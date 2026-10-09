@@ -408,7 +408,7 @@ export function DigestEmailViewer({ open, onClose, digestWindow, onDigestWindowC
                   <button
                     type="button"
                     onClick={openStructured}
-                    className="block mx-auto mt-3 text-[12px] text-gold-ink hover:text-gold/80"
+                    className="block mx-auto mt-3 text-[12px] text-gold-ink hover:underline"
                   >
                     Generate the Structured view (one AI call)
                   </button>
@@ -425,7 +425,7 @@ export function DigestEmailViewer({ open, onClose, digestWindow, onDigestWindowC
                   <button
                     type="button"
                     onClick={openStructured}
-                    className="block mx-auto mt-2 text-[12px] text-gold-ink hover:text-gold/80"
+                    className="block mx-auto mt-2 text-[12px] text-gold-ink hover:underline"
                   >
                     Try again
                   </button>
@@ -441,7 +441,7 @@ export function DigestEmailViewer({ open, onClose, digestWindow, onDigestWindowC
           {data && !data.empty && genFailed && !data.structuredHtml && (
             <div role="status" className="px-5 py-2 text-[12px] text-warn border-b border-edge">
               The Structured view could not be generated this time. The other layouts are unaffected.
-              <button type="button" onClick={openStructured} className="ml-2 text-gold-ink hover:text-gold/80">
+              <button type="button" onClick={openStructured} className="ml-2 text-gold-ink hover:underline">
                 Try again
               </button>
             </div>
@@ -471,7 +471,7 @@ export function DigestEmailViewer({ open, onClose, digestWindow, onDigestWindowC
               <button
                 type="button"
                 onClick={openStructured}
-                className="block mx-auto mt-3 text-[12px] text-gold-ink hover:text-gold/80"
+                className="block mx-auto mt-3 text-[12px] text-gold-ink hover:underline"
               >
                 Generate the Structured view (one AI call)
               </button>
@@ -483,7 +483,7 @@ export function DigestEmailViewer({ open, onClose, digestWindow, onDigestWindowC
               <button
                 type="button"
                 onClick={openStructured}
-                className="block mx-auto mt-3 text-[12px] text-gold-ink hover:text-gold/80"
+                className="block mx-auto mt-3 text-[12px] text-gold-ink hover:underline"
               >
                 Try again
               </button>
@@ -496,7 +496,7 @@ export function DigestEmailViewer({ open, onClose, digestWindow, onDigestWindowC
                 <button
                   type="button"
                   onClick={() => pickLayout(layout === "structured" ? "by_source" : layout === "by_source" ? "by_company" : "structured")}
-                  className="block mx-auto mt-3 text-[12px] text-gold-ink hover:text-gold/80"
+                  className="block mx-auto mt-3 text-[12px] text-gold-ink hover:underline"
                 >
                   Switch to the other view →
                 </button>

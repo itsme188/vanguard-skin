@@ -14,6 +14,7 @@ import { LedgerRecomputeDialog, useLedgerRecomputeFlow } from "./LedgerRecompute
 import { withLedgerAck } from "./ledger-recompute-flow";
 import { ScrollFade } from "../ScrollFade";
 import { LotBasisControl } from "./LotBasisControl";
+import { reverseDateInputId } from "./giving-ids";
 
 /**
  * One year's giving ledger (Task 13) — stock donations table + a visually
@@ -97,6 +98,7 @@ export function GivingYearSection({ year }: { year: GivingYear }) {
   const [unlinkTarget, setUnlinkTarget] = useState<GivingDonation | null>(null);
   const [reverseTarget, setReverseTarget] = useState<GivingDonation | null>(null);
   const [reverseDate, setReverseDate] = useState("");
+  const reverseDateId = reverseDateInputId(year.year);
 
   const stockDonations = year.donations.filter((gd) => gd.donation.kind === "stock");
   const cashDonations = year.donations.filter((gd) => gd.donation.kind === "cash");
@@ -177,11 +179,11 @@ export function GivingYearSection({ year }: { year: GivingYear }) {
         onCancel={() => setReverseTarget(null)}
       >
         {reverseTarget && <DonationIdentityLine gd={reverseTarget} />}
-        <label htmlFor="giving-reverse-date" className="block text-xs font-medium text-ink-faint mb-1.5 mt-3">
+        <label htmlFor={reverseDateId} className="block text-xs font-medium text-ink-faint mb-1.5 mt-3">
           Reversed date
         </label>
         <input
-          id="giving-reverse-date"
+          id={reverseDateId}
           type="date"
           value={reverseDate}
           onChange={(e) => setReverseDate(e.target.value)}
@@ -302,6 +304,7 @@ export function GivingYearSection({ year }: { year: GivingYear }) {
                           <LotBasisControl
                             key={lot.acquisitionTransactionId}
                             lot={lot}
+                            donationId={d.id}
                             symbol={d.symbol_raw ?? "this security"}
                           />
                         ))}

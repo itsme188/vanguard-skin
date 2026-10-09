@@ -154,7 +154,7 @@ function SymbolPills({
             // growth; the ~2px mutual overlap between adjacent chips'
             // extensions is an acceptable trade-off vs. a dead zone between
             // them (the chip's own visible box stays the primary target).
-            className="relative px-2 py-0.5 rounded bg-blue/20 text-blue text-xs font-mono font-medium hover:bg-blue/30 transition-colors pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-1"
+            className="relative px-2 py-0.5 rounded bg-blue/20 text-blue text-xs font-mono font-medium hover:brightness-95 transition-colors pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-1"
           >
             {s}
           </Link>
@@ -1348,7 +1348,7 @@ function ArticleCard({
               target="_blank"
               rel="noopener noreferrer"
               onClick={(e) => e.stopPropagation()}
-              className="text-xs text-ink-faint hover:text-gold transition-colors ml-auto"
+              className="text-xs text-ink-faint hover:text-gold-ink transition-colors ml-auto"
               title="Open the original article in your browser"
             >
               Open original ↗
@@ -1370,7 +1370,7 @@ function ArticleCard({
             is a real button: it opens and closes the card from the keyboard
             (Enter/Space) and stays clickable while expanded. stopPropagation:
             the collapsed wrapper also toggles, and two toggles cancel out. */}
-        <h3 className={`text-xl font-semibold leading-snug text-ink mb-2 ${expanded ? "" : "group-hover:text-gold transition-colors"}`}>
+        <h3 className={`text-xl font-semibold leading-snug text-ink mb-2 ${expanded ? "" : "group-hover:text-gold-ink transition-colors"}`}>
           <button
             type="button"
             aria-expanded={expanded}
@@ -1441,7 +1441,7 @@ function ArticleCard({
                       href={originalUrl}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="text-gold-ink hover:text-gold/80 not-italic"
+                      className="text-gold-ink hover:underline not-italic"
                     >
                       open the original ↗
                     </a>

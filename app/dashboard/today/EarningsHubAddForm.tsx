@@ -7,7 +7,7 @@
  */
 
 import { CHIP_TONE_CLASSES } from "@/app/dashboard/components/Chip";
-import { CHIP_TONE_TEXT } from "@/app/dashboard/components/chip-tone-text";
+import { CHIP_TONE_TEXT, GOLD_OUTLINE_HOVER } from "@/app/dashboard/components/chip-tone-text";
 import { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -369,7 +369,7 @@ export function EarningsHubAddForm({ weekOf }: Props) {
             setSlot(DEFAULT_SLOT);
             setOpen(true);
           }}
-          className="relative pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-3 pointer-coarse:after:-inset-x-2 text-[14px] font-medium text-gold-ink hover:text-gold"
+          className="relative pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-3 pointer-coarse:after:-inset-x-2 text-[14px] font-medium text-gold-ink hover:underline"
         >
           + Add ticker
         </button>
@@ -379,7 +379,7 @@ export function EarningsHubAddForm({ weekOf }: Props) {
         {outOfWeekNote && outOfWeekLink && (
           <Link
             href={outOfWeekLink.href}
-            className="relative pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-3 pointer-coarse:after:-inset-x-2 text-[12px] font-medium text-gold-ink underline underline-offset-2 hover:text-gold whitespace-nowrap"
+            className="relative pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-3 pointer-coarse:after:-inset-x-2 text-[12px] font-medium text-gold-ink underline underline-offset-2 hover:decoration-2 whitespace-nowrap"
           >
             {outOfWeekLink.label}
           </Link>
@@ -389,7 +389,7 @@ export function EarningsHubAddForm({ weekOf }: Props) {
             type="button"
             onClick={undo}
             disabled={undoing}
-            className="relative pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-3 pointer-coarse:after:-inset-x-2 text-[12px] font-medium text-gold-ink underline underline-offset-2 hover:text-gold disabled:opacity-50 whitespace-nowrap"
+            className="relative pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-3 pointer-coarse:after:-inset-x-2 text-[12px] font-medium text-gold-ink underline underline-offset-2 hover:decoration-2 disabled:opacity-50 whitespace-nowrap"
           >
             {undoing ? "Undoing…" : "Undo"}
           </button>
@@ -464,7 +464,7 @@ export function EarningsHubAddForm({ weekOf }: Props) {
               type="button"
               onClick={() => save(NO_ACKS)}
               disabled={submitting}
-              className="px-3 py-1 text-[11px] font-semibold rounded border border-gold-ink/40 text-gold-ink hover:bg-gold/10 disabled:opacity-50"
+              className={`px-3 py-1 text-[11px] font-semibold rounded border border-gold-ink/40 text-gold-ink ${GOLD_OUTLINE_HOVER} disabled:opacity-50`}
             >
               {submitting ? "Adding…" : "Save anyway"}
             </button>
@@ -487,7 +487,7 @@ export function EarningsHubAddForm({ weekOf }: Props) {
               type="button"
               onClick={() => save({ ...acks, forceSlot: true })}
               disabled={submitting}
-              className="px-3 py-1 text-[11px] font-semibold rounded border border-gold-ink/40 text-gold-ink hover:bg-gold/10 disabled:opacity-50"
+              className={`px-3 py-1 text-[11px] font-semibold rounded border border-gold-ink/40 text-gold-ink ${GOLD_OUTLINE_HOVER} disabled:opacity-50`}
             >
               {submitting ? "Adding…" : `Add anyway as ${slot}`}
             </button>
@@ -514,7 +514,7 @@ export function EarningsHubAddForm({ weekOf }: Props) {
               type="button"
               onClick={() => save({ ...acks, force: true })}
               disabled={submitting}
-              className="px-3 py-1 text-[11px] font-semibold rounded border border-gold-ink/40 text-gold-ink hover:bg-gold/10 disabled:opacity-50"
+              className={`px-3 py-1 text-[11px] font-semibold rounded border border-gold-ink/40 text-gold-ink ${GOLD_OUTLINE_HOVER} disabled:opacity-50`}
             >
               {submitting ? "Adding…" : "Add anyway (replaces the vendor date)"}
             </button>

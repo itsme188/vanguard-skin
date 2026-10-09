@@ -16,7 +16,7 @@ import { todayET, nowET } from "@/lib/calendar/date-utils";
 import { getRiskFreeRate } from "@/lib/queries/risk-free-rate";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 import { accountIdsFilterSql, normalizeAccountIds } from "@/lib/compute/factors";
-import { isOptionLive } from "@/lib/compute/option-expiry";
+import { isOptionLive, normalizeOptionExpiration } from "@/lib/compute/option-expiry";
 import { issuerSiblings } from "@/lib/securities/issuer-family";
 
 /**
@@ -482,7 +482,13 @@ export function computePortfolioGreeks(
   // underlying / strike / type / symbol, so the order is deterministic and a
   // reader scanning for "what expires this week" starts at the top.
   const daysByRow = new Map<OptionHoldingRow, number>();
-  for (const row of rows) daysByRow.set(row, daysBetween(today, row.expiration_date));
+  for (const row of rows) {
+    // One spelling from here on: a legacy compact `YYYYMMDD` expiration made
+    // the day count NaN (it sorted as "unreadable") and the row's own
+    // expiration field carried the compact form to the card.
+    row.expiration_date = normalizeOptionExpiration(row.expiration_date);
+    daysByRow.set(row, daysBetween(today, row.expiration_date));
+  }
   rows.sort((a, b) =>
     compareGreeksDefaultOrder(
       { daysToExpiry: daysByRow.get(a) as number, underlying: a.underlying_symbol, strike: a.strike_price, optionType: a.option_type, symbol: a.symbol },
@@ -730,8 +736,11 @@ export function isExpiredAsOf(
   today: string,
   now: Date = new Date()
 ): boolean {
-  if (expirationDate < today) return true;
-  if (expirationDate > today) return false;
+  // Compared in dashed form: a legacy compact `YYYYMMDD` string sorts after
+  // every dashed day of its year, so compared raw it was never expired.
+  const expiry = normalizeOptionExpiration(expirationDate);
+  if (!isOptionLive(expiry, today)) return true;
+  if (expiry !== today) return false;
   // Same calendar day as expiry — decide against the ET wall-clock close.
   return nowET(now) >= MARKET_CLOSE_ET;
 }
@@ -757,7 +766,7 @@ export function yearsToExpiry(
   today: string,
   now: Date = new Date()
 ): number {
-  const daysToExpiry = daysBetween(today, expirationDate);
+  const daysToExpiry = daysBetween(today, normalizeOptionExpiration(expirationDate));
   if (daysToExpiry !== 0) {
     return Math.max(daysToExpiry / 365, 0);
   }

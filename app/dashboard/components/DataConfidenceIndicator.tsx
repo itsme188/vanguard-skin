@@ -173,7 +173,7 @@ export function DataConfidenceIndicator() {
           <span>Data unavailable</span>
           <button
             onClick={fetchConfidence}
-            className="text-blue hover:text-blue/80 underline"
+            className="text-blue hover:decoration-2 underline"
           >
             Retry
           </button>
@@ -200,7 +200,7 @@ export function DataConfidenceIndicator() {
         ref={triggerRef}
         onClick={() => setShowPopover(!showPopover)}
         className={`relative flex items-center gap-2 text-[11px] font-mono transition-colors pointer-coarse:after:absolute pointer-coarse:after:-inset-2 pointer-coarse:after:content-[''] ${
-          confidence.capReason ? "text-down hover:text-down/80" : "text-ink-faint hover:text-ink-dim"
+          confidence.capReason ? "text-down hover:underline" : "text-ink-faint hover:text-ink-dim"
         }`}
         title={
           confidence.capReason
@@ -556,7 +556,7 @@ function ActionRow({
         <button
           onClick={onFix}
           disabled={loading}
-          className="shrink-0 px-2 py-0.5 rounded bg-blue/20 text-blue hover:bg-blue/30 disabled:opacity-50 text-[9px] font-medium transition-colors"
+          className="shrink-0 px-2 py-0.5 rounded bg-blue/20 text-blue hover:brightness-95 disabled:opacity-50 text-[9px] font-medium transition-colors"
         >
           {loading ? "..." : "Fix"}
         </button>

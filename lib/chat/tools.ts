@@ -999,8 +999,20 @@ export async function executeTool(
     const scopeAccounts = accountScope.kind === "accounts" ? accountScope.accounts : undefined;
     if (scopeAccounts && scopeAccounts.length > 1 && !SCOPE_LIST_TOOLS.has(toolName)) {
       const names = scopeAccounts.map((a) => `"${a.name}"`).join(", ");
+      // What leaving the name out does. For every tool but one it reads every
+      // account. query_trade_reviews instead falls to its default account, so
+      // it gets its own sentence, and only when that default really is one
+      // account (otherwise the advice would loop back to this refusal).
+      let omitAdvice = ", or omit account_name for every account";
+      if (toolName === "query_trade_reviews") {
+        const fallback = resolveChatAccounts(db, "IBKR");
+        omitAdvice =
+          fallback.kind === "accounts" && fallback.accounts.length === 1
+            ? `, or omit account_name for the ${fallback.accounts[0].name} account`
+            : "";
+      }
       return {
-        error: `"${requestedAccount}" names ${scopeAccounts.length} accounts (${names}) and this tool reads one account at a time. Call it once per account with the exact account name, or omit account_name for every account.`,
+        error: `"${requestedAccount}" names ${scopeAccounts.length} accounts (${names}) and this tool reads one account at a time. Call it once per account with the exact account name${omitAdvice}.`,
       };
     }
     /** Undefined = every account. */

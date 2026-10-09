@@ -131,7 +131,7 @@ export function TranscriptsRefreshButton({ ticker }: Props) {
         type="button"
         onClick={refresh}
         disabled={busy}
-        className="text-ink-dim hover:text-gold disabled:opacity-50 font-mono"
+        className="text-ink-dim hover:text-gold-ink disabled:opacity-50 font-mono"
       >
         {busy ? "…fetching" : "↻ refresh"}
       </button>

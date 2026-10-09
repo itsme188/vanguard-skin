@@ -5,7 +5,7 @@ import { anchorIndex } from "@/tests/helpers/source-anchor";
 
 const cases: Array<[string, string, string]> = [
   ["app/dashboard/today/EarningsHubRefreshButton.tsx", "onClick={refresh}", "-inset-y-3 "],
-  ["app/dashboard/today/BogeysUploadButton.tsx", 'className="text-gold-ink hover:text-gold/80', "-inset-y-3 "],
+  ["app/dashboard/today/BogeysUploadButton.tsx", 'className="text-gold-ink enabled:hover:underline', "-inset-y-3 "],
   ["app/dashboard/today/IbkrRefreshButton.tsx", "onClick={refresh}", "-inset-y-3.5"],
   ["app/dashboard/components/TodayReleases.tsx", 'href="/dashboard/calendar"', "-inset-y-3.5"],
 ];

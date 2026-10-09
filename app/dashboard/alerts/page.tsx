@@ -1,6 +1,6 @@
 "use client";
 
-import { CHIP_TONE_TEXT } from "@/app/dashboard/components/chip-tone-text";
+import { CHIP_TONE_TEXT, GOLD_OUTLINE_HOVER } from "@/app/dashboard/components/chip-tone-text";
 import {
   Fragment,
   Suspense,
@@ -965,7 +965,7 @@ function AlertsPageInner() {
             Triggered levels and newsletter-extracted suggestions in one inbox.{" "}
             <Link
               href="/dashboard/levels/performance"
-              className="text-gold-ink hover:text-gold"
+              className="text-gold-ink hover:underline"
             >
               Source performance →
             </Link>
@@ -1059,7 +1059,7 @@ function AlertsPageInner() {
             <button
               onClick={confirmApproveAllForce}
               disabled={approvingAll}
-              className="relative px-3 py-1 text-[11px] font-semibold rounded border border-gold-ink/40 text-gold-ink hover:bg-gold/10 disabled:opacity-50 pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2.5 pointer-coarse:after:-inset-x-0.5"
+              className={`relative px-3 py-1 text-[11px] font-semibold rounded border border-gold-ink/40 text-gold-ink ${GOLD_OUTLINE_HOVER} disabled:opacity-50 pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2.5 pointer-coarse:after:-inset-x-0.5`}
             >
               Confirm
             </button>
@@ -1905,7 +1905,7 @@ function AlertRow({
             {alert.symbol && (
               <Link
                 href={`/dashboard/security/${alert.security_id}`}
-                className="font-mono text-sm font-medium text-ink hover:text-gold"
+                className="font-mono text-sm font-medium text-ink hover:text-gold-ink"
               >
                 {alert.symbol}
               </Link>
@@ -2166,7 +2166,7 @@ function ReviewRow({
             </span>
             <Link
               href={`/dashboard/security/${level.security_id}`}
-              className="font-mono text-sm font-medium text-ink hover:text-gold"
+              className="font-mono text-sm font-medium text-ink hover:text-gold-ink"
             >
               {level.symbol}
             </Link>
@@ -2259,7 +2259,7 @@ function ReviewRow({
                 <button
                   onClick={() => onDecide(level.id, "auto_approved", true)}
                   disabled={disabled}
-                  className="relative px-3 py-1 text-[11px] font-semibold rounded border border-gold-ink/40 text-gold-ink hover:bg-gold/10 disabled:opacity-50 pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2.5 pointer-coarse:after:-inset-x-0.5"
+                  className={`relative px-3 py-1 text-[11px] font-semibold rounded border border-gold-ink/40 text-gold-ink ${GOLD_OUTLINE_HOVER} disabled:opacity-50 pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2.5 pointer-coarse:after:-inset-x-0.5`}
                 >
                   {busy ? "Arming…" : "Confirm"}
                 </button>

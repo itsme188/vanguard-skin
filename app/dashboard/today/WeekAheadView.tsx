@@ -189,7 +189,7 @@ export function WeekAheadView({ events, weekOf }: WeekAheadViewProps) {
   const weekHref = (monday: string) =>
     `/dashboard/today?view=week-ahead&weekOf=${monday}`;
   const chevronClass =
-    "relative text-[11px] text-ink-faint hover:text-gold border border-edge rounded-full px-2.5 py-1 pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-0.5";
+    "relative text-[11px] text-ink-faint hover:text-gold-ink border border-edge rounded-full px-2.5 py-1 pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-0.5";
 
   return (
     <div className="space-y-8">
@@ -208,7 +208,7 @@ export function WeekAheadView({ events, weekOf }: WeekAheadViewProps) {
           {showThisWeekLink && (
             <Link
               href={weekHref(thisWeekMonday)}
-              className="relative text-[11px] uppercase tracking-widest text-ink-faint hover:text-gold border border-edge rounded-full px-3 py-1 pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-0.5"
+              className="relative text-[11px] uppercase tracking-widest text-ink-faint hover:text-gold-ink border border-edge rounded-full px-3 py-1 pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-0.5"
             >
               This week
             </Link>
@@ -218,7 +218,7 @@ export function WeekAheadView({ events, weekOf }: WeekAheadViewProps) {
           </Link>
           <Link
             href="/dashboard/today"
-            className="relative text-[11px] uppercase tracking-widest text-ink-faint hover:text-gold border border-edge rounded-full px-3 py-1 pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-0.5"
+            className="relative text-[11px] uppercase tracking-widest text-ink-faint hover:text-gold-ink border border-edge rounded-full px-3 py-1 pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-0.5"
           >
             ← Today
           </Link>
@@ -345,7 +345,7 @@ function WeekendNote({
               {e.security_id ? (
                 <Link
                   href={`/dashboard/security/${e.security_id}`}
-                  className="font-mono font-medium text-ink hover:text-gold"
+                  className="font-mono font-medium text-ink hover:text-gold-ink"
                   title={slotAwareTitle(e) ?? undefined}
                 >
                   {name}

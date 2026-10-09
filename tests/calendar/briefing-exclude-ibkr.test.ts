@@ -5,6 +5,7 @@ import {
   getBriefingHoldings,
   buildCombinedPositionsForEvents,
   getBriefingExpiringOptions,
+  formatOptionForPrompt,
 } from "@/lib/calendar/briefing";
 import type { CalendarEvent } from "@/lib/types";
 
@@ -216,6 +217,78 @@ describe("getBriefingExpiringOptions — IBKR exclusion + per-(account, security
     seedHolding(put, VANGUARD_TAXABLE, 0, "2025-02-28");
 
     expect(getBriefingExpiringOptions(db, "2026-06-08", "2026-06-14")).toHaveLength(0);
+  });
+});
+
+describe("getBriefingExpiringOptions — legacy compact YYYYMMDD expirations", () => {
+  it("lists a compact-form option expiring inside the week, with a dashed date", () => {
+    const put = seedOption("ZZA 260612P00050000", "ZZA", 50, "20260612");
+    seedHolding(put, VANGUARD_TAXABLE, -1);
+
+    const rows = getBriefingExpiringOptions(db, "2026-06-08", "2026-06-14");
+    // Before the fix: [] ('20260612' sorts after '2026-06-14' as raw text).
+    expect(rows.map((r) => [r.underlying_symbol, r.expiration_date])).toEqual([["ZZA", "2026-06-12"]]);
+  });
+
+  it("includes compact dates on both week bounds and leaves out the days either side", () => {
+    seedHolding(seedOption("ZZA 260607P00050000", "ZZA", 50, "20260607"), VANGUARD_TAXABLE, -1);
+    seedHolding(seedOption("ZZB 260608P00050000", "ZZB", 50, "20260608"), VANGUARD_TAXABLE, -1);
+    seedHolding(seedOption("ZZC 260614P00050000", "ZZC", 50, "20260614"), VANGUARD_TAXABLE, -1);
+    seedHolding(seedOption("ZZD 260615P00050000", "ZZD", 50, "20260615"), VANGUARD_TAXABLE, -1);
+    // Same year, raw text would sort all of these after any dashed bound.
+    seedHolding(seedOption("ZZE 261218P00050000", "ZZE", 50, "20261218"), VANGUARD_TAXABLE, -1);
+
+    const rows = getBriefingExpiringOptions(db, "2026-06-08", "2026-06-14");
+    expect(rows.map((r) => r.underlying_symbol)).toEqual(["ZZB", "ZZC"]);
+  });
+
+  it("orders compact and dashed rows together by the real day, then underlying", () => {
+    seedHolding(seedOption("ZZC 260612P00050000", "ZZC", 50, "2026-06-12"), VANGUARD_TAXABLE, -1);
+    seedHolding(seedOption("ZZB 260612P00050000", "ZZB", 50, "20260612"), VANGUARD_TAXABLE, -1);
+    seedHolding(seedOption("ZZA 260610P00050000", "ZZA", 50, "20260610"), VANGUARD_TAXABLE, -1);
+    seedHolding(seedOption("ZZD 260609P00050000", "ZZD", 50, "2026-06-09"), VANGUARD_TAXABLE, -1);
+
+    const rows = getBriefingExpiringOptions(db, "2026-06-08", "2026-06-14");
+    expect(rows.map((r) => `${r.underlying_symbol} ${r.expiration_date}`)).toEqual([
+      "ZZD 2026-06-09",
+      "ZZA 2026-06-10",
+      "ZZB 2026-06-12",
+      "ZZC 2026-06-12",
+    ]);
+  });
+
+  it("still excludes an IBKR leg stored in the compact form", () => {
+    seedHolding(seedOption("ZZA 260612P00050000", "ZZA", 50, "20260612"), IBKR, -5);
+    expect(getBriefingExpiringOptions(db, "2026-06-08", "2026-06-14")).toEqual([]);
+  });
+
+  it("a dashed-form option returns the same row and the same briefing line as before", () => {
+    const put = seedOption("SPY 260612P00500000", "SPY", 500, "2026-06-12");
+    seedHolding(put, VANGUARD_TAXABLE, -1);
+
+    const rows = getBriefingExpiringOptions(db, "2026-06-08", "2026-06-14");
+    expect(rows).toEqual([
+      {
+        symbol: "SPY 260612P00500000",
+        underlying_symbol: "SPY",
+        expiration_date: "2026-06-12",
+        option_type: "PUT",
+        strike_price: 500,
+        quantity: -1,
+        account_name: "Vanguard Taxable",
+      },
+    ]);
+    expect(formatOptionForPrompt(rows[0], 1)).toBe(
+      "1. **SPY** PUT $500 exp 2026-06-12 \u2014 SHORT in Vanguard Taxable",
+    );
+  });
+
+  it("a compact-form option renders the same briefing line as its dashed twin", () => {
+    seedHolding(seedOption("SPY 260612P00500000", "SPY", 500, "20260612"), VANGUARD_TAXABLE, -1);
+    const rows = getBriefingExpiringOptions(db, "2026-06-08", "2026-06-14");
+    expect(formatOptionForPrompt(rows[0], 1)).toBe(
+      "1. **SPY** PUT $500 exp 2026-06-12 \u2014 SHORT in Vanguard Taxable",
+    );
   });
 });
 

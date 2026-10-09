@@ -353,7 +353,7 @@ export function getFullTextForSources(
        WHERE a.source_id IN (${placeholders})
          AND a.processed_at IS NOT NULL
          AND COALESCE(a.is_relevant, 1) = 1
-         AND a.received_at >= datetime('now', '-' || ? || ' hours')
+         AND datetime(a.received_at) >= datetime('now', '-' || ? || ' hours')
        ORDER BY a.received_at DESC`
     )
     .all(...sourceIds, hours) as {
@@ -503,7 +503,7 @@ export function getRecentArticleSummaries(
        JOIN research_sources s ON a.source_id = s.id
        WHERE a.processed_at IS NOT NULL
          AND COALESCE(a.is_relevant, 1) = 1
-         AND a.received_at >= datetime('now', '-' || ? || ' hours')
+         AND datetime(a.received_at) >= datetime('now', '-' || ? || ' hours')
        ORDER BY a.received_at DESC
        LIMIT ?`
     )

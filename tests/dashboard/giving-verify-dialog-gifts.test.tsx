@@ -66,6 +66,7 @@ const dialog = (giftsFed: GivingLotGift[]) =>
   renderToStaticMarkup(
     <BasisVerifiedDialog
       open
+      fieldIds={{ input: "lot-basis-source-d1-t1", hint: "lot-basis-hint-d1-t1" }}
       symbol="ZZBB"
       acquisitionDate="2010-01-10"
       giftsFed={giftsFed}

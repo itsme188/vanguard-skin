@@ -191,7 +191,7 @@ export default async function TodayPage({ searchParams }: TodayPageProps) {
           )}
           <Link
             href="/dashboard/today?view=week-ahead"
-            className="text-[11px] uppercase tracking-widest text-ink-faint hover:text-gold border border-edge rounded-full px-3 py-1"
+            className="text-[11px] uppercase tracking-widest text-ink-faint hover:text-gold-ink border border-edge rounded-full px-3 py-1"
           >
             Week ahead →
           </Link>
@@ -334,7 +334,7 @@ export default async function TodayPage({ searchParams }: TodayPageProps) {
               </span>
             )}
             <IbkrRefreshButton latestPriceDate={latestPriceDate} />
-            <Link href="/dashboard/accounts" className="ml-auto text-[13px] text-gold-ink hover:text-gold">
+            <Link href="/dashboard/accounts" className="ml-auto text-[13px] text-gold-ink hover:underline">
               Accounts &rarr;
             </Link>
           </div>

@@ -464,7 +464,7 @@ export function SettingsModal() {
                     API key changes require a restart to take effect.{" "}
                     <button
                       onClick={handleRestart}
-                      className="text-gold-ink hover:text-gold/80 underline"
+                      className="text-gold-ink hover:decoration-2 underline"
                     >
                       Restart now
                     </button>

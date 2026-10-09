@@ -1,7 +1,7 @@
 "use client";
 
 import { GOLD_FILL_CLASSES } from "@/app/dashboard/components/chip-tone-text";
-import { useEffect, useId, useRef, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import type { GivingFlaggedLot, GivingLotGift } from "@/lib/queries/giving-view";
 import { Chip, type ChipTone } from "../Chip";
@@ -17,6 +17,7 @@ import {
   sourceNoteProblem,
   verificationSummary,
 } from "./lot-basis-actions";
+import { lotBasisFieldIds, type LotBasisFieldIds } from "./giving-ids";
 
 /**
  * One flagged donated lot on a Giving row (owner request 2026-10-07): its
@@ -170,6 +171,7 @@ export function GiftsFedNote({ gifts }: { gifts: GivingLotGift[] }) {
 /** The one-field form: what was the basis checked against? */
 export function BasisVerifiedDialog({
   open,
+  fieldIds,
   symbol,
   acquisitionDate,
   giftsFed,
@@ -181,6 +183,9 @@ export function BasisVerifiedDialog({
   onCancel,
 }: {
   open: boolean;
+  /** Built from stored ids by the caller (`lotBasisFieldIds`); never generated,
+   *  so the server render and the browser cannot disagree. */
+  fieldIds: LotBasisFieldIds;
   symbol: string;
   acquisitionDate: string;
   /** The gifts this lot is flagged on (`GivingFlaggedLot.giftsFed`). */
@@ -194,8 +199,7 @@ export function BasisVerifiedDialog({
 }) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
-  const inputId = useId();
-  const hintId = useId();
+  const { input: inputId, hint: hintId } = fieldIds;
   // Save stays disabled with nothing to save; the hint says why.
   const noteEmpty = note.trim().length === 0;
 
@@ -293,7 +297,17 @@ export function BasisVerifiedDialog({
   );
 }
 
-export function LotBasisControl({ lot, symbol }: { lot: GivingFlaggedLot; symbol: string }) {
+export function LotBasisControl({
+  lot,
+  symbol,
+  donationId,
+}: {
+  lot: GivingFlaggedLot;
+  symbol: string;
+  /** The gift this row belongs to: one lot can be flagged on several gifts,
+   *  so the dialog's element ids need both. */
+  donationId: number;
+}) {
   const router = useRouter();
   const { isPrivate } = usePrivacy();
   // Outside React state on purpose: a second click in the same frame is refused.
@@ -360,6 +374,7 @@ export function LotBasisControl({ lot, symbol }: { lot: GivingFlaggedLot; symbol
       <LotBasisStatus lot={lot} busy={busy} notice={notice} onMark={openDialog} onUndo={undo} />
       <BasisVerifiedDialog
         open={dialogOpen}
+        fieldIds={lotBasisFieldIds(donationId, lot.acquisitionTransactionId)}
         symbol={symbol}
         acquisitionDate={lot.acquisitionDate}
         giftsFed={lot.giftsFed}
