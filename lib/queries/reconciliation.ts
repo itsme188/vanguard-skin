@@ -19,12 +19,65 @@ export interface ReconciliationCheckpoint {
   difference: number | null;
   notes: string | null;
   created_at: string;
+  /** Date of the prior valuation used when the exact date had none; null when the stored value was used. */
+  computed_from_date: string | null;
+  /** Why Computed is empty (no valuation within the fallback window); null when there is a value. */
+  computed_missing_reason: string | null;
+}
+
+/** How far back a checkpoint looks for a valuation when its own date has none. */
+export const CHECKPOINT_FALLBACK_DAYS = 7;
+export const CHECKPOINT_NO_VALUATION_REASON = `No valuation on or within ${CHECKPOINT_FALLBACK_DAYS} days before this date`;
+
+type StoredCheckpoint = Omit<ReconciliationCheckpoint, "computed_from_date" | "computed_missing_reason">;
+
+/**
+ * Read-time fallback: a row with no stored Computed value (weekend or holiday
+ * date) takes the nearest PRIOR daily valuation of the same account, at most
+ * CHECKPOINT_FALLBACK_DAYS earlier. Nothing is written back.
+ */
+function withComputedFallback(db: Database.Database, rows: StoredCheckpoint[]): ReconciliationCheckpoint[] {
+  const lookup = db.prepare(
+    `SELECT valuation_date, total_value FROM daily_valuations
+     WHERE account_id = ? AND valuation_date <= ? AND valuation_date >= date(?, ?)
+     ORDER BY valuation_date DESC LIMIT 1`
+  );
+  return rows.map((row) => {
+    if (row.computed_value !== null) {
+      return { ...row, computed_from_date: null, computed_missing_reason: null };
+    }
+    const prior = lookup.get(
+      row.account_id,
+      row.checkpoint_date,
+      row.checkpoint_date,
+      `-${CHECKPOINT_FALLBACK_DAYS} days`
+    ) as { valuation_date: string; total_value: number } | undefined;
+    if (!prior) {
+      return {
+        ...row,
+        difference: null,
+        computed_from_date: null,
+        computed_missing_reason: CHECKPOINT_NO_VALUATION_REASON,
+      };
+    }
+    return {
+      ...row,
+      computed_value: prior.total_value,
+      difference: row.statement_value - prior.total_value,
+      computed_from_date: prior.valuation_date === row.checkpoint_date ? null : prior.valuation_date,
+      computed_missing_reason: null,
+    };
+  });
 }
 
 export function getReconciliationCheckpoints(
   db: Database.Database,
   accountId?: number
 ): ReconciliationCheckpoint[] {
+  return withComputedFallback(db, selectStoredCheckpoints(db, accountId));
+}
+
+function selectStoredCheckpoints(db: Database.Database, accountId?: number): StoredCheckpoint[] {
   if (accountId) {
     return db
       .prepare(
@@ -38,7 +91,7 @@ export function getReconciliationCheckpoints(
         WHERE rc.account_id = ?
         ORDER BY rc.checkpoint_date DESC`
       )
-      .all(accountId) as ReconciliationCheckpoint[];
+      .all(accountId) as StoredCheckpoint[];
   }
   return db
     .prepare(
@@ -51,7 +104,7 @@ export function getReconciliationCheckpoints(
       JOIN accounts a ON a.id = rc.account_id
       ORDER BY rc.checkpoint_date DESC, a.name`
     )
-    .all() as ReconciliationCheckpoint[];
+    .all() as StoredCheckpoint[];
 }
 
 /** What a refused or confirmed replace shows the user about the saved row. */
@@ -200,14 +253,15 @@ export function addReconciliationCheckpoint(
         .lastInsertRowid;
     }
 
-    const checkpoint = db
+    const stored = db
       .prepare(
         `SELECT rc.*, a.name AS account_name
          FROM reconciliation_checkpoints rc
          JOIN accounts a ON a.id = rc.account_id
          WHERE rc.id = ?`
       )
-      .get(id) as ReconciliationCheckpoint;
+      .get(id) as StoredCheckpoint;
+    const [checkpoint] = withComputedFallback(db, [stored]);
 
     return existing
       ? { status: "replaced", checkpoint, previous: existing }
