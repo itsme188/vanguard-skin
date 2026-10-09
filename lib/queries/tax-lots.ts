@@ -194,7 +194,17 @@ const ENGINE_ESTIMATED_COLUMNS = `
         COALESCE(SUM(CASE WHEN ${ENGINE_ESTIMATED} AND tls.is_long_term = 0 THEN 1 ELSE 0 END), 0) AS engineEstimatedShortTermSales,
         COALESCE(SUM(CASE WHEN ${ENGINE_ESTIMATED} AND ${USD_ONLY} AND tls.is_long_term = 0 THEN tls.realized_gain_loss ELSE 0 END), 0) AS engineEstimatedShortTermGain`;
 
-function remainingLotBasisSql(): string {
+/**
+ * The basis of the quantity STILL OPEN in a lot, in USD, as a SQL fragment:
+ * the lot's fee-inclusive cost_basis prorated by remaining / acquired, times
+ * the FX factor. Requires `tax_lots tl` and `LEFT JOIN fx_rates fx` in scope.
+ * The one copy: the Tax Lots reads here, the chat tax-lot tool
+ * (lib/queries/chat-tools.ts) and the chat summary
+ * (lib/queries/portfolio-summary.ts) all measure an open lot's unrealized
+ * figure against it. Never rebuild it from quantity x acquisition_price: that
+ * drops the fees the engine capitalized into the lot.
+ */
+export function remainingLotBasisSql(): string {
   return "(CASE WHEN tl.quantity_acquired != 0 THEN tl.cost_basis * tl.quantity_remaining / tl.quantity_acquired ELSE 0 END) * COALESCE(fx.usd_per_unit, 1)";
 }
 

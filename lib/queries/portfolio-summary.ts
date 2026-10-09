@@ -9,7 +9,7 @@ import {
   type AccountValueSourceKind,
 } from "@/lib/queries/dashboard";
 import { liveOptionExpirationSql } from "@/lib/compute/option-expiry";
-import { CURRENCY_CONVERSION_SECURITY_SQL, USD_ONLY, lotSideSignSql } from "@/lib/queries/tax-lots";
+import { CURRENCY_CONVERSION_SECURITY_SQL, USD_ONLY, lotSideSignSql, remainingLotBasisSql } from "@/lib/queries/tax-lots";
 import { longTermDateSql } from "@/lib/queries/long-term-sql";
 import {
   isPendingStatementLot,
@@ -401,9 +401,14 @@ export function getPortfolioSummaryForChat(db: Database.Database, accountName?: 
   // Tax-loss harvesting candidates (positions with unrealized losses).
   // The figure is signed by side, the same way the Tax Lots reads sign it
   // (lib/queries/tax-lots.ts): a short lot gains when the price FALLS, so its
-  // unrealized figure is the opening-price value minus the current value.
+  // unrealized figure is the opening value minus the current value.
   // quantity_remaining is positive for a short lot (is_short is the flag).
+  // The opening value is the page's fee-inclusive remaining lot basis (the
+  // shared fragment), never quantity x acquisition_price, so this list, the
+  // chat tax-lot tool and the Tax Lots page give one figure per lot. The
+  // -100 threshold applies to that figure.
   const LOT_SIDE_SIGN = lotSideSignSql("tl");
+  const REMAINING_BASIS = remainingLotBasisSql();
   const harvestCandidates = (db
     .prepare(
       `WITH latest_prices AS (
@@ -417,8 +422,8 @@ export function getPortfolioSummaryForChat(db: Database.Database, accountName?: 
         s.symbol,
         a.name AS account_name,
         ${LOT_SIDE_SIGN} * (${adjustedMarketValueSQL("tl.quantity_remaining", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}
-         - ${adjustedMarketValueSQL("tl.quantity_remaining", "tl.acquisition_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}) AS unrealized_loss,
-        tl.cost_basis * COALESCE(fx.usd_per_unit, 1) AS cost_basis,
+         - ${REMAINING_BASIS}) AS unrealized_loss,
+        ${REMAINING_BASIS} AS cost_basis,
         CAST(julianday(?) - julianday(tl.acquisition_date) AS INTEGER) AS days_held
       FROM tax_lots tl
       JOIN accounts a ON a.id = tl.account_id
@@ -430,7 +435,7 @@ export function getPortfolioSummaryForChat(db: Database.Database, accountName?: 
         AND ${liveOptionExpirationSql("s", today)}
         AND lp.close_price IS NOT NULL
         AND ${LOT_SIDE_SIGN} * (${adjustedMarketValueSQL("tl.quantity_remaining", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}
-             - ${adjustedMarketValueSQL("tl.quantity_remaining", "tl.acquisition_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}) < -100
+             - ${REMAINING_BASIS}) < -100
         ${taxLotsFilter}
       ORDER BY unrealized_loss ASC`
     )
@@ -477,7 +482,7 @@ export function getPortfolioSummaryForChat(db: Database.Database, accountName?: 
         CAST(julianday(${LONG_TERM_DATE}) - julianday(?) AS INTEGER) AS days_remaining,
         CASE WHEN lp.close_price IS NOT NULL
           THEN ${adjustedMarketValueSQL("tl.quantity_remaining", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}
-               - ${adjustedMarketValueSQL("tl.quantity_remaining", "tl.acquisition_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}
+               - ${REMAINING_BASIS}
           ELSE NULL END AS unrealized_gain
       FROM tax_lots tl
       JOIN accounts a ON a.id = tl.account_id

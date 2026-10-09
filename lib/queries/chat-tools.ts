@@ -8,7 +8,7 @@ import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 import { marketCapCategoryBucketSql } from "@/lib/securities/normalize-market-cap";
 import { isPendingStatementLot, pendingStatementKeySet } from "@/lib/queries/pending-statement";
 import { isOptionLive, liveOptionExpirationSql } from "@/lib/compute/option-expiry";
-import { isCurrencyConversionSecurityType, lotSideSignSql } from "@/lib/queries/tax-lots";
+import { isCurrencyConversionSecurityType, lotSideSignSql, remainingLotBasisSql } from "@/lib/queries/tax-lots";
 import { isLongTermSql, longTermDateSql } from "@/lib/queries/long-term-sql";
 
 /**
@@ -133,7 +133,18 @@ export interface TaxLotResult {
   acquisition_date: string;
   acquisition_price: number;
   quantity_remaining: number;
+  /**
+   * Open lots: the basis of the quantity STILL OPEN (fees included), the
+   * figure `unrealized_gain` is measured against, so it pairs with
+   * `current_value`. Closed rows: the basis allocated to the quantity sold.
+   */
   cost_basis: number;
+  /**
+   * Open lots only: the basis of the WHOLE lot as acquired. Equal to
+   * `cost_basis` unless part of the lot has been closed. Never subtract it
+   * from `current_value`.
+   */
+  original_lot_cost_basis?: number;
   current_price: number | null;
   current_value: number | null;
   unrealized_gain: number | null;
@@ -144,7 +155,7 @@ export interface TaxLotResult {
    * Open lots only: "short" for a short lot, "long" otherwise (the same words
    * the holdings tool uses). The raw `is_short` join key is never returned
    * (tests/queries/chat-pending-statement.test.ts). `quantity_remaining`, `cost_basis`
-   * (the opening proceeds) and `current_value` (what covering would cost) stay
+   * (the net opening proceeds of the quantity still open) and `current_value` (what covering would cost) stay
    * positive; `unrealized_gain` is signed by side (a short gains when the
    * price falls). A short lot is never long-term: `is_long_term` is false and
    * `long_term_date` is null, because the engine books every short close as
@@ -593,7 +604,12 @@ export function getTaxLotsForChat(
       tl.acquisition_date,
       tl.acquisition_price,
       tl.quantity_remaining,
-      tl.cost_basis * COALESCE(fx.usd_per_unit, 1) AS cost_basis,
+      -- cost_basis is the basis of the quantity STILL OPEN (the page's
+      -- fee-inclusive remaining basis, the one the gain below uses), so it
+      -- sits beside current_value on the same quantity. The whole lot's
+      -- figure is kept under its own name.
+      ${remainingLotBasisSql()} AS cost_basis,
+      tl.cost_basis * COALESCE(fx.usd_per_unit, 1) AS original_lot_cost_basis,
       lp.close_price AS current_price,
       CASE WHEN lp.close_price IS NOT NULL
         THEN ${adjustedMarketValueSQL("tl.quantity_remaining", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}
@@ -601,9 +617,11 @@ export function getTaxLotsForChat(
       -- Signed by side (the shared fragment the Tax Lots reads use): a short
       -- lot stores a positive quantity_remaining and gains when the price
       -- FALLS, so its figure is the opening value minus the current value.
+      -- Measured against the SAME remaining basis as the Tax Lots page
+      -- (fees included), never quantity x acquisition_price.
       CASE WHEN lp.close_price IS NOT NULL
         THEN ${lotSideSignSql("tl")} * (${adjustedMarketValueSQL("tl.quantity_remaining", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}
-             - ${adjustedMarketValueSQL("tl.quantity_remaining", "tl.acquisition_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")})
+             - ${remainingLotBasisSql()})
         ELSE NULL END AS unrealized_gain,
       CAST(julianday(?) - julianday(tl.acquisition_date) AS INTEGER) AS days_held,
       -- Calendar-anniversary rule (IRS Pub 550, single-sourced at
