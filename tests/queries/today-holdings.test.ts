@@ -53,8 +53,10 @@ describe("getIbkrTodayHoldings", () => {
     const acct = ibkrAccountId();
     const goog = seedSecurity("GOOG");
     const spy = seedSecurity("SPY", "ETF");
-    hold(acct, goog, 10);
-    hold(acct, spy, 5);
+    // Held since before the pair's prior date (7/31): a row dated on the later
+    // pair date with no earlier row would be a position opened that session.
+    hold(acct, goog, 10, "2026-07-30");
+    hold(acct, spy, 5, "2026-07-30");
 
     // 2026-07-31 = Friday (real session close), 2026-08-01 Sat, 2026-08-02 Sun
     // (phantom), 2026-08-03 Mon-before-open (phantom carrying Friday's true
@@ -99,8 +101,8 @@ describe("getIbkrTodayHoldings", () => {
     const acct = ibkrAccountId();
     const aapl = seedSecurity("AAPL");
     const spy = seedSecurity("SPY", "ETF");
-    hold(acct, aapl, 4, "2026-07-30");
-    hold(acct, spy, 1, "2026-07-30");
+    hold(acct, aapl, 4, "2026-07-29");
+    hold(acct, spy, 1, "2026-07-29");
     for (const [sid, a, b] of [
       [aapl, 210, 214.2],
       [spy, 628, 630],
@@ -282,6 +284,12 @@ describe("getIbkrTodayHoldings", () => {
         today_pct: null,
         price_date: null,
         price_source: null,
+        opened_today: false,
+        added_today_qty: 0,
+        added_cost_unknown: false,
+        change_undated: false,
+        day_move_basis: overrides.today_gain == null ? "unpriced" : "prior_close",
+        day_move_base: null,
         ...overrides,
       };
     }
@@ -342,9 +350,9 @@ describe("getIbkrTodayHoldings", () => {
     const spy = seedSecurity("SPY", "ETF");
     const short = seedSecurity("SHRT");
     const long = seedSecurity("LONG");
-    hold(acct, spy, 1, "2026-07-30");
-    hold(acct, short, -100, "2026-07-30");
-    hold(acct, long, 20, "2026-07-30");
+    hold(acct, spy, 1, "2026-07-29");
+    hold(acct, short, -100, "2026-07-29");
+    hold(acct, long, 20, "2026-07-29");
 
     price(spy, "2026-07-29", 628);
     price(spy, "2026-07-30", 630);
@@ -388,9 +396,9 @@ describe("getIbkrTodayHoldings", () => {
     const spy = seedSecurity("SPY", "ETF");
     const expired = seedOption("EXP   270101P00100000", "EXP", "PUT", 100, yesterday);
     const liveToday = seedOption("LIV   270101P00100000", "LIV", "PUT", 100, today);
-    hold(acct, spy, 1, "2026-07-30");
-    hold(acct, expired, 2, "2026-07-30");
-    hold(acct, liveToday, 3, "2026-07-30");
+    hold(acct, spy, 1, "2026-07-29");
+    hold(acct, expired, 2, "2026-07-29");
+    hold(acct, liveToday, 3, "2026-07-29");
 
     price(spy, "2026-07-29", 628);
     price(spy, "2026-07-30", 630);
@@ -418,9 +426,9 @@ describe("short positions: today_pct is signed by position direction", () => {
     const shrt = seedSecurity("SHRT");
     const lng = seedSecurity("LONG");
     const spy = seedSecurity("SPY", "ETF");
-    hold(acct, shrt, -10, "2026-07-30");
-    hold(acct, lng, 10, "2026-07-30");
-    hold(acct, spy, 1, "2026-07-30");
+    hold(acct, shrt, -10, "2026-07-29");
+    hold(acct, lng, 10, "2026-07-29");
+    hold(acct, spy, 1, "2026-07-29");
     for (const sid of [shrt, lng]) {
       price(sid, "2026-07-29", 100);
       price(sid, "2026-07-30", 90);
@@ -447,5 +455,391 @@ describe("getIbkrTodayHoldings measures on the pair it is given", () => {
     expect(page.match(/resolveTradingDayPair\(db\)/g)).toHaveLength(1);
     expect(page).toContain("getIbkrTodayHoldings(db, ibkrAccount.id, movePair)");
     expect(page).toContain("ibkrSnapshotHeading(movePair?.latest ?? null, todayET())");
+  });
+});
+
+// Owner ruling 2026-10-08: a position opened or added to since the prior close
+// is not credited with the move since that close. Quantity held through the
+// session keeps the close-to-close move; quantity opened today is measured
+// from its own cost, and is left out when the cost is unknown.
+//
+// Fixtures follow the live writer (lib/tws/positions.ts): one holdings row per
+// (account, security, day), cost_basis = quantity x average cost (a TOTAL, so
+// negative for a short and already multiplied for an option).
+describe("getIbkrTodayHoldings: quantity opened today is measured from cost", () => {
+  const PRIOR = "2026-08-05"; // Wednesday
+  const LATEST = "2026-08-06"; // Thursday
+
+  function holdAt(
+    accountId: number,
+    securityId: number,
+    qty: number,
+    cost: number | null,
+    asOf: string,
+  ): void {
+    db.prepare(
+      "INSERT INTO holdings (account_id, security_id, quantity, cost_basis, as_of_date, source_key) VALUES (?, ?, ?, ?, ?, ?)",
+    ).run(accountId, securityId, qty, cost, asOf, `tws-${accountId}-${securityId}-${asOf}`);
+  }
+
+  /** SPY sets the pair, and is held on both dates so the book was observed at the prior close. */
+  function seedClock(acct: number): number {
+    const spy = seedSecurity("SPY", "ETF");
+    price(spy, PRIOR, 630);
+    price(spy, LATEST, 631);
+    holdAt(acct, spy, 1, 600, PRIOR);
+    holdAt(acct, spy, 1, 600, LATEST);
+    return spy;
+  }
+
+  function find(rows: TodayHolding[], symbol: string): TodayHolding {
+    const row = rows.find((r) => r.symbol === symbol);
+    if (!row) throw new Error(`no row for ${symbol}`);
+    return row;
+  }
+
+  it("opened today with a cost: gain is (latest close - cost per share) x quantity", () => {
+    const acct = ibkrAccountId();
+    seedClock(acct);
+    const zza = seedSecurity("ZZA");
+    holdAt(acct, zza, 10, 1020, LATEST); // bought 10 at 102
+    price(zza, PRIOR, 100);
+    price(zza, LATEST, 105);
+
+    const z = find(getIbkrTodayHoldings(db, acct), "ZZA");
+    // 10 x (105 - 102) = 30. The old rule credited 10 x (105 - 100) = 50.
+    expect(z.today_gain).toBeCloseTo(30, 6);
+    expect(z.today_pct).toBeCloseTo(30 / 1020, 9);
+    expect(z.opened_today).toBe(true);
+    expect(z.added_today_qty).toBe(10);
+    expect(z.day_move_basis).toBe("cost");
+    expect(z.day_move_base).toBeCloseTo(1020, 6);
+    expect(z.change_undated).toBe(false);
+  });
+
+  it("opened today with a cost needs no prior close", () => {
+    const acct = ibkrAccountId();
+    seedClock(acct);
+    const zza = seedSecurity("ZZA");
+    holdAt(acct, zza, 10, 1020, LATEST);
+    price(zza, LATEST, 105); // first price row ever
+
+    const z = find(getIbkrTodayHoldings(db, acct), "ZZA");
+    expect(z.today_gain).toBeCloseTo(30, 6);
+    expect(z.day_move_basis).toBe("cost");
+  });
+
+  it("opened today without a cost: excluded from the move and counted", () => {
+    const acct = ibkrAccountId();
+    seedClock(acct);
+    const zza = seedSecurity("ZZA");
+    holdAt(acct, zza, 10, null, LATEST);
+    price(zza, PRIOR, 100);
+    price(zza, LATEST, 105);
+
+    const rows = getIbkrTodayHoldings(db, acct);
+    const z = find(rows, "ZZA");
+    expect(z.today_gain).toBeNull();
+    expect(z.today_pct).toBeNull();
+    expect(z.opened_today).toBe(true);
+    expect(z.day_move_basis).toBe("excluded");
+    // Still a held name with a value.
+    expect(z.current_value).toBeCloseTo(1050, 6);
+
+    const summary = summarizeIbkrDayMove(rows);
+    expect(summary.count).toBe(1); // SPY only
+    expect(summary.todayGain).toBeCloseTo(1, 6); // SPY 1 x (631 - 630)
+    expect(summary.openedTodayCount).toBe(1);
+    expect(summary.excludedCount).toBe(1);
+    expect(summary.unpricedCount).toBe(0);
+  });
+
+  it("a position closed and reopened: the zero-quantity tombstone at the prior date means absent", () => {
+    const acct = ibkrAccountId();
+    seedClock(acct);
+    const zza = seedSecurity("ZZA");
+    holdAt(acct, zza, 10, 900, "2026-08-04");
+    holdAt(acct, zza, 0, null, PRIOR); // closed
+    holdAt(acct, zza, 10, 1020, LATEST); // bought back at 102
+    price(zza, PRIOR, 100);
+    price(zza, LATEST, 105);
+
+    const z = find(getIbkrTodayHoldings(db, acct), "ZZA");
+    expect(z.opened_today).toBe(true);
+    expect(z.today_gain).toBeCloseTo(30, 6);
+  });
+
+  it("an add: held quantity close-to-close, added quantity from the change in total cost", () => {
+    const acct = ibkrAccountId();
+    seedClock(acct);
+    const zzb = seedSecurity("ZZB");
+    holdAt(acct, zzb, 10, 900, PRIOR);
+    holdAt(acct, zzb, 15, 1410, LATEST); // 5 more for 510 = 102 each
+    price(zzb, PRIOR, 100);
+    price(zzb, LATEST, 105);
+
+    const z = find(getIbkrTodayHoldings(db, acct), "ZZB");
+    // Held 10 x 5 = 50, added 5 x (105 - 102) = 15. Old rule: 15 x 5 = 75.
+    expect(z.today_gain).toBeCloseTo(65, 6);
+    // Base: 10 x 100 + 510 = 1,510.
+    expect(z.day_move_base).toBeCloseTo(1510, 6);
+    expect(z.today_pct).toBeCloseTo(65 / 1510, 9);
+    expect(z.day_move_basis).toBe("mixed");
+    expect(z.opened_today).toBe(false);
+    expect(z.added_today_qty).toBe(5);
+    expect(z.added_cost_unknown).toBe(false);
+  });
+
+  it("an add whose cost cannot be derived: only the held quantity counts, and the row is flagged", () => {
+    const acct = ibkrAccountId();
+    seedClock(acct);
+    const zzb = seedSecurity("ZZB");
+    holdAt(acct, zzb, 10, null, PRIOR); // no cost on the prior row
+    holdAt(acct, zzb, 15, 1410, LATEST);
+    price(zzb, PRIOR, 100);
+    price(zzb, LATEST, 105);
+
+    const rows = getIbkrTodayHoldings(db, acct);
+    const z = find(rows, "ZZB");
+    expect(z.today_gain).toBeCloseTo(50, 6); // 10 x 5
+    expect(z.today_pct).toBeCloseTo(0.05, 9);
+    expect(z.day_move_base).toBeCloseTo(1000, 6);
+    expect(z.day_move_basis).toBe("prior_close");
+    expect(z.added_today_qty).toBe(5);
+    expect(z.added_cost_unknown).toBe(true);
+
+    const summary = summarizeIbkrDayMove(rows);
+    expect(summary.addedTodayCount).toBe(1);
+    expect(summary.addedCostUnknownCount).toBe(1);
+    // Denominator uses the held quantity's prior value (1,000), not the value
+    // of all 15 shares: SPY 630 + ZZB 1,000.
+    expect(summary.priorGross).toBeCloseTo(1630, 6);
+  });
+
+  it("a reduced position: only the quantity still held gets the move", () => {
+    const acct = ibkrAccountId();
+    seedClock(acct);
+    const zzc = seedSecurity("ZZC");
+    holdAt(acct, zzc, 10, 900, PRIOR);
+    holdAt(acct, zzc, 4, 360, LATEST);
+    price(zzc, PRIOR, 100);
+    price(zzc, LATEST, 105);
+
+    const z = find(getIbkrTodayHoldings(db, acct), "ZZC");
+    expect(z.today_gain).toBeCloseTo(20, 6); // 4 x 5
+    expect(z.today_pct).toBeCloseTo(0.05, 9);
+    expect(z.day_move_basis).toBe("prior_close");
+    expect(z.opened_today).toBe(false);
+    expect(z.added_today_qty).toBe(0);
+  });
+
+  it("an unchanged position is exactly what it was before the ruling, whatever its cost says", () => {
+    const acct = ibkrAccountId();
+    seedClock(acct);
+    const zzd = seedSecurity("ZZD");
+    holdAt(acct, zzd, 10, 900, PRIOR);
+    holdAt(acct, zzd, 10, 910, LATEST); // cost drifted; quantity did not
+    price(zzd, PRIOR, 100);
+    price(zzd, LATEST, 105);
+
+    const z = find(getIbkrTodayHoldings(db, acct), "ZZD");
+    expect(z.today_gain).toBeCloseTo(50, 6);
+    expect(z.today_pct).toBeCloseTo(0.05, 9);
+    expect(z.prior_close).toBeCloseTo(100, 6);
+    expect(z.day_move_basis).toBe("prior_close");
+    expect(z.day_move_base).toBeCloseTo(1000, 6);
+    expect(z.opened_today).toBe(false);
+    expect(z.added_today_qty).toBe(0);
+    expect(z.added_cost_unknown).toBe(false);
+  });
+
+  it("a short opened today gains when the price falls below the sale price, not below the prior close", () => {
+    const acct = ibkrAccountId();
+    seedClock(acct);
+    const zzs = seedSecurity("ZZS");
+    holdAt(acct, zzs, -10, -500, LATEST); // sold 10 short at 50
+    price(zzs, PRIOR, 52);
+    price(zzs, LATEST, 45);
+
+    const z = find(getIbkrTodayHoldings(db, acct), "ZZS");
+    // (45 - 50) x -10 = +50. The old rule credited (45 - 52) x -10 = +70.
+    expect(z.today_gain).toBeCloseTo(50, 6);
+    expect(z.today_pct).toBeCloseTo(0.1, 9); // 50 on 500 of proceeds
+    expect(z.day_move_basis).toBe("cost");
+    expect(z.opened_today).toBe(true);
+  });
+
+  it("an option opened today: the contract multiplier scales the value, the cost is already total dollars", () => {
+    const acct = ibkrAccountId();
+    seedClock(acct);
+    const call = db
+      .prepare(
+        `INSERT INTO securities (symbol, name, security_type, asset_class, underlying_symbol, option_type, strike_price, multiplier, currency)
+         VALUES ('ZZA   271217C00110000', 'ZZA call', 'Option', 'option', 'ZZA', 'CALL', 110, 100, 'USD')`,
+      )
+      .run().lastInsertRowid as number;
+    holdAt(acct, call, 2, 1000, LATEST); // 2 contracts at 5.00
+    price(call, PRIOR, 2);
+    price(call, LATEST, 6);
+
+    const c = find(getIbkrTodayHoldings(db, acct), "ZZA   271217C00110000");
+    // (6 - 5) x 2 x 100 = 200. The old rule credited (6 - 2) x 2 x 100 = 800.
+    expect(c.today_gain).toBeCloseTo(200, 6);
+    expect(c.today_pct).toBeCloseTo(0.2, 9);
+    expect(c.day_move_base).toBeCloseTo(1000, 6);
+    expect(c.day_move_basis).toBe("cost");
+  });
+
+  it("an option opened today ignores a stale PRIOR quote but is still suppressed by a stale LATEST quote", () => {
+    const acct = ibkrAccountId();
+    seedClock(acct);
+    const und = seedSecurity("ZZU");
+    price(und, PRIOR, 350);
+    price(und, LATEST, 350);
+    const insert = db.prepare(
+      `INSERT INTO securities (symbol, name, security_type, asset_class, underlying_symbol, option_type, strike_price, multiplier, currency)
+       VALUES (?, ?, 'Option', 'option', 'ZZU', 'PUT', 390, 100, 'USD')`,
+    );
+    const stalePrior = insert.run("ZZU   271217P00390000", "ZZU put a").lastInsertRowid as number;
+    const staleLatest = insert.run("ZZU   280121P00390000", "ZZU put b").lastInsertRowid as number;
+    // Intrinsic is 390 - 350 = 40 on both dates.
+    holdAt(acct, stalePrior, 1, 4100, LATEST); // bought at 41.00
+    price(stalePrior, PRIOR, 15); // far below intrinsic: stale, but not used
+    price(stalePrior, LATEST, 42);
+    holdAt(acct, staleLatest, 1, 4100, LATEST);
+    price(staleLatest, PRIOR, 41);
+    price(staleLatest, LATEST, 15); // far below intrinsic: stale, and it IS used
+
+    const rows = getIbkrTodayHoldings(db, acct);
+    const a = find(rows, "ZZU   271217P00390000");
+    expect(a.today_gain).toBeCloseTo(100, 6); // (42 - 41) x 100
+    const b = find(rows, "ZZU   280121P00390000");
+    expect(b.today_gain).toBeNull();
+    expect(b.day_move_basis).toBe("unpriced");
+  });
+
+  it("a non-USD row: cost and closes are native, the gain and its base are converted once", () => {
+    const acct = ibkrAccountId();
+    seedClock(acct);
+    const zzk = db
+      .prepare(
+        "INSERT INTO securities (symbol, name, security_type, asset_class, currency) VALUES ('ZZK', 'ZZK Corp', 'Stock', 'equity', 'KRW')",
+      )
+      .run().lastInsertRowid as number;
+    db.prepare(
+      "INSERT INTO fx_rates (currency, usd_per_unit, as_of, source) VALUES ('KRW', 0.0007, ?, 'test')",
+    ).run(LATEST);
+    holdAt(acct, zzk, 10, 17_000_000, LATEST); // 10 at 1,700,000 won
+    price(zzk, PRIOR, 1_650_000);
+    price(zzk, LATEST, 1_731_000);
+
+    const z = find(getIbkrTodayHoldings(db, acct), "ZZK");
+    // 10 x (1,731,000 - 1,700,000) = 310,000 won = 217 dollars.
+    expect(z.today_gain).toBeCloseTo(217, 6);
+    // Base 17,000,000 won = 11,900 dollars.
+    expect(z.day_move_base).toBeCloseTo(11_900, 6);
+    expect(z.today_pct).toBeCloseTo(217 / 11_900, 9);
+    expect(z.day_move_basis).toBe("cost");
+  });
+
+  it("percent denominator: prior value of held quantity plus cost of quantity opened today", () => {
+    const acct = ibkrAccountId();
+    seedClock(acct); // SPY: gain 1 on a prior value of 630
+    const held = seedSecurity("ZZD");
+    holdAt(acct, held, 10, 900, PRIOR);
+    holdAt(acct, held, 10, 900, LATEST);
+    price(held, PRIOR, 100);
+    price(held, LATEST, 105); // gain 50 on 1,000
+    const opened = seedSecurity("ZZA");
+    holdAt(acct, opened, 10, 1020, LATEST);
+    price(opened, PRIOR, 100);
+    price(opened, LATEST, 105); // gain 30 on a cost of 1,020
+    const added = seedSecurity("ZZB");
+    holdAt(acct, added, 10, 900, PRIOR);
+    holdAt(acct, added, 15, 1410, LATEST);
+    price(added, PRIOR, 100);
+    price(added, LATEST, 105); // gain 65 on 1,000 + 510
+
+    const summary = summarizeIbkrDayMove(getIbkrTodayHoldings(db, acct));
+    expect(summary.count).toBe(4);
+    expect(summary.todayGain).toBeCloseTo(1 + 50 + 30 + 65, 6);
+    // 630 + 1,000 + 1,020 + 1,510 = 4,160. The old denominator took
+    // current value - gain for every row and read 630 + 1,000 + 1,020 + 1,510
+    // only by accident for none of the changed rows: it gave 1,050 - 30 = 1,020
+    // for the opened row but 1,575 - 65 = 1,510 only because 65 is now the gain.
+    expect(summary.priorGross).toBeCloseTo(4160, 6);
+    expect(summary.todayPct).toBeCloseTo(146 / 4160, 9);
+    expect(summary.openedTodayCount).toBe(1);
+    expect(summary.addedTodayCount).toBe(1);
+    expect(summary.excludedCount).toBe(0);
+    expect(summary.addedCostUnknownCount).toBe(0);
+    expect(summary.undatedChangeCount).toBe(0);
+  });
+
+  it("a short opened today enters the denominator at its proceeds, as a positive amount", () => {
+    const acct = ibkrAccountId();
+    seedClock(acct);
+    const zzs = seedSecurity("ZZS");
+    holdAt(acct, zzs, -10, -500, LATEST);
+    price(zzs, PRIOR, 52);
+    price(zzs, LATEST, 45);
+
+    const summary = summarizeIbkrDayMove(getIbkrTodayHoldings(db, acct));
+    expect(summary.todayGain).toBeCloseTo(51, 6);
+    expect(summary.priorGross).toBeCloseTo(630 + 500, 6);
+  });
+
+  // The book was last seen days ago: a position that is new since then may
+  // have been bought on any of those days. Measuring it from cost would print
+  // a multi-day gain as this session's move, so the change is left out.
+  it("with no holdings snapshot at the prior close, a new position is not dated to this session", () => {
+    const acct = ibkrAccountId();
+    const spy = seedSecurity("SPY", "ETF");
+    price(spy, PRIOR, 630);
+    price(spy, LATEST, 631);
+    holdAt(acct, spy, 1, 600, "2026-07-31"); // last snapshot before the gap
+    holdAt(acct, spy, 1, 600, LATEST);
+    const zza = seedSecurity("ZZA");
+    holdAt(acct, zza, 10, 1020, LATEST);
+    price(zza, PRIOR, 100);
+    price(zza, LATEST, 105);
+    const zzb = seedSecurity("ZZB");
+    holdAt(acct, zzb, 10, 900, "2026-07-31");
+    holdAt(acct, zzb, 15, 1410, LATEST);
+    price(zzb, PRIOR, 100);
+    price(zzb, LATEST, 105);
+
+    const rows = getIbkrTodayHoldings(db, acct);
+    const a = find(rows, "ZZA");
+    expect(a.today_gain).toBeNull();
+    expect(a.change_undated).toBe(true);
+    expect(a.opened_today).toBe(false);
+    expect(a.day_move_basis).toBe("excluded");
+    const b = find(rows, "ZZB");
+    // The 10 shares in the last snapshot are still held: 10 x 5 = 50.
+    expect(b.today_gain).toBeCloseTo(50, 6);
+    expect(b.change_undated).toBe(true);
+    expect(b.added_today_qty).toBe(0);
+    expect(b.day_move_base).toBeCloseTo(1000, 6);
+    // Unchanged names are untouched by the gap.
+    expect(find(rows, "SPY").today_gain).toBeCloseTo(1, 6);
+
+    const summary = summarizeIbkrDayMove(rows);
+    expect(summary.undatedChangeCount).toBe(2);
+    expect(summary.openedTodayCount).toBe(0);
+    expect(summary.addedTodayCount).toBe(0);
+    expect(summary.priorGross).toBeCloseTo(1630, 6);
+  });
+
+  it("with no trading-day pair nothing is called opened and every move is unknown", () => {
+    const acct = ibkrAccountId();
+    const zza = seedSecurity("ZZA");
+    holdAt(acct, zza, 10, 1020, LATEST);
+    price(zza, LATEST, 105);
+
+    const z = find(getIbkrTodayHoldings(db, acct, null), "ZZA");
+    expect(z.today_gain).toBeNull();
+    expect(z.opened_today).toBe(false);
+    expect(z.day_move_basis).toBe("unpriced");
   });
 });

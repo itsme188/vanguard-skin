@@ -1,6 +1,10 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
-import { ibkrSnapshotHeading, olderVanguardBasisNote } from "@/app/dashboard/today/basis-labels";
+import {
+  ibkrSessionWord,
+  ibkrSnapshotHeading,
+  olderVanguardBasisNote,
+} from "@/app/dashboard/today/basis-labels";
 import { anchorIndex } from "@/tests/helpers/source-anchor";
 
 // qa:today-ibkr-snapshot--stale-session-move-labelled-today-beside-2d-ago-chip
@@ -29,6 +33,18 @@ describe("ibkrSnapshotHeading", () => {
   });
   it("reads the date part of a stored datetime", () => {
     expect(ibkrSnapshotHeading("2026-09-22T20:00:00.000Z", TODAY)).toBe("IBKR today");
+  });
+});
+
+describe("ibkrSessionWord", () => {
+  it("says 'today' only when the move's session is today's Eastern date", () => {
+    expect(ibkrSessionWord("2026-09-22", TODAY)).toBe("today");
+    expect(ibkrSessionWord("2026-09-22T20:00:00.000Z", TODAY)).toBe("today");
+  });
+  it("says 'that session' for an earlier, missing or unreadable session date", () => {
+    for (const other of ["2026-09-21", "2025-12-31", null, undefined, "", "garbage"]) {
+      expect(ibkrSessionWord(other, TODAY)).toBe("that session");
+    }
   });
 });
 
@@ -62,6 +78,14 @@ describe("Today page wiring (source pins)", () => {
     expect(line).toContain("{ibkrHeading}</h2>");
     expect(line).not.toMatch(/<h2[^>]*>IBKR today<\/h2>/);
     expect(page).toMatch(/ibkrSnapshotHeading\(\s*movePair\?\.latest \?\? null,\s*todayET\(\)\s*\)/);
+  });
+  it("the opened / added notes take their 'when' word from the same session date as the heading", () => {
+    expect(page).toMatch(/ibkrSessionWord\(\s*movePair\?\.latest \?\? null,\s*todayET\(\)\s*\)/);
+    const line = page.slice(anchorIndex(page, "IBKR today — one line"));
+    expect(line).toContain("opened {sessionWord}");
+    expect(line).toContain("added to {sessionWord}");
+    // Never a fixed "opened today": the session may be an earlier one.
+    expect(line).not.toMatch(/opened today/);
   });
   it("the Portfolio strip appends the older-basis note beside its as-of date", () => {
     const strip = page.slice(anchorIndex(page, "as of ${fmtShortDate(portfolio.latestDate)}"));

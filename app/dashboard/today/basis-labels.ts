@@ -39,6 +39,16 @@ export function ibkrSnapshotHeading(sessionDate: string | null | undefined, toda
 }
 
 /**
+ * The word for WHEN a position was opened or added to, on the one-line IBKR
+ * snapshot ("2 opened today"). It follows the heading's rule: "today" only when
+ * the move's session is today's Eastern date; otherwise "that session", which
+ * reads against a heading that names the session.
+ */
+export function ibkrSessionWord(sessionDate: string | null | undefined, today: string): string {
+  return datePart(sessionDate) === today ? "today" : "that session";
+}
+
+/**
  * Note beside the Portfolio strip's "as of" date when the Vanguard holdings
  * behind the total are older than that headline date. Null when they are not
  * older, or when either date is unknown.
