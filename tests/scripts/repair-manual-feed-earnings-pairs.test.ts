@@ -213,7 +213,26 @@ describe("repair-manual-feed-earnings-pairs", () => {
     expect(db.prepare("SELECT COUNT(*) AS n FROM earnings_emails").get()).toEqual({ n: 3 });
   });
 
-  it("skips, untouched: two hand-entered rows, a confirmed feed row, an email in flight", () => {
+  it("repairs a pair whose feed row is user-confirmed in place, like any other", () => {
+    const manual = seed({ source: "manual", symbol: "ZZB", date: OLD });
+    const feed = seed({ source: "nasdaq", symbol: "ZZB", date: OLD, dateStatus: "user_confirmed" });
+
+    const dry = runManualFeedPairRepair(db, {});
+    expect(dry.plan.skipped).toEqual([]);
+    expect(dry.plan.pairs.map((p) => p.manualId)).toEqual([manual]);
+
+    const result = runManualFeedPairRepair(db, { apply: true, acknowledgeRepair: true, today: TODAY });
+    expect(result.hidden).toBe(1);
+    const sup = (id: number) =>
+      (db.prepare("SELECT COALESCE(superseded, 0) AS s FROM calendar_events WHERE id = ?").get(id) as { s: number }).s;
+    expect(sup(feed)).toBe(1);
+    expect(sup(manual)).toBe(0);
+
+    // Idempotent: a second run finds nothing.
+    expect(planManualFeedPairRepair(db)).toEqual({ pairs: [], skipped: [] });
+  });
+
+  it("skips, untouched: two hand-entered rows, an email in flight", () => {
     // Two hand-entered rows on one date (distinct source keys).
     const twoA = seed({ source: "manual", symbol: "ZZA", date: OLD });
     const twoB = db
@@ -223,9 +242,6 @@ describe("repair-manual-feed-earnings-pairs", () => {
       )
       .run(OLD).lastInsertRowid as number;
     const twoFeed = seed({ source: "nasdaq", symbol: "ZZA", date: OLD });
-
-    const confManual = seed({ source: "manual", symbol: "ZZB", date: OLD });
-    const confFeed = seed({ source: "nasdaq", symbol: "ZZB", date: OLD, dateStatus: "user_confirmed" });
 
     const flightManual = seed({ source: "manual", symbol: "ZZC", date: OLD });
     const flightFeed = seed({ source: "finnhub", symbol: "ZZC", date: OLD });
@@ -237,7 +253,6 @@ describe("repair-manual-feed-earnings-pairs", () => {
     expect(result.plan.pairs).toEqual([]);
     expect(result.plan.skipped).toEqual([
       { symbol: "ZZA", eventDate: OLD, manualIds: [twoA, twoB], feedIds: [twoFeed], reason: "several_hand_entered_rows" },
-      { symbol: "ZZB", eventDate: OLD, manualIds: [confManual], feedIds: [confFeed], reason: "feed_row_user_confirmed" },
       { symbol: "ZZC", eventDate: OLD, manualIds: [flightManual], feedIds: [flightFeed], reason: "email_in_flight" },
     ]);
     expect(dump()).toEqual(before);

@@ -20,7 +20,7 @@ describe("SignificantMovesCard empty states and labels", () => {
     const start = anchorIndex(src, "No ${scope.plural} moved significantly");
     const nothingMoved = src.slice(start, anchorIndex(src, "`,", start));
     expect(nothingMoved).not.toContain("today");
-    expect(nothingMoved).toMatch(/on \$\{dated\}/);
+    expect(nothingMoved).toMatch(/from \$\{pair\.prior\} to \$\{dated\}/);
     expect(src).toMatch(/const dated = olderSession \? `\$\{pair\.latest\} \(\$\{OLDER_SESSION_LABEL\}\)` : pair\.latest;/);
   });
 

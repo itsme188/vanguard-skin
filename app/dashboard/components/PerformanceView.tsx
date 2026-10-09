@@ -316,6 +316,7 @@ export async function PerformanceView({ scope = "all", period }: PerformanceView
           <Link
             key={s.key}
             href={buildHref({ scope: s.key })}
+            aria-current={activeScope === s.key ? "true" : undefined}
             className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
               activeScope === s.key
                 ? "bg-panel text-ink shadow-sm"

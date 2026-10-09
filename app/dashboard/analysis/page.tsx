@@ -283,6 +283,7 @@ export default async function AnalysisPage({ searchParams }: PageProps) {
                 // check ('workspace' !== null), so the nav's Workspace row
                 // would lose its highlight while on this exact page.
                 href={`/dashboard/analysis?scope=${s.key}`}
+                aria-current={scope === s.key ? "true" : undefined}
                 className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
                   scope === s.key
                     ? "bg-panel text-ink shadow-sm"
@@ -450,6 +451,7 @@ function DefenseScopePills({ active }: { active: AccountScope }) {
         <Link
           key={s.key}
           href={`/dashboard/analysis?view=defense&scope=${s.key}`}
+          aria-current={active === s.key ? "true" : undefined}
           className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
             active === s.key
               ? "bg-panel text-ink shadow-sm"

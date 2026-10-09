@@ -4,6 +4,7 @@ import { useEffect, useLayoutEffect, useRef, useState, useTransition } from "rea
 import { useRouter } from "next/navigation";
 import { addDays, MAX_EARNINGS_DAYS_AHEAD, todayET } from "@/lib/calendar/date-utils";
 import apiFetch from "@/lib/http/apiFetch";
+import { networkFailureMessage, readMutationResult } from "@/lib/ui/mutation-result";
 import { EARNINGS_DATE_CORRECTED_EVENT } from "./EarningsHubDateCorrectionNote";
 import { Chip } from "../components/Chip";
 
@@ -254,6 +255,9 @@ function EarningsDateChipInner({
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [confirmError, setConfirmError] = useState<string | null>(null);
+  // A sentence the confirm route wants read even though the date was locked
+  // (several hand-entered dates; an old entry kept because a preview was sent).
+  const [confirmNotice, setConfirmNotice] = useState<string | null>(null);
   const [pending, startTransition] = useTransition();
   const [submitting, setSubmitting] = useState(false);
   const [customDate, setCustomDate] = useState("");
@@ -586,29 +590,33 @@ function EarningsDateChipInner({
     if (submitting) return;
     setSubmitting(true);
     setConfirmError(null);
+    setConfirmNotice(null);
     try {
       const res = await apiFetch("/api/earnings/confirm-date", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ symbol, confirmedDate: date, confirmedTime: time }),
       });
-      // The route answers { success, data } / { success: false, error }: a 2xx
-      // without success: true is still a failure.
-      const body = (await res.json().catch(() => null)) as {
-        success?: boolean;
-        error?: string;
-      } | null;
-      if (!res.ok || body?.success !== true) {
+      const result = await readMutationResult<{ data?: { notice?: unknown } }>(res);
+      if (!result.ok) {
         // Keep the popover open — closing on a rejected confirm makes the
         // chip look resolved when the conflict is still live.
-        setConfirmError(`Confirm failed: ${body?.error ?? `server returned ${res.status}`}.`);
+        setConfirmError(`Confirm failed: ${result.message}`);
+        return;
+      }
+      const rawNotice = result.data.data?.notice;
+      const notice = typeof rawNotice === "string" ? rawNotice.trim() : "";
+      onConfirmed?.();
+      if (notice) {
+        // The refresh below would replace this chip, so a notice keeps the
+        // popover open until the user dismisses it.
+        setConfirmNotice(notice);
         return;
       }
       setOpen(false);
-      onConfirmed?.();
       startTransition(() => router.refresh());
     } catch {
-      setConfirmError("Confirm failed: could not reach the server.");
+      setConfirmError(networkFailureMessage("confirm the date"));
     } finally {
       setSubmitting(false);
     }
@@ -704,6 +712,22 @@ function EarningsDateChipInner({
           />
           {confirmError && (
             <p className="text-[10px] text-down pt-1">{confirmError}</p>
+          )}
+          {confirmNotice && (
+            <div role="status" className="pt-1 space-y-1">
+              <p className="text-[11px] text-ink-dim">{confirmNotice}</p>
+              <button
+                type="button"
+                onClick={() => {
+                  setConfirmNotice(null);
+                  setOpen(false);
+                  startTransition(() => router.refresh());
+                }}
+                className="text-[10px] font-mono px-1.5 py-0.5 rounded text-up bg-up/15 hover:bg-up/25"
+              >
+                Got it
+              </button>
+            </div>
           )}
         </div>
       )}
