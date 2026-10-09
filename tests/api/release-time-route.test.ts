@@ -150,7 +150,11 @@ describe("POST /api/earnings/release-time — slot-mismatch guard (409)", () => 
       .prepare("UPDATE calendar_events SET actual_value = 'EPS 1.00' WHERE symbol = 'XMTR'")
       .run();
 
-    const res = await POST(postReq({ symbol: "XMTR", releaseTime: "16:20" }));
+    // Unit 17 (2026-10-08): a save over the standing web_verified row asks
+    // first, so this save carries the acknowledgement.
+    const res = await POST(
+      postReq({ symbol: "XMTR", releaseTime: "16:20", replaceWebVerified: true }),
+    );
 
     expect(res.status).toBe(200);
     const row = hoisted.db
@@ -183,7 +187,11 @@ describe("POST /api/earnings/release-time — slot-mismatch guard (409)", () => 
   it("still allows a same-side (after-close) time: 200, writes the user row, updates the event", async () => {
     seedAmcEventWithWebVerified("XMTR", "2099-01-01");
 
-    const res = await POST(postReq({ symbol: "XMTR", releaseTime: "16:20" }));
+    // Unit 17 (2026-10-08): a save over the standing web_verified row asks
+    // first, so this save carries the acknowledgement.
+    const res = await POST(
+      postReq({ symbol: "XMTR", releaseTime: "16:20", replaceWebVerified: true }),
+    );
 
     expect(res.status).toBe(200);
     const body = await res.json();

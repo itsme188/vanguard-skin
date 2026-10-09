@@ -7,6 +7,7 @@ import apiFetch from "@/lib/http/apiFetch";
 import { networkFailureMessage, readMutationResult } from "@/lib/ui/mutation-result";
 import { EARNINGS_DATE_CORRECTED_EVENT } from "./EarningsHubDateCorrectionNote";
 import { Chip } from "../components/Chip";
+import { ConfirmDialog } from "../components/ConfirmDialog";
 
 interface Props {
   symbol: string;
@@ -82,6 +83,11 @@ function fmtShort(d: string): string {
 export interface ReleaseTimeState {
   resolved: { time: string; source: string } | null;
   override: StandingOverride | null;
+  /**
+   * How the resolver treats the standing row for this row's slot, as GET
+   * /api/earnings/release-time returns it. Absent or "in_effect" = used.
+   */
+  overrideUse?: "in_effect" | "suspect_call_time" | "not_in_effect" | null;
 }
 
 /** The symbol's standing release-time row, as GET /api/earnings/release-time returns it. */
@@ -123,16 +129,79 @@ export function standingOverrideLine(override: StandingOverride | null | undefin
   return `Standing: ${parts.join(" · ")}. Save changes the time and keeps the note.`;
 }
 
-/** The time the "Reports at" line shows: the resolved time, else the row's own. */
+/**
+ * The time the "Reports at" line shows: the ROW'S OWN stored time, else the
+ * ticker's resolved time. The row comes first (unit 17, 2026-10-08): a row can
+ * keep a time the ticker-wide resolution does not give it (a reported row is
+ * not re-timed by a Save; a row can carry its own explicit time), and the
+ * popover used to show the ticker's time against a row reading another.
+ */
 export function reportsAtTime(rt: ReleaseTimeState | null, releaseTime: string | null): string | null {
-  return rt?.resolved?.time ?? releaseTime ?? null;
+  return releaseTime ?? rt?.resolved?.time ?? null;
+}
+
+/** The source tag beside the shown time: only when it IS the resolved time. */
+export function reportsAtSource(rt: ReleaseTimeState | null, releaseTime: string | null): string | null {
+  const resolved = rt?.resolved;
+  if (!resolved) return null;
+  return resolved.time === reportsAtTime(rt, releaseTime) ? resolved.source : null;
+}
+
+/** True when the standing row is one the resolver actually uses. */
+function standingIsUsed(rt: ReleaseTimeState | null): boolean {
+  if (!rt?.override) return false;
+  return rt.overrideUse !== "suspect_call_time" && rt.overrideUse !== "not_in_effect";
+}
+
+/**
+ * Said under the standing line when the app does not use the standing time.
+ * A web-verified after-close time at or after 17:00 is a suspect call time
+ * and is never trusted.
+ */
+export function standingNotUsedLine(rt: ReleaseTimeState | null): string | null {
+  if (!rt?.override || standingIsUsed(rt)) return null;
+  return rt.overrideUse === "suspect_call_time"
+    ? "Not used: 17:00 or later after the close is usually the call, not the release."
+    : "Not used for this row.";
+}
+
+/**
+ * Said when the ticker's standing time is in use but this row keeps another
+ * time, so the two times on screen are explained rather than contradictory.
+ */
+export function standingNotAppliedLine(
+  rt: ReleaseTimeState | null,
+  releaseTime: string | null,
+): string | null {
+  const resolved = rt?.resolved;
+  if (!resolved || !releaseTime) return null;
+  if (resolved.source !== "user" && resolved.source !== "web_verified") return null;
+  if (resolved.time === releaseTime) return null;
+  return `The standing time ${resolved.time} is not applied to this row.`;
+}
+
+/** Mirrors WOULD_REPLACE_WEB_VERIFIED (lib/earnings/wire-times.ts); a test pins the pair. */
+export const REPLACE_WEB_VERIFIED_CODE = "would_replace_web_verified";
+
+/**
+ * The question a Save must put first: the server's 409 with the named code.
+ * Null for every other reply, which the shared mutation reader then handles.
+ */
+export function releaseTimeAskFirst(status: number, body: unknown): { message: string } | null {
+  if (status !== 409 || !body || typeof body !== "object") return null;
+  const { code, error } = body as { code?: unknown; error?: unknown };
+  if (code !== REPLACE_WEB_VERIFIED_CODE) return null;
+  if (typeof error !== "string" || !error.trim()) return null;
+  return { message: error.trim() };
 }
 
 /**
  * What the override time input holds. `edited` is what the user typed, or
  * null when they have not typed since the last load or save. Untouched, the
- * input FOLLOWS the standing override, else the very time the "Reports at"
- * line shows, so the two cannot disagree. It used to be seeded once from the
+ * input FOLLOWS the standing override when the app uses it, else the very time
+ * the "Reports at" line shows, so the two cannot disagree. A standing time the
+ * app ignores (a suspect call time above all) never seeds it: one Save would
+ * turn it into the user's own trusted time. It used to be seeded once from the
  * row's release time, which after a Clear was still the pre-refresh value: the
  * line read the fallback while the input kept the cleared time, one Save away
  * from re-applying it.
@@ -142,7 +211,8 @@ export function releaseTimeInputValue(
   rt: ReleaseTimeState | null,
   releaseTime: string | null,
 ): string {
-  return edited ?? rt?.override?.release_time ?? reportsAtTime(rt, releaseTime) ?? "";
+  const standing = standingIsUsed(rt) ? rt?.override?.release_time : null;
+  return edited ?? standing ?? reportsAtTime(rt, releaseTime) ?? "";
 }
 
 /** The pointer-coarse hit extension the hub chrome carries on its small buttons. */
@@ -164,6 +234,10 @@ function ReleaseTimeEditor({
   rtSaving,
   rtMsg,
   onSave,
+  settling,
+  ask,
+  onAskConfirm,
+  onAskCancel,
 }: {
   symbol: string;
   rt: ReleaseTimeState | null;
@@ -173,18 +247,29 @@ function ReleaseTimeEditor({
   rtSaving: boolean;
   rtMsg: string | null;
   onSave: (value: string | null) => void;
+  /** A save or the refresh after it is still running: the row prop may be stale. */
+  settling: boolean;
+  /** The server's question before a Save that would replace a web-verified time. */
+  ask: string | null;
+  onAskConfirm: () => void;
+  onAskCancel: () => void;
 }) {
+  const source = reportsAtSource(rt, releaseTime);
+  const notUsed = standingNotUsedLine(rt);
+  const notApplied = settling ? null : standingNotAppliedLine(rt, releaseTime);
   return (
     <div className="mt-2 pt-1.5 border-t border-edge">
       <p className="text-[11px] text-ink mb-1">
         Reports at{" "}
         <span className="font-mono">{reportsAtTime(rt, releaseTime) ?? "—"}</span>
-        {rt?.resolved && <span className="text-ink-faint"> · {rt.resolved.source}</span>}
+        {source && <span className="text-ink-dim"> · {source}</span>}
       </p>
       <p className="text-[10px] text-ink-dim mb-1">{symbolWideNote(symbol)}</p>
       {standingOverrideLine(rt?.override) && (
         <p className="text-[10px] text-ink-dim mb-1">{standingOverrideLine(rt?.override)}</p>
       )}
+      {notUsed && <p className="text-[10px] text-ink-dim mb-1">{notUsed}</p>}
+      {notApplied && <p className="text-[10px] text-ink-dim mb-1">{notApplied}</p>}
       <div className="flex items-center gap-1">
         <input
           type="time"
@@ -213,6 +298,14 @@ function ReleaseTimeEditor({
         )}
       </div>
       {rtMsg && <p className="text-[10px] text-ink-dim pt-1">{rtMsg}</p>}
+      <ConfirmDialog
+        open={ask !== null}
+        title="Replace the web-verified time?"
+        message={ask ?? ""}
+        confirmLabel="Save anyway"
+        onConfirm={onAskConfirm}
+        onCancel={onAskCancel}
+      />
     </div>
   );
 }
@@ -277,6 +370,9 @@ function EarningsDateChipInner({
   const [rtEdited, setRtEdited] = useState<string | null>(null);
   const [rtSaving, setRtSaving] = useState(false);
   const [rtMsg, setRtMsg] = useState<string | null>(null);
+  // The server's question before a Save that would replace a web-verified
+  // time (409 would_replace_web_verified), with the time it was asked about.
+  const [rtAsk, setRtAsk] = useState<{ value: string; message: string } | null>(null);
 
   // Viewport-aware popover alignment (QA 2026-08-07): popoverAlign is a
   // static hint from the call site, but the chip's actual position decides
@@ -364,6 +460,9 @@ function EarningsDateChipInner({
       setOpen(false);
     }
     function handleKeyDown(e: KeyboardEvent) {
+      // While the replace question is up, Escape answers IT (the dialog's
+      // own cancel), not the popover underneath.
+      if (rtAsk) return;
       if (e.key === "Escape") setOpen(false);
     }
     document.addEventListener("pointerdown", handlePointerDown);
@@ -372,7 +471,7 @@ function EarningsDateChipInner({
       document.removeEventListener("pointerdown", handlePointerDown);
       document.removeEventListener("keydown", handleKeyDown);
     };
-  }, [open]);
+  }, [open, rtAsk]);
 
   const slotParam = releaseTime && releaseTime < "12:00" ? "bmo" : "amc";
   const rtEdit = releaseTimeInputValue(rtEdited, rt, releaseTime);
@@ -382,6 +481,7 @@ function EarningsDateChipInner({
     // success/error from a prior save lingers beside freshly-fetched data
     // after close → reopen.
     setRtMsg(null);
+    setRtAsk(null);
     try {
       const res = await fetch(
         `/api/earnings/release-time?symbol=${encodeURIComponent(symbol)}&slot=${slotParam}`,
@@ -396,7 +496,7 @@ function EarningsDateChipInner({
     }
   }
 
-  async function saveReleaseTime(value: string | null) {
+  async function saveReleaseTime(value: string | null, replaceWebVerified = false) {
     if (rtSaving) return;
     setRtSaving(true);
     setRtMsg(null);
@@ -404,25 +504,50 @@ function EarningsDateChipInner({
       const res = await apiFetch("/api/earnings/release-time", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ symbol, releaseTime: value }),
+        body: JSON.stringify(
+          replaceWebVerified
+            ? { symbol, releaseTime: value, replaceWebVerified: true }
+            : { symbol, releaseTime: value },
+        ),
       });
-      const body = await res.json().catch(() => null);
-      if (!res.ok || !body?.success) {
-        setRtMsg(body?.error ?? `Save failed: server returned ${res.status}.`);
+      // A Save over a web-verified time is asked about first: nothing was
+      // stored, and the answer re-sends with the acknowledgement.
+      if (value !== null && !replaceWebVerified) {
+        const ask = releaseTimeAskFirst(res.status, await res.clone().json().catch(() => null));
+        if (ask) {
+          setRtAsk({ value, message: ask.message });
+          return;
+        }
+      }
+      const result = await readMutationResult<{ data?: { updatedEvents?: unknown } }>(res);
+      if (!result.ok) {
+        setRtMsg(`Nothing was saved. ${result.message}`);
         return;
       }
+      const updated = Number(result.data.data?.updatedEvents ?? 0);
       setRtMsg(
         value === null
-          ? `Override cleared · ${body.data.updatedEvents} upcoming event(s) re-resolved`
-          : `Saved · ${body.data.updatedEvents} upcoming event(s) updated`,
+          ? `Override cleared · ${updated} upcoming event(s) re-resolved`
+          : `Saved · ${updated} upcoming event(s) updated`,
       );
       await loadReleaseTime();
       startTransition(() => router.refresh());
     } catch {
-      setRtMsg("Save failed: could not reach the server.");
+      setRtMsg(networkFailureMessage(value === null ? "clear the release time" : "save the release time"));
     } finally {
       setRtSaving(false);
     }
+  }
+
+  function confirmReplaceWebVerified() {
+    const asked = rtAsk;
+    setRtAsk(null);
+    if (asked) void saveReleaseTime(asked.value, true);
+  }
+
+  function cancelReplaceWebVerified() {
+    setRtAsk(null);
+    setRtMsg("Nothing was saved. The web-verified time stands.");
   }
 
   // Submitting the pre-filled form unchanged used to doom the vendor row and
@@ -568,6 +693,10 @@ function EarningsDateChipInner({
               rtSaving={rtSaving}
               rtMsg={rtMsg}
               onSave={saveReleaseTime}
+              settling={rtSaving || pending}
+              ask={rtAsk?.message ?? null}
+              onAskConfirm={confirmReplaceWebVerified}
+              onAskCancel={cancelReplaceWebVerified}
             />
             {confirmError && (
               <p className="text-[10px] text-down pt-1">{confirmError}</p>
@@ -709,6 +838,10 @@ function EarningsDateChipInner({
             rtSaving={rtSaving}
             rtMsg={rtMsg}
             onSave={saveReleaseTime}
+            settling={rtSaving || pending}
+            ask={rtAsk?.message ?? null}
+            onAskConfirm={confirmReplaceWebVerified}
+            onAskCancel={cancelReplaceWebVerified}
           />
           {confirmError && (
             <p className="text-[10px] text-down pt-1">{confirmError}</p>
