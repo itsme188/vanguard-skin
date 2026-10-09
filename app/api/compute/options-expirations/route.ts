@@ -8,7 +8,7 @@ export async function GET(request: NextRequest) {
     const { searchParams } = new URL(request.url);
     const scope = searchParams.get("scope");
     const daysParam = searchParams.get("days");
-    // Use resolveScope (array) not resolveScopeToSingleId — Expirations
+    // Use resolveScope (array), never a first-id collapse — Expirations
     // shows options across all accounts in a scope; the multi-account
     // case must work for "all" scope to surface anything.
     const accountIds = resolveScope(db, scope);

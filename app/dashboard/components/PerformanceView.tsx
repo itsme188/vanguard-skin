@@ -91,10 +91,10 @@ const BENCHMARK_SYMBOL = "SPY";
 export async function PerformanceView({ scope = "all", period }: PerformanceViewProps) {
   const activePeriod: Period = (PERIODS.find((p) => p.key === period)?.key ?? "ytd") as Period;
   const activeScope = SCOPES.find((s) => s.key === scope)?.key ?? "all";
-  // Full scope, not a first-id collapse — resolveScopeToSingleId would
+  // Full scope, not a first-id collapse: taking only the first id would
   // silently drop every account past the first from the TWR aggregate
-  // chain (the resolveScopeToSingleId violation this fixes; scopes are
-  // disjoint but not all 1-account, and must not be treated as if they were).
+  // chain (the old first-id helper is deleted; scopes are disjoint but not
+  // all 1-account, and must not be treated as if they were).
   const scopeAccountIds = activeScope === "all" ? undefined : resolveScope(db, activeScope);
   // Every figure on this page takes the WHOLE scope (scopeAccountIds): the
   // TWR, the money-weighted return, the risk tiles, the curve and the

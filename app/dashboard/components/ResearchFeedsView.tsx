@@ -3,6 +3,7 @@
 import { CHIP_TONE_TEXT, GOLD_FILL_CLASSES } from "@/app/dashboard/components/chip-tone-text";
 import { emptyEnrichmentLabel } from "@/lib/research/empty-enrichment";
 import { readMutationResult, networkFailureMessage } from "@/lib/ui/mutation-result";
+import { joinSentences } from "@/lib/ui/join-sentences";
 import { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -470,7 +471,7 @@ export function ResearchFeedsView({
       const reloaded = await reloadFilteredList();
       if (!reloaded) restoreBefore();
       toast(
-        `Couldn't ${copy.verb} the article: ${result.message} It stays in the filtered list.` +
+        joinSentences(`Couldn't ${copy.verb} the article: ${result.message}`, "It stays in the filtered list.") +
           (reloaded ? "" : " The list could not be refreshed and may be out of date."),
         "error",
       );

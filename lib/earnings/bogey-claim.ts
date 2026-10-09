@@ -7,7 +7,8 @@
  *
  *   - "curated"      at least one printed entry is NOT the vendor's;
  *   - "vendor_only"  every printed entry is the vendor's: the text says the
- *                    vendor consensus is shown and no curated bogeys are on file;
+ *                    vendor consensus is shown and no curated bogeys are on file
+ *                    (the cloud twin words it "no curated bogeys are shown here");
  *   - "none"         nothing is printed: no block, no claim.
  *
  * Callers pass the SAME list of printed rows the block renders (the Mac's
