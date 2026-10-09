@@ -40,11 +40,12 @@ import {
 } from "@/lib/queries/analyst-estimates";
 import { syncAnalystCoverage } from "@/lib/apis/analyst-estimates";
 import { getRecentReleaseReactions } from "@/lib/queries/level-performance";
+import type { ReactionSnapshot } from "@/lib/calendar/reaction-snapshot-core";
 import {
-  isUsableReactionLeg,
-  parseReactionSnapshot,
-  type ReactionSnapshot,
-} from "@/lib/calendar/reaction-snapshot-core";
+  readReactionLegs,
+  type ReactionLegKey,
+  type StoredReactionLeg,
+} from "@/lib/calendar/reaction-validity";
 import { getMarketSnapshot, fetchYahooQuotes } from "@/lib/queries/market-snapshot";
 import {
   resolvePerformanceWindow,
@@ -66,34 +67,59 @@ function parseKeyThemesField(raw: string): unknown {
 }
 
 /**
- * Strip every unusable benchmark leg out of a stored reaction snapshot before
- * the chat model ever sees it.
+ * Strip every leg that is not a real measurement out of a stored reaction
+ * snapshot before the chat model ever sees it.
  *
- * Legacy rows (written before the write-side guard landed) zero-fill a leg
- * whose bars never arrived: `{t_pre:0, t_post:0, delta_pct:0}`. Handed to the
- * model as-is, that reads as a genuine FLAT market reaction — the model can
- * then tell the user "SPY was unchanged on the print" when the truth is that
- * we have no measurement at all. isUsableReactionLeg is the shared predicate
- * the recap email (lib/digest/send-earnings-email.ts) and the weekly briefing
- * (lib/calendar/briefing.ts) already filter through; the chat tool must not
- * fork it. A snapshot with no surviving leg carries no reaction information,
- * so it collapses to null rather than shipping bare metadata.
+ * Two classes are removed, both decided by lib/calendar/reaction-validity.ts
+ * (the same rule the on-screen chips, the recap email and the weekly briefing
+ * read; the chat tool must not fork it):
+ *
+ *   - ABSENT. Legacy rows (written before the write-side guard landed)
+ *     zero-fill a leg whose bars never arrived: `{t_pre:0, t_post:0,
+ *     delta_pct:0}`. Handed to the model as-is, that reads as a genuine FLAT
+ *     market reaction. The leg is dropped.
+ *   - PENDING (2026-10-08). A figure exists but is not a measurement: the
+ *     snapshot was captured before its two-hour window elapsed, or the pre and
+ *     post prices are identical. The leg is replaced by `{ state: "pending" }`
+ *     with no price and no percent, so the model can say the reaction is not
+ *     in yet and can never quote the number.
+ *
+ * A snapshot with no measured and no pending leg carries no reaction
+ * information, so it collapses to null rather than shipping bare metadata.
+ * When nothing is measured but something is pending, the result carries a
+ * top-level `state: "pending"`.
+ *
+ * The tool's query (getRecentReleaseReactions) does not select `enriched_at`,
+ * so only the evidence the snapshot itself carries is applied here: the
+ * legacy "0.00% move on a row enriched before the window" case is not caught.
  */
+type ChatReactionLeg = StoredReactionLeg | { state: "pending"; symbol?: string };
+type ChatReactionSnapshot = Partial<
+  Pick<ReactionSnapshot, "t0_utc" | "window_min" | "source" | "pre_anchor">
+> &
+  Partial<Record<ReactionLegKey, ChatReactionLeg>> & { state?: "pending" };
+
 function sanitizeReactionSnapshotForChat(
   raw: string | null,
-): Partial<ReactionSnapshot> | null {
-  const snap = parseReactionSnapshot(raw);
-  if (!snap) return null;
+): ChatReactionSnapshot | null {
+  const read = readReactionLegs(raw);
+  if (!read) return null;
+  const { snapshot: snap, measured, pending } = read;
 
-  const clean: Partial<ReactionSnapshot> = {};
-  if (isUsableReactionLeg(snap.spy)) clean.spy = snap.spy;
-  if (isUsableReactionLeg(snap.qqq)) clean.qqq = snap.qqq;
-  if (isUsableReactionLeg(snap.tlt)) clean.tlt = snap.tlt;
-  if (isUsableReactionLeg(snap.sector)) clean.sector = snap.sector;
-  if (isUsableReactionLeg(snap.symbol)) clean.symbol = snap.symbol;
+  const clean: ChatReactionSnapshot = {};
+  for (const key of ["spy", "qqq", "tlt", "sector", "symbol"] as const) {
+    const leg = measured[key];
+    if (leg) {
+      clean[key] = leg;
+    } else if (pending.includes(key)) {
+      const label = (snap[key] as StoredReactionLeg | undefined)?.symbol;
+      clean[key] = typeof label === "string" ? { state: "pending", symbol: label } : { state: "pending" };
+    }
+  }
   if (Object.keys(clean).length === 0) return null;
+  if (Object.keys(measured).length === 0) clean.state = "pending";
 
-  // Metadata rides along only when at least one real leg survived — it is
+  // Metadata rides along only when at least one leg survived — it is
   // context for the deltas, never a substitute for them.
   if (snap.t0_utc) clean.t0_utc = snap.t0_utc;
   if (snap.window_min) clean.window_min = snap.window_min;

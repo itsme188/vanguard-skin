@@ -14,7 +14,14 @@
  *     instant on every snapshot it does store;
  *   - the renderers      (app/dashboard/components/calendar/EnrichmentChips.tsx)
  *     — show "pending", never a percent, for a leg that is not a measurement;
- *   - the repair script  (scripts/repair-premature-reaction-snapshots.ts).
+ *   - the repair script  (scripts/repair-premature-reaction-snapshots.ts);
+ *   - every TEXT reader, through `readReactionLegs` below: the earnings email
+ *     composer (scoreboard, recap prompt, read-through bullets), the weekly
+ *     briefing, the macro-themes event line, the chat tool and the email
+ *     viewer's rebuilt scoreboard. Outbound text and prompts OMIT a pending
+ *     leg; only in-app surfaces may say "pending". The print push composer
+ *     (lib/alerts/print-push-message.ts) is import-free by design and carries
+ *     an inlined copy of the snapshot-only part of the rule.
  *
  * Client-safe and pure: the only import is the dependency-free
  * reaction-snapshot-core leaf (never lib/calendar/reaction-snapshot.ts, which
@@ -246,4 +253,53 @@ export function withoutReactionLegs(
   for (const key of keys) delete next[key];
   if (!CORE_LEG_KEYS.some((key) => isUsableReactionLeg(next[key]))) return null;
   return next;
+}
+
+/** A leg as stored; `symbol` rides along on the sector and own-stock legs. */
+export type StoredReactionLeg = BenchmarkReaction & { symbol?: string };
+
+export interface ReactionLegRead {
+  /** The parsed snapshot as stored (metadata: t0_utc, window_min, source, pre_anchor). */
+  snapshot: ReactionSnapshot;
+  /** Only the legs that are real measurements; safe to print as a percent. */
+  measured: Partial<Record<ReactionLegKey, StoredReactionLeg>>;
+  /** Legs holding a figure that is not a measurement. Never print their percent. */
+  pending: ReactionLegKey[];
+}
+
+/**
+ * The one read path for anything that turns a stored snapshot into text.
+ *
+ * Takes the raw `calendar_events.reaction_snapshot` column (or an already
+ * parsed snapshot) and sorts each leg through `reactionLegVerdict`. Returns
+ * null when there is nothing readable at all (NULL column, malformed JSON, a
+ * non-object). A dead/zero-quote leg is in neither list (it is absent).
+ *
+ * Pass `rowEnrichedAt` whenever the row is at hand: without it only the
+ * evidence the snapshot itself carries is used (`captured_at`, and an
+ * identical pre/post pair on a snapshot with no capture stamp).
+ */
+export function readReactionLegs(
+  raw: string | ReactionSnapshot | null | undefined,
+  evidence: ReactionEvidence = {},
+): ReactionLegRead | null {
+  let snapshot: unknown = raw;
+  if (typeof raw === "string") {
+    try {
+      snapshot = JSON.parse(raw);
+    } catch {
+      return null;
+    }
+  }
+  if (snapshot == null || typeof snapshot !== "object" || Array.isArray(snapshot)) return null;
+  const snap = snapshot as ReactionSnapshot;
+  const measured: ReactionLegRead["measured"] = {};
+  const pending: ReactionLegKey[] = [];
+  for (const key of REACTION_LEG_KEYS) {
+    const leg = snap[key];
+    const state = reactionLegState(snap, leg, evidence);
+    if (state === "measured") measured[key] = leg as StoredReactionLeg;
+    else if (state === "pending") pending.push(key);
+  }
+  return { snapshot: snap, measured, pending };
 }
