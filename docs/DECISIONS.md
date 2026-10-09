@@ -931,3 +931,52 @@ Forty-nine commits, merged to `main` as `f4feed84`. Authority: the entry above (
 - **A ruling about which row wins has readers downstream.** The slot rule was one function; it touched the briefing, a prepare step, two email paths and the Worker. Map who assumes the old winner before changing a winner.
 - **Builders must not each run the type-checker.** Sixty-two copies stalled the machine; the orchestrator runs it once per batch.
 - **Check the clock; do not estimate it.** The orchestrator reported the time wrongly for part of the night.
+
+## 2026-10-08 (late night) — Second overnight sprint, second half: what was built and decided
+
+The owner said the first half was too little for an all-night sprint, so the sprint went on under the same authority (the "authority" entry above). This half merged as `04d5d787` (49 commits). Method: one read-only triage of every open to-do entry and ledger row against the code (about 105 candidates checked), then builders on separate files in one sibling worktree, each unit committed by the orchestrator after its tests were re-run; one Codex review (no findings), two reviews by agents that ran the code (both "ready", six should-fix items, all fixed before the merge), and a browser pass on a sandbox copy (twelve screens, desktop and phone width, both themes; three small defects, fixed).
+
+**Decisions taken on the recommendation. The owner should confirm or reverse each.**
+1. **A pending reaction never prints as a percent** in an email, the briefing, the themes prompt, the chat or a push, on the Mac and in the cloud. A leg captured before its window elapsed is left out; the recap takes its "not captured yet" wording when no leg is measured.
+2. **Short lots are signed by their side everywhere the chat reads them**, are never listed as approaching long-term (the engine treats every short close as short-term), and the chat readers now use the same fee-inclusive remaining basis as the Tax Lots page. On a partly closed lot the tool reports the basis of the quantity still open.
+3. **"Beat N of 8"** counts the last eight rows that carry an EPS result.
+4. **A recap scoreboard prints dashes; a preview keeps its fill-in boxes.** The renderer tells them apart by the scoreboard heading, so rewording that heading needs both composers and the renderer changed together (pinned by tests on both sides).
+5. **Evening movers read the current long book; the digest's held list reads the current book including shorts.** A sold name no longer appears.
+6. **A level expires at the end of its Eastern day on the Mac**, as it already did in the cloud.
+7. **The lot integrity scan compares lots with statement holdings.** A difference seen only in live data is a warning that never caps the score. When the ledger is newer than the statement the lots are rolled back to the statement date and compared; a mismatch there is critical. On a copy of the book: critical hits 12 to 7, the cap still fires.
+8. **The Fixed Income card uses the scenario estimator's durations**, marks a derived one as an estimate, and lists a bond it cannot model with no figure. A note whose name says its coupon floats or is index-linked is never given a duration, whatever coupon is stored. Treasury inflation-indexed notes keep their fixed real coupon. An issuer named with the whole word CMS is treated as not modelled (the safe side). On the copy: bonds with a duration 4 to 12, weighted duration down by about a third.
+9. **The Giving suggestion puts a lot with an implausible basis last within its holding period**, not last overall: a flagged long-term lot is still suggested ahead of a clean short-term one, because a short-term gift deducts only at cost.
+10. **A hand-entered earnings add** that collides with a hidden hand-entered row is refused with a message naming the entry that replaced it (the hidden row is not revived); it hides a showing feed row on the same symbol and date in the same transaction; an edit runs the slot guard with its own acknowledgement.
+11. **A feed row on a date the owner removed never wins the duplicate check**, so a refresh no longer brings it back. A hand-entered row is exempt. Read-only check of the live book before landing: no showing row sat on a removed date.
+12. **A hand-entered actual on a row with no slot clears "pre-release" at the company's usual side** (display only; the save floor still reads the stored time).
+13. **Saving over a web-verified release time asks first** (a named refusal until the request carries an acknowledgement). A web-verified time at or after 17:00 is a suspect call time and is replaced without a question.
+14. **An all-empty bogey row does not count on the send paths**, and a row counts for a composer only when that composer prints something from it. The vendor EPS consensus is printed and labelled as the vendor's.
+15. **A claim for an event with no calendar row is a plain refusal** (`event_not_found`); a debrief member deleted while the email is composed stops that run.
+16. **The digest Preview opens on the Send panel's window** (default "Today's articles"), and the two share one choice.
+17. **The transcripts "latest" default** flags a document as the previous print's when a newer print is still waiting for results, and never passes off an older call for a print with no fiscal quarter.
+18. **Three files with no importer were deleted** after a whole-repo search of the module path and every exported name: the retired stapled-wrap sender `lib/earnings/wrap-send.ts`, its test, and the unused `MetricCard` component. Recoverable from git.
+19. **Three chip tones failed the contrast floor** (green and gold in the light theme, red in both) and are corrected in the chip only; no theme token changed. Chips are one line unless a caller asks for wrapping.
+20. **Every question goes through the app dialog** (`useConfirmPrompt`), not a native browser prompt, in the conflict marker, the bogeys modal and the live print row.
+
+**Built and deliberately limited.**
+- Performance view: the money-weighted return, the risk tiles and the curve read the whole selected scope (every named scope is one account today, so nothing moved on the copy), and the curve starts at the first statement. **No time-weighted return computation was changed.** For a single account whose statements carry a stored monthly return the chain opens on the first day of the month (364 days for a year); otherwise on the prior month-end (365 days). The annualized figure differs by a few basis points. The caption now prints the date the return actually uses. Aligning the two branches is an owner decision because it moves a published figure.
+- The read-through builder's consensus order was NOT aligned with the other sites: a test shows aligning would let a revenue figure into the prompt with no consensus to check it against.
+- The Electron cookie change (SameSite) was not built: only a packaged-app login can prove it.
+- The 8-K exhibit-link fix was not built: it changes which document a print shows and needs a check against a live filing index.
+
+**Held for the owner.**
+- **PR #107, three additive migrations** (096 vendor earnings actual kept beside a hand-entered one; 097 macro refusal reason and reference period; 098 detection price on a level narrative). Built, type-checked, reviewed by Codex with its two findings fixed. Not merged. It needs a rebase onto this merge.
+- **The written design for a live-closed option or short as pending** (`docs/superpowers/specs/2026-10-08-live-closed-options-shorts-pending-design.md`), with the Codex review folded in and twelve owner questions. Nothing in it is approved.
+- **Known limit of the integrity scan:** duplicate rows that are themselves dated after the last statement cannot be told from a real purchase whose sale is not yet imported. It needs a duplicate-row check.
+- **Wording:** a vendor-only bogey entry still sits under a heading and footer that say "your curated bogeys". The line itself is labelled as the vendor's.
+- **`docs/superpowers/specs/2026-07-05-defense-hedging-tab-design.md` names real tickers and one share count** in a public repo. Rewrite or purge is the owner's call.
+- One open short option lot on the book was opened by a row typed as a sell-to-close (ledger data; not touched).
+- The second-opinion list from the triage (weekend rows in risk and beta, tilts on the Breakdown universe, a skipped mid-series anchor, early-close days, and others) is unchanged and in the to-do entry.
+
+**Not seen in a browser** (the sandbox had no earnings rows this week): the Hub date-chip popover and its new ask-first dialog, the conflict lock dialog, the bogeys modal dialogs, reconciliation chips, a "not modelled" duration, the digest catch-up banner, a level result in the command palette (the palette shows securities only).
+
+**Lessons.**
+- A shared base-class change (one-line chips) removed a deliberate exception elsewhere; only a test in another file caught it. A base change needs a search for callers that override it.
+- A reviewer that ran the code found three real holes that a reading review (Codex, no findings) did not: the scan going blind after one later trade, a stored coupon bypassing the name guard, and chat figures that shared a sign but not a basis.
+- "Claims X is included" and "prints X" must come from one list. Two separate checks drifted the same night they were written.
+- The clock was mis-stated to the owner twice in one night from estimates. Run `date`.
