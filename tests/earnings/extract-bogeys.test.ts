@@ -390,4 +390,21 @@ describe("extractBogeysFromUpload truncation + parse failure mapping", () => {
     expect(err.message).not.toContain("could not find any bogeys");
     expect(err.message).not.toContain("First 200 chars");
   });
+
+  it("maps a reply with no text block to a typed unreadable error, not a bare Error", async () => {
+    mockStreamWith({ content: [], stop_reason: "end_turn" });
+    const err = await extractBogeysFromUpload(new Uint8Array([1]), "application/pdf").catch((e) => e);
+    expect(err).toBeInstanceOf(BogeysExtractionError);
+    expect(err.code).toBe("unreadable");
+    expect(err.status).toBe(422);
+    expect(err.message).toMatch(/couldn't be read/i);
+  });
+
+  it("maps an empty text reply to the same unreadable error", async () => {
+    mockStreamWith({ content: [{ type: "text", text: "   " }], stop_reason: "end_turn" });
+    const err = await extractBogeysFromUpload(new Uint8Array([1]), "image/png").catch((e) => e);
+    expect(err).toBeInstanceOf(BogeysExtractionError);
+    expect(err.code).toBe("unreadable");
+    expect(err.message).toMatch(/image/i);
+  });
 });

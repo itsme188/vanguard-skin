@@ -15,7 +15,12 @@ const text = (r: Parameters<typeof describeUploadOutcome>[0], file = "sheet.pdf"
 describe("describeUploadOutcome", () => {
   it("names the file when nothing was extracted, instead of a bare 0/0", () => {
     const lines = describeUploadOutcome({ symbolsExtracted: 0, eventsMatched: 0, eventsUnmatched: [], results: [] }, "sheet.pdf");
-    expect(lines).toEqual([{ text: "No tickers found in sheet.pdf — nothing was stored.", tone: "warn" }]);
+    expect(lines).toEqual([
+      {
+        text: "No tickers found in sheet.pdf — it may be blank, unreadable or not an earnings sheet. Nothing was stored.",
+        tone: "warn",
+      },
+    ]);
   });
 
   it("names every symbol it saved bogeys for", () => {

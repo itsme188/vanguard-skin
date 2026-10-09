@@ -65,7 +65,7 @@ function shortDate(iso: string | null | undefined): string | null {
 export function describeUploadOutcome(result: UploadResponse, fileName: string): UploadOutcomeLine[] {
   const extracted = result.symbolsExtracted ?? 0;
   if (extracted === 0) {
-    return [{ text: `No tickers found in ${fileName} — nothing was stored.`, tone: "warn" }];
+    return [{ text: `No tickers found in ${fileName} — it may be blank, unreadable or not an earnings sheet. Nothing was stored.`, tone: "warn" }];
   }
   const lines: UploadOutcomeLine[] = [
     { text: `${result.eventsMatched ?? 0}/${extracted} matched`, tone: "plain" },
