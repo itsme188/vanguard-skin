@@ -1,164 +1,102 @@
 # Session Handoff — for Codex review
 
-**Waiting on:** USER (each is a `decision` record in the coordination register; `npm run inbox` lists them): `confirm-sprint-decisions-2026-10-07-night` (confirm or reverse what was built on standing authority and answer the numbered owner questions in section 3); and, carried from before the sprint, `giving-mark-lots-verified`, `broker-realized-gain-reports`, `tax-preparer-short-term-gift`, `confirm-gift-month-convention`, `confirm-builder-rulings-2026-10-07`, `github-support-history-purge`. Closed on 2026-10-08: `merge-pr-101-and-deploy` and `small-repairs-after-sprint-merge` (see section 0a). CODEX: nothing assigned; a review of the merged sprint is welcome, especially the items in section 3. CLAUDE: nothing.
+**Waiting on:** USER (each is a `decision` record in the coordination register; `npm run inbox` lists them): `confirm-sprint-decisions-2026-10-08-night` (confirm or reverse what the second overnight sprint decided, and approve or decline the three migrations it held); `confirm-phone-chat-layout` (look at the chat panel on the phone); and, carried from before, `giving-mark-lots-verified`, `broker-realized-gain-reports`, `tax-preparer-short-term-gift`, `confirm-gift-month-convention`, `confirm-builder-rulings-2026-10-07`, `github-support-history-purge`. CODEX: nothing assigned; a review of the merged sprint is welcome, especially section 3. CLAUDE: nothing.
 
 > Rolling file, overwritten at each session close. Past handoffs: `git log -p docs/HANDOFF.md`.
 > Written by Claude Code so Codex can review changes and reasoning at full project context.
 > **Commit ids:** history was rewritten on 2026-10-06, so every commit id written in docs before that date is an old id. A private old-to-new map is in gitignored `docs/private/`.
 
-**Session dates:** 2026-10-07 evening into the night (about 19:00 to 23:30 Eastern time). An unattended sprint: Claude orchestrated, Claude sub-agents and Codex built, each side reviewed the other. The owner gave standing authority at the start (quoted in `docs/DECISIONS.md`, 2026-10-07 evening) and was not present after that.
+**Session date:** 2026-10-08, morning to about 22:00 Eastern time. One long session in three parts: a ruling session with the owner; a first wave of eight small builds (PR #106); then an unattended sprint the owner started at about 19:40 ("same thing as last night, but try to go further and make more decisions").
 
-## 0a. Update, 2026-10-08 morning: everything below is MERGED and DEPLOYED
+## 0. State at the end
 
-- The owner merged #101, #102, #103 and #104, plus the nightly fixer's #105 (four import-preview warnings). #102 first needed one conflict resolved in a test list, because two review fixes had reached the later branches by cherry-pick; Claude merged `main` up through the three branches (no file content changed) and pointed them at `main`.
-- `main` was verified before deploy: type-check clean, full suite 14,468 passed, Worker suite 647 passed. `bash scripts/verify.sh full --base main` passed after the deploy.
-- The Worker was deployed first, then the Mac app (commit `ed12c5c9`; bundle check and post-verify passed).
-- The nightly fixer is back on (`qa/deep-qa-config.json`, commit `ed12c5c9`).
-- The three rehearsed repairs were run live after a backup (`data/vanguard-pre-small-repairs-2026-10-08.db`); an identical second run changed nothing.
-- The QA ledger rows for #101 to #105 are marked merged.
-- The sprint worktrees and branches are removed. The held patches and the sprint's working notes are in gitignored `docs/private/sprint-2026-10-07/` (the Giving split-display patch and the international-exposure scale patch are under `held/`).
-- **Gotcha found while deploying:** `npx wrangler deploy` leaves an empty `workers/cron/.wrangler/` folder, and the Mac deploy's pre-flight refuses to build while it exists. Remove it between the two deploys.
-- **Still open for the owner:** the decisions queued in section 0 below and in `docs/DECISIONS.md` (2026-10-07 night), and the items not yet seen in a browser. Steps 1 to 5 below are done; they are kept for the record.
+- `main` holds everything. The sprint merged as `f4feed84` (49 commits). Wave 1 merged earlier as `4f6aa65a` (PR #106).
+- **Deployed:** the Cloudflare Worker (first), then the Mac app. See section 2 for the commit each ran from.
+- **The nightly fixer is back on** (`qa/deep-qa-config.json`).
+- **Live database:** one repair was applied, with a backup, during the ruling session: the old hand-entered and feed earnings pair for one past print (`scripts/repair-manual-feed-earnings-pairs.ts`; backup `data/vanguard-pre-ter-pair-repair-2026-10-08.db`). Nothing else was written to live data. Three new repair scripts exist and were NOT run.
+- **No migration was added.** Three were held for the owner (section 3).
 
-## 0. State at the end of the sprint night (superseded by 0a)
+## 1. Goal + what changed
 
-**Three stacked pull requests (PRs) are open. None is merged. Nothing is deployed, neither the Cloudflare Worker nor the Mac app. `main` is untouched at `2daccfef`.**
+**Goal (the owner's words, shortened):** rule on the questions the 2026-10-07 sprint queued, then run a fully autonomous sprint with Codex: build everything planned and more, decide open questions on the recommendation, get a Codex second opinion when unsure.
 
-| PR | Branch | Base | Commits | QA findings |
-|---|---|---|---|---|
-| #101 | `claude/land1-2026-10-07` | `main` | 76 | about 300 |
-| #102 | `claude/land2-2026-10-07` | the #101 branch | 26 | 53 |
-| #103 | `claude/land3-2026-10-07` | the #102 branch | 10 | 11 |
-| #104 | `claude/land4-2026-10-07` | the #103 branch | 10 | none stamped (to-do units, interim label fixes, these docs) |
+**Where to read the detail.** Decisions and reasons are in `docs/DECISIONS.md`, six entries dated 2026-10-08:
+1. Owner rulings on the sprint's queued questions.
+2. Owner rulings on the findings Codex called a direction change.
+3. Design choices found while mapping the ruled builds to code.
+4. Wave 1 merged; two rulings from its review.
+5. Second overnight sprint: the authority.
+6. Second overnight sprint: what was built and decided (the list to confirm or reverse, what is held, the lessons).
 
-**Why they are not merged:** the permission system blocked Claude from merging to `main` and from writing to the live database. Both are owner actions. Do not route around the block (no piecemeal merge, no merge through another tool).
+File lists: `git log --stat 845b756b..f4feed84` for the sprint, `git log --stat d24c62b5..4f6aa65a` for wave 1.
 
-**Owner steps, in this order:**
-
-1. **Merge #101, then #102, then #103, then #104.** They are stacked; this order keeps each diff clean.
-2. **Deploy the Worker FIRST:** `cd workers/cron && npx wrangler deploy`. The Worker must be able to read the two new payload lists before the Mac sends them.
-3. **Deploy the Mac app:** `npm run deploy` from the main checkout. No deploy between 01:30 and 04:30 Eastern time; the nightly QA chain runs then.
-4. **Turn the nightly fixer back on:** in `qa/deep-qa-config.json` set `fixer.enabled` back to `true`, and commit it. The pause was committed on the sprint branches only (`49af56e1`), so the merge brings the pause to `main`. It was never on `main` during the night, so the fixer may have run on the night of the sprint.
-5. **Run the three rehearsed repairs,** from the repo root of the main checkout, backup first:
-
-   ```
-   sqlite3 data/vanguard.db "VACUUM INTO 'data/vanguard-pre-small-repairs.db'"
-   PATH=/opt/homebrew/opt/node@24/bin:$PATH npx tsx scripts/repair-empty-bogeys.ts --apply
-   PATH=/opt/homebrew/opt/node@24/bin:$PATH npx tsx scripts/repair-zero-ohlcv-bars.ts --apply --acknowledge-repair
-   PATH=/opt/homebrew/opt/node@24/bin:$PATH npx tsx scripts/repair-duplicate-research-documents.ts --apply
-   ```
-
-   What each does: removes stored bogey rows whose every field is empty; removes stored daily bars the write guard would reject today; removes one duplicate research document and keeps the copy other records point at. Each was rehearsed on a copy of the live database: apply, then an identical second run changed nothing, and the integrity check passed. Run each without `--apply` first to read its dry-run report.
-6. **Clean up worktrees and branches,** only after the merge and the deploy have finished:
-   - `git worktree remove /Users/Yitzi/code/vanguard-skin-sprint` (branch `claude/sprint-2026-10-07`)
-   - `git worktree remove /Users/Yitzi/code/vanguard-skin-sprint-verify` (detached)
-   - `git worktree remove /Users/Yitzi/code/vanguard-skin-land1` (branch `claude/land1-2026-10-07`)
-   - `git branch -d` for `claude/sprint-2026-10-07`, `claude/land1-2026-10-07`, `claude/land2-2026-10-07`, `claude/land3-2026-10-07`
-   - **Leave `/Users/Yitzi/code/vanguard-skin-qa-fix` alone.** It is the nightly fixer's worktree.
-   - Archive anything wanted from a worktree before removing it. Do not run this cleanup while a deploy is building.
-
-**Three more new scripts are report-only for now.** Do not apply them without a decision:
-
-- `scripts/repair-manual-feed-earnings-pairs.ts`: its dry run found one old pair. Applying it changes which of two rows is canonical for that print.
-- `scripts/repair-stranded-earnings-suppressions.ts`: found nothing stranded.
-- `scripts/retire-expired-option-holdings.ts`: found nothing to retire. It needs two flags to write.
-
-## 1. Goal + exact files changed
-
-**Goal (the owner's words, shortened):** get the app back to par. Fix and close as many backlog findings as possible; start with what needs no decision, then take the recommended option on what does; get a second opinion from Codex when unsure; skip anything that changes the app's direction and queue it for the morning.
-
-**Result on the QA (quality assurance) ledger:** 457 findings open at the start of the session, 95 open now. Rows fixed tonight are stamped `pr-open` against the three pull requests. The 95 are held classes; Codex judged 14 of them already fixed by code and waiting for the nightly sweep.
-
-**What was built, by pull request.** Decisions and reasons are in `docs/DECISIONS.md` (2026-10-07 evening for the first 47 commits of #101, 2026-10-07 night for the rest). File lists: `git log --stat main..claude/land3-2026-10-07`.
-
-- **#101, first landing.** The ruled findings waiting for a build, the findings that needed no decision, the Worker's replaced-entry fix (Mac payload, Worker reader, parity tests), and a first batch of decisions on the recommended option. Touches most dashboard components, `lib/queries/`, `lib/compute/`, `lib/earnings/`, `lib/calendar/`, `workers/cron/`.
-- **#102, second landing.** Level edit (`lib/levels/edit-level.ts`, `app/api/levels/route.ts`); security page disclosures (`lib/queries/security-detail.ts`, `lib/compute/lot-coverage.ts`); Earnings Hub chips and editor copy; phone chat layout (layout only); equity curve time axis (`lib/chart/equity-curve-anchor.ts`); protective puts (`lib/compute/options-strategy.ts`); gross-basis gain percent (`lib/compute/gain-ratio.ts`); the data-quality label basis (`lib/compute/daily-valuation.ts`); cash-deploy and what-if (`lib/compute/cash-deploy.ts`); the Recompute preview (`lib/compute/tax-lot-recompute-summary.ts`, `app/api/compute/tax-lots/route.ts`); the Tax Lots page disclosures; the digest preview (`app/api/digest/preview/route.ts`, preview only); Plaid sync messages (`lib/plaid/refresh.ts`); notes draft recovery; trade-review price window (`lib/trade-review/generate.ts`); the transcript vendor's daily limit (`lib/transcripts/fetch.ts`).
-- **#103, third landing.** Level currency (`lib/queries/briefing-levels.ts`, `lib/alerts/generate-suggestion.ts`); hand-entered earnings rows and the "Entered by you" chip (`lib/calendar/reconcile-earnings-dates.ts`, `app/dashboard/today/EarningsDateChip.tsx`); cash-equivalent lists (`lib/compute/cash-equivalents.ts` and five readers); the Giving link stamp (`lib/mutations/donation-links.ts`); bars (`lib/tws/benchmark.ts`, `lib/queries/ohlcv.ts`); Today, analysis and accounts label fixes.
-- **New scripts, all dry-run by default:** `scripts/repair-empty-bogeys.ts`, `scripts/repair-duplicate-research-documents.ts`, `scripts/repair-stranded-earnings-suppressions.ts`, `scripts/repair-zero-ohlcv-bars.ts`, `scripts/repair-manual-feed-earnings-pairs.ts`, `scripts/retire-expired-option-holdings.ts`.
-- **Docs (this commit):** `docs/DECISIONS.md` (night entry), `docs/plans/TODO.md` (reconciled, one new entry), `docs/reference/conventions-detail.md`, `docs/reference/earnings-pipeline.md`, `CLAUDE.md` (five invariants), this file.
-
-**Method.** Builders worked on disjoint files in one shared worktree and never wrote git. The orchestrator read each diff, re-ran its tests and committed by pathspec. Codex reviewed Claude's committed work, read-only. A Claude agent that ran the code reviewed each unit Codex built. Every blocking review finding was fixed before a branch was pushed.
+**What was built, by area** (owner rulings unless marked "decided"):
+- **Earnings calendar:** a real slot beats a default time in the duplicate check, before and after the print (`lib/calendar/reconcile-earnings-dates.ts`); a hand-entered row wins a same-date tie; a feed row written behind a hand-entered row is stored hidden and comes back when that row is deleted or moved (`lib/mutations/calendar.ts`, `lib/calendar/sync.ts`); confirming a different date leaves one hand-entered row (`lib/mutations/confirm-earnings-date.ts`); the display-only time estimate reads report history and a same-day twin.
+- **Follow-on from the slot rule (decided, after a Codex second opinion):** the weekly briefing lists the canonical earnings row whatever its source (`lib/calendar/briefing-partition.ts`, mirrored block in `workers/cron/src/fallback-briefing.ts`); the kept row takes the vendor data its hidden twin carries (`createFinnhubDataCarrier`); the consensus step reads the hidden vendor twin directly (`lib/earnings/prepare-steps/consensus-row.ts`); the email finder drops a candidate when a same-company row on that date already has that email (`findEmailCandidates`).
+- **Today:** the IBKR line measures quantity opened or added today from its cost (`lib/compute/day-move.ts`, `lib/queries/today-holdings.ts`); the Portfolio strip names its baseline statement; an armed Hub row after its print shows a read-only record (new `GET /api/print-watch/record`, `lib/earnings/print-record.ts`); small Hub and add-form fixes.
+- **Analysis:** macro themes rank inputs and are checked against their cited article (`lib/compute/macro-themes.ts`); deep in-the-money calls count as stock (`lib/compute/hedging.ts`); Significant Moves follows scope and waits for a completed session (`lib/digest/anomalies.ts`); fixed performance periods end at the last statement (`lib/compute/performance-window.ts`); Diagnostics captions; scope memory; the bond-fund default guard (`lib/compute/bond-duration.ts`); the "live now" badge; scenario input bounds.
+- **Accounts and data health:** the equity curve check is flow-aware; a checkpoint falls back to the nearest prior valuation; the Holdings confidence score is weighted by value; one price-freshness window; the Data Health page shows the score at the top.
+- **Chat (tool and query code only):** movers one row per side with an account filter and a day effect; the total comes from the strip's selection; the return tool uses the statement window. One two-line change in the protected chat route (the title function).
+- **Mac and Worker together (snapshot version 12):** level prices carry their currency in emails and pushes (`lib/alerts/outbound-level-price.ts`, `workers/cron/src/level-price.ts`); the Worker's once-a-day guard uses the Eastern day; the fired marker is kept seven days; a failed push leaves no marker (`workers/cron/src/level-scan.ts`, `lib/alerts/reconcile-cloud-fired.ts`).
+- **Reactions:** none is captured before release plus two hours on either side; each snapshot records its capture time; one validity rule (`lib/calendar/reaction-validity.ts`).
+- **Research and digest:** the Preview runs its AI synthesis only on a click; the evening sender reads the shared window rule; empty-enrichment articles are queued and show no chip; a two-tier notes picker.
+- **Plaid:** the daily sync purges expired options and matured bonds, for its account and live rows only.
+- **New scripts, all dry-run by default, none run:** `scripts/repair-alert-suggestions.ts`, `scripts/repair-premature-reaction-snapshots.ts`; `scripts/repair-empty-enrichments.ts` got a wider selector. `scripts/finish-donations.ts` was deleted with the owner's approval.
 
 ## 2. Tests / E2E / deploy
 
 | Check | Result |
 |---|---|
-| Type-check at the last tip (`d01046c5`) | clean |
-| Full suite at the last tip | 14,351 passed, 0 failed (12,106 at the previous handoff) |
-| Worker suite | 647 passed; Worker type-check clean |
-| Browser checks | each landing checked on a sandbox copy of the database, at desktop and phone width; passed, no console errors |
-| Not seen in a browser | the "Entered by you" chip: the copy had no hand-entered row in the current week |
-| Repair scripts | three rehearsed on a copy (section 0); the other three dry-run only; none run on live data |
-| Mac deploy | NOT done |
-| Worker deploy | NOT done |
-| Live database | no repair applied during the sprint (blocked by the permission system). Just before it began, at about 19:00, the three repair scripts owed from the previous handoff were applied live with a backup, and their decision record was closed |
+| Type-check, Mac and Worker, at the merge | clean |
+| Full suite on `main` after the merge | 15,366 passed, 0 failed (14,512 at the start of the day) |
+| Worker suite | 719 passed |
+| Codex | one plan review (wave 1), two code reviews (sprint), one second opinion (the slot rule); every finding fixed except one Claude disagreed with (recorded in DECISIONS) |
+| Reviews that ran the code | three: wave 1; sprint earnings, calendar and alerts; sprint money and analysis. All returned ready; their should-fix items were fixed before the merge |
+| Browser, sandbox copy | wave 1: smoke 4 of 4 plus three screens. Sprint: smoke 4 of 4 plus thirteen areas at desktop and phone width |
+| Worker deploy | done, before the Mac |
+| Mac deploy | see the last lines of this section |
 
 Notes on the evidence:
+- **The browser pass found a crash that every test passed:** the Data Health page called a function exported from a client file. Fixed, with a test pinning the import boundary, and the page was reloaded on the sandbox.
+- **The full suite found three sets of failures the per-unit runs missed:** a source pin left behind by a moved query; two hand-built test schemas missing real columns; two Mac-side tests of the Worker enrich path. All were tests, not product bugs.
+- **Not seen in a browser:** the armed row's read-only record (the sandbox had no earnings rows that week); the digest caps caption (empty window); a "pending" reaction label; the chat tools in a live chat; the review fixes made after the browser pass (email finder, Worker gate, caption wording, the four money fixes).
+- **Not verified against live data:** the cause of the "0.00% reaction" finding; the basis units of bond and option holdings; how often a print has one vendor with a slot and the other without.
 
-- The first landing's automated smoke, run from a side worktree, captured a blank page once. It did not reproduce: a browser agent then loaded every main page at both widths, light and dark, with no console errors.
-- Many units in #101 were not browser-checked by their own builders. The per-landing browser pass covered the main pages, not every changed control.
-- The full suite was run in a clean verify worktree at each landing tip, not in the shared build worktree.
+**Deploy record:** the Worker was deployed from `main` at `53111e4c` (the sprint merge plus the closeout docs). The Mac app was deployed from the commit that carries this file; its first attempt did not start because the integration lock from the merge was still held, and nothing was built or quit by that attempt. The deploy log is under the coordination folder's `logs/`.
 
 ## 3. Open concerns, rejected approaches, user decisions
 
-**What Codex should scrutinize:**
+**What Codex should scrutinize first:**
+- **The slot rule and everything hung on it** (`pickSameDateWinner`, `createFinnhubDataCarrier`, `findHiddenFinnhubDonor`, `resolveVendorConsensus`, `phaseHandledOnSibling`). It is the widest change of the night and it sits on the earnings email path. Known residue: the carried vendor data is wiped by a vendor sync until the reconcile pass at the end of the same sync restores it; the whole-text consensus fill done by the older fold is never refreshed; the Worker's own email finder has no same-company sibling check.
+- **`confirmEarningsDate` now deletes a row.** It deletes only after counting every table that references the event and finding none; otherwise it keeps the row hidden and returns a notice.
+- **The Worker marker.** Seven-day lifetime, earlier fires carried in the marker, rollback on a failed push, an unreadable marker costs one extra alert. The Mac files one inbox row per Eastern day from `firedAt`.
+- **The reaction gate's new follow-up pass** in `lib/calendar/enrichment-runner.ts`: reaction only, bounded to a 30-minute window, inside the pass limit.
+- **`computePositionDayMove`** and the two "left out" branches in `today-holdings.ts` (book not seen at the prior close; row dated after the session).
+- **The chat route's two-line change** and the new account filter on the market snapshot tool.
 
-- **The Worker's replaced-entry and removed-entry lists** (`workers/cron/`, `lib/earnings/cloud-outbox.ts`, `lib/earnings/armed-events-projection.ts`). The outbox was found able to jam on an old failed row and was fixed; a same-version post can now only complete a stored record, never replace it.
-- **Hand-entered earnings rows** (`lib/calendar/reconcile-earnings-dates.ts`, `lockedStatusFor`). The sync no longer writes a confirmation. Anything that read `user_confirmed` as "this is a manual row" is now wrong; the Hub chip was the one known reader and was fixed in the same commit.
-- **The Giving link stamp** (`linkDonationLegs`). It writes a transaction amount on an acknowledged click.
-- **The cash-equivalent SQL twin** and the two live-sync sites that use the type-only signal.
-- **The Recompute rehearsal** (`rehearseTaxLotRecompute`): the engine runs inside a transaction that always rolls back. It is safe only while the engine is synchronous.
-- **Level edit** (`lib/levels/edit-level.ts`): an edit must never approve or re-arm; a price change on an armed level goes through the arm guard.
-- **The phone chat layout.** Chat is a protected area. The wiring is byte-identical and pinned by a hash test; a presentational controls component and focus handling were added.
-- **AI cards generate only on a click.** Scenario "live now" badges and cash-deploy read the themes cache, so they show less until themes exist for the week.
+**Rejected or not adopted:**
+- Codex's suggestion to compare a macro theme's risk-on or risk-off call with its cited article. That call is about the market; the check compares the model's read of the article with the article's stored sentiment.
+- Expiring the Worker marker at Eastern midnight (the original ruling's wording). It would have lost cloud alerts from the Mac's inbox overnight.
+- Keeping the old vendor as the canonical row and giving it the twin's slot. Codex judged it riskier: every slot reader would have to consult the hidden twin.
+- Changing the email finder's pre-reconcile ranking to prefer the slotted row. Replaced by the protective sibling check.
 
-**Held, not in any pull request:**
+**Held for the owner** (the full list is in the to-do entry "Second overnight sprint"):
+1. Three migrations: the vendor actual column for the recap scoreboard; a reason and a reference month for macro actuals; the detection price for a suggested level.
+2. The written design for a live-closed option or short as pending.
+3. Masking figures in chat titles (needs an edit inside the protected chat component).
+4. Ledger and data: retyping option trades; re-classifying one mislabelled fund; the cause of the basis differences.
+5. Running the three repair scripts.
+6. Questions: a preview already sent stays on a moved row; should scoped Significant Moves evaluate shorts.
 
-- **Giving: split-adjusted display.** Goal: on the Giving page, show a donated lot's basis and remaining quantity in the units of the donation date, so a split dated after a gift does not distort the row. Two attempts were wrong when a reviewer ran the real engine, though the builder's hand-seeded test passed. Failing case one: a manual-mode split dated before the gift (manual-mode splits rewrite history and are excluded from the replay, so the read layer must not adjust for them again). Failing case two: a lot opened by one trade that both closes a position and opens the opposite one. The same patch also changes "suggest highest-gain" to skip lots with an implausible basis. The file is `lib/queries/giving-view.ts`. **Held patch saved outside the repo; ask the owner's Claude session.** Any rebuild must be tested against lots produced by `computeTaxLots`, not hand-seeded lot rows.
-- **"One weight per security across Diagnostics".** Built (`40205f9f`) and reverted (`7b9b2238`). Breakdown, heatmap, concentration and position risk each use a different denominator. A shared gross denominator fixed the display but, with a short in the book, also moved factor tilts, each position's share of volatility and the Defense share of book. The revert commit message has the reviewer's findings.
-- **International-exposure scale.** The change would store a different label for new classifications, and `lib/compute/scenario-recipes.ts` scores the old and new labels differently, so scenario figures would move silently. **Held patch saved outside the repo; ask the owner's Claude session.**
-- **Held classes among the 95 open findings:** the import pipeline and the chat route (protected areas), automatic-email composers and send paths, the tax-lot engine, stored-data repairs.
-
-**Queued owner decisions** (the same questions, with ids, are in `docs/plans/TODO.md`):
-
-1. May the digest preview's window rule be extracted from the send module, with no behaviour change, so the preview mirrors the sender?
-2. Opening the digest Preview fires an AI call with no warning. Gate it behind a click, or relabel the button?
-3. Confirming a zero-amount gift pair now writes the leg's amount from the gift's recorded fair value. Keep it?
-4. The Plaid daily sync runs no expired-option purge, no matured-bond purge and no classification. Should the purges be scoped per account and wired in? Should classification run there, at the cost of an AI call each morning?
-5. A lot closed in a live feed stays open with a market value until a statement arrives. Extend the statement-only design to live-flat options and shorts?
-6. Level prices in the weekly briefing and daily digest emails still print a dollar sign on a non-USD security. May the composers change, Worker mirror included?
-7. Calendar doubles outside the reconciler window: how should a re-minted feed twin on an old week, or a feed row far ahead, be handled, given that hiding one could hide a row an email finder would pick up?
-8. A confirmed vendor row and a hand-entered row on the same date: which should win? Today it depends on row order.
-9. Which denominator should each Diagnostics card use when the book holds a short?
-10. International-exposure labels: rule on the scenario score before the stored label changes.
-11. `scripts/finish-donations.ts` bypasses the acknowledgement the assignment script now needs. Close that path?
-12. A hand-entered earnings row reads "Entered by you" on the Hub and "added by hand" on the week view. Which wording?
-13. Confirming a date from a conflict popover overwrites a typed clock time with the default. Keep the typed time?
-14. The macro themes prompt is cut well short of a full week's input. Raise the cut, rank the inputs, or leave it?
-15. The 28 findings Codex called a direction change each need a ruling (grouped in the TODO entry).
-16. Confirm or reverse every decision listed in the two DECISIONS entries for the sprint.
-17. Apply `repair-manual-feed-earnings-pairs` to the one old pair it found, or leave it?
-
-**Unreconciled between the two Codex passes:** the levels finding about rejected rows under "show inactive" was called a direction change in the second-opinion round and "already fixed by code" in the later triage. Check it on screen before ruling.
-
-**Lessons recorded in `docs/DECISIONS.md`:** a reviewer that runs the real engine catches what a hand-seeded test passes; write the "what must not change" test before wiring a delete into a schedule; a ruled fix can remove the only entry point to a screen, so check what a status was being used for before clearing it; run git commands one at a time in a shared worktree.
-
-**Next recommended work, after the merge and deploy:**
-
-1. Rule on the queued questions; most are one line each.
-2. Sweep the QA ledger so the 14 "already fixed by code" rows close, and flip the `pr-open` rows to merged with their commits.
-3. Reword the two stale lines in `CLAUDE.md` (the benchmark bar filter and the count of legacy cash-equivalent lists); see the TODO entry.
-4. Build the small items triaged as buildable and not built (TODO entry, item n1).
-5. Still open from before the sprint: the broker realized-gain reports, the live tax-lot recompute run, the June return restatement, the IBKR monthly-return scale.
+**Lessons recorded in `docs/DECISIONS.md`:** a page every test passes can still crash, so a new import from a component file into a server page needs a browser look; hand-built test schemas go stale silently; map who assumes the old winner before changing a winner; builders must not each run the type-checker; check the clock, do not estimate it.
 
 ## 4. Uncommitted changes and live-process state
 
-- **Sprint worktree** `/Users/Yitzi/code/vanguard-skin-sprint` (branch `claude/sprint-2026-10-07`): its tip is the #104 branch tip. Everything built in the sprint is in one of the four pull requests; nothing is left uncommitted. #104 holds the last wave: the research sync cause, the expired-level row, the narrative benchmark caption, the level prompt, the bogey upload date, the archive banner time, and these docs. Codex reviewed the Claude-built units (no findings); an agent that ran the code reviewed the Codex-built units and its one defect was fixed.
-- **Other worktrees:** `/Users/Yitzi/code/vanguard-skin-sprint-verify` (detached at `d01046c5`, has its own `node_modules` clone and a copy of `.env.local`); `/Users/Yitzi/code/vanguard-skin-land1` (branch `claude/land1-2026-10-07`); `/Users/Yitzi/code/vanguard-skin-qa-fix` (the nightly fixer's; leave alone).
-- **Main checkout:** `main` at `2daccfef`, equal to `origin/main`. The QA ledger there (gitignored) is stamped `pr-open`; backups of the ledger from before each stamp sit beside it.
-- **Processes:** no sandbox or dev server running. A builder may still be working on the bogey upload unit named above. The live app still runs the build from before the sprint.
-- **Coordination register:** task `sprint-2026-10-07` is active with a `USER:` next action. No lock is held.
-- **Session-local files:** prompts, Codex outputs, review reports and the held patches are in the session's scratch folder outside the repo. It does not survive the session. A running progress log is in gitignored `docs/private/`.
+- **Main checkout:** clean after the closeout commit.
+- **Worktrees:** the sprint worktree `/Users/Yitzi/code/vanguard-skin-sprint2` and its branch are removed after the deploy; `/Users/Yitzi/code/vanguard-skin-qa-fix` is the nightly fixer's and stays.
+- **Processes:** no sandbox or dev server is running. The installed app runs the new build.
+- **Coordination register:** the sprint task is released; one new decision record for the owner.
+- **Session-local files:** builder briefs, review outputs and Codex transcripts are in the session's scratch folder outside the repo and do not survive the session. The sprint's progress log is in gitignored `docs/private/sprint-2026-10-08/`; note that the times written in it before 21:15 are estimates and are wrong by several hours.
 
 ## 5. Agent
 
