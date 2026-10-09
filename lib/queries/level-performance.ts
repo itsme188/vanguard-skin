@@ -74,7 +74,11 @@ function fetchForwardReturn(
   // from the EASTERN day it fired on: a bare `new Date(...)` reads the
   // space-separated SQLite shape as local time, and a UTC slice puts an
   // evening fire on the next day.
-  const firedDay = lastFiredDateET(fromDate) ?? fromDate.slice(0, 10);
+  // A bare YYYY-MM-DD is already a calendar day: the instant helper would
+  // read it as UTC midnight and land on the Eastern day before.
+  const firedDay = /^\d{4}-\d{2}-\d{2}$/.test(fromDate)
+    ? fromDate
+    : (lastFiredDateET(fromDate) ?? fromDate.slice(0, 10));
   const targetIso = addDays(firedDay, daysOut);
   // ET day: a UTC slice reads tomorrow from 20:00 ET and widens the window.
   const todayIso = todayET();
