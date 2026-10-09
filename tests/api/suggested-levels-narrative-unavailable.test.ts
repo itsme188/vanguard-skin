@@ -126,4 +126,22 @@ describe("POST /api/suggested-levels marks a failed narrative", () => {
     }
     expect(hoisted.generate).not.toHaveBeenCalled();
   });
+
+  it("returns the stored detection day and price; an old row returns null price", async () => {
+    hoisted.generate.mockResolvedValue({ object: { narrative: "Coincides with a prior gap." } });
+    const posted = (await (await POST(request(secId))).json()).levels as Array<Record<string, unknown>>;
+    for (const l of posted) {
+      expect(l.narrativeDetectedPrice).toBe(100);
+      expect(l.narrativeDetectedDay).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    }
+    const got = (await (await GET(request(secId))).json()).levels as Array<Record<string, unknown>>;
+    for (const l of got) expect(l.narrativeDetectedPrice).toBe(100);
+
+    hoisted.db.prepare("UPDATE suggested_level_narratives SET detected_price = NULL").run();
+    const old = (await (await GET(request(secId))).json()).levels as Array<Record<string, unknown>>;
+    for (const l of old) {
+      expect(l.narrative).toBe("Coincides with a prior gap.");
+      expect(l.narrativeDetectedPrice).toBeNull();
+    }
+  });
 });

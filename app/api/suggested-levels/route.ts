@@ -5,7 +5,7 @@ import { getUsdPerUnit } from "@/lib/queries/fx-rates";
 import { computeSuggestedLevels } from "@/lib/chart/suggested-levels";
 import {
   getOrGenerateNarrative,
-  getCachedLevelNarrative,
+  getCachedLevelNarrativeDetail,
 } from "@/lib/chart/narrate-levels";
 import type { SuggestedLevel } from "@/lib/chart/suggested-levels";
 
@@ -125,7 +125,7 @@ function wantsNarratives(req: NextRequest): boolean {
  *
  * SIDE-EFFECT-FREE (#35 task 5). computeSuggestedLevels is pure. When
  * narratives=1 the levels are enriched with narratives READ FROM CACHE ONLY
- * (getCachedLevelNarrative → null when not yet generated) — GET never calls the
+ * (getCachedLevelNarrativeDetail → null when not yet generated) — GET never calls the
  * paid Haiku generator, which also INSERTs. Under SameSite=Lax a bare GET has
  * no CSRF protection, so narrative generation moved to POST. The client GETs
  * for display, then POSTs to fill any missing narratives.
@@ -137,14 +137,19 @@ export async function GET(req: NextRequest) {
   const { result, usdPerUnit, securityId } = outcome;
 
   if (wantsNarratives(req) && result.levels.length > 0) {
-    const enriched = result.levels.map((level: SuggestedLevel) => ({
-      ...level,
-      narrative: getCachedLevelNarrative(db, {
+    const enriched = result.levels.map((level: SuggestedLevel) => {
+      const cached = getCachedLevelNarrativeDetail(db, {
         securityId,
         levelPrice: level.price,
         direction: level.type,
-      }),
-    }));
+      });
+      return {
+        ...level,
+        narrative: cached?.narrative ?? null,
+        narrativeDetectedDay: cached?.detectedDay ?? null,
+        narrativeDetectedPrice: cached?.detectedPrice ?? null,
+      };
+    });
     return Response.json({ ...result, levels: enriched, usdPerUnit });
   }
 
@@ -185,11 +190,24 @@ export async function POST(req: NextRequest) {
     // null. This is the generation path, so a null here is a failure, not "not
     // generated yet" — say so, or the card shows a blank with no reason. GET
     // never sets the marker: a null in a cache read only means POST has not run.
-    const enriched = result.levels.map((level: SuggestedLevel, i: number) => ({
-      ...level,
-      narrative: narratives[i],
-      narrativeUnavailable: narratives[i] == null,
-    }));
+    const enriched = result.levels.map((level: SuggestedLevel, i: number) => {
+      // Day and price come from the stored row, never recomputed here.
+      const stored =
+        narratives[i] == null
+          ? null
+          : getCachedLevelNarrativeDetail(db, {
+              securityId,
+              levelPrice: level.price,
+              direction: level.type,
+            });
+      return {
+        ...level,
+        narrative: narratives[i],
+        narrativeUnavailable: narratives[i] == null,
+        narrativeDetectedDay: stored?.detectedDay ?? null,
+        narrativeDetectedPrice: stored?.detectedPrice ?? null,
+      };
+    });
     return Response.json({ ...result, levels: enriched, usdPerUnit });
   }
 

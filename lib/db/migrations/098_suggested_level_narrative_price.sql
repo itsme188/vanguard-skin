@@ -1,0 +1,15 @@
+-- 098: record the price a suggested-level narrative was written at.
+--
+-- The narrative sentence is written at detection time, so a distance claim in
+-- it is a statement about that moment. The suggested-level card leads it with
+-- "Detected <day> at <price>:" (lib/levels/narrative-detection-prefix.ts); the
+-- day is computed_at_day, and this column holds the price.
+--
+--   detected_price -- the security's price in its NATIVE currency (never
+--                     converted) that the narrative prompt was given when the
+--                     row was written.
+--
+-- NULLABLE and ADDITIVE: one ALTER TABLE ADD COLUMN, no DEFAULT, no backfill.
+-- Rows written before this migration stay NULL and the card shows no lead-in;
+-- a default would forge a price.
+ALTER TABLE suggested_level_narratives ADD COLUMN detected_price REAL;

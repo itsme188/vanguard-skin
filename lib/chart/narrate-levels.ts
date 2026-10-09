@@ -82,15 +82,37 @@ export function getCachedLevelNarrative(
   db: Database.Database,
   input: { securityId: number; levelPrice: number; direction: string },
 ): string | null {
+  return getCachedLevelNarrativeDetail(db, input)?.narrative ?? null;
+}
+
+export interface CachedLevelNarrative {
+  narrative: string;
+  /** Day the narrative was written (computed_at_day), YYYY-MM-DD. */
+  detectedDay: string;
+  /** Native-currency price the prompt was given; null for rows written before migration 098. */
+  detectedPrice: number | null;
+}
+
+/** Same side-effect-free read as getCachedLevelNarrative, with the detection day and price. */
+export function getCachedLevelNarrativeDetail(
+  db: Database.Database,
+  input: { securityId: number; levelPrice: number; direction: string },
+): CachedLevelNarrative | null {
   const cached = db
     .prepare(
-      `SELECT narrative FROM suggested_level_narratives
+      `SELECT narrative, computed_at_day, detected_price FROM suggested_level_narratives
        WHERE security_id = ? AND level_price = ? AND direction = ? AND computed_at_day = ?`,
     )
     .get(input.securityId, input.levelPrice, input.direction, today()) as
-    | { narrative: string }
+    | { narrative: string; computed_at_day: string; detected_price: number | null }
     | undefined;
-  return cached ? cached.narrative : null;
+  return cached
+    ? {
+        narrative: cached.narrative,
+        detectedDay: cached.computed_at_day,
+        detectedPrice: cached.detected_price ?? null,
+      }
+    : null;
 }
 
 export async function getOrGenerateNarrative(
@@ -127,9 +149,17 @@ export async function getOrGenerateNarrative(
 
     db.prepare(
       `INSERT OR IGNORE INTO suggested_level_narratives
-       (security_id, level_price, direction, narrative, computed_at_day)
-       VALUES (?, ?, ?, ?, ?)`,
-    ).run(input.securityId, input.level.price, direction, narrative, day);
+       (security_id, level_price, direction, narrative, computed_at_day, detected_price)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    ).run(
+      input.securityId,
+      input.level.price,
+      direction,
+      narrative,
+      day,
+      // The price buildPrompt gave the model, in native currency.
+      Number.isFinite(input.currentPrice) ? input.currentPrice : null,
+    );
 
     return narrative;
   } catch (err) {

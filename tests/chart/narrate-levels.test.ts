@@ -275,3 +275,43 @@ describe("getOrGenerateNarrative", () => {
     });
   });
 });
+
+describe("detected price (migration 098)", () => {
+  it("stores the price the prompt was given, and a cache hit rewrites nothing", async () => {
+    const { getCachedLevelNarrativeDetail } = await import("@/lib/chart/narrate-levels");
+    const db = new Database(":memory:");
+    db.pragma("foreign_keys = ON");
+    runMigrations(db);
+    db.prepare(`INSERT INTO securities (id, symbol, security_type) VALUES (1, 'ZZA', 'stock')`).run();
+
+    await getOrGenerateNarrative(db, {
+      securityId: 1, symbol: "ZZA", currentPrice: 175.25, level: SAMPLE_LEVEL, recentBars: SAMPLE_BARS,
+    });
+    const first = getCachedLevelNarrativeDetail(db, { securityId: 1, levelPrice: 150, direction: "support" });
+    expect(first?.detectedPrice).toBe(175.25);
+    expect(first?.detectedDay).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+
+    // Later call with a different price is served from cache: stored price unchanged.
+    await getOrGenerateNarrative(db, {
+      securityId: 1, symbol: "ZZA", currentPrice: 190, level: SAMPLE_LEVEL, recentBars: SAMPLE_BARS,
+    });
+    const second = getCachedLevelNarrativeDetail(db, { securityId: 1, levelPrice: 150, direction: "support" });
+    expect(second?.detectedPrice).toBe(175.25);
+  });
+
+  it("an old row (NULL price) reads back with detectedPrice null", async () => {
+    const { getCachedLevelNarrativeDetail } = await import("@/lib/chart/narrate-levels");
+    const db = new Database(":memory:");
+    db.pragma("foreign_keys = ON");
+    runMigrations(db);
+    db.prepare(`INSERT INTO securities (id, symbol, security_type) VALUES (1, 'ZZA', 'stock')`).run();
+    const day = new Date().toISOString().slice(0, 10);
+    db.prepare(
+      `INSERT INTO suggested_level_narratives (security_id, level_price, direction, narrative, computed_at_day)
+       VALUES (1, 150, 'support', 'old', ?)`,
+    ).run(day);
+    const d = getCachedLevelNarrativeDetail(db, { securityId: 1, levelPrice: 150, direction: "support" });
+    expect(d?.narrative).toBe("old");
+    expect(d?.detectedPrice).toBeNull();
+  });
+});
