@@ -208,3 +208,68 @@ Up 5%, every segment grew
     expect(body).toMatch(/<td[^>]*>\s*Revenue\s*<\/td>/);
   });
 });
+
+/**
+ * qa:earnings-email-viewer--recap-scoreboard-blank-cells-contradict-legend.
+ * The scoreboard's own legend says a dash on a recap means "data wasn't
+ * available at send time". The renderer used to turn every dash cell into an
+ * empty fill-in box, in recaps too, so the reader saw a blank where the
+ * legend promised a dash. Fill-in boxes are for paper and previews only.
+ */
+describe("briefingToHtml — recap scoreboards show their dashes", () => {
+  const board = (phaseLabel: string, epsActual: string) => `## ZZA scoreboard — ${phaseLabel}
+
+| Metric | Consensus | Actual | Δ |
+|---|---|---|---|
+| **EPS** | 1.35 | ${epsActual} | — |
+| **Guidance (next quarter)** | — | — | — |
+
+*Legend.*`;
+  const cellsOf = (html: string): string[] =>
+    [...html.matchAll(/<td style="border[^>]*>(.*?)<\/td>/g)].map((m) => m[1]);
+
+  it("a recap keeps every dash as a dash, at normal cell padding", () => {
+    const html = briefingToHtml(board("post-print", "1.42"), "ZZA Earnings Recap");
+    const cells = cellsOf(html);
+    expect(cells.slice(1, 4)).toEqual(["1.35", "1.42", "—"]);
+    expect(cells.slice(5, 8)).toEqual(["—", "—", "—"]);
+    expect(html).not.toContain("padding:14px 10px");
+  });
+
+  it("a preview keeps its empty fill-in boxes", () => {
+    const html = briefingToHtml(board("into the print", "—"), "ZZA Earnings Preview");
+    const cells = cellsOf(html);
+    expect(cells.slice(1, 4)).toEqual(["1.35", "&nbsp;", "&nbsp;"]);
+    expect(cells.slice(5, 8)).toEqual(["&nbsp;", "&nbsp;", "&nbsp;"]);
+    expect(html).toMatch(/padding:14px 10px[^>]*>&nbsp;</);
+  });
+
+  it("every table in a recap shows its dashes, also one above the scoreboard", () => {
+    const md = `| Name | Result |\n|---|---|\n| ZZA | — |\n\n${board("post-print", "—")}\n\n## Line-by-line\n\n| Metric | Bogey | Actual |\n|---|---|---|\n| Margin | 60% | - |`;
+    const html = briefingToHtml(md, "Wrap");
+    expect(html).not.toContain("padding:14px 10px");
+    expect(cellsOf(html).filter((c) => c === "&nbsp;")).toEqual([]);
+  });
+
+  it("an empty cell in a recap stays empty and is not given a made-up dash", () => {
+    const md = `${board("post-print", "1.42")}\n\n| Metric | Value |\n|---|---|\n| Margin |  |`;
+    const cells = cellsOf(briefingToHtml(md, "Recap"));
+    expect(cells[cells.length - 1]).toBe("&nbsp;");
+  });
+
+  it("a page with a preview scoreboard keeps its boxes even when a recap scoreboard is also present", () => {
+    const md = `${board("into the print", "—")}\n\n${board("post-print", "—")}`;
+    expect(briefingToHtml(md, "Mixed")).toMatch(/padding:14px 10px[^>]*>&nbsp;</);
+  });
+
+  it("the words in running text or in the title do not switch the boxes off", () => {
+    const md = `The ZZA scoreboard — post-print is below.\n\n| Event | Consensus | Actual |\n|---|---|---|\n| CPI | 0.3% | — |`;
+    const html = briefingToHtml(md, "ZZA scoreboard — post-print");
+    expect(html).toMatch(/padding:14px 10px[^>]*>&nbsp;</);
+  });
+
+  it("a table with no scoreboard above it (briefing, digest) is unchanged", () => {
+    const md = `| Event | Consensus | Actual |\n|---|---|---|\n| CPI | 0.3% | — |`;
+    expect(briefingToHtml(md, "Briefing")).toMatch(/padding:14px 10px[^>]*>&nbsp;</);
+  });
+});

@@ -11,6 +11,8 @@
 
 import { describe, it, expect } from "vitest";
 import { briefingToHtml } from "../src/html";
+import { renderScoreboard } from "../src/fallback-earnings";
+import { briefingToHtml as macBriefingToHtml } from "../../../lib/calendar/briefing-html";
 
 const TOKEN_URL =
   "https://stratechery.com/2026/whos-afraid/?access_token=eyJhb_Gci_OiJSUzI1_NiIs.abc_def_ghi";
@@ -217,5 +219,83 @@ Up 5%, every segment grew
     expect(body).toMatch(/<td[^>]*>\s*0\.72\s*<\/td>/);
     expect(body).toMatch(/<td[^>]*>\s*\+3%\s*<\/td>/);
     expect(body).toMatch(/<td[^>]*>\s*Revenue\s*<\/td>/);
+  });
+});
+
+/**
+ * Worker mirror of tests/calendar/briefing-html-tables.test.ts "recap
+ * scoreboards show their dashes"
+ * (qa:earnings-email-viewer--recap-scoreboard-blank-cells-contradict-legend).
+ * The scoreboard legend says a dash on a recap means the figure was not
+ * available; the renderer must not turn that dash into an empty fill-in box.
+ * Previews keep their boxes. The last block pins the two renderers together.
+ */
+describe("briefingToHtml recap scoreboards show their dashes (Worker mirror)", () => {
+  const board = (phaseLabel: string, epsActual: string) => `## ZZA scoreboard — ${phaseLabel}
+
+| Metric | Consensus | Actual | Δ |
+|---|---|---|---|
+| **EPS** | 1.35 | ${epsActual} | — |
+| **Guidance (next quarter)** | — | — | — |
+
+*Legend.*`;
+  const cellsOf = (html: string): string[] =>
+    [...html.matchAll(/<td style="border[^>]*>(.*?)<\/td>/g)].map((m) => m[1]);
+  const tablesOf = (html: string): string[] =>
+    [...html.matchAll(/<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="border-collapse[\s\S]*?<\/table>/g)].map((m) => m[0]);
+
+  it("a recap keeps every dash as a dash, at normal cell padding", () => {
+    const html = briefingToHtml(board("post-print", "1.42"), "ZZA Earnings Recap");
+    const cells = cellsOf(html);
+    expect(cells.slice(1, 4)).toEqual(["1.35", "1.42", "—"]);
+    expect(cells.slice(5, 8)).toEqual(["—", "—", "—"]);
+    expect(html).not.toContain("padding:14px 10px");
+  });
+
+  it("a preview keeps its empty fill-in boxes", () => {
+    const html = briefingToHtml(board("into the print", "—"), "ZZA Earnings Preview");
+    const cells = cellsOf(html);
+    expect(cells.slice(1, 4)).toEqual(["1.35", "&nbsp;", "&nbsp;"]);
+    expect(html).toMatch(/padding:14px 10px[^>]*>&nbsp;</);
+  });
+
+  it("the Worker's own recap scoreboard renders dashes; its preview renders boxes", () => {
+    const ev = {
+      id: 1, symbol: "ZZA", event_date: "2026-08-13", event_type: "earnings",
+      consensus_estimate: "EPS 1.35 · Rev 750M", actual_value: "EPS 1.42 · Rev 775M",
+      consensus_value: null, reaction_snapshot: null,
+    } as unknown as Parameters<typeof renderScoreboard>[0];
+    const recap = briefingToHtml(renderScoreboard(ev, "recap", null, false), "ZZA Earnings Recap");
+    expect(recap).not.toContain("padding:14px 10px");
+    expect(cellsOf(recap)).not.toContain("&nbsp;");
+    expect(cellsOf(recap).filter((c) => c === "—").length).toBeGreaterThan(5);
+    const preview = briefingToHtml(renderScoreboard(ev, "preview", null, false), "ZZA Earnings Preview");
+    expect(preview).toMatch(/padding:14px 10px[^>]*>&nbsp;</);
+    expect(cellsOf(preview)).not.toContain("—");
+  });
+
+  it("a page with a preview scoreboard keeps its boxes; plain text and the title never switch them off", () => {
+    const mixed = `${board("into the print", "—")}\n\n${board("post-print", "—")}`;
+    expect(briefingToHtml(mixed, "Mixed")).toMatch(/padding:14px 10px[^>]*>&nbsp;</);
+    const prose = `The ZZA scoreboard — post-print is below.\n\n| Event | Consensus | Actual |\n|---|---|---|\n| CPI | 0.3% | — |`;
+    expect(briefingToHtml(prose, "ZZA scoreboard — post-print")).toMatch(/padding:14px 10px[^>]*>&nbsp;</);
+  });
+
+  it("parity: Mac and Worker render every table identically for recap, preview, mixed and plain pages", () => {
+    const pages = [
+      board("post-print", "1.42"),
+      board("post-print", "—"),
+      board("into the print", "—"),
+      `${board("into the print", "—")}\n\n${board("post-print", "—")}`,
+      `| Name | Result |\n|---|---|\n| ZZA | — |\n\n${board("post-print", "—")}\n\n| Metric | Value |\n|---|---|\n| Margin |  |\n| Cash | - |\n| Debt | – |`,
+      `| Event | Consensus | Actual |\n|---|---|---|\n| CPI | 0.3% | — |`,
+      `### ZZA scoreboard — post-print\n\n| A | B |\n|---|---|\n| x | — |`,
+      `## ZZA Scoreboard — Post-Print\n\n| A | B |\n|---|---|\n| x | — |`,
+    ];
+    for (const md of pages) {
+      const worker = tablesOf(briefingToHtml(md, "t"));
+      expect(worker.length).toBeGreaterThan(0);
+      expect(worker).toEqual(tablesOf(macBriefingToHtml(md, "t")));
+    }
   });
 });
