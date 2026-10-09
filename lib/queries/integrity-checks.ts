@@ -15,6 +15,7 @@ import { statementGradeHoldingSql } from "@/lib/db/holding-sources";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 import { pendingStatementKeySet } from "@/lib/queries/pending-statement";
 import { isCurrencyConversionSecurityType } from "@/lib/queries/tax-lots";
+import { addDays, todayET } from "@/lib/calendar/date-utils";
 
 /**
  * Cross-cutting number-trust integrity scan (spec: number-trust durable
@@ -692,6 +693,131 @@ function scanReconcileDeltaHits(db: Database.Database): IntegrityHit[] {
   }));
 }
 
+// ── Check 5: possible duplicate ledger rows ────────────────────────────
+//
+// The lot roll-back above has one known limit: a duplicated import dated
+// AFTER the newest statement looks exactly like a real purchase whose sale is
+// not imported yet, so it is silent there. This check asks the question for
+// that window only.
+//
+// A hit is two or more transactions that agree on account, security, trade
+// date, UPPER(type), quantity and amount in whole cents, AND show one of the
+// two fingerprints a duplicated import leaves:
+//
+//   * one of them carries the importer's ordinal suffix (`:#2` or higher on
+//     `source_key`): the parsers (canonical-csv, ibkr-activity) append it to
+//     the second identical row of ONE file, so the second copy lands as a new
+//     row instead of deduping; or
+//   * they came from different import batches (`import_batch_id`; a row with
+//     no batch counts as its own origin): the same trade arrived twice under
+//     two different keys, which the source-key dedupe cannot see.
+//
+// Identical rows in one batch with no suffix are left alone: no importer
+// writes that shape, so it is not import evidence.
+//
+// Two identical fills on one day are real at a broker, so the wording is a
+// question and the severity is always "warning": it never caps the score.
+// There is no dismiss switch; the note goes away when the data is fixed, or
+// when the next statement moves the window past the rows (from then on the
+// lot comparison against the statement judges them).
+//
+// Not hits: rows with no security or no quantity (dividends, interest, fees
+// and cash movements carry none, so equal same-day income rows never reach
+// the comparison) and engine-owned closes, which are never user activity.
+//
+// Window: rows dated after the account's newest statement-grade holdings
+// row; an account with no statement book gets the last 45 days.
+
+const DUPLICATE_LEDGER_NO_STATEMENT_DAYS = 45;
+const ENGINE_OWNED_LEDGER_TYPES = new Set(["RECONCILE_CLOSE"]);
+const ORDINAL_SUFFIX_RE = /:#(\d+)$/;
+
+/** True for a source key the importer suffixed as the 2nd+ identical row of a file. */
+function hasOrdinalSuffix(sourceKey: string | null): boolean {
+  if (!sourceKey) return false;
+  const m = ORDINAL_SUFFIX_RE.exec(sourceKey);
+  return m !== null && Number(m[1]) >= 2;
+}
+
+export function scanPossibleDuplicateLedgerHits(
+  db: Database.Database,
+  today: string = todayET()
+): IntegrityHit[] {
+  // Each account's newest statement-grade date, reduced in JS.
+  const statementDates = db
+    .prepare(
+      `SELECT DISTINCT h.account_id AS accountId, h.as_of_date AS asOfDate
+         FROM holdings h
+        WHERE ${statementGradeHoldingSql("h")}`
+    )
+    .all() as { accountId: number; asOfDate: string }[];
+  const statementDateByAccount = new Map<number, string>();
+  for (const r of statementDates) {
+    const prev = statementDateByAccount.get(r.accountId);
+    if (!prev || r.asOfDate > prev) statementDateByAccount.set(r.accountId, r.asOfDate);
+  }
+  const noStatementFloor = addDays(today, -DUPLICATE_LEDGER_NO_STATEMENT_DAYS);
+
+  const accounts = db.prepare(`SELECT id, name FROM accounts ORDER BY id`).all() as {
+    id: number;
+    name: string;
+  }[];
+  const rowsStmt = db.prepare(
+    `SELECT t.id AS id, t.security_id AS securityId, t.trade_date AS date,
+            UPPER(TRIM(t.type)) AS type, t.quantity AS quantity, t.amount AS amount,
+            t.source_key AS sourceKey, t.import_batch_id AS batchId, s.symbol AS symbol
+       FROM transactions t
+       JOIN securities s ON s.id = t.security_id
+      WHERE t.account_id = ?
+        AND t.quantity IS NOT NULL AND t.quantity <> 0
+        AND t.trade_date > ?
+      ORDER BY t.id`
+  );
+
+  interface Row {
+    id: number;
+    securityId: number;
+    date: string;
+    type: string;
+    quantity: number;
+    amount: number | null;
+    sourceKey: string | null;
+    batchId: number | null;
+    symbol: string;
+  }
+
+  const hits: IntegrityHit[] = [];
+  for (const account of accounts) {
+    const after = statementDateByAccount.get(account.id) ?? noStatementFloor;
+    const groups = new Map<string, Row[]>();
+    for (const row of rowsStmt.all(account.id, after) as Row[]) {
+      if (ENGINE_OWNED_LEDGER_TYPES.has(row.type)) continue;
+      const cents = Math.round((row.amount ?? 0) * 100);
+      const key = `${row.securityId}|${row.date}|${row.type}|${row.quantity}|${cents}`;
+      const list = groups.get(key);
+      if (list) list.push(row);
+      else groups.set(key, [row]);
+    }
+    for (const rows of groups.values()) {
+      if (rows.length < 2) continue;
+      const suffixed = rows.some((r) => hasOrdinalSuffix(r.sourceKey));
+      // A row with no import batch is its own origin (keyed by its row id),
+      // so two identical batch-less rows count as two origins.
+      const origins = new Set(
+        rows.map((r) => (r.batchId === null ? `row:${r.id}` : `batch:${r.batchId}`))
+      );
+      if (!suffixed && origins.size < 2) continue;
+      const first = rows[0]; // lowest id: rows are read in id order
+      hits.push({
+        key: `duplicate-ledger:${first.id}`,
+        severity: "warning",
+        reason: `${first.symbol} (${account.name}): ${rows.length} identical ${first.type} rows on ${first.date}: check for a duplicate import`,
+      });
+    }
+  }
+  return hits;
+}
+
 // ── Grouping for a reader ─────────────────────────────────────────────
 //
 // Every hit's `key` starts with the check that produced it. The Data Health
@@ -702,6 +828,7 @@ export type IntegrityCheckId =
   | "type-contradiction"
   | "cash-residual"
   | "lot-drift"
+  | "duplicate-ledger"
   | "reconcile-delta"
   | "other";
 
@@ -710,6 +837,7 @@ export const INTEGRITY_CHECK_ORDER: readonly IntegrityCheckId[] = [
   "type-contradiction",
   "cash-residual",
   "lot-drift",
+  "duplicate-ledger",
   "reconcile-delta",
   "other",
 ];
@@ -718,6 +846,7 @@ export const INTEGRITY_CHECK_LABELS: Record<IntegrityCheckId, string> = {
   "type-contradiction": "Security type contradicts its trades",
   "cash-residual": "Cash movement no transaction explains",
   "lot-drift": "Position does not match its tax lots",
+  "duplicate-ledger": "Identical ledger rows on one day, possibly a duplicate import",
   "reconcile-delta": "Corporate action share count does not reconcile",
   other: "Other",
 };
@@ -727,6 +856,7 @@ export function integrityCheckIdOf(key: string): IntegrityCheckId {
   return prefix === "type-contradiction" ||
     prefix === "cash-residual" ||
     prefix === "lot-drift" ||
+    prefix === "duplicate-ledger" ||
     prefix === "reconcile-delta"
     ? prefix
     : "other";
@@ -778,6 +908,12 @@ export function runIntegrityChecks(db: Database.Database): {
     for (const hit of scanLotDriftHits(db)) {
       (hit.severity === "critical" ? critical : warnings).push(hit);
     }
+  }
+
+  // Independent of the tax-lot convention marker: it reads the ledger only.
+  // Always a warning, so it can never cap the score.
+  for (const hit of scanPossibleDuplicateLedgerHits(db)) {
+    warnings.push(hit);
   }
 
   for (const hit of scanReconcileDeltaHits(db)) {

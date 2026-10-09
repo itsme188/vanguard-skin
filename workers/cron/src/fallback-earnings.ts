@@ -56,6 +56,7 @@ import {
 } from "./armed-events";
 import { briefingToHtml } from "./html";
 import { snapshotBogeyHasContent, snapshotBogeysPrinted } from "./bogey-content";
+import { snapshotBogeyClaim, type SnapshotBogeyClaim } from "./bogey-claim";
 import { sendEmail } from "./resend";
 import { composeReleaseInstant } from "./reaction-matcher";
 import { isUsableReactionLeg } from "./reaction-leg";
@@ -879,7 +880,7 @@ async function composeAndSend(
   // verbatim (prior behavior).
   const snapshotViews = resolvePositions(snapshot, family);
   const positions = combineFamilyPositions(snapshotViews, liveIbkr, family, ibkrAccountName);
-  const { sections, hasNotes, hasBogeys } = renderCandidateSections(
+  const { sections, hasNotes, hasBogeys, bogeyClaim } = renderCandidateSections(
     snapshot,
     cand,
     positions,
@@ -899,15 +900,22 @@ async function composeAndSend(
   // per-candidate cloud-context note. Empty blocks already dropped inside
   // renderCandidateSections; sections is always non-empty (scoreboard renders
   // unconditionally), so the join is byte-identical to the prior 6-block join.
-  const body = [sections, renderNote(cand.phase, { hasNotes, hasBogeys })]
+  const body = [sections, renderNote(cand.phase, { hasNotes, hasBogeys, bogeyClaim })]
     .filter((s) => s && s.trim().length > 0)
     .join("\n\n");
 
   const included: string[] = [];
-  if (hasBogeys) included.push("your curated bogeys");
+  // "curated" only when a printed entry is not the vendor's (bogey-claim.ts).
+  const vendorOnly = hasBogeys && bogeyClaim === "vendor_only";
+  if (hasBogeys && !vendorOnly) included.push("your curated bogeys");
   if (hasNotes) included.push("your prior notes");
-  const includedNote =
-    included.length > 0 ? ` ${included.join(" + ")} ARE included above.` : "";
+  const includedNote = vendorOnly
+    ? hasNotes
+      ? " The vendor consensus is shown above (no curated bogeys are shown here) and your prior notes ARE included above."
+      : " The vendor consensus is shown above; no curated bogeys are shown here."
+    : included.length > 0
+      ? ` ${included.join(" + ")} ARE included above.`
+      : "";
   const footer = `Cloud fallback delivery (state snapshot ${snapshot.snapshotDate}) — the Mac didn't complete this send in time (asleep, unreachable, or its compose failed).${includedNote} Analyst recs, transcripts, and sell-side web-search are only in the Mac primary version.`;
   const html = briefingToHtml(body, title, footer);
 
@@ -932,7 +940,7 @@ function renderCandidateSections(
   positions: PositionView[],
   ibkrLive: boolean,
   implausible: boolean,
-): { sections: string; hasNotes: boolean; hasBogeys: boolean } {
+): { sections: string; hasNotes: boolean; hasBogeys: boolean; bogeyClaim: SnapshotBogeyClaim } {
   const family = issuerSiblings(cand.symbol);
   const intelCtx = resolveIntelCtx(snapshot, cand.eventId, cand.symbol);
   const scoreboard = renderScoreboard(cand.event, cand.phase, cand.payload ?? null, implausible, intelCtx);
@@ -951,7 +959,10 @@ function renderCandidateSections(
   const sections = [scoreboard, pastPrintsBlock, positionsBlock, bogeysBlock, notesBlock]
     .filter((s) => s && s.trim().length > 0)
     .join("\n\n");
-  return { sections, hasNotes: notes.length > 0, hasBogeys: bogeys.length > 0 };
+  // The claim is read off the printed entries, the same call the block
+  // renders through, so the note and footer cannot disagree with the block.
+  const bogeyClaim = snapshotBogeyClaim(snapshotBogeysPrinted(bogeys).map((e) => e.bogey));
+  return { sections, hasNotes: notes.length > 0, hasBogeys: bogeys.length > 0, bogeyClaim };
 }
 
 // ── Position resolution from snapshot ─────────────────────────────
@@ -1381,13 +1392,22 @@ function resolveIbkrAccountName(snapshot: Snapshot): string {
 
 function renderNote(
   phase: EarningsPhase,
-  ctx: { hasNotes: boolean; hasBogeys: boolean } = { hasNotes: false, hasBogeys: false },
+  ctx: { hasNotes: boolean; hasBogeys: boolean; bogeyClaim?: SnapshotBogeyClaim } = {
+    hasNotes: false,
+    hasBogeys: false,
+  },
 ): string {
   // Describe only what's STILL missing, so the note stays honest as the cloud
   // path closes the gap. Bogeys + notes are now mirrored into the v5 snapshot;
   // analyst recs, transcripts, and sell-side web-search remain Mac-only.
   const have: string[] = [];
-  if (ctx.hasBogeys) have.push("your curated bogeys (consensus + whisper)");
+  // "curated" only when a printed entry is not the vendor's (bogey-claim.ts).
+  if (ctx.hasBogeys)
+    have.push(
+      ctx.bogeyClaim === "vendor_only"
+        ? "the vendor consensus (no curated bogeys are shown here)"
+        : "your curated bogeys (consensus + whisper)",
+    );
   if (ctx.hasNotes) have.push("your prior thesis notes");
   const haveLine =
     have.length > 0
@@ -1503,7 +1523,14 @@ function renderBogeysBlock(bogeys: SnapshotBogey[]): string {
     const label = b.source_label ?? `${b.source} (no label)`;
     return `### [${i + 1}] ${label} (uploaded ${b.uploaded_at})${body}`;
   });
-  return `## Bogeys (your curated consensus + whisper — preferred over Finnhub)\n\nWhisper numbers are the bar that matters — beat-the-whisper is the meaningful event. Most recent set first.\n\n${lines.join("\n\n---\n\n")}`;
+  // The heading says "curated" only when a printed entry is not the vendor's,
+  // read off the same `entries` listed below. With one curated entry the text
+  // is byte-identical to before.
+  const lead =
+    snapshotBogeyClaim(entries.map((e) => e.bogey)) === "vendor_only"
+      ? `## Bogeys (vendor consensus only — no curated bogeys shown here)\n\nThese are the vendor consensus figures (Finnhub). No curated bogeys or whisper numbers are shown here.`
+      : `## Bogeys (your curated consensus + whisper — preferred over Finnhub)\n\nWhisper numbers are the bar that matters — beat-the-whisper is the meaningful event. Most recent set first.`;
+  return `${lead}\n\n${lines.join("\n\n---\n\n")}`;
 }
 
 // ── Helpers ────────────────────────────────────────────────────────

@@ -4,6 +4,7 @@ import {
   computeFactorAnalysis,
   computeMacroFactorTilts,
   computeSecurityFactorShare,
+  computeSecurityFactorShareView,
   normalizeAccountIds,
 } from "@/lib/compute/factors";
 
@@ -535,9 +536,9 @@ describe("normalizeAccountIds", () => {
     expect(normalizeAccountIds({})).toBeUndefined();
     expect(normalizeAccountIds(undefined)).toBeUndefined();
   });
-  it("treats an empty accountIds array as 'fall through to accountId'", () => {
-    expect(normalizeAccountIds({ accountId: 7, accountIds: [] })).toEqual([7]);
-    expect(normalizeAccountIds({ accountIds: [] })).toBeUndefined();
+  it("a defined empty accountIds list is NO accounts: it never widens and never falls through", () => {
+    expect(normalizeAccountIds({ accountIds: [] })).toEqual([]);
+    expect(normalizeAccountIds({ accountId: 7, accountIds: [] })).toEqual([]);
   });
 });
 
@@ -566,6 +567,32 @@ describe("computeFactorAnalysis multi-account scope", () => {
 
     expect(acct1Ai.topContributors.map((c) => c.symbol)).toEqual(["AAPL"]);
     expect(bothAi.topContributors.map((c) => c.symbol).sort()).toEqual(["AAPL", "NVDA"]);
+  });
+
+  it("a defined empty accountIds list is no accounts, never the whole book", () => {
+    const whole = computeFactorAnalysis(db);
+    expect(whole.tilts.find((t) => t.factor === "ai_exposure")!.topContributors.length).toBe(2);
+    expect(whole.tilts.find((t) => t.factor === "ai_exposure")!.exposurePct).toBeGreaterThan(0);
+    // Give the size tilt something to read, so its null below is the scope's doing.
+    db.exec("UPDATE securities SET market_cap_category = 'Large Cap'");
+    expect(computeFactorAnalysis(db).sizeTilt).not.toBeNull();
+
+    const none = computeFactorAnalysis(db, { accountIds: [] });
+    expect(none).not.toEqual(whole);
+    expect(none.marketRegression).toBeNull();
+    expect(none.sizeTilt).toBeNull();
+    expect(none.styleTilt).toBeNull();
+    expect(none.sectorTilt).toBeNull();
+    expect(none.geographyTilt).toBeNull();
+    for (const tilt of none.tilts) {
+      expect(tilt.topContributors).toEqual([]);
+      expect(tilt.exposurePct).toBe(0);
+    }
+    // The legacy single id does not rescue an explicitly empty list.
+    expect(computeFactorAnalysis(db, { accountId: 1, accountIds: [] })).toEqual(none);
+    // The per-security share card follows the same rule.
+    expect(computeSecurityFactorShareView(db, 1, []).held).toBe(false);
+    expect(computeSecurityFactorShareView(db, 1).held).toBe(true);
   });
 
   it("accountIds undefined equals the all-accounts result", () => {

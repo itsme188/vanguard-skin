@@ -68,8 +68,8 @@ export function ConfirmDialog({
       className="m-auto rounded-xl border border-edge bg-panel p-0 text-ink backdrop:bg-canvas/70 backdrop:backdrop-blur-sm max-w-sm w-full"
     >
       <div className="p-6">
-        <h3 className="text-base font-medium mb-2">{title}</h3>
-        <p className="text-sm text-ink-dim">{message}</p>
+        <h3 className="text-base font-medium mb-2 [overflow-wrap:anywhere]">{title}</h3>
+        <p className="text-sm text-ink-dim [overflow-wrap:anywhere]">{message}</p>
         {children}
       </div>
       <div className="flex justify-end gap-3 px-6 pb-6">

@@ -19,13 +19,15 @@ import { runMorningDebrief } from "@/lib/earnings/debrief-send";
 // real deployment can hit: candidate selection ran before a concurrent
 // process claimed one of the events. Every OTHER export of the module (and
 // findDebriefCandidates's own default behavior) stays REAL — same pattern as
-// wrap-send.test.ts stubbing only composeEarningsEmail off send-earnings-email.
+// the retired stapled-wrap sender's test (removed 2026-10-08), which stubbed
+// only composeEarningsEmail off send-earnings-email.
 vi.mock("@/lib/earnings/debrief", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/earnings/debrief")>();
   return { ...actual, findDebriefCandidates: vi.fn(actual.findDebriefCandidates) };
 });
 vi.mock("@/lib/email", () => ({ sendEmail: vi.fn() }));
-// Mac↔cloud KV marker dance (F2) — same stub shape wrap-send.test.ts uses.
+// Mac↔cloud KV marker dance (F2) — same stub shape the retired stapled-wrap
+// sender's test used.
 // All helpers no-op in production when WORKER_MARKER_URL is unset; mocking
 // keeps the tests off the network and lets them pin the calls.
 vi.mock("@/lib/cron/earnings-marker-check", () => ({

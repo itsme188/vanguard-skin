@@ -82,11 +82,14 @@ describe("wiring", () => {
   const BUTTON = readFileSync("app/dashboard/today/EarningsDeleteButton.tsx", "utf8");
   const HUB = readFileSync("app/dashboard/today/EarningsHub.tsx", "utf8");
 
-  it("a fix-dated row asks in the dialog instead of the two-answer browser confirm", () => {
+  it("a fix-dated row asks in its three-answer dialog instead of the two-answer question", () => {
     const click = sliceBetween(BUTTON, "function handleClick()", "const copy =");
     const dialog = anchorIndex(click, "setAsking(true);");
-    const browser = anchorIndex(click, "confirm(confirmMessage)");
-    expect(dialog).toBeLessThan(browser);
+    // The two-answer question moved from the browser's confirm() to the app
+    // dialog (2026-10-08); the fix-dated branch still returns ahead of it.
+    const twoAnswer = anchorIndex(click, "await prompt.ask(");
+    expect(dialog).toBeLessThan(twoAnswer);
+    expect(click).not.toMatch(/(?<![.\w])confirm\(/);
     expect(BUTTON).toContain("onClick={() => void remove(true)}");
     expect(BUTTON).toContain("onClick={() => void remove(false)}");
     // <dialog> needs m-auto under Tailwind v4's preflight.

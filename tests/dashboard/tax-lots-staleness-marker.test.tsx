@@ -58,14 +58,26 @@ describe("TaxLotStalenessNotice", () => {
   it("names the number of tax-input changes the figures predate", () => {
     const html = render({ stale: true, inputChangesSince: 8, reason: "behind" });
     expect(html).toContain("These figures predate");
-    expect(html).toContain("<span>8</span> tax-input changes");
+    expect(html).toContain("later tax-input changes (changes since: <span>8</span>)");
     expect(html).toContain("press Recompute to refresh them.");
   });
 
-  it("uses the singular for a single tax-input change", () => {
-    const html = render({ stale: true, inputChangesSince: 1, reason: "behind" });
-    expect(html).toContain("<span>1</span> tax-input change ");
-    expect(html).not.toContain("tax-input changes");
+  // 2026-10-08: this used to pin "1 tax-input change" (singular). A noun that
+  // switches with the count says, under Hide amounts, whether the masked
+  // count is one, so the noun now leads and is always plural.
+  it("words a single change exactly as it words several, so the noun cannot leak a masked 1", () => {
+    const strip = (html: string) => html.replace(/<span>[^<]*<\/span>/g, "<span>N</span>");
+    for (const reason of ["behind", "legacy"] as const) {
+      const one = render({ stale: true, inputChangesSince: 1, reason });
+      const many = render({ stale: true, inputChangesSince: 8, reason });
+      expect(one).toContain("<span>1</span>");
+      expect(strip(one)).toBe(strip(many));
+      privacyState.isPrivate = true;
+      expect(render({ stale: true, inputChangesSince: 1, reason })).toBe(
+        render({ stale: true, inputChangesSince: 8, reason }),
+      );
+      privacyState.isPrivate = false;
+    }
   });
 
   it("says the figures come from an earlier lot convention, and how far back", () => {
@@ -75,7 +87,7 @@ describe("TaxLotStalenessNotice", () => {
     );
     // The superseded convention is the headline, but the tax-input distance
     // is the user's ruling and is named too.
-    expect(html).toContain("<span>8</span> tax-input changes ago");
+    expect(html).toContain("(tax-input changes since: <span>8</span>)");
     expect(html).toContain("press Recompute to refresh them.");
   });
 
@@ -113,7 +125,7 @@ describe("TaxLotStalenessNotice", () => {
   it("masks the tax-input-change count in privacy mode, keeping the prose", () => {
     privacyState.isPrivate = true;
     const html = render({ stale: true, inputChangesSince: 8, reason: "behind" });
-    expect(html).toContain(`<span>${MASK}</span> tax-input changes`);
+    expect(html).toContain(`changes since: <span>${MASK}</span>`);
     expect(html).not.toContain(">8<");
     expect(html).toContain("press Recompute to refresh them.");
   });

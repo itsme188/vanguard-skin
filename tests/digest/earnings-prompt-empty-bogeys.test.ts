@@ -70,6 +70,7 @@ async function promptFor(phase: "preview" | "recap"): Promise<{ prompt: string; 
 }
 
 const BLOCK_HEADING = "## Bogeys (user-curated";
+const VENDOR_ONLY_HEADING = "## Bogeys (vendor consensus only — no user-curated bogeys on file)";
 
 describe.each(["preview", "recap"] as const)("%s prompt and all-empty bogey rows", (phase) => {
   it("only-empty rows compose exactly like no rows", async () => {
@@ -173,7 +174,10 @@ Notes: a note
   it("a vendor-EPS-only row prints the vendor figure, labelled as the vendor's", async () => {
     seedCols("Sell-side consensus (Finnhub)", "2026-08-03 12:00:00", { eps_consensus_vendor: 1.05 }, "finnhub");
     const { prompt } = await promptFor(phase);
-    expect(prompt).toContain(BLOCK_HEADING);
+    // The only printed entry is the vendor's, so the block does not claim
+    // curated bogeys (ruling 2026-10-08; pinned in full further down).
+    expect(prompt).toContain(VENDOR_ONLY_HEADING);
+    expect(prompt).not.toContain(BLOCK_HEADING);
     expect(prompt).toContain("### [1] Sell-side consensus (Finnhub)");
     expect(prompt).toContain("vendor EPS consensus 1.05 (basis unspecified)");
     // Never dressed as the curated consensus.
@@ -254,5 +258,94 @@ Notes: a note
     // The prompt block DOES print the note, so the row still counts there.
     expect(prompt).toContain("### [1] notes only");
     expect(prompt).toContain("Notes: watch margins");
+  });
+});
+
+/**
+ * Wording follow-up (2026-10-08): the block's heading and lead-in say "curated"
+ * only when at least one PRINTED entry is not the vendor's. The claim is read
+ * off the same printed entries the block lists, so it cannot disagree with them.
+ */
+const CURATED_LEAD = `
+## Bogeys (user-curated — preferred over Finnhub consensus, most recent first)
+
+These are bogeys the user pulled from preferred sources (TMT Breakout, sell-side notes) and uploaded for THIS event. **Treat the most recent entry as the primary consensus reference.** Whisper numbers, when present, are the directional bar that matters — beat-the-whisper is the meaningful event, not beat-consensus. Cite the source label inline when discussing them.
+
+`;
+const VENDOR_CLAUSE = `A "vendor EPS consensus" figure is the data vendor's figure on an unspecified basis, not a curated bogey: quote it as the vendor's, and an entry that carries only vendor figures is never the primary consensus reference when a curated entry is listed.
+
+`;
+const VENDOR_ONLY_LEAD = `
+## Bogeys (vendor consensus only — no user-curated bogeys on file)
+
+These are the data vendor's (Finnhub) consensus figures for THIS event. The user has uploaded no curated bogeys and no whisper numbers, so do not describe these figures as curated, as a whisper, or as the user's preferred reference. Cite the source label inline when discussing them.
+
+`;
+
+describe.each(["preview", "recap"] as const)("%s: the block says curated only when a curated entry is printed", (phase) => {
+  async function seedRealVendorRow(revenue: number | null): Promise<void> {
+    const { saveBogeyWithRecompile } = await import("@/lib/mutations/earnings-bogeys");
+    saveBogeyWithRecompile(db, {
+      event_id: eventId,
+      source: "finnhub",
+      source_label: "Sell-side consensus (Finnhub)",
+      eps_consensus: null,
+      eps_consensus_vendor: 1.05,
+      revenue_consensus_usd: revenue,
+      notes: "Vendor consensus (Finnhub) — EPS basis unspecified; shown labelled, never the adjusted-EPS bogey.",
+    });
+  }
+
+  it("only the vendor's row (as the real consensus step writes it): vendor wording, no curated claim", async () => {
+    await seedRealVendorRow(100_000_000);
+    const { prompt } = await promptFor(phase);
+    expect(prompt).toContain(
+      `${VENDOR_ONLY_LEAD}${VENDOR_CLAUSE}### [1] Sell-side consensus (Finnhub) (uploaded `,
+    );
+    expect(prompt).toContain("vendor EPS consensus 1.05 (basis unspecified) · revenue consensus $100.0M");
+    expect(prompt).not.toContain("user-curated — preferred");
+    expect(prompt).not.toContain("bogeys the user pulled from preferred sources");
+    expect(prompt).not.toContain("Treat the most recent entry as the primary consensus reference");
+  });
+
+  it("a vendor row beside a curated row: every string is the curated one, byte for byte", async () => {
+    seedCols("Sell-side consensus (Finnhub)", "2026-08-03 12:00:00", { eps_consensus_vendor: 1.05 }, "finnhub");
+    seedCols("Real Sheet", "2026-08-02 12:00:00", { eps_consensus: 1.02 }, "manual");
+    const { prompt } = await promptFor(phase);
+    expect(prompt).toContain(
+      `${CURATED_LEAD}${VENDOR_CLAUSE}### [1] Sell-side consensus (Finnhub) (uploaded 2026-08-03 12:00:00)
+vendor EPS consensus 1.05 (basis unspecified)
+
+---
+
+### [2] Real Sheet (uploaded 2026-08-02 12:00:00)
+EPS consensus 1.02
+`,
+    );
+    expect(prompt).not.toContain("vendor consensus only");
+  });
+
+  it("a curated row alone: the curated lead, byte for byte, and no vendor wording", async () => {
+    seedCols("Real Sheet", "2026-08-02 12:00:00", { eps_consensus: 1.02 }, "manual");
+    const { prompt } = await promptFor(phase);
+    expect(prompt).toContain(`${CURATED_LEAD}### [1] Real Sheet (uploaded 2026-08-02 12:00:00)\nEPS consensus 1.02\n`);
+    expect(prompt).not.toContain("vendor consensus only");
+  });
+
+  it("the claim follows the PRINTED entries: a curated row that prints nothing does not make it curated", async () => {
+    await seedRealVendorRow(null);
+    // Holds something (passes the content rule), prints nothing.
+    seedCols("Segment with no figure", "2026-08-03 12:00:00", { segment_breakdown_json: '{"Cloud":{}}' }, "manual");
+    const { prompt } = await promptFor(phase);
+    expect(prompt).toContain(VENDOR_ONLY_HEADING);
+    expect(prompt).not.toContain(BLOCK_HEADING);
+    expect(prompt).not.toContain("Segment with no figure");
+  });
+
+  it("a hand-entered row that carries only a vendor-column figure is still a curated entry (the source decides)", async () => {
+    seedCols("Desk entry", "2026-08-03 12:00:00", { eps_consensus_vendor: 1.05 }, "manual");
+    const { prompt } = await promptFor(phase);
+    expect(prompt).toContain(BLOCK_HEADING);
+    expect(prompt).not.toContain(VENDOR_ONLY_HEADING);
   });
 });

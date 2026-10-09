@@ -130,8 +130,10 @@ describe("security hub — AI Trade Grades section (source pin)", () => {
   it("shows the section when only excluded trips exist and prints the count through <Count>", () => {
     const start = anchorIndex(source, "(tradeGrades.length > 0 || tradeGradesExcluded > 0) && (");
     const section = source.slice(start, start + 1400);
-    anchorIndex(section, "title={`AI Trade Grades · ${tradeGrades.length}`}");
-    anchorIndex(section, "<Count value={tradeGradesExcluded} />");
-    anchorIndex(section, "excluded — pairing under review");
+    // The title count is masked too (2026-10-08) and the noun comes first,
+    // so the wording does not give away whether the count is one.
+    anchorIndex(section, "AI Trade Grades");
+    anchorIndex(section, "<Count value={tradeGrades.length} />");
+    anchorIndex(section, "Trips excluded: <Count value={tradeGradesExcluded} /> — pairing under review");
   });
 });

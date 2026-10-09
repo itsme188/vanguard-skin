@@ -22,8 +22,8 @@
  * composer interpolates what it is handed verbatim by design.
  */
 import type Database from "better-sqlite3";
-import { getBogeysForEvent } from "@/lib/queries/earnings-bogeys";
-import { renderSheetBogeysBlock } from "@/lib/digest/send-earnings-email";
+import { getBogeysWithContentForEvent } from "@/lib/queries/earnings-bogeys";
+import { renderSheetBogeysBlock, sheetBogeysWithCells } from "@/lib/digest/send-earnings-email";
 import { getPrintById, getSheet } from "@/lib/print-watch/store";
 import { getLatestDoneRead, listCallouts } from "@/lib/print-watch/read-store";
 import { deltaPctNumber } from "@/lib/print-watch/read-facts";
@@ -154,7 +154,11 @@ export function loadPostPrintSheetInputs(
     lines,
     callouts,
     read,
-    bogeysMd: renderSheetBogeysBlock(getBogeysForEvent(db, print.event_id)),
+    // Same read as the email body's table: only rows the table shows a cell
+    // from, so an empty row is never a column of dashes on paper.
+    bogeysMd: renderSheetBogeysBlock(
+      sheetBogeysWithCells(getBogeysWithContentForEvent(db, print.event_id)),
+    ),
     notes: loadPrintSheetNotes(db, symbol),
     // ET wall-clock, never UTC: the desk reads this against the wire time.
     // The whitespace collapse normalises the narrow no-break space some ICU

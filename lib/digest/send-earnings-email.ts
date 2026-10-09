@@ -30,6 +30,7 @@ import {
   bogeyPrintsVendorEps,
   bogeysPrintedInPrompt,
 } from "@/lib/earnings/bogey-prompt-entries";
+import { bogeyClaim } from "@/lib/earnings/bogey-claim";
 import { resolveExpectedMove } from "@/lib/earnings/expected-move";
 import { getReadThroughsForTargets } from "@/lib/queries/read-through-pairs";
 import {
@@ -399,7 +400,8 @@ export interface EarningsEmailClaim {
  *    wrong one).
  *  - `ignored_manual_twin`: the LATER of two live hand-entered rows for one
  *    company; email follows the earlier (lib/earnings/manual-twin-email.ts).
- *    Refused on the automatic roads only, see `claimEarningsEmailSlot`.
+ *    Refused on every road (sweep, nudge and manual), see
+ *    `claimEarningsEmailSlot`.
  *  - `event_not_found`: there is no calendar row with this id (never there,
  *    or deleted since the candidate list was built). Refused for everyone:
  *    there is no print to write about, and the audit row could not be stored
@@ -479,10 +481,9 @@ export function getSendRow(
  * refused before its token is minted).
  *
  * `refuseIgnoredManualTwin` (default true) also refuses the later of two live
- * hand-entered rows. The send service turns it off for the two roads where a
- * person pressed a button on that very row (`nudge`, `manual`): which of two
- * hand-entered dates is right is the user's call, and the Hub already tells
- * them email follows the earlier one.
+ * hand-entered rows. The send service leaves it on for every mode (`sweep`,
+ * `nudge` and `manual`): email follows the earlier of the two dates even when
+ * a person pressed a button on the later row, and the Hub tells them so.
  */
 export function claimEarningsEmailSlot(
   db: Database.Database,
@@ -2524,9 +2525,19 @@ function renderBogeysBlock(ctx: PreviewContext): string {
   const vendorClause = entries.some((e) => bogeyPrintsVendorEps(e.bogey))
     ? `A "vendor EPS consensus" figure is the data vendor's figure on an unspecified basis, not a curated bogey: quote it as the vendor's, and an entry that carries only vendor figures is never the primary consensus reference when a curated entry is listed.\n\n`
     : "";
-  return `\n## Bogeys (user-curated — preferred over Finnhub consensus, most recent first)
+  // The heading and lead-in say "curated" only when a printed entry is not the
+  // vendor's, read off the same `entries` listed below (lib/earnings/bogey-claim.ts),
+  // so the claim and the content cannot disagree. With one curated entry the
+  // text is byte-identical to before.
+  const lead =
+    bogeyClaim(entries.map((e) => e.bogey)) === "vendor_only"
+      ? `## Bogeys (vendor consensus only — no user-curated bogeys on file)
 
-These are bogeys the user pulled from preferred sources (TMT Breakout, sell-side notes) and uploaded for THIS event. **Treat the most recent entry as the primary consensus reference.** Whisper numbers, when present, are the directional bar that matters — beat-the-whisper is the meaningful event, not beat-consensus. Cite the source label inline when discussing them.
+These are the data vendor's (Finnhub) consensus figures for THIS event. The user has uploaded no curated bogeys and no whisper numbers, so do not describe these figures as curated, as a whisper, or as the user's preferred reference. Cite the source label inline when discussing them.`
+      : `## Bogeys (user-curated — preferred over Finnhub consensus, most recent first)
+
+These are bogeys the user pulled from preferred sources (TMT Breakout, sell-side notes) and uploaded for THIS event. **Treat the most recent entry as the primary consensus reference.** Whisper numbers, when present, are the directional bar that matters — beat-the-whisper is the meaningful event, not beat-consensus. Cite the source label inline when discussing them.`;
+  return `\n${lead}
 
 ${vendorClause}${lines.join("\n\n---\n\n")}
 `;

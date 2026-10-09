@@ -23,7 +23,6 @@ interface TaxReportSummary {
     saleDate: string;
     purchaseDate: string;
     lossAmount: number;
-    description: string;
     direction: "before" | "after";
     daysFromSale: number;
   }[];
@@ -82,15 +81,16 @@ export const NO_RETIREMENT_STAMP_COPY =
 export const TAX_REPORT_EMPTY_COPY =
   "No taxable sales for this scope and year.";
 /**
- * The words after the count in the "engine closes left out" line. The line is
+ * The words around the count in the "engine closes left out" line. The line is
  * shown only when the scope has at least one such close; the count itself
- * renders through `<Count>` so it masks under privacy mode.
+ * renders through `<Count>` so it masks under privacy mode. Noun first and
+ * always plural: a noun that switched with the count would say, under Hide
+ * amounts, whether the hidden count is one.
  */
-export function engineEstimatedExcludedCopy(count: number): string {
-  return count === 1
-    ? "engine-estimated reconciliation close is left out of the Tax Report rows; it stays in the economic realized tiles above."
-    : "engine-estimated reconciliation closes are left out of the Tax Report rows; they stay in the economic realized tiles above.";
-}
+export const ENGINE_ESTIMATED_EXCLUDED_LABEL =
+  "Engine-estimated reconciliation closes left out of the Tax Report rows";
+export const ENGINE_ESTIMATED_EXCLUDED_TAIL =
+  "They stay in the economic realized tiles above.";
 
 /**
  * One line naming the retirement accounts whose sales were dropped from an
@@ -505,7 +505,7 @@ export function TaxReportCard({
         <p className="text-[10px] text-ink-faint">{report.washSaleAdvisory}</p>
         {excludedEngineCloses > 0 && (
           <p className="text-[10px] text-ink-faint italic">
-            <Count value={excludedEngineCloses} /> {engineEstimatedExcludedCopy(excludedEngineCloses)}
+            {ENGINE_ESTIMATED_EXCLUDED_LABEL}: <Count value={excludedEngineCloses} />. {ENGINE_ESTIMATED_EXCLUDED_TAIL}
           </p>
         )}
 
@@ -518,7 +518,7 @@ export function TaxReportCard({
                 <PrivateText>{formatMoney(report.shortTermTotal.gainLoss)}</PrivateText>
               </div>
               <div className="text-[10px] text-ink-faint mt-0.5">
-                <Count value={report.shortTermRows?.length ?? 0} /> sales
+                Sales: <Count value={report.shortTermRows?.length ?? 0} />
               </div>
               {shouldShowWashSaleAddBack(report.shortTermTotal.adjustments) && (
                 <div className="text-[10px] text-ink-faint mt-0.5">
@@ -533,7 +533,7 @@ export function TaxReportCard({
                 <PrivateText>{formatMoney(report.longTermTotal.gainLoss)}</PrivateText>
               </div>
               <div className="text-[10px] text-ink-faint mt-0.5">
-                <Count value={report.longTermRows?.length ?? 0} /> sales
+                Sales: <Count value={report.longTermRows?.length ?? 0} />
               </div>
               {shouldShowWashSaleAddBack(report.longTermTotal.adjustments) && (
                 <div className="text-[10px] text-ink-faint mt-0.5">
@@ -548,7 +548,7 @@ export function TaxReportCard({
                 <PrivateText>{formatMoney(totalGainLoss)}</PrivateText>
               </div>
               <div className="text-[10px] text-ink-faint mt-0.5">
-                <Count value={totalSales} /> total sales
+                Total sales: <Count value={totalSales} />
               </div>
             </div>
 
@@ -592,8 +592,8 @@ export function TaxReportCard({
                   <span className="font-mono font-medium text-ink">{w.symbol}</span>
                   {" \u2014 "}Sold {w.saleDate} (loss <PrivateText>{formatMoney(w.lossAmount)}</PrivateText>)
                   {"; "}
-                  {/* One phrase builder, shared with WashSaleWarning.description
-                      in lib/compute/tax-report.ts - never re-compose it here. */}
+                  {/* The one phrase builder, washSaleReplacementPhrase in
+                      lib/compute/tax-report.ts - never re-compose it here. */}
                   {washSaleReplacementPhrase(w)}
                 </div>
               ))}

@@ -7,6 +7,7 @@ import type { ImportBatch } from "@/lib/types";
 import { parseStoredTimestamp } from "@/lib/format";
 import apiFetch from "@/lib/http/apiFetch";
 import { ScrollFade } from "./ScrollFade";
+import { useConfirmPrompt } from "./useConfirmPrompt";
 
 const SOURCE_LABELS: Record<string, string> = {
   "ibkr-activity": "IBKR Activity",
@@ -37,6 +38,8 @@ export function ImportHistory({ batches }: { batches: ImportBatch[] }) {
   const router = useRouter();
   const [undoingId, setUndoingId] = useState<number | null>(null);
   const [undoError, setUndoError] = useState<string | null>(null);
+  // Before the early return below: hooks run in the same order every render.
+  const prompt = useConfirmPrompt();
 
   if (batches.length === 0) {
     return (
@@ -57,9 +60,14 @@ export function ImportHistory({ batches }: { batches: ImportBatch[] }) {
     const name = batch.filename ?? "unnamed file";
     const when = formatDate(batch.created_at);
     if (
-      !confirm(
-        `Undo import "${name}" (${label}, ${when})? This will delete all records from this batch and recompute tax lots. A recovery snapshot is saved first, in the "undo-recovery" folder beside the database. There is no Restore button in the app: restoring a batch means running scripts/restore-import-batch.ts from a terminal in the project folder.`,
-      )
+      !(await prompt.ask({
+        title: `Undo import "${name}"?`,
+        message:
+          `${label}, ${when}. This will delete all records from this batch and recompute tax lots.\n\n` +
+          `A recovery snapshot is saved first, in the "undo-recovery" folder beside the database. There is no Restore button in the app: restoring a batch means running scripts/restore-import-batch.ts from a terminal in the project folder.`,
+        confirmLabel: "Undo import",
+        variant: "danger",
+      }))
     )
       return;
     setUndoingId(batchId);
@@ -100,6 +108,7 @@ export function ImportHistory({ batches }: { batches: ImportBatch[] }) {
   return (
     <div>
       <h3 className="text-sm font-medium text-ink-dim mb-3">Import History</h3>
+      {prompt.dialog}
       {undoError && (
         <div className="mb-3 px-3 py-2 bg-down/20 text-down text-xs font-medium rounded-lg">
           {undoError}

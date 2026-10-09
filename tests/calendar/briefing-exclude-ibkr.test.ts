@@ -4,7 +4,7 @@ import { runMigrations } from "@/lib/db/migrate";
 import {
   getBriefingHoldings,
   buildCombinedPositionsForEvents,
-  getExpiringOptions,
+  getBriefingExpiringOptions,
 } from "@/lib/calendar/briefing";
 import type { CalendarEvent } from "@/lib/types";
 
@@ -182,14 +182,14 @@ describe("getBriefingHoldings — IBKR exclusion (U4: 'holds QQQ outright' bug)"
   });
 });
 
-describe("getExpiringOptions — IBKR exclusion + per-(account, security) latest keying", () => {
+describe("getBriefingExpiringOptions — IBKR exclusion + per-(account, security) latest keying", () => {
   it("excludes IBKR option legs from the expiry roster", () => {
     const qqqPut = seedOption("QQQ 260612P00715000", "QQQ", 715, "2026-06-12");
     seedHolding(qqqPut, IBKR, -5);
     const vgPut = seedOption("SPY 260612P00500000", "SPY", 500, "2026-06-12");
     seedHolding(vgPut, VANGUARD_TAXABLE, -1);
 
-    const rows = getExpiringOptions(db, "2026-06-08", "2026-06-14");
+    const rows = getBriefingExpiringOptions(db, "2026-06-08", "2026-06-14");
     expect(rows.map((r) => r.underlying_symbol)).toEqual(["SPY"]);
   });
 
@@ -201,7 +201,7 @@ describe("getExpiringOptions — IBKR exclusion + per-(account, security) latest
     const vti = seedEtf("VTI");
     seedHolding(vti, VANGUARD_TAXABLE, 100, "2025-02-28");
 
-    const rows = getExpiringOptions(db, "2026-06-08", "2026-06-14");
+    const rows = getBriefingExpiringOptions(db, "2026-06-08", "2026-06-14");
     // Under per-account MAX this expiring short put was invisible to the
     // briefing — the user got no warning that it expires this week.
     expect(rows).toHaveLength(1);
@@ -215,7 +215,7 @@ describe("getExpiringOptions — IBKR exclusion + per-(account, security) latest
     seedHolding(put, VANGUARD_TAXABLE, -1, "2025-01-31");
     seedHolding(put, VANGUARD_TAXABLE, 0, "2025-02-28");
 
-    expect(getExpiringOptions(db, "2026-06-08", "2026-06-14")).toHaveLength(0);
+    expect(getBriefingExpiringOptions(db, "2026-06-08", "2026-06-14")).toHaveLength(0);
   });
 });
 

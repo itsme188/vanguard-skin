@@ -43,10 +43,13 @@ parameter, env var, table, helper, date, and rationale from the original CLAUDE.
 
 A guard that refuses an action the user can still choose answers **409 with nothing written** and
 an inline message beside the control. These are designed outcomes, not failures:
-`POST /api/earnings/release-time` `slot_mismatch` (without `force`); `POST /api/earnings/actuals`
+`POST /api/earnings/release-time` `slot_mismatch` (no bypass) and `would_replace_web_verified`
+(until `replaceWebVerified: true`); `POST /api/earnings/actuals`
 `pre_print` (the caller offers `force`); `POST /api/earnings/correct-date` refusals;
 `POST /api/reconciliation` `checkpoint_exists`; `POST /api/research/documents` on a duplicate
-upload; `POST` / `PATCH /api/calendar/events` `would_supersede_vendor`; `PATCH /api/levels`
+upload; `POST` / `PATCH /api/calendar/events` `would_supersede_vendor` (`force`) and
+`slot_contradicts_known_time` (`forceSlot`); `POST /api/calendar/events` `manual_row_exists` and
+`manual_row_hidden` (no flag skips them); `PATCH /api/levels`
 `{ action: "deactivate" }` on a level that is not armed; `POST /api/earnings/confirm-date` on a
 past or too-distant date. The browser logs
 "Failed to load resource" for any non-2xx response, so each of these leaves a console line; the QA
@@ -171,8 +174,31 @@ CRUD for manually-curated calendar events.
   — inserts row with `source='manual'`,
   `source_key='manual:SYMBOL:DATE:TYPE'`, `week_of` derived from `event_date`, `release_time`
   auto-derived 08:00/16:15 from BMO/AMC.
+- **POST refusals, in order (each writes nothing).** Typed-input checks first: 400
+  `invalid_symbol`, 400 `invalid_date`. Then:
+  1. 409 `manual_row_exists` (with `existingEventId`): a hand-entered row already shows on that
+     symbol, date and type. Edit it instead.
+  2. 409 `manual_row_hidden` (with `hiddenEventId`, `replacedByEventId`, `replacedByDate`): the
+     hand-entered row on that tuple is hidden. The message names the entry showing in its place.
+     The hidden row is not revived. (2026-10-08; `lib/calendar/manual-add-collision.ts`.)
+  3. 409 `slot_contradicts_known_time`: the chosen slot contradicts the symbol's known release
+     time. `forceSlot: true` inserts and stores the slot default time.
+  4. 409 `would_supersede_vendor`: the add would take a live vendor date in another week off the
+     calendar. `force: true` inserts.
+  No flag skips 1 or 2. `forceSlot` answers only 3 and `force` only 4, so one add can be refused
+  twice in sequence, each time with its own reason.
+- **POST success** returns `{ success, id, securityMatched, hiddenFeedRows }`. `hiddenFeedRows`
+  (2026-10-08) is the number of showing feed rows on that symbol and date that the add hid in its
+  own transaction.
 - PATCH read-first-guards on `source='manual'` and 403s sync-owned rows so a stray edit can't
-  corrupt the next sync's idempotency.
+  corrupt the next sync's idempotency. That 403 runs first; no flag bypasses it.
+- **PATCH runs both guards too.** `would_supersede_vendor` runs when `event_date` changes
+  (`force`). `slot_contradicts_known_time` (2026-10-08) runs when the body names a different slot,
+  or a new symbol while the row keeps a before-open or after-close slot, and leaves the clock time
+  to the server (`forceSlot`; `force` never answers it). When that check runs the release time
+  follows the slot. A PATCH that keeps the slot and the symbol is never checked. A row moved onto
+  a date where a feed row shows hides that feed row in the same transaction. Test:
+  `tests/api/calendar-events-manual-add-gaps.test.ts`.
 - DELETE (2026-07-26 `9cade35`): manual rows delete directly; sync-owned EARNINGS rows
   suppress-then-delete via `deleteAndSuppressCalendarEvent` (see the calendar-event-suppressions
   convention); symbol-less macro rows stay 403.
@@ -229,7 +255,10 @@ is the full 10-route "service" set per `lib/auth/route-policy.ts`'s `CRON_ROUTES
 
 ## Compute & analytics
 
-- `GET /api/compute/xirr?startDate=&endDate=&accountId=` — compute XIRR for arbitrary date ranges.
+- `GET /api/compute/xirr?startDate=&endDate=&accountId=|scope=` — compute XIRR for arbitrary date
+  ranges. An explicit `accountId` is one account. A named `scope` is its WHOLE account list: one
+  money-weighted return over every account in it, never the first account alone (2026-10-08).
+  `all` or no scope is every account. Test: `tests/compute/xirr-scope-u13.test.ts`.
 - `GET /api/compute/risk?startDate=&endDate=&accountId=` — portfolio risk metrics (drawdown,
   volatility, Sharpe, Herfindahl).
 - `GET /api/compute/position-risk?accountId=&topN=10` — per-position volatility, risk contribution,
@@ -247,8 +276,20 @@ is the full 10-route "service" set per `lib/auth/route-policy.ts`'s `CRON_ROUTES
     and the custom form reads the same file for its input limits. `marketMove` and each sector
     move are decimal fractions; `rateMove` is basis points. Test:
     `tests/api/scenarios-route-validation.test.ts`.
-- `GET /api/compute/fixed-income` — bond exposure: weighted avg duration, credit quality breakdown,
-  bond positions.
+- `GET /api/compute/fixed-income?scope=` — bond exposure: weighted avg duration, credit quality
+  breakdown, bond positions. Thin wrapper over `computeFixedIncomeExposure`
+  (`lib/compute/fixed-income-exposure.ts`); the whole scope, individual bonds only.
+  - **Durations come from the scenario rule (2026-10-08)**, `estimateBondRateLeg`, not from the
+    stored column alone. New fields per bond: `durationSource` (where the duration came from; null
+    when not modelled), `unmodelledReason` (why there is none; null when there is one),
+    `couponSource` (`broker` or `name`, set only when a coupon decided the outcome). `couponRate`
+    is still the stored coupon.
+  - **New top-level fields:** `asOfDate` (the Eastern date every duration and the maturity filter
+    were judged on), `measuredBondValue`, `unmeasuredBondValue`, `unmeasuredBondCount`,
+    `derivedBondCount` (durations worked out, not read from a stored figure).
+  - `weightedAvgDuration` covers only the bonds that have a duration and is null when none has.
+    A bond that cannot be modelled is still listed, with no figure.
+  - Test: `tests/api/compute-fixed-income.test.ts`.
 - `GET /api/compute/options-greeks?accountId=` — portfolio + per-position Greeks (delta, gamma,
   theta, vega, IV).
   - **Returns `diagnostics: GreeksDiagnostic[]`** alongside positions — entries explain why specific
@@ -356,7 +397,21 @@ Sonnet narrative prose per (scope, surface, week) cached in `analysis_narratives
 - `GET /api/tax-report?year=&format=json|csv|txf` — Form 8949 tax report with wash sale detection
   (CSV for filing, TXF for TurboTax). `filingReady` is marker-gated per accepted (account, tax-year) —
   see `docs/reference/data-integrity.md` §17; CSV/TXF filenames carry `-NOT-FOR-FILING` until then.
-- `GET /api/search?q=` — global search across securities, notes, transactions.
+- `GET /api/transcripts?ticker=&year=&quarter=` (also `?ticker=` alone for summaries, and
+  `?ticker=&list=quarters`) / `POST /api/transcripts` `{ ticker, year?, quarter? }` — read or fetch
+  and cache an earnings call transcript or 8-K. In-app, `{ success, data }` envelope; POST also
+  returns `fromCache`.
+  - **POST with no year and quarter means "the latest"** (`fetchLatestTranscript`): the issuer's
+    most recent earnings print, requested by its FISCAL quarter.
+  - **`latestConfirmed` and `latestNote` (2026-10-08)** ride on the POST reply. Both are null when
+    a quarter was named. `latestConfirmed: false` plus a plain-words `latestNote` means the
+    document could not be tied to the issuer's newest print: no earnings date is on file, or a
+    newer print is on file with no results recorded yet (the note names both dates). The fetch
+    button shows the note. Rules: `docs/reference/data-integrity.md` §13b. Test:
+    `tests/api/transcripts-route.test.ts`.
+- `GET /api/search?q=` — global search across securities, notes, transactions. A level result's
+  title labels the price in the security's own currency (`formatLevelPrice`) and never converts it
+  (2026-10-08; `tests/api/search-level-currency-q12.test.ts`).
 - `POST /api/benchmark/sync` — SSE streaming: fetch benchmark prices from TWS (falls back to cached
   `ohlcv_bars`/`prices` on timeout).
 - `GET /api/benchmark/prices?mode=prices|chart|stats|available&symbol=SPY` — benchmark data and
@@ -542,7 +597,12 @@ hours by `com.vanguard-skin.research-sync.plist`.
     from `lib/digest/group-by-company.ts`.
   - Email itself stays single-version (per-source) — the toggle is in-app only.
 - `GET /api/digest/status` — last-sent timestamps (`lastDigestSentAt`, `lastBriefingSentAt`) and
-  `defaultRecipient` from env.
+  `defaultRecipient` from env. Cloud-aware: `cloudDigestToday`.
+  - **`lastDigestSkip` (2026-10-08):** `{ reason, date, at }` or null. The last time the scheduled
+    since-last-email window came back empty (`lib/digest/digest-skip.ts`, one `settings` row,
+    read-only here). The catch-up banner uses it to say "nothing new to send" in place of "wasn't
+    sent" (`decideDigestBanner`, `lib/digest/catchup-banner.ts`). Test:
+    `tests/api/digest-status.test.ts`.
 
 ---
 
@@ -560,10 +620,17 @@ Manual trigger for an earnings preview / recap email.
   - Analyst recs, press releases, prior-quarter transcript (best-effort).
 - Runs through Sonnet 4.6 on Anthropic with `web_search_20250305` enabled (max_uses=5).
 - Two feature keys (`earningsPreview`, `earningsRecap`) in `lib/ai/feature-keys.ts`.
-- Email opens with a deterministic 6-row scoreboard table (light palette, white-bg cells with
-  empty-cell padding for fill-by-hand printing) rendered by `renderHeadlineTable()` from
-  `consensus_estimate` + `actual_value` + `reaction_snapshot`, then an AI-generated
-  `## Line-by-line bogies` markdown table + prose.
+- Email opens with a deterministic 6-row scoreboard table (light palette, white-bg cells) rendered
+  by `renderHeadlineTable()` from `consensus_estimate` + `actual_value` + `reaction_snapshot`, then
+  an AI-generated `## Line-by-line bogies` markdown table + prose. A PREVIEW keeps empty fill-in
+  boxes for printing; since 2026-10-08 a RECAP scoreboard prints a dash in an empty cell, as its
+  legend says. The renderer tells them apart by the scoreboard heading wording
+  (`docs/reference/earnings-pipeline.md` §14). A reaction leg that is not a measurement yet is
+  left out.
+- **Calendar-row refusals.** The send service refuses a row that is not its print's email row
+  (`emailRowRefusal`). The route passes on the service's status and sentence as `{ error }`: 409
+  when the entry was replaced, **404** when no calendar row has that id (`event_not_found`,
+  2026-10-08). Nothing is sent.
 - Composer writes an audit row to `earnings_emails` (migration 042, UNIQUE(event_id, phase)) on
   success.
 - Driver scripts: `scripts/preflight-earnings-data.ts <syms...>` and
@@ -703,10 +770,21 @@ family net exposure, `nextRelease` countdown target, `skippedRows` honesty count
 Per-symbol standing release-time override (wire-time tracking, 2026-08-04).
 
 - GET `?symbol=&slot=bmo|amc` →
-  `{success, data: {symbol, resolved: {time, source}|null, override, observations}}`.
-- POST `{symbol, releaseTime: "HH:MM"|null}` upserts a `source='user'` `symbol_release_times` row
-  (null clears ONLY user rows; validates HH:MM shape + clock bounds + [04:00, 20:00] ET) and
-  re-resolves upcoming family events, returning `updatedEvents`.
+  `{success, data: {symbol, resolved: {time, source}|null, override, overrideUse, observations}}`.
+  `overrideUse` says whether the resolver actually uses the standing row for that slot (a
+  web-verified after-close time at or after 17:00 is a suspect call time and is not used).
+- POST `{symbol, releaseTime: "HH:MM"|null, replaceWebVerified?}` upserts a `source='user'`
+  `symbol_release_times` row (null clears ONLY user rows; validates HH:MM shape + clock bounds +
+  [04:00, 20:00] ET) and re-resolves upcoming family events, returning `updatedEvents`.
+- **POST refusals (409, nothing stored), in order:**
+  1. `slot_mismatch` (with `data: { slot, eventDate }`): the time's side of noon disagrees with the
+     symbol's nearest upcoming event's slot (or its latest reported print when none is upcoming).
+     There is no bypass: a forced wrong-side row would be ignored downstream anyway.
+  2. `would_replace_web_verified` (2026-10-08; `data` carries the standing `releaseTime`,
+     `verifiedForDate`, `note`): the Save would turn a standing web-verified time into a user
+     time, and a later Clear could not bring it back. Send `replaceWebVerified: true` to save. The
+     acknowledgement never answers the slot check. A suspect web-verified call time (after-close,
+     at or after 17:00) is replaced without a question.
 - In-app (no cron auth); consumed by the EarningsDateChip popover "Reports at" editor.
 
 ### `GET/POST /api/earnings/worksheet`

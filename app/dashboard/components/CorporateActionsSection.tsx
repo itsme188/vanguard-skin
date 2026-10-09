@@ -6,6 +6,7 @@ import { Section } from "./Section";
 import { Chip } from "./Chip";
 import { Shares } from "@/lib/privacy/components";
 import apiFetch from "@/lib/http/apiFetch";
+import { useConfirmPrompt } from "./useConfirmPrompt";
 
 interface CorporateAction {
   id: number;
@@ -33,6 +34,9 @@ export function CorporateActionsSection({
   const [actions, setActions] = useState<CorporateAction[]>([]);
   const [showForm, setShowForm] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  // A refusal is said in the section itself, never in a browser alert.
+  const [actionError, setActionError] = useState<string | null>(null);
+  const prompt = useConfirmPrompt();
 
   // Form state
   const [actionType, setActionType] = useState<"SPLIT" | "REVERSE_SPLIT">("SPLIT");
@@ -52,6 +56,7 @@ export function CorporateActionsSection({
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setSubmitting(true);
+    setActionError(null);
 
     try {
       const res = await apiFetch("/api/corporate-actions", {
@@ -77,7 +82,7 @@ export function CorporateActionsSection({
         setNotes("");
         router.refresh();
       } else {
-        alert(`Error: ${data.error}`);
+        setActionError(`Couldn't apply the corporate action: ${data.error ?? "the server returned an error."}`);
       }
     } finally {
       setSubmitting(false);
@@ -85,7 +90,17 @@ export function CorporateActionsSection({
   }
 
   async function handleUndo(actionId: number) {
-    if (!confirm("Undo this corporate action? This will reverse all adjustments.")) return;
+    if (
+      !(await prompt.ask({
+        title: "Undo this corporate action?",
+        message: "This will reverse all adjustments.",
+        confirmLabel: "Undo",
+        variant: "danger",
+      }))
+    ) {
+      return;
+    }
+    setActionError(null);
 
     const res = await apiFetch(`/api/corporate-actions?id=${actionId}`, {
       method: "DELETE",
@@ -95,7 +110,7 @@ export function CorporateActionsSection({
       setActions((prev) => prev.filter((a) => a.id !== actionId));
       router.refresh();
     } else {
-      alert(`Error: ${data.error}`);
+      setActionError(`Couldn't undo the corporate action: ${data.error ?? "the server returned an error."}`);
     }
   }
 
@@ -115,6 +130,12 @@ export function CorporateActionsSection({
         </button>
       }
     >
+      {prompt.dialog}
+      {actionError && (
+        <p role="alert" className="px-5 py-2 border-b border-edge bg-down/20 text-down text-xs font-medium">
+          {actionError}
+        </p>
+      )}
 
       {/* Add form */}
       {showForm && (
