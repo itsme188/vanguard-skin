@@ -43,6 +43,8 @@ interface FinnhubOpts {
   quarter?: number;
   epsActual?: number | null;
   echoed?: string;
+  /** Overrides the description the writer would assemble (null = none). */
+  description?: string | null;
 }
 
 /** A Finnhub earnings row as lib/calendar/finnhub.ts assembles it. */
@@ -62,7 +64,8 @@ function finnhub(symbol: string, date: string, o: FinnhubOpts = {}): number {
     year: 2026,
   };
   if (o.hour !== undefined) entry.hour = o.hour;
-  const consensus = [eps != null ? `EPS ${eps.toFixed(2)}` : null, rev != null ? `Rev ${rev / 1e9}B` : null]
+  // The real writer prints a zero estimate as the literal placeholder "Rev 0".
+  const consensus = [eps != null ? `EPS ${eps.toFixed(2)}` : null, rev != null ? (rev === 0 ? "Rev 0" : `Rev ${rev / 1e9}B`) : null]
     .filter(Boolean)
     .join(" · ");
   upsertCalendarEvents(db, [
@@ -72,7 +75,10 @@ function finnhub(symbol: string, date: string, o: FinnhubOpts = {}): number {
       event_date: date,
       event_time: null,
       title: `${symbol} earnings`,
-      description: `Q${quarter} 2026 report.\n\nLast 4 quarters (EPS):\n  - Q${quarter - 1} 2026: actual 1.10 vs est 1.00 (surprise 10.0%)`,
+      description:
+        o.description !== undefined
+          ? o.description
+          : `Q${quarter} 2026 report.\n\nLast 4 quarters (EPS):\n  - Q${quarter - 1} 2026: actual 1.10 vs est 1.00 (surprise 10.0%)`,
       symbol,
       consensus_estimate: consensus || null,
       raw_json: JSON.stringify({
@@ -354,5 +360,186 @@ describe("nothing is carried when it should not be", () => {
     reconcileEarningsDates(db, { today: TODAY });
 
     expect(rowOf(n).raw_json).toBe("not json");
+  });
+});
+
+// Codex second opinion, fix 1 (2026-10-08): what the carry wrote into the
+// kept row's `consensus_estimate` (the revenue part) and `description` used to
+// be write-once, so a later Finnhub revision or withdrawal never reached the
+// earnings email scoreboard. The marker now records both, and each pass
+// refreshes or removes exactly what it carried.
+describe("the carried revenue part follows the Finnhub row", () => {
+  it("Finnhub revises its revenue estimate: the kept row shows the new figure", () => {
+    finnhub("ZZA", PRINT);
+    const n = nasdaq("ZZA", PRINT, "amc");
+    reconcileEarningsDates(db, { today: TODAY });
+    expect(rowOf(n).consensus_estimate).toBe("EPS 1.05 · Rev 2B");
+    expect(jsonOf(n).finnhub_carried.consensus_revenue).toBe("Rev 2B");
+
+    finnhub("ZZA", PRINT, { revenueEstimate: 3_000_000_000 });
+    reconcileEarningsDates(db, { today: TODAY });
+
+    expect(rowOf(n).consensus_estimate).toBe("EPS 1.05 · Rev 3B");
+    expect(jsonOf(n).finnhub_carried.consensus_revenue).toBe("Rev 3B");
+    const settled = rowOf(n);
+    reconcileEarningsDates(db, { today: TODAY });
+    expect(rowOf(n)).toEqual(settled);
+  });
+
+  it("Finnhub withdraws its revenue estimate: the carried part is removed, Nasdaq's EPS stays", () => {
+    finnhub("ZZA", PRINT);
+    const n = nasdaq("ZZA", PRINT, "amc");
+    reconcileEarningsDates(db, { today: TODAY });
+
+    finnhub("ZZA", PRINT, { revenueEstimate: null });
+    reconcileEarningsDates(db, { today: TODAY });
+
+    expect(rowOf(n).consensus_estimate).toBe("EPS 1.05");
+    expect(jsonOf(n).finnhub_carried).not.toHaveProperty("consensus_revenue");
+    const settled = rowOf(n);
+    reconcileEarningsDates(db, { today: TODAY });
+    expect(rowOf(n)).toEqual(settled);
+  });
+
+  it("a revenue figure the kept row has of its own is never edited (defensive: Nasdaq does not write one today)", () => {
+    finnhub("ZZA", PRINT);
+    const n = nasdaq("ZZA", PRINT, "amc");
+    db.prepare("UPDATE calendar_events SET consensus_estimate = 'EPS 1.05 · Rev 5B' WHERE id = ?").run(n);
+
+    reconcileEarningsDates(db, { today: TODAY });
+    expect(rowOf(n).consensus_estimate).toBe("EPS 1.05 · Rev 5B");
+    expect(jsonOf(n).finnhub_carried).not.toHaveProperty("consensus_revenue");
+
+    finnhub("ZZA", PRINT, { revenueEstimate: 3_000_000_000 });
+    reconcileEarningsDates(db, { today: TODAY });
+    expect(rowOf(n).consensus_estimate).toBe("EPS 1.05 · Rev 5B");
+
+    finnhub("ZZA", PRINT, { revenueEstimate: null });
+    reconcileEarningsDates(db, { today: TODAY });
+    expect(rowOf(n).consensus_estimate).toBe("EPS 1.05 · Rev 5B");
+  });
+
+  it("a hand-entered row's typed consensus is never edited, whatever the Finnhub row does", () => {
+    finnhub("ZZB", PRINT);
+    const m = insertCalendarEvent(db, {
+      symbol: "ZZB",
+      event_date: PRINT,
+      event_time: "AMC",
+      consensus_estimate: "EPS 0.90 · Rev 2B",
+      week_of: mondayOf(PRINT),
+    }).id;
+    reconcileEarningsDates(db, { today: TODAY });
+
+    finnhub("ZZB", PRINT, { revenueEstimate: null });
+    reconcileEarningsDates(db, { today: TODAY });
+
+    expect(rowOf(m).consensus_estimate).toBe("EPS 0.90 · Rev 2B");
+  });
+
+  it("a zero revenue estimate is Finnhub's placeholder and is never carried", () => {
+    const f = finnhub("ZZA", PRINT, { revenueEstimate: 0 });
+    const n = nasdaq("ZZA", PRINT, "amc");
+    expect(rowOf(f).consensus_estimate).toBe("EPS 1.00 · Rev 0"); // precondition: the writer's shape
+
+    reconcileEarningsDates(db, { today: TODAY });
+
+    expect(rowOf(n).consensus_estimate).toBe("EPS 1.05");
+    const j = jsonOf(n);
+    expect(j.entry).not.toHaveProperty("revenueEstimate");
+    expect(j.finnhub_carried.keys).not.toContain("entry.revenueEstimate");
+    expect(j.entry.epsEstimate).toBe(1);
+    expect(readVendorConsensus(rowOf(n).raw_json, "ZZA")).toEqual({ eps: 1, revenue: null });
+  });
+
+  it("a real estimate that turns into the zero placeholder is removed again", () => {
+    finnhub("ZZA", PRINT);
+    const n = nasdaq("ZZA", PRINT, "amc");
+    reconcileEarningsDates(db, { today: TODAY });
+
+    finnhub("ZZA", PRINT, { revenueEstimate: 0 });
+    reconcileEarningsDates(db, { today: TODAY });
+
+    expect(rowOf(n).consensus_estimate).toBe("EPS 1.05");
+    expect(jsonOf(n).entry).not.toHaveProperty("revenueEstimate");
+  });
+
+  it("a Nasdaq sync that states no forecast keeps the old text and wipes the marker; the carried part is still followed", () => {
+    finnhub("ZZA", PRINT);
+    const n = nasdaq("ZZA", PRINT, "amc");
+    reconcileEarningsDates(db, { today: TODAY });
+
+    // The upsert replaces raw_json (marker gone) but COALESCEs consensus_estimate.
+    nasdaq("ZZA", PRINT, "amc", null);
+    expect(rowOf(n).consensus_estimate).toBe("EPS 1.05 · Rev 2B");
+    expect(jsonOf(n)).not.toHaveProperty("finnhub_carried");
+    reconcileEarningsDates(db, { today: TODAY });
+    expect(jsonOf(n).finnhub_carried.consensus_revenue).toBe("Rev 2B");
+
+    finnhub("ZZA", PRINT, { revenueEstimate: 3_000_000_000 });
+    reconcileEarningsDates(db, { today: TODAY });
+    expect(rowOf(n).consensus_estimate).toBe("EPS 1.05 · Rev 3B");
+  });
+});
+
+describe("the carried description follows the Finnhub row", () => {
+  it("Finnhub changes its text: the kept row's carried description is refreshed", () => {
+    const f = finnhub("ZZA", PRINT);
+    const n = nasdaq("ZZA", PRINT, "amc");
+    reconcileEarningsDates(db, { today: TODAY });
+    expect(rowOf(n).description).toContain("Q3 2026 report.");
+
+    finnhub("ZZA", PRINT, { quarter: 4 });
+    reconcileEarningsDates(db, { today: TODAY });
+
+    expect(rowOf(n).description).toBe(rowOf(f).description);
+    expect(rowOf(n).description).toContain("Q4 2026 report.");
+    const settled = rowOf(n);
+    reconcileEarningsDates(db, { today: TODAY });
+    expect(rowOf(n)).toEqual(settled);
+  });
+
+  it("Finnhub drops its text: the carried description is removed", () => {
+    finnhub("ZZB", PRINT);
+    const m = insertCalendarEvent(db, { symbol: "ZZB", event_date: PRINT, week_of: mondayOf(PRINT) }).id;
+    reconcileEarningsDates(db, { today: TODAY });
+    expect(rowOf(m).description).toContain("Last 4 quarters");
+
+    finnhub("ZZB", PRINT, { description: null });
+    reconcileEarningsDates(db, { today: TODAY });
+
+    expect(rowOf(m).description).toBeNull();
+    expect(jsonOf(m).finnhub_carried).not.toHaveProperty("description");
+  });
+
+  it("text a person typed over the carried description is never replaced", () => {
+    finnhub("ZZB", PRINT);
+    const m = insertCalendarEvent(db, { symbol: "ZZB", event_date: PRINT, week_of: mondayOf(PRINT) }).id;
+    reconcileEarningsDates(db, { today: TODAY });
+    db.prepare("UPDATE calendar_events SET description = 'my own note' WHERE id = ?").run(m);
+
+    finnhub("ZZB", PRINT, { quarter: 4 });
+    reconcileEarningsDates(db, { today: TODAY });
+    expect(rowOf(m).description).toBe("my own note");
+
+    finnhub("ZZB", PRINT, { description: null });
+    reconcileEarningsDates(db, { today: TODAY });
+    expect(rowOf(m).description).toBe("my own note");
+  });
+
+  it("a description the kept row had before any carry is never replaced", () => {
+    finnhub("ZZB", PRINT);
+    const m = insertCalendarEvent(db, {
+      symbol: "ZZB",
+      event_date: PRINT,
+      description: "my note",
+      week_of: mondayOf(PRINT),
+    }).id;
+    reconcileEarningsDates(db, { today: TODAY });
+
+    finnhub("ZZB", PRINT, { quarter: 4 });
+    reconcileEarningsDates(db, { today: TODAY });
+
+    expect(rowOf(m).description).toBe("my note");
+    expect(jsonOf(m).finnhub_carried).not.toHaveProperty("description");
   });
 });

@@ -24,6 +24,7 @@ import { generateTextForFeature } from "@/lib/ai/generate";
 import { generateWeeklyBriefing, buildCurrentPrices } from "@/lib/calendar/briefing";
 import {
   partitionBriefingEvents,
+  partitionBriefingEventsBy,
   briefingRowHasRealSlot,
 } from "@/lib/calendar/briefing-partition";
 import { getEventsByWeek } from "@/lib/queries/calendar";
@@ -179,6 +180,40 @@ describe("partitionBriefingEvents over the real week reader", () => {
     const parts = partitionBriefingEvents(getEventsByWeek(db, WEEK));
 
     expect(ids(parts.portfolioEarnings).sort()).toEqual([f1, f2].sort());
+  });
+
+  it("a share-class pair from two vendors on one date (no reconcile pass yet) is listed once", () => {
+    finnhub("GOOGL", PRINT); // no hour
+    const n = nasdaq("GOOG", PRINT, "amc");
+    const f2 = finnhub("BRK.B", PRINT, "amc");
+    nasdaq("BRK/B", PRINT, "amc");
+
+    const events = getEventsByWeek(db, WEEK);
+    expect(events).toHaveLength(4); // precondition: all four showing
+    const parts = partitionBriefingEvents(events);
+
+    // One per issuer: the slotted Nasdaq row for Alphabet, Finnhub on the tie.
+    expect(ids(parts.portfolioEarnings).sort()).toEqual([n, f2].sort());
+  });
+
+  it("without an issuer-family function the guard falls back to the symbol itself", () => {
+    const f = finnhub("GOOGL", PRINT);
+    const n = nasdaq("GOOG", PRINT, "amc");
+    finnhub("ZZA", PRINT);
+    const n2 = nasdaq("ZZA", PRINT, "amc");
+
+    const parts = partitionBriefingEventsBy(getEventsByWeek(db, WEEK));
+
+    expect(ids(parts.portfolioEarnings).sort()).toEqual([f, n, n2].sort());
+  });
+
+  it("a share-class pair on DIFFERENT dates is still both listed", () => {
+    const f = finnhub("GOOGL", "2026-11-04", "amc");
+    const n = nasdaq("GOOG", PRINT, "amc");
+
+    const parts = partitionBriefingEvents(getEventsByWeek(db, WEEK));
+
+    expect(ids(parts.portfolioEarnings)).toEqual([f, n]);
   });
 
   it("two rows for one symbol on DIFFERENT dates are both listed (that choice is the reconciler's)", () => {

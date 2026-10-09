@@ -192,6 +192,13 @@ describe("Worker briefing prompt: portfolio earnings are the kept row, any sourc
     expect(sectionOf(prompt, "Macro & Other Events This Week")).toBe("");
   });
 
+  it("a share-class pair from two vendors, both still showing: the issuer is listed once", async () => {
+    const prompt = await promptFor([finnhubRow(1, "GOOGL"), nasdaqRow(2, "GOOG", "amc")]);
+    const earnings = sectionOf(prompt, "Portfolio Earnings This Week");
+    expect(earnings.match(/\*\*GOOGL? earnings/g)).toHaveLength(1);
+    expect(earnings).toContain("GOOG earnings (Nasdaq row)");
+  });
+
   it("a hidden macro row is not narrated either", async () => {
     const prompt = await promptFor([cpiRow(3, { superseded: 1 }), finnhubRow(1, "ZZA", "amc")]);
     expect(prompt).not.toContain("**CPI**");
@@ -236,6 +243,9 @@ describe("briefing-partition parity (Worker mirror vs Mac)", () => {
     { name: "wsh + macro", rows: [row({ id: 1, source: "wsh", symbol: "ZZC" }), cpiRow(2)] },
     { name: "case-different symbols", rows: [finnhubRow(1, "zza", "amc"), nasdaqRow(2, "ZZA", "amc")] },
     { name: "no symbol rows are never merged", rows: [row({ id: 1, source: "manual" }), row({ id: 2, source: "manual" })] },
+    { name: "share-class pair, nasdaq slotted", rows: [finnhubRow(1, "GOOGL"), nasdaqRow(2, "GOOG", "amc")] },
+    { name: "share-class pair, both slotted", rows: [nasdaqRow(1, "BRK/B", "amc"), finnhubRow(2, "BRK.B", "amc")] },
+    { name: "share-class pair, different dates", rows: [finnhubRow(1, "GOOGL", "amc", { event_date: "2026-11-04" }), nasdaqRow(2, "GOOG", "amc")] },
   ];
 
   it.each(matrix)("same partition: $name", ({ rows }) => {
@@ -261,5 +271,8 @@ describe("briefing-partition parity (Worker mirror vs Mac)", () => {
     expect(answer("wsh + macro")).toEqual([]);
     expect(answer("case-different symbols")).toEqual([1]);
     expect(answer("no symbol rows are never merged")).toEqual([1, 2]);
+    expect(answer("share-class pair, nasdaq slotted")).toEqual([2]);
+    expect(answer("share-class pair, both slotted")).toEqual([2]); // Finnhub
+    expect(answer("share-class pair, different dates")).toEqual([1, 2]);
   });
 });

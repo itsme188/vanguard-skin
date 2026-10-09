@@ -25,6 +25,7 @@ import { generateWithFailover } from "./ai";
 import { briefingToHtml } from "./html";
 import { todayET, getCurrentETDayOfWeek } from "./dst";
 import type { FallbackEnv, FallbackResult } from "./fallback-digest";
+import { issuerSiblings } from "./fallback-earnings";
 
 // Must match Mac's lib/calendar/briefing.ts constants.
 const PREFERRED_SOURCE_IDS = [1, 18, 19, 28];
@@ -331,16 +332,31 @@ function briefingEarningsRank(row: BriefingPartitionRow): number {
  * carries them, so the rule lives here for both.
  *
  * Guard for a pair no reconcile pass has seen yet (both rows still showing):
- * one symbol on one date is listed once. The row with a real slot is kept,
+ * one ISSUER on one date is listed once. The row with a real slot is kept,
  * then Finnhub, then Nasdaq, then a hand-entered row, then the lower id. Rows
  * on different dates are both listed: choosing between dates is the
  * reconciler's job, never this guard's.
  *
+ * `familyKey` maps an upper-cased symbol to one key per issuer, so a
+ * share-class pair from two vendors (GOOG from one, GOOGL from the other) is
+ * one print. It is a parameter because this block cannot import: each side
+ * passes a function built on its own issuer-family table (see
+ * `partitionBriefingEvents` outside the block). Without it, or when it
+ * returns nothing for a symbol, the symbol itself is the key.
+ *
  * Input order is preserved in every list.
  */
-export function partitionBriefingEvents<T extends BriefingPartitionRow>(
+export function partitionBriefingEventsBy<T extends BriefingPartitionRow>(
   events: readonly T[],
+  familyKey?: (symbol: string) => string | null | undefined,
 ): BriefingPartition<T> {
+  const printKey = (e: T): string | null => {
+    const symbol = typeof e.symbol === "string" ? e.symbol.trim().toUpperCase() : "";
+    if (!symbol) return null;
+    const family = familyKey ? familyKey(symbol) : null;
+    return `${typeof family === "string" && family !== "" ? family : symbol}|${e.event_date}`;
+  };
+
   const live = events.filter((e) => !e.superseded || e.superseded === "0");
 
   const wshEarnings = live.filter((e) => e.source === "wsh" && e.event_type === "earnings");
@@ -351,9 +367,8 @@ export function partitionBriefingEvents<T extends BriefingPartitionRow>(
   const candidates = live.filter((e) => e.event_type === "earnings" && e.source !== "wsh");
   const bestByPrint = new Map<string, T>();
   for (const e of candidates) {
-    const symbol = typeof e.symbol === "string" ? e.symbol.trim().toUpperCase() : "";
-    if (!symbol) continue;
-    const key = `${symbol}|${e.event_date}`;
+    const key = printKey(e);
+    if (key === null) continue;
     const held = bestByPrint.get(key);
     if (!held) {
       bestByPrint.set(key, e);
@@ -364,13 +379,34 @@ export function partitionBriefingEvents<T extends BriefingPartitionRow>(
     if (diff < 0 || (diff === 0 && idDiff < 0)) bestByPrint.set(key, e);
   }
   const portfolioEarnings = candidates.filter((e) => {
-    const symbol = typeof e.symbol === "string" ? e.symbol.trim().toUpperCase() : "";
-    return !symbol || bestByPrint.get(`${symbol}|${e.event_date}`) === e;
+    const key = printKey(e);
+    return key === null || bestByPrint.get(key) === e;
   });
 
   return { portfolioEarnings, wshEarnings, otherEvents };
 }
 // ── END briefing-partition ────────────────────────────────────────────
+
+/** One key per issuer: the alphabetically first share-class sibling. */
+function issuerFamilyKey(symbol: string): string {
+  return (
+    issuerSiblings(symbol)
+      .map((s) => s.toUpperCase())
+      .sort()[0] ?? symbol
+  );
+}
+
+/**
+ * The Worker's entry point: the shared partition with the Worker's
+ * issuer-family table (fallback-earnings.ts), so a share-class pair from two
+ * vendors on one date is one print. Twin of the Mac's function of the same
+ * name at the foot of lib/calendar/briefing-partition.ts.
+ */
+export function partitionBriefingEvents<T extends BriefingPartitionRow>(
+  events: readonly T[],
+): BriefingPartition<T> {
+  return partitionBriefingEventsBy(events, issuerFamilyKey);
+}
 
 function buildDeepSection(snapshot: Snapshot): string {
   let total = 0;

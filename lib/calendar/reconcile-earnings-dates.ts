@@ -5,6 +5,7 @@ import { writeArmedEventsOutboxRow } from "@/lib/earnings/cloud-outbox";
 import { deliveredSql, notLiveClaimSql } from "@/lib/earnings/email-states";
 import { mondayOf, todayET } from "@/lib/calendar/date-utils";
 import { deriveEarningsSlot } from "@/lib/earnings/earnings-slot";
+import { parseFinnhubFigure } from "@/lib/format/finnhub-figure";
 
 // ── Earnings date cross-check reconciliation ────────────────────────
 //
@@ -1150,8 +1151,12 @@ function parseRawJsonObject(raw: string | null): JsonObject | null {
   }
 }
 
-/** The hidden Finnhub row whose data the kept row borrows: nearest date, then lowest id. */
-function pickFinnhubDonor<T extends Pick<EarningsRow, "id" | "source" | "event_date">>(
+/**
+ * The hidden Finnhub row whose data the kept row borrows: nearest date, then
+ * lowest id. Exported so the vendor-consensus prepare step resolves the same
+ * row (`findHiddenFinnhubDonor`) instead of carrying a second rule.
+ */
+export function pickFinnhubDonor<T extends Pick<EarningsRow, "id" | "source" | "event_date">>(
   hidden: T[],
   canonicalEventDate: string,
 ): T | null {
@@ -1162,6 +1167,53 @@ function pickFinnhubDonor<T extends Pick<EarningsRow, "id" | "source" | "event_d
       daysBetween(a.event_date, canonicalEventDate) - daysBetween(b.event_date, canonicalEventDate) ||
       a.id - b.id,
   )[0];
+}
+
+/** A hidden Finnhub earnings row, as `findHiddenFinnhubDonor` returns it. */
+export interface HiddenFinnhubDonor {
+  id: number;
+  source: string;
+  symbol: string | null;
+  event_date: string;
+  raw_json: string | null;
+}
+
+/**
+ * The hidden (superseded) Finnhub earnings row that describes the same print
+ * as `kept`, read straight from the table: same issuer family
+ * (`issuerSiblings`, never symbol equality), within the clustering distance
+ * of the kept row's date, and then `pickFinnhubDonor`'s order (nearest date,
+ * lowest id) — the row the carrier borrows from once a reconcile pass runs.
+ *
+ * It exists for readers that must not depend on the carry having run: a
+ * vendor sync wipes the carried keys off a kept Nasdaq row until the pass at
+ * the end of that sync restores them (lib/earnings/prepare-steps/
+ * consensus-row.ts reads through this instead). Read-only. null when the
+ * print has no hidden Finnhub row.
+ */
+export function findHiddenFinnhubDonor(
+  db: Database.Database,
+  kept: { id: number; symbol: string | null; event_date: string },
+): HiddenFinnhubDonor | null {
+  if (!kept.symbol) return null;
+  const family = [...new Set(issuerSiblings(kept.symbol).map((s) => s.toUpperCase()))];
+  if (family.length === 0) return null;
+  const hidden = db
+    .prepare(
+      `SELECT id, source, symbol, event_date, raw_json
+         FROM calendar_events
+        WHERE event_type = 'earnings' AND source = 'finnhub'
+          AND COALESCE(superseded, 0) = 1 AND id != ?
+          AND UPPER(symbol) IN (${family.map(() => "?").join(",")})
+          AND event_date BETWEEN ? AND ?`,
+    )
+    .all(
+      kept.id,
+      ...family,
+      addDaysUTC(kept.event_date, -CLUSTER_PROXIMITY_DAYS),
+      addDaysUTC(kept.event_date, CLUSTER_PROXIMITY_DAYS),
+    ) as HiddenFinnhubDonor[];
+  return pickFinnhubDonor(hidden, kept.event_date);
 }
 
 /**
@@ -1179,19 +1231,40 @@ function pickFinnhubDonor<T extends Pick<EarningsRow, "id" | "source" | "event_d
  *      non-NULL it blocks the fold's COALESCE.
  *
  * Rules:
- *  - Only a key the kept row LACKS is written. A key the kept row has of its
- *    own is never replaced; the marker lists the keys the carry wrote, and
- *    only those are refreshed (or removed) when the Finnhub row changes.
+ *  - Only what the kept row LACKS is written. A value the kept row has of its
+ *    own is never replaced.
+ *  - EVERYTHING the carry wrote is recorded on the marker and follows the
+ *    Finnhub row from then on: refreshed when the Finnhub row changed, removed
+ *    when the Finnhub row no longer states it. The marker holds
+ *      `keys`               the raw_json keys carried,
+ *      `description`        the description text carried (present only while
+ *                           the kept row's description is that carried text),
+ *      `consensus_revenue`  the "Rev …" part carried into consensus_estimate.
+ *    A description or revenue part is "still the carried one" only while it
+ *    equals what the marker recorded; text a person typed over it is theirs.
+ *  - Marker lost, value still there (a Nasdaq sync replaces `raw_json` but
+ *    keeps the old `consensus_estimate` when it states no forecast of its
+ *    own): a description / revenue part EQUAL to the Finnhub row's current one
+ *    is taken back under the marker without a column write, so it is followed
+ *    again. One that differs is treated as the kept row's own.
  *  - The slot is never touched (see FINNHUB_CARRIED_ENTRY_KEYS).
- *  - `description` fills only an empty one. The revenue part is appended only
- *    to a NASDAQ row's own "EPS …" text; text a person typed is never edited.
+ *  - The revenue part is managed only on a NASDAQ row, and appended only to
+ *    its own "EPS …" text; consensus text on a hand-entered row is never
+ *    edited.
+ *  - A zero revenue estimate is Finnhub's placeholder for "none published"
+ *    (CLAUDE.md, resolved by `parseFinnhubFigure`): it is never carried, as a
+ *    raw_json key or as text, and a carried figure that turns into it is
+ *    removed.
+ *  - A kept row whose raw_json cannot be parsed cannot hold a marker, so
+ *    nothing is carried onto it.
  *  - A settled pair writes nothing, so a second pass is a no-op. The carry
  *    does not change the armed projection and never asks for an outbox row.
  *
  * NOT durable on its own for a vendor row: the weekly sync's upsert replaces
  * `raw_json` and `description` for the same source_key and resets
  * `consensus_estimate`. It is restored because every sync ends in a reconcile
- * pass and the pass revisits already-hidden rows — see the caller.
+ * pass and the pass revisits already-hidden rows — see the caller. Readers
+ * that cannot tolerate that gap go through `findHiddenFinnhubDonor`.
  */
 export function createFinnhubDataCarrier(db: Database.Database) {
   interface CarryRow {
@@ -1208,76 +1281,128 @@ export function createFinnhubDataCarrier(db: Database.Database) {
   const writeDescription = db.prepare("UPDATE calendar_events SET description = ? WHERE id = ?");
   const writeConsensus = db.prepare("UPDATE calendar_events SET consensus_estimate = ? WHERE id = ?");
 
+  const has = (obj: JsonObject, key: string) => Object.prototype.hasOwnProperty.call(obj, key);
+  const isRevenuePart = (part: string) => /^Rev\b/.test(part);
+  const consensusParts = (text: string | null) =>
+    (text ?? "")
+      .split(" · ")
+      .map((part) => part.trim())
+      .filter((part) => part !== "");
+
   return function carry(donorId: number, canonicalId: number): void {
     const donor = read.get(donorId) as CarryRow | undefined;
     const kept = read.get(canonicalId) as CarryRow | undefined;
     if (!donor || !kept || donor.source !== "finnhub" || kept.source === "finnhub") return;
 
-    // 1. raw_json keys.
-    const donorJson = donor.raw_json ? parseRawJsonObject(donor.raw_json) : null;
-    const donorEntry = donorJson ? asJsonObject(donorJson.entry) : null;
     const keptJson = parseRawJsonObject(kept.raw_json);
-    if (donorJson && donorEntry && keptJson) {
-      const hadEntry = Object.prototype.hasOwnProperty.call(keptJson, "entry");
-      const keptEntry = hadEntry ? asJsonObject(keptJson.entry) : {};
-      // A kept row whose `entry` is not an object is a shape we do not know: leave it.
-      if (keptEntry) {
-        const marker = asJsonObject(keptJson[FINNHUB_CARRY_MARKER]);
-        const markerKeys: unknown = marker ? marker.keys : null;
-        const previouslyCarried = new Set<string>(
-          Array.isArray(markerKeys) ? markerKeys.filter((k): k is string => typeof k === "string") : [],
-        );
-        const has = (obj: JsonObject, key: string) => Object.prototype.hasOwnProperty.call(obj, key);
-        const carriedNow: string[] = [];
-        let changed = false;
-        const apply = (target: JsonObject, source: JsonObject, key: string, label: string) => {
-          const mine = previouslyCarried.has(label);
-          if (has(target, key) && !mine) return; // the kept row's own value
-          if (has(source, key)) {
-            if (!has(target, key) || JSON.stringify(target[key]) !== JSON.stringify(source[key])) {
-              target[key] = source[key];
-              changed = true;
-            }
-            carriedNow.push(label);
-          } else if (mine && has(target, key)) {
-            delete target[key]; // the Finnhub row no longer states it
-            changed = true;
-          }
-        };
-        for (const key of FINNHUB_CARRIED_ENTRY_KEYS) apply(keptEntry, donorEntry, key, `entry.${key}`);
-        for (const key of FINNHUB_CARRIED_TOP_KEYS) apply(keptJson, donorJson, key, key);
+    // No parseable raw_json, no place for the marker: carry nothing.
+    if (!keptJson) return;
+    const marker = asJsonObject(keptJson[FINNHUB_CARRY_MARKER]);
+    let jsonChanged = false;
 
-        if (carriedNow.length > 0) {
-          const nextMarker = { from_event_id: donor.id, keys: carriedNow };
-          if (JSON.stringify(marker) !== JSON.stringify(nextMarker)) {
-            keptJson[FINNHUB_CARRY_MARKER] = nextMarker;
-            changed = true;
+    // 1. raw_json keys. A Finnhub row that lost its entry states nothing, so
+    //    every key carried earlier is removed.
+    const donorJson = (donor.raw_json ? parseRawJsonObject(donor.raw_json) : null) ?? {};
+    const donorEntry = { ...(asJsonObject(donorJson.entry) ?? {}) };
+    if (donorEntry.revenueEstimate === 0) delete donorEntry.revenueEstimate; // placeholder, not a figure
+    const hadEntry = has(keptJson, "entry");
+    const keptEntry = hadEntry ? asJsonObject(keptJson.entry) : {};
+    const carriedKeys: string[] = [];
+    // A kept row whose `entry` is not an object is a shape we do not know: leave its keys alone.
+    if (keptEntry) {
+      const markerKeys: unknown = marker ? marker.keys : null;
+      const previouslyCarried = new Set<string>(
+        Array.isArray(markerKeys) ? markerKeys.filter((k): k is string => typeof k === "string") : [],
+      );
+      const apply = (target: JsonObject, source: JsonObject, key: string, label: string) => {
+        const mine = previouslyCarried.has(label);
+        if (has(target, key) && !mine) return; // the kept row's own value
+        if (has(source, key)) {
+          if (!has(target, key) || JSON.stringify(target[key]) !== JSON.stringify(source[key])) {
+            target[key] = source[key];
+            jsonChanged = true;
           }
-          if (!hadEntry) keptJson.entry = keptEntry;
-        } else if (marker) {
-          delete keptJson[FINNHUB_CARRY_MARKER];
-          changed = true;
+          carriedKeys.push(label);
+        } else if (mine && has(target, key)) {
+          delete target[key]; // the Finnhub row no longer states it
+          jsonChanged = true;
         }
-        if (changed) writeRawJson.run(JSON.stringify(keptJson), kept.id);
-      }
+      };
+      for (const key of FINNHUB_CARRIED_ENTRY_KEYS) apply(keptEntry, donorEntry, key, `entry.${key}`);
+      for (const key of FINNHUB_CARRIED_TOP_KEYS) apply(keptJson, donorJson, key, key);
+      if (carriedKeys.length > 0 && !hadEntry) keptJson.entry = keptEntry;
     }
 
-    // 2. description: fill an empty one, never replace text.
-    if ((kept.description ?? "").trim() === "" && (donor.description ?? "").trim() !== "") {
-      writeDescription.run(donor.description, kept.id);
+    // 2. description: fill an empty one; afterwards follow the Finnhub row
+    //    for as long as the kept row still shows the carried text.
+    const donorDescription = (donor.description ?? "").trim() !== "" ? donor.description : null;
+    const markedDescription = marker && typeof marker.description === "string" ? marker.description : null;
+    let carriedDescription: string | null = null;
+    if ((kept.description ?? "").trim() === "") {
+      if (donorDescription !== null) {
+        writeDescription.run(donorDescription, kept.id);
+        carriedDescription = donorDescription;
+      }
+    } else if (kept.description === markedDescription) {
+      if (donorDescription === null) writeDescription.run(null, kept.id);
+      else {
+        if (donorDescription !== kept.description) writeDescription.run(donorDescription, kept.id);
+        carriedDescription = donorDescription;
+      }
+    } else if (markedDescription === null && kept.description === donorDescription) {
+      carriedDescription = donorDescription; // marker lost; the text is the Finnhub row's
     }
 
-    // 3. revenue estimate: add it to a Nasdaq row's EPS-only consensus.
-    if (kept.source === "nasdaq" && kept.consensus_estimate && donor.consensus_estimate) {
-      const hasRevenue = kept.consensus_estimate.split(" · ").some((part) => /^Rev\b/.test(part.trim()));
-      const donorRevenue = donor.consensus_estimate
-        .split(" · ")
-        .map((part) => part.trim())
-        .filter((part) => /^Rev\b/.test(part));
-      if (!hasRevenue && donorRevenue.length > 0) {
-        writeConsensus.run([kept.consensus_estimate, ...donorRevenue].join(" · "), kept.id);
+    // 3. revenue estimate inside a Nasdaq row's consensus text.
+    let carriedRevenue: string | null = null;
+    if (kept.source === "nasdaq") {
+      const parts = consensusParts(kept.consensus_estimate);
+      const keptRevenue = parts.filter(isRevenuePart);
+      const donorRevenue =
+        consensusParts(donor.consensus_estimate).find(
+          (part) => isRevenuePart(part) && parseFinnhubFigure(part).revenue != null,
+        ) ?? null;
+      const markedRevenue =
+        marker && typeof marker.consensus_revenue === "string" ? marker.consensus_revenue : null;
+      if (keptRevenue.length === 0) {
+        // Appended only to the row's own text (an empty consensus is the fold's to fill).
+        if (donorRevenue !== null && parts.length > 0) {
+          writeConsensus.run([...parts, donorRevenue].join(" · "), kept.id);
+          carriedRevenue = donorRevenue;
+        }
+      } else if (
+        keptRevenue.length === 1 &&
+        (keptRevenue[0] === markedRevenue || (markedRevenue === null && keptRevenue[0] === donorRevenue))
+      ) {
+        if (donorRevenue === null) {
+          writeConsensus.run(parts.filter((part) => !isRevenuePart(part)).join(" · ") || null, kept.id);
+        } else {
+          if (donorRevenue !== keptRevenue[0]) {
+            writeConsensus.run(
+              parts.map((part) => (isRevenuePart(part) ? donorRevenue : part)).join(" · "),
+              kept.id,
+            );
+          }
+          carriedRevenue = donorRevenue;
+        }
       }
+      // Anything else is a revenue figure the kept row has of its own.
     }
+
+    // The marker: what this pass left carried on the row.
+    if (carriedKeys.length > 0 || carriedDescription !== null || carriedRevenue !== null) {
+      const nextMarker: JsonObject = { from_event_id: donor.id, keys: carriedKeys };
+      if (carriedDescription !== null) nextMarker.description = carriedDescription;
+      if (carriedRevenue !== null) nextMarker.consensus_revenue = carriedRevenue;
+      if (JSON.stringify(marker) !== JSON.stringify(nextMarker)) {
+        keptJson[FINNHUB_CARRY_MARKER] = nextMarker;
+        jsonChanged = true;
+      }
+    } else if (has(keptJson, FINNHUB_CARRY_MARKER)) {
+      delete keptJson[FINNHUB_CARRY_MARKER];
+      jsonChanged = true;
+    }
+    if (jsonChanged) writeRawJson.run(JSON.stringify(keptJson), kept.id);
   };
 }
 
