@@ -1,5 +1,6 @@
 "use client";
 
+import { PERCENT_BASIS } from "@/lib/analysis/percent-bases";
 import { useMemo, useState } from "react";
 import type { FactorHeatmapRow } from "@/lib/queries/analysis";
 import { ScrollFade } from "./ScrollFade";
@@ -114,6 +115,7 @@ export function FactorHeatmap({ rows, onCellClick }: FactorHeatmapProps) {
           )}
         </span>
       </h3>
+      <p className="text-xs text-ink-dim mb-3">{PERCENT_BASIS.factorWeightCaption}</p>
 
       <ScrollFade>
         <table className="w-full text-xs" aria-label="Factor exposure heatmap">
@@ -124,6 +126,7 @@ export function FactorHeatmap({ rows, onCellClick }: FactorHeatmapProps) {
               </th>
               <th
                 className="text-right py-2 px-2 font-medium text-ink-faint min-w-[60px] cursor-pointer hover:text-ink-dim select-none"
+                title={PERCENT_BASIS.factorWeight}
                 onClick={() => handleSort("weight")}
               >
                 Weight{sortIndicator("weight")}

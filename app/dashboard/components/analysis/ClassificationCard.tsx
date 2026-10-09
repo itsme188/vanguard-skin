@@ -1,5 +1,6 @@
 "use client";
 
+import { PERCENT_BASIS } from "@/lib/analysis/percent-bases";
 import { useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 import { useToast } from "../Toast";
@@ -221,7 +222,8 @@ export function ClassificationCard({ concentration, coverage }: Props) {
   return (
     <>
       <div className="bg-panel border border-edge rounded-lg p-4">
-        <h3 className="text-sm font-medium text-ink mb-4">Concentration Metrics</h3>
+        <h3 className="text-sm font-medium text-ink mb-1">Concentration Metrics</h3>
+        <p className="text-xs text-ink-dim mb-4">{PERCENT_BASIS.concentrationCaption}</p>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
           {/* HHI, its sentence and the effective-position count restate the
               book's weights, so they mask like the same figures on the Risk
@@ -268,7 +270,7 @@ export function ClassificationCard({ concentration, coverage }: Props) {
                 <XAxis type="number" tickFormatter={pctTickFormatter} tick={{ fill: "var(--color-ink-faint)", fontSize: 11 }} />
                 <YAxis type="category" dataKey="symbol" tick={{ fill: "var(--color-ink-dim)", fontSize: 11 }} width={70} interval={0} />
                 <Tooltip
-                  formatter={(value: number | string | undefined) => [pctTooltipFormatter(value), "Weight"]}
+                  formatter={(value: number | string | undefined) => [pctTooltipFormatter(value), `Weight (${PERCENT_BASIS.concentration})`]}
                   contentStyle={{
                     backgroundColor: "var(--color-panel)",
                     border: "1px solid var(--color-edge)",

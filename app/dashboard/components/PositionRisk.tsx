@@ -1,5 +1,6 @@
 "use client";
 
+import { PERCENT_BASIS } from "@/lib/analysis/percent-bases";
 import { useState, useEffect } from "react";
 import type {
   PositionRisk,
@@ -255,13 +256,17 @@ export function PositionRiskCard({ scope }: { scope?: string }) {
 
       <NarrativeBlock scope={scope ?? "all"} surfaceKey="position-risk" />
 
+      <p className="text-xs text-ink-dim mb-2">{PERCENT_BASIS.positionRiskWeightCaption}</p>
+
       {/* ── Position table ── */}
       <ScrollFade>
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b border-edge text-ink-faint text-xs">
               <th className="text-left py-2 pr-4 font-medium">Position</th>
-              <th className="text-right py-2 px-3 font-medium">Weight</th>
+              <th className="text-right py-2 px-3 font-medium" title={PERCENT_BASIS.positionRiskWeight}>
+                Weight
+              </th>
               <th className="text-right py-2 px-3 font-medium">Volatility</th>
               <th className="text-right py-2 px-3 font-medium">Corr w/ Port</th>
               <th className="text-right py-2 pl-3 font-medium">Risk Contrib</th>
