@@ -1,5 +1,11 @@
 import type Database from "better-sqlite3";
-import { easternDaySql } from "@/lib/db/eastern-day-sql";
+import { easternDaySql, unmaturedSecuritySql } from "@/lib/db/eastern-day-sql";
+import { todayET } from "@/lib/calendar/date-utils";
+import {
+  estimateBondRateLeg,
+  type BondUnmodelledReason,
+  type RateDurationSource,
+} from "@/lib/compute/bond-duration";
 import {
   reconcileTwrAgainstStatements,
   type TwrReconcileResult,
@@ -67,19 +73,51 @@ export interface AnalysisTrustState {
    *  `stalePrices` (a stale price is old; this is absent), so neither count
    *  changes meaning. Same holdings universe as `stalePrices`. */
   neverPriced: { count: number; symbols: string[] };
+  /** Held, unmatured bonds, each judged by `estimateBondRateLeg`: the same
+   *  rule, on the same stored inputs, as the Fixed Income card. One row per
+   *  security. totalBonds = storedCount + estimated.length + missing.length. */
   bondDuration: {
     totalBonds: number;
+    /** Bonds that have a duration, stored or estimated (storedCount + estimated.length). */
     withDuration: number;
-    /** The held bonds with no duration yet, by symbol — one row per security,
-     *  the same grain as the two counts (missing.length = totalBonds − withDuration). */
+    /** Bonds whose duration is the stored figure. */
+    storedCount: number;
+    /** Bonds whose duration is worked out from their own maturity, coupon and price. */
+    estimated: EstimatedDurationBond[];
+    /** Bonds the rule cannot model, with the reason. The only gap: nothing is
+     *  ever assumed for them (missing.length = totalBonds - withDuration). */
     missing: MissingDurationBond[];
   };
+}
+
+export interface EstimatedDurationBond {
+  securityId: number;
+  symbol: string;
+  name: string | null;
+  durationYears: number;
+  /** What the duration was derived from; never "stored". */
+  durationSource: RateDurationSource;
 }
 
 export interface MissingDurationBond {
   securityId: number;
   symbol: string;
   name: string | null;
+  /** Why the bond is not modelled. */
+  reason: BondUnmodelledReason | null;
+}
+
+interface BondDurationRow {
+  securityId: number;
+  symbol: string;
+  name: string | null;
+  security_type: string;
+  sector: string | null;
+  fund_category: string | null;
+  duration_years: number | null;
+  maturity_date: string | null;
+  coupon_rate: number | null;
+  bond_price: number | null;
 }
 
 const STALE_PRICE_DAYS = 4;
@@ -187,7 +225,9 @@ function walkAccountChain(
 
 export function getAnalysisTrustState(
   db: Database.Database,
-  accountIds?: number[]
+  accountIds?: number[],
+  /** The Eastern calendar date the bond durations and the maturity cut are judged on. */
+  today: string = todayET(),
 ): AnalysisTrustState {
   // `undefined` is every account; a defined empty list is NO accounts.
   const { sql: accountFilter, params } = accountScopeAndSql(accountIds);
@@ -292,43 +332,68 @@ export function getAnalysisTrustState(
     .all(...params) as { symbol: string }[];
 
   // ── Bond duration coverage ───────────────────────────────────────────
-  const bondRow = db
+  // Every bond is judged by `estimateBondRateLeg`, the one duration rule the
+  // Fixed Income card and the scenario engines use, with the same stored
+  // inputs (latest price included). A bond the card can model is therefore
+  // never listed here as lacking a duration. Same Eastern-day maturity cut as
+  // the card: a bond past its maturity date is no longer a position.
+  const bondRows = db
     .prepare(
       `
     WITH latest AS (
       SELECT h.security_id FROM holdings h
       WHERE ${latestHoldingsPredicate({ accountFilter })}
       GROUP BY h.security_id
+    ),
+    latest_prices AS (
+      SELECT security_id, close_price
+      FROM prices
+      WHERE (security_id, date) IN (
+        SELECT security_id, MAX(date) FROM prices GROUP BY security_id
+      )
     )
-    SELECT
-      COUNT(s.id) AS total_bonds,
-      COUNT(s.duration_years) AS with_duration
+    SELECT s.id AS securityId, s.symbol, s.name, s.security_type, s.sector,
+           s.fund_category, s.duration_years, s.maturity_date, s.coupon_rate,
+           lp.close_price AS bond_price
     FROM latest l
     JOIN securities s ON s.id = l.security_id
+    LEFT JOIN latest_prices lp ON lp.security_id = s.id
     WHERE LOWER(s.security_type) = 'bond'
-  `
-    )
-    .get(...params) as { total_bonds: number; with_duration: number };
-
-  // Same CTE and bond predicate as the counts above, so the list can never
-  // disagree with the n/N it explains.
-  const missingDurationBonds = db
-    .prepare(
-      `
-    WITH latest AS (
-      SELECT h.security_id FROM holdings h
-      WHERE ${latestHoldingsPredicate({ accountFilter })}
-      GROUP BY h.security_id
-    )
-    SELECT s.id AS securityId, s.symbol, s.name
-    FROM latest l
-    JOIN securities s ON s.id = l.security_id
-    WHERE LOWER(s.security_type) = 'bond'
-      AND s.duration_years IS NULL
+      AND ${unmaturedSecuritySql("s", today)}
     ORDER BY s.symbol
   `
     )
-    .all(...params) as MissingDurationBond[];
+    .all(...params) as BondDurationRow[];
+
+  let storedBonds = 0;
+  const estimatedBonds: EstimatedDurationBond[] = [];
+  const missingDurationBonds: MissingDurationBond[] = [];
+  for (const row of bondRows) {
+    const leg = estimateBondRateLeg(
+      {
+        security_type: row.security_type,
+        security_name: row.name,
+        sector: row.sector,
+        fund_category: row.fund_category,
+        duration_years: row.duration_years,
+        maturity_date: row.maturity_date,
+        coupon_rate: row.coupon_rate,
+        bond_price: row.bond_price,
+      },
+      0,
+      today,
+    );
+    const id = { securityId: row.securityId, symbol: row.symbol, name: row.name };
+    const duration = leg?.durationYears;
+    if (typeof duration !== "number" || !Number.isFinite(duration) || !leg?.durationSource) {
+      // Not modelled: listed with the reason, never given a figure.
+      missingDurationBonds.push({ ...id, reason: leg?.unmodelledReason ?? null });
+    } else if (leg.durationSource === "stored") {
+      storedBonds += 1;
+    } else {
+      estimatedBonds.push({ ...id, durationYears: duration, durationSource: leg.durationSource });
+    }
+  }
 
   // ── Independent Dietz cross-check ────────────────────────────────────
   // Semantic for the rollup field `crossCheckedThru`: "all accounts have an
@@ -426,8 +491,10 @@ export function getAnalysisTrustState(
       symbols: neverPricedRows.map((r) => r.symbol),
     },
     bondDuration: {
-      totalBonds: bondRow.total_bonds,
-      withDuration: bondRow.with_duration,
+      totalBonds: bondRows.length,
+      withDuration: storedBonds + estimatedBonds.length,
+      storedCount: storedBonds,
+      estimated: estimatedBonds,
       missing: missingDurationBonds,
     },
   };

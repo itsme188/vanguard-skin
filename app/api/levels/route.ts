@@ -113,7 +113,8 @@ export async function POST(request: NextRequest) {
     // QA security-detail-levels--past-expiry-accepted-renders-armed-never-fires:
     // a brand-new level with an already-past expires_at used to be accepted
     // silently (200) and render in the active list looking armed, but
-    // getArmedLevels/findCrossedLevels filter `expires_at >= date('now')` —
+    // getArmedLevels/findCrossedLevels filter `expires_at >=` the Eastern day
+    // (a bound todayET(), no longer SQLite's UTC date('now')) —
     // the scanner permanently excludes it and it can never fire. Reject at
     // creation with an honest 400 instead. This gate is create-only (POST
     // never carries an `id`, unlike PATCH's edit path) so it never touches

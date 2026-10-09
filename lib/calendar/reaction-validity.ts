@@ -29,10 +29,10 @@
  *
  * Evidence, strongest first:
  *   1. `captured_at` on the snapshot (written by the Mac runner since
- *      2026-10-08). Earlier than t0 + window  =>  the whole snapshot is
+ *      2026-10-08, and by the Worker's capture as well). Earlier than t0 + window  =>  the whole snapshot is
  *      premature. At or after it  =>  every usable leg is a measurement, even
  *      a flat one.
- *   2. No `captured_at` (older rows, and every snapshot the Worker captures):
+ *   2. No `captured_at` (older rows, from either side):
  *      a) a pre/post pair with the identical price is not trusted as a move;
  *      b) a leg that rounds to exactly 0.00% on a row whose `enriched_at`
  *         stamp falls before the window could have been measured is not

@@ -8,7 +8,7 @@ export async function GET(request: NextRequest) {
     const { searchParams } = new URL(request.url);
     const accountIdParam = searchParams.get("accountId");
     const scope = searchParams.get("scope");
-    // resolveScope, never resolveScopeToSingleId: a scope is a SET of accounts.
+    // resolveScope, never a first-id collapse: a scope is a SET of accounts.
     const accountIds = accountIdParam ? [Number(accountIdParam)] : resolveScope(db, scope);
 
     const result = computePortfolioGreeks(db, { accountIds });

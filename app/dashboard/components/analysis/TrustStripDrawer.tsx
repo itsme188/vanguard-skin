@@ -11,6 +11,7 @@ import { DIETZ_CONSISTENT_BP, type DietzBand } from "@/lib/compute/dietz";
 import { PrivateText, Pct, Count } from "@/lib/privacy/components";
 import { Chip, type ChipTone } from "@/app/dashboard/components/Chip";
 import { SymbolLink } from "@/app/dashboard/components/SymbolLink";
+import { describeBondDuration } from "@/app/dashboard/components/FixedIncomeCard";
 import { formatEnrichedAtET } from "@/lib/format";
 import apiFetch from "@/lib/http/apiFetch";
 import { networkFailureMessage, readMutationResult } from "@/lib/ui/mutation-result";
@@ -524,6 +525,8 @@ function PerformanceContent({ state }: { state: AnalysisTrustState }) {
 
 function BondDurationContent({ state }: { state: AnalysisTrustState }) {
   const { bondDuration } = state;
+  // Wording comes from the Fixed Income card (describeBondDuration), so the
+  // two surfaces name a bond's duration, or the reason it has none, alike.
   return (
     <div className="space-y-3">
       {bondDuration.totalBonds === 0 ? (
@@ -534,13 +537,45 @@ function BondDurationContent({ state }: { state: AnalysisTrustState }) {
             <span className="text-2xl font-bold text-ink">
               <PrivateText>{`${bondDuration.withDuration}/${bondDuration.totalBonds}`}</PrivateText>
             </span>
-            <span className="text-sm text-ink-faint">bonds with duration data</span>
+            <span className="text-sm text-ink-faint">bonds with a duration</span>
           </div>
+          <p className="text-xs text-ink-dim">
+            <PrivateText>
+              {`${bondDuration.storedCount} stored · ${bondDuration.estimated.length} estimated · ${bondDuration.missing.length} not modelled`}
+            </PrivateText>
+          </p>
+          {bondDuration.estimated.length > 0 && (
+            <div>
+              <p className="text-xs font-medium text-ink-faint uppercase tracking-wide mb-2">
+                Estimated
+              </p>
+              <ul className="space-y-1.5">
+                {bondDuration.estimated.map((bond) => (
+                  <li key={bond.securityId} className="flex items-baseline gap-2 text-xs min-w-0">
+                    <SymbolLink
+                      securityId={bond.securityId}
+                      symbol={bond.symbol}
+                      className="font-mono text-ink-dim shrink-0"
+                    />
+                    <span className="text-ink-faint truncate">{describeBondDuration(bond).note}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {bondDuration.estimated.length + bondDuration.missing.length > 0 && (
+            <p className="text-xs text-ink-faint">
+              An estimate is worked out from the bond&apos;s own maturity,
+              coupon and price, as on the Fixed Income card. A stored figure
+              is written by a maintenance step, not when a statement is
+              imported.
+            </p>
+          )}
           {bondDuration.missing.length > 0 && (
             <>
               <div>
                 <p className="text-xs font-medium text-ink-faint uppercase tracking-wide mb-2">
-                  No duration yet
+                  Not modelled
                 </p>
                 <ul className="space-y-1.5">
                   {bondDuration.missing.map((bond) => (
@@ -550,17 +585,18 @@ function BondDurationContent({ state }: { state: AnalysisTrustState }) {
                         symbol={bond.symbol}
                         className="font-mono text-ink-dim shrink-0"
                       />
-                      {bond.name && (
-                        <span className="text-ink-faint truncate">{bond.name}</span>
-                      )}
+                      <span className="text-ink-faint truncate">
+                        {describeBondDuration({ durationYears: null, unmodelledReason: bond.reason }).note}
+                        {bond.name ? ` · ${bond.name}` : ""}
+                      </span>
                     </li>
                   ))}
                 </ul>
               </div>
               <p className="text-xs text-ink-faint">
-                Duration is worked out from each bond&apos;s maturity date. The
-                bonds listed above are still waiting for that. It runs as a
-                maintenance step, not when a statement is imported.
+                No duration is assumed for a bond that cannot be modelled. It
+                is left out of the average duration and of rate scenarios
+                until the missing input is on file.
               </p>
             </>
           )}

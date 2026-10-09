@@ -57,7 +57,7 @@ export async function GET(request: NextRequest) {
     const endDate = searchParams.get("endDate") ?? undefined;
     const accountIdParam = searchParams.get("accountId");
     const scope = searchParams.get("scope");
-    // resolveScope, never resolveScopeToSingleId: a scope is a SET of
+    // resolveScope, never a first-id collapse: a scope is a SET of
     // accounts and collapsing it to the first id measures a different book
     // than every other card on the page (the Concentration Metrics card next
     // to this one passes the whole set). Undefined = whole portfolio.

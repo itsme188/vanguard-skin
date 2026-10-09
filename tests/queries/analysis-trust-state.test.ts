@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import { getAnalysisTrustState } from "@/lib/queries/analysis-trust-state";
+import { computeFixedIncomeExposure } from "@/lib/compute/fixed-income-exposure";
 import {
   classifyOptionSectors,
   SECTOR_CLASSIFY_LAST_RUN_KEY,
@@ -230,12 +231,103 @@ describe("getAnalysisTrustState", () => {
     expect(state.bondDuration.withDuration).toBe(1);
     // A bond held in two accounts is one row, like the count beside it.
     expect(state.bondDuration.missing).toEqual([
-      { securityId: 11, symbol: "AAABOND", name: "Alpha Corp Note" },
-      { securityId: 10, symbol: "ZZZBOND", name: "Zeta Corp Note" },
+      { securityId: 11, symbol: "AAABOND", name: "Alpha Corp Note", reason: "no-maturity" },
+      { securityId: 10, symbol: "ZZZBOND", name: "Zeta Corp Note", reason: "no-maturity" },
     ]);
     expect(state.bondDuration.missing.length).toBe(
       state.bondDuration.totalBonds - state.bondDuration.withDuration,
     );
+  });
+
+  // The trust state and the Fixed Income card read one rule
+  // (estimateBondRateLeg), so a bond the card can model is never listed here
+  // as lacking a duration. Synthetic names and round figures.
+  describe("bond duration: stored, estimated, not modelled", () => {
+    const TODAY = "2030-01-15";
+
+    function seedFour(): void {
+      db.prepare(
+        `INSERT INTO securities (id, symbol, name, security_type, currency, duration_years, coupon_rate, maturity_date) VALUES
+           (20, 'ZZSTORED', 'ZZ Corp 3% Note', 'Bond', 'USD', 4, 3, '2035-01-15'),
+           (21, 'ZZCOUPON', 'ZZ Corp Senior Note', 'Bond', 'USD', NULL, 4, '2035-01-15'),
+           (22, 'ZZBILL', 'United States Treasury Bill', 'Bond', 'USD', NULL, NULL, '2030-07-15'),
+           (23, 'ZZFLOAT', 'ZZ Corp Floating Rate Note', 'Bond', 'USD', NULL, 5, '2033-01-15')`,
+      ).run();
+      db.prepare(
+        `INSERT INTO holdings (account_id, security_id, as_of_date, quantity, source_key) VALUES
+           (1, 20, '2030-01-14', 1000, 'b-20'),
+           (1, 21, '2030-01-14', 1000, 'b-21'),
+           (1, 22, '2030-01-14', 1000, 'b-22'),
+           (3, 23, '2030-01-14', 1000, 'b-23')`,
+      ).run();
+      db.prepare(
+        `INSERT INTO prices (security_id, date, close_price) VALUES
+           (20, '2030-01-14', 100), (21, '2030-01-14', 100),
+           (22, '2030-01-14', 98), (23, '2030-01-14', 100)`,
+      ).run();
+    }
+
+    it("sorts each bond into stored, estimated (with what it came from) or not modelled (with why)", () => {
+      seedFour();
+      const { bondDuration } = getAnalysisTrustState(db, undefined, TODAY);
+      expect(bondDuration.totalBonds).toBe(4);
+      expect(bondDuration.storedCount).toBe(1);
+      expect(bondDuration.estimated.map((b) => [b.symbol, b.durationSource])).toEqual([
+        ["ZZBILL", "bill-maturity"],
+        ["ZZCOUPON", "coupon-yield"],
+      ]);
+      const bill = bondDuration.estimated.find((b) => b.symbol === "ZZBILL")!;
+      expect(bill.durationYears).toBeCloseTo(181 / 365, 6);
+      expect(bondDuration.missing).toEqual([
+        { securityId: 23, symbol: "ZZFLOAT", name: "ZZ Corp Floating Rate Note", reason: "not-fixed-coupon" },
+      ]);
+      // The count the cell shows: only the not-modelled bond is a gap.
+      expect(bondDuration.withDuration).toBe(3);
+      expect(bondDuration.missing.length).toBe(bondDuration.totalBonds - bondDuration.withDuration);
+    });
+
+    it("agrees with the Fixed Income card bond by bond", () => {
+      seedFour();
+      const card = computeFixedIncomeExposure(db, undefined, TODAY);
+      const { bondDuration } = getAnalysisTrustState(db, undefined, TODAY);
+      expect(card.bonds).toHaveLength(4);
+      for (const bond of card.bonds) {
+        const estimated = bondDuration.estimated.find((b) => b.symbol === bond.symbol);
+        const missing = bondDuration.missing.find((b) => b.symbol === bond.symbol);
+        if (bond.durationYears == null) {
+          expect(missing?.reason).toBe(bond.unmodelledReason);
+          expect(estimated).toBeUndefined();
+        } else if (bond.durationSource === "stored") {
+          expect(estimated).toBeUndefined();
+          expect(missing).toBeUndefined();
+        } else {
+          expect(estimated?.durationSource).toBe(bond.durationSource);
+          expect(estimated?.durationYears).toBe(bond.durationYears);
+          expect(missing).toBeUndefined();
+        }
+      }
+      expect(bondDuration.missing.length).toBe(card.unmeasuredBondCount);
+      expect(bondDuration.estimated.length).toBe(card.derivedBondCount);
+      expect(bondDuration.withDuration).toBe(card.bonds.length - card.unmeasuredBondCount);
+    });
+
+    it("respects the account scope; a defined empty list is no accounts", () => {
+      seedFour();
+      const ibkr = getAnalysisTrustState(db, [3], TODAY).bondDuration;
+      expect(ibkr.totalBonds).toBe(1);
+      expect(ibkr.withDuration).toBe(0);
+      expect(ibkr.missing.map((b) => b.symbol)).toEqual(["ZZFLOAT"]);
+      const none = getAnalysisTrustState(db, [], TODAY).bondDuration;
+      expect(none).toEqual({ totalBonds: 0, withDuration: 0, storedCount: 0, estimated: [], missing: [] });
+    });
+
+    it("a bond still counts on its maturity day (Eastern) and is gone the day after", () => {
+      seedFour();
+      expect(getAnalysisTrustState(db, undefined, "2030-07-15").bondDuration.totalBonds).toBe(4);
+      const after = getAnalysisTrustState(db, undefined, "2030-07-16").bondDuration;
+      expect(after.totalBonds).toBe(3);
+      expect(after.estimated.map((b) => b.symbol)).toEqual(["ZZCOUPON"]);
+    });
   });
 
   it("scopes the missing-duration bond list to the requested accounts", () => {

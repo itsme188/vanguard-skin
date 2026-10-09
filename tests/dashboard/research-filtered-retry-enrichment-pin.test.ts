@@ -72,7 +72,9 @@ describe("the shared handler behind Unfilter and Retry", () => {
   it("a refusal is explained in words and the list is reloaded", () => {
     const refusal = sliceBetween(handler, "if (!result.ok) {", "return;");
     expect(refusal).toContain("const reloaded = await reloadFilteredList();");
-    expect(refusal).toContain("Couldn't ${copy.verb} the article: ${result.message} It stays in the filtered list.");
+    expect(refusal).toContain(
+      'joinSentences(`Couldn\'t ${copy.verb} the article: ${result.message}`, "It stays in the filtered list.")',
+    );
     expect(refusal).toContain("if (!reloaded) restoreBefore();");
     expect(refusal).toContain("The list could not be refreshed and may be out of date.");
   });

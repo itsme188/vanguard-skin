@@ -1,6 +1,6 @@
 # Session Handoff — for Codex review
 
-**Waiting on:** USER (each is a `decision` record in the coordination register; `npm run inbox` lists them): `confirm-sprint-decisions-2026-10-08-night` (confirm or reverse what the overnight sprint decided, all eight waves; approve or decline PR #107); `confirm-phone-chat-layout`; and, carried from before, `giving-mark-lots-verified`, `broker-realized-gain-reports`, `tax-preparer-short-term-gift`, `confirm-gift-month-convention`, `confirm-builder-rulings-2026-10-07`, `github-support-history-purge`. CODEX: nothing assigned; a review of the merged sprint is welcome, especially section 3. CLAUDE: nothing.
+**Waiting on:** USER (each is a `decision` record in the coordination register; `npm run inbox` lists them): `confirm-sprint-decisions-2026-10-08-night` (confirm or reverse what the overnight sprint decided, all nine waves; approve or decline PR #107); `confirm-phone-chat-layout`; and, carried from before, `giving-mark-lots-verified`, `broker-realized-gain-reports`, `tax-preparer-short-term-gift`, `confirm-gift-month-convention`, `confirm-builder-rulings-2026-10-07`, `github-support-history-purge`. CODEX: nothing assigned; a review of the merged sprint is welcome, especially section 3. CLAUDE: nothing.
 
 > Rolling file, overwritten at each session close. Past handoffs: `git log -p docs/HANDOFF.md`.
 > Written by Claude Code so Codex can review changes and reasoning at full project context.
@@ -10,7 +10,7 @@
 
 ## 0. State at the end
 
-- `main` holds everything except the held migrations. The overnight sprint merged in eight steps: `f4feed84` (first half, 49 commits), then `04d5d787`, `1d92150a`, `30288312`, `7796af1d`, `605de55a`, `d9c77919` and one more merge for the eighth wave (waves two to eight, about 100 more commits).
+- `main` holds everything except the held migrations. The overnight sprint merged in eight steps: `f4feed84` (first half, 49 commits), then `04d5d787`, `1d92150a`, `30288312`, `7796af1d`, `605de55a`, `d9c77919` `b093ea5b` (eighth wave) and one small ninth-wave merge (waves two to nine, about 100 more commits).
 - **Deployed:** see section 2 for the commit each side runs.
 - **The nightly fixer is back on** (`qa/deep-qa-config.json`). It was paused for the whole sprint.
 - **PR #107 is open and NOT merged:** three additive migrations (096, 097, 098) and the code that uses them. It is up to date with `main` and was rehearsed on a copy of the live database. It waits for the owner.
@@ -32,6 +32,7 @@
 8. 2026-10-09 (about 02:15): sixth wave.
 9. 2026-10-09 (about 02:40): seventh wave, with the list of guards added.
 10. 2026-10-09 (about 03:20): eighth wave and closeout, with the Worker audit's open items.
+11. 2026-10-09 (about 03:45): a small ninth wave found by the final browser check (the trust strip and the Fixed Income card now use one bond-duration estimator).
 
 File lists: `git log --stat 6b06dbb0..HEAD` for waves two to eight; `git log --stat 845b756b..f4feed84` for the first half.
 
@@ -52,11 +53,11 @@ File lists: `git log --stat 6b06dbb0..HEAD` for waves two to eight; `git log --s
 | Check | Result |
 |---|---|
 | Type-check, Mac and Worker, at every merge | clean (it caught four slips that tests did not: a missing import, two duplicate imports, three test typings) |
-| Full suite on `main` at the last merge | see the closeout line below (16,652 at the seventh merge; 14,512 at the start of the day) |
+| Full suite on `main` at the last merge | 16,762 passed, 0 failed (14,512 at the start of the day) |
 | Worker suite | 841 passed |
-| Codex | eight code reviews, one design review, one plan review, two second opinions; every finding fixed or recorded as held with the reason |
+| Codex | nine code reviews, one design review, one plan review, two second opinions; every finding fixed or recorded as held with the reason |
 | Reviews that ran the code | seven, one per wave from the second on, each with probes against `main`'s own code; all returned ready, their should-fix items fixed before the merge |
-| Browser, sandbox copy | smoke 4 of 4 at every wave; six passes across desktop and phone width and both themes, with contrast measured by script |
+| Browser, sandbox copy | smoke 4 of 4 at every wave; a final look-only pass of the finished build with every data load healthy; six measured passes across desktop and phone width and both themes, with contrast measured by script |
 | PR #107 | type-check clean; Mac suite 16,935 and Worker suite 936 on the branch; migrations rehearsed on a copy of the live database |
 
 Notes on the evidence:

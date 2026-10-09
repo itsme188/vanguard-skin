@@ -7,6 +7,7 @@ import { useToast } from "../components/Toast";
 import { useConfirmPrompt } from "../components/useConfirmPrompt";
 import apiFetch, { type ApiFetch } from "@/lib/http/apiFetch";
 import { networkFailureMessage, readMutationResult } from "@/lib/ui/mutation-result";
+import { joinSentences } from "@/lib/ui/join-sentences";
 
 /**
  * What the confirm says for a row that "Fix date" minted (owner ruling
@@ -145,7 +146,7 @@ export function EarningsDeleteButton({
         toast(
           outcome.kind === "unreachable"
             ? `${networkFailureMessage(`remove the event${label}`)} The row is unchanged.`
-            : `Couldn't remove the event${label}: ${outcome.message} The row is unchanged.`,
+            : joinSentences(`Couldn't remove the event${label}: ${outcome.message}`, "The row is unchanged."),
           "error",
         );
         return;
