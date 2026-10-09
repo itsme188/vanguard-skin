@@ -435,35 +435,35 @@ describe("readers that load rows from the database", () => {
       expect(res.status).toBe(200);
       return (await res.json()) as { fullHtml: string; reactionLegAt: string | null };
     }
-    // Table cells as text: tags become one bar; the renderer prints a dash cell as &nbsp;.
+    // Table cells as text: tags become one bar; a recap page prints a dash cell as a dash (previews keep the fill-in box).
     const cells = (html: string) =>
       html.replace(/<[^>]+>/g, "|").replace(/\|+/g, "|");
 
     it("all legs measured: the percents and the measured-at instant", async () => {
       const body = await viewer(MEASURED);
       const text = cells(body.fullHtml);
-      expect(text).toContain("ZZA @ T+2h|&nbsp;|+4.00%|");
-      expect(text).toContain("SPY @ T+2h|&nbsp;|+0.50%|");
+      expect(text).toContain("ZZA @ T+2h|—|+4.00%|");
+      expect(text).toContain("SPY @ T+2h|—|+0.50%|");
       expect(text).not.toContain("pending");
       expect(body.reactionLegAt).toBe("2026-09-10T22:15:00.000Z");
     });
     it("one pending leg: that row says pending", async () => {
       const text = cells((await viewer(LEGACY_SPY_ECHO)).fullHtml);
-      expect(text).toContain("SPY @ T+2h|&nbsp;|pending|");
-      expect(text).toContain("QQQ @ T+2h|&nbsp;|-0.80%|");
+      expect(text).toContain("SPY @ T+2h|—|pending|");
+      expect(text).toContain("QQQ @ T+2h|—|-0.80%|");
     });
     it("all pending: every row says pending and no measured-at instant is claimed", async () => {
       const body = await viewer(PREMATURE);
       const text = cells(body.fullHtml);
-      expect(text).toContain("ZZA @ T+2h|&nbsp;|pending|");
-      expect(text).toContain("SPY @ T+2h|&nbsp;|pending|");
-      expect(text).toContain("QQQ @ T+2h|&nbsp;|pending|");
+      expect(text).toContain("ZZA @ T+2h|—|pending|");
+      expect(text).toContain("SPY @ T+2h|—|pending|");
+      expect(text).toContain("QQQ @ T+2h|—|pending|");
       expect(text).not.toContain("+4.00%");
       expect(body.reactionLegAt).toBeNull();
     });
     it("legacy zero move on a row enriched before the window: pending", async () => {
       const text = cells((await viewer(LEGACY_ZERO_SPY, EARLY_ENRICHED_AT)).fullHtml);
-      expect(text).toContain("SPY @ T+2h|&nbsp;|pending|");
+      expect(text).toContain("SPY @ T+2h|—|pending|");
     });
   });
 });
