@@ -980,3 +980,26 @@ The owner said the first half was too little for an all-night sprint, so the spr
 - A reviewer that ran the code found three real holes that a reading review (Codex, no findings) did not: the scan going blind after one later trade, a stored coupon bypassing the name guard, and chat figures that shared a sign but not a basis.
 - "Claims X is included" and "prints X" must come from one list. Two separate checks drifted the same night they were written.
 - The clock was mis-stated to the owner twice in one night from estimates. Run `date`.
+
+## 2026-10-08 (toward midnight) — Second overnight sprint, third wave
+
+Thirteen more commits under the same authority, merged the same night. One Codex review (one medium finding, held, see below), one review by an agent that ran the code ("ready"; its small items fixed before the merge), a browser pass on a sandbox copy (one phone layout defect, fixed). The QA ledger was also stamped: open rows 102 to 40 (62 marked fixed with their commit, 15 annotated and left open because stored data or a held piece remains).
+
+**Decisions taken. The owner should confirm or reverse each.**
+1. **A manual or nudge Send on the later of two hand-entered earnings entries is refused**, with a message naming the earlier date (Codex's second opinion backed this; it was the only undecided item it would build). Consequence to know: once a second hand-entered entry exists for a company, the automatic path sends no recap for the later one and says nothing; the reason shows only on a manual press. One constant in `lib/earnings/send-service.ts` reverses it.
+2. **In chat, an account name resolves as an exact name, then a scope word the way the dashboard reads it, then a substring only when it matches one account; anything else is an error listing the valid names.** Before, the word "vanguard" answered with the Roth account. Each scope word covers one account on the live book today (checked read-only), so no tool errors now.
+3. **Evening movers and the Significant Moves card use the cloud's security types** (stock, ETF, mutual fund). An option or bond can no longer be a mover.
+4. **A vendor-only bogey entry is no longer called the owner's curated bogeys**, on the Mac prompt or in the cloud email. The cloud says "no curated bogeys are shown here", which is true whether none exist or one exists that the cloud cannot show.
+5. **A warning lists identical ledger rows dated after the last statement** as a possible duplicate import. It is a question, never a critical hit, never a score cap.
+6. **A defined empty account list means no accounts** in the factor and Greeks engines.
+7. **The five remaining native browser prompts use the app dialog**, including the Undo question in Import History. Only the question's presentation changed there: same warning text, same undo logic. The import flow is on the do-not-change list, so this one is flagged.
+8. The factors page anchors its week-ago comparison on the Eastern day (it was a day late between 20:00 and midnight Eastern).
+
+**Held from this wave.**
+- **Codex, medium:** a named scope that matches no account resolves to "every account" (`resolveScope`, documented behaviour, 22 call sites). It cannot happen on a book that has all three scopes. Changing it touches every scope route, so it waits for the owner. The risk engine has the same reading of an empty list.
+- **Codex's second opinion on the eighteen undecided items:** hold all but one for the owner. Its list, with a recommended answer per item, is in gitignored `docs/private/sprint-2026-10-08/CODEX-second-opinion-2026-10-08.md`.
+- The eight chat tools that read one account at a time return an error for a scope of two or more accounts; widening them needs `accountIds` on their query functions.
+
+**Not seen in a browser:** the rotate-credential dialog (packaged app only), the corporate-action undo dialog (no hand-entered action on file), the vendor-row removal wording and every Hub dialog (no earnings rows this week on the sandbox), the staleness notice.
+
+**Ledger hygiene noticed, not changed:** 491 older rows are marked fixed with no fix commit; two pairs of duplicate ids; nine fix-commit values are free text.
