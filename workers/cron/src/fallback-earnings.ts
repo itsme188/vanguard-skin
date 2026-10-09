@@ -328,13 +328,35 @@ function dedupeClusterByFamily(events: CalendarEventRow[]): CalendarEventRow[] {
  *
  * Field absent (a snapshot older than v13) or not a list: the calendar rows
  * are returned as they are, which is the behaviour before v13.
+ *
+ * The field is as old as the snapshot. A row the owner deleted, or the
+ * reconciler replaced, since then is named in the armed-events delta
+ * (`removedEventIds` / `supersededEventIds`); such a field row is dropped
+ * here, under the same "strictly newer than the snapshot" gate
+ * `effectiveCalendarEvents` uses for in-window rows. Without this a deleted
+ * earlier row would keep silencing the later one until the next snapshot.
+ * The delta can only REMOVE rows from the rule's input, never add one.
+ *
+ * A field row whose `symbol` is not text is dropped: the rule upper-cases the
+ * symbol, and one bad row must never stop every other company's email.
  */
 export function manualTwinRuleRows(
   snapshot: Snapshot,
   events: readonly CalendarEventRow[],
+  delta: ArmedEventsDelta | null = null,
 ): readonly ManualTwinRow[] {
   const extra = snapshot.manualEarningsRows;
   if (!Array.isArray(extra) || extra.length === 0) return events;
+  const gone = new Set<number>();
+  if (
+    delta &&
+    (snapshot.schemaVersion ?? 0) >= 11 &&
+    snapshot.armedGeneration != null &&
+    delta.generation > snapshot.armedGeneration
+  ) {
+    for (const id of delta.supersededEventIds ?? []) gone.add(id);
+    for (const r of delta.removedEventIds ?? []) gone.add(r.id);
+  }
   const seen = new Set(events.map((e) => e.id));
   const rows: ManualTwinRow[] = [...events];
   for (const r of extra as unknown[]) {
@@ -342,7 +364,8 @@ export function manualTwinRuleRows(
     const row = r as Partial<ManualTwinRow>;
     if (typeof row.id !== "number" || !Number.isFinite(row.id)) continue;
     if (typeof row.event_date !== "string" || typeof row.source !== "string") continue;
-    if (seen.has(row.id)) continue;
+    if (typeof row.symbol !== "string") continue;
+    if (seen.has(row.id) || gone.has(row.id)) continue;
     seen.add(row.id);
     rows.push(row as ManualTwinRow);
   }
@@ -391,7 +414,7 @@ function buildWrapCluster(
   // date; the later row is not a recap this cluster expects (owner ruling
   // 2026-10-07). Mirrors lib/earnings/wrap.ts::getExpectedRecapCluster.
   const ignoredManualTwins = emailIgnoredManualTwins(
-    manualTwinRuleRows(snapshot, eff.events),
+    manualTwinRuleRows(snapshot, eff.events, delta),
     issuerSiblings,
   );
 
@@ -784,7 +807,7 @@ async function findCandidatesFromSnapshot(
   // 2026-10-07). Same rule, same file contents, as the Mac finders
   // (lib/earnings/manual-twin-email.ts <-> ./manual-twin-email.ts).
   const ignoredManualTwins = emailIgnoredManualTwins(
-    manualTwinRuleRows(snapshot, eff.events),
+    manualTwinRuleRows(snapshot, eff.events, delta),
     issuerSiblings,
   );
 

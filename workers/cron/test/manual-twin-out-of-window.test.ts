@@ -50,8 +50,8 @@ const TWO_HOURS_BEFORE_LATER = "2026-06-11T18:00:00Z";
 const LATER_ENRICHED_AT = "2026-06-11 20:30:00";
 const AFTER_LATER_ENRICHED = "2026-06-11T21:00:00Z";
 
-function makeEnv(): FallbackEnv {
-  const store = new Map<string, string>();
+function makeEnv(seed: Record<string, string> = {}): FallbackEnv {
+  const store = new Map<string, string>(Object.entries(seed));
   return {
     CRON_KV: {
       get: vi.fn(async (key: string) => store.get(key) ?? null),
@@ -273,5 +273,139 @@ describe("manualTwinRuleRows (the rule's input at both Worker call sites)", () =
       const after = new Set(emailIgnoredManualTwins(rows, issuerSiblings).keys());
       for (const id of before) expect(after.has(id)).toBe(true);
     }
+  });
+});
+
+describe("a hand-entered row deleted or replaced after the nightly snapshot", () => {
+  // The Mac posts the ids of deleted and replaced earnings rows to the Worker
+  // between snapshots (KV key "armed-events"). In-window calendar rows already
+  // honour those lists; the field's out-of-window rows must too, or a row the
+  // owner deleted keeps silencing the later one until the next snapshot.
+  const SNAPSHOT_GENERATION = 5;
+  const withWatermark = (snapshot: Snapshot): Snapshot =>
+    ({ ...snapshot, armedGeneration: SNAPSHOT_GENERATION, armedEvents: [] }) as unknown as Snapshot;
+  const deltaOf = (generation: number, lists: Record<string, unknown>) => ({
+    generation,
+    entries: [],
+    supersededEventIds: [],
+    removedEventIds: [],
+    ...lists,
+  });
+  const removedEarlier = [
+    { id: EARLIER.id, eventDate: EARLIER.eventDate, removedAt: "2026-06-11T12:00:00.000Z" },
+  ];
+  const fieldSnapshot = () =>
+    withWatermark(snapshotOf([calendarRow(LATER)], [manualRow(EARLIER), manualRow(LATER)]));
+  const envWith = (delta: unknown) => makeEnv({ "armed-events": JSON.stringify(delta) });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    (sendEmail as ReturnType<typeof vi.fn>).mockResolvedValue({ id: "mock-email-id" });
+  });
+
+  it("no newer delta: the earlier row still silences the later one", async () => {
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(fieldSnapshot());
+    const result = await runEarningsFallback(makeEnv(), { now: new Date(TWO_HOURS_BEFORE_LATER) });
+    expect(sendEmail).not.toHaveBeenCalled();
+    expect(touchedIds(result)).not.toContain(LATER.id);
+  });
+
+  it("the earlier row was deleted: the later row previews", async () => {
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(fieldSnapshot());
+    const env = envWith(deltaOf(SNAPSHOT_GENERATION + 1, { removedEventIds: removedEarlier }));
+    const result = await runEarningsFallback(env, { now: new Date(TWO_HOURS_BEFORE_LATER) });
+    expect(sentIds(result)).toEqual([LATER.id]);
+  });
+
+  it("the earlier row was deleted: the later row's recap sends", async () => {
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(
+      withWatermark(snapshotOf([laterWithActual()], [manualRow(EARLIER), manualRow(LATER)])),
+    );
+    const env = envWith(deltaOf(SNAPSHOT_GENERATION + 1, { removedEventIds: removedEarlier }));
+    const result = await runEarningsFallback(env, { now: new Date(AFTER_LATER_ENRICHED) });
+    expect(sentIds(result)).toEqual([LATER.id]);
+  });
+
+  it("the earlier row was replaced (superseded): the later row previews", async () => {
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(fieldSnapshot());
+    const env = envWith(deltaOf(SNAPSHOT_GENERATION + 1, { supersededEventIds: [EARLIER.id] }));
+    const result = await runEarningsFallback(env, { now: new Date(TWO_HOURS_BEFORE_LATER) });
+    expect(sentIds(result)).toEqual([LATER.id]);
+  });
+
+  it("a delta no newer than the snapshot is not applied: the snapshot already reflects it", async () => {
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(fieldSnapshot());
+    const env = envWith(deltaOf(SNAPSHOT_GENERATION, { removedEventIds: removedEarlier }));
+    const result = await runEarningsFallback(env, { now: new Date(TWO_HOURS_BEFORE_LATER) });
+    expect(sendEmail).not.toHaveBeenCalled();
+    expect(touchedIds(result)).not.toContain(LATER.id);
+  });
+
+  it("a delta that names some other row changes nothing", async () => {
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(fieldSnapshot());
+    const env = envWith(
+      deltaOf(SNAPSHOT_GENERATION + 1, {
+        supersededEventIds: [777],
+        removedEventIds: [{ id: 778, eventDate: EARLIER.eventDate, removedAt: "2026-06-11T12:00:00.000Z" }],
+      }),
+    );
+    const result = await runEarningsFallback(env, { now: new Date(TWO_HOURS_BEFORE_LATER) });
+    expect(sendEmail).not.toHaveBeenCalled();
+    expect(touchedIds(result)).not.toContain(LATER.id);
+  });
+
+  it("manualTwinRuleRows drops a field row the delta lists as removed or superseded", () => {
+    const events = [calendarRow(LATER)] as unknown as Parameters<typeof manualTwinRuleRows>[1];
+    const THIRD = { id: 3, eventDate: "2026-06-04" };
+    const snapshot = withWatermark(
+      snapshotOf([], [manualRow(EARLIER), manualRow(THIRD), manualRow(LATER)]),
+    );
+    const delta = deltaOf(SNAPSHOT_GENERATION + 1, {
+      removedEventIds: removedEarlier,
+      supersededEventIds: [THIRD.id],
+    }) as unknown as Parameters<typeof manualTwinRuleRows>[2];
+    expect(manualTwinRuleRows(snapshot, events, delta).map((r) => r.id)).toEqual([LATER.id]);
+    // Without the delta both extra rows are kept.
+    expect(manualTwinRuleRows(snapshot, events).map((r) => r.id)).toEqual([
+      LATER.id,
+      EARLIER.id,
+      THIRD.id,
+    ]);
+  });
+});
+
+describe("a field row whose symbol is not text", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    (sendEmail as ReturnType<typeof vi.fn>).mockResolvedValue({ id: "mock-email-id" });
+  });
+
+  it("is ignored by manualTwinRuleRows", () => {
+    const events = [calendarRow(LATER)] as unknown as Parameters<typeof manualTwinRuleRows>[1];
+    const rows = manualTwinRuleRows(
+      snapshotOf(
+        [],
+        [
+          { ...manualRow({ id: 50, eventDate: "2026-06-03" }), symbol: 12345 },
+          { ...manualRow({ id: 51, eventDate: "2026-06-03" }), symbol: { ticker: SYMBOL } },
+          { ...manualRow({ id: 52, eventDate: "2026-06-03" }), symbol: null },
+          manualRow(EARLIER),
+        ],
+      ),
+      events,
+    );
+    expect(rows.map((r) => r.id)).toEqual([LATER.id, EARLIER.id]);
+    expect(() => emailIgnoredManualTwins(rows, issuerSiblings)).not.toThrow();
+  });
+
+  it("does not stop another company's email", async () => {
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(
+      snapshotOf(
+        [calendarRow(LATER)],
+        [{ ...manualRow({ id: 50, eventDate: "2026-06-03" }, "ZZB"), symbol: 12345 }, manualRow(LATER)],
+      ),
+    );
+    const result = await runEarningsFallback(makeEnv(), { now: new Date(TWO_HOURS_BEFORE_LATER) });
+    expect(sentIds(result)).toEqual([LATER.id]);
   });
 });

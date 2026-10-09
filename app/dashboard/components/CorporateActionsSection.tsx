@@ -9,6 +9,7 @@ import { Shares } from "@/lib/privacy/components";
 import apiFetch from "@/lib/http/apiFetch";
 import { useConfirmPrompt } from "./useConfirmPrompt";
 import { networkFailureMessage, readMutationResult } from "@/lib/ui/mutation-result";
+import { joinSentences } from "@/lib/ui/join-sentences";
 
 interface CorporateAction {
   id: number;
@@ -96,7 +97,7 @@ export function CorporateActionsSection({
 
       const result = await readMutationResult<{ action?: CorporateAction }>(res);
       if (!result.ok) {
-        setActionError(`Couldn't apply the corporate action: ${result.message} Nothing was changed.`);
+        setActionError(joinSentences(`Couldn't apply the corporate action: ${result.message}`, "Nothing was changed."));
         return;
       }
       const added = result.data.action;
@@ -133,7 +134,7 @@ export function CorporateActionsSection({
       });
       const result = await readMutationResult(res);
       if (!result.ok) {
-        setActionError(`Couldn't undo the corporate action: ${result.message} It is still applied.`);
+        setActionError(joinSentences(`Couldn't undo the corporate action: ${result.message}`, "It is still applied."));
         return;
       }
       setActions((prev) => prev.filter((a) => a.id !== actionId));

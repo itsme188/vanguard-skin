@@ -19,6 +19,7 @@ import { CHIP_TONE_CLASSES } from "@/app/dashboard/components/Chip";
 import { useEffect, useState } from "react";
 import apiFetch from "@/lib/http/apiFetch";
 import { networkFailureMessage, readMutationResult } from "@/lib/ui/mutation-result";
+import { joinSentences } from "@/lib/ui/join-sentences";
 
 interface FeatureModelRow {
   key: string;
@@ -83,9 +84,10 @@ export function AiModelsSection() {
       if (!result.ok || !result.data.features) {
         setRowStatus(key, {
           kind: "error",
-          message: `Not saved: ${
-            result.ok ? "the server sent no model list." : result.message
-          } The override is unchanged.`,
+          message: joinSentences(
+            `Not saved: ${result.ok ? "the server sent no model list." : result.message}`,
+            "The override is unchanged.",
+          ),
         });
         return;
       }

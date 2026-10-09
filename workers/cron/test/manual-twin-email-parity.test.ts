@@ -72,9 +72,11 @@ describe("manual-twin email rule parity (Worker mirror of lib/earnings/manual-tw
     ]) {
       // The rule's input is the calendar rows plus the snapshot's
       // `manualEarningsRows` (v13): the Mac reads every live hand-entered
-      // row, not a date window. See manual-twin-out-of-window.test.ts.
+      // row, not a date window. The armed-events delta is passed too, so a
+      // row deleted or replaced since the snapshot is dropped from the
+      // field's rows. See manual-twin-out-of-window.test.ts.
       expect(body).toMatch(
-        /emailIgnoredManualTwins\(\s*manualTwinRuleRows\(snapshot, eff\.events\),\s*issuerSiblings,?\s*\)/,
+        /emailIgnoredManualTwins\(\s*manualTwinRuleRows\(snapshot, eff\.events, delta\),\s*issuerSiblings,?\s*\)/,
       );
       expect(body).toContain("if (ignoredManualTwins.has(e.id)) continue;");
     }

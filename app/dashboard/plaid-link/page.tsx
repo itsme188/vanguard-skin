@@ -34,6 +34,7 @@
 import { useEffect, useState } from "react";
 import apiFetch from "@/lib/http/apiFetch";
 import { networkFailureMessage, readMutationResult } from "@/lib/ui/mutation-result";
+import { joinSentences } from "@/lib/ui/join-sentences";
 import { createPlaidLinkStore, type StoredLinkPayload } from "@/lib/plaid/link-storage";
 
 declare global {
@@ -155,7 +156,10 @@ export default function PlaidLinkPage() {
         } else {
           setState({
             kind: "error",
-            message: `Re-authenticated. Sync failed: ${result.message} You can retry from Settings.`,
+            message: joinSentences(
+              `Re-authenticated. Sync failed: ${result.message}`,
+              "You can retry from Settings.",
+            ),
           });
         }
       } catch {

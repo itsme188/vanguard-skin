@@ -13,6 +13,7 @@
 import { useEffect, useState } from "react";
 import apiFetch from "@/lib/http/apiFetch";
 import { networkFailureMessage, readMutationResult } from "@/lib/ui/mutation-result";
+import { joinSentences } from "@/lib/ui/join-sentences";
 import { PrivateText } from "@/lib/privacy/components";
 // R-D20: ONLY the client-safe module here — `callouts.ts` pulls in node:fs and
 // ./pdf (node:child_process) and `first-pass-prompt.ts` pulls in node:crypto,
@@ -132,7 +133,7 @@ export default function FirstPassRead({ eventId, read, activeRead, lastAttempt =
     try {
       const res = await apiFetch("/api/print-watch/callouts/accept", { method: "POST", body: JSON.stringify({ calloutId: c.id, accept }) });
       const result = await readMutationResult(res);
-      if (!result.ok) { setNote(`Not saved: ${result.message} The callout is unchanged.`); return; }
+      if (!result.ok) { setNote(joinSentences(`Not saved: ${result.message}`, "The callout is unchanged.")); return; }
       await onChanged();
     } catch { setNote(`${networkFailureMessage("save that choice")} The callout is unchanged.`); }
     finally { setBusy(null); }

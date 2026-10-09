@@ -20,6 +20,7 @@ import { CHIP_TONE_CLASSES } from "@/app/dashboard/components/Chip";
 import { useEffect, useState } from "react";
 import apiFetch from "@/lib/http/apiFetch";
 import { networkFailureMessage, readMutationResult } from "@/lib/ui/mutation-result";
+import { joinSentences } from "@/lib/ui/join-sentences";
 
 interface PlaidAccountInfo {
   id: string;
@@ -116,6 +117,9 @@ export function PlaidSection() {
   const [mapSaving, setMapSaving] = useState(false);
   const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null);
   const [syncing, setSyncing] = useState(false);
+  // A re-read that failed AFTER a sync that finished. Its own line: it must
+  // never replace the section or hide the sync's result.
+  const [refreshError, setRefreshError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -138,18 +142,23 @@ export function PlaidSection() {
     };
   }, []);
 
-  async function load() {
+  // The re-read after a sync whose outcome has already been said. A re-read
+  // that fails is not the sync failing: the settings on screen stay as they
+  // were (only the "last synced" time is out of date) and the failure gets
+  // its own line under the sync result.
+  async function refreshAfterWrite() {
+    const failed = "The sync finished; the list could not be refreshed. Reload to see it.";
     try {
       const loaded = await readPlaidSettings(await fetch("/api/settings/plaid"));
       if (!loaded.ok) {
-        setLoadError(loaded.message);
+        setRefreshError(failed);
         return;
       }
       setPayload(loaded.payload);
       setDraftMap(loaded.payload.accountMap);
-      setLoadError(null);
+      setRefreshError(null);
     } catch {
-      setLoadError(networkFailureMessage("load the Plaid settings"));
+      setRefreshError(failed);
     }
   }
 
@@ -166,7 +175,10 @@ export function PlaidSection() {
       if (!result.ok) {
         setMapStatus({
           kind: "error",
-          message: `Mapping not saved: ${result.message} The saved mapping is unchanged.`,
+          message: joinSentences(
+            `Mapping not saved: ${result.message}`,
+            "The saved mapping is unchanged.",
+          ),
         });
         return;
       }
@@ -186,6 +198,7 @@ export function PlaidSection() {
   async function handleSync() {
     setSyncing(true);
     setSyncStatus(null);
+    setRefreshError(null);
     try {
       const res = await apiFetch("/api/plaid/sync", { method: "POST" });
       const result = await readMutationResult<SyncResponse>(res);
@@ -210,7 +223,7 @@ export function PlaidSection() {
         unmatched: data.unmatched ?? [],
         securitiesCreated,
       });
-      void load();
+      void refreshAfterWrite();
     } catch {
       setSyncStatus({ kind: "error", message: networkFailureMessage("sync Vanguard") });
     } finally {
@@ -370,6 +383,11 @@ export function PlaidSection() {
                 {syncStatus.unmatched
                   .map((u) => `${u.name ?? "unknown security"} (${u.reason})`)
                   .join(", ")}
+              </p>
+            )}
+            {refreshError && (
+              <p className="text-down" role="status">
+                {refreshError}
               </p>
             )}
           </div>

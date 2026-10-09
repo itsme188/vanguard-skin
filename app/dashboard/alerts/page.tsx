@@ -53,6 +53,7 @@ import {
 import { EarningsEmailViewer } from "../components/EarningsEmailViewer";
 import apiFetch from "@/lib/http/apiFetch";
 import { networkFailureMessage, readMutationResult } from "@/lib/ui/mutation-result";
+import { joinSentences } from "@/lib/ui/join-sentences";
 import {
   FILTER_OPTIONS,
   parseAlertsViewParam,
@@ -478,12 +479,15 @@ function AlertsPageInner() {
         toast(`Alert marked ${response}`, kind);
         window.dispatchEvent(new CustomEvent("alerts-updated"));
       } else {
-        toast(`Alert not marked ${response}: ${result.message} The alert is unchanged.`, "error");
+        toast(
+          joinSentences(`Alert not marked ${response}: ${result.message}`, "The alert is unchanged."),
+          "error",
+        );
       }
     } catch {
       toast(`${networkFailureMessage(`mark the alert ${response}`)} The alert is unchanged.`, "error");
     }
-    refresh();
+    await refreshAfterWrite();
   }
 
   // Undo for an Acted / Ignored / Dismissed alert: back to the Pending inbox
@@ -839,7 +843,9 @@ function AlertsPageInner() {
           ),
         );
       } else {
-        setActionStatus(`Scan failed: ${result.message} No alert was fired by this scan.`);
+        setActionStatus(
+          joinSentences(`Scan failed: ${result.message}`, "No alert was fired by this scan."),
+        );
       }
       await refreshAfterWrite();
     } catch {
@@ -869,7 +875,7 @@ function AlertsPageInner() {
         }
       } else {
         setActionStatus(
-          `Suggestion failed: ${result.message} Existing suggestions are unaffected.`
+          joinSentences(`Suggestion failed: ${result.message}`, "Existing suggestions are unaffected."),
         );
       }
       await refreshAfterWrite();

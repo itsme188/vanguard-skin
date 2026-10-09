@@ -4,6 +4,7 @@ import { GOLD_FILL_CLASSES } from "@/app/dashboard/components/chip-tone-text";
 import { useState, useEffect } from "react";
 import apiFetch from "@/lib/http/apiFetch";
 import { networkFailureMessage, readMutationResult } from "@/lib/ui/mutation-result";
+import { joinSentences } from "@/lib/ui/join-sentences";
 import { todayET } from "@/lib/calendar/date-utils";
 import { decideDigestBanner } from "@/lib/digest/catchup-banner";
 
@@ -143,7 +144,9 @@ export function DigestCatchup() {
       const result = await readMutationResult<{ skipped?: boolean; reason?: unknown }>(res);
       if (!result.ok) {
         // Keep the banner up — silently hiding it makes a failed send look successful.
-        setSendError(`Send failed: ${result.message} The banner stays until a digest goes out.`);
+        setSendError(
+          joinSentences(`Send failed: ${result.message}`, "The banner stays until a digest goes out."),
+        );
         return;
       }
       const data = result.data;

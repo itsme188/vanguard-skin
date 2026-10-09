@@ -14,6 +14,7 @@ import { SymbolLink } from "@/app/dashboard/components/SymbolLink";
 import { formatEnrichedAtET } from "@/lib/format";
 import apiFetch from "@/lib/http/apiFetch";
 import { networkFailureMessage, readMutationResult } from "@/lib/ui/mutation-result";
+import { joinSentences } from "@/lib/ui/join-sentences";
 
 export type DrawerPanel =
   | "factorCoverage"
@@ -209,7 +210,7 @@ function StalePricesContent({
       });
       const result = await readMutationResult(res);
       if (!result.ok) {
-        setResult(`Refresh not started: ${result.message} Prices are unchanged.`);
+        setResult(joinSentences(`Refresh not started: ${result.message}`, "Prices are unchanged."));
         return;
       }
       // Keep the drawer open so the user sees this — the sync itself takes
