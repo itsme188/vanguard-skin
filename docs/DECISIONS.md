@@ -1023,3 +1023,27 @@ Three commits, merged the same night, plus work on the held pull request.
 - `scripts/generate-pdf-fixture.ts` regenerates the mock statement fixture from a real statement, which would put real figures back into the committed fixture.
 - Git history still holds every original figure from the documents and tests rewritten tonight.
 - The archived to-do file (`docs/plans/archive/TODO-closed-2026-07-08.md`) is a long narrative of real-data repairs; a pattern sweep will not have caught every prose mention. It probably belongs in the private folder.
+
+## 2026-10-09 (about 01:00) — Second overnight sprint, fifth wave: Eastern dates, contrast from one table, empty account lists
+
+Seven commits. One Codex review (one high finding, answered by deploy timing, see below), one review by an agent that ran the code ("ready", with the same timing condition), a browser pass in both themes (one regression found and fixed).
+
+**Decisions taken. The owner should confirm or reverse each.**
+1. **The broker sync and the streaming price flush stamp the Eastern day** on live holdings rows, their source keys, price rows and the live snapshot row. They used the UTC day, so an evening sync wrote tomorrow's date while the snapshot writer and the Web API writer already wrote the Eastern day. All three writers now agree.
+   - **DEPLOY RULE for this one change: it must first go live between 00:00 and 20:00 Eastern.** If the new build starts on an evening when the old build has already synced after 20:00, the old tomorrow-dated rows outrank the new rows for that one evening: a sold position still shows, a position opened that evening is hidden, and a level cross is alerted late. It heals at the first sync of the next Eastern day and leaves no wrong stored figure. The switch happens once. A cleanup that would make it safe at any hour is a delete on live data and was not built.
+2. **Fifteen other "today" values use the Eastern day**: chart range cut-offs, the risk week-ago comparison, chat tool default windows, the level narrative cache day, the regression lookback, and the level price-freshness window. One visible effect: after 20:00 Eastern a level whose last price is four Eastern days old is now scanned, as it already was during the day. A repo test fails on a new UTC day cut and lists every allowed one with its reason.
+3. **Small coloured text on a tint takes its colour from the shared chip table everywhere.** A scan found 145 hand-written pairs in 59 files below 4.5 to 1 in one theme or both; 141 moved, 4 are allowlisted. Only colour classes changed. Visible effect, mostly in the light theme: green, red and gold badge text is darker, and three buttons on Alerts change from emerald to the app's green. It is one commit (`48bc1e1d`) and easy to revert. Two import-screen files had colour classes changed only.
+4. **The last series readers treat a defined empty account list as no accounts**, and the Performance view passes its scope straight through. A digest captured before the change still matches, and the reviewer's own comparison against main's code on its own fixture was identical: no figure moves.
+
+**Found by the checks and fixed before the merge.**
+- The type-check caught a component that used the colour table without importing it (it would have crashed the Corporate Actions section). Source-scan tests cannot see that; the wave-level type-check and a browser can.
+- The browser pass found the chart status strip unreadable on a light page, because it sits inside the always-dark chart module. It now opts in to a dark-module override, pinned by a contrast test.
+- The sandbox served a stale stylesheet after a restart until its build cache was cleared. A CSS fix checked in a browser needs the cache cleared first.
+
+**Not edited, for the owner.**
+- Five fallback dates inside the import parsers use the UTC day (`lib/import/parsers/ibkr-holdings.ts`, `vanguard-export.ts`, `vanguard-holdings.ts`, `vanguard-cost-basis.ts` twice). Same defect, protected pipeline.
+- About 40 SQL fragments still use SQLite's `date('now')`, which is also the UTC day. Not classified yet.
+- A live sync replaces a statement holdings row dated the same day (`lib/tws/positions.ts`, on `main` before tonight). The date change extends that to the evening of a statement date.
+- Selling more than half the book in one day is never reconciled from live data (the 50% shrink guard, working as designed); it needs a statement.
+- Still under the contrast floor and not part of this sweep: text in a faded colour (70 to 80 percent opacity) on Performance, Diagnostics and trade reviews; solid gold buttons with pale text; the 8px letters in the grades bar; the bell count badge, the Cmd+J hint and the nav sub-view markers in the light theme; two solid red destructive buttons; one violet tag.
+- The scope resolver still turns a named scope that matches no account into "every account"; about twenty readers and one tombstone cleanup that writes would follow it. No caller passes an empty list today.
