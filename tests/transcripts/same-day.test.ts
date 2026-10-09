@@ -737,6 +737,84 @@ describe("fetchSameDayTranscripts — cached-EDGAR upgrade candidates (thin-8-K 
   });
 });
 
+describe("fetchSameDayTranscripts: the attempt budget goes to the print waited on longest", () => {
+  it("a print never tried goes before a newer print tried 31 minutes ago", async () => {
+    seedHeld("NEWA");
+    seedHeld("OLDA");
+    const relNew = hoursAgoEt(3);
+    const relOld = hoursAgoEt(7);
+    const triedAt = new Date(NOW.getTime() - 31 * 60 * 1000).toISOString().replace("T", " ").slice(0, 19);
+    seedEvent({ symbol: "NEWA", date: relNew.date, releaseTime: relNew.time, transcriptAttemptedAt: triedAt });
+    seedEvent({ symbol: "OLDA", date: relOld.date, releaseTime: relOld.time });
+    mockedFetch.mockResolvedValue(null);
+
+    const result = await fetchSameDayTranscripts(db, { now: NOW, maxAttempts: 1 });
+
+    expect(result.attempted).toBe(1);
+    expect(mockedFetch.mock.calls.map((c) => c[1])).toEqual(["OLDA"]);
+  });
+
+  it("among prints already tried, the oldest attempt goes first", async () => {
+    seedHeld("NEWB");
+    seedHeld("MIDB");
+    seedHeld("OLDB");
+    const stamp = (minutesAgo: number) =>
+      new Date(NOW.getTime() - minutesAgo * 60 * 1000).toISOString().replace("T", " ").slice(0, 19);
+    const relNew = hoursAgoEt(3);
+    const relMid = hoursAgoEt(5);
+    const relOld = hoursAgoEt(7);
+    seedEvent({ symbol: "NEWB", date: relNew.date, releaseTime: relNew.time, transcriptAttemptedAt: stamp(40) });
+    seedEvent({ symbol: "MIDB", date: relMid.date, releaseTime: relMid.time, transcriptAttemptedAt: stamp(90) });
+    seedEvent({ symbol: "OLDB", date: relOld.date, releaseTime: relOld.time, transcriptAttemptedAt: stamp(60) });
+    mockedFetch.mockResolvedValue(null);
+
+    await fetchSameDayTranscripts(db, { now: NOW, maxAttempts: 2 });
+
+    expect(mockedFetch.mock.calls.map((c) => c[1])).toEqual(["MIDB", "OLDB"]);
+  });
+
+  it("five prints with nothing filed all get a turn across ticks (the newest four no longer share every slot)", async () => {
+    const symbols = ["P1C", "P2C", "P3C", "P4C", "P5C"];
+    symbols.forEach((symbol, i) => {
+      seedHeld(symbol);
+      const rel = hoursAgoEt(3 + i);
+      seedEvent({ symbol, date: rel.date, releaseTime: rel.time });
+    });
+    mockedFetch.mockResolvedValue(null);
+
+    const tried: string[] = [];
+    // Five ticks, 15 minutes apart, two attempts each: ten attempts in all.
+    for (let tick = 0; tick < 5; tick += 1) {
+      mockedFetch.mockClear();
+      await fetchSameDayTranscripts(db, {
+        now: new Date(NOW.getTime() + tick * 15 * 60 * 1000),
+        maxAttempts: 2,
+      });
+      tried.push(...mockedFetch.mock.calls.map((c) => c[1] as string));
+    }
+
+    // The oldest print used to get no attempt at all. Now every print is
+    // tried once before any print is tried twice.
+    expect([...tried.slice(0, 5)].sort()).toEqual([...symbols].sort());
+    expect(tried).toHaveLength(10);
+    expect(tried.filter((t) => t === "P5C").length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("with equal waits the newest print still goes first", async () => {
+    seedHeld("NEWD");
+    seedHeld("OLDD");
+    const relNew = hoursAgoEt(3);
+    const relOld = hoursAgoEt(7);
+    seedEvent({ symbol: "OLDD", date: relOld.date, releaseTime: relOld.time });
+    seedEvent({ symbol: "NEWD", date: relNew.date, releaseTime: relNew.time });
+    mockedFetch.mockResolvedValue(null);
+
+    await fetchSameDayTranscripts(db, { now: NOW, maxAttempts: 1 });
+
+    expect(mockedFetch.mock.calls.map((c) => c[1])).toEqual(["NEWD"]);
+  });
+});
+
 describe("fetchSameDayTranscripts — AI desk-note summary (#12 B2)", () => {
   it("calls the AI once and stores the desk-note summary over the cached row when the fetched transcript has text", async () => {
     seedHeld("JJJ");

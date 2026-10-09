@@ -225,9 +225,18 @@ describe("POST /api/transcripts (the fetch / refresh buttons)", () => {
     ).toBe(0);
   });
 
-  it("falls back to the calendar default only when no print's fiscal quarter is known", async () => {
+  // Changed 2026-10-08 (sprint unit 26): this used to pin a calendar-quarter
+  // vendor request for a print with no Finnhub entry. That request can return
+  // an older fiscal quarter's call as "the latest", so it is no longer made.
+  it("a latest print with no Finnhub entry makes no calendar-quarter vendor request", async () => {
     seedPrint(null, "nasdaq");
 
+    await POST(post({ ticker: "ZZR" }));
+
+    expect(getAlphaVantageTranscript).not.toHaveBeenCalled();
+  });
+
+  it("falls back to the calendar default only when no earnings print is on file", async () => {
     await POST(post({ ticker: "ZZR" }));
 
     const [, year, quarter] = vi.mocked(getAlphaVantageTranscript).mock.calls[0];

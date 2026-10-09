@@ -10,6 +10,7 @@ import {
   fetchLatestTranscript,
   fetchTranscript,
   getCachedFilingForPrint,
+  getMostRecentQuarter,
   getTranscriptForChat,
   latestPrintFiscalQuarter,
   statedFiscalQuarterFromTranscript,
@@ -1000,6 +1001,128 @@ describe("the default quarter is the latest print's fiscal quarter (fetch button
 
     expect(await getTranscriptForChat(db, "ZZL", 2026, 4)).toBeNull();
     expect(rowsFor(db, "ZZL")).toEqual([]);
+  });
+});
+
+describe("the latest transcript is never an older call passed off as the latest (fetch button + chat)", () => {
+  let db: Database.Database;
+  const printDate = addDays(todayET(), -1);
+  beforeEach(() => {
+    db = makeDb();
+    vi.clearAllMocks();
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.spyOn(console, "log").mockImplementation(() => {});
+  });
+
+  it("latest print with no Finnhub entry: no vendor request by calendar quarter; the print's 8-K is found by its filing date", async () => {
+    seedCalendarEvent(db, { symbol: "ZZL", date: printDate, source: "nasdaq", rawJson: null });
+    // What the vendor would hand back for a calendar-quarter request: an
+    // older call that states no quarter, which an explicit key accepts.
+    vi.mocked(getAlphaVantageTranscript).mockResolvedValue(
+      vendorCall("Thank you for standing by and welcome to the ZZL conference call."),
+    );
+    vi.mocked(getEarnings8KFilings).mockResolvedValue([
+      filing("zzl-latest", printDate, "ZZL reports fiscal fourth quarter 2026 results."),
+    ]);
+
+    const result = await fetchLatestTranscript(db, "ZZL");
+
+    expect(getAlphaVantageTranscript).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      latestConfirmed: true,
+      transcript: { source: "edgar_8k", year: 2026, quarter: 4, call_date: printDate },
+    });
+    expect(rowsFor(db, "ZZL").map((r) => r.source)).toEqual(["edgar_8k"]);
+  });
+
+  it("latest print with no Finnhub entry and no 8-K in its window: nothing is returned, and nothing older is fetched", async () => {
+    seedCalendarEvent(db, { symbol: "ZZL", date: printDate, source: "nasdaq", rawJson: null });
+    vi.mocked(getAlphaVantageTranscript).mockResolvedValue(
+      vendorCall("Thank you for standing by and welcome to the ZZL conference call."),
+    );
+    vi.mocked(getEarnings8KFilings).mockResolvedValue([
+      filing("zzl-prior", addDays(printDate, -91), "ZZL reports fiscal third quarter 2026 results."),
+    ]);
+
+    expect(await fetchLatestTranscript(db, "ZZL")).toBeNull();
+    expect(await getTranscriptForChat(db, "ZZL")).toBeNull();
+    expect(getAlphaVantageTranscript).not.toHaveBeenCalled();
+    expect(rowsFor(db, "ZZL")).toEqual([]);
+  });
+
+  it("no earnings date on file: the calendar default still fetches, and the result says it is not confirmed as the latest", async () => {
+    vi.mocked(getAlphaVantageTranscript).mockResolvedValue(
+      vendorCall("Thank you for standing by and welcome to the ZZN conference call."),
+    );
+
+    const result = await fetchLatestTranscript(db, "ZZN");
+    expect(result).toMatchObject({ latestConfirmed: false, transcript: { source: "alpha_vantage" } });
+
+    const out = await getTranscriptForChat(db, "ZZN");
+    expect(out).toMatchObject({ source: "alpha_vantage", latest_confirmed: false });
+    expect(out!.latest_note).toMatch(/could not be confirmed as the most recent/);
+    expect(out!.latest_note).toContain(`Q${out!.quarter} ${out!.year}`);
+    expect(out!.latest_note).toMatch(/\bcall\b/);
+  });
+
+  it("no earnings date on file and only an 8-K comes back: the note calls it a press release, never a call or transcript", async () => {
+    vi.mocked(getAlphaVantageTranscript).mockResolvedValue(null);
+    const cal = getMostRecentQuarter();
+    const ordinal = ["first", "second", "third", "fourth"][cal.quarter - 1];
+    vi.mocked(getEarnings8KFilings).mockResolvedValue([
+      filing("zzn-8k", addDays(todayET(), -30), `ZZN reports fiscal ${ordinal} quarter ${cal.year} results.`),
+    ]);
+
+    const out = await getTranscriptForChat(db, "ZZN");
+
+    expect(out).toMatchObject({ source: "edgar_8k", latest_confirmed: false });
+    expect(out!.latest_note).toMatch(/8-K press release/);
+    expect(out!.latest_note).not.toMatch(/\b(?:call|transcript)\b/i);
+  });
+
+  it("a known print is confirmed, and an explicit quarter makes no claim about the latest", async () => {
+    seedCalendarEvent(db, { symbol: "ZZL", date: printDate, rawJson: finnhub(4, 2026) });
+    vi.mocked(getAlphaVantageTranscript).mockResolvedValue(
+      vendorCall("Welcome to ZZL's fiscal fourth quarter 2026 earnings call."),
+    );
+
+    const latest = await getTranscriptForChat(db, "ZZL");
+    expect(latest).toMatchObject({ year: 2026, quarter: 4, latest_confirmed: true, latest_note: null });
+
+    const named = await getTranscriptForChat(db, "ZZL", 2026, 4);
+    expect(named).toMatchObject({ year: 2026, quarter: 4, latest_confirmed: null, latest_note: null });
+  });
+});
+
+describe("guidance keywords: inflected forms", () => {
+  const call = (sentence: string) =>
+    [
+      "Operator: Good afternoon, and welcome to the ZZG earnings conference call.",
+      `Jane Doe (CEO): Demand was steady across the regions during the period. ${sentence}`,
+      "Question-and-answer session",
+    ].join("\n\n");
+
+  it.each([
+    ["expects", "The company expects revenue growth in the low teens on steady demand."],
+    ["expecting", "We are expecting revenue growth in the low teens on steady demand."],
+    ["expected to", "Revenue growth is expected to land in the low teens on steady demand."],
+    ["anticipates", "Management anticipates revenue growth in the low teens on steady demand."],
+    ["anticipating", "We are anticipating revenue growth in the low teens on steady demand."],
+    ["forecasts", "The company forecasts revenue growth in the low teens on steady demand."],
+    ["forecasting", "We are forecasting revenue growth in the low teens on steady demand."],
+    ["reaffirms", "The company reaffirms revenue growth in the low teens on steady demand."],
+    ["reaffirmed", "We reaffirmed revenue growth in the low teens on steady demand."],
+    ["reaffirming", "We are reaffirming revenue growth in the low teens on steady demand."],
+  ])("'%s' qualifies a guidance sentence", (_form, sentence) => {
+    expect(extractGuidance(call(sentence))).toBe(`Jane Doe (CEO): ${sentence}`);
+  });
+
+  it.each([
+    ["better than expected", "Revenue came in better than expected on steady demand in the regions."],
+    ["as anticipated", "Margins held up as anticipated on steady demand in the regions."],
+    ["expectations", "Results exceeded expectations on steady demand in the regions."],
+  ])("'%s' describes the quarter just reported and does not qualify", (_form, sentence) => {
+    expect(extractGuidance(call(sentence))).toBeNull();
   });
 });
 
