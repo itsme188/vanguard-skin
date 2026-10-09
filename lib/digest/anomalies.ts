@@ -9,7 +9,9 @@
  */
 
 import type Database from "better-sqlite3";
+import { addDays, nowET, todayET } from "@/lib/calendar/date-utils";
 import { isMarketClosed, nextTradingDay } from "@/lib/calendar/market-holidays";
+import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 import { BETA_LOOKBACK_DAYS } from "@/lib/queries/security-betas";
 
 // ─── Trigger constants ────────────────────────────────────────────────────────
@@ -58,6 +60,40 @@ export interface TradingDayPair {
   prior: string;
 }
 
+/** Regular-session close, ET wall-clock (HH:MM). */
+const REGULAR_CLOSE_ET = "16:00";
+
+/**
+ * The most recent trading session that has CLOSED as of `now` (ET): today
+ * once the 16:00 ET close has passed on a trading day, otherwise the trading
+ * day before. The one statement of the "completed session" rule: the
+ * Significant Moves card and `resolveTradingDayPair`'s `completedOnly` both
+ * read it.
+ *
+ * Early-close days (13:00 ET, e.g. the day after Thanksgiving) are out of
+ * scope: no exchange calendar with close times is stored, so such a session
+ * counts as completed at 16:00 ET like any other. That errs on the side of
+ * waiting, never on the side of reading a session still in progress.
+ */
+export function latestCompletedSession(now = new Date()): string {
+  let day = todayET(now);
+  if (isMarketClosed(day) || nowET(now) < REGULAR_CLOSE_ET) day = addDays(day, -1);
+  while (isMarketClosed(day)) day = addDays(day, -1);
+  return day;
+}
+
+export interface TradingDayPairOptions {
+  /**
+   * Ignore an SPY row dated today (ET) until the regular session has closed
+   * (see `latestCompletedSession`). Off by default: Today's IBKR line and the
+   * chat market snapshot deliberately keep the intraday move (owner ruling
+   * 2026-10-08), so the rule is applied by the callers that want it.
+   */
+  completedOnly?: boolean;
+  /** Clock override for tests. Only read when `completedOnly` is set. */
+  now?: Date;
+}
+
 /**
  * Resolve the (latest, prior) **consecutive trading-day** pair from SPY's price
  * history. SPY is the market clock — always present, always the benchmark.
@@ -81,7 +117,10 @@ export interface TradingDayPair {
  * Returns null when SPY lacks a clean consecutive pair; callers then emit
  * nothing.
  */
-export function resolveTradingDayPair(db: Database.Database): TradingDayPair | null {
+export function resolveTradingDayPair(
+  db: Database.Database,
+  opts: TradingDayPairOptions = {},
+): TradingDayPair | null {
   const rows = db
     .prepare(
       `SELECT p.date AS date
@@ -95,7 +134,17 @@ export function resolveTradingDayPair(db: Database.Database): TradingDayPair | n
 
   // Drop any non-trading-day rows (weekend/holiday phantoms) before picking
   // the two most-recent sessions.
-  const tradingDays = rows.map((r) => r.date).filter((d) => !isMarketClosed(d));
+  let tradingDays = rows.map((r) => r.date).filter((d) => !isMarketClosed(d));
+
+  // completedOnly: a row dated today is an intraday mark, not a close, until
+  // the session has ended. Only today's row is dropped; nothing else moves.
+  if (opts.completedOnly) {
+    const now = opts.now ?? new Date();
+    const today = todayET(now);
+    if (latestCompletedSession(now) !== today) {
+      tradingDays = tradingDays.filter((d) => d !== today);
+    }
+  }
   if (tradingDays.length < 2) return null;
 
   const latest = tradingDays[0];
@@ -111,8 +160,34 @@ export function resolveTradingDayPair(db: Database.Database): TradingDayPair | n
 
 // ─── Main computation ─────────────────────────────────────────────────────────
 
+export interface ComputeAnomaliesOptions {
+  /** Accounts to evaluate. Omitted = the Vanguard (non-Roth) email universe. */
+  accountIds?: readonly number[];
+  /** Clock override for tests (decides whether today's session has closed). */
+  now?: Date;
+}
+
 /**
- * Compute anomaly flags for all securities held in Vanguard (non-Roth) accounts.
+ * The scoped universe's holdings filter: the current long book. The card's
+ * coverage query uses the same predicate, so "Evaluated N of M" counts the
+ * positions this function actually looked at.
+ */
+const SCOPED_HOLDINGS_SQL = latestHoldingsPredicate({ includeShorts: false });
+
+/**
+ * Compute anomaly flags for held securities.
+ *
+ * Universe:
+ *  - `accountIds` omitted (the evening email): every holdings row ever written
+ *    for the Vanguard (non-Roth) accounts. Kept exactly as it was, so the
+ *    email and its Worker mirror are unchanged.
+ *  - `accountIds` given (the Significant Moves card, following the scope
+ *    selector): the CURRENT long book of exactly those accounts, through
+ *    `latestHoldingsPredicate`. Every id is used; an empty list evaluates
+ *    nothing and never falls back to the Vanguard default.
+ *
+ * Both read completed sessions only (owner ruling 2026-10-08): an SPY row
+ * dated today is ignored until 16:00 ET.
  *
  * Algorithm:
  * 1. Resolve a single (latest, prior) consecutive trading-day pair from SPY.
@@ -123,9 +198,12 @@ export function resolveTradingDayPair(db: Database.Database): TradingDayPair | n
  *    AND (residual_std is unusable OR zScore >= 2).
  * 5. Sort by zScore descending.
  */
-export function computeAnomalies(db: Database.Database): AnomalyFlag[] {
+export function computeAnomalies(
+  db: Database.Database,
+  opts: ComputeAnomaliesOptions = {},
+): AnomalyFlag[] {
   // ── 1. Resolve the consecutive trading-day pair (SPY = market clock) ───────
-  const pair = resolveTradingDayPair(db);
+  const pair = resolveTradingDayPair(db, { completedOnly: true, now: opts.now });
   if (!pair) return [];
   const { latest, prior } = pair;
 
@@ -152,18 +230,24 @@ export function computeAnomalies(db: Database.Database): AnomalyFlag[] {
   const spyPct =
     ((spyPrices.today_close - spyPrices.prior_close) / spyPrices.prior_close) * 100;
 
-  // ── 3. Vanguard (non-Roth) account IDs ─────────────────────────────────────
-  const vanguardAccounts = db
-    .prepare(
-      `SELECT id FROM accounts
-       WHERE LOWER(name) LIKE '%vanguard%'
-         AND LOWER(name) NOT LIKE '%roth%'`
-    )
-    .all() as { id: number }[];
+  // ── 3. Accounts: the caller's scope, else Vanguard (non-Roth) ──────────────
+  const scoped = opts.accountIds !== undefined;
+  let accountIds: number[];
+  if (opts.accountIds !== undefined) {
+    accountIds = [...opts.accountIds];
+  } else {
+    const vanguardAccounts = db
+      .prepare(
+        `SELECT id FROM accounts
+         WHERE LOWER(name) LIKE '%vanguard%'
+           AND LOWER(name) NOT LIKE '%roth%'`
+      )
+      .all() as { id: number }[];
+    accountIds = vanguardAccounts.map((a) => a.id);
+  }
 
-  if (vanguardAccounts.length === 0) return [];
+  if (accountIds.length === 0) return [];
 
-  const accountIds = vanguardAccounts.map((a) => a.id);
   const placeholders = accountIds.map(() => "?").join(",");
 
   // ── 4. Held securities, pinned to the SAME (latest, prior) dates ───────────
@@ -187,7 +271,8 @@ export function computeAnomalies(db: Database.Database): AnomalyFlag[] {
          LEFT JOIN security_betas sb
                ON sb.security_id = s.id AND sb.lookback_days = ${BETA_LOOKBACK_DAYS}
         WHERE h.account_id IN (${placeholders})
-          AND UPPER(s.symbol) != 'SPY'`
+          AND UPPER(s.symbol) != 'SPY'
+          ${scoped ? `AND ${SCOPED_HOLDINGS_SQL}` : ""}`
     )
     .all(latest, prior, ...accountIds) as HeldSecurityRow[];
 

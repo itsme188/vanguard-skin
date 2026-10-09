@@ -1,10 +1,15 @@
 /**
- * Significant Moves in Vanguard Holdings (vs. expected) — Analysis · Diagnostics surface.
+ * Significant Moves (vs. expected) — Analysis · Diagnostics surface.
  *
  * Server component reusing the SAME engine that powers the evening email's
- * anomaly block (lib/digest/anomalies.ts::computeAnomalies). Flags Vanguard
- * (non-Roth) holdings whose daily move deviates from what their beta predicts
- * given SPY's move.
+ * anomaly block (lib/digest/anomalies.ts::computeAnomalies). Flags holdings
+ * whose daily move deviates from what their beta predicts given SPY's move.
+ *
+ * Scope (owner ruling 2026-10-08): the card follows the page's scope
+ * selector. It evaluates the current long book of exactly the accounts the
+ * page resolved, and its title, coverage line and quiet text name that scope.
+ * It reads completed sessions only: a close dated today is ignored until
+ * 16:00 ET (rule single-sourced in the engine module).
  *
  * Privacy: all numbers here are PUBLIC market data (% moves, beta, SPY move) —
  * they appear identically on any terminal — so they are NOT masked. No $
@@ -14,9 +19,11 @@
 
 import type Database from "better-sqlite3";
 import { db } from "@/lib/db";
-import { computeAnomalies, resolveTradingDayPair } from "@/lib/digest/anomalies";
-import { addDays, nowET, todayET } from "@/lib/calendar/date-utils";
-import { isMarketClosed } from "@/lib/calendar/market-holidays";
+import {
+  computeAnomalies,
+  latestCompletedSession,
+  resolveTradingDayPair,
+} from "@/lib/digest/anomalies";
 import { BETA_LOOKBACK_DAYS } from "@/lib/queries/security-betas";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 import { SymbolLink } from "@/app/dashboard/components/SymbolLink";
@@ -24,7 +31,51 @@ import { Chip } from "@/app/dashboard/components/Chip";
 import { EmptySection } from "@/app/dashboard/components/EmptySection";
 import { Count } from "@/lib/privacy/components";
 
-const TITLE = "Significant Moves in Vanguard Holdings";
+/** How the card names the scope on screen, in its title and its sentences. */
+export interface ScopeWording {
+  title: string;
+  /** Plural noun phrase, e.g. "IBKR holdings". */
+  plural: string;
+  /** Singular noun phrase, e.g. "IBKR holding". */
+  singular: string;
+}
+
+/**
+ * `scopeLabel` is the scope pill's own label ("Vanguard", "IBKR", "Roth").
+ * `allAccounts` is true when the page resolved no account filter; the wording
+ * then says "all accounts" whatever the label, so the card never names a scope
+ * narrower than the one it evaluated.
+ */
+export function scopeWording(scopeLabel: string, allAccounts: boolean): ScopeWording {
+  if (allAccounts) {
+    return {
+      title: "Significant Moves Across All Accounts",
+      plural: "holdings across all accounts",
+      singular: "holding across all accounts",
+    };
+  }
+  return {
+    title: `Significant Moves in ${scopeLabel} Holdings`,
+    plural: `${scopeLabel} holdings`,
+    singular: `${scopeLabel} holding`,
+  };
+}
+
+/**
+ * The accounts the card evaluates. The page hands over its resolved ids, or
+ * nothing for "all accounts"; that case is expanded to every account id here
+ * because the engine reads an omitted list as the evening email's
+ * Vanguard-only universe.
+ */
+export function scopeAccountIds(
+  db: Database.Database,
+  accountIds: readonly number[] | undefined,
+): number[] {
+  if (accountIds !== undefined) return [...accountIds];
+  return (db.prepare("SELECT id FROM accounts ORDER BY id").all() as { id: number }[]).map(
+    (r) => r.id,
+  );
+}
 
 function signedPct(value: number, decimals = 1): string {
   const rounded = parseFloat(value.toFixed(decimals));
@@ -37,7 +88,7 @@ const THRESHOLD_HINT =
   "A name is flagged when its daily move is at least 3% AND at least 2 standard deviations beyond that stock's own normal day-to-day noise (after adjusting for SPY). Needs cached betas, a residual volatility, and two consecutive closes.";
 
 export interface MovesCoverage {
-  /** Long Vanguard (non-Roth) holdings in scope. */
+  /** Long holdings in the scope's accounts. */
   total: number;
   /** Of those, how many have a cached beta AND a close on both pair dates. */
   evaluated: number;
@@ -47,7 +98,13 @@ export interface MovesCoverage {
   missingCloses: number;
 }
 
-function loadCoverage(db: Database.Database, pair: { latest: string; prior: string }): MovesCoverage {
+export function loadCoverage(
+  db: Database.Database,
+  pair: { latest: string; prior: string },
+  accountIds: readonly number[],
+): MovesCoverage {
+  if (accountIds.length === 0) return { total: 0, evaluated: 0, missingBeta: 0, missingCloses: 0 };
+  const placeholders = accountIds.map(() => "?").join(",");
   const closesOk = `p_latest.close_price IS NOT NULL
             AND p_prior.close_price IS NOT NULL
             AND p_prior.close_price != 0`;
@@ -62,31 +119,21 @@ function loadCoverage(db: Database.Database, pair: { latest: string; prior: stri
          COUNT(DISTINCT CASE WHEN sb.beta IS NULL THEN s.id END) AS missingBeta,
          COUNT(DISTINCT CASE WHEN NOT (${closesOk}) THEN s.id END) AS missingCloses
        FROM holdings h
-       JOIN accounts a ON a.id = h.account_id
        JOIN securities s ON s.id = h.security_id
        LEFT JOIN security_betas sb
               ON sb.security_id = s.id AND sb.lookback_days = ${BETA_LOOKBACK_DAYS}
        LEFT JOIN prices p_latest ON p_latest.security_id = s.id AND p_latest.date = ?
        LEFT JOIN prices p_prior ON p_prior.security_id = s.id AND p_prior.date = ?
-       WHERE LOWER(a.name) LIKE '%vanguard%'
-         AND LOWER(a.name) NOT LIKE '%roth%'
+       WHERE h.account_id IN (${placeholders})
          AND UPPER(s.symbol) != 'SPY'
          AND ${latestHoldingsPredicate({ includeShorts: false })}`,
     )
-    .get(pair.latest, pair.prior) as MovesCoverage;
+    .get(pair.latest, pair.prior, ...accountIds) as MovesCoverage;
 }
 
-/**
- * The most recent trading session that has CLOSED as of `now` (ET): today
- * once the 16:00 ET close has passed on a trading day, otherwise the trading
- * day before. A session still in progress is not one the card can be behind.
- */
-export function latestCompletedSession(now = new Date()): string {
-  let day = todayET(now);
-  if (isMarketClosed(day) || nowET(now) < "16:00") day = addDays(day, -1);
-  while (isMarketClosed(day)) day = addDays(day, -1);
-  return day;
-}
+// The completed-session rule lives in the engine module; re-exported here for
+// the callers and tests that reach it through the card.
+export { latestCompletedSession };
 
 /** The resolved pair ends before the latest completed session: stale closes. */
 export function isOlderSession(pairLatest: string, now = new Date()): boolean {
@@ -113,27 +160,39 @@ function CoverageLine({ evaluated, total }: { evaluated: number; total: number }
   );
 }
 
-export function SignificantMovesCard() {
-  const pair = resolveTradingDayPair(db);
+export function SignificantMovesCard({
+  accountIds,
+  scopeLabel,
+}: {
+  /** The page's resolved account ids; omitted means all accounts. */
+  accountIds?: readonly number[];
+  /** The active scope pill's label. */
+  scopeLabel: string;
+}) {
+  const scope = scopeWording(scopeLabel, accountIds === undefined);
+  // One clock reading for the pair, the engine and the staleness label.
+  const now = new Date();
+  const pair = resolveTradingDayPair(db, { completedOnly: true, now });
   if (!pair) {
     return (
       <EmptySection
-        title={TITLE}
+        title={scope.title}
         reason="Could not evaluate significant moves because the latest SPY trading-day pair is unavailable."
         hint="The card needs two consecutive SPY closes before it can compare held names against beta-adjusted expectations."
       />
     );
   }
 
-  const coverage = loadCoverage(db, pair);
-  const flags = computeAnomalies(db);
-  const olderSession = isOlderSession(pair.latest);
+  const ids = scopeAccountIds(db, accountIds);
+  const coverage = loadCoverage(db, pair, ids);
+  const flags = computeAnomalies(db, { accountIds: ids, now });
+  const olderSession = isOlderSession(pair.latest, now);
 
   if (flags.length === 0) {
-    const quiet = quietState(coverage, pair, olderSession);
+    const quiet = quietState(coverage, pair, olderSession, scope);
     return (
       <div>
-        <EmptySection title={TITLE} reason={quiet.reason} hint={quiet.hint} />
+        <EmptySection title={scope.title} reason={quiet.reason} hint={quiet.hint} />
         {quiet.showCoverage && (
           <div className="mt-1 px-4 sm:px-5">
             <CoverageLine evaluated={coverage.evaluated} total={coverage.total} />
@@ -146,7 +205,7 @@ export function SignificantMovesCard() {
   return (
     <section className="rounded-xl bg-panel p-4 card-elev">
       <div className="mb-2 flex items-baseline justify-between gap-3 flex-wrap">
-        <h2 className="text-sm font-medium text-ink">{TITLE}</h2>
+        <h2 className="text-sm font-medium text-ink">{scope.title}</h2>
         <span className="text-[11px] text-ink-faint font-mono">
           vs. expected · <Count value={flags.length} /> flagged · {pair.prior} to {pair.latest}
           {olderSession ? ` · ${OLDER_SESSION_LABEL}` : ""}
@@ -220,13 +279,14 @@ export function quietState(
   coverage: MovesCoverage,
   pair: { latest: string; prior: string },
   olderSession: boolean,
+  scope: ScopeWording,
 ): { reason: string; hint: string; showCoverage: boolean } {
   const dated = olderSession ? `${pair.latest} (${OLDER_SESSION_LABEL})` : pair.latest;
 
   if (coverage.total === 0) {
     return {
-      reason: "No Vanguard holdings are in scope for this card.",
-      hint: "It covers long positions held in Vanguard taxable (non-Roth) accounts.",
+      reason: `No ${scope.plural} are in scope for this card.`,
+      hint: "It covers long positions held in the accounts of the scope selected above.",
       showCoverage: false,
     };
   }
@@ -239,7 +299,7 @@ export function quietState(
           ? `none of them has a close on both ${pair.prior} and ${pair.latest}`
           : `each is missing a cached beta or a close on ${pair.prior} or ${pair.latest}`;
     return {
-      reason: `No Vanguard holding could be evaluated for ${pair.prior} to ${dated}: ${why}. This is not a finding that nothing moved.`,
+      reason: `No ${scope.singular} could be evaluated for ${pair.prior} to ${dated}: ${why}. This is not a finding that nothing moved.`,
       hint: THRESHOLD_HINT,
       showCoverage: false,
     };
@@ -247,14 +307,14 @@ export function quietState(
 
   if (coverage.evaluated < coverage.total) {
     return {
-      reason: `Among the Vanguard holdings that could be evaluated, none moved significantly more than its beta predicted on ${dated}. The rest were not checked.`,
+      reason: `Among the ${scope.plural} that could be evaluated, none moved significantly more than its beta predicted on ${dated}. The rest were not checked.`,
       hint: THRESHOLD_HINT,
       showCoverage: true,
     };
   }
 
   return {
-    reason: `No Vanguard holdings moved significantly more than their beta predicted on ${dated}.`,
+    reason: `No ${scope.plural} moved significantly more than their beta predicted on ${dated}.`,
     hint: THRESHOLD_HINT,
     showCoverage: true,
   };
