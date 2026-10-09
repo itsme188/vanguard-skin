@@ -287,10 +287,12 @@ describe("runCloudFallback", () => {
     const fredPayload = JSON.parse(store.get(cloudEnrichedKey(100))!);
     expect(fredPayload.source).toBe("fred");
     expect(fredPayload.actual).toMatch(/%/);
-    expect(fredPayload.reaction?.source).toBe("yahoo");
+    // Minutes after the release the two-hour reaction cannot be measured yet,
+    // so none is captured (2026-10-08: the Worker gates every row, macro too).
+    expect(fredPayload.reaction ?? null).toBeNull();
   });
 
-  it("defers claude nonfred events — writes deferred payload with reaction captured via Yahoo", async () => {
+  it("defers claude nonfred events — writes a deferred payload, with no reaction before the window", async () => {
     const nowMs = Date.now();
     const snapshot = {
       schemaVersion: 1,
@@ -351,8 +353,9 @@ describe("runCloudFallback", () => {
     expect(payload.source).toBe("claude_nonfred_deferred");
     expect(payload.actual).toBeNull();
     expect(payload.deferred).toBe(true);
-    // Yahoo reaction still captured (it's orthogonal to actual value)
-    expect(payload.reaction?.source).toBe("yahoo");
+    // The reaction is orthogonal to the actual, but it is still gated on the
+    // two-hour window: minutes after the release there is none yet.
+    expect(payload.reaction ?? null).toBeNull();
   });
 
   it("is idempotent — pre-seeded cloud-enriched KV marker short-circuits FRED + Yahoo", async () => {
