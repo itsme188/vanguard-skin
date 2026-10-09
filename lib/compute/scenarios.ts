@@ -81,7 +81,10 @@ export interface PositionImpact {
   rateDurationYears?: number;
   /** Bonds and bond funds under a rate move: where that duration came from. */
   rateDurationSource?: RateDurationSource;
-  /** Bonds only: set when the rate move could not be priced; the rate leg is then zero. */
+  /**
+   * Bonds, and funds refused the 5-year default: set when the rate move could
+   * not be priced; the rate leg is then zero.
+   */
   bondUnmodelledReason?: BondUnmodelledReason;
 }
 
@@ -96,8 +99,12 @@ export interface ScenarioResult {
   biggestWinners: PositionImpact[];
   /** Option rows left out of the total because they could not be repriced. */
   optionsUnmodelled: { count: number; valueShare: number; unpricedCount: number };
-  /** Individual bonds whose rate leg is zero because no duration could be derived. */
-  bondsUnmodelled: { count: number; valueShare: number };
+  /**
+   * Individual bonds whose rate leg is zero because no duration could be
+   * derived (`count`, `valueShare`), and funds left out because the 5-year
+   * default was refused (`fundCount`).
+   */
+  bondsUnmodelled: { count: number; valueShare: number; fundCount: number };
   /**
    * Custom scenarios only. Held equity funds a sector shock could not look
    * through because no sector weights are cached for them: they took the

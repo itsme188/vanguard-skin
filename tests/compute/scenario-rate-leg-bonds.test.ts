@@ -79,7 +79,7 @@ beforeEach(() => {
   seed(NO_MATURITY, "ZZNOMAT", { name: "ZZ undated", type: "Bond", price: 100, quantity: 5000 });
   seed(STORED, "ZZSTORED", { name: "ZZ measured", type: "Bond", duration: 7, maturity: addDays(today, 60), price: 100, quantity: 10000 });
   seed(FUND_DEFAULT, "ZZBFUND", {
-    name: "ZZ Mortgage Bond Fund", type: "Mutual Fund", sector: "Fixed Income", fundCategory: "ZZ Mortgage Bond", price: 10, quantity: 1000,
+    name: "ZZ Mortgage Bond Fund", type: "Mutual Fund", sector: "Fixed Income", fundCategory: "US Mortgage-Backed Securities", price: 10, quantity: 1000,
   });
   seed(FUND_STORED, "ZZSFUND", {
     name: "ZZ Short Bond ETF", type: "ETF", sector: "Fixed Income", fundCategory: "ZZ Short Bond", duration: 2, price: 50, quantity: 200,
@@ -189,7 +189,7 @@ describe("custom rate move: individual bonds", () => {
 
   it("no rate move, nothing left out", () => {
     for (const res of [custom(undefined, -0.1), custom(0, -0.1)]) {
-      expect(res.bondsUnmodelled).toEqual({ count: 0, valueShare: 0 });
+      expect(res.bondsUnmodelled).toEqual({ count: 0, valueShare: 0, fundCount: 0 });
       expect(res.positionImpacts.every((p) => p.bondUnmodelledReason === undefined)).toBe(true);
       expect(res.positionImpacts.every((p) => p.rateDurationSource === undefined)).toBe(true);
     }
@@ -309,7 +309,7 @@ describe("rate preset", () => {
   it("a preset that is not about rates leaves no bond out and applies no duration", () => {
     for (const scenario of PRESET_SCENARIOS.filter((p) => p.id !== RATE_PRESET)) {
       const res = computeScenario(db, scenario);
-      expect(res.bondsUnmodelled, scenario.id).toEqual({ count: 0, valueShare: 0 });
+      expect(res.bondsUnmodelled, scenario.id).toEqual({ count: 0, valueShare: 0, fundCount: 0 });
       expect(res.positionImpacts.every((p) => p.rateDurationSource === undefined), scenario.id).toBe(true);
     }
   });

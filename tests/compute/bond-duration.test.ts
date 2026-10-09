@@ -273,7 +273,9 @@ describe("estimateBondRateLeg", () => {
   });
 
   it("a bond fund uses its stored duration, else the 5-year default; an individual bond never does", () => {
-    const fund = { security_type: "Mutual Fund", sector: "Fixed Income", fund_category: "ZZ Bond", security_name: "ZZ Bond Fund" };
+    // D6 (2026-10-08): the default needs a recognised bond category, so the
+    // fixture's invented "ZZ Bond" label became a real one.
+    const fund = { security_type: "Mutual Fund", sector: "Fixed Income", fund_category: "US Aggregate Bond", security_name: "ZZ Bond Fund" };
     const stored = estimateBondRateLeg(row({ ...fund, duration_years: 2 }), 200, TODAY)!;
     expect(stored.durationSource).toBe("fund-stored");
     expect(stored.changePercent).toBeCloseTo(Math.exp(-2 * 0.02) - 1, 12);
@@ -299,10 +301,10 @@ describe("summarizeUnmodelledBonds", () => {
       { securityType: "Mutual Fund", currentValue: 9000 },
       { securityType: "Stock", currentValue: 50000 },
     ]);
-    expect(summary).toEqual({ count: 1, valueShare: 0.25 });
+    expect(summary).toEqual({ count: 1, valueShare: 0.25, fundCount: 0 });
   });
   it("is zero when nothing is left out", () => {
-    expect(summarizeUnmodelledBonds([{ securityType: "Bond", currentValue: 10 }])).toEqual({ count: 0, valueShare: 0 });
-    expect(summarizeUnmodelledBonds([])).toEqual({ count: 0, valueShare: 0 });
+    expect(summarizeUnmodelledBonds([{ securityType: "Bond", currentValue: 10 }])).toEqual({ count: 0, valueShare: 0, fundCount: 0 });
+    expect(summarizeUnmodelledBonds([])).toEqual({ count: 0, valueShare: 0, fundCount: 0 });
   });
 });

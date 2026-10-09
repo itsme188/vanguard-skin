@@ -29,7 +29,11 @@
  * unmodelled. The result says which was used (`couponSource`).
  *
  * A fixed-income FUND uses its stored duration, else a 5-year default. The
- * default is for funds only.
+ * default is for funds only, and only for a fund that really is a bond fund
+ * (ruling D6, 2026-10-08): its fund category must be in the bond family AND
+ * nothing else on the row may say it is an equity fund (see
+ * `fundDefaultRefusal`). A fund that fails either test adds NOTHING to the
+ * rate leg and is listed and counted as not modelled.
  *
  * Cash equivalents are not handled here: each engine keeps its own existing
  * cash treatment and never reaches this module for one. Options are not
@@ -39,7 +43,7 @@
  */
 
 import { isCashEquivalentSecurity } from "./cash-equivalents";
-import { normalizeSector } from "@/lib/securities/normalize-sector";
+import { normalizeSector, GICS_SECTORS } from "@/lib/securities/normalize-sector";
 import { isBondFundCategory, isLeveragedInverseFundCategory } from "@/lib/securities/normalize-fund-category";
 import { extractCouponRate } from "@/lib/bonds";
 
@@ -84,7 +88,18 @@ export type BondUnmodelledReason =
   /** A coupon IS stored but is not a usable number (negative, not finite). The name is not consulted. */
   | "unusable-coupon"
   | "no-price"
-  | "no-yield";
+  | "no-yield"
+  | FundUnmodelledReason;
+
+/**
+ * Why a fund with no stored duration was refused the 5-year default
+ * (ruling D6, 2026-10-08). Funds only; an individual bond never carries one.
+ */
+export type FundUnmodelledReason =
+  /** Labelled a bond fund, but its sector or its name says it holds equities. */
+  | "fund-equity-evidence"
+  /** Its fund category is not a recognised bond category (missing or unknown). */
+  | "fund-category-unconfirmed";
 
 /** The stored inputs the rate leg reads. Both engines select exactly these. */
 export interface RateLegInputs {
@@ -162,6 +177,46 @@ export function isFixedIncomeFund(sec: {
   if (isCashEquivalentSecurity(sec)) return false;
   if (isLeveragedInverseFundCategory(sec.fund_category)) return false;
   return isBondFundCategory(sec.fund_category) || normalizeSector(sec.sector) === "Fixed Income";
+}
+
+/** The eleven GICS sectors are all equity sectors ("Fixed Income" and "Diversified" are not among them). */
+const EQUITY_SECTORS: ReadonlySet<string> = new Set<string>(GICS_SECTORS);
+
+/**
+ * Whole words in a fund's name that say it holds equities: "Equity",
+ * "Equities", "Stock", "Stocks", and "Long Short" in its three spellings.
+ * Whole words only, so "Shares", "iShares" and "Stockton" do not match.
+ */
+const EQUITY_NAME_WORDS = /\b(?:equity|equities|stocks?|long[\s/-]+short)\b/i;
+
+/**
+ * Whether a fixed-income fund with no stored duration may take the 5-year
+ * default (ruling D6, 2026-10-08). Null means yes; otherwise the reason it is
+ * left out. The ONE reader of the rule.
+ *
+ * Why: an equity fund the classifier had labelled "Diversified Bond" was
+ * marked down like a mortgage-bond fund. The category alone is one piece of
+ * evidence (and may be an AI label), so the default now needs both:
+ *   1. no equity evidence: the sector must not normalize to a GICS equity
+ *      sector, and the name must carry no equity word. Checked first, so a
+ *      fund failing both tests is named as an equity fund;
+ *   2. the normalized fund category is in the bond family (the one grouping
+ *      in lib/securities/normalize-fund-category.ts). A "Fixed Income" sector
+ *      with a missing or unknown category is not enough.
+ *
+ * Not read: `securities.asset_class`. The broker codes every exchange-traded
+ * fund, bond funds included, as stock there, so it cannot tell the two apart.
+ */
+export function fundDefaultRefusal(sec: {
+  security_name: string | null;
+  sector: string | null;
+  fund_category: string | null;
+}): FundUnmodelledReason | null {
+  const sector = normalizeSector(sec.sector);
+  if (sector != null && EQUITY_SECTORS.has(sector)) return "fund-equity-evidence";
+  if (sec.security_name && EQUITY_NAME_WORDS.test(sec.security_name)) return "fund-equity-evidence";
+  if (!isBondFundCategory(sec.fund_category)) return "fund-category-unconfirmed";
+  return null;
 }
 
 /**
@@ -346,11 +401,18 @@ export function estimateBondRateLeg(pos: RateLegInputs, rateBps: number, today: 
 
   if (type !== "bond") {
     if (!isFixedIncomeFund(pos)) return null;
-    const durationYears = stored ?? FUND_DEFAULT_DURATION_YEARS;
+    // A stored duration is a stored input and is used as stored.
+    if (stored != null) {
+      return { changePercent: rateLegForDuration(stored, rateBps), durationYears: stored, durationSource: "fund-stored" };
+    }
+    // The default is for a corroborated bond fund only; anything else is
+    // left out and reported, never given a duration.
+    const refusal = fundDefaultRefusal(pos);
+    if (refusal) return { changePercent: 0, unmodelledReason: refusal };
     return {
-      changePercent: rateLegForDuration(durationYears, rateBps),
-      durationYears,
-      durationSource: stored != null ? "fund-stored" : "fund-default",
+      changePercent: rateLegForDuration(FUND_DEFAULT_DURATION_YEARS, rateBps),
+      durationYears: FUND_DEFAULT_DURATION_YEARS,
+      durationSource: "fund-default",
     };
   }
 
@@ -407,17 +469,22 @@ export function estimateBondRateLeg(pos: RateLegInputs, rateBps: number, today: 
 
 /**
  * How many individual bonds a rate move left unmodelled, and their share of
- * the absolute individual-bond value. Funds are never unmodelled (they fall
- * back to the default), so they are not in the denominator.
+ * the absolute individual-bond value. Funds are not in that share: a fund
+ * left out (refused the default, see `fundDefaultRefusal`) is counted on its
+ * own in `fundCount`.
  */
 export function summarizeUnmodelledBonds(
   rows: Array<{ securityType: string; currentValue: number; bondUnmodelledReason?: BondUnmodelledReason }>,
-): { count: number; valueShare: number } {
+): { count: number; valueShare: number; fundCount: number } {
   let count = 0;
+  let fundCount = 0;
   let unmodelledValue = 0;
   let bondValue = 0;
   for (const row of rows) {
-    if ((row.securityType ?? "").trim().toLowerCase() !== "bond") continue;
+    if ((row.securityType ?? "").trim().toLowerCase() !== "bond") {
+      if (row.bondUnmodelledReason) fundCount += 1;
+      continue;
+    }
     const value = Math.abs(row.currentValue);
     bondValue += value;
     if (row.bondUnmodelledReason) {
@@ -425,5 +492,5 @@ export function summarizeUnmodelledBonds(
       unmodelledValue += value;
     }
   }
-  return { count, valueShare: bondValue > 0 ? unmodelledValue / bondValue : 0 };
+  return { count, valueShare: bondValue > 0 ? unmodelledValue / bondValue : 0, fundCount };
 }
