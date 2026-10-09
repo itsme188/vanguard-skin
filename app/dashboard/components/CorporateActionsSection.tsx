@@ -5,7 +5,6 @@ import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { Section } from "./Section";
 import { Chip, CHIP_TONE_CLASSES } from "./Chip";
-import { CHIP_TONE_TEXT } from "./chip-tone-text";
 import { Shares } from "@/lib/privacy/components";
 import apiFetch from "@/lib/http/apiFetch";
 import { useConfirmPrompt } from "./useConfirmPrompt";
