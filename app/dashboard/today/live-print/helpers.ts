@@ -222,6 +222,87 @@ export function printHeadlineText(stateText: string, windowSentence: string): st
   return ["live print", ...stateAndWindowSegments(stateText, windowSentence)].join(" · ");
 }
 
+// ── the read-only record of a finished print ───────────────────────────
+
+/** What an expanded slot shows: nothing, the live sheet, the read-only record
+ *  of a finished print, or the armed row's pre-window controls. */
+export type SlotBodyKind = "none" | "live" | "record" | "waiting";
+
+/**
+ * Which body an expanded Hub slot renders.
+ *
+ * The status feed stops listing a finished print once its event date is no
+ * longer today (on purpose: yesterday's print is history, not work). So an
+ * armed row dated before today with no live print is a print that is OVER, and
+ * it shows the read-only record instead of the pre-window controls.
+ *
+ * A finished print dated TODAY needs no rule here: the feed still lists it
+ * (active states, and today's expired prints), so it arrives as a live print.
+ *
+ * Both dates are `YYYY-MM-DD`, so a string compare is a date compare. An
+ * unknown date or a clock that has not started yet reads as "waiting": the
+ * slot never claims a window has closed on a guess.
+ */
+export function slotBodyKind(input: {
+  armed: boolean;
+  hasLivePrint: boolean;
+  /** The event's calendar date, or null when the Hub has not been told it. */
+  eventDate: string | null;
+  /** Today in ET, or null before the client clock starts. */
+  todayEt: string | null;
+}): SlotBodyKind {
+  if (input.hasLivePrint) return "live";
+  if (!input.armed) return "none";
+  if (input.eventDate !== null && input.todayEt !== null && input.eventDate < input.todayEt) {
+    return "record";
+  }
+  return "waiting";
+}
+
+/**
+ * The lines a record shows: figures the desk accepted, plus figures two
+ * independent readings agreed on that nobody accepted. Every other state is a
+ * measurement that never finished (pending, conflict, single source, flash,
+ * blank) or a retired definition, and is not part of the record. Sheet order
+ * is kept.
+ */
+export function recordLines(lines: PrintWatchLine[]): PrintWatchLine[] {
+  return lines.filter((l) => l.state === "accepted" || l.state === "agreed");
+}
+
+/** In words, never colour alone: an agreed line was never verified by a
+ *  person, and the record must not let it pass for one that was. */
+export function recordLineStatus(line: PrintWatchLine): string {
+  return line.state === "accepted" ? "accepted" : "agreed, not accepted";
+}
+
+/** The document a line's figure was read from: "doc #12 (edgar-ex99)". */
+export function lineSourceLabel(
+  line: Pick<PrintWatchLine, "source_doc_id">,
+  documents: Record<number, string> | undefined,
+): string {
+  if (line.source_doc_id === null) return "no document of record";
+  const kind = documents?.[line.source_doc_id];
+  return kind ? `doc #${line.source_doc_id} (${kind})` : `doc #${line.source_doc_id}`;
+}
+
+/**
+ * The record's header line: "Window closed · parsed · Tue, Jan 6".
+ *
+ * An `expired` print's state label IS the phrase "window closed", so it is
+ * dropped rather than printed twice (the same collision
+ * `stateAndWindowSegments` removes from the live headline).
+ */
+export function recordHeaderText(state: PrintWatchState, dateLabel: string | null): string {
+  const lead = "Window closed";
+  const stateText = printStateLabel(state).text;
+  return [
+    lead,
+    ...(stateText.toLowerCase() === lead.toLowerCase() ? [] : [stateText]),
+    ...(dateLabel ? [dateLabel] : []),
+  ].join(" · ");
+}
+
 /**
  * The header's count line. `expired` prints are listed alongside active ones
  * (their drop zone is still live), so counting the whole list as "active"

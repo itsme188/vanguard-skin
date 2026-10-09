@@ -114,6 +114,24 @@ export interface PrintStatusEntry {
   outputs?: PrintOutputsWire;
 }
 
+/** `GET /api/print-watch/record?eventId=…`: one event's print in any state,
+ *  for the read-only record an armed row shows once its print is over.
+ *  Mirrors `PrintRecord` (`@/lib/earnings/print-record`, a server module, hence
+ *  the re-declaration). */
+export interface PrintRecordWire {
+  eventId: number;
+  /** null when no print was ever created for the event. */
+  print: {
+    printId: number;
+    symbol: string;
+    eventDate: string;
+    state: PrintWatchStateWire;
+  } | null;
+  lines: PrintWatchLineWire[];
+  documents: Record<number, string>;
+  outputs: PrintOutputsWire | null;
+}
+
 /** One prepare step off `GET /api/earnings/worksheet?eventIds=…`
  *  (`PrepareStepRow` in `@/lib/earnings/prepare-armed-event`, which is a
  *  server module — hence the re-declaration). */
