@@ -888,3 +888,46 @@ Six read-only agents mapped the 2026-10-08 rulings to files. The mapping showed 
 **If the permission system blocks a merge to `main`, a deploy or a live write,** the work ends as stacked pull requests and an owner decision record, as it did last night. It is not routed around.
 
 Decisions taken under this authority are listed in the closeout entry for the sprint.
+
+## 2026-10-08 (night) — Second overnight sprint: what was built and decided
+
+Forty-nine commits, merged to `main` as `f4feed84`. Authority: the entry above ("Second overnight Claude + Codex sprint: the authority"). Direction-only; no figure appears here. Method: units with separate files built side by side by Claude agents (one by Codex) in a sibling worktree; builders never wrote git; the orchestrator re-ran each unit's tests and committed by path. Codex reviewed the work twice and gave one second opinion; two agents that ran the real code reviewed the earnings and the money clusters; a browser agent checked thirteen areas on a sandbox copy. Every blocking finding was fixed before the merge. Full suite at the merge: 15,366 passed, none failed; Worker suite 719 passed; type-check clean on both.
+
+**Owner rulings of 2026-10-08 that are now built**
+- The earnings duplicate check keeps the row with a real slot; a hand-entered row wins a same-date tie; a feed row written behind a hand-entered row on the same date is stored hidden; confirming a different date leaves one hand-entered row; the display-only time estimate reads report history and a same-day twin; an armed Hub row after its print shows a read-only record.
+- Macro themes rank their inputs, are checked against the article they cite and show the cited sentence. The equity curve check is flow-aware. A deep in-the-money call counts as stock. Significant Moves follows the scope and waits for a completed session. Fixed performance periods end at the last statement. The Holdings confidence score is weighted by value. Each Diagnostics card names its basis; the geography catch-alls are defined; the Analysis scope is remembered for the session.
+- The Plaid daily sync purges expired options and matured bonds for its account and live rows only. Today's IBKR line measures quantity opened or added today from its cost. Chat movers are one row per side, the chat total is the strip's, and the chat return tool uses the statement window.
+- The digest Preview runs its AI synthesis only on a click and names each tab's cap; the evening sender reads the shared window rule. The email viewer says when actuals were entered after a recap was sent. A checkpoint with no valuation on its date uses the nearest prior day.
+- Mac and Worker together (snapshot version 12): level prices keep their currency in emails and pushes; the Worker's once-a-day guard uses the Eastern day.
+- Empty-enrichment articles are queued and show no sentiment chip.
+
+**Decisions Claude took under the authority (for the owner to confirm or reverse)**
+- **The slot rule also holds after the print.** Without it the winner flipped back to the other vendor when actuals landed. Every same-date row competes.
+- **Keeping the slot rule as designed, after a Codex second opinion.** A kept Nasdaq row broke readers that assumed the other vendor always wins: the weekly briefing list, the vendor consensus step (which would have deleted a bogey) and the preview's revenue estimate. Codex compared this with the alternative (the old winner inheriting the slot) and said keep it, with fixes. Built: the briefing lists the canonical row whatever its source (Mac and Worker); the kept row takes the vendor data its hidden twin carries and that copy follows its source; the consensus step reads the hidden vendor twin directly.
+- **The email finder drops a preview or recap candidate when any same-company row on that date already has that email.** It closes a duplicate-preview window that opens briefly in each weekly sync. It can only remove candidates.
+- **The Worker's fired marker is kept seven days, not expired at Eastern midnight.** The ruling's purpose is the guard, which now reads the day the push went out. The marker is also how the Mac learns of a cloud alert, and the cloud fires when the Mac is down, often overnight. Each earlier unreconciled fire rides along in the marker. A failed push now puts the marker back, and an unreadable marker no longer holds a level.
+- **Confirming a different date deletes the emptied duplicate row** once its records are folded onto the kept row; when something is still attached (a preview already sent) the row is kept and the popover says so.
+- **A feed row is hidden on update as well as insert, and comes back when the hand-entered row is deleted or moved,** outside the reconciler window too.
+- **Macro themes:** the model no longer sees the stored sentiment (so its own read is an independent check); when no theme survives the check nothing is cached and the card says so; events get up to a fifth of the prompt and alerts a twentieth; a citation must name its source kind. Claude did not adopt Codex's suggestion to compare the theme's risk-on or risk-off call with the article: that call is about the market, not the article.
+- **No reaction is captured before release plus two hours, on the Mac and the Worker, for every row;** each snapshot records when it was captured; macro rows get one reaction-only retry after the two hours. The finding's stated cause could not be reproduced from the code.
+- **Today's line:** a quantity changed since an older snapshot, or after the measured session, is left out and counted, not measured across days.
+- **Significant Moves, scoped:** evaluates the current long book; shorts are not evaluated.
+- **Performance:** the anchor is the latest statement month-end every account in the scope has; the caption says when that makes the period end early.
+- **The basis-difference note on the security page is for stocks and funds only** until the bond and option basis units are checked.
+- **Pending QA findings decided on their written recommendation:** one three-day price-freshness window; the "live now" badge is the same at every scope and a theme must agree in direction; a release-time save keeps its note; stored alert advice can be regenerated on a click; a fund takes the five-year bond default only when it really is a bond fund (and then takes the market move if it has equity evidence); an opening short sale reads "Sell to open" (display only); a two-tier notes security picker; Blend in the factor heatmap; the taxable footer's wording on a live day; custom scenario inputs are bounded; the Data Health page shows the score at the top; hand-entered actuals are for earnings only; the two-entry notice counts the entries; an out-of-week add can be undone; the Portfolio strip names its baseline statement; new chat conversations are titled from the first message.
+- **A two-line change in the protected chat route** (the title is built by one function). Nothing else in the chat route or component changed.
+
+**Held, not built (each needs the owner)**
+- **Migrations (shown to the owner first):** the vendor actual column for the recap scoreboard; a stored reason and reference month for macro actuals; the detection price for a suggested level.
+- **A live-closed option or short as pending:** needs the written design.
+- **Protected areas:** masking figures in chat titles (the list renders inside the chat component); the failed-chat-turn finding; the import near-miss message.
+- **Ledger and data:** retyping stored option trades; re-classifying the one mislabelled fund; the cause behind broker-versus-ledger basis differences.
+- **Repair scripts written and NOT run:** empty enrichments, stale alert advice, premature reaction snapshots.
+- **Known gaps left open:** the Worker's own email finder has the same duplicate window the Mac's had; the Worker gets no macro reaction when the Mac is down past the retry window; the email composers still print a pending reaction as a percent; a preview already sent stays attached to a moved hand-entered row, so the new date gets no second preview; the recap scoreboard ruling (worksheet figure first) is not built.
+
+**Lessons**
+- **A page that every test passes can still crash.** The Data Health page called a function from a client file; the type-check and the whole suite were green and the page showed an error screen. Only the browser pass saw it. A server page that gains a new import from a component file needs a look in a browser.
+- **Hand-built test schemas go stale silently.** Two tests with their own cut-down tables failed only in the full suite when a query began reading a real column they lacked. The full suite must run before a merge even when every unit's own tests pass.
+- **A ruling about which row wins has readers downstream.** The slot rule was one function; it touched the briefing, a prepare step, two email paths and the Worker. Map who assumes the old winner before changing a winner.
+- **Builders must not each run the type-checker.** Sixty-two copies stalled the machine; the orchestrator runs it once per batch.
+- **Check the clock; do not estimate it.** The orchestrator reported the time wrongly for part of the night.
