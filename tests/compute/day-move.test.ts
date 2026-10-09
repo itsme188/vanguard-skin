@@ -319,3 +319,33 @@ describe("computePositionDayMove — guards", () => {
     }
   });
 });
+
+// Codex review 2026-10-08: a short's total cost can be stored as positive
+// proceeds. Held short 100 from prior close 60 to 57: 100 x 3 = +300.
+// 50 more shorted today at 58: (58 - 57) x 50 = +50. Total +350.
+// Base: 100 x 60 + 50 x 58 = 8,900.
+describe("computePositionDayMove — adding to a short, either cost convention", () => {
+  const base = { priorQty: -100, currentQty: -150, priorClose: 60, latestClose: 57, multiplier: 1 };
+
+  it("negative stored cost (the live writer's quantity x average cost)", () => {
+    const m = computePositionDayMove({ ...base, priorCostBasis: -6000, currentCostBasis: -8900 });
+    expect(m.gain).toBeCloseTo(350, 9);
+    expect(m.base).toBeCloseTo(8900, 9);
+    expect(m.basis).toBe("mixed");
+    expect(m.addedCostUnknown).toBe(false);
+  });
+
+  it("positive stored proceeds give the same answer", () => {
+    const m = computePositionDayMove({ ...base, priorCostBasis: 6000, currentCostBasis: 8900 });
+    expect(m.gain).toBeCloseTo(350, 9);
+    expect(m.base).toBeCloseTo(8900, 9);
+    expect(m.addedCostUnknown).toBe(false);
+  });
+
+  it("a total cost that shrank while the quantity grew is left out, not guessed", () => {
+    const m = computePositionDayMove({ ...base, priorCostBasis: -6000, currentCostBasis: -5000 });
+    expect(m.gain).toBeCloseTo(300, 9);
+    expect(m.addedCostUnknown).toBe(true);
+  });
+});
+

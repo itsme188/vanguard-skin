@@ -448,6 +448,44 @@ describe("runLevelScan — once per Eastern day", () => {
     expect(() => JSON.parse(String(puts[0].value))).not.toThrow();
   });
 
+  // Codex review 2026-10-08: a push that did not go out must not leave a
+  // marker behind, or the level is held all day and the Mac later files an
+  // alert nobody received.
+  describe("a failed push leaves no trace", () => {
+    async function scanWithFailedPush(seed: Record<string, string> = {}) {
+      const kv = makeKV(seed);
+      const env: any = { CRON_KV: kv, ARCHIVE: {}, PUSHOVER_APP_TOKEN: "t", PUSHOVER_USER_KEY: "u" };
+      const level = lvl({ id: LEVEL_ID });
+      const run = (sent: boolean) =>
+        runLevelScan(env, {
+          loadSnapshot: async () => makeSnapshot([level]),
+          fetchPrice: async () => ({ price: 149.5, tMs: MORNING.getTime() }),
+          sendPush: async () => (sent ? { sent: true } : { sent: false, reason: "pushover down" }),
+          pacingMs: 0,
+          now: MORNING,
+        });
+      return { kv, run };
+    }
+
+    it("no earlier marker: the key is removed and the next tick alerts", async () => {
+      const { kv, run } = await scanWithFailedPush();
+      await run(false);
+      expect(kv.store.has(`cloud-fired-level-${LEVEL_ID}`)).toBe(false);
+      const retry = await run(true);
+      expect(retry.fired).toBe(1);
+      expect(retry.deduped).toBe(0);
+      expect(kv.store.has(`cloud-fired-level-${LEVEL_ID}`)).toBe(true);
+    });
+
+    it("an earlier day's unreconciled marker is put back exactly as it was", async () => {
+      const earlier = marker({ triggeredAt: "2026-10-06T19:59:00.000Z", firedAt: "2026-10-06T19:59:30.000Z" });
+      const key = `cloud-fired-level-${LEVEL_ID}`;
+      const { kv, run } = await scanWithFailedPush(earlier);
+      await run(false);
+      expect(kv.store.get(key)).toBe(earlier[key]);
+    });
+  });
+
   it("the marker is kept 7 days for the Mac to reconcile; its lifetime is not the guard", async () => {
     expect(CLOUD_FIRED_MARKER_TTL_SECONDS).toBe(7 * 24 * 60 * 60);
     const level = lvl({ id: LEVEL_ID });

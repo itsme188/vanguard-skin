@@ -158,14 +158,19 @@ export function computePositionDayMove(input: PositionDayMoveInput): PositionDay
   }
 
   // The row stores ONE blended cost for the whole position, so the added
-  // shares' cost is the change in total cost between the two rows. Both rows
-  // are signed alike by one writer, so the signed division is positive for a
-  // long and for a short; rows that disagree on convention fall outside the
-  // band and are left out.
+  // shares' cost is the change in total cost between the two rows. A short's
+  // total can be stored negative or as positive proceeds, so the change is
+  // taken by magnitude, and only when both rows use the same sign and the
+  // magnitude grew; rows that disagree on convention are left out, not guessed.
   const priorCost = usableCost(input.priorCostBasis);
   const currentCost = usableCost(input.currentCostBasis);
-  const addedCost = priorCost === null || currentCost === null ? null : currentCost - priorCost;
-  const addedPerShare = addedCost === null ? null : addedCost / (added * multiplier);
+  const sameConvention =
+    priorCost !== null && currentCost !== null && Math.sign(priorCost) === Math.sign(currentCost);
+  const addedCost =
+    sameConvention && Math.abs(currentCost as number) > Math.abs(priorCost as number)
+      ? Math.abs(currentCost as number) - Math.abs(priorCost as number)
+      : null;
+  const addedPerShare = addedCost === null ? null : addedCost / (Math.abs(added) * multiplier);
 
   if (
     addedCost === null ||

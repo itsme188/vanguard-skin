@@ -295,6 +295,20 @@ export async function runLevelScan(
         currency: lvl.currency ?? null,
       });
 
+      // The marker is written BEFORE the push so two overlapping scans cannot
+      // both alert. If the push then did not go out, put things back as they
+      // were: otherwise the level would be held for the rest of the day and
+      // later filed in the Mac's inbox as an alert nobody received. The next
+      // tick tries again; a push that was delivered but reported as failed
+      // costs one duplicate alert, the smaller harm.
+      if (!pushRes.sent && !opts.dryRun) {
+        if (existing !== null) {
+          await env.CRON_KV.put(kvKey, existing, { expirationTtl: CLOUD_FIRED_MARKER_TTL_SECONDS });
+        } else {
+          await env.CRON_KV.delete(kvKey);
+        }
+      }
+
       result.fired++;
       result.results.push({
         levelId: lvl.id,
