@@ -134,17 +134,24 @@ describe("data-confidence guidance — derived from counts, not score thresholds
   });
 
   describe("holdings", () => {
-    it("worst account 7 days stale (score 80) still names the gap — no false 'current across accounts'", () => {
+    it("worst account 7 days stale (score 87) still names the gap — no false 'current across accounts'", () => {
       const a = insertSecurity(db, "HQA");
       const b = insertSecurity(db, "HQB");
       const c = insertSecurity(db, "HQC");
+      // 10 shares each at $100: three equal $1,000 positions.
+      for (const sec of [a, b, c]) insertPrice(db, sec, "2026-08-21", 100);
       insertHolding(db, 1, a, "2026-08-21", "canonical:hold:TAX:HQA:2026-08-21"); // 0 days
       insertHolding(db, 2, b, "2026-08-18", "canonical:hold:ROTH:HQB:2026-08-18"); // 3 days
       insertHolding(db, 3, c, "2026-08-14", "tws-3-hqc-2026-08-14"); // 7 days — worst
 
       const { holdingsRecency } = getDataConfidence(db, NOW);
-      expect(holdingsRecency.score).toBe(80);
+      // Deliberately changed by the 2026-10-08 ruling (was 80, the stalest
+      // row's bucket). Value-weighted: 0 days -> 100, 3 days -> 80, 7 days -> 80.
+      // (1,000*100 + 1,000*80 + 1,000*80) / 3,000 = 86.67 -> 87
+      expect(holdingsRecency.score).toBe(87);
       expect(holdingsRecency.guidance).not.toContain("current across accounts");
+      // 2,000 of 3,000 is more than a day old: 66.67% -> 67%.
+      expect(holdingsRecency.guidance).toContain("67% of book value");
       expect(holdingsRecency.guidance).toContain("HQC");
       expect(holdingsRecency.guidance).toContain("IBKR");
     });
@@ -156,8 +163,10 @@ describe("data-confidence guidance — derived from counts, not score thresholds
       insertHolding(db, 1, a, "2026-08-21", "canonical:hold:TAX:HCA:2026-08-21"); // 0 days
       insertHolding(db, 2, b, "2026-08-20", "canonical:hold:ROTH:HCB:2026-08-20"); // 1 day
       insertHolding(db, 3, c, "2026-08-21", "tws-3-hcc-2026-08-21"); // 0 days
+      for (const sec of [a, b, c]) insertPrice(db, sec, "2026-08-21", 100);
 
       const { holdingsRecency } = getDataConfidence(db, NOW);
+      // Every position is in the 100 bucket, so any weighting gives 100.
       expect(holdingsRecency.score).toBe(100);
       expect(holdingsRecency.guidance).toBe("Holdings are current across accounts.");
     });

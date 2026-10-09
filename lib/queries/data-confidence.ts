@@ -14,6 +14,7 @@ import { isCashEquivalentSecurity } from "@/lib/compute/cash-equivalents";
 import { classifyHoldingSourceKey } from "@/lib/db/holding-sources";
 import { runIntegrityChecks, sortWorstFirst } from "@/lib/queries/integrity-checks";
 import { formatUSD, rendersAsZero } from "@/lib/format";
+import { adjustedMarketValueSQL } from "@/lib/valuation";
 import {
   computeCashFlowResiduals,
   isUnexplainedCashFlow,
@@ -77,10 +78,18 @@ export interface PriceFreshnessScore extends DimensionScore {
 }
 
 export interface HoldingsRecencyScore extends DimensionScore {
+  /** Share (0-1) of the book's weight sitting in positions more than a day
+   *  old: the figure the guidance line quotes. Weights are the same ones the
+   *  score averages over (see scoreHoldingsRecency). Null when nothing held
+   *  can be valued, so there is no weight to take a share of. Portfolio-
+   *  derived: render it masked. */
+  staleValueShare: number | null;
   perAccount: {
     name: string;
-    /** The STALEST held position's as_of_date — this is what the score is
-     *  based on (weakest-link), NOT the account's most recent import. */
+    /** The STALEST held position's as_of_date, NOT the account's most recent
+     *  import. Display and actions read it; the score is the value-weighted
+     *  average over every position (owner ruling 2026-10-08), so one small
+     *  carried row no longer sets it. */
     date: string | null;
     source: string | null;
     daysOld: number | null;
@@ -91,15 +100,15 @@ export interface HoldingsRecencyScore extends DimensionScore {
      *  latestHoldingsPredicate, keyBy:"account") — shown alongside `date` so
      *  this drawer can never contradict Data Health's "Last holdings"
      *  figure (qa:header-dataconfidence--holdings-date-is-oldest-position-
-     *  not-latest). Scoring is unchanged — still based on `date`/`daysOld`. */
+     *  not-latest). */
     latestDate: string | null;
     /** Held positions in this account. */
     heldCount: number;
     /** Positions more than a day old, oldest first — what the stale-holdings
      *  action names, so it never calls a whole account N days old over a
      *  few carried rows (qa:header-dataconfidence--actions-row-claims-
-     *  account-121d-old-for-2-of-134-positions-regression-2). Display only;
-     *  scoring still reads `daysOld`. */
+     *  account-121d-old-for-2-of-134-positions-regression-2). Display only:
+     *  every stale row is listed whatever its size. */
     stalePositions: { symbol: string; date: string }[];
   }[];
 }
@@ -345,6 +354,32 @@ function scorePriceFreshness(db: Database.Database, now: Date = new Date()): Pri
   };
 }
 
+/** Age bucket score for one position (days since its as_of_date). */
+function holdingAgeBucketScore(daysOld: number): number {
+  if (daysOld <= 1) return 100;
+  if (daysOld <= 7) return 80;
+  if (daysOld <= 30) return 50;
+  if (daysOld <= 90) return 20;
+  return 0;
+}
+
+/** A position with neither a price nor a cost basis counts as fully stale at
+ *  this share of the valued total each ... */
+const UNVALUED_HOLDING_WEIGHT_SHARE = 0.01;
+/** ... and all such positions together never weigh more than this share of
+ *  the valued total (owner ruling 2026-10-08). */
+const UNVALUED_HOLDINGS_WEIGHT_CAP = 0.1;
+
+/** A share of book value as a whole percent. A share that is above zero but
+ *  rounds to 0 reads "<1%", and one short of everything reads ">99%", so the
+ *  line never claims "0%" or "100%" when that is not so. */
+function formatValueShare(share: number): string {
+  const pct = Math.round(share * 100);
+  if (pct === 0 && share > 0) return "<1%";
+  if (pct === 100 && share < 1) return ">99%";
+  return `${pct}%`;
+}
+
 function scoreHoldingsRecency(db: Database.Database, now: Date = new Date()): HoldingsRecencyScore {
   const today = todayET(now);
 
@@ -361,14 +396,38 @@ function scoreHoldingsRecency(db: Database.Database, now: Date = new Date()): Ho
   // mask a stale carried position. Ordered oldest-first per account so a
   // tie between two equally-stale positions deterministically keeps the
   // first row encountered.
+  //
+  // Each row also carries what the score weighs it by: its market value in
+  // USD at the latest stored price (the app's own adjusted-value expression:
+  // bonds /100, options x multiplier, FX at read time) and its cost basis in
+  // USD for a row with no price.
   const holdingRows = db.prepare(`
-    SELECT h.account_id, h.as_of_date, h.source_key, s.symbol
+    SELECT h.account_id, h.as_of_date, h.source_key, s.symbol,
+           lp.close_price AS close_price,
+           ${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")} AS market_value_usd,
+           h.cost_basis * COALESCE(fx.usd_per_unit, 1) AS cost_basis_usd
     FROM holdings h
     JOIN securities s ON s.id = h.security_id
+    LEFT JOIN (
+      SELECT p.security_id, p.close_price
+      FROM prices p
+      JOIN (
+        SELECT security_id, MAX(date) AS max_date FROM prices GROUP BY security_id
+      ) pm ON pm.security_id = p.security_id AND pm.max_date = p.date
+    ) lp ON lp.security_id = h.security_id
+    LEFT JOIN fx_rates fx ON fx.currency = s.currency
     WHERE ${latestHoldingsPredicate({ keyBy: "account_security", includeShorts: true })}
       AND ${liveOptionExpirationSql("s", today)}
     ORDER BY h.account_id, h.as_of_date ASC
-  `).all() as { account_id: number; as_of_date: string; source_key: string | null; symbol: string }[];
+  `).all() as {
+    account_id: number;
+    as_of_date: string;
+    source_key: string | null;
+    symbol: string;
+    close_price: number | null;
+    market_value_usd: number | null;
+    cost_basis_usd: number | null;
+  }[];
 
   const worstByAccount = new Map<
     number,
@@ -440,23 +499,83 @@ function scoreHoldingsRecency(db: Database.Database, now: Date = new Date()): Ho
       guidance: "Add an account to get started.",
       guidanceParts: ["Add an account to get started."],
       guidanceActionable: false,
+      staleValueShare: null,
       perAccount: [],
     };
   }
 
-  // Score based on worst account (weakest link)
-  const worstDays = Math.max(...perAccount.map(a => a.daysOld ?? 999));
+  // Score: the VALUE-WEIGHTED average of each position's age bucket (owner
+  // ruling 2026-10-08; it used to be the single stalest position's bucket,
+  // so one small carried row set the whole score). A large stale position
+  // still pulls the score down in proportion to its size.
+  //   weight = |market value in USD|            when the row has a price
+  //          = |cost basis in USD|              when it has no price
+  //          = 1% of the valued total, bucket 0 when it has neither (all such
+  //            rows together capped at 10% of the valued total)
+  // A stored price of zero or less is treated as no price. An account with
+  // no holdings contributes no row, so it does not affect the score.
+  let valuedWeight = 0;
+  let valuedScoreSum = 0;
+  let staleValuedWeight = 0;
+  let unvaluedCount = 0;
+  let unvaluedStaleCount = 0;
+  let oldestRowDays: number | null = null;
+  for (const r of holdingRows) {
+    const daysOld = Math.round((Date.parse(today) - Date.parse(r.as_of_date)) / 86_400_000);
+    if (oldestRowDays === null || daysOld > oldestRowDays) oldestRowDays = daysOld;
+    const marketValue =
+      r.close_price !== null && r.close_price > 0 && r.market_value_usd !== null
+        ? Math.abs(r.market_value_usd)
+        : 0;
+    const costBasis = r.cost_basis_usd !== null ? Math.abs(r.cost_basis_usd) : 0;
+    const weight =
+      Number.isFinite(marketValue) && marketValue > 0
+        ? marketValue
+        : Number.isFinite(costBasis) && costBasis > 0
+          ? costBasis
+          : 0;
+    if (weight > 0) {
+      valuedWeight += weight;
+      valuedScoreSum += weight * holdingAgeBucketScore(daysOld);
+      if (daysOld > 1) staleValuedWeight += weight;
+    } else {
+      unvaluedCount++;
+      if (daysOld > 1) unvaluedStaleCount++;
+    }
+  }
+
+  // The age the wording and the fallback read: the oldest held row. With no
+  // holdings anywhere it keeps the old 999-day sentinel (score 0, "weeks+
+  // old" guidance) — the owner kept that case as it was.
+  const worstDays = oldestRowDays ?? 999;
+
   let score: number;
-  if (worstDays <= 1) score = 100;
-  else if (worstDays <= 7) score = 80;
-  else if (worstDays <= 30) score = 50;
-  else if (worstDays <= 90) score = 20;
-  else score = 0;
+  let staleValueShare: number | null;
+  if (valuedWeight > 0) {
+    const unvaluedShare = Math.min(
+      unvaluedCount * UNVALUED_HOLDING_WEIGHT_SHARE,
+      UNVALUED_HOLDINGS_WEIGHT_CAP
+    );
+    const unvaluedWeight = valuedWeight * unvaluedShare;
+    const totalWeight = valuedWeight + unvaluedWeight;
+    // Unvalued rows add weight at bucket 0, so they only enlarge the divisor.
+    score = Math.round(valuedScoreSum / totalWeight);
+    // The share the guidance quotes is by AGE (more than a day old), the same
+    // bar as stalePositions; an unvalued row counts at its small fixed weight.
+    const staleUnvaluedWeight =
+      unvaluedCount > 0 ? unvaluedWeight * (unvaluedStaleCount / unvaluedCount) : 0;
+    staleValueShare = (staleValuedWeight + staleUnvaluedWeight) / totalWeight;
+  } else {
+    // Nothing held can be valued (or nothing is held): there are no weights
+    // to average, so the stalest row's bucket stands, as before.
+    score = holdingAgeBucketScore(worstDays);
+    staleValueShare = null;
+  }
 
   // "<account>: latest: <date> · stalest position: SYM <date>" — both dates
   // named and labeled so this line can never read as contradicting Data
   // Health's own "Last holdings <date>" (which quotes the LATEST date, not
-  // the stalest position this dimension scores on).
+  // the stalest position this line also names).
   const detailParts: CopyPart[] = [];
   for (const a of perAccount.filter(acct => acct.date)) {
     // Always the literal ET date — a relative word ("today") goes stale
@@ -480,26 +599,61 @@ function scoreHoldingsRecency(db: Database.Database, now: Date = new Date()): Ho
     ? [priv(worstAccount.stalestSymbol), ` in ${worstAccount.name}`]
     : [worstAccount?.name ?? "the affected account"];
 
-  // Guidance is derived from worstDays — the SAME weakest-link figure the
-  // score buckets on — never from the score bucket alone
-  // (qa:header-dataconfidence--guidance-contradicts-detail-and-actions). The
-  // old `score >= 80` threshold covered the whole <=7-day bucket, so a
-  // 7-day-stale worst position could still read "current across accounts."
-  // "Current" now requires the same <=1-day bar the detail line's
-  // "today"/"yesterday" labels use.
-  const guidanceParts: CopyPart[] =
-    worstDays <= 1
-      ? ["Holdings are current across accounts."]
-      : score >= 50
+  // Guidance is derived from the SAME rows and weights the score averages —
+  // never from the score alone
+  // (qa:header-dataconfidence--guidance-contradicts-detail-and-actions).
+  // "Current across accounts" appears only when EVERY held row is a day old
+  // or less. Otherwise the line names the share of book value sitting in
+  // positions more than a day old (a private run: it is portfolio-derived)
+  // and the stalest position to refresh. A value-weighted score can round to
+  // 100 with a small old row still held, so the wording keys on the rows.
+  const refreshTail: CopyPart[] =
+    score >= 50
+      ? ["refresh ", ...worstPositionLabel, " — import the latest monthly statement (Vanguard) or sync TWS (IBKR)."]
+      : ["refresh ", ...worstPositionLabel, " now (import latest statements or reconnect TWS)."];
+  let guidanceParts: CopyPart[];
+  if (worstDays <= 1) {
+    guidanceParts =
+      valuedWeight > 0 && unvaluedCount > 0
+        ? [
+            "Holdings are current across accounts; ",
+            priv(`${unvaluedCount} ${unvaluedCount === 1 ? "position has" : "positions have"}`),
+            " no price or cost basis — counted as stale in this score.",
+          ]
+        : ["Holdings are current across accounts."];
+  } else if (staleValueShare !== null) {
+    guidanceParts = [
+      priv(formatValueShare(staleValueShare)),
+      " of book value is in positions more than a day old — ",
+      ...refreshTail,
+    ];
+  } else {
+    // No weights (nothing held can be valued): the wording from before the
+    // value-weighted rule, keyed on the stalest row.
+    guidanceParts =
+      score >= 50
         ? ["Refresh ", ...worstPositionLabel, " — import the latest monthly statement (Vanguard) or sync TWS (IBKR)."]
         : ["Holdings are weeks+ old — refresh ", ...worstPositionLabel, " now (import latest statements or reconnect TWS)."];
+  }
   const guidance = copyText(guidanceParts);
 
-  // Same predicate the guidance ternary above branches on: actionable
-  // whenever the weakest-link account is more than 1 day stale.
+  // Same predicate the guidance branches on: actionable whenever any held
+  // row is more than a day old (which covers every row older than 7 days,
+  // however small its share of the book). deriveActions gates the
+  // stale-holdings action row on this, so the two cannot disagree.
   const guidanceActionable = worstDays > 1;
 
-  return { score, detail, detailParts, whyMatters, guidance, guidanceParts, guidanceActionable, perAccount };
+  return {
+    score,
+    detail,
+    detailParts,
+    whyMatters,
+    guidance,
+    guidanceParts,
+    guidanceActionable,
+    staleValueShare,
+    perAccount,
+  };
 }
 
 // sortWorstFirst is imported from lib/queries/integrity-checks.ts (single
@@ -1015,8 +1169,8 @@ function deriveActions(
     });
   }
 
-  // Holdings recency — same predicate as the holdings guidance text (worst
-  // account more than a day old), not the old 30-day threshold that let the
+  // Holdings recency — same predicate as the holdings guidance text (any
+  // held row more than a day old), not the old 30-day threshold that let the
   // guidance name a stale account with no matching action row.
   const staleAccounts = holdings.guidanceActionable
     ? holdings.perAccount.filter(a => (a.daysOld ?? 999) > 1)
