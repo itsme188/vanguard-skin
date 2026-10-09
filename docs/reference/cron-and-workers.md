@@ -216,6 +216,7 @@ cloud digest had been composing on a 7/13 snapshot). Tracked via the gitignored
 | v8 (2026-07-05) | `watchlistSymbols` (additive; older snapshots degrade Worker pushes to held-only) |
 | v11 (2026-09-03) | `armedEvents` + `armedGeneration` (the KV-delta watermark) and `eps_consensus_vendor` on `earningsBogeys` rows — read by `armed-events.ts::effectiveCalendarEvents`. Snapshots ≤ v10 ignore the delta and degrade to held + watchlist (see §15) |
 | v12 (2026-10-08) | `currency` and `triggered_at` on `securityLevels` rows — read by `level-scan.ts` (currency label on the cloud push; once-per-Eastern-day guard). Both optional: a v11 row reads as USD and never blocks. **Deploy the Worker before the first v12 snapshot is written** |
+| v13 (2026-10-09) | `manualEarningsRows`: every live hand-entered earnings row (id, symbol, date, source, type), with no date window, read by `fallback-earnings.ts` as extra input to the two-hand-entered-entries rule so the cloud ignores the same later entry the Mac ignores. Optional: a v12 snapshot reads as today (calendar window only). **Deploy the Worker before the first v13 snapshot is written** |
 
 ## 9. Mac-side scheduling (launchd + pmset)
 
