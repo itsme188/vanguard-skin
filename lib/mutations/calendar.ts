@@ -249,6 +249,12 @@ export function upsertCalendarEvents(
   return insertAll();
 }
 
+/** The fields of a feed row the hider reads; a stored row supplies them too. */
+type FeedRowIdentity = Pick<
+  CalendarEventInput,
+  "source" | "event_type" | "event_date" | "symbol" | "source_key"
+>;
+
 /**
  * Build the per-row step of `upsertCalendarEvents` that stores a feed earnings
  * row hidden behind a showing hand-entered row on the same symbol and date.
@@ -257,7 +263,7 @@ export function upsertCalendarEvents(
  */
 function createFeedRowHider(
   db: Database.Database,
-): (e: CalendarEventInput, existedBeforeWrite: boolean) => HiddenFeedRow | null {
+): (e: FeedRowIdentity, existedBeforeWrite: boolean) => HiddenFeedRow | null {
   let prepared: {
     holders: Database.Statement;
     written: Database.Statement;
@@ -321,6 +327,55 @@ function createFeedRowHider(
       wasShowing: existedBeforeWrite && row.superseded === 0,
     };
   };
+}
+
+/**
+ * The same rule from the other side: a hand-entered earnings row has just
+ * ARRIVED on (symbol, eventDate), by insert or by a date/symbol edit, and a
+ * feed row is already showing there. Without this the two showed side by side
+ * until the next refresh rewrote the feed row (and for a week nobody
+ * refreshes, for good).
+ *
+ * Every showing feed row on that exact symbol and date goes through
+ * `createFeedRowHider`, so the guards are the refresh's own and cannot
+ * drift: exactly one showing hand-entered row on the date, never a feed row
+ * the user confirmed in place, never a row with an email send in flight.
+ * Rows already hidden are left as they are. Call inside the transaction that
+ * wrote the hand-entered row; the caller writes the outbox row.
+ */
+function hideShowingFeedRowsBehindManual(
+  db: Database.Database,
+  symbol: string,
+  eventDate: string,
+): HiddenFeedRow[] {
+  const sym = symbol.trim().toUpperCase();
+  if (!sym) return [];
+  const showing = db
+    .prepare(
+      `SELECT source, source_key FROM calendar_events
+        WHERE event_type = 'earnings' AND source != 'manual'
+          AND UPPER(symbol) = ? AND event_date = ?
+          AND COALESCE(superseded, 0) = 0
+        ORDER BY id`,
+    )
+    .all(sym, eventDate) as { source: CalendarEventSource; source_key: string }[];
+  if (showing.length === 0) return [];
+  const hide = createFeedRowHider(db);
+  const hidden: HiddenFeedRow[] = [];
+  for (const row of showing) {
+    const result = hide(
+      {
+        source: row.source,
+        event_type: "earnings",
+        event_date: eventDate,
+        symbol: sym,
+        source_key: row.source_key,
+      },
+      true,
+    );
+    if (result) hidden.push(result);
+  }
+  return hidden;
 }
 
 /**
@@ -979,6 +1034,12 @@ export interface ManualEarningsInput {
 
 export interface ManualEarningsResult {
   id: number;
+  /**
+   * Feed earnings rows that were showing on this symbol and date and are now
+   * hidden behind the new row (see `hideShowingFeedRowsBehindManual`).
+   * Empty when there were none.
+   */
+  hiddenFeedRows: HiddenFeedRow[];
 }
 
 /**
@@ -992,6 +1053,13 @@ export interface ManualEarningsResult {
  * pass an explicit value):
  *   - event_time omitted     → "AMC" (most common case for missed names)
  *   - release_time omitted   → 08:00 if BMO, 16:15 if AMC, null otherwise
+ *
+ * An earnings row added on a date a feed row already shows on hides that feed
+ * row in the same transaction (one company, one card per day), filling this
+ * row's empty consensus / actual / reaction columns from it and moving its
+ * bogeys, email records and arm here. The armed outbox row is written in that
+ * transaction whenever a row was hidden; the writer is a no-op when the
+ * cloud's view did not change.
  */
 export function insertCalendarEvent(
   db: Database.Database,
@@ -1004,29 +1072,36 @@ export function insertCalendarEvent(
   const sourceKey = `manual:${symbol}:${input.event_date}:${eventType}`;
   const title = `${symbol} earnings (Manual entry)`;
 
-  const result = db
-    .prepare(
-      `INSERT INTO calendar_events
-       (source, event_type, event_date, event_time, title, description,
-        security_id, symbol, expected_impact, consensus_estimate,
-        source_key, week_of, release_time)
-       VALUES ('manual', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    )
-    .run(
-      eventType,
-      input.event_date,
-      eventTime,
-      title,
-      input.description ?? null,
-      input.security_id ?? null,
-      symbol,
-      input.expected_impact ?? "high",
-      input.consensus_estimate ?? null,
-      sourceKey,
-      input.week_of,
-      releaseTime,
-    );
-  return { id: result.lastInsertRowid as number };
+  return db.transaction((): ManualEarningsResult => {
+    const result = db
+      .prepare(
+        `INSERT INTO calendar_events
+         (source, event_type, event_date, event_time, title, description,
+          security_id, symbol, expected_impact, consensus_estimate,
+          source_key, week_of, release_time)
+         VALUES ('manual', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        eventType,
+        input.event_date,
+        eventTime,
+        title,
+        input.description ?? null,
+        input.security_id ?? null,
+        symbol,
+        input.expected_impact ?? "high",
+        input.consensus_estimate ?? null,
+        sourceKey,
+        input.week_of,
+        releaseTime,
+      );
+    const hiddenFeedRows =
+      eventType === "earnings"
+        ? hideShowingFeedRowsBehindManual(db, symbol, input.event_date)
+        : [];
+    if (hiddenFeedRows.length > 0) writeArmedEventsOutboxRow(db);
+    return { id: result.lastInsertRowid as number, hiddenFeedRows };
+  })();
 }
 
 export interface UpdateManualEarningsInput {
@@ -1104,6 +1179,24 @@ export function updateCalendarEvent(
     // a feed row stored hidden behind it there. On a date the reconciler never
     // looks at, nothing else would bring that row back.
     let restored = 0;
+    // And the other half of a move: a hand-entered earnings row that just
+    // ARRIVED on a (symbol, date) where a feed row is showing hides it, exactly
+    // as adding the row there would have.
+    let hidden = 0;
+    if (result.changes > 0) {
+      const now = db
+        .prepare("SELECT event_type, symbol, event_date FROM calendar_events WHERE id = ?")
+        .get(input.id) as { event_type: string; symbol: string | null; event_date: string };
+      const arrived =
+        now.event_type === "earnings" &&
+        !!now.symbol &&
+        (existing.event_type !== "earnings" ||
+          now.event_date !== existing.event_date ||
+          now.symbol.toUpperCase() !== (existing.symbol ?? "").toUpperCase());
+      if (arrived && now.symbol) {
+        hidden = hideShowingFeedRowsBehindManual(db, now.symbol, now.event_date).length;
+      }
+    }
     if (result.changes > 0 && existing.event_type === "earnings" && existing.symbol) {
       const after = db
         .prepare("SELECT event_type, symbol, event_date FROM calendar_events WHERE id = ?")
@@ -1120,7 +1213,7 @@ export function updateCalendarEvent(
         });
       }
     }
-    if (result.changes > 0 && (restored > 0 || isEventArmed(db, input.id))) {
+    if (result.changes > 0 && (restored > 0 || hidden > 0 || isEventArmed(db, input.id))) {
       writeArmedEventsOutboxRow(db);
     }
     return result.changes > 0;
