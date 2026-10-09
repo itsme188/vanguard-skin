@@ -10,7 +10,7 @@ import {
   getCachedNarrative,
   isNarrativeDrifted,
 } from "@/lib/queries/analysis-narratives";
-import { mondayOf } from "@/lib/calendar/date-utils";
+import { mondayOf, todayET } from "@/lib/calendar/date-utils";
 
 export const dynamic = "force-dynamic";
 
@@ -62,7 +62,7 @@ export async function GET(req: NextRequest) {
     );
   }
 
-  const week = mondayOf(new Date().toISOString().slice(0, 10));
+  const week = mondayOf(todayET());
 
   const cached = getCachedNarrative(db, scope, surface, week);
   if (cached) {
@@ -166,7 +166,7 @@ export async function POST(req: NextRequest) {
   // Stamp BEFORE generating so a concurrent double-click (arriving while
   // Sonnet is still running) also gets blocked, not just sequential calls.
   lastRegenAt.set(key, now);
-  const week = mondayOf(new Date().toISOString().slice(0, 10));
+  const week = mondayOf(todayET());
   try {
     const r = await generateNarrative(db, {
       scope,

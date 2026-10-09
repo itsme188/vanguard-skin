@@ -2,8 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { computeAllScenarios, computeScenario, PRESET_SCENARIOS, type ScenarioDefinition, type ScenarioResult } from "@/lib/compute/scenarios";
 import { matchScenariosToThemes, SCENARIO_RECIPES } from "@/lib/compute/scenario-recipes";
-import { getCachedMacroThemes } from "@/lib/queries/analysis-macro-themes";
-import { mondayOf } from "@/lib/calendar/date-utils";
+import { getCachedMacroThemesForNow } from "@/lib/compute/theme-week";
 import { resolveScope } from "@/lib/queries/accounts";
 import { VOL_MOVE_MIN, VOL_MOVE_MAX } from "@/lib/compute/option-reprice";
 import { SCENARIO_INPUT_BOUNDS, customScenarioBodyProblem } from "@/lib/compute/scenario-input-bounds";
@@ -31,13 +30,11 @@ export async function GET(request: NextRequest) {
 
     // All scenarios — decorate with "live now" reason from cached macro themes
     const results = computeAllScenarios(db, { accountIds });
-    // The week key must match the one the themes were cached under (the
-    // macro-themes route and cash-deploy use this same expression). Moving it
-    // to the Eastern day has to happen in every reader and the writer at once.
-    const weekOf = mondayOf(new Date().toISOString().slice(0, 10));
     // The badge is scope-independent: always the 'all' themes, whatever scope
-    // the exposure figures were computed for. No cached 'all' themes = no badge.
-    const cached = getCachedMacroThemes(db, "all", weekOf);
+    // the exposure figures were computed for. The shared reader picks the week
+    // (Eastern; on a weekend the upcoming week once generated). No cached
+    // 'all' themes = no badge.
+    const cached = getCachedMacroThemesForNow(db, "all");
     const activeThemes = cached ? (JSON.parse(cached.themesJson) as Array<{ name: string; factor_label: string; direction: string }>) : [];
     const decoratedRecipes = matchScenariosToThemes(SCENARIO_RECIPES, activeThemes);
     const liveNowMap = new Map(decoratedRecipes.map((r) => [r.id, r.liveNowReason]));

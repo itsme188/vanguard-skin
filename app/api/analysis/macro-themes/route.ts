@@ -8,6 +8,7 @@ import {
 } from "@/lib/compute/macro-themes";
 import { getCachedMacroThemes } from "@/lib/queries/analysis-macro-themes";
 import { mondayOf } from "@/lib/calendar/date-utils";
+import { currentThemeWeek, getCachedMacroThemesForNow } from "@/lib/compute/theme-week";
 
 export const dynamic = "force-dynamic";
 
@@ -33,9 +34,11 @@ export async function GET(req: NextRequest) {
     );
   }
   const weekParam = url.searchParams.get("week");
-  const week = weekParam ? mondayOf(weekParam) : mondayOf(new Date().toISOString().slice(0, 10));
-
-  const cached = getCachedMacroThemes(db, scope, week);
+  // No week named: on a weekend prefer the upcoming week's themes once the
+  // Sunday briefing has generated them, else the week that is ending.
+  const cached = weekParam
+    ? getCachedMacroThemes(db, scope, mondayOf(weekParam))
+    : getCachedMacroThemesForNow(db, scope);
   if (!cached) {
     return NextResponse.json({ success: true, notGenerated: true, themes: null });
   }
@@ -113,7 +116,7 @@ export async function POST(req: NextRequest) {
   // second POST that arrives while this one is still in flight now sees the
   // claim and 429s instead of starting a second paid generation.
   lastMacroRegenAt.set(scope, now);
-  const week = mondayOf(new Date().toISOString().slice(0, 10));
+  const week = currentThemeWeek();
   try {
     const r = await generateMacroThemes(db, { scope, weekOf: week, forceRegen: true });
     if (r.noneVerified) {
