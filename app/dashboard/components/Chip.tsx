@@ -49,6 +49,7 @@ export function Chip({
   size = "sm",
   uppercase = false,
   title,
+  wrap = false,
   className = "",
 }: {
   children: ReactNode;
@@ -56,6 +57,8 @@ export function Chip({
   size?: ChipSize;
   uppercase?: boolean;
   title?: string;
+  /** Let a long label wrap inside a narrow parent. Off by default: a chip is one line. */
+  wrap?: boolean;
   className?: string;
 }) {
   const upper = uppercase ? "uppercase tracking-wide" : "";
@@ -64,7 +67,7 @@ export function Chip({
   return (
     <span
       title={title}
-      className={`inline-flex items-center whitespace-nowrap rounded-full font-medium ${SIZE_CLASSES[size]} ${CHIP_TONE_CLASSES[tone]} ${upper} ${className}`}
+      className={`inline-flex items-center ${wrap ? "" : "whitespace-nowrap"} rounded-full font-medium ${SIZE_CLASSES[size]} ${CHIP_TONE_CLASSES[tone]} ${upper} ${className}`}
     >
       {children}
     </span>

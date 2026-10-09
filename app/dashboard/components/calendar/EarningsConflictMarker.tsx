@@ -102,7 +102,8 @@ export function EarningsConflictMarker({
       tone="gold"
       size="xs"
       title={sentence}
-      className={`${wrap ? "max-w-full min-w-0 break-words" : "whitespace-nowrap"} ${className}`}
+      wrap={wrap}
+      className={`${wrap ? "max-w-full min-w-0 break-words" : ""} ${className}`}
     >
       ⚠ {detail}
     </Chip>
