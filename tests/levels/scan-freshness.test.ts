@@ -32,7 +32,10 @@ describe("scanner price-freshness window", () => {
   it("builds a SQLite predicate with date() on BOTH sides", () => {
     const sql = levelPriceIsFreshSql("COALESCE(lp.date, lb.date)");
     expect(sql).toContain("date(COALESCE(lp.date, lb.date))");
-    expect(sql).toContain("date('now', '-4 days')");
+    // The right side counts back from the bound EASTERN day, never SQLite's
+    // UTC date('now') (which is already tomorrow after 20:00 Eastern).
+    expect(sql).toContain("date(@armedToday, '-4 days')");
+    expect(sql).not.toContain("'now'");
     expect(sql).toContain(">=");
   });
 

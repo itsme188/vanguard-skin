@@ -6,7 +6,7 @@ import {
 } from "@/lib/earnings/extract-bogeys";
 import { saveBogeyWithRecompile } from "@/lib/mutations/earnings-bogeys";
 import { issuerSiblings } from "@/lib/securities/issuer-family";
-import { addDays } from "@/lib/calendar/date-utils";
+import { addDays, todayET } from "@/lib/calendar/date-utils";
 import { buildBogeyEventMatchMap } from "@/lib/queries/bogey-event-match";
 import { buildStatementKey, uploadStatementPdf } from "@/lib/storage/r2";
 
@@ -70,7 +70,7 @@ export async function POST(request: Request) {
 
   const sourceLabel = (() => {
     const v = form.get("sourceLabel");
-    return typeof v === "string" && v.trim() ? v.trim() : `Upload ${new Date().toISOString().slice(0, 10)} ${file.name}`;
+    return typeof v === "string" && v.trim() ? v.trim() : `Upload ${todayET()} ${file.name}`;
   })();
 
   const buffer = Buffer.from(await file.arrayBuffer());

@@ -11,7 +11,7 @@ import {
 } from "@/lib/queries/chat-tools";
 import { getNotesFiltered, getSecurityIdBySymbol } from "@/lib/queries/notes";
 import { createNote } from "@/lib/mutations/notes";
-import { todayET } from "@/lib/calendar/date-utils";
+import { addDays, todayET } from "@/lib/calendar/date-utils";
 import { NOTE_TYPES, NOTE_SENTIMENTS } from "@/lib/types";
 import { coerceNoteType, coerceNoteSentiment } from "@/lib/notes/coerce";
 import { computeTwr } from "@/lib/compute/twr";
@@ -1145,9 +1145,7 @@ export async function executeTool(
         // This is async — return a promise
         const seriesId = input.series_id as string | undefined;
         const searchQuery = input.search_query as string | undefined;
-        const defaultStart = new Date(Date.now() - 365 * 24 * 3600 * 1000)
-          .toISOString()
-          .slice(0, 10);
+        const defaultStart = addDays(todayET(), -365);
 
         if (seriesId) {
           rawResult = await getSeriesData(seriesId, {
@@ -1588,8 +1586,6 @@ export async function executeTool(
         try {
           const { getRecentArticles } = await import("@/lib/queries/research");
           const daysBack = (input.days_back as number) || 7;
-          const startDate = new Date();
-          startDate.setDate(startDate.getDate() - daysBack);
 
           // If filtering by symbol, find the security_id
           let securityId: number | undefined;
@@ -1616,7 +1612,9 @@ export async function executeTool(
           researchArticles = getRecentArticles(db, {
             sourceId,
             securityId,
-            startDate: startDate.toISOString().slice(0, 10),
+            // N days before the Eastern day (a UTC slice is tomorrow after
+            // 20:00 Eastern and opened the window a day late).
+            startDate: addDays(todayET(), -daysBack),
             search: input.search ? String(input.search) : undefined,
             processedOnly: true,
             limit: 15,
@@ -1646,15 +1644,12 @@ export async function executeTool(
       case "query_calendar_events": {
         const daysAhead = (input.days_ahead as number) ?? 14;
         const daysBack = (input.days_back as number) ?? 0;
-        const now = new Date();
-        const startDate = new Date(now);
-        startDate.setDate(startDate.getDate() - daysBack);
-        const endDate = new Date(now);
-        endDate.setDate(endDate.getDate() + daysAhead);
-
+        // Event dates are Eastern calendar days, so the window is anchored on
+        // the Eastern day: a UTC slice dropped tonight's events after 20:00.
+        const today = todayET();
         const evtParams: unknown[] = [
-          startDate.toISOString().slice(0, 10),
-          endDate.toISOString().slice(0, 10),
+          addDays(today, -daysBack),
+          addDays(today, daysAhead),
         ];
 
         let evtWhere = "event_date BETWEEN ? AND ?";

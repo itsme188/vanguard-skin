@@ -2,6 +2,7 @@ import type Database from "better-sqlite3";
 import { MarketDataType, SecType, IBApiTickType } from "@stoqey/ib";
 import type { Subscription } from "rxjs";
 import { getIbApi } from "./client";
+import { todayET } from "@/lib/calendar/date-utils";
 import { mapSecurityType } from "./security-type-map";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 import { bumpIfPricesAffectSyntheticCloses } from "@/lib/compute/tax-convention";
@@ -266,7 +267,9 @@ export function stopStreaming(): void {
 /** Write current cache to prices table as a snapshot. */
 export function snapshotToDb(db: Database.Database): number {
   const state = getState();
-  const today = new Date().toISOString().slice(0, 10);
+  // Eastern market day, the same stamp lib/tws/snapshot.ts uses. A UTC slice
+  // dated an evening flush (after 20:00 Eastern) tomorrow.
+  const today = todayET();
   const upsert = db.prepare(`
     INSERT OR REPLACE INTO prices (security_id, date, close_price, source)
     VALUES (?, ?, ?, 'tws')

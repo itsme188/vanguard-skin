@@ -178,14 +178,29 @@ export const BEYOND_SCAN_RANGE_EXPLANATION =
 export const LEVEL_PRICE_MAX_AGE_DAYS = 4;
 
 /**
+ * The named parameter the fragment below binds: today's EASTERN calendar day
+ * (`todayET()`). It is the same parameter the armed-universe expiry test binds
+ * (lib/queries/security-levels.ts, `armedTodayParam()`), so one binding serves
+ * both tests in a scan query.
+ */
+export const LEVEL_SCAN_TODAY_PARAM = "@armedToday";
+
+/**
  * SQLite predicate fragment: is the price behind `dateExpr` fresh enough to
  * scan? `date()` on BOTH sides per the project's datetime convention — the
- * left side is a stored YYYY-MM-DD string, the right side is SQLite's UTC now.
+ * left side is a stored YYYY-MM-DD string, the right side counts back from the
+ * EASTERN day bound as `@armedToday`.
  *
- * Interpolates only the module's own integer constant — never caller input.
+ * Never SQLite's date('now'): that is the UTC day, already tomorrow after
+ * 20:00 Eastern, which made the window a day stricter in the evening than the
+ * Eastern reading every other level test uses. Every statement that embeds
+ * this fragment must bind `armedToday`; one that does not fails loudly
+ * (better-sqlite3 refuses a missing named parameter).
+ *
+ * Interpolates only the module's own constants — never caller input.
  */
 export function levelPriceIsFreshSql(dateExpr: string): string {
-  return `date(${dateExpr}) >= date('now', '-${LEVEL_PRICE_MAX_AGE_DAYS} days')`;
+  return `date(${dateExpr}) >= date(${LEVEL_SCAN_TODAY_PARAM}, '-${LEVEL_PRICE_MAX_AGE_DAYS} days')`;
 }
 
 /**
@@ -197,8 +212,8 @@ export function levelPriceIsFreshSql(dateExpr: string): string {
  * separately-disclosed) story; mislabelling it would repeat the mistake the
  * band predicate avoids with its own null handling.
  *
- * Server code should prefer the SQL fragment so the comparison happens in the
- * same clock as the scan (SQLite's date('now') is UTC).
+ * Pass the Eastern day (`todayET()`) as `today`: that is the day the SQL
+ * fragment above counts back from.
  */
 export function isLevelPriceStale(
   priceDate: string | null | undefined,
