@@ -37,6 +37,7 @@ import {
   extractBogeysFromArticleForEvent,
   NEWSLETTER_EXTRACTOR_VERSION,
 } from "@/lib/earnings/extract-newsletter-bogeys";
+import { bogeyHasContentSql } from "@/lib/mutations/earnings-bogeys";
 import { stableHash, type PrepareStepDefinition } from "../prepare-armed-event";
 
 /** How far back the rescan reaches. Bogeys age out fast; two weeks covers the
@@ -150,7 +151,13 @@ export function makeNewsletterRescanStep(
         // is then armed. Bank the pair as a hit from the existing bogey row and
         // spend no model call on it. Never disturbs a live claim.
         const already = db
-          .prepare(`SELECT 1 AS present FROM earnings_bogeys WHERE event_id = ? AND research_article_id = ? LIMIT 1`)
+          // Only a row that holds something is an extraction. An all-empty row
+          // (the pre-ruling global scan stored them) banked as a hit would stop
+          // this pair from ever being read for the armed event.
+          .prepare(
+            `SELECT 1 AS present FROM earnings_bogeys
+              WHERE event_id = ? AND research_article_id = ? AND ${bogeyHasContentSql()} LIMIT 1`,
+          )
           .get(e.id, article.id) as { present: number } | undefined;
         if (already) {
           db.prepare(

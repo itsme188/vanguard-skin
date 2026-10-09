@@ -21,7 +21,11 @@ import {
 } from "@/lib/queries/analyst-estimates";
 import { getCachedTranscript } from "@/lib/queries/transcripts";
 import { getNotesForFamily, type NoteWithContext } from "@/lib/queries/notes";
-import { getBogeysForEvent, type EarningsBogey } from "@/lib/queries/earnings-bogeys";
+import {
+  getBogeysForEvent,
+  getBogeysWithContentForEvent,
+  type EarningsBogey,
+} from "@/lib/queries/earnings-bogeys";
 import { resolveExpectedMove } from "@/lib/earnings/expected-move";
 import { getReadThroughsForTargets } from "@/lib/queries/read-through-pairs";
 import {
@@ -1062,7 +1066,9 @@ function buildPreviewContext(
   const ratingChanges = formatRatingChanges(db, symbol);
   const recentPressReleases = formatPressReleases(db, family, 30, 8);
   const priorTranscript = findPriorTranscript(db, symbol, event.event_date);
-  const bogeys = getBogeysForEvent(db, event.id);
+  // Rows that hold something only: the prompt names the newest entry "the
+  // primary consensus reference", and an all-empty row must never be that.
+  const bogeys = getBogeysWithContentForEvent(db, event.id);
   const readThroughs = buildReadThroughEntries(db, family, event.event_date);
   const priorCallNote = getLatestCallNoteForFamily(db, symbol, event.event_date);
   let intel: EarningsIntelView | undefined;

@@ -55,6 +55,7 @@ import {
   readArmedEventsDelta,
 } from "./armed-events";
 import { briefingToHtml } from "./html";
+import { snapshotBogeyHasContent } from "./bogey-content";
 import { sendEmail } from "./resend";
 import { composeReleaseInstant } from "./reaction-matcher";
 import { isUsableReactionLeg } from "./reaction-leg";
@@ -1466,7 +1467,10 @@ function resolveNotesForFamily(
 
 function resolveBogeysForEvent(snapshot: Snapshot, eventId: number): SnapshotBogey[] {
   return (snapshot.earningsBogeys ?? [])
-    .filter((b) => b.event_id === eventId)
+    // A row that holds nothing is not a bogey (PARITY: the Mac's
+    // getBogeysWithContentForEvent). `hasBogeys` is this list's length, so an
+    // event whose only rows are empty composes exactly like one with none.
+    .filter((b) => b.event_id === eventId && snapshotBogeyHasContent(b))
     // Most recently uploaded first — the Mac composer prefers the latest set.
     .sort((a, b) => (a.uploaded_at < b.uploaded_at ? 1 : -1));
 }

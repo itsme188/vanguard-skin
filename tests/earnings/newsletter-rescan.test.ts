@@ -445,6 +445,24 @@ describe("newsletter_rescan step + earnings_bogey_scans ledger", () => {
     expect(ledger(ev)).toEqual([{ article_id: a1, status: "hit", attempts: 0, model_id: null }]);
   });
 
+  it("an all-empty row from the global scan is not an extraction: the pair is scanned, not banked as a hit", async () => {
+    const ev = seedEvent();
+    const a1 = seedArticle("ACME EPS 0.60", daysAgo(3));
+    // The shape the pre-ruling global scan left behind: a row, no content.
+    db.prepare(
+      `INSERT INTO earnings_bogeys (event_id, source, source_label, research_article_id, notes)
+       VALUES (?, 'newsletter', 'Desk Notes 8/30', ?, '')`,
+    ).run(ev, a1);
+
+    const extract = vi.fn(async () => ({ bogeysStored: 1, modelId: "m", called: true }));
+    expect(await makeNewsletterRescanStep({ extract }).run(db, ev, ctx)).toEqual({
+      status: "done",
+      note: "1 scanned, 1 hit",
+    });
+    expect(extract).toHaveBeenCalledTimes(1);
+    expect(ledger(ev)).toEqual([{ article_id: a1, status: "hit", attempts: 1, model_id: "m" }]);
+  });
+
   it("the DEFAULT step (no injected extractor) drives the real per-event path end to end", async () => {
     const ev = seedEvent();
     const hitArticle = seedArticle("ACME buyside bogey: EPS 0.60, rev 1.51B", daysAgo(2), null);

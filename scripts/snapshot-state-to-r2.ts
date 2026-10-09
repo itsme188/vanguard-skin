@@ -30,6 +30,7 @@ import {
   isR2Configured,
 } from "@/lib/storage/r2";
 import { getModelCatalog } from "@/lib/ai/model-catalog";
+import { bogeyHasContentSql } from "@/lib/mutations/earnings-bogeys";
 import { getBriefingHoldings } from "@/lib/calendar/briefing";
 import { getHeldStockSymbols } from "@/lib/queries/briefing-symbols";
 import {
@@ -322,7 +323,7 @@ export function getVanguardHoldingsForSnapshot(
  * The Worker uses these to rank holdings by systematic risk without
  * running a full regression in the cloud.
  */
-function getSecurityBetas(
+export function getSecurityBetas(
   db: Database.Database
 ): Array<{ securityId: number; lookbackDays: number; beta: number; residualStd: number | null; computedAt: string }> {
   const rows = db
@@ -371,8 +372,13 @@ function getNotesForSnapshot(db: Database.Database): Snapshot["notes"] {
 /**
  * Curated earnings bogeys for events inside the snapshot's calendar window, so
  * each bogey's event_id matches a calendarEvents row the Worker already has.
+ *
+ * Rows that hold nothing stay on the Mac (owner ruling 2026-08-12: an all-empty
+ * row is not coverage), so the Worker's email treats such an event as having
+ * no bogeys. The Worker applies the same rule again on its side
+ * (workers/cron/src/bogey-content.ts) for snapshots written before this filter.
  */
-function getEarningsBogeysForSnapshot(
+export function getEarningsBogeysForSnapshot(
   db: Database.Database,
   startDate: string,
   endDate: string,
@@ -386,6 +392,7 @@ function getEarningsBogeysForSnapshot(
          FROM earnings_bogeys b
          JOIN calendar_events e ON e.id = b.event_id
         WHERE e.event_date >= ? AND e.event_date <= ?
+          AND ${bogeyHasContentSql("b")}
         ORDER BY b.uploaded_at DESC`,
     )
     .all(startDate, endDate) as Snapshot["earningsBogeys"];

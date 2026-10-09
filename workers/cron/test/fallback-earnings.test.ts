@@ -368,6 +368,70 @@ describe("runEarningsFallback v5 context (notes + bogeys)", () => {
     expect(html).toContain("1.58");
   });
 
+  it("an event whose only bogey rows are empty composes exactly like an event with no bogeys", async () => {
+    const emptyRow = {
+      id: 3,
+      event_id: 1,
+      source: "newsletter",
+      source_label: "Desk Notes 6/14",
+      eps_consensus: null,
+      eps_whisper: null,
+      revenue_consensus_usd: null,
+      revenue_whisper_usd: null,
+      expected_move_pct: null,
+      eps_consensus_vendor: null,
+      segment_breakdown_json: "{}",
+      guidance_notes: "",
+      notes: "  ",
+      uploaded_at: "2026-06-14 12:00:00",
+    };
+
+    const bare = makeEarningsSnapshot();
+    (bare as unknown as Snapshot).schemaVersion = 5;
+    (bare as unknown as Snapshot).earningsBogeys = [];
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(bare);
+    expect((await runEarningsFallback(makeEnv(), { now: previewWindowNow() })).sent).toBe(1);
+    const bareHtml = htmlOfLastSend();
+
+    const withEmpties = makeEarningsSnapshot();
+    (withEmpties as unknown as Snapshot).schemaVersion = 5;
+    (withEmpties as unknown as Snapshot).earningsBogeys = [emptyRow, { ...emptyRow, id: 4, source_label: "Desk Notes 6/13" }];
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(withEmpties);
+    expect((await runEarningsFallback(makeEnv(), { now: previewWindowNow() })).sent).toBe(1);
+    const html = htmlOfLastSend();
+
+    expect(html).not.toContain("Desk Notes");
+    expect(html).not.toContain("your curated bogeys");
+    expect(html).toBe(bareHtml);
+  });
+
+  it("an empty bogey row beside a real one: only the real one is listed, and the footer still claims bogeys", async () => {
+    const snap = makeEarningsSnapshot();
+    (snap as unknown as Snapshot).schemaVersion = 5;
+    const base = {
+      event_id: 1,
+      source: "newsletter",
+      eps_consensus: null,
+      eps_whisper: null,
+      revenue_consensus_usd: null,
+      revenue_whisper_usd: null,
+      segment_breakdown_json: null,
+      guidance_notes: null,
+      notes: null,
+    };
+    (snap as unknown as Snapshot).earningsBogeys = [
+      { ...base, id: 3, source_label: "Empty Sheet", uploaded_at: "2026-06-14 12:00:00" },
+      { ...base, id: 4, source_label: "Real Sheet", eps_consensus: 0, uploaded_at: "2026-06-13 12:00:00" },
+    ];
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(snap);
+    expect((await runEarningsFallback(makeEnv(), { now: previewWindowNow() })).sent).toBe(1);
+
+    const html = htmlOfLastSend();
+    expect(html).toContain("[1] Real Sheet");
+    expect(html).not.toContain("Empty Sheet");
+    expect(html).toContain("your curated bogeys");
+  });
+
   it("renders fine when notes/bogeys are absent (back-compat with v2 snapshot)", async () => {
     const env = makeEnv();
     (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(
