@@ -16,7 +16,7 @@ import { NOTE_TYPES, NOTE_SENTIMENTS } from "@/lib/types";
 import { coerceNoteType, coerceNoteSentiment } from "@/lib/notes/coerce";
 import { computeTwr } from "@/lib/compute/twr";
 import { computeXirr } from "@/lib/compute/xirr";
-import { resolveAccountScopeIds } from "@/lib/chat/account-scope";
+import { resolveChatAccounts, type ChatAccountResolution } from "@/lib/chat/account-scope";
 import { annotateToolResult } from "@/lib/chat/validate";
 import { getSeriesData, searchSeries, getLatestValue, FRED_SERIES } from "@/lib/apis/fred";
 import { getCompanyFinancials, getCompanyInfo, getRecentFilings, getInsiderTransactions } from "@/lib/apis/edgar";
@@ -148,7 +148,7 @@ export const CHAT_TOOLS: Anthropic.Tool[] = [
         account_name: {
           type: "string",
           description:
-            "Filter by account name (e.g., 'Vanguard Brokerage', 'Roth IRA', 'Interactive Brokers'). Omit for all accounts.",
+            "Optional. An exact account name, or a scope word: 'vanguard' (the Vanguard accounts EXCLUDING the Roth), 'roth', 'ibkr', or 'all'. This tool reads one account at a time: a scope word that names more than one account returns an error listing them. Omit for all accounts.",
         },
         symbol: {
           type: "string",
@@ -220,7 +220,8 @@ export const CHAT_TOOLS: Anthropic.Tool[] = [
         },
         account_name: {
           type: "string",
-          description: "Optional: restrict to a single account",
+          description:
+            "Optional. An exact account name, or a scope word: 'vanguard' (the Vanguard accounts EXCLUDING the Roth), 'roth', 'ibkr', or 'all'. This tool reads one account at a time: a scope word that names more than one account returns an error listing them. Omit for all accounts.",
         },
       },
       required: ["group_by"],
@@ -244,7 +245,8 @@ export const CHAT_TOOLS: Anthropic.Tool[] = [
         },
         account_name: {
           type: "string",
-          description: "Filter by account name",
+          description:
+            "Optional. An exact account name, or a scope word: 'vanguard' (the Vanguard accounts EXCLUDING the Roth), 'roth', 'ibkr', or 'all'. This tool reads one account at a time: a scope word that names more than one account returns an error listing them. Omit for all accounts.",
         },
         year: {
           type: "integer",
@@ -271,7 +273,8 @@ export const CHAT_TOOLS: Anthropic.Tool[] = [
       properties: {
         account_name: {
           type: "string",
-          description: "Filter by account name",
+          description:
+            "Optional. An exact account name, or a scope word: 'vanguard' (the Vanguard accounts EXCLUDING the Roth), 'roth', 'ibkr', or 'all'. This tool reads one account at a time: a scope word that names more than one account returns an error listing them. Omit for all accounts.",
         },
         symbol: {
           type: "string",
@@ -310,7 +313,8 @@ export const CHAT_TOOLS: Anthropic.Tool[] = [
       properties: {
         account_name: {
           type: "string",
-          description: "Filter by account name. Omit for all accounts.",
+          description:
+            "Optional. An exact account name, or a scope word: 'vanguard' (the Vanguard accounts EXCLUDING the Roth), 'roth', 'ibkr', or 'all'. This tool reads one account at a time: a scope word that names more than one account returns an error listing them. Omit for all accounts.",
         },
         start_date: {
           type: "string",
@@ -342,7 +346,8 @@ export const CHAT_TOOLS: Anthropic.Tool[] = [
         },
         account_name: {
           type: "string",
-          description: "Filter by account name. Omit for all accounts.",
+          description:
+            "Optional. An exact account name, or a scope word: 'vanguard' (the Vanguard accounts EXCLUDING the Roth), 'roth', 'ibkr', or 'all'. This tool reads one account at a time: a scope word that names more than one account returns an error listing them. Omit for all accounts.",
         },
       },
     },
@@ -363,7 +368,7 @@ export const CHAT_TOOLS: Anthropic.Tool[] = [
         account_name: {
           type: "string",
           description:
-            "Optional: restrict to a single account name. Omit for portfolio-wide TWR.",
+            "Optional. An exact account name, or a scope word: 'vanguard' (the Vanguard accounts EXCLUDING the Roth), 'roth', 'ibkr', or 'all'. A scope word that names several accounts gives ONE time-weighted and ONE money-weighted return over all of them. Omit for portfolio-wide TWR.",
         },
       },
     },
@@ -700,7 +705,7 @@ export const CHAT_TOOLS: Anthropic.Tool[] = [
         account_name: {
           type: "string",
           description:
-            "Account name to query (e.g., 'IBKR'). Defaults to IBKR if omitted.",
+            "Optional. An exact account name, or a scope word: 'vanguard' (the Vanguard accounts EXCLUDING the Roth), 'roth', 'ibkr', or 'all'. This tool reads one account at a time: a scope word that names more than one account returns an error listing them. Defaults to IBKR if omitted.",
         },
         year: {
           type: "integer",
@@ -729,7 +734,7 @@ export const CHAT_TOOLS: Anthropic.Tool[] = [
         account_name: {
           type: "string",
           description:
-            "Account name to query (e.g., 'IBKR'). Omit for all accounts.",
+            "Optional. An exact account name, or a scope word: 'vanguard' (the Vanguard accounts EXCLUDING the Roth), 'roth', 'ibkr', or 'all'. A scope word that names several accounts covers all of them. Omit for all accounts.",
         },
         underlying: {
           type: "string",
@@ -913,7 +918,7 @@ export const CHAT_TOOLS: Anthropic.Tool[] = [
         account_name: {
           type: "string",
           description:
-            "Optional: show held names for this account only. Omit for every account. Benchmarks are always included.",
+            "Optional. An exact account name, or a scope word: 'vanguard' (the Vanguard accounts EXCLUDING the Roth), 'roth', 'ibkr', or 'all'. This tool reads one account at a time: a scope word that names more than one account returns an error listing them. Shows held names for that account only. Omit for every account. Benchmarks are always included.",
         },
       },
       additionalProperties: false,
@@ -924,52 +929,42 @@ export const CHAT_TOOLS: Anthropic.Tool[] = [
 // ─── Account Name Resolution ─────────────────────────────────────
 
 /**
- * Resolve a user-provided account name to the exact DB account name
- * using case-insensitive substring matching.
- * "roth" → "Vanguard Roth IRA", "ibkr" → "IBKR", etc.
- * Returns the original string if no match found (let downstream handle it).
+ * Resolve an account name or hint to the exact DB account name, for callers
+ * that need ONE account (the scoped chat's clamp and context).
+ *
+ * Follows `resolveChatAccounts`: an exact name, a scope word ("vanguard"
+ * excludes the Roth), or a fragment that matches exactly one account. It
+ * never takes the first of several matches. A name that is ambiguous,
+ * unknown, or a scope of two or more accounts comes back unchanged: it then
+ * matches no account downstream, and a chat tool handed it answers with the
+ * error that lists the valid names.
  */
 export function resolveAccountName(
   db: Database.Database,
   input: string | undefined
 ): string | undefined {
   if (!input) return undefined;
-
-  // Try exact match first
-  const exact = db
-    .prepare("SELECT name FROM accounts WHERE name = ?")
-    .get(input) as { name: string } | undefined;
-  if (exact) return exact.name;
-
-  // Fall back to case-insensitive substring match
-  const fuzzy = db
-    .prepare("SELECT name FROM accounts WHERE LOWER(name) LIKE '%' || LOWER(?) || '%'")
-    .get(input) as { name: string } | undefined;
-  return fuzzy?.name ?? input;
+  const resolved = resolveChatAccounts(db, input);
+  if (resolved.kind === "all") return undefined;
+  if (resolved.kind === "accounts" && resolved.accounts.length === 1) {
+    return resolved.accounts[0].name;
+  }
+  return input;
 }
+
+/** Every tool whose schema declares `account_name`. */
+const ACCOUNT_TOOL_NAMES: ReadonlySet<string> = new Set(
+  CHAT_TOOLS.filter(
+    (t) => (t.input_schema.properties as Record<string, unknown> | undefined)?.account_name
+  ).map((t) => t.name)
+);
 
 /**
- * Resolve a user-provided account name to the DB account ID
- * using case-insensitive substring matching.
+ * The account-taking tools whose engines accept an id LIST, so a scope of
+ * several accounts is answered whole. Every other account-taking tool reads
+ * one account by name and refuses a wider scope rather than pick one.
  */
-function resolveAccountId(
-  db: Database.Database,
-  input: string | undefined
-): number | undefined {
-  if (!input) return undefined;
-
-  // Try exact match first
-  const exact = db
-    .prepare("SELECT id FROM accounts WHERE name = ?")
-    .get(input) as { id: number } | undefined;
-  if (exact) return exact.id;
-
-  // Fall back to case-insensitive substring match
-  const fuzzy = db
-    .prepare("SELECT id FROM accounts WHERE LOWER(name) LIKE '%' || LOWER(?) || '%'")
-    .get(input) as { id: number } | undefined;
-  return fuzzy?.id;
-}
+const SCOPE_LIST_TOOLS: ReadonlySet<string> = new Set(["query_twr", "query_options_greeks"]);
 
 // ─── Tool Dispatcher ──────────────────────────────────────────────
 
@@ -988,8 +983,29 @@ export async function executeTool(
   input: Record<string, unknown>
 ): Promise<unknown> {
   try {
-    // Resolve account names case-insensitively for all tools that accept one
-    const accountName = resolveAccountName(db, input.account_name as string | undefined);
+    // The model-supplied account_name, resolved ONCE for every tool that
+    // declares one: an exact name, a scope word, or a fragment naming exactly
+    // one account. Ambiguous or unknown is a plain error so the model asks
+    // or retries; it never gets the first match or the whole book.
+    // (query_trade_reviews has always defaulted to the IBKR account.)
+    const takesAccount = ACCOUNT_TOOL_NAMES.has(toolName);
+    const requestedAccount =
+      asString(input.account_name) || (toolName === "query_trade_reviews" ? "IBKR" : undefined);
+    const accountScope: ChatAccountResolution = takesAccount
+      ? resolveChatAccounts(db, requestedAccount)
+      : { kind: "all" };
+    if (accountScope.kind === "error") return { error: accountScope.error };
+    const scopeAccounts = accountScope.kind === "accounts" ? accountScope.accounts : undefined;
+    if (scopeAccounts && scopeAccounts.length > 1 && !SCOPE_LIST_TOOLS.has(toolName)) {
+      const names = scopeAccounts.map((a) => `"${a.name}"`).join(", ");
+      return {
+        error: `"${requestedAccount}" names ${scopeAccounts.length} accounts (${names}) and this tool reads one account at a time. Call it once per account with the exact account name, or omit account_name for every account.`,
+      };
+    }
+    /** Undefined = every account. */
+    const accountIds = scopeAccounts?.map((a) => a.id);
+    /** The one account's exact name, for the tools that read a single account. */
+    const accountName = scopeAccounts?.length === 1 ? scopeAccounts[0].name : undefined;
 
     let rawResult: unknown;
 
@@ -1083,11 +1099,13 @@ export async function executeTool(
             ? requested
             : "all";
 
-        const accountId = resolveAccountId(db, input.account_name as string | undefined);
-        const anchorScope = accountId != null ? [accountId] : undefined;
+        // One scope for the whole answer: the window anchor, the
+        // time-weighted return and the money-weighted return all read the
+        // same account id list (a one-id list is that account, exactly as a
+        // single id was; undefined is every account).
         const perfWindow = resolvePerformanceWindow(period, {
           today,
-          lastStatementAnchor: latestStatementAnchor(db, anchorScope, today),
+          lastStatementAnchor: latestStatementAnchor(db, accountIds, today),
         });
         // Exactly as the Performance view calls the engines: the chain starts
         // the day after the opening anchor, and the end is bounded only for a
@@ -1095,19 +1113,8 @@ export async function executeTool(
         const startDate = perfWindow.chainStartDate;
         const endDate = perfWindow.endsAtStatement ? perfWindow.endDate : undefined;
 
-        const twrResult = computeTwr(db, { startDate, endDate, accountId });
-        // The money-weighted return covers the WHOLE named scope (the same
-        // call /api/compute/xirr makes): a scope word naming two accounts is
-        // one return over both, never the first account's. A one-account
-        // name is a one-id list, which computeXirr treats as that account.
-        // The scope is used only when it contains the account the window and
-        // the time-weighted return above were resolved to; otherwise this
-        // stays on that account, so the two returns in one answer never
-        // describe different accounts.
-        const scopeIds = resolveAccountScopeIds(db, input.account_name as string | undefined);
-        const xirrAccountIds =
-          accountId != null && !scopeIds?.includes(accountId) ? [accountId] : scopeIds;
-        const xirrResult = computeXirr(db, { startDate, endDate, accountIds: xirrAccountIds });
+        const twrResult = computeTwr(db, { startDate, endDate, accountIds });
+        const xirrResult = computeXirr(db, { startDate, endDate, accountIds });
 
         rawResult = {
           window: {
@@ -1404,14 +1411,8 @@ export async function executeTool(
       }
 
       case "query_trade_reviews": {
-        const accountName = resolveAccountName(
-          db,
-          (input.account_name as string) || "IBKR"
-        );
-        const account = db
-          .prepare("SELECT id FROM accounts WHERE name = ?")
-          .get(accountName) as { id: number } | undefined;
-
+        // Resolved above to exactly one account (default: IBKR).
+        const account = scopeAccounts?.[0];
         if (!account) {
           rawResult = { error: `Account "${input.account_name ?? "IBKR"}" not found` };
           break;
@@ -1463,16 +1464,8 @@ export async function executeTool(
       }
 
       case "query_options_greeks": {
-        const accountName = resolveAccountName(db, input.account_name as string | undefined);
-        const account = accountName
-          ? (db
-              .prepare("SELECT id FROM accounts WHERE name = ?")
-              .get(accountName) as { id: number } | undefined)
-          : undefined;
-        const accountId = account?.id;
-
-        // Compute Greeks
-        const greeks = computePortfolioGreeks(db, { accountId });
+        // The whole named scope (a list of ids; undefined = every account).
+        const greeks = computePortfolioGreeks(db, { accountIds });
 
         // Filter by underlying if specified
         let positions = greeks.positions;
@@ -1483,8 +1476,8 @@ export async function executeTool(
 
         // Detect strategies from option positions + stock holdings.
         // Stock legs via the shared per-(account,security) helper — see lib/queries/options.ts.
-        const optionPositions = getOptionPositions(db, accountId);
-        const stockHoldings = getStockLegsForStrategyDetection(db, accountId);
+        const optionPositions = getOptionPositions(db, accountIds);
+        const stockHoldings = getStockLegsForStrategyDetection(db, accountIds);
 
         // Strategies are detected account by account (one shared helper with
         // /api/compute/options-strategies): legs are never paired across
