@@ -322,6 +322,54 @@ describe("/api/analysis/macro-themes", () => {
     }
   });
 
+  // ── Every theme failed the citation check (ruling 2026-10-08) ─────────────
+  // Not a success (nothing was cached, nothing to show) and not the
+  // insufficient-signal verdict. The paid call happened, so the short failure
+  // cooldown applies; the 24h window is released.
+
+  it("POST answers 422 with the honest message when no theme could be verified, and does not consume the 24h window", async () => {
+    const macroThemes = await import("@/lib/compute/macro-themes");
+    const spy = vi
+      .spyOn(macroThemes, "generateMacroThemes")
+      .mockResolvedValueOnce({
+        themes: [],
+        sourceSummary: null,
+        fromCache: false,
+        generatedAt: new Date().toISOString(),
+        underThreshold: false,
+        noneVerified: true,
+        droppedThemes: 3,
+      })
+      .mockResolvedValue(OK_RESULT);
+    try {
+      const { POST, __resetMacroRegenLimitForTests, __clearMacroFailCooldownForTests } =
+        await import("@/app/api/analysis/macro-themes/route");
+      __resetMacroRegenLimitForTests();
+      const makeReq = makePost("ibkr");
+
+      const res = await POST(makeReq());
+      expect(res.status).toBe(422);
+      const body = await res.json();
+      expect(body.success).toBe(false);
+      expect(body.reason).toBe("none_verified");
+      expect(body.error).toBe(macroThemes.MACRO_NONE_VERIFIED_MESSAGE);
+      expect(body.droppedThemes).toBe(3);
+      // Never dressed up as the under-threshold verdict or as themes.
+      expect(body.underThreshold).toBeUndefined();
+      expect(body.themes).toBeUndefined();
+
+      const cooled = await POST(makeReq());
+      expect(cooled.status).toBe(429);
+      expect((await cooled.json()).reason).toBe("last_attempt_failed");
+
+      __clearMacroFailCooldownForTests();
+      expect((await POST(makeReq())).status).toBe(200);
+      expect(spy).toHaveBeenCalledTimes(2);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   // ── Raw provider text never reaches the card ──────────────────────────────
   // generateMacroThemes also throws plain Errors carrying provider text (and a
   // refusal). Only MacroThemesParseError writes a message for a reader; the
