@@ -114,9 +114,13 @@ const TD_MONO = "px-4 py-2.5 text-sm text-ink font-mono tabular-nums border-b bo
 
 const TRANSCRIPTS_VISIBLE = 8;
 
-/** "read ▾" / "collapse ▴" under a clamped card — a full-height tap target. */
+/**
+ * "read ▾" / "collapse ▴" under a clamped card — a full-height tap target.
+ * No display utility here: each label sets its own, so `hidden` never has to
+ * beat an `inline-block` on the same element (both labels used to show).
+ */
 const EXPANDER_CLASS =
-  "mt-1 inline-block py-1.5 text-xs font-medium text-blue hover:brightness-110 transition-colors";
+  "mt-1 py-1.5 text-xs font-medium text-blue hover:brightness-110 transition-colors";
 
 /** A note longer than this (or with a line break) is clamped and gets an expander. */
 const NOTE_CLAMP_CHARS = 160;
@@ -165,7 +169,7 @@ function TranscriptRow({
             <span className="line-clamp-2 text-sm leading-snug text-ink-dim group-open:hidden">
               {transcriptPreviewText(t.summary)}
             </span>
-            <span className={`${EXPANDER_CLASS} group-open:hidden`}>read ▾</span>
+            <span className={`${EXPANDER_CLASS} inline-block group-open:hidden`}>read ▾</span>
             <span className={`${EXPANDER_CLASS} hidden group-open:inline-block`}>collapse ▴</span>
           </summary>
           <div className="mt-2 text-sm leading-snug text-ink-dim">
@@ -1043,7 +1047,7 @@ export default async function SecurityDetailPage(props: {
                       <span className="line-clamp-2 text-sm leading-snug text-ink-dim group-open:hidden">
                         {noteBody}
                       </span>
-                      <span className={`${EXPANDER_CLASS} group-open:hidden`}>read ▾</span>
+                      <span className={`${EXPANDER_CLASS} inline-block group-open:hidden`}>read ▾</span>
                       <span className={`${EXPANDER_CLASS} hidden group-open:inline-block`}>collapse ▴</span>
                     </summary>
                     <p className="mt-2 whitespace-pre-wrap text-sm leading-snug text-ink-dim">

@@ -62,3 +62,27 @@ export function performanceCaptionMeasuredFrom(
     : `measured from ${formatDay(measuredFrom)}, the nearest date this scope's return can start from (the period opens ${formatDay(window.startDate)}).`;
   return base.replace(promised, actual);
 }
+
+/**
+ * The equity-curve caption's clause for a curve that runs past the Period
+ * window card's End (the last month-end anchor the TWR chain reaches).
+ *
+ * Every form of the caption names the first and last day of the daily data
+ * the curve is computed from. When the shorter-history notice precedes this
+ * clause (`afterNotice`), that notice has already named both, so only the
+ * overshoot sentence is added. When it does not (the daily history covers the
+ * selected period), this clause opens the caption and names them itself: it
+ * used to print the end date alone. Caption only.
+ */
+export function equityCurveOvershootClause(input: {
+  afterNotice: boolean;
+  curveStart: string;
+  curveEnd: string;
+  windowEnd: string;
+}): string {
+  const { afterNotice, curveStart, curveEnd, windowEnd } = input;
+  const overshoot = `The daily history runs to ${formatDay(curveEnd)}, past the Period window’s ${formatDay(windowEnd)} month-end anchor — the TWR above stops at that anchor`;
+  return afterNotice
+    ? `. ${overshoot}`
+    : `Equity curve: computed from daily data ${formatDay(curveStart)} – ${formatDay(curveEnd)}. ${overshoot}`;
+}

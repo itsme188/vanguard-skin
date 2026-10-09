@@ -31,7 +31,10 @@ import {
   newestStatementInScope,
   type PerformancePeriod,
 } from "@/lib/compute/performance-window";
-import { performanceCaptionMeasuredFrom } from "@/lib/compute/performance-window-caption";
+import {
+  equityCurveOvershootClause,
+  performanceCaptionMeasuredFrom,
+} from "@/lib/compute/performance-window-caption";
 
 // Same four band labels as TrustStripDrawer's chips — duplicated locally
 // rather than imported (TrustStripDrawer is a "use client" module; this
@@ -630,14 +633,14 @@ export async function PerformanceView({ scope = "all", period }: PerformanceView
                         )}
                       </>
                     )}
-                    {runsPastWindow && (
-                      <>
-                        {notice ? ". The " : "Equity curve: the "}
-                        daily history runs to {fmtDate(curveEnd ?? undefined)}, past the Period
-                        window’s {fmtDate(windowEnd ?? undefined)} month-end anchor — the TWR above
-                        stops at that anchor
-                      </>
-                    )}
+                    {runsPastWindow &&
+                      curveStart !== null &&
+                      equityCurveOvershootClause({
+                        afterNotice: notice !== null,
+                        curveStart,
+                        curveEnd,
+                        windowEnd,
+                      })}
                   </p>
                 ) : null;
               })()}
