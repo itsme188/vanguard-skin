@@ -5,6 +5,7 @@
  */
 
 import type Database from "better-sqlite3";
+import { easternDaySql, unmaturedSecuritySql } from "@/lib/db/eastern-day-sql";
 import { generateTextForFeature } from "@/lib/ai/generate";
 import { FACTOR_COLUMNS, FACTOR_LABELS, type FactorColumn } from "@/lib/factors";
 import { normalizeSector } from "@/lib/securities/normalize-sector";
@@ -103,7 +104,7 @@ export async function classifyFactors(
        LEFT JOIN security_factors sf ON sf.security_id = s.id
        WHERE sf.security_id IS NULL
          AND s.underlying_symbol IS NULL
-         AND (s.maturity_date IS NULL OR s.maturity_date >= date('now'))
+         AND ${unmaturedSecuritySql("s")}
        ORDER BY s.symbol`
     )
     .all() as Array<{
@@ -131,7 +132,7 @@ export async function classifyFactors(
        LEFT JOIN security_factors usf ON usf.security_id = u.id
        WHERE ${latestHoldingsPredicate({})}
          AND s.underlying_symbol IS NOT NULL
-         AND (s.expiration_date IS NULL OR s.expiration_date >= date('now'))
+         AND (s.expiration_date IS NULL OR s.expiration_date >= ${easternDaySql()})
          AND usf.security_id IS NULL
        ORDER BY s.underlying_symbol`
     )

@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { easternDaySql } from "@/lib/db/eastern-day-sql";
 import { issuerSiblings } from "@/lib/securities/issuer-family";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 import { getArmedEventIds, getArmedSymbolsInHorizon } from "./earnings-worksheet-flags";
@@ -155,7 +156,7 @@ export function getSymbolStatusDetailed(
         WHERE UPPER(COALESCE(s.underlying_symbol, '')) IN (${placeholders})
           AND LOWER(COALESCE(s.security_type, '')) = 'option'
           AND h.quantity != 0
-          AND (s.expiration_date IS NULL OR s.expiration_date >= date('now'))
+          AND (s.expiration_date IS NULL OR s.expiration_date >= ${easternDaySql()})
           AND h.as_of_date = (
             SELECT MAX(h2.as_of_date) FROM holdings h2
              WHERE h2.account_id = h.account_id AND h2.security_id = h.security_id
@@ -305,7 +306,7 @@ export function getHeldOptionUnderlyingSymbols(db: Database.Database): string[] 
           AND s.underlying_symbol IS NOT NULL AND s.underlying_symbol != ''
           AND LOWER(COALESCE(u.security_type, '')) NOT IN ('etf', 'mutual fund')
           AND h.quantity != 0
-          AND (s.expiration_date IS NULL OR s.expiration_date >= date('now'))
+          AND (s.expiration_date IS NULL OR s.expiration_date >= ${easternDaySql()})
           AND h.as_of_date = (
             SELECT MAX(h2.as_of_date) FROM holdings h2
              WHERE h2.account_id = h.account_id AND h2.security_id = h.security_id

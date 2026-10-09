@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { todayET } from "@/lib/calendar/date-utils";
 import type {
   LevelType,
   LevelDirection,
@@ -83,13 +84,15 @@ export function upsertLevel(
       `INSERT INTO security_levels
         (security_id, level_type, price, price_source, direction, action_hint, source,
          source_article_id, source_author, thesis, timeframe, expires_at,
-         group_id, notes, review_status)
+         group_id, notes, review_status, set_date)
        VALUES
         (@security_id, @level_type, @price, @price_source, @direction, @action_hint, @source,
          @source_article_id, @source_author, @thesis, @timeframe, @expires_at,
-         @group_id, @notes, @review_status)`
+         @group_id, @notes, @review_status, @set_date)`
     )
-    .run(common);
+    // The day a level was set is the Eastern day. The column default is
+    // SQLite's date('now'), the UTC day: tomorrow after 20:00 Eastern.
+    .run({ ...common, set_date: todayET() });
   return result.lastInsertRowid as number;
 }
 

@@ -589,11 +589,13 @@ export async function alertBlockedRecaps(
           AND ce.actual_missing_alerted_at IS NULL
           AND ce.release_time IS NOT NULL
           AND ce.symbol IS NOT NULL
-          AND ce.event_date >= date('now', '-2 days')
+          AND ce.event_date >= date(?, '-2 days')
           AND er.id IS NULL
           AND es.id IS NULL`,
     )
-    .all() as BlockedRecapRow[];
+    // The age window counts from the Eastern day of `now`, bound: SQLite's
+    // date('now') is the UTC day, already tomorrow after 20:00 Eastern.
+    .all(todayET(now)) as BlockedRecapRow[];
 
   const stampAlerted = db.prepare(
     `UPDATE calendar_events SET actual_missing_alerted_at = datetime('now') WHERE id = ?`,

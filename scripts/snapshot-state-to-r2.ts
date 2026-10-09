@@ -356,10 +356,11 @@ function getNotesForSnapshot(db: Database.Database): Snapshot["notes"] {
          FROM notes n
          JOIN securities s ON s.id = n.security_id
         WHERE n.security_id IS NOT NULL
-          AND datetime(n.event_date) >= datetime('now', '-90 days')
+          AND date(n.event_date) > date(?, '-90 days')
         ORDER BY n.event_date DESC, n.created_at DESC`,
     )
-    .all() as Snapshot["notes"];
+    // Days back from the Eastern day, bound (twin of getNotesForFamily).
+    .all(todayET()) as Snapshot["notes"];
   return rows.map((n) => ({
     ...n,
     content:

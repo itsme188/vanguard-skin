@@ -12,6 +12,7 @@
 
 import { db } from "../lib/db";
 import { SYMBOL_RELEASE_TIMES_ET } from "../lib/calendar/release-times";
+import { todayET } from "../lib/calendar/date-utils";
 
 const dryRun = process.argv.includes("--dry-run");
 const symbols = Object.keys(SYMBOL_RELEASE_TIMES_ET);
@@ -23,9 +24,10 @@ const rows = db
      FROM calendar_events
      WHERE event_type = 'earnings'
        AND symbol IN (${placeholders})
-       AND event_date >= date('now')`,
+       AND event_date >= ?`,
   )
-  .all(...symbols) as Array<{ id: number; symbol: string; event_date: string; release_time: string | null }>;
+  // The Eastern day, bound: SQLite's date('now') is the UTC day.
+  .all(...symbols, todayET()) as Array<{ id: number; symbol: string; event_date: string; release_time: string | null }>;
 
 let changed = 0;
 const update = db.prepare("UPDATE calendar_events SET release_time = ? WHERE id = ?");

@@ -1,6 +1,7 @@
 import type Database from "better-sqlite3";
 import { escapeLikeTerm } from "./like-escape";
 import type { NoteType } from "@/lib/types";
+import { todayET } from "@/lib/calendar/date-utils";
 
 // ─── Filter types ─────────────────────────────────────────────────
 
@@ -249,8 +250,12 @@ export function getNotesForFamily(
       `${NOTE_SELECT}
        WHERE (UPPER(s.symbol) IN (${placeholders})
               OR UPPER(COALESCE(s.underlying_symbol, '')) IN (${placeholders}))
-         AND datetime(n.event_date) >= datetime('now', ?)
+         AND date(n.event_date) > date(?, ?)
        ORDER BY n.event_date DESC, n.created_at DESC`,
     )
-    .all(...upperFamily, ...upperFamily, sinceArg) as NoteWithContext[];
+    // A note's event_date is a calendar day, so the window is counted in
+    // days back from the Eastern day (bound). It was compared with the UTC
+    // instant, which dropped the oldest day of the window at 20:00 Eastern.
+    // Strictly after `today - N`: the same days the instant compare kept.
+    .all(...upperFamily, ...upperFamily, todayET(), sinceArg) as NoteWithContext[];
 }

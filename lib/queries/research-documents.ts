@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { todayET } from "@/lib/calendar/date-utils";
 
 export type ResearchDocumentType =
   | "analyst_report"
@@ -197,9 +198,11 @@ export function searchResearchDocuments(
   }
   if (opts.days_back && opts.days_back > 0) {
     where.push(
-      "COALESCE(rd.publication_date, rd.uploaded_at) >= date('now', ?)",
+      "COALESCE(rd.publication_date, rd.uploaded_at) >= date(?, ?)",
     );
-    params.push(`-${Math.floor(opts.days_back)} days`);
+    // The window counts back from the Eastern day, bound: SQLite's
+    // date('now') is the UTC day, already tomorrow after 20:00 Eastern.
+    params.push(todayET(), `-${Math.floor(opts.days_back)} days`);
   }
 
   return db

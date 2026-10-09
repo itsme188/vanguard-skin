@@ -52,6 +52,7 @@ import { SecType } from "@stoqey/ib";
 import { getIbApi } from "../lib/tws/client";
 import { RateLimiter } from "../lib/tws/rate-limiter";
 import { shouldRetypeAsEtf } from "../lib/tws/security-type-map";
+import { easternDaySql } from "../lib/db/eastern-day-sql";
 
 const DB_PATH = path.join(process.cwd(), "data", "vanguard.db");
 
@@ -243,7 +244,7 @@ function getStockTypedSweepCandidates(db: Database.Database): SweepRow[] {
                WHERE LOWER(COALESCE(opt.security_type, '')) = 'option'
                  AND UPPER(COALESCE(opt.underlying_symbol, '')) = UPPER(s.symbol)
                  AND ho.quantity != 0
-                 AND (opt.expiration_date IS NULL OR opt.expiration_date >= date('now'))
+                 AND (opt.expiration_date IS NULL OR opt.expiration_date >= ${easternDaySql()})
             )
           )
         ORDER BY s.symbol`,
