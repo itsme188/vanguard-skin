@@ -310,6 +310,54 @@ export async function generateSuggestionForAlert(
   }
 }
 
+export type RegenerateResult =
+  | { ok: true; suggestion: string }
+  | { ok: false; reason: "not_found" | "generation_failed" };
+
+/**
+ * Forced single-row path: regenerate ONE alert's stored advice, replacing the
+ * sentence already there. One AI call. On failure the old sentence is kept
+ * (generateSuggestionForAlert only writes on success). The bulk pass still
+ * skips rows that have advice; this is the only way to refresh one.
+ */
+export async function regenerateSuggestionForAlert(
+  db: Database.Database,
+  alertId: number
+): Promise<RegenerateResult> {
+  if (!buildSuggestionContext(db, alertId)) return { ok: false, reason: "not_found" };
+  const suggestion = await generateSuggestionForAlert(db, alertId);
+  if (suggestion === null) return { ok: false, reason: "generation_failed" };
+  return { ok: true, suggestion };
+}
+
+// Per-alert rate limit for the forced path. Per-process, like the narrative
+// route's limiter; fine for the single-server Electron deployment. The stamp is
+// taken BEFORE the call so a double-click is blocked, and released on failure
+// so a transient AI error does not burn the window.
+export const REGENERATE_WINDOW_MS = 60 * 1000;
+const lastRegenerateAt = new Map<number, number>();
+
+export function claimRegenerateSlot(
+  alertId: number,
+  now: number = Date.now()
+): { ok: boolean; retryAfterMs: number } {
+  const last = lastRegenerateAt.get(alertId);
+  if (last !== undefined && now - last < REGENERATE_WINDOW_MS) {
+    return { ok: false, retryAfterMs: REGENERATE_WINDOW_MS - (now - last) };
+  }
+  lastRegenerateAt.set(alertId, now);
+  return { ok: true, retryAfterMs: 0 };
+}
+
+export function releaseRegenerateSlot(alertId: number): void {
+  lastRegenerateAt.delete(alertId);
+}
+
+/** Test-only: clear the limiter between cases. */
+export function __resetRegenerateLimitForTests(): void {
+  lastRegenerateAt.clear();
+}
+
 /**
  * Fill in suggestions for every pending alert that doesn't have one yet.
  * Runs in parallel with a modest cap so a handful of alerts complete in ~5s.
