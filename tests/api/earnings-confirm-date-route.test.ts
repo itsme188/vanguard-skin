@@ -235,6 +235,10 @@ describe("EarningsDateChip confirm handler reads the envelope", () => {
     const start = anchorIndex(src, 'apiFetch("/api/earnings/confirm-date"');
     const end = anchorIndex(src, "onConfirmed?.();", start);
     const handler = src.slice(start, end);
-    expect(handler).toContain("!res.ok || body?.success !== true");
+    // The handler reads the reply through the shared reader, which fails a
+    // 2xx whose body does not say success:true (lib/ui/mutation-result.ts).
+    expect(handler).toContain("await readMutationResult");
+    expect(handler).toContain("if (!result.ok)");
+    expect(handler).not.toMatch(/if \(!res\.ok\)\s*\{/);
   });
 });
