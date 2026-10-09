@@ -3,6 +3,7 @@
 import { useState } from "react";
 import type { CalendarEvent, EventImpact } from "@/lib/types";
 import { macroPeriodNote } from "@/lib/calendar/macro-period-display";
+import { refusedActualNote } from "@/lib/calendar/macro-refused-note";
 
 // ── Event type styling ───────────────────────────────────────────
 
@@ -57,6 +58,9 @@ export function EventCard({ event, compact = false }: EventCardProps) {
   // The data period from FRED's observation date, shown beside the title
   // only when the title does not already name it. The title is never edited.
   const periodNote = macroPeriodNote(event.title, event.reference_period);
+  // A macro actual the size check refused: stored empty with a reason. The
+  // card says so, so the row does not read as "nothing released yet".
+  const refusedNote = refusedActualNote(event);
 
   if (compact) {
     return (
@@ -75,6 +79,11 @@ export function EventCard({ event, compact = false }: EventCardProps) {
           </div>
           <p className="text-sm text-ink truncate">{event.title}</p>
           {periodNote && <p className="text-xs text-ink-dim truncate">{periodNote}</p>}
+          {refusedNote && (
+            <p className="text-xs text-ink-dim" title={refusedNote.title}>
+              {refusedNote.text}
+            </p>
+          )}
         </div>
         {event.expected_impact && (
           <ImpactBadge impact={event.expected_impact} />
@@ -112,6 +121,11 @@ export function EventCard({ event, compact = false }: EventCardProps) {
             {event.title}
           </p>
           {periodNote && <p className="text-xs text-ink-dim mt-0.5">{periodNote}</p>}
+          {refusedNote && (
+            <p className="text-xs text-ink-dim mt-0.5" title={refusedNote.title}>
+              {refusedNote.text}
+            </p>
+          )}
 
           {/* Description — always visible, no truncation */}
           {event.description && (

@@ -5,6 +5,7 @@ import { formatFinnhubFigure, parseFinnhubFigure, formatFinnhubFigureCompact } f
 import { formatCompactUSD } from "@/lib/format";
 import { effectiveConsensus } from "@/lib/calendar/consensus";
 import { macroPeriodNote } from "@/lib/calendar/macro-period-display";
+import { refusedActualNote } from "@/lib/calendar/macro-refused-note";
 import {
   earningsTimeLabel,
   FRED_SOURCE_KEY_PREFIX,
@@ -654,6 +655,9 @@ function EventRow({ event: storedEvent, todayIso }: { event: DisplayedEvent; tod
   // Display only: every other read below is untouched by the title.
   const event: DisplayedEvent = { ...storedEvent, title: slotAwareTitle(storedEvent) };
   const periodNote = macroPeriodNote(storedEvent.title, storedEvent.reference_period);
+  // A macro actual the size check refused (stored empty with a reason): the
+  // card says so, in place of the generic "no actual recorded" tag.
+  const refusedNote = refusedActualNote(storedEvent);
   // "time unknown" for an earnings row with no clock time — never a blank and
   // never a default (user ruling 2026-10-05). Single-sourced with Today's
   // releases in lib/calendar/release-times.ts.
@@ -757,7 +761,12 @@ function EventRow({ event: storedEvent, todayIso }: { event: DisplayedEvent; tod
           Cons: {consensusDisplay}
         </p>
       )}
-      {showsNoActualRecorded(event, todayIso) && (
+      {refusedNote && (
+        <p className="text-[12px] text-ink-dim leading-snug mt-1.5" title={refusedNote.title}>
+          {refusedNote.text}
+        </p>
+      )}
+      {!refusedNote && showsNoActualRecorded(event, todayIso) && (
         <p className="text-[11px] text-ink-faint italic mt-1.5">{NO_ACTUAL_RECORDED_LABEL}</p>
       )}
       {/* Captured market reaction (public data, unmasked) — the week view is
