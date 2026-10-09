@@ -331,7 +331,17 @@ describe("LivePrintRow — no hover-only affordances, no div onClick, keyboard-f
     const post = body.indexOf("postAccept({ promoteHeadline: true })");
     expect(warn).toBeGreaterThan(-1);
     expect(post).toBeGreaterThan(warn);
-    expect(body).toMatch(/window\.confirm\(/);
+    // Asked in the app's ConfirmDialog (unit 16), never a browser prompt;
+    // declining returns before the request with the same cancelled line.
+    const ask = body.indexOf("await prompt.ask(");
+    const cancelled = body.indexOf(
+      "Promote cancelled — accept the adjusted EPS line first, or promote again to use GAAP.",
+    );
+    expect(ask).toBeGreaterThan(warn);
+    expect(cancelled).toBeGreaterThan(ask);
+    expect(post).toBeGreaterThan(cancelled);
+    expect(body.slice(cancelled, post)).toContain("return;");
+    expect(src).not.toMatch(/window\.confirm\(/);
   });
   it("owns the accept route and its three 409 confirms in one place (F-S8)", () => {
     expect(src).toMatch(/SUPERSEDED_CONFIRM_COPY/);

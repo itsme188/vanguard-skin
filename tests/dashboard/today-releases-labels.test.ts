@@ -4,7 +4,9 @@
  */
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
-import { pendingOrReleasedText, slotAwareTitle } from "@/app/dashboard/components/TodayReleases";
+import { pendingOrReleasedText } from "@/app/dashboard/components/TodayReleases";
+// Unit 16: the rule moved to a plain lib module shared with the week view.
+import { slotAwareTitle } from "@/lib/calendar/manual-row-display";
 import { anchorIndex } from "@/tests/helpers/source-anchor";
 
 // 2026-03-10 10:00 ET (EDT, UTC-4)
