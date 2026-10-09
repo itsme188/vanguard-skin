@@ -1722,7 +1722,9 @@ export function SecurityChart({
             <span>{chartFooterStalenessText({ barCount, lastDate, intraday: isIntraday, dailyLastBarDate: dailyLoaded.lastDate })}</span>
             {hiddenTradesVisible && <HiddenTradesNote summary={markerSummary} />}
             {/* Level-type color key — maps chart overlay colors to what they mean. */}
-            <div className="hidden sm:flex items-center gap-2 text-[10px] opacity-70">
+            {/* No fade on this wrapper: at 70% the 10px labels measured 3.2 to
+                3.5:1. Only the swatch keeps the 70% (LegendDot). */}
+            <div className="hidden sm:flex items-center gap-2 text-[10px]">
               <LegendDot color="#ffb84d" label="last price" />
               <LegendDot color="#22c55e" label="support / entry" />
               <LegendDot color="#60a5fa" label="target" />
@@ -1741,7 +1743,7 @@ function LegendDot({ color, label }: { color: string; label: string }) {
     <span className="flex items-center gap-1">
       <span
         aria-hidden
-        className="inline-block w-2.5 h-[2px] rounded-sm"
+        className="inline-block w-2.5 h-[2px] rounded-sm opacity-70"
         style={{ background: color, boxShadow: `0 0 0 1px ${color}` }}
       />
       <span>{label}</span>

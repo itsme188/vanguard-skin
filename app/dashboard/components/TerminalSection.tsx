@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { DARK_MODULE_DIM_TEXT } from "./dark-module-text";
 
 /**
  * Shared section + table primitives for the Terminal aesthetic on the
@@ -220,7 +221,7 @@ export function KpiCell({
           style={{
             fontFamily: "var(--font-mono), monospace",
             fontSize: "11px",
-            color: "#777",
+            color: DARK_MODULE_DIM_TEXT,
             fontVariantNumeric: "tabular-nums",
             marginTop: "3px",
             whiteSpace: "nowrap",

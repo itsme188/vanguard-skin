@@ -281,7 +281,10 @@ html {
  * the always-dark module that dark ink lands on near-black (2.1:1, seen in
  * a browser), so the strips opt in here and take the dark-theme ink
  * whatever the page theme. Same unlayered pattern as .chart-chrome above.
- * On the light Charts page these classes do nothing. */
+ * On the light Charts page these classes do nothing.
+ * The Levels list's sort picker opts in the same way: its active pill takes
+ * .chart-status-gold (2.10:1 before) and its "Sort:" label .chart-chrome
+ * (2.68:1 before). */
 .dark-module-chart .chart-status-gold {
   color: #ffb84d;
 }

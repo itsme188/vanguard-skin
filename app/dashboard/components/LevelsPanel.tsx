@@ -53,6 +53,7 @@ import { useToast } from "./Toast";
 import { Chip, CHIP_TONE_CLASSES } from "./Chip";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { SortPicker } from "./SortPicker";
+import { DARK_MODULE_DIM_TEXT } from "./dark-module-text";
 import { compareValues, useSortParam } from "@/lib/hooks/useSortParam";
 import apiFetch from "@/lib/http/apiFetch";
 
@@ -417,7 +418,7 @@ function SuggestedLevels({
             fontSize: "12px",
             letterSpacing: "0.18em",
             textTransform: "uppercase",
-            color: "#555",
+            color: DARK_MODULE_DIM_TEXT,
           }}
         >
           Computing suggested levels…
@@ -457,12 +458,12 @@ function SuggestedLevels({
             <span style={{ color: "#ffb84d", marginRight: "0.5em" }}>{expanded ? "▾" : "▸"}</span>
             {filtered.length} Suggested · Auto-detected
             {data.atr != null && (
-              <span style={{ color: "#555", marginLeft: "1em" }}>
+              <span style={{ color: DARK_MODULE_DIM_TEXT, marginLeft: "1em" }}>
                 · ATR ≈ ${(data.atr * usd).toFixed(2)}
               </span>
             )}
           </span>
-          <span style={{ color: "#555" }}>{expanded ? "hide" : "show"}</span>
+          <span style={{ color: DARK_MODULE_DIM_TEXT }}>{expanded ? "hide" : "show"}</span>
         </button>
         {expanded && (
           <div>
@@ -1639,7 +1640,7 @@ export function LevelsPanel({
                       fontSize: "12px",
                       letterSpacing: "0.18em",
                       textTransform: "uppercase",
-                      color: "#555",
+                      color: DARK_MODULE_DIM_TEXT,
                       padding: "20px 0",
                       textAlign: "center",
                       borderTop: "1px solid #1f1f1f",
@@ -1890,7 +1891,7 @@ export function LevelsPanel({
                               fontSize: "11px",
                               letterSpacing: "0.14em",
                               textTransform: "uppercase",
-                              color: "#666",
+                              color: DARK_MODULE_DIM_TEXT,
                               border: "1px solid #333",
                               padding: "2px 6px",
                               borderRadius: "2px",

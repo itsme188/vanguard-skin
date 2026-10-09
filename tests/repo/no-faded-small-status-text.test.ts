@@ -363,25 +363,33 @@ describe("trade review grades bar", () => {
     }
   });
 
-  it("each segment takes whichever of canvas or ink reads better, per theme", () => {
+  it("each segment takes whichever of canvas or ink reads better, per theme (B in the dark theme takes white)", () => {
     for (const g of GRADES) {
       for (const theme of THEMES) {
         const best = Math.max(
           worstRatio(theme, GRADE_BAR_FILL[g], "text-canvas"),
           worstRatio(theme, GRADE_BAR_FILL[g], "text-ink"),
         );
+        if (g === "B" && theme === "dark") {
+          // Neither theme colour reaches the floor on the 60% green, so the
+          // letter is white there (a browser measured the ink at 4.21:1).
+          expect(Number(best.toFixed(2))).toBe(4.11);
+          expect(textIn(GRADE_BAR_TEXT.B, "dark")).toBe("text-white");
+          expect(ratio(g, theme)).toBeGreaterThan(best);
+          continue;
+        }
         expect(ratio(g, theme), `${g} ${theme}`).toBe(best);
       }
     }
   });
 
-  it("pins the figures; only B in the dark theme stays under 4.5:1", () => {
+  it("pins the figures; every segment reaches 4.5:1 in both themes", () => {
     const table = Object.fromEntries(
       GRADES.map((g) => [g, THEMES.map((t) => Number(ratio(g, t).toFixed(2)))]),
     );
     expect(table).toEqual({
       A: [4.96, 8.69],
-      B: [7.41, 4.11],
+      B: [7.41, 5.18],
       C: [6.08, 11.52],
       D: [6.8, 6.04],
       F: [5.12, 5.26],
@@ -389,7 +397,12 @@ describe("trade review grades bar", () => {
     const under = GRADES.flatMap((g) =>
       THEMES.filter((t) => ratio(g, t) < FLOOR).map((t) => `${g} ${t}`),
     );
-    expect(under).toEqual(["B dark"]);
+    expect(under).toEqual([]);
+  });
+
+  it("B keeps the ink in the light theme, where white would be 2.52:1", () => {
+    expect(textIn(GRADE_BAR_TEXT.B, "light")).toBe("text-ink");
+    expect(Number(worstRatio("light", GRADE_BAR_FILL.B, "text-white").toFixed(2))).toBe(2.52);
   });
 });
 

@@ -1,7 +1,7 @@
 "use client";
 
 import { PERCENT_BASIS } from "@/lib/analysis/percent-bases";
-import { useMemo, useState } from "react";
+import { useMemo, useState, type CSSProperties } from "react";
 import type { FactorHeatmapRow } from "@/lib/queries/analysis";
 import { ScrollFade } from "./ScrollFade";
 import {
@@ -13,11 +13,12 @@ import {
   type FactorColumn,
 } from "@/lib/factors";
 import { Pct } from "@/lib/privacy/components";
+import { factorTagTextColor } from "@/lib/factor-tag-text";
 
 type SortColumn = FactorColumn | "weight";
 
 /** Neutral slate for the display-only Blend bucket (no entry in LEVEL_COLORS). */
-const BLEND_COLOR = "#64748B";
+export const BLEND_COLOR = "#64748B";
 
 /**
  * The Growth vs Value cell reads the same style field the classification
@@ -207,12 +208,20 @@ export function FactorHeatmap({ rows, onCellClick }: FactorHeatmapProps) {
                     >
                       {value ? (
                         <span
-                          className="inline-block px-1.5 py-0.5 rounded text-[10px] font-medium leading-tight"
-                          style={{
-                            backgroundColor: `${color}20`,
-                            color: color,
-                            border: `1px solid ${color}40`,
-                          }}
+                          // Text is the tag's hue pulled toward black (light)
+                          // or white (dark) until it reaches 4.5:1 on its own
+                          // tint: the raw hue measured 1.4 to 3.7:1 on a light
+                          // panel (lib/factor-tag-text.ts). Tint and border
+                          // keep the raw hue.
+                          className="inline-block px-1.5 py-0.5 rounded text-[10px] font-medium leading-tight text-[color:var(--factor-tag-ink-light)] [[data-theme=dark]_&]:text-[color:var(--factor-tag-ink-dark)]"
+                          style={
+                            {
+                              backgroundColor: `${color}20`,
+                              border: `1px solid ${color}40`,
+                              "--factor-tag-ink-light": factorTagTextColor(color, "light"),
+                              "--factor-tag-ink-dark": factorTagTextColor(color, "dark"),
+                            } as CSSProperties
+                          }
                         >
                           {value}
                         </span>

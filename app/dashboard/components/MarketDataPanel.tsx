@@ -5,6 +5,7 @@ import type { CSSProperties } from "react";
 import { SecurityChart } from "./SecurityChart";
 import { LevelsPanel } from "./LevelsPanel";
 import { KpiCell } from "./TerminalSection";
+import { DARK_MODULE_DIM_TEXT } from "./dark-module-text";
 import { formatUSDPrecise, formatPercent, formatNumber, rendersAsZero } from "@/lib/format";
 import { todayET, nowET, addDays } from "@/lib/calendar/date-utils";
 import { isMarketClosed } from "@/lib/calendar/market-holidays";
@@ -390,7 +391,7 @@ export function MarketDataPanel({
               <span
                 style={{
                   fontSize: "0.42em",
-                  color: "#555",
+                  color: DARK_MODULE_DIM_TEXT,
                   fontWeight: 400,
                   verticalAlign: "top",
                   marginRight: "0.08em",
@@ -470,7 +471,7 @@ export function MarketDataPanel({
             value={
               kpis.open != null ? (
                 <>
-                  <span style={{ color: "#555", marginRight: "0.08em" }}>$</span>
+                  <span style={{ color: DARK_MODULE_DIM_TEXT, marginRight: "0.08em" }}>$</span>
                   {formatPublicUSD(kpis.open * usdPerUnit, { bare: true })}
                 </>
               ) : (
@@ -531,7 +532,7 @@ export function MarketDataPanel({
             value={
               kpis.atr14 != null ? (
                 <>
-                  <span style={{ color: "#555", marginRight: "0.08em" }}>$</span>
+                  <span style={{ color: DARK_MODULE_DIM_TEXT, marginRight: "0.08em" }}>$</span>
                   {formatPublicUSD(kpis.atr14 * usdPerUnit, { bare: true })}
                 </>
               ) : (
