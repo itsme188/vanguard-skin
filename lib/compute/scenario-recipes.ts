@@ -27,6 +27,7 @@
 import type Database from "better-sqlite3";
 import type { FactorColumn } from "@/lib/factors";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
+import { accountScopeAndSql } from "@/lib/queries/account-scope-sql";
 import type { ScenarioDefinition, ScenarioResult, PositionImpact } from "./scenarios";
 import { adjustedMarketValueSQL } from "@/lib/valuation";
 import { explodeHoldingBySector } from "./explode-sector";
@@ -539,10 +540,8 @@ export function computeRecipeScenario(
   options?: { accountId?: number; accountIds?: number[] }
 ): ScenarioResult {
   const accountIds = options?.accountIds ?? (options?.accountId ? [options.accountId] : undefined);
-  const accountFilter = accountIds?.length
-    ? `AND h.account_id IN (${accountIds.map(() => "?").join(",")})`
-    : "";
-  const params: number[] = accountIds?.length ? [...accountIds] : [];
+  // `undefined` is every account; a defined empty list is NO accounts.
+  const { sql: accountFilter, params } = accountScopeAndSql(accountIds);
 
   const positions = db
     .prepare(

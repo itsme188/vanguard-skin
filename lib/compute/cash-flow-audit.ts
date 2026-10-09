@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { accountScopeCondition } from "@/lib/queries/account-scope-sql";
 import { fetchAnchorSourceSeamDates } from "@/lib/compute/flow-adjusted";
 import { onlyLiveSnapshotsSql } from "@/lib/db/live-sources";
 
@@ -275,13 +276,12 @@ export function computeCashFlowResiduals(
     .get() as { n: number };
   if (hasRequiredTables.n < 2) return [];
 
-  const accountIds = opts?.accountIds;
-  const accountFilter = accountIds && accountIds.length > 0
-    ? ` WHERE id IN (${accountIds.map(() => "?").join(",")})`
-    : "";
+  // `undefined` is every account; a defined empty list is NO accounts.
+  const accountScope = accountScopeCondition(opts?.accountIds, "id");
+  const accountFilter = accountScope.condition === null ? "" : ` WHERE ${accountScope.condition}`;
   const accounts = db
     .prepare(`SELECT id, name FROM accounts${accountFilter} ORDER BY id`)
-    .all(...(accountIds ?? [])) as { id: number; name: string }[];
+    .all(...accountScope.params) as { id: number; name: string }[];
 
   const valuationsStmt = db.prepare(
     `SELECT valuation_date, cash_balance, total_value
