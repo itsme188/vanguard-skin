@@ -27,7 +27,9 @@
  *   3. Filter to held|watchlist (snapshot.heldSymbols) + earningsSettings
  *      (master toggle + muted symbols).
  *   4. Skip events Mac already audited (snapshot.earningsEmails) OR with
- *      mac-sent-* / cloud-sent-* / mac-running-* markers in KV.
+ *      mac-sent-* / cloud-sent-* / mac-running-* markers in KV. The same two
+ *      checks are also asked of the print's sibling rows (same issuer family,
+ *      same event_date) — see siblingEventIndex.
  *   5. For each candidate: compose lean email, send via Worker Gmail,
  *      write cloud-sent marker.
  */
@@ -181,6 +183,13 @@ interface SnapshotCandidate {
   event: CalendarEventRow;
   /** Present on KV-road recap candidates — carries same-day cloud-enriched data. */
   payload?: CloudEnrichedPayload | null;
+  /**
+   * Ids of the OTHER earnings rows for the same print (same issuer family,
+   * same event_date, showing or hidden). Usually empty. The send loop reads
+   * their KV markers so a phase already handled on a sibling is not sent
+   * again — see siblingEventIndex.
+   */
+  siblingEventIds: number[];
 }
 
 interface ScanSkip {
@@ -359,6 +368,51 @@ function buildWrapCluster(
     eventId: e.id,
     symbol: (e.symbol as string).toUpperCase(),
   }));
+}
+
+/**
+ * "This phase is already handled for this print" — asked of the row's
+ * SIBLINGS: every other earnings row of the same issuer family on the same
+ * event_date, showing or hidden. Worker mirror of the Mac's
+ * phaseHandledOnSibling (lib/calendar/enrichment-runner.ts, 2026-10-08).
+ *
+ * Why: two rows for one print can both be showing and sit at different times
+ * (a Nasdaq row with a before-open slot, its Finnhub twin on the hour-unknown
+ * afternoon default). Each row checked only its OWN (event, phase) key, so
+ * the print could get a preview in the morning on one row and a second one
+ * in the afternoon on the other.
+ *
+ * This builds the lookup "row -> ids of its siblings". The caller then asks
+ * each sibling the SAME question a row asks about itself, from the same two
+ * places: the snapshot's earnings-email rows (a live claim does not count,
+ * exactly as for the row's own key) and the KV markers (Mac sent, cloud
+ * sent, Mac running). The two rules cannot disagree because they are one
+ * rule applied to a longer list of ids.
+ *
+ * Protective only: it can remove a candidate, never add one. Family, not
+ * symbol equality (GOOG / GOOGL). Not applied to the wrap cluster. The
+ * hand-entered-twin rule (manual-twin-email.ts) is separate and untouched.
+ *
+ * KNOWN GAP vs the Mac: the snapshot does not ship earnings_email_skips, so a
+ * skip recorded on a sibling is invisible here (the same pre-existing limit
+ * as a skip on the row itself).
+ */
+function siblingEventIndex(
+  events: readonly CalendarEventRow[],
+): (e: CalendarEventRow) => number[] {
+  const keyOf = (e: CalendarEventRow): string =>
+    `${[...new Set(issuerSiblings((e.symbol as string) ?? "").map((s) => s.toUpperCase()))]
+      .sort()
+      .join(",")}|${e.event_date}`;
+  const byPrint = new Map<string, number[]>();
+  for (const e of events) {
+    if (e.event_type !== "earnings" || !e.symbol) continue;
+    const key = keyOf(e);
+    const ids = byPrint.get(key);
+    if (ids) ids.push(e.id);
+    else byPrint.set(key, [e.id]);
+  }
+  return (e) => (byPrint.get(keyOf(e)) ?? []).filter((id) => id !== e.id);
 }
 
 /**
@@ -562,6 +616,31 @@ export async function runEarningsFallback(
       continue;
     }
 
+    // The same marker question, asked of the print's other rows (see
+    // siblingEventIndex). Read here, not in the scan, so (a) only the capped
+    // set pays for it — three KV reads per sibling, and almost every row has
+    // none — and (b) a cloud-sent marker written earlier in THIS loop is seen:
+    // two showing rows of one print in the same tick send one email.
+    let siblingReason: string | null = null;
+    for (const siblingId of cand.siblingEventIds) {
+      const sib = await readEarningsMarkers(env.CRON_KV, cand.phase, siblingId);
+      if (sib.cloud) siblingReason = "sibling-cloud-already-sent";
+      else if (sib.mac) siblingReason = "sibling-mac-already-sent";
+      else if (sib.macRunning) siblingReason = "sibling-mac-running";
+      if (siblingReason) break;
+    }
+    if (siblingReason) {
+      result.skipped++;
+      result.details.push({
+        eventId: cand.eventId,
+        symbol: cand.symbol,
+        phase: cand.phase,
+        status: "skipped",
+        reason: siblingReason,
+      });
+      continue;
+    }
+
     let implausible = false;
     if (cand.phase === "recap") {
       const verdict = evaluateRecapContent(cand.event, cand.payload ?? null);
@@ -660,6 +739,13 @@ async function findCandidatesFromSnapshot(
   // (lib/earnings/manual-twin-email.ts <-> ./manual-twin-email.ts).
   const ignoredManualTwins = emailIgnoredManualTwins(eff.events, issuerSiblings);
 
+  // A phase already handled on another row of the same print (see
+  // siblingEventIndex). The snapshot half is answered here; the KV-marker
+  // half is answered in the send loop, from the ids carried on the candidate.
+  const siblingsOf = siblingEventIndex(eff.events);
+  const handledOnSibling = (siblingIds: number[], phase: EarningsPhase): boolean =>
+    siblingIds.some((id) => auditedSet.has(auditKey(id, phase)));
+
   for (const e of eff.events) {
     if (e.event_type !== "earnings") continue;
     if (!e.symbol) continue;
@@ -683,13 +769,19 @@ async function findCandidatesFromSnapshot(
     const family = issuerSiblings(sym).map((s) => s.toUpperCase());
     if (family.some((f) => muted.has(f))) continue;
 
+    const siblingEventIds = siblingsOf(e);
+
     // Preview candidate
     if (e.release_time && !auditedSet.has(auditKey(e.id, "preview"))) {
       const releaseInstant = composeReleaseInstant(e.event_date, e.release_time as string);
       if (releaseInstant) {
         const msUntilRelease = releaseInstant.getTime() - nowMs;
         if (msUntilRelease >= PREVIEW_WINDOW_MIN_MS && msUntilRelease <= PREVIEW_WINDOW_MAX_MS) {
-          out.push({ eventId: e.id, symbol: sym, phase: "preview", event: e });
+          if (handledOnSibling(siblingEventIds, "preview")) {
+            skips.push({ eventId: e.id, symbol: sym, phase: "preview", reason: "handled-on-sibling" });
+          } else {
+            out.push({ eventId: e.id, symbol: sym, phase: "preview", event: e, siblingEventIds });
+          }
         }
       }
     }
@@ -709,8 +801,10 @@ async function findCandidatesFromSnapshot(
         if (ageMs >= 0 && ageMs <= RECAP_WINDOW_MAX_MS) {
           if (((e as Record<string, unknown>).actual_value ?? null) == null) {
             skips.push({ eventId: e.id, symbol: sym, phase: "recap", reason: "no-actual" });
+          } else if (handledOnSibling(siblingEventIds, "recap")) {
+            skips.push({ eventId: e.id, symbol: sym, phase: "recap", reason: "handled-on-sibling" });
           } else {
-            out.push({ eventId: e.id, symbol: sym, phase: "recap", event: e });
+            out.push({ eventId: e.id, symbol: sym, phase: "recap", event: e, siblingEventIds });
           }
         }
       }
@@ -728,6 +822,12 @@ async function findCandidatesFromSnapshot(
       if (releaseInstant) {
         const sinceRelease = nowMs - releaseInstant.getTime();
         if (sinceRelease >= 0 && sinceRelease <= KV_PROBE_WINDOW_MS) {
+          // Recap already handled on a sibling row: no candidate, and no KV
+          // probe spent on it either.
+          if (handledOnSibling(siblingEventIds, "recap")) {
+            skips.push({ eventId: e.id, symbol: sym, phase: "recap", reason: "handled-on-sibling" });
+            continue;
+          }
           try {
             const raw = await kv.get(cloudEnrichedKey(e.id));
             if (!raw) {
@@ -739,7 +839,7 @@ async function findCandidatesFromSnapshot(
               } else {
                 const readyMs = Date.parse(payload.fetchedAt);
                 if (Number.isFinite(readyMs) && nowMs - readyMs >= 0 && nowMs - readyMs <= RECAP_WINDOW_MAX_MS) {
-                  out.push({ eventId: e.id, symbol: sym, phase: "recap", event: e, payload });
+                  out.push({ eventId: e.id, symbol: sym, phase: "recap", event: e, payload, siblingEventIds });
                 }
                 // fetchedAt outside the 4h window → expired recap, silent
                 // (mirrors the snapshot road's silent expiry).

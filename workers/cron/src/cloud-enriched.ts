@@ -16,7 +16,14 @@ export interface CloudEnrichedPayload {
   source: WorkerEnrichActualResult["source"];
   deferred?: boolean;
   reason?: string;
-  reaction: unknown; // ReactionSnapshot JSON, or null
+  // ReactionSnapshot JSON (reaction-matcher.ts), or null. Never written before
+  // release + 120 minutes (REACTION_READY_MS below); a fresh capture carries
+  // its own `captured_at`.
+  reaction: unknown;
+  // When the actual-fetch pass last wrote this payload. NOT the reaction's
+  // capture time: an earnings payload is re-written on later ticks, and the
+  // macro reaction-only follow-up (calendar-enrich.ts) adds a reaction
+  // without touching this field. Read `reaction.captured_at` for that.
   fetchedAt: string;
 }
 

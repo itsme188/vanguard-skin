@@ -21,10 +21,15 @@
  * 9b cloud enrichment:
  *
  *   1. Read the latest R2 state snapshot.
- *   2. Filter calendar events to the [now-2h, now-5min] window.
+ *   2. Filter calendar events to the [now-2h, now-5min] window (earnings
+ *      rows: up to 12h, retried until complete).
  *   3. For each candidate, fetch actual value (FRED/Finnhub — Claude nonfred
- *      deferred to next Mac wake) and reaction bars (Polygon).
+ *      deferred to next Mac wake) and, from release + 120 minutes, the
+ *      reaction bars (Yahoo).
  *   4. Write payload to KV at `cloud-enriched-{eventId}` (7d TTL).
+ *   4b. Reaction-only follow-up: a MACRO payload written before its reaction
+ *      could be measured gets the reaction added between release + 120 and
+ *      release + 150 minutes (see runMacroReactionFollowUp).
  *   5. Mac reconciles on next wake via /api/calendar/reconcile-cloud-enrich,
  *      with TWS-always-wins precedence on reaction_snapshot.
  *
@@ -46,6 +51,7 @@ import {
   cloudEnrichedKey,
   isPayloadComplete,
   isEarningsRow,
+  COMPLETE_SETTLE_MS,
   REACTION_READY_MS,
   type CloudEnrichedPayload,
 } from "./cloud-enriched";
@@ -136,6 +142,8 @@ export interface FallbackRunSummary {
   candidatesProcessed?: number;
   failures?: number;
   deferred?: number;
+  /** Macro payloads the reaction-only follow-up tried to complete this tick. */
+  reactionFollowUps?: number;
   error?: string;
   /** Last per-candidate failure message — set when failures > 0 so a partial
    *  (or total) failure surfaces a diagnosable reason, not just a count. */
@@ -194,8 +202,106 @@ interface SnapshotCalendarEvent {
 export interface RunCloudFallbackOpts {
   /** Override wallclock for candidate-window computation. Defaults to Date.now(). */
   nowMs?: number;
-  /** Pacing between Polygon symbol fetches. Defaults to 300ms. Tests pass 0. */
+  /** Pacing between Yahoo symbol fetches. Defaults to the fetcher's own. Tests pass 0. */
   pacingMs?: number;
+}
+
+/**
+ * Reaction-only follow-up for MACRO rows (2026-10-08) — Worker mirror of the
+ * Mac's runReactionFollowUp (lib/calendar/enrichment-runner.ts).
+ *
+ * A macro payload is single-shot: written minutes after the release with the
+ * actual (or a deferral) and no reaction, because a reaction is the move to
+ * release + 120 minutes. The macro candidate window closes at that same
+ * instant, so with the Mac down the row never got a reaction. This pass comes
+ * back for it once the window HAS ended:
+ *
+ *   - only a macro row (never an earnings row — those retry until complete on
+ *     the main road), not superseded, not already enriched in the snapshot;
+ *   - only when its payload EXISTS, carries an actual or a deferral, and has
+ *     no reaction. No payload (the Mac reconciled and deleted it, or none was
+ *     written) means nothing to do — this pass never creates a payload;
+ *   - only while release + 120m <= now < release + 150m (REACTION_READY_MS to
+ *     COMPLETE_SETTLE_MS — the same "the capture window has settled" deadline
+ *     earnings payloads use). On the 15-minute cron that is at most two
+ *     ticks; the second is reached only if the first capture came back empty.
+ *     Nothing is retried after 150 minutes.
+ *
+ * It writes ONLY `reaction` (stamped with `captured_at`, which is what the
+ * Mac's admitCloudReaction reads first). The actual, consensus, source,
+ * deferred, reason and fetchedAt are written back exactly as they were. It
+ * never fetches an actual and never pushes or emails.
+ *
+ * `budget` is what is left of the per-tick candidate limit after the main
+ * pass, so the two passes together stay inside MAX_CANDIDATES_PER_TICK.
+ */
+async function runMacroReactionFollowUp(
+  env: EnrichRunEnv,
+  events: SnapshotCalendarEvent[],
+  nowMs: number,
+  pacingMs: number | undefined,
+  budget: number,
+  alreadyWritten: Set<number>,
+): Promise<{ attempts: number; failures: number; lastError: string | null }> {
+  let attempts = 0;
+  let failures = 0;
+  let lastError: string | null = null;
+
+  for (const ev of events) {
+    if (attempts >= budget) break;
+    if (ev.enriched_at != null) continue;
+    if (ev.superseded) continue;
+    if (typeof ev.release_time !== "string" || !ev.release_time) continue;
+    if (typeof ev.event_date !== "string" || !ev.event_date) continue;
+    if (typeof ev.source_key !== "string") continue;
+    if (typeof ev.id !== "number") continue;
+    if (alreadyWritten.has(ev.id)) continue;
+    const eventType = typeof ev.event_type === "string" ? ev.event_type : "";
+    if (isEarningsRow(eventType, ev.source_key)) continue;
+
+    const releaseInstant = composeReleaseInstant(ev.event_date, ev.release_time);
+    if (!releaseInstant) continue;
+    const ageMs = nowMs - releaseInstant.getTime();
+    if (ageMs < REACTION_READY_MS || ageMs >= COMPLETE_SETTLE_MS) continue;
+
+    try {
+      const raw = await env.CRON_KV.get(cloudEnrichedKey(ev.id));
+      if (!raw) continue;
+      let existing: CloudEnrichedPayload;
+      try {
+        existing = JSON.parse(raw) as CloudEnrichedPayload;
+      } catch {
+        continue;
+      }
+      if (existing == null || typeof existing !== "object") continue;
+      if (existing.reaction != null) continue;
+      if (existing.actual == null && existing.deferred !== true) continue;
+
+      attempts += 1;
+      const captured = await captureReactionFromYahoo(
+        releaseInstant,
+        resolveSectorEtf(eventType, null),
+        { pacingMs, eventSymbol: null, earningsCloseMs: null },
+      );
+      // An empty capture writes nothing; the next tick inside the window is
+      // the one retry.
+      if (!captured) continue;
+
+      const updated: CloudEnrichedPayload = {
+        ...existing,
+        reaction: { ...captured, captured_at: new Date(nowMs).toISOString() },
+      };
+      await env.CRON_KV.put(cloudEnrichedKey(ev.id), JSON.stringify(updated), {
+        expirationTtl: 7 * 24 * 3600,
+      });
+    } catch (err) {
+      failures += 1;
+      lastError = err instanceof Error ? err.message : String(err);
+      console.error(`[cloud-enrich] macro reaction follow-up for ${ev.id} failed:`, err);
+    }
+  }
+
+  return { attempts, failures, lastError };
 }
 
 export async function runCloudFallback(
@@ -269,11 +375,12 @@ export async function runCloudFallback(
     if (candidates.length >= MAX_CANDIDATES_PER_TICK) break;
   }
 
-  if (candidates.length === 0) return { kind: "no_candidates" };
-
   let failures = 0;
   let deferred = 0;
   let lastError: string | null = null;
+  // Rows whose payload the main pass wrote this tick — the follow-up below
+  // never revisits one in the same tick.
+  const writtenThisTick = new Set<number>();
 
   for (const cand of candidates) {
     try {
@@ -286,14 +393,14 @@ export async function runCloudFallback(
         } catch {
           existing = null;
         }
-        // Macro rows keep single-shot semantics EXACTLY: one payload, never
-        // revisited. Since 2026-10-08 that payload carries the actual and (in
-        // practice) NO reaction — the reaction gate below needs T+120min and
-        // the macro candidate window closes at T+120min. The Worker does not
-        // come back for a macro reaction; the Mac's reaction-only follow-up
-        // pass captures it when the Mac is up. Earnings rows retry until
-        // COMPLETE — the Worker mirror of the Mac's migration-062
-        // retry-until-complete.
+        // Macro rows keep single-shot semantics on THIS road: one payload,
+        // its actual never re-fetched. Since 2026-10-08 that payload carries
+        // the actual and (in practice) NO reaction — the reaction gate below
+        // needs T+120min and the macro candidate window closes at T+120min.
+        // The reaction is added afterwards by runMacroReactionFollowUp (this
+        // file), or by the Mac's own reaction-only follow-up when the Mac is
+        // up. Earnings rows retry until COMPLETE — the Worker mirror of the
+        // Mac's migration-062 retry-until-complete.
         if (!isEarnings) continue;
         if (existing && isPayloadComplete(existing, cand.releaseInstant, nowMs)) continue;
       }
@@ -354,6 +461,7 @@ export async function runCloudFallback(
       await env.CRON_KV.put(cloudEnrichedKey(cand.id), JSON.stringify(payload), {
         expirationTtl: 7 * 24 * 3600,
       });
+      writtenThisTick.add(cand.id);
 
       // Push-at-print (Wave 1 §2): the Worker is often the first to capture
       // an actual while the Mac sleeps — push immediately rather than waiting
@@ -442,11 +550,29 @@ export async function runCloudFallback(
     }
   }
 
+  // Reaction-only follow-up for macro rows, on whatever is left of the
+  // per-tick limit after the main pass.
+  const followUp = await runMacroReactionFollowUp(
+    env,
+    events,
+    nowMs,
+    pacingMs,
+    MAX_CANDIDATES_PER_TICK - candidates.length,
+    writtenThisTick,
+  );
+  failures += followUp.failures;
+  if (followUp.lastError) lastError = followUp.lastError;
+
+  if (candidates.length === 0 && followUp.attempts === 0 && followUp.failures === 0) {
+    return { kind: "no_candidates" };
+  }
+
   return {
     kind: "success",
     candidatesProcessed: candidates.length,
     failures,
     deferred,
+    reactionFollowUps: followUp.attempts,
     lastError: lastError ?? undefined,
   };
 }

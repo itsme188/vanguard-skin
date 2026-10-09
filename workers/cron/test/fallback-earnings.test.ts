@@ -1265,19 +1265,37 @@ describe("intel rows in cloud scoreboard (Task 9: snapshot v9)", () => {
 // budget is shared with calendar-enrich (itself capped at 10 candidates). An
 // uncapped clustered-AMC run could die mid-loop with markers half-written.
 
+// Each cap event is a DIFFERENT company (ZC1, ZC2, ...), all held. Until
+// 2026-10-08 these were N rows of one symbol on one date — a shape the app
+// never writes, and one the sibling check (a phase already handled on another
+// row of the same print) now correctly collapses to a single email. The cap
+// is about many prints in one tick, so the fixture says that.
+// The slot marker is set to "BMO" only to keep these rows out of the AMC wrap
+// cluster: three or more DIFFERENT companies after the close switch the
+// suppress-only wrap on (tested on its own below), which would add recap-phase
+// skips to the swept / skipped counts these tests pin. Nothing else in the
+// preview or recap road reads the marker.
 function makeCapEvent(
   overrides: Partial<Record<string, unknown>> & { id: number },
 ): Record<string, unknown> {
+  const symbol = `ZC${overrides.id}`;
   return {
     ...(makeEarningsSnapshot().calendarEvents[0] as unknown as Record<string, unknown>),
-    source_key: `finnhub:AAPL:${EVENT_DATE}:${overrides.id}`,
+    symbol,
+    title: `${symbol} earnings`,
+    event_time: "BMO",
+    source_key: `finnhub:${symbol}:${EVENT_DATE}`,
     ...overrides,
   };
 }
 
 function makeSnapshotWithEvents(events: Record<string, unknown>[]): Snapshot {
-  const snap = makeEarningsSnapshot() as unknown as { calendarEvents: unknown[] };
+  const snap = makeEarningsSnapshot() as unknown as {
+    calendarEvents: unknown[];
+    heldSymbols: string[];
+  };
   snap.calendarEvents = events;
+  snap.heldSymbols = [...new Set(["AAPL", ...events.map((e) => String(e.symbol))])];
   return snap as unknown as Snapshot;
 }
 
