@@ -92,7 +92,7 @@ export async function generateWeeklyBriefing(
   const { portfolioEarnings, wshEarnings, otherEvents } = partitionBriefingEvents(events);
 
   // ── Expiring options ─────────────────────────────────────────────
-  const expiringOptions = getExpiringOptions(db, weekStart, weekEnd);
+  const expiringOptions = getBriefingExpiringOptions(db, weekStart, weekEnd);
 
   // ── Current prices (held + option underlyings + earnings symbols) ─
   // The briefing once wrote "TER closed Friday well below $180" when TER was at $420.
@@ -475,7 +475,7 @@ interface ExpiringOption {
  *
  * Exported for unit test (module-private otherwise).
  */
-export function getExpiringOptions(
+export function getBriefingExpiringOptions(
   db: Database.Database,
   startDate: string,
   endDate: string

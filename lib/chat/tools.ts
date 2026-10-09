@@ -16,14 +16,18 @@ import { NOTE_TYPES, NOTE_SENTIMENTS } from "@/lib/types";
 import { coerceNoteType, coerceNoteSentiment } from "@/lib/notes/coerce";
 import { computeTwr } from "@/lib/compute/twr";
 import { computeXirr } from "@/lib/compute/xirr";
+import { resolveAccountScopeIds } from "@/lib/chat/account-scope";
 import { annotateToolResult } from "@/lib/chat/validate";
 import { getSeriesData, searchSeries, getLatestValue, FRED_SERIES } from "@/lib/apis/fred";
 import { getCompanyFinancials, getCompanyInfo, getRecentFilings, getInsiderTransactions } from "@/lib/apis/edgar";
 import { getTranscriptForChat } from "@/lib/transcripts/fetch";
 import { getTradeReviews, getTradeReviewByPeriod, getTradeRoundtrips } from "@/lib/queries/trade-reviews";
 import { computePortfolioGreeks } from "@/lib/compute/options-greeks";
-import { getOptionPositions, getStockLegsForStrategyDetection } from "@/lib/queries/options";
-import { detectStrategies, type PositionLeg } from "@/lib/compute/options-strategy";
+import {
+  detectStrategiesPerAccount,
+  getOptionPositions,
+  getStockLegsForStrategyDetection,
+} from "@/lib/queries/options";
 import { getActiveLevels, getAlerts, getLevelsForSecurity } from "@/lib/queries/security-levels";
 import { resolveLevelPrice } from "@/lib/alerts/resolve-level-price";
 import { getFilingSection } from "@/lib/apis/filing-extract";
@@ -1092,7 +1096,18 @@ export async function executeTool(
         const endDate = perfWindow.endsAtStatement ? perfWindow.endDate : undefined;
 
         const twrResult = computeTwr(db, { startDate, endDate, accountId });
-        const xirrResult = computeXirr(db, { startDate, endDate, accountId });
+        // The money-weighted return covers the WHOLE named scope (the same
+        // call /api/compute/xirr makes): a scope word naming two accounts is
+        // one return over both, never the first account's. A one-account
+        // name is a one-id list, which computeXirr treats as that account.
+        // The scope is used only when it contains the account the window and
+        // the time-weighted return above were resolved to; otherwise this
+        // stays on that account, so the two returns in one answer never
+        // describe different accounts.
+        const scopeIds = resolveAccountScopeIds(db, input.account_name as string | undefined);
+        const xirrAccountIds =
+          accountId != null && !scopeIds?.includes(accountId) ? [accountId] : scopeIds;
+        const xirrResult = computeXirr(db, { startDate, endDate, accountIds: xirrAccountIds });
 
         rawResult = {
           window: {
@@ -1471,42 +1486,10 @@ export async function executeTool(
         const optionPositions = getOptionPositions(db, accountId);
         const stockHoldings = getStockLegsForStrategyDetection(db, accountId);
 
-        // detectStrategies assumes account-local positions
-        // (lib/compute/options-strategy.ts) — group legs by account and
-        // concatenate the per-account results.
-        const legsByAccount = new Map<number, PositionLeg[]>();
-        const pushLeg = (acct: number, leg: PositionLeg) => {
-          const legs = legsByAccount.get(acct);
-          if (legs) legs.push(leg);
-          else legsByAccount.set(acct, [leg]);
-        };
-        for (const s of stockHoldings) {
-          pushLeg(s.account_id, {
-            symbol: s.symbol,
-            underlying: s.symbol,
-            securityType: "stock" as const,
-            quantity: s.quantity,
-            multiplier: 1,
-            currentPrice: s.current_price,
-          });
-        }
-        for (const o of optionPositions) {
-          pushLeg(o.accountId, {
-            symbol: o.symbol,
-            underlying: o.underlying,
-            securityType: "option" as const,
-            optionType: o.optionType,
-            strike: o.strike,
-            expiration: o.expiration,
-            quantity: o.quantity,
-            multiplier: o.multiplier,
-            currentPrice: o.currentPrice,
-          });
-        }
-
-        const strategies = Array.from(legsByAccount.values()).flatMap((legs) =>
-          detectStrategies(legs)
-        );
+        // Strategies are detected account by account (one shared helper with
+        // /api/compute/options-strategies): legs are never paired across
+        // accounts.
+        const strategies = detectStrategiesPerAccount(stockHoldings, optionPositions);
 
         // Coverage gate, mirroring app/dashboard/components/OptionsGreeksCard.tsx:
         // computePortfolioGreeks initializes the four totals at 0 and only adds
