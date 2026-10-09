@@ -26,6 +26,43 @@ export function todayET(now = new Date()): string {
   }).format(now);
 }
 
+/** True for a bare `YYYY-MM-DD` date (no time part). */
+export function isDateOnly(s: string): boolean {
+  return /^\d{4}-\d{2}-\d{2}$/.test(s);
+}
+
+/**
+ * The instant (ISO, UTC) of 00:00:00 Eastern on the given `YYYY-MM-DD`.
+ *
+ * Exists because SQLite `datetime('YYYY-MM-DD')` is midnight UTC, which is
+ * 8 PM (EDT) or 7 PM (EST) Eastern the evening before: a date-only window
+ * compared that way pulls in the prior evening's arrivals.
+ */
+export function easternDayStartIso(date: string): string {
+  const [y, m, d] = date.split("-").map(Number);
+  const fmt = new Intl.DateTimeFormat("en-US", {
+    timeZone: ET_ZONE,
+    hour12: false,
+    year: "numeric",
+    month: "numeric",
+    day: "numeric",
+    hour: "numeric",
+    minute: "numeric",
+  });
+  // Milliseconds the ET wall clock is ahead of UTC at this instant (negative).
+  const wallMinusInstant = (ms: number): number => {
+    const parts = Object.fromEntries(
+      fmt.formatToParts(new Date(ms)).map((p) => [p.type, Number(p.value)]),
+    );
+    const hour = parts.hour === 24 ? 0 : parts.hour;
+    return Date.UTC(parts.year, parts.month - 1, parts.day, hour, parts.minute) - ms;
+  };
+  const wallTarget = Date.UTC(y, m - 1, d, 0, 0);
+  let guess = wallTarget - wallMinusInstant(Date.UTC(y, m - 1, d, 5));
+  guess = wallTarget - wallMinusInstant(guess);
+  return new Date(guess).toISOString();
+}
+
 /**
  * The given instant's wall-clock time in ET (America/New_York), as HH:MM
  * (24-hour, zero-padded — safe to compare lexically against e.g. "09:30").
