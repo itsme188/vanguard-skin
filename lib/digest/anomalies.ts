@@ -13,6 +13,7 @@ import { addDays, nowET, todayET } from "@/lib/calendar/date-utils";
 import { isMarketClosed, nextTradingDay } from "@/lib/calendar/market-holidays";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 import { BETA_LOOKBACK_DAYS } from "@/lib/queries/security-betas";
+import { mapSecurityType } from "@/lib/tws/security-type-map";
 
 // ─── Trigger constants ────────────────────────────────────────────────────────
 // A move is "out of the ordinary" only if it is BOTH large in raw terms AND
@@ -40,8 +41,9 @@ export interface AnomalyFlag {
 
 interface HeldSecurityRow {
   security_id: number;
-  symbol: string;
+  symbol: string | null;
   name: string | null;
+  security_type: string | null;
   today_close: number;
   prior_close: number;
   beta: number | null;
@@ -158,6 +160,47 @@ export function resolveTradingDayPair(
   return { latest, prior };
 }
 
+// ─── Universe: which security types can be a mover ───────────────────────────
+
+/**
+ * The stored types the cloud's universe keeps, lower-cased. This is the list
+ * in `getVanguardHoldingsForSnapshot` (scripts/snapshot-state-to-r2.ts), which
+ * is all the Worker's fallback evening email ever sees. Change both together:
+ * tests/digest/anomalies-universe-type-parity.test.ts runs the real snapshot
+ * reader against this filter and fails when they differ.
+ */
+const MOVER_SECURITY_TYPES: ReadonlySet<string> = new Set([
+  "stock",
+  "common stock",
+  "etf",
+  "mutual fund",
+]);
+
+// The two equity-like classes of the single type mapper, read through the
+// mapper itself so this file names no broker enum.
+const EQUITY_CLASS = mapSecurityType("stock");
+const FUND_CLASS = mapSecurityType("mutual fund");
+
+/**
+ * Can a security of this stored type be named in a "significant moves" list?
+ *
+ * A move is judged against a beta to SPY, which only means something for an
+ * equity-like instrument. Two tests, both case-insensitive:
+ *  1. `mapSecurityType` (the single source for type classes) must not class
+ *     it as an option or a bond.
+ *  2. The stored type must be one the cloud's universe keeps. The mapper
+ *     alone is not enough: it defaults an unknown or missing type to the
+ *     stock class, and an untyped row can be anything (a mistyped option is a
+ *     known corruption class). Fail closed: an unrecognized type is not
+ *     published as a mover.
+ */
+export function isMoverSecurityType(securityType: string | null | undefined): boolean {
+  if (securityType == null) return false;
+  const cls = mapSecurityType(securityType);
+  if (cls !== EQUITY_CLASS && cls !== FUND_CLASS) return false;
+  return MOVER_SECURITY_TYPES.has(securityType.toLowerCase());
+}
+
 // ─── Main computation ─────────────────────────────────────────────────────────
 
 export interface ComputeAnomaliesOptions {
@@ -184,6 +227,10 @@ const CURRENT_LONG_BOOK_SQL = latestHoldingsPredicate({ includeShorts: false });
  *  - `accountIds` given (the Significant Moves card, following the scope
  *    selector): exactly those accounts. Every id is used; an empty list
  *    evaluates nothing and never falls back to the Vanguard default.
+ *
+ * Either way only equity-like types are evaluated (stock, common stock, ETF,
+ * mutual fund: `isMoverSecurityType`, the same list the cloud's universe
+ * keeps), so an option or a bond is never named a mover.
  *
  * Either way only the CURRENT long book is read, through
  * `latestHoldingsPredicate`. Until 2026-10-08 the email path read every
@@ -264,6 +311,7 @@ export function computeAnomalies(
               s.id AS security_id,
               s.symbol,
               s.name,
+              s.security_type,
               (SELECT close_price FROM prices
                 WHERE security_id = s.id AND date = ?) AS today_close,
               (SELECT close_price FROM prices
@@ -284,6 +332,11 @@ export function computeAnomalies(
   const flags: AnomalyFlag[] = [];
 
   for (const row of rows) {
+    // Skip: not an equity-like type, or no symbol to print (the cloud's
+    // universe drops both; see isMoverSecurityType).
+    if (!isMoverSecurityType(row.security_type)) continue;
+    if (!row.symbol) continue;
+    const symbol = row.symbol;
     // Skip: no beta, no prior close, or zero prior close
     if (row.beta == null) continue;
     if (row.prior_close == null || row.prior_close === 0) continue;
@@ -313,7 +366,7 @@ export function computeAnomalies(
 
     flags.push({
       securityId: row.security_id,
-      symbol: row.symbol,
+      symbol,
       companyName: row.name,
       actualPct,
       spyPct,
