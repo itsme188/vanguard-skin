@@ -113,9 +113,12 @@ export function levelRowStatus(
     scanner_watching?: boolean;
   },
 ): LevelRowStatus {
-  const { showPause, unarmedReview, showRequeue } = levelActionVisibility(level);
+  const { showPause, unarmedReview, showRequeue, showRejectedChip } = levelActionVisibility(level);
   if (showPause) return "armed";
   if (unarmedReview) return showRequeue ? "rejected" : "pending_review";
+  // A paused rejected row is still a rejected row: it sorts and counts with
+  // the rejected ones, and its row also carries the inactive chip.
+  if (showRejectedChip) return "rejected";
   return level.triggered_at != null ? "triggered" : "inactive";
 }
 
@@ -1730,7 +1733,7 @@ export function LevelsPanel({
                 // Rejected / pending-review levels must read as not-armed here.
                 // levelActionVisibility is the single owner of which buttons a
                 // row gets — do not add conditions on top of its result here.
-                const { unarmedReview, showPause, showReactivate, showRequeue } =
+                const { unarmedReview, showPause, showReactivate, showRequeue, showRejectedChip } =
                   levelActionVisibility(l);
                 const notWatchedExplanation = levelNotWatchedExplanation(l);
                 const meta = levelRowMeta(l, today);
@@ -1915,6 +1918,23 @@ export function LevelsPanel({
                             }}
                           >
                             {STALE_PRICE_LABEL}
+                          </span>
+                        )}
+                        {l.is_active !== 1 && showRejectedChip && (
+                          <span
+                            title="Rejected and paused. Reactivate it first; then it can be re-queued for review."
+                            style={{
+                              fontFamily: "var(--font-mono), monospace",
+                              fontSize: "11px",
+                              letterSpacing: "0.14em",
+                              textTransform: "uppercase",
+                              color: "#f87171",
+                              border: "1px solid #f87171",
+                              padding: "2px 6px",
+                              borderRadius: "2px",
+                            }}
+                          >
+                            Rejected
                           </span>
                         )}
                         {unarmedReview && (
@@ -2146,7 +2166,7 @@ export function LevelsPanel({
               const alertedToday = l.alerted_today === true;
               const inactive = l.is_active === 0 && !lastFired;
               // Single owner, as in the embedded rows above.
-              const { showPause, showReactivate, showRequeue } = levelActionVisibility(l);
+              const { showPause, showReactivate, showRequeue, showRejectedChip } = levelActionVisibility(l);
               const notWatchedExplanation = levelNotWatchedExplanation(l);
               const meta = levelRowMeta(l, today);
               const pendingReview = levelRowStatus(l) === "pending_review";
@@ -2219,6 +2239,16 @@ export function LevelsPanel({
                   {rowStalePrice(l) && (
                     <Chip size="xs" tone="warn" title={STALE_PRICE_EXPLANATION}>
                       {STALE_PRICE_LABEL}
+                    </Chip>
+                  )}
+                  {l.is_active !== 1 && showRejectedChip && (
+                    <Chip
+                      size="xs"
+                      tone="warn"
+                      uppercase
+                      title="Rejected and paused. Reactivate it first; then it can be re-queued for review."
+                    >
+                      rejected
                     </Chip>
                   )}
                   {l.is_active === 1 && l.review_status !== "auto_approved" && (

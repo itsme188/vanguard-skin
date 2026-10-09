@@ -57,6 +57,10 @@ export interface LevelActionVisibility {
    *  it doesn't duplicate the Review tab's own Approve/Reject actions on a
    *  level that's still mid-review (pending_review). */
   showRequeue: boolean;
+  /** The Rejected chip shows on every rejected row, active or paused. An
+   *  inactive rejected row used to show only "inactive", hiding that it was
+   *  rejected. */
+  showRejectedChip: boolean;
 }
 
 export function levelActionVisibility(l: LevelActionVisibilityInput): LevelActionVisibility {
@@ -69,7 +73,16 @@ export function levelActionVisibility(l: LevelActionVisibilityInput): LevelActio
     showPause: l.is_active === 1 && !unarmedReview && l.scanner_watching !== false,
     showReactivate: l.is_active !== 1,
     showRequeue: unarmedReview && l.review_status === "rejected",
+    showRejectedChip: l.review_status === "rejected",
   };
+}
+
+/** Server-side twin of `showPause`'s review rule: only an auto-approved level
+ *  is armed, so only it can be paused. Returns the refusal wording, or null
+ *  when pausing is allowed. The UI never offers Pause on any other row. */
+export function levelPauseRefusal(reviewStatus: LevelReviewStatus): string | null {
+  if (reviewStatus === "auto_approved") return null;
+  return "This level is not armed, so there is nothing to pause. Delete it or send it back for review.";
 }
 
 export function levelNotWatchedExplanation(l: LevelActionVisibilityInput): string | null {
