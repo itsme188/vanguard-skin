@@ -8,15 +8,18 @@ import { resolveReleaseTime, SYMBOL_RELEASE_TIMES_ET } from "@/lib/calendar/rele
 import { resolveEarningsReleaseTime, resolveSymbolReleaseTime } from "@/lib/earnings/wire-times";
 import { getSecurityIdForSymbolWithSiblings } from "@/lib/queries/briefing-symbols";
 import { issuerSiblings } from "@/lib/securities/issuer-family";
-import { mondayOf, todayET } from "@/lib/calendar/date-utils";
+import { addDays, mondayOf, todayET } from "@/lib/calendar/date-utils";
 import { isEventArmed } from "@/lib/queries/earnings-worksheet-flags";
 import { writeArmedEventsOutboxRow } from "@/lib/earnings/cloud-outbox";
 import { deriveEarningsSlot } from "@/lib/earnings/earnings-slot";
 import { mergeEarningsEventState } from "@/lib/earnings/event-merge";
 import {
+  createTwinFolder,
   reconcileEarningsDates,
   repointDependentsBeforeDelete,
+  type TwinDonor,
 } from "@/lib/calendar/reconcile-earnings-dates";
+import { isLiveClaim } from "@/lib/earnings/email-states";
 
 // ─── Result types ─────────────────────────────────────────────────
 
@@ -24,6 +27,23 @@ export interface UpsertResult {
   total: number;
   inserted: number;
   updated: number;
+  /**
+   * Feed earnings rows this call stored HIDDEN because a showing hand-entered
+   * row already holds their symbol and date (see `upsertCalendarEvents`).
+   * Present only when there is at least one.
+   */
+  hiddenBehindManual?: HiddenFeedRow[];
+}
+
+/** One feed earnings row stored hidden behind a hand-entered row. */
+export interface HiddenFeedRow {
+  sourceKey: string;
+  title: string;
+  /** YYYY-MM-DD; also the hand-entered row's date. */
+  eventDate: string;
+  source: string;
+  /** True when the row existed and was showing before this write. */
+  wasShowing: boolean;
 }
 
 // ─── Event input type ─────────────────────────────────────────────
@@ -90,6 +110,22 @@ export interface CalendarEventInput {
  * new date, so both columns are NULLed in that case (and preserved
  * otherwise) — the opposite of the "never clear" rule above, because here
  * the value being cleared is itself invalidated by the date change.
+ *
+ * Feed row behind a hand-entered row (owner ruling 2026-10-08): when a feed
+ * earnings row (any source but 'manual') is written and ONE showing
+ * hand-entered earnings row already holds that exact symbol and event_date,
+ * the feed row is stored hidden (`superseded = 1`). The reconciler does the
+ * same, but only 21 days back and 30 days ahead of today; a refresh of a week
+ * outside that window used to mint the feed copy showing beside the
+ * hand-entered row and nothing ever folded it. The write goes through the
+ * reconciler's own `createTwinFolder`, so the hand-entered row's EMPTY
+ * consensus / actual / reaction columns are filled from the feed row (a value
+ * already there is never replaced, its date status is not touched) and any
+ * bogeys, email records or arm on the feed row move with the print. Exact
+ * symbol only: a share-class sibling is not paired. A feed row on a different
+ * date is left for the reconciler. Left showing, as the pair-repair script
+ * leaves them: a feed row the user confirmed in place, a feed row with an
+ * email being sent right now, and a date with two showing hand-entered rows.
  */
 export function upsertCalendarEvents(
   db: Database.Database,
@@ -159,9 +195,12 @@ export function upsertCalendarEvents(
        fetched_at = datetime('now')`
   );
 
-  const insertAll = db.transaction(() => {
+  const hideBehindManual = createFeedRowHider(db);
+
+  const insertAll = db.transaction((): UpsertResult => {
     let inserted = 0;
     let updated = 0;
+    const hiddenBehindManual: HiddenFeedRow[] = [];
     for (const e of events) {
       const releaseTime = resolveEarningsReleaseTime(db, {
         event_type: e.event_type,
@@ -192,11 +231,96 @@ export function upsertCalendarEvents(
       } else {
         inserted++;
       }
+      const hidden = hideBehindManual(e, existingKeys.has(e.source_key));
+      if (hidden) hiddenBehindManual.push(hidden);
     }
-    return { total: inserted + updated, inserted, updated };
+    const result: UpsertResult = { total: inserted + updated, inserted, updated };
+    if (hiddenBehindManual.length > 0) {
+      result.hiddenBehindManual = hiddenBehindManual;
+      // A hidden earnings row dated inside the cloud's lookback (or any time
+      // ahead) is part of the projection's replaced-ids list, and a fold can
+      // move an arm. The writer is a no-op when the projection is unchanged
+      // (D10), so an old week publishes nothing.
+      writeArmedEventsOutboxRow(db);
+    }
+    return result;
   });
 
   return insertAll();
+}
+
+/**
+ * Build the per-row step of `upsertCalendarEvents` that stores a feed earnings
+ * row hidden behind a showing hand-entered row on the same symbol and date.
+ * Returns what it hid, or null when the row is left as written. Statements are
+ * prepared on first use, so a batch with no earnings row prepares nothing.
+ */
+function createFeedRowHider(
+  db: Database.Database,
+): (e: CalendarEventInput, existedBeforeWrite: boolean) => HiddenFeedRow | null {
+  let prepared: {
+    holders: Database.Statement;
+    written: Database.Statement;
+    emails: Database.Statement;
+    fold: ReturnType<typeof createTwinFolder>;
+  } | null = null;
+
+  return (e, existedBeforeWrite) => {
+    if (e.event_type !== "earnings" || e.source === "manual") return null;
+    const symbol = e.symbol?.trim().toUpperCase();
+    if (!symbol) return null;
+
+    prepared ??= {
+      holders: db.prepare(
+        `SELECT id FROM calendar_events
+          WHERE event_type = 'earnings' AND source = 'manual'
+            AND UPPER(symbol) = ? AND event_date = ?
+            AND COALESCE(superseded, 0) = 0
+          ORDER BY id`,
+      ),
+      written: db.prepare(
+        `SELECT id, source, title, event_date, date_status,
+                COALESCE(superseded, 0) AS superseded,
+                consensus_estimate, consensus_value, actual_value, manual_actuals_at,
+                reaction_snapshot, enriched_at
+           FROM calendar_events WHERE source_key = ?`,
+      ),
+      emails: db.prepare("SELECT error FROM earnings_emails WHERE event_id = ?"),
+      fold: createTwinFolder(db),
+    };
+
+    const holders = prepared.holders.all(symbol, e.event_date) as { id: number }[];
+    // Two showing hand-entered rows on one date is the user's call to settle.
+    if (holders.length !== 1) return null;
+
+    const row = prepared.written.get(e.source_key) as
+      | (TwinDonor & {
+          source: string;
+          title: string;
+          event_date: string;
+          date_status: string | null;
+          superseded: number;
+        })
+      | undefined;
+    if (!row || row.source === "manual") return null;
+    // A feed row the user confirmed in place competes with the hand-entered
+    // row inside the reconciler; this write does not decide between them.
+    if (row.date_status === "user_confirmed") return null;
+    // Never move an email record out from under a send that is in flight.
+    const inFlight = (prepared.emails.all(row.id) as { error: string | null }[]).some((m) =>
+      isLiveClaim(m.error),
+    );
+    if (inFlight) return null;
+
+    prepared.fold(row, holders[0].id, row.event_date);
+    return {
+      sourceKey: e.source_key,
+      title: row.title,
+      eventDate: row.event_date,
+      source: row.source,
+      wasShowing: existedBeforeWrite && row.superseded === 0,
+    };
+  };
 }
 
 /**
@@ -277,6 +401,78 @@ function getSuppressedEventTuples(db: Database.Database): Set<string> {
     if (err instanceof Error && /no such table/i.test(err.message)) return new Set();
     throw err;
   }
+}
+
+/**
+ * The reconciler's gather window (`GATHER_BACK_DAYS` / `GATHER_FWD_DAYS`,
+ * private to lib/calendar/reconcile-earnings-dates.ts). Mirrored here only to
+ * answer "will a reconcile pass ever look at this date?". Pinned to the
+ * reconciler's real behaviour by tests/calendar/feed-row-hidden-behind-manual.test.ts.
+ */
+const RECONCILE_BACK_DAYS = 21;
+const RECONCILE_FWD_DAYS = 30;
+
+function outsideReconcileWindow(eventDate: string, today: string): boolean {
+  return (
+    eventDate < addDays(today, -RECONCILE_BACK_DAYS) ||
+    eventDate > addDays(today, RECONCILE_FWD_DAYS)
+  );
+}
+
+/**
+ * Bring back the feed earnings row that was hidden behind a hand-entered row
+ * on `eventDate`, once that hand-entered row has left the date (deleted, or
+ * moved to another date) — for a date the reconciler will NOT look at.
+ *
+ * Inside the reconciler's window this does nothing: the scoped reconcile the
+ * delete path runs re-resolves the whole cluster and is the one authority
+ * there. Outside it no pass ever runs, so a feed row `upsertCalendarEvents`
+ * stored hidden would stay hidden for good and the vendor's date would be
+ * gone from every calendar surface.
+ *
+ * Deliberately narrow, because no cluster is resolved here:
+ *   - exact symbol and exact date only (the same pairing the write used);
+ *   - nothing comes back while any earnings row for that symbol still shows
+ *     on the date (one company, one card per day);
+ *   - ONE row comes back: `preferId` when it is one of the hidden rows (the
+ *     row the deleted row's records were just handed to), else Finnhub, else
+ *     Nasdaq, else the lowest id — the order the reconciler uses for rows
+ *     that agree on a date. Its duplicates stay hidden;
+ *   - a (symbol, date) the user removed (a suppression) never comes back.
+ * The row returns with whatever date status it had (none): it is as
+ * unreconciled as any other row outside the window.
+ *
+ * Returns how many rows it un-hid (0 or 1).
+ */
+function restoreFeedRowOutsideWindow(
+  db: Database.Database,
+  opts: { symbol: string; eventDate: string; today: string; preferId?: number | null },
+): number {
+  if (!outsideReconcileWindow(opts.eventDate, opts.today)) return 0;
+  const symbol = opts.symbol.trim().toUpperCase();
+  if (!symbol) return 0;
+  if (getSuppressedEventTuples(db).has(suppressionKey(symbol, opts.eventDate, "earnings"))) {
+    return 0;
+  }
+  const rows = db
+    .prepare(
+      `SELECT id, source, COALESCE(superseded, 0) AS superseded
+         FROM calendar_events
+        WHERE event_type = 'earnings' AND UPPER(symbol) = ? AND event_date = ?
+        ORDER BY id`,
+    )
+    .all(symbol, opts.eventDate) as { id: number; source: string; superseded: number }[];
+  if (rows.some((r) => r.superseded === 0)) return 0;
+  const hidden = rows.filter((r) => r.source !== "manual");
+  const pick =
+    hidden.find((r) => r.id === opts.preferId) ??
+    hidden.find((r) => r.source === "finnhub") ??
+    hidden.find((r) => r.source === "nasdaq") ??
+    hidden[0];
+  if (!pick) return 0;
+  return db
+    .prepare("UPDATE calendar_events SET superseded = 0 WHERE id = ? AND superseded = 1")
+    .run(pick.id).changes;
 }
 
 /**
@@ -852,8 +1048,10 @@ export function updateCalendarEvent(
   input: UpdateManualEarningsInput,
 ): boolean {
   const existing = db
-    .prepare("SELECT source FROM calendar_events WHERE id = ?")
-    .get(input.id) as { source: string } | undefined;
+    .prepare("SELECT source, event_type, symbol, event_date FROM calendar_events WHERE id = ?")
+    .get(input.id) as
+    | { source: string; event_type: string; symbol: string | null; event_date: string }
+    | undefined;
   if (!existing) return false;
   if (existing.source !== "manual") return false; // sync-owned — refuse silently; route returns 403
 
@@ -901,7 +1099,30 @@ export function updateCalendarEvent(
     // consensus) just changed — the Worker delta must carry the new shape.
     // Unarmed edits write nothing; an edit that changed no VALUE is caught by
     // the writer's own no-op rule (D10).
-    if (result.changes > 0 && isEventArmed(db, input.id)) writeArmedEventsOutboxRow(db);
+    //
+    // A hand-entered earnings row that just LEFT a (symbol, date) may have had
+    // a feed row stored hidden behind it there. On a date the reconciler never
+    // looks at, nothing else would bring that row back.
+    let restored = 0;
+    if (result.changes > 0 && existing.event_type === "earnings" && existing.symbol) {
+      const after = db
+        .prepare("SELECT event_type, symbol, event_date FROM calendar_events WHERE id = ?")
+        .get(input.id) as { event_type: string; symbol: string | null; event_date: string };
+      const left =
+        after.event_type !== "earnings" ||
+        after.event_date !== existing.event_date ||
+        (after.symbol ?? "").toUpperCase() !== existing.symbol.toUpperCase();
+      if (left) {
+        restored = restoreFeedRowOutsideWindow(db, {
+          symbol: existing.symbol,
+          eventDate: existing.event_date,
+          today: todayET(),
+        });
+      }
+    }
+    if (result.changes > 0 && (restored > 0 || isEventArmed(db, input.id))) {
+      writeArmedEventsOutboxRow(db);
+    }
     return result.changes > 0;
   })();
 }
@@ -933,7 +1154,9 @@ export function updateCalendarEvent(
  * `opts.today` is the ET anchor for the reconcile pass (past-with-actuals vs
  * future logic); it defaults to todayET() and exists for tests/callers that
  * already hold an ET date. The restore inherits the reconciler's own gather
- * window, which is the same window the supersession was decided in.
+ * window, which is the same window the supersession was decided in — plus one
+ * case outside it: a feed row `upsertCalendarEvents` stored hidden behind this
+ * row on the same date (see `restoreFeedRowOutsideWindow`).
  */
 export function deleteCalendarEvent(
   db: Database.Database,
@@ -973,8 +1196,10 @@ export function deleteCalendarEvent(
     // instead, under the reconciler's own repoint rules.
     // Computed before the DELETE but consulted after `deleted` is known.
     let mergeChanged = false;
+    let handBackTargetId: number | null = null;
     if (restoreSymbol) {
       const handedBack = repointDependentsBeforeDelete(db, { eventId: id, today });
+      handBackTargetId = handedBack.targetId;
       // [R12b] The repointer only knows about bogeys/emails/skips. The arm
       // itself, its prepare steps, its scan ledger and every slice's registered
       // tables cascade too — hand them to the SAME survivor, or the print
@@ -990,6 +1215,15 @@ export function deleteCalendarEvent(
         .run(id).changes > 0;
     if (deleted && restoreSymbol) {
       reconcileEarningsDates(db, { today, symbols: [restoreSymbol] });
+      // The pass above only reaches 21 days back and 30 ahead. A feed row
+      // stored hidden behind this row on a date outside that reach has to be
+      // brought back here, before the outbox row below is written.
+      restoreFeedRowOutsideWindow(db, {
+        symbol: restoreSymbol,
+        eventDate: existing.event_date,
+        today,
+        preferId: handBackTargetId,
+      });
     }
     // The flag either moved to the survivor or cascaded away; either way the
     // projection changed and the writer emits the tombstone for this id (D7).
