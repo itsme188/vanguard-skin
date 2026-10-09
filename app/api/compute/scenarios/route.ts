@@ -6,6 +6,7 @@ import { getCachedMacroThemes } from "@/lib/queries/analysis-macro-themes";
 import { mondayOf } from "@/lib/calendar/date-utils";
 import { resolveScope } from "@/lib/queries/accounts";
 import { VOL_MOVE_MIN, VOL_MOVE_MAX } from "@/lib/compute/option-reprice";
+import { SCENARIO_INPUT_BOUNDS, customScenarioBodyProblem } from "@/lib/compute/scenario-input-bounds";
 
 export async function GET(request: NextRequest) {
   try {
@@ -58,10 +59,10 @@ export async function GET(request: NextRequest) {
  * POST /api/compute/scenarios — Compute a custom what-if scenario.
  *
  * Body: {
- *   marketMove: number (-0.50 to 0.30),
- *   rateMove?: number (basis points),
+ *   marketMove: number (-0.50 to 0.50, a decimal fraction),
+ *   rateMove?: number (basis points, -1000 to 1000),
  *   volMove?: number (volatility points, -20 to 60) — option repricing only,
- *   sectorMoves?: Record<string, number>,
+ *   sectorMoves?: Record<string, number> (each -0.50 to 0.50),
  *   name?: string,
  *   accountId?: number
  * }
@@ -82,25 +83,24 @@ export async function POST(request: NextRequest) {
     // to the same account set as the preset cards it renders next to.
     const accountIds = bodyAccountId != null ? [bodyAccountId] : resolveScope(db, scope ?? null);
 
-    if (marketMove == null || typeof marketMove !== "number") {
+    const marketLimit = SCENARIO_INPUT_BOUNDS.marketMove.toFixed(2);
+    if (marketMove == null || typeof marketMove !== "number" || !Number.isFinite(marketMove)) {
       return NextResponse.json(
-        { success: false, error: "marketMove is required (number between -0.50 and 0.30)" },
+        { success: false, error: `marketMove is required (number between -${marketLimit} and ${marketLimit})` },
         { status: 400 }
       );
     }
 
-    if (marketMove < -0.50 || marketMove > 0.50) {
+    if (Math.abs(marketMove) > SCENARIO_INPUT_BOUNDS.marketMove) {
       return NextResponse.json(
-        { success: false, error: "marketMove must be between -0.50 and 0.50" },
+        { success: false, error: `marketMove must be between -${marketLimit} and ${marketLimit}` },
         { status: 400 }
       );
     }
 
-    if (rateMove != null && (typeof rateMove !== "number" || !Number.isFinite(rateMove))) {
-      return NextResponse.json(
-        { success: false, error: "rateMove must be a finite number (basis points)" },
-        { status: 400 }
-      );
+    const bodyProblem = customScenarioBodyProblem({ rateMove, sectorMoves });
+    if (bodyProblem) {
+      return NextResponse.json({ success: false, error: bodyProblem }, { status: 400 });
     }
 
     if (volMove != null) {
