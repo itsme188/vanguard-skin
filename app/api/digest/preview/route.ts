@@ -1,14 +1,24 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import {
+  ADAPTIVE_ARTICLE_CAP,
+  DIGEST_ARTICLE_CAP,
   generateDigestSince,
   generateDigestSinceAdaptive,
 } from "@/lib/digest/daily-digest";
 import { resolveDigestSince, defaultDigestSince } from "@/lib/digest/digest-window";
-import { generateDigestByCompanySince } from "@/lib/digest/group-by-company";
+import { BY_COMPANY_ARTICLE_CAP, generateDigestByCompanySince } from "@/lib/digest/group-by-company";
 import { briefingToHtml } from "@/lib/calendar/briefing-html";
 
 const TITLE = "Daily Research Digest";
+
+// Each layout's article cap, so the viewer's caption can name it. The cap
+// constants live in server modules the client component must not import.
+const CAPS = {
+  structured: ADAPTIVE_ARTICLE_CAP,
+  bySource: DIGEST_ARTICLE_CAP,
+  byCompany: BY_COMPANY_ARTICLE_CAP,
+} as const;
 
 // The sender's own window rule, so the preview shows what a send would cover.
 function resolveSince(request: NextRequest): string {
@@ -69,6 +79,7 @@ export async function GET(request: NextRequest) {
       success: true,
       since,
       empty: true,
+      caps: CAPS,
       structuredHtml: null,
       bySourceHtml: null,
       byCompanyHtml: null,
@@ -79,6 +90,7 @@ export async function GET(request: NextRequest) {
     success: true,
     since,
     empty: false,
+    caps: CAPS,
     structuredHtml: null,
     bySourceHtml: bySourceMd ? briefingToHtml(bySourceMd, TITLE) : null,
     byCompanyHtml: byCompanyMd ? briefingToHtml(byCompanyMd, TITLE) : null,
@@ -111,6 +123,7 @@ export async function POST(request: NextRequest) {
       success: true,
       since,
       empty: true,
+      caps: CAPS,
       structuredHtml: null,
       bySourceHtml: null,
       byCompanyHtml: null,
@@ -121,6 +134,7 @@ export async function POST(request: NextRequest) {
     success: true,
     since,
     empty: false,
+    caps: CAPS,
     structuredHtml: structuredMd ? briefingToHtml(structuredMd, TITLE) : null,
     synthesisFallback: structuredMd ? synthesisFallback : null,
     bySourceHtml: bySourceMd ? briefingToHtml(bySourceMd, TITLE) : null,
