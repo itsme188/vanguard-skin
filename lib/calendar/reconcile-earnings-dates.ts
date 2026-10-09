@@ -1112,6 +1112,176 @@ export function createTwinFolder(db: Database.Database) {
 }
 
 /**
+ * Vendor data only a Finnhub row carries, by where each reader looks for it:
+ *  - `raw_json.entry.symbol` / `.epsEstimate` / `.revenueEstimate` and
+ *    top-level `finnhub_symbol` — the vendor-consensus prepare step
+ *    (lib/earnings/prepare-steps/consensus-row.ts). Without them a kept
+ *    Nasdaq row reads as "figures withdrawn" and the step deletes the
+ *    event's Finnhub bogey.
+ *  - `raw_json.entry.quarter` / `.year` — the print's fiscal quarter
+ *    (lib/transcripts/fetch.ts; that reader also looks at hidden twins).
+ *  - top-level `history` — no reader today; carried with the entry it
+ *    describes so the row stays one coherent Finnhub payload.
+ *
+ * NEVER in this list: `entry.hour` (the kept row won on its own slot, and
+ * `deriveEarningsSlot` reads exactly that key), `entry.date` (the kept row's
+ * date is the one that counts) and `entry.epsActual` / `entry.revenueActual`
+ * (`hasActual` treats them as evidence that a print happened; actuals travel
+ * through `actual_value` in the fold, under its own guards).
+ */
+const FINNHUB_CARRIED_ENTRY_KEYS = ["symbol", "epsEstimate", "revenueEstimate", "quarter", "year"] as const;
+const FINNHUB_CARRIED_TOP_KEYS = ["finnhub_symbol", "history"] as const;
+/** Top-level marker on the kept row: which keys the carry wrote, and from which row. */
+const FINNHUB_CARRY_MARKER = "finnhub_carried";
+
+type JsonObject = Record<string, unknown>;
+
+function asJsonObject(value: unknown): JsonObject | null {
+  return value !== null && typeof value === "object" && !Array.isArray(value) ? (value as JsonObject) : null;
+}
+
+/** null raw_json → an empty object; anything unparseable or non-object → null (leave the row alone). */
+function parseRawJsonObject(raw: string | null): JsonObject | null {
+  if (raw == null || raw === "") return {};
+  try {
+    return asJsonObject(JSON.parse(raw));
+  } catch {
+    return null;
+  }
+}
+
+/** The hidden Finnhub row whose data the kept row borrows: nearest date, then lowest id. */
+function pickFinnhubDonor<T extends Pick<EarningsRow, "id" | "source" | "event_date">>(
+  hidden: T[],
+  canonicalEventDate: string,
+): T | null {
+  const finnhub = hidden.filter((r) => r.source === "finnhub");
+  if (finnhub.length === 0) return null;
+  return [...finnhub].sort(
+    (a, b) =>
+      daysBetween(a.event_date, canonicalEventDate) - daysBetween(b.event_date, canonicalEventDate) ||
+      a.id - b.id,
+  )[0];
+}
+
+/**
+ * Build "the kept row borrows what only the hidden Finnhub row carries".
+ *
+ * Since the 2026-10-08 slot ruling a Nasdaq row can keep a print and hide the
+ * Finnhub row (a hand-entered row always could). The fold above carries
+ * consensus / actual / reaction columns, COALESCE-style, and nothing else, so
+ * the kept row lost three things its readers use:
+ *   1. the Finnhub keys of `raw_json` listed on FINNHUB_CARRIED_*;
+ *   2. `description` (Finnhub's "Q3 2026 report. Last 4 quarters …" text the
+ *      weekly briefing prompt leans on) — a Nasdaq row has none;
+ *   3. the revenue estimate inside `consensus_estimate` ("EPS x · Rev y", read
+ *      by the earnings emails) — a Nasdaq row states EPS only, and being
+ *      non-NULL it blocks the fold's COALESCE.
+ *
+ * Rules:
+ *  - Only a key the kept row LACKS is written. A key the kept row has of its
+ *    own is never replaced; the marker lists the keys the carry wrote, and
+ *    only those are refreshed (or removed) when the Finnhub row changes.
+ *  - The slot is never touched (see FINNHUB_CARRIED_ENTRY_KEYS).
+ *  - `description` fills only an empty one. The revenue part is appended only
+ *    to a NASDAQ row's own "EPS …" text; text a person typed is never edited.
+ *  - A settled pair writes nothing, so a second pass is a no-op. The carry
+ *    does not change the armed projection and never asks for an outbox row.
+ *
+ * NOT durable on its own for a vendor row: the weekly sync's upsert replaces
+ * `raw_json` and `description` for the same source_key and resets
+ * `consensus_estimate`. It is restored because every sync ends in a reconcile
+ * pass and the pass revisits already-hidden rows — see the caller.
+ */
+export function createFinnhubDataCarrier(db: Database.Database) {
+  interface CarryRow {
+    id: number;
+    source: string;
+    raw_json: string | null;
+    description: string | null;
+    consensus_estimate: string | null;
+  }
+  const read = db.prepare(
+    "SELECT id, source, raw_json, description, consensus_estimate FROM calendar_events WHERE id = ?",
+  );
+  const writeRawJson = db.prepare("UPDATE calendar_events SET raw_json = ? WHERE id = ?");
+  const writeDescription = db.prepare("UPDATE calendar_events SET description = ? WHERE id = ?");
+  const writeConsensus = db.prepare("UPDATE calendar_events SET consensus_estimate = ? WHERE id = ?");
+
+  return function carry(donorId: number, canonicalId: number): void {
+    const donor = read.get(donorId) as CarryRow | undefined;
+    const kept = read.get(canonicalId) as CarryRow | undefined;
+    if (!donor || !kept || donor.source !== "finnhub" || kept.source === "finnhub") return;
+
+    // 1. raw_json keys.
+    const donorJson = donor.raw_json ? parseRawJsonObject(donor.raw_json) : null;
+    const donorEntry = donorJson ? asJsonObject(donorJson.entry) : null;
+    const keptJson = parseRawJsonObject(kept.raw_json);
+    if (donorJson && donorEntry && keptJson) {
+      const hadEntry = Object.prototype.hasOwnProperty.call(keptJson, "entry");
+      const keptEntry = hadEntry ? asJsonObject(keptJson.entry) : {};
+      // A kept row whose `entry` is not an object is a shape we do not know: leave it.
+      if (keptEntry) {
+        const marker = asJsonObject(keptJson[FINNHUB_CARRY_MARKER]);
+        const markerKeys: unknown = marker ? marker.keys : null;
+        const previouslyCarried = new Set<string>(
+          Array.isArray(markerKeys) ? markerKeys.filter((k): k is string => typeof k === "string") : [],
+        );
+        const has = (obj: JsonObject, key: string) => Object.prototype.hasOwnProperty.call(obj, key);
+        const carriedNow: string[] = [];
+        let changed = false;
+        const apply = (target: JsonObject, source: JsonObject, key: string, label: string) => {
+          const mine = previouslyCarried.has(label);
+          if (has(target, key) && !mine) return; // the kept row's own value
+          if (has(source, key)) {
+            if (!has(target, key) || JSON.stringify(target[key]) !== JSON.stringify(source[key])) {
+              target[key] = source[key];
+              changed = true;
+            }
+            carriedNow.push(label);
+          } else if (mine && has(target, key)) {
+            delete target[key]; // the Finnhub row no longer states it
+            changed = true;
+          }
+        };
+        for (const key of FINNHUB_CARRIED_ENTRY_KEYS) apply(keptEntry, donorEntry, key, `entry.${key}`);
+        for (const key of FINNHUB_CARRIED_TOP_KEYS) apply(keptJson, donorJson, key, key);
+
+        if (carriedNow.length > 0) {
+          const nextMarker = { from_event_id: donor.id, keys: carriedNow };
+          if (JSON.stringify(marker) !== JSON.stringify(nextMarker)) {
+            keptJson[FINNHUB_CARRY_MARKER] = nextMarker;
+            changed = true;
+          }
+          if (!hadEntry) keptJson.entry = keptEntry;
+        } else if (marker) {
+          delete keptJson[FINNHUB_CARRY_MARKER];
+          changed = true;
+        }
+        if (changed) writeRawJson.run(JSON.stringify(keptJson), kept.id);
+      }
+    }
+
+    // 2. description: fill an empty one, never replace text.
+    if ((kept.description ?? "").trim() === "" && (donor.description ?? "").trim() !== "") {
+      writeDescription.run(donor.description, kept.id);
+    }
+
+    // 3. revenue estimate: add it to a Nasdaq row's EPS-only consensus.
+    if (kept.source === "nasdaq" && kept.consensus_estimate && donor.consensus_estimate) {
+      const hasRevenue = kept.consensus_estimate.split(" · ").some((part) => /^Rev\b/.test(part.trim()));
+      const donorRevenue = donor.consensus_estimate
+        .split(" · ")
+        .map((part) => part.trim())
+        .filter((part) => /^Rev\b/.test(part));
+      if (!hasRevenue && donorRevenue.length > 0) {
+        writeConsensus.run([kept.consensus_estimate, ...donorRevenue].join(" · "), kept.id);
+      }
+    }
+  };
+}
+
+/**
  * Reconcile all held/watchlist earnings rows in a window around `today`.
  * Pure given `today`; idempotent (re-running yields the same marks); never
  * mutates a user_confirmed/manual cluster's canonical date.
@@ -1203,6 +1373,7 @@ export function reconcileEarningsDates(
       hasActual(r));
 
   const foldIntoCanonical = createTwinFolder(db);
+  const carryFinnhubData = createFinnhubDataCarrier(db);
 
   const result: ReconcileResult = {
     confirmed: 0,
@@ -1289,6 +1460,14 @@ export function reconcileEarningsDates(
           const changed = foldIntoCanonical(r, res.canonicalId, canonicalEventDate);
           anyChanged ||= changed;
         }
+        // AFTER the folds (the fold's COALESCE has had first say on the
+        // consensus column). `superseded` holds every hidden row of the
+        // cluster on every pass, already-hidden ones included, so data the
+        // weekly sync's upsert wiped off a vendor row is carried again by
+        // the pass that ends that same sync.
+        const finnhubDonor =
+          canonicalRow.source === "finnhub" ? null : pickFinnhubDonor(superseded, canonicalEventDate);
+        if (finnhubDonor) carryFinnhubData(finnhubDonor.id, res.canonicalId);
         if (res.status === "confirmed") result.confirmed++;
         else if (res.status === "conflict") result.conflict++;
         else if (res.status === "single") result.single++;
