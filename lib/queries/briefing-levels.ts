@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { todayET } from "@/lib/calendar/date-utils";
 
 // ── Types ─────────────────────────────────────────────────────
 
@@ -120,9 +121,11 @@ export function getLevelsNearPrice(
        ) p ON p.security_id = sl.security_id
        WHERE sl.is_active = 1
          AND sl.review_status = 'auto_approved'
-         AND (sl.expires_at IS NULL OR sl.expires_at >= date('now'))
+         AND (sl.expires_at IS NULL OR sl.expires_at >= ?)
          AND ABS((p.close_price - sl.price) / sl.price) <= ?
        ORDER BY ABS((p.close_price - sl.price) / sl.price) ASC`
     )
-    .all(withinPct) as LevelNearPrice[];
+    // The expiry day is the Eastern day, bound: SQLite's date('now') is the
+    // UTC day and drops a level expiring today after 20:00 Eastern.
+    .all(todayET(), withinPct) as LevelNearPrice[];
 }

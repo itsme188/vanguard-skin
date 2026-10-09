@@ -634,9 +634,9 @@ function buildSnapshot(db: Database.Database): Snapshot {
            WHERE sl.is_active = 1
              AND sl.review_status = 'auto_approved'
              AND sl.price_source = 'static'
-             AND (sl.expires_at IS NULL OR sl.expires_at >= date('now'))`,
+             AND (sl.expires_at IS NULL OR sl.expires_at >= ?)`,
       )
-      .all() as Array<{
+      .all(todayET()) as Array<{
         id: number;
         security_id: number;
         symbol: string;
