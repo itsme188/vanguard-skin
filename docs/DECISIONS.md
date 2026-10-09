@@ -1083,3 +1083,21 @@ Eight commits. One Codex review (no production finding; one gap in a guard test,
 - Two builders sharing a file meant one unit's commit carried a few lines of the other's unfinished work, and for a moment the branch did not build on its own. Commit by file only when one builder owns the file, or wait for both.
 - A builder asked to list risky sites for a decision changed them instead. Each change was sound, but the brief should have said "stop and report" as the first line, not the last.
 - Colour inside an always-dark panel must be checked separately from the page theme. One measured pass found a regression from the wave before it and twelve older misses.
+
+## 2026-10-09 (about 02:40) — Second overnight sprint, seventh and last wave
+
+Three commits. One Codex review (two findings, both fixed before the merge), the full suite, and a browser check in both themes (no duplicate id, no rendering warning in eight hard reloads, no hovered element under the contrast floor).
+
+**Decisions taken. The owner should confirm or reverse each.**
+1. **Time windows compare like with like.** Two windows compared a timestamp stored with a `T` against SQLite's space-separated clock, which let in rows from earlier the same day: press releases for the earnings email prompt, and levels fired inside the weekly briefing window. Both sides now go through `datetime()`. The only effect is that rows outside the window are no longer included. Five more windows on a column already stored in the space form were wrapped the same way and select the same rows. Checked read-only on the live book: no stored value in the three affected tables is unreadable by `datetime()`, so no row disappears.
+2. **A compact option expiry (`YYYYMMDD`) is read correctly everywhere**: the expirations list (a live contract in that form was missing from it), the Greeks (it was never expired), the days-to-expiry helper (it threw, which would have crashed that security's page), the one-off purge script, and **the weekly briefing's expiring-options list**. The last one adds a row to an email where it applies; an option that really expires this week belongs in that list. No security on the live book carries the compact form, so nothing changes today.
+3. **Giving element ids are built from the year, the gift and the lot.** Two year sections shared one id, and the verify dialog's generated ids intermittently differed between server and client.
+4. **A hover never lowers small text under the contrast floor.** Seventy-three hover states faded text or brightened a tint under it; they now underline, take the small-text gold, or dim the fill slightly.
+
+**Guards added tonight** (each fails the suite on a new instance and lists every allowed one with its reason): a UTC day cut in JavaScript; a calendar-day comparison on SQLite's UTC clock; a bare column compared with the current instant; a hand-written option-expiry comparison; a native browser prompt; small coloured text on a tint under 4.5 to 1; faded small text, small plain gold and hand-written solid gold; a dim grey in a dark-panel file; a fade applied to small text; a hover that lowers small text under the floor.
+
+**Still open from this wave.**
+- The security page prints a compact expiry as stored (`20261016`), not prettified.
+- `scripts/verify-a1-current-prices.ts` and `scripts/verify-a2-combined-positions.ts` compare an expiry by hand (one-off read-only scripts).
+- Two Levels panel controls inside the dark chart panel have no hover feedback.
+- The selected chat scope pill and the chat Send button remain under the floor in the light theme (protected component; the one-line changes are in the sixth-wave entry).
