@@ -128,3 +128,85 @@ export function computeLotSignMismatches(
   }
   return mismatches;
 }
+
+export interface BasisDisagreementPositionInput extends LotCoveragePositionInput {
+  /** Holding cost basis (USD-converted by the page query); null/0 = unknown. */
+  cost_basis: number | null;
+}
+
+export interface BasisDisagreementLotInput extends LotCoverageLotInput {
+  is_short?: number | boolean | null;
+  /** Remaining-lot basis (USD-converted). */
+  adjusted_cost_basis: number | null;
+  pending_statement?: boolean;
+  expired_option?: boolean;
+}
+
+export interface BasisDisagreement {
+  accountId: number;
+  accountName: string;
+  /** Absolute holding basis. */
+  holdingBasis: number;
+  /** Absolute sum of the same-side open lots' basis. */
+  lotBasis: number;
+  /** lotBasis - holdingBasis (positive: the ledger carries more basis). */
+  difference: number;
+}
+
+/** Relative share of the holding basis below which a gap is rounding noise. */
+const BASIS_TOLERANCE_RATIO = 0.005;
+/** Absolute floor, in the holding's own currency. */
+const BASIS_TOLERANCE_FLOOR = 1;
+
+/**
+ * Where the open lots fully cover a position's quantity, do their summed
+ * basis and the holding's basis agree? The holding figure is the broker's;
+ * the lots are the ledger's. This only DISCLOSES a gap; nothing is changed.
+ *
+ * Per (account, security), like computeLotCoverageGaps. Skipped: positions
+ * with no known basis (the unknown-basis note covers them), pairs with any
+ * quantity gap (the coverage note covers them), pairs with a lot pending its
+ * statement or an expired option lot, and pairs where a lot has no basis.
+ * Shorts: the holding stores proceeds as a negative basis while lots store a
+ * positive figure, so absolute values are compared, against short lots only.
+ *
+ * Tolerance: the larger of 0.5% of the holding basis or 1.00 of the
+ * holding's currency. Both bases arrive converted to USD, so the 1.00 floor
+ * is scaled by `usdPerUnit` (1 for USD).
+ */
+export function computeBasisDisagreements(
+  positions: BasisDisagreementPositionInput[],
+  openLots: BasisDisagreementLotInput[],
+  opts: { usdPerUnit?: number } = {}
+): BasisDisagreement[] {
+  const floor = BASIS_TOLERANCE_FLOOR * (opts.usdPerUnit ?? 1);
+  const out: BasisDisagreement[] = [];
+  for (const position of positions) {
+    if (position.cost_basis == null || position.cost_basis === 0) continue;
+    if (Math.abs(position.quantity) <= EPSILON) continue;
+    const wantShort = position.quantity < 0;
+    const accountLots = openLots.filter(
+      (l) => l.account_id === position.account_id && Math.abs(l.quantity_remaining) > EPSILON
+    );
+    if (accountLots.some((l) => l.pending_statement || l.expired_option)) continue;
+    const lots = accountLots.filter((l) => !!l.is_short === wantShort);
+    if (lots.length === 0) continue;
+    const covered = lots.reduce((s, l) => s + Math.abs(l.quantity_remaining), 0);
+    if (Math.abs(Math.abs(position.quantity) - covered) > EPSILON) continue;
+    if (lots.some((l) => l.adjusted_cost_basis == null)) continue;
+
+    const holdingBasis = Math.abs(position.cost_basis);
+    const lotBasis = Math.abs(lots.reduce((s, l) => s + (l.adjusted_cost_basis ?? 0), 0));
+    const difference = lotBasis - holdingBasis;
+    const tolerance = Math.max(holdingBasis * BASIS_TOLERANCE_RATIO, floor);
+    if (Math.abs(difference) <= tolerance) continue;
+    out.push({
+      accountId: position.account_id,
+      accountName: position.account_name,
+      holdingBasis,
+      lotBasis,
+      difference,
+    });
+  }
+  return out;
+}
