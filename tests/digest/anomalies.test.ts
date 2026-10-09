@@ -629,7 +629,7 @@ describe("computeAnomalies: scoped to the caller's accounts", () => {
     expect(computeAnomalies(db, { accountIds: [] })).toEqual([]);
   });
 
-  it("a scoped call reads the current book; the default universe keeps a closed position", () => {
+  it("a scoped call and the default (email) universe both read the current book", () => {
     seedSpy(400, 400);
     const vanguard = seedAccount("Vanguard Taxable");
     const sold = seedMover("ZZA");
@@ -642,7 +642,51 @@ describe("computeAnomalies: scoped to the caller's accounts", () => {
     seedHolding(vanguard, seedMover("ZZB"), "2026-05-08");
 
     expect(computeAnomalies(db, { accountIds: [vanguard] }).map((f) => f.symbol)).toEqual(["ZZB"]);
+    // Changed 2026-10-08: the evening email used to read every holdings row
+    // ever written, so a sold name could still be reported as a held mover.
+    expect(computeAnomalies(db).map((f) => f.symbol)).toEqual(["ZZB"]);
+  });
+
+  it("the email universe keeps a name whose latest row is an older statement row", () => {
+    // Latest is per (account, security): a statement-only position must not be
+    // dropped because another name in the account has a newer row.
+    seedSpy(400, 400);
+    const vanguard = seedAccount("Vanguard Taxable");
+    seedHolding(vanguard, seedMover("ZZA"), "2026-03-31");
+    seedHolding(vanguard, seedMover("ZZB"), "2026-05-08");
+
     expect(computeAnomalies(db).map((f) => f.symbol).sort()).toEqual(["ZZA", "ZZB"]);
+  });
+
+  it("the email universe is the long book: a name sold in one Vanguard account and still held in another stays, once", () => {
+    seedSpy(400, 400);
+    const a = seedAccount("Vanguard Taxable");
+    const b = seedAccount("Vanguard Brokerage");
+    const both = seedMover("ZZA");
+    seedHolding(a, both, "2026-04-30");
+    db.prepare(
+      `INSERT INTO holdings (account_id, security_id, quantity, as_of_date, source_key)
+       VALUES (?, ?, 0, '2026-05-08', 'test:tombstone-a')`
+    ).run(a, both);
+    seedHolding(b, both, "2026-04-30");
+
+    expect(computeAnomalies(db).map((f) => f.symbol)).toEqual(["ZZA"]);
+  });
+
+  it("the formatted email block does not name a sold position", () => {
+    seedSpy(400, 400);
+    const vanguard = seedAccount("Vanguard Taxable");
+    const sold = seedMover("ZZA");
+    seedHolding(vanguard, sold, "2026-04-30");
+    db.prepare(
+      `INSERT INTO holdings (account_id, security_id, quantity, as_of_date, source_key)
+       VALUES (?, ?, 0, '2026-05-08', 'test:tombstone')`
+    ).run(vanguard, sold);
+    seedHolding(vanguard, seedMover("ZZB"), "2026-05-08");
+
+    const block = formatVanguardAnomaliesBlock(db);
+    expect(block).toContain("ZZB");
+    expect(block).not.toContain("ZZA");
   });
 });
 
