@@ -31,6 +31,18 @@ describe("Period window card and the annualized figures describe ONE window", ()
     expect(src).toContain("Chained from the prior month-end anchor");
   });
 
+  // B4 ruling (2026-10-08): a fixed period (1Y / 3Y / 5Y) is the full span
+  // ending at the last statement anchor. The card still reads the chain's own
+  // measurementStartDate / endDate / totalDays (pins above, unchanged); what
+  // changed is the window handed to the chain, so the card now shows the full
+  // span. The chain must be bounded at BOTH ends by the shared window rule.
+  it("the chain behind the card is bounded by the shared window rule at both ends", () => {
+    const flat = src.replace(/\s+/g, " ");
+    expect(flat).toContain("startDate: chainStart, endDate: chainEnd,");
+    expect(flat).toContain("const chainStart = perfWindow.chainStartDate;");
+    expect(src).not.toContain("startDateForPeriod");
+  });
+
   it("the per-account coverage window under the annualized column uses the same anchor", () => {
     expect(src).toContain("fmtMonthYear(acc.measurementStartDate)");
     expect(src).not.toContain("fmtMonthYear(acc.startDate)");
