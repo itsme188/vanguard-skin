@@ -290,7 +290,22 @@ export function ReconciliationTable({
                       <Money value={cp.statement_value} precise />
                     </td>
                     <td className="px-4 py-3 text-right font-mono tabular-nums text-ink-dim">
-                      <Money value={cp.computed_value} precise />
+                      {cp.computed_value === null ? (
+                        <span
+                          className="text-ink-faint"
+                          title={cp.computed_missing_reason ?? undefined}
+                        >
+                          <span aria-hidden="true">&mdash;</span>
+                          <span className="sr-only">
+                            {cp.computed_missing_reason ?? "No computed value"}
+                          </span>
+                        </span>
+                      ) : (
+                        <Money value={cp.computed_value} precise />
+                      )}
+                      {cp.computed_from_date && (
+                        <div className="text-ink-faint text-xs font-sans">from {cp.computed_from_date}</div>
+                      )}
                     </td>
                     <td className="px-4 py-3 text-right">
                       {band !== null ? (

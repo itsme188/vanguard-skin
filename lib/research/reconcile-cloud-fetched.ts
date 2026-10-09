@@ -4,6 +4,7 @@ import { subjectSymbolBackstop } from "@/lib/gmail/subject-symbol-backstop";
 import { getHeldStockSymbols } from "@/lib/queries/briefing-symbols";
 import { getHeldSymbolSet, heldSymbolsMentioned } from "@/lib/research/held-symbol-relevance";
 import { getActiveWatchlistStockSymbols } from "@/lib/queries/watchlist";
+import { isEmptyEnrichment } from "@/lib/research/empty-enrichment";
 
 /**
  * Reconcile cloud-fetched newsletter articles.
@@ -124,7 +125,7 @@ export async function reconcileCloudFetchedNewsletters(
        summary, key_themes, sentiment, sentiment_score,
        mentioned_symbols, portfolio_relevance, ai_model,
        processed_at, is_relevant, excluded_category, excluded_reason)
-    VALUES (?, ?, NULL, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?, ?, ?)
+    VALUES (?, ?, NULL, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
   const selectSource = db.prepare(
@@ -215,6 +216,19 @@ export async function reconcileCloudFetchedNewsletters(
       // raw-json-envelope-in-summary (2026-08-14, rows 71098/71094/68064).
       const summary = sanitizeModelSummary(payload.summary || "");
 
+      // Empty enrichment (no summary AND no themes; the same test as
+      // isEmptyEnrichmentResult in lib/gmail/process.ts, shared via
+      // lib/research/empty-enrichment.ts): the Worker's parse produced
+      // nothing, so store the row UNPROCESSED with no sentiment. The Mac's
+      // processUnprocessedArticles then enriches it (processed_at IS NULL).
+      const sanitizedThemes = sanitizeThemeList(payload.key_themes);
+      const enrichmentEmpty = isEmptyEnrichment(summary, sanitizedThemes);
+      const storedSentiment = enrichmentEmpty ? null : payload.sentiment;
+      const storedScore = enrichmentEmpty ? null : payload.sentiment_score;
+      const processedAt = enrichmentEmpty
+        ? null
+        : db.prepare(`SELECT datetime('now') AS t`).pluck().get();
+
       const info = insertArticle.run(
         payload.source_id,
         payload.gmail_message_id,
@@ -224,12 +238,13 @@ export async function reconcileCloudFetchedNewsletters(
         payload.raw_text,
         payload.raw_html,
         summary,
-        JSON.stringify(sanitizeThemeList(payload.key_themes)),
-        payload.sentiment,
-        payload.sentiment_score,
+        JSON.stringify(sanitizedThemes),
+        storedSentiment,
+        storedScore,
         JSON.stringify(mentionedSymbols),
         payload.portfolio_relevance,
         payload.ai_model,
+        processedAt,
         isRelevant,
         excludedCategory,
         excludedReason,
@@ -254,7 +269,7 @@ export async function reconcileCloudFetchedNewsletters(
         const sec = findSecurity.get(symbol) as { id: number } | undefined;
         if (sec) {
           // NULL, not a placeholder: no real excerpt exists for cloud-fetched rows.
-          linkSecurity.run(articleId, sec.id, null, payload.sentiment);
+          linkSecurity.run(articleId, sec.id, null, storedSentiment);
         }
       }
       for (const symbol of backstopHits) {
@@ -264,7 +279,7 @@ export async function reconcileCloudFetchedNewsletters(
             articleId,
             sec.id,
             `Subject-line backstop match: "${payload.subject.slice(0, 300)}"`,
-            payload.sentiment,
+            storedSentiment,
           );
         }
       }

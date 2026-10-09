@@ -884,6 +884,13 @@ export interface FactorHeatmapRow {
   crypto_adjacent: string | null;
   regulatory_risk: string | null;
   factor_source: string | null;
+  /**
+   * Classification style (Growth / Value / Blend), the same field the
+   * classification Breakdown buckets on; options inherit their underlying's.
+   * DISPLAY ONLY: the heatmap shows a third "Blend" bucket from it. It never
+   * feeds weights or tilts, which keep reading growth_vs_value.
+   */
+  style: string | null;
 }
 
 export interface FactorCoverage {
@@ -938,7 +945,8 @@ export function getFactorHeatmap(
         COALESCE(sf.ai_exposure, sf_u.ai_exposure) AS ai_exposure,
         COALESCE(sf.crypto_adjacent, sf_u.crypto_adjacent) AS crypto_adjacent,
         COALESCE(sf.regulatory_risk, sf_u.regulatory_risk) AS regulatory_risk,
-        COALESCE(sf.factor_source, sf_u.factor_source) AS factor_source
+        COALESCE(sf.factor_source, sf_u.factor_source) AS factor_source,
+        COALESCE(NULLIF(s.style, 'null'), NULLIF(s_u.style, 'null')) AS style
       FROM latest_holdings h
       JOIN securities s ON s.id = h.security_id
       LEFT JOIN latest_prices lp ON lp.security_id = h.security_id
@@ -966,6 +974,7 @@ export function getFactorHeatmap(
       crypto_adjacent: string | null;
       regulatory_risk: string | null;
       factor_source: string | null;
+      style: string | null;
     }>;
 
   const totalValue = rows.reduce((sum, r) => sum + r.market_value, 0);
@@ -987,6 +996,7 @@ export function getFactorHeatmap(
     crypto_adjacent: r.crypto_adjacent,
     regulatory_risk: r.regulatory_risk,
     factor_source: r.factor_source,
+    style: r.style,
   }));
 }
 

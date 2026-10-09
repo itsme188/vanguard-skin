@@ -20,7 +20,12 @@ import { EarningsHub } from "./EarningsHub";
 import { WeekAheadView } from "./WeekAheadView";
 import { IbkrRefreshButton } from "./IbkrRefreshButton";
 import { SnapshotAge } from "../components/SnapshotAge";
-import { ibkrSnapshotHeading, olderVanguardBasisNote } from "./basis-labels";
+import {
+  ibkrSessionWord,
+  ibkrSnapshotHeading,
+  olderVanguardBasisNote,
+  portfolioBaselineLabel,
+} from "./basis-labels";
 
 function fmtShortDate(iso: string): string {
   const [, month, day] = iso.split("T")[0].split("-");
@@ -106,10 +111,18 @@ export default async function TodayPage({ searchParams }: TodayPageProps) {
   // Percent denominator is GROSS prior-close exposure, not net (ratified
   // 2026-09-13) — with shorts in the row set, a hedged book's net exposure can
   // be tiny or negative. See summarizeIbkrDayMove for the full rationale.
-  const { count: movedCount, todayGain, todayPct } = summarizeIbkrDayMove(holdings);
+  //
+  // Owner ruling 2026-10-08: quantity opened or added since the prior close is
+  // measured from its own cost, not credited with the move since that close,
+  // and is left out when its cost is unknown. The summary counts those names
+  // so the line can say which ones the figure treats differently.
+  const dayMove = summarizeIbkrDayMove(holdings);
+  const { todayGain, todayPct } = dayMove;
   // The heading names the later date of the one pair the figure was measured
   // on, and says "today" only when that session is today's Eastern date.
   const ibkrHeading = ibkrSnapshotHeading(movePair?.latest ?? null, todayET());
+  // Same rule for the notes: "opened today" only for today's session.
+  const sessionWord = ibkrSessionWord(movePair?.latest ?? null, todayET());
 
   // ── Today's calendar releases (with release_time set) ─────────────
   // ET-anchored inside the query (calendar event_date is an ET market date, so
@@ -196,7 +209,9 @@ export default async function TodayPage({ searchParams }: TodayPageProps) {
             }`}
           >
             {portfolio.totalChange >= 0 ? "▲" : "▼"} <Money value={Math.abs(portfolio.totalChange)} />{" "}
-            <span className="text-ink-faint">vs prior month</span>
+            <span className="text-ink-faint">
+              {portfolioBaselineLabel(portfolio.previousDateEarliest, portfolio.previousDateLatest, todayET())}
+            </span>
           </span>
         )}
         <span className="text-[12px] text-ink-faint ml-auto">
@@ -256,12 +271,52 @@ export default async function TodayPage({ searchParams }: TodayPageProps) {
                 )}
               </span>
             )}
-            {movedCount < holdings.length && (
+            {dayMove.openedTodayCount > 0 && (
               <span
                 className="text-[11px] text-ink-faint"
-                title="Names with no prior close are excluded from today's move"
+                title="Measured from what they cost, not from the prior close"
               >
-                <Count value={holdings.length - movedCount} /> without a prior close
+                <Count value={dayMove.openedTodayCount} /> opened {sessionWord}
+              </span>
+            )}
+            {dayMove.excludedCount > 0 && (
+              <span
+                className="text-[11px] text-ink-faint"
+                title="Newly opened names with no usable cost on record are excluded from the move"
+              >
+                <Count value={dayMove.excludedCount} /> with no cost, left out
+              </span>
+            )}
+            {dayMove.addedTodayCount > 0 && (
+              <span
+                className="text-[11px] text-ink-faint"
+                title="Shares already held are measured from the prior close; the added shares from what they cost"
+              >
+                <Count value={dayMove.addedTodayCount} /> added to {sessionWord}
+              </span>
+            )}
+            {dayMove.addedCostUnknownCount > 0 && (
+              <span
+                className="text-[11px] text-ink-faint"
+                title="The added shares' cost could not be worked out, so only the shares already held are in the move"
+              >
+                <Count value={dayMove.addedCostUnknownCount} /> added, cost unknown
+              </span>
+            )}
+            {dayMove.undatedChangeCount > 0 && (
+              <span
+                className="text-[11px] text-ink-faint"
+                title="No holdings snapshot at the prior close, so the change cannot be dated to this session; the new shares are excluded from the move"
+              >
+                <Count value={dayMove.undatedChangeCount} /> changed since an older snapshot
+              </span>
+            )}
+            {dayMove.unpricedCount > 0 && (
+              <span
+                className="text-[11px] text-ink-faint"
+                title="Names with no prior close are excluded from the move"
+              >
+                <Count value={dayMove.unpricedCount} /> without a prior close
               </span>
             )}
             <IbkrRefreshButton latestPriceDate={latestPriceDate} />

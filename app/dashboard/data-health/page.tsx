@@ -7,6 +7,7 @@ import {
   getSectorDisagreements,
 } from "@/lib/queries/data-health";
 import { DataHealthView } from "../components/DataHealthView";
+import { dataConfidenceLevelLabel } from "@/lib/ui/data-confidence-level";
 import { ScrollFade } from "../components/ScrollFade";
 import { SymbolLink } from "../components/SymbolLink";
 import { Count, PrivateText } from "@/lib/privacy/components";
@@ -41,6 +42,57 @@ function IntegrityGroups({ hits }: { hits: IntegrityHit[] }) {
 }
 
 /**
+ * The cap line: whether a critical integrity check is holding the score down,
+ * and which one. Shared by the summary at the top of the page and the
+ * Integrity section below, so the wording and the masking live once. The cap
+ * rule itself is getDataConfidence's, not restated here.
+ */
+function CapStatus({ confidence }: { confidence: DataConfidence }) {
+  return confidence.capReason ? (
+    <p className="text-[13px] text-down" role="status">
+      The score is capped by a critical check:{" "}
+      <PrivateText>{confidence.capReason}</PrivateText>
+    </p>
+  ) : (
+    <p className="text-[13px] text-ink-dim" role="status">
+      No critical check is failing, so the score is not capped.
+    </p>
+  );
+}
+
+/**
+ * Score, level, cap state and cap reason at the top of the page. The header
+ * badge is hidden below md, so a phone user reads the score here (QA finding
+ * mobile-header--data-confidence-badge-hidden-below-md-no-mobile-surface).
+ * The score is a data-quality figure, printed plain exactly as the header
+ * badge and the drawer row print it; the cap reason can name a position, so
+ * it stays masked.
+ */
+function ConfidenceSummary({ confidence }: { confidence: DataConfidence | null }) {
+  return (
+    <section
+      aria-label="Data freshness score"
+      className="rounded-xl border border-edge bg-panel px-5 py-4 space-y-2"
+    >
+      {confidence === null ? (
+        <p className="text-[13px] text-warn" role="alert">
+          The Data Freshness score could not be read just now. This is not a clean result.
+        </p>
+      ) : (
+        <>
+          <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+            <h2 className="text-sm font-medium text-ink">Data Freshness</h2>
+            <span className="font-mono text-2xl text-ink tabular-nums">{confidence.overallScore}%</span>
+            <span className="text-[13px] text-ink-dim">{dataConfidenceLevelLabel(confidence.overallLevel)}</span>
+          </div>
+          <CapStatus confidence={confidence} />
+        </>
+      )}
+    </section>
+  );
+}
+
+/**
  * The integrity checks behind the header's Data Freshness badge: the reason
  * the score is capped, every critical hit, and every informational note. The
  * popover's "Full audit" link promises this list, and until now nothing on
@@ -70,16 +122,7 @@ function IntegritySection({ confidence }: { confidence: DataConfidence | null })
         </div>
       ) : (
         <div className="px-5 py-4 space-y-4">
-          {confidence.capReason ? (
-            <p className="text-[13px] text-down" role="status">
-              The header score is capped by a critical check:{" "}
-              <PrivateText>{confidence.capReason}</PrivateText>
-            </p>
-          ) : (
-            <p className="text-[13px] text-ink-dim" role="status">
-              No critical check is failing, so the header score is not capped.
-            </p>
-          )}
+          <CapStatus confidence={confidence} />
           {!confidence.integrity.lotDriftChecked && (
             // Unchecked is not clean: say the comparison did not run.
             <p className="text-[13px] text-warn">
@@ -130,6 +173,7 @@ export default function DataHealthPage() {
 
   return (
     <div className="max-w-[1400px] mx-auto px-6 py-8 space-y-6">
+      <ConfidenceSummary confidence={confidence} />
       <DataHealthView integritySection={<IntegritySection confidence={confidence} />} />
 
       <section className="rounded-xl border border-edge bg-panel overflow-hidden">

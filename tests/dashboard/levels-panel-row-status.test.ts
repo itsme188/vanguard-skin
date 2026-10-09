@@ -26,8 +26,9 @@ describe("levelRowStatus — the status a row's chips show", () => {
     expect(levelRowStatus(REJECTED)).toBe("rejected");
     expect(levelRowStatus(FIRED)).toBe("triggered");
     expect(levelRowStatus(PAUSED)).toBe("inactive");
-    // An inactive row shows the Inactive chip whatever its review status.
-    expect(levelRowStatus(PAUSED_REJECTED)).toBe("inactive");
+    // A paused rejected row is still rejected (its row also carries the
+    // inactive chip), so it sorts and counts with the rejected ones.
+    expect(levelRowStatus(PAUSED_REJECTED)).toBe("rejected");
   });
 });
 
@@ -71,6 +72,20 @@ describe("Status sort groups rows by visible status", () => {
 
 // QA finding security-detail-levels--empty-state-hides-inactive-and-pending-
 // review-levels: "No active levels" over rows that exist in other states.
+describe("a paused rejected row", () => {
+  it("ranks with the rejected rows and sorts after the pending ones", () => {
+    expect(levelStatusRank(PAUSED_REJECTED)).toBe(levelStatusRank(REJECTED));
+    expect(levelStatusRank(PAUSED_REJECTED)).toBeGreaterThan(levelStatusRank(PAUSED));
+    expect(levelStatusRank(PAUSED_REJECTED)).toBeLessThan(levelStatusRank(PENDING));
+  });
+
+  it("is counted as rejected in the hidden summary", () => {
+    expect(hiddenLevelsSummary([PAUSED_REJECTED, REJECTED, PAUSED])).toBe(
+      "3 not shown: 2 rejected, 1 inactive",
+    );
+  });
+});
+
 describe("hiddenLevelsSummary — what the armed-only view leaves out", () => {
   it("counts hidden rows by status, pending review first", () => {
     expect(hiddenLevelsSummary([REJECTED, FIRED, PENDING, REJECTED, PAUSED, FIRED, REJECTED])).toBe(

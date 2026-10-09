@@ -9,6 +9,8 @@ import { FUND_DEFAULT_DURATION_YEARS, type BondUnmodelledReason } from "@/lib/co
 import { Count, Pct, PrivateText } from "@/lib/privacy/components";
 import { formatCompactOptionSymbol } from "@/lib/format";
 import apiFetch from "@/lib/http/apiFetch";
+import { readMutationResult, networkFailureMessage } from "@/lib/ui/mutation-result";
+import { SCENARIO_INPUT_BOUNDS, fractionToPercent } from "@/lib/compute/scenario-input-bounds";
 
 function findRecipeMethodology(id: string): string | null {
   return findRecipe(id)?.methodology ?? null;
@@ -43,6 +45,9 @@ const BOND_UNMODELLED_REASON_LABEL: Record<BondUnmodelledReason, string> = {
   "unusable-coupon": "the stored coupon is not a usable figure",
   "no-price": "no price",
   "no-yield": "price gives no usable yield",
+  // A fund with no stored duration that was refused the 5-year default.
+  "fund-equity-evidence": "labelled a bond fund, but its sector or name says equity",
+  "fund-category-unconfirmed": "no recognised bond category, and no stored duration",
 };
 const BETA_TITLE = "Beta vs the market: 1.0 moves with the index.";
 
@@ -90,8 +95,9 @@ function nonShockableBucket(pos: ScenarioResult["positionImpacts"][number]): str
 // Custom-scenario input bounds (owner ruling 2026-10-07, QA option 1): a rate
 // move past +/-1000 bp or a sector override past +/-50% is refused, with the
 // input named. Nothing is clamped or replaced by another figure.
-export const CUSTOM_RATE_MOVE_LIMIT_BP = 1000;
-export const CUSTOM_SECTOR_MOVE_LIMIT_PCT = 50;
+// The numbers live in lib/compute/scenario-input-bounds.ts (shared with the route).
+export const CUSTOM_RATE_MOVE_LIMIT_BP = SCENARIO_INPUT_BOUNDS.rateMoveBp;
+export const CUSTOM_SECTOR_MOVE_LIMIT_PCT = fractionToPercent(SCENARIO_INPUT_BOUNDS.sectorMove);
 
 export function customScenarioInputProblems(
   rateMoveBp: number,
@@ -183,18 +189,19 @@ export function ScenarioModelingCard({ scope }: { scope?: string }) {
           scope,
         }),
       });
-      const json = await res.json();
+      const result = await readMutationResult<{ data: ScenarioResult }>(res);
       if (requestTokenRef.current !== requestToken) return;
-      if (json.success) {
+      if (result.ok) {
         setCustomError(null);
-        setCustomResult(json.data);
+        setCustomResult(result.data.data);
         setExpanded("custom");
       } else {
-        setCustomError(`Couldn't compute the scenario: ${json.error ?? "unknown error"}.`);
+        // The server's own refusal (an out-of-range input names itself), shown as is.
+        setCustomError(`Couldn't compute the scenario: ${result.message.replace(/\.$/, "")}.`);
       }
     } catch {
       if (requestTokenRef.current !== requestToken) return;
-      setCustomError("Couldn't compute the scenario: could not reach the server.");
+      setCustomError(networkFailureMessage("compute the scenario"));
     } finally {
       setCustomLoading(false);
     }
@@ -312,7 +319,7 @@ export function ScenarioModelingCard({ scope }: { scope?: string }) {
                       {result.liveNowReason && (
                         <span
                           className="text-[10px] px-1.5 py-0.5 rounded border bg-amber/20 text-amber border-amber/40 uppercase tracking-wide"
-                          title={`Live theme: ${result.liveNowReason}`}
+                          title={`Live theme${result.liveNowReason.includes("; ") ? "s" : ""}: ${result.liveNowReason}`}
                         >
                           live now
                         </span>
@@ -542,18 +549,29 @@ export function ScenarioModelingCard({ scope }: { scope?: string }) {
 
                   {/* Bonds the rate move could not price: no duration is
                       assumed for them, so they are listed, not hidden. */}
-                  {result.bondsUnmodelled.count > 0 && (
+                  {(result.bondsUnmodelled.count > 0 || result.bondsUnmodelled.fundCount > 0) && (
                     <div>
                       <h4 className="text-[10px] text-ink-faint uppercase tracking-wider mb-1.5">
                         Bonds Not Modelled
                       </h4>
                       <p className="text-xs text-ink-dim mb-1.5">
                         <PrivateText>
-                          {result.bondsUnmodelled.count}{" "}
-                          {result.bondsUnmodelled.count === 1 ? "bond" : "bonds"} (
-                          {(result.bondsUnmodelled.valueShare * 100).toFixed(0)}% of bond value) left out of the
-                          rate move.
-                        </PrivateText>{" "}
+                          {result.bondsUnmodelled.count > 0 && (
+                            <>
+                              {result.bondsUnmodelled.count}{" "}
+                              {result.bondsUnmodelled.count === 1 ? "bond" : "bonds"} (
+                              {(result.bondsUnmodelled.valueShare * 100).toFixed(0)}% of bond value) left out of the
+                              rate move.{" "}
+                            </>
+                          )}
+                          {result.bondsUnmodelled.fundCount > 0 && (
+                            <>
+                              {result.bondsUnmodelled.fundCount}{" "}
+                              {result.bondsUnmodelled.fundCount === 1 ? "fund" : "funds"} left out of the rate move:
+                              not confirmed as a bond fund, so no duration is assumed.{" "}
+                            </>
+                          )}
+                        </PrivateText>
                         No figure is estimated for them.
                       </p>
                       <div className="space-y-1">

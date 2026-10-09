@@ -572,3 +572,147 @@ describe("formatVanguardAnomaliesBlock", () => {
     expect(md.endsWith("\n")).toBe(true);
   });
 });
+
+// ─── Scope + completed-session rulings (2026-10-08) ───────────────────────────
+
+import { resolveTradingDayPair, latestCompletedSession } from "@/lib/digest/anomalies";
+
+describe("computeAnomalies: scoped to the caller's accounts", () => {
+  /** A name that clears both gates on the 2026-05-07 → 2026-05-08 pair. */
+  function seedMover(symbol: string): number {
+    const id = seedSecurity(symbol);
+    seedPrice(id, "2026-05-07", 100);
+    seedPrice(id, "2026-05-08", 110);
+    seedBeta(id, 1.0, 1.0);
+    return id;
+  }
+
+  it("evaluates only the accounts it is given", () => {
+    seedSpy(400, 400);
+    const vanguard = seedAccount("Vanguard Taxable");
+    const ibkr = seedAccount("IBKR Margin");
+    seedHolding(vanguard, seedMover("ZZA"));
+    seedHolding(ibkr, seedMover("ZZB"));
+
+    expect(computeAnomalies(db, { accountIds: [ibkr] }).map((f) => f.symbol)).toEqual(["ZZB"]);
+    expect(computeAnomalies(db, { accountIds: [vanguard] }).map((f) => f.symbol)).toEqual(["ZZA"]);
+    // The default (email) universe is still Vanguard non-Roth only.
+    expect(computeAnomalies(db).map((f) => f.symbol)).toEqual(["ZZA"]);
+  });
+
+  it("uses every account of a multi-account scope, never just the first id", () => {
+    seedSpy(400, 400);
+    const a = seedAccount("IBKR Margin");
+    const b = seedAccount("Vanguard Roth IRA");
+    seedHolding(a, seedMover("ZZA"));
+    seedHolding(b, seedMover("ZZB"));
+
+    expect(computeAnomalies(db, { accountIds: [a, b] }).map((f) => f.symbol).sort()).toEqual([
+      "ZZA",
+      "ZZB",
+    ]);
+  });
+
+  it("works for an IBKR-only scope when no Vanguard account exists at all", () => {
+    db.prepare("DELETE FROM accounts").run();
+    seedSpy(400, 400);
+    const ibkr = seedAccount("IBKR Margin");
+    seedHolding(ibkr, seedMover("ZZB"));
+
+    expect(computeAnomalies(db)).toEqual([]);
+    expect(computeAnomalies(db, { accountIds: [ibkr] }).map((f) => f.symbol)).toEqual(["ZZB"]);
+  });
+
+  it("an empty account list evaluates nothing (it never falls back to the Vanguard default)", () => {
+    seedSpy(400, 400);
+    seedHolding(seedAccount("Vanguard Taxable"), seedMover("ZZA"));
+    expect(computeAnomalies(db, { accountIds: [] })).toEqual([]);
+  });
+
+  it("a scoped call reads the current book; the default universe keeps a closed position", () => {
+    seedSpy(400, 400);
+    const vanguard = seedAccount("Vanguard Taxable");
+    const sold = seedMover("ZZA");
+    seedHolding(vanguard, sold, "2026-04-30");
+    // The closed-position reconciler's tombstone: a later zero-quantity row.
+    db.prepare(
+      `INSERT INTO holdings (account_id, security_id, quantity, as_of_date, source_key)
+       VALUES (?, ?, 0, '2026-05-08', 'test:tombstone')`
+    ).run(vanguard, sold);
+    seedHolding(vanguard, seedMover("ZZB"), "2026-05-08");
+
+    expect(computeAnomalies(db, { accountIds: [vanguard] }).map((f) => f.symbol)).toEqual(["ZZB"]);
+    expect(computeAnomalies(db).map((f) => f.symbol).sort()).toEqual(["ZZA", "ZZB"]);
+  });
+});
+
+describe("completed sessions only", () => {
+  // 2026-10-07 is a Wednesday.
+  const MORNING = new Date("2026-10-07T10:00:00-04:00");
+  const AFTER_CLOSE = new Date("2026-10-07T16:30:00-04:00");
+
+  function seedThreeSessions(): number {
+    const spy = seedSecurity("SPY", "SPDR S&P 500 ETF");
+    seedPrice(spy, "2026-10-05", 400);
+    seedPrice(spy, "2026-10-06", 400);
+    seedPrice(spy, "2026-10-07", 400);
+    return spy;
+  }
+
+  it("resolveTradingDayPair with no option is unchanged: an intraday row dated today is the latest", () => {
+    seedThreeSessions();
+    expect(resolveTradingDayPair(db)).toEqual({ latest: "2026-10-07", prior: "2026-10-06" });
+    expect(resolveTradingDayPair(db, { now: MORNING })).toEqual({
+      latest: "2026-10-07",
+      prior: "2026-10-06",
+    });
+  });
+
+  it("completedOnly ignores a row dated today at 10:00 ET", () => {
+    seedThreeSessions();
+    expect(resolveTradingDayPair(db, { completedOnly: true, now: MORNING })).toEqual({
+      latest: "2026-10-06",
+      prior: "2026-10-05",
+    });
+  });
+
+  it("completedOnly uses the row dated today at 16:30 ET", () => {
+    seedThreeSessions();
+    expect(resolveTradingDayPair(db, { completedOnly: true, now: AFTER_CLOSE })).toEqual({
+      latest: "2026-10-07",
+      prior: "2026-10-06",
+    });
+  });
+
+  it("completedOnly leaves a pair of earlier sessions alone", () => {
+    seedSpy(400, 401);
+    expect(resolveTradingDayPair(db, { completedOnly: true, now: MORNING })).toEqual({
+      latest: "2026-05-08",
+      prior: "2026-05-07",
+    });
+  });
+
+  it("latestCompletedSession: prior trading day before the close, today after it", () => {
+    expect(latestCompletedSession(MORNING)).toBe("2026-10-06");
+    expect(latestCompletedSession(AFTER_CLOSE)).toBe("2026-10-07");
+  });
+
+  it("computeAnomalies does not flag an intraday move until the session has closed", () => {
+    seedThreeSessions();
+    const vanguard = seedAccount("Vanguard Taxable");
+    const id = seedSecurity("ZZA");
+    seedPrice(id, "2026-10-05", 100);
+    seedPrice(id, "2026-10-06", 100);
+    seedPrice(id, "2026-10-07", 110);
+    seedBeta(id, 1.0, 1.0);
+    seedHolding(vanguard, id, "2026-10-06");
+
+    // Default (email) universe and a scoped (card) call both wait.
+    expect(computeAnomalies(db, { now: MORNING })).toEqual([]);
+    expect(computeAnomalies(db, { accountIds: [vanguard], now: MORNING })).toEqual([]);
+    expect(computeAnomalies(db, { now: AFTER_CLOSE }).map((f) => f.symbol)).toEqual(["ZZA"]);
+    expect(
+      computeAnomalies(db, { accountIds: [vanguard], now: AFTER_CLOSE }).map((f) => f.symbol)
+    ).toEqual(["ZZA"]);
+  });
+});

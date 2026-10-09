@@ -75,8 +75,8 @@ describe("LevelsPanel reactivate last-fired handling (source pin)", () => {
     expect(src).not.toMatch(/actionVisibility\.show(Pause|Reactivate)\s*&&/);
     expect(src).not.toMatch(/const showPause\s*=/);
     expect(src).not.toMatch(/const showReactivate\s*=/);
-    expect(src).toMatch(/const \{ unarmedReview, showPause, showReactivate, showRequeue \}\s*=\s*levelActionVisibility\(l\)/);
-    expect(src).toMatch(/const \{ showPause, showReactivate, showRequeue \}\s*=\s*levelActionVisibility\(l\)/);
+    expect(src).toMatch(/const \{ unarmedReview, showPause, showReactivate, showRequeue, showRejectedChip \}\s*=\s*levelActionVisibility\(l\)/);
+    expect(src).toMatch(/const \{ showPause, showReactivate, showRequeue, showRejectedChip \}\s*=\s*levelActionVisibility\(l\)/);
   });
 
   it("alerted-today comes from the server fact, not from the browser's local date", () => {

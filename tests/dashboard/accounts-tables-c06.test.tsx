@@ -110,7 +110,7 @@ describe("option trade chips follow cash direction (option 1)", () => {
   it("both chips (desktop cell and phone tag) read the one function", () => {
     const src = readFileSync("app/dashboard/components/TransactionHistory.tsx", "utf8");
     const body = src.slice(anchorIndex(src, "<tbody>"));
-    expect(body.match(/transactionTypeChipClass\(txn\.type\)/g)!.length).toBe(2);
+    expect(body.match(/transactionTypeChipClass\(transactionDisplayType\(txn\.type, txn\.notes\)\)/g)!.length).toBe(2);
     expect(body).not.toContain("TYPE_STYLES[");
   });
 });

@@ -152,6 +152,10 @@ interface EnrichedAlert extends LevelAlert {
  *      level; for an MA level with no usable history it is the only number
  *      left, and it too is captioned.
  */
+/** Ask for one alert's advice. `regenerate` replaces advice already stored
+ *  (one AI call). Resolves to null on success, or the reason it failed. */
+type SuggestHandler = (id: number, opts?: { regenerate?: boolean }) => Promise<string | null>;
+
 function alertThresholdView(alert: EnrichedAlert): {
   value: number;
   caption: string | null;
@@ -840,16 +844,21 @@ function AlertsPageInner() {
   // One alert's suggestion, asked for from its own row. Resolves to null on
   // success (the refreshed row then carries the text) or to the reason it
   // failed, which the row shows next to a Retry button.
-  async function suggestOne(alertId: number): Promise<string | null> {
+  async function suggestOne(
+    alertId: number,
+    opts: { regenerate?: boolean } = {},
+  ): Promise<string | null> {
     let res: Response;
     try {
-      res = await apiFetch("/api/alerts/suggest", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ alertId }),
-      });
+      res = opts.regenerate
+        ? await apiFetch(`/api/alerts/suggest?id=${alertId}`, { method: "POST" })
+        : await apiFetch("/api/alerts/suggest", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ alertId }),
+          });
     } catch {
-      return networkFailureMessage("get a suggestion");
+      return networkFailureMessage(opts.regenerate ? "regenerate the advice" : "get a suggestion");
     }
     const result = await readMutationResult(res);
     if (!result.ok) return result.message;
@@ -1623,7 +1632,7 @@ function SplitPendingStream({
   items: StreamItem[];
   onRespond: (id: number, response: AlertResponse, note?: string) => void;
   onRestore: (id: number) => void;
-  onSuggest: (id: number) => Promise<string | null>;
+  onSuggest: SuggestHandler;
   onDecideReview: (id: number, status: LevelReviewStatus, force?: boolean) => void;
   forceConfirm: ForceConfirmMap;
   onCancelConfirm: (id: number) => void;
@@ -1805,7 +1814,7 @@ function AlertRow({
   /** Return an Acted / Ignored / Dismissed alert to the Pending inbox. */
   onRestore: (id: number) => void;
   /** Ask for this one alert's AI suggestion. Null = stored; a string = why not. */
-  onSuggest: (id: number) => Promise<string | null>;
+  onSuggest: SuggestHandler;
 }) {
   // A restored alert keeps the note logged with its first response, so the
   // form starts from it: logging again does not silently drop it.
@@ -1824,6 +1833,16 @@ function AlertRow({
   function cancelNote() {
     setNoteOpen(false);
     setNote(keptNote);
+  }
+
+  async function regenerateAdvice() {
+    setSuggestBusy(true);
+    setSuggestError(null);
+    try {
+      setSuggestError(await onSuggest(alert.id, { regenerate: true }));
+    } finally {
+      setSuggestBusy(false);
+    }
   }
 
   async function askSuggestion() {
@@ -1862,6 +1881,8 @@ function AlertRow({
   // suggestion can still inform a decision: pending and ignored alerts.
   const canAskSuggestion =
     !alert.suggested_action && (isPending || alert.user_response === "ignored");
+  // Stored advice can be rewritten while the alert is still open to a decision.
+  const canRegenerate = isPending || alert.user_response === "ignored";
   const responseLabel: Record<AlertResponse, { label: string; color: string }> = {
     pending: { label: "Pending", color: "text-gold-ink" },
     acted: { label: "Acted", color: "text-emerald-400" },
@@ -1953,6 +1974,21 @@ function AlertRow({
             <div className="mt-2 px-3 py-1.5 rounded border border-gold/20 bg-gold/5 text-[11px] text-gold-ink">
               {/* AI prose embeds portfolio figures at generation time — mask the whole block */}
               <PrivateText>{alert.suggested_action}</PrivateText>
+            </div>
+          )}
+
+          {alert.suggested_action && canRegenerate && (
+            <div className="mt-1 flex items-center gap-2 flex-wrap text-[11px] text-ink-dim">
+              {suggestError && <span>{`Advice not refreshed. ${suggestError}`}</span>}
+              <button
+                onClick={regenerateAdvice}
+                disabled={suggestBusy}
+                className="relative px-2 py-0.5 rounded border border-edge text-ink-dim hover:text-ink disabled:opacity-50 pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2.5 pointer-coarse:after:-inset-x-0.5"
+                title="Makes one AI call to rewrite this advice against the threshold shown on the card. The current advice stays if the request fails."
+              >
+                {suggestBusy ? "Thinking..." : "Regenerate advice"}
+              </button>
+              <span className="text-ink-faint">Makes one AI call.</span>
             </div>
           )}
 

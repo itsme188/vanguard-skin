@@ -1,6 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
-import { generateMacroThemes, MacroThemesParseError, type MacroTheme } from "@/lib/compute/macro-themes";
+import {
+  generateMacroThemes,
+  MACRO_NONE_VERIFIED_MESSAGE,
+  MacroThemesParseError,
+  type MacroTheme,
+} from "@/lib/compute/macro-themes";
 import { getCachedMacroThemes } from "@/lib/queries/analysis-macro-themes";
 import { mondayOf } from "@/lib/calendar/date-utils";
 
@@ -111,6 +116,27 @@ export async function POST(req: NextRequest) {
   const week = mondayOf(new Date().toISOString().slice(0, 10));
   try {
     const r = await generateMacroThemes(db, { scope, weekOf: week, forceRegen: true });
+    if (r.noneVerified) {
+      // The model answered, but every theme failed the citation check, so
+      // nothing was cached. That is neither a success nor the under-threshold
+      // verdict (an empty themes array would read as one). The paid call was
+      // made, so it gets the short failure cooldown; the 24h claim is released
+      // so the next attempt is not a day away.
+      lastMacroRegenAt.delete(scope);
+      lastMacroFailAt.set(scope, now);
+      console.warn(
+        `[macro-themes] scope=${scope}: all ${r.droppedThemes ?? 0} generated themes failed the citation check; nothing cached`,
+      );
+      return NextResponse.json(
+        {
+          success: false,
+          error: MACRO_NONE_VERIFIED_MESSAGE,
+          reason: "none_verified",
+          droppedThemes: r.droppedThemes ?? 0,
+        },
+        { status: 422 },
+      );
+    }
     // A success supersedes any earlier failure for this scope.
     lastMacroFailAt.delete(scope);
     return NextResponse.json({ success: true, ...r });

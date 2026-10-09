@@ -2,7 +2,11 @@ import { describe, it, expect, beforeEach } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import { confirmEarningsDate } from "@/lib/mutations/confirm-earnings-date";
-import { addDays } from "@/lib/calendar/date-utils";
+import { addDays, mondayOf, todayET } from "@/lib/calendar/date-utils";
+import { insertCalendarEvent } from "@/lib/mutations/calendar";
+import { reconcileEarningsDates } from "@/lib/calendar/reconcile-earnings-dates";
+import { upsertBogey } from "@/lib/mutations/earnings-bogeys";
+import { armWorksheet } from "@/lib/mutations/earnings-worksheet-flags";
 import { upsertSymbolReleaseTime } from "@/lib/earnings/wire-times";
 import { writeArmedEventsOutboxRow } from "@/lib/earnings/cloud-outbox";
 import { readArmedGeneration } from "@/lib/earnings/armed-events-projection";
@@ -323,5 +327,342 @@ describe("confirmEarningsDate far-future guard", () => {
     confirmEarningsDate(db, { symbol: "NVDA", confirmedDate: "2026-06-12", today: "2026-06-08" });
     expect(manualRow().event_time).toBeNull();
     expect(manualRow().release_time).toBe("16:15");
+  });
+});
+
+// ── Owner ruling 2026-10-08: confirming a DIFFERENT date moves the row ──
+// A symbol with one showing hand-entered row for the upcoming print, confirmed
+// on another date, used to end with TWO hand-entered rows (the upsert keys on
+// the date). The existing row now moves, keeping its id and everything
+// attached to it. Dates derive from todayET() because armWorksheet reads the
+// real clock for its armed-events projection.
+describe("confirmEarningsDate moves the existing hand-entered row", () => {
+  const today = todayET();
+  const dateA = addDays(today, 10);
+  const dateB = addDays(today, 12);
+
+  function addManual(date: string, eventTime = "AMC", releaseTime?: string): number {
+    return insertCalendarEvent(db, {
+      symbol: "NVDA",
+      event_date: date,
+      event_time: eventTime,
+      release_time: releaseTime,
+      week_of: mondayOf(date),
+    }).id;
+  }
+  interface ManualRow {
+    id: number;
+    event_date: string;
+    week_of: string;
+    source_key: string;
+    date_status: string | null;
+    event_time: string | null;
+    release_time: string | null;
+    superseded: number;
+  }
+  const manualRows = (): ManualRow[] =>
+    db
+      .prepare(
+        `SELECT id, event_date, week_of, source_key, date_status, event_time, release_time,
+                COALESCE(superseded, 0) AS superseded
+           FROM calendar_events WHERE source = 'manual' AND symbol = 'NVDA' ORDER BY id`,
+      )
+      .all() as ManualRow[];
+  const showing = () => manualRows().filter((r) => r.superseded === 0);
+
+  it("manual row on A, feed row on B, confirm B: one showing manual row, same id, on B", () => {
+    const manualId = addManual(dateA, "AMC", "16:05");
+    const feedId = seedSync("finnhub", dateB);
+
+    const res = confirmEarningsDate(db, { symbol: "NVDA", confirmedDate: dateB, confirmedTime: "amc", today });
+
+    expect(res).toEqual({ ok: true, movedEventId: manualId });
+    expect(manualRows()).toEqual([
+      {
+        id: manualId,
+        event_date: dateB,
+        week_of: mondayOf(dateB),
+        source_key: `manual:NVDA:${dateB}:earnings`,
+        date_status: "user_confirmed",
+        event_time: "AMC",
+        release_time: "16:05", // typed clock kept: same slot
+        superseded: 0,
+      },
+    ]);
+    const feed = db.prepare("SELECT superseded FROM calendar_events WHERE id = ?").get(feedId) as { superseded: number };
+    expect(feed.superseded).toBe(1);
+  });
+
+  it("picking the other slot on a move drops the typed clock for that slot's default", () => {
+    const manualId = addManual(dateA, "AMC", "16:05");
+    confirmEarningsDate(db, { symbol: "NVDA", confirmedDate: dateB, confirmedTime: "bmo", today });
+    expect(showing()).toHaveLength(1);
+    expect(showing()[0]).toMatchObject({ id: manualId, event_date: dateB, event_time: "BMO", release_time: "08:00" });
+  });
+
+  it("bogeys and the arm flag stay attached to the moved row", () => {
+    const manualId = addManual(dateA);
+    upsertBogey(db, { event_id: manualId, source: "manual", eps_consensus: 1.5 });
+    armWorksheet(db, manualId);
+    seedSync("finnhub", dateB);
+
+    confirmEarningsDate(db, { symbol: "NVDA", confirmedDate: dateB, confirmedTime: "amc", today });
+
+    expect(showing().map((r) => r.id)).toEqual([manualId]);
+    const bogeys = db.prepare("SELECT event_id, eps_consensus FROM earnings_bogeys").all();
+    expect(bogeys).toEqual([{ event_id: manualId, eps_consensus: 1.5 }]);
+    const flags = db.prepare("SELECT event_id FROM earnings_worksheet_flags").all();
+    expect(flags).toEqual([{ event_id: manualId }]);
+  });
+
+  it("moving an armed row mints exactly one armed-events generation carrying the new date", () => {
+    const manualId = addManual(dateA);
+    armWorksheet(db, manualId);
+    const beforeGeneration = readArmedGeneration(db);
+
+    confirmEarningsDate(db, { symbol: "NVDA", confirmedDate: dateB, confirmedTime: "amc", today });
+
+    expect(readArmedGeneration(db)).toBe(beforeGeneration + 1);
+    const payload = JSON.parse(
+      (db.prepare(`SELECT payload_json FROM cloud_outbox ORDER BY generation DESC LIMIT 1`).get() as {
+        payload_json: string;
+      }).payload_json,
+    ) as { entries: Array<{ eventId: number; eventDate: string; sourceKey: string; removed?: boolean }> };
+    expect(payload.entries).toHaveLength(1);
+    expect(payload.entries[0]).toMatchObject({
+      eventId: manualId,
+      eventDate: dateB,
+      sourceKey: `manual:NVDA:${dateB}:earnings`,
+    });
+    expect(payload.entries[0].removed).toBeFalsy();
+  });
+
+  it("a reported manual row is a past print: never moved", () => {
+    const reportedId = addManual(dateA);
+    db.prepare("UPDATE calendar_events SET actual_value = 'EPS 1.50' WHERE id = ?").run(reportedId);
+
+    const res = confirmEarningsDate(db, { symbol: "NVDA", confirmedDate: dateB, confirmedTime: "amc", today });
+
+    expect(res).toEqual({ ok: true });
+    const rows = manualRows();
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toMatchObject({ id: reportedId, event_date: dateA });
+    expect(rows[1]).toMatchObject({ event_date: dateB, date_status: "user_confirmed" });
+  });
+
+  it("a manual row dated before today is a past print: never moved", () => {
+    const pastId = addManual(addDays(today, -3));
+    const res = confirmEarningsDate(db, { symbol: "NVDA", confirmedDate: dateB, confirmedTime: "amc", today });
+    expect(res).toEqual({ ok: true });
+    expect(manualRows().find((r) => r.id === pastId)?.event_date).toBe(addDays(today, -3));
+    expect(manualRows()).toHaveLength(2);
+  });
+
+  it("a manual row more than 45 days from the confirmed date is another print: never moved", () => {
+    const farId = addManual(addDays(dateB, 46));
+    const res = confirmEarningsDate(db, { symbol: "NVDA", confirmedDate: dateB, confirmedTime: "amc", today });
+    expect(res).toEqual({ ok: true });
+    expect(manualRows().find((r) => r.id === farId)?.event_date).toBe(addDays(dateB, 46));
+    expect(manualRows()).toHaveLength(2);
+  });
+
+  it("a row exactly 45 days away still moves", () => {
+    const id = addManual(addDays(dateB, 45));
+    const res = confirmEarningsDate(db, { symbol: "NVDA", confirmedDate: dateB, confirmedTime: "amc", today });
+    expect(res).toEqual({ ok: true, movedEventId: id });
+    expect(manualRows()).toHaveLength(1);
+  });
+
+  it("two future manual rows: no move, a notice, and today's behaviour", () => {
+    const first = addManual(dateA);
+    const second = addManual(addDays(dateA, 1));
+
+    const res = confirmEarningsDate(db, { symbol: "NVDA", confirmedDate: dateB, confirmedTime: "amc", today });
+
+    expect(res.ok).toBe(true);
+    if (res.ok) expect(res.notice).toMatch(/several hand-entered dates/i);
+    const rows = manualRows();
+    expect(rows).toHaveLength(3);
+    expect(rows.find((r) => r.id === first)?.event_date).toBe(dateA);
+    expect(rows.find((r) => r.id === second)?.event_date).toBe(addDays(dateA, 1));
+    expect(rows.filter((r) => r.event_date === dateB)).toHaveLength(1);
+  });
+
+  it("another symbol's hand-entered row is never moved", () => {
+    db.prepare(
+      "INSERT INTO securities (symbol, name, security_type, asset_class, multiplier) VALUES ('ZZA','Zed A','stock','equity',1)",
+    ).run();
+    const other = insertCalendarEvent(db, { symbol: "ZZA", event_date: dateA, week_of: mondayOf(dateA) }).id;
+    confirmEarningsDate(db, { symbol: "NVDA", confirmedDate: dateB, confirmedTime: "amc", today });
+    const row = db.prepare("SELECT symbol, event_date FROM calendar_events WHERE id = ?").get(other);
+    expect(row).toEqual({ symbol: "ZZA", event_date: dateA });
+  });
+
+  it("a hidden hand-entered row on another date is not moved", () => {
+    const hidden = addManual(dateA);
+    db.prepare("UPDATE calendar_events SET superseded = 1 WHERE id = ?").run(hidden);
+    const res = confirmEarningsDate(db, { symbol: "NVDA", confirmedDate: dateB, confirmedTime: "amc", today });
+    expect(res).toEqual({ ok: true });
+    expect(manualRows().find((r) => r.id === hidden)?.event_date).toBe(dateA);
+  });
+
+  describe("a hand-entered row already sits on the confirmed date", () => {
+    it("the confirmed row is updated in place; the other row's bogeys and arm move over and the emptied row is deleted", () => {
+      const oldId = addManual(dateA);
+      const keptId = addManual(dateB);
+      upsertBogey(db, { event_id: oldId, source: "manual", eps_consensus: 1.5 });
+      armWorksheet(db, oldId);
+
+      const res = confirmEarningsDate(db, { symbol: "NVDA", confirmedDate: dateB, confirmedTime: "amc", today });
+
+      expect(res).toEqual({ ok: true, deletedEventId: oldId });
+      // Exactly one hand-entered row for the symbol, showing or hidden.
+      expect(manualRows().map((r) => r.id)).toEqual([keptId]);
+      expect(manualRows()[0]).toMatchObject({ event_date: dateB, date_status: "user_confirmed", superseded: 0 });
+      expect(db.prepare("SELECT event_id, eps_consensus FROM earnings_bogeys").all()).toEqual([
+        { event_id: keptId, eps_consensus: 1.5 },
+      ]);
+      expect(db.prepare("SELECT event_id FROM earnings_worksheet_flags").all()).toEqual([{ event_id: keptId }]);
+    });
+
+    it("a following reconcile pass still leaves exactly one row", () => {
+      addManual(dateA);
+      const keptId = addManual(dateB);
+      confirmEarningsDate(db, { symbol: "NVDA", confirmedDate: dateB, confirmedTime: "amc", today });
+
+      const pass = reconcileEarningsDates(db, { today });
+
+      expect(pass.restored).toEqual([]);
+      expect(manualRows().map((r) => r.id)).toEqual([keptId]);
+      expect(showing()).toHaveLength(1);
+    });
+
+    it("the outbox hears that the armed row moved to the kept row and that the old id is gone", () => {
+      const oldId = addManual(dateA);
+      const keptId = addManual(dateB);
+      armWorksheet(db, oldId);
+      const beforeGeneration = readArmedGeneration(db);
+
+      confirmEarningsDate(db, { symbol: "NVDA", confirmedDate: dateB, confirmedTime: "amc", today });
+
+      expect(readArmedGeneration(db)).toBe(beforeGeneration + 1);
+      const payload = JSON.parse(
+        (db.prepare(`SELECT payload_json FROM cloud_outbox ORDER BY generation DESC LIMIT 1`).get() as {
+          payload_json: string;
+        }).payload_json,
+      ) as {
+        entries: Array<{ eventId: number; eventDate: string; removed?: boolean }>;
+        removedEventIds: Array<{ id: number; eventDate: string }>;
+      };
+      const live = payload.entries.filter((e) => !e.removed);
+      expect(live).toHaveLength(1);
+      expect(live[0]).toMatchObject({ eventId: keptId, eventDate: dateB });
+      expect(payload.removedEventIds.map((r) => ({ id: r.id, eventDate: r.eventDate }))).toEqual([
+        { id: oldId, eventDate: dateA },
+      ]);
+    });
+
+    it("an unarmed pair still tells the outbox the old id is gone", () => {
+      const oldId = addManual(dateA);
+      addManual(dateB);
+      confirmEarningsDate(db, { symbol: "NVDA", confirmedDate: dateB, confirmedTime: "amc", today });
+      const row = db.prepare(`SELECT payload_json FROM cloud_outbox ORDER BY generation DESC LIMIT 1`).get() as
+        | { payload_json: string }
+        | undefined;
+      expect(row).toBeDefined();
+      const payload = JSON.parse(row!.payload_json) as { removedEventIds: Array<{ id: number }> };
+      expect(payload.removedEventIds.map((r) => r.id)).toEqual([oldId]);
+    });
+
+    it("a record still on the old row keeps it: hidden, not deleted, and the result says so", () => {
+      const oldId = addManual(dateA);
+      const keptId = addManual(dateB);
+      // A preview sent for the old date long before the confirmed print: the
+      // fold leaves it behind (it is no promise about the confirmed date).
+      db.prepare(
+        `INSERT INTO earnings_emails (event_id, phase, recipient, sent_at)
+         VALUES (?, 'preview', 'desk@example.com', ?)`,
+      ).run(oldId, `${addDays(today, -20)} 12:00:00`);
+      upsertBogey(db, { event_id: oldId, source: "manual", eps_consensus: 1.5 });
+
+      const res = confirmEarningsDate(db, { symbol: "NVDA", confirmedDate: dateB, confirmedTime: "amc", today });
+
+      expect(res.ok).toBe(true);
+      if (!res.ok) return;
+      expect(res.foldedEventId).toBe(oldId);
+      expect(res.deletedEventId).toBeUndefined();
+      expect(res.note).toMatch(/earnings_emails/);
+      // The user is told, in plain words, that the old entry is still there
+      // and why (the next reconcile pass shows it again).
+      expect(res.notice).toBe(
+        `NVDA still has an entry on ${dateA} because a preview email was already sent for it. Remove that entry if you no longer want it.`,
+      );
+      // No internal table name reaches the user.
+      expect(res.notice).not.toMatch(/earnings_emails|_/);
+      expect(manualRows().find((r) => r.id === oldId)).toMatchObject({ event_date: dateA, superseded: 1 });
+      expect(showing().map((r) => r.id)).toEqual([keptId]);
+      // The preview is still on file; the bogey moved.
+      expect(db.prepare("SELECT event_id FROM earnings_emails").all()).toEqual([{ event_id: oldId }]);
+      expect(db.prepare("SELECT event_id FROM earnings_bogeys").all()).toEqual([{ event_id: keptId }]);
+    });
+
+    it("a recorded preview SKIP on the old row keeps it too, and the notice does not claim an email was sent", () => {
+      const oldId = addManual(dateA);
+      addManual(dateB);
+      db.prepare(
+        `INSERT INTO earnings_email_skips (event_id, phase, skipped_at)
+         VALUES (?, 'preview', ?)`,
+      ).run(oldId, `${addDays(today, -20)} 12:00:00`);
+
+      const res = confirmEarningsDate(db, { symbol: "NVDA", confirmedDate: dateB, confirmedTime: "amc", today });
+
+      expect(res.ok).toBe(true);
+      if (!res.ok) return;
+      expect(res.foldedEventId).toBe(oldId);
+      expect(res.notice).toBe(
+        `NVDA still has an entry on ${dateA} because other records are still attached to it. Remove that entry if you no longer want it.`,
+      );
+    });
+
+    it("the fold-and-delete path returns no notice", () => {
+      addManual(dateA);
+      addManual(dateB);
+      const res = confirmEarningsDate(db, { symbol: "NVDA", confirmedDate: dateB, confirmedTime: "amc", today });
+      expect(res.ok).toBe(true);
+      if (!res.ok) return;
+      expect(res.deletedEventId).toBeDefined();
+      expect(res.notice).toBeUndefined();
+      expect(res.note).toBeUndefined();
+    });
+
+    it("the plain move returns no notice", () => {
+      const manualId = addManual(dateA);
+      const res = confirmEarningsDate(db, { symbol: "NVDA", confirmedDate: dateB, confirmedTime: "amc", today });
+      expect(res).toEqual({ ok: true, movedEventId: manualId });
+    });
+
+    it("a HIDDEN row on the confirmed date comes back and takes the print (no unique-key failure)", () => {
+      const oldId = addManual(dateA);
+      const keptId = addManual(dateB);
+      db.prepare("UPDATE calendar_events SET superseded = 1 WHERE id = ?").run(keptId);
+
+      const res = confirmEarningsDate(db, { symbol: "NVDA", confirmedDate: dateB, confirmedTime: "amc", today });
+
+      expect(res).toEqual({ ok: true, deletedEventId: oldId });
+      expect(manualRows().map((r) => r.id)).toEqual([keptId]);
+      expect(showing().map((r) => r.id)).toEqual([keptId]);
+    });
+
+    it("with two other showing rows nothing is hidden and the notice is returned", () => {
+      const a = addManual(dateA);
+      const b = addManual(addDays(dateA, 1));
+      const keptId = addManual(dateB);
+
+      const res = confirmEarningsDate(db, { symbol: "NVDA", confirmedDate: dateB, confirmedTime: "amc", today });
+
+      expect(res.ok).toBe(true);
+      if (res.ok) expect(res.notice).toMatch(/several hand-entered dates/i);
+      expect(showing().map((r) => r.id).sort()).toEqual([a, b, keptId].sort());
+    });
   });
 });

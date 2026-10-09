@@ -37,16 +37,22 @@ import {
   SUPERSEDED_ACCEPT_CONFIRM_COPY,
   SUPERSEDED_CANDIDATE_CONFIRM_COPY,
   SUPERSEDED_CONFIRM_COPY,
+  basisNote,
   dropOutcomeMessage,
   fileToBase64,
   firstDroppedFile,
+  formatContractRange,
   goStatusText,
   ladderText,
+  lineSourceLabel,
   printStateLabel,
   promoteSummary,
+  recordHeaderText,
+  recordLineStatus,
+  recordLines,
   windowText,
 } from "./live-print/helpers";
-import type { PrepareStepWire, PrintStatusEntry } from "./hub-live/types";
+import type { PrepareStepWire, PrintRecordWire, PrintStatusEntry } from "./hub-live/types";
 
 interface AcceptResponse {
   success?: boolean;
@@ -525,6 +531,137 @@ export default function LivePrintRow({
         outputs={print.outputs}
         onChanged={onChanged}
         promote={promoteControl}
+      />
+    </div>
+  );
+}
+
+/**
+ * The promote control a read-only record hands to `PrintOutputs`.
+ *
+ * `PrintOutputs` always renders the promote button between its two output
+ * buttons, and promoting is a write the live sheet owns (it shares the accept
+ * route's three confirms). A record is read-only, so the control is permanently
+ * disabled and says why. A module constant, so its identity never changes
+ * between renders.
+ */
+const RECORD_PROMOTE_CONTROL = {
+  label: "Promote EPS+Rev",
+  disabled: true,
+  title: "The watch window has closed. This record is read-only.",
+  busy: false,
+  onClick: () => undefined,
+};
+
+/**
+ * The read-only record of a finished print (owner ruling, 2026-10-08).
+ *
+ * An armed row expanded after its print is over used to show the pre-window
+ * controls and nothing else, so the figures the desk accepted were unreachable.
+ * This shows them: one header line, the accepted (and machine-agreed) figures
+ * with their source and snippet, and the two output buttons.
+ *
+ * READ-ONLY by construction. It renders none of the live sheet's controls: no
+ * go press, no drop zone or drag handlers, no IR-page field, no accept or
+ * un-accept. The live sheet's own row component carries those buttons, so the
+ * table here is a plain one built from the same formatting helpers
+ * (`formatContractRange`, `basisNote`).
+ *
+ * Privacy: every figure here is the company's own reported number from a
+ * public press release, so it renders plain. The desk's bogeys are not shown.
+ *
+ * Kept at the END of this file: a source-pin test slices from this function to
+ * the end and asserts none of the live controls appear in it.
+ */
+export function PrintRecordView({
+  record,
+  dateLabel,
+  onChanged,
+}: {
+  record: PrintRecordWire;
+  /** The print's event date in desk language ("Tue, Jan 6"), or null. */
+  dateLabel: string | null;
+  /** Re-reads the record after an output button did its work. */
+  onChanged: () => Promise<void>;
+}) {
+  const print = record.print;
+  if (!print) {
+    return (
+      <p className="mt-2 text-[12px] text-ink-dim">
+        No print was captured for this release. The watch window passed without a print being
+        opened for it.
+      </p>
+    );
+  }
+
+  const lines = recordLines(record.lines);
+
+  return (
+    <div className="mt-2">
+      <div className="flex items-baseline gap-2 flex-wrap mb-1.5">
+        <span className="font-mono font-medium text-ink" style={{ fontSize: "15px" }}>
+          {print.symbol}
+        </span>
+        <p className="text-[12px] font-mono text-ink-dim">{recordHeaderText(print.state, dateLabel)}</p>
+      </div>
+      <p className="text-[11px] text-ink-dim mb-2">
+        Read-only record. Accepting and promoting closed with the window.
+      </p>
+
+      {lines.length === 0 ? (
+        <p className="text-[12px] text-ink-dim">
+          No figures were accepted on this print
+          {record.lines.length === 0
+            ? ", and its sheet has no lines."
+            : `. Its sheet has ${record.lines.length} line${record.lines.length === 1 ? "" : "s"}, none accepted or agreed.`}
+        </p>
+      ) : (
+        <ScrollFade>
+          <table className="w-full text-[13px]" style={{ borderCollapse: "collapse" }}>
+            <thead>
+              <tr className="text-ink-faint font-mono uppercase" style={{ fontSize: "10px", letterSpacing: "0.14em" }}>
+                <th className="text-left py-1.5 pr-3">Metric</th>
+                <th className="text-left py-1.5 pr-3">Reported</th>
+                <th className="text-left py-1.5 pr-3">Status</th>
+                <th className="text-left py-1.5 pr-3">Source</th>
+                <th className="text-left py-1.5">Snippet</th>
+              </tr>
+            </thead>
+            <tbody>
+              {lines.map((line) => {
+                const basis = basisNote(line.contract);
+                return (
+                  <tr key={line.metric_id} className="border-t border-edge">
+                    <td className="py-2 pr-3 align-top">
+                      <span className="text-ink">{line.contract.label}</span>
+                      {basis && <span className="ml-1.5 text-[10px] text-ink-faint uppercase">{basis}</span>}
+                      {line.contract.segment && (
+                        <span className="block text-[10px] text-ink-faint">{line.contract.segment}</span>
+                      )}
+                    </td>
+                    <td className="py-2 pr-3 align-top font-mono tabular-nums text-ink">
+                      {formatContractRange(line.contract, line.value, line.value_high)}
+                    </td>
+                    <td className="py-2 pr-3 align-top text-[12px] text-ink-dim">{recordLineStatus(line)}</td>
+                    <td className="py-2 pr-3 align-top text-[11px] font-mono text-ink-dim">
+                      {lineSourceLabel(line, record.documents)}
+                    </td>
+                    <td className="py-2 align-top text-[11px] text-ink-dim italic">
+                      {line.snippet ? `\u201c${line.snippet}\u201d` : "no snippet captured"}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </ScrollFade>
+      )}
+
+      <PrintOutputs
+        printId={print.printId}
+        outputs={record.outputs ?? undefined}
+        onChanged={onChanged}
+        promote={RECORD_PROMOTE_CONTROL}
       />
     </div>
   );

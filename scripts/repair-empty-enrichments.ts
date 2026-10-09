@@ -22,16 +22,19 @@
  * `processed_at IS NULL`). It never touches summary/key_themes/sentiment/
  * etc — those get overwritten naturally once the retry succeeds.
  *
- * Selector (ALL must hold):
+ * Selector (widened 2026-10-08, owner ruling; ALL must hold):
  *   - summary IS NULL or ''
  *   - key_themes parses to an empty JSON array (or is NULL)
- *   - mentioned_symbols parses to an empty JSON array (or is NULL)
- *   - portfolio_relevance IS NULL or ''
- *   - sentiment = 'neutral' AND sentiment_score = 0 (exact — the bug's
- *     lockstep defaults, not a genuine neutral read that happens to score
- *     dead-center)
  *   - processed_at IS NOT NULL (nothing to repair on an already-unprocessed
  *     row)
+ *   - relevant (COALESCE(is_relevant, 1) = 1): a filtered row is never picked
+ *     up by the enrich queue, so clearing it would repair nothing
+ * Symbols, relevance prose and sentiment are NOT part of the selector: cloud-
+ * fetched rows carry subject-backstop symbols and a model-stamped sentiment
+ * yet are just as empty. Same definition as lib/research/empty-enrichment.ts.
+ *
+ * Re-enrichment costs paid AI calls (at most 20 articles per pass, up to
+ * MAX_ENRICH_ATTEMPTS attempts each); the report prints that bound.
  *
  * Dry-run by default:  npx tsx scripts/repair-empty-enrichments.ts
  * Apply:               npx tsx scripts/repair-empty-enrichments.ts --apply
@@ -42,6 +45,8 @@
  * 0 rows and writes nothing.
  */
 import type Database from "better-sqlite3";
+import { isEmptyEnrichment } from "@/lib/research/empty-enrichment";
+import { MAX_ENRICH_ATTEMPTS } from "@/lib/gmail/enrichment-failure";
 
 // ─── Selector (pure, unit-tested) ──────────────────────────────────
 
@@ -55,42 +60,25 @@ interface RawRow {
   subject: string;
   summary: string | null;
   key_themes: string | null;
-  mentioned_symbols: string | null;
-  portfolio_relevance: string | null;
-  sentiment: string | null;
-  sentiment_score: number | null;
   processed_at: string | null;
+  is_relevant: number | null;
 }
 
-function isEmptyString(v: string | null): boolean {
-  return v == null || v.trim() === "";
-}
-
-/** True when `v` is NULL or parses to a JSON array with zero elements.
- *  Malformed JSON is never treated as "empty" — that's a different defect
- *  (a mangled string), not this bug's signature, so it's left untouched
- *  rather than risk a false-positive match. */
-function isEmptyJsonArray(v: string | null): boolean {
-  if (v == null) return true;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(v);
-  } catch {
-    return false;
-  }
-  return Array.isArray(parsed) && parsed.length === 0;
-}
-
-/** The exact all-defaults signature the bug produced — see file header. */
+/** The empty-enrichment signature (shared definition) on a processed,
+ *  relevant row — see file header. */
 function isEmptyEnrichmentRow(row: RawRow): boolean {
   return (
     row.processed_at != null &&
-    isEmptyString(row.summary) &&
-    isEmptyJsonArray(row.key_themes) &&
-    isEmptyJsonArray(row.mentioned_symbols) &&
-    isEmptyString(row.portfolio_relevance) &&
-    row.sentiment === "neutral" &&
-    row.sentiment_score === 0
+    (row.is_relevant ?? 1) === 1 &&
+    isEmptyEnrichment(row.summary, row.key_themes)
+  );
+}
+
+/** Plain-words bound on the paid AI calls the repaired rows will cost. */
+export function reEnrichmentCostNote(rowCount: number): string {
+  return (
+    `Re-enrichment makes paid AI calls: ${rowCount} row(s), at most 20 per pass, ` +
+    `up to ${MAX_ENRICH_ATTEMPTS} attempts each (up to ${rowCount * MAX_ENRICH_ATTEMPTS} calls in the worst case).`
   );
 }
 
@@ -98,8 +86,7 @@ function isEmptyEnrichmentRow(row: RawRow): boolean {
 export function findEmptyEnrichmentRows(db: Database.Database): EmptyEnrichmentRow[] {
   const rows = db
     .prepare(
-      `SELECT id, subject, summary, key_themes, mentioned_symbols,
-              portfolio_relevance, sentiment, sentiment_score, processed_at
+      `SELECT id, subject, summary, key_themes, processed_at, is_relevant
          FROM research_articles
         WHERE processed_at IS NOT NULL`,
     )
@@ -194,7 +181,7 @@ if (isMain) {
       const { matched, repaired } = repairEmptyEnrichments(db, { apply });
 
       if (matched.length === 0) {
-        console.log("No all-defaults enrichment rows found. Nothing to do.");
+        console.log("No empty-enrichment rows found. Nothing to do.");
       } else {
         for (const row of matched) {
           console.log(`row ${row.id}: "${row.subject.slice(0, 80)}"`);
@@ -204,6 +191,7 @@ if (isMain) {
             ? `\nCleared processed_at on ${repaired} of ${matched.length} row(s) — they will be retried on the next enrich pass.`
             : `\nWould clear processed_at on ${matched.length} row(s). Re-run with --apply.`,
         );
+        console.log(reEnrichmentCostNote(matched.length));
       }
     } finally {
       db.close();

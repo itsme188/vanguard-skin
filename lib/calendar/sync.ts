@@ -13,6 +13,8 @@ import {
   deleteUnenrichedEventsForWeek,
   type CalendarEventInput,
   type DeletedEarningsRow,
+  type HiddenFeedRow,
+  type UpsertResult,
 } from "@/lib/mutations/calendar";
 import { writeArmedEventsOutboxRow } from "@/lib/earnings/cloud-outbox";
 import { getIbApi, disconnectTws } from "@/lib/tws/client";
@@ -177,6 +179,10 @@ function describeFinnhubFailures(
  * "N new" for an unchanged release list. The snapshot is taken before the
  * delete, so a re-mint counts as a refresh. Reporting only — the write step
  * itself is unchanged. Suppressed inputs never land, so they never count.
+ *
+ * A key that is new but was stored HIDDEN (a feed earnings row written behind
+ * a hand-entered row for the same symbol and date, see `upsertCalendarEvents`)
+ * is not counted either: nothing new reached any calendar surface.
  */
 function writeAndCountNewKeys(
   db: Database.Database,
@@ -190,15 +196,16 @@ function writeAndCountNewKeys(
   }
   const placeholders = keys.map(() => "?").join(",");
   const existing = db.prepare(
-    `SELECT source_key FROM calendar_events WHERE source_key IN (${placeholders})`,
+    `SELECT source_key, COALESCE(superseded, 0) AS superseded
+       FROM calendar_events WHERE source_key IN (${placeholders})`,
   );
-  const readKeys = () =>
-    new Set((existing.all(...keys) as { source_key: string }[]).map((r) => r.source_key));
-  const before = readKeys();
+  const readRows = () => existing.all(...keys) as { source_key: string; superseded: number }[];
+  const before = new Set(readRows().map((r) => r.source_key));
   write();
-  const after = readKeys();
   let fresh = 0;
-  for (const key of after) if (!before.has(key)) fresh++;
+  for (const row of readRows()) {
+    if (!before.has(row.source_key) && row.superseded === 0) fresh++;
+  }
   return fresh;
 }
 
@@ -254,6 +261,9 @@ function writeAndCollectRemoved(
  * The macro phase does not come through here: a claude_macro row is never an
  * earnings row, so it has nothing to publish.
  *
+ * Returns the upsert's own result, so the caller can read which feed rows
+ * were stored hidden behind a hand-entered row.
+ *
  * Exported for tests.
  */
 export function replaceWeekRowsPublishingRemovals(
@@ -262,12 +272,12 @@ export function replaceWeekRowsPublishingRemovals(
   source: "claude_macro" | "finnhub" | "nasdaq",
   inputs: CalendarEventInput[],
   keepSourceKeys?: readonly string[],
-): void {
-  db.transaction(() => {
+): UpsertResult {
+  return db.transaction((): UpsertResult => {
     const deletedEarnings: DeletedEarningsRow[] = [];
     deleteUnenrichedEventsForWeek(db, weekOf, source, keepSourceKeys, deletedEarnings);
-    upsertCalendarEvents(db, inputs);
-    if (deletedEarnings.length === 0) return;
+    const upserted = upsertCalendarEvents(db, inputs);
+    if (deletedEarnings.length === 0) return upserted;
     // Re-listed = the same source_key is stored again ON THE SAME DATE. A key
     // that came back on a different date is a moved print: the old id is stale.
     const relisted = db.prepare(
@@ -281,6 +291,7 @@ export function replaceWeekRowsPublishingRemovals(
     // deleted row may have been armed, and the writer is a no-op when the
     // projection is unchanged (D10).
     writeArmedEventsOutboxRow(db, { removedEvents });
+    return upserted;
   })();
 }
 
@@ -367,6 +378,11 @@ export async function syncCalendarForWeek(
     ).map((r) => r.source_key),
   );
 
+  // Feed earnings rows the vendor steps stored hidden behind a hand-entered
+  // row. The reconcile step never reports these (they are already hidden when
+  // it runs), so the ones that were on screen at the start are named below.
+  const hiddenAtWrite: HiddenFeedRow[] = [];
+
   let wshEvents = 0;
   let wshNew = 0;
   let macroEvents = 0;
@@ -392,7 +408,7 @@ export async function syncCalendarForWeek(
           // WSH never deletes before upserting, but shares the one "new"
           // definition so the four counts can't drift apart.
           wshNew = writeAndCountNewKeys(db, parsed, () => {
-            upsertCalendarEvents(db, parsed);
+            hiddenAtWrite.push(...(upsertCalendarEvents(db, parsed).hiddenBehindManual ?? []));
           });
         }
         wshEvents = parsed.length;
@@ -548,7 +564,10 @@ export async function syncCalendarForWeek(
           finnhubNew = writeAndCountNewKeys(db, finnhubInputs, () => {
             removed.push(
               ...writeAndCollectRemoved(db, weekOf, "finnhub", finnhubReason, () => {
-                replaceWeekRowsPublishingRemovals(db, weekOf, "finnhub", finnhubInputs);
+                hiddenAtWrite.push(
+                  ...(replaceWeekRowsPublishingRemovals(db, weekOf, "finnhub", finnhubInputs)
+                    .hiddenBehindManual ?? []),
+                );
               }),
             );
           });
@@ -604,7 +623,10 @@ export async function syncCalendarForWeek(
               "nasdaq",
               "Nasdaq did not return this date on this refresh",
               () => {
-                replaceWeekRowsPublishingRemovals(db, weekOf, "nasdaq", nasdaqInputs);
+                hiddenAtWrite.push(
+                  ...(replaceWeekRowsPublishingRemovals(db, weekOf, "nasdaq", nasdaqInputs)
+                    .hiddenBehindManual ?? []),
+                );
               },
             ),
           );
@@ -653,6 +675,32 @@ export async function syncCalendarForWeek(
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown error";
     errors.push(`reconcile: ${msg}`);
+  }
+
+  // Rows hidden at write that the desk WAS looking at when the refresh began
+  // and that are still hidden now (the reconcile step may have decided
+  // otherwise inside its window). Same wording the reconcile step uses for a
+  // row a hand-entered date replaces. Runs even when the reconcile step threw.
+  if (hiddenAtWrite.length > 0) {
+    const stillHidden = db.prepare(
+      "SELECT 1 FROM calendar_events WHERE source_key = ? AND COALESCE(superseded, 0) = 1",
+    );
+    const named = new Set(superseded.map((r) => `${r.source}|${r.eventDate}|${r.title}`));
+    const seen = new Set<string>();
+    for (const h of hiddenAtWrite) {
+      // By source_key, not `wasShowing`: the vendor steps delete and re-mint a
+      // row, so a row on screen at the start arrives here as a fresh insert.
+      if (!showingAtStart.has(h.sourceKey) || seen.has(h.sourceKey)) continue;
+      seen.add(h.sourceKey);
+      if (stillHidden.get(h.sourceKey) === undefined) continue;
+      if (named.has(`${h.source}|${h.eventDate}|${h.title}`)) continue;
+      superseded.push({
+        title: h.title,
+        eventDate: h.eventDate,
+        source: h.source,
+        reason: `the date you entered (${h.eventDate}) takes its place`,
+      });
+    }
   }
 
   const totalSaved = wshEvents + macroEvents + finnhubEvents + nasdaqEvents;

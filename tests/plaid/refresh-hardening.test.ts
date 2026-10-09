@@ -100,6 +100,95 @@ function pos(symbol: string, quantity: number): MappedPlaidPosition {
 }
 
 describe("writePlaidHoldings — directional supersession + transaction bumps", () => {
+  it("purges expired options and matured bonds only for live rows in the synced account", () => {
+    const otherId = Number(
+      db.prepare(`INSERT INTO accounts (name) VALUES ('Other')`).run().lastInsertRowid,
+    );
+    const liveExpiredOption = upsertSecurity(db, {
+      symbol: "ZZA   260619P00010000",
+      securityType: "Option",
+      underlyingSymbol: "ZZA",
+      expirationDate: "2026-06-19",
+      optionType: "PUT",
+      strikePrice: 10,
+    });
+    const liveMaturedBond = upsertSecurity(db, {
+      symbol: "ZZTB1",
+      securityType: "Bond",
+      maturityDate: "2026-06-15",
+    });
+    const otherExpiredOption = upsertSecurity(db, {
+      symbol: "ZZB   260619P00010000",
+      securityType: "Option",
+      underlyingSymbol: "ZZB",
+      expirationDate: "2026-06-19",
+      optionType: "PUT",
+      strikePrice: 10,
+    });
+    const statementExpiredOption = upsertSecurity(db, {
+      symbol: "ZZC   260619P00010000",
+      securityType: "Option",
+      underlyingSymbol: "ZZC",
+      expirationDate: "2026-06-19",
+      optionType: "PUT",
+      strikePrice: 10,
+    });
+    const expiresToday = upsertSecurity(db, {
+      symbol: "ZZD   260710P00010000",
+      securityType: "Option",
+      underlyingSymbol: "ZZD",
+      expirationDate: TODAY,
+      optionType: "PUT",
+      strikePrice: 10,
+    });
+
+    hold(taxableId, liveExpiredOption, 1, D_MINUS_5, `plaid:${taxableId}:${liveExpiredOption}:${D_MINUS_5}`);
+    hold(taxableId, liveMaturedBond, 100, D_MINUS_5, `plaid:${taxableId}:${liveMaturedBond}:${D_MINUS_5}`);
+    hold(otherId, otherExpiredOption, 2, D_MINUS_5, `plaid:${otherId}:${otherExpiredOption}:${D_MINUS_5}`);
+    hold(
+      taxableId,
+      statementExpiredOption,
+      3,
+      D_MINUS_5,
+      `vanguard-pdf:holding:${taxableId}:${statementExpiredOption}:${D_MINUS_5}`,
+    );
+    hold(taxableId, expiresToday, 4, D_MINUS_5, `plaid:${taxableId}:${expiresToday}:${D_MINUS_5}`);
+
+    const genBefore = getTaxInputGeneration(db);
+    writePlaidHoldings(db, mappedResult([pos("Y", 10)]), { pTax: taxableId }, TODAY);
+
+    expect(rowAt(taxableId, liveExpiredOption, D_MINUS_5)).toBeUndefined();
+    expect(rowAt(taxableId, liveMaturedBond, D_MINUS_5)).toBeUndefined();
+    expect(rowAt(otherId, otherExpiredOption, D_MINUS_5)?.quantity).toBe(2);
+    expect(rowAt(taxableId, statementExpiredOption, D_MINUS_5)?.quantity).toBe(3);
+    expect(rowAt(taxableId, expiresToday, D_MINUS_5)?.quantity).toBe(4);
+    expect(getTaxInputGeneration(db)).toBe(genBefore);
+  });
+
+  it("rolls back the scoped purge with the rest of the per-account transaction", () => {
+    const expiredOption = upsertSecurity(db, {
+      symbol: "ZZA   260619P00010000",
+      securityType: "Option",
+      underlyingSymbol: "ZZA",
+      expirationDate: "2026-06-19",
+      optionType: "PUT",
+      strikePrice: 10,
+    });
+    hold(taxableId, expiredOption, 1, D_MINUS_5, `plaid:${taxableId}:${expiredOption}:${D_MINUS_5}`);
+    const yId = upsertSecurity(db, { symbol: "Y", securityType: "Stock" });
+
+    vi.mocked(reconcileClosedEquityHoldings).mockImplementationOnce(() => {
+      throw new Error("boom — injected reconcile failure");
+    });
+
+    expect(() => writePlaidHoldings(db, mappedResult([pos("Y", 10)]), { pTax: taxableId }, TODAY)).toThrow(
+      "boom",
+    );
+
+    expect(rowAt(taxableId, expiredOption, D_MINUS_5)?.quantity).toBe(1);
+    expect(rowAt(taxableId, yId, TODAY)).toBeUndefined();
+  });
+
   it("plaid supersedes a same-date :live tombstone without bumping (live-origin, not a tax input — 2026-10-02 §2.3)", () => {
     const xId = upsertSecurity(db, { symbol: "X", securityType: "Stock" });
     hold(taxableId, xId, 5, D_MINUS_10);

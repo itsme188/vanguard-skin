@@ -16,8 +16,10 @@ import { resolveAccountName } from "@/lib/chat/tools";
  * active, `clampToolInputToScope` HARD-OVERRIDES `account_name` to the scope's
  * account for every tool that accepts one — overriding any model-supplied value,
  * not just blanks. The model literally cannot query another account's portfolio
- * data in a scoped chat. Genuinely global tools (FRED, research, market
- * snapshot, calendar) have no `account_name` and pass through unchanged, as do
+ * data in a scoped chat. Genuinely global tools (FRED, research, calendar)
+ * have no `account_name` and pass through unchanged (the market snapshot is
+ * NOT one of them since 2026-10-08: its held rows carry account, quantity and
+ * value, so it declares `account_name` and is clamped like the rest), as do
  * the `all` and `macro` scopes (where there is no single account to clamp to).
  */
 

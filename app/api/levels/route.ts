@@ -19,6 +19,7 @@ import {
   reactivateLevel,
   deleteLevel,
 } from "@/lib/mutations/security-levels";
+import { levelPauseRefusal } from "@/lib/levels/action-visibility";
 import { editLevel } from "@/lib/levels/edit-level";
 import { resolveLevelPrice } from "@/lib/alerts/resolve-level-price";
 import { todayET } from "@/lib/calendar/date-utils";
@@ -168,6 +169,10 @@ export async function PATCH(request: NextRequest) {
       return NextResponse.json({ success: false, error: "Level not found" }, { status: 404 });
     }
     if (action === "deactivate") {
+      const refusal = levelPauseRefusal(getLevelById(db, id)!.review_status);
+      if (refusal) {
+        return NextResponse.json({ success: false, error: refusal }, { status: 409 });
+      }
       deactivateLevel(db, id);
     } else if (action === "reactivate") {
       const result = reactivateLevel(db, id, { force: body.force === true });

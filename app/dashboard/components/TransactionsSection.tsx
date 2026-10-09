@@ -10,7 +10,7 @@ import { compareValues, useSortParam, type SortDir } from "@/lib/hooks/useSortPa
 import { Section } from "./Section";
 import { ScrollFade } from "./ScrollFade";
 import { Chip, type ChipTone } from "./Chip";
-import { transactionTypeLabel } from "@/lib/chart/marker-label";
+import { transactionDirectionLabel, transactionDisplayType } from "@/lib/transactions/direction-label";
 
 type SortField = "trade_date" | "type" | "account_name" | "quantity" | "price_per_share" | "amount";
 
@@ -242,8 +242,8 @@ export function TransactionsSection({
                   <tr key={t.id}>
                     <td className={`${TD_MONO} text-ink-dim`}>{t.trade_date}</td>
                     <td className={TD_CLASS}>
-                      <Chip tone={typeTone(t.type)} size="xs" uppercase>
-                        {transactionTypeLabel(t.type)}
+                      <Chip tone={typeTone(transactionDisplayType(t.type, t.notes))} size="xs" uppercase>
+                        {transactionDirectionLabel(t.type, t.notes)}
                       </Chip>
                     </td>
                     <td className={`${TD_CLASS} hidden md:table-cell text-ink-dim`}>

@@ -1,6 +1,6 @@
 "use client";
 
-import type { RankedExposure, HedgeScore, StandaloneBet, HedgeBadge } from "@/lib/compute/hedging";
+import type { RankedExposure, RankedExposureLeg, HedgeScore, StandaloneBet, HedgeBadge } from "@/lib/compute/hedging";
 import { Money, Pct } from "@/lib/privacy/components";
 import { Chip, type ChipTone } from "./Chip";
 import { ScrollFade } from "./ScrollFade";
@@ -64,6 +64,32 @@ export function protectsLabel(protects: string): string {
   return `${words.charAt(0).toUpperCase()}${words.slice(1)}: ${detail}`;
 }
 
+/**
+ * The caveats and option legs under a "Most exposed" name. A row with no
+ * shares behind it (a put and a call netted into one row) lists each leg with
+ * its own exposure, so the net figure can be read back to its parts.
+ */
+function ExposureRowDetail({ notes, legs }: { notes?: string[]; legs?: RankedExposureLeg[] }) {
+  const showLegs = legs !== undefined && legs.length > 1;
+  if (!showLegs && (notes === undefined || notes.length === 0)) return null;
+  return (
+    <div className="mt-0.5 space-y-0.5 text-[11px] text-ink-dim">
+      {showLegs && (
+        <div>
+          Net of {legs.length} option legs:{" "}
+          {legs.map((leg, i) => (
+            <span key={leg.securityId} className="whitespace-nowrap">
+              {i > 0 ? " · " : ""}
+              {leg.symbol} <Money value={leg.exposure} signed />
+            </span>
+          ))}
+        </div>
+      )}
+      {notes?.map((note) => <div key={note}>{note}</div>)}
+    </div>
+  );
+}
+
 interface DefenseTablesProps {
   rankedExposures: RankedExposure[];
   hedgeScores: HedgeScore[];
@@ -125,8 +151,12 @@ function MostExposedTable({
             </thead>
             <tbody>
               {rows.map((row) => {
-                const kind = standaloneBetKinds[row.underlying];
+                // A standalone bet always ranks as "unhedged"; only such a
+                // row may take the bet chip for its underlying.
+                const kind = row.classification === "unhedged" ? standaloneBetKinds[row.underlying] : undefined;
                 return (
+                  // One row per underlying per classification: an options-only
+                  // name is netted into a single row upstream, so this key is unique.
                   <tr key={`${row.underlying}:${row.classification}`} className="border-b border-edge/50 hover:bg-muted/30">
                     <td className="py-2 pr-3 text-ink">
                       {row.securityId !== null ? (
@@ -134,6 +164,7 @@ function MostExposedTable({
                       ) : (
                         row.underlying
                       )}
+                      <ExposureRowDetail notes={row.notes} legs={row.legs} />
                     </td>
                     <td className="text-right py-2 px-2 font-mono tabular-nums">
                       <Money value={row.netExposure} signed />
@@ -256,6 +287,9 @@ function StandaloneBetsList({ standaloneBets }: { standaloneBets: StandaloneBet[
             <span className="text-ink">
               {bet.underlying}{" "}
               <span className="text-xs text-ink-faint">({BET_KIND_LABEL[bet.kind]})</span>
+              {bet.notes?.map((note) => (
+                <span key={note} className="block text-[11px] text-ink-dim">{note}</span>
+              ))}
             </span>
             <span className="font-mono tabular-nums text-down">
               <Money value={bet.exposure} signed />

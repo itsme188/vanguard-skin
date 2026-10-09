@@ -1,5 +1,6 @@
 "use client";
 
+import { PERCENT_BASIS } from "@/lib/analysis/percent-bases";
 import { useMemo, useState } from "react";
 import type { FactorHeatmapRow } from "@/lib/queries/analysis";
 import { ScrollFade } from "./ScrollFade";
@@ -15,9 +16,31 @@ import { Pct } from "@/lib/privacy/components";
 
 type SortColumn = FactorColumn | "weight";
 
+/** Neutral slate for the display-only Blend bucket (no entry in LEVEL_COLORS). */
+const BLEND_COLOR = "#64748B";
+
+/**
+ * The Growth vs Value cell reads the same style field the classification
+ * Breakdown uses: a Blend-style security (an index fund) reads "Blend" here
+ * too instead of a forced Growth/Value side. Display only: the stored factor,
+ * weights and tilts are untouched.
+ */
+export function growthValueCellValue(row: {
+  style: string | null;
+  growth_vs_value: string | null;
+}): string | null {
+  if (row.style && row.style.trim().toLowerCase() === "blend") return "Blend";
+  return row.growth_vs_value;
+}
+
+function cellValue(row: FactorHeatmapRow, col: FactorColumn): string | null {
+  return col === "growth_vs_value" ? growthValueCellValue(row) : row[col];
+}
+
 /** Get numeric rank for a factor value (higher = more exposure). Null → -1 (always last). */
 function getFactorRank(value: string | null): number {
   if (value === null || value === undefined) return -1;
+  if (value === "Blend") return 2.5; // between Value (2) and Growth (3)
   return FACTOR_SORT_RANK[value] ?? 0;
 }
 
@@ -80,8 +103,8 @@ export function FactorHeatmap({ rows, onCellClick }: FactorHeatmapProps) {
       if (sortColumn === "weight") {
         cmp = a.weight_pct - b.weight_pct;
       } else {
-        const rankA = getFactorRank(a[sortColumn]);
-        const rankB = getFactorRank(b[sortColumn]);
+        const rankA = getFactorRank(cellValue(a, sortColumn));
+        const rankB = getFactorRank(cellValue(b, sortColumn));
         // Null values (-1) always sort to bottom regardless of direction
         if (rankA === -1 && rankB === -1) return 0;
         if (rankA === -1) return 1;
@@ -114,6 +137,7 @@ export function FactorHeatmap({ rows, onCellClick }: FactorHeatmapProps) {
           )}
         </span>
       </h3>
+      <p className="text-xs text-ink-dim mb-3">{PERCENT_BASIS.factorWeightCaption}</p>
 
       <ScrollFade>
         <table className="w-full text-xs" aria-label="Factor exposure heatmap">
@@ -124,6 +148,7 @@ export function FactorHeatmap({ rows, onCellClick }: FactorHeatmapProps) {
               </th>
               <th
                 className="text-right py-2 px-2 font-medium text-ink-faint min-w-[60px] cursor-pointer hover:text-ink-dim select-none"
+                title={PERCENT_BASIS.factorWeight}
                 onClick={() => handleSort("weight")}
               >
                 Weight{sortIndicator("weight")}
@@ -161,11 +186,14 @@ export function FactorHeatmap({ rows, onCellClick }: FactorHeatmapProps) {
                   <Pct value={row.weight_pct} digits={1} />
                 </td>
                 {FACTOR_COLUMNS.map((col, colIdx) => {
-                  const value = row[col];
-                  const color = getFactorColor(value);
+                  const value = cellValue(row, col);
+                  const color = value === "Blend" ? BLEND_COLOR : getFactorColor(value);
+                  // Blend is display-only: the drill-down filters on the stored
+                  // factor bucket, which has no Blend value.
+                  const isBlend = value === "Blend";
                   const isHovered =
                     hoveredCell?.row === rowIdx && hoveredCell?.col === colIdx;
-                  const clickable = !!(onCellClick && value);
+                  const clickable = !!(onCellClick && value && !isBlend);
 
                   return (
                     <td
@@ -217,6 +245,7 @@ export function FactorHeatmap({ rows, onCellClick }: FactorHeatmapProps) {
           { label: "Very High", color: getFactorColor("Very High") },
           { label: "Growth", color: getFactorColor("Growth") },
           { label: "Value", color: getFactorColor("Value") },
+          { label: "Blend / n.a.", color: BLEND_COLOR },
         ].map(({ label, color }) => (
           <span
             key={label}

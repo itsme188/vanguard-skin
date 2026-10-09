@@ -18,6 +18,7 @@ import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import {
   findEmptyEnrichmentRows,
+  reEnrichmentCostNote,
   repairEmptyEnrichments,
 } from "@/scripts/repair-empty-enrichments";
 
@@ -123,32 +124,21 @@ describe("findEmptyEnrichmentRows", () => {
     expect(findEmptyEnrichmentRows(db)).toEqual([]);
   });
 
-  it("does NOT match a row with real mentioned_symbols", () => {
-    insertArticle(db, {
+  it("matches a row that carries symbols, relevance prose and a non-neutral sentiment (cloud shape)", () => {
+    const id = insertArticle(db, {
       ...ALL_DEFAULTS,
-      mentioned_symbols: JSON.stringify(["AAPL"]),
+      mentioned_symbols: JSON.stringify(["ZZA"]),
+      portfolio_relevance: "Relevant to ZZA.",
+      sentiment: "bullish",
+      sentiment_score: 0.4,
     });
 
-    expect(findEmptyEnrichmentRows(db)).toEqual([]);
+    expect(findEmptyEnrichmentRows(db).map((r) => r.id)).toEqual([id]);
   });
 
-  it("does NOT match a row with a non-empty portfolio_relevance", () => {
-    insertArticle(db, {
-      ...ALL_DEFAULTS,
-      portfolio_relevance: "Relevant to your NVDA position.",
-    });
-
-    expect(findEmptyEnrichmentRows(db)).toEqual([]);
-  });
-
-  it("does NOT match a row with a non-neutral sentiment", () => {
-    insertArticle(db, { ...ALL_DEFAULTS, sentiment: "bullish" });
-
-    expect(findEmptyEnrichmentRows(db)).toEqual([]);
-  });
-
-  it("does NOT match a row with a non-zero sentiment_score", () => {
-    insertArticle(db, { ...ALL_DEFAULTS, sentiment_score: 0.4 });
+  it("does NOT match a filtered (is_relevant = 0) row; the queue would never pick it up", () => {
+    const id = insertArticle(db, ALL_DEFAULTS);
+    db.prepare(`UPDATE research_articles SET is_relevant = 0 WHERE id = ?`).run(id);
 
     expect(findEmptyEnrichmentRows(db)).toEqual([]);
   });
@@ -175,15 +165,22 @@ describe("findEmptyEnrichmentRows", () => {
       summary: "A real summary describing the article.",
     });
     insertArticle(db, { ...ALL_DEFAULTS, processed_at: null });
-    insertArticle(db, { ...ALL_DEFAULTS, sentiment: "bearish" });
+    const cloudId = insertArticle(db, { ...ALL_DEFAULTS, sentiment: "bearish", mentioned_symbols: '["ZZB"]' });
 
     const rows = findEmptyEnrichmentRows(db);
 
-    expect(rows.map((r) => r.id)).toEqual([badId]);
+    expect(rows.map((r) => r.id).sort((a, b) => a - b)).toEqual([badId, cloudId].sort((a, b) => a - b));
   });
 });
 
 describe("repairEmptyEnrichments", () => {
+  it("reports the paid re-enrichment cost bound for the matched rows", () => {
+    expect(reEnrichmentCostNote(0)).toContain("0");
+    expect(reEnrichmentCostNote(45)).toMatch(/20 per pass/);
+    expect(reEnrichmentCostNote(45)).toMatch(/3 attempts/);
+    expect(reEnrichmentCostNote(45)).toMatch(/up to 135/);
+  });
+
   let db: Database.Database;
 
   beforeEach(() => {

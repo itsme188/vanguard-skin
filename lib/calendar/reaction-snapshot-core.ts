@@ -101,6 +101,11 @@ export interface ReactionSnapshot {
   // (earnings rows, 2026-08-04). Absent on macro rows and pre-fix snapshots —
   // renderers use it to label deltas honestly ("vs prior close").
   pre_anchor?: "prior_close";
+  // The UTC instant the bars were read (2026-10-08). Written by the Mac
+  // runner on every snapshot it stores; absent on older rows and on
+  // snapshots the Worker captured. lib/calendar/reaction-validity.ts is the
+  // one reader: a capture earlier than t0 + window_min is not a measurement.
+  captured_at?: string;
 }
 
 // ── Snapshot parsing & date matching (RSC-safe, client-safe) ─────────

@@ -138,11 +138,72 @@ function usualSlotFromPastPrints(
     set.add(slot);
     byDate.set(r.event_date, set);
   }
+  // earnings_report_history votes too (report_time pre/post-market). It shares
+  // the per-date map, so a date seen in both sources is still ONE vote, and a
+  // date whose sources disagree is a disagreement.
+  try {
+    const hist = db
+      .prepare(
+        `SELECT reported_date, report_time
+           FROM earnings_report_history
+          WHERE UPPER(symbol) IN (${ph})
+            AND report_time IN ('pre-market', 'post-market')
+            AND reported_date < ?
+            AND reported_date >= ?`,
+      )
+      .all(...family, eventDate, addDays(eventDate, -OBSERVATION_LOOKBACK_DAYS)) as {
+      reported_date: string;
+      report_time: "pre-market" | "post-market";
+    }[];
+    for (const h of hist) {
+      const set = byDate.get(h.reported_date) ?? new Set<EarningsSlot>();
+      set.add(h.report_time === "pre-market" ? "bmo" : "amc");
+      byDate.set(h.reported_date, set);
+    }
+  } catch {
+    // history table unavailable: calendar evidence alone
+  }
   if (byDate.size < MIN_AGREEING_PRINTS) return null;
   const sides = new Set<EarningsSlot>();
   for (const set of byDate.values()) for (const s of set) sides.add(s);
   if (sides.size !== 1) return null;
   return [...sides][0];
+}
+
+/**
+ * Tie-breaker only: the explicit slot of a SUPERSEDED same-family, same-date
+ * twin of this row. A twin carrying only the default time has no slot and says
+ * nothing. Display only; never stored.
+ */
+function twinSlot(
+  db: Database.Database,
+  symbol: string,
+  eventDate: string,
+): EarningsSlot | null {
+  const family = issuerSiblings(symbol).map((s) => s.toUpperCase());
+  const ph = family.map(() => "?").join(",");
+  let rows: { event_time: string | null; raw_json: string | null }[];
+  try {
+    rows = db
+      .prepare(
+        `SELECT event_time, raw_json
+           FROM calendar_events
+          WHERE event_type = 'earnings'
+            AND UPPER(symbol) IN (${ph})
+            AND source != 'manual'
+            AND COALESCE(superseded, 0) = 1
+            AND event_date = ?`,
+      )
+      .all(...family, eventDate) as typeof rows;
+  } catch {
+    return null;
+  }
+  const sides = new Set<EarningsSlot>();
+  for (const r of rows) {
+    const slot = deriveEarningsSlot({ event_time: r.event_time, raw_json: r.raw_json });
+    if (slot) sides.add(slot);
+  }
+  return sides.size === 1 ? [...sides][0] : null;
 }
 
 export function displayEarningsTime(
@@ -175,7 +236,9 @@ export function displayEarningsTime(
 
   // 2. The side of the session its past reported prints agree on — a slot,
   //    never an invented clock time.
-  const slot = usualSlotFromPastPrints(db, symbol, row.event_date);
+  const slot =
+    usualSlotFromPastPrints(db, symbol, row.event_date) ??
+    twinSlot(db, symbol, row.event_date);
   if (slot) return { label: USUAL_SLOT_LABELS[slot], kind: "usual" };
 
   return { label: UNKNOWN_RELEASE_TIME_LABEL, kind: "unknown" };

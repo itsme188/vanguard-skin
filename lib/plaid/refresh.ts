@@ -15,6 +15,8 @@ import {
 } from "@/lib/queries/plaid-settings";
 import { upsertSecurity } from "@/lib/mutations/securities";
 import { removeStaleSameDayTwsHoldings } from "@/lib/mutations/same-day-tws-holdings";
+import { purgeExpiredOptionHoldings } from "@/lib/mutations/expired-options";
+import { purgeMaturedBondHoldings } from "@/lib/mutations/matured-bonds";
 import {
   reconcileClosedEquityHoldings,
   countStatementGradeRowsOnDate,
@@ -220,6 +222,20 @@ export function writePlaidHoldings(
       // Consuming statement-grade evidence is a RECONCILE_CLOSE input change.
       if (stmtGradeAfter < stmtGradeBefore) bumpTaxGenerationIfPresent(db);
       bumpIfPricesAffectSyntheticCloses(db, pricePairs);
+
+      purgeExpiredOptionHoldings(db, 1, {
+        accountId: localAccountId,
+        liveOnly: true,
+        today,
+      });
+      purgeMaturedBondHoldings(db, 1, {
+        accountId: localAccountId,
+        liveOnly: true,
+        today,
+      });
+      // Live-only expiry/maturity cleanup is not a tax input and is inside the
+      // same transaction as the Plaid write, so a later reconcile failure
+      // rolls it back with the rest of the account sync.
 
       // Snapshot-diff closure sweep: equities absent from today's full book
       // get quantity=0 rows (non-destructive, shrink-guarded).

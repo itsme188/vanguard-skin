@@ -9,7 +9,7 @@ import type {
 import { SymbolLink } from "@/app/dashboard/components/SymbolLink";
 import { Count, Money, Shares } from "@/lib/privacy/components";
 import { displayCashEffect } from "@/lib/format/cash-effect";
-import { transactionTypeLabel } from "@/lib/chart/marker-label";
+import { transactionDirectionLabel, transactionDisplayType } from "@/lib/transactions/direction-label";
 import { ScrollFade } from "./ScrollFade";
 import { SortableHeader } from "./SortableHeader";
 import {
@@ -206,10 +206,10 @@ export function TransactionHistory({
                 <td className="hidden md:table-cell px-4 py-3">
                   <span
                     className={`text-xs font-medium px-2 py-0.5 rounded-full ${
-                      transactionTypeChipClass(txn.type)
+                      transactionTypeChipClass(transactionDisplayType(txn.type, txn.notes))
                     }`}
                   >
-                    {transactionTypeLabel(txn.type)}
+                    {transactionDirectionLabel(txn.type, txn.notes)}
                   </span>
                 </td>
                 <td className="px-4 py-3 font-mono text-ink">
@@ -222,10 +222,10 @@ export function TransactionHistory({
                   </div>
                   <span
                     className={`md:hidden mt-1 inline-block text-[10px] font-medium px-1.5 py-0.5 rounded ${
-                      transactionTypeChipClass(txn.type)
+                      transactionTypeChipClass(transactionDisplayType(txn.type, txn.notes))
                     }`}
                   >
-                    {transactionTypeLabel(txn.type)}
+                    {transactionDirectionLabel(txn.type, txn.notes)}
                   </span>
                 </td>
                 <td className="hidden md:table-cell px-4 py-3 text-right font-mono tabular-nums text-ink-dim">

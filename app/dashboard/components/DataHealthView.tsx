@@ -118,6 +118,7 @@ export function accountCoverageGrainNote(heldInMultipleAccounts: number): string
   return `${base} ${subject}, so the rows add up to more than the Price Coverage headline, which counts each security once.`;
 }
 
+
 const RECONCILIATION_ROW_LIMIT = 30;
 const DISCREPANCY_ROW_LIMIT = 20;
 
@@ -202,7 +203,7 @@ export function DataHealthView({ integritySection }: { integritySection?: ReactN
         <SummaryCard
           label="Price Coverage"
           value={`${summary.overallCoveragePct}%`}
-          sub={`${summary.securitiesWithPrices}/${summary.totalSecurities} distinct securities`}
+          sub={`${summary.securitiesWithPrices}/${summary.totalSecurities} distinct securities priced within ${summary.priceWindowDays} days`}
           color={summary.overallCoveragePct >= 90 ? "up" : summary.overallCoveragePct >= 70 ? "gold" : "down"}
         />
         <SummaryCard

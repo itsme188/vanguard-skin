@@ -39,6 +39,16 @@ export function ibkrSnapshotHeading(sessionDate: string | null | undefined, toda
 }
 
 /**
+ * The word for WHEN a position was opened or added to, on the one-line IBKR
+ * snapshot ("2 opened today"). It follows the heading's rule: "today" only when
+ * the move's session is today's Eastern date; otherwise "that session", which
+ * reads against a heading that names the session.
+ */
+export function ibkrSessionWord(sessionDate: string | null | undefined, today: string): string {
+  return datePart(sessionDate) === today ? "today" : "that session";
+}
+
+/**
  * Note beside the Portfolio strip's "as of" date when the Vanguard holdings
  * behind the total are older than that headline date. Null when they are not
  * older, or when either date is unknown.
@@ -53,4 +63,25 @@ export function olderVanguardBasisNote(
   if (vanguard === null || headline === null) return null;
   if (vanguard >= headline) return null;
   return `Vanguard holdings through ${shortDate(vanguard, today)}`;
+}
+
+/**
+ * Words beside the Portfolio strip's delta chip: which statement the change is
+ * measured against. Each account's baseline is its previous statement snapshot,
+ * which is not always the prior month-end, so the chip names the date(s).
+ * One shared date reads "vs Aug 31 statement"; differing dates read
+ * "vs statements of Aug 29 to Aug 31". With no baseline date the old wording stays.
+ */
+export function portfolioBaselineLabel(
+  earliest: string | null | undefined,
+  latest: string | null | undefined,
+  today: string,
+): string {
+  const first = datePart(earliest);
+  const last = datePart(latest);
+  if (first === null && last === null) return "vs prior month";
+  if (first === null || last === null || first === last) {
+    return `vs ${shortDate((first ?? last) as string, today)} statement`;
+  }
+  return `vs statements of ${shortDate(first, today)} to ${shortDate(last, today)}`;
 }

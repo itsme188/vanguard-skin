@@ -8,13 +8,14 @@ function seedHolding(
   symbol: string,
   securityType: string,
   maturityDate: string | null,
+  opts: { accountName?: string; sourceKey?: string; asOfDate?: string } = {},
 ): number {
   const accountId = (
     db.prepare(
       `INSERT INTO accounts (name) VALUES (?)
        ON CONFLICT(name) DO UPDATE SET name = name
        RETURNING id`,
-    ).get(`acct-${symbol}`) as { id: number }
+    ).get(opts.accountName ?? `acct-${symbol}`) as { id: number }
   ).id;
   const securityId = (
     db.prepare(
@@ -23,10 +24,14 @@ function seedHolding(
     ).get(symbol, securityType, maturityDate) as { id: number }
   ).id;
   db.prepare(
-    `INSERT INTO holdings (account_id, security_id, quantity, as_of_date)
-     VALUES (?, ?, ?, date('now'))`,
-  ).run(accountId, securityId, 10);
+    `INSERT INTO holdings (account_id, security_id, quantity, as_of_date, source_key)
+     VALUES (?, ?, ?, ?, ?)`,
+  ).run(accountId, securityId, 10, opts.asOfDate ?? "2026-07-10", opts.sourceKey ?? null);
   return securityId;
+}
+
+function accountId(db: Database.Database, name: string): number {
+  return (db.prepare(`SELECT id FROM accounts WHERE name = ?`).get(name) as { id: number }).id;
 }
 
 describe("purgeMaturedBondHoldings", () => {
@@ -86,5 +91,40 @@ describe("purgeMaturedBondHoldings", () => {
     expect(purged).toBe(0);
     const remaining = db.prepare("SELECT COUNT(*) AS n FROM holdings").get() as { n: number };
     expect(remaining.n).toBe(1);
+  });
+
+  it("scoped Plaid mode deletes only live-origin rows in the synced account, using explicit ET today", () => {
+    seedHolding(db, "ZZTB1", "bond", "2026-07-03", {
+      accountName: "Taxable",
+      sourceKey: "plaid:1:1:2026-07-10",
+    });
+    seedHolding(db, "ZZTB2", "bond", "2026-07-03", {
+      accountName: "Other",
+      sourceKey: "plaid:2:2:2026-07-10",
+    });
+    seedHolding(db, "ZZTB3", "bond", "2026-07-03", {
+      accountName: "Taxable",
+      sourceKey: "vanguard-pdf:holding:1:3:2026-06-30",
+    });
+    seedHolding(db, "ZZTB4", "bond", "2026-07-10", {
+      accountName: "Taxable",
+      sourceKey: "plaid:1:4:2026-07-10",
+    });
+
+    const purged = purgeMaturedBondHoldings(db, 1, {
+      accountId: accountId(db, "Taxable"),
+      liveOnly: true,
+      today: "2026-07-10",
+    });
+
+    expect(purged).toBe(1);
+    const remaining = db
+      .prepare(
+        `SELECT s.symbol, h.source_key
+           FROM holdings h JOIN securities s ON s.id = h.security_id
+          ORDER BY s.symbol`,
+      )
+      .all() as { symbol: string; source_key: string }[];
+    expect(remaining.map((r) => r.symbol)).toEqual(["ZZTB2", "ZZTB3", "ZZTB4"]);
   });
 });

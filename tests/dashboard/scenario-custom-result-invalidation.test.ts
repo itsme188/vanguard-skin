@@ -132,7 +132,7 @@ describe("Custom scenario result is invalidated on scope switch and Hide", () =>
     const guardMatch = guardRe.exec(body);
     expect(guardMatch, "expected an early-return guard comparing the ref against the captured token").not.toBeNull();
 
-    const resultIdx = anchorIndex(body, "setCustomResult(json.data)");
+    const resultIdx = anchorIndex(body, "setCustomResult(result.data.data)");
     expect(resultIdx).toBeGreaterThan(-1);
     expect(guardMatch!.index).toBeLessThan(resultIdx);
   });

@@ -81,6 +81,8 @@ type EnrichedRow = CalendarEvent & {
    * 2026-10-07). Null on every other row.
    */
   emailFollowsDate: string | null;
+  /** Hand-entered entries in the group (the earlier row plus the ones email ignores). 0 on an unmarked row. */
+  emailFollowsCount: number;
 };
 
 function fmtDayLong(iso: string): { weekday: string; date: string } {
@@ -276,6 +278,7 @@ export function EarningsHub() {
     worksheetPrinted: worksheetMap.get(e.id)?.printedAt != null,
     hasBogeys: bogeysSet.has(e.id),
     emailFollowsDate: ignoredManualTwins.get(e.id)?.emailRowDate ?? null,
+    emailFollowsCount: emailGroupSize(ignoredManualTwins, e.id),
   }));
 
   // Group by event_date for day separators.
@@ -455,21 +458,35 @@ const DESKTOP_GRID_COLUMNS = "84px 64px 92px 1fr 1fr 1fr 1fr 56px 64px 160px";
  * always-visible text (no hover), public calendar data only. Renders nothing
  * for an unmarked row.
  */
+/** Entries in the group an ignored row belongs to: the row email follows plus every row it makes ignored. 0 for an unmarked row. */
+function emailGroupSize(
+  ignored: ReturnType<typeof getEmailIgnoredManualTwins>,
+  eventId: number,
+): number {
+  const follows = ignored.get(eventId);
+  if (!follows) return 0;
+  let count = 1;
+  for (const v of ignored.values()) if (v.emailRowId === follows.emailRowId) count++;
+  return count;
+}
+
 function EmailFollowsEarlierNote({
   symbol,
   emailFollowsDate,
+  entryCount,
   className,
   style,
 }: {
   symbol: string | null;
   emailFollowsDate: string | null;
+  entryCount: number;
   className?: string;
   style?: React.CSSProperties;
 }) {
   if (!emailFollowsDate || !symbol) return null;
   return (
     <span className={`text-ink-dim ${className ?? ""}`} style={{ fontSize: "11px", ...style }}>
-      {emailFollowsEarlierCopy(symbol, emailFollowsDate)}
+      {emailFollowsEarlierCopy(symbol, emailFollowsDate, entryCount, todayET())}
     </span>
   );
 }
@@ -612,6 +629,7 @@ function DesktopRow({ event }: { event: EnrichedRow }) {
         symbol={event.symbol}
         emailFollowsDate={event.emailFollowsDate}
         style={{ gridColumn: "1 / -1" }}
+        entryCount={event.emailFollowsCount}
       />
     </div>
   );
@@ -812,6 +830,7 @@ function MobileCard({ event }: { event: EnrichedRow }) {
         symbol={event.symbol}
         emailFollowsDate={event.emailFollowsDate}
         className="block mt-1.5"
+        entryCount={event.emailFollowsCount}
       />
     </div>
   );

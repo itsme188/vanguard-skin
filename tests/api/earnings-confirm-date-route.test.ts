@@ -7,6 +7,11 @@
  * visible and locked, and the answer names it by id. The other row's date and
  * slot are never rewritten.
  *
+ * Owner ruling 2026-10-08: one hand-entered row per upcoming print. The other
+ * row of such a pair is now folded into the confirmed one and deleted (it
+ * used to stay showing), a lone hand-entered row on another date is moved,
+ * and several such rows produce a notice.
+ *
  * Also pins the standard envelope: `{success:true,data}` / `{success:false,error}`.
  *
  * Dates derive from todayET() so the fixture never goes wall-clock stale.
@@ -90,20 +95,21 @@ describe("POST /api/earnings/confirm-date — two rows for one symbol", () => {
     const res = await post({ symbol: "AAA", confirmedDate: later, confirmedTime: "amc" });
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body).toEqual({ success: true, data: { eventId: laterId, eventDate: later } });
+    expect(body).toEqual({
+      success: true,
+      data: { eventId: laterId, eventDate: later, deletedEventId: earlierId },
+    });
 
     const confirmed = rowById(laterId);
     expect(confirmed.event_date).toBe(later);
     expect(confirmed.date_status).toBe("user_confirmed");
     expect(confirmed.superseded).toBe(0);
 
-    // The other row keeps the date and slot the user typed for it.
-    const other = rowById(earlierId);
-    expect(other.event_date).toBe(earlier);
-    expect(other.event_time).toBe("BMO");
-    // No third row was minted.
+    // The other row had nothing attached, so it is gone (ruling 2026-10-08):
+    // one hand-entered row for the print, and no third row was minted.
+    expect(rowById(earlierId)).toBeUndefined();
     const n = hoisted.db.prepare("SELECT COUNT(*) AS n FROM calendar_events").get() as { n: number };
-    expect(n.n).toBe(2);
+    expect(n.n).toBe(1);
   });
 
   it("confirming the EARLIER date locks the earlier row, by id", async () => {
@@ -113,8 +119,67 @@ describe("POST /api/earnings/confirm-date — two rows for one symbol", () => {
     const res = await post({ symbol: "aaa", confirmedDate: earlier, confirmedTime: "bmo" });
     const body = await res.json();
     expect(body.data.eventId).toBe(earlierId);
+    expect(body.data.deletedEventId).toBe(laterId);
     expect(rowById(earlierId).superseded).toBe(0);
-    expect(rowById(laterId).event_date).toBe(later);
+    expect(rowById(earlierId).event_date).toBe(earlier);
+    expect(rowById(laterId)).toBeUndefined();
+  });
+
+  it("a record still attached to the other row keeps it hidden, and the answer says so", async () => {
+    const earlierId = seedManualRow("AAA", earlier, "BMO", "08:00");
+    const laterId = seedManualRow("AAA", later, "AMC", "16:10");
+    // A preview sent long before the confirmed date stays on the old row.
+    hoisted.db
+      .prepare(
+        `INSERT INTO earnings_emails (event_id, phase, recipient, sent_at)
+         VALUES (?, 'preview', 'desk@example.com', ?)`,
+      )
+      .run(earlierId, `${addDays(todayET(), -20)} 12:00:00`);
+
+    const res = await post({ symbol: "AAA", confirmedDate: later, confirmedTime: "amc" });
+    const body = await res.json();
+    expect(body.success).toBe(true);
+    expect(body.data.eventId).toBe(laterId);
+    expect(body.data.foldedEventId).toBe(earlierId);
+    expect(body.data).not.toHaveProperty("deletedEventId");
+    expect(body.data.note).toMatch(/hidden, not deleted/);
+    // The user-facing sentence travels in `notice` (the conflict marker shows it).
+    expect(body.data.notice).toBe(
+      `AAA still has an entry on ${earlier} because a preview email was already sent for it. Remove that entry if you no longer want it.`,
+    );
+    expect(rowById(earlierId).superseded).toBe(1);
+  });
+
+  it("one hand-entered row on another date is MOVED: same id, confirmed date, no second row", async () => {
+    const id = seedManualRow("AAA", earlier, "AMC", "16:10");
+
+    const res = await post({ symbol: "AAA", confirmedDate: later, confirmedTime: "amc" });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      success: true,
+      data: { eventId: id, eventDate: later, movedEventId: id },
+    });
+    const moved = rowById(id);
+    expect(moved.event_date).toBe(later);
+    expect(moved.date_status).toBe("user_confirmed");
+    expect(moved.superseded).toBe(0);
+    const n = hoisted.db.prepare("SELECT COUNT(*) AS n FROM calendar_events").get() as { n: number };
+    expect(n.n).toBe(1);
+  });
+
+  it("several hand-entered rows on other dates: nothing moves and the answer carries a notice", async () => {
+    const a = seedManualRow("AAA", earlier, "AMC", "16:10");
+    const b = seedManualRow("AAA", addDays(later, 1), "AMC", "16:10");
+
+    const res = await post({ symbol: "AAA", confirmedDate: later, confirmedTime: "amc" });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.success).toBe(true);
+    expect(body.data.notice).toMatch(/several hand-entered dates/);
+    expect(body.data).not.toHaveProperty("movedEventId");
+    expect(rowById(a).event_date).toBe(earlier);
+    expect(rowById(b).event_date).toBe(addDays(later, 1));
+    expect(rowById(body.data.eventId).event_date).toBe(later);
   });
 
   it("a confirmed date beside a vendor row supersedes the vendor row, not the confirmed one", async () => {

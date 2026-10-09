@@ -191,14 +191,53 @@ export interface PortfolioTotals {
   snapshotCount: number;
   latestDate: string | null;
   oldestDate: string | null;
+  /** Earliest / latest statement date the change is measured against (null = none). */
+  previousDateEarliest: string | null;
+  previousDateLatest: string | null;
 }
 
-export function getPortfolioTotals(db: Database.Database): PortfolioTotals {
-  // Use same blending logic as getAccountSummaries: prefer recent TWS value,
-  // then daily valuation, then non-TWS monthly snapshot per account.
-  const row = db
-    .prepare(
-      `WITH latest_monthly AS (
+/** Which kind of row an account's current value was read from. */
+export type AccountValueSourceKind = "live" | "daily" | "statement";
+
+export interface AccountCurrentValue {
+  accountId: number;
+  accountName: string;
+  /** null when the account has no value on record. */
+  currentValue: number | null;
+  asOfDate: string | null;
+  /** The latest statement value dated before `asOfDate`. */
+  previousValue: number | null;
+  /** Date of the statement `previousValue` was read from. */
+  previousDate: string | null;
+  sourceKind: AccountValueSourceKind | null;
+}
+
+export interface PortfolioCurrentValues {
+  totalValue: number;
+  totalPreviousValue: number;
+  /** Newest and oldest of the accounts' own as-of dates. */
+  latestDate: string | null;
+  oldestDate: string | null;
+  previousDateEarliest: string | null;
+  previousDateLatest: string | null;
+  accounts: AccountCurrentValue[];
+}
+
+/**
+ * The per-account "current value" selection behind the Portfolio strip, as a
+ * CTE chain ending in `account_values` (one row per account in scope):
+ * a live (TWS / Plaid) row dated within a day wins, else the latest daily
+ * valuation when it is newer than the latest statement, else that statement.
+ * `scopeSql` is appended to the final accounts read (`AND a.id IN (...)`).
+ */
+function accountValuesCteSql(scopeSql: string): string {
+  const pick = (liveCol: string, dailyCol: string, statementCol: string) => `CASE
+            WHEN tw.total_value IS NOT NULL THEN ${liveCol}
+            WHEN COALESCE(d.valuation_date, '') > COALESCE(m.month_end_date, '')
+              THEN ${dailyCol}
+            ELSE ${statementCol}
+          END`;
+  return `WITH latest_monthly AS (
         SELECT account_id, month_end_date, total_value,
           ROW_NUMBER() OVER (PARTITION BY account_id ORDER BY month_end_date DESC) AS rn
         FROM monthly_snapshots
@@ -219,43 +258,84 @@ export function getPortfolioTotals(db: Database.Database): PortfolioTotals {
       account_values AS (
         SELECT
           a.id,
-          CASE
-            WHEN tw.total_value IS NOT NULL THEN tw.total_value
-            WHEN COALESCE(d.valuation_date, '') > COALESCE(m.month_end_date, '')
-              THEN d.total_value
-            ELSE m.total_value
-          END AS current_value,
-          CASE
-            WHEN tw.total_value IS NOT NULL THEN tw.month_end_date
-            WHEN COALESCE(d.valuation_date, '') > COALESCE(m.month_end_date, '')
-              THEN d.valuation_date
-            ELSE m.month_end_date
-          END AS as_of_date,
+          a.name,
+          ${pick("tw.total_value", "d.total_value", "m.total_value")} AS current_value,
+          ${pick("tw.month_end_date", "d.valuation_date", "m.month_end_date")} AS as_of_date,
+          ${pick("'live'", "'daily'", "'statement'")} AS source_kind,
           (SELECT ms2.total_value FROM monthly_snapshots ms2
            WHERE ms2.account_id = a.id AND ${excludeLiveSnapshotsSql("ms2.source")}
-             AND ms2.month_end_date < CASE
-               WHEN tw.total_value IS NOT NULL THEN tw.month_end_date
-               WHEN COALESCE(d.valuation_date, '') > COALESCE(m.month_end_date, '')
-               THEN d.valuation_date ELSE m.month_end_date END
-           ORDER BY ms2.month_end_date DESC LIMIT 1) AS prev_value
+             AND ms2.month_end_date < ${pick("tw.month_end_date", "d.valuation_date", "m.month_end_date")}
+           ORDER BY ms2.month_end_date DESC LIMIT 1) AS prev_value,
+          (SELECT ms3.month_end_date FROM monthly_snapshots ms3
+           WHERE ms3.account_id = a.id AND ${excludeLiveSnapshotsSql("ms3.source")}
+             AND ms3.month_end_date < ${pick("tw.month_end_date", "d.valuation_date", "m.month_end_date")}
+           ORDER BY ms3.month_end_date DESC LIMIT 1) AS prev_date
         FROM accounts a
         LEFT JOIN latest_monthly m ON m.account_id = a.id AND m.rn = 1
         LEFT JOIN latest_daily d ON d.account_id = a.id AND d.rn = 1
         LEFT JOIN latest_tws tw ON tw.account_id = a.id AND tw.rn = 1
-      )
+        WHERE 1 = 1 ${scopeSql}
+      )`;
+}
+
+/**
+ * Each account's current value and the total over a scope: the ONE
+ * implementation the Portfolio strip (`getPortfolioTotals`) and the chat
+ * summary both read, so the two can never state different totals.
+ *
+ * `accountIds` undefined = every account; an empty array = no accounts
+ * (never widened to the whole portfolio).
+ */
+export function getPortfolioCurrentValues(
+  db: Database.Database,
+  accountIds?: number[],
+): PortfolioCurrentValues {
+  if (accountIds !== undefined && accountIds.length === 0) {
+    return { totalValue: 0, totalPreviousValue: 0, latestDate: null, oldestDate: null, previousDateEarliest: null, previousDateLatest: null, accounts: [] };
+  }
+  const scopeSql = accountIds ? `AND a.id IN (${accountIds.map(() => "?").join(",")})` : "";
+  const scopeParams = accountIds ?? [];
+  const cte = accountValuesCteSql(scopeSql);
+
+  const row = db
+    .prepare(
+      `${cte}
       SELECT
         COALESCE(SUM(current_value), 0) AS totalValue,
         COALESCE(SUM(prev_value), 0) AS totalPreviousValue,
+        MIN(prev_date) AS previousDateEarliest,
+        MAX(prev_date) AS previousDateLatest,
         MIN(as_of_date) AS oldestDate,
         MAX(as_of_date) AS latestDate
       FROM account_values`
     )
-    .get() as {
+    .get(...scopeParams) as {
     totalValue: number;
     totalPreviousValue: number;
     oldestDate: string | null;
     latestDate: string | null;
+    previousDateEarliest: string | null;
+    previousDateLatest: string | null;
   };
+
+  const accounts = db
+    .prepare(
+      `${cte}
+      SELECT id AS accountId, name AS accountName, current_value AS currentValue,
+             as_of_date AS asOfDate, prev_value AS previousValue, prev_date AS previousDate,
+             CASE WHEN current_value IS NULL THEN NULL ELSE source_kind END AS sourceKind
+      FROM account_values
+      ORDER BY id`
+    )
+    .all(...scopeParams) as AccountCurrentValue[];
+
+  return { ...row, accounts };
+}
+
+export function getPortfolioTotals(db: Database.Database): PortfolioTotals {
+  // Use same blending logic as getAccountSummaries: prefer recent TWS value,
+  // then daily valuation, then non-TWS monthly snapshot per account.
+  const row = getPortfolioCurrentValues(db);
 
   const totalChange = row.totalValue - row.totalPreviousValue;
   const totalChangePercent =
@@ -285,5 +365,7 @@ export function getPortfolioTotals(db: Database.Database): PortfolioTotals {
     snapshotCount,
     latestDate: row.latestDate,
     oldestDate: row.oldestDate,
+    previousDateEarliest: row.previousDateEarliest,
+    previousDateLatest: row.previousDateLatest,
   };
 }

@@ -4,6 +4,8 @@ import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { SubView, Tab } from "./nav-tabs";
+import { rememberedScopeHref } from "@/lib/ui/analysis-scope-memory";
+import { useRememberedAnalysisScope } from "./use-remembered-analysis-scope";
 
 interface Props {
   tab: Tab;
@@ -62,6 +64,7 @@ export function TabDropdown({ tab, isActive }: Props) {
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const router = useRouter();
+  const rememberedScope = useRememberedAnalysisScope(pathname, searchParams.get("scope"));
   const [open, setOpen] = useState(false);
   const [focusIndex, setFocusIndex] = useState(0);
   const [menuPos, setMenuPos] = useState<{ top: number; left: number } | null>(null);
@@ -169,7 +172,7 @@ export function TabDropdown({ tab, isActive }: Props) {
     <div ref={containerRef} className="relative">
       <div className="flex items-center">
         <Link
-          href={tab.href}
+          href={rememberedScopeHref(tab.href, rememberedScope, pathname)}
           role="tab"
           aria-selected={isActive}
           aria-haspopup="menu"
@@ -218,7 +221,11 @@ export function TabDropdown({ tab, isActive }: Props) {
         >
           {subviews.map((sv, i) => {
             const active = subviewMatches(sv, searchParams, pathname, tab.href);
-            const href = withPreservedParams(sv.href, searchParams, tab.preserveParams);
+            const href = rememberedScopeHref(
+              withPreservedParams(sv.href, searchParams, tab.preserveParams),
+              rememberedScope,
+              pathname,
+            );
             return (
               <Link
                 key={sv.href}

@@ -1,5 +1,6 @@
 "use client";
 
+import { PERCENT_BASIS } from "@/lib/analysis/percent-bases";
 import { useState, useEffect, type ReactNode } from "react";
 import {
   AreaChart,
@@ -352,6 +353,8 @@ export function RiskMetrics({ scope }: { scope?: string }) {
             </div>
           </div>
 
+          <p className="text-xs text-ink-dim mb-3">{PERCENT_BASIS.riskTop5Caption}</p>
+
           {metrics.herfindahl != null && metrics.herfindahl > 0 && (
             <p className={`text-xs mb-3 ${toneClass(interpretHHI(metrics.herfindahl).tone)}`}>
               <PrivateText>{interpretHHI(metrics.herfindahl).text}</PrivateText>
@@ -384,7 +387,7 @@ export function RiskMetrics({ scope }: { scope?: string }) {
                   tickLine={false}
                 />
                 <Tooltip
-                  formatter={(value) => [weightTooltipFormatter(value as number | string), "Weight"]}
+                  formatter={(value) => [weightTooltipFormatter(value as number | string), `Weight (${PERCENT_BASIS.riskTop5})`]}
                   contentStyle={{
                     background: "#0F1218",
                     border: "1px solid #1E293B",

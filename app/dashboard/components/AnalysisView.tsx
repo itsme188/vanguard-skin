@@ -30,6 +30,7 @@ import { ClassificationCard } from "./analysis/ClassificationCard";
 import { DrillDownPanel } from "./analysis/DrillDownPanel";
 import type { DrillDownFilter } from "@/lib/queries/drill-down";
 import { isDrillableDimension } from "@/lib/analysis/drillable-dimensions";
+import { PERCENT_BASIS, geographyBucketDefinition } from "@/lib/analysis/percent-bases";
 import {
   PieChart, Pie, Cell, Tooltip, ResponsiveContainer,
 } from "recharts";
@@ -531,10 +532,12 @@ export function AnalysisView({
                 <tr className="border-b border-edge text-ink-faint">
                   <th className="text-left py-2 pr-4">{getDimensionLabel(currentDimension)}</th>
                   <th className="text-right py-2 pr-4">Value</th>
-                  <th className="text-right py-2 pr-4">%</th>
+                  <th className="text-right py-2 pr-4" title={PERCENT_BASIS.breakdown}>
+                    %
+                  </th>
                   <th
                     className="text-right py-2 pr-4"
-                    title="Delta-adjusted exposure as % of holdings — options count at delta × underlying notional (puts negative), so this is what actually moves with the market"
+                    title={`Delta-adjusted exposure, ${PERCENT_BASIS.breakdown}: options count at delta × underlying notional (puts negative), so this is what actually moves with the market`}
                   >
                     Net exp %
                   </th>
@@ -554,6 +557,12 @@ export function AnalysisView({
                   // No entry = the row has no slice (a net-short or flat
                   // bucket): it gets a hollow dot, never a slice's colour.
                   const sliceColor = sliceColors.get(row.group_name);
+                  // Display-only definition of a catch-all bucket; group_name
+                  // itself stays raw (drill-down and donut colours key on it).
+                  const geographyDefinition = geographyBucketDefinition(
+                    currentDimension,
+                    row.group_name,
+                  );
                   return (
                   <tr
                     key={row.group_name}
@@ -578,17 +587,24 @@ export function AnalysisView({
                           reachable by Tab and Enter/Space while the row keeps
                           its table semantics. The click bubbles to the row's
                           own handler, so there is one drill path. */}
-                      {rowIsDrillable ? (
-                        <button
-                          type="button"
-                          aria-label={`Drill down into ${row.group_name}`}
-                          className="text-ink text-left rounded cursor-pointer focus-ring"
-                        >
-                          {row.group_name}
-                        </button>
-                      ) : (
-                        <span className="text-ink">{row.group_name}</span>
-                      )}
+                      <div className="min-w-0">
+                          {rowIsDrillable ? (
+                            <button
+                              type="button"
+                              aria-label={`Drill down into ${row.group_name}`}
+                              className="text-ink text-left rounded cursor-pointer focus-ring"
+                            >
+                              {row.group_name}
+                            </button>
+                          ) : (
+                            <span className="text-ink">{row.group_name}</span>
+                          )}
+                          {geographyDefinition && (
+                            <span className="block text-xs text-ink-dim">
+                              {geographyDefinition}
+                            </span>
+                          )}
+                      </div>
                     </td>
                     <td className="text-right py-2 pr-4 font-mono text-ink-dim">
                       <PrivateText>{formatMoney(row.total_market_value)}</PrivateText>
@@ -613,6 +629,7 @@ export function AnalysisView({
             </table>
             </ScrollFade>
           </div>
+          <p className="mt-3 text-xs text-ink-dim">{PERCENT_BASIS.breakdownCaption}</p>
         </div>
       </div>
 

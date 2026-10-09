@@ -123,6 +123,23 @@ describe("HoldingsTable account value footer (rendered)", () => {
     expect(note).toContain("not in Positions");
   });
 
+  it("on a live-anchor residual day the sweep note does not claim the funds are counted in Cash (D9b)", () => {
+    const html = render(
+      [...ROWS, holding(3, "ZZSWEEP")],
+      cashLine({
+        cashEquivalentSymbols: ["ZZSWEEP"],
+        isLiveSource: true,
+        liveSourceCaption: LIVE_SNAPSHOT_CASH_CAPTION,
+        anchorDate: "2026-03-03",
+      }),
+    );
+    const note = sliceBetween(html, 'data-account-value="sweep-note"', "</p>");
+    expect(note).toContain("ZZSWEEP");
+    expect(note).not.toContain("counted in Cash");
+    expect(note).toContain("account total minus positions");
+    expect(note).toContain("last statement");
+  });
+
   describe("some positions had no price on the valuation date", () => {
     const unpriced = { holdingsCount: 4, pricedCount: 3 };
 

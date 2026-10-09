@@ -120,15 +120,15 @@ describe("TransactionsSection.tsx wiring", () => {
     "utf8",
   );
 
-  it("imports transactionTypeLabel from the shared helper", () => {
+  it("imports the direction-label helper (wraps transactionTypeLabel)", () => {
     expect(source).toMatch(
-      /import\s*\{\s*transactionTypeLabel\s*\}\s*from\s*["']@\/lib\/chart\/marker-label["']/,
+      /import\s*\{\s*transactionDirectionLabel,\s*transactionDisplayType\s*\}\s*from\s*["']@\/lib\/transactions\/direction-label["']/,
     );
   });
 
   it("no longer renders the raw t.type inside the type chip", () => {
     expect(source).not.toMatch(/\{t\.type\}/);
-    expect(source).toContain("transactionTypeLabel(t.type)");
+    expect(source).toContain("transactionDirectionLabel(t.type, t.notes)");
   });
 });
 
@@ -138,15 +138,15 @@ describe("TransactionHistory.tsx wiring", () => {
     "utf8",
   );
 
-  it("imports transactionTypeLabel from the shared helper", () => {
+  it("imports the direction-label helper (wraps transactionTypeLabel)", () => {
     expect(source).toMatch(
-      /import\s*\{\s*transactionTypeLabel\s*\}\s*from\s*["']@\/lib\/chart\/marker-label["']/,
+      /import\s*\{\s*transactionDirectionLabel,\s*transactionDisplayType\s*\}\s*from\s*["']@\/lib\/transactions\/direction-label["']/,
     );
   });
 
   it("no longer renders the raw txn.type in either the desktop or mobile type pill", () => {
     expect(source).not.toMatch(/\{txn\.type\}/);
-    const occurrences = source.match(/transactionTypeLabel\(txn\.type\)/g) ?? [];
+    const occurrences = source.match(/transactionDirectionLabel\(txn\.type, txn\.notes\)/g) ?? [];
     // Two pills render the type: the desktop-only cell and the mobile-only
     // inline pill beside the symbol.
     expect(occurrences.length).toBe(2);

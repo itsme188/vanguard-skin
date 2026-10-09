@@ -15,6 +15,7 @@ import {
   renderThinCoverageLines,
   insertBeforeAlsoCovered,
 } from "@/lib/digest/thin-coverage";
+import { formatOutboundLevelPrice } from "@/lib/alerts/outbound-level-price";
 
 // ── Alerts block ────────────────────────────────────────────────────
 
@@ -27,6 +28,9 @@ interface RecentAlertRow {
   triggered_price: number;
   user_response: string;
   suggested_action: string | null;
+  /** The security's trading currency. `price` and `triggered_price` are both
+   *  in THIS currency (native, never converted). */
+  currency: string;
 }
 
 /**
@@ -46,7 +50,8 @@ export function formatTriggeredAlertsSection(
   const rows = db
     .prepare(
       `SELECT s.symbol, sl.level_type, sl.price, sl.price_source, sl.source_author,
-              la.triggered_price, la.user_response, la.suggested_action
+              la.triggered_price, la.user_response, la.suggested_action,
+              COALESCE(s.currency, 'USD') AS currency
          FROM level_alerts la
          JOIN security_levels sl ON sl.id = la.level_id
          JOIN securities s ON s.id = la.security_id
@@ -71,13 +76,13 @@ export function formatTriggeredAlertsSection(
       r.price_source && r.price_source !== "static"
         ? r.price_source.toUpperCase().replace("_", " ")
         : r.price != null
-          ? `$${r.price.toFixed(2)}`
+          ? formatOutboundLevelPrice(r.currency, r.price)
           : "";
     const author = r.source_author ? ` — ${r.source_author}` : "";
     const response = r.user_response !== "pending" ? ` (${r.user_response})` : "";
     const suggestion = r.suggested_action ? ` — _${r.suggested_action}_` : "";
     lines.push(
-      `- **${sym}** ${lt} ${srcLabel} hit $${r.triggered_price.toFixed(2)}${author}${response}${suggestion}`
+      `- **${sym}** ${lt} ${srcLabel} hit ${formatOutboundLevelPrice(r.currency, r.triggered_price)}${author}${response}${suggestion}`
     );
   }
   lines.push("");

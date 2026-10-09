@@ -81,7 +81,7 @@ function seedDb() {
     db.prepare(
       `INSERT INTO research_articles
          (id, source_id, subject, sender, raw_text, received_at, processed_at, sentiment, mentioned_symbols)
-       VALUES (?, 1, ?, 't@test.com', 'Body', datetime('${WEEK}', '-${i} days'), datetime('now'), 'neutral', '[]')`,
+       VALUES (?, 1, ?, 't@test.com', 'Synthetic body text about markets this week.', datetime('${WEEK}', '-${i} days'), datetime('now'), 'neutral', '[]')`,
     ).run(i + 1, `Article ${i}`);
   }
   return db;
@@ -129,11 +129,13 @@ describe("buildMacroSignalBlob — calendar events", () => {
 });
 
 describe("generateMacroThemes — exposure figure, marker and cited events", () => {
+  // Every theme cites an input and quotes it: since 2026-10-08 a theme without a
+  // verifiable citation is dropped before caching (tests/compute/macro-themes-citations.test.ts).
   const reply = JSON.stringify([
-    { name: "AI capex cycle", factor_label: "ai_exposure", direction: "risk-on", summary: "Capex guides kept climbing through the week." },
-    { name: "Rate repricing", factor_label: "interest_rate_sensitive", direction: "risk-off", summary: "A hot jobs print revived the hike debate." },
-    { name: "Tariff headlines", factor_label: "tariff_exposure", direction: "risk-off", summary: "Trade headlines pushed cyclicals lower again." },
-    { name: "Crypto bid", factor_label: "crypto_adjacent", direction: "risk-on", summary: "Crypto-linked names caught a late-week bid." },
+    { name: "AI capex cycle", factor_label: "ai_exposure", direction: "risk-on", summary: "Capex guides kept climbing through the week.", cited_kind: "article", cited_id: 1, cited_read: "mixed", cited_excerpt: "Synthetic body text about markets this week." },
+    { name: "Rate repricing", factor_label: "interest_rate_sensitive", direction: "risk-off", summary: "A hot jobs print revived the hike debate.", cited_kind: "article", cited_id: 1, cited_read: "mixed", cited_excerpt: "Synthetic body text about markets this week." },
+    { name: "Tariff headlines", factor_label: "tariff_exposure", direction: "risk-off", summary: "Trade headlines pushed cyclicals lower again.", cited_kind: "article", cited_id: 1, cited_read: "mixed", cited_excerpt: "Synthetic body text about markets this week." },
+    { name: "Crypto bid", factor_label: "crypto_adjacent", direction: "risk-on", summary: "Crypto-linked names caught a late-week bid.", cited_kind: "article", cited_id: 1, cited_read: "mixed", cited_excerpt: "Synthetic body text about markets this week." },
   ]);
 
   beforeEach(() => {

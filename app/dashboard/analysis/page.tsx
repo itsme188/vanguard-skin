@@ -404,7 +404,7 @@ export default async function AnalysisPage({ searchParams }: PageProps) {
               surface. SignificantMovesCard self-loads from the db singleton;
               MomentumPulse is prop-driven, so the pulse is computed here. ── */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-start">
-        <SignificantMovesCard />
+        <SignificantMovesCard accountIds={accountIds} scopeLabel={SCOPE_PILLS.find((s) => s.key === scope)?.label ?? scope} />
         <MomentumPulse pulse={computeMomentumPulse(db)} />
       </div>
 

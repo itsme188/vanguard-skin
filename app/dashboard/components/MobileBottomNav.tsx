@@ -3,6 +3,8 @@
 import { Suspense } from "react";
 import { usePathname, useSearchParams } from "next/navigation";
 import Link from "next/link";
+import { rememberedScopeHref } from "@/lib/ui/analysis-scope-memory";
+import { useRememberedAnalysisScope } from "./use-remembered-analysis-scope";
 
 type NavItem =
   | {
@@ -83,6 +85,7 @@ const navItems: NavItem[] = [
 function MobileBottomNavInner() {
   const pathname = usePathname();
   const searchParams = useSearchParams();
+  const rememberedScope = useRememberedAnalysisScope(pathname, searchParams.get("scope"));
 
   function handleChatClick(e: React.MouseEvent) {
     e.preventDefault();
@@ -136,7 +139,7 @@ function MobileBottomNavInner() {
           return (
             <Link
               key={item.href}
-              href={item.href}
+              href={rememberedScopeHref(item.href, rememberedScope, pathname)}
               className={`flex flex-col items-center gap-0.5 py-2 px-3 transition-colors ${
                 isActive ? "text-gold-ink" : "text-ink-faint"
               }`}

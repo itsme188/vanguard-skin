@@ -475,7 +475,11 @@ describe("EarningsHubLive source", () => {
     // IrPageField's mount effect fires GET /api/print-watch/sources twice.
     expect(src).toMatch(/offsetParent !== null/);
     expect(src).toMatch(/attributeFilter: \["data-chat-rail"\]/);
-    expect(src.match(/open && isVisibleTwin/g)).toHaveLength(2);
+    // Three bodies since the read-only record of a finished print joined the
+    // live sheet and the pre-window controls: every one of them is gated, so
+    // the record's mount read fires once per expand and not once per twin.
+    expect(src.match(/open && isVisibleTwin/g)).toHaveLength(3);
+    expect(src.match(/\{open && [^i]/g)).toBeNull();
   });
 
   it("prints the state and the window ONCE, and never off the wall clock (reviews M1, M4)", () => {

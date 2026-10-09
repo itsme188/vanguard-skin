@@ -19,6 +19,7 @@ import { usePrivateFormatter } from "@/lib/privacy/components";
 import { formatUSD } from "@/lib/format";
 import {
   anchorDailiesToStatements,
+  type EquityFlow,
   equityCurveGranularity,
   equityCurveRangeCaption,
   equityCurveTimeTicks,
@@ -153,11 +154,13 @@ interface ChartPoint {
  */
 function buildChartData(
   snapshots: MonthlySnapshot[],
-  dailyValuations?: DailyValuation[]
+  dailyValuations?: DailyValuation[],
+  flows: EquityFlow[] = []
 ): { points: ChartPoint[]; summary: AnchoredCurveSummary } {
   const { points, summary } = anchorDailiesToStatements(
     snapshots.map((s) => ({ date: s.month_end_date, value: s.total_value })),
-    (dailyValuations ?? []).map((d) => ({ date: d.valuation_date, value: d.total_value }))
+    (dailyValuations ?? []).map((d) => ({ date: d.valuation_date, value: d.total_value })),
+    flows
   );
   return {
     points: points.map((p) => ({ date: p.date, total: p.value, recordedValue: p.recordedValue })),
@@ -268,11 +271,14 @@ export function PerformanceCurveChart({
 export function EquityCurveChart({
   snapshots,
   dailyValuations,
+  flows,
   accountName,
   showBreakdown = false,
 }: {
   snapshots: MonthlySnapshot[];
   dailyValuations?: DailyValuation[];
+  /** External deposits (+) and withdrawals (-) by date; used only by the bad-data spread check, never rendered. */
+  flows?: EquityFlow[];
   accountName: string;
   showBreakdown?: boolean;
 }) {
@@ -283,7 +289,7 @@ export function EquityCurveChart({
 
   // Statement values are authoritative and plot exactly; recorded daily values
   // keep their shape, corrected additively onto the statements.
-  const { points: rawData, summary: anchorSummary } = buildChartData(snapshots, dailyValuations);
+  const { points: rawData, summary: anchorSummary } = buildChartData(snapshots, dailyValuations, flows);
   const hasDaily = dailyValuations && dailyValuations.length > 0;
   const anchorCaption = equityCurveRangeCaption(anchorSummary, rangeCutoffIso(selectedRange));
 

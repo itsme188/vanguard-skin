@@ -209,4 +209,55 @@ describe("sendLevelAlertPush", () => {
     expect(res.reason).toBe("pushover_not_configured");
     expect(fetchSpy).not.toHaveBeenCalled();
   });
+
+  it("labels a non-dollar level in its own currency, with the number unchanged", async () => {
+    process.env.PUSHOVER_APP_TOKEN = "tok";
+    process.env.PUSHOVER_USER_KEY = "usr";
+
+    const fetchSpy = vi.fn().mockResolvedValue({
+      status: 200,
+      json: async () => ({ status: 1, request: "req-3" }),
+    });
+    globalThis.fetch = fetchSpy as unknown as typeof fetch;
+
+    await sendLevelAlertPush({
+      symbol: "ZZJ",
+      levelType: "support",
+      triggeredPrice: 976000,
+      sourceAuthor: null,
+      heldQuantity: 0,
+      securityId: 7,
+      currency: "JPY",
+    });
+
+    const [, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
+    const body = new URLSearchParams(init.body as string);
+    expect(body.get("message")).toBe("Triggered @ \u00a5976,000");
+    expect(body.get("message")).not.toContain("$");
+  });
+
+  it("an explicit USD currency reads exactly as a missing one", async () => {
+    process.env.PUSHOVER_APP_TOKEN = "tok";
+    process.env.PUSHOVER_USER_KEY = "usr";
+
+    const fetchSpy = vi.fn().mockResolvedValue({
+      status: 200,
+      json: async () => ({ status: 1, request: "req-4" }),
+    });
+    globalThis.fetch = fetchSpy as unknown as typeof fetch;
+
+    await sendLevelAlertPush({
+      symbol: "HOOD",
+      levelType: "entry",
+      triggeredPrice: 1291.3,
+      sourceAuthor: null,
+      heldQuantity: 0,
+      securityId: 1735,
+      currency: "USD",
+    });
+
+    const [, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
+    const body = new URLSearchParams(init.body as string);
+    expect(body.get("message")).toBe("Triggered @ $1,291.30");
+  });
 });

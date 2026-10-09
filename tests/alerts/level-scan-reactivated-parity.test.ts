@@ -35,11 +35,12 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.unstubAllEnvs();
   vi.unstubAllGlobals();
 });
 
-function seedFiredLevel(): { secId: number; levelId: number } {
+function seedFiredLevel(priorFire: string = PRIOR_FIRE): { secId: number; levelId: number } {
   const secId = db
     .prepare(
       "INSERT INTO securities (symbol, name, security_type, asset_class, multiplier) VALUES (?, ?, 'stock', 'equity', 1)"
@@ -55,7 +56,7 @@ function seedFiredLevel(): { secId: number; levelId: number } {
     "INSERT INTO prices (security_id, date, close_price, source) VALUES (?, ?, 120, 'manual')"
   ).run(secId, PRICE_DATE);
   // It fired on an earlier day: paused, with the last-fired record kept.
-  triggerLevel(db, { levelId, securityId: secId, triggeredPrice: 110, triggeredAt: PRIOR_FIRE });
+  triggerLevel(db, { levelId, securityId: secId, triggeredPrice: 110, triggeredAt: priorFire });
   return { secId, levelId };
 }
 
@@ -150,5 +151,87 @@ describe("a re-armed level with a last-fired record: Mac scan and Worker scan ag
 
     const worker = await runWorker(workerSnapshot());
     expect(worker.sent[0]).toMatchObject({ armedCrossedAt: stamp });
+  });
+});
+
+/**
+ * Once-a-day guard, both sides (ruling 2026-10-08). The Mac allows one alert
+ * per level per EASTERN day. The Worker now reads the level's last fire from
+ * the snapshot row and blocks only a fire on the current Eastern day; before,
+ * its only memory was a KV marker with a rolling 24 hours.
+ */
+describe("once per Eastern day: Mac scan and Worker scan agree", () => {
+  // 10:00 Eastern (EDT) on 2026-10-08.
+  const NOW = new Date("2026-10-08T14:00:00.000Z");
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(NOW);
+  });
+
+  it("the snapshot row carries the level's currency and its last-fired time", async () => {
+    // 09:35 Eastern today.
+    const { secId, levelId } = seedFiredLevel("2026-10-08T13:35:00.000Z");
+    db.prepare("UPDATE securities SET currency = 'JPY' WHERE id = ?").run(secId);
+    reactivateLevel(db, levelId, { force: true });
+
+    const snapshot = workerSnapshot();
+    expect(snapshot.schemaVersion).toBe(12);
+    const row = (snapshot.securityLevels ?? []).find((l) => l.id === levelId);
+    expect(row).toMatchObject({ currency: "JPY", triggered_at: "2026-10-08T13:35:00.000Z" });
+  });
+
+  it("a level that never fired carries a null last-fired time and USD", async () => {
+    const secId = db
+      .prepare(
+        "INSERT INTO securities (symbol, name, security_type, asset_class, multiplier) VALUES ('ZZN', 'ZZN Corp', 'stock', 'equity', 1)"
+      )
+      .run().lastInsertRowid as number;
+    const levelId = upsertLevel(db, { security_id: secId, level_type: "resistance", price: 100, price_source: "static" });
+    const row = (workerSnapshot().securityLevels ?? []).find((l) => l.id === levelId);
+    expect(row).toMatchObject({ currency: "USD", triggered_at: null });
+  });
+
+  it("fired earlier the same Eastern day, then re-armed: neither side alerts again", async () => {
+    const { levelId } = seedFiredLevel("2026-10-08T13:35:00.000Z");
+    expect(reactivateLevel(db, levelId, { force: true }).ok).toBe(true);
+
+    const worker = await runWorker(workerSnapshot());
+    expect(worker.result.fired).toBe(0);
+    expect(worker.result.deduped).toBe(1);
+    expect(worker.sent).toHaveLength(0);
+    expect(worker.kv.store.has(`cloud-fired-level-${levelId}`)).toBe(false);
+
+    const mac = detectAndFireAlerts(db);
+    expect(mac.fired).toBe(0);
+    expect(mac.deduped).toBe(1);
+    expect(getAlerts(db)).toHaveLength(1);
+  });
+
+  it("fired yesterday afternoon, re-armed, crosses again this morning (under 24 hours): both sides alert", async () => {
+    // 15:00 Eastern on the 7th: 19 hours before NOW.
+    const { levelId } = seedFiredLevel("2026-10-07T19:00:00.000Z");
+    expect(reactivateLevel(db, levelId, { force: true }).ok).toBe(true);
+
+    const worker = await runWorker(workerSnapshot());
+    expect(worker.result.fired).toBe(1);
+    expect(worker.sent).toHaveLength(1);
+
+    const mac = detectAndFireAlerts(db);
+    expect(mac.fired).toBe(1);
+    expect(mac.deduped).toBe(0);
+    expect(getAlerts(db)).toHaveLength(2);
+  });
+
+  it("fired at 20:30 Eastern last night (same UTC date as this morning): both sides alert", async () => {
+    const { levelId } = seedFiredLevel("2026-10-08T00:30:00.000Z");
+    expect(reactivateLevel(db, levelId, { force: true }).ok).toBe(true);
+
+    const worker = await runWorker(workerSnapshot());
+    expect(worker.result.fired).toBe(1);
+
+    const mac = detectAndFireAlerts(db);
+    expect(mac.fired).toBe(1);
+    expect(getAlerts(db)).toHaveLength(2);
   });
 });

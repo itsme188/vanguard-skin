@@ -27,7 +27,7 @@ function seedDb() {
     db.prepare(
       `INSERT INTO research_articles
          (id, source_id, subject, sender, raw_text, received_at, processed_at, sentiment, mentioned_symbols)
-       VALUES (?, 1, ?, 't@test.com', 'Body', datetime('${WEEK}', '-${i} days'), datetime('now'), 'neutral', '[]')`,
+       VALUES (?, 1, ?, 't@test.com', 'Synthetic body text about markets this week.', datetime('${WEEK}', '-${i} days'), datetime('now'), 'neutral', '[]')`,
     ).run(i + 1, `Article ${i}`);
   }
   const sec = db.prepare("INSERT INTO securities (symbol, name, security_type, fund_category) VALUES (?, ?, ?, ?)");
@@ -62,9 +62,11 @@ describe("dropCashEquivalentContributors", () => {
 });
 
 describe("generateMacroThemes — top contributors", () => {
+  // Every theme cites an input and quotes it: since 2026-10-08 a theme without a
+  // verifiable citation is dropped before caching (tests/compute/macro-themes-citations.test.ts).
   const reply = JSON.stringify([
-    { name: "Rate repricing", factor_label: "interest_rate_sensitive", direction: "risk-off", summary: "A hot jobs print revived the hike debate." },
-    { name: "AI capex cycle", factor_label: "ai_exposure", direction: "risk-on", summary: "Capex guides kept climbing through the week." },
+    { name: "Rate repricing", factor_label: "interest_rate_sensitive", direction: "risk-off", summary: "A hot jobs print revived the hike debate.", cited_kind: "article", cited_id: 1, cited_read: "mixed", cited_excerpt: "Synthetic body text about markets this week." },
+    { name: "AI capex cycle", factor_label: "ai_exposure", direction: "risk-on", summary: "Capex guides kept climbing through the week.", cited_kind: "article", cited_id: 1, cited_read: "mixed", cited_excerpt: "Synthetic body text about markets this week." },
   ]);
 
   beforeEach(() => {

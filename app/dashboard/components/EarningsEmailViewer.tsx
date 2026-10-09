@@ -32,6 +32,11 @@ export interface EmailContentResponse {
    * out; the header says so (see scoreboardRefreshedAfterSend).
    */
   reactionLegAt?: string | null;
+  /**
+   * Additive, recap only — `manual_actuals_at` when later than `sentAt`: the
+   * actuals on the scoreboard were entered or promoted after the send.
+   */
+  actualsChangedAt?: string | null;
   fullHtml: string;
 }
 
@@ -61,6 +66,25 @@ export function scoreboardRefreshedAfterSend(
 }
 
 /**
+ * The one sentence naming what changed on the scoreboard after the send, or
+ * null when nothing did. Reaction only, actuals only, or both in one sentence.
+ * Times are ET.
+ */
+export function scoreboardRefreshSentence(
+  sentAt: string | null | undefined,
+  reactionLegAt: string | null | undefined,
+  actualsChangedAt: string | null | undefined,
+): string | null {
+  const reaction = scoreboardRefreshedAfterSend(sentAt, reactionLegAt);
+  const actuals = scoreboardRefreshedAfterSend(sentAt, actualsChangedAt);
+  const parts: string[] = [];
+  if (actuals) parts.push(`actuals entered ${formatSentAt(actuals.toISOString())} ET`);
+  if (reaction) parts.push(`reaction captured ${formatSentAt(reaction.toISOString())} ET`);
+  if (parts.length === 0) return null;
+  return `Scoreboard refreshed after send \u2014 ${parts.join("; ")}`;
+}
+
+/**
  * Where Tab lands next inside the viewer: the dialog's own controls form a
  * closed ring (Tab off the last wraps to the first, Shift+Tab off the first
  * wraps to the last). `current` is -1 when focus sits on the dialog panel
@@ -80,10 +104,11 @@ export function nextTabStopIndex(count: number, current: number, shift: boolean)
  * tests/dashboard/earnings-email-viewer-delivery-state.test.ts.
  */
 export function EmailViewerHeader({ data }: { data: EmailContentResponse | null }) {
-  const refreshedAt =
+  const refreshNote =
     data && data.phase === "recap"
-      ? scoreboardRefreshedAfterSend(data.sentAt, data.reactionLegAt)
+      ? scoreboardRefreshSentence(data.sentAt, data.reactionLegAt, data.actualsChangedAt)
       : null;
+  const isSentRecap = !!data && data.phase === "recap" && !!data.sentAt;
   return (
     <div className="flex flex-col min-w-0">
       <h2 className="text-sm font-medium text-ink truncate whitespace-nowrap!">
@@ -106,10 +131,12 @@ export function EmailViewerHeader({ data }: { data: EmailContentResponse | null 
           still live-rebuilt)
         </p>
       )}
-      {refreshedAt && (
-        <p className="text-[11px] text-gold-ink font-mono mt-0.5 truncate">
-          Scoreboard refreshed after send — reaction captured{" "}
-          {formatSentAt(refreshedAt.toISOString())} ET
+      {refreshNote && (
+        <p className="text-[11px] text-gold-ink font-mono mt-0.5 truncate">{refreshNote}</p>
+      )}
+      {isSentRecap && (
+        <p className="text-[11px] text-ink-dim mt-0.5 truncate">
+          The scoreboard is rebuilt from current data; the text below is what was sent.
         </p>
       )}
       {data && data.deliveryState === "delivery-unknown" && (

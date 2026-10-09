@@ -19,11 +19,13 @@ import type { FeatureKey } from "@/lib/ai/feature-keys";
 import { issuerSiblings } from "@/lib/securities/issuer-family";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 import { mondayOf } from "@/lib/calendar/date-utils";
+import { partitionBriefingEvents } from "@/lib/calendar/briefing-partition";
 import {
   findSelfAdmissions,
   buildSelfAdmissionAddendum,
 } from "@/lib/calendar/briefing-self-admission";
 import { isUsableReactionLeg, type BenchmarkReaction } from "@/lib/calendar/reaction-snapshot-core";
+import { formatOutboundLevelPrice } from "@/lib/alerts/outbound-level-price";
 
 // Preferred weekend-reading sources — full raw_text is sent to the model.
 // ids correspond to research_sources.id. Keep aligned with DB; wrong ids
@@ -81,18 +83,13 @@ export async function generateWeeklyBriefing(
   // short-term trading book and must not be framed as core positioning.
   const holdings = getBriefingHoldings(db);
 
-  // ── Event partitioning: portfolio earnings (Finnhub) vs macro ──
+  // ── Event partitioning: portfolio earnings vs WSH vs macro ───────
+  // Portfolio earnings are the kept row for each print, whatever its source
+  // (a Nasdaq or hand-entered row can be the one the duplicate check keeps).
+  // The rule is shared with the Worker: lib/calendar/briefing-partition.ts.
   const weekStart = weekOf;
   const weekEnd = addDays(weekOf, 6);
-  const portfolioEarnings = events.filter(
-    (e) => e.source === "finnhub" && e.event_type === "earnings"
-  );
-  const wshEarnings = events.filter(
-    (e) => e.source === "wsh" && e.event_type === "earnings"
-  );
-  const otherEvents = events.filter(
-    (e) => e.source !== "finnhub" && !(e.source === "wsh" && e.event_type === "earnings")
-  );
+  const { portfolioEarnings, wshEarnings, otherEvents } = partitionBriefingEvents(events);
 
   // ── Expiring options ─────────────────────────────────────────────
   const expiringOptions = getExpiringOptions(db, weekStart, weekEnd);
@@ -346,7 +343,7 @@ function buildPrompt(p: PromptInput): string {
 
   const portfolioEarningsSection =
     p.portfolioEarnings.length > 0
-      ? `\n## Portfolio Earnings This Week\nThese are earnings from companies the user currently holds (Finnhub, cross-referenced against all accounts). For each event, the **User's combined position** field rolls up *every* sibling-class share + option held under the issuer family (e.g., GOOG common counts as exposure to GOOGL earnings). Use that field verbatim — do NOT infer position size from prose elsewhere. For each: setup going in, Street expectations (EPS/revenue consensus are embedded in the description below), how the company has performed against estimates over the last 4 quarters (also in description), key thing to watch on the call, and position implications given current holdings.\n\n${p.portfolioEarnings
+      ? `\n## Portfolio Earnings This Week\nThese are earnings from companies the user currently holds (earnings calendar, cross-referenced against all accounts). For each event, the **User's combined position** field rolls up *every* sibling-class share + option held under the issuer family (e.g., GOOG common counts as exposure to GOOGL earnings). Use that field verbatim — do NOT infer position size from prose elsewhere. For each: setup going in, Street expectations (EPS/revenue consensus are embedded in the description below), how the company has performed against estimates over the last 4 quarters (also in description), key thing to watch on the call, and position implications given current holdings.\n\n${p.portfolioEarnings
           .map((e, i) =>
             formatEventForPrompt(e, i + 1, p.combinedPositions.get(e.id)),
           )
@@ -373,7 +370,7 @@ function buildPrompt(p: PromptInput): string {
           .map((l, i) => {
             const who = l.source_author || l.source;
             const thesis = l.thesis ? ` — "${l.thesis}"` : "";
-            return `${i + 1}. **${l.symbol}** ${l.level_type.replace("_", " ")} at $${l.level_price.toFixed(2)} hit on ${l.triggered_at.slice(0, 10)} (price: $${l.triggered_price.toFixed(2)}). Source: ${who}${thesis}. User response: ${l.user_response}.`;
+            return `${i + 1}. **${l.symbol}** ${l.level_type.replace("_", " ")} at ${formatOutboundLevelPrice(l.currency, l.level_price)} hit on ${l.triggered_at.slice(0, 10)} (price: ${formatOutboundLevelPrice(l.currency, l.triggered_price)}). Source: ${who}${thesis}. User response: ${l.user_response}.`;
           })
           .join("\n")}\n`
       : "";
@@ -386,7 +383,7 @@ function buildPrompt(p: PromptInput): string {
             const thesis = l.thesis ? ` — "${l.thesis}"` : "";
             const distance = `${(l.distance_pct * 100).toFixed(1)}% ${l.distance_pct >= 0 ? "above" : "below"}`;
             const action = l.action_hint ? ` [action hint: ${l.action_hint.replace("_", " ")}]` : "";
-            return `${i + 1}. **${l.symbol}** ${l.level_type.replace("_", " ")} at $${l.level_price.toFixed(2)} — currently $${l.current_price.toFixed(2)} (${distance}). ${who}${thesis}${action}`;
+            return `${i + 1}. **${l.symbol}** ${l.level_type.replace("_", " ")} at ${formatOutboundLevelPrice(l.currency, l.level_price)} — currently ${formatOutboundLevelPrice(l.currency, l.current_price)} (${distance}). ${who}${thesis}${action}`;
           })
           .join("\n")}\n`
       : "";
@@ -900,7 +897,7 @@ function pluralOptionRight(optionType: string | null | undefined): string {
  * latest close per symbol. Sources of symbols:
  *   - held stocks/ETFs (the holdings list)
  *   - underlyings of options expiring this week
- *   - earnings event tickers (Finnhub + WSH)
+ *   - earnings event tickers (the kept row per print, any source, + WSH)
  *   - underlyings of any non-expiring options the user holds (e.g. a TER LEAP
  *     when TER stock isn't currently in holdings)
  * Why all four: we don't want Opus inferring "TER closed Friday well below

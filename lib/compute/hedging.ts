@@ -51,8 +51,55 @@ export interface DefenseInstrument {
   daysToExpiry?: number;
   /** Daily theta in dollars for the whole position (negative = decay). */
   thetaPerDay?: number | null;
+  /**
+   * Per-contract delta. When a scope holds the contract in several accounts
+   * this is the contract-weighted average across them (never "last account
+   * wins").
+   */
   delta?: number | null;
+  /**
+   * Where the volatility behind `delta` came from (options-greeks.ts):
+   * "computed" (solved from the option's own price) and "ibkr" (the broker's
+   * volatility for the underlying) are real market figures; "default" is the
+   * assumed fallback volatility. Across several accounts the weakest source
+   * is kept. Absent on shares and on options with no Greeks.
+   */
+  ivSource?: OptionVolSource;
   underlyingPrice?: number;
+}
+
+export type OptionVolSource = "computed" | "ibkr" | "default";
+
+/** Row text for a call whose delta clears the bar only on the assumed volatility. */
+export const ASSUMED_VOL_NOT_STOCK_NOTE = "delta from assumed volatility: not counted as stock";
+/** Row text for a core that includes a deep in-the-money call. */
+export const DEEP_CALL_COUNTED_NOTE = "deep in-the-money call counted as stock (delta-weighted)";
+
+export interface StockEquivalentVerdict {
+  /** True when the instrument joins the core as share-equivalents. */
+  counts: boolean;
+  /** Set only when the call clears the delta bar but is refused. */
+  refusedReason: string | null;
+}
+
+/**
+ * Owner ruling 2026-10-08: a LONG call with |delta| >= DEEP_ITM_ABS_DELTA is
+ * economically stock (contracts x multiplier x delta shares) and counts as a
+ * core holding, so a put against it is a hedge. Only a delta from a REAL
+ * volatility counts: one computed from the assumed default volatility is
+ * refused, with the reason carried to the row. A null delta, a missing
+ * volatility source, a short call and every put never count.
+ */
+export function stockEquivalentVerdict(i: DefenseInstrument): StockEquivalentVerdict {
+  const no: StockEquivalentVerdict = { counts: false, refusedReason: null };
+  if (!i.isOption || i.optionType !== "CALL") return no;
+  if (!(i.quantity > 0) || !(i.exposure > 0)) return no;
+  if (!i.greeksAvailable) return no;
+  if (typeof i.delta !== "number" || !Number.isFinite(i.delta)) return no;
+  if (Math.abs(i.delta) < HEDGE_BADGE_THRESHOLDS.DEEP_ITM_ABS_DELTA) return no;
+  if (i.ivSource === "computed" || i.ivSource === "ibkr") return { counts: true, refusedReason: null };
+  if (i.ivSource === "default") return { counts: false, refusedReason: ASSUMED_VOL_NOT_STOCK_NOTE };
+  return no;
 }
 
 export interface UnderlyingGroup {
@@ -83,6 +130,13 @@ export interface UnderlyingPair {
   coveragePct: number | null;
   sector: string | null;
   instruments: DefenseInstrument[];
+  /**
+   * The part of `coreExposure` that comes from deep in-the-money long calls
+   * counted as stock (see stockEquivalentVerdict). Absent when none.
+   */
+  stockEquivalentExposure?: number;
+  /** Short plain-language caveats for the row. Absent when none. */
+  notes?: string[];
 }
 
 export interface ProxyCandidate {
@@ -97,6 +151,8 @@ export interface StandaloneBet {
   exposure: number; // signed (negative)
   kind: "single_name_put" | "naked_short";
   instruments: DefenseInstrument[];
+  /** Short plain-language caveats for the row. Absent when none. */
+  notes?: string[];
 }
 
 export interface ClassifyResult {
@@ -113,10 +169,33 @@ export function classifyBook(groups: Map<string, UnderlyingGroup>): ClassifyResu
   const standaloneBets: StandaloneBet[] = [];
 
   for (const g of groups.values()) {
-    const core = sum(g.instruments.filter((i) => !i.isOption).map((i) => i.exposure));
-    const options = g.instruments.filter((i) => i.isOption);
+    const shareCore = sum(g.instruments.filter((i) => !i.isOption).map((i) => i.exposure));
+    const allOptions = g.instruments.filter((i) => i.isOption);
     const netExposure = sum(g.instruments.map((i) => i.exposure));
     const sector = g.instruments.find((i) => i.sector)?.sector ?? null;
+
+    // Deep in-the-money long calls count as stock (owner ruling 2026-10-08),
+    // delta-weighted: the instrument's exposure is already
+    // contracts x multiplier x delta x price. They join the core only when
+    // the shares are long or absent. Against SHORT shares a long call is the
+    // hedge of that short, and folding it into the core would hide the hedge.
+    const stockEquivalents: DefenseInstrument[] = [];
+    const notes: string[] = [];
+    for (const o of allOptions) {
+      const verdict = stockEquivalentVerdict(o);
+      if (verdict.counts && shareCore >= 0) stockEquivalents.push(o);
+      else if (verdict.refusedReason && shareCore >= 0 && !notes.includes(verdict.refusedReason)) {
+        notes.push(verdict.refusedReason);
+      }
+    }
+    const stockEquivalentExposure = sum(stockEquivalents.map((o) => o.exposure));
+    if (stockEquivalents.length > 0) notes.push(DEEP_CALL_COUNTED_NOTE);
+    const core = shareCore + stockEquivalentExposure;
+    const options = allOptions.filter((o) => !stockEquivalents.includes(o));
+    const extras = {
+      ...(stockEquivalents.length > 0 ? { stockEquivalentExposure } : {}),
+      ...(notes.length > 0 ? { notes } : {}),
+    };
 
     if (core > 0) {
       const opposing = options.filter((o) => o.exposure < 0);
@@ -145,6 +224,7 @@ export function classifyBook(groups: Map<string, UnderlyingGroup>): ClassifyResu
         coveragePct: offsetCredited / core,
         sector,
         instruments: g.instruments,
+        ...extras,
       });
       continue;
     }
@@ -198,24 +278,56 @@ export function classifyBook(groups: Map<string, UnderlyingGroup>): ClassifyResu
     // core === 0 — options only.
     const protective = options.filter((o) => o.exposure < 0);
     const bullish = options.filter((o) => o.exposure > 0);
-    if (protective.length > 0) {
-      if (g.underlyingIsEtf) {
+
+    if (g.underlyingIsEtf) {
+      // An ETF's puts with no core are portfolio protection in full; its
+      // calls stay their own speculative row. The protection is not a
+      // "Most exposed" row, so this already renders one row per underlying.
+      if (protective.length > 0) {
         proxyCandidates.push({
           underlying: g.underlying,
           protectiveNotional: Math.abs(sum(protective.map((o) => o.exposure))),
           source: "no_core_etf",
           instruments: protective,
         });
-      } else {
-        standaloneBets.push({
+      }
+      if (bullish.length > 0) {
+        pairs.push({
           underlying: g.underlying,
-          exposure: sum(protective.map((o) => o.exposure)),
-          kind: "single_name_put",
-          instruments: protective,
+          classification: "speculative",
+          coreExposure: 0,
+          offsetExposure: 0,
+          offsetCredited: 0,
+          amplifierExposure: sum(bullish.map((o) => o.exposure)),
+          hasAmplifiers: true,
+          netExposure: sum(bullish.map((o) => o.exposure)),
+          coveragePct: null,
+          sector,
+          instruments: bullish,
+          ...extras,
         });
       }
+      continue;
     }
-    if (bullish.length > 0) {
+
+    // Single name, options only: ONE row for the underlying, sized by the
+    // NET delta exposure of all its legs (owner ruling 2026-10-08). A put and
+    // a call on one name used to render as a bearish bet plus a separate
+    // speculative row. Net bearish = a standalone bet; otherwise a
+    // speculative options position. Nothing is credited as protection either
+    // way: with no core there is nothing to hedge.
+    if (protective.length === 0 && bullish.length === 0) continue;
+    const legs = [...protective, ...bullish];
+    const net = sum(legs.map((o) => o.exposure));
+    if (bullish.length === 0 || net < 0) {
+      standaloneBets.push({
+        underlying: g.underlying,
+        exposure: net,
+        kind: "single_name_put",
+        instruments: legs,
+        ...(notes.length > 0 ? { notes } : {}),
+      });
+    } else {
       pairs.push({
         underlying: g.underlying,
         classification: "speculative",
@@ -224,10 +336,11 @@ export function classifyBook(groups: Map<string, UnderlyingGroup>): ClassifyResu
         offsetCredited: 0,
         amplifierExposure: sum(bullish.map((o) => o.exposure)),
         hasAmplifiers: true,
-        netExposure: sum(bullish.map((o) => o.exposure)),
+        netExposure: net,
         coveragePct: null,
         sector,
-        instruments: bullish,
+        instruments: legs,
+        ...extras,
       });
     }
   }
@@ -527,12 +640,20 @@ interface UnderlyingMeta {
 interface GreeksAgg {
   exposure: number;
   thetaPerDay: number;
+  /** Contract-weighted average delta across the scoped accounts. */
   delta: number | null;
+  /** Σ delta x |contracts| and Σ |contracts| behind that average. */
+  deltaWeighted: number;
+  deltaWeight: number;
+  /** Weakest volatility source across the scoped accounts. */
+  ivSource: OptionVolSource | undefined;
   daysToExpiry: number | null;
   strike: number | null;
   underlyingPrice: number | null;
   greeksAvailable: boolean;
 }
+
+const VOL_SOURCE_WEAKNESS: Record<OptionVolSource, number> = { computed: 0, ibkr: 1, default: 2 };
 
 /** issuerSiblings-canonical key for a raw underlying symbol. */
 function canonicalUnderlying(symbol: string): string {
@@ -577,6 +698,24 @@ export interface RankedExposure {
   hasAmplifiers: boolean;
   sector: string | null;
   securityId: number | null; // for SymbolLink; null if underlying row absent
+  /** Short plain-language caveats for the row. Absent when none. */
+  notes?: string[];
+  /**
+   * The option legs behind a row that holds no shares, so a put and a call
+   * netted into one row can still be read leg by leg. Absent on rows with a
+   * share core.
+   */
+  legs?: RankedExposureLeg[];
+}
+
+export interface RankedExposureLeg {
+  securityId: number;
+  symbol: string;
+  optionType: "CALL" | "PUT" | null;
+  /** Signed contracts. */
+  quantity: number;
+  /** Signed delta-notional USD. */
+  exposure: number;
 }
 
 export interface DefenseDiagnostic {
@@ -699,6 +838,9 @@ export function computeDefenseAnalysis(db: Database.Database, accountIds?: numbe
           exposure: 0,
           thetaPerDay: 0,
           delta: null,
+          deltaWeighted: 0,
+          deltaWeight: 0,
+          ivSource: undefined,
           daysToExpiry: pos.daysToExpiry,
           strike: pos.strike,
           underlyingPrice: pos.underlyingPrice,
@@ -707,7 +849,23 @@ export function computeDefenseAnalysis(db: Database.Database, accountIds?: numbe
       if (pos.greeks) {
         cur.exposure += pos.greeks.delta * pos.underlyingPrice * pos.multiplier * pos.quantity;
         cur.thetaPerDay += pos.greeks.theta * pos.multiplier * pos.quantity;
-        cur.delta = pos.greeks.delta;
+        // Weight the per-contract delta by the contracts each account holds
+        // (it used to be "last account wins"). One contract has one delta,
+        // so the accounts agree today; the weighting keeps that true if the
+        // inputs ever differ by account.
+        const contracts = Math.abs(pos.quantity);
+        if (contracts > 0) {
+          cur.deltaWeighted += pos.greeks.delta * contracts;
+          cur.deltaWeight += contracts;
+          cur.delta = cur.deltaWeighted / cur.deltaWeight;
+        } else if (cur.delta === null) {
+          cur.delta = pos.greeks.delta;
+        }
+        // A missing source is treated as the assumed one: never "real".
+        const source: OptionVolSource = pos.greeks.ivSource ?? "default";
+        if (cur.ivSource === undefined || VOL_SOURCE_WEAKNESS[source] > VOL_SOURCE_WEAKNESS[cur.ivSource]) {
+          cur.ivSource = source;
+        }
         cur.greeksAvailable = true;
         if (pos.underlyingPriceSource) siblingPricedSecurityIds.add(pos.securityId);
       }
@@ -804,6 +962,7 @@ export function computeDefenseAnalysis(db: Database.Database, accountIds?: numbe
     let exposure: number;
     let thetaPerDay: number | null | undefined;
     let delta: number | null | undefined;
+    let ivSource: OptionVolSource | undefined;
     let daysToExpiry: number | undefined;
     let strike: number | undefined;
     let underlyingPrice: number | undefined;
@@ -815,6 +974,7 @@ export function computeDefenseAnalysis(db: Database.Database, accountIds?: numbe
         exposure = g.exposure;
         thetaPerDay = g.thetaPerDay;
         delta = g.delta;
+        ivSource = g.ivSource;
         daysToExpiry = g.daysToExpiry ?? undefined;
         strike = g.strike ?? undefined;
         underlyingPrice = g.underlyingPrice ?? undefined;
@@ -855,6 +1015,7 @@ export function computeDefenseAnalysis(db: Database.Database, accountIds?: numbe
       geography: row.geography,
       greeksAvailable,
       ...(isOption ? { strike, daysToExpiry, thetaPerDay, delta, underlyingPrice } : {}),
+      ...(isOption && ivSource ? { ivSource } : {}),
     });
   }
 
@@ -1045,6 +1206,20 @@ export function computeDefenseAnalysis(db: Database.Database, accountIds?: numbe
     return underlyingInfo.get(canonical)?.securityId ?? null;
   }
 
+  // Legs are listed only for a row with no shares behind it.
+  const optionOnlyLegs = (insts: DefenseInstrument[]): { legs?: RankedExposureLeg[] } =>
+    insts.length > 0 && insts.every((i) => i.isOption)
+      ? {
+          legs: insts.map((i) => ({
+            securityId: i.securityId,
+            symbol: i.symbol,
+            optionType: i.optionType,
+            quantity: i.quantity,
+            exposure: i.exposure,
+          })),
+        }
+      : {};
+
   const rankedExposures: RankedExposure[] = [];
   for (const pair of classifyResult.pairs) {
     rankedExposures.push({
@@ -1059,6 +1234,8 @@ export function computeDefenseAnalysis(db: Database.Database, accountIds?: numbe
       hasAmplifiers: pair.hasAmplifiers,
       sector: pair.sector,
       securityId: coreSecurityId(pair.instruments, pair.underlying),
+      ...(pair.notes && pair.notes.length > 0 ? { notes: pair.notes } : {}),
+      ...optionOnlyLegs(pair.instruments),
     });
   }
   for (const bet of classifyResult.standaloneBets) {
@@ -1075,6 +1252,8 @@ export function computeDefenseAnalysis(db: Database.Database, accountIds?: numbe
       hasAmplifiers: false,
       sector,
       securityId: coreSecurityId(bet.instruments, bet.underlying),
+      ...(bet.notes && bet.notes.length > 0 ? { notes: bet.notes } : {}),
+      ...optionOnlyLegs(bet.instruments),
     });
   }
   rankedExposures.sort((a, b) => Math.abs(b.netExposure) - Math.abs(a.netExposure));

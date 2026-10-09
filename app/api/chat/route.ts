@@ -18,6 +18,7 @@ import { getModelForFeature } from "@/lib/ai/provider";
 import { VALID_SCOPES, type ChatScope } from "@/lib/types";
 import { createConversation, saveMessage, updateConversationTitle } from "@/lib/mutations/chat";
 import { todayET } from "@/lib/calendar/date-utils";
+import { conversationTitleFromMessages } from "@/lib/chat/conversation-title";
 import { verifySession } from "@/lib/queries/sessions";
 import { SESSION_COOKIE } from "@/lib/auth/cookies";
 import {
@@ -264,7 +265,7 @@ export async function POST(request: NextRequest) {
           // Auto-title from first exchange
           const msgCount = messages.filter((m: any) => m.role === "user").length;
           if (msgCount <= 1) {
-            const title = text.slice(0, 80).split("\n")[0].replace(/[#*_`]/g, "").trim();
+            const title = conversationTitleFromMessages(messages);
             if (title) updateConversationTitle(db, conversationId, title);
           }
         }

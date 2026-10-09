@@ -177,12 +177,12 @@ describe("release-time editor — says what a Save touches", () => {
         note: "wire timestamp",
         verified_for_date: "2030-01-15",
       }),
-    ).toBe("Standing: 16:10 · web-verified · verified for 2030-01-15 · “wire timestamp”. Save replaces it, note included.");
+    ).toBe("Standing: 16:10 · web-verified · verified for 2030-01-15 · “wire timestamp”. Save changes the time and keeps the note.");
     expect(standingOverrideLine({ source: "user", release_time: "07:30", note: "set in app" })).toBe(
-      "Standing: 07:30 · set by you · “set in app”. Save replaces it, note included.",
+      "Standing: 07:30 · set by you · “set in app”. Save changes the time and keeps the note.",
     );
     expect(standingOverrideLine({ source: "user", release_time: "07:30" })).toBe(
-      "Standing: 07:30 · set by you. Save replaces it.",
+      "Standing: 07:30 · set by you. Save changes the time and keeps the note.",
     );
   });
 

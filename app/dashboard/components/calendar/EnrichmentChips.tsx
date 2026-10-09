@@ -7,6 +7,7 @@ import {
   type BenchmarkReaction,
   type ReactionSnapshot,
 } from "@/lib/calendar/reaction-snapshot-core";
+import { reactionLegState } from "@/lib/calendar/reaction-validity";
 import { formatFinnhubFigureCompact } from "@/lib/format/finnhub-figure";
 import { parseStoredTimestamp } from "@/lib/format";
 import { Chip } from "../Chip";
@@ -44,6 +45,30 @@ export interface ReactionPair {
   pct: number | null;
   /** The event's own stock, shown as a dash because its move was not captured. */
   notCaptured?: boolean;
+  /**
+   * A figure is stored but it is not a measurement (read before the window
+   * elapsed, or pre and post are the same quote) — shown as "pending", never
+   * as a percent. The rule is lib/calendar/reaction-validity.ts.
+   */
+  pending?: boolean;
+}
+
+/** Shown in place of a percent for a leg that is not a measurement yet. */
+const PENDING_TEXT = "pending";
+const PENDING_TITLE =
+  "Reaction not measured yet: this figure was read before the two-hour window after the release had passed";
+
+/** One summary slot: the percent, or `pending` when the leg is not a measurement. */
+function summaryPair(
+  snapshot: ReactionSnapshot,
+  label: string,
+  leg: BenchmarkReaction | undefined,
+  enrichedAt: string | null | undefined,
+): ReactionPair {
+  if (reactionLegState(snapshot, leg, { rowEnrichedAt: enrichedAt }) === "pending") {
+    return { label, pct: null, pending: true };
+  }
+  return { label, pct: leg?.delta_pct ?? null };
 }
 
 /**
@@ -60,25 +85,23 @@ export interface ReactionPair {
  */
 export function reactionSummaryPairs(
   snapshot: ReactionSnapshot | null,
-  opts: { preferEventSymbol?: boolean; eventSymbol?: string | null } = {},
+  opts: {
+    preferEventSymbol?: boolean;
+    eventSymbol?: string | null;
+    /** The row's enriched_at — evidence for an older snapshot with no capture stamp. */
+    enrichedAt?: string | null;
+  } = {},
 ): ReactionPair[] {
   if (!snapshot) return [];
+  const pair = (label: string, leg: BenchmarkReaction | undefined) =>
+    summaryPair(snapshot, label, leg, opts.enrichedAt);
   if (opts.preferEventSymbol && snapshot.symbol) {
-    return [
-      { label: snapshot.symbol.symbol, pct: snapshot.symbol.delta_pct ?? null },
-      { label: "SPY", pct: snapshot.spy?.delta_pct ?? null },
-    ];
+    return [pair(snapshot.symbol.symbol, snapshot.symbol), pair("SPY", snapshot.spy)];
   }
   if (opts.preferEventSymbol && opts.eventSymbol) {
-    return [
-      { label: opts.eventSymbol, pct: null, notCaptured: true },
-      { label: "SPY", pct: snapshot.spy?.delta_pct ?? null },
-    ];
+    return [{ label: opts.eventSymbol, pct: null, notCaptured: true }, pair("SPY", snapshot.spy)];
   }
-  return [
-    { label: "SPY", pct: snapshot.spy?.delta_pct ?? null },
-    { label: "QQQ", pct: snapshot.qqq?.delta_pct ?? null },
-  ];
+  return [pair("SPY", snapshot.spy), pair("QQQ", snapshot.qqq)];
 }
 
 /**
@@ -92,6 +115,7 @@ export function EnrichmentRowSummary({
   snapshotRaw = null,
   preferEventSymbol = false,
   eventSymbol = null,
+  enrichedAt = null,
 }: {
   actual: string | null;
   /** Already-parsed snapshot (client callers). */
@@ -105,6 +129,8 @@ export function EnrichmentRowSummary({
   preferEventSymbol?: boolean;
   /** Ticker of an earnings row — see reactionSummaryPairs. */
   eventSymbol?: string | null;
+  /** The row's enriched_at — see reactionSummaryPairs. */
+  enrichedAt?: string | null;
 }) {
   const snap = snapshot ?? parseReactionSnapshot(snapshotRaw);
   // `actual` can be a Finnhub-shaped string whose only recognizable token
@@ -115,7 +141,7 @@ export function EnrichmentRowSummary({
   // nothing (never an empty chip) and never leaves a stray "·" separator
   // dangling with no figure in front of it.
   const formatted = actual ? formatFinnhubFigureCompact(actual) : null;
-  const pairs = reactionSummaryPairs(snap, { preferEventSymbol, eventSymbol });
+  const pairs = reactionSummaryPairs(snap, { preferEventSymbol, eventSymbol, enrichedAt });
   if (!formatted && pairs.length === 0) return null;
   return (
     // Wraps (never one fixed line): week-ahead day columns get as narrow as
@@ -134,12 +160,19 @@ export function EnrichmentRowSummary({
           {pairs.map((p, i) => (
             <span key={p.label} className="flex items-center gap-1.5">
               {i > 0 && <span className="text-ink-faint">/</span>}
-              <span
-                className={deltaClass(p.pct)}
-                title={p.notCaptured ? `${p.label}'s own move was not captured` : undefined}
-              >
-                {p.label} {fmtDelta(p.pct)}
-              </span>
+              {p.pending ? (
+                <span className="text-ink-dim" title={PENDING_TITLE}>
+                  {p.label} {PENDING_TEXT}
+                  <span className="sr-only"> (reaction not measured yet)</span>
+                </span>
+              ) : (
+                <span
+                  className={deltaClass(p.pct)}
+                  title={p.notCaptured ? `${p.label}'s own move was not captured` : undefined}
+                >
+                  {p.label} {fmtDelta(p.pct)}
+                </span>
+              )}
             </span>
           ))}
         </>
@@ -151,15 +184,21 @@ export function EnrichmentRowSummary({
 export interface ReactionDetailRow {
   label: string;
   data: BenchmarkReaction;
+  /** Stored but not a measurement — the row shows "pending", not its figures. */
+  pending?: boolean;
 }
 
 /**
  * Every usable leg of a snapshot, in display order: the event's own stock
  * (when captured), SPY, QQQ, TLT, then the sector ETF. An unusable leg
  * (isUsableReactionLeg — dead or missing quote) is left out, never shown as
- * a flat "+0.00%".
+ * a flat "+0.00%". A leg that is not a measurement yet
+ * (lib/calendar/reaction-validity.ts) keeps its row, flagged `pending`.
  */
-export function reactionDetailRows(snapshot: ReactionSnapshot | null): ReactionDetailRow[] {
+export function reactionDetailRows(
+  snapshot: ReactionSnapshot | null,
+  opts: { enrichedAt?: string | null } = {},
+): ReactionDetailRow[] {
   if (!snapshot) return [];
   const legs: Array<{ label: string; data: BenchmarkReaction | undefined }> = [
     { label: snapshot.symbol?.symbol ?? "", data: snapshot.symbol },
@@ -170,7 +209,10 @@ export function reactionDetailRows(snapshot: ReactionSnapshot | null): ReactionD
   ];
   const rows: ReactionDetailRow[] = [];
   for (const leg of legs) {
-    if (leg.label && isUsableReactionLeg(leg.data)) rows.push({ label: leg.label, data: leg.data });
+    if (!leg.label || !isUsableReactionLeg(leg.data)) continue;
+    const pending =
+      reactionLegState(snapshot, leg.data, { rowEnrichedAt: opts.enrichedAt }) === "pending";
+    rows.push(pending ? { label: leg.label, data: leg.data, pending: true } : { label: leg.label, data: leg.data });
   }
   return rows;
 }
@@ -190,7 +232,7 @@ export function EnrichmentDetail({
 }) {
   if (!actual && !snapshot) return null;
 
-  const rows = reactionDetailRows(snapshot);
+  const rows = reactionDetailRows(snapshot, { enrichedAt });
 
   return (
     <div className="bg-canvas/50 rounded px-2.5 py-2 border border-edge/30">
@@ -224,14 +266,21 @@ export function EnrichmentDetail({
               className="flex flex-wrap items-center justify-between gap-x-2 text-[11px] font-mono"
             >
               <span className="text-ink-dim">{b.label}</span>
-              <span className="flex flex-wrap items-center gap-x-2">
-                <span className="text-ink-faint">
-                  {b.data.t_pre.toFixed(2)} → {b.data.t_post.toFixed(2)}
+              {b.pending ? (
+                <span className="text-ink-dim" title={PENDING_TITLE}>
+                  {PENDING_TEXT}
+                  <span className="sr-only"> (reaction not measured yet)</span>
                 </span>
-                <span className={deltaClass(b.data.delta_pct)}>
-                  {fmtDelta(b.data.delta_pct)}
+              ) : (
+                <span className="flex flex-wrap items-center gap-x-2">
+                  <span className="text-ink-faint">
+                    {b.data.t_pre.toFixed(2)} → {b.data.t_post.toFixed(2)}
+                  </span>
+                  <span className={deltaClass(b.data.delta_pct)}>
+                    {fmtDelta(b.data.delta_pct)}
+                  </span>
                 </span>
-              </span>
+              )}
             </div>
           ))}
         </div>

@@ -16,7 +16,14 @@ export const dynamic = "force-dynamic";
  *
  * Answers `{ success: true, data: { eventId, eventDate } }` — `eventId` is the
  * one row that now carries the confirmed date, so a caller holding two rows
- * for one name can tell which was locked. Failures are
+ * for one name can tell which was locked. When the name already had ONE other
+ * showing hand-entered row for the same upcoming print, that row is moved onto
+ * the confirmed date (`data.movedEventId`, same id as `eventId`) or, when a
+ * hand-entered row already sat on the confirmed date, folded into it and
+ * deleted (`data.deletedEventId`; or left hidden as `data.foldedEventId` with
+ * a `data.note` when records were still attached to it). With several such
+ * rows nothing is moved and
+ * `data.notice` carries a sentence for the user. Failures are
  * `{ success: false, error }`: 400 for a bad body, 409 when the mutation
  * refuses the date (past, or too far ahead).
  */
@@ -66,6 +73,14 @@ export async function POST(request: Request) {
 
   return Response.json({
     success: true,
-    data: { eventId: confirmed?.id ?? null, eventDate: body.confirmedDate },
+    data: {
+      eventId: confirmed?.id ?? null,
+      eventDate: body.confirmedDate,
+      ...(result.movedEventId !== undefined ? { movedEventId: result.movedEventId } : {}),
+      ...(result.deletedEventId !== undefined ? { deletedEventId: result.deletedEventId } : {}),
+      ...(result.foldedEventId !== undefined ? { foldedEventId: result.foldedEventId } : {}),
+      ...(result.note ? { note: result.note } : {}),
+      ...(result.notice ? { notice: result.notice } : {}),
+    },
   });
 }

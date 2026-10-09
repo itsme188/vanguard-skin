@@ -18,6 +18,13 @@ import { ConfirmDialog } from "./ConfirmDialog";
 import { EmptyState } from "./EmptyState";
 import apiFetch from "@/lib/http/apiFetch";
 import { PrivateText } from "@/lib/privacy/components";
+import {
+  isSelectableNoteSecurity,
+  defaultPickerSecurities,
+  searchPickerSecurities,
+  type PickerTier,
+  type TieredPickerSecurity,
+} from "@/lib/notes/security-picker";
 import { describeNoteSaveFailure } from "@/lib/notes/save-failure-copy";
 import { readMutationResult, networkFailureMessage } from "@/lib/ui/mutation-result";
 import {
@@ -54,6 +61,8 @@ export interface PickerSecurity {
   symbol: string;
   name: string | null;
   security_type?: string | null;
+  /** held / watch / other; absent on rows from older callers (treated as held). */
+  tier?: PickerTier;
 }
 
 // ─── Constants ───────────────────────────────────────────────────
@@ -242,36 +251,19 @@ export function noteDraftBlocker(
   return EARNINGS_NOTE_NEEDS_SECURITY;
 }
 
-// A bare 9-character CUSIP (a Treasury bill stored under its CUSIP) and a
-// raw OCC option string are identifiers, not securities a note is filed
-// under. All-digit symbols are deliberately NOT matched: Tokyo and Seoul
-// tickers are numeric.
-const CUSIP_SYMBOL_RE = /^\d{3}[0-9A-Z]{5}\d$/i;
-const OCC_SYMBOL_RE = /^[A-Z.]{1,6}\s*\d{6}[CP]\d{8}$/i;
-
-/** False for placeholder rows ("-"), bare CUSIPs and raw OCC option strings. */
-export function isSelectableNoteSecurity(symbol: string): boolean {
-  const s = symbol.trim();
-  if (!/[A-Za-z0-9]/.test(s)) return false;
-  if (CUSIP_SYMBOL_RE.test(s)) return false;
-  if (OCC_SYMBOL_RE.test(s)) return false;
-  return true;
-}
+export { isSelectableNoteSecurity };
 
 /**
- * The security picker's options. `keep` is the security a note being edited
- * already points at: it stays selectable even when the filter would drop it,
- * so opening the editor never silently re-files a note.
+ * The picker's default options (held + watchlist). `keep` is the security a
+ * note being edited already points at: it stays selectable even when the
+ * filter would drop it, so opening the editor never silently re-files a note.
  */
 export function notePickerSecurities(
   securities: PickerSecurity[],
   keep?: { id: number | null; symbol: string | null } | null,
 ): PickerSecurity[] {
-  const options = securities.filter((s) => isSelectableNoteSecurity(s.symbol));
-  if (keep?.symbol && keep.id != null && !options.some((s) => s.symbol === keep.symbol)) {
-    return [{ id: keep.id, symbol: keep.symbol, name: null }, ...options];
-  }
-  return options;
+  const tiered: TieredPickerSecurity[] = securities.map((s) => ({ ...s, tier: s.tier ?? "held" }));
+  return defaultPickerSecurities(tiered, keep);
 }
 
 // A US-listed ticker: starts with a letter, at most five characters, with
@@ -776,7 +768,7 @@ export function NotesView({
           onContentChange={setFormContent}
           tags={formTags}
           onTagsChange={setFormTags}
-          securities={notePickerSecurities(securities)}
+          securities={securities}
           viaOption={searchParams.get("via") === "option"}
           textareaRef={textareaRef}
           tagsHintId="tags-hint"
@@ -847,6 +839,83 @@ export function NotesView({
 // 2026-09-14). `children` is the action area: Save Note for the composer,
 // Save / Cancel for the editor.
 
+/**
+ * Two-tier security picker. The select lists what the user holds or
+ * watches; the search box below it reaches every other security. Defined at
+ * module level (a component inside another remounts on each render).
+ */
+function SecurityPicker({
+  symbol,
+  onSymbolChange,
+  securities,
+  keep,
+}: {
+  symbol: string;
+  onSymbolChange: (next: string) => void;
+  securities: PickerSecurity[];
+  keep?: { id: number | null; symbol: string | null } | null;
+}) {
+  const [query, setQuery] = useState("");
+  const tiered: TieredPickerSecurity[] = securities.map((s) => ({ ...s, tier: s.tier ?? "held" }));
+  const base = defaultPickerSecurities(tiered, keep);
+  // A security picked through the search stays selectable in the select.
+  const options =
+    symbol && !base.some((s) => s.symbol === symbol)
+      ? [tiered.find((s) => s.symbol === symbol) ?? { id: -1, symbol, name: null, tier: "other" as const }, ...base]
+      : base;
+  const matches = searchPickerSecurities(tiered, query);
+  const listId = "note-security-search-list";
+  return (
+    <>
+      <select
+        value={symbol}
+        aria-label="Security"
+        onChange={(e) => onSymbolChange(e.target.value)}
+        // min-w-0 + max-w-full: a <select> sizes to its longest <option>,
+        // and securities.symbol holds 80+-char prediction-market names —
+        // unconstrained it blew the Notes page to 613px at a 390px
+        // viewport (deep-QA 2026-07-28).
+        className="min-w-0 max-w-full truncate bg-raised border border-edge rounded-lg px-3 py-1.5 text-sm text-ink focus:outline-none focus:border-gold"
+      >
+        <option value="">Select security...</option>
+        {options.map((s) => (
+          <option key={s.id} value={s.symbol}>
+            {s.symbol}
+          </option>
+        ))}
+      </select>
+      <input
+        type="search"
+        value={query}
+        list={listId}
+        aria-label="Search all securities"
+        placeholder="Search all securities"
+        onChange={(e) => {
+          const v = e.target.value;
+          const hit = searchPickerSecurities(tiered, v).find(
+            (s) => s.symbol.toLowerCase() === v.trim().toLowerCase(),
+          );
+          // Exact symbol (a datalist pick or a typed symbol) selects it.
+          if (hit && v.trim().length > 0 && v === hit.symbol) {
+            onSymbolChange(hit.symbol);
+            setQuery("");
+          } else {
+            setQuery(v);
+          }
+        }}
+        className="min-w-0 w-44 max-w-full bg-raised border border-edge rounded-lg px-3 py-1.5 text-sm text-ink placeholder:text-ink-dim focus:outline-none focus:border-gold"
+      />
+      <datalist id={listId}>
+        {matches.map((s) => (
+          <option key={s.id} value={s.symbol}>
+            {s.name ?? ""}
+          </option>
+        ))}
+      </datalist>
+    </>
+  );
+}
+
 function NoteComposerFields({
   type,
   onTypeChange,
@@ -861,6 +930,7 @@ function NoteComposerFields({
   tags,
   onTagsChange,
   securities,
+  keepSecurity = null,
   viaOption = false,
   textareaRef,
   autoFocus = false,
@@ -880,6 +950,7 @@ function NoteComposerFields({
   tags: string;
   onTagsChange: (next: string) => void;
   securities: PickerSecurity[];
+  keepSecurity?: { id: number | null; symbol: string | null } | null;
   viaOption?: boolean;
   textareaRef?: React.Ref<HTMLTextAreaElement>;
   autoFocus?: boolean;
@@ -914,23 +985,12 @@ function NoteComposerFields({
         )}
 
         {(type === "earnings" || type === "trade_thesis") && (
-          <select
-            value={symbol}
-            aria-label="Security"
-            onChange={(e) => onSymbolChange(e.target.value)}
-            // min-w-0 + max-w-full: a <select> sizes to its longest <option>,
-            // and securities.symbol holds 80+-char prediction-market names —
-            // unconstrained it blew the Notes page to 613px at a 390px
-            // viewport (deep-QA 2026-07-28).
-            className="min-w-0 max-w-full truncate bg-raised border border-edge rounded-lg px-3 py-1.5 text-sm text-ink focus:outline-none focus:border-gold"
-          >
-            <option value="">Select security...</option>
-            {securities.map((s) => (
-              <option key={s.id} value={s.symbol}>
-                {s.symbol}
-              </option>
-            ))}
-          </select>
+          <SecurityPicker
+            symbol={symbol}
+            onSymbolChange={onSymbolChange}
+            securities={securities}
+            keep={keepSecurity}
+          />
         )}
 
         <input
@@ -1391,10 +1451,8 @@ function NoteCard({
             onContentChange={(content) => edit.onChange({ content })}
             tags={draft.tags}
             onTagsChange={(tags) => edit.onChange({ tags })}
-            securities={notePickerSecurities(edit.securities, {
-              id: note.security_id,
-              symbol: note.symbol,
-            })}
+            securities={edit.securities}
+            keepSecurity={{ id: note.security_id, symbol: note.symbol }}
             autoFocus
             tagsHintId={`tags-hint-${note.id}`}
           >

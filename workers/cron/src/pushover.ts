@@ -9,6 +9,8 @@
  * to never approach this.
  */
 
+import { formatOutboundLevelPrice } from "./level-price";
+
 export interface PushoverEnv {
   PUSHOVER_APP_TOKEN?: string;
   PUSHOVER_USER_KEY?: string;
@@ -66,6 +68,12 @@ export interface LevelPushArgs {
    * field on the Mac sibling (lib/alerts/notify-pushover.ts).
    */
   armedCrossedAt?: string | null;
+  /**
+   * The security's trading currency (snapshot v12 onward). The triggered
+   * price is in THIS currency (native, never converted) and is labelled with
+   * it. Missing reads as USD, and a dollar price reads as it always has.
+   */
+  currency?: string | null;
 }
 
 /**
@@ -77,8 +85,7 @@ export async function sendLevelAlertPush(
   env: PushoverEnv,
   args: LevelPushArgs,
 ): Promise<PushoverResult> {
-  const fmtPrice = (n: number) =>
-    `$${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  const fmtPrice = (n: number) => formatOutboundLevelPrice(args.currency, n, "grouped");
   const base =
     env.PUSHOVER_LINK_BASE ??
     (env.MESH_HOSTNAME ? `https://${env.MESH_HOSTNAME}` : "http://localhost:3099");

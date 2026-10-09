@@ -130,7 +130,15 @@ export async function POST(req: NextRequest) {
       { status: 409 },
     );
   }
-  upsertSymbolReleaseTime(db, { symbol, releaseTime: t, source: "user", note: "set in app" });
+  // Keep a standing note and verified date (D4): only a ticker with no note
+  // yet gets the "set in app" label. Both are symbol-wide, like the time.
+  const standing = getSymbolReleaseTimeRow(db, symbol);
+  upsertSymbolReleaseTime(db, {
+    symbol,
+    releaseTime: t,
+    source: "user",
+    ...(standing?.note?.trim() ? {} : { note: "set in app" }),
+  });
   const updatedEvents = applyResolvedReleaseTimeToUpcomingEvents(db, symbol);
   return NextResponse.json({ success: true, data: { updatedEvents } });
 }

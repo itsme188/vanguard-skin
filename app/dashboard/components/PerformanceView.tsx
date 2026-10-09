@@ -24,6 +24,13 @@ import {
 import { PerformanceCurveChart, type PerformanceCurveData } from "./EquityCurveChart";
 import { buildEquityCurveData } from "@/lib/compute/equity-curve";
 import { PeriodAttributionSection } from "./PeriodAttributionSection";
+import {
+  resolvePerformanceWindow,
+  latestStatementAnchor,
+  newestStatementInScope,
+  performanceWindowCaption,
+  type PerformancePeriod,
+} from "@/lib/compute/performance-window";
 
 // Same four band labels as TrustStripDrawer's chips — duplicated locally
 // rather than imported (TrustStripDrawer is a "use client" module; this
@@ -36,7 +43,7 @@ const BAND_LABEL: Record<DietzBand, string> = {
   insufficient: "Insufficient data",
 };
 
-type Period = "ytd" | "1y" | "3y" | "5y" | "all";
+type Period = PerformancePeriod;
 
 const PERIODS: { key: Period; label: string }[] = [
   { key: "ytd", label: "YTD" },
@@ -70,31 +77,6 @@ function fmtMonthYear(iso: string | undefined): string {
   return `${months[parseInt(m, 10) - 1]} ${y}`;
 }
 
-// todayIso must be an ET calendar day (todayET()) — never a local/UTC
-// `new Date()` slice. The arithmetic below then runs entirely in UTC (on a
-// Date anchored at that ET day's midnight) so it never re-drifts across a
-// day boundary depending on the machine's local timezone.
-function startDateForPeriod(period: Period, todayIso: string): string | undefined {
-  const today = new Date(todayIso + "T00:00:00Z");
-  if (period === "ytd") return `${today.getUTCFullYear()}-01-01`;
-  if (period === "1y") {
-    const d = new Date(today);
-    d.setUTCFullYear(d.getUTCFullYear() - 1);
-    return d.toISOString().slice(0, 10);
-  }
-  if (period === "3y") {
-    const d = new Date(today);
-    d.setUTCFullYear(d.getUTCFullYear() - 3);
-    return d.toISOString().slice(0, 10);
-  }
-  if (period === "5y") {
-    const d = new Date(today);
-    d.setUTCFullYear(d.getUTCFullYear() - 5);
-    return d.toISOString().slice(0, 10);
-  }
-  return undefined;
-}
-
 interface PerformanceViewProps {
   scope?: string;
   period?: string;
@@ -119,7 +101,33 @@ export async function PerformanceView({ scope = "all", period }: PerformanceView
   const twrAccountIds = scopeAccountIds && scopeAccountIds.length > 1 ? scopeAccountIds : undefined;
 
   const today = todayET();
-  const startDate = startDateForPeriod(activePeriod, today);
+  // ONE window for the whole page (lib/compute/performance-window.ts). A
+  // fixed period (1Y / 3Y / 5Y) is the full span ending at the scope's last
+  // statement anchor; YTD and All still run to today. The anchor is looked up
+  // over the FULL scope (full coverage for a multi-account scope), never a
+  // first-id collapse.
+  const perfWindow = resolvePerformanceWindow(activePeriod, {
+    today,
+    lastStatementAnchor: latestStatementAnchor(db, scopeAccountIds, today),
+    // Lets the caption say why a multi-account period ends early (an account
+    // in the scope has no later statement).
+    newestScopeStatement: newestStatementInScope(db, scopeAccountIds, today),
+  });
+  const windowCaption = performanceWindowCaption(activePeriod, perfWindow);
+  // The window's opening date: what the daily series (risk, curve, benchmark,
+  // attribution) start on and what the "shorter than the selected period"
+  // notices compare against.
+  const startDate = perfWindow.startDate;
+  // computeTwr / computeXirr read their start as the first day INSIDE the
+  // window and open on the last statement strictly before it — see
+  // PerformanceWindow.chainStartDate. Their end is bounded only for a
+  // statement-anchored period; YTD / All keep the compute layer's own default.
+  const chainStart = perfWindow.chainStartDate;
+  const chainEnd = perfWindow.endsAtStatement ? perfWindow.endDate : undefined;
+  // End of every daily series: the statement anchor for a fixed period, today
+  // otherwise — so drawdown, Sharpe, the curve, the benchmark and the
+  // attribution describe the same window as the TWR beside them.
+  const dailyEnd = perfWindow.endDate;
 
   let twrResult: ReturnType<typeof computeTwr> | null = null;
   let xirrResult: ReturnType<typeof computeXirr> | null = null;
@@ -127,8 +135,13 @@ export async function PerformanceView({ scope = "all", period }: PerformanceView
   let computeError: string | null = null;
 
   try {
-    twrResult = computeTwr(db, { startDate, accountId: twrAccountId, accountIds: twrAccountIds });
-    xirrResult = computeXirr(db, { startDate, accountId });
+    twrResult = computeTwr(db, {
+      startDate: chainStart,
+      endDate: chainEnd,
+      accountId: twrAccountId,
+      accountIds: twrAccountIds,
+    });
+    xirrResult = computeXirr(db, { startDate: chainStart, endDate: chainEnd, accountId });
     // coverageFloor "scope", not the default "common" (2026-09-14 ruling,
     // docs/DECISIONS.md): this page shows ONE scope's tiles at a time and
     // never compares scopes against each other, so the cross-account floor
@@ -139,7 +152,7 @@ export async function PerformanceView({ scope = "all", period }: PerformanceView
     // first row, and those two series now share one coverage start.
     riskResult = computeRiskMetrics(db, {
       startDate,
-      endDate: today,
+      endDate: dailyEnd,
       accountId,
       coverageFloor: "scope",
     });
@@ -181,10 +194,10 @@ export async function PerformanceView({ scope = "all", period }: PerformanceView
   // on the same screen). Same guard computeRiskMetrics/regression use; the
   // caption below self-adjusts because it reads the curve's own first row.
   const dailyVals = accountId !== undefined
-    ? getDailyValuationsByAccount(db, accountId, { startDate: effectiveStart, endDate: today })
+    ? getDailyValuationsByAccount(db, accountId, { startDate: effectiveStart, endDate: dailyEnd })
     : getDailyValuationsCombined(db, {
         startDate: effectiveStart,
-        endDate: today,
+        endDate: dailyEnd,
         fullCoverageOnly: true,
       });
 
@@ -194,7 +207,7 @@ export async function PerformanceView({ scope = "all", period }: PerformanceView
        WHERE symbol = ? AND date BETWEEN ? AND ?
        ORDER BY date ASC`,
     )
-    .all(BENCHMARK_SYMBOL, effectiveStart, today) as { date: string; close_price: number }[];
+    .all(BENCHMARK_SYMBOL, effectiveStart, dailyEnd) as { date: string; close_price: number }[];
 
   // Flow-adjusted, seam-bridged inputs for the portfolio leg of the curve —
   // same accountIds scope as the daily-valuation load above (scopeAccountIds:
@@ -251,7 +264,7 @@ export async function PerformanceView({ scope = "all", period }: PerformanceView
       db,
       activeScope === "all" ? undefined : resolveScope(db, activeScope),
       effectiveStart,
-      today,
+      dailyEnd,
       BENCHMARK_SYMBOL,
     );
   } catch {
@@ -275,6 +288,11 @@ export async function PerformanceView({ scope = "all", period }: PerformanceView
           <p className="text-sm text-ink-faint mt-0.5">
             Time-weighted (TWR) and money-weighted (XIRR) returns over selectable periods.
           </p>
+          {/* Names a fixed period's end date: 1Y / 3Y / 5Y end at the last
+              statement, not today (dates only, no portfolio figure). */}
+          {windowCaption && (
+            <p className="text-xs text-ink-dim mt-1">{windowCaption}</p>
+          )}
         </div>
         <div className="flex items-center gap-1 rounded-lg bg-raised border border-edge p-0.5 self-start">
           {PERIODS.map((p) => (

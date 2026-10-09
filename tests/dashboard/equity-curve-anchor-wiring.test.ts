@@ -19,7 +19,7 @@ describe("EquityCurveChart anchor-correction wiring", () => {
     const body = sliceBetween(text, "function buildChartData(", "// ─── Performance benchmark overlay chart");
     expect(body).toContain("anchorDailiesToStatements(");
     const chart = text.slice(anchorIndex(text, "export function EquityCurveChart"));
-    expect(chart).toContain("buildChartData(snapshots, dailyValuations)");
+    expect(chart).toContain("buildChartData(snapshots, dailyValuations, flows)");
   });
 
   it("the old interpolation / progress-rescale / multiplicative-trailing code is gone", () => {
@@ -54,5 +54,19 @@ describe("EquityCurveChart anchor-correction wiring", () => {
       expect(f).toContain("recordedValue");
       expect(f).toContain("currencyTooltipFormatter");
     }
+  });
+});
+
+describe("equity-curve flow wiring", () => {
+  it("the server page fetches flows and passes them down to the chart", () => {
+    const page = readFileSync("app/dashboard/accounts/page.tsx", "utf8");
+    expect(page).toContain("fetchNetFlowsByDate(");
+    expect(page).toContain("equityFlows={equityFlows}");
+    const detail = readFileSync("app/dashboard/components/AccountDetail.tsx", "utf8");
+    expect(detail).toContain("flows={equityFlows}");
+  });
+
+  it("the chart hands flows to the anchor module", () => {
+    expect(src()).toMatch(/anchorDailiesToStatements\([\s\S]*?,\s*flows\s*\)/);
   });
 });

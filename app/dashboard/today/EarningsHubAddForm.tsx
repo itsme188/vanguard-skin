@@ -11,6 +11,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { addDays, defaultDateWithinWeek, mondayOf } from "@/lib/calendar/date-utils";
 import apiFetch, { type ApiFetch } from "@/lib/http/apiFetch";
+import { networkFailureMessage, readMutationResult } from "@/lib/ui/mutation-result";
 
 interface Props {
   weekOf: string;
@@ -197,6 +198,29 @@ export async function postManualEarningsEvent(
   }
 }
 
+/**
+ * Undo an add: DELETE the manual row just created, through the same route the
+ * row's own remove control uses. Honest result handling: a refusal carries the
+ * server's words, an unreachable server is named as such.
+ */
+export async function undoManualEarningsAdd(
+  eventId: number,
+  fetchImpl: ApiFetch = apiFetch,
+): Promise<{ ok: true } | { ok: false; message: string }> {
+  try {
+    const res = await fetchImpl("/api/calendar/events", {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: eventId }),
+    });
+    const result = await readMutationResult(res);
+    if (!result.ok) return { ok: false, message: result.message };
+    return { ok: true };
+  } catch {
+    return { ok: false, message: networkFailureMessage("undo that entry") };
+  }
+}
+
 /** Which of the two server warnings the user has answered for THIS add. */
 interface GuardAcks {
   force: boolean;
@@ -214,6 +238,11 @@ export function EarningsHubAddForm({ weekOf }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [outOfWeekNote, setOutOfWeekNote] = useState<string | null>(null);
   const [outOfWeekLink, setOutOfWeekLink] = useState<{ href: string; label: string } | null>(null);
+  // The id of the row an out-of-week save just created, so the notice can offer
+  // Undo. Null for an in-week save (the row is in view) or once undone.
+  const [undoId, setUndoId] = useState<number | null>(null);
+  const [undoing, setUndoing] = useState(false);
+  const [undoError, setUndoError] = useState<string | null>(null);
   // Set only by a 409 would_supersede_vendor: the add was REFUSED and nothing
   // was written, so the form stays open with the typed values and asks. Same
   // shape as the alerts inbox's arm-refusal confirm.
@@ -269,6 +298,8 @@ export function EarningsHubAddForm({ weekOf }: Props) {
       // poller and needs its own signal to pick up the new reporter now.
       setOutOfWeekNote(outOfWeekSaveNote(date, weekOf));
       setOutOfWeekLink(outOfWeekSaveLink(date, weekOf));
+      setUndoError(null);
+      setUndoId(outOfWeekSaveNote(date, weekOf) !== null ? outcome.id : null);
       setAcks(NO_ACKS);
       setSymbol("");
       setOpen(false);
@@ -276,6 +307,27 @@ export function EarningsHubAddForm({ weekOf }: Props) {
       router.refresh();
     } finally {
       setSubmitting(false);
+    }
+  }
+
+  async function undo() {
+    if (undoId === null) return;
+    setUndoing(true);
+    setUndoError(null);
+    try {
+      const result = await undoManualEarningsAdd(undoId);
+      if (!result.ok) {
+        // The row is still there: keep the notice and Undo, say why.
+        setUndoError(result.message);
+        return;
+      }
+      setUndoId(null);
+      setOutOfWeekNote(null);
+      setOutOfWeekLink(null);
+      window.dispatchEvent(new Event("earnings-data-changed"));
+      router.refresh();
+    } finally {
+      setUndoing(false);
     }
   }
 
@@ -330,6 +382,17 @@ export function EarningsHubAddForm({ weekOf }: Props) {
             {outOfWeekLink.label}
           </Link>
         )}
+        {outOfWeekNote && undoId !== null && (
+          <button
+            type="button"
+            onClick={undo}
+            disabled={undoing}
+            className="relative pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-3 pointer-coarse:after:-inset-x-2 text-[12px] font-medium text-gold-ink underline underline-offset-2 hover:text-gold disabled:opacity-50 whitespace-nowrap"
+          >
+            {undoing ? "Undoing…" : "Undo"}
+          </button>
+        )}
+        {undoError && <span className="text-[11px] text-down w-full">{undoError}</span>}
       </div>
     );
   }

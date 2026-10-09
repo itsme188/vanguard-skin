@@ -78,11 +78,15 @@ function seedSecurity(symbol: string, currency: string): number {
   return result.lastInsertRowid as number;
 }
 
+// Dated on the pair's PRIOR date: these names were held through the session.
+// (A row dated on the later pair date with no earlier row is a position opened
+// that session, which since 2026-10-08 is measured from cost, not from the
+// prior close — a different surface from the FX conversion pinned here.)
 function seedHolding(
   accountId: number,
   securityId: number,
   quantity: number,
-  asOfDate = PAIR_LATEST
+  asOfDate = PAIR_PRIOR
 ) {
   db.prepare(
     "INSERT INTO holdings (account_id, security_id, quantity, as_of_date) VALUES (?, ?, ?, ?)"

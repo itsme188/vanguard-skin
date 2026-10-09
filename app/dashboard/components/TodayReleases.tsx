@@ -289,6 +289,7 @@ export function TodayReleases({
                   <EnrichmentRowSummary
                     actual={event.actual_value}
                     snapshot={snapshot}
+                    enrichedAt={event.enriched_at}
                   />
                 ) : (
                   <span className="text-ink-faint">

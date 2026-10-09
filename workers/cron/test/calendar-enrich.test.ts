@@ -43,7 +43,7 @@ import { composeReleaseInstant } from "../src/reaction-matcher";
 import { captureReactionFromYahoo } from "../src/yahoo";
 import { sendPushover } from "../src/pushover";
 import { readPrintPushMarker } from "../src/earnings-markers";
-import { cloudEnrichedKey } from "../src/cloud-enriched";
+import { cloudEnrichedKey, REACTION_READY_MS } from "../src/cloud-enriched";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -566,7 +566,7 @@ describe("retry-until-complete (B8: earnings only, Mac migration-062 mirror)", (
     expect(vi.mocked(fetchActualForEventCloud)).not.toHaveBeenCalled();
   });
 
-  it("does not fetch Yahoo for an earnings row before T+115 (actual-only tick)", async () => {
+  it("does not fetch Yahoo for an earnings row before T+120 (actual-only tick)", async () => {
     vi.mocked(loadLatestSnapshot).mockResolvedValue(makeEnrichSnapshot());
     vi.mocked(fetchActualForEventCloud).mockResolvedValue({ actual: "EPS 1.60", consensus: null, source: "finnhub" });
     const env = makeEnv();
@@ -577,16 +577,74 @@ describe("retry-until-complete (B8: earnings only, Mac migration-062 mirror)", (
     expect(stored.reaction).toBeNull();
   });
 
-  it("still fetches Yahoo immediately for a macro row (never gated)", async () => {
+  // 2026-10-08: a reaction is the move to release + 120 minutes. Before that
+  // instant there is nothing to measure, so NO row is captured early. (This
+  // test used to pin "macro rows are never gated".)
+  function macroSnapshot() {
     const snap = makeEnrichSnapshot();
     const ev = snap.calendarEvents[0] as Record<string, unknown>;
     ev.event_type = "cpi";
     ev.source_key = "fred:10";
-    vi.mocked(loadLatestSnapshot).mockResolvedValue(snap);
+    return snap;
+  }
+
+  it("the reaction-ready constant is the full 120-minute window (Mac parity)", () => {
+    expect(REACTION_READY_MS).toBe(120 * 60 * 1000);
+  });
+
+  it("a macro row before T+120 keeps its actual and gets NO reaction", async () => {
+    vi.mocked(loadLatestSnapshot).mockResolvedValue(macroSnapshot());
     vi.mocked(fetchActualForEventCloud).mockResolvedValue({ actual: "3.2%", consensus: null, source: "fred" });
     const env = makeEnv();
-    await runCloudFallback(env, { nowMs: release().getTime() + 30 * 60_000, pacingMs: 0 });
+    await runCloudFallback(env, { nowMs: release().getTime() + 5 * 60_000, pacingMs: 0 });
+    expect(vi.mocked(captureReactionFromYahoo)).not.toHaveBeenCalled();
+    const stored = JSON.parse((await env.CRON_KV.get(cloudEnrichedKey(1)))!) as Record<string, unknown>;
+    expect(stored.actual).toBe("3.2%");
+    expect(stored.reaction).toBeNull();
+  });
+
+  it("a macro row at exactly T+120 is captured and stamped with the capture time", async () => {
+    vi.mocked(loadLatestSnapshot).mockResolvedValue(macroSnapshot());
+    vi.mocked(fetchActualForEventCloud).mockResolvedValue({ actual: "3.2%", consensus: null, source: "fred" });
+    const env = makeEnv();
+    const nowMs = release().getTime() + 120 * 60_000;
+    await runCloudFallback(env, { nowMs, pacingMs: 0 });
     expect(vi.mocked(captureReactionFromYahoo)).toHaveBeenCalledTimes(1);
+    const stored = JSON.parse((await env.CRON_KV.get(cloudEnrichedKey(1)))!) as { reaction: Record<string, unknown> };
+    expect(stored.reaction.source).toBe("yahoo");
+    expect(stored.reaction.captured_at).toBe(new Date(nowMs).toISOString());
+  });
+
+  it("an earnings row at T+116 (inside the old 115-minute gate) is still not captured", async () => {
+    vi.mocked(loadLatestSnapshot).mockResolvedValue(makeEnrichSnapshot());
+    vi.mocked(fetchActualForEventCloud).mockResolvedValue({ actual: "EPS 1.60", consensus: null, source: "finnhub" });
+    const env = makeEnv();
+    await runCloudFallback(env, { nowMs: release().getTime() + 116 * 60_000, pacingMs: 0 });
+    expect(vi.mocked(captureReactionFromYahoo)).not.toHaveBeenCalled();
+    const stored = JSON.parse((await env.CRON_KV.get(cloudEnrichedKey(1)))!) as Record<string, unknown>;
+    expect(stored.reaction).toBeNull();
+  });
+
+  it("an earnings row at T+121 is captured and stamped with the capture time", async () => {
+    vi.mocked(loadLatestSnapshot).mockResolvedValue(makeEnrichSnapshot());
+    vi.mocked(fetchActualForEventCloud).mockResolvedValue({ actual: "EPS 1.60", consensus: null, source: "finnhub" });
+    const env = makeEnv();
+    const nowMs = release().getTime() + 121 * 60_000;
+    await runCloudFallback(env, { nowMs, pacingMs: 0 });
+    const stored = JSON.parse((await env.CRON_KV.get(cloudEnrichedKey(1)))!) as { reaction: Record<string, unknown> };
+    expect(stored.reaction.captured_at).toBe(new Date(nowMs).toISOString());
+  });
+
+  it("a reaction already in KV is carried over untouched (no fresh stamp on an old capture)", async () => {
+    vi.mocked(loadLatestSnapshot).mockResolvedValue(makeEnrichSnapshot());
+    vi.mocked(fetchActualForEventCloud).mockResolvedValue({ actual: "EPS 1.60", consensus: null, source: "finnhub" });
+    const env = makeEnv();
+    await seedPayload(env, { eventId: 1, source_key: "finnhub:AAPL:2026-06-15", actual: null, consensus: null, source: "finnhub", reaction: { source: "yahoo" }, fetchedAt: new Date(release().getTime() + 115 * 60_000).toISOString() });
+    await runCloudFallback(env, { nowMs: release().getTime() + 3 * 3600_000, pacingMs: 0 });
+    expect(vi.mocked(captureReactionFromYahoo)).not.toHaveBeenCalled();
+    const stored = JSON.parse((await env.CRON_KV.get(cloudEnrichedKey(1)))!) as { actual: string; reaction: Record<string, unknown> };
+    expect(stored.actual).toBe("EPS 1.60");
+    expect(stored.reaction).toEqual({ source: "yahoo" });
   });
 
   it("COALESCEs on overwrite: a captured actual survives a null re-fetch", async () => {

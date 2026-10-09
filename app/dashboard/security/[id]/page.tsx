@@ -29,7 +29,7 @@ import { computeSecurityFactorShareView } from "@/lib/compute/factors";
 import { getSecurityQuote } from "@/lib/queries/security-quotes";
 import { QuoteStats } from "../../components/QuoteStats";
 import { Count, Money, Pct, Shares, PrivateText, QuantityUnit } from "@/lib/privacy/components";
-import { computeLotCoverageGaps, computeLotSignMismatches } from "@/lib/compute/lot-coverage";
+import { computeBasisDisagreements, computeLotCoverageGaps, computeLotSignMismatches } from "@/lib/compute/lot-coverage";
 import { getTranscriptsForSecurity } from "@/lib/queries/transcripts";
 import { daysToExpiry, liveOptionExpirationSql } from "@/lib/compute/option-expiry";
 import type { EarningsTranscript } from "@/lib/types";
@@ -254,6 +254,18 @@ export default async function SecurityDetailPage(props: {
   // A short position over long open lots: the coverage check skips shorts, so
   // the contradiction is named on its own line above the lots table.
   const lotSignMismatches = computeLotSignMismatches(positions, openTaxLots);
+  // Lots fully cover the position yet their basis differs from the holding's
+  // (broker) basis: disclosed in Positions, nothing recomputed.
+  // Stocks and funds only for now: a bond holding's basis can be on a
+  // per-100-face convention and an option's carries the multiplier, while lots
+  // store economic dollars, so those two could show a false difference until
+  // their units are checked against real rows.
+  const basisNoteApplies = ["stock", "etf", "mutual fund"].includes(
+    (security.security_type ?? "").toLowerCase(),
+  );
+  const basisDisagreements = basisNoteApplies
+    ? computeBasisDisagreements(positions, openTaxLots, { usdPerUnit: detail.usdPerUnit })
+    : [];
   // Value sums every position; cost basis, gain and % sum only the ones with
   // a known basis. When some are left out the three figures are marked "~"
   // and a line under the table names what they leave out.
@@ -573,6 +585,20 @@ export default async function SecurityDetailPage(props: {
                   does not use that figure.
                 </p>
               ))}
+            </div>
+          )}
+          {basisDisagreements.length > 0 && (
+            <div className="px-5 py-3 border-t border-edge flex flex-col gap-1">
+              {basisDisagreements.map((d) => (
+                <p key={d.accountId} className="text-xs text-ink-faint">
+                  <span className="text-ink-dim">{d.accountName}</span>: Broker-reported basis differs from
+                  the ledger lots by <Money value={Math.abs(d.difference)} />.
+                </p>
+              ))}
+              <p className="text-xs text-ink-faint">
+                Common causes: a different lot-relief method at the broker, wash-sale adjustments the
+                broker carries, or reinvested-dividend lots.
+              </p>
             </div>
           )}
           {lotsWithoutPosition.length > 0 && (

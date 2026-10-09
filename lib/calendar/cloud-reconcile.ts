@@ -6,6 +6,13 @@ import {
   getEarningsSettings,
   shouldSendEarningsEmail,
 } from "@/lib/queries/earnings-settings";
+import type { ReactionSnapshot } from "./reaction-snapshot-core";
+import {
+  admitCapturedReaction,
+  assessReactionSnapshot,
+  parseUtcInstantMs,
+  withoutReactionLegs,
+} from "./reaction-validity";
 
 interface CloudEnrichedPayload {
   eventId: number;
@@ -48,6 +55,45 @@ function isStalePayload(fetchedAt: string | undefined, now: number = Date.now())
   const parsed = Date.parse(fetchedAt);
   if (Number.isNaN(parsed)) return false;
   return now - parsed > STALE_PAYLOAD_MS;
+}
+
+/**
+ * The reaction a cloud payload may store, or null when it may store none.
+ *
+ * A cloud capture goes through the SAME rule as a Mac capture
+ * (lib/calendar/reaction-validity.ts) — a reaction is the move to release +
+ * 120 minutes, and a read taken before that is not a measurement. The actual
+ * and consensus in the payload are unaffected; only the reaction is judged.
+ *
+ * Capture time, strongest first:
+ *   1. `captured_at` on the snapshot (the Worker stamps it since 2026-10-08);
+ *   2. the payload's `fetchedAt`. For a macro row this IS the capture instant
+ *      (single-shot payload). An earnings payload is re-written on later ticks
+ *      while its reaction is carried over, so `fetchedAt` can be later than
+ *      the capture — it is only used when the snapshot has no stamp of its
+ *      own, i.e. for payloads written by a Worker older than this change.
+ *   3. neither (a payload older than `fetchedAt` itself): the helper's legacy
+ *      rule — a leg that is an identical pre/post pair, a zero move on a row
+ *      enriched before the window could be measured, or a dead quote is
+ *      dropped; what is left is stored WITHOUT an invented stamp.
+ */
+export function admitCloudReaction(
+  reaction: unknown,
+  evidence: { fetchedAt?: string | null; rowEnrichedAt?: string | null } = {},
+): ReactionSnapshot | null {
+  if (reaction == null || typeof reaction !== "object" || Array.isArray(reaction)) return null;
+  const snapshot = reaction as ReactionSnapshot;
+
+  const capturedAtMs =
+    parseUtcInstantMs(typeof snapshot.captured_at === "string" ? snapshot.captured_at : null) ??
+    parseUtcInstantMs(typeof evidence.fetchedAt === "string" ? evidence.fetchedAt : null);
+  if (capturedAtMs != null) return admitCapturedReaction(snapshot, capturedAtMs);
+
+  const assessment = assessReactionSnapshot(snapshot, { rowEnrichedAt: evidence.rowEnrichedAt });
+  return withoutReactionLegs(snapshot, [
+    ...assessment.pendingLegs.map((leg) => leg.key),
+    ...assessment.placeholderLegs,
+  ]);
 }
 
 function workerBase(): string | null {
@@ -221,6 +267,21 @@ export async function reconcileCloudEnrichment(
 
       const rowHasOrGetsActual = payload.actual != null || existing.actual_value != null;
 
+      // The cloud reaction is stored only if it passes the same validity rule
+      // as a Mac capture; a refused one is simply absent (the actual still
+      // lands, and the Mac's reaction-only follow-up can capture it later).
+      const admittedReaction = admitCloudReaction(payload.reaction, {
+        fetchedAt: payload.fetchedAt,
+        rowEnrichedAt: existing.enriched_at,
+      });
+      if (payload.reaction != null && admittedReaction == null) {
+        console.warn(
+          `[cloud-reconcile] event ${eventId}: cloud reaction not stored ` +
+            `(captured before release + 120 minutes, or no usable benchmark leg)`,
+        );
+      }
+      const admittedReactionJson = admittedReaction ? JSON.stringify(admittedReaction) : null;
+
       if (existingIsTws) {
         if (rowHasOrGetsActual) {
           updateActualOnly.run(payload.actual, payload.consensus, eventId);
@@ -232,12 +293,12 @@ export async function reconcileCloudEnrichment(
         updateWithReaction.run(
           payload.actual,
           payload.consensus,
-          payload.reaction ? JSON.stringify(payload.reaction) : null,
+          admittedReactionJson,
           eventId,
         );
       } else {
         updateReactionNoStamp.run(
-          payload.reaction ? JSON.stringify(payload.reaction) : null,
+          admittedReactionJson,
           payload.consensus,
           eventId,
         );
@@ -276,9 +337,7 @@ export async function reconcileCloudEnrichment(
               // older Finnhub-sync-time snapshot) — see CLAUDE.md.
               consensusValue:
                 payload.consensus ?? existing.consensus_value ?? existing.consensus_estimate,
-              reactionJson: payload.reaction
-                ? JSON.stringify(payload.reaction)
-                : existing.reaction_snapshot,
+              reactionJson: admittedReactionJson ?? existing.reaction_snapshot,
               readThroughs,
               readThroughOnly: !covered,
             });

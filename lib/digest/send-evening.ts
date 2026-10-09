@@ -4,9 +4,9 @@ import { fetchNewArticles, backfillSourceUrls } from "@/lib/gmail/fetch";
 import { processUnprocessedArticles } from "@/lib/gmail/process";
 import {
   generateDigestSinceAdaptive,
-  getLastDigestSentAt,
   setLastDigestSentAt,
 } from "@/lib/digest/daily-digest";
+import { resolveDigestSince, defaultDigestSince } from "@/lib/digest/digest-window";
 import { briefingToHtml } from "@/lib/calendar/briefing-html";
 import { sendEmail } from "@/lib/email";
 import { syncPortfolio } from "@/lib/tws/positions";
@@ -66,19 +66,14 @@ export async function sendEveningEmail(
     );
   }
 
-  // Capture digest range boundaries BEFORE the slow fetch/process step.
-  // Otherwise a concurrent manual trigger that completes during our
-  // fetch+process window will update `last_digest_sent_at` to "now" and
-  // our subsequent range query would return a future-of-our-articles cutoff
-  // — silently producing zero matches and a skip.
-  // Mirror of the same race-guard in send-digest.ts (lines 82-93).
-  const sinceSnapshot = (() => {
-    const lastSent = getLastDigestSentAt(db);
-    const fallback = new Date(Date.now() - 24 * 60 * 60 * 1000)
-      .toISOString()
-      .slice(0, 10);
-    return lastSent || fallback;
-  })();
+  // Capture the digest window BEFORE the slow fetch/process step. Otherwise a
+  // concurrent manual trigger that completes during our fetch+process window
+  // would move `last_digest_sent_at` to "now" and our range query would start
+  // after our own articles, silently producing zero matches and a skip.
+  // The shared rule (also used by send-digest and the preview): the last-sent
+  // marker, else the Eastern yesterday.
+  const sinceSnapshot =
+    resolveDigestSince(db, { mode: "since_last" }) ?? defaultDigestSince();
 
   let twsSynced = false;
   try {

@@ -13,7 +13,16 @@
  *   - Compares each level against the latest price using the same direction
  *     semantics as Mac's findCrossedLevels (support/entry/scale_in/stop fire
  *     when price <= level; resistance/exit fire when price >= level).
- *   - Dedups against `cloud-fired-level-{levelId}` KV markers (24h TTL).
+ *   - Once per level per EASTERN day, the day the Mac's own guard counts by
+ *     (hasAlertToday): a level is held back only when its last fire was on
+ *     the current Eastern day. The last fire is read from the snapshot row's
+ *     `triggered_at` (v12) and from this Worker's own
+ *     `cloud-fired-level-{levelId}` KV marker. A fire on an earlier Eastern
+ *     day never blocks. The marker is ALSO the audit record the Mac
+ *     reconciles into its inbox, so it is kept 7 days, not until midnight:
+ *     its lifetime does not encode the guard. When a level fires again
+ *     before the Mac has reconciled an earlier day's marker, the earlier
+ *     record rides along in the new marker's `earlier` list.
  *   - Pre-checks `mac-recent-scan` marker (set by Mac after each auto-refresh
  *     scan completes) to avoid duplicate firing during the overlap when Mac
  *     wakes mid-window.
@@ -33,6 +42,7 @@ import type { Snapshot, SecurityLevelRow } from "./state";
 import { loadLatestSnapshot } from "./state";
 import { fetchYahooLastPrice } from "./yahoo";
 import { sendLevelAlertPush, type PushoverEnv } from "./pushover";
+import { etDateOfStoredUtc, todayET } from "./dst";
 
 export interface LevelScanEnv extends PushoverEnv {
   CRON_KV: KVNamespace;
@@ -57,7 +67,15 @@ export interface LevelScanResult {
 
 const KV_FIRED_PREFIX = "cloud-fired-level-";
 const KV_MAC_SCAN_MARKER = "mac-recent-scan";
-const FIRED_TTL_SECONDS = 24 * 60 * 60; // 24h
+/**
+ * How long a cloud-fired marker is kept for the Mac to reconcile into its
+ * alert inbox. The Worker fires exactly when the Mac is down, often for a
+ * night or a trip, so the record must outlive the day. The once-a-day guard
+ * does NOT depend on this lifetime: it reads the marker's fire date.
+ */
+export const CLOUD_FIRED_MARKER_TTL_SECONDS = 7 * 24 * 60 * 60;
+/** Most earlier-day records one marker carries (one per day of its lifetime). */
+const MAX_EARLIER_RECORDS = 7;
 const MAC_SCAN_RECENCY_SECONDS = 90 * 60; // 90 min — wider than the 30-min auto-refresh window
 
 /**
@@ -102,6 +120,58 @@ interface RunOpts {
   pacingMs?: number;
   /** When true, do everything except write KV markers (for smoke testing). */
   dryRun?: boolean;
+  /** The scan's clock. Defaults to the real time; tests pin it. */
+  now?: Date;
+}
+
+/**
+ * Did this Worker already alert on the level in the Eastern day `today`?
+ *
+ * The marker records `firedAt` (when the push went out). Markers written
+ * before 2026-10-08 carry only `triggeredAt` (the time of the quote), which
+ * is used when `firedAt` is absent. A marker that cannot be read does NOT
+ * hold the level back: the marker lives 7 days, so failing closed would
+ * silence a level for a week. The next fire overwrites it with a readable
+ * marker, which then blocks for the rest of that Eastern day, so the cost of
+ * an unreadable marker is at most one extra alert.
+ */
+function markerFiredOn(raw: string, today: string): boolean {
+  let firedAt: unknown;
+  try {
+    const parsed = JSON.parse(raw) as { firedAt?: unknown; triggeredAt?: unknown } | null;
+    firedAt = parsed?.firedAt ?? parsed?.triggeredAt;
+  } catch {
+    return false;
+  }
+  if (typeof firedAt !== "string") return false;
+  return etDateOfStoredUtc(firedAt) === today;
+}
+
+/**
+ * The records an earlier-day marker still owes the Mac's inbox: the marker
+ * itself plus whatever it was already carrying, oldest first. Called only for
+ * a marker that `markerFiredOn` read successfully and judged "not today".
+ * Records older than the marker lifetime are dropped, so a level that fires
+ * every day cannot grow its marker without bound.
+ */
+function unreconciledRecords(raw: string, now: Date): unknown[] {
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const { earlier, ...own } = parsed;
+    const all = [...(Array.isArray(earlier) ? earlier : []), own];
+    const cutoffMs = now.getTime() - CLOUD_FIRED_MARKER_TTL_SECONDS * 1000;
+    return all
+      .filter((r): r is Record<string, unknown> => {
+        if (!r || typeof r !== "object") return false;
+        const rec = r as { firedAt?: unknown; triggeredAt?: unknown };
+        const at = typeof rec.firedAt === "string" ? rec.firedAt : rec.triggeredAt;
+        const ms = typeof at === "string" ? Date.parse(at) : NaN;
+        return !Number.isNaN(ms) && ms >= cutoffMs;
+      })
+      .slice(-MAX_EARLIER_RECORDS);
+  } catch {
+    return [];
+  }
 }
 
 export async function runLevelScan(
@@ -109,6 +179,8 @@ export async function runLevelScan(
   opts: RunOpts = {},
 ): Promise<LevelScanResult> {
   const result: LevelScanResult = { scanned: 0, fired: 0, deduped: 0, skipped: 0, results: [] };
+  const now = opts.now ?? new Date();
+  const today = todayET(now);
 
   // Mac-recent-scan check — Mac sets this every time its auto-refresh
   // pipeline completes detectAndFireAlerts. If recently set, the Mac is
@@ -132,7 +204,9 @@ export async function runLevelScan(
   // Group by symbol so we only fetch each symbol once.
   const bySymbol = new Map<string, SecurityLevelRow[]>();
   for (const lvl of levels) {
-    if (lvl.expires_at && lvl.expires_at < new Date().toISOString().slice(0, 10)) continue;
+    // Eastern date, not the UTC one: after 20:00 Eastern the UTC date is
+    // already tomorrow and would expire a level a day early.
+    if (lvl.expires_at && lvl.expires_at < today) continue;
     const arr = bySymbol.get(lvl.symbol) ?? [];
     arr.push(lvl);
     bySymbol.set(lvl.symbol, arr);
@@ -169,9 +243,12 @@ export async function runLevelScan(
       result.scanned++;
       if (!isLevelCrossed(lvl, priceData.price)) continue;
 
+      // Once per level per Eastern day. Two memories of the last fire: the
+      // snapshot row (the Mac's own record) and this Worker's KV marker.
       const kvKey = `${KV_FIRED_PREFIX}${lvl.id}`;
-      const existing = await env.CRON_KV.get(kvKey);
-      if (existing) {
+      const firedTodayOnMac = etDateOfStoredUtc(lvl.triggered_at) === today;
+      const existing = firedTodayOnMac ? null : await env.CRON_KV.get(kvKey);
+      if (firedTodayOnMac || (existing !== null && markerFiredOn(existing, today))) {
         result.deduped++;
         result.results.push({
           levelId: lvl.id,
@@ -194,8 +271,18 @@ export async function runLevelScan(
           triggeredPrice: priceData.price,
           triggeredAt: new Date(priceData.tMs).toISOString(),
           sourceAuthor: lvl.source_author,
+          currency: lvl.currency ?? null,
+          // When the alert went out. The once-a-day guard reads this, not
+          // `triggeredAt`: a thinly traded name's last quote can be a day old.
+          firedAt: now.toISOString(),
+          // An earlier day's fire the Mac has not reconciled yet. This write
+          // replaces that marker, so its record is carried here and the Mac
+          // files one inbox row per day (reconcile-cloud-fired.ts).
+          ...(existing !== null && unreconciledRecords(existing, now).length > 0
+            ? { earlier: unreconciledRecords(existing, now) }
+            : {}),
         });
-        await env.CRON_KV.put(kvKey, payload, { expirationTtl: FIRED_TTL_SECONDS });
+        await env.CRON_KV.put(kvKey, payload, { expirationTtl: CLOUD_FIRED_MARKER_TTL_SECONDS });
       }
 
       const pushRes = await sendFn(env, {
@@ -205,7 +292,22 @@ export async function runLevelScan(
         sourceAuthor: lvl.source_author,
         securityId: lvl.security_id,
         armedCrossedAt: lvl.armed_crossed_at ?? null,
+        currency: lvl.currency ?? null,
       });
+
+      // The marker is written BEFORE the push so two overlapping scans cannot
+      // both alert. If the push then did not go out, put things back as they
+      // were: otherwise the level would be held for the rest of the day and
+      // later filed in the Mac's inbox as an alert nobody received. The next
+      // tick tries again; a push that was delivered but reported as failed
+      // costs one duplicate alert, the smaller harm.
+      if (!pushRes.sent && !opts.dryRun) {
+        if (existing !== null) {
+          await env.CRON_KV.put(kvKey, existing, { expirationTtl: CLOUD_FIRED_MARKER_TTL_SECONDS });
+        } else {
+          await env.CRON_KV.delete(kvKey);
+        }
+      }
 
       result.fired++;
       result.results.push({

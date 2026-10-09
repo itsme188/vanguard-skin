@@ -155,7 +155,9 @@ describe("Macro sources drawer is the week's inputs, not one theme's receipt", (
   it("is headed as the week's inputs and says the list is shared by every theme", () => {
     expect(MACRO_INPUTS_HEADING).toBe("Inputs to this week's macro read");
     expect(MACRO_INPUTS_NOTE).toMatch(/same list sits behind every theme/);
-    expect(MACRO_INPUTS_NOTE).toMatch(/up to 10 of each/);
+    // Ruling 2026-10-08: the list is what was SENT to the model, no longer the
+    // ten most recent of each (tests/dashboard/macro-card-cited-excerpt.test.ts).
+    expect(MACRO_INPUTS_NOTE).toMatch(/sent to the model/);
     expect(DRAWER).toContain("<h2 className=\"text-base font-medium text-ink\">{MACRO_INPUTS_HEADING}</h2>");
     expect(DRAWER).toContain("aria-label={MACRO_INPUTS_HEADING}");
   });

@@ -158,6 +158,10 @@ describe("data-confidence copy runs", () => {
     expect(publicText(c.holdingsRecency.detailParts!)).not.toContain("QQGZ");
     expect(privateText(c.holdingsRecency.detailParts!)).toContain("QQGZ");
     expect(publicText(c.holdingsRecency.guidanceParts!)).not.toContain("QQGZ");
+    // The stale share of book value is portfolio-derived: a private run.
+    expect(privateText(c.holdingsRecency.guidanceParts!)).toMatch(/\d+%/);
+    expect(publicText(c.holdingsRecency.guidanceParts!)).not.toMatch(/\d/);
+    expect(publicText(c.holdingsRecency.guidanceParts!)).toContain(" of book value is in positions more than a day old");
 
     // No public run anywhere names a held ticker.
     const everyPublic = [
@@ -226,16 +230,25 @@ describe("data-confidence stale-holdings action names the lagging positions", ()
       insertHolding(db, 1, insertSecurity(db, sym), TODAY, `plaid:1:${sym}:${TODAY}`);
     }
     for (const sym of ["SWPAZ", "SWPBZ"]) {
-      insertHolding(db, 1, insertSecurity(db, sym), "2026-07-31", `canonical:hold:TAX:${sym}:2026-07-31`);
+      // 5 shares each (the current rows hold 10).
+      insertHolding(db, 1, insertSecurity(db, sym), "2026-07-31", `canonical:hold:TAX:${sym}:2026-07-31`, 5);
+    }
+    // Every security priced at $100, so each row has a value to weigh by.
+    for (const { id } of db.prepare(`SELECT id FROM securities`).all() as { id: number }[]) {
+      insertPrice(db, id, TODAY);
     }
     const c = getDataConfidence(db, NOW);
 
     const taxable = c.holdingsRecency.perAccount.find(a => a.name === "Vanguard Taxable")!;
     expect(taxable.heldCount).toBe(6);
     expect(taxable.stalePositions.map(p => p.symbol).sort()).toEqual(["SWPAZ", "SWPBZ"]);
-    // Scoring basis untouched: still the stalest row.
+    // The account's age is still the stalest row's.
     expect(taxable.daysOld).toBe(21);
-    expect(c.holdingsRecency.score).toBe(50);
+    // Deliberately changed by the 2026-10-08 ruling (was 50, the stalest
+    // row's bucket). Value-weighted: 6 current rows of $1,000 -> 100, 2
+    // carried rows of $500 at 21 days -> 50.
+    // (6,000*100 + 1,000*50) / 7,000 = 92.86 -> 93
+    expect(c.holdingsRecency.score).toBe(93);
 
     const action = c.actions.find(a => a.message.startsWith("Vanguard Taxable"))!;
     expect(action).toBeDefined();

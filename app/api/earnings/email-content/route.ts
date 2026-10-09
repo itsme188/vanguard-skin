@@ -43,6 +43,9 @@ export const dynamic = "force-dynamic";
  * `reactionLegAt` (recap only) is the instant the scoreboard's reaction legs
  * were measured at, so the viewer can say when the scoreboard carries a
  * reaction the sent email could not have had.
+ *
+ * `actualsChangedAt` (recap only) is `manual_actuals_at` when it is later than
+ * the send: actuals were entered or promoted after the email went out.
  */
 
 /**
@@ -64,6 +67,24 @@ function reactionLegInstant(reactionSnapshot: string | null): string | null {
   }
   const at = new Date(t0 + windowMin * 60_000);
   return isNaN(at.getTime()) ? null : at.toISOString();
+}
+
+/**
+ * `calendar_events.manual_actuals_at` (hand-entered or promoted actuals), when
+ * it is LATER than the send; else null. The two columns can use different
+ * formats ('YYYY-MM-DD HH:MM:SS' vs ISO with T), so both are parsed to instants
+ * rather than compared as strings. `enriched_at` is deliberately not used: it
+ * is a first-completion stamp and cannot show a later vendor re-enrichment.
+ */
+function actualsChangedInstant(
+  manualActualsAt: string | null | undefined,
+  sentAt: string | null | undefined,
+): string | null {
+  if (!manualActualsAt || !sentAt) return null;
+  const changed = parseDbTimestamp(manualActualsAt);
+  const sent = parseDbTimestamp(sentAt);
+  if (!changed || !sent) return null;
+  return changed.getTime() > sent.getTime() ? manualActualsAt : null;
 }
 
 export async function GET(request: Request) {
@@ -153,6 +174,8 @@ export async function GET(request: Request) {
     // tells the reader which body they are looking at.
     deliveryState: sendStateFor(audit.error),
     reactionLegAt: phase === "recap" ? reactionLegInstant(event.reaction_snapshot) : null,
+    actualsChangedAt:
+      phase === "recap" ? actualsChangedInstant(event.manual_actuals_at, audit.sent_at) : null,
     fullHtml,
   });
 }

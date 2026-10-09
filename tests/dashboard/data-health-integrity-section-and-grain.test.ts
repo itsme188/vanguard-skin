@@ -17,7 +17,7 @@ describe("Data Health has an Integrity section", () => {
   it("reads the same confidence state as the header badge — no second copy of the cap rule", () => {
     expect(PAGE).toContain('import { getDataConfidence, type DataConfidence } from "@/lib/queries/data-confidence";');
     expect(PAGE).toContain("return getDataConfidence(db);");
-    expect(section).toContain("confidence.capReason");
+    expect(PAGE).toContain("confidence.capReason");
     // The cap rule (which hit caps, and to what score) is not restated here.
     expect(PAGE).not.toMatch(/critical\[0\]/);
     expect(PAGE).not.toMatch(/Math\.min\(/);
@@ -29,7 +29,11 @@ describe("Data Health has an Integrity section", () => {
   });
 
   it("prints the cap reason, the criticals and the notes — reasons masked, counts through <Count>", () => {
-    expect(section).toContain("<PrivateText>{confidence.capReason}</PrivateText>");
+    // The cap line is the shared CapStatus (also shown at the page top).
+    expect(section).toContain("<CapStatus confidence={confidence} />");
+    expect(sliceBetween(PAGE, "function CapStatus(", "function ConfidenceSummary(")).toContain(
+      "<PrivateText>{confidence.capReason}</PrivateText>",
+    );
     expect(section).toContain("<IntegrityGroups hits={confidence.integrity.critical} />");
     expect(section).toContain("<IntegrityGroups hits={confidence.integrity.warnings} />");
     expect(section).toContain("<Count value={confidence.integrity.critical.length} />");
@@ -61,7 +65,7 @@ describe("Data Health has an Integrity section", () => {
 // QA finding data-health--headline-distinct-securities-vs-account-rows-pairs-no-grain-label
 describe("Data Health labels the grain of each coverage count", () => {
   it("the headline says distinct securities; the account rows say positions", () => {
-    expect(VIEW).toContain("sub={`${summary.securitiesWithPrices}/${summary.totalSecurities} distinct securities`}");
+    expect(VIEW).toContain("sub={`${summary.securitiesWithPrices}/${summary.totalSecurities} distinct securities priced within ${summary.priceWindowDays} days`}");
     expect(VIEW).toContain("{ac.pricedHoldings}/{ac.totalHoldings} positions priced");
   });
 

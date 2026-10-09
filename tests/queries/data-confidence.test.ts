@@ -177,12 +177,14 @@ describe("data-confidence universes (latest-holdings predicate)", () => {
   // position-not-latest): the drawer rendered ONLY the stalest position's
   // date under the account name ("Vanguard Taxable: 2026-04-30"), which
   // contradicted Data Health's own "Last holdings 2026-08-27" for the same
-  // account — the scoring dimension is deliberately stalest-first (weakest
-  // link), but the drawer must show BOTH figures, clearly labeled, so they
-  // can never read as disagreeing.
-  it("per-account detail carries the account's LATEST holdings date alongside the stalest position's symbol+date; scoring stays stalest-based", () => {
+  // account — the drawer must show BOTH figures, clearly labeled, so they
+  // can never read as disagreeing. (The score itself is value-weighted since
+  // the 2026-10-08 owner ruling; it used to be the stalest position's bucket.)
+  it("per-account detail carries the account's LATEST holdings date alongside the stalest position's symbol+date; the score weighs each position by value", () => {
     const fresh = insertSecurity(db, "FRESH");
     const stale = insertSecurity(db, "STALE");
+    insertPrice(db, fresh, "2026-08-27", 100); // 10 shares = $1,000
+    insertPrice(db, stale, "2026-08-27", 100); //  5 shares = $500
     insertHolding(db, 1, fresh, 10, "2026-08-27", "canonical:hold:TAX:FRESH:2026-08-27");
     insertHolding(db, 1, stale, 5, "2026-04-30", "canonical:hold:TAX:STALE:2026-04-30");
 
@@ -191,11 +193,14 @@ describe("data-confidence universes (latest-holdings predicate)", () => {
     const taxable = holdingsRecency.perAccount.find((a) => a.name === "Vanguard Taxable");
     expect(taxable).toBeDefined();
 
-    // Scoring is UNCHANGED: still based on the stalest position (weakest link).
+    // The per-account figures still describe the stalest position.
     expect(taxable!.date).toBe("2026-04-30");
     expect(taxable!.daysOld).toBe(120); // 2026-04-30 -> 2026-08-28
     expect(taxable!.stalestSymbol).toBe("STALE");
-    expect(holdingsRecency.score).toBe(0); // 90+ days stale bucket, same as before this fix
+    // Deliberately changed by the 2026-10-08 ruling (was 0, the stalest row's
+    // bucket): FRESH $1,000 at 1 day -> 100, STALE $500 at 120 days -> 0.
+    // (1,000*100 + 500*0) / 1,500 = 66.67 -> 67
+    expect(holdingsRecency.score).toBe(67);
 
     // NEW: the account's latest (freshest) holdings date is carried too.
     expect(taxable!.latestDate).toBe("2026-08-27");
@@ -394,7 +399,7 @@ describe("data-confidence universes (latest-holdings predicate)", () => {
       path.join(process.cwd(), "lib/queries/data-confidence.ts"),
       "utf8",
     );
-    expect(src).toContain("const RECENT_PRICE_WINDOW_DAYS = " + windowFromDetail);
+    expect(src).toContain("export const PRICE_FRESHNESS_DAYS = " + windowFromDetail);
     expect(src).not.toMatch(/priced within 3 days/);
   });
 });

@@ -4,6 +4,8 @@ import { mergeEarningsEventState } from "@/lib/earnings/event-merge";
 import { writeArmedEventsOutboxRow } from "@/lib/earnings/cloud-outbox";
 import { deliveredSql, notLiveClaimSql } from "@/lib/earnings/email-states";
 import { mondayOf, todayET } from "@/lib/calendar/date-utils";
+import { deriveEarningsSlot } from "@/lib/earnings/earnings-slot";
+import { parseFinnhubFigure } from "@/lib/format/finnhub-figure";
 
 // ── Earnings date cross-check reconciliation ────────────────────────
 //
@@ -14,7 +16,8 @@ import { mondayOf, todayET } from "@/lib/calendar/date-utils";
 // earnings-email candidate finder) shows exactly one row per event.
 //
 // Resolution priority (see docs/superpowers/specs/2026-06-08-earnings-date-crosscheck-design.md):
-//   1. a user_confirmed / manual row → locked canonical (never reverted)
+//   1. a user_confirmed / manual row → locked canonical (never reverted);
+//      on ONE date a hand-entered row beats a vendor row the user confirmed
 //      (a hand-entered row locks by its SOURCE; the pass never writes
 //      `user_confirmed` on a row that does not already carry it — see
 //      `lockedStatusFor`)
@@ -22,6 +25,9 @@ import { mondayOf, todayET } from "@/lib/calendar/date-utils";
 //   3. both sources agree → confirmed
 //   4. both future, dates differ → conflict (Nasdaq provisional, awaits the user)
 //   5. only one source → single
+// Wherever rows of ONE date compete (rungs 2, 3 and 5), a row carrying an
+// explicit before-open / after-close slot beats a row carrying only a vendor
+// default (owner ruling 2026-10-08) — see `pickSameDateWinner`.
 //
 // One exemption to "exactly one row per event" (owner ruling 2026-10-06): two
 // HAND-ENTERED rows for one name are never resolved against each other — both
@@ -80,6 +86,13 @@ interface EarningsRow {
   source: string;
   symbol: string | null;
   event_date: string;
+  /**
+   * Read ONLY to tell whether the row carries a real before-open /
+   * after-close slot (`hasRealSlot`). Vendor rows store null here and keep
+   * the slot in `raw_json.entry.hour`; hand-entered rows store the slot word
+   * or a clock.
+   */
+  event_time: string | null;
   raw_json: string | null;
   actual_value: string | null;
   date_status: string | null;
@@ -177,10 +190,18 @@ const PRINT_EVIDENCE_SQL = `(
 )`;
 
 /** The columns every resolution step reads. Shared by both gather queries. */
-const EARNINGS_ROW_COLUMNS = `id, source, symbol, event_date, raw_json, actual_value, date_status,
+const EARNINGS_ROW_COLUMNS = `id, source, symbol, event_date, event_time, raw_json, actual_value, date_status,
         consensus_estimate, consensus_value, reaction_snapshot, enriched_at,
         manual_actuals_at, created_at, ${PRINT_EVIDENCE_SQL} AS print_evidence,
         COALESCE(superseded, 0) AS superseded`;
+
+/**
+ * The order every gather hands rows to the resolution steps in. Same-date rows
+ * are tie-broken by id so "the first row" means the same thing on every pass
+ * and on every machine (the gathers used to sort by date alone, leaving
+ * same-date order to the query planner).
+ */
+const EARNINGS_ROW_ORDER = "ORDER BY event_date ASC, id ASC";
 
 /**
  * Greedy proximity clustering of ONE issuer family's rows (already sorted by
@@ -360,22 +381,80 @@ function splitReportedFromManualCluster(
   };
 }
 
+/**
+ * Does this row say WHEN in the day the print lands — an explicit before-open
+ * or after-close slot — as opposed to carrying only a vendor's default time?
+ *
+ * Read through the one shared slot resolver, with no release-time fallback:
+ * `release_time` cannot tell the two apart (Finnhub stores no hour and the
+ * row gets the after-close default; an explicit after-close row gets the
+ * same clock). "During market hours" and an unknown hour are not a slot.
+ */
+function hasRealSlot(r: EarningsRow): boolean {
+  return deriveEarningsSlot({ event_time: r.event_time, raw_json: r.raw_json }) !== null;
+}
+
+/**
+ * Among rows that all sit on ONE date, pick the row the duplicate check keeps
+ * (owner ruling 2026-10-08, "two vendors, one print: a real slot beats a
+ * default time"). `incumbent` is the row the older rule kept and must be one
+ * of `sameDateRows`; `sameDateRows` is in gather order (id ASC).
+ *
+ * The incumbent keeps the print unless it carries no real slot and another
+ * row on the date does. So when both rows carry a slot, or neither does, the
+ * answer is exactly what it was before the ruling. Among several slotted
+ * challengers the order is Finnhub, then Nasdaq, then lowest id.
+ *
+ * The loser is hidden through the ordinary fold on the next pass; its slot
+ * is never edited in place.
+ */
+function pickSameDateWinner(incumbent: EarningsRow, sameDateRows: EarningsRow[]): EarningsRow {
+  if (hasRealSlot(incumbent)) return incumbent;
+  const slotted = sameDateRows.filter(
+    (r) => r.id !== incumbent.id && r.event_date === incumbent.event_date && hasRealSlot(r),
+  );
+  return (
+    slotted.find((r) => r.source === "finnhub") ??
+    slotted.find((r) => r.source === "nasdaq") ??
+    slotted[0] ??
+    incumbent
+  );
+}
+
 /** Resolve one cluster of rows (all referring to the same reporting event). */
 function resolveCluster(rows: EarningsRow[], today: string): Resolution {
-  // 1. A user-confirmed / manual row is authoritative and locked.
-  const manual = rows.find(
-    (r) => r.source === "manual" || r.date_status === "user_confirmed",
-  );
-  if (manual) {
-    return { canonicalId: manual.id, status: "user_confirmed", conflictWith: null };
+  // 1. A user-confirmed / manual row is authoritative and locked. The first
+  // locked row in gather order (date, then id) wins — except that on its own
+  // date a HAND-ENTERED row beats a vendor row the user confirmed, whatever
+  // order the two were written in (owner ruling 2026-10-08).
+  const firstLocked = rows.find(isManualRow);
+  if (firstLocked) {
+    const locked =
+      firstLocked.source === "manual"
+        ? firstLocked
+        : (rows.find((r) => r.source === "manual" && r.event_date === firstLocked.event_date) ??
+          firstLocked);
+    return { canonicalId: locked.id, status: "user_confirmed", conflictWith: null };
   }
 
   // 2. A past date with reported actuals demonstrably happened — it wins.
+  // Several rows can report the same latest date (both vendors, after the
+  // print): the first in gather order keeps it unless a twin on that date
+  // carries the real slot, so a pair the slot rule resolved before the print
+  // does not flip back the moment both rows show actuals. EVERY row on that
+  // date competes for the slot, not only the ones already showing an actual:
+  // vendors post actuals at different times, and judging only the rows that
+  // have one handed the print back to a default-time Finnhub row for the
+  // hours before the slotted Nasdaq row showed its own (2026-10-08 review).
   const occurred = rows
     .filter((r) => r.event_date < today && hasActual(r))
-    .sort((a, b) => b.event_date.localeCompare(a.event_date));
+    .sort((a, b) => b.event_date.localeCompare(a.event_date) || a.id - b.id);
   if (occurred.length > 0) {
-    return { canonicalId: occurred[0].id, status: "confirmed", conflictWith: null };
+    const winner = pickSameDateWinner(
+      occurred[0],
+      rows.filter((r) => r.event_date === occurred[0].event_date),
+    );
+    return { canonicalId: winner.id, status: "confirmed", conflictWith: null };
   }
 
   // Rows arrive date-sorted ASC, so find-first picks the OLDEST claim per
@@ -389,12 +468,15 @@ function resolveCluster(rows: EarningsRow[], today: string): Resolution {
   // 3 & 4. Both calendars present.
   if (finnhubRows.length > 0 && nasdaqRows.length > 0) {
     // Agreement-first: ANY finnhub/nasdaq pair sharing a date is a
-    // confirmation. Keep Finnhub canonical (richer raw_json/history that
-    // the earnings-email composer already relies on); supersede the rest.
+    // confirmation. Finnhub stays canonical (richer raw_json/history that
+    // the earnings-email composer already relies on) UNLESS it carries only
+    // a default time and a row on that date carries a real slot; supersede
+    // the rest.
     for (const n of nasdaqRows) {
       const agreeing = finnhubRows.find((f) => f.event_date === n.event_date);
       if (agreeing) {
-        return { canonicalId: agreeing.id, status: "confirmed", conflictWith: null };
+        const winner = pickSameDateWinner(agreeing, rows);
+        return { canonicalId: winner.id, status: "confirmed", conflictWith: null };
       }
     }
     // Genuine disagreement → Nasdaq provisional, flagged for the user to
@@ -407,8 +489,10 @@ function resolveCluster(rows: EarningsRow[], today: string): Resolution {
     };
   }
 
-  // 5. Single source.
-  const only = finnhubRows[0] ?? nasdaqRows[0] ?? rows[0];
+  // 5. Single source. The oldest claim keeps the cluster, as before; a slot
+  // only decides between rows on that claim's own date (share-class siblings
+  // listed by one vendor), never between dates.
+  const only = pickSameDateWinner(finnhubRows[0] ?? nasdaqRows[0] ?? rows[0], rows);
   return { canonicalId: only.id, status: "single", conflictWith: null };
 }
 
@@ -687,7 +771,7 @@ export function repointDependentsBeforeDelete(
         `SELECT ${EARNINGS_ROW_COLUMNS}
            FROM calendar_events
           WHERE event_type = 'earnings' AND event_date BETWEEN ? AND ?
-          ORDER BY event_date ASC`,
+          ${EARNINGS_ROW_ORDER}`,
       )
       .all(lo, hi) as EarningsRow[]
   ).filter((r) => familyKey(r.symbol) === key);
@@ -749,7 +833,7 @@ export interface VendorSupersessionCheck {
 
 /** The id the hypothetical row carries during the dry run. Sorts LAST among
  *  same-date rows, matching where a freshly INSERTed row's rowid puts it in the
- *  reconciler's `ORDER BY event_date ASC` gather. */
+ *  reconciler's `ORDER BY event_date ASC, id ASC` gather. */
 const HYPOTHETICAL_ROW_ID = Number.MAX_SAFE_INTEGER;
 
 /** Resolve a family's rows exactly as `reconcileEarningsDates` does, returning
@@ -861,7 +945,7 @@ export function checkManualAddWouldSupersedeVendor(
         `SELECT ${EARNINGS_ROW_COLUMNS}
            FROM calendar_events
           WHERE event_type = 'earnings' AND event_date BETWEEN ? AND ?
-          ORDER BY event_date ASC`,
+          ${EARNINGS_ROW_ORDER}`,
       )
       .all(lo, hi) as GatheredRow[]
   ).filter((r) => familyKey(r.symbol) === key && r.id !== opts.excludeEventId);
@@ -872,6 +956,9 @@ export function checkManualAddWouldSupersedeVendor(
     source: "manual",
     symbol,
     event_date: newDate,
+    // The hypothetical row is hand-entered, so it locks at rung 1 and its
+    // slot is never weighed against a vendor's.
+    event_time: null,
     raw_json: null,
     actual_value: null,
     date_status: null,
@@ -1033,6 +1120,300 @@ export function createTwinFolder(db: Database.Database) {
 }
 
 /**
+ * Vendor data only a Finnhub row carries, by where each reader looks for it:
+ *  - `raw_json.entry.symbol` / `.epsEstimate` / `.revenueEstimate` and
+ *    top-level `finnhub_symbol` — the vendor-consensus prepare step
+ *    (lib/earnings/prepare-steps/consensus-row.ts). Without them a kept
+ *    Nasdaq row reads as "figures withdrawn" and the step deletes the
+ *    event's Finnhub bogey.
+ *  - `raw_json.entry.quarter` / `.year` — the print's fiscal quarter
+ *    (lib/transcripts/fetch.ts; that reader also looks at hidden twins).
+ *  - top-level `history` — no reader today; carried with the entry it
+ *    describes so the row stays one coherent Finnhub payload.
+ *
+ * NEVER in this list: `entry.hour` (the kept row won on its own slot, and
+ * `deriveEarningsSlot` reads exactly that key), `entry.date` (the kept row's
+ * date is the one that counts) and `entry.epsActual` / `entry.revenueActual`
+ * (`hasActual` treats them as evidence that a print happened; actuals travel
+ * through `actual_value` in the fold, under its own guards).
+ */
+const FINNHUB_CARRIED_ENTRY_KEYS = ["symbol", "epsEstimate", "revenueEstimate", "quarter", "year"] as const;
+const FINNHUB_CARRIED_TOP_KEYS = ["finnhub_symbol", "history"] as const;
+/** Top-level marker on the kept row: which keys the carry wrote, and from which row. */
+const FINNHUB_CARRY_MARKER = "finnhub_carried";
+
+type JsonObject = Record<string, unknown>;
+
+function asJsonObject(value: unknown): JsonObject | null {
+  return value !== null && typeof value === "object" && !Array.isArray(value) ? (value as JsonObject) : null;
+}
+
+/** null raw_json → an empty object; anything unparseable or non-object → null (leave the row alone). */
+function parseRawJsonObject(raw: string | null): JsonObject | null {
+  if (raw == null || raw === "") return {};
+  try {
+    return asJsonObject(JSON.parse(raw));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The hidden Finnhub row whose data the kept row borrows: nearest date, then
+ * lowest id. Exported so the vendor-consensus prepare step resolves the same
+ * row (`findHiddenFinnhubDonor`) instead of carrying a second rule.
+ */
+export function pickFinnhubDonor<T extends Pick<EarningsRow, "id" | "source" | "event_date">>(
+  hidden: T[],
+  canonicalEventDate: string,
+): T | null {
+  const finnhub = hidden.filter((r) => r.source === "finnhub");
+  if (finnhub.length === 0) return null;
+  return [...finnhub].sort(
+    (a, b) =>
+      daysBetween(a.event_date, canonicalEventDate) - daysBetween(b.event_date, canonicalEventDate) ||
+      a.id - b.id,
+  )[0];
+}
+
+/** A hidden Finnhub earnings row, as `findHiddenFinnhubDonor` returns it. */
+export interface HiddenFinnhubDonor {
+  id: number;
+  source: string;
+  symbol: string | null;
+  event_date: string;
+  raw_json: string | null;
+}
+
+/**
+ * The hidden (superseded) Finnhub earnings row that describes the same print
+ * as `kept`, read straight from the table: same issuer family
+ * (`issuerSiblings`, never symbol equality), within the clustering distance
+ * of the kept row's date, and then `pickFinnhubDonor`'s order (nearest date,
+ * lowest id) — the row the carrier borrows from once a reconcile pass runs.
+ *
+ * It exists for readers that must not depend on the carry having run: a
+ * vendor sync wipes the carried keys off a kept Nasdaq row until the pass at
+ * the end of that sync restores them (lib/earnings/prepare-steps/
+ * consensus-row.ts reads through this instead). Read-only. null when the
+ * print has no hidden Finnhub row.
+ */
+export function findHiddenFinnhubDonor(
+  db: Database.Database,
+  kept: { id: number; symbol: string | null; event_date: string },
+): HiddenFinnhubDonor | null {
+  if (!kept.symbol) return null;
+  const family = [...new Set(issuerSiblings(kept.symbol).map((s) => s.toUpperCase()))];
+  if (family.length === 0) return null;
+  const hidden = db
+    .prepare(
+      `SELECT id, source, symbol, event_date, raw_json
+         FROM calendar_events
+        WHERE event_type = 'earnings' AND source = 'finnhub'
+          AND COALESCE(superseded, 0) = 1 AND id != ?
+          AND UPPER(symbol) IN (${family.map(() => "?").join(",")})
+          AND event_date BETWEEN ? AND ?`,
+    )
+    .all(
+      kept.id,
+      ...family,
+      addDaysUTC(kept.event_date, -CLUSTER_PROXIMITY_DAYS),
+      addDaysUTC(kept.event_date, CLUSTER_PROXIMITY_DAYS),
+    ) as HiddenFinnhubDonor[];
+  return pickFinnhubDonor(hidden, kept.event_date);
+}
+
+/**
+ * Build "the kept row borrows what only the hidden Finnhub row carries".
+ *
+ * Since the 2026-10-08 slot ruling a Nasdaq row can keep a print and hide the
+ * Finnhub row (a hand-entered row always could). The fold above carries
+ * consensus / actual / reaction columns, COALESCE-style, and nothing else, so
+ * the kept row lost three things its readers use:
+ *   1. the Finnhub keys of `raw_json` listed on FINNHUB_CARRIED_*;
+ *   2. `description` (Finnhub's "Q3 2026 report. Last 4 quarters …" text the
+ *      weekly briefing prompt leans on) — a Nasdaq row has none;
+ *   3. the revenue estimate inside `consensus_estimate` ("EPS x · Rev y", read
+ *      by the earnings emails) — a Nasdaq row states EPS only, and being
+ *      non-NULL it blocks the fold's COALESCE.
+ *
+ * Rules:
+ *  - Only what the kept row LACKS is written. A value the kept row has of its
+ *    own is never replaced.
+ *  - EVERYTHING the carry wrote is recorded on the marker and follows the
+ *    Finnhub row from then on: refreshed when the Finnhub row changed, removed
+ *    when the Finnhub row no longer states it. The marker holds
+ *      `keys`               the raw_json keys carried,
+ *      `description`        the description text carried (present only while
+ *                           the kept row's description is that carried text),
+ *      `consensus_revenue`  the "Rev …" part carried into consensus_estimate.
+ *    A description or revenue part is "still the carried one" only while it
+ *    equals what the marker recorded; text a person typed over it is theirs.
+ *  - Marker lost, value still there (a Nasdaq sync replaces `raw_json` but
+ *    keeps the old `consensus_estimate` when it states no forecast of its
+ *    own): a description / revenue part EQUAL to the Finnhub row's current one
+ *    is taken back under the marker without a column write, so it is followed
+ *    again. One that differs is treated as the kept row's own.
+ *  - The slot is never touched (see FINNHUB_CARRIED_ENTRY_KEYS).
+ *  - The revenue part is managed only on a NASDAQ row, and appended only to
+ *    its own "EPS …" text; consensus text on a hand-entered row is never
+ *    edited.
+ *  - A zero revenue estimate is Finnhub's placeholder for "none published"
+ *    (CLAUDE.md, resolved by `parseFinnhubFigure`): it is never carried, as a
+ *    raw_json key or as text, and a carried figure that turns into it is
+ *    removed.
+ *  - A kept row whose raw_json cannot be parsed cannot hold a marker, so
+ *    nothing is carried onto it.
+ *  - A settled pair writes nothing, so a second pass is a no-op. The carry
+ *    does not change the armed projection and never asks for an outbox row.
+ *
+ * NOT durable on its own for a vendor row: the weekly sync's upsert replaces
+ * `raw_json` and `description` for the same source_key and resets
+ * `consensus_estimate`. It is restored because every sync ends in a reconcile
+ * pass and the pass revisits already-hidden rows — see the caller. Readers
+ * that cannot tolerate that gap go through `findHiddenFinnhubDonor`.
+ */
+export function createFinnhubDataCarrier(db: Database.Database) {
+  interface CarryRow {
+    id: number;
+    source: string;
+    raw_json: string | null;
+    description: string | null;
+    consensus_estimate: string | null;
+  }
+  const read = db.prepare(
+    "SELECT id, source, raw_json, description, consensus_estimate FROM calendar_events WHERE id = ?",
+  );
+  const writeRawJson = db.prepare("UPDATE calendar_events SET raw_json = ? WHERE id = ?");
+  const writeDescription = db.prepare("UPDATE calendar_events SET description = ? WHERE id = ?");
+  const writeConsensus = db.prepare("UPDATE calendar_events SET consensus_estimate = ? WHERE id = ?");
+
+  const has = (obj: JsonObject, key: string) => Object.prototype.hasOwnProperty.call(obj, key);
+  const isRevenuePart = (part: string) => /^Rev\b/.test(part);
+  const consensusParts = (text: string | null) =>
+    (text ?? "")
+      .split(" · ")
+      .map((part) => part.trim())
+      .filter((part) => part !== "");
+
+  return function carry(donorId: number, canonicalId: number): void {
+    const donor = read.get(donorId) as CarryRow | undefined;
+    const kept = read.get(canonicalId) as CarryRow | undefined;
+    if (!donor || !kept || donor.source !== "finnhub" || kept.source === "finnhub") return;
+
+    const keptJson = parseRawJsonObject(kept.raw_json);
+    // No parseable raw_json, no place for the marker: carry nothing.
+    if (!keptJson) return;
+    const marker = asJsonObject(keptJson[FINNHUB_CARRY_MARKER]);
+    let jsonChanged = false;
+
+    // 1. raw_json keys. A Finnhub row that lost its entry states nothing, so
+    //    every key carried earlier is removed.
+    const donorJson = (donor.raw_json ? parseRawJsonObject(donor.raw_json) : null) ?? {};
+    const donorEntry = { ...(asJsonObject(donorJson.entry) ?? {}) };
+    if (donorEntry.revenueEstimate === 0) delete donorEntry.revenueEstimate; // placeholder, not a figure
+    const hadEntry = has(keptJson, "entry");
+    const keptEntry = hadEntry ? asJsonObject(keptJson.entry) : {};
+    const carriedKeys: string[] = [];
+    // A kept row whose `entry` is not an object is a shape we do not know: leave its keys alone.
+    if (keptEntry) {
+      const markerKeys: unknown = marker ? marker.keys : null;
+      const previouslyCarried = new Set<string>(
+        Array.isArray(markerKeys) ? markerKeys.filter((k): k is string => typeof k === "string") : [],
+      );
+      const apply = (target: JsonObject, source: JsonObject, key: string, label: string) => {
+        const mine = previouslyCarried.has(label);
+        if (has(target, key) && !mine) return; // the kept row's own value
+        if (has(source, key)) {
+          if (!has(target, key) || JSON.stringify(target[key]) !== JSON.stringify(source[key])) {
+            target[key] = source[key];
+            jsonChanged = true;
+          }
+          carriedKeys.push(label);
+        } else if (mine && has(target, key)) {
+          delete target[key]; // the Finnhub row no longer states it
+          jsonChanged = true;
+        }
+      };
+      for (const key of FINNHUB_CARRIED_ENTRY_KEYS) apply(keptEntry, donorEntry, key, `entry.${key}`);
+      for (const key of FINNHUB_CARRIED_TOP_KEYS) apply(keptJson, donorJson, key, key);
+      if (carriedKeys.length > 0 && !hadEntry) keptJson.entry = keptEntry;
+    }
+
+    // 2. description: fill an empty one; afterwards follow the Finnhub row
+    //    for as long as the kept row still shows the carried text.
+    const donorDescription = (donor.description ?? "").trim() !== "" ? donor.description : null;
+    const markedDescription = marker && typeof marker.description === "string" ? marker.description : null;
+    let carriedDescription: string | null = null;
+    if ((kept.description ?? "").trim() === "") {
+      if (donorDescription !== null) {
+        writeDescription.run(donorDescription, kept.id);
+        carriedDescription = donorDescription;
+      }
+    } else if (kept.description === markedDescription) {
+      if (donorDescription === null) writeDescription.run(null, kept.id);
+      else {
+        if (donorDescription !== kept.description) writeDescription.run(donorDescription, kept.id);
+        carriedDescription = donorDescription;
+      }
+    } else if (markedDescription === null && kept.description === donorDescription) {
+      carriedDescription = donorDescription; // marker lost; the text is the Finnhub row's
+    }
+
+    // 3. revenue estimate inside a Nasdaq row's consensus text.
+    let carriedRevenue: string | null = null;
+    if (kept.source === "nasdaq") {
+      const parts = consensusParts(kept.consensus_estimate);
+      const keptRevenue = parts.filter(isRevenuePart);
+      const donorRevenue =
+        consensusParts(donor.consensus_estimate).find(
+          (part) => isRevenuePart(part) && parseFinnhubFigure(part).revenue != null,
+        ) ?? null;
+      const markedRevenue =
+        marker && typeof marker.consensus_revenue === "string" ? marker.consensus_revenue : null;
+      if (keptRevenue.length === 0) {
+        // Appended only to the row's own text (an empty consensus is the fold's to fill).
+        if (donorRevenue !== null && parts.length > 0) {
+          writeConsensus.run([...parts, donorRevenue].join(" · "), kept.id);
+          carriedRevenue = donorRevenue;
+        }
+      } else if (
+        keptRevenue.length === 1 &&
+        (keptRevenue[0] === markedRevenue || (markedRevenue === null && keptRevenue[0] === donorRevenue))
+      ) {
+        if (donorRevenue === null) {
+          writeConsensus.run(parts.filter((part) => !isRevenuePart(part)).join(" · ") || null, kept.id);
+        } else {
+          if (donorRevenue !== keptRevenue[0]) {
+            writeConsensus.run(
+              parts.map((part) => (isRevenuePart(part) ? donorRevenue : part)).join(" · "),
+              kept.id,
+            );
+          }
+          carriedRevenue = donorRevenue;
+        }
+      }
+      // Anything else is a revenue figure the kept row has of its own.
+    }
+
+    // The marker: what this pass left carried on the row.
+    if (carriedKeys.length > 0 || carriedDescription !== null || carriedRevenue !== null) {
+      const nextMarker: JsonObject = { from_event_id: donor.id, keys: carriedKeys };
+      if (carriedDescription !== null) nextMarker.description = carriedDescription;
+      if (carriedRevenue !== null) nextMarker.consensus_revenue = carriedRevenue;
+      if (JSON.stringify(marker) !== JSON.stringify(nextMarker)) {
+        keptJson[FINNHUB_CARRY_MARKER] = nextMarker;
+        jsonChanged = true;
+      }
+    } else if (has(keptJson, FINNHUB_CARRY_MARKER)) {
+      delete keptJson[FINNHUB_CARRY_MARKER];
+      jsonChanged = true;
+    }
+    if (jsonChanged) writeRawJson.run(JSON.stringify(keptJson), kept.id);
+  };
+}
+
+/**
  * Reconcile all held/watchlist earnings rows in a window around `today`.
  * Pure given `today`; idempotent (re-running yields the same marks); never
  * mutates a user_confirmed/manual cluster's canonical date.
@@ -1061,7 +1442,7 @@ export function reconcileEarningsDates(
       `SELECT ${EARNINGS_ROW_COLUMNS}, title, source_key
        FROM calendar_events
        WHERE event_type = 'earnings' AND event_date BETWEEN ? AND ?
-       ORDER BY event_date ASC`,
+       ${EARNINGS_ROW_ORDER}`,
     )
     .all(start, end) as PassRow[];
 
@@ -1124,6 +1505,7 @@ export function reconcileEarningsDates(
       hasActual(r));
 
   const foldIntoCanonical = createTwinFolder(db);
+  const carryFinnhubData = createFinnhubDataCarrier(db);
 
   const result: ReconcileResult = {
     confirmed: 0,
@@ -1210,6 +1592,14 @@ export function reconcileEarningsDates(
           const changed = foldIntoCanonical(r, res.canonicalId, canonicalEventDate);
           anyChanged ||= changed;
         }
+        // AFTER the folds (the fold's COALESCE has had first say on the
+        // consensus column). `superseded` holds every hidden row of the
+        // cluster on every pass, already-hidden ones included, so data the
+        // weekly sync's upsert wiped off a vendor row is carried again by
+        // the pass that ends that same sync.
+        const finnhubDonor =
+          canonicalRow.source === "finnhub" ? null : pickFinnhubDonor(superseded, canonicalEventDate);
+        if (finnhubDonor) carryFinnhubData(finnhubDonor.id, res.canonicalId);
         if (res.status === "confirmed") result.confirmed++;
         else if (res.status === "conflict") result.conflict++;
         else if (res.status === "single") result.single++;

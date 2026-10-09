@@ -61,9 +61,16 @@ describe("Today keeps only the blocks the spec keeps (§2 ruling, §4.6)", () =>
     // The aggregation lives in summarizeIbkrDayMove (lib/queries/today-holdings.ts),
     // whose null-means-unknown contract is unit-tested there; the page must
     // delegate to it rather than re-inline the math.
-    expect(today).toMatch(/const \{ count: movedCount, todayGain, todayPct \} = summarizeIbkrDayMove\(holdings\)/);
+    // 2026-10-08 ruling: the summary also reports the rows opened or added to
+    // since the prior close, so the page keeps the whole summary, and "without
+    // a prior close" counts only rows missing a close (`unpricedCount`) — the
+    // old `holdings.length - movedCount` would now mislabel a position opened
+    // today without a cost as missing a price.
+    expect(today).toMatch(/const dayMove = summarizeIbkrDayMove\(holdings\);/);
+    expect(today).toMatch(/const \{ todayGain, todayPct \} = dayMove;/);
     expect(today).toContain("no prior-close prices yet — today's move is unavailable");
-    expect(today).toMatch(/<Count value=\{holdings\.length - movedCount\} \/>/);
+    expect(today).toMatch(/<Count value=\{dayMove\.unpricedCount\} \/> without a prior close/);
+    expect(today).not.toMatch(/holdings\.length - /);
     // Every $, % and count on the line sits inside a privacy wrapper: the
     // only braces in that block that reach a number are the wrappers' own
     // `value=` props — a bare `{todayGain}`/`{todayPct}`/`{holdings.length}`
@@ -71,6 +78,22 @@ describe("Today keeps only the blocks the spec keeps (§2 ruling, §4.6)", () =>
     // guards against.
     const line = today.slice(anchorIndex(today, "IBKR today — one line"), anchorIndex(today, "</section>", anchorIndex(today, "IBKR today — one line")));
     expect(line).not.toMatch(/(?<!value=)(\{todayGain\}|\{todayPct\}|\{holdings\.length\})/);
+    // The same holds for every count the summary reports: each reaches the
+    // line only as a <Count>'s `value=` (or inside a `> 0` render gate).
+    expect([...line.matchAll(/\{dayMove\.\w+\}/g)].length).toBeGreaterThan(0);
+    expect(line).not.toMatch(/(?<!<Count value=)\{dayMove\.\w+\}/);
+  });
+  // 2026-10-08 ruling: a position opened today is not credited with the move
+  // since yesterday's close, and the line says which names that touched.
+  it("marks the names opened or added to since the prior close, and the ones left out", () => {
+    const line = today.slice(anchorIndex(today, "IBKR today — one line"), anchorIndex(today, "</section>", anchorIndex(today, "IBKR today — one line")));
+    expect(line).toMatch(/dayMove\.openedTodayCount > 0 &&/);
+    expect(line).toMatch(/<Count value=\{dayMove\.openedTodayCount\} \/> opened \{sessionWord\}/);
+    expect(line).toMatch(/dayMove\.excludedCount > 0 &&/);
+    expect(line).toMatch(/<Count value=\{dayMove\.excludedCount\} \/> with no cost, left out/);
+    expect(line).toMatch(/<Count value=\{dayMove\.addedTodayCount\} \/> added to \{sessionWord\}/);
+    expect(line).toMatch(/<Count value=\{dayMove\.addedCostUnknownCount\} \/> added, cost unknown/);
+    expect(line).toMatch(/<Count value=\{dayMove\.undatedChangeCount\} \/> changed since an older snapshot/);
   });
 });
 
@@ -102,7 +125,9 @@ describe("Analysis diagnostics gains the two moved cards (§4.6 bullet 2)", () =
   it("computes the pulse itself, because MomentumPulse is prop-driven while SignificantMovesCard self-loads", () => {
     expect(analysis).toMatch(/computeMomentumPulse\(db\)/);
     expect(analysis).toMatch(/<MomentumPulse pulse=/);
-    expect(analysis).toMatch(/<SignificantMovesCard \/>/);
+    // The card still loads its own data, now for the page's resolved scope
+    // (owner ruling 2026-10-08: it follows the scope selector).
+    expect(analysis).toMatch(/<SignificantMovesCard accountIds=\{accountIds\} scopeLabel=/);
   });
 });
 

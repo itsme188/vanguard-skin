@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { MacroThemeReceiptDrawer } from "./MacroThemeReceiptDrawer";
 import apiFetch from "@/lib/http/apiFetch";
-import { Pct } from "@/lib/privacy/components";
+import { Pct, PrivateText } from "@/lib/privacy/components";
 import {
   describeRefreshFailure,
   isExpectedRefreshState,
@@ -20,6 +20,12 @@ interface MacroTheme {
   exposure_pct?: number;
   exposure_rank?: "highest" | "lowest" | null;
   top_contributors: Array<{ symbol: string; weight: number }>;
+  // The input this theme cites and the sentence it quotes from it. Checked on
+  // the server before caching; absent on a theme cached before 2026-10-08.
+  cited_kind?: "article" | "event" | "alert";
+  cited_id?: number;
+  cited_title?: string;
+  cited_excerpt?: string;
 }
 
 interface ApiResponse {
@@ -29,6 +35,9 @@ interface ApiResponse {
     articles: Array<{ id: number; title: string }>;
     events: Array<{ id: number; symbol: string | null; event_date: string; title?: string; event_type?: string }>;
     alerts: Array<{ id: number; symbol: string }>;
+    totals?: { articles: number; events: number; alerts: number };
+    /** Themes the model returned that failed the citation check. */
+    droppedThemes?: number;
   } | null;
   underThreshold?: boolean;
   notGenerated?: boolean;
@@ -40,7 +49,7 @@ interface ApiResponse {
   /** ms left on the POST route's window — only present on a 429. */
   retryAfter?: number;
   /** Which of the POST route's two limits fired — only present on a 429. */
-  reason?: "daily" | "last_attempt_failed";
+  reason?: "daily" | "last_attempt_failed" | "none_verified";
   /**
    * Client-side only: this failure is an EXPECTED state (a rate limit), not a
    * breakage, so it renders neutrally rather than in the loss colour.
@@ -101,6 +110,46 @@ export function exposureRankLabel(rank: MacroTheme["exposure_rank"]): string | n
  */
 export function hasExposureFigure(t: Pick<MacroTheme, "exposure_pct">): boolean {
   return typeof t.exposure_pct === "number" && Number.isFinite(t.exposure_pct);
+}
+
+/** True when the theme carries a quoted sentence to show under it. */
+export function hasCitedExcerpt(t: Pick<MacroTheme, "cited_excerpt">): boolean {
+  return typeof t.cited_excerpt === "string" && t.cited_excerpt.trim() !== "";
+}
+
+/**
+ * Where the cited input opens. Only an article has a page of its own (the
+ * Research feed opens one article from ?article=<id>); an event or alert is
+ * named but not linked.
+ */
+export function citedSourceHref(t: Pick<MacroTheme, "cited_kind" | "cited_id">): string | null {
+  if (t.cited_kind !== "article" || typeof t.cited_id !== "number") return null;
+  return `/dashboard/research?view=feeds&article=${t.cited_id}`;
+}
+
+const CITED_KIND_FALLBACK: Record<NonNullable<MacroTheme["cited_kind"]>, string> = {
+  article: "cited article",
+  event: "cited calendar event",
+  alert: "cited level alert",
+};
+
+/** What to call the cited input: its title, or its kind when none was stored. */
+export function citedSourceLabel(t: Pick<MacroTheme, "cited_kind" | "cited_title">): string {
+  const title = typeof t.cited_title === "string" ? t.cited_title.trim() : "";
+  if (title) return title;
+  return t.cited_kind ? CITED_KIND_FALLBACK[t.cited_kind] : "cited source";
+}
+
+/**
+ * Themes the model wrote that failed the check are not shown; say that some
+ * were held back so a short list does not read as a quiet week. Null when
+ * none were (or on a summary cached before the check existed).
+ */
+export function droppedThemesNote(dropped: number | undefined): string | null {
+  if (typeof dropped !== "number" || !Number.isFinite(dropped) || dropped <= 0) return null;
+  return dropped === 1
+    ? "1 more theme was generated but could not be verified against its source, so it is not shown."
+    : `${dropped} more themes were generated but could not be verified against their sources, so they are not shown.`;
 }
 
 /**
@@ -285,7 +334,29 @@ export function MacroOverlayCard({ scope }: { scope: string }) {
                   </span>
                 )}
               </div>
-              <p className="text-xs text-ink-dim mt-1 ml-4">{t.summary}</p>
+              <p className="text-xs text-ink-dim mt-1 ml-4">
+                <PrivateText>{t.summary}</PrivateText>
+              </p>
+              {hasCitedExcerpt(t) && (
+                // The sentence this theme quotes from the input it cites. The
+                // server found it in that input's text before caching; it is
+                // public article or release text, so it is not masked.
+                <p className="text-[11px] text-ink-dim mt-1.5 ml-4 border-l-2 border-edge pl-2">
+                  <q className="italic">{t.cited_excerpt}</q>
+                  <span className="text-ink-dim"> · </span>
+                  {citedSourceHref(t) ? (
+                    <a
+                      href={citedSourceHref(t) ?? undefined}
+                      title={citedSourceLabel(t)}
+                      className="underline decoration-dotted underline-offset-2 hover:text-ink"
+                    >
+                      {citedSourceLabel(t)}
+                    </a>
+                  ) : (
+                    <span>{citedSourceLabel(t)}</span>
+                  )}
+                </p>
+              )}
               <div className="mt-2 ml-4 flex items-center gap-3 text-[11px]">
                 <span className="text-ink-faint">
                   factor: {FACTOR_LABELS[t.factor_label] ?? t.factor_label}
@@ -314,6 +385,11 @@ export function MacroOverlayCard({ scope }: { scope: string }) {
               </div>
             </li>
           ))}
+          {droppedThemesNote(data.sourceSummary?.droppedThemes) && (
+            <li className="px-1 text-[11px] text-ink-dim">
+              {droppedThemesNote(data.sourceSummary?.droppedThemes)}
+            </li>
+          )}
         </ul>
       )}
 

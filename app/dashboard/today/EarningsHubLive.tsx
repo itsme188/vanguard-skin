@@ -40,7 +40,8 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import apiFetch from "@/lib/http/apiFetch";
-import LivePrintRow from "./LivePrintRow";
+import { todayET } from "@/lib/calendar/date-utils";
+import LivePrintRow, { PrintRecordView } from "./LivePrintRow";
 import IrPageField from "./live-print/IrPageField";
 import PrepareStatus from "./live-print/PrepareStatus";
 import {
@@ -63,6 +64,7 @@ import {
   HOT_POLL_MS,
   printHeadlineText,
   printStateLabel,
+  slotBodyKind,
   stateAndWindowSegments,
   windowText,
 } from "./live-print/helpers";
@@ -70,6 +72,7 @@ import type {
   CockpitPayloadWire,
   CockpitRowWire,
   PrepareStepWire,
+  PrintRecordWire,
   PrintStatusEntry,
 } from "./hub-live/types";
 
@@ -608,6 +611,122 @@ export default function EarningsHubLive({
   );
 }
 
+/** The outcome of one record read: the record, or the sentence to show. */
+export type PrintRecordResult =
+  | { ok: true; record: PrintRecordWire }
+  | { ok: false; error: string };
+
+/**
+ * Reads one event's print record (`GET /api/print-watch/record`).
+ *
+ * A plain function over an injected fetch so the URL and every failure
+ * sentence are assertable with no DOM. It never throws: a refusal, a body that
+ * is not the envelope and a network failure each come back as a sentence. An
+ * aborted read rethrows, so the caller can tell "cancelled" from "failed".
+ */
+export async function fetchPrintRecord(
+  eventId: number,
+  fetchImpl: (input: string, init?: RequestInit) => Promise<Response>,
+  signal?: AbortSignal,
+): Promise<PrintRecordResult> {
+  try {
+    const res = await fetchImpl(`/api/print-watch/record?eventId=${eventId}`, signal ? { signal } : undefined);
+    const data = (await res.json().catch(() => null)) as
+      | { success?: boolean; error?: string; data?: PrintRecordWire }
+      | null;
+    if (!res.ok || !data?.success || !data.data) {
+      return {
+        ok: false,
+        error: data?.error ?? `Could not read this print's record (HTTP ${res.status}).`,
+      };
+    }
+    return { ok: true, record: data.data };
+  } catch (err) {
+    if (signal?.aborted) throw err;
+    return { ok: false, error: "Could not reach the server for this print's record." };
+  }
+}
+
+/**
+ * The read-only record of a finished print, fetched when the row is expanded.
+ *
+ * A SEPARATE top-level component (never nested in the slot: the remount trap).
+ * The slot mounts it only while the row is open AND in the visible twin, so
+ * the read fires once per expand and never twice for the two responsive twins.
+ *
+ * Three honest states: reading, failed (the sentence plus a retry), loaded.
+ * `attempt` is bumped by the retry and by an output button finishing, so both
+ * are one more run of the same read rather than a second code path. A re-read
+ * keeps the record on screen instead of flashing back to "reading".
+ */
+function PrintRecordPanel({
+  eventId,
+  onChanged,
+}: {
+  eventId: number;
+  /** The Hub's own refresh: a sent recap also moves the row's stage chips. */
+  onChanged: () => Promise<void>;
+}) {
+  const [record, setRecord] = useState<PrintRecordWire | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [attempt, setAttempt] = useState(0);
+
+  useEffect(() => {
+    const ac = new AbortController();
+    (async () => {
+      try {
+        const result = await fetchPrintRecord(eventId, apiFetch, ac.signal);
+        if (ac.signal.aborted) return;
+        if (result.ok) {
+          setRecord(result.record);
+          setError(null);
+        } else {
+          setError(result.error);
+        }
+      } catch {
+        // Aborted: the row collapsed or a newer read replaced this one.
+      }
+    })();
+    return () => ac.abort();
+  }, [eventId, attempt]);
+
+  const reload = useCallback(async () => {
+    setAttempt((n) => n + 1);
+    await onChanged();
+  }, [onChanged]);
+
+  if (record === null && error === null) {
+    return <p className="mt-2 text-[12px] text-ink-dim">Reading this print&apos;s record…</p>;
+  }
+
+  return (
+    <>
+      {error && (
+        <p className="mt-2 text-[12px] text-down">
+          {error}{" "}
+          <button
+            type="button"
+            onClick={() => {
+              setError(null);
+              setAttempt((n) => n + 1);
+            }}
+            className="relative underline text-ink-dim hover:text-ink pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-1"
+          >
+            retry the read
+          </button>
+        </p>
+      )}
+      {record && (
+        <PrintRecordView
+          record={record}
+          dateLabel={eventDateLabel(record.print?.eventDate ?? null)}
+          onChanged={reload}
+        />
+      )}
+    </>
+  );
+}
+
 /**
  * One armed Hub row's live-print expansion (M-F6, M-F13).
  *
@@ -717,7 +836,20 @@ export function LivePrintSlot({
     [print, prepareSteps, onChanged],
   );
 
-  if (!armed && !print) return null;
+  /**
+   * WHICH BODY? An armed row with no live print is one of two different things:
+   * a print still to come (the pre-window controls), or a print that is over
+   * and has dropped out of the status feed (the read-only record). The event's
+   * date decides, read off the cockpit row the Hub already holds; the print's
+   * own record is fetched only once the row is expanded. Today comes from the
+   * provider's shared clock, never the wall clock in render, and is unknown
+   * until that clock starts, which reads as "still to come".
+   */
+  const eventDate = live?.cockpitByEvent[eventId]?.eventDate ?? null;
+  const todayEt = live && live.nowMs > 0 ? todayET(new Date(live.nowMs)) : null;
+  const body = slotBodyKind({ armed, hasLivePrint: print !== null, eventDate, todayEt });
+
+  if (body === "none") return null;
 
   const toggle = () => {
     if (live) live.toggleRow(eventId, print?.printId ?? null);
@@ -749,7 +881,9 @@ export function LivePrintSlot({
           stateChip!.text,
           windowText(print.effectiveWindow ?? null, live?.nowMs ?? 0),
         )
-    : "armed — the watch window opens automatically ahead of the release";
+    : body === "record"
+      ? "armed — the watch window has closed; expand for the record of this print"
+      : "armed — the watch window opens automatically ahead of the release";
 
   return (
     <div ref={rootRef} className="px-5 py-2 border-b border-edge bg-canvas">
@@ -760,13 +894,22 @@ export function LivePrintSlot({
           onClick={toggle}
           aria-expanded={open}
           className="relative text-[11px] font-mono underline text-ink-dim hover:text-ink pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-1"
-          title={open ? "Collapse this print" : "Open the live print sheet for this row"}
+          title={
+            open
+              ? "Collapse this print"
+              : body === "record"
+                ? "Open the read-only record of this print"
+                : "Open the live print sheet for this row"
+          }
         >
           {open ? "collapse" : "expand"}
         </button>
       </div>
       {open && isVisibleTwin && print && sheet}
-      {open && isVisibleTwin && !print && (
+      {/* A finished print that has left the status feed: the read-only record,
+          with none of the pre-window controls below. */}
+      {open && isVisibleTwin && body === "record" && <PrintRecordPanel eventId={eventId} onChanged={onChanged} />}
+      {open && isVisibleTwin && body === "waiting" && (
         <div className="mt-2 space-y-1.5">
           {/* Before the window opens there is no sheet to show — what the desk
               CAN still do is the two things that decide whether the print is

@@ -7,6 +7,7 @@ vi.mock("@/lib/db", () => ({ db: {} }));
 
 import {
   quietState,
+  scopeWording,
   coverageAccountsForFlags,
   latestCompletedSession,
   isOlderSession,
@@ -19,16 +20,21 @@ function cov(over: Partial<MovesCoverage>): MovesCoverage {
   return { total: 0, evaluated: 0, missingBeta: 0, missingCloses: 0, ...over };
 }
 
+// The card follows the scope selector (owner ruling 2026-10-08): every string
+// names the scope on screen. These cases use the Vanguard scope; the per-scope
+// wording is pinned in the "scopeWording" block below.
+const VANGUARD = scopeWording("Vanguard", false);
+
 describe("quietState", () => {
   it("no holdings in scope: says so, never 'nothing moved'", () => {
-    const q = quietState(cov({}), PAIR, false);
+    const q = quietState(cov({}), PAIR, false, VANGUARD);
     expect(q.reason).toBe("No Vanguard holdings are in scope for this card.");
     expect(q.reason).not.toContain("moved");
     expect(q.showCoverage).toBe(false);
   });
 
   it("a held name with no cached beta (evaluated 0 of 1): not evaluated, and why", () => {
-    const q = quietState(cov({ total: 1, evaluated: 0, missingBeta: 1 }), PAIR, false);
+    const q = quietState(cov({ total: 1, evaluated: 0, missingBeta: 1 }), PAIR, false, VANGUARD);
     expect(q.reason).toContain("No Vanguard holding could be evaluated");
     expect(q.reason).toContain("none of them has a beta on file");
     expect(q.reason).toContain("This is not a finding that nothing moved.");
@@ -36,24 +42,24 @@ describe("quietState", () => {
   });
 
   it("nothing evaluated because closes are missing: names the two dates", () => {
-    const q = quietState(cov({ total: 4, evaluated: 0, missingBeta: 1, missingCloses: 4 }), PAIR, false);
+    const q = quietState(cov({ total: 4, evaluated: 0, missingBeta: 1, missingCloses: 4 }), PAIR, false, VANGUARD);
     expect(q.reason).toContain("none of them has a close on both 2026-10-05 and 2026-10-06");
   });
 
   it("nothing evaluated for mixed reasons: says either input is missing", () => {
-    const q = quietState(cov({ total: 4, evaluated: 0, missingBeta: 2, missingCloses: 2 }), PAIR, false);
+    const q = quietState(cov({ total: 4, evaluated: 0, missingBeta: 2, missingCloses: 2 }), PAIR, false, VANGUARD);
     expect(q.reason).toContain("each is missing a cached beta or a close");
   });
 
   it("partial coverage: the quiet-day sentence is limited to the evaluated holdings", () => {
-    const q = quietState(cov({ total: 10, evaluated: 6, missingBeta: 4 }), PAIR, false);
+    const q = quietState(cov({ total: 10, evaluated: 6, missingBeta: 4 }), PAIR, false, VANGUARD);
     expect(q.reason).toContain("Among the Vanguard holdings that could be evaluated");
     expect(q.reason).toContain("The rest were not checked.");
     expect(q.showCoverage).toBe(true);
   });
 
   it("full coverage: the plain quiet-day sentence, dated", () => {
-    const q = quietState(cov({ total: 10, evaluated: 10 }), PAIR, false);
+    const q = quietState(cov({ total: 10, evaluated: 10 }), PAIR, false, VANGUARD);
     expect(q.reason).toBe(
       "No Vanguard holdings moved significantly more than their beta predicted on 2026-10-06.",
     );
@@ -66,20 +72,79 @@ describe("quietState", () => {
       cov({ total: 7, evaluated: 3, missingBeta: 4 }),
       cov({ total: 7, evaluated: 7 }),
     ]) {
-      const q = quietState(c, { prior: "PRIOR", latest: "LATEST" }, false);
+      const q = quietState(c, { prior: "PRIOR", latest: "LATEST" }, false, VANGUARD);
       expect(`${q.reason} ${q.hint.replace(/3%|2 standard/g, "")}`).not.toMatch(/\d/);
     }
   });
 
   it("states the flag threshold in the visible hint whenever holdings exist", () => {
-    const q = quietState(cov({ total: 10, evaluated: 10 }), PAIR, false);
+    const q = quietState(cov({ total: 10, evaluated: 10 }), PAIR, false, VANGUARD);
     expect(q.hint).toContain("at least 3%");
     expect(q.hint).toContain("2 standard deviations");
   });
 
   it("an older session is labelled next to its date", () => {
-    const q = quietState(cov({ total: 10, evaluated: 10 }), PAIR, true);
+    const q = quietState(cov({ total: 10, evaluated: 10 }), PAIR, true, VANGUARD);
     expect(q.reason).toContain("2026-10-06 (older session — no newer close on file)");
+  });
+});
+
+describe("scopeWording: the title and quiet text name the scope on screen", () => {
+  const full = cov({ total: 10, evaluated: 10 });
+
+  it("Vanguard", () => {
+    const w = scopeWording("Vanguard", false);
+    expect(w.title).toBe("Significant Moves in Vanguard Holdings");
+    expect(quietState(full, PAIR, false, w).reason).toBe(
+      "No Vanguard holdings moved significantly more than their beta predicted on 2026-10-06.",
+    );
+  });
+
+  it("IBKR", () => {
+    const w = scopeWording("IBKR", false);
+    expect(w.title).toBe("Significant Moves in IBKR Holdings");
+    expect(quietState(full, PAIR, false, w).reason).toBe(
+      "No IBKR holdings moved significantly more than their beta predicted on 2026-10-06.",
+    );
+    expect(quietState(cov({}), PAIR, false, w).reason).toBe(
+      "No IBKR holdings are in scope for this card.",
+    );
+    expect(quietState(cov({ total: 2, evaluated: 0, missingBeta: 2 }), PAIR, false, w).reason).toContain(
+      "No IBKR holding could be evaluated",
+    );
+    expect(quietState(cov({ total: 4, evaluated: 2, missingBeta: 2 }), PAIR, false, w).reason).toContain(
+      "Among the IBKR holdings that could be evaluated",
+    );
+  });
+
+  it("Roth", () => {
+    const w = scopeWording("Roth", false);
+    expect(w.title).toBe("Significant Moves in Roth Holdings");
+    expect(quietState(full, PAIR, false, w).reason).toContain("No Roth holdings moved significantly");
+  });
+
+  it("all accounts: reads as a sentence, and never says Vanguard", () => {
+    const w = scopeWording("All accounts", true);
+    expect(w.title).toBe("Significant Moves Across All Accounts");
+    const states = [
+      quietState(cov({}), PAIR, false, w),
+      quietState(cov({ total: 2, evaluated: 0, missingBeta: 2 }), PAIR, false, w),
+      quietState(cov({ total: 4, evaluated: 2, missingBeta: 2 }), PAIR, false, w),
+      quietState(full, PAIR, false, w),
+    ];
+    expect(states[0].reason).toBe("No holdings across all accounts are in scope for this card.");
+    expect(states[3].reason).toBe(
+      "No holdings across all accounts moved significantly more than their beta predicted on 2026-10-06.",
+    );
+    for (const q of states) expect(`${q.reason} ${q.hint}`).not.toContain("Vanguard");
+  });
+
+  it("no scope's empty-scope hint claims the card is Vanguard-only", () => {
+    for (const w of [scopeWording("IBKR", false), scopeWording("Vanguard", false)]) {
+      expect(quietState(cov({}), PAIR, false, w).hint).toBe(
+        "It covers long positions held in the accounts of the scope selected above.",
+      );
+    }
   });
 });
 

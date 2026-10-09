@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
+  levelPauseRefusal,
   levelActionVisibility,
   levelNotWatchedExplanation,
   levelReviewGuidance,
@@ -23,6 +24,7 @@ describe("levelActionVisibility", () => {
       showPause: true,
       showReactivate: false,
       showRequeue: false,
+      showRejectedChip: false,
     });
   });
 
@@ -33,6 +35,7 @@ describe("levelActionVisibility", () => {
       showPause: false,
       showReactivate: false,
       showRequeue: false,
+      showRejectedChip: false,
     });
     expect(levelNotWatchedExplanation(input)).toBe("Expired — no longer watched");
   });
@@ -54,6 +57,7 @@ describe("levelActionVisibility", () => {
       showPause: false,
       showReactivate: false,
       showRequeue: false,
+      showRejectedChip: false,
     });
   });
 
@@ -64,6 +68,7 @@ describe("levelActionVisibility", () => {
       showPause: false,
       showReactivate: false,
       showRequeue: true,
+      showRejectedChip: true,
     });
   });
 
@@ -74,6 +79,7 @@ describe("levelActionVisibility", () => {
       showPause: false,
       showReactivate: true,
       showRequeue: false,
+      showRejectedChip: false,
     });
   });
 
@@ -84,6 +90,7 @@ describe("levelActionVisibility", () => {
       showPause: false,
       showReactivate: true,
       showRequeue: false,
+      showRejectedChip: true,
     });
   });
 
@@ -94,6 +101,7 @@ describe("levelActionVisibility", () => {
       showPause: false,
       showReactivate: true,
       showRequeue: false,
+      showRejectedChip: false,
     });
   });
 
@@ -141,5 +149,25 @@ describe("levelReviewGuidance", () => {
   it("tells a pending_review row it can be approved/rejected on the Alerts Review tab", () => {
     const text = levelReviewGuidance("pending_review");
     expect(text).toContain("Alerts Review tab");
+  });
+});
+
+describe("showRejectedChip — a paused rejected row still says rejected", () => {
+  it("shows on every rejected row, active or paused, and on no other", () => {
+    expect(levelActionVisibility({ is_active: 0, review_status: "rejected" }).showRejectedChip).toBe(true);
+    expect(levelActionVisibility({ is_active: 1, review_status: "rejected" }).showRejectedChip).toBe(true);
+    expect(levelActionVisibility({ is_active: 0, review_status: "auto_approved" }).showRejectedChip).toBe(false);
+    expect(levelActionVisibility({ is_active: 1, review_status: "pending_review" }).showRejectedChip).toBe(false);
+  });
+});
+
+describe("levelPauseRefusal — the server twin of showPause", () => {
+  it("allows only an auto-approved level, and agrees with the UI rule", () => {
+    expect(levelPauseRefusal("auto_approved")).toBeNull();
+    for (const rs of ["pending_review", "rejected"] as const) {
+      expect(levelPauseRefusal(rs)).toMatch(/not armed/i);
+      // No active row of this status is offered Pause, so the UI never sends it.
+      expect(levelActionVisibility({ is_active: 1, review_status: rs }).showPause).toBe(false);
+    }
   });
 });

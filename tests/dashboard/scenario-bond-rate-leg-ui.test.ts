@@ -42,6 +42,22 @@ describe("scenario card: bonds the rate move could not price", () => {
     expect(s).not.toMatch(/text-ink-(muted|ghost)/);
     expect(s).not.toMatch(/[▾▼▸▶⌄]/);
   });
+
+  // D6 (2026-10-08): a fund refused the 5-year default is listed here too.
+  it("shows the section for a left-out fund alone, counts it inside PrivateText and labels both fund reasons", () => {
+    anchorIndex(card, "(result.bondsUnmodelled.count > 0 || result.bondsUnmodelled.fundCount > 0) && (");
+    const s = section();
+    const open = anchorIndex(s, "<PrivateText>");
+    const close = anchorIndex(s, "</PrivateText>", open);
+    anchorIndex(s.slice(open, close), "{result.bondsUnmodelled.fundCount}");
+    expect(s.slice(0, open) + s.slice(close)).not.toContain("{result.bondsUnmodelled.fundCount}");
+    anchorIndex(s, "no duration is assumed");
+    // The labels key on the helper's own reason values, so neither can go dead.
+    for (const reason of ["fund-equity-evidence", "fund-category-unconfirmed"]) {
+      anchorIndex(card, `"${reason}":`);
+      anchorIndex(helper, `| "${reason}"`);
+    }
+  });
 });
 
 describe("scenario card: fund duration note", () => {

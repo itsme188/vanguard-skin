@@ -4,11 +4,11 @@
  * Fires every 15 minutes via the "every-15m" cron trigger, but self-gates
  * inside `shouldRunNow` to US-market business hours (09:30 → 18:59 ET,
  * Mon-Fri). The 18:59 upper bound (extended from 18:00, B8) exists because
- * earnings-row reaction capture is gated to T+115min (`REACTION_READY_MS`,
+ * reaction capture is gated to T+120min for every row (`REACTION_READY_MS`,
  * see cloud-enriched.ts) — a late-AMC name (e.g. 16:30 release) isn't
- * reaction-ready until ~18:25, so the old 18:00 boundary gave it zero
+ * reaction-ready until 18:30, so the old 18:00 boundary gave it zero
  * capturable ticks. 18:59 gives every AMC name at least two tick
- * opportunities within the runner's -2h candidate window.
+ * opportunities (16:30 → 18:30 + 18:45).
  *
  * Originally (mirroring briefing/digest) this tried a Mac primary via a local
  * `callEnrichPrimary` helper before falling back — record an `enrich-sent-
@@ -66,10 +66,9 @@ export function shouldRunCalendarEnrich(
   if (now.dow < 1 || now.dow > 5) return false;
   const minuteOfDay = now.hour * 60 + now.minute;
   // Upper bound 18:59 ET (was 17:59, B8): reaction capture needs a tick at
-  // ≥ release+110min (bars target T+120 with 10-min tolerance —
-  // BAR_TOLERANCE_MS in reaction-matcher.ts). The AMC cohort releases
-  // 16:00–16:30, so the latest capturable floor is 18:20 (16:30 release);
-  // 18:59 gives every AMC name at least two tick opportunities
+  // ≥ release+120min (REACTION_READY_MS — the full reaction window). The AMC
+  // cohort releases 16:00–16:30, so the latest capturable floor is 18:30
+  // (16:30 release); 18:59 gives every AMC name at least two tick opportunities
   // (e.g. 16:30 → 18:30 + 18:45). Before this, cloud AMC reactions were
   // structurally impossible.
   return minuteOfDay >= 9 * 60 + 30 && minuteOfDay <= 18 * 60 + 59;
@@ -287,9 +286,14 @@ export async function runCloudFallback(
         } catch {
           existing = null;
         }
-        // Macro rows keep single-shot semantics EXACTLY (immediate partial
-        // capture is by design). Earnings rows retry until COMPLETE — the
-        // Worker mirror of the Mac's migration-062 retry-until-complete.
+        // Macro rows keep single-shot semantics EXACTLY: one payload, never
+        // revisited. Since 2026-10-08 that payload carries the actual and (in
+        // practice) NO reaction — the reaction gate below needs T+120min and
+        // the macro candidate window closes at T+120min. The Worker does not
+        // come back for a macro reaction; the Mac's reaction-only follow-up
+        // pass captures it when the Mac is up. Earnings rows retry until
+        // COMPLETE — the Worker mirror of the Mac's migration-062
+        // retry-until-complete.
         if (!isEarnings) continue;
         if (existing && isPayloadComplete(existing, cand.releaseInstant, nowMs)) continue;
       }
@@ -310,25 +314,30 @@ export async function runCloudFallback(
       // ETF and publish SPY/QQQ/TLT only — Mac's TWS-upgrade path can add
       // the sector ETF later if needed.
       const sectorEtf = resolveSectorEtf(cand.event_type, null);
-      // Earnings reactions are pointless before T+115 (bars target T+120,
-      // 10-min tolerance) — Mac REACTION_READY_MS mirror. Macro rows are
-      // NEVER gated (immediate partial capture is by design).
-      const reactionAllowed =
-        !isEarnings || nowMs - cand.releaseInstant.getTime() >= REACTION_READY_MS;
+      // No reaction before release + 120 minutes, for EVERY row (earnings and
+      // macro alike) — Mac REACTION_READY_MS mirror, owner ruling 2026-10-08.
+      // A row enriched earlier keeps its actual and simply has no reaction.
+      const reactionAllowed = nowMs - cand.releaseInstant.getTime() >= REACTION_READY_MS;
       // Earnings rows anchor t_pre to the prior regular-session close
       // (2026-08-04 Mac parity) — pass the 16:00-ET-of-event-day instant.
       const earningsCloseMs = isEarnings
         ? (composeReleaseInstant(cand.event_date, "16:00")?.getTime() ?? null)
         : null;
-      const reaction =
-        existing?.reaction ??
-        (reactionAllowed
+      const captured =
+        existing?.reaction == null && reactionAllowed
           ? await captureReactionFromYahoo(cand.releaseInstant, sectorEtf, {
               pacingMs,
               eventSymbol: cand.event_type === "earnings" ? cand.symbol : null,
               earningsCloseMs,
             })
-          : null);
+          : null;
+      // Stamp the capture instant on a FRESH capture only (Mac parity:
+      // `captured_at` on the snapshot is what lib/calendar/reaction-validity.ts
+      // reads to tell a measurement from an early read). A reaction already in
+      // KV is carried over untouched — never given a newer stamp than its bars.
+      const reaction =
+        existing?.reaction ??
+        (captured ? { ...captured, captured_at: new Date(nowMs).toISOString() } : null);
 
       const payload: CloudEnrichedPayload = {
         eventId: cand.id,

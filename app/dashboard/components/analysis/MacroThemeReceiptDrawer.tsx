@@ -15,6 +15,10 @@ interface SourceSummary {
   // title / event_type are absent on a summary cached before they were stored.
   events: Array<{ id: number; symbol: string | null; event_date: string; title?: string; event_type?: string }>;
   alerts: Array<{ id: number; symbol: string }>;
+  // Present on a summary written since 2026-10-08: the lists above are then
+  // what was SENT to the model, and these are the sizes of the week it was
+  // chosen from.
+  totals?: { articles: number; events: number; alerts: number };
 }
 
 /**
@@ -39,14 +43,33 @@ export function macroEventLabel(e: SourceSummary["events"][number]): string {
   return type ? type.replace(/_/g, " ") : "Unnamed event";
 }
 
-// The stored inputs belong to the WEEK, not to one theme: the model returns a
-// name, a factor, a direction and a summary per theme and cites nothing. The
-// drawer used to open under a single theme's name and summary, which read as
-// that theme's evidence while every theme showed the same list (QA finding
+// The stored inputs belong to the WEEK, not to one theme. The drawer used to
+// open under a single theme's name and summary, which read as that theme's
+// evidence while every theme showed the same list (QA finding
 // analysis-macro-sources--receipt-drawer-same-10-articles-for-every-theme).
+// Since 2026-10-08 each theme does cite one input, and the CARD shows that
+// quote under the theme; this drawer stays the week's whole input list.
 export const MACRO_INPUTS_HEADING = "Inputs to this week's macro read";
 export const MACRO_INPUTS_NOTE =
+  "The macro events, level alerts and articles that were sent to the model for this week's themes, in the order sent: articles on names you hold first, then the newest. The same list sits behind every theme; the one input a theme quotes is shown under that theme on the card.";
+/** For a summary cached before 2026-10-08, whose lists were built differently. */
+export const MACRO_INPUTS_NOTE_LEGACY =
   "The most recent articles, macro events and level alerts gathered for this week's themes (up to 10 of each). The same list sits behind every theme: which input supports which theme is not recorded.";
+
+/** The note that is true of THIS summary: `totals` marks the newer shape. */
+export function macroInputsNote(sourceSummary: SourceSummary): string {
+  return sourceSummary.totals ? MACRO_INPUTS_NOTE : MACRO_INPUTS_NOTE_LEGACY;
+}
+
+/**
+ * A section's count: how many were sent, and out of how many when the week
+ * held more. These count public articles and releases, not holdings.
+ */
+export function inputsCountLabel(sent: number, total: number | undefined): string {
+  return typeof total === "number" && Number.isFinite(total) && total > sent
+    ? `${sent} sent of ${total} this week`
+    : String(sent);
+}
 
 export function MacroThemeReceiptDrawer({
   sourceSummary,
@@ -80,7 +103,7 @@ export function MacroThemeReceiptDrawer({
         <header className="mb-4 flex items-start justify-between gap-3">
           <div>
             <h2 className="text-base font-medium text-ink">{MACRO_INPUTS_HEADING}</h2>
-            <p className="text-xs text-ink-faint mt-1">{MACRO_INPUTS_NOTE}</p>
+            <p className="text-xs text-ink-faint mt-1">{macroInputsNote(sourceSummary)}</p>
           </div>
           <button
             type="button"
@@ -94,7 +117,7 @@ export function MacroThemeReceiptDrawer({
 
         <section className="mb-4">
           <h3 className="text-xs uppercase tracking-wider text-ink-faint mb-2">
-            Articles ({sourceSummary.articles.length})
+            Articles ({inputsCountLabel(sourceSummary.articles.length, sourceSummary.totals?.articles)})
           </h3>
           {sourceSummary.articles.length === 0 ? (
             <p className="text-xs text-ink-faint italic">None</p>
@@ -118,7 +141,7 @@ export function MacroThemeReceiptDrawer({
 
         <section className="mb-4">
           <h3 className="text-xs uppercase tracking-wider text-ink-faint mb-2">
-            Macro events ({sourceSummary.events.length})
+            Macro events ({inputsCountLabel(sourceSummary.events.length, sourceSummary.totals?.events)})
           </h3>
           {sourceSummary.events.length === 0 ? (
             <p className="text-xs text-ink-faint italic">None</p>
@@ -135,7 +158,7 @@ export function MacroThemeReceiptDrawer({
 
         <section className="mb-4">
           <h3 className="text-xs uppercase tracking-wider text-ink-faint mb-2">
-            Level alerts ({sourceSummary.alerts.length})
+            Level alerts ({inputsCountLabel(sourceSummary.alerts.length, sourceSummary.totals?.alerts)})
           </h3>
           {sourceSummary.alerts.length === 0 ? (
             <p className="text-xs text-ink-faint italic">None</p>

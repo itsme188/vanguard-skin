@@ -134,6 +134,20 @@ export interface SecurityLevelRow {
    * still parse (undefined treated the same as null).
    */
   armed_crossed_at?: string | null;
+  /**
+   * v12 (2026-10-08). The security's trading currency. `price` is in THIS
+   * currency (native, never converted); the push labels it. Optional: a v11
+   * snapshot has no such field and reads as USD.
+   */
+  currency?: string | null;
+  /**
+   * v12. The level's last fire on the Mac (`security_levels.triggered_at`), a
+   * UTC instant in either stored form (ISO with T and Z, or SQLite
+   * 'YYYY-MM-DD HH:MM:SS'). Read with `etDateOfStoredUtc` (dst.ts). The
+   * once-a-day guard skips a level whose last fire was on the current Eastern
+   * day. Optional: a v11 snapshot has no such field (never blocks).
+   */
+  triggered_at?: string | null;
 }
 
 /**
@@ -306,7 +320,10 @@ export interface RemovedEventId {
 }
 
 export interface Snapshot {
-  schemaVersion: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11;
+  // v12 (2026-10-08) adds `currency` and `triggered_at` to securityLevels
+  // rows. Both are optional, so a v11 snapshot is read unchanged: the Worker
+  // is deployed before the first v12 snapshot is written.
+  schemaVersion: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12;
   snapshotDate: string;
   generatedAt: string;
   heldSymbols: string[];

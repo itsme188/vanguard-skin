@@ -27,8 +27,16 @@ export function cloudEnrichedKey(eventId: number): string {
 /** Mac enrichment-runner REACTION_SETTLE_MS mirror — reaction window closes 150 min post-release. */
 export const COMPLETE_SETTLE_MS = 150 * 60 * 1000;
 
-/** Mac enrichment-runner REACTION_READY_MS mirror — earnings reaction attempts are pointless before T+115 (bars target T+120, 10-min tolerance). */
-export const REACTION_READY_MS = 115 * 60 * 1000;
+/**
+ * Mac enrichment-runner REACTION_READY_MS mirror (same value: the full
+ * 120-minute reaction window). A reaction is the move to release + 120
+ * minutes; before that instant there is nothing to measure, so NO row —
+ * earnings or macro — is captured earlier (owner ruling 2026-10-08; the Mac
+ * rule lives in lib/calendar/reaction-validity.ts). History: this was 115
+ * minutes and earnings-only, and macro rows were captured minutes after the
+ * release, which stored a 5-minute move as the two-hour reaction.
+ */
+export const REACTION_READY_MS = 120 * 60 * 1000;
 
 /** Earnings-row predicate — mirrors the Mac rule (source='finnhub' OR event_type='earnings'). */
 export function isEarningsRow(eventType: string, sourceKey: string): boolean {

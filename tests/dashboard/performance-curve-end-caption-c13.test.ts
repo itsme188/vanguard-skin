@@ -37,9 +37,15 @@ describe("equity-curve caption names the end overshoot", () => {
     expect(curve).toContain("return notice || runsPastWindow ? (");
   });
 
-  it("the curve still plots every daily point: no clip to the window end", () => {
+  // B4 ruling (2026-10-08) deliberately changed this pin: a FIXED period
+  // (1Y / 3Y / 5Y) now ends the curve at the last statement anchor, the same
+  // end as the TWR beside it. YTD and All still plot every daily point to
+  // today, which is where the overshoot caption above still applies.
+  it("the curve ends at the page window's end: today for YTD / All, the statement anchor for a fixed period", () => {
     expect(flat(view)).toContain(
-      "getDailyValuationsByAccount(db, accountId, { startDate: effectiveStart, endDate: today })",
+      "getDailyValuationsByAccount(db, accountId, { startDate: effectiveStart, endDate: dailyEnd })",
     );
+    expect(flat(view)).toContain("const dailyEnd = perfWindow.endDate;");
+    expect(flat(view)).not.toContain("{ startDate: effectiveStart, endDate: twrResult");
   });
 });

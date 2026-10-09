@@ -16,8 +16,9 @@
  */
 
 import type Database from "better-sqlite3";
-import { resolveTradingDayPair } from "@/lib/digest/anomalies";
-import { getHoldingsForChat } from "@/lib/queries/chat-tools";
+import { resolveTradingDayPair, type TradingDayPair } from "@/lib/digest/anomalies";
+import { getIbkrTodayHoldings, type TodayHolding } from "@/lib/queries/today-holdings";
+import type { DayMoveBasis } from "@/lib/compute/day-move";
 import { todayET, nowET, calendarDaysBetween } from "@/lib/calendar/date-utils";
 
 /** Calendar-day tolerance before the local book counts as stale. Matches the
@@ -35,13 +36,40 @@ export interface MarketMove {
   kind: "benchmark" | "holding";
   /**
    * Direction of the held position, holdings only. `pct` is the PRICE move,
-   * so a short (or a written option) LOSES when pct is positive. "mixed" = the
-   * symbol is long in one account and short in another.
+   * so a short (or a written option) LOSES when pct is positive. A symbol
+   * held long in one account and short in another is TWO rows, one per side
+   * (owner ruling 2026-10-08; there is no "mixed").
    */
   position?: MarketPosition;
+  // ── Holdings only (absent on benchmark rows) ──────────────────────────────
+  /** Accounts holding this side of the symbol, sorted by name. */
+  accounts?: string[];
+  /** Signed quantity on this side, summed over `accounts`. Negative = short. */
+  quantity?: number;
+  /** Signed market value in USD at the latest local price, summed over
+   *  `accounts`; null when any leg has no price. */
+  market_value?: number | null;
+  /**
+   * The session's dollar effect on this row in USD, measured with the Today
+   * line's rule (lib/compute/day-move.ts): quantity held through the session
+   * is measured close to close, quantity opened or added is measured from its
+   * own cost. null = not measured; `day_effect_reason` says why.
+   */
+  day_effect?: number | null;
+  /** How `day_effect` was measured. */
+  day_effect_basis?: DayMoveBasis;
+  /** True when `day_effect` covers only some of `accounts` (the rest are
+   *  named in `day_effect_reason`). */
+  day_effect_partial?: boolean;
+  /** A leg of this row was opened during the session. */
+  opened_today?: boolean;
+  /** A leg of this row was held before and added to during the session. */
+  added_today?: boolean;
+  /** Why `day_effect` is null, partial, or leaves quantity out; else null. */
+  day_effect_reason?: string | null;
 }
 
-export type MarketPosition = "long" | "short" | "mixed";
+export type MarketPosition = "long" | "short";
 
 export interface MarketSnapshot {
   source: "local" | "yahoo" | "none";
@@ -79,6 +107,12 @@ interface SnapshotOptions {
   now?: Date;
   fetchQuotes?: QuoteFetcher;
   benchmarks?: string[];
+  /**
+   * Exact account name: held rows cover this account only (a single-account
+   * chat must not see other accounts' positions). A name matching no account
+   * yields no held rows, never the whole book. Omitted = every account.
+   */
+  accountName?: string;
 }
 
 function finite(n: unknown): n is number {
@@ -189,6 +223,12 @@ function isYahooPriceableType(securityType: string | null | undefined): boolean 
   return !YAHOO_UNPRICEABLE_TYPES.has((securityType ?? "").trim().toLowerCase());
 }
 
+/** One account's position in one security, with its day move already measured. */
+interface HeldLeg {
+  account: string;
+  holding: TodayHolding;
+}
+
 interface UniverseEntry {
   symbol: string;
   name: string | null;
@@ -196,10 +236,30 @@ interface UniverseEntry {
   position?: MarketPosition;
   /** False for a held option or bond: never requested from the Yahoo fallback. */
   yahooPriceable: boolean;
+  /** Holdings only: every account's leg on this side of the symbol. */
+  legs?: HeldLeg[];
 }
 
-/** Distinct (benchmark + held) symbols, benchmarks first, no duplicates. */
-function buildUniverse(db: Database.Database, benchmarks: string[]): UniverseEntry[] {
+/**
+ * Benchmarks first, then one entry per held (symbol, side).
+ *
+ * Full held universe, shorts included. A short's move is the security's price
+ * move (closeOn is price-only): the sign is not flipped, so each entry carries
+ * the position's direction instead. A symbol held on the same side in several
+ * accounts is one entry; long in one account and short in another is two.
+ *
+ * Each account's rows come from `getIbkrTodayHoldings` (despite the name it
+ * takes any account id): the ONE implementation of the opened-today rule, so
+ * the chat's dollar day effect and the Today line cannot disagree. A held
+ * benchmark keeps its benchmark row AND gets a holding row, because only the
+ * holding row carries dollars.
+ */
+function buildUniverse(
+  db: Database.Database,
+  benchmarks: string[],
+  pair: TradingDayPair | null,
+  accountName: string | undefined,
+): UniverseEntry[] {
   const seen = new Set<string>();
   const universe: UniverseEntry[] = [];
   for (const symbol of benchmarks) {
@@ -208,32 +268,139 @@ function buildUniverse(db: Database.Database, benchmarks: string[]): UniverseEnt
     seen.add(up);
     universe.push({ symbol: up, name: null, kind: "benchmark", yahooPriceable: true });
   }
-  // Full held universe: the chat default is the 50 largest long positions,
-  // which would silently leave smaller names and shorts unmeasured. A short's
-  // move is the security's price move (closeOn is price-only): the sign is not
-  // flipped, so each entry carries the position's direction instead. One row
-  // per symbol; a symbol held on both sides is "mixed".
+
+  const accounts = (
+    accountName === undefined
+      ? db.prepare("SELECT id, name FROM accounts ORDER BY id").all()
+      : db.prepare("SELECT id, name FROM accounts WHERE name = ? ORDER BY id").all(accountName)
+  ) as { id: number; name: string }[];
+  const typeOf = db.prepare("SELECT security_type FROM securities WHERE id = ?");
+
   const held = new Map<string, UniverseEntry>();
-  for (const h of getHoldingsForChat(db, { limit: 100000, includeShorts: true })) {
-    const up = h.symbol?.toUpperCase();
-    if (!up || seen.has(up)) continue;
-    const side: MarketPosition = h.quantity < 0 ? "short" : "long";
-    const yahooPriceable = isYahooPriceableType(h.security_type);
-    const prior = held.get(up);
-    if (prior) {
-      if (prior.position !== side) prior.position = "mixed";
-      if (yahooPriceable) prior.yahooPriceable = true;
-      continue;
+  for (const account of accounts) {
+    for (const holding of getIbkrTodayHoldings(db, account.id, pair)) {
+      const up = holding.symbol?.toUpperCase();
+      if (!up || holding.quantity === 0) continue;
+      const side: MarketPosition = holding.quantity < 0 ? "short" : "long";
+      const type = (typeOf.get(holding.security_id) as { security_type: string | null } | undefined)
+        ?.security_type;
+      const yahooPriceable = isYahooPriceableType(type);
+      const key = `${up}|${side}`;
+      const entry = held.get(key);
+      if (entry) {
+        entry.legs!.push({ account: account.name, holding });
+        if (yahooPriceable) entry.yahooPriceable = true;
+        continue;
+      }
+      held.set(key, {
+        symbol: up,
+        name: holding.security_name,
+        kind: "holding",
+        position: side,
+        yahooPriceable,
+        legs: [{ account: account.name, holding }],
+      });
     }
-    held.set(up, { symbol: up, name: h.security_name, kind: "holding", position: side, yahooPriceable });
   }
-  universe.push(...held.values());
+  // Largest gross exposure first, then symbol and side, so the order is stable.
+  const grossValue = (u: UniverseEntry) =>
+    Math.abs((u.legs ?? []).reduce((sum, l) => sum + (l.holding.current_value ?? 0), 0));
+  universe.push(
+    ...[...held.values()].sort(
+      (a, b) =>
+        grossValue(b) - grossValue(a) ||
+        a.symbol.localeCompare(b.symbol) ||
+        (a.position ?? "").localeCompare(b.position ?? ""),
+    ),
+  );
   return universe;
 }
 
-/** Omits the key for benchmarks so their rows keep the old shape. */
-function positionOf(u: UniverseEntry): { position?: MarketPosition } {
-  return u.position ? { position: u.position } : {};
+/** Why one leg's day effect is null or leaves quantity out; null when whole. */
+function legNote(h: TodayHolding): string | null {
+  if (h.today_gain === null) {
+    if (h.change_undated) {
+      return "no holdings snapshot exists at the prior close, so this position cannot be dated to the session; left out";
+    }
+    if (h.day_move_basis === "excluded") {
+      return "opened today with no usable cost; left out rather than measured from the prior close";
+    }
+    return "a closing price needed for the measurement is missing";
+  }
+  if (h.change_undated) {
+    return "quantity changed but no holdings snapshot exists at the prior close; only the quantity last seen is measured";
+  }
+  if (h.added_cost_unknown) {
+    return "added to today and the added quantity's cost is not known; only the quantity held at the prior close is measured";
+  }
+  return null;
+}
+
+const NO_LOCAL_SESSION_REASON =
+  "The local book is behind, so what was held, opened or added this session is not known; no dollar day effect is given. Report the percent price move only.";
+
+type PositionFields = Omit<MarketMove, "symbol" | "name" | "pct" | "kind">;
+
+/**
+ * The position fields of a held row; empty for a benchmark so its row keeps
+ * the percent-only shape. `sessionKnown` is false on the live fallback, where
+ * the local book is behind: quantity and value are still the book's, but no
+ * dollar day effect is claimed.
+ */
+function positionFields(u: UniverseEntry, sessionKnown: boolean): PositionFields {
+  if (!u.legs || !u.position) return {};
+  const legs = [...u.legs].sort((a, b) => a.account.localeCompare(b.account));
+  const many = legs.length > 1;
+  const base = {
+    position: u.position,
+    accounts: legs.map((l) => l.account),
+    quantity: legs.reduce((sum, l) => sum + l.holding.quantity, 0),
+    market_value: legs.some((l) => l.holding.current_value === null)
+      ? null
+      : legs.reduce((sum, l) => sum + (l.holding.current_value ?? 0), 0),
+  };
+  if (!sessionKnown) {
+    return {
+      ...base,
+      day_effect: null,
+      day_effect_basis: "unpriced",
+      day_effect_partial: false,
+      opened_today: false,
+      added_today: false,
+      day_effect_reason: NO_LOCAL_SESSION_REASON,
+    };
+  }
+
+  const measured = legs.filter((l) => l.holding.today_gain !== null);
+  const measuredBases = new Set(measured.map((l) => l.holding.day_move_basis));
+  let basis: DayMoveBasis;
+  if (measured.length === 0) {
+    basis = legs.some((l) => l.holding.day_move_basis === "excluded") ? "excluded" : "unpriced";
+  } else if (measuredBases.size === 1) {
+    basis = measured[0].holding.day_move_basis;
+  } else {
+    // Legs measured differently (one close to close, one from cost).
+    basis = "mixed";
+  }
+  const notes = legs
+    .map((l) => {
+      const note = legNote(l.holding);
+      return note === null ? null : many ? `${l.account}: ${note}` : note;
+    })
+    .filter((n): n is string => n !== null);
+
+  return {
+    ...base,
+    day_effect:
+      measured.length === 0
+        ? null
+        : measured.reduce((sum, l) => sum + (l.holding.today_gain ?? 0), 0),
+    day_effect_basis: basis,
+    day_effect_partial: measured.length > 0 && measured.length < legs.length,
+    opened_today: legs.some((l) => l.holding.opened_today),
+    added_today: legs.some((l) => !l.holding.opened_today && l.holding.added_today_qty !== 0),
+    day_effect_reason: notes.length > 0 ? notes.join(" | ") : null,
+  };
 }
 
 function closeOn(db: Database.Database, symbol: string, date: string): number | null {
@@ -277,10 +444,13 @@ export async function getMarketSnapshot(
   const now = opts.now ?? new Date();
   const today = opts.today ?? todayET(now);
   const benchmarks = opts.benchmarks ?? DEFAULT_BENCHMARKS;
-  const universe = buildUniverse(db, benchmarks);
 
   // ── Local path ──────────────────────────────────────────────────────────────
+  // The chat snapshot keeps the intraday move (owner ruling 2026-10-08): the
+  // pair is resolved with no options, once, and the same pair measures both
+  // the percent moves and every held row's dollar day effect.
   const pair = resolveTradingDayPair(db);
+  const universe = buildUniverse(db, benchmarks, pair, opts.accountName);
   let localMoves: MarketMove[] = [];
   let staleDays: number | null = null;
   let localStale = true;
@@ -291,7 +461,7 @@ export async function getMarketSnapshot(
         const latest = closeOn(db, u.symbol, pair.latest);
         const prior = closeOn(db, u.symbol, pair.prior);
         if (latest == null || prior == null || prior === 0) return null;
-        return { symbol: u.symbol, name: u.name, pct: pct(latest, prior), kind: u.kind, ...positionOf(u) };
+        return { symbol: u.symbol, name: u.name, pct: pct(latest, prior), kind: u.kind, ...positionFields(u, true) };
       })
       .filter((m): m is MarketMove => m !== null);
     staleDays = calendarDaysBetween(pair.latest, today);
@@ -321,7 +491,11 @@ export async function getMarketSnapshot(
   if (opts.fetchQuotes) {
     let quotes: Awaited<ReturnType<QuoteFetcher>> = null;
     try {
-      quotes = await opts.fetchQuotes(universe.filter((u) => u.yahooPriceable).map((u) => u.symbol));
+      // Each symbol once: a held benchmark, or a name held on both sides, is
+      // several rows but one quote.
+      quotes = await opts.fetchQuotes([
+        ...new Set(universe.filter((u) => u.yahooPriceable).map((u) => u.symbol)),
+      ]);
     } catch {
       quotes = null;
     }
@@ -330,16 +504,17 @@ export async function getMarketSnapshot(
         .map((u): MarketMove | null => {
           const q = quotes![u.symbol];
           if (!q || q.prior === 0) return null;
-          return { symbol: u.symbol, name: u.name, pct: pct(q.price, q.prior), kind: u.kind, ...positionOf(u) };
+          return { symbol: u.symbol, name: u.name, pct: pct(q.price, q.prior), kind: u.kind, ...positionFields(u, false) };
         })
         .filter((m): m is MarketMove => m !== null);
       if (moves.length > 0) {
         // Date the snapshot by the quotes' own session (the most common
         // per-symbol ET date; ties → the later date), not by today — pre-open
         // or on a weekend the latest Yahoo session is an earlier day.
+        // One vote per symbol, however many rows it has.
         const counts = new Map<string, number>();
-        for (const u of universe) {
-          const d = quotes[u.symbol]?.asOf;
+        for (const symbol of new Set(universe.map((u) => u.symbol))) {
+          const d = quotes[symbol]?.asOf;
           if (d) counts.set(d, (counts.get(d) ?? 0) + 1);
         }
         let asOf: string | null = null;

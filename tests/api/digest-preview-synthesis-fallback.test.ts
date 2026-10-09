@@ -26,9 +26,13 @@ vi.mock("@/lib/digest/daily-digest", () => ({
   generateDigestSinceAdaptive: hoisted.adaptive,
   generateDigestSince: hoisted.bySource,
   getLastDigestSentAt: () => null,
+  // The route reports each layout's cap; the mock carries the real values.
+  ADAPTIVE_ARTICLE_CAP: 40,
+  DIGEST_ARTICLE_CAP: 30,
 }));
 vi.mock("@/lib/digest/group-by-company", () => ({
   generateDigestByCompanySince: hoisted.byCompany,
+  BY_COMPANY_ARTICLE_CAP: 30,
 }));
 
 import { GET, POST } from "@/app/api/digest/preview/route";

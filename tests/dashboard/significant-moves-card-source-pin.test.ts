@@ -8,7 +8,7 @@ describe("SignificantMovesCard empty states and labels", () => {
   it("checks the trading-day pair before saying nothing moved", () => {
     expect(src).toMatch(/import\s*\{[^}]*computeAnomalies[^}]*resolveTradingDayPair[^}]*\}/);
     const pairUnavailable = anchorIndex(src, "Could not evaluate significant moves");
-    const nothingMoved = anchorIndex(src, "No Vanguard holdings moved significantly");
+    const nothingMoved = anchorIndex(src, "No ${scope.plural} moved significantly");
     expect(pairUnavailable).toBeLessThan(nothingMoved);
   });
 
@@ -17,7 +17,7 @@ describe("SignificantMovesCard empty states and labels", () => {
   // pair.latest plus an older-session label when the pair is stale. The
   // wording per coverage state is tested in significant-moves-card-states.test.ts.
   it("does not describe the no-movers state as today-only", () => {
-    const start = anchorIndex(src, "No Vanguard holdings moved significantly");
+    const start = anchorIndex(src, "No ${scope.plural} moved significantly");
     const nothingMoved = src.slice(start, anchorIndex(src, "`,", start));
     expect(nothingMoved).not.toContain("today");
     expect(nothingMoved).toMatch(/on \$\{dated\}/);
@@ -35,7 +35,7 @@ describe("SignificantMovesCard empty states and labels", () => {
   });
 
   it("renders the empty states through EmptySection with the threshold explanation visible, not in a hover title", () => {
-    expect(src).toMatch(/<EmptySection title=\{TITLE\} reason=\{quiet\.reason\} hint=\{quiet\.hint\} \/>/);
+    expect(src).toMatch(/<EmptySection title=\{scope\.title\} reason=\{quiet\.reason\} hint=\{quiet\.hint\} \/>/);
     // No hand-rolled copy of EmptySection's markup, no hover-only explanation.
     expect(src).not.toContain("cursor-help");
     expect(src).not.toContain("empty ⓘ");
@@ -50,6 +50,27 @@ describe("SignificantMovesCard empty states and labels", () => {
   it("labels an older session next to the pair dates", () => {
     const dates = anchorIndex(src, "{pair.prior} to {pair.latest}");
     expect(src.slice(dates, dates + 120)).toContain("olderSession ? ` · ${OLDER_SESSION_LABEL}`");
+  });
+
+  // Owner ruling 2026-10-08: the card follows the scope selector and waits
+  // for a completed session.
+  it("follows the page's scope: no hard-coded Vanguard account filter or title", () => {
+    expect(src).not.toMatch(/LIKE '%vanguard%'/);
+    expect(src).not.toMatch(/const TITLE\b/);
+    expect(src).toMatch(/h\.account_id IN \(\$\{placeholders\}\)/);
+    expect(src).toMatch(/computeAnomalies\(db, \{ accountIds: ids, now \}\)/);
+    expect(src).toMatch(/loadCoverage\(db, pair, ids\)/);
+  });
+
+  it("reads completed sessions only, with the rule single-sourced in the engine module", () => {
+    expect(src).toMatch(/resolveTradingDayPair\(db, \{ completedOnly: true, now \}\)/);
+    expect(src).not.toMatch(/function latestCompletedSession/);
+    expect(src).not.toMatch(/nowET|todayET/);
+  });
+
+  it("the analysis page hands the card its resolved scope", () => {
+    const page = readFileSync("app/dashboard/analysis/page.tsx", "utf8");
+    expect(page).toMatch(/<SignificantMovesCard accountIds=\{accountIds\} scopeLabel=\{/);
   });
 
   it("never prints coverage counts that cannot account for the visible flags", () => {

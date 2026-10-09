@@ -678,7 +678,7 @@ describe("earnings retry-until-complete (migration 062)", () => {
   });
 });
 
-describe("reaction-capture gate: T+115m for earnings only (Task 7)", () => {
+describe("reaction-capture gate: release + 120m for every row (Task 7; widened 2026-10-08)", () => {
   let db: Database.Database;
 
   beforeEach(() => {
@@ -703,7 +703,7 @@ describe("reaction-capture gate: T+115m for earnings only (Task 7)", () => {
   // on what bars they'd find.
   const mockTws = { getHistoricalData: async () => [] };
 
-  it("skips reaction capture for an earnings row before T+115m (retry tick covers it)", async () => {
+  it("skips reaction capture for an earnings row before the window has elapsed (retry tick covers it)", async () => {
     seedSecurity(db, 400, "GATE", "Technology");
     (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
       ok: true,
@@ -726,7 +726,7 @@ describe("reaction-capture gate: T+115m for earnings only (Task 7)", () => {
     const eventId = Number(lastInsertRowid);
     const releaseInstant = composeReleaseInstant("2026-04-24", "08:00")!;
 
-    // 30 minutes post-release — well short of the 115-min gate.
+    // 30 minutes post-release — well short of the 120-min gate.
     const now = new Date(releaseInstant.getTime() + 30 * 60 * 1000);
     await runEnrichment(db, { now, tws: mockTws as any, pacingMs: 0 }); // eslint-disable-line @typescript-eslint/no-explicit-any
 
@@ -745,7 +745,13 @@ describe("reaction-capture gate: T+115m for earnings only (Task 7)", () => {
     expect(row.enriched_at).toBeNull();
   });
 
-  it("still captures reaction immediately for a macro row (single-shot semantics)", async () => {
+  // Owner ruling 2026-10-08: this test used to pin "macro rows are never
+  // gated — capture immediately". A reaction read 30 minutes into a
+  // 120-minute window is not a measurement, so the macro row is now gated
+  // like every other row; it stays single-shot for its ACTUAL, and the
+  // reaction-only follow-up captures the reaction once the window has ended
+  // (tests/calendar/enrichment-runner-reaction-window.test.ts).
+  it("does NOT capture a macro row's reaction before the window has elapsed (actual stays single-shot)", async () => {
     (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
       ok: true,
       json: async () => ({
@@ -766,15 +772,23 @@ describe("reaction-capture gate: T+115m for earnings only (Task 7)", () => {
     });
     const releaseInstant = composeReleaseInstant("2026-04-11", "08:30")!;
 
-    // Same 30-minute age as the skipped earnings case above — macro rows
-    // are never gated, so capture must still be attempted immediately.
+    // Same 30-minute age as the skipped earnings case above.
     const now = new Date(releaseInstant.getTime() + 30 * 60 * 1000);
     await runEnrichment(db, { now, tws: mockTws as any, pacingMs: 0 }); // eslint-disable-line @typescript-eslint/no-explicit-any
 
-    expect(mockCaptureReactionFromTws).toHaveBeenCalled();
+    expect(mockCaptureReactionFromTws).not.toHaveBeenCalled();
+    expect(mockCaptureReactionFromYahoo).not.toHaveBeenCalled();
+    const row = db
+      .prepare(
+        "SELECT enriched_at, actual_value, reaction_snapshot FROM calendar_events WHERE source_key = 'fred:10:2026-04-11'",
+      )
+      .get() as { enriched_at: string | null; actual_value: string | null; reaction_snapshot: string | null };
+    expect(row.actual_value).toBeTruthy();
+    expect(row.enriched_at).toBeTruthy();
+    expect(row.reaction_snapshot).toBeNull();
   });
 
-  it("attempts earnings reaction capture once past T+115m", async () => {
+  it("attempts earnings reaction capture once the window has elapsed", async () => {
     seedSecurity(db, 401, "LATEGATE", "Technology");
     (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
       ok: true,
