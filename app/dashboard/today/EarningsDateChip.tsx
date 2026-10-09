@@ -119,7 +119,7 @@ export function standingOverrideLine(override: StandingOverride | null | undefin
   if (override.verified_for_date) parts.push(`verified for ${override.verified_for_date}`);
   const note = override.note?.trim();
   if (note) parts.push(`“${note}”`);
-  return `Standing: ${parts.join(" · ")}. Save replaces it${note ? ", note included" : ""}.`;
+  return `Standing: ${parts.join(" · ")}. Save changes the time and keeps the note.`;
 }
 
 /** The time the "Reports at" line shows: the resolved time, else the row's own. */

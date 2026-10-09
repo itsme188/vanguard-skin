@@ -237,7 +237,9 @@ export function upsertSymbolReleaseTime(
     symbol: string;
     releaseTime: string;
     source: "user" | "web_verified";
+    /** undefined = not supplied (keep the stored note); null or "" = clear it. */
     note?: string | null;
+    /** undefined = not supplied (keep the stored date); null = clear it. */
     verifiedForDate?: string | null;
   },
 ): void {
@@ -252,21 +254,30 @@ export function upsertSymbolReleaseTime(
       .get(symbol) as { source: string } | undefined;
     if (existing?.source === "user") return;
   }
+  // The row is one slot per symbol, so a save from one event's editor must
+  // not silently drop the standing note / verified date (D4, 2026-10-08):
+  // keep what is stored unless the caller supplies a value. An explicit
+  // null (or an empty note) is a deliberate clear.
+  const noteSupplied = input.note !== undefined;
+  const dateSupplied = input.verifiedForDate !== undefined;
+  const note = noteSupplied ? (input.note?.trim() ? input.note : null) : null;
   db.prepare(
     `INSERT INTO symbol_release_times (symbol, release_time, source, note, verified_for_date, updated_at)
      VALUES (?, ?, ?, ?, ?, datetime('now'))
      ON CONFLICT(symbol) DO UPDATE SET
        release_time = excluded.release_time,
        source = excluded.source,
-       note = excluded.note,
-       verified_for_date = excluded.verified_for_date,
+       note = CASE WHEN ? THEN excluded.note ELSE symbol_release_times.note END,
+       verified_for_date = CASE WHEN ? THEN excluded.verified_for_date ELSE symbol_release_times.verified_for_date END,
        updated_at = datetime('now')`,
   ).run(
     symbol,
     input.releaseTime,
     input.source,
-    input.note ?? null,
+    note,
     input.verifiedForDate ?? null,
+    noteSupplied ? 1 : 0,
+    dateSupplied ? 1 : 0,
   );
 }
 
