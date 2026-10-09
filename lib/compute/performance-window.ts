@@ -226,7 +226,7 @@ export function performanceWindowCaption(
   if (FIXED_PERIOD_YEARS[period] === undefined) return null;
   const label = PERIOD_LABEL[period];
   if (window.endsAtStatement && window.startDate) {
-    const base = `${label} to ${formatDay(window.endDate)} (last statement) — the full span from ${formatDay(window.startDate)}.`;
+    const base = `${label} to ${formatDay(window.endDate)} (last statement) — measured from ${formatDay(window.startDate)}, or from the start of this scope's history if that is later.`;
     // The anchor is the latest month EVERY account has. When some account in
     // the scope has a statement well after it, another account stopped
     // receiving them and is holding the period back: say so.

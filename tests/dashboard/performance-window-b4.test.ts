@@ -101,7 +101,7 @@ describe("performanceWindowCaption", () => {
   it("a fixed period names its end date and that it is the last statement", () => {
     const w = resolvePerformanceWindow("1y", { today, lastStatementAnchor: "2026-09-30" });
     expect(performanceWindowCaption("1y", w)).toBe(
-      "1Y to Sep 30, 2026 (last statement) — the full span from Sep 30, 2025.",
+      "1Y to Sep 30, 2026 (last statement) — measured from Sep 30, 2025, or from the start of this scope's history if that is later.",
     );
   });
 
@@ -348,7 +348,7 @@ describe("a scope held back by an account whose statements stopped says so", () 
     expect(latestStatementAnchor(db, scope, today)).toBe("2025-09-30");
     expect(newestStatementInScope(db, scope, today)).toBe("2026-09-30");
     expect(captionFor(scope)).toBe(
-      `1Y to Sep 30, 2025 (last statement) — the full span from Sep 30, 2024. ${CLAUSE}`,
+      `1Y to Sep 30, 2025 (last statement) — measured from Sep 30, 2024, or from the start of this scope's history if that is later. ${CLAUSE}`,
     );
     expect(captionFor(undefined)).toContain(CLAUSE);
   });
@@ -357,7 +357,7 @@ describe("a scope held back by an account whose statements stopped says so", () 
     for (const id of ids.slice(0, 3)) seedThrough(id, "2026-09");
     const scope = ids.slice(0, 3);
     expect(newestStatementInScope(db, scope, today)).toBe("2026-09-30");
-    expect(captionFor(scope)).toBe("1Y to Sep 30, 2026 (last statement) — the full span from Sep 30, 2025.");
+    expect(captionFor(scope)).toBe("1Y to Sep 30, 2026 (last statement) — measured from Sep 30, 2025, or from the start of this scope's history if that is later.");
   });
 
   it("one account a single statement behind (inside 62 days): no clause", () => {
@@ -365,14 +365,14 @@ describe("a scope held back by an account whose statements stopped says so", () 
     seedThrough(ids[1], "2026-09");
     seedThrough(ids[2], "2026-08");
     const caption = captionFor([ids[0], ids[1], ids[2]])!;
-    expect(caption).toBe("1Y to Aug 31, 2026 (last statement) — the full span from Aug 31, 2025.");
+    expect(caption).toBe("1Y to Aug 31, 2026 (last statement) — measured from Aug 31, 2025, or from the start of this scope's history if that is later.");
   });
 
   it("a single account: no clause, whatever the other accounts have", () => {
     seedThrough(ids[0], "2026-09");
     seedThrough(ids[2], "2025-09");
-    expect(captionFor([ids[2]])).toBe("1Y to Sep 30, 2025 (last statement) — the full span from Sep 30, 2024.");
-    expect(captionFor([ids[0]])).toBe("1Y to Sep 30, 2026 (last statement) — the full span from Sep 30, 2025.");
+    expect(captionFor([ids[2]])).toBe("1Y to Sep 30, 2025 (last statement) — measured from Sep 30, 2024, or from the start of this scope's history if that is later.");
+    expect(captionFor([ids[0]])).toBe("1Y to Sep 30, 2026 (last statement) — measured from Sep 30, 2025, or from the start of this scope's history if that is later.");
   });
 
   it("the newest statement ignores live rows, rows after today and mid-month rows; an empty scope has none", () => {
@@ -394,7 +394,7 @@ describe("a scope held back by an account whose statements stopped says so", () 
     });
     expect("newestScopeStatement" in window).toBe(false);
     expect(performanceWindowCaption("1y", window)).toBe(
-      "1Y to Sep 30, 2025 (last statement) — the full span from Sep 30, 2024.",
+      "1Y to Sep 30, 2025 (last statement) — measured from Sep 30, 2024, or from the start of this scope's history if that is later.",
     );
   });
 });
