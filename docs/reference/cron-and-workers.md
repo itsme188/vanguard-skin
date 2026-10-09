@@ -89,7 +89,9 @@ Rules that fall out of this:
 (race already lost), or (c) `mac-running-*` is set. This closed the 8:45→8:57 thinned-duplicate
 window observed 4/27: the primary timed out at 120s while the Mac was still mid-pipeline at 130s,
 and the Worker fallback fired without re-checking. `PRIMARY_TIMEOUT_MS` was simultaneously bumped
-120s → 300s.
+120s → 300s. (History only: the Worker's Mac-primary call was retired on 2026-08-14, nothing read
+the setting after that, and it was removed from the Worker source, `wrangler.toml` and the test
+fixtures on 2026-10-08.)
 
 ## 4. 2026-05-14 hardening (`ffce179`)
 
@@ -256,6 +258,16 @@ On the Mac, `lib/calendar/cloud-reconcile.ts` checks every cloud reaction throug
 `lib/calendar/reaction-validity.ts` before it writes: a snapshot captured before its window ended
 is not stored, and for an older payload with no capture time only the legs that pass the rule are
 kept.
+
+**The cloud recap leaves out a pending leg, as the Mac does (2026-10-08).** The Worker cannot
+import the Mac's rule, so `workers/cron/src/fallback-earnings.ts` carries its own copy,
+`workerReactionLegState` ("measured", "pending" or "absent"). The cloud scoreboard, its
+expected-move row and the recap gate (`evaluateRecapContent`) read it: a pending leg prints a dash
+and is not a "real data point", so an implausible actual with only pending legs sends nothing. The
+copy is pinned against the Mac's `reactionLegState` by a 900-case table in
+`workers/cron/test/fallback-earnings.test.ts`. The Worker copy of the push composer
+(`print-push-message.ts`) was re-copied from the Mac in the same change. Deploy the Worker for the
+cloud side to take effect.
 
 **Macro rows get one bounded reaction-only follow-up.** A macro payload is single-shot and is
 written minutes after the release, before any reaction can exist. `runMacroReactionFollowUp`
@@ -441,6 +453,24 @@ These Mac-side modules have Worker counterparts that are parity-pinned. Change B
 - `REACTION_READY_MS`: `lib/calendar/enrichment-runner.ts` ⇄ `workers/cron/src/cloud-enriched.ts` —
   the two-hour reaction gate (§10). Each suite pins its own side's value; no test compares the two,
   so change both by hand.
+- `lib/calendar/reaction-validity.ts::reactionLegState` ⇄
+  `workers/cron/src/fallback-earnings.ts::workerReactionLegState` (2026-10-08) — whether a stored
+  reaction leg is a measurement yet (§10). Hand copy; a 900-case table in
+  `workers/cron/test/fallback-earnings.test.ts` runs both.
+- `lib/earnings/bogey-prompt-entries.ts` (and `bogeyHasContent` in
+  `lib/mutations/earnings-bogeys.ts`) ⇄ `workers/cron/src/bogey-content.ts` (2026-10-08) — which
+  bogey rows count for an earnings email, and what is printed from each. A row counts only when
+  the composer prints something from it. The Worker file has no imports, because the Mac suite
+  loads it directly: `tests/earnings/bogey-content-worker-parity.test.ts` pins the column list and
+  both rules. One documented difference: the snapshot does not carry `extra_metrics_json`, so an
+  extras-only row is an entry on the Mac and not in the cloud. Detail:
+  `docs/reference/earnings-pipeline.md` §14.
+- `lib/calendar/briefing-html.ts` ⇄ `workers/cron/src/html.ts` — the shared markdown renderer.
+  Since 2026-10-08 both decide "fill-in boxes or dashes" from the scoreboard HEADING wording
+  (`usesFillInBoxes`): a recap page prints dashes, every other page keeps its boxes. The headings
+  come from the two composers (Mac `renderHeadlineTable`, Worker `renderScoreboard`). Rewording a
+  heading means changing both composers and both renderers together.
+  `workers/cron/test/html.test.ts` pins the two renderers.
 - `presence-position.ts` (Worker) holds `formatCombinedExposurePresence` for B7 short presence.
 - `lib/earnings/armed-events-projection.ts::ARMED_EVENT_PROJECTION_KEYS` ⇄
   `workers/cron/src/armed-events.ts::ARMED_EVENT_ENTRY_KEYS` — parity-tested key SET. The Worker's
