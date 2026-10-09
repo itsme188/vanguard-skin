@@ -90,6 +90,8 @@ function unmodelledNote(reason: BondUnmodelledReason | null): string {
       return "no maturity date";
     case "matured":
       return "past its maturity date";
+    case "not-fixed-coupon":
+      return "floating or index-linked coupon, by its name";
     case "no-coupon":
       return "no coupon from the broker, and none readable in the bond's name";
     case "unusable-coupon":

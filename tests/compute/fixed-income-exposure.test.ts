@@ -160,7 +160,7 @@ describe("computeFixedIncomeExposure: durations come from the scenario rate-leg 
     const out = computeFixedIncomeExposure(db, null, TODAY);
     for (const b of out.bonds) {
       expect(b.durationYears, b.symbol).toBeNull();
-      expect(b.unmodelledReason, b.symbol).toBe("no-coupon");
+      expect(b.unmodelledReason, b.symbol).toBe("not-fixed-coupon");
     }
     expect(out.weightedAvgDuration).toBeNull();
   });

@@ -103,25 +103,51 @@ const PERCENT_TOKEN = /(?<![\d.,/$+-])(\d{1,2}(?:\.\d{1,5})?)\s*%/g;
 const ANY_PERCENT_FIGURE = /(\d+(?:\.\d+)?)\s*%/g;
 
 /**
- * Words that mean a percent figure in the name is NOT a fixed coupon: a
- * yield, a floating or variable rate, a step-up, a reference rate (the figure
- * is then a spread), a pay-in-kind toggle, or a note whose coupon is LINKED
- * to an index: a swap rate ("CMS"), consumer prices ("CPI"), or anything the
- * name calls linked ("INFLATION-LINKED", "INDEX LINKED", "EQUITY LKD"). The
- * percent figure on such a note is a floor, a cap, a spread or a first-period
- * teaser, never the coupon to maturity. Whole words, any case.
+ * Words that say the INSTRUMENT does not pay one fixed coupon to maturity: a
+ * floating or variable rate, a step-up, a reference rate (a figure beside it
+ * is a spread), a pay-in-kind toggle, a fixed-to-floating note, or a note
+ * whose coupon is LINKED to an index: a swap rate ("CMS", "CONSTANT MATURITY
+ * SWAP", a "STEEPENER" on the gap between two swap rates), consumer prices
+ * ("CPI"), a "RANGE ACCRUAL" (pays only on days a rate sits inside a range),
+ * or anything the name calls linked ("INFLATION-LINKED", "INDEX LINKED",
+ * "EQUITY LKD"). A percent figure on such a note is a floor, a cap, a spread
+ * or a first-period teaser, never the coupon to maturity, and the same holds
+ * for a coupon stored for it: it is the current period's rate at best. Whole
+ * words, any case.
  *
  * "CMS" is blocked wherever it stands as a word ("CMS", "CMS10"), which also
  * blocks a fixed-coupon bond of an issuer NAMED CMS. That is the safe side:
  * the bond is then listed as not modelled, where the other mistake would be a
- * silently wrong duration on a swap-rate floater.
+ * silently wrong duration on a swap-rate floater. "CONSTANT MATURITY" is
+ * blocked with or without "SWAP" after it (a constant-maturity Treasury rate
+ * is a floating reference too). "FLT" is the broker shorthand for floating,
+ * alone ("FLT RT NT") or after "FXD" ("FXD/FLT", "FXD-FLT", "FXDFLT").
  *
  * NOT blocked: a Treasury inflation-indexed note ("INFL IX", "INFLATION
  * INDEXED", "TIPS"). Its coupon IS fixed (a real rate, paid on principal that
  * grows with prices), so the figure in the name is the coupon.
  */
-const NOT_A_FIXED_COUPON =
-  /\b(?:YLD|YIELD|FLTG|FLOAT|FLOATER|FLOATING|FRN|VAR|VARIABLE|STEP|SOFR|LIBOR|PIK|TOGGLE|CMS\d{0,2}|CPI|LINKED|LKD|LNKD)\b/i;
+const NOT_A_FIXED_COUPON_INSTRUMENT =
+  /\b(?:FLTG|FLT|FLOAT|FLOATER|FLOATING|FRN|VAR|VARIABLE|STEP|SOFR|LIBOR|PIK|TOGGLE|CMS\d{0,2}|CPI|LINKED|LKD|LNKD|STEEPENERS?|CONSTANT[\s-]+MATURITY|RANGE[\s-]+ACCRUALS?|FXD(?:TO)?FLTG?)\b/i;
+
+/**
+ * Words that say a percent FIGURE in the name is a yield, not the coupon.
+ * They say nothing about the instrument: a plain fixed bond may be quoted
+ * with its yield, so these block only reading a coupon out of the name.
+ */
+const NAME_FIGURE_IS_A_YIELD = /\b(?:YLD|YIELD)\b/i;
+
+/**
+ * True when the bond's stored name says it does not pay one fixed coupon to
+ * maturity (see NOT_A_FIXED_COUPON_INSTRUMENT). The ONE reader of that list:
+ * the coupon parser below refuses such a name, and the duration rule
+ * (lib/compute/bond-duration.ts) asks it BEFORE using any coupon, stored or
+ * read, so a floater is never priced as a bill or as a fixed bond.
+ */
+export function isNotFixedCouponName(name: string | null | undefined): boolean {
+  if (!name) return false;
+  return NOT_A_FIXED_COUPON_INSTRUMENT.test(name);
+}
 
 /**
  * Read a bond's annual coupon, in PERCENT of face (4.375 means 4.375%), from
@@ -136,9 +162,10 @@ const NOT_A_FIXED_COUPON =
  *   "U S TREASURY BILL CPN 0.00000  MTD 2024-08-20 DTD ..." → 0       CPN, no percent
  *
  * Returns null when:
- *   - the name carries a word from NOT_A_FIXED_COUPON ("YLD 5.1%", "FLTG
- *     RATE NT VAR 5.310%", "SOFR + 0.25%", "6.5%/7.5% PIK TOGGLE", "CMS NOTE
- *     6.000%", "CPI LINKED NOTE 3.000%");
+ *   - the name says the figure is a yield ("YLD 5.1%"), or says the
+ *     instrument has no fixed coupon (`isNotFixedCouponName`: "FLTG RATE NT
+ *     VAR 5.310%", "SOFR + 0.25%", "6.5%/7.5% PIK TOGGLE", "CMS NOTE
+ *     6.000%", "CPI LINKED NOTE 3.000%", "FXD/FLT NT 5.250%");
  *   - ANY percent figure in the name differs from the coupon found, counted
  *     before any lookbehind ("6.5%/7.5%", "CPN 4.125 ... PRICE 98.5%",
  *     "4.375% ... CALLABLE 100%", "4 3/8%"). With two different percent
@@ -151,7 +178,7 @@ const NOT_A_FIXED_COUPON =
  */
 export function extractCouponRate(name: string | null | undefined): number | null {
   if (!name) return null;
-  if (NOT_A_FIXED_COUPON.test(name)) return null;
+  if (isNotFixedCouponName(name) || NAME_FIGURE_IS_A_YIELD.test(name)) return null;
 
   const found: number[] = [];
   for (const pattern of [CPN_TOKEN, PERCENT_TOKEN]) {
