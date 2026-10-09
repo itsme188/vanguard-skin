@@ -48,7 +48,7 @@ describe("ScenarioModeling QA pins", () => {
 
   it("puts full option labels in title attributes and leaves a gap before the percent columns", () => {
     expect(src.match(/title=\{formatCompactOptionSymbol\(pos\.symbol\)\}/g)?.length).toBeGreaterThanOrEqual(3);
-    expect(src.match(/min-w-\[8rem\]/g)?.length).toBeGreaterThanOrEqual(3);
+    expect(src.match(/font-mono font-medium text-ink break-words/g)?.length).toBeGreaterThanOrEqual(3);
     anchorIndex(src, "shrink-0 ml-2");
   });
 
