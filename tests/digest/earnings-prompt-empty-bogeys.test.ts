@@ -104,3 +104,155 @@ describe.each(["preview", "recap"] as const)("%s prompt and all-empty bogey rows
     expect(prompt).not.toContain("### [2]");
   });
 });
+
+/**
+ * Reviewer follow-up (2026-10-08): "holds something" is not "prints something".
+ * A row counts for a composer only if that composer prints at least one field
+ * from it, so the prompt can never list an entry with nothing under it and the
+ * email body can never carry an empty column.
+ */
+const EXTRA_ID = "11111111-1111-4111-8111-111111111111";
+const EXTRAS_JSON = JSON.stringify([
+  {
+    id: EXTRA_ID,
+    label: "Bookings",
+    definition: "Total bookings in the quarter",
+    unit: "usd",
+    kind: "point",
+    period: "Q",
+    basis: "na",
+    consensus: 250_000_000,
+    whisper: 260_000_000,
+  },
+]);
+
+function seedCols(label: string, uploadedAt: string, cols: Record<string, unknown>, source = "newsletter"): void {
+  const names = Object.keys(cols);
+  db.prepare(
+    `INSERT INTO earnings_bogeys (event_id, source, source_label, uploaded_at${names.map((n) => `, ${n}`).join("")})
+     VALUES (?, ?, ?, ?${names.map(() => ", ?").join("")})`,
+  ).run(eventId, source, label, uploadedAt, ...Object.values(cols));
+}
+
+describe.each(["preview", "recap"] as const)("%s: a row counts only if the composer prints something from it", (phase) => {
+  it("a normal curated row renders byte-for-byte as before", async () => {
+    seedCols("TMT Sheet", "2026-08-02 12:00:00", {
+      eps_consensus: 1.02,
+      eps_whisper: 1.08,
+      revenue_consensus_usd: 100_000_000,
+      revenue_whisper_usd: 104_000_000,
+      expected_move_pct: 6,
+      segment_breakdown_json: '{"Cloud":{"consensus":40000000,"whisper":42000000}}',
+      guidance_notes: "watch the guide",
+      notes: "a note",
+    });
+    const { prompt, markdown } = await promptFor(phase);
+    expect(prompt).toContain(`
+## Bogeys (user-curated — preferred over Finnhub consensus, most recent first)
+
+These are bogeys the user pulled from preferred sources (TMT Breakout, sell-side notes) and uploaded for THIS event. **Treat the most recent entry as the primary consensus reference.** Whisper numbers, when present, are the directional bar that matters — beat-the-whisper is the meaningful event, not beat-consensus. Cite the source label inline when discussing them.
+
+### [1] TMT Sheet (uploaded 2026-08-02 12:00:00)
+EPS consensus 1.02 · EPS **whisper 1.08** · revenue consensus $100.0M · revenue **whisper $104.0M** · expected move ±6.0%
+Segment splits:
+  - Cloud: consensus $40.0M, whisper $42.0M
+Guidance: watch the guide
+Notes: a note
+`);
+    expect(prompt).not.toContain("vendor");
+    expect(markdown).toContain(`## Sheet bogeys — by source
+
+| Metric | TMT Sheet (8/02) |
+|---|---|
+| EPS | 1.02 · **w 1.08** |
+| Revenue | $100.0M · **w $104.0M** |
+| Expected move | ±6.0% |
+| Cloud (seg) | $40.0M · **w $42.0M** |`);
+  });
+
+  it("a vendor-EPS-only row prints the vendor figure, labelled as the vendor's", async () => {
+    seedCols("Sell-side consensus (Finnhub)", "2026-08-03 12:00:00", { eps_consensus_vendor: 1.05 }, "finnhub");
+    const { prompt } = await promptFor(phase);
+    expect(prompt).toContain(BLOCK_HEADING);
+    expect(prompt).toContain("### [1] Sell-side consensus (Finnhub)");
+    expect(prompt).toContain("vendor EPS consensus 1.05 (basis unspecified)");
+    // Never dressed as the curated consensus.
+    expect(prompt).not.toMatch(/(^|[^r] )EPS consensus 1\.05/m);
+    expect(prompt).toContain("is the data vendor's figure");
+  });
+
+  it("the row the real consensus step writes with no vendor revenue shows its EPS figure", async () => {
+    const { saveBogeyWithRecompile } = await import("@/lib/mutations/earnings-bogeys");
+    saveBogeyWithRecompile(db, {
+      event_id: eventId,
+      source: "finnhub",
+      source_label: "Sell-side consensus (Finnhub)",
+      eps_consensus: null,
+      eps_consensus_vendor: 1.05,
+      revenue_consensus_usd: null,
+      notes: "Vendor consensus (Finnhub) — EPS basis unspecified; shown labelled, never the adjusted-EPS bogey.",
+    });
+    const { prompt } = await promptFor(phase);
+    expect(prompt).toContain("vendor EPS consensus 1.05 (basis unspecified)");
+  });
+
+  it("a vendor row newer than a curated row is flagged as not the primary reference", async () => {
+    seedCols("Sell-side consensus (Finnhub)", "2026-08-03 12:00:00", { eps_consensus_vendor: 1.05 }, "finnhub");
+    seedCols("Real Sheet", "2026-08-02 12:00:00", { eps_consensus: 1.02 }, "manual");
+    const { prompt } = await promptFor(phase);
+    expect(prompt).toContain("### [1] Sell-side consensus (Finnhub)");
+    expect(prompt).toContain("### [2] Real Sheet");
+    expect(prompt).toContain("never the primary consensus reference when a curated entry is listed");
+  });
+
+  it("an extras-only row prints its metric line", async () => {
+    seedCols("Desk Sheet", "2026-08-03 12:00:00", { extra_metrics_json: EXTRAS_JSON }, "manual");
+    const { prompt } = await promptFor(phase);
+    expect(prompt).toContain("### [1] Desk Sheet");
+    expect(prompt).toContain("Extra metrics:\n  - Bookings (this quarter): consensus $250.0M, whisper $260.0M");
+  });
+
+  it("rows that hold something no composer prints compose exactly like no rows", async () => {
+    const bare = await promptFor(phase);
+    // Each passes the content rule and prints nothing.
+    seedCols("Unreadable extras", "2026-08-03 12:00:00", { extra_metrics_json: '[{"label":"Bookings"}]' });
+    seedCols("Extras with no figure", "2026-08-03 11:00:00", {
+      extra_metrics_json: JSON.stringify([{ ...JSON.parse(EXTRAS_JSON)[0], consensus: null, whisper: null }]),
+    });
+    seedCols("Segment with no figure", "2026-08-03 10:00:00", { segment_breakdown_json: '{"Cloud":{}}' });
+    seedCols("Broken segments", "2026-08-03 09:00:00", { segment_breakdown_json: "{not json" });
+    const after = await promptFor(phase);
+    expect(after.prompt).not.toContain(BLOCK_HEADING);
+    expect(after.prompt).toBe(bare.prompt);
+    expect(after.markdown).toBe(bare.markdown);
+  });
+
+  it("one printed row among unprinted ones is entry [1] and the only entry", async () => {
+    seedCols("Segment with no figure", "2026-08-03 12:00:00", { segment_breakdown_json: '{"Cloud":{}}' });
+    seedCols("Real Sheet", "2026-08-02 12:00:00", { expected_move_pct: 5 }, "manual");
+    const { prompt } = await promptFor(phase);
+    expect(prompt).toContain("### [1] Real Sheet");
+    expect(prompt).toContain("expected move ±5.0%");
+    expect(prompt).not.toContain("Segment with no figure");
+    expect(prompt).not.toContain("### [2]");
+  });
+
+  it("S2: the email body's sheet table never carries an empty row as a column", async () => {
+    seedCols("empty row", "2026-10-09 12:00:00", {});
+    seedCols("content row", "2026-10-09 11:00:00", { eps_consensus: 1.02 }, "manual");
+    const { markdown } = await promptFor(phase);
+    expect(markdown).toContain("| Metric | content row (10/09) |");
+    expect(markdown).not.toContain("empty row");
+  });
+
+  it("S2: a row with nothing the sheet table shows is not a column of dashes", async () => {
+    seedCols("notes only", "2026-10-09 12:00:00", { notes: "watch margins" }, "manual");
+    seedCols("content row", "2026-10-09 11:00:00", { eps_consensus: 1.02 }, "manual");
+    const { markdown, prompt } = await promptFor(phase);
+    expect(markdown).toContain("| Metric | content row (10/09) |");
+    expect(markdown).not.toContain("notes only (10/09)");
+    // The prompt block DOES print the note, so the row still counts there.
+    expect(prompt).toContain("### [1] notes only");
+    expect(prompt).toContain("Notes: watch margins");
+  });
+});

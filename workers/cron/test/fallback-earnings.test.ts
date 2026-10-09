@@ -39,6 +39,7 @@ import {
 } from "../src/fallback-earnings";
 import { reactionLegState as macReactionLegState } from "../../../lib/calendar/reaction-validity";
 import { loadLatestSnapshot } from "../src/state";
+import { snapshotBogeyEntryBody } from "../src/bogey-content";
 // Mac-side label/format helpers, imported for cross-side parity pins only
 // (both modules are pure; neither pulls a native dependency).
 import { epsDelta as macEpsDelta } from "../../../lib/earnings/eps-delta";
@@ -429,6 +430,93 @@ describe("runEarningsFallback v5 context (notes + bogeys)", () => {
     const html = htmlOfLastSend();
     expect(html).toContain("[1] Real Sheet");
     expect(html).not.toContain("Empty Sheet");
+    expect(html).toContain("your curated bogeys");
+  });
+
+  // Review follow-up (2026-10-08): a row counts only if the email PRINTS
+  // something from it. Shapes below each pass the content rule.
+  const printBase = {
+    event_id: 1,
+    source: "newsletter",
+    eps_consensus: null,
+    eps_whisper: null,
+    revenue_consensus_usd: null,
+    revenue_whisper_usd: null,
+    expected_move_pct: null,
+    eps_consensus_vendor: null,
+    segment_breakdown_json: null,
+    guidance_notes: null,
+    notes: null,
+    uploaded_at: "2026-06-14 12:00:00",
+  };
+
+  async function htmlWithBogeys(rows: unknown[]): Promise<string> {
+    const snap = makeEarningsSnapshot();
+    (snap as unknown as Snapshot).schemaVersion = 5;
+    (snap as unknown as Snapshot).earningsBogeys = rows as Snapshot["earningsBogeys"];
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(snap);
+    expect((await runEarningsFallback(makeEnv(), { now: previewWindowNow() })).sent).toBe(1);
+    return htmlOfLastSend();
+  }
+
+  it("a vendor-EPS-only row prints the vendor figure, labelled as the vendor's", async () => {
+    const html = await htmlWithBogeys([
+      { ...printBase, id: 3, source: "finnhub", source_label: "Sell-side consensus (Finnhub)", eps_consensus_vendor: 1.05 },
+    ]);
+    expect(html).toContain("[1] Sell-side consensus (Finnhub)");
+    expect(html).toContain("Vendor EPS consensus 1.05 (basis unspecified)");
+    expect(html).not.toMatch(/(^|[^r] )EPS consensus 1\.05/m);
+  });
+
+  it("an expected-move-only row and a segments-only row print their figures", async () => {
+    const html = await htmlWithBogeys([
+      { ...printBase, id: 3, source_label: "Move Sheet", expected_move_pct: 5 },
+      {
+        ...printBase,
+        id: 4,
+        source_label: "Segment Sheet",
+        segment_breakdown_json: '{"Cloud":{"consensus":40000000,"whisper":42000000}}',
+        uploaded_at: "2026-06-13 12:00:00",
+      },
+    ]);
+    expect(html).toContain("[1] Move Sheet");
+    expect(html).toContain("Expected move ±5.0%");
+    expect(html).toContain("[2] Segment Sheet");
+    expect(html).toContain("Segments: Cloud consensus $40.0M, whisper $42.0M");
+  });
+
+  it("rows that hold something the email prints nothing from compose exactly like no bogeys", async () => {
+    const bareHtml = await htmlWithBogeys([]);
+    const html = await htmlWithBogeys([
+      { ...printBase, id: 3, source_label: "Segment with no figure", segment_breakdown_json: '{"Cloud":{}}' },
+      { ...printBase, id: 4, source_label: "Broken segments", segment_breakdown_json: "{not json" },
+    ]);
+    expect(html).not.toContain("Segment with no figure");
+    expect(html).not.toContain("Broken segments");
+    expect(html).not.toContain("your curated bogeys");
+    expect(html).toBe(bareHtml);
+  });
+
+  it("a normal curated row prints byte-for-byte as before", async () => {
+    const row = {
+      ...printBase,
+      id: 3,
+      source: "pdf_upload",
+      source_label: "TMT Sheet",
+      eps_consensus: 1.5,
+      eps_whisper: 1.58,
+      revenue_consensus_usd: 90_000_000_000,
+      revenue_whisper_usd: 92_000_000_000,
+      guidance_notes: "Watch FY guide on Services",
+      notes: "a note",
+    };
+    expect(snapshotBogeyEntryBody(row)).toBe(
+      "\nEPS consensus 1.50 · EPS **whisper 1.58** · Rev consensus $90.00B · Rev **whisper $92.00B**\nGuidance: Watch FY guide on Services\nNotes: a note",
+    );
+    const html = await htmlWithBogeys([row]);
+    expect(html).toContain("[1] TMT Sheet (uploaded 2026-06-14 12:00:00)");
+    expect(html).toContain("Rev consensus $90.00B");
+    expect(html).not.toContain("Vendor EPS");
     expect(html).toContain("your curated bogeys");
   });
 

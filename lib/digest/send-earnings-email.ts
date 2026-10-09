@@ -26,6 +26,10 @@ import {
   getBogeysWithContentForEvent,
   type EarningsBogey,
 } from "@/lib/queries/earnings-bogeys";
+import {
+  bogeyPrintsVendorEps,
+  bogeysPrintedInPrompt,
+} from "@/lib/earnings/bogey-prompt-entries";
 import { resolveExpectedMove } from "@/lib/earnings/expected-move";
 import { getReadThroughsForTargets } from "@/lib/queries/read-through-pairs";
 import {
@@ -265,7 +269,11 @@ export async function composeEarningsEmail(
   // AI-generated) — the recap doesn't repeat it.
   const pastPrintsBlock =
     phase === "preview" ? renderPastPrintsBlock(intelView?.history ?? []) : "";
-  const sheetBogeysBlock = renderSheetBogeysBlock(getBogeysForEvent(db, event.id));
+  // Rows the table shows a cell from only: an empty row, or one whose content
+  // the table does not print, is never a column.
+  const sheetBogeysBlock = renderSheetBogeysBlock(
+    sheetBogeysWithCells(getBogeysWithContentForEvent(db, event.id)),
+  );
   // Slice E: the recap's body carries the same direction-safe block the prompt
   // carried, so the email says what the model was told. A preview has no live
   // watch to show (the print has not happened yet), so this is recap-only by
@@ -1066,9 +1074,12 @@ function buildPreviewContext(
   const ratingChanges = formatRatingChanges(db, symbol);
   const recentPressReleases = formatPressReleases(db, family, 30, 8);
   const priorTranscript = findPriorTranscript(db, symbol, event.event_date);
-  // Rows that hold something only: the prompt names the newest entry "the
-  // primary consensus reference", and an all-empty row must never be that.
-  const bogeys = getBogeysWithContentForEvent(db, event.id);
+  // Rows the prompt block prints something from only: the prompt names the
+  // newest entry "the primary consensus reference", and a row with nothing
+  // under it must never be that. Same helper `renderBogeysBlock` renders with.
+  const bogeys = bogeysPrintedInPrompt(getBogeysWithContentForEvent(db, event.id)).map(
+    (e) => e.bogey,
+  );
   const readThroughs = buildReadThroughEntries(db, family, event.event_date);
   const priorCallNote = getLatestCallNoteForFamily(db, symbol, event.event_date);
   let intel: EarningsIntelView | undefined;
@@ -2489,46 +2500,35 @@ export function renderSheetBogeysBlock(bogeys: EarningsBogey[]): string {
   return `## Sheet bogeys — by source\n\n${header}\n${sep}\n${body}${olderLine}`;
 }
 
+/**
+ * The rows the sheet table shows at least one cell from, in the order given.
+ * The table itself is the judge (a row it renders nothing for alone is not a
+ * column), so this filter and the rendering cannot disagree.
+ */
+export function sheetBogeysWithCells(bogeys: EarningsBogey[]): EarningsBogey[] {
+  return bogeys.filter((b) => renderSheetBogeysBlock([b]) !== "");
+}
+
 function renderBogeysBlock(ctx: PreviewContext): string {
-  if (ctx.bogeys.length === 0) return "";
-  const lines = ctx.bogeys.map((b, i) => {
+  // One helper decides which rows are entries AND what each prints
+  // (lib/earnings/bogey-prompt-entries.ts): a row with nothing printed is not
+  // an entry, so the block never lists a heading with nothing under it.
+  const entries = bogeysPrintedInPrompt(ctx.bogeys);
+  if (entries.length === 0) return "";
+  const lines = entries.map(({ bogey: b, body }, i) => {
     const sourceLabel = b.source_label ?? `${b.source} (no label)`;
-    const fields: string[] = [];
-    if (b.eps_consensus != null) fields.push(`EPS consensus ${b.eps_consensus.toFixed(2)}`);
-    if (b.eps_whisper != null) fields.push(`EPS **whisper ${b.eps_whisper.toFixed(2)}**`);
-    if (b.revenue_consensus_usd != null) fields.push(`revenue consensus ${formatLargeUSD(b.revenue_consensus_usd)}`);
-    if (b.revenue_whisper_usd != null) fields.push(`revenue **whisper ${formatLargeUSD(b.revenue_whisper_usd)}**`);
-    if (b.expected_move_pct != null) fields.push(`expected move ±${b.expected_move_pct.toFixed(1)}%`);
-    const head = fields.length > 0 ? `\n${fields.join(" · ")}` : "";
-    let segs = "";
-    if (b.segment_breakdown_json) {
-      try {
-        const parsed = JSON.parse(b.segment_breakdown_json) as Record<
-          string,
-          { consensus?: number; whisper?: number }
-        >;
-        const segLines = Object.entries(parsed).map(([name, vals]) => {
-          const segFields: string[] = [];
-          if (vals.consensus != null) segFields.push(`consensus ${formatLargeUSD(vals.consensus)}`);
-          if (vals.whisper != null) segFields.push(`whisper ${formatLargeUSD(vals.whisper)}`);
-          return `  - ${name}: ${segFields.join(", ")}`;
-        });
-        if (segLines.length > 0) {
-          segs = `\nSegment splits:\n${segLines.join("\n")}`;
-        }
-      } catch {
-        // Stored JSON malformed — skip silently.
-      }
-    }
-    const guidance = b.guidance_notes ? `\nGuidance: ${b.guidance_notes}` : "";
-    const notes = b.notes ? `\nNotes: ${b.notes}` : "";
-    return `### [${i + 1}] ${sourceLabel} (uploaded ${b.uploaded_at})${head}${segs}${guidance}${notes}`;
+    return `### [${i + 1}] ${sourceLabel} (uploaded ${b.uploaded_at})${body}`;
   });
+  // Only when a vendor figure is printed, so a block of curated rows reads
+  // exactly as before.
+  const vendorClause = entries.some((e) => bogeyPrintsVendorEps(e.bogey))
+    ? `A "vendor EPS consensus" figure is the data vendor's figure on an unspecified basis, not a curated bogey: quote it as the vendor's, and an entry that carries only vendor figures is never the primary consensus reference when a curated entry is listed.\n\n`
+    : "";
   return `\n## Bogeys (user-curated — preferred over Finnhub consensus, most recent first)
 
 These are bogeys the user pulled from preferred sources (TMT Breakout, sell-side notes) and uploaded for THIS event. **Treat the most recent entry as the primary consensus reference.** Whisper numbers, when present, are the directional bar that matters — beat-the-whisper is the meaningful event, not beat-consensus. Cite the source label inline when discussing them.
 
-${lines.join("\n\n---\n\n")}
+${vendorClause}${lines.join("\n\n---\n\n")}
 `;
 }
 

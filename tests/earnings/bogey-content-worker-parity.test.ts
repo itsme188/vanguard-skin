@@ -25,8 +25,10 @@ import { getBogeysWithContentForEvent } from "@/lib/queries/earnings-bogeys";
 import { getEarningsBogeysForSnapshot } from "@/scripts/snapshot-state-to-r2";
 import {
   snapshotBogeyHasContent,
+  snapshotBogeysPrinted,
   SNAPSHOT_BOGEY_CONTENT_COLUMNS,
 } from "@/workers/cron/src/bogey-content";
+import { bogeysPrintedInPrompt } from "@/lib/earnings/bogey-prompt-entries";
 
 /** Content columns the snapshot row does not carry. Adding one here is a
  *  decision: such a row counts on the Mac and reads as empty in the cloud. */
@@ -139,5 +141,84 @@ describe("end to end: Mac send reader, snapshot select and Worker count the same
     const ids = NOT_IN_SNAPSHOT.map((c) => seedRow(`only ${c}`, { [c]: SAMPLE[c] }));
     expect(macIds()).toEqual(ids);
     expect(workerIds()).toEqual([]);
+  });
+
+  /**
+   * Review follow-up (2026-10-08): the composers count a row only if they PRINT
+   * something from it (holding something is not enough).
+   *
+   *   Mac:    bogeysPrintedInPrompt    lib/earnings/bogey-prompt-entries.ts
+   *   Worker: snapshotBogeysPrinted    workers/cron/src/bogey-content.ts
+   *
+   * The two agree on every column the snapshot carries. The ONE documented
+   * difference: the snapshot has no extra_metrics_json, so an extras-only row
+   * is an entry in the Mac's prompt and not in the cloud email.
+   */
+  const macPrinted = () =>
+    bogeysPrintedInPrompt(getBogeysWithContentForEvent(db, eventId)).map((e) => e.bogey.id).sort((a, b) => a - b);
+  const workerPrinted = () =>
+    snapshotBogeysPrinted(
+      getEarningsBogeysForSnapshot(db, "2026-04-01", "2026-05-31").filter(
+        (b) => b.event_id === eventId && snapshotBogeyHasContent(b),
+      ),
+    )
+      .map((e) => e.bogey.id)
+      .sort((a, b) => a - b);
+
+  const EXTRAS = JSON.stringify([
+    {
+      id: "11111111-1111-4111-8111-111111111111",
+      label: "Bookings",
+      definition: "Total bookings in the quarter",
+      unit: "usd",
+      kind: "point",
+      period: "Q",
+      basis: "na",
+      consensus: 250_000_000,
+    },
+  ]);
+
+  it.each([
+    ["vendor-EPS-only", { eps_consensus_vendor: 1.05 }, true, true],
+    ["move-only", { expected_move_pct: 5 }, true, true],
+    ["segments-only", { segment_breakdown_json: '{"Cloud":{"consensus":40000000}}' }, true, true],
+    ["extras-only (the documented difference)", { extra_metrics_json: EXTRAS }, true, false],
+    ["empty", {}, false, false],
+  ] as Array<[string, Record<string, unknown>, boolean, boolean]>)(
+    "single-column shape %s: printed on the Mac and in the cloud as documented",
+    (_name, cols, onMac, inCloud) => {
+      const id = seedRow("only this", cols);
+      expect(macPrinted()).toEqual(onMac ? [id] : []);
+      expect(workerPrinted()).toEqual(inCloud ? [id] : []);
+    },
+  );
+
+  it("one row per snapshot-carried column: both composers print every one", () => {
+    const ids = CONTENT_COLUMNS.filter((c) => !NOT_IN_SNAPSHOT.includes(c)).map((c) =>
+      seedRow(`only ${c}`, { [c]: SAMPLE[c] }),
+    );
+    expect(macPrinted()).toEqual(ids);
+    expect(workerPrinted()).toEqual(ids);
+  });
+
+  it.each([
+    ["a segment with no figure", { segment_breakdown_json: '{"Cloud":{}}' }],
+    ["segments that are not JSON", { segment_breakdown_json: "{not json" }],
+    ["segments that are a list", { segment_breakdown_json: "[1]" }],
+  ] as Array<[string, Record<string, unknown>]>)(
+    "%s passes the content rule and is printed by neither composer",
+    (_name, cols) => {
+      const id = seedRow("holds, prints nothing", cols);
+      expect(macIds()).toEqual([id]);
+      expect(macPrinted()).toEqual([]);
+      expect(workerPrinted()).toEqual([]);
+    },
+  );
+
+  it("extras that hold no figure, or do not validate, are printed by neither", () => {
+    seedRow("no figure", { extra_metrics_json: JSON.stringify([{ ...JSON.parse(EXTRAS)[0], consensus: null }]) });
+    seedRow("invalid", { extra_metrics_json: '[{"label":"Bookings","value":"100"}]' });
+    expect(macPrinted()).toEqual([]);
+    expect(workerPrinted()).toEqual([]);
   });
 });

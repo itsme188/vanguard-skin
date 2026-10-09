@@ -55,7 +55,7 @@ import {
   readArmedEventsDelta,
 } from "./armed-events";
 import { briefingToHtml } from "./html";
-import { snapshotBogeyHasContent } from "./bogey-content";
+import { snapshotBogeyHasContent, snapshotBogeysPrinted } from "./bogey-content";
 import { sendEmail } from "./resend";
 import { composeReleaseInstant } from "./reaction-matcher";
 import { isUsableReactionLeg } from "./reaction-leg";
@@ -1466,13 +1466,17 @@ function resolveNotesForFamily(
 }
 
 function resolveBogeysForEvent(snapshot: Snapshot, eventId: number): SnapshotBogey[] {
-  return (snapshot.earningsBogeys ?? [])
+  const rows = (snapshot.earningsBogeys ?? [])
     // A row that holds nothing is not a bogey (PARITY: the Mac's
-    // getBogeysWithContentForEvent). `hasBogeys` is this list's length, so an
-    // event whose only rows are empty composes exactly like one with none.
+    // getBogeysWithContentForEvent).
     .filter((b) => b.event_id === eventId && snapshotBogeyHasContent(b))
     // Most recently uploaded first — the Mac composer prefers the latest set.
     .sort((a, b) => (a.uploaded_at < b.uploaded_at ? 1 : -1));
+  // And a row this email prints nothing from is not an entry either (PARITY:
+  // the Mac's bogeysPrintedInPrompt). `hasBogeys` is this list's length and
+  // `renderBogeysBlock` renders through the same helper, so an event whose
+  // rows print nothing composes exactly like one with none.
+  return snapshotBogeysPrinted(rows).map((e) => e.bogey);
 }
 
 const NOTE_CHAR_CAP = 600;
@@ -1490,29 +1494,14 @@ function renderNotesBlock(notes: SnapshotNote[], symbol: string): string {
   return `## Your prior notes on ${symbol} — read these FIRST\n\nYour own journal / earnings / trade-thesis notes on ${symbol} or a sibling-class security. Frame the event against this prior view.\n\n${lines.join("\n\n---\n\n")}`;
 }
 
-/** Compact USD for bogey figures (no Mac lib import). 92e9 → "$92.0B". */
-function formatBogeyUSD(n: number): string {
-  if (Math.abs(n) >= 1e9) return `$${(n / 1e9).toFixed(2)}B`;
-  if (Math.abs(n) >= 1e6) return `$${(n / 1e6).toFixed(1)}M`;
-  if (Math.abs(n) >= 1e3) return `$${Math.round(n).toLocaleString("en-US")}`;
-  return `$${n.toFixed(2)}`;
-}
-
 function renderBogeysBlock(bogeys: SnapshotBogey[]): string {
-  if (bogeys.length === 0) return "";
-  const lines = bogeys.map((b, i) => {
+  // The helper that decides which rows are entries also supplies what each
+  // prints (bogey-content.ts), so no entry is a heading with nothing under it.
+  const entries = snapshotBogeysPrinted(bogeys);
+  if (entries.length === 0) return "";
+  const lines = entries.map(({ bogey: b, body }, i) => {
     const label = b.source_label ?? `${b.source} (no label)`;
-    const fields: string[] = [];
-    if (b.eps_consensus != null) fields.push(`EPS consensus ${b.eps_consensus.toFixed(2)}`);
-    if (b.eps_whisper != null) fields.push(`EPS **whisper ${b.eps_whisper.toFixed(2)}**`);
-    if (b.revenue_consensus_usd != null)
-      fields.push(`Rev consensus ${formatBogeyUSD(b.revenue_consensus_usd)}`);
-    if (b.revenue_whisper_usd != null)
-      fields.push(`Rev **whisper ${formatBogeyUSD(b.revenue_whisper_usd)}**`);
-    const head = fields.length > 0 ? `\n${fields.join(" · ")}` : "";
-    const guidance = b.guidance_notes ? `\nGuidance: ${b.guidance_notes}` : "";
-    const notes = b.notes ? `\nNotes: ${b.notes}` : "";
-    return `### [${i + 1}] ${label} (uploaded ${b.uploaded_at})${head}${guidance}${notes}`;
+    return `### [${i + 1}] ${label} (uploaded ${b.uploaded_at})${body}`;
   });
   return `## Bogeys (your curated consensus + whisper — preferred over Finnhub)\n\nWhisper numbers are the bar that matters — beat-the-whisper is the meaningful event. Most recent set first.\n\n${lines.join("\n\n---\n\n")}`;
 }
