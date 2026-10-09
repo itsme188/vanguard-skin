@@ -22,6 +22,7 @@ function createTestDb(): Database.Database {
       fund_category TEXT,
       multiplier REAL DEFAULT 1,
       maturity_date TEXT,
+      expiration_date TEXT,
       currency TEXT NOT NULL DEFAULT 'USD'
     );
 

@@ -12,6 +12,7 @@ import {
 import { normalizeMarketCapCategory } from "@/lib/securities/normalize-market-cap";
 import { issuerSiblings } from "@/lib/securities/issuer-family";
 import { liveOptionExpirationSql } from "@/lib/compute/option-expiry";
+import { todayET } from "@/lib/calendar/date-utils";
 
 // ─── Types ─────────────��────────────────────────────────────────
 
@@ -302,7 +303,8 @@ function computeTilts(
        JOIN securities s ON s.id = lh.security_id
        LEFT JOIN latest_prices lp ON lp.security_id = lh.security_id
        LEFT JOIN fx_rates fx ON fx.currency = s.currency
-       WHERE COALESCE(lp.close_price, 0) > 0`
+       WHERE COALESCE(lp.close_price, 0) > 0
+         AND ${liveOptionExpirationSql("s", asOfDate ?? todayET())}`
     )
     .all(...accountParams) as {
     market_cap_category: string | null;
