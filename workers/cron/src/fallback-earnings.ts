@@ -1063,13 +1063,13 @@ export function evaluateRecapContent(
   // actually render, not merely a truthy-but-empty payload (e.g. `{}`) —
   // readReactionDelta is the same defensive reader the scoreboard itself
   // uses, so "has a data point" and "renders a data point" can't diverge.
-  const reactionJson =
-    (event.reaction_snapshot as string | null) ??
-    (payload?.reaction != null ? JSON.stringify(payload.reaction) : null);
+  // A leg that is not a measurement yet (pending) renders a dash too, so it
+  // is not a data point either (2026-10-08).
+  const { reactionJson, rowEnrichedAt } = reactionSourceFor(event, payload);
   const hasReaction =
-    readReactionDelta(reactionJson, "symbol") !== "—" ||
-    readReactionDelta(reactionJson, "spy") !== "—" ||
-    readReactionDelta(reactionJson, "qqq") !== "—";
+    readReactionDelta(reactionJson, "symbol", rowEnrichedAt) !== "—" ||
+    readReactionDelta(reactionJson, "spy", rowEnrichedAt) !== "—" ||
+    readReactionDelta(reactionJson, "qqq", rowEnrichedAt) !== "—";
   if (!plausible && !hasReaction) return { send: false, reason: "implausible-no-data-point" };
   return { send: true, implausible: !plausible };
 }
@@ -1178,16 +1178,9 @@ function histPrintsLabel(history: EarningsHistorySnapshotEntry | null | undefine
 function readReactionPct(
   json: string | null,
   key: "spy" | "qqq" | "tlt" | "symbol",
+  rowEnrichedAt: string | null | undefined,
 ): number | null {
-  if (!json) return null;
-  try {
-    const snap = JSON.parse(json) as Record<string, unknown>;
-    const node = snap[key] as { t_pre?: number; t_post?: number; delta_pct?: number } | undefined;
-    if (!isUsableReactionLeg(node)) return null;
-    return node.delta_pct;
-  } catch {
-    return null;
-  }
+  return readMeasuredReactionPct(json, key, rowEnrichedAt);
 }
 
 /**
@@ -1252,12 +1245,12 @@ export function renderScoreboard(
       : "—";
 
   const isRecap = phase === "recap";
-  const reactionJson =
-    ((event.reaction_snapshot as string | null) ??
-      (payload?.reaction != null ? JSON.stringify(payload.reaction) : null));
-  const stockR = isRecap ? readReactionDelta(reactionJson, "symbol") : "—";
-  const spyR = isRecap ? readReactionDelta(reactionJson, "spy") : "—";
-  const qqqR = isRecap ? readReactionDelta(reactionJson, "qqq") : "—";
+  // PARITY (Mac: renderHeadlineTable -> readScoreboardLeg): a leg that is not
+  // a measurement yet is a dash in an outbound email, never a percent.
+  const { reactionJson, rowEnrichedAt } = reactionSourceFor(event, payload);
+  const stockR = isRecap ? readReactionDelta(reactionJson, "symbol", rowEnrichedAt) : "—";
+  const spyR = isRecap ? readReactionDelta(reactionJson, "spy", rowEnrichedAt) : "—";
+  const qqqR = isRecap ? readReactionDelta(reactionJson, "qqq", rowEnrichedAt) : "—";
 
   const phaseLabel = phase === "preview" ? "into the print" : "post-print";
   const sym = event.symbol ?? "";
@@ -1279,14 +1272,15 @@ export function renderScoreboard(
     let impliedActual = "—";
     let impliedVerdict = "—";
     if (isRecap && intelCtx?.intel?.impliedMovePct != null) {
-      const realized = readReactionPct(reactionJson, "symbol");
+      const realized = readReactionPct(reactionJson, "symbol", rowEnrichedAt);
       if (realized != null) {
         impliedActual = `${realized >= 0 ? "+" : ""}${realized.toFixed(1)}%`;
         impliedVerdict = Math.abs(realized) <= intelCtx.intel.impliedMovePct ? "inside" : "outside";
       } else {
         // A stored-but-unusable (or missing) symbol leg — never publish an
         // inside/outside verdict from a leg that couldn't be measured
-        // (parity with the Mac's renderHeadlineTable).
+        // (parity with the Mac's renderHeadlineTable). A pending stock leg
+        // is the same blank.
         impliedVerdict = "— no reaction quote";
       }
     }
@@ -1584,20 +1578,119 @@ function formatPctDelta(actual: number, consensus: number, kind: "eps" | "revenu
   return `${pct >= 0 ? "+" : ""}${pct.toFixed(1)}%`;
 }
 
+// ── Is a stored reaction leg a measurement yet? ──────────────────────────────
+// PARITY (Mac: lib/calendar/reaction-validity.ts::reactionLegVerdict). The
+// Worker cannot import lib/, so this is a hand copy of the rule; the table in
+// test/fallback-earnings.test.ts runs it against the Mac function. Change
+// both sides together.
+//
+// A reaction is the move from just before a release to the price `window_min`
+// minutes after it. Until that window has elapsed there is nothing to
+// measure, and an email never prints a percent for it (owner ruling
+// 2026-10-08). Evidence, strongest first:
+//   1. `captured_at` on the snapshot: earlier than t0 + window means the
+//      whole snapshot is pending; at or after it every usable leg is
+//      measured, even a flat one. An unreadable t0 fails closed.
+//   2. No `captured_at` (older rows, and every snapshot the Worker captures):
+//      a) identical pre and post prices are not trusted as a move;
+//      b) a leg of exactly 0 on a row whose `enriched_at` is more than the
+//         bar tolerance (ten minutes) before the window end is not trusted.
+const DEFAULT_REACTION_WINDOW_MIN = 120;
+const REACTION_BAR_TOLERANCE_MS = 10 * 60 * 1000;
+
+/** A stored UTC instant: ISO, or SQLite "YYYY-MM-DD HH:MM:SS" with no marker. */
+function parseUtcInstantMs(raw: unknown): number | null {
+  if (typeof raw !== "string") return null;
+  const s = raw.trim();
+  if (!s) return null;
+  const hasZone = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(s);
+  const ms = Date.parse(hasZone ? s : `${s.replace(" ", "T")}Z`);
+  return Number.isFinite(ms) ? ms : null;
+}
+
+export type WorkerReactionLegState = "measured" | "pending" | "absent";
+
+export function workerReactionLegState(
+  snapshot: Record<string, unknown> | null | undefined,
+  leg: { t_pre?: number; t_post?: number; delta_pct?: number } | null | undefined,
+  rowEnrichedAt?: string | null,
+): WorkerReactionLegState {
+  if (!snapshot || !isUsableReactionLeg(leg)) return "absent";
+
+  let windowEnd: number | null = null;
+  const t0Raw = snapshot.t0_utc;
+  if (typeof t0Raw === "string" && t0Raw) {
+    const t0 = Date.parse(t0Raw);
+    if (Number.isFinite(t0)) {
+      const w = snapshot.window_min;
+      const windowMin =
+        typeof w === "number" && Number.isFinite(w) && w > 0 ? w : DEFAULT_REACTION_WINDOW_MIN;
+      windowEnd = t0 + windowMin * 60 * 1000;
+    }
+  }
+
+  const capturedAt = parseUtcInstantMs(snapshot.captured_at);
+  if (capturedAt != null) {
+    return windowEnd == null || capturedAt < windowEnd ? "pending" : "measured";
+  }
+
+  if (leg.t_pre === leg.t_post) return "pending";
+  if (leg.delta_pct === 0 && windowEnd != null) {
+    const enrichedAt = parseUtcInstantMs(rowEnrichedAt);
+    if (enrichedAt != null && enrichedAt < windowEnd - REACTION_BAR_TOLERANCE_MS) return "pending";
+  }
+  return "measured";
+}
+
+/**
+ * Which reaction the recap reads, and the evidence that travels with it. The
+ * snapshot row's own reaction_snapshot wins (road 1); otherwise the same-day
+ * cloud payload's (road 2). The row's `enriched_at` describes the ROW's
+ * snapshot only, so it is passed along for road 1 and never for a payload
+ * reaction (that one is judged on what the snapshot itself carries).
+ */
+function reactionSourceFor(
+  event: CalendarEventRow,
+  payload: CloudEnrichedPayload | null,
+): { reactionJson: string | null; rowEnrichedAt: string | null } {
+  const rowJson = (event.reaction_snapshot as string | null) ?? null;
+  if (rowJson != null) {
+    const stamp = (event as Record<string, unknown>).enriched_at;
+    return { reactionJson: rowJson, rowEnrichedAt: typeof stamp === "string" ? stamp : null };
+  }
+  return {
+    reactionJson: payload?.reaction != null ? JSON.stringify(payload.reaction) : null,
+    rowEnrichedAt: null,
+  };
+}
+
+/** The leg's percent when it is a real measurement; null when absent or pending. */
+function readMeasuredReactionPct(
+  json: string | null,
+  key: "spy" | "qqq" | "tlt" | "symbol",
+  rowEnrichedAt: string | null | undefined,
+): number | null {
+  if (!json) return null;
+  try {
+    const snap = JSON.parse(json) as unknown;
+    if (snap == null || typeof snap !== "object" || Array.isArray(snap)) return null;
+    const record = snap as Record<string, unknown>;
+    const node = record[key] as { t_pre?: number; t_post?: number; delta_pct?: number } | undefined;
+    if (workerReactionLegState(record, node, rowEnrichedAt) !== "measured") return null;
+    return (node as { delta_pct: number }).delta_pct;
+  } catch {
+    return null;
+  }
+}
+
 function readReactionDelta(
   json: string | null,
   key: "spy" | "qqq" | "tlt" | "symbol",
+  rowEnrichedAt: string | null | undefined,
 ): string {
-  if (!json) return "—";
-  try {
-    const snap = JSON.parse(json) as Record<string, unknown>;
-    const node = snap[key] as { t_pre?: number; t_post?: number; delta_pct?: number } | undefined;
-    if (!isUsableReactionLeg(node)) return "—";
-    const v = node.delta_pct;
-    return `${v >= 0 ? "+" : ""}${v.toFixed(2)}%`;
-  } catch {
-    return "—";
-  }
+  const v = readMeasuredReactionPct(json, key, rowEnrichedAt);
+  if (v == null) return "—";
+  return `${v >= 0 ? "+" : ""}${v.toFixed(2)}%`;
 }
 
 function formatDate(iso: string): string {

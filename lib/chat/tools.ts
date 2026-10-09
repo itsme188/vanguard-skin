@@ -43,6 +43,7 @@ import { getRecentReleaseReactions } from "@/lib/queries/level-performance";
 import type { ReactionSnapshot } from "@/lib/calendar/reaction-snapshot-core";
 import {
   readReactionLegs,
+  type ReactionEvidence,
   type ReactionLegKey,
   type StoredReactionLeg,
 } from "@/lib/calendar/reaction-validity";
@@ -89,9 +90,9 @@ function parseKeyThemesField(raw: string): unknown {
  * When nothing is measured but something is pending, the result carries a
  * top-level `state: "pending"`.
  *
- * The tool's query (getRecentReleaseReactions) does not select `enriched_at`,
- * so only the evidence the snapshot itself carries is applied here: the
- * legacy "0.00% move on a row enriched before the window" case is not caught.
+ * Pass the row's `enriched_at` as evidence so the legacy rule applies too: an
+ * older snapshot's 0.00% leg on a row enriched before the window ended is
+ * pending, not a flat move.
  */
 type ChatReactionLeg = StoredReactionLeg | { state: "pending"; symbol?: string };
 type ChatReactionSnapshot = Partial<
@@ -101,8 +102,9 @@ type ChatReactionSnapshot = Partial<
 
 function sanitizeReactionSnapshotForChat(
   raw: string | null,
+  evidence: ReactionEvidence = {},
 ): ChatReactionSnapshot | null {
-  const read = readReactionLegs(raw);
+  const read = readReactionLegs(raw, evidence);
   if (!read) return null;
   const { snapshot: snap, measured, pending } = read;
 
@@ -872,7 +874,7 @@ export const CHAT_TOOLS: Anthropic.Tool[] = [
   {
     name: "query_release_reactions",
     description:
-      "Look up how the market reacted to past macro releases or earnings. Each row includes the actual value, consensus at release time, and the 2-hour post-release price change for SPY, QQQ, TLT, and (when mapped) the sector ETF. Use when the user asks 'what did SPY do on the last three hot CPI prints?', 'how does NVDA typically trade after earnings?', or 'show me the last few FOMC reactions'. Pass event_type = 'cpi' / 'fomc' / 'jobs' / 'gdp' for macro, or 'earnings_NVDA' / 'earnings_SPY' for a specific ticker's earnings.",
+      "Look up how the market reacted to past macro releases or earnings. Each row includes the actual value, consensus at release time, and the 2-hour post-release price change for SPY, QQQ, TLT, and (when mapped) the sector ETF. A leg, or a whole reaction, may carry state: \"pending\": it has not been measured yet and no figure should be quoted for it. Use when the user asks 'what did SPY do on the last three hot CPI prints?', 'how does NVDA typically trade after earnings?', or 'show me the last few FOMC reactions'. Pass event_type = 'cpi' / 'fomc' / 'jobs' / 'gdp' for macro, or 'earnings_NVDA' / 'earnings_SPY' for a specific ticker's earnings.",
     input_schema: {
       type: "object" as const,
       properties: {
@@ -1809,7 +1811,10 @@ export async function executeTool(
         const decoded = rows.map((r) => {
           // Never hand the model a raw snapshot: a zero-filled legacy leg is
           // a fabricated flat move (see sanitizeReactionSnapshotForChat).
-          const reaction = sanitizeReactionSnapshotForChat(r.reaction_snapshot);
+          // The row's enriched_at is evidence only; it is not returned.
+          const reaction = sanitizeReactionSnapshotForChat(r.reaction_snapshot, {
+            rowEnrichedAt: r.enriched_at,
+          });
           return {
             event_id: r.event_id,
             title: r.title,

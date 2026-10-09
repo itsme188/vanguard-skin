@@ -298,6 +298,12 @@ export interface ReleaseReactionRow {
   actual_value: string | null;
   consensus_value: string | null;
   reaction_snapshot: string | null;
+  /**
+   * When the row was enriched (SQLite UTC). Evidence for the reaction
+   * validity rule (lib/calendar/reaction-validity.ts): an older snapshot's
+   * 0.00% leg on a row enriched before the window ended is not a measurement.
+   */
+  enriched_at: string | null;
 }
 
 export function getRecentReleaseReactions(
@@ -330,7 +336,7 @@ export function getRecentReleaseReactions(
   return db
     .prepare(
       `SELECT id AS event_id, title, event_date, event_type, symbol,
-              actual_value, consensus_value, reaction_snapshot
+              actual_value, consensus_value, reaction_snapshot, enriched_at
        FROM calendar_events
        WHERE ${conds.join(" AND ")}
        ORDER BY event_date DESC

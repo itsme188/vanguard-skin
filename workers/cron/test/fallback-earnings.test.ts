@@ -34,8 +34,10 @@ import {
   renderPositions,
   renderScoreboard,
   evaluateRecapContent,
+  workerReactionLegState,
   type PositionView,
 } from "../src/fallback-earnings";
+import { reactionLegState as macReactionLegState } from "../../../lib/calendar/reaction-validity";
 import { loadLatestSnapshot } from "../src/state";
 // Mac-side label/format helpers, imported for cross-side parity pins only
 // (both modules are pure; neither pulls a native dependency).
@@ -2124,5 +2126,270 @@ describe("armed-as-covered (snapshot v11 + KV delta)", () => {
     expect(result.details.some((d) => d.eventId === 1 && d.phase === "recap")).toBe(false);
     expect(result.details.some((d) => d.eventId === 2 && d.phase === "recap")).toBe(true);
     expect(sendEmail).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * A pending reaction never prints as a percent (owner ruling 2026-10-08).
+ * Parity with the Mac: lib/calendar/reaction-validity.ts::reactionLegVerdict,
+ * read by lib/digest/send-earnings-email.ts::renderHeadlineTable through
+ * readScoreboardLeg. The Worker cannot import lib/, so fallback-earnings.ts
+ * carries a local copy of the rule; the table below runs both.
+ *
+ * Synthetic prices throughout. Release 20:00 UTC, window 120 minutes, so the
+ * window ends 22:00 UTC.
+ */
+describe("pending reaction legs in the cloud recap (parity with the Mac)", () => {
+  const T0 = "2026-06-15T20:00:00.000Z";
+  const AFTER_WINDOW = "2026-06-15T22:05:00.000Z";
+  const BEFORE_WINDOW = "2026-06-15T20:30:00.000Z";
+
+  const baseEvent = (over: Record<string, unknown> = {}) =>
+    ({
+      id: 1, source: "finnhub", event_type: "earnings", event_date: EVENT_DATE,
+      event_time: "AMC", title: "ZZA earnings", description: null, security_id: null,
+      symbol: "ZZA", expected_impact: "high",
+      consensus_estimate: "EPS 1.50 · Rev 90,000,000,000",
+      previous_value: null, raw_json: null,
+      consensus_value: null, actual_value: "EPS 1.60 · Rev 91,000,000,000",
+      reaction_snapshot: null, enriched_at: null,
+      ...over,
+    }) as unknown as import("../src/state").CalendarEventRow;
+
+  const intelCtx = {
+    intel: {
+      eventId: 1, sourceKey: "x", impliedMovePct: 4.8, impliedMethod: "straddle",
+      expiryUsed: "2026-07-18", computedAt: "2026-06-14 06:00:00",
+    },
+    history: null,
+  } as unknown as Parameters<typeof renderScoreboard>[4];
+
+  const moved = {
+    symbol: { symbol: "ZZA", t_pre: 100, t_post: 103, delta_pct: 3 },
+    spy: { t_pre: 500, t_post: 502, delta_pct: 0.4 },
+    qqq: { t_pre: 400, t_post: 398, delta_pct: -0.5 },
+  };
+  const flat = (px: number) => ({ t_pre: px, t_post: px, delta_pct: 0 });
+
+  const rowsOf = (md: string) => {
+    const find = (needle: string) => md.split("\n").find((l) => l.includes(needle))!;
+    return {
+      stock: find("**ZZA @ T+2h**"),
+      spy: find("**SPY @ T+2h**"),
+      qqq: find("**QQQ @ T+2h**"),
+      expected: find("**Expected move**"),
+    };
+  };
+  const render = (snapshot: unknown, over: Record<string, unknown> = {}) =>
+    rowsOf(
+      renderScoreboard(
+        baseEvent({ reaction_snapshot: JSON.stringify(snapshot), ...over }),
+        "recap",
+        null,
+        false,
+        intelCtx,
+      ),
+    );
+
+  it("all legs measured: the rows print the percents, exactly as before", () => {
+    const stamped = render({ t0_utc: T0, window_min: 120, captured_at: AFTER_WINDOW, ...moved });
+    const legacy = render({ t0_utc: T0, window_min: 120, ...moved });
+    for (const r of [stamped, legacy]) {
+      expect(r.stock).toBe("| **ZZA @ T+2h** | — | +3.00% | — |");
+      expect(r.spy).toBe("| **SPY @ T+2h** | — | +0.40% | — |");
+      expect(r.qqq).toBe("| **QQQ @ T+2h** | — | -0.50% | — |");
+      expect(r.expected).toContain("| +3.0% | inside |");
+    }
+  });
+
+  it("SPY leg pending: its row is dashes, the other rows still print", () => {
+    const r = render({ t0_utc: T0, window_min: 120, ...moved, spy: flat(500) });
+    expect(r.spy).toBe("| **SPY @ T+2h** | — | — | — |");
+    expect(r.stock).toBe("| **ZZA @ T+2h** | — | +3.00% | — |");
+    expect(r.qqq).toBe("| **QQQ @ T+2h** | — | -0.50% | — |");
+    expect(r.expected).toContain("| +3.0% | inside |");
+  });
+
+  it("stock leg pending: its row is dashes and the expected-move row names no verdict", () => {
+    const r = render({ t0_utc: T0, window_min: 120, ...moved, symbol: { symbol: "ZZA", ...flat(100) } });
+    expect(r.stock).toBe("| **ZZA @ T+2h** | — | — | — |");
+    expect(r.spy).toBe("| **SPY @ T+2h** | — | +0.40% | — |");
+    expect(r.expected).toMatch(/\| — \| — no reaction quote \|$/);
+  });
+
+  it("all pending (captured before the window ended): every reaction row is dashes", () => {
+    const r = render({ t0_utc: T0, window_min: 120, captured_at: BEFORE_WINDOW, ...moved });
+    expect(r.stock).toBe("| **ZZA @ T+2h** | — | — | — |");
+    expect(r.spy).toBe("| **SPY @ T+2h** | — | — | — |");
+    expect(r.qqq).toBe("| **QQQ @ T+2h** | — | — | — |");
+    expect(r.expected).toMatch(/\| — \| — no reaction quote \|$/);
+  });
+
+  it("a capture stamp with an unreadable release instant fails closed", () => {
+    const r = render({ window_min: 120, captured_at: AFTER_WINDOW, ...moved });
+    expect(r.stock).toBe("| **ZZA @ T+2h** | — | — | — |");
+    expect(r.spy).toBe("| **SPY @ T+2h** | — | — | — |");
+  });
+
+  it("legacy snapshot with identical pre and post prices: no '+0.00%'", () => {
+    const r = render({
+      t0_utc: T0, window_min: 120,
+      symbol: { symbol: "ZZA", ...flat(100) }, spy: flat(500), qqq: flat(400),
+    });
+    expect(r.stock).toBe("| **ZZA @ T+2h** | — | — | — |");
+    expect(r.spy).toBe("| **SPY @ T+2h** | — | — | — |");
+    expect(r.qqq).toBe("| **QQQ @ T+2h** | — | — | — |");
+    expect(r.expected).toMatch(/\| — \| — no reaction quote \|$/);
+  });
+
+  it("a flat move stamped after the window is a real measurement and prints +0.00%", () => {
+    const r = render({
+      t0_utc: T0, window_min: 120, captured_at: AFTER_WINDOW,
+      ...moved, spy: flat(500),
+    });
+    expect(r.spy).toBe("| **SPY @ T+2h** | — | +0.00% | — |");
+  });
+
+  describe("legacy 0.00% leg and the row's enriched_at", () => {
+    const snapshot = {
+      t0_utc: T0, window_min: 120,
+      ...moved,
+      symbol: { symbol: "ZZA", t_pre: 100, t_post: 100.002, delta_pct: 0 },
+    };
+
+    it("enriched long before the window ended: the zero leg is dashes, moved legs print", () => {
+      const r = render(snapshot, { enriched_at: "2026-06-15 20:05:00" });
+      expect(r.stock).toBe("| **ZZA @ T+2h** | — | — | — |");
+      expect(r.spy).toBe("| **SPY @ T+2h** | — | +0.40% | — |");
+      expect(r.expected).toMatch(/\| — \| — no reaction quote \|$/);
+    });
+
+    it("enriched after the window ended: the zero leg is trusted", () => {
+      const r = render(snapshot, { enriched_at: "2026-06-15 22:10:00" });
+      expect(r.stock).toBe("| **ZZA @ T+2h** | — | +0.00% | — |");
+    });
+
+    it("enriched inside the ten-minute bar tolerance before the window end: trusted", () => {
+      const r = render(snapshot, { enriched_at: "2026-06-15 21:55:00" });
+      expect(r.stock).toBe("| **ZZA @ T+2h** | — | +0.00% | — |");
+    });
+
+    it("no enriched_at on the row: trusted (enriched_at is the only evidence for this rule)", () => {
+      const r = render(snapshot);
+      expect(r.stock).toBe("| **ZZA @ T+2h** | — | +0.00% | — |");
+    });
+
+    it("the row's enriched_at is not applied to a reaction that came from the cloud payload", () => {
+      const md = renderScoreboard(
+        baseEvent({ enriched_at: "2026-06-15 20:05:00" }),
+        "recap",
+        {
+          eventId: 1, source_key: "x", actual: null, consensus: null, source: "finnhub",
+          reaction: snapshot, fetchedAt: "2026-06-15T22:10:00.000Z",
+        } as unknown as Parameters<typeof renderScoreboard>[2],
+        false,
+        intelCtx,
+      );
+      expect(rowsOf(md).stock).toBe("| **ZZA @ T+2h** | — | +0.00% | — |");
+    });
+  });
+
+  it("a cloud-payload reaction with identical pre and post prices is dashes too", () => {
+    const md = renderScoreboard(
+      baseEvent(),
+      "recap",
+      {
+        eventId: 1, source_key: "x", actual: null, consensus: null, source: "finnhub",
+        reaction: { t0_utc: T0, window_min: 120, source: "yahoo", ...moved, spy: flat(500) },
+        fetchedAt: "2026-06-15T22:10:00.000Z",
+      } as unknown as Parameters<typeof renderScoreboard>[2],
+      false,
+      intelCtx,
+    );
+    const r = rowsOf(md);
+    expect(r.spy).toBe("| **SPY @ T+2h** | — | — | — |");
+    expect(r.stock).toBe("| **ZZA @ T+2h** | — | +3.00% | — |");
+  });
+
+  describe("recap gate: a pending leg is not a data point", () => {
+    const implausible = { actual_value: "EPS 5.11" }; // vs consensus 1.50
+
+    it("implausible actual + every leg pending: no email", () => {
+      const ev = baseEvent({
+        ...implausible,
+        reaction_snapshot: JSON.stringify({ t0_utc: T0, window_min: 120, captured_at: BEFORE_WINDOW, ...moved }),
+      });
+      expect(evaluateRecapContent(ev, null)).toEqual({ send: false, reason: "implausible-no-data-point" });
+    });
+
+    it("implausible actual + only a legacy early zero leg: no email", () => {
+      const ev = baseEvent({
+        ...implausible,
+        enriched_at: "2026-06-15 20:05:00",
+        reaction_snapshot: JSON.stringify({
+          t0_utc: T0, window_min: 120,
+          symbol: { symbol: "ZZA", t_pre: 100, t_post: 100.002, delta_pct: 0 },
+        }),
+      });
+      expect(evaluateRecapContent(ev, null)).toEqual({ send: false, reason: "implausible-no-data-point" });
+    });
+
+    it("implausible actual + one measured leg beside pending ones: sends, flagged", () => {
+      const ev = baseEvent({
+        ...implausible,
+        reaction_snapshot: JSON.stringify({
+          t0_utc: T0, window_min: 120,
+          symbol: { symbol: "ZZA", ...flat(100) }, spy: flat(500), qqq: moved.qqq,
+        }),
+      });
+      expect(evaluateRecapContent(ev, null)).toEqual({ send: true, implausible: true });
+    });
+  });
+
+  it("the Worker's leg rule agrees with the Mac's reactionLegState on every case", () => {
+    const leg = { t_pre: 100, t_post: 103, delta_pct: 3 };
+    const zero = { t_pre: 100, t_post: 100.002, delta_pct: 0 };
+    const same = { t_pre: 100, t_post: 100, delta_pct: 0 };
+    const dead = { t_pre: 0, t_post: 0, delta_pct: 0 };
+    const snaps: Array<Record<string, unknown>> = [
+      { t0_utc: T0, window_min: 120, captured_at: AFTER_WINDOW },
+      { t0_utc: T0, window_min: 120, captured_at: "2026-06-15T22:00:00.000Z" },
+      { t0_utc: T0, window_min: 120, captured_at: "2026-06-15T21:59:59.000Z" },
+      { t0_utc: T0, window_min: 120, captured_at: "2026-06-15 22:05:00" },
+      { t0_utc: T0, captured_at: "2026-06-15T21:00:00.000Z" },
+      { t0_utc: T0, window_min: 30, captured_at: "2026-06-15T20:31:00.000Z" },
+      { t0_utc: T0, window_min: 0, captured_at: "2026-06-15T21:00:00.000Z" },
+      { window_min: 120, captured_at: AFTER_WINDOW },
+      { t0_utc: "not a date", window_min: 120, captured_at: AFTER_WINDOW },
+      { t0_utc: T0, window_min: 120, captured_at: "garbage" },
+      { t0_utc: T0, window_min: 120, captured_at: "" },
+      { t0_utc: T0, window_min: 120 },
+      { t0_utc: T0, window_min: 30 },
+      { window_min: 120 },
+      {},
+    ];
+    const stamps = [
+      undefined, null, "", "garbage",
+      "2026-06-15 20:05:00", "2026-06-15 21:49:59", "2026-06-15 21:50:00",
+      "2026-06-15T21:55:00.000Z", "2026-06-15 22:10:00", "2026-06-15 20:35:00",
+    ];
+    let checked = 0;
+    for (const snap of snaps) {
+      for (const l of [leg, zero, same, dead, null, undefined]) {
+        for (const stamp of stamps) {
+          const mac = macReactionLegState(
+            snap as Parameters<typeof macReactionLegState>[0],
+            l as Parameters<typeof macReactionLegState>[1],
+            { rowEnrichedAt: stamp },
+          );
+          expect(
+            workerReactionLegState(snap, l, stamp),
+            `${JSON.stringify(snap)} ${JSON.stringify(l)} ${String(stamp)}`,
+          ).toBe(mac);
+          checked++;
+        }
+      }
+    }
+    expect(checked).toBe(snaps.length * 6 * stamps.length);
   });
 });
