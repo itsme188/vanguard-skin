@@ -315,6 +315,34 @@ describe("LivePrintRow — no hover-only affordances, no div onClick, keyboard-f
     expect(src).toMatch(/\{!print\.outputs && <PromoteButton promote=\{promoteControl\} \/>\}/);
     expect(src).toMatch(/<PrintOutputs[\s\S]*promote=\{promoteControl\}/);
   });
+  it("the card's file input accepts PDF, like the drop API and the go control do (unit 18)", () => {
+    const accepts = src.match(/accept="([^"]+)"/g) ?? [];
+    expect(accepts).toHaveLength(1);
+    expect(accepts[0]).toContain(".pdf");
+    expect(accepts[0]).toContain("application/pdf");
+    // The tooltip must not promise less than the input takes.
+    expect(src).not.toMatch(/release document \(HTML\/text\)/);
+  });
+  it("asks before a promote that would fall to the GAAP figure (unit 18)", () => {
+    const start = src.indexOf("async function promote()");
+    expect(start).toBeGreaterThan(-1);
+    const body = src.slice(start, src.indexOf("async function acceptLine", start));
+    const warn = body.indexOf("promoteBasisWarning(print.lines)");
+    const post = body.indexOf("postAccept({ promoteHeadline: true })");
+    expect(warn).toBeGreaterThan(-1);
+    expect(post).toBeGreaterThan(warn);
+    // Asked in the app's ConfirmDialog (unit 16), never a browser prompt;
+    // declining returns before the request with the same cancelled line.
+    const ask = body.indexOf("await prompt.ask(");
+    const cancelled = body.indexOf(
+      "Promote cancelled — accept the adjusted EPS line first, or promote again to use GAAP.",
+    );
+    expect(ask).toBeGreaterThan(warn);
+    expect(cancelled).toBeGreaterThan(ask);
+    expect(post).toBeGreaterThan(cancelled);
+    expect(body.slice(cancelled, post)).toContain("return;");
+    expect(src).not.toMatch(/window\.confirm\(/);
+  });
   it("owns the accept route and its three 409 confirms in one place (F-S8)", () => {
     expect(src).toMatch(/SUPERSEDED_CONFIRM_COPY/);
     expect(src).toMatch(/SUPERSEDED_ACCEPT_CONFIRM_COPY/);

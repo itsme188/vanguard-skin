@@ -15,8 +15,9 @@ import { todayET } from "@/lib/calendar/date-utils";
  * Ruling D6 (2026-10-08): the 5-year fund default is for a fund that really
  * is a bond fund. It needs a bond-family fund category AND no sign that the
  * fund is an equity fund (a GICS equity sector, or an equity word in its
- * name). A fund that fails either test is listed as not modelled and counted;
- * it is never given a duration.
+ * name). A fund that fails either test is never given a duration. The custom
+ * engine lists and counts it; the rate preset treats an equity-evidence fund
+ * as the equity position it is (unit N3) and lists only the unconfirmed one.
  * Synthetic figures only: ZZ* names, round numbers.
  */
 const TODAY = "2030-01-15";
@@ -129,7 +130,7 @@ describe("summarizeUnmodelledBonds: funds left out are counted on their own", ()
   });
 });
 
-describe("both scenario engines: a mislabelled fund is listed, never marked down by 5 years", () => {
+describe("both scenario engines: a mislabelled fund is never marked down by 5 years", () => {
   let db: Database.Database;
   let today: string;
   const REAL = 1;
@@ -166,29 +167,99 @@ describe("both scenario engines: a mislabelled fund is listed, never marked down
     ["rate preset", computeScenario(db, PRESET_SCENARIOS.find((p) => p.id === RATE_PRESET)!), 25],
   ];
 
-  it("the real bond fund moves on the default; the three others add nothing and carry a reason", () => {
-    for (const [label, res, bps] of runs()) {
-      const real = rowOf(res, REAL);
-      expect(real.rateDurationSource, label).toBe("fund-default");
-      expect(real.changePercent, label).toBeCloseTo(Math.exp(-5 * (bps / 10000)) - 1, 12);
-      expect(real.bondUnmodelledReason, label).toBeUndefined();
+  it("custom engine: the real bond fund moves on the default; the three others add nothing and carry a reason", () => {
+    const [label, res, bps] = runs()[0];
+    const real = rowOf(res, REAL);
+    expect(real.rateDurationSource, label).toBe("fund-default");
+    expect(real.changePercent, label).toBeCloseTo(Math.exp(-5 * (bps / 10000)) - 1, 12);
+    expect(real.bondUnmodelledReason, label).toBeUndefined();
 
-      for (const [id, reason] of [
-        [EQUITY_SECTOR, "fund-equity-evidence"],
-        [EQUITY_NAME, "fund-equity-evidence"],
-        [UNKNOWN_CATEGORY, "fund-category-unconfirmed"],
-      ] as const) {
-        const row = rowOf(res, id);
-        expect(row.bondUnmodelledReason, `${label} ${id}`).toBe(reason);
-        expect(row.changePercent, `${label} ${id}`).toBe(0);
-        expect(row.estimatedChange, `${label} ${id}`).toBe(0);
-        expect(row.rateDurationYears, `${label} ${id}`).toBeUndefined();
-        expect(row.rateDurationSource, `${label} ${id}`).toBeUndefined();
-      }
-      expect(res.bondsUnmodelled, label).toEqual({ count: 0, valueShare: 0, fundCount: 3 });
-      // Only the real fund's 10,000 moves.
-      expect(res.estimatedChange, label).toBeCloseTo(10_000 * (Math.exp(-5 * (bps / 10000)) - 1), 8);
+    for (const [id, reason] of [
+      [EQUITY_SECTOR, "fund-equity-evidence"],
+      [EQUITY_NAME, "fund-equity-evidence"],
+      [UNKNOWN_CATEGORY, "fund-category-unconfirmed"],
+    ] as const) {
+      const row = rowOf(res, id);
+      expect(row.bondUnmodelledReason, `${label} ${id}`).toBe(reason);
+      expect(row.changePercent, `${label} ${id}`).toBe(0);
+      expect(row.estimatedChange, `${label} ${id}`).toBe(0);
+      expect(row.rateDurationYears, `${label} ${id}`).toBeUndefined();
+      expect(row.rateDurationSource, `${label} ${id}`).toBeUndefined();
     }
+    expect(res.bondsUnmodelled, label).toEqual({ count: 0, valueShare: 0, fundCount: 3 });
+    // Only the real fund's 10,000 moves (no market move in this run).
+    expect(res.estimatedChange, label).toBeCloseTo(10_000 * (Math.exp(-5 * (bps / 10000)) - 1), 8);
+  });
+
+  // Unit N3 (2026-10-08) deliberately changed the PRESET here. A fund with
+  // equity evidence and no stored duration used to take a bond leg of zero,
+  // so in the one preset where growth equity is meant to lag it stood still.
+  // It is now an equity position for the recipe (the normal factor path) and
+  // is no longer counted as a fund left out. A fund refused only for an
+  // unconfirmed category is unchanged: not modelled, counted.
+  it("rate preset: an equity-evidence fund takes the equity factor path; the unconfirmed one stays out", () => {
+    const factors = db.prepare(
+      `INSERT INTO security_factors (security_id, interest_rate_sensitive, growth_vs_value) VALUES (?, ?, ?)`,
+    );
+    factors.run(EQUITY_SECTOR, "Moderate", "Growth");
+    factors.run(EQUITY_NAME, "Low", "Blend");
+    // Factor rows a classifier could also hang on the other two: they must
+    // not pull either fund onto the equity path.
+    factors.run(REAL, "Moderate", "Growth");
+    factors.run(UNKNOWN_CATEGORY, "Moderate", "Growth");
+
+    const res = computeScenario(db, PRESET_SCENARIOS.find((p) => p.id === RATE_PRESET)!);
+
+    // The real bond fund: exp(-5 x 0.0025) - 1 = -1.2422% of 10,000.
+    const real = rowOf(res, REAL);
+    expect(real.rateDurationSource).toBe("fund-default");
+    expect(real.changePercent).toBeCloseTo(Math.exp(-5 * 0.0025) - 1, 12);
+
+    // ZZB (Moderate rate bucket, Growth). Preset shock -2.5%.
+    //   blend = 0.50 (Moderate) + 0.5 x 1.00 (Growth) = 1.00
+    //   subject by both factor selectors, membership floor 0.50
+    //   change = -0.025 x max(0.50, 1.00) = -2.5%  ->  -250 on 10,000
+    const growth = rowOf(res, EQUITY_SECTOR);
+    expect(growth.currentValue).toBeCloseTo(10_000, 8);
+    expect(growth.changePercent).toBeCloseTo(-0.025, 12);
+    expect(growth.estimatedChange).toBeCloseTo(-250, 8);
+    expect(growth.subjectShare).toBe(1);
+
+    // ZZC (Low rate bucket, Blend): not a subject, so the spillover leg.
+    //   blend = 0.10 (Low) + 0.5 x 0.25 (Blend) = 0.225
+    //   change = -0.025 x 0.25 (spillover) x 0.225 = -0.140625%
+    //   -> -14.0625 on 10,000
+    const blend = rowOf(res, EQUITY_NAME);
+    expect(blend.changePercent).toBeCloseTo(-0.00140625, 12);
+    expect(blend.estimatedChange).toBeCloseTo(-14.0625, 8);
+    expect(blend.subjectShare).toBe(0);
+
+    for (const row of [growth, blend]) {
+      expect(row.bondUnmodelledReason, row.symbol).toBeUndefined();
+      expect(row.rateDurationYears, row.symbol).toBeUndefined();
+      expect(row.rateDurationSource, row.symbol).toBeUndefined();
+    }
+
+    const unconfirmed = rowOf(res, UNKNOWN_CATEGORY);
+    expect(unconfirmed.bondUnmodelledReason).toBe("fund-category-unconfirmed");
+    expect(unconfirmed.changePercent).toBe(0);
+    expect(unconfirmed.estimatedChange).toBe(0);
+
+    // Only the unconfirmed fund is left out now.
+    expect(res.bondsUnmodelled).toEqual({ count: 0, valueShare: 0, fundCount: 1 });
+    expect(res.estimatedChange).toBeCloseTo(10_000 * (Math.exp(-5 * 0.0025) - 1) - 250 - 14.0625, 8);
+  });
+
+  it("rate preset: an equity-evidence fund with a STORED duration keeps the bond treatment", () => {
+    db.prepare(`UPDATE securities SET duration_years = 4 WHERE id = ?`).run(EQUITY_SECTOR);
+    db.prepare(
+      `INSERT INTO security_factors (security_id, interest_rate_sensitive, growth_vs_value) VALUES (?, 'Moderate', 'Growth')`,
+    ).run(EQUITY_SECTOR);
+    const res = computeScenario(db, PRESET_SCENARIOS.find((p) => p.id === RATE_PRESET)!);
+    const row = rowOf(res, EQUITY_SECTOR);
+    // exp(-4 x 0.0025) - 1 = -0.995%
+    expect(row.rateDurationSource).toBe("fund-stored");
+    expect(row.changePercent).toBeCloseTo(Math.exp(-4 * 0.0025) - 1, 12);
   });
 
   it("with no rate move nothing is listed", () => {

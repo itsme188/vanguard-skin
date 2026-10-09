@@ -10,6 +10,7 @@ import {
   isFredScheduleRow,
 } from "@/lib/calendar/release-times";
 import type { EarningsDisplayTime } from "@/lib/calendar/display-earnings-time";
+import { HAND_ENTERED_LABEL, slotAwareTitle } from "@/lib/calendar/manual-row-display";
 import { actualsAreImplausible } from "@/lib/earnings/actuals-display";
 import { epsDelta } from "@/lib/earnings/eps-delta";
 import {
@@ -21,7 +22,6 @@ import {
   EarningsConflictActions,
   EarningsConflictMarker,
 } from "../components/calendar/EarningsConflictMarker";
-import { deriveEarningsSlot } from "@/lib/earnings/earnings-slot";
 import { EarningsDeleteButton } from "./EarningsDeleteButton";
 import { preReleaseClearsAtMs } from "./pre-release-clear";
 import {
@@ -250,31 +250,6 @@ export function WeekAheadView({ events, weekOf }: WeekAheadViewProps) {
   );
 }
 
-/**
- * The title a week card prints. A hand-entered earnings row is stored as
- * "<SYM> earnings (Manual entry)", which names the source where every vendor
- * row names the market slot; when the row's own slot is known (event_time or
- * raw_json only, via deriveEarningsSlot) the slot is printed instead. Display
- * only — the stored title is never rewritten.
- *
- * Same rule as slotAwareTitle in components/TodayReleases.tsx. That file is a
- * client module and this view is a Server Component, which may not call a
- * client module's function, so the rule is repeated here and
- * tests/dashboard/week-ahead-cards-c07.test.ts pins the two to the same answers.
- */
-export function weekAheadTitle(
-  event: Pick<CalendarEvent, "title" | "event_time" | "raw_json" | "event_type">,
-): string {
-  const title = event.title;
-  if (!title || event.event_type !== "earnings" || !/\(Manual entry\)\s*$/.test(title)) return title;
-  const slot = deriveEarningsSlot({ event_time: event.event_time, raw_json: event.raw_json });
-  if (!slot) return title;
-  return title.replace(
-    /\(Manual entry\)\s*$/,
-    slot === "bmo" ? "(Before Market Open)" : "(After Market Close)",
-  );
-}
-
 /** The label a card prints as its time — display only (see EventRow). */
 function eventTimeLabel(event: DisplayedEvent): string | null {
   return event.display_time?.label ?? earningsTimeLabel(event);
@@ -336,7 +311,7 @@ function RemoveRow({ event }: { event: DisplayedEvent }) {
   if (!weekAheadRemovable(event)) return null;
   return (
     <span className="inline-flex items-center gap-1.5 text-[11px] text-ink-faint">
-      Entered by you
+      {HAND_ENTERED_LABEL}
       <EarningsDeleteButton eventId={event.id} symbol={event.symbol ?? null} source={event.source} />
     </span>
   );
@@ -370,14 +345,14 @@ function WeekendNote({
                 <Link
                   href={`/dashboard/security/${e.security_id}`}
                   className="font-mono font-medium text-ink hover:text-gold"
-                  title={weekAheadTitle(e) ?? undefined}
+                  title={slotAwareTitle(e) ?? undefined}
                 >
                   {name}
                 </Link>
               ) : (
                 <span
                   className={e.symbol ? "font-mono font-medium text-ink" : "text-ink"}
-                  title={e.symbol ? (weekAheadTitle(e) ?? undefined) : undefined}
+                  title={e.symbol ? (slotAwareTitle(e) ?? undefined) : undefined}
                 >
                   {name}
                 </span>
@@ -536,7 +511,8 @@ export function actualChipClass(
         CalendarEvent,
         "consensus_value" | "manual_actuals_at" | "event_date" | "event_time" | "release_time" | "raw_json"
       >
-    >,
+    > &
+    Pick<DisplayedEvent, "display_time">,
   now: Date = new Date(),
 ): string {
   // Owner ruling 2026-10-06 (display-only): an actual saved before the
@@ -553,6 +529,9 @@ export function actualChipClass(
         release_time: event.release_time ?? null,
         raw_json: event.raw_json ?? null,
         actual_value: event.actual_value,
+        // The usual side of a slot-less row (display only), so the colour
+        // and the "pre-release" chip beside it clear at the same moment.
+        display_time: event.display_time,
       },
       now,
     )
@@ -672,7 +651,7 @@ export function macroCardExpandable(
 function EventRow({ event: storedEvent, todayIso }: { event: DisplayedEvent; todayIso: string }) {
   // A hand-entered earnings row prints its market slot, not "(Manual entry)".
   // Display only: every other read below is untouched by the title.
-  const event: DisplayedEvent = { ...storedEvent, title: weekAheadTitle(storedEvent) };
+  const event: DisplayedEvent = { ...storedEvent, title: slotAwareTitle(storedEvent) };
   // "time unknown" for an earnings row with no clock time — never a blank and
   // never a default (user ruling 2026-10-05). Single-sourced with Today's
   // releases in lib/calendar/release-times.ts.

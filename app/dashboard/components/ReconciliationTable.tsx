@@ -15,6 +15,7 @@ import { useToast } from "./Toast";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { EmptyState } from "./EmptyState";
 import { ScrollFade } from "./ScrollFade";
+import { CHIP_TONE_CLASSES } from "./Chip";
 import { Money } from "@/lib/privacy/components";
 import apiFetch from "@/lib/http/apiFetch";
 import { todayET } from "@/lib/calendar/date-utils";
@@ -311,14 +312,17 @@ export function ReconciliationTable({
                       {band !== null ? (
                         <span
                           title={band.label}
-                          className={`font-mono font-medium tabular-nums text-xs px-2 py-0.5 rounded inline-flex items-center gap-1 ${
+                          // Green, gold and red come from the shared chip
+                          // tones: the hand-written pairs were under 4.5:1
+                          // at this 12px size (red in both themes).
+                          className={`font-mono font-medium tabular-nums text-xs px-2 py-0.5 rounded inline-flex items-center gap-1 whitespace-nowrap ${
                             band.band === "match"
-                              ? "bg-up/20 text-up"
+                              ? CHIP_TONE_CLASSES.up
                               : band.band === "within"
                                 ? "bg-panel text-ink-dim"
                                 : band.band === "close"
-                                  ? "bg-gold/20 text-gold-ink"
-                                  : "bg-down/20 text-down"
+                                  ? CHIP_TONE_CLASSES.gold
+                                  : CHIP_TONE_CLASSES.down
                           }`}
                         >
                           <span aria-hidden="true">{band.glyph}</span>

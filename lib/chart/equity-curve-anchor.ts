@@ -527,25 +527,34 @@ const SHORT_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "S
 export type EquityCurveDateStyle = "day" | "month-year" | "full" | "year";
 
 /**
- * A plotted date as text, always read in UTC: "Jun 5" (day), "Jun 26"
+ * A plotted date as text, always read in UTC: "Jun 5" (day), "Jun '26"
  * (month-year), "Jun 5, 2026" (full), "2026" (year).
+ *
+ * The month-year form carries an apostrophe before the two-digit year: a
+ * bare "Jun 26" reads as the 26th of June, the same text the day form
+ * prints for that date.
  */
 export function formatEquityCurveDate(ms: number, style: EquityCurveDateStyle): string {
   if (!Number.isFinite(ms)) return "";
   const d = new Date(ms);
   if (style === "year") return String(d.getUTCFullYear());
   if (style === "day") return `${SHORT_MONTHS[d.getUTCMonth()]} ${d.getUTCDate()}`;
-  return d.toLocaleDateString(
-    "en-US",
-    style === "month-year"
-      ? { month: "short", year: "2-digit", timeZone: "UTC" }
-      : { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" },
-  );
+  if (style === "month-year") {
+    const yy = String(d.getUTCFullYear() % 100).padStart(2, "0");
+    return `${SHORT_MONTHS[d.getUTCMonth()]} '${yy}`;
+  }
+  return d.toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    timeZone: "UTC",
+  });
 }
 
 /**
  * Axis tick label for a tick step: a day of the month below monthly steps,
- * month and two-digit year for month and quarter starts, the year for yearly.
+ * month and apostrophe two-digit year ("Jun '26") for month and quarter
+ * starts, the year for yearly.
  */
 export function formatEquityCurveTick(ms: number, unit: EquityCurveTickUnit): string {
   return formatEquityCurveDate(

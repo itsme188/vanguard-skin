@@ -47,7 +47,6 @@ interface SyncResponse {
   holdingsWritten?: number;
   pricesWritten?: number;
   staleRemoved?: number;
-  skippedReason?: "market_closed" | "already_synced_today" | null;
   unmatched?: UnmatchedPlaidSecurity[];
   securitiesCreated?: string[];
   error?: string;
@@ -152,14 +151,10 @@ export function PlaidSection() {
       if (data.success) {
         const accountsSynced = data.accountsSynced ?? 0;
         const holdingsWritten = data.holdingsWritten ?? 0;
-        let message: string;
-        if (data.skippedReason === "market_closed") {
-          message = "Nothing to sync — the market is closed.";
-        } else if (data.skippedReason === "already_synced_today") {
-          message = "Already synced today — nothing new to pull.";
-        } else {
-          message = `Synced ${holdingsWritten} holding${holdingsWritten === 1 ? "" : "s"} across ${accountsSynced} account${accountsSynced === 1 ? "" : "s"}.`;
-        }
+        // This button's route always forces the sync, so the cron-only
+        // "skipped" answers (closed day, already ran today) never come back
+        // here; tests/plaid/plaid-minors-q30.test.ts pins that.
+        let message = `Synced ${holdingsWritten} holding${holdingsWritten === 1 ? "" : "s"} across ${accountsSynced} account${accountsSynced === 1 ? "" : "s"}.`;
         const securitiesCreated = data.securitiesCreated ?? [];
         if (securitiesCreated.length > 0) {
           message += ` New securities created: ${securitiesCreated.join(", ")} — verify these aren't duplicates of existing holdings.`;

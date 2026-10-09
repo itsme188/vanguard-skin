@@ -586,6 +586,62 @@ Sibling of the explain-no-ops convention: What-if's `ExposureDelta.droppedLegs`
 (`unknown_symbol`/`not_held`, `lib/compute/exposure-delta.ts`) is the same shape — an engine that
 silently skips input must report what it skipped.
 
+### Fixed performance periods end at the last statement (2026-10-08)
+
+One rule, `lib/compute/performance-window.ts`, decides what dates a selected period covers, so the
+return, the money-weighted return, the risk metrics, the equity curve, the benchmark rows and the
+attribution on one screen all describe one window.
+
+- **1Y, 3Y and 5Y are full spans ending at the last statement anchor.** The end is the latest
+  statement month-end for the scope (`latestStatementAnchor`); the start is that date shifted back
+  the period, month-end aware (`shiftYearsMonthEndAware`). Before, the start rolled with today
+  while the monthly chain could only reach the last statement, so "1Y" covered about eleven months.
+- **Year to date and All are unchanged** and run to today.
+- **The anchor is the latest month-end EVERY account in the scope has a statement for** (the same
+  full-coverage rule the aggregate return chain applies). Live (Plaid or TWS) rows never count as
+  an anchor, and a hand-entered mid-month value never does either.
+- **`chainStartDate`, not `startDate`, goes to the return functions.** They read their start as the
+  first day inside the window and take the opening value from the last statement before it; passing
+  the anchor itself would pull in one extra month.
+- **The caption names the end date** (`performanceWindowCaption`). It says so when the history may
+  not cover the full span, and when one account in the scope has stopped receiving statements and
+  is holding the period back (`newestStatementInScope`). With no statement at all the period rolls
+  with today and the caption says that.
+- The Performance view and the chat return tool (`lib/chat/tools.ts`) both read this rule.
+
+Tests: `tests/dashboard/performance-window-b4.test.ts`, `tests/dashboard/performance-period-window.test.ts`,
+`tests/chat/tools-snapshot-scope-and-twr-window.test.ts`.
+
+### One position's move for one session (2026-10-08)
+
+`computePositionDayMove` (`lib/compute/day-move.ts`) is the one place that decides how a position's
+day move is measured. The old rule was current quantity times (latest close minus prior close),
+which credits a position bought today with a move it never earned.
+
+- Quantity held at the prior close and still held: close to close.
+- Quantity opened or added since the prior close: latest close minus what those shares cost. With
+  no usable cost it is LEFT OUT and counted, never guessed. A per-share cost further than three
+  times (or under a third of) the latest close is not believed (`COST_PLAUSIBILITY_FACTOR`).
+- Quantity sold since the prior close: nothing. Only what is still held is measured.
+- The function is pure and works in the security's native currency; the caller converts. Cost is a
+  total, not per share, and a short's cost sign is ignored for a position opened today, because
+  stored short bases use more than one sign convention.
+
+Callers: Today's one-line IBKR snapshot (`lib/queries/today-holdings.ts`) and the chat market
+snapshot (`lib/queries/market-snapshot.ts`). On Today, a quantity that changed after the measured
+session, or whose change cannot be dated to that session because no holdings snapshot exists at
+the prior close, is also left out and counted; the line says how many names were opened, how many
+were left out for no cost, and how many could not be dated. In the chat snapshot a symbol held long
+in one account and short in another is two rows, one per side.
+
+The chat portfolio summary's total is the Portfolio strip's own (`getPortfolioCurrentValues`,
+`lib/queries/dashboard.ts`), so the two surfaces cannot state different totals; a summary scoped to
+one account says it is that account alone.
+
+Tests: `tests/compute/day-move.test.ts`, `tests/queries/today-holdings.test.ts`,
+`tests/queries/market-snapshot-sides-and-day-effect.test.ts`,
+`tests/queries/portfolio-summary-strip-total.test.ts`.
+
 ### Delta-adjusted exposure (single source)
 
 `lib/compute/exposure.ts`:
@@ -628,6 +684,8 @@ One helper, `lib/compute/bond-duration.ts`, used by both scenario engines (they 
 
 - **A bond's duration, in order:** a stored `duration_years`; a bill or zero-coupon bond uses time to maturity; a bond within one coupon period of maturity uses time to maturity (one flow left); a coupon bond uses modified duration from its coupon (stored, else read from the name), its maturity and a yield solved from the stored price (semiannual coupons stepped back by calendar months; the price is treated as a clean quote). A bond past maturity, with no maturity date, or with no usable coupon is NOT modelled: it adds nothing and is listed and counted on the card (`ScenarioResult.bondsUnmodelled`). No bond ever takes a default duration.
 - **Bond funds** (`isFixedIncomeFund`): a fund-family security type only, not a cash equivalent, not a leveraged or inverse fund, and either a Fixed Income sector or a normalized fund category in `BOND_FUND_CATEGORIES` (`lib/securities/normalize-fund-category.ts`, the single list). They use the fund's stored duration, else a 5-year default that the card states.
+- **The default needs two pieces of evidence (2026-10-08).** `fundDefaultRefusal` (`lib/compute/bond-duration.ts`) is the one reader. A fund with no stored duration takes the default only when (1) it shows no equity evidence (its sector does not normalize to an equity sector and its name carries no equity word), and (2) its normalized fund category is in the bond family. A Fixed Income sector with a missing or unknown category is not enough: the category may be an AI label. A refused fund adds nothing to the rate leg and is listed and counted. A refused fund WITH equity evidence still takes the market move like an equity fund (`isBondFundWithoutMarketMove`, `lib/compute/scenarios.ts`), so it never sits out both legs. Tests: `tests/compute/bond-fund-default-corroboration-d6.test.ts`, `tests/compute/scenarios-equity-evidence-fund-market-leg.test.ts`.
+- **Custom scenario inputs are bounded on the server (2026-10-08).** `lib/compute/scenario-input-bounds.ts` holds one set of bounds, read by `POST /api/compute/scenarios` (which refuses with 400) and by the custom form (which shows the same limits). Nothing is clamped.
 - A bill is recognised by its stored name only when no positive coupon is stored.
 
 ### Holdings footers state exactly what each total covers (2026-10-07)
@@ -1264,6 +1322,48 @@ All gotchas below were live-verified 2026-07-11 on the first real sync:
 `DataConfidenceIndicator` header popover links there. The old `DataFreshness.tsx` is unused (replaced
 by `DataConfidenceIndicator.tsx`).
 
+**The page opens with the confidence score (2026-10-08).** The top block shows the overall score,
+the same plain wording the header badge uses, and the cap reason when an integrity hit capped the
+score. It reads `getDataConfidence`, the same read the badge makes. The wording lives in a plain
+module, `lib/ui/data-confidence-level.ts`: the page is a server component and must not call a
+function exported from a `"use client"` file (doing so crashed the page with the type-check and the
+suite green; `tests/dashboard/data-health-confidence-top.test.ts` pins the import boundary).
+
+**One price-freshness window (2026-10-08).** `PRICE_FRESHNESS_DAYS` (`lib/queries/data-confidence.ts`,
+three calendar days, so a Friday close is still fresh on Monday) is the one window for the
+confidence chip and for the Data Health price-coverage card and account rows
+(`lib/queries/data-health.ts` imports it). Never write a second threshold. Test:
+`tests/queries/price-freshness-window-d1.test.ts`.
+
+**The Holdings confidence score is weighted by value (2026-10-08).** The score is the
+value-weighted average of each held position's age bucket, not the single stalest position's
+bucket, so one small carried row no longer sets the score while a large stale position still does.
+Weight is absolute market value (a short counts by its size); a position with no price weighs by
+its cost basis; a position with neither counts as fully stale at a small fixed share. An account
+with no holdings does not enter the score. The popover still names every stale position whatever
+its size. Full definition: `docs/reference/auto-refresh.md`. Test:
+`tests/queries/data-confidence-value-weighted.test.ts`.
+
+### Reconciliation checkpoints: bands and the missing-valuation fallback (2026-10-08)
+
+- **The Difference chip uses a tolerance that scales with the account.** One helper,
+  `reconciliationBand` (`lib/compute/reconciliation-tolerance.ts`), holds the bands: **match** (to
+  the cent); **within** (under a tenth of a percent of the statement value); **close** (a tenth to
+  half a percent, or over half a percent but no more than the flat dollar floor); **off** (over
+  both the flat floor and half a percent). The floor keeps a small account's rounding residue from
+  ever reading as off. With no usable statement value only the floor decides between close and
+  off. `checkpointDifferenceBand` (`lib/queries/reconciliation.ts`) adds the glyph and the
+  plain-words legend; never hand-roll a threshold.
+- **A checkpoint with no valuation on its date uses the nearest prior day.** At read time
+  (`withComputedFallback`), a row with no stored computed value (a weekend or holiday date) takes
+  the same account's nearest PRIOR daily valuation, at most `CHECKPOINT_FALLBACK_DAYS` earlier, and
+  the table names the date it used (`computed_from_date`). With none in that window the Computed
+  cell is empty and says why (`computed_missing_reason`). Nothing is written back.
+
+Tests: `tests/compute/reconciliation-tolerance.test.ts`,
+`tests/queries/reconciliation-checkpoints-fallback.test.ts`,
+`tests/dashboard/reconciliation-table-fallback.test.ts`.
+
 ---
 
 ## J. Levels and alerts
@@ -1283,8 +1383,19 @@ Distance is native against native. Level rows read for briefings and for the sug
 it); a missing currency reads as USD. Label a level price with `formatLevelPrice(currency, …)` (`lib/chart/price-formatter.ts`),
 never a hardcoded dollar sign, and never multiply it by an FX rate. Tests:
 `tests/queries/briefing-levels-currency-u20.test.ts`, `tests/alerts/suggestion-prompt-currency-u20.test.ts`.
-**Still open:** the weekly briefing and daily digest email composers print a dollar sign (owner
-question in `docs/plans/TODO.md`).
+**Outbound text (2026-10-08).** The weekly briefing prompt, the daily digest and the push
+notifications label a level price with `formatOutboundLevelPrice` (`lib/alerts/outbound-level-price.ts`),
+not with the on-screen formatter. The on-screen formatter uses the runtime's default locale, and
+outbound text is written by two runtimes (the Mac and the Worker) whose defaults can differ, so the
+outbound formatter pins `en-US` and replaces non-breaking spaces with plain ones. A dollar level
+reads exactly as before (the briefing and digest keep the plain style, pushes keep the grouped
+style); any other currency goes through the standard currency style; a non-finite price prints
+"n/a". A currency with no minor unit (yen, won) shows a whole price whole and keeps the fraction
+of a fractional one. The file is import-free and hand-mirrored
+at `workers/cron/src/level-price.ts`; change both together. Tests:
+`tests/alerts/outbound-level-price.test.ts`, `workers/cron/test/level-price-parity.test.ts` (one
+fixture set, `tests/fixtures/level-price-parity.json`), `tests/calendar/briefing-level-currency.test.ts`,
+`tests/alerts/detect-push-currency.test.ts`.
 
 ### Levels-and-alerts dedup
 
@@ -1300,8 +1411,11 @@ decides the day with `todayET()` in JS, never with SQLite `date('now')`, which i
 rolls over in the Eastern evening. One function serves the "alerted today" chip, the reactivate
 result and the Mac scanner's once-a-day guard in `triggerLevel`, so all three roll over at Eastern
 midnight. Not moved: a level's expiry day still compares against `date('now')` (UTC) in the armed
-predicate and the list filter, and the Worker's cloud level scan keeps its own 24-hour guard (see
-the TODO).
+predicate and the list filter. The Worker's cloud level scan moved to the same Eastern-day rule on
+2026-10-08: it holds a level back only when its last fire (the snapshot row's `triggered_at`, or
+the push time on the Worker's own marker) was on the current Eastern day. Its fired marker is kept
+seven days as the Mac's audit record, so the marker's lifetime is not the guard. Detail:
+`docs/reference/cron-and-workers.md` §12.
 
 ### Arm guard and action visibility: single owners (2026-10-07)
 

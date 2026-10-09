@@ -480,7 +480,9 @@ export function suggestAllocation(
       const matchingGap = gaps.find((g) => g.sector === sector && g.gapPp < 0);
       if (!matchingGap) return null;
       const score = matchingGap.gapClosureScore;
-      const rationale = `Underweight ${sector} by ${matchingGap.gapPp.toFixed(1)}pp vs benchmark`;
+      // "Underweight" already carries the direction, so the sentence states
+      // the SIZE of the gap: "underweight by -4.8pp" is a doubled negative.
+      const rationale = `Underweight ${sector} by ${Math.abs(matchingGap.gapPp).toFixed(1)}pp vs benchmark`;
       return { ...c, score, sectorTarget: sector, rationale };
     })
     .filter((x): x is WatchlistCandidate & { score: number; sectorTarget: string; rationale: string } => x !== null)
@@ -493,7 +495,7 @@ export function suggestAllocation(
       const matchingGap = gaps.find((g) => g.sector === sector && g.gapPp < 0);
       if (!matchingGap) return null;
       const score = matchingGap.gapClosureScore * 0.9;
-      const rationale = `Held name pick: underweight ${sector} by ${matchingGap.gapPp.toFixed(1)}pp vs benchmark`;
+      const rationale = `Held name pick: underweight ${sector} by ${Math.abs(matchingGap.gapPp).toFixed(1)}pp vs benchmark`;
       return { ...c, score, sectorTarget: sector, rationale };
     })
     .filter((x): x is WatchlistCandidate & { score: number; sectorTarget: string; rationale: string } => x !== null)

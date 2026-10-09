@@ -25,7 +25,7 @@ import {
   findEmailCandidates,
   type EmailSweepOpts,
 } from "./enrichment-runner";
-import { reapStaleEarningsEmailClaims } from "@/lib/digest/send-earnings-email";
+import { reapStaleEarningsEmailClaims, type EmailRowRefusal } from "@/lib/digest/send-earnings-email";
 // ONE send path (slice E): the service owns the claim, the awaited markers, the
 // cloud pre-check, the provider call and every state transition on the audit
 // row. The sweep decides WHICH candidates to offer it and books what came back.
@@ -54,6 +54,20 @@ import { runPrepareSteps, type PrepareRunReport } from "@/lib/earnings/prepare-a
 // email-sweep ↔ debrief-send import cycle.
 import { recordCloudSentAudit } from "@/lib/mutations/earnings-emails";
 
+/**
+ * How the sweep books each calendar-row refusal. Keyed by the refusal type,
+ * so a refusal added in lib/digest/send-earnings-email.ts fails the type
+ * check here until it is given a name.
+ */
+const ROW_REFUSAL_SKIP: Record<
+  EmailRowRefusal,
+  "entry-replaced" | "later-manual-entry" | "entry-not-found"
+> = {
+  superseded_event: "entry-replaced",
+  ignored_manual_twin: "later-manual-entry",
+  event_not_found: "entry-not-found",
+};
+
 export interface SweepCandidateResult {
   eventId: number;
   symbol: string;
@@ -63,6 +77,11 @@ export interface SweepCandidateResult {
     | "cloud-already-sent"
     | "claim-held"
     | "not-ready"
+    /** The calendar entry is not this print's email row any more. Nothing was
+     *  composed or sent; waiting will not change it (unlike "not-ready"). */
+    | "entry-replaced"
+    | "later-manual-entry"
+    | "entry-not-found"
     | "wrap-pending"
     | "already-reported"
     /** A completed row already exists for this (event, phase) — the Mac sent it
@@ -408,10 +427,13 @@ export async function runEarningsEmailSweep(
         results.push({ ...base, ok: true, skipped: "delivery-unknown" });
         break;
       case "refused":
+        // A refusal about the CALENDAR ROW (outcome.code) is booked under its
+        // own cause. Only a refusal with no code is "not-ready": the compose
+        // is waiting on something a later tick may bring.
         results.push({
           ...base,
           ok: true,
-          skipped: "not-ready",
+          skipped: outcome.code ? ROW_REFUSAL_SKIP[outcome.code] : "not-ready",
           status: outcome.status,
           message: outcome.reason,
         });

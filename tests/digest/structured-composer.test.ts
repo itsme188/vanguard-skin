@@ -41,7 +41,7 @@ function setupDb(): Database.Database {
     CREATE TABLE security_levels (id INTEGER PRIMARY KEY, level_type TEXT, price REAL,
       price_source TEXT, source_author TEXT);
     CREATE TABLE securities (id INTEGER PRIMARY KEY, symbol TEXT, name TEXT, security_type TEXT, currency TEXT);
-    CREATE TABLE holdings (id INTEGER PRIMARY KEY, security_id INTEGER, quantity REAL);
+    CREATE TABLE holdings (id INTEGER PRIMARY KEY, account_id INTEGER, security_id INTEGER, quantity REAL, as_of_date TEXT);
     CREATE TABLE watchlist (id INTEGER PRIMARY KEY, security_id INTEGER, is_active INTEGER);
   `);
   db.prepare(`INSERT INTO research_sources (id, name) VALUES (1,'Vital Knowledge'),(2,'MBI Deep Dives'),(3,'TMT Breakout')`).run();

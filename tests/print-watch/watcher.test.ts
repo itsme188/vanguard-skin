@@ -676,6 +676,42 @@ describe("ensurePrintWatch — reconcile", () => {
     expect(getWatchStatus(db)).toHaveLength(1);
   });
 
+  // Unit 18. A print's event can be deleted under it (a hand delete, a date
+  // correction). The print row is evidence and stays; the status read must not
+  // offer the panel a row whose accept / drop / go controls key on an event id
+  // that no longer exists.
+  it("status skips an ACTIVE print whose event was deleted, and keeps the print row", () => {
+    const { eventId } = seedArmedEvent();
+    ensurePrintWatch(db);
+    const printId = printIdFor(eventId);
+    expect(getWatchStatus(db)).toHaveLength(1);
+
+    db.prepare(`DELETE FROM calendar_events WHERE id = ?`).run(eventId);
+
+    expect(getWatchStatus(db)).toHaveLength(0);
+    // Read-only: the row is still there, untouched.
+    const kept = getPrintById(db, printId);
+    expect(kept).not.toBeNull();
+    expect(kept!.state).toBe("window_open");
+  });
+
+  it("status skips TODAY's expired print whose event was deleted, and keeps the print row", () => {
+    const { eventId } = seedArmedEvent();
+    const other = seedArmedEvent({ symbol: "ZZA" });
+    ensurePrintWatch(db);
+    const printId = printIdFor(eventId);
+    vi.setSystemTime(new Date("2026-08-26T21:30:00Z"));
+    ensurePrintWatch(db);
+    expect(getPrintById(db, printId)!.state).toBe("expired");
+    expect(getWatchStatus(db)).toHaveLength(2);
+
+    db.prepare(`DELETE FROM calendar_events WHERE id = ?`).run(eventId);
+
+    const status = getWatchStatus(db);
+    expect(status.map((r) => r.eventId)).toEqual([other.eventId]);
+    expect(getPrintById(db, printId)!.state).toBe("expired");
+  });
+
   it("is idempotent — a second ensure neither duplicates prints nor doubles the loop", async () => {
     const { eventId } = seedArmedEvent();
     ensurePrintWatch(db);
@@ -1996,6 +2032,37 @@ describe("pipeline", () => {
     expect(getSheet(db, printId).find((l) => l.metric_id === "eps_adj_q")!.state).toBe("pending");
     expect(listDocuments(db, printId)[0].parsed_at).toBeNull();
     expect(getWatchStatus(db)[0].sources.pipeline).toContain("refused");
+  });
+
+  it("a throwing onDelivered hook does not fail an ingest whose bytes are already recorded (unit 18)", async () => {
+    const { eventId } = seedArmedEvent();
+    ensurePrintWatch(db);
+    const printId = printIdFor(eventId);
+    fake.extract = async () => [candidate("eps_adj_q", 1.05)];
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    try {
+      const result = await ingestDocument(
+        db,
+        printId,
+        "user-drop",
+        "drop:a.txt",
+        null,
+        Buffer.from(NVDA_RELEASE_TEXT, "utf8"),
+        () => {
+          throw new Error("hook blew up");
+        },
+      );
+
+      expect(result.isNew).toBe(true);
+      expect(result.docId).toBeGreaterThan(0);
+      // The parse still ran: the hook is bookkeeping, the bytes are the work.
+      expect(fake.extractCalls).toHaveLength(1);
+      expect(getDocument(db, result.docId)!.parsed_at).not.toBeNull();
+      expect(warn).toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it("re-ingesting identical bytes is a no-op (no second parse)", async () => {

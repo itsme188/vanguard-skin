@@ -10,6 +10,7 @@ import {
   GainCell,
   GainPercentCell,
   HoldingsFooterDisclosures,
+  PricedOnlyMark,
   StaleAsOfChip,
   holdingDisplayName,
   holdingsSortValue,
@@ -389,10 +390,15 @@ export function HoldingsTable({
                 )}
               </td>
               <td className="px-4 py-3 text-right font-mono tabular-nums font-medium text-ink">
-                {filtered.length === 0 ? (
+                {footer.pricedCount === 0 ? (
+                  // No row to total, or no row shown has a price: unknown,
+                  // never an exact "$0.00".
                   <span>&mdash;</span>
                 ) : (
-                  <Money value={footer.totalValue} precise />
+                  <>
+                    <Money value={footer.totalValue} precise />
+                    {footer.unpricedCount > 0 && <PricedOnlyMark />}
+                  </>
                 )}
               </td>
               <td className="px-4 py-3 text-right">

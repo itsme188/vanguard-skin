@@ -20,7 +20,7 @@ import { getExpectedMoveBogeysForEvents } from "@/lib/queries/earnings-bogeys";
 import type Database from "better-sqlite3";
 import { todayET, mondayOf } from "@/lib/calendar/date-utils";
 import { getEarningsForWeekDeduped } from "@/lib/queries/calendar";
-import { getSymbolStatus } from "@/lib/queries/briefing-symbols";
+import { coveredForEvents, getSymbolStatus } from "@/lib/queries/briefing-symbols";
 import { getReadThroughReporterSymbols } from "@/lib/queries/read-through-pairs";
 import { formatFinnhubFigureCompact } from "@/lib/format/finnhub-figure";
 import { effectiveConsensus } from "@/lib/calendar/consensus";
@@ -63,6 +63,16 @@ export function composeTodaysReportersBlock(
 
     const symbols = events.map((e) => e.symbol!) ;
     const status = getSymbolStatus(db, symbols);
+    // ARMED is a fact about ONE print. The symbol-level status marks a symbol
+    // armed once ANY of its events inside the horizon is armed, so today's row
+    // could read "armed" for a different print. coveredForEvents also returns
+    // held and watchlist rows; it is consulted only for rows that are neither,
+    // where covered can only mean this event (or a same-day twin) is armed.
+    // Same rule as the Today hub's chip and the Worker's block. Display only.
+    const armedPrints = coveredForEvents(
+      db,
+      events.map((e) => ({ symbol: e.symbol, eventId: e.id })),
+    );
     const rtSet = new Set(getReadThroughReporterSymbols(db).map((s) => s.toUpperCase()));
 
     const intelById = new Map<
@@ -89,7 +99,7 @@ export function composeTodaysReportersBlock(
     const rows: ReporterRowView[] = events.map((e) => {
       const sym = e.symbol!.toUpperCase();
       const st = status[sym];
-      const chip = st === "held" ? "held" : st === "watchlist" ? "wl" : st === "armed" ? "armed" : rtSet.has(sym) ? "rt" : "";
+      const chip = st === "held" ? "held" : st === "watchlist" ? "wl" : armedPrints.has(e.id) ? "armed" : rtSet.has(sym) ? "rt" : "";
       // consensus_value (enrichment-corrected) wins over the sync-time
       // consensus_estimate — same precedence as renderHeadlineTable + the
       // Today tab (7/28 review follow-up: email-surface parity).

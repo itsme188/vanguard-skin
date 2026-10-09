@@ -62,7 +62,11 @@ export interface BenchmarkReaction {
  *   - lib/alerts/print-push-message.ts — inlined in the Mac push composer.
  *   - workers/cron/src/print-push-message.ts — inlined in its Worker twin.
  *
- * Change all four together. (Earlier revisions of this comment named
+ * Change all four together. Usable is not the same as MEASURED: whether a
+ * usable leg may be printed as a percent is decided by
+ * lib/calendar/reaction-validity.ts (`readReactionLegs` for text readers);
+ * the two push composers inline the snapshot-only part of that rule as
+ * `isMeasuredReactionLeg`. (Earlier revisions of this comment named
  * fallback-earnings.ts, which has imported the predicate from
  * reaction-leg.ts since that module was extracted — it holds no copy.)
  */

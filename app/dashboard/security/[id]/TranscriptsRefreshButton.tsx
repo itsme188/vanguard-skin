@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import apiFetch from "@/lib/http/apiFetch";
+import { networkFailureMessage, readMutationResult } from "@/lib/ui/mutation-result";
 
 interface Props {
   ticker: string;
@@ -34,6 +35,25 @@ export function formatCacheNotice(data: unknown): string {
     return `Already up to date — Q${quarter} ${year} is the latest cached quarter`;
   }
   return "Already up to date — no new transcript found";
+}
+
+/**
+ * The line to show when the route could NOT confirm the document as the
+ * issuer's latest (`latestConfirmed: false`): the server's own note, or a
+ * plain fallback when the flag came without one. Null in every other case
+ * (confirmed, no claim made, an older reply shape), so the caller keeps its
+ * usual notice. Pure for the same reason as `formatCacheNotice`.
+ */
+export function latestNoteLine(body: unknown): string | null {
+  if (!body || typeof body !== "object") return null;
+  const { latestConfirmed, latestNote } = body as {
+    latestConfirmed?: unknown;
+    latestNote?: unknown;
+  };
+  if (latestConfirmed !== false) return null;
+  return typeof latestNote === "string" && latestNote.trim().length > 0
+    ? latestNote.trim()
+    : "This could not be confirmed as the most recent document; a newer one may exist.";
 }
 
 /**
@@ -69,13 +89,19 @@ export function TranscriptsRefreshButton({ ticker }: Props) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ ticker }),
       });
-      const body = await res.json().catch(() => ({}));
-      if (!res.ok || !body?.success) {
-        setError(body?.error ?? `HTTP ${res.status}`);
+      const result = await readMutationResult<{ fromCache?: unknown; data?: unknown }>(res);
+      if (!result.ok) {
+        setError(result.message);
         setBusy(false);
         return;
       }
-      if (body.fromCache === true) {
+      const body = result.data;
+      // A document that is not confirmed as the latest says so, cached or
+      // not; "is the latest cached quarter" would contradict it.
+      const notLatest = latestNoteLine(body);
+      if (notLatest) {
+        setNotice(notLatest);
+      } else if (body.fromCache === true) {
         setNotice(formatCacheNotice(body.data));
       }
       router.refresh();
@@ -83,8 +109,8 @@ export function TranscriptsRefreshButton({ ticker }: Props) {
       // commits — otherwise the button flashes idle while the new HTML
       // streams in.
       setTimeout(() => setBusy(false), 300);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Network error");
+    } catch {
+      setError(networkFailureMessage("fetch the latest transcript"));
       setBusy(false);
     }
   }

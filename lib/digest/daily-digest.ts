@@ -1,6 +1,7 @@
 import type Database from "better-sqlite3";
 import { todayET, addDays } from "@/lib/calendar/date-utils";
 import { getRecentArticles, countRecentArticles } from "@/lib/queries/research";
+import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 import { bucketByCompany } from "@/lib/digest/group-by-company";
 import { splitDigestOpening } from "./synthesis-editorial";
 import { synthesize, SynthesisEmptyError } from "@/lib/digest/synthesize";
@@ -311,7 +312,10 @@ function recordSynthesisFallback(
 }
 
 /**
- * Query distinct held stock/ETF symbols from the portfolio.
+ * Distinct stock/ETF symbols in the CURRENT book: the newest row per account
+ * and security, with a non-zero quantity (a short is exposure, the same rule
+ * `getSymbolStatus` uses). A sold name, whose newest row is a zero-quantity
+ * tombstone, is not held. Symbols only: no quantity or value leaves here.
  */
 function getHeldSymbols(db: Database.Database): string[] {
   interface SymRow { symbol: string }
@@ -320,7 +324,8 @@ function getHeldSymbols(db: Database.Database): string[] {
       `SELECT DISTINCT s.symbol
          FROM holdings h
          JOIN securities s ON s.id = h.security_id
-        WHERE LOWER(s.security_type) IN ('stock', 'etf', 'common stock')`
+        WHERE LOWER(s.security_type) IN ('stock', 'etf', 'common stock')
+          AND ${latestHoldingsPredicate()}`
     )
     .all() as SymRow[];
   return rows.map((r) => r.symbol);

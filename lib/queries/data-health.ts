@@ -7,6 +7,12 @@ import { PRICE_FRESHNESS_DAYS } from "@/lib/queries/data-confidence";
 import { liveOptionExpirationSql } from "@/lib/compute/option-expiry";
 import { excludeLiveSnapshotsSql } from "@/lib/db/live-sources";
 import { cashEquivalentSecuritySql } from "@/lib/compute/cash-equivalents";
+import {
+  resolveUnderlyingSector,
+  underlyingCandidateRows,
+  OPTION_SECTOR_SOURCE_AI,
+  OPTION_SECTOR_SOURCE_INHERITED,
+} from "@/lib/securities/underlying-sector";
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -664,6 +670,118 @@ export function getSectorDisagreements(db: Database.Database): SectorDisagreemen
  */
 export function getSectorCheckMissingSector(db: Database.Database): SectorDisagreement[] {
   return classifySectorCheck(db).missingSector;
+}
+
+/** Why a held option cannot take a sector from its underlying. */
+export type OptionUnderlyingSectorGapReason =
+  /** The option row records no underlying symbol. */
+  | "no_underlying_recorded"
+  /** No security row (stock, fund) exists for the underlying or a share-class sibling. */
+  | "underlying_unknown"
+  /** The underlying is a known security whose sector is blank or not a sector the app accepts. */
+  | "underlying_no_sector";
+
+/**
+ * How the option came by the sector it carries now.
+ *  - `blank`: it has none.
+ *  - `ai`: the AI picked it (the stand-in used while the underlying has none).
+ *  - `inherited`: copied from the underlying earlier, when it still had one.
+ *  - `protected`: set by an import, the broker or the verification sweep, or
+ *    its origin is unknown. The sector run never overwrites such a row.
+ */
+export type OptionSectorOrigin = "blank" | "ai" | "inherited" | "protected";
+
+export interface OptionUnderlyingSectorGap {
+  securityId: number;
+  symbol: string;
+  /** Upper-case, trimmed; null when the option records none. */
+  underlyingSymbol: string | null;
+  /** The underlying's own security row, when one exists (for a link). */
+  underlyingSecurityId: number | null;
+  reason: OptionUnderlyingSectorGapReason;
+  /** The option's stored sector as written, or null when blank. */
+  optionSector: string | null;
+  optionSectorOrigin: OptionSectorOrigin;
+}
+
+/**
+ * Held, unexpired options whose underlying has no usable stored sector, one
+ * row per option (an option held in two accounts appears once), by symbol.
+ *
+ * An option's sector is a maintained copy of its underlying's
+ * (lib/securities/classify-option-sectors.ts). When the underlying has none,
+ * the option is blank or sits in a sector the AI picked, and the sector
+ * breakdown counts it there. This list names those options so the owner can
+ * fill the underlying's sector; the next sector run then brings the option in
+ * line by itself.
+ *
+ * The underlying is resolved exactly as the sector run resolves it
+ * (`resolveUnderlyingSector`: case-insensitive, share-class aware, never
+ * another option row), so the two can never disagree about which options are
+ * waiting. Unlike the run's work list this also names an option that records
+ * no underlying at all, which the run cannot visit.
+ *
+ * READ ONLY: no sector, setting or stamp is written here.
+ */
+export function getOptionsWithUnsectoredUnderlying(
+  db: Database.Database,
+  today: string = todayET(),
+): OptionUnderlyingSectorGap[] {
+  const options = db
+    .prepare(
+      `SELECT s.id AS id, s.symbol AS symbol, s.underlying_symbol AS underlying,
+              s.sector AS sector, s.sector_source AS source, s.sector_verified_at AS verifiedAt
+       FROM securities s
+       WHERE LOWER(s.security_type) = 'option'
+         AND ${liveOptionExpirationSql("s", today)}
+         AND EXISTS (
+           SELECT 1 FROM holdings h
+           WHERE h.security_id = s.id AND ${latestHoldingsPredicate()}
+         )
+       ORDER BY s.symbol, s.id`,
+    )
+    .all() as Array<{
+    id: number;
+    symbol: string;
+    underlying: string | null;
+    sector: string | null;
+    source: string | null;
+    verifiedAt: string | null;
+  }>;
+
+  const out: OptionUnderlyingSectorGap[] = [];
+  for (const o of options) {
+    const underlying = (o.underlying ?? "").trim().toUpperCase();
+    let reason: OptionUnderlyingSectorGapReason;
+    let underlyingSecurityId: number | null = null;
+    if (underlying === "") {
+      reason = "no_underlying_recorded";
+    } else {
+      if (resolveUnderlyingSector(db, underlying)) continue; // has a sector to inherit
+      const rows = underlyingCandidateRows(db, underlying);
+      reason = rows.length === 0 ? "underlying_unknown" : "underlying_no_sector";
+      underlyingSecurityId = rows[0]?.id ?? null;
+    }
+
+    const sector = o.sector !== null && o.sector.trim() !== "" ? o.sector : null;
+    let origin: OptionSectorOrigin;
+    if (sector === null) origin = "blank";
+    else if (o.verifiedAt !== null) origin = "protected";
+    else if (o.source === OPTION_SECTOR_SOURCE_AI) origin = "ai";
+    else if (o.source === OPTION_SECTOR_SOURCE_INHERITED) origin = "inherited";
+    else origin = "protected";
+
+    out.push({
+      securityId: o.id,
+      symbol: o.symbol,
+      underlyingSymbol: underlying === "" ? null : underlying,
+      underlyingSecurityId,
+      reason,
+      optionSector: sector,
+      optionSectorOrigin: origin,
+    });
+  }
+  return out;
 }
 
 /**

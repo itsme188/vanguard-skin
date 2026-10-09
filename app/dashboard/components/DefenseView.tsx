@@ -1,6 +1,6 @@
 import { db } from "@/lib/db";
 import { resolveScope } from "@/lib/queries/accounts";
-import { computeDefenseAnalysis } from "@/lib/compute/hedging";
+import { computeDefenseAnalysis, type StandaloneBetKind } from "@/lib/compute/hedging";
 import { interpretProtectionRatio, toneClass } from "@/lib/analysis/interpret";
 import { Money, Pct, Count, PrivateText } from "@/lib/privacy/components";
 import { CoverageBar } from "./CoverageBar";
@@ -45,7 +45,7 @@ export async function DefenseView({ scope = "all" }: DefenseViewProps) {
   // underlying → standalone-bet kind, so the most-exposed table can tell a
   // genuinely-unhedged long apart from a naked short / single-name bearish
   // bet — both collapse to PairClassification "unhedged" upstream.
-  const standaloneBetKinds: Record<string, "naked_short" | "single_name_put"> = {};
+  const standaloneBetKinds: Record<string, StandaloneBetKind> = {};
   for (const bet of analysis.standaloneBets) standaloneBetKinds[bet.underlying] = bet.kind;
 
   return (

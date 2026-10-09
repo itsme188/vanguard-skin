@@ -270,7 +270,11 @@ describe("PerformanceView feeds every consumer the one window", () => {
     expect(flat).toContain(
       "computeTwr(db, { startDate: chainStart, endDate: chainEnd, accountId: twrAccountId, accountIds: twrAccountIds, })",
     );
-    expect(flat).toContain("computeXirr(db, { startDate: chainStart, endDate: chainEnd, accountId })");
+    // U13: the money-weighted return takes the whole scope's id list (it was
+    // the scope's first account).
+    expect(flat).toContain(
+      "computeXirr(db, { startDate: chainStart, endDate: chainEnd, accountIds: scopeAccountIds })",
+    );
     // A fixed period is bounded at the statement; YTD / All keep their old
     // open end (the compute layer's own default).
     expect(flat).toContain("const chainEnd = perfWindow.endsAtStatement ? perfWindow.endDate : undefined;");
@@ -280,18 +284,23 @@ describe("PerformanceView feeds every consumer the one window", () => {
     expect(flat).toContain("const dailyEnd = perfWindow.endDate;");
     const riskAt = anchorIndex(flat, "computeRiskMetrics(db, {");
     expect(flat.slice(riskAt, riskAt + 120)).toContain("startDate, endDate: dailyEnd,");
-    expect(flat).toContain(
-      "getDailyValuationsByAccount(db, accountId, { startDate: effectiveStart, endDate: dailyEnd })",
-    );
-    const combinedAt = anchorIndex(flat, "getDailyValuationsCombined(db, {");
-    expect(flat.slice(combinedAt, combinedAt + 120)).toContain("startDate: effectiveStart, endDate: dailyEnd,");
+    // U13: one summed series for the whole scope. It starts at the later of
+    // the window start and the scope's first statement (curveSeriesStart) and
+    // still ends on the window end.
+    expect(flat).toContain("const curveSeriesStart = curveFloorDate(effectiveStart, curveFloor);");
+    const seriesAt = anchorIndex(flat, "getDailyValuationsForAccounts(db, scopeAccountIds ?? [], {");
+    expect(flat.slice(seriesAt, seriesAt + 140)).toContain("startDate: curveSeriesStart, endDate: dailyEnd,");
     expect(flat).toContain(".all(BENCHMARK_SYMBOL, effectiveStart, dailyEnd)");
     const attrAt = anchorIndex(flat, "attribution = computePeriodAttribution(");
     expect(flat.slice(attrAt, attrAt + 200)).toContain("effectiveStart, dailyEnd, BENCHMARK_SYMBOL,");
   });
 
   it("renders the window caption under the period selector", () => {
-    expect(flat).toContain("const windowCaption = performanceWindowCaption(activePeriod, perfWindow);");
+    // U13: the caption is built after the return so its start date is the
+    // one the return is measured from (the Period window card's Start).
+    expect(flat).toContain(
+      "const windowCaption = performanceCaptionMeasuredFrom( activePeriod, perfWindow, twrResult?.measurementStartDate ?? null, );",
+    );
     expect(flat).toContain("{windowCaption && (");
   });
 });

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { extractCouponRate } from "@/lib/bonds";
+import { extractCouponRate, isNotFixedCouponName } from "@/lib/bonds";
 
 /** Synthetic names only, in the shapes the maturity parser's tests already cover. */
 describe("extractCouponRate: a coupon is read only from a percent sign or an explicit CPN token", () => {
@@ -66,6 +66,81 @@ describe("extractCouponRate: a coupon is read only from a percent sign or an exp
     expect(extractCouponRate("ZZ CORP STEP-UP 5.25% 2031")).toBeNull();
     // A longer word that merely contains one is not blocked.
     expect(extractCouponRate("ZZ VARCO STEPSTONE 5.25% 2031")).toBe(5.25);
+  });
+
+  it("a note linked to a swap rate, to consumer prices or to any index is not a fixed coupon", () => {
+    // The percent figure on these is a floor, a cap, a spread or a teaser.
+    expect(extractCouponRate("ZZ BANK CMS NOTE 6.000% DUE 01/15/36")).toBeNull();
+    expect(extractCouponRate("ZZ BANK CMS10 STEEPENER 8.000% DUE 01/15/36")).toBeNull();
+    expect(extractCouponRate("ZZ BANK CPI LINKED NOTE 3.000% DUE 01/15/36")).toBeNull();
+    expect(extractCouponRate("ZZ BANK CPI-U NT 2.500% DUE 01/15/36")).toBeNull();
+    expect(extractCouponRate("ZZ CORP INFLATION-LINKED NT 1.500% DUE 01/15/36")).toBeNull();
+    expect(extractCouponRate("ZZ CORP INDEX LINKED NT 1.500% DUE 01/15/36")).toBeNull();
+    for (const word of ["CMS", "cms", "CMS2", "CMS30", "CPI", "Linked", "LKD", "LNKD"]) {
+      expect(extractCouponRate(`ZZ CORP ${word} 5.25% 2031`), word).toBeNull();
+    }
+    // Whole words only: a longer word that merely contains one still reads.
+    expect(extractCouponRate("ZZ CPIX LINKEDGE CMSA 5.25% 2031")).toBe(5.25);
+    // A Treasury inflation-indexed note has a FIXED (real) coupon: it still reads.
+    expect(extractCouponRate("ZZ TREASURY INFL IX NOTE 0.125% DUE 04/15/32")).toBe(0.125);
+    expect(extractCouponRate("ZZ TREASURY INFLATION INDEXED NOTE 0.125% DUE 04/15/32")).toBe(0.125);
+  });
+
+  it("a structured or fixed-to-floating note is not a fixed coupon; a look-alike name still reads", () => {
+    const blocked = [
+      "ZZ BANK CONSTANT MATURITY SWAP NT 6.000% DUE 01/15/36",
+      "ZZ BANK CONSTANT-MATURITY SWAP NT 6.000% DUE 01/15/36",
+      "ZZ BANK STEEPENER NT 8.000% DUE 01/15/36",
+      "ZZ BANK STEEPENERS 8.000% DUE 01/15/36",
+      "ZZ BANK RANGE ACCRUAL NT 7.000% DUE 01/15/36",
+      "ZZ BANK RANGE-ACCRUAL NT 7.000% DUE 01/15/36",
+      "ZZ BANK FXD/FLT NT 5.250% DUE 01/15/36",
+      "ZZ BANK FXD-FLT NT 5.250% DUE 01/15/36",
+      "ZZ BANK FXD TO FLT NT 5.250% DUE 01/15/36",
+      "ZZ BANK FXDFLT NT 5.250% DUE 01/15/36",
+      "ZZ BANK FLT RT NT 5.250% DUE 01/15/36",
+      "ZZ BANK FIXED TO FLOATING RATE NT 5.250% DUE 01/15/36",
+      "ZZ BANK FIXED-TO-FLOATING NT 5.250% DUE 01/15/36",
+      "ZZ BANK FIX-TO-FLOAT NT 5.250% DUE 01/15/36",
+      "ZZ BANK FIX TO FLOAT NT 5.250% DUE 01/15/36",
+      "ZZ BANK FIXED/FLTG NT 5.250% DUE 01/15/36",
+      "zz bank range accrual nt 7.000% due 01/15/36",
+    ];
+    for (const name of blocked) {
+      expect(extractCouponRate(name), name).toBeNull();
+      expect(isNotFixedCouponName(name), name).toBe(true);
+    }
+    // Look-alikes: each shares a word or a stem with a blocked name and is a plain fixed bond.
+    const fixed: Array<[string, number]> = [
+      ["ZZ STEEPLE CORP 5.25% 2031", 5.25],
+      ["ZZ STEEP ROCK CORP 5.25% 2031", 5.25],
+      ["ZZ RANGE CORP 4.75% 2031", 4.75],
+      ["ZZ ACCRUAL CORP 4.75% 2031", 4.75],
+      ["ZZ CONSTANT CORP 5.25% 2031", 5.25],
+      ["ZZ MATURITY SWAP CORP 5.25% 2031", 5.25],
+      ["ZZ FXD RATE NT 5.25% 2031", 5.25],
+      ["ZZ FIXED RATE NT 5.25% 2031", 5.25],
+      ["ZZ FLTX CORP 5.25% 2031", 5.25],
+    ];
+    for (const [name, coupon] of fixed) {
+      expect(extractCouponRate(name), name).toBe(coupon);
+      expect(isNotFixedCouponName(name), name).toBe(false);
+    }
+  });
+
+  it("isNotFixedCouponName: the instrument words, not a yield quote and not a Treasury inflation-indexed note", () => {
+    for (const word of ["FLTG", "FLOAT", "Floater", "FLOATING", "FRN", "VAR", "VARIABLE", "STEP", "SOFR", "LIBOR", "PIK", "TOGGLE", "CMS", "CMS10", "CPI", "LINKED", "LKD", "LNKD"]) {
+      expect(isNotFixedCouponName(`ZZ CORP ${word} NT 2031`), word).toBe(true);
+    }
+    // A yield quote says the FIGURE is not the coupon; the bond may be a plain fixed one.
+    expect(isNotFixedCouponName("ZZ CORP NT YLD 5.1% DUE 2030")).toBe(false);
+    expect(isNotFixedCouponName("ZZ CORP NT YIELD 5.1% DUE 2030")).toBe(false);
+    expect(extractCouponRate("ZZ CORP NT YIELD 5.1% DUE 2030")).toBeNull();
+    expect(isNotFixedCouponName("ZZ TREASURY INFL IX NOTE 0.125% DUE 04/15/32")).toBe(false);
+    expect(isNotFixedCouponName("ZZ TREASURY INFLATION INDEXED NOTE 0.125% DUE 04/15/32")).toBe(false);
+    expect(isNotFixedCouponName("ZZ VARCO STEPSTONE 5.25% 2031")).toBe(false);
+    expect(isNotFixedCouponName(null)).toBe(false);
+    expect(isNotFixedCouponName("")).toBe(false);
   });
 
   it("the slash no longer hides a second percent figure", () => {

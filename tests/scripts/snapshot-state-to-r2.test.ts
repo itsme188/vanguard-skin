@@ -8,7 +8,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
-import { getVanguardHoldingsForSnapshot } from "@/scripts/snapshot-state-to-r2";
+import { getSecurityBetas, getVanguardHoldingsForSnapshot } from "@/scripts/snapshot-state-to-r2";
 
 function createTestDb(): Database.Database {
   const db = new Database(":memory:");
@@ -25,21 +25,6 @@ function getSettingValue(db: Database.Database, key: string): string | null {
     .prepare("SELECT value FROM settings WHERE key = ?")
     .get(key) as { value: string } | undefined;
   return row?.value ?? null;
-}
-
-function getSecurityBetas(
-  db: Database.Database
-): Array<{ securityId: number; lookbackDays: number; beta: number; computedAt: string }> {
-  return db
-    .prepare(
-      `SELECT security_id AS securityId,
-              lookback_days AS lookbackDays,
-              beta,
-              computed_at AS computedAt
-         FROM security_betas
-        ORDER BY security_id, lookback_days`
-    )
-    .all() as Array<{ securityId: number; lookbackDays: number; beta: number; computedAt: string }>;
 }
 
 function buildSnapshotV3(db: Database.Database) {
@@ -224,6 +209,29 @@ describe("snapshot-state-to-r2 schemaVersion 3", () => {
       expect(row.lookbackDays).toBe(60);
       expect(row.beta).toBeCloseTo(1.15);
       expect(row.computedAt).toBe(now);
+    });
+
+    it("carries the residual volatility the script really writes", () => {
+      // This test once ran a hand copy of the query, and the copy had fallen
+      // behind the script: it never selected residual_std. It now calls the
+      // script's own reader, so a column the Worker needs cannot go missing
+      // here while the test stays green.
+      insertSecurity(db, "VTI", "ETF");
+      const secId = (
+        db.prepare("SELECT id FROM securities WHERE symbol = 'VTI'").get() as { id: number }
+      ).id;
+      const now = new Date().toISOString();
+      db.prepare(
+        "INSERT INTO security_betas (security_id, lookback_days, beta, residual_std, computed_at) VALUES (?, ?, ?, ?, ?)"
+      ).run(secId, 60, 1.15, 0.02, now);
+      db.prepare(
+        "INSERT INTO security_betas (security_id, lookback_days, beta, computed_at) VALUES (?, ?, ?, ?)"
+      ).run(secId, 252, 0.97, now);
+
+      const rows = buildSnapshotV3(db).securityBetas;
+      expect(rows.map((r) => r.lookbackDays)).toEqual([60, 252]);
+      expect(rows[0].residualStd).toBeCloseTo(0.02);
+      expect(rows[1].residualStd).toBeNull();
     });
 
     it("is empty when no betas are cached", () => {

@@ -3,6 +3,8 @@ import {
   renderHeadlineTable, renderPastPrintsBlock, type EarningsIntelView,
 } from "@/lib/digest/send-earnings-email";
 import type { CalendarEvent } from "@/lib/types";
+import { briefingToHtml } from "@/lib/calendar/briefing-html";
+import { composePrintSheetHtml } from "@/lib/earnings/print-sheet";
 
 type ScoreboardEvent = Pick<
   CalendarEvent,
@@ -174,5 +176,57 @@ describe("scoreboard plausibility gate", () => {
     );
     expect(md).not.toContain("-1.20");
     expect(md).not.toContain("flagged as implausible");
+  });
+});
+
+/**
+ * qa:earnings-email-viewer--recap-scoreboard-blank-cells-contradict-legend.
+ * End to end through the real composer and the real renderer: the recap
+ * legend promises a dash for a figure that was not available, so the rendered
+ * recap must show that dash. A preview and the printed worksheet keep their
+ * empty fill-in boxes.
+ */
+describe("scoreboard dashes through the HTML renderer", () => {
+  const cellsOf = (html: string): string[] =>
+    [...html.matchAll(/<td style="border[^>]*>(.*?)<\/td>/g)].map((m) => m[1]);
+  const rowOf = (html: string, label: string): string[] => {
+    const cells = cellsOf(html);
+    const at = cells.findIndex((c) => c.includes(label));
+    return cells.slice(at + 1, at + 4);
+  };
+
+  it("recap: a missing reaction and the guidance row render as dashes", () => {
+    const md = renderHeadlineTable(
+      { ...EVENT, actual_value: "EPS 1.42 · Rev 775M" }, "ZZA", "recap", INTEL,
+    );
+    const html = briefingToHtml(md, "ZZA Earnings Recap");
+    expect(rowOf(html, "Guidance (next quarter)")).toEqual(["—", "—", "—"]);
+    expect(rowOf(html, "SPY @ T+2h")).toEqual(["—", "—", "—"]);
+    expect(rowOf(html, "EPS")[1]).toBe("1.42");
+    expect(html).not.toContain("padding:14px 10px");
+  });
+
+  it("recap with no actual at all still shows dashes, never empty boxes", () => {
+    const html = briefingToHtml(renderHeadlineTable(EVENT, "ZZA", "recap"), "ZZA Earnings Recap");
+    expect(rowOf(html, "EPS")).toEqual(["1.35", "—", "—"]);
+    expect(cellsOf(html)).not.toContain("&nbsp;");
+  });
+
+  it("preview: the same cells stay empty fill-in boxes", () => {
+    const html = briefingToHtml(renderHeadlineTable(EVENT, "ZZA", "preview", INTEL), "ZZA Earnings Preview");
+    expect(rowOf(html, "EPS")).toEqual(["1.35", "&nbsp;", "&nbsp;"]);
+    expect(rowOf(html, "Guidance (next quarter)")).toEqual(["&nbsp;", "&nbsp;", "&nbsp;"]);
+    expect(html).toMatch(/padding:14px 10px[^>]*>&nbsp;</);
+  });
+
+  it("printed worksheet: built from the preview scoreboard, keeps its boxes", () => {
+    const html = composePrintSheetHtml({
+      symbol: "ZZA", eventDate: "2026-08-13", eventTime: "AMC",
+      scoreboardMd: renderHeadlineTable(EVENT, "ZZA", "preview", INTEL),
+      sheetBogeysMd: "", bogiesTableMd: "## Line-by-line bogies\n\n| Metric | Bogey | Actual |\n|---|---|---|\n| Margin | 60% | — |",
+      notes: [], pastPrintsMd: "", sentAt: "2026-08-12 20:00:00",
+    });
+    expect(rowOf(html, "EPS")).toEqual(["1.35", "&nbsp;", "&nbsp;"]);
+    expect(rowOf(html, "Margin").slice(0, 2)).toEqual(["60%", "&nbsp;"]);
   });
 });

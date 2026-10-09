@@ -63,10 +63,21 @@ const SCAN_LEVELS_FROM_SQL = `FROM security_levels sl
  *
  * Rejecting a reviewed level flips review_status but leaves is_active=1, so
  * the auto_approved clause is load-bearing, not redundant.
+ *
+ * The expiry day is an EASTERN calendar day, bound as the named parameter
+ * `@armedToday` (pass `armedTodayParam()`). It is never SQLite's date('now'):
+ * that is the UTC day, which is already tomorrow after 20:00 Eastern and
+ * dropped a level expiring today hours early, while the Worker scan (Eastern
+ * day) and the once-a-day alert guard still counted it as live.
  */
 const ARMED_UNIVERSE_WHERE_SQL = `sl.is_active = 1
          AND sl.review_status = 'auto_approved'
-         AND (sl.expires_at IS NULL OR sl.expires_at >= date('now'))`;
+         AND (sl.expires_at IS NULL OR sl.expires_at >= @armedToday)`;
+
+/** The binding for `@armedToday`: today's Eastern calendar day. */
+function armedTodayParam(): { armedToday: string } {
+  return { armedToday: todayET() };
+}
 
 /**
  * Would the scanner watch this level right now? The same ARMED_UNIVERSE
@@ -77,9 +88,9 @@ export function isLevelInArmedUniverse(db: Database.Database, id: number): boole
   const row = db
     .prepare(
       `SELECT 1 FROM security_levels sl
-       WHERE sl.id = ? AND ${ARMED_UNIVERSE_WHERE_SQL}`
+       WHERE sl.id = @id AND ${ARMED_UNIVERSE_WHERE_SQL}`
     )
-    .get(id);
+    .get({ id, ...armedTodayParam() });
   return !!row;
 }
 
@@ -140,7 +151,10 @@ export function getActiveLevels(
     params.push(filters.source);
   }
   if (!filters.includeExpired) {
-    conditions.push("(expires_at IS NULL OR expires_at >= date('now'))");
+    // Eastern day, bound: SQLite's date('now') is the UTC day (see
+    // ARMED_UNIVERSE_WHERE_SQL).
+    conditions.push("(expires_at IS NULL OR expires_at >= ?)");
+    params.push(todayET());
   }
 
   return db
@@ -293,7 +307,7 @@ export function findCrossedLevels(
          AND COALESCE(lp.close_price, lb.close_price) IS NOT NULL
          AND ${SCAN_PRICE_IS_FRESH_SQL}`
     )
-    .all() as Array<SecurityLevel & { current_price: number; price_date: string; sec_type: string | null }>;
+    .all(armedTodayParam()) as Array<SecurityLevel & { current_price: number; price_date: string; sec_type: string | null }>;
 
   const crossed: Array<SecurityLevel & { current_price: number; effective_price: number; price_date: string }> = [];
 
@@ -377,7 +391,7 @@ export function countScanCoverage(db: Database.Database): ScanCoverage {
        ${SCAN_LEVELS_FROM_SQL}
        WHERE ${ARMED_UNIVERSE_WHERE_SQL}`
     )
-    .all() as Array<
+    .all(armedTodayParam()) as Array<
     LevelTriggerCheckInput & {
       current_price: number | null;
       price_is_fresh: number;
@@ -594,7 +608,7 @@ export function getArmedLevels(db: Database.Database): ArmedLevel[] {
        ${SCAN_LEVELS_FROM_SQL}
        WHERE ${ARMED_UNIVERSE_WHERE_SQL}`
     )
-    .all() as Array<
+    .all(armedTodayParam()) as Array<
     SecurityLevel & {
       sym: string;
       security_name: string | null;
@@ -804,7 +818,7 @@ export function getActiveLevelCountsForSecurityIds(
           AND sl.security_id IN (${placeholders})
         GROUP BY sl.security_id`
     )
-    .all(...securityIds) as Array<{ security_id: number; n: number }>;
+    .all(...securityIds, armedTodayParam()) as Array<{ security_id: number; n: number }>;
   for (const r of rows) result.set(r.security_id, r.n);
   return result;
 }

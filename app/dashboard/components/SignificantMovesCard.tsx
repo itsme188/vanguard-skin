@@ -307,14 +307,14 @@ export function quietState(
 
   if (coverage.evaluated < coverage.total) {
     return {
-      reason: `Among the ${scope.plural} that could be evaluated, none moved significantly more than its beta predicted on ${dated}. The rest were not checked.`,
+      reason: `Among the ${scope.plural} that could be evaluated, none moved significantly more than its beta predicted from ${pair.prior} to ${dated}. The rest were not checked.`,
       hint: THRESHOLD_HINT,
       showCoverage: true,
     };
   }
 
   return {
-    reason: `No ${scope.plural} moved significantly more than their beta predicted on ${dated}.`,
+    reason: `No ${scope.plural} moved significantly more than their beta predicted from ${pair.prior} to ${dated}.`,
     hint: THRESHOLD_HINT,
     showCoverage: true,
   };

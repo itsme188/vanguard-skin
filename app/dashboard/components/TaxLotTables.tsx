@@ -231,6 +231,14 @@ export function OpenLotsTable({
                     </td>
                     <td className="px-4 py-3 text-right font-mono tabular-nums text-ink-dim">
                       <Money value={lot.adjusted_cost_basis} precise />
+                      {/* Phone only: the Cost/Share column is hidden below
+                          md:, so an option's or a bond's per-unit cost and its
+                          unit ride under the basis they explain. */}
+                      {costUnit && (
+                        <span className="block md:hidden font-sans text-[11px] text-ink-faint whitespace-nowrap">
+                          <Money value={lot.acquisition_price} precise /> {costUnit}
+                        </span>
+                      )}
                     </td>
                     <td className="hidden md:table-cell px-4 py-3 text-right font-mono tabular-nums text-ink">
                       <Money value={lot.current_value} precise />

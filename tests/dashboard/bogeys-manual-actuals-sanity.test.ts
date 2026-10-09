@@ -5,8 +5,9 @@
  * the "regenerate" touch target on the first-pass read (qa:
  * mobile-liveprintrow--regenerate-66x17-ai-spend-no-touch-extension-no-confirm).
  *
- * No DOM harness in this repo: the rule is proved through the modal's pure
- * exports and the wiring is pinned from source. Invented figures only.
+ * No DOM harness in this repo: the rule is proved through its pure functions
+ * (moved from the modal to lib/earnings/actuals-validation.ts, unit 16) and
+ * the wiring is pinned from source. Invented figures only.
  */
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
@@ -14,7 +15,7 @@ import {
   consensusForActualsCheck,
   manualActualsSanityWarnings,
   plausibleEarningsClientCopy,
-} from "@/app/dashboard/today/BogeysEditModal";
+} from "@/lib/earnings/actuals-validation";
 import { isPlausibleEarnings } from "@/lib/earnings/plausibility";
 import { anchorIndex, sliceBetween } from "@/tests/helpers/source-anchor";
 
@@ -115,11 +116,14 @@ describe("consensusForActualsCheck", () => {
 
 describe("source pins", () => {
   const modal = readFileSync("app/dashboard/today/BogeysEditModal.tsx", "utf8");
+  const lib = readFileSync("lib/earnings/actuals-validation.ts", "utf8");
 
   it("Save actuals asks before it saves, and a declined ask sends nothing", () => {
     const handler = sliceBetween(modal, "async function saveActuals(", "async function clearActuals(");
     const ask = anchorIndex(handler, "manualActualsSanityWarnings(");
-    const confirm = anchorIndex(handler, "window.confirm(");
+    // Asked in the app's ConfirmDialog (unit 16), not a browser prompt.
+    const confirm = anchorIndex(handler, "await prompt.ask(");
+    expect(handler).not.toContain("window.confirm(");
     const declined = anchorIndex(handler, "Not saved");
     const submit = anchorIndex(handler, "await submitActuals(false)");
     expect(ask).toBeLessThan(confirm);
@@ -132,8 +136,9 @@ describe("source pins", () => {
   it("the check never rewrites what was typed", () => {
     const handler = sliceBetween(modal, "async function saveActuals(", "async function clearActuals(");
     expect(handler).not.toContain("setActuals(");
-    const fn = sliceBetween(modal, "export function manualActualsSanityWarnings(", "export const NOTHING_TO_SAVE");
+    const fn = lib.slice(anchorIndex(lib, "export function manualActualsSanityWarnings("));
     expect(fn).not.toContain("setActuals");
+    expect(fn).toContain("return warnings;");
   });
 
   it("the first-pass 'regenerate' button carries the touch-only hit extension", () => {

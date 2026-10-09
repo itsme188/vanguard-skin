@@ -26,6 +26,7 @@ import { useRouter } from "next/navigation";
 import apiFetch from "@/lib/http/apiFetch";
 import { Chip } from "../components/Chip";
 import { ScrollFade } from "../components/ScrollFade";
+import { useConfirmPrompt } from "../components/useConfirmPrompt";
 import FirstPassRead from "./FirstPassRead";
 import GoControls from "./live-print/GoControls";
 import IrPageField from "./live-print/IrPageField";
@@ -46,6 +47,7 @@ import {
   ladderText,
   lineSourceLabel,
   printStateLabel,
+  promoteBasisWarning,
   promoteSummary,
   recordHeaderText,
   recordLineStatus,
@@ -107,6 +109,8 @@ export default function LivePrintRow({
   const [dragActive, setDragActive] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionNote, setActionNote] = useState<string | null>(null);
+  // Every question this row asks goes through the app's own dialog.
+  const prompt = useConfirmPrompt();
 
   // IrPageField reads the stored row in an effect keyed on `onError`, so these
   // must be identity-stable or the read re-runs on every poll tick.
@@ -147,9 +151,11 @@ export default function LivePrintRow({
       const data = (await res.json().catch(() => null)) as AcceptResponse | null;
       if (!res.ok || !data?.success) {
         if (res.status === 409 && data?.code === "pre_print" && !body.force) {
-          const confirmed = window.confirm(
-            `${data.error ?? "This print's release time is still in the future."}\n\nPromote anyway?`,
-          );
+          const confirmed = await prompt.ask({
+            title: "Release time is still in the future",
+            message: data.error ?? "This print's release time is still in the future.",
+            confirmLabel: "Promote anyway",
+          });
           if (confirmed) return postAccept({ ...body, force: true });
           // The panel's OWN cancellation copy, never the server's. The 409
           // body ends "…Confirm to save anyway" — echoing it back to someone
@@ -167,15 +173,17 @@ export default function LivePrintRow({
           const isPromote = body.promoteHeadline === true;
           const isCandidate =
             !isPromote && (body.accept ?? []).some((entry) => typeof entry === "object");
-          const confirmed = window.confirm(
-            `${data.error ?? "Newer evidence disagrees with the accepted number."}\n\n${
+          const confirmed = await prompt.ask({
+            title: "Newer evidence disagrees",
+            message: `${data.error ?? "Newer evidence disagrees with the accepted number."}\n\n${
               isPromote
                 ? SUPERSEDED_CONFIRM_COPY
                 : isCandidate
                   ? SUPERSEDED_CANDIDATE_CONFIRM_COPY
                   : SUPERSEDED_ACCEPT_CONFIRM_COPY
             }`,
-          );
+            confirmLabel: isPromote ? "Promote anyway" : "Accept anyway",
+          });
           if (confirmed) return postAccept({ ...body, forceSuperseded: true });
           setActionError(
             isPromote
@@ -212,6 +220,21 @@ export default function LivePrintRow({
 
   async function promote() {
     if (promoting || !summary) return;
+    // Asked BEFORE the request: the server accepts a GAAP promote, so this is
+    // the only place the desk is told the basis changed under it.
+    const basisWarning = promoteBasisWarning(print.lines);
+    if (basisWarning) {
+      const confirmed = await prompt.ask({
+        title: "This promote would use the GAAP figure",
+        message: basisWarning,
+        confirmLabel: "Promote GAAP",
+      });
+      if (!confirmed) {
+        setActionNote(null);
+        setActionError("Promote cancelled — accept the adjusted EPS line first, or promote again to use GAAP.");
+        return;
+      }
+    }
     setPromoting(true);
     setActionNote(null);
     try {
@@ -400,12 +423,12 @@ export default function LivePrintRow({
             className={`relative text-[12px] font-mono border border-edge rounded px-2 py-1 cursor-pointer hover:bg-raised pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-0.5 ${
               uploading ? "opacity-60 pointer-events-none" : ""
             }`}
-            title={noEventId ? "This print has no event reference from the server — cannot upload." : "Drop or choose the release document (HTML/text)"}
+            title={noEventId ? "This print has no event reference from the server — cannot upload." : "Drop or choose the release document (HTML, text or PDF)"}
           >
             {uploading ? "Uploading… (may take up to 30s)" : "⇪ Drop release"}
             <input
               type="file"
-              accept=".html,.htm,.txt,text/html,text/plain"
+              accept=".html,.htm,.txt,.pdf,text/html,text/plain,application/pdf"
               className="hidden"
               disabled={uploading || noEventId}
               onChange={(e) => {
@@ -532,6 +555,7 @@ export default function LivePrintRow({
         onChanged={onChanged}
         promote={promoteControl}
       />
+      {prompt.dialog}
     </div>
   );
 }

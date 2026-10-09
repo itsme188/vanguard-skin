@@ -80,6 +80,21 @@ export interface GivingFlaggedLot {
   sourceNote: string | null;
   /** When the marker was written (`datetime('now')`, UTC); null with no marker. */
   verifiedAt: string | null;
+  /**
+   * Every gift this lot is flagged on, this row's own gift included, oldest
+   * first. A marker belongs to the LOT, so marking it verified (or undoing
+   * that) changes all of these rows in one save; the verify dialog lists
+   * them. Left out: a reversed gift (it is in no total), and a gift whose
+   * own fair market value does not trip the 1% rule on this lot (nothing
+   * about it changes).
+   */
+  giftsFed: GivingLotGift[];
+}
+
+/** One gift a flagged lot feeds: enough to name it and its year. */
+export interface GivingLotGift {
+  donationId: number;
+  receivedDate: string;
 }
 
 interface OutLegRow {
@@ -375,6 +390,7 @@ function buildGivingDonation(
           state,
           sourceNote: hasMarker ? a.source_note : null,
           verifiedAt: hasMarker ? a.verified_at : null,
+          giftsFed: [], // filled by attachGiftsFed once every row is built
         });
       }
       // One unverified (or stale) lot leaves the whole row out.
@@ -406,6 +422,7 @@ function buildGivingDonation(
         state,
         sourceNote: o.source_note,
         verifiedAt: o.verified_at,
+        giftsFed: [], // filled by attachGiftsFed once every row is built
       });
       if (leavesRowOut(state)) basisImplausible = true;
     }
@@ -430,6 +447,35 @@ function buildGivingDonation(
   };
 }
 
+/**
+ * Fills `giftsFed` on every flagged lot: the unreversed gifts on which that
+ * same lot is flagged. Reads only the rows already built (the flag itself is
+ * never re-derived here), so the list and the chips cannot disagree.
+ */
+function attachGiftsFed(rows: GivingDonation[]): void {
+  const byLot = new Map<number, GivingLotGift[]>();
+  for (const gd of rows) {
+    if (gd.donation.reversed_date != null) continue;
+    for (const lot of gd.flaggedLots) {
+      const gift = { donationId: gd.donation.id, receivedDate: gd.donation.received_date };
+      const list = byLot.get(lot.acquisitionTransactionId);
+      // One gift is listed once, even if it somehow drew on the lot twice.
+      if (!list) byLot.set(lot.acquisitionTransactionId, [gift]);
+      else if (!list.some((g) => g.donationId === gift.donationId)) list.push(gift);
+    }
+  }
+  for (const list of byLot.values()) {
+    list.sort((a, b) =>
+      a.receivedDate === b.receivedDate ? a.donationId - b.donationId : a.receivedDate < b.receivedDate ? -1 : 1
+    );
+  }
+  for (const gd of rows) {
+    for (const lot of gd.flaggedLots) {
+      lot.giftsFed = [...(byLot.get(lot.acquisitionTransactionId) ?? [])];
+    }
+  }
+}
+
 export function getGivingView(db: Database.Database): {
   years: GivingYear[];
   reconciliation: ReconciliationReport;
@@ -446,13 +492,16 @@ export function getGivingView(db: Database.Database): {
   const currencies = fetchSecurityCurrencies(db);
 
   const byYear = new Map<string, GivingDonation[]>();
+  const built: GivingDonation[] = [];
   for (const d of donations) {
     const year = d.received_date.slice(0, 4);
     const gd = buildGivingDonation(d, outLegs, assignmentsByDonation, orphanMarkersByDonation, currencies);
+    built.push(gd);
     const list = byYear.get(year);
     if (list) list.push(gd);
     else byYear.set(year, [gd]);
   }
+  attachGiftsFed(built);
 
   const years: GivingYear[] = [...byYear.entries()]
     .sort((a, b) => (a[0] < b[0] ? 1 : a[0] > b[0] ? -1 : 0))
@@ -515,6 +564,13 @@ export interface OpenLotForDonation {
   remainingAsOfDonationDate: number;
   isLongTerm: boolean;
   gainPerShare: number | null;
+  /**
+   * This lot's basis state FOR THIS GIFT, from the one reader
+   * (`donatedLotBasisState`): the same answer the Giving row would show if
+   * the lot were assigned. The suggestion takes an `implausible` or
+   * `verified-stale` lot last within its holding period.
+   */
+  basisState: DonatedLotBasisState;
   suggested: boolean;
   suggestedQuantity: number;
   /** This donation's OWN current claim on this lot (donation_lots.quantity
@@ -529,9 +585,18 @@ export interface OpenLotForDonation {
 /**
  * Lists open lots AS OF the donation's OUT-leg date, in that date's units,
  * for the lot-assignment drawer. Also flags a greedy long-term/highest-gain
- * preselection (LT lots first, then highest gain-per-share) covering the
- * donation's full quantity — the drawer's "Suggest highest-gain long-term"
- * button uses these flags as its default; the user can still override.
+ * preselection covering the donation's full quantity — the drawer's
+ * "Suggest highest-gain long-term" button uses these flags as its default;
+ * the user can still override.
+ *
+ * Suggestion order (2026-10-08): long-term lots first; within a holding
+ * period, a lot whose basis is flagged for this gift (implausible, or a
+ * marker gone stale) comes AFTER every lot that is not; then the highest
+ * gain per share. A penny-basis lot has the largest gain per share by
+ * construction, so ranking by gain alone picked the very lot the Giving row
+ * then flags and leaves out of "Gain avoided". A flagged lot is demoted,
+ * never dropped: the suggestion still covers the whole gift when the other
+ * lots cannot. A lot the owner marked verified is not flagged.
  */
 export function getOpenLotsForDonation(db: Database.Database, donationId: number): OpenLotForDonation[] {
   const donation = db.prepare("SELECT * FROM donations WHERE id = ?").get(donationId) as
@@ -558,10 +623,15 @@ export function getOpenLotsForDonation(db: Database.Database, donationId: number
 
   const lotRows = db
     .prepare(
-      `SELECT id, acquisition_transaction_id, acquisition_date, cost_basis, quantity_acquired
-         FROM tax_lots
-        WHERE account_id = ? AND security_id = ? AND acquisition_date < ?
-        ORDER BY acquisition_date, id`
+      `SELECT tl.id AS id, tl.acquisition_transaction_id AS acquisition_transaction_id,
+              tl.acquisition_date AS acquisition_date, tl.cost_basis AS cost_basis,
+              tl.quantity_acquired AS quantity_acquired,
+              v.id IS NOT NULL AS has_verification,
+              v.verified_amount AS verified_amount, v.verified_quantity AS verified_quantity
+         FROM tax_lots tl
+         LEFT JOIN lot_basis_verifications v ON v.acquisition_transaction_id = tl.acquisition_transaction_id
+        WHERE tl.account_id = ? AND tl.security_id = ? AND tl.acquisition_date < ?
+        ORDER BY tl.acquisition_date, tl.id`
     )
     .all(outLeg.account_id, donation.security_id, outLeg.trade_date) as Array<{
     id: number;
@@ -569,6 +639,9 @@ export function getOpenLotsForDonation(db: Database.Database, donationId: number
     acquisition_date: string;
     cost_basis: number;
     quantity_acquired: number;
+    has_verification: number;
+    verified_amount: number | null;
+    verified_quantity: number | null;
   }>;
 
   const salesBeforeStmt = db.prepare(
@@ -606,6 +679,16 @@ export function getOpenLotsForDonation(db: Database.Database, donationId: number
     const isLongTerm = isLongTermHolding(lot.acquisition_date, outLeg.trade_date);
     const costPerShare = lot.quantity_acquired !== 0 ? lot.cost_basis / lot.quantity_acquired : 0;
     const gainPerShare = fmvPerShare != null ? fmvPerShare - costPerShare : null;
+    const basisState = donatedLotBasisState({
+      lotCostBasis: lot.cost_basis,
+      lotQuantityAcquired: lot.quantity_acquired,
+      donationFmvUsd: donation.fmv_usd,
+      donationQuantity: donation.quantity,
+      verification:
+        lot.has_verification === 1
+          ? { verifiedAmount: lot.verified_amount, verifiedQuantity: lot.verified_quantity }
+          : null,
+    });
     return {
       acquisitionTransactionId: lot.acquisition_transaction_id,
       acquisitionDate: lot.acquisition_date,
@@ -614,6 +697,7 @@ export function getOpenLotsForDonation(db: Database.Database, donationId: number
       remainingAsOfDonationDate: remaining,
       isLongTerm,
       gainPerShare,
+      basisState,
       suggested: false,
       suggestedQuantity: 0,
       currentlyAssignedQuantity: currentAssignments.get(lot.acquisition_transaction_id) ?? 0,
@@ -622,6 +706,10 @@ export function getOpenLotsForDonation(db: Database.Database, donationId: number
 
   const ranked = [...rows].sort((a, b) => {
     if (a.isLongTerm !== b.isLongTerm) return a.isLongTerm ? -1 : 1;
+    // The same two states that leave a Giving row out of "Gain avoided".
+    const fa = leavesRowOut(a.basisState);
+    const fb = leavesRowOut(b.basisState);
+    if (fa !== fb) return fa ? 1 : -1;
     const ga = a.gainPerShare ?? -Infinity;
     const gb = b.gainPerShare ?? -Infinity;
     if (ga !== gb) return gb - ga;

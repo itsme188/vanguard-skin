@@ -4,9 +4,15 @@ import { readMutationResult, networkFailureMessage } from "@/lib/ui/mutation-res
 import { useState, useEffect, useCallback } from "react";
 import { getCurrentMonday, addDays } from "@/lib/calendar/date-utils";
 import apiFetch from "@/lib/http/apiFetch";
+import {
+  DIGEST_WINDOW_OPTIONS,
+  digestSendBody,
+  digestWindowNeedsDate,
+  type DigestMode,
+  type DigestWindowChoice,
+} from "./digest-window-choice";
 
 type EmailType = "digest" | "briefing";
-type DigestMode = "today" | "since_last" | "since_date";
 type BriefingMode = "this_week" | "last_week" | "week_of";
 
 interface DigestStatus {
@@ -34,16 +40,32 @@ export function sendRefusalCopy(message: string, emailType: EmailType): string {
   );
 }
 
-export function SendDigestPanel({ onClose }: { onClose: () => void }) {
+interface SendDigestPanelProps {
+  onClose: () => void;
+  /** The digest window, held by the page so the Preview shows the same one. */
+  digestWindow: DigestWindowChoice;
+  onDigestWindowChange: (next: DigestWindowChoice) => void;
+}
+
+export function SendDigestPanel({ onClose, digestWindow, onDigestWindowChange }: SendDigestPanelProps) {
   const [status, setStatus] = useState<DigestStatus | null>(null);
   const [emailType, setEmailType] = useState<EmailType>("digest");
   const [recipient, setRecipient] = useState("");
-  const [digestMode, setDigestMode] = useState<DigestMode>("today");
+  const digestMode = digestWindow.mode;
+  const sinceDate = digestWindow.sinceDate;
+  const setDigestMode = (mode: DigestMode) => onDigestWindowChange({ ...digestWindow, mode });
+  const setSinceDate = (date: string) => onDigestWindowChange({ ...digestWindow, sinceDate: date });
   const [briefingMode, setBriefingMode] = useState<BriefingMode>("this_week");
-  const [sinceDate, setSinceDate] = useState("");
   const [weekOfDate, setWeekOfDate] = useState("");
   const [sending, setSending] = useState(false);
   const [result, setResult] = useState<{ success: boolean; message: string } | null>(null);
+  // The window can also change from the Preview while this panel is open. A
+  // status line from the old window must not survive that either.
+  const [seenWindow, setSeenWindow] = useState(digestWindow);
+  if (seenWindow !== digestWindow) {
+    setSeenWindow(digestWindow);
+    setResult(null);
+  }
 
   // Fetch status on mount
   useEffect(() => {
@@ -60,13 +82,13 @@ export function SendDigestPanel({ onClose }: { onClose: () => void }) {
   // silently substitutes a different window (last-24h / current Monday).
   const missingDate =
     emailType === "digest"
-      ? digestMode === "since_date" && !sinceDate
+      ? digestWindowNeedsDate(digestWindow)
       : briefingMode === "week_of" && !weekOfDate;
 
   const handleSend = useCallback(async () => {
     if (!recipient.trim()) return;
     if (
-      (emailType === "digest" && digestMode === "since_date" && !sinceDate) ||
+      (emailType === "digest" && digestWindowNeedsDate(digestWindow)) ||
       (emailType === "briefing" && briefingMode === "week_of" && !weekOfDate)
     ) {
       return;
@@ -76,8 +98,10 @@ export function SendDigestPanel({ onClose }: { onClose: () => void }) {
 
     try {
       if (emailType === "digest") {
-        const body: Record<string, string> = { to: recipient.trim(), mode: digestMode };
-        if (digestMode === "since_date" && sinceDate) body.sinceDate = sinceDate;
+        const body: { to: string; mode: DigestMode; sinceDate?: string } = {
+          to: recipient.trim(),
+          ...digestSendBody(digestWindow),
+        };
 
         const res = await apiFetch("/api/digest/email", {
           method: "POST",
@@ -125,7 +149,7 @@ export function SendDigestPanel({ onClose }: { onClose: () => void }) {
     } finally {
       setSending(false);
     }
-  }, [emailType, recipient, digestMode, sinceDate, briefingMode, weekOfDate]);
+  }, [emailType, recipient, digestWindow, briefingMode, weekOfDate]);
 
   // A status line describes the send it came from. Changing the email type or
   // its window makes it stale, so every such control clears it.
@@ -185,11 +209,12 @@ export function SendDigestPanel({ onClose }: { onClose: () => void }) {
             onChange={(e) => { clearResult(); setDigestMode(e.target.value as DigestMode); }}
             className="px-3 py-1.5 rounded-md bg-raised border border-edge text-sm text-ink"
           >
-            <option value="today">Today&apos;s articles</option>
-            <option value="since_last">
-              Since last email{lastSent ? ` (${formatDate(lastSent)})` : ""}
-            </option>
-            <option value="since_date">Since date...</option>
+            {DIGEST_WINDOW_OPTIONS.map((o) => (
+              <option key={o.mode} value={o.mode}>
+                {o.label}
+                {o.mode === "since_last" && lastSent ? ` (${formatDate(lastSent)})` : ""}
+              </option>
+            ))}
           </select>
           {digestMode === "since_date" && (
             <input

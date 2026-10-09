@@ -166,6 +166,12 @@ export interface HoldingsFooterSummary {
   /** Market value of every priced row. Never narrowed to make the columns
    *  subtract: it is what the positions are worth. */
   totalValue: number;
+  /** Rows that have a current price (a real zero value counts). When this
+   *  is 0 the Value total is unknown, never "$0.00". */
+  pricedCount: number;
+  /** Rows with no current price: their own Value cell is a dash and they
+   *  add nothing to totalValue, so the footer marks its Value figure. */
+  unpricedCount: number;
   /** Cost basis of the rows whose basis is known; null when none is. */
   totalCostBasis: number | null;
   /** Gain of the rows that have one (known basis AND a price); null when
@@ -218,6 +224,8 @@ export function summarizeHoldingsFooter(
 
   return {
     totalValue: sum(rows.map((h) => h.current_value ?? 0)),
+    pricedCount: rows.filter((h) => h.current_value !== null).length,
+    unpricedCount: rows.filter((h) => h.current_value === null).length,
     totalCostBasis: withBasis.length === 0 ? null : sum(withBasis.map((h) => h.cost_basis!)),
     totalGain: gain.totalGain,
     gainCostBasis: gain.grossBasis,
@@ -463,13 +471,16 @@ export function AllHoldingsTable({ holdings }: { holdings: AllHoldingsRow[] }) {
                 )}
               </td>
               <td className="px-4 py-3 text-right font-mono tabular-nums font-medium text-ink">
-                {filtered.length === 0 ? (
-                  // A filter that matches nothing has no value to total: the
-                  // same unknown dash as its Cost Basis and Gain siblings,
-                  // never an exact "$0.00" over no rows.
+                {footer.pricedCount === 0 ? (
+                  // No row to total (a filter that matches nothing), or no
+                  // row shown has a price: unknown, the same dash as its
+                  // Cost Basis and Gain siblings, never an exact "$0.00".
                   <span className="text-ink-faint">&mdash;</span>
                 ) : (
-                  <Money value={totalValue} precise />
+                  <>
+                    <Money value={totalValue} precise />
+                    {footer.unpricedCount > 0 && <PricedOnlyMark />}
+                  </>
                 )}
               </td>
               <td className="px-4 py-3 text-right">
@@ -487,7 +498,9 @@ export function AllHoldingsTable({ holdings }: { holdings: AllHoldingsRow[] }) {
                 />
               </td>
               <td className="px-4 py-3 text-right font-mono tabular-nums text-ink-dim">
-                {filtered.length > 0 && unfilteredTotal > 0 ? (
+                {/* A share of the portfolio needs a value: none when no row
+                    shown has a price. */}
+                {footer.pricedCount > 0 && unfilteredTotal > 0 ? (
                   <Pct value={(totalValue / unfilteredTotal) * 100} digits={2} />
                 ) : (
                   "—"
@@ -499,6 +512,22 @@ export function AllHoldingsTable({ holdings }: { holdings: AllHoldingsRow[] }) {
       </ScrollFade>
       <HoldingsFooterDisclosures footer={footer} stale={stale} />
     </div>
+  );
+}
+
+/**
+ * Visible words under a footer Value total that does not cover every row
+ * shown: a position with no current price shows a dash in its own Value
+ * cell and adds nothing to the total. Words, not a "~" with a hover title
+ * (that reads as rounding and a phone cannot hover). The sentences under
+ * the table say how many positions and which columns. Shared with the
+ * single-account table.
+ */
+export function PricedOnlyMark() {
+  return (
+    <span className="block font-sans text-xs font-normal text-ink-dim whitespace-nowrap">
+      priced positions only
+    </span>
   );
 }
 

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import type {
   AnalysisTrustState,
   BandHistoryEntry,
@@ -16,6 +17,7 @@ import apiFetch from "@/lib/http/apiFetch";
 export type DrawerPanel =
   | "factorCoverage"
   | "lastClassify"
+  | "sectorClassify"
   | "performance"
   | "stalePrices"
   | "bondDuration";
@@ -559,11 +561,44 @@ function BondDurationContent({ state }: { state: AnalysisTrustState }) {
   );
 }
 
+function SectorClassifyContent({ state }: { state: AnalysisTrustState }) {
+  // The last time option sectors were checked and either found in line with
+  // their underlyings or brought in line (stored UTC, shown as Eastern time).
+  // A check that hit an AI error does not move it.
+  const ts = state.lastSectorClassification;
+  return (
+    <div className="space-y-3">
+      <p className="text-sm text-ink">
+        {ts
+          ? `Sectors last checked: ${formatEnrichedAtET(ts)}`
+          : "Sectors have not been checked yet."}
+      </p>
+      <p className="text-xs text-ink-dim">
+        This is the last time the options you hold were checked against the sector of their underlying stock or fund, and were either found in line or brought in line.
+      </p>
+      <p className="text-xs text-ink-dim">
+        The check runs on every full broker sync and when you click &ldquo;Auto-Classify&rdquo; on Analysis &rarr; Diagnostics &rarr; Classification. A check that fails part-way does not move this date, so a date that stops advancing means the check is not finishing.
+      </p>
+      <p className="text-xs text-ink-dim">
+        An option whose underlying has no sector cannot be brought in line, and a clean check still leaves it waiting.{" "}
+        <Link href="/dashboard/data-health#option-underlying-sector" className="text-blue underline">
+          Data Health lists those options
+        </Link>
+        .
+      </p>
+      <p className="text-xs text-ink-dim">
+        The sector of a stock or fund itself comes from the broker or an import, not from this check, so this date says nothing about those.
+      </p>
+    </div>
+  );
+}
+
 // ── Panel config ─────────────────────────────────────────────────────
 
 const PANEL_TITLES: Record<DrawerPanel, string> = {
   factorCoverage: "Factor Coverage",
   lastClassify: "Factor Ratings Last Updated",
+  sectorClassify: "Sectors Last Classified",
   performance: "Performance Cross-Check",
   stalePrices: "Stale Prices",
   bondDuration: "Bond Duration Coverage",
@@ -627,6 +662,7 @@ export function TrustStripDrawer({ panel, state, onClose, onRefresh }: Props) {
             <FactorCoverageContent state={state} onRefresh={onRefresh} onClose={onClose} />
           )}
           {panel === "lastClassify" && <LastClassifyContent state={state} />}
+          {panel === "sectorClassify" && <SectorClassifyContent state={state} />}
           {panel === "performance" && <PerformanceContent state={state} />}
           {panel === "stalePrices" && <StalePricesContent state={state} onClose={onClose} />}
           {panel === "bondDuration" && <BondDurationContent state={state} />}

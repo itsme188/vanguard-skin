@@ -46,6 +46,25 @@ export interface EarningsDisplayTime {
    * "unknown" — a defaulted time with no history behind it.
    */
   kind: "stored" | "usual" | "unknown";
+  /**
+   * Present only on a "usual" answer: the side of the session the estimate
+   * stands for (before the open / after the close), when it has one. Read by
+   * the "pre-release" chip so a hand-entered figure on a slot-less row clears
+   * at the company's usual side (decision 2026-10-08). An estimate like the
+   * label: for screens only, never stored, never read by a gate.
+   */
+  slot?: EarningsSlot;
+}
+
+/**
+ * The side of the session a usual clock time falls on: before the 09:30 ET
+ * open, or from the 16:00 ET close on. A time inside the session has no side.
+ */
+export function usualSideOfClock(hhmm: string): EarningsSlot | null {
+  if (!/^\d{2}:\d{2}$/.test(hhmm)) return null;
+  if (hhmm < "09:30") return "bmo";
+  if (hhmm >= "16:00") return "amc";
+  return null;
 }
 
 export interface DisplayEarningsTimeRow {
@@ -231,7 +250,10 @@ export function displayEarningsTime(
   if (known) {
     if (known === row.release_time) return stored;
     const label = usualClockLabel(known);
-    if (label) return { label, kind: "usual" };
+    if (label) {
+      const side = usualSideOfClock(known);
+      return side ? { label, kind: "usual", slot: side } : { label, kind: "usual" };
+    }
   }
 
   // 2. The side of the session its past reported prints agree on — a slot,
@@ -239,7 +261,7 @@ export function displayEarningsTime(
   const slot =
     usualSlotFromPastPrints(db, symbol, row.event_date) ??
     twinSlot(db, symbol, row.event_date);
-  if (slot) return { label: USUAL_SLOT_LABELS[slot], kind: "usual" };
+  if (slot) return { label: USUAL_SLOT_LABELS[slot], kind: "usual", slot };
 
   return { label: UNKNOWN_RELEASE_TIME_LABEL, kind: "unknown" };
 }

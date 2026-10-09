@@ -144,7 +144,7 @@ describe("runEarningsEmailSweep: a candidate superseded after the scan, before i
     expect(summary.swept).toBe(3);
     expect(summary.results.map((r) => [r.eventId, r.ok, r.skipped ?? null])).toEqual([
       [a, true, null],
-      [b, true, "not-ready"],
+      [b, true, "entry-replaced"],
       [c, true, null],
     ]);
     expect(summary).toMatchObject({ sent: 2, skipped: 1, failed: 0 });
@@ -153,6 +153,36 @@ describe("runEarningsEmailSweep: a candidate superseded after the scan, before i
     );
     expect(sendEmail).toHaveBeenCalledTimes(2);
     // No row at all for the refused candidate: no claim, no audit row.
+    expect(emailRows()).toEqual([
+      { event_id: a, phase: "recap", error: null },
+      { event_id: c, phase: "recap", error: null },
+    ]);
+  });
+
+  it("a candidate DELETED after the scan, before its turn, is booked as entry-not-found and the loop goes on", async () => {
+    const a = seedReportedHeld("ZZA");
+    const b = seedReportedHeld("ZZB");
+    const c = seedReportedHeld("ZZC");
+    sendEmail.mockImplementation(async (o: { messageId?: string }) => {
+      if (sendEmail.mock.calls.length === 1) {
+        db.prepare(`DELETE FROM calendar_events WHERE id = ?`).run(b);
+      }
+      return { messageId: o.messageId ?? "<m@test>", response: "250 OK" };
+    });
+
+    const summary = await runEarningsEmailSweep(db, { now: NOW });
+
+    expect(summary.results.map((r) => [r.eventId, r.ok, r.skipped ?? null])).toEqual([
+      [a, true, null],
+      [b, true, "entry-not-found"],
+      [c, true, null],
+    ]);
+    expect(summary).toMatchObject({ sent: 2, skipped: 1, failed: 0 });
+    expect(summary.results[1]).toMatchObject({
+      status: 404,
+      message: "The calendar entry this recap was for no longer exists. Nothing was sent.",
+    });
+    expect(sendEmail).toHaveBeenCalledTimes(2);
     expect(emailRows()).toEqual([
       { event_id: a, phase: "recap", error: null },
       { event_id: c, phase: "recap", error: null },

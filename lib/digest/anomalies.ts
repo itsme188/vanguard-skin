@@ -168,23 +168,28 @@ export interface ComputeAnomaliesOptions {
 }
 
 /**
- * The scoped universe's holdings filter: the current long book. The card's
- * coverage query uses the same predicate, so "Evaluated N of M" counts the
- * positions this function actually looked at.
+ * The holdings filter for both universes: the current long book (the newest
+ * row per account and security, quantity above zero). The card's coverage
+ * query uses the same predicate, so "Evaluated N of M" counts the positions
+ * this function actually looked at.
  */
-const SCOPED_HOLDINGS_SQL = latestHoldingsPredicate({ includeShorts: false });
+const CURRENT_LONG_BOOK_SQL = latestHoldingsPredicate({ includeShorts: false });
 
 /**
  * Compute anomaly flags for held securities.
  *
  * Universe:
- *  - `accountIds` omitted (the evening email): every holdings row ever written
- *    for the Vanguard (non-Roth) accounts. Kept exactly as it was, so the
- *    email and its Worker mirror are unchanged.
+ *  - `accountIds` omitted (the evening email): the Vanguard (non-Roth)
+ *    accounts.
  *  - `accountIds` given (the Significant Moves card, following the scope
- *    selector): the CURRENT long book of exactly those accounts, through
- *    `latestHoldingsPredicate`. Every id is used; an empty list evaluates
- *    nothing and never falls back to the Vanguard default.
+ *    selector): exactly those accounts. Every id is used; an empty list
+ *    evaluates nothing and never falls back to the Vanguard default.
+ *
+ * Either way only the CURRENT long book is read, through
+ * `latestHoldingsPredicate`. Until 2026-10-08 the email path read every
+ * holdings row ever written, so a name sold months ago could be reported as a
+ * held mover; the Worker's fallback email already read the latest positive row
+ * per account and security (`getVanguardHoldingsForSnapshot`).
  *
  * Both read completed sessions only (owner ruling 2026-10-08): an SPY row
  * dated today is ignored until 16:00 ET.
@@ -231,7 +236,6 @@ export function computeAnomalies(
     ((spyPrices.today_close - spyPrices.prior_close) / spyPrices.prior_close) * 100;
 
   // ── 3. Accounts: the caller's scope, else Vanguard (non-Roth) ──────────────
-  const scoped = opts.accountIds !== undefined;
   let accountIds: number[];
   if (opts.accountIds !== undefined) {
     accountIds = [...opts.accountIds];
@@ -272,7 +276,7 @@ export function computeAnomalies(
                ON sb.security_id = s.id AND sb.lookback_days = ${BETA_LOOKBACK_DAYS}
         WHERE h.account_id IN (${placeholders})
           AND UPPER(s.symbol) != 'SPY'
-          ${scoped ? `AND ${SCOPED_HOLDINGS_SQL}` : ""}`
+          AND ${CURRENT_LONG_BOOK_SQL}`
     )
     .all(latest, prior, ...accountIds) as HeldSecurityRow[];
 

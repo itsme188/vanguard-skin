@@ -98,6 +98,7 @@ import {
   ELIGIBLE_SQL,
   isDocumentEligible,
   claimDocumentParse,
+  existingEventIds,
   finalizeDocumentParse,
   getDocument,
   getSheet,
@@ -1051,9 +1052,14 @@ function retireFinishedRuntimes(db: Database.Database, armedPrintIds: Set<number
  */
 export function getWatchStatus(db: Database.Database): WatchStatusRow[] {
   const todayEt = todayET(new Date(seams.now()));
-  const prints = [...listActivePrints(db), ...listTodaysExpiredPrints(db, todayEt)].sort(
-    (a, b) => a.event_date.localeCompare(b.event_date) || a.id - b.id,
-  );
+  const listed = [...listActivePrints(db), ...listTodaysExpiredPrints(db, todayEt)];
+  // A print whose event was deleted is kept as evidence but left off the panel:
+  // every control on its card keys on an event id that is gone. Read-only here
+  // — the sweep's stale-print pass is what stands such a print down.
+  const liveEvents = existingEventIds(db, listed.map((p) => p.event_id));
+  const prints = listed
+    .filter((p) => liveEvents.has(p.event_id))
+    .sort((a, b) => a.event_date.localeCompare(b.event_date) || a.id - b.id);
   return prints.map((print) => {
     const status = statuses.get(print.id);
     const sources = { ...(status?.sources ?? {}) };
@@ -1449,10 +1455,11 @@ async function runRoad(
 
   arm();
   try {
-    const abandoned = new Promise<never>((_resolve, reject) => {
+    // Named apart from the `abandoned` flag above, which the catch reads.
+    const abandonment = new Promise<never>((_resolve, reject) => {
       stop = reject;
     });
-    await Promise.race([run(ctx), abandoned]);
+    await Promise.race([run(ctx), abandonment]);
   } catch (err) {
     if (abandoned) throw new Error(abandonText());
     // A lane that honoured its cancellation rejects with whatever its adapter
@@ -2153,8 +2160,14 @@ async function finishIngest(
   const delivery = recordDelivery(db, print.id, kind, source, url, buf, input);
   // The bytes are DURABLE from here on. Everything below — the gate verdict,
   // the parse — is about what they turn into, and a road's report has already
-  // settled (R-C12).
-  onDelivered?.();
+  // settled (R-C12). The hook is the caller's bookkeeping: if it throws, the
+  // bytes are still recorded and the parse is still owed, so it must not fail
+  // the ingest.
+  try {
+    onDelivered?.();
+  } catch (err) {
+    console.warn(`[print-watch] onDelivered hook threw for print ${print.id}: ${errText(err)}`);
+  }
   const status = statusFor(print.id);
   // Guarded at the CALL site, not just inside: every other delivery — the
   // overwhelming majority — then adds no await at all to the ingest chain.

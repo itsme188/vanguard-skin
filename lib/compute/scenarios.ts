@@ -253,17 +253,7 @@ ${OPTION_PRICING_JOINS_SQL}
       security_type: pos.security_type,
       fund_category: pos.fund_category,
     });
-    const isBondFund = isFixedIncomeFund(pos);
-    // A fund labelled with a bond category but carrying equity evidence (an
-    // equity sector, or an equity word in its name) is refused the duration
-    // default (fundDefaultRefusal). It must not also sit out the market move:
-    // with neither leg a market shock left it unchanged and listed nowhere.
-    // It takes the beta an equity fund would. A stored duration is a stored
-    // input, not a default, so such a fund keeps the bond-fund treatment.
-    const hasStoredDuration =
-      typeof pos.duration_years === "number" && Number.isFinite(pos.duration_years) && pos.duration_years >= 0;
-    const isZeroBetaBondFund =
-      isBondFund && (hasStoredDuration || fundDefaultRefusal(pos) !== "fund-equity-evidence");
+    const isZeroBetaBondFund = isBondFundWithoutMarketMove(pos);
     // An option is a claim on its underlying, so its beta is the UNDERLYING's
     // beta (leverage is applied separately, below, by signed elasticity).
     const beta = estimateBeta(
@@ -386,10 +376,13 @@ ${OPTION_PRICING_JOINS_SQL}
       // The same two tests explodeHoldingBySector applies before it looks through.
       if (!["etf", "mutual fund"].includes((pos.security_type ?? "").toLowerCase())) continue;
       if ((etfWeights.get(pos.symbol)?.length ?? 0) > 0) continue;
-      // Cash and bond funds carry no equity move at all, so nothing was skipped.
+      // Cash and bond funds carry no equity move at all, so nothing was
+      // skipped. The bond-fund test is the market leg's own: a fund with a
+      // bond label but equity evidence DID take the market move as one
+      // bucket, so it is named like any other fund without weights.
       if (
         isCashEquivalentSecurity({ security_type: pos.security_type, fund_category: pos.fund_category }) ||
-        isFixedIncomeFund(pos)
+        isBondFundWithoutMarketMove(pos)
       ) {
         continue;
       }
@@ -441,6 +434,31 @@ export function computeAllScenarios(
 }
 
 // ─── Beta estimation heuristics ──────────────────────────────────
+
+/**
+ * True for a fixed-income fund that takes NO equity market move (beta 0).
+ * The one test both the market leg and the "funds without sector weights"
+ * disclosure read, so the two can never disagree about a fund.
+ *
+ * A fund labelled with a bond category but carrying equity evidence (an
+ * equity sector, or an equity word in its name) is refused the duration
+ * default (fundDefaultRefusal). It must not also sit out the market move:
+ * with neither leg a market shock left it unchanged and listed nowhere. It
+ * takes the beta an equity fund would. A stored duration is a stored input,
+ * not a default, so such a fund keeps the bond-fund treatment.
+ */
+function isBondFundWithoutMarketMove(pos: {
+  security_type: string;
+  security_name: string | null;
+  sector: string | null;
+  fund_category: string | null;
+  duration_years: number | null;
+}): boolean {
+  if (!isFixedIncomeFund(pos)) return false;
+  const hasStoredDuration =
+    typeof pos.duration_years === "number" && Number.isFinite(pos.duration_years) && pos.duration_years >= 0;
+  return hasStoredDuration || fundDefaultRefusal(pos) !== "fund-equity-evidence";
+}
 
 /**
  * Equity beta for the thing a position tracks.

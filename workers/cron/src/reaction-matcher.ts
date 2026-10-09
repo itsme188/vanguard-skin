@@ -45,6 +45,12 @@ export interface ReactionSnapshot {
   // is the last regular-session close before the release (earnings rows,
   // 2026-08-04) rather than the near-release bar.
   pre_anchor?: "prior_close";
+  // Mirror of the Mac-side field (lib/calendar/reaction-snapshot-core.ts):
+  // the UTC instant the bars were fetched. calendar-enrich.ts stamps it on
+  // every fresh capture (2026-10-08); the Mac's admitCloudReaction reads it
+  // first to tell a measurement from an early read. Absent on a capture made
+  // by an older Worker.
+  captured_at?: string;
 }
 
 export interface TimedClose {

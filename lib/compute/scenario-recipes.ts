@@ -628,8 +628,19 @@ ${OPTION_PRICING_JOINS_SQL}
     let subjectShare: number;
     // Null for anything that is not an individual bond or a bond fund, and
     // for every recipe that is not a rate shock.
-    const bondLeg: BondRateLeg | null =
+    const rawBondLeg: BondRateLeg | null =
       rateBps != null && !isCashEquivalentSecurity(pos) ? estimateBondRateLeg(pos, rateBps, runToday) : null;
+    // A fund labelled with a bond category but carrying equity evidence (an
+    // equity sector, or an equity word in its name) is refused the duration
+    // default. The shared rule returns that reason only when the fund has no
+    // stored duration. Such a fund IS an equity fund for this recipe: it
+    // takes the factor path below like any other equity position, and is not
+    // counted as a fund left out, because it is modelled. Keeping the zero
+    // bond leg made it stand still in the one preset where growth equity is
+    // meant to lag. The custom engine already gives it the market move. A
+    // fund refused for an unconfirmed category stays not modelled.
+    const bondLeg: BondRateLeg | null =
+      rawBondLeg?.unmodelledReason === "fund-equity-evidence" ? null : rawBondLeg;
 
     // FINANCE RULE (QA finding `analysis-scenarios--preset-rate-shock-still-
     // marks-money-market-sweep-down`): a cash-equivalent sweep fund has a

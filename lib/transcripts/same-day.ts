@@ -26,6 +26,10 @@
  *     SQLite datetime() on both sides per repo convention, never raw string
  *     compare)
  *
+ * Order (2026-10-08): fresh candidates before upgrades; inside each class the
+ * print that has waited longest (never tried, then the oldest attempt stamp);
+ * the newest print first among equal waits.
+ *
  * Keys and what counts as cached (fiscal keying, 2026-10-07): the vendor's
  * quarter parameter is FISCAL, so the print's key is the fiscal quarter in
  * the Finnhub calendar entry on its earnings event (often a superseded twin
@@ -387,13 +391,24 @@ export async function fetchSameDayTranscripts(
       if (lastMs !== null && nowMs - lastMs < UPGRADE_PACING_MS) return [];
       skipVendor = false;
     }
-    return [{ row, symbol, year, quarter, expected, skipVendor, isUpgrade: !!cachedFiling }];
+    return [
+      { row, symbol, year, quarter, expected, skipVendor, isUpgrade: !!cachedFiling, lastMs },
+    ];
   });
 
   // Fresh candidates spend the shared attempt budget first — a same-day
-  // transcript beats a days-old upgrade retry. Stable sort keeps the SQL
-  // recency order within each class.
-  candidates.sort((a, b) => Number(a.isUpgrade) - Number(b.isUpgrade));
+  // transcript beats a days-old upgrade retry. Inside each class the print
+  // that has waited longest goes first: one never tried, then the oldest
+  // attempt stamp (2026-10-08). By recency alone, on a day with more prints
+  // than two ticks' budget and nothing filed yet, the newest prints came off
+  // their 30-minute pacing in time to take every slot again and the oldest
+  // print was never tried. The stable sort keeps the SQL recency order among
+  // equal waits.
+  const waitRank = (lastMs: number | null) => (lastMs === null ? 0 : lastMs);
+  candidates.sort(
+    (a, b) =>
+      Number(a.isUpgrade) - Number(b.isUpgrade) || waitRank(a.lastMs) - waitRank(b.lastMs),
+  );
 
   // Stamped with the sweep's own `now` (identical to datetime('now') in
   // production) so pacing is measured on one clock.

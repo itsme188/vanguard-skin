@@ -186,7 +186,7 @@ describe("labels", () => {
   it("formatEquityCurveDate styles", () => {
     const t = ms("2026-06-05");
     expect(formatEquityCurveDate(t, "day")).toBe("Jun 5");
-    expect(formatEquityCurveDate(t, "month-year")).toBe("Jun 26");
+    expect(formatEquityCurveDate(t, "month-year")).toBe("Jun '26");
     expect(formatEquityCurveDate(t, "full")).toBe("Jun 5, 2026");
     expect(formatEquityCurveDate(t, "year")).toBe("2026");
     expect(formatEquityCurveDate(Number.NaN, "full")).toBe("");
@@ -196,9 +196,30 @@ describe("labels", () => {
     const t = ms("2026-01-01");
     expect(formatEquityCurveTick(t, "week")).toBe("Jan 1");
     expect(formatEquityCurveTick(t, "half-month")).toBe("Jan 1");
-    expect(formatEquityCurveTick(t, "month")).toBe("Jan 26");
-    expect(formatEquityCurveTick(t, "quarter")).toBe("Jan 26");
+    expect(formatEquityCurveTick(t, "month")).toBe("Jan '26");
+    expect(formatEquityCurveTick(t, "quarter")).toBe("Jan '26");
     expect(formatEquityCurveTick(t, "year")).toBe("2026");
+  });
+});
+
+describe("a month tick cannot be read as a day of the month", () => {
+  // "Jun 26" reads as the 26th of June. The year carries an apostrophe.
+  it("month and quarter ticks mark the two-digit year with an apostrophe", () => {
+    for (const d of ["2026-06-01", "2031-01-01", "2012-12-01", "2005-03-01"]) {
+      const t = ms(d);
+      const yy = d.slice(2, 4);
+      for (const unit of ["month", "quarter"] as const) {
+        const label = formatEquityCurveTick(t, unit);
+        expect(label).toMatch(/^[A-Z][a-z]{2} '\d{2}$/);
+        expect(label.endsWith(`'${yy}`)).toBe(true);
+      }
+    }
+  });
+
+  it("a day tick and a month tick for the same date never print the same text", () => {
+    // 2026-06-26 as a day is "Jun 26"; June 2026 as a month must differ.
+    expect(formatEquityCurveTick(ms("2026-06-26"), "week")).toBe("Jun 26");
+    expect(formatEquityCurveTick(ms("2026-06-01"), "month")).not.toBe("Jun 26");
   });
 });
 
@@ -266,14 +287,14 @@ describe.each(["America/Los_Angeles", "Asia/Tokyo", "UTC"])("under TZ=%s", (tz) 
       expect(formatEquityCurveDate(t, "year")).toBe(String(y));
     }
     expect(formatEquityCurveDate(ms("2026-01-01"), "day")).toBe("Jan 1");
-    expect(formatEquityCurveDate(ms("2026-01-01"), "month-year")).toBe("Jan 26");
+    expect(formatEquityCurveDate(ms("2026-01-01"), "month-year")).toBe("Jan '26");
     expect(formatEquityCurveDate(ms("2026-01-01"), "full")).toBe("Jan 1, 2026");
-    expect(formatEquityCurveDate(ms("2026-12-31"), "month-year")).toBe("Dec 26");
+    expect(formatEquityCurveDate(ms("2026-12-31"), "month-year")).toBe("Dec '26");
   });
 
   it("ticks are the same calendar dates", () => {
     const r = equityCurveTimeTicks(ms("2025-10-07"), ms("2026-10-07"));
     expect(iso(r.ticks)[0]).toBe("2025-11-01");
-    expect(r.ticks.map((t) => formatEquityCurveTick(t, r.unit))[2]).toBe("Jan 26");
+    expect(r.ticks.map((t) => formatEquityCurveTick(t, r.unit))[2]).toBe("Jan '26");
   });
 });

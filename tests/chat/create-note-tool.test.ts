@@ -110,3 +110,42 @@ describe("create_note tool — default date is today in New York", () => {
     expect(result.note?.event_date).toBe("2026-02-02");
   });
 });
+
+describe("note tools: enums come from NOTE_TYPES / NOTE_SENTIMENTS", () => {
+  it("advertises exactly the shared enum values to the model", async () => {
+    const { CHAT_TOOLS } = await import("@/lib/chat/tools");
+    const { NOTE_TYPES, NOTE_SENTIMENTS } = await import("@/lib/types");
+    const byName = (n: string) =>
+      CHAT_TOOLS.find((t) => t.name === n)!.input_schema as {
+        additionalProperties?: boolean;
+        properties: Record<string, { enum?: string[] }>;
+      };
+    const create = byName("create_note");
+    const query = byName("query_notes");
+    expect(create.properties.note_type.enum).toEqual([...NOTE_TYPES]);
+    expect(query.properties.note_type.enum).toEqual([...NOTE_TYPES]);
+    expect(create.properties.sentiment.enum).toEqual([...NOTE_SENTIMENTS]);
+    // Plain mutable string arrays, as the Anthropic API expects.
+    expect(Object.isFrozen(create.properties.note_type.enum)).toBe(false);
+  });
+
+  it("refuses an unknown note type and saves nothing", async () => {
+    const result = await run({ note_type: "diary", content: "x" });
+    expect(result.error).toContain("note type");
+    expect(noteCount()).toBe(0);
+  });
+
+  it("refuses an unknown sentiment and saves nothing", async () => {
+    const result = await run({ note_type: "journal", content: "x", sentiment: "ecstatic" });
+    expect(result.error).toContain("sentiment");
+    expect(noteCount()).toBe(0);
+  });
+
+  it("query_notes ignores an unknown type filter instead of matching nothing", async () => {
+    await run({ note_type: "journal", content: "hello" });
+    const wrapped = (await executeTool(db, "query_notes", { note_type: "all" })) as {
+      data: unknown[];
+    };
+    expect(wrapped.data).toHaveLength(1);
+  });
+});

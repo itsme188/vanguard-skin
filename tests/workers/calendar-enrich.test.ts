@@ -93,7 +93,6 @@ describe("runCalendarEnrich", () => {
       CRON_KV: makeKv(),
       CRON_SHARED_SECRET: overrides.secret ?? "test-secret",
       MESH_HOSTNAME: overrides.mesh ?? "http://localhost:3099",
-      PRIMARY_TIMEOUT_MS: "5000",
     };
   }
 

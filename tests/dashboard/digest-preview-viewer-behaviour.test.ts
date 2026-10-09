@@ -73,7 +73,7 @@ describe("digest preview: the wait for the Structured layout is announced", () =
 
   it("the open effect never fires the AI call; the POST lives only in the click handler", () => {
     expect(SRC.match(/method: "POST"/g)?.length).toBe(1);
-    const effect = sliceBetween(SRC, "useEffect(() => {\n    if (!open) return;\n    let cancelled", "}, [open, since]);");
+    const effect = sliceBetween(SRC, "useEffect(() => {\n    if (!open) return;\n    let cancelled", "}, [open, since, needsDate]);");
     expect(effect).not.toContain("POST");
     expect(effect).not.toContain("apiFetch");
     const gen = sliceBetween(SRC, "const generateStructured = async", "const openStructured");

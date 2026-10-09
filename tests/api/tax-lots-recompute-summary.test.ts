@@ -193,3 +193,96 @@ describe("tax-lot recompute summary: one basis per tax year (the sale year)", ()
     expect(summary.openLots).toEqual({ before: 0, after: 0, added: 0, removed: 0 });
   });
 });
+
+describe("tax-lot recompute summary: the open-lot count says what it includes", () => {
+  // The preview's open-lot count is every open row in every account. The Tax
+  // Lots page lists two kinds of those rows apart from its Open Lots table:
+  // lots of an option past its expiration (awaiting a closing entry) and
+  // currency-conversion lots. The preview names both so its count can be
+  // squared with the table's. Dates are far past / far future so the fixture
+  // never goes stale against the wall clock.
+  function seedMixedBook(db: Database.Database) {
+    const accountId = acct(db);
+    const insertSecurity = db.prepare(
+      "INSERT INTO securities (symbol, name, security_type, multiplier, expiration_date) VALUES (?, ?, ?, ?, ?)"
+    );
+    const stock = insertSecurity.run("ZZA", "ZZA stock", "Stock", 1, null).lastInsertRowid as number;
+    const expired = insertSecurity.run("ZZA   200117P00050000", "ZZA expired put", "Option", 100, "2000-01-17")
+      .lastInsertRowid as number;
+    // Legacy rows store the expiration compact; it must still read as expired.
+    const expiredCompact = insertSecurity.run("ZZA   200117C00050000", "ZZA expired call", "Option", 100, "20000117")
+      .lastInsertRowid as number;
+    const live = insertSecurity.run("ZZA   991217C00050000", "ZZA live call", "Option", 100, "2999-12-17")
+      .lastInsertRowid as number;
+    const fx = insertSecurity.run("ZZE.USD", "ZZE.USD", "Forex", 1, null).lastInsertRowid as number;
+    const buy = db.prepare(
+      `INSERT INTO transactions (account_id, security_id, trade_date, type, quantity, price_per_share, amount, fees, source_key)
+       VALUES (?, ?, ?, 'BUY', ?, ?, ?, 0, ?)`
+    );
+    buy.run(accountId, stock, "1999-06-01", 100, 10, -1000, "buy-zza");
+    buy.run(accountId, stock, "1999-07-01", 50, 10, -500, "buy-zza-2");
+    buy.run(accountId, expired, "1999-11-01", 2, 1, -200, "buy-expired-put");
+    buy.run(accountId, expiredCompact, "1999-11-02", 1, 1, -100, "buy-expired-call");
+    buy.run(accountId, live, "1999-12-01", 3, 1, -300, "buy-live-call");
+    buy.run(accountId, fx, "1999-08-01", 1000, 1, -1000, "buy-fx");
+  }
+
+  it("counts expired-option lots and currency-conversion lots inside the open-lot total, before and after", () => {
+    const db = hoisted.db;
+    seedMixedBook(db);
+
+    const summary = rehearseTaxLotRecompute(db);
+
+    // Nothing was computed before; after, six lots are open.
+    expect(summary.openLots).toEqual({ before: 0, after: 6, added: 6, removed: 0 });
+    expect(summary.openLotBreakdown).toEqual({
+      expiredOptionLots: { before: 0, after: 2 },
+      currencyConversionLots: { before: 0, after: 1 },
+    });
+  });
+
+  it("the breakdown agrees with what the Tax Lots page lists apart from Open Lots", async () => {
+    const db = hoisted.db;
+    seedMixedBook(db);
+    computeTaxLots(db);
+    const { getOpenTaxLots, getExpiredOptionLotsAwaitingClose, isCurrencyConversionTaxLot } = await import(
+      "@/lib/queries/tax-lots"
+    );
+
+    const summary = rehearseTaxLotRecompute(db);
+    const tableRows = getOpenTaxLots(db);
+    const expiredRows = getExpiredOptionLotsAwaitingClose(db);
+    const currencyRows = tableRows.filter(isCurrencyConversionTaxLot);
+
+    expect(summary.openLotBreakdown.expiredOptionLots.before).toBe(expiredRows.length);
+    expect(summary.openLotBreakdown.currencyConversionLots.before).toBe(currencyRows.length);
+    // The identity the preview's wording rests on: the total, less the two
+    // kinds listed apart, is the Open Lots table's own row count.
+    expect(
+      summary.openLots.before -
+        summary.openLotBreakdown.expiredOptionLots.before -
+        summary.openLotBreakdown.currencyConversionLots.before
+    ).toBe(tableRows.length - currencyRows.length);
+  });
+
+  it("the rehearsal that reads the breakdown still writes nothing, and apply reports the same figures", () => {
+    const db = hoisted.db;
+    seedMixedBook(db);
+    const before = dumpTables(db);
+
+    const mixed = rehearseTaxLotRecompute(db);
+    expect(mixed.openLotBreakdown.expiredOptionLots.after).toBe(2);
+    expect(dumpTables(db)).toBe(before);
+    expect(applyTaxLotRecompute(db).summary).toEqual(mixed);
+  });
+
+  it("a plain stock book has an empty breakdown", () => {
+    const db = hoisted.db;
+    seedBook(db);
+
+    expect(rehearseTaxLotRecompute(db).openLotBreakdown).toEqual({
+      expiredOptionLots: { before: 0, after: 0 },
+      currencyConversionLots: { before: 0, after: 0 },
+    });
+  });
+});

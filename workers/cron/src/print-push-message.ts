@@ -47,6 +47,12 @@ interface ReactionLeg {
   delta_pct?: number;
 }
 
+interface ReactionSnapshotMeta {
+  t0_utc?: string;
+  window_min?: number;
+  captured_at?: string;
+}
+
 /**
  * A leg is only usable when both prices are real (finite AND positive) — a
  * 0/0 division (dead quote on both sides) still produces a finite
@@ -68,6 +74,46 @@ function isUsableReactionLeg(
     (leg.t_post as number) > 0 &&
     Number.isFinite(leg.delta_pct)
   );
+}
+
+/** A stored UTC instant: ISO, or SQLite "YYYY-MM-DD HH:MM:SS" with no marker. */
+function parseUtcInstantMs(raw: string | null | undefined): number | null {
+  if (typeof raw !== "string") return null;
+  const s = raw.trim();
+  if (!s) return null;
+  const hasZone = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(s);
+  const ms = Date.parse(hasZone ? s : `${s.replace(" ", "T")}Z`);
+  return Number.isFinite(ms) ? ms : null;
+}
+
+/**
+ * A usable leg is still not a MEASUREMENT until the reaction window has
+ * elapsed. Inlined copy of the snapshot-only part of
+ * lib/calendar/reaction-validity.ts::reactionLegVerdict (this composer is
+ * import-free, see header; tests/calendar/reaction-pending-text-readers.test.ts
+ * runs both against one table):
+ *   - `captured_at` present: measured only when it is at or after
+ *     t0 + window_min (120 when missing); an unreadable t0 fails closed;
+ *   - no `captured_at` (older rows, cloud captures): an identical pre/post
+ *     pair is not trusted as a move.
+ * The row's `enriched_at` is not available to a push, so the legacy
+ * "0.00% on a row enriched before the window" case is not applied here.
+ * A leg that is not measured prints nothing: a push never says "+0.00%" for
+ * a move that was never measured.
+ */
+function isMeasuredReactionLeg(
+  snap: ReactionSnapshotMeta,
+  leg: ReactionLeg | null | undefined,
+): leg is { t_pre: number; t_post: number; delta_pct: number } {
+  if (!isUsableReactionLeg(leg)) return false;
+  const capturedAt = parseUtcInstantMs(snap.captured_at);
+  if (capturedAt != null) {
+    const t0 = typeof snap.t0_utc === "string" && snap.t0_utc ? Date.parse(snap.t0_utc) : NaN;
+    const w = snap.window_min;
+    const windowMin = typeof w === "number" && Number.isFinite(w) && w > 0 ? w : 120;
+    return Number.isFinite(t0) && capturedAt >= t0 + windowMin * 60 * 1000;
+  }
+  return leg.t_pre !== leg.t_post;
 }
 
 /**
@@ -173,14 +219,15 @@ export function composePrintPushMessage(input: {
 
   if (input.reactionJson) {
     try {
-      const snap = JSON.parse(input.reactionJson) as {
+      const snap = JSON.parse(input.reactionJson) as ReactionSnapshotMeta & {
         symbol?: ReactionLeg;
         spy?: ReactionLeg;
       };
       // isUsableReactionLeg guards against a 0/0 sentinel leg rendering as
       // a confident-looking "+0.00%" push (2026-09-10 qa fix) — both legs
-      // must be usable, or the whole reaction tail is omitted.
-      if (isUsableReactionLeg(snap.symbol) && isUsableReactionLeg(snap.spy)) {
+      // must be usable, or the whole reaction tail is omitted. Both must
+      // also be MEASURED (2026-10-08): a pending leg never prints a percent.
+      if (isMeasuredReactionLeg(snap, snap.symbol) && isMeasuredReactionLeg(snap, snap.spy)) {
         parts.push(
           `${input.symbol.toUpperCase()} ${pct(snap.symbol.delta_pct)} vs SPY ${pct(snap.spy.delta_pct)} (T+2h)`,
         );

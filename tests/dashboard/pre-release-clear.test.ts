@@ -47,6 +47,62 @@ describe("preReleaseClearsAtMs", () => {
   });
 });
 
+// Display only (decision 2026-10-08): a slot-less row carrying the company's
+// usual side clears at that side's window; the timer must agree with the chip.
+describe("preReleaseClearsAtMs: slot-less row with a usual side attached", () => {
+  const slotless = (over: Partial<PreReleaseActualInput> = {}) =>
+    row({ event_time: null, release_time: "16:15", raw_json: null, ...over });
+
+  it("usual side before the open: the timer lands just after 07:00 ET", () => {
+    const r = slotless({ display_time: { slot: "bmo" } });
+    const at = preReleaseClearsAtMs(r, new Date("2026-10-07T10:30:10Z"))!;
+    expect(at).toBeGreaterThan(new Date("2026-10-07T11:00:00Z").getTime());
+    expect(at).toBeLessThan(new Date("2026-10-07T11:00:01Z").getTime());
+    expect(isPreReleaseActual(r, new Date(at - 1000))).toBe(true);
+    expect(isPreReleaseActual(r, new Date(at))).toBe(false);
+    expect(preReleaseClearsAtMs(r, new Date("2026-10-07T12:00:00Z"))).toBeNull();
+  });
+
+  it("usual side after the close: 16:00 ET, not the stored 16:15", () => {
+    const r = slotless({ display_time: { slot: "amc" } });
+    const at = preReleaseClearsAtMs(r, new Date("2026-10-07T19:30:00Z"))!;
+    expect(at).toBeLessThan(new Date("2026-10-07T20:00:01Z").getTime());
+    expect(isPreReleaseActual(r, new Date(at))).toBe(false);
+  });
+
+  it("no usual side: the stored 16:15 still sets the timer", () => {
+    const at = preReleaseClearsAtMs(slotless(), new Date("2026-10-07T12:00:00Z"))!;
+    expect(at).toBeGreaterThan(new Date("2026-10-07T20:15:00Z").getTime());
+    expect(at).toBeLessThan(new Date("2026-10-07T20:15:01Z").getTime());
+  });
+
+  it("the timer and the chip read ONE floor (no second copy of the rule)", () => {
+    const src = readFileSync("app/dashboard/today/pre-release-clear.ts", "utf8");
+    expect(src).toContain("preReleaseFloorET(row)");
+    expect(src).not.toContain("deriveEarningsSlot");
+  });
+});
+
+describe("the three Today surfaces hand the usual side to the chip", () => {
+  const read = (f: string) => readFileSync(f, "utf8");
+  it("Today releases and the Hub pass the whole row, which carries display_time", () => {
+    const releases = read("app/dashboard/components/TodayReleases.tsx");
+    expect(releases).toContain("type DisplayedEvent = CalendarEvent & { display_time?: EarningsDisplayTime };");
+    expect(releases).toContain("isPreReleaseActual(event)");
+    expect(releases).toContain("preReleaseClearsAtMs(r, now)");
+    const hub = read("app/dashboard/today/EarningsHub.tsx");
+    expect(hub).toContain("display_time: EarningsDisplayTime;");
+    expect(hub).toContain("isPreReleaseActual(event)");
+    expect(hub).toContain("preReleaseClearsAtMs(event)");
+  });
+  it("the week card's chip colour passes it through its hand-built row", () => {
+    const week = read("app/dashboard/today/WeekAheadView.tsx");
+    const at = anchorIndex(week, "export function actualChipClass(");
+    const body = week.slice(at, anchorIndex(week, "return PRE_RELEASE_ACTUAL_CHIP_CLASS;", at));
+    expect(body).toContain("display_time: event.display_time");
+  });
+});
+
 describe("pre-release chip timer wiring (source pins)", () => {
   const read = (f: string) => readFileSync(f, "utf8");
   it("the hook sets one timer and cleans it up", () => {

@@ -29,6 +29,7 @@ import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import { countScanCoverage, findCrossedLevels } from "@/lib/queries/security-levels";
 import { upsertLevel } from "@/lib/mutations/security-levels";
+import { todayET, addDays } from "@/lib/calendar/date-utils";
 
 let db: Database.Database;
 
@@ -144,7 +145,10 @@ describe("countScanCoverage", () => {
     const expired = seedSecurity("QAAAEXPIRED");
     seedPriceDaysAgo(expired, 100, 0);
     const expiredId = upsertLevel(db, { security_id: expired, level_type: "support", price: 90 });
-    db.prepare("UPDATE security_levels SET expires_at = date('now','-1 day') WHERE id = ?").run(
+    // Expired = the day before the EASTERN day. SQLite's date('now','-1 day')
+    // is UTC-yesterday, which after 20:00 Eastern is still the Eastern today.
+    db.prepare("UPDATE security_levels SET expires_at = ? WHERE id = ?").run(
+      addDays(todayET(), -1),
       expiredId,
     );
 

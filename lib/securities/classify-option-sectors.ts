@@ -3,8 +3,17 @@ import { generateTextForFeature, AIRefusalError } from "@/lib/ai/generate";
 import { normalizeSector, GICS_SECTORS } from "@/lib/securities/normalize-sector";
 import { parseJsonArrayLenient } from "@/lib/ai/extract-json";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
-import { issuerSiblings } from "@/lib/securities/issuer-family";
 import { todayET } from "@/lib/calendar/date-utils";
+import {
+  resolveUnderlyingSector,
+  OPTION_SECTOR_SOURCE_INHERITED,
+  OPTION_SECTOR_SOURCE_AI,
+  type UnderlyingSector,
+} from "@/lib/securities/underlying-sector";
+
+// The underlying lookup lives in an AI-free module; these names stay
+// importable from here for the callers that already use them.
+export { resolveUnderlyingSector, type UnderlyingSector };
 
 export interface OptionSectorResult {
   /** Option rows written this run (inherited + resynced + AI). */
@@ -33,8 +42,7 @@ export interface OptionSectorResult {
  * either: its origin is unknown, so it is scripts/repair-option-sectors.ts's
  * business, where the owner sees a dry run first.
  */
-export const OPTION_SECTOR_SOURCE_INHERITED = "underlying_inherited";
-export const OPTION_SECTOR_SOURCE_AI = "ai_classify";
+export { OPTION_SECTOR_SOURCE_INHERITED, OPTION_SECTOR_SOURCE_AI };
 
 /** SQL: option row `alias` carries a derived sector this module maintains. */
 function maintainedOptionSectorSql(alias: string): string {
@@ -91,6 +99,46 @@ function writeAiMisses(db: Database.Database, misses: Map<string, string>): void
     `INSERT INTO settings (key, value, updated_at) VALUES (?, ?, datetime('now'))
      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`
   ).run(OPTION_SECTOR_AI_MISSES_KEY, value);
+}
+
+/**
+ * When option sectors were last CHECKED: found in line with their underlyings,
+ * or brought in line. Kept in the `settings` key-value table as a UTC time in
+ * SQLite's own `YYYY-MM-DD HH:MM:SS` form. The Analysis trust strip shows it.
+ *
+ * Two writers, both in this file:
+ *  - `classifyOptionSectors`, at its end, on any run that finished with no
+ *    error (a run with nothing to do counts: that is a clean check);
+ *  - `markOptionSectorsChecked`, which the two callers use on the branch
+ *    where their free pre-check found no work and they skip the run.
+ * A run that hit an AI error does NOT move it: the check did not finish.
+ * Never written by an import or under lib/import/.
+ */
+export const SECTOR_CLASSIFY_LAST_RUN_KEY = "sector_classify_last_run_at";
+
+/**
+ * Record that option sectors were just checked and nothing needed doing.
+ * For a caller that ran `getUnsectoredOptionUnderlyings`, got an empty list
+ * and therefore skips `classifyOptionSectors`. Writes the time only: no
+ * sector, no other setting.
+ */
+export function markOptionSectorsChecked(db: Database.Database): void {
+  db.prepare(
+    `INSERT INTO settings (key, value, updated_at) VALUES (?, datetime('now'), datetime('now'))
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`
+  ).run(SECTOR_CLASSIFY_LAST_RUN_KEY);
+}
+
+/**
+ * The stored last-run time, read back through `datetime()` so a `T`/`Z`
+ * spelling comes out in the same space-separated UTC form as every other
+ * stored stamp, and a value that is not a time reads as null (never shown).
+ */
+export function getLastSectorClassifyRun(db: Database.Database): string | null {
+  const row = db
+    .prepare(`SELECT datetime(value) AS at FROM settings WHERE key = ?`)
+    .get(SECTOR_CLASSIFY_LAST_RUN_KEY) as { at: string | null } | undefined;
+  return row?.at ?? null;
 }
 
 /** Whole days from `from` to `to` (both YYYY-MM-DD), by calendar date. */
@@ -180,53 +228,6 @@ function optionSectorWork(db: Database.Database, today: string): OptionSectorWor
   return [...work.values()];
 }
 
-export interface UnderlyingSector {
-  /** The non-option security row the sector was read from. */
-  securityId: number;
-  /** That row's symbol as stored (may be a share-class sibling of the option's
-   *  named underlying). */
-  symbol: string;
-  /** That row's stored sector after `normalizeSector` (GICS-11, or the
-   *  pass-through fund labels "Diversified" / "Fixed Income"). */
-  sector: string;
-}
-
-/**
- * The stored sector of an option's underlying, or null when the option must
- * not inherit: the underlying symbol matches no non-option security row, or
- * every matching row's sector is blank or a spelling `normalizeSector` rejects.
- *
- * Matching is case-insensitive and share-class aware, the same way
- * `cascadeOptionSectors` (lib/securities/verify-sector-tags.ts) resolves an
- * option's underlying: the exactly named symbol is tried first, then its
- * `issuerSiblings` in family order, and the first row with a usable sector
- * wins. Another option row is never an underlying.
- */
-export function resolveUnderlyingSector(
-  db: Database.Database,
-  underlyingSymbol: string | null | undefined
-): UnderlyingSector | null {
-  const wanted = (underlyingSymbol ?? "").trim().toUpperCase();
-  if (wanted === "") return null;
-  const candidates = [wanted];
-  for (const sib of issuerSiblings(wanted)) {
-    const s = sib.toUpperCase();
-    if (!candidates.includes(s)) candidates.push(s);
-  }
-  const find = db.prepare(
-    `SELECT id, symbol, sector FROM securities
-     WHERE UPPER(symbol) = ? AND LOWER(COALESCE(security_type, '')) != 'option'
-     ORDER BY id`
-  );
-  for (const symbol of candidates) {
-    for (const row of find.all(symbol) as Array<{ id: number; symbol: string; sector: string | null }>) {
-      const sector = normalizeSector(row.sector);
-      if (sector) return { securityId: row.id, symbol: row.symbol, sector };
-    }
-  }
-  return null;
-}
-
 const SYSTEM = `You assign a GICS sector to each ticker (a stock or a sector/thematic ETF).
 Return ONLY a JSON array, one object per input ticker:
 {"symbol":"TICKER","sector":"<exactly one of: Energy, Materials, Industrials, Consumer Discretionary, Consumer Staples, Healthcare, Financials, Technology, Communication Services, Utilities, Real Estate>"}
@@ -267,6 +268,9 @@ For sector/thematic ETFs use the dominant GICS sector (SMH/IGV/SOXX/HACK->Techno
  * `OPTION_SECTOR_AI_MISS_RETRY_DAYS` days, and it still inherits, with no AI
  * call, as soon as the underlying has a usable stored sector.
  *
+ * A run that finished without an error, with or without work, leaves its
+ * time in `settings` (`SECTOR_CLASSIFY_LAST_RUN_KEY`).
+ *
  * Idempotent: a second run finds no work.
  */
 export async function classifyOptionSectors(
@@ -274,7 +278,11 @@ export async function classifyOptionSectors(
   today: string = todayET()
 ): Promise<OptionSectorResult> {
   const work = optionSectorWork(db, today);
-  if (work.length === 0) return { classified: 0, inherited: 0, resynced: 0, errors: [] };
+  if (work.length === 0) {
+    // Nothing to do is a clean check.
+    markOptionSectorsChecked(db);
+    return { classified: 0, inherited: 0, resynced: 0, errors: [] };
+  }
 
   const writeSector = db.prepare(
     `UPDATE securities SET sector = ?, sector_source = ?
@@ -361,6 +369,12 @@ export async function classifyOptionSectors(
   for (const u of newMisses) after.set(u, today);
   const changed = after.size !== before.size || [...after].some(([u, d]) => before.get(u) !== d);
   if (changed) writeAiMisses(db, after);
+
+  // Leave the time behind (see SECTOR_CLASSIFY_LAST_RUN_KEY): every option was
+  // checked and is in line, was brought in line, or is waiting on an
+  // underlying with no sector (Data Health lists those). An AI error means the
+  // check did not finish, so the time stays where it was.
+  if (errors.length === 0) markOptionSectorsChecked(db);
 
   return { classified, inherited, resynced, errors };
 }

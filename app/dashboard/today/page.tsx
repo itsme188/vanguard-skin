@@ -26,6 +26,7 @@ import {
   olderVanguardBasisNote,
   portfolioBaselineLabel,
 } from "./basis-labels";
+import { NO_PRIOR_SESSION_PRICE_NOTE, dayMoveGap } from "./day-move-gap";
 
 function fmtShortDate(iso: string): string {
   const [, month, day] = iso.split("T")[0].split("-");
@@ -118,6 +119,10 @@ export default async function TodayPage({ searchParams }: TodayPageProps) {
   // so the line can say which ones the figure treats differently.
   const dayMove = summarizeIbkrDayMove(holdings);
   const { todayGain, todayPct } = dayMove;
+  // With no trading-day pair there is no previous session to measure from, so
+  // every row comes back without a move. That is one missing session price,
+  // not a fault of each name: the line says so once and prints no per-name count.
+  const moveGap = dayMoveGap(movePair !== null, dayMove.unpricedCount);
   // The heading names the later date of the one pair the figure was measured
   // on, and says "today" only when that session is today's Eastern date.
   const ibkrHeading = ibkrSnapshotHeading(movePair?.latest ?? null, todayET());
@@ -259,7 +264,11 @@ export default async function TodayPage({ searchParams }: TodayPageProps) {
             {todayGain === null ? (
               <span
                 className="font-mono tabular-nums text-ink-faint"
-                title="no prior-close prices yet — today's move is unavailable"
+                title={
+                  moveGap === "no_session_pair"
+                    ? NO_PRIOR_SESSION_PRICE_NOTE
+                    : "no prior-close prices yet — today's move is unavailable"
+                }
               >
                 —
               </span>
@@ -311,7 +320,10 @@ export default async function TodayPage({ searchParams }: TodayPageProps) {
                 <Count value={dayMove.undatedChangeCount} /> changed since an older snapshot
               </span>
             )}
-            {dayMove.unpricedCount > 0 && (
+            {moveGap === "no_session_pair" && (
+              <span className="text-[11px] text-ink-dim">{NO_PRIOR_SESSION_PRICE_NOTE}</span>
+            )}
+            {moveGap === "names_unpriced" && (
               <span
                 className="text-[11px] text-ink-faint"
                 title="Names with no prior close are excluded from the move"

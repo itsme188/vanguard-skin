@@ -4,6 +4,13 @@ import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import apiFetch from "@/lib/http/apiFetch";
 import { EMAIL_FRAME_SANDBOX, withExternalLinkTarget } from "@/lib/email/archive-srcdoc";
+import {
+  DIGEST_WINDOW_OPTIONS,
+  digestPreviewSince,
+  digestWindowNeedsDate,
+  isDigestMode,
+  type DigestWindowChoice,
+} from "./digest-window-choice";
 
 type Layout = "structured" | "by_source" | "by_company";
 
@@ -95,8 +102,12 @@ export function emptyWindowMessage(since: string | null | undefined): string {
 interface DigestEmailViewerProps {
   open: boolean;
   onClose: () => void;
-  /** Optional — overrides the server's default last-sent / 24h window. */
-  since?: string;
+  /**
+   * The window chosen for sending, held by the page and shared with the Send
+   * panel. The preview loads this window and can change it.
+   */
+  digestWindow: DigestWindowChoice;
+  onDigestWindowChange: (next: DigestWindowChoice) => void;
 }
 
 /**
@@ -107,7 +118,11 @@ interface DigestEmailViewerProps {
  * Source of truth for content: GET /api/digest/preview returns both
  * pre-rendered HTML payloads in one call.
  */
-export function DigestEmailViewer({ open, onClose, since }: DigestEmailViewerProps) {
+export function DigestEmailViewer({ open, onClose, digestWindow, onDigestWindowChange }: DigestEmailViewerProps) {
+  // "Today" is the Eastern calendar day. No `since` = the server applies the
+  // sender's since-last-email rule. A date mode with no date loads nothing.
+  const since = digestPreviewSince(digestWindow);
+  const needsDate = digestWindowNeedsDate(digestWindow);
   const [data, setData] = useState<DigestPreviewResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -149,6 +164,13 @@ export function DigestEmailViewer({ open, onClose, since }: DigestEmailViewerPro
     setError(null);
     setData(null);
 
+    if (needsDate) {
+      setLoading(false);
+      return () => {
+        sessionRef.current++;
+      };
+    }
+
     (async () => {
       try {
         // GET only: by-publication / by-company (no AI, no write). The paid
@@ -176,13 +198,16 @@ export function DigestEmailViewer({ open, onClose, since }: DigestEmailViewerPro
       cancelled = true;
       sessionRef.current++;
     };
-    // previewUrl closes over `since`, which is a dependency.
+    // previewUrl closes over `since`, which is a dependency. A changed window
+    // re-runs this: the old preview is wiped and an in-flight generation for
+    // the old window is ignored when it lands (session check).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, since]);
+  }, [open, since, needsDate]);
 
   // The paid AI call: one POST, started only by a click on the Structured tab
   // or its generate/retry control. Routed through apiFetch (mutating call).
   const generateStructured = async () => {
+    if (needsDate) return;
     if (
       !shouldStartStructuredGeneration({
         hasStructured: Boolean(data?.structuredHtml),
@@ -272,8 +297,35 @@ export function DigestEmailViewer({ open, onClose, since }: DigestEmailViewerPro
             >
               Morning Research Digest
             </h2>
+            <div className="flex flex-wrap items-center gap-2 mt-1.5">
+              <select
+                aria-label="Digest window"
+                title="The same window the Email panel sends"
+                value={digestWindow.mode}
+                onChange={(e) => {
+                  const mode = e.target.value;
+                  if (isDigestMode(mode)) onDigestWindowChange({ ...digestWindow, mode });
+                }}
+                className="px-2 py-1 rounded-md bg-raised border border-edge text-xs text-ink"
+              >
+                {DIGEST_WINDOW_OPTIONS.map((o) => (
+                  <option key={o.mode} value={o.mode}>
+                    {o.label}
+                  </option>
+                ))}
+              </select>
+              {digestWindow.mode === "since_date" && (
+                <input
+                  type="date"
+                  aria-label="Digest window start date"
+                  value={digestWindow.sinceDate}
+                  onChange={(e) => onDigestWindowChange({ ...digestWindow, sinceDate: e.target.value })}
+                  className="px-2 py-1 rounded-md bg-raised border border-edge text-xs text-ink"
+                />
+              )}
+            </div>
             {data && !data.empty && (
-              <p className="text-[11px] text-ink-faint font-mono mt-0.5 truncate">
+              <p className="text-[11px] text-ink-faint font-mono mt-1 truncate">
                 Since {formatSince(data.since)}
                 {capText ? ` · ${capText}` : ""}
               </p>
@@ -342,6 +394,9 @@ export function DigestEmailViewer({ open, onClose, since }: DigestEmailViewerPro
           )}
           {error && (
             <div className="px-5 py-12 text-center text-[14px] text-down">{error}</div>
+          )}
+          {needsDate && (
+            <div className="px-5 py-12 text-center text-[14px] text-warn">Choose a date first</div>
           )}
           {data?.empty && (
             <div className="px-5 py-12 text-center text-[14px] text-ink-faint">

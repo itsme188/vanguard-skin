@@ -70,7 +70,6 @@ function makeEnv(overrides: Partial<Env> = {}): Env {
     EXPECTED_HOUR_EVENING_MON_THU: "19",
     EXPECTED_HOUR_EVENING_FRI: "17",
     EXPECTED_MINUTE_EVENING_FRI: "30",
-    PRIMARY_TIMEOUT_MS: "300000",
     CRON_SHARED_SECRET: "secret",
     // Retained on Env even though runJob no longer reads it — see the report
     // for why (Pushover deep-link base fallback elsewhere).
@@ -178,7 +177,6 @@ describe("runCalendarEnrich — Mac-primary retirement (2026-08-14, #35 Phase D)
       CRON_KV: makeKv(),
       CRON_SHARED_SECRET: "secret",
       MESH_HOSTNAME: "http://mesh.local",
-      PRIMARY_TIMEOUT_MS: "300000",
       CLOUD_ENRICH_ENABLED: "false",
       ...overrides,
     };

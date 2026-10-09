@@ -682,7 +682,9 @@ export function getClassificationCoverage(
     active_securities AS (
       SELECT DISTINCT h.security_id
       FROM holdings h
+      JOIN securities s ON s.id = h.security_id
       WHERE ${latestHoldingsPredicate({ accountFilter: "", includeShorts: true })} ${holdingsFilter}
+        AND ${liveOptionExpirationSql("s")}
     )
   `;
 

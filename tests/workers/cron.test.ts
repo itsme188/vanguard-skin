@@ -78,7 +78,6 @@ function makeEnv(overrides: Partial<Record<string, unknown>> = {}) {
     ARCHIVE: {} as unknown as R2Bucket,
     EXPECTED_HOUR_BRIEFING: "15",
     EXPECTED_HOUR_DIGEST: "9",
-    PRIMARY_TIMEOUT_MS: "1000",
     CRON_SHARED_SECRET: "test-secret",
     MESH_HOSTNAME: "http://mac.test",
     ANTHROPIC_API_KEY: "sk-ant-test",

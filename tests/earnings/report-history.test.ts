@@ -112,6 +112,35 @@ describe("summarizeHistory", () => {
     expect(s.missCount).toBe(1);
     expect(s.quarterCount).toBe(3);
   });
+  it("window is the last 8 rows that carry an EPS result; an unreported quarter is skipped", () => {
+    const row = (d: string, a: number | null, e: number | null, m: number | null) => ({
+      reportedDate: d, fiscalDateEnding: null, epsActual: a, epsEstimate: e,
+      surprisePct: null, reportTime: null, postPrintMovePct: m,
+    });
+    // Nine rows, newest first; r2 is an upcoming quarter with an estimate but no actual.
+    const rows = [
+      row("2026-07-22", 1.1, 1.0, 2),     // r0 beat
+      row("2026-04-22", 1.1, 1.0, -4),    // r1 beat
+      row("2026-01-28", null, 1.0, null), // r2 unreported (no result, no move)
+      row("2025-10-28", 0.9, 1.0, 6),     // r3 miss
+      row("2025-07-22", 1.1, 1.0, -2),    // r4 beat
+      row("2025-04-22", 1.1, 1.0, 4),     // r5 beat
+      row("2025-01-28", 0.9, 1.0, -6),    // r6 miss
+      row("2024-10-28", 1.1, 1.0, 2),     // r7 beat
+      row("2024-07-22", 1.1, 1.0, 10),    // r8 beat (oldest)
+    ];
+    // Old behaviour: slice(0,8) = r0..r7, so r2 uses a window slot, the oldest row
+    // r8 drops out, and the average ran over 7 moves while the count said 8.
+    // New behaviour: 8 reported rows = r0,r1,r3..r8 (all but r2).
+    //   quarterCount = 8
+    //   beats = r0,r1,r4,r5,r7,r8 = 6 ; misses = r3,r6 = 2   (6 + 2 = 8 = quarterCount)
+    //   |moves| = 2+4+6+2+4+6+2+10 = 36 ; average = 36 / 8 = 4.5
+    const s = summarizeHistory(rows);
+    expect(s.quarterCount).toBe(8);
+    expect(s.beatCount).toBe(6);
+    expect(s.missCount).toBe(2);
+    expect(s.avgAbsMovePct).toBeCloseTo(4.5, 6);
+  });
   it("empty → null average, zero counts", () => {
     expect(summarizeHistory([])).toEqual({ avgAbsMovePct: null, beatCount: 0, missCount: 0, quarterCount: 0 });
   });

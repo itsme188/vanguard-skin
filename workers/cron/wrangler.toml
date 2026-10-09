@@ -70,4 +70,3 @@ EXPECTED_HOUR_EVENING_MON_THU = "19" # Worker fallback at 19:15
 EXPECTED_MINUTE_EVENING_MON_THU = "15"
 EXPECTED_HOUR_EVENING_FRI = "17"     # Worker fallback at 17:45
 EXPECTED_MINUTE_EVENING_FRI = "45"
-PRIMARY_TIMEOUT_MS = "300000"        # 300s for Mac webhook. Bumped from 120s 2026-04-27: Mac's full pipeline (TWS sync + Gmail fetch + Sonnet processing + email send) routinely exceeds 120s when many articles arrive overnight, causing the Worker to fire its fallback even though the Mac email had already gone out — produced the 8:45→8:57 thinned-out duplicate.

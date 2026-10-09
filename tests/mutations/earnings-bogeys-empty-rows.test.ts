@@ -22,6 +22,7 @@ import {
   formatPlan,
   parseArgs,
 } from "@/scripts/repair-empty-bogeys";
+import { getBogeysForEvent, getBogeysWithContentForEvent } from "@/lib/queries/earnings-bogeys";
 
 let db: Database.Database;
 
@@ -197,5 +198,28 @@ describe("scripts/repair-empty-bogeys.ts", () => {
     expect(parseArgs([])).toEqual({ apply: false });
     expect(parseArgs(["--apply"])).toEqual({ apply: true });
     expect(() => parseArgs(["--force"])).toThrow(/unknown argument/);
+  });
+});
+
+describe("getBogeysWithContentForEvent: the send-path reader skips all-empty rows", () => {
+  it("an event whose only rows are empty reads exactly like an event with no rows", () => {
+    seedRawRow(1, "Desk Notes 4/20");
+    seedRawRow(1, "Desk Notes 4/21", { notes: "  ", segment_breakdown_json: "{}", extra_metrics_json: "[]" });
+    expect(getBogeysWithContentForEvent(db, 1)).toEqual([]);
+    expect(getBogeysWithContentForEvent(db, 2)).toEqual([]);
+    // The unfiltered reader is unchanged: the edit modal still sees both rows.
+    expect(getBogeysForEvent(db, 1)).toHaveLength(2);
+  });
+
+  it("keeps the rows that hold something, in the unfiltered reader's order", () => {
+    seedRawRow(1, "empty");
+    const withFigure = seedRawRow(1, "figure", { eps_consensus: 0 });
+    const withNote = seedRawRow(1, "note", { notes: "watch the guide" });
+    const all = getBogeysForEvent(db, 1).map((b) => b.id);
+    const kept = getBogeysWithContentForEvent(db, 1).map((b) => b.id);
+    expect(kept.sort()).toEqual([withFigure, withNote].sort());
+    expect(getBogeysWithContentForEvent(db, 1).map((b) => b.id)).toEqual(
+      all.filter((id) => id === withFigure || id === withNote),
+    );
   });
 });

@@ -37,6 +37,8 @@ Negative-exposure instruments on **ETFs with no (or fully consumed) offsetting c
 2. **Geography:** country ETFs (EWG, EWY) credit against held names whose `geography` classification matches.
 3. **Beta fallback:** unmatched (MTUM, ARKK, …) credits as broad-book protection at β × notional. β resolution: `security_betas` row → computed from cached closes with the trading-day gap guard (pairs spanning >7 calendar days dropped) → 1.0, flagged as assumed.
 
+> **Note (2026-10-08, owner ruling):** a deep in-the-money LONG call counts as core. A long call whose absolute delta is at or above the deep-in-the-money threshold (`DEEP_ITM_ABS_DELTA` in `lib/compute/hedging.ts`) is treated as stock at its delta-weighted share count, so a put against it is a hedge in every scope. Only a REAL delta counts: one computed from the assumed default volatility, or with no volatility source at all, never makes a call core, and the row says why. A short call and every put never count. One reader: `stockEquivalentVerdict`. A put and a call left on one underlying net into one row. Test: `tests/compute/hedging-deep-call-core.test.ts`. This narrows "Long calls with no core" below: such a call is no longer listed as speculation.
+
 ### Deliberately NOT credited as protection
 
 - **Long calls with no core** (DRAM, FROG, LFMD, …) — speculation; shown as leveraged long exposure in the rankings.

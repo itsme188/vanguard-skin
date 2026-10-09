@@ -144,7 +144,6 @@ describe("runCloudFallback", () => {
       CRON_KV: makeKv(),
       CRON_SHARED_SECRET: "test",
       MESH_HOSTNAME: "http://localhost:3099",
-      PRIMARY_TIMEOUT_MS: "5000",
     } as Parameters<typeof runCloudFallback>[0];
     const result = await runCloudFallback(env);
     expect(result.kind).toBe("error");
@@ -156,7 +155,6 @@ describe("runCloudFallback", () => {
       CRON_KV: makeKv(),
       CRON_SHARED_SECRET: "test",
       MESH_HOSTNAME: "http://localhost:3099",
-      PRIMARY_TIMEOUT_MS: "5000",
       CLOUD_ENRICH_ENABLED: "true",
     } as Parameters<typeof runCloudFallback>[0];
     const result = await runCloudFallback(env);
@@ -178,7 +176,6 @@ describe("runCloudFallback", () => {
       ARCHIVE: emptyArchive,
       CRON_SHARED_SECRET: "test",
       MESH_HOSTNAME: "http://localhost:3099",
-      PRIMARY_TIMEOUT_MS: "5000",
       CLOUD_ENRICH_ENABLED: "true",
     } as Parameters<typeof runCloudFallback>[0];
     const result = await runCloudFallback(env);
@@ -269,7 +266,6 @@ describe("runCloudFallback", () => {
       ARCHIVE: makeArchive(snapshot),
       CRON_SHARED_SECRET: "test",
       MESH_HOSTNAME: "http://localhost:3099",
-      PRIMARY_TIMEOUT_MS: "5000",
       CLOUD_ENRICH_ENABLED: "true",
       FRED_API_KEY: "fred-key",
       FINNHUB_API_KEY: "finnhub-key",
@@ -338,7 +334,6 @@ describe("runCloudFallback", () => {
       ARCHIVE: makeArchive(snapshot),
       CRON_SHARED_SECRET: "test",
       MESH_HOSTNAME: "http://localhost:3099",
-      PRIMARY_TIMEOUT_MS: "5000",
       CLOUD_ENRICH_ENABLED: "true",
       FRED_API_KEY: "fred-key",
       FINNHUB_API_KEY: "finnhub-key",
@@ -390,7 +385,6 @@ describe("runCloudFallback", () => {
       ARCHIVE: makeArchive(snapshot),
       CRON_SHARED_SECRET: "test",
       MESH_HOSTNAME: "http://localhost:3099",
-      PRIMARY_TIMEOUT_MS: "5000",
       CLOUD_ENRICH_ENABLED: "true",
       FRED_API_KEY: "fred-key",
       FINNHUB_API_KEY: "finnhub-key",
@@ -489,7 +483,6 @@ describe("runCalendarEnrich → cloud success (no primary call attempted)", () =
       ARCHIVE: makeArchive(snapshot),
       CRON_SHARED_SECRET: "test",
       MESH_HOSTNAME: "http://localhost:3099",
-      PRIMARY_TIMEOUT_MS: "5000",
       CLOUD_ENRICH_ENABLED: "true",
       FRED_API_KEY: "fred-key",
       FINNHUB_API_KEY: "finnhub-key",

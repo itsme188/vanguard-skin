@@ -21,7 +21,15 @@ import {
 } from "@/lib/queries/analyst-estimates";
 import { getCachedTranscript } from "@/lib/queries/transcripts";
 import { getNotesForFamily, type NoteWithContext } from "@/lib/queries/notes";
-import { getBogeysForEvent, type EarningsBogey } from "@/lib/queries/earnings-bogeys";
+import {
+  getBogeysForEvent,
+  getBogeysWithContentForEvent,
+  type EarningsBogey,
+} from "@/lib/queries/earnings-bogeys";
+import {
+  bogeyPrintsVendorEps,
+  bogeysPrintedInPrompt,
+} from "@/lib/earnings/bogey-prompt-entries";
 import { resolveExpectedMove } from "@/lib/earnings/expected-move";
 import { getReadThroughsForTargets } from "@/lib/queries/read-through-pairs";
 import {
@@ -30,8 +38,7 @@ import {
   type EarningsCallNote,
 } from "@/lib/queries/earnings-call-notes";
 import { addDays } from "@/lib/calendar/date-utils";
-import { isUsableReactionLeg } from "@/lib/calendar/reaction-snapshot-core";
-import type { BenchmarkReaction, ReactionSnapshot } from "@/lib/calendar/reaction-snapshot";
+import { readReactionLegs, type ReactionEvidence } from "@/lib/calendar/reaction-validity";
 import type { CalendarEvent, EarningsTranscript } from "@/lib/types";
 import { actualsAreImplausible } from "@/lib/earnings/actuals-display";
 import { applyClusterManualActuals } from "@/lib/queries/manual-actuals-cluster";
@@ -262,7 +269,11 @@ export async function composeEarningsEmail(
   // AI-generated) — the recap doesn't repeat it.
   const pastPrintsBlock =
     phase === "preview" ? renderPastPrintsBlock(intelView?.history ?? []) : "";
-  const sheetBogeysBlock = renderSheetBogeysBlock(getBogeysForEvent(db, event.id));
+  // Rows the table shows a cell from only: an empty row, or one whose content
+  // the table does not print, is never a column.
+  const sheetBogeysBlock = renderSheetBogeysBlock(
+    sheetBogeysWithCells(getBogeysWithContentForEvent(db, event.id)),
+  );
   // Slice E: the recap's body carries the same direction-safe block the prompt
   // carried, so the email says what the model was told. A preview has no live
   // watch to show (the print has not happened yet), so this is recap-only by
@@ -389,8 +400,23 @@ export interface EarningsEmailClaim {
  *  - `ignored_manual_twin`: the LATER of two live hand-entered rows for one
  *    company; email follows the earlier (lib/earnings/manual-twin-email.ts).
  *    Refused on the automatic roads only, see `claimEarningsEmailSlot`.
+ *  - `event_not_found`: there is no calendar row with this id (never there,
+ *    or deleted since the candidate list was built). Refused for everyone:
+ *    there is no print to write about, and the audit row could not be stored
+ *    anyway (it points at the calendar row). Checked FIRST, so a caller sees
+ *    this plain answer instead of a raw foreign-key error from the insert.
  */
-export type EmailRowRefusal = "superseded_event" | "ignored_manual_twin";
+export const EMAIL_ROW_REFUSALS = ["superseded_event", "ignored_manual_twin", "event_not_found"] as const;
+export type EmailRowRefusal = (typeof EMAIL_ROW_REFUSALS)[number];
+
+/**
+ * Is this claim reason one of the calendar-row refusals? Callers branch on
+ * this guard rather than listing the reasons, so a reason added above cannot
+ * be missed at a call site.
+ */
+export function isEmailRowRefusal(reason: unknown): reason is EmailRowRefusal {
+  return (EMAIL_ROW_REFUSALS as readonly unknown[]).includes(reason);
+}
 
 /**
  * The one reader of "may this calendar row be emailed right now". Every
@@ -406,7 +432,8 @@ export function emailRowRefusal(
   const row = db
     .prepare(`SELECT COALESCE(superseded, 0) AS superseded FROM calendar_events WHERE id = ?`)
     .get(eventId) as { superseded: number } | undefined;
-  if (row && row.superseded !== 0) return "superseded_event";
+  if (!row) return "event_not_found";
+  if (row.superseded !== 0) return "superseded_event";
   if (opts.refuseIgnoredManualTwin && getEmailIgnoredManualTwins(db).has(eventId)) {
     return "ignored_manual_twin";
   }
@@ -1047,7 +1074,12 @@ function buildPreviewContext(
   const ratingChanges = formatRatingChanges(db, symbol);
   const recentPressReleases = formatPressReleases(db, family, 30, 8);
   const priorTranscript = findPriorTranscript(db, symbol, event.event_date);
-  const bogeys = getBogeysForEvent(db, event.id);
+  // Rows the prompt block prints something from only: the prompt names the
+  // newest entry "the primary consensus reference", and a row with nothing
+  // under it must never be that. Same helper `renderBogeysBlock` renders with.
+  const bogeys = bogeysPrintedInPrompt(getBogeysWithContentForEvent(db, event.id)).map(
+    (e) => e.bogey,
+  );
   const readThroughs = buildReadThroughEntries(db, family, event.event_date);
   const priorCallNote = getLatestCallNoteForFamily(db, symbol, event.event_date);
   let intel: EarningsIntelView | undefined;
@@ -1181,16 +1213,15 @@ export function buildReadThroughEntries(
     let stockPct: number | null = null;
     let spyPct: number | null = null;
     let qqqPct: number | null = null;
-    try {
-      const rs = JSON.parse(ev.reaction_snapshot!) as ReactionSnapshot;
-      // isUsableReactionLeg guards against a 0/0 sentinel leg rendering as a
-      // confident-looking delta (2026-09-10 qa fix) — never trust delta_pct
-      // alone without checking the underlying prices were real.
-      stockPct = isUsableReactionLeg(rs.symbol) ? rs.symbol.delta_pct : null;
-      spyPct = isUsableReactionLeg(rs.spy) ? rs.spy.delta_pct : null;
-      qqqPct = isUsableReactionLeg(rs.qqq) ? rs.qqq.delta_pct : null;
-    } catch {
-      // Malformed reaction_snapshot JSON — skip gracefully.
+    // Only a MEASURED leg is a figure (lib/calendar/reaction-validity.ts): a
+    // dead/zero quote (2026-09-10 qa fix) and a pending leg — captured before
+    // its window elapsed, or an identical pre/post pair (2026-10-08) — are
+    // both null here, so the bullet omits them. Malformed JSON reads as null.
+    const reporterLegs = readReactionLegs(ev.reaction_snapshot, { rowEnrichedAt: ev.enriched_at });
+    if (reporterLegs) {
+      stockPct = reporterLegs.measured.symbol?.delta_pct ?? null;
+      spyPct = reporterLegs.measured.spy?.delta_pct ?? null;
+      qqqPct = reporterLegs.measured.qqq?.delta_pct ?? null;
     }
 
     entries.push({
@@ -1219,7 +1250,9 @@ function buildRecapContext(
 ): RecapContext {
   const base = buildPreviewContext(db, event);
 
-  const reactionSnapshotMarkdown = formatReactionSnapshot(event.reaction_snapshot);
+  const reactionSnapshotMarkdown = formatReactionSnapshot(event.reaction_snapshot, {
+    rowEnrichedAt: event.enriched_at,
+  });
   // For the recap we want every PR since the release time, not just last 30d.
   // 2 days back from now is plenty for both BMO + AMC.
   const freshPressReleases = formatPressReleases(db, base.family, 2, 12);
@@ -1649,46 +1682,43 @@ function findPriorTranscript(
 
 // ── Reaction snapshot formatter ────────────────────────────────────
 
-export function formatReactionSnapshot(json: string | null): string | null {
-  if (!json) return null;
-  try {
-    const snap = JSON.parse(json) as {
-      t0_utc?: string;
-      window_min?: number;
-      source?: string;
-      spy?: BenchmarkReaction;
-      qqq?: BenchmarkReaction;
-      tlt?: BenchmarkReaction;
-      sector?: BenchmarkReaction & { symbol?: string };
-      symbol?: BenchmarkReaction & { symbol?: string };
-      pre_anchor?: string;
-    };
-    const lines: string[] = [];
-    const win = snap.window_min ?? 120;
-    // pre_anchor snapshots (earnings, 2026-08-04) measure each move from the
-    // prior regular-session close, not from the release-time bar — say so, or
-    // the reader compares these against day-change numbers and calls them off.
-    const basis =
-      snap.pre_anchor === "prior_close"
-        ? `moves vs prior close, measured at T+${win} minutes`
-        : `T+${win} minutes from release`;
-    lines.push(`- Window: ${basis} (source: ${snap.source ?? "?"})`);
-    // isUsableReactionLeg guards every leg against the 0/0 sentinel class
-    // (2026-09-10 qa fix) — a leg with dead/zero prices is omitted rather
-    // than rendered as a confident-looking "+0.00%".
-    if (isUsableReactionLeg(snap.symbol)) {
-      lines.push(`- ${snap.symbol.symbol ?? "stock"}: ${pctSign(snap.symbol.delta_pct)}`);
-    }
-    if (isUsableReactionLeg(snap.spy)) lines.push(`- SPY: ${pctSign(snap.spy.delta_pct)}`);
-    if (isUsableReactionLeg(snap.qqq)) lines.push(`- QQQ: ${pctSign(snap.qqq.delta_pct)}`);
-    if (isUsableReactionLeg(snap.tlt)) lines.push(`- TLT: ${pctSign(snap.tlt.delta_pct)}`);
-    if (isUsableReactionLeg(snap.sector)) {
-      lines.push(`- ${snap.sector.symbol ?? "sector ETF"}: ${pctSign(snap.sector.delta_pct)}`);
-    }
-    return lines.join("\n");
-  } catch {
-    return null;
+/**
+ * The recap prompt's "Market reaction" block. Only MEASURED legs are listed
+ * (lib/calendar/reaction-validity.ts): a dead/zero quote (2026-09-10 qa fix)
+ * and a pending leg (captured before its window elapsed, or an identical
+ * pre/post pair; 2026-10-08) are omitted, never printed as a percent. With no
+ * measured leg at all the result is null, so the prompt takes its "Reaction
+ * snapshot not yet captured" branch instead of a bare window line.
+ * Pass the row's `enriched_at` so the legacy zero-move rule can apply.
+ */
+export function formatReactionSnapshot(
+  json: string | null,
+  evidence: ReactionEvidence = {},
+): string | null {
+  const read = readReactionLegs(json, evidence);
+  if (!read) return null;
+  const { snapshot: snap, measured } = read;
+  if (Object.keys(measured).length === 0) return null;
+  const lines: string[] = [];
+  const win = (snap.window_min as number | undefined) ?? 120;
+  // pre_anchor snapshots (earnings, 2026-08-04) measure each move from the
+  // prior regular-session close, not from the release-time bar — say so, or
+  // the reader compares these against day-change numbers and calls them off.
+  const basis =
+    snap.pre_anchor === "prior_close"
+      ? `moves vs prior close, measured at T+${win} minutes`
+      : `T+${win} minutes from release`;
+  lines.push(`- Window: ${basis} (source: ${snap.source ?? "?"})`);
+  if (measured.symbol) {
+    lines.push(`- ${measured.symbol.symbol ?? "stock"}: ${pctSign(measured.symbol.delta_pct)}`);
   }
+  if (measured.spy) lines.push(`- SPY: ${pctSign(measured.spy.delta_pct)}`);
+  if (measured.qqq) lines.push(`- QQQ: ${pctSign(measured.qqq.delta_pct)}`);
+  if (measured.tlt) lines.push(`- TLT: ${pctSign(measured.tlt.delta_pct)}`);
+  if (measured.sector) {
+    lines.push(`- ${measured.sector.symbol ?? "sector ETF"}: ${pctSign(measured.sector.delta_pct)}`);
+  }
+  return lines.join("\n");
 }
 
 function pctSign(v: number): string {
@@ -1728,29 +1758,45 @@ function formatPctDelta(actual: number, consensus: number, kind: "eps" | "revenu
   return `${sign}${pct.toFixed(1)}%`;
 }
 
-// Raw numeric sibling of readReactionDelta — same parsing, no formatting.
-// Used by the scoreboard's implied-vs-realized "expected move" row, which
-// needs the number to compare against `intel.impliedMovePct`, not just a
-// pre-formatted display string.
-function readReactionPct(json: string | null, key: "spy" | "qqq" | "tlt" | "symbol"): number | null {
-  if (!json) return null;
-  try {
-    const snap = JSON.parse(json) as Record<string, unknown>;
-    const node = snap[key] as BenchmarkReaction | undefined;
-    // isUsableReactionLeg rejects the 0/0 sentinel class (2026-09-10 qa fix)
-    // — a leg with dead/zero prices must never read back as a real delta.
-    if (!isUsableReactionLeg(node)) return null;
-    return node.delta_pct;
-  } catch {
-    return null;
-  }
+// One scoreboard reaction leg, read through the validity rule
+// (lib/calendar/reaction-validity.ts). `pct` is set only for a MEASURED leg.
+// A dead/zero quote (2026-09-10 qa fix) is "absent"; a figure that is not a
+// measurement yet (2026-10-08) is "pending". Neither ever reads back as a
+// delta: the scoreboard's implied-vs-realized row compares `pct` against
+// `intel.impliedMovePct`, so a pending stock leg publishes no verdict.
+type ScoreboardLegKey = "spy" | "qqq" | "tlt" | "symbol";
+interface ScoreboardLeg {
+  state: "measured" | "pending" | "absent";
+  pct: number | null;
 }
 
-function readReactionDelta(json: string | null, key: "spy" | "qqq" | "tlt" | "symbol"): string {
-  const v = readReactionPct(json, key);
-  if (v == null) return "—";
-  const sign = v >= 0 ? "+" : "";
-  return `${sign}${v.toFixed(2)}%`;
+function readScoreboardLeg(
+  json: string | null,
+  key: ScoreboardLegKey,
+  evidence: ReactionEvidence,
+): ScoreboardLeg {
+  const read = readReactionLegs(json, evidence);
+  const leg = read?.measured[key];
+  if (leg) return { state: "measured", pct: leg.delta_pct };
+  if (read?.pending.includes(key)) return { state: "pending", pct: null };
+  return { state: "absent", pct: null };
+}
+
+// The cell text. An outbound email says nothing ("—") for a pending leg; only
+// the in-app viewer passes `pendingLabel` and shows the word.
+function formatScoreboardLeg(leg: ScoreboardLeg, pendingLabel: boolean): string {
+  if (leg.pct == null) return leg.state === "pending" && pendingLabel ? "pending" : "—";
+  const sign = leg.pct >= 0 ? "+" : "";
+  return `${sign}${leg.pct.toFixed(2)}%`;
+}
+
+export interface HeadlineTableOptions {
+  /**
+   * In-app surfaces only (the email viewer's rebuilt scoreboard): show the
+   * word "pending" for a reaction leg that is not a measurement yet. Every
+   * outbound composer leaves this off, so a sent email shows a dash.
+   */
+  pendingReactionLabel?: boolean;
 }
 
 // ── Earnings-intelligence scoreboard rows (Task 7) ─────────────────
@@ -1842,10 +1888,11 @@ ${rows.join("\n")}
 // snapshot at email-send time.
 export function renderHeadlineTable(
   event: Pick<CalendarEvent, "consensus_estimate" | "actual_value" | "consensus_value" | "reaction_snapshot"> &
-    Partial<Pick<CalendarEvent, "manual_actuals_at">>,
+    Partial<Pick<CalendarEvent, "manual_actuals_at" | "enriched_at">>,
   symbol: string,
   phase: "preview" | "recap",
   intel?: EarningsIntelView | null,
+  options: HeadlineTableOptions = {},
 ): string {
   // Consensus precedence: consensus_value (at-release, set by enrichment) wins
   // over consensus_estimate (Finnhub-sync-time). Apply identically to BOTH
@@ -1890,9 +1937,22 @@ export function renderHeadlineTable(
 
   // Reaction rows are recap-only; preview leaves the actual columns blank.
   const isRecap = phase === "recap";
-  const stockReaction = isRecap ? readReactionDelta(event.reaction_snapshot, "symbol") : "—";
-  const spyReaction = isRecap ? readReactionDelta(event.reaction_snapshot, "spy") : "—";
-  const qqqReaction = isRecap ? readReactionDelta(event.reaction_snapshot, "qqq") : "—";
+  // Each leg goes through the validity rule; the row's enriched_at feeds the
+  // legacy zero-move check. A pending leg is a dash in an email and the word
+  // "pending" only in the in-app viewer.
+  const reactionEvidence: ReactionEvidence = { rowEnrichedAt: event.enriched_at };
+  const pendingLabel = options.pendingReactionLabel === true;
+  const stockLeg = readScoreboardLeg(event.reaction_snapshot, "symbol", reactionEvidence);
+  const reactionCell = (key: ScoreboardLegKey): string =>
+    isRecap
+      ? formatScoreboardLeg(
+          key === "symbol" ? stockLeg : readScoreboardLeg(event.reaction_snapshot, key, reactionEvidence),
+          pendingLabel,
+        )
+      : "—";
+  const stockReaction = reactionCell("symbol");
+  const spyReaction = reactionCell("spy");
+  const qqqReaction = reactionCell("qqq");
 
   const phaseLabel = phase === "preview" ? "into the print" : "post-print";
 
@@ -1907,7 +1967,7 @@ export function renderHeadlineTable(
   let impliedActual = "—";
   let impliedVerdict = "—";
   if (isRecap && intel?.impliedMovePct != null) {
-    const realized = readReactionPct(event.reaction_snapshot, "symbol");
+    const realized = stockLeg.pct;
     if (realized != null) {
       impliedActual = `${realized >= 0 ? "+" : ""}${realized.toFixed(1)}%`;
       impliedVerdict = Math.abs(realized) <= intel.impliedMovePct ? "inside" : "outside";
@@ -1915,7 +1975,10 @@ export function renderHeadlineTable(
       // A stored-but-unusable (or missing) symbol leg — never publish an
       // inside/outside verdict from a leg that couldn't be measured
       // (2026-09-10 qa fix: better a blank than a fabricated comparison).
-      impliedVerdict = "— no reaction quote";
+      // A pending stock leg is the same blank in an email; the in-app
+      // viewer names it.
+      impliedVerdict =
+        stockLeg.state === "pending" && pendingLabel ? "— reaction pending" : "— no reaction quote";
     }
   }
 
@@ -2056,6 +2119,20 @@ export function renderRecapPrompt(ctx: RecapContext): string {
     ? `\n## Market reaction (T+2h, captured automatically)\n${ctx.reactionSnapshotMarkdown}\n`
     : `\n## Market reaction\nReaction snapshot not yet captured. Say so in one line. Do NOT use web_search to find a price or a move, and do not quote an after-hours price or a stock move from any source, a sell-side headline included: a later figure would post-date this email.\n`;
 
+  // The intro and the scoreboard sentence speak of a reaction only when one
+  // was measured. With no snapshot the old wording told the model the reader
+  // had "digested the immediate market reaction" and that the scoreboard shows
+  // reaction figures, two lines above a block saying none was captured. The
+  // measured wording is unchanged byte for byte
+  // (tests/digest/earnings-prompt-prose-rules.test.ts pins its hash).
+  const hasReaction = Boolean(ctx.reactionSnapshotMarkdown);
+  const introGoal = hasReaction
+    ? `brief him as a colleague who just digested the print and the immediate market reaction.`
+    : `brief him as a colleague who just digested the print. The market reaction has not been captured yet.`;
+  const scoreboardShows = hasReaction
+    ? `it shows EPS / Revenue / expected-vs-realized move / avg historical move / stock + SPY + QQQ reactions`
+    : `it shows EPS / Revenue / expected move / avg historical move; its reaction rows are blank because no reaction has been captured yet`;
+
   const positionsBlock = renderPositionsBlock(ctx);
   const userNotesBlock = renderUserNotesBlock(ctx);
   const bogeysBlock = renderBogeysBlock(ctx);
@@ -2072,7 +2149,7 @@ export function renderRecapPrompt(ctx: RecapContext): string {
     : "";
   const priorCallBlock = renderPriorTranscriptBlock(ctx);
 
-  return `You are a financial analyst writing a focused post-earnings recap for a single portfolio manager who holds ${ctx.symbol}. The release was approximately 2 hours ago. Goal: brief him as a colleague who just digested the print and the immediate market reaction.
+  return `You are a financial analyst writing a focused post-earnings recap for a single portfolio manager who holds ${ctx.symbol}. The release was approximately 2 hours ago. Goal: ${introGoal}
 
 ## Event
 - Symbol: **${ctx.symbol}**
@@ -2098,7 +2175,7 @@ ${priorCallBlock}
 
 Use the structured context above as the source of truth. **For anything missing — call commentary, post-print sell-side reactions, transcript quotes, guidance change details — use web_search** with focus on the last 4 hours of coverage. Cite source URLs inline. **When evaluating beat/miss, anchor against the bogeys block (especially whisper numbers) when present, not just the Finnhub consensus.**
 
-**IMPORTANT — output structure.** A deterministic "scoreboard" table is rendered ABOVE your output by the system (it shows EPS / Revenue / expected-vs-realized move / avg historical move / stock + SPY + QQQ reactions). Do NOT repeat those headline metrics. Your output starts with the line-by-line table (same shape as the preview, but filled in), then prose. Specifically:
+**IMPORTANT — output structure.** A deterministic "scoreboard" table is rendered ABOVE your output by the system (${scoreboardShows}). Do NOT repeat those headline metrics. Your output starts with the line-by-line table (same shape as the preview, but filled in), then prose. Specifically:
 
 1. **\`## Line-by-line metrics\`** — a markdown table with EXACTLY these columns:
 
@@ -2423,46 +2500,35 @@ export function renderSheetBogeysBlock(bogeys: EarningsBogey[]): string {
   return `## Sheet bogeys — by source\n\n${header}\n${sep}\n${body}${olderLine}`;
 }
 
+/**
+ * The rows the sheet table shows at least one cell from, in the order given.
+ * The table itself is the judge (a row it renders nothing for alone is not a
+ * column), so this filter and the rendering cannot disagree.
+ */
+export function sheetBogeysWithCells(bogeys: EarningsBogey[]): EarningsBogey[] {
+  return bogeys.filter((b) => renderSheetBogeysBlock([b]) !== "");
+}
+
 function renderBogeysBlock(ctx: PreviewContext): string {
-  if (ctx.bogeys.length === 0) return "";
-  const lines = ctx.bogeys.map((b, i) => {
+  // One helper decides which rows are entries AND what each prints
+  // (lib/earnings/bogey-prompt-entries.ts): a row with nothing printed is not
+  // an entry, so the block never lists a heading with nothing under it.
+  const entries = bogeysPrintedInPrompt(ctx.bogeys);
+  if (entries.length === 0) return "";
+  const lines = entries.map(({ bogey: b, body }, i) => {
     const sourceLabel = b.source_label ?? `${b.source} (no label)`;
-    const fields: string[] = [];
-    if (b.eps_consensus != null) fields.push(`EPS consensus ${b.eps_consensus.toFixed(2)}`);
-    if (b.eps_whisper != null) fields.push(`EPS **whisper ${b.eps_whisper.toFixed(2)}**`);
-    if (b.revenue_consensus_usd != null) fields.push(`revenue consensus ${formatLargeUSD(b.revenue_consensus_usd)}`);
-    if (b.revenue_whisper_usd != null) fields.push(`revenue **whisper ${formatLargeUSD(b.revenue_whisper_usd)}**`);
-    if (b.expected_move_pct != null) fields.push(`expected move ±${b.expected_move_pct.toFixed(1)}%`);
-    const head = fields.length > 0 ? `\n${fields.join(" · ")}` : "";
-    let segs = "";
-    if (b.segment_breakdown_json) {
-      try {
-        const parsed = JSON.parse(b.segment_breakdown_json) as Record<
-          string,
-          { consensus?: number; whisper?: number }
-        >;
-        const segLines = Object.entries(parsed).map(([name, vals]) => {
-          const segFields: string[] = [];
-          if (vals.consensus != null) segFields.push(`consensus ${formatLargeUSD(vals.consensus)}`);
-          if (vals.whisper != null) segFields.push(`whisper ${formatLargeUSD(vals.whisper)}`);
-          return `  - ${name}: ${segFields.join(", ")}`;
-        });
-        if (segLines.length > 0) {
-          segs = `\nSegment splits:\n${segLines.join("\n")}`;
-        }
-      } catch {
-        // Stored JSON malformed — skip silently.
-      }
-    }
-    const guidance = b.guidance_notes ? `\nGuidance: ${b.guidance_notes}` : "";
-    const notes = b.notes ? `\nNotes: ${b.notes}` : "";
-    return `### [${i + 1}] ${sourceLabel} (uploaded ${b.uploaded_at})${head}${segs}${guidance}${notes}`;
+    return `### [${i + 1}] ${sourceLabel} (uploaded ${b.uploaded_at})${body}`;
   });
+  // Only when a vendor figure is printed, so a block of curated rows reads
+  // exactly as before.
+  const vendorClause = entries.some((e) => bogeyPrintsVendorEps(e.bogey))
+    ? `A "vendor EPS consensus" figure is the data vendor's figure on an unspecified basis, not a curated bogey: quote it as the vendor's, and an entry that carries only vendor figures is never the primary consensus reference when a curated entry is listed.\n\n`
+    : "";
   return `\n## Bogeys (user-curated — preferred over Finnhub consensus, most recent first)
 
 These are bogeys the user pulled from preferred sources (TMT Breakout, sell-side notes) and uploaded for THIS event. **Treat the most recent entry as the primary consensus reference.** Whisper numbers, when present, are the directional bar that matters — beat-the-whisper is the meaningful event, not beat-consensus. Cite the source label inline when discussing them.
 
-${lines.join("\n\n---\n\n")}
+${vendorClause}${lines.join("\n\n---\n\n")}
 `;
 }
 

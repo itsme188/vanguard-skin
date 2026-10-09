@@ -27,7 +27,9 @@
  *   3. Filter to held|watchlist (snapshot.heldSymbols) + earningsSettings
  *      (master toggle + muted symbols).
  *   4. Skip events Mac already audited (snapshot.earningsEmails) OR with
- *      mac-sent-* / cloud-sent-* / mac-running-* markers in KV.
+ *      mac-sent-* / cloud-sent-* / mac-running-* markers in KV. The same two
+ *      checks are also asked of the print's sibling rows (same issuer family,
+ *      same event_date) — see siblingEventIndex.
  *   5. For each candidate: compose lean email, send via Worker Gmail,
  *      write cloud-sent marker.
  */
@@ -53,6 +55,7 @@ import {
   readArmedEventsDelta,
 } from "./armed-events";
 import { briefingToHtml } from "./html";
+import { snapshotBogeyHasContent, snapshotBogeysPrinted } from "./bogey-content";
 import { sendEmail } from "./resend";
 import { composeReleaseInstant } from "./reaction-matcher";
 import { isUsableReactionLeg } from "./reaction-leg";
@@ -181,6 +184,13 @@ interface SnapshotCandidate {
   event: CalendarEventRow;
   /** Present on KV-road recap candidates — carries same-day cloud-enriched data. */
   payload?: CloudEnrichedPayload | null;
+  /**
+   * Ids of the OTHER earnings rows for the same print (same issuer family,
+   * same event_date, showing or hidden). Usually empty. The send loop reads
+   * their KV markers so a phase already handled on a sibling is not sent
+   * again — see siblingEventIndex.
+   */
+  siblingEventIds: number[];
 }
 
 interface ScanSkip {
@@ -359,6 +369,51 @@ function buildWrapCluster(
     eventId: e.id,
     symbol: (e.symbol as string).toUpperCase(),
   }));
+}
+
+/**
+ * "This phase is already handled for this print" — asked of the row's
+ * SIBLINGS: every other earnings row of the same issuer family on the same
+ * event_date, showing or hidden. Worker mirror of the Mac's
+ * phaseHandledOnSibling (lib/calendar/enrichment-runner.ts, 2026-10-08).
+ *
+ * Why: two rows for one print can both be showing and sit at different times
+ * (a Nasdaq row with a before-open slot, its Finnhub twin on the hour-unknown
+ * afternoon default). Each row checked only its OWN (event, phase) key, so
+ * the print could get a preview in the morning on one row and a second one
+ * in the afternoon on the other.
+ *
+ * This builds the lookup "row -> ids of its siblings". The caller then asks
+ * each sibling the SAME question a row asks about itself, from the same two
+ * places: the snapshot's earnings-email rows (a live claim does not count,
+ * exactly as for the row's own key) and the KV markers (Mac sent, cloud
+ * sent, Mac running). The two rules cannot disagree because they are one
+ * rule applied to a longer list of ids.
+ *
+ * Protective only: it can remove a candidate, never add one. Family, not
+ * symbol equality (GOOG / GOOGL). Not applied to the wrap cluster. The
+ * hand-entered-twin rule (manual-twin-email.ts) is separate and untouched.
+ *
+ * KNOWN GAP vs the Mac: the snapshot does not ship earnings_email_skips, so a
+ * skip recorded on a sibling is invisible here (the same pre-existing limit
+ * as a skip on the row itself).
+ */
+function siblingEventIndex(
+  events: readonly CalendarEventRow[],
+): (e: CalendarEventRow) => number[] {
+  const keyOf = (e: CalendarEventRow): string =>
+    `${[...new Set(issuerSiblings((e.symbol as string) ?? "").map((s) => s.toUpperCase()))]
+      .sort()
+      .join(",")}|${e.event_date}`;
+  const byPrint = new Map<string, number[]>();
+  for (const e of events) {
+    if (e.event_type !== "earnings" || !e.symbol) continue;
+    const key = keyOf(e);
+    const ids = byPrint.get(key);
+    if (ids) ids.push(e.id);
+    else byPrint.set(key, [e.id]);
+  }
+  return (e) => (byPrint.get(keyOf(e)) ?? []).filter((id) => id !== e.id);
 }
 
 /**
@@ -562,6 +617,31 @@ export async function runEarningsFallback(
       continue;
     }
 
+    // The same marker question, asked of the print's other rows (see
+    // siblingEventIndex). Read here, not in the scan, so (a) only the capped
+    // set pays for it — three KV reads per sibling, and almost every row has
+    // none — and (b) a cloud-sent marker written earlier in THIS loop is seen:
+    // two showing rows of one print in the same tick send one email.
+    let siblingReason: string | null = null;
+    for (const siblingId of cand.siblingEventIds) {
+      const sib = await readEarningsMarkers(env.CRON_KV, cand.phase, siblingId);
+      if (sib.cloud) siblingReason = "sibling-cloud-already-sent";
+      else if (sib.mac) siblingReason = "sibling-mac-already-sent";
+      else if (sib.macRunning) siblingReason = "sibling-mac-running";
+      if (siblingReason) break;
+    }
+    if (siblingReason) {
+      result.skipped++;
+      result.details.push({
+        eventId: cand.eventId,
+        symbol: cand.symbol,
+        phase: cand.phase,
+        status: "skipped",
+        reason: siblingReason,
+      });
+      continue;
+    }
+
     let implausible = false;
     if (cand.phase === "recap") {
       const verdict = evaluateRecapContent(cand.event, cand.payload ?? null);
@@ -660,6 +740,13 @@ async function findCandidatesFromSnapshot(
   // (lib/earnings/manual-twin-email.ts <-> ./manual-twin-email.ts).
   const ignoredManualTwins = emailIgnoredManualTwins(eff.events, issuerSiblings);
 
+  // A phase already handled on another row of the same print (see
+  // siblingEventIndex). The snapshot half is answered here; the KV-marker
+  // half is answered in the send loop, from the ids carried on the candidate.
+  const siblingsOf = siblingEventIndex(eff.events);
+  const handledOnSibling = (siblingIds: number[], phase: EarningsPhase): boolean =>
+    siblingIds.some((id) => auditedSet.has(auditKey(id, phase)));
+
   for (const e of eff.events) {
     if (e.event_type !== "earnings") continue;
     if (!e.symbol) continue;
@@ -683,13 +770,19 @@ async function findCandidatesFromSnapshot(
     const family = issuerSiblings(sym).map((s) => s.toUpperCase());
     if (family.some((f) => muted.has(f))) continue;
 
+    const siblingEventIds = siblingsOf(e);
+
     // Preview candidate
     if (e.release_time && !auditedSet.has(auditKey(e.id, "preview"))) {
       const releaseInstant = composeReleaseInstant(e.event_date, e.release_time as string);
       if (releaseInstant) {
         const msUntilRelease = releaseInstant.getTime() - nowMs;
         if (msUntilRelease >= PREVIEW_WINDOW_MIN_MS && msUntilRelease <= PREVIEW_WINDOW_MAX_MS) {
-          out.push({ eventId: e.id, symbol: sym, phase: "preview", event: e });
+          if (handledOnSibling(siblingEventIds, "preview")) {
+            skips.push({ eventId: e.id, symbol: sym, phase: "preview", reason: "handled-on-sibling" });
+          } else {
+            out.push({ eventId: e.id, symbol: sym, phase: "preview", event: e, siblingEventIds });
+          }
         }
       }
     }
@@ -709,8 +802,10 @@ async function findCandidatesFromSnapshot(
         if (ageMs >= 0 && ageMs <= RECAP_WINDOW_MAX_MS) {
           if (((e as Record<string, unknown>).actual_value ?? null) == null) {
             skips.push({ eventId: e.id, symbol: sym, phase: "recap", reason: "no-actual" });
+          } else if (handledOnSibling(siblingEventIds, "recap")) {
+            skips.push({ eventId: e.id, symbol: sym, phase: "recap", reason: "handled-on-sibling" });
           } else {
-            out.push({ eventId: e.id, symbol: sym, phase: "recap", event: e });
+            out.push({ eventId: e.id, symbol: sym, phase: "recap", event: e, siblingEventIds });
           }
         }
       }
@@ -728,6 +823,12 @@ async function findCandidatesFromSnapshot(
       if (releaseInstant) {
         const sinceRelease = nowMs - releaseInstant.getTime();
         if (sinceRelease >= 0 && sinceRelease <= KV_PROBE_WINDOW_MS) {
+          // Recap already handled on a sibling row: no candidate, and no KV
+          // probe spent on it either.
+          if (handledOnSibling(siblingEventIds, "recap")) {
+            skips.push({ eventId: e.id, symbol: sym, phase: "recap", reason: "handled-on-sibling" });
+            continue;
+          }
           try {
             const raw = await kv.get(cloudEnrichedKey(e.id));
             if (!raw) {
@@ -739,7 +840,7 @@ async function findCandidatesFromSnapshot(
               } else {
                 const readyMs = Date.parse(payload.fetchedAt);
                 if (Number.isFinite(readyMs) && nowMs - readyMs >= 0 && nowMs - readyMs <= RECAP_WINDOW_MAX_MS) {
-                  out.push({ eventId: e.id, symbol: sym, phase: "recap", event: e, payload });
+                  out.push({ eventId: e.id, symbol: sym, phase: "recap", event: e, payload, siblingEventIds });
                 }
                 // fetchedAt outside the 4h window → expired recap, silent
                 // (mirrors the snapshot road's silent expiry).
@@ -963,13 +1064,13 @@ export function evaluateRecapContent(
   // actually render, not merely a truthy-but-empty payload (e.g. `{}`) —
   // readReactionDelta is the same defensive reader the scoreboard itself
   // uses, so "has a data point" and "renders a data point" can't diverge.
-  const reactionJson =
-    (event.reaction_snapshot as string | null) ??
-    (payload?.reaction != null ? JSON.stringify(payload.reaction) : null);
+  // A leg that is not a measurement yet (pending) renders a dash too, so it
+  // is not a data point either (2026-10-08).
+  const { reactionJson, rowEnrichedAt } = reactionSourceFor(event, payload);
   const hasReaction =
-    readReactionDelta(reactionJson, "symbol") !== "—" ||
-    readReactionDelta(reactionJson, "spy") !== "—" ||
-    readReactionDelta(reactionJson, "qqq") !== "—";
+    readReactionDelta(reactionJson, "symbol", rowEnrichedAt) !== "—" ||
+    readReactionDelta(reactionJson, "spy", rowEnrichedAt) !== "—" ||
+    readReactionDelta(reactionJson, "qqq", rowEnrichedAt) !== "—";
   if (!plausible && !hasReaction) return { send: false, reason: "implausible-no-data-point" };
   return { send: true, implausible: !plausible };
 }
@@ -1078,16 +1179,9 @@ function histPrintsLabel(history: EarningsHistorySnapshotEntry | null | undefine
 function readReactionPct(
   json: string | null,
   key: "spy" | "qqq" | "tlt" | "symbol",
+  rowEnrichedAt: string | null | undefined,
 ): number | null {
-  if (!json) return null;
-  try {
-    const snap = JSON.parse(json) as Record<string, unknown>;
-    const node = snap[key] as { t_pre?: number; t_post?: number; delta_pct?: number } | undefined;
-    if (!isUsableReactionLeg(node)) return null;
-    return node.delta_pct;
-  } catch {
-    return null;
-  }
+  return readMeasuredReactionPct(json, key, rowEnrichedAt);
 }
 
 /**
@@ -1152,12 +1246,12 @@ export function renderScoreboard(
       : "—";
 
   const isRecap = phase === "recap";
-  const reactionJson =
-    ((event.reaction_snapshot as string | null) ??
-      (payload?.reaction != null ? JSON.stringify(payload.reaction) : null));
-  const stockR = isRecap ? readReactionDelta(reactionJson, "symbol") : "—";
-  const spyR = isRecap ? readReactionDelta(reactionJson, "spy") : "—";
-  const qqqR = isRecap ? readReactionDelta(reactionJson, "qqq") : "—";
+  // PARITY (Mac: renderHeadlineTable -> readScoreboardLeg): a leg that is not
+  // a measurement yet is a dash in an outbound email, never a percent.
+  const { reactionJson, rowEnrichedAt } = reactionSourceFor(event, payload);
+  const stockR = isRecap ? readReactionDelta(reactionJson, "symbol", rowEnrichedAt) : "—";
+  const spyR = isRecap ? readReactionDelta(reactionJson, "spy", rowEnrichedAt) : "—";
+  const qqqR = isRecap ? readReactionDelta(reactionJson, "qqq", rowEnrichedAt) : "—";
 
   const phaseLabel = phase === "preview" ? "into the print" : "post-print";
   const sym = event.symbol ?? "";
@@ -1179,14 +1273,15 @@ export function renderScoreboard(
     let impliedActual = "—";
     let impliedVerdict = "—";
     if (isRecap && intelCtx?.intel?.impliedMovePct != null) {
-      const realized = readReactionPct(reactionJson, "symbol");
+      const realized = readReactionPct(reactionJson, "symbol", rowEnrichedAt);
       if (realized != null) {
         impliedActual = `${realized >= 0 ? "+" : ""}${realized.toFixed(1)}%`;
         impliedVerdict = Math.abs(realized) <= intelCtx.intel.impliedMovePct ? "inside" : "outside";
       } else {
         // A stored-but-unusable (or missing) symbol leg — never publish an
         // inside/outside verdict from a leg that couldn't be measured
-        // (parity with the Mac's renderHeadlineTable).
+        // (parity with the Mac's renderHeadlineTable). A pending stock leg
+        // is the same blank.
         impliedVerdict = "— no reaction quote";
       }
     }
@@ -1371,10 +1466,17 @@ function resolveNotesForFamily(
 }
 
 function resolveBogeysForEvent(snapshot: Snapshot, eventId: number): SnapshotBogey[] {
-  return (snapshot.earningsBogeys ?? [])
-    .filter((b) => b.event_id === eventId)
+  const rows = (snapshot.earningsBogeys ?? [])
+    // A row that holds nothing is not a bogey (PARITY: the Mac's
+    // getBogeysWithContentForEvent).
+    .filter((b) => b.event_id === eventId && snapshotBogeyHasContent(b))
     // Most recently uploaded first — the Mac composer prefers the latest set.
     .sort((a, b) => (a.uploaded_at < b.uploaded_at ? 1 : -1));
+  // And a row this email prints nothing from is not an entry either (PARITY:
+  // the Mac's bogeysPrintedInPrompt). `hasBogeys` is this list's length and
+  // `renderBogeysBlock` renders through the same helper, so an event whose
+  // rows print nothing composes exactly like one with none.
+  return snapshotBogeysPrinted(rows).map((e) => e.bogey);
 }
 
 const NOTE_CHAR_CAP = 600;
@@ -1392,29 +1494,14 @@ function renderNotesBlock(notes: SnapshotNote[], symbol: string): string {
   return `## Your prior notes on ${symbol} — read these FIRST\n\nYour own journal / earnings / trade-thesis notes on ${symbol} or a sibling-class security. Frame the event against this prior view.\n\n${lines.join("\n\n---\n\n")}`;
 }
 
-/** Compact USD for bogey figures (no Mac lib import). 92e9 → "$92.0B". */
-function formatBogeyUSD(n: number): string {
-  if (Math.abs(n) >= 1e9) return `$${(n / 1e9).toFixed(2)}B`;
-  if (Math.abs(n) >= 1e6) return `$${(n / 1e6).toFixed(1)}M`;
-  if (Math.abs(n) >= 1e3) return `$${Math.round(n).toLocaleString("en-US")}`;
-  return `$${n.toFixed(2)}`;
-}
-
 function renderBogeysBlock(bogeys: SnapshotBogey[]): string {
-  if (bogeys.length === 0) return "";
-  const lines = bogeys.map((b, i) => {
+  // The helper that decides which rows are entries also supplies what each
+  // prints (bogey-content.ts), so no entry is a heading with nothing under it.
+  const entries = snapshotBogeysPrinted(bogeys);
+  if (entries.length === 0) return "";
+  const lines = entries.map(({ bogey: b, body }, i) => {
     const label = b.source_label ?? `${b.source} (no label)`;
-    const fields: string[] = [];
-    if (b.eps_consensus != null) fields.push(`EPS consensus ${b.eps_consensus.toFixed(2)}`);
-    if (b.eps_whisper != null) fields.push(`EPS **whisper ${b.eps_whisper.toFixed(2)}**`);
-    if (b.revenue_consensus_usd != null)
-      fields.push(`Rev consensus ${formatBogeyUSD(b.revenue_consensus_usd)}`);
-    if (b.revenue_whisper_usd != null)
-      fields.push(`Rev **whisper ${formatBogeyUSD(b.revenue_whisper_usd)}**`);
-    const head = fields.length > 0 ? `\n${fields.join(" · ")}` : "";
-    const guidance = b.guidance_notes ? `\nGuidance: ${b.guidance_notes}` : "";
-    const notes = b.notes ? `\nNotes: ${b.notes}` : "";
-    return `### [${i + 1}] ${label} (uploaded ${b.uploaded_at})${head}${guidance}${notes}`;
+    return `### [${i + 1}] ${label} (uploaded ${b.uploaded_at})${body}`;
   });
   return `## Bogeys (your curated consensus + whisper — preferred over Finnhub)\n\nWhisper numbers are the bar that matters — beat-the-whisper is the meaningful event. Most recent set first.\n\n${lines.join("\n\n---\n\n")}`;
 }
@@ -1484,20 +1571,119 @@ function formatPctDelta(actual: number, consensus: number, kind: "eps" | "revenu
   return `${pct >= 0 ? "+" : ""}${pct.toFixed(1)}%`;
 }
 
+// ── Is a stored reaction leg a measurement yet? ──────────────────────────────
+// PARITY (Mac: lib/calendar/reaction-validity.ts::reactionLegVerdict). The
+// Worker cannot import lib/, so this is a hand copy of the rule; the table in
+// test/fallback-earnings.test.ts runs it against the Mac function. Change
+// both sides together.
+//
+// A reaction is the move from just before a release to the price `window_min`
+// minutes after it. Until that window has elapsed there is nothing to
+// measure, and an email never prints a percent for it (owner ruling
+// 2026-10-08). Evidence, strongest first:
+//   1. `captured_at` on the snapshot: earlier than t0 + window means the
+//      whole snapshot is pending; at or after it every usable leg is
+//      measured, even a flat one. An unreadable t0 fails closed.
+//   2. No `captured_at` (older rows, and every snapshot the Worker captures):
+//      a) identical pre and post prices are not trusted as a move;
+//      b) a leg of exactly 0 on a row whose `enriched_at` is more than the
+//         bar tolerance (ten minutes) before the window end is not trusted.
+const DEFAULT_REACTION_WINDOW_MIN = 120;
+const REACTION_BAR_TOLERANCE_MS = 10 * 60 * 1000;
+
+/** A stored UTC instant: ISO, or SQLite "YYYY-MM-DD HH:MM:SS" with no marker. */
+function parseUtcInstantMs(raw: unknown): number | null {
+  if (typeof raw !== "string") return null;
+  const s = raw.trim();
+  if (!s) return null;
+  const hasZone = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(s);
+  const ms = Date.parse(hasZone ? s : `${s.replace(" ", "T")}Z`);
+  return Number.isFinite(ms) ? ms : null;
+}
+
+export type WorkerReactionLegState = "measured" | "pending" | "absent";
+
+export function workerReactionLegState(
+  snapshot: Record<string, unknown> | null | undefined,
+  leg: { t_pre?: number; t_post?: number; delta_pct?: number } | null | undefined,
+  rowEnrichedAt?: string | null,
+): WorkerReactionLegState {
+  if (!snapshot || !isUsableReactionLeg(leg)) return "absent";
+
+  let windowEnd: number | null = null;
+  const t0Raw = snapshot.t0_utc;
+  if (typeof t0Raw === "string" && t0Raw) {
+    const t0 = Date.parse(t0Raw);
+    if (Number.isFinite(t0)) {
+      const w = snapshot.window_min;
+      const windowMin =
+        typeof w === "number" && Number.isFinite(w) && w > 0 ? w : DEFAULT_REACTION_WINDOW_MIN;
+      windowEnd = t0 + windowMin * 60 * 1000;
+    }
+  }
+
+  const capturedAt = parseUtcInstantMs(snapshot.captured_at);
+  if (capturedAt != null) {
+    return windowEnd == null || capturedAt < windowEnd ? "pending" : "measured";
+  }
+
+  if (leg.t_pre === leg.t_post) return "pending";
+  if (leg.delta_pct === 0 && windowEnd != null) {
+    const enrichedAt = parseUtcInstantMs(rowEnrichedAt);
+    if (enrichedAt != null && enrichedAt < windowEnd - REACTION_BAR_TOLERANCE_MS) return "pending";
+  }
+  return "measured";
+}
+
+/**
+ * Which reaction the recap reads, and the evidence that travels with it. The
+ * snapshot row's own reaction_snapshot wins (road 1); otherwise the same-day
+ * cloud payload's (road 2). The row's `enriched_at` describes the ROW's
+ * snapshot only, so it is passed along for road 1 and never for a payload
+ * reaction (that one is judged on what the snapshot itself carries).
+ */
+function reactionSourceFor(
+  event: CalendarEventRow,
+  payload: CloudEnrichedPayload | null,
+): { reactionJson: string | null; rowEnrichedAt: string | null } {
+  const rowJson = (event.reaction_snapshot as string | null) ?? null;
+  if (rowJson != null) {
+    const stamp = (event as Record<string, unknown>).enriched_at;
+    return { reactionJson: rowJson, rowEnrichedAt: typeof stamp === "string" ? stamp : null };
+  }
+  return {
+    reactionJson: payload?.reaction != null ? JSON.stringify(payload.reaction) : null,
+    rowEnrichedAt: null,
+  };
+}
+
+/** The leg's percent when it is a real measurement; null when absent or pending. */
+function readMeasuredReactionPct(
+  json: string | null,
+  key: "spy" | "qqq" | "tlt" | "symbol",
+  rowEnrichedAt: string | null | undefined,
+): number | null {
+  if (!json) return null;
+  try {
+    const snap = JSON.parse(json) as unknown;
+    if (snap == null || typeof snap !== "object" || Array.isArray(snap)) return null;
+    const record = snap as Record<string, unknown>;
+    const node = record[key] as { t_pre?: number; t_post?: number; delta_pct?: number } | undefined;
+    if (workerReactionLegState(record, node, rowEnrichedAt) !== "measured") return null;
+    return (node as { delta_pct: number }).delta_pct;
+  } catch {
+    return null;
+  }
+}
+
 function readReactionDelta(
   json: string | null,
   key: "spy" | "qqq" | "tlt" | "symbol",
+  rowEnrichedAt: string | null | undefined,
 ): string {
-  if (!json) return "—";
-  try {
-    const snap = JSON.parse(json) as Record<string, unknown>;
-    const node = snap[key] as { t_pre?: number; t_post?: number; delta_pct?: number } | undefined;
-    if (!isUsableReactionLeg(node)) return "—";
-    const v = node.delta_pct;
-    return `${v >= 0 ? "+" : ""}${v.toFixed(2)}%`;
-  } catch {
-    return "—";
-  }
+  const v = readMeasuredReactionPct(json, key, rowEnrichedAt);
+  if (v == null) return "—";
+  return `${v >= 0 ? "+" : ""}${v.toFixed(2)}%`;
 }
 
 function formatDate(iso: string): string {

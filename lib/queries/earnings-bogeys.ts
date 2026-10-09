@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { bogeyHasContent } from "@/lib/mutations/earnings-bogeys";
 
 export type EarningsBogeySource = "pdf_upload" | "manual" | "newsletter" | "finnhub";
 
@@ -65,6 +66,24 @@ export function getBogeysForEvent(
                 ) DESC`,
     )
     .all(eventId) as EarningsBogey[];
+}
+
+/**
+ * The bogeys for an event that hold something, newest first: the reader for
+ * anything that goes OUT (the earnings email's prompt block). A row with every
+ * content column empty is not coverage (owner ruling 2026-08-12), so an event
+ * whose only rows are empty reads here exactly like an event with none.
+ *
+ * Same rows, same order as `getBogeysForEvent`, minus the empty ones, judged by
+ * the one rule in lib/mutations/earnings-bogeys.ts (`bogeyHasContent`).
+ * `getBogeysForEvent` itself stays unfiltered on purpose: the edit modal must
+ * still show an empty row so the user can fill it in or delete it.
+ */
+export function getBogeysWithContentForEvent(
+  db: Database.Database,
+  eventId: number,
+): EarningsBogey[] {
+  return getBogeysForEvent(db, eventId).filter((b) => bogeyHasContent(b));
 }
 
 /**

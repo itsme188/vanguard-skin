@@ -31,7 +31,7 @@ export class BogeysExtractionError extends Error {
   constructor(
     message: string,
     public readonly status: number,
-    public readonly code: "invalid_pdf" | "upstream" | "truncated" | "unparseable",
+    public readonly code: "invalid_pdf" | "upstream" | "truncated" | "unparseable" | "unreadable",
   ) {
     super(message);
     this.name = "BogeysExtractionError";
@@ -226,8 +226,16 @@ export async function extractBogeysFromUpload(
     );
   }
   const textBlock = response.content.find((b) => b.type === "text");
-  if (!textBlock || textBlock.type !== "text") {
-    throw new Error("Bogeys extraction returned no text block.");
+  if (!textBlock || textBlock.type !== "text" || textBlock.text.trim() === "") {
+    // Nothing came back to parse: the model produced no reading of the file.
+    console.error("Bogeys extraction returned no text.");
+    throw new BogeysExtractionError(
+      isImage
+        ? "That image couldn't be read — try a clearer screenshot (PNG/JPEG) and upload again."
+        : "That file couldn't be read as a PDF — try re-exporting it and uploading again.",
+      422,
+      "unreadable",
+    );
   }
 
   // Output truncation produces syntactically-broken JSON that would otherwise

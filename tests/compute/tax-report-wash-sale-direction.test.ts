@@ -185,8 +185,8 @@ describe("wash-sale warning direction (QA tax-lots-wash-sales)", () => {
     expect(w.direction).toBe("before");
     expect(w.daysFromSale).toBe(10);
     expect(w.purchaseDate).toBe("2025-06-09");
-    expect(w.description).toContain("before the sale");
-    expect(w.description).not.toContain("repurchased");
+    expect(washSaleReplacementPhrase(w)).toContain("before the sale");
+    expect(washSaleReplacementPhrase(w)).not.toContain("repurchased");
   });
 
   it("flags direction 'after' when the replacement purchase follows the sale", () => {
@@ -200,7 +200,7 @@ describe("wash-sale warning direction (QA tax-lots-wash-sales)", () => {
     expect(w.direction).toBe("after");
     expect(w.daysFromSale).toBe(5);
     expect(w.purchaseDate).toBe("2025-06-24");
-    expect(w.description).toContain("repurchased");
+    expect(washSaleReplacementPhrase(w)).toContain("repurchased");
   });
 });
 
@@ -279,8 +279,8 @@ describe("wash-sale replacement selection: nearest the sale, ties to the after-s
     const w = report.washSaleWarnings[0];
     expect(w.direction).toBe("after");
     expect(w.daysFromSale).toBe(0);
-    expect(w.description).toContain("the same day");
-    expect(w.description).not.toContain("0 day");
+    expect(washSaleReplacementPhrase(w)).toContain("the same day");
+    expect(washSaleReplacementPhrase(w)).not.toContain("0 day");
   });
 
   it("leaves the W adjustment code untouched no matter which side is named", () => {
@@ -340,12 +340,15 @@ describe("washSaleReplacementPhrase (single source of the user-visible sentence)
     ).toBe("repurchased 2025-06-19, the same day");
   });
 
-  it("is the phrase the warning description itself is built from", () => {
+  it("is the only wording: a warning carries the facts, not a second pre-built sentence", () => {
+    // The warning used to carry a `description` string that no surface read.
+    // An unread copy of the wording can only drift from the one that is shown.
     const db = createTestDb();
     addReplacementLot(db, "2025-06-24", 20, 41);
     addTheLossSale(db);
     const w = generateTaxReport(db, 2025).washSaleWarnings[0];
-    expect(w.description).toContain(washSaleReplacementPhrase(w));
+    expect(w).not.toHaveProperty("description");
+    expect(washSaleReplacementPhrase(w)).toBe("repurchased 2025-06-24, 5 days after the sale");
     db.close();
   });
 });
