@@ -1047,3 +1047,39 @@ Seven commits. One Codex review (one high finding, answered by deploy timing, se
 - Selling more than half the book in one day is never reconciled from live data (the 50% shrink guard, working as designed); it needs a statement.
 - Still under the contrast floor and not part of this sweep: text in a faded colour (70 to 80 percent opacity) on Performance, Diagnostics and trade reviews; solid gold buttons with pale text; the 8px letters in the grades bar; the bell count badge, the Cmd+J hint and the nav sub-view markers in the light theme; two solid red destructive buttons; one violet tag.
 - The scope resolver still turns a named scope that matches no account into "every account"; about twenty readers and one tombstone cleanup that writes would follow it. No caller passes an empty list today.
+
+## 2026-10-09 (about 02:15) — Second overnight sprint, sixth wave: SQL dates, the last scope readers, the last contrast misses
+
+Eight commits. One Codex review (no production finding; one gap in a guard test, closed), one review by an agent that ran the code ("ready"; it rebuilt main's own queries with a controllable clock and compared them with this branch at five times of day), two browser passes in both themes.
+
+**Decisions taken. The owner should confirm or reverse each.**
+1. **Calendar-day comparisons in SQL use the Eastern day** (36 lines in 20 files, one helper, `lib/db/eastern-day-sql.ts`). SQLite's `date('now')` is the UTC day, already tomorrow from 20:00 Eastern. Every effect is in the evening only, and each makes the evening match the daytime:
+   - the expired-option and matured-bond purges keep their one-day grace in the evening (main deleted a contract that expired yesterday; nothing is ever deleted earlier than before);
+   - a name held only through an option that expires today keeps its earnings coverage until midnight Eastern, so an evening email for it can now go out where it was skipped;
+   - a bond maturing today, yesterday's live portfolio value, a three-day-old price and the oldest day of the notes window all behave in the evening as they do in the day.
+   The one daytime change: the chat's bond note counted one day short all day; it now says "today", "1 day" or "N days".
+2. **An expired option stored in the old compact date format no longer counts as held** for earnings coverage, factor classification or the fund-type sweep, and the purge now removes it on schedule. Before, it compared as live until the calendar year changed. No such row is on the live book (checked read-only), so nothing changes today.
+3. **The remaining holdings readers and the orphaned-tombstone cleanup treat a defined empty account list as no accounts.** The cleanup deletes; it could have widened to every account. No caller passes an empty list; the reviewer's comparison against main was byte-identical for every reader and every real scope.
+4. **The remaining small text reaches the contrast floor.** Visible changes to look at:
+   - **solid gold buttons in the light theme have near-black text** (31 buttons, including the login button; the dark theme is unchanged);
+   - red destructive buttons use a fill that passes in both themes, and dim on hover where they brightened;
+   - faded status text on Performance, Diagnostics, scenarios and trade reviews is full strength;
+   - factor heatmap tags in the light theme take a darker text colour derived from their hue;
+   - dim grey text inside the always-dark chart panel is lighter.
+   Colour only. Three repo scans now fail on a new miss of these kinds.
+
+**Reported, not changed (protected chat component, `ChatInterface.tsx`).** Each is a one-line change waiting for a go-ahead:
+- the Send button is still pale text on gold in the light theme (3.1 to 1): `bg-gold text-canvas` becomes `bg-gold text-ink [[data-theme=dark]_&]:text-canvas`;
+- the selected scope pill is 4.2 to 4.4 to 1 in the light theme: its `text-gold-ink` becomes the checked gold ink;
+- **the first Tab on a dashboard page lands in the chat box, not on "Skip to main content"**: the chat's scroll-to-bottom on mount (`scrollIntoView`, line 505) moves the browser's tab starting point. Scrolling the message container instead would fix it.
+
+**Found, not fixed.**
+- An intermittent rendering mismatch on the Giving page (about one hard load in seven on the dev server): generated element ids differ between server and client. The cause is above the Giving components and was not found; the practical effect is small (labels and inputs stay matched).
+- Two Giving year sections share one element id.
+- Seven elapsed-time SQL windows compare a stored timestamp without wrapping it in `datetime()`; one is known to let in up to a day extra.
+- `scripts/purge-expired-options-once.ts` has the same blind spot for the compact expiry format (operator script).
+
+**Lessons.**
+- Two builders sharing a file meant one unit's commit carried a few lines of the other's unfinished work, and for a moment the branch did not build on its own. Commit by file only when one builder owns the file, or wait for both.
+- A builder asked to list risky sites for a decision changed them instead. Each change was sound, but the brief should have said "stop and report" as the first line, not the last.
+- Colour inside an always-dark panel must be checked separately from the page theme. One measured pass found a regression from the wave before it and twelve older misses.
