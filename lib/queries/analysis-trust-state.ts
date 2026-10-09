@@ -259,7 +259,9 @@ export function getAnalysisTrustState(
     -- Whole days from the Eastern day (inlined literal), not from SQLite's
     -- UTC clock. ">=" on whole days flags the same days the old fractional
     -- ">" did in daytime; after 20:00 Eastern it no longer flags a day early.
-    WHERE julianday(${easternDaySql()}) - julianday(lp.latest_date) >= ?
+    -- date(...) cuts the price date to its calendar day, so a value that
+    -- carried a time of day would still count as that whole day.
+    WHERE julianday(${easternDaySql()}) - julianday(date(lp.latest_date)) >= ?
     ORDER BY s.symbol
   `
     )

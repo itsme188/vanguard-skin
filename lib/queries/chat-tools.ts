@@ -358,7 +358,11 @@ export function getHoldingsForChat(
       -- fraction, printed one day short all day.
       CASE WHEN s.maturity_date IS NOT NULL
         AND julianday(s.maturity_date) - julianday(${easternDaySql()}) BETWEEN 0 AND 90
-        THEN 'Matures in ' || CAST(julianday(s.maturity_date) - julianday(${easternDaySql()}) AS INTEGER) || ' days'
+        THEN CASE CAST(julianday(s.maturity_date) - julianday(${easternDaySql()}) AS INTEGER)
+          WHEN 0 THEN 'Matures today'
+          WHEN 1 THEN 'Matures in 1 day'
+          ELSE 'Matures in ' || CAST(julianday(s.maturity_date) - julianday(${easternDaySql()}) AS INTEGER) || ' days'
+        END
         ELSE NULL END AS maturity_note
     FROM holdings h
     JOIN accounts a ON a.id = h.account_id

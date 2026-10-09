@@ -208,8 +208,8 @@ describe("a bond is a position through the end of its Eastern maturity day", () 
         (r as { maturity_note: string | null }).maturity_note,
       ]),
     );
-    expect(notes.get("ZZBT")).toBe("Matures in 0 days");
-    expect(notes.get("ZZB1")).toBe("Matures in 1 days");
+    expect(notes.get("ZZBT")).toBe("Matures today");
+    expect(notes.get("ZZB1")).toBe("Matures in 1 day");
     expect(notes.get("ZZB90")).toBe("Matures in 90 days");
     expect(notes.get("ZZB91")).toBeNull();
   });
@@ -389,6 +389,21 @@ describe("stale prices are counted in whole Eastern days", () => {
     seedPrice(three, addDays(ET_TODAY, -3), 50);
     expect(getAnalysisTrustState(db).stalePrices.symbols).toEqual(["ZZS4"]);
   });
+
+  it("a price date that carries a time of day counts as its calendar day", () => {
+    // No stored price date carries a time today; if one ever does, the
+    // afternoon stamp must not make a four-day-old price read as 3.4 days.
+    const four = seedSec("ZZS4");
+    const three = seedSec("ZZS3");
+    const fourT = seedSec("ZZT4");
+    seedHolding(four, 10);
+    seedHolding(three, 10);
+    seedHolding(fourT, 10);
+    seedPrice(four, `${addDays(ET_TODAY, -4)} 15:00:00`, 50);
+    seedPrice(three, `${addDays(ET_TODAY, -3)} 00:00:00`, 50);
+    seedPrice(fourT, `${addDays(ET_TODAY, -4)}T23:59:59`, 50);
+    expect(getAnalysisTrustState(db).stalePrices.symbols).toEqual(["ZZS4", "ZZT4"]);
+  });
 });
 
 describe("day-count windows start from the Eastern day", () => {
@@ -411,6 +426,18 @@ describe("day-count windows start from the Eastern day", () => {
     insert.run("newest", sec, ET_TODAY);
     insert.run("edge", sec, addDays(ET_TODAY, -89));
     insert.run("out", sec, addDays(ET_TODAY, -90));
+    expect(getNotesForFamily(db, ["ZZN"]).map((n) => n.content)).toEqual(["newest", "edge"]);
+  });
+
+  it("notes for an issuer family: an event date that carries a time counts as its day", () => {
+    const sec = seedSec("ZZN");
+    const insert = db.prepare(
+      `INSERT INTO notes (note_type, content, security_id, event_date) VALUES ('journal', ?, ?, ?)`,
+    );
+    insert.run("newest", sec, `${ET_TODAY} 23:30:00`);
+    insert.run("edge", sec, `${addDays(ET_TODAY, -89)}T00:00:01`);
+    insert.run("out", sec, `${addDays(ET_TODAY, -90)} 23:59:59`);
+    insert.run("out-iso", sec, `${addDays(ET_TODAY, -90)}T23:59:59.000Z`);
     expect(getNotesForFamily(db, ["ZZN"]).map((n) => n.content)).toEqual(["newest", "edge"]);
   });
 

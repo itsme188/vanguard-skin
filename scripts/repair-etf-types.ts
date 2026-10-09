@@ -52,7 +52,7 @@ import { SecType } from "@stoqey/ib";
 import { getIbApi } from "../lib/tws/client";
 import { RateLimiter } from "../lib/tws/rate-limiter";
 import { shouldRetypeAsEtf } from "../lib/tws/security-type-map";
-import { easternDaySql } from "../lib/db/eastern-day-sql";
+import { liveOptionExpirationSql } from "../lib/compute/option-expiry";
 
 const DB_PATH = path.join(process.cwd(), "data", "vanguard.db");
 
@@ -220,7 +220,7 @@ interface SweepRow extends SecurityRow {
  *  watchlist OR the underlying of a held option — the same "who cares
  *  about this name" surface the earnings coverage guard uses — restricted
  *  to rows currently typed 'Stock' (the mistyped-ETF candidate pool). */
-function getStockTypedSweepCandidates(db: Database.Database): SweepRow[] {
+export function getStockTypedSweepCandidates(db: Database.Database): SweepRow[] {
   return db
     .prepare(
       `SELECT DISTINCT s.id, s.symbol, s.name, s.security_type, s.fund_category, s.currency
@@ -244,7 +244,7 @@ function getStockTypedSweepCandidates(db: Database.Database): SweepRow[] {
                WHERE LOWER(COALESCE(opt.security_type, '')) = 'option'
                  AND UPPER(COALESCE(opt.underlying_symbol, '')) = UPPER(s.symbol)
                  AND ho.quantity != 0
-                 AND (opt.expiration_date IS NULL OR opt.expiration_date >= ${easternDaySql()})
+                 AND ${liveOptionExpirationSql("opt")}
             )
           )
         ORDER BY s.symbol`,

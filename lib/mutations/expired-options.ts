@@ -2,6 +2,15 @@ import type Database from "better-sqlite3";
 import { liveOriginHoldingSql } from "@/lib/db/holding-sources";
 import { todayET } from "@/lib/calendar/date-utils";
 
+/**
+ * The stored expiration as a SQLite day. Legacy rows carry the compact
+ * `YYYYMMDD` spelling, which `date()` reads as NULL (the row was never
+ * purged), so the dashed form is rebuilt first, exactly as
+ * `liveOptionExpirationSql` (lib/compute/option-expiry.ts) does for readers.
+ * Anything else that `date()` cannot read stays NULL and is never deleted.
+ */
+const EXPIRATION_DAY_SQL = `date(CASE WHEN expiration_date GLOB '[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]' THEN substr(expiration_date,1,4) || '-' || substr(expiration_date,5,2) || '-' || substr(expiration_date,7,2) ELSE expiration_date END)`;
+
 export interface PurgeExpiredOptionHoldingsOptions {
   accountId?: number;
   liveOnly?: boolean;
@@ -33,7 +42,7 @@ export function purgeExpiredOptionHoldings(
            SELECT id FROM securities
            WHERE LOWER(security_type) = 'option'
              AND expiration_date IS NOT NULL
-             AND date(expiration_date) < date(?, ?)
+             AND ${EXPIRATION_DAY_SQL} < date(?, ?)
          )`,
       )
       // The grace day counts from the Eastern day, bound: SQLite's
@@ -48,7 +57,7 @@ export function purgeExpiredOptionHoldings(
        SELECT id FROM securities
        WHERE LOWER(security_type) = 'option'
          AND expiration_date IS NOT NULL
-         AND date(expiration_date) < date(@today, @grace)
+         AND ${EXPIRATION_DAY_SQL} < date(@today, @grace)
      )`,
   ];
   if (options.accountId != null) predicates.push("account_id = @accountId");

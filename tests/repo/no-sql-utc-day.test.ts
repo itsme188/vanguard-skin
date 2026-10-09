@@ -254,7 +254,7 @@ interface Hit {
 
 const DAY_FORM = /\b(?:date|julianday)\(\s*'now'|\bstrftime\([^)]*'now'|\bCURRENT_DATE\b/i;
 const INSTANT_WINDOW =
-  /\bdatetime\(\s*'now'\s*,|(?:[<>]=?|\bBETWEEN\b[^\n]*)\s*datetime\(\s*'now'\s*\)|\bdatetime\(\s*'now'\s*\)\s*[<>]/i;
+  /\bdatetime\(\s*'now'\s*,|(?:[<>]=?|\bBETWEEN\b[^\n]*)\s*datetime\(\s*'now'\s*\)|\bdatetime\(\s*'now'\s*\)\s*(?:[<>]|(?:NOT\s+)?BETWEEN\b)/i;
 // Case-sensitive on purpose: SQL `date(` / `DATE(`, never JavaScript `new Date(`.
 const DAY_CUT =
   /(?<![\w.])(?:date|DATE)\(\s*(?:COALESCE\(\s*)?(?:[a-z_][a-z0-9_]*\.)?[a-z0-9_]*_at\b|(?<![\w.])(?:substr|SUBSTR)\(\s*(?:[a-z_][a-z0-9_]*\.)?[a-z0-9_]*_at\s*,\s*1\s*,\s*10\s*\)/;
@@ -323,6 +323,10 @@ describe("SQL never reads the UTC clock as a calendar day", () => {
     expect(INSTANT_WINDOW.test("WHERE a.t >= datetime('now', ?)")).toBe(true);
     expect(INSTANT_WINDOW.test("WHERE a.t < datetime('now')")).toBe(true);
     expect(INSTANT_WINDOW.test("WHERE datetime('now') > a.t")).toBe(true);
+    expect(INSTANT_WINDOW.test("WHERE datetime('now') BETWEEN a.starts_at AND a.ends_at")).toBe(true);
+    expect(INSTANT_WINDOW.test("WHERE datetime('now') NOT BETWEEN a.t AND b.t")).toBe(true);
+    expect(INSTANT_WINDOW.test("AND datetime( 'now' )  not between ? AND ?")).toBe(true);
+    expect(INSTANT_WINDOW.test("WHERE a.t BETWEEN ? AND datetime('now')")).toBe(true);
     expect(INSTANT_WINDOW.test("SET updated_at = datetime('now')")).toBe(false);
     expect(INSTANT_WINDOW.test("VALUES (?, ?, datetime('now'))")).toBe(false);
     expect(INSTANT_WINDOW.test("applied_at TEXT DEFAULT (datetime('now'))")).toBe(false);

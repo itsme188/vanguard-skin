@@ -5,7 +5,8 @@
  */
 
 import type Database from "better-sqlite3";
-import { easternDaySql, unmaturedSecuritySql } from "@/lib/db/eastern-day-sql";
+import { unmaturedSecuritySql } from "@/lib/db/eastern-day-sql";
+import { liveOptionExpirationSql } from "@/lib/compute/option-expiry";
 import { generateTextForFeature } from "@/lib/ai/generate";
 import { FACTOR_COLUMNS, FACTOR_LABELS, type FactorColumn } from "@/lib/factors";
 import { normalizeSector } from "@/lib/securities/normalize-sector";
@@ -132,7 +133,7 @@ export async function classifyFactors(
        LEFT JOIN security_factors usf ON usf.security_id = u.id
        WHERE ${latestHoldingsPredicate({})}
          AND s.underlying_symbol IS NOT NULL
-         AND (s.expiration_date IS NULL OR s.expiration_date >= ${easternDaySql()})
+         AND ${liveOptionExpirationSql("s")}
          AND usf.security_id IS NULL
        ORDER BY s.underlying_symbol`
     )
