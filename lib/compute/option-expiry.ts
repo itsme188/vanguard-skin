@@ -41,6 +41,38 @@ import { todayET } from "@/lib/calendar/date-utils";
  */
 
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+const COLUMN_PATTERN = /^(?:[A-Za-z_][A-Za-z0-9_]*\.)?[A-Za-z_][A-Za-z0-9_]*$/;
+
+/**
+ * SQL expression for a stored expiration in dashed `YYYY-MM-DD` text form.
+ * Legacy rows store the compact `YYYYMMDD` spelling (stored rows are NOT
+ * normalized); the dashed form is rebuilt for those and anything else passes
+ * through unchanged. `column` is a bare or alias-qualified column name
+ * (`expiration_date`, `s.expiration_date`), validated and inlined.
+ *
+ * Use this (or one of the two fragments built on it) for EVERY SQL comparison
+ * of an option expiration. A raw string compare reads the compact form as
+ * later than every dashed day of its year (`'20261004' >= '2026-10-06'` is
+ * true, `'1'` sorts after `'-'`), and SQLite's `date()` / `julianday()` read
+ * it as NULL.
+ */
+export function optionExpirationDashedSql(column = "expiration_date"): string {
+  if (!COLUMN_PATTERN.test(column)) {
+    throw new Error(`optionExpirationDashedSql: not a column name: ${JSON.stringify(column)}`);
+  }
+  return `CASE WHEN ${column} GLOB '[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]' THEN substr(${column},1,4) || '-' || substr(${column},5,2) || '-' || substr(${column},7,2) ELSE ${column} END`;
+}
+
+/**
+ * The stored expiration as a SQLite day: `date()` over
+ * {@link optionExpirationDashedSql}. A value `date()` still cannot read stays
+ * NULL, so a comparison against it is never true (the purge never deletes
+ * such a row). Shared by the expired-holdings purge
+ * (lib/mutations/expired-options.ts) and its one-shot preview script.
+ */
+export function optionExpirationDaySql(column = "expiration_date"): string {
+  return `date(${optionExpirationDashedSql(column)})`;
+}
 
 /**
  * SQL fragment for a `WHERE`/`AND` clause against a `securities` row aliased
@@ -65,7 +97,7 @@ export function liveOptionExpirationSql(alias = "s", today: string = todayET()):
   // NOT normalized). A raw string compare of '20261004' >= '2026-10-06' is
   // TRUE ('1' sorts after '-'), which kept an expired legacy-format contract
   // live — so rebuild the dashed form before comparing.
-  return `(${e} IS NULL OR (CASE WHEN ${e} GLOB '[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]' THEN substr(${e},1,4) || '-' || substr(${e},5,2) || '-' || substr(${e},7,2) ELSE ${e} END) >= '${today}')`;
+  return `(${e} IS NULL OR (${optionExpirationDashedSql(e)}) >= '${today}')`;
 }
 
 const COMPACT_DATE_PATTERN = /^(\d{4})(\d{2})(\d{2})$/;

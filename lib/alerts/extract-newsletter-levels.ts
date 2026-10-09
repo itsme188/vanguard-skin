@@ -268,7 +268,7 @@ function getUnscannedArticles(
        FROM research_articles a
        JOIN research_sources rs ON rs.id = a.source_id
        WHERE a.levels_extracted_at IS NULL
-         AND a.received_at >= datetime('now', '-${sinceDays} days')
+         AND datetime(a.received_at) >= datetime('now', '-${sinceDays} days')
          AND a.raw_text IS NOT NULL AND length(a.raw_text) > 200
        ORDER BY a.received_at DESC
        LIMIT ?`

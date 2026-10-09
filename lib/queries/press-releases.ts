@@ -44,7 +44,7 @@ export function listPressReleases(
     params.push(needle, needle);
   }
   if (opts.days_back && opts.days_back > 0) {
-    where.push("published_at >= datetime('now', ?)");
+    where.push("datetime(published_at) >= datetime('now', ?)");
     params.push(`-${Math.floor(opts.days_back)} days`);
   }
 

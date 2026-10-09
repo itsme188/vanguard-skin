@@ -13,6 +13,7 @@
 import { db } from "../lib/db";
 import { purgeExpiredOptionHoldings } from "../lib/mutations/expired-options";
 import { todayET } from "../lib/calendar/date-utils";
+import { optionExpirationDaySql } from "../lib/compute/option-expiry";
 
 const dryRun = process.argv.includes("--dry-run");
 
@@ -24,9 +25,11 @@ const candidates = db
      JOIN accounts a ON a.id = h.account_id
      WHERE LOWER(s.security_type) = 'option'
        AND s.expiration_date IS NOT NULL
-       AND date(s.expiration_date) < date(?, '-1 day')`,
+       AND ${optionExpirationDaySql("s.expiration_date")} < date(?, '-1 day')`,
   )
-  // The Eastern day, bound: the same cut the purge itself applies.
+  // The Eastern day, bound: the same cut the purge itself applies, through
+  // the same fragment, so a legacy compact `YYYYMMDD` expiration (which a
+  // bare date() reads as NULL) is previewed and no longer ends the run early.
   .all(todayET()) as Array<{ symbol: string; expiration_date: string; quantity: number; account: string }>;
 
 if (candidates.length === 0) {

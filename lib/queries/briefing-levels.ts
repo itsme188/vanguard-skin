@@ -77,7 +77,7 @@ export function getLevelsTriggeredInWindow(
        FROM level_alerts a
        JOIN security_levels sl ON sl.id = a.level_id
        JOIN securities s ON s.id = a.security_id
-       WHERE a.triggered_at >= datetime('now', ?)
+       WHERE datetime(a.triggered_at) >= datetime('now', ?)
        ORDER BY a.triggered_at DESC`
     )
     .all(`-${days} days`) as LevelTriggeredThisWeek[];
