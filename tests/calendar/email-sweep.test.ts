@@ -506,6 +506,20 @@ describe("runEarningsEmailSweep marker dance", () => {
       "delivery-unknown",
     ],
     [{ outcome: "refused", reason: "no actuals yet", status: 409 }, "not-ready"],
+    // A refusal about the calendar row is booked under its own cause, never
+    // as "not-ready" (waiting will not change it).
+    [
+      { outcome: "refused", reason: "replaced", status: 409, code: "superseded_event" },
+      "entry-replaced",
+    ],
+    [
+      { outcome: "refused", reason: "later entry", status: 409, code: "ignored_manual_twin" },
+      "later-manual-entry",
+    ],
+    [
+      { outcome: "refused", reason: "gone", status: 404, code: "event_not_found" },
+      "entry-not-found",
+    ],
   ])("maps %o to a skip, never a failure", async (outcome, skipped) => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const eventId = seedHeldPreviewCandidate(db, "MSFT");

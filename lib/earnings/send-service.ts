@@ -56,6 +56,7 @@ import {
   composeEarningsEmail,
   EarningsEmailError,
   emailRowRefusal,
+  isEmailRowRefusal,
   type EmailRowRefusal,
   getSendRow,
   markEmailDeliveryUnknown,
@@ -151,7 +152,13 @@ function rowRefusalOutcome(
   when: "at the claim" | "after composing",
 ): Extract<SendOutcome, { outcome: "refused" }> {
   let reason: string;
-  if (code === "superseded_event") {
+  // 409 = the entry is there but is not the print's email row; 404 = there is
+  // no such entry at all.
+  let status = 409;
+  if (code === "event_not_found") {
+    reason = `The calendar entry this ${candidate.phase} was for no longer exists. Nothing was sent.`;
+    status = 404;
+  } else if (code === "superseded_event") {
     const live = findLiveEntryForSupersededEvent(db, candidate.eventId);
     reason =
       `The calendar entry this ${candidate.phase} was for has been replaced` +
@@ -167,7 +174,7 @@ function rowRefusalOutcome(
   console.warn(
     `[send-service] ${candidate.phase} ${candidate.eventId} (${candidate.symbol}, ${mode}): refused ${when}, ${code}`,
   );
-  return { outcome: "refused", reason, status: 409, code };
+  return { outcome: "refused", reason, status, code };
 }
 
 export interface ComposedSend {
@@ -616,7 +623,7 @@ export async function sendEarningsCandidate(
   }
 
   // (2) claim. The claim itself re-reads the calendar row inside its own
-  // transaction and refuses a superseded entry in EVERY mode: the finders
+  // transaction and refuses a missing or superseded entry in EVERY mode: the finders
   // filter those out, but a candidate list can be minutes old, and the nudge
   // and the manual route never went through a finder at all. The later of two
   // hand-entered rows is refused on the automatic road only; `nudge` and
@@ -628,7 +635,7 @@ export async function sendEarningsCandidate(
   });
   if (!claim.claimed) {
     if (claim.reason === IN_PROGRESS) return { outcome: IN_PROGRESS };
-    if (claim.reason === "superseded_event" || claim.reason === "ignored_manual_twin") {
+    if (isEmailRowRefusal(claim.reason)) {
       return rowRefusalOutcome(db, candidate, claim.reason, opts.mode, "at the claim");
     }
     const row = getSendRow(db, eventId, phase);

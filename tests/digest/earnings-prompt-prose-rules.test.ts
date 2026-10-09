@@ -1,4 +1,5 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
+import { createHash } from "node:crypto";
 import {
   renderPreviewPrompt,
   renderRecapPrompt,
@@ -165,5 +166,86 @@ describe("recap prompt — no reaction is captured yet", () => {
     expect(prompt).toContain("## Market reaction (T+2h, captured automatically)");
     expect(prompt).toContain("AAPL +1.2% vs SPY +0.1%");
     expect(prompt).not.toContain("Reaction snapshot not yet captured.");
+  });
+});
+
+// Sprint unit 4d: with no reaction snapshot the prompt used to open by calling
+// the reader someone "who just digested the print and the immediate market
+// reaction", and told the model the scoreboard shows "stock + SPY + QQQ
+// reactions". Both sentences now speak of a reaction only when one was
+// measured. The measured prompt must not move by a single byte.
+describe("recap prompt — the intro and the scoreboard sentence follow the snapshot", () => {
+  const INTRO_WITH = "who just digested the print and the immediate market reaction.";
+  const SCOREBOARD_WITH =
+    "(it shows EPS / Revenue / expected-vs-realized move / avg historical move / stock + SPY + QQQ reactions)";
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("no snapshot: the intro does not say the reaction was digested", () => {
+    const prompt = renderRecapPrompt(makeRecapContext());
+    expect(prompt).not.toContain("immediate market reaction");
+    expect(prompt).toContain(
+      "Goal: brief him as a colleague who just digested the print. The market reaction has not been captured yet.",
+    );
+  });
+
+  it("no snapshot: the scoreboard sentence does not promise reaction figures", () => {
+    const prompt = renderRecapPrompt(makeRecapContext());
+    expect(prompt).not.toContain("stock + SPY + QQQ reactions");
+    expect(prompt).not.toContain("expected-vs-realized move");
+    expect(prompt).toContain(
+      "(it shows EPS / Revenue / expected move / avg historical move; its reaction rows are blank because no reaction has been captured yet)",
+    );
+  });
+
+  it("with a snapshot: both sentences read exactly as before", () => {
+    const prompt = renderRecapPrompt({
+      ...makeRecapContext(),
+      reactionSnapshotMarkdown: "- AAPL: +1.20%\n- SPY: +0.10%",
+    });
+    expect(prompt).toContain(INTRO_WITH);
+    expect(prompt).toContain(SCOREBOARD_WITH);
+    expect(prompt).not.toContain("has not been captured yet");
+  });
+
+  it("with a snapshot: the whole prompt is byte-identical to the prompt before this change", () => {
+    // The prompt prints the current year in one search hint; freeze the clock.
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-06T22:00:00Z"));
+    const prompt = renderRecapPrompt({
+      ...makeRecapContext(),
+      reactionSnapshotMarkdown: "- AAPL: +1.20%\n- SPY: +0.10%",
+    });
+    // sha256 of the prompt rendered by the code as it stood BEFORE unit 4d
+    // (recorded by running this case against the unchanged file).
+    expect(createHash("sha256").update(prompt, "utf8").digest("hex")).toBe(
+      "4c14d8f52db251c88910c75b6ac79f53484252eaaa847da072c9754af6dd095d",
+    );
+  });
+
+  it("the two prompts differ ONLY in those two sentences and the reaction block", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-06T22:00:00Z"));
+    const withSnap = renderRecapPrompt({
+      ...makeRecapContext(),
+      reactionSnapshotMarkdown: "- AAPL: +1.20%",
+    });
+    const without = renderRecapPrompt(makeRecapContext());
+    const rebuilt = without
+      .replace(
+        "who just digested the print. The market reaction has not been captured yet.",
+        INTRO_WITH,
+      )
+      .replace(
+        "(it shows EPS / Revenue / expected move / avg historical move; its reaction rows are blank because no reaction has been captured yet)",
+        SCOREBOARD_WITH,
+      )
+      .replace(
+        /\n## Market reaction\nReaction snapshot not yet captured\.[^\n]*\n/,
+        "\n## Market reaction (T+2h, captured automatically)\n- AAPL: +1.20%\n",
+      );
+    expect(rebuilt).toBe(withSnap);
   });
 });

@@ -60,6 +60,7 @@ import {
 import {
   claimEarningsEmailSlot,
   emailRowRefusal,
+  isEmailRowRefusal,
   releaseEarningsEmailClaim,
 } from "@/lib/digest/send-earnings-email";
 import { checkEarningsCloudMarker } from "@/lib/cron/earnings-marker-check";
@@ -160,9 +161,9 @@ export async function runMorningDebrief(
   const claims: FreshClaim[] = [];
   for (const candidate of unsent) {
     const claim = claimEarningsEmailSlot(db, candidate.eventId, "recap", recipient);
-    if (!claim.claimed && (claim.reason === "superseded_event" || claim.reason === "ignored_manual_twin")) {
+    if (!claim.claimed && isEmailRowRefusal(claim.reason)) {
       // The claim re-reads the calendar row in its own transaction: an entry
-      // replaced (or made the later of two hand-entered rows) since
+      // replaced, deleted, or made the later of two hand-entered rows since
       // findDebriefCandidates ran is not narrated. No row was written.
       console.warn(
         `[debrief] ${candidate.symbol} (event ${candidate.eventId}) dropped at the claim: ${claim.reason}`,
@@ -214,9 +215,16 @@ export async function runMorningDebrief(
     // every fresh claim, and let the next run rebuild the batch from a fresh
     // candidate scan (which drops the replaced entry and picks up the entry
     // that replaced it, if that one qualifies).
-    const replaced = claims.filter(
-      (c) => emailRowRefusal(db, c.candidate.eventId, { refuseIgnoredManualTwin: true }) != null,
-    );
+    // A member whose entry was DELETED meanwhile is refused the same way (its
+    // claim row went with it), so the draft that still narrates it is not sent.
+    const refusals = claims
+      .map((c) => ({
+        claim: c,
+        refusal: emailRowRefusal(db, c.candidate.eventId, { refuseIgnoredManualTwin: true }),
+      }))
+      .filter((r) => r.refusal != null);
+    const replaced = refusals.map((r) => r.claim);
+    const anyDeleted = refusals.some((r) => r.refusal === "event_not_found");
     if (replaced.length > 0) {
       releaseFreshClaims(db, claims);
       // No email went out and nothing failed, so this was not the day's one
@@ -226,7 +234,7 @@ export async function runMorningDebrief(
       console.warn(
         `[debrief] nothing sent: ${replaced
           .map((c) => `${c.candidate.symbol} (event ${c.candidate.eventId})`)
-          .join(", ")} was replaced on the calendar while the debrief was being composed; ` +
+          .join(", ")} was replaced on ${anyDeleted ? "or removed from " : ""}the calendar while the debrief was being composed; ` +
           `released ${claims.length} claim(s), the next run rebuilds the batch`,
       );
       return { sent: false, covered: [], skippedReason: "member-replaced" };

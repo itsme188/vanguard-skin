@@ -388,8 +388,23 @@ export interface EarningsEmailClaim {
  *  - `ignored_manual_twin`: the LATER of two live hand-entered rows for one
  *    company; email follows the earlier (lib/earnings/manual-twin-email.ts).
  *    Refused on the automatic roads only, see `claimEarningsEmailSlot`.
+ *  - `event_not_found`: there is no calendar row with this id (never there,
+ *    or deleted since the candidate list was built). Refused for everyone:
+ *    there is no print to write about, and the audit row could not be stored
+ *    anyway (it points at the calendar row). Checked FIRST, so a caller sees
+ *    this plain answer instead of a raw foreign-key error from the insert.
  */
-export type EmailRowRefusal = "superseded_event" | "ignored_manual_twin";
+export const EMAIL_ROW_REFUSALS = ["superseded_event", "ignored_manual_twin", "event_not_found"] as const;
+export type EmailRowRefusal = (typeof EMAIL_ROW_REFUSALS)[number];
+
+/**
+ * Is this claim reason one of the calendar-row refusals? Callers branch on
+ * this guard rather than listing the reasons, so a reason added above cannot
+ * be missed at a call site.
+ */
+export function isEmailRowRefusal(reason: unknown): reason is EmailRowRefusal {
+  return (EMAIL_ROW_REFUSALS as readonly unknown[]).includes(reason);
+}
 
 /**
  * The one reader of "may this calendar row be emailed right now". Every
@@ -405,7 +420,8 @@ export function emailRowRefusal(
   const row = db
     .prepare(`SELECT COALESCE(superseded, 0) AS superseded FROM calendar_events WHERE id = ?`)
     .get(eventId) as { superseded: number } | undefined;
-  if (row && row.superseded !== 0) return "superseded_event";
+  if (!row) return "event_not_found";
+  if (row.superseded !== 0) return "superseded_event";
   if (opts.refuseIgnoredManualTwin && getEmailIgnoredManualTwins(db).has(eventId)) {
     return "ignored_manual_twin";
   }
@@ -2086,6 +2102,20 @@ export function renderRecapPrompt(ctx: RecapContext): string {
     ? `\n## Market reaction (T+2h, captured automatically)\n${ctx.reactionSnapshotMarkdown}\n`
     : `\n## Market reaction\nReaction snapshot not yet captured. Say so in one line. Do NOT use web_search to find a price or a move, and do not quote an after-hours price or a stock move from any source, a sell-side headline included: a later figure would post-date this email.\n`;
 
+  // The intro and the scoreboard sentence speak of a reaction only when one
+  // was measured. With no snapshot the old wording told the model the reader
+  // had "digested the immediate market reaction" and that the scoreboard shows
+  // reaction figures, two lines above a block saying none was captured. The
+  // measured wording is unchanged byte for byte
+  // (tests/digest/earnings-prompt-prose-rules.test.ts pins its hash).
+  const hasReaction = Boolean(ctx.reactionSnapshotMarkdown);
+  const introGoal = hasReaction
+    ? `brief him as a colleague who just digested the print and the immediate market reaction.`
+    : `brief him as a colleague who just digested the print. The market reaction has not been captured yet.`;
+  const scoreboardShows = hasReaction
+    ? `it shows EPS / Revenue / expected-vs-realized move / avg historical move / stock + SPY + QQQ reactions`
+    : `it shows EPS / Revenue / expected move / avg historical move; its reaction rows are blank because no reaction has been captured yet`;
+
   const positionsBlock = renderPositionsBlock(ctx);
   const userNotesBlock = renderUserNotesBlock(ctx);
   const bogeysBlock = renderBogeysBlock(ctx);
@@ -2102,7 +2132,7 @@ export function renderRecapPrompt(ctx: RecapContext): string {
     : "";
   const priorCallBlock = renderPriorTranscriptBlock(ctx);
 
-  return `You are a financial analyst writing a focused post-earnings recap for a single portfolio manager who holds ${ctx.symbol}. The release was approximately 2 hours ago. Goal: brief him as a colleague who just digested the print and the immediate market reaction.
+  return `You are a financial analyst writing a focused post-earnings recap for a single portfolio manager who holds ${ctx.symbol}. The release was approximately 2 hours ago. Goal: ${introGoal}
 
 ## Event
 - Symbol: **${ctx.symbol}**
@@ -2128,7 +2158,7 @@ ${priorCallBlock}
 
 Use the structured context above as the source of truth. **For anything missing — call commentary, post-print sell-side reactions, transcript quotes, guidance change details — use web_search** with focus on the last 4 hours of coverage. Cite source URLs inline. **When evaluating beat/miss, anchor against the bogeys block (especially whisper numbers) when present, not just the Finnhub consensus.**
 
-**IMPORTANT — output structure.** A deterministic "scoreboard" table is rendered ABOVE your output by the system (it shows EPS / Revenue / expected-vs-realized move / avg historical move / stock + SPY + QQQ reactions). Do NOT repeat those headline metrics. Your output starts with the line-by-line table (same shape as the preview, but filled in), then prose. Specifically:
+**IMPORTANT — output structure.** A deterministic "scoreboard" table is rendered ABOVE your output by the system (${scoreboardShows}). Do NOT repeat those headline metrics. Your output starts with the line-by-line table (same shape as the preview, but filled in), then prose. Specifically:
 
 1. **\`## Line-by-line metrics\`** — a markdown table with EXACTLY these columns:
 
