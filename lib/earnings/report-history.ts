@@ -108,7 +108,10 @@ export interface HistorySummary {
 }
 
 export function summarizeHistory(rows: ReportHistoryRow[]): HistorySummary {
-  const recent = rows.slice(0, SUMMARY_QUARTERS);
+  // The window is the last SUMMARY_QUARTERS rows that carry an EPS result, so
+  // "Beat N of M" and the average move describe the same sample. An unreported
+  // quarter (no actual yet) neither takes a slot nor inflates the denominator.
+  const recent = rows.filter((r) => r.epsActual != null).slice(0, SUMMARY_QUARTERS);
   const moves = recent.map((r) => r.postPrintMovePct).filter((m): m is number => m != null);
   let beat = 0, miss = 0;
   for (const r of recent) {
