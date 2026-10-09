@@ -2,9 +2,9 @@
 
 import { useEffect, useId, useRef, useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
-import type { GivingFlaggedLot } from "@/lib/queries/giving-view";
+import type { GivingFlaggedLot, GivingLotGift } from "@/lib/queries/giving-view";
 import { Chip, type ChipTone } from "../Chip";
-import { PrivateText } from "@/lib/privacy/components";
+import { Count, PrivateText } from "@/lib/privacy/components";
 import { usePrivacy } from "@/lib/privacy/context";
 import apiFetch from "@/lib/http/apiFetch";
 import {
@@ -28,6 +28,10 @@ import {
  *  - verified-stale: warn chip, the old source, "Mark basis verified".
  * The server refuses a mark while the tax-lot ledger is waiting on a
  * recompute; its plain reason is shown in the form like any other refusal.
+ *
+ * A marker belongs to the LOT, and one lot can feed several gifts, so one
+ * save changes every row the lot is flagged on. The form says so and lists
+ * those gifts by year (`lot.giftsFed`, built by the same server read).
  *
  * These two actions are the only Giving writes that do NOT go through
  * LedgerRecomputeDialog: a marker changes no tax figure and nothing is
@@ -119,11 +123,55 @@ export function LotBasisStatus({
   );
 }
 
+/** How many of the gifts a lot feeds fall in each year, oldest year first. */
+export function giftsFedByYear(gifts: GivingLotGift[]): { year: string; count: number }[] {
+  const counts = new Map<string, number>();
+  for (const gift of gifts) {
+    const year = gift.receivedDate.slice(0, 4);
+    counts.set(year, (counts.get(year) ?? 0) + 1);
+  }
+  return [...counts.entries()]
+    .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
+    .map(([year, count]) => ({ year, count }));
+}
+
+/**
+ * What one save reaches. With one gift the plain sentence is enough. With
+ * several, the form says the check is per lot and lists the gifts by year.
+ * A count is a portfolio figure, so each goes through <Count>; in privacy
+ * mode the noun stays plural so it cannot give away a single gift.
+ */
+export function GiftsFedNote({ gifts }: { gifts: GivingLotGift[] }) {
+  const { isPrivate } = usePrivacy();
+  if (gifts.length <= 1) {
+    return <> The gift then counts toward Gain avoided again.</>;
+  }
+  return (
+    <>
+      <span className="block mt-2">
+        This check is saved for the lot, not for one gift. This lot feeds <Count value={gifts.length} /> gifts, and
+        saving changes all of them:
+      </span>
+      <ul className="mt-1 list-disc pl-5">
+        {giftsFedByYear(gifts).map(({ year, count }) => (
+          <li key={year}>
+            {year}: <Count value={count} /> {count === 1 && !isPrivate ? "gift" : "gifts"}
+          </li>
+        ))}
+      </ul>
+      <span className="block mt-1">
+        Each of them counts toward Gain avoided again, unless another of its lots is still flagged.
+      </span>
+    </>
+  );
+}
+
 /** The one-field form: what was the basis checked against? */
 export function BasisVerifiedDialog({
   open,
   symbol,
   acquisitionDate,
+  giftsFed,
   note,
   busy,
   error,
@@ -134,6 +182,8 @@ export function BasisVerifiedDialog({
   open: boolean;
   symbol: string;
   acquisitionDate: string;
+  /** The gifts this lot is flagged on (`GivingFlaggedLot.giftsFed`). */
+  giftsFed: GivingLotGift[];
   note: string;
   busy: boolean;
   error: string | null;
@@ -185,10 +235,11 @@ export function BasisVerifiedDialog({
       <form onSubmit={handleSubmit}>
         <div className="p-6">
           <h3 className="text-base font-medium mb-2 whitespace-nowrap!">Mark basis verified</h3>
-          <p className="text-sm text-ink-dim">
+          <div className="text-sm text-ink-dim">
             Use this when you have checked the basis of the {symbol} lot acquired {acquisitionDate} against a
-            document and the small figure is right. The gift then counts toward Gain avoided again.
-          </p>
+            document and the small figure is right.
+            <GiftsFedNote gifts={giftsFed} />
+          </div>
           <p className="text-sm text-ink-dim mt-2">
             This only records your check. It changes no tax figure and does not recompute the ledger.
           </p>
@@ -310,6 +361,7 @@ export function LotBasisControl({ lot, symbol }: { lot: GivingFlaggedLot; symbol
         open={dialogOpen}
         symbol={symbol}
         acquisitionDate={lot.acquisitionDate}
+        giftsFed={lot.giftsFed}
         note={note}
         busy={busy}
         error={dialogError}

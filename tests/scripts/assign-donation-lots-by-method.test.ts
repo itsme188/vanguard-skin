@@ -17,6 +17,7 @@ function lot(overrides: Partial<OpenLotForDonation>): OpenLotForDonation {
     remainingAsOfDonationDate: 100,
     isLongTerm: true,
     gainPerShare: 1,
+    basisState: "plausible",
     suggested: false,
     suggestedQuantity: 0,
     currentlyAssignedQuantity: 0,
