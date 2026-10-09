@@ -592,11 +592,53 @@ describe("confirmEarningsDate moves the existing hand-entered row", () => {
       expect(res.foldedEventId).toBe(oldId);
       expect(res.deletedEventId).toBeUndefined();
       expect(res.note).toMatch(/earnings_emails/);
+      // The user is told, in plain words, that the old entry is still there
+      // and why (the next reconcile pass shows it again).
+      expect(res.notice).toBe(
+        `NVDA still has an entry on ${dateA} because a preview email was already sent for it. Remove that entry if you no longer want it.`,
+      );
+      // No internal table name reaches the user.
+      expect(res.notice).not.toMatch(/earnings_emails|_/);
       expect(manualRows().find((r) => r.id === oldId)).toMatchObject({ event_date: dateA, superseded: 1 });
       expect(showing().map((r) => r.id)).toEqual([keptId]);
       // The preview is still on file; the bogey moved.
       expect(db.prepare("SELECT event_id FROM earnings_emails").all()).toEqual([{ event_id: oldId }]);
       expect(db.prepare("SELECT event_id FROM earnings_bogeys").all()).toEqual([{ event_id: keptId }]);
+    });
+
+    it("a recorded preview SKIP on the old row keeps it too, and the notice does not claim an email was sent", () => {
+      const oldId = addManual(dateA);
+      addManual(dateB);
+      db.prepare(
+        `INSERT INTO earnings_email_skips (event_id, phase, skipped_at)
+         VALUES (?, 'preview', ?)`,
+      ).run(oldId, `${addDays(today, -20)} 12:00:00`);
+
+      const res = confirmEarningsDate(db, { symbol: "NVDA", confirmedDate: dateB, confirmedTime: "amc", today });
+
+      expect(res.ok).toBe(true);
+      if (!res.ok) return;
+      expect(res.foldedEventId).toBe(oldId);
+      expect(res.notice).toBe(
+        `NVDA still has an entry on ${dateA} because other records are still attached to it. Remove that entry if you no longer want it.`,
+      );
+    });
+
+    it("the fold-and-delete path returns no notice", () => {
+      addManual(dateA);
+      addManual(dateB);
+      const res = confirmEarningsDate(db, { symbol: "NVDA", confirmedDate: dateB, confirmedTime: "amc", today });
+      expect(res.ok).toBe(true);
+      if (!res.ok) return;
+      expect(res.deletedEventId).toBeDefined();
+      expect(res.notice).toBeUndefined();
+      expect(res.note).toBeUndefined();
+    });
+
+    it("the plain move returns no notice", () => {
+      const manualId = addManual(dateA);
+      const res = confirmEarningsDate(db, { symbol: "NVDA", confirmedDate: dateB, confirmedTime: "amc", today });
+      expect(res).toEqual({ ok: true, movedEventId: manualId });
     });
 
     it("a HIDDEN row on the confirmed date comes back and takes the print (no unique-key failure)", () => {

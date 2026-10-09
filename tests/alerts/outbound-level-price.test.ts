@@ -31,6 +31,39 @@ describe("formatOutboundLevelPrice", () => {
     });
   }
 
+  for (const c of fixture.nonFinite) {
+    const value = Number(c.value);
+    it(`${JSON.stringify(c.currency)} ${c.value}: a non-finite price prints "n/a", never a currency sign`, () => {
+      expect(Number.isFinite(value)).toBe(false);
+      expect(formatOutboundLevelPrice(c.currency, value)).toBe(c.expected);
+      expect(formatOutboundLevelPrice(c.currency, value, "grouped")).toBe(c.expected);
+      expect(workerFormat(c.currency, value, "plain")).toBe(c.expected);
+      expect(workerFormat(c.currency, value, "grouped")).toBe(c.expected);
+    });
+  }
+
+  it("negatives, sub-cent values and the pence code are left exactly as they were", () => {
+    expect(formatOutboundLevelPrice("USD", -5)).toBe("$-5.00");
+    expect(formatOutboundLevelPrice("USD", -1234.5, "grouped")).toBe("$-1,234.50");
+    expect(formatOutboundLevelPrice("USD", 0.004)).toBe("$0.00");
+    expect(formatOutboundLevelPrice("GBp", 1250)).toBe("£1,250.00");
+    for (const args of [["USD", -5], ["USD", 0.004], ["GBp", 1250], ["GBP", -12.5]] as const) {
+      expect(workerFormat(args[0], args[1])).toBe(formatOutboundLevelPrice(args[0], args[1]));
+    }
+  });
+
+  it("the two mirrors' formatter bodies are byte-identical", async () => {
+    const { readFileSync } = await import("node:fs");
+    const { resolve } = await import("node:path");
+    const body = (path: string) => {
+      const text = readFileSync(resolve(__dirname, path), "utf8");
+      const start = text.indexOf("export type OutboundUsdStyle");
+      expect(start).toBeGreaterThan(-1);
+      return text.slice(start);
+    };
+    expect(body("../../workers/cron/src/level-price.ts")).toBe(body("../../lib/alerts/outbound-level-price.ts"));
+  });
+
   it("undefined currency reads as USD", () => {
     expect(formatOutboundLevelPrice(undefined, 91.32, "grouped")).toBe("$91.32");
   });

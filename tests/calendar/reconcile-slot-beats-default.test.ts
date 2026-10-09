@@ -246,6 +246,40 @@ describe("ruling (a): a real slot beats a vendor default on one date", () => {
     expect(state(f).superseded).toBe(1);
   });
 
+  it("does not flip back to Finnhub when only the Finnhub row shows the actual yet", () => {
+    // Reviewer's probe: before the print the slotted Nasdaq row is kept. The
+    // day after, Finnhub posts its actual first; the Nasdaq row has none yet.
+    // The print must stay on the Nasdaq row (its bogey, preview and slot go
+    // with it), not hop to Finnhub's default time and back again later.
+    const f = finnhub("ZZA", PAST_PRINT, undefined);
+    const n = nasdaq("ZZA", PAST_PRINT, "bmo");
+    reconcileEarningsDates(db, { today: "2026-10-27" });
+    expect(state(n).superseded).toBe(0);
+    expect(state(f).superseded).toBe(1);
+
+    finnhub("ZZA", PAST_PRINT, undefined, 1.1); // the vendor re-sync brings epsActual
+    reconcileEarningsDates(db, { today: TODAY });
+
+    expect(state(n)).toEqual({ superseded: 0, date_status: "confirmed" });
+    expect(state(f).superseded).toBe(1);
+
+    nasdaq("ZZA", PAST_PRINT, "bmo", 1.1); // and later the Nasdaq row shows it too
+    reconcileEarningsDates(db, { today: TODAY });
+
+    expect(state(n)).toEqual({ superseded: 0, date_status: "confirmed" });
+    expect(state(f).superseded).toBe(1);
+  });
+
+  it("only the Nasdaq row shows the actual and Finnhub carries the slot: Finnhub is still kept", () => {
+    const f = finnhub("ZZA", PAST_PRINT, "amc");
+    const n = nasdaq("ZZA", PAST_PRINT, null, 1.1);
+
+    reconcileEarningsDates(db, { today: TODAY });
+
+    expect(state(f)).toEqual({ superseded: 0, date_status: "confirmed" });
+    expect(state(n).superseded).toBe(1);
+  });
+
   it("a real disagreement on the date is still a conflict with Nasdaq provisional (unchanged)", () => {
     const f = finnhub("ZZA", PRINT, "amc");
     const n = nasdaq("ZZA", "2026-11-06", null);

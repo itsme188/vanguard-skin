@@ -143,6 +143,10 @@ describe("POST /api/earnings/confirm-date — two rows for one symbol", () => {
     expect(body.data.foldedEventId).toBe(earlierId);
     expect(body.data).not.toHaveProperty("deletedEventId");
     expect(body.data.note).toMatch(/hidden, not deleted/);
+    // The user-facing sentence travels in `notice` (the conflict marker shows it).
+    expect(body.data.notice).toBe(
+      `AAA still has an entry on ${earlier} because a preview email was already sent for it. Remove that entry if you no longer want it.`,
+    );
     expect(rowById(earlierId).superseded).toBe(1);
   });
 

@@ -874,6 +874,61 @@ function dedupeCrossSourceRows<
   return rows.filter((row) => winners.get(keyOf(row)) === row);
 }
 
+/**
+ * "This phase is already handled for this print" — asked of the row's
+ * SIBLINGS: any other earnings row of the same issuer family on the same
+ * event_date, showing or hidden.
+ *
+ * The candidate queries filter each row on its OWN earnings_emails /
+ * earnings_email_skips rows, and dedupeCrossSourceRows only collapses rows
+ * that are in the send window at the same moment. Two rows for one print can
+ * sit at different times (a Nasdaq row with a before-open slot, its Finnhub
+ * twin on the hour-unknown 16:15 default), and both are showing before the
+ * first reconcile pass and again during every weekly sync (the hidden
+ * un-enriched Finnhub row is deleted and re-minted showing until the pass at
+ * the end of that sync). Without this check the print got a preview at 06:00
+ * on one row and a second one at 14:15 on the other (2026-10-08 review).
+ *
+ * The test is the SAME one each row applies to itself (`ee.id IS NULL AND
+ * es.id IS NULL`): ANY email row for the phase counts, whatever its state —
+ * sent, sent by the cloud, or a live claim (a send in progress is exactly
+ * the race) — and so does a recorded skip. A failed claim is released by
+ * deleting its row, so it stops blocking the moment it is gone. No state
+ * value is read here, on purpose: the two rules cannot disagree.
+ *
+ * Protective only: it can remove a candidate, never add one. Family, not
+ * symbol equality (GOOG / GOOGL). Not applied to the read-through reporter
+ * scan, the debrief or the wrap.
+ */
+function phaseHandledOnSibling(
+  db: Database.Database,
+  phase: "preview" | "recap",
+): (row: { id: number; symbol: string | null; event_date: string }) => boolean {
+  return (row) => {
+    if (!row.symbol) return false;
+    const family = [...new Set(issuerSiblings(row.symbol).map((s) => s.toUpperCase()))];
+    if (family.length === 0) return false;
+    const hit = db
+      .prepare(
+        `SELECT 1 AS handled
+           FROM calendar_events sib
+          WHERE sib.event_type = 'earnings'
+            AND sib.event_date = ?
+            AND sib.id != ?
+            AND UPPER(sib.symbol) IN (${family.map(() => "?").join(",")})
+            AND (
+              EXISTS (SELECT 1 FROM earnings_emails ee
+                       WHERE ee.event_id = sib.id AND ee.phase = ?)
+              OR EXISTS (SELECT 1 FROM earnings_email_skips es
+                          WHERE es.event_id = sib.id AND es.phase = ?)
+            )
+          LIMIT 1`,
+      )
+      .get(row.event_date, row.id, ...family, phase, phase);
+    return hit !== undefined;
+  };
+}
+
 export interface EmailSweepOpts {
   /** Override "now" for testing. */
   now?: Date;
@@ -933,7 +988,13 @@ export function findEmailCandidates(
   const ignoredManualTwins = getEmailIgnoredManualTwins(db);
   const notIgnoredTwin = (row: { id: number }): boolean => !ignoredManualTwins.has(row.id);
 
-  const previewCandidates = dedupeCrossSourceRows(inWindowPreviews.filter(notIgnoredTwin));
+  // A preview already sent, claimed or skipped on a sibling row of the same
+  // print (see phaseHandledOnSibling) removes the row before the in-window
+  // collapse.
+  const previewHandledOnSibling = phaseHandledOnSibling(db, "preview");
+  const previewCandidates = dedupeCrossSourceRows(
+    inWindowPreviews.filter(notIgnoredTwin).filter((row) => !previewHandledOnSibling(row)),
+  );
 
   // ── Recap candidates ────────────────────────────────────────────
   // Gate: actual_value MUST be populated. enriched_at gets set the moment
@@ -964,7 +1025,10 @@ export function findEmailCandidates(
           AND es.id IS NULL`,
     )
     .all(recapCutoff) as RecapCandidateRow[];
-  const recapCandidates = dedupeCrossSourceRows(recapRows.filter(notIgnoredTwin));
+  const recapHandledOnSibling = phaseHandledOnSibling(db, "recap");
+  const recapCandidates = dedupeCrossSourceRows(
+    recapRows.filter(notIgnoredTwin).filter((row) => !recapHandledOnSibling(row)),
+  );
 
   // ── Read-through reporter recap scan (feedback #3) ──────────────
   // Pure read-through reporters (NOT held/watchlist — those take the AI

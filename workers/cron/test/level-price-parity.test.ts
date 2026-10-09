@@ -19,4 +19,14 @@ describe("outbound level price: Worker mirror == Mac == fixture", () => {
       );
     });
   }
+
+  for (const c of fixture.nonFinite) {
+    const value = Number(c.value);
+    it(`${JSON.stringify(c.currency)} ${c.value}: non-finite prints the plain fallback on both sides`, () => {
+      expect(workerFormat(c.currency, value, "plain")).toBe(c.expected);
+      expect(workerFormat(c.currency, value, "grouped")).toBe(c.expected);
+      expect(macFormat(c.currency, value, "plain")).toBe(c.expected);
+      expect(macFormat(c.currency, value, "grouped")).toBe(c.expected);
+    });
+  }
 });

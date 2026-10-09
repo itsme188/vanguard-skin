@@ -70,6 +70,28 @@ export const SAME_PRINT_WINDOW_DAYS = 45;
 export const SEVERAL_MANUAL_DATES_NOTICE =
   "The date is confirmed, but this symbol has several hand-entered dates; remove the ones you do not want.";
 
+/**
+ * Said when the other hand-entered row could not be removed after a confirm
+ * (the "kept hidden" fallback). The row is hidden now, but the next reconcile
+ * pass shows every hand-entered row dated today or later again, and as the
+ * EARLIER hand-entered date it then carries the email (owner ruling
+ * 2026-10-07) — so the user has to hear about it. `reason` is plain words; no
+ * table name ever reaches the user (that detail is in `note`).
+ */
+export function keptEntryNotice(
+  symbol: string,
+  oldDate: string,
+  reason: "preview_sent" | "records_attached" | "delete_refused",
+): string {
+  const why =
+    reason === "preview_sent"
+      ? "a preview email was already sent for it"
+      : reason === "records_attached"
+        ? "other records are still attached to it"
+        : "it could not be removed automatically";
+  return `${symbol} still has an entry on ${oldDate} because ${why}. Remove that entry if you no longer want it.`;
+}
+
 interface SamePrintManualRow extends TwinDonor {
   event_date: string;
   event_time: string | null;
@@ -175,7 +197,8 @@ function remainingEventDependents(db: Database.Database, eventId: number): strin
  *    pass shows every hand-entered row dated today or later
  *    (`keptManualTwins`). If anything is still attached to the old row after
  *    the fold it is NOT deleted: it stays hidden (`foldedEventId`) and `note`
- *    names what remained;
+ *    names what remained, and `notice` tells the user the entry is still there
+ *    and why (plain words, shown by the conflict marker);
  *  - two or more: nothing is moved or hidden, and `notice` says so.
  * Sync-owned rows are never moved; the reconcile below hides them as before.
  */
@@ -354,6 +377,16 @@ export function confirmEarningsDate(
         if (remaining.length > 0) {
           outcome.foldedEventId = toFold.id;
           outcome.note = `The row on ${toFold.event_date} was hidden, not deleted: records are still attached to it in ${remaining.join(", ")}.`;
+          // `remaining` entries read "table (count)". In practice the one
+          // thing the fold leaves behind is a preview email (or skip) for the
+          // old date; say "email sent" only when an email row is really there.
+          outcome.notice = keptEntryNotice(
+            symbol,
+            toFold.event_date,
+            remaining.some((entry) => entry.startsWith("earnings_emails ("))
+              ? "preview_sent"
+              : "records_attached",
+          );
         } else {
           try {
             // Its own savepoint, so a refused delete leaves the fold standing.
@@ -365,6 +398,7 @@ export function confirmEarningsDate(
           } catch (err) {
             outcome.foldedEventId = toFold.id;
             outcome.note = `The row on ${toFold.event_date} was hidden, not deleted: the delete was refused (${err instanceof Error ? err.message : String(err)}).`;
+            outcome.notice = keptEntryNotice(symbol, toFold.event_date, "delete_refused");
           }
         }
       }

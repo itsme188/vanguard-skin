@@ -27,8 +27,11 @@ interface CloudFiredPayload {
   /** The security's trading currency (snapshot v12 onward). Not stored: the
    *  alert's price is read with the security's own currency. */
   currency?: string | null;
-  /** When the Worker sent the alert (v12 onward). `triggeredAt` is the time
-   *  of the quote it was judged on and stays the alert's recorded time. */
+  /** When the Worker sent the alert (v12 onward). This is the alert's
+   *  recorded time and the day it counts on (`alertTimeOf`) — the same field
+   *  the Worker's own once-a-day guard reads. `triggeredAt` is the time of the
+   *  quote it was judged on; a thinly traded name's last quote can be a day
+   *  old. Markers written before v12 carry only `triggeredAt`. */
   firedAt?: string;
   /**
    * Fires on EARLIER Eastern days that this marker replaced before the Mac
@@ -49,6 +52,18 @@ function isFilable(r: unknown): r is CloudFiredPayload {
     typeof rec.triggeredPrice === "number" &&
     Number.isFinite(rec.triggeredPrice)
   );
+}
+
+/**
+ * The instant an alert went out: the push time when the marker has a readable
+ * one, else the quote time (older markers). Worker and Mac must count "the
+ * day" of a cloud alert from the same field, or the inbox shows a row on a
+ * day with no push (workers/cron/src/level-scan.ts reads it the same way).
+ */
+function alertTimeOf(rec: CloudFiredPayload): string {
+  return typeof rec.firedAt === "string" && !Number.isNaN(Date.parse(rec.firedAt))
+    ? rec.firedAt
+    : rec.triggeredAt;
 }
 
 /** How far either side of the cloud fire the same-day read looks before the
@@ -187,14 +202,18 @@ export async function reconcileCloudFiredLevels(
       ];
       let newest: CloudFiredPayload | null = null;
       for (const rec of records) {
-        if (alertedOnSameEasternDay(levelId, rec.triggeredAt)) {
+        const alertAt = alertTimeOf(rec);
+        if (alertedOnSameEasternDay(levelId, alertAt)) {
           skippedAlreadyAlerted += 1;
           continue;
         }
 
         const positionContext = JSON.stringify({
           source: "cloud_scan",
-          fired_at: rec.triggeredAt,
+          fired_at: alertAt,
+          // The quote the level was judged on, when it differs from the push
+          // time (level_alerts has no column for it; this context is its home).
+          ...(alertAt !== rec.triggeredAt ? { quote_at: rec.triggeredAt } : {}),
           symbol: rec.symbol ?? payload.symbol,
           level_type: rec.levelType ?? payload.levelType,
           level_price: rec.levelPrice ?? payload.levelPrice,
@@ -204,7 +223,7 @@ export async function reconcileCloudFiredLevels(
         insertAlert.run(
           levelId,
           rec.securityId ?? payload.securityId,
-          rec.triggeredAt,
+          alertAt,
           rec.triggeredPrice,
           positionContext,
         );
@@ -216,7 +235,7 @@ export async function reconcileCloudFiredLevels(
       // Mac-side triggerLevel mutation post-fire state so the LevelsPanel
       // UI shows the same "alerted" treatment regardless of which side fired.
       if (newest && level.is_active === 1) {
-        flipLevel.run(newest.triggeredAt, newest.triggeredPrice, levelId);
+        flipLevel.run(alertTimeOf(newest), newest.triggeredPrice, levelId);
       }
 
       await deleteFromWorker(base, secret, levelId);

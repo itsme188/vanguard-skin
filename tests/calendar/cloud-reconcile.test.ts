@@ -18,6 +18,20 @@ const mockSendEarningsPrintPush = vi.mocked(sendEarningsPrintPush);
 // rots the "fires" assertions the day after it ages out (bit us 2026-07-29).
 const FRESH_FETCHED_AT = new Date(Date.now() - 60 * 60 * 1000).toISOString();
 
+// The shape the Worker really writes (workers/cron/src/yahoo.ts). Since
+// 2026-10-08 a cloud reaction is stored only when it passes the shared
+// validity rule (lib/calendar/reaction-validity.ts), so the old shorthand
+// `{ source: "yahoo", spy: { delta_pct } }` (no release time, no prices) is
+// refused. Release 4h ago + payload fetched 1h ago = captured after the window.
+const CLOUD_REACTION = {
+  t0_utc: new Date(Date.now() - 4 * 60 * 60 * 1000).toISOString(),
+  window_min: 120,
+  source: "yahoo",
+  spy: { t_pre: 500, t_post: 502, delta_pct: 0.4 },
+};
+/** What the Mac stores / pushes for CLOUD_REACTION: the same snapshot, stamped. */
+const ADMITTED_CLOUD_REACTION = { ...CLOUD_REACTION, captured_at: FRESH_FETCHED_AT };
+
 function mockWorker(payloads: Record<string, unknown>) {
   globalThis.fetch = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
     if (init?.method === "DELETE") return new Response("{}", { status: 200 });
@@ -78,7 +92,7 @@ describe("reconcileCloudEnrichment data-preservation guards", () => {
         actual: null,
         consensus: null,
         source: "cloud",
-        reaction: { source: "yahoo", spy: { delta_pct: 0.4 } },
+        reaction: CLOUD_REACTION,
         fetchedAt: FRESH_FETCHED_AT,
       },
     });
@@ -105,7 +119,7 @@ describe("reconcileCloudEnrichment data-preservation guards", () => {
         actual: null,
         consensus: null,
         source: "cloud",
-        reaction: { source: "yahoo", spy: { delta_pct: 0.4 } },
+        reaction: CLOUD_REACTION,
         fetchedAt: FRESH_FETCHED_AT,
       },
     });
@@ -135,7 +149,7 @@ describe("reconcileCloudEnrichment data-preservation guards", () => {
         actual: null,
         consensus: null,
         source: "cloud",
-        reaction: { source: "yahoo", spy: { delta_pct: 0.4 } },
+        reaction: CLOUD_REACTION,
         fetchedAt: FRESH_FETCHED_AT,
       },
     });
@@ -237,7 +251,7 @@ describe("push-at-print hook (Wave 1 §2, cloud reconcile path)", () => {
         actual: "EPS 1.42 · Rev 775,000,000",
         consensus: "EPS 1.35 · Rev 762,000,000",
         source: "cloud",
-        reaction: { source: "yahoo", spy: { delta_pct: 0.4 } },
+        reaction: CLOUD_REACTION,
         fetchedAt: FRESH_FETCHED_AT,
       },
     });
@@ -250,7 +264,7 @@ describe("push-at-print hook (Wave 1 §2, cloud reconcile path)", () => {
       symbol: "PUSH",
       actualValue: "EPS 1.42 · Rev 775,000,000",
       consensusValue: "EPS 1.35 · Rev 762,000,000",
-      reactionJson: JSON.stringify({ source: "yahoo", spy: { delta_pct: 0.4 } }),
+      reactionJson: JSON.stringify(ADMITTED_CLOUD_REACTION),
       readThroughs: [],
       readThroughOnly: false,
     });
@@ -430,7 +444,7 @@ describe("push-at-print hook (Wave 1 §2, cloud reconcile path)", () => {
         actual: "3.2%",
         consensus: "3.1%",
         source: "cloud",
-        reaction: { source: "yahoo", spy: { delta_pct: 0.1 } },
+        reaction: CLOUD_REACTION,
         fetchedAt: FRESH_FETCHED_AT,
       },
     });

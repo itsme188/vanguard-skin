@@ -53,6 +53,9 @@ export function formatOutboundLevelPrice(
   value: number,
   usdStyle: OutboundUsdStyle = "plain",
 ): string {
+  // A level price should always be finite. If one is not, outbound text says
+  // so plainly: never "$NaN" or a currency sign beside an infinity mark.
+  if (!Number.isFinite(value)) return "n/a";
   const code = (currency ?? "").trim().toUpperCase();
   if (code === "" || code === "USD") {
     return usdStyle === "grouped" ? `$${twoDecimals(value)}` : `$${value.toFixed(2)}`;

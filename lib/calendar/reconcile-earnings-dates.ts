@@ -441,12 +441,19 @@ function resolveCluster(rows: EarningsRow[], today: string): Resolution {
   // Several rows can report the same latest date (both vendors, after the
   // print): the first in gather order keeps it unless a twin on that date
   // carries the real slot, so a pair the slot rule resolved before the print
-  // does not flip back the moment both rows show actuals.
+  // does not flip back the moment both rows show actuals. EVERY row on that
+  // date competes for the slot, not only the ones already showing an actual:
+  // vendors post actuals at different times, and judging only the rows that
+  // have one handed the print back to a default-time Finnhub row for the
+  // hours before the slotted Nasdaq row showed its own (2026-10-08 review).
   const occurred = rows
     .filter((r) => r.event_date < today && hasActual(r))
     .sort((a, b) => b.event_date.localeCompare(a.event_date) || a.id - b.id);
   if (occurred.length > 0) {
-    const winner = pickSameDateWinner(occurred[0], occurred);
+    const winner = pickSameDateWinner(
+      occurred[0],
+      rows.filter((r) => r.event_date === occurred[0].event_date),
+    );
     return { canonicalId: winner.id, status: "confirmed", conflictWith: null };
   }
 
