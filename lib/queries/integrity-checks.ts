@@ -177,12 +177,29 @@ function scanUnexplainedResidualHits(db: Database.Database): IntegrityHit[] {
 //      statement-grade row (`statementGradeHoldingSql`, the same evidence
 //      class the synthetic-close anchor uses), or zero when the pair has none
 //      (the statement book is complete). A disagreement here is a real hit.
-//   3. The statement is skipped as comparator when the ledger is newer than
-//      it (a quantity-bearing transaction dated after the statement row):
-//      the lots have legitimately moved on.
-//   4. When the statement agrees (or was skipped) and a snapshot at least as
-//      new as the ledger still differs from the lots, the hit is a WARNING
-//      of kind "statement-lag" (pending statement). It never caps the score.
+//   3. When the ledger is newer than the statement (a quantity-bearing
+//      transaction or a corporate action dated after the statement row), the
+//      lots are ROLLED BACK to the statement date before the comparison
+//      (`rollLotsBackToStatement`): today's open-lot quantity minus the
+//      signed quantity those later ledger rows moved, with an import-sourced
+//      split undone by its ratio. A rolled-back quantity that disagrees with
+//      the statement is a real hit, exactly as in rule 2: a later trade never
+//      hides a disagreement that was already there on the statement date.
+//      When the roll-back cannot be done exactly (a spin-off, a merger, a
+//      hand-entered split, an unknown transaction type, an expiry the lots
+//      did not record), the pair is a "statement-lag" WARNING whose reason
+//      says so, unless a snapshot at least as new as the ledger agrees with
+//      the lots.
+//   4. When the statement agrees with the lots (as they stand, or rolled
+//      back) and a snapshot at least as new as the ledger still differs from
+//      the lots, the hit is a WARNING of kind "statement-lag" (pending
+//      statement). It never caps the score. A snapshot OLDER than the newest
+//      ledger row cannot judge today's lots: the rolled-back comparison has
+//      already accounted for every row after the statement, so there is no
+//      difference left to report.
+//
+// Every pair with a statement book therefore ends in exactly one of: no
+// difference, a real hit, or a pending-statement warning.
 
 const LOT_DRIFT_EPSILON = 1e-4; // shares
 const LOT_DRIFT_RATIO_THRESHOLD = 0.05; // 5%
@@ -227,6 +244,112 @@ function classifyLotDrift(
   if (hasLot && !hasPos) return { shape: "lots-no-position", magnitude: 0 };
   const ratio = Math.abs(diff) / Math.max(Math.abs(posQty), Math.abs(signedLotQty));
   return ratio > LOT_DRIFT_RATIO_THRESHOLD ? { shape: "ratio", magnitude: ratio } : null;
+}
+
+/**
+ * Signed share movement per transaction type (compare with UPPER(type)).
+ * +1 raises the signed position (buys, covers, arrivals); -1 lowers it
+ * (sales, short opens, departures, maturities). Signed arithmetic makes the
+ * same table right for longs and shorts: a cover moves -100 toward zero by
+ * adding, a short open moves away from zero by subtracting.
+ */
+const LEDGER_MOVE_SIGN: Record<string, 1 | -1> = {
+  BUY: 1,
+  REINVESTMENT: 1,
+  BUY_TO_OPEN: 1,
+  BUY_TO_COVER: 1,
+  BUY_TO_CLOSE: 1,
+  TRANSFER_IN: 1,
+  SELL: -1,
+  SELL_TO_CLOSE: -1,
+  SELL_TO_OPEN: -1,
+  SHORT_SELL: -1,
+  TRANSFER_OUT: -1,
+  REDEMPTION: -1,
+};
+
+/**
+ * Types that close whatever is open, long or short, so the type alone does
+ * not give a direction. The direction is read from the lots the engine
+ * actually closed for that row (`tax_lot_sales`).
+ */
+const LEDGER_CLOSE_TOWARD_ZERO = new Set(["EXPIRED", "EXERCISED", "ASSIGNED", "RECONCILE_CLOSE"]);
+
+const IMPORT_SPLIT_ACTION_TYPES = new Set(["SPLIT", "REVERSE_SPLIT"]);
+
+type LotRollBack = { ok: true; quantity: number } | { ok: false; why: string };
+
+interface LedgerRowAfter {
+  id: number;
+  date: string;
+  type: string;
+  quantity: number;
+}
+
+interface CorporateActionAfter {
+  date: string;
+  actionType: string;
+  source: string | null;
+  ratio: number | null;
+}
+
+/**
+ * The signed open-lot quantity as it stood at the end of the statement date:
+ * today's quantity with every later ledger row undone, newest first. Within
+ * one date the engine applies trades first and the split last (end-of-day
+ * rule), so the undo runs the split first and the trades after it.
+ *
+ * Quantities only: an option's multiplier and a bond's per-100 pricing never
+ * enter a share-count comparison.
+ */
+function rollLotsBackToStatement(
+  signedLotQty: number,
+  ledgerRows: LedgerRowAfter[],
+  corporateActions: CorporateActionAfter[],
+  closedSignedQty: (transactionId: number) => number | null
+): LotRollBack {
+  type Step =
+    | { date: string; rank: 0; ratio: number }
+    | { date: string; rank: 1; row: LedgerRowAfter };
+  const steps: Step[] = [];
+  for (const ca of corporateActions) {
+    if (!IMPORT_SPLIT_ACTION_TYPES.has(ca.actionType)) {
+      return { ok: false, why: "a corporate action dated after the statement" };
+    }
+    if (ca.source !== "import") {
+      return { ok: false, why: "a hand-entered split dated after the statement" };
+    }
+    if (ca.ratio === null || !Number.isFinite(ca.ratio) || ca.ratio <= 0) {
+      return { ok: false, why: "a split with no usable ratio dated after the statement" };
+    }
+    steps.push({ date: ca.date, rank: 0, ratio: ca.ratio });
+  }
+  for (const row of ledgerRows) steps.push({ date: row.date, rank: 1, row });
+  steps.sort((a, b) => (a.date === b.date ? a.rank - b.rank : a.date < b.date ? 1 : -1));
+
+  let quantity = signedLotQty;
+  for (const step of steps) {
+    if (step.rank === 0) {
+      quantity /= step.ratio;
+      continue;
+    }
+    const { row } = step;
+    const sign = LEDGER_MOVE_SIGN[row.type];
+    if (sign !== undefined) {
+      quantity -= sign * Math.abs(row.quantity);
+      continue;
+    }
+    if (LEDGER_CLOSE_TOWARD_ZERO.has(row.type)) {
+      const closed = closedSignedQty(row.id);
+      if (closed === null) {
+        return { ok: false, why: "an expiry, exercise or assignment after the statement that closed no tax lot" };
+      }
+      quantity -= closed;
+      continue;
+    }
+    return { ok: false, why: "a corporate action dated after the statement" };
+  }
+  return { ok: true, quantity };
 }
 
 function scanLotDriftHits(db: Database.Database): IntegrityHit[] {
@@ -328,15 +451,44 @@ function scanLotDriftHits(db: Database.Database): IntegrityHit[] {
         AND UPPER(type) IN (${EQUITY_FILL_TYPES.map(() => "?").join(",")})
         AND quantity IS NOT NULL AND quantity <> 0`
   );
-  // Newest ledger row that moves shares for the pair. Every quantity-bearing
-  // transaction counts (fills, reinvestments, in-kind transfers, splits,
-  // redemptions); income rows carry no quantity. Deliberately wider than the
-  // synthetic-close later-fill list: the question here is only "has the
-  // ledger moved since this snapshot?".
-  const lastLedgerMoveStmt = db.prepare(
-    `SELECT MAX(trade_date) AS d FROM transactions
+  // Ledger rows that move shares for the pair, dated after its statement.
+  // Every quantity-bearing transaction counts (fills, reinvestments, in-kind
+  // transfers, redemptions, expiries); income rows carry no quantity.
+  // Deliberately wider than the synthetic-close later-fill list: these are
+  // the rows the roll-back to the statement date has to undo.
+  const ledgerAfterStmt = db.prepare(
+    `SELECT id, trade_date AS date, UPPER(TRIM(type)) AS type, quantity
+       FROM transactions
       WHERE account_id = ? AND security_id = ?
-        AND quantity IS NOT NULL AND quantity <> 0`
+        AND quantity IS NOT NULL AND quantity <> 0
+        AND trade_date > ?`
+  );
+  // Corporate actions on the security after the statement. A split is
+  // market-wide (the engine applies it to every account holding the
+  // security), so there is no account filter.
+  const corporateActionsAfterStmt = db.prepare(
+    `SELECT effective_date AS date, UPPER(TRIM(action_type)) AS actionType, source,
+            CASE WHEN ratio_denominator <> 0
+                 THEN CAST(ratio_numerator AS REAL) / ratio_denominator END AS ratio
+       FROM corporate_actions
+      WHERE security_id = ? AND effective_date > ?`
+  );
+  // What a close-toward-zero row (expiry, exercise, assignment, synthetic
+  // close) did to the signed position: closing a long lot lowers it, closing
+  // a short lot raises it. NULL when the engine closed nothing for the row.
+  const closedByTxnStmt = db.prepare(
+    `SELECT SUM(CASE WHEN l.is_short = 1 THEN s.quantity_sold ELSE -s.quantity_sold END) AS q
+       FROM tax_lot_sales s JOIN tax_lots l ON l.id = s.tax_lot_id
+      WHERE s.sale_transaction_id = ?`
+  );
+  const closedSignedQty = (transactionId: number): number | null =>
+    (closedByTxnStmt.get(transactionId) as { q: number | null }).q;
+  const fillsAsOfStmt = db.prepare(
+    `SELECT COUNT(*) AS n FROM transactions
+      WHERE account_id = ? AND security_id = ?
+        AND UPPER(type) IN (${EQUITY_FILL_TYPES.map(() => "?").join(",")})
+        AND quantity IS NOT NULL AND quantity <> 0
+        AND trade_date <= ?`
   );
 
   // Each hit carries the drift magnitude it was measured at so the list can
@@ -371,9 +523,9 @@ function scanLotDriftHits(db: Database.Database): IntegrityHit[] {
       return fillsMemo;
     };
 
-    const pushReal = (drift: LotDriftShape): void => {
+    const pushReal = (drift: LotDriftShape, fills: () => number = fillCount): void => {
       if (drift.shape === "fills-zero-lots") {
-        const n = fillCount();
+        const n = fills();
         hits.push({
           magnitude: drift.magnitude,
           hit: {
@@ -385,7 +537,16 @@ function scanLotDriftHits(db: Database.Database): IntegrityHit[] {
       } else if (drift.shape === "no-lots-no-fills") {
         hits.push({
           magnitude: 0,
-          hit: { key: hitKey, severity: "warning", reason: `${label}: position has zero lots and zero transactions` },
+          hit: {
+            key: hitKey,
+            severity: "warning",
+            // On the rolled-back path later transactions exist, so the plain
+            // wording would be untrue: say what the statement date showed.
+            reason:
+              fills === fillCount
+                ? `${label}: position has zero lots and zero transactions`
+                : `${label}: statement position has no tax lots and no transactions up to the statement date`,
+          },
         });
       } else if (drift.shape === "lots-no-position") {
         hits.push({
@@ -428,27 +589,73 @@ function scanLotDriftHits(db: Database.Database): IntegrityHit[] {
       continue;
     }
 
-    // (2)/(3) Statement position vs lots, unless the ledger is newer.
+    // (2)/(3) Statement position vs lots: as they stand, or rolled back to
+    // the statement date when the ledger has moved past it.
     const statementRow = statementByKey.get(key);
     const statementDate = statementRow?.asOfDate ?? accountStatementDate;
     const statementQty = statementRow?.quantity ?? 0;
-    const lastLedgerMove = (lastLedgerMoveStmt.get(accountId, securityId) as { d: string | null }).d;
-    const ledgerNewerThanStatement = lastLedgerMove !== null && lastLedgerMove > statementDate;
+    const ledgerRows = ledgerAfterStmt.all(accountId, securityId, statementDate) as LedgerRowAfter[];
+    const corporateActions = corporateActionsAfterStmt.all(securityId, statementDate) as CorporateActionAfter[];
+    const ledgerNewerThanStatement = ledgerRows.length > 0 || corporateActions.length > 0;
+    // Newest ledger event after the statement (ISO dates sort as strings).
+    const lastLedgerMove = [...ledgerRows, ...corporateActions].reduce<string | null>(
+      (max, r) => (max === null || r.date > max ? r.date : max),
+      null
+    );
+    const newestDate = newestDateByKey.get(key);
+    const snapshotOlderThanLedger =
+      lastLedgerMove !== null && (newestDate === undefined || newestDate < lastLedgerMove);
+
     if (!ledgerNewerThanStatement) {
       const statementDrift = classifyLotDrift(statementQty, signedLotQty, hasLot, fillCount);
       if (statementDrift) {
         pushReal(statementDrift);
         continue;
       }
+    } else {
+      const rolled = rollLotsBackToStatement(signedLotQty, ledgerRows, corporateActions, closedSignedQty);
+      if (!rolled.ok) {
+        // The statement cannot judge these lots. A snapshot at least as new
+        // as the ledger that agrees with them is the only clean bill left;
+        // anything else is said out loud, never skipped.
+        if (!latestDrift && !snapshotOlderThanLedger) continue;
+        hits.push({
+          magnitude: 0,
+          hit: {
+            key: hitKey,
+            severity: "warning",
+            kind: "statement-lag",
+            reason: `${label}: tax lots cannot be checked against the statement (${rolled.why}) — pending statement`,
+          },
+        });
+        continue;
+      }
+      let fillsAsOfMemo: number | undefined;
+      const fillCountAsOfStatement = (): number => {
+        if (fillsAsOfMemo === undefined) {
+          fillsAsOfMemo = (
+            fillsAsOfStmt.get(accountId, securityId, ...EQUITY_FILL_TYPES, statementDate) as { n: number }
+          ).n;
+        }
+        return fillsAsOfMemo;
+      };
+      const rolledDrift = classifyLotDrift(
+        statementQty,
+        rolled.quantity,
+        Math.abs(rolled.quantity) > LOT_DRIFT_EPSILON,
+        fillCountAsOfStatement
+      );
+      if (rolledDrift) {
+        pushReal(rolledDrift, fillCountAsOfStatement);
+        continue;
+      }
     }
 
-    // (4) The statement agrees (or the ledger has moved past it). A snapshot
-    // that is older than the newest ledger move cannot judge the lots; a
-    // newer one that still differs is waiting on the statement.
-    if (!latestDrift) continue;
-    const newestDate = newestDateByKey.get(key);
-    const snapshotOlderThanLedger =
-      lastLedgerMove !== null && (newestDate === undefined || newestDate < lastLedgerMove);
+    // (4) The statement agrees with the lots, as they stand or rolled back.
+    if (!latestDrift) continue; // no difference anywhere
+    // The newest snapshot predates the newest ledger row, so it cannot judge
+    // today's lots; the roll-back above already reconciled every row after
+    // the statement. No difference left.
     if (ledgerNewerThanStatement && snapshotOlderThanLedger) continue;
     hits.push({
       magnitude: 0,
