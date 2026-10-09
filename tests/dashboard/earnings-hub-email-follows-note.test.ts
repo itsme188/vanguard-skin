@@ -14,10 +14,25 @@ import { anchorIndex, sliceBetween } from "@/tests/helpers/source-anchor";
 import { emailFollowsEarlierCopy } from "@/app/dashboard/today/email-follows-earlier-copy";
 
 describe("emailFollowsEarlierCopy", () => {
-  it("names the company, the date email follows, and the remedy", () => {
-    expect(emailFollowsEarlierCopy("ZZA", "2026-06-10")).toBe(
-      "Email follows your earlier ZZA entry (2026-06-10). Delete one of the two entries to settle the date.",
+  // F1 2026-10-08: the notice counts the real number of entries and never names
+  // a date that has already passed (the ruling itself is unchanged).
+  it("names the company, the upcoming date email follows, the count and the remedy", () => {
+    expect(emailFollowsEarlierCopy("ZZA", "2026-06-10", 2, "2026-06-01")).toBe(
+      "Email follows your earlier ZZA entry (2026-06-10). Delete one of the 2 entries to settle the date.",
     );
+  });
+
+  it("counts three or four hand-entered entries as they are", () => {
+    expect(emailFollowsEarlierCopy("ZZA", "2026-06-10", 3, "2026-06-10")).toContain("one of the 3 entries");
+    expect(emailFollowsEarlierCopy("ZZA", "2026-06-10", 4, "2026-06-01")).toContain("one of the 4 entries");
+  });
+
+  it("does not name a date that has already passed", () => {
+    const text = emailFollowsEarlierCopy("ZZA", "2026-06-10", 3, "2026-06-11");
+    expect(text).not.toContain("2026-06-10");
+    expect(text).toContain("Email follows your earliest ZZA entry");
+    expect(text).toContain("already passed");
+    expect(text).toContain("one of the 3 entries");
   });
 });
 
@@ -28,6 +43,9 @@ describe("EarningsHub source — the later hand-entered row is marked", () => {
     expect(src).toContain('from "@/lib/queries/manual-twin-email"');
     expect(src).toContain("getEmailIgnoredManualTwins(db)");
     expect(src).toContain("emailFollowsDate: ignoredManualTwins.get(e.id)?.emailRowDate ?? null");
+    // The count is the earlier row plus every row that follows it.
+    expect(src).toContain("emailFollowsCount");
+    expect(src).toContain("emailFollowsEarlierCopy(symbol, emailFollowsDate, entryCount, todayET())");
   });
 
   it("renders the note on both the desktop row and the phone card", () => {

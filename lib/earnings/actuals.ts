@@ -84,6 +84,21 @@ export function saveManualActuals(
     return { ok: false, status: 404, error: `Event ${input.eventId} not found.` };
   }
 
+  // Owner decision 2026-10-08: no hand-entered actuals on a macro release
+  // (FOMC, CPI, ...). Here, not in a route, so every caller gets it.
+  // (A separate read: the by-id actuals read above is pinned by
+  // tests/repo/calendar-event-actuals-healed-reader.test.ts and reads no type.)
+  const kind = db
+    .prepare("SELECT event_type FROM calendar_events WHERE id = ?")
+    .get(input.eventId) as { event_type: string } | undefined;
+  if (kind?.event_type !== "earnings") {
+    return {
+      ok: false,
+      status: 400,
+      error: "Actuals can be entered by hand for earnings only.",
+    };
+  }
+
   if (input.epsActual == null && input.revenueActualUsd == null) {
     return {
       ok: false,
