@@ -413,7 +413,9 @@ export function DataHealthView({ integritySection }: { integritySection?: ReactN
             )}
             {gaps.staleHoldings.length > 0 && (
               <details>
-                <summary className="text-sm text-[#f97316] cursor-pointer hover:underline">
+                {/* Same orange treatment as the 15-to-45-day band of StaleBadge
+                    above: darkened on a light page, plain on a dark one. */}
+                <summary className="text-sm text-[color:color-mix(in_srgb,#f97316_60%,black)] [[data-theme=dark]_&]:text-[#f97316] cursor-pointer hover:underline">
                   {gaps.staleHoldings.length} stale holdings (&gt;90 days)
                 </summary>
                 <div className="mt-2 space-y-1">

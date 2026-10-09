@@ -146,7 +146,12 @@ describe("postManualEarningsEvent — the paths that already worked", () => {
 
     const outcome = await postManualEarningsEvent(ADD, failing);
 
-    expect(outcome).toEqual({ kind: "failed", message: "Network error" });
+    // The browser's own exception text ("Network error", "Failed to fetch")
+    // is never shown; the failure is named in plain words instead.
+    expect(outcome).toEqual({
+      kind: "failed",
+      message: "Couldn't add the earnings date: could not reach the server. Try again.",
+    });
   });
 
   it("falls back to the status code when the server sends no message at all", async () => {

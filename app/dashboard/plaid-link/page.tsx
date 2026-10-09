@@ -33,6 +33,7 @@
 
 import { useEffect, useState } from "react";
 import apiFetch from "@/lib/http/apiFetch";
+import { networkFailureMessage, readMutationResult } from "@/lib/ui/mutation-result";
 import { createPlaidLinkStore, type StoredLinkPayload } from "@/lib/plaid/link-storage";
 
 declare global {
@@ -104,28 +105,26 @@ export default function PlaidLinkPage() {
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ publicToken }),
         });
-        const data = (await res.json()) as {
-          success: boolean;
+        const result = await readMutationResult<{
           plaidAccounts?: { id: string; name: string; mask: string | null; subtype: string | null }[];
-          error?: string;
-        };
+        }>(res);
         if (cancelled) return;
         linkStore.clear();
-        if (!data.success) {
-          setState({ kind: "error", message: data.error || "Exchange failed." });
+        if (!result.ok) {
+          setState({ kind: "error", message: `Vanguard was not connected: ${result.message}` });
           return;
         }
-        const n = data.plaidAccounts?.length ?? 0;
+        const n = result.data.plaidAccounts?.length ?? 0;
         setState({
           kind: "success",
           message: `Connected — ${n} Vanguard account${n === 1 ? "" : "s"} found and mapped. Review the mapping in Settings → Vanguard Live (Plaid).`,
         });
-      } catch (err) {
+      } catch {
         if (cancelled) return;
         linkStore.clear();
         setState({
           kind: "error",
-          message: err instanceof Error ? `Exchange failed: ${err.message}` : "Exchange failed.",
+          message: `${networkFailureMessage("finish connecting Vanguard")} Nothing was connected.`,
         });
       }
     }
@@ -145,14 +144,10 @@ export default function PlaidLinkPage() {
       setState({ kind: "syncing" });
       try {
         const res = await apiFetch("/api/plaid/sync", { method: "POST" });
-        const data = (await res.json()) as {
-          success: boolean;
-          holdingsWritten?: number;
-          error?: string;
-        };
+        const result = await readMutationResult<{ holdingsWritten?: number }>(res);
         if (cancelled) return;
-        if (data.success) {
-          const n = data.holdingsWritten ?? 0;
+        if (result.ok) {
+          const n = result.data.holdingsWritten ?? 0;
           setState({
             kind: "success",
             message: `Re-authenticated and synced — ${n} holding${n === 1 ? "" : "s"} updated.`,
@@ -160,16 +155,14 @@ export default function PlaidLinkPage() {
         } else {
           setState({
             kind: "error",
-            message: `Re-authenticated. Sync failed: ${data.error || "unknown error"} — you can retry from Settings.`,
+            message: `Re-authenticated. Sync failed: ${result.message} You can retry from Settings.`,
           });
         }
-      } catch (err) {
+      } catch {
         if (cancelled) return;
         setState({
           kind: "error",
-          message: `Re-authenticated. Sync failed: ${
-            err instanceof Error ? err.message : "unknown error"
-          } — you can retry from Settings.`,
+          message: `Re-authenticated. Sync failed: could not reach the server. You can retry from Settings.`,
         });
       }
     }
@@ -230,15 +223,32 @@ export default function PlaidLinkPage() {
 
         // Fresh leg: mint a new link token (reauth uses update mode — no
         // new access token, just re-establishes the Vanguard login).
-        const res = await apiFetch("/api/plaid/link-token", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify(isReauth ? { mode: "reauth" } : {}),
-        });
-        const data = (await res.json()) as { success: boolean; linkToken?: string; error?: string };
-        if (!data.success || !data.linkToken) {
-          throw new Error(data.error || `Failed to create a link token (HTTP ${res.status}).`);
+        let res: Response;
+        try {
+          res = await apiFetch("/api/plaid/link-token", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(isReauth ? { mode: "reauth" } : {}),
+          });
+        } catch {
+          if (!cancelled) {
+            setState({ kind: "error", message: networkFailureMessage("start Plaid Link") });
+          }
+          return;
         }
+        const result = await readMutationResult<{ linkToken?: string }>(res);
+        if (!result.ok || !result.data.linkToken) {
+          if (!cancelled) {
+            setState({
+              kind: "error",
+              message: `Couldn't start Plaid Link: ${
+                result.ok ? "the server sent no link token." : result.message
+              }`,
+            });
+          }
+          return;
+        }
+        const data = { linkToken: result.data.linkToken };
         linkStore.save({ token: data.linkToken, reauth: isReauth } satisfies StoredLinkPayload);
         if (cancelled) return;
         setState({ kind: "opening" });
@@ -254,6 +264,9 @@ export default function PlaidLinkPage() {
           onExit: handleExit,
         }).open();
       } catch (err) {
+        // What reaches here is a sentence this page threw itself (the script
+        // did not initialise, the stored Link session is missing) or the
+        // Plaid widget's own error. The request above has its own catch.
         if (!cancelled) {
           setState({
             kind: "error",

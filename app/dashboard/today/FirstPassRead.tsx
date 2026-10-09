@@ -12,6 +12,7 @@
 // Slice F re-lays the panel; this block is self-contained.
 import { useEffect, useState } from "react";
 import apiFetch from "@/lib/http/apiFetch";
+import { networkFailureMessage, readMutationResult } from "@/lib/ui/mutation-result";
 import { PrivateText } from "@/lib/privacy/components";
 // R-D20: ONLY the client-safe module here — `callouts.ts` pulls in node:fs and
 // ./pdf (node:child_process) and `first-pass-prompt.ts` pulls in node:crypto,
@@ -118,11 +119,11 @@ export default function FirstPassRead({ eventId, read, activeRead, lastAttempt =
     setBusy("read"); setNote(null);
     try {
       const res = await apiFetch("/api/print-watch/read", { method: "POST", body: JSON.stringify({ eventId }) });
-      const data = await res.json();
-      if (!res.ok || !data.success) { setNote(data.error ?? `regenerate failed (${res.status})`); return; }
-      setNote(data.data.status === "no_facts" ? "Nothing to read yet — the sheet has no accepted values" : "Regenerating…");
+      const result = await readMutationResult<{ data?: { status?: string } }>(res);
+      if (!result.ok) { setNote(`Regenerate failed: ${result.message}`); return; }
+      setNote(result.data.data?.status === "no_facts" ? "Nothing to read yet — the sheet has no accepted values" : "Regenerating…");
       await onChanged();
-    } catch (e) { setNote(e instanceof Error ? e.message : "regenerate failed"); }
+    } catch { setNote(networkFailureMessage("regenerate the read")); }
     finally { setBusy(null); }
   }
 
@@ -130,10 +131,10 @@ export default function FirstPassRead({ eventId, read, activeRead, lastAttempt =
     setBusy(`callout-${c.id}`); setNote(null);
     try {
       const res = await apiFetch("/api/print-watch/callouts/accept", { method: "POST", body: JSON.stringify({ calloutId: c.id, accept }) });
-      const data = await res.json();
-      if (!res.ok || !data.success) { setNote(data.error ?? `accept failed (${res.status})`); return; }
+      const result = await readMutationResult(res);
+      if (!result.ok) { setNote(`Not saved: ${result.message} The callout is unchanged.`); return; }
       await onChanged();
-    } catch (e) { setNote(e instanceof Error ? e.message : "accept failed"); }
+    } catch { setNote(`${networkFailureMessage("save that choice")} The callout is unchanged.`); }
     finally { setBusy(null); }
   }
 

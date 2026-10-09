@@ -5,7 +5,9 @@ import { Count, Pct, PrivateText } from "@/lib/privacy/components";
 import type { BondUnmodelledReason, RateDurationSource } from "@/lib/compute/bond-duration";
 import { formatCompactUSD } from "@/lib/format";
 import { EmptySection } from "./EmptySection";
+import { LoadFailedSection } from "./LoadFailedSection";
 import { ScrollFade } from "./ScrollFade";
+import { networkFailureMessage, readMutationResult } from "@/lib/ui/mutation-result";
 import {
   interpretDuration,
   interpretPortfolioRateSensitivity,
@@ -113,21 +115,53 @@ function unmodelledNote(reason: BondUnmodelledReason | null): string {
 export function FixedIncomeCard({ scope }: { scope?: string }) {
   const [data, setData] = useState<FixedIncomeData | null>(null);
   const [loading, setLoading] = useState(true);
+  // A load that failed is not "no bonds": the card says the figures could not
+  // be loaded instead of showing the empty state.
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   useEffect(() => {
+    let cancelled = false;
     setLoading(true);
     const params = scope && scope !== "all" ? `?scope=${scope}` : "";
     fetch(`/api/compute/fixed-income${params}`)
-      .then((r) => r.json())
-      .then((json) => {
-        if (json.success && json.data.bonds.length > 0) setData(json.data);
-        else setData(null);
+      .then((res) => readMutationResult<{ data?: FixedIncomeData }>(res))
+      .then((result) => {
+        if (cancelled) return;
+        if (!result.ok || !result.data.data || !Array.isArray(result.data.data.bonds)) {
+          setData(null);
+          setLoadError(
+            `Couldn't load the bond figures: ${
+              result.ok ? "the server sent no data." : result.message
+            }`,
+          );
+          return;
+        }
+        setLoadError(null);
+        setData(result.data.data.bonds.length > 0 ? result.data.data : null);
       })
-      .catch(() => {})
-      .finally(() => setLoading(false));
+      .catch(() => {
+        if (cancelled) return;
+        setData(null);
+        setLoadError(networkFailureMessage("load the bond figures"));
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [scope]);
 
   if (loading) return null;
+  if (loadError) {
+    return (
+      <LoadFailedSection
+        title="Fixed Income Exposure"
+        message={loadError}
+        hint="The bond holdings themselves are unchanged. Reload the page to try again."
+      />
+    );
+  }
   if (!data) {
     return (
       <EmptySection

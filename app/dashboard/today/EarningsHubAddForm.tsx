@@ -195,8 +195,9 @@ export async function postManualEarningsEvent(
       return { kind: "failed", message: data?.error ?? `Server returned ${res.status}` };
     }
     return { kind: "saved", id: data.id ?? null };
-  } catch (err) {
-    return { kind: "failed", message: err instanceof Error ? err.message : "Network error" };
+  } catch {
+    // Nothing came back, so nothing is known to have been added.
+    return { kind: "failed", message: networkFailureMessage("add the earnings date") };
   }
 }
 

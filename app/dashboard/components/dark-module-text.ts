@@ -11,3 +11,15 @@
  * on a new darker inline grey in these files.
  */
 export const DARK_MODULE_DIM_TEXT = "#8a8a8a";
+
+/**
+ * Text colour of a grey control on those modules while the pointer is over
+ * it: 13.4:1 or better on every dark-module surface. The same value the
+ * chart's own chrome buttons take on hover (`.dark-module-chart
+ * button.chart-chrome:hover` in app/globals.css). A hex, not a theme token:
+ * `hover:text-ink` would turn near-black on a light page.
+ */
+export const DARK_MODULE_HOVER_TEXT = "#d4d4d4";
+
+/** Border of an outlined grey control there while the pointer is over it. */
+export const DARK_MODULE_HOVER_BORDER = "#666";

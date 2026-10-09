@@ -32,7 +32,7 @@ import { QuoteStats } from "../../components/QuoteStats";
 import { Count, Money, Pct, Shares, PrivateText, QuantityUnit } from "@/lib/privacy/components";
 import { computeBasisDisagreements, computeLotCoverageGaps, computeLotSignMismatches } from "@/lib/compute/lot-coverage";
 import { getTranscriptsForSecurity } from "@/lib/queries/transcripts";
-import { daysToExpiry, liveOptionExpirationSql } from "@/lib/compute/option-expiry";
+import { daysToExpiry, liveOptionExpirationSql, normalizeOptionExpiration } from "@/lib/compute/option-expiry";
 import type { EarningsTranscript } from "@/lib/types";
 import { resolveOptionUnderlying } from "@/lib/queries/securities";
 import { getNotesForSecurity } from "@/lib/queries/notes";
@@ -287,6 +287,12 @@ export default async function SecurityDetailPage(props: {
   // Option hubs: notes are filed under the UNDERLYING (the composer has no
   // option picker). Resolve it through the existing option→underlying relation.
   const isOptionHub = (security.security_type ?? "").toLowerCase() === "option";
+  // Display only: a legacy row stores the expiration compact (YYYYMMDD). The
+  // page prints the dashed form; the stored value is what every computation
+  // still reads.
+  const expirationShown = security.expiration_date
+    ? normalizeOptionExpiration(security.expiration_date)
+    : null;
   const optionUnderlying = isOptionHub ? resolveOptionUnderlying(db, securityId) : null;
   const underlyingNotes = optionUnderlying ? getNotesForSecurity(db, optionUnderlying.id) : [];
   const underlyingNoteIds = new Set(underlyingNotes.map((n) => n.id));
@@ -454,7 +460,7 @@ export default async function SecurityDetailPage(props: {
             {security.expiration_date && (
               <OptionCell label="Expiration">
                 <span className="font-mono font-semibold text-lg text-ink">
-                  {security.expiration_date}
+                  {expirationShown}
                   <span className="text-xs text-ink-faint ml-1.5">
                     {(() => {
                       const dte = daysToExpiry(security.expiration_date);
@@ -1220,7 +1226,9 @@ export default async function SecurityDetailPage(props: {
                       <td className={`${TD_MONO} text-right`}>
                         <Money value={o.strike_price} precise />
                       </td>
-                      <td className={`${TD_MONO} text-ink-dim`}>{o.expiration_date}</td>
+                      <td className={`${TD_MONO} text-ink-dim`}>
+                        {o.expiration_date ? normalizeOptionExpiration(o.expiration_date) : o.expiration_date}
+                      </td>
                       <td className={`${TD_MONO} text-right ${o.quantity < 0 ? "text-down" : "text-ink"}`}>
                         {o.quantity > 0 ? "+" : ""}<Shares value={o.quantity} />
                       </td>
@@ -1288,7 +1296,7 @@ export default async function SecurityDetailPage(props: {
       {expiredOptionSnapshotRows.length > 0 && (
         <div className="rounded-xl border border-dashed border-edge p-6">
           <p className="text-sm text-ink-dim">
-            {security.symbol} expired{security.expiration_date ? ` on ${security.expiration_date}` : ""} and
+            {security.symbol} expired{expirationShown ? ` on ${expirationShown}` : ""} and
             is awaiting a statement. The latest holdings snapshot still lists it, but an expired contract
             is not counted as a held position. The row clears when the statement that records the expiry is
             imported.

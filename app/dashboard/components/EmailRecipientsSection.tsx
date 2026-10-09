@@ -19,6 +19,7 @@
 import { CHIP_TONE_CLASSES } from "@/app/dashboard/components/Chip";
 import { useEffect, useRef, useState } from "react";
 import apiFetch from "@/lib/http/apiFetch";
+import { networkFailureMessage } from "@/lib/ui/mutation-result";
 
 interface RecipientsState {
   briefing_email_recipients: string;
@@ -66,16 +67,29 @@ export function EmailRecipientsSection() {
   useEffect(() => {
     let cancelled = false;
     fetch("/api/settings/email-recipients")
-      .then((r) => r.json())
-      .then((data: Partial<RecipientsState>) => {
-        if (!cancelled) {
-          setState({ ...EMPTY_STATE, ...data });
+      .then(async (r) => {
+        // This route answers with the recipients object itself (no success
+        // envelope), so the status is the gate. An error body must never be
+        // spread into the form: it would show every list as blank, and a
+        // blank list reads as "use the default".
+        const data = (await r.json().catch(() => null)) as
+          | (Partial<RecipientsState> & { error?: unknown })
+          | null;
+        if (cancelled) return;
+        if (!r.ok || !data || typeof data !== "object") {
+          const serverText =
+            typeof data?.error === "string" && data.error.trim() ? data.error.trim() : null;
+          setError(
+            `Couldn't load the recipients: ${
+              serverText ?? `the server returned an error (HTTP ${r.status}).`
+            }`,
+          );
+          return;
         }
+        setState({ ...EMPTY_STATE, ...data });
       })
-      .catch((err) => {
-        if (!cancelled) {
-          setError(err instanceof Error ? err.message : "Load failed");
-        }
+      .catch(() => {
+        if (!cancelled) setError(networkFailureMessage("load the recipients"));
       });
     return () => {
       cancelled = true;

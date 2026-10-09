@@ -76,7 +76,11 @@ export function SendDigestPanel({ onClose, digestWindow, onDigestWindowChange }:
         setStatus(data);
         if (data.defaultRecipient) setRecipient(data.defaultRecipient);
       })
-      .catch(() => {});
+      .catch(() => {
+        // The status only pre-fills the recipient and adds the "Last sent"
+        // line. Without it the panel still sends: the box stays blank and no
+        // last-sent date is claimed.
+      });
   }, []);
 
   // A date-required range mode with a blank date must not send — the server

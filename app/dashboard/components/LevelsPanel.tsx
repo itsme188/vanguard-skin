@@ -1,7 +1,7 @@
 "use client";
 
 import { CHIP_TONE_TEXT } from "@/app/dashboard/components/chip-tone-text";
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, type MouseEvent } from "react";
 import Link from "next/link";
 import type {
   SecurityLevel,
@@ -53,7 +53,11 @@ import { useToast } from "./Toast";
 import { Chip, CHIP_TONE_CLASSES } from "./Chip";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { SortPicker } from "./SortPicker";
-import { DARK_MODULE_DIM_TEXT } from "./dark-module-text";
+import {
+  DARK_MODULE_DIM_TEXT,
+  DARK_MODULE_HOVER_BORDER,
+  DARK_MODULE_HOVER_TEXT,
+} from "./dark-module-text";
 import { compareValues, useSortParam } from "@/lib/hooks/useSortParam";
 import apiFetch from "@/lib/http/apiFetch";
 
@@ -110,6 +114,25 @@ function priceSourceLabel(src: LevelPriceSource): string {
  *  or was paused. Derived from levelActionVisibility (the single owner of the
  *  armed / unarmed rules) so it cannot drift from the chips and buttons. */
 export type LevelRowStatus = "armed" | "triggered" | "pending_review" | "rejected" | "inactive";
+
+/**
+ * Hover feedback for a grey, inline-styled control on the always-dark chart
+ * panel. Inline styles outrank a `hover:` class, so the colour is swapped
+ * here, the way the panel's Accept and Add buttons already do it. `rest` is
+ * what the control's own `style` sets; leaving puts it back.
+ */
+function darkModuleHover(rest: { color: string; borderColor?: string }) {
+  return {
+    onMouseEnter: (e: MouseEvent<HTMLElement>) => {
+      e.currentTarget.style.color = DARK_MODULE_HOVER_TEXT;
+      if (rest.borderColor) e.currentTarget.style.borderColor = DARK_MODULE_HOVER_BORDER;
+    },
+    onMouseLeave: (e: MouseEvent<HTMLElement>) => {
+      e.currentTarget.style.color = rest.color;
+      if (rest.borderColor) e.currentTarget.style.borderColor = rest.borderColor;
+    },
+  };
+}
 
 export function levelRowStatus(
   level: Pick<SecurityLevel, "is_active" | "review_status" | "triggered_at"> & {
@@ -438,6 +461,7 @@ function SuggestedLevels({
       <div style={{ marginBottom: "1rem", borderTop: "1px solid #1f1f1f", borderBottom: "1px solid #1f1f1f" }}>
         <button
           onClick={() => setExpanded((v) => !v)}
+          {...darkModuleHover({ color: "#999" })}
           style={{
             width: "100%",
             padding: "10px 0",
@@ -452,6 +476,7 @@ function SuggestedLevels({
             letterSpacing: "0.18em",
             textTransform: "uppercase",
             color: "#999",
+            transition: "color 180ms ease",
           }}
         >
           <span>
@@ -2076,10 +2101,15 @@ export function LevelsPanel({
                         onClick={() => startEdit(l)}
                         title="Edit this level"
                         className="relative pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-1"
+                        {...darkModuleHover({
+                          color: "#888",
+                          borderColor: "#333",
+                        })}
                         style={{
                           background: "transparent",
                           border: "1px solid #333",
                           color: "#888",
+                          transition: "color 180ms ease, border-color 180ms ease",
                           fontFamily: "var(--font-mono), monospace",
                           fontSize: "11px",
                           fontWeight: 600,

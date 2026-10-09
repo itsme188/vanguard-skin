@@ -18,6 +18,7 @@
 import { CHIP_TONE_CLASSES } from "@/app/dashboard/components/Chip";
 import { useEffect, useState } from "react";
 import apiFetch from "@/lib/http/apiFetch";
+import { networkFailureMessage, readMutationResult } from "@/lib/ui/mutation-result";
 
 interface FeatureModelRow {
   key: string;
@@ -41,22 +42,20 @@ export function AiModelsSection() {
     let cancelled = false;
     fetch("/api/settings/ai-models")
       .then(async (r) => {
-        const data = (await r.json()) as {
-          success?: boolean;
-          features?: FeatureModelRow[];
-          error?: string;
-        };
-        if (!r.ok || !data.success || !data.features) {
-          throw new Error(data.error || `HTTP ${r.status}`);
-        }
-        if (!cancelled) setFeatures(data.features);
-      })
-      .catch((err) => {
-        if (!cancelled) {
+        const result = await readMutationResult<{ features?: FeatureModelRow[] }>(r);
+        if (cancelled) return;
+        if (!result.ok || !result.data.features) {
           setLoadError(
-            err instanceof Error ? err.message : "Failed to load AI models",
+            `Couldn't load the AI models: ${
+              result.ok ? "the server sent no model list." : result.message
+            }`,
           );
+          return;
         }
+        setFeatures(result.data.features);
+      })
+      .catch(() => {
+        if (!cancelled) setLoadError(networkFailureMessage("load the AI models"));
       });
     return () => {
       cancelled = true;
@@ -80,19 +79,17 @@ export function AiModelsSection() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ key, model }),
       });
-      const data = (await res.json()) as {
-        success?: boolean;
-        features?: FeatureModelRow[];
-        error?: string;
-      };
-      if (!res.ok || !data.success || !data.features) {
+      const result = await readMutationResult<{ features?: FeatureModelRow[] }>(res);
+      if (!result.ok || !result.data.features) {
         setRowStatus(key, {
           kind: "error",
-          message: data.error || `Save failed (HTTP ${res.status}) — override unchanged`,
+          message: `Not saved: ${
+            result.ok ? "the server sent no model list." : result.message
+          } The override is unchanged.`,
         });
         return;
       }
-      setFeatures(data.features);
+      setFeatures(result.data.features);
       setDrafts((prev) => {
         const next = { ...prev };
         delete next[key];
@@ -104,13 +101,10 @@ export function AiModelsSection() {
           ? { kind: "saved", message: "Override cleared — back to the default model" }
           : { kind: "saved", message: "Saved — applies to the next AI call" },
       );
-    } catch (err) {
+    } catch {
       setRowStatus(key, {
         kind: "error",
-        message:
-          err instanceof Error
-            ? `Save failed: ${err.message} — override unchanged`
-            : "Save failed — override unchanged",
+        message: `${networkFailureMessage("save the override")} The override is unchanged.`,
       });
     } finally {
       setSaving((prev) => {
