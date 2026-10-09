@@ -1,5 +1,6 @@
 "use client";
 
+import { emptyEnrichmentLabel } from "@/lib/research/empty-enrichment";
 import { readMutationResult, networkFailureMessage } from "@/lib/ui/mutation-result";
 import { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import Link from "next/link";
@@ -1272,7 +1273,13 @@ function ArticleCard({
     day: "numeric",
     year: "numeric",
   });
-  const border = sentimentBorder[article.sentiment ?? "neutral"] ?? "border-l-edge-strong";
+  // An article with no summary and no themes was never really enriched: no
+  // sentiment chip and no made-up "neutral" border, just a plain label.
+  const emptyLabel = emptyEnrichmentLabel(article);
+  const border =
+    emptyLabel || !article.sentiment
+      ? "border-l-edge-strong"
+      : (sentimentBorder[article.sentiment] ?? "border-l-edge-strong");
   // The original article on the publisher's site. Falls back to the source's
   // homepage so there's always a way out to the source even when inline text
   // isn't available (U5). source_url can be null for some rows.
@@ -1309,7 +1316,8 @@ function ArticleCard({
           </span>
           <span className="text-ink-faint">·</span>
           <time className="text-xs text-ink-faint">{dateStr}</time>
-          <SentimentBadge sentiment={article.sentiment} />
+          {!emptyLabel && <SentimentBadge sentiment={article.sentiment} />}
+          {emptyLabel && <span className="text-xs text-ink-dim">{emptyLabel}</span>}
           {/* A filtered article stays in this list (owner ruling) but is
               marked, with the same reason text the Filtered tab uses. Always
               visible: no hover, so it reads the same on touch. */}

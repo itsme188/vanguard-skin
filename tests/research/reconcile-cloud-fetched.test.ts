@@ -153,6 +153,49 @@ describe("reconcileCloudFetchedNewsletters", () => {
     expect(row.is_relevant).toBe(1);
   });
 
+  it("stores an empty-enrichment payload unprocessed with NULL sentiment, and the queue picks it up", async () => {
+    const db = makeDb();
+    mockWorker({
+      list: {
+        m1: {
+          ...BASE_PAYLOAD,
+          summary: "",
+          key_themes: [],
+          sentiment: "neutral" as never,
+          sentiment_score: 0,
+          mentioned_symbols: ["AAPL"],
+        },
+      },
+    });
+
+    await reconcileCloudFetchedNewsletters(db, "secret");
+
+    const row = db
+      .prepare(`SELECT processed_at, sentiment, sentiment_score FROM research_articles WHERE gmail_message_id = 'm1'`)
+      .get() as any;
+    expect(row.processed_at).toBeNull();
+    expect(row.sentiment).toBeNull();
+    expect(row.sentiment_score).toBeNull();
+    const link = db.prepare(`SELECT sentiment FROM research_article_securities`).get() as any;
+    expect(link.sentiment).toBeNull();
+    // Same predicate processUnprocessedArticles uses (lib/gmail/process.ts).
+    const queued = db
+      .prepare(`SELECT id FROM research_articles WHERE processed_at IS NULL AND COALESCE(is_relevant, 1) = 1`)
+      .all();
+    expect(queued).toHaveLength(1);
+  });
+
+  it("keeps a non-empty payload exactly as before (processed, sentiment kept on row and link)", async () => {
+    const db = makeDb();
+    mockWorker({ list: { m1: BASE_PAYLOAD } });
+    await reconcileCloudFetchedNewsletters(db, "secret");
+    const row = db.prepare(`SELECT processed_at, sentiment FROM research_articles`).get() as any;
+    expect(row.processed_at).not.toBeNull();
+    expect(row.sentiment).toBe("bearish");
+    const link = db.prepare(`SELECT sentiment FROM research_article_securities`).get() as any;
+    expect(link.sentiment).toBe("bearish");
+  });
+
   it("sanitizes tag-contaminated key_themes before storing", async () => {
     const db = makeDb();
     mockWorker({
