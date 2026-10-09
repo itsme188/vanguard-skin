@@ -28,6 +28,7 @@ import { enrichSecurities, enrichPendingOptionUnderlyings } from "./contracts";
 import {
   classifyOptionSectors,
   getUnsectoredOptionUnderlyings,
+  markOptionSectorsChecked,
 } from "../securities/classify-option-sectors";
 import { classifyFactors } from "../compute/classify-factors";
 import { purgeExpiredOptionHoldings } from "../mutations/expired-options";
@@ -237,6 +238,9 @@ export async function runAutoRefresh(
                   : ""),
             );
           }
+        } else {
+          // Checked, nothing to do: record the check (trust strip "Sectors classified").
+          markOptionSectorsChecked(db);
         }
       } catch (err) {
         const msg =

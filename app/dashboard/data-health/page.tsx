@@ -3,8 +3,11 @@ export const dynamic = "force-dynamic";
 import { db } from "@/lib/db";
 import { getSectorEtfGaps } from "@/lib/queries/level-performance";
 import {
+  getOptionsWithUnsectoredUnderlying,
   getSectorCheckMissingSector,
   getSectorDisagreements,
+  type OptionSectorOrigin,
+  type OptionUnderlyingSectorGapReason,
 } from "@/lib/queries/data-health";
 import { DataHealthView } from "../components/DataHealthView";
 import { dataConfidenceLevelLabel } from "@/lib/ui/data-confidence-level";
@@ -153,6 +156,32 @@ function IntegritySection({ confidence }: { confidence: DataConfidence | null })
   );
 }
 
+/** Why the option cannot take its underlying's sector, in plain words. */
+function optionSectorGapReasonLabel(reason: OptionUnderlyingSectorGapReason): string {
+  switch (reason) {
+    case "no_underlying_recorded":
+      return "The option records no underlying";
+    case "underlying_unknown":
+      return "The underlying is not a security in the app";
+    case "underlying_no_sector":
+      return "The underlying has no sector";
+  }
+}
+
+/** How the option came by the sector it shows now, in plain words. */
+function optionSectorOriginLabel(origin: OptionSectorOrigin): string {
+  switch (origin) {
+    case "blank":
+      return "None yet";
+    case "ai":
+      return "Picked by the AI as a stand-in";
+    case "inherited":
+      return "Copied from the underlying earlier";
+    case "protected":
+      return "Set by an import, the broker or a check; never changed automatically";
+  }
+}
+
 function readConfidence(): DataConfidence | null {
   try {
     return getDataConfidence(db);
@@ -170,6 +199,7 @@ export default function DataHealthPage() {
   const sectorGaps = getSectorEtfGaps(db);
   const sectorDisagreements = getSectorDisagreements(db);
   const sectorMissingCount = getSectorCheckMissingSector(db).length;
+  const optionSectorGaps = getOptionsWithUnsectoredUnderlying(db);
 
   return (
     <div className="max-w-[1400px] mx-auto px-6 py-8 space-y-6">
@@ -320,6 +350,89 @@ export default function DataHealthPage() {
             {sectorMissingCount === 1 ? "has" : "have"} no sector tag, so
             there is nothing to compare against the fund category.
           </p>
+        )}
+      </section>
+
+      <section
+        id="option-underlying-sector"
+        className="rounded-xl border border-edge bg-panel overflow-hidden scroll-mt-20"
+      >
+        <div className="px-5 py-4 border-b border-edge">
+          <h2 className="text-sm font-medium text-ink">
+            Options whose underlying has no sector
+            {optionSectorGaps.length > 0 && (
+              <>
+                {" "}
+                (<Count value={optionSectorGaps.length} />)
+              </>
+            )}
+          </h2>
+          <p className="text-[12px] text-ink-dim mt-0.5 max-w-3xl">
+            An option you hold takes the sector of its underlying stock or
+            fund. When the underlying has none, the option is left without a
+            sector or sits in one the AI picked, and the sector breakdown
+            counts it there. Give the underlying a sector and the next sync
+            brings the option in line by itself. Nothing on this page changes
+            a sector.
+          </p>
+        </div>
+
+        {optionSectorGaps.length === 0 ? (
+          <div className="px-5 py-8 text-center text-[13px] text-ink-dim">
+            Every option you hold has an underlying with a sector.
+          </div>
+        ) : (
+          <ScrollFade>
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-edge text-[11px] uppercase tracking-wider text-ink-dim">
+                  <th className="text-left px-5 py-2 font-medium">Option</th>
+                  <th className="text-left px-5 py-2 font-medium">Underlying</th>
+                  <th className="text-left px-5 py-2 font-medium">What is missing</th>
+                  <th className="text-left px-5 py-2 font-medium">Option&rsquo;s sector now</th>
+                  <th className="text-left px-5 py-2 font-medium">Where that came from</th>
+                </tr>
+              </thead>
+              <tbody>
+                {optionSectorGaps.map((o) => (
+                  <tr
+                    key={o.securityId}
+                    className="border-b border-edge/50 last:border-0"
+                  >
+                    <td className="px-5 py-2 text-ink font-mono whitespace-nowrap">
+                      <SymbolLink
+                        securityId={o.securityId}
+                        symbol={o.symbol}
+                        className="text-blue font-mono"
+                      />
+                    </td>
+                    <td className="px-5 py-2 text-ink font-mono whitespace-nowrap">
+                      {o.underlyingSymbol === null ? (
+                        "—"
+                      ) : o.underlyingSecurityId != null ? (
+                        <SymbolLink
+                          securityId={o.underlyingSecurityId}
+                          symbol={o.underlyingSymbol}
+                          className="text-blue font-mono"
+                        />
+                      ) : (
+                        o.underlyingSymbol
+                      )}
+                    </td>
+                    <td className="px-5 py-2 text-ink-dim">
+                      {optionSectorGapReasonLabel(o.reason)}
+                    </td>
+                    <td className="px-5 py-2 text-ink-dim">
+                      {o.optionSector ?? "—"}
+                    </td>
+                    <td className="px-5 py-2 text-ink-dim">
+                      {optionSectorOriginLabel(o.optionSectorOrigin)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </ScrollFade>
         )}
       </section>
     </div>

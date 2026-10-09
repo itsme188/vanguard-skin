@@ -105,7 +105,7 @@ export function TrustStrip({ scope }: TrustStripProps) {
     // Skeleton placeholder while loading
     return (
       <div className="flex gap-2 flex-wrap mb-2">
-        {Array.from({ length: 5 }).map((_, i) => (
+        {Array.from({ length: 6 }).map((_, i) => (
           <div
             key={i}
             className="h-14 w-36 rounded-lg border border-edge bg-raised/30 animate-pulse"
@@ -115,7 +115,7 @@ export function TrustStrip({ scope }: TrustStripProps) {
     );
   }
 
-  const { factorCoverage, lastClassification, crossCheckedThru, stalePrices, neverPriced, bondDuration } = state;
+  const { factorCoverage, lastClassification, lastSectorClassification, crossCheckedThru, stalePrices, neverPriced, bondDuration } = state;
 
   const coveragePct = Math.round(factorCoverage.percentage * 100);
   const coverageTone: Tone =
@@ -137,6 +137,9 @@ export function TrustStrip({ scope }: TrustStripProps) {
       : "bad";
 
   const classifyTone: Tone = lastClassification ? "neutral" : "warn";
+  // The time moves on every clean check (each full sync), so "never" means no
+  // check has finished since this figure was introduced.
+  const sectorClassifyTone: Tone = lastSectorClassification ? "neutral" : "warn";
 
   const reconTone: Tone = "neutral";
 
@@ -171,6 +174,22 @@ export function TrustStrip({ scope }: TrustStripProps) {
           }
           onClick={() => togglePanel("lastClassify")}
           active={activePanel === "lastClassify"}
+        />
+        <Cell
+          // The last time option sectors were checked and found in line, or
+          // brought in line (a stored time, written by the sector run). A
+          // separate figure from "Factors updated": neither run moves the
+          // other's date.
+          label="Sectors classified"
+          value={formatRelative(lastSectorClassification)}
+          tone={sectorClassifyTone}
+          hint={
+            lastSectorClassification
+              ? `Sectors last checked ${formatEnrichedAtET(lastSectorClassification)}`
+              : "Sectors have not been checked yet"
+          }
+          onClick={() => togglePanel("sectorClassify")}
+          active={activePanel === "sectorClassify"}
         />
         <Cell
           label="Cross-checked (Modified Dietz)"
