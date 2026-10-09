@@ -1,3 +1,4 @@
+import { CHIP_TONE_CLASSES } from "@/app/dashboard/components/Chip";
 import type { AccountSummary } from "@/lib/queries/dashboard";
 import Link from "next/link";
 import { Money, Pct } from "@/lib/privacy/components";
@@ -103,7 +104,7 @@ export function AccountSummaryCards({
                     signed
                     className={`text-xs font-medium px-1.5 py-0.5 rounded font-mono tabular-nums ${
                       canonicalChangePct != null && canonicalChangePct >= 0
-                        ? "bg-up/20 text-up" : "bg-down/20 text-down"
+                        ? CHIP_TONE_CLASSES.up : CHIP_TONE_CLASSES.down
                     }`}
                   />
                 </div>
@@ -122,7 +123,7 @@ export function AccountSummaryCards({
                     signed
                     className={`text-xs font-medium px-1.5 py-0.5 rounded font-mono tabular-nums ${
                       account.monthlyChangePercent != null && account.monthlyChangePercent >= 0
-                        ? "bg-up/20 text-up" : "bg-down/20 text-down"
+                        ? CHIP_TONE_CLASSES.up : CHIP_TONE_CLASSES.down
                     }`}
                   />
                 </div>
@@ -133,7 +134,7 @@ export function AccountSummaryCards({
             {hasEstimate && (
               <div className="mt-3 pt-2.5 border-t border-edge/50">
                 <div className="flex items-baseline justify-between">
-                  <span className="text-lg font-mono tabular-nums text-gold/80">
+                  <span className="text-lg font-mono tabular-nums text-gold-ink">
                     ~<Money value={account.estimatedValue} />
                   </span>
                   <span className="text-[11px] font-mono font-medium text-gold-ink">

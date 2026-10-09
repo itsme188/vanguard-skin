@@ -4,9 +4,11 @@
  */
 
 import type Database from "better-sqlite3";
+import { unmaturedSecuritySql } from "@/lib/db/eastern-day-sql";
 import { adjustedMarketValueSQL } from "@/lib/valuation";
 import { FACTOR_COLUMNS, type FactorColumn } from "@/lib/factors";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
+import { accountScopeAndSql, accountScopeCondition } from "@/lib/queries/account-scope-sql";
 import {
   concentrationGrossValue,
   getConcentrationUniverse,
@@ -150,8 +152,10 @@ export const HOLDING_VALUE_USD_SQL = `CASE
  * drill-down so a matured bond leaves the row and its panel together.
  * Needs alias `s` (securities) in scope.
  */
-export const UNMATURED_SECURITY_SQL =
-  "(s.maturity_date IS NULL OR s.maturity_date >= date('now'))";
+export function UNMATURED_SECURITY_SQL(): string {
+  // Eastern day, resolved per call: never SQLite's UTC date('now').
+  return unmaturedSecuritySql("s");
+}
 
 /**
  * Split one holding across sectors (explodeHoldingBySector) and MERGE the
@@ -404,15 +408,17 @@ export function getAllocationByDimension(
     }`;
 
   const conditions = [
-    UNMATURED_SECURITY_SQL,
+    UNMATURED_SECURITY_SQL(),
     // An option past its ET expiration day is no longer a position.
     liveOptionExpirationSql("s"),
   ];
   const params: (string | number)[] = [];
 
-  if (accountIds && accountIds.length > 0) {
-    conditions.push(`h.account_id IN (${accountIds.map(() => "?").join(",")})`);
-    params.push(...accountIds);
+  // `undefined` is every account; a defined empty list is NO accounts.
+  const scope = accountScopeCondition(accountIds);
+  if (scope.condition !== null) {
+    conditions.push(scope.condition);
+    params.push(...scope.params);
   }
 
   // Per-holding rows (not SQL GROUP BY) so each row's delta-adjusted
@@ -489,14 +495,16 @@ function getSectorAllocationWithLookThrough(
   accountIds?: number[]
 ): AllocationEntry[] {
   const conditions = [
-    UNMATURED_SECURITY_SQL,
+    UNMATURED_SECURITY_SQL(),
     // An option past its ET expiration day is no longer a position.
     liveOptionExpirationSql("s"),
   ];
   const params: (string | number)[] = [];
-  if (accountIds && accountIds.length > 0) {
-    conditions.push(`h.account_id IN (${accountIds.map(() => "?").join(",")})`);
-    params.push(...accountIds);
+  // `undefined` is every account; a defined empty list is NO accounts.
+  const scope = accountScopeCondition(accountIds);
+  if (scope.condition !== null) {
+    conditions.push(scope.condition);
+    params.push(...scope.params);
   }
 
   const rows = db
@@ -673,10 +681,8 @@ export function getClassificationCoverage(
   accountIds?: number[]
 ): ClassificationCoverage {
   // Scope to securities with current holdings in the selected accounts
-  const holdingsFilter = accountIds && accountIds.length > 0
-    ? `AND h.account_id IN (${accountIds.map(() => "?").join(",")})`
-    : "";
-  const holdingsParams = accountIds ?? [];
+  // `undefined` is every account; a defined empty list is NO accounts.
+  const { sql: holdingsFilter, params: holdingsParams } = accountScopeAndSql(accountIds);
 
   const activeSecuritiesCTE = `
     active_securities AS (
@@ -743,15 +749,11 @@ export function getAnalysisDataCoverage(
   db: Database.Database,
   accountIds?: number[]
 ): AnalysisDataCoverage {
-  const accountFilter =
-    accountIds && accountIds.length > 0
-      ? `AND h.account_id IN (${accountIds.map(() => "?").join(",")})`
-      : "";
-  const accountFilterSnap =
-    accountIds && accountIds.length > 0
-      ? `AND ms.account_id IN (${accountIds.map(() => "?").join(",")})`
-      : "";
-  const accountParams = accountIds ?? [];
+  // `undefined` is every account; a defined empty list is NO accounts.
+  // The three filters below bind the same ids, one column each.
+  const { sql: accountFilter, params: accountParams } = accountScopeAndSql(accountIds);
+  const accountFilterSnap = accountScopeAndSql(accountIds, "ms.account_id").sql;
+  const accountFilterAccounts = accountScopeAndSql(accountIds, "a.id").sql;
 
   // ONE basis per account (the two sides must agree on what "cash" is):
   //   • latest snapshot STATES a cash balance (Plaid / TWS) → invested value
@@ -780,7 +782,7 @@ export function getAnalysisDataCoverage(
       JOIN securities s ON s.id = h.security_id
       LEFT JOIN latest_prices lp ON lp.security_id = h.security_id
       LEFT JOIN fx_rates fx ON fx.currency = s.currency
-      WHERE ${UNMATURED_SECURITY_SQL}
+      WHERE ${UNMATURED_SECURITY_SQL()}
         AND ${liveOptionExpirationSql("s")}
         ${accountFilter}
       GROUP BY h.account_id, s.security_type, s.fund_category`
@@ -849,7 +851,7 @@ export function getAnalysisDataCoverage(
       `SELECT a.name FROM accounts a
        WHERE EXISTS (SELECT 1 FROM monthly_snapshots ms WHERE ms.account_id = a.id)
          AND NOT EXISTS (SELECT 1 FROM holdings h WHERE h.account_id = a.id AND h.quantity > 0)
-         ${accountIds && accountIds.length > 0 ? `AND a.id IN (${accountIds.map(() => "?").join(",")})` : ""}`
+         ${accountFilterAccounts}`
     )
     .all(...accountParams) as Array<{ name: string }>;
 
@@ -910,15 +912,20 @@ export function getFactorHeatmap(
   db: Database.Database,
   accountIds?: number[]
 ): FactorHeatmapRow[] {
+  // `undefined` is every account; a defined empty list is NO accounts (it
+  // must never widen to the whole book).
+  if (accountIds && accountIds.length === 0) return [];
   const conditions = [
-    "(s.maturity_date IS NULL OR s.maturity_date >= date('now'))",
+    UNMATURED_SECURITY_SQL(),
     liveOptionExpirationSql("s"),
   ];
   const params: (string | number)[] = [];
 
-  if (accountIds && accountIds.length > 0) {
-    conditions.push(`h.account_id IN (${accountIds.map(() => "?").join(",")})`);
-    params.push(...accountIds);
+  // `undefined` is every account; a defined empty list is NO accounts.
+  const scope = accountScopeCondition(accountIds);
+  if (scope.condition !== null) {
+    conditions.push(scope.condition);
+    params.push(...scope.params);
   }
 
   // Aggregate by symbol — same security across accounts has identical factors,
@@ -1010,14 +1017,16 @@ export function getFactorCoverage(
   accountIds?: number[]
 ): FactorCoverage {
   const conditions = [
-    "(s.maturity_date IS NULL OR s.maturity_date >= date('now'))",
+    UNMATURED_SECURITY_SQL(),
     liveOptionExpirationSql("s"),
   ];
   const params: (string | number)[] = [];
 
-  if (accountIds && accountIds.length > 0) {
-    conditions.push(`h.account_id IN (${accountIds.map(() => "?").join(",")})`);
-    params.push(...accountIds);
+  // `undefined` is every account; a defined empty list is NO accounts.
+  const scope = accountScopeCondition(accountIds);
+  if (scope.condition !== null) {
+    conditions.push(scope.condition);
+    params.push(...scope.params);
   }
 
   const row = db

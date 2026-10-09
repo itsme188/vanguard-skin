@@ -37,11 +37,11 @@ function group(underlying: string, isEtf: boolean, instruments: DefenseInstrumen
 
 describe("classifyBook — Tier 1 pairs", () => {
   it("classifies long stock + puts as hedged_long with capped coverage", () => {
-    const r = classifyBook(new Map([group("MSFT", false, [
-      inst({ securityId: 1, symbol: "MSFT", exposure: 20000 }),
-      inst({ securityId: 2, symbol: "MSFT  270115P00400000", isOption: true, optionType: "PUT", quantity: 2, exposure: -8000, marketValue: 3000 }),
+    const r = classifyBook(new Map([group("ZZA", false, [
+      inst({ securityId: 1, symbol: "ZZA", exposure: 20000 }),
+      inst({ securityId: 2, symbol: "ZZA   270115P00400000", isOption: true, optionType: "PUT", quantity: 2, exposure: -8000, marketValue: 3000 }),
     ])]));
-    const pair = r.pairs.find((p) => p.underlying === "MSFT")!;
+    const pair = r.pairs.find((p) => p.underlying === "ZZA")!;
     expect(pair.classification).toBe("hedged_long");
     expect(pair.coreExposure).toBe(20000);
     expect(pair.offsetCredited).toBe(8000);
@@ -50,23 +50,23 @@ describe("classifyBook — Tier 1 pairs", () => {
   });
 
   it("classifies short stock + long call as hedged_short", () => {
-    const r = classifyBook(new Map([group("PAYC", false, [
-      inst({ securityId: 1, symbol: "PAYC", quantity: -80, exposure: -12000, marketValue: -12000 }),
-      inst({ securityId: 2, symbol: "PAYC  260116C00200000", isOption: true, optionType: "CALL", quantity: 1, exposure: 4000, marketValue: 1500 }),
+    const r = classifyBook(new Map([group("ZZB", false, [
+      inst({ securityId: 1, symbol: "ZZB", quantity: -60, exposure: -12000, marketValue: -12000 }),
+      inst({ securityId: 2, symbol: "ZZB   260116C00200000", isOption: true, optionType: "CALL", quantity: 1, exposure: 4000, marketValue: 1500 }),
     ])]));
-    const pair = r.pairs.find((p) => p.underlying === "PAYC")!;
+    const pair = r.pairs.find((p) => p.underlying === "ZZB")!;
     expect(pair.classification).toBe("hedged_short");
     expect(pair.offsetCredited).toBe(4000);
     expect(pair.coveragePct).toBeCloseTo(4000 / 12000);
   });
 
   it("flags same-sign options on a long core as amplifiers, not hedges", () => {
-    const r = classifyBook(new Map([group("INTC", false, [
-      inst({ securityId: 1, symbol: "INTC", exposure: 5000 }),
-      inst({ securityId: 2, symbol: "INTC  260320C00030000", isOption: true, optionType: "CALL", quantity: 20, exposure: 15000, marketValue: 6000 }),
-      inst({ securityId: 3, symbol: "INTC  260320P00045000", isOption: true, optionType: "PUT", quantity: 4, exposure: -3000, marketValue: 2000 }),
+    const r = classifyBook(new Map([group("ZZC", false, [
+      inst({ securityId: 1, symbol: "ZZC", exposure: 5000 }),
+      inst({ securityId: 2, symbol: "ZZC   260320C00030000", isOption: true, optionType: "CALL", quantity: 10, exposure: 15000, marketValue: 6000 }),
+      inst({ securityId: 3, symbol: "ZZC   260320P00045000", isOption: true, optionType: "PUT", quantity: 2, exposure: -3000, marketValue: 2000 }),
     ])]));
-    const pair = r.pairs.find((p) => p.underlying === "INTC")!;
+    const pair = r.pairs.find((p) => p.underlying === "ZZC")!;
     expect(pair.classification).toBe("hedged_long"); // opposing puts exist
     expect(pair.amplifierExposure).toBe(15000);
     expect(pair.hasAmplifiers).toBe(true);
@@ -74,11 +74,11 @@ describe("classifyBook — Tier 1 pairs", () => {
   });
 
   it("classifies long stock + only same-sign calls (no opposing puts) as amplified", () => {
-    const r = classifyBook(new Map([group("NVDA", false, [
-      inst({ securityId: 1, symbol: "NVDA", exposure: 10000 }),
-      inst({ securityId: 2, symbol: "NVDA  260320C00100000", isOption: true, optionType: "CALL", quantity: 5, exposure: 6000, marketValue: 2500 }),
+    const r = classifyBook(new Map([group("ZZD", false, [
+      inst({ securityId: 1, symbol: "ZZD", exposure: 10000 }),
+      inst({ securityId: 2, symbol: "ZZD   260320C00100000", isOption: true, optionType: "CALL", quantity: 5, exposure: 6000, marketValue: 2500 }),
     ])]));
-    const pair = r.pairs.find((p) => p.underlying === "NVDA")!;
+    const pair = r.pairs.find((p) => p.underlying === "ZZD")!;
     expect(pair.classification).toBe("amplified");
     expect(pair.hasAmplifiers).toBe(true);
     expect(pair.offsetCredited).toBe(0);
@@ -86,64 +86,64 @@ describe("classifyBook — Tier 1 pairs", () => {
   });
 
   it("caps offset credit at |core| and spills ETF excess to proxy candidates", () => {
-    const r = classifyBook(new Map([group("XLE", true, [
-      inst({ securityId: 1, symbol: "XLE", exposure: 10000 }),
-      inst({ securityId: 2, symbol: "XLE   260116P00080000", isOption: true, optionType: "PUT", quantity: 10, exposure: -16000, marketValue: 5000 }),
+    const r = classifyBook(new Map([group("ZZE", true, [
+      inst({ securityId: 1, symbol: "ZZE", exposure: 10000 }),
+      inst({ securityId: 2, symbol: "ZZE   260116P00080000", isOption: true, optionType: "PUT", quantity: 10, exposure: -16000, marketValue: 5000 }),
     ])]));
-    const pair = r.pairs.find((p) => p.underlying === "XLE")!;
+    const pair = r.pairs.find((p) => p.underlying === "ZZE")!;
     expect(pair.offsetCredited).toBe(10000);        // capped
     expect(pair.coveragePct).toBeCloseTo(1.0);
-    const spill = r.proxyCandidates.find((c) => c.underlying === "XLE")!;
+    const spill = r.proxyCandidates.find((c) => c.underlying === "ZZE")!;
     expect(spill.protectiveNotional).toBe(6000);    // the excess
     expect(spill.source).toBe("tier1_spill");
   });
 
-  it("routes a short ETF plus same-sign puts entirely to proxy candidates (MAGS case)", () => {
-    const r = classifyBook(new Map([group("MAGS", true, [
-      inst({ securityId: 1, symbol: "MAGS", quantity: -300, exposure: -15000, marketValue: -15000 }),
-      inst({ securityId: 2, symbol: "MAGS  260116P00050000", isOption: true, optionType: "PUT", quantity: 10, exposure: -9000, marketValue: 4000 }),
+  it("routes a short ETF plus same-sign puts entirely to proxy candidates (short-ETF stack case)", () => {
+    const r = classifyBook(new Map([group("ZZF", true, [
+      inst({ securityId: 1, symbol: "ZZF", quantity: -200, exposure: -15000, marketValue: -15000 }),
+      inst({ securityId: 2, symbol: "ZZF   260116P00050000", isOption: true, optionType: "PUT", quantity: 5, exposure: -9000, marketValue: 4000 }),
     ])]));
-    expect(r.pairs.find((p) => p.underlying === "MAGS")).toBeUndefined();
-    const c = r.proxyCandidates.find((c) => c.underlying === "MAGS")!;
+    expect(r.pairs.find((p) => p.underlying === "ZZF")).toBeUndefined();
+    const c = r.proxyCandidates.find((c) => c.underlying === "ZZF")!;
     expect(c.protectiveNotional).toBe(24000);       // short shares + puts
     expect(c.source).toBe("etf_negative_stack");
   });
 
   it("routes ETF puts with no core to proxy candidates", () => {
-    const r = classifyBook(new Map([group("MTUM", true, [
-      inst({ securityId: 2, symbol: "MTUM  260116P00200000", isOption: true, optionType: "PUT", quantity: 3, exposure: -12000, marketValue: 3500 }),
+    const r = classifyBook(new Map([group("ZZG", true, [
+      inst({ securityId: 2, symbol: "ZZG   260116P00200000", isOption: true, optionType: "PUT", quantity: 6, exposure: -12000, marketValue: 3500 }),
     ])]));
-    expect(r.proxyCandidates.find((c) => c.underlying === "MTUM")!.protectiveNotional).toBe(12000);
+    expect(r.proxyCandidates.find((c) => c.underlying === "ZZG")!.protectiveNotional).toBe(12000);
   });
 
   it("classifies single-name puts on non-held stock AND naked single-name shorts as standalone bets", () => {
     const r = classifyBook(new Map([
-      group("RGTI", false, [
-        inst({ securityId: 2, symbol: "RGTI  260116P00010000", isOption: true, optionType: "PUT", quantity: 20, exposure: -5000, marketValue: 2500 }),
+      group("ZZH", false, [
+        inst({ securityId: 2, symbol: "ZZH   260116P00010000", isOption: true, optionType: "PUT", quantity: 10, exposure: -5000, marketValue: 2500 }),
       ]),
-      group("AMD", false, [
-        inst({ securityId: 3, symbol: "AMD", quantity: -20, exposure: -3000, marketValue: -3000 }),
+      group("ZZI", false, [
+        inst({ securityId: 3, symbol: "ZZI", quantity: -30, exposure: -3000, marketValue: -3000 }),
       ]),
     ]));
     expect(r.standaloneBets).toHaveLength(2);
-    expect(r.pairs.find((p) => p.underlying === "AMD")).toBeUndefined();
+    expect(r.pairs.find((p) => p.underlying === "ZZI")).toBeUndefined();
     expect(r.proxyCandidates).toHaveLength(0);
   });
 
   it("classifies naked long calls as speculative pairs (risk, never protection)", () => {
-    const r = classifyBook(new Map([group("FROG", false, [
-      inst({ securityId: 2, symbol: "FROG  260116C00040000", isOption: true, optionType: "CALL", quantity: 4, exposure: 7000, marketValue: 2000 }),
+    const r = classifyBook(new Map([group("ZZJ", false, [
+      inst({ securityId: 2, symbol: "ZZJ   260116C00040000", isOption: true, optionType: "CALL", quantity: 2, exposure: 7000, marketValue: 2000 }),
     ])]));
-    const pair = r.pairs.find((p) => p.underlying === "FROG")!;
+    const pair = r.pairs.find((p) => p.underlying === "ZZJ")!;
     expect(pair.classification).toBe("speculative");
     expect(pair.netExposure).toBe(7000);
   });
 
   it("classifies plain long stock with no options as unhedged", () => {
-    const r = classifyBook(new Map([group("XOM", false, [
-      inst({ securityId: 1, symbol: "XOM", exposure: 11000 }),
+    const r = classifyBook(new Map([group("ZZK", false, [
+      inst({ securityId: 1, symbol: "ZZK", exposure: 11000 }),
     ])]));
-    expect(r.pairs.find((p) => p.underlying === "XOM")!.classification).toBe("unhedged");
+    expect(r.pairs.find((p) => p.underlying === "ZZK")!.classification).toBe("unhedged");
   });
 });
 

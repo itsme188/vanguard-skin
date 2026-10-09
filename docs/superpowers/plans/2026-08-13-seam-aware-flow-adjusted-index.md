@@ -216,8 +216,8 @@ Append to `lib/compute/flow-adjusted.ts`:
  * computeDailyValuations snaps total_value to each anchor's total on the
  * anchor date, so a source change between adjacent anchors injects the two
  * sources' measurement-basis difference into the daily series as if it were
- * a market move (the 2026-07-11 Plaid go-live read as a fake ~+4% day; every
- * daily-source ↔ statement month-end handoff repeats this at ~±1-3%).
+ * a market move (the 2026-07-11 Plaid go-live read as a fake up day; every
+ * daily-source ↔ statement month-end handoff repeats this at a smaller size).
  * buildFlowAdjustedIndex bridges these days: zero information, not a return.
  *
  * The scan starts from each account's FIRST anchor (not startDate) so the

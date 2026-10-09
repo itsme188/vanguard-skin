@@ -100,7 +100,8 @@ function csvLine(fields: Array<string | number>): string {
   return fields.map((f) => String(f)).join(",");
 }
 
-/** The 4 canonical (statement-verified) December rows from the plan's table. */
+/** Four canonical December rows. SYNTHETIC figures (round, invented): each
+ *  total = starting + deposits + gain and twr = gain / starting. */
 const CANONICAL_DECEMBER_ROWS: Array<{
   monthEndDate: string;
   totalValue: number;
@@ -111,35 +112,35 @@ const CANONICAL_DECEMBER_ROWS: Array<{
 }> = [
   {
     monthEndDate: "2022-12-31",
-    totalValue: 328285.46,
-    startingValue: 351126.94,
+    totalValue: 285000,
+    startingValue: 300000,
     depositsWithdrawals: 0.0,
-    investmentGain: -22841.48,
-    twr: -0.065052,
+    investmentGain: -15000,
+    twr: -0.05,
   },
   {
     monthEndDate: "2023-12-31",
-    totalValue: 526157.97,
-    startingValue: 502253.87,
+    totalValue: 436800,
+    startingValue: 420000,
     depositsWithdrawals: 0.0,
-    investmentGain: 23904.1,
-    twr: 0.047594,
+    investmentGain: 16800,
+    twr: 0.04,
   },
   {
     monthEndDate: "2024-12-31",
-    totalValue: 896634.19,
-    startingValue: 939820.98,
+    totalValue: 582000,
+    startingValue: 600000,
     depositsWithdrawals: 0.0,
-    investmentGain: -43186.79,
-    twr: -0.045952,
+    investmentGain: -18000,
+    twr: -0.03,
   },
   {
     monthEndDate: "2025-12-31",
-    totalValue: 1290023.49,
-    startingValue: 1344716.44,
+    totalValue: 766000,
+    startingValue: 800000,
     depositsWithdrawals: -20000.0,
-    investmentGain: -34692.95,
-    twr: -0.025799,
+    investmentGain: -14000,
+    twr: -0.0175,
   },
 ];
 
@@ -193,7 +194,7 @@ afterEach(() => {
 describe("parseSnapshotCsv", () => {
   it("parses a well-formed row, including optional fields as null when blank", () => {
     const content = buildCsvContent([
-      { account: "Vanguard Taxable", monthEndDate: "2022-12-31", totalValue: 328285.46 },
+      { account: "Vanguard Taxable", monthEndDate: "2022-12-31", totalValue: 285000 },
     ]);
     const parsed = parseSnapshotCsv(content);
     expect(parsed.malformedRowNumbers).toHaveLength(0);
@@ -201,7 +202,7 @@ describe("parseSnapshotCsv", () => {
     expect(parsed.rows[0]).toMatchObject({
       account: "Vanguard Taxable",
       monthEndDate: "2022-12-31",
-      totalValue: 328285.46,
+      totalValue: 285000,
       startingValue: null,
       depositsWithdrawals: null,
       twr: null,
@@ -215,11 +216,11 @@ describe("parseSnapshotCsv", () => {
     ]);
     const parsed = parseSnapshotCsv(content);
     expect(parsed.rows[0]).toMatchObject({
-      totalValue: 328285.46,
-      startingValue: 351126.94,
+      totalValue: 285000,
+      startingValue: 300000,
       depositsWithdrawals: 0.0,
-      investmentGain: -22841.48,
-      twr: -0.065052,
+      investmentGain: -15000,
+      twr: -0.05,
     });
   });
 
@@ -231,7 +232,7 @@ describe("parseSnapshotCsv", () => {
   });
 
   it("skips (and reports) a row with a comma-grouped numeric (would silently truncate)", () => {
-    const content = [CSV_HEADER, 'Vanguard Taxable,2022-12-31,"328,285.46",,,,,,,,'].join("\n");
+    const content = [CSV_HEADER, 'Vanguard Taxable,2022-12-31,"285,000.00",,,,,,,,'].join("\n");
     const parsed = parseSnapshotCsv(content);
     expect(parsed.rows).toHaveLength(0);
     expect(parsed.malformedRowNumbers).toEqual([2]);
@@ -243,15 +244,15 @@ describe("parseSnapshotCsv", () => {
       csvLine([
         "  Vanguard Taxable  ",
         "2022-12-31",
-        328285.46,
-        351126.94,
+        285000,
+        300000,
         0.0,
         "",
         "",
         "",
         "",
-        -22841.48,
-        -0.065052,
+        -15000,
+        -0.05,
       ]),
     ].join("\n");
     const parsed = parseSnapshotCsv(content);
@@ -277,29 +278,29 @@ describe("findSnapshotMismatches", () => {
   it("reports the 4 poisoned December rows as mismatches (live-shaped fixture)", () => {
     // Poisoned rows: annual-summary drafts written by batch 26.
     seedSnapshot(db, taxableId, "2022-12-31", {
-      totalValue: 362408.31,
-      startingValue: 391746.97,
-      depositsWithdrawals: 118593.14,
+      totalValue: 310000,
+      startingValue: 330000,
+      depositsWithdrawals: 110000,
       twr: -0.312,
       investmentGain: null,
     });
     seedSnapshot(db, taxableId, "2023-12-31", {
-      totalValue: 580250.4,
-      startingValue: 362408.31,
-      depositsWithdrawals: 124523.94,
+      totalValue: 450000,
+      startingValue: 310000,
+      depositsWithdrawals: 120000,
       twr: null,
       investmentGain: null,
     });
     seedSnapshot(db, taxableId, "2024-12-31", {
-      totalValue: 896634.19, // total already correct — mismatch must still trigger on other fields
-      startingValue: 526157.97,
+      totalValue: 582000, // total already correct — mismatch must still trigger on other fields
+      startingValue: 436800,
       depositsWithdrawals: 255000.0,
       twr: null,
       investmentGain: null,
     });
     seedSnapshot(db, taxableId, "2025-12-31", {
-      totalValue: 1290023.49, // total already correct
-      startingValue: 896634.19,
+      totalValue: 766000, // total already correct
+      startingValue: 582000,
       depositsWithdrawals: 10000.0,
       twr: null,
       investmentGain: null,
@@ -319,11 +320,11 @@ describe("findSnapshotMismatches", () => {
 
   it("does not flag a row that matches the CSV within tolerance", () => {
     seedSnapshot(db, taxableId, "2022-12-31", {
-      totalValue: 328285.46,
-      startingValue: 351126.94,
+      totalValue: 285000,
+      startingValue: 300000,
       depositsWithdrawals: 0.0,
-      twr: -0.065052,
-      investmentGain: -22841.48,
+      twr: -0.05,
+      investmentGain: -15000,
     });
     const csvPath = writeTempCsv(
       buildCsvContent([{ account: "Vanguard Taxable", ...CANONICAL_DECEMBER_ROWS[0] }]),
@@ -364,11 +365,11 @@ describe("findSnapshotMismatches", () => {
 
   it("treats NULL (DB) vs a real value (CSV) as a mismatch on that field only", () => {
     seedSnapshot(db, taxableId, "2023-12-31", {
-      totalValue: 526157.97,
-      startingValue: 502253.87,
+      totalValue: 436800,
+      startingValue: 420000,
       depositsWithdrawals: 0.0,
       twr: null, // poisoned: NULL in DB
-      investmentGain: 23904.1,
+      investmentGain: 16800,
     });
     const csvPath = writeTempCsv(
       buildCsvContent([{ account: "Vanguard Taxable", ...CANONICAL_DECEMBER_ROWS[1] }]),
@@ -419,7 +420,7 @@ describe("findSnapshotMismatches", () => {
       {
         account: "Vanguard Taxable",
         monthEndDate: "2022-12-31",
-        totalValue: 328285.46,
+        totalValue: 285000,
         startingValue: null,
         depositsWithdrawals: null,
         twr: null,
@@ -446,30 +447,30 @@ describe("repairDecemberSnapshots", () => {
 
     // The 4 live-shaped poisoned rows.
     seedSnapshot(db, taxableId, "2022-12-31", {
-      totalValue: 362408.31,
-      startingValue: 391746.97,
-      depositsWithdrawals: 118593.14,
+      totalValue: 310000,
+      startingValue: 330000,
+      depositsWithdrawals: 110000,
       twr: -0.312,
       investmentGain: null,
       notes: "imported from batch 26",
     });
     seedSnapshot(db, taxableId, "2023-12-31", {
-      totalValue: 580250.4,
-      startingValue: 362408.31,
-      depositsWithdrawals: 124523.94,
+      totalValue: 450000,
+      startingValue: 310000,
+      depositsWithdrawals: 120000,
       twr: null,
       investmentGain: null,
     });
     seedSnapshot(db, taxableId, "2024-12-31", {
-      totalValue: 896634.19,
-      startingValue: 526157.97,
+      totalValue: 582000,
+      startingValue: 436800,
       depositsWithdrawals: 255000.0,
       twr: null,
       investmentGain: null,
     });
     seedSnapshot(db, taxableId, "2025-12-31", {
-      totalValue: 1290023.49,
-      startingValue: 896634.19,
+      totalValue: 766000,
+      startingValue: 582000,
       depositsWithdrawals: 10000.0,
       twr: null,
       investmentGain: null,
@@ -568,31 +569,31 @@ describe("repairDecemberSnapshots", () => {
 
     // 2022-12-31: values repaired, existing note preserved + new note appended.
     const s2022 = readSnapshot(db, taxableId, "2022-12-31");
-    expect(s2022.totalValue).toBeCloseTo(328285.46, 2);
-    expect(s2022.startingValue).toBeCloseTo(351126.94, 2);
+    expect(s2022.totalValue).toBeCloseTo(285000, 2);
+    expect(s2022.startingValue).toBeCloseTo(300000, 2);
     expect(s2022.depositsWithdrawals).toBeCloseTo(0.0, 2);
-    expect(s2022.twr).toBeCloseTo(-0.065052, 6);
-    expect(s2022.investmentGain).toBeCloseTo(-22841.48, 2);
+    expect(s2022.twr).toBeCloseTo(-0.05, 6);
+    expect(s2022.investmentGain).toBeCloseTo(-15000, 2);
     expect(s2022.notes).toBe(
       "imported from batch 26\nrepaired 2026-08-10 from canonical CSV (annual-row defect, batch 26)",
     );
 
     // 2023/2024/2025: NULL twr repaired to the CSV's real value; no pre-existing note.
     const s2023 = readSnapshot(db, taxableId, "2023-12-31");
-    expect(s2023.twr).toBeCloseTo(0.047594, 6);
-    expect(s2023.startingValue).toBeCloseTo(502253.87, 2);
+    expect(s2023.twr).toBeCloseTo(0.04, 6);
+    expect(s2023.startingValue).toBeCloseTo(420000, 2);
     expect(s2023.notes).toBe(
       "repaired 2026-08-10 from canonical CSV (annual-row defect, batch 26)",
     );
 
     const s2024 = readSnapshot(db, taxableId, "2024-12-31");
-    expect(s2024.twr).toBeCloseTo(-0.045952, 6);
-    expect(s2024.startingValue).toBeCloseTo(939820.98, 2);
-    expect(s2024.investmentGain).toBeCloseTo(-43186.79, 2);
+    expect(s2024.twr).toBeCloseTo(-0.03, 6);
+    expect(s2024.startingValue).toBeCloseTo(600000, 2);
+    expect(s2024.investmentGain).toBeCloseTo(-18000, 2);
 
     const s2025 = readSnapshot(db, taxableId, "2025-12-31");
-    expect(s2025.twr).toBeCloseTo(-0.025799, 6);
-    expect(s2025.startingValue).toBeCloseTo(1344716.44, 2);
+    expect(s2025.twr).toBeCloseTo(-0.0175, 6);
+    expect(s2025.startingValue).toBeCloseTo(800000, 2);
     expect(s2025.depositsWithdrawals).toBeCloseTo(-20000.0, 2);
 
     // Roth December rows: byte-identical, never touched.
@@ -672,15 +673,15 @@ describe("repairDecemberSnapshots", () => {
         csvLine([
           "  Vanguard Taxable  ",
           "2022-12-31",
-          328285.46,
-          351126.94,
+          285000,
+          300000,
           0.0,
           "",
           "",
           "",
           "",
-          -22841.48,
-          -0.065052,
+          -15000,
+          -0.05,
         ]),
       ].join("\n"),
     );
@@ -692,9 +693,9 @@ describe("repairDecemberSnapshots", () => {
     expect(result.updated).toBe(1);
 
     const s2022 = readSnapshot(db, taxableId, "2022-12-31");
-    expect(s2022.totalValue).toBeCloseTo(328285.46, 2);
-    expect(s2022.startingValue).toBeCloseTo(351126.94, 2);
-    expect(s2022.twr).toBeCloseTo(-0.065052, 6);
+    expect(s2022.totalValue).toBeCloseTo(285000, 2);
+    expect(s2022.startingValue).toBeCloseTo(300000, 2);
+    expect(s2022.twr).toBeCloseTo(-0.05, 6);
   });
 
   it("rolls back the ENTIRE December batch when the post-write verification catches a real mismatch", () => {

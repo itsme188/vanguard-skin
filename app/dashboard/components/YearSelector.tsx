@@ -1,5 +1,6 @@
 "use client";
 
+import { CHIP_TONE_CLASSES } from "@/app/dashboard/components/Chip";
 import { useRouter, useSearchParams } from "next/navigation";
 
 function FilterPills({
@@ -35,7 +36,7 @@ function FilterPills({
           aria-pressed={opt.value === currentValue}
           className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors whitespace-nowrap focus-ring ${
             opt.value === currentValue
-              ? "bg-gold/20 text-gold-ink"
+              ? CHIP_TONE_CLASSES.gold
               : "text-ink-dim hover:text-ink hover:bg-panel"
           }`}
         >

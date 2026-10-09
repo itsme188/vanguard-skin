@@ -414,14 +414,14 @@ describe("v2 dollar convention (task 4: readers consume stored tax_lots.cost_bas
   });
 
   it("shows a bond lot's tax-summary cost basis at face-adjusted dollars (÷100), not the raw quote", () => {
-    const bondId = addSecurity({ symbol: "912796XY0", securityType: "bond" });
-    addBuyTxn(bondId, "BUY", "2023-02-08", 20000, 99.438385);
+    const bondId = addSecurity({ symbol: "ZZBILL01", securityType: "bond" });
+    addBuyTxn(bondId, "BUY", "2025-01-06", 10000, 98.123456);
     computeTaxLots(db);
 
     const summary = getPortfolioSummaryForChat(db);
-    // 20000 × 99.438385 / 100 = $19,887.68 (rounds to $19,888) — pre-fix,
-    // quantity_remaining * acquisition_price would have read ≈$1,988,768.
-    expect(summary).toContain("cost basis: $19,888");
+    // Synthetic: 10000 × 98.123456 / 100 = $9,812.35 (rounds to $9,812) — pre-fix,
+    // quantity_remaining * acquisition_price would have read ≈$981,235.
+    expect(summary).toContain("cost basis: $9,812");
   });
 
   it("appends the pending-recompute disclaimer only once the convention marker goes stale", () => {

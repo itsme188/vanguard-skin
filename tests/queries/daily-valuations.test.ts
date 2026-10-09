@@ -72,8 +72,12 @@ describe("getDailyValuationsForAccounts", () => {
     expect(subset.map((r) => r.valuation_date)).toEqual(byAccount.map((r) => r.valuation_date));
   });
 
-  it("empty/undefined accountIds falls through to the all-accounts combined view", () => {
-    expect(getDailyValuationsForAccounts(db, [])).toEqual(getDailyValuationsCombined(db));
+  // Scope rule (2026-10-09) deliberately changed this pin: it used to say an
+  // empty list falls through to the all-accounts view.
+  it("undefined accountIds is the all-accounts combined view; an empty list is no accounts", () => {
+    expect(getDailyValuationsForAccounts(db, undefined)).toEqual(getDailyValuationsCombined(db));
+    expect(getDailyValuationsCombined(db).length).toBeGreaterThan(0);
+    expect(getDailyValuationsForAccounts(db, [])).toEqual([]);
   });
 
   it("respects startDate / endDate filtering", () => {

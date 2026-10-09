@@ -1,5 +1,7 @@
 export const dynamic = "force-dynamic";
 
+import { CHIP_TONE_CLASSES } from "@/app/dashboard/components/Chip";
+import { CHIP_TONE_TEXT } from "@/app/dashboard/components/chip-tone-text";
 import { db } from "@/lib/db";
 import Link from "next/link";
 import { getAccountByName } from "@/lib/queries/accounts";
@@ -43,7 +45,7 @@ function daysAgo(iso: string): number {
 
 function qualityChip(days: number, source: string | null): { label: string; className: string } {
   if (days === 0 && source === "tws") {
-    return { label: "live", className: "text-up bg-up/20" };
+    return { label: "live", className: CHIP_TONE_CLASSES.up };
   }
   if (days <= 1) {
     return { label: "fresh", className: "text-ink-dim bg-raised" };
@@ -51,7 +53,7 @@ function qualityChip(days: number, source: string | null): { label: string; clas
   if (days <= 4) {
     return { label: `${days}d old`, className: "text-ink-faint bg-raised" };
   }
-  return { label: `${days}d old`, className: "text-down bg-down/20" };
+  return { label: `${days}d old`, className: CHIP_TONE_CLASSES.down };
 }
 
 interface TodayPageProps {
@@ -210,7 +212,7 @@ export default async function TodayPage({ searchParams }: TodayPageProps) {
         {portfolio.totalChange !== 0 && (
           <span
             className={`text-[12px] font-mono tabular-nums rounded-full px-2 py-0.5 ${
-              portfolio.totalChange >= 0 ? "bg-up/10 text-up" : "bg-down/10 text-down"
+              portfolio.totalChange >= 0 ? `bg-up/10 ${CHIP_TONE_TEXT.up}` : `bg-down/10 ${CHIP_TONE_TEXT.down}`
             }`}
           >
             {portfolio.totalChange >= 0 ? "▲" : "▼"} <Money value={Math.abs(portfolio.totalChange)} />{" "}

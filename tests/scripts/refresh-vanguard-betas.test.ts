@@ -212,7 +212,7 @@ describe("refreshVanguardBetas", () => {
   it("invalidates (deletes) a cached beta when the new regression has no explanatory power", async () => {
     // qa: today-significant-moves--negative-noise-betas-published-as-fact.
     // A 60-day window where the name moves independently of SPY produces a
-    // beta whose SIGN is noise (the live DB had 21/68 negative, incl. XLV).
+    // beta whose SIGN is noise (the live DB had many negative ones).
     // Publishing it mints false "direction flipped" badges — so the cached row
     // must be DELETED, which is exactly what consumers already read as
     // "no beta" (anomalies.ts LEFT JOIN → beta == null → skip).

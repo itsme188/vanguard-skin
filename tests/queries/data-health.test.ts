@@ -273,7 +273,7 @@ describe("getAccountCoverage", () => {
     const vti = seedSecurity("VTI");
     const brkb = seedSecurity("BRK/B");
 
-    seedHolding(acct, vti, 100, daysAgo(28), 37301.64); // statement row w/ basis
+    seedHolding(acct, vti, 100, daysAgo(28), 25000); // statement row w/ basis
     seedHolding(acct, brkb, 20, daysAgo(28), null); // never had basis
     seedHolding(acct, vti, 100, today, null); // Plaid row, NULL basis
     seedHolding(acct, brkb, 20, today, null); // Plaid row, NULL basis
@@ -495,7 +495,7 @@ describe("getCrossSourceDiscrepancies", () => {
     // KRW security: stored prices are native (919,000 KRW ≈ $611); the UI
     // renders priceA/priceB through <Money> with a $ prefix, so the query
     // must apply the fx factor — pre-fix the page showed "$919,000.00".
-    const sec = seedSecurity("402340");
+    const sec = seedSecurity("000000");
     db.prepare("UPDATE securities SET currency = 'KRW' WHERE id = ?").run(sec);
     db.prepare(
       `INSERT INTO fx_rates (currency, usd_per_unit, as_of, source)

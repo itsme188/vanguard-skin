@@ -1,5 +1,6 @@
 "use client";
 
+import { CHIP_TONE_TEXT, GOLD_FILL_CLASSES } from "@/app/dashboard/components/chip-tone-text";
 import { readMutationResult, networkFailureMessage } from "@/lib/ui/mutation-result";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -295,7 +296,7 @@ function UploadZone({ onUploadComplete }: UploadZoneProps) {
           <button
             onClick={() => inputRef.current?.click()}
             disabled={uploading}
-            className="px-4 py-2 rounded-lg bg-gold text-canvas text-sm font-medium hover:brightness-110 transition-[filter,scale] active:scale-[0.96] disabled:opacity-40 disabled:cursor-not-allowed focus-ring"
+            className={`px-4 py-2 rounded-lg ${GOLD_FILL_CLASSES} text-sm font-medium hover:brightness-110 transition-[filter,scale] active:scale-[0.96] disabled:opacity-40 disabled:cursor-not-allowed focus-ring`}
           >
             {uploading ? "Processing…" : "Choose PDF"}
           </button>
@@ -720,7 +721,7 @@ function DocumentRow({
             {rowTags.slice(0, 5).map((t) => (
               <span
                 key={`tag-${t}`}
-                className="px-1.5 py-0.5 rounded-full bg-gold/15 text-gold-ink text-[11px] font-medium"
+                className={`px-1.5 py-0.5 rounded-full bg-gold/15 ${CHIP_TONE_TEXT.gold} text-[11px] font-medium`}
               >
                 {t}
               </span>
@@ -820,7 +821,7 @@ function DocumentRow({
                   >
                     <span>{showFullText ? "▾" : "▸"}</span>
                     {showFullText ? "Hide" : "Show"} full text
-                    <span className="text-ink-faint/70 normal-case tracking-normal">
+                    <span className="text-ink-faint normal-case tracking-normal">
                       · {detail.raw_text.length.toLocaleString()} chars
                     </span>
                   </button>
@@ -948,7 +949,7 @@ function InboxForwardCard({ onIngested }: { onIngested: () => void }) {
       {checkError && (
         <div
           role="alert"
-          className="px-3 py-2 rounded-lg bg-down/10 border border-down/30 text-xs text-down"
+          className={`px-3 py-2 rounded-lg bg-down/10 border border-down/30 text-xs ${CHIP_TONE_TEXT.down}`}
         >
           {checkError}
         </div>

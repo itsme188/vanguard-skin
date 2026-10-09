@@ -125,16 +125,16 @@ function onlySale(): SaleRow {
 }
 
 describe("bond dollar convention", () => {
-  // Bond: qty 20,000 face at 99.438385 per-100-face → 20000 × 99.438385 / 100
-  //     = $19,887.677 economic dollars.
+  // Bond (synthetic): qty 10,000 face at 98.123456 per-100-face →
+  //     10000 × 98.123456 / 100 = $9,812.3456 economic dollars.
   function seedBond(): number {
-    const secId = seedSecurity({ symbol: "912796XY0", securityType: "Bond" });
+    const secId = seedSecurity({ symbol: "ZZBILL01", securityType: "Bond" });
     addTxn({
       securityId: secId,
       type: "BUY",
-      date: "2023-02-08",
-      quantity: 20000,
-      price: 99.438385,
+      date: "2025-01-06",
+      quantity: 10000,
+      price: 98.123456,
     });
     return secId;
   }
@@ -144,8 +144,8 @@ describe("bond dollar convention", () => {
     computeTaxLots(db);
 
     const lot = onlyLot();
-    expect(lot.cost_basis).toBeCloseTo(19887.68, 2); // NOT 1,988,768
-    expect(lot.acquisition_price).toBeCloseTo(99.438385, 6); // per-unit price unchanged
+    expect(lot.cost_basis).toBeCloseTo(9812.35, 2); // NOT 981,234.56
+    expect(lot.acquisition_price).toBeCloseTo(98.123456, 6); // per-unit price unchanged
   });
 
   it("bill redemption at cost realizes ~$0 with proceeds == |amount|", () => {
@@ -153,19 +153,19 @@ describe("bond dollar convention", () => {
     addTxn({
       securityId: secId,
       type: "REDEMPTION",
-      date: "2023-08-10",
-      quantity: 20000,
+      date: "2025-07-08",
+      quantity: 10000,
       price: null,
-      amount: 19887.69,
+      amount: 9812.36,
     });
     computeTaxLots(db);
 
     const sale = onlySale();
-    expect(sale.proceeds).toBeCloseTo(19887.69, 2);
-    expect(sale.cost_basis_allocated).toBeCloseTo(19887.68, 2);
+    expect(sale.proceeds).toBeCloseTo(9812.36, 2);
+    expect(sale.cost_basis_allocated).toBeCloseTo(9812.35, 2);
     expect(sale.realized_gain_loss).toBeCloseTo(0.01, 2);
-    // derived per-100-face price survives: |amount|/qty×100
-    expect(sale.sale_price).toBeCloseTo(99.43845, 6);
+    // derived per-100-face price survives: |amount|/qty×100 = 9812.36/10000×100
+    expect(sale.sale_price).toBeCloseTo(98.1236, 6);
   });
 
   it("a redemption CARRYING FEES still realizes $0 at cost — |amount| is the net principal", () => {
@@ -173,29 +173,29 @@ describe("bond dollar convention", () => {
     // implies equals |amount| by construction. Without the net-path exemption
     // the gross/net probe would see fees > 0 and subtract them, inventing a
     // loss on a bill that matured exactly at its purchase cost.
-    const secId = seedSecurity({ symbol: "912796FEE", securityType: "Bond" });
+    const secId = seedSecurity({ symbol: "ZZBILLFEE", securityType: "Bond" });
     addTxn({
       securityId: secId,
       type: "BUY",
-      date: "2023-02-08",
-      quantity: 20000,
-      price: 99.438385,
-      amount: 19887.69,
+      date: "2025-01-06",
+      quantity: 10000,
+      price: 98.123456,
+      amount: 9812.36,
     });
     addTxn({
       securityId: secId,
       type: "REDEMPTION",
-      date: "2023-08-10",
-      quantity: 20000,
+      date: "2025-07-08",
+      quantity: 10000,
       price: null,
-      amount: 19887.69,
+      amount: 9812.36,
       fees: 3,
     });
     computeTaxLots(db);
 
     const sale = onlySale();
-    expect(sale.proceeds).toBeCloseTo(19887.69, 2);
-    expect(sale.cost_basis_allocated).toBeCloseTo(19887.69, 2);
+    expect(sale.proceeds).toBeCloseTo(9812.36, 2);
+    expect(sale.cost_basis_allocated).toBeCloseTo(9812.36, 2);
     expect(sale.realized_gain_loss).toBeCloseTo(0, 2);
   });
 });
@@ -1200,10 +1200,10 @@ describe("recompute idempotence and marker", () => {
     });
     addTxn({ securityId: stockId, type: "BUY", date: "2025-01-02", quantity: 100, price: 10, fees: 2 });
     addTxn({ securityId: stockId, type: "SELL", date: "2025-06-02", quantity: 40, price: 12, fees: 1 });
-    addTxn({ securityId: bondId, type: "BUY", date: "2025-01-05", quantity: 20000, price: 99.4 });
+    addTxn({ securityId: bondId, type: "BUY", date: "2025-01-05", quantity: 10000, price: 99.4 });
     addTxn({
       securityId: bondId, type: "REDEMPTION", date: "2025-07-05",
-      quantity: 20000, price: null, amount: 19900,
+      quantity: 10000, price: null, amount: 9950,
     });
     addTxn({ securityId: optId, type: "SELL_TO_OPEN", date: "2025-02-01", quantity: 3, price: 4, fees: 1 });
     addTxn({ securityId: optId, type: "BUY_TO_CLOSE", date: "2025-03-01", quantity: 3, price: 1, fees: 1 });

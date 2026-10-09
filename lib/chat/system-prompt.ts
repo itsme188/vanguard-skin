@@ -351,6 +351,8 @@ Available tools:
 
 All account_name parameters support case-insensitive matching: "roth" matches "Vanguard Roth IRA", "ibkr" matches "IBKR".
 
+When a tool answers with an error saying a name covers several accounts and the tool reads one account at a time, call that tool once per account, using each exact account name the error lists, and combine the answers yourself.
+
 ## Financial Conventions
 
 - Bond prices are percentage-of-par: a price of 99.5 means 99.5% of $100 face value

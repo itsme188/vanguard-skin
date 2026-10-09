@@ -1,5 +1,7 @@
 "use client";
 
+import { CHIP_TONE_TEXT } from "@/app/dashboard/components/chip-tone-text";
+import { CHIP_TONE_CLASSES } from "@/app/dashboard/components/Chip";
 import { useState } from "react";
 import type { CalendarEvent, EventImpact } from "@/lib/types";
 import { macroPeriodNote } from "@/lib/calendar/macro-period-display";
@@ -11,14 +13,14 @@ const EVENT_TYPE_CONFIG: Record<
   string,
   { icon: string; color: string; bgColor: string }
 > = {
-  earnings: { icon: "📊", color: "text-gold-ink", bgColor: "bg-gold/20" },
-  analyst_meeting: { icon: "🎤", color: "text-gold-ink", bgColor: "bg-gold/20" },
-  conference: { icon: "🏛", color: "text-gold-ink", bgColor: "bg-gold/20" },
+  earnings: { icon: "📊", color: CHIP_TONE_TEXT.gold, bgColor: "bg-gold/20" },
+  analyst_meeting: { icon: "🎤", color: CHIP_TONE_TEXT.gold, bgColor: "bg-gold/20" },
+  conference: { icon: "🏛", color: CHIP_TONE_TEXT.gold, bgColor: "bg-gold/20" },
   split: { icon: "✂️", color: "text-blue", bgColor: "bg-blue/20" },
-  fomc: { icon: "🏦", color: "text-down", bgColor: "bg-down/20" },
-  cpi: { icon: "📈", color: "text-down", bgColor: "bg-down/20" },
-  jobs: { icon: "👷", color: "text-down", bgColor: "bg-down/20" },
-  gdp: { icon: "🌐", color: "text-down", bgColor: "bg-down/20" },
+  fomc: { icon: "🏦", color: CHIP_TONE_TEXT.down, bgColor: "bg-down/20" },
+  cpi: { icon: "📈", color: CHIP_TONE_TEXT.down, bgColor: "bg-down/20" },
+  jobs: { icon: "👷", color: CHIP_TONE_TEXT.down, bgColor: "bg-down/20" },
+  gdp: { icon: "🌐", color: CHIP_TONE_TEXT.down, bgColor: "bg-down/20" },
   pmi: { icon: "🏭", color: "text-warn", bgColor: "bg-warn/20" },
   retail_sales: {
     icon: "🛒",
@@ -40,7 +42,7 @@ const EVENT_TYPE_CONFIG: Record<
 
 const IMPACT_BADGE: Record<EventImpact, { label: string; className: string }> =
   {
-    high: { label: "High Impact", className: "bg-down/20 text-down" },
+    high: { label: "High Impact", className: CHIP_TONE_CLASSES.down },
     medium: { label: "Medium", className: "bg-warn/20 text-warn" },
     low: { label: "Low", className: "bg-muted text-ink-dim" },
   };

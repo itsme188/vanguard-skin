@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { liveOptionExpirationSql } from "@/lib/compute/option-expiry";
 import { issuerSiblings } from "@/lib/securities/issuer-family";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 import { getArmedEventIds, getArmedSymbolsInHorizon } from "./earnings-worksheet-flags";
@@ -94,7 +95,9 @@ export function getSymbolStatusDetailed(
     for (const m of fam) allFamilyMembers.add(m);
   }
 
-  const armedSymbols = getArmedSymbolsInHorizon(db, { today: opts.today ?? todayET() });
+  // One day for both the armed horizon and the option-expiry check below.
+  const today = opts.today ?? todayET();
+  const armedSymbols = getArmedSymbolsInHorizon(db, { today });
 
   const buildOut = (
     held: Set<string>,
@@ -147,6 +150,9 @@ export function getSymbolStatusDetailed(
   // Option-only exposure counts as held: a TER LEAP with no TER stock still
   // makes TER's print matter (same look-through the earnings composer does
   // via underlying_symbol). Unexpired, quantity != 0 (shorts carry exposure).
+  // The expiry check goes through liveOptionExpirationSql so a legacy compact
+  // `YYYYMMDD` expiration is read as its day: compared as a raw string it
+  // sorted after every dashed day and an expired option kept the name "held".
   const optionHeldRows = db
     .prepare(
       `SELECT DISTINCT UPPER(s.underlying_symbol) AS symbol
@@ -155,7 +161,7 @@ export function getSymbolStatusDetailed(
         WHERE UPPER(COALESCE(s.underlying_symbol, '')) IN (${placeholders})
           AND LOWER(COALESCE(s.security_type, '')) = 'option'
           AND h.quantity != 0
-          AND (s.expiration_date IS NULL OR s.expiration_date >= date('now'))
+          AND ${liveOptionExpirationSql("s", today)}
           AND h.as_of_date = (
             SELECT MAX(h2.as_of_date) FROM holdings h2
              WHERE h2.account_id = h.account_id AND h2.security_id = h.security_id
@@ -305,7 +311,7 @@ export function getHeldOptionUnderlyingSymbols(db: Database.Database): string[] 
           AND s.underlying_symbol IS NOT NULL AND s.underlying_symbol != ''
           AND LOWER(COALESCE(u.security_type, '')) NOT IN ('etf', 'mutual fund')
           AND h.quantity != 0
-          AND (s.expiration_date IS NULL OR s.expiration_date >= date('now'))
+          AND ${liveOptionExpirationSql("s", todayET())}
           AND h.as_of_date = (
             SELECT MAX(h2.as_of_date) FROM holdings h2
              WHERE h2.account_id = h.account_id AND h2.security_id = h.security_id

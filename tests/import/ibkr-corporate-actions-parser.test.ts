@@ -32,12 +32,12 @@ describe("ibkr-activity parser: Corporate Actions section", () => {
   });
 
   it("keeps a dotted exchange-suffixed symbol intact (normalization happens at commit)", () => {
-    const kr = result.corporateActions.find((a) => a.symbol === "402340.KS");
+    const kr = result.corporateActions.find((a) => a.symbol === "000000.KS");
     expect(kr).toMatchObject({ actionType: "SPLIT", ratioNumerator: 2, ratioDenominator: 1 });
   });
 
   it("warns by name on merger, malformed, 1:1, zero-denominator, and option-adjustment rows", () => {
-    expect(result.corporateActions).toHaveLength(4);   // AAAA, BBBB, 402340.KS, GGGG
+    expect(result.corporateActions).toHaveLength(4);   // AAAA, BBBB, 000000.KS, GGGG
     const joined = result.warnings.join("\n");
     expect(joined).toContain("CCCC");                  // merger
     expect(joined).toContain("DDDD");                  // Split X for Y

@@ -4,7 +4,7 @@ import { useMemo } from "react";
 import type { TaxLotWithSecurity, TaxLotSaleWithDetails } from "@/lib/queries/tax-lots";
 import { SymbolLink } from "@/app/dashboard/components/SymbolLink";
 import { Count, Money, PrivateText, Shares } from "@/lib/privacy/components";
-import { Chip } from "./Chip";
+import { Chip, CHIP_TONE_CLASSES } from "./Chip";
 import { EmptySection } from "./EmptySection";
 import { PENDING_STATEMENT_CHIP_LABEL, PENDING_STATEMENT_TITLE } from "./pending-statement-copy";
 import { HoldingPeriodBadge } from "./HoldingPeriodBadge";
@@ -141,7 +141,7 @@ export function OpenLotsTable({
     <div>
       <h4 className="text-xs font-medium text-ink-faint mb-2">
         Open Lots{pendingOnly ? ` \u2014 ${PENDING_STATEMENT_CHIP_LABEL} only` : ""}
-        <span className="ml-1.5 text-ink-faint/60">(<Count value={lots.length} />)</span>
+        <span className="ml-1.5 text-ink-faint">(<Count value={lots.length} />)</span>
       </h4>
       <div className="rounded-xl border border-edge overflow-hidden">
         <ScrollFade>
@@ -379,7 +379,7 @@ export function ClosedSalesTable({
     <div>
       <h4 className="text-xs font-medium text-ink-faint mb-2">
         Closed Sales
-        <span className="ml-1.5 text-ink-faint/60">(<Count value={sales.length} />)</span>
+        <span className="ml-1.5 text-ink-faint">(<Count value={sales.length} />)</span>
       </h4>
       <div className="rounded-xl border border-edge overflow-hidden">
         <ScrollFade>
@@ -500,7 +500,7 @@ export function ClosedSalesTable({
                         className={`text-xs px-2 py-0.5 rounded font-medium ${
                           sale.is_long_term
                             ? "bg-blue/20 text-blue"
-                            : "bg-gold/20 text-gold-ink"
+                            : CHIP_TONE_CLASSES.gold
                         }`}
                       >
                         {sale.is_long_term ? "Long" : "Short"}

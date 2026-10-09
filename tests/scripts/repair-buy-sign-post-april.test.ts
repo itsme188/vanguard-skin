@@ -50,18 +50,18 @@ beforeEach(() => {
 describe("fetchWrongSignRows", () => {
   it("selects a post-2026-04 BUY_TO_OPEN row with a positive amount", () => {
     const db = fresh();
-    const secId = seedSecurity(db, "INTC  260717P00100000");
+    const secId = seedSecurity(db, "ZZD   260717P00100000");
     const id = seedTxn(db, {
       securityId: secId,
       tradeDate: "2026-05-05",
       type: "BUY_TO_OPEN",
-      amount: 2202,
-      sourceKey: "canonical:txn:Vanguard Taxable:INTC  260717P00100000:2026-05-05:BUY_TO_OPEN:220200",
+      amount: 2100,
+      sourceKey: "canonical:txn:Vanguard Taxable:ZZD   260717P00100000:2026-05-05:BUY_TO_OPEN:210000",
     });
 
     const rows = fetchWrongSignRows(db);
     expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({ id, type: "BUY_TO_OPEN", amount: 2202 });
+    expect(rows[0]).toMatchObject({ id, type: "BUY_TO_OPEN", amount: 2100 });
   });
 
   it("selects a post-2026-04 SELL_TO_CLOSE row with a negative amount", () => {
@@ -110,13 +110,13 @@ describe("fetchWrongSignRows", () => {
 
   it("does NOT select a zero-amount row", () => {
     const db = fresh();
-    const secId = seedSecurity(db, "XMTR");
+    const secId = seedSecurity(db, "ZZC");
     seedTxn(db, {
       securityId: secId,
       tradeDate: "2026-05-10",
       type: "BUY",
       amount: 0,
-      sourceKey: "canonical:txn:Vanguard Taxable:XMTR:2026-05-10:BUY:0",
+      sourceKey: "canonical:txn:Vanguard Taxable:ZZC:2026-05-10:BUY:0",
     });
 
     expect(fetchWrongSignRows(db)).toHaveLength(0);
@@ -193,8 +193,8 @@ describe("fetchWrongSignRows", () => {
       securityId: secId,
       tradeDate: "2026-05-04",
       type: "BUY_TO_OPEN",
-      amount: 2202,
-      sourceKey: "canonical:txn:Vanguard Taxable:MIXED:2026-05-04:BUY_TO_OPEN:220200",
+      amount: 2100,
+      sourceKey: "canonical:txn:Vanguard Taxable:MIXED:2026-05-04:BUY_TO_OPEN:210000",
     });
     const wrongSellId = seedTxn(db, {
       securityId: secId,
@@ -213,7 +213,7 @@ describe("fetchWrongSignRows", () => {
 
 describe("normalizedAmountFor", () => {
   it("flips a BUY-family positive amount to negative", () => {
-    expect(normalizedAmountFor("BUY_TO_OPEN", 2202)).toBe(-2202);
+    expect(normalizedAmountFor("BUY_TO_OPEN", 2100)).toBe(-2100);
     expect(normalizedAmountFor("BUY", 1500)).toBe(-1500);
     expect(normalizedAmountFor("BUY_TO_CLOSE", 500)).toBe(-500);
     expect(normalizedAmountFor("BUY_TO_COVER", 1500)).toBe(-1500);
@@ -228,16 +228,16 @@ describe("normalizedAmountFor", () => {
 
 describe("rewriteSourceKeyCents", () => {
   it("replaces the trailing cents segment, no ordinal", () => {
-    const key = "canonical:txn:Vanguard Taxable:INTC  260717P00100000:2026-05-05:BUY_TO_OPEN:220200";
-    expect(rewriteSourceKeyCents(key, -2202)).toBe(
-      "canonical:txn:Vanguard Taxable:INTC  260717P00100000:2026-05-05:BUY_TO_OPEN:-220200"
+    const key = "canonical:txn:Vanguard Taxable:ZZD   260717P00100000:2026-05-05:BUY_TO_OPEN:210000";
+    expect(rewriteSourceKeyCents(key, -2100)).toBe(
+      "canonical:txn:Vanguard Taxable:ZZD   260717P00100000:2026-05-05:BUY_TO_OPEN:-210000"
     );
   });
 
   it("preserves a trailing :#N disambiguation ordinal", () => {
-    const key = "canonical:txn:Vanguard Taxable:XMTR:2026-05-13:BUY_TO_OPEN:220200:#2";
-    expect(rewriteSourceKeyCents(key, -2202)).toBe(
-      "canonical:txn:Vanguard Taxable:XMTR:2026-05-13:BUY_TO_OPEN:-220200:#2"
+    const key = "canonical:txn:Vanguard Taxable:ZZC:2026-05-13:BUY_TO_OPEN:210000:#2";
+    expect(rewriteSourceKeyCents(key, -2100)).toBe(
+      "canonical:txn:Vanguard Taxable:ZZC:2026-05-13:BUY_TO_OPEN:-210000:#2"
     );
   });
 

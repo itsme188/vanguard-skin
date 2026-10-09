@@ -1,5 +1,6 @@
 "use client";
 
+import { CHIP_TONE_TEXT } from "@/app/dashboard/components/chip-tone-text";
 import {
   Fragment,
   Suspense,
@@ -975,7 +976,7 @@ function AlertsPageInner() {
             <button
               onClick={approveAll}
               disabled={approvingAll}
-              className="relative px-3 py-1.5 text-xs font-medium rounded-lg border border-gold/30 bg-gold/10 text-gold-ink hover:bg-gold/20 disabled:opacity-50 pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-0.5"
+              className={`relative px-3 py-1.5 text-xs font-medium rounded-lg border border-gold/30 bg-gold/10 ${CHIP_TONE_TEXT.gold} hover:bg-gold/20 disabled:opacity-50 pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-0.5`}
               title="Approve every pending newsletter level so the scanner can arm them"
             >
               Approve all ({reviewCount})
@@ -1023,7 +1024,7 @@ function AlertsPageInner() {
                   onClick={() => selectFilter(opt.value)}
                   className={`relative px-2.5 py-1 text-[11px] rounded transition-colors pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-0.5 ${
                     filter === opt.value
-                      ? "bg-gold/15 text-gold-ink"
+                      ? `bg-gold/15 ${CHIP_TONE_TEXT.gold}`
                       : "text-ink-faint hover:text-ink"
                   }`}
                 >
@@ -1039,7 +1040,7 @@ function AlertsPageInner() {
       {approveAllConfirm && (
         // gold-ink over amber-200: same both-themes contrast fix as the
         // per-card confirm block in ReviewRow.
-        <div className="rounded-lg border border-gold/30 bg-gold/10 p-3 text-[12px] text-gold-ink flex items-center justify-between gap-3 flex-wrap">
+        <div className={`rounded-lg border border-gold/30 bg-gold/10 p-3 text-[12px] ${CHIP_TONE_TEXT.gold} flex items-center justify-between gap-3 flex-wrap`}>
           <span>
             {approveAllConfirm.ids.length} of {approveAllConfirm.total} were not armed:{" "}
             {[
@@ -1896,7 +1897,7 @@ function AlertRow({
         <div className="flex-1 min-w-0">
           <div className="flex items-baseline gap-2 flex-wrap">
             <span
-              className="inline-block px-1.5 py-0.5 rounded text-[9px] bg-gold/15 text-gold-ink uppercase tracking-wider"
+              className={`inline-block px-1.5 py-0.5 rounded text-[9px] bg-gold/15 ${CHIP_TONE_TEXT.gold} uppercase tracking-wider`}
               title="Fired alert — a level you set was crossed"
             >
               Alert
@@ -2023,7 +2024,7 @@ function AlertRow({
             <>
               <button
                 onClick={() => setNoteOpen(!noteOpen)}
-                className="relative px-2.5 py-1 text-[11px] rounded bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2.5 pointer-coarse:after:-inset-x-0.5"
+                className={`relative px-2.5 py-1 text-[11px] rounded bg-up/10 ${CHIP_TONE_TEXT.up} hover:bg-up/20 pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2.5 pointer-coarse:after:-inset-x-0.5`}
               >
                 Acted
               </button>
@@ -2081,7 +2082,7 @@ function AlertRow({
           />
           <button
             onClick={submitNote}
-            className="px-3 py-1 text-[11px] rounded bg-emerald-500/20 text-emerald-400 hover:bg-emerald-500/30"
+            className={`px-3 py-1 text-[11px] rounded bg-up/20 ${CHIP_TONE_TEXT.up} hover:bg-up/30`}
           >
             Log
           </button>
@@ -2233,7 +2234,7 @@ function ReviewRow({
             // composites to ~1.1:1 on the light theme's white panel — the
             // gold-ink token is the house pair for readable small gold text
             // in BOTH themes (4.5:1+ each side).
-            <div className="mt-2 rounded-lg border border-gold/30 bg-gold/10 p-2 text-[11px] text-gold-ink">
+            <div className={`mt-2 rounded-lg border border-gold/30 bg-gold/10 p-2 text-[11px] ${CHIP_TONE_TEXT.gold}`}>
               {confirm.reason === "beyond_scan_range" ? (
                 <>
                   This level ({formatUSDPrecise(confirm.effectivePrice)}) is more than{" "}
@@ -2278,7 +2279,7 @@ function ReviewRow({
             <button
               onClick={() => onDecide(level.id, "auto_approved")}
               disabled={disabled}
-              className="relative px-3 py-1 text-[11px] rounded bg-emerald-500/15 text-emerald-400 hover:bg-emerald-500/25 disabled:opacity-50 pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2.5 pointer-coarse:after:-inset-x-0.5"
+              className={`relative px-3 py-1 text-[11px] rounded bg-up/15 ${CHIP_TONE_TEXT.up} hover:bg-up/25 disabled:opacity-50 pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2.5 pointer-coarse:after:-inset-x-0.5`}
             >
               {busy ? "Checking…" : "Approve"}
             </button>

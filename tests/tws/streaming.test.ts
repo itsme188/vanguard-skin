@@ -10,6 +10,7 @@ vi.mock("@/lib/tws/client", () => ({
 import { getIbApi } from "@/lib/tws/client";
 import { startStreaming, stopStreaming, getQuoteCache, snapshotToDb } from "@/lib/tws/streaming";
 import { getTaxInputGeneration } from "@/lib/compute/tax-convention";
+import { todayET } from "@/lib/calendar/date-utils";
 
 const mockedGetIbApi = vi.mocked(getIbApi);
 
@@ -79,7 +80,7 @@ describe("startStreaming — contract currency", () => {
   });
 
   it("uses the security's own stored currency for the contract (non-USD)", () => {
-    const secId = seedSecurity(db, "402340", { conId: 555, currency: "KRW" });
+    const secId = seedSecurity(db, "000000", { conId: 555, currency: "KRW" });
 
     const mockApi = {
       setMarketDataType: vi.fn(),
@@ -113,7 +114,7 @@ describe("startStreaming — contract currency", () => {
   });
 
   it("forces USD for an OPTION contract even when the security's stored currency is non-USD (KRW)", () => {
-    const secId = seedSecurity(db, "402340  260320C00045000", {
+    const secId = seedSecurity(db, "000000  260320C00045000", {
       conId: 556,
       currency: "KRW",
       securityType: "option",
@@ -287,6 +288,24 @@ describe("snapshotToDb — synthetic-close price bump (reconciler-hardening, spe
     });
   }
 
+  // The broader UTC sweep: at 21:30 Eastern the UTC day has already rolled.
+  it("an evening flush (21:30 Eastern) dates the price row with the Eastern day", () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-03-10T01:30:00Z"));
+    try {
+      const acctId = seedAccount(db, "T");
+      const secId = seedSecurity(db, "ZZA", { conId: 9 });
+      insertHolding(db, acctId, secId, 100, "2026-01-01");
+      cacheQuote(secId, "ZZA", 50);
+
+      expect(snapshotToDb(db)).toBe(1);
+      const rows = db.prepare("SELECT date FROM prices WHERE security_id = ?").all(secId) as Array<{ date: string }>;
+      expect(rows).toEqual([{ date: "2026-03-09" }]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("does not bump for a held-only cache flush (routine)", () => {
     const acctId = seedAccount(db, "T");
     const secId = seedSecurity(db, "AAPL", { conId: 1 });
@@ -303,10 +322,10 @@ describe("snapshotToDb — synthetic-close price bump (reconciler-hardening, spe
   it("bumps when the cached quote prices a tombstoned security — isolated PRICE path (Codex plan-review F8): snapshotToDb never writes to `holdings`", () => {
     const acctId = seedAccount(db, "T");
     const secId = seedSecurity(db, "GONE", { conId: 2 });
-    // snapshotToDb stamps `new Date().toISOString().slice(0,10)` as the write
+    // snapshotToDb stamps the Eastern market day (`todayET()`) as the write
     // date — the tombstone must be dated at-or-after that for the price
     // write to fall inside the synthetic-close window.
-    const today = new Date().toISOString().slice(0, 10);
+    const today = todayET();
     db.prepare(
       `INSERT INTO holdings (account_id, security_id, quantity, as_of_date, source_key)
        VALUES (?, ?, 0, ?, 'recon:closed-equity:g:stmt')`,
@@ -325,7 +344,7 @@ describe("snapshotToDb — synthetic-close price bump (reconciler-hardening, spe
   it("does NOT bump when the zero row is a LIVE-origin tombstone (:live) — the engine mints no close from it (2026-10-02 §2.3)", () => {
     const acctId = seedAccount(db, "T");
     const secId = seedSecurity(db, "ZZLIVE", { conId: 4 });
-    const today = new Date().toISOString().slice(0, 10);
+    const today = todayET();
     db.prepare(
       `INSERT INTO holdings (account_id, security_id, quantity, as_of_date, source_key)
        VALUES (?, ?, 0, ?, 'recon:closed-equity:g:live')`,
@@ -341,7 +360,7 @@ describe("snapshotToDb — synthetic-close price bump (reconciler-hardening, spe
     const acctId = seedAccount(db, "T");
     const goneId = seedSecurity(db, "GONE", { conId: 2 });
     const boomId = seedSecurity(db, "BOOM", { conId: 3 });
-    const today = new Date().toISOString().slice(0, 10);
+    const today = todayET();
     db.prepare(
       `INSERT INTO holdings (account_id, security_id, quantity, as_of_date, source_key)
        VALUES (?, ?, 0, ?, 'recon:closed-equity:g:stmt')`,

@@ -28,25 +28,25 @@ describe("vanguard PDF parser", () => {
     it("extracts all holdings with correct data", () => {
       expect(result.holdings.length).toBe(17);
 
-      const vti = result.holdings.find((h) => h.symbol === "VTI");
+      const vti = result.holdings.find((h) => h.symbol === "ZZD");
       expect(vti).toBeTruthy();
-      expect(vti!.quantity).toBe(36.0);
-      expect(vti!.marketValue).toBe(10749.60);
+      expect(vti!.quantity).toBe(30);
+      expect(vti!.marketValue).toBe(9000); // 30 x 300 (synthetic)
       expect(vti!.asOfDate).toBe("2025-01-31");
     });
 
     it("extracts securities from holdings", () => {
       expect(result.securities.length).toBeGreaterThanOrEqual(17);
 
-      const tsm = result.securities.find((s) => s.symbol === "TSM");
+      const tsm = result.securities.find((s) => s.symbol === "ZZP");
       expect(tsm).toBeTruthy();
-      expect(tsm!.name).toContain("TAIWAN SEMICONDUCTOR");
+      expect(tsm!.name).toContain("ZZP SYNTHETIC");
     });
 
     it("extracts prices from holdings", () => {
-      const vgtPrice = result.prices.find((p) => p.symbol === "VGT");
+      const vgtPrice = result.prices.find((p) => p.symbol === "ZZC");
       expect(vgtPrice).toBeTruthy();
-      expect(vgtPrice!.closePrice).toBe(616.61);
+      expect(vgtPrice!.closePrice).toBe(600);
       expect(vgtPrice!.date).toBe("2025-01-31");
       expect(vgtPrice!.source).toBe("vanguard-pdf");
     });
@@ -60,9 +60,9 @@ describe("vanguard PDF parser", () => {
       const dividends = result.transactions.filter((t) => t.type === "DIVIDEND");
       expect(dividends.length).toBe(3);
 
-      const vnqDiv = dividends.find((t) => t.symbol === "VNQ");
+      const vnqDiv = dividends.find((t) => t.symbol === "ZZA");
       expect(vnqDiv).toBeTruthy();
-      expect(vnqDiv!.amount).toBe(15.23);
+      expect(vnqDiv!.amount).toBe(18);
       expect(vnqDiv!.tradeDate).toBe("2025-01-02");
     });
 
@@ -70,11 +70,11 @@ describe("vanguard PDF parser", () => {
       const buys = result.transactions.filter((t) => t.type === "BUY");
       expect(buys.length).toBe(2);
 
-      const pltrBuy = buys.find((t) => t.symbol === "PLTR");
+      const pltrBuy = buys.find((t) => t.symbol === "ZZO");
       expect(pltrBuy).toBeTruthy();
       expect(pltrBuy!.quantity).toBe(10.0);
-      expect(pltrBuy!.pricePerShare).toBe(71.25);
-      expect(pltrBuy!.amount).toBe(-712.50);
+      expect(pltrBuy!.pricePerShare).toBe(70);
+      expect(pltrBuy!.amount).toBe(-700);
       expect(pltrBuy!.fees).toBe(0.0);
     });
 
@@ -90,8 +90,8 @@ describe("vanguard PDF parser", () => {
         (t) => t.type === "TAX_WITHHELD"
       );
       expect(taxWithheld.length).toBe(1);
-      expect(taxWithheld[0].amount).toBe(-2.81);
-      expect(taxWithheld[0].symbol).toBe("TSM");
+      expect(taxWithheld[0].amount).toBe(-2);
+      expect(taxWithheld[0].symbol).toBe("ZZP");
     });
 
     it("creates monthly snapshot", () => {
@@ -99,24 +99,24 @@ describe("vanguard PDF parser", () => {
       const snap = result.snapshots[0];
       expect(snap.accountName).toBe("Vanguard Roth IRA");
       expect(snap.monthEndDate).toBe("2025-01-31");
-      expect(snap.totalValue).toBe(59379.62);
-      expect(snap.dividends).toBe(28.59);
+      expect(snap.totalValue).toBe(57600) // sum of the 17 synthetic holding values;
+      expect(snap.dividends).toBe(43) // 18 + 10 + 15;
       expect(snap.source).toBe("vanguard-pdf");
     });
 
     it("generates deterministic source keys for holdings", () => {
-      const vti = result.holdings.find((h) => h.symbol === "VTI");
+      const vti = result.holdings.find((h) => h.symbol === "ZZD");
       expect(vti!.sourceKey).toBe(
-        "vanguard-pdf:holding:Vanguard Roth IRA:VTI:2025-01-31"
+        "vanguard-pdf:holding:Vanguard Roth IRA:ZZD:2025-01-31"
       );
     });
 
     it("generates deterministic source keys for transactions", () => {
       const pltrBuy = result.transactions.find(
-        (t) => t.symbol === "PLTR" && t.type === "BUY"
+        (t) => t.symbol === "ZZO" && t.type === "BUY"
       );
       expect(pltrBuy!.sourceKey).toBe(
-        "vanguard-pdf:txn:Vanguard Roth IRA:2025-01-14:PLTR:buy:-712.5"
+        "vanguard-pdf:txn:Vanguard Roth IRA:2025-01-14:ZZO:buy:-700"
       );
     });
 
@@ -158,9 +158,9 @@ describe("vanguard PDF parser", () => {
             symbol: "INTC",
             name: "Intel Corp",
             category: "Stocks",
-            quantity: 275,
-            price: 45.61,
-            value: 12542.75,
+            quantity: 200,
+            price: 45,
+            value: 9000,
           },
         ],
         transactions: [],
@@ -173,7 +173,7 @@ describe("vanguard PDF parser", () => {
       expect(optionHolding!.symbol).toBe("INTC  260320P00045000");
 
       // Stock should keep bare ticker
-      const stockHolding = result.holdings.find(h => h.quantity === 275);
+      const stockHolding = result.holdings.find(h => h.quantity === 200);
       expect(stockHolding!.symbol).toBe("INTC");
 
       // Securities should be separate

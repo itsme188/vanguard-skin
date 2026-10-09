@@ -1,5 +1,6 @@
 "use client";
 
+import { CHIP_TONE_TEXT } from "@/app/dashboard/components/chip-tone-text";
 import { useEffect, useState } from "react";
 
 /**
@@ -41,7 +42,7 @@ export function ChatToggleButton() {
       //      <html data-chat-rail="open">; shows when "collapsed")
       className={`relative hidden md:flex chat-toggle-rail-aware items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors pointer-coarse:after:absolute pointer-coarse:after:-inset-2 pointer-coarse:after:content-[''] ${
         open
-          ? "bg-gold/10 text-gold-ink border border-gold/30"
+          ? `bg-gold/10 ${CHIP_TONE_TEXT.gold} border border-gold/30`
           : "text-ink-faint hover:text-ink-dim hover:bg-raised border border-transparent"
       }`}
       title="Toggle chat (Cmd+J)"

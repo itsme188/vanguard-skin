@@ -313,7 +313,7 @@ export function GivingYearSection({ year }: { year: GivingYear }) {
                             <button
                               type="button"
                               onClick={() => setDrawerDonation(gd)}
-                              className="text-xs text-gold hover:underline focus-ring"
+                              className="text-xs text-gold-ink hover:underline focus-ring"
                             >
                               {gd.basis != null ? "Edit lots" : "Assign lots"}
                             </button>
@@ -468,7 +468,7 @@ function ResolveSecurityControl({
         <button
           type="button"
           onClick={() => setOpen(true)}
-          className="font-sans text-xs text-gold hover:underline focus-ring"
+          className="font-sans text-xs text-gold-ink hover:underline focus-ring"
         >
           Resolve…
         </button>

@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { addDays, todayET } from "@/lib/calendar/date-utils";
 import {
   betaConfidenceVerdict,
   type BetaConfidenceResult,
@@ -35,9 +36,9 @@ export function computeSecurityRegression(
   days = 252
 ): SecurityRegression | null {
   // 1. Pull security prices for the lookback window.
-  const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000)
-    .toISOString()
-    .slice(0, 10);
+  //    The window counts back from the Eastern day: a UTC slice of the wall
+  //    clock is already tomorrow after 20:00 Eastern.
+  const cutoff = addDays(todayET(), -days);
 
   const securityRows = db
     .prepare(

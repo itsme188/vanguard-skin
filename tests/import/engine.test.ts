@@ -623,23 +623,23 @@ describe("import engine", () => {
   describe("statement-wins-over-tws upserts (regression for 2026-05-04 IBKR April bug)", () => {
     it("statement holdings overwrite earlier TWS-source rows on conflict", () => {
       // Pre-2026-05-04: holdings UPSERT used INSERT OR IGNORE, so a TWS intra-day
-      // row written before the statement import (e.g., AMZN 100 at noon) would
-      // silently block the statement's end-of-day row (AMZN 160). On April 2026
-      // import, 18 of 19 IBKR statement holdings were lost this way.
+      // row written before the statement import (e.g., ZZA 100 at noon) would
+      // silently block the statement's end-of-day row (ZZA 150). On April 2026
+      // import, most IBKR statement holdings were lost this way.
       db.prepare(
         "INSERT OR IGNORE INTO accounts (id, name) VALUES (3, 'IBKR')"
       ).run();
       db.prepare(
-        "INSERT INTO securities (id, symbol, security_type) VALUES (1000, 'AMZN', 'Stock')"
+        "INSERT INTO securities (id, symbol, security_type) VALUES (1000, 'ZZA', 'Stock')"
       ).run();
 
       // 1) TWS sync writes intra-day (e.g., 100 shares at noon)
       db.prepare(
         `INSERT INTO holdings (account_id, security_id, quantity, cost_basis, as_of_date, source_key)
-         VALUES (3, 1000, 100, 26000, '2026-04-30', 'tws-3-1000-2026-04-30')`
+         VALUES (3, 1000, 100, 20000, '2026-04-30', 'tws-3-1000-2026-04-30')`
       ).run();
 
-      // 2) Simulate statement import writing the EOD row (160 shares)
+      // 2) Simulate statement import writing the EOD row (150 shares)
       const insertHolding = db.prepare(`
         INSERT INTO holdings
           (account_id, security_id, quantity, cost_basis, as_of_date, import_batch_id, source_key)
@@ -651,7 +651,7 @@ describe("import engine", () => {
           source_key = excluded.source_key
         WHERE holdings.source_key LIKE 'tws-%'
       `);
-      insertHolding.run(3, 1000, 160, 41659.8, "2026-04-30", null, "ibkr:pos:2026-04-30:AMZN");
+      insertHolding.run(3, 1000, 150, 30000, "2026-04-30", null, "ibkr:pos:2026-04-30:ZZA");
 
       const row = db
         .prepare(
@@ -661,9 +661,9 @@ describe("import engine", () => {
         )
         .get() as { quantity: number; cost_basis: number; source_key: string };
 
-      expect(row.quantity).toBe(160);
-      expect(row.cost_basis).toBe(41659.8);
-      expect(row.source_key).toBe("ibkr:pos:2026-04-30:AMZN");
+      expect(row.quantity).toBe(150);
+      expect(row.cost_basis).toBe(30000);
+      expect(row.source_key).toBe("ibkr:pos:2026-04-30:ZZA");
     });
 
     it("statement holdings re-import is idempotent (statement-vs-statement preserved)", () => {
@@ -674,7 +674,7 @@ describe("import engine", () => {
         "INSERT OR IGNORE INTO accounts (id, name) VALUES (3, 'IBKR')"
       ).run();
       db.prepare(
-        "INSERT INTO securities (id, symbol, security_type) VALUES (1000, 'AMZN', 'Stock')"
+        "INSERT INTO securities (id, symbol, security_type) VALUES (1000, 'ZZA', 'Stock')"
       ).run();
 
       const insertHolding = db.prepare(`
@@ -689,9 +689,9 @@ describe("import engine", () => {
         WHERE holdings.source_key LIKE 'tws-%'
       `);
       // First statement import
-      insertHolding.run(3, 1000, 160, 41659.8, "2026-04-30", null, "ibkr:pos:2026-04-30:AMZN");
+      insertHolding.run(3, 1000, 150, 30000, "2026-04-30", null, "ibkr:pos:2026-04-30:ZZA");
       // Pretend a tampered re-import tries to overwrite with different values
-      insertHolding.run(3, 1000, 999, 99999, "2026-04-30", null, "ibkr:pos:2026-04-30:AMZN");
+      insertHolding.run(3, 1000, 999, 99999, "2026-04-30", null, "ibkr:pos:2026-04-30:ZZA");
 
       const row = db
         .prepare(
@@ -701,8 +701,8 @@ describe("import engine", () => {
         .get() as { quantity: number; cost_basis: number };
 
       // Original statement values preserved (UPDATE only fires for tws-* source_keys)
-      expect(row.quantity).toBe(160);
-      expect(row.cost_basis).toBe(41659.8);
+      expect(row.quantity).toBe(150);
+      expect(row.cost_basis).toBe(30000);
     });
 
     it("statement snapshot overwrites earlier tws-source snapshot row", () => {
@@ -716,7 +716,7 @@ describe("import engine", () => {
       db.prepare(
         `INSERT INTO monthly_snapshots
            (account_id, month_end_date, total_value, source)
-         VALUES (3, '2026-04-30', 448941.47, 'tws')`
+         VALUES (3, '2026-04-30', 250500, 'tws')`
       ).run();
 
       // 2) Statement import writes the rich snapshot
@@ -745,17 +745,17 @@ describe("import engine", () => {
       insertSnapshot.run(
         3,
         "2026-04-30",
-        449764.24,
+        250000,
         "ibkr-activity",
-        525103.95,
-        24709.98,
+        340000,
+        10000,
         -100000,
-        179.7,
-        656.94,
-        -323.97,
-        -131.36,
+        150,
+        400,
+        -300,
+        -100,
         null,
-        5.239,
+        4,
         null,
         null
       );
@@ -775,10 +775,10 @@ describe("import engine", () => {
         };
 
       expect(row.source).toBe("ibkr-activity");
-      expect(row.total_value).toBe(449764.24);
-      expect(row.starting_value).toBe(525103.95);
+      expect(row.total_value).toBe(250000);
+      expect(row.starting_value).toBe(340000);
       expect(row.deposits_withdrawals).toBe(-100000);
-      expect(row.twr).toBe(5.239);
+      expect(row.twr).toBe(4);
     });
   });
 
@@ -928,12 +928,12 @@ describe("import engine", () => {
   describe("ibkr-activity exchange-suffixed symbol resolution (2026-07-05 Korea dup bug)", () => {
     it("resolves a known exchange-suffixed symbol to an existing base-symbol security (no duplicate row)", () => {
       // Seed the base-symbol security the way TWS/Web-API sync would have
-      // created it: bare "402340", currency KRW.
+      // created it: bare "000000", currency KRW.
       const baseSecId = (
         db
           .prepare(
             `INSERT INTO securities (symbol, security_type, currency)
-             VALUES ('402340', 'Stock', 'KRW') RETURNING id`,
+             VALUES ('000000', 'Stock', 'KRW') RETURNING id`,
           )
           .get() as { id: number }
       ).id;
@@ -947,26 +947,26 @@ describe("import engine", () => {
             accountName: "IBKR",
             tradeDate: "2026-06-15",
             type: "BUY",
-            symbol: "402340.KS",
+            symbol: "000000.KS",
             quantity: 10,
             amount: -500000,
             pricePerShare: 50000,
-            sourceKey: "ibkr:trade:2026-06-15:402340.KS:10:-500000",
+            sourceKey: "ibkr:trade:2026-06-15:000000.KS:10:-500000",
           },
         ],
-        securities: [{ symbol: "402340.KS", securityType: "Stock" }],
+        securities: [{ symbol: "000000.KS", securityType: "Stock" }],
         holdings: [
           {
             accountName: "IBKR",
-            symbol: "402340.KS",
+            symbol: "000000.KS",
             quantity: 10,
             asOfDate: "2026-06-30",
-            sourceKey: "ibkr:pos:2026-06-30:402340.KS",
+            sourceKey: "ibkr:pos:2026-06-30:000000.KS",
           },
         ],
         prices: [
           {
-            symbol: "402340.KS",
+            symbol: "000000.KS",
             date: "2026-06-30",
             closePrice: 50000,
             source: "ibkr-activity",
@@ -987,7 +987,7 @@ describe("import engine", () => {
         .get() as { c: number };
       expect(allSecurities.c).toBe(1);
       const suffixedRow = db
-        .prepare("SELECT COUNT(*) as c FROM securities WHERE symbol = '402340.KS'")
+        .prepare("SELECT COUNT(*) as c FROM securities WHERE symbol = '000000.KS'")
         .get() as { c: number };
       expect(suffixedRow.c).toBe(0);
 
@@ -1000,14 +1000,14 @@ describe("import engine", () => {
       // The transaction, holding, and price all landed on the existing base security.
       const txn = db
         .prepare("SELECT security_id FROM transactions WHERE source_key = ?")
-        .get("ibkr:trade:2026-06-15:402340.KS:10:-500000") as
+        .get("ibkr:trade:2026-06-15:000000.KS:10:-500000") as
         | { security_id: number }
         | undefined;
       expect(txn?.security_id).toBe(baseSecId);
 
       const holding = db
         .prepare(
-          "SELECT security_id FROM holdings WHERE source_key = 'ibkr:pos:2026-06-30:402340.KS'",
+          "SELECT security_id FROM holdings WHERE source_key = 'ibkr:pos:2026-06-30:000000.KS'",
         )
         .get() as { security_id: number } | undefined;
       expect(holding?.security_id).toBe(baseSecId);
@@ -1133,26 +1133,26 @@ describe("import engine", () => {
               accountName: "IBKR",
               tradeDate: "2026-06-15",
               type: "BUY",
-              symbol: "402340.KS",
+              symbol: "000000.KS",
               quantity: 10,
               amount: -500000,
               pricePerShare: 50000,
-              sourceKey: "ibkr:trade:2026-06-15:402340.KS:10:-500000",
+              sourceKey: "ibkr:trade:2026-06-15:000000.KS:10:-500000",
             },
           ],
-          securities: [{ symbol: "402340.KS", securityType: "Stock" }],
+          securities: [{ symbol: "000000.KS", securityType: "Stock" }],
           holdings: [
             {
               accountName: "IBKR",
-              symbol: "402340.KS",
+              symbol: "000000.KS",
               quantity: 10,
               asOfDate: "2026-06-30",
-              sourceKey: "ibkr:pos:2026-06-30:402340.KS",
+              sourceKey: "ibkr:pos:2026-06-30:000000.KS",
             },
           ],
           prices: [
             {
-              symbol: "402340.KS",
+              symbol: "000000.KS",
               date: "2026-06-30",
               closePrice: 50000,
               source: "ibkr-activity",
@@ -1165,7 +1165,7 @@ describe("import engine", () => {
         };
       }
 
-      // First commit — NO base-symbol ("402340") row exists yet.
+      // First commit — NO base-symbol ("000000") row exists yet.
       commitImport(db, buildBatch());
 
       const ibkrAccountId = (
@@ -1189,7 +1189,7 @@ describe("import engine", () => {
       // Simulate the TWS/Web-API sync later creating the bare-symbol
       // security row (currency resolved from the live contract, e.g. KRW).
       upsertSecurity(db, {
-        symbol: "402340",
+        symbol: "000000",
         securityType: "Stock",
         currency: "KRW",
       });
@@ -1197,7 +1197,7 @@ describe("import engine", () => {
       // Re-commit the SAME statement (a legitimate duplicate/re-run import).
       // Under the pre-redesign DB-existence-gated resolver this throws a
       // "UNIQUE constraint failed: holdings.source_key" error and rolls back
-      // the whole batch, because the second commit resolves "402340.KS" to
+      // the whole batch, because the second commit resolves "000000.KS" to
       // the NOW-existing base row's security_id while the first commit's
       // holding row is still keyed to the suffixed-symbol security_id — same
       // source_key, different (account_id, security_id, as_of_date), so the
@@ -1224,19 +1224,19 @@ describe("import engine", () => {
       // row both times — no new/duplicate holding row.
       expect(afterHoldingCount).toBe(beforeHoldingCount);
 
-      // Exactly one securities row for the whole "402340" family — never a
-      // second row under the suffixed "402340.KS" form.
+      // Exactly one securities row for the whole "000000" family — never a
+      // second row under the suffixed "000000.KS" form.
       const securitiesForFamily = db
         .prepare(
-          "SELECT symbol FROM securities WHERE symbol IN ('402340', '402340.KS')",
+          "SELECT symbol FROM securities WHERE symbol IN ('000000', '000000.KS')",
         )
         .all() as { symbol: string }[];
       expect(securitiesForFamily).toHaveLength(1);
-      expect(securitiesForFamily[0].symbol).toBe("402340");
+      expect(securitiesForFamily[0].symbol).toBe("000000");
 
       // Currency was never clobbered back to USD by the re-import.
       const currency = db
-        .prepare("SELECT currency FROM securities WHERE symbol = '402340'")
+        .prepare("SELECT currency FROM securities WHERE symbol = '000000'")
         .get() as { currency: string };
       expect(currency.currency).toBe("KRW");
     });

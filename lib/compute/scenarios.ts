@@ -2,6 +2,7 @@ import type Database from "better-sqlite3";
 import type { FactorColumn } from "@/lib/factors";
 import { adjustedMarketValueSQL } from "@/lib/valuation";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
+import { accountScopeAndSql } from "@/lib/queries/account-scope-sql";
 import { explodeHoldingBySector } from "./explode-sector";
 import { getEtfSectorWeights } from "@/lib/queries/etf-weights";
 import { liveOptionExpirationSql } from "@/lib/compute/option-expiry";
@@ -151,10 +152,8 @@ export function computeScenario(
   if (recipe) return computeRecipeScenario(db, recipe, options);
 
   const accountIds = options?.accountIds ?? (options?.accountId ? [options.accountId] : undefined);
-  const accountFilter = accountIds?.length
-    ? `AND h.account_id IN (${accountIds.map(() => "?").join(",")})`
-    : "";
-  const accountParams: number[] = accountIds?.length ? [...accountIds] : [];
+  // `undefined` is every account; a defined empty list is NO accounts.
+  const { sql: accountFilter, params: accountParams } = accountScopeAndSql(accountIds);
 
   // 1. Get current positions with latest prices and classification
   const positions = db

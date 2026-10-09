@@ -1,5 +1,6 @@
 "use client";
 
+import { CHIP_TONE_CLASSES } from "@/app/dashboard/components/Chip";
 import { useEffect, useRef, useState, useCallback } from "react";
 import type { OhlcvBar } from "@/lib/tws/types";
 import { computeSMA, computeEMA } from "@/lib/chart/indicators";
@@ -7,6 +8,7 @@ import { formatChartPrice } from "@/lib/chart/price-formatter";
 import { markerTypeLabel } from "@/lib/chart/marker-label";
 import { Count } from "@/lib/privacy/components";
 import { formatNumber, formatUSDPrecise, rendersAsZero } from "@/lib/format";
+import { todayET } from "@/lib/calendar/date-utils";
 import { usePrivacy } from "@/lib/privacy/context";
 import { AddLevelPopover } from "./AddLevelPopover";
 import { ScrollFade } from "./ScrollFade";
@@ -57,12 +59,22 @@ const TIMEFRAMES = [
 
 type TimeframeLabel = (typeof TIMEFRAMES)[number]["label"];
 
+/**
+ * The day N months before today (YYYY-MM-DD). "Today" is the Eastern day; the
+ * month step then runs in UTC on a Date built from that day string, so it is
+ * plain date arithmetic. A UTC slice of the wall clock is already tomorrow
+ * after 20:00 Eastern.
+ */
+function monthsBackCutoff(months: number): string {
+  const cutoff = new Date(todayET() + "T00:00:00Z");
+  cutoff.setUTCMonth(cutoff.getUTCMonth() - months);
+  return cutoff.toISOString().slice(0, 10);
+}
+
 /** Filter bars to only include the last N months. months=0 means show all. */
 function filterBarsByWindow(bars: OhlcvBar[], months: number): OhlcvBar[] {
   if (months === 0 || bars.length === 0) return bars;
-  const cutoff = new Date();
-  cutoff.setMonth(cutoff.getMonth() - months);
-  const cutoffStr = cutoff.toISOString().slice(0, 10);
+  const cutoffStr = monthsBackCutoff(months);
   return bars.filter((b) => b.date >= cutoffStr);
 }
 
@@ -1236,9 +1248,7 @@ export function SecurityChart({
       // fetch it. Otherwise just filter what we already have.
       if (allBars.length > 0 && selected.months > 0) {
         const oldestBar = allBars[0].date;
-        const cutoff = new Date();
-        cutoff.setMonth(cutoff.getMonth() - selected.months);
-        const cutoffStr = cutoff.toISOString().slice(0, 10);
+        const cutoffStr = monthsBackCutoff(selected.months);
         if (oldestBar > cutoffStr) {
           // We don't have enough history — fetch more
           const data = await fetchChartData(selected.duration);
@@ -1265,11 +1275,7 @@ export function SecurityChart({
           if (showMarkers) {
             const filteredTxns = selected.months === 0
               ? txns
-              : txns.filter((t) => {
-                  const cutoff = new Date();
-                  cutoff.setMonth(cutoff.getMonth() - selected.months);
-                  return t.date >= cutoff.toISOString().slice(0, 10);
-                });
+              : txns.filter((t) => t.date >= monthsBackCutoff(selected.months));
             markersPluginRef.current = updateMarkers(lc, candleSeriesRef.current!, filteredTxns, true, markersPluginRef.current, isPrivateRef.current, reportMarkers);
           }
           if (chartRef.current) fitChartContent(chartRef.current, candleSeriesRef.current, markerSummaryRef.current);
@@ -1629,17 +1635,17 @@ export function SecurityChart({
 
       {/* Status bar */}
       {(warning || error) && (
-        <div className={`shrink-0 px-4 py-1.5 text-xs font-medium ${error ? "bg-down/20 text-down" : "bg-gold/20 text-gold"}`}>
+        <div className={`shrink-0 px-4 py-1.5 text-xs font-medium ${error ? `chart-status-down ${CHIP_TONE_CLASSES.down}` : `chart-status-gold ${CHIP_TONE_CLASSES.gold}`}`}>
           {error || warning}
         </div>
       )}
       {!warning && !error && levelsUnavailable && (
-        <div className="shrink-0 px-4 py-1.5 text-xs font-medium bg-gold/20 text-gold">
+        <div className={`chart-status-gold shrink-0 px-4 py-1.5 text-xs font-medium ${CHIP_TONE_CLASSES.gold}`}>
           Price-level overlays unavailable — the levels fetch failed; retrying automatically.
         </div>
       )}
       {!warning && !error && !levelsUnavailable && indicatorNote && !isIntraday && (
-        <div className="shrink-0 px-4 py-1.5 text-xs font-medium bg-gold/20 text-gold">
+        <div className={`chart-status-gold shrink-0 px-4 py-1.5 text-xs font-medium ${CHIP_TONE_CLASSES.gold}`}>
           {indicatorNote}
         </div>
       )}
@@ -1716,7 +1722,9 @@ export function SecurityChart({
             <span>{chartFooterStalenessText({ barCount, lastDate, intraday: isIntraday, dailyLastBarDate: dailyLoaded.lastDate })}</span>
             {hiddenTradesVisible && <HiddenTradesNote summary={markerSummary} />}
             {/* Level-type color key — maps chart overlay colors to what they mean. */}
-            <div className="hidden sm:flex items-center gap-2 text-[10px] opacity-70">
+            {/* No fade on this wrapper: at 70% the 10px labels measured 3.2 to
+                3.5:1. Only the swatch keeps the 70% (LegendDot). */}
+            <div className="hidden sm:flex items-center gap-2 text-[10px]">
               <LegendDot color="#ffb84d" label="last price" />
               <LegendDot color="#22c55e" label="support / entry" />
               <LegendDot color="#60a5fa" label="target" />
@@ -1735,7 +1743,7 @@ function LegendDot({ color, label }: { color: string; label: string }) {
     <span className="flex items-center gap-1">
       <span
         aria-hidden
-        className="inline-block w-2.5 h-[2px] rounded-sm"
+        className="inline-block w-2.5 h-[2px] rounded-sm opacity-70"
         style={{ background: color, boxShadow: `0 0 0 1px ${color}` }}
       />
       <span>{label}</span>

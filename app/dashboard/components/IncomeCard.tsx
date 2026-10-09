@@ -1,3 +1,4 @@
+import { CHIP_TONE_CLASSES } from "@/app/dashboard/components/Chip";
 import { db } from "@/lib/db";
 import { Money, Pct } from "@/lib/privacy/components";
 import { formatUSD } from "@/lib/format";
@@ -121,7 +122,7 @@ export function IncomeCard() {
         {yoyChange !== null && (
           <span
             className={`text-xs font-mono font-medium px-2 py-1 rounded-lg ${
-              yoyChange >= 0 ? "bg-up/20 text-up" : "bg-down/20 text-down"
+              yoyChange >= 0 ? CHIP_TONE_CLASSES.up : CHIP_TONE_CLASSES.down
             }`}
           >
             <Pct value={yoyChange} digits={1} signed /> vs {MONTH_LABELS[0]}-{MONTH_LABELS[currentMonth - 1]} {currentYear.year - 1}

@@ -143,32 +143,32 @@ describe("getIbkrTodayHoldings", () => {
   it("suppresses an option's move when its prior stored close violates intrinsic vs the underlying's same-date close", () => {
     const acct = ibkrAccountId();
     const spy = seedSecurity("SPY", "ETF");
-    const app = seedSecurity("APP");
-    const put = seedOption("APP   260814P00390000", "APP", "PUT", 390);
+    const app = seedSecurity("ZZP");
+    const put = seedOption("ZZP   260814P00400000", "ZZP", "PUT", 400);
     hold(acct, spy, 1);
-    hold(acct, app, 15);
+    hold(acct, app, 10);
     hold(acct, put, 1);
 
     price(spy, "2026-08-05", 630);
     price(spy, "2026-08-06", 631);
     // Underlying: post-earnings closes on both pair dates
     price(app, "2026-08-05", 350.0);
-    price(app, "2026-08-06", 351.51);
-    // Put: 8/05 row is a stale PRE-earnings intraday quote — $15.75 is far
-    // below intrinsic ($390 − $350 = $40) at the same date's underlying close.
-    price(put, "2026-08-05", 15.75);
-    price(put, "2026-08-06", 48.52);
+    price(app, "2026-08-06", 351);
+    // Put: 8/05 row is a stale PRE-earnings intraday quote — $15 is far
+    // below intrinsic ($400 − $350 = $50) at the same date's underlying close.
+    price(put, "2026-08-05", 15);
+    price(put, "2026-08-06", 50);
 
     const rows = getIbkrTodayHoldings(db, acct);
-    const p = rows.find((r) => r.symbol.includes("P00390000"))!;
-    // The +208% phantom must not render as "today's move"
+    const p = rows.find((r) => r.symbol.includes("P00400000"))!;
+    // The +233% phantom ((50 − 15) / 15) must not render as "today's move"
     expect(p.today_gain).toBeNull();
     expect(p.today_pct).toBeNull();
     // Position value still shows from the freshest row
-    expect(p.current_value).toBeCloseTo(48.52 * 100, 2);
+    expect(p.current_value).toBeCloseTo(50 * 100, 2);
     // Underlying row unaffected
-    const a = rows.find((r) => r.symbol === "APP")!;
-    expect(a.today_pct).toBeCloseTo((351.51 - 350.0) / 350.0, 6);
+    const a = rows.find((r) => r.symbol === "ZZP")!;
+    expect(a.today_pct).toBeCloseTo((351 - 350.0) / 350.0, 6);
   });
 
   it("keeps a legitimate option premium multi-bagger (no intrinsic violation)", () => {
@@ -731,14 +731,14 @@ describe("getIbkrTodayHoldings: quantity opened today is measured from cost", ()
     ).run(LATEST);
     holdAt(acct, zzk, 10, 17_000_000, LATEST); // 10 at 1,700,000 won
     price(zzk, PRIOR, 1_650_000);
-    price(zzk, LATEST, 1_731_000);
+    price(zzk, LATEST, 1_730_000);
 
     const z = find(getIbkrTodayHoldings(db, acct), "ZZK");
-    // 10 x (1,731,000 - 1,700,000) = 310,000 won = 217 dollars.
-    expect(z.today_gain).toBeCloseTo(217, 6);
+    // 10 x (1,730,000 - 1,700,000) = 300,000 won x 0.0007 = 210 dollars.
+    expect(z.today_gain).toBeCloseTo(210, 6);
     // Base 17,000,000 won = 11,900 dollars.
     expect(z.day_move_base).toBeCloseTo(11_900, 6);
-    expect(z.today_pct).toBeCloseTo(217 / 11_900, 9);
+    expect(z.today_pct).toBeCloseTo(210 / 11_900, 9);
     expect(z.day_move_basis).toBe("cost");
   });
 

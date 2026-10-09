@@ -307,14 +307,14 @@ describe("TWS portfolio sync", () => {
   it("persists a non-USD contract currency onto the security", async () => {
     mockApi!.getAccountUpdates.mockReturnValue(
       mockObservable(makeAccountUpdate([
-        { symbol: "402340", pos: 10, avgCost: 1_632_979.2, marketPrice: 1_731_000, currency: "KRW", conId: 555 },
-      ], 484374.59, 64983.18))
+        { symbol: "000000", pos: 10, avgCost: 1_400_000, marketPrice: 1_500_000, currency: "KRW", conId: 555 },
+      ], 200000, 50000))
     );
 
     const syncPortfolio = await getSyncPortfolio();
     await syncPortfolio(db);
 
-    const sec = db.prepare("SELECT currency FROM securities WHERE symbol = '402340'").get() as any;
+    const sec = db.prepare("SELECT currency FROM securities WHERE symbol = '000000'").get() as any;
     expect(sec.currency).toBe("KRW");
   });
 

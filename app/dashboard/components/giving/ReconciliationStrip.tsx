@@ -1,5 +1,6 @@
 "use client";
 
+import { GOLD_FILL_CLASSES } from "@/app/dashboard/components/chip-tone-text";
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import type { ReconciliationReport } from "@/lib/compute/donation-reconciliation";
@@ -110,7 +111,7 @@ export function ReconciliationStrip({ report }: { report: ReconciliationReport }
                             : confirmMatch(donation.id, outLeg.id, artifactLeg?.id ?? null)
                         }
                         disabled={flow.active}
-                        className="px-3 py-1.5 rounded-lg bg-gold text-canvas text-xs font-medium hover:brightness-110 disabled:opacity-50 transition-[filter,scale] active:scale-[0.96] focus-ring"
+                        className={`px-3 py-1.5 rounded-lg ${GOLD_FILL_CLASSES} text-xs font-medium hover:brightness-110 disabled:opacity-50 transition-[filter,scale] active:scale-[0.96] focus-ring`}
                       >
                         {submitting ? "Confirming…" : armed ? "Link anyway" : "Confirm"}
                       </button>

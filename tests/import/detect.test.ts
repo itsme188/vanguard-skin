@@ -17,20 +17,20 @@ ibkr,SPY,SPDR S&P 500 ETF TRUST,ETF,100,600,47000,60000`;
 
   it("detects Vanguard cost basis CSV", () => {
     const content = `symbol,name,type,account,cost_basis_method,quantity,cost_per_share,total_cost,market_value,short_term_gain_loss,long_term_gain_loss,total_gain_loss,percent_gain_loss
-VEMBX,Vanguard Emerging Markets Bond,Mutual Fund,Brokerage,MinTax,360.684,,3994.61,3870.14,9.41,-133.88,-124.47,-3.12%`;
+VEMBX,Vanguard Emerging Markets Bond,Mutual Fund,Brokerage,MinTax,400.000,,4000.00,3900.00,10.00,-110.00,-100.00,-2.50%`;
     expect(detectSourceType(content, "vanguard_cost_basis.csv")).toBe("vanguard-cost-basis");
   });
 
   it("detects Vanguard holdings CSV", () => {
     const content = `symbol,name,type,price,quantity,value
-VMFXX,Vanguard Federal Money Market Fund,Settlement Fund,1.00,8297.75,8297.75`;
+VMFXX,Vanguard Federal Money Market Fund,Settlement Fund,1.00,8000.00,8000.00`;
     expect(detectSourceType(content, "vanguard_holdings.csv")).toBe("vanguard-holdings");
   });
 
   it("detects monthly values CSV", () => {
     const content = `date,month,year,ibkr
-2024-12-31,12,2024,280374.665374
-2025-01-31,1,2025,315531.77`;
+2024-12-31,12,2024,250000.125
+2025-01-31,1,2025,260000.00`;
     expect(detectSourceType(content, "monthly_values.csv")).toBe("monthly-values");
   });
 

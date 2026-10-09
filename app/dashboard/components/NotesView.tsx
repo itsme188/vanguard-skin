@@ -1,5 +1,7 @@
 "use client";
 
+import { GOLD_FILL_CLASSES } from "@/app/dashboard/components/chip-tone-text";
+import { CHIP_TONE_CLASSES } from "@/app/dashboard/components/Chip";
 import { useState, useRef, useEffect, useTransition } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import type { NoteWithContext, EarningsTimelineEntry } from "@/lib/queries/notes";
@@ -100,10 +102,10 @@ const SENTIMENT_OPTIONS: { label: string; value: NoteSentiment }[] =
   }));
 
 const SENTIMENT_STYLES: Record<string, string> = {
-  bullish: "bg-up/20 text-up",
-  bearish: "bg-down/20 text-down",
+  bullish: CHIP_TONE_CLASSES.up,
+  bearish: CHIP_TONE_CLASSES.down,
   neutral: "bg-muted text-ink-dim",
-  cautious: "bg-gold/20 text-gold-ink",
+  cautious: CHIP_TONE_CLASSES.gold,
   confident: "bg-blue/20 text-blue",
 };
 
@@ -700,7 +702,7 @@ export function NotesView({
             aria-pressed={(opt.value || null) === currentType}
             className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors whitespace-nowrap focus-ring ${
               (opt.value || null) === currentType
-                ? "bg-gold/20 text-gold-ink"
+                ? CHIP_TONE_CLASSES.gold
                 : "text-ink-faint hover:text-ink hover:bg-panel"
             }`}
           >
@@ -714,7 +716,7 @@ export function NotesView({
           <button
             type="button"
             onClick={clearSecurityFilter}
-            className="inline-flex items-center gap-1.5 rounded-full bg-gold/20 text-gold-ink px-3 py-1.5 text-sm font-medium hover:brightness-110 transition-colors focus-ring"
+            className={`inline-flex items-center gap-1.5 rounded-full ${CHIP_TONE_CLASSES.gold} px-3 py-1.5 text-sm font-medium hover:brightness-110 transition-colors focus-ring`}
             aria-label={
               securityFilterSymbol
                 ? `Clear filter — showing only ${securityFilterSymbol}`
@@ -779,7 +781,7 @@ export function NotesView({
           <button
             type="submit"
             disabled={!formContent.trim() || isSaving}
-            className="px-4 py-1.5 bg-gold text-canvas rounded-lg text-sm font-medium hover:bg-gold/90 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            className={`px-4 py-1.5 ${GOLD_FILL_CLASSES} rounded-lg text-sm font-medium hover:bg-gold/90 disabled:opacity-40 disabled:cursor-not-allowed transition-colors`}
           >
             {isSaving ? "Saving..." : "Save Note"}
           </button>
@@ -1460,7 +1462,7 @@ function NoteCard({
               type="button"
               onClick={() => edit.onSave(note)}
               disabled={!draft.content.trim() || edit.saving}
-              className="px-3 py-1 bg-gold text-canvas rounded text-xs font-medium hover:bg-gold/90 disabled:opacity-40 disabled:cursor-not-allowed"
+              className={`px-3 py-1 ${GOLD_FILL_CLASSES} rounded text-xs font-medium hover:bg-gold/90 disabled:opacity-40 disabled:cursor-not-allowed`}
             >
               {edit.saving ? "Saving..." : "Save"}
             </button>

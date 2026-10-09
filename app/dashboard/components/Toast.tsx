@@ -1,5 +1,6 @@
 "use client";
 
+import { CHIP_TONE_CLASSES } from "@/app/dashboard/components/Chip";
 import {
   createContext,
   useCallback,
@@ -64,10 +65,10 @@ export function ToastProvider({ children }: { children: ReactNode }) {
             key={t.id}
             className={`pointer-events-auto flex items-center gap-3 rounded-lg border px-4 py-3 text-sm font-medium shadow-lg backdrop-blur-sm animate-slide-in ${
               t.type === "success"
-                ? "border-up/40 bg-up/20 text-up"
+                ? `border-up/40 ${CHIP_TONE_CLASSES.up}`
                 : t.type === "error"
-                  ? "border-down/40 bg-down/20 text-down"
-                  : "border-gold/40 bg-gold/20 text-gold-ink"
+                  ? `border-down/40 ${CHIP_TONE_CLASSES.down}`
+                  : `border-gold/40 ${CHIP_TONE_CLASSES.gold}`
             }`}
             role="status"
           >

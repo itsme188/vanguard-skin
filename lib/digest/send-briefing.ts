@@ -3,7 +3,7 @@ import { getBriefingByWeek, isBriefingStale } from "@/lib/queries/calendar";
 import { generateWeeklyBriefing } from "@/lib/calendar/briefing";
 import { briefingToHtml } from "@/lib/calendar/briefing-html";
 import { sendEmail } from "@/lib/email";
-import { addDays, getCurrentMonday, mondayOf } from "@/lib/calendar/date-utils";
+import { addDays, getCurrentMonday, mondayOf, todayET } from "@/lib/calendar/date-utils";
 import { syncPortfolio } from "@/lib/tws/positions";
 import { runAutoRefresh } from "@/lib/tws/auto-refresh";
 import { setLastBriefingSentAt } from "@/lib/digest/daily-digest";
@@ -112,14 +112,15 @@ export async function sendBriefingEmail(
     const row = db
       .prepare(
         `SELECT MAX(p.date) AS latest_date,
-                CAST(julianday('now') - julianday(MAX(p.date)) AS INTEGER) AS days_old
+                CAST(julianday(?) - julianday(MAX(p.date)) AS INTEGER) AS days_old
            FROM prices p
            JOIN securities s ON s.id = p.security_id
           WHERE s.id IN (
             SELECT DISTINCT security_id FROM holdings WHERE quantity != 0
           )`,
       )
-      .get() as { latest_date: string | null; days_old: number | null } | undefined;
+      // Whole days from the Eastern day (bound), not from SQLite's UTC clock.
+      .get(todayET()) as { latest_date: string | null; days_old: number | null } | undefined;
     if (row?.latest_date) {
       console.log(
         `[send-briefing] Latest price as_of_date: ${row.latest_date} (${row.days_old ?? "?"}d old)`,

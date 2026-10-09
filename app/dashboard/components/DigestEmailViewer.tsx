@@ -1,5 +1,6 @@
 "use client";
 
+import { CHIP_TONE_TEXT } from "@/app/dashboard/components/chip-tone-text";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import apiFetch from "@/lib/http/apiFetch";
@@ -341,7 +342,7 @@ export function DigestEmailViewer({ open, onClose, digestWindow, onDigestWindowC
                 aria-label={structuredGenerating ? "Structured (generating)" : undefined}
                 className={`inline-flex items-center gap-1.5 px-2.5 py-1 ${
                   layout === "structured"
-                    ? "bg-gold/15 text-gold-ink"
+                    ? `bg-gold/15 ${CHIP_TONE_TEXT.gold}`
                     : "text-ink-dim hover:bg-raised disabled:opacity-40"
                 }`}
               >
@@ -359,7 +360,7 @@ export function DigestEmailViewer({ open, onClose, digestWindow, onDigestWindowC
                 disabled={!data?.bySourceHtml}
                 className={`px-2.5 py-1 border-l border-edge ${
                   layout === "by_source"
-                    ? "bg-gold/15 text-gold-ink"
+                    ? `bg-gold/15 ${CHIP_TONE_TEXT.gold}`
                     : "text-ink-dim hover:bg-raised disabled:opacity-40"
                 }`}
               >
@@ -371,7 +372,7 @@ export function DigestEmailViewer({ open, onClose, digestWindow, onDigestWindowC
                 disabled={!data?.byCompanyHtml}
                 className={`px-2.5 py-1 border-l border-edge ${
                   layout === "by_company"
-                    ? "bg-gold/15 text-gold-ink"
+                    ? `bg-gold/15 ${CHIP_TONE_TEXT.gold}`
                     : "text-ink-dim hover:bg-raised disabled:opacity-40"
                 }`}
               >

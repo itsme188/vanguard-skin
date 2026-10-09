@@ -12,6 +12,7 @@
 
 import { db } from "../lib/db";
 import { purgeExpiredOptionHoldings } from "../lib/mutations/expired-options";
+import { todayET } from "../lib/calendar/date-utils";
 
 const dryRun = process.argv.includes("--dry-run");
 
@@ -23,9 +24,10 @@ const candidates = db
      JOIN accounts a ON a.id = h.account_id
      WHERE LOWER(s.security_type) = 'option'
        AND s.expiration_date IS NOT NULL
-       AND date(s.expiration_date) < date('now', '-1 day')`,
+       AND date(s.expiration_date) < date(?, '-1 day')`,
   )
-  .all() as Array<{ symbol: string; expiration_date: string; quantity: number; account: string }>;
+  // The Eastern day, bound: the same cut the purge itself applies.
+  .all(todayET()) as Array<{ symbol: string; expiration_date: string; quantity: number; account: string }>;
 
 if (candidates.length === 0) {
   console.log("No expired option holdings to purge.");

@@ -1,5 +1,6 @@
 "use client";
 
+import { GOLD_FILL_CLASSES } from "@/app/dashboard/components/chip-tone-text";
 import { useEffect, useState, useCallback, useRef } from "react";
 import Link from "next/link";
 import { formatUSDPrecise } from "@/lib/format";
@@ -171,7 +172,7 @@ export function NotificationBell() {
           <path d="M10.3 21a1.94 1.94 0 0 0 3.4 0" />
         </svg>
         {totalCount > 0 && (
-          <span className="absolute -top-1.5 -right-1.5 min-w-[18px] h-[18px] px-1 rounded-full bg-gold text-canvas text-[11px] font-mono font-bold flex items-center justify-center">
+          <span className={`absolute -top-1.5 -right-1.5 min-w-[18px] h-[18px] px-1 rounded-full ${GOLD_FILL_CLASSES} text-[11px] font-mono font-bold flex items-center justify-center`}>
             {totalCount > 9 ? "9+" : totalCount}
           </span>
         )}

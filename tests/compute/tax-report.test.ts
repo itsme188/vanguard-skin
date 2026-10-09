@@ -270,7 +270,7 @@ describe("non-USD sales (QA 2026-08-07)", () => {
   beforeEach(() => {
     db = createTestDb();
     db.exec(
-      "INSERT INTO securities (id, symbol, name, currency) VALUES (3, '402340', 'KRW Name', 'KRW')"
+      "INSERT INTO securities (id, symbol, name, currency) VALUES (3, '000000', 'KRW Name', 'KRW')"
     );
   });
 

@@ -1,5 +1,6 @@
 "use client";
 
+import { CHIP_TONE_TEXT } from "@/app/dashboard/components/chip-tone-text";
 import { useEffect, useLayoutEffect, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { addDays, MAX_EARNINGS_DAYS_AHEAD, todayET } from "@/lib/calendar/date-utils";
@@ -282,7 +283,7 @@ function ReleaseTimeEditor({
           type="button"
           disabled={rtSaving || !rtEdit}
           onClick={() => onSave(rtEdit)}
-          className={`${TOUCH_EXTENSION} text-[10px] font-mono px-1.5 py-0.5 rounded text-up bg-up/15 hover:bg-up/25 disabled:opacity-40 whitespace-nowrap`}
+          className={`${TOUCH_EXTENSION} text-[10px] font-mono px-1.5 py-0.5 rounded ${CHIP_TONE_TEXT.up} bg-up/15 hover:bg-up/25 disabled:opacity-40 whitespace-nowrap`}
         >
           Save
         </button>
@@ -599,7 +600,7 @@ function EarningsDateChipInner({
     const passive = {
       confirmed: {
         label: "✓ 2 src",
-        cls: "text-up/80",
+        cls: CHIP_TONE_TEXT.up,
         line: "Confirmed by Finnhub + Nasdaq",
       },
       single: {
@@ -679,7 +680,7 @@ function EarningsDateChipInner({
                 disabled={submitting || !fixDate || noChange}
                 title={noChange ? "Change the date or slot first" : undefined}
                 onClick={submitCorrection}
-                className="text-[10px] font-mono px-1.5 py-0.5 rounded text-up bg-up/15 hover:bg-up/25 disabled:opacity-40 whitespace-nowrap"
+                className={`text-[10px] font-mono px-1.5 py-0.5 rounded ${CHIP_TONE_TEXT.up} bg-up/15 hover:bg-up/25 disabled:opacity-40 whitespace-nowrap`}
               >
                 Fix date
               </button>
@@ -760,7 +761,7 @@ function EarningsDateChipInner({
           if (!open) void loadReleaseTime();
         }}
         disabled={pending}
-        className="text-[10px] font-mono px-1.5 py-0.5 rounded text-gold-ink bg-gold/15 hover:bg-gold/25 disabled:opacity-50 cursor-pointer"
+        className={`text-[10px] font-mono px-1.5 py-0.5 rounded ${CHIP_TONE_TEXT.gold} bg-gold/15 hover:bg-gold/25 disabled:opacity-50 cursor-pointer`}
         title="Sources disagree on the date — confirm against IBKR"
       >
         ⚠ confirm
@@ -823,7 +824,7 @@ function EarningsDateChipInner({
                 type="button"
                 disabled={submitting || !customDate || isPast(customDate)}
                 onClick={() => customDate && confirm(customDate, customTime)}
-                className={`${TOUCH_EXTENSION} ml-1 text-[10px] font-mono px-1.5 py-0.5 rounded text-up bg-up/15 hover:bg-up/25 disabled:opacity-40`}
+                className={`${TOUCH_EXTENSION} ml-1 text-[10px] font-mono px-1.5 py-0.5 rounded ${CHIP_TONE_TEXT.up} bg-up/15 hover:bg-up/25 disabled:opacity-40`}
               >
                 ok
               </button>
@@ -856,7 +857,7 @@ function EarningsDateChipInner({
                   setOpen(false);
                   startTransition(() => router.refresh());
                 }}
-                className="text-[10px] font-mono px-1.5 py-0.5 rounded text-up bg-up/15 hover:bg-up/25"
+                className={`text-[10px] font-mono px-1.5 py-0.5 rounded ${CHIP_TONE_TEXT.up} bg-up/15 hover:bg-up/25`}
               >
                 Got it
               </button>

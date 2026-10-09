@@ -1,4 +1,5 @@
 import { ImapFlow, type MessageStructureObject } from "imapflow";
+import { todayET } from "@/lib/calendar/date-utils";
 
 const VK_SENDER = "updates@vitalknowledge.net";
 const MAX_EMAILS = 5;
@@ -132,7 +133,7 @@ export async function fetchVitalKnowledge(
       emails.sort((a, b) => a.date.getTime() - b.date.getTime());
 
       const sections = emails.map((e) => {
-        const dateStr = e.date.toISOString().split("T")[0];
+        const dateStr = todayET(e.date);
         return `[${dateStr}] ${e.subject}\n${e.text}`;
       });
 

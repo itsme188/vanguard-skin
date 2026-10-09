@@ -138,7 +138,7 @@ describe("POST /api/import?mode=commit — corporate-action replay status", () =
   it('reports "mismatch" and surfaces commit-time warnings when the ledger has no matching lots', async () => {
     seedSecurity(hoisted.db, "AAAA"); // known, but no tax lots -> the split's
     // implied delta (0) won't match the statement's quantityDelta (300).
-    // BBBB / 402340 / GGGG stay unknown -> resolve-only skip + warnings.
+    // BBBB / 000000 / GGGG stay unknown -> resolve-only skip + warnings.
 
     const mod = await import("@/app/api/import/route");
     const res = await mod.POST(
@@ -155,7 +155,7 @@ describe("POST /api/import?mode=commit — corporate-action replay status", () =
 
     const fileResult = body.results[0];
     expect(fileResult.committed!.newCorporateActions).toBe(1); // AAAA only
-    // Commit-time resolve-only-skip warnings (BBBB/402340/GGGG) must appear
+    // Commit-time resolve-only-skip warnings (BBBB/000000/GGGG) must appear
     // in the response, not just live inside commitImport's return value.
     expect(fileResult.warnings!.join("\n")).toContain("BBBB");
     expect(fileResult.warnings!.join("\n")).toContain("no known security");
@@ -207,7 +207,7 @@ describe("POST /api/import?mode=preview — corporate actions preview", () => {
     // DB used for both the preview and the follow-up commit call).
     seedSecurity(hoisted.db, "AAAA");
     seedSecurity(hoisted.db, "BBBB");
-    seedSecurity(hoisted.db, "402340"); // exchange-suffix stripped at commit
+    seedSecurity(hoisted.db, "000000"); // exchange-suffix stripped at commit
     seedSecurity(hoisted.db, "GGGG");
 
     const mod = await import("@/app/api/import/route");
@@ -218,7 +218,7 @@ describe("POST /api/import?mode=preview — corporate actions preview", () => {
     expect(previewRes.status).toBe(200);
     const previewBody = (await previewRes.json()) as ImportRouteResponse;
     const preview = previewBody.results[0].preview!;
-    expect(preview.corporateActions.count).toBe(4); // AAAA, BBBB, 402340.KS, GGGG
+    expect(preview.corporateActions.count).toBe(4); // AAAA, BBBB, 000000.KS, GGGG
 
     const aaaa = preview.corporateActions.sample.find((s) => s.symbol === "AAAA");
     expect(aaaa).toEqual({

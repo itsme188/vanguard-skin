@@ -188,10 +188,10 @@ describe("getPortfolioExposureSummary", () => {
     seedHolding(acct, aapl, 10);
     seedPrice(aapl, 208);
 
-    // KRW holding: 10 sh @ ₩1,731,000 = ₩17,310,000 notional.
-    const krw = seedStock("402340", "KRW");
+    // KRW holding: 10 sh @ ₩1,500,000 = ₩15,000,000 notional.
+    const krw = seedStock("000000", "KRW");
     seedHolding(acct, krw, 10);
-    seedPrice(krw, 1_731_000);
+    seedPrice(krw, 1_500_000);
 
     upsertFxRate(db, {
       currency: "KRW",
@@ -202,12 +202,12 @@ describe("getPortfolioExposureSummary", () => {
 
     const s = getPortfolioExposureSummary(db);
 
-    const expectedKrwUsd = 10 * 1_731_000 * 0.000734; // ≈ $12,705.54
+    const expectedKrwUsd = 10 * 1_500_000 * 0.000734; // ≈ $11,010.00
     const expectedTotal = 2_080 + expectedKrwUsd;
 
     // Total market value (and thus net/gross exposure, which are MV for
     // non-options) must reflect the USD-converted KRW value, NOT the won
-    // notional treated as dollars (2,080 + 17,310,000 ≈ $17.3M phantom).
+    // notional treated as dollars (2,080 + 15,000,000 ≈ $15M phantom).
     expect(s.total_market_value).toBeCloseTo(expectedTotal, 5);
     expect(s.total_market_value).toBeLessThan(20_000);
     expect(s.net_exposure).toBeCloseTo(expectedTotal, 5);
@@ -218,9 +218,9 @@ describe("getPortfolioExposureSummary", () => {
     const acct = seedAccount("Test");
 
     // No price row seeded — forces the `WHEN h.cost_basis > 0 THEN h.cost_basis`
-    // fallback branch. ₩16,329,792 cost basis.
-    const krw = seedStock("005930", "KRW");
-    seedHoldingWithCostBasis(acct, krw, 10, 16_329_792);
+    // fallback branch. ₩14,000,000 cost basis.
+    const krw = seedStock("000001", "KRW");
+    seedHoldingWithCostBasis(acct, krw, 10, 14_000_000);
 
     upsertFxRate(db, {
       currency: "KRW",
@@ -230,7 +230,7 @@ describe("getPortfolioExposureSummary", () => {
     });
 
     const s = getPortfolioExposureSummary(db);
-    const expectedUsd = 16_329_792 * 0.000734; // ≈ $11,986.07
+    const expectedUsd = 14_000_000 * 0.000734; // ≈ $10,276.00
 
     expect(s.total_market_value).toBeCloseTo(expectedUsd, 2);
     expect(s.total_market_value).toBeLessThan(20_000);

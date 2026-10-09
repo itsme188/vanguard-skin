@@ -1,10 +1,12 @@
 import type Database from "better-sqlite3";
+import { easternDaySql } from "@/lib/db/eastern-day-sql";
 import {
   reconcileTwrAgainstStatements,
   type TwrReconcileResult,
 } from "@/lib/compute/twr-reconcile";
 import type { DietzBand } from "@/lib/compute/dietz";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
+import { accountScopeAndSql, accountScopeCondition } from "@/lib/queries/account-scope-sql";
 
 /** The `settings` key the sector run stamps. The same string is exported as
  *  `SECTOR_CLASSIFY_LAST_RUN_KEY` by lib/securities/classify-option-sectors.ts,
@@ -187,10 +189,8 @@ export function getAnalysisTrustState(
   db: Database.Database,
   accountIds?: number[]
 ): AnalysisTrustState {
-  const accountFilter = accountIds?.length
-    ? `AND h.account_id IN (${accountIds.map(() => "?").join(",")})`
-    : "";
-  const params: number[] = accountIds?.length ? [...accountIds] : [];
+  // `undefined` is every account; a defined empty list is NO accounts.
+  const { sql: accountFilter, params } = accountScopeAndSql(accountIds);
 
   // ── Factor coverage ──────────────────────────────────────────────────
   const factorRow = db
@@ -256,7 +256,12 @@ export function getAnalysisTrustState(
     SELECT s.symbol
     FROM latest_prices lp
     JOIN securities s ON s.id = lp.security_id
-    WHERE julianday('now') - julianday(lp.latest_date) > ?
+    -- Whole days from the Eastern day (inlined literal), not from SQLite's
+    -- UTC clock. ">=" on whole days flags the same days the old fractional
+    -- ">" did in daytime; after 20:00 Eastern it no longer flags a day early.
+    -- date(...) cuts the price date to its calendar day, so a value that
+    -- carried a time of day would still count as that whole day.
+    WHERE julianday(${easternDaySql()}) - julianday(date(lp.latest_date)) >= ?
     ORDER BY s.symbol
   `
     )
@@ -333,16 +338,15 @@ export function getAnalysisTrustState(
   // (or never started). Per-account detail flows out via
   // `perAccountReconciliation` (headline: the latest statement month) and
   // each row's `bandHistory` (the full walked chain).
-  const accountList = accountIds?.length
-    ? (db
-        .prepare(
-          `SELECT id, name FROM accounts WHERE id IN (${accountIds.map(() => "?").join(",")})`,
-        )
-        .all(...accountIds) as { id: number; name: string }[])
-    : (db.prepare("SELECT id, name FROM accounts").all() as {
-        id: number;
-        name: string;
-      }[]);
+  // Same scope rule: an empty list reconciles no account.
+  const accountScope = accountScopeCondition(accountIds, "id");
+  const accountList = db
+    .prepare(
+      `SELECT id, name FROM accounts${
+        accountScope.condition === null ? "" : ` WHERE ${accountScope.condition}`
+      }`,
+    )
+    .all(...accountScope.params) as { id: number; name: string }[];
 
   const perAccount: PerAccountReconciliation[] = [];
   let rollupCrossCheckedThru: string | null = null;

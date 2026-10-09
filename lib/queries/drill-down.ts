@@ -26,6 +26,7 @@
 
 import type Database from "better-sqlite3";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
+import { accountScopeAndSql } from "@/lib/queries/account-scope-sql";
 import { FACTOR_COLUMNS, type FactorColumn } from "@/lib/factors";
 import { BETA_LOOKBACK_DAYS } from "@/lib/queries/security-betas";
 import { computePositionRisk, type PositionRisk } from "@/lib/compute/risk";
@@ -112,10 +113,8 @@ export function getHoldingsInBucket(
   filter: DrillDownFilter,
   accountIds?: number[]
 ): DrillDownRow[] {
-  const accountFilter = accountIds?.length
-    ? `AND h.account_id IN (${accountIds.map(() => "?").join(",")})`
-    : "";
-  const accountParams: number[] = accountIds?.length ? [...accountIds] : [];
+  // `undefined` is every account; a defined empty list is NO accounts.
+  const { sql: accountFilter, params: accountParams } = accountScopeAndSql(accountIds);
 
   let extraWhere = "";
   const orderBy = "market_value DESC";
@@ -233,7 +232,7 @@ export function getHoldingsInBucket(
       LEFT JOIN fx_rates fx ON fx.currency = s.currency
       WHERE ${latestHoldingsPredicate({ accountFilter })}
         AND ${liveOptionExpirationSql("s")}
-        AND ${UNMATURED_SECURITY_SQL}
+        AND ${UNMATURED_SECURITY_SQL()}
         ${extraWhere}
       -- Aggregate per SECURITY, not per (account, security) row: a name held
       -- in several accounts must appear once with its value summed, or it
@@ -277,7 +276,7 @@ export function getHoldingsInBucket(
        LEFT JOIN fx_rates fx ON fx.currency = s.currency
        WHERE ${latestHoldingsPredicate({ accountFilter })}
          AND ${liveOptionExpirationSql("s")}
-         AND ${UNMATURED_SECURITY_SQL}`
+         AND ${UNMATURED_SECURITY_SQL()}`
     )
     .get(...accountParams) as { total: number | null };
 

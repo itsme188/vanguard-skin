@@ -1,5 +1,6 @@
 "use client";
 
+import { CHIP_TONE_CLASSES } from "@/app/dashboard/components/Chip";
 import { useMemo } from "react";
 import type {
   TransactionSort,
@@ -18,19 +19,14 @@ import {
   type SortDir,
 } from "@/lib/hooks/useSortParam";
 
-// Chip text is 10-12px, so it needs 4.5:1. In the light theme the plain
-// status colour on its own 20% tint measures 3.8:1 (up / down) and 4.2:1
-// (gold-ink), so the light text is the same hue mixed 20% toward black
-// (5.2:1 or better). The dark theme keeps the plain token, which already
-// passes there. tests/dashboard/transaction-history-chip-contrast.test.ts
-// computes the light ratios from the tokens in globals.css.
-const UP_CHIP =
-  "bg-up/20 text-[color:color-mix(in_srgb,var(--up)_80%,black)] [[data-theme=dark]_&]:text-up";
-const DOWN_CHIP =
-  "bg-down/20 text-[color:color-mix(in_srgb,var(--down)_80%,black)] [[data-theme=dark]_&]:text-down";
-const GOLD_CHIP =
-  "bg-gold/20 text-[color:color-mix(in_srgb,var(--gold-ink)_80%,black)] [[data-theme=dark]_&]:text-gold-ink";
-const BLUE_CHIP = "bg-blue/20 text-blue";
+// Chip text is 10-12px, so it needs 4.5:1 on its own tint in both themes.
+// The four pairs are the checked tones of the shared Chip table (the Sell
+// chip's hand-written copy kept plain red in the dark theme, about 4.1:1).
+// tests/dashboard/chip-contrast-nowrap.test.tsx pins the ratios.
+const UP_CHIP = CHIP_TONE_CLASSES.up;
+const DOWN_CHIP = CHIP_TONE_CLASSES.down;
+const GOLD_CHIP = CHIP_TONE_CLASSES.gold;
+const BLUE_CHIP = CHIP_TONE_CLASSES.info;
 
 // Option legs take the colour of the equity leg with the same cash
 // direction (decision 2026-10-07): a buy pays cash out like BUY, a sell

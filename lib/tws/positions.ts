@@ -4,6 +4,7 @@ import { SecType, OptionType } from "@stoqey/ib";
 import type { Position } from "@stoqey/ib/dist/api-next";
 import type { AccountUpdate } from "@stoqey/ib/dist/api-next/account/account-update";
 import { getIbApi } from "./client";
+import { todayET } from "../calendar/date-utils";
 import { upsertSecurity } from "../mutations/securities";
 import { removeStaleSameDayTwsHoldings } from "../mutations/same-day-tws-holdings";
 import { countStatementGradeRowsOnDate } from "../mutations/closed-equity";
@@ -218,7 +219,10 @@ export async function syncPortfolio(
     throw new Error("IBKR account not found in database");
   }
   const accountId = account.id;
-  const today = new Date().toISOString().slice(0, 10);
+  // Eastern market day, the same stamp lib/tws/snapshot.ts uses. A UTC slice
+  // dated an evening sync (after 20:00 Eastern) tomorrow: holdings, prices and
+  // the account snapshot all landed on a day that had not started.
+  const today = todayET();
 
   const accountCode = options?.ibkrAccountCode ?? IBKR_PERSONAL_ACCOUNT;
 

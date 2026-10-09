@@ -1,5 +1,7 @@
 "use client";
 
+import { CHIP_TONE_CLASSES } from "@/app/dashboard/components/Chip";
+import { CHIP_TONE_TEXT, GOLD_FILL_CLASSES } from "@/app/dashboard/components/chip-tone-text";
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { useElectron } from "@/lib/hooks/useElectron";
@@ -56,7 +58,7 @@ export function WelcomeOverlay() {
             action={
               <button
                 onClick={() => window.dispatchEvent(new Event("open-settings"))}
-                className="px-3 py-1 text-xs font-medium rounded-lg bg-gold/20 text-gold-ink hover:bg-gold/30 transition-colors"
+                className={`px-3 py-1 text-xs font-medium rounded-lg ${CHIP_TONE_CLASSES.gold} hover:bg-gold/30 transition-colors`}
               >
                 Open Settings
               </button>
@@ -91,7 +93,7 @@ export function WelcomeOverlay() {
         {/* Get Started */}
         <button
           onClick={handleGetStarted}
-          className="w-full py-2.5 text-sm font-medium rounded-lg bg-gold text-canvas hover:bg-gold/90 transition-colors"
+          className={`w-full py-2.5 text-sm font-medium rounded-lg ${GOLD_FILL_CLASSES} hover:bg-gold/90 transition-colors`}
         >
           Get Started
         </button>
@@ -115,7 +117,7 @@ function SetupStep({
 }) {
   return (
     <div className="flex gap-3">
-      <div className="flex-shrink-0 w-6 h-6 rounded-full bg-gold/15 text-gold-ink text-xs font-medium flex items-center justify-center mt-0.5">
+      <div className={`flex-shrink-0 w-6 h-6 rounded-full bg-gold/15 ${CHIP_TONE_TEXT.gold} text-xs font-medium flex items-center justify-center mt-0.5`}>
         {number}
       </div>
       <div className="flex-1 space-y-1.5">

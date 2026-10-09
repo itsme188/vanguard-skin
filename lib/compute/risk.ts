@@ -11,7 +11,7 @@ import {
   concentrationGrossValue,
   getConcentrationUniverse,
 } from "@/lib/queries/concentration-universe";
-import { normalizeAccountIds } from "@/lib/compute/factors";
+import { accountIdsFilterSql, normalizeAccountIds } from "@/lib/compute/factors";
 import { buildFlowAdjustedIndex, fetchNetFlowsByDate, fetchAnchorSourceSeamDates } from "@/lib/compute/flow-adjusted";
 import { addDays, calendarDaysBetween, todayET } from "@/lib/calendar/date-utils";
 import { isCashEquivalentSecurity } from "@/lib/compute/cash-equivalents";
@@ -254,18 +254,24 @@ export function computeRiskMetrics(
     coverageFloor === "scope"
       ? options?.startDate
       : laterDate(options?.startDate, commonCoverageStart(db));
+  // `undefined` is every account; a defined empty list is NO accounts: there
+  // is no series, and it must never widen to the whole book
+  // (getDailyValuationsForAccounts follows the same rule since 2026-10-09;
+  // the explicit branches are kept so the rule is visible here).
   const valuations =
-    accountIds && accountIds.length > 0
-      ? getDailyValuationsForAccounts(db, accountIds, {
+    accountIds === undefined
+      ? getDailyValuationsCombined(db, {
           startDate,
           endDate: effectiveEndDate,
           fullCoverageOnly: true,
         })
-      : getDailyValuationsCombined(db, {
-          startDate,
-          endDate: effectiveEndDate,
-          fullCoverageOnly: true,
-        });
+      : accountIds.length === 0
+        ? []
+        : getDailyValuationsForAccounts(db, accountIds, {
+            startDate,
+            endDate: effectiveEndDate,
+            fullCoverageOnly: true,
+          });
 
   // 2. Compute drawdown and return metrics from a FLOW-ADJUSTED return index,
   // never the raw value series. A withdrawal/deposit changes account value
@@ -584,11 +590,12 @@ export function computePositionRisk(
 ): PositionRiskResult {
   const topN = options?.topN ?? 10;
   const accountIds = normalizeAccountIds(options);
-  const accountFilter =
-    accountIds && accountIds.length > 0
-      ? `AND h.account_id IN (${accountIds.map(() => "?").join(",")})`
-      : "";
-  const accountParams: number[] = accountIds ?? [];
+  // `undefined` is every account; a defined empty list is NO accounts (it
+  // must never widen to the whole book).
+  if (accountIds && accountIds.length === 0) {
+    return { positions: [], correlations: [], portfolioVol: null };
+  }
+  const { sql: accountFilter, params: accountParams } = accountIdsFilterSql(accountIds);
 
   const predicate = latestHoldingsPredicate({
     keyBy: "account_security",

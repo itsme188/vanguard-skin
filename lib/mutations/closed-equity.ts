@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { accountScopeAndSql } from "@/lib/queries/account-scope-sql";
 import {
   RECON_HOLDING_SOURCE_PREFIX,
   RECON_STMT_SUFFIX,
@@ -451,8 +452,9 @@ export function removeOrphanedReconTombstones(
   db: Database.Database,
   opts: { accountIds?: number[] } = {},
 ): number {
-  const ids = opts.accountIds ?? [];
-  const acctFilter = ids.length > 0 ? `AND account_id IN (${ids.map(() => "?").join(",")})` : "";
+  // `undefined` is every account; a defined empty list is NO accounts: it
+  // deletes nothing (it must never widen this DELETE to the whole book).
+  const { sql: acctFilter, params: ids } = accountScopeAndSql(opts.accountIds, "account_id");
   return db.transaction(() => {
     const live = db
       .prepare(

@@ -17,6 +17,7 @@ import type { MonthlySnapshot } from "@/lib/types";
 import type { DailyValuation } from "@/lib/queries/daily-valuations";
 import { usePrivateFormatter } from "@/lib/privacy/components";
 import { formatUSD } from "@/lib/format";
+import { addDays, todayET } from "@/lib/calendar/date-utils";
 import {
   anchorDailiesToStatements,
   type EquityFlow,
@@ -111,17 +112,13 @@ function formatDateFull(date: string): string {
 /** First date the selected range shows (YYYY-MM-DD); null for All. */
 function rangeCutoffIso(rangeIndex: number): string | null {
   const range = DATE_RANGES[rangeIndex];
-  const today = new Date();
   if (range.label === "All") return null;
-  let cutoff: Date;
-  if (range.label === "YTD") {
-    cutoff = new Date(today.getFullYear(), 0, 1);
-  } else if (range.days) {
-    cutoff = new Date(today.getTime() - range.days * 24 * 3600 * 1000);
-  } else {
-    return null;
-  }
-  return cutoff.toISOString().slice(0, 10);
+  // Eastern day, then plain date arithmetic on the date string. A UTC slice of
+  // the wall clock is already tomorrow after 20:00 Eastern.
+  const today = todayET();
+  if (range.label === "YTD") return `${today.slice(0, 4)}-01-01`;
+  if (range.days) return addDays(today, -range.days);
+  return null;
 }
 
 function filterByRange<T extends { date: string }>(

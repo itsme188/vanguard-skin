@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { easternDaySql } from "@/lib/db/eastern-day-sql";
 import {
   excludeLiveSnapshotsSql,
   onlyLiveSnapshotsSql,
@@ -72,7 +73,7 @@ export function getAccountSummaries(db: Database.Database): AccountSummary[] {
           ROW_NUMBER() OVER (PARTITION BY ms.account_id ORDER BY ms.month_end_date DESC) AS rn
         FROM monthly_snapshots ms
         WHERE ${onlyLiveSnapshotsSql("ms.source")}
-          AND ms.month_end_date >= date('now', '-1 day')
+          AND ms.month_end_date >= date(${easternDaySql()}, '-1 day')
       ),
       latest_holdings AS (
         SELECT account_id, MAX(as_of_date) AS max_date
@@ -253,7 +254,7 @@ function accountValuesCteSql(scopeSql: string): string {
           ROW_NUMBER() OVER (PARTITION BY account_id ORDER BY month_end_date DESC) AS rn
         FROM monthly_snapshots
         WHERE ${onlyLiveSnapshotsSql("source")}
-          AND month_end_date >= date('now', '-1 day')
+          AND month_end_date >= date(${easternDaySql()}, '-1 day')
       ),
       account_values AS (
         SELECT

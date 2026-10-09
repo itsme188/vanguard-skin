@@ -1,3 +1,4 @@
+import { CHIP_TONE_CLASSES } from "@/app/dashboard/components/Chip";
 import { db } from "@/lib/db";
 import { getUpcomingEvents } from "@/lib/queries/calendar";
 import { getLatestBriefing } from "@/lib/queries/calendar";
@@ -24,7 +25,7 @@ const EVENT_ICONS: Record<string, string> = {
 };
 
 const IMPACT_STYLES: Record<string, string> = {
-  high: "bg-down/20 text-down",
+  high: CHIP_TONE_CLASSES.down,
   medium: "bg-warn/20 text-warn",
   low: "bg-ink-faint/20 text-ink-dim",
 };

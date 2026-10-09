@@ -43,7 +43,7 @@ export async function GivingView() {
           hiding the basis/gain-avoided figures below. */}
       {conventionPending && (
         <div className="rounded-lg px-5 py-3 bg-gold/5 border-l-2 border-gold flex items-start gap-2">
-          <span aria-hidden className="text-gold text-sm leading-5">⚠</span>
+          <span aria-hidden className="text-gold-ink text-sm leading-5">⚠</span>
           <p className="text-xs text-ink-dim leading-5">
             <span className="text-gold-ink font-medium">
               Cost-basis figures are pending a recompute.

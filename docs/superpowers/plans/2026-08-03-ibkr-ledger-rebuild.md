@@ -52,7 +52,7 @@
   4. `/Users/Yitzi/Desktop/Trading - Local/Trading/2026-02 IBKR Activity Statement.csv`
   5. `/Users/Yitzi/Desktop/Trading - Local/Trading/IBKR march 26.csv`
   6. `/Users/Yitzi/Desktop/Trading - Local/july 2026 IBKR statement.csv` (Jul 1–31 2026)
-- Genuine shorts are real and correct (AAL −1000 broker-confirmed): after rebuild, residual negative holding periods should correspond ONLY to broker-confirmed short round-trips.
+- Genuine shorts are real and correct (AAL broker-confirmed): after rebuild, residual negative holding periods should correspond ONLY to broker-confirmed short round-trips.
 
 ---
 
@@ -248,7 +248,7 @@ Expected: PASS.
 - [ ] **Step 5: Full suite**
 
 Run: `npx vitest run`
-Expected: green. (Watch for Vanguard-side surprises: Vanguard TRANSFER_IN rows exist — e.g. VFITX 0.905 sh on 2024-01-02 — and will now create small lots. That is CORRECT behavior — those shares really arrived — but if a Vanguard reconciliation test asserts exact lot counts it may need its fixture updated, with a comment explaining the semantic change.)
+Expected: green. (Watch for Vanguard-side surprises: Vanguard TRANSFER_IN rows exist — e.g. a fractional fund-share row in early 2024 — and will now create small lots. That is CORRECT behavior — those shares really arrived — but if a Vanguard reconciliation test asserts exact lot counts it may need its fixture updated, with a comment explaining the semantic change.)
 
 ---
 

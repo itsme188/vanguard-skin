@@ -1,5 +1,7 @@
 "use client";
 
+import { GOLD_FILL_CLASSES } from "@/app/dashboard/components/chip-tone-text";
+
 export default function DashboardError({
   error,
   reset,
@@ -33,7 +35,7 @@ export default function DashboardError({
         </p>
         <button
           onClick={reset}
-          className="px-5 py-2.5 rounded-lg bg-gold text-canvas font-medium text-sm hover:brightness-110 transition-[filter,scale] active:scale-[0.96]"
+          className={`px-5 py-2.5 rounded-lg ${GOLD_FILL_CLASSES} font-medium text-sm hover:brightness-110 transition-[filter,scale] active:scale-[0.96]`}
         >
           Try Again
         </button>

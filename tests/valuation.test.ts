@@ -10,19 +10,19 @@ describe("valuation FX", () => {
   });
 
   it("applies usdPerUnit for a foreign price", () => {
-    // 402340.KS: 10 sh * ₩1,731,000 * 0.000734 ≈ $12,705.54
-    expect(marketValue(10, 1_731_000, "Stock", 1, 0.000734)).toBeCloseTo(12705.54, 1);
+    // 000000.KS: 10 sh * ₩1,500,000 * 0.000734 ≈ $11,010.00
+    expect(marketValue(10, 1_500_000, "Stock", 1, 0.000734)).toBeCloseTo(11010, 1);
   });
 
   it("SQL: fx defaults to 1 (byte-identical) and multiplies when provided", () => {
     const noFx = adjustedMarketValueSQL("q", "p", "t", "m");
     const db = new Database(":memory:");
     db.exec("CREATE TABLE x (q REAL, p REAL, t TEXT, m REAL, fx REAL)");
-    db.prepare("INSERT INTO x VALUES (10, 1731000, 'Stock', 1, 0.000734)").run();
+    db.prepare("INSERT INTO x VALUES (10, 1500000, 'Stock', 1, 0.000734)").run();
     const usd = adjustedMarketValueSQL("q", "p", "t", "m", "fx");
     const rowUsd = db.prepare(`SELECT ${usd} AS v FROM x`).get() as { v: number };
-    expect(rowUsd.v).toBeCloseTo(12705.54, 1);
+    expect(rowUsd.v).toBeCloseTo(11010, 1);
     const rowNoFx = db.prepare(`SELECT ${noFx} AS v FROM x`).get() as { v: number };
-    expect(rowNoFx.v).toBe(1731000 * 10);
+    expect(rowNoFx.v).toBe(1500000 * 10);
   });
 });

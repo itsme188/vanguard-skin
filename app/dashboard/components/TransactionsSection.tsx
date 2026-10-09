@@ -9,7 +9,7 @@ import { SortableHeader } from "./SortableHeader";
 import { compareValues, useSortParam, type SortDir } from "@/lib/hooks/useSortParam";
 import { Section } from "./Section";
 import { ScrollFade } from "./ScrollFade";
-import { Chip, type ChipTone } from "./Chip";
+import { Chip, type ChipTone, CHIP_TONE_CLASSES } from "./Chip";
 import { transactionDirectionLabel, transactionDisplayType } from "@/lib/transactions/direction-label";
 
 type SortField = "trade_date" | "type" | "account_name" | "quantity" | "price_per_share" | "amount";
@@ -293,7 +293,7 @@ function FilterPill({
       onClick={onClick}
       className={`px-2.5 py-1 text-[11px] rounded transition-colors ${
         active
-          ? "bg-gold/20 text-gold-ink font-medium"
+          ? `${CHIP_TONE_CLASSES.gold} font-medium`
           : "text-ink-faint hover:text-ink hover:bg-raised"
       }`}
     >

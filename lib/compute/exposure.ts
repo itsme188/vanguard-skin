@@ -24,6 +24,7 @@ import { computePortfolioGreeks } from "@/lib/compute/options-greeks";
 import { DEFAULT_OPTION_ELASTICITY } from "@/lib/compute/scenario-recipes";
 import { adjustedMarketValueSQL } from "@/lib/valuation";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
+import { accountScopeCondition } from "@/lib/queries/account-scope-sql";
 import { issuerSiblings } from "@/lib/securities/issuer-family";
 import { liveOptionExpirationSql } from "@/lib/compute/option-expiry";
 import { todayET } from "@/lib/calendar/date-utils";
@@ -38,8 +39,9 @@ export function getOptionExposureMap(
   accountIds?: number[]
 ): Map<number, number> {
   const map = new Map<number, number>();
-  const scopes: Array<number | undefined> =
-    accountIds && accountIds.length > 0 ? accountIds : [undefined];
+  // `undefined` is every account (one whole-book pass); a defined empty
+  // list is NO accounts: no pass, an empty map.
+  const scopes: Array<number | undefined> = accountIds === undefined ? [undefined] : accountIds;
 
   for (const accountId of scopes) {
     const greeks = computePortfolioGreeks(db, accountId ? { accountId } : undefined);
@@ -110,9 +112,11 @@ export function getPortfolioExposureSummary(
     liveOptionExpirationSql("s", today),
   ];
   const params: (string | number)[] = [today];
-  if (accountIds && accountIds.length > 0) {
-    conditions.push(`h.account_id IN (${accountIds.map(() => "?").join(",")})`);
-    params.push(...accountIds);
+  // `undefined` is every account; a defined empty list is NO accounts.
+  const scope = accountScopeCondition(accountIds);
+  if (scope.condition !== null) {
+    conditions.push(scope.condition);
+    params.push(...scope.params);
   }
 
   const rows = db

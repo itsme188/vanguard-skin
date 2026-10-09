@@ -6,6 +6,7 @@ import {
   TerminalTag,
   KpiCell,
 } from "../../components/TerminalSection";
+import { DARK_MODULE_DIM_TEXT } from "../../components/dark-module-text";
 import {
   FACTOR_COLUMNS,
   FACTOR_LABELS,
@@ -363,7 +364,7 @@ function BlockLabel({ children }: { children: React.ReactNode }) {
         fontSize: "10px",
         letterSpacing: "0.22em",
         textTransform: "uppercase",
-        color: "#666",
+        color: DARK_MODULE_DIM_TEXT,
         marginBottom: "10px",
       }}
     >

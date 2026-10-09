@@ -16,6 +16,7 @@
  *     feedback (never a silent no-op).
  */
 
+import { CHIP_TONE_CLASSES } from "@/app/dashboard/components/Chip";
 import { useEffect, useState } from "react";
 import apiFetch from "@/lib/http/apiFetch";
 
@@ -246,7 +247,7 @@ export function PlaidSection() {
           href={connectHref}
           target="_blank"
           rel="noreferrer"
-          className="px-2.5 py-1 text-[11px] font-medium rounded bg-gold/20 text-gold-ink hover:bg-gold/30 transition-colors whitespace-nowrap"
+          className={`px-2.5 py-1 text-[11px] font-medium rounded ${CHIP_TONE_CLASSES.gold} hover:bg-gold/30 transition-colors whitespace-nowrap`}
         >
           {connectLabel}
         </a>

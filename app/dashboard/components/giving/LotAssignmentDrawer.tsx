@@ -1,5 +1,6 @@
 "use client";
 
+import { GOLD_FILL_CLASSES } from "@/app/dashboard/components/chip-tone-text";
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { OpenLotForDonation } from "@/lib/queries/giving-view";
@@ -438,7 +439,7 @@ export function LotAssignmentDrawer({
             type="button"
             onClick={handleSave}
             disabled={flowActive || !lots || lots.length === 0 || overAssigned.length > 0}
-            className="px-4 py-2 rounded-lg bg-gold text-canvas text-sm font-medium hover:brightness-110 disabled:opacity-50 transition-[filter,scale] active:scale-[0.96] focus-ring"
+            className={`px-4 py-2 rounded-lg ${GOLD_FILL_CLASSES} text-sm font-medium hover:brightness-110 disabled:opacity-50 transition-[filter,scale] active:scale-[0.96] focus-ring`}
           >
             Save
           </button>

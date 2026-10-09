@@ -65,7 +65,7 @@ function daysFromNow(days: number): string {
 describe("computeDefenseAnalysis", () => {
   let accountA: number;
   let accountB: number;
-  let msftId: number;
+  let zzaId: number;
 
   beforeEach(() => {
     db = new Database(":memory:");
@@ -78,143 +78,143 @@ describe("computeDefenseAnalysis", () => {
     const expiry180 = daysFromNow(180);
     const expiryTag = expiry180.replace(/-/g, "").slice(2);
 
-    // 100 sh MSFT @ $500
-    msftId = seedSecurity("MSFT", { type: "Stock", sector: "Technology", geography: "US" });
-    seedHolding(accountA, msftId, 100);
-    seedPrice(msftId, 500);
+    // 100 sh ZZA @ $500
+    zzaId = seedSecurity("ZZA", { type: "Stock", sector: "Technology", geography: "US" });
+    seedHolding(accountA, zzaId, 100);
+    seedPrice(zzaId, 500);
 
-    // 2 MSFT puts, strike 400, expiry +180d, multiplier 100, option price $10
-    const msftPutId = seedSecurity(`MSFT  ${expiryTag}P00400000`, {
+    // 2 ZZA puts, strike 400, expiry +180d, multiplier 100, option price $10
+    const zzaPutId = seedSecurity(`ZZA   ${expiryTag}P00400000`, {
       type: "Option",
-      underlyingSymbol: "MSFT",
+      underlyingSymbol: "ZZA",
       optionType: "PUT",
       strikePrice: 400,
       expirationDate: expiry180,
       multiplier: 100,
     });
-    seedHolding(accountA, msftPutId, 2);
-    seedPrice(msftPutId, 10);
+    seedHolding(accountA, zzaPutId, 2);
+    seedPrice(zzaPutId, 10);
 
-    // MTUM: no shares held, just a price for the option's underlying valuation
-    const mtumId = seedSecurity("MTUM", { type: "ETF" });
-    seedPrice(mtumId, 220);
+    // ZZM: no shares held, just a price for the option's underlying valuation
+    const zzmId = seedSecurity("ZZM", { type: "ETF" });
+    seedPrice(zzmId, 220);
 
-    // 3 MTUM puts, strike 200, expiry +180d, multiplier 100
-    const mtumPutId = seedSecurity(`MTUM  ${expiryTag}P00200000`, {
+    // 4 ZZM puts, strike 200, expiry +180d, multiplier 100
+    const zzmPutId = seedSecurity(`ZZM   ${expiryTag}P00200000`, {
       type: "Option",
-      underlyingSymbol: "MTUM",
+      underlyingSymbol: "ZZM",
       optionType: "PUT",
       strikePrice: 200,
       expirationDate: expiry180,
       multiplier: 100,
     });
-    seedHolding(accountA, mtumPutId, 3);
-    seedPrice(mtumPutId, 5);
+    seedHolding(accountA, zzmPutId, 4);
+    seedPrice(zzmPutId, 5);
 
-    // -80 sh PAYC in account B (naked short, no options)
-    const paycId = seedSecurity("PAYC", { type: "Stock" });
-    seedHolding(accountB, paycId, -80);
-    seedPrice(paycId, 200);
+    // -60 sh ZZB in account B (naked short, no options)
+    const zzbId = seedSecurity("ZZB", { type: "Stock" });
+    seedHolding(accountB, zzbId, -60);
+    seedPrice(zzbId, 200);
   });
 
-  it("builds MSFT hedged_long, MTUM proxy via assumed beta, and PAYC naked_short, with a positive protection ratio", () => {
+  it("builds ZZA hedged_long, ZZM proxy via assumed beta, and ZZB naked_short, with a positive protection ratio", () => {
     const result = computeDefenseAnalysis(db);
 
     expect(result.summary.protectionRatio).not.toBeNull();
     expect(result.summary.protectionRatio!).toBeGreaterThan(0);
 
-    const msftPair = result.pairs.find((p) => p.underlying === "MSFT");
-    expect(msftPair).toBeDefined();
-    expect(msftPair!.classification).toBe("hedged_long");
+    const zzaPair = result.pairs.find((p) => p.underlying === "ZZA");
+    expect(zzaPair).toBeDefined();
+    expect(zzaPair!.classification).toBe("hedged_long");
 
-    const mtumProxy = result.proxies.find((p) => p.underlying === "MTUM");
-    expect(mtumProxy).toBeDefined();
-    expect(mtumProxy!.route).toBe("beta");
-    expect(mtumProxy!.betaSource).toBe("assumed");
+    const zzmProxy = result.proxies.find((p) => p.underlying === "ZZM");
+    expect(zzmProxy).toBeDefined();
+    expect(zzmProxy!.route).toBe("beta");
+    expect(zzmProxy!.betaSource).toBe("assumed");
     expect(
-      result.diagnostics.some((d) => d.kind === "assumed_beta" && d.symbol === "MTUM")
+      result.diagnostics.some((d) => d.kind === "assumed_beta" && d.symbol === "ZZM")
     ).toBe(true);
 
-    const paycBet = result.standaloneBets.find((b) => b.underlying === "PAYC");
-    expect(paycBet).toBeDefined();
-    expect(paycBet!.kind).toBe("naked_short");
+    const zzbBet = result.standaloneBets.find((b) => b.underlying === "ZZB");
+    expect(zzbBet).toBeDefined();
+    expect(zzbBet!.kind).toBe("naked_short");
   });
 
-  it("scoping to account A excludes PAYC from standaloneBets and from summary.shortExposure", () => {
+  it("scoping to account A excludes ZZB from standaloneBets and from summary.shortExposure", () => {
     const all = computeDefenseAnalysis(db);
     const scoped = computeDefenseAnalysis(db, [accountA]);
 
-    expect(all.standaloneBets.find((b) => b.underlying === "PAYC")).toBeDefined();
-    expect(scoped.standaloneBets.find((b) => b.underlying === "PAYC")).toBeUndefined();
+    expect(all.standaloneBets.find((b) => b.underlying === "ZZB")).toBeDefined();
+    expect(scoped.standaloneBets.find((b) => b.underlying === "ZZB")).toBeUndefined();
 
-    // Excluding PAYC's negative exposure makes shortExposure less negative (i.e. greater).
+    // Excluding ZZB's negative exposure makes shortExposure less negative (i.e. greater).
     expect(scoped.summary.shortExposure).toBeGreaterThan(all.summary.shortExposure);
   });
 
-  it("scales MSFT's core exposure by the FX rate when its currency is foreign", () => {
+  it("scales ZZA's core exposure by the FX rate when its currency is foreign", () => {
     const before = computeDefenseAnalysis(db);
-    const msftPairBefore = before.pairs.find((p) => p.underlying === "MSFT")!;
-    expect(msftPairBefore.coreExposure).toBeCloseTo(50000, 2);
+    const zzaPairBefore = before.pairs.find((p) => p.underlying === "ZZA")!;
+    expect(zzaPairBefore.coreExposure).toBeCloseTo(50000, 2);
 
-    db.prepare("UPDATE securities SET currency = 'KRW' WHERE id = ?").run(msftId);
+    db.prepare("UPDATE securities SET currency = 'KRW' WHERE id = ?").run(zzaId);
     db.prepare(
       "INSERT INTO fx_rates (currency, usd_per_unit, as_of, source) VALUES ('KRW', 0.0007, '2026-07-01', 'test')"
     ).run();
 
     const after = computeDefenseAnalysis(db);
-    const msftPairAfter = after.pairs.find((p) => p.underlying === "MSFT")!;
+    const zzaPairAfter = after.pairs.find((p) => p.underlying === "ZZA")!;
 
-    expect(msftPairAfter.coreExposure).toBeCloseTo(msftPairBefore.coreExposure * 0.0007, 2);
+    expect(zzaPairAfter.coreExposure).toBeCloseTo(zzaPairBefore.coreExposure * 0.0007, 2);
   });
 
   it("excludes the opposing CALL from an etf_negative_stack candidate's hedge-book rows and never over-scores its credited notional", () => {
-    // Short 100 sh IWM (ETF) + 3 protective puts (same-sign as the short) +
+    // Short 100 sh ZZQ (ETF) + 3 protective puts (same-sign as the short) +
     // 1 opposing CALL that partially offsets the short — the CALL must not
     // get a hedgeScores row, and the sum of what DOES get scored for this
     // candidate must not exceed the credited protectiveNotional.
     const expiry180 = daysFromNow(180);
     const expiryTag = expiry180.replace(/-/g, "").slice(2);
 
-    const iwmId = seedSecurity("IWM", { type: "ETF" });
-    seedHolding(accountA, iwmId, -100);
-    seedPrice(iwmId, 220);
+    const zzqId = seedSecurity("ZZQ", { type: "ETF" });
+    seedHolding(accountA, zzqId, -100);
+    seedPrice(zzqId, 220);
 
-    const iwmPutId = seedSecurity(`IWM   ${expiryTag}P00200000`, {
+    const zzqPutId = seedSecurity(`ZZQ   ${expiryTag}P00200000`, {
       type: "Option",
-      underlyingSymbol: "IWM",
+      underlyingSymbol: "ZZQ",
       optionType: "PUT",
       strikePrice: 200,
       expirationDate: expiry180,
       multiplier: 100,
     });
-    seedHolding(accountA, iwmPutId, 3);
-    seedPrice(iwmPutId, 5);
+    seedHolding(accountA, zzqPutId, 3);
+    seedPrice(zzqPutId, 5);
 
-    const iwmCallId = seedSecurity(`IWM   ${expiryTag}C00230000`, {
+    const zzqCallId = seedSecurity(`ZZQ   ${expiryTag}C00230000`, {
       type: "Option",
-      underlyingSymbol: "IWM",
+      underlyingSymbol: "ZZQ",
       optionType: "CALL",
       strikePrice: 230,
       expirationDate: expiry180,
       multiplier: 100,
     });
-    seedHolding(accountA, iwmCallId, 1);
-    seedPrice(iwmCallId, 4);
+    seedHolding(accountA, zzqCallId, 1);
+    seedPrice(zzqCallId, 4);
 
     const result = computeDefenseAnalysis(db, [accountA]);
 
-    expect(result.pairs.find((p) => p.underlying === "IWM")).toBeUndefined();
-    const proxy = result.proxies.find((p) => p.underlying === "IWM");
+    expect(result.pairs.find((p) => p.underlying === "ZZQ")).toBeUndefined();
+    const proxy = result.proxies.find((p) => p.underlying === "ZZQ");
     expect(proxy).toBeDefined();
 
     // The call never earns a hedge-book row.
-    expect(result.hedgeScores.find((h) => h.securityId === iwmCallId)).toBeUndefined();
+    expect(result.hedgeScores.find((h) => h.securityId === zzqCallId)).toBeUndefined();
 
     // Everything scored for this candidate (core short + puts) sums to no
     // more than the credited protectiveNotional (the call's offset already
     // reduced what's credited via coreRemainder).
     const scoredForCandidate = result.hedgeScores
-      .filter((h) => h.underlying === "IWM")
+      .filter((h) => h.underlying === "ZZQ")
       .reduce((a, h) => a + h.protectedNotional, 0);
     expect(scoredForCandidate).toBeLessThanOrEqual(proxy!.protectiveNotional + 0.01);
   });
@@ -254,7 +254,7 @@ describe("computeDefenseAnalysis — held-sibling display labels", () => {
   it("labels a BRK/B holding as BRK/B, never the internal family key BRK A", () => {
     const acct = seedAccount("Taxable");
     const brkb = seedSecurity("BRK/B", { sector: "Financials" });
-    seedHolding(acct, brkb, 116);
+    seedHolding(acct, brkb, 100);
     seedPrice(brkb, 500);
 
     const result = computeDefenseAnalysis(db);
@@ -305,11 +305,11 @@ describe("computeDefenseAnalysis — expired option exclusion", () => {
   // pull used `date('now', '-1 day')`, a slip copied from
   // purgeExpiredOptionHoldings's DELETE grace window (lib/mutations/expired-
   // options.ts) into what should have been a strict "expiring today or
-  // later" read-time filter. That let a QQQ put that expired yesterday still
+  // later" read-time filter. That let a put that expired yesterday still
   // render "Runway -1d" / an "expiring" badge and still count toward
   // PROTECTION RATIO. See lib/compute/option-expiry.ts.
   let acct: number;
-  let msft: number;
+  let zza: number;
 
   beforeEach(() => {
     db = new Database(":memory:");
@@ -317,17 +317,17 @@ describe("computeDefenseAnalysis — expired option exclusion", () => {
     runMigrations(db);
 
     acct = seedAccount("Taxable");
-    msft = seedSecurity("MSFT", { type: "Stock", sector: "Technology", geography: "US" });
-    seedHolding(acct, msft, 100);
-    seedPrice(msft, 500);
+    zza = seedSecurity("ZZA", { type: "Stock", sector: "Technology", geography: "US" });
+    seedHolding(acct, zza, 100);
+    seedPrice(zza, 500);
   });
 
-  function seedMsftPut(expirationDate: string, strike = 400) {
+  function seedZzaPut(expirationDate: string, strike = 400) {
     const tag = expirationDate.replace(/-/g, "").slice(2);
     const occStrike = String(strike * 1000).padStart(8, "0");
-    const putId = seedSecurity(`MSFT  ${tag}P${occStrike}`, {
+    const putId = seedSecurity(`ZZA   ${tag}P${occStrike}`, {
       type: "Option",
-      underlyingSymbol: "MSFT",
+      underlyingSymbol: "ZZA",
       optionType: "PUT",
       strikePrice: strike,
       expirationDate,
@@ -350,11 +350,11 @@ describe("computeDefenseAnalysis — expired option exclusion", () => {
     const today = todayET();
     vi.useFakeTimers({ now: new Date(`${today}T12:00:00-05:00`), toFake: ["Date"] });
     try {
-      const putId = seedMsftPut(today, 520);
+      const putId = seedZzaPut(today, 520);
 
       const result = computeDefenseAnalysis(db, [acct]);
 
-      const pair = result.pairs.find((p) => p.underlying === "MSFT");
+      const pair = result.pairs.find((p) => p.underlying === "ZZA");
       expect(pair?.classification).toBe("hedged_long");
       expect(result.summary.protectionRatio).toBeGreaterThan(0);
 
@@ -369,12 +369,12 @@ describe("computeDefenseAnalysis — expired option exclusion", () => {
 
   it("excludes an option that expired YESTERDAY from pairs, hedgeScores, and protection ratio", () => {
     const yesterday = addDays(todayET(), -1);
-    const putId = seedMsftPut(yesterday);
+    const putId = seedZzaPut(yesterday);
 
     const result = computeDefenseAnalysis(db, [acct]);
 
-    // No opposing option survives the filter — MSFT's core reverts to unhedged.
-    const pair = result.pairs.find((p) => p.underlying === "MSFT");
+    // No opposing option survives the filter — ZZA's core reverts to unhedged.
+    const pair = result.pairs.find((p) => p.underlying === "ZZA");
     expect(pair?.classification).toBe("unhedged");
 
     // The expired put must never surface in the hedge book...
@@ -392,12 +392,12 @@ describe("computeDefenseAnalysis — expired option exclusion", () => {
   });
 
   it("a non-option holding (no expiration_date) is unaffected by the expiry filter", () => {
-    // MSFT itself carries no expiration_date; confirm the IS NULL branch of
+    // ZZA itself carries no expiration_date; confirm the IS NULL branch of
     // the shared predicate keeps it regardless of any expired option noise.
-    seedMsftPut(addDays(todayET(), -1)); // dead weight, should not affect MSFT core
+    seedZzaPut(addDays(todayET(), -1)); // dead weight, should not affect ZZA core
 
     const result = computeDefenseAnalysis(db, [acct]);
-    const pair = result.pairs.find((p) => p.underlying === "MSFT");
+    const pair = result.pairs.find((p) => p.underlying === "ZZA");
     expect(pair).toBeDefined();
     expect(pair!.coreExposure).toBeCloseTo(50000, 2);
   });

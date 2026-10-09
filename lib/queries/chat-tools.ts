@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { easternDaySql, unmaturedSecuritySql } from "@/lib/db/eastern-day-sql";
 import { adjustedMarketValueSQL } from "@/lib/valuation";
 import { todayET, addDays } from "@/lib/calendar/date-utils";
 import { SECTOR_OWN_BUCKET_SQL } from "@/lib/queries/analysis";
@@ -270,7 +271,7 @@ export function getHoldingsForChat(
       LEFT JOIN fx_rates fx ON fx.currency = s.currency
       LEFT JOIN latest_prices lp ON lp.security_id = h.security_id
       WHERE ${latestHoldingsPredicate({ includeShorts })}
-      AND (s.maturity_date IS NULL OR s.maturity_date >= date('now'))
+      AND ${unmaturedSecuritySql("s")}
       AND ${liveOptionSql}`
     )
     .get() as { total: number };
@@ -280,7 +281,7 @@ export function getHoldingsForChat(
   // Build filtered query
   const conditions: string[] = [
     latestHoldingsPredicate({ includeShorts }),
-    "(s.maturity_date IS NULL OR s.maturity_date >= date('now'))",
+    unmaturedSecuritySql("s"),
     liveOptionSql,
   ];
   const params: (string | number)[] = [];
@@ -351,9 +352,17 @@ export function getHoldingsForChat(
         THEN ${grossDenominatorMvExpr} * 100.0 / ${totalPortfolioValue}
         ELSE NULL END AS position_weight_pct,
       s.maturity_date,
+      -- Whole calendar days from the Eastern day to the maturity day (0 on
+      -- the maturity day itself). Never julianday('now'): that is a UTC
+      -- instant, which rolled to the next day at 20:00 Eastern and, as a
+      -- fraction, printed one day short all day.
       CASE WHEN s.maturity_date IS NOT NULL
-        AND julianday(s.maturity_date) - julianday('now') BETWEEN 0 AND 90
-        THEN 'Matures in ' || CAST(julianday(s.maturity_date) - julianday('now') AS INTEGER) || ' days'
+        AND julianday(s.maturity_date) - julianday(${easternDaySql()}) BETWEEN 0 AND 90
+        THEN CASE CAST(julianday(s.maturity_date) - julianday(${easternDaySql()}) AS INTEGER)
+          WHEN 0 THEN 'Matures today'
+          WHEN 1 THEN 'Matures in 1 day'
+          ELSE 'Matures in ' || CAST(julianday(s.maturity_date) - julianday(${easternDaySql()}) AS INTEGER) || ' days'
+        END
         ELSE NULL END AS maturity_note
     FROM holdings h
     JOIN accounts a ON a.id = h.account_id
@@ -448,7 +457,7 @@ export function getAllocationBreakdown(
 
   const conditions: string[] = [
     latestHoldingsPredicate({ includeShorts: false }),
-    "(s.maturity_date IS NULL OR s.maturity_date >= date('now'))",
+    unmaturedSecuritySql("s"),
   ];
   const params: (string | number)[] = [];
 

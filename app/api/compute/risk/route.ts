@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { computeRiskMetrics, type PortfolioRiskMetrics } from "@/lib/compute/risk";
 import { resolveScope } from "@/lib/queries/accounts";
-import { weekAgo } from "@/lib/calendar/date-utils";
+import { todayET, weekAgo } from "@/lib/calendar/date-utils";
 
 /**
  * Compute per-metric numeric delta between two risk snapshots (now vs week-ago).
@@ -65,8 +65,9 @@ export async function GET(request: NextRequest) {
       ? [Number(accountIdParam)]
       : resolveScope(db, scope);
 
-    const today = new Date().toISOString().slice(0, 10);
-    const wkAgo = weekAgo(today);
+    // Eastern day: a UTC slice is already tomorrow after 20:00 Eastern, which
+    // moved the comparison point a day forward for an evening read.
+    const wkAgo = weekAgo(todayET());
 
     const now = computeRiskMetrics(db, { startDate, endDate, accountIds });
     const past = computeRiskMetrics(db, { startDate, endDate, accountIds, asOfDate: wkAgo });

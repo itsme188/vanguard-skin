@@ -1,5 +1,6 @@
 export const dynamic = "force-dynamic";
 
+import { CHIP_TONE_CLASSES } from "@/app/dashboard/components/Chip";
 import Link from "next/link";
 import { db } from "@/lib/db";
 import { todayET } from "@/lib/calendar/date-utils";
@@ -217,7 +218,7 @@ export default async function TaxLotsPage(props: {
             <div className="w-px h-5 bg-edge" />
             <Link
               href={clearFilterHref}
-              className="inline-flex items-center gap-1.5 rounded-full bg-gold/20 text-gold-ink px-3 py-1.5 text-sm font-medium hover:brightness-110 transition-colors"
+              className={`inline-flex items-center gap-1.5 rounded-full ${CHIP_TONE_CLASSES.gold} px-3 py-1.5 text-sm font-medium hover:brightness-110 transition-colors`}
               aria-label={`Clear filter — showing only ${filterSecurity.symbol}`}
               title="Clear filter"
             >

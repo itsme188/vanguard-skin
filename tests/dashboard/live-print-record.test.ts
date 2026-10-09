@@ -185,7 +185,9 @@ describe("PrintRecordView", () => {
     expect(html).not.toContain("Print is live");
     expect(html).not.toContain("IR page");
     // The promote control is owned by the live sheet; here it can never fire.
-    const promote = html.slice(anchorIndex(html, "Promote EPS+Rev") - 400, anchorIndex(html, "Promote EPS+Rev"));
+    // 800 characters back: the button's class attribute carries the checked
+    // Chip text colours, which are longer than the plain token was.
+    const promote = html.slice(anchorIndex(html, "Promote EPS+Rev") - 800, anchorIndex(html, "Promote EPS+Rev"));
     expect(promote.slice(promote.lastIndexOf("<button"))).toContain("disabled");
   });
 

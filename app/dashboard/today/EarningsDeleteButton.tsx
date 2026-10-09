@@ -1,5 +1,6 @@
 "use client";
 
+import { CHIP_TONE_TEXT, DANGER_FILL_CLASSES, GOLD_FILL_CLASSES } from "@/app/dashboard/components/chip-tone-text";
 import { useEffect, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { useToast } from "../components/Toast";
@@ -194,7 +195,7 @@ export function EarningsDeleteButton({
         type="button"
         onClick={() => void handleClick()}
         disabled={deleting}
-        className="relative text-[10px] font-mono px-1.5 py-0.5 rounded text-down bg-down/15 hover:bg-down/25 disabled:opacity-50 cursor-pointer pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-0.5"
+        className={`relative text-[10px] font-mono px-1.5 py-0.5 rounded ${CHIP_TONE_TEXT.down} bg-down/15 hover:bg-down/25 disabled:opacity-50 cursor-pointer pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-0.5`}
         title={
           isManual
             ? `Remove this manually-added earnings event${label}`
@@ -224,7 +225,7 @@ export function EarningsDeleteButton({
               type="button"
               onClick={() => void remove(true)}
               disabled={deleting}
-              className="px-4 py-2 rounded-lg text-sm font-medium bg-gold text-canvas hover:brightness-110 focus-ring disabled:opacity-50"
+              className={`px-4 py-2 rounded-lg text-sm font-medium ${GOLD_FILL_CLASSES} hover:brightness-110 focus-ring disabled:opacity-50`}
             >
               {copy.restoreLabel}
             </button>
@@ -232,7 +233,7 @@ export function EarningsDeleteButton({
               type="button"
               onClick={() => void remove(false)}
               disabled={deleting}
-              className="px-4 py-2 rounded-lg text-sm font-medium bg-down/90 text-white hover:bg-down focus-ring disabled:opacity-50"
+              className={`px-4 py-2 rounded-lg text-sm font-medium ${DANGER_FILL_CLASSES} hover:brightness-90 focus-ring disabled:opacity-50`}
             >
               {copy.removeOnlyLabel}
             </button>

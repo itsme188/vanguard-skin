@@ -193,8 +193,12 @@ describe("PerformanceView draws the curve for the whole scope, from the floor", 
     );
     expect(flat).toContain("const curveSeriesStart = curveFloorDate(effectiveStart, curveFloor);");
     expect(flat).toContain(
-      "getDailyValuationsForAccounts(db, scopeAccountIds ?? [], { startDate: curveSeriesStart, endDate: dailyEnd, fullCoverageOnly: true, })",
+      "getDailyValuationsForAccounts(db, scopeAccountIds, { startDate: curveSeriesStart, endDate: dailyEnd, fullCoverageOnly: true, })",
     );
+    // Scope rule (2026-10-09): the scope is passed straight through, with
+    // undefined = every account. It is never coerced to an empty list, which
+    // now means NO accounts.
+    expect(flat).not.toContain("scopeAccountIds ?? []");
     // The single-account series (a first-id collapse for a wider scope) is gone.
     expect(flat).not.toContain("getDailyValuationsByAccount");
   });

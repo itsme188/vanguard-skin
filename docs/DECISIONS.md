@@ -1003,3 +1003,83 @@ Thirteen more commits under the same authority, merged the same night. One Codex
 **Not seen in a browser:** the rotate-credential dialog (packaged app only), the corporate-action undo dialog (no hand-entered action on file), the vendor-row removal wording and every Hub dialog (no earnings rows this week on the sandbox), the staleness notice.
 
 **Ledger hygiene noticed, not changed:** 491 older rows are marked fixed with no fix commit; two pairs of duplicate ids; nine fix-commit values are free text.
+
+## 2026-10-09 (after midnight) — Second overnight sprint, fourth wave: no real-looking figures in committed docs or tests
+
+Three commits, merged the same night, plus work on the held pull request.
+
+**Built.**
+- **Committed documents:** sixteen files had real-looking balances, flows, position sizes and lot figures rewritten to direction-only wording; two plans had real tickers with real-looking sizes swapped for synthetic names. Public market data, clearly synthetic examples and plain counts were left.
+- **Committed tests:** 64 test files and 3 fixtures had real-looking position data replaced with invented data (a bond lot, shorts and options on real tickers, a foreign listing and its figures, account snapshots, monthly returns, split fills, a mock statement fixture). Every dependent expected value was recomputed by hand. The assertion count went up, no test was removed, none is skipped. Nothing under the real-data folders was opened: the judgement was by shape.
+- **Code:** a defined empty account list means no accounts in the risk path, the concentration universe, the factor heatmap, flows and seam dates (a digest over every reader shows no change for any real scope). The Significant Moves coverage line counts only the types the engine checks.
+- **PR #107 (still held, not merged):** brought up to date with `main`; a macro actual never prints as negative zero; a refused macro actual shows a quiet line on its card; the three migrations were rehearsed on a copy of the live database with every check clean (in the pull request description).
+
+**Investigated and not built.** Retiring the "duplicate" of a monthly release that appears on two dates. The stored data shows the source lists more than one real date per month for several monthly releases, some with different actuals, so the rule would delete real scheduled releases and flap between syncs. It needs a per-release decision and a check against the live source.
+
+**For the owner: real-looking data that is still in committed SOURCE files.** These were found by the test sweep and NOT edited, because they are in the protected import pipeline or are live constants in repair scripts. The repository is public.
+- `lib/import/parsers/vanguard-export.ts` and `lib/import/parsers/vanguard-cost-basis.ts` hold a full account number as a live lookup key that maps to an account name; `lib/import/parsers/vanguard-pdf.ts` has a comment example whose last digits match it. This is the most serious one. The fix is to move the mapping to a gitignored config or the settings table; it is an edit inside the import pipeline, so it needs the owner's go-ahead, and the number is also in git history.
+- `scripts/repair-acats-opening-lots.ts` and `scripts/repair-mistyped-option-legs.ts` hold real lots and option legs as live constants (the project rule says repair constants live in gitignored `data/repair-configs/`); their two test files still mirror them.
+- Comment examples with a real ticker and real fill sizes or a real amount: `lib/import/parsers/canonical-csv.ts`, `lib/import/parsers/ibkr-activity.ts`, `scripts/repair-split-basis-audit.ts`, `scripts/repair-buy-sign-post-april.ts`.
+- `scripts/generate-pdf-fixture.ts` regenerates the mock statement fixture from a real statement, which would put real figures back into the committed fixture.
+- Git history still holds every original figure from the documents and tests rewritten tonight.
+- The archived to-do file (`docs/plans/archive/TODO-closed-2026-07-08.md`) is a long narrative of real-data repairs; a pattern sweep will not have caught every prose mention. It probably belongs in the private folder.
+
+## 2026-10-09 (about 01:00) — Second overnight sprint, fifth wave: Eastern dates, contrast from one table, empty account lists
+
+Seven commits. One Codex review (one high finding, answered by deploy timing, see below), one review by an agent that ran the code ("ready", with the same timing condition), a browser pass in both themes (one regression found and fixed).
+
+**Decisions taken. The owner should confirm or reverse each.**
+1. **The broker sync and the streaming price flush stamp the Eastern day** on live holdings rows, their source keys, price rows and the live snapshot row. They used the UTC day, so an evening sync wrote tomorrow's date while the snapshot writer and the Web API writer already wrote the Eastern day. All three writers now agree.
+   - **DEPLOY RULE for this one change: it must first go live between 00:00 and 20:00 Eastern.** If the new build starts on an evening when the old build has already synced after 20:00, the old tomorrow-dated rows outrank the new rows for that one evening: a sold position still shows, a position opened that evening is hidden, and a level cross is alerted late. It heals at the first sync of the next Eastern day and leaves no wrong stored figure. The switch happens once. A cleanup that would make it safe at any hour is a delete on live data and was not built.
+2. **Fifteen other "today" values use the Eastern day**: chart range cut-offs, the risk week-ago comparison, chat tool default windows, the level narrative cache day, the regression lookback, and the level price-freshness window. One visible effect: after 20:00 Eastern a level whose last price is four Eastern days old is now scanned, as it already was during the day. A repo test fails on a new UTC day cut and lists every allowed one with its reason.
+3. **Small coloured text on a tint takes its colour from the shared chip table everywhere.** A scan found 145 hand-written pairs in 59 files below 4.5 to 1 in one theme or both; 141 moved, 4 are allowlisted. Only colour classes changed. Visible effect, mostly in the light theme: green, red and gold badge text is darker, and three buttons on Alerts change from emerald to the app's green. It is one commit (`48bc1e1d`) and easy to revert. Two import-screen files had colour classes changed only.
+4. **The last series readers treat a defined empty account list as no accounts**, and the Performance view passes its scope straight through. A digest captured before the change still matches, and the reviewer's own comparison against main's code on its own fixture was identical: no figure moves.
+
+**Found by the checks and fixed before the merge.**
+- The type-check caught a component that used the colour table without importing it (it would have crashed the Corporate Actions section). Source-scan tests cannot see that; the wave-level type-check and a browser can.
+- The browser pass found the chart status strip unreadable on a light page, because it sits inside the always-dark chart module. It now opts in to a dark-module override, pinned by a contrast test.
+- The sandbox served a stale stylesheet after a restart until its build cache was cleared. A CSS fix checked in a browser needs the cache cleared first.
+
+**Not edited, for the owner.**
+- Five fallback dates inside the import parsers use the UTC day (`lib/import/parsers/ibkr-holdings.ts`, `vanguard-export.ts`, `vanguard-holdings.ts`, `vanguard-cost-basis.ts` twice). Same defect, protected pipeline.
+- About 40 SQL fragments still use SQLite's `date('now')`, which is also the UTC day. Not classified yet.
+- A live sync replaces a statement holdings row dated the same day (`lib/tws/positions.ts`, on `main` before tonight). The date change extends that to the evening of a statement date.
+- Selling more than half the book in one day is never reconciled from live data (the 50% shrink guard, working as designed); it needs a statement.
+- Still under the contrast floor and not part of this sweep: text in a faded colour (70 to 80 percent opacity) on Performance, Diagnostics and trade reviews; solid gold buttons with pale text; the 8px letters in the grades bar; the bell count badge, the Cmd+J hint and the nav sub-view markers in the light theme; two solid red destructive buttons; one violet tag.
+- The scope resolver still turns a named scope that matches no account into "every account"; about twenty readers and one tombstone cleanup that writes would follow it. No caller passes an empty list today.
+
+## 2026-10-09 (about 02:15) — Second overnight sprint, sixth wave: SQL dates, the last scope readers, the last contrast misses
+
+Eight commits. One Codex review (no production finding; one gap in a guard test, closed), one review by an agent that ran the code ("ready"; it rebuilt main's own queries with a controllable clock and compared them with this branch at five times of day), two browser passes in both themes.
+
+**Decisions taken. The owner should confirm or reverse each.**
+1. **Calendar-day comparisons in SQL use the Eastern day** (36 lines in 20 files, one helper, `lib/db/eastern-day-sql.ts`). SQLite's `date('now')` is the UTC day, already tomorrow from 20:00 Eastern. Every effect is in the evening only, and each makes the evening match the daytime:
+   - the expired-option and matured-bond purges keep their one-day grace in the evening (main deleted a contract that expired yesterday; nothing is ever deleted earlier than before);
+   - a name held only through an option that expires today keeps its earnings coverage until midnight Eastern, so an evening email for it can now go out where it was skipped;
+   - a bond maturing today, yesterday's live portfolio value, a three-day-old price and the oldest day of the notes window all behave in the evening as they do in the day.
+   The one daytime change: the chat's bond note counted one day short all day; it now says "today", "1 day" or "N days".
+2. **An expired option stored in the old compact date format no longer counts as held** for earnings coverage, factor classification or the fund-type sweep, and the purge now removes it on schedule. Before, it compared as live until the calendar year changed. No such row is on the live book (checked read-only), so nothing changes today.
+3. **The remaining holdings readers and the orphaned-tombstone cleanup treat a defined empty account list as no accounts.** The cleanup deletes; it could have widened to every account. No caller passes an empty list; the reviewer's comparison against main was byte-identical for every reader and every real scope.
+4. **The remaining small text reaches the contrast floor.** Visible changes to look at:
+   - **solid gold buttons in the light theme have near-black text** (31 buttons, including the login button; the dark theme is unchanged);
+   - red destructive buttons use a fill that passes in both themes, and dim on hover where they brightened;
+   - faded status text on Performance, Diagnostics, scenarios and trade reviews is full strength;
+   - factor heatmap tags in the light theme take a darker text colour derived from their hue;
+   - dim grey text inside the always-dark chart panel is lighter.
+   Colour only. Three repo scans now fail on a new miss of these kinds.
+
+**Reported, not changed (protected chat component, `ChatInterface.tsx`).** Each is a one-line change waiting for a go-ahead:
+- the Send button is still pale text on gold in the light theme (3.1 to 1): `bg-gold text-canvas` becomes `bg-gold text-ink [[data-theme=dark]_&]:text-canvas`;
+- the selected scope pill is 4.2 to 4.4 to 1 in the light theme: its `text-gold-ink` becomes the checked gold ink;
+- **the first Tab on a dashboard page lands in the chat box, not on "Skip to main content"**: the chat's scroll-to-bottom on mount (`scrollIntoView`, line 505) moves the browser's tab starting point. Scrolling the message container instead would fix it.
+
+**Found, not fixed.**
+- An intermittent rendering mismatch on the Giving page (about one hard load in seven on the dev server): generated element ids differ between server and client. The cause is above the Giving components and was not found; the practical effect is small (labels and inputs stay matched).
+- Two Giving year sections share one element id.
+- Seven elapsed-time SQL windows compare a stored timestamp without wrapping it in `datetime()`; one is known to let in up to a day extra.
+- `scripts/purge-expired-options-once.ts` has the same blind spot for the compact expiry format (operator script).
+
+**Lessons.**
+- Two builders sharing a file meant one unit's commit carried a few lines of the other's unfinished work, and for a moment the branch did not build on its own. Commit by file only when one builder owns the file, or wait for both.
+- A builder asked to list risky sites for a decision changed them instead. Each change was sound, but the brief should have said "stop and report" as the first line, not the last.
+- Colour inside an always-dark panel must be checked separately from the page theme. One measured pass found a regression from the wave before it and twelve older misses.

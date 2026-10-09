@@ -1,5 +1,6 @@
 "use client";
 
+import { CHIP_TONE_TEXT } from "@/app/dashboard/components/chip-tone-text";
 import { useState, useEffect, useCallback, useRef } from "react";
 import Link from "next/link";
 import type {
@@ -49,9 +50,10 @@ import {
 } from "@/lib/levels/scan-range";
 import { todayET } from "@/lib/calendar/date-utils";
 import { useToast } from "./Toast";
-import { Chip } from "./Chip";
+import { Chip, CHIP_TONE_CLASSES } from "./Chip";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { SortPicker } from "./SortPicker";
+import { DARK_MODULE_DIM_TEXT } from "./dark-module-text";
 import { compareValues, useSortParam } from "@/lib/hooks/useSortParam";
 import apiFetch from "@/lib/http/apiFetch";
 
@@ -416,7 +418,7 @@ function SuggestedLevels({
             fontSize: "12px",
             letterSpacing: "0.18em",
             textTransform: "uppercase",
-            color: "#555",
+            color: DARK_MODULE_DIM_TEXT,
           }}
         >
           Computing suggested levels…
@@ -456,12 +458,12 @@ function SuggestedLevels({
             <span style={{ color: "#ffb84d", marginRight: "0.5em" }}>{expanded ? "▾" : "▸"}</span>
             {filtered.length} Suggested · Auto-detected
             {data.atr != null && (
-              <span style={{ color: "#555", marginLeft: "1em" }}>
+              <span style={{ color: DARK_MODULE_DIM_TEXT, marginLeft: "1em" }}>
                 · ATR ≈ ${(data.atr * usd).toFixed(2)}
               </span>
             )}
           </span>
-          <span style={{ color: "#555" }}>{expanded ? "hide" : "show"}</span>
+          <span style={{ color: DARK_MODULE_DIM_TEXT }}>{expanded ? "hide" : "show"}</span>
         </button>
         {expanded && (
           <div>
@@ -1336,7 +1338,7 @@ export function LevelsPanel({
             className={
               embedded
                 ? "relative pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-1"
-                : "px-3 py-1.5 text-xs font-medium rounded-lg border border-gold/30 bg-gold/10 text-gold hover:bg-gold/20 transition-colors"
+                : `px-3 py-1.5 text-xs font-medium rounded-lg border border-gold/30 bg-gold/10 ${CHIP_TONE_TEXT.gold} hover:bg-gold/20 transition-colors`
             }
             style={
               embedded
@@ -1541,7 +1543,7 @@ export function LevelsPanel({
             <button
               type="submit"
               disabled={loading || (priceSource === "static" && !price)}
-              className="px-4 py-1.5 text-xs font-medium rounded-lg bg-gold/20 text-gold hover:bg-gold/30 disabled:opacity-50"
+              className={`px-4 py-1.5 text-xs font-medium rounded-lg ${CHIP_TONE_CLASSES.gold} hover:bg-gold/30 disabled:opacity-50`}
             >
               {loading ? "Saving..." : editing ? "Save changes" : `Add ${symbol} level`}
             </button>
@@ -1576,7 +1578,7 @@ export function LevelsPanel({
                 onClick={() => setAuthorFilter(p)}
                 className={`px-2.5 py-1 rounded-full text-[11px] font-medium transition-colors ${
                   authorFilter === p
-                    ? "bg-gold/20 text-gold"
+                    ? CHIP_TONE_CLASSES.gold
                     : "bg-raised text-ink-dim hover:text-ink"
                 }`}
               >
@@ -1638,7 +1640,7 @@ export function LevelsPanel({
                       fontSize: "12px",
                       letterSpacing: "0.18em",
                       textTransform: "uppercase",
-                      color: "#555",
+                      color: DARK_MODULE_DIM_TEXT,
                       padding: "20px 0",
                       textAlign: "center",
                       borderTop: "1px solid #1f1f1f",
@@ -1889,7 +1891,7 @@ export function LevelsPanel({
                               fontSize: "11px",
                               letterSpacing: "0.14em",
                               textTransform: "uppercase",
-                              color: "#666",
+                              color: DARK_MODULE_DIM_TEXT,
                               border: "1px solid #333",
                               padding: "2px 6px",
                               borderRadius: "2px",

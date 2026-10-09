@@ -178,24 +178,24 @@ describe("reconcileCostBasis uses account_security keyBy (QA regression, mirrors
 describe("reconcileCostBasis FX conversion", () => {
   it("converts KRW broker AND computed cost basis to USD (both sides, delta preserved)", () => {
     db.prepare(
-      "INSERT INTO securities (id, symbol, name, security_type, currency) VALUES (3, '402340', 'Hanwha Vision', 'stock', 'KRW')"
+      "INSERT INTO securities (id, symbol, name, security_type, currency) VALUES (3, '000000', 'ZZ Korea Co', 'stock', 'KRW')"
     ).run();
     // Buy 10 sh @ ₩1,600,000 = ₩16,000,000 computed basis.
     insertTransaction(3, "BUY", "2025-06-01", 10, 1_600_000);
     computeTaxLots(db);
-    // Broker reports ₩16,329,792 (includes fees/FX drift).
-    insertHolding(3, 10, 16_329_792, "2026-03-27");
+    // Broker reports ₩16,300,000 (synthetic; a fees/FX-drift gap of ₩300,000).
+    insertHolding(3, 10, 16_300_000, "2026-03-27");
     upsertFxRate(db, { currency: "KRW", usdPerUnit: 0.0006531, asOf: "2026-07-03", source: "test" });
 
     const result = reconcileCostBasis(db);
-    const row = result.rows.find((r) => r.symbol === "402340");
+    const row = result.rows.find((r) => r.symbol === "000000");
     expect(row).toBeTruthy();
-    // Pre-fix both sides rendered as won-with-$-glyph ($16.3M phantom).
-    expect(row!.brokerCostBasis).toBeCloseTo(16_329_792 * 0.0006531, 2);
+    // Pre-fix both sides rendered as won-with-$-glyph ($16.3M phantom; 16,300,000 × 0.0006531 = $10,645.53 true).
+    expect(row!.brokerCostBasis).toBeCloseTo(16_300_000 * 0.0006531, 2);
     expect(row!.computedCostBasis).toBeCloseTo(16_000_000 * 0.0006531, 2);
     expect(row!.brokerCostBasis!).toBeLessThan(20_000);
     // Delta scales with the same factor — flag semantics unchanged.
-    expect(row!.costBasisDiff).toBeCloseTo((16_329_792 - 16_000_000) * 0.0006531, 2);
+    expect(row!.costBasisDiff).toBeCloseTo((16_300_000 - 16_000_000) * 0.0006531, 2);
   });
 });
 
@@ -221,19 +221,19 @@ describe("reconcileCostBasis v2 dollar convention (task 4: readers consume store
 
   it("reconciles a bond lot at face-basis dollars (÷100), not the raw quote", () => {
     db.prepare(
-      "INSERT INTO securities (id, symbol, name, security_type) VALUES (5, '912796XY0', 'T-Bill', 'bond')"
+      "INSERT INTO securities (id, symbol, name, security_type) VALUES (5, 'ZZBILL01', 'T-Bill', 'bond')"
     ).run();
-    // 20,000 face at 99.438385 per-100-face → 20000 × 99.438385 / 100 = $19,887.68.
-    insertTransactionNoAmount(5, "BUY", "2023-02-08", 20000, 99.438385);
+    // Synthetic: 10,000 face at 98.123456 per-100-face → 10000 × 98.123456 / 100 = $9,812.35.
+    insertTransactionNoAmount(5, "BUY", "2025-01-06", 10000, 98.123456);
     computeTaxLots(db);
-    insertHolding(5, 20000, 19887.68, "2026-03-27");
+    insertHolding(5, 10000, 9812.35, "2026-03-27");
 
     const result = reconcileCostBasis(db);
-    const row = result.rows.find((r) => r.symbol === "912796XY0");
+    const row = result.rows.find((r) => r.symbol === "ZZBILL01");
     expect(row).toBeTruthy();
     // Pre-fix, SUM(quantity_remaining * acquisition_price) would have read
-    // 20000 × 99.438385 ≈ $1,988,768 (the raw quote, not the face-adjusted dollars).
-    expect(row!.computedCostBasis).toBeCloseTo(19887.68, 2);
+    // 10000 × 98.123456 ≈ $981,235 (the raw quote, not the face-adjusted dollars).
+    expect(row!.computedCostBasis).toBeCloseTo(9812.35, 2);
     expect(row!.flagged).toBe(false);
   });
 

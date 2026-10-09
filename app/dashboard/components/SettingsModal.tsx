@@ -1,5 +1,6 @@
 "use client";
 
+import { CHIP_TONE_CLASSES } from "@/app/dashboard/components/Chip";
 import { networkFailureMessage } from "@/lib/ui/mutation-result";
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { createPortal } from "react-dom";
@@ -445,7 +446,7 @@ export function SettingsModal() {
                   <button
                     onClick={handleSave}
                     disabled={!hasDirtyFields}
-                    className="px-4 py-1.5 text-xs font-medium rounded-lg bg-gold/20 text-gold-ink hover:bg-gold/30 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                    className={`px-4 py-1.5 text-xs font-medium rounded-lg ${CHIP_TONE_CLASSES.gold} hover:bg-gold/30 disabled:opacity-30 disabled:cursor-not-allowed transition-colors`}
                   >
                     Save Settings
                   </button>

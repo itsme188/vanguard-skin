@@ -1,3 +1,4 @@
+import { CHIP_TONE_TEXT } from "@/app/dashboard/components/chip-tone-text";
 import Link from "next/link";
 import type { CalendarEvent } from "@/lib/types";
 import { addDays, formatWeekRange, todayET, getCurrentMonday, mondayOf } from "@/lib/calendar/date-utils";
@@ -68,7 +69,7 @@ function fmtDayLabel(iso: string): string {
 }
 
 function impactClass(impact: string | null): string {
-  if (impact === "high") return "bg-down/10 text-down";
+  if (impact === "high") return `bg-down/10 ${CHIP_TONE_TEXT.down}`;
   if (impact === "medium") return "bg-blue/15 text-blue";
   return "bg-raised text-ink-faint";
 }
@@ -494,8 +495,8 @@ export function eventFigureDisplays(
   return { consensusDisplay, actualDisplay };
 }
 
-const CHIP_TONE_UP = "text-up bg-up/10";
-const CHIP_TONE_DOWN = "text-down bg-down/10";
+const CHIP_TONE_UP = `${CHIP_TONE_TEXT.up} bg-up/10`;
+const CHIP_TONE_DOWN = `${CHIP_TONE_TEXT.down} bg-down/10`;
 const CHIP_TONE_NEUTRAL = "text-ink-dim bg-raised border border-edge";
 /** A pre-release actual (isPreReleaseActual): faint italic, never beat/miss colored. */
 const PRE_RELEASE_ACTUAL_CHIP_CLASS = "text-ink-faint italic bg-raised border border-edge";

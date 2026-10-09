@@ -94,7 +94,10 @@ describe("fetchAnchorSourceSeamDates", () => {
     ).toEqual(["2026-07-11", "2026-07-31"]);
   });
 
-  it("treats undefined/empty accountIds as all accounts", () => {
+  // Rule adopted 2026-10-08: undefined is every account; a defined empty
+  // list is NO accounts and never widens to the whole book. (This test
+  // pinned the old widening on an empty list.)
+  it("treats undefined accountIds as all accounts and an empty list as none", () => {
     insertAnchor(db, 1, "2026-06-30", "canonical");
     insertAnchor(db, 1, "2026-07-11", "plaid");
     expect(
@@ -102,7 +105,7 @@ describe("fetchAnchorSourceSeamDates", () => {
     ).toEqual(["2026-07-11"]);
     expect(
       fetchAnchorSourceSeamDates(db, [], "2026-01-01", "2026-12-31")
-    ).toEqual(["2026-07-11"]);
+    ).toEqual([]);
   });
 
   it("treats NULL source as a distinct value (transition to/from it bridges)", () => {

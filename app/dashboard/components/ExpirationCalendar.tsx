@@ -1,5 +1,6 @@
 "use client";
 
+import { CHIP_TONE_CLASSES } from "@/app/dashboard/components/Chip";
 import { useState, useEffect } from "react";
 import { Count, Shares } from "@/lib/privacy/components";
 import { formatUSDPrecise } from "@/lib/format";
@@ -102,9 +103,9 @@ export function ExpirationCalendar({ scope }: { scope?: string }) {
               <div
                 className={`flex-shrink-0 w-14 h-14 rounded-xl flex flex-col items-center justify-center ${
                   dte <= 7
-                    ? "bg-down/20 text-down"
+                    ? CHIP_TONE_CLASSES.down
                     : dte <= 30
-                    ? "bg-gold/20 text-gold"
+                    ? CHIP_TONE_CLASSES.gold
                     : "bg-blue/20 text-blue"
                 }`}
               >

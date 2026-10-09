@@ -12,6 +12,7 @@ import { runMigrations } from "@/lib/db/migrate";
 import { SecType } from "@stoqey/ib";
 import { getTaxInputGeneration } from "@/lib/compute/tax-convention";
 import { countReconRowsOnDate } from "@/lib/mutations/closed-equity";
+import { todayET } from "@/lib/calendar/date-utils";
 
 // ── Mock @stoqey/ib Observable helpers (same shape as positions.test.ts) ──
 
@@ -116,7 +117,7 @@ describe("syncPortfolio — tombstone-supersession + price bumps (reconciler-har
        VALUES (?, ?, 0, ?, ?)`,
     ).run(accountId, securityId, date, `recon:closed-equity:${accountId}:${securityId}:${date}${origin}`);
   }
-  const today = () => new Date().toISOString().slice(0, 10); // matches syncPortfolio's own `today`
+  const today = () => todayET(); // matches syncPortfolio's own `today` (the Eastern market day)
 
   // Spec 2026-10-02 statement-only synthetic closes §2.3: the engine reads
   // statement-grade holdings only, so a newer-date live re-buy over ANY
@@ -126,13 +127,13 @@ describe("syncPortfolio — tombstone-supersession + price bumps (reconciler-har
     "does NOT bump on a newer-date re-buy over an older %s tombstone",
     async (origin) => {
       const acctId = ibkrAccountId();
-      const secId = seedSecurity("NET");
+      const secId = seedSecurity("ZZA");
       seedTombstone(acctId, secId, "2000-01-01", origin);
       const before = getTaxInputGeneration(db);
 
       mockApi!.getAccountUpdates.mockReturnValue(
         mockObservable(
-          makeAccountUpdate([{ symbol: "NET", pos: 60, avgCost: 200, marketPrice: 269.42, conId: 111 }], 1000, 500),
+          makeAccountUpdate([{ symbol: "ZZA", pos: 50, avgCost: 200, marketPrice: 250, conId: 111 }], 1000, 500),
         ),
       );
 
@@ -143,6 +144,39 @@ describe("syncPortfolio — tombstone-supersession + price bumps (reconciler-har
       expect(getTaxInputGeneration(db)).toBe(before);
     },
   );
+
+  // The broader UTC sweep: at 21:30 Eastern the UTC day has already rolled.
+  // An evening sync belongs to the Eastern market day, the same stamp
+  // lib/tws/snapshot.ts uses, never the UTC day that has not started.
+  it("an evening sync (21:30 Eastern) stamps holdings, prices and the account snapshot with the Eastern day", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-03-10T01:30:00Z"));
+    try {
+      const acctId = ibkrAccountId();
+      mockApi!.getAccountUpdates.mockReturnValue(
+        mockObservable(
+          makeAccountUpdate([{ symbol: "ZZA", pos: 50, avgCost: 200, marketPrice: 250, conId: 111 }], 1000, 500),
+        ),
+      );
+
+      const syncPortfolio = await getSyncPortfolio();
+      const result = await syncPortfolio(db);
+      expect(result.positionsSynced).toBe(1);
+
+      const holdingDays = db
+        .prepare("SELECT DISTINCT as_of_date AS d FROM holdings WHERE account_id = ? AND quantity != 0")
+        .all(acctId) as Array<{ d: string }>;
+      expect(holdingDays).toEqual([{ d: "2026-03-09" }]);
+      const priceDays = db.prepare("SELECT DISTINCT date AS d FROM prices").all() as Array<{ d: string }>;
+      expect(priceDays).toEqual([{ d: "2026-03-09" }]);
+      const snapshotDays = db
+        .prepare("SELECT DISTINCT month_end_date AS d FROM monthly_snapshots WHERE account_id = ?")
+        .all(acctId) as Array<{ d: string }>;
+      expect(snapshotDays).toEqual([{ d: "2026-03-09" }]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 
   it("same-date REPLACE of a :live tombstone does NOT bump", async () => {
     const acctId = ibkrAccountId();
@@ -200,8 +234,8 @@ describe("syncPortfolio — tombstone-supersession + price bumps (reconciler-har
 
   it("a throw inside the writer's transaction rolls back writes AND bump together", async () => {
     const acctId = ibkrAccountId();
-    const secId = seedSecurity("NET");
-    // Same-date :stmt tombstone: NET's write REPLACES it, which alone bumps —
+    const secId = seedSecurity("ZZA");
+    // Same-date :stmt tombstone: ZZA's write REPLACES it, which alone bumps —
     // so an unchanged generation below proves the bump rolled back.
     seedTombstone(acctId, secId, today(), ":stmt");
     const before = getTaxInputGeneration(db);
@@ -209,7 +243,7 @@ describe("syncPortfolio — tombstone-supersession + price bumps (reconciler-har
     // No outer transaction wraps this call (discriminating: proves the
     // writer's OWN db.transaction rolls things back, not a caller's). The
     // sentinel quantity aborts the SECOND position's holdings insert, after
-    // the first (NET, a tombstone re-buy) already wrote.
+    // the first (ZZA, a tombstone re-buy) already wrote.
     db.exec(
       `CREATE TEMP TRIGGER boom BEFORE INSERT ON holdings WHEN NEW.quantity = 424242 BEGIN SELECT RAISE(ABORT,'boom'); END`,
     );
@@ -218,7 +252,7 @@ describe("syncPortfolio — tombstone-supersession + price bumps (reconciler-har
       mockObservable(
         makeAccountUpdate(
           [
-            { symbol: "NET", pos: 60, avgCost: 200, marketPrice: 269.42, conId: 111 },
+            { symbol: "ZZA", pos: 50, avgCost: 200, marketPrice: 250, conId: 111 },
             { symbol: "BOOM", pos: 424242, avgCost: 1, marketPrice: 1, conId: 444 },
           ],
           1000,
@@ -239,7 +273,7 @@ describe("syncPortfolio — tombstone-supersession + price bumps (reconciler-har
 
   it("a price-write failure rolls back the holdings writes it now shares a transaction with (proves the merged commit — this test fails against the pre-fix two-transaction split)", async () => {
     const acctId = ibkrAccountId();
-    const secId = seedSecurity("NET");
+    const secId = seedSecurity("ZZA");
     seedTombstone(acctId, secId, today(), ":stmt"); // a REPLACE here alone would bump
     const before = getTaxInputGeneration(db);
 
@@ -251,7 +285,7 @@ describe("syncPortfolio — tombstone-supersession + price bumps (reconciler-har
       mockObservable(
         makeAccountUpdate(
           [
-            { symbol: "NET", pos: 60, avgCost: 200, marketPrice: 269.42, conId: 111 },
+            { symbol: "ZZA", pos: 50, avgCost: 200, marketPrice: 250, conId: 111 },
             { symbol: "BOOM", pos: 5, avgCost: 1, marketPrice: 999999, conId: 444 },
           ],
           1000,
@@ -266,7 +300,7 @@ describe("syncPortfolio — tombstone-supersession + price bumps (reconciler-har
     const netRows = db
       .prepare(`SELECT quantity FROM holdings WHERE security_id = ? ORDER BY as_of_date`)
       .all(secId) as { quantity: number }[];
-    // NET's re-buy holdings write must have rolled back together with the
+    // ZZA's re-buy holdings write must have rolled back together with the
     // aborted BOOM price insert — only the original tombstone survives.
     expect(netRows).toEqual([{ quantity: 0 }]);
     expect(getTaxInputGeneration(db)).toBe(before);

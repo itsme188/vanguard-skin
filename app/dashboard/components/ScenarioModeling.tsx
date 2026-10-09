@@ -1,5 +1,6 @@
 "use client";
 
+import { CHIP_TONE_TEXT, GOLD_FILL_CLASSES } from "@/app/dashboard/components/chip-tone-text";
 import { useState, useEffect, useCallback, useRef } from "react";
 import type { ScenarioResult } from "@/lib/compute/scenarios";
 import { findRecipe } from "@/lib/compute/scenario-recipes";
@@ -344,7 +345,7 @@ export function ScenarioModelingCard({ scope }: { scope?: string }) {
                 </PrivateText>
                 <PrivateText
                   className={`text-sm font-mono tabular-nums ${
-                    isPositive ? "text-up/70" : "text-down/70"
+                    isPositive ? CHIP_TONE_TEXT.up : CHIP_TONE_TEXT.down
                   }`}
                 >
                   {formatMoney(result.estimatedChange)}
@@ -434,7 +435,7 @@ export function ScenarioModelingCard({ scope }: { scope?: string }) {
                               <PrivateText className="font-mono tabular-nums text-down">
                                 {formatPct(pos.changePercent)}
                               </PrivateText>
-                              <PrivateText className="font-mono tabular-nums text-down/70 w-16 text-right">
+                              <PrivateText className={`font-mono tabular-nums ${CHIP_TONE_TEXT.down} w-16 text-right`}>
                                 {formatMoney(pos.estimatedChange)}
                               </PrivateText>
                             </div>
@@ -488,7 +489,7 @@ export function ScenarioModelingCard({ scope }: { scope?: string }) {
                               <PrivateText className="font-mono tabular-nums text-up">
                                 {formatPct(pos.changePercent)}
                               </PrivateText>
-                              <PrivateText className="font-mono tabular-nums text-up/70 w-16 text-right">
+                              <PrivateText className={`font-mono tabular-nums ${CHIP_TONE_TEXT.up} w-16 text-right`}>
                                 {formatMoney(pos.estimatedChange)}
                               </PrivateText>
                             </div>
@@ -793,7 +794,7 @@ export function ScenarioModelingCard({ scope }: { scope?: string }) {
             <button
               onClick={handleComputeCustom}
               disabled={customLoading || customInputProblems.length > 0}
-              className="px-4 py-1.5 rounded-lg bg-gold text-canvas text-sm font-medium hover:brightness-110 disabled:opacity-50 transition-[filter,scale] active:scale-[0.96] focus-ring"
+              className={`px-4 py-1.5 rounded-lg ${GOLD_FILL_CLASSES} text-sm font-medium hover:brightness-110 disabled:opacity-50 transition-[filter,scale] active:scale-[0.96] focus-ring`}
             >
               {customLoading ? "Computing..." : "Compute Scenario"}
             </button>

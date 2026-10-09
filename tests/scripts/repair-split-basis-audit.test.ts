@@ -19,8 +19,8 @@ import {
 // split whose pre-split transaction rows were never re-based.
 const SPLIT_DATE = "2020-08-28";
 const RATIO = 4;
-const PRE_QTY = 30.318;
-const PRE_PRICE = 1094.92;
+const PRE_QTY = 30.5;
+const PRE_PRICE = 1000;
 const ACCOUNT = 1; // migration 002 seeds 1='Vanguard Taxable', 2=Roth, 3=IBKR
 
 function fresh(): Database.Database {
@@ -133,7 +133,7 @@ describe("parseConfig", () => {
   it("accepts a well-formed entry and defaults priceRows to []", () => {
     const parsed = parseConfig(
       JSON.parse(
-        '[{"symbol":"AAAA","splitDate":"2020-08-28","ratio":4,"expectedPreSplitTxnQty":30.318}]'
+        '[{"symbol":"AAAA","splitDate":"2020-08-28","ratio":4,"expectedPreSplitTxnQty":30.5}]'
       )
     );
     expect(parsed).toEqual([
@@ -141,7 +141,7 @@ describe("parseConfig", () => {
         symbol: "AAAA",
         splitDate: "2020-08-28",
         ratio: 4,
-        expectedPreSplitTxnQty: 30.318,
+        expectedPreSplitTxnQty: 30.5,
         priceRows: [],
       },
     ]);
@@ -153,11 +153,11 @@ describe("parseConfig", () => {
         symbol: "AAAA",
         splitDate: "2020-08-28",
         ratio: 4,
-        expectedPreSplitTxnQty: 30.318,
-        priceRows: [{ date: "2025-06-30", preSplitClose: 1094.92 }],
+        expectedPreSplitTxnQty: 30.5,
+        priceRows: [{ date: "2025-06-30", preSplitClose: 1000 }],
       },
     ]);
-    expect(parsed[0].priceRows).toEqual([{ date: "2025-06-30", preSplitClose: 1094.92 }]);
+    expect(parsed[0].priceRows).toEqual([{ date: "2025-06-30", preSplitClose: 1000 }]);
   });
 
   it("accepts an empty array (sweep-only mode)", () => {
@@ -179,7 +179,7 @@ describe("parseConfig", () => {
       symbol: "AAAA",
       splitDate: "2020-08-28",
       ratio: 4,
-      expectedPreSplitTxnQty: 30.318,
+      expectedPreSplitTxnQty: 30.5,
     };
     expect(() => parseConfig([{ ...base, symbol: "" }])).toThrow("malformed");
     expect(() => parseConfig([{ ...base, splitDate: "08/28/2020" }])).toThrow("YYYY-MM-DD");
@@ -336,7 +336,7 @@ describe("auditAndRepair — transaction basis", () => {
       securityId: secId,
       tradeDate: "2019-05-10",
       type: "BUY",
-      quantity: 77.5, // neither 30.318 nor 121.272
+      quantity: 77.5, // neither 30.5 nor 122
       price: PRE_PRICE,
     });
 
@@ -366,7 +366,7 @@ describe("auditAndRepair — transaction basis", () => {
       securityId: secId,
       tradeDate: "2019-05-10",
       type: "REINVESTMENT",
-      quantity: 10.318,
+      quantity: 10.5,
       price: PRE_PRICE,
     });
 
@@ -375,7 +375,7 @@ describe("auditAndRepair — transaction basis", () => {
     expect(report.targets[0].preSplitRowCount).toBe(2);
     expect(readTxn(db, a).quantity).toBeCloseTo(80, 9);
     expect(readTxn(db, a).price_per_share!).toBeCloseTo(250, 9);
-    expect(readTxn(db, b).quantity).toBeCloseTo(41.272, 9);
+    expect(readTxn(db, b).quantity).toBeCloseTo(42, 9);
   });
 
   it("normalizes a REVERSE split in the shrinking direction (ratio 0.1)", () => {
@@ -624,23 +624,23 @@ describe("walkLedger", () => {
   });
 
   it("reports a non-tie residual", () => {
-    const walk = walkLedger(legs({ type: "BUY", quantity: 100 }), 1, 121.272);
-    expect(walk.residual).toBeCloseTo(-21.272, 6);
+    const walk = walkLedger(legs({ type: "BUY", quantity: 100 }), 1, 122);
+    expect(walk.residual).toBeCloseTo(-22, 6);
     expect(walk.ties).toBe(false);
   });
 
   it("scales only the pre-split legs by the split factor", () => {
-    // 30.318 pre-split shares, unadjusted, against a post-split 121.272 position.
-    const raw = walkLedger(legs({ type: "BUY", quantity: PRE_QTY, preSplit: true }), 1, 121.272);
+    // 30.5 pre-split shares, unadjusted, against a post-split 122 position.
+    const raw = walkLedger(legs({ type: "BUY", quantity: PRE_QTY, preSplit: true }), 1, 122);
     expect(raw.ties).toBe(false);
-    expect(raw.residual).toBeCloseTo(-90.954, 6);
+    expect(raw.residual).toBeCloseTo(-91.5, 6);
 
     const hypothetical = walkLedger(
       legs({ type: "BUY", quantity: PRE_QTY, preSplit: true }),
       RATIO,
-      121.272
+      122
     );
-    expect(hypothetical.walked).toBeCloseTo(121.272, 6);
+    expect(hypothetical.walked).toBeCloseTo(122, 6);
     expect(hypothetical.ties).toBe(true);
 
     // A post-split leg is never scaled.
@@ -650,7 +650,7 @@ describe("walkLedger", () => {
         { type: "BUY", quantity: 10, preSplit: false }
       ),
       RATIO,
-      131.272
+      132
     );
     expect(mixed.ties).toBe(true);
   });
@@ -729,7 +729,7 @@ describe("auditAndRepair — ledger walk integration", () => {
       quantity: PRE_QTY,
       price: PRE_PRICE,
     });
-    // Broker says 200 shares — 78.728 more than the ledger can explain.
+    // Broker says 200 shares — 78 more than the ledger can explain.
     seedHolding(db, secId, 200, "2026-06-30");
 
     const report = auditAndRepair(db, [target()], { apply: true });
@@ -873,7 +873,7 @@ describe("sweepSiblings", () => {
     seedHolding(db, cleanId, 25, "2026-06-30");
 
     const brokenId = seedSecurity(db, "BROKEN");
-    // Pre-split basis never re-based: ledger says 30.318, broker says 121.272.
+    // Pre-split basis never re-based: ledger says 30.5, broker says 122.
     seedTxn(db, {
       securityId: brokenId,
       tradeDate: "2019-05-10",

@@ -1,5 +1,6 @@
 export const dynamic = "force-dynamic";
 
+import { GOLD_FILL_CLASSES } from "@/app/dashboard/components/chip-tone-text";
 import { db } from "@/lib/db";
 import { unrealizedGainRatio } from "@/lib/format";
 import { assetClassLabel, getSecurityDetail, transcriptPreviewText } from "@/lib/queries/security-detail";
@@ -1251,7 +1252,7 @@ export default async function SecurityDetailPage(props: {
           isOptionHub && optionUnderlying ? (
             <>
               for{" "}
-              <Link href={`/dashboard/security/${optionUnderlying.id}`} className="text-gold hover:underline">
+              <Link href={`/dashboard/security/${optionUnderlying.id}`} className="text-gold-ink hover:underline">
                 {optionUnderlying.symbol}
               </Link>
               , the underlying
@@ -1318,7 +1319,7 @@ export default async function SecurityDetailPage(props: {
             </p>
             <Link
               href="/dashboard/import"
-              className="mt-3 inline-block px-4 py-2 rounded-lg bg-gold text-canvas text-sm font-medium hover:brightness-110 transition-[filter,scale] active:scale-[0.96]"
+              className={`mt-3 inline-block px-4 py-2 rounded-lg ${GOLD_FILL_CLASSES} text-sm font-medium hover:brightness-110 transition-[filter,scale] active:scale-[0.96]`}
             >
               Import Files
             </Link>

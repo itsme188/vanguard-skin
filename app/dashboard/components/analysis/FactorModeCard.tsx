@@ -1,5 +1,6 @@
 "use client";
 
+import { CHIP_TONE_TEXT } from "@/app/dashboard/components/chip-tone-text";
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { useToast } from "../Toast";
@@ -78,7 +79,7 @@ export function FactorModeCard({ factorHeatmap, factorCoverage, scope }: Props) 
           <button
             onClick={runFactorAutoClassify}
             disabled={factorClassifyLoading}
-            className="px-3 py-1 text-xs bg-gold/10 text-gold-ink border border-gold/30 rounded hover:bg-gold/20 transition-colors disabled:opacity-50 disabled:cursor-not-allowed focus-ring"
+            className={`px-3 py-1 text-xs bg-gold/10 ${CHIP_TONE_TEXT.gold} border border-gold/30 rounded hover:bg-gold/20 transition-colors disabled:opacity-50 disabled:cursor-not-allowed focus-ring`}
           >
             {factorClassifyLoading ? "Classifying..." : "Auto-Classify Factors"}
           </button>

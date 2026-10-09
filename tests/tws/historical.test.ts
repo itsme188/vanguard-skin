@@ -211,7 +211,7 @@ describe("fetchHistoricalPrices", () => {
       .prepare(
         "INSERT INTO securities (symbol, name, security_type, ib_con_id, currency) VALUES (?, ?, ?, ?, ?)",
       )
-      .run("402340", "Korea Corp", "stock", 555, "KRW");
+      .run("000000", "Korea Corp", "stock", 555, "KRW");
     const secId = result.lastInsertRowid as number;
 
     const mockApi = {
@@ -252,7 +252,7 @@ describe("fetchHistoricalPrices", () => {
       .prepare(
         "INSERT INTO securities (symbol, name, security_type, ib_con_id, currency) VALUES (?, ?, ?, ?, ?)",
       )
-      .run("402340  260320C00045000", "Korea Corp Option", "option", 556, "KRW");
+      .run("000000  260320C00045000", "Korea Corp Option", "option", 556, "KRW");
     const secId = result.lastInsertRowid as number;
 
     const mockApi = {

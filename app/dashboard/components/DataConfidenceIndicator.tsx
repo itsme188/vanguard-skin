@@ -24,7 +24,7 @@ const LEVEL_CONFIG = {
 
 const SEVERITY_STYLES = {
   critical: "text-down",
-  warning: "text-gold",
+  warning: "text-gold-ink",
   info: "text-ink-dim",
 } as const;
 

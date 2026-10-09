@@ -117,7 +117,7 @@ describe("chat history", () => {
     it("saves and retrieves messages in order", () => {
       const convId = createConversation(db, "all");
       saveMessage(db, convId, "user", "What is my portfolio value?", null);
-      saveMessage(db, convId, "assistant", "Your portfolio is worth $1.8M.", null);
+      saveMessage(db, convId, "assistant", "Your portfolio is worth $100K.", null);
 
       const messages = getConversationMessages(db, convId);
       expect(messages).toHaveLength(2);

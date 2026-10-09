@@ -13,20 +13,20 @@ function seedPortfolio(db: Database.Database) {
   ).run();
   // KRW holding, same Technology sector so both land in one drill-down bucket.
   db.prepare(
-    `INSERT INTO securities (id, symbol, name, security_type, sector, currency) VALUES (2, '402340', 'SK Hynix', 'Stock', 'Technology', 'KRW')`
+    `INSERT INTO securities (id, symbol, name, security_type, sector, currency) VALUES (2, '000000', 'ZZ Korea Co', 'Stock', 'Technology', 'KRW')`
   ).run();
 
   const today = new Date().toISOString().slice(0, 10);
   // AAPL: 10,000 sh @ $208 -> $2,080,000.
   db.prepare(`INSERT INTO prices (security_id, date, close_price, source) VALUES (1, ?, 208, 'tws')`).run(today);
-  // 402340: 10 sh @ ₩1,731,000 -> ₩17,310,000 notional.
-  db.prepare(`INSERT INTO prices (security_id, date, close_price, source) VALUES (2, ?, 1731000, 'tws')`).run(today);
+  // 000000: 10 sh @ ₩1,500,000 -> ₩15,000,000 notional.
+  db.prepare(`INSERT INTO prices (security_id, date, close_price, source) VALUES (2, ?, 1500000, 'tws')`).run(today);
 
   db.prepare(
     `INSERT INTO holdings (account_id, security_id, as_of_date, quantity, source_key) VALUES (3, 1, ?, 10000, 'tws-aapl')`
   ).run(today);
   db.prepare(
-    `INSERT INTO holdings (account_id, security_id, as_of_date, quantity, source_key) VALUES (3, 2, ?, 10, 'tws-402340')`
+    `INSERT INTO holdings (account_id, security_id, as_of_date, quantity, source_key) VALUES (3, 2, ?, 10, 'tws-000000')`
   ).run(today);
 }
 
@@ -55,7 +55,7 @@ describe("getHoldingsInBucket FX conversion", () => {
     });
 
     const usdRow = rows.find((r) => r.symbol === "AAPL");
-    const krwRow = rows.find((r) => r.symbol === "402340");
+    const krwRow = rows.find((r) => r.symbol === "000000");
 
     expect(usdRow).toBeTruthy();
     expect(krwRow).toBeTruthy();
@@ -63,14 +63,14 @@ describe("getHoldingsInBucket FX conversion", () => {
     // USD control unaffected.
     expect(usdRow!.marketValue).toBe(2_080_000);
 
-    // KRW row valued in USD (₩17,310,000 * 0.000734 ≈ $12,705.54), NOT the
-    // won notional ($17,310,000 if FX were never applied).
-    const expectedUsdMv = 10 * 1_731_000 * 0.000734;
+    // KRW row valued in USD (₩15,000,000 * 0.000734 ≈ $11,010.00), NOT the
+    // won notional ($15,000,000 if FX were never applied).
+    const expectedUsdMv = 10 * 1_500_000 * 0.000734;
     expect(krwRow!.marketValue).toBeCloseTo(expectedUsdMv, 5);
     expect(krwRow!.marketValue).toBeLessThan(20_000);
 
     // Weight is a fraction of the scope total, which must also be in USD:
-    // 12,705.54 / (2,080,000 + 12,705.54).
+    // 11,010.00 / (2,080,000 + 11,010.00).
     const scopeTotal = 2_080_000 + expectedUsdMv;
     expect(krwRow!.weight).toBeCloseTo(expectedUsdMv / scopeTotal, 5);
   });

@@ -1,5 +1,6 @@
 "use client";
 
+import { GOLD_FILL_CLASSES } from "@/app/dashboard/components/chip-tone-text";
 import { readMutationResult, networkFailureMessage } from "@/lib/ui/mutation-result";
 import { useState } from "react";
 import { useRouter } from "next/navigation";
@@ -253,7 +254,7 @@ export function ReconciliationTable({
               disabled={isSubmitting || !isFormValid}
               title={formBlocker ?? undefined}
               aria-describedby={formBlocker ? "recon-save-blocker" : undefined}
-              className="px-5 py-2 rounded-lg bg-gold text-canvas font-medium text-sm hover:brightness-110 transition-[filter,scale] active:scale-[0.96] disabled:opacity-50 disabled:cursor-not-allowed focus-ring"
+              className={`px-5 py-2 rounded-lg ${GOLD_FILL_CLASSES} font-medium text-sm hover:brightness-110 transition-[filter,scale] active:scale-[0.96] disabled:opacity-50 disabled:cursor-not-allowed focus-ring`}
             >
               {isSubmitting ? "Saving..." : "Save Checkpoint"}
             </button>

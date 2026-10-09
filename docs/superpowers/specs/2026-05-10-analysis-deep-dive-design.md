@@ -242,7 +242,7 @@ The new center of gravity. Three cards in the Workspace above the fold.
 | 7 | Healthcare reg shock | `regulatory_risk` + sector |
 | 8 | Crypto -30% | `crypto_adjacent` |
 
-**Each scenario.** Recipe = `{ shockMagnitude, factorMultipliers: Record<factor, number>, methodology: string }`. Per-position P&L = `Σ position_value × factor_sensitivity × shock_magnitude`. Methodology shown to the user — "rate +25bp × duration 5.6y × $27k bond ladder = -$380."
+**Each scenario.** Recipe = `{ shockMagnitude, factorMultipliers: Record<factor, number>, methodology: string }`. Per-position P&L = `Σ position_value × factor_sensitivity × shock_magnitude`. Methodology shown to the user — "rate +25bp × duration 5y × $100k bond ladder = -$1,250."
 
 **Confidence intervals.** Derived from historical analog returns. New `lib/compute/scenario-confidence.ts::computeAnalogCI(db, scenario)` — looks up similar magnitude shocks in the past 5 years (FRED for rates, OHLCV for sector ETFs), measures portfolio response on those days, returns 95% CI.
 

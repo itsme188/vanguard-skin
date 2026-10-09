@@ -23,7 +23,7 @@ describe("formatChartPrice", () => {
 
   describe("KRW (non-USD, real ISO code)", () => {
     it("formats with the won symbol, grouping, and no decimals", () => {
-      // 402340.KS-style native value — the exact QA-finding regression case.
+      // 000000.KS-style native value — the exact QA-finding regression case.
       expect(formatChartPrice("KRW", 976000)).toBe("₩976,000");
     });
 
@@ -81,7 +81,7 @@ describe("formatLevelPrice", () => {
 
   describe("KRW (non-USD, real ISO code) — delegates to formatChartPrice", () => {
     it("formats with the won symbol, grouping, and no decimals", () => {
-      // 402340.KS-style native level price — the LevelsPanel sibling of the
+      // 000000.KS-style native level price — the LevelsPanel sibling of the
       // QA-finding regression fixed on the chart itself in 9ba9158.
       expect(formatLevelPrice("KRW", 976000)).toBe("₩976,000");
       expect(formatLevelPrice("KRW", 976000)).toBe(formatChartPrice("KRW", 976000));

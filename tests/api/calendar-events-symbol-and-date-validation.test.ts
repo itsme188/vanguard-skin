@@ -62,7 +62,7 @@ function seedSecurity(symbol: string, type = "Stock"): number {
 }
 
 describe("tickerShapeError", () => {
-  it.each(["AAA", "brk.b", "BF-B", "ABBNY", "402340.KS", " zzz "])("accepts %s", (s) => {
+  it.each(["AAA", "brk.b", "BF-B", "ABBNY", "000000.KS", " zzz "])("accepts %s", (s) => {
     expect(tickerShapeError(s)).toBeNull();
   });
   it.each(["!!!@@@ 123", "AA A", "AAA!", ".AAA", "AAA.", "AA..A", "-", "ABCDEFGHIJKLM", "AAA;DROP"])(

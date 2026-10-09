@@ -58,7 +58,9 @@ export function getIncomeSummary(
   endDate: string,
   accountIds?: number[],
 ): IncomeSummary {
-  const accountFilter = accountIds && accountIds.length > 0
+  // `undefined` is every account; a defined empty list is NO accounts
+  // (`IN ()` matches nothing), never the whole book.
+  const accountFilter = accountIds
     ? `AND t.account_id IN (${accountIds.map(() => "?").join(",")})`
     : "";
   const accountParams = accountIds ?? [];

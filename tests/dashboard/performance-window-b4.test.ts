@@ -288,7 +288,7 @@ describe("PerformanceView feeds every consumer the one window", () => {
     // the window start and the scope's first statement (curveSeriesStart) and
     // still ends on the window end.
     expect(flat).toContain("const curveSeriesStart = curveFloorDate(effectiveStart, curveFloor);");
-    const seriesAt = anchorIndex(flat, "getDailyValuationsForAccounts(db, scopeAccountIds ?? [], {");
+    const seriesAt = anchorIndex(flat, "getDailyValuationsForAccounts(db, scopeAccountIds, {");
     expect(flat.slice(seriesAt, seriesAt + 140)).toContain("startDate: curveSeriesStart, endDate: dailyEnd,");
     expect(flat).toContain(".all(BENCHMARK_SYMBOL, effectiveStart, dailyEnd)");
     const attrAt = anchorIndex(flat, "attribution = computePeriodAttribution(");

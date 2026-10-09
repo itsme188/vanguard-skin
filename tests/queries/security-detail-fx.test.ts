@@ -102,11 +102,11 @@ describe("security-detail FX conversion", () => {
 
   describe("getHoldingsBySecurity", () => {
     it("converts KRW market value + unrealized gain to USD, not the won phantom", () => {
-      // 10 sh @ ₩1,731,000 = ₩17,310,000 notional; cost basis ₩16,329,792.
-      // Pre-fix this renders as a $17,310,000 market value (phantom).
-      const krw = seedSecurity(db, "402340", { currency: "KRW" });
-      seedHolding(db, ACCOUNT_ID, krw, 10, 16_329_792, TODAY);
-      seedPrice(db, krw, 1_731_000, TODAY);
+      // 10 sh @ ₩1,500,000 = ₩15,000,000 notional; cost basis ₩14,000,000.
+      // Pre-fix this renders as a $15,000,000 market value (phantom).
+      const krw = seedSecurity(db, "000000", { currency: "KRW" });
+      seedHolding(db, ACCOUNT_ID, krw, 10, 14_000_000, TODAY);
+      seedPrice(db, krw, 1_500_000, TODAY);
 
       upsertFxRate(db, {
         currency: "KRW",
@@ -118,24 +118,24 @@ describe("security-detail FX conversion", () => {
       const positions = getHoldingsBySecurity(db, krw);
       expect(positions).toHaveLength(1);
 
-      const expectedMv = 10 * 1_731_000 * 0.000734; // 12,705.54
-      const expectedCostUsd = 16_329_792 * 0.000734; // 11,986.07
+      const expectedMv = 10 * 1_500_000 * 0.000734; // 11,010.00
+      const expectedCostUsd = 14_000_000 * 0.000734; // 10,276.00
 
       expect(positions[0].current_value).toBeCloseTo(expectedMv, 5);
       expect(positions[0].current_value).toBeLessThan(20_000);
       // Must NOT be the won-notional phantom.
-      expect(positions[0].current_value).not.toBeCloseTo(17_310_000, 0);
+      expect(positions[0].current_value).not.toBeCloseTo(15_000_000, 0);
 
       expect(positions[0].unrealized_gain).toBeCloseTo(
         expectedMv - expectedCostUsd,
         5
       );
-      expect(positions[0].unrealized_gain).toBeCloseTo(719.47, 1);
+      expect(positions[0].unrealized_gain).toBeCloseTo(734.00, 1);
 
       // Task 5d: the RAW returned cost_basis field must also be USD, not the
-      // won notional (₩16,329,792).
+      // won notional (₩14,000,000).
       expect(positions[0].cost_basis).toBeCloseTo(expectedCostUsd, 5);
-      expect(positions[0].cost_basis).not.toBeCloseTo(16_329_792, 0);
+      expect(positions[0].cost_basis).not.toBeCloseTo(14_000_000, 0);
       expect(positions[0].cost_basis).toBeLessThan(20_000);
     });
 
@@ -154,10 +154,10 @@ describe("security-detail FX conversion", () => {
 
   describe("getOpenTaxLotsBySecurity", () => {
     it("converts KRW adjusted cost basis + market value + unrealized gain to USD, not the won phantom", () => {
-      const krw = seedSecurity(db, "402340", { currency: "KRW" });
-      // acquisition_price ₩1,632,979.2/unit * 10 units => cost_basis ₩16,329,792
-      seedTaxLot(db, ACCOUNT_ID, krw, "2025-01-01", 1_632_979.2, 10, 16_329_792);
-      seedPrice(db, krw, 1_731_000, TODAY);
+      const krw = seedSecurity(db, "000000", { currency: "KRW" });
+      // acquisition_price ₩1,400,000/unit * 10 units => cost_basis ₩14,000,000
+      seedTaxLot(db, ACCOUNT_ID, krw, "2025-01-01", 1_400_000, 10, 14_000_000);
+      seedPrice(db, krw, 1_500_000, TODAY);
 
       upsertFxRate(db, {
         currency: "KRW",
@@ -169,23 +169,23 @@ describe("security-detail FX conversion", () => {
       const lots = getOpenTaxLotsBySecurity(db, krw);
       expect(lots).toHaveLength(1);
 
-      const expectedMv = 10 * 1_731_000 * 0.000734; // 12,705.54
-      const expectedCostUsd = 10 * 1_632_979.2 * 0.000734; // 11,986.07
+      const expectedMv = 10 * 1_500_000 * 0.000734; // 11,010.00
+      const expectedCostUsd = 10 * 1_400_000 * 0.000734; // 10,276.00
 
       expect(lots[0].current_value).toBeCloseTo(expectedMv, 2);
       expect(lots[0].current_value).toBeLessThan(20_000);
-      expect(lots[0].current_value).not.toBeCloseTo(17_310_000, 0);
+      expect(lots[0].current_value).not.toBeCloseTo(15_000_000, 0);
 
       expect(lots[0].adjusted_cost_basis).toBeCloseTo(expectedCostUsd, 2);
-      expect(lots[0].adjusted_cost_basis).not.toBeCloseTo(16_329_792, 0);
+      expect(lots[0].adjusted_cost_basis).not.toBeCloseTo(14_000_000, 0);
 
       expect(lots[0].unrealized_gain).toBeCloseTo(expectedMv - expectedCostUsd, 2);
-      expect(lots[0].unrealized_gain).toBeCloseTo(719.47, 1);
+      expect(lots[0].unrealized_gain).toBeCloseTo(734.00, 1);
 
       // Task 5d: the RAW returned cost_basis field must also be USD, not the
-      // won notional (₩16,329,792).
+      // won notional (₩14,000,000).
       expect(lots[0].cost_basis).toBeCloseTo(expectedCostUsd, 2);
-      expect(lots[0].cost_basis).not.toBeCloseTo(16_329_792, 0);
+      expect(lots[0].cost_basis).not.toBeCloseTo(14_000_000, 0);
     });
 
     it("USD control is unaffected (byte-unchanged behavior)", () => {
@@ -214,15 +214,15 @@ describe("getSecurityDetail usdPerUnit", () => {
   });
 
   it("exposes the KRW fx factor; hero price stays NATIVE for chart/ratio consumers", () => {
-    const krw = seedSecurity(db, "402340", { currency: "KRW" });
-    seedPrice(db, krw, 1_602_000, TODAY);
+    const krw = seedSecurity(db, "000000", { currency: "KRW" });
+    seedPrice(db, krw, 1_450_000, TODAY);
     upsertFxRate(db, { currency: "KRW", usdPerUnit: 0.0006531, asOf: TODAY, source: "test" });
 
     const detail = getSecurityDetail(db, krw);
     expect(detail).toBeTruthy();
     // Display sites multiply by this; the chart price-line + ATR ratio keep native.
     expect(detail!.usdPerUnit).toBeCloseTo(0.0006531, 9);
-    expect(detail!.price?.close_price).toBe(1_602_000);
+    expect(detail!.price?.close_price).toBe(1_450_000);
   });
 
   it("USD security exposes 1 (byte-identical rendering)", () => {
@@ -233,8 +233,8 @@ describe("getSecurityDetail usdPerUnit", () => {
   });
 
   it("missing fx row falls back to 1 (native passthrough, never fabricated)", () => {
-    const krw = seedSecurity(db, "402340", { currency: "KRW" });
-    seedPrice(db, krw, 1_602_000, TODAY);
+    const krw = seedSecurity(db, "000000", { currency: "KRW" });
+    seedPrice(db, krw, 1_450_000, TODAY);
     const detail = getSecurityDetail(db, krw);
     expect(detail!.usdPerUnit).toBe(1);
   });
