@@ -107,7 +107,7 @@ function nasdaq(symbol: string, date: string, hour: "bmo" | "amc" | null): numbe
 function macro(title: string, date: string): number {
   upsertCalendarEvents(db, [
     {
-      source: "fred",
+      source: "claude_macro",
       event_type: "cpi",
       event_date: date,
       event_time: "08:30",
