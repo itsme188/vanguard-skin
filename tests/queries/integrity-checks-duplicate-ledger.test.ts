@@ -235,6 +235,67 @@ describe("identical rows dated after the newest statement", () => {
   });
 });
 
+describe("rows with no import batch", () => {
+  const seedBatchless = (sec: number, sourceKey: string | null) =>
+    seedTxn({
+      accountId: VANGUARD,
+      securityId: sec,
+      date: TRADE,
+      type: "BUY",
+      quantity: 10,
+      amount: -1000,
+      sourceKey,
+      batchId: null,
+    });
+
+  it("each is its own origin: two identical batch-less rows with no ordinal suffix are one question", () => {
+    const sec = seedSec(db, "ZZA");
+    seedHold(db, VANGUARD, sec, STMT, "stmt", 100);
+    seedBatchless(sec, "manual:a");
+    seedBatchless(sec, "manual:b");
+
+    const hits = dupHits();
+    expect(hits).toHaveLength(1);
+    expect(hits[0].severity).toBe("warning");
+    expect(hits[0].reason).toBe(
+      `ZZA (Vanguard Taxable): 2 identical BUY rows on ${TRADE}: check for a duplicate import`
+    );
+    const all = runIntegrityChecks(db);
+    expect(all.critical.filter((h) => h.key.startsWith("duplicate-ledger:"))).toHaveLength(0);
+  });
+
+  it("a batch-less row beside an imported twin is still a hit, and a lone one is not", () => {
+    const sec = seedSec(db, "ZZA");
+    seedHold(db, VANGUARD, sec, STMT, "stmt", 100);
+    seedBatchless(sec, "manual:a");
+    expect(dupHits()).toEqual([]);
+    seedTxn({
+      accountId: VANGUARD,
+      securityId: sec,
+      date: TRADE,
+      type: "BUY",
+      quantity: 10,
+      amount: -1000,
+      sourceKey: canonicalKey("ZZA", TRADE, "BUY", -1000),
+      batchId: seedBatch("september.csv"),
+    });
+    expect(dupHits()).toHaveLength(1);
+  });
+
+  it("does not change the confidence score or its cap", () => {
+    const sec = seedSec(db, "ZZA");
+    seedHold(db, VANGUARD, sec, STMT, "stmt", 100);
+    seedBatchless(sec, "manual:a");
+    const before = getDataConfidence(db);
+    seedBatchless(sec, "manual:b");
+    const after = getDataConfidence(db);
+    expect(after.integrity.warnings.some((h) => h.key.startsWith("duplicate-ledger:"))).toBe(true);
+    expect(after.integrity.critical.some((h) => h.key.startsWith("duplicate-ledger:"))).toBe(false);
+    expect(after.capReason).toEqual(before.capReason);
+    expect(after.overallScore).toBe(before.overallScore);
+  });
+});
+
 describe("rows that are not hits", () => {
   it("ignores identical rows in one batch when neither carries an ordinal suffix", () => {
     const sec = seedSec(db, "ZZA");

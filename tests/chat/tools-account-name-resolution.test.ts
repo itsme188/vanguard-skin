@@ -294,6 +294,19 @@ describe("tools that take account_name", () => {
     expect(await holdingSymbols("IBKR")).toEqual(["ZZC"]);
   });
 
+  it("query_trade_reviews given a name that resolves to no single account answers with a top-level error listing the names", async () => {
+    for (const name of ["all", "ALL"]) {
+      const result = (await executeTool(db, "query_trade_reviews", { account_name: name })) as {
+        error?: string;
+        data?: unknown;
+      };
+      expect(result.data, name).toBeUndefined();
+      expect(result.error, name).toMatch(/one account at a time/);
+      expect(result.error, name).toContain('"Vanguard Taxable"');
+      expect(result.error, name).toContain('"IBKR"');
+    }
+  });
+
   it("query_trade_reviews without a name still defaults to the IBKR account", async () => {
     const result = (await executeTool(db, "query_trade_reviews", {})) as {
       error?: string;

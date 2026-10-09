@@ -530,16 +530,16 @@ describe("runEarningsFallback v5 context (notes + bogeys)", () => {
     "This fallback DOES include your curated bogeys (consensus + whisper) and your prior thesis notes (mirrored in the nightly snapshot). ";
   const CURATED_FOOTER = " your curated bogeys ARE included above. Analyst recs";
   const CURATED_FOOTER_WITH_NOTES = " your curated bogeys + your prior notes ARE included above. Analyst recs";
-  const VENDOR_HEADING = "Bogeys (vendor consensus only — no curated bogeys on file)";
+  const VENDOR_HEADING = "Bogeys (vendor consensus only — no curated bogeys shown here)";
   const VENDOR_LEAD =
-    "These are the vendor consensus figures (Finnhub). No curated bogeys or whisper numbers are on file for this event.";
+    "These are the vendor consensus figures (Finnhub). No curated bogeys or whisper numbers are shown here.";
   const VENDOR_NOTE =
-    "This fallback DOES include the vendor consensus (no curated bogeys are on file) (mirrored in the nightly snapshot). ";
+    "This fallback DOES include the vendor consensus (no curated bogeys are shown here) (mirrored in the nightly snapshot). ";
   const VENDOR_NOTE_WITH_NOTES =
-    "This fallback DOES include the vendor consensus (no curated bogeys are on file) and your prior thesis notes (mirrored in the nightly snapshot). ";
-  const VENDOR_FOOTER = " The vendor consensus is shown above; no curated bogeys are on file. Analyst recs";
+    "This fallback DOES include the vendor consensus (no curated bogeys are shown here) and your prior thesis notes (mirrored in the nightly snapshot). ";
+  const VENDOR_FOOTER = " The vendor consensus is shown above; no curated bogeys are shown here. Analyst recs";
   const VENDOR_FOOTER_WITH_NOTES =
-    " The vendor consensus is shown above (no curated bogeys are on file) and your prior notes ARE included above. Analyst recs";
+    " The vendor consensus is shown above (no curated bogeys are shown here) and your prior notes ARE included above. Analyst recs";
 
   const vendorRow = {
     ...printBase,
@@ -580,7 +580,7 @@ describe("runEarningsFallback v5 context (notes + bogeys)", () => {
   }
 
   const ALL_CURATED = [CURATED_HEADING, CURATED_LEAD, "your curated bogeys"];
-  const ALL_VENDOR = [VENDOR_HEADING, VENDOR_LEAD, "no curated bogeys are on file"];
+  const ALL_VENDOR = [VENDOR_HEADING, VENDOR_LEAD, "no curated bogeys are shown here"];
 
   it("only the vendor's row: heading, note and footer say vendor consensus, never curated", async () => {
     const html = await htmlWith([vendorRow]);

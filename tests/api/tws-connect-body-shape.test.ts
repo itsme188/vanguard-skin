@@ -65,6 +65,9 @@ describe("POST /api/tws/connect checks clientId", () => {
     ["an array", [1]],
     ["a boolean", true],
     ["a negative number", -1],
+    ["a whole number far too large to be a client id", 1e20],
+    ["a whole number past the safe range", 2 ** 53],
+    ["one past the top of the range", 1000],
   ])("%s: 400, plain error, no connection attempted", async (_label, clientId) => {
     const res = await POST(makeReq({ host: "127.0.0.1", port: 7496, clientId }));
     expect(res.status).toBe(400);
@@ -76,6 +79,12 @@ describe("POST /api/tws/connect checks clientId", () => {
     const res = await POST(makeReq({ host: "127.0.0.1", port: 7496, clientId: 7 }));
     expect(res.status).toBe(200);
     expect(hoisted.connectTws).toHaveBeenCalledWith({ host: "127.0.0.1", port: 7496, clientId: 7 });
+  });
+
+  it("the top of the range (999) is forwarded", async () => {
+    const res = await POST(makeReq({ host: "127.0.0.1", port: 7496, clientId: 999 }));
+    expect(res.status).toBe(200);
+    expect(hoisted.connectTws).toHaveBeenCalledWith({ host: "127.0.0.1", port: 7496, clientId: 999 });
   });
 
   it("zero is a whole number (the TWS master client id)", async () => {

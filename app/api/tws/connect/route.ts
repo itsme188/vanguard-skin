@@ -19,11 +19,13 @@ export async function POST(request: NextRequest) {
     const body = parsed as { host?: unknown; port?: unknown; clientId?: unknown };
 
     // clientId: absent (or null) keeps the configured one; anything else must
-    // be a whole number, zero included (0 is the TWS master client id).
+    // be a whole number from 0 to 999, zero included (0 is the TWS master
+    // client id; this project's ids are single digits, and Number.isInteger
+    // alone would let 1e20 through).
     let clientId: number | undefined;
     if (body.clientId !== undefined && body.clientId !== null) {
       const raw = body.clientId;
-      if (typeof raw !== "number" || !Number.isInteger(raw) || raw < 0) {
+      if (typeof raw !== "number" || !Number.isSafeInteger(raw) || raw < 0 || raw > 999) {
         return NextResponse.json(
           { success: false, error: "clientId must be a whole number" },
           { status: 400 },

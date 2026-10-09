@@ -15,7 +15,7 @@ import type Database from "better-sqlite3";
 import { todayET, nowET } from "@/lib/calendar/date-utils";
 import { getRiskFreeRate } from "@/lib/queries/risk-free-rate";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
-import { normalizeAccountIds } from "@/lib/compute/factors";
+import { accountIdsFilterSql, normalizeAccountIds } from "@/lib/compute/factors";
 import { isOptionLive } from "@/lib/compute/option-expiry";
 import { issuerSiblings } from "@/lib/securities/issuer-family";
 
@@ -437,13 +437,9 @@ export function computePortfolioGreeks(
     (options?.today ? new Date(`${options.today}T16:00:00Z`) : new Date());
 
   // A scope is a SET of accounts; `accountIds` wins over the legacy single
-  // `accountId`. Empty/undefined = whole portfolio.
-  const scopeIds = normalizeAccountIds(options);
-  const accountFilter =
-    scopeIds && scopeIds.length > 0
-      ? `AND h.account_id IN (${scopeIds.map(() => "?").join(",")})`
-      : "";
-  const params: (string | number)[] = scopeIds ?? [];
+  // `accountId`. Undefined = whole portfolio; a defined EMPTY list = no
+  // accounts (it matches no row and never widens to the whole book).
+  const { sql: accountFilter, params } = accountIdsFilterSql(normalizeAccountIds(options));
 
   // Get option positions from latest holdings with underlying prices.
   // asOfDate=today scopes "latest" to today-or-earlier (vs picking up a stray

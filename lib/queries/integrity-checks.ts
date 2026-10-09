@@ -801,7 +801,11 @@ export function scanPossibleDuplicateLedgerHits(
     for (const rows of groups.values()) {
       if (rows.length < 2) continue;
       const suffixed = rows.some((r) => hasOrdinalSuffix(r.sourceKey));
-      const origins = new Set(rows.map((r) => (r.batchId === null ? "none" : String(r.batchId))));
+      // A row with no import batch is its own origin (keyed by its row id),
+      // so two identical batch-less rows count as two origins.
+      const origins = new Set(
+        rows.map((r) => (r.batchId === null ? `row:${r.id}` : `batch:${r.batchId}`))
+      );
       if (!suffixed && origins.size < 2) continue;
       const first = rows[0]; // lowest id: rows are read in id order
       hits.push({

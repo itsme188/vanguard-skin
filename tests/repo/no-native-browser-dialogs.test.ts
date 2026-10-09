@@ -1,7 +1,9 @@
 /**
- * No native browser dialog under app/ (owner ruling 2026-10-08).
+ * No native browser dialog under app/ or in a lib/ component (owner ruling
+ * 2026-10-08).
  *
- * `window.confirm` / `window.alert` are drawn by the browser, not the app:
+ * `confirm` / `alert` / `prompt` (bare, or qualified with `window.`,
+ * `globalThis.` or `self.`) are drawn by the browser, not the app:
  * they ignore the theme, block the page, and in the packaged desktop shell
  * carry the shell's own title. A yes/no question goes through
  * `useConfirmPrompt` (app/dashboard/components/useConfirmPrompt.tsx); a
@@ -9,8 +11,9 @@
  *
  * A file that declares its OWN `confirm` / `alert` function (for example the
  * earnings date chip's `async function confirm(date, time)`) is calling that,
- * not the browser, so a bare call there is allowed; a `window.`-qualified call
- * never is.
+ * not the browser, so a bare call there is allowed; a qualified call never is.
+ * A hook result named `prompt` (`const prompt = useConfirmPrompt()`) is used
+ * as `prompt.ask(...)` / `prompt.dialog`, never called, so it is not a hit.
  */
 import { describe, it, expect } from "vitest";
 import { readdirSync, readFileSync, statSync } from "node:fs";
@@ -33,9 +36,9 @@ function isCommentLine(line: string): boolean {
 
 function nativeDialogCalls(src: string): string[] {
   const hits: string[] = [];
-  for (const name of ["confirm", "alert"]) {
+  for (const name of ["confirm", "alert", "prompt"]) {
     const declaresOwn = new RegExp(`(?:function\\s+${name}\\s*\\(|(?:const|let)\\s+${name}\\s*=\\s*(?:async\\s*)?(?:\\(|function))`).test(src);
-    const qualified = new RegExp(`window\\.${name}\\s*\\(`);
+    const qualified = new RegExp(`(?<![.\\w$])(?:(?:window|globalThis|self)\\.)+${name}\\s*\\(`);
     const bare = new RegExp(`(?<![.\\w$])${name}\\s*\\(`);
     src.split("\n").forEach((line, i) => {
       if (isCommentLine(line)) return;
@@ -63,6 +66,36 @@ describe("the scanner itself", () => {
     expect(nativeDialogCalls("// was: confirm(message)")).toEqual([]);
   });
 
+  it("flags the browser's prompt(), bare or qualified", () => {
+    expect(nativeDialogCalls('const name = prompt("Name?");')).toHaveLength(1);
+    expect(nativeDialogCalls('const name = window.prompt("Name?");')).toHaveLength(1);
+  });
+
+  it("flags a globalThis- or self-qualified call", () => {
+    expect(nativeDialogCalls('if (!globalThis.confirm("x")) return;')).toHaveLength(1);
+    expect(nativeDialogCalls('self.alert("x");')).toHaveLength(1);
+    expect(nativeDialogCalls('globalThis.prompt("x");')).toHaveLength(1);
+    expect(nativeDialogCalls("function alert() {}\nself.alert('x');")).toHaveLength(1);
+  });
+
+  it("ignores the hook result conventionally named prompt", () => {
+    expect(
+      nativeDialogCalls(
+        [
+          "const prompt = useConfirmPrompt();",
+          'const ok = await prompt.ask({ title: "Delete?" });',
+          "return <>{prompt.dialog}</>;",
+        ].join("\n"),
+      ),
+    ).toEqual([]);
+  });
+
+  it("ignores a property, a method on another object and a longer name", () => {
+    expect(nativeDialogCalls('tools.prompt("x"); buildPrompt("x"); prompt_text("x");')).toEqual([]);
+    expect(nativeDialogCalls("this.alert(1); myself.alert(2); notwindow.confirm(3);")).toEqual([]);
+    expect(nativeDialogCalls("const prompt = (text: string) => text;\nprompt('x');")).toEqual([]);
+  });
+
   it("a window-qualified call is flagged even beside a local of the same name", () => {
     expect(
       nativeDialogCalls("function confirm() {}\nwindow.confirm('x');"),
@@ -70,10 +103,12 @@ describe("the scanner itself", () => {
   });
 });
 
-describe("app/ asks and reports in the app's own UI", () => {
-  it("no file calls the browser's confirm() or alert()", () => {
+describe("app/ and lib/ components ask and report in the app's own UI", () => {
+  it("no file calls the browser's confirm(), alert() or prompt()", () => {
     const offenders: string[] = [];
-    for (const file of sourceFiles("app")) {
+    const files = [...sourceFiles("app"), ...sourceFiles("lib").filter((f) => f.endsWith(".tsx"))];
+    expect(files.some((f) => f.startsWith("lib/"))).toBe(true);
+    for (const file of files) {
       for (const hit of nativeDialogCalls(readFileSync(file, "utf8"))) {
         offenders.push(`${file}:${hit}`);
       }

@@ -400,7 +400,8 @@ export interface EarningsEmailClaim {
  *    wrong one).
  *  - `ignored_manual_twin`: the LATER of two live hand-entered rows for one
  *    company; email follows the earlier (lib/earnings/manual-twin-email.ts).
- *    Refused on the automatic roads only, see `claimEarningsEmailSlot`.
+ *    Refused on every road (sweep, nudge and manual), see
+ *    `claimEarningsEmailSlot`.
  *  - `event_not_found`: there is no calendar row with this id (never there,
  *    or deleted since the candidate list was built). Refused for everyone:
  *    there is no print to write about, and the audit row could not be stored
@@ -480,10 +481,9 @@ export function getSendRow(
  * refused before its token is minted).
  *
  * `refuseIgnoredManualTwin` (default true) also refuses the later of two live
- * hand-entered rows. The send service turns it off for the two roads where a
- * person pressed a button on that very row (`nudge`, `manual`): which of two
- * hand-entered dates is right is the user's call, and the Hub already tells
- * them email follows the earlier one.
+ * hand-entered rows. The send service leaves it on for every mode (`sweep`,
+ * `nudge` and `manual`): email follows the earlier of the two dates even when
+ * a person pressed a button on the later row, and the Hub tells them so.
  */
 export function claimEarningsEmailSlot(
   db: Database.Database,

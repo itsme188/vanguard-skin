@@ -911,8 +911,8 @@ async function composeAndSend(
   if (hasNotes) included.push("your prior notes");
   const includedNote = vendorOnly
     ? hasNotes
-      ? " The vendor consensus is shown above (no curated bogeys are on file) and your prior notes ARE included above."
-      : " The vendor consensus is shown above; no curated bogeys are on file."
+      ? " The vendor consensus is shown above (no curated bogeys are shown here) and your prior notes ARE included above."
+      : " The vendor consensus is shown above; no curated bogeys are shown here."
     : included.length > 0
       ? ` ${included.join(" + ")} ARE included above.`
       : "";
@@ -1405,7 +1405,7 @@ function renderNote(
   if (ctx.hasBogeys)
     have.push(
       ctx.bogeyClaim === "vendor_only"
-        ? "the vendor consensus (no curated bogeys are on file)"
+        ? "the vendor consensus (no curated bogeys are shown here)"
         : "your curated bogeys (consensus + whisper)",
     );
   if (ctx.hasNotes) have.push("your prior thesis notes");
@@ -1528,7 +1528,7 @@ function renderBogeysBlock(bogeys: SnapshotBogey[]): string {
   // is byte-identical to before.
   const lead =
     snapshotBogeyClaim(entries.map((e) => e.bogey)) === "vendor_only"
-      ? `## Bogeys (vendor consensus only — no curated bogeys on file)\n\nThese are the vendor consensus figures (Finnhub). No curated bogeys or whisper numbers are on file for this event.`
+      ? `## Bogeys (vendor consensus only — no curated bogeys shown here)\n\nThese are the vendor consensus figures (Finnhub). No curated bogeys or whisper numbers are shown here.`
       : `## Bogeys (your curated consensus + whisper — preferred over Finnhub)\n\nWhisper numbers are the bar that matters — beat-the-whisper is the meaningful event. Most recent set first.`;
   return `${lead}\n\n${lines.join("\n\n---\n\n")}`;
 }

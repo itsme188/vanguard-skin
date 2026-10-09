@@ -17,6 +17,7 @@ import { coerceNoteType, coerceNoteSentiment } from "@/lib/notes/coerce";
 import { computeTwr } from "@/lib/compute/twr";
 import { computeXirr } from "@/lib/compute/xirr";
 import { resolveChatAccounts, type ChatAccountResolution } from "@/lib/chat/account-scope";
+import { getAllAccounts } from "@/lib/queries/accounts";
 import { annotateToolResult } from "@/lib/chat/validate";
 import { getSeriesData, searchSeries, getLatestValue, FRED_SERIES } from "@/lib/apis/fred";
 import { getCompanyFinancials, getCompanyInfo, getRecentFilings, getInsiderTransactions } from "@/lib/apis/edgar";
@@ -1412,10 +1413,17 @@ export async function executeTool(
 
       case "query_trade_reviews": {
         // Resolved above to exactly one account (default: IBKR).
+        // A name that resolves to no single account ("all") is refused with
+        // the same top-level error shape as every other account tool, naming
+        // the accounts it may ask for; it is never wrapped inside `data`.
         const account = scopeAccounts?.[0];
         if (!account) {
-          rawResult = { error: `Account "${input.account_name ?? "IBKR"}" not found` };
-          break;
+          const names = getAllAccounts(db)
+            .map((a) => `"${a.name}"`)
+            .join(", ");
+          return {
+            error: `"${requestedAccount}" does not name one account and this tool reads one account at a time. Call it once per account with an exact account name (${names}), or omit account_name for the IBKR account.`,
+          };
         }
 
         if (input.period_start) {
