@@ -79,7 +79,7 @@ describe("startStreaming — contract currency", () => {
   });
 
   it("uses the security's own stored currency for the contract (non-USD)", () => {
-    const secId = seedSecurity(db, "402340", { conId: 555, currency: "KRW" });
+    const secId = seedSecurity(db, "000000", { conId: 555, currency: "KRW" });
 
     const mockApi = {
       setMarketDataType: vi.fn(),
@@ -113,7 +113,7 @@ describe("startStreaming — contract currency", () => {
   });
 
   it("forces USD for an OPTION contract even when the security's stored currency is non-USD (KRW)", () => {
-    const secId = seedSecurity(db, "402340  260320C00045000", {
+    const secId = seedSecurity(db, "000000  260320C00045000", {
       conId: 556,
       currency: "KRW",
       securityType: "option",

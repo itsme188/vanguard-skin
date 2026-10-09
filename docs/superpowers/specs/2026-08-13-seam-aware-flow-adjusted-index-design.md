@@ -3,7 +3,7 @@
 **Date:** 2026-08-13
 **Status:** Approved scope (user, 2026-08-13); Codex review round 1 folded in (findings 2,3,4,5,6,7,8,9 addressed; finding 1 escalated to user — see session log); pending user review
 **Owner:** Interactive session (ledger vol/drawdown entries carry fixer-must-skip markers)
-**Replaces:** the flow-synthesis idea for `analysis-risk-decomposition--vol-drawdown-sharpe-count-cash-flows-as-returns-regression-1` (the $83K 2026-07-11 synthesized deposit was disproven — statement shows no such flow)
+**Replaces:** the flow-synthesis idea for `analysis-risk-decomposition--vol-drawdown-sharpe-count-cash-flows-as-returns-regression-1` (the 2026-07-11 synthesized deposit was disproven — statement shows no such flow)
 
 ## 1. Problem
 
@@ -23,16 +23,16 @@ specifics):
 
 - **Go-live seam** (canonical → plaid, account 1, 2026-07-11): the day before
   carries the stale prior-month statement anchor; the first Plaid anchor snaps
-  ~11 days of accumulated drift into one step — a **~+4% fake day** with a
-  six-figure cash component. Account 3 has the analogous canonical → tws seam
+  ~11 days of accumulated drift into one step — a **fake up day of a few percent** with a
+  large cash component. Account 3 has the analogous canonical → tws seam
   at its 2026-04-06 TWS go-live.
 - **Recurring month-end seams** (daily source ↔ statement, every month in the
-  live era): at 2026-07-31 the three accounts read fake steps of roughly
-  ±1–3% — same defect, smaller magnitude, systematic (2 transitions per
+  live era): at 2026-07-31 the three accounts read fake steps of a
+  percent or more — same defect, smaller magnitude, systematic (2 transitions per
   account per month).
 
-Consequences today: single-account vol reads roughly double (24–29% vs
-components' true levels), Sharpe derives from the contaminated vol, drawdown
+Consequences today: single-account vol reads roughly double the
+components' true levels, Sharpe derives from the contaminated vol, drawdown
 windows can start or trough on a splice day, and the flow-repair script
 (`scripts/repair-missing-external-flows.ts`) proposed synthesizing a deposit
 for the 07-11 seam that the statement disproves.
@@ -52,7 +52,7 @@ read as a market move.
 
 Rejected alternatives:
 
-- **Go-live seams only** — leaves the recurring ±0.6–2.9% month-end steps in
+- **Go-live seams only** — leaves the recurring month-end steps in
   the vol stream.
 - **Magnitude-gated bridging** — tunable threshold, inconsistent semantics.
 - **Persisted seam column on `daily_valuations`** (write-time stamping) —

@@ -38,7 +38,7 @@ function seedTransaction(
 // Accounts-page sibling of tests/queries/security-detail-transactions-fx.test.ts:
 // the a703773 fix covered only Security Detail; the Accounts Recent
 // Transactions query rendered the same KRW rows as raw USD (deep-QA
-// 2026-07-28: −$16,320,000 shown for a −$10,850 buy).
+// 2026-07-28: −$14,000,000 shown for a −$9,307 buy).
 describe("getTransactionsByAccount FX conversion", () => {
   let db: Database.Database;
   const ACCOUNT_ID = 1;
@@ -50,10 +50,10 @@ describe("getTransactionsByAccount FX conversion", () => {
   });
 
   it("converts a KRW transaction's price_per_share + amount to USD", () => {
-    const krw = seedSecurity(db, "402340", { currency: "KRW" });
+    const krw = seedSecurity(db, "000000", { currency: "KRW" });
     seedTransaction(db, ACCOUNT_ID, krw, {
-      pricePerShare: 1_632_000,
-      amount: -16_320_000,
+      pricePerShare: 1_400_000,
+      amount: -14_000_000,
     });
     upsertFxRate(db, {
       currency: "KRW",
@@ -63,8 +63,8 @@ describe("getTransactionsByAccount FX conversion", () => {
     });
 
     const [row] = getTransactionsByAccount(db, ACCOUNT_ID);
-    expect(row.price_per_share).toBeCloseTo(1_632_000 * 0.0006648, 2); // ~$1,085
-    expect(row.amount).toBeCloseTo(-16_320_000 * 0.0006648, 2); // ~-$10,850
+    expect(row.price_per_share).toBeCloseTo(1_400_000 * 0.0006648, 2); // ~$930.72
+    expect(row.amount).toBeCloseTo(-14_000_000 * 0.0006648, 2); // ~-$9,307.20
   });
 
   it("leaves a USD transaction byte-identical (rate 1 path)", () => {

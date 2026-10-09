@@ -87,10 +87,10 @@ describe("Analysis allocation FX", () => {
     seedHolding(db, acctId, aaplId, 10000, 1_800_000);
     seedPrice(db, aaplId, 208);
 
-    // KRW holding: 10 sh @ ₩1,731,000 = ₩17,310,000 notional.
-    const krwId = seedSecurity(db, "402340", { currency: "KRW" });
+    // KRW holding: 10 sh @ ₩1,500,000 = ₩15,000,000 notional.
+    const krwId = seedSecurity(db, "000000", { currency: "KRW" });
     seedHolding(db, acctId, krwId, 10, 15000);
-    seedPrice(db, krwId, 1_731_000);
+    seedPrice(db, krwId, 1_500_000);
 
     upsertFxRate(db, {
       currency: "KRW",
@@ -102,7 +102,7 @@ describe("Analysis allocation FX", () => {
     const alloc = getAllocationByDimension(db, "symbol");
 
     const usdRow = alloc.find((a) => a.group_name === "AAPL");
-    const krwRow = alloc.find((a) => a.group_name === "402340");
+    const krwRow = alloc.find((a) => a.group_name === "000000");
 
     expect(usdRow).toBeTruthy();
     expect(krwRow).toBeTruthy();
@@ -110,14 +110,14 @@ describe("Analysis allocation FX", () => {
     // USD control unchanged.
     expect(usdRow!.total_market_value).toBe(2_080_000);
 
-    // KRW row valued in USD (₩17,310,000 * 0.000734 ≈ $12,705.54),
-    // NOT the won notional ($17,310,000 if FX were never applied).
-    const expectedKrwUsd = 10 * 1_731_000 * 0.000734;
+    // KRW row valued in USD (₩15,000,000 * 0.000734 ≈ $11,010.00),
+    // NOT the won notional ($15,000,000 if FX were never applied).
+    const expectedKrwUsd = 10 * 1_500_000 * 0.000734;
     expect(krwRow!.total_market_value).toBeCloseTo(expectedKrwUsd, 5);
     expect(krwRow!.total_market_value).toBeLessThan(20_000);
 
     // Allocation total reflects real USD (~$2.09M), NOT the won-as-dollars
-    // phantom (~$19.39M = $2.08M + ₩17.31M treated as $17.31M).
+    // phantom (~$19.39M = $2.08M + ₩15M treated as $15M).
     const total = alloc.reduce((sum, a) => sum + a.total_market_value, 0);
     expect(total).toBeCloseTo(2_080_000 + expectedKrwUsd, 5);
     expect(total).toBeGreaterThan(2_000_000);
@@ -127,14 +127,14 @@ describe("Analysis allocation FX", () => {
 
 // ─── cost_basis fallback FX (no price row → the `WHEN h.cost_basis > 0 THEN
 // h.cost_basis` branch fires). Pre-fix this returned the raw won notional
-// (₩16,329,792 read as $16,329,792); it must be USD-converted the same way
+// (₩14,000,000 read as $14,000,000); it must be USD-converted the same way
 // the priced branch is. ────────────────────────────────────────────────────
 describe("Analysis cost_basis fallback FX (Task 7a, Gap 2)", () => {
-  const KRW_COST_BASIS = 16_329_792;
+  const KRW_COST_BASIS = 14_000_000;
   const KRW_RATE = 0.000734;
-  const expectedUsd = KRW_COST_BASIS * KRW_RATE; // ≈ $11,986.07
+  const expectedUsd = KRW_COST_BASIS * KRW_RATE; // ≈ $10,276.00
 
-  function seedKrwNoPriceHolding(acctId: number, symbol = "005930") {
+  function seedKrwNoPriceHolding(acctId: number, symbol = "000001") {
     const krwId = seedSecurity(db, symbol, { currency: "KRW" });
     // Deliberately NO seedPrice() call — forces the cost_basis fallback.
     seedHolding(db, acctId, krwId, 10, KRW_COST_BASIS);
@@ -152,7 +152,7 @@ describe("Analysis cost_basis fallback FX (Task 7a, Gap 2)", () => {
     seedKrwNoPriceHolding(acctId);
 
     const alloc = getAllocationByDimension(db, "symbol");
-    const krwRow = alloc.find((a) => a.group_name === "005930");
+    const krwRow = alloc.find((a) => a.group_name === "000001");
 
     expect(krwRow).toBeTruthy();
     expect(krwRow!.total_market_value).toBeCloseTo(expectedUsd, 2);
@@ -175,7 +175,7 @@ describe("Analysis cost_basis fallback FX (Task 7a, Gap 2)", () => {
     seedKrwNoPriceHolding(acctId);
 
     const metrics = getConcentrationMetrics(db);
-    const krwPos = metrics.top_positions.find((p) => p.symbol === "005930");
+    const krwPos = metrics.top_positions.find((p) => p.symbol === "000001");
 
     expect(krwPos).toBeTruthy();
     expect(krwPos!.market_value).toBeCloseTo(expectedUsd, 2);
@@ -213,7 +213,7 @@ describe("Analysis cost_basis fallback FX (Task 7a, Gap 2)", () => {
     seedKrwNoPriceHolding(acctId);
 
     const heatmap = getFactorHeatmap(db);
-    const krwRow = heatmap.find((r) => r.symbol === "005930");
+    const krwRow = heatmap.find((r) => r.symbol === "000001");
 
     expect(krwRow).toBeTruthy();
     expect(krwRow!.market_value).toBeCloseTo(expectedUsd, 2);

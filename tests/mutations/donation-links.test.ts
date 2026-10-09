@@ -137,7 +137,7 @@ describe("linkDonationLegs", () => {
   beforeEach(() => {
     db = fresh();
     seedSecurity(db, 1, "AAPL"); // USD via column default
-    seedSecurity(db, 2, "005930.KS", "KRW"); // non-USD
+    seedSecurity(db, 2, "000001.KS", "KRW"); // non-USD
 
     // Base fixture: donation 1, quantity 10, security 1
     seedDonation(db, { id: 1, kind: "stock", securityId: 1, quantity: 10, fmvUsd: 1000 });
@@ -358,7 +358,7 @@ describe("assignDonationLots", () => {
   beforeEach(() => {
     db = fresh();
     seedSecurity(db, 1, "AAPL");
-    seedSecurity(db, 2, "005930.KS", "KRW");
+    seedSecurity(db, 2, "000001.KS", "KRW");
 
     // Donation 1: confirmed out link, quantity 10, security 1
     seedDonation(db, { id: 1, kind: "stock", securityId: 1, quantity: 10, fmvUsd: 1000, receivedDate: "2026-01-10" });

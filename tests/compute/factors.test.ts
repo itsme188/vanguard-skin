@@ -247,19 +247,19 @@ describe("FX conversion (Task 9b — factor tilt weights)", () => {
     db.prepare("INSERT INTO holdings (account_id, security_id, as_of_date, quantity) VALUES (1, 1, ?, 10)").run(today);
     db.prepare("INSERT INTO prices (security_id, date, close_price) VALUES (1, ?, 208)").run(today);
 
-    // KRW holding: 10 sh @ ₩1,731,000 = ₩17,310,000 notional. fx 0.000734 → ≈$12,705.54. Small Cap.
+    // KRW holding: 10 sh @ ₩1,500,000 = ₩15,000,000 notional. fx 0.000734 → ≈$11,010.00. Small Cap.
     db.prepare(
-      "INSERT INTO securities (id, symbol, name, market_cap_category, currency) VALUES (2, '402340', 'KRW Co', 'Small Cap', 'KRW')"
+      "INSERT INTO securities (id, symbol, name, market_cap_category, currency) VALUES (2, '000000', 'KRW Co', 'Small Cap', 'KRW')"
     ).run();
     db.prepare("INSERT INTO holdings (account_id, security_id, as_of_date, quantity) VALUES (1, 2, ?, 10)").run(today);
-    db.prepare("INSERT INTO prices (security_id, date, close_price) VALUES (2, ?, 1731000)").run(today);
+    db.prepare("INSERT INTO prices (security_id, date, close_price) VALUES (2, ?, 1500000)").run(today);
     db.prepare(
       "INSERT INTO fx_rates (currency, usd_per_unit, as_of, source) VALUES ('KRW', 0.000734, ?, 'test')"
     ).run(today);
 
     const result = computeFactorAnalysis(db);
 
-    const expectedKrwUsd = 10 * 1_731_000 * 0.000734; // ≈ $12,705.54
+    const expectedKrwUsd = 10 * 1_500_000 * 0.000734; // ≈ $11,010.00
     const expectedTotal = expectedKrwUsd + 2_080;
 
     expect(result.sizeTilt).not.toBeNull();

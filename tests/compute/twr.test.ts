@@ -606,14 +606,14 @@ describe("TWR computation", () => {
   // the option only filtered perAccount[]. The Performance view headline
   // therefore showed the combined portfolio number for every scope.
   //
-  // Ground truth: chained statement TWRs verified against the IBKR
-  // PortfolioAnalyst PDF to the basis point.
+  // Fixture: SYNTHETIC monthly returns (invented, round). Each expected
+  // headline is the hand chain of that account's five months.
   describe("scope-aware top-level TWR", () => {
     const MONTHS = ["2026-01-31", "2026-02-28", "2026-03-31", "2026-04-30", "2026-05-31"];
     const MONTHLY_RETURNS: Record<number, number[]> = {
-      1: [-0.010212, -0.026796, -0.055982, 0.1464, 0.1191], // Vanguard Taxable (canonical, decimal)
-      2: [0.020503, 0.010643, -0.048169, 0.2384, 0.0669], // Roth (canonical, decimal)
-      3: [0.04988, -0.034033, 0.012633, 0.05239320524, 0.07706298396], // IBKR (Apr/May rows are ibkr-activity, stored as PERCENT)
+      1: [-0.01, -0.02, -0.05, 0.14, 0.12], // Vanguard Taxable (canonical, decimal)
+      2: [0.02, 0.01, -0.04, 0.2, 0.06], // Roth (canonical, decimal)
+      3: [0.05, -0.03, 0.01, 0.0525, 0.08], // IBKR (Apr/May rows are ibkr-activity, stored as PERCENT)
     };
     const START_VALUES: Record<number, number> = { 1: 1000000, 2: 300000, 3: 500000 };
 
@@ -626,7 +626,7 @@ describe("TWR computation", () => {
         MONTHLY_RETURNS[acctId].forEach((r, i) => {
           v = v * (1 + r);
           // IBKR Apr+May came in via the ibkr-activity parser, which stores
-          // twr as a PERCENT (5.239320524 = 5.24%); everything else decimal.
+          // twr as a PERCENT (5.25 = 5.25%); everything else decimal.
           const isIbkrPct = acctId === 3 && i >= 3;
           seedSnapshot(db, acctId, MONTHS[i], v, {
             twr: isIbkrPct ? r * 100 : r,
@@ -636,28 +636,28 @@ describe("TWR computation", () => {
       }
     }
 
-    it("returns Vanguard Taxable's own chained TWR for accountId=1 (~+16.66% YTD)", () => {
+    it("returns Vanguard Taxable's own chained TWR for accountId=1 (~+17.68% YTD)", () => {
       seedGroundTruth();
       const result = computeTwr(db, { startDate: "2026-01-01", accountId: 1 });
       expect(result).not.toBeNull();
-      expect(result!.totalReturn).toBeCloseTo(chain(MONTHLY_RETURNS[1]), 6); // 0.166625…
-      expect(result!.totalReturn).toBeCloseTo(0.1666, 4);
+      expect(result!.totalReturn).toBeCloseTo(chain(MONTHLY_RETURNS[1]), 6); // 0.99 x 0.98 x 0.95 x 1.14 x 1.12 - 1 = 0.176814
+      expect(result!.totalReturn).toBeCloseTo(0.1768, 4);
     });
 
-    it("returns Roth's own chained TWR for accountId=2 (~+29.70% YTD)", () => {
+    it("returns Roth's own chained TWR for accountId=2 (~+25.80% YTD)", () => {
       seedGroundTruth();
       const result = computeTwr(db, { startDate: "2026-01-01", accountId: 2 });
       expect(result).not.toBeNull();
-      expect(result!.totalReturn).toBeCloseTo(chain(MONTHLY_RETURNS[2]), 6); // 0.297049…
-      expect(result!.totalReturn).toBeCloseTo(0.2970, 4);
+      expect(result!.totalReturn).toBeCloseTo(chain(MONTHLY_RETURNS[2]), 6); // 1.02 x 1.01 x 0.96 x 1.20 x 1.06 - 1 = 0.257998
+      expect(result!.totalReturn).toBeCloseTo(0.2580, 4);
     });
 
-    it("returns IBKR's own chained TWR for accountId=3, honoring ibkr-activity percent rows (~+16.41% YTD)", () => {
+    it("returns IBKR's own chained TWR for accountId=3, honoring ibkr-activity percent rows (~+16.93% YTD)", () => {
       seedGroundTruth();
       const result = computeTwr(db, { startDate: "2026-01-01", accountId: 3 });
       expect(result).not.toBeNull();
-      expect(result!.totalReturn).toBeCloseTo(chain(MONTHLY_RETURNS[3]), 6); // 0.164054…
-      expect(result!.totalReturn).toBeCloseTo(0.1641, 4);
+      expect(result!.totalReturn).toBeCloseTo(chain(MONTHLY_RETURNS[3]), 6); // 1.05 x 0.97 x 1.01 x 1.0525 x 1.08 - 1 = 0.169306
+      expect(result!.totalReturn).toBeCloseTo(0.1693, 4);
     });
 
     it("top-level fields mirror perAccount[0] when scoped to a single account", () => {

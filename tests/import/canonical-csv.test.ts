@@ -164,33 +164,33 @@ IBKR,2025-04-15,,BUY,AAPL,Apple Inc,Stock,10,150,1500,0,`;
     // sometimes emits negative qty on sells (Vanguard PDF convention); now the parser
     // normalizes to abs and pushes a warning so the user sees it.
     const csv = `${header}
-Vanguard Taxable,2026-04-13,,SELL,RSP,Invesco S&P 500 EW,ETF,-400,196.17,78466.98,1.62,
-Vanguard Taxable,2026-04-10,,SELL,ACN,Accenture,Stock,-35.256,182.65,6439.20,0,`;
+Vanguard Taxable,2026-04-01,,SELL,ZZA,ZZA Fund,ETF,-400,200.00,80000.00,2.00,
+Vanguard Taxable,2026-04-02,,SELL,ZZB,ZZB Corp,Stock,-12.5,100.00,1250.00,0,`;
 
     const result = parseCanonicalCsv(csv, "txn.csv");
     expect(result.transactions).toHaveLength(2);
     expect(result.transactions[0].quantity).toBe(400);
-    expect(result.transactions[1].quantity).toBe(35.256);
+    expect(result.transactions[1].quantity).toBe(12.5);
     // Warnings should mention both rows so the user notices the normalization.
-    expect(result.warnings.some((w) => w.includes("RSP") && w.includes("normalized"))).toBe(true);
-    expect(result.warnings.some((w) => w.includes("ACN") && w.includes("normalized"))).toBe(true);
+    expect(result.warnings.some((w) => w.includes("ZZA") && w.includes("normalized"))).toBe(true);
+    expect(result.warnings.some((w) => w.includes("ZZB") && w.includes("normalized"))).toBe(true);
   });
 
   it("source_key includes amount-as-cents so split fills don't collide", () => {
-    // Regression: 2026-04-13 had two RSP SELL fills (400 shares @ $78,466.98 and 100
-    // shares @ $19,664.09) on the same day. Pre-fix source_key omitted amount and the
+    // Regression: one day carried two SELL fills of the same fund (synthetic here:
+    // 400 shares for $80,000.00 and 100 shares for $20,100.00). Pre-fix source_key omitted amount and the
     // second row was silently lost to UNIQUE constraint. Now both keys differ.
     const csv = `${header}
-Vanguard Taxable,2026-04-13,,SELL,RSP,Invesco S&P 500 EW,ETF,400,196.1715,78466.98,1.62,
-Vanguard Taxable,2026-04-13,,SELL,RSP,Invesco S&P 500 EW,ETF,100,196.6450,19664.09,0.41,`;
+Vanguard Taxable,2026-04-01,,SELL,ZZA,ZZA Fund,ETF,400,200.0000,80000.00,2.00,
+Vanguard Taxable,2026-04-01,,SELL,ZZA,ZZA Fund,ETF,100,201.0000,20100.00,0.50,`;
 
     const result = parseCanonicalCsv(csv, "txn.csv");
     expect(result.transactions).toHaveLength(2);
     const keys = result.transactions.map((t) => t.sourceKey);
     expect(new Set(keys).size).toBe(2);
-    // Cents are integer Math.round(amount * 100): 7846698 and 1966409
-    expect(keys[0]).toBe("canonical:txn:Vanguard Taxable:RSP:2026-04-13:SELL:7846698");
-    expect(keys[1]).toBe("canonical:txn:Vanguard Taxable:RSP:2026-04-13:SELL:1966409");
+    // Cents are integer Math.round(amount * 100): 8000000 and 2010000
+    expect(keys[0]).toBe("canonical:txn:Vanguard Taxable:ZZA:2026-04-01:SELL:8000000");
+    expect(keys[1]).toBe("canonical:txn:Vanguard Taxable:ZZA:2026-04-01:SELL:2010000");
   });
 
   it("disambiguates duplicate zero-amount gift/journal transfers (same key + amount)", () => {
@@ -200,25 +200,25 @@ Vanguard Taxable,2026-04-13,,SELL,RSP,Invesco S&P 500 EW,ETF,100,196.6450,19664.
     // was silently dropped by INSERT OR IGNORE. Now the first keeps the bare key
     // (idempotent) and the second gets a ":#2" suffix — both survive.
     const csv = `${header}
-Vanguard Taxable,2026-05-13,,TRANSFER_OUT,XMTR,Xometry Inc Cl A,Stock,100,,0,,Journal out (cash)
-Vanguard Taxable,2026-05-13,,TRANSFER_OUT,XMTR,Xometry Inc Cl A,Stock,100,,0,,Journal out to XXXX1494-1 (margin)`;
+Vanguard Taxable,2026-05-13,,TRANSFER_OUT,ZZC,ZZC Corp Cl A,Stock,100,,0,,Journal out (cash)
+Vanguard Taxable,2026-05-13,,TRANSFER_OUT,ZZC,ZZC Corp Cl A,Stock,100,,0,,Journal out to XXXX0000-1 (margin)`;
 
     const result = parseCanonicalCsv(csv, "txn.csv");
     expect(result.transactions).toHaveLength(2);
     const keys = result.transactions.map((t) => t.sourceKey);
     expect(new Set(keys).size).toBe(2);
-    expect(keys[0]).toBe("canonical:txn:Vanguard Taxable:XMTR:2026-05-13:TRANSFER_OUT:0");
-    expect(keys[1]).toBe("canonical:txn:Vanguard Taxable:XMTR:2026-05-13:TRANSFER_OUT:0:#2");
+    expect(keys[0]).toBe("canonical:txn:Vanguard Taxable:ZZC:2026-05-13:TRANSFER_OUT:0");
+    expect(keys[1]).toBe("canonical:txn:Vanguard Taxable:ZZC:2026-05-13:TRANSFER_OUT:0:#2");
   });
 
   it("does not suffix non-duplicate keys (idempotency preserved)", () => {
     // A lone transfer keeps the bare key so re-imports of existing data no-op.
     const csv = `${header}
-Vanguard Taxable,2026-05-13,,TRANSFER_OUT,XMTR,Xometry Inc Cl A,Stock,100,,0,,Single gift`;
+Vanguard Taxable,2026-05-13,,TRANSFER_OUT,ZZC,ZZC Corp Cl A,Stock,100,,0,,Single gift`;
     const result = parseCanonicalCsv(csv, "txn.csv");
     expect(result.transactions).toHaveLength(1);
     expect(result.transactions[0].sourceKey).toBe(
-      "canonical:txn:Vanguard Taxable:XMTR:2026-05-13:TRANSFER_OUT:0"
+      "canonical:txn:Vanguard Taxable:ZZC:2026-05-13:TRANSFER_OUT:0"
     );
   });
 
@@ -268,16 +268,16 @@ describe("post-2026-04 BUY/SELL amount sign auto-normalization", () => {
 
   it("flips a positive BUY_TO_OPEN amount to negative on/after 2026-04-01 and warns", () => {
     const csv = `${header}
-Vanguard Taxable,2026-05-05,,BUY_TO_OPEN,INTC  260717P00100000,INTC Put,Option,20,11.01,2202.00,0,`;
+Vanguard Taxable,2026-05-05,,BUY_TO_OPEN,ZZD   260717P00100000,ZZD Put,Option,2,10.50,2100.00,0,`;
 
     const result = parseCanonicalCsv(csv, "txn.csv");
     expect(result.transactions).toHaveLength(1);
-    expect(result.transactions[0].amount).toBe(-2202);
+    expect(result.transactions[0].amount).toBe(-2100);
     expect(
       result.warnings.some(
         (w) =>
           w.includes("BUY_TO_OPEN") &&
-          w.includes("normalized to -2202") &&
+          w.includes("normalized to -2100") &&
           w.includes("post-2026-04")
       )
     ).toBe(true);
@@ -285,7 +285,7 @@ Vanguard Taxable,2026-05-05,,BUY_TO_OPEN,INTC  260717P00100000,INTC Put,Option,2
 
   it("flips a negative SELL_TO_CLOSE amount to positive on/after 2026-04-01 and warns", () => {
     const csv = `${header}
-Vanguard Taxable,2026-05-06,,SELL_TO_CLOSE,INTC  260717P00100000,INTC Put,Option,20,12.00,-2400.00,0,`;
+Vanguard Taxable,2026-05-06,,SELL_TO_CLOSE,ZZD   260717P00100000,ZZD Put,Option,2,12.00,-2400.00,0,`;
 
     const result = parseCanonicalCsv(csv, "txn.csv");
     expect(result.transactions[0].amount).toBe(2400);
@@ -363,20 +363,20 @@ Vanguard Taxable,2026/05/10,,BUY,AAPL,Apple Inc,Stock,10,150,1500.00,0,slash-for
     // CSV re-upload must land on the identical source_key as the original
     // wrong-sign import, not create a second row.
     const wrongSignCsv = `${header}
-Vanguard Taxable,2026-05-05,,BUY_TO_OPEN,INTC  260717P00100000,INTC Put,Option,20,11.01,2202.00,0,`;
+Vanguard Taxable,2026-05-05,,BUY_TO_OPEN,ZZD   260717P00100000,ZZD Put,Option,2,10.50,2100.00,0,`;
     const correctSignCsv = `${header}
-Vanguard Taxable,2026-05-05,,BUY_TO_OPEN,INTC  260717P00100000,INTC Put,Option,20,11.01,-2202.00,0,`;
+Vanguard Taxable,2026-05-05,,BUY_TO_OPEN,ZZD   260717P00100000,ZZD Put,Option,2,10.50,-2100.00,0,`;
 
     const wrongResult = parseCanonicalCsv(wrongSignCsv, "wrong.csv");
     const correctResult = parseCanonicalCsv(correctSignCsv, "correct.csv");
 
-    expect(wrongResult.transactions[0].amount).toBe(-2202);
-    expect(correctResult.transactions[0].amount).toBe(-2202);
+    expect(wrongResult.transactions[0].amount).toBe(-2100);
+    expect(correctResult.transactions[0].amount).toBe(-2100);
     expect(wrongResult.transactions[0].sourceKey).toBe(
       correctResult.transactions[0].sourceKey
     );
     expect(wrongResult.transactions[0].sourceKey).toBe(
-      "canonical:txn:Vanguard Taxable:INTC  260717P00100000:2026-05-05:BUY_TO_OPEN:-220200"
+      "canonical:txn:Vanguard Taxable:ZZD   260717P00100000:2026-05-05:BUY_TO_OPEN:-210000"
     );
   });
 });

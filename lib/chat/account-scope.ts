@@ -93,20 +93,3 @@ export function resolveChatAccounts(
     error: `No account matches "${wanted}". ${optionsText(accounts)}`,
   };
 }
-
-/**
- * The id list for a chat tool's `account_name`: undefined means every
- * account (no name, or "all"); an ambiguous or unknown name is an EMPTY list,
- * which every scope-aware engine reads as "no accounts", never the whole
- * book. Tools should prefer `resolveChatAccounts` so they can return its
- * error message.
- */
-export function resolveAccountScopeIds(
-  db: Database.Database,
-  accountName: string | undefined,
-): number[] | undefined {
-  const resolved = resolveChatAccounts(db, accountName);
-  if (resolved.kind === "all") return undefined;
-  if (resolved.kind === "error") return [];
-  return resolved.accounts.map((a) => a.id);
-}

@@ -85,27 +85,27 @@ describe("getPortfolioSummaryForChat FX conversion", () => {
     seedHolding(db, ACCOUNT_ID, aapl, 100, TODAY, 20000);
     seedPrice(db, aapl, TODAY, 250);
 
-    // KRW holding: 10 sh @ ₩1,731,000 = ₩17,310,000 notional; cost basis
-    // ₩16,329,792. Pre-fix this renders as $17,310,000 MV (phantom).
-    const krw = seedSecurity(db, "402340", { currency: "KRW" });
-    seedHolding(db, ACCOUNT_ID, krw, 10, TODAY, 16_329_792);
-    seedPrice(db, krw, TODAY, 1_731_000);
+    // KRW holding: 10 sh @ ₩1,500,000 = ₩15,000,000 notional; cost basis
+    // ₩14,000,000. Pre-fix this renders as $15,000,000 MV (phantom).
+    const krw = seedSecurity(db, "000000", { currency: "KRW" });
+    seedHolding(db, ACCOUNT_ID, krw, 10, TODAY, 14_000_000);
+    seedPrice(db, krw, TODAY, 1_500_000);
 
     upsertFxRate(db, { currency: "KRW", usdPerUnit: 0.000734, asOf: TODAY, source: "test" });
 
     const summary = getPortfolioSummaryForChat(db);
 
-    const expectedKrwUsdMv = 10 * 1_731_000 * 0.000734; // 12,705.54
-    const expectedKrwUsdCost = 16_329_792 * 0.000734; // 11,986.07
-    const expectedGain = expectedKrwUsdMv - expectedKrwUsdCost; // ~719.47
+    const expectedKrwUsdMv = 10 * 1_500_000 * 0.000734; // 11,010.00
+    const expectedKrwUsdCost = 14_000_000 * 0.000734; // 10,276.00
+    const expectedGain = expectedKrwUsdMv - expectedKrwUsdCost; // ~734.00
 
-    expect(summary).toContain("402340");
+    expect(summary).toContain("000000");
     expect(summary).toContain(`MV:${formatUSD(expectedKrwUsdMv)}`);
     expect(summary).toContain(`G/L:+${formatUSD(expectedGain)}`);
 
-    // Must NOT show the won-notional phantom ($17,310,000) anywhere.
-    expect(summary).not.toContain("$17,310,000");
-    expect(summary).not.toContain("17,310,000");
+    // Must NOT show the won-notional phantom ($15,000,000) anywhere.
+    expect(summary).not.toContain("$15,000,000");
+    expect(summary).not.toContain("15,000,000");
 
     // USD control unaffected.
     expect(summary).toContain("MV:$25,000");
@@ -117,23 +117,23 @@ describe("getPortfolioSummaryForChat FX conversion", () => {
     seedHolding(db, ACCOUNT_ID, aapl, 100, TODAY);
     seedPrice(db, aapl, TODAY, 250); // $25,000
 
-    const krw = seedSecurity(db, "402340", { currency: "KRW", asset_class: "Intl Equity" });
+    const krw = seedSecurity(db, "000000", { currency: "KRW", asset_class: "Intl Equity" });
     seedHolding(db, ACCOUNT_ID, krw, 10, TODAY);
-    seedPrice(db, krw, TODAY, 1_731_000);
+    seedPrice(db, krw, TODAY, 1_500_000);
 
     upsertFxRate(db, { currency: "KRW", usdPerUnit: 0.000734, asOf: TODAY, source: "test" });
 
     const summary = getPortfolioSummaryForChat(db);
-    const expectedKrwUsdMv = 10 * 1_731_000 * 0.000734; // 12,705.54
+    const expectedKrwUsdMv = 10 * 1_500_000 * 0.000734; // 11,010.00
 
     expect(summary).toContain("Asset Allocation");
     expect(summary).toContain(`Intl Equity: ${formatUSD(expectedKrwUsdMv)}`);
-    expect(summary).not.toContain("$17,310,000");
+    expect(summary).not.toContain("$15,000,000");
     expect(summary).toContain(`US Equity: $25,000`);
   });
 
   it("tax-loss harvesting candidates compute the loss in USD, not the won phantom", () => {
-    const krw = seedSecurity(db, "402340", { currency: "KRW" });
+    const krw = seedSecurity(db, "000000", { currency: "KRW" });
     // 100 units acquired @ ₩2,000,000, now priced @ ₩1,700,000 -> a loss.
     seedTaxLot(db, ACCOUNT_ID, krw, "2025-01-01", 2_000_000, 100, 200_000_000);
     seedPrice(db, krw, TODAY, 1_700_000);
@@ -147,7 +147,7 @@ describe("getPortfolioSummaryForChat FX conversion", () => {
     const expectedLoss = expectedUsdMv - expectedUsdCost; // -22,020
 
     expect(summary).toContain("Tax-Loss Harvesting Candidates");
-    expect(summary).toContain("402340");
+    expect(summary).toContain("000000");
     expect(summary).toContain(formatUSD(expectedLoss));
 
     // Must NOT show the won-notional phantom loss (-$30,000,000).
@@ -155,21 +155,21 @@ describe("getPortfolioSummaryForChat FX conversion", () => {
   });
 
   it("Tax Summary open-lots cost basis uses USD, not the won phantom (Task 5d)", () => {
-    const krw = seedSecurity(db, "402340", { currency: "KRW" });
-    // 10 units @ ₩1,632,979.2/unit -> cost_basis ₩16,329,792.
-    seedTaxLot(db, ACCOUNT_ID, krw, "2025-01-01", 1_632_979.2, 10, 16_329_792);
-    seedPrice(db, krw, TODAY, 1_731_000);
+    const krw = seedSecurity(db, "000000", { currency: "KRW" });
+    // 10 units @ ₩1,400,000/unit -> cost_basis ₩14,000,000.
+    seedTaxLot(db, ACCOUNT_ID, krw, "2025-01-01", 1_400_000, 10, 14_000_000);
+    seedPrice(db, krw, TODAY, 1_500_000);
 
     upsertFxRate(db, { currency: "KRW", usdPerUnit: 0.000734, asOf: TODAY, source: "test" });
 
     const summary = getPortfolioSummaryForChat(db);
 
-    const expectedUsdCost = 16_329_792 * 0.000734; // ~11,986.07 -> "$11,986"
+    const expectedUsdCost = 14_000_000 * 0.000734; // ~10,276.00 -> "$10,276"
 
     expect(summary).toContain("Tax Summary");
     expect(summary).toContain(`cost basis: ${formatUSD(expectedUsdCost)}`);
 
-    // Must NOT show the won-notional phantom cost basis (₩16,329,792).
-    expect(summary).not.toContain("16,329,792");
+    // Must NOT show the won-notional phantom cost basis (₩14,000,000).
+    expect(summary).not.toContain("14,000,000");
   });
 });

@@ -15,7 +15,7 @@ A dedicated surface answering two questions: *what in my book is actually protec
 3. **Placement: Analysis 5th sub-view** — `/dashboard/analysis?view=defense`, alongside Workspace / Diagnostics / Performance / Trade Reviews.
 4. **Guidance: deterministic score + AI prose** — testable per-hedge columns (delta coverage, theta bleed, runway, efficiency) plus a cached Sonnet narrative via the existing `analysis_narratives` pattern.
 
-Live-book grounding (2026-07-05): 72 open options (68 in Vanguard Taxable, 4 IBKR), **zero short options anywhere** — all hedging is long puts / long calls vs shorts. True same-name pairs: MSFT (42 sh + 2 puts), INTC (125 sh + 4 puts + 20 amplifying calls), PAYC/PCTY (−80 sh shorts + 1 call each). Proxy sleeve: puts on MTUM/EWG/EWY/IGV/SMH/XLF/KRE/ARKK plus a −300 MAGS short. Standalone bearish bets: puts on non-held RGTI/TD/CM/PANW etc.
+Live-book grounding (2026-07-05): the open options sit mostly in Vanguard Taxable with a few in IBKR, **zero short options anywhere** — all hedging is long puts / long calls vs shorts. True same-name pairs come in three shapes: long stock with puts, long stock with puts plus amplifying calls, and short stock with a call. Proxy sleeve: puts on sector, country and factor ETFs plus one ETF short. Standalone bearish bets: puts on non-held single names.
 
 ## Financial model
 
@@ -26,23 +26,23 @@ All classification runs on **signed delta-notional exposure**: stock/ETF at sign
 Per underlying, instruments split into *core* (stock/ETF shares, signed) and *options on that underlying*:
 
 - **Opposing-sign options are hedges.** Long core + puts → *hedged long*; short core + calls → *hedged short*. Coverage = min(|offsetting Δ-notional|, |core|) ÷ |core|.
-- **Same-sign options on a name with a long core are amplifiers**, never hedges (INTC calls over long stock). They raise the name's ranked exposure and get an explicit amplifier flag. Same-sign *negative* stacks on ETFs (the MAGS puts over the MAGS short) are not amplified risk — they are more protection, and route to Tier 2 along with the short itself.
+- **Same-sign options on a name with a long core are amplifiers**, never hedges (calls over a long stock position). They raise the name's ranked exposure and get an explicit amplifier flag. Same-sign *negative* stacks on ETFs (ETF puts over a short in the same ETF) are not amplified risk — they are more protection, and route to Tier 2 along with the short itself.
 - **Offset credit caps at the core.** Excess offsetting notional flips the name net-short (net-long for shorts); if the underlying is an ETF, the excess spills into Tier 2 as proxy protection.
 
 ### Tier 2 — proxy protection
 
-Negative-exposure instruments on **ETFs with no (or fully consumed) offsetting core** — long ETF puts and short ETF share positions alike (the MAGS short is protection the same way its puts are). Attribution cascade, first match wins:
+Negative-exposure instruments on **ETFs with no (or fully consumed) offsetting core** — long ETF puts and short ETF share positions alike (an ETF short is protection the same way its puts are). Attribution cascade, first match wins:
 
 1. **Sector:** ETF has cached `etf_sector_weights` → protective notional distributes across GICS sectors by weight (reuse `explodeHoldingBySector`) and credits against the book's long exposure in those sectors.
-2. **Geography:** country ETFs (EWG, EWY) credit against held names whose `geography` classification matches.
-3. **Beta fallback:** unmatched (MTUM, ARKK, …) credits as broad-book protection at β × notional. β resolution: `security_betas` row → computed from cached closes with the trading-day gap guard (pairs spanning >7 calendar days dropped) → 1.0, flagged as assumed.
+2. **Geography:** country ETFs credit against held names whose `geography` classification matches.
+3. **Beta fallback:** unmatched (factor and thematic ETFs) credits as broad-book protection at β × notional. β resolution: `security_betas` row → computed from cached closes with the trading-day gap guard (pairs spanning >7 calendar days dropped) → 1.0, flagged as assumed.
 
 > **Note (2026-10-08, owner ruling):** a deep in-the-money LONG call counts as core. A long call whose absolute delta is at or above the deep-in-the-money threshold (`DEEP_ITM_ABS_DELTA` in `lib/compute/hedging.ts`) is treated as stock at its delta-weighted share count, so a put against it is a hedge in every scope. Only a REAL delta counts: one computed from the assumed default volatility, or with no volatility source at all, never makes a call core, and the row says why. A short call and every put never count. One reader: `stockEquivalentVerdict`. A put and a call left on one underlying net into one row. Test: `tests/compute/hedging-deep-call-core.test.ts`. This narrows "Long calls with no core" below: such a call is no longer listed as speculation.
 
 ### Deliberately NOT credited as protection
 
-- **Long calls with no core** (DRAM, FROG, LFMD, …) — speculation; shown as leveraged long exposure in the rankings.
-- **Single-name puts on non-held stocks** (RGTI, TD, CM, PANW, …) and **naked single-name shorts** (AMD −20) — directional bearish bets; listed in a dedicated "standalone bets" block, never smeared into sector coverage.
+- **Long calls with no core** — speculation; shown as leveraged long exposure in the rankings.
+- **Single-name puts on non-held stocks** and **naked single-name shorts** — directional bearish bets; listed in a dedicated "standalone bets" block, never smeared into sector coverage.
 
 ### Outputs
 

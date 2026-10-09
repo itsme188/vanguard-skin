@@ -96,14 +96,14 @@ function seedSnapshot(db: Database.Database, accountId: number, monthEnd: string
 
 const TODAY = "2025-01-31";
 const KRW_QTY = 10;
-const KRW_PRICE = 1_731_000;
-const KRW_COST_BASIS = 16_329_792;
-const KRW_ACQ_PRICE = 1_632_979.2; // = cost_basis / qty
+const KRW_PRICE = 1_500_000;
+const KRW_COST_BASIS = 14_000_000;
+const KRW_ACQ_PRICE = 1_400_000; // = cost_basis / qty
 const FX_RATE = 0.000734;
 
-const EXPECTED_KRW_USD_MV = KRW_QTY * KRW_PRICE * FX_RATE; // 12,705.54
-const EXPECTED_KRW_USD_COST = KRW_COST_BASIS * FX_RATE; // ~11,986.07
-const EXPECTED_KRW_USD_GAIN = EXPECTED_KRW_USD_MV - EXPECTED_KRW_USD_COST; // ~719.47
+const EXPECTED_KRW_USD_MV = KRW_QTY * KRW_PRICE * FX_RATE; // 11,010.00
+const EXPECTED_KRW_USD_COST = KRW_COST_BASIS * FX_RATE; // ~10,276.00
+const EXPECTED_KRW_USD_GAIN = EXPECTED_KRW_USD_MV - EXPECTED_KRW_USD_COST; // ~734.00
 
 describe("chat-tools FX conversion", () => {
   let db: Database.Database;
@@ -120,14 +120,14 @@ describe("chat-tools FX conversion", () => {
       seedHolding(db, 1, aapl, 100, TODAY, 20000);
       seedPrice(db, aapl, TODAY, 250);
 
-      const krw = seedSecurity(db, "402340", { currency: "KRW" });
+      const krw = seedSecurity(db, "000000", { currency: "KRW" });
       seedHolding(db, 1, krw, KRW_QTY, TODAY, KRW_COST_BASIS);
       seedPrice(db, krw, TODAY, KRW_PRICE);
 
       upsertFxRate(db, { currency: "KRW", usdPerUnit: FX_RATE, asOf: TODAY, source: "test" });
 
       const holdings = getHoldingsForChat(db);
-      const krwRow = holdings.find((h) => h.symbol === "402340");
+      const krwRow = holdings.find((h) => h.symbol === "000000");
       const usdRow = holdings.find((h) => h.symbol === "AAPL");
 
       expect(krwRow).toBeDefined();
@@ -141,7 +141,7 @@ describe("chat-tools FX conversion", () => {
       );
 
       // Must NOT show the won-notional phantom anywhere in the numeric fields.
-      expect(krwRow!.market_value).not.toBeCloseTo(17_310_000, 0);
+      expect(krwRow!.market_value).not.toBeCloseTo(15_000_000, 0);
       expect(krwRow!.cost_basis).not.toBeCloseTo(KRW_COST_BASIS, 0);
 
       // USD control unaffected.
@@ -157,7 +157,7 @@ describe("chat-tools FX conversion", () => {
       seedHolding(db, 1, aapl, 100, TODAY);
       seedPrice(db, aapl, TODAY, 250); // $25,000
 
-      const krw = seedSecurity(db, "402340", { currency: "KRW", asset_class: "Intl Equity" });
+      const krw = seedSecurity(db, "000000", { currency: "KRW", asset_class: "Intl Equity" });
       seedHolding(db, 1, krw, KRW_QTY, TODAY);
       seedPrice(db, krw, TODAY, KRW_PRICE);
 
@@ -169,12 +169,12 @@ describe("chat-tools FX conversion", () => {
 
       expect(intl).toBeDefined();
       expect(intl!.total_market_value).toBeCloseTo(EXPECTED_KRW_USD_MV, 1);
-      expect(intl!.total_market_value).not.toBeCloseTo(17_310_000, 0);
+      expect(intl!.total_market_value).not.toBeCloseTo(15_000_000, 0);
       expect(us!.total_market_value).toBe(25000);
     });
 
     it("converts the cost-basis fallback (unpriced KRW position) to USD", () => {
-      const krw = seedSecurity(db, "402340", { currency: "KRW", asset_class: "Intl Equity" });
+      const krw = seedSecurity(db, "000000", { currency: "KRW", asset_class: "Intl Equity" });
       seedHolding(db, 1, krw, KRW_QTY, TODAY, KRW_COST_BASIS);
       // No price seeded — allocation falls back to cost_basis.
 
@@ -191,7 +191,7 @@ describe("chat-tools FX conversion", () => {
 
   describe("getTaxLotsForChat (open lots)", () => {
     it("converts KRW current value, cost basis, and gain to USD (not the won phantom)", () => {
-      const krw = seedSecurity(db, "402340", { currency: "KRW" });
+      const krw = seedSecurity(db, "000000", { currency: "KRW" });
       seedTaxLot(db, 1, krw, {
         acquisition_date: "2024-01-01",
         acquisition_price: KRW_ACQ_PRICE,
@@ -203,7 +203,7 @@ describe("chat-tools FX conversion", () => {
 
       upsertFxRate(db, { currency: "KRW", usdPerUnit: FX_RATE, asOf: TODAY, source: "test" });
 
-      const lots = getTaxLotsForChat(db, { symbol: "402340" });
+      const lots = getTaxLotsForChat(db, { symbol: "000000" });
       expect(lots).toHaveLength(1);
       const lot = lots[0];
 
@@ -211,14 +211,14 @@ describe("chat-tools FX conversion", () => {
       expect(lot.cost_basis).toBeCloseTo(EXPECTED_KRW_USD_COST, 1);
       expect(lot.unrealized_gain).toBeCloseTo(EXPECTED_KRW_USD_GAIN, 1);
 
-      expect(lot.current_value).not.toBeCloseTo(17_310_000, 0);
+      expect(lot.current_value).not.toBeCloseTo(15_000_000, 0);
       expect(lot.cost_basis).not.toBeCloseTo(KRW_COST_BASIS, 0);
     });
   });
 
   describe("getCashEstimates", () => {
     it("converts KRW holdings_total and estimated_cash to USD (not the won phantom)", () => {
-      const krw = seedSecurity(db, "402340", { currency: "KRW" });
+      const krw = seedSecurity(db, "000000", { currency: "KRW" });
       seedHolding(db, 1, krw, KRW_QTY, TODAY);
       seedPrice(db, krw, TODAY, KRW_PRICE);
       // snapshot_total large enough that estimated_cash stays sane
@@ -232,7 +232,7 @@ describe("chat-tools FX conversion", () => {
       expect(row!.holdings_total).toBeCloseTo(EXPECTED_KRW_USD_MV, 1);
       expect(row!.estimated_cash).toBeCloseTo(100_000 - EXPECTED_KRW_USD_MV, 1);
 
-      expect(row!.holdings_total).not.toBeCloseTo(17_310_000, 0);
+      expect(row!.holdings_total).not.toBeCloseTo(15_000_000, 0);
     });
   });
 });

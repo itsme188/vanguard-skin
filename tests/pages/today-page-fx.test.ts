@@ -3,7 +3,7 @@
  *
  * Commit bdb62a4 added the fx_rates join to the market-value SQL behind the
  * Today page's IBKR figures — pre-fix, a KRW holding rendered its won notional
- * as if it were dollars (10 sh @ ₩1,731,000 read as a $17.3M phantom). That
+ * as if it were dollars (10 sh @ ₩1,500,000 read as a $15M phantom). That
  * conversion now lives in lib/queries/today-holdings.ts, which multiplies both
  * prices and all three market values by COALESCE(fx.usd_per_unit, 1).
  *
@@ -206,16 +206,16 @@ describe("TodayPage — IBKR one-line snapshot FX conversion", () => {
     hoisted.db = db;
   });
 
-  it("sums today's move in CONVERTED dollars — a KRW name contributes ~$228, not its ₩310k notional", async () => {
+  it("sums today's move in CONVERTED dollars — a KRW name contributes ~$220, not its ₩300k notional", async () => {
     const { default: TodayPage } = await import("@/app/dashboard/today/page");
 
     seedMarketClock();
     const acctId = getAccountId("IBKR");
 
-    // KRW holding: 10 sh @ ₩1,731,000 current / ₩1,700,000 prior.
+    // KRW holding: 10 sh @ ₩1,730,000 current / ₩1,700,000 prior (synthetic).
     const KRW_PER_USD = 0.000734;
     const krwQty = 10;
-    const krwCurrent = 1_731_000;
+    const krwCurrent = 1_730_000;
     const krwPrior = 1_700_000;
     const krwId = seedSecurity("XMPL1", "KRW");
     seedHolding(acctId, krwId, krwQty);
@@ -247,13 +247,13 @@ describe("TodayPage — IBKR one-line snapshot FX conversion", () => {
     expect(renderedPct).not.toBeNull();
 
     // Expected: each leg's move converted to USD, then summed.
-    const krwGainUsd = krwQty * (krwCurrent - krwPrior) * KRW_PER_USD; // ≈ $227.54
+    const krwGainUsd = krwQty * (krwCurrent - krwPrior) * KRW_PER_USD; // ≈ $220.20 (300,000 won x 0.000734)
     const usdGain = usdQty * (usdCurrent - usdPrior); //                  = $15.00
-    const expectedGain = krwGainUsd + usdGain; //                         ≈ $242.54
+    const expectedGain = krwGainUsd + usdGain; //                         ≈ $235.20
     expect(renderedGain!).toBeCloseTo(expectedGain, 6);
 
     // Drop the conversion and the KRW leg alone contributes its raw won move
-    // (10 × 31,000 = ₩310,000) as if it were dollars — a ~1,280x inflation of
+    // (10 × 30,000 = ₩300,000) as if it were dollars — a ~1,275x inflation of
     // the whole line. This is the assertion that sees a lost FX factor.
     const unconvertedGain = krwQty * (krwCurrent - krwPrior) + usdGain;
     expect(renderedGain!).not.toBeCloseTo(unconvertedGain, 0);
@@ -263,7 +263,7 @@ describe("TodayPage — IBKR one-line snapshot FX conversion", () => {
     // market values. It is a WEAKER signal than the dollar figure (dropping FX
     // from both numerator and denominator nearly cancels), so it is pinned as
     // a consistency check, not as the FX guard.
-    const krwCurrentValueUsd = krwQty * krwCurrent * KRW_PER_USD; // ≈ $12,705.54
+    const krwCurrentValueUsd = krwQty * krwCurrent * KRW_PER_USD; // ≈ $12,698.20
     const usdCurrentValue = usdQty * usdCurrent; //                   = $1,040.00
     const priorClose = krwCurrentValueUsd + usdCurrentValue - expectedGain;
     expect(renderedPct!).toBeCloseTo((expectedGain / priorClose) * 100, 6);

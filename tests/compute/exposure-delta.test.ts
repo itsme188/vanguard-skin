@@ -223,30 +223,30 @@ describe("FX conversion (Task 9c — exposure-delta market value)", () => {
     db.prepare(`INSERT INTO prices (security_id, date, close_price, source) VALUES (1, ?, 200, 'tws')`).run(today);
     db.prepare(`INSERT INTO holdings (account_id, security_id, as_of_date, quantity, source_key) VALUES (1, 1, ?, 10, 'vg-aapl')`).run(today);
 
-    // KRW holding: 10 sh @ ₩1,731,000 = ₩17,310,000 notional. fx 0.000734 → ≈$12,705.54.
+    // KRW holding: 10 sh @ ₩1,500,000 = ₩15,000,000 notional. fx 0.000734 → ≈$11,010.00.
     db.prepare(
-      `INSERT INTO securities (id, symbol, security_type, sector, currency) VALUES (2, '402340', 'Stock', 'Technology', 'KRW')`
+      `INSERT INTO securities (id, symbol, security_type, sector, currency) VALUES (2, '000000', 'Stock', 'Technology', 'KRW')`
     ).run();
-    db.prepare(`INSERT INTO prices (security_id, date, close_price, source) VALUES (2, ?, 1731000, 'tws')`).run(today);
+    db.prepare(`INSERT INTO prices (security_id, date, close_price, source) VALUES (2, ?, 1500000, 'tws')`).run(today);
     db.prepare(`INSERT INTO holdings (account_id, security_id, as_of_date, quantity, source_key) VALUES (1, 2, ?, 10, 'vg-krw')`).run(today);
     db.prepare(`INSERT INTO fx_rates (currency, usd_per_unit, as_of, source) VALUES ('KRW', 0.000734, ?, 'test')`).run(today);
 
     // A NOT-currently-held KRW candidate, for the synth (line 291) path.
     db.prepare(
-      `INSERT INTO securities (id, symbol, security_type, sector, currency) VALUES (3, '005930', 'Stock', 'Technology', 'KRW')`
+      `INSERT INTO securities (id, symbol, security_type, sector, currency) VALUES (3, '000001', 'Stock', 'Technology', 'KRW')`
     ).run();
     db.prepare(`INSERT INTO prices (security_id, date, close_price, source) VALUES (3, ?, 71000, 'tws')`).run(today);
   });
 
   it("before.totalValue and topConcentrations reflect USD conversion, not KRW notional (r / line 142)", () => {
     const result = computeExposureDelta(db, "all", undefined, []);
-    const expectedKrwUsd = 10 * 1_731_000 * 0.000734; // ≈ $12,705.54
+    const expectedKrwUsd = 10 * 1_500_000 * 0.000734; // ≈ $11,010.00
     const expectedTotal = expectedKrwUsd + 2_000;
 
     expect(result.before.totalValue).toBeCloseTo(expectedTotal, 2);
-    expect(result.before.totalValue).toBeLessThan(20_000); // NOT the ₩17.31M phantom
+    expect(result.before.totalValue).toBeLessThan(20_000); // NOT the ₩15M phantom
 
-    const krw = result.before.topConcentrations.find((c) => c.symbol === "402340")!;
+    const krw = result.before.topConcentrations.find((c) => c.symbol === "000000")!;
     const aapl = result.before.topConcentrations.find((c) => c.symbol === "AAPL")!;
     expect(krw).toBeDefined();
     expect(aapl).toBeDefined();
@@ -257,7 +257,7 @@ describe("FX conversion (Task 9c — exposure-delta market value)", () => {
   it("existing-holding BUY leg on a KRW security moves total portfolio value by exactly the entered USD amount (h / line ~287)", () => {
     const before = computeExposureDelta(db, "all", undefined, []);
     const result = computeExposureDelta(db, "all", undefined, [
-      { symbol: "402340", action: "buy", dollarAmount: 1000 },
+      { symbol: "000000", action: "buy", dollarAmount: 1000 },
     ]);
     // A "$1,000 buy" what-if leg is a USD figure entered by the user — it
     // must change total portfolio value by exactly $1,000 USD, regardless
@@ -280,7 +280,7 @@ describe("FX conversion (Task 9c — exposure-delta market value)", () => {
   it("synthesized new-position BUY leg on a KRW security moves total portfolio value by exactly the entered USD amount (synth / line ~301)", () => {
     const before = computeExposureDelta(db, "all", undefined, []);
     const result = computeExposureDelta(db, "all", undefined, [
-      { symbol: "005930", action: "buy", dollarAmount: 5000 },
+      { symbol: "000001", action: "buy", dollarAmount: 5000 },
     ]);
     // Same correctness requirement as the existing-holding case above: a
     // "$5,000 buy" leg synthesizing a brand-new KRW position must still
@@ -293,7 +293,7 @@ describe("FX conversion (Task 9c — exposure-delta market value)", () => {
     const buggyPreFixDelta = 5000 * 0.000734; // ≈ $3.67 — what the regression produced
     expect(result.after.totalValue).not.toBeCloseTo(before.before.totalValue + buggyPreFixDelta, 2);
     expect(result.after.totalValue).toBeCloseTo(before.before.totalValue + 5000, 2);
-    const synthPos = result.after.topConcentrations.find((c) => c.symbol === "005930");
+    const synthPos = result.after.topConcentrations.find((c) => c.symbol === "000001");
     expect(synthPos).toBeDefined();
   });
 

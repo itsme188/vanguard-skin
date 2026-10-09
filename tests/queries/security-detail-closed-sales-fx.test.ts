@@ -68,7 +68,7 @@ describe("getClosedSalesBySecurity FX conversion", () => {
   });
 
   it("converts every money column for a non-USD sale with an fx_rates row", () => {
-    const sec = seedSecurity(db, "402340", { currency: "KRW" });
+    const sec = seedSecurity(db, "000000", { currency: "KRW" });
     seedBuy(db, ACCOUNT_ID, sec, "2025-01-15", 10, 1000);
     seedSell(db, ACCOUNT_ID, sec, "2025-02-15", 10, 1300);
     computeTaxLots(db);

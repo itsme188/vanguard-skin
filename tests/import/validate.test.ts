@@ -52,7 +52,7 @@ describe("isValidQuantity", () => {
     // Other source paths (IBKR-activity) may use signed quantities legitimately.
     // Pre-2026-05-04 this rejected negatives and silently dropped 20+ rows on April import.
     expect(isValidQuantity(-1)).toBe(true);
-    expect(isValidQuantity(-35.256)).toBe(true);
+    expect(isValidQuantity(-12.5)).toBe(true);
   });
 
   it("rejects NaN, Infinity (non-finite)", () => {

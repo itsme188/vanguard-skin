@@ -408,7 +408,7 @@ describe("market-context", () => {
       // Reproduces 2026-04 INTC: ohlcv_bars synced through mid-month, but
       // daily-snapshot prices extend to the trade's exit date with a much
       // higher close. Pre-fix, the period high was stuck at the bars' max
-      // (~$70.33) even though the trade exited at $87.76 with subsequent
+      // (~$70.33) even though the trade exited at $88 with subsequent
       // closes near $94.
       const securityId = 3; // INTC
 
@@ -456,18 +456,18 @@ describe("market-context", () => {
         symbol: "INTC",
         earliestEntryDate: "2026-04-08",
         exitDate: "2026-04-29",
-        avgEntryPrice: 44.57,
-        exitPrice: 87.76,
+        avgEntryPrice: 45,
+        exitPrice: 88,
       });
       const [ctx] = getMarketContext(db, [trade], 1);
 
       expect(ctx.stockContext).not.toBeNull();
-      // Period high should reflect the trade's exit price (87.76) since it's
+      // Period high should reflect the trade's exit price (88) since it's
       // higher than any bar high. Folded entry/exit guarantees this.
-      expect(ctx.stockContext!.periodHigh).toBeGreaterThanOrEqual(87.76);
-      // Period low should reflect the entry price (44.57) — lower than every
+      expect(ctx.stockContext!.periodHigh).toBeGreaterThanOrEqual(88);
+      // Period low should reflect the entry price (45) — lower than every
       // bar low and every price close in the range.
-      expect(ctx.stockContext!.periodLow).toBeCloseTo(44.57, 2);
+      expect(ctx.stockContext!.periodLow).toBeCloseTo(45, 2);
     });
 
     it("folds entry/exit prices into the period range even when bars exist", () => {
@@ -560,38 +560,38 @@ describe("market-context", () => {
   // ─── Option Origin (exercise / assignment) ────────────────────
 
   describe("option origin", () => {
-    it("surfaces RSP-style long-call exercise on the underlying trade (regression)", () => {
-      // Reproduces the user's 2026-04 RSP case:
-              //   3/30 BUY_TO_OPEN 5 long calls $190 strike, exp 4/10 @ $3.50 premium
-              //   4/10 EXERCISED 5 contracts → 500 shares assigned at $190 strike
-              //   4/13 SELL 400 shares @ $196.17
+    it("surfaces a long-call exercise on the underlying trade (regression)", () => {
+      // Synthetic shape of a long-call exercise followed by a stock sale:
+      //   3/23 BUY_TO_OPEN 4 long calls $200 strike, exp 4/17 @ $3.00 premium
+      //   4/17 EXERCISED 4 contracts → 400 shares delivered at the $200 strike
+      //   4/20 SELL of the delivered shares
       // Insert option security + transactions
       db.prepare(
         `INSERT INTO securities
          (id, symbol, name, security_type, underlying_symbol, strike_price, expiration_date, option_type, multiplier)
-         VALUES (?, ?, ?, 'Option', 'RSP', 190, '2026-04-10', 'CALL', 100)`
-      ).run(100, "RSP   260410C00190000", "RSP 4/10 $190 CALL");
+         VALUES (?, ?, ?, 'Option', 'ZZR', 200, '2026-04-17', 'CALL', 100)`
+      ).run(100, "ZZR   260417C00200000", "ZZR 4/17 $200 CALL");
 
       db.prepare(
         `INSERT INTO transactions (account_id, security_id, trade_date, type, quantity, price_per_share)
-         VALUES (1, 100, '2026-03-30', 'BUY_TO_OPEN', 5, 3.50)`
+         VALUES (1, 100, '2026-03-23', 'BUY_TO_OPEN', 4, 3.00)`
       ).run();
       db.prepare(
         `INSERT INTO transactions (account_id, security_id, trade_date, type, quantity, price_per_share)
-         VALUES (1, 100, '2026-04-10', 'EXERCISED', 5, 0)`
+         VALUES (1, 100, '2026-04-17', 'EXERCISED', 4, 0)`
       ).run();
 
-      // The grouped trade is the 4/13 RSP stock sell. RSP must exist as the
+      // The grouped trade is the 4/20 ZZR stock sell. ZZR must exist as the
       // underlying — securityId 1 is AAPL in the fixture, so use a fresh id.
       db.prepare(
         `INSERT INTO securities (id, symbol, name, security_type) VALUES (?, ?, ?, 'Stock')`
-      ).run(50, "RSP", "Invesco S&P 500 Equal Weight");
+      ).run(50, "ZZR", "ZZR Fund");
 
       const trade = makeGroupedTrade({
         securityId: 50,
-        symbol: "RSP",
+        symbol: "ZZR",
         earliestEntryDate: "2026-03-20",
-        exitDate: "2026-04-13",
+        exitDate: "2026-04-20",
       });
       const [ctx] = getMarketContext(db, [trade], 1);
 
@@ -599,13 +599,13 @@ describe("market-context", () => {
       expect(ctx.optionOrigin!).toHaveLength(1);
       const ev = ctx.optionOrigin![0];
       expect(ev.eventType).toBe("EXERCISED");
-      expect(ev.eventDate).toBe("2026-04-10");
+      expect(ev.eventDate).toBe("2026-04-17");
       expect(ev.optionType).toBe("CALL");
-      expect(ev.contracts).toBe(5);
-      expect(ev.strikePrice).toBe(190);
-      expect(ev.expirationDate).toBe("2026-04-10");
-      expect(ev.openPremiumPerContract).toBe(3.5);
-      expect(ev.openDate).toBe("2026-03-30");
+      expect(ev.contracts).toBe(4);
+      expect(ev.strikePrice).toBe(200);
+      expect(ev.expirationDate).toBe("2026-04-17");
+      expect(ev.openPremiumPerContract).toBe(3);
+      expect(ev.openDate).toBe("2026-03-23");
       expect(ev.openType).toBe("BUY_TO_OPEN");
     });
 

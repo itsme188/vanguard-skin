@@ -59,17 +59,17 @@ describe("getAllHoldings FX conversion", () => {
     seedHolding(db, ACCOUNT_ID, aapl, 10_000, TODAY, 1_800_000);
     seedPrice(db, aapl, TODAY, 208);
 
-    // KRW holding: 10 sh @ ₩1,731,000 = ₩17,310,000 notional; cost basis
-    // ₩16,329,792. Pre-fix current_value renders as ~17,310,000 (phantom).
-    const krw = seedSecurity(db, "402340", { currency: "KRW" });
-    seedHolding(db, ACCOUNT_ID, krw, 10, TODAY, 16_329_792);
-    seedPrice(db, krw, TODAY, 1_731_000);
+    // KRW holding: 10 sh @ ₩1,500,000 = ₩15,000,000 notional; cost basis
+    // ₩14,000,000. Pre-fix current_value renders as ~15,000,000 (phantom).
+    const krw = seedSecurity(db, "000000", { currency: "KRW" });
+    seedHolding(db, ACCOUNT_ID, krw, 10, TODAY, 14_000_000);
+    seedPrice(db, krw, TODAY, 1_500_000);
 
     upsertFxRate(db, { currency: "KRW", usdPerUnit: 0.000734, asOf: TODAY, source: "test" });
 
     const rows = getAllHoldings(db);
     const usdRow = rows.find((r) => r.symbol === "AAPL");
-    const krwRow = rows.find((r) => r.symbol === "402340");
+    const krwRow = rows.find((r) => r.symbol === "000000");
 
     expect(usdRow).toBeTruthy();
     expect(krwRow).toBeTruthy();
@@ -78,19 +78,19 @@ describe("getAllHoldings FX conversion", () => {
     expect(usdRow!.current_value).toBe(2_080_000);
     expect(usdRow!.unrealized_gain).toBe(2_080_000 - 1_800_000);
 
-    // KRW row valued in USD (₩17,310,000 * 0.000734 ≈ $12,705.54), NOT the
-    // won notional ($17,310,000 if FX were never applied).
-    const expectedUsdMv = 10 * 1_731_000 * 0.000734;
-    const expectedUsdCost = 16_329_792 * 0.000734;
+    // KRW row valued in USD (₩15,000,000 * 0.000734 ≈ $11,010.00), NOT the
+    // won notional ($15,000,000 if FX were never applied).
+    const expectedUsdMv = 10 * 1_500_000 * 0.000734;
+    const expectedUsdCost = 14_000_000 * 0.000734;
     expect(krwRow!.current_value).toBeCloseTo(expectedUsdMv, 5);
     expect(krwRow!.current_value).toBeLessThan(20_000);
     expect(krwRow!.unrealized_gain).toBeCloseTo(expectedUsdMv - expectedUsdCost, 5);
 
     // Task 5d: the RAW returned cost_basis field must also be USD, not the
-    // won notional (₩16,329,792) — otherwise pct = gain(USD)/cost_basis(KRW)
+    // won notional (₩14,000,000) — otherwise pct = gain(USD)/cost_basis(KRW)
     // and <Money> rendering both break downstream.
     expect(krwRow!.cost_basis).toBeCloseTo(expectedUsdCost, 5);
-    expect(krwRow!.cost_basis).not.toBeCloseTo(16_329_792, 0);
+    expect(krwRow!.cost_basis).not.toBeCloseTo(14_000_000, 0);
     expect(krwRow!.cost_basis).toBeLessThan(20_000);
 
     // USD control's returned cost_basis is byte-unchanged.
@@ -113,25 +113,25 @@ describe("getHoldingsByAccount FX conversion", () => {
     const aapl = seedSecurity(db, "AAPL", { currency: "USD" });
     seedHolding(db, ACCOUNT_ID, aapl, 100, TODAY, 15_000);
 
-    const krw = seedSecurity(db, "402340", { currency: "KRW" });
-    seedHolding(db, ACCOUNT_ID, krw, 10, TODAY, 16_329_792);
+    const krw = seedSecurity(db, "000000", { currency: "KRW" });
+    seedHolding(db, ACCOUNT_ID, krw, 10, TODAY, 14_000_000);
 
     upsertFxRate(db, { currency: "KRW", usdPerUnit: 0.0006531, asOf: TODAY, source: "test" });
 
     const rows = getHoldingsByAccount(db, ACCOUNT_ID);
     const usdRow = rows.find((r) => r.symbol === "AAPL")!;
-    const krwRow = rows.find((r) => r.symbol === "402340")!;
+    const krwRow = rows.find((r) => r.symbol === "000000")!;
 
     expect(usdRow.cost_basis).toBe(15_000);
-    // ₩16,329,792 × 0.0006531 ≈ $10,665 — NOT the $16.3M phantom.
-    expect(krwRow.cost_basis).toBeCloseTo(16_329_792 * 0.0006531, 5);
+    // ₩14,000,000 × 0.0006531 ≈ $9,143.40 — NOT the $14M phantom.
+    expect(krwRow.cost_basis).toBeCloseTo(14_000_000 * 0.0006531, 5);
     expect(krwRow.cost_basis).toBeLessThan(20_000);
   });
 
   it("missing fx_rates row passes native through at rate 1 (never fabricates)", () => {
-    const krw = seedSecurity(db, "402340", { currency: "KRW" });
-    seedHolding(db, ACCOUNT_ID, krw, 10, TODAY, 16_329_792);
+    const krw = seedSecurity(db, "000000", { currency: "KRW" });
+    seedHolding(db, ACCOUNT_ID, krw, 10, TODAY, 14_000_000);
     const rows = getHoldingsByAccount(db, ACCOUNT_ID);
-    expect(rows[0].cost_basis).toBe(16_329_792);
+    expect(rows[0].cost_basis).toBe(14_000_000);
   });
 });

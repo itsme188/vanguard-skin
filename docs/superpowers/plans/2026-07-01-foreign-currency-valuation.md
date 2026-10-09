@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Make foreign-currency (KRW) holdings value correctly in USD everywhere, eliminating the `402340.KS` $17.3M phantom position, without changing behavior for USD holdings.
+**Goal:** Make foreign-currency (KRW) holdings value correctly in USD everywhere, eliminating the `402340.KS` phantom position, without changing behavior for USD holdings.
 
 **Architecture:** Add a `currency` column to `securities` and an `fx_rates` (currency → USD) table. Populate the rate from the broker's own USD figures during sync (no external FX feed). Apply the conversion at the single valuation chokepoint (`lib/valuation.ts`) so every holdings-derived surface converts uniformly. Account totals from broker NetLiq are untouched.
 
@@ -250,20 +250,20 @@ describe("valuation FX", () => {
   });
 
   it("applies usdPerUnit for a foreign price", () => {
-    // 402340.KS: 10 sh * ₩1,731,000 * 0.000734 ≈ $12,705.54
-    expect(marketValue(10, 1_731_000, "Stock", 1, 0.000734)).toBeCloseTo(12705.54, 1);
+    // KRW lot (synthetic size): 100 sh * ₩1,731,000 * 0.000734 ≈ $127,055.40
+    expect(marketValue(100, 1_731_000, "Stock", 1, 0.000734)).toBeCloseTo(127055.4, 1);
   });
 
   it("SQL: fx defaults to 1 (byte-identical) and multiplies when provided", () => {
     const noFx = adjustedMarketValueSQL("q", "p", "t", "m");
     const db = new Database(":memory:");
     db.exec("CREATE TABLE x (q REAL, p REAL, t TEXT, m REAL, fx REAL)");
-    db.prepare("INSERT INTO x VALUES (10, 1731000, 'Stock', 1, 0.000734)").run();
+    db.prepare("INSERT INTO x VALUES (100, 1731000, 'Stock', 1, 0.000734)").run();
     const usd = adjustedMarketValueSQL("q", "p", "t", "m", "fx");
     const rowUsd = db.prepare(`SELECT ${usd} AS v FROM x`).get() as { v: number };
-    expect(rowUsd.v).toBeCloseTo(12705.54, 1);
+    expect(rowUsd.v).toBeCloseTo(127055.4, 1);
     const rowNoFx = db.prepare(`SELECT ${noFx} AS v FROM x`).get() as { v: number };
-    expect(rowNoFx.v).toBe(1731000 * 10);
+    expect(rowNoFx.v).toBe(1731000 * 100);
   });
 });
 ```
@@ -350,17 +350,17 @@ describe("computeDailyValuations FX", () => {
   it("values a KRW holding in USD, not won", () => {
     const db = new Database(":memory:");
     runMigrations(db);
-    // --- seed: account, KRW security (currency='KRW'), holding 10 @ ₩1,731,000, fx rate ---
+    // --- seed: account, KRW security (currency='KRW'), holding 100 @ ₩1,731,000, fx rate ---
     // (see tests/compute/*.test.ts for the exact insert shape used elsewhere)
     upsertFxRate(db, { currency: "KRW", usdPerUnit: 0.000734, asOf: "2026-07-01", source: "test" });
     // ... run computeDailyValuations(db, ...) and assert the KRW contribution
-    // to total_value ≈ 12_705 USD, NOT 17_310_000.
+    // to total_value ≈ 127_055 USD, NOT 173_100_000.
     expect(true).toBe(true); // replace with the real assertion once seeded
   });
 });
 ```
 
-**Note to implementer:** replace the placeholder assertion by copying the seed pattern from the nearest existing `tests/compute/daily-valuation*.test.ts`; the deliverable is a real assertion that the KRW holding contributes ≈ $12,705 (not ₩17.31M) to `total_value`, plus a USD-holding case that is unchanged.
+**Note to implementer:** replace the placeholder assertion by copying the seed pattern from the nearest existing `tests/compute/daily-valuation*.test.ts`; the deliverable is a real assertion that the KRW holding contributes its USD value (not the KRW magnitude) to `total_value`, plus a USD-holding case that is unchanged.
 
 - [ ] **Step 2: Run test to verify it fails**
 
@@ -417,9 +417,9 @@ import { runMigrations } from "@/lib/db/migrate";
 import { upsertFxRate } from "@/lib/mutations/fx-rates";
 import { getAllocationByDimension } from "@/lib/queries/analysis";
 
-// Seed: one IBKR account, a USD stock (~$2.08M spread) + the KRW 402340
-// (10 @ ₩1,731,000, currency='KRW'), fx KRW=0.000734. Assert the KRW row's
-// value ≈ $12.7K and the allocation total ≈ real USD (~$2.1M), NOT $19.3M.
+// Seed: one IBKR account, a USD stock + the KRW 402340
+// (100 @ ₩1,731,000, currency='KRW'), fx KRW=0.000734. Assert the KRW row's
+// value ≈ $127K and the allocation total stays in real USD, NOT a KRW magnitude.
 describe("Analysis allocation FX", () => {
   it("KRW holding contributes its USD value, not its won notional", () => {
     const db = new Database(":memory:");
@@ -428,14 +428,14 @@ describe("Analysis allocation FX", () => {
     // ... seed accounts/securities/holdings/prices per existing analysis tests ...
     // const alloc = getAllocationByDimension(db, { ...scope..., dimension: "category" });
     // const total = alloc.reduce((s, r) => s + r.value, 0);
-    // expect(total).toBeLessThan(100_000);      // ~$2.1M seed, NOT $19.3M
-    // expect(krwRow.value).toBeCloseTo(12705, -2);
+    // expect(total).toBeLessThan(100_000);      // USD-scale seed, NOT a KRW magnitude
+    // expect(krwRow.value).toBeCloseTo(127055, -2);
     expect(true).toBe(true); // replace with real assertions once seeded
   });
 });
 ```
 
-**Note to implementer:** copy the seed shape from the nearest existing `tests/queries/analysis*.test.ts`. Deliverable: real assertions that the KRW position values at ≈$12.7K and the allocation total reflects real USD, plus a USD-only control that is unchanged.
+**Note to implementer:** copy the seed shape from the nearest existing `tests/queries/analysis*.test.ts`. Deliverable: real assertions that the KRW position values at its USD figure and the allocation total reflects real USD, plus a USD-only control that is unchanged.
 
 - [ ] **Step 2: Run test to verify it fails**
 
@@ -486,13 +486,13 @@ import { mapPosition, deriveUsdPerUnit } from "@/lib/ibkr/map-positions";
 describe("IBKR position currency", () => {
   it("carries currency through mapPosition (default USD)", () => {
     expect(mapPosition({ assetClass: "STK", contractDesc: "AAPL", position: 10, mktPrice: 150 }).currency).toBe("USD");
-    expect(mapPosition({ assetClass: "STK", contractDesc: "402340", currency: "KRW", position: 10, mktPrice: 1_731_000, mktValue: 12705 }).currency).toBe("KRW");
+    expect(mapPosition({ assetClass: "STK", contractDesc: "402340", currency: "KRW", position: 100, mktPrice: 1_731_000, mktValue: 127055 }).currency).toBe("KRW");
   });
 
   it("derives USD-per-unit from mktValue / (mktPrice*qty)", () => {
-    expect(deriveUsdPerUnit(12705, 1_731_000, 10, 1)).toBeCloseTo(0.000734, 6);
-    expect(deriveUsdPerUnit(null as unknown as number, 1_731_000, 10)).toBeNull();
-    expect(deriveUsdPerUnit(12705, 0, 10)).toBeNull();
+    expect(deriveUsdPerUnit(127055, 1_731_000, 100, 1)).toBeCloseTo(0.000734, 6);
+    expect(deriveUsdPerUnit(null as unknown as number, 1_731_000, 100)).toBeNull();
+    expect(deriveUsdPerUnit(127055, 0, 100)).toBeNull();
   });
 });
 ```
@@ -566,9 +566,9 @@ import { runMigrations } from "@/lib/db/migrate";
 import { upsertFxRate } from "@/lib/mutations/fx-rates";
 import { getCrossAccountPositions } from "@/lib/queries/accounts";
 
-// Seed the KRW 402340: cost_basis ₩16,329,792, price ₩1,731,000×10, KRW=0.000734.
-// Assert the returned USD cost basis ≈ $11,986 and unrealized gain is the USD
-// difference (~+$719), NOT a ₩-vs-$ mixed-unit number.
+// Seed the KRW 402340 (synthetic size): cost_basis ₩160,000,000, price ₩1,731,000×100, KRW=0.000734.
+// Assert the returned USD cost basis ≈ $117,440 and unrealized gain is the USD
+// difference (~+$9,615), NOT a ₩-vs-$ mixed-unit number.
 describe("cost basis FX", () => {
   it("converts cost basis to USD for unrealized gain", () => {
     const db = new Database(":memory:");
@@ -580,12 +580,12 @@ describe("cost basis FX", () => {
 });
 ```
 
-**Note to implementer:** replace the placeholder with real assertions using the seed shape from existing `tests/queries/accounts*.test.ts`. Deliverable: USD cost basis ≈ $11,986 and gain ≈ +$719 for the KRW row; a USD row unchanged.
+**Note to implementer:** replace the placeholder with real assertions using the seed shape from existing `tests/queries/accounts*.test.ts`. Deliverable: USD cost basis ≈ $117,440 and gain ≈ +$9,615 for the KRW row; a USD row unchanged.
 
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `npx vitest run tests/queries/cost-basis-fx.test.ts`
-Expected: FAIL — cost basis returned as ₩16.33M.
+Expected: FAIL — cost basis returned in KRW magnitude.
 
 - [ ] **Step 3: Implement** — apply the fx join/multiply at each `cost_basis` gain site found by the grep.
 
@@ -619,7 +619,7 @@ Expected: clean compile (catches type errors the tests miss).
 
 - [ ] **Step 3: Live sanity check (deployed app or dev server)**
 
-Load `/dashboard/today` and `/dashboard/analysis?scope=all` after a TWS/IBKR sync. Confirm: 402340.KS shows ≈ $12.7K (not $17.3M); Analysis allocation total ≈ real portfolio (~$2.1M, not $19.3M); `MU` no longer shows $1,044.79 if it shares the same currency-ingestion class; USD holdings unchanged. Verify `fx_rates` has a `KRW` row: `sqlite3 data/vanguard.db "SELECT * FROM fx_rates;"`.
+Load `/dashboard/today` and `/dashboard/analysis?scope=all` after a TWS/IBKR sync. Confirm: 402340.KS shows its true USD value (not the KRW magnitude); Analysis allocation total matches the real portfolio (not the inflated figure); `MU` no longer shows $1,044.79 if it shares the same currency-ingestion class; USD holdings unchanged. Verify `fx_rates` has a `KRW` row: `sqlite3 data/vanguard.db "SELECT * FROM fx_rates;"`.
 
 - [ ] **Step 4: Update the deep-QA finding**
 

@@ -42,10 +42,10 @@ describe("IBKR activity parser", () => {
   });
 
   it("parses negative TWR correctly", () => {
-    // IBKR reports negative TWR as "-6.43%" — the minus sign must be captured
-    const negTwr = fixture.replace("14.545454545%", "-6.426701465%");
+    // IBKR reports negative TWR as "-6.5%" — the minus sign must be captured
+    const negTwr = fixture.replace("14.545454545%", "-6.5%");
     const result = parseIbkrActivity(negTwr, "test.csv");
-    expect(result.snapshots[0].twr).toBeCloseTo(-6.426701465);
+    expect(result.snapshots[0].twr).toBeCloseTo(-6.5);
   });
 
   it("ignores a secondary zeroed Change-in-NAV block (multi-currency statements)", () => {
@@ -197,33 +197,33 @@ describe("IBKR activity parser", () => {
     const withOptionTrades = fixture.replace(
       'Trades,Data,Order,Stocks,USD,U99999999,MSFT,"2025-01-10, 10:30:00",-50,387.00,375.00,19350,-2.75,-18750,597.25,600,C',
       'Trades,Data,Order,Stocks,USD,U99999999,MSFT,"2025-01-10, 10:30:00",-50,387.00,375.00,19350,-2.75,-18750,597.25,600,C\n' +
-        'Trades,Data,Order,Equity and Index Options,USD,U99999999,AMPL 15MAY26 8 C,"2025-01-12, 15:55:43",5,0.51,0.525,-255,-3.50,258.50,0,7.5,O;P\n' +
-        'Trades,Data,Order,Equity and Index Options,USD,U99999999,AMPL 15MAY26 8 C,"2025-01-13, 10:59:44",-5,0.01,0.0232,5,2.49,-258.50,-251.01,-6.6,C'
+        'Trades,Data,Order,Equity and Index Options,USD,U99999999,ZZA 15MAY26 8 C,"2025-01-12, 10:00:00",5,0.50,0.52,-250,-3.50,253.50,0,10,O;P\n' +
+        'Trades,Data,Order,Equity and Index Options,USD,U99999999,ZZA 15MAY26 8 C,"2025-01-13, 11:00:00",-5,0.02,0.03,10,-2.50,-253.50,-246.00,-5,C'
     );
 
     const result = parseIbkrActivity(withOptionTrades, "IBKR 2025-01 activity.csv");
 
     const open = result.transactions.find((t) => t.type === "BUY_TO_OPEN");
     expect(open).toBeTruthy();
-    expect(open!.symbol).toBe("AMPL  260515C00008000");
+    expect(open!.symbol).toBe("ZZA   260515C00008000");
     expect(open!.quantity).toBe(5);
-    expect(open!.amount).toBe(-255);
+    expect(open!.amount).toBe(-250);
 
     const close = result.transactions.find((t) => t.type === "SELL_TO_CLOSE");
     expect(close).toBeTruthy();
-    expect(close!.symbol).toBe("AMPL  260515C00008000");
+    expect(close!.symbol).toBe("ZZA   260515C00008000");
 
     // The security carries option metadata, not a raw asset-category string
-    const sec = result.securities.find((s) => s.symbol === "AMPL  260515C00008000");
+    const sec = result.securities.find((s) => s.symbol === "ZZA   260515C00008000");
     expect(sec).toBeTruthy();
     expect(sec!.securityType).toBe("option");
-    expect(sec!.underlyingSymbol).toBe("AMPL");
+    expect(sec!.underlyingSymbol).toBe("ZZA");
     expect(sec!.strikePrice).toBe(8);
     expect(sec!.expirationDate).toBe("2026-05-15");
     expect(sec!.multiplier).toBe(100);
 
     // No raw-symbol stock security should be created for the option
-    expect(result.securities.find((s) => s.symbol === "AMPL 15MAY26 8 C")).toBeUndefined();
+    expect(result.securities.find((s) => s.symbol === "ZZA 15MAY26 8 C")).toBeUndefined();
   });
 
   it("extracts dividends", () => {
@@ -285,7 +285,7 @@ describe("IBKR activity parser", () => {
     const spyPut = result.holdings.find((h) => h.symbol.includes("SPY"));
     expect(spyPut).toBeTruthy();
     expect(spyPut!.quantity).toBe(5);
-    expect(spyPut!.costBasis).toBeCloseTo(2783.43, 1);
+    expect(spyPut!.costBasis).toBeCloseTo(2750, 1);
 
     // Should also register as option security
     const optSec = result.securities.find((s) => s.symbol === spyPut!.symbol);

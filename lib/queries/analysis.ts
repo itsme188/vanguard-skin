@@ -910,6 +910,9 @@ export function getFactorHeatmap(
   db: Database.Database,
   accountIds?: number[]
 ): FactorHeatmapRow[] {
+  // `undefined` is every account; a defined empty list is NO accounts (it
+  // must never widen to the whole book).
+  if (accountIds && accountIds.length === 0) return [];
   const conditions = [
     "(s.maturity_date IS NULL OR s.maturity_date >= date('now'))",
     liveOptionExpirationSql("s"),

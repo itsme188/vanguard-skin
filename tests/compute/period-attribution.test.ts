@@ -532,14 +532,14 @@ describe("FX conversion (Task 9c — per-position contribution weights)", () => 
       `INSERT INTO holdings (account_id, security_id, as_of_date, quantity, source_key) VALUES (1, 1, '2026-01-01', 10, 's-aapl')`,
     ).run();
 
-    // KRW holding: 10 sh @ ₩1,731,000 -> ₩1,900,000 (start->end), Technology.
-    // fx 0.000734: start USD value ≈ $12,705.54, i.e. it should NOT dwarf
-    // AAPL's $1,000 start value the way the ₩17.31M raw notional would.
+    // KRW holding: 10 sh @ ₩1,500,000 -> ₩1,900,000 (start->end), Technology.
+    // fx 0.000734: start USD value ≈ $11,010.00, i.e. it should NOT dwarf
+    // AAPL's $1,000 start value the way the ₩15M raw notional would.
     db.prepare(
-      `INSERT INTO securities (id, symbol, security_type, sector, currency) VALUES (2, '402340', 'Stock', 'Technology', 'KRW')`,
+      `INSERT INTO securities (id, symbol, security_type, sector, currency) VALUES (2, '000000', 'Stock', 'Technology', 'KRW')`,
     ).run();
     db.prepare(
-      `INSERT INTO prices (security_id, date, close_price, source) VALUES (2, '2026-01-01', 1731000, 'tws')`,
+      `INSERT INTO prices (security_id, date, close_price, source) VALUES (2, '2026-01-01', 1500000, 'tws')`,
     ).run();
     db.prepare(
       `INSERT INTO prices (security_id, date, close_price, source) VALUES (2, '2026-04-30', 1900000, 'tws')`,
@@ -553,9 +553,9 @@ describe("FX conversion (Task 9c — per-position contribution weights)", () => 
 
     const r = computePeriodAttribution(db, 1, "2026-01-01", "2026-04-30");
 
-    const expectedKrwStartUsd = 10 * 1_731_000 * 0.000734; // ≈ $12,705.54
+    const expectedKrwStartUsd = 10 * 1_500_000 * 0.000734; // ≈ $11,010.00
     const expectedTotalStartUsd = expectedKrwStartUsd + 1_000; // + AAPL's $1,000
-    const krwReturn = (1_900_000 - 1_731_000) / 1_731_000;
+    const krwReturn = (1_900_000 - 1_500_000) / 1_500_000;
     const aaplReturn = (120 - 100) / 100;
 
     const expectedKrwWeight = expectedKrwStartUsd / expectedTotalStartUsd;
@@ -563,21 +563,21 @@ describe("FX conversion (Task 9c — per-position contribution weights)", () => 
     const expectedKrwContribution = expectedKrwWeight * krwReturn;
     const expectedAaplContribution = expectedAaplWeight * aaplReturn;
 
-    const krw = r.topContributors.find((c) => c.symbol === "402340")
-      ?? r.topDetractors.find((c) => c.symbol === "402340");
+    const krw = r.topContributors.find((c) => c.symbol === "000000")
+      ?? r.topDetractors.find((c) => c.symbol === "000000");
     const aapl = r.topContributors.find((c) => c.symbol === "AAPL")
       ?? r.topDetractors.find((c) => c.symbol === "AAPL");
     expect(krw).toBeDefined();
     expect(aapl).toBeDefined();
 
-    // Converted: KRW's weight is a modest ~92.7% (its true USD share of a
-    // mixed book), not swamping AAPL to <0.006% the way the ₩17.31M raw
-    // notional would (won notional ÷ (won notional + $1,000) ≈ 99.994%).
+    // Converted: KRW's weight is a modest ~91.7% (11,010 / 12,010) (its true USD share of a
+    // mixed book), not swamping AAPL to <0.006% the way the ₩15M raw
+    // notional would (won notional ÷ (won notional + $1,000) ≈ 99.993%).
     expect(krw!.contribution).toBeCloseTo(expectedKrwContribution, 6);
     expect(aapl!.contribution).toBeCloseTo(expectedAaplContribution, 6);
 
     // Sanity bound ruling out the phantom: under the unconverted bug, AAPL's
-    // contribution would be diluted to ~0.0000116 (weight ≈ 1000/17,311,000),
+    // contribution would be diluted to ~0.0000133 (weight ≈ 1000/15,001,000),
     // three orders of magnitude smaller than the correctly-converted value.
     expect(aapl!.contribution).toBeGreaterThan(0.01);
 

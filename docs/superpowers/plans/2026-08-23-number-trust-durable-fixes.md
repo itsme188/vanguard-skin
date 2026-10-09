@@ -330,22 +330,22 @@ Run `PATH=/opt/homebrew/opt/node@24/bin:$PATH npx tsx lib/db/migrate.ts` against
 
 ```ts
 describe("bond dollar convention", () => {
-  // Bond: qty 20000 face, price 99.438385 per-100-face → economic $19,887.68
+  // Bond: qty 20000 face, price 99.5 per-100-face → economic $19,900.00
   it("stores bond lot cost_basis at economic dollars (÷100)", () => {
-    seedBond(db, { qty: 20000, price: 99.438385 });          // BUY
+    seedBond(db, { qty: 20000, price: 99.5 });          // BUY
     computeTaxLots(db);
     const lot = getOnlyLot(db);
-    expect(lot.cost_basis).toBeCloseTo(19887.68, 2);          // NOT 1,988,768
-    expect(lot.acquisition_price).toBeCloseTo(99.438385, 6);  // per-unit price unchanged
+    expect(lot.cost_basis).toBeCloseTo(19900.00, 2);          // NOT 1,990,000
+    expect(lot.acquisition_price).toBeCloseTo(99.5, 6);  // per-unit price unchanged
   });
 
   it("bill redemption at cost realizes $0 with proceeds == |amount|", () => {
-    seedBond(db, { qty: 20000, price: 99.438385 });
-    addTxn(db, { type: "REDEMPTION", qty: 20000, price: null, amount: 19887.69 });
+    seedBond(db, { qty: 20000, price: 99.5 });
+    addTxn(db, { type: "REDEMPTION", qty: 20000, price: null, amount: 19900.01 });
     computeTaxLots(db);
     const sale = getOnlySale(db);
-    expect(sale.proceeds).toBeCloseTo(19887.69, 2);
-    expect(sale.cost_basis_allocated).toBeCloseTo(19887.68, 2);
+    expect(sale.proceeds).toBeCloseTo(19900.01, 2);
+    expect(sale.cost_basis_allocated).toBeCloseTo(19900.00, 2);
     expect(sale.realized_gain_loss).toBeCloseTo(0.01, 2);
   });
 });
@@ -570,7 +570,7 @@ Run `PATH=... npx vitest run tests/compute/` — every failure in `tax-lots*.tes
 - Consumes: v2 `tax_lots.cost_basis` (dollars) from Task 3; `getTaxConventionState` from Task 1.
 - Produces: both readers return an extra field `conventionPending: boolean` (true when `!getTaxConventionState(db).recomputeCurrent`) — UI tasks read this exact name.
 
-- [ ] **Step 1: Failing tests** — seed an option (multiplier 100) and a bond position through `computeTaxLots`; assert the reconciliation's computed basis now equals the broker-dollar convention (an option bought 1×$2.50 reconciles as ~$250, a 20k-face bond at ~99.4 as ~$19,888) and `flagged` is false when broker basis matches; assert `conventionPending === true` when the marker is stale (bump the generation after recompute in the test).
+- [ ] **Step 1: Failing tests** — seed an option (multiplier 100) and a bond position through `computeTaxLots`; assert the reconciliation's computed basis now equals the broker-dollar convention (an option bought 1×$2.50 reconciles as ~$250, a 20k-face bond at 99.5 as $19,900) and `flagged` is false when broker basis matches; assert `conventionPending === true` when the marker is stale (bump the generation after recompute in the test).
 
 - [ ] **Step 2: Run — expect FAIL.**
 

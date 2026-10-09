@@ -5,7 +5,7 @@ import { upsertFxRate } from "@/lib/mutations/fx-rates";
 import { getLatestPrice } from "@/lib/queries/ohlcv";
 
 // The Charts page header renders getLatestPrice through <Money> — a foreign
-// security's native close must carry the FX factor or ₩1,602,000 renders as
+// security's native close must carry the FX factor or ₩1,450,000 renders as
 // $1.6M/share (QA finding: charts price header, 2026-07-06).
 
 let db: Database.Database;
@@ -34,15 +34,15 @@ beforeEach(() => {
 
 describe("getLatestPrice FX conversion", () => {
   it("KRW close converts to USD; picks the latest date", () => {
-    const krw = seedSecurity("402340", "KRW");
-    seedPrice(krw, "2026-07-01", 1_731_000);
-    seedPrice(krw, TODAY, 1_602_000);
+    const krw = seedSecurity("000000", "KRW");
+    seedPrice(krw, "2026-07-01", 1_500_000);
+    seedPrice(krw, TODAY, 1_450_000);
     upsertFxRate(db, { currency: "KRW", usdPerUnit: 0.0006531, asOf: TODAY, source: "test" });
 
     const p = getLatestPrice(db, krw);
     expect(p).toBeTruthy();
     expect(p!.date).toBe(TODAY);
-    expect(p!.close_price).toBeCloseTo(1_602_000 * 0.0006531, 5);
+    expect(p!.close_price).toBeCloseTo(1_450_000 * 0.0006531, 5);
     expect(p!.close_price).toBeLessThan(2_000);
   });
 
@@ -54,9 +54,9 @@ describe("getLatestPrice FX conversion", () => {
   });
 
   it("missing fx row passes native through at rate 1", () => {
-    const krw = seedSecurity("402340", "KRW");
-    seedPrice(krw, TODAY, 1_602_000);
+    const krw = seedSecurity("000000", "KRW");
+    seedPrice(krw, TODAY, 1_450_000);
     const p = getLatestPrice(db, krw);
-    expect(p!.close_price).toBe(1_602_000);
+    expect(p!.close_price).toBe(1_450_000);
   });
 });
