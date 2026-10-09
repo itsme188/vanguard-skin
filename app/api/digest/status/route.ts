@@ -1,5 +1,6 @@
 import { db } from "@/lib/db";
 import { getLastDigestSentAt, getLastBriefingSentAt } from "@/lib/digest/daily-digest";
+import { getLastDigestSkip } from "@/lib/digest/digest-skip";
 import {
   checkCloudMarker,
   reconcileRecentCloudSends,
@@ -42,6 +43,9 @@ async function readStatus() {
     lastBriefingSentAt: getLastBriefingSentAt(db),
     defaultRecipient: process.env.BRIEFING_EMAIL_TO || null,
     cloudDigestToday,
+    // Read-only: the last time the scheduled window came back empty (written
+    // by the sender's skip branch). The banner uses it to explain a skip.
+    lastDigestSkip: getLastDigestSkip(db),
   };
 }
 

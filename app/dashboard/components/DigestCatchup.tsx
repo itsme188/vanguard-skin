@@ -3,6 +3,7 @@
 import { useState, useEffect } from "react";
 import apiFetch from "@/lib/http/apiFetch";
 import { todayET } from "@/lib/calendar/date-utils";
+import { decideDigestBanner } from "@/lib/digest/catchup-banner";
 
 // Per-tab, per-ET-day dismissal. Component state alone lost it on every
 // client navigation (the banner remounts); sessionStorage keeps it for the
@@ -41,10 +42,15 @@ const DIGEST_TIME_LABEL = "8:45 AM";
  * nagged all day on every cloud-sent day because it only read the Mac-local
  * last_digest_sent_at). An in-flight cloud attempt shows an informational
  * line WITHOUT the Send button — a manual send would race the fallback.
+ *
+ * Skip-aware: when the scheduled run looked today and found nothing new, the
+ * status route reports that skip. The banner then says so and offers no Send
+ * button, because a send over the same window would skip for the same reason.
  */
 export function DigestCatchup() {
   const [show, setShow] = useState(false);
   const [cloudSending, setCloudSending] = useState(false);
+  const [skippedEmpty, setSkippedEmpty] = useState(false);
   const [sending, setSending] = useState(false);
   const [sent, setSent] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
@@ -72,6 +78,7 @@ export function DigestCatchup() {
       if (now < scheduled) {
         setShow(false);
         setCloudSending(false);
+        setSkippedEmpty(false);
         return;
       }
 
@@ -83,28 +90,22 @@ export function DigestCatchup() {
       apiFetch("/api/digest/status", { method: "POST" })
         .then((r) => r.json())
         .then((data) => {
-          // Cloud fallback mid-flight: informational, not actionable.
-          if (data.cloudDigestToday?.via === "attempting") {
-            setCloudSending(true);
-            setShow(true);
-            return;
-          }
-          setCloudSending(false);
-          // Confirmed cloud delivery today = sent, regardless of the local
-          // pointer (the status route advances it too, but don't depend on it).
-          if (data.cloudDigestToday?.via === "sent" || (data.cloudDigestToday && !data.cloudDigestToday.via)) {
-            setShow(false);
-            return;
-          }
-          if (!data.lastDigestSentAt) {
-            setShow(true);
-            return;
-          }
-          const lastSent = new Date(data.lastDigestSentAt);
-          // "Sent today" = sent at or after the scheduled trigger today.
-          // Tolerates a stale midnight rollover where lastSent is from
-          // yesterday's late-night manual catch-up but pre-trigger today.
-          setShow(lastSent < scheduled);
+          // One rule for every state (lib/digest/catchup-banner.ts): a cloud
+          // attempt in flight is informational; a confirmed cloud send or a
+          // local send at or after the trigger hides the banner; a recorded
+          // empty-window skip today is explained without a Send button.
+          const state = decideDigestBanner({
+            now,
+            scheduled,
+            today: todayET(now),
+            lastDigestSentAt: data.lastDigestSentAt ?? null,
+            cloudPresent: Boolean(data.cloudDigestToday),
+            cloudVia: data.cloudDigestToday?.via ?? null,
+            lastDigestSkip: data.lastDigestSkip ?? null,
+          });
+          setCloudSending(state === "cloud-sending");
+          setSkippedEmpty(state === "skipped-empty");
+          setShow(state !== "hidden");
         })
         .catch(() => {});
     };
@@ -170,12 +171,14 @@ export function DigestCatchup() {
           <span className="text-down">{sendError}</span>
         ) : cloudSending ? (
           "Cloud fallback is sending today's digest — it should arrive within a few minutes."
+        ) : skippedEmpty ? (
+          "No digest went out this morning: there was nothing new to send since the last one. To send a different range, use the digest panel on the Research tab."
         ) : (
           `Today's digest wasn't sent at ${DIGEST_TIME_LABEL}`
         )}
       </span>
       <div className="flex items-center gap-2">
-        {!sent && !cloudSending && (
+        {!sent && !cloudSending && !skippedEmpty && (
           <button
             onClick={handleSend}
             disabled={sending}

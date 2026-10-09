@@ -2,6 +2,8 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import { setLastDigestSentAt, getLastDigestSentAt } from "@/lib/digest/daily-digest";
+import { getLastDigestSkip } from "@/lib/digest/digest-skip";
+import { todayET } from "@/lib/calendar/date-utils";
 
 /**
  * Regression test for the 2026-04-22 → 24 "digest skipped despite N processed
@@ -177,5 +179,59 @@ describe("send-digest skipMarkerUpdate flag", () => {
     // Even without the flag, a skipped send leaves the marker alone
     // because setLastDigestSentAt is only called on the success path.
     expect(getLastDigestSentAt(db)).toBe(yesterday);
+  });
+});
+
+/**
+ * The catch-up banner could not tell "the scheduled run never happened" from
+ * "the scheduled run found nothing new". The skip branch now records the
+ * second case; the send branch writes nothing new.
+ */
+describe("send-digest records an empty-window skip", () => {
+  it("records the reason and the Eastern date when the scheduled window is empty", async () => {
+    const { sendDigestEmail } = await import("@/lib/digest/send-digest");
+    setLastDigestSentAt(db, new Date(Date.now() - 60 * 60 * 1000).toISOString());
+    expect(getLastDigestSkip(db)).toBeNull();
+
+    const before = Date.now();
+    const result = await sendDigestEmail(db, { mode: "since_last" });
+
+    expect("skipped" in result && result.skipped).toBe(true);
+    const skip = getLastDigestSkip(db);
+    expect(skip).not.toBeNull();
+    expect(skip!.date).toBe(todayET());
+    expect(skip!.reason).toBe("No processed articles in the selected range");
+    expect(new Date(skip!.at).getTime()).toBeGreaterThanOrEqual(before - 1000);
+  });
+
+  it("the catch-up send (marker update off) records its skip the same way", async () => {
+    const { sendDigestEmail } = await import("@/lib/digest/send-digest");
+    setLastDigestSentAt(db, new Date(Date.now() - 60 * 60 * 1000).toISOString());
+
+    await sendDigestEmail(db, { mode: "since_last", skipMarkerUpdate: true });
+
+    expect(getLastDigestSkip(db)?.date).toBe(todayET());
+  });
+
+  it("a hand-picked range that comes back empty is not the scheduled digest: nothing recorded", async () => {
+    const { sendDigestEmail } = await import("@/lib/digest/send-digest");
+
+    const today = await sendDigestEmail(db, { mode: "today" });
+    const sinceDate = await sendDigestEmail(db, { mode: "since_date", sinceDate: todayET() });
+
+    expect("skipped" in today && today.skipped).toBe(true);
+    expect("skipped" in sinceDate && sinceDate.skipped).toBe(true);
+    expect(getLastDigestSkip(db)).toBeNull();
+  });
+
+  it("a digest that sends records no skip and leaves an older one untouched", async () => {
+    const { sendDigestEmail } = await import("@/lib/digest/send-digest");
+    setLastDigestSentAt(db, "2026-04-26T12:45:00.000Z");
+    seedProcessedArticle("2026-04-27 02:00:00");
+
+    const result = await sendDigestEmail(db, { mode: "since_last" });
+
+    expect("sentTo" in result && result.sentTo).toBe("to@example.com");
+    expect(getLastDigestSkip(db)).toBeNull();
   });
 });
