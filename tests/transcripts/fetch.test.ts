@@ -13,6 +13,7 @@ import {
   getMostRecentQuarter,
   getTranscriptForChat,
   latestPrintFiscalQuarter,
+  PRINT_FILING_WINDOW_DAYS,
   statedFiscalQuarterFromTranscript,
 } from "@/lib/transcripts/fetch";
 import { todayET, addDays } from "@/lib/calendar/date-utils";
@@ -1091,6 +1092,191 @@ describe("the latest transcript is never an older call passed off as the latest 
 
     const named = await getTranscriptForChat(db, "ZZL", 2026, 4);
     expect(named).toMatchObject({ year: 2026, quarter: 4, latest_confirmed: null, latest_note: null });
+  });
+});
+
+describe("a newer print with no results yet: the document is the earlier print's, and says so (S3a)", () => {
+  let db: Database.Database;
+  const today = todayET();
+  const priorDate = addDays(today, -91);
+  beforeEach(() => {
+    db = makeDb();
+    vi.clearAllMocks();
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.spyOn(console, "log").mockImplementation(() => {});
+  });
+
+  function seedPriorCall(ticker: string) {
+    upsertTranscript(db, {
+      ticker,
+      year: 2026,
+      quarter: 3,
+      call_date: priorDate,
+      source: "api_ninjas",
+      transcript: `Operator (Operator): Welcome to the ${ticker} fiscal third quarter 2026 earnings call.\n\nJane Doe (CEO): Revenue rose.`,
+      summary: "seed summary",
+      guidance: null,
+      risk_factors: null,
+      sentiment_score: null,
+      sentiment_label: null,
+      participants: null,
+      accession_number: null,
+      filing_url: null,
+      source_key: `api_ninjas:${ticker}:2026:3`,
+    });
+  }
+
+  it("today's print has no actual yet: last quarter's cached call comes back NOT confirmed, with a note naming both dates", async () => {
+    seedCalendarEvent(db, { symbol: "ZZA", date: priorDate, rawJson: finnhub(3, 2026) });
+    seedCalendarEvent(db, { symbol: "ZZA", date: today, rawJson: finnhub(4, 2026), actual: null });
+    seedPriorCall("ZZA");
+
+    const result = await fetchLatestTranscript(db, "ZZA");
+    expect(result).toMatchObject({
+      latestConfirmed: false,
+      transcript: { year: 2026, quarter: 3, source: "api_ninjas" },
+    });
+
+    const out = await getTranscriptForChat(db, "ZZA");
+    expect(out).toMatchObject({ year: 2026, quarter: 3, latest_confirmed: false });
+    expect(out!.latest_note).toContain(today);
+    expect(out!.latest_note).toContain(priorDate);
+    expect(out!.latest_note).toMatch(/\bcall\b/);
+    expect(out!.latest_note).toMatch(/not the latest/);
+    expect(out!.latest_note).not.toMatch(/No earnings date is on file/);
+  });
+
+  it("the earlier print's document is an 8-K: the note never calls it a call or transcript", async () => {
+    seedCalendarEvent(db, { symbol: "ZZA", date: priorDate, source: "nasdaq", rawJson: null });
+    seedCalendarEvent(db, { symbol: "ZZA", date: today, source: "nasdaq", rawJson: null, actual: null });
+    vi.mocked(getEarnings8KFilings).mockResolvedValue([
+      filing("zza-q3", priorDate, "ZZA reports fiscal third quarter 2026 results."),
+    ]);
+
+    const out = await getTranscriptForChat(db, "ZZA");
+
+    expect(out).toMatchObject({ source: "edgar_8k", latest_confirmed: false });
+    expect(out!.latest_note).toContain(today);
+    expect(out!.latest_note).toMatch(/8-K press release/);
+    expect(out!.latest_note).not.toMatch(/\b(?:call|transcript)\b/i);
+  });
+
+  it("a superseded newer row, or a future-dated row, is not a newer print", async () => {
+    seedCalendarEvent(db, { symbol: "ZZA", date: priorDate, rawJson: finnhub(3, 2026) });
+    seedCalendarEvent(db, { symbol: "ZZA", date: today, rawJson: finnhub(4, 2026), actual: null, superseded: 1 });
+    seedCalendarEvent(db, { symbol: "ZZA", date: addDays(today, 20), rawJson: finnhub(4, 2026), actual: null });
+    seedPriorCall("ZZA");
+
+    const out = await getTranscriptForChat(db, "ZZA");
+
+    expect(out).toMatchObject({ year: 2026, quarter: 3, latest_confirmed: true, latest_note: null });
+  });
+
+  it("a showing twin a day or two after the print (the same print from another source) is not a newer print", async () => {
+    seedCalendarEvent(db, { symbol: "ZZA", date: priorDate, rawJson: finnhub(3, 2026) });
+    seedCalendarEvent(db, { symbol: "ZZA", date: addDays(priorDate, 2), source: "nasdaq", rawJson: null, actual: null });
+    seedPriorCall("ZZA");
+
+    const out = await getTranscriptForChat(db, "ZZA");
+
+    expect(out).toMatchObject({ latest_confirmed: true, latest_note: null });
+  });
+
+  it("the only print on file has no actual yet: the calendar default is not confirmed, and the note names that print's date", async () => {
+    seedCalendarEvent(db, { symbol: "ZZA", date: today, source: "nasdaq", rawJson: null, actual: null });
+    vi.mocked(getAlphaVantageTranscript).mockResolvedValue(
+      vendorCall("Thank you for standing by and welcome to the ZZA conference call."),
+    );
+
+    const out = await getTranscriptForChat(db, "ZZA");
+
+    expect(out).toMatchObject({ source: "alpha_vantage", latest_confirmed: false });
+    expect(out!.latest_note).toContain(today);
+    expect(out!.latest_note).toMatch(/could not be confirmed as the most recent/);
+    expect(out!.latest_note).not.toMatch(/No earnings date is on file/);
+  });
+});
+
+describe("a print with no fiscal quarter: a cached call dated inside the print's window is found (S3b)", () => {
+  let db: Database.Database;
+  const printDate = "2026-10-20";
+  beforeEach(() => {
+    db = makeDb();
+    vi.clearAllMocks();
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.spyOn(console, "log").mockImplementation(() => {});
+  });
+
+  function seedCall(callDate: string | null) {
+    upsertTranscript(db, {
+      ticker: "ZZU",
+      year: 2026,
+      quarter: 4,
+      call_date: callDate,
+      source: "api_ninjas",
+      transcript: "Jane Doe (CEO): remarks on the quarter.",
+      summary: "seed summary",
+      guidance: null,
+      risk_factors: null,
+      sentiment_score: null,
+      sentiment_label: null,
+      participants: null,
+      accession_number: null,
+      filing_url: null,
+      source_key: "api_ninjas:ZZU:2026:4",
+    });
+  }
+
+  it("no 8-K for the print, a cached call one day after it: the call is returned from the cache", async () => {
+    seedCall("2026-10-21");
+    vi.mocked(getEarnings8KFilings).mockResolvedValue([]);
+
+    const result = await fetchTranscript(db, "ZZU", 2026, 3, { eventDate: printDate });
+
+    expect(result).toMatchObject({ fromCache: true, transcript: { source: "api_ninjas", call_date: "2026-10-21" } });
+    expect(getAlphaVantageTranscript).not.toHaveBeenCalled();
+    expect(getApiNinjasTranscript).not.toHaveBeenCalled();
+  });
+
+  it(`a cached call at the edge of the window (${PRINT_FILING_WINDOW_DAYS} days) counts; one day further does not`, async () => {
+    vi.mocked(getEarnings8KFilings).mockResolvedValue([]);
+    seedCall(addDays(printDate, PRINT_FILING_WINDOW_DAYS));
+    expect(await fetchTranscript(db, "ZZU", 2026, 3, { eventDate: printDate })).toMatchObject({
+      transcript: { source: "api_ninjas" },
+    });
+
+    seedCall(addDays(printDate, PRINT_FILING_WINDOW_DAYS + 1));
+    expect(await fetchTranscript(db, "ZZU", 2026, 3, { eventDate: printDate })).toBeNull();
+  });
+
+  it("a cached call far from the print, or with no call date, is still refused", async () => {
+    vi.mocked(getEarnings8KFilings).mockResolvedValue([]);
+    seedCall("2026-07-21");
+    expect(await fetchTranscript(db, "ZZU", 2026, 3, { eventDate: printDate })).toBeNull();
+    seedCall(null);
+    expect(await fetchTranscript(db, "ZZU", 2026, 3, { eventDate: printDate })).toBeNull();
+  });
+
+  it("the print's 8-K still wins when one is filed (which document a print shows is unchanged)", async () => {
+    seedCall("2026-10-21");
+    vi.mocked(getEarnings8KFilings).mockResolvedValue([
+      filing("zzu-q4", printDate, "ZZU reports fiscal fourth quarter 2026 results."),
+    ]);
+
+    const result = await fetchTranscript(db, "ZZU", 2026, 3, { eventDate: printDate });
+
+    expect(result).toMatchObject({ transcript: { source: "edgar_8k", call_date: printDate } });
+  });
+
+  it("the chat tool finds the latest print's cached call instead of answering nothing", async () => {
+    const latest = addDays(todayET(), -1);
+    seedCalendarEvent(db, { symbol: "ZZU", date: latest, source: "nasdaq", rawJson: null });
+    seedCall(latest);
+    vi.mocked(getEarnings8KFilings).mockResolvedValue([]);
+
+    const out = await getTranscriptForChat(db, "ZZU");
+
+    expect(out).toMatchObject({ source: "api_ninjas", call_date: latest, latest_confirmed: true, latest_note: null });
   });
 });
 

@@ -236,6 +236,59 @@ describe("POST /api/transcripts (the fetch / refresh buttons)", () => {
     expect(getAlphaVantageTranscript).not.toHaveBeenCalled();
   });
 
+  it("a confirmed latest print says so in the envelope, with no note", async () => {
+    seedPrint(JSON.stringify({ entry: { quarter: 4, year: 2026 } }));
+    vi.mocked(getAlphaVantageTranscript).mockResolvedValueOnce(
+      call("Welcome to the ZZR fiscal fourth quarter 2026 earnings conference call."),
+    );
+
+    const body = await (await POST(post({ ticker: "ZZR" }))).json();
+
+    expect(body).toMatchObject({ success: true, fromCache: false, latestConfirmed: true, latestNote: null });
+  });
+
+  it("no earnings print on file: the envelope carries latestConfirmed false and the plain-words note", async () => {
+    vi.mocked(getAlphaVantageTranscript).mockResolvedValueOnce(
+      call("Thank you for standing by and welcome to the ZZR conference call."),
+    );
+
+    const body = await (await POST(post({ ticker: "ZZR" }))).json();
+
+    expect(body).toMatchObject({ success: true, latestConfirmed: false });
+    expect(body.latestNote).toMatch(/could not be confirmed as the most recent/);
+  });
+
+  it("a newer print with no results yet: the earlier print's document is returned flagged, and the note names the newer date", async () => {
+    const today = todayET();
+    const earlier = addDays(today, -91);
+    const insert = hoisted.db.prepare(
+      `INSERT INTO calendar_events
+        (source, event_type, event_date, release_time, title, symbol, actual_value, source_key, week_of, superseded, raw_json)
+       VALUES ('finnhub', 'earnings', ?, '16:05', 'ZZR earnings', 'ZZR', ?, ?, ?, 0, ?)`,
+    );
+    insert.run(earlier, "EPS 1.00", `finnhub:ZZR:${earlier}`, earlier, JSON.stringify({ entry: { quarter: 3, year: 2026 } }));
+    insert.run(today, null, `finnhub:ZZR:${today}`, today, JSON.stringify({ entry: { quarter: 4, year: 2026 } }));
+    vi.mocked(getAlphaVantageTranscript).mockResolvedValueOnce(
+      call("Welcome to the ZZR fiscal third quarter 2026 earnings conference call."),
+    );
+
+    const body = await (await POST(post({ ticker: "ZZR" }))).json();
+
+    expect(getAlphaVantageTranscript).toHaveBeenCalledWith("ZZR", 2026, 3);
+    expect(body).toMatchObject({ success: true, latestConfirmed: false, data: { year: 2026, quarter: 3 } });
+    expect(body.latestNote).toContain(today);
+  });
+
+  it("an explicit quarter makes no claim about the latest (both fields null)", async () => {
+    vi.mocked(getAlphaVantageTranscript).mockResolvedValueOnce(
+      call("Welcome to the ZZR fiscal third quarter 2026 earnings conference call."),
+    );
+
+    const body = await (await POST(post({ ticker: "ZZR", year: 2026, quarter: 3 }))).json();
+
+    expect(body).toMatchObject({ success: true, latestConfirmed: null, latestNote: null });
+  });
+
   it("falls back to the calendar default only when no earnings print is on file", async () => {
     await POST(post({ ticker: "ZZR" }));
 
