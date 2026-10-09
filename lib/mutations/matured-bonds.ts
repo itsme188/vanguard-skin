@@ -1,4 +1,11 @@
 import type Database from "better-sqlite3";
+import { liveOriginHoldingSql } from "@/lib/db/holding-sources";
+
+export interface PurgeMaturedBondHoldingsOptions {
+  accountId?: number;
+  liveOnly?: boolean;
+  today?: string;
+}
 
 /**
  * Delete holdings rows for bond securities whose `maturity_date` is more
@@ -16,17 +23,45 @@ import type Database from "better-sqlite3";
 export function purgeMaturedBondHoldings(
   db: Database.Database,
   graceDays = 1,
+  options?: PurgeMaturedBondHoldingsOptions,
 ): number {
+  if (!options) {
+    const result = db
+      .prepare(
+        `DELETE FROM holdings
+         WHERE security_id IN (
+           SELECT id FROM securities
+           WHERE LOWER(security_type) = 'bond'
+             AND maturity_date IS NOT NULL
+             AND date(maturity_date) < date('now', ?)
+         )`,
+      )
+      .run(`-${graceDays} day`);
+    return result.changes;
+  }
+
+  const predicates = [
+    `security_id IN (
+       SELECT id FROM securities
+       WHERE LOWER(security_type) = 'bond'
+         AND maturity_date IS NOT NULL
+         AND date(maturity_date) < ${
+           options.today ? "date(@today, @grace)" : "date('now', @grace)"
+         }
+     )`,
+  ];
+  if (options.accountId != null) predicates.push("account_id = @accountId");
+  if (options.liveOnly) predicates.push(liveOriginHoldingSql("holdings"));
+
   const result = db
     .prepare(
       `DELETE FROM holdings
-       WHERE security_id IN (
-         SELECT id FROM securities
-         WHERE LOWER(security_type) = 'bond'
-           AND maturity_date IS NOT NULL
-           AND date(maturity_date) < date('now', ?)
-       )`,
+       WHERE ${predicates.join(" AND ")}`,
     )
-    .run(`-${graceDays} day`);
+    .run({
+      accountId: options.accountId,
+      grace: `-${graceDays} day`,
+      today: options.today,
+    });
   return result.changes;
 }
