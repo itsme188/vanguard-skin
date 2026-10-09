@@ -68,6 +68,24 @@ describe("extractCouponRate: a coupon is read only from a percent sign or an exp
     expect(extractCouponRate("ZZ VARCO STEPSTONE 5.25% 2031")).toBe(5.25);
   });
 
+  it("a note linked to a swap rate, to consumer prices or to any index is not a fixed coupon", () => {
+    // The percent figure on these is a floor, a cap, a spread or a teaser.
+    expect(extractCouponRate("ZZ BANK CMS NOTE 6.000% DUE 01/15/36")).toBeNull();
+    expect(extractCouponRate("ZZ BANK CMS10 STEEPENER 8.000% DUE 01/15/36")).toBeNull();
+    expect(extractCouponRate("ZZ BANK CPI LINKED NOTE 3.000% DUE 01/15/36")).toBeNull();
+    expect(extractCouponRate("ZZ BANK CPI-U NT 2.500% DUE 01/15/36")).toBeNull();
+    expect(extractCouponRate("ZZ CORP INFLATION-LINKED NT 1.500% DUE 01/15/36")).toBeNull();
+    expect(extractCouponRate("ZZ CORP INDEX LINKED NT 1.500% DUE 01/15/36")).toBeNull();
+    for (const word of ["CMS", "cms", "CMS2", "CMS30", "CPI", "Linked", "LKD", "LNKD"]) {
+      expect(extractCouponRate(`ZZ CORP ${word} 5.25% 2031`), word).toBeNull();
+    }
+    // Whole words only: a longer word that merely contains one still reads.
+    expect(extractCouponRate("ZZ CPIX LINKEDGE CMSA 5.25% 2031")).toBe(5.25);
+    // A Treasury inflation-indexed note has a FIXED (real) coupon: it still reads.
+    expect(extractCouponRate("ZZ TREASURY INFL IX NOTE 0.125% DUE 04/15/32")).toBe(0.125);
+    expect(extractCouponRate("ZZ TREASURY INFLATION INDEXED NOTE 0.125% DUE 04/15/32")).toBe(0.125);
+  });
+
   it("the slash no longer hides a second percent figure", () => {
     expect(extractCouponRate("ZZ CORP 6.5%/7.5% 2030")).toBeNull();
     expect(extractCouponRate("ZZ CORP 6.5% / 6.5% 2030")).toBe(6.5);

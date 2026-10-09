@@ -105,10 +105,23 @@ const ANY_PERCENT_FIGURE = /(\d+(?:\.\d+)?)\s*%/g;
 /**
  * Words that mean a percent figure in the name is NOT a fixed coupon: a
  * yield, a floating or variable rate, a step-up, a reference rate (the figure
- * is then a spread), a pay-in-kind toggle. Whole words, any case.
+ * is then a spread), a pay-in-kind toggle, or a note whose coupon is LINKED
+ * to an index: a swap rate ("CMS"), consumer prices ("CPI"), or anything the
+ * name calls linked ("INFLATION-LINKED", "INDEX LINKED", "EQUITY LKD"). The
+ * percent figure on such a note is a floor, a cap, a spread or a first-period
+ * teaser, never the coupon to maturity. Whole words, any case.
+ *
+ * "CMS" is blocked wherever it stands as a word ("CMS", "CMS10"), which also
+ * blocks a fixed-coupon bond of an issuer NAMED CMS. That is the safe side:
+ * the bond is then listed as not modelled, where the other mistake would be a
+ * silently wrong duration on a swap-rate floater.
+ *
+ * NOT blocked: a Treasury inflation-indexed note ("INFL IX", "INFLATION
+ * INDEXED", "TIPS"). Its coupon IS fixed (a real rate, paid on principal that
+ * grows with prices), so the figure in the name is the coupon.
  */
 const NOT_A_FIXED_COUPON =
-  /\b(?:YLD|YIELD|FLTG|FLOAT|FLOATER|FLOATING|FRN|VAR|VARIABLE|STEP|SOFR|LIBOR|PIK|TOGGLE)\b/i;
+  /\b(?:YLD|YIELD|FLTG|FLOAT|FLOATER|FLOATING|FRN|VAR|VARIABLE|STEP|SOFR|LIBOR|PIK|TOGGLE|CMS\d{0,2}|CPI|LINKED|LKD|LNKD)\b/i;
 
 /**
  * Read a bond's annual coupon, in PERCENT of face (4.375 means 4.375%), from
@@ -124,7 +137,8 @@ const NOT_A_FIXED_COUPON =
  *
  * Returns null when:
  *   - the name carries a word from NOT_A_FIXED_COUPON ("YLD 5.1%", "FLTG
- *     RATE NT VAR 5.310%", "SOFR + 0.25%", "6.5%/7.5% PIK TOGGLE");
+ *     RATE NT VAR 5.310%", "SOFR + 0.25%", "6.5%/7.5% PIK TOGGLE", "CMS NOTE
+ *     6.000%", "CPI LINKED NOTE 3.000%");
  *   - ANY percent figure in the name differs from the coupon found, counted
  *     before any lookbehind ("6.5%/7.5%", "CPN 4.125 ... PRICE 98.5%",
  *     "4.375% ... CALLABLE 100%", "4 3/8%"). With two different percent

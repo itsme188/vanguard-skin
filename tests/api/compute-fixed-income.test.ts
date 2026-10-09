@@ -11,6 +11,7 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import { upsertFxRate } from "@/lib/mutations/fx-rates";
+import { addDays, todayET } from "@/lib/calendar/date-utils";
 
 const state = vi.hoisted(() => ({
   db: null as unknown as Database.Database,
@@ -288,5 +289,52 @@ describe("GET /api/compute/fixed-income weighted duration with unknown-duration 
     expect(body.data.measuredBondValue).toBeCloseTo(10_000, 5);
     expect(body.data.unmeasuredBondValue).toBeCloseTo(0, 5);
     expect(body.data.unmeasuredBondCount).toBe(0);
+  });
+});
+
+describe("GET /api/compute/fixed-income reads durations through the scenario rate-leg rule", () => {
+  beforeEach(() => {
+    state.db = new Database(":memory:");
+    state.db.pragma("foreign_keys = ON");
+    runMigrations(state.db);
+  });
+
+  it("a bill with no stored duration gets its time to maturity; a bond with no usable input is listed, not given a figure", async () => {
+    const db = state.db;
+    // Dates hang off the Eastern today the route reads, so the fixture never goes stale.
+    const today = todayET();
+    const insert = db.prepare(
+      `INSERT INTO securities (symbol, name, security_type, currency, maturity_date) VALUES (?, ?, 'Bond', 'USD', ?)`,
+    );
+
+    // A Treasury bill 73 days out, no stored duration: 73 / 365 = 0.2 years.
+    // 30,000 face at 98 = 29,400. Before, the card showed a dash for it.
+    const bill = insert.run("ZZB", "ZZ TREASURY BILL", addDays(today, 73)).lastInsertRowid as number;
+    seedHolding(db, 1, bill, 30_000, today);
+    seedPrice(db, bill, today, 98);
+
+    // A coupon bond with no coupon stored and none in its name: not modelled.
+    const blank = insert.run("ZZU", "ZZ Corp note", addDays(today, 3650)).lastInsertRowid as number;
+    seedHolding(db, 1, blank, 10_000, today);
+    seedPrice(db, blank, today, 100);
+
+    const { GET } = await import("@/app/api/compute/fixed-income/route");
+    const body = await (await GET(new Request("http://x/api/compute/fixed-income") as never)).json();
+    expect(body.success).toBe(true);
+    expect(body.data.asOfDate).toBe(today);
+
+    const by = new Map<string, { durationYears: number | null; durationSource: string | null; unmodelledReason: string | null }>(
+      body.data.bonds.map((b: { symbol: string }) => [b.symbol, b]),
+    );
+    expect(by.get("ZZB")!.durationYears).toBeCloseTo(0.2, 10);
+    expect(by.get("ZZB")!.durationSource).toBe("bill-maturity");
+    expect(by.get("ZZU")!.durationYears).toBeNull();
+    expect(by.get("ZZU")!.unmodelledReason).toBe("no-coupon");
+
+    // The average covers the bill only; the other bond is counted, not zeroed.
+    expect(body.data.weightedAvgDuration).toBeCloseTo(0.2, 10);
+    expect(body.data.measuredBondValue).toBeCloseTo(29_400, 5);
+    expect(body.data.unmeasuredBondValue).toBeCloseTo(10_000, 5);
+    expect(body.data.unmeasuredBondCount).toBe(1);
   });
 });

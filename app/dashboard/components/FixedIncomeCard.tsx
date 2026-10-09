@@ -1,7 +1,8 @@
 "use client";
 
 import { useState, useEffect, type ReactNode } from "react";
-import { Pct, PrivateText } from "@/lib/privacy/components";
+import { Count, Pct, PrivateText } from "@/lib/privacy/components";
+import type { BondUnmodelledReason, RateDurationSource } from "@/lib/compute/bond-duration";
 import { formatCompactUSD } from "@/lib/format";
 import { EmptySection } from "./EmptySection";
 import { ScrollFade } from "./ScrollFade";
@@ -15,7 +16,10 @@ interface BondHolding {
   symbol: string;
   name: string | null;
   marketValue: number;
+  /** The duration the scenario rate move uses for this bond; null when it is not modelled. */
   durationYears: number | null;
+  durationSource?: RateDurationSource | null;
+  unmodelledReason?: BondUnmodelledReason | null;
   creditRating: string | null;
   couponRate: number | null;
   maturityDate: string | null;
@@ -45,6 +49,58 @@ export function hasRatedBond(
   bonds: ReadonlyArray<{ creditRating: string | null }>,
 ): boolean {
   return bonds.some((b) => b.creditRating != null && b.creditRating.trim() !== "");
+}
+
+/**
+ * How one bond's duration reads on the card. The figure is the one the
+ * scenario rate move uses (lib/compute/bond-duration.ts), so the card and a
+ * scenario can never show two durations for one bond.
+ *   - a stored duration: the figure, no mark;
+ *   - a duration worked out from the bond's own maturity, coupon and price:
+ *     the figure marked "est." with a short note saying what it came from;
+ *   - a bond that cannot be modelled: no figure, and the missing input named.
+ *     Nothing is ever assumed for it.
+ */
+export function describeBondDuration(bond: {
+  durationYears: number | null;
+  durationSource?: RateDurationSource | null;
+  unmodelledReason?: BondUnmodelledReason | null;
+}): { modelled: boolean; derived: boolean; note: string | null } {
+  if (bond.durationYears == null || !Number.isFinite(bond.durationYears)) {
+    return { modelled: false, derived: false, note: unmodelledNote(bond.unmodelledReason ?? null) };
+  }
+  switch (bond.durationSource) {
+    case "bill-maturity":
+      return { modelled: true, derived: true, note: "pays no coupon: time to maturity" };
+    case "single-flow":
+      return { modelled: true, derived: true, note: "one payment left: time to maturity" };
+    case "coupon-yield":
+      return { modelled: true, derived: true, note: "from coupon, maturity and price" };
+    case "coupon-yield-name":
+      return { modelled: true, derived: true, note: "from price and the coupon in the bond's name" };
+    default:
+      return { modelled: true, derived: false, note: null };
+  }
+}
+
+/** Same wording as the scenario card's list of bonds it left out. */
+function unmodelledNote(reason: BondUnmodelledReason | null): string {
+  switch (reason) {
+    case "no-maturity":
+      return "no maturity date";
+    case "matured":
+      return "past its maturity date";
+    case "no-coupon":
+      return "no coupon from the broker, and none readable in the bond's name";
+    case "unusable-coupon":
+      return "the stored coupon is not a usable figure";
+    case "no-price":
+      return "no price";
+    case "no-yield":
+      return "price gives no usable yield";
+    default:
+      return "no duration data";
+  }
 }
 
 /**
@@ -88,6 +144,9 @@ export function FixedIncomeCard({ scope }: { scope?: string }) {
   const unmeasuredValue = data.unmeasuredBondValue ?? 0;
   const unmeasuredPct =
     data.totalBondValue > 0 ? (unmeasuredValue / data.totalBondValue) * 100 : 0;
+  const unmeasuredCount =
+    data.unmeasuredBondCount ?? data.bonds.filter((b) => !describeBondDuration(b).modelled).length;
+  const anyDerived = data.bonds.some((b) => describeBondDuration(b).derived);
   const rateSensitivity =
     data.weightedAvgDuration != null && data.portfolioValue > 0
       ? data.weightedAvgDuration * (measuredValue / data.portfolioValue)
@@ -121,22 +180,31 @@ export function FixedIncomeCard({ scope }: { scope?: string }) {
                 <span className={toneClass(interpretDuration(data.weightedAvgDuration).tone)}>
                   {interpretDuration(data.weightedAvgDuration).text}
                 </span>
-                {unmeasuredPct > 0 && (
+                {unmeasuredCount > 0 && (
                   <span className="block text-warn">
-                    excludes <Pct value={unmeasuredPct} digits={0} /> of bond
-                    value with no duration data
+                    leaves out <Count value={unmeasuredCount} />{" "}
+                    {unmeasuredCount === 1 ? "bond" : "bonds"} not modelled (
+                    <Pct value={unmeasuredPct} digits={0} /> of bond value)
                   </span>
                 )}
               </>
             ) : (
-              "No duration data"
+              "No bond could be modelled"
             )
           }
         />
         <MetricCell
           label="Positions"
-          value={String(data.bonds.length)}
-          subtext="bond holdings"
+          value={<Count value={data.bonds.length} />}
+          subtext={
+            unmeasuredCount > 0 ? (
+              <>
+                bond holdings, <Count value={unmeasuredCount} /> not modelled
+              </>
+            ) : (
+              "bond holdings"
+            )
+          }
         />
         <MetricCell
           label="Rate Sensitivity"
@@ -205,7 +273,9 @@ export function FixedIncomeCard({ scope }: { scope?: string }) {
             </tr>
           </thead>
           <tbody>
-            {data.bonds.map((bond) => (
+            {data.bonds.map((bond) => {
+              const duration = describeBondDuration(bond);
+              return (
               <tr key={bond.symbol} className="border-b border-edge/50 last:border-0">
                 <td className="py-1.5 pr-3">
                   <span className="font-mono font-medium text-ink">{bond.symbol}</span>
@@ -216,8 +286,25 @@ export function FixedIncomeCard({ scope }: { scope?: string }) {
                 <td className="py-1.5 pr-3 text-right font-mono text-ink tabular-nums">
                   <PrivateText>{`$${(bond.marketValue / 1000).toFixed(0)}K`}</PrivateText>
                 </td>
-                <td className="py-1.5 pr-3 text-right font-mono text-ink-dim tabular-nums">
-                  {bond.durationYears != null ? `${bond.durationYears.toFixed(1)} yr` : "—"}
+                <td className="py-1.5 pr-3 text-right text-ink-dim">
+                  {duration.modelled && bond.durationYears != null ? (
+                    <>
+                      <span className="font-mono tabular-nums whitespace-nowrap">
+                        {`${bond.durationYears.toFixed(1)} yr`}
+                        {duration.derived && <span className="font-sans text-ink-dim"> est.</span>}
+                      </span>
+                      {duration.note && (
+                        <span className="block text-[10px] text-ink-dim">{duration.note}</span>
+                      )}
+                    </>
+                  ) : (
+                    <>
+                      <span className="text-warn whitespace-nowrap">not modelled</span>
+                      {duration.note && (
+                        <span className="block text-[10px] text-ink-dim">{duration.note}</span>
+                      )}
+                    </>
+                  )}
                 </td>
                 <td className="py-1.5 pr-3 text-center">
                   {bond.creditRating ? (
@@ -238,10 +325,20 @@ export function FixedIncomeCard({ scope }: { scope?: string }) {
                   {bond.maturityDate ?? "—"}
                 </td>
               </tr>
-            ))}
+              );
+            })}
           </tbody>
         </table>
       </ScrollFade>
+
+      {(anyDerived || unmeasuredCount > 0) && (
+        <p className="text-[11px] text-ink-dim leading-relaxed">
+          {anyDerived &&
+            "A duration marked est. is worked out from the bond's own maturity, coupon and price. It is the same figure the scenario rate move uses. "}
+          {unmeasuredCount > 0 &&
+            "A bond marked not modelled is missing an input; no duration is assumed for it, and it is left out of the average and of rate sensitivity."}
+        </p>
+      )}
     </div>
   );
 }
