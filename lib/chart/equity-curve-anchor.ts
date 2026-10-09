@@ -29,7 +29,8 @@
  * TWS/Plaid snapshots. A segment longer than SHORT_SEGMENT_MAX_DAYS whose
  * dailies are too sparse (fewer than MIN_SEGMENT_DAILIES days
  * strictly between the anchors) or internally inconsistent (max-min spread
- * above MAX_SEGMENT_SPREAD of their mean, a sign of incomplete holdings that
+ * above MAX_SEGMENT_SPREAD of their mean, measured net of the segment's
+ * deposits and withdrawals so real money movement does not trip it; a sign of incomplete holdings that
  * month) is plotted from the statements only, and counted in the summary so
  * the chart can say so. A segment that passes both tests but has a gap longer
  * than SHORT_SEGMENT_MAX_DAYS between its plotted points is still drawn, and
@@ -46,6 +47,13 @@ export interface EquityDaily {
   /** YYYY-MM-DD valuation date. */
   date: string;
   value: number;
+}
+
+export interface EquityFlow {
+  /** YYYY-MM-DD the money moved. */
+  date: string;
+  /** Net external flow that day: deposits positive, withdrawals negative. */
+  netFlow: number;
 }
 
 export interface AnchoredPoint {
@@ -110,6 +118,23 @@ function dayNumber(date: string): number {
   return Date.UTC(y, m - 1, d) / DAY_MS;
 }
 
+/**
+ * Each daily's value net of the external flows since `segmentStart` (flows
+ * dated in (segmentStart, daily date]): a deposit on day k lowers every
+ * adjusted value from day k on. Used ONLY by the spread check; the plotted
+ * values are never adjusted. With no flows the values come back unchanged.
+ */
+function netOfFlows(set: EquityDaily[], segmentStart: string, flows: EquityFlow[]): number[] {
+  if (flows.length === 0) return set.map((d) => d.value);
+  return set.map((d) => {
+    let cum = 0;
+    for (const f of flows) {
+      if (f.date > segmentStart && f.date <= d.date && Number.isFinite(f.netFlow)) cum += f.netFlow;
+    }
+    return d.value - cum;
+  });
+}
+
 function tooInconsistent(values: number[]): boolean {
   if (values.length === 0) return false;
   const min = Math.min(...values);
@@ -160,6 +185,7 @@ function referenceDaily(
 export function anchorDailiesToStatements(
   anchors: EquityAnchor[],
   dailies: EquityDaily[],
+  flows: EquityFlow[] = [],
 ): AnchoredCurve {
   const sortedAnchors = [...anchors].sort((a, b) => a.date.localeCompare(b.date));
   const sortedDailies = dailies
@@ -184,7 +210,7 @@ export function anchorDailiesToStatements(
 
     const a1 = sortedAnchors[i + 1];
     if (!a1) {
-      appendTrailing(points, summary, a0, sortedDailies, dailyByDate.get(a0.date));
+      appendTrailing(points, summary, a0, sortedDailies, dailyByDate.get(a0.date), flows);
       continue;
     }
 
@@ -198,7 +224,7 @@ export function anchorDailiesToStatements(
 
     if (span > SHORT_SEGMENT_MAX_DAYS) {
       const consistencySet = [...(onD0 ? [onD0] : []), ...between, ...(onD1 ? [onD1] : [])];
-      if (between.length < MIN_SEGMENT_DAILIES || tooInconsistent(consistencySet.map((d) => d.value))) {
+      if (between.length < MIN_SEGMENT_DAILIES || tooInconsistent(netOfFlows(consistencySet, a0.date, flows))) {
         summary.segmentsSkipped++;
         summary.skippedSpans!.push({ from: a0.date, to: a1.date });
         continue;
@@ -236,11 +262,12 @@ function appendTrailing(
   last: EquityAnchor,
   sortedDailies: EquityDaily[],
   onLast: EquityDaily | undefined,
+  flows: EquityFlow[],
 ): void {
   const trailing = sortedDailies.filter((d) => d.date > last.date);
   if (trailing.length === 0) return;
   const consistencySet = [...(onLast ? [onLast] : []), ...trailing];
-  if (tooInconsistent(consistencySet.map((d) => d.value))) {
+  if (tooInconsistent(netOfFlows(consistencySet, last.date, flows))) {
     summary.trailingSkipped = true;
     return;
   }

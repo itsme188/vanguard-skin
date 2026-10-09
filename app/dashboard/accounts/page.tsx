@@ -9,6 +9,7 @@ import {
 import { getAccountTransactionPage } from "@/lib/queries/transactions";
 import { getSnapshotsByAccount } from "@/lib/queries/monthly-snapshots";
 import { getDailyValuationsByAccount } from "@/lib/queries/daily-valuations";
+import { fetchNetFlowsByDate } from "@/lib/compute/flow-adjusted";
 import { getAccountCashLine } from "@/lib/queries/account-cash-line";
 import { getReconciliationCheckpoints } from "@/lib/queries/reconciliation";
 import { AccountDetail } from "../components/AccountDetail";
@@ -108,7 +109,7 @@ export default async function AccountsPage(props: {
   const selectedAccount =
     accounts.find((a) => a.id === selectedId) ?? accounts[0];
 
-  let holdings, transactionPage, snapshots, dailyValuations, cashLine, reconciliationCheckpoints;
+  let holdings, transactionPage, snapshots, dailyValuations, equityFlows, cashLine, reconciliationCheckpoints;
   try {
     // The same priced rows the All Accounts table shows, bound to this
     // account (value, gain and cost basis per row).
@@ -122,6 +123,11 @@ export default async function AccountsPage(props: {
     });
     snapshots = getSnapshotsByAccount(db, selectedAccount.id);
     dailyValuations = getDailyValuationsByAccount(db, selectedAccount.id);
+    // Deposits / withdrawals, for the equity curve's spread check only.
+    // Half-open (start, end]: the whole history.
+    equityFlows = fetchNetFlowsByDate(db, [selectedAccount.id], "0000-01-01", "9999-12-31").map(
+      (f) => ({ date: f.date, netFlow: f.net })
+    );
     cashLine = getAccountCashLine(db, selectedAccount.id);
     reconciliationCheckpoints = getReconciliationCheckpoints(db, selectedAccount.id);
   } catch {
@@ -139,6 +145,7 @@ export default async function AccountsPage(props: {
         transactionSort={transactionPage.sort}
         snapshots={snapshots}
         dailyValuations={dailyValuations}
+        equityFlows={equityFlows}
         cashLine={cashLine}
         reconciliationCheckpoints={reconciliationCheckpoints}
       />

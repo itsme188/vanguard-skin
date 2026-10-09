@@ -442,3 +442,80 @@ describe("equityCurveRangeCaption", () => {
     expect(equityCurveRangeCaption({ ...base, skippedSpans: [old], segmentsSkipped: 1 }, "2026-08-01")).toBeNull();
   });
 });
+
+describe("anchorDailiesToStatements — spread check is net of deposits and withdrawals", () => {
+  // Dailies sit at 1000 until a deposit of 500 lands on 02-15, then at 1500:
+  // a 40% swing of the mean that is entirely money movement.
+  const anchors = [A("2026-01-31", 1000), A("2026-02-28", 1500)];
+  const dailies = [
+    D("2026-01-31", 1000),
+    D("2026-02-05", 1000),
+    D("2026-02-10", 1000),
+    D("2026-02-15", 1500),
+    D("2026-02-20", 1500),
+    D("2026-02-28", 1500),
+  ];
+
+  it("a jump that is only a deposit is plotted", () => {
+    const flows = [{ date: "2026-02-15", netFlow: 500 }];
+    const { points, summary } = anchorDailiesToStatements(anchors, dailies, flows);
+    expect(summary.segmentsSkipped).toBe(0);
+    expect(summary.segmentsAnchored).toBe(1);
+    expect(interior(points).length).toBeGreaterThan(0);
+    // The plotted values are NOT flow-adjusted.
+    expect(interior(points).find((p) => p.date === "2026-02-20")!.recordedValue).toBe(1500);
+  });
+
+  it("the same jump with no flow is still refused", () => {
+    for (const flows of [undefined, []]) {
+      const { points, summary } = anchorDailiesToStatements(anchors, dailies, flows);
+      expect(summary.segmentsSkipped).toBe(1);
+      expect(interior(points)).toHaveLength(0);
+    }
+  });
+
+  it("a withdrawal (negative flow) explains a drop", () => {
+    const a = [A("2026-01-31", 1500), A("2026-02-28", 1000)];
+    const d = [
+      D("2026-01-31", 1500),
+      D("2026-02-05", 1500),
+      D("2026-02-10", 1500),
+      D("2026-02-15", 1000),
+      D("2026-02-20", 1000),
+      D("2026-02-28", 1000),
+    ];
+    const flows = [{ date: "2026-02-15", netFlow: -500 }];
+    expect(anchorDailiesToStatements(a, d, flows).summary.segmentsSkipped).toBe(0);
+    // A deposit of the wrong sign does not help.
+    expect(anchorDailiesToStatements(a, d, [{ date: "2026-02-15", netFlow: 500 }]).summary.segmentsSkipped).toBe(1);
+  });
+
+  it("flows outside the segment do not help", () => {
+    const flows = [
+      { date: "2026-01-31", netFlow: 500 }, // on the start anchor: before the segment
+      { date: "2026-03-05", netFlow: 500 }, // after the segment
+    ];
+    expect(anchorDailiesToStatements(anchors, dailies, flows).summary.segmentsSkipped).toBe(1);
+  });
+
+  it("a flow that does not explain the swing does not hide it", () => {
+    const flows = [{ date: "2026-02-15", netFlow: 100 }];
+    expect(anchorDailiesToStatements(anchors, dailies, flows).summary.segmentsSkipped).toBe(1);
+  });
+
+  it("trailing segment: a deposit-only jump after the last anchor is plotted", () => {
+    const a = [A("2026-01-31", 1000)];
+    const d = [
+      D("2026-01-31", 1000),
+      D("2026-02-05", 1000),
+      D("2026-02-10", 1000),
+      D("2026-02-15", 1500),
+      D("2026-02-20", 1500),
+    ];
+    const noFlow = anchorDailiesToStatements(a, d);
+    expect(noFlow.summary.trailingSkipped).toBe(true);
+    const withFlow = anchorDailiesToStatements(a, d, [{ date: "2026-02-15", netFlow: 500 }]);
+    expect(withFlow.summary.trailingSkipped).toBe(false);
+    expect(withFlow.summary.trailingDays).toBe(4);
+  });
+});

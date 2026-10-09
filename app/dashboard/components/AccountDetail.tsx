@@ -12,6 +12,7 @@ import type { AccountCashLine } from "@/lib/queries/account-cash-line";
 import { HoldingsTable } from "./HoldingsTable";
 import { TransactionHistory } from "./TransactionHistory";
 import { EquityCurveChart } from "./EquityCurveChart";
+import type { EquityFlow } from "@/lib/chart/equity-curve-anchor";
 import { ReconciliationTable } from "./ReconciliationTable";
 import { SnapshotAge, summarizeSnapshot } from "./SnapshotAge";
 import type { ReconciliationCheckpoint } from "@/lib/queries/reconciliation";
@@ -26,6 +27,8 @@ interface AccountDetailProps {
   transactionSort?: TransactionSort;
   snapshots: MonthlySnapshot[];
   dailyValuations?: DailyValuation[];
+  /** External flows for the equity-curve spread check (not rendered). */
+  equityFlows?: EquityFlow[];
   /** Positions / cash / total from the latest daily valuation, for the
    *  Holdings footer. */
   cashLine?: AccountCashLine | null;
@@ -40,6 +43,7 @@ export function AccountDetail({
   transactionSort,
   snapshots,
   dailyValuations,
+  equityFlows,
   cashLine,
   reconciliationCheckpoints,
 }: AccountDetailProps) {
@@ -74,6 +78,7 @@ export function AccountDetail({
         <EquityCurveChart
           snapshots={snapshots}
           dailyValuations={dailyValuations}
+          flows={equityFlows}
           accountName={selectedAccount.name}
         />
       )}
