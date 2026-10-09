@@ -1,4 +1,5 @@
 export const dynamic = "force-dynamic";
+export const metadata = { title: "Source Performance" };
 
 import Link from "next/link";
 import { db } from "@/lib/db";
