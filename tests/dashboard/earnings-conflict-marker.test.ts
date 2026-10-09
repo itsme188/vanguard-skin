@@ -1,7 +1,10 @@
 import { describe, it, expect } from "vitest";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { EarningsConflictMarker } from "@/app/dashboard/components/calendar/EarningsConflictMarker";
+import {
+  EarningsConflictMarker,
+  confirmConflictDate,
+} from "@/app/dashboard/components/calendar/EarningsConflictMarker";
 
 // QA findings:
 //   security-detail-upcoming-events--date-conflicted-earnings-row-rendered-as-settled-no-marker
@@ -89,5 +92,58 @@ describe("EarningsConflictMarker", () => {
     // EarningsDateChip's "⚠ confirm" chip uses on the Earnings Hub.
     expect(html).toContain("text-gold-ink");
     expect(html).toContain("whitespace-nowrap");
+  });
+});
+
+// Owner ruling 2026-10-08: a confirm for a symbol with several hand-entered
+// dates succeeds but cannot tidy them up; the route says so in `data.notice`
+// and the caller must hand that sentence on instead of dropping it.
+describe("confirmConflictDate", () => {
+  const input = { symbol: "ZZA", date: "2026-11-05", slot: "amc" as const };
+  const respond = (status: number, body: unknown) => async () =>
+    new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+
+  it("a plain success carries no notice", async () => {
+    const outcome = await confirmConflictDate(
+      input,
+      respond(200, { success: true, data: { eventId: 7, eventDate: input.date } }),
+    );
+    expect(outcome).toEqual({ kind: "confirmed" });
+  });
+
+  it("hands on the server's notice on a success", async () => {
+    const outcome = await confirmConflictDate(
+      input,
+      respond(200, {
+        success: true,
+        data: { eventId: 7, eventDate: input.date, notice: "Several hand-entered dates; remove the extras." },
+      }),
+    );
+    expect(outcome).toEqual({
+      kind: "confirmed",
+      notice: "Several hand-entered dates; remove the extras.",
+    });
+  });
+
+  it("a blank or non-text notice is no notice", async () => {
+    for (const notice of ["   ", 42, null]) {
+      const outcome = await confirmConflictDate(
+        input,
+        respond(200, { success: true, data: { eventId: 7, eventDate: input.date, notice } }),
+      );
+      expect(outcome).toEqual({ kind: "confirmed" });
+    }
+  });
+
+  it("a 2xx without success:true is still a failure, in the server's words", async () => {
+    const outcome = await confirmConflictDate(input, respond(200, { success: false, error: "No." }));
+    expect(outcome).toEqual({ kind: "failed", message: "No." });
+  });
+
+  it("a fetch that never answers is unreachable", async () => {
+    const outcome = await confirmConflictDate(input, async () => {
+      throw new TypeError("Failed to fetch");
+    });
+    expect(outcome).toEqual({ kind: "unreachable" });
   });
 });

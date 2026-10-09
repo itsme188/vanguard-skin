@@ -144,7 +144,12 @@ export function conflictResolveOptions(
 }
 
 export type ConfirmConflictOutcome =
-  | { kind: "confirmed" }
+  /**
+   * `notice`: a sentence the server wants the user to read even though the
+   * date was locked (the symbol has several hand-entered dates it would not
+   * pick between). Absent on a plain success.
+   */
+  | { kind: "confirmed"; notice?: string }
   | { kind: "failed"; message: string }
   | { kind: "unreachable" };
 
@@ -152,7 +157,8 @@ export type ConfirmConflictOutcome =
  * Lock one date for a conflicted row through POST /api/earnings/confirm-date —
  * the same call the Earnings Hub's "⚠ confirm" popover makes, so both surfaces
  * resolve a conflict one way. Extracted so the network contract is testable in
- * Node: a 2xx without `success: true` is a failure.
+ * Node: a 2xx without `success: true` is a failure, and a success may carry
+ * a notice.
  */
 export async function confirmConflictDate(
   input: { symbol: string; date: string; slot: "bmo" | "amc" },
@@ -168,8 +174,12 @@ export async function confirmConflictDate(
         confirmedTime: input.slot,
       }),
     });
-    const result = await readMutationResult(res);
-    return result.ok ? { kind: "confirmed" } : { kind: "failed", message: result.message };
+    const result = await readMutationResult<{ data?: { notice?: unknown } }>(res);
+    if (!result.ok) return { kind: "failed", message: result.message };
+    const notice = result.data.data?.notice;
+    return typeof notice === "string" && notice.trim() !== ""
+      ? { kind: "confirmed", notice: notice.trim() }
+      : { kind: "confirmed" };
   } catch {
     return { kind: "unreachable" };
   }
@@ -231,6 +241,10 @@ export function EarningsConflictActions({
     setError(null);
     const outcome = await confirmConflictDate({ symbol: symbol as string, date: option.date, slot });
     if (outcome.kind === "confirmed") {
+      // The reload below would wipe an inline message, so a notice is shown
+      // in a dialog the user dismisses first (this handler already asks
+      // through one).
+      if (outcome.notice) window.alert(outcome.notice);
       window.location.reload();
       return;
     }
