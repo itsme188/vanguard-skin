@@ -42,8 +42,10 @@ describe("equity-curve caption names the end overshoot", () => {
   // end as the TWR beside it. YTD and All still plot every daily point to
   // today, which is where the overshoot caption above still applies.
   it("the curve ends at the page window's end: today for YTD / All, the statement anchor for a fixed period", () => {
+    // U13 changed the loader (one summed series for the whole scope, started
+    // at the scope's first statement); the END this test pins is unchanged.
     expect(flat(view)).toContain(
-      "getDailyValuationsByAccount(db, accountId, { startDate: effectiveStart, endDate: dailyEnd })",
+      "getDailyValuationsForAccounts(db, scopeAccountIds ?? [], { startDate: curveSeriesStart, endDate: dailyEnd, fullCoverageOnly: true, })",
     );
     expect(flat(view)).toContain("const dailyEnd = perfWindow.endDate;");
     expect(flat(view)).not.toContain("{ startDate: effectiveStart, endDate: twrResult");
