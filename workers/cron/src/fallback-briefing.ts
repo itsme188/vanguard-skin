@@ -23,7 +23,7 @@ import { loadLatestSnapshot, type Snapshot } from "./state";
 import { sendEmail } from "./resend";
 import { generateWithFailover } from "./ai";
 import { briefingToHtml } from "./html";
-import { todayET, getCurrentETDayOfWeek } from "./dst";
+import { todayET, getCurrentETDayOfWeek, etDateOfStoredUtc } from "./dst";
 import type { FallbackEnv, FallbackResult } from "./fallback-digest";
 import { issuerSiblings } from "./fallback-earnings";
 
@@ -199,7 +199,7 @@ function buildPrompt(snapshot: Snapshot, weekOf: string): string {
     .filter((a) => a.summary)
     .slice(0, BROADER_ARTICLE_LIMIT);
   const breadthContext = breadth
-    .map((a) => `[${a.received_at.slice(0, 10)}] ${a.source_name}: ${a.subject}\n${a.summary || ""}`)
+    .map((a) => `[${articleDayET(a.received_at)}] ${a.source_name}: ${a.subject}\n${a.summary || ""}`)
     .join("\n\n---\n\n");
 
   const portfolioEarningsSection =
@@ -408,6 +408,16 @@ export function partitionBriefingEvents<T extends BriefingPartitionRow>(
   return partitionBriefingEventsBy(events, issuerFamilyKey);
 }
 
+/**
+ * The Eastern calendar day an article arrived. `received_at` is a UTC
+ * instant, so its first ten characters are the UTC date: an article received
+ * at 21:00 Eastern on Thursday read as Friday. An unreadable value keeps
+ * those ten characters, the label it had before.
+ */
+function articleDayET(receivedAt: string): string {
+  return etDateOfStoredUtc(receivedAt) ?? receivedAt.slice(0, 10);
+}
+
 function buildDeepSection(snapshot: Snapshot): string {
   let total = 0;
   const chunks: string[] = [];
@@ -416,7 +426,7 @@ function buildDeepSection(snapshot: Snapshot): string {
     const text = article.raw_text.slice(0, MAX_CHARS_PER_ARTICLE);
     if (total + text.length > MAX_TOTAL_DEEP_CHARS) break;
     chunks.push(
-      `### ${article.source_name} — ${article.received_at.slice(0, 10)}: ${article.subject}\n\n${text}`
+      `### ${article.source_name} — ${articleDayET(article.received_at)}: ${article.subject}\n\n${text}`
     );
     total += text.length;
   }

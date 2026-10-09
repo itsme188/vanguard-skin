@@ -176,7 +176,8 @@ describe("once per Eastern day: Mac scan and Worker scan agree", () => {
     reactivateLevel(db, levelId, { force: true });
 
     const snapshot = workerSnapshot();
-    expect(snapshot.schemaVersion).toBe(12);
+    // 13 since 2026-10-09 (manualEarningsRows); the v12 level fields are unchanged.
+    expect(snapshot.schemaVersion).toBe(13);
     const row = (snapshot.securityLevels ?? []).find((l) => l.id === levelId);
     expect(row).toMatchObject({ currency: "JPY", triggered_at: "2026-10-08T13:35:00.000Z" });
   });

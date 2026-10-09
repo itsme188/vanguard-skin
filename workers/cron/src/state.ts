@@ -219,7 +219,12 @@ export interface SnapshotBogey {
  *        earningsBogeys[].eps_consensus_vendor, so the cloud honours
  *        "armed as covered" for events armed after the 2am snapshot
  *
- * All v2–v11 fields are optional for back-compat with older snapshots; the
+ *   v12 — adds currency + triggered_at on securityLevels rows
+ *   v13 — adds manualEarningsRows (every live hand-entered earnings row, five
+ *        columns) so the manual-twin email rule is not limited to the
+ *        calendar window
+ *
+ * All v2–v13 fields are optional for back-compat with older snapshots; the
  * fallback gracefully degrades when these are missing.
  */
 /**
@@ -323,7 +328,9 @@ export interface Snapshot {
   // v12 (2026-10-08) adds `currency` and `triggered_at` to securityLevels
   // rows. Both are optional, so a v11 snapshot is read unchanged: the Worker
   // is deployed before the first v12 snapshot is written.
-  schemaVersion: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12;
+  // v13 (2026-10-09) adds `manualEarningsRows`. Optional, and nothing gates on
+  // the number: a v12 snapshot simply lacks the field. Same deploy order.
+  schemaVersion: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13;
   snapshotDate: string;
   generatedAt: string;
   heldSymbols: string[];
@@ -395,6 +402,24 @@ export interface Snapshot {
   // to today's held+watchlist coverage (`source: "degraded-v10"`).
   armedGeneration?: number;
   armedEvents?: ArmedEventEntry[];
+  // v13 — EVERY live (not superseded) hand-entered earnings row, whatever its
+  // date, so the "two hand-entered rows, one email" rule sees the earlier row
+  // after it has left `calendarEvents` (yesterday to +7 days). The Mac reads
+  // the whole table for this rule (lib/queries/manual-twin-email.ts); these
+  // are the same rows. Read ONLY as input to that rule
+  // (fallback-earnings.ts::manualTwinRuleRows), never as events to email.
+  // Optional/additive: a ≤v12 snapshot lacks it and the rule runs over the
+  // calendar window alone, as before.
+  manualEarningsRows?: ManualEarningsSnapshotRow[];
+}
+
+/** The five columns the manual-twin rule reads; nothing else is shipped. */
+export interface ManualEarningsSnapshotRow {
+  id: number;
+  symbol: string;
+  event_date: string;
+  source: string;
+  event_type: string;
 }
 
 export interface ReadThroughPairSnapshotRow {

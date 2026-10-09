@@ -54,7 +54,7 @@ const CALENDAR_LOOKAHEAD_DAYS = 7;
 const SNAPSHOT_RETENTION_DAYS = 7;
 
 interface Snapshot {
-  schemaVersion: 12;
+  schemaVersion: 13;
   snapshotDate: string;
   generatedAt: string;
   heldSymbols: string[];
@@ -219,6 +219,18 @@ interface Snapshot {
   // `armedEvents` is the full armed list plus D7 tombstones.
   armedGeneration: number;
   armedEvents: ArmedEventProjection[];
+  // v13 — EVERY live (not superseded) hand-entered earnings row, whatever its
+  // date. `calendarEvents` covers yesterday to +7 days; the "two hand-entered
+  // rows, one email" rule (lib/earnings/manual-twin-email.ts) needs the
+  // earlier row after it has left that window. Rule input only: the five
+  // columns the rule reads, no figure.
+  manualEarningsRows: Array<{
+    id: number;
+    symbol: string;
+    event_date: string;
+    source: string;
+    event_type: string;
+  }>;
 }
 
 /**
@@ -338,6 +350,29 @@ export function getSecurityBetas(
     )
     .all() as Array<{ securityId: number; lookbackDays: number; beta: number; residualStd: number | null; computedAt: string }>;
   return rows;
+}
+
+/**
+ * Every live hand-entered earnings row: the SAME rows, by the same predicate,
+ * that the Mac's `getEmailIgnoredManualTwins` (lib/queries/manual-twin-email.ts)
+ * feeds the manual-twin rule. No date window on purpose. Change the two
+ * together; tests/scripts/snapshot-manual-earnings-rows.test.ts runs the
+ * Worker's rule on this output against the Mac's answer.
+ */
+export function getManualEarningsRowsForSnapshot(
+  db: Database.Database,
+): Snapshot["manualEarningsRows"] {
+  return db
+    .prepare(
+      `SELECT id, symbol, event_date, source, event_type
+         FROM calendar_events
+        WHERE event_type = 'earnings'
+          AND source = 'manual'
+          AND symbol IS NOT NULL
+          AND COALESCE(superseded, 0) = 0
+        ORDER BY id`,
+    )
+    .all() as Snapshot["manualEarningsRows"];
 }
 
 const NOTE_CONTENT_CAP = 2_000;
@@ -671,7 +706,7 @@ function buildSnapshot(db: Database.Database): Snapshot {
     );
 
     return {
-      schemaVersion: 12,
+      schemaVersion: 13,
       snapshotDate: todayET(),
       generatedAt: new Date().toISOString(),
       heldSymbols: getHeldStockSymbols(db),
@@ -738,6 +773,8 @@ function buildSnapshot(db: Database.Database): Snapshot {
       // watermark can never be older than the list it stamps.
       armedGeneration: readArmedGeneration(db),
       armedEvents: buildArmedEventsEntries(db, { today: todayET() }),
+      // v13 — every live hand-entered earnings row, for the manual-twin rule.
+      manualEarningsRows: getManualEarningsRowsForSnapshot(db),
     };
   })();
 }
