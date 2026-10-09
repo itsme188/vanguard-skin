@@ -535,8 +535,11 @@ describe("fetchLast2ClosesBatch (Yahoo spark, batched — subrequest budget)", (
       }),
     });
     const map = await fetchLast2ClosesBatch(["SPY", "AAPL"]);
-    expect(map.get("SPY")).toEqual({ prior: 505, today: 510 });
-    expect(map.get("AAPL")).toEqual({ prior: 200, today: 210 });
+    // Each entry now also carries the Eastern day of its two bars (epoch
+    // seconds 1 to 3 are all 31 Dec 1969 in New York).
+    const day = "1969-12-31";
+    expect(map.get("SPY")).toEqual({ prior: 505, today: 510, priorDate: day, todayDate: day });
+    expect(map.get("AAPL")).toEqual({ prior: 200, today: 210, priorDate: day, todayDate: day });
   });
 
   it("issues ONE request for a modest symbol set (collapses N subrequests → 1)", async () => {

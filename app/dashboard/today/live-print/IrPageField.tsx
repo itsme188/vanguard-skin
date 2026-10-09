@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import apiFetch from "@/lib/http/apiFetch";
+import { networkFailureMessage } from "@/lib/ui/mutation-result";
 
 /**
  * The first UI for /api/print-watch/sources (M-F16). Slice B shipped the route
@@ -96,8 +97,8 @@ export default function IrPageField({
       }
       onNote(describe(data.data?.cleared));
       setHasStored(data.data?.cleared === true ? false : true);
-    } catch (err) {
-      onError(err instanceof Error ? err.message : "Could not reach the server.");
+    } catch {
+      onError(networkFailureMessage("save the IR page"));
     } finally {
       setBusy(false);
     }

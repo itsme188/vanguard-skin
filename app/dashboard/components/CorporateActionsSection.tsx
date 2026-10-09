@@ -8,6 +8,8 @@ import { Chip, CHIP_TONE_CLASSES } from "./Chip";
 import { Shares } from "@/lib/privacy/components";
 import apiFetch from "@/lib/http/apiFetch";
 import { useConfirmPrompt } from "./useConfirmPrompt";
+import { networkFailureMessage, readMutationResult } from "@/lib/ui/mutation-result";
+import { joinSentences } from "@/lib/ui/join-sentences";
 
 interface CorporateAction {
   id: number;
@@ -37,6 +39,9 @@ export function CorporateActionsSection({
   const [submitting, setSubmitting] = useState(false);
   // A refusal is said in the section itself, never in a browser alert.
   const [actionError, setActionError] = useState<string | null>(null);
+  // A list that failed to load is not an empty list: say so instead of
+  // "No corporate actions recorded".
+  const [loadError, setLoadError] = useState<string | null>(null);
   const prompt = useConfirmPrompt();
 
   // Form state
@@ -47,11 +52,28 @@ export function CorporateActionsSection({
   const [notes, setNotes] = useState("");
 
   useEffect(() => {
+    let cancelled = false;
     fetch(`/api/corporate-actions?securityId=${securityId}`)
-      .then((r) => r.json())
-      .then((d) => {
-        if (d.success) setActions(d.actions);
+      .then((res) => readMutationResult<{ actions?: CorporateAction[] }>(res))
+      .then((result) => {
+        if (cancelled) return;
+        if (!result.ok || !Array.isArray(result.data.actions)) {
+          setLoadError(
+            `Couldn't load the corporate actions: ${
+              result.ok ? "the server sent no list." : result.message
+            }`,
+          );
+          return;
+        }
+        setLoadError(null);
+        setActions(result.data.actions);
+      })
+      .catch(() => {
+        if (!cancelled) setLoadError(networkFailureMessage("load the corporate actions"));
       });
+    return () => {
+      cancelled = true;
+    };
   }, [securityId]);
 
   async function handleSubmit(e: React.FormEvent) {
@@ -73,18 +95,21 @@ export function CorporateActionsSection({
         }),
       });
 
-      const data = await res.json();
-      if (data.success) {
-        setActions((prev) => [data.action, ...prev]);
-        setShowForm(false);
-        setEffectiveDate("");
-        setRatioNum("2");
-        setRatioDen("1");
-        setNotes("");
-        router.refresh();
-      } else {
-        setActionError(`Couldn't apply the corporate action: ${data.error ?? "the server returned an error."}`);
+      const result = await readMutationResult<{ action?: CorporateAction }>(res);
+      if (!result.ok) {
+        setActionError(joinSentences(`Couldn't apply the corporate action: ${result.message}`, "Nothing was changed."));
+        return;
       }
+      const added = result.data.action;
+      if (added) setActions((prev) => [added, ...prev]);
+      setShowForm(false);
+      setEffectiveDate("");
+      setRatioNum("2");
+      setRatioDen("1");
+      setNotes("");
+      router.refresh();
+    } catch {
+      setActionError(`${networkFailureMessage("apply the corporate action")} The form is unchanged.`);
     } finally {
       setSubmitting(false);
     }
@@ -103,15 +128,19 @@ export function CorporateActionsSection({
     }
     setActionError(null);
 
-    const res = await apiFetch(`/api/corporate-actions?id=${actionId}`, {
-      method: "DELETE",
-    });
-    const data = await res.json();
-    if (data.success) {
+    try {
+      const res = await apiFetch(`/api/corporate-actions?id=${actionId}`, {
+        method: "DELETE",
+      });
+      const result = await readMutationResult(res);
+      if (!result.ok) {
+        setActionError(joinSentences(`Couldn't undo the corporate action: ${result.message}`, "It is still applied."));
+        return;
+      }
       setActions((prev) => prev.filter((a) => a.id !== actionId));
       router.refresh();
-    } else {
-      setActionError(`Couldn't undo the corporate action: ${data.error ?? "the server returned an error."}`);
+    } catch {
+      setActionError(`${networkFailureMessage("undo the corporate action")} It is still applied.`);
     }
   }
 
@@ -218,6 +247,12 @@ export function CorporateActionsSection({
         </form>
       )}
 
+      {loadError && (
+        <p role="alert" className={`px-5 py-2 border-b border-edge ${CHIP_TONE_CLASSES.down} text-xs font-medium`}>
+          {loadError}
+        </p>
+      )}
+
       {/* Actions list */}
       {actions.length > 0 ? (
         <div className="divide-y divide-edge/50">
@@ -272,7 +307,7 @@ export function CorporateActionsSection({
           ))}
         </div>
       ) : (
-        !showForm && (
+        !showForm && !loadError && (
           <div className="px-5 py-6 text-center text-sm text-ink-faint">
             No corporate actions recorded
           </div>

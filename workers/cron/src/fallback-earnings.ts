@@ -84,7 +84,7 @@ import {
   type CloudEnrichedPayload,
 } from "./cloud-enriched";
 import { isPlausibleEarnings } from "./plausibility";
-import { emailIgnoredManualTwins } from "./manual-twin-email";
+import { emailIgnoredManualTwins, type ManualTwinRow } from "./manual-twin-email";
 import { resolveExpectedMove } from "./expected-move";
 import { formatEtTimestamp, todayET } from "./dst";
 
@@ -308,6 +308,70 @@ function dedupeClusterByFamily(events: CalendarEventRow[]): CalendarEventRow[] {
   return events.filter((e) => winners.get(keyOf(e)) === e);
 }
 
+
+/**
+ * The rows the "two hand-entered rows, one email" rule runs over.
+ *
+ * The Mac feeds the rule EVERY live hand-entered earnings row
+ * (lib/queries/manual-twin-email.ts): the earlier row decides whether a later
+ * one is ignored even after it has left every date window. The snapshot's
+ * calendar covers yesterday to +7 days only, so on the later date of two rows
+ * more than a week apart the earlier row is gone from it. Snapshot v13 ships
+ * those rows separately (`manualEarningsRows`); this unions them in BY EVENT
+ * ID. A calendar row wins over the field's copy of the same id: it is the
+ * fuller row and carries the `superseded` flag.
+ *
+ * The extra rows are input to the rule ONLY. No selector iterates them, so
+ * they can never become an email candidate; and because a row is ignored
+ * exactly when the row before it (by date) is within the window, adding rows
+ * can only ignore more, never less.
+ *
+ * Field absent (a snapshot older than v13) or not a list: the calendar rows
+ * are returned as they are, which is the behaviour before v13.
+ *
+ * The field is as old as the snapshot. A row the owner deleted, or the
+ * reconciler replaced, since then is named in the armed-events delta
+ * (`removedEventIds` / `supersededEventIds`); such a field row is dropped
+ * here, under the same "strictly newer than the snapshot" gate
+ * `effectiveCalendarEvents` uses for in-window rows. Without this a deleted
+ * earlier row would keep silencing the later one until the next snapshot.
+ * The delta can only REMOVE rows from the rule's input, never add one.
+ *
+ * A field row whose `symbol` is not text is dropped: the rule upper-cases the
+ * symbol, and one bad row must never stop every other company's email.
+ */
+export function manualTwinRuleRows(
+  snapshot: Snapshot,
+  events: readonly CalendarEventRow[],
+  delta: ArmedEventsDelta | null = null,
+): readonly ManualTwinRow[] {
+  const extra = snapshot.manualEarningsRows;
+  if (!Array.isArray(extra) || extra.length === 0) return events;
+  const gone = new Set<number>();
+  if (
+    delta &&
+    (snapshot.schemaVersion ?? 0) >= 11 &&
+    snapshot.armedGeneration != null &&
+    delta.generation > snapshot.armedGeneration
+  ) {
+    for (const id of delta.supersededEventIds ?? []) gone.add(id);
+    for (const r of delta.removedEventIds ?? []) gone.add(r.id);
+  }
+  const seen = new Set(events.map((e) => e.id));
+  const rows: ManualTwinRow[] = [...events];
+  for (const r of extra as unknown[]) {
+    if (r == null || typeof r !== "object") continue;
+    const row = r as Partial<ManualTwinRow>;
+    if (typeof row.id !== "number" || !Number.isFinite(row.id)) continue;
+    if (typeof row.event_date !== "string" || typeof row.source !== "string") continue;
+    if (typeof row.symbol !== "string") continue;
+    if (seen.has(row.id) || gone.has(row.id)) continue;
+    seen.add(row.id);
+    rows.push(row as ManualTwinRow);
+  }
+  return rows;
+}
+
 /**
  * The expected-unsent recap cluster for one (date, slot), from the snapshot:
  * earnings rows for today (ET) in the slot, held/watchlist family-aware, not
@@ -349,7 +413,10 @@ function buildWrapCluster(
   // Two live hand-entered rows for one company: email follows the EARLIER
   // date; the later row is not a recap this cluster expects (owner ruling
   // 2026-10-07). Mirrors lib/earnings/wrap.ts::getExpectedRecapCluster.
-  const ignoredManualTwins = emailIgnoredManualTwins(eff.events, issuerSiblings);
+  const ignoredManualTwins = emailIgnoredManualTwins(
+    manualTwinRuleRows(snapshot, eff.events, delta),
+    issuerSiblings,
+  );
 
   const raw: CalendarEventRow[] = [];
   for (const e of eff.events) {
@@ -674,7 +741,7 @@ export async function runEarningsFallback(
 
     try {
       const liveIbkr = await getLiveIbkr();
-      await composeAndSend(env, snapshot, cand, liveIbkr, ibkrAccountName, implausible);
+      await composeAndSend(env, snapshot, cand, liveIbkr, ibkrAccountName, implausible, now);
       await writeEarningsMarker(env.CRON_KV, "cloud", cand.phase, cand.eventId);
       result.sent++;
       result.details.push({
@@ -739,7 +806,10 @@ async function findCandidatesFromSnapshot(
   // date and the later row is ignored for preview AND recap (owner ruling
   // 2026-10-07). Same rule, same file contents, as the Mac finders
   // (lib/earnings/manual-twin-email.ts <-> ./manual-twin-email.ts).
-  const ignoredManualTwins = emailIgnoredManualTwins(eff.events, issuerSiblings);
+  const ignoredManualTwins = emailIgnoredManualTwins(
+    manualTwinRuleRows(snapshot, eff.events, delta),
+    issuerSiblings,
+  );
 
   // A phase already handled on another row of the same print (see
   // siblingEventIndex). The snapshot half is answered here; the KV-marker
@@ -797,8 +867,11 @@ async function findCandidatesFromSnapshot(
     const enrichedAt = (e as Record<string, unknown>).enriched_at as string | null | undefined;
     const recapAudited = auditedSet.has(auditKey(e.id, "recap"));
     if (enrichedAt && !recapAudited) {
-      const enrichedMs = Date.parse(enrichedAt.replace(" ", "T") + "Z");
-      if (Number.isFinite(enrichedMs)) {
+      // Both stored forms of the instant (SQLite "YYYY-MM-DD HH:MM:SS" and
+      // ISO with T and Z) read as UTC. Appending "Z" by hand turned the ISO
+      // form into NaN, and since the value is truthy road 2 was skipped too.
+      const enrichedMs = parseUtcInstantMs(enrichedAt);
+      if (enrichedMs != null) {
         const ageMs = nowMs - enrichedMs;
         if (ageMs >= 0 && ageMs <= RECAP_WINDOW_MAX_MS) {
           if (((e as Record<string, unknown>).actual_value ?? null) == null) {
@@ -866,6 +939,7 @@ async function composeAndSend(
   liveIbkr: LiveIbkrPosition[] | null,
   ibkrAccountName: string,
   implausible: boolean,
+  now: Date,
 ): Promise<void> {
   if (!env.BRIEFING_EMAIL_TO) {
     throw new Error("BRIEFING_EMAIL_TO missing");
@@ -886,6 +960,7 @@ async function composeAndSend(
     positions,
     liveIbkr !== null,
     implausible,
+    now,
   );
 
   const release = cand.event.release_time
@@ -940,6 +1015,7 @@ function renderCandidateSections(
   positions: PositionView[],
   ibkrLive: boolean,
   implausible: boolean,
+  now: Date,
 ): { sections: string; hasNotes: boolean; hasBogeys: boolean; bogeyClaim: SnapshotBogeyClaim } {
   const family = issuerSiblings(cand.symbol);
   const intelCtx = resolveIntelCtx(snapshot, cand.eventId, cand.symbol);
@@ -951,7 +1027,7 @@ function renderCandidateSections(
     cand.phase === "preview" ? renderPastPrintsBlock(intelCtx?.history?.rows ?? []) : "";
 
   // v5 — the user's own thesis notes + curated bogeys (consensus/whisper).
-  const notes = resolveNotesForFamily(snapshot, family);
+  const notes = resolveNotesForFamily(snapshot, family, now);
   const bogeys = resolveBogeysForEvent(snapshot, cand.eventId);
   const notesBlock = renderNotesBlock(notes, cand.symbol);
   const bogeysBlock = renderBogeysBlock(bogeys);
@@ -1473,16 +1549,35 @@ function resolveIntelCtx(
 
 // ── v5 context: notes + bogeys from snapshot ────────────────────────
 
-function resolveNotesForFamily(
+/** PARITY: the default `daysBack` of lib/queries/notes.ts::getNotesForFamily. */
+const NOTES_WINDOW_DAYS = 90;
+
+/**
+ * The family's notes, cut to the last 90 days AS OF THE SEND.
+ *
+ * The snapshot already cut at 90 days, but from the day it was written; a
+ * snapshot a day or more old still carries notes that have since aged out.
+ * Same rule as the Mac (lib/queries/notes.ts::getNotesForFamily):
+ * `date(event_date) > today - 90 days`, today being the Eastern day. A note
+ * whose date cannot be read is left out, as SQLite's `date()` leaves it out.
+ * This can only remove a note the snapshot shipped.
+ */
+export function resolveNotesForFamily(
   snapshot: Snapshot,
   family: readonly string[],
+  now: Date,
 ): SnapshotNote[] {
   const fam = new Set(family.map((s) => s.toUpperCase()));
-  return (snapshot.notes ?? []).filter(
-    (n) =>
+  const cutoffMs = Date.parse(`${todayET(now)}T00:00:00Z`) - NOTES_WINDOW_DAYS * 86_400_000;
+  const cutoff = new Date(cutoffMs).toISOString().slice(0, 10);
+  return (snapshot.notes ?? []).filter((n) => {
+    const day = typeof n.event_date === "string" ? n.event_date.slice(0, 10) : "";
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(day) || !(day > cutoff)) return false;
+    return (
       (n.symbol != null && fam.has(n.symbol.toUpperCase())) ||
-      (n.underlying_symbol != null && fam.has(n.underlying_symbol.toUpperCase())),
-  );
+      (n.underlying_symbol != null && fam.has(n.underlying_symbol.toUpperCase()))
+    );
+  });
 }
 
 function resolveBogeysForEvent(snapshot: Snapshot, eventId: number): SnapshotBogey[] {

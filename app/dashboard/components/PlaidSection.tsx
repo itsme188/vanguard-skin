@@ -19,6 +19,8 @@
 import { CHIP_TONE_CLASSES } from "@/app/dashboard/components/Chip";
 import { useEffect, useState } from "react";
 import apiFetch from "@/lib/http/apiFetch";
+import { networkFailureMessage, readMutationResult } from "@/lib/ui/mutation-result";
+import { joinSentences } from "@/lib/ui/join-sentences";
 
 interface PlaidAccountInfo {
   id: string;
@@ -43,14 +45,12 @@ interface UnmatchedPlaidSecurity {
 }
 
 interface SyncResponse {
-  success: boolean;
   accountsSynced?: number;
   holdingsWritten?: number;
   pricesWritten?: number;
   staleRemoved?: number;
   unmatched?: UnmatchedPlaidSecurity[];
   securitiesCreated?: string[];
-  error?: string;
 }
 
 type InlineStatus =
@@ -65,6 +65,39 @@ type SyncStatus =
       securitiesCreated: string[];
     }
   | { kind: "error"; message: string };
+
+type PlaidSettingsLoad =
+  | { ok: true; payload: PlaidSettingsPayload }
+  | { ok: false; message: string };
+
+/**
+ * Read the settings GET. That route answers with the settings object itself
+ * (no success envelope), so the status and the shape are the gate: a failed
+ * or unreadable answer is a failure line, never a settings panel built from
+ * an error body.
+ */
+async function readPlaidSettings(res: Response): Promise<PlaidSettingsLoad> {
+  const body = (await res.json().catch(() => null)) as
+    | (Partial<PlaidSettingsPayload> & { error?: unknown })
+    | null;
+  if (
+    res.ok &&
+    body &&
+    typeof body.configured === "boolean" &&
+    Array.isArray(body.plaidAccounts) &&
+    Array.isArray(body.localAccounts) &&
+    body.accountMap != null
+  ) {
+    return { ok: true, payload: body as PlaidSettingsPayload };
+  }
+  const serverText = typeof body?.error === "string" && body.error.trim() ? body.error.trim() : null;
+  return {
+    ok: false,
+    message: `Couldn't load the Plaid settings: ${
+      serverText ?? `the server returned an error (HTTP ${res.status}).`
+    }`,
+  };
+}
 
 function formatTimeSince(isoDate: string): string {
   const diffMs = Date.now() - new Date(isoDate).getTime();
@@ -84,35 +117,48 @@ export function PlaidSection() {
   const [mapSaving, setMapSaving] = useState(false);
   const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null);
   const [syncing, setSyncing] = useState(false);
+  // A re-read that failed AFTER a sync that finished. Its own line: it must
+  // never replace the section or hide the sync's result.
+  const [refreshError, setRefreshError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     fetch("/api/settings/plaid")
-      .then((r) => r.json())
-      .then((data: PlaidSettingsPayload) => {
+      .then(readPlaidSettings)
+      .then((loaded) => {
         if (cancelled) return;
-        setPayload(data);
-        setDraftMap(data.accountMap);
-      })
-      .catch((err) => {
-        if (!cancelled) {
-          setLoadError(err instanceof Error ? err.message : "Failed to load Plaid settings");
+        if (!loaded.ok) {
+          setLoadError(loaded.message);
+          return;
         }
+        setPayload(loaded.payload);
+        setDraftMap(loaded.payload.accountMap);
+      })
+      .catch(() => {
+        if (!cancelled) setLoadError(networkFailureMessage("load the Plaid settings"));
       });
     return () => {
       cancelled = true;
     };
   }, []);
 
-  async function load() {
+  // The re-read after a sync whose outcome has already been said. A re-read
+  // that fails is not the sync failing: the settings on screen stay as they
+  // were (only the "last synced" time is out of date) and the failure gets
+  // its own line under the sync result.
+  async function refreshAfterWrite() {
+    const failed = "The sync finished; the list could not be refreshed. Reload to see it.";
     try {
-      const res = await fetch("/api/settings/plaid");
-      const data = (await res.json()) as PlaidSettingsPayload;
-      setPayload(data);
-      setDraftMap(data.accountMap);
-      setLoadError(null);
-    } catch (err) {
-      setLoadError(err instanceof Error ? err.message : "Failed to load Plaid settings");
+      const loaded = await readPlaidSettings(await fetch("/api/settings/plaid"));
+      if (!loaded.ok) {
+        setRefreshError(failed);
+        return;
+      }
+      setPayload(loaded.payload);
+      setDraftMap(loaded.payload.accountMap);
+      setRefreshError(null);
+    } catch {
+      setRefreshError(failed);
     }
   }
 
@@ -125,18 +171,24 @@ export function PlaidSection() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ accountMap: draftMap }),
       });
-      const data = (await res.json()) as PlaidSettingsPayload & { success?: boolean; error?: string };
-      if (!res.ok || data.success === false) {
-        setMapStatus({ kind: "error", message: data.error || `Save failed (HTTP ${res.status})` });
+      const result = await readMutationResult<PlaidSettingsPayload>(res);
+      if (!result.ok) {
+        setMapStatus({
+          kind: "error",
+          message: joinSentences(
+            `Mapping not saved: ${result.message}`,
+            "The saved mapping is unchanged.",
+          ),
+        });
         return;
       }
-      setPayload(data);
-      setDraftMap(data.accountMap);
+      setPayload(result.data);
+      setDraftMap(result.data.accountMap);
       setMapStatus({ kind: "saved", message: "Mapping saved." });
-    } catch (err) {
+    } catch {
       setMapStatus({
         kind: "error",
-        message: err instanceof Error ? `Save failed: ${err.message}` : "Save failed",
+        message: `${networkFailureMessage("save the mapping")} The saved mapping is unchanged.`,
       });
     } finally {
       setMapSaving(false);
@@ -146,32 +198,34 @@ export function PlaidSection() {
   async function handleSync() {
     setSyncing(true);
     setSyncStatus(null);
+    setRefreshError(null);
     try {
       const res = await apiFetch("/api/plaid/sync", { method: "POST" });
-      const data = (await res.json()) as SyncResponse;
-      if (data.success) {
-        const accountsSynced = data.accountsSynced ?? 0;
-        const holdingsWritten = data.holdingsWritten ?? 0;
-        // This button's route always forces the sync, so the cron-only
-        // "skipped" answers (closed day, already ran today) never come back
-        // here; tests/plaid/plaid-minors-q30.test.ts pins that.
-        let message = `Synced ${holdingsWritten} holding${holdingsWritten === 1 ? "" : "s"} across ${accountsSynced} account${accountsSynced === 1 ? "" : "s"}.`;
-        const securitiesCreated = data.securitiesCreated ?? [];
-        if (securitiesCreated.length > 0) {
-          message += ` New securities created: ${securitiesCreated.join(", ")} — verify these aren't duplicates of existing holdings.`;
-        }
-        setSyncStatus({
-          kind: "success",
-          message,
-          unmatched: data.unmatched ?? [],
-          securitiesCreated,
-        });
-        void load();
-      } else {
-        setSyncStatus({ kind: "error", message: data.error || "Sync failed." });
+      const result = await readMutationResult<SyncResponse>(res);
+      if (!result.ok) {
+        setSyncStatus({ kind: "error", message: `Vanguard sync failed: ${result.message}` });
+        return;
       }
+      const data = result.data;
+      const accountsSynced = data.accountsSynced ?? 0;
+      const holdingsWritten = data.holdingsWritten ?? 0;
+      // This button's route always forces the sync, so the cron-only
+      // "skipped" answers (closed day, already ran today) never come back
+      // here; tests/plaid/plaid-minors-q30.test.ts pins that.
+      let message = `Synced ${holdingsWritten} holding${holdingsWritten === 1 ? "" : "s"} across ${accountsSynced} account${accountsSynced === 1 ? "" : "s"}.`;
+      const securitiesCreated = data.securitiesCreated ?? [];
+      if (securitiesCreated.length > 0) {
+        message += ` New securities created: ${securitiesCreated.join(", ")} — verify these aren't duplicates of existing holdings.`;
+      }
+      setSyncStatus({
+        kind: "success",
+        message,
+        unmatched: data.unmatched ?? [],
+        securitiesCreated,
+      });
+      void refreshAfterWrite();
     } catch {
-      setSyncStatus({ kind: "error", message: "Failed to connect to server" });
+      setSyncStatus({ kind: "error", message: networkFailureMessage("sync Vanguard") });
     } finally {
       setSyncing(false);
     }
@@ -329,6 +383,11 @@ export function PlaidSection() {
                 {syncStatus.unmatched
                   .map((u) => `${u.name ?? "unknown security"} (${u.reason})`)
                   .join(", ")}
+              </p>
+            )}
+            {refreshError && (
+              <p className="text-down" role="status">
+                {refreshError}
               </p>
             )}
           </div>

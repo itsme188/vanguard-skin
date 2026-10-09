@@ -3,6 +3,8 @@
 import { GOLD_FILL_CLASSES } from "@/app/dashboard/components/chip-tone-text";
 import { useState, useEffect } from "react";
 import apiFetch from "@/lib/http/apiFetch";
+import { networkFailureMessage, readMutationResult } from "@/lib/ui/mutation-result";
+import { joinSentences } from "@/lib/ui/join-sentences";
 import { todayET } from "@/lib/calendar/date-utils";
 import { decideDigestBanner } from "@/lib/digest/catchup-banner";
 
@@ -108,7 +110,11 @@ export function DigestCatchup() {
           setSkippedEmpty(state === "skipped-empty");
           setShow(state !== "hidden");
         })
-        .catch(() => {});
+        .catch(() => {
+        // A failed status poll changes nothing on screen: the banner stays as
+        // the last good poll left it, and the next poll (five minutes, or the
+        // window regaining focus) asks again.
+      });
     };
 
     checkStatus();
@@ -135,11 +141,19 @@ export function DigestCatchup() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ mode: "since_last", skipMarkerUpdate: true }),
       });
-      const data = await res.json();
-      if (data.success && !data.skipped) {
+      const result = await readMutationResult<{ skipped?: boolean; reason?: unknown }>(res);
+      if (!result.ok) {
+        // Keep the banner up — silently hiding it makes a failed send look successful.
+        setSendError(
+          joinSentences(`Send failed: ${result.message}`, "The banner stays until a digest goes out."),
+        );
+        return;
+      }
+      const data = result.data;
+      if (!data.skipped) {
         setSent(true);
         setTimeout(() => setShow(false), 3000);
-      } else if (data.skipped) {
+      } else {
         // Already handled elsewhere (cloud fallback / concurrent cron) —
         // explain rather than vanish, then dismiss.
         // Show the server's own reason (e.g. an empty window) rather than
@@ -152,12 +166,9 @@ export function DigestCatchup() {
         );
         rememberDismissal();
         setTimeout(() => setShow(false), 6000);
-      } else {
-        // Keep the banner up — silently hiding it makes a failed send look successful.
-        setSendError(`Send failed: ${data.error ?? "unknown error"}. The banner stays until a digest goes out.`);
       }
     } catch {
-      setSendError("Send failed: could not reach the server.");
+      setSendError(`${networkFailureMessage("send the digest")} The banner stays until a digest goes out.`);
     } finally {
       setSending(false);
     }

@@ -226,7 +226,12 @@ Tests: `tests/calendar/event-suppressions.test.ts`,
 - Reads **FULL** `raw_text` from 4 preferred weekend sources: Vital Knowledge (id=1), Eliant Capital
   (18), Purple Drink's Market Musings (19), Helene Meisler (28). Other sources contribute at
   summary level.
-- Surfaces expiring options + Finnhub earnings + macro events.
+- Surfaces expiring options + Finnhub earnings + macro events. Since 2026-10-09 the
+  expiring-options list reads an expiry stored in the compact `YYYYMMDD` form too
+  (`optionExpirationDashedSql`, `lib/compute/option-expiry.ts`); before, such an option was left
+  out of the week it expires in. The "levels fired this week" read compares its window with
+  `datetime()` on both sides (`lib/queries/briefing-levels.ts`); before, a level fired earlier on
+  the window's first day was included.
 - 30k chars/article + 200k total cap keeps input cost at roughly **$0.65/run**.
 - `lib/queries/research.ts::getFullTextForSources()` — fetches processed articles' `raw_text` for a
   source-id list over a lookback window.

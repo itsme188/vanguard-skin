@@ -6,7 +6,9 @@ import { PrivateText, Count } from "@/lib/privacy/components";
 import { formatUSDPrecise, rendersAsZero } from "@/lib/format";
 import { formatOptionExpiry } from "@/lib/format/option-expiry";
 import { EmptySection } from "./EmptySection";
+import { LoadFailedSection } from "./LoadFailedSection";
 import { ScrollFade } from "./ScrollFade";
+import { networkFailureMessage, readMutationResult } from "@/lib/ui/mutation-result";
 import { SortableHeader } from "./SortableHeader";
 import { useSortParam, compareValues, type SortState } from "@/lib/hooks/useSortParam";
 import {
@@ -28,20 +30,54 @@ export function OptionsGreeksCard({ scope }: { scope?: string }) {
   // No sort param = the compute's own order (nearest expiry first).
   const { sort, setSort } = useSortParam<GreeksSortField>("greeks", null, "desc");
 
+  // A load that failed is not "no options": the card says the figures could
+  // not be loaded instead of showing the empty state.
+  const [loadError, setLoadError] = useState<string | null>(null);
+
   useEffect(() => {
+    let cancelled = false;
     setLoading(true);
     const params = scope && scope !== "all" ? `?scope=${scope}` : "";
     fetch(`/api/compute/options-greeks${params}`)
-      .then((r) => r.json())
-      .then((json) => {
-        if (json.success && json.data.positions?.length > 0) setData(json.data);
-        else setData(null);
+      .then((res) => readMutationResult<{ data?: PortfolioGreeks }>(res))
+      .then((result) => {
+        if (cancelled) return;
+        if (!result.ok || !result.data.data) {
+          setData(null);
+          setLoadError(
+            `Couldn't load the option Greeks: ${
+              result.ok ? "the server sent no data." : result.message
+            }`,
+          );
+          return;
+        }
+        setLoadError(null);
+        const loaded = result.data.data;
+        setData(Array.isArray(loaded.positions) && loaded.positions.length > 0 ? loaded : null);
       })
-      .catch(() => {})
-      .finally(() => setLoading(false));
+      .catch(() => {
+        if (cancelled) return;
+        setData(null);
+        setLoadError(networkFailureMessage("load the option Greeks"));
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [scope]);
 
   if (loading) return null;
+  if (loadError) {
+    return (
+      <LoadFailedSection
+        title="Options Greeks"
+        message={loadError}
+        hint="The option positions themselves are unchanged. Reload the page to try again."
+      />
+    );
+  }
   if (!data) {
     return (
       <EmptySection

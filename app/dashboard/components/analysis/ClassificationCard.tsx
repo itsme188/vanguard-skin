@@ -19,6 +19,7 @@ import type { ConcentrationMetrics, ClassificationCoverage } from "@/lib/queries
 import { interpretHHI, effectivePositionsFromHHI } from "@/lib/analysis/interpret";
 import { displaySecurityName } from "@/lib/format";
 import apiFetch from "@/lib/http/apiFetch";
+import { networkFailureMessage, readMutationResult } from "@/lib/ui/mutation-result";
 
 interface Props {
   concentration: ConcentrationMetrics;
@@ -188,33 +189,39 @@ export function ClassificationCard({ concentration, coverage }: Props) {
     setClassifyLoading(true);
     try {
       const res = await apiFetch("/api/compute/classify", { method: "POST" });
-      const data = await res.json();
-      if (data.success) {
-        // Guard with Array.isArray — aiErrors comes off the wire as JSON, not
-        // a typed value.
-        const aiErrors: string[] = Array.isArray(data.aiErrors) ? data.aiErrors : [];
-        if (data.classified === 0 && !data.unresolvedCount && aiErrors.length === 0) {
-          // Explain the no-op — "Classified 0" with no why reads as a broken button.
-          // No count: data.skipped is the engine's whole-table skip tally (every
-          // securities row ever seen, ~1.3k), not the held universe — quoting it
-          // as "held securities" contradicted the coverage card's 137.
-          toast("Nothing to classify — every held security already has sector/fund classifications.", "info");
-        } else {
-          toast(
-            classifyRunSummary(
-              data,
-              aiErrors,
-              isPrivate ? null : coverage.unclassified_securities.length,
-            ),
-            aiErrors.length > 0 ? "error" : data.unresolvedCount > 0 ? "info" : "success",
-          );
-        }
-        router.refresh();
-      } else {
-        toast(`Classification failed: ${data.error}`, "error");
+      const result = await readMutationResult<{
+        classified: number;
+        skipped: number;
+        unresolvedCount: number;
+        aiErrors?: string[];
+      }>(res);
+      if (!result.ok) {
+        toast(`Classification failed: ${result.message}`, "error");
+        return;
       }
+      const data = result.data;
+      // Guard with Array.isArray — aiErrors comes off the wire as JSON, not
+      // a typed value.
+      const aiErrors: string[] = Array.isArray(data.aiErrors) ? data.aiErrors : [];
+      if (data.classified === 0 && !data.unresolvedCount && aiErrors.length === 0) {
+        // Explain the no-op — "Classified 0" with no why reads as a broken button.
+        // No count: data.skipped is the engine's whole-table skip tally (every
+        // securities row ever seen, ~1.3k), not the held universe — quoting it
+        // as "held securities" contradicted the coverage card's 137.
+        toast("Nothing to classify — every held security already has sector/fund classifications.", "info");
+      } else {
+        toast(
+          classifyRunSummary(
+            data,
+            aiErrors,
+            isPrivate ? null : coverage.unclassified_securities.length,
+          ),
+          aiErrors.length > 0 ? "error" : data.unresolvedCount > 0 ? "info" : "success",
+        );
+      }
+      router.refresh();
     } catch {
-      toast("Failed to connect to server", "error");
+      toast(networkFailureMessage("run the classification"), "error");
     } finally {
       setClassifyLoading(false);
     }

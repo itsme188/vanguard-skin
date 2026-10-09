@@ -430,8 +430,17 @@ send (each send holds a 60 to 180 second AI call).
   (`event_not_found`). Waiting will not change any of them. Only a refusal with no code is
   `not-ready` (the compose is waiting on something a later tick may bring). The map is keyed by the
   refusal type, so a new refusal fails the type-check until it is given a name.
-- **The later hand-entered row** is refused only when `mode === "sweep"` and in the debrief. The
-  two manual modes (`nudge`, `manual`) may still send it.
+- **The later hand-entered row** is refused in EVERY mode since the third wave of 2026-10-08:
+  the sweep, the debrief, the Today nudge and the manual Send. Before, the two manual modes
+  (`nudge`, `manual`) still sent it, so a button could send an email no automatic path would.
+  The refusal says this is the later of two hand-entered entries, names the earlier date, and
+  gives the way out (remove or re-date the earlier entry); the send path never edits a calendar
+  row. `POST /api/earnings/email` answers 409 with that sentence; the nudge route returns a
+  `refused` outcome. One constant in `sendEarningsCandidate` (`refuseIgnoredManualTwin`,
+  `lib/earnings/send-service.ts`) holds the decision, which the owner has still to confirm.
+  Consequence to know: once a second hand-entered entry exists for a company, the automatic path
+  sends no recap for the later one and says nothing; the reason shows only on a manual press.
+  Test: `tests/earnings/superseded-event-send-path.test.ts`.
 - **Morning debrief:** a replaced member is dropped at the claim. After `generate` and before
   delivery, `runMorningDebrief` re-checks every claimed member with `emailRowRefusal`. If any is
   refused it sends nothing, releases all claims, restores the day key and returns
@@ -974,6 +983,21 @@ printing, not holding.
   all go through `snapshotBogeysPrinted`.
 - **The vendor EPS consensus is printed and labelled as the vendor's** ("vendor EPS consensus ...
   (basis unspecified)"), never as "EPS consensus".
+- **What the email SAYS follows the printed list (third wave, 2026-10-08).** The vendor consensus
+  row (source `finnhub`) is a printed entry, but the user did not curate it. `bogeyClaim`
+  (`lib/earnings/bogey-claim.ts`; Worker mirror `snapshotBogeyClaim`,
+  `workers/cron/src/bogey-claim.ts`) takes the SAME printed list the block renders and answers
+  `curated` (at least one printed entry is not the vendor's), `vendor_only` or `none`. The source
+  decides, not the column: a hand-entered row that fills only the vendor column is still the
+  user's entry. On `vendor_only` the Mac prompt heading and lead-in say these are the vendor's
+  figures and do not tell the model to treat them as the primary reference; the cloud heading,
+  note and footer say "no curated bogeys are shown here", which is true whether none exist or
+  one exists that the cloud cannot show. With a curated entry every string is as before.
+- **Printed sheets drop an all-empty bogey column.** The printed worksheet
+  (`lib/earnings/worksheet.ts`) and the post-print sheet (`lib/earnings/post-print-sheet.ts`)
+  read only rows the table prints a cell from, so an empty row is no longer a column of dashes.
+  Tests: `tests/earnings/printed-sheets-bogey-columns.test.ts`,
+  `tests/earnings/bogey-content-worker-parity.test.ts`.
 - **One documented difference:** the nightly snapshot does not carry `extra_metrics_json`, so a row
   whose only content is an extra metric line is an entry on the Mac and not in the cloud.
 - **Lesson:** "claims X is included" and "prints X" must come from one list. Two separate checks

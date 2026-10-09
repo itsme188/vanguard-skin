@@ -51,7 +51,8 @@ upload; `POST` / `PATCH /api/calendar/events` `would_supersede_vendor` (`force`)
 `slot_contradicts_known_time` (`forceSlot`); `POST /api/calendar/events` `manual_row_exists` and
 `manual_row_hidden` (no flag skips them); `PATCH /api/levels`
 `{ action: "deactivate" }` on a level that is not armed; `POST /api/earnings/confirm-date` on a
-past or too-distant date. The browser logs
+past or too-distant date; `POST /api/earnings/email` on the later of two hand-entered entries for
+one company (2026-10-08, no flag skips it). The browser logs
 "Failed to load resource" for any non-2xx response, so each of these leaves a console line; the QA
 sweep should not file them as console errors.
 
@@ -76,6 +77,19 @@ sweep should not file them as console errors.
 
 ## TWS / IBKR
 
+- `POST /api/tws/connect` — connect to TWS, then start the sync pipeline. Body (all optional):
+  `{ host?, port?, clientId? }`. An empty or unparseable body means "connect with the stored
+  settings".
+  - **400s (2026-10-08), nothing connected, `{ success: false, error }`:**
+    - `body must be a JSON object`: the body parsed to null, text, a number or an array.
+    - `clientId must be a whole number`: anything other than a whole number from 0 to 999. Zero is
+      allowed (the TWS master client id).
+    - the allowed-target check's own message, when the host or port (as sent, or the stored one)
+      is not an allowed TWS target. A host that is not text or a port that is not a number is
+      refused here too.
+  - An omitted or null `host`, `port` or `clientId` keeps the stored value. The key is not passed
+    on, so an omitted client id never blanks the stored one.
+  - Test: `tests/api/tws-connect-body-shape.test.ts`.
 - `POST /api/tws/positions` — SSE streaming: sync live IBKR positions + account summary from TWS.
 - `POST /api/tws/chart` — OHLCV bars for per-security charting.
   - Supports daily (cached in `ohlcv_bars`) and intraday 1m/5m (live from TWS, **not** cached).
@@ -259,12 +273,20 @@ is the full 10-route "service" set per `lib/auth/route-policy.ts`'s `CRON_ROUTES
   ranges. An explicit `accountId` is one account. A named `scope` is its WHOLE account list: one
   money-weighted return over every account in it, never the first account alone (2026-10-08).
   `all` or no scope is every account. Test: `tests/compute/xirr-scope-u13.test.ts`.
-- `GET /api/compute/risk?startDate=&endDate=&accountId=` — portfolio risk metrics (drawdown,
-  volatility, Sharpe, Herfindahl).
-- `GET /api/compute/position-risk?accountId=&topN=10` — per-position volatility, risk contribution,
-  correlation matrix.
-- `GET /api/compute/factors?accountId=&benchmark=SPY` — market beta regression + portfolio tilts
-  (size, style, sector, geography).
+- `GET /api/compute/risk?startDate=&endDate=&accountId=|scope=` — portfolio risk metrics (drawdown,
+  volatility, Sharpe, Herfindahl). The week-ago comparison point is counted from the Eastern day
+  (2026-10-09); it was a day late between 20:00 and midnight Eastern.
+- `GET /api/compute/position-risk?accountId=|scope=&topN=10` — per-position volatility, risk
+  contribution, correlation matrix.
+- `GET /api/compute/factors?accountId=|scope=&benchmark=SPY` — market beta regression + portfolio
+  tilts (size, style, sector, geography). An explicit `accountId` is one account; a named `scope`
+  is its WHOLE account list, never the first account alone (2026-10-08). The week-ago comparison
+  is counted from the Eastern day. Test: `tests/api/compute-factors.test.ts`.
+- **One rule for `accountId` and `scope` on these routes.** `accountId` is one account. `scope`
+  goes through `resolveScope`: `all` or no scope is every account, a named scope is every account
+  in it. The single-id helper that took the first account of a scope was deleted on 2026-10-08.
+  Known gap, an open owner question: a named scope that matches no account also resolves to
+  "every account" (see `conventions-detail.md` §E).
 - `GET /api/compute/scenarios?accountId=&scenario=` — scenario modeling (9 presets: crash, rate
   shocks, rally, sector rotation).
 - `POST /api/compute/scenarios` — custom what-if scenario.
@@ -303,12 +325,18 @@ is the full 10-route "service" set per `lib/auth/route-policy.ts`'s `CRON_ROUTES
   - Backed by `lib/compute/options-expirations.ts`.
   - Replaces the prior pattern where `ExpirationCalendar` chained off
     `/api/compute/options-greeks` and inherited its bugs.
-  - Multi-account scope resolution via `resolveScope` (not `resolveScopeToSingleId`) — Expirations
-    renders across all accounts in a scope, not just the first.
-- `GET /api/compute/options-strategies?accountId=` — detected option strategies (covered calls,
-  spreads, etc.).
-- `GET /api/compute/reconciliation?accountId=` — cost basis reconciliation: broker-reported vs
-  computed.
+  - Multi-account scope resolution via `resolveScope` — Expirations renders across all accounts
+    in a scope, not just the first.
+  - A live contract whose expiry is stored in the compact `YYYYMMDD` form is listed too
+    (2026-10-09); before, it was missing. The rows return the dashed date.
+- `GET /api/compute/options-strategies?accountId=|scope=` — detected option strategies (covered
+  calls, spreads, etc.). A named `scope` reads every account in it (2026-10-08; it used to read
+  the first one). Strategies are still detected account by account and then joined
+  (`detectStrategiesPerAccount`, `lib/queries/options.ts`): shares in one account never cover a
+  call written in another. Test: `tests/api/options-strategies-scope.test.ts`.
+- `GET /api/compute/reconciliation?accountId=|scope=` — cost basis reconciliation: broker-reported
+  vs computed. It checks one account at a time: a scope of two or more accounts answers **400**
+  with a sentence saying so, and never picks one.
 
 ---
 
@@ -631,6 +659,14 @@ Manual trigger for an earnings preview / recap email.
   (`emailRowRefusal`). The route passes on the service's status and sentence as `{ error }`: 409
   when the entry was replaced, **404** when no calendar row has that id (`event_not_found`,
   2026-10-08). Nothing is sent.
+  - **`ignored_manual_twin` on a manual send (2026-10-08).** When one company has two hand-entered
+    earnings entries, email follows the earlier one. A manual Send on the LATER entry now answers
+    **409** as well. Before, only the automatic sweep refused it and the button still sent. The
+    sentence says this is the later of two hand-entered entries, names the earlier date, and gives
+    the way out: remove or re-date the earlier entry. The body is `{ error }` only; the code
+    `ignored_manual_twin` stays inside the send service (`SendOutcome.code`). No flag skips the
+    refusal. One constant in `lib/earnings/send-service.ts` (`refuseIgnoredManualTwin`) holds the
+    decision. Test: `tests/earnings/superseded-event-send-path.test.ts`.
 - Composer writes an audit row to `earnings_emails` (migration 042, UNIQUE(event_id, phase)) on
   success.
 - Driver scripts: `scripts/preflight-earnings-data.ts <syms...>` and
@@ -659,6 +695,9 @@ Drop a multi-symbol PDF (e.g. TMT Breakout's weekly preview); Claude extracts pe
 `lib/earnings/extract-bogeys.ts`, fans out to matching `calendar_events` for
 `[weekOf-3d, weekOf+10d]` via `issuerSiblings()`. Archives PDF to R2 (graceful no-op without R2 env
 vars). Returns `{symbolsExtracted, eventsMatched, eventsUnmatched, results}`.
+
+When the form carries no `sourceLabel`, the default label is `Upload <date> <file name>` with the
+Eastern day (2026-10-09; it was the UTC day).
 
 ### `GET/POST/DELETE /api/earnings/bogeys`
 
@@ -871,6 +910,16 @@ Top-level Phase-3 driver.
   `CRON_SHARED_SECRET`) daily Plaid holdings sync. Calls `refreshVanguardHoldingsFromPlaid(db)`
   (no force — respects the once-per-trading-day skip). Called by launchd
   `com.vanguard-skin.plaid-sync.plist` (07:30 ET weekdays).
+  - **A skipped run names its cause (2026-10-08).** When the refresh did not run, the response is
+    `{ success: true, result: null, cause, note }`. `cause` is one of `not_configured`,
+    `not_connected`, `no_account_mapped`, `sync_in_progress`
+    (`plaidRefreshBlocker`, `lib/plaid/refresh.ts`, the same gate the refresh itself checks), or
+    `cleared_before_read` when the cause was gone by the time the route looked. `note` is
+    `skipped: ` plus the sentence the in-app route shows (`plaidSyncUnavailableMessage`). Before,
+    one catch-all note covered three causes and left out "no account mapped". A run that DID
+    start still answers `{ success: true, result }`, where `result.skippedReason` may be
+    `market_closed` or `already_synced_today`. Auth is unchanged. Test:
+    `tests/api/cron-plaid-sync-skip-cause.test.ts`.
 
 ## Donations (Giving — R4, 2026-08-17)
 
@@ -937,3 +986,5 @@ trusted `Origin` on unsafe methods); none has a `lib/auth/route-policy.ts` entry
 - `POST /api/print-watch/send-recap { printId }` — 200 for EVERY coordination outcome, rendered verbatim by the row:
   `sent | in_progress | already_sent | delivery_unknown | refused | failed` (E). The gate requires the accepted
   headline pair, the promote stamp, and that the currently accepted pair still matches the stored `actual_value`.
+  Since 2026-10-08 a press on the later of two hand-entered entries comes back `refused` with the same sentence the
+  manual route gives (`{ outcome: "refused", reason }`; the status is still 200).

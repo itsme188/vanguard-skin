@@ -143,10 +143,71 @@ export type HoverChange = {
   line: number;
   /** The hover classes that change the colour, as written, joined by a space. */
   hover: string;
+  /**
+   * Where the text colour was read: the class string itself, or the
+   * always-applied part of the `className` template it sits in.
+   */
+  textFrom: "own" | "element";
   /** Contrast before and while hovered, per theme (lowest of canvas, panel, raised). */
   resting: Record<Theme, number | null>;
   hovered: Record<Theme, number>;
 };
+
+type ClassNameTemplate = { start: number; end: number; staticText: string };
+
+/** Index just past the string that opens at `open` (a `"` or `'`). */
+function skipQuoted(src: string, open: number): number {
+  const quote = src[open];
+  let i = open + 1;
+  while (i < src.length && src[i] !== quote) i += src[i] === "\\" ? 2 : 1;
+  return i + 1;
+}
+
+/**
+ * Reads the template literal whose backtick is at `open`: where it ends, and
+ * its own static text (everything outside `${...}`), with each interpolation
+ * replaced by a space.
+ */
+function readTemplate(src: string, open: number): { end: number; staticText: string } {
+  let staticText = "";
+  let i = open + 1;
+  while (i < src.length && src[i] !== "`") {
+    if (src[i] === "\\") {
+      i += 2;
+    } else if (src[i] === "$" && src[i + 1] === "{") {
+      let depth = 1;
+      i += 2;
+      while (i < src.length && depth > 0) {
+        const ch = src[i];
+        if (ch === "{") depth++;
+        else if (ch === "}") depth--;
+        if (ch === '"' || ch === "'") i = skipQuoted(src, i);
+        else if (ch === "`") i = readTemplate(src, i).end + 1;
+        else i++;
+      }
+      staticText += " ";
+    } else {
+      staticText += src[i];
+      i++;
+    }
+  }
+  return { end: i, staticText };
+}
+
+/**
+ * Every `className={`...`}` template literal, with the classes that are on
+ * the element whatever its conditions decide: the template's own static text.
+ * A class inside `${cond ? "a" : "b"}` is not part of it.
+ */
+function classNameTemplates(clean: string): ClassNameTemplate[] {
+  const out: ClassNameTemplate[] = [];
+  for (const m of clean.matchAll(/className=\{\s*`/g)) {
+    const open = (m.index ?? 0) + m[0].length - 1;
+    const { end, staticText } = readTemplate(clean, open);
+    out.push({ start: open, end, staticText });
+  }
+  return out;
+}
 
 /**
  * Every class string whose hover state changes the text colour or the fill
@@ -155,12 +216,20 @@ export type HoverChange = {
  * A class string is the text between two string delimiters, as in
  * `linesPairing`. The text colour while hovered is the hover text colour, or
  * the resting one when the hover only changes the fill; the same for the
- * fill. A string with no text colour of its own is skipped (its text is
- * coloured somewhere else and cannot be read from here).
+ * fill.
+ *
+ * A string with no text colour of its own takes it from the same element when
+ * the scan can read it: the static text of the `className` template literal
+ * the string sits in (`textFrom: "element"`). Only the text colour is
+ * borrowed, never a fill, and never a class from another arm of a condition.
+ * Where there is no such template (a plain string, a colour held in a
+ * constant) the string is still skipped: its text is coloured somewhere this
+ * scan cannot read.
  */
 export function scanHoverChanges(src: string): HoverChange[] {
   const clean = stripComments(src);
   const out: HoverChange[] = [];
+  const templates = classNameTemplates(clean);
   const delimiter = /["'`]|\$\{|\}/g;
   let start = 0;
   const colour = (prefix: "text-" | "bg-", c: StateClass) =>
@@ -173,18 +242,32 @@ export function scanHoverChanges(src: string): HoverChange[] {
     });
     const changes = classes.filter((c) => c.hover && (colour("text-", c) || colour("bg-", c)));
     if (changes.length === 0) return;
-    const pick = (prefix: "text-" | "bg-", hover: boolean, theme: Theme) => {
-      const pool = classes.filter((c) => c.hover === hover && colour(prefix, c));
+    const pickFrom = (from: StateClass[], prefix: "text-" | "bg-", hover: boolean, theme: Theme) => {
+      const pool = from.filter((c) => c.hover === hover && colour(prefix, c));
       return (pool.find((c) => c.theme === theme) ?? pool.find((c) => c.theme === "both"))?.utility;
     };
+    const pick = (prefix: "text-" | "bg-", hover: boolean, theme: Theme) =>
+      pickFrom(classes, prefix, hover, theme);
+    // No text colour of its own, resting or hovered: read the element's.
+    const ownText = classes.some((c) => colour("text-", c));
+    const template = ownText
+      ? undefined
+      : templates.find((t) => offset > t.start && offset <= t.end);
+    const element: StateClass[] = template
+      ? [...template.staticText.matchAll(/\S+/g)].flatMap((m) => {
+          const c = stateClass(m[0]);
+          return c ? [c] : [];
+        })
+      : [];
     const ratio = (text: string, bg: string | undefined, theme: Theme) =>
       bg ? worstRatio(theme, bg, text) : plainRatio(theme, text);
     const resting = {} as Record<Theme, number | null>;
     const hovered = {} as Record<Theme, number>;
     for (const theme of THEMES) {
-      const restText = pick("text-", false, theme);
+      const restText = ownText ? pick("text-", false, theme) : pickFrom(element, "text-", false, theme);
       const restBg = pick("bg-", false, theme);
-      const hoverText = pick("text-", true, theme) ?? restText;
+      const hoverText =
+        (ownText ? pick("text-", true, theme) : pickFrom(element, "text-", true, theme)) ?? restText;
       const hoverBg = pick("bg-", true, theme) ?? restBg;
       if (!hoverText) return;
       resting[theme] = restText ? ratio(restText, restBg, theme) : null;
@@ -193,6 +276,7 @@ export function scanHoverChanges(src: string): HoverChange[] {
     out.push({
       line: clean.slice(0, changes[0].index).split("\n").length,
       hover: changes.map((c) => c.raw).join(" "),
+      textFrom: ownText ? "own" : "element",
       resting,
       hovered,
     });

@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import apiFetch from "@/lib/http/apiFetch";
+import { networkFailureMessage, readMutationResult } from "@/lib/ui/mutation-result";
 
 interface Props {
   latestPriceDate: string | null;
@@ -35,20 +36,23 @@ export function IbkrRefreshButton({ latestPriceDate }: Props) {
     setError(null);
     setPhaseLabel("starting…");
     stopRef.current = false;
+    // Whether the server accepted the refresh. A lost connection while
+    // watching its progress is not the refresh failing.
+    let started = false;
     try {
       const res = await apiFetch("/api/tws/auto-refresh", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ level: "quick" }),
       });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        const msg = typeof body?.error === "string" ? body.error : `HTTP ${res.status}`;
-        setError(msg);
+      const accepted = await readMutationResult(res);
+      if (!accepted.ok) {
+        setError(accepted.message);
         setSyncing(false);
         setPhaseLabel(null);
         return;
       }
+      started = true;
       const start = Date.now();
       while (!stopRef.current && Date.now() - start < POLL_TIMEOUT_MS) {
         await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
@@ -82,8 +86,12 @@ export function IbkrRefreshButton({ latestPriceDate }: Props) {
         setPhaseLabel(null);
         router.refresh();
       }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Network error");
+    } catch {
+      setError(
+        started
+          ? "Lost contact with the server while the refresh was running. It may still finish: reload the page to see the result."
+          : networkFailureMessage("refresh from IBKR"),
+      );
       setSyncing(false);
       setPhaseLabel(null);
     }

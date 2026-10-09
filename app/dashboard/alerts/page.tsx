@@ -53,6 +53,7 @@ import {
 import { EarningsEmailViewer } from "../components/EarningsEmailViewer";
 import apiFetch from "@/lib/http/apiFetch";
 import { networkFailureMessage, readMutationResult } from "@/lib/ui/mutation-result";
+import { joinSentences } from "@/lib/ui/join-sentences";
 import {
   FILTER_OPTIONS,
   parseAlertsViewParam,
@@ -454,20 +455,39 @@ function AlertsPageInner() {
     refresh();
   }, [refresh]);
 
-  async function respond(id: number, response: AlertResponse, note?: string) {
-    const res = await apiFetch("/api/alerts", {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id, response, note }),
-    });
-    if (res.ok) {
-      const kind: "success" | "info" = response === "acted" ? "success" : "info";
-      toast(`Alert marked ${response}`, kind);
-      window.dispatchEvent(new CustomEvent("alerts-updated"));
-    } else {
-      toast("Failed to update alert", "error");
+  // The re-read after a write whose outcome has already been said. A re-read
+  // that fails must never be reported as the write failing, so it has its own
+  // line.
+  async function refreshAfterWrite() {
+    try {
+      await refresh();
+    } catch {
+      toast("The lists could not be re-read. Reload the page to see the current state.", "error");
     }
-    refresh();
+  }
+
+  async function respond(id: number, response: AlertResponse, note?: string) {
+    try {
+      const res = await apiFetch("/api/alerts", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id, response, note }),
+      });
+      const result = await readMutationResult(res);
+      if (result.ok) {
+        const kind: "success" | "info" = response === "acted" ? "success" : "info";
+        toast(`Alert marked ${response}`, kind);
+        window.dispatchEvent(new CustomEvent("alerts-updated"));
+      } else {
+        toast(
+          joinSentences(`Alert not marked ${response}: ${result.message}`, "The alert is unchanged."),
+          "error",
+        );
+      }
+    } catch {
+      toast(`${networkFailureMessage(`mark the alert ${response}`)} The alert is unchanged.`, "error");
+    }
+    await refreshAfterWrite();
   }
 
   // Undo for an Acted / Ignored / Dismissed alert: back to the Pending inbox
@@ -514,6 +534,9 @@ function AlertsPageInner() {
     setDecidingId(id);
     try {
       await decideReviewInner(id, status, force);
+    } catch {
+      // No reply at all: nothing is known to have changed.
+      toast(`${networkFailureMessage("save that decision")} The level is still pending.`, "error");
     } finally {
       setDecidingId(null);
     }
@@ -545,7 +568,7 @@ function AlertsPageInner() {
       setReviewLevels((prev) => prev.filter((l) => l.id !== id));
       clearForceConfirm(id);
       window.dispatchEvent(new CustomEvent("reviews-updated"));
-      await refresh();
+      await refreshAfterWrite();
       return;
     }
 
@@ -629,7 +652,14 @@ function AlertsPageInner() {
           ).length,
         });
       }
-      await refresh();
+      await refreshAfterWrite();
+    } catch {
+      // One request never got a reply. Others may have gone through, so no
+      // count is claimed: the list is the record.
+      toast(
+        `${networkFailureMessage("approve the levels")} Some may already be armed: reload to see which are still pending.`,
+        "error",
+      );
     } finally {
       setApprovingAll(false);
     }
@@ -679,7 +709,14 @@ function AlertsPageInner() {
       if (failedIds.length > 0) {
         toast(`${failedIds.length} level${failedIds.length === 1 ? "" : "s"} failed to arm`, "error");
       }
-      await refresh();
+      await refreshAfterWrite();
+    } catch {
+      // One request never got a reply. Others may have gone through, so no
+      // count is claimed: the list is the record.
+      toast(
+        `${networkFailureMessage("approve the levels")} Some may already be armed: reload to see which are still pending.`,
+        "error",
+      );
     } finally {
       setApproveAllConfirm(null);
       setApprovingAll(false);
@@ -698,8 +735,9 @@ function AlertsPageInner() {
     setActionStatus(null);
     try {
       const res = await apiFetch("/api/alerts/detect", { method: "POST" });
-      const json = await res.json();
-      if (json.success) {
+      const result = await readMutationResult<Record<string, unknown>>(res);
+      if (result.ok) {
+        const json = result.data;
         // Every coverage field is additive on the response (older server =
         // undefined); treat a missing one as 0 rather than assume full
         // coverage. The four skip buckets mirror ScanCoverage in
@@ -805,9 +843,13 @@ function AlertsPageInner() {
           ),
         );
       } else {
-        setActionStatus("Scan failed — see console for details.");
+        setActionStatus(
+          joinSentences(`Scan failed: ${result.message}`, "No alert was fired by this scan."),
+        );
       }
-      await refresh();
+      await refreshAfterWrite();
+    } catch {
+      setActionStatus(`${networkFailureMessage("run the scan")} No alert was fired by this scan.`);
     } finally {
       setDetecting(false);
     }
@@ -825,18 +867,22 @@ function AlertsPageInner() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({}),
       });
-      const json = await res.json();
-      if (json.success) {
-        const { generated, failed } = json as { generated?: number; failed?: number };
+      const result = await readMutationResult<{ generated?: number; failed?: number }>(res);
+      if (result.ok) {
+        const { generated, failed } = result.data;
         if (generated !== undefined) {
           setActionStatus(suggestOutcomeMessage(generated, failed));
         }
       } else {
         setActionStatus(
-          `Suggestion failed: ${json.error ?? `server returned ${res.status}`}. Existing suggestions are unaffected.`
+          joinSentences(`Suggestion failed: ${result.message}`, "Existing suggestions are unaffected."),
         );
       }
-      await refresh();
+      await refreshAfterWrite();
+    } catch {
+      setActionStatus(
+        `${networkFailureMessage("ask for suggestions")} Existing suggestions are unaffected.`
+      );
     } finally {
       setSuggesting(false);
     }

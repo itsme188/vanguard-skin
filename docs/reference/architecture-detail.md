@@ -39,6 +39,11 @@ bottom-nav "Notes" entry (the Notes page). localStorage drafts persist either wa
 
 Slide-out right panel (Cmd+J), accessible from any tab, persists conversation.
 
+An account name the model passes to a chat tool is resolved by `resolveChatAccounts`
+(`lib/chat/account-scope.ts`, 2026-10-08): an exact name, a scope word read the way the dashboard
+reads it, or a fragment that matches exactly one account; anything else is an error listing the
+valid names. It never takes the first match. Detail: `conventions-detail.md` §E.
+
 ### Privacy toggle
 
 `lib/privacy/context.tsx` (`PrivacyProvider` + `usePrivacy()` hook + localStorage
