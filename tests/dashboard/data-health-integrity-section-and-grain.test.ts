@@ -61,7 +61,7 @@ describe("Data Health has an Integrity section", () => {
 // QA finding data-health--headline-distinct-securities-vs-account-rows-pairs-no-grain-label
 describe("Data Health labels the grain of each coverage count", () => {
   it("the headline says distinct securities; the account rows say positions", () => {
-    expect(VIEW).toContain("sub={`${summary.securitiesWithPrices}/${summary.totalSecurities} distinct securities`}");
+    expect(VIEW).toContain("sub={`${summary.securitiesWithPrices}/${summary.totalSecurities} distinct securities priced within ${summary.priceWindowDays} days`}");
     expect(VIEW).toContain("{ac.pricedHoldings}/{ac.totalHoldings} positions priced");
   });
 

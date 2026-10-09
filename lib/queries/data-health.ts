@@ -3,6 +3,7 @@ import { scaledCostBasisFallbackSQL } from "@/lib/valuation";
 import { normalizeSector } from "@/lib/securities/normalize-sector";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 import { todayET } from "@/lib/calendar/date-utils";
+import { PRICE_FRESHNESS_DAYS } from "@/lib/queries/data-confidence";
 import { liveOptionExpirationSql } from "@/lib/compute/option-expiry";
 import { excludeLiveSnapshotsSql } from "@/lib/db/live-sources";
 import { cashEquivalentSecuritySql } from "@/lib/compute/cash-equivalents";
@@ -73,6 +74,8 @@ export interface SectorDisagreement {
 export interface DataHealthSummary {
   totalSecurities: number;
   securitiesWithPrices: number;
+  /** The freshness window (days) behind `securitiesWithPrices`; shown on the card. */
+  priceWindowDays: number;
   securitiesWithoutPrices: number;
   avgStaleDays: number | null;
   maxStaleDays: number | null;
@@ -169,8 +172,8 @@ export function getPriceFreshness(db: Database.Database): PriceFreshness[] {
  * always all-NULL and a newest-date-only count permanently reported
  * "Cost basis: 0/N" while the Accounts tab rendered real statement values.
  */
-export function getAccountCoverage(db: Database.Database): AccountCoverage[] {
-  const today = todayET();
+export function getAccountCoverage(db: Database.Database, now: Date = new Date()): AccountCoverage[] {
+  const today = todayET(now);
 
   return db
     .prepare(
@@ -181,14 +184,14 @@ export function getAccountCoverage(db: Database.Database): AccountCoverage[] {
         COUNT(DISTINCT h.security_id) AS totalHoldings,
         COUNT(DISTINCT CASE
           WHEN p.latest_date IS NOT NULL
-            AND CAST(julianday(?) - julianday(p.latest_date) AS INTEGER) <= 7
+            AND CAST(julianday(?) - julianday(p.latest_date) AS INTEGER) <= ${PRICE_FRESHNESS_DAYS}
           THEN h.security_id
         END) AS pricedHoldings,
         CASE WHEN COUNT(DISTINCT h.security_id) > 0
           THEN ROUND(
             100.0 * COUNT(DISTINCT CASE
               WHEN p.latest_date IS NOT NULL
-                AND CAST(julianday(?) - julianday(p.latest_date) AS INTEGER) <= 7
+                AND CAST(julianday(?) - julianday(p.latest_date) AS INTEGER) <= ${PRICE_FRESHNESS_DAYS}
               THEN h.security_id
             END) / COUNT(DISTINCT h.security_id),
             1
@@ -667,8 +670,9 @@ export function getSectorCheckMissingSector(db: Database.Database): SectorDisagr
  * Aggregate summary of data health for the dashboard header.
  *
  * Universe = CURRENTLY-held securities (latest per-(account,security) row,
- * shorts included) and "priced" = a price row within the last 7 days — the
- * same held rows and the same window as getAccountCoverage. Any-date
+ * shorts included) and "priced" = a price row within PRICE_FRESHNESS_DAYS (3) — the
+ * same held rows and the same window as getAccountCoverage and the confidence
+ * chip's Prices dimension. Any-date
  * holdings + any-age prices previously pinned the headline near 100% while
  * three current holdings carried month-old prices.
  *
@@ -680,8 +684,9 @@ export function getSectorCheckMissingSector(db: Database.Database): SectorDisagr
  */
 export function getDataHealthSummary(
   db: Database.Database,
+  now: Date = new Date(),
 ): DataHealthSummary {
-  const today = todayET();
+  const today = todayET(now);
 
   const heldCte = `held AS (
         SELECT DISTINCT h.security_id FROM holdings h
@@ -699,7 +704,7 @@ export function getDataHealthSummary(
         COUNT(CASE WHEN EXISTS (
           SELECT 1 FROM prices p
           WHERE p.security_id = held.security_id
-            AND CAST(julianday(?) - julianday(p.date) AS INTEGER) <= 7
+            AND CAST(julianday(?) - julianday(p.date) AS INTEGER) <= ${PRICE_FRESHNESS_DAYS}
         ) THEN 1 END) AS withPrices
       FROM held
       `,
@@ -772,6 +777,7 @@ export function getDataHealthSummary(
   return {
     totalSecurities: secCounts.total,
     securitiesWithPrices: secCounts.withPrices,
+    priceWindowDays: PRICE_FRESHNESS_DAYS,
     securitiesWithoutPrices: secCounts.total - secCounts.withPrices,
     avgStaleDays: staleness.avgDays !== null ? Math.round(staleness.avgDays) : null,
     maxStaleDays: staleness.maxDays,

@@ -218,14 +218,18 @@ const WEIGHTS = {
 
 // ── Scoring functions ────────────────────────────────────────────────
 
-/** "Recent" price window (days) — shared by the SQL query, the Prices
+/** "Recent" price window (days). PRICE_FRESHNESS_DAYS is the ONE window for the
+ *  confidence chip AND the Data Health Price Coverage card/account rows
+ *  (lib/queries/data-health.ts imports it). 3 calendar days keeps a Friday
+ *  close fresh on Monday. Shared by the SQL query, the Prices
  *  dimension detail/score, and the stale-prices action message so all three
  *  can never disagree about what counts as stale (qa:header-dataconfidence--
  *  prices-detail-fresh-count-disagrees-with-actions-stale-count: the action
  *  used to report totalHeld - pricedToday, a 1-day threshold, while the
  *  detail/score used pricedRecent, a 3-day threshold, over the SAME
  *  population). */
-const RECENT_PRICE_WINDOW_DAYS = 3;
+export const PRICE_FRESHNESS_DAYS = 3;
+const RECENT_PRICE_WINDOW_DAYS = PRICE_FRESHNESS_DAYS;
 
 function scorePriceFreshness(db: Database.Database, now: Date = new Date()): PriceFreshnessScore {
   const today = todayET(now);

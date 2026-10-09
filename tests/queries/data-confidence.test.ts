@@ -399,7 +399,7 @@ describe("data-confidence universes (latest-holdings predicate)", () => {
       path.join(process.cwd(), "lib/queries/data-confidence.ts"),
       "utf8",
     );
-    expect(src).toContain("const RECENT_PRICE_WINDOW_DAYS = " + windowFromDetail);
+    expect(src).toContain("export const PRICE_FRESHNESS_DAYS = " + windowFromDetail);
     expect(src).not.toMatch(/priced within 3 days/);
   });
 });

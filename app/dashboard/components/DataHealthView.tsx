@@ -202,7 +202,7 @@ export function DataHealthView({ integritySection }: { integritySection?: ReactN
         <SummaryCard
           label="Price Coverage"
           value={`${summary.overallCoveragePct}%`}
-          sub={`${summary.securitiesWithPrices}/${summary.totalSecurities} distinct securities`}
+          sub={`${summary.securitiesWithPrices}/${summary.totalSecurities} distinct securities priced within ${summary.priceWindowDays} days`}
           color={summary.overallCoveragePct >= 90 ? "up" : summary.overallCoveragePct >= 70 ? "gold" : "down"}
         />
         <SummaryCard
