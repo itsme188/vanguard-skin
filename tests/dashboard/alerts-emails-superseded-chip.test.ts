@@ -30,6 +30,18 @@ describe("the shared chip and note", () => {
     expect(chip.slice(at, anchorIndex(chip, "</Chip>", at))).toContain("entry replaced");
   });
 
+  it("the chip stays on one line through the shared Chip base, with no class of its own", () => {
+    // QA 2026-10-08: at 390px "entry replaced" stacked on two lines inside
+    // its pill. The rule lives in Chip.tsx so every chip gets it.
+    const base = readFileSync("app/dashboard/components/Chip.tsx", "utf8");
+    const at = anchorIndex(base, "<span");
+    const span = base.slice(at, anchorIndex(base, "</span>", at));
+    expect(span).toContain("whitespace-nowrap");
+    const chipAt = anchorIndex(chip, "<Chip");
+    const opening = chip.slice(chipAt, anchorIndex(chip, ">", chipAt));
+    expect(opening).not.toContain("className");
+  });
+
   it("the note renders nothing for an ordinary email", () => {
     const guard = anchorIndex(note, "if (email.event_superseded !== 1) return null;");
     expect(guard).toBeLessThan(anchorIndex(note, "<p "));
