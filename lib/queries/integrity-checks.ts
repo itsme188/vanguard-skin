@@ -11,8 +11,10 @@ import {
 } from "@/lib/compute/cash-flow-audit";
 import { isCashEquivalentSecurity } from "@/lib/compute/cash-equivalents";
 import { getTaxConventionState } from "@/lib/compute/tax-convention";
+import { statementGradeHoldingSql } from "@/lib/db/holding-sources";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 import { pendingStatementKeySet } from "@/lib/queries/pending-statement";
+import { isCurrencyConversionSecurityType } from "@/lib/queries/tax-lots";
 
 /**
  * Cross-cutting number-trust integrity scan (spec: number-trust durable
@@ -28,12 +30,14 @@ export interface IntegrityHit {
   severity: "critical" | "warning";
   reason: string;
   /**
-   * Optional typed sub-kind. "statement-lag": open lots of a position closed
-   * per LIVE data, awaiting the broker statement (the pending-statement read
-   * model, lib/queries/pending-statement.ts). Expected, self-resolving on the
-   * next statement import: severity stays "warning" (never caps the score)
-   * and the popover renders it as informational "awaiting statement".
-   * Absent on every other hit.
+   * Optional typed sub-kind. "statement-lag": the tax lots differ from the
+   * position only in LIVE data — a position closed per live data (the
+   * pending-statement read model, lib/queries/pending-statement.ts), or any
+   * other difference between a live sync and the lots while the statement
+   * book agrees with them. Expected, self-resolving on the next statement
+   * import: severity stays "warning" (never caps the score) and the popover
+   * renders it as informational "awaiting statement". Absent on every other
+   * hit.
    */
   kind?: "statement-lag";
 }
@@ -159,6 +163,26 @@ function scanUnexplainedResidualHits(db: Database.Database): IntegrityHit[] {
 // (returns no hits) while the tax-lots convention marker is stale — a
 // drift signal computed against a pre-recompute engine isn't trustworthy
 // (Track A dependency; see getTaxConventionState's doc).
+//
+// WHICH position the lots are compared with (2026-10-08). Tax lots are built
+// from the imported ledger, and the ledger moves only when a statement or an
+// activity file is imported. A live sync (TWS / IBKR Web API / Plaid) is
+// fresher than the ledger, so a difference seen only there is timing, not a
+// defect. Per (account, security):
+//
+//   1. The account has no statement-grade holdings row at all: there is no
+//      statement to wait for, so the lots are compared with the latest
+//      position of any source, at full severity (the original behaviour).
+//   2. Otherwise the comparator is the STATEMENT position: the pair's newest
+//      statement-grade row (`statementGradeHoldingSql`, the same evidence
+//      class the synthetic-close anchor uses), or zero when the pair has none
+//      (the statement book is complete). A disagreement here is a real hit.
+//   3. The statement is skipped as comparator when the ledger is newer than
+//      it (a quantity-bearing transaction dated after the statement row):
+//      the lots have legitimately moved on.
+//   4. When the statement agrees (or was skipped) and a snapshot at least as
+//      new as the ledger still differs from the lots, the hit is a WARNING
+//      of kind "statement-lag" (pending statement). It never caps the score.
 
 const LOT_DRIFT_EPSILON = 1e-4; // shares
 const LOT_DRIFT_RATIO_THRESHOLD = 0.05; // 5%
@@ -173,6 +197,37 @@ const EQUITY_FILL_TYPES = [
   "BUY_TO_CLOSE",
   "SELL_TO_CLOSE",
 ];
+
+type LotDriftShape =
+  | { shape: "fills-zero-lots"; magnitude: 1 }
+  | { shape: "no-lots-no-fills"; magnitude: 0 }
+  | { shape: "lots-no-position"; magnitude: 0 }
+  | { shape: "ratio"; magnitude: number };
+
+/**
+ * The one comparison both comparators (statement position, latest position)
+ * run. `posQty` 0 means "no position"; `signedLotQty` 0 with `hasLot` false
+ * means "no open lots". `fillCount` is only consulted for a position with no
+ * lots. Returns null when the two reconcile (or differ by 5% or less).
+ */
+function classifyLotDrift(
+  posQty: number,
+  signedLotQty: number,
+  hasLot: boolean,
+  fillCount: () => number
+): LotDriftShape | null {
+  const diff = posQty - signedLotQty;
+  if (Math.abs(diff) <= LOT_DRIFT_EPSILON) return null;
+  const hasPos = posQty !== 0;
+  if (!hasLot && hasPos) {
+    return fillCount() > 0
+      ? { shape: "fills-zero-lots", magnitude: 1 }
+      : { shape: "no-lots-no-fills", magnitude: 0 };
+  }
+  if (hasLot && !hasPos) return { shape: "lots-no-position", magnitude: 0 };
+  const ratio = Math.abs(diff) / Math.max(Math.abs(posQty), Math.abs(signedLotQty));
+  return ratio > LOT_DRIFT_RATIO_THRESHOLD ? { shape: "ratio", magnitude: ratio } : null;
+}
 
 function scanLotDriftHits(db: Database.Database): IntegrityHit[] {
   const positions = db
@@ -193,10 +248,50 @@ function scanLotDriftHits(db: Database.Database): IntegrityHit[] {
     )
     .all() as { accountId: number; securityId: number; signedQty: number }[];
 
+  // The STATEMENT book: each pair's newest statement-grade row (a zero row is
+  // a statement-pass tombstone: the statement says the position is closed).
+  const statementRows = db
+    .prepare(
+      `SELECT h.account_id AS accountId, h.security_id AS securityId,
+              h.quantity AS quantity, h.as_of_date AS asOfDate
+         FROM holdings h
+        WHERE ${statementGradeHoldingSql("h")}
+          AND h.as_of_date = (
+            SELECT MAX(h2.as_of_date) FROM holdings h2
+             WHERE h2.account_id = h.account_id AND h2.security_id = h.security_id
+               AND ${statementGradeHoldingSql("h2")}
+          )`
+    )
+    .all() as { accountId: number; securityId: number; quantity: number; asOfDate: string }[];
+
+  // Date of each pair's newest row of ANY source, zero rows included (the
+  // `positions` read above drops zero rows, so it cannot date a live flat).
+  const newestRows = db
+    .prepare(
+      `SELECT h.account_id AS accountId, h.security_id AS securityId, h.as_of_date AS asOfDate
+         FROM holdings h
+        WHERE h.as_of_date = (
+            SELECT MAX(h2.as_of_date) FROM holdings h2
+             WHERE h2.account_id = h.account_id AND h2.security_id = h.security_id
+          )`
+    )
+    .all() as { accountId: number; securityId: number; asOfDate: string }[];
+
   const posByKey = new Map(positions.map((p) => [`${p.accountId}:${p.securityId}`, p]));
   const lotsByKey = new Map(lotRows.map((l) => [`${l.accountId}:${l.securityId}`, l]));
+  const statementByKey = new Map(statementRows.map((r) => [`${r.accountId}:${r.securityId}`, r]));
+  const newestDateByKey = new Map(newestRows.map((r) => [`${r.accountId}:${r.securityId}`, r.asOfDate]));
+  // An account's statement date: its newest statement-grade row. A pair the
+  // statement book does not carry is flat as of this date.
+  const statementDateByAccount = new Map<number, string>();
+  for (const r of statementRows) {
+    const prev = statementDateByAccount.get(r.accountId);
+    if (!prev || r.asOfDate > prev) statementDateByAccount.set(r.accountId, r.asOfDate);
+  }
 
-  const allKeys = Array.from(new Set<string>([...posByKey.keys(), ...lotsByKey.keys()])).sort();
+  const allKeys = Array.from(
+    new Set<string>([...posByKey.keys(), ...lotsByKey.keys(), ...statementByKey.keys()])
+  ).sort();
   if (allKeys.length === 0) return [];
 
   // Same `${account}:${security}` key as posByKey/lotsByKey above.
@@ -220,11 +315,27 @@ function scanLotDriftHits(db: Database.Database): IntegrityHit[] {
   // Sweep / money-market funds carry no meaningful tax lots, so a position
   // with zero lots is expected, not drift (single source: isCashEquivalentSecurity).
   const cashEquivalentIds = new Set(secRows.filter((s) => isCashEquivalentSecurity(s)).map((s) => s.id));
+  // A currency conversion (IBKR forex trade) mints lots but never a holdings
+  // row — the currency sits in the cash balance. Lots without a position are
+  // its normal state, not an orphan (single source: isCurrencyConversionSecurityType).
+  const currencyConversionIds = new Set(
+    secRows.filter((s) => isCurrencyConversionSecurityType(s.security_type)).map((s) => s.id)
+  );
 
   const fillsStmt = db.prepare(
     `SELECT COUNT(*) AS n FROM transactions
       WHERE account_id = ? AND security_id = ?
         AND UPPER(type) IN (${EQUITY_FILL_TYPES.map(() => "?").join(",")})
+        AND quantity IS NOT NULL AND quantity <> 0`
+  );
+  // Newest ledger row that moves shares for the pair. Every quantity-bearing
+  // transaction counts (fills, reinvestments, in-kind transfers, splits,
+  // redemptions); income rows carry no quantity. Deliberately wider than the
+  // synthetic-close later-fill list: the question here is only "has the
+  // ledger moved since this snapshot?".
+  const lastLedgerMoveStmt = db.prepare(
+    `SELECT MAX(trade_date) AS d FROM transactions
+      WHERE account_id = ? AND security_id = ?
         AND quantity IS NOT NULL AND quantity <> 0`
   );
 
@@ -241,70 +352,113 @@ function scanLotDriftHits(db: Database.Database): IntegrityHit[] {
     const accountId = Number(accountIdStr);
     const securityId = Number(securityIdStr);
     if (cashEquivalentIds.has(securityId)) continue;
-    const pos = posByKey.get(key);
+    if (currencyConversionIds.has(securityId)) continue;
     const lot = lotsByKey.get(key);
-    const posQty = pos?.posQty ?? 0;
+    const hasLot = Boolean(lot);
     const signedLotQty = lot?.signedQty ?? 0;
-    const diff = posQty - signedLotQty;
-    if (Math.abs(diff) <= LOT_DRIFT_EPSILON) continue;
+    const latestQty = posByKey.get(key)?.posQty ?? 0;
 
     const accountName = accountNameById.get(accountId) ?? `account ${accountId}`;
     const symbol = symbolBySecurityId.get(securityId) ?? `security ${securityId}`;
+    const hitKey = `lot-drift:${accountId}:${securityId}`;
+    const label = `${symbol} (${accountName})`;
 
-    if (!lot && pos) {
-      const fills = fillsStmt.get(accountId, securityId, ...EQUITY_FILL_TYPES) as { n: number };
-      if (fills.n > 0) {
+    let fillsMemo: number | undefined;
+    const fillCount = (): number => {
+      if (fillsMemo === undefined) {
+        fillsMemo = (fillsStmt.get(accountId, securityId, ...EQUITY_FILL_TYPES) as { n: number }).n;
+      }
+      return fillsMemo;
+    };
+
+    const pushReal = (drift: LotDriftShape): void => {
+      if (drift.shape === "fills-zero-lots") {
+        const n = fillCount();
         hits.push({
-          magnitude: 1,
+          magnitude: drift.magnitude,
           hit: {
-            key: `lot-drift:${accountId}:${securityId}`,
+            key: hitKey,
             severity: "critical",
-            reason: `${symbol} (${accountName}): position has ${fills.n} fill${fills.n === 1 ? "" : "s"} but zero tax lots`,
+            reason: `${label}: position has ${n} fill${n === 1 ? "" : "s"} but zero tax lots`,
           },
+        });
+      } else if (drift.shape === "no-lots-no-fills") {
+        hits.push({
+          magnitude: 0,
+          hit: { key: hitKey, severity: "warning", reason: `${label}: position has zero lots and zero transactions` },
+        });
+      } else if (drift.shape === "lots-no-position") {
+        hits.push({
+          magnitude: 0,
+          hit: { key: hitKey, severity: "warning", reason: `${label}: open tax lots with no matching position` },
         });
       } else {
         hits.push({
-          magnitude: 0,
+          magnitude: drift.magnitude,
           hit: {
-            key: `lot-drift:${accountId}:${securityId}`,
-            severity: "warning",
-            reason: `${symbol} (${accountName}): position has zero lots and zero transactions`,
+            key: hitKey,
+            severity: "critical",
+            reason: `${label}: position/lot drift ${(drift.magnitude * 100).toFixed(1)}%`,
           },
         });
       }
-      continue;
-    }
+    };
 
-    if (lot && !pos) {
+    const latestDrift = classifyLotDrift(latestQty, signedLotQty, hasLot, fillCount);
+
+    // Closed per live data, lots still open: the pending-statement read model
+    // owns this pair on every surface, so it wins here too.
+    if (latestDrift?.shape === "lots-no-position" && pendingKeys.has(key)) {
       hits.push({
         magnitude: 0,
-        hit: pendingKeys.has(key)
-          ? {
-              key: `lot-drift:${accountId}:${securityId}`,
-              severity: "warning",
-              kind: "statement-lag",
-              reason: `${symbol} (${accountName}): closed per live data — awaiting statement`,
-            }
-          : {
-              key: `lot-drift:${accountId}:${securityId}`,
-              severity: "warning",
-              reason: `${symbol} (${accountName}): open tax lots with no matching position`,
-            },
+        hit: {
+          key: hitKey,
+          severity: "warning",
+          kind: "statement-lag",
+          reason: `${label}: closed per live data — awaiting statement`,
+        },
       });
       continue;
     }
 
-    const ratio = Math.abs(diff) / Math.max(Math.abs(posQty), Math.abs(signedLotQty));
-    if (ratio > LOT_DRIFT_RATIO_THRESHOLD) {
-      hits.push({
-        magnitude: ratio,
-        hit: {
-          key: `lot-drift:${accountId}:${securityId}`,
-          severity: "critical",
-          reason: `${symbol} (${accountName}): position/lot drift ${(ratio * 100).toFixed(1)}%`,
-        },
-      });
+    // (1) No statement book for this account: nothing to wait for.
+    const accountStatementDate = statementDateByAccount.get(accountId);
+    if (!accountStatementDate) {
+      if (latestDrift) pushReal(latestDrift);
+      continue;
     }
+
+    // (2)/(3) Statement position vs lots, unless the ledger is newer.
+    const statementRow = statementByKey.get(key);
+    const statementDate = statementRow?.asOfDate ?? accountStatementDate;
+    const statementQty = statementRow?.quantity ?? 0;
+    const lastLedgerMove = (lastLedgerMoveStmt.get(accountId, securityId) as { d: string | null }).d;
+    const ledgerNewerThanStatement = lastLedgerMove !== null && lastLedgerMove > statementDate;
+    if (!ledgerNewerThanStatement) {
+      const statementDrift = classifyLotDrift(statementQty, signedLotQty, hasLot, fillCount);
+      if (statementDrift) {
+        pushReal(statementDrift);
+        continue;
+      }
+    }
+
+    // (4) The statement agrees (or the ledger has moved past it). A snapshot
+    // that is older than the newest ledger move cannot judge the lots; a
+    // newer one that still differs is waiting on the statement.
+    if (!latestDrift) continue;
+    const newestDate = newestDateByKey.get(key);
+    const snapshotOlderThanLedger =
+      lastLedgerMove !== null && (newestDate === undefined || newestDate < lastLedgerMove);
+    if (ledgerNewerThanStatement && snapshotOlderThanLedger) continue;
+    hits.push({
+      magnitude: 0,
+      hit: {
+        key: hitKey,
+        severity: "warning",
+        kind: "statement-lag",
+        reason: `${label}: live position differs from tax lots — pending statement`,
+      },
+    });
   }
 
   return hits.sort((a, b) => b.magnitude - a.magnitude).map((h) => h.hit);
