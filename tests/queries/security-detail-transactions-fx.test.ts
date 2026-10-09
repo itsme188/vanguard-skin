@@ -46,12 +46,12 @@ describe("getTransactionsBySecurity FX conversion", () => {
   });
 
   it("converts a KRW transaction's price_per_share + amount to USD", () => {
-    // Ledger repro: 402340 (KRW) — ₩1,632,000/share ×10 stored native;
-    // pre-fix rendered as $1,632,000.00 / −$16,320,000.
-    const krw = seedSecurity(db, "402340", { currency: "KRW" });
+    // Ledger repro: 000000 (KRW) — ₩1,400,000/share ×10 stored native;
+    // pre-fix rendered as $1,400,000.00 / −$14,000,000.
+    const krw = seedSecurity(db, "000000", { currency: "KRW" });
     seedTransaction(db, ACCOUNT_ID, krw, {
-      pricePerShare: 1_632_000,
-      amount: -16_320_000,
+      pricePerShare: 1_400_000,
+      amount: -14_000_000,
     });
     upsertFxRate(db, {
       currency: "KRW",
@@ -61,8 +61,8 @@ describe("getTransactionsBySecurity FX conversion", () => {
     });
 
     const [row] = getTransactionsBySecurity(db, krw);
-    expect(row.price_per_share).toBeCloseTo(1_632_000 * 0.0006648, 2); // ~$1,085
-    expect(row.amount).toBeCloseTo(-16_320_000 * 0.0006648, 2); // ~-$10,850
+    expect(row.price_per_share).toBeCloseTo(1_400_000 * 0.0006648, 2); // ~$930.72
+    expect(row.amount).toBeCloseTo(-14_000_000 * 0.0006648, 2); // ~-$9,307.20
   });
 
   it("leaves a USD transaction byte-identical (rate 1 path)", () => {
@@ -84,7 +84,7 @@ describe("getTransactionsBySecurity FX conversion", () => {
   });
 
   it("preserves null money fields (no 0-coercion through the multiply)", () => {
-    const krw = seedSecurity(db, "402340", { currency: "KRW" });
+    const krw = seedSecurity(db, "000000", { currency: "KRW" });
     db.prepare(
       `INSERT INTO transactions (account_id, security_id, trade_date, type, source_key)
        VALUES (?, ?, '2026-06-30', 'DIVIDEND', 'test:txn:null-fields')`

@@ -55,42 +55,42 @@ describe("extractOccFromContractDesc", () => {
 describe("mapPosition", () => {
   it("maps a stock position", () => {
     const m = mapPosition({
-      acctId: "U1", assetClass: "STK", conid: 504546674, contractDesc: "NET",
-      currency: "USD", position: 60, avgCost: 200.5, avgPrice: 200.5,
-      mktPrice: 269.42, mktValue: 16165.2,
+      acctId: "U1", assetClass: "STK", conid: 111111, contractDesc: "ZZA",
+      currency: "USD", position: 50, avgCost: 200, avgPrice: 200,
+      mktPrice: 250, mktValue: 12500,
     });
     expect(m).toMatchObject({
-      symbol: "NET", securityType: "Stock", quantity: 60, conid: 504546674,
-      mktPrice: 269.42, costBasis: 60 * 200.5,
+      symbol: "ZZA", securityType: "Stock", quantity: 50, conid: 111111,
+      mktPrice: 250, costBasis: 50 * 200,
     });
     expect(m.optionType).toBeUndefined();
   });
 
   it("maps an option position from contractDesc, cost basis = qty × avgCost", () => {
     const m = mapPosition({
-      acctId: "U1", assetClass: "OPT", conid: 825212004,
-      contractDesc: "HACK   JUN2026 100 P [HACK  260618P00100000 100]",
-      currency: "USD", position: 6, avgCost: 191.70075, avgPrice: 1.9170075,
-      mktPrice: 1.23, mktValue: 739.95,
+      acctId: "U1", assetClass: "OPT", conid: 222222,
+      contractDesc: "ZZH    JUN2026 100 P [ZZH   260618P00100000 100]",
+      currency: "USD", position: 5, avgCost: 200.5, avgPrice: 2.005,
+      mktPrice: 1.5, mktValue: 750,
     });
     expect(m).toMatchObject({
-      symbol: "HACK  260618P00100000",
+      symbol: "ZZH   260618P00100000",
       securityType: "Option",
-      underlyingSymbol: "HACK",
+      underlyingSymbol: "ZZH",
       optionType: "PUT",
       strikePrice: 100,
       expirationDate: "2026-06-18",
       multiplier: 100,
-      quantity: 6,
+      quantity: 5,
     });
-    // 6 contracts × 191.70075 per-contract avgCost
-    expect(m.costBasis).toBeCloseTo(1150.2, 1);
+    // 5 contracts × 200.50 per-contract avgCost = 1,002.50
+    expect(m.costBasis).toBeCloseTo(1002.5, 1);
   });
 
   it("handles a short position (negative qty) and a closed (qty 0) row", () => {
-    const short = mapPosition({ assetClass: "STK", conid: 1, contractDesc: "FEZ", position: -300, avgCost: 70, mktPrice: 68.27, mktValue: -20482.38 });
-    expect(short.quantity).toBe(-300);
-    expect(short.costBasis).toBe(-300 * 70);
+    const short = mapPosition({ assetClass: "STK", conid: 1, contractDesc: "ZZS", position: -200, avgCost: 70, mktPrice: 68, mktValue: -13600 });
+    expect(short.quantity).toBe(-200);
+    expect(short.costBasis).toBe(-200 * 70);
     const closed = mapPosition({ assetClass: "STK", conid: 2, contractDesc: "HOOD", position: 0, avgCost: 0, mktPrice: 87.1, mktValue: 0 });
     expect(closed.quantity).toBe(0);
   });

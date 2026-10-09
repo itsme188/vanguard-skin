@@ -56,47 +56,50 @@ describe("getHoldingsBySecurity includes shorts", () => {
   });
 
   it("returns a pure short position (negative quantity)", () => {
-    const gme = seedSecurity(db, "GME");
-    seedHolding(db, VANGUARD, gme, -300, "2026-07-10", null, "tws-GME-2026-07-10");
-    seedPrice(db, gme, "2026-07-10", 25);
+    const zza = seedSecurity(db, "ZZA");
+    seedHolding(db, VANGUARD, zza, -200, "2026-07-10", null, "tws-ZZA-2026-07-10");
+    seedPrice(db, zza, "2026-07-10", 25);
 
-    const rows = getHoldingsBySecurity(db, gme);
+    const rows = getHoldingsBySecurity(db, zza);
     expect(rows).toHaveLength(1);
-    expect(rows[0].quantity).toBe(-300);
+    expect(rows[0].quantity).toBe(-200);
     // Negative market value — a short is negative exposure, not a phantom.
-    expect(rows[0].current_value).toBe(-300 * 25);
+    expect(rows[0].current_value).toBe(-200 * 25); // -5,000
   });
 
   it("returns BOTH legs of a long+short pair across accounts", () => {
-    const gme = seedSecurity(db, "GME");
-    seedHolding(db, VANGUARD, gme, 100, "2026-07-10", 2000, "tws-GME-v-2026-07-10");
-    seedHolding(db, ROTH, gme, -50, "2026-07-10", null, "tws-GME-r-2026-07-10");
-    seedPrice(db, gme, "2026-07-10", 25);
+    const zza = seedSecurity(db, "ZZA");
+    seedHolding(db, VANGUARD, zza, 100, "2026-07-10", 2000, "tws-ZZA-v-2026-07-10");
+    seedHolding(db, ROTH, zza, -40, "2026-07-10", null, "tws-ZZA-r-2026-07-10");
+    seedPrice(db, zza, "2026-07-10", 25);
 
-    const rows = getHoldingsBySecurity(db, gme);
+    const rows = getHoldingsBySecurity(db, zza);
     expect(rows).toHaveLength(2);
     const quantities = rows.map((r) => r.quantity).sort((a, b) => a - b);
-    expect(quantities).toEqual([-50, 100]);
+    expect(quantities).toEqual([-40, 100]);
   });
 
   it("scales a stale statement basis per-share for a short whose size changed", () => {
-    // PAYC shape (qa:security-detail-positions--short-stale-cost-basis-fallback-impossible-loss):
-    // statement row -80 sh with basis stored +10,282.15; current Plaid row
-    // -50 sh, basis NULL. The fallback must serve per-share basis x current
-    // quantity, signed like the position (short proceeds are negative), never
-    // the -80-row's whole basis — which rendered a -170% "loss" 2.4x the
-    // position's entire notional.
-    const payc = seedSecurity(db, "PAYC");
-    seedHolding(db, VANGUARD, payc, -80, "2026-06-30", 10282.15, "canonical:hold:PAYC:2026-06-30");
-    seedHolding(db, VANGUARD, payc, -50, "2026-08-03", null, "plaid:1:PAYC:2026-08-03");
-    seedPrice(db, payc, "2026-08-03", 144);
+    // Stale-statement short shape (qa:security-detail-positions--short-stale-cost-basis-fallback-impossible-loss),
+    // synthetic figures: statement row -60 sh with basis stored +7,500;
+    // current Plaid row -40 sh, basis NULL. The fallback must serve per-share
+    // basis x current quantity, signed like the position (short proceeds are
+    // negative), never the -60-row's whole basis, which would render a
+    // "loss" larger than the position's entire notional.
+    const zzb = seedSecurity(db, "ZZB");
+    seedHolding(db, VANGUARD, zzb, -60, "2026-06-30", 7500, "canonical:hold:ZZB:2026-06-30");
+    seedHolding(db, VANGUARD, zzb, -40, "2026-08-03", null, "plaid:1:ZZB:2026-08-03");
+    seedPrice(db, zzb, "2026-08-03", 140);
 
-    const rows = getHoldingsBySecurity(db, payc);
+    const rows = getHoldingsBySecurity(db, zzb);
     expect(rows).toHaveLength(1);
-    const perShare = 10282.15 / 80; // 128.53
-    expect(rows[0].cost_basis).toBeCloseTo(-perShare * 50, 2); // ~ -6,426.34
-    // Loss = liability grew from ~128.53/sh to 144/sh on 50 shares.
-    expect(rows[0].unrealized_gain).toBeCloseTo(-50 * 144 - -(perShare * 50), 2); // ~ -773.66
+    const perShare = 7500 / 60; // 125
+    expect(rows[0].cost_basis).toBeCloseTo(-perShare * 40, 2); // -125 x 40 = -5,000
+    expect(rows[0].cost_basis).toBeCloseTo(-5000, 2);
+    // Loss = liability grew from 125/sh to 140/sh on 40 shares:
+    // -40 x 140 - (-5,000) = -5,600 + 5,000 = -600.
+    expect(rows[0].unrealized_gain).toBeCloseTo(-40 * 140 - -(perShare * 40), 2);
+    expect(rows[0].unrealized_gain).toBeCloseTo(-600, 2);
   });
 
   it("resolves to NULL when a short's only known-basis sibling is a LONG row (sign flip)", () => {
@@ -159,10 +162,10 @@ describe("getHoldingsBySecurity includes shorts", () => {
   });
 
   it("still excludes closed (quantity 0) tombstone rows", () => {
-    const gme = seedSecurity(db, "GME");
-    seedHolding(db, VANGUARD, gme, 0, "2026-07-10", null, "canonical:hold:GME:2026-07-10");
-    seedPrice(db, gme, "2026-07-10", 25);
+    const zza = seedSecurity(db, "ZZA");
+    seedHolding(db, VANGUARD, zza, 0, "2026-07-10", null, "canonical:hold:ZZA:2026-07-10");
+    seedPrice(db, zza, "2026-07-10", 25);
 
-    expect(getHoldingsBySecurity(db, gme)).toHaveLength(0);
+    expect(getHoldingsBySecurity(db, zza)).toHaveLength(0);
   });
 });

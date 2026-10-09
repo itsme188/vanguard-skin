@@ -602,9 +602,9 @@ describe("computePositionRisk", () => {
     ).run();
     db.prepare("INSERT INTO holdings (account_id, security_id, as_of_date, quantity) VALUES (1, 1, ?, 10)").run(today);
 
-    // KRW holding: 10 sh @ ₩1,731,000 = ₩17,310,000 notional. fx 0.000734 → ≈$12,705.54.
+    // KRW holding: 10 sh @ ₩1,500,000 = ₩15,000,000 notional. fx 0.000734 → ≈$11,010.00.
     db.prepare(
-      "INSERT INTO securities (id, symbol, name, security_type, currency) VALUES (2, '402340', 'KRW Co', 'stock', 'KRW')"
+      "INSERT INTO securities (id, symbol, name, security_type, currency) VALUES (2, '000000', 'KRW Co', 'stock', 'KRW')"
     ).run();
     db.prepare("INSERT INTO holdings (account_id, security_id, as_of_date, quantity) VALUES (1, 2, ?, 10)").run(today);
     db.prepare(
@@ -618,14 +618,14 @@ describe("computePositionRisk", () => {
       d.setDate(d.getDate() - 59 + i);
       const date = d.toISOString().slice(0, 10);
       db.prepare("INSERT OR IGNORE INTO prices (security_id, date, close_price) VALUES (1, ?, 208)").run(date);
-      db.prepare("INSERT OR IGNORE INTO prices (security_id, date, close_price) VALUES (2, ?, 1731000)").run(date);
+      db.prepare("INSERT OR IGNORE INTO prices (security_id, date, close_price) VALUES (2, ?, 1500000)").run(date);
     }
 
     const result = computePositionRisk(db);
-    const expectedKrwUsd = 10 * 1_731_000 * 0.000734; // ≈ $12,705.54
+    const expectedKrwUsd = 10 * 1_500_000 * 0.000734; // ≈ $11,010.00
     const expectedTotal = expectedKrwUsd + 2_080;
 
-    const krw = result.positions.find((p) => p.symbol === "402340")!;
+    const krw = result.positions.find((p) => p.symbol === "000000")!;
     const aapl = result.positions.find((p) => p.symbol === "AAPL")!;
     expect(krw).toBeDefined();
     expect(aapl).toBeDefined();
@@ -659,12 +659,12 @@ describe("FX conversion (Task 9b — risk concentration weights)", () => {
     db.prepare("INSERT INTO holdings (account_id, security_id, as_of_date, quantity) VALUES (1, 1, ?, 10)").run(today);
     db.prepare("INSERT INTO prices (security_id, date, close_price) VALUES (1, ?, 208)").run(today);
 
-    // KRW holding: 10 sh @ ₩1,731,000 = ₩17,310,000 notional. fx 0.000734 → ≈$12,705.54.
+    // KRW holding: 10 sh @ ₩1,500,000 = ₩15,000,000 notional. fx 0.000734 → ≈$11,010.00.
     db.prepare(
-      "INSERT INTO securities (id, symbol, name, security_type, currency) VALUES (2, '402340', 'KRW Co', 'stock', 'KRW')"
+      "INSERT INTO securities (id, symbol, name, security_type, currency) VALUES (2, '000000', 'KRW Co', 'stock', 'KRW')"
     ).run();
     db.prepare("INSERT INTO holdings (account_id, security_id, as_of_date, quantity) VALUES (1, 2, ?, 10)").run(today);
-    db.prepare("INSERT INTO prices (security_id, date, close_price) VALUES (2, ?, 1731000)").run(today);
+    db.prepare("INSERT INTO prices (security_id, date, close_price) VALUES (2, ?, 1500000)").run(today);
     db.prepare(
       "INSERT INTO fx_rates (currency, usd_per_unit, as_of, source) VALUES ('KRW', 0.000734, ?, 'test')"
     ).run(today);
@@ -676,16 +676,16 @@ describe("FX conversion (Task 9b — risk concentration weights)", () => {
 
     const result = computeRiskMetrics(db);
 
-    const expectedKrwUsd = 10 * 1_731_000 * 0.000734; // ≈ $12,705.54
+    const expectedKrwUsd = 10 * 1_500_000 * 0.000734; // ≈ $11,010.00
     const expectedTotal = expectedKrwUsd + 2_080;
 
-    const krw = result.top5Positions.find((p) => p.symbol === "402340")!;
+    const krw = result.top5Positions.find((p) => p.symbol === "000000")!;
     const aapl = result.top5Positions.find((p) => p.symbol === "AAPL")!;
     expect(krw).toBeDefined();
     expect(aapl).toBeDefined();
 
     expect(krw!.marketValue).toBeCloseTo(expectedKrwUsd, 2);
-    expect(krw!.marketValue).toBeLessThan(20_000); // NOT the ₩17.31M phantom
+    expect(krw!.marketValue).toBeLessThan(20_000); // NOT the ₩15M phantom
     expect(krw!.weight).toBeCloseTo(expectedKrwUsd / expectedTotal, 3);
     expect(krw!.weight).toBeLessThan(0.9); // not dominating at ~99.99% notional weight
 
@@ -803,7 +803,7 @@ describe("multi-account scope (accountIds[])", () => {
  * latestHoldingsPredicate resolves per (account, security) — correctly, since
  * one account's statement date routinely trails another's. computeConcentration
  * then treated each surviving ROW as its own position, so a name held in two
- * accounts (SPY: 21.16 sh in Vanguard + 100 sh in IBKR) showed up as two
+ * accounts (SPY: 20 sh in Vanguard + 100 sh in IBKR) showed up as two
  * smaller positions instead of one real one. Consequences: top5 / Herfindahl /
  * positionCount all understated the portfolio's true concentration, and the
  * page rendered two disagreeing Herfindahls at scope=all. Positions must be
@@ -818,14 +818,14 @@ describe("concentration merges a security held in several accounts", () => {
     db.exec("INSERT INTO accounts (id, name) VALUES (1, 'Vanguard'), (3, 'IBKR')");
     db.exec("INSERT INTO securities (id, symbol, name) VALUES (1, 'SPY', 'S&P 500 ETF'), (2, 'AAPL', 'Apple')");
     // SPY straddles both accounts; AAPL sits in one.
-    db.prepare("INSERT INTO holdings (account_id, security_id, as_of_date, quantity) VALUES (1, 1, ?, 21.16)").run(today);
+    db.prepare("INSERT INTO holdings (account_id, security_id, as_of_date, quantity) VALUES (1, 1, ?, 20)").run(today);
     db.prepare("INSERT INTO holdings (account_id, security_id, as_of_date, quantity) VALUES (3, 1, ?, 100)").run(today);
     db.prepare("INSERT INTO holdings (account_id, security_id, as_of_date, quantity) VALUES (1, 2, ?, 100)").run(today);
     db.prepare("INSERT INTO prices (security_id, date, close_price) VALUES (1, ?, 773)").run(today);
     db.prepare("INSERT INTO prices (security_id, date, close_price) VALUES (2, ?, 200)").run(today);
   });
 
-  const SPY_TOTAL = 121.16 * 773; // 93,656.68 — both legs, not just the IBKR one
+  const SPY_TOTAL = 120 * 773; // 92,760 — both legs, not just the IBKR one
 
   it("reports one SPY position worth the SUM of both legs (whole portfolio)", () => {
     const result = computeRiskMetrics(db);
@@ -860,7 +860,7 @@ describe("concentration merges a security held in several accounts", () => {
     const vanguard = computeRiskMetrics(db, { accountIds: [1] });
     const spy = vanguard.top5Positions.filter((p) => p.symbol === "SPY");
     expect(spy).toHaveLength(1);
-    expect(spy[0].marketValue).toBeCloseTo(21.16 * 773, 2);
+    expect(spy[0].marketValue).toBeCloseTo(20 * 773, 2);
   });
 });
 

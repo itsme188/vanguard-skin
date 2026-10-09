@@ -422,17 +422,17 @@ describe("REDEMPTION with null price (bond/bill maturity)", () => {
   }
 
   it("closes the lot at ~zero realized when amount carries the principal (per-100 bond price basis)", () => {
-    const secId = seedSecurity(db, "912796XY0", "U S TREASURY BILL");
+    const secId = seedSecurity(db, "ZZBILL01", "U S TREASURY BILL");
     seedTransaction(db, {
       account_id: ACCOUNT_ID,
       security_id: secId,
-      trade_date: "2023-02-08",
+      trade_date: "2023-02-01",
       type: "BUY",
       quantity: 10000,
-      price_per_share: 97.6137, // per-100-face statement basis
-      amount: 9761.37,
+      price_per_share: 97.5, // per-100-face statement basis (synthetic)
+      amount: 9750,
     });
-    seedRedemption(db, secId, { quantity: 10000, amount: 9761.37 });
+    seedRedemption(db, secId, { quantity: 10000, amount: 9750 });
 
     computeTaxLots(db);
 
@@ -445,22 +445,22 @@ describe("REDEMPTION with null price (bond/bill maturity)", () => {
       .prepare("SELECT proceeds, realized_gain_loss FROM tax_lot_sales")
       .get() as any;
     // TRUE-DOLLAR convention (WS1): the redemption's `amount` is the broker's
-    // own principal figure and is authoritative — proceeds = |9761.37|.
-    // sale_price still derives on the per-100 basis (|amount|/qty×100 = 97.6137).
-    expect(sale.proceeds).toBeCloseTo(9761.37, 2);
+    // own principal figure and is authoritative — proceeds = |9750|.
+    // sale_price still derives on the per-100 basis (|amount|/qty×100 = 97.5).
+    expect(sale.proceeds).toBeCloseTo(9750, 2);
     expect(sale.realized_gain_loss).toBeCloseTo(0, 2);
   });
 
   it("still skips a redemption with neither price nor amount (cannot value it)", () => {
-    const secId = seedSecurity(db, "912796ZZ5", "U S TREASURY BILL");
+    const secId = seedSecurity(db, "ZZBILL02", "U S TREASURY BILL");
     seedTransaction(db, {
       account_id: ACCOUNT_ID,
       security_id: secId,
-      trade_date: "2023-04-24",
+      trade_date: "2023-04-03",
       type: "BUY",
       quantity: 4000,
-      price_per_share: 98.81625,
-      amount: 3952.65,
+      price_per_share: 98.5,
+      amount: 3940, // 4000 × 98.5 / 100
     });
     seedRedemption(db, secId, { quantity: 4000, amount: null });
 

@@ -99,9 +99,9 @@ describe("tax-lots FX conversion", () => {
     });
 
     it("converts a KRW lot's market value + adjusted cost basis + unrealized gain to USD, not the won phantom", () => {
-      const krw = seedSecurity(db, "402340", { currency: "KRW" });
-      seedTaxLot(db, ACCOUNT_ID, krw, "2025-01-01", 1_632_979.2, 10, 16_329_792);
-      seedPrice(db, krw, 1_731_000, TODAY);
+      const krw = seedSecurity(db, "000000", { currency: "KRW" });
+      seedTaxLot(db, ACCOUNT_ID, krw, "2025-01-01", 1_400_000, 10, 14_000_000);
+      seedPrice(db, krw, 1_500_000, TODAY);
 
       upsertFxRate(db, {
         currency: "KRW",
@@ -111,21 +111,21 @@ describe("tax-lots FX conversion", () => {
       });
 
       const lots = getOpenTaxLots(db);
-      const krwLot = lots.find((l) => l.symbol === "402340");
+      const krwLot = lots.find((l) => l.symbol === "000000");
       expect(krwLot).toBeTruthy();
 
-      const expectedMv = 10 * 1_731_000 * 0.000734; // 12,705.54
-      const expectedCostUsd = 10 * 1_632_979.2 * 0.000734; // 11,986.07
+      const expectedMv = 10 * 1_500_000 * 0.000734; // 11,010.00
+      const expectedCostUsd = 10 * 1_400_000 * 0.000734; // 10,276.00
 
       expect(krwLot!.current_value).toBeCloseTo(expectedMv, 2);
       expect(krwLot!.current_value).toBeLessThan(20_000);
-      expect(krwLot!.current_value).not.toBeCloseTo(17_310_000, 0);
+      expect(krwLot!.current_value).not.toBeCloseTo(15_000_000, 0);
 
       expect(krwLot!.adjusted_cost_basis).toBeCloseTo(expectedCostUsd, 2);
-      expect(krwLot!.adjusted_cost_basis).not.toBeCloseTo(16_329_792, 0);
+      expect(krwLot!.adjusted_cost_basis).not.toBeCloseTo(14_000_000, 0);
 
       expect(krwLot!.unrealized_gain).toBeCloseTo(expectedMv - expectedCostUsd, 2);
-      expect(krwLot!.unrealized_gain).toBeCloseTo(719.47, 1);
+      expect(krwLot!.unrealized_gain).toBeCloseTo(734.00, 1);
     });
 
     it("USD control is unaffected (byte-unchanged behavior)", () => {
@@ -142,9 +142,9 @@ describe("tax-lots FX conversion", () => {
     });
 
     it("converts the raw cost_basis field to USD, not the won phantom", () => {
-      const krw = seedSecurity(db, "402340", { currency: "KRW" });
-      seedTaxLot(db, ACCOUNT_ID, krw, "2025-01-01", 1_632_979.2, 10, 16_329_792);
-      seedPrice(db, krw, 1_731_000, TODAY);
+      const krw = seedSecurity(db, "000000", { currency: "KRW" });
+      seedTaxLot(db, ACCOUNT_ID, krw, "2025-01-01", 1_400_000, 10, 14_000_000);
+      seedPrice(db, krw, 1_500_000, TODAY);
 
       upsertFxRate(db, {
         currency: "KRW",
@@ -158,14 +158,14 @@ describe("tax-lots FX conversion", () => {
       seedPrice(db, aapl, 250, TODAY);
 
       const lots = getOpenTaxLots(db);
-      const krwLot = lots.find((l) => l.symbol === "402340");
+      const krwLot = lots.find((l) => l.symbol === "000000");
       const usdLot = lots.find((l) => l.symbol === "AAPL");
       expect(krwLot).toBeTruthy();
       expect(usdLot).toBeTruthy();
 
-      const expectedCostUsd = 10 * 1_632_979.2 * 0.000734; // 11,986.07
+      const expectedCostUsd = 10 * 1_400_000 * 0.000734; // 10,276.00
       expect(krwLot!.cost_basis).toBeCloseTo(expectedCostUsd, 2);
-      expect(krwLot!.cost_basis).not.toBeCloseTo(16_329_792, 0);
+      expect(krwLot!.cost_basis).not.toBeCloseTo(14_000_000, 0);
 
       // USD control: byte-identical (×1)
       expect(usdLot!.cost_basis).toBe(20_000);
@@ -193,9 +193,9 @@ describe("tax-lots FX conversion", () => {
       seedTaxLot(db, ACCOUNT_ID, aapl, "2025-01-01", 200, 100, 20_000);
       seedPrice(db, aapl, 250, TODAY); // USD gain: (100*250) - 20000 = 5,000
 
-      const krw = seedSecurity(db, "402340", { currency: "KRW" });
-      seedTaxLot(db, ACCOUNT_ID, krw, "2025-01-01", 1_632_979.2, 10, 16_329_792);
-      seedPrice(db, krw, 1_731_000, TODAY);
+      const krw = seedSecurity(db, "000000", { currency: "KRW" });
+      seedTaxLot(db, ACCOUNT_ID, krw, "2025-01-01", 1_400_000, 10, 14_000_000);
+      seedPrice(db, krw, 1_500_000, TODAY);
 
       upsertFxRate(db, {
         currency: "KRW",
@@ -209,12 +209,12 @@ describe("tax-lots FX conversion", () => {
 
       const usdGain = 100 * 250 - 20_000; // 5,000
       const krwGainUsd =
-        10 * 1_731_000 * 0.000734 - 10 * 1_632_979.2 * 0.000734; // ~719.47
+        10 * 1_500_000 * 0.000734 - 10 * 1_400_000 * 0.000734; // ~734.00
       const expectedTotal = usdGain + krwGainUsd;
 
       expect(summary.totalUnrealizedGain).toBeCloseTo(expectedTotal, 2);
       // Must NOT be dominated by the won-notional phantom gain
-      // (would be ~17,290,000 if KRW were treated as raw USD).
+      // (would be ~1,005,000 if KRW were treated as raw USD).
       expect(summary.totalUnrealizedGain).toBeLessThan(10_000);
     });
   });
@@ -273,12 +273,12 @@ describe("tax-lots FX conversion", () => {
         costBasis: 20_000,
         realized: 5_000,
       });
-      // KRW sale: native −3,980,000 (≈ −$2,646) — must NOT sum as USD
-      const krw = seedSecurity(db, "402340", { currency: "KRW" });
+      // KRW sale: native −3,000,000 (≈ −$1,994) — must NOT sum as USD
+      const krw = seedSecurity(db, "000000", { currency: "KRW" });
       seedSale(db, ACCOUNT_ID, krw, "2026-07-12", {
-        proceeds: 12_340_000,
-        costBasis: 16_320_000,
-        realized: -3_980_000,
+        proceeds: 11_000_000,
+        costBasis: 14_000_000,
+        realized: -3_000_000,
       });
       upsertFxRate(db, {
         currency: "KRW",
@@ -312,15 +312,15 @@ describe("tax-lots FX conversion", () => {
 
     it("getClosedTaxLotSales rows carry the security's currency so the UI can label native values", () => {
       const sales = getClosedTaxLotSales(db, YEAR);
-      const krwSale = sales.find((s) => s.symbol === "402340");
+      const krwSale = sales.find((s) => s.symbol === "000000");
       const usdSale = sales.find((s) => s.symbol === "AAPL");
       expect(krwSale?.currency).toBe("KRW");
       expect(usdSale?.currency).toBe("USD");
       // row values stay native (never fabricate an FX vintage on tax rows)
-      expect(krwSale?.realized_gain_loss).toBe(-3_980_000);
+      expect(krwSale?.realized_gain_loss).toBe(-3_000_000);
       // Sort keys are display-only USD conversions so non-USD rows do not
       // rank by raw native magnitude in the Closed Sales table.
-      expect(krwSale?.realized_gain_loss_usd).toBeCloseTo(-3_980_000 * 0.0006648, 6);
+      expect(krwSale?.realized_gain_loss_usd).toBeCloseTo(-3_000_000 * 0.0006648, 6);
       expect(usdSale?.realized_gain_loss_usd).toBe(usdSale?.realized_gain_loss);
     });
 

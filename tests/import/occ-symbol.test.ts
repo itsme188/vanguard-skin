@@ -73,7 +73,7 @@ describe("parseOptionSymbol", () => {
       ["ETF ticker", "SPY"],
       ["bond CUSIP-style symbol", "912828YK0"],
       ["mutual fund symbol", "VTSAX"],
-      ["foreign exchange-suffixed symbol", "402340.KS"],
+      ["foreign exchange-suffixed symbol", "000000.KS"],
       ["empty string", ""],
       ["symbol with only a root and date, no right/strike", "NVDA 260618"],
       ["OCC-length garbage (21 chars, no C/P at position 12)", "NVDA  260618X00175000"],

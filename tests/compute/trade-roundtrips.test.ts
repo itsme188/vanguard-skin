@@ -961,25 +961,25 @@ describe("computeGroupedSummary", () => {
     const roundTrips: RoundTrip[] = [
       // Sale tx 100: 3 lots, total loss
       {
-        accountId: 1, securityId: 1, symbol: "CPRT", securityName: null,
-        entryDate: "2024-05-24", entryPrice: 49.75, entryQuantity: 25,
-        entryCost: 1243.75, exitDate: "2026-03-11", exitPrice: 35.98,
-        exitQuantity: 25, exitProceeds: 899.50, holdingDays: 656,
-        realizedPnl: -344.25, returnPct: -27.7, saleTransactionId: 100, sellTransactionQty: null,
+        accountId: 1, securityId: 1, symbol: "ZZA", securityName: null,
+        entryDate: "2024-05-01", entryPrice: 50.00, entryQuantity: 25,
+        entryCost: 1250, exitDate: "2026-03-02", exitPrice: 36.00,
+        exitQuantity: 25, exitProceeds: 900.00, holdingDays: 670,
+        realizedPnl: -350.00, returnPct: -28.0, saleTransactionId: 100, sellTransactionQty: null,
       },
       {
-        accountId: 1, securityId: 1, symbol: "CPRT", securityName: null,
-        entryDate: "2024-09-11", entryPrice: 45.00, entryQuantity: 20,
-        entryCost: 900, exitDate: "2026-03-11", exitPrice: 35.98,
-        exitQuantity: 20, exitProceeds: 719.60, holdingDays: 546,
-        realizedPnl: -180.40, returnPct: -20.0, saleTransactionId: 100, sellTransactionQty: null,
+        accountId: 1, securityId: 1, symbol: "ZZA", securityName: null,
+        entryDate: "2024-09-03", entryPrice: 45.00, entryQuantity: 20,
+        entryCost: 900, exitDate: "2026-03-02", exitPrice: 36.00,
+        exitQuantity: 20, exitProceeds: 720.00, holdingDays: 545,
+        realizedPnl: -180.00, returnPct: -20.0, saleTransactionId: 100, sellTransactionQty: null,
       },
       {
-        accountId: 1, securityId: 1, symbol: "CPRT", securityName: null,
-        entryDate: "2025-07-25", entryPrice: 42.00, entryQuantity: 20,
-        entryCost: 840, exitDate: "2026-03-11", exitPrice: 35.98,
-        exitQuantity: 20, exitProceeds: 719.60, holdingDays: 229,
-        realizedPnl: -120.40, returnPct: -14.3, saleTransactionId: 100, sellTransactionQty: null,
+        accountId: 1, securityId: 1, symbol: "ZZA", securityName: null,
+        entryDate: "2025-07-01", entryPrice: 42.00, entryQuantity: 20,
+        entryCost: 840, exitDate: "2026-03-02", exitPrice: 36.00,
+        exitQuantity: 20, exitProceeds: 720.00, holdingDays: 244,
+        realizedPnl: -120.00, returnPct: -14.3, saleTransactionId: 100, sellTransactionQty: null,
       },
       // Sale tx 200: 1 lot, winner
       {
@@ -997,12 +997,12 @@ describe("computeGroupedSummary", () => {
     const summary = computeGroupedSummary(grouped);
     expect(summary.totalTrades).toBe(2); // NOT 4
     expect(summary.winningTrades).toBe(1); // AAPL
-    expect(summary.losingTrades).toBe(1); // CPRT (aggregated)
+    expect(summary.losingTrades).toBe(1); // ZZA (aggregated)
     expect(summary.winRate).toBe(0.5);
     expect(summary.bestTradeSymbol).toBe("AAPL");
-    expect(summary.worstTradeSymbol).toBe("CPRT");
-    // CPRT total PnL: -344.25 + -180.40 + -120.40 = -645.05
-    expect(summary.worstTradePnl).toBeCloseTo(-645.05);
+    expect(summary.worstTradeSymbol).toBe("ZZA");
+    // ZZA total PnL: -350 + -180 + -120 = -650
+    expect(summary.worstTradePnl).toBeCloseTo(-650);
     expect(summary.bestTradePnl).toBe(150);
   });
 
@@ -1043,12 +1043,12 @@ describe("foreign-currency conversion (fx_rates)", () => {
 
   beforeEach(() => {
     db = createTestDb();
-    // Korean listing priced in KRW (the 402340 trap: native prices read as USD)
+    // Korean listing priced in KRW (the 000000 trap: native prices read as USD)
     db.exec(
-      "INSERT INTO securities (id, symbol, name, currency) VALUES (4, '402340', 'SK Square', 'KRW')"
+      "INSERT INTO securities (id, symbol, name, currency) VALUES (4, '000000', 'ZZ Korea Co', 'KRW')"
     );
     db.exec(
-      "INSERT INTO securities (id, symbol, name, currency) VALUES (5, '005930', 'Samsung', 'KRW')"
+      "INSERT INTO securities (id, symbol, name, currency) VALUES (5, '000001', 'ZZ Korea Two', 'KRW')"
     );
   });
 
@@ -1062,21 +1062,21 @@ describe("foreign-currency conversion (fx_rates)", () => {
       acquisitionDate: "2026-07-01",
       saleDate: "2026-07-16",
       quantity: 10,
-      acquisitionPrice: 1632000,
-      salePrice: 1190000,
+      acquisitionPrice: 1400000,
+      salePrice: 1100000,
     });
 
     const trips = getRoundTrips(db, 1, "2026-07-01", "2026-07-31");
     expect(trips).toHaveLength(1);
     const t = trips[0];
-    // native: cost 16,320,000 / proceeds 11,900,000 / pnl -4,420,000
-    expect(t.entryCost).toBeCloseTo(16320000 * 0.0007, 2);
-    expect(t.exitProceeds).toBeCloseTo(11900000 * 0.0007, 2);
-    expect(t.realizedPnl).toBeCloseTo(-4420000 * 0.0007, 2);
-    expect(t.entryPrice).toBeCloseTo(1632000 * 0.0007, 2);
-    expect(t.exitPrice).toBeCloseTo(1190000 * 0.0007, 2);
+    // native: cost 14,000,000 / proceeds 11,000,000 / pnl -3,000,000
+    expect(t.entryCost).toBeCloseTo(14000000 * 0.0007, 2);
+    expect(t.exitProceeds).toBeCloseTo(11000000 * 0.0007, 2);
+    expect(t.realizedPnl).toBeCloseTo(-3000000 * 0.0007, 2);
+    expect(t.entryPrice).toBeCloseTo(1400000 * 0.0007, 2);
+    expect(t.exitPrice).toBeCloseTo(1100000 * 0.0007, 2);
     // percent return is currency-invariant
-    expect(t.returnPct).toBeCloseTo((-4420000 / 16320000) * 100, 4);
+    expect(t.returnPct).toBeCloseTo((-3000000 / 14000000) * 100, 4);
     expect(t.usdPerUnit).toBeCloseTo(0.0007);
   });
 
@@ -1121,8 +1121,8 @@ describe("foreign-currency conversion (fx_rates)", () => {
       acquisitionDate: "2026-07-01",
       saleDate: "2026-07-16",
       quantity: 10,
-      acquisitionPrice: 1632000,
-      salePrice: 1190000,
+      acquisitionPrice: 1400000,
+      salePrice: 1100000,
     });
     addRoundTrip(db, {
       accountId: 1,
@@ -1138,12 +1138,12 @@ describe("foreign-currency conversion (fx_rates)", () => {
       getRoundTrips(db, 1, "2026-07-01", "2026-07-31")
     );
     const summary = computeGroupedSummary(grouped);
-    // KRW trade: -4,420,000 * 0.0007 = -3,094 USD; AAPL trade: +500 USD
-    expect(summary.totalRealizedPnl).toBeCloseTo(-3094 + 500, 2);
-    expect(summary.worstTradePnl).toBeCloseTo(-3094, 2);
-    expect(summary.worstTradeSymbol).toBe("402340");
+    // KRW trade: -3,000,000 * 0.0007 = -2,100 USD; AAPL trade: +500 USD
+    expect(summary.totalRealizedPnl).toBeCloseTo(-2100 + 500, 2);
+    expect(summary.worstTradePnl).toBeCloseTo(-2100, 2);
+    expect(summary.worstTradeSymbol).toBe("000000");
     // grouped trade carries the rate for native-price consumers (market context)
-    const krw = grouped.find((g) => g.symbol === "402340")!;
+    const krw = grouped.find((g) => g.symbol === "000000")!;
     expect(krw.usdPerUnit).toBeCloseTo(0.0007);
   });
 });

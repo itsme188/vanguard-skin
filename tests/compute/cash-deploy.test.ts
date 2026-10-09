@@ -155,11 +155,11 @@ describe("FX conversion (Task 9c — cash-deploy market value)", () => {
     db.prepare(`INSERT INTO prices (security_id, date, close_price, source) VALUES (1, ?, 200, 'tws')`).run(today);
     db.prepare(`INSERT INTO holdings (account_id, security_id, as_of_date, quantity, source_key) VALUES (1, 1, '2026-04-30', 40, 'h-aapl')`).run();
 
-    // KRW holding: 10 sh @ ₩1,731,000 = ₩17,310,000 notional. fx 0.000734 → ≈$12,705.54. Technology.
+    // KRW holding: 10 sh @ ₩1,500,000 = ₩15,000,000 notional. fx 0.000734 → ≈$11,010.00. Technology.
     db.prepare(
-      `INSERT INTO securities (id, symbol, security_type, sector, currency) VALUES (2, '402340', 'Stock', 'Technology', 'KRW')`
+      `INSERT INTO securities (id, symbol, security_type, sector, currency) VALUES (2, '000000', 'Stock', 'Technology', 'KRW')`
     ).run();
-    db.prepare(`INSERT INTO prices (security_id, date, close_price, source) VALUES (2, ?, 1731000, 'tws')`).run(today);
+    db.prepare(`INSERT INTO prices (security_id, date, close_price, source) VALUES (2, ?, 1500000, 'tws')`).run(today);
     db.prepare(`INSERT INTO holdings (account_id, security_id, as_of_date, quantity, source_key) VALUES (1, 2, '2026-04-30', 10, 'h-krw')`).run();
     db.prepare(`INSERT INTO fx_rates (currency, usd_per_unit, as_of, source) VALUES ('KRW', 0.000734, ?, 'test')`).run(today);
 
@@ -176,7 +176,7 @@ describe("FX conversion (Task 9c — cash-deploy market value)", () => {
     const result = suggestAllocation(db, "vanguard", [1], 1000);
     expect(result.mode).toBe("heuristic");
 
-    const expectedKrwUsd = 10 * 1_731_000 * 0.000734; // ≈ $12,705.54
+    const expectedKrwUsd = 10 * 1_500_000 * 0.000734; // ≈ $11,010.00
     const expectedTechDollars = 8_000 + expectedKrwUsd;
     const expectedHealthDollars = 4_950;
 
@@ -185,7 +185,7 @@ describe("FX conversion (Task 9c — cash-deploy market value)", () => {
     expect(techGap).toBeDefined();
     expect(healthGap).toBeDefined();
 
-    // Converted: Technology ≈ $20,705.54, NOT the ₩17.31M-inflated phantom
+    // Converted: Technology ≈ $20,705.54, NOT the ₩15M-inflated phantom
     // (which would put Technology's dollarGap over $17M).
     expect(Math.abs(techGap!.dollarGap)).toBeCloseTo(expectedTechDollars, 1);
     expect(Math.abs(techGap!.dollarGap)).toBeLessThan(30_000);

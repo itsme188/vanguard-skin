@@ -23,7 +23,7 @@ describe("corporate actions end-to-end (disposable DB)", () => {
     acct = (db.prepare("SELECT id FROM accounts WHERE name='IBKR'").get() as { id: number }).id;
     db.prepare("INSERT INTO securities (symbol) VALUES ('AAAA')").run();
     db.prepare("INSERT INTO securities (symbol) VALUES ('BBBB')").run();
-    db.prepare("INSERT INTO securities (symbol) VALUES ('402340')").run();  // suffix-normalized target
+    db.prepare("INSERT INTO securities (symbol) VALUES ('000000')").run();  // suffix-normalized target
     db.prepare("INSERT INTO securities (symbol) VALUES ('GGGG')").run();    // null-delta row's security
     sec = (db.prepare("SELECT id FROM securities WHERE symbol='AAAA'").get() as { id: number }).id;
     db.prepare(
@@ -52,7 +52,7 @@ describe("corporate actions end-to-end (disposable DB)", () => {
   it("import → recompute → invariants → valuation continuity → undo → restore → re-import idempotent", async () => {
     const parsed = await parseImport(csv, "ibkr-corporate-actions.csv");
     const commit1 = commitImport(db, parsed);
-    expect(commit1.newCorporateActions).toBe(4);   // AAAA split, BBBB reverse, 402340 (suffix-normalized), GGGG (null delta)
+    expect(commit1.newCorporateActions).toBe(4);   // AAAA split, BBBB reverse, 000000 (suffix-normalized), GGGG (null delta)
 
     computeTaxLots(db);
     const lot = db.prepare("SELECT quantity_remaining, acquisition_price, cost_basis FROM tax_lots WHERE security_id = ?").get(sec) as Record<string, number>;

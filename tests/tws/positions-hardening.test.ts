@@ -126,13 +126,13 @@ describe("syncPortfolio — tombstone-supersession + price bumps (reconciler-har
     "does NOT bump on a newer-date re-buy over an older %s tombstone",
     async (origin) => {
       const acctId = ibkrAccountId();
-      const secId = seedSecurity("NET");
+      const secId = seedSecurity("ZZA");
       seedTombstone(acctId, secId, "2000-01-01", origin);
       const before = getTaxInputGeneration(db);
 
       mockApi!.getAccountUpdates.mockReturnValue(
         mockObservable(
-          makeAccountUpdate([{ symbol: "NET", pos: 60, avgCost: 200, marketPrice: 269.42, conId: 111 }], 1000, 500),
+          makeAccountUpdate([{ symbol: "ZZA", pos: 50, avgCost: 200, marketPrice: 250, conId: 111 }], 1000, 500),
         ),
       );
 
@@ -200,8 +200,8 @@ describe("syncPortfolio — tombstone-supersession + price bumps (reconciler-har
 
   it("a throw inside the writer's transaction rolls back writes AND bump together", async () => {
     const acctId = ibkrAccountId();
-    const secId = seedSecurity("NET");
-    // Same-date :stmt tombstone: NET's write REPLACES it, which alone bumps —
+    const secId = seedSecurity("ZZA");
+    // Same-date :stmt tombstone: ZZA's write REPLACES it, which alone bumps —
     // so an unchanged generation below proves the bump rolled back.
     seedTombstone(acctId, secId, today(), ":stmt");
     const before = getTaxInputGeneration(db);
@@ -209,7 +209,7 @@ describe("syncPortfolio — tombstone-supersession + price bumps (reconciler-har
     // No outer transaction wraps this call (discriminating: proves the
     // writer's OWN db.transaction rolls things back, not a caller's). The
     // sentinel quantity aborts the SECOND position's holdings insert, after
-    // the first (NET, a tombstone re-buy) already wrote.
+    // the first (ZZA, a tombstone re-buy) already wrote.
     db.exec(
       `CREATE TEMP TRIGGER boom BEFORE INSERT ON holdings WHEN NEW.quantity = 424242 BEGIN SELECT RAISE(ABORT,'boom'); END`,
     );
@@ -218,7 +218,7 @@ describe("syncPortfolio — tombstone-supersession + price bumps (reconciler-har
       mockObservable(
         makeAccountUpdate(
           [
-            { symbol: "NET", pos: 60, avgCost: 200, marketPrice: 269.42, conId: 111 },
+            { symbol: "ZZA", pos: 50, avgCost: 200, marketPrice: 250, conId: 111 },
             { symbol: "BOOM", pos: 424242, avgCost: 1, marketPrice: 1, conId: 444 },
           ],
           1000,
@@ -239,7 +239,7 @@ describe("syncPortfolio — tombstone-supersession + price bumps (reconciler-har
 
   it("a price-write failure rolls back the holdings writes it now shares a transaction with (proves the merged commit — this test fails against the pre-fix two-transaction split)", async () => {
     const acctId = ibkrAccountId();
-    const secId = seedSecurity("NET");
+    const secId = seedSecurity("ZZA");
     seedTombstone(acctId, secId, today(), ":stmt"); // a REPLACE here alone would bump
     const before = getTaxInputGeneration(db);
 
@@ -251,7 +251,7 @@ describe("syncPortfolio — tombstone-supersession + price bumps (reconciler-har
       mockObservable(
         makeAccountUpdate(
           [
-            { symbol: "NET", pos: 60, avgCost: 200, marketPrice: 269.42, conId: 111 },
+            { symbol: "ZZA", pos: 50, avgCost: 200, marketPrice: 250, conId: 111 },
             { symbol: "BOOM", pos: 5, avgCost: 1, marketPrice: 999999, conId: 444 },
           ],
           1000,
@@ -266,7 +266,7 @@ describe("syncPortfolio — tombstone-supersession + price bumps (reconciler-har
     const netRows = db
       .prepare(`SELECT quantity FROM holdings WHERE security_id = ? ORDER BY as_of_date`)
       .all(secId) as { quantity: number }[];
-    // NET's re-buy holdings write must have rolled back together with the
+    // ZZA's re-buy holdings write must have rolled back together with the
     // aborted BOOM price insert — only the original tombstone survives.
     expect(netRows).toEqual([{ quantity: 0 }]);
     expect(getTaxInputGeneration(db)).toBe(before);

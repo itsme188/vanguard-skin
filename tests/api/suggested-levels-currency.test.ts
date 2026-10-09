@@ -88,7 +88,7 @@ describe("GET /api/suggested-levels currency frame", () => {
 
   it("computes distances native-vs-native for a KRW security and returns usdPerUnit", async () => {
     const secId = seedSecurity(hoisted.db, {
-      symbol: "402340",
+      symbol: "000000",
       currency: "KRW",
       base: 950_000,
     });

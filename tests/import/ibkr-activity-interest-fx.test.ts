@@ -5,8 +5,8 @@ import { parseIbkrActivity } from "@/lib/import/parsers/ibkr-activity";
 // rows, a "Total" line in that currency, then a "Total in USD" line that
 // carries the broker's own conversion of the block. The USD block ends with
 // the grand "Total Interest in USD" line instead. Before 2026-09-03 the parser
-// stored every row at its native amount, so a ₩36,461.73 debit-interest row
-// landed in the ledger as −$36,461.73 (August 2026 statement).
+// stored every row at its native amount, so a won debit-interest row landed
+// in the ledger as dollars at its native magnitude.
 
 const HEADER =
   "Statement,Header,Field Name,Field Value\n" +

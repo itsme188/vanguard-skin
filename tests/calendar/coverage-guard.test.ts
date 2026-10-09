@@ -296,10 +296,10 @@ describe("findEarningsCoverageGaps", () => {
 
   it("ignored symbols are excluded", () => {
     db.prepare(
-      `INSERT INTO settings (key, value) VALUES ('coverage_guard_ignored_symbols', '["402340"]')`,
+      `INSERT INTO settings (key, value) VALUES ('coverage_guard_ignored_symbols', '["000000"]')`,
     ).run();
     const acct = insertAccount(db);
-    const sec = insertSecurity(db, "402340");
+    const sec = insertSecurity(db, "000000");
     insertHolding(db, acct, sec, 100);
     // no earnings history at all — would be a no_history gap if not ignored
 
