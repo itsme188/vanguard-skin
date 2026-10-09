@@ -223,9 +223,10 @@ export async function PerformanceView({ scope = "all", period }: PerformanceView
   // day. The floor is looked up over the full scope.
   const curveFloor = firstStatementAnchorForCurve(db, scopeAccountIds, effectiveStart, dailyEnd);
   const curveSeriesStart = curveFloorDate(effectiveStart, curveFloor);
-  // The WHOLE scope, summed (an empty id list = every account), for a named
-  // scope of one account this is that account's own series.
-  const dailyVals = getDailyValuationsForAccounts(db, scopeAccountIds ?? [], {
+  // The WHOLE scope, summed (undefined = every account; an empty id list
+  // would be no accounts), for a named scope of one account this is that
+  // account's own series.
+  const dailyVals = getDailyValuationsForAccounts(db, scopeAccountIds, {
     startDate: curveSeriesStart,
     endDate: dailyEnd,
     fullCoverageOnly: true,

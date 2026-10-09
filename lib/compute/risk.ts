@@ -256,8 +256,8 @@ export function computeRiskMetrics(
       : laterDate(options?.startDate, commonCoverageStart(db));
   // `undefined` is every account; a defined empty list is NO accounts: there
   // is no series, and it must never widen to the whole book
-  // (getDailyValuationsForAccounts itself reads an empty list as every
-  // account, so the empty case never reaches it).
+  // (getDailyValuationsForAccounts follows the same rule since 2026-10-09;
+  // the explicit branches are kept so the rule is visible here).
   const valuations =
     accountIds === undefined
       ? getDailyValuationsCombined(db, {

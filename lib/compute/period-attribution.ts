@@ -1,15 +1,13 @@
 import type Database from "better-sqlite3";
 import { calendarDaysBetween } from "@/lib/calendar/date-utils";
 import { SIGNED_EXTERNAL_FLOW_SQL } from "@/lib/compute/flow-adjusted";
-import {
-  getDailyValuationsCombined,
-  getDailyValuationsForAccounts,
-} from "@/lib/queries/daily-valuations";
+import { getDailyValuationsForAccounts } from "@/lib/queries/daily-valuations";
 import { getUsdPerUnit } from "@/lib/queries/fx-rates";
 
 /**
  * Scope for attribution: a single account id, an explicit id set, or
- * undefined for the whole portfolio. Multi-account scopes are aggregated —
+ * undefined for the whole portfolio. A DEFINED EMPTY id set is NO accounts
+ * (an empty attribution, never the whole book). Multi-account scopes are aggregated —
  * valuations SUMMED per date before the regression, holdings merged per
  * security — never collapsed to the first id (deep-QA 2026-06-11: scope=all
  * rendered account 1's beta/alpha labeled "All accounts").
@@ -18,8 +16,8 @@ export type AttributionScope = number | number[] | undefined;
 
 function scopeToIds(scope: AttributionScope): number[] | undefined {
   if (typeof scope === "number") return [scope];
-  if (scope && scope.length > 0) return scope;
-  return undefined;
+  // `undefined` is every account; a defined empty list stays empty.
+  return scope;
 }
 
 /** `AND <column> IN (?,?,…)` fragment + params, or empty for whole-portfolio. */
@@ -90,9 +88,12 @@ function computeBetaForPeriod(
   // whole value reads as a fake +89% YTD return) — single-sourced in
   // lib/queries/daily-valuations.ts::fullCoverageHaving since 2026-07-03;
   // this file's inline copy migrated there.
-  const valuations = accountIds
-    ? getDailyValuationsForAccounts(db, accountIds, { startDate, endDate, fullCoverageOnly: true })
-    : getDailyValuationsCombined(db, { startDate, endDate, fullCoverageOnly: true });
+  // (`undefined` = every account; an empty list reads no series.)
+  const valuations = getDailyValuationsForAccounts(db, accountIds, {
+    startDate,
+    endDate,
+    fullCoverageOnly: true,
+  });
 
   const benchmarks = db
     .prepare(
@@ -251,6 +252,18 @@ export function computePeriodAttribution(
   benchmarkSymbol: string = "SPY",
 ): PeriodAttribution {
   const accountIds = scopeToIds(scope);
+  // No accounts: nothing to attribute. Same result an account with no data
+  // gets (no positions, no regression).
+  if (accountIds && accountIds.length === 0) {
+    return {
+      topContributors: [],
+      topDetractors: [],
+      sectorContribution: [],
+      betaVsAlpha: { betaContribution: 0, alphaContribution: 0 },
+      betaWindow: null,
+      decomposedReturn: null,
+    };
+  }
   const { rows, sectorMap } = computePerPositionContributions(
     db,
     accountIds,

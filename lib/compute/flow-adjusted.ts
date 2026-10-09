@@ -103,7 +103,8 @@ export function fetchNetFlowsByDate(
  * half-open convention and same missing-table guard as fetchNetFlowsByDate.
  * This is the "only in-kind" mirror of that function: WHERE is_external_flow
  * = 1 AND (IN_KIND_LEG_SQL), signed via SIGNED_EXTERNAL_FLOW_SQL, instead of
- * `excludeInKind`'s NOT (...).
+ * `excludeInKind`'s NOT (...). `accountIds`: `null` = every account, a
+ * defined empty list = no accounts (returns []).
  *
  * Template for the shared Dietz primitives (Task 11) — mirrors
  * fetchNetFlowsByDate's shape exactly; only the WHERE predicate differs.
@@ -119,10 +120,12 @@ export function fetchInKindFlowsByDate(
     .get();
   if (!hasTable) return [];
 
-  const accountFilter =
-    accountIds && accountIds.length > 0
-      ? `AND account_id IN (${accountIds.map(() => "?").join(",")})`
-      : "";
+  // `null` is every account; a defined empty list is NO accounts (it must
+  // never widen to the whole book).
+  if (accountIds && accountIds.length === 0) return [];
+  const accountFilter = accountIds
+    ? `AND account_id IN (${accountIds.map(() => "?").join(",")})`
+    : "";
 
   return db
     .prepare(
