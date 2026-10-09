@@ -42,9 +42,10 @@ export function TaxLotStalenessNotice({
       {marker.reason === "legacy" ? (
         <>
           These figures were computed under an earlier lot convention
+          {/* Noun first and always plural, as in the "behind" branch below. */}
           {n != null ? (
             <>
-              , <Count value={n} /> tax-input change{n !== 1 ? "s" : ""} ago
+              {" "}(tax-input changes since: <Count value={n} />)
             </>
           ) : null}
           {" — press Recompute to refresh them."}
@@ -65,9 +66,11 @@ export function TaxLotStalenessNotice({
               own definition (lib/compute/tax-convention.ts: "the generation
               counter advances on every MATERIAL tax-input mutation") — it
               also counts sync-driven bookkeeping writes, not just entries a
-              user typed into a ledger. */}
-          These figures predate <Count value={n} /> tax-input change
-          {n !== 1 ? "s" : ""} — press Recompute to refresh them.
+              user typed into a ledger. Noun first and always plural: a
+              noun that switched with the count would say, under Hide
+              amounts, whether the hidden count is one. */}
+          These figures predate later tax-input changes (changes since:{" "}
+          <Count value={n} />) — press Recompute to refresh them.
         </>
       ) : (
         /* A stamp we cannot measure a distance from — say only what is

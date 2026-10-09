@@ -7,9 +7,10 @@
  * internals), the KV marker dance, the provider call and every state
  * transition on the audit row. Two callers keep their own claims because they
  * batch several events into ONE email and must claim them all before
- * composing: lib/earnings/debrief-send.ts and lib/earnings/wrap-send.ts. Both
- * deliver (or, for the retired wrap, must be ported to deliver) through
- * `deliverClaimedBatch` below, so the lifecycle itself is still single-sourced.
+ * composing: lib/earnings/debrief-send.ts and the stapled-wrap sender. The
+ * stapled-wrap sender was retired on 2026-10-08 and its file is deleted, so
+ * the debrief is the one left; it delivers through `deliverClaimedBatch`
+ * below, so the lifecycle itself is still single-sourced.
  * tests/repo/one-claim-owner.test.ts pins that allowlist, with a justification
  * per entry.
  *

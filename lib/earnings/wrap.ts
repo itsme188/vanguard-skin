@@ -1,6 +1,6 @@
 /**
- * EOD earnings-wrap cluster logic (#17) — pure decisions only; the send
- * lives in lib/earnings/wrap-send.ts.
+ * EOD earnings-wrap cluster logic (#17) — pure decisions only; the
+ * stapled-wrap sender that used them was retired on 2026-10-08.
  *
  * A (date, slot) cluster is in WRAP MODE when its expected-unsent recap
  * count reaches WRAP_THRESHOLD. Expected = covered (held/watchlist

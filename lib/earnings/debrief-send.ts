@@ -4,7 +4,7 @@
  * deterministic section/prompt building live in lib/earnings/debrief.ts
  * (Tasks 1+2). Task 4 wires this into the earnings sweep.
  *
- * Claim choreography mirrors lib/earnings/wrap-send.ts::runSlotWrap — claim
+ * Claim choreography mirrors the stapled-wrap sender (retired 2026-10-08) — claim
  * every candidate's recap slot BEFORE composing, release fresh (token-owned)
  * claims on any failure so the sweep never leaks a claim into the 30-min
  * 'in_progress' blackout — with one deliberate difference: a per-member claim
@@ -173,7 +173,7 @@ export async function runMorningDebrief(
     if (!claim.claimed || claim.mode !== "fresh" || !claim.token) continue;
 
     // Symmetric cloud-marker read, mirroring the retired wrap's per-member
-    // exclusion (wrap-send.ts::runSlotWrap): the Worker fallback may have
+    // exclusion (the stapled-wrap sender, retired 2026-10-08): the Worker fallback may have
     // delivered this very recap while the Mac slept, and the sweep's KV→audit
     // backfill may not have run yet — without this read the debrief would
     // re-narrate a name the user already got an email about. A cloud-owned

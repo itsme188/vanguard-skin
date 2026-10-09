@@ -587,9 +587,7 @@ export default async function SecurityDetailPage(props: {
               {unknownBasisLotNotes.map((note) => (
                 <p key={note.accountId} className="text-xs text-ink-faint">
                   <span className="text-ink-dim">{note.accountName}</span>: cost basis and gain are unknown
-                  here because the holdings row carries no cost basis. The open{" "}
-                  {note.lotCount === 1 ? "lot" : "lots"} below{" "}
-                  {note.lotCount === 1 ? "carries" : "carry"} <Money value={note.lotCostBasis} /> for{" "}
+                  here because the holdings row carries no cost basis. Open-lot cost basis below: <Money value={note.lotCostBasis} /> for{" "}
                   <Shares value={note.lotQty} />{" "}
                   <QuantityUnit securityType={security.security_type} quantity={note.lotQty} />; this row
                   does not use that figure.
@@ -633,7 +631,11 @@ export default async function SecurityDetailPage(props: {
       {/* Tax Lots */}
       {(openTaxLots.length > 0 || expiredOptionLotsAwaitingClose.length > 0 || lotCoverageGaps.length > 0) && (
         <Section
-          title={`Open Tax Lots · ${openTaxLots.length}`}
+          title={
+            <>
+              Open Tax Lots · <Count value={openTaxLots.length} />
+            </>
+          }
           action={
             <Link href={`/dashboard/tax-lots?security=${securityId}`} className={ACTION_LINK_CLASS}>
               Open in Tax Lots →
@@ -671,8 +673,8 @@ export default async function SecurityDetailPage(props: {
                   <span className="text-ink-dim">{m.accountName}</span>: the position is short{" "}
                   <Shares value={Math.abs(m.positionQty)} />{" "}
                   <QuantityUnit securityType={security.security_type} quantity={m.positionQty} />, yet the
-                  ledger holds <Shares value={m.longLotQty} /> long in <Count value={m.longLotCount} /> open{" "}
-                  {m.longLotCount === 1 ? "lot" : "lots"}. The two are not reconciled, so the position&apos;s
+                  ledger holds <Shares value={m.longLotQty} /> long (open lots: <Count value={m.longLotCount} />).
+                  The two are not reconciled, so the position&apos;s
                   gain above and the lots&apos; gain below cannot both be right.
                 </p>
               ))}
@@ -773,9 +775,15 @@ export default async function SecurityDetailPage(props: {
       {closedSales.length > 0 && (
         <Section
           title={
-            closedSalesTotal > closedSales.length
-              ? `Recent Sales · ${closedSales.length} of ${closedSalesTotal}`
-              : `Recent Sales · ${closedSales.length}`
+            closedSalesTotal > closedSales.length ? (
+              <>
+                Recent Sales · <Count value={closedSales.length} /> of <Count value={closedSalesTotal} />
+              </>
+            ) : (
+              <>
+                Recent Sales · <Count value={closedSales.length} />
+              </>
+            )
           }
           action={
             closedSalesTotal > closedSales.length ? (
@@ -838,7 +846,11 @@ export default async function SecurityDetailPage(props: {
       {/* Trade Grades (from AI reviews) */}
       {(tradeGrades.length > 0 || tradeGradesExcluded > 0) && (
         <Section
-          title={`AI Trade Grades · ${tradeGrades.length}`}
+          title={
+            <>
+              AI Trade Grades · <Count value={tradeGrades.length} />
+            </>
+          }
           action={
             <Link href="/dashboard/analysis?view=trade-reviews" className={ACTION_LINK_CLASS}>
               All reviews →
@@ -849,8 +861,7 @@ export default async function SecurityDetailPage(props: {
               left out of the cards and counted here instead. */}
           {tradeGradesExcluded > 0 && (
             <p className="px-5 py-3 text-xs text-ink-dim">
-              <Count value={tradeGradesExcluded} />{" "}
-              {tradeGradesExcluded === 1 ? "trip" : "trips"} excluded — pairing under review
+              Trips excluded: <Count value={tradeGradesExcluded} /> — pairing under review
             </p>
           )}
           {tradeGrades.some((grade) => grade.pairings_stale) && (
@@ -1175,7 +1186,13 @@ export default async function SecurityDetailPage(props: {
 
         if (relatedOptions.length === 0) return null;
         return (
-          <Section title={`Related Options · ${relatedOptions.length}`}>
+          <Section
+            title={
+              <>
+                Related Options · <Count value={relatedOptions.length} />
+              </>
+            }
+          >
             <ScrollFade>
               <table className="w-full">
                 <thead>

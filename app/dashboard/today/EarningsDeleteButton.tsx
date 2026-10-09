@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { useToast } from "../components/Toast";
+import { useConfirmPrompt } from "../components/useConfirmPrompt";
 import apiFetch, { type ApiFetch } from "@/lib/http/apiFetch";
 import { networkFailureMessage, readMutationResult } from "@/lib/ui/mutation-result";
 
@@ -25,6 +26,31 @@ export function fixDatedDeleteCopy(
       `and no calendar refresh will bring one back.`,
     restoreLabel: "Remove and restore vendor date",
     removeOnlyLabel: "Remove only",
+  };
+}
+
+/**
+ * What the two-answer question says for every other row. A hand-entered row
+ * is simply deleted; a vendor row is deleted AND suppressed, so the next
+ * calendar sync cannot bring the same date back.
+ */
+export function plainDeleteCopy(
+  symbol: string | null,
+  source: string,
+): { title: string; message: string; confirmLabel: string } {
+  const label = symbol ? ` for ${symbol}` : "";
+  if (source === "manual") {
+    return {
+      title: `Remove this manually-added earnings event${label}?`,
+      message: "Only this hand-entered row is removed.",
+      confirmLabel: "Remove",
+    };
+  }
+  return {
+    title: `Remove this ${source}-sourced earnings event${label}?`,
+    message:
+      'It will stay removed across calendar syncs. If the date was wrong, add the correct one with "+ Add ticker".',
+    confirmLabel: "Remove",
   };
 }
 
@@ -71,10 +97,10 @@ export async function deleteEarningsEvent(
  * same wrong date (migration 070; the NET Jul-30-vs-Aug-6 correction path).
  * The confirm copy tells the user which flavor they're getting.
  *
- * Confirm-before-delete via window.confirm — matches the codebase idiom for
- * destructive row actions (LevelsPanel delete, BogeysEditModal, ImportHistory
- * undo). A row that "Fix date" minted (`vendorDate` set) is the exception: it
- * has three answers, not two, so it asks in a dialog (see fixDatedDeleteCopy).
+ * Confirm-before-delete in the app's own dialog (useConfirmPrompt), never the
+ * browser's; a declined question sends no request. A row that "Fix date"
+ * minted (`vendorDate` set) has three answers, not two, so it asks in its own
+ * dialog (see fixDatedDeleteCopy).
  * Honest feedback per the project convention: checks res.ok AND the
  * response body, explains failures via toast, refreshes the list on success
  * so the row visibly disappears.
@@ -93,6 +119,7 @@ export function EarningsDeleteButton({
 }) {
   const router = useRouter();
   const { toast } = useToast();
+  const prompt = useConfirmPrompt();
   const [deleting, setDeleting] = useState(false);
   const [asking, setAsking] = useState(false);
   const [, startTransition] = useTransition();
@@ -100,9 +127,6 @@ export function EarningsDeleteButton({
   const label = symbol ? ` for ${symbol}` : "";
   const isManual = source === "manual";
   const fixDated = isManual && vendorDate != null;
-  const confirmMessage = isManual
-    ? `Remove this manually-added earnings event${label}?`
-    : `Remove this ${source}-sourced earnings event${label}? It will STAY removed across calendar syncs — if the date was wrong, add the correct one with "+ Add ticker".`;
 
   useEffect(() => {
     const dialog = dialogRef.current;
@@ -152,13 +176,13 @@ export function EarningsDeleteButton({
     }
   }
 
-  function handleClick() {
+  async function handleClick() {
     if (deleting) return;
     if (fixDated) {
       setAsking(true);
       return;
     }
-    if (!confirm(confirmMessage)) return;
+    if (!(await prompt.ask({ ...plainDeleteCopy(symbol, source), variant: "danger" }))) return;
     void remove(false);
   }
 
@@ -168,7 +192,7 @@ export function EarningsDeleteButton({
     <>
       <button
         type="button"
-        onClick={handleClick}
+        onClick={() => void handleClick()}
         disabled={deleting}
         className="relative text-[10px] font-mono px-1.5 py-0.5 rounded text-down bg-down/15 hover:bg-down/25 disabled:opacity-50 cursor-pointer pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-0.5"
         title={
@@ -180,6 +204,7 @@ export function EarningsDeleteButton({
       >
         {deleting ? "…" : "✕"}
       </button>
+      {prompt.dialog}
       {copy && (
         <dialog
           ref={dialogRef}

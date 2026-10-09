@@ -20,12 +20,14 @@
 import { useState } from "react";
 import { useElectron } from "@/lib/hooks/useElectron";
 import apiFetch from "@/lib/http/apiFetch";
+import { useConfirmPrompt } from "./useConfirmPrompt";
 import { MIN_PASSWORD_LENGTH } from "@/lib/auth/password-policy";
 
 type Status = "idle" | "pending" | "ok" | "error";
 
 export function SecuritySection() {
   const { api } = useElectron();
+  const prompt = useConfirmPrompt();
 
   // --- Change password ---
   const [current, setCurrent] = useState("");
@@ -72,9 +74,11 @@ export function SecuritySection() {
   async function handleRotateCredential() {
     if (!api?.rotateServiceCredential) return;
     if (
-      !window.confirm(
-        "Rotate the service credential? The app will briefly restart its server and reload.",
-      )
+      !(await prompt.ask({
+        title: "Rotate the service credential?",
+        message: "The app will briefly restart its server and reload.",
+        confirmLabel: "Rotate",
+      }))
     ) {
       return;
     }
@@ -139,6 +143,7 @@ export function SecuritySection() {
 
   return (
     <div className="space-y-4">
+      {prompt.dialog}
       <p className="text-[10px] text-ink-faint uppercase tracking-wider">Security</p>
 
       {/* Change password — Electron-only */}

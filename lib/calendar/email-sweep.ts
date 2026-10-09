@@ -272,8 +272,9 @@ export async function runEarningsEmailSweep(
     // reviewer's coordination rule).
     //
     // Gated to TODAY's ET date (#17 final-review fix): runWrapPass only
-    // evaluates today's (date, slot) clusters (`date = todayET(now)` in
-    // wrap-send.ts), so a candidate whose event_date is NOT today can never
+    // evaluates today's (date, slot) clusters (`date = todayET(now)` in the
+    // stapled-wrap sender, retired 2026-10-08), so a candidate whose
+    // event_date is NOT today can never
     // be matched by any wrap pass — suppressing it here strands it in
     // wrap-pending limbo forever (candidates vanish from the recap window
     // at enriched_at+4h with no email ever sent). A same-day Finnhub outage
