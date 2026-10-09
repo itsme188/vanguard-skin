@@ -53,7 +53,7 @@ File lists: `git log --stat 6b06dbb0..HEAD` for waves two to eight; `git log --s
 | Check | Result |
 |---|---|
 | Type-check, Mac and Worker, at every merge | clean (it caught four slips that tests did not: a missing import, two duplicate imports, three test typings) |
-| Full suite on `main` at the last merge | 16,761 passed, 0 failed (14,512 at the start of the day) |
+| Full suite on `main` at the last merge | 16,762 passed, 0 failed (14,512 at the start of the day) |
 | Worker suite | 841 passed |
 | Codex | nine code reviews, one design review, one plan review, two second opinions; every finding fixed or recorded as held with the reason |
 | Reviews that ran the code | seven, one per wave from the second on, each with probes against `main`'s own code; all returned ready, their should-fix items fixed before the merge |
