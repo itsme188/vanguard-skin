@@ -23,6 +23,7 @@ import {
 import {
   estimateBondRateLeg,
   isFixedIncomeFund,
+  fundDefaultRefusal,
   summarizeUnmodelledBonds,
   type BondRateLeg,
   type BondUnmodelledReason,
@@ -253,6 +254,16 @@ ${OPTION_PRICING_JOINS_SQL}
       fund_category: pos.fund_category,
     });
     const isBondFund = isFixedIncomeFund(pos);
+    // A fund labelled with a bond category but carrying equity evidence (an
+    // equity sector, or an equity word in its name) is refused the duration
+    // default (fundDefaultRefusal). It must not also sit out the market move:
+    // with neither leg a market shock left it unchanged and listed nowhere.
+    // It takes the beta an equity fund would. A stored duration is a stored
+    // input, not a default, so such a fund keeps the bond-fund treatment.
+    const hasStoredDuration =
+      typeof pos.duration_years === "number" && Number.isFinite(pos.duration_years) && pos.duration_years >= 0;
+    const isZeroBetaBondFund =
+      isBondFund && (hasStoredDuration || fundDefaultRefusal(pos) !== "fund-equity-evidence");
     // An option is a claim on its underlying, so its beta is the UNDERLYING's
     // beta (leverage is applied separately, below, by signed elasticity).
     const beta = estimateBeta(
@@ -260,7 +271,7 @@ ${OPTION_PRICING_JOINS_SQL}
       pos.sector,
       pos.style,
       pos.market_cap_category,
-      isCashEquivalent || isBondFund
+      isCashEquivalent || isZeroBetaBondFund
     );
 
     // QA fix (2026-08-18): legs compose ADDITIVELY — changePercent =

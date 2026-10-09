@@ -134,8 +134,12 @@ export function getPortfolioSummaryForChat(db: Database.Database, accountName?: 
         })`
       : "";
     lines.push(`- **Total Portfolio**: ${formatUSD(portfolioValues.totalValue)}${asOf}`);
+    // The strip on Today adds EVERY account. A summary scoped to one account
+    // totals that account alone, so it must not claim the strip's figure.
     lines.push(
-      "- This total is the same figure as the Portfolio strip on Today. Each account line above states its own date and source.",
+      accountName
+        ? `- This total covers the ${accountName} account only. It is not the whole-portfolio figure on the Portfolio strip on Today, which adds every account. The account line above states its own date and source.`
+        : "- This total is the same figure as the Portfolio strip on Today. Each account line above states its own date and source.",
     );
   }
 

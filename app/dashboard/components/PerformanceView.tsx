@@ -27,6 +27,7 @@ import { PeriodAttributionSection } from "./PeriodAttributionSection";
 import {
   resolvePerformanceWindow,
   latestStatementAnchor,
+  newestStatementInScope,
   performanceWindowCaption,
   type PerformancePeriod,
 } from "@/lib/compute/performance-window";
@@ -108,6 +109,9 @@ export async function PerformanceView({ scope = "all", period }: PerformanceView
   const perfWindow = resolvePerformanceWindow(activePeriod, {
     today,
     lastStatementAnchor: latestStatementAnchor(db, scopeAccountIds, today),
+    // Lets the caption say why a multi-account period ends early (an account
+    // in the scope has no later statement).
+    newestScopeStatement: newestStatementInScope(db, scopeAccountIds, today),
   });
   const windowCaption = performanceWindowCaption(activePeriod, perfWindow);
   // The window's opening date: what the daily series (risk, curve, benchmark,

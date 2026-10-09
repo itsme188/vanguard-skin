@@ -38,6 +38,13 @@ export interface TodayHolding {
    * print a multi-day gain as this session's move.
    */
   change_undated: boolean;
+  /**
+   * Set (true) only when the row is dated AFTER the measured session and its
+   * quantity differs from the book as of that session: the difference was
+   * traded in a LATER session, so it is not measured against this one's
+   * closes. `change_undated` is also true for such a row. Absent otherwise.
+   */
+  changed_after_session?: boolean;
   /** How `today_gain` was measured. See lib/compute/day-move.ts. */
   day_move_basis: DayMoveBasis;
   /**
@@ -98,6 +105,9 @@ interface TodayHoldingRow extends TodayHolding {
   prior_cost_basis_native: number | null;
   value_per_point: number | null;
   fx_usd_per_unit: number | null;
+  holding_as_of_date: string;
+  session_quantity: number | null;
+  session_cost_basis_native: number | null;
 }
 
 /**
@@ -140,6 +150,15 @@ interface TodayHoldingRow extends TodayHolding {
  * keeps the SQL's close-to-close figure untouched; quantity opened or added is
  * measured from its own cost, or left out when the cost is unknown. A row
  * whose quantity did not grow is byte-for-byte what it was before the ruling.
+ *
+ * A row dated AFTER the measured session (2026-10-08): the current row is
+ * the newest on record, and it can be newer than the pair's later date (a
+ * live row written today while the last full session is yesterday's). A
+ * quantity that changed after the session was traded against a later price,
+ * so it is not measured here: the move is taken on the book as of the pair's
+ * later date (read the same way as the prior book), a name not held then is
+ * left out, and the row is flagged `change_undated`. A row dated on or before
+ * the pair's later date, or a later row with the same quantity, is untouched.
  */
 export function getIbkrTodayHoldings(
   db: Database.Database,
@@ -162,6 +181,15 @@ export function getIbkrTodayHoldings(
          FROM holdings h
         WHERE h.account_id = ?
           AND ${latestHoldingsPredicate({ accountFilter: "", asOfDate: pair.prior })}`
+    : `SELECT NULL AS security_id, NULL AS quantity, NULL AS cost_basis WHERE ? IS NULL AND 0`;
+
+  // The book as of the pair's LATER date: what was held when the measured
+  // session closed. Equal to the current row unless that row is dated later.
+  const sessionBookSql = pair
+    ? `SELECT h.security_id, h.quantity, h.cost_basis
+         FROM holdings h
+        WHERE h.account_id = ?
+          AND ${latestHoldingsPredicate({ accountFilter: "", asOfDate: pair.latest })}`
     : `SELECT NULL AS security_id, NULL AS quantity, NULL AS cost_basis WHERE ? IS NULL AND 0`;
 
   // Was the book SEEN at the prior close? Any holdings row for the account
@@ -243,6 +271,9 @@ export function getIbkrTodayHoldings(
          h.cost_basis AS cost_basis_native,
          hp.quantity AS prior_quantity,
          hp.cost_basis AS prior_cost_basis_native,
+         h.as_of_date AS holding_as_of_date,
+         hs.quantity AS session_quantity,
+         hs.cost_basis AS session_cost_basis_native,
          ${valuePerPoint} AS value_per_point,
          COALESCE(fx.usd_per_unit, 1) AS fx_usd_per_unit,
          CASE WHEN p_today.close_price IS NOT NULL THEN ${marketValueCurrent} ELSE NULL END AS current_value,
@@ -263,6 +294,7 @@ export function getIbkrTodayHoldings(
        LEFT JOIN prices pu_prior ON pu_prior.security_id = s_u.id AND pu_prior.date = ?
        LEFT JOIN fx_rates fx ON fx.currency = s.currency
        LEFT JOIN (${priorBookSql}) hp ON hp.security_id = h.security_id
+       LEFT JOIN (${sessionBookSql}) hs ON hs.security_id = h.security_id
        WHERE h.account_id = ?
          AND ${latestHoldingsPredicate({ accountFilter: "" })}
          AND (s.maturity_date IS NULL OR s.maturity_date >= date('now')
@@ -275,6 +307,7 @@ export function getIbkrTodayHoldings(
       pairPrior,
       pairLatest,
       pairPrior,
+      pair ? accountId : null,
       pair ? accountId : null,
       accountId,
     ) as TodayHoldingRow[];
@@ -292,6 +325,9 @@ export function getIbkrTodayHoldings(
       prior_cost_basis_native,
       value_per_point,
       fx_usd_per_unit,
+      holding_as_of_date,
+      session_quantity,
+      session_cost_basis_native,
       ...sqlHolding
     } = row;
     const holding: TodayHolding = {
@@ -306,19 +342,37 @@ export function getIbkrTodayHoldings(
 
     if (pair) {
       const fx = fx_usd_per_unit ?? 1;
+      // The row is dated after the measured session and its quantity is not
+      // what the book held when that session closed: measure the session's
+      // own book, never the quantity traded afterwards.
+      const sessionQty = session_quantity ?? 0;
+      const changedAfterSession =
+        holding_as_of_date > pair.latest && sessionQty !== row.quantity;
       const input = {
         priorQty: prior_quantity,
-        currentQty: row.quantity,
+        currentQty: changedAfterSession ? sessionQty : row.quantity,
         priorClose: pair_prior_close,
         latestClose: pair_latest_close,
         priorCostBasis: prior_cost_basis_native,
-        currentCostBasis: cost_basis_native,
+        currentCostBasis: changedAfterSession ? session_cost_basis_native : cost_basis_native,
         multiplier: value_per_point ?? 1,
       };
       let move = computePositionDayMove(input);
       const grew = move.openedToday || move.addedQty !== 0;
 
-      if (grew && !priorBookObserved) {
+      if (changedAfterSession) {
+        holding.change_undated = true;
+        holding.changed_after_session = true;
+      }
+
+      if (changedAfterSession && sessionQty === 0) {
+        // Not held when the session closed: opened afterwards. Nothing of it
+        // belongs to this session, so it is left out, not priced from cost.
+        move = {
+          gain: null, base: null, basis: "excluded",
+          openedToday: false, addedQty: 0, addedCostUnknown: false,
+        };
+      } else if (grew && !priorBookObserved) {
         // The change cannot be dated to this session: leave the new quantity
         // out. A brand-new name has nothing left to measure; a grown one keeps
         // the close-to-close move on the quantity last seen (costs withheld so
@@ -333,9 +387,11 @@ export function getIbkrTodayHoldings(
         holding.added_cost_unknown = move.addedCostUnknown;
       }
 
-      if (grew) {
-        // Only a row whose quantity grew is re-measured. Everything else keeps
-        // the SQL figures above, exactly as before the ruling.
+      if (grew || changedAfterSession) {
+        // Only a row whose quantity grew, or whose current quantity is not the
+        // session's (the SQL figures are on the current quantity), is
+        // re-measured. Everything else keeps the SQL figures above, exactly as
+        // before the ruling.
         holding.today_gain = move.gain === null ? null : move.gain * fx;
         holding.today_pct =
           move.gain !== null && move.base !== null && move.base > 0

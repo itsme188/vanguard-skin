@@ -20,6 +20,7 @@ import { computeXirr } from "@/lib/compute/xirr";
 import {
   resolvePerformanceWindow,
   latestStatementAnchor,
+  newestStatementInScope,
   performanceWindowCaption,
   shiftYearsMonthEndAware,
 } from "@/lib/compute/performance-window";
@@ -256,9 +257,10 @@ describe("PerformanceView feeds every consumer the one window", () => {
 
   it("the window comes from the shared rule and the shared anchor lookup", () => {
     expect(view).toContain('from "@/lib/compute/performance-window"');
-    expect(flat).toContain(
-      "resolvePerformanceWindow(activePeriod, { today, lastStatementAnchor: latestStatementAnchor(db, scopeAccountIds, today), })",
-    );
+    expect(flat).toContain("resolvePerformanceWindow(activePeriod, { today,");
+    expect(flat).toContain("lastStatementAnchor: latestStatementAnchor(db, scopeAccountIds, today),");
+    // The caption can say why a multi-account period ends early.
+    expect(flat).toContain("newestScopeStatement: newestStatementInScope(db, scopeAccountIds, today),");
     // The old rolling rule is gone.
     expect(view).not.toContain("startDateForPeriod");
     expect(view).not.toContain("setUTCFullYear");
@@ -291,5 +293,108 @@ describe("PerformanceView feeds every consumer the one window", () => {
   it("renders the window caption under the period selector", () => {
     expect(flat).toContain("const windowCaption = performanceWindowCaption(activePeriod, perfWindow);");
     expect(flat).toContain("{windowCaption && (");
+  });
+});
+
+describe("a scope held back by an account whose statements stopped says so", () => {
+  let db: Database.Database;
+  let ids: number[];
+  const today = "2026-10-08";
+  const CLAUSE = "Not every account in this scope has a statement after Sep 30, 2025, so the period ends there.";
+
+  /** Month-ends from `from` (YYYY-MM) through `to` (YYYY-MM), inclusive. */
+  function monthEnds(from: string, to: string): string[] {
+    const out: string[] = [];
+    let [y, m] = from.split("-").map(Number);
+    const [ty, tm] = to.split("-").map(Number);
+    while (y < ty || (y === ty && m <= tm)) {
+      out.push(new Date(Date.UTC(y, m, 0)).toISOString().slice(0, 10));
+      m += 1;
+      if (m > 12) {
+        m = 1;
+        y += 1;
+      }
+    }
+    return out;
+  }
+
+  function seedThrough(accountId: number, to: string): void {
+    for (const d of monthEnds("2024-06", to)) seedSnapshot(db, accountId, d, 1000);
+  }
+
+  function captionFor(scope: number[] | undefined): string | null {
+    const window = resolvePerformanceWindow("1y", {
+      today,
+      lastStatementAnchor: latestStatementAnchor(db, scope, today),
+      newestScopeStatement: newestStatementInScope(db, scope, today),
+    });
+    return performanceWindowCaption("1y", window);
+  }
+
+  beforeEach(() => {
+    db = new Database(":memory:");
+    db.pragma("foreign_keys = ON");
+    runMigrations(db);
+    ids = (db.prepare("SELECT id FROM accounts ORDER BY id").all() as { id: number }[]).map((r) => r.id);
+    expect(ids.length).toBeGreaterThanOrEqual(3);
+  });
+
+  it("three accounts, one stopped a year earlier: the anchor is unchanged and the caption names the cause", () => {
+    seedThrough(ids[0], "2026-09");
+    seedThrough(ids[1], "2026-09");
+    seedThrough(ids[2], "2025-09");
+    const scope = [ids[0], ids[1], ids[2]];
+    // The anchor rule is NOT changed: the latest month every account has.
+    expect(latestStatementAnchor(db, scope, today)).toBe("2025-09-30");
+    expect(newestStatementInScope(db, scope, today)).toBe("2026-09-30");
+    expect(captionFor(scope)).toBe(
+      `1Y to Sep 30, 2025 (last statement) — the full span from Sep 30, 2024. ${CLAUSE}`,
+    );
+    expect(captionFor(undefined)).toContain(CLAUSE);
+  });
+
+  it("all three current: no clause", () => {
+    for (const id of ids.slice(0, 3)) seedThrough(id, "2026-09");
+    const scope = ids.slice(0, 3);
+    expect(newestStatementInScope(db, scope, today)).toBe("2026-09-30");
+    expect(captionFor(scope)).toBe("1Y to Sep 30, 2026 (last statement) — the full span from Sep 30, 2025.");
+  });
+
+  it("one account a single statement behind (inside 62 days): no clause", () => {
+    seedThrough(ids[0], "2026-09");
+    seedThrough(ids[1], "2026-09");
+    seedThrough(ids[2], "2026-08");
+    const caption = captionFor([ids[0], ids[1], ids[2]])!;
+    expect(caption).toBe("1Y to Aug 31, 2026 (last statement) — the full span from Aug 31, 2025.");
+  });
+
+  it("a single account: no clause, whatever the other accounts have", () => {
+    seedThrough(ids[0], "2026-09");
+    seedThrough(ids[2], "2025-09");
+    expect(captionFor([ids[2]])).toBe("1Y to Sep 30, 2025 (last statement) — the full span from Sep 30, 2024.");
+    expect(captionFor([ids[0]])).toBe("1Y to Sep 30, 2026 (last statement) — the full span from Sep 30, 2025.");
+  });
+
+  it("the newest statement ignores live rows, rows after today and mid-month rows; an empty scope has none", () => {
+    seedThrough(ids[0], "2026-08");
+    seedSnapshot(db, ids[0], "2026-10-07", 1000, "plaid");
+    seedSnapshot(db, ids[0], "2026-09-15", 1000);
+    seedSnapshot(db, ids[0], "2026-10-31", 1000);
+    expect(newestStatementInScope(db, [ids[0]], today)).toBe("2026-08-31");
+    expect(newestStatementInScope(db, [], today)).toBeNull();
+  });
+
+  it("a window resolved without the newest statement (today's callers) keeps the old caption", () => {
+    const window = resolvePerformanceWindow("1y", { today, lastStatementAnchor: "2025-09-30" });
+    expect(window).toEqual({
+      startDate: "2024-09-30",
+      endDate: "2025-09-30",
+      endsAtStatement: true,
+      chainStartDate: "2024-10-01",
+    });
+    expect("newestScopeStatement" in window).toBe(false);
+    expect(performanceWindowCaption("1y", window)).toBe(
+      "1Y to Sep 30, 2025 (last statement) — the full span from Sep 30, 2024.",
+    );
   });
 });

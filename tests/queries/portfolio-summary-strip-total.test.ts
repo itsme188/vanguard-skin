@@ -128,3 +128,24 @@ describe("getPortfolioCurrentValues (the one per-account selection)", () => {
     expect(values.accounts[0]).toMatchObject({ currentValue: null, asOfDate: null, sourceKind: null });
   });
 });
+
+describe("the 'same figure as the Portfolio strip' sentence is only said when it is true", () => {
+  const STRIP_SENTENCE = "This total is the same figure as the Portfolio strip on Today";
+
+  it("an unscoped summary says its total is the strip's", () => {
+    seedMixedBook();
+    const summary = getPortfolioSummaryForChat(db);
+    expect(summary).toContain(STRIP_SENTENCE);
+    expect(summary).not.toContain("covers the Vanguard Roth IRA account only");
+  });
+
+  it("a scoped summary says its total covers that account only, and never claims the strip's figure", () => {
+    seedMixedBook();
+    const summary = getPortfolioSummaryForChat(db, "Vanguard Roth IRA");
+    expect(summary).toContain(`**Total Portfolio**: ${formatUSD(42000)}`);
+    expect(summary).not.toContain(STRIP_SENTENCE);
+    expect(summary).toContain(
+      "This total covers the Vanguard Roth IRA account only. It is not the whole-portfolio figure on the Portfolio strip on Today, which adds every account.",
+    );
+  });
+});

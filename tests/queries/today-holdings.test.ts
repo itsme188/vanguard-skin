@@ -843,3 +843,142 @@ describe("getIbkrTodayHoldings: quantity opened today is measured from cost", ()
     expect(z.day_move_basis).toBe("unpriced");
   });
 });
+
+// A holdings row dated AFTER the measured session says what happened in the
+// NEXT session. Measuring its quantity against this session's closes prices a
+// purchase against a close that came before it. Invented round figures.
+describe("getIbkrTodayHoldings: a row dated after the measured session", () => {
+  const PRIOR = "2026-10-06"; // Tuesday
+  const LATEST = "2026-10-07"; // Wednesday
+  const NEXT = "2026-10-08"; // Thursday: after the measured session
+  const PAIR = { latest: LATEST, prior: PRIOR };
+
+  function holdAt(
+    accountId: number,
+    securityId: number,
+    qty: number,
+    cost: number | null,
+    asOf: string,
+  ): void {
+    db.prepare(
+      "INSERT INTO holdings (account_id, security_id, quantity, cost_basis, as_of_date, source_key) VALUES (?, ?, ?, ?, ?, ?)",
+    ).run(accountId, securityId, qty, cost, asOf, `tws-${accountId}-${securityId}-${asOf}`);
+  }
+
+  function seedName(symbol: string): number {
+    const id = seedSecurity(symbol);
+    price(id, PRIOR, 50);
+    price(id, LATEST, 55);
+    return id;
+  }
+
+  function find(rows: TodayHolding[], symbol: string): TodayHolding {
+    const row = rows.find((r) => r.symbol === symbol);
+    if (!row) throw new Error(`no row for ${symbol}`);
+    return row;
+  }
+
+  it("shares bought in the next session are not measured: the session's own quantity moves close-to-close", () => {
+    const acct = ibkrAccountId();
+    const morn = seedName("MORN");
+    holdAt(acct, morn, 100, 4000, PRIOR);
+    holdAt(acct, morn, 100, 4000, LATEST);
+    holdAt(acct, morn, 200, 10000, NEXT); // 100 more bought at 60 the next day
+
+    const m = find(getIbkrTodayHoldings(db, acct, PAIR), "MORN");
+    expect(m.today_gain).toBeCloseTo(500, 6); // 100 x (55 - 50)
+    expect(m.today_pct).toBeCloseTo(0.1, 9);
+    expect(m.day_move_basis).toBe("prior_close");
+    expect(m.added_today_qty).toBe(0);
+    expect(m.opened_today).toBe(false);
+    expect(m.change_undated).toBe(true);
+    expect(m.changed_after_session).toBe(true);
+    expect(m.day_move_base).toBeCloseTo(5000, 6); // 100 x 50
+    expect(m.quantity).toBe(200); // the row still shows what is held now
+  });
+
+  it("a name opened in the next session is not measured at all, and is counted", () => {
+    const acct = ibkrAccountId();
+    const morn = seedName("MORN");
+    holdAt(acct, morn, 100, 4000, PRIOR);
+    holdAt(acct, morn, 100, 4000, LATEST);
+    const next = seedName("OPENNEXT");
+    holdAt(acct, next, 100, 6000, NEXT);
+
+    const rows = getIbkrTodayHoldings(db, acct, PAIR);
+    const o = find(rows, "OPENNEXT");
+    expect(o.today_gain).toBeNull();
+    expect(o.today_pct).toBeNull();
+    expect(o.opened_today).toBe(false);
+    expect(o.added_today_qty).toBe(0);
+    expect(o.day_move_basis).toBe("excluded");
+    expect(o.change_undated).toBe(true);
+    expect(o.changed_after_session).toBe(true);
+
+    const summary = summarizeIbkrDayMove(rows);
+    expect(summary.todayGain).toBeCloseTo(500, 6);
+    expect(summary.priorGross).toBeCloseTo(5000, 6);
+    expect(summary.count).toBe(1);
+    expect(summary.undatedChangeCount).toBe(1);
+    expect(summary.openedTodayCount).toBe(0);
+    expect(summary.excludedCount).toBe(0);
+  });
+
+  it("a position reduced in the next session: the quantity held in the session is measured", () => {
+    const acct = ibkrAccountId();
+    const zza = seedName("ZZA");
+    holdAt(acct, zza, 100, 4000, PRIOR);
+    holdAt(acct, zza, 100, 4000, LATEST);
+    holdAt(acct, zza, 40, 1600, NEXT); // 60 sold the next day
+
+    const z = find(getIbkrTodayHoldings(db, acct, PAIR), "ZZA");
+    expect(z.today_gain).toBeCloseTo(500, 6); // 100 x 5, not 40 x 5
+    expect(z.day_move_basis).toBe("prior_close");
+    expect(z.change_undated).toBe(true);
+    expect(z.day_move_base).toBeCloseTo(5000, 6);
+  });
+
+  it("a later row with the SAME quantity changes nothing", () => {
+    const acct = ibkrAccountId();
+    const zza = seedName("ZZA");
+    holdAt(acct, zza, 100, 4000, PRIOR);
+    holdAt(acct, zza, 100, 4000, LATEST);
+    holdAt(acct, zza, 100, 4000, NEXT);
+
+    const z = find(getIbkrTodayHoldings(db, acct, PAIR), "ZZA");
+    expect(z.today_gain).toBeCloseTo(500, 6);
+    expect(z.change_undated).toBe(false);
+    expect(z.changed_after_session).toBeUndefined();
+    expect(z.day_move_basis).toBe("prior_close");
+  });
+
+  it("a row dated exactly on the session is measured as before: bought in the session, from cost", () => {
+    const acct = ibkrAccountId();
+    const zza = seedName("ZZA");
+    holdAt(acct, zza, 100, 4000, PRIOR);
+    holdAt(acct, zza, 200, 9200, LATEST); // 100 more at 52 during the session
+
+    const z = find(getIbkrTodayHoldings(db, acct, PAIR), "ZZA");
+    // Held 100 x 5 = 500, added 100 x (55 - 52) = 300.
+    expect(z.today_gain).toBeCloseTo(800, 6);
+    expect(z.day_move_basis).toBe("mixed");
+    expect(z.added_today_qty).toBe(100);
+    expect(z.change_undated).toBe(false);
+    expect(z.changed_after_session).toBeUndefined();
+  });
+
+  it("bought in the session AND again the next day: the session's purchase is measured, the next day's is not", () => {
+    const acct = ibkrAccountId();
+    const zza = seedName("ZZA");
+    holdAt(acct, zza, 100, 4000, PRIOR);
+    holdAt(acct, zza, 200, 9200, LATEST);
+    holdAt(acct, zza, 300, 15200, NEXT);
+
+    const z = find(getIbkrTodayHoldings(db, acct, PAIR), "ZZA");
+    expect(z.today_gain).toBeCloseTo(800, 6);
+    expect(z.day_move_basis).toBe("mixed");
+    expect(z.added_today_qty).toBe(100);
+    expect(z.change_undated).toBe(true);
+    expect(z.day_move_base).toBeCloseTo(10200, 6); // 100 x 50 + 5,200 cost
+  });
+});

@@ -45,6 +45,21 @@ export interface PerformanceWindow {
    *  day after — passing `startDate` would pull the opening month in as a
    *  thirteenth link. Equal to `startDate` in every other case. */
   chainStartDate: string | undefined;
+  /** The newest statement month-end ANY account in the scope has
+   *  (`newestStatementInScope`). Present only when the caller supplied it.
+   *  Read by the caption alone: when it is well past `endDate`, some account
+   *  in the scope stopped receiving statements and is holding the window
+   *  back. It never moves a date. */
+  newestScopeStatement?: string | null;
+}
+
+/** A gap longer than this between the anchor and the newest statement in the
+ *  scope is more than one late monthly statement (two month-ends are at most
+ *  62 days apart). */
+const STALLED_ACCOUNT_GAP_DAYS = 62;
+
+function daysBetween(from: string, to: string): number {
+  return Math.round((Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86_400_000);
 }
 
 function isoUtc(y: number, monthIndex: number, day: number): string {
@@ -86,7 +101,11 @@ export function shiftYearsMonthEndAware(date: string, years: number): string {
  */
 export function resolvePerformanceWindow(
   period: PerformancePeriod,
-  { today, lastStatementAnchor }: { today: string; lastStatementAnchor: string | null },
+  {
+    today,
+    lastStatementAnchor,
+    newestScopeStatement,
+  }: { today: string; lastStatementAnchor: string | null; newestScopeStatement?: string | null },
 ): PerformanceWindow {
   const years = FIXED_PERIOD_YEARS[period];
   if (years === undefined) {
@@ -100,6 +119,7 @@ export function resolvePerformanceWindow(
       endDate: lastStatementAnchor,
       endsAtStatement: true,
       chainStartDate: nextDay(startDate),
+      ...(newestScopeStatement !== undefined ? { newestScopeStatement } : {}),
     };
   }
   // No statement for this scope: the period rolls with today, as it did
@@ -162,6 +182,33 @@ export function latestStatementAnchor(
   return rows.find((r) => isMonthEnd(r.d))?.d ?? null;
 }
 
+/**
+ * The newest statement-grade month-end ANY account in the scope has, on or
+ * before `today`, or null when there is none. Companion to
+ * `latestStatementAnchor` (which needs EVERY account): when this is well
+ * past the anchor, an account that stopped receiving statements is what
+ * holds the fixed periods back. Same statement-grade and month-end tests,
+ * same scope rules (undefined = every account, empty = none).
+ */
+export function newestStatementInScope(
+  db: Database.Database,
+  accountIds: number[] | undefined,
+  today: string,
+): string | null {
+  if (accountIds !== undefined && accountIds.length === 0) return null;
+  const scopeAnd = accountIds ? ` AND account_id IN (${accountIds.map(() => "?").join(",")})` : "";
+  const rows = db
+    .prepare(
+      `SELECT DISTINCT month_end_date AS d
+       FROM monthly_snapshots
+       WHERE month_end_date <= ?
+         AND ${excludeLiveSnapshotsSql("source")}${scopeAnd}
+       ORDER BY d DESC`,
+    )
+    .all(today, ...(accountIds ?? [])) as { d: string }[];
+  return rows.find((r) => isMonthEnd(r.d))?.d ?? null;
+}
+
 function formatDay(iso: string): string {
   const [y, m, d] = iso.split("-").map(Number);
   const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -179,7 +226,15 @@ export function performanceWindowCaption(
   if (FIXED_PERIOD_YEARS[period] === undefined) return null;
   const label = PERIOD_LABEL[period];
   if (window.endsAtStatement && window.startDate) {
-    return `${label} to ${formatDay(window.endDate)} (last statement) — the full span from ${formatDay(window.startDate)}.`;
+    const base = `${label} to ${formatDay(window.endDate)} (last statement) — the full span from ${formatDay(window.startDate)}.`;
+    // The anchor is the latest month EVERY account has. When some account in
+    // the scope has a statement well after it, another account stopped
+    // receiving them and is holding the period back: say so.
+    const newest = window.newestScopeStatement;
+    const heldBack = newest != null && daysBetween(window.endDate, newest) > STALLED_ACCOUNT_GAP_DAYS;
+    return heldBack
+      ? `${base} Not every account in this scope has a statement after ${formatDay(window.endDate)}, so the period ends there.`
+      : base;
   }
   return `${label} to ${formatDay(window.endDate)} (today) — this scope has no statement yet, so the period rolls with today.`;
 }
