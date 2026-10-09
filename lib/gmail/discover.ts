@@ -1,4 +1,5 @@
 import type { gmail_v1 } from "googleapis";
+import { todayET } from "@/lib/calendar/date-utils";
 
 interface DiscoveredSender {
   email: string;
@@ -94,7 +95,9 @@ export async function discoverNewsletterSenders(
     if (data.count >= 1) {
       let formattedDate: string;
       try {
-        formattedDate = new Date(data.latestDate).toISOString().slice(0, 10);
+        // The Eastern day the email arrived on (a UTC slice shows an evening
+        // email as the next day). An unparseable date throws, like before.
+        formattedDate = todayET(new Date(data.latestDate));
       } catch {
         formattedDate = "unknown";
       }

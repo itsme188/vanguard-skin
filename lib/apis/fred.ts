@@ -9,6 +9,8 @@
  * Free API key: https://fred.stlouisfed.org/docs/api/api_key.html
  */
 
+import { todayET } from "@/lib/calendar/date-utils";
+
 const FRED_BASE_URL = "https://api.stlouisfed.org/fred";
 
 // ─── Common FRED Series IDs ─────────────────────────────────────
@@ -214,7 +216,9 @@ export async function getRiskFreeRate(
   }
 ): Promise<{ rate: number; date: string; series: string }> {
   const seriesId = options?.seriesId || FRED_SERIES.TREASURY_3M;
-  const endDate = options?.asOfDate || new Date().toISOString().slice(0, 10);
+  // Eastern day by default: a UTC slice of the wall clock is already
+  // tomorrow after 20:00 Eastern.
+  const endDate = options?.asOfDate || todayET();
 
   // Fetch last 30 days to ensure we get at least one observation
   const startDate = new Date(

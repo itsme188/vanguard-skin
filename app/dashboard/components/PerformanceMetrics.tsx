@@ -1,5 +1,6 @@
 "use client";
 
+import { CHIP_TONE_CLASSES } from "@/app/dashboard/components/Chip";
 import { useState, useCallback } from "react";
 import type { PortfolioTotals } from "@/lib/queries/dashboard";
 import { Money, Pct } from "@/lib/privacy/components";
@@ -118,8 +119,8 @@ export function PerformanceMetrics({
               signed
               className={`text-sm px-2 py-0.5 rounded font-mono tabular-nums ${
                 totals.totalChangePercent >= 0
-                  ? "bg-up/20 text-up"
-                  : "bg-down/20 text-down"
+                  ? CHIP_TONE_CLASSES.up
+                  : CHIP_TONE_CLASSES.down
               }`}
             />
           </div>
@@ -140,7 +141,7 @@ export function PerformanceMetrics({
                   aria-pressed={!customMode && i === selectedPeriod}
                   className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors focus-ring ${
                     !customMode && i === selectedPeriod
-                      ? "bg-gold/20 text-gold-ink"
+                      ? CHIP_TONE_CLASSES.gold
                       : "text-ink-faint hover:text-ink hover:bg-panel"
                   }`}
                 >
@@ -152,7 +153,7 @@ export function PerformanceMetrics({
                 aria-pressed={customMode}
                 className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors focus-ring ${
                   customMode
-                    ? "bg-gold/20 text-gold-ink"
+                    ? CHIP_TONE_CLASSES.gold
                     : "text-ink-faint hover:text-ink hover:bg-panel"
                 }`}
               >

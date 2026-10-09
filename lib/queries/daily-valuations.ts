@@ -172,20 +172,21 @@ export function getDailyValuationsCombined(
  * volatility/drawdown/Sharpe math operates on the combined series — per-account
  * stats can't be averaged back into a portfolio figure (diversification).
  *
- * Empty/undefined `accountIds` falls through to the all-accounts combined view.
+ * Scope rule: `undefined` means every account (the all-accounts combined
+ * view); a DEFINED EMPTY list means NO accounts and returns no rows. It must
+ * never widen to the whole book.
  */
 export function getDailyValuationsForAccounts(
   db: Database.Database,
-  accountIds: number[],
+  accountIds: number[] | undefined,
   options?: {
     startDate?: string;
     endDate?: string;
     fullCoverageOnly?: boolean;
   }
 ): DailyValuation[] {
-  if (!accountIds || accountIds.length === 0) {
-    return getDailyValuationsCombined(db, options);
-  }
+  if (accountIds === undefined) return getDailyValuationsCombined(db, options);
+  if (accountIds.length === 0) return [];
 
   const conditions: string[] = [
     `account_id IN (${accountIds.map(() => "?").join(",")})`,

@@ -10,6 +10,7 @@ import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { anchorIndex } from "../helpers/source-anchor";
+import { CHIP_TONE_CLASSES, type ChipTone } from "@/app/dashboard/components/Chip";
 
 type Rgb = [number, number, number];
 
@@ -50,12 +51,19 @@ const mix = (a: Rgb, b: Rgb, shareOfA: number): Rgb =>
 
 const BLACK: Rgb = [0, 0, 0];
 
-/** The class string assigned to `const <NAME> =` in the component. */
+/**
+ * The class string behind `const <NAME> =` in the component. Since the
+ * 2026-10-09 sweep each constant points at a tone of the shared Chip table
+ * (`CHIP_TONE_CLASSES.<tone>`), so this resolves the tone and returns the
+ * table's classes.
+ */
 function chipClasses(name: string): string {
   const start = anchorIndex(src, `const ${name} =`);
-  const m = src.slice(start).match(/"([^"]+)"/);
-  if (!m) throw new Error(`no class string after const ${name}`);
-  return m[1];
+  const m = src.slice(start).match(/^const [A-Z_]+ = CHIP_TONE_CLASSES\.([a-z]+);/);
+  if (!m) throw new Error(`const ${name} is not a CHIP_TONE_CLASSES tone`);
+  const classes = CHIP_TONE_CLASSES[m[1] as ChipTone];
+  if (!classes) throw new Error(`const ${name}: unknown Chip tone ${m[1]}`);
+  return classes;
 }
 
 /** Light-theme text contrast of a chip against its tint on the page canvas. */
@@ -95,10 +103,25 @@ describe("transaction type chips, light theme", () => {
 
   it.each([
     ["UP_CHIP", "text-up"],
-    ["DOWN_CHIP", "text-down"],
     ["GOLD_CHIP", "text-gold-ink"],
   ])("%s keeps the plain token in the dark theme", (name, token) => {
     expect(chipClasses(name).split(/\s+/)).toContain(`[[data-theme=dark]_&]:${token}`);
+  });
+
+  // The Sell chip kept plain red in the dark theme and measured about 4.1:1
+  // there. It now takes the Chip table's red, whose dark text is pulled
+  // toward white; chip-contrast-nowrap.test.tsx pins that ratio.
+  it("DOWN_CHIP no longer uses plain red in the dark theme", () => {
+    const classes = chipClasses("DOWN_CHIP").split(/\s+/);
+    expect(classes).not.toContain("[[data-theme=dark]_&]:text-down");
+    expect(classes.some((c) => c.startsWith("[[data-theme=dark]_&]:text-"))).toBe(true);
+  });
+
+  it("the four constants are the shared Chip tones, not hand-written copies", () => {
+    expect(chipClasses("UP_CHIP")).toBe(CHIP_TONE_CLASSES.up);
+    expect(chipClasses("DOWN_CHIP")).toBe(CHIP_TONE_CLASSES.down);
+    expect(chipClasses("GOLD_CHIP")).toBe(CHIP_TONE_CLASSES.gold);
+    expect(chipClasses("BLUE_CHIP")).toBe(CHIP_TONE_CLASSES.info);
   });
 
   it("every coloured type uses one of the checked chip constants", () => {

@@ -1,5 +1,6 @@
 "use client";
 
+import { CHIP_TONE_TEXT } from "@/app/dashboard/components/chip-tone-text";
 import { useState, useEffect } from "react";
 import { Count, PrivateText } from "@/lib/privacy/components";
 import {
@@ -368,7 +369,7 @@ export function TaxReportCard({
     // all, indistinguishable from "no tax report needed this year").
     return (
       <div className="rounded-xl border border-down/40 bg-down/20 p-4">
-        <div className="text-sm text-down">Unable to load tax report: {status.message}</div>
+        <div className={`text-sm ${CHIP_TONE_TEXT.down}`}>Unable to load tax report: {status.message}</div>
       </div>
     );
   }
@@ -438,14 +439,14 @@ export function TaxReportCard({
             <button
               onClick={() => handleDownload("csv")}
               disabled={downloading}
-              className="px-3 py-1.5 text-xs font-medium rounded-lg bg-gold/10 text-gold-ink hover:bg-gold/20 border border-gold/20 transition-colors disabled:opacity-50"
+              className={`px-3 py-1.5 text-xs font-medium rounded-lg bg-gold/10 ${CHIP_TONE_TEXT.gold} hover:bg-gold/20 border border-gold/20 transition-colors disabled:opacity-50`}
             >
               {downloading ? "Generating..." : "CSV"}
             </button>
             <button
               onClick={() => handleDownload("txf")}
               disabled={downloadingTxf}
-              className="px-3 py-1.5 text-xs font-medium rounded-lg bg-gold/10 text-gold-ink hover:bg-gold/20 border border-gold/20 transition-colors disabled:opacity-50"
+              className={`px-3 py-1.5 text-xs font-medium rounded-lg bg-gold/10 ${CHIP_TONE_TEXT.gold} hover:bg-gold/20 border border-gold/20 transition-colors disabled:opacity-50`}
             >
               {downloadingTxf ? "Generating..." : "TXF (TurboTax)"}
             </button>
@@ -470,7 +471,7 @@ export function TaxReportCard({
       {status.staleError && (
         <div className="px-5 pt-4">
           <div className="border border-down/40 bg-down/20 rounded-lg p-3">
-            <h4 className="text-xs font-medium text-down">
+            <h4 className={`text-xs font-medium ${CHIP_TONE_TEXT.down}`}>
               &#x26A0; Showing last-loaded data — refresh failed
             </h4>
             <p className="text-[10px] text-ink-faint mt-1">{status.staleError}</p>

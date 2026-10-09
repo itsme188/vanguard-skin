@@ -1,5 +1,6 @@
 "use client";
 
+import { CHIP_TONE_CLASSES } from "@/app/dashboard/components/Chip";
 import { readMutationResult, networkFailureMessage } from "@/lib/ui/mutation-result";
 import { useState, useEffect, useCallback, useRef } from "react";
 import type { TwsStatus as TwsStatusType } from "@/lib/tws/types";
@@ -536,7 +537,7 @@ function TwsPanel({
               <button
                 onClick={handleConnect}
                 disabled={loading !== null}
-                className="flex-1 px-3 py-1.5 text-xs font-medium rounded-lg bg-up/20 text-up hover:bg-up/30 disabled:opacity-50 transition-colors"
+                className={`flex-1 px-3 py-1.5 text-xs font-medium rounded-lg ${CHIP_TONE_CLASSES.up} hover:bg-up/30 disabled:opacity-50 transition-colors`}
               >
                 {loading === "connect" ? "Connecting..." : "Connect"}
               </button>
@@ -544,7 +545,7 @@ function TwsPanel({
               <button
                 onClick={handleDisconnect}
                 disabled={loading !== null}
-                className="flex-1 px-3 py-1.5 text-xs font-medium rounded-lg bg-down/20 text-down hover:bg-down/30 disabled:opacity-50 transition-colors"
+                className={`flex-1 px-3 py-1.5 text-xs font-medium rounded-lg ${CHIP_TONE_CLASSES.down} hover:bg-down/30 disabled:opacity-50 transition-colors`}
               >
                 {loading === "disconnect" ? "Disconnecting..." : "Disconnect"}
               </button>
@@ -670,7 +671,7 @@ function TwsPanel({
                 <>
                   <button
                     onClick={streaming.stop}
-                    className="flex-1 px-3 py-1.5 text-xs font-medium rounded-lg bg-down/20 text-down hover:bg-down/30 transition-colors"
+                    className={`flex-1 px-3 py-1.5 text-xs font-medium rounded-lg ${CHIP_TONE_CLASSES.down} hover:bg-down/30 transition-colors`}
                   >
                     Stop Stream
                   </button>
@@ -679,7 +680,7 @@ function TwsPanel({
                       const saved = await streaming.saveSnapshot();
                       setResult(`Saved ${saved} prices to database`);
                     }}
-                    className="px-3 py-1.5 text-xs font-medium rounded-lg bg-gold/20 text-gold-ink hover:bg-gold/30 transition-colors"
+                    className={`px-3 py-1.5 text-xs font-medium rounded-lg ${CHIP_TONE_CLASSES.gold} hover:bg-gold/30 transition-colors`}
                     title="Save current streaming prices to database"
                   >
                     Save
@@ -700,7 +701,7 @@ function TwsPanel({
             <button
               onClick={handleSyncPortfolio}
               disabled={loading !== null}
-              className="w-full px-3 py-1.5 text-xs font-medium rounded-lg bg-up/20 text-up hover:bg-up/30 disabled:opacity-50 transition-colors"
+              className={`w-full px-3 py-1.5 text-xs font-medium rounded-lg ${CHIP_TONE_CLASSES.up} hover:bg-up/30 disabled:opacity-50 transition-colors`}
               title="Fetch live positions and account value from TWS"
             >
               {loading === "sync" ? (syncStatus ?? "Syncing...") : "Sync Portfolio"}
@@ -713,7 +714,7 @@ function TwsPanel({
               <button
                 onClick={handleEnrich}
                 disabled={loading !== null}
-                className="flex-1 px-3 py-1.5 text-xs font-medium rounded-lg bg-gold/20 text-gold-ink hover:bg-gold/30 disabled:opacity-50 transition-colors"
+                className={`flex-1 px-3 py-1.5 text-xs font-medium rounded-lg ${CHIP_TONE_CLASSES.gold} hover:bg-gold/30 disabled:opacity-50 transition-colors`}
               >
                 {loading === "enrich" ? "Enriching..." : "Enrich Securities"}
               </button>
@@ -758,8 +759,8 @@ function TwsPanel({
           <p
             className={`text-xs p-2 rounded-lg ${
               result.startsWith("Error")
-                ? "bg-down/20 text-down"
-                : "bg-up/20 text-up"
+                ? CHIP_TONE_CLASSES.down
+                : CHIP_TONE_CLASSES.up
             }`}
           >
             {result}

@@ -487,7 +487,7 @@ export function getLatestScanPriceForSecurity(
        LEFT JOIN latest_benchmark lb ON lb.security_id = s.id
        WHERE s.id = ?`
     )
-    .get(securityId, securityId, securityId) as
+    .get(securityId, securityId, securityId, armedTodayParam()) as
     | {
         sec_type: string | null;
         current_price: number | null;

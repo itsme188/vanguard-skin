@@ -1,5 +1,7 @@
 "use client";
 
+import { CHIP_TONE_CLASSES } from "@/app/dashboard/components/Chip";
+import { CHIP_TONE_TEXT } from "@/app/dashboard/components/chip-tone-text";
 import { useState, useCallback, type ReactNode } from "react";
 import type { TradeReview } from "@/lib/types";
 import { MarkdownMessage } from "./MarkdownMessage";
@@ -70,11 +72,11 @@ interface TradeReviewViewProps {
 // ─── Grade styling ──────────────────────────────────────────────
 
 const GRADE_STYLES: Record<string, string> = {
-  A: "bg-up/25 text-up border-up/40",
-  B: "bg-up/20 text-up border-up/30",
-  C: "bg-gold/25 text-gold-ink border-gold/40",
-  D: "bg-down/20 text-down border-down/30",
-  F: "bg-down/25 text-down border-down/40",
+  A: `bg-up/25 ${CHIP_TONE_TEXT.up} border-up/40`,
+  B: `${CHIP_TONE_CLASSES.up} border-up/30`,
+  C: `bg-gold/25 ${CHIP_TONE_TEXT.gold} border-gold/40`,
+  D: `${CHIP_TONE_CLASSES.down} border-down/30`,
+  F: `bg-down/25 ${CHIP_TONE_TEXT.down} border-down/40`,
 };
 
 const GRADE_COLORS: Record<string, string> = {
@@ -589,7 +591,7 @@ export function TradeReviewView({
         <div
           className={`rounded-lg border px-4 py-3 text-sm ${
             generateFailed
-              ? "border-down/30 bg-down/20 text-down"
+              ? `border-down/30 ${CHIP_TONE_CLASSES.down}`
               : "border-edge bg-raised text-ink-dim"
           }`}
         >

@@ -276,6 +276,19 @@ html {
   --down: #ef4444;
 }
 
+/* Status strips under the chart (2026-10-09): their text takes the shared
+ * chip tones, whose LIGHT-theme ink is darkened for a light surface. Inside
+ * the always-dark module that dark ink lands on near-black (2.1:1, seen in
+ * a browser), so the strips opt in here and take the dark-theme ink
+ * whatever the page theme. Same unlayered pattern as .chart-chrome above.
+ * On the light Charts page these classes do nothing. */
+.dark-module-chart .chart-status-gold {
+  color: #ffb84d;
+}
+.dark-module-chart .chart-status-down {
+  color: color-mix(in srgb, #ef4444 80%, white);
+}
+
 /* ACCESSIBILITY: respect the system Reduce Motion setting (2026-07-12
  * HIG audit). Quiets every CSS animation/transition — slide-up overlays,
  * skeleton pulses, chip transitions — to near-instant. 0.01ms rather than

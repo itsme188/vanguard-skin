@@ -1,5 +1,6 @@
 "use client";
 
+import { CHIP_TONE_CLASSES } from "@/app/dashboard/components/Chip";
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import apiFetch from "@/lib/http/apiFetch";
@@ -131,7 +132,7 @@ export function CallNoteModal({ eventId, symbol, open, onClose, onSaved }: Props
                 }
                 className={`rounded-full px-2.5 py-1 text-[12px] font-medium transition-colors ${
                   guidance === opt.value
-                    ? "bg-gold/20 text-gold-ink"
+                    ? CHIP_TONE_CLASSES.gold
                     : "bg-raised text-ink-dim hover:text-ink"
                 }`}
               >

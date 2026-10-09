@@ -1,5 +1,6 @@
 "use client";
 
+import { CHIP_TONE_CLASSES } from "@/app/dashboard/components/Chip";
 import { readMutationResult, networkFailureMessage } from "@/lib/ui/mutation-result";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
@@ -110,7 +111,7 @@ export function ImportHistory({ batches }: { batches: ImportBatch[] }) {
       <h3 className="text-sm font-medium text-ink-dim mb-3">Import History</h3>
       {prompt.dialog}
       {undoError && (
-        <div className="mb-3 px-3 py-2 bg-down/20 text-down text-xs font-medium rounded-lg">
+        <div className={`mb-3 px-3 py-2 ${CHIP_TONE_CLASSES.down} text-xs font-medium rounded-lg`}>
           {undoError}
         </div>
       )}

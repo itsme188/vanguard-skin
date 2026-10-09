@@ -1,5 +1,6 @@
 "use client";
 
+import { CHIP_TONE_CLASSES } from "@/app/dashboard/components/Chip";
 import { useState, useRef, useEffect, useTransition } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import type { NoteWithContext, EarningsTimelineEntry } from "@/lib/queries/notes";
@@ -100,10 +101,10 @@ const SENTIMENT_OPTIONS: { label: string; value: NoteSentiment }[] =
   }));
 
 const SENTIMENT_STYLES: Record<string, string> = {
-  bullish: "bg-up/20 text-up",
-  bearish: "bg-down/20 text-down",
+  bullish: CHIP_TONE_CLASSES.up,
+  bearish: CHIP_TONE_CLASSES.down,
   neutral: "bg-muted text-ink-dim",
-  cautious: "bg-gold/20 text-gold-ink",
+  cautious: CHIP_TONE_CLASSES.gold,
   confident: "bg-blue/20 text-blue",
 };
 
@@ -700,7 +701,7 @@ export function NotesView({
             aria-pressed={(opt.value || null) === currentType}
             className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors whitespace-nowrap focus-ring ${
               (opt.value || null) === currentType
-                ? "bg-gold/20 text-gold-ink"
+                ? CHIP_TONE_CLASSES.gold
                 : "text-ink-faint hover:text-ink hover:bg-panel"
             }`}
           >
@@ -714,7 +715,7 @@ export function NotesView({
           <button
             type="button"
             onClick={clearSecurityFilter}
-            className="inline-flex items-center gap-1.5 rounded-full bg-gold/20 text-gold-ink px-3 py-1.5 text-sm font-medium hover:brightness-110 transition-colors focus-ring"
+            className={`inline-flex items-center gap-1.5 rounded-full ${CHIP_TONE_CLASSES.gold} px-3 py-1.5 text-sm font-medium hover:brightness-110 transition-colors focus-ring`}
             aria-label={
               securityFilterSymbol
                 ? `Clear filter — showing only ${securityFilterSymbol}`

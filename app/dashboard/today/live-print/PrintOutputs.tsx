@@ -17,6 +17,7 @@
  * (F-S8). Two copies of a confirm are two copies that can disagree.
  */
 
+import { CHIP_TONE_TEXT } from "@/app/dashboard/components/chip-tone-text";
 import { useState } from "react";
 import apiFetch from "@/lib/http/apiFetch";
 import type { PrintOutputsWire } from "../hub-live/types";
@@ -45,7 +46,7 @@ export function PromoteButton({ promote }: { promote: PromoteControl }) {
       onClick={promote.onClick}
       disabled={promote.disabled || promote.busy}
       title={promote.title}
-      className="relative text-[13px] font-semibold bg-up/15 text-up border border-up/40 hover:bg-up/25 disabled:opacity-50 rounded px-2.5 py-1 pointer-coarse:after:absolute pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-1 pointer-coarse:after:content-['']"
+      className={`relative text-[13px] font-semibold bg-up/15 ${CHIP_TONE_TEXT.up} border border-up/40 hover:bg-up/25 disabled:opacity-50 rounded px-2.5 py-1 pointer-coarse:after:absolute pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-1 pointer-coarse:after:content-['']`}
     >
       {promote.busy ? "Promoting…" : promote.label}
     </button>

@@ -55,7 +55,7 @@ describe("equity-curve caption names the end overshoot", () => {
     // U13 changed the loader (one summed series for the whole scope, started
     // at the scope's first statement); the END this test pins is unchanged.
     expect(flat(view)).toContain(
-      "getDailyValuationsForAccounts(db, scopeAccountIds ?? [], { startDate: curveSeriesStart, endDate: dailyEnd, fullCoverageOnly: true, })",
+      "getDailyValuationsForAccounts(db, scopeAccountIds, { startDate: curveSeriesStart, endDate: dailyEnd, fullCoverageOnly: true, })",
     );
     expect(flat(view)).toContain("const dailyEnd = perfWindow.endDate;");
     expect(flat(view)).not.toContain("{ startDate: effectiveStart, endDate: twrResult");

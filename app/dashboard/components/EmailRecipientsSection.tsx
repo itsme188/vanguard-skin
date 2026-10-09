@@ -16,6 +16,7 @@
  * var (BRIEFING_EMAIL_TO, DIGEST_EMAIL_TO, EVENING_EMAIL_TO).
  */
 
+import { CHIP_TONE_CLASSES } from "@/app/dashboard/components/Chip";
 import { useEffect, useRef, useState } from "react";
 import apiFetch from "@/lib/http/apiFetch";
 
@@ -225,7 +226,7 @@ export function EmailRecipientsSection() {
               <button
                 type="button"
                 onClick={saveAll}
-                className="px-3 py-1 text-xs font-medium rounded-lg bg-gold/20 text-gold-ink hover:bg-gold/30 transition-colors"
+                className={`px-3 py-1 text-xs font-medium rounded-lg ${CHIP_TONE_CLASSES.gold} hover:bg-gold/30 transition-colors`}
               >
                 Save Recipients
               </button>

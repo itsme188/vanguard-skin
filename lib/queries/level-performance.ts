@@ -17,7 +17,8 @@
  */
 
 import type Database from "better-sqlite3";
-import { todayET } from "@/lib/calendar/date-utils";
+import { addDays, todayET } from "@/lib/calendar/date-utils";
+import { lastFiredDateET } from "@/lib/levels/last-fired-date";
 import { SECTOR_TO_ETF } from "@/lib/calendar/reaction-snapshot";
 import { normalizeSector } from "@/lib/securities/normalize-sector";
 
@@ -69,9 +70,16 @@ function fetchForwardReturn(
   fromDate: string,
   daysOut: number,
 ): number | null {
-  const targetIso = new Date(new Date(fromDate).getTime() + daysOut * 86_400_000)
-    .toISOString()
-    .slice(0, 10);
+  // `fromDate` is the alert's stored fire instant (UTC). The window counts
+  // from the EASTERN day it fired on: a bare `new Date(...)` reads the
+  // space-separated SQLite shape as local time, and a UTC slice puts an
+  // evening fire on the next day.
+  // A bare YYYY-MM-DD is already a calendar day: the instant helper would
+  // read it as UTC midnight and land on the Eastern day before.
+  const firedDay = /^\d{4}-\d{2}-\d{2}$/.test(fromDate)
+    ? fromDate
+    : (lastFiredDateET(fromDate) ?? fromDate.slice(0, 10));
+  const targetIso = addDays(firedDay, daysOut);
   // ET day: a UTC slice reads tomorrow from 20:00 ET and widens the window.
   const todayIso = todayET();
   const windowEnd = targetIso < todayIso ? targetIso : todayIso;

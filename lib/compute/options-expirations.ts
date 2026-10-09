@@ -28,7 +28,9 @@ export function getExpiringOptions(
   const today = options?.today ?? todayET();
   const daysWindow = options?.daysWindow ?? 90;
 
-  const accountFilter = options?.accountIds?.length
+  // `undefined` is every account; a defined empty list is NO accounts
+  // (`IN ()` matches nothing), never the whole book.
+  const accountFilter = options?.accountIds
     ? `AND h.account_id IN (${options.accountIds.map(() => "?").join(",")})`
     : "";
 

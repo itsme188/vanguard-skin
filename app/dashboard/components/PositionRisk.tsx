@@ -1,5 +1,6 @@
 "use client";
 
+import { CHIP_TONE_CLASSES } from "@/app/dashboard/components/Chip";
 import { PERCENT_BASIS } from "@/lib/analysis/percent-bases";
 import { useState, useEffect } from "react";
 import type {
@@ -45,11 +46,11 @@ function formatCorr(value: number): string {
 
 function corrColor(corr: number): string {
   // High positive correlation = warm (red-ish), low/negative = cool (blue-ish)
-  if (corr >= 0.8) return "bg-down/30 text-down";
+  if (corr >= 0.8) return CHIP_TONE_CLASSES.down;
   if (corr >= 0.5) return "bg-warn/15 text-warn";
   if (corr >= 0.2) return "bg-ink-faint/15 text-ink-dim";
-  if (corr >= -0.2) return "bg-up/20 text-up";
-  return "bg-blue-500/20 text-blue-400";
+  if (corr >= -0.2) return CHIP_TONE_CLASSES.up;
+  return CHIP_TONE_CLASSES.info;
 }
 
 function corrBg(corr: number): string {

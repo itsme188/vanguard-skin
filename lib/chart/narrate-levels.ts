@@ -2,6 +2,7 @@ import type Database from "better-sqlite3";
 import { jsonSchema } from "ai";
 import { generateObjectForFeature } from "@/lib/ai/generate";
 import { guardNarrative } from "@/lib/levels/narrative-guard";
+import { todayET } from "@/lib/calendar/date-utils";
 import type { SuggestedLevel } from "./suggested-levels";
 import type { OhlcBar } from "./indicators";
 
@@ -26,8 +27,9 @@ export const NARRATIVE_SCHEMA = jsonSchema<{ narrative: string }>({
   required: ["narrative"],
 });
 
+/** The cache's day key: the Eastern day, so it rolls at Eastern midnight. */
 function today(): string {
-  return new Date().toISOString().slice(0, 10);
+  return todayET();
 }
 
 export interface LevelNarrativeInput {

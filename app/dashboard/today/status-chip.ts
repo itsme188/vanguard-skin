@@ -4,11 +4,12 @@
  * that imports the `db` singleton at module load, so its helpers can't be
  * imported by a unit test. No imports beyond the `SymbolStatus` type.
  */
+import { CHIP_TONE_TEXT } from "@/app/dashboard/components/chip-tone-text";
 import type { SymbolStatus } from "@/lib/queries/briefing-symbols";
 
 export function statusChipClass(status: SymbolStatus): string {
-  if (status === "held") return "text-up bg-up/15 border border-up/30";
-  if (status === "watchlist") return "text-gold-ink bg-gold/15 border border-gold/30";
+  if (status === "held") return `${CHIP_TONE_TEXT.up} bg-up/15 border border-up/30`;
+  if (status === "watchlist") return `${CHIP_TONE_TEXT.gold} bg-gold/15 border border-gold/30`;
   if (status === "armed") return "text-ink-dim bg-raised border border-edge-strong";
   return "text-ink-faint bg-raised border border-edge";
 }

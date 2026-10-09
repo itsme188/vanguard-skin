@@ -3,7 +3,8 @@
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { Section } from "./Section";
-import { Chip } from "./Chip";
+import { Chip, CHIP_TONE_CLASSES } from "./Chip";
+import { CHIP_TONE_TEXT } from "./chip-tone-text";
 import { Shares } from "@/lib/privacy/components";
 import apiFetch from "@/lib/http/apiFetch";
 import { useConfirmPrompt } from "./useConfirmPrompt";
@@ -132,7 +133,7 @@ export function CorporateActionsSection({
     >
       {prompt.dialog}
       {actionError && (
-        <p role="alert" className="px-5 py-2 border-b border-edge bg-down/20 text-down text-xs font-medium">
+        <p role="alert" className={`px-5 py-2 border-b border-edge ${CHIP_TONE_CLASSES.down} text-xs font-medium`}>
           {actionError}
         </p>
       )}
@@ -242,9 +243,9 @@ export function CorporateActionsSection({
                       imported
                     </Chip>
                   ) : action.applied ? (
-                    <span className="text-xs px-1.5 py-0.5 rounded-full bg-up/15 text-up">Applied</span>
+                    <span className={`text-xs px-1.5 py-0.5 rounded-full bg-up/15 ${CHIP_TONE_TEXT.up}`}>Applied</span>
                   ) : (
-                    <span className="text-xs px-1.5 py-0.5 rounded-full bg-gold/15 text-gold-ink">Pending</span>
+                    <span className={`text-xs px-1.5 py-0.5 rounded-full bg-gold/15 ${CHIP_TONE_TEXT.gold}`}>Pending</span>
                   )}
                 </div>
                 <div className="text-xs text-ink-faint font-mono">

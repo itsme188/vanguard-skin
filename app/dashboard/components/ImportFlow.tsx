@@ -1,5 +1,7 @@
 "use client";
 
+import { CHIP_TONE_CLASSES } from "@/app/dashboard/components/Chip";
+import { CHIP_TONE_TEXT } from "@/app/dashboard/components/chip-tone-text";
 import { useState, useCallback, useRef } from "react";
 import { useRouter } from "next/navigation";
 import apiFetch from "@/lib/http/apiFetch";
@@ -529,12 +531,12 @@ export function ImportFlow() {
                   </span>
                 )}
                 {(result.skippedRows?.length ?? 0) > 0 && (
-                  <span className="text-xs px-2 py-0.5 rounded-full bg-gold/15 text-gold-ink font-medium">
+                  <span className={`text-xs px-2 py-0.5 rounded-full bg-gold/15 ${CHIP_TONE_TEXT.gold} font-medium`}>
                     {countExcludedRows(result.skippedRows)} skipped
                   </span>
                 )}
                 {(result.warnings?.length ?? 0) > 0 && !(result.skippedRows?.length) && (
-                  <span className="text-xs px-2 py-0.5 rounded-full bg-gold/20 text-gold-ink font-medium">
+                  <span className={`text-xs px-2 py-0.5 rounded-full ${CHIP_TONE_CLASSES.gold} font-medium`}>
                     {result.warnings!.length} warning{result.warnings!.length !== 1 ? "s" : ""}
                   </span>
                 )}
@@ -853,7 +855,7 @@ export function ImportFlow() {
           </div>
         )}
         {state.replay && state.replay.status === "failed" && (
-          <div className="rounded-lg border border-down/20 bg-down/5 px-4 py-3 text-sm text-down">
+          <div className={`rounded-lg border border-down/20 bg-down/5 px-4 py-3 text-sm ${CHIP_TONE_TEXT.down}`}>
             Tax-lot recompute failed after a corporate-action import — reconcile status unknown.
             Check the server log and re-run the recompute.
           </div>
