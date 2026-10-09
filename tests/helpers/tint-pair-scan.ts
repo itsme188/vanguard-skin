@@ -142,7 +142,7 @@ const LIGHT_VARIANTS = new Set(["[[data-theme=light]_&]"]);
 const PASSIVE_VARIANT = /^(sm|md|lg|xl|2xl|max-[a-z0-9]+|electron|print|first|last|odd|even)$/;
 
 /** Splits "a:b:[c:d]:e" on the colons that are not inside brackets. */
-function splitVariants(cls: string): string[] {
+export function splitVariants(cls: string): string[] {
   const parts: string[] = [];
   let depth = 0;
   let cur = "";

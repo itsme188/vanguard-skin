@@ -1115,7 +1115,7 @@ export function BogeysEditModal({ eventId, symbol, open, onClose }: Props) {
                   <button
                     type="button"
                     onClick={addExtraRow}
-                    className="relative text-[11px] text-ink-dim hover:text-gold border border-edge rounded px-2 py-0.5 pointer-coarse:after:absolute pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-1 pointer-coarse:after:content-['']"
+                    className="relative text-[11px] text-ink-dim hover:text-gold-ink border border-edge rounded px-2 py-0.5 pointer-coarse:after:absolute pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-1 pointer-coarse:after:content-['']"
                   >
                     + add metric
                   </button>
@@ -1177,7 +1177,7 @@ export function BogeysEditModal({ eventId, symbol, open, onClose }: Props) {
                       <button
                         type="button"
                         onClick={() => void copyId(row.id)}
-                        className="relative text-[11px] text-ink-dim hover:text-gold underline pointer-coarse:after:absolute pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-1 pointer-coarse:after:content-['']"
+                        className="relative text-[11px] text-ink-dim hover:text-gold-ink underline pointer-coarse:after:absolute pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-1 pointer-coarse:after:content-['']"
                       >
                         {copiedId === row.id ? "copied" : "copy id"}
                       </button>

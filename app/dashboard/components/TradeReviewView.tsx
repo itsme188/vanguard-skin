@@ -1006,7 +1006,7 @@ function ReviewDetail({
         <div className="flex-1" />
         <button
           onClick={onRegenerate}
-          className="text-[10px] text-ink-faint hover:text-gold transition-colors"
+          className="text-[10px] text-ink-faint hover:text-gold-ink transition-colors"
           title="Regenerate this review"
         >
           ↻ Regenerate

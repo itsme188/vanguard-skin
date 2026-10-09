@@ -167,7 +167,7 @@ export default function IrPageField({
                 ? "Type a page address, or use “clear the stored page”."
                 : "Save this IR page"
         }
-        className="border border-edge rounded px-2 py-1 text-ink-dim hover:text-gold disabled:opacity-50"
+        className="border border-edge rounded px-2 py-1 text-ink-dim hover:text-gold-ink disabled:opacity-50"
       >
         Save
       </button>
@@ -192,7 +192,7 @@ export default function IrPageField({
           onClick={() => setAttempt((n) => n + 1)}
           disabled={busy}
           title="Read the stored IR page for this symbol again"
-          className="border border-edge rounded px-2 py-1 text-ink-dim hover:text-gold disabled:opacity-50"
+          className="border border-edge rounded px-2 py-1 text-ink-dim hover:text-gold-ink disabled:opacity-50"
         >
           retry the read
         </button>

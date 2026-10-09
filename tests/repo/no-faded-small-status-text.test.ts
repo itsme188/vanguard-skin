@@ -15,6 +15,13 @@
  * 4. Solid red buttons, the grades bar letters, the violet OPT tag and the
  *    factor "No" pill: pinned one by one below.
  *
+ * 5. Hover states (second browser pass, 2026-10-09): `hover:text-gold/80`
+ *    on a small gold link (2.31:1 while hovered), `hover:text-gold` (2.92:1),
+ *    a 10% gold tint under gold-ink text (4.34:1) and a 30% blue tint under
+ *    blue text (4.35:1 in the dark theme). A hover must not make text harder
+ *    to read: the affordance is now an underline, a thicker underline, a
+ *    brightness filter, or a colour that still reaches the floor.
+ *
  * The scans read class names only. They cannot read text size, so text of
  * 18px and up, icons and decorative glyphs that stay on the plain gold are
  * allowlisted with the reason.
@@ -27,6 +34,7 @@ import {
   DANGER_FILL_CLASSES,
   GOLD_FILL_CLASSES,
   GOLD_FILL_TEXT,
+  GOLD_OUTLINE_HOVER,
 } from "@/app/dashboard/components/chip-tone-text";
 import {
   GRADE_BAR_FILL,
@@ -44,10 +52,13 @@ import {
   type Theme,
 } from "@/tests/helpers/tint-pair-scan";
 import {
+  fadedHoverText,
+  hoverFailures,
   linesPairing,
   linesUsing,
   plainRatio,
   scanFadedText,
+  scanHoverChanges,
 } from "@/tests/helpers/small-text-scan";
 import { anchorIndex } from "@/tests/helpers/source-anchor";
 
@@ -429,5 +440,129 @@ describe("factor tags (the security page Factor Profile)", () => {
 
   it("a colour that is not a 6-digit hex keeps the near-black text", () => {
     expect(tagTextColor("var(--gold)")).toBe("#0a0a0a");
+  });
+});
+
+// ─── 5. Hover states ────────────────────────────────────────────
+
+/**
+ * Hover changes that leave text under 4.5:1, each with the reason.
+ * Key: "<file> | <the hover classes as written>".
+ */
+const HOVER_ALLOWLIST: Record<string, string> = {
+  "app/dashboard/components/PrivacyToggle.tsx | hover:text-gold/80":
+    "An icon button (the eye svg), not text; the plain gold it rests on is allowlisted above for the same reason.",
+  "app/dashboard/components/LevelsPanel.tsx | hover:bg-gold/5":
+    "Rendered inside the always-dark chart module: the light-theme figure does not apply there, and the dark figure passes (10.14:1).",
+  "app/dashboard/components/LevelsPanel.tsx | hover:text-emerald-300":
+    "Rendered inside the always-dark chart module, where the hover brightens the text (9.82 to 12.39:1); the light figure does not apply.",
+  "app/dashboard/components/LevelsPanel.tsx | hover:text-rose-300":
+    "Rendered inside the always-dark chart module, where the hover brightens the text (7.02 to 9.99:1); the light figure does not apply.",
+};
+
+/** Hover text that fades (an opacity suffix) and stays, each with the reason. */
+const FADED_HOVER_ALLOWLIST: Record<string, string> = {
+  "app/dashboard/components/PrivacyToggle.tsx | hover:text-gold/80":
+    "An icon button (the eye svg), not text: the fade is the pressed-state cue of an icon.",
+};
+
+describe("app/: a hover never drops small text under 4.5:1", () => {
+  const failures = [...SOURCES].flatMap(([file, src]) =>
+    hoverFailures(src, FLOOR).map((c) => ({ ...c, id: `${file} | ${c.hover}`, where: `${file}:${c.line}` })),
+  );
+  const fades = [...SOURCES].flatMap(([file, src]) =>
+    fadedHoverText(src).map((c) => ({ id: `${file} | ${c.hover}`, where: `${file}:${c.line}` })),
+  );
+
+  it("the forms that were replaced really do fail (the bound is real)", () => {
+    expect(Number(plainRatio("light", "text-gold/80").toFixed(2))).toBe(2.31);
+    expect(Number(plainRatio("light", "text-gold").toFixed(2))).toBe(2.92);
+    expect(plainRatio("light", "text-down/80")).toBeLessThan(FLOOR);
+    expect(plainRatio("dark", "text-down/80")).toBeLessThan(FLOOR);
+    expect(Number(worstRatio("light", "bg-gold/10", "text-gold-ink").toFixed(2))).toBe(4.34);
+    expect(Number(worstRatio("dark", "bg-blue/30", "text-blue").toFixed(2))).toBe(4.35);
+    // The resting states they sit on pass.
+    expect(plainRatio("light", "text-gold-ink")).toBeGreaterThanOrEqual(FLOOR);
+    expect(worstRatio("dark", "bg-blue/20", "text-blue")).toBeGreaterThanOrEqual(FLOOR);
+  });
+
+  it("the scan reads the hovered text on the hovered fill, per theme", () => {
+    const src = [
+      'const a = "text-xs text-gold-ink hover:text-gold/80";',
+      'const b = "text-gold-ink hover:underline";',
+      'const c = "bg-blue/20 text-blue hover:bg-blue/30 disabled:opacity-50";',
+      'const d = "text-ink-faint hover:text-ink";',
+      'const e = "text-gold-ink enabled:hover:bg-gold/10 disabled:hover:text-gold/50";',
+      "// a comment that mentions hover:text-gold/80",
+      'const f = "text-ink group-hover:text-gold";',
+      'const g = "hover:bg-gold/10";',
+    ].join("\n");
+    expect(scanHoverChanges(src).map((c) => `${c.line} ${c.hover}`)).toEqual([
+      "1 hover:text-gold/80",
+      "3 hover:bg-blue/30",
+      "4 hover:text-ink",
+      "5 enabled:hover:bg-gold/10",
+      "7 group-hover:text-gold",
+    ]);
+    const failed = hoverFailures(src, FLOOR);
+    expect(failed.map((c) => `${c.line} ${c.hover}`)).toEqual([
+      "1 hover:text-gold/80",
+      "3 hover:bg-blue/30",
+      "5 enabled:hover:bg-gold/10",
+      "7 group-hover:text-gold",
+    ]);
+    // Line 3 fails in the dark theme only; line 1 in the light theme only.
+    expect(failed[1].hovered.light).toBeGreaterThanOrEqual(FLOOR);
+    expect(failed[1].hovered.dark).toBeLessThan(FLOOR);
+    expect(failed[0].hovered.dark).toBeGreaterThanOrEqual(FLOOR);
+    expect(fadedHoverText(src).map((c) => `${c.line} ${c.hover}`)).toEqual(["1 hover:text-gold/80"]);
+  });
+
+  it("a hover that raises a failing resting contrast is not this scan's business", () => {
+    // The resting state is covered by the scans above.
+    expect(hoverFailures('const a = "bg-up/20 text-up hover:bg-up/10";', FLOOR)).toEqual([]);
+  });
+
+  it("GOLD_OUTLINE_HOVER reaches 4.5:1 on its own tint in both themes", () => {
+    const [change] = scanHoverChanges(`const x = "${GOLD_OUTLINE_HOVER}";`);
+    expect(change.hover).toBe(GOLD_OUTLINE_HOVER);
+    expect([Number(change.hovered.light.toFixed(2)), Number(change.hovered.dark.toFixed(2))]).toEqual([6.03, 9.18]);
+  });
+
+  it("every hover that leaves text under the floor is on the allowlist", () => {
+    const fmt = (n: number | null) => (n === null ? "none" : n.toFixed(2));
+    const unexpected = failures
+      .filter((f) => !(f.id in HOVER_ALLOWLIST))
+      .map(
+        (f) =>
+          `${f.where} [${f.hover}] light ${fmt(f.resting.light)} to ${fmt(f.hovered.light)}, ` +
+          `dark ${fmt(f.resting.dark)} to ${fmt(f.hovered.dark)}: keep the resting colour and use ` +
+          "hover:underline (hover:decoration-2 on an underlined link), hover:brightness-95 on a tinted " +
+          "button, or GOLD_OUTLINE_HOVER on a gold outline button",
+      );
+    expect(unexpected).toEqual([]);
+  });
+
+  it("no small coloured text fades on hover, whatever the figure", () => {
+    const unexpected = fades
+      .filter((f) => !(f.id in FADED_HOVER_ALLOWLIST))
+      .map((f) => `${f.where} [${f.hover}]: a hover must not fade text; use hover:underline`);
+    expect(unexpected).toEqual([]);
+  });
+
+  it("every allowlist entry still matches and carries a reason", () => {
+    const liveFailures = new Set(failures.map((f) => f.id));
+    const liveFades = new Set(fades.map((f) => f.id));
+    expect(Object.keys(HOVER_ALLOWLIST).filter((id) => !liveFailures.has(id))).toEqual([]);
+    expect(Object.keys(FADED_HOVER_ALLOWLIST).filter((id) => !liveFades.has(id))).toEqual([]);
+    for (const [id, reason] of [...Object.entries(HOVER_ALLOWLIST), ...Object.entries(FADED_HOVER_ALLOWLIST)]) {
+      expect(reason.length, id).toBeGreaterThan(20);
+    }
+  });
+
+  it("the protected chat file carries no hover fade (it could not be fixed here)", () => {
+    const chat = SOURCES.get("app/dashboard/components/ChatInterface.tsx") ?? "";
+    expect(chat.length).toBeGreaterThan(0);
+    expect(hoverFailures(chat, FLOOR)).toEqual([]);
   });
 });

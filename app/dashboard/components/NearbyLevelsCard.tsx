@@ -34,7 +34,7 @@ export function NearbyLevelsCard({ levels }: { levels: LevelNearPrice[] }) {
           <li key={l.level_id} className="py-2 flex items-baseline gap-3 text-[11px]">
             <Link
               href={`/dashboard/security/${l.security_id}`}
-              className="font-mono text-[11px] font-medium text-ink hover:text-gold w-14 shrink-0"
+              className="font-mono text-[11px] font-medium text-ink hover:text-gold-ink w-14 shrink-0"
             >
               {l.symbol}
             </Link>
@@ -69,7 +69,7 @@ export function NearbyLevelsCard({ levels }: { levels: LevelNearPrice[] }) {
         )}
         <Link
           href="/dashboard/alerts?view=armed"
-          className="text-[11px] font-medium text-gold-ink hover:text-gold"
+          className="text-[11px] font-medium text-gold-ink hover:underline"
         >
           View all armed levels &rarr;
         </Link>

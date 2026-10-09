@@ -370,7 +370,7 @@ export function MacroOverlayCard({ scope }: { scope: string }) {
                   <button
                     type="button"
                     onClick={() => setDrawerOpenForThemeIdx(i)}
-                    className="relative ml-auto text-amber hover:text-amber/80 transition-colors pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-2"
+                    className="relative ml-auto text-amber hover:underline transition-colors pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-2"
                   >
                     {"This week's inputs →"}
                   </button>

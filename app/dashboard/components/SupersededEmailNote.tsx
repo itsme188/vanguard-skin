@@ -58,7 +58,7 @@ export function SupersededEmailNote({
         <button
           type="button"
           onClick={() => onOpen({ event_id: live.event_id, phase: email.phase })}
-          className="underline underline-offset-2 text-ink hover:text-gold transition-colors"
+          className="underline underline-offset-2 text-ink hover:text-gold-ink transition-colors"
         >
           Open the {email.phase} for the current entry (reports {live.event_date}, sent{" "}
           {formatSentAt(live.email_sent_at)})

@@ -779,7 +779,7 @@ function LevelsLoadError({
       <button
         type="button"
         onClick={onRetry}
-        className="text-blue hover:text-blue/80 underline"
+        className="text-blue hover:decoration-2 underline"
       >
         Retry
       </button>
@@ -1697,7 +1697,7 @@ export function LevelsPanel({
                       <button
                         type="button"
                         onClick={() => setShowInactive(true)}
-                        className="text-blue hover:text-blue/80 underline not-italic"
+                        className="text-blue hover:decoration-2 underline not-italic"
                       >
                         Show inactive
                       </button>
@@ -2296,7 +2296,7 @@ export function LevelsPanel({
                 {pendingReview && (
                   <Link
                     href="/dashboard/alerts?view=review"
-                    className="text-[10px] text-warn hover:text-warn/90 underline"
+                    className="text-[10px] text-warn hover:decoration-2 underline"
                     title="Approve or reject this level in the alerts inbox"
                   >
                     Review
@@ -2305,7 +2305,7 @@ export function LevelsPanel({
                 {showRequeue && (
                   <button
                     onClick={() => handleRequeue(l.id)}
-                    className="text-[10px] text-warn hover:text-warn/90"
+                    className="text-[10px] text-warn hover:underline"
                     title="Send back to pending_review so the Alerts Review tab can approve or reject it"
                   >
                     Re-queue

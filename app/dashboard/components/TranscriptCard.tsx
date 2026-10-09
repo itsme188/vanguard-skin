@@ -104,7 +104,7 @@ export function TranscriptCard({
       href={filingHref}
       target="_blank"
       rel="noopener noreferrer"
-      className="text-xs text-gold-ink hover:text-gold/80"
+      className="text-xs text-gold-ink hover:underline"
     >
       Open the filing on SEC.gov ↗
     </a>
@@ -130,7 +130,7 @@ export function TranscriptCard({
         <button
           onClick={() => setExpanded(!expanded)}
           aria-expanded={expanded}
-          className="mt-1 text-xs text-gold-ink hover:text-gold/80"
+          className="mt-1 text-xs text-gold-ink hover:underline"
         >
           {expanded ? "Show less" : "Read more"}
         </button>
@@ -238,7 +238,7 @@ export function TranscriptCard({
               <div className="space-y-2 mb-3">
                 {t.guidance && (
                   <details className="group">
-                    <summary className="text-xs font-medium text-blue cursor-pointer hover:text-blue/80">
+                    <summary className="text-xs font-medium text-blue cursor-pointer hover:underline">
                       Guidance
                     </summary>
                     <p className="text-xs text-ink-dim mt-1 pl-3 border-l border-blue/30 leading-relaxed">
@@ -248,7 +248,7 @@ export function TranscriptCard({
                 )}
                 {t.risk_factors && (
                   <details className="group">
-                    <summary className="text-xs font-medium text-down cursor-pointer hover:text-down/80">
+                    <summary className="text-xs font-medium text-down cursor-pointer hover:underline">
                       Risk Factors
                     </summary>
                     <p className="text-xs text-ink-dim mt-1 pl-3 border-l border-down/30 leading-relaxed">
@@ -274,7 +274,7 @@ export function TranscriptCard({
             <button
               onClick={loadFullTranscript}
               disabled={loadingFull}
-              className="text-xs text-gold-ink hover:text-gold/80 disabled:opacity-40"
+              className="text-xs text-gold-ink enabled:hover:underline disabled:opacity-40"
             >
               {loadingFull ? "Loading..." : isFiling ? "View filing" : "View Full Transcript"}
             </button>
@@ -385,7 +385,7 @@ export function FetchTranscriptButton({
       <button
         onClick={handleFetch}
         disabled={isFetching}
-        className="text-xs text-gold-ink hover:text-gold/80 disabled:opacity-40"
+        className="text-xs text-gold-ink enabled:hover:underline disabled:opacity-40"
       >
         {isFetching ? "Fetching..." : `Fetch ${ticker} Transcript`}
       </button>

@@ -186,7 +186,7 @@ export function MorningBriefing() {
             </p>
             <Link
               href="/dashboard/calendar"
-              className="text-xs text-gold-ink hover:text-gold/80 transition-colors mt-1.5 inline-block"
+              className="text-xs text-gold-ink hover:underline transition-colors mt-1.5 inline-block"
             >
               Read full briefing &rarr;
             </Link>
