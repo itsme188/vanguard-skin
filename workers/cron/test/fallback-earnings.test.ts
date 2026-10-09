@@ -2117,13 +2117,16 @@ describe("armed-as-covered (snapshot v11 + KV delta)", () => {
 });
 
 /**
- * Recap scoreboard basis label, parity with the Mac (owner ruling 2026-10-08:
- * "with no worksheet figure, the vendor figure shows with a basis label. Mac
- * and Worker change together"; "the cloud recap gets the basis label only;
- * the snapshot is not extended"). Mac half:
- * tests/digest/scoreboard-actual-basis.test.ts. Synthetic figures only.
+ * Recap scoreboard basis line, parity with the Mac (owner ruling 2026-10-08:
+ * "the worksheet or parsed adjusted figure leads, with the vendor figure as a
+ * footnote; with no worksheet figure, the vendor figure shows with a basis
+ * label. Mac and Worker change together"). A cloud recap and a Mac recap of
+ * the same print carry the same line: the Worker reads the kept vendor figure
+ * off the snapshot row (`vendor_actual_value`, a SELECT * column). Mac half:
+ * tests/digest/scoreboard-actual-basis.test.ts; helper parity:
+ * test/actuals-basis-parity.test.ts. Synthetic figures only.
  */
-describe("recap scoreboard basis label (parity with the Mac)", () => {
+describe("recap scoreboard basis line (parity with the Mac)", () => {
   const STAMP = "2026-01-06 21:30:00";
   const CONSENSUS = "EPS 1.00 · Rev 500000000";
   const event = (over: Record<string, unknown>) =>
@@ -2144,23 +2147,43 @@ describe("recap scoreboard basis label (parity with the Mac)", () => {
     expect(ACTUALS_BASIS_ADJUSTED_LINE).toBe(MAC_ACTUALS_BASIS_ADJUSTED_LINE);
   });
 
-  // Same fixtures through both renderers, where neither has a kept vendor
-  // figure to footnote (the Worker never does).
-  const PARITY_CASES: Array<[string, string | null, string | null]> = [
-    ["vendor figure, no stamp", "EPS 1.10 · Rev 510,000,000", null],
-    ["hand-entered or promoted figure", "EPS 1.10 · Rev 510000000", STAMP],
-    ["EPS only, vendor", "EPS 1.10", null],
-    ["no actual", null, null],
-    ["a 'Rev 0' placeholder alone is no actual", "Rev 0", null],
+  // Same fixtures through both renderers: the Worker's scoreboard against the
+  // Mac helper. [name, row actual, stamp, kept vendor figure, consensus]
+  const PARITY_CASES: Array<[string, string | null, string | null, string | null, string]> = [
+    ["vendor only", "EPS 1.10 · Rev 510,000,000", null, null, CONSENSUS],
+    ["adjusted, no kept figure", "EPS 1.10 · Rev 510000000", STAMP, null, CONSENSUS],
+    ["adjusted, an equal kept figure", "EPS 1.10 · Rev 510000000", STAMP, "EPS 1.10 · Rev 510,000,000", CONSENSUS],
+    ["adjusted, a kept figure equal at printed precision", "EPS 1.10 · Rev 510000000", STAMP, "EPS 1.104 · Rev 510,040,000", CONSENSUS],
+    ["adjusted, a differing EPS", "EPS 1.10 · Rev 505000000", STAMP, "EPS 1.02 · Rev 505,000,000", CONSENSUS],
+    ["adjusted, a differing revenue", "EPS 1.10 · Rev 510000000", STAMP, "EPS 1.10 · Rev 505,000,000", CONSENSUS],
+    ["adjusted, both differ", "EPS 1.10 · Rev 510000000", STAMP, "EPS 1.02 · Rev 505,000,000", CONSENSUS],
+    ["adjusted, an implausible kept figure (sign flip)", "EPS 1.80", STAMP, "EPS -1.20", "EPS 1.74"],
+    ["adjusted, kept 'Rev 0' beside an EPS", "EPS 1.10 · Rev 510000000", STAMP, "EPS 1.02 · Rev 0", CONSENSUS],
+    ["adjusted, kept 'Rev 0' alone", "EPS 1.10 · Rev 510000000", STAMP, "Rev 0", CONSENSUS],
+    ["adjusted EPS only, kept figure adds a revenue", "EPS 1.10", STAMP, "EPS 1.02 · Rev 999,960,000", CONSENSUS],
+    ["a kept figure beside an UNSTAMPED actual is not footnoted", "EPS 1.10", null, "EPS 1.02", CONSENSUS],
+    ["EPS only, vendor", "EPS 1.10", null, null, CONSENSUS],
+    ["no actual", null, null, null, CONSENSUS],
+    ["a 'Rev 0' placeholder alone is no actual", "Rev 0", null, null, CONSENSUS],
   ];
-  for (const [name, actual, stamp] of PARITY_CASES) {
+  for (const [name, actual, stamp, vendor, consensus] of PARITY_CASES) {
     it(`same line as the Mac: ${name}`, () => {
-      const md = renderScoreboard(event({ actual_value: actual, manual_actuals_at: stamp }), "recap", null, false);
+      const md = renderScoreboard(
+        event({
+          actual_value: actual,
+          manual_actuals_at: stamp,
+          vendor_actual_value: vendor,
+          consensus_estimate: consensus,
+        }),
+        "recap",
+        null,
+        false,
+      );
       const mac = macRenderActualsBasisLine({
         shownActual: actual,
         manualActualsAt: stamp,
-        vendorActualValue: null,
-        consensus: CONSENSUS,
+        vendorActualValue: vendor,
+        consensus,
       });
       expect(basisLines(md)).toEqual(mac == null ? [] : [mac]);
     });
@@ -2173,7 +2196,9 @@ describe("recap scoreboard basis label (parity with the Mac)", () => {
     expect(basisLines(md)).toEqual(["*Actuals basis: vendor.*"]);
   });
 
-  it("stamped row: 'adjusted' label and never a vendor footnote, even if the row carries one", () => {
+  // Replaces the earlier pin "never a vendor footnote, even if the row
+  // carries one": the cloud recap now prints the same footnote as the Mac.
+  it("stamped row with a differing kept vendor figure: the footnote the Mac prints", () => {
     const md = renderScoreboard(
       event({
         actual_value: "EPS 1.10 · Rev 510000000",
@@ -2184,14 +2209,56 @@ describe("recap scoreboard basis label (parity with the Mac)", () => {
       null,
       false,
     );
-    expect(basisLines(md)).toEqual(["*Actuals basis: adjusted (worksheet or hand-entered figure).*"]);
-    expect(md).not.toContain("basis may differ");
-    expect(md).not.toContain("1.02");
+    // The rows carry the adjusted figure; the one delta is against consensus.
+    expect(md.split("\n")).toContain("| **EPS** | 1.00 | 1.10 | +10.0% |");
+    expect(md.split("\n")).toContain("| **Revenue** | $500.0M | $510.0M | +2.0% |");
+    expect(basisLines(md)).toEqual([
+      "*Actuals basis: adjusted (worksheet or hand-entered figure). For reference, vendor figure (basis may differ): EPS 1.02 · Revenue $505.0M.*",
+    ]);
+    expect(basisLines(md)[0]).not.toMatch(/%/);
+  });
+
+  it("an implausible kept vendor figure is not printed", () => {
+    const md = renderScoreboard(
+      event({
+        consensus_estimate: "EPS 1.74",
+        actual_value: "EPS 1.80",
+        manual_actuals_at: STAMP,
+        vendor_actual_value: "EPS -1.20",
+      }),
+      "recap",
+      null,
+      false,
+    );
+    expect(basisLines(md)).toEqual([ACTUALS_BASIS_ADJUSTED_LINE]);
+    expect(md).not.toContain("-1.20");
+  });
+
+  it("the footnote is judged against the consensus the table shows (consensus_value first)", () => {
+    // consensus_estimate alone would pass the kept figure; the enrichment-time
+    // consensus_value the table is anchored on flags it as a sign flip.
+    const md = renderScoreboard(
+      event({
+        consensus_estimate: "EPS -1.00",
+        consensus_value: "EPS 1.74",
+        actual_value: "EPS 1.80",
+        manual_actuals_at: STAMP,
+        vendor_actual_value: "EPS -1.20",
+      }),
+      "recap",
+      null,
+      false,
+    );
+    expect(basisLines(md)).toEqual([ACTUALS_BASIS_ADJUSTED_LINE]);
   });
 
   it("an actual that came from the cloud-enrich payload is a vendor figure", () => {
     const payload = { eventId: 3, actual: "EPS 1.10 · Rev 510,000,000", consensus: null, reaction: null, source: "cloud" } as never;
     expect(basisLines(renderScoreboard(event({}), "recap", payload, false))).toEqual([ACTUALS_BASIS_VENDOR_LINE]);
+    // Even on a row that carries a stamp and a kept figure with no actual of
+    // its own: neither describes the payload's figure.
+    const stale = event({ manual_actuals_at: STAMP, vendor_actual_value: "EPS 1.02" });
+    expect(basisLines(renderScoreboard(stale, "recap", payload, false))).toEqual([ACTUALS_BASIS_VENDOR_LINE]);
   });
 
   it("no label when no actual is shown: preview, and cells blanked as implausible", () => {

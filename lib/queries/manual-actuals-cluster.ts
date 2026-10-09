@@ -49,6 +49,12 @@ export interface ClusterActualsRow {
   event_type?: string | null;
   actual_value?: string | null;
   manual_actuals_at?: string | null;
+  /**
+   * The vendor figure kept beside a hand-entered actual (migration 096).
+   * Healed only on a read shape that selected the column (see
+   * {@link applyClusterManualActuals}).
+   */
+  vendor_actual_value?: string | null;
 }
 
 interface StampRow {
@@ -56,6 +62,7 @@ interface StampRow {
   event_date: string;
   actual_value: string;
   stamp: string;
+  vendor: string | null;
 }
 
 const SEP = "\u0000";
@@ -80,10 +87,28 @@ function needsCluster(row: ClusterActualsRow): boolean {
 }
 
 /**
+ * A row can borrow the print's kept vendor figure when its read shape carries
+ * the column and its own is empty. A shape that never selected the column is
+ * left without one.
+ */
+function lacksKeptVendorFigure(row: ClusterActualsRow): boolean {
+  return "vendor_actual_value" in row && !row.vendor_actual_value && hasClusterKey(row);
+}
+
+/**
  * Resolve the manual-acceptance stamp for a set of rows IN PLACE, rewriting
  * `manual_actuals_at` to the cluster-wide value where the row's own is NULL.
  * Rows that already carry a stamp, carry no actual, or are not earnings are
  * untouched (a NULL stays NULL — never becomes undefined).
+ *
+ * The kept vendor figure (`vendor_actual_value`, migration 096) is resolved
+ * the same way and under the same key: a row that reads as hand-entered (its
+ * own stamp or the cluster's) and keeps no vendor figure of its own reads the
+ * one kept by a stamped twin showing the SAME figure (the latest-stamped twin
+ * that kept one). The recap scoreboard's vendor footnote therefore does not
+ * depend on which twin of the print is read, on the Mac or in the nightly
+ * snapshot the Worker reads. The row's own kept figure always wins, and only
+ * a read shape that selected the column is given a value.
  *
  * One query per call regardless of row count.
  */
@@ -91,7 +116,7 @@ export function applyClusterManualActuals<T extends ClusterActualsRow>(
   db: Database.Database,
   rows: T[],
 ): T[] {
-  const candidates = rows.filter(needsCluster);
+  const candidates = rows.filter((r) => needsCluster(r) || lacksKeptVendorFigure(r));
   if (candidates.length === 0) return rows;
 
   const dates = Array.from(new Set(candidates.map((r) => r.event_date as string)));
@@ -99,32 +124,44 @@ export function applyClusterManualActuals<T extends ClusterActualsRow>(
   const stamped = db
     .prepare(
       `SELECT UPPER(symbol) AS sym, event_date, actual_value,
-              MAX(manual_actuals_at) AS stamp
+              manual_actuals_at AS stamp, vendor_actual_value AS vendor
          FROM calendar_events
         WHERE event_type = 'earnings'
           AND manual_actuals_at IS NOT NULL
           AND actual_value IS NOT NULL
           AND symbol IS NOT NULL
           AND event_date IN (${placeholders})
-        GROUP BY UPPER(symbol), event_date, actual_value`,
+        ORDER BY manual_actuals_at ASC, id ASC`,
     )
     .all(...dates) as StampRow[];
   if (stamped.length === 0) return rows;
 
+  // Oldest stamp first, so the last write per key is the latest stamp, and
+  // the kept vendor figure is the one from the latest-stamped twin that has one.
   const byKey = new Map<string, string>();
+  const vendorByKey = new Map<string, { stamp: string; vendor: string }>();
   for (const s of stamped) {
-    byKey.set(keyOf(s.sym, s.event_date, s.actual_value), s.stamp);
+    const key = keyOf(s.sym, s.event_date, s.actual_value);
+    byKey.set(key, s.stamp);
+    if (s.vendor) vendorByKey.set(key, { stamp: s.stamp, vendor: s.vendor });
   }
 
   for (const row of candidates) {
     let best: string | null = null;
+    let kept: { stamp: string; vendor: string } | null = null;
     for (const sibling of issuerSiblings(row.symbol as string)) {
-      const hit = byKey.get(
-        keyOf(sibling, row.event_date as string, row.actual_value as string),
-      );
+      const key = keyOf(sibling, row.event_date as string, row.actual_value as string);
+      const hit = byKey.get(key);
       if (hit != null && (best == null || hit > best)) best = hit;
+      const v = vendorByKey.get(key);
+      if (v != null && (kept == null || v.stamp > kept.stamp)) kept = v;
     }
-    if (best != null) row.manual_actuals_at = best;
+    if (best != null && !row.manual_actuals_at) row.manual_actuals_at = best;
+    // Only beside a figure that reads as hand-entered, and never over the
+    // row's own kept figure.
+    if (kept != null && row.manual_actuals_at && lacksKeptVendorFigure(row)) {
+      row.vendor_actual_value = kept.vendor;
+    }
   }
   return rows;
 }

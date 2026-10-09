@@ -6,6 +6,7 @@ import { deliveredSql, notLiveClaimSql } from "@/lib/earnings/email-states";
 import { mondayOf, todayET } from "@/lib/calendar/date-utils";
 import { deriveEarningsSlot } from "@/lib/earnings/earnings-slot";
 import { parseFinnhubFigure } from "@/lib/format/finnhub-figure";
+import { clusterManualActualsAt } from "@/lib/queries/manual-actuals-cluster";
 
 // ── Earnings date cross-check reconciliation ────────────────────────
 //
@@ -1095,10 +1096,62 @@ export function createTwinFolder(db: Database.Database) {
        enriched_at = COALESCE(enriched_at, ?)
      WHERE id = ?`,
   );
+  // The kept vendor figure (vendor_actual_value, migration 096) follows the
+  // print. It is read off the donor row by id inside the statement, so every
+  // caller's donor SELECT stays as it is. Written once (a figure the canonical
+  // already keeps is never replaced) and never a hand-entered figure. Two
+  // cases, both judged against the canonical row as it stood BEFORE
+  // carryEnrichment runs (this statement runs first):
+  //   1. the donor's stamped actual is the one the canonical adopts or already
+  //      shows (the same test carryEnrichment uses to carry the stamp): the
+  //      canonical takes the vendor figure the donor kept beside it;
+  //   2. the donor's own actual is a vendor figure (no stamp on it or on any
+  //      twin showing that figure) and the canonical carries a DIFFERENT
+  //      hand-entered actual of its own: the donor's actual is the vendor
+  //      figure for this print, kept the way the cloud reconcile and the
+  //      enrichment runner keep a vendor actual that arrives beside a
+  //      hand-entered one.
+  // Binds, in order: donor stamp, donor actual (x2), donor id, donor-actual-
+  // is-vendor flag, donor actual (x2), canonical id.
+  const carryVendorActual = db.prepare(
+    `UPDATE calendar_events SET
+       vendor_actual_value = CASE
+         WHEN ? IS NOT NULL AND ? IS NOT NULL
+              AND (actual_value IS NULL OR actual_value = ?)
+           THEN (SELECT d.vendor_actual_value FROM calendar_events d WHERE d.id = ?)
+         WHEN ? = 1 AND manual_actuals_at IS NOT NULL
+              AND actual_value IS NOT NULL AND actual_value <> ?
+           THEN ?
+         ELSE NULL
+       END
+     WHERE id = ? AND vendor_actual_value IS NULL`,
+  );
+  const donorPrint = db.prepare(
+    "SELECT symbol, event_date, event_type FROM calendar_events WHERE id = ?",
+  );
+  /** The donor's own actual is a vendor figure: no stamp for it anywhere in the print. */
+  const donorActualIsVendor = (r: TwinDonor): boolean => {
+    if (r.actual_value == null || r.manual_actuals_at != null) return false;
+    const print = donorPrint.get(r.id) as
+      | { symbol: string | null; event_date: string; event_type: string }
+      | undefined;
+    if (!print) return false;
+    return clusterManualActualsAt(db, { ...print, actual_value: r.actual_value }) == null;
+  };
   const repointDependents = createDependentRepointer(db);
 
   return function fold(r: TwinDonor, canonicalId: number, canonicalEventDate: string): boolean {
     setSuperseded.run(r.id);
+    carryVendorActual.run(
+      r.manual_actuals_at,
+      r.actual_value,
+      r.actual_value,
+      r.id,
+      donorActualIsVendor(r) ? 1 : 0,
+      r.actual_value,
+      r.actual_value,
+      canonicalId,
+    );
     // Positional (better-sqlite3 binds `?` only positionally, so the
     // donor's actual_value is passed TWICE — once for the
     // manual_actuals_at CASE test, once for its own COALESCE).

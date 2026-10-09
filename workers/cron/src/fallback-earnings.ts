@@ -80,6 +80,7 @@ import {
   type CloudEnrichedPayload,
 } from "./cloud-enriched";
 import { isPlausibleEarnings } from "./plausibility";
+import { renderActualsBasisLine } from "./actuals-basis";
 import { emailIgnoredManualTwins } from "./manual-twin-email";
 import { resolveExpectedMove } from "./expected-move";
 import { formatEtTimestamp, todayET } from "./dst";
@@ -1120,14 +1121,12 @@ ${lines.join("\n")}
 // ── Scoreboard table (mirrors Mac renderHeadlineTable) ──────────────
 
 // PARITY (Mac: lib/earnings/actuals-basis.ts, owner ruling 2026-10-08): the
-// basis line under the recap scoreboard. The cloud recap gets the LABEL only:
-// the Mac also footnotes the kept vendor figure, the Worker does not read it
-// (the snapshot contract is not extended for it). The two strings are pinned
-// to the Mac's in workers/cron/test/fallback-earnings.test.ts. Change both
-// sides together.
-export const ACTUALS_BASIS_VENDOR_LINE = "*Actuals basis: vendor.*";
-export const ACTUALS_BASIS_ADJUSTED_LINE =
-  "*Actuals basis: adjusted (worksheet or hand-entered figure).*";
+// basis line under the recap scoreboard, label and vendor footnote, comes
+// from ./actuals-basis.ts, the byte-identical hand copy of the Mac helper
+// (test/actuals-basis-parity.test.ts). The kept vendor figure is read off the
+// snapshot row (`vendor_actual_value`; the snapshot is a SELECT * and resolves
+// it across the print's twin rows before upload, like the stamp).
+export { ACTUALS_BASIS_VENDOR_LINE, ACTUALS_BASIS_ADJUSTED_LINE } from "./actuals-basis";
 
 export function renderScoreboard(
   event: CalendarEventRow,
@@ -1147,17 +1146,24 @@ export function renderScoreboard(
       ? parseFinnhubFigure(actualRaw)
       : { eps: null as string | null, revenue: null as string | null };
 
-  // Basis label, only when an actual is shown. "Adjusted" needs BOTH the
-  // snapshot row's own actual and its manual_actuals_at stamp (the snapshot
-  // resolves the stamp across the print's twin rows before upload); an actual
-  // that came from the cloud-enrich payload is always a vendor figure.
-  const showsActual = actual.eps != null || actual.revenue != null;
-  const actualIsAdjusted =
-    (event.actual_value as string | null) != null &&
-    (event.manual_actuals_at as string | null | undefined) != null;
-  const basisBlock = showsActual
-    ? `\n\n${actualIsAdjusted ? ACTUALS_BASIS_ADJUSTED_LINE : ACTUALS_BASIS_VENDOR_LINE}`
-    : "";
+  // Basis line, only when an actual is shown (the helper returns null
+  // otherwise). The stamp describes the snapshot row's OWN actual (the
+  // snapshot resolves it across the print's twin rows before upload), so it
+  // is passed only when that actual is the one shown; an actual that came
+  // from the cloud-enrich payload is always a vendor figure and never takes
+  // the footnote. Same inputs as the Mac's renderHeadlineTable.
+  const rowActualShown = (event.actual_value as string | null) != null;
+  const basisLine = renderActualsBasisLine({
+    shownActual: phase === "recap" && !implausible ? actualRaw : null,
+    manualActualsAt: rowActualShown
+      ? ((event.manual_actuals_at as string | null | undefined) ?? null)
+      : null,
+    vendorActualValue: rowActualShown
+      ? ((event.vendor_actual_value as string | null | undefined) ?? null)
+      : null,
+    consensus: effectiveConsensusRaw(event, payload),
+  });
+  const basisBlock = basisLine ? `\n\n${basisLine}` : "";
 
   const epsConsensus = cons.eps ?? "—";
   const epsActual = actual.eps ?? "—";

@@ -1,29 +1,67 @@
 /**
- * The basis line under the recap scoreboard (owner ruling 2026-10-08):
- * "the worksheet or parsed adjusted figure leads, with the vendor figure as a
- * footnote; with no worksheet figure, the vendor figure shows with a basis
- * label."
+ * Worker hand copy of lib/earnings/actuals-basis.ts: the basis line under the
+ * recap scoreboard (label, plus the kept vendor figure as a footnote). The
+ * Worker bundle cannot cross the Next.js path-alias boundary, so the three
+ * helpers the Mac file imports are restated here, above the mirror marker,
+ * under the same names. Everything below the marker is byte-identical to the
+ * Mac file; test/actuals-basis-parity.test.ts pins that and runs both copies
+ * over one case list.
  *
- * Which figure the scoreboard shows is decided by one stamp:
- *   - `manual_actuals_at` set: `actual_value` is the hand-entered or promoted
- *     worksheet figure (lib/earnings/actuals.ts::saveManualActuals). Label
- *     "adjusted". If the vendor's figure was kept
- *     (`calendar_events.vendor_actual_value`, migration 096) and differs, it
- *     is footnoted.
- *   - not set: `actual_value` is the vendor's figure. Label "vendor".
- *
- * The line is code-rendered and public market data. It adds no delta: the
- * scoreboard's one delta stays against consensus.
- *
- * PARITY: workers/cron/src/actuals-basis.ts is the Worker's hand copy (label
- * AND footnote; the cloud recap reads `vendor_actual_value` off the snapshot
- * row). Everything below the mirror marker is byte-identical in the two
- * files; workers/cron/test/actuals-basis-parity.test.ts pins that and runs
- * both copies over one case list. Never edit one side alone: change this
- * file, then copy the part below the marker.
+ * Never edit this file alone: change the Mac file, then copy the part below
+ * the marker here.
  */
-import { formatRevenueUSD, parseFinnhubFigure } from "@/lib/format/finnhub-figure";
-import { actualsAreImplausible } from "@/lib/earnings/actuals-display";
+import { isPlausibleEarnings } from "./plausibility";
+
+// PARITY (Mac: lib/format/finnhub-figure.ts::parseFinnhubFigure). Numbers,
+// as on the Mac. "Rev 0" is Finnhub's placeholder for "no revenue figure
+// published", never a figure; an EPS of exactly 0 is real.
+function parseFinnhubFigure(s: string | null | undefined): {
+  eps: number | null;
+  revenue: number | null;
+} {
+  if (!s) return { eps: null, revenue: null };
+  const out: { eps: number | null; revenue: number | null } = { eps: null, revenue: null };
+  const epsMatch = /EPS\s+(-?\d+(?:\.\d+)?)/i.exec(s);
+  if (epsMatch) {
+    const v = Number(epsMatch[1]);
+    out.eps = Number.isFinite(v) ? v : null;
+  }
+  const revMatch = /Rev\s+([\d.,]+)/i.exec(s);
+  if (revMatch) {
+    const v = Number(revMatch[1].replace(/,/g, ""));
+    out.revenue = Number.isFinite(v) && v !== 0 ? v : null;
+  }
+  return out;
+}
+
+// PARITY (Mac: lib/format/finnhub-figure.ts::formatRevenueUSD over
+// lib/format.ts::formatLargeUSD), for the non-negative figures the parser
+// above can return. A figure in [$999.95M, $1B) prints "$1.00B".
+const groupedInteger = new Intl.NumberFormat("en-US");
+function formatRevenueUSD(value: number): string {
+  if (!Number.isFinite(value)) return "\u2014";
+  const abs = Math.abs(value);
+  if (abs >= 1_000_000_000) return `$${(abs / 1_000_000_000).toFixed(2)}B`;
+  if (abs >= 1_000_000) {
+    const m = `$${(abs / 1_000_000).toFixed(1)}M`;
+    return m === "$1000.0M" ? "$1.00B" : m;
+  }
+  if (abs >= 1_000) return `$${groupedInteger.format(Math.round(abs))}`;
+  return `$${abs.toFixed(2)}`;
+}
+
+// PARITY (Mac: lib/earnings/actuals-display.ts::actualsAreImplausible).
+function actualsAreImplausible(
+  consensus: string | null,
+  actual: string | null,
+  manualActualsAt?: string | null,
+): boolean {
+  if (!actual) return false;
+  if (manualActualsAt) return false;
+  const c = parseFinnhubFigure(consensus);
+  const a = parseFinnhubFigure(actual);
+  return !isPlausibleEarnings(c.eps, a.eps, c.revenue, a.revenue);
+}
 
 // ── mirrored below this line ──
 
