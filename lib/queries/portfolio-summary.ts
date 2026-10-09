@@ -9,7 +9,7 @@ import {
   type AccountValueSourceKind,
 } from "@/lib/queries/dashboard";
 import { liveOptionExpirationSql } from "@/lib/compute/option-expiry";
-import { CURRENCY_CONVERSION_SECURITY_SQL, USD_ONLY } from "@/lib/queries/tax-lots";
+import { CURRENCY_CONVERSION_SECURITY_SQL, USD_ONLY, lotSideSignSql } from "@/lib/queries/tax-lots";
 import { longTermDateSql } from "@/lib/queries/long-term-sql";
 import {
   isPendingStatementLot,
@@ -403,7 +403,7 @@ export function getPortfolioSummaryForChat(db: Database.Database, accountName?: 
   // (lib/queries/tax-lots.ts): a short lot gains when the price FALLS, so its
   // unrealized figure is the opening-price value minus the current value.
   // quantity_remaining is positive for a short lot (is_short is the flag).
-  const LOT_SIDE_SIGN = `(CASE WHEN tl.is_short = 1 THEN -1 ELSE 1 END)`;
+  const LOT_SIDE_SIGN = lotSideSignSql("tl");
   const harvestCandidates = (db
     .prepare(
       `WITH latest_prices AS (
