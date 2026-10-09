@@ -17,7 +17,10 @@ beforeEach(() => {
 const ACCOUNT_TOOL = {
   properties: { account_name: { type: "string" }, symbol: { type: "string" } },
 };
-// A tool schema with no account_name (like query_fred / query_market_snapshot).
+// A tool schema with no account_name (like query_fred). query_market_snapshot
+// used to be listed here; since 2026-10-08 its rows carry account, quantity
+// and value, so it takes an account_name and IS clamped (pinned against the
+// real schema in tests/chat/tools-snapshot-scope-and-twr-window.test.ts).
 const GLOBAL_TOOL = { properties: { series_id: { type: "string" } } };
 
 describe("scopeToAccountName", () => {

@@ -4,6 +4,10 @@ import { formatUSD, formatNumber } from "@/lib/format";
 import { getTaxConventionState } from "@/lib/compute/tax-convention";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 import { todayET } from "@/lib/calendar/date-utils";
+import {
+  getPortfolioCurrentValues,
+  type AccountValueSourceKind,
+} from "@/lib/queries/dashboard";
 import { liveOptionExpirationSql } from "@/lib/compute/option-expiry";
 import { CURRENCY_CONVERSION_SECURITY_SQL, USD_ONLY } from "@/lib/queries/tax-lots";
 import { longTermDateSql } from "@/lib/queries/long-term-sql";
@@ -16,11 +20,12 @@ import {
 const CONVENTION_PENDING_NOTE =
   "Note: cost-basis figures are pending a recompute under the corrected dollar convention and may be unit-inconsistent.";
 
-interface AccountValue {
-  name: string;
-  latest_value: number | null;
-  latest_date: string | null;
-}
+/** How each account's value source is named to the model. */
+const ACCOUNT_VALUE_SOURCE_LABEL: Record<AccountValueSourceKind, string> = {
+  live: "live broker value",
+  daily: "daily valuation",
+  statement: "statement",
+};
 
 interface EnrichedHolding {
   account_name: string;
@@ -100,34 +105,38 @@ export function getPortfolioSummaryForChat(db: Database.Database, accountName?: 
   const txnParams = accountId != null ? [accountId] : [];
 
   // ─── Account Values ────────────────────────────────────────────
-  const accountFilter = accountName ? `WHERE a.name = ?` : `WHERE 1=1`;
-  const accountParams = accountName ? [accountName] : [];
-
-  const accountValues = db
-    .prepare(
-      `SELECT a.name, ms.total_value AS latest_value, ms.month_end_date AS latest_date
-       FROM accounts a
-       LEFT JOIN monthly_snapshots ms ON ms.account_id = a.id
-         AND ms.month_end_date = (
-           SELECT MAX(ms2.month_end_date) FROM monthly_snapshots ms2 WHERE ms2.account_id = a.id
-         )
-       ${accountFilter}
-       ORDER BY a.id`
-    )
-    .all(...accountParams) as AccountValue[];
+  // Owner ruling 2026-10-08: the chat reads the Portfolio strip's total. The
+  // per-account selection (recent live row, else newer daily valuation, else
+  // latest statement) is the strip's own, from one shared helper, so the two
+  // surfaces cannot state different totals. A named account that matches
+  // nothing is an empty scope, never the whole portfolio.
+  const valueScope = accountName ? (accountId != null ? [accountId] : []) : undefined;
+  const portfolioValues = getPortfolioCurrentValues(db, valueScope);
 
   lines.push("### Account Values");
-  for (const av of accountValues) {
-    if (av.latest_value !== null) {
-      lines.push(`- ${av.name}: ${formatUSD(av.latest_value)} (as of ${av.latest_date})`);
+  for (const av of portfolioValues.accounts) {
+    if (av.currentValue !== null) {
+      const kind = av.sourceKind ? `, ${ACCOUNT_VALUE_SOURCE_LABEL[av.sourceKind]}` : "";
+      lines.push(`- ${av.accountName}: ${formatUSD(av.currentValue)} (as of ${av.asOfDate}${kind})`);
     } else {
-      lines.push(`- ${av.name}: No data yet`);
+      lines.push(`- ${av.accountName}: No data yet`);
     }
   }
 
-  const totalValue = accountValues.reduce((sum, a) => sum + (a.latest_value ?? 0), 0);
-  if (totalValue > 0) {
-    lines.push(`- **Total Portfolio**: ${formatUSD(totalValue)}`);
+  if (portfolioValues.totalValue > 0) {
+    const mixedDates =
+      portfolioValues.oldestDate !== null && portfolioValues.oldestDate !== portfolioValues.latestDate;
+    const asOf = portfolioValues.latestDate
+      ? ` (as of ${portfolioValues.latestDate}${
+          mixedDates
+            ? `; the accounts are valued on different dates, the oldest account value is dated ${portfolioValues.oldestDate}`
+            : ""
+        })`
+      : "";
+    lines.push(`- **Total Portfolio**: ${formatUSD(portfolioValues.totalValue)}${asOf}`);
+    lines.push(
+      "- This total is the same figure as the Portfolio strip on Today. Each account line above states its own date and source.",
+    );
   }
 
   // ─── All Holdings with enrichment ──────────────────────────────

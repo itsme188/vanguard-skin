@@ -46,6 +46,11 @@ import {
   type ReactionSnapshot,
 } from "@/lib/calendar/reaction-snapshot-core";
 import { getMarketSnapshot, fetchYahooQuotes } from "@/lib/queries/market-snapshot";
+import {
+  resolvePerformanceWindow,
+  latestStatementAnchor,
+  type PerformancePeriod,
+} from "@/lib/compute/performance-window";
 
 // research_articles.key_themes is stored JSON, but a mangled row (the
 // tag-remnant leak sanitizeThemeList/sanitizeModelSummary now guard against
@@ -312,7 +317,7 @@ export const CHAT_TOOLS: Anthropic.Tool[] = [
   {
     name: "query_twr",
     description:
-      "Compute Time-Weighted Return (TWR) and XIRR for the portfolio or individual accounts over a specified period. TWR uses chain-linked Modified Dietz (measures portfolio manager skill). XIRR uses Newton-Raphson (measures investor's actual experience, accounting for timing of deposits/withdrawals). Returns both metrics, cumulative return, annualized return, and per-account breakdown. Account names are matched case-insensitively (e.g., 'roth' matches 'Vanguard Roth IRA'). Use when asked about portfolio performance, returns, how the portfolio has done, YTD/annual returns, investment performance comparison between accounts, or whether the portfolio is beating expectations.",
+      "Compute Time-Weighted Return (TWR) and XIRR for the portfolio or individual accounts over a specified period. A fixed period (1y / 3y / 5y) is the FULL span ending at the last statement, not at today; ytd and inception run to today. The result's `window` gives the exact `start_date` and `end_date` measured: always state them with the figure (for example 'the year to Sep 30'), and never describe a fixed-period figure as running through today when `ends_at_last_statement` is true. TWR uses chain-linked Modified Dietz (measures portfolio manager skill). XIRR uses Newton-Raphson (measures investor's actual experience, accounting for timing of deposits/withdrawals). Returns both metrics, cumulative return, annualized return, and per-account breakdown. Account names are matched case-insensitively (e.g., 'roth' matches 'Vanguard Roth IRA'). Use when asked about portfolio performance, returns, how the portfolio has done, YTD/annual returns, investment performance comparison between accounts, or whether the portfolio is beating expectations.",
     input_schema: {
       type: "object" as const,
       properties: {
@@ -320,7 +325,7 @@ export const CHAT_TOOLS: Anthropic.Tool[] = [
           type: "string",
           enum: ["ytd", "1y", "3y", "5y", "inception"],
           description:
-            "Time period for TWR computation. Defaults to 'ytd'.",
+            "Time period for TWR computation. Defaults to 'ytd'. 1y / 3y / 5y end at the last statement.",
         },
         account_name: {
           type: "string",
@@ -868,10 +873,17 @@ export const CHAT_TOOLS: Anthropic.Tool[] = [
   {
     name: "query_market_snapshot",
     description:
-      "Get the latest market move (percent change vs the prior close) for the major benchmarks (SPY, QQQ, DIA) AND the user's held names. Every move is the security's PRICE move; held names carry `position` ('long' | 'short' | 'mixed'). A 'short' position (short stock or a written option) LOSES money when its price rises and gains when it falls, so never call a rising short a winner; for 'mixed' (long in one account, short in another) report the price move without calling it a gain or a loss. Call this WHENEVER the user asks what the market is doing today, how indexes/stocks moved, why something is up or down, or wants a market overview — you have NO other way to observe live or recent market action, so do not answer such questions without calling this tool. Local-first (the last close from the synced book); falls back to a live Yahoo quote when the local book is behind. The result carries an `asOf` date, a `stale` flag, a `source` ('local' | 'yahoo' | 'none'), and a `note` describing freshness. ALWAYS relay the `asOf`/freshness to the user, NEVER state moves more current than `asOf`, and if `source` is 'none' tell the user current data is unavailable rather than estimating.",
+      "Get the latest market move for the major benchmarks (SPY, QQQ, DIA) AND the user's held names. `pct` is always the security's PRICE move in percent versus the prior close. Held names come back as one row per symbol and side: `position` is 'long' or 'short', and a symbol held long in one account and short in another is TWO rows. Each held row carries `accounts`, signed `quantity`, signed `market_value` (USD) and `day_effect`: the session's dollar gain or loss on that row in USD, already signed for the position (a short LOSES when its price rises, so never call a rising short a winner). `day_effect` follows the Today page's rule: quantity held through the session is measured from the prior close, quantity opened or added during the session is measured from what it cost (`opened_today`, `added_today`, `day_effect_basis`: 'prior_close' | 'cost' | 'mixed' | 'excluded' | 'unpriced'). For dollar movers, biggest winners and losers, or what a move was worth, report the tool's `day_effect` and rank by it. NEVER multiply a percent move by a market value or a quantity yourself: that credits a position bought today with a move it did not earn. When `day_effect` is null, say it was not measured and give `day_effect_reason`; when `day_effect_partial` is true or `day_effect_reason` is set, state that caveat with the figure. Benchmarks and names not held carry the percent move only. Call this WHENEVER the user asks what the market is doing today, how indexes/stocks moved, why something is up or down, or wants a market overview — you have NO other way to observe live or recent market action, so do not answer such questions without calling this tool. Local-first (the last close from the synced book); falls back to a live Yahoo quote when the local book is behind (the fallback gives percent moves only, no dollar day effect). The result carries an `asOf` date, a `stale` flag, a `source` ('local' | 'yahoo' | 'none'), and a `note` describing freshness. ALWAYS relay the `asOf`/freshness to the user, NEVER state moves more current than `asOf`, and if `source` is 'none' tell the user current data is unavailable rather than estimating.",
     input_schema: {
       type: "object" as const,
-      properties: {},
+      properties: {
+        account_name: {
+          type: "string",
+          description:
+            "Optional: show held names for this account only. Omit for every account. Benchmarks are always included.",
+        },
+      },
+      additionalProperties: false,
     },
   },
 ];
@@ -1023,35 +1035,46 @@ export async function executeTool(
         break;
 
       case "query_twr": {
-        const today = new Date().toISOString().slice(0, 10);
-        const period = (input.period as string) || "ytd";
-        let startDate: string | undefined;
-
-        switch (period) {
-          case "ytd":
-            startDate = `${today.slice(0, 4)}-01-01`;
-            break;
-          case "1y":
-            startDate = new Date(Date.now() - 365 * 24 * 3600 * 1000).toISOString().slice(0, 10);
-            break;
-          case "3y":
-            startDate = new Date(Date.now() - 3 * 365 * 24 * 3600 * 1000).toISOString().slice(0, 10);
-            break;
-          case "5y":
-            startDate = new Date(Date.now() - 5 * 365 * 24 * 3600 * 1000).toISOString().slice(0, 10);
-            break;
-          case "inception":
-          default:
-            startDate = undefined;
-            break;
-        }
+        // Owner ruling 2026-10-08: ONE window rule, shared with the
+        // Performance view (lib/compute/performance-window.ts). A fixed period
+        // is the full span ending at the scope's last statement anchor; YTD
+        // and inception run to today. Today is the Eastern day.
+        const today = todayET();
+        const requested = typeof input.period === "string" ? input.period : "ytd";
+        const period: PerformancePeriod =
+          requested === "ytd" || requested === "1y" || requested === "3y" || requested === "5y"
+            ? requested
+            : "all";
 
         const accountId = resolveAccountId(db, input.account_name as string | undefined);
+        const anchorScope = accountId != null ? [accountId] : undefined;
+        const perfWindow = resolvePerformanceWindow(period, {
+          today,
+          lastStatementAnchor: latestStatementAnchor(db, anchorScope, today),
+        });
+        // Exactly as the Performance view calls the engines: the chain starts
+        // the day after the opening anchor, and the end is bounded only for a
+        // statement-anchored period.
+        const startDate = perfWindow.chainStartDate;
+        const endDate = perfWindow.endsAtStatement ? perfWindow.endDate : undefined;
 
-        const twrResult = computeTwr(db, { startDate, endDate: today, accountId });
-        const xirrResult = computeXirr(db, { startDate, endDate: today, accountId });
+        const twrResult = computeTwr(db, { startDate, endDate, accountId });
+        const xirrResult = computeXirr(db, { startDate, endDate, accountId });
 
         rawResult = {
+          window: {
+            period: period === "all" ? "inception" : period,
+            start_date: perfWindow.startDate ?? null,
+            end_date: perfWindow.endDate,
+            ends_at_last_statement: perfWindow.endsAtStatement,
+            note: perfWindow.endsAtStatement
+              ? `Full ${period.toUpperCase()} span from ${perfWindow.startDate} to ${perfWindow.endDate}, the last statement. Activity after ${perfWindow.endDate} is not in this figure.`
+              : period === "all"
+                ? `Since inception, to ${perfWindow.endDate} (today). The return chain itself ends at the latest statement on record (see each result's endDate).`
+                : period === "ytd"
+                  ? `Year to date: ${perfWindow.startDate} to ${perfWindow.endDate} (today). The return chain itself ends at the latest statement on record (see each result's endDate).`
+                  : `No statement on record for this scope, so the period rolls with today: ${perfWindow.startDate} to ${perfWindow.endDate}.`,
+          },
           twr: twrResult,
           xirr: xirrResult,
         };
@@ -1777,7 +1800,9 @@ export async function executeTool(
       }
 
       case "query_market_snapshot": {
-        rawResult = await getMarketSnapshot(db, { fetchQuotes: fetchYahooQuotes });
+        // `accountName` is set by the scope clamp in a single-account chat, so
+        // such a chat sees only its own account's positions.
+        rawResult = await getMarketSnapshot(db, { fetchQuotes: fetchYahooQuotes, accountName });
         break;
       }
 

@@ -330,7 +330,9 @@ describe("getMarketSnapshot universe coverage", () => {
     expect(snap.moves.find((m) => m.symbol === "SPY")?.position).toBeUndefined();
   });
 
-  it("marks a name held long in one account and short in another as mixed", async () => {
+  // Owner ruling 2026-10-08: one row per (symbol, side). This test used to pin
+  // a single row with position "mixed"; that value no longer exists.
+  it("gives a name held long in one account and short in another one row per side", async () => {
     const spyId = seedSecurity("SPY", "SPDR S&P 500 ETF");
     seedPrice(spyId, "2026-06-04", 600);
     seedPrice(spyId, "2026-06-05", 585);
@@ -349,8 +351,8 @@ describe("getMarketSnapshot universe coverage", () => {
     const snap = await getMarketSnapshot(db, { today: "2026-06-05", fetchQuotes });
 
     const rows = snap.moves.filter((m) => m.symbol === "BOTH1");
-    expect(rows.length).toBe(1);
-    expect(rows[0].position).toBe("mixed");
+    expect(rows.map((r) => r.position).sort()).toEqual(["long", "short"]);
+    expect(rows.some((r) => (r.position as string) === "mixed")).toBe(false);
   });
 });
 

@@ -301,7 +301,8 @@ Apply these when relevant:
  */
 const LIVE_MARKET_RULE = `## Live Market Data
 
-- You CANNOT observe live or intraday market action on your own, and your training data has NO knowledge of recent or current prices. To answer ANYTHING about what the market is doing today, how indexes or stocks moved, why a name is up or down, or for a market overview, you MUST call the \`query_market_snapshot\` tool — it returns the latest move (vs the prior close) for the major benchmarks (SPY, QQQ, DIA) and the user's held names, with an \`asOf\` date, a \`source\`, and a \`stale\` flag.
+- You CANNOT observe live or intraday market action on your own, and your training data has NO knowledge of recent or current prices. To answer ANYTHING about what the market is doing today, how indexes or stocks moved, why a name is up or down, or for a market overview, you MUST call the \`query_market_snapshot\` tool — it returns the latest percent price move (vs the prior close) for the major benchmarks (SPY, QQQ, DIA) and the user's held names, with an \`asOf\` date, a \`source\`, and a \`stale\` flag. Each held name is one row per side (long or short) with its accounts, quantity, market value and a dollar \`day_effect\`.
+- For dollar movers (what a move was worth, biggest winners and losers), report the tool's \`day_effect\` and NEVER multiply a percent move by a market value or quantity yourself: a position opened today is measured from its cost, not from yesterday's close. When \`day_effect\` is null or partial, say so and give \`day_effect_reason\`.
 - NEVER state today's market moves, index levels, or a security's daily change from your own knowledge. If \`query_market_snapshot\` returns \`source: 'none'\` (or \`stale: true\`), tell the user the current data is unavailable / give the as-of date — DO NOT invent figures.
 - ALWAYS relay the \`asOf\` date so the user knows how current the numbers are. The local book's latest value is an end-of-day close, not an intraday quote — say so.`;
 
@@ -329,7 +330,7 @@ Available tools:
 - **query_transactions**: Search trade history by type, symbol, date range
 - **query_performance**: Get monthly account values, monthly_change, investment_change (excludes cash flows), dividends, interest, fees
 - **query_income_summary**: Aggregate dividend/interest/fee income by symbol, account, or month. Filterable by account.
-- **query_twr**: Compute TWR (time-weighted, measures manager skill) and XIRR (money-weighted, measures investor experience) for portfolio or specific accounts over YTD, 1Y, 3Y, 5Y, or since inception. Returns both metrics. Account names matched case-insensitively.
+- **query_twr**: Compute TWR (time-weighted, measures manager skill) and XIRR (money-weighted, measures investor experience) for portfolio or specific accounts over YTD, 1Y, 3Y, 5Y, or since inception. Returns both metrics. Account names matched case-insensitively. 1Y / 3Y / 5Y are the full span ending at the last statement (not today): always state the \`window\` start and end dates the tool returns.
 - **query_fred**: Fetch economic data from FRED (Federal Reserve). Use for interest rates (DGS10, FEDFUNDS, DTB3), inflation (CPIAUCSL, T10YIE), market indices (SP500, VIXCLS), GDP, unemployment, and 800K+ other series. Can search by keyword if you don't know the series ID.
 - **query_company_fundamentals**: Look up company financials from SEC EDGAR (10-K/10-Q). Returns revenue, net income, EPS, assets, liabilities, equity, shares outstanding. Use for fundamental analysis of portfolio holdings.
 - **query_insider_trades**: Look up recent insider trading (SEC Form 4) for any stock. Returns insider name, title, buy/sell, shares, price, and post-transaction ownership. Use for insider buying/selling signals and executive activity.
@@ -468,7 +469,7 @@ Available tools:
 - **query_research_feeds**: Search ingested financial newsletter articles from Gmail (Vital Knowledge, Stratechery, The Diff, etc.). Returns summaries, sentiment, tickers, and themes.
 - **query_calendar_events**: Query upcoming or past market events — FOMC, CPI, jobs, GDP, PMI, earnings, etc. PROACTIVELY use for any time-sensitive market discussion.
 - **query_calendar_briefings**: Retrieve weekly AI-generated market briefings with narrative context. Use for "what happened last week" or historical market recaps.
-- **query_market_snapshot**: Get the latest move (vs prior close) for the major benchmarks (SPY, QQQ, DIA) + the user's held names, local-first with a live Yahoo fallback. This is your ONLY window into recent/live market action — use it for any "what's the market doing" question.
+- **query_market_snapshot**: Get the latest percent price move (vs prior close) for the major benchmarks (SPY, QQQ, DIA) + the user's held names (one row per side, with a dollar \`day_effect\` to report as given), local-first with a live Yahoo fallback. This is your ONLY window into recent/live market action — use it for any "what's the market doing" question.
 
 ## Financial Conventions
 
