@@ -40,7 +40,7 @@ function setupDb(): Database.Database {
       triggered_at TEXT, triggered_price REAL, user_response TEXT, suggested_action TEXT);
     CREATE TABLE security_levels (id INTEGER PRIMARY KEY, level_type TEXT, price REAL,
       price_source TEXT, source_author TEXT);
-    CREATE TABLE securities (id INTEGER PRIMARY KEY, symbol TEXT, name TEXT, security_type TEXT);
+    CREATE TABLE securities (id INTEGER PRIMARY KEY, symbol TEXT, name TEXT, security_type TEXT, currency TEXT);
     CREATE TABLE holdings (id INTEGER PRIMARY KEY, security_id INTEGER, quantity REAL);
     CREATE TABLE watchlist (id INTEGER PRIMARY KEY, security_id INTEGER, is_active INTEGER);
   `);
