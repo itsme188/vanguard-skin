@@ -312,7 +312,7 @@ export function ScenarioModelingCard({ scope }: { scope?: string }) {
                       {result.liveNowReason && (
                         <span
                           className="text-[10px] px-1.5 py-0.5 rounded border bg-amber/20 text-amber border-amber/40 uppercase tracking-wide"
-                          title={`Live theme: ${result.liveNowReason}`}
+                          title={`Live theme${result.liveNowReason.includes("; ") ? "s" : ""}: ${result.liveNowReason}`}
                         >
                           live now
                         </span>

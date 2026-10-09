@@ -805,8 +805,10 @@ export function findRecipe(id: string): ScenarioRecipe | undefined {
  *
  * - Returns a NEW array (never mutates input).
  * - When themes is empty every recipe gets `liveNowReason: undefined`.
- * - Direction is not filtered: any active theme whose factor_label matches
- *   makes the scenario "live" regardless of risk-on / risk-off direction.
+ * - Direction must agree: a downside scenario (negative shock) is live only
+ *   for a risk-off or neutral theme; an upside scenario only for risk-on or
+ *   neutral. A rally theme never marks a sell-off scenario live.
+ * - When several compatible themes match, liveNowReason names all of them.
  */
 export function matchScenariosToThemes(
   recipes: ScenarioRecipe[],
@@ -816,8 +818,12 @@ export function matchScenariosToThemes(
     return recipes.map((r) => ({ ...r, liveNowReason: undefined }));
   }
   return recipes.map((r) => {
-    const match = themes.find((t) => t.factor_label === r.primaryFactor);
-    if (!match) return { ...r, liveNowReason: undefined };
-    return { ...r, liveNowReason: match.name };
+    const compatible = themes.filter((t) => {
+      if (t.factor_label !== r.primaryFactor) return false;
+      if (t.direction === "neutral") return true;
+      return r.shockMagnitude < 0 ? t.direction === "risk-off" : t.direction === "risk-on";
+    });
+    if (compatible.length === 0) return { ...r, liveNowReason: undefined };
+    return { ...r, liveNowReason: compatible.map((t) => t.name).join("; ") };
   });
 }

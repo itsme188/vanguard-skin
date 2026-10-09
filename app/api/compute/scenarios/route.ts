@@ -30,8 +30,13 @@ export async function GET(request: NextRequest) {
 
     // All scenarios — decorate with "live now" reason from cached macro themes
     const results = computeAllScenarios(db, { accountIds });
+    // The week key must match the one the themes were cached under (the
+    // macro-themes route and cash-deploy use this same expression). Moving it
+    // to the Eastern day has to happen in every reader and the writer at once.
     const weekOf = mondayOf(new Date().toISOString().slice(0, 10));
-    const cached = getCachedMacroThemes(db, scope ?? "all", weekOf);
+    // The badge is scope-independent: always the 'all' themes, whatever scope
+    // the exposure figures were computed for. No cached 'all' themes = no badge.
+    const cached = getCachedMacroThemes(db, "all", weekOf);
     const activeThemes = cached ? (JSON.parse(cached.themesJson) as Array<{ name: string; factor_label: string; direction: string }>) : [];
     const decoratedRecipes = matchScenariosToThemes(SCENARIO_RECIPES, activeThemes);
     const liveNowMap = new Map(decoratedRecipes.map((r) => [r.id, r.liveNowReason]));
