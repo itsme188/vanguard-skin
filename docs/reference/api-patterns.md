@@ -46,7 +46,9 @@ an inline message beside the control. These are designed outcomes, not failures:
 `POST /api/earnings/release-time` `slot_mismatch` (without `force`); `POST /api/earnings/actuals`
 `pre_print` (the caller offers `force`); `POST /api/earnings/correct-date` refusals;
 `POST /api/reconciliation` `checkpoint_exists`; `POST /api/research/documents` on a duplicate
-upload; `POST` / `PATCH /api/calendar/events` `would_supersede_vendor`. The browser logs
+upload; `POST` / `PATCH /api/calendar/events` `would_supersede_vendor`; `PATCH /api/levels`
+`{ action: "deactivate" }` on a level that is not armed; `POST /api/earnings/confirm-date` on a
+past or too-distant date. The browser logs
 "Failed to load resource" for any non-2xx response, so each of these leaves a console line; the QA
 sweep should not file them as console errors.
 
@@ -237,7 +239,14 @@ is the full 10-route "service" set per `lib/auth/route-policy.ts`'s `CRON_ROUTES
 - `GET /api/compute/scenarios?accountId=&scenario=` — scenario modeling (9 presets: crash, rate
   shocks, rally, sector rotation).
 - `POST /api/compute/scenarios` — custom what-if scenario.
-  Body: `{ marketMove, rateMove?, sectorMoves?, name? }`.
+  Body: `{ marketMove, rateMove?, sectorMoves?, volMove?, name? }`.
+  - **Inputs are bounded on the server (2026-10-08).** A market move, a rate move or a sector move
+    outside its bound, or one that is not a finite number, answers **400** with a sentence naming
+    the field and its range; nothing is clamped. The bounds live in
+    `lib/compute/scenario-input-bounds.ts` (`SCENARIO_INPUT_BOUNDS`, `customScenarioBodyProblem`)
+    and the custom form reads the same file for its input limits. `marketMove` and each sector
+    move are decimal fractions; `rateMove` is basis points. Test:
+    `tests/api/scenarios-route-validation.test.ts`.
 - `GET /api/compute/fixed-income` — bond exposure: weighted avg duration, credit quality breakdown,
   bond positions.
 - `GET /api/compute/options-greeks?accountId=` — portfolio + per-position Greeks (delta, gamma,
@@ -389,6 +398,12 @@ Sonnet narrative prose per (scope, surface, week) cached in `analysis_narratives
   `level_type`, `price`, `price_source`, `direction`, `action_hint`, `source`, `source_author`,
   `thesis`, `timeframe`, `expires_at`, `group_id`, `notes`).
 - `PATCH /api/levels` — update OR pass `{ id, action: "deactivate" | "reactivate" }` for state flips.
+  - A missing level answers 404 on every branch.
+  - **Pause refusal (2026-10-08):** `deactivate` on a level whose review status is not
+    `auto_approved` (a pending or rejected level) answers **409** with a plain sentence and writes
+    nothing: a level that is not armed has nothing to pause. One rule, `levelPauseRefusal`
+    (`lib/levels/action-visibility.ts`), read by the route and the panel. Test:
+    `tests/api/levels-route-pause-refusal.test.ts`.
 - `DELETE /api/levels?id=` — hard delete a level.
 - `POST /api/levels/extract` — Claude scans recent unscanned `research_articles` for ticker+level
   mentions against held+watchlist symbols.
@@ -414,7 +429,16 @@ Sonnet narrative prose per (scope, surface, week) cached in `analysis_narratives
 - `POST /api/alerts/detect` — manual run of `detectAndFireAlerts` (the auto-refresh pipeline runs
   this automatically as Step 6).
 - `POST /api/alerts/suggest` — Claude generates a one-sentence recommendation for an alert. Body
-  `{ alertId? }` for single, otherwise fills all pending alerts without a suggestion.
+  `{ alertId?, limit? }` for single, otherwise fills up to `limit` (default 20) pending alerts
+  without a suggestion.
+- `POST /api/alerts/suggest?id=<alert id>` — **regenerate one alert's stored advice (2026-10-08).**
+  One AI call, behind a per-alert rate limit (`claimRegenerateSlot`, `REGENERATE_WINDOW_MS`, in
+  memory; the slot is released when the call fails, so a transient error does not use up the
+  window). 400 for a bad id, 404 for an unknown alert, 429 when asked again too soon, 502 when the
+  model call fails; on 502 the old advice is kept. Used by the regenerate control on
+  `/dashboard/alerts`. Logic: `regenerateSuggestionForAlert` (`lib/alerts/generate-suggestion.ts`).
+  A dry-run-default script, `scripts/repair-alert-suggestions.ts`, finds stored advice that quotes
+  a stale price (written, not run). Test: `tests/alerts/regenerate-alert-advice-d5.test.ts`.
 
 ---
 
@@ -499,8 +523,19 @@ hours by `com.vanguard-skin.research-sync.plist`.
   - Body: `{ to?, mode?: "today" | "since_last" | "since_date", sinceDate? }`. Default (no mode) =
     last 24h.
   - Records `last_digest_sent_at` in the `settings` table.
-- `GET /api/digest/preview?since=` — read-only digest preview. Returns the morning digest content
-  rendered two ways in one fetch: `{ bySourceHtml, byCompanyHtml, since, empty }`.
+- `GET /api/digest/preview?since=` — read-only digest preview, no AI call. Returns the morning
+  digest content rendered two ways in one fetch: `{ bySourceHtml, byCompanyHtml, structuredHtml:
+  null, since, empty, caps }`.
+  - **`caps` (2026-10-08)** is each layout's article cap, `{ structured, bySource, byCompany }`,
+    so the viewer's caption can name the cap for the tab on screen. The cap constants live in
+    server modules a client component must not import. Test: `tests/api/digest-preview-caps.test.ts`.
+  - **With no `since`, the window is the sender's own** (`resolveDigestSince` /
+    `defaultDigestSince`, `lib/digest/digest-window.ts`), so the preview shows what a send would
+    cover. Both senders read the same rule.
+- `POST /api/digest/preview?since=` — the same response plus the STRUCTURED layout
+  (`structuredHtml`, `synthesisFallback`). This is the paid path: one AI synthesis when enough
+  commentary is in the window. The viewer calls it only on a click (2026-10-08); opening the modal
+  runs the GET alone.
   - Used by the `<DigestEmailViewer>` modal (mounted as the "Preview" button on the Research Feeds
     toolbar) for client-side toggling between layouts without a re-fetch.
   - By-source uses the existing `generateDigestSince`; by-company uses `generateDigestByCompanySince`
@@ -597,6 +632,30 @@ Earnings whose Finnhub × Nasdaq dates disagree awaiting IBKR confirmation, next
   mobile-reachable resolution surface reusing `EarningsDateChip` (which gained `onConfirmed` for
   client-fetched lists + `popoverAlign="right"` for right-edge chips; popover is z-[55] per the
   chat-rail precedent).
+
+### `POST /api/earnings/confirm-date`
+
+Record the earnings date the user confirmed. Thin wrapper over `confirmEarningsDate`
+(`lib/mutations/confirm-earnings-date.ts`). In-app (no cron auth). Idempotent.
+
+- Body: `{ symbol, confirmedDate: "YYYY-MM-DD", confirmedTime?: "bmo" | "amc" | "HH:MM" }`.
+- Writes a locked, user-confirmed hand-entered row and hides the conflicting vendor rows for that
+  name. Later syncs never revert it.
+- 400 for a bad body. **409** with the mutation's reason when the date is in the past or too far
+  ahead.
+- **Result fields (2026-10-08):** `{ success: true, data: { eventId, eventDate, ... } }`. `eventId`
+  is the one row that now carries the confirmed date. When the name already had ONE other showing
+  hand-entered row for the same upcoming print, one of these is also present:
+  - `movedEventId` — that row was moved onto the confirmed date (same id as `eventId`);
+  - `deletedEventId` — a hand-entered row already sat on the confirmed date, so the other row was
+    folded into it and deleted;
+  - `foldedEventId` plus `note` — the other row was folded but something was still attached to it,
+    so it was left hidden, not deleted. `note` names what remained (for logs).
+- **`notice`** is a plain sentence for the user, present when the confirm could not tidy up fully:
+  a kept entry (with the reason), or several hand-entered dates that nothing could choose between.
+  The conflict marker and the Hub's date chip show it.
+- Rules and the typed-time behaviour: `earnings-pipeline.md` §5. Tests:
+  `tests/api/earnings-confirm-date-route.test.ts`, `tests/mutations/confirm-earnings-date.test.ts`.
 
 ### `POST /api/earnings/correct-date`
 
@@ -776,6 +835,14 @@ trusted `Origin` on unsafe methods); none has a `lib/auth/route-policy.ts` entry
   `windowExtendedUntil` / `effectiveWindow` / `goRequest` (C), `read` / `activeRead` / `lastAttempt` / `callouts`
   (D), and `outputs` (E: `printSheet { enabled, reason }`, `sendRecap { enabled, reason, state, providerMessageId }`
   — the ONLY source the Today buttons render from, so a dark button and its route's refusal can never disagree).
+- `GET /api/print-watch/record?eventId=<id>` — **PURE READ (2026-10-08).** One event's print in whatever state
+  it is in, its sheet lines, a document-id-to-kind map and the same `outputs` evaluation the status route sends
+  (`getPrintRecord`, `lib/earnings/print-record.ts`). The status route stops listing a finished print once its
+  event date is no longer today, on purpose; this is the scoped read an armed Hub row uses to show a read-only
+  record of such a print. 400 when `eventId` is not a positive whole number. An event with no print answers 200
+  with `print: null` ("nothing was captured" is an ordinary answer). A human route by the proxy's default
+  classification; no `route-policy` entry. Tests: `tests/api/print-watch-record.test.ts`,
+  `tests/print-watch/print-record.test.ts`.
 - `POST /api/print-watch/ensure` — keeps the in-process watcher lease alive (the Hub polls it every 60 s).
 - `POST /api/print-watch/drop` — a dropped release file or a pasted `url` (B; SSRF-hardened fetch).
 - `POST /api/print-watch/accept` — accept a line / a candidate, un-accept, `promoteHeadline` (validates inside an

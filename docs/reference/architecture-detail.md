@@ -59,7 +59,10 @@ The LightweightCharts security chart re-reads `localization.priceFormatter` + th
 - `NearbyLevelsCard` (armed levels within 5%)
 - full-width chat launcher (`OpenChatButton` → `toggle-mobile-chat` event)
 - IBKR holdings sorted by `|today_gain|` desc (today's move: latest close − prior close, via a
-  ROW_NUMBER() CTE over `prices` picking rn=1 and rn=2) with a `data_quality` chip
+  ROW_NUMBER() CTE over `prices` picking rn=1 and rn=2) with a `data_quality` chip. Since
+  2026-10-08 a quantity opened or added since the prior close is measured from its cost, not from
+  the prior close, and is left out when its cost is unknown (`lib/compute/day-move.ts`, the one
+  rule; see `conventions-detail.md`). The per-name list now lives on Accounts; Today keeps one line.
 
 `MobileBottomNav` maps Today to the leftmost slot (sun icon). **Today is the default landing**:
 Electron `main.ts` loads `/dashboard/today`; the desktop tab nav has Today as the leftmost tab
@@ -76,8 +79,9 @@ URL), a "This week" pill visible only off the current week (keyed on the RESOLVE
 micro-label (Week ahead / Past week / Upcoming week), and a past-week-aware empty message.
 
 This is the Calendar Living Record's only week-level browse path — enriched past weeks (actuals +
-reactions) are reachable here. Known display gap, filed pre-classified: the week view doesn't yet
-render `reaction_snapshot` percentages (`today-week-ahead--reaction-snapshots-never-render`).
+reactions) are reachable here. The week view renders the reaction line through the shared chips
+(`app/dashboard/components/calendar/EnrichmentChips.tsx`), only for a released event whose snapshot
+was measured on its own date, and shows "pending" for a leg that is not a measurement yet.
 
 ## Securities, watchlist, levels
 
@@ -213,6 +217,14 @@ was already +8% post-news, and the email reported the fade as −4.8% when the d
 "consistency"-refactor the asymmetry. `composeReleaseInstant` does DST-aware ET→UTC so release
 timestamps and bar timestamps stay in one reference frame. The `ReactionSnapshot.source`
 discriminator is `"tws" | "polygon" | "yahoo"`.
+
+**No reaction before release plus two hours (owner ruling 2026-10-08).** A reaction is the move to
+release + 120 minutes, so nothing is captured before then, for earnings and macro rows, on the Mac
+and the Worker (`REACTION_READY_MS`). Each stored snapshot records `captured_at`. A row marked done
+before its window ended gets its reaction from a reaction-only follow-up pass between release + 120
+and release + 150 minutes. `lib/calendar/reaction-validity.ts` is the one place that says whether a
+stored leg is a measurement yet; screens show "pending", never a percent, for a leg that is not.
+Detail: `earnings-pipeline.md` §1.
 
 ### Candidate windowing — why the filter is in JS, not SQL
 

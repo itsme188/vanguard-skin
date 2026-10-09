@@ -33,7 +33,8 @@ Contents:
 Earnings rows (`source='finnhub'` OR `event_type='earnings'`) retry **every** enrichment tick
 (10-min pacing via `calendar_events.enrichment_attempted_at`) until COMPLETE.
 
-- **COMPLETE** = actual captured AND (reaction captured OR release ≥150 min ago).
+- **COMPLETE** = actual captured AND (reaction captured OR release ≥150 min ago;
+  `REACTION_SETTLE_MS` = `REACTION_RECAPTURE_HORIZON_MS`).
 - `enriched_at` stamps **ONLY** on completion, which is what opens the recap `[enriched_at, +4h]`
   window — so recaps go out after the call, and a blocked row (`enriched_at` NULL) is reopened by a
   manual `POST /api/earnings/actuals`.
@@ -41,9 +42,42 @@ Earnings rows (`source='finnhub'` OR `event_type='earnings'`) retry **every** en
 
 ### Reaction-capture gate
 
-Reaction capture is gated to **≥T+115m for earnings rows only** (`REACTION_READY_MS`, 2026-07-06):
-bars target `t_post = release + 120m`, so earlier attempts were guaranteed-empty TWS/Yahoo rounds per
-retry tick. Macro rows are **NEVER** gated — their immediate partial capture is by design.
+**No reaction is captured before release plus two hours, for every row (owner ruling 2026-10-08).**
+A reaction is the move from just before a release to the price 120 minutes after it. Until that
+moment has passed there is nothing to measure. `REACTION_READY_MS` (`lib/calendar/enrichment-runner.ts`,
+120 minutes) gates earnings AND macro rows; the Worker carries the same constant
+(`workers/cron/src/cloud-enriched.ts`, used in `calendar-enrich.ts`). History: the gate was 115
+minutes and earnings-only, and macro rows were never gated, so a macro row could store a "reaction"
+read minutes after its release.
+
+- **Each stored snapshot records when it was captured** (`captured_at`, both sides).
+  `admitCapturedReaction` is the last check before a write.
+- **Reaction-only follow-up** (`runReactionFollowUp`). The main pass only sees rows with
+  `enriched_at IS NULL`. A row marked done before its window ended (every macro row is; an earnings
+  row is when a cloud actual stamps it early) gets its reaction between release + 120 and release +
+  150 minutes. The follow-up writes `reaction_snapshot` only where it is still NULL, never fetches an
+  actual, never touches `enriched_at`, and never sends anything.
+- **One home for "is this a measurement yet?":** `lib/calendar/reaction-validity.ts`. The capture
+  gate, the cloud reconcile (`assessReactionSnapshot`) and the on-screen chips (`reactionLegState`,
+  which show "pending", never a percent) all read it. For an older snapshot with no `captured_at`,
+  a pre/post pair with the identical price is not trusted, and a leg that rounds to zero on a row
+  stamped before its window could have been measured is not trusted either.
+- **Every reader that turns a snapshot into text goes through `readReactionLegs`** (same file): the
+  earnings email composer (scoreboard, recap prompt, read-through bullets), the weekly briefing,
+  the macro-themes event line, the chat tool and the email viewer's rebuilt scoreboard. It returns
+  the measured legs and names the pending ones. **Outbound text and prompts omit a pending leg;**
+  when no leg is measured the recap uses its not-yet-captured wording. Only in-app surfaces (the
+  email viewer, the chat tool, the chips) may say "pending". The push composer
+  (`lib/alerts/print-push-message.ts`) is import-free by design and carries its own copy of the
+  snapshot-only part of the rule, as does its Worker mirror. A snapshot whose legs are all
+  measured renders exactly as before.
+- **Repair script, written and not run:** `scripts/repair-premature-reaction-snapshots.ts`
+  (dry-run default) lists stored snapshots that were captured too early.
+
+Tests: `tests/calendar/reaction-validity.test.ts`,
+`tests/calendar/reaction-pending-text-readers.test.ts`,
+`tests/calendar/enrichment-runner-reaction-window.test.ts`,
+`tests/calendar/cloud-reconcile-reaction-validity.test.ts`, `workers/cron/test/calendar-enrich.test.ts`.
 
 ### Do not regress
 
@@ -197,8 +231,95 @@ Builds the owner's 2026-09-14 ruling. In `lib/calendar/reconcile-earnings-dates.
 
 Tests: `tests/calendar/reconcile-manual-rows-a14.test.ts`,
 `tests/dashboard/earnings-date-chip-hand-entered.test.tsx`. The chip was not seen in a browser.
-**Open:** a feed twin outside the reconciler's window, and a confirmed vendor row against a
-hand-entered row on the same date (owner questions in `docs/plans/TODO.md`).
+Both questions left open here on 2026-10-07 were ruled and built on 2026-10-08: a feed twin outside
+the reconciler's window is hidden at write (`docs/reference/calendar.md` §5), and on one date a
+hand-entered row beats a vendor row the user confirmed, whatever order they were written in
+(`resolveCluster`, rung 1).
+
+### Same-date duplicates: a real slot beats a default time (2026-10-08)
+
+Two vendors often list one print. Finnhub sometimes gives no hour, and the sync then stores the
+after-close default. Before this ruling the Finnhub row always won an agreeing pair, so a print the
+other vendor knew was before the open showed as an afternoon print.
+
+- **The rule lives in one function:** `pickSameDateWinner` (`lib/calendar/reconcile-earnings-dates.ts`).
+  Among rows on ONE date, the row the older rule kept stays unless it has no real slot and another
+  row on that date has one. A "real slot" is an explicit before-open or after-close marker
+  (`hasRealSlot`, read through `deriveEarningsSlot` with no release-time fallback). When both rows
+  have a slot, or neither has, nothing changes.
+- **It holds after the print too.** Every row on the reported date competes, not only the rows that
+  already show an actual. Otherwise the winner flipped back when the first vendor posted its actual.
+- **Duplicate check only.** The read-time pickers that prefer one vendor before a reconcile pass
+  runs (two of them in the Worker) are unchanged. The loser is hidden by the ordinary fold on the
+  next pass; no slot is edited in place.
+- **So the kept row is not always Finnhub's.** Do not write a reader that assumes it is.
+
+**What a kept non-Finnhub row needs from its hidden Finnhub twin.** The fold copies consensus,
+actual and reaction columns and nothing else. `createFinnhubDataCarrier` adds the rest onto a kept
+Nasdaq or hand-entered row: the Finnhub keys of `raw_json` that readers use (symbol, estimates,
+fiscal quarter and year), the description text the weekly briefing prompt reads, and the revenue
+part of the consensus text (Nasdaq rows only). Rules:
+
+- Only what the kept row lacks is written. The slot, the date and the vendor's actuals are never
+  carried.
+- Everything carried is recorded on a marker in the kept row's `raw_json` (`finnhub_carried`) and
+  follows the Finnhub row from then on: refreshed when it changes, removed when the Finnhub row no
+  longer states it. Text a person typed over a carried value is theirs and is left alone.
+- A zero revenue estimate is the vendor's placeholder and is never carried.
+- A settled pair writes nothing, so a second pass is a no-op.
+- **The copy is not durable on its own.** A weekly sync replaces the kept vendor row's `raw_json`
+  and description; the reconcile pass at the end of that sync restores the copy.
+
+**A reader that cannot tolerate that gap reads the hidden twin directly.** `findHiddenFinnhubDonor`
+returns the hidden Finnhub row for the same print (issuer family, within the clustering distance,
+nearest date then lowest id; the carrier uses the same picker, `pickFinnhubDonor`). The vendor
+consensus prepare step (`resolveVendorConsensus`, `lib/earnings/prepare-steps/consensus-row.ts`)
+reads it and never the copy: reading the copy during a sync looked like the vendor withdrawing its
+figures and deleted the event's vendor bogey. "Withdrawn" is concluded only when a Finnhub source
+for the print exists and says so.
+
+**The weekly briefing lists the kept row whatever its source** (`lib/calendar/briefing-partition.ts`;
+the block between its BEGIN and END markers is carried byte-for-byte in
+`workers/cron/src/fallback-briefing.ts`). A share-class pair lists once.
+
+Tests: `tests/calendar/reconcile-slot-beats-default.test.ts`,
+`tests/calendar/reconcile-carry-finnhub-data.test.ts`, `tests/earnings/consensus-row-donor.test.ts`,
+`tests/calendar/briefing-canonical-earnings.test.ts`,
+`workers/cron/test/fallback-briefing-partition.test.ts`.
+
+### Confirming a different date leaves one hand-entered row (2026-10-08)
+
+`confirmEarningsDate` (`lib/mutations/confirm-earnings-date.ts`, behind
+`POST /api/earnings/confirm-date`). Before, confirming another date wrote a second hand-entered row
+and left the first one showing. Now it looks for the symbol's OTHER showing hand-entered rows for
+the same upcoming print (`samePrintManualRows`: this exact symbol, dated today or later, within
+`SAME_PRINT_WINDOW_DAYS` of the confirmed date, not yet reported):
+
+- **Exactly one, and the confirmed date is free:** that row MOVES to the confirmed date and keeps
+  its id, so its bogeys, emails, skips, arm and notes stay attached (`movedEventId`).
+- **Exactly one, and a hand-entered row already sits on the confirmed date:** the confirmed row is
+  updated in place, the other row's records are folded onto it (`createTwinFolder`, the
+  reconciler's own fold), and the emptied row is DELETED (`deletedEventId`). Hiding it would not
+  last: the next pass shows every hand-entered row dated today or later.
+- **Before the delete, every table is counted** (`remainingEventDependents`). Each foreign key onto
+  a calendar event cascades, so a delete never fails; it would silently take whatever the fold left
+  behind. The list of tables is read from the schema, so a table added later is covered. If anything
+  is still attached (a preview already sent for the old date, for example) the row is NOT deleted:
+  it stays hidden (`foldedEventId`), `note` names what remained for the log, and `notice` tells the
+  user in plain words (`keptEntryNotice`).
+- **Two or more:** nothing is moved or hidden, and `notice` says so.
+- **A typed clock time is kept** when the confirm picks the same slot or names no time. Picking the
+  other slot is a deliberate change and stores that slot's default. Two stored shapes count as
+  typed: a clock in `event_time`, or a slot word in `event_time` with a non-default clock in
+  `release_time` (`typedTimeOf`).
+- Sync-owned rows are never moved; the reconcile that follows hides them as before.
+
+**Known gap:** a preview email or skip recorded for the old date stays attached to a moved row, so a
+move to a later date gets no second preview. Left on purpose; detaching it changes what is sent and
+needs an owner ruling.
+
+Tests: `tests/mutations/confirm-earnings-date.test.ts`, `tests/api/earnings-confirm-date-route.test.ts`,
+`tests/dashboard/earnings-conflict-marker.test.ts`.
 
 ### Slot floors, not the stored release time (`154eb81`, 2026-08-28)
 
@@ -373,6 +494,30 @@ path is never invoked for it in a later pass, so no marker would ever be written
 `reapStaleEarningsEmailClaims` itself returns `flipped: Array<{eventId, phase}>`, and
 `runEarningsEmailSweep` writes one mac-sent marker per flip immediately after the reap call
 (fail-open, same tick).
+
+### Same-company sibling check (2026-10-08)
+
+Two rows for one print can both be showing for a short time in each weekly sync (a vendor row is
+re-written before the reconcile pass hides it again), and they can sit at different times of day.
+Each row checked only its own audit rows, so one print could get two previews.
+`phaseHandledOnSibling` (`lib/calendar/enrichment-runner.ts`) closes that: `findEmailCandidates`
+drops a preview or recap candidate when any OTHER earnings row of the same issuer family on the same
+date already has an `earnings_emails` row or an `earnings_email_skips` row for that phase.
+
+- **It can only remove a candidate, never add one.** It reads no state value, on purpose: any audit
+  row counts, exactly as for the row's own key.
+- Family, not symbol equality (`issuerSiblings`). Not applied to the read-through reporter scan, the
+  debrief or the wrap. The two-hand-entered-rows rule (`manual-twin-email.ts`) is separate.
+
+- **The Worker asks the same question.** `siblingEventIndex` (`workers/cron/src/fallback-earnings.ts`)
+  maps each row to the other earnings rows of the same issuer family on the same date, and the
+  cloud finder checks each sibling the way it checks the row itself: the snapshot's earnings-email
+  rows and the KV markers (Mac sent, cloud sent, Mac running). Known limit: the snapshot does not
+  carry skips, so a skip recorded on a sibling is not seen in the cloud (the same limit as a skip
+  on the row itself).
+
+Tests: `tests/calendar/findEmailCandidates-sibling-handled.test.ts`,
+`workers/cron/test/fallback-earnings-sibling-handled.test.ts`.
 
 Every new reader must exclude live claims via `isLiveClaim` / `notLiveClaimSql`
 (pattern: `getSentPhasesForEvents` / `getEmailAudit`) — never a literal.
@@ -1028,6 +1173,33 @@ renders collapsed with no accept control) and it cannot reach promote or any
 outbound send. The route is outside slice F's edit list; the fix has to gate
 on the `~retired~` id substring rather than on `state`, because `state` is what
 the bug flips.
+
+## An armed row after its print: the read-only record (2026-10-08)
+
+**Why it was empty.** `getWatchStatus` (`lib/print-watch/watcher.ts`) lists active prints and the
+prints that expired TODAY, and nothing older. That feed also drives the poll interval, the live
+countdown and the ensure route's count, so it is not widened. An armed Hub row expanded the morning
+after its print therefore had no print to show.
+
+**The scoped read.** `getPrintRecord(db, eventId)` (`lib/earnings/print-record.ts`) returns one
+event's print in whatever state it is in, its sheet lines, a map from document id to document kind,
+and the same output-button evaluation the status route sends. It only reads. It sits beside
+`print-outputs.ts`, not under `lib/print-watch/`, because it reads the send audit through
+`lib/digest` and no print-watch module may import that tree
+(`tests/repo/print-watch-import-boundaries.test.ts`). Route: `GET /api/print-watch/record?eventId=`
+(see `docs/reference/api-patterns.md`).
+
+**What the row shows.** `slotBodyKind` (`app/dashboard/today/live-print/helpers.ts`) picks the
+record when the row is armed, has no live print, and its event date is before today (Eastern). A
+finished print dated today still arrives through the live feed. `PrintRecordView` in
+`LivePrintRow.tsx` renders a window-closed header, the lines the desk accepted plus the lines two
+independent readings agreed on (`recordLines`; each says in words whether it was accepted or only
+agreed), each figure's source document, and the output buttons. Accepting and promoting are closed:
+the promote control is permanently disabled with the reason in its title. An event with no print
+says nothing was captured.
+
+Tests: `tests/print-watch/print-record.test.ts`, `tests/api/print-watch-record.test.ts`,
+`tests/dashboard/live-print-record.test.ts`, `tests/dashboard/earnings-hub-live.test.ts`.
 
 ## Transcripts: fiscal keys and the stated-quarter guard (2026-10-07)
 
