@@ -1003,3 +1003,23 @@ Thirteen more commits under the same authority, merged the same night. One Codex
 **Not seen in a browser:** the rotate-credential dialog (packaged app only), the corporate-action undo dialog (no hand-entered action on file), the vendor-row removal wording and every Hub dialog (no earnings rows this week on the sandbox), the staleness notice.
 
 **Ledger hygiene noticed, not changed:** 491 older rows are marked fixed with no fix commit; two pairs of duplicate ids; nine fix-commit values are free text.
+
+## 2026-10-09 (after midnight) — Second overnight sprint, fourth wave: no real-looking figures in committed docs or tests
+
+Three commits, merged the same night, plus work on the held pull request.
+
+**Built.**
+- **Committed documents:** sixteen files had real-looking balances, flows, position sizes and lot figures rewritten to direction-only wording; two plans had real tickers with real-looking sizes swapped for synthetic names. Public market data, clearly synthetic examples and plain counts were left.
+- **Committed tests:** 64 test files and 3 fixtures had real-looking position data replaced with invented data (a bond lot, shorts and options on real tickers, a foreign listing and its figures, account snapshots, monthly returns, split fills, a mock statement fixture). Every dependent expected value was recomputed by hand. The assertion count went up, no test was removed, none is skipped. Nothing under the real-data folders was opened: the judgement was by shape.
+- **Code:** a defined empty account list means no accounts in the risk path, the concentration universe, the factor heatmap, flows and seam dates (a digest over every reader shows no change for any real scope). The Significant Moves coverage line counts only the types the engine checks.
+- **PR #107 (still held, not merged):** brought up to date with `main`; a macro actual never prints as negative zero; a refused macro actual shows a quiet line on its card; the three migrations were rehearsed on a copy of the live database with every check clean (in the pull request description).
+
+**Investigated and not built.** Retiring the "duplicate" of a monthly release that appears on two dates. The stored data shows the source lists more than one real date per month for several monthly releases, some with different actuals, so the rule would delete real scheduled releases and flap between syncs. It needs a per-release decision and a check against the live source.
+
+**For the owner: real-looking data that is still in committed SOURCE files.** These were found by the test sweep and NOT edited, because they are in the protected import pipeline or are live constants in repair scripts. The repository is public.
+- `lib/import/parsers/vanguard-export.ts` and `lib/import/parsers/vanguard-cost-basis.ts` hold a full account number as a live lookup key that maps to an account name; `lib/import/parsers/vanguard-pdf.ts` has a comment example whose last digits match it. This is the most serious one. The fix is to move the mapping to a gitignored config or the settings table; it is an edit inside the import pipeline, so it needs the owner's go-ahead, and the number is also in git history.
+- `scripts/repair-acats-opening-lots.ts` and `scripts/repair-mistyped-option-legs.ts` hold real lots and option legs as live constants (the project rule says repair constants live in gitignored `data/repair-configs/`); their two test files still mirror them.
+- Comment examples with a real ticker and real fill sizes or a real amount: `lib/import/parsers/canonical-csv.ts`, `lib/import/parsers/ibkr-activity.ts`, `scripts/repair-split-basis-audit.ts`, `scripts/repair-buy-sign-post-april.ts`.
+- `scripts/generate-pdf-fixture.ts` regenerates the mock statement fixture from a real statement, which would put real figures back into the committed fixture.
+- Git history still holds every original figure from the documents and tests rewritten tonight.
+- The archived to-do file (`docs/plans/archive/TODO-closed-2026-07-08.md`) is a long narrative of real-data repairs; a pattern sweep will not have caught every prose mention. It probably belongs in the private folder.
