@@ -169,4 +169,26 @@ describe("renderBogeysReminderLine", () => {
     expect(line).not.toBeNull();
     expect(line).toContain("3");
   });
+
+  it("an all-empty bogey row is not a bogey on file: the reminder still shows", () => {
+    seedHeld("AAA");
+    seedHeld("BBB");
+    seedWatchlist("CCC");
+    seedEvent({ symbol: "AAA", date: "2026-07-20" });
+    seedEvent({ symbol: "BBB", date: "2026-07-21" });
+    const cccEvent = seedEvent({ symbol: "CCC", date: "2026-07-22" });
+    // The shape the pre-ruling newsletter scan left behind: a row, no content.
+    db.prepare(
+      `INSERT INTO earnings_bogeys (event_id, source, source_label, notes, segment_breakdown_json)
+       VALUES (?, 'newsletter', 'Desk Notes 7/19', '  ', '{}')`,
+    ).run(cccEvent);
+
+    const line = renderBogeysReminderLine(db, WEEK_OF);
+    expect(line).not.toBeNull();
+    expect(line).toContain("CCC");
+
+    // A row that holds a figure still silences it.
+    addBogey(cccEvent);
+    expect(renderBogeysReminderLine(db, WEEK_OF)).toBeNull();
+  });
 });

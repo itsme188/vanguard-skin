@@ -48,7 +48,8 @@ describe("estimateBondRateLeg: where the coupon came from", () => {
   });
 
   it("a name that does not parse cleanly leaves the bond not modelled", () => {
-    for (const name of ["ZZ TREASURY NOTE 4.625 02/15/35 02/15/25", "ZZ STEP NOTE 4.000% TO 6.000%", "ZZ Corp note", null]) {
+    // (A step-up name used to sit here; it now has its own reason, pinned below.)
+    for (const name of ["ZZ TREASURY NOTE 4.625 02/15/35 02/15/25", "ZZ NOTE 4.000% TO 6.000%", "ZZ Corp note", null]) {
       const res = estimateBondRateLeg(row({ security_name: name }), 100, TODAY)!;
       expect(res.unmodelledReason, String(name)).toBe("no-coupon");
       expect(res.changePercent).toBe(0);
@@ -96,8 +97,15 @@ describe("estimateBondRateLeg: where the coupon came from", () => {
   });
 
   it("a floater or a yield in the name is never used as a coupon", () => {
-    for (const name of ["ZZ BANK FLTG RATE NT VAR 5.310% 01/13/40", "ZZ CORP NT YLD 5.1% DUE 2040", "ZZ CORP 6.5%/7.5% PIK TOGGLE 2040"]) {
-      expect(estimateBondRateLeg(row({ security_name: name }), 100, TODAY)!.unmodelledReason, name).toBe("no-coupon");
+    // A floater, a toggle or a step-up is left out for what it IS (the reason
+    // changed from "no-coupon" on 2026-10-08: the name test now runs first).
+    for (const name of ["ZZ BANK FLTG RATE NT VAR 5.310% 01/13/40", "ZZ CORP 6.5%/7.5% PIK TOGGLE 2040", "ZZ STEP NOTE 4.000% TO 6.000%"]) {
+      const res = estimateBondRateLeg(row({ security_name: name }), 100, TODAY)!;
+      expect(res.unmodelledReason, name).toBe("not-fixed-coupon");
+      expect(res.changePercent, name).toBe(0);
+      expect(res.couponSource, name).toBeUndefined();
     }
+    // A yield quote is only an unreadable figure: the bond has no coupon on file.
+    expect(estimateBondRateLeg(row({ security_name: "ZZ CORP NT YLD 5.1% DUE 2040" }), 100, TODAY)!.unmodelledReason).toBe("no-coupon");
   });
 });

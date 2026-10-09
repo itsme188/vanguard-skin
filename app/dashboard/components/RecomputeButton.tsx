@@ -6,6 +6,7 @@ import { useToast } from "./Toast";
 import apiFetch from "@/lib/http/apiFetch";
 import { Count, Money } from "@/lib/privacy/components";
 import type { TaxLotRecomputeSummary } from "@/lib/compute/tax-lot-recompute-summary";
+import { RecomputeOpenLotScope } from "./RecomputeOpenLotScope";
 
 export function RecomputeButton({
   endpoint,
@@ -100,6 +101,7 @@ export function RecomputeButton({
                 New or changed <Count value={summary.openLots.added} />, gone or changed{" "}
                 <Count value={summary.openLots.removed} />
               </div>
+              <RecomputeOpenLotScope breakdown={summary.openLotBreakdown} />
             </div>
           </div>
         </div>

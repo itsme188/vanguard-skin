@@ -4,6 +4,7 @@ import { classifySecurities, classifyUnresolvedWithClaude } from "@/lib/compute/
 import {
   classifyOptionSectors,
   getUnsectoredOptionUnderlyings,
+  markOptionSectorsChecked,
 } from "@/lib/securities/classify-option-sectors";
 
 /**
@@ -22,6 +23,9 @@ export async function POST() {
     let optionSectors = { classified: 0, errors: [] as string[] };
     if (getUnsectoredOptionUnderlyings(db).length > 0) {
       optionSectors = await classifyOptionSectors(db);
+    } else {
+      // Checked, nothing to do: record the check (trust strip "Sectors classified").
+      markOptionSectorsChecked(db);
     }
 
     return NextResponse.json({

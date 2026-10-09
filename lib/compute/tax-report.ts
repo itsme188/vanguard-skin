@@ -44,7 +44,6 @@ export interface WashSaleWarning {
   saleDate: string;
   purchaseDate: string;
   lossAmount: number;
-  description: string;
   /**
    * Which side of the loss sale the replacement purchase fell on — the IRS
    * wash-sale window runs both directions (30 days before OR after), and
@@ -290,7 +289,6 @@ function detectWashSales(
         saleDate: sale.sale_date,
         purchaseDate: best.purchaseDate,
         lossAmount: sale.realized_gain_loss,
-        description: `Sold ${sale.symbol} at loss on ${sale.sale_date}; ${washSaleReplacementPhrase(best)}`,
         direction: best.direction,
         daysFromSale: best.daysFromSale,
       });

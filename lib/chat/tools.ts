@@ -12,17 +12,23 @@ import {
 import { getNotesFiltered, getSecurityIdBySymbol } from "@/lib/queries/notes";
 import { createNote } from "@/lib/mutations/notes";
 import { todayET } from "@/lib/calendar/date-utils";
-import type { NoteType, NoteSentiment } from "@/lib/types";
+import { NOTE_TYPES, NOTE_SENTIMENTS } from "@/lib/types";
+import { coerceNoteType, coerceNoteSentiment } from "@/lib/notes/coerce";
 import { computeTwr } from "@/lib/compute/twr";
 import { computeXirr } from "@/lib/compute/xirr";
+import { resolveChatAccounts, type ChatAccountResolution } from "@/lib/chat/account-scope";
+import { getAllAccounts } from "@/lib/queries/accounts";
 import { annotateToolResult } from "@/lib/chat/validate";
 import { getSeriesData, searchSeries, getLatestValue, FRED_SERIES } from "@/lib/apis/fred";
 import { getCompanyFinancials, getCompanyInfo, getRecentFilings, getInsiderTransactions } from "@/lib/apis/edgar";
 import { getTranscriptForChat } from "@/lib/transcripts/fetch";
 import { getTradeReviews, getTradeReviewByPeriod, getTradeRoundtrips } from "@/lib/queries/trade-reviews";
 import { computePortfolioGreeks } from "@/lib/compute/options-greeks";
-import { getOptionPositions, getStockLegsForStrategyDetection } from "@/lib/queries/options";
-import { detectStrategies, type PositionLeg } from "@/lib/compute/options-strategy";
+import {
+  detectStrategiesPerAccount,
+  getOptionPositions,
+  getStockLegsForStrategyDetection,
+} from "@/lib/queries/options";
 import { getActiveLevels, getAlerts, getLevelsForSecurity } from "@/lib/queries/security-levels";
 import { resolveLevelPrice } from "@/lib/alerts/resolve-level-price";
 import { getFilingSection } from "@/lib/apis/filing-extract";
@@ -40,11 +46,13 @@ import {
 } from "@/lib/queries/analyst-estimates";
 import { syncAnalystCoverage } from "@/lib/apis/analyst-estimates";
 import { getRecentReleaseReactions } from "@/lib/queries/level-performance";
+import type { ReactionSnapshot } from "@/lib/calendar/reaction-snapshot-core";
 import {
-  isUsableReactionLeg,
-  parseReactionSnapshot,
-  type ReactionSnapshot,
-} from "@/lib/calendar/reaction-snapshot-core";
+  readReactionLegs,
+  type ReactionEvidence,
+  type ReactionLegKey,
+  type StoredReactionLeg,
+} from "@/lib/calendar/reaction-validity";
 import { getMarketSnapshot, fetchYahooQuotes } from "@/lib/queries/market-snapshot";
 import {
   resolvePerformanceWindow,
@@ -66,34 +74,60 @@ function parseKeyThemesField(raw: string): unknown {
 }
 
 /**
- * Strip every unusable benchmark leg out of a stored reaction snapshot before
- * the chat model ever sees it.
+ * Strip every leg that is not a real measurement out of a stored reaction
+ * snapshot before the chat model ever sees it.
  *
- * Legacy rows (written before the write-side guard landed) zero-fill a leg
- * whose bars never arrived: `{t_pre:0, t_post:0, delta_pct:0}`. Handed to the
- * model as-is, that reads as a genuine FLAT market reaction — the model can
- * then tell the user "SPY was unchanged on the print" when the truth is that
- * we have no measurement at all. isUsableReactionLeg is the shared predicate
- * the recap email (lib/digest/send-earnings-email.ts) and the weekly briefing
- * (lib/calendar/briefing.ts) already filter through; the chat tool must not
- * fork it. A snapshot with no surviving leg carries no reaction information,
- * so it collapses to null rather than shipping bare metadata.
+ * Two classes are removed, both decided by lib/calendar/reaction-validity.ts
+ * (the same rule the on-screen chips, the recap email and the weekly briefing
+ * read; the chat tool must not fork it):
+ *
+ *   - ABSENT. Legacy rows (written before the write-side guard landed)
+ *     zero-fill a leg whose bars never arrived: `{t_pre:0, t_post:0,
+ *     delta_pct:0}`. Handed to the model as-is, that reads as a genuine FLAT
+ *     market reaction. The leg is dropped.
+ *   - PENDING (2026-10-08). A figure exists but is not a measurement: the
+ *     snapshot was captured before its two-hour window elapsed, or the pre and
+ *     post prices are identical. The leg is replaced by `{ state: "pending" }`
+ *     with no price and no percent, so the model can say the reaction is not
+ *     in yet and can never quote the number.
+ *
+ * A snapshot with no measured and no pending leg carries no reaction
+ * information, so it collapses to null rather than shipping bare metadata.
+ * When nothing is measured but something is pending, the result carries a
+ * top-level `state: "pending"`.
+ *
+ * Pass the row's `enriched_at` as evidence so the legacy rule applies too: an
+ * older snapshot's 0.00% leg on a row enriched before the window ended is
+ * pending, not a flat move.
  */
+type ChatReactionLeg = StoredReactionLeg | { state: "pending"; symbol?: string };
+type ChatReactionSnapshot = Partial<
+  Pick<ReactionSnapshot, "t0_utc" | "window_min" | "source" | "pre_anchor">
+> &
+  Partial<Record<ReactionLegKey, ChatReactionLeg>> & { state?: "pending" };
+
 function sanitizeReactionSnapshotForChat(
   raw: string | null,
-): Partial<ReactionSnapshot> | null {
-  const snap = parseReactionSnapshot(raw);
-  if (!snap) return null;
+  evidence: ReactionEvidence = {},
+): ChatReactionSnapshot | null {
+  const read = readReactionLegs(raw, evidence);
+  if (!read) return null;
+  const { snapshot: snap, measured, pending } = read;
 
-  const clean: Partial<ReactionSnapshot> = {};
-  if (isUsableReactionLeg(snap.spy)) clean.spy = snap.spy;
-  if (isUsableReactionLeg(snap.qqq)) clean.qqq = snap.qqq;
-  if (isUsableReactionLeg(snap.tlt)) clean.tlt = snap.tlt;
-  if (isUsableReactionLeg(snap.sector)) clean.sector = snap.sector;
-  if (isUsableReactionLeg(snap.symbol)) clean.symbol = snap.symbol;
+  const clean: ChatReactionSnapshot = {};
+  for (const key of ["spy", "qqq", "tlt", "sector", "symbol"] as const) {
+    const leg = measured[key];
+    if (leg) {
+      clean[key] = leg;
+    } else if (pending.includes(key)) {
+      const label = (snap[key] as StoredReactionLeg | undefined)?.symbol;
+      clean[key] = typeof label === "string" ? { state: "pending", symbol: label } : { state: "pending" };
+    }
+  }
   if (Object.keys(clean).length === 0) return null;
+  if (Object.keys(measured).length === 0) clean.state = "pending";
 
-  // Metadata rides along only when at least one real leg survived — it is
+  // Metadata rides along only when at least one leg survived — it is
   // context for the deltas, never a substitute for them.
   if (snap.t0_utc) clean.t0_utc = snap.t0_utc;
   if (snap.window_min) clean.window_min = snap.window_min;
@@ -115,7 +149,7 @@ export const CHAT_TOOLS: Anthropic.Tool[] = [
         account_name: {
           type: "string",
           description:
-            "Filter by account name (e.g., 'Vanguard Brokerage', 'Roth IRA', 'Interactive Brokers'). Omit for all accounts.",
+            "Optional. An exact account name, or a scope word: 'vanguard' (the Vanguard accounts EXCLUDING the Roth), 'roth', 'ibkr', or 'all'. This tool reads one account at a time: a scope word that names more than one account returns an error listing them. Omit for all accounts.",
         },
         symbol: {
           type: "string",
@@ -187,7 +221,8 @@ export const CHAT_TOOLS: Anthropic.Tool[] = [
         },
         account_name: {
           type: "string",
-          description: "Optional: restrict to a single account",
+          description:
+            "Optional. An exact account name, or a scope word: 'vanguard' (the Vanguard accounts EXCLUDING the Roth), 'roth', 'ibkr', or 'all'. This tool reads one account at a time: a scope word that names more than one account returns an error listing them. Omit for all accounts.",
         },
       },
       required: ["group_by"],
@@ -196,7 +231,7 @@ export const CHAT_TOOLS: Anthropic.Tool[] = [
   {
     name: "query_tax_lots",
     description:
-      "Query tax lot details for open or closed positions. Returns acquisition date, cost basis, current value, unrealized/realized gain/loss, holding period, long-term/short-term status, and projected long-term date. Uses FIFO (First-In, First-Out) lot matching — the user's broker may use a different method. Use for tax-loss harvesting analysis, capital gains questions, wash sale evaluation, lot-level drill-down, or identifying lots approaching the 1-year long-term threshold. An open lot with pending_statement=true belongs to a position closed per live broker data whose closing trade awaits the broker statement: describe it as pending (see its status_note), never as an unrealized holding or a harvesting candidate.",
+      "Query tax lot details for open or closed positions. Returns acquisition date, cost basis, current value, unrealized/realized gain/loss, holding period, long-term/short-term status, and projected long-term date. For an open lot cost_basis is the basis of the quantity still open (fees included, the figure unrealized_gain is measured against, so it pairs with current_value); original_lot_cost_basis is the whole lot as acquired and differs only when part of the lot has been closed. Uses FIFO (First-In, First-Out) lot matching — the user's broker may use a different method. Use for tax-loss harvesting analysis, capital gains questions, wash sale evaluation, lot-level drill-down, or identifying lots approaching the 1-year long-term threshold. An open lot with pending_statement=true belongs to a position closed per live broker data whose closing trade awaits the broker statement: describe it as pending (see its status_note), never as an unrealized holding or a harvesting candidate. Open lots carry position_side ('long' or 'short'): for a short lot quantity_remaining, cost_basis (the opening proceeds) and current_value (the cost to cover) are positive and unrealized_gain is already signed for the short side (a gain when the price has fallen); a short lot is never long-term, closing it means buying to cover, and it must never be described as approaching long-term.",
     input_schema: {
       type: "object" as const,
       properties: {
@@ -211,7 +246,8 @@ export const CHAT_TOOLS: Anthropic.Tool[] = [
         },
         account_name: {
           type: "string",
-          description: "Filter by account name",
+          description:
+            "Optional. An exact account name, or a scope word: 'vanguard' (the Vanguard accounts EXCLUDING the Roth), 'roth', 'ibkr', or 'all'. This tool reads one account at a time: a scope word that names more than one account returns an error listing them. Omit for all accounts.",
         },
         year: {
           type: "integer",
@@ -238,7 +274,8 @@ export const CHAT_TOOLS: Anthropic.Tool[] = [
       properties: {
         account_name: {
           type: "string",
-          description: "Filter by account name",
+          description:
+            "Optional. An exact account name, or a scope word: 'vanguard' (the Vanguard accounts EXCLUDING the Roth), 'roth', 'ibkr', or 'all'. This tool reads one account at a time: a scope word that names more than one account returns an error listing them. Omit for all accounts.",
         },
         symbol: {
           type: "string",
@@ -277,7 +314,8 @@ export const CHAT_TOOLS: Anthropic.Tool[] = [
       properties: {
         account_name: {
           type: "string",
-          description: "Filter by account name. Omit for all accounts.",
+          description:
+            "Optional. An exact account name, or a scope word: 'vanguard' (the Vanguard accounts EXCLUDING the Roth), 'roth', 'ibkr', or 'all'. This tool reads one account at a time: a scope word that names more than one account returns an error listing them. Omit for all accounts.",
         },
         start_date: {
           type: "string",
@@ -309,7 +347,8 @@ export const CHAT_TOOLS: Anthropic.Tool[] = [
         },
         account_name: {
           type: "string",
-          description: "Filter by account name. Omit for all accounts.",
+          description:
+            "Optional. An exact account name, or a scope word: 'vanguard' (the Vanguard accounts EXCLUDING the Roth), 'roth', 'ibkr', or 'all'. This tool reads one account at a time: a scope word that names more than one account returns an error listing them. Omit for all accounts.",
         },
       },
     },
@@ -317,7 +356,7 @@ export const CHAT_TOOLS: Anthropic.Tool[] = [
   {
     name: "query_twr",
     description:
-      "Compute Time-Weighted Return (TWR) and XIRR for the portfolio or individual accounts over a specified period. A fixed period (1y / 3y / 5y) is the FULL span ending at the last statement, not at today; ytd and inception run to today. The result's `window` gives the exact `start_date` and `end_date` measured: always state them with the figure (for example 'the year to Sep 30'), and never describe a fixed-period figure as running through today when `ends_at_last_statement` is true. TWR uses chain-linked Modified Dietz (measures portfolio manager skill). XIRR uses Newton-Raphson (measures investor's actual experience, accounting for timing of deposits/withdrawals). Returns both metrics, cumulative return, annualized return, and per-account breakdown. Account names are matched case-insensitively (e.g., 'roth' matches 'Vanguard Roth IRA'). Use when asked about portfolio performance, returns, how the portfolio has done, YTD/annual returns, investment performance comparison between accounts, or whether the portfolio is beating expectations.",
+      "Compute Time-Weighted Return (TWR) and XIRR for the portfolio or individual accounts over a specified period. A fixed period (1y / 3y / 5y) is the FULL span ending at the last statement, not at today; ytd and inception run to today. The result's `window` gives the exact `start_date` and `end_date` measured: always state them with the figure (for example 'the year to Sep 30'), and never describe a fixed-period figure as running through today when `ends_at_last_statement` is true. TWR uses chain-linked Modified Dietz (measures portfolio manager skill). XIRR uses Newton-Raphson (measures investor's actual experience, accounting for timing of deposits/withdrawals). Returns both metrics, cumulative return, annualized return, and per-account breakdown. In the XIRR result, `totalInvested` is the sum of money the investor put IN during the window (cash deposits and in-kind transfers in); it does not include the opening portfolio value and is not net of withdrawals (those are `totalWithdrawn`). Never present it as the portfolio's cost basis or as a total amount invested over time; the result's `field_notes` repeats this. Account names are matched case-insensitively (e.g., 'roth' matches 'Vanguard Roth IRA'). Use when asked about portfolio performance, returns, how the portfolio has done, YTD/annual returns, investment performance comparison between accounts, or whether the portfolio is beating expectations.",
     input_schema: {
       type: "object" as const,
       properties: {
@@ -330,7 +369,7 @@ export const CHAT_TOOLS: Anthropic.Tool[] = [
         account_name: {
           type: "string",
           description:
-            "Optional: restrict to a single account name. Omit for portfolio-wide TWR.",
+            "Optional. An exact account name, or a scope word: 'vanguard' (the Vanguard accounts EXCLUDING the Roth), 'roth', 'ibkr', or 'all'. A scope word that names several accounts gives ONE time-weighted and ONE money-weighted return over all of them. Omit for portfolio-wide TWR.",
         },
       },
     },
@@ -426,7 +465,7 @@ export const CHAT_TOOLS: Anthropic.Tool[] = [
       properties: {
         note_type: {
           type: "string",
-          enum: ["journal", "earnings", "trade_thesis"],
+          enum: [...NOTE_TYPES],
           description:
             "Filter by note type. Omit for all types.",
         },
@@ -463,7 +502,7 @@ export const CHAT_TOOLS: Anthropic.Tool[] = [
       properties: {
         note_type: {
           type: "string",
-          enum: ["journal", "earnings", "trade_thesis"],
+          enum: [...NOTE_TYPES],
           description: "Type of note to create.",
         },
         content: {
@@ -482,7 +521,7 @@ export const CHAT_TOOLS: Anthropic.Tool[] = [
         },
         sentiment: {
           type: "string",
-          enum: ["bullish", "bearish", "neutral", "cautious", "confident"],
+          enum: [...NOTE_SENTIMENTS],
           description: "Optional sentiment tag.",
         },
         tags: {
@@ -667,7 +706,7 @@ export const CHAT_TOOLS: Anthropic.Tool[] = [
         account_name: {
           type: "string",
           description:
-            "Account name to query (e.g., 'IBKR'). Defaults to IBKR if omitted.",
+            "Optional. An exact account name, or a scope word: 'vanguard' (the Vanguard accounts EXCLUDING the Roth), 'roth', 'ibkr', or 'all'. This tool reads one account at a time: a scope word that names more than one account returns an error listing them. Defaults to IBKR if omitted.",
         },
         year: {
           type: "integer",
@@ -696,7 +735,7 @@ export const CHAT_TOOLS: Anthropic.Tool[] = [
         account_name: {
           type: "string",
           description:
-            "Account name to query (e.g., 'IBKR'). Omit for all accounts.",
+            "Optional. An exact account name, or a scope word: 'vanguard' (the Vanguard accounts EXCLUDING the Roth), 'roth', 'ibkr', or 'all'. A scope word that names several accounts covers all of them. Omit for all accounts.",
         },
         underlying: {
           type: "string",
@@ -846,7 +885,7 @@ export const CHAT_TOOLS: Anthropic.Tool[] = [
   {
     name: "query_release_reactions",
     description:
-      "Look up how the market reacted to past macro releases or earnings. Each row includes the actual value, consensus at release time, and the 2-hour post-release price change for SPY, QQQ, TLT, and (when mapped) the sector ETF. Use when the user asks 'what did SPY do on the last three hot CPI prints?', 'how does NVDA typically trade after earnings?', or 'show me the last few FOMC reactions'. Pass event_type = 'cpi' / 'fomc' / 'jobs' / 'gdp' for macro, or 'earnings_NVDA' / 'earnings_SPY' for a specific ticker's earnings.",
+      "Look up how the market reacted to past macro releases or earnings. Each row includes the actual value, consensus at release time, and the 2-hour post-release price change for SPY, QQQ, TLT, and (when mapped) the sector ETF. A leg, or a whole reaction, may carry state: \"pending\": it has not been measured yet and no figure should be quoted for it. Use when the user asks 'what did SPY do on the last three hot CPI prints?', 'how does NVDA typically trade after earnings?', or 'show me the last few FOMC reactions'. Pass event_type = 'cpi' / 'fomc' / 'jobs' / 'gdp' for macro, or 'earnings_NVDA' / 'earnings_SPY' for a specific ticker's earnings.",
     input_schema: {
       type: "object" as const,
       properties: {
@@ -880,7 +919,7 @@ export const CHAT_TOOLS: Anthropic.Tool[] = [
         account_name: {
           type: "string",
           description:
-            "Optional: show held names for this account only. Omit for every account. Benchmarks are always included.",
+            "Optional. An exact account name, or a scope word: 'vanguard' (the Vanguard accounts EXCLUDING the Roth), 'roth', 'ibkr', or 'all'. This tool reads one account at a time: a scope word that names more than one account returns an error listing them. Shows held names for that account only. Omit for every account. Benchmarks are always included.",
         },
       },
       additionalProperties: false,
@@ -891,52 +930,42 @@ export const CHAT_TOOLS: Anthropic.Tool[] = [
 // ─── Account Name Resolution ─────────────────────────────────────
 
 /**
- * Resolve a user-provided account name to the exact DB account name
- * using case-insensitive substring matching.
- * "roth" → "Vanguard Roth IRA", "ibkr" → "IBKR", etc.
- * Returns the original string if no match found (let downstream handle it).
+ * Resolve an account name or hint to the exact DB account name, for callers
+ * that need ONE account (the scoped chat's clamp and context).
+ *
+ * Follows `resolveChatAccounts`: an exact name, a scope word ("vanguard"
+ * excludes the Roth), or a fragment that matches exactly one account. It
+ * never takes the first of several matches. A name that is ambiguous,
+ * unknown, or a scope of two or more accounts comes back unchanged: it then
+ * matches no account downstream, and a chat tool handed it answers with the
+ * error that lists the valid names.
  */
 export function resolveAccountName(
   db: Database.Database,
   input: string | undefined
 ): string | undefined {
   if (!input) return undefined;
-
-  // Try exact match first
-  const exact = db
-    .prepare("SELECT name FROM accounts WHERE name = ?")
-    .get(input) as { name: string } | undefined;
-  if (exact) return exact.name;
-
-  // Fall back to case-insensitive substring match
-  const fuzzy = db
-    .prepare("SELECT name FROM accounts WHERE LOWER(name) LIKE '%' || LOWER(?) || '%'")
-    .get(input) as { name: string } | undefined;
-  return fuzzy?.name ?? input;
+  const resolved = resolveChatAccounts(db, input);
+  if (resolved.kind === "all") return undefined;
+  if (resolved.kind === "accounts" && resolved.accounts.length === 1) {
+    return resolved.accounts[0].name;
+  }
+  return input;
 }
+
+/** Every tool whose schema declares `account_name`. */
+const ACCOUNT_TOOL_NAMES: ReadonlySet<string> = new Set(
+  CHAT_TOOLS.filter(
+    (t) => (t.input_schema.properties as Record<string, unknown> | undefined)?.account_name
+  ).map((t) => t.name)
+);
 
 /**
- * Resolve a user-provided account name to the DB account ID
- * using case-insensitive substring matching.
+ * The account-taking tools whose engines accept an id LIST, so a scope of
+ * several accounts is answered whole. Every other account-taking tool reads
+ * one account by name and refuses a wider scope rather than pick one.
  */
-function resolveAccountId(
-  db: Database.Database,
-  input: string | undefined
-): number | undefined {
-  if (!input) return undefined;
-
-  // Try exact match first
-  const exact = db
-    .prepare("SELECT id FROM accounts WHERE name = ?")
-    .get(input) as { id: number } | undefined;
-  if (exact) return exact.id;
-
-  // Fall back to case-insensitive substring match
-  const fuzzy = db
-    .prepare("SELECT id FROM accounts WHERE LOWER(name) LIKE '%' || LOWER(?) || '%'")
-    .get(input) as { id: number } | undefined;
-  return fuzzy?.id;
-}
+const SCOPE_LIST_TOOLS: ReadonlySet<string> = new Set(["query_twr", "query_options_greeks"]);
 
 // ─── Tool Dispatcher ──────────────────────────────────────────────
 
@@ -945,14 +974,39 @@ function resolveAccountId(
  * Returns the query result wrapped with data quality annotations.
  * On error, returns { error: "..." } instead of throwing.
  */
+function asString(v: unknown): string | undefined {
+  return typeof v === "string" ? v : undefined;
+}
+
 export async function executeTool(
   db: Database.Database,
   toolName: string,
   input: Record<string, unknown>
 ): Promise<unknown> {
   try {
-    // Resolve account names case-insensitively for all tools that accept one
-    const accountName = resolveAccountName(db, input.account_name as string | undefined);
+    // The model-supplied account_name, resolved ONCE for every tool that
+    // declares one: an exact name, a scope word, or a fragment naming exactly
+    // one account. Ambiguous or unknown is a plain error so the model asks
+    // or retries; it never gets the first match or the whole book.
+    // (query_trade_reviews has always defaulted to the IBKR account.)
+    const takesAccount = ACCOUNT_TOOL_NAMES.has(toolName);
+    const requestedAccount =
+      asString(input.account_name) || (toolName === "query_trade_reviews" ? "IBKR" : undefined);
+    const accountScope: ChatAccountResolution = takesAccount
+      ? resolveChatAccounts(db, requestedAccount)
+      : { kind: "all" };
+    if (accountScope.kind === "error") return { error: accountScope.error };
+    const scopeAccounts = accountScope.kind === "accounts" ? accountScope.accounts : undefined;
+    if (scopeAccounts && scopeAccounts.length > 1 && !SCOPE_LIST_TOOLS.has(toolName)) {
+      const names = scopeAccounts.map((a) => `"${a.name}"`).join(", ");
+      return {
+        error: `"${requestedAccount}" names ${scopeAccounts.length} accounts (${names}) and this tool reads one account at a time. Call it once per account with the exact account name, or omit account_name for every account.`,
+      };
+    }
+    /** Undefined = every account. */
+    const accountIds = scopeAccounts?.map((a) => a.id);
+    /** The one account's exact name, for the tools that read a single account. */
+    const accountName = scopeAccounts?.length === 1 ? scopeAccounts[0].name : undefined;
 
     let rawResult: unknown;
 
@@ -1046,11 +1100,13 @@ export async function executeTool(
             ? requested
             : "all";
 
-        const accountId = resolveAccountId(db, input.account_name as string | undefined);
-        const anchorScope = accountId != null ? [accountId] : undefined;
+        // One scope for the whole answer: the window anchor, the
+        // time-weighted return and the money-weighted return all read the
+        // same account id list (a one-id list is that account, exactly as a
+        // single id was; undefined is every account).
         const perfWindow = resolvePerformanceWindow(period, {
           today,
-          lastStatementAnchor: latestStatementAnchor(db, anchorScope, today),
+          lastStatementAnchor: latestStatementAnchor(db, accountIds, today),
         });
         // Exactly as the Performance view calls the engines: the chain starts
         // the day after the opening anchor, and the end is bounded only for a
@@ -1058,8 +1114,8 @@ export async function executeTool(
         const startDate = perfWindow.chainStartDate;
         const endDate = perfWindow.endsAtStatement ? perfWindow.endDate : undefined;
 
-        const twrResult = computeTwr(db, { startDate, endDate, accountId });
-        const xirrResult = computeXirr(db, { startDate, endDate, accountId });
+        const twrResult = computeTwr(db, { startDate, endDate, accountIds });
+        const xirrResult = computeXirr(db, { startDate, endDate, accountIds });
 
         rawResult = {
           window: {
@@ -1077,6 +1133,10 @@ export async function executeTool(
           },
           twr: twrResult,
           xirr: xirrResult,
+          field_notes: {
+            totalInvested:
+              "Total deposits: the money the investor added during this window (cash deposits and in-kind transfers in). It is not the portfolio's opening value, not its cost basis, and not net of withdrawals (see totalWithdrawn).",
+          },
         };
         break;
       }
@@ -1140,7 +1200,7 @@ export async function executeTool(
           if (id) securityId = id;
         }
         rawResult = getNotesFiltered(db, {
-          note_type: input.note_type as NoteType | undefined,
+          note_type: coerceNoteType(asString(input.note_type)),
           security_id: securityId,
           search: input.search as string | undefined,
           start_date: input.start_date as string | undefined,
@@ -1152,13 +1212,28 @@ export async function executeTool(
 
       case "create_note": {
         const today = todayET();
+        const noteType = coerceNoteType(asString(input.note_type));
+        if (!noteType) {
+          rawResult = {
+            error: `Unknown note type. Nothing was saved. Use one of: ${NOTE_TYPES.join(", ")}.`,
+          };
+          break;
+        }
+        const rawSentiment = asString(input.sentiment);
+        const sentiment = coerceNoteSentiment(rawSentiment);
+        if (rawSentiment && !sentiment) {
+          rawResult = {
+            error: `Unknown sentiment. Nothing was saved. Use one of: ${NOTE_SENTIMENTS.join(", ")}, or leave it out.`,
+          };
+          break;
+        }
         let securityId: number | null = null;
         if (input.symbol) {
           securityId = getSecurityIdBySymbol(db, input.symbol as string);
         }
         // Same refusal as POST /api/notes: the Earnings tab files notes under
         // per-security headers, so one with no security would be shown nowhere.
-        if (input.note_type === "earnings" && !securityId) {
+        if (noteType === "earnings" && !securityId) {
           rawResult = {
             error:
               "An earnings note needs a security. Nothing was saved. Pass the symbol of a security on file, then save.",
@@ -1166,11 +1241,11 @@ export async function executeTool(
           break;
         }
         const note = createNote(db, {
-          note_type: input.note_type as NoteType,
+          note_type: noteType,
           content: input.content as string,
           security_id: securityId,
           event_date: (input.event_date as string) || today,
-          sentiment: (input.sentiment as NoteSentiment) || null,
+          sentiment: sentiment ?? null,
           tags: (input.tags as string[]) || null,
         });
         rawResult = { saved: true, note };
@@ -1337,17 +1412,18 @@ export async function executeTool(
       }
 
       case "query_trade_reviews": {
-        const accountName = resolveAccountName(
-          db,
-          (input.account_name as string) || "IBKR"
-        );
-        const account = db
-          .prepare("SELECT id FROM accounts WHERE name = ?")
-          .get(accountName) as { id: number } | undefined;
-
+        // Resolved above to exactly one account (default: IBKR).
+        // A name that resolves to no single account ("all") is refused with
+        // the same top-level error shape as every other account tool, naming
+        // the accounts it may ask for; it is never wrapped inside `data`.
+        const account = scopeAccounts?.[0];
         if (!account) {
-          rawResult = { error: `Account "${input.account_name ?? "IBKR"}" not found` };
-          break;
+          const names = getAllAccounts(db)
+            .map((a) => `"${a.name}"`)
+            .join(", ");
+          return {
+            error: `"${requestedAccount}" does not name one account and this tool reads one account at a time. Call it once per account with an exact account name (${names}), or omit account_name for the IBKR account.`,
+          };
         }
 
         if (input.period_start) {
@@ -1396,16 +1472,8 @@ export async function executeTool(
       }
 
       case "query_options_greeks": {
-        const accountName = resolveAccountName(db, input.account_name as string | undefined);
-        const account = accountName
-          ? (db
-              .prepare("SELECT id FROM accounts WHERE name = ?")
-              .get(accountName) as { id: number } | undefined)
-          : undefined;
-        const accountId = account?.id;
-
-        // Compute Greeks
-        const greeks = computePortfolioGreeks(db, { accountId });
+        // The whole named scope (a list of ids; undefined = every account).
+        const greeks = computePortfolioGreeks(db, { accountIds });
 
         // Filter by underlying if specified
         let positions = greeks.positions;
@@ -1416,45 +1484,13 @@ export async function executeTool(
 
         // Detect strategies from option positions + stock holdings.
         // Stock legs via the shared per-(account,security) helper — see lib/queries/options.ts.
-        const optionPositions = getOptionPositions(db, accountId);
-        const stockHoldings = getStockLegsForStrategyDetection(db, accountId);
+        const optionPositions = getOptionPositions(db, accountIds);
+        const stockHoldings = getStockLegsForStrategyDetection(db, accountIds);
 
-        // detectStrategies assumes account-local positions
-        // (lib/compute/options-strategy.ts) — group legs by account and
-        // concatenate the per-account results.
-        const legsByAccount = new Map<number, PositionLeg[]>();
-        const pushLeg = (acct: number, leg: PositionLeg) => {
-          const legs = legsByAccount.get(acct);
-          if (legs) legs.push(leg);
-          else legsByAccount.set(acct, [leg]);
-        };
-        for (const s of stockHoldings) {
-          pushLeg(s.account_id, {
-            symbol: s.symbol,
-            underlying: s.symbol,
-            securityType: "stock" as const,
-            quantity: s.quantity,
-            multiplier: 1,
-            currentPrice: s.current_price,
-          });
-        }
-        for (const o of optionPositions) {
-          pushLeg(o.accountId, {
-            symbol: o.symbol,
-            underlying: o.underlying,
-            securityType: "option" as const,
-            optionType: o.optionType,
-            strike: o.strike,
-            expiration: o.expiration,
-            quantity: o.quantity,
-            multiplier: o.multiplier,
-            currentPrice: o.currentPrice,
-          });
-        }
-
-        const strategies = Array.from(legsByAccount.values()).flatMap((legs) =>
-          detectStrategies(legs)
-        );
+        // Strategies are detected account by account (one shared helper with
+        // /api/compute/options-strategies): legs are never paired across
+        // accounts.
+        const strategies = detectStrategiesPerAccount(stockHoldings, optionPositions);
 
         // Coverage gate, mirroring app/dashboard/components/OptionsGreeksCard.tsx:
         // computePortfolioGreeks initializes the four totals at 0 and only adds
@@ -1783,7 +1819,10 @@ export async function executeTool(
         const decoded = rows.map((r) => {
           // Never hand the model a raw snapshot: a zero-filled legacy leg is
           // a fabricated flat move (see sanitizeReactionSnapshotForChat).
-          const reaction = sanitizeReactionSnapshotForChat(r.reaction_snapshot);
+          // The row's enriched_at is evidence only; it is not returned.
+          const reaction = sanitizeReactionSnapshotForChat(r.reaction_snapshot, {
+            rowEnrichedAt: r.enriched_at,
+          });
           return {
             event_id: r.event_id,
             title: r.title,

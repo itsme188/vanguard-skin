@@ -1,5 +1,7 @@
 import type Database from "better-sqlite3";
 import { computeTaxLots } from "@/lib/compute/tax-lots";
+import { liveOptionExpirationSql } from "@/lib/compute/option-expiry";
+import { CURRENCY_CONVERSION_SECURITY_SQL } from "@/lib/queries/tax-lots";
 
 /**
  * One row per TAX YEAR, and a tax year is always the year of the sale (the
@@ -33,15 +35,34 @@ export interface TaxLotRecomputeOpenLotSummary {
   removed: number;
 }
 
+/**
+ * What the open-lot total includes that the Tax Lots page lists APART from
+ * its Open Lots table, so the preview's count can be squared with the table's
+ * row count. `openLots` counts every `quantity_remaining > 0` row in every
+ * account; the page splits two kinds out of that table:
+ *   - lots of an option past its expiration (the "expired contracts awaiting
+ *     a closing entry" line; `getExpiredOptionLotsAwaitingClose`), and
+ *   - currency-conversion lots (the Section 988 table).
+ * Both use the page's own predicates. Counts only: nothing here changes the
+ * total, a key, or a stored row.
+ */
+export interface TaxLotRecomputeOpenLotBreakdown {
+  expiredOptionLots: { before: number; after: number };
+  currencyConversionLots: { before: number; after: number };
+}
+
 export interface TaxLotRecomputeSummary {
   years: TaxLotRecomputeYearSummary[];
   openLots: TaxLotRecomputeOpenLotSummary;
+  openLotBreakdown: TaxLotRecomputeOpenLotBreakdown;
 }
 
 interface LedgerSnapshot {
   realizedByYear: Map<number, number>;
   lotSalesByYear: Map<number, Map<string, number>>;
   openLots: Map<string, number>;
+  expiredOptionOpenLots: number;
+  currencyConversionOpenLots: number;
   engineClosesByYear: Map<number, Map<string, number>>;
 }
 
@@ -130,8 +151,11 @@ function snapshotLedger(db: Database.Database): LedgerSnapshot {
   const openLotRows = db
     .prepare(
       `SELECT tl.acquisition_transaction_id, tl.account_id, tl.security_id, tl.acquisition_date,
-              tl.quantity_acquired, tl.quantity_remaining, tl.cost_basis, tl.is_short
+              tl.quantity_acquired, tl.quantity_remaining, tl.cost_basis, tl.is_short,
+              NOT (${liveOptionExpirationSql("s")}) AS expired_option,
+              (${CURRENCY_CONVERSION_SECURITY_SQL}) AS currency_conversion
        FROM tax_lots tl
+       LEFT JOIN securities s ON s.id = tl.security_id
        WHERE tl.quantity_remaining > 0`
     )
     .all() as Array<{
@@ -143,9 +167,17 @@ function snapshotLedger(db: Database.Database): LedgerSnapshot {
       quantity_remaining: number;
       cost_basis: number;
       is_short: number;
+      expired_option: number;
+      currency_conversion: number;
     }>;
   const openLots = new Map<string, number>();
+  let expiredOptionOpenLots = 0;
+  let currencyConversionOpenLots = 0;
   for (const lot of openLotRows) {
+    // Same order as the page: an expired option never reaches the Open Lots
+    // table, so it is counted as expired first.
+    if (lot.expired_option) expiredOptionOpenLots += 1;
+    else if (lot.currency_conversion) currencyConversionOpenLots += 1;
     addKey(
       openLots,
       [
@@ -194,7 +226,14 @@ function snapshotLedger(db: Database.Database): LedgerSnapshot {
     );
   }
 
-  return { realizedByYear, lotSalesByYear, openLots, engineClosesByYear };
+  return {
+    realizedByYear,
+    lotSalesByYear,
+    openLots,
+    expiredOptionOpenLots,
+    currencyConversionOpenLots,
+    engineClosesByYear,
+  };
 }
 
 function total(map: Map<string, number>): number {
@@ -236,6 +275,16 @@ function summarize(before: LedgerSnapshot, after: LedgerSnapshot): TaxLotRecompu
       after: total(after.openLots),
       added: unmatched(after.openLots, before.openLots),
       removed: unmatched(before.openLots, after.openLots),
+    },
+    openLotBreakdown: {
+      expiredOptionLots: {
+        before: before.expiredOptionOpenLots,
+        after: after.expiredOptionOpenLots,
+      },
+      currencyConversionLots: {
+        before: before.currencyConversionOpenLots,
+        after: after.currencyConversionOpenLots,
+      },
     },
   };
 }

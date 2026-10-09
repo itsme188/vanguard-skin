@@ -41,6 +41,7 @@ import { EarningsConflictMarker } from "../../components/calendar/EarningsConfli
 // DISPLAY ONLY (user ruling 2026-10-06): the usual time / "time unknown" for a
 // slot-less earnings row. app/** is an allowed importer.
 import { displayEarningsTime } from "@/lib/calendar/display-earnings-time";
+import { expiredContractQuantity, recentSalesTaxLotsLink } from "./tax-lot-wording";
 
 const GROSS_GAIN_PERCENT_TOOLTIP =
   "Gain % uses gross cost basis (absolute long basis plus short proceeds) when a short is present.";
@@ -113,9 +114,13 @@ const TD_MONO = "px-4 py-2.5 text-sm text-ink font-mono tabular-nums border-b bo
 
 const TRANSCRIPTS_VISIBLE = 8;
 
-/** "read ▾" / "collapse ▴" under a clamped card — a full-height tap target. */
+/**
+ * "read ▾" / "collapse ▴" under a clamped card — a full-height tap target.
+ * No display utility here: each label sets its own, so `hidden` never has to
+ * beat an `inline-block` on the same element (both labels used to show).
+ */
 const EXPANDER_CLASS =
-  "mt-1 inline-block py-1.5 text-xs font-medium text-blue hover:brightness-110 transition-colors";
+  "mt-1 py-1.5 text-xs font-medium text-blue hover:brightness-110 transition-colors";
 
 /** A note longer than this (or with a line break) is clamped and gets an expander. */
 const NOTE_CLAMP_CHARS = 160;
@@ -164,7 +169,7 @@ function TranscriptRow({
             <span className="line-clamp-2 text-sm leading-snug text-ink-dim group-open:hidden">
               {transcriptPreviewText(t.summary)}
             </span>
-            <span className={`${EXPANDER_CLASS} group-open:hidden`}>read ▾</span>
+            <span className={`${EXPANDER_CLASS} inline-block group-open:hidden`}>read ▾</span>
             <span className={`${EXPANDER_CLASS} hidden group-open:inline-block`}>collapse ▴</span>
           </summary>
           <div className="mt-2 text-sm leading-snug text-ink-dim">
@@ -240,6 +245,11 @@ export default async function SecurityDetailPage(props: {
   if (!detail) notFound();
 
   const { security, price, kpis, positions, openTaxLots, expiredOptionLotsAwaitingClose, closedSales, closedSalesTotal, recentTransactions, relatedOptionTransactions, notes, upcomingEvents, factors, transcripts, tradeGrades, tradeGradesExcluded, researchMentions, researchMentionsTotal } = detail;
+
+  const expiredContracts = expiredContractQuantity(expiredOptionLotsAwaitingClose);
+  // The Tax Lots page shows one sale year at a time, so the link under Recent
+  // Sales names the year of this security's newest sale.
+  const recentSalesLink = recentSalesTaxLotsLink(securityId, closedSales);
 
   // Per-account reconciliation: a position's quantity should equal the sum of
   // that account's open tax lots. Statement import and computeTaxLots are
@@ -577,9 +587,7 @@ export default async function SecurityDetailPage(props: {
               {unknownBasisLotNotes.map((note) => (
                 <p key={note.accountId} className="text-xs text-ink-faint">
                   <span className="text-ink-dim">{note.accountName}</span>: cost basis and gain are unknown
-                  here because the holdings row carries no cost basis. The open{" "}
-                  {note.lotCount === 1 ? "lot" : "lots"} below{" "}
-                  {note.lotCount === 1 ? "carries" : "carry"} <Money value={note.lotCostBasis} /> for{" "}
+                  here because the holdings row carries no cost basis. Open-lot cost basis below: <Money value={note.lotCostBasis} /> for{" "}
                   <Shares value={note.lotQty} />{" "}
                   <QuantityUnit securityType={security.security_type} quantity={note.lotQty} />; this row
                   does not use that figure.
@@ -623,7 +631,11 @@ export default async function SecurityDetailPage(props: {
       {/* Tax Lots */}
       {(openTaxLots.length > 0 || expiredOptionLotsAwaitingClose.length > 0 || lotCoverageGaps.length > 0) && (
         <Section
-          title={`Open Tax Lots · ${openTaxLots.length}`}
+          title={
+            <>
+              Open Tax Lots · <Count value={openTaxLots.length} />
+            </>
+          }
           action={
             <Link href={`/dashboard/tax-lots?security=${securityId}`} className={ACTION_LINK_CLASS}>
               Open in Tax Lots →
@@ -661,8 +673,8 @@ export default async function SecurityDetailPage(props: {
                   <span className="text-ink-dim">{m.accountName}</span>: the position is short{" "}
                   <Shares value={Math.abs(m.positionQty)} />{" "}
                   <QuantityUnit securityType={security.security_type} quantity={m.positionQty} />, yet the
-                  ledger holds <Shares value={m.longLotQty} /> long in <Count value={m.longLotCount} /> open{" "}
-                  {m.longLotCount === 1 ? "lot" : "lots"}. The two are not reconciled, so the position&apos;s
+                  ledger holds <Shares value={m.longLotQty} /> long (open lots: <Count value={m.longLotCount} />).
+                  The two are not reconciled, so the position&apos;s
                   gain above and the lots&apos; gain below cannot both be right.
                 </p>
               ))}
@@ -670,8 +682,12 @@ export default async function SecurityDetailPage(props: {
           )}
           {expiredOptionLotsAwaitingClose.length > 0 && (
             <p className="px-5 py-3 border-b border-edge text-xs text-ink-dim">
-              <Count value={expiredOptionLotsAwaitingClose.length} /> expired{" "}
-              {expiredOptionLotsAwaitingClose.length === 1 ? "lot is" : "lots are"} awaiting a closing entry.
+              {/* Contracts, not lots (two purchases of one series are two
+                  lots), and no "is / are" beside the figure: under Hide
+                  amounts the wording must not say whether it is one. Only an
+                  option has an expiration, so the unit is the option's. */}
+              Expired and awaiting a closing entry: <Shares value={expiredContracts} />{" "}
+              <QuantityUnit securityType="Option" quantity={expiredContracts} />.
             </p>
           )}
           {openTaxLots.length === 0 ? (
@@ -707,7 +723,19 @@ export default async function SecurityDetailPage(props: {
                   const isLT = !lot.is_short && holdingPeriodLabel(lot.acquisition_date) === "LT";
                   return (
                     <tr key={lot.id}>
-                      <td className={`${TD_MONO} text-ink-dim`}>{lot.acquisition_date}</td>
+                      <td className={`${TD_MONO} text-ink-dim`}>
+                        {lot.acquisition_date}
+                        {/* Phone only: the Unrealized column, where the chip
+                            stands in for the figure, is off-screen at phone
+                            width, so the first column repeats it there. */}
+                        {lot.pending_statement && (
+                          <span className="block md:hidden mt-1 font-sans">
+                            <Chip tone="neutral" size="xs" title={PENDING_STATEMENT_TITLE}>
+                              {PENDING_STATEMENT_CHIP_LABEL}
+                            </Chip>
+                          </span>
+                        )}
+                      </td>
                       <td className={TD_CLASS}>{lot.account_name}</td>
                       <td className={`${TD_MONO} text-right`}>
                         <Shares value={lot.quantity_remaining} />
@@ -747,14 +775,20 @@ export default async function SecurityDetailPage(props: {
       {closedSales.length > 0 && (
         <Section
           title={
-            closedSalesTotal > closedSales.length
-              ? `Recent Sales · ${closedSales.length} of ${closedSalesTotal}`
-              : `Recent Sales · ${closedSales.length}`
+            closedSalesTotal > closedSales.length ? (
+              <>
+                Recent Sales · <Count value={closedSales.length} /> of <Count value={closedSalesTotal} />
+              </>
+            ) : (
+              <>
+                Recent Sales · <Count value={closedSales.length} />
+              </>
+            )
           }
           action={
             closedSalesTotal > closedSales.length ? (
-              <Link href={`/dashboard/tax-lots?security=${securityId}`} className={ACTION_LINK_CLASS}>
-                Open in Tax Lots →
+              <Link href={recentSalesLink.href} className={ACTION_LINK_CLASS}>
+                {recentSalesLink.label}
               </Link>
             ) : undefined
           }
@@ -812,7 +846,11 @@ export default async function SecurityDetailPage(props: {
       {/* Trade Grades (from AI reviews) */}
       {(tradeGrades.length > 0 || tradeGradesExcluded > 0) && (
         <Section
-          title={`AI Trade Grades · ${tradeGrades.length}`}
+          title={
+            <>
+              AI Trade Grades · <Count value={tradeGrades.length} />
+            </>
+          }
           action={
             <Link href="/dashboard/analysis?view=trade-reviews" className={ACTION_LINK_CLASS}>
               All reviews →
@@ -823,8 +861,7 @@ export default async function SecurityDetailPage(props: {
               left out of the cards and counted here instead. */}
           {tradeGradesExcluded > 0 && (
             <p className="px-5 py-3 text-xs text-ink-dim">
-              <Count value={tradeGradesExcluded} />{" "}
-              {tradeGradesExcluded === 1 ? "trip" : "trips"} excluded — pairing under review
+              Trips excluded: <Count value={tradeGradesExcluded} /> — pairing under review
             </p>
           )}
           {tradeGrades.some((grade) => grade.pairings_stale) && (
@@ -1021,7 +1058,7 @@ export default async function SecurityDetailPage(props: {
                       <span className="line-clamp-2 text-sm leading-snug text-ink-dim group-open:hidden">
                         {noteBody}
                       </span>
-                      <span className={`${EXPANDER_CLASS} group-open:hidden`}>read ▾</span>
+                      <span className={`${EXPANDER_CLASS} inline-block group-open:hidden`}>read ▾</span>
                       <span className={`${EXPANDER_CLASS} hidden group-open:inline-block`}>collapse ▴</span>
                     </summary>
                     <p className="mt-2 whitespace-pre-wrap text-sm leading-snug text-ink-dim">
@@ -1149,7 +1186,13 @@ export default async function SecurityDetailPage(props: {
 
         if (relatedOptions.length === 0) return null;
         return (
-          <Section title={`Related Options · ${relatedOptions.length}`}>
+          <Section
+            title={
+              <>
+                Related Options · <Count value={relatedOptions.length} />
+              </>
+            }
+          >
             <ScrollFade>
               <table className="w-full">
                 <thead>

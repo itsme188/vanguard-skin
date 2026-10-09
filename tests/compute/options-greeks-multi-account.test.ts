@@ -69,6 +69,22 @@ describe("computePortfolioGreeks — multi-account data freshness", () => {
     expect(symbols).toEqual([aaplCallSymbol, msftCallSymbol].sort());
   });
 
+  it("a defined empty accountIds list is no accounts, never the whole book", () => {
+    const whole = computePortfolioGreeks(db);
+    expect(whole.totalPositions).toBe(2);
+    expect(computePortfolioGreeks(db, { accountIds: undefined }).totalPositions).toBe(2);
+
+    const none = computePortfolioGreeks(db, { accountIds: [] });
+    expect(none.totalPositions).toBe(0);
+    expect(none.positions).toEqual([]);
+    // The legacy single id does not rescue an explicitly empty list.
+    expect(computePortfolioGreeks(db, { accountId: 3, accountIds: [] }).totalPositions).toBe(0);
+    // A real one-account scope is unchanged.
+    expect(computePortfolioGreeks(db, { accountIds: [3] }).positions.map((p) => p.symbol)).toEqual([
+      msftCallSymbol,
+    ]);
+  });
+
   it("surfaces short option positions (negative quantity)", () => {
     const msftPutSymbol = buildOCCSymbol("MSFT", farExpiry, "PUT", 380);
     db.prepare(`INSERT INTO securities (id, symbol, security_type, option_type, strike_price, expiration_date, underlying_symbol, multiplier)

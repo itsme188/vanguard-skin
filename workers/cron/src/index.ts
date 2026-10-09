@@ -84,11 +84,6 @@ export interface Env {
   EXPECTED_MINUTE_EVENING_MON_THU?: string;
   EXPECTED_HOUR_EVENING_FRI: string;
   EXPECTED_MINUTE_EVENING_FRI: string;
-  // PRIMARY_TIMEOUT_MS: fully unused now that runJob's Mac-primary call is
-  // retired (2026-08-14, #35 Phase D, Task 25). Left in place per convention
-  // (env cleanup is a deploy-time step, not a code change) — safe to drop
-  // from wrangler.toml in a later pass.
-  PRIMARY_TIMEOUT_MS: string;
   // Secrets (`wrangler secret put`)
   CRON_SHARED_SECRET: string;
   // MESH_HOSTNAME: no longer used to call the Mac from runJob, but still

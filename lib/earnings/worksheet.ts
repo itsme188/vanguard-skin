@@ -45,7 +45,12 @@
 
 import { spawn } from "node:child_process";
 import type Database from "better-sqlite3";
-import { getBogeysForEvent, getExpectedMoveBogeysForEvents, type EarningsBogey } from "@/lib/queries/earnings-bogeys";
+import {
+  getBogeysForEvent,
+  getBogeysWithContentForEvent,
+  getExpectedMoveBogeysForEvents,
+  type EarningsBogey,
+} from "@/lib/queries/earnings-bogeys";
 import { getIntelForEvents } from "@/lib/queries/earnings-intel";
 import { getUnprintedWorksheetEvents } from "@/lib/queries/earnings-worksheet-flags";
 import { stampWorksheetPrinted } from "@/lib/mutations/earnings-worksheet-flags";
@@ -70,6 +75,7 @@ import {
   renderHeadlineTable,
   renderPastPrintsBlock,
   renderSheetBogeysBlock,
+  sheetBogeysWithCells,
 } from "@/lib/digest/send-earnings-email";
 import {
   composePrintSheetHtml,
@@ -371,7 +377,11 @@ export function loadPrintSheetInputs(
     eventDate: event.event_date,
     eventTime: event.event_time,
     scoreboardMd: renderHeadlineTable(event, symbol, "preview", intelView),
-    sheetBogeysMd: renderSheetBogeysBlock(getBogeysForEvent(db, eventId)),
+    // Same read as the email body's table: only rows the table shows a cell
+    // from, so an empty row is never a column of dashes on paper.
+    sheetBogeysMd: renderSheetBogeysBlock(
+      sheetBogeysWithCells(getBogeysWithContentForEvent(db, eventId)),
+    ),
     bogiesTableMd,
     notes,
     pastPrintsMd: renderPastPrintsBlock(intelView.history),

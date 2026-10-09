@@ -128,6 +128,7 @@ describe("displayEarningsTime", () => {
       expect(displayEarningsTime(db, row)).toEqual({
         label: "~7:00 AM (usual time)",
         kind: "usual",
+        slot: "bmo",
       });
     }
   });
@@ -139,6 +140,7 @@ describe("displayEarningsTime", () => {
     expect(displayEarningsTime(db, row)).toEqual({
       label: "Before the open (usual)",
       kind: "usual",
+      slot: "bmo",
     });
 
     pastPrint("ZZAI", "2026-04-21", "amc");
@@ -147,6 +149,7 @@ describe("displayEarningsTime", () => {
     expect(displayEarningsTime(db, amc)).toEqual({
       label: "After the close (usual)",
       kind: "usual",
+      slot: "amc",
     });
   });
 
@@ -290,6 +293,7 @@ describe("getTodayReleases — same rows, same order (display field is additive)
     expect(byId.get("ZZBA")?.display_time).toEqual({
       label: "Before the open (usual)",
       kind: "usual",
+      slot: "bmo",
     });
     expect(byId.get("ZZBC")?.display_time).toEqual({ label: "4:05 PM", kind: "stored" });
   });

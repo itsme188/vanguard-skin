@@ -160,3 +160,109 @@ describe("POST /api/earnings/release-time", () => {
     expect(body.data).toEqual({ cleared: false, updatedEvents: 0 });
   });
 });
+
+// Unit 17 (2026-10-08): Save over a web-verified time asks first.
+describe("POST /api/earnings/release-time over a web-verified time", () => {
+  function seedWebVerified(symbol: string, time = "16:05") {
+    hoisted.db
+      .prepare(
+        `INSERT INTO symbol_release_times (symbol, release_time, source, note, verified_for_date, updated_at)
+         VALUES (?, ?, 'web_verified', 'company schedule page', '2099-01-05', datetime('now'))`,
+      )
+      .run(symbol, time);
+  }
+  const row = (symbol: string) =>
+    hoisted.db
+      .prepare("SELECT release_time, source, note, verified_for_date FROM symbol_release_times WHERE symbol = ?")
+      .get(symbol);
+
+  it("answers 409 would_replace_web_verified and stores nothing", async () => {
+    seedWebVerified("ZZA");
+    const res = await POST(postReq({ symbol: "ZZA", releaseTime: "16:30" }));
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.success).toBe(false);
+    expect(body.code).toBe("would_replace_web_verified");
+    expect(body.data).toEqual({
+      releaseTime: "16:05",
+      verifiedForDate: "2099-01-05",
+      note: "company schedule page",
+    });
+    expect(body.error).toContain("16:05");
+    expect(body.error).toMatch(/Clear will not bring/);
+    expect(row("ZZA")).toEqual({
+      release_time: "16:05",
+      source: "web_verified",
+      note: "company schedule page",
+      verified_for_date: "2099-01-05",
+    });
+  });
+
+  it("saves once the body carries replaceWebVerified: true", async () => {
+    seedWebVerified("ZZA");
+    const res = await POST(postReq({ symbol: "ZZA", releaseTime: "16:30", replaceWebVerified: true }));
+    expect(res.status).toBe(200);
+    expect((await res.json()).success).toBe(true);
+    expect(row("ZZA")).toMatchObject({ release_time: "16:30", source: "user" });
+  });
+
+  it("only the boolean true acknowledges", async () => {
+    seedWebVerified("ZZA");
+    for (const flag of ["true", 1, "yes", {}]) {
+      const res = await POST(postReq({ symbol: "ZZA", releaseTime: "16:30", replaceWebVerified: flag }));
+      expect(res.status).toBe(409);
+    }
+    // `force` belongs to other routes and answers nothing here.
+    const forced = await POST(postReq({ symbol: "ZZA", releaseTime: "16:30", force: true }));
+    expect(forced.status).toBe(409);
+    expect(row("ZZA")).toMatchObject({ release_time: "16:05", source: "web_verified" });
+  });
+
+  it("the acknowledgement never answers the slot check", async () => {
+    seedWebVerified("ZZA");
+    hoisted.db
+      .prepare(
+        `INSERT INTO calendar_events (source, event_type, event_date, event_time, release_time, symbol, title, source_key, week_of)
+         VALUES ('finnhub','earnings','2099-01-05','AMC','16:05','ZZA','ZZA earnings','finnhub:ZZA:2099-01-05','2099-01-05')`,
+      )
+      .run();
+    const res = await POST(postReq({ symbol: "ZZA", releaseTime: "07:30", replaceWebVerified: true }));
+    expect(res.status).toBe(409);
+    expect((await res.json()).code).toBe("slot_mismatch");
+    expect(row("ZZA")).toMatchObject({ release_time: "16:05", source: "web_verified" });
+  });
+
+  it("does not ask over a suspect call time (web-verified, 17:00 or later)", async () => {
+    seedWebVerified("ZZA", "17:00");
+    const res = await POST(postReq({ symbol: "ZZA", releaseTime: "16:10" }));
+    expect(res.status).toBe(200);
+    expect(row("ZZA")).toMatchObject({ release_time: "16:10", source: "user" });
+  });
+
+  it("the full loss the question guards: acknowledged Save then Clear leaves no row", async () => {
+    seedWebVerified("ZZA");
+    await POST(postReq({ symbol: "ZZA", releaseTime: "16:30", replaceWebVerified: true }));
+    const cleared = await POST(postReq({ symbol: "ZZA", releaseTime: null }));
+    expect((await cleared.json()).data.cleared).toBe(true);
+    expect(row("ZZA")).toBeUndefined();
+  });
+
+  it("Clear alone never touches a web-verified row", async () => {
+    seedWebVerified("ZZA");
+    const res = await POST(postReq({ symbol: "ZZA", releaseTime: null }));
+    expect((await res.json()).data.cleared).toBe(false);
+    expect(row("ZZA")).toMatchObject({ release_time: "16:05", source: "web_verified" });
+  });
+
+  it("GET says how the standing row is used", async () => {
+    seedWebVerified("ZZA", "17:00");
+    seedWebVerified("ZZB");
+    const suspect = await (await GET(getReq("?symbol=ZZA&slot=amc"))).json();
+    expect(suspect.data.overrideUse).toBe("suspect_call_time");
+    expect(suspect.data.resolved).toBeNull();
+    const used = await (await GET(getReq("?symbol=ZZB&slot=amc"))).json();
+    expect(used.data.overrideUse).toBe("in_effect");
+    const none = await (await GET(getReq("?symbol=ZZC&slot=amc"))).json();
+    expect(none.data.overrideUse).toBeNull();
+  });
+});

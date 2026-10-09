@@ -3,6 +3,7 @@ import { db } from "@/lib/db";
 import { searchResearchDocuments } from "@/lib/queries/research-documents";
 import { liveOptionExpirationSql } from "@/lib/compute/option-expiry";
 import { todayET } from "@/lib/calendar/date-utils";
+import { formatLevelPrice } from "@/lib/chart/price-formatter";
 
 export type SearchResultType =
   | "security"
@@ -170,7 +171,8 @@ export async function GET(request: NextRequest) {
     const levels = db
       .prepare(
         `SELECT sl.id, sl.security_id, sl.level_type, sl.price, sl.thesis,
-                sl.source_author, sl.is_active, s.symbol
+                sl.source_author, sl.is_active, s.symbol,
+                COALESCE(s.currency, 'USD') AS currency
          FROM security_levels sl
          JOIN securities s ON s.id = sl.security_id
          WHERE sl.thesis LIKE ?
@@ -188,6 +190,7 @@ export async function GET(request: NextRequest) {
       source_author: string | null;
       is_active: number;
       symbol: string;
+      currency: string;
     }[];
 
     for (const l of levels) {
@@ -200,7 +203,8 @@ export async function GET(request: NextRequest) {
       results.push({
         type: "level",
         id: l.id,
-        title: `${l.symbol} ${l.level_type.replace("_", " ")} $${l.price.toFixed(2)}${activeMark}`,
+        // A level price is native currency: labelled, never converted.
+        title: `${l.symbol} ${l.level_type.replace("_", " ")} ${formatLevelPrice(l.currency, l.price)}${activeMark}`,
         subtitle: thesisFragment,
         href: `/dashboard/security/${l.security_id}`,
       });

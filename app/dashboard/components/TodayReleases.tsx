@@ -8,7 +8,7 @@ import { formatFinnhubFigureCompact } from "@/lib/format/finnhub-figure";
 import { effectiveConsensus } from "@/lib/calendar/consensus";
 import { nowET, todayET } from "@/lib/calendar/date-utils";
 import { earningsTimeLabel, formatClockTime12 } from "@/lib/calendar/release-times";
-import { deriveEarningsSlot } from "@/lib/earnings/earnings-slot";
+import { slotAwareTitle } from "@/lib/calendar/manual-row-display";
 // Type only — the module reads the database, so no value may cross into this
 // client bundle.
 import type { EarningsDisplayTime } from "@/lib/calendar/display-earnings-time";
@@ -120,24 +120,6 @@ export function pendingOrReleasedText(
     event.event_date < today ||
     (event.event_date === today && event.release_time.slice(0, 5).padStart(5, "0") <= nowET(now));
   return past ? `Released ${clock} \u00b7 awaiting data` : text;
-}
-
-/**
- * Manual earnings rows are titled "<SYM> earnings (Manual entry)", which names
- * the source instead of the slot. When the row's own slot is known, print it the
- * way the vendor rows do. Display only; the stored title is never rewritten.
- */
-export function slotAwareTitle(
-  event: Pick<CalendarEvent, "title" | "event_time" | "raw_json" | "event_type">,
-): string | null {
-  const title = event.title;
-  if (!title || event.event_type !== "earnings" || !/\(Manual entry\)\s*$/.test(title)) return title;
-  const slot = deriveEarningsSlot({ event_time: event.event_time, raw_json: event.raw_json });
-  if (!slot) return title;
-  return title.replace(
-    /\(Manual entry\)\s*$/,
-    slot === "bmo" ? "(Before Market Open)" : "(After Market Close)",
-  );
 }
 
 /**

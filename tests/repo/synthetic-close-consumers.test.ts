@@ -49,6 +49,10 @@ const CONSUMERS: Record<string, { role: Role; why: string }> = {
     why: "labelled 'Estimated closes' census count before and after a donation-triggered recompute",
   },
   "lib/queries/options.ts": { role: "include-with-disclosure", why: "isSyntheticClose flag on closed sales" },
+  "lib/queries/integrity-checks.ts": {
+    role: "exclude",
+    why: "audit: the lot roll-back undoes an engine close dated after the statement by the lots it actually closed, so lots are compared with the statement as they stood then; it never counts one as user activity or as a fill",
+  },
   "lib/queries/security-detail.ts": {
     role: "include-with-disclosure",
     why: "is_synthetic_close drives the Estimated chip on the security hub",

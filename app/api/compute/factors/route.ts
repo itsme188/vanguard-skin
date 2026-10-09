@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { computeFactorAnalysis, type FactorAnalysisResult } from "@/lib/compute/factors";
-import { resolveScopeToSingleId } from "@/lib/queries/accounts";
-import { weekAgo } from "@/lib/calendar/date-utils";
+import { resolveScope } from "@/lib/queries/accounts";
+import { todayET, weekAgo } from "@/lib/calendar/date-utils";
 
 /**
  * Compute the per-metric numeric delta between two factor snapshots (now vs week-ago).
@@ -43,14 +43,20 @@ export async function GET(request: NextRequest) {
     const { searchParams } = new URL(request.url);
     const accountIdParam = searchParams.get("accountId");
     const scope = searchParams.get("scope");
-    const accountId = accountIdParam ? Number(accountIdParam) : resolveScopeToSingleId(db, scope);
+    // An explicit accountId is one account. A named scope is its WHOLE id
+    // list (resolveScope), never the first account alone. "all" or no scope
+    // resolves to undefined: every account.
+    const accounts = accountIdParam
+      ? { accountId: Number(accountIdParam) }
+      : { accountIds: resolveScope(db, scope) };
     const benchmarkSymbol = searchParams.get("benchmark") ?? undefined;
 
-    const today = new Date().toISOString().slice(0, 10);
-    const wkAgo = weekAgo(today);
+    // The Eastern day: after 20:00 ET the UTC date is already tomorrow, which
+    // moved the week-ago snapshot a day forward.
+    const wkAgo = weekAgo(todayET());
 
-    const now = computeFactorAnalysis(db, { accountId, benchmarkSymbol });
-    const past = computeFactorAnalysis(db, { accountId, benchmarkSymbol, asOfDate: wkAgo });
+    const now = computeFactorAnalysis(db, { ...accounts, benchmarkSymbol });
+    const past = computeFactorAnalysis(db, { ...accounts, benchmarkSymbol, asOfDate: wkAgo });
 
     const delta = computeFactorDelta(now, past);
 

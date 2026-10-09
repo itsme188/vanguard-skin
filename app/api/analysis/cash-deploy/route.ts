@@ -2,8 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { suggestAllocation } from "@/lib/compute/cash-deploy";
 import { resolveScope } from "@/lib/queries/accounts";
-import { getCachedMacroThemes } from "@/lib/queries/analysis-macro-themes";
-import { mondayOf } from "@/lib/calendar/date-utils";
+import { getCachedMacroThemesForNow } from "@/lib/compute/theme-week";
 
 export async function GET(request: NextRequest) {
   try {
@@ -21,8 +20,7 @@ export async function GET(request: NextRequest) {
 
     // Read active themes from cache so suggestAllocation can boost gap-closure
     // scores toward sectors aligned with the current macro environment.
-    const weekOf = mondayOf(new Date().toISOString().slice(0, 10));
-    const cachedThemes = getCachedMacroThemes(db, scope, weekOf);
+    const cachedThemes = getCachedMacroThemesForNow(db, scope);
     const activeThemes = cachedThemes
       ? (JSON.parse(cachedThemes.themesJson) as import("@/lib/compute/macro-themes").MacroTheme[])
       : [];

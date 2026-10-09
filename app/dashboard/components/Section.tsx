@@ -18,7 +18,8 @@ export function Section({
   dense = false,
   className = "",
 }: {
-  title: string;
+  /** A node, so a portfolio-derived count in a title can sit behind `<Count>`. */
+  title: ReactNode;
   subtitle?: ReactNode;
   action?: ReactNode;
   children: ReactNode;

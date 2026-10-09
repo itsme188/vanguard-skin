@@ -12,6 +12,10 @@
  *      duration; a matured bond has no rate risk left to estimate).
  *   2. A stored duration is used as stored.
  *   3. No maturity date: unmodelled.
+ *   3a. A name that says the coupon floats, steps or follows an index
+ *      (`isNotFixedCouponName`, lib/bonds.ts): unmodelled, whatever coupon is
+ *      stored and however close maturity is. Rules 4 to 6 are for fixed
+ *      coupons only. A Treasury inflation-indexed note is not such a name.
  *   4. Zero coupon (a coupon of 0, or a Treasury bill by name with no
  *      stored coupon): years to maturity.
  *   5. Within one coupon period of maturity: one cash flow is left, so the
@@ -45,7 +49,7 @@
 import { isCashEquivalentSecurity } from "./cash-equivalents";
 import { normalizeSector, GICS_SECTORS } from "@/lib/securities/normalize-sector";
 import { isBondFundCategory, isLeveragedInverseFundCategory } from "@/lib/securities/normalize-fund-category";
-import { extractCouponRate } from "@/lib/bonds";
+import { extractCouponRate, isNotFixedCouponName } from "@/lib/bonds";
 
 /** Ruled 2026-10-06: a bond FUND with no stored duration is priced at 5 years. */
 export const FUND_DEFAULT_DURATION_YEARS = 5;
@@ -83,6 +87,12 @@ export type CouponSource = "broker" | "name";
 export type BondUnmodelledReason =
   | "no-maturity"
   | "matured"
+  /**
+   * The name says the coupon floats, steps or follows an index
+   * (`isNotFixedCouponName`). Decided before any coupon is read, so it holds
+   * whatever coupon is stored.
+   */
+  | "not-fixed-coupon"
   /** No coupon stored and none readable in the name. */
   | "no-coupon"
   /** A coupon IS stored but is not a usable number (negative, not finite). The name is not consulted. */
@@ -433,6 +443,11 @@ export function estimateBondRateLeg(pos: RateLegInputs, rateBps: number, today: 
   if (days != null && days < 0) return unmodelled("matured");
   if (stored != null) return modelled(stored, "stored");
   if (days == null) return unmodelled("no-maturity");
+
+  // The name test comes BEFORE any coupon. A stored coupon on a floating or
+  // index-linked note is the current period's rate at best: a stored 0 would
+  // make it a bill and a stored 8 a plain fixed bond, both invented figures.
+  if (isNotFixedCouponName(pos.security_name)) return unmodelled("not-fixed-coupon");
 
   // The stored coupon first; with none stored, the one the name states.
   const storedCoupon = pos.coupon_rate;

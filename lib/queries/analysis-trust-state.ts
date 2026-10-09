@@ -6,6 +6,13 @@ import {
 import type { DietzBand } from "@/lib/compute/dietz";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 
+/** The `settings` key the sector run stamps. The same string is exported as
+ *  `SECTOR_CLASSIFY_LAST_RUN_KEY` by lib/securities/classify-option-sectors.ts,
+ *  the only writer; it is repeated here so this read-only query does not
+ *  import the classifier (and with it the AI client).
+ *  tests/queries/analysis-trust-state.test.ts pins the two together. */
+const SECTOR_CLASSIFY_LAST_RUN_SETTING = "sector_classify_last_run_at";
+
 /** One walked calendar month in an account's cross-check chain. A month
  *  with no statement row at all is "missing" — distinct from a Dietz band,
  *  and (like "investigate"/"insufficient") breaks the chain. */
@@ -45,6 +52,12 @@ export interface AnalysisTrustState {
     missingSymbols: string[];
   };
   lastClassification: string | null;
+  /** When option sectors were last checked and found in line with their
+   *  underlyings, or brought in line (lib/securities/classify-option-sectors.ts;
+   *  a check that hit an AI error does not count): stored UTC,
+   *  `YYYY-MM-DD HH:MM:SS`. null = never stamped. Not per account: the check
+   *  covers every account. */
+  lastSectorClassification: string | null;
   crossCheckedThru: string | null; // populated by Slice D; renamed from performanceReconciledThru (Task 13)
   perAccountReconciliation: PerAccountReconciliation[];
   stalePrices: { count: number; symbols: string[] };
@@ -216,6 +229,13 @@ export function getAnalysisTrustState(
   const lastClassRow = db
     .prepare(`SELECT MAX(updated_at) AS last FROM security_factors`)
     .get() as { last: string | null };
+
+  // ── Last sector classification ───────────────────────────────────────
+  // datetime() normalizes the stored text (and turns a value that is not a
+  // time into NULL), so the strip never prints a raw or malformed stamp.
+  const lastSectorRow = db
+    .prepare(`SELECT datetime(value) AS last FROM settings WHERE key = ?`)
+    .get(SECTOR_CLASSIFY_LAST_RUN_SETTING) as { last: string | null } | undefined;
 
   // ── Stale prices ─────────────────────────────────────────────────────
   // Param order: accountIds first (in CTE), STALE_PRICE_DAYS last (outer WHERE)
@@ -390,6 +410,7 @@ export function getAnalysisTrustState(
   return {
     factorCoverage: { totalNames: total, classified, percentage, missingSymbols },
     lastClassification: lastClassRow.last,
+    lastSectorClassification: lastSectorRow?.last ?? null,
     crossCheckedThru: anyChainless ? null : rollupCrossCheckedThru,
     perAccountReconciliation: perAccount,
     stalePrices: {

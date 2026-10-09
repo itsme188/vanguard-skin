@@ -89,7 +89,9 @@ Rules that fall out of this:
 (race already lost), or (c) `mac-running-*` is set. This closed the 8:45→8:57 thinned-duplicate
 window observed 4/27: the primary timed out at 120s while the Mac was still mid-pipeline at 130s,
 and the Worker fallback fired without re-checking. `PRIMARY_TIMEOUT_MS` was simultaneously bumped
-120s → 300s.
+120s → 300s. (History only: the Worker's Mac-primary call was retired on 2026-08-14, nothing read
+the setting after that, and it was removed from the Worker source, `wrangler.toml` and the test
+fixtures on 2026-10-08.)
 
 ## 4. 2026-05-14 hardening (`ffce179`)
 
@@ -240,10 +242,44 @@ FRED + Finnhub (Claude nonfred deferred to the Mac), and reaction bars from **Ya
 real-time, ~10-day 1-min retention). It writes `cloud-enriched-{eventId}` KV payloads (7d TTL).
 
 **B8 (2026-07-07):** earnings-row payloads are retry-until-complete (the Worker mirror of migration
-062 — macro stays single-shot exact), gated to a T+115min reaction-ready window; the self-gate runs
+062 — macro stays single-shot exact), gated to a reaction-ready window (115 minutes then; 120 since
+2026-10-08, see below); the self-gate runs
 09:30–18:59 ET (extended from 18:00 so late-AMC prints get capturable ticks); and the Worker's
 earnings recap fallback reads these completed payloads directly as a same-day recap road
 (actual-required + plausibility-gated, no live Mac wake needed).
+
+**No reaction before release plus two hours, for every row (owner ruling 2026-10-08).** The Worker
+captures a reaction only when `now - release >= REACTION_READY_MS` (120 minutes;
+`workers/cron/src/cloud-enriched.ts`, the same value as the Mac's constant in
+`lib/calendar/enrichment-runner.ts`). The gate covers earnings and macro rows. A row enriched
+earlier keeps its actual and simply has no reaction in its payload. A fresh capture is stamped
+`captured_at`; a reaction already in KV is carried over untouched and never given a newer stamp.
+On the Mac, `lib/calendar/cloud-reconcile.ts` checks every cloud reaction through
+`lib/calendar/reaction-validity.ts` before it writes: a snapshot captured before its window ended
+is not stored, and for an older payload with no capture time only the legs that pass the rule are
+kept.
+
+**The cloud recap leaves out a pending leg, as the Mac does (2026-10-08).** The Worker cannot
+import the Mac's rule, so `workers/cron/src/fallback-earnings.ts` carries its own copy,
+`workerReactionLegState` ("measured", "pending" or "absent"). The cloud scoreboard, its
+expected-move row and the recap gate (`evaluateRecapContent`) read it: a pending leg prints a dash
+and is not a "real data point", so an implausible actual with only pending legs sends nothing. The
+copy is pinned against the Mac's `reactionLegState` by a 900-case table in
+`workers/cron/test/fallback-earnings.test.ts`. The Worker copy of the push composer
+(`print-push-message.ts`) was re-copied from the Mac in the same change. Deploy the Worker for the
+cloud side to take effect.
+
+**Macro rows get one bounded reaction-only follow-up.** A macro payload is single-shot and is
+written minutes after the release, before any reaction can exist. `runMacroReactionFollowUp`
+(`calendar-enrich.ts`) adds the reaction between release + 120 and release + 150 minutes
+(`COMPLETE_SETTLE_MS`), which is at most two ticks; nothing is retried after that. It writes only
+`reaction` (stamped `captured_at`), leaves the actual, consensus and source exactly as they were,
+never fetches an actual, and never pushes or emails. It shares the per-tick candidate limit with
+the main pass.
+
+Tests: `workers/cron/test/calendar-enrich.test.ts`,
+`workers/cron/test/calendar-enrich-macro-reaction-follow-up.test.ts`,
+`tests/calendar/cloud-reconcile-reaction-validity.test.ts`.
 
 **Mac reconciliation:** on every wake via `/api/calendar/reconcile-cloud-enrich`, piggy-backed on
 `POST /api/calendar/enrich`, reading payloads from the Worker's `GET /internal/cloud-enriched` with
@@ -271,6 +307,15 @@ keyed on (phase, eventId): `mac-sent-earnings-*`, `cloud-sent-earnings-*`,
 `mac-running-earnings-*`. Mac cron routes pre-check `cloud-sent-*` → skip if the Worker fallback
 already fired; set running on entry, write mac-sent on success, clear running in `finally`. Three
 Worker endpoints `/internal/earnings-{marker,running-marker,sent-marker}`, all X-Cron-Secret-gated.
+
+**Same-company sibling check (2026-10-08).** Two rows for one print can both be showing and sit at
+different times of day, so each row checking only its own (event, phase) key could send two
+previews. `siblingEventIndex` (`fallback-earnings.ts`) maps a row to the other earnings rows of the
+same issuer family on the same date, and the send loop asks each sibling the same question a row
+asks about itself: the snapshot's earnings-email rows and the three KV markers. It can only remove
+a candidate. Worker mirror of the Mac's `phaseHandledOnSibling`. Known limit: the snapshot ships no
+skips, so a skip on a sibling is not seen. Not applied to the wrap. Test:
+`workers/cron/test/fallback-earnings-sibling-handled.test.ts`.
 
 **Gate:** `shouldRunEarningsFallback` is wider than calendar-enrich — Mon–Fri 05:00–20:00 ET — to
 cover BMO previews + AMC recaps. Plan: `~/.claude/plans/okay-let-s-see-if-joyful-feather.md`.
@@ -309,7 +354,15 @@ Mac's own record, read with `etDateOfStoredUtc` in `dst.ts`, which accepts both 
 with `T`/`Z` and SQLite `YYYY-MM-DD HH:MM:SS` in UTC) and the Worker's own KV marker (its `firedAt`,
 or `triggeredAt` on a marker written before this change). A fire on an earlier Eastern day never
 blocks, so a level that crosses again the next morning alerts even inside 24 hours. A marker that
-cannot be read holds the level back.
+cannot be read does NOT hold the level back (`markerFiredOn`): the marker lives seven days, so
+failing closed would silence a level for a week. The cost is at most one extra alert, because the
+next fire overwrites it with a readable marker.
+
+**A failed push leaves no fired marker.** The marker is written BEFORE the push so two overlapping
+scans cannot both alert. When the push then does not go out, the Worker puts things back as they
+were (the earlier marker is restored, or the key is deleted). Otherwise the level would be held for
+the rest of the day and later filed in the Mac's inbox as an alert nobody received. The next tick
+tries again.
 
 **The marker is also the audit record, kept 7 days (`CLOUD_FIRED_MARKER_TTL_SECONDS`).** Its
 lifetime does not encode the guard. The Worker fires exactly when the Mac is down, often overnight
@@ -387,6 +440,37 @@ These Mac-side modules have Worker counterparts that are parity-pinned. Change B
   brand-new model FAMILY NAME requires editing both. The Worker reads the model catalog from R2
   snapshot v6 (`modelCatalog`).
 - `lib/alerts/print-push-message.ts` ⇄ its Worker mirror — byte-parity, parity test.
+- `lib/alerts/outbound-level-price.ts` ⇄ `workers/cron/src/level-price.ts` — the level-price label
+  for outbound text (2026-10-08, §12). Hand copy; both suites read
+  `tests/fixtures/level-price-parity.json`. The Mac file must stay import-free.
+- `lib/calendar/briefing-partition.ts` ⇄ the marked block in `workers/cron/src/fallback-briefing.ts`
+  (2026-10-08) — how the weekly briefing sorts a week's rows into portfolio earnings, WSH earnings
+  and everything else. The block between the BEGIN and END markers is carried byte-for-byte and
+  must stay free of imports; `workers/cron/test/fallback-briefing-partition.test.ts` fails when the
+  two drift. It lists ONE row per earnings print, the row the duplicate check kept, whatever its
+  source (a Nasdaq or hand-entered row can keep a print since the slot ruling; see
+  `docs/reference/earnings-pipeline.md` §5). Each side supplies only its own share-class table.
+- `REACTION_READY_MS`: `lib/calendar/enrichment-runner.ts` ⇄ `workers/cron/src/cloud-enriched.ts` —
+  the two-hour reaction gate (§10). Each suite pins its own side's value; no test compares the two,
+  so change both by hand.
+- `lib/calendar/reaction-validity.ts::reactionLegState` ⇄
+  `workers/cron/src/fallback-earnings.ts::workerReactionLegState` (2026-10-08) — whether a stored
+  reaction leg is a measurement yet (§10). Hand copy; a 900-case table in
+  `workers/cron/test/fallback-earnings.test.ts` runs both.
+- `lib/earnings/bogey-prompt-entries.ts` (and `bogeyHasContent` in
+  `lib/mutations/earnings-bogeys.ts`) ⇄ `workers/cron/src/bogey-content.ts` (2026-10-08) — which
+  bogey rows count for an earnings email, and what is printed from each. A row counts only when
+  the composer prints something from it. The Worker file has no imports, because the Mac suite
+  loads it directly: `tests/earnings/bogey-content-worker-parity.test.ts` pins the column list and
+  both rules. One documented difference: the snapshot does not carry `extra_metrics_json`, so an
+  extras-only row is an entry on the Mac and not in the cloud. Detail:
+  `docs/reference/earnings-pipeline.md` §14.
+- `lib/calendar/briefing-html.ts` ⇄ `workers/cron/src/html.ts` — the shared markdown renderer.
+  Since 2026-10-08 both decide "fill-in boxes or dashes" from the scoreboard HEADING wording
+  (`usesFillInBoxes`): a recap page prints dashes, every other page keeps its boxes. The headings
+  come from the two composers (Mac `renderHeadlineTable`, Worker `renderScoreboard`). Rewording a
+  heading means changing both composers and both renderers together.
+  `workers/cron/test/html.test.ts` pins the two renderers.
 - `presence-position.ts` (Worker) holds `formatCombinedExposurePresence` for B7 short presence.
 - `lib/earnings/armed-events-projection.ts::ARMED_EVENT_PROJECTION_KEYS` ⇄
   `workers/cron/src/armed-events.ts::ARMED_EVENT_ENTRY_KEYS` — parity-tested key SET. The Worker's

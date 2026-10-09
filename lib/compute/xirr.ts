@@ -51,6 +51,14 @@ export interface XirrOptions {
   startDate?: string; // YYYY-MM-DD
   endDate?: string; // YYYY-MM-DD, defaults to latest snapshot
   accountId?: number; // if omitted, compute for all + portfolio-wide
+  /**
+   * A whole scope (resolveScope's id list). One id behaves exactly like
+   * `accountId`; two or more return ONE money-weighted return over the summed
+   * cash flows of just those accounts (never the first account alone, never
+   * the whole portfolio); an empty array means "no accounts" and returns
+   * null. `accountId` wins when both are given.
+   */
+  accountIds?: number[];
 }
 
 // ─── Internal types ─────────────────────────────────────────────
@@ -240,7 +248,17 @@ export function computeXirr(
   db: Database.Database,
   options: XirrOptions = {}
 ): PortfolioXirrResult | null {
-  const { startDate, endDate, accountId } = options;
+  const { startDate, endDate, accountIds } = options;
+
+  // Scope rules, the same three computeTwr applies: one id in `accountIds`
+  // is the single-account path; two or more scope the aggregate path to just
+  // those accounts; an explicitly empty list is "no accounts in scope" and
+  // must never widen to the whole portfolio.
+  const accountId: number | undefined =
+    options.accountId ?? (accountIds && accountIds.length === 1 ? accountIds[0] : undefined);
+  const scopeIds: number[] | undefined =
+    !accountId && accountIds && accountIds.length > 1 ? accountIds : undefined;
+  if (!accountId && accountIds !== undefined && accountIds.length === 0) return null;
 
   // Get accounts
   let accounts: AccountRow[];
@@ -248,6 +266,12 @@ export function computeXirr(
     accounts = db
       .prepare("SELECT id, name FROM accounts WHERE id = ?")
       .all(accountId) as AccountRow[];
+  } else if (scopeIds) {
+    accounts = db
+      .prepare(
+        `SELECT id, name FROM accounts WHERE id IN (${scopeIds.map(() => "?").join(",")}) ORDER BY id`
+      )
+      .all(...scopeIds) as AccountRow[];
   } else {
     accounts = db
       .prepare("SELECT id, name FROM accounts ORDER BY id")
@@ -594,6 +618,24 @@ export function computeXirr(
 
   // ─── Portfolio-wide XIRR ─────────────────────────────────────
 
+  // When scopeIds is set (a named scope of 2+ accounts) every aggregate
+  // query below is limited to those accounts, including the "expected
+  // accounts" coverage count (otherwise a scoped month would be compared
+  // against the whole portfolio's count and never read as complete). With no
+  // scopeIds every clause is empty and the SQL is the all-accounts SQL.
+  const scopePlaceholders = scopeIds ? scopeIds.map(() => "?").join(",") : "";
+  const scopeAnd = (col: string) =>
+    scopeIds ? ` AND ${col} IN (${scopePlaceholders})` : "";
+  const scopeParams: number[] = scopeIds ?? [];
+  const firstsCte = scopeIds
+    ? `snapshot_firsts AS (
+         SELECT account_id, MIN(month_end_date) AS first_date
+         FROM monthly_snapshots
+         WHERE ${excludeLiveSnapshotsSql("source")}${scopeAnd("account_id")}
+         GROUP BY account_id
+       )`
+    : SNAPSHOT_FIRSTS_CTE;
+
   const portfolioCashFlows: CashFlow[] = [];
 
   // Aggregated starting value — try monthly snapshots, fall back to daily valuations
@@ -604,7 +646,7 @@ export function computeXirr(
   // account reported (see snapshot-coverage.ts — statement-lag guard).
   const monthlyAggStart = db
     .prepare(
-      `WITH ${SNAPSHOT_FIRSTS_CTE},
+      `WITH ${firstsCte},
        agg AS (
          SELECT ms.month_end_date AS d,
                 SUM(ms.total_value) AS total_value,
@@ -612,7 +654,7 @@ export function computeXirr(
                 ${EXPECTED_ACCOUNTS_SQL} AS expected_accounts
          FROM monthly_snapshots ms
          WHERE ms.month_end_date < ?
-           AND ${excludeLiveSnapshotsSql("ms.source")}
+           AND ${excludeLiveSnapshotsSql("ms.source")}${scopeAnd("ms.account_id")}
          GROUP BY ms.month_end_date
        )
        SELECT d, total_value FROM agg
@@ -620,7 +662,7 @@ export function computeXirr(
        ORDER BY d DESC
        LIMIT 1`
     )
-    .get(effectiveStart) as { d: string; total_value: number | null } | undefined;
+    .get(...scopeParams, effectiveStart, ...scopeParams) as { d: string; total_value: number | null } | undefined;
 
   if (monthlyAggStart?.total_value && monthlyAggStart.total_value > 0 && monthlyAggStart.d) {
     aggStartValue = monthlyAggStart.total_value;
@@ -634,10 +676,10 @@ export function computeXirr(
          WHERE valuation_date = (
            SELECT MAX(valuation_date)
            FROM daily_valuations
-           WHERE valuation_date < ?
-         )`
+           WHERE valuation_date < ?${scopeAnd("account_id")}
+         )${scopeAnd("account_id")}`
       )
-      .get(effectiveStart) as { total_value: number | null; d: string | null } | undefined;
+      .get(effectiveStart, ...scopeParams, ...scopeParams) as { total_value: number | null; d: string | null } | undefined;
 
     if (dailyAggStart?.total_value && dailyAggStart.total_value > 0 && dailyAggStart.d) {
       aggStartValue = dailyAggStart.total_value;
@@ -653,13 +695,15 @@ export function computeXirr(
   const hasPriorAggRow =
     monthlyAggStart !== undefined ||
     (db
-      .prepare("SELECT 1 FROM daily_valuations WHERE valuation_date < ? LIMIT 1")
-      .get(effectiveStart) !== undefined);
+      .prepare(
+        `SELECT 1 FROM daily_valuations WHERE valuation_date < ?${scopeAnd("account_id")} LIMIT 1`
+      )
+      .get(effectiveStart, ...scopeParams) !== undefined);
 
   if (!hasPriorAggRow) {
     const monthlyAggFirst = db
       .prepare(
-        `WITH ${SNAPSHOT_FIRSTS_CTE},
+        `WITH ${firstsCte},
          agg AS (
            SELECT ms.month_end_date AS d,
                   SUM(ms.total_value) AS total_value,
@@ -667,7 +711,7 @@ export function computeXirr(
                   ${EXPECTED_ACCOUNTS_SQL} AS expected_accounts
            FROM monthly_snapshots ms
            WHERE ms.month_end_date >= ? AND ms.month_end_date < ?
-             AND ${excludeLiveSnapshotsSql("ms.source")}
+             AND ${excludeLiveSnapshotsSql("ms.source")}${scopeAnd("ms.account_id")}
            GROUP BY ms.month_end_date
          )
          SELECT d AS month_end_date, total_value FROM agg
@@ -675,7 +719,7 @@ export function computeXirr(
          ORDER BY d ASC
          LIMIT 1`
       )
-      .get(effectiveStart, effectiveEnd) as
+      .get(...scopeParams, effectiveStart, effectiveEnd, ...scopeParams) as
       | { month_end_date: string; total_value: number | null }
       | undefined;
 
@@ -686,10 +730,10 @@ export function computeXirr(
          WHERE valuation_date = (
            SELECT MIN(valuation_date)
            FROM daily_valuations
-           WHERE valuation_date >= ? AND valuation_date < ?
-         )`
+           WHERE valuation_date >= ? AND valuation_date < ?${scopeAnd("account_id")}
+         )${scopeAnd("account_id")}`
       )
-      .get(effectiveStart, effectiveEnd) as
+      .get(effectiveStart, effectiveEnd, ...scopeParams, ...scopeParams) as
       | { month_end_date: string | null; total_value: number | null }
       | undefined;
 
@@ -720,12 +764,12 @@ export function computeXirr(
       `SELECT month_end_date, SUM(deposits_withdrawals) AS total_deps
        FROM monthly_snapshots
        WHERE month_end_date >= ? AND month_end_date <= ?
-         AND ${excludeLiveSnapshotsSql("source")}
+         AND ${excludeLiveSnapshotsSql("source")}${scopeAnd("account_id")}
          AND deposits_withdrawals IS NOT NULL AND deposits_withdrawals != 0
        GROUP BY month_end_date
        ORDER BY month_end_date ASC`
     )
-    .all(aggFlowStart, effectiveEnd) as {
+    .all(aggFlowStart, effectiveEnd, ...scopeParams) as {
       month_end_date: string;
       total_deps: number;
     }[];
@@ -742,11 +786,11 @@ export function computeXirr(
        FROM transactions
        WHERE is_external_flow = 1
          AND trade_date >= ? AND trade_date <= ?
-         AND ${IN_KIND_LEG_SQL}
+         AND ${IN_KIND_LEG_SQL}${scopeAnd("account_id")}
        GROUP BY trade_date
        ORDER BY trade_date ASC`
     )
-    .all(aggFlowStart, effectiveEnd) as {
+    .all(aggFlowStart, effectiveEnd, ...scopeParams) as {
       trade_date: string;
       amount: number;
     }[];
@@ -769,11 +813,11 @@ export function computeXirr(
              AND ${excludeLiveSnapshotsSql("p2.source")}
          )
        WHERE ms.month_end_date >= ? AND ms.month_end_date <= ?
-         AND ${excludeLiveSnapshotsSql("ms.source")}
+         AND ${excludeLiveSnapshotsSql("ms.source")}${scopeAnd("ms.account_id")}
          AND SUBSTR(ms.month_end_date, 6, 2) = '12'
          AND ms.starting_value IS NOT NULL`
     )
-    .all(aggFlowStart, effectiveEnd) as {
+    .all(aggFlowStart, effectiveEnd, ...scopeParams) as {
     account_id: number;
     month_end_date: string;
     starting_value: number;
@@ -813,7 +857,7 @@ export function computeXirr(
   // whole account from the terminal value and fabricates a huge loss.
   const aggEndRow = db
     .prepare(
-      `WITH ${SNAPSHOT_FIRSTS_CTE},
+      `WITH ${firstsCte},
        agg AS (
          SELECT ms.month_end_date AS d,
                 SUM(ms.total_value) AS total_value,
@@ -821,7 +865,7 @@ export function computeXirr(
                 ${EXPECTED_ACCOUNTS_SQL} AS expected_accounts
          FROM monthly_snapshots ms
          WHERE ms.month_end_date <= ?
-           AND ${excludeLiveSnapshotsSql("ms.source")}
+           AND ${excludeLiveSnapshotsSql("ms.source")}${scopeAnd("ms.account_id")}
          GROUP BY ms.month_end_date
        )
        SELECT d, total_value FROM agg
@@ -829,7 +873,7 @@ export function computeXirr(
        ORDER BY d DESC
        LIMIT 1`
     )
-    .get(effectiveEnd) as { d: string; total_value: number | null } | undefined;
+    .get(...scopeParams, effectiveEnd, ...scopeParams) as { d: string; total_value: number | null } | undefined;
 
   // The date the terminal value is anchored to. A flow that postdates it is
   // invisible to that value — booking it as committed capital would read a
@@ -848,10 +892,10 @@ export function computeXirr(
          WHERE valuation_date = (
            SELECT MAX(valuation_date)
            FROM daily_valuations
-           WHERE valuation_date <= ?
-         )`
+           WHERE valuation_date <= ?${scopeAnd("account_id")}
+         )${scopeAnd("account_id")}`
       )
-      .get(effectiveEnd) as
+      .get(effectiveEnd, ...scopeParams, ...scopeParams) as
       | { valuation_date: string; total_value: number | null }
       | undefined;
 

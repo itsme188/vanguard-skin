@@ -157,6 +157,14 @@ function outboxRows(): Array<{ supersededEventIds: number[] }> {
   ).map((r) => JSON.parse(r.payload_json) as { supersededEventIds: number[] });
 }
 
+/**
+ * Put a feed row back the way versions before the add-time hide stored it:
+ * showing beside the hand-entered row on its date.
+ */
+function leftShowingByAnOlderVersion(feedId: number): void {
+  db.prepare("UPDATE calendar_events SET superseded = 0 WHERE id = ?").run(feedId);
+}
+
 async function refresh(week: string, finnhub: CalendarEventInput[], nasdaq: CalendarEventInput[] = []) {
   vi.mocked(fetchFinnhubEarningsForSymbols).mockResolvedValueOnce(finnhub);
   vi.mocked(fetchNasdaqEarningsForSymbols).mockResolvedValueOnce(nasdaq);
@@ -308,15 +316,18 @@ describe("refreshing a week outside the reconciler's window", () => {
 
   it("an existing showing feed row is hidden on its next write, and its records move", () => {
     // A pair an older refresh left showing: the feed row is kept by the
-    // cleanup (it carries a bogey), so it arrives as an UPDATE.
+    // cleanup (it carries a bogey), so it arrives as an UPDATE. An add now
+    // hides the feed row itself, so the stored pair is rebuilt by showing the
+    // feed row again and giving it its records afterwards.
     upsertCalendarEvents(db, [feed("finnhub", "ZZA", OLD_DATE)]);
     const feedId = rowByKey(`finnhub:ZZA:${OLD_DATE}`)!.id;
+    const manual = addManual("ZZA", OLD_DATE, "EPS 1.00");
+    leftShowingByAnOlderVersion(feedId);
     db.prepare(
       `INSERT INTO earnings_bogeys (event_id, source, source_label, eps_consensus)
        VALUES (?, 'pdf_upload', 'Weekly note', 1.5)`,
     ).run(feedId);
     db.prepare("UPDATE calendar_events SET actual_value = 'EPS 1.10' WHERE id = ?").run(feedId);
-    const manual = addManual("ZZA", OLD_DATE);
 
     const result = upsertCalendarEvents(db, [feed("finnhub", "ZZA", OLD_DATE)]);
 
@@ -341,6 +352,7 @@ describe("refreshing a week outside the reconciler's window", () => {
   it("names a row that WAS showing when the refresh started", async () => {
     await refresh(OLD_WEEK, [feed("finnhub", "ZZA", OLD_DATE)]);
     addManual("ZZA", OLD_DATE);
+    leftShowingByAnOlderVersion(rowByKey(`finnhub:ZZA:${OLD_DATE}`)!.id);
 
     const result = await refresh(OLD_WEEK, [feed("finnhub", "ZZA", OLD_DATE)]);
 
@@ -352,6 +364,111 @@ describe("refreshing a week outside the reconciler's window", () => {
         reason: `the date you entered (${OLD_DATE}) takes its place`,
       },
     ]);
+  });
+});
+
+describe("adding a hand-entered row on a date a feed row already shows on", () => {
+  it("hides the feed row at the add and carries its consensus, with no refresh", () => {
+    upsertCalendarEvents(db, [feed("finnhub", "ZZA", OLD_DATE)]);
+
+    const added = insertCalendarEvent(db, {
+      symbol: "ZZA",
+      event_date: OLD_DATE,
+      week_of: mondayOf(OLD_DATE),
+    });
+
+    expect(added.hiddenFeedRows).toEqual([
+      {
+        sourceKey: `finnhub:ZZA:${OLD_DATE}`,
+        title: "ZZA Earnings",
+        eventDate: OLD_DATE,
+        source: "finnhub",
+        wasShowing: true,
+      },
+    ]);
+    expect(rowByKey(`finnhub:ZZA:${OLD_DATE}`)!.superseded).toBe(1);
+    expect(rowById(added.id)!.superseded).toBe(0);
+    expect(rowById(added.id)!.consensus_estimate).toBe("EPS 1.00");
+  });
+
+  it("hides both vendors' rows when both were showing", () => {
+    upsertCalendarEvents(db, [feed("finnhub", "ZZA", FAR_DATE), feed("nasdaq", "ZZA", FAR_DATE)]);
+
+    const added = addManual("ZZA", FAR_DATE);
+
+    expect(rowByKey(`finnhub:ZZA:${FAR_DATE}`)!.superseded).toBe(1);
+    expect(rowByKey(`nasdaq:ZZA:${FAR_DATE}`)!.superseded).toBe(1);
+    expect(rowById(added)!.superseded).toBe(0);
+    const rows = outboxRows();
+    expect(rows).toHaveLength(1);
+    expect([...rows[0].supersededEventIds].sort()).toEqual(
+      [rowByKey(`finnhub:ZZA:${FAR_DATE}`)!.id, rowByKey(`nasdaq:ZZA:${FAR_DATE}`)!.id].sort(),
+    );
+  });
+
+  it("leaves a feed row the user confirmed in place showing", () => {
+    upsertCalendarEvents(db, [feed("finnhub", "ZZA", OLD_DATE)]);
+    db.prepare(
+      "UPDATE calendar_events SET date_status = 'user_confirmed' WHERE source = 'finnhub'",
+    ).run();
+
+    const added = insertCalendarEvent(db, {
+      symbol: "ZZA",
+      event_date: OLD_DATE,
+      week_of: mondayOf(OLD_DATE),
+    });
+
+    expect(added.hiddenFeedRows).toEqual([]);
+    expect(rowByKey(`finnhub:ZZA:${OLD_DATE}`)!.superseded).toBe(0);
+  });
+
+  it("leaves a feed row on another date, a sibling's row and a non-earnings add alone", () => {
+    upsertCalendarEvents(db, [
+      feed("finnhub", "ZZA", addDays(OLD_DATE, 1)),
+      feed("finnhub", "GOOG", OLD_DATE),
+      feed("finnhub", "ZZB", OLD_DATE),
+    ]);
+
+    addManual("ZZA", OLD_DATE);
+    addManual("GOOGL", OLD_DATE);
+    const other = insertCalendarEvent(db, {
+      symbol: "ZZB",
+      event_date: OLD_DATE,
+      event_type: "investor_day",
+      week_of: mondayOf(OLD_DATE),
+    });
+
+    expect(other.hiddenFeedRows).toEqual([]);
+    expect(
+      (db.prepare("SELECT COUNT(*) AS n FROM calendar_events WHERE superseded = 1").get() as { n: number }).n,
+    ).toBe(0);
+    expect(outboxRows()).toHaveLength(0);
+  });
+
+  it("an add and its removal leave the feed row showing again", () => {
+    upsertCalendarEvents(db, [feed("finnhub", "ZZA", OLD_DATE)]);
+    const added = addManual("ZZA", OLD_DATE);
+    expect(rowByKey(`finnhub:ZZA:${OLD_DATE}`)!.superseded).toBe(1);
+
+    expect(deleteCalendarEvent(db, added, { today: TODAY })).toBe(true);
+
+    expect(rowByKey(`finnhub:ZZA:${OLD_DATE}`)!.superseded).toBe(0);
+  });
+
+  it("moving a hand-entered row onto a feed row's date hides it; moving away shows it again", () => {
+    upsertCalendarEvents(db, [feed("finnhub", "ZZA", FAR_DATE)]);
+    const manual = addManual("ZZA", addDays(FAR_DATE, 40));
+    expect(rowByKey(`finnhub:ZZA:${FAR_DATE}`)!.superseded).toBe(0);
+
+    updateCalendarEvent(db, { id: manual, event_date: FAR_DATE, week_of: mondayOf(FAR_DATE) });
+    expect(rowByKey(`finnhub:ZZA:${FAR_DATE}`)!.superseded).toBe(1);
+
+    updateCalendarEvent(db, {
+      id: manual,
+      event_date: addDays(FAR_DATE, 40),
+      week_of: mondayOf(addDays(FAR_DATE, 40)),
+    });
+    expect(rowByKey(`finnhub:ZZA:${FAR_DATE}`)!.superseded).toBe(0);
   });
 });
 

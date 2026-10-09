@@ -96,6 +96,10 @@ describe("security hub page — Recent Sales header", () => {
     expect(idx).toBeGreaterThan(-1);
     const section = src.slice(idx, idx + 600);
     expect(section).toContain("closedSalesTotal");
-    expect(section).toContain("/dashboard/tax-lots?security=${securityId}");
+    // The link is built by recentSalesTaxLotsLink so it carries the sale
+    // year: the Tax Lots page shows one year at a time (unit-tested in
+    // tests/dashboard/security-hub-tax-lot-wording.test.ts).
+    expect(section).toContain("href={recentSalesLink.href}");
+    expect(src).toContain("recentSalesTaxLotsLink(securityId, closedSales)");
   });
 });

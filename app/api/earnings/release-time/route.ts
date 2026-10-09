@@ -8,6 +8,8 @@ import {
   getObservationsForFamily,
   applyResolvedReleaseTimeToUpcomingEvents,
   checkUserReleaseTimeAgainstUpcomingSlot,
+  checkUserSaveWouldReplaceWebVerified,
+  standingReleaseTimeUse,
   EARLIEST_PLAUSIBLE_ET,
   LATEST_PLAUSIBLE_ET,
   OBSERVATION_LOOKBACK_DAYS,
@@ -41,6 +43,17 @@ export const dynamic = "force-dynamic";
  * would still be ignored downstream, which is the exact contradiction this
  * guard exists to prevent.
  *
+ * After the slot check, a Save over a standing web-verified time answers 409
+ * { code: "would_replace_web_verified" } and stores nothing, until the body
+ * carries `replaceWebVerified: true` (checkUserSaveWouldReplaceWebVerified).
+ * The row is one slot per ticker: the save turns it into a user row, and a
+ * later Clear deletes that, so the web-verified time could not come back.
+ * The acknowledgement answers only this question, never the slot check.
+ *
+ * GET also returns `overrideUse`: whether the resolver actually uses the
+ * standing row for this slot (a web-verified after-close time at or after
+ * 17:00 is a suspect call time and is not used).
+ *
  * Thin — validation + composition only; the cascade semantics live in
  * lib/earnings/wire-times.ts. In-app only (no cron auth — same family as
  * confirm-date/correct-date).
@@ -61,6 +74,7 @@ export async function GET(req: NextRequest) {
       symbol,
       resolved: resolveSymbolReleaseTime(db, symbol, slot),
       override: getSymbolReleaseTimeRow(db, symbol),
+      overrideUse: standingReleaseTimeUse(db, symbol, slot),
       observations: getObservationsForFamily(db, symbol, since),
     },
   });
@@ -68,7 +82,7 @@ export async function GET(req: NextRequest) {
 
 export async function POST(req: NextRequest) {
   const body = (await req.json().catch(() => null)) as
-    | { symbol?: string; releaseTime?: string | null }
+    | { symbol?: string; releaseTime?: string | null; replaceWebVerified?: unknown }
     | null;
   const symbol = body?.symbol?.trim().toUpperCase();
   if (!symbol) {
@@ -129,6 +143,20 @@ export async function POST(req: NextRequest) {
       },
       { status: 409 },
     );
+  }
+  if (body.replaceWebVerified !== true) {
+    const replaceCheck = checkUserSaveWouldReplaceWebVerified(db, symbol, t);
+    if (!replaceCheck.ok) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: replaceCheck.message,
+          code: replaceCheck.code,
+          data: replaceCheck.standing,
+        },
+        { status: 409 },
+      );
+    }
   }
   // Keep a standing note and verified date (D4): only a ticker with no note
   // yet gets the "set in app" label. Both are symbol-wide, like the time.

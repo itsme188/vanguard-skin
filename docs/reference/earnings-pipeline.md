@@ -33,7 +33,8 @@ Contents:
 Earnings rows (`source='finnhub'` OR `event_type='earnings'`) retry **every** enrichment tick
 (10-min pacing via `calendar_events.enrichment_attempted_at`) until COMPLETE.
 
-- **COMPLETE** = actual captured AND (reaction captured OR release ≥150 min ago).
+- **COMPLETE** = actual captured AND (reaction captured OR release ≥150 min ago;
+  `REACTION_SETTLE_MS` = `REACTION_RECAPTURE_HORIZON_MS`).
 - `enriched_at` stamps **ONLY** on completion, which is what opens the recap `[enriched_at, +4h]`
   window — so recaps go out after the call, and a blocked row (`enriched_at` NULL) is reopened by a
   manual `POST /api/earnings/actuals`.
@@ -41,9 +42,53 @@ Earnings rows (`source='finnhub'` OR `event_type='earnings'`) retry **every** en
 
 ### Reaction-capture gate
 
-Reaction capture is gated to **≥T+115m for earnings rows only** (`REACTION_READY_MS`, 2026-07-06):
-bars target `t_post = release + 120m`, so earlier attempts were guaranteed-empty TWS/Yahoo rounds per
-retry tick. Macro rows are **NEVER** gated — their immediate partial capture is by design.
+**No reaction is captured before release plus two hours, for every row (owner ruling 2026-10-08).**
+A reaction is the move from just before a release to the price 120 minutes after it. Until that
+moment has passed there is nothing to measure. `REACTION_READY_MS` (`lib/calendar/enrichment-runner.ts`,
+120 minutes) gates earnings AND macro rows; the Worker carries the same constant
+(`workers/cron/src/cloud-enriched.ts`, used in `calendar-enrich.ts`). History: the gate was 115
+minutes and earnings-only, and macro rows were never gated, so a macro row could store a "reaction"
+read minutes after its release.
+
+- **Each stored snapshot records when it was captured** (`captured_at`, both sides).
+  `admitCapturedReaction` is the last check before a write.
+- **Reaction-only follow-up** (`runReactionFollowUp`). The main pass only sees rows with
+  `enriched_at IS NULL`. A row marked done before its window ended (every macro row is; an earnings
+  row is when a cloud actual stamps it early) gets its reaction between release + 120 and release +
+  150 minutes. The follow-up writes `reaction_snapshot` only where it is still NULL, never fetches an
+  actual, never touches `enriched_at`, and never sends anything.
+- **One home for "is this a measurement yet?":** `lib/calendar/reaction-validity.ts`. The capture
+  gate, the cloud reconcile (`assessReactionSnapshot`) and the on-screen chips (`reactionLegState`,
+  which show "pending", never a percent) all read it. For an older snapshot with no `captured_at`,
+  a pre/post pair with the identical price is not trusted, and a leg that rounds to zero on a row
+  stamped before its window could have been measured is not trusted either.
+- **Every reader that turns a snapshot into text goes through `readReactionLegs`** (same file): the
+  earnings email composer (scoreboard, recap prompt, read-through bullets), the weekly briefing,
+  the macro-themes event line, the chat tool and the email viewer's rebuilt scoreboard. It returns
+  the measured legs and names the pending ones. **Outbound text and prompts omit a pending leg;**
+  when no leg is measured the recap uses its not-yet-captured wording. Only in-app surfaces (the
+  email viewer, the chat tool, the chips) may say "pending". The push composer
+  (`lib/alerts/print-push-message.ts`) is import-free by design and carries its own copy of the
+  snapshot-only part of the rule, as does its Worker mirror. A snapshot whose legs are all
+  measured renders exactly as before.
+- **The Worker's recap has its own copy of the leg rule** (second half of the 2026-10-08 sprint):
+  `workerReactionLegState` (`workers/cron/src/fallback-earnings.ts`). The cloud scoreboard, its
+  expected-move row and the recap gate read it. The gate (`evaluateRecapContent`) asks for "at
+  least one real data point"; a pending leg renders a dash, so it is not a data point, and an
+  implausible actual with only pending legs sends nothing. The copy is pinned against the Mac's
+  `reactionLegState` by a 900-case table (15 snapshot shapes, 6 leg shapes, 10 enrichment stamps)
+  in `workers/cron/test/fallback-earnings.test.ts`. Change both sides together and deploy the
+  Worker.
+- **The chat tool can judge an old zero move:** the release-reactions query selects the row's
+  enrichment time, so a 0.00 percent leg on a row stamped before its window ended reads as pending
+  (`tests/chat/release-reactions-legacy-zero-move.test.ts`).
+- **Repair script, written and not run:** `scripts/repair-premature-reaction-snapshots.ts`
+  (dry-run default) lists stored snapshots that were captured too early.
+
+Tests: `tests/calendar/reaction-validity.test.ts`,
+`tests/calendar/reaction-pending-text-readers.test.ts`,
+`tests/calendar/enrichment-runner-reaction-window.test.ts`,
+`tests/calendar/cloud-reconcile-reaction-validity.test.ts`, `workers/cron/test/calendar-enrich.test.ts`.
 
 ### Do not regress
 
@@ -104,6 +149,18 @@ layered cascade:
 6. BMO/AMC defaults
 
 Any observation earlier than a layer-≥3 resolution pulls it down.
+
+**Saving over a web-verified time asks first (2026-10-08).** The table holds one row per ticker. A
+Save turns a web-verified row into a user row, and a later Clear deletes that, so the web-verified
+time could not come back. `POST /api/earnings/release-time` therefore answers 409
+`would_replace_web_verified` and stores nothing until the body carries `replaceWebVerified: true`
+(`checkUserSaveWouldReplaceWebVerified`, same file). The popover asks through the app dialog. The
+slot check (`slot_mismatch`) still runs first and has no bypass; the acknowledgement answers only
+this one question. A web-verified after-close time at or after 17:00 is a suspect call time and
+is replaced without a question. GET also returns `overrideUse`: whether the resolver actually uses
+the standing row for that slot (`standingReleaseTimeUse`). Tests:
+`tests/api/earnings-release-time.test.ts`, `tests/earnings/wire-times.test.ts`,
+`tests/dashboard/release-time-editor-u17.test.ts`.
 
 ### Pre-release probe
 
@@ -197,8 +254,95 @@ Builds the owner's 2026-09-14 ruling. In `lib/calendar/reconcile-earnings-dates.
 
 Tests: `tests/calendar/reconcile-manual-rows-a14.test.ts`,
 `tests/dashboard/earnings-date-chip-hand-entered.test.tsx`. The chip was not seen in a browser.
-**Open:** a feed twin outside the reconciler's window, and a confirmed vendor row against a
-hand-entered row on the same date (owner questions in `docs/plans/TODO.md`).
+Both questions left open here on 2026-10-07 were ruled and built on 2026-10-08: a feed twin outside
+the reconciler's window is hidden at write (`docs/reference/calendar.md` §5), and on one date a
+hand-entered row beats a vendor row the user confirmed, whatever order they were written in
+(`resolveCluster`, rung 1).
+
+### Same-date duplicates: a real slot beats a default time (2026-10-08)
+
+Two vendors often list one print. Finnhub sometimes gives no hour, and the sync then stores the
+after-close default. Before this ruling the Finnhub row always won an agreeing pair, so a print the
+other vendor knew was before the open showed as an afternoon print.
+
+- **The rule lives in one function:** `pickSameDateWinner` (`lib/calendar/reconcile-earnings-dates.ts`).
+  Among rows on ONE date, the row the older rule kept stays unless it has no real slot and another
+  row on that date has one. A "real slot" is an explicit before-open or after-close marker
+  (`hasRealSlot`, read through `deriveEarningsSlot` with no release-time fallback). When both rows
+  have a slot, or neither has, nothing changes.
+- **It holds after the print too.** Every row on the reported date competes, not only the rows that
+  already show an actual. Otherwise the winner flipped back when the first vendor posted its actual.
+- **Duplicate check only.** The read-time pickers that prefer one vendor before a reconcile pass
+  runs (two of them in the Worker) are unchanged. The loser is hidden by the ordinary fold on the
+  next pass; no slot is edited in place.
+- **So the kept row is not always Finnhub's.** Do not write a reader that assumes it is.
+
+**What a kept non-Finnhub row needs from its hidden Finnhub twin.** The fold copies consensus,
+actual and reaction columns and nothing else. `createFinnhubDataCarrier` adds the rest onto a kept
+Nasdaq or hand-entered row: the Finnhub keys of `raw_json` that readers use (symbol, estimates,
+fiscal quarter and year), the description text the weekly briefing prompt reads, and the revenue
+part of the consensus text (Nasdaq rows only). Rules:
+
+- Only what the kept row lacks is written. The slot, the date and the vendor's actuals are never
+  carried.
+- Everything carried is recorded on a marker in the kept row's `raw_json` (`finnhub_carried`) and
+  follows the Finnhub row from then on: refreshed when it changes, removed when the Finnhub row no
+  longer states it. Text a person typed over a carried value is theirs and is left alone.
+- A zero revenue estimate is the vendor's placeholder and is never carried.
+- A settled pair writes nothing, so a second pass is a no-op.
+- **The copy is not durable on its own.** A weekly sync replaces the kept vendor row's `raw_json`
+  and description; the reconcile pass at the end of that sync restores the copy.
+
+**A reader that cannot tolerate that gap reads the hidden twin directly.** `findHiddenFinnhubDonor`
+returns the hidden Finnhub row for the same print (issuer family, within the clustering distance,
+nearest date then lowest id; the carrier uses the same picker, `pickFinnhubDonor`). The vendor
+consensus prepare step (`resolveVendorConsensus`, `lib/earnings/prepare-steps/consensus-row.ts`)
+reads it and never the copy: reading the copy during a sync looked like the vendor withdrawing its
+figures and deleted the event's vendor bogey. "Withdrawn" is concluded only when a Finnhub source
+for the print exists and says so.
+
+**The weekly briefing lists the kept row whatever its source** (`lib/calendar/briefing-partition.ts`;
+the block between its BEGIN and END markers is carried byte-for-byte in
+`workers/cron/src/fallback-briefing.ts`). A share-class pair lists once.
+
+Tests: `tests/calendar/reconcile-slot-beats-default.test.ts`,
+`tests/calendar/reconcile-carry-finnhub-data.test.ts`, `tests/earnings/consensus-row-donor.test.ts`,
+`tests/calendar/briefing-canonical-earnings.test.ts`,
+`workers/cron/test/fallback-briefing-partition.test.ts`.
+
+### Confirming a different date leaves one hand-entered row (2026-10-08)
+
+`confirmEarningsDate` (`lib/mutations/confirm-earnings-date.ts`, behind
+`POST /api/earnings/confirm-date`). Before, confirming another date wrote a second hand-entered row
+and left the first one showing. Now it looks for the symbol's OTHER showing hand-entered rows for
+the same upcoming print (`samePrintManualRows`: this exact symbol, dated today or later, within
+`SAME_PRINT_WINDOW_DAYS` of the confirmed date, not yet reported):
+
+- **Exactly one, and the confirmed date is free:** that row MOVES to the confirmed date and keeps
+  its id, so its bogeys, emails, skips, arm and notes stay attached (`movedEventId`).
+- **Exactly one, and a hand-entered row already sits on the confirmed date:** the confirmed row is
+  updated in place, the other row's records are folded onto it (`createTwinFolder`, the
+  reconciler's own fold), and the emptied row is DELETED (`deletedEventId`). Hiding it would not
+  last: the next pass shows every hand-entered row dated today or later.
+- **Before the delete, every table is counted** (`remainingEventDependents`). Each foreign key onto
+  a calendar event cascades, so a delete never fails; it would silently take whatever the fold left
+  behind. The list of tables is read from the schema, so a table added later is covered. If anything
+  is still attached (a preview already sent for the old date, for example) the row is NOT deleted:
+  it stays hidden (`foldedEventId`), `note` names what remained for the log, and `notice` tells the
+  user in plain words (`keptEntryNotice`).
+- **Two or more:** nothing is moved or hidden, and `notice` says so.
+- **A typed clock time is kept** when the confirm picks the same slot or names no time. Picking the
+  other slot is a deliberate change and stores that slot's default. Two stored shapes count as
+  typed: a clock in `event_time`, or a slot word in `event_time` with a non-default clock in
+  `release_time` (`typedTimeOf`).
+- Sync-owned rows are never moved; the reconcile that follows hides them as before.
+
+**Known gap:** a preview email or skip recorded for the old date stays attached to a moved row, so a
+move to a later date gets no second preview. Left on purpose; detaching it changes what is sent and
+needs an owner ruling.
+
+Tests: `tests/mutations/confirm-earnings-date.test.ts`, `tests/api/earnings-confirm-date-route.test.ts`,
+`tests/dashboard/earnings-conflict-marker.test.ts`.
 
 ### Slot floors, not the stored release time (`154eb81`, 2026-08-28)
 
@@ -262,24 +406,39 @@ checks too, because a reconcile in another process can replace an entry between 
 send (each send holds a 60 to 180 second AI call).
 
 - **One check:** `lib/digest/send-earnings-email.ts::emailRowRefusal(db, eventId, { refuseIgnoredManualTwin })`.
-  It returns `"superseded_event"`, `"ignored_manual_twin"` (the later of two live hand-entered rows)
-  or null. These are facts about the calendar row, not `earnings_emails.error` states.
+  It returns `"superseded_event"`, `"ignored_manual_twin"` (the later of two live hand-entered rows),
+  `"event_not_found"` or null. These are facts about the calendar row, not `earnings_emails.error`
+  states. The list is `EMAIL_ROW_REFUSALS`; callers branch on `isEmailRowRefusal(reason)`, never on
+  a hand-written list, so a reason added later cannot be missed at a call site.
+- **`event_not_found` (2026-10-08):** there is no calendar row with that id (never there, or
+  deleted since the candidate list was built). It is checked FIRST and refused for every caller.
+  Before, the claim's insert failed with a raw foreign-key error, because the audit row points at
+  the calendar row.
 - **Inside the claim:** `claimEarningsEmailSlot` runs the check and the claim in one immediate
   transaction (a savepoint when the caller already holds one; a wrapping caller must use
   `.immediate()`). A refusal returns `{ claimed: false, reason }` and writes nothing. Every claimer
-  goes through it: the send service, the morning debrief and the retired wrap.
+  goes through it: the send service and the morning debrief.
 - **After compose:** `sendEarningsCandidate` (`lib/earnings/send-service.ts`) asks again before the
   provider call. On a refusal there the claim is undone the way a failed compose undoes it.
-- **Outcome:** `{ outcome: "refused", status: 409, code, reason }`, where `code` is one of the two
-  refusal codes. The reason sentence names the current entry's date when one is found
-  (`findLiveEntryForSupersededEvent`, `lib/queries/earnings-emails.ts`). The sweep books it as a
-  skip and continues.
+- **Outcome:** `{ outcome: "refused", status, code, reason }`, where `code` is one of the three
+  refusal codes. The status is 409 when the entry exists but is not the print's email row, and 404
+  for `event_not_found`. The reason sentence names the current entry's date when one is found
+  (`findLiveEntryForSupersededEvent`, `lib/queries/earnings-emails.ts`).
+- **The sweep names why it skipped (2026-10-08).** A refusal that carries a code is booked under
+  its own cause (`ROW_REFUSAL_SKIP`, `lib/calendar/email-sweep.ts`): `entry-replaced`
+  (`superseded_event`), `later-manual-entry` (`ignored_manual_twin`), `entry-not-found`
+  (`event_not_found`). Waiting will not change any of them. Only a refusal with no code is
+  `not-ready` (the compose is waiting on something a later tick may bring). The map is keyed by the
+  refusal type, so a new refusal fails the type-check until it is given a name.
 - **The later hand-entered row** is refused only when `mode === "sweep"` and in the debrief. The
   two manual modes (`nudge`, `manual`) may still send it.
 - **Morning debrief:** a replaced member is dropped at the claim. After `generate` and before
   delivery, `runMorningDebrief` re-checks every claimed member with `emailRowRefusal`. If any is
   refused it sends nothing, releases all claims, restores the day key and returns
-  `skippedReason: "member-replaced"`, so the next tick inside the morning window retries.
+  `skippedReason: "member-replaced"`, so the next tick inside the morning window retries. A member
+  whose entry was DELETED while the email was being composed is refused the same way
+  (`event_not_found`), so a draft that still narrates it is never sent. Test:
+  `tests/earnings/event-not-found-send-path.test.ts`.
 - **Archive:** `SentEarningsEmail` carries `event_superseded` and `replacement`. The shared
   `app/dashboard/components/SupersededEmailNote.tsx` renders the chip and the same-kind link on the
   Emails view and the security page. The link is found by the reconciler's 14-day cluster rule
@@ -351,14 +510,15 @@ ignored by a reader?"; `isDelivered` — "should a chip say sent?" (legacy text 
 fails on any of the four literal sentinel strings appearing under `lib/**` or `app/api/**` outside
 that module (`app/dashboard/**` is exempt by design — slice F needs the chip words).
 
-**Two claim modes (slice E).** `automatic` (sweep, nudge, debrief, wrap) NEVER refires a completed
+**Two claim modes (slice E).** `automatic` (sweep, nudge, debrief) NEVER refires a completed
 row. `manual` (`POST /api/earnings/email`) does, and its refire goes completed → `sending` DIRECTLY,
 never through `in_progress`, so the 30-minute reaper can never delete a delivered row. The
 `UNIQUE(event_id, phase)` row is the **cross-process mutex** — claimed BEFORE compose, now via
 `claimEarningsEmailSlot` (`lib/digest/send-earnings-email.ts`), called from
 `lib/earnings/send-service.ts::sendEarningsCandidate`, the one path every automatic and manual send
-goes through (`debrief-send.ts` and `wrap-send.ts` batch several events under one claim of their
-own — `tests/repo/one-claim-owner.test.ts` pins that short list). Since **migration 063** claims
+goes through (`debrief-send.ts` batches several events under one claim of its own —
+`tests/repo/one-claim-owner.test.ts` pins that short list, and asserts that the deleted
+`lib/earnings/wrap-send.ts` stays gone). Since **migration 063** claims
 carry a `claim_token` and every transition is compare-and-set on it, so a late finisher can't clobber
 a successor's takeover claim.
 
@@ -374,11 +534,36 @@ path is never invoked for it in a later pass, so no marker would ever be written
 `runEarningsEmailSweep` writes one mac-sent marker per flip immediately after the reap call
 (fail-open, same tick).
 
+### Same-company sibling check (2026-10-08)
+
+Two rows for one print can both be showing for a short time in each weekly sync (a vendor row is
+re-written before the reconcile pass hides it again), and they can sit at different times of day.
+Each row checked only its own audit rows, so one print could get two previews.
+`phaseHandledOnSibling` (`lib/calendar/enrichment-runner.ts`) closes that: `findEmailCandidates`
+drops a preview or recap candidate when any OTHER earnings row of the same issuer family on the same
+date already has an `earnings_emails` row or an `earnings_email_skips` row for that phase.
+
+- **It can only remove a candidate, never add one.** It reads no state value, on purpose: any audit
+  row counts, exactly as for the row's own key.
+- Family, not symbol equality (`issuerSiblings`). Not applied to the read-through reporter scan, the
+  debrief. The two-hand-entered-rows rule (`manual-twin-email.ts`) is separate.
+
+- **The Worker asks the same question.** `siblingEventIndex` (`workers/cron/src/fallback-earnings.ts`)
+  maps each row to the other earnings rows of the same issuer family on the same date, and the
+  cloud finder checks each sibling the way it checks the row itself: the snapshot's earnings-email
+  rows and the KV markers (Mac sent, cloud sent, Mac running). Known limit: the snapshot does not
+  carry skips, so a skip recorded on a sibling is not seen in the cloud (the same limit as a skip
+  on the row itself).
+
+Tests: `tests/calendar/findEmailCandidates-sibling-handled.test.ts`,
+`workers/cron/test/fallback-earnings-sibling-handled.test.ts`.
+
 Every new reader must exclude live claims via `isLiveClaim` / `notLiveClaimSql`
 (pattern: `getSentPhasesForEvents` / `getEmailAudit`) — never a literal.
 
 Benign coordination outcomes still land in `SweepSummary.skipped` with `ok:true` — now
-`claim-held`, `not-ready`, `already-sent` and `delivery-unknown`. Never count them as failures, and
+`claim-held`, `not-ready`, `already-sent`, `delivery-unknown` and the three calendar-row skips
+(`entry-replaced`, `later-manual-entry`, `entry-not-found`). Never count them as failures, and
 `alertBlockedRecaps` respects the muted-symbols setting (no stamp on a muted skip, so unmuting
 re-arms).
 
@@ -441,7 +626,8 @@ manually; the Mac suppression branch gates on `slot === "AMC"`).
 
 An AMC recap cluster still skips individual sends as `wrap-pending`, on the same raw
 `lib/earnings/wrap.ts::getExpectedRecapCluster(...).length >= WRAP_THRESHOLD` (= **3**)
-determination, and `runWrapPass` is **retired** from the sweep. Suppressed names roll into the
+determination, and `runWrapPass` is **retired** from the sweep (and was deleted with
+`lib/earnings/wrap-send.ts` on 2026-10-08). Suppressed names roll into the
 **7:45 ET morning debrief** (`lib/earnings/debrief-send.ts::runMorningDebrief`, gated 07:45–08:20 ET
 + once-per-day settings key `last_debrief_date`, invoked from the sweep tick **BEFORE** its
 per-candidate loop — 60–180s individual sends would otherwise push the debrief past its window
@@ -480,8 +666,12 @@ cloud recap sends (skip reason `wrap-suppressed-for-debrief`, **no markers writt
 replaces them from the cloud — the names roll into the Mac's next morning debrief (the 3-day
 self-heal covers a slept-through morning; there is deliberately **no cloud debrief**).
 
-Quiet nights (< threshold) still get individual cloud recaps. `wrap-send.ts` + the Worker's
-`SLOT_DEADLINES_ET` / `wrapSlotForCloud` stay **retired-not-deleted** for the wrap-parity pin.
+Quiet nights (< threshold) still get individual cloud recaps. The stapled-wrap SENDER
+(`lib/earnings/wrap-send.ts`) and its test were deleted on 2026-10-08, after a whole-repo search
+found no caller. What remains is the cluster rule only: `lib/earnings/wrap.ts` (pure:
+`getExpectedRecapCluster`, `WRAP_THRESHOLD`, `SLOT_DEADLINES_ET`) and the Worker's
+`SLOT_DEADLINES_ET` / `wrapSlotForCloud`, which decide suppression and are parity-pinned
+(`workers/cron/test/wrap-parity.test.ts`).
 
 ---
 
@@ -694,9 +884,9 @@ coordination outcome is a 200 the desk reads verbatim.
 turns a claim into an email — the sweep loop, the nudge and `POST /api/earnings/email` all call it.
 It resolves the recipient, claims, AWAITS the running marker, composes, mints the Message-ID, CASes
 the row to `sending`, races the provider against `SEND_TIMEOUT_MS` (90 s), then CASes to `sent` and
-awaits the mac-sent and clear markers. Two callers keep their own claims because they batch several
-events into ONE email: `debrief-send.ts` and `wrap-send.ts`. `tests/repo/one-claim-owner.test.ts`
-pins that list.
+awaits the mac-sent and clear markers. One caller keeps its own claims because it batches several
+events into ONE email: `debrief-send.ts`. `tests/repo/one-claim-owner.test.ts` pins that list. (The
+stapled-wrap sender, the other former claim owner, was deleted on 2026-10-08.)
 
 **Failure classification.** A send is `delivery_unknown` only when the message MAY have been
 transmitted: our own deadline elapsed, or nodemailer reported `ECONNECTION`/`ESOCKET`/`ETIMEDOUT`/
@@ -715,9 +905,9 @@ TODO.
 5–7 (the `sending` CAS, the single provider call, the classification, the terminal transitions and
 the per-member mac-sent markers) for N already-claimed members covered by ONE email.
 `sendEarningsCandidate` calls it with one member; the 07:45 ET morning debrief
-(`lib/earnings/debrief-send.ts`) calls it with N. `lib/earnings/wrap-send.ts` is retired and is
-OUTSIDE the lifecycle — it must adopt `deliverClaimedBatch` before it is ever revived (it has no
-production caller today, so nothing calls it as things stand).
+(`lib/earnings/debrief-send.ts`) calls it with N. The retired stapled-wrap sender never adopted
+this lifecycle and was deleted on 2026-10-08; any future batch sender must be built on
+`deliverClaimedBatch`.
 
 **An unknown ending CLAIMS the phase.** nodemailer offers no way to abort an in-flight `sendMail`:
 after our 90-second deadline the call and its socket keep running, and the message may still be
@@ -756,6 +946,60 @@ table **code-built directly from `earnings_bogeys` rows — zero AI involvement*
 - Empty bogeys list → returns `""`, unchanged emails for names without sheets.
 - The prompt tells the model **NOT** to re-list this table and to cite the source label in-cell
   whenever it uses a sheet value.
+
+### A bogey row counts only when the composer prints something from it (2026-10-08)
+
+An all-empty bogey row is not coverage (owner ruling 2026-08-12). The second half of the 2026-10-08
+sprint found the class was wider: a row can hold something a composer does not print (a segment
+with no number, an extra metric line the cloud cannot see), and the email then listed an entry
+with nothing under it while its footer said the bogeys were included. So the rule is about
+printing, not holding.
+
+- **Mac prompt block.** `lib/earnings/bogey-prompt-entries.ts` builds each row's printed lines
+  first (`bogeyPromptEntryBody`); a row with none is not an entry. `bogeysPrintedInPrompt` is the
+  one reader of "does this event have bogeys, as far as the email prompt is concerned":
+  `renderBogeysBlock` renders from it and the prompt context is filtered through it, so the count
+  and the rendering cannot disagree.
+- **Mac sheet table.** `renderSheetBogeysBlock` is fed `sheetBogeysWithCells(...)`: a row the table
+  shows no cell from is never a column. The table itself is the judge.
+- **Both Mac paths start from `getBogeysWithContentForEvent`** (`lib/queries/earnings-bogeys.ts`),
+  which drops empty rows by the one content rule, `bogeyHasContent`
+  (`lib/mutations/earnings-bogeys.ts`).
+- **`getBogeysForEvent` stays unfiltered on purpose.** The edit modal must list an empty row so the
+  user can delete it. Do not add the filter there.
+- **Cloud.** `workers/cron/src/bogey-content.ts` holds the Worker's two rules:
+  `snapshotBogeyHasContent` (the content rule applied again on arrival, so an older snapshot cannot
+  make the cloud email claim bogeys it has none of) and `snapshotBogeysPrinted` (the printing
+  rule). `resolveBogeysForEvent`, `hasBogeys` and `renderBogeysBlock` in `fallback-earnings.ts`
+  all go through `snapshotBogeysPrinted`.
+- **The vendor EPS consensus is printed and labelled as the vendor's** ("vendor EPS consensus ...
+  (basis unspecified)"), never as "EPS consensus".
+- **One documented difference:** the nightly snapshot does not carry `extra_metrics_json`, so a row
+  whose only content is an extra metric line is an entry on the Mac and not in the cloud.
+- **Lesson:** "claims X is included" and "prints X" must come from one list. Two separate checks
+  drifted the same night they were written.
+
+Test: `tests/earnings/bogey-content-worker-parity.test.ts` (Mac suite; it loads the Worker file
+directly, which is why that file has no imports).
+
+### A recap scoreboard prints dashes; other pages keep fill-in boxes (2026-10-08)
+
+The shared markdown renderer turns a dash or empty table cell into an empty box, so a printed page
+can be filled in by hand. It did that on recaps too, where the scoreboard legend says a dash means
+the figure was not available at send time. Now:
+
+- `usesFillInBoxes(md)` in `lib/calendar/briefing-html.ts` (Mac) and `workers/cron/src/html.ts`
+  (Worker) decides per page. A page is a recap when it carries a heading that ends "scoreboard —
+  post-print" and no heading that ends "scoreboard — into the print". A recap prints the dash.
+  Every other page (briefing, digest, evening, preview, the printed worksheet) renders exactly as
+  before.
+- Heading lines only: the same words in running text or in a title change nothing.
+- **The renderer keys on the heading WORDING.** The headings are written by the two scoreboard
+  composers (Mac `renderHeadlineTable`, Worker `renderScoreboard`). Rewording either heading means
+  changing both composers and both renderers together, and deploying the Worker first.
+
+Tests: `tests/calendar/briefing-html-tables.test.ts`, `tests/digest/earnings-intel-render.test.ts`,
+`workers/cron/test/html.test.ts` (pins the two renderers together).
 
 ### Newsletter re-scans preserve, never erase (`cb4e9ef`, 2026-08-28)
 
@@ -1028,6 +1272,33 @@ renders collapsed with no accept control) and it cannot reach promote or any
 outbound send. The route is outside slice F's edit list; the fix has to gate
 on the `~retired~` id substring rather than on `state`, because `state` is what
 the bug flips.
+
+## An armed row after its print: the read-only record (2026-10-08)
+
+**Why it was empty.** `getWatchStatus` (`lib/print-watch/watcher.ts`) lists active prints and the
+prints that expired TODAY, and nothing older. That feed also drives the poll interval, the live
+countdown and the ensure route's count, so it is not widened. An armed Hub row expanded the morning
+after its print therefore had no print to show.
+
+**The scoped read.** `getPrintRecord(db, eventId)` (`lib/earnings/print-record.ts`) returns one
+event's print in whatever state it is in, its sheet lines, a map from document id to document kind,
+and the same output-button evaluation the status route sends. It only reads. It sits beside
+`print-outputs.ts`, not under `lib/print-watch/`, because it reads the send audit through
+`lib/digest` and no print-watch module may import that tree
+(`tests/repo/print-watch-import-boundaries.test.ts`). Route: `GET /api/print-watch/record?eventId=`
+(see `docs/reference/api-patterns.md`).
+
+**What the row shows.** `slotBodyKind` (`app/dashboard/today/live-print/helpers.ts`) picks the
+record when the row is armed, has no live print, and its event date is before today (Eastern). A
+finished print dated today still arrives through the live feed. `PrintRecordView` in
+`LivePrintRow.tsx` renders a window-closed header, the lines the desk accepted plus the lines two
+independent readings agreed on (`recordLines`; each says in words whether it was accepted or only
+agreed), each figure's source document, and the output buttons. Accepting and promoting are closed:
+the promote control is permanently disabled with the reason in its title. An event with no print
+says nothing was captured.
+
+Tests: `tests/print-watch/print-record.test.ts`, `tests/api/print-watch-record.test.ts`,
+`tests/dashboard/live-print-record.test.ts`, `tests/dashboard/earnings-hub-live.test.ts`.
 
 ## Transcripts: fiscal keys and the stated-quarter guard (2026-10-07)
 

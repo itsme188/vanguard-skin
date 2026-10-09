@@ -11,6 +11,7 @@ import { briefingToHtml } from "@/lib/calendar/briefing-html";
 import { sendEmail } from "@/lib/email";
 import { syncPortfolio } from "@/lib/tws/positions";
 import { getRecipientsFor } from "@/lib/queries/email-recipients";
+import { recordDigestSkip } from "@/lib/digest/digest-skip";
 
 export class DigestSendError extends Error {
   constructor(
@@ -111,10 +112,23 @@ export async function sendDigestEmail(
     : await generateDigestSinceAdaptive(db, defaultDigestSince(), { includeAnomalies: false, edition: "morning" });
 
   if (!digest) {
+    const reason = "No processed articles in the selected range";
+    // Record the skip so the catch-up banner can say "nothing new to send"
+    // rather than "wasn't sent". Only the scheduled window (`since_last`, the
+    // one the 8:45 job and the banner's own Send now use) counts: an empty
+    // hand-picked range says nothing about the scheduled digest. Best effort:
+    // a failed write must not turn a clean skip into an error.
+    if (opts.mode === "since_last") {
+      try {
+        recordDigestSkip(db, reason);
+      } catch (err) {
+        console.warn("[send-digest] could not record the empty-window skip:", err);
+      }
+    }
     return {
       success: true,
       skipped: true,
-      reason: "No processed articles in the selected range",
+      reason,
       synced,
     };
   }

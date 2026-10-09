@@ -14,6 +14,9 @@ import {
   applyResolvedReleaseTimeToUpcomingEvents,
   isSuspectAmcCallTime,
   checkUserReleaseTimeAgainstUpcomingSlot,
+  checkUserSaveWouldReplaceWebVerified,
+  standingReleaseTimeUse,
+  WOULD_REPLACE_WEB_VERIFIED,
 } from "@/lib/earnings/wire-times";
 import { deriveEarningsSlot } from "@/lib/earnings/earnings-slot";
 
@@ -603,3 +606,109 @@ describe("checkUserReleaseTimeAgainstUpcomingSlot", () => {
     });
   });
 });
+
+// Unit 17 (2026-10-08): the store keeps ONE row per ticker, so a Save over a
+// web-verified row turns it into the user's own row, and a later Clear deletes
+// that. The web-verified time is then gone for good. Save asks first.
+describe("checkUserSaveWouldReplaceWebVerified", () => {
+  it("asks when the ticker's standing row is web-verified, and names what would be lost", () => {
+    upsertSymbolReleaseTime(db, {
+      symbol: "ZZA",
+      releaseTime: "16:05",
+      source: "web_verified",
+      note: "company schedule page",
+      verifiedForDate: "2099-01-05",
+    });
+    const check = checkUserSaveWouldReplaceWebVerified(db, "zza", "16:30");
+    expect(check.ok).toBe(false);
+    if (check.ok) return;
+    expect(check.code).toBe(WOULD_REPLACE_WEB_VERIFIED);
+    expect(check.code).toBe("would_replace_web_verified");
+    expect(check.standing).toEqual({
+      releaseTime: "16:05",
+      verifiedForDate: "2099-01-05",
+      note: "company schedule page",
+    });
+    expect(check.message).toContain("ZZA");
+    expect(check.message).toContain("16:05");
+    expect(check.message).toContain("16:30");
+    expect(check.message).toContain("2099-01-05");
+    expect(check.message).toMatch(/Clear will not bring/);
+  });
+
+  it("asks even when the typed time equals the web-verified time (the row still becomes the user's)", () => {
+    upsertSymbolReleaseTime(db, { symbol: "ZZA", releaseTime: "16:05", source: "web_verified" });
+    const check = checkUserSaveWouldReplaceWebVerified(db, "ZZA", "16:05");
+    expect(check.ok).toBe(false);
+    if (check.ok) return;
+    expect(check.message).toMatch(/your own time/);
+  });
+
+  it("does not ask over the user's own row, or when the ticker has no row", () => {
+    expect(checkUserSaveWouldReplaceWebVerified(db, "ZZA", "16:30")).toEqual({ ok: true });
+    upsertSymbolReleaseTime(db, { symbol: "ZZA", releaseTime: "16:05", source: "user" });
+    expect(checkUserSaveWouldReplaceWebVerified(db, "ZZA", "16:30")).toEqual({ ok: true });
+  });
+
+  it("does not ask over a web-verified time at or after 17:00: a suspect call time is never trusted", () => {
+    upsertSymbolReleaseTime(db, { symbol: "ZZA", releaseTime: "17:00", source: "web_verified" });
+    expect(checkUserSaveWouldReplaceWebVerified(db, "ZZA", "16:10")).toEqual({ ok: true });
+    upsertSymbolReleaseTime(db, { symbol: "ZZB", releaseTime: "16:55", source: "web_verified" });
+    expect(checkUserSaveWouldReplaceWebVerified(db, "ZZB", "16:10").ok).toBe(false);
+  });
+
+  it("looks only at the ticker's own row: a sibling share class's row is not overwritten by the save", () => {
+    upsertSymbolReleaseTime(db, { symbol: "GOOGL", releaseTime: "16:05", source: "web_verified" });
+    expect(checkUserSaveWouldReplaceWebVerified(db, "GOOG", "16:30")).toEqual({ ok: true });
+  });
+
+  it("writes nothing", () => {
+    upsertSymbolReleaseTime(db, { symbol: "ZZA", releaseTime: "16:05", source: "web_verified" });
+    checkUserSaveWouldReplaceWebVerified(db, "ZZA", "16:30");
+    expect(
+      db.prepare("SELECT release_time, source FROM symbol_release_times WHERE symbol = 'ZZA'").get(),
+    ).toEqual({ release_time: "16:05", source: "web_verified" });
+  });
+});
+
+describe("standingReleaseTimeUse", () => {
+  it("is null with no standing row", () => {
+    expect(standingReleaseTimeUse(db, "ZZA", "amc")).toBeNull();
+  });
+
+  it("in_effect when the resolver honours the row", () => {
+    upsertSymbolReleaseTime(db, { symbol: "ZZA", releaseTime: "16:05", source: "web_verified" });
+    expect(resolveSymbolReleaseTime(db, "ZZA", "amc")).toEqual({ time: "16:05", source: "web_verified" });
+    expect(standingReleaseTimeUse(db, "ZZA", "amc")).toBe("in_effect");
+    upsertSymbolReleaseTime(db, { symbol: "ZZB", releaseTime: "17:00", source: "user" });
+    expect(standingReleaseTimeUse(db, "ZZB", "amc")).toBe("in_effect");
+  });
+
+  it("suspect_call_time for a web-verified after-close time at or after 17:00, which the resolver ignores", () => {
+    upsertSymbolReleaseTime(db, { symbol: "ZZA", releaseTime: "17:00", source: "web_verified" });
+    expect(resolveSymbolReleaseTime(db, "ZZA", "amc")).toBeNull();
+    expect(standingReleaseTimeUse(db, "ZZA", "amc")).toBe("suspect_call_time");
+  });
+
+  it("not_in_effect when the resolver ignores the row for another reason", () => {
+    // Wrong side of the session.
+    upsertSymbolReleaseTime(db, { symbol: "ZZA", releaseTime: "16:05", source: "web_verified" });
+    expect(standingReleaseTimeUse(db, "ZZA", "bmo")).toBe("not_in_effect");
+    // A bounded sighting outranks a web-verified note.
+    const id = seedEvent("ZZB", todayMinusDays(30));
+    upsertSymbolReleaseTime(db, { symbol: "ZZB", releaseTime: "16:05", source: "web_verified" });
+    recordWireObservation(db, {
+      symbol: "ZZB",
+      eventDate: todayMinusDays(30),
+      eventId: id,
+      firstSeenAt: `${todayMinusDays(30)}T21:20:00.000Z`,
+      lastEmptyProbeAt: `${todayMinusDays(30)}T21:05:00.000Z`,
+    });
+    expect(resolveSymbolReleaseTime(db, "ZZB", "amc")?.source).toBe("observed");
+    expect(standingReleaseTimeUse(db, "ZZB", "amc")).toBe("not_in_effect");
+  });
+});
+
+function todayMinusDays(n: number): string {
+  return new Date(Date.now() - n * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+}

@@ -12,6 +12,7 @@ import type {
 } from "@/lib/queries/data-health";
 import { Money } from "@/lib/privacy/components";
 import { formatUSDPrecise } from "@/lib/format";
+import { CHIP_TONE_CLASSES } from "./Chip";
 import { ScrollFade } from "./ScrollFade";
 import { SymbolLink } from "./SymbolLink";
 import { EmptySection } from "./EmptySection";
@@ -33,33 +34,37 @@ function formatRate(usdPerUnit: number): string {
   return Number(usdPerUnit.toFixed(6)).toString();
 }
 
+// 12px text, so every band needs 4.5:1 on its own tint in both themes. Green,
+// gold and red take the checked pairs from the shared Chip; orange has no
+// Chip tone, so it keeps its hue and darkens the text in the light theme
+// (tests/dashboard/data-health-stale-badge-contrast.test.ts computes it).
 function StaleBadge({ days }: { days: number | null }) {
   if (days === null)
     return (
-      <span className="text-xs px-2 py-0.5 rounded-full bg-down/15 text-down font-medium">
+      <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${CHIP_TONE_CLASSES.down}`}>
         No prices
       </span>
     );
   if (days <= 3)
     return (
-      <span className="text-xs px-2 py-0.5 rounded-full bg-up/15 text-up font-medium">
+      <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${CHIP_TONE_CLASSES.up}`}>
         {days}d
       </span>
     );
   if (days <= 14)
     return (
-      <span className="text-xs px-2 py-0.5 rounded-full bg-gold/15 text-gold-ink font-medium">
+      <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${CHIP_TONE_CLASSES.gold}`}>
         {days}d
       </span>
     );
   if (days <= 45)
     return (
-      <span className="text-xs px-2 py-0.5 rounded-full bg-[#f97316]/15 text-[#f97316] font-medium">
+      <span className="text-xs px-2 py-0.5 rounded-full bg-[#f97316]/15 text-[color:color-mix(in_srgb,#f97316_60%,black)] [[data-theme=dark]_&]:text-[#f97316] font-medium">
         {days}d
       </span>
     );
   return (
-    <span className="text-xs px-2 py-0.5 rounded-full bg-down/15 text-down font-medium">
+    <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${CHIP_TONE_CLASSES.down}`}>
       {days}d
     </span>
   );

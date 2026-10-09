@@ -41,6 +41,7 @@ const UNMODELLED_REASON_LABEL: Record<OptionUnmodelledReason, string> = {
 const BOND_UNMODELLED_REASON_LABEL: Record<BondUnmodelledReason, string> = {
   "no-maturity": "no maturity date",
   "matured": "past its maturity date",
+  "not-fixed-coupon": "floating or index-linked coupon, by its name",
   "no-coupon": "no coupon from the broker, and none readable in the bond's name",
   "unusable-coupon": "the stored coupon is not a usable figure",
   "no-price": "no price",

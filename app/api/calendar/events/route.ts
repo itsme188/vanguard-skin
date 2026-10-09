@@ -23,6 +23,11 @@ import { attemptPostCommitDrain } from "@/lib/earnings/cloud-outbox";
 import { checkManualAddWouldSupersedeVendor } from "@/lib/calendar/reconcile-earnings-dates";
 import { checkManualSlotAgainstKnownTime } from "@/lib/earnings/wire-times";
 import { fixDateOrigin, liftEarningsSuppression } from "@/lib/calendar/fix-date-suppression";
+import {
+  findManualAddCollision,
+  manualAddCollisionMessage,
+  type ManualAddCollision,
+} from "@/lib/calendar/manual-add-collision";
 
 export const dynamic = "force-dynamic";
 
@@ -45,6 +50,31 @@ function resolveEventSecurityId(symbol: string): number | null {
 /** 400 for typed input that cannot be saved. Nothing was written. */
 function invalidInput(code: "invalid_symbol" | "invalid_date", error: string): Response {
   return Response.json({ success: false, error, code }, { status: 400 });
+}
+
+/** 409 for an add onto a (symbol, date, type) a hand-entered row already holds. */
+function collisionRefusal(
+  collision: ManualAddCollision,
+  input: { symbol: string; eventDate: string; eventType: string },
+): Response {
+  const error = manualAddCollisionMessage(collision, input);
+  if (collision.kind === "showing") {
+    return Response.json(
+      { success: false, error, code: "manual_row_exists", existingEventId: collision.eventId },
+      { status: 409 },
+    );
+  }
+  return Response.json(
+    {
+      success: false,
+      error,
+      code: "manual_row_hidden",
+      hiddenEventId: collision.eventId,
+      replacedByEventId: collision.replacedBy?.eventId ?? null,
+      replacedByDate: collision.replacedBy?.eventDate ?? null,
+    },
+    { status: 409 },
+  );
 }
 
 /**
@@ -91,8 +121,19 @@ export async function GET(request: Request) {
  *
  * Inserts with source='manual'. source_key derived as
  * `manual:{SYMBOL}:{event_date}:{event_type}`. week_of computed from
- * event_date. Returns 409 if a manual row already exists for that
- * symbol+date+type (UNIQUE collision).
+ * event_date.
+ *
+ * First 409: a manual row already exists for that symbol+date+type. Checked
+ * before either guard below (no acknowledgement can make the add succeed, so
+ * none is asked for) and neither flag skips it. Two codes
+ * (findManualAddCollision): `manual_row_exists` when the row is showing
+ * ("edit it instead"), `manual_row_hidden` when it is hidden, which says so
+ * and names the entry showing in its place. The hidden row is not brought
+ * back: its records were moved to the entry that replaced it.
+ *
+ * An earnings add on a date a feed row already shows on hides that feed row
+ * in the insert's own transaction (insertCalendarEvent); the answer carries
+ * `hiddenFeedRows`, the number hidden.
  *
  * Second 409, `would_supersede_vendor` (user ruling 2026-09-02): a manual
  * earnings row wins its cluster outright at the next reconcile pass, so an
@@ -158,6 +199,10 @@ export async function POST(request: Request) {
   try {
     const symbol = normalizeTicker(body.symbol);
     const eventType = body.event_type ?? "earnings";
+
+    const collisionInput = { symbol, eventDate: body.event_date, eventType };
+    const collision = findManualAddCollision(db, collisionInput);
+    if (collision) return collisionRefusal(collision, collisionInput);
 
     // Slot vs known time — only for an earnings add that names a BMO/AMC slot
     // and leaves the clock time to the server.
@@ -227,13 +272,23 @@ export async function POST(request: Request) {
     // nothing — it is the catch-up for any generation still unsent. The whole
     // wait is capped (2s); the 15-minute sweep is the backstop.
     await attemptPostCommitDrain(db);
-    return Response.json({ success: true, id: id.id, securityMatched: securityId !== null });
+    return Response.json({
+      success: true,
+      id: id.id,
+      securityMatched: securityId !== null,
+      hiddenFeedRows: id.hiddenFeedRows.length,
+    });
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown error";
-    // SQLITE_CONSTRAINT_UNIQUE → 409
+    // SQLITE_CONSTRAINT_UNIQUE → 409. The check above answers this before the
+    // write; reaching here means another request added the row in between.
     if (/UNIQUE constraint failed/i.test(msg)) {
       return Response.json(
-        { error: `A manual calendar event already exists for ${body.symbol?.toUpperCase()} on ${body.event_date} (${body.event_type ?? "earnings"}). Edit it instead.` },
+        {
+          success: false,
+          code: "manual_row_exists",
+          error: `A manual calendar event already exists for ${body.symbol?.toUpperCase()} on ${body.event_date} (${body.event_type ?? "earnings"}). Edit it instead.`,
+        },
         { status: 409 },
       );
     }
@@ -261,6 +316,22 @@ export async function POST(request: Request) {
  * pre-move position can't manufacture a false before/after diff. `force:
  * true` skips the check, same envelope and error code as POST.
  *
+ * Same `slot_contradicts_known_time` 409 as POST, with its own
+ * acknowledgement `forceSlot` (`force` never answers it). It runs when the
+ * edit would leave an earnings row in a BMO/AMC slot nobody has checked for
+ * this symbol: the body names a slot other than the one the row sits in, or
+ * names a new symbol while the row keeps a BMO/AMC slot. The body must also
+ * leave the clock time to the server; an explicit `release_time` is the
+ * caller's own statement, as on POST. When the check runs, the release time
+ * follows the slot: the symbol's known time on that side, else the slot
+ * default (also what `forceSlot` stores). Before this, a slot change kept the
+ * old slot's time, nine hours off. A PATCH that keeps the slot and the symbol
+ * is never checked and keeps its stored time. Slot first, then supersede, as
+ * on POST.
+ *
+ * A row moved onto a date where a feed row shows hides that feed row in the
+ * update's own transaction (updateCalendarEvent), as an add there would.
+ *
  * A new `symbol` or `event_date` passes the same typed-input checks as POST
  * (400 `invalid_symbol` / `invalid_date`), after the 404/403 checks.
  */
@@ -276,17 +347,30 @@ export async function PATCH(request: Request) {
     consensus_estimate?: string | null;
     description?: string | null;
     force?: boolean;
+    forceSlot?: boolean;
   };
 
   if (typeof body.id !== "number" || !Number.isInteger(body.id)) {
     return Response.json({ error: "Body field 'id' is required." }, { status: 400 });
   }
+  if (body.event_time !== undefined && body.event_time !== null && typeof body.event_time !== "string") {
+    return Response.json({ error: "Body field 'event_time' must be a string when provided." }, { status: 400 });
+  }
 
   // Read-first guard so we can return 404 vs 403 distinctly.
   const existing = db
-    .prepare("SELECT source, symbol, event_date, event_type FROM calendar_events WHERE id = ?")
+    .prepare(
+      "SELECT source, symbol, event_date, event_type, event_time, release_time FROM calendar_events WHERE id = ?",
+    )
     .get(body.id) as
-    | { source: string; symbol: string | null; event_date: string; event_type: string }
+    | {
+        source: string;
+        symbol: string | null;
+        event_date: string;
+        event_type: string;
+        event_time: string | null;
+        release_time: string | null;
+      }
     | undefined;
   if (!existing) return Response.json({ error: "Event not found." }, { status: 404 });
   if (existing.source !== "manual") {
@@ -309,6 +393,52 @@ export async function PATCH(request: Request) {
         ? manualEventDateError(body.event_date, todayET())
         : "Body field 'event_date' must be YYYY-MM-DD.";
     if (dateError) return invalidInput("invalid_date", dateError);
+  }
+
+  // Slot vs known time (see the route comment). `storedMarker` is the literal
+  // slot word on the row; a row holding a clock time or TAS has none.
+  const slotMarkerOf = (value: string | null | undefined): "BMO" | "AMC" | null => {
+    const marker = (value ?? "").trim().toUpperCase();
+    return marker === "BMO" || marker === "AMC" ? marker : null;
+  };
+  const patchedSymbol = (body.symbol ?? existing.symbol ?? "").trim().toUpperCase();
+  const storedSymbol = (existing.symbol ?? "").trim().toUpperCase();
+  const storedMarker = slotMarkerOf(existing.event_time);
+  const patchedMarker =
+    body.event_time === undefined ? storedMarker : slotMarkerOf(body.event_time);
+  const slotUnchecked =
+    patchedMarker !== null &&
+    (patchedMarker !== storedMarker || patchedSymbol !== storedSymbol);
+  let guardedReleaseTime: string | undefined;
+  if (
+    slotUnchecked &&
+    patchedMarker !== null &&
+    patchedSymbol !== "" &&
+    (body.event_type ?? existing.event_type) === "earnings" &&
+    (body.release_time === undefined || body.release_time === null)
+  ) {
+    const slotCheck = checkManualSlotAgainstKnownTime(
+      db,
+      patchedSymbol,
+      patchedMarker === "BMO" ? "bmo" : "amc",
+    );
+    if (!slotCheck.ok && body.forceSlot !== true) {
+      return Response.json(
+        {
+          success: false,
+          // The guard's text is written for an add; this is an edit.
+          error: slotCheck.message
+            .replace("Nothing was added.", "Nothing was changed.")
+            .replace("or add anyway to save it", "or save anyway to store it"),
+          code: "slot_contradicts_known_time",
+          slot: patchedMarker,
+          knownTime: slotCheck.knownTime,
+          slotDefaultTime: slotCheck.slotDefaultTime,
+        },
+        { status: 409 },
+      );
+    }
+    guardedReleaseTime = slotCheck.ok ? slotCheck.releaseTime : slotCheck.slotDefaultTime;
   }
 
   if (
@@ -346,7 +476,7 @@ export async function PATCH(request: Request) {
     event_date: body.event_date,
     event_time: body.event_time,
     event_type: body.event_type,
-    release_time: body.release_time,
+    release_time: guardedReleaseTime ?? body.release_time,
     expected_impact: body.expected_impact,
     consensus_estimate: body.consensus_estimate,
     description: body.description,

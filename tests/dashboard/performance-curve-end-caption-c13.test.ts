@@ -10,6 +10,7 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { anchorIndex } from "@/tests/helpers/source-anchor";
+import { equityCurveOvershootClause } from "@/lib/compute/performance-window-caption";
 
 const view = readFileSync("app/dashboard/components/PerformanceView.tsx", "utf8");
 const flat = (s: string) => s.replace(/\s+/g, " ");
@@ -26,11 +27,20 @@ describe("equity-curve caption names the end overshoot", () => {
   });
 
   it("names both dates and says which figure stops at the anchor", () => {
-    const at = anchorIndex(curve, "{runsPastWindow && (");
-    const tail = curve.slice(at);
-    expect(tail).toContain("daily history runs to {fmtDate(curveEnd ?? undefined)}");
-    expect(tail).toContain("past the Period window’s {fmtDate(windowEnd ?? undefined)} month-end anchor");
-    expect(tail).toContain("the TWR above stops at that anchor");
+    // The wording moved into equityCurveOvershootClause (2026-10-08) so the
+    // branch with no shorter-history notice also names the curve's start;
+    // tests/dashboard/equity-curve-overshoot-caption.test.ts pins both forms.
+    const at = anchorIndex(curve, "{runsPastWindow &&");
+    expect(curve.slice(at)).toContain("equityCurveOvershootClause({");
+    const text = equityCurveOvershootClause({
+      afterNotice: true,
+      curveStart: "2026-03-16",
+      curveEnd: "2026-10-07",
+      windowEnd: "2026-09-30",
+    });
+    expect(text).toContain("daily history runs to Oct 7, 2026");
+    expect(text).toContain("past the Period window’s Sep 30, 2026 month-end anchor");
+    expect(text).toContain("the TWR above stops at that anchor");
   });
 
   it("renders when only the end overshoots (a period the daily history fully covers)", () => {
@@ -42,8 +52,10 @@ describe("equity-curve caption names the end overshoot", () => {
   // end as the TWR beside it. YTD and All still plot every daily point to
   // today, which is where the overshoot caption above still applies.
   it("the curve ends at the page window's end: today for YTD / All, the statement anchor for a fixed period", () => {
+    // U13 changed the loader (one summed series for the whole scope, started
+    // at the scope's first statement); the END this test pins is unchanged.
     expect(flat(view)).toContain(
-      "getDailyValuationsByAccount(db, accountId, { startDate: effectiveStart, endDate: dailyEnd })",
+      "getDailyValuationsForAccounts(db, scopeAccountIds ?? [], { startDate: curveSeriesStart, endDate: dailyEnd, fullCoverageOnly: true, })",
     );
     expect(flat(view)).toContain("const dailyEnd = perfWindow.endDate;");
     expect(flat(view)).not.toContain("{ startDate: effectiveStart, endDate: twrResult");

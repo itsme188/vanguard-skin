@@ -24,7 +24,7 @@ import {
   findSelfAdmissions,
   buildSelfAdmissionAddendum,
 } from "@/lib/calendar/briefing-self-admission";
-import { isUsableReactionLeg, type BenchmarkReaction } from "@/lib/calendar/reaction-snapshot-core";
+import { readReactionLegs } from "@/lib/calendar/reaction-validity";
 import { formatOutboundLevelPrice } from "@/lib/alerts/outbound-level-price";
 
 // Preferred weekend-reading sources — full raw_text is sent to the model.
@@ -92,7 +92,7 @@ export async function generateWeeklyBriefing(
   const { portfolioEarnings, wshEarnings, otherEvents } = partitionBriefingEvents(events);
 
   // ── Expiring options ─────────────────────────────────────────────
-  const expiringOptions = getExpiringOptions(db, weekStart, weekEnd);
+  const expiringOptions = getBriefingExpiringOptions(db, weekStart, weekEnd);
 
   // ── Current prices (held + option underlyings + earnings symbols) ─
   // The briefing once wrote "TER closed Friday well below $180" when TER was at $420.
@@ -475,7 +475,7 @@ interface ExpiringOption {
  *
  * Exported for unit test (module-private otherwise).
  */
-export function getExpiringOptions(
+export function getBriefingExpiringOptions(
   db: Database.Database,
   startDate: string,
   endDate: string
@@ -1079,31 +1079,25 @@ export function formatReleasedEventForPrompt(event: CalendarEvent, index: number
   }
   if (values.length > 0) parts.push(`— ${values.join(" ")}`);
 
-  if (event.reaction_snapshot) {
-    try {
-      const snap = JSON.parse(event.reaction_snapshot) as {
-        spy?: BenchmarkReaction;
-        qqq?: BenchmarkReaction;
-        tlt?: BenchmarkReaction;
-        sector?: BenchmarkReaction & { symbol: string };
-      };
-      // isUsableReactionLeg guards against a 0/0 sentinel leg printing as a
-      // confident-looking flat move in the weekly briefing (2026-09-10 qa
-      // fix) — a bare truthy check (`if (snap.spy)`) does NOT catch this,
-      // since a {t_pre:0,t_post:0,delta_pct:0} object is still truthy.
-      const reacts: string[] = [];
-      if (isUsableReactionLeg(snap.spy)) reacts.push(`SPY ${fmtSignedPct(snap.spy.delta_pct)}`);
-      if (isUsableReactionLeg(snap.qqq)) reacts.push(`QQQ ${fmtSignedPct(snap.qqq.delta_pct)}`);
-      if (isUsableReactionLeg(snap.tlt)) reacts.push(`TLT ${fmtSignedPct(snap.tlt.delta_pct)}`);
-      if (isUsableReactionLeg(snap.sector)) {
-        reacts.push(
-          `${snap.sector.symbol} ${fmtSignedPct(snap.sector.delta_pct)}`,
-        );
-      }
-      if (reacts.length > 0) parts.push(`· ${reacts.join(" / ")}`);
-    } catch {
-      // malformed snapshot — skip reaction line
+  // Only MEASURED legs are printed (lib/calendar/reaction-validity.ts). A
+  // 0/0 sentinel leg (2026-09-10 qa fix; a bare truthy check does not catch
+  // it, since {t_pre:0,t_post:0,delta_pct:0} is truthy) and a pending leg
+  // (captured before its window elapsed, or an identical pre/post pair;
+  // 2026-10-08) are both left out, so the briefing never states a flat move
+  // that was never measured. A malformed snapshot reads as null: no line.
+  const reaction = readReactionLegs(event.reaction_snapshot, { rowEnrichedAt: event.enriched_at });
+  if (reaction) {
+    const { measured } = reaction;
+    const reacts: string[] = [];
+    if (measured.spy) reacts.push(`SPY ${fmtSignedPct(measured.spy.delta_pct)}`);
+    if (measured.qqq) reacts.push(`QQQ ${fmtSignedPct(measured.qqq.delta_pct)}`);
+    if (measured.tlt) reacts.push(`TLT ${fmtSignedPct(measured.tlt.delta_pct)}`);
+    if (measured.sector) {
+      reacts.push(
+        `${measured.sector.symbol} ${fmtSignedPct(measured.sector.delta_pct)}`,
+      );
     }
+    if (reacts.length > 0) parts.push(`· ${reacts.join(" / ")}`);
   }
 
   return `- ${parts.join(" ")}`;

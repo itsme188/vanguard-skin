@@ -62,6 +62,10 @@ prerequisite is absent. It renders a titled card with a `reason` (one sentence) 
 It replaces the silent-null pattern in OptionsGreeksCard / OptionsStrategies / ExpirationCalendar /
 FixedIncomeCard.
 
+The same rule holds inside a card (2026-10-08): the Fixed Income card lists a bond it cannot model
+with the words "not modelled" and the missing input, never a dash and never a guessed duration
+(`lib/compute/fixed-income-exposure.ts`; see `conventions-detail.md`, scenario rate leg).
+
 New Analysis sections that may have no data (no held bonds, no options, etc.) should render
 `<EmptySection>`, not `return null` — the page should look intentional, not partially-broken.
 
@@ -205,6 +209,13 @@ fan-out via `issuerSiblings()` to matching `calendar_events` rows in `[weekOf-3d
 `send-earnings-email.ts::renderBogeysBlock` slots after the user-notes block; the recap prompt
 explicitly anchors beat/miss on whisper when present.
 
+Since 2026-10-08 a row counts for a composer only when that composer prints something from it:
+the block renders from `bogeysPrintedInPrompt` (`lib/earnings/bogey-prompt-entries.ts`), so an
+entry with nothing under it is never listed, and the vendor EPS consensus is printed and labelled
+as the vendor's. The cloud email applies the same rule (`workers/cron/src/bogey-content.ts`). The
+edit modal's read, `getBogeysForEvent`, stays unfiltered. Detail:
+`docs/reference/earnings-pipeline.md` §14.
+
 ### 12.3 Per-event UI
 
 `BogeysEditModal` has three sections:
@@ -312,6 +323,7 @@ Supersedes the parts of §14 below that describe a calendar-derived request and 
 - **A call has no date; its only evidence is its own words.** `statedFiscalQuarterFromTranscript` (`lib/mutations/transcripts.ts`) reads the quarter the opening states. On the same-day path a vendor call is cached only when it states the print's fiscal quarter (and year, when it states one); a call that states nothing is rejected. Every other writer is guarded at the single insert, `upsertTranscript`: a call is never stored under a key its text contradicts.
 - **A filing has a real date.** An 8-K whose filing date is within `PRINT_FILING_WINDOW_DAYS` of the print is stored for that print under the print's key even when the release's own label differs. A call can never use this exemption (the insert checks the source).
 - **No Finnhub entry means no vendor request**; the filing path runs. Vendor requests for one print are bounded to one per 12-hour slot while nothing is cached.
+- **"The latest" has one default, and it says when it is not sure (2026-10-08).** `fetchLatestTranscript` (`lib/transcripts/fetch.ts`) serves the fetch button, `POST /api/transcripts` with no quarter, and the chat tool. Three cases. (1) The most recent print's fiscal quarter is known: the request is made by that fiscal quarter and tied to the print's date. (2) The print is on file but no Finnhub entry states its fiscal quarter: only the print's 8-K is fetched, matched by filing date, and a cached call dated inside the print's window is found after the filing path; no vendor is asked by calendar quarter, because for an offset fiscal year that returns an OLDER call, which used to come back as "the latest". (3) No print is on file: the calendar default is all there is, and the result carries `latestConfirmed: false`. "The most recent print" means the newest one whose RESULTS are on file. When a newer showing print is on file with no results yet (the day of a print), the document fetched is still the earlier print's, and the result says so: `latestConfirmed: false` with a `latestNote` naming both dates. Which document is fetched does not change; only the label does. Tests: `tests/transcripts/fetch.test.ts`, `tests/api/transcripts-route.test.ts`, `tests/dashboard/transcripts-refresh-latest-note.test.ts`.
 - **Nothing is deleted.** Rows keyed the old way are correct transcripts of the quarter they state. `scripts/audit-transcript-keys.ts` and `scripts/audit-transcripts-quarter-mismatch.ts` are read-only reports (the old delete flag is refused).
 - **Guidance and Risk sections** are sliced from paragraphs before the Q&A, skip the welcome, safe-harbor sentences and filing cover text, exclude analyst and operator turns, and start at the matching sentence. `scripts/repair-transcript-sections.ts` (dry-run by default; skips sources that supply their own sections and empty text) rewrites stored sections; expect nearly every stored call to change.
 

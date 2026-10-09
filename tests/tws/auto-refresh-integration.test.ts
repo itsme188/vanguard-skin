@@ -25,6 +25,7 @@ const mocks = vi.hoisted(() => ({
   })),
   classifyOptionSectors: vi.fn(async () => ({ classified: 1, errors: [] })),
   getUnsectoredOptionUnderlyings: vi.fn(() => [] as string[]),
+  markOptionSectorsChecked: vi.fn(() => {}),
   classifyFactors: vi.fn(async () => ({
     classified: 0,
     skipped: 0,
@@ -57,6 +58,7 @@ vi.mock("@/lib/alerts/generate-suggestion", () => ({
 vi.mock("@/lib/securities/classify-option-sectors", () => ({
   classifyOptionSectors: mocks.classifyOptionSectors,
   getUnsectoredOptionUnderlyings: mocks.getUnsectoredOptionUnderlyings,
+  markOptionSectorsChecked: mocks.markOptionSectorsChecked,
 }));
 vi.mock("@/lib/compute/classify-factors", () => ({
   classifyFactors: mocks.classifyFactors,
@@ -355,18 +357,29 @@ describe("auto-refresh — integration", () => {
     const result = await runAutoRefresh(db, "full");
     expect(result).not.toBeNull();
     expect(mocks.classifyOptionSectors).toHaveBeenCalledTimes(1);
+    // The run stamps its own check time; the caller does not stamp a second one.
+    expect(mocks.markOptionSectorsChecked).not.toHaveBeenCalled();
   });
 
   it("skips option-sector classification when nothing is unsectored", async () => {
     mocks.getUnsectoredOptionUnderlyings.mockReturnValue([]);
-    await runAutoRefresh(db, "full");
+    const result = await runAutoRefresh(db, "full");
     expect(mocks.classifyOptionSectors).not.toHaveBeenCalled();
+    // The skipped run still counts as a check: the time is recorded, on this db.
+    expect(mocks.markOptionSectorsChecked).toHaveBeenCalledTimes(1);
+    expect(mocks.markOptionSectorsChecked).toHaveBeenCalledWith(db);
+    expect(result?.errors ?? []).toEqual([]);
   });
 
   it("does not run option-sector classification on quick refresh", async () => {
     mocks.getUnsectoredOptionUnderlyings.mockReturnValue(["XYZ"]);
     await runAutoRefresh(db, "quick");
     expect(mocks.classifyOptionSectors).not.toHaveBeenCalled();
+    // A quick refresh checks nothing, so it records no check either.
+    resetSyncState();
+    mocks.getUnsectoredOptionUnderlyings.mockReturnValue([]);
+    await runAutoRefresh(db, "quick");
+    expect(mocks.markOptionSectorsChecked).not.toHaveBeenCalled();
   });
 
   it("runs factor classification on full refresh (Step 2.6), not quick", async () => {

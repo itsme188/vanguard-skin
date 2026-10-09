@@ -18,7 +18,6 @@ import {
   NO_ACTUAL_RECORDED_LABEL,
   conflictResolvableHere,
   showsNoActualRecorded,
-  weekAheadTitle,
 } from "@/app/dashboard/today/WeekAheadView";
 import {
   EnrichmentRowSummary,
@@ -30,7 +29,7 @@ import {
   confirmConflictDate,
   conflictResolveOptions,
 } from "@/app/dashboard/components/calendar/EarningsConflictMarker";
-import { slotAwareTitle } from "@/app/dashboard/components/TodayReleases";
+import { slotAwareTitle } from "@/lib/calendar/manual-row-display";
 import type { ReactionSnapshot } from "@/lib/calendar/reaction-snapshot-core";
 import type { CalendarEvent } from "@/lib/types";
 import { anchorIndex } from "@/tests/helpers/source-anchor";
@@ -368,14 +367,25 @@ describe("a hand-entered earnings row prints its market slot", () => {
     },
   ];
 
-  it("gives the same answer as Today's releases for every row", () => {
-    for (const row of rows) expect(weekAheadTitle(row)).toBe(slotAwareTitle(row));
+  // Unit 16: the two screens used to keep a copy each, pinned to the same
+  // answers. There is now one rule in a plain lib module and both import it.
+  it("both screens call the one shared rule", () => {
+    const week = readFileSync("app/dashboard/today/WeekAheadView.tsx", "utf8");
+    const releases = readFileSync("app/dashboard/components/TodayReleases.tsx", "utf8");
+    anchorIndex(week, "title: slotAwareTitle(storedEvent)");
+    anchorIndex(releases, "const slotTitle = slotAwareTitle(event);");
+    for (const src of [week, releases]) {
+      anchorIndex(src, 'from "@/lib/calendar/manual-row-display";');
+      expect(src).not.toContain("function slotAwareTitle(");
+      expect(src).not.toContain("function weekAheadTitle(");
+    }
+    for (const row of rows) expect(typeof slotAwareTitle(row)).toBe("string");
   });
 
   it("swaps the source token for the slot only when the slot is known", () => {
-    expect(weekAheadTitle(rows[0])).toBe("AAA earnings (Before Market Open)");
-    expect(weekAheadTitle(rows[1])).toBe("AAA earnings (After Market Close)");
-    expect(weekAheadTitle(rows[3])).toBe("AAA earnings (Manual entry)");
+    expect(slotAwareTitle(rows[0])).toBe("AAA earnings (Before Market Open)");
+    expect(slotAwareTitle(rows[1])).toBe("AAA earnings (After Market Close)");
+    expect(slotAwareTitle(rows[3])).toBe("AAA earnings (Manual entry)");
   });
 
   it("the card shows the slot and never the stored source token", () => {

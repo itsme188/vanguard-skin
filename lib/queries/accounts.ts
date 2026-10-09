@@ -51,15 +51,3 @@ export function resolveScope(
     .map((a) => a.id);
   return ids.length > 0 ? ids : undefined;
 }
-
-/**
- * Resolve scope to a single accountId for APIs that only accept one.
- * Returns the first matching account ID, or undefined for "all".
- */
-export function resolveScopeToSingleId(
-  db: Database.Database,
-  scope: string | null | undefined
-): number | undefined {
-  const ids = resolveScope(db, scope);
-  return ids?.[0];
-}

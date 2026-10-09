@@ -10,7 +10,7 @@ import type { DietzBand } from "@/lib/compute/dietz";
 import { computePeriodAttribution } from "@/lib/compute/period-attribution";
 import { resolveScope } from "@/lib/queries/accounts";
 import { todayET } from "@/lib/calendar/date-utils";
-import { getDailyValuationsByAccount, getDailyValuationsCombined } from "@/lib/queries/daily-valuations";
+import { getDailyValuationsForAccounts } from "@/lib/queries/daily-valuations";
 import { fetchNetFlowsByDate, fetchAnchorSourceSeamDates } from "@/lib/compute/flow-adjusted";
 import { Money, Pct } from "@/lib/privacy/components";
 import { formatPercent } from "@/lib/format";
@@ -23,14 +23,18 @@ import {
 } from "@/lib/analysis/interpret";
 import { PerformanceCurveChart, type PerformanceCurveData } from "./EquityCurveChart";
 import { buildEquityCurveData } from "@/lib/compute/equity-curve";
+import { curveFloorDate, firstStatementAnchorForCurve } from "@/lib/compute/equity-curve-floor";
 import { PeriodAttributionSection } from "./PeriodAttributionSection";
 import {
   resolvePerformanceWindow,
   latestStatementAnchor,
   newestStatementInScope,
-  performanceWindowCaption,
   type PerformancePeriod,
 } from "@/lib/compute/performance-window";
+import {
+  equityCurveOvershootClause,
+  performanceCaptionMeasuredFrom,
+} from "@/lib/compute/performance-window-caption";
 
 // Same four band labels as TrustStripDrawer's chips — duplicated locally
 // rather than imported (TrustStripDrawer is a "use client" module; this
@@ -92,11 +96,11 @@ export async function PerformanceView({ scope = "all", period }: PerformanceView
   // chain (the resolveScopeToSingleId violation this fixes; scopes are
   // disjoint but not all 1-account, and must not be treated as if they were).
   const scopeAccountIds = activeScope === "all" ? undefined : resolveScope(db, activeScope);
-  // computeXirr/computeRiskMetrics still take a single accountId — their
-  // signature is unchanged (out of scope for this fix). Every scope today
-  // resolves to exactly one account, so the first id is equivalent; this
-  // only diverges once a named scope covers 2+ accounts.
-  const accountId = scopeAccountIds?.[0];
+  // Every figure on this page takes the WHOLE scope (scopeAccountIds): the
+  // TWR, the money-weighted return, the risk tiles, the curve and the
+  // attribution. Nothing reads "the first account" of a scope. The one
+  // per-account surface, the cross-check strip, shows only when the scope IS
+  // one account (twrAccountId).
   const twrAccountId = scopeAccountIds?.length === 1 ? scopeAccountIds[0] : undefined;
   const twrAccountIds = scopeAccountIds && scopeAccountIds.length > 1 ? scopeAccountIds : undefined;
 
@@ -113,7 +117,6 @@ export async function PerformanceView({ scope = "all", period }: PerformanceView
     // in the scope has no later statement).
     newestScopeStatement: newestStatementInScope(db, scopeAccountIds, today),
   });
-  const windowCaption = performanceWindowCaption(activePeriod, perfWindow);
   // The window's opening date: what the daily series (risk, curve, benchmark,
   // attribution) start on and what the "shorter than the selected period"
   // notices compare against.
@@ -141,7 +144,9 @@ export async function PerformanceView({ scope = "all", period }: PerformanceView
       accountId: twrAccountId,
       accountIds: twrAccountIds,
     });
-    xirrResult = computeXirr(db, { startDate: chainStart, endDate: chainEnd, accountId });
+    // One money-weighted return over the summed cash flows of every account
+    // in the scope (undefined = all accounts), never the first account alone.
+    xirrResult = computeXirr(db, { startDate: chainStart, endDate: chainEnd, accountIds: scopeAccountIds });
     // coverageFloor "scope", not the default "common" (2026-09-14 ruling,
     // docs/DECISIONS.md): this page shows ONE scope's tiles at a time and
     // never compares scopes against each other, so the cross-account floor
@@ -153,19 +158,37 @@ export async function PerformanceView({ scope = "all", period }: PerformanceView
     riskResult = computeRiskMetrics(db, {
       startDate,
       endDate: dailyEnd,
-      accountId,
+      // The whole scope. computeRiskMetrics sums the scope's accounts on
+      // full-coverage days before any return math; for a one-account scope
+      // this is the same series the single id gave.
+      accountIds: scopeAccountIds,
       coverageFloor: "scope",
     });
   } catch (err) {
     computeError = err instanceof Error ? err.message : "Unable to compute performance";
   }
 
+  // Built AFTER the return so it can name the date the return is actually
+  // measured from: the same date the Period window card prints as Start. A
+  // chain of stored monthly returns opens on the first day of its first
+  // month, one day after the opening statement the window rule names; the
+  // caption used to print the statement date beside a card printing the day
+  // after. Caption only: no return figure changes.
+  const windowCaption = performanceCaptionMeasuredFrom(
+    activePeriod,
+    perfWindow,
+    twrResult?.measurementStartDate ?? null,
+  );
+
   const totalReturnPct = twrResult?.totalReturn ?? null;
   const annualizedTwr = twrResult?.annualizedReturn ?? null;
   const xirrAnnualized = xirrResult?.xirr ?? null;
 
   // ── Reconciliation strip ────────────────────────────────────────
-  // Use latest month-end we have for the scope's primary account
+  // The cross-check is per account, so the strip shows only when the scope
+  // is exactly one account: a check of one member is not a claim about a
+  // wider scope.
+  const accountId = twrAccountId;
   let reconciliation: ReturnType<typeof reconcileTwrAgainstStatements> = null;
   if (accountId !== undefined) {
     try {
@@ -193,13 +216,20 @@ export async function PerformanceView({ scope = "all", period }: PerformanceView
   // as a fake day (Apr 6 coverage onset read as +53%, contradicting the TWR
   // on the same screen). Same guard computeRiskMetrics/regression use; the
   // caption below self-adjusts because it reads the curve's own first row.
-  const dailyVals = accountId !== undefined
-    ? getDailyValuationsByAccount(db, accountId, { startDate: effectiveStart, endDate: dailyEnd })
-    : getDailyValuationsCombined(db, {
-        startDate: effectiveStart,
-        endDate: dailyEnd,
-        fullCoverageOnly: true,
-      });
+  //
+  // FLOOR (ruling 2026-09-02): the curve starts at the scope's first
+  // statement anchor. A daily value dated before an account's first statement
+  // is an estimate, and as the base day it put a fake step on the statement
+  // day. The floor is looked up over the full scope.
+  const curveFloor = firstStatementAnchorForCurve(db, scopeAccountIds, effectiveStart, dailyEnd);
+  const curveSeriesStart = curveFloorDate(effectiveStart, curveFloor);
+  // The WHOLE scope, summed (an empty id list = every account), for a named
+  // scope of one account this is that account's own series.
+  const dailyVals = getDailyValuationsForAccounts(db, scopeAccountIds ?? [], {
+    startDate: curveSeriesStart,
+    endDate: dailyEnd,
+    fullCoverageOnly: true,
+  });
 
   const benchmarkRows = db
     .prepare(
@@ -217,17 +247,13 @@ export async function PerformanceView({ scope = "all", period }: PerformanceView
   // move and an anchor-source handoff (statement<->Plaid<->TWS) reads as a
   // fake step (CLAUDE.md: "a metric must be invariant to depositing $1M and
   // buying nothing").
-  // Pair the flow/seam scope with the SERIES above, not the raw scope list:
-  // dailyVals is the single-account series whenever accountId is set, so its
-  // flows must be that account's alone. Equivalent today (every named scope
-  // is one account), but a 2+-account scope would otherwise net every
-  // account's flows against one account's values.
-  const curveAccountIds = accountId !== undefined ? [accountId] : scopeAccountIds;
+  // The flow/seam scope is the SERIES' scope: dailyVals sums every account
+  // in scopeAccountIds, so the flows netted out of it are those accounts'.
   const flows =
     dailyVals.length >= 2
       ? fetchNetFlowsByDate(
           db,
-          curveAccountIds,
+          scopeAccountIds,
           dailyVals[0].valuation_date,
           dailyVals[dailyVals.length - 1].valuation_date,
         )
@@ -236,7 +262,7 @@ export async function PerformanceView({ scope = "all", period }: PerformanceView
     dailyVals.length >= 2
       ? fetchAnchorSourceSeamDates(
           db,
-          curveAccountIds,
+          scopeAccountIds,
           dailyVals[0].valuation_date,
           dailyVals[dailyVals.length - 1].valuation_date,
         )
@@ -250,6 +276,7 @@ export async function PerformanceView({ scope = "all", period }: PerformanceView
     benchmarkRows,
     flows,
     seamDates,
+    curveFloor,
   );
 
   // ── Period attribution ──────────────────────────────────────────
@@ -316,6 +343,7 @@ export async function PerformanceView({ scope = "all", period }: PerformanceView
           <Link
             key={s.key}
             href={buildHref({ scope: s.key })}
+            aria-current={activeScope === s.key ? "true" : undefined}
             className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
               activeScope === s.key
                 ? "bg-panel text-ink shadow-sm"
@@ -571,6 +599,12 @@ export async function PerformanceView({ scope = "all", period }: PerformanceView
                   riskStart !== null &&
                   riskEnd !== null &&
                   (riskStart !== curveStart || riskEnd !== curveEnd);
+                // The curve is floored at the first statement; the risk tiles
+                // are not (their series is untouched). When daily values
+                // exist before that statement, that is why the two windows
+                // differ, and the caption must not blame the benchmark.
+                const flooredAtStatement =
+                  curveFloor !== null && riskStart !== null && riskStart < curveFloor;
                 // The END side: the curve keeps every daily point the book
                 // has, so it can run past the Period window card's End (the
                 // last month-end anchor the TWR chain reaches). Say so rather
@@ -584,21 +618,29 @@ export async function PerformanceView({ scope = "all", period }: PerformanceView
                         Equity curve: {notice.charAt(0).toLowerCase() + notice.slice(1)}
                         {curveWindowDiffers && (
                           <>
-                            . It plots only days that also have a {BENCHMARK_SYMBOL} close; the daily
-                            valuations behind Max drawdown &amp; Sharpe run {fmtDate(riskStart ?? undefined)} –{" "}
-                            {fmtDate(riskEnd ?? undefined)}
+                            {flooredAtStatement ? (
+                              <>
+                                . It starts at this scope’s first statement ({fmtDate(curveFloor ?? undefined)}):
+                                daily values before a first statement are estimates and are not
+                                plotted. It also plots only days that have a {BENCHMARK_SYMBOL} close
+                              </>
+                            ) : (
+                              <>. It plots only days that also have a {BENCHMARK_SYMBOL} close</>
+                            )}
+                            ; the daily valuations behind Max drawdown &amp; Sharpe run{" "}
+                            {fmtDate(riskStart ?? undefined)} – {fmtDate(riskEnd ?? undefined)}
                           </>
                         )}
                       </>
                     )}
-                    {runsPastWindow && (
-                      <>
-                        {notice ? ". The " : "Equity curve: the "}
-                        daily history runs to {fmtDate(curveEnd ?? undefined)}, past the Period
-                        window’s {fmtDate(windowEnd ?? undefined)} month-end anchor — the TWR above
-                        stops at that anchor
-                      </>
-                    )}
+                    {runsPastWindow &&
+                      curveStart !== null &&
+                      equityCurveOvershootClause({
+                        afterNotice: notice !== null,
+                        curveStart,
+                        curveEnd,
+                        windowEnd,
+                      })}
                   </p>
                 ) : null;
               })()}

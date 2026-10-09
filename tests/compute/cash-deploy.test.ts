@@ -217,14 +217,19 @@ describe("post-allocation gap update (qa: allocated-sector-gap-doubled)", () => 
     }
 
     // Each pick's rationale string ("Underweight <sector> by Xpp vs
-    // benchmark") must cite the SAME gap number the table shows for that
-    // sector, not a residual that already reflects this pick's own dollars.
+    // benchmark") must cite the SAME gap the table shows for that sector,
+    // not a residual that already reflects this pick's own dollars. The
+    // sentence states the SIZE of the gap: "underweight" already carries the
+    // direction, so "underweight by -6.2pp" would be a doubled negative.
+    expect(result.picks.length).toBeGreaterThan(0);
     for (const p of result.picks) {
-      const match = p.rationale.match(/by (-?\d+\.\d)pp/);
+      expect(p.rationale).not.toMatch(/by -/);
+      const match = p.rationale.match(/by (\d+\.\d)pp/);
       expect(match).not.toBeNull();
       const gap = result.gaps.find((g) => g.sector === p.sectorTarget);
       expect(gap).toBeDefined();
-      expect(match![1]).toBe(gap!.gapPp.toFixed(1));
+      expect(gap!.gapPp).toBeLessThan(0);
+      expect(match![1]).toBe(Math.abs(gap!.gapPp).toFixed(1));
     }
   });
 

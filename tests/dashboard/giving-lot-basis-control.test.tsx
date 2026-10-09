@@ -214,6 +214,7 @@ const lot = (over: Partial<GivingFlaggedLot>): GivingFlaggedLot => ({
   state: "implausible",
   sourceNote: null,
   verifiedAt: null,
+  giftsFed: [],
   ...over,
 });
 
@@ -291,6 +292,7 @@ describe("BasisVerifiedDialog", () => {
         open
         symbol="ZZBB"
         acquisitionDate="2010-01-10"
+        giftsFed={[]}
         note={over.note ?? ""}
         busy={over.busy ?? false}
         error={over.error ?? null}
@@ -468,7 +470,8 @@ describe("how the control is written", () => {
     const src = read("LotBasisControl.tsx");
     // Every function component in the file starts at column 0.
     const components = src.match(/^[ \t]*(export )?function [A-Z]\w*\(/gm) ?? [];
-    expect(components.length).toBe(3);
+    // The chip block, the gifts-fed note (2026-10-08), the form and the control.
+    expect(components.length).toBe(4);
     for (const c of components) expect(c.startsWith("export function")).toBe(true);
     const dialog = sliceBetween(src, "<dialog", ">");
     expect(dialog).toContain('className="m-auto ');
@@ -491,8 +494,10 @@ describe("how the control is written", () => {
     expect(count(view, "isDonatedLotBasisImplausible(")).toBe(2); // its definition and the one call
     const reader = sliceBetween(view, "export function donatedLotBasisState", "\n}\n");
     expect(reader).toContain("if (!isDonatedLotBasisImplausible(input)) return \"plausible\";");
-    // Two call sites, one reader: a lot in the ledger, and a marked lot that is gone from it.
-    expect(count(view, "donatedLotBasisState({")).toBe(2);
+    // Three call sites, one reader: a lot in the ledger, a marked lot that is
+    // gone from it, and (2026-10-08) a lot listed in the drawer, whose
+    // suggestion takes a flagged lot last.
+    expect(count(view, "donatedLotBasisState({")).toBe(3);
     // The snapshot is compared with the figures the 1% rule reads, not with the transaction row.
     expect(reader).toContain("sameCents(verification.verifiedAmount, input.lotCostBasis)");
     expect(reader).toContain("sameQuantity(verification.verifiedQuantity, input.lotQuantityAcquired)");

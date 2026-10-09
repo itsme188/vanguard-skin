@@ -462,8 +462,10 @@ partitions the portfolio.
 `cc317ff` 2026-06-11.
 
 Pull the valuation series from `getDailyValuationsForAccounts` (sum per-date BEFORE
-drawdown/vol/Sharpe). **Never collapse a multi-account scope to `accountIds[0]`.** `/api/compute/*`
-routes stay on `resolveScopeToSingleId` deliberately.
+drawdown/vol/Sharpe). **Never collapse a multi-account scope to `accountIds[0]`.** Some
+`/api/compute/*` routes (risk, position-risk, options-greeks, options-expirations) stay on
+`resolveScopeToSingleId` deliberately. `GET /api/compute/xirr` and `GET /api/compute/fixed-income`
+read the whole scope through `resolveScope` (2026-10-08).
 
 **Coverage-jump guard (single-sourced 2026-07-03 `0ce68b5`)**: per-account daily-valuation coverage
 STARTS on different dates (IBKR 3/27, Vanguard + Roth 4/06) — a summed series "gains" an appearing
@@ -586,6 +588,95 @@ Sibling of the explain-no-ops convention: What-if's `ExposureDelta.droppedLegs`
 (`unknown_symbol`/`not_held`, `lib/compute/exposure-delta.ts`) is the same shape — an engine that
 silently skips input must report what it skipped.
 
+### Fixed performance periods end at the last statement (2026-10-08)
+
+One rule, `lib/compute/performance-window.ts`, decides what dates a selected period covers, so the
+return, the money-weighted return, the risk metrics, the equity curve, the benchmark rows and the
+attribution on one screen all describe one window.
+
+- **1Y, 3Y and 5Y are full spans ending at the last statement anchor.** The end is the latest
+  statement month-end for the scope (`latestStatementAnchor`); the start is that date shifted back
+  the period, month-end aware (`shiftYearsMonthEndAware`). Before, the start rolled with today
+  while the monthly chain could only reach the last statement, so "1Y" covered about eleven months.
+- **Year to date and All are unchanged** and run to today.
+- **The anchor is the latest month-end EVERY account in the scope has a statement for** (the same
+  full-coverage rule the aggregate return chain applies). Live (Plaid or TWS) rows never count as
+  an anchor, and a hand-entered mid-month value never does either.
+- **`chainStartDate`, not `startDate`, goes to the return functions.** They read their start as the
+  first day inside the window and take the opening value from the last statement before it; passing
+  the anchor itself would pull in one extra month.
+- **The caption names the end date** (`performanceWindowCaption`). It says so when the history may
+  not cover the full span, and when one account in the scope has stopped receiving statements and
+  is holding the period back (`newestStatementInScope`). With no statement at all the period rolls
+  with today and the caption says that.
+- The Performance view and the chat return tool (`lib/chat/tools.ts`) both read this rule.
+
+Tests: `tests/dashboard/performance-window-b4.test.ts`, `tests/dashboard/performance-period-window.test.ts`,
+`tests/chat/tools-snapshot-scope-and-twr-window.test.ts`.
+
+### The Performance view reads the whole scope; the curve starts at the first statement (2026-10-08)
+
+Second half of the 2026-10-08 sprint. Three figures on the Performance view read only the first
+account of a named scope. They now read every account in it.
+
+- **Money-weighted return.** `computeXirr` (`lib/compute/xirr.ts`) takes `accountIds`, with the
+  same three scope rules as `computeTwr`: one id is the single-account path; two or more are one
+  return over the summed cash flows of just those accounts; an explicitly empty list is "no
+  accounts" and returns null (never widened to the whole portfolio). `GET /api/compute/xirr` takes
+  `scope=` and passes the whole list; an explicit `accountId=` is still one account.
+- **Risk tiles.** `computeRiskMetrics` is called with the scope's `accountIds` (it sums the
+  accounts on full-coverage days before any return math).
+- **Equity curve.** It reads the whole scope and is floored at the first statement
+  (`lib/compute/equity-curve-floor.ts`, ruling 2026-09-02): a daily value dated before an account's
+  first statement has no statement to tie it to, and as the curve's base day it put a fake step on
+  the first statement day. For several accounts the floor is the LATEST of their first statements.
+  Only accounts with a daily value inside the window count, and an account with no statement at
+  all sets no floor (a live-only account still plots). No stored row changes.
+- **Every named scope is one account today**, so no figure moved when this landed.
+- **No time-weighted return computation changed.**
+- **Open owner question: the two start-date branches.** For a single account whose statements
+  carry a stored monthly return, the return chain opens on the first day of the month. In every
+  other case it opens on the prior month-end. A one-year window is therefore one day shorter on
+  the first branch, and the annualized figure differs slightly. Aligning them moves a published
+  figure, so it waits for a ruling. Do not align them in passing.
+- **The caption prints the date the return really uses.** `performanceCaptionMeasuredFrom`
+  (`lib/compute/performance-window-caption.ts`) replaces the window's promised start with the
+  computed one, so the caption and the "Period window" card never show two start dates. Caption
+  only.
+
+Tests: `tests/compute/xirr-scope-u13.test.ts`, `tests/compute/equity-curve-floor-u13.test.ts`,
+`tests/dashboard/performance-caption-u13.test.ts`.
+
+### One position's move for one session (2026-10-08)
+
+`computePositionDayMove` (`lib/compute/day-move.ts`) is the one place that decides how a position's
+day move is measured. The old rule was current quantity times (latest close minus prior close),
+which credits a position bought today with a move it never earned.
+
+- Quantity held at the prior close and still held: close to close.
+- Quantity opened or added since the prior close: latest close minus what those shares cost. With
+  no usable cost it is LEFT OUT and counted, never guessed. A per-share cost further than three
+  times (or under a third of) the latest close is not believed (`COST_PLAUSIBILITY_FACTOR`).
+- Quantity sold since the prior close: nothing. Only what is still held is measured.
+- The function is pure and works in the security's native currency; the caller converts. Cost is a
+  total, not per share, and a short's cost sign is ignored for a position opened today, because
+  stored short bases use more than one sign convention.
+
+Callers: Today's one-line IBKR snapshot (`lib/queries/today-holdings.ts`) and the chat market
+snapshot (`lib/queries/market-snapshot.ts`). On Today, a quantity that changed after the measured
+session, or whose change cannot be dated to that session because no holdings snapshot exists at
+the prior close, is also left out and counted; the line says how many names were opened, how many
+were left out for no cost, and how many could not be dated. In the chat snapshot a symbol held long
+in one account and short in another is two rows, one per side.
+
+The chat portfolio summary's total is the Portfolio strip's own (`getPortfolioCurrentValues`,
+`lib/queries/dashboard.ts`), so the two surfaces cannot state different totals; a summary scoped to
+one account says it is that account alone.
+
+Tests: `tests/compute/day-move.test.ts`, `tests/queries/today-holdings.test.ts`,
+`tests/queries/market-snapshot-sides-and-day-effect.test.ts`,
+`tests/queries/portfolio-summary-strip-total.test.ts`.
+
 ### Delta-adjusted exposure (single source)
 
 `lib/compute/exposure.ts`:
@@ -628,7 +719,30 @@ One helper, `lib/compute/bond-duration.ts`, used by both scenario engines (they 
 
 - **A bond's duration, in order:** a stored `duration_years`; a bill or zero-coupon bond uses time to maturity; a bond within one coupon period of maturity uses time to maturity (one flow left); a coupon bond uses modified duration from its coupon (stored, else read from the name), its maturity and a yield solved from the stored price (semiannual coupons stepped back by calendar months; the price is treated as a clean quote). A bond past maturity, with no maturity date, or with no usable coupon is NOT modelled: it adds nothing and is listed and counted on the card (`ScenarioResult.bondsUnmodelled`). No bond ever takes a default duration.
 - **Bond funds** (`isFixedIncomeFund`): a fund-family security type only, not a cash equivalent, not a leveraged or inverse fund, and either a Fixed Income sector or a normalized fund category in `BOND_FUND_CATEGORIES` (`lib/securities/normalize-fund-category.ts`, the single list). They use the fund's stored duration, else a 5-year default that the card states.
+- **The default needs two pieces of evidence (2026-10-08).** `fundDefaultRefusal` (`lib/compute/bond-duration.ts`) is the one reader. A fund with no stored duration takes the default only when (1) it shows no equity evidence (its sector does not normalize to an equity sector and its name carries no equity word), and (2) its normalized fund category is in the bond family. A Fixed Income sector with a missing or unknown category is not enough: the category may be an AI label. A refused fund adds nothing to the rate leg and is listed and counted. A refused fund WITH equity evidence still takes the market move like an equity fund (`isBondFundWithoutMarketMove`, `lib/compute/scenarios.ts`), so it never sits out both legs. Tests: `tests/compute/bond-fund-default-corroboration-d6.test.ts`, `tests/compute/scenarios-equity-evidence-fund-market-leg.test.ts`.
+- **Custom scenario inputs are bounded on the server (2026-10-08).** `lib/compute/scenario-input-bounds.ts` holds one set of bounds, read by `POST /api/compute/scenarios` (which refuses with 400) and by the custom form (which shows the same limits). Nothing is clamped.
 - A bill is recognised by its stored name only when no positive coupon is stored.
+- **A name that says the coupon is not fixed blocks every derived duration (2026-10-08).**
+  `isNotFixedCouponName` (`lib/bonds.ts`) is the one reader of the word list (floating, variable,
+  step, a reference rate, a swap rate, a price index, "linked", payment in kind, and the broker's
+  short forms). `estimateBondRateLeg` asks it BEFORE any coupon is used, stored or read from the
+  name: a stored coupon on a floater is the current period's rate at best, so a stored zero would
+  make it a bill and a stored positive figure a plain fixed bond. The bond is listed as not
+  modelled with the reason `not-fixed-coupon`. Order matters: a past maturity still wins, and a
+  STORED DURATION is still used as stored; the name test guards the derived durations only. A
+  Treasury inflation-indexed note is not such a name (its real coupon is fixed). An issuer named
+  with the whole word CMS is treated as not modelled, which is the safe side. Test: `tests/compute/bond-duration-not-fixed-coupon.test.ts`.
+- **The Fixed Income card uses the same rule (2026-10-08).** `computeFixedIncomeExposure`
+  (`lib/compute/fixed-income-exposure.ts`) reads every individual bond through
+  `estimateBondRateLeg`. The card used to read only the stored `duration_years`, so a bond showed
+  a dash on the card while a scenario on the same tab moved it by a derived duration. Now a derived
+  duration is marked as an estimate (`durationSource`, `derivedBondCount`), and a bond the rule
+  cannot model is still listed, with its reason and no figure, and is counted
+  (`unmeasuredBondCount`, `unmeasuredBondValue`). The weighted average covers only the bonds that
+  have a duration: unknown is not zero. "Today" is the Eastern date, passed in by the route, so
+  the maturity filter and every duration are judged on one day. Individual bonds only; bond funds
+  are not listed there. Tests: `tests/compute/fixed-income-exposure.test.ts`,
+  `tests/api/compute-fixed-income.test.ts`.
 
 ### Holdings footers state exactly what each total covers (2026-10-07)
 
@@ -641,6 +755,8 @@ One helper, `lib/compute/bond-duration.ts`, used by both scenario engines (they 
 - **Currency conversions are Section 988 items, never Form 8949 rows.** One predicate, exported from `lib/queries/tax-lots.ts` as SQL (`CURRENCY_CONVERSION_SECURITY_SQL`) and JS (`isCurrencyConversionSecurityType`), a plain case-insensitive match on the security type that imports nothing from the broker library. The Tax Lots page shows them in their own block; the open-lot count, the gain tiles, both 8949 exports, the chat portfolio summary and `scripts/reconcile-tax-report-vs-broker.ts` all exclude them through it. Per-lot chat rows keep them, labelled. The engine and the stored rows do not change. Never classify them through `lib/tws/security-type-map.ts`: that mapper builds live broker contracts.
 - **An option past expiry is not an open lot on screen.** Open Lots, the Unrealized tile, the chat summary and the data-health universes drop it by the shared live-option rule and count it under "expired contracts awaiting a closing entry" (distinct contracts). The lot stays open in the ledger until its real outcome is imported; nothing synthesizes a close.
 - **The Recompute preview groups by the year of the sale (2026-10-07).** The first press calls `rehearseTaxLotRecompute` (`lib/compute/tax-lot-recompute-summary.ts`), which runs the engine inside a transaction that always rolls back and writes nothing. Each row is one tax year, and a tax year is the year of the sale: realized gain, lot sales and engine closes are all dated that way. Open lots have not been sold, so they are one total under no year. Only an explicit confirm calls `applyTaxLotRecompute`, which returns the same numbers. Test: `tests/api/tax-lots-recompute-summary.test.ts`.
+- **One sign and one basis for an open lot (2026-10-08).** Two SQL fragments exported from `lib/queries/tax-lots.ts` are the only copies. `lotSideSignSql(alias)` is -1 for a short lot and +1 for a long one: a short lot stores a POSITIVE remaining quantity (`is_short` is the flag) and gains when the price falls. `remainingLotBasisSql()` is the basis of the quantity still open: the lot's fee-inclusive cost basis prorated by remaining over acquired, times the FX factor. Every unrealized figure is sign times (current value minus that basis). Three readers use them: the Tax Lots page reads, the chat portfolio summary's tax-loss list (`lib/queries/portfolio-summary.ts`) and the chat tax-lot tool (`lib/queries/chat-tools.ts`). Before, the chat readers signed a short as a long and rebuilt the basis from quantity times acquisition price, which drops the fees the engine capitalized into the lot, so the chat and the page gave different figures for one lot. On a partly closed lot the tool reports the basis of the quantity still open, and the whole lot as acquired in a separate field.
+- **A short lot is never long-term and never "approaching long-term" (2026-10-08).** The engine books every short close as short-term however long the short was open. The chat tool returns a short lot as not long-term with no projected long-term date, and the summary's "approaching long-term" list is long lots only. A short in the tax-loss list is labelled as a short, with the note that closing it means buying to cover. Tests: `tests/queries/chat-tools-short-lots.test.ts`, `tests/queries/portfolio-summary-short-lots.test.ts`, `tests/queries/chat-lot-basis-parity.test.ts`.
 
 ## F. Classification: sectors, factors, look-throughs
 
@@ -747,6 +863,28 @@ Pre-fix, 16.8% of the portfolio sat in one `'Options'` `fund_category` bucket an
 14.1% instead of ~29%. Test: `tests/queries/analysis-option-lookthrough.test.ts`.
 
 ### Option sectors are a maintained copy of the underlying's (2026-10-07)
+
+**"Sectors classified" on the trust strip means last checked (2026-10-08).** The time is the
+`settings` key `sector_classify_last_run_at`. It has two writers, both in
+`classify-option-sectors.ts`: `classifyOptionSectors` at its end, on any run that finished with no
+error (a run with nothing to do is a clean check), and `markOptionSectorsChecked`, which the full
+sync (`lib/tws/auto-refresh.ts`) and `POST /api/compute/classify` call when their free pre-check
+found no work and they skip the run. A run that hit an AI error does not move the time. No import
+writes it. The trust state returns it as `lastSectorClassification`.
+
+**Data Health lists options whose underlying has no sector (2026-10-08).**
+`getOptionsWithUnsectoredUnderlying` (`lib/queries/data-health.ts`) returns held, unexpired
+options whose underlying has no usable stored sector, with what is missing and where the option's
+own sector came from (blank, AI, inherited or protected). It resolves the underlying exactly as
+the sector run does (`resolveUnderlyingSector`, moved to `lib/securities/underlying-sector.ts` so a
+read-only page does not pull in the AI client). It also names an option that records no
+underlying at all, which the run cannot visit. Read-only: it writes no sector, setting or stamp.
+Filling the underlying's sector lets the next run bring the option in line.
+
+Tests: `tests/securities/classify-option-sectors-last-run.test.ts`,
+`tests/api/compute-classify-sector-check-time.test.ts`,
+`tests/queries/data-health-option-underlying-sector.test.ts`,
+`tests/dashboard/trust-strip-sector-classify-and-option-gaps.test.ts`.
 
 No sector reader inherits at read time: the sector breakdown, its drill-down, the factor tilts and
 cash-deploy all read the option row's own stored `sector`. So the copy is stored, in
@@ -1000,6 +1138,27 @@ decisions still treat both as cloud-claimed). It runs at both cron routes' entry
 stops nagging "wasn't sent at 8:45" on cloud-sent days and shows a no-button "cloud sending…" state
 mid-attempt.
 
+**A scheduled digest that found nothing new says so (2026-10-08).** The skip branch of
+`sendDigestEmail` records the sender's own reason in the `settings` table (`last_digest_skip`,
+`lib/digest/digest-skip.ts`: reason, Eastern date, time). Only the scheduled since-last-email
+window writes it; an empty hand-picked range says nothing about the schedule. A later successful
+send does not clear it. `GET /api/digest/status` returns it as `lastDigestSkip`. The banner's rule
+is one pure function, `decideDigestBanner` (`lib/digest/catchup-banner.ts`), in this order: before
+the scheduled time, hidden; a cloud attempt in flight, the no-button state; a confirmed cloud send
+or a local send at or after the scheduled time, hidden; a skip recorded today at or after the
+scheduled time, "nothing new to send" with no Send button (a send would skip for the same
+reason); otherwise the digest was missed. A skip from before the scheduled time is an earlier
+hand-run send and is ignored. Tests: `tests/digest/catchup-banner.test.ts`,
+`tests/api/digest-status.test.ts`.
+
+**The Preview and the Send panel share one window choice (2026-10-08).**
+`app/dashboard/components/digest-window-choice.ts` holds the choice (today's articles, since last
+email, since a date; default "Today's articles") and the two helpers each surface uses
+(`digestPreviewSince`, `digestSendBody`), so the preview shows the window a send would cover. The
+file is client-safe: the server rule is still `resolveDigestSince` (`lib/digest/digest-window.ts`),
+and "since last email" is left to the server. A date mode with no date picked acts on neither
+surface (`digestWindowNeedsDate`). Test: `tests/dashboard/digest-preview-window-mirrors-send.test.ts`.
+
 Spec: `docs/superpowers/specs/2026-06-09-digest-redesign-design.md`.
 
 ### Synthesis prompt rules (pinned)
@@ -1125,7 +1284,7 @@ needed, just a publish gate. `refresh-vanguard-betas.ts` applies decisions in on
 
 ### Earnings bogeys and the armed-events payload (2026-10-07)
 
-- **"Has bogeys" has one rule:** `bogeyHasContent` and its SQL twin `bogeyHasContentSql` (`lib/mutations/earnings-bogeys.ts`). A bogey row (the consensus figures a print is judged against) with every content column empty is not coverage. An empty write stores nothing and never erases figures already stored; the manual route refuses it; the Hub chip ignores a stored empty row. A zero is a real figure. Any new reader that counts or selects bogey rows uses the SQL twin. Readers on the send paths have not all moved to it yet (see the TODO).
+- **"Has bogeys" has one rule:** `bogeyHasContent` and its SQL twin `bogeyHasContentSql` (`lib/mutations/earnings-bogeys.ts`). A bogey row (the consensus figures a print is judged against) with every content column empty is not coverage. An empty write stores nothing and never erases figures already stored; the manual route refuses it; the Hub chip ignores a stored empty row. A zero is a real figure. Any new reader that counts or selects bogey rows uses the SQL twin. The send paths moved onto it on 2026-10-08 (`getBogeysWithContentForEvent`, `lib/queries/earnings-bogeys.ts`; the Worker applies the same rule again on arrival, `snapshotBogeyHasContent`). On top of it, a row counts for a composer only when that composer PRINTS something from it (`lib/earnings/bogey-prompt-entries.ts`, Worker `workers/cron/src/bogey-content.ts`). `getBogeysForEvent` stays unfiltered on purpose, so the edit modal can list and delete an empty row. Detail: `docs/reference/earnings-pipeline.md` §14.
 - **The armed-events payload carries two more lists:** `supersededEventIds` (earnings rows replaced on the Mac) and `removedEventIds` (earnings rows deleted on the Mac, each `{ id, eventDate, removedAt }`). The Worker marks a matching snapshot row replaced, one way only: it never clears the mark, deletes a row or invents one. Both sides are parity-pinned (`workers/cron/test/armed-events-parity.test.ts`); deploy the Worker first. Detail: `docs/reference/cron-and-workers.md`.
 
 ---
@@ -1264,6 +1423,91 @@ All gotchas below were live-verified 2026-07-11 on the first real sync:
 `DataConfidenceIndicator` header popover links there. The old `DataFreshness.tsx` is unused (replaced
 by `DataConfidenceIndicator.tsx`).
 
+**The page opens with the confidence score (2026-10-08).** The top block shows the overall score,
+the same plain wording the header badge uses, and the cap reason when an integrity hit capped the
+score. It reads `getDataConfidence`, the same read the badge makes. The wording lives in a plain
+module, `lib/ui/data-confidence-level.ts`: the page is a server component and must not call a
+function exported from a `"use client"` file (doing so crashed the page with the type-check and the
+suite green; `tests/dashboard/data-health-confidence-top.test.ts` pins the import boundary).
+
+**One price-freshness window (2026-10-08).** `PRICE_FRESHNESS_DAYS` (`lib/queries/data-confidence.ts`,
+three calendar days, so a Friday close is still fresh on Monday) is the one window for the
+confidence chip and for the Data Health price-coverage card and account rows
+(`lib/queries/data-health.ts` imports it). Never write a second threshold. Test:
+`tests/queries/price-freshness-window-d1.test.ts`.
+
+**The Holdings confidence score is weighted by value (2026-10-08).** The score is the
+value-weighted average of each held position's age bucket, not the single stalest position's
+bucket, so one small carried row no longer sets the score while a large stale position still does.
+Weight is absolute market value (a short counts by its size); a position with no price weighs by
+its cost basis; a position with neither counts as fully stale at a small fixed share. An account
+with no holdings does not enter the score. The popover still names every stale position whatever
+its size. Full definition: `docs/reference/auto-refresh.md`. Test:
+`tests/queries/data-confidence-value-weighted.test.ts`.
+
+### The lot integrity scan compares lots with the statement (2026-10-08)
+
+The scan that checks open tax lots against positions (`scanLotDriftHits`,
+`lib/queries/integrity-checks.ts`) used to compare the lots with whatever holdings row was newest.
+Tax lots are built from the imported ledger, and the ledger moves only when a statement or an
+activity file is imported. A live sync is fresher than the ledger, so a live row that ran ahead of
+the statement raised a critical hit and capped the confidence score for what was only timing.
+Per (account, security) the scan now does this:
+
+1. **No statement book for the account:** there is no statement to wait for. The lots are compared
+   with the latest position of any source, at full severity (the old behaviour).
+2. **Otherwise the comparator is the statement position:** the pair's newest statement-grade row
+   (`statementGradeHoldingSql`, the same evidence class the synthetic-close anchor uses), or zero
+   when the pair has none (the statement book is complete). A disagreement here is a real hit.
+3. **When the ledger is newer than the statement** (a quantity-bearing transaction or a corporate
+   action dated after the statement row), the lots are first ROLLED BACK to the statement date
+   (`rollLotsBackToStatement`): today's open quantity with every later ledger row undone, newest
+   first, and an import-sourced split undone by its ratio. A rolled-back quantity that disagrees
+   with the statement is a real hit. One later trade no longer hides a disagreement that was
+   already there on the statement date.
+4. **A pair the roll-back cannot do exactly** (a spin-off or merger, a hand-entered split, an
+   unknown transaction type, an expiry the lots did not record) is a `statement-lag` warning whose
+   reason says so, unless a snapshot at least as new as the ledger agrees with the lots.
+5. **A difference seen only in live data** (the statement agrees with the lots, a newer snapshot
+   does not) is a warning of kind `statement-lag`, shown as "awaiting statement". It never caps
+   the score and resolves on the next statement import.
+
+Every pair with a statement book ends in exactly one of: no difference, a real hit, or a
+pending-statement warning. Currency-conversion lots are skipped (their normal state is not an
+orphan). The check is still dark while the tax-lots convention marker is stale.
+
+**Known limit (pinned by a test):** duplicate rows that are themselves dated after the last
+statement cannot be told from a real purchase whose sale is not yet imported. That needs a
+duplicate-row check.
+
+The roll-back names the engine close type so it can undo one dated after the statement, by the
+lots it actually closed. `tests/repo/synthetic-close-consumers.test.ts` requires every such file to
+declare its role; this one is classified `exclude` (an audit that never counts an engine close as
+user activity or as a fill).
+
+Tests: `tests/queries/integrity-checks-statement-positions.test.ts`,
+`tests/queries/integrity-checks-lot-rollback.test.ts`.
+
+### Reconciliation checkpoints: bands and the missing-valuation fallback (2026-10-08)
+
+- **The Difference chip uses a tolerance that scales with the account.** One helper,
+  `reconciliationBand` (`lib/compute/reconciliation-tolerance.ts`), holds the bands: **match** (to
+  the cent); **within** (under a tenth of a percent of the statement value); **close** (a tenth to
+  half a percent, or over half a percent but no more than the flat dollar floor); **off** (over
+  both the flat floor and half a percent). The floor keeps a small account's rounding residue from
+  ever reading as off. With no usable statement value only the floor decides between close and
+  off. `checkpointDifferenceBand` (`lib/queries/reconciliation.ts`) adds the glyph and the
+  plain-words legend; never hand-roll a threshold.
+- **A checkpoint with no valuation on its date uses the nearest prior day.** At read time
+  (`withComputedFallback`), a row with no stored computed value (a weekend or holiday date) takes
+  the same account's nearest PRIOR daily valuation, at most `CHECKPOINT_FALLBACK_DAYS` earlier, and
+  the table names the date it used (`computed_from_date`). With none in that window the Computed
+  cell is empty and says why (`computed_missing_reason`). Nothing is written back.
+
+Tests: `tests/compute/reconciliation-tolerance.test.ts`,
+`tests/queries/reconciliation-checkpoints-fallback.test.ts`,
+`tests/dashboard/reconciliation-table-fallback.test.ts`.
+
 ---
 
 ## J. Levels and alerts
@@ -1283,8 +1527,23 @@ Distance is native against native. Level rows read for briefings and for the sug
 it); a missing currency reads as USD. Label a level price with `formatLevelPrice(currency, …)` (`lib/chart/price-formatter.ts`),
 never a hardcoded dollar sign, and never multiply it by an FX rate. Tests:
 `tests/queries/briefing-levels-currency-u20.test.ts`, `tests/alerts/suggestion-prompt-currency-u20.test.ts`.
-**Still open:** the weekly briefing and daily digest email composers print a dollar sign (owner
-question in `docs/plans/TODO.md`).
+**Global search (2026-10-08).** A level result in `GET /api/search` labels its price with
+`formatLevelPrice` in the security's own currency and never converts it. Test:
+`tests/api/search-level-currency-q12.test.ts`.
+
+**Outbound text (2026-10-08).** The weekly briefing prompt, the daily digest and the push
+notifications label a level price with `formatOutboundLevelPrice` (`lib/alerts/outbound-level-price.ts`),
+not with the on-screen formatter. The on-screen formatter uses the runtime's default locale, and
+outbound text is written by two runtimes (the Mac and the Worker) whose defaults can differ, so the
+outbound formatter pins `en-US` and replaces non-breaking spaces with plain ones. A dollar level
+reads exactly as before (the briefing and digest keep the plain style, pushes keep the grouped
+style); any other currency goes through the standard currency style; a non-finite price prints
+"n/a". A currency with no minor unit (yen, won) shows a whole price whole and keeps the fraction
+of a fractional one. The file is import-free and hand-mirrored
+at `workers/cron/src/level-price.ts`; change both together. Tests:
+`tests/alerts/outbound-level-price.test.ts`, `workers/cron/test/level-price-parity.test.ts` (one
+fixture set, `tests/fixtures/level-price-parity.json`), `tests/calendar/briefing-level-currency.test.ts`,
+`tests/alerts/detect-push-currency.test.ts`.
 
 ### Levels-and-alerts dedup
 
@@ -1299,9 +1558,16 @@ scanner decides from `is_active`, the review whitelist and `hasAlertToday`.
 decides the day with `todayET()` in JS, never with SQLite `date('now')`, which is the UTC day and
 rolls over in the Eastern evening. One function serves the "alerted today" chip, the reactivate
 result and the Mac scanner's once-a-day guard in `triggerLevel`, so all three roll over at Eastern
-midnight. Not moved: a level's expiry day still compares against `date('now')` (UTC) in the armed
-predicate and the list filter, and the Worker's cloud level scan keeps its own 24-hour guard (see
-the TODO).
+midnight. The expiry day moved too, on 2026-10-08 (second half of the sprint): every Mac reader of
+`expires_at` binds `todayET()` as a parameter (the armed predicate, via `armedTodayParam()`, and the
+list filter in `lib/queries/security-levels.ts`; the near-price read in
+`lib/queries/briefing-levels.ts`; the nightly snapshot script). Before, after 20:00 Eastern a level
+expiring today was already dropped from the Mac scan while the Worker still held it. Never compare
+an expiry with `date('now')`. Test: `tests/queries/level-expiry-eastern-day-q12.test.ts`. The Worker's cloud level scan moved to the same Eastern-day rule on
+2026-10-08: it holds a level back only when its last fire (the snapshot row's `triggered_at`, or
+the push time on the Worker's own marker) was on the current Eastern day. Its fired marker is kept
+seven days as the Mac's audit record, so the marker's lifetime is not the guard. Detail:
+`docs/reference/cron-and-workers.md` §12.
 
 ### Arm guard and action visibility: single owners (2026-10-07)
 
@@ -1540,6 +1806,29 @@ Worker fallback re-introduced exact `$` into the cc'd email).
 
 **Never** inline `bg-{color}/10 text-{color}` or `-tint`/`-glow` tokens for chip text (a
 low-contrast pattern). See `memory/feedback_design_readability.md`.
+
+**A chip is one line unless `wrap` is passed (2026-10-08).** The base carries `whitespace-nowrap`:
+a two-word chip that wrapped at phone width painted as a blob. A caller with a long label in a
+narrow parent passes `wrap` (the earnings conflict chip in a week card does). **Tones are pinned
+for contrast:** `tests/dashboard/chip-contrast-nowrap.test.tsx` computes each tone's ratio from the
+theme tokens in `globals.css` and the classes in `Chip.tsx`, in both themes and over every surface
+a chip sits on, against the 4.5:1 floor. Three tones failed (green and gold in the light theme,
+red in both) and were corrected in the chip only; no theme token changed.
+
+**A base-class change needs a search for callers that override it.** The one-line rule removed the
+conflict chip's deliberate wrapping, and only a test in another file caught it.
+
+### A question goes through the app dialog (2026-10-08)
+
+`useConfirmPrompt` (`app/dashboard/components/useConfirmPrompt.tsx`) is the in-app replacement for
+a native `confirm()` in an async handler: `if (!(await prompt.ask({...}))) return;`, and render
+`prompt.dialog` once. It resolves false on Cancel, on Escape, and when the asking component goes
+away first, so a handler never acts on a question nobody answered. The dialog is the shared
+`ConfirmDialog`, portalled to the document body: that keeps it out of any form it would otherwise
+sit in (its buttons would submit the form) and out of a link or a narrow inline parent, and clicks
+stop at its wrapper so an answer does not also trigger the row behind it. Never add a native
+`confirm()` or `alert()`. The conflict marker, the bogeys modal and the live print row were moved
+over and are pinned (`tests/dashboard/today-week-tidy-u16.test.ts`).
 
 ### Hover-reveal affordances are touch tap-traps
 

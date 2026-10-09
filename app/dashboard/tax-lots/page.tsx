@@ -32,6 +32,10 @@ import { resolveSelectedYear } from "./select-year";
 import { Count, PrivateText } from "@/lib/privacy/components";
 import { SECURITY_FILTER_CHIP_CAPTION } from "@/lib/compute/tax-report";
 
+// Browser tab: "Tax Lots · Portfolio Desk" (template in app/layout.tsx).
+// A fixed word: never a ticker or a portfolio figure.
+export const metadata = { title: "Tax Lots" };
+
 export default async function TaxLotsPage(props: {
   searchParams: Promise<{ year?: string; account?: string; security?: string; pending?: string }>;
 }) {
@@ -278,9 +282,10 @@ export default async function TaxLotsPage(props: {
               8949 export. */}
           {expiredOptionContractCount > 0 && (
             <p className="text-sm text-ink-dim">
-              <Count value={expiredOptionContractCount} /> expired{" "}
-              {expiredOptionContractCount === 1 ? "contract" : "contracts"} awaiting a closing entry:{" "}
-              <PrivateText>{expiredOptionSymbols.join(", ")}</PrivateText>
+              {/* Noun first and always plural: under Hide amounts a noun
+                  that switched with the count would say whether it is one. */}
+              Expired contracts awaiting a closing entry: <Count value={expiredOptionContractCount} />{" "}
+              (<PrivateText>{expiredOptionSymbols.join(", ")}</PrivateText>)
             </p>
           )}
           <TaxReportCard

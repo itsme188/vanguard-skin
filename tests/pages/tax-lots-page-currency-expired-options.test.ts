@@ -27,8 +27,12 @@ describe("Tax Lots page source pins — currency conversions and expired options
     // of both names, so the name checks passed with the JSX deleted.
     const line = sliceBetween(src, "{expiredOptionContractCount > 0 && (", "<TaxReportCard");
     expect(line).toContain("<Count value={expiredOptionContractCount} />");
-    expect(line).toContain('"contract"');
-    expect(line).toContain('"contracts"');
+    // 2026-10-08: this used to pin both "contract" and "contracts". The
+    // switch told a reader with amounts hidden whether the count was one,
+    // so the noun now leads and is always plural.
+    expect(line).toContain("Expired contracts awaiting a closing entry: <Count");
+    expect(line).not.toContain('"contract"');
+    expect(line).not.toContain("=== 1");
     expect(line).toContain("awaiting a closing entry");
     expect(line).toContain("<PrivateText>{expiredOptionSymbols.join(");
     // The count is distinct contracts read from the shared query, not lots.

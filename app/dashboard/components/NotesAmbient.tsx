@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import apiFetch from "@/lib/http/apiFetch";
 import { describeNoteSaveFailure } from "@/lib/notes/save-failure-copy";
+import { useConfirmPrompt } from "./useConfirmPrompt";
 
 // The one spelling of the key. NotesDraftRecovery.tsx imports it.
 export const AMBIENT_NOTES_STORAGE_KEY = "vgs:notes-ambient";
@@ -58,6 +59,7 @@ function readStoredDraft(): string | null {
  */
 export function NotesAmbient() {
   const [open, setOpen] = useState(false);
+  const prompt = useConfirmPrompt();
   // Lazy initializer, not a mount effect (2026-09-15 landing review — the
   // prior mount-effect form was already flagged by this repo's
   // react-hooks/set-state-in-effect lint rule as a cascading-render risk
@@ -229,8 +231,18 @@ export function NotesAmbient() {
     }
   }, [draft, router]);
 
-  const handleClear = useCallback(() => {
-    if (draft && !confirm("Clear this draft? This can't be undone.")) return;
+  const handleClear = useCallback(async () => {
+    if (
+      draft &&
+      !(await prompt.ask({
+        title: "Clear this draft?",
+        message: "This can't be undone.",
+        confirmLabel: "Clear",
+        variant: "danger",
+      }))
+    ) {
+      return;
+    }
     setDraft("");
     clearStickyError();
     try {
@@ -239,7 +251,7 @@ export function NotesAmbient() {
     } catch {
       // ignore
     }
-  }, [draft, clearStickyError]);
+  }, [draft, clearStickyError, prompt]);
 
   // Closed: render nothing. QA ruling (2026-09-04, closes an 8-entry finding
   // family): a fixed floating action button here sat over row controls on
@@ -263,6 +275,7 @@ export function NotesAmbient() {
       role="dialog"
       aria-label="Ambient notes"
     >
+      {prompt.dialog}
       <div className="flex items-center justify-between px-4 py-2.5 border-b border-edge">
         <div className="flex items-center gap-2">
           <span className="text-xs font-medium uppercase tracking-wider text-ink-faint">
@@ -324,7 +337,7 @@ export function NotesAmbient() {
           </span>
           <div className="flex items-center gap-1.5 shrink-0">
             <button
-              onClick={handleClear}
+              onClick={() => void handleClear()}
               disabled={!draft || saveState === "saving"}
               className="px-2.5 py-1 rounded-md text-xs text-ink-dim hover:text-ink hover:bg-raised transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
             >

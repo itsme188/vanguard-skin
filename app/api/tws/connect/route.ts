@@ -5,7 +5,34 @@ import { runAutoRefresh } from "@/lib/tws/auto-refresh";
 
 export async function POST(request: NextRequest) {
   try {
-    const body = await request.json().catch(() => ({}));
+    // An empty or unparseable body means "connect with the current config".
+    // A body that parsed to something other than an object (null, text, a
+    // number, an array) is a caller mistake: say so plainly instead of
+    // throwing on `body.host` or silently ignoring what was sent.
+    const parsed: unknown = await request.json().catch(() => ({}));
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return NextResponse.json(
+        { success: false, error: "body must be a JSON object" },
+        { status: 400 },
+      );
+    }
+    const body = parsed as { host?: unknown; port?: unknown; clientId?: unknown };
+
+    // clientId: absent (or null) keeps the configured one; anything else must
+    // be a whole number from 0 to 999, zero included (0 is the TWS master
+    // client id; this project's ids are single digits, and Number.isInteger
+    // alone would let 1e20 through).
+    let clientId: number | undefined;
+    if (body.clientId !== undefined && body.clientId !== null) {
+      const raw = body.clientId;
+      if (typeof raw !== "number" || !Number.isSafeInteger(raw) || raw < 0 || raw > 999) {
+        return NextResponse.json(
+          { success: false, error: "clientId must be a whole number" },
+          { status: 400 },
+        );
+      }
+      clientId = raw;
+    }
 
     // Defense-in-depth (#35 Task 19, spec §G): validate the EFFECTIVE target
     // (caller-supplied value, falling back to the current config the same
@@ -16,7 +43,9 @@ export async function POST(request: NextRequest) {
     const targetHost = body.host ?? current.host;
     const targetPort = body.port ?? current.port;
     try {
-      assertAllowedTwsTarget(targetHost, targetPort);
+      // The body values are unchecked here on purpose: the assert refuses a
+      // non-text host or a non-number port with a plain message.
+      assertAllowedTwsTarget(targetHost as string, targetPort as number);
     } catch (err) {
       const message = err instanceof Error ? err.message : "TWS connect target not allowed";
       return NextResponse.json({ success: false, error: message }, { status: 400 });
@@ -27,10 +56,12 @@ export async function POST(request: NextRequest) {
     // {host: null} validates safely (falls back to targetHost above) but
     // would otherwise overwrite the live config with null via connectTws()'s
     // object-spread merge (an explicit key, even undefined/null, wins).
+    // clientId follows the same rule: the key is sent only when the caller
+    // supplied a checked value, so an omitted one never blanks the config.
     const status = await connectTws({
-      host: targetHost,
-      port: targetPort,
-      clientId: body.clientId,
+      host: targetHost as string,
+      port: targetPort as number,
+      ...(clientId !== undefined ? { clientId } : {}),
     });
 
     // Fire auto-refresh pipeline after successful connection.

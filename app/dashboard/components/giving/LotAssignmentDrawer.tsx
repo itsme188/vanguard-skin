@@ -23,6 +23,10 @@ import { withLedgerAck } from "./ledger-recompute-flow";
  * selections (replace semantics); "Clear assignments" POSTs an empty array
  * (Codex plan-review #5).
  *
+ * The suggestion takes a lot whose basis is flagged for this gift last
+ * within its holding period (decided on the server, lib/queries/giving-view.ts);
+ * the drawer only marks such a lot and says so. It never re-ranks.
+ *
  * Both end in a recompute of the ENTIRE tax-lot ledger, so both go through
  * the disclose-and-confirm flow (owner ruling 2026-10-06,
  * LedgerRecomputeDialog): the first request carries no acknowledgement, the
@@ -110,6 +114,24 @@ export function availableCostBasis(
   if (!(lot.quantityAcquired > 0)) return null;
   return (lot.costBasis * lot.remainingAsOfDonationDate) / lot.quantityAcquired;
 }
+
+/**
+ * The two basis states that leave a Giving row out of "Gain avoided", in the
+ * drawer's words. Shorter than the row chip's: the verifying is done on the
+ * row, not here.
+ */
+export const DRAWER_BASIS_FLAG_LABEL = {
+  implausible: "basis implausible",
+  "verified-stale": "basis changed since verified",
+} as const;
+
+/** The chip text for a lot in the drawer, or null for a lot that needs none. */
+export function drawerBasisFlagLabel(state: OpenLotForDonation["basisState"]): string | null {
+  return state === "implausible" || state === "verified-stale" ? DRAWER_BASIS_FLAG_LABEL[state] : null;
+}
+
+export const SUGGESTION_FLAGGED_NOTE =
+  "The suggestion takes a lot marked with a basis warning last, and only when the other lots held as long cannot cover the gift. A gift that uses one is left out of Gain avoided until its basis is verified.";
 
 interface LotsResponse {
   success: boolean;
@@ -257,6 +279,7 @@ export function LotAssignmentDrawer({
     submit([], "clear");
   }
 
+  const anyFlagged = (lots ?? []).some((lot) => drawerBasisFlagLabel(lot.basisState) != null);
   const selectedTotal = cleanShareQuantity(totalSelected(selections));
   const overAssigned = overAssignedLotIds(selections, lots ?? []);
 
@@ -324,12 +347,14 @@ export function LotAssignmentDrawer({
                 Suggest highest-gain long-term
               </button>
             </div>
+            {anyFlagged && <p className="text-xs text-ink-dim mb-2">{SUGGESTION_FLAGGED_NOTE}</p>}
             <ul className="space-y-2 mb-4">
               {lots.map((lot) => {
                 const checked = (selections[lot.acquisitionTransactionId] ?? 0) > 0;
                 // An empty lot cannot be picked, but a saved pick on one can still be unticked.
                 const disabled = lot.remainingAsOfDonationDate <= 0 && !checked;
                 const over = overAssigned.includes(lot.acquisitionTransactionId);
+                const basisFlag = drawerBasisFlagLabel(lot.basisState);
                 return (
                   <li key={lot.acquisitionTransactionId} className="rounded-lg border border-edge px-3 py-2">
                     <label className="flex items-start gap-2 text-sm cursor-pointer">
@@ -346,6 +371,11 @@ export function LotAssignmentDrawer({
                           <Chip tone={lot.isLongTerm ? "up" : "neutral"} size="xs">
                             {lot.isLongTerm ? "LT" : "ST"}
                           </Chip>
+                          {basisFlag != null && (
+                            <Chip tone="warn" size="xs">
+                              {basisFlag}
+                            </Chip>
+                          )}
                           {lot.gainPerShare != null && (
                             <span className="text-xs text-ink-faint">
                               <Money value={lot.gainPerShare} precise /> /sh gain

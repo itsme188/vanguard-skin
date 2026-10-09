@@ -151,6 +151,21 @@ function dropReq(body: unknown): NextRequest {
   });
 }
 
+/**
+ * The calendar event a print was armed from. The status read leaves a print
+ * whose event no longer exists off the panel (unit 18), and the real writer
+ * (`ensurePrintWatch`) only ever creates a print FROM an event — so a status
+ * test that wants a listed print seeds the event row the app would have.
+ */
+function seedEventRow(eventId: number, symbol: string, eventDate: string): void {
+  hoisted.db
+    .prepare(
+      `INSERT INTO calendar_events (id, source, event_type, event_date, event_time, title, symbol, source_key)
+       VALUES (?, 'finnhub', 'earnings', ?, 'AMC', ?, ?, ?)`,
+    )
+    .run(eventId, eventDate, `${symbol} earnings`, symbol, `finnhub:${symbol}:${eventDate}:${eventId}`);
+}
+
 beforeEach(() => {
   hoisted.db = new Database(":memory:");
   hoisted.db.pragma("foreign_keys = ON");
@@ -177,6 +192,7 @@ afterEach(() => {
 
 describe("GET /api/print-watch/status", () => {
   it("returns each active print's status merged with its sheet lines", async () => {
+    seedEventRow(501, "ACME", "2026-08-26");
     const printId = upsertPrint(hoisted.db, 501, "ACME", "2026-08-26", "16:15");
     upsertLines(hoisted.db, printId, [testLine("eps_gaap_q"), testLine("eps_adj_q", "flash")]);
 
@@ -208,6 +224,7 @@ describe("GET /api/print-watch/status", () => {
   });
 
   it("carries a doc-id → kind map so conflict candidates can name their source", async () => {
+    seedEventRow(505, "ACME", "2026-08-26");
     const printId = upsertPrint(hoisted.db, 505, "ACME", "2026-08-26", "16:15");
     upsertLines(hoisted.db, printId, [testLine("eps_adj_q", "conflict")]);
     const edgar = seedDelivery(
@@ -242,6 +259,7 @@ describe("GET /api/print-watch/status", () => {
   });
 
   it("GET /status carries documentRoads per document alongside the kind map", async () => {
+    seedEventRow(507, "ACME", "2026-08-26");
     const printId = upsertPrint(hoisted.db, 507, "ACME", "2026-08-26", "16:15");
     upsertLines(hoisted.db, printId, [testLine("eps_adj_q", "conflict")]);
     // One document, TWO roads (089/M13 — identity is content): the kind map can
@@ -341,7 +359,9 @@ describe("GET /api/print-watch/status", () => {
 
 describe("POST /api/print-watch/ensure", () => {
   it("invokes the watcher reconciler and returns the active-print count", async () => {
+    seedEventRow(601, "NVDA", "2026-08-26");
     upsertPrint(hoisted.db, 601, "NVDA", "2026-08-26", "16:15");
+    seedEventRow(602, "CRWD", "2026-08-27");
     upsertPrint(hoisted.db, 602, "CRWD", "2026-08-27", "16:15");
 
     const mod = await import("@/app/api/print-watch/ensure/route");

@@ -299,6 +299,14 @@ Apply these when relevant:
  * 2026-06-05: the chat had no live-market tool and no rule against
  * confabulating today's action, so it hallucinated.
  */
+/**
+ * How to read `latest_confirmed` / `latest_note` on a transcript tool result
+ * (lib/transcripts/fetch.ts::getTranscriptForChat). Shared by the portfolio
+ * scopes and macro mode: both can call the tool.
+ */
+const TRANSCRIPT_LATEST_RULE =
+  "When a query_earnings_transcript result carries latest_confirmed: false, the document could not be confirmed as the company's most recent one: tell the user what latest_note says before quoting the document, and do not call it the latest.";
+
 const LIVE_MARKET_RULE = `## Live Market Data
 
 - You CANNOT observe live or intraday market action on your own, and your training data has NO knowledge of recent or current prices. To answer ANYTHING about what the market is doing today, how indexes or stocks moved, why a name is up or down, or for a market overview, you MUST call the \`query_market_snapshot\` tool — it returns the latest percent price move (vs the prior close) for the major benchmarks (SPY, QQQ, DIA) and the user's held names, with an \`asOf\` date, a \`source\`, and a \`stale\` flag. Each held name is one row per side (long or short) with its accounts, quantity, market value and a dollar \`day_effect\`.
@@ -386,6 +394,7 @@ Specifically:
 - A BUY transaction does NOT mean the position is still held — it may have been sold since
 - A closed tax lot with realized loss does NOT make it a harvesting candidate — it is already sold
 - An open tax lot with quantity_remaining > 0 DOES indicate current ownership — EXCEPT a lot flagged pending_statement = true: that position is already closed per live broker data and is awaiting the statement (its realized result is not known yet). Never call it held, never count its gain as unrealized, and never suggest selling or harvesting it
+- An open tax lot may carry position_side "short": its unrealized_gain is already signed for the short side (a gain when the price has fallen, so never flip the sign), closing it means buying to cover, not selling, and a short lot is never long-term and never "approaching long-term", however long it has been open
 
 When performing tax-loss harvesting analysis:
 1. Start by identifying positions from the "Current Holdings" in the Portfolio Summary or from query_holdings
@@ -413,6 +422,7 @@ When discussing any company's performance, outlook, or fundamentals:
 - Weave transcript insights into your analysis: "According to the Q3 2025 earnings call..."
 - Cross-reference with the user's own earnings notes (included in tool response)
 - Note the data source: EDGAR 8-K (press release only), Motley Fool (full transcript), or API Ninjas (AI-analyzed)
+- ${TRANSCRIPT_LATEST_RULE}
 - If no transcript is available, mention it and analyze available EDGAR financials instead
 - For portfolio holdings, combine earnings transcript data with holdings data for richer analysis
 
@@ -463,7 +473,7 @@ Available tools:
 - **query_fred**: Fetch economic data from FRED (Federal Reserve). Use for interest rates (DGS10, FEDFUNDS, DTB3), inflation (CPIAUCSL, T10YIE), market indices (SP500, VIXCLS), GDP, unemployment, and 800K+ other series. Can search by keyword if you don't know the series ID.
 - **query_company_fundamentals**: Look up company financials from SEC EDGAR (10-K/10-Q). Returns revenue, net income, EPS, assets, liabilities, equity, shares outstanding.
 - **query_insider_trades**: Look up recent insider trading (SEC Form 4) for any stock.
-- **query_earnings_transcript**: Fetch earnings call transcript or press release for any publicly traded company.
+- **query_earnings_transcript**: Fetch earnings call transcript or press release for any publicly traded company. ${TRANSCRIPT_LATEST_RULE}
 - **query_holdings**: (Available if user asks about their portfolio) Get current positions with market value, cost basis, unrealized gain, sector, weight.
 - **query_allocation**: (Available if user asks about their portfolio) Compute portfolio breakdown by multiple dimensions including thematic factors.
 - **query_research_feeds**: Search ingested financial newsletter articles from Gmail (Vital Knowledge, Stratechery, The Diff, etc.). Returns summaries, sentiment, tickers, and themes.

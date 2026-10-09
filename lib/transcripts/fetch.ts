@@ -37,7 +37,7 @@ import {
   upsertTranscript,
 } from "@/lib/mutations/transcripts";
 import { issuerSiblings } from "@/lib/securities/issuer-family";
-import { isFilingRow } from "@/lib/transcripts/presentation";
+import { isFilingRow, kindHeadingLabel } from "@/lib/transcripts/presentation";
 import { todayET } from "@/lib/calendar/date-utils";
 import {
   isApiNinjasConfigured,
@@ -54,6 +54,21 @@ import { getEarnings8KFilings, type Earnings8KFiling } from "@/lib/apis/edgar";
 export interface FetchTranscriptResult {
   transcript: EarningsTranscript;
   fromCache: boolean;
+  /**
+   * Set only by `fetchLatestTranscript` (the caller named no quarter).
+   * true: the document is tied to the issuer's most recent earnings print.
+   * false: no earnings date is on file for the issuer, so the calendar
+   * default was used and a newer document may exist. A surface must not call
+   * a `false` result "the latest". Also false when a NEWER earnings print is
+   * on file with no results recorded yet: the document then belongs to the
+   * earlier print.
+   */
+  latestConfirmed?: boolean;
+  /**
+   * Set only by `fetchLatestTranscript`. Plain words for a surface to show
+   * when `latestConfirmed` is false; null when it is true.
+   */
+  latestNote?: string | null;
 }
 
 export interface FiscalQuarter {
@@ -171,8 +186,12 @@ export function extractRiskFactors(text: string): string | null {
 //   - Risk never repeats a passage Guidance already shows, and that is
 //     decided BEFORE the top-N cut so a later risk passage takes the slot.
 
+// Verbs are listed with their inflected forms ("expects", "anticipating",
+// "reaffirmed"): `\bexpect\b` alone misses "the company expects". A past
+// participle counts only when it looks forward ("is expected to"); "better
+// than expected" and "as anticipated" describe the quarter just reported.
 const GUIDANCE_KEYWORDS =
-  /\b(guidance|outlook|expect|forecast|anticipate|projects|projected|projecting|looking ahead|full[- ]year|next quarter|raising|lowering|reaffirm)\b/i;
+  /\b(guidance|outlook|expect(?:s|ing)?|forecast(?:s|ing)?|anticipat(?:e|es|ing)|(?:expected|anticipated|forecast(?:ed)?)\s+to|projects|projected|projecting|looking ahead|full[- ]year|next quarter|raising|lowering|reaffirm(?:s|ed|ing)?)\b/i;
 const RISK_KEYWORDS =
   /\b(risk|challenge|headwind|decline|pressure|uncertain|concern|difficult|disruption|tariff|impact)\b/i;
 const GUIDANCE_LIMIT = 3;
@@ -468,17 +487,20 @@ export interface LatestPrint extends FiscalQuarter {
   eventDate: string;
 }
 
+export interface LatestPrintOnFile {
+  eventDate: string;
+  /** The print's fiscal quarter (Finnhub), or null when no entry states it. */
+  fiscal: FiscalQuarter | null;
+}
+
 /**
- * The issuer's most recent earnings print that has happened, with its fiscal
- * quarter. The ONE default for "the latest transcript" when a caller names no
- * quarter (the fetch button, the chat tool). Null when there is no such print
- * or its fiscal quarter is unknown; the caller then falls back to the
- * calendar default.
+ * The issuer's most recent earnings print that has happened, whether or not
+ * its fiscal quarter is known. Null when no such print is on file.
  */
-export function latestPrintFiscalQuarter(
+export function latestPrintOnFile(
   db: Database.Database,
   ticker: string,
-): LatestPrint | null {
+): LatestPrintOnFile | null {
   const siblings = [...issuerSiblings(ticker)].map((s) => s.toUpperCase());
   if (siblings.length === 0) return null;
   const placeholders = siblings.map(() => "?").join(",");
@@ -496,8 +518,95 @@ export function latestPrintFiscalQuarter(
     )
     .get(...siblings, todayET()) as { symbol: string; event_date: string } | undefined;
   if (!row) return null;
-  const expected = expectedFiscalQuarterForPrint(db, row.symbol, row.event_date);
-  return expected ? { ...expected, eventDate: row.event_date } : null;
+  return {
+    eventDate: row.event_date,
+    fiscal: expectedFiscalQuarterForPrint(db, row.symbol, row.event_date),
+  };
+}
+
+/**
+ * The date of the issuer's newest SHOWING earnings row dated today or earlier,
+ * whether or not its results are recorded. `latestPrintOnFile` needs an
+ * actual, so on the day of a print (or while the actual is still missing) it
+ * answers with the print before. This is the date to compare it against.
+ * Superseded rows and future-dated rows never count. Null when none is on file.
+ */
+export function newestShowingPrintDate(
+  db: Database.Database,
+  ticker: string,
+): string | null {
+  const siblings = [...issuerSiblings(ticker)].map((s) => s.toUpperCase());
+  if (siblings.length === 0) return null;
+  const placeholders = siblings.map(() => "?").join(",");
+  const row = db
+    .prepare(
+      `SELECT event_date
+         FROM calendar_events
+        WHERE (event_type = 'earnings' OR source = 'finnhub')
+          AND COALESCE(superseded, 0) = 0
+          AND UPPER(symbol) IN (${placeholders})
+          AND event_date <= ?
+        ORDER BY event_date DESC, id ASC
+        LIMIT 1`,
+    )
+    .get(...siblings, todayET()) as { event_date: string } | undefined;
+  return normalizedDate(row?.event_date);
+}
+
+/**
+ * The date of a showing earnings print NEWER than `print` (the latest print
+ * with results), or null. Two showing rows a day or two apart are one print
+ * seen by two sources (`FISCAL_QUARTER_EVENT_TOLERANCE_DAYS`), so a row that
+ * close is not "newer". With no `print` at all, any showing row counts.
+ */
+function newerPrintWithoutResults(
+  db: Database.Database,
+  ticker: string,
+  print: LatestPrintOnFile | null,
+): string | null {
+  const newest = newestShowingPrintDate(db, ticker);
+  if (!newest) return null;
+  if (!print) return newest;
+  if (newest <= print.eventDate) return null;
+  const gap = daysBetween(newest, print.eventDate);
+  return gap !== null && gap > FISCAL_QUARTER_EVENT_TOLERANCE_DAYS ? newest : null;
+}
+
+/**
+ * The cached CALL for a print, found by its call date whatever key it sits
+ * under: the nearest call dated within `PRINT_FILING_WINDOW_DAYS` of the
+ * print. A call with no call date, or one outside the window, is never taken
+ * (its key alone does not tie it to this print).
+ */
+export function getCachedCallForPrint(
+  db: Database.Database,
+  ticker: string,
+  eventDate: string,
+): EarningsTranscript | null {
+  if (parseDateOnly(eventDate) === null) return null;
+  const rows = db
+    .prepare(
+      `SELECT * FROM earnings_transcripts
+        WHERE UPPER(ticker) = UPPER(?)
+          AND call_date IS NOT NULL
+          AND ABS(julianday(substr(call_date, 1, 10)) - julianday(?)) <= ?
+        ORDER BY ABS(julianday(substr(call_date, 1, 10)) - julianday(?)) ASC, id DESC`,
+    )
+    .all(ticker, eventDate, PRINT_FILING_WINDOW_DAYS, eventDate) as EarningsTranscript[];
+  return rows.find((row) => !isFilingRow(row)) ?? null;
+}
+
+/**
+ * The issuer's most recent earnings print that has happened, with its fiscal
+ * quarter. Null when there is no such print or its fiscal quarter is unknown
+ * (`latestPrintOnFile` tells those two apart).
+ */
+export function latestPrintFiscalQuarter(
+  db: Database.Database,
+  ticker: string,
+): LatestPrint | null {
+  const print = latestPrintOnFile(db, ticker);
+  return print?.fiscal ? { ...print.fiscal, eventDate: print.eventDate } : null;
 }
 
 /**
@@ -845,8 +954,11 @@ async function fetchFiling(
  *   the call itself names that quarter. Every rejection goes on to the
  *   filing, which is matched to the print by filing date.
  * - A print whose fiscal quarter is unknown (`eventDate` alone): no call can
- *   be verified, so no vendor is asked and no cached call is consulted. Only
- *   the filing path runs.
+ *   be verified by its quarter, so no vendor is asked and the filing path
+ *   runs. Only when that finds nothing is a cached call returned, and only
+ *   one whose call date is inside the print's window
+ *   (`getCachedCallForPrint`); a call tied to the print by its key alone is
+ *   still refused.
  * - An explicit (year, quarter) with no print: every source is tried and each
  *   result must not contradict the key (see `upsertTranscript`).
  *
@@ -880,7 +992,13 @@ export async function fetchTranscript(
   if (printDate && !expected) {
     const cachedFiling = getCachedFilingForPrint(db, upperTicker, printDate);
     if (cachedFiling) return { transcript: cachedFiling, fromCache: true };
-    return fetchFiling(db, securityId, upperTicker, requested, printDate, null);
+    const filed = await fetchFiling(db, securityId, upperTicker, requested, printDate, null);
+    if (filed) return filed;
+    // No 8-K for this print. A call already on file whose own date is inside
+    // the print's window is this print's call; answering "nothing found"
+    // while it sits in the cache was wrong (2026-10-08).
+    const cachedCall = getCachedCallForPrint(db, upperTicker, printDate);
+    return cachedCall ? { transcript: cachedCall, fromCache: true } : null;
   }
 
   const requireStatedQuarter = !!expected;
@@ -984,20 +1102,65 @@ export async function fetchTranscript(
 }
 
 /**
- * The latest transcript when the caller names no quarter: the issuer's most
- * recent print, requested by its FISCAL quarter and tied to its date. Falls
- * back to the calendar default only when no print's fiscal quarter is known.
+ * The latest document when the caller names no quarter (the fetch button,
+ * the chat tool). The ONE default for "the latest". Three cases:
+ *
+ * - The most recent print's fiscal quarter is known: the request is made by
+ *   that FISCAL quarter and tied to the print's date.
+ * - The most recent print is on file but no Finnhub entry states its fiscal
+ *   quarter: only the print's 8-K press release is fetched, matched by filing
+ *   date. No vendor is asked by calendar quarter: for a company whose fiscal
+ *   year is not the calendar year that request returns an OLDER fiscal
+ *   quarter's call, truthfully keyed, and it used to come back as "the
+ *   latest" (2026-10-08). Null when the print has no 8-K in its window and
+ *   no cached call is dated inside it.
+ * - No print is on file at all: the calendar default is all there is. The
+ *   result carries `latestConfirmed: false` so no surface calls it the latest.
+ *
+ * "The most recent print" above means the newest one whose RESULTS are on
+ * file. When a newer showing print is on file with no results yet (the day of
+ * a print, or an actual that never arrived), the document fetched is still
+ * the earlier print's, and the result says so: `latestConfirmed: false` with
+ * a `latestNote` naming both dates. Which document is fetched does not change.
  */
 export async function fetchLatestTranscript(
   db: Database.Database,
   ticker: string,
 ): Promise<FetchTranscriptResult | null> {
-  const print = latestPrintFiscalQuarter(db, ticker);
-  if (!print) return fetchTranscript(db, ticker);
-  return fetchTranscript(db, ticker, print.year, print.quarter, {
+  const print = latestPrintOnFile(db, ticker);
+  const newerDate = newerPrintWithoutResults(db, ticker, print);
+  if (!print) {
+    const result = await fetchTranscript(db, ticker);
+    if (!result) return null;
+    const t = result.transcript;
+    const lead = `This ${kindHeadingLabel(t)} is for fiscal Q${t.quarter} ${t.year}.`;
+    return {
+      ...result,
+      latestConfirmed: false,
+      latestNote: newerDate
+        ? `${lead} The newest earnings print on file for ${t.ticker} is dated ${newerDate} and has no results recorded yet, so this could not be confirmed as the most recent one; it may belong to an earlier print.`
+        : `${lead} No earnings date is on file for ${t.ticker}, so it could not be confirmed as the most recent one; a newer one may exist.`,
+    };
+  }
+  // With no fiscal quarter the key is the same calendar fallback the same-day
+  // sweep uses for such a print; `fetchTranscript` then runs the filing path
+  // only.
+  const key = print.fiscal ?? deriveFilingReportingQuarter(print.eventDate);
+  const result = await fetchTranscript(db, ticker, key.year, key.quarter, {
     eventDate: print.eventDate,
-    expectedFiscalQuarter: { year: print.year, quarter: print.quarter },
+    ...(print.fiscal ? { expectedFiscalQuarter: print.fiscal } : {}),
   });
+  if (!result) return null;
+  if (newerDate) {
+    const t = result.transcript;
+    const kind = kindHeadingLabel(t);
+    return {
+      ...result,
+      latestConfirmed: false,
+      latestNote: `This ${kind} is for fiscal Q${t.quarter} ${t.year}, the earnings print dated ${print.eventDate}. A newer earnings print dated ${newerDate} is on file for ${t.ticker} with no results recorded yet, so this is the previous print's ${kind}, not the latest.`,
+    };
+  }
+  return { ...result, latestConfirmed: true, latestNote: null };
 }
 
 /**
@@ -1074,9 +1237,10 @@ async function refreshLegacyFiling(
  * Get transcript for the chat tool — returns structured data
  * optimized for Claude's context window.
  *
- * With no quarter named, the default is the issuer's latest print by its
- * fiscal quarter (`fetchLatestTranscript`), the same default the fetch
- * button uses.
+ * With no quarter named, the default is the issuer's latest print
+ * (`fetchLatestTranscript`), the same default the fetch button uses. When no
+ * earnings date is on file the calendar default is used and the result says
+ * so (`latest_confirmed: false`, `latest_note`).
  *
  * @param fullText when true, returns the complete transcript body in the
  *   `excerpt` field (field name kept for back-compat). Default false keeps
@@ -1105,12 +1269,23 @@ export async function getTranscriptForChat(
   transcript_length_words: number;
   has_full_transcript: boolean;
   truncated: boolean;
+  /**
+   * Only when no quarter was named. true: tied to the issuer's most recent
+   * earnings print. false: no earnings date is on file, or a newer print is
+   * on file with no results yet, so this is not confirmed as the most recent
+   * document (`latest_note` says which, in plain words). null:
+   * the caller named the quarter, so no claim about "latest" is made.
+   */
+  latest_confirmed: boolean | null;
+  latest_note: string | null;
 } | null> {
   let result =
     !year || !quarter
       ? await fetchLatestTranscript(db, ticker)
       : await fetchTranscript(db, ticker, year, quarter);
   if (!result) return null;
+  const latestConfirmed = result.latestConfirmed ?? null;
+  const latestNote = latestConfirmed === false ? (result.latestNote ?? null) : null;
 
   const fullText = !!options.fullText;
   let legacyBodyKept = false;
@@ -1165,5 +1340,7 @@ export async function getTranscriptForChat(
       : 0,
     has_full_transcript: !!t.transcript && t.transcript.length > 100,
     truncated,
+    latest_confirmed: latestConfirmed,
+    latest_note: latestNote,
   };
 }

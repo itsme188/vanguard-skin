@@ -26,7 +26,6 @@
  *
  * Pairs left alone and listed as skipped:
  *   - two or more showing hand-entered rows on that symbol and date;
- *   - a feed row the user confirmed in place (`date_status = 'user_confirmed'`);
  *   - a feed row with an email being sent right now.
  * Only an exact symbol match is paired; share-class siblings are not.
  *
@@ -58,8 +57,6 @@ const KNOWN_FLAGS = new Set(["--apply", ACK_FLAG]);
 export type PairSkipReason =
   /** More than one showing hand-entered row on the symbol and date. */
   | "several_hand_entered_rows"
-  /** A feed row on the date carries the user's own confirmation. */
-  | "feed_row_user_confirmed"
   /** An email on a feed row is claimed or on the wire. */
   | "email_in_flight";
 
@@ -120,7 +117,7 @@ export function planManualFeedPairRepair(db: Database.Database): ManualFeedPairP
   // Same donor order as the reconcile pass: freshest-enriched first, because
   // the fold only fills empty columns and the first donor's value wins.
   const feedsOf = db.prepare(
-    `SELECT id, source, date_status FROM calendar_events
+    `SELECT id, source FROM calendar_events
       WHERE event_type = 'earnings' AND source != 'manual'
         AND UPPER(symbol) = ? AND event_date = ? AND COALESCE(superseded, 0) = 0
       ORDER BY COALESCE(enriched_at, '') DESC, id`,
@@ -133,7 +130,6 @@ export function planManualFeedPairRepair(db: Database.Database): ManualFeedPairP
     const feeds = feedsOf.all(g.symbol, g.eventDate) as {
       id: number;
       source: string;
-      date_status: string | null;
     }[];
     const emailRows = new Map(
       feeds.map((f) => [f.id, emailsOf.all(f.id) as { error: string | null }[]]),
@@ -142,11 +138,9 @@ export function planManualFeedPairRepair(db: Database.Database): ManualFeedPairP
     const reason: PairSkipReason | null =
       manualIds.length > 1
         ? "several_hand_entered_rows"
-        : feeds.some((f) => f.date_status === "user_confirmed")
-          ? "feed_row_user_confirmed"
-          : feeds.some((f) => emailRows.get(f.id)!.some((e) => isLiveClaim(e.error)))
-            ? "email_in_flight"
-            : null;
+        : feeds.some((f) => emailRows.get(f.id)!.some((e) => isLiveClaim(e.error)))
+          ? "email_in_flight"
+          : null;
     if (reason) {
       plan.skipped.push({
         symbol: g.symbol,
@@ -238,7 +232,6 @@ export function runManualFeedPairRepair(
 const SKIP_WORDS: Record<PairSkipReason, string> = {
   several_hand_entered_rows:
     "two or more hand-entered rows show on this date; delete one in the app first",
-  feed_row_user_confirmed: "a feed row here carries your own confirmation",
   email_in_flight: "an email for a feed row is being sent right now; run again later",
 };
 

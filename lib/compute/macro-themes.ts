@@ -136,6 +136,11 @@ export interface EventSignal {
   consensus_value: string | null;
   previous_value: string | null;
   reaction_snapshot: string | null;
+  /**
+   * The row's enrichment stamp: evidence for the reaction validity rule
+   * (lib/calendar/reaction-validity.ts). Never sent to the model.
+   */
+  enriched_at?: string | null;
 }
 export interface AlertSignal {
   id: number;
@@ -197,7 +202,7 @@ export function buildMacroSignalBlob(
     // retired row — listing it shows the print twice and crowds the canonical
     // row out of the LIMIT.
     `SELECT id, event_date, event_type, title, symbol, actual_value,
-            consensus_value, previous_value, reaction_snapshot
+            consensus_value, previous_value, reaction_snapshot, enriched_at
      FROM calendar_events
      WHERE datetime(event_date) >= datetime(?, '-7 days')
        AND enriched_at IS NOT NULL
@@ -240,7 +245,7 @@ import { getCachedMacroThemes, upsertMacroThemes } from "@/lib/queries/analysis-
 import { computeFactorAnalysis } from "@/lib/compute/factors";
 import { isCashEquivalentSecurity } from "@/lib/compute/cash-equivalents";
 import { getHeldSymbolSet, heldSymbolsMentioned } from "@/lib/research/held-symbol-relevance";
-import { isUsableReactionLeg, parseReactionSnapshot } from "@/lib/calendar/reaction-snapshot-core";
+import { readReactionLegs } from "@/lib/calendar/reaction-validity";
 
 const SYSTEM_PROMPT = `You are a portfolio analyst identifying the macro themes that actually moved markets this week. Output ONLY valid JSON matching the schema. Never include prose outside the JSON array. 3-5 themes maximum. Each theme must map to one factor_label from the allowed list. Each summary is one sentence, 30-200 chars. Prefer fewer broader themes over many narrow ones — split only when the underlying drivers are independent. Every theme must cite exactly one of the supplied inputs and quote it word for word; a theme you cannot support with a quote from the inputs is left out.`;
 
@@ -337,24 +342,27 @@ function squash(text: string): string {
   return text.replace(/\s+/g, " ").trim();
 }
 
-function formatReaction(raw: string | null): string | undefined {
-  const snap = parseReactionSnapshot(raw);
-  if (!snap) return undefined;
+function formatReaction(raw: string | null, rowEnrichedAt: string | null | undefined): string | undefined {
+  const read = readReactionLegs(raw, { rowEnrichedAt });
+  if (!read) return undefined;
+  const { measured } = read;
   const parts: string[] = [];
   const add = (label: string, leg: { delta_pct: number }) => {
     parts.push(`${label} ${leg.delta_pct >= 0 ? "+" : ""}${leg.delta_pct.toFixed(2)}%`);
   };
-  // An unusable leg (dead quote) is absent, never a flat move.
-  if (isUsableReactionLeg(snap.spy)) add("SPY", snap.spy);
-  if (isUsableReactionLeg(snap.qqq)) add("QQQ", snap.qqq);
-  if (isUsableReactionLeg(snap.tlt)) add("TLT", snap.tlt);
-  if (isUsableReactionLeg(snap.sector) && typeof snap.sector.symbol === "string") add(snap.sector.symbol, snap.sector);
-  if (isUsableReactionLeg(snap.symbol) && typeof snap.symbol.symbol === "string") add(snap.symbol.symbol, snap.symbol);
+  // Only measured legs (lib/calendar/reaction-validity.ts): a dead quote is
+  // absent, and a pending leg (captured before its window elapsed, or an
+  // identical pre/post pair) is left out too. Neither is ever a flat move.
+  if (measured.spy) add("SPY", measured.spy);
+  if (measured.qqq) add("QQQ", measured.qqq);
+  if (measured.tlt) add("TLT", measured.tlt);
+  if (measured.sector && typeof measured.sector.symbol === "string") add(measured.sector.symbol, measured.sector);
+  if (measured.symbol && typeof measured.symbol.symbol === "string") add(measured.symbol.symbol, measured.symbol);
   return parts.length > 0 ? parts.join(", ") : undefined;
 }
 
 function toPromptEvent(e: EventSignal): PromptEvent {
-  const reaction = formatReaction(e.reaction_snapshot);
+  const reaction = formatReaction(e.reaction_snapshot, e.enriched_at);
   return {
     id: e.id,
     date: e.event_date,

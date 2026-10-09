@@ -97,7 +97,7 @@ interface DefenseTablesProps {
   /** underlying → standalone-bet kind, so the most-exposed table can
       distinguish a genuinely-unhedged long from a naked short / single-name
       put bet — both share PairClassification "unhedged" upstream. */
-  standaloneBetKinds: Record<string, "naked_short" | "single_name_put">;
+  standaloneBetKinds: Record<string, StandaloneBet["kind"]>;
 }
 
 export function DefenseTables({
@@ -120,7 +120,7 @@ function MostExposedTable({
   standaloneBetKinds,
 }: {
   rankedExposures: RankedExposure[];
-  standaloneBetKinds: Record<string, "naked_short" | "single_name_put">;
+  standaloneBetKinds: Record<string, StandaloneBet["kind"]>;
 }) {
   const { sort, setSort } = useSortParam<ExposureField>("defense", null, "desc");
 
@@ -183,7 +183,7 @@ function MostExposedTable({
                         {row.hasAmplifiers && <Chip tone="warn" size="xs">levered</Chip>}
                         {row.classification === "speculative" && <Chip tone="info" size="xs">spec</Chip>}
                         {kind === "naked_short" && <Chip tone="down" size="xs">short</Chip>}
-                        {kind === "single_name_put" && <Chip tone="down" size="xs">bet</Chip>}
+                        {kind !== undefined && kind !== "naked_short" && <Chip tone="down" size="xs">bet</Chip>}
                       </div>
                     </td>
                   </tr>
@@ -269,6 +269,8 @@ function HedgeBookTable({ hedgeScores }: { hedgeScores: HedgeScore[] }) {
 
 const BET_KIND_LABEL: Record<StandaloneBet["kind"], string> = {
   single_name_put: "bearish bet",
+  single_name_short_call: "short call",
+  single_name_bearish_options: "bearish options",
   naked_short: "naked short",
 };
 

@@ -275,8 +275,11 @@ describe("All Accounts Holdings table", () => {
     expect(footer).not.toContain("NaN");
     const src = readFileSync("app/dashboard/components/AllHoldingsTable.tsx", "utf8");
     const footerSrc = sliceBetween(src, "<tfoot>", "</tfoot>");
-    expect(footerSrc).toContain("filtered.length === 0 ? (");
-    expect(footerSrc).toContain("filtered.length > 0 && unfilteredTotal > 0 ? (");
+    // The guard is "no priced row shown" (2026-10-08): zero rows is one case
+    // of it, a set of unpriced rows is the other. Behaviour for both is in
+    // tests/dashboard/holdings-footer-unpriced-value.test.tsx.
+    expect(footerSrc).toContain("footer.pricedCount === 0 ? (");
+    expect(footerSrc).toContain("footer.pricedCount > 0 && unfilteredTotal > 0 ? (");
   });
 
   it("keeps the Symbol column in view while the money columns pan (desktop only)", () => {

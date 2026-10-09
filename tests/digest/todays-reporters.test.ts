@@ -189,6 +189,52 @@ describe("composeTodaysReportersBlock", () => {
     expect(block).toMatch(/\| ARMD \| armed \|/);
   });
 
+  // ARMED is a fact about ONE print (decision 2026-10-07, same rule as the
+  // Today hub's chip): arming a different print of the same company must not
+  // mark today's row.
+  it("a worksheet armed on ANOTHER print of the same symbol does not chip today's row", () => {
+    const today = todayET();
+    seedEvent({ symbol: "ZZA", date: today, releaseTime: "08:00", weekOf: mondayOf(today) });
+    // A second, hand-entered row for the same company a few days out, armed.
+    const d = new Date(`${today}T12:00:00Z`);
+    d.setUTCDate(d.getUTCDate() + 3);
+    const later = d.toISOString().slice(0, 10);
+    const laterId = seedEvent({
+      symbol: "ZZA",
+      date: later,
+      source: "manual",
+      releaseTime: "08:00",
+      weekOf: mondayOf(later),
+    });
+    armWorksheet(db, laterId);
+
+    const block = composeTodaysReportersBlock(db, { today })!;
+    expect(block).toMatch(/\| ZZA \| — \|/);
+  });
+
+  it("the armed chip does not depend on the wall clock: an armed print chips on its own date", () => {
+    const eventId = seedEvent({ symbol: "ZZB", releaseTime: "08:00" });
+    armWorksheet(db, eventId);
+    expect(composeTodaysReportersBlock(db, { today: TODAY })!).toMatch(/\| ZZB \| armed \|/);
+  });
+
+  it("held still wins over armed, and read-through shows when the print is not armed", () => {
+    const acct = seedAccount();
+    seedHolding(acct, seedSecurity("ZZH"), 10);
+    const heldEvent = seedEvent({ symbol: "ZZH", releaseTime: "08:00" });
+    armWorksheet(db, heldEvent);
+    seedHolding(acct, seedSecurity("TGT"), 10);
+    db.prepare(
+      `INSERT INTO read_through_pairs (reporter_symbol, target_symbol, weight, hypothesis)
+       VALUES ('ZZR', 'TGT', 1.0, 'test')`,
+    ).run();
+    seedEvent({ symbol: "ZZR", releaseTime: "08:05" });
+
+    const block = composeTodaysReportersBlock(db, { today: TODAY })!;
+    expect(block).toMatch(/\| ZZH \| held \|/);
+    expect(block).toMatch(/\| ZZR \| rt \|/);
+  });
+
   it("inherits the Hub's dedup: one row per print even with finnhub+nasdaq sources", () => {
     seedEvent({ symbol: "DUP", source: "finnhub", consensus: "EPS 2.00" });
     seedEvent({ symbol: "DUP", source: "nasdaq", consensus: "EPS 1.90" });

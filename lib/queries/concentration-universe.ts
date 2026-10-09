@@ -43,6 +43,7 @@ import type Database from "better-sqlite3";
 import { adjustedMarketValueSQL } from "@/lib/valuation";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 import { todayET } from "@/lib/calendar/date-utils";
+import { liveOptionExpirationSql } from "@/lib/compute/option-expiry";
 
 /**
  * Half a cent. Below this a position is worth nothing a dollar figure could
@@ -147,6 +148,7 @@ export function getConcentrationUniverse(
          LEFT JOIN latest_prices lp ON lp.security_id = h.security_id
          LEFT JOIN fx_rates fx ON fx.currency = s.currency
          WHERE (s.maturity_date IS NULL OR s.maturity_date >= ?)
+           AND ${liveOptionExpirationSql("s", maturityCutoff)}
        )
        SELECT
          security_id,

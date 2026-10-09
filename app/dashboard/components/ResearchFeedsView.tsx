@@ -19,6 +19,7 @@ import { ManageSourcesModal } from "./ManageSourcesModal";
 import { NewsletterArticleFrame } from "./NewsletterArticleFrame";
 import { SendDigestPanel } from "./SendDigestPanel";
 import { DigestEmailViewer } from "./DigestEmailViewer";
+import { DEFAULT_DIGEST_WINDOW, type DigestWindowChoice } from "./digest-window-choice";
 import { useIsMobile } from "@/lib/hooks/useIsMobile";
 import { useResearchSync } from "@/lib/hooks/useResearchSync";
 import {
@@ -364,6 +365,9 @@ export function ResearchFeedsView({
   const [manageOpen, setManageOpen] = useState(false);
   const [sendOpen, setSendOpen] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
+  // One digest window for the Preview and the Send panel: the preview shows
+  // the window a send would cover, and a change in either shows in the other.
+  const [digestWindow, setDigestWindow] = useState<DigestWindowChoice>(DEFAULT_DIGEST_WINDOW);
   const [searchOpen, setSearchOpen] = useState(false);
   const { toast } = useToast();
   const [expandedId, setExpandedId] = useState<number | null>(null);
@@ -972,7 +976,7 @@ export function ResearchFeedsView({
           <button
             onClick={() => setPreviewOpen(true)}
             className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium border border-edge text-ink-dim hover:text-ink hover:bg-raised transition-colors"
-            title="Preview digest (toggle by publication / by company)"
+            title="Preview the digest for the window chosen for sending"
           >
             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M2.036 12.322a1.012 1.012 0 0 1 0-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178.07.207.07.431 0 .639C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.963-7.178Z" />
@@ -1054,7 +1058,12 @@ export function ResearchFeedsView({
         </div>
       )}
 
-      <DigestEmailViewer open={previewOpen} onClose={() => setPreviewOpen(false)} />
+      <DigestEmailViewer
+        open={previewOpen}
+        onClose={() => setPreviewOpen(false)}
+        digestWindow={digestWindow}
+        onDigestWindowChange={setDigestWindow}
+      />
 
       {/* D5 — filtered/all toggle. Hidden when there's nothing to audit so
           the toolbar stays calm on quiet days. Visible on both desktop and
@@ -1108,7 +1117,13 @@ export function ResearchFeedsView({
       )}
 
       {/* Send digest panel */}
-      {sendOpen && <SendDigestPanel onClose={() => setSendOpen(false)} />}
+      {sendOpen && (
+        <SendDigestPanel
+          onClose={() => setSendOpen(false)}
+          digestWindow={digestWindow}
+          onDigestWindowChange={setDigestWindow}
+        />
+      )}
 
       {/* A one-character search does not run (too noisy), so the list below
           still shows the previous result. Say so, or box and list disagree. */}

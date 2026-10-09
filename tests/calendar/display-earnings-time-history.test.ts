@@ -70,8 +70,8 @@ function calPrint(symbol: string, date: string, hour: "bmo" | "amc") {
   });
 }
 
-const AMC = { label: "After the close (usual)", kind: "usual" };
-const BMO = { label: "Before the open (usual)", kind: "usual" };
+const AMC = { label: "After the close (usual)", kind: "usual", slot: "amc" };
+const BMO = { label: "Before the open (usual)", kind: "usual", slot: "bmo" };
 const UNK = { label: "time unknown", kind: "unknown" };
 
 describe("history as evidence", () => {

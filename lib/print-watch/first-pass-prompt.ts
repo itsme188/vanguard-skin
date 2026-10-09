@@ -276,8 +276,12 @@ export function validateCitedLines(
   for (const raw of lines) {
     const l = raw as Partial<CitedLine>;
     if (!l || typeof l !== "object" || typeof l.text !== "string" || !Array.isArray(l.cites)) { dropped++; continue; }
-    const cites = l.cites.filter((c): c is string => typeof c === "string");
-    if (!opts.citesOptional && (cites.length === 0 || !cites.every((c) => allowed.has(c)))) { dropped++; continue; }
+    // Call-watch mode never reads the cite list, so it is only built for the
+    // strict mode.
+    if (!opts.citesOptional) {
+      const cites = l.cites.filter((c): c is string => typeof c === "string");
+      if (cites.length === 0 || !cites.every((c) => allowed.has(c))) { dropped++; continue; }
+    }
     const numbers = l.text.match(NUMBER_TOKEN) ?? [];
     if (!numbers.every((t) => numberMatches(t, pool))) { dropped++; continue; }
     const [clean] = sanitizeProseLines([l.text], 1);

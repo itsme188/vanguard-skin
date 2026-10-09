@@ -126,7 +126,31 @@ function isFillableCell(text: string): boolean {
   return t === "" || t === "—" || t === "-" || t === "–";
 }
 
-function renderTable(headers: string[], rows: string[][]): string {
+// The two headings the earnings scoreboard composers write (Mac
+// renderHeadlineTable, Worker renderScoreboard): "## SYM scoreboard — into the
+// print" on a preview, "## SYM scoreboard — post-print" on a recap. Heading
+// lines only, so the same words in running text or in the title change nothing.
+const PREVIEW_SCOREBOARD_HEADING_RE = /^#{1,6}\s+.*\bscoreboard — into the print\s*$/m;
+const RECAP_SCOREBOARD_HEADING_RE = /^#{1,6}\s+.*\bscoreboard — post-print\s*$/m;
+
+/**
+ * Should dash and empty cells render as empty fill-in boxes?
+ * (qa:earnings-email-viewer--recap-scoreboard-blank-cells-contradict-legend)
+ *
+ * Boxes are for a page someone fills in by hand: a preview and the printed
+ * worksheet. A recap is read, not filled in, and its scoreboard legend says a
+ * dash means the figure was not available at send time, so a recap shows the
+ * dash. A page is a recap when it carries a recap scoreboard heading and no
+ * preview scoreboard heading; every other page (briefing, digest, evening,
+ * preview, printed sheets) keeps the boxes exactly as before. This file and
+ * its twin (lib/calendar/briefing-html.ts and workers/cron/src/html.ts) must
+ * agree; workers/cron/test/html.test.ts pins them together.
+ */
+function usesFillInBoxes(md: string): boolean {
+  return PREVIEW_SCOREBOARD_HEADING_RE.test(md) || !RECAP_SCOREBOARD_HEADING_RE.test(md);
+}
+
+function renderTable(headers: string[], rows: string[][], fillInBoxes: boolean): string {
   const headerCells = headers
     .map(
       (h) =>
@@ -138,7 +162,7 @@ function renderTable(headers: string[], rows: string[][]): string {
     .map((row) => {
       const cells = row
         .map((c, idx) => {
-          const fillable = isFillableCell(c);
+          const fillable = fillInBoxes && isFillableCell(c);
           const isLabel = idx === 0;
           const content = fillable && !isLabel ? "&nbsp;" : inlineFormat(c) || "&nbsp;";
           const padding = !isLabel && fillable ? "14px 10px" : "8px 10px";
@@ -284,6 +308,7 @@ function convertMarkdown(md: string): string {
   const lines = md.split("\n");
   const output: string[] = [];
   let inList = false;
+  const fillInBoxes = usesFillInBoxes(md);
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
@@ -296,7 +321,7 @@ function convertMarkdown(md: string): string {
       if (inList) { output.push("</ul>"); inList = false; }
       const headerCells = parseTableRow(line);
       const { dataRows, nextIndex } = consumeTableBody(lines, i + 2, headerCells.length);
-      output.push(renderTable(headerCells, dataRows));
+      output.push(renderTable(headerCells, dataRows, fillInBoxes));
       i = nextIndex - 1;
       continue;
     }

@@ -7,9 +7,10 @@
  * internals), the KV marker dance, the provider call and every state
  * transition on the audit row. Two callers keep their own claims because they
  * batch several events into ONE email and must claim them all before
- * composing: lib/earnings/debrief-send.ts and lib/earnings/wrap-send.ts. Both
- * deliver (or, for the retired wrap, must be ported to deliver) through
- * `deliverClaimedBatch` below, so the lifecycle itself is still single-sourced.
+ * composing: lib/earnings/debrief-send.ts and the stapled-wrap sender. The
+ * stapled-wrap sender was retired on 2026-10-08 and its file is deleted, so
+ * the debrief is the one left; it delivers through `deliverClaimedBatch`
+ * below, so the lifecycle itself is still single-sourced.
  * tests/repo/one-claim-owner.test.ts pins that allowlist, with a justification
  * per entry.
  *
@@ -56,6 +57,7 @@ import {
   composeEarningsEmail,
   EarningsEmailError,
   emailRowRefusal,
+  isEmailRowRefusal,
   type EmailRowRefusal,
   getSendRow,
   markEmailDeliveryUnknown,
@@ -151,7 +153,13 @@ function rowRefusalOutcome(
   when: "at the claim" | "after composing",
 ): Extract<SendOutcome, { outcome: "refused" }> {
   let reason: string;
-  if (code === "superseded_event") {
+  // 409 = the entry is there but is not the print's email row; 404 = there is
+  // no such entry at all.
+  let status = 409;
+  if (code === "event_not_found") {
+    reason = `The calendar entry this ${candidate.phase} was for no longer exists. Nothing was sent.`;
+    status = 404;
+  } else if (code === "superseded_event") {
     const live = findLiveEntryForSupersededEvent(db, candidate.eventId);
     reason =
       `The calendar entry this ${candidate.phase} was for has been replaced` +
@@ -159,15 +167,18 @@ function rowRefusalOutcome(
       `. Nothing was sent.`;
   } else {
     const follows = getEmailIgnoredManualTwins(db).get(candidate.eventId);
+    // Says what the row is, which entry email follows, and the way out: the
+    // send path never edits a calendar row, so the user has to.
     reason =
-      `${candidate.symbol} has two hand-entered earnings entries and email follows the earlier one` +
-      (follows ? ` (reports ${follows.emailRowDate})` : "") +
-      `. Nothing was sent for this later entry.`;
+      `This is the later of two hand-entered earnings entries for ${candidate.symbol}. ` +
+      `Emails follow the earlier one` +
+      (follows ? ` (${follows.emailRowDate})` : "") +
+      `. To email this entry, remove or re-date the earlier one. Nothing was sent.`;
   }
   console.warn(
     `[send-service] ${candidate.phase} ${candidate.eventId} (${candidate.symbol}, ${mode}): refused ${when}, ${code}`,
   );
-  return { outcome: "refused", reason, status: 409, code };
+  return { outcome: "refused", reason, status, code };
 }
 
 export interface ComposedSend {
@@ -616,19 +627,21 @@ export async function sendEarningsCandidate(
   }
 
   // (2) claim. The claim itself re-reads the calendar row inside its own
-  // transaction and refuses a superseded entry in EVERY mode: the finders
+  // transaction and refuses a missing or superseded entry in EVERY mode: the finders
   // filter those out, but a candidate list can be minutes old, and the nudge
   // and the manual route never went through a finder at all. The later of two
-  // hand-entered rows is refused on the automatic road only; `nudge` and
-  // `manual` are a person pressing a button on that very row.
-  const refuseIgnoredManualTwin = opts.mode === "sweep";
+  // hand-entered rows is refused in EVERY mode as well (ruling 2026-10-08):
+  // for email the earlier date counts everywhere, so a press on the later row
+  // (`nudge`, `manual`) gets the same answer the sweep gets, with the way out
+  // spelled out in the refusal, instead of an email no other path would send.
+  const refuseIgnoredManualTwin = true;
   const claim = claimEarningsEmailSlot(db, eventId, phase, recipient, {
     mode: opts.mode === "manual" ? "manual" : "automatic",
     refuseIgnoredManualTwin,
   });
   if (!claim.claimed) {
     if (claim.reason === IN_PROGRESS) return { outcome: IN_PROGRESS };
-    if (claim.reason === "superseded_event" || claim.reason === "ignored_manual_twin") {
+    if (isEmailRowRefusal(claim.reason)) {
       return rowRefusalOutcome(db, candidate, claim.reason, opts.mode, "at the claim");
     }
     const row = getSendRow(db, eventId, phase);

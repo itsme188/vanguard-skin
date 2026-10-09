@@ -7,6 +7,7 @@ import { deriveEarningsSlot } from "@/lib/earnings/earnings-slot";
 import apiFetch, { type ApiFetch } from "@/lib/http/apiFetch";
 import { networkFailureMessage, readMutationResult } from "@/lib/ui/mutation-result";
 import { Chip } from "../Chip";
+import { useConfirmPrompt } from "../useConfirmPrompt";
 
 // Only the two vendor calendars feed the cross-check (migration 057's own
 // doc comment: "The calendar now ingests TWO independent free earnings
@@ -102,7 +103,8 @@ export function EarningsConflictMarker({
       tone="gold"
       size="xs"
       title={sentence}
-      className={`${wrap ? "max-w-full min-w-0 break-words" : "whitespace-nowrap"} ${className}`}
+      wrap={wrap}
+      className={`${wrap ? "max-w-full min-w-0 break-words" : ""} ${className}`}
     >
       ⚠ {detail}
     </Chip>
@@ -192,9 +194,9 @@ const ACTION_BUTTON_CLASS =
  * Confirm / use-the-other-date buttons for a date-conflicted earnings row
  * (owner-approved 2026-10-07). The marker used to send the user to the
  * Earnings Hub, which shows only the current week — a conflict in another
- * week could be seen and not resolved. Each button asks first (the choice is
- * locked against later calendar syncs), then reloads the page so the row
- * shows its settled state. Renders nothing for a row that is not in conflict,
+ * week could be seen and not resolved. Each button asks first, in the app's
+ * own dialog (the choice is locked against later calendar syncs), then reloads
+ * the page so the row shows its settled state. Renders nothing for a row that is not in conflict,
  * has no ticker, or has no date left to pick.
  *
  * Never place this inside a link: the week card renders it under the card.
@@ -220,6 +222,7 @@ export function EarningsConflictActions({
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const prompt = useConfirmPrompt();
   if (dateStatus !== "conflict" || !symbol) return null;
   const options = conflictResolveOptions({ eventDate, dateConflictWith }, todayET());
   if (options.length === 0) return null;
@@ -233,18 +236,22 @@ export function EarningsConflictActions({
 
   async function pick(option: ConflictResolveOption) {
     if (busy) return;
-    const ok = window.confirm(
-      `Lock ${symbol} earnings to ${option.date}? Calendar syncs will no longer change this date.`,
-    );
+    const ok = await prompt.ask({
+      title: `Lock ${symbol} earnings to ${option.date}?`,
+      message: "Calendar syncs will no longer change this date.",
+      confirmLabel: "Lock date",
+    });
     if (!ok) return;
     setBusy(true);
     setError(null);
     const outcome = await confirmConflictDate({ symbol: symbol as string, date: option.date, slot });
     if (outcome.kind === "confirmed") {
       // The reload below would wipe an inline message, so a notice is shown
-      // in a dialog the user dismisses first (this handler already asks
-      // through one).
-      if (outcome.notice) window.alert(outcome.notice);
+      // in the same dialog and the page reloads once it is dismissed. Either
+      // button dismisses it: the date is already locked.
+      if (outcome.notice) {
+        await prompt.ask({ title: "Date locked", message: outcome.notice, confirmLabel: "OK" });
+      }
       window.location.reload();
       return;
     }
@@ -274,6 +281,7 @@ export function EarningsConflictActions({
           {error}
         </span>
       )}
+      {prompt.dialog}
     </span>
   );
 }

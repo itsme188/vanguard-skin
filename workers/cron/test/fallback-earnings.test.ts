@@ -36,9 +36,12 @@ import {
   evaluateRecapContent,
   ACTUALS_BASIS_ADJUSTED_LINE,
   ACTUALS_BASIS_VENDOR_LINE,
+  workerReactionLegState,
   type PositionView,
 } from "../src/fallback-earnings";
+import { reactionLegState as macReactionLegState } from "../../../lib/calendar/reaction-validity";
 import { loadLatestSnapshot } from "../src/state";
+import { snapshotBogeyEntryBody } from "../src/bogey-content";
 // Mac-side label/format helpers, imported for cross-side parity pins only
 // (both modules are pure; neither pulls a native dependency).
 import { epsDelta as macEpsDelta } from "../../../lib/earnings/eps-delta";
@@ -371,6 +374,278 @@ describe("runEarningsFallback v5 context (notes + bogeys)", () => {
     // Bogey source + whisper surface (the whole point — Finnhub lacks whispers)
     expect(html).toContain("TMT Breakout 2026-06-14 weekly preview");
     expect(html).toContain("1.58");
+  });
+
+  it("an event whose only bogey rows are empty composes exactly like an event with no bogeys", async () => {
+    const emptyRow = {
+      id: 3,
+      event_id: 1,
+      source: "newsletter",
+      source_label: "Desk Notes 6/14",
+      eps_consensus: null,
+      eps_whisper: null,
+      revenue_consensus_usd: null,
+      revenue_whisper_usd: null,
+      expected_move_pct: null,
+      eps_consensus_vendor: null,
+      segment_breakdown_json: "{}",
+      guidance_notes: "",
+      notes: "  ",
+      uploaded_at: "2026-06-14 12:00:00",
+    };
+
+    const bare = makeEarningsSnapshot();
+    (bare as unknown as Snapshot).schemaVersion = 5;
+    (bare as unknown as Snapshot).earningsBogeys = [];
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(bare);
+    expect((await runEarningsFallback(makeEnv(), { now: previewWindowNow() })).sent).toBe(1);
+    const bareHtml = htmlOfLastSend();
+
+    const withEmpties = makeEarningsSnapshot();
+    (withEmpties as unknown as Snapshot).schemaVersion = 5;
+    (withEmpties as unknown as Snapshot).earningsBogeys = [emptyRow, { ...emptyRow, id: 4, source_label: "Desk Notes 6/13" }];
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(withEmpties);
+    expect((await runEarningsFallback(makeEnv(), { now: previewWindowNow() })).sent).toBe(1);
+    const html = htmlOfLastSend();
+
+    expect(html).not.toContain("Desk Notes");
+    expect(html).not.toContain("your curated bogeys");
+    expect(html).toBe(bareHtml);
+  });
+
+  it("an empty bogey row beside a real one: only the real one is listed, and the footer still claims bogeys", async () => {
+    const snap = makeEarningsSnapshot();
+    (snap as unknown as Snapshot).schemaVersion = 5;
+    const base = {
+      event_id: 1,
+      source: "newsletter",
+      eps_consensus: null,
+      eps_whisper: null,
+      revenue_consensus_usd: null,
+      revenue_whisper_usd: null,
+      segment_breakdown_json: null,
+      guidance_notes: null,
+      notes: null,
+    };
+    (snap as unknown as Snapshot).earningsBogeys = [
+      { ...base, id: 3, source_label: "Empty Sheet", uploaded_at: "2026-06-14 12:00:00" },
+      { ...base, id: 4, source_label: "Real Sheet", eps_consensus: 0, uploaded_at: "2026-06-13 12:00:00" },
+    ];
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(snap);
+    expect((await runEarningsFallback(makeEnv(), { now: previewWindowNow() })).sent).toBe(1);
+
+    const html = htmlOfLastSend();
+    expect(html).toContain("[1] Real Sheet");
+    expect(html).not.toContain("Empty Sheet");
+    expect(html).toContain("your curated bogeys");
+  });
+
+  // Review follow-up (2026-10-08): a row counts only if the email PRINTS
+  // something from it. Shapes below each pass the content rule.
+  const printBase = {
+    event_id: 1,
+    source: "newsletter",
+    eps_consensus: null,
+    eps_whisper: null,
+    revenue_consensus_usd: null,
+    revenue_whisper_usd: null,
+    expected_move_pct: null,
+    eps_consensus_vendor: null,
+    segment_breakdown_json: null,
+    guidance_notes: null,
+    notes: null,
+    uploaded_at: "2026-06-14 12:00:00",
+  };
+
+  async function htmlWithBogeys(rows: unknown[]): Promise<string> {
+    const snap = makeEarningsSnapshot();
+    (snap as unknown as Snapshot).schemaVersion = 5;
+    (snap as unknown as Snapshot).earningsBogeys = rows as Snapshot["earningsBogeys"];
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(snap);
+    expect((await runEarningsFallback(makeEnv(), { now: previewWindowNow() })).sent).toBe(1);
+    return htmlOfLastSend();
+  }
+
+  it("a vendor-EPS-only row prints the vendor figure, labelled as the vendor's", async () => {
+    const html = await htmlWithBogeys([
+      { ...printBase, id: 3, source: "finnhub", source_label: "Sell-side consensus (Finnhub)", eps_consensus_vendor: 1.05 },
+    ]);
+    expect(html).toContain("[1] Sell-side consensus (Finnhub)");
+    expect(html).toContain("Vendor EPS consensus 1.05 (basis unspecified)");
+    expect(html).not.toMatch(/(^|[^r] )EPS consensus 1\.05/m);
+  });
+
+  it("an expected-move-only row and a segments-only row print their figures", async () => {
+    const html = await htmlWithBogeys([
+      { ...printBase, id: 3, source_label: "Move Sheet", expected_move_pct: 5 },
+      {
+        ...printBase,
+        id: 4,
+        source_label: "Segment Sheet",
+        segment_breakdown_json: '{"Cloud":{"consensus":40000000,"whisper":42000000}}',
+        uploaded_at: "2026-06-13 12:00:00",
+      },
+    ]);
+    expect(html).toContain("[1] Move Sheet");
+    expect(html).toContain("Expected move ±5.0%");
+    expect(html).toContain("[2] Segment Sheet");
+    expect(html).toContain("Segments: Cloud consensus $40.0M, whisper $42.0M");
+  });
+
+  it("rows that hold something the email prints nothing from compose exactly like no bogeys", async () => {
+    const bareHtml = await htmlWithBogeys([]);
+    const html = await htmlWithBogeys([
+      { ...printBase, id: 3, source_label: "Segment with no figure", segment_breakdown_json: '{"Cloud":{}}' },
+      { ...printBase, id: 4, source_label: "Broken segments", segment_breakdown_json: "{not json" },
+    ]);
+    expect(html).not.toContain("Segment with no figure");
+    expect(html).not.toContain("Broken segments");
+    expect(html).not.toContain("your curated bogeys");
+    expect(html).toBe(bareHtml);
+  });
+
+  it("a normal curated row prints byte-for-byte as before", async () => {
+    const row = {
+      ...printBase,
+      id: 3,
+      source: "pdf_upload",
+      source_label: "TMT Sheet",
+      eps_consensus: 1.5,
+      eps_whisper: 1.58,
+      revenue_consensus_usd: 90_000_000_000,
+      revenue_whisper_usd: 92_000_000_000,
+      guidance_notes: "Watch FY guide on Services",
+      notes: "a note",
+    };
+    expect(snapshotBogeyEntryBody(row)).toBe(
+      "\nEPS consensus 1.50 · EPS **whisper 1.58** · Rev consensus $90.00B · Rev **whisper $92.00B**\nGuidance: Watch FY guide on Services\nNotes: a note",
+    );
+    const html = await htmlWithBogeys([row]);
+    expect(html).toContain("[1] TMT Sheet (uploaded 2026-06-14 12:00:00)");
+    expect(html).toContain("Rev consensus $90.00B");
+    expect(html).not.toContain("Vendor EPS");
+    expect(html).toContain("your curated bogeys");
+  });
+
+  // Wording follow-up (2026-10-08): the heading, the cloud-context note and the
+  // footer say "curated" only when at least one PRINTED entry is not the
+  // vendor's. With a curated entry every string is byte-identical to before.
+  const CURATED_HEADING = "Bogeys (your curated consensus + whisper — preferred over Finnhub)";
+  const CURATED_LEAD = "Whisper numbers are the bar that matters — beat-the-whisper is the meaningful event. Most recent set first.";
+  const CURATED_NOTE = "This fallback DOES include your curated bogeys (consensus + whisper) (mirrored in the nightly snapshot). ";
+  const CURATED_NOTE_WITH_NOTES =
+    "This fallback DOES include your curated bogeys (consensus + whisper) and your prior thesis notes (mirrored in the nightly snapshot). ";
+  const CURATED_FOOTER = " your curated bogeys ARE included above. Analyst recs";
+  const CURATED_FOOTER_WITH_NOTES = " your curated bogeys + your prior notes ARE included above. Analyst recs";
+  const VENDOR_HEADING = "Bogeys (vendor consensus only — no curated bogeys shown here)";
+  const VENDOR_LEAD =
+    "These are the vendor consensus figures (Finnhub). No curated bogeys or whisper numbers are shown here.";
+  const VENDOR_NOTE =
+    "This fallback DOES include the vendor consensus (no curated bogeys are shown here) (mirrored in the nightly snapshot). ";
+  const VENDOR_NOTE_WITH_NOTES =
+    "This fallback DOES include the vendor consensus (no curated bogeys are shown here) and your prior thesis notes (mirrored in the nightly snapshot). ";
+  const VENDOR_FOOTER = " The vendor consensus is shown above; no curated bogeys are shown here. Analyst recs";
+  const VENDOR_FOOTER_WITH_NOTES =
+    " The vendor consensus is shown above (no curated bogeys are shown here) and your prior notes ARE included above. Analyst recs";
+
+  const vendorRow = {
+    ...printBase,
+    id: 3,
+    source: "finnhub",
+    source_label: "Sell-side consensus (Finnhub)",
+    eps_consensus_vendor: 1.05,
+    revenue_consensus_usd: 90_000_000_000,
+    notes: "Vendor consensus (Finnhub) — EPS basis unspecified; shown labelled, never the adjusted-EPS bogey.",
+  };
+  const curatedRow = {
+    ...printBase,
+    id: 4,
+    source: "pdf_upload",
+    source_label: "TMT Sheet",
+    eps_consensus: 1.5,
+    uploaded_at: "2026-06-13 12:00:00",
+  };
+  const aNote = {
+    id: 7,
+    note_type: "trade_thesis",
+    content: "Services margin is the swing factor.",
+    event_date: "2026-06-10",
+    sentiment: "bullish",
+    tags: "thesis",
+    symbol: "AAPL",
+    underlying_symbol: null,
+  };
+
+  async function htmlWith(rows: unknown[], notes: unknown[] = []): Promise<string> {
+    const snap = makeEarningsSnapshot();
+    (snap as unknown as Snapshot).schemaVersion = 5;
+    (snap as unknown as Snapshot).earningsBogeys = rows as Snapshot["earningsBogeys"];
+    (snap as unknown as Snapshot).notes = notes as Snapshot["notes"];
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(snap);
+    expect((await runEarningsFallback(makeEnv(), { now: previewWindowNow() })).sent).toBe(1);
+    return htmlOfLastSend();
+  }
+
+  const ALL_CURATED = [CURATED_HEADING, CURATED_LEAD, "your curated bogeys"];
+  const ALL_VENDOR = [VENDOR_HEADING, VENDOR_LEAD, "no curated bogeys are shown here"];
+
+  it("only the vendor's row: heading, note and footer say vendor consensus, never curated", async () => {
+    const html = await htmlWith([vendorRow]);
+    expect(html).toContain("[1] Sell-side consensus (Finnhub)");
+    expect(html).toContain(VENDOR_HEADING);
+    expect(html).toContain(VENDOR_LEAD);
+    expect(html).toContain(VENDOR_NOTE);
+    expect(html).toContain(VENDOR_FOOTER);
+    for (const s of ALL_CURATED) expect(html).not.toContain(s);
+    expect(html).not.toContain("beat-the-whisper");
+  });
+
+  it("only the vendor's row, with prior notes: the notes are still claimed, the bogeys are not", async () => {
+    const html = await htmlWith([vendorRow], [aNote]);
+    expect(html).toContain(VENDOR_NOTE_WITH_NOTES);
+    expect(html).toContain(VENDOR_FOOTER_WITH_NOTES);
+    for (const s of ALL_CURATED) expect(html).not.toContain(s);
+  });
+
+  it("a vendor row beside a curated row: every string is the curated one, byte for byte", async () => {
+    const html = await htmlWith([vendorRow, curatedRow]);
+    expect(html).toContain("[1] Sell-side consensus (Finnhub)");
+    expect(html).toContain("[2] TMT Sheet");
+    expect(html).toContain(CURATED_HEADING);
+    expect(html).toContain(CURATED_LEAD);
+    expect(html).toContain(CURATED_NOTE);
+    expect(html).toContain(CURATED_FOOTER);
+    for (const s of ALL_VENDOR) expect(html).not.toContain(s);
+  });
+
+  it("a curated row alone, with and without notes: every string byte for byte as before", async () => {
+    const html = await htmlWith([curatedRow]);
+    expect(html).toContain(CURATED_HEADING);
+    expect(html).toContain(CURATED_LEAD);
+    expect(html).toContain(CURATED_NOTE);
+    expect(html).toContain(CURATED_FOOTER);
+    for (const s of ALL_VENDOR) expect(html).not.toContain(s);
+
+    const withNotes = await htmlWith([curatedRow], [aNote]);
+    expect(withNotes).toContain(CURATED_NOTE_WITH_NOTES);
+    expect(withNotes).toContain(CURATED_FOOTER_WITH_NOTES);
+    for (const s of ALL_VENDOR) expect(withNotes).not.toContain(s);
+  });
+
+  it("the claim follows the PRINTED entries: a curated row that prints nothing does not make it curated", async () => {
+    const html = await htmlWith([
+      vendorRow,
+      { ...printBase, id: 5, source: "manual", source_label: "Segment with no figure", segment_breakdown_json: '{"Cloud":{}}' },
+    ]);
+    expect(html).toContain(VENDOR_HEADING);
+    expect(html).toContain(VENDOR_FOOTER);
+    expect(html).not.toContain("Segment with no figure");
+    for (const s of ALL_CURATED) expect(html).not.toContain(s);
+  });
+
+  it("no printed entry: no bogey claim of either kind", async () => {
+    const html = await htmlWith([]);
+    for (const s of [...ALL_CURATED, ...ALL_VENDOR, "vendor consensus"]) expect(html).not.toContain(s);
   });
 
   it("renders fine when notes/bogeys are absent (back-compat with v2 snapshot)", async () => {
@@ -1272,19 +1547,37 @@ describe("intel rows in cloud scoreboard (Task 9: snapshot v9)", () => {
 // budget is shared with calendar-enrich (itself capped at 10 candidates). An
 // uncapped clustered-AMC run could die mid-loop with markers half-written.
 
+// Each cap event is a DIFFERENT company (ZC1, ZC2, ...), all held. Until
+// 2026-10-08 these were N rows of one symbol on one date — a shape the app
+// never writes, and one the sibling check (a phase already handled on another
+// row of the same print) now correctly collapses to a single email. The cap
+// is about many prints in one tick, so the fixture says that.
+// The slot marker is set to "BMO" only to keep these rows out of the AMC wrap
+// cluster: three or more DIFFERENT companies after the close switch the
+// suppress-only wrap on (tested on its own below), which would add recap-phase
+// skips to the swept / skipped counts these tests pin. Nothing else in the
+// preview or recap road reads the marker.
 function makeCapEvent(
   overrides: Partial<Record<string, unknown>> & { id: number },
 ): Record<string, unknown> {
+  const symbol = `ZC${overrides.id}`;
   return {
     ...(makeEarningsSnapshot().calendarEvents[0] as unknown as Record<string, unknown>),
-    source_key: `finnhub:AAPL:${EVENT_DATE}:${overrides.id}`,
+    symbol,
+    title: `${symbol} earnings`,
+    event_time: "BMO",
+    source_key: `finnhub:${symbol}:${EVENT_DATE}`,
     ...overrides,
   };
 }
 
 function makeSnapshotWithEvents(events: Record<string, unknown>[]): Snapshot {
-  const snap = makeEarningsSnapshot() as unknown as { calendarEvents: unknown[] };
+  const snap = makeEarningsSnapshot() as unknown as {
+    calendarEvents: unknown[];
+    heldSymbols: string[];
+  };
   snap.calendarEvents = events;
+  snap.heldSymbols = [...new Set(["AAPL", ...events.map((e) => String(e.symbol))])];
   return snap as unknown as Snapshot;
 }
 
@@ -2274,5 +2567,270 @@ describe("recap scoreboard basis line (parity with the Mac)", () => {
     expect(all[at - 2].startsWith("| **QQQ @ T+2h** |")).toBe(true);
     expect(all[at + 1]).toBe("");
     expect(all[at + 2].startsWith("*Cloud-fallback delivery")).toBe(true);
+  });
+});
+
+/**
+ * A pending reaction never prints as a percent (owner ruling 2026-10-08).
+ * Parity with the Mac: lib/calendar/reaction-validity.ts::reactionLegVerdict,
+ * read by lib/digest/send-earnings-email.ts::renderHeadlineTable through
+ * readScoreboardLeg. The Worker cannot import lib/, so fallback-earnings.ts
+ * carries a local copy of the rule; the table below runs both.
+ *
+ * Synthetic prices throughout. Release 20:00 UTC, window 120 minutes, so the
+ * window ends 22:00 UTC.
+ */
+describe("pending reaction legs in the cloud recap (parity with the Mac)", () => {
+  const T0 = "2026-06-15T20:00:00.000Z";
+  const AFTER_WINDOW = "2026-06-15T22:05:00.000Z";
+  const BEFORE_WINDOW = "2026-06-15T20:30:00.000Z";
+
+  const baseEvent = (over: Record<string, unknown> = {}) =>
+    ({
+      id: 1, source: "finnhub", event_type: "earnings", event_date: EVENT_DATE,
+      event_time: "AMC", title: "ZZA earnings", description: null, security_id: null,
+      symbol: "ZZA", expected_impact: "high",
+      consensus_estimate: "EPS 1.50 · Rev 90,000,000,000",
+      previous_value: null, raw_json: null,
+      consensus_value: null, actual_value: "EPS 1.60 · Rev 91,000,000,000",
+      reaction_snapshot: null, enriched_at: null,
+      ...over,
+    }) as unknown as import("../src/state").CalendarEventRow;
+
+  const intelCtx = {
+    intel: {
+      eventId: 1, sourceKey: "x", impliedMovePct: 4.8, impliedMethod: "straddle",
+      expiryUsed: "2026-07-18", computedAt: "2026-06-14 06:00:00",
+    },
+    history: null,
+  } as unknown as Parameters<typeof renderScoreboard>[4];
+
+  const moved = {
+    symbol: { symbol: "ZZA", t_pre: 100, t_post: 103, delta_pct: 3 },
+    spy: { t_pre: 500, t_post: 502, delta_pct: 0.4 },
+    qqq: { t_pre: 400, t_post: 398, delta_pct: -0.5 },
+  };
+  const flat = (px: number) => ({ t_pre: px, t_post: px, delta_pct: 0 });
+
+  const rowsOf = (md: string) => {
+    const find = (needle: string) => md.split("\n").find((l) => l.includes(needle))!;
+    return {
+      stock: find("**ZZA @ T+2h**"),
+      spy: find("**SPY @ T+2h**"),
+      qqq: find("**QQQ @ T+2h**"),
+      expected: find("**Expected move**"),
+    };
+  };
+  const render = (snapshot: unknown, over: Record<string, unknown> = {}) =>
+    rowsOf(
+      renderScoreboard(
+        baseEvent({ reaction_snapshot: JSON.stringify(snapshot), ...over }),
+        "recap",
+        null,
+        false,
+        intelCtx,
+      ),
+    );
+
+  it("all legs measured: the rows print the percents, exactly as before", () => {
+    const stamped = render({ t0_utc: T0, window_min: 120, captured_at: AFTER_WINDOW, ...moved });
+    const legacy = render({ t0_utc: T0, window_min: 120, ...moved });
+    for (const r of [stamped, legacy]) {
+      expect(r.stock).toBe("| **ZZA @ T+2h** | — | +3.00% | — |");
+      expect(r.spy).toBe("| **SPY @ T+2h** | — | +0.40% | — |");
+      expect(r.qqq).toBe("| **QQQ @ T+2h** | — | -0.50% | — |");
+      expect(r.expected).toContain("| +3.0% | inside |");
+    }
+  });
+
+  it("SPY leg pending: its row is dashes, the other rows still print", () => {
+    const r = render({ t0_utc: T0, window_min: 120, ...moved, spy: flat(500) });
+    expect(r.spy).toBe("| **SPY @ T+2h** | — | — | — |");
+    expect(r.stock).toBe("| **ZZA @ T+2h** | — | +3.00% | — |");
+    expect(r.qqq).toBe("| **QQQ @ T+2h** | — | -0.50% | — |");
+    expect(r.expected).toContain("| +3.0% | inside |");
+  });
+
+  it("stock leg pending: its row is dashes and the expected-move row names no verdict", () => {
+    const r = render({ t0_utc: T0, window_min: 120, ...moved, symbol: { symbol: "ZZA", ...flat(100) } });
+    expect(r.stock).toBe("| **ZZA @ T+2h** | — | — | — |");
+    expect(r.spy).toBe("| **SPY @ T+2h** | — | +0.40% | — |");
+    expect(r.expected).toMatch(/\| — \| — no reaction quote \|$/);
+  });
+
+  it("all pending (captured before the window ended): every reaction row is dashes", () => {
+    const r = render({ t0_utc: T0, window_min: 120, captured_at: BEFORE_WINDOW, ...moved });
+    expect(r.stock).toBe("| **ZZA @ T+2h** | — | — | — |");
+    expect(r.spy).toBe("| **SPY @ T+2h** | — | — | — |");
+    expect(r.qqq).toBe("| **QQQ @ T+2h** | — | — | — |");
+    expect(r.expected).toMatch(/\| — \| — no reaction quote \|$/);
+  });
+
+  it("a capture stamp with an unreadable release instant fails closed", () => {
+    const r = render({ window_min: 120, captured_at: AFTER_WINDOW, ...moved });
+    expect(r.stock).toBe("| **ZZA @ T+2h** | — | — | — |");
+    expect(r.spy).toBe("| **SPY @ T+2h** | — | — | — |");
+  });
+
+  it("legacy snapshot with identical pre and post prices: no '+0.00%'", () => {
+    const r = render({
+      t0_utc: T0, window_min: 120,
+      symbol: { symbol: "ZZA", ...flat(100) }, spy: flat(500), qqq: flat(400),
+    });
+    expect(r.stock).toBe("| **ZZA @ T+2h** | — | — | — |");
+    expect(r.spy).toBe("| **SPY @ T+2h** | — | — | — |");
+    expect(r.qqq).toBe("| **QQQ @ T+2h** | — | — | — |");
+    expect(r.expected).toMatch(/\| — \| — no reaction quote \|$/);
+  });
+
+  it("a flat move stamped after the window is a real measurement and prints +0.00%", () => {
+    const r = render({
+      t0_utc: T0, window_min: 120, captured_at: AFTER_WINDOW,
+      ...moved, spy: flat(500),
+    });
+    expect(r.spy).toBe("| **SPY @ T+2h** | — | +0.00% | — |");
+  });
+
+  describe("legacy 0.00% leg and the row's enriched_at", () => {
+    const snapshot = {
+      t0_utc: T0, window_min: 120,
+      ...moved,
+      symbol: { symbol: "ZZA", t_pre: 100, t_post: 100.002, delta_pct: 0 },
+    };
+
+    it("enriched long before the window ended: the zero leg is dashes, moved legs print", () => {
+      const r = render(snapshot, { enriched_at: "2026-06-15 20:05:00" });
+      expect(r.stock).toBe("| **ZZA @ T+2h** | — | — | — |");
+      expect(r.spy).toBe("| **SPY @ T+2h** | — | +0.40% | — |");
+      expect(r.expected).toMatch(/\| — \| — no reaction quote \|$/);
+    });
+
+    it("enriched after the window ended: the zero leg is trusted", () => {
+      const r = render(snapshot, { enriched_at: "2026-06-15 22:10:00" });
+      expect(r.stock).toBe("| **ZZA @ T+2h** | — | +0.00% | — |");
+    });
+
+    it("enriched inside the ten-minute bar tolerance before the window end: trusted", () => {
+      const r = render(snapshot, { enriched_at: "2026-06-15 21:55:00" });
+      expect(r.stock).toBe("| **ZZA @ T+2h** | — | +0.00% | — |");
+    });
+
+    it("no enriched_at on the row: trusted (enriched_at is the only evidence for this rule)", () => {
+      const r = render(snapshot);
+      expect(r.stock).toBe("| **ZZA @ T+2h** | — | +0.00% | — |");
+    });
+
+    it("the row's enriched_at is not applied to a reaction that came from the cloud payload", () => {
+      const md = renderScoreboard(
+        baseEvent({ enriched_at: "2026-06-15 20:05:00" }),
+        "recap",
+        {
+          eventId: 1, source_key: "x", actual: null, consensus: null, source: "finnhub",
+          reaction: snapshot, fetchedAt: "2026-06-15T22:10:00.000Z",
+        } as unknown as Parameters<typeof renderScoreboard>[2],
+        false,
+        intelCtx,
+      );
+      expect(rowsOf(md).stock).toBe("| **ZZA @ T+2h** | — | +0.00% | — |");
+    });
+  });
+
+  it("a cloud-payload reaction with identical pre and post prices is dashes too", () => {
+    const md = renderScoreboard(
+      baseEvent(),
+      "recap",
+      {
+        eventId: 1, source_key: "x", actual: null, consensus: null, source: "finnhub",
+        reaction: { t0_utc: T0, window_min: 120, source: "yahoo", ...moved, spy: flat(500) },
+        fetchedAt: "2026-06-15T22:10:00.000Z",
+      } as unknown as Parameters<typeof renderScoreboard>[2],
+      false,
+      intelCtx,
+    );
+    const r = rowsOf(md);
+    expect(r.spy).toBe("| **SPY @ T+2h** | — | — | — |");
+    expect(r.stock).toBe("| **ZZA @ T+2h** | — | +3.00% | — |");
+  });
+
+  describe("recap gate: a pending leg is not a data point", () => {
+    const implausible = { actual_value: "EPS 5.11" }; // vs consensus 1.50
+
+    it("implausible actual + every leg pending: no email", () => {
+      const ev = baseEvent({
+        ...implausible,
+        reaction_snapshot: JSON.stringify({ t0_utc: T0, window_min: 120, captured_at: BEFORE_WINDOW, ...moved }),
+      });
+      expect(evaluateRecapContent(ev, null)).toEqual({ send: false, reason: "implausible-no-data-point" });
+    });
+
+    it("implausible actual + only a legacy early zero leg: no email", () => {
+      const ev = baseEvent({
+        ...implausible,
+        enriched_at: "2026-06-15 20:05:00",
+        reaction_snapshot: JSON.stringify({
+          t0_utc: T0, window_min: 120,
+          symbol: { symbol: "ZZA", t_pre: 100, t_post: 100.002, delta_pct: 0 },
+        }),
+      });
+      expect(evaluateRecapContent(ev, null)).toEqual({ send: false, reason: "implausible-no-data-point" });
+    });
+
+    it("implausible actual + one measured leg beside pending ones: sends, flagged", () => {
+      const ev = baseEvent({
+        ...implausible,
+        reaction_snapshot: JSON.stringify({
+          t0_utc: T0, window_min: 120,
+          symbol: { symbol: "ZZA", ...flat(100) }, spy: flat(500), qqq: moved.qqq,
+        }),
+      });
+      expect(evaluateRecapContent(ev, null)).toEqual({ send: true, implausible: true });
+    });
+  });
+
+  it("the Worker's leg rule agrees with the Mac's reactionLegState on every case", () => {
+    const leg = { t_pre: 100, t_post: 103, delta_pct: 3 };
+    const zero = { t_pre: 100, t_post: 100.002, delta_pct: 0 };
+    const same = { t_pre: 100, t_post: 100, delta_pct: 0 };
+    const dead = { t_pre: 0, t_post: 0, delta_pct: 0 };
+    const snaps: Array<Record<string, unknown>> = [
+      { t0_utc: T0, window_min: 120, captured_at: AFTER_WINDOW },
+      { t0_utc: T0, window_min: 120, captured_at: "2026-06-15T22:00:00.000Z" },
+      { t0_utc: T0, window_min: 120, captured_at: "2026-06-15T21:59:59.000Z" },
+      { t0_utc: T0, window_min: 120, captured_at: "2026-06-15 22:05:00" },
+      { t0_utc: T0, captured_at: "2026-06-15T21:00:00.000Z" },
+      { t0_utc: T0, window_min: 30, captured_at: "2026-06-15T20:31:00.000Z" },
+      { t0_utc: T0, window_min: 0, captured_at: "2026-06-15T21:00:00.000Z" },
+      { window_min: 120, captured_at: AFTER_WINDOW },
+      { t0_utc: "not a date", window_min: 120, captured_at: AFTER_WINDOW },
+      { t0_utc: T0, window_min: 120, captured_at: "garbage" },
+      { t0_utc: T0, window_min: 120, captured_at: "" },
+      { t0_utc: T0, window_min: 120 },
+      { t0_utc: T0, window_min: 30 },
+      { window_min: 120 },
+      {},
+    ];
+    const stamps = [
+      undefined, null, "", "garbage",
+      "2026-06-15 20:05:00", "2026-06-15 21:49:59", "2026-06-15 21:50:00",
+      "2026-06-15T21:55:00.000Z", "2026-06-15 22:10:00", "2026-06-15 20:35:00",
+    ];
+    let checked = 0;
+    for (const snap of snaps) {
+      for (const l of [leg, zero, same, dead, null, undefined]) {
+        for (const stamp of stamps) {
+          const mac = macReactionLegState(
+            snap as Parameters<typeof macReactionLegState>[0],
+            l as Parameters<typeof macReactionLegState>[1],
+            { rowEnrichedAt: stamp },
+          );
+          expect(
+            workerReactionLegState(snap, l, stamp),
+            `${JSON.stringify(snap)} ${JSON.stringify(l)} ${String(stamp)}`,
+          ).toBe(mac);
+          checked++;
+        }
+      }
+    }
+    expect(checked).toBe(snaps.length * 6 * stamps.length);
   });
 });

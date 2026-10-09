@@ -2,6 +2,10 @@ import { describe, it, expect, beforeEach } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import { getAnalysisTrustState } from "@/lib/queries/analysis-trust-state";
+import {
+  classifyOptionSectors,
+  SECTOR_CLASSIFY_LAST_RUN_KEY,
+} from "@/lib/securities/classify-option-sectors";
 
 // ─── Seed helper (mirrors tests/compute/dietz.test.ts's seedSnapshot) ──────
 function seedSnapshot(
@@ -95,6 +99,35 @@ describe("getAnalysisTrustState", () => {
 
     const state = getAnalysisTrustState(db);
     expect(state.lastClassification).toBe("2026-05-01 12:00:00");
+  });
+
+  it("reports no sector-classify time before the sector run has ever stamped one", () => {
+    expect(getAnalysisTrustState(db).lastSectorClassification).toBeNull();
+  });
+
+  it("reports the time the sector run stamped, and keeps it apart from the factor time", async () => {
+    // Written by the real writer: a held option takes its underlying's sector.
+    db.prepare(`INSERT INTO securities (id, symbol, security_type, sector, underlying_symbol, expiration_date) VALUES
+                  (10, 'ZZA', 'Stock', 'Energy', NULL, NULL),
+                  (11, 'ZZA   990115C00090000', 'Option', NULL, 'ZZA', '2099-01-15')`).run();
+    db.prepare(`INSERT INTO holdings (account_id, security_id, as_of_date, quantity, source_key)
+                VALUES (3, 11, '2026-06-01', 1, 'tws-9')`).run();
+    db.prepare(`INSERT INTO security_factors (security_id, ai_exposure, updated_at) VALUES (10, 'High', '2026-05-01 12:00:00')`).run();
+
+    const res = await classifyOptionSectors(db);
+    expect(res).toMatchObject({ classified: 1, errors: [] });
+
+    const stamped = db.prepare(`SELECT datetime(value) AS at FROM settings WHERE key = ?`).get(SECTOR_CLASSIFY_LAST_RUN_KEY) as { at: string };
+    const state = getAnalysisTrustState(db);
+    expect(state.lastSectorClassification).toBe(stamped.at);
+    expect(state.lastSectorClassification).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
+    expect(state.lastClassification).toBe("2026-05-01 12:00:00");
+  });
+
+  it("reports the sector-classify time whatever the account scope: the run is not per account", async () => {
+    db.prepare(`INSERT INTO settings (key, value) VALUES (?, '2026-05-02T09:30:00Z')`).run(SECTOR_CLASSIFY_LAST_RUN_KEY);
+    expect(getAnalysisTrustState(db, [1]).lastSectorClassification).toBe("2026-05-02 09:30:00");
+    expect(getAnalysisTrustState(db, [3]).lastSectorClassification).toBe("2026-05-02 09:30:00");
   });
 
   it("counts stale prices (latest price older than 4 days)", () => {

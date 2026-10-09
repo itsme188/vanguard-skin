@@ -16,6 +16,13 @@
 // BENCHMARK series stays a plain raw-close ratio — SPY has no external
 // flows and no measurement-basis seams.
 // (qa:analysis-performance--equity-curve-raw-value-not-flow-adjusted)
+//
+// FLOOR (ruling 2026-09-02): the curve starts at the first statement anchor.
+// A daily value dated before an account's first statement is an estimate, so
+// as the base day it put a fake step on the statement day. `floorDate` (see
+// lib/compute/equity-curve-floor.ts) drops every earlier day before anything
+// is indexed, so the base day is statement-tied.
+// (qa:analysis-performance--equity-curve-pre-anchor-estimated-base-day-step)
 
 import { buildFlowAdjustedIndex, type SeriesPoint } from "./flow-adjusted";
 
@@ -29,8 +36,18 @@ export function buildEquityCurveData(
   dailyVals: Array<{ valuation_date: string; total_value: number }>,
   benchmarkRows: Array<{ date: string; close_price: number }>,
   flows: { date: string; net: number }[] = [],
-  seamDates: string[] = []
+  seamDates: string[] = [],
+  /** First statement anchor for the scope; days before it are not plotted.
+   *  null / undefined = no floor. */
+  floorDate?: string | null
 ): EquityCurvePoint[] {
+  // Floor first: the growth index below bases on the series' first row, and
+  // buildFlowAdjustedIndex treats a flow or seam on or before that row as
+  // already inside the opening value, so nothing dated before the floor can
+  // reach the plotted returns.
+  if (floorDate) {
+    dailyVals = dailyVals.filter((v) => v.valuation_date >= floorDate);
+  }
   if (dailyVals.length < 2 || benchmarkRows.length < 2) return [];
 
   const benchByDate = new Map(benchmarkRows.map((b) => [b.date, b.close_price]));

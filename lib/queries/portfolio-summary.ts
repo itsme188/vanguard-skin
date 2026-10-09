@@ -9,7 +9,7 @@ import {
   type AccountValueSourceKind,
 } from "@/lib/queries/dashboard";
 import { liveOptionExpirationSql } from "@/lib/compute/option-expiry";
-import { CURRENCY_CONVERSION_SECURITY_SQL, USD_ONLY } from "@/lib/queries/tax-lots";
+import { CURRENCY_CONVERSION_SECURITY_SQL, USD_ONLY, lotSideSignSql, remainingLotBasisSql } from "@/lib/queries/tax-lots";
 import { longTermDateSql } from "@/lib/queries/long-term-sql";
 import {
   isPendingStatementLot,
@@ -61,6 +61,8 @@ interface AllocationRow {
 interface HarvestCandidate {
   symbol: string;
   account_name: string;
+  /** 1 for a short lot: the figure is signed by side and the line says so. */
+  is_short: number;
   unrealized_loss: number;
   cost_basis: number;
   days_held: number;
@@ -396,7 +398,17 @@ export function getPortfolioSummaryForChat(db: Database.Database, accountName?: 
     }
   }
 
-  // Tax-loss harvesting candidates (positions with unrealized losses)
+  // Tax-loss harvesting candidates (positions with unrealized losses).
+  // The figure is signed by side, the same way the Tax Lots reads sign it
+  // (lib/queries/tax-lots.ts): a short lot gains when the price FALLS, so its
+  // unrealized figure is the opening value minus the current value.
+  // quantity_remaining is positive for a short lot (is_short is the flag).
+  // The opening value is the page's fee-inclusive remaining lot basis (the
+  // shared fragment), never quantity x acquisition_price, so this list, the
+  // chat tax-lot tool and the Tax Lots page give one figure per lot. The
+  // -100 threshold applies to that figure.
+  const LOT_SIDE_SIGN = lotSideSignSql("tl");
+  const REMAINING_BASIS = remainingLotBasisSql();
   const harvestCandidates = (db
     .prepare(
       `WITH latest_prices AS (
@@ -409,9 +421,9 @@ export function getPortfolioSummaryForChat(db: Database.Database, accountName?: 
         tl.account_id, tl.security_id, tl.is_short,
         s.symbol,
         a.name AS account_name,
-        (${adjustedMarketValueSQL("tl.quantity_remaining", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}
-         - ${adjustedMarketValueSQL("tl.quantity_remaining", "tl.acquisition_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}) AS unrealized_loss,
-        tl.cost_basis * COALESCE(fx.usd_per_unit, 1) AS cost_basis,
+        ${LOT_SIDE_SIGN} * (${adjustedMarketValueSQL("tl.quantity_remaining", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}
+         - ${REMAINING_BASIS}) AS unrealized_loss,
+        ${REMAINING_BASIS} AS cost_basis,
         CAST(julianday(?) - julianday(tl.acquisition_date) AS INTEGER) AS days_held
       FROM tax_lots tl
       JOIN accounts a ON a.id = tl.account_id
@@ -422,8 +434,8 @@ export function getPortfolioSummaryForChat(db: Database.Database, accountName?: 
         AND NOT (${CURRENCY_CONVERSION_SECURITY_SQL})
         AND ${liveOptionExpirationSql("s", today)}
         AND lp.close_price IS NOT NULL
-        AND (${adjustedMarketValueSQL("tl.quantity_remaining", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}
-             - ${adjustedMarketValueSQL("tl.quantity_remaining", "tl.acquisition_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}) < -100
+        AND ${LOT_SIDE_SIGN} * (${adjustedMarketValueSQL("tl.quantity_remaining", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}
+             - ${REMAINING_BASIS}) < -100
         ${taxLotsFilter}
       ORDER BY unrealized_loss ASC`
     )
@@ -436,8 +448,12 @@ export function getPortfolioSummaryForChat(db: Database.Database, accountName?: 
   if (harvestCandidates.length > 0) {
     lines.push("\n### Tax-Loss Harvesting Candidates (from CURRENT open tax lots only)");
     for (const c of harvestCandidates) {
+      // A short is labelled so the chat model never suggests "selling" it:
+      // a short loss is realized by buying to cover.
       lines.push(
-        `- ${c.symbol} (${c.account_name}): ${formatUSD(c.unrealized_loss)} unrealized loss, held ${c.days_held} days`
+        c.is_short
+          ? `- ${c.symbol} short (${c.account_name}): ${formatUSD(c.unrealized_loss)} unrealized loss, open ${c.days_held} days (short position: closing it means buying to cover)`
+          : `- ${c.symbol} (${c.account_name}): ${formatUSD(c.unrealized_loss)} unrealized loss, held ${c.days_held} days`
       );
     }
   }
@@ -445,6 +461,9 @@ export function getPortfolioSummaryForChat(db: Database.Database, accountName?: 
   // Lots approaching long-term threshold (within 60 days). The long-term
   // date is the engine's calendar-anniversary rule (shared SQL, pinned to
   // isLongTermHolding), never a fixed day count.
+  // Long lots only: the engine books every short close as short-term however
+  // long the short was open (section 1233 general rule, computeTaxLots), so a
+  // short lot never approaches long-term.
   const LONG_TERM_DATE = longTermDateSql("tl.acquisition_date");
   const approachingLT = (db
     .prepare(
@@ -463,7 +482,7 @@ export function getPortfolioSummaryForChat(db: Database.Database, accountName?: 
         CAST(julianday(${LONG_TERM_DATE}) - julianday(?) AS INTEGER) AS days_remaining,
         CASE WHEN lp.close_price IS NOT NULL
           THEN ${adjustedMarketValueSQL("tl.quantity_remaining", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}
-               - ${adjustedMarketValueSQL("tl.quantity_remaining", "tl.acquisition_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}
+               - ${REMAINING_BASIS}
           ELSE NULL END AS unrealized_gain
       FROM tax_lots tl
       JOIN accounts a ON a.id = tl.account_id
@@ -471,6 +490,7 @@ export function getPortfolioSummaryForChat(db: Database.Database, accountName?: 
       LEFT JOIN latest_prices lp ON lp.security_id = tl.security_id
       LEFT JOIN fx_rates fx ON fx.currency = s.currency
       WHERE tl.quantity_remaining > 0
+        AND tl.is_short = 0
         AND NOT (${CURRENCY_CONVERSION_SECURITY_SQL})
         AND ${liveOptionExpirationSql("s", today)}
         AND julianday(${LONG_TERM_DATE}) > julianday(?)

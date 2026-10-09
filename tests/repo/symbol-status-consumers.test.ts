@@ -30,6 +30,8 @@ const ALLOWLIST: AllowEntry[] = [
   // symbol facts, and `armed` is derived from the row's own event coverage.
   { file: "lib/queries/earnings-cockpit.ts", fn: "getSymbolStatusDetailed", effect: "display" },
   { file: "lib/digest/todays-reporters.ts", fn: "getSymbolStatus", effect: "display" },
+  // The Pos chip reads ARMED from the row's own event coverage, as the hub does.
+  { file: "lib/digest/todays-reporters.ts", fn: "coveredForEvents", effect: "display" },
   { file: "app/dashboard/today/EarningsHub.tsx", fn: "getSymbolStatus", effect: "display" },
   // The POS chip reads ARMED from the row's own event coverage (hubRowStatus).
   { file: "app/dashboard/today/EarningsHub.tsx", fn: "coveredForEvents", effect: "display" },

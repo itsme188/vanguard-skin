@@ -86,6 +86,10 @@ export async function GET(request: NextRequest) {
  * (fetchLatestTranscript, the same default the chat tool uses). A calendar
  * quarter here fetched an older fiscal quarter's call as "the refresh" for
  * any company whose fiscal year is not the calendar year.
+ *
+ * The reply also carries `latestConfirmed` and `latestNote` (both null when a
+ * quarter was named): false plus a plain-words note when the document could
+ * not be tied to the issuer's newest earnings print.
  */
 export async function POST(request: NextRequest) {
   try {
@@ -123,6 +127,8 @@ export async function POST(request: NextRequest) {
       success: true,
       data: withDecodedTranscript(result.transcript),
       fromCache: result.fromCache,
+      latestConfirmed: result.latestConfirmed ?? null,
+      latestNote: result.latestNote ?? null,
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";

@@ -54,6 +54,7 @@ describe("quietState", () => {
   it("partial coverage: the quiet-day sentence is limited to the evaluated holdings", () => {
     const q = quietState(cov({ total: 10, evaluated: 6, missingBeta: 4 }), PAIR, false, VANGUARD);
     expect(q.reason).toContain("Among the Vanguard holdings that could be evaluated");
+    expect(q.reason).toContain("from 2026-10-05 to 2026-10-06");
     expect(q.reason).toContain("The rest were not checked.");
     expect(q.showCoverage).toBe(true);
   });
@@ -61,7 +62,7 @@ describe("quietState", () => {
   it("full coverage: the plain quiet-day sentence, dated", () => {
     const q = quietState(cov({ total: 10, evaluated: 10 }), PAIR, false, VANGUARD);
     expect(q.reason).toBe(
-      "No Vanguard holdings moved significantly more than their beta predicted on 2026-10-06.",
+      "No Vanguard holdings moved significantly more than their beta predicted from 2026-10-05 to 2026-10-06.",
     );
     expect(q.showCoverage).toBe(true);
   });
@@ -96,7 +97,7 @@ describe("scopeWording: the title and quiet text name the scope on screen", () =
     const w = scopeWording("Vanguard", false);
     expect(w.title).toBe("Significant Moves in Vanguard Holdings");
     expect(quietState(full, PAIR, false, w).reason).toBe(
-      "No Vanguard holdings moved significantly more than their beta predicted on 2026-10-06.",
+      "No Vanguard holdings moved significantly more than their beta predicted from 2026-10-05 to 2026-10-06.",
     );
   });
 
@@ -104,7 +105,7 @@ describe("scopeWording: the title and quiet text name the scope on screen", () =
     const w = scopeWording("IBKR", false);
     expect(w.title).toBe("Significant Moves in IBKR Holdings");
     expect(quietState(full, PAIR, false, w).reason).toBe(
-      "No IBKR holdings moved significantly more than their beta predicted on 2026-10-06.",
+      "No IBKR holdings moved significantly more than their beta predicted from 2026-10-05 to 2026-10-06.",
     );
     expect(quietState(cov({}), PAIR, false, w).reason).toBe(
       "No IBKR holdings are in scope for this card.",
@@ -134,7 +135,7 @@ describe("scopeWording: the title and quiet text name the scope on screen", () =
     ];
     expect(states[0].reason).toBe("No holdings across all accounts are in scope for this card.");
     expect(states[3].reason).toBe(
-      "No holdings across all accounts moved significantly more than their beta predicted on 2026-10-06.",
+      "No holdings across all accounts moved significantly more than their beta predicted from 2026-10-05 to 2026-10-06.",
     );
     for (const q of states) expect(`${q.reason} ${q.hint}`).not.toContain("Vanguard");
   });

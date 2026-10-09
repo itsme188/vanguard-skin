@@ -72,6 +72,8 @@ export type OptionVolSource = "computed" | "ibkr" | "default";
 
 /** Row text for a call whose delta clears the bar only on the assumed volatility. */
 export const ASSUMED_VOL_NOT_STOCK_NOTE = "delta from assumed volatility: not counted as stock";
+/** Row text for a call whose delta clears the bar but has no volatility source at all. */
+export const NO_VOL_SOURCE_NOT_STOCK_NOTE = "delta has no volatility source: not counted as stock";
 /** Row text for a core that includes a deep in-the-money call. */
 export const DEEP_CALL_COUNTED_NOTE = "deep in-the-money call counted as stock (delta-weighted)";
 
@@ -87,8 +89,9 @@ export interface StockEquivalentVerdict {
  * economically stock (contracts x multiplier x delta shares) and counts as a
  * core holding, so a put against it is a hedge. Only a delta from a REAL
  * volatility counts: one computed from the assumed default volatility is
- * refused, with the reason carried to the row. A null delta, a missing
- * volatility source, a short call and every put never count.
+ * refused, with the reason carried to the row. A delta with no volatility
+ * source at all is refused the same way, with its own reason (it used to be
+ * refused silently). A null delta, a short call and every put never count.
  */
 export function stockEquivalentVerdict(i: DefenseInstrument): StockEquivalentVerdict {
   const no: StockEquivalentVerdict = { counts: false, refusedReason: null };
@@ -99,7 +102,7 @@ export function stockEquivalentVerdict(i: DefenseInstrument): StockEquivalentVer
   if (Math.abs(i.delta) < HEDGE_BADGE_THRESHOLDS.DEEP_ITM_ABS_DELTA) return no;
   if (i.ivSource === "computed" || i.ivSource === "ibkr") return { counts: true, refusedReason: null };
   if (i.ivSource === "default") return { counts: false, refusedReason: ASSUMED_VOL_NOT_STOCK_NOTE };
-  return no;
+  return { counts: false, refusedReason: NO_VOL_SOURCE_NOT_STOCK_NOTE };
 }
 
 export interface UnderlyingGroup {
@@ -146,10 +149,32 @@ export interface ProxyCandidate {
   instruments: DefenseInstrument[];
 }
 
+/**
+ * What makes a standalone bet bearish. The three option kinds are named for
+ * the legs with negative exposure, so a call is never labelled a put:
+ *   - `single_name_put`: every bearish leg is a put;
+ *   - `single_name_short_call`: every bearish leg is a short call;
+ *   - `single_name_bearish_options`: both (a long put with a short call).
+ * `naked_short` is short shares with nothing against them.
+ */
+export type StandaloneBetKind =
+  | "single_name_put"
+  | "single_name_short_call"
+  | "single_name_bearish_options"
+  | "naked_short";
+
+/** The option kind for a set of bearish (negative-exposure) option legs. */
+function bearishOptionKind(bearishLegs: DefenseInstrument[]): Exclude<StandaloneBetKind, "naked_short"> {
+  const calls = bearishLegs.filter((o) => (o.optionType ?? "").toUpperCase() === "CALL").length;
+  // No bearish leg at all, or a leg of unknown type, keeps the kind it had.
+  if (calls === 0) return "single_name_put";
+  return calls === bearishLegs.length ? "single_name_short_call" : "single_name_bearish_options";
+}
+
 export interface StandaloneBet {
   underlying: string;
   exposure: number; // signed (negative)
-  kind: "single_name_put" | "naked_short";
+  kind: StandaloneBetKind;
   instruments: DefenseInstrument[];
   /** Short plain-language caveats for the row. Absent when none. */
   notes?: string[];
@@ -323,7 +348,7 @@ export function classifyBook(groups: Map<string, UnderlyingGroup>): ClassifyResu
       standaloneBets.push({
         underlying: g.underlying,
         exposure: net,
-        kind: "single_name_put",
+        kind: bearishOptionKind(protective),
         instruments: legs,
         ...(notes.length > 0 ? { notes } : {}),
       });

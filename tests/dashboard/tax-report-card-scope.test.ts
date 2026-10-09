@@ -7,7 +7,8 @@ import {
   resolveTaxReportCardStatus,
   createFetchGuard,
   TAX_REPORT_EMPTY_COPY,
-  engineEstimatedExcludedCopy,
+  ENGINE_ESTIMATED_EXCLUDED_LABEL,
+  ENGINE_ESTIMATED_EXCLUDED_TAIL,
 } from "@/app/dashboard/components/TaxReportCard";
 
 /**
@@ -177,17 +178,16 @@ describe("TaxReportCard scope wiring (source pin)", () => {
   });
 
   it("discloses engine-estimated reconciliation closes only when the scope has some, with the count", () => {
-    for (const n of [1, 3]) {
-      expect(engineEstimatedExcludedCopy(n)).toContain("engine-estimated");
-      expect(engineEstimatedExcludedCopy(n)).toContain("economic realized tiles");
-    }
-    expect(engineEstimatedExcludedCopy(1)).toContain("close is left out");
-    expect(engineEstimatedExcludedCopy(3)).toContain("closes are left out");
+    // 2026-10-08: the copy used to switch "close is" / "closes are" with the
+    // count, which told a reader with amounts hidden whether it was one. The
+    // noun now leads, always plural, and the count follows it.
+    expect(ENGINE_ESTIMATED_EXCLUDED_LABEL).toContain("Engine-estimated reconciliation closes left out");
+    expect(ENGINE_ESTIMATED_EXCLUDED_TAIL).toContain("economic realized tiles");
     // Shown only above zero, and the count is the report's own field (never a
     // second query in the component), masked through <Count>.
     expect(src).toContain("const excludedEngineCloses = report.excludedEngineCloses ?? 0;");
     expect(src).toMatch(
-      /\{excludedEngineCloses > 0 && \(\s*<p[^>]*>\s*<Count value=\{excludedEngineCloses\} \/> \{engineEstimatedExcludedCopy\(excludedEngineCloses\)\}/
+      /\{excludedEngineCloses > 0 && \(\s*<p[^>]*>\s*\{ENGINE_ESTIMATED_EXCLUDED_LABEL\}: <Count value=\{excludedEngineCloses\} \/>\. \{ENGINE_ESTIMATED_EXCLUDED_TAIL\}/
     );
   });
 

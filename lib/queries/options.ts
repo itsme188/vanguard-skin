@@ -12,6 +12,11 @@ import { getUsdPerUnit } from "@/lib/queries/fx-rates";
 import { isTaxConventionPending } from "@/lib/compute/tax-convention";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 import { liveOptionExpirationSql } from "@/lib/compute/option-expiry";
+import {
+  detectStrategies,
+  type DetectedStrategy,
+  type PositionLeg,
+} from "@/lib/compute/options-strategy";
 
 // ─── Types ──────────────────────────────────────────────────────
 
@@ -94,6 +99,32 @@ export interface OptionsPnL {
   conventionPending: boolean;
 }
 
+// ─── Account scope ──────────────────────────────────────────────
+
+/**
+ * One account id, or a scope's whole id list (`resolveScope`). Undefined is
+ * every account.
+ */
+export type AccountScopeArg = number | number[] | undefined;
+
+/**
+ * The `AND h.account_id ...` clause for a scope. A single id (or a list of
+ * one) is the same `= ?` clause the single-account read always used; a list
+ * of two or more is an `IN (...)`; an explicitly empty list is "no accounts
+ * in scope" and matches nothing (it must never widen to the whole book).
+ */
+function accountScopeClause(scope: AccountScopeArg): { sql: string; params: number[] } {
+  if (Array.isArray(scope)) {
+    if (scope.length === 0) return { sql: "AND 0", params: [] };
+    if (scope.length === 1) return { sql: "AND h.account_id = ?", params: [scope[0]] };
+    return {
+      sql: `AND h.account_id IN (${scope.map(() => "?").join(",")})`,
+      params: [...scope],
+    };
+  }
+  return scope ? { sql: "AND h.account_id = ?", params: [scope] } : { sql: "", params: [] };
+}
+
 // ─── Queries ────────────────────────────────────────────────────
 
 /**
@@ -111,12 +142,10 @@ export interface OptionsPnL {
  */
 export function getOptionPositions(
   db: Database.Database,
-  accountId?: number,
+  accountId?: AccountScopeArg,
   today: string = todayET()
 ): OptionPosition[] {
-  const accountFilter = accountId ? "AND h.account_id = ?" : "";
-  const params: (string | number)[] = [];
-  if (accountId) params.push(accountId);
+  const { sql: accountFilter, params } = accountScopeClause(accountId);
 
   const rows = db
     .prepare(
@@ -330,9 +359,9 @@ export function getOptionsPnL(
 
 export function getStockLegsForStrategyDetection(
   db: Database.Database,
-  accountId?: number
+  accountId?: AccountScopeArg
 ): StockLegRow[] {
-  const accountFilter = accountId ? "AND h.account_id = ?" : "";
+  const { sql: accountFilter, params } = accountScopeClause(accountId);
   return db
     .prepare(
       `SELECT s.symbol, h.quantity, s.security_type, h.account_id,
@@ -344,5 +373,56 @@ export function getStockLegsForStrategyDetection(
          AND ${latestHoldingsPredicate({ accountFilter: "" })}
          ${accountFilter}`
     )
-    .all(...(accountId ? [accountId] : [])) as StockLegRow[];
+    .all(...params) as StockLegRow[];
+}
+
+/**
+ * Detect option strategies account by account.
+ *
+ * `detectStrategies` assumes account-local positions
+ * (lib/compute/options-strategy.ts): shares in one account never cover a
+ * call written in another, whatever scope the caller read. This groups the
+ * stock and option legs by account and concatenates the per-account results
+ * (accounts in first-seen order: stock rows first, then option rows).
+ *
+ * Single source for the two former hand-copies (the chat's
+ * query_options_greeks and /api/compute/options-strategies).
+ */
+export function detectStrategiesPerAccount(
+  stockLegs: StockLegRow[],
+  optionPositions: OptionPosition[]
+): DetectedStrategy[] {
+  const legsByAccount = new Map<number, PositionLeg[]>();
+  const pushLeg = (acct: number, leg: PositionLeg) => {
+    const legs = legsByAccount.get(acct);
+    if (legs) legs.push(leg);
+    else legsByAccount.set(acct, [leg]);
+  };
+  for (const s of stockLegs) {
+    pushLeg(s.account_id, {
+      symbol: s.symbol,
+      underlying: s.symbol,
+      securityType: "stock" as const,
+      quantity: s.quantity,
+      multiplier: 1,
+      currentPrice: s.current_price,
+    });
+  }
+  for (const o of optionPositions) {
+    pushLeg(o.accountId, {
+      symbol: o.symbol,
+      underlying: o.underlying,
+      securityType: "option" as const,
+      optionType: o.optionType,
+      strike: o.strike,
+      expiration: o.expiration,
+      quantity: o.quantity,
+      multiplier: o.multiplier,
+      currentPrice: o.currentPrice,
+    });
+  }
+
+  return Array.from(legsByAccount.values()).flatMap((legs) =>
+    detectStrategies(legs)
+  );
 }

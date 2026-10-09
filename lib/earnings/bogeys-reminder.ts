@@ -17,6 +17,7 @@
 import type Database from "better-sqlite3";
 import { coveredForEvents } from "@/lib/queries/briefing-symbols";
 import { addDays } from "@/lib/calendar/date-utils";
+import { bogeyHasContentSql } from "@/lib/mutations/earnings-bogeys";
 
 // [weekOf, weekOf + WINDOW_DAYS] — the working week the Sunday briefing
 // covers (Mon-Fri).
@@ -70,7 +71,12 @@ export function renderBogeysReminderLine(
   const eventIds = reporters.map((r) => r.event_id);
   const placeholders = eventIds.map(() => "?").join(",");
   const { n: bogeyCount } = db
-    .prepare(`SELECT COUNT(*) AS n FROM earnings_bogeys WHERE event_id IN (${placeholders})`)
+    // A row with every content column empty is not a bogey on file (owner
+    // ruling 2026-08-12): it must not silence the reminder.
+    .prepare(
+      `SELECT COUNT(*) AS n FROM earnings_bogeys
+        WHERE event_id IN (${placeholders}) AND ${bogeyHasContentSql()}`,
+    )
     .get(...eventIds) as { n: number };
 
   if (bogeyCount > 0) return null;

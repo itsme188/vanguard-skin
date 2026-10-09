@@ -293,6 +293,96 @@ export function clearUserReleaseTime(db: Database.Database, symbol: string): boo
   }
 }
 
+/** The 409 code a Save answers when it would replace a web-verified time. */
+export const WOULD_REPLACE_WEB_VERIFIED = "would_replace_web_verified";
+
+/**
+ * Ask-first guard for a user Save (unit 17, 2026-10-08). The store keeps ONE
+ * row per ticker, so a user Save over a web-verified row turns it into the
+ * user's own row, and a later Clear (which deletes only a user row) then
+ * removes it: the web-verified time, its note and its date are gone for good.
+ * The route answers 409 with this code until the body acknowledges with
+ * `replaceWebVerified: true`. Read-only.
+ *
+ * Looks at the ticker's OWN row only: the upsert is keyed on the exact
+ * symbol, so a sibling share class's row is never overwritten by this save.
+ *
+ * A web-verified time at or after 17:00 is a suspect call time, never trusted
+ * (isSuspectAmcCallTime), so replacing one loses nothing and is not asked.
+ * Such a time is after noon, so the only print it could serve is after-close.
+ */
+export function checkUserSaveWouldReplaceWebVerified(
+  db: Database.Database,
+  symbol: string,
+  releaseTime: string,
+):
+  | { ok: true }
+  | {
+      ok: false;
+      code: typeof WOULD_REPLACE_WEB_VERIFIED;
+      standing: { releaseTime: string; verifiedForDate: string | null; note: string | null };
+      /** Plain-English question, ready to render. */
+      message: string;
+    } {
+  const sym = symbol.trim().toUpperCase();
+  let row: Pick<SymbolReleaseTimeRow, "release_time" | "source" | "note" | "verified_for_date"> | undefined;
+  try {
+    row = db
+      .prepare(
+        `SELECT release_time, source, note, verified_for_date
+         FROM symbol_release_times WHERE symbol = ?`,
+      )
+      .get(sym) as typeof row;
+  } catch {
+    return { ok: true };
+  }
+  if (!row || row.source !== "web_verified") return { ok: true };
+  if (isSuspectAmcCallTime(row.release_time, "amc")) return { ok: true };
+
+  const verifiedFor = row.verified_for_date ? ` (verified for ${row.verified_for_date})` : "";
+  const change =
+    releaseTime === row.release_time
+      ? `Saving makes ${releaseTime} your own time instead`
+      : `Saving ${releaseTime} replaces it with your own time`;
+  return {
+    ok: false,
+    code: WOULD_REPLACE_WEB_VERIFIED,
+    standing: {
+      releaseTime: row.release_time,
+      verifiedForDate: row.verified_for_date ?? null,
+      note: row.note?.trim() ? row.note : null,
+    },
+    message:
+      `${sym} has a web-verified release time of ${row.release_time}${verifiedFor}. ` +
+      `${change}, and a later Clear will not bring the web-verified time back. Save anyway?`,
+  };
+}
+
+/** How the resolver treats the ticker's standing row for a print in `slot`. */
+export type StandingReleaseTimeUse = "in_effect" | "suspect_call_time" | "not_in_effect";
+
+/**
+ * Whether the standing row is the time the resolver actually uses, so the
+ * editor never presents an ignored time as the row's time. Null with no row.
+ * `in_effect` is read off resolveSymbolReleaseTime itself, never re-derived.
+ */
+export function standingReleaseTimeUse(
+  db: Database.Database,
+  symbol: string,
+  slot: "bmo" | "amc" | null,
+): StandingReleaseTimeUse | null {
+  const row = getSymbolReleaseTimeRow(db, symbol);
+  if (!row) return null;
+  const resolved = resolveSymbolReleaseTime(db, symbol, slot);
+  if (resolved && resolved.source === row.source && resolved.time === row.release_time) {
+    return "in_effect";
+  }
+  if (row.source === "web_verified" && isSuspectAmcCallTime(row.release_time, slot ?? "amc")) {
+    return "suspect_call_time";
+  }
+  return "not_in_effect";
+}
+
 function lookbackSinceDate(): string {
   // UTC-sliced (not ET-anchored): on a 400-day window this is at most a
   // ~1-day fuzz at either boundary, which can only ever admit one extra

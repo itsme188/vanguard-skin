@@ -12,6 +12,7 @@ import {
 import { normalizeMarketCapCategory } from "@/lib/securities/normalize-market-cap";
 import { issuerSiblings } from "@/lib/securities/issuer-family";
 import { liveOptionExpirationSql } from "@/lib/compute/option-expiry";
+import { todayET } from "@/lib/calendar/date-utils";
 
 // ─── Types ─────────────��────────────────────────────────────────
 
@@ -93,14 +94,35 @@ const TRADING_DAYS_PER_YEAR = 252;
  * Normalize the two scope inputs into one optional account-id array.
  * `accountIds` wins; a lone `accountId` becomes a single-element set; neither
  * → undefined (= whole portfolio). Shared by factors + risk.
+ *
+ * A DEFINED empty `accountIds` list comes back as that empty list: it means
+ * "no accounts in scope" and must never widen to the whole book, nor fall
+ * through to `accountId`. Only `undefined` means every account.
  */
 export function normalizeAccountIds(opts?: {
   accountId?: number;
   accountIds?: number[];
 }): number[] | undefined {
-  if (opts?.accountIds && opts.accountIds.length > 0) return opts.accountIds;
+  if (Array.isArray(opts?.accountIds)) return opts.accountIds;
   if (opts?.accountId !== undefined) return [opts.accountId];
   return undefined;
+}
+
+/**
+ * The `AND h.account_id ...` fragment for a normalized scope, with its bind
+ * values. `undefined` filters nothing; an explicitly empty list matches no
+ * row (`AND 0`), the same rule as `accountScopeClause` in lib/queries/options.ts.
+ */
+export function accountIdsFilterSql(accountIds: number[] | undefined): {
+  sql: string;
+  params: number[];
+} {
+  if (accountIds === undefined) return { sql: "", params: [] };
+  if (accountIds.length === 0) return { sql: "AND 0", params: [] };
+  return {
+    sql: `AND h.account_id IN (${accountIds.map(() => "?").join(",")})`,
+    params: [...accountIds],
+  };
 }
 
 // ─── Market Beta Regression ──────────────────────────���───────────
@@ -120,6 +142,9 @@ function computeMarketRegression(
   // appearing account's whole value reads as a fake return and poisons
   // beta/alpha (the +89% phantom-alpha class; see fullCoverageHaving).
   const accountIds = normalizeAccountIds(options);
+  // A defined empty scope is no accounts: there is no series to regress, and
+  // the readers below would read an empty list as the whole book.
+  if (accountIds && accountIds.length === 0) return null;
   // asOfDate truncates the regression window to "as of that date" — without
   // this, options.asOfDate was accepted but never read here, so a
   // "week-ago" regression silently ran on the exact same full history as
@@ -264,11 +289,7 @@ function computeTilts(
   accountIds?: number[],
   asOfDate?: string
 ): { sizeTilt: FactorTilt | null; styleTilt: FactorTilt | null; sectorTilt: FactorTilt | null; geographyTilt: FactorTilt | null } {
-  const accountFilter =
-    accountIds && accountIds.length > 0
-      ? `AND h.account_id IN (${accountIds.map(() => "?").join(",")})`
-      : "";
-  const accountParams: number[] = accountIds ?? [];
+  const { sql: accountFilter, params: accountParams } = accountIdsFilterSql(accountIds);
 
   const predicate = latestHoldingsPredicate({
     keyBy: "account_security",
@@ -302,7 +323,8 @@ function computeTilts(
        JOIN securities s ON s.id = lh.security_id
        LEFT JOIN latest_prices lp ON lp.security_id = lh.security_id
        LEFT JOIN fx_rates fx ON fx.currency = s.currency
-       WHERE COALESCE(lp.close_price, 0) > 0`
+       WHERE COALESCE(lp.close_price, 0) > 0
+         AND ${liveOptionExpirationSql("s", asOfDate ?? todayET())}`
     )
     .all(...accountParams) as {
     market_cap_category: string | null;
@@ -442,7 +464,9 @@ export function computeMacroFactorTilts(
   options?: FactorOptions
 ): FactorMacroTilt[] {
   const accountIds = normalizeAccountIds(options);
-  const heatmap = getFactorHeatmap(db, accountIds);
+  // getFactorHeatmap reads an empty list as the whole book; a defined empty
+  // scope is no accounts, so it has no rows.
+  const heatmap = accountIds && accountIds.length === 0 ? [] : getFactorHeatmap(db, accountIds);
 
   return FACTOR_COLUMNS.map((factor) => {
     const contributors = heatmap
@@ -526,10 +550,7 @@ function liveNetQuantity(
   securityId: number,
   accountIds?: number[]
 ): number | null {
-  const accountFilter =
-    accountIds && accountIds.length > 0
-      ? `AND h.account_id IN (${accountIds.map(() => "?").join(",")})`
-      : "";
+  const { sql: accountFilter, params: accountParams } = accountIdsFilterSql(accountIds);
   const row = db
     .prepare(
       `SELECT COUNT(*) AS n, COALESCE(SUM(h.quantity), 0) AS qty
@@ -539,7 +560,7 @@ function liveNetQuantity(
          AND ${liveOptionExpirationSql("s")}
          AND ${latestHoldingsPredicate({ keyBy: "account_security", includeShorts: true, accountFilter })}`
     )
-    .get(securityId, ...(accountIds ?? [])) as { n: number; qty: number };
+    .get(securityId, ...accountParams) as { n: number; qty: number };
   return row.n > 0 ? row.qty : null;
 }
 

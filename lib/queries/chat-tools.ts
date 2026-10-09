@@ -8,7 +8,7 @@ import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 import { marketCapCategoryBucketSql } from "@/lib/securities/normalize-market-cap";
 import { isPendingStatementLot, pendingStatementKeySet } from "@/lib/queries/pending-statement";
 import { isOptionLive, liveOptionExpirationSql } from "@/lib/compute/option-expiry";
-import { isCurrencyConversionSecurityType } from "@/lib/queries/tax-lots";
+import { isCurrencyConversionSecurityType, lotSideSignSql, remainingLotBasisSql } from "@/lib/queries/tax-lots";
 import { isLongTermSql, longTermDateSql } from "@/lib/queries/long-term-sql";
 
 /**
@@ -133,13 +133,35 @@ export interface TaxLotResult {
   acquisition_date: string;
   acquisition_price: number;
   quantity_remaining: number;
+  /**
+   * Open lots: the basis of the quantity STILL OPEN (fees included), the
+   * figure `unrealized_gain` is measured against, so it pairs with
+   * `current_value`. Closed rows: the basis allocated to the quantity sold.
+   */
   cost_basis: number;
+  /**
+   * Open lots only: the basis of the WHOLE lot as acquired. Equal to
+   * `cost_basis` unless part of the lot has been closed. Never subtract it
+   * from `current_value`.
+   */
+  original_lot_cost_basis?: number;
   current_price: number | null;
   current_value: number | null;
   unrealized_gain: number | null;
   days_held: number;
   is_long_term: boolean;
   long_term_date: string | null;
+  /**
+   * Open lots only: "short" for a short lot, "long" otherwise (the same words
+   * the holdings tool uses). The raw `is_short` join key is never returned
+   * (tests/queries/chat-pending-statement.test.ts). `quantity_remaining`, `cost_basis`
+   * (the net opening proceeds of the quantity still open) and `current_value` (what covering would cost) stay
+   * positive; `unrealized_gain` is signed by side (a short gains when the
+   * price falls). A short lot is never long-term: `is_long_term` is false and
+   * `long_term_date` is null, because the engine books every short close as
+   * short-term however long the short was open. `status_note` says so in words.
+   */
+  position_side?: "long" | "short";
   /**
    * Open lots only: the lot belongs to a position closed per LIVE broker data
    * whose closing trade awaits the broker statement
@@ -582,14 +604,24 @@ export function getTaxLotsForChat(
       tl.acquisition_date,
       tl.acquisition_price,
       tl.quantity_remaining,
-      tl.cost_basis * COALESCE(fx.usd_per_unit, 1) AS cost_basis,
+      -- cost_basis is the basis of the quantity STILL OPEN (the page's
+      -- fee-inclusive remaining basis, the one the gain below uses), so it
+      -- sits beside current_value on the same quantity. The whole lot's
+      -- figure is kept under its own name.
+      ${remainingLotBasisSql()} AS cost_basis,
+      tl.cost_basis * COALESCE(fx.usd_per_unit, 1) AS original_lot_cost_basis,
       lp.close_price AS current_price,
       CASE WHEN lp.close_price IS NOT NULL
         THEN ${adjustedMarketValueSQL("tl.quantity_remaining", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}
         ELSE NULL END AS current_value,
+      -- Signed by side (the shared fragment the Tax Lots reads use): a short
+      -- lot stores a positive quantity_remaining and gains when the price
+      -- FALLS, so its figure is the opening value minus the current value.
+      -- Measured against the SAME remaining basis as the Tax Lots page
+      -- (fees included), never quantity x acquisition_price.
       CASE WHEN lp.close_price IS NOT NULL
-        THEN ${adjustedMarketValueSQL("tl.quantity_remaining", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}
-             - ${adjustedMarketValueSQL("tl.quantity_remaining", "tl.acquisition_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}
+        THEN ${lotSideSignSql("tl")} * (${adjustedMarketValueSQL("tl.quantity_remaining", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}
+             - ${remainingLotBasisSql()})
         ELSE NULL END AS unrealized_gain,
       CAST(julianday(?) - julianday(tl.acquisition_date) AS INTEGER) AS days_held,
       -- Calendar-anniversary rule (IRS Pub 550, single-sourced at
@@ -600,8 +632,11 @@ export function getTaxLotsForChat(
       -- year on, built as a string like that function does: SQLite's
       -- date(x, '+1 year') rolls Feb 29 forward to Mar 1, which made a
       -- Feb-29 lot long-term one day late (Mar 2 instead of Mar 1).
-      ${isLongTermSql("tl.acquisition_date")} AS is_long_term,
-      ${longTermDateSql("tl.acquisition_date")} AS long_term_date
+      -- Long lots only: the engine books every short close as short-term
+      -- however long the short was open (computeTaxLots), so a short lot is
+      -- never long-term and has no date on which it becomes so.
+      CASE WHEN tl.is_short = 1 THEN 0 ELSE ${isLongTermSql("tl.acquisition_date")} END AS is_long_term,
+      CASE WHEN tl.is_short = 1 THEN NULL ELSE ${longTermDateSql("tl.acquisition_date")} END AS long_term_date
     FROM tax_lots tl
     JOIN accounts a ON a.id = tl.account_id
     JOIN securities s ON s.id = tl.security_id
@@ -623,19 +658,34 @@ export function getTaxLotsForChat(
   const pendingKeys = pendingStatementKeySet(db);
   return rows.map(({ account_id, security_id, is_short, ...r }) => {
     const pending = isPendingStatementLot(pendingKeys, { account_id, security_id, is_short });
-    const statusNote = taxLotStatusNote(r, today);
+    const baseNote = taxLotStatusNote(r, today);
+    // A short lot says so in words as well as in the flag, so the model never
+    // suggests "selling" it or waiting for long-term treatment.
+    const short = is_short === 1;
+    const statusNote = short ? (baseNote ? `${SHORT_LOT_CHAT_NOTE} ${baseNote}` : SHORT_LOT_CHAT_NOTE) : baseNote;
     return pending
       ? {
           ...r,
           current_value: null,
           unrealized_gain: null,
           is_long_term: Boolean(r.is_long_term),
+          position_side: short ? ("short" as const) : ("long" as const),
           pending_statement: true,
           status_note: statusNote ? `${PENDING_STATEMENT_CHAT_NOTE} ${statusNote}` : PENDING_STATEMENT_CHAT_NOTE,
         }
-      : { ...r, is_long_term: Boolean(r.is_long_term), pending_statement: false, status_note: statusNote };
+      : {
+          ...r,
+          is_long_term: Boolean(r.is_long_term),
+          position_side: short ? ("short" as const) : ("long" as const),
+          pending_statement: false,
+          status_note: statusNote,
+        };
   }) as TaxLotResult[];
 }
+
+/** How chat describes an open short lot (pinned by tests). */
+export const SHORT_LOT_CHAT_NOTE =
+  "Short position: unrealized_gain is signed for the short side (a gain when the price has fallen). Closing it means buying to cover, and the gain or loss on a short is short-term however long it has been open.";
 
 /** How chat describes a pending-statement lot (pinned by tests). */
 export const PENDING_STATEMENT_CHAT_NOTE =

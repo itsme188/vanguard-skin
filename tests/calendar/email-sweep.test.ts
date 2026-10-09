@@ -506,6 +506,20 @@ describe("runEarningsEmailSweep marker dance", () => {
       "delivery-unknown",
     ],
     [{ outcome: "refused", reason: "no actuals yet", status: 409 }, "not-ready"],
+    // A refusal about the calendar row is booked under its own cause, never
+    // as "not-ready" (waiting will not change it).
+    [
+      { outcome: "refused", reason: "replaced", status: 409, code: "superseded_event" },
+      "entry-replaced",
+    ],
+    [
+      { outcome: "refused", reason: "later entry", status: 409, code: "ignored_manual_twin" },
+      "later-manual-entry",
+    ],
+    [
+      { outcome: "refused", reason: "gone", status: 404, code: "event_not_found" },
+      "entry-not-found",
+    ],
   ])("maps %o to a skip, never a failure", async (outcome, skipped) => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const eventId = seedHeldPreviewCandidate(db, "MSFT");
@@ -798,7 +812,8 @@ describe("wrap-mode suppression (#17 T3)", () => {
    * #17 final-review fix: the suppression branch used to compute the wrap
    * cluster on `eventRow.event_date` (whatever date the row happened to
    * carry) while `runWrapPass` only ever evaluates TODAY's (date, slot)
-   * clusters (`date = todayET(now)` in wrap-send.ts). A recap candidate
+   * clusters (`date = todayET(now)` in the stapled-wrap sender, retired
+   * 2026-10-08). A recap candidate
    * whose `event_date` is NOT today — e.g. a same-day Finnhub outage where
    * the user backfills actuals the next morning, reopening recap
    * candidates dated yesterday via a fresh `enriched_at` — would get
@@ -846,7 +861,7 @@ describe("wrap-mode suppression (#17 T3)", () => {
 
 /**
  * Morning debrief pass wiring (2026-08-02 plan, Task 4): the sweep retired
- * its EOD wrap-send call in favor of the 7:45 ET morning debrief
+ * its EOD stapled-wrap send (sender retired 2026-10-08) in favor of the 7:45 ET morning debrief
  * (lib/earnings/debrief-send.ts::runMorningDebrief). The pass runs
  * unconditionally BEFORE the candidate loop (its own window/once-per-day gate
  * decides whether it actually composes+sends) and must never fail the sweep.

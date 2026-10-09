@@ -42,9 +42,10 @@ export function TaxLotStalenessNotice({
       {marker.reason === "legacy" ? (
         <>
           These figures were computed under an earlier lot convention
+          {/* Noun first and always plural, as in the "behind" branch below. */}
           {n != null ? (
             <>
-              , <Count value={n} /> tax-input change{n !== 1 ? "s" : ""} ago
+              {" "}(tax-input changes since: <Count value={n} />)
             </>
           ) : null}
           {" — press Recompute to refresh them."}
@@ -65,9 +66,11 @@ export function TaxLotStalenessNotice({
               own definition (lib/compute/tax-convention.ts: "the generation
               counter advances on every MATERIAL tax-input mutation") — it
               also counts sync-driven bookkeeping writes, not just entries a
-              user typed into a ledger. */}
-          These figures predate <Count value={n} /> tax-input change
-          {n !== 1 ? "s" : ""} — press Recompute to refresh them.
+              user typed into a ledger. Noun first and always plural: a
+              noun that switched with the count would say, under Hide
+              amounts, whether the hidden count is one. */}
+          These figures predate later tax-input changes (changes since:{" "}
+          <Count value={n} />) — press Recompute to refresh them.
         </>
       ) : (
         /* A stamp we cannot measure a distance from — say only what is
@@ -87,7 +90,7 @@ export const ENGINE_ESTIMATED_TITLE =
   "Engine-generated reconciliation entries (no matching broker sale) — those realized figures are estimated. They are included in this economic total and excluded from the Tax Report card and the 8949 exports below.";
 
 /**
- * "(incl. M engine-estimated closes, +$Y)" — the disclosure half of the
+ * "(incl. engine-estimated closes: M, +$Y)" — the disclosure half of the
  * "disclose, never exclude" ruling on QA finding
  * tax-lots--headline-tiles-include-reconcile-close-engine-rows. The figure
  * beside it stays whole; this line says how much of it the engine estimated.
@@ -105,8 +108,9 @@ function EngineEstimatedNote({
   if (!count || count <= 0) return null;
   return (
     <span className={className} title={ENGINE_ESTIMATED_TITLE}>
-      (incl. <Count value={count} /> engine-estimated close
-      {count !== 1 ? "s" : ""},{" "}
+      {/* Noun first and always plural: a "close" / "closes" switch beside a
+          masked count would say whether the count is one. */}
+      (incl. engine-estimated closes: <Count value={count} />,{" "}
       {/* Keep the sign glued to its figure: the note can wrap inside a
           tile, and a line break between "−" and "$704" reads as two
           tokens (same class as the security-detail Amount column fix). */}
@@ -229,8 +233,9 @@ export function TaxLotSummaryCards({
           value={summary.totalRealizedGain}
           sublabel={
             <>
-              <Count value={summary.totalClosedSales} /> sale
-              {summary.totalClosedSales !== 1 ? "s" : ""}
+              {/* Same rule as "Open lots:" beside it: noun first, always
+                  plural, so the masked tile reads the same for one sale. */}
+              Sales: <Count value={summary.totalClosedSales} />
             </>
           }
           engineEstimatedCount={summary.engineEstimatedSales}
@@ -308,7 +313,7 @@ export function AccountSummaryCards({
                 className="block text-[11px] text-ink-faint mt-1"
               />
               <div className="text-[11px] text-ink-faint mt-1">
-                <Count value={acct.totalClosedSales} /> sale{acct.totalClosedSales !== 1 ? "s" : ""}
+                Sales: <Count value={acct.totalClosedSales} />
                 {/* Also shown when the LT figure nets to zero BUT carries
                     engine-estimated closes — otherwise offsetting engine
                     rows would hide their own disclosure. */}
