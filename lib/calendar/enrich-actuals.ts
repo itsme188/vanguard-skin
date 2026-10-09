@@ -17,6 +17,7 @@
 import type Database from "better-sqlite3";
 import { getRawAnthropicClient } from "@/lib/ai/provider";
 import { SONNET_MODEL } from "@/lib/claude-models";
+import { referencePeriodFor, type MacroFrequency } from "./macro-figure";
 
 // ── Types ───────────────────────────────────────────────────────────
 
@@ -37,6 +38,14 @@ export interface EnrichActualResult {
    * Source tag for audit — which code path produced the actual.
    */
   source: "fred" | "finnhub" | "claude_web_search" | "unknown";
+
+  /**
+   * The data period the actual refers to, from the FRED observation date
+   * ("2026-08", "2026-Q2", or a week-ending date; see referencePeriodFor).
+   * Set on the FRED release road only. Stored in
+   * calendar_events.reference_period (migration 097).
+   */
+  referencePeriod?: string | null;
 }
 
 interface CalendarEventRow {
@@ -50,6 +59,11 @@ interface CalendarEventRow {
   title: string;
   consensus_estimate: string | null;
   raw_json: string | null;
+  /**
+   * The row's previous reading. Optional: only the non-FRED lookup reads it,
+   * to ask for the actual on the same basis as the figures already on the row.
+   */
+  previous_value?: string | null;
 }
 
 // ── FRED release_id → primary series mapping ────────────────────────
@@ -83,17 +97,20 @@ export interface FredSeriesConfig {
   /** Multiplier converting a raw observation to ones. Required for
    *  delta_k / level_count; ignored by the pct/usd formats. */
   unitScale?: number;
+  /** How often the series reports. Monthly when absent. Decides the form of
+   *  the stored reference period (see referencePeriodFor). */
+  frequency?: MacroFrequency;
 }
 
 export const RELEASE_ID_TO_SERIES: Record<number, FredSeriesConfig> = {
   10:  { seriesId: "CPIAUCSL", formatAs: "pct_yoy" },   // CPI YoY
   46:  { seriesId: "PPIFIS",   formatAs: "pct_yoy" },   // PPI Final Demand YoY — the press headline; PPIACO (all commodities) matches no published print
   54:  { seriesId: "PCEPILFE", formatAs: "pct_yoy" },   // Core PCE YoY
-  53:  { seriesId: "GDPC1",    formatAs: "qoq_saar" },  // Real GDP SAAR
+  53:  { seriesId: "GDPC1",    formatAs: "qoq_saar", frequency: "quarterly" },  // Real GDP SAAR
   50:  { seriesId: "PAYEMS",   formatAs: "delta_k", unitScale: 1000 }, // NFP: change, thousands of persons
   194: { seriesId: "ADPMNUSNERSA", formatAs: "delta_k", unitScale: 1 }, // ADP MONTHLY: change, raw persons
   192: { seriesId: "JTSJOL",   formatAs: "level_count", unitScale: 1000 }, // JOLTS: level, thousands
-  180: { seriesId: "ICSA",     formatAs: "level_count", unitScale: 1 },    // Initial claims: level, raw count
+  180: { seriesId: "ICSA",     formatAs: "level_count", unitScale: 1, frequency: "weekly" },    // Initial claims: level, raw count
   9:   { seriesId: "RSAFS",    formatAs: "pct_mom" },   // Retail sales MoM
   27:  { seriesId: "HOUST",    formatAs: "level_count", unitScale: 1000 }, // Housing starts: level, thousands SAAR
   291: { seriesId: "EXHOSLUSM495S", formatAs: "level_count", unitScale: 1 }, // Existing home sales: level, raw count SAAR
@@ -102,6 +119,31 @@ export const RELEASE_ID_TO_SERIES: Record<number, FredSeriesConfig> = {
   95:  { seriesId: "DGORDER",  formatAs: "pct_mom" },   // Durable goods orders
   51:  { seriesId: "BOPGSTB",  formatAs: "usd_millions" }, // Trade balance, millions of $
 };
+
+/**
+ * The basis a FRED actual is reported on, in words, for the sync-time
+ * consensus prompt (owner ruling 2026-10-08: consensus and previous must come
+ * back on the same basis the actual will be formatted in). One phrase per
+ * `formatAs`; a new format must add its phrase here.
+ */
+export function fredBasisDescription(formatAs: FredSeriesConfig["formatAs"]): string {
+  switch (formatAs) {
+    case "pct_yoy":
+      return "year-over-year percent change (e.g. \"2.9%\")";
+    case "pct_mom":
+      return "month-over-month percent change (e.g. \"+0.3%\")";
+    case "qoq_saar":
+      return "quarter-over-quarter percent change at a seasonally adjusted annual rate (e.g. \"2.8%\")";
+    case "delta_k":
+      return "change from the prior period, in thousands (e.g. \"+172K\")";
+    case "level_count":
+      return "level, as a count (e.g. \"229K\" or \"4.17M\")";
+    case "usd_millions":
+      return "level, in US dollars (e.g. \"-$55.9B\")";
+    case "pct":
+      return "level, in percent (e.g. \"4.2%\")";
+  }
+}
 
 // ── FRED API ────────────────────────────────────────────────────────
 
@@ -489,17 +531,45 @@ export async function probeFinnhubActualExistsStrict(symbol: string, date: strin
 
 // ── Claude + web_search fallback for non-FRED macro ─────────────────
 
+/**
+ * The non-FRED actual lookup prompt. When the row already carries a consensus
+ * and/or a previous reading, the lookup is given them and told to answer on
+ * the SAME basis (owner ruling 2026-10-08: "the lookup must return the actual
+ * on the consensus basis"). With neither on the row the prompt is unchanged.
+ */
+export function buildNonFredActualPrompt(
+  shortName: string,
+  date: string,
+  consensus: string | null | undefined,
+  previous: string | null | undefined,
+): string {
+  const have = (v: string | null | undefined): v is string => typeof v === "string" && v.trim() !== "";
+  const onFile: string[] = [];
+  if (have(consensus)) onFile.push(`the consensus estimate "${consensus.trim()}"`);
+  if (have(previous)) onFile.push(`the previous reading "${previous.trim()}"`);
+  const basis =
+    onFile.length > 0
+      ? `
+
+Already on file for this release: ${onFile.join(" and ")}. Report the actual on the SAME basis and in the same units as ${onFile.length > 1 ? "those figures" : "that figure"} (for example: if it is a month-over-month percent, answer with the month-over-month percent, not the year-over-year one; if it is an index level, answer with the index level). If you can only find the figure on a different basis, respond with exactly "null".`
+      : "";
+
+  return `What was the released value of "${shortName}" on ${date}?
+
+Search recent news and publisher websites for the actual published figure. Respond with ONLY the value as a short string (e.g., "57.1", "3.2%", "250K"). If you cannot find the value with reasonable certainty, respond with exactly "null".${basis}
+
+No preamble, no explanation.`;
+}
+
 async function fetchNonFredActualViaClaude(
   shortName: string,
   date: string,
+  consensus?: string | null,
+  previous?: string | null,
 ): Promise<string | null> {
   if (!process.env.ANTHROPIC_API_KEY) return null;
 
-  const prompt = `What was the released value of "${shortName}" on ${date}?
-
-Search recent news and publisher websites for the actual published figure. Respond with ONLY the value as a short string (e.g., "57.1", "3.2%", "250K"). If you cannot find the value with reasonable certainty, respond with exactly "null".
-
-No preamble, no explanation.`;
+  const prompt = buildNonFredActualPrompt(shortName, date, consensus, previous);
 
   try {
     const client = getRawAnthropicClient("scheduleVerification");
@@ -543,6 +613,9 @@ export async function fetchActualForEvent(
       actual: formatFredValue(obs, cfg),
       consensus,
       source: "fred",
+      // The observation date names the period the print covers; it used to be
+      // dropped here and the period guessed from the release date.
+      referencePeriod: referencePeriodFor(obs.date, cfg.frequency ?? "monthly"),
     };
   }
 
@@ -570,7 +643,12 @@ export async function fetchActualForEvent(
   }
 
   if (parsed.kind === "nonfred") {
-    const actual = await fetchNonFredActualViaClaude(parsed.shortName, parsed.date);
+    const actual = await fetchNonFredActualViaClaude(
+      parsed.shortName,
+      parsed.date,
+      consensus,
+      event.previous_value,
+    );
     return { actual, consensus, source: "claude_web_search" };
   }
 

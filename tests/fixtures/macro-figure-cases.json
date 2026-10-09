@@ -1,0 +1,147 @@
+{
+  "_comment": "Shared by tests/calendar/macro-figure.test.ts (Mac) and workers/cron/test/macro-figure-parity.test.ts (Worker). Synthetic figures only.",
+  "parse": [
+    { "input": "+0.3%", "value": 0.3, "unit": "pct", "step": 0.1 },
+    { "input": "4.7%", "value": 4.7, "unit": "pct", "step": 0.1 },
+    { "input": "-0.2%", "value": -0.2, "unit": "pct", "step": 0.1 },
+    { "input": "−0.2%", "value": -0.2, "unit": "pct", "step": 0.1 },
+    { "input": "0.25%", "value": 0.25, "unit": "pct", "step": 0.01 },
+    { "input": "3%", "value": 3, "unit": "pct", "step": 1 },
+    { "input": "0.3% m/m", "value": 0.3, "unit": "pct", "step": 0.1 },
+    { "input": "2.9% YoY", "value": 2.9, "unit": "pct", "step": 0.1 },
+    { "input": "229K", "value": 229000, "unit": "count", "step": 1000 },
+    { "input": "+172K", "value": 172000, "unit": "count", "step": 1000 },
+    { "input": "-5K", "value": -5000, "unit": "count", "step": 1000 },
+    { "input": "1,465K", "value": 1465000, "unit": "count", "step": 1000 },
+    { "input": "4.17M", "value": 4170000, "unit": "count", "step": 10000 },
+    { "input": "7.2m", "value": 7200000, "unit": "count", "step": 100000 },
+    { "input": "-$88.6B", "value": -88600000000, "unit": "usd", "step": 100000000 },
+    { "input": "$-70B", "value": -70000000000, "unit": "usd", "step": 1000000000 },
+    { "input": "$1.25", "value": 1.25, "unit": "usd", "step": 0.01 },
+    { "input": "57.1", "value": 57.1, "unit": "plain", "step": 0.1 },
+    { "input": "950", "value": 950, "unit": "plain", "step": 1 },
+    { "input": "  4.50%  ", "value": 4.5, "unit": "pct", "step": 0.01 },
+    { "input": "", "value": null },
+    { "input": "n/a", "value": null },
+    { "input": "null", "value": null },
+    { "input": "EPS 2.00 · Rev 100", "value": null },
+    { "input": "3.2% to 3.4%", "value": null },
+    { "input": "about 3%", "value": null },
+    { "input": "57.1 index", "value": null },
+    { "input": "229K%", "value": null },
+    { "input": "$3%", "value": null },
+    { "input": "+-3%", "value": null },
+    { "input": "-$-3B", "value": null },
+    { "input": "1,23K", "value": null }
+  ],
+  "gate": [
+    {
+      "name": "PPI: a year-over-year actual beside a month-over-month consensus and previous, more than ten times both",
+      "actual": "2.6%", "consensus": "0.2%", "previous": "0.2%", "fires": true
+    },
+    {
+      "name": "PPI: more than ten times the previous but not the consensus, so it stands",
+      "actual": "2.6%", "consensus": "0.3%", "previous": "0.2%", "fires": false
+    },
+    {
+      "name": "PPI: more than ten times the consensus but not the previous, so it stands",
+      "actual": "2.6%", "consensus": "0.2%", "previous": "0.3%", "fires": false
+    },
+    {
+      "name": "PPI: just over ten times both",
+      "actual": "3.3%", "consensus": "0.3%", "previous": "0.2%", "fires": true
+    },
+    {
+      "name": "exactly ten times both is not MORE than ten times",
+      "actual": "3.0%", "consensus": "0.3%", "previous": "0.3%", "fires": false
+    },
+    {
+      "name": "same basis, an ordinary surprise",
+      "actual": "2.6%", "consensus": "2.9%", "previous": "2.7%", "fires": false
+    },
+    {
+      "name": "zero consensus is not comparable",
+      "actual": "2.6%", "consensus": "0.0%", "previous": "0.2%", "fires": false
+    },
+    {
+      "name": "zero previous is not comparable",
+      "actual": "2.6%", "consensus": "0.2%", "previous": "0.0%", "fires": false
+    },
+    {
+      "name": "a consensus one printed step from zero is not comparable",
+      "actual": "2.6%", "consensus": "0.1%", "previous": "0.2%", "fires": false
+    },
+    {
+      "name": "the same small consensus printed to two decimals is ten steps from zero, so it is comparable",
+      "actual": "2.6%", "consensus": "0.10%", "previous": "0.20%", "fires": true
+    },
+    {
+      "name": "a payroll consensus one step from zero is not comparable",
+      "actual": "+150K", "consensus": "+1K", "previous": "+12K", "fires": false
+    },
+    {
+      "name": "mixed units: a count beside percents",
+      "actual": "229K", "consensus": "0.3%", "previous": "0.2%", "fires": false
+    },
+    {
+      "name": "mixed units: the previous is a plain index number",
+      "actual": "2.6%", "consensus": "0.2%", "previous": "57.1", "fires": false
+    },
+    {
+      "name": "mixed units: dollars beside a count",
+      "actual": "-$88.6B", "consensus": "70B", "previous": "68B", "fires": false
+    },
+    {
+      "name": "a count stored at the wrong scale",
+      "actual": "130,000K", "consensus": "4.15M", "previous": "4.09M", "fires": true
+    },
+    {
+      "name": "claims: an ordinary print",
+      "actual": "229K", "consensus": "235K", "previous": "231K", "fires": false
+    },
+    {
+      "name": "dollars: size is judged on the absolute value",
+      "actual": "-$886B", "consensus": "-$70.0B", "previous": "-$68.5B", "fires": true
+    },
+    {
+      "name": "dollars: an ordinary deficit print",
+      "actual": "-$88.6B", "consensus": "-$70.0B", "previous": "-$68.5B", "fires": false
+    },
+    {
+      "name": "a sign flip alone is not a size problem",
+      "actual": "-0.4%", "consensus": "0.3%", "previous": "0.2%", "fires": false
+    },
+    {
+      "name": "an unreadable consensus: no guess",
+      "actual": "2.6%", "consensus": "about 0.2%", "previous": "0.2%", "fires": false
+    },
+    {
+      "name": "no previous on the row",
+      "actual": "2.6%", "consensus": "0.2%", "previous": null, "fires": false
+    },
+    {
+      "name": "no consensus on the row",
+      "actual": "2.6%", "consensus": null, "previous": "0.2%", "fires": false
+    },
+    {
+      "name": "no actual",
+      "actual": null, "consensus": "0.2%", "previous": "0.2%", "fires": false
+    },
+    {
+      "name": "an earnings-shaped string never trips it",
+      "actual": "EPS 25.00", "consensus": "EPS 2.00", "previous": "EPS 2.10", "fires": false
+    }
+  ],
+  "period": [
+    { "date": "2026-08-01", "frequency": "monthly", "period": "2026-08" },
+    { "date": "2025-12-01", "frequency": "monthly", "period": "2025-12" },
+    { "date": "2026-01-01", "frequency": "quarterly", "period": "2026-Q1" },
+    { "date": "2026-04-01", "frequency": "quarterly", "period": "2026-Q2" },
+    { "date": "2026-07-01", "frequency": "quarterly", "period": "2026-Q3" },
+    { "date": "2026-10-01", "frequency": "quarterly", "period": "2026-Q4" },
+    { "date": "2026-08-29", "frequency": "weekly", "period": "2026-08-29" },
+    { "date": "2026-8-1", "frequency": "monthly", "period": null },
+    { "date": "2026-13-01", "frequency": "monthly", "period": null },
+    { "date": "", "frequency": "monthly", "period": null }
+  ]
+}

@@ -18,6 +18,15 @@ export interface CloudEnrichedPayload {
   reason?: string;
   reaction: unknown; // ReactionSnapshot JSON, or null
   fetchedAt: string;
+  /**
+   * Macro FRED rows: the data period of the observation the actual came from
+   * ("2026-08", "2026-Q2", a week-ending date). Present only when known. The
+   * Mac's cloud reconcile stores it in calendar_events.reference_period.
+   *
+   * A macro actual refused by the size check (macro-figure.ts) goes out as
+   * `actual: null` with `reason` set to ACTUAL_REFUSED_PREFIX + the sentence.
+   */
+  referencePeriod?: string;
 }
 
 export function cloudEnrichedKey(eventId: number): string {

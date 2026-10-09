@@ -1,0 +1,22 @@
+-- 096: keep the vendor's earnings actual when a hand-entered or promoted
+-- figure replaces it.
+--
+-- Owner ruling 2026-10-08 (recap scoreboard actuals): the worksheet or parsed
+-- adjusted figure leads the scoreboard, with the vendor figure as a footnote.
+-- Until now, accepting worksheet figures (or saving actuals by hand) wrote
+-- over calendar_events.actual_value, so the vendor figure was gone and there
+-- was nothing to footnote.
+--
+--   vendor_actual_value -- the vendor's actual string ("EPS 1.10 · Rev
+--                          510000000", the same shape as actual_value) as it
+--                          stood the moment a hand-entered or promoted actual
+--                          first replaced it, or a vendor actual that arrived
+--                          after the row already carried a hand-entered one.
+--                          Public market data. Written once per row and never
+--                          holds a hand-entered figure.
+--
+-- NULLABLE and ADDITIVE, with no DEFAULT. NULL means "no vendor figure was
+-- kept": every row that exists before this migration stays NULL, because a
+-- figure already overwritten cannot be recovered and must not be invented.
+-- No backfill, no table rebuild, no change to any existing column or row.
+ALTER TABLE calendar_events ADD COLUMN vendor_actual_value TEXT;

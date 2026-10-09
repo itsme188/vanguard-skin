@@ -4,6 +4,7 @@ import { SONNET_MODEL } from "@/lib/claude-models";
 import { getRawAnthropicClient } from "@/lib/ai/provider";
 import { generateTextForFeature, AIRefusalError } from "@/lib/ai/generate";
 import { FRED_SOURCE_KEY_PREFIX } from "@/lib/calendar/release-times";
+import { RELEASE_ID_TO_SERIES, fredBasisDescription } from "@/lib/calendar/enrich-actuals";
 
 // ── FRED Release IDs → Calendar Event Types ──────────────────────
 //
@@ -64,6 +65,27 @@ const TRACKED_RELEASES: FredReleaseConfig[] = [
 const RELEASE_MAP = new Map<number, FredReleaseConfig>();
 for (const r of TRACKED_RELEASES) {
   RELEASE_MAP.set(r.releaseId, r);
+}
+
+// ── Basis of the actual ──────────────────────────────────────────
+//
+// After a release, the actual is read from one FRED series and formatted on
+// one fixed basis (RELEASE_ID_TO_SERIES in enrich-actuals.ts): CPI, PPI, core
+// PCE and industrial production year over year; retail sales and durable
+// goods month over month; claims and housing as levels. The consensus and
+// previous figures are written BEFORE the release by the prompt below. If the
+// prompt is not told the basis it answers with the press headline (PPI: a
+// month-over-month figure), and the card then shows a year-over-year actual
+// beside a month-over-month estimate (owner ruling 2026-10-08).
+
+/**
+ * The basis note for one tracked release, as it is printed on that release's
+ * line of the sync-time prompt; null for a release with no mapped series.
+ */
+export function releaseBasisNote(releaseId: number): string | null {
+  const cfg = RELEASE_ID_TO_SERIES[releaseId];
+  if (!cfg) return null;
+  return `${fredBasisDescription(cfg.formatAs)}, of FRED series ${cfg.seriesId}`;
 }
 
 // ── Reporting Period ─────────────────────────────────────────────
@@ -292,18 +314,26 @@ interface EnrichedEvent {
  * but CANNOT change the dates (those come from FRED).
  */
 async function enrichEventsWithClaude(
-  events: { date: string; shortName: string; fredName: string; reportingPeriod: string | null }[]
+  events: {
+    date: string;
+    shortName: string;
+    fredName: string;
+    reportingPeriod: string | null;
+    /** From releaseBasisNote: the basis the actual will be reported on. */
+    basis: string | null;
+  }[]
 ): Promise<Map<string, EnrichedEvent>> {
   if (events.length === 0) return new Map();
 
   const eventList = events
     .map((e, i) => {
       const period = e.reportingPeriod ? ` [reporting period: ${e.reportingPeriod}]` : "";
-      return `${i + 1}. ${e.date} — ${e.shortName} (FRED: "${e.fredName}")${period}`;
+      const basis = e.basis ? ` [actual basis: ${e.basis}]` : "";
+      return `${i + 1}. ${e.date} — ${e.shortName} (FRED: "${e.fredName}")${period}${basis}`;
     })
     .join("\n");
 
-  const prompt = `I have the following confirmed US economic data releases with their exact dates from FRED (Federal Reserve Economic Data). The dates are authoritative — do NOT change them. The reporting period in brackets is also authoritative — it tells you which month/quarter the data covers (economic releases lag by 1-2 months).
+  const prompt = `I have the following confirmed US economic data releases with their exact dates from FRED (Federal Reserve Economic Data). The dates are authoritative — do NOT change them. The reporting period in brackets is also authoritative — it tells you which month/quarter the data covers (economic releases lag by 1-2 months). The "actual basis" in brackets is authoritative too — it is the exact basis and series the released figure will be recorded on after the release.
 
 ${eventList}
 
@@ -312,8 +342,8 @@ For each event, provide enrichment data as a JSON array (same order as above):
 - description: one sentence about what this measures and why it matters for markets
 - expected_impact: "high", "medium", or "low" — based on typical market sensitivity
 - event_time: release time in HH:MM format (ET timezone) if you know the standard release time, or null
-- consensus_estimate: current Street consensus if you know it (e.g., "+180K", "3.2%"), or null
-- previous_value: most recent prior reading (e.g., "+150K", "3.1%"), or null
+- consensus_estimate: current Street consensus ON THE ACTUAL BASIS given in brackets for that event (same basis, same series, same units), as the figure only with no words (e.g., "+180K", "3.2%"), or null. If you only know the consensus on a different basis (for example a month-over-month figure when the basis is year-over-year), give null rather than a figure on the wrong basis.
+- previous_value: most recent prior reading ON THE SAME ACTUAL BASIS as consensus_estimate, as the figure only with no words (e.g., "+150K", "3.1%"), or null
 
 Return ONLY a JSON array of objects, one per event, in the same order. No markdown, no explanation.`;
 
@@ -608,6 +638,7 @@ export async function fetchMacroEvents(
     shortName: e.config.shortName,
     fredName: e.fredName,
     reportingPeriod: getReportingPeriod(e.date, e.config.reportingLag),
+    basis: releaseBasisNote(e.config.releaseId),
   }));
 
   const enriched = process.env.ANTHROPIC_API_KEY

@@ -7,6 +7,8 @@ import {
   shouldSendEarningsEmail,
 } from "@/lib/queries/earnings-settings";
 import type { ReactionSnapshot } from "./reaction-snapshot-core";
+import { refusedReasonFromPayload } from "./macro-figure";
+import { gateMacroActual, readMacroYardsticks, recordMacroBasis } from "./macro-actual-gate";
 import {
   admitCapturedReaction,
   assessReactionSnapshot,
@@ -25,6 +27,11 @@ interface CloudEnrichedPayload {
   reaction: unknown;
   /** Absent on pre-Wave-1 Worker payloads — treated as fresh (see isStalePayload). */
   fetchedAt?: string;
+  /**
+   * Macro FRED rows: the data period of the observation the actual came from
+   * ("2026-08", "2026-Q2", a week-ending date). Absent on older payloads.
+   */
+  referencePeriod?: string | null;
 }
 
 export interface CloudReconcileResult {
@@ -201,6 +208,21 @@ export async function reconcileCloudEnrichment(
      WHERE id = ?`,
   );
 
+  // Vendor figure kept (migration 096, owner ruling 2026-10-08). The cloud
+  // actual is a vendor figure. When the row already carries a hand-entered
+  // actual, the COALESCE above keeps that one; the vendor figure goes in
+  // vendor_actual_value so the recap scoreboard can footnote it. Written
+  // once (never replaces a kept figure) and only beside a hand-entered
+  // actual: a row whose own actual is the vendor's needs no second copy.
+  const keepVendorActual = db.prepare(
+    `UPDATE calendar_events
+     SET vendor_actual_value = ?
+     WHERE id = ?
+       AND vendor_actual_value IS NULL
+       AND actual_value IS NOT NULL
+       AND manual_actuals_at IS NOT NULL`,
+  );
+
   for (const [idStr, payload] of entries) {
     const eventId = Number(idStr);
     if (!Number.isInteger(eventId)) continue;
@@ -238,6 +260,28 @@ export async function reconcileCloudEnrichment(
         continue;
       }
 
+      // Macro rows only (owner rulings 2026-10-08, migration 097). The Worker
+      // runs the size check before it writes a payload; a refusal arrives as
+      // `actual: null` with the reason on the payload. A cloud actual that
+      // DID arrive is checked again here, against this database's own
+      // consensus and previous reading, before it may fill a local NULL: the
+      // Worker judged it against a snapshot that can be a day old.
+      const isMacroRow = existing.event_type !== "earnings";
+      let macroRefusedReason: string | null = null;
+      if (isMacroRow) {
+        macroRefusedReason = refusedReasonFromPayload(payload.reason);
+        if (payload.actual != null && existing.actual_value == null) {
+          const gated = gateMacroActual(payload.actual, readMacroYardsticks(db, eventId));
+          if (gated.refusedReason) {
+            macroRefusedReason = gated.refusedReason;
+            payload.actual = null;
+            console.warn(
+              `[cloud-reconcile] event ${eventId}: cloud macro actual not stored. ${gated.refusedReason}`,
+            );
+          }
+        }
+      }
+
       let existingIsTws = false;
       if (existing.reaction_snapshot) {
         try {
@@ -263,6 +307,10 @@ export async function reconcileCloudEnrichment(
             `${JSON.stringify(payload.actual)} differs from the local actual ` +
             `${JSON.stringify(existing.actual_value)} — cloud actual not applied, local value kept`,
         );
+      }
+
+      if (payload.actual != null && existing.event_type === "earnings") {
+        keepVendorActual.run(payload.actual, eventId);
       }
 
       const rowHasOrGetsActual = payload.actual != null || existing.actual_value != null;
@@ -304,6 +352,15 @@ export async function reconcileCloudEnrichment(
         );
       }
       reconciled += 1;
+
+      // Macro rows: settle the refusal reason against what the row now holds
+      // (a stored actual clears it) and keep the FRED observation's period.
+      if (isMacroRow) {
+        recordMacroBasis(db, eventId, {
+          refusedReason: macroRefusedReason,
+          referencePeriod: payload.referencePeriod,
+        });
+      }
 
       // Push-at-print for cloud-captured actuals (Wave 1 §2). The marker
       // check inside sendEarningsPrintPush dedups against a push the Worker

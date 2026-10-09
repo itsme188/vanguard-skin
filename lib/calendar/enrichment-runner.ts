@@ -12,7 +12,8 @@
 
 import type Database from "better-sqlite3";
 import type { IBApiNext } from "@stoqey/ib";
-import { fetchActualForEvent } from "./enrich-actuals";
+import { fetchActualForEvent, type EnrichActualResult } from "./enrich-actuals";
+import { gateMacroActual, readMacroYardsticks, recordMacroBasis } from "./macro-actual-gate";
 import {
   captureReactionFromTws,
   composeReleaseInstant,
@@ -138,6 +139,11 @@ export interface EnrichmentResult {
   reason?: string;
   /** Present exactly when `reason === "pre_print"`. */
   prePrint?: EnrichmentPrePrintSkip;
+  /**
+   * Macro rows only: the fetched actual was refused by the size check and
+   * stored empty; this is the reason written to actual_refused_reason.
+   */
+  actualRefusedReason?: string;
 }
 
 /**
@@ -249,13 +255,32 @@ function logSectorGap(
 // telling the user to use the override it had just wiped (deep-QA finding
 // 2026-06-10). A fresh non-null fetch still overwrites.
 //
-// enriched_at is stamped only when the pass is COMPLETE (bound ?4 = 1);
+// enriched_at is stamped only when the pass is COMPLETE (`complete` = 1);
 // earnings rows retry across ticks until then. enrichment_attempted_at is
 // stamped every pass — it drives retry pacing in findCandidates.
-const updateEnrichment = (db: Database.Database) =>
-  db.prepare(
+//
+// Vendor figure kept (migration 096, owner ruling 2026-10-08). The pass
+// fetches a vendor actual only for a row that had none when it was loaded,
+// but a hand-entered or promoted actual can land while the fetch is in
+// flight. On such a row (manual_actuals_at set) the fresh vendor figure goes
+// to vendor_actual_value (written once) and the hand-entered actual stays:
+// writing it over would leave a vendor figure wearing the hand-entered stamp.
+// Every right-hand side reads the row as it stood before the UPDATE.
+// better-sqlite3 binds `?` by position only, so the vendor actual is bound
+// twice; the wrapper keeps the caller's five-argument run() unchanged.
+const updateEnrichment = (db: Database.Database) => {
+  const stmt = db.prepare(
     `UPDATE calendar_events
-     SET actual_value = COALESCE(?, actual_value),
+     SET vendor_actual_value = CASE
+           WHEN manual_actuals_at IS NOT NULL AND actual_value IS NOT NULL
+             THEN COALESCE(vendor_actual_value, ?)
+           ELSE vendor_actual_value
+         END,
+         actual_value = CASE
+           WHEN manual_actuals_at IS NOT NULL AND actual_value IS NOT NULL
+             THEN actual_value
+           ELSE COALESCE(?, actual_value)
+         END,
          consensus_value = COALESCE(?, consensus_value),
          reaction_snapshot = COALESCE(?, reaction_snapshot),
          enrichment_attempted_at = datetime('now'),
@@ -263,6 +288,16 @@ const updateEnrichment = (db: Database.Database) =>
                             ELSE enriched_at END
      WHERE id = ?`,
   );
+  return {
+    run: (
+      actual: string | null,
+      consensus: string | null,
+      reactionJson: string | null,
+      complete: 0 | 1,
+      eventId: number,
+    ) => stmt.run(actual, actual, consensus, reactionJson, complete, eventId),
+  };
+};
 
 /**
  * Reaction-only upgrade path (Phase 9b): overwrite reaction_snapshot but
@@ -365,9 +400,31 @@ export async function runEnrichment(
       const isEarnings =
         event.source === "finnhub" || event.event_type === "earnings";
 
-      const actualResult = event.actual_value
-        ? { actual: null, consensus: null } // already captured on a prior attempt
-        : await fetchActualForEvent(db, event);
+      // Macro rows only (owner rulings 2026-10-08, migration 097): the row's
+      // consensus and previous reading are the yardsticks for the size check,
+      // and the previous reading also goes to the non-FRED lookup so it can
+      // answer on the same basis. Earnings rows skip all of this.
+      const macroYardsticks = isEarnings ? null : readMacroYardsticks(db, event.id);
+
+      const fetchedActual: Pick<EnrichActualResult, "actual" | "consensus" | "referencePeriod"> =
+        event.actual_value
+          ? { actual: null, consensus: null } // already captured on a prior attempt
+          : await fetchActualForEvent(
+              db,
+              macroYardsticks
+                ? { ...event, previous_value: macroYardsticks.previous_value }
+                : event,
+            );
+
+      // A macro actual more than ten times both yardsticks is refused: it is
+      // stored empty and the reason is recorded below. The row is still marked
+      // done, the way a null macro actual is today (single-shot).
+      const macroGate = macroYardsticks
+        ? gateMacroActual(fetchedActual.actual, macroYardsticks)
+        : null;
+      const actualResult = macroGate
+        ? { ...fetchedActual, actual: macroGate.actual }
+        : fetchedActual;
 
       // Reaction snapshot — never before the window has elapsed (the gate
       // is inside captureReactionForRow).
@@ -411,6 +468,22 @@ export async function runEnrichment(
         complete ? 1 : 0,
         event.id,
       );
+
+      // Macro rows: settle the refusal reason against what the row now holds
+      // and store the reference period from the FRED observation date. Two
+      // columns the weekly sync never touches.
+      if (macroGate) {
+        recordMacroBasis(db, event.id, {
+          refusedReason: macroGate.refusedReason,
+          referencePeriod: fetchedActual.referencePeriod,
+        });
+        if (macroGate.refusedReason) {
+          console.warn(
+            `[enrichment] event ${event.id} (${event.source_key}): macro actual not stored. ` +
+              macroGate.refusedReason,
+          );
+        }
+      }
 
       // Wire-time observation (spec 2026-08-04): record the first-seen
       // instant on the null→non-null actual transition — covers both the
@@ -480,6 +553,7 @@ export async function runEnrichment(
         actual: actualResult.actual,
         reaction,
         enriched: complete,
+        ...(macroGate?.refusedReason ? { actualRefusedReason: macroGate.refusedReason } : {}),
       });
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);

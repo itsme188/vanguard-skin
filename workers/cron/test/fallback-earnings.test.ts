@@ -34,6 +34,8 @@ import {
   renderPositions,
   renderScoreboard,
   evaluateRecapContent,
+  ACTUALS_BASIS_ADJUSTED_LINE,
+  ACTUALS_BASIS_VENDOR_LINE,
   type PositionView,
 } from "../src/fallback-earnings";
 import { loadLatestSnapshot } from "../src/state";
@@ -41,6 +43,11 @@ import { loadLatestSnapshot } from "../src/state";
 // (both modules are pure; neither pulls a native dependency).
 import { epsDelta as macEpsDelta } from "../../../lib/earnings/eps-delta";
 import { formatRevenueUSD as macFormatRevenueUSD } from "../../../lib/format/finnhub-figure";
+import {
+  ACTUALS_BASIS_ADJUSTED_LINE as MAC_ACTUALS_BASIS_ADJUSTED_LINE,
+  ACTUALS_BASIS_VENDOR_LINE as MAC_ACTUALS_BASIS_VENDOR_LINE,
+  renderActualsBasisLine as macRenderActualsBasisLine,
+} from "../../../lib/earnings/actuals-basis";
 import { sendEmail } from "../src/resend";
 import { composeReleaseInstant } from "../src/reaction-matcher";
 import { fetchLiveIbkrPositionsCached } from "../src/ibkr-positions";
@@ -2106,5 +2113,99 @@ describe("armed-as-covered (snapshot v11 + KV delta)", () => {
     expect(result.details.some((d) => d.eventId === 1 && d.phase === "recap")).toBe(false);
     expect(result.details.some((d) => d.eventId === 2 && d.phase === "recap")).toBe(true);
     expect(sendEmail).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * Recap scoreboard basis label, parity with the Mac (owner ruling 2026-10-08:
+ * "with no worksheet figure, the vendor figure shows with a basis label. Mac
+ * and Worker change together"; "the cloud recap gets the basis label only;
+ * the snapshot is not extended"). Mac half:
+ * tests/digest/scoreboard-actual-basis.test.ts. Synthetic figures only.
+ */
+describe("recap scoreboard basis label (parity with the Mac)", () => {
+  const STAMP = "2026-01-06 21:30:00";
+  const CONSENSUS = "EPS 1.00 · Rev 500000000";
+  const event = (over: Record<string, unknown>) =>
+    ({
+      id: 3, source: "finnhub", event_type: "earnings", event_date: EVENT_DATE,
+      event_time: "AMC", title: "ZZA earnings", description: null, security_id: null,
+      symbol: "ZZA", expected_impact: "high",
+      consensus_estimate: CONSENSUS,
+      previous_value: null, raw_json: null,
+      consensus_value: null, actual_value: null, reaction_snapshot: null,
+      manual_actuals_at: null,
+      ...over,
+    }) as unknown as import("../src/state").CalendarEventRow;
+  const basisLines = (md: string) => md.split("\n").filter((l) => l.includes("Actuals basis"));
+
+  it("the two label strings are the Mac's", () => {
+    expect(ACTUALS_BASIS_VENDOR_LINE).toBe(MAC_ACTUALS_BASIS_VENDOR_LINE);
+    expect(ACTUALS_BASIS_ADJUSTED_LINE).toBe(MAC_ACTUALS_BASIS_ADJUSTED_LINE);
+  });
+
+  // Same fixtures through both renderers, where neither has a kept vendor
+  // figure to footnote (the Worker never does).
+  const PARITY_CASES: Array<[string, string | null, string | null]> = [
+    ["vendor figure, no stamp", "EPS 1.10 · Rev 510,000,000", null],
+    ["hand-entered or promoted figure", "EPS 1.10 · Rev 510000000", STAMP],
+    ["EPS only, vendor", "EPS 1.10", null],
+    ["no actual", null, null],
+    ["a 'Rev 0' placeholder alone is no actual", "Rev 0", null],
+  ];
+  for (const [name, actual, stamp] of PARITY_CASES) {
+    it(`same line as the Mac: ${name}`, () => {
+      const md = renderScoreboard(event({ actual_value: actual, manual_actuals_at: stamp }), "recap", null, false);
+      const mac = macRenderActualsBasisLine({
+        shownActual: actual,
+        manualActualsAt: stamp,
+        vendorActualValue: null,
+        consensus: CONSENSUS,
+      });
+      expect(basisLines(md)).toEqual(mac == null ? [] : [mac]);
+    });
+  }
+
+  it("vendor figure: 'vendor' label, rows unchanged", () => {
+    const md = renderScoreboard(event({ actual_value: "EPS 1.10 · Rev 510,000,000" }), "recap", null, false);
+    expect(md.split("\n")).toContain("| **EPS** | 1.00 | 1.10 | +10.0% |");
+    expect(md.split("\n")).toContain("| **Revenue** | $500.0M | $510.0M | +2.0% |");
+    expect(basisLines(md)).toEqual(["*Actuals basis: vendor.*"]);
+  });
+
+  it("stamped row: 'adjusted' label and never a vendor footnote, even if the row carries one", () => {
+    const md = renderScoreboard(
+      event({
+        actual_value: "EPS 1.10 · Rev 510000000",
+        manual_actuals_at: STAMP,
+        vendor_actual_value: "EPS 1.02 · Rev 505,000,000",
+      }),
+      "recap",
+      null,
+      false,
+    );
+    expect(basisLines(md)).toEqual(["*Actuals basis: adjusted (worksheet or hand-entered figure).*"]);
+    expect(md).not.toContain("basis may differ");
+    expect(md).not.toContain("1.02");
+  });
+
+  it("an actual that came from the cloud-enrich payload is a vendor figure", () => {
+    const payload = { eventId: 3, actual: "EPS 1.10 · Rev 510,000,000", consensus: null, reaction: null, source: "cloud" } as never;
+    expect(basisLines(renderScoreboard(event({}), "recap", payload, false))).toEqual([ACTUALS_BASIS_VENDOR_LINE]);
+  });
+
+  it("no label when no actual is shown: preview, and cells blanked as implausible", () => {
+    const ev = event({ actual_value: "EPS 1.10 · Rev 510,000,000" });
+    expect(basisLines(renderScoreboard(ev, "preview", null, false))).toEqual([]);
+    expect(basisLines(renderScoreboard(ev, "recap", null, true))).toEqual([]);
+  });
+
+  it("the label sits between the table and the standing footnote", () => {
+    const all = renderScoreboard(event({ actual_value: "EPS 1.10" }), "recap", null, false).split("\n");
+    const at = all.indexOf(ACTUALS_BASIS_VENDOR_LINE);
+    expect(all[at - 1]).toBe("");
+    expect(all[at - 2].startsWith("| **QQQ @ T+2h** |")).toBe(true);
+    expect(all[at + 1]).toBe("");
+    expect(all[at + 2].startsWith("*Cloud-fallback delivery")).toBe(true);
   });
 });

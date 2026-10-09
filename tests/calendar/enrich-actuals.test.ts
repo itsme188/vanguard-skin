@@ -96,6 +96,9 @@ describe("RELEASE_ID_TO_SERIES — units-verified config", () => {
   it("pins ICSA as a level-quoted raw-count series", () => {
     expect(RELEASE_ID_TO_SERIES[180]).toEqual({
       seriesId: "ICSA", formatAs: "level_count", unitScale: 1,
+      // Added with migration 097: claims report weekly, so the stored
+      // reference period is the observation's week-ending date.
+      frequency: "weekly",
     });
   });
 

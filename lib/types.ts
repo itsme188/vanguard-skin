@@ -263,6 +263,20 @@ export interface CalendarEvent {
   // break; non-null/non-empty means the display-layer plausibility guard
   // (lib/earnings/actuals-display.ts) must bypass, never withhold.
   manual_actuals_at?: string | null;
+  // Migration 096 — the vendor's actual, kept when a hand-entered or promoted
+  // figure replaced it (or when it arrived after one). Same string shape as
+  // actual_value; public market data. NULL = no vendor figure was kept. Read
+  // only by the recap scoreboard footnote (owner ruling 2026-10-08).
+  vendor_actual_value?: string | null;
+  // Migration 097 — macro rows only (owner rulings 2026-10-08). Both NULL on
+  // earnings rows and on rows not yet enriched; the weekly sync never writes
+  // either. actual_refused_reason: why a fetched actual was refused by the
+  // size check and stored empty (lib/calendar/macro-figure.ts).
+  // reference_period: the data period of the FRED observation the actual
+  // came from: "2026-08", "2026-Q2" or a week-ending date. Shown through
+  // lib/calendar/macro-period-display.ts, never printed raw.
+  actual_refused_reason?: string | null;
+  reference_period?: string | null;
 }
 
 export interface CalendarBriefing {

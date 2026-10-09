@@ -14,23 +14,28 @@
 // /series endpoint 2026-06-11. Keep this map + formatFredValue in
 // lockstep with the Mac side; parity is pinned by mirrored test cases
 // in test/enrich-actuals.test.ts.
+import { referencePeriodFor, type MacroFrequency } from "./macro-figure";
+
 export interface FredSeriesConfig {
   seriesId: string;
   formatAs: "pct" | "pct_yoy" | "pct_mom" | "delta_k" | "level_count" | "usd_millions" | "qoq_saar";
   /** Multiplier converting a raw observation to ones. Required for
    *  delta_k / level_count; ignored by the pct/usd formats. */
   unitScale?: number;
+  /** How often the series reports. Monthly when absent. Decides the form of
+   *  the reference period (Mac mirror: lib/calendar/enrich-actuals.ts). */
+  frequency?: MacroFrequency;
 }
 
 export const RELEASE_ID_TO_SERIES: Record<number, FredSeriesConfig> = {
   10:  { seriesId: "CPIAUCSL", formatAs: "pct_yoy" },
   46:  { seriesId: "PPIFIS",   formatAs: "pct_yoy" }, // PPI Final Demand — the press headline, not PPIACO all-commodities
   54:  { seriesId: "PCEPILFE", formatAs: "pct_yoy" },
-  53:  { seriesId: "GDPC1",    formatAs: "qoq_saar" },
+  53:  { seriesId: "GDPC1",    formatAs: "qoq_saar", frequency: "quarterly" },
   50:  { seriesId: "PAYEMS",   formatAs: "delta_k", unitScale: 1000 },
   194: { seriesId: "ADPMNUSNERSA", formatAs: "delta_k", unitScale: 1 },
   192: { seriesId: "JTSJOL",   formatAs: "level_count", unitScale: 1000 },
-  180: { seriesId: "ICSA",     formatAs: "level_count", unitScale: 1 },
+  180: { seriesId: "ICSA",     formatAs: "level_count", unitScale: 1, frequency: "weekly" },
   9:   { seriesId: "RSAFS",    formatAs: "pct_mom" },
   27:  { seriesId: "HOUST",    formatAs: "level_count", unitScale: 1000 },
   291: { seriesId: "EXHOSLUSM495S", formatAs: "level_count", unitScale: 1 },
@@ -272,6 +277,12 @@ export interface WorkerEnrichActualResult {
   source: "fred" | "finnhub" | "claude_nonfred_deferred" | "unknown";
   deferred?: boolean;
   reason?: string;
+  /**
+   * FRED release road only: the data period of the observation the actual
+   * came from ("2026-08", "2026-Q2", a week-ending date). The Mac stores it in
+   * calendar_events.reference_period (migration 097).
+   */
+  referencePeriod?: string | null;
 }
 
 interface MinimalEventRow {
@@ -294,7 +305,12 @@ export async function fetchActualForEventCloud(
     // later-published months and revisions (see fetchFredVintageForEvent).
     const obs = await fetchFredVintageForEvent(env.FRED_API_KEY, cfg.seriesId, event.event_date);
     if (!obs) return { actual: null, consensus, source: "fred", reason: "no_observation" };
-    return { actual: formatFredValue(obs, cfg), consensus, source: "fred" };
+    return {
+      actual: formatFredValue(obs, cfg),
+      consensus,
+      source: "fred",
+      referencePeriod: referencePeriodFor(obs.date, cfg.frequency ?? "monthly"),
+    };
   }
 
   if (parsed.kind === "fomc") {

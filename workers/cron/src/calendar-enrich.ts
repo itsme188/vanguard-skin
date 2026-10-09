@@ -37,6 +37,7 @@ import { loadLatestSnapshot } from "./state";
 import { composeReleaseInstant, resolveSectorEtf } from "./reaction-matcher";
 import { captureReactionFromYahoo } from "./yahoo";
 import { fetchActualForEventCloud, type WorkerEnrichActualResult } from "./enrich-actuals";
+import { ACTUAL_REFUSED_PREFIX, isReferencePeriod, macroActualProblem } from "./macro-figure";
 import { issuerSiblings } from "./fallback-earnings";
 import { effectiveCalendarEvents, readArmedEventsDelta } from "./armed-events";
 import { readPrintPushMarker, writePrintPushMarker } from "./earnings-markers";
@@ -184,6 +185,7 @@ interface SnapshotCalendarEvent {
   release_time?: unknown;
   symbol?: unknown;
   consensus_estimate?: unknown;
+  previous_value?: unknown;
   security_id?: unknown;
   actual_value?: unknown;
   enriched_at?: unknown;
@@ -231,6 +233,7 @@ export async function runCloudFallback(
     release_time: string;
     symbol: string | null;
     consensus_estimate: string | null;
+    previous_value: string | null;
     releaseInstant: Date;
   }[] = [];
 
@@ -264,6 +267,7 @@ export async function runCloudFallback(
       release_time: ev.release_time,
       symbol: typeof ev.symbol === "string" ? ev.symbol : null,
       consensus_estimate: typeof ev.consensus_estimate === "string" ? ev.consensus_estimate : null,
+      previous_value: typeof ev.previous_value === "string" ? ev.previous_value : null,
       releaseInstant,
     });
     if (candidates.length >= MAX_CANDIDATES_PER_TICK) break;
@@ -301,13 +305,33 @@ export async function runCloudFallback(
       // Fetch only what's missing — an existing actual is never re-fetched
       // (subrequest saving) and never erased by a later null fetch.
       const haveActual = existing?.actual != null && existing?.deferred !== true;
-      const actual: WorkerEnrichActualResult = haveActual
+      const fetchedActual: WorkerEnrichActualResult = haveActual
         ? { actual: existing!.actual, consensus: existing!.consensus, source: existing!.source }
         : await fetchActualForEventCloud(
             { source_key: cand.source_key, event_date: cand.event_date, consensus_estimate: cand.consensus_estimate },
             env,
           );
-      if (!haveActual && actual.deferred) deferred += 1;
+      if (!haveActual && fetchedActual.deferred) deferred += 1;
+
+      // Macro size check (owner ruling 2026-10-08; Mac twin in
+      // lib/calendar/enrichment-runner.ts, same rule from the mirrored
+      // macro-figure module). A freshly fetched macro actual that is more than
+      // ten times both the snapshot's consensus and its previous reading goes
+      // out as `actual: null` with the reason on the payload. Earnings rows
+      // are never judged here.
+      const macroProblem =
+        !isEarnings && !haveActual
+          ? macroActualProblem(fetchedActual.actual, cand.consensus_estimate, cand.previous_value)
+          : null;
+      if (macroProblem) {
+        console.warn(`[cloud-enrich] candidate ${cand.id}: macro actual not written. ${macroProblem}`);
+      }
+      const actual: WorkerEnrichActualResult = macroProblem
+        ? { ...fetchedActual, actual: null, reason: `${ACTUAL_REFUSED_PREFIX}${macroProblem}` }
+        : fetchedActual;
+      const referencePeriod = isReferencePeriod(actual.referencePeriod)
+        ? actual.referencePeriod
+        : existing?.referencePeriod;
 
       // Earnings sector is not in the snapshot; map from event_type only on
       // cloud path. Macro events map cleanly; earnings will get null sector
@@ -349,6 +373,8 @@ export async function runCloudFallback(
         reason: actual.reason,
         reaction: reaction ?? existing?.reaction ?? null,
         fetchedAt: new Date().toISOString(),
+        // Only when known, so a payload with no period keeps its old shape.
+        ...(referencePeriod ? { referencePeriod } : {}),
       };
 
       await env.CRON_KV.put(cloudEnrichedKey(cand.id), JSON.stringify(payload), {

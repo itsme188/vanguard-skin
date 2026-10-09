@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import type { CalendarEvent, EventImpact } from "@/lib/types";
+import { macroPeriodNote } from "@/lib/calendar/macro-period-display";
 
 // ── Event type styling ───────────────────────────────────────────
 
@@ -53,6 +54,9 @@ interface EventCardProps {
 export function EventCard({ event, compact = false }: EventCardProps) {
   const [expanded, setExpanded] = useState(false);
   const config = EVENT_TYPE_CONFIG[event.event_type] ?? EVENT_TYPE_CONFIG.other;
+  // The data period from FRED's observation date, shown beside the title
+  // only when the title does not already name it. The title is never edited.
+  const periodNote = macroPeriodNote(event.title, event.reference_period);
 
   if (compact) {
     return (
@@ -70,6 +74,7 @@ export function EventCard({ event, compact = false }: EventCardProps) {
             )}
           </div>
           <p className="text-sm text-ink truncate">{event.title}</p>
+          {periodNote && <p className="text-xs text-ink-dim truncate">{periodNote}</p>}
         </div>
         {event.expected_impact && (
           <ImpactBadge impact={event.expected_impact} />
@@ -106,6 +111,7 @@ export function EventCard({ event, compact = false }: EventCardProps) {
           <p className={`text-sm font-medium mt-1 ${config.color}`}>
             {event.title}
           </p>
+          {periodNote && <p className="text-xs text-ink-dim mt-0.5">{periodNote}</p>}
 
           {/* Description — always visible, no truncation */}
           {event.description && (

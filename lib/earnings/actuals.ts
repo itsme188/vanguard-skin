@@ -89,8 +89,8 @@ export function saveManualActuals(
   // (A separate read: the by-id actuals read above is pinned by
   // tests/repo/calendar-event-actuals-healed-reader.test.ts and reads no type.)
   const kind = db
-    .prepare("SELECT event_type FROM calendar_events WHERE id = ?")
-    .get(input.eventId) as { event_type: string } | undefined;
+    .prepare("SELECT event_type, symbol FROM calendar_events WHERE id = ?")
+    .get(input.eventId) as { event_type: string; symbol: string | null } | undefined;
   if (kind?.event_type !== "earnings") {
     return {
       ok: false,
@@ -144,13 +144,41 @@ export function saveManualActuals(
   // stamp across the cluster keyed on the accepted FIGURE
   // (lib/queries/manual-actuals-cluster.ts), and reconcileEarningsDates
   // carries it forward with the figure it describes.
+  //
+  // Vendor figure kept (migration 096, owner ruling 2026-10-08): the first
+  // hand-entered or promoted save copies the actual it is about to replace
+  // into vendor_actual_value, so the recap scoreboard can footnote it. Three
+  // conditions, all required:
+  //   - nothing is kept yet (written once, never replaced);
+  //   - this row carries no stamp of its own (a stamped row's actual is
+  //     already hand-entered; a hand-entered figure never goes in that column);
+  //   - no twin of this print carries a stamp for the SAME figure (the
+  //     twin-flip shape: the row shows a hand-entered figure with no stamp of
+  //     its own, lib/queries/manual-actuals-cluster.ts).
+  // SQLite evaluates every right-hand side against the row as it stood before
+  // the UPDATE, so `actual_value` and `manual_actuals_at` in the CASE are the
+  // old values.
+  const existingIsHandEntered =
+    clusterManualActualsAt(db, {
+      symbol: kind.symbol,
+      event_date: event.event_date,
+      event_type: kind.event_type,
+      actual_value: event.actual_value,
+    }) != null;
   db.prepare(
     `UPDATE calendar_events
-        SET actual_value = ?,
+        SET vendor_actual_value = CASE
+              WHEN vendor_actual_value IS NULL
+                   AND manual_actuals_at IS NULL
+                   AND ? = 0
+                THEN actual_value
+              ELSE vendor_actual_value
+            END,
+            actual_value = ?,
             enriched_at = COALESCE(enriched_at, datetime('now')),
             manual_actuals_at = datetime('now')
       WHERE id = ?`,
-  ).run(formatted, input.eventId);
+  ).run(existingIsHandEntered ? 1 : 0, formatted, input.eventId);
 
   return { ok: true, actualValue: formatted };
 }

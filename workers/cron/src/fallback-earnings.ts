@@ -1119,6 +1119,16 @@ ${lines.join("\n")}
 
 // ── Scoreboard table (mirrors Mac renderHeadlineTable) ──────────────
 
+// PARITY (Mac: lib/earnings/actuals-basis.ts, owner ruling 2026-10-08): the
+// basis line under the recap scoreboard. The cloud recap gets the LABEL only:
+// the Mac also footnotes the kept vendor figure, the Worker does not read it
+// (the snapshot contract is not extended for it). The two strings are pinned
+// to the Mac's in workers/cron/test/fallback-earnings.test.ts. Change both
+// sides together.
+export const ACTUALS_BASIS_VENDOR_LINE = "*Actuals basis: vendor.*";
+export const ACTUALS_BASIS_ADJUSTED_LINE =
+  "*Actuals basis: adjusted (worksheet or hand-entered figure).*";
+
 export function renderScoreboard(
   event: CalendarEventRow,
   phase: EarningsPhase,
@@ -1136,6 +1146,18 @@ export function renderScoreboard(
     phase === "recap" && !implausible
       ? parseFinnhubFigure(actualRaw)
       : { eps: null as string | null, revenue: null as string | null };
+
+  // Basis label, only when an actual is shown. "Adjusted" needs BOTH the
+  // snapshot row's own actual and its manual_actuals_at stamp (the snapshot
+  // resolves the stamp across the print's twin rows before upload); an actual
+  // that came from the cloud-enrich payload is always a vendor figure.
+  const showsActual = actual.eps != null || actual.revenue != null;
+  const actualIsAdjusted =
+    (event.actual_value as string | null) != null &&
+    (event.manual_actuals_at as string | null | undefined) != null;
+  const basisBlock = showsActual
+    ? `\n\n${actualIsAdjusted ? ACTUALS_BASIS_ADJUSTED_LINE : ACTUALS_BASIS_VENDOR_LINE}`
+    : "";
 
   const epsConsensus = cons.eps ?? "—";
   const epsActual = actual.eps ?? "—";
@@ -1204,7 +1226,7 @@ export function renderScoreboard(
 | **Guidance (next quarter)** | — | — | — |
 | **${sym} @ T+2h** | — | ${stockR} | — |
 | **SPY @ T+2h** | — | ${spyR} | — |
-| **QQQ @ T+2h** | — | ${qqqR} | — |
+| **QQQ @ T+2h** | — | ${qqqR} | — |${basisBlock}
 
 *Cloud-fallback delivery — empty cells in a preview are intentional. \`—\` in the actual column on a recap means data wasn't available at send time.*${warn}`;
 }

@@ -4,6 +4,7 @@ import { addDays, formatWeekRange, todayET, getCurrentMonday, mondayOf } from "@
 import { formatFinnhubFigure, parseFinnhubFigure, formatFinnhubFigureCompact } from "@/lib/format/finnhub-figure";
 import { formatCompactUSD } from "@/lib/format";
 import { effectiveConsensus } from "@/lib/calendar/consensus";
+import { macroPeriodNote } from "@/lib/calendar/macro-period-display";
 import {
   earningsTimeLabel,
   FRED_SOURCE_KEY_PREFIX,
@@ -673,6 +674,7 @@ function EventRow({ event: storedEvent, todayIso }: { event: DisplayedEvent; tod
   // A hand-entered earnings row prints its market slot, not "(Manual entry)".
   // Display only: every other read below is untouched by the title.
   const event: DisplayedEvent = { ...storedEvent, title: weekAheadTitle(storedEvent) };
+  const periodNote = macroPeriodNote(storedEvent.title, storedEvent.reference_period);
   // "time unknown" for an earnings row with no clock time — never a blank and
   // never a default (user ruling 2026-10-05). Single-sourced with Today's
   // releases in lib/calendar/release-times.ts.
@@ -763,6 +765,11 @@ function EventRow({ event: storedEvent, todayIso }: { event: DisplayedEvent; tod
       >
         {event.title}
       </p>
+      {/* Macro rows: the data period from FRED's observation date, beside the
+          title when the title does not already name it. Never a title edit. */}
+      {periodNote && (
+        <p className="text-[12px] text-ink-dim leading-snug mt-0.5">{periodNote}</p>
+      )}
       {/* Consensus stays visible even after the actual lands — an enriched
           past week is only useful if the print can be judged against the
           street (a bare "actual $6.18" hides a 16% miss). */}

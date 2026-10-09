@@ -34,6 +34,7 @@ import { isUsableReactionLeg } from "@/lib/calendar/reaction-snapshot-core";
 import type { BenchmarkReaction, ReactionSnapshot } from "@/lib/calendar/reaction-snapshot";
 import type { CalendarEvent, EarningsTranscript } from "@/lib/types";
 import { actualsAreImplausible } from "@/lib/earnings/actuals-display";
+import { renderActualsBasisLine } from "@/lib/earnings/actuals-basis";
 import { applyClusterManualActuals } from "@/lib/queries/manual-actuals-cluster";
 import { getEventById } from "@/lib/queries/calendar";
 import { getEmailIgnoredManualTwins } from "@/lib/queries/manual-twin-email";
@@ -1842,7 +1843,7 @@ ${rows.join("\n")}
 // snapshot at email-send time.
 export function renderHeadlineTable(
   event: Pick<CalendarEvent, "consensus_estimate" | "actual_value" | "consensus_value" | "reaction_snapshot"> &
-    Partial<Pick<CalendarEvent, "manual_actuals_at">>,
+    Partial<Pick<CalendarEvent, "manual_actuals_at" | "vendor_actual_value">>,
   symbol: string,
   phase: "preview" | "recap",
   intel?: EarningsIntelView | null,
@@ -1938,11 +1939,24 @@ export function renderHeadlineTable(
       ? "\n\n*⚠ Reported actuals were flagged as implausible vs consensus (likely Finnhub scrape error). Cells blanked to avoid misleading; verify via press release before relying on them.*"
       : "";
 
+  // Basis line (owner ruling 2026-10-08): says whether the Actual column is
+  // the adjusted (worksheet / hand-entered) figure or the vendor's, and
+  // footnotes the kept vendor figure when the adjusted one leads. A separate
+  // line, so the EPS / Revenue rows stay byte-identical. Null whenever no
+  // actual is shown (preview, no actual yet, blanked as implausible).
+  const basisLine = renderActualsBasisLine({
+    shownActual: phase === "recap" && plausible ? event.actual_value : null,
+    manualActualsAt: event.manual_actuals_at,
+    vendorActualValue: event.vendor_actual_value,
+    consensus: consSource,
+  });
+  const basisBlock = basisLine ? `\n\n${basisLine}` : "";
+
   return `## ${symbol} scoreboard — ${phaseLabel}
 
 | Metric | Consensus | Actual | Δ |
 |---|---|---|---|
-${rows}
+${rows}${basisBlock}
 
 *Empty cells in a preview are intentional — print this, fill them in live during the call. Recap fills them automatically. \`—\` in the actual column on a recap means data wasn't available at send time (e.g. TWS disconnected, transcript not posted).*${flaggedNote}`;
 }
