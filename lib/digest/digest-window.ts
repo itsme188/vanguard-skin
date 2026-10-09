@@ -1,5 +1,5 @@
 import type Database from "better-sqlite3";
-import { todayET, addDays } from "@/lib/calendar/date-utils";
+import { todayET, addDays, easternDayStartIso, isDateOnly } from "@/lib/calendar/date-utils";
 import { getLastDigestSentAt } from "@/lib/digest/daily-digest";
 
 /**
@@ -25,4 +25,13 @@ export function resolveDigestSince(
 /** The window for a caller that named no mode: the Eastern yesterday. */
 export function defaultDigestSince(): string {
   return addDays(todayET(), -1);
+}
+
+/**
+ * The instant a window opens, for a SQL `datetime(?)` comparison. A date-only
+ * window opens at midnight Eastern (SQLite would read the bare date as UTC
+ * midnight, the prior evening in Eastern). A full instant is returned as is.
+ */
+export function digestWindowStartInstant(since: string): string {
+  return isDateOnly(since) ? easternDayStartIso(since) : since;
 }

@@ -87,6 +87,20 @@ export function RecomputeButton({
                   Realized: <Money value={year.realizedGainBefore} /> →{" "}
                   <Money value={year.realizedGainAfter} />
                 </div>
+                {(year.nonUsdSalesExcludedBefore > 0 || year.nonUsdSalesExcludedAfter > 0) && (
+                  <div className="text-ink-dim">
+                    USD sales only —{" "}
+                    {year.nonUsdSalesExcludedBefore !== year.nonUsdSalesExcludedAfter ? (
+                      <>
+                        <Count value={year.nonUsdSalesExcludedBefore} /> →{" "}
+                        <Count value={year.nonUsdSalesExcludedAfter} />
+                      </>
+                    ) : (
+                      <Count value={year.nonUsdSalesExcludedAfter} />
+                    )}{" "}
+                    non-USD sale(s) excluded (native-currency figures)
+                  </div>
+                )}
                 <div>
                   Lot sales added <Count value={year.lotSalesAdded} />, removed{" "}
                   <Count value={year.lotSalesRemoved} />

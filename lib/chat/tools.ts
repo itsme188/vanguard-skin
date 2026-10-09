@@ -238,7 +238,7 @@ export const CHAT_TOOLS: Anthropic.Tool[] = [
         status: {
           type: "string",
           enum: ["open", "closed", "all"],
-          description: "Filter by lot status. Defaults to 'open'.",
+          description: "Filter by lot status. Defaults to 'open'. 'all' returns open lots and closed sales (open first; the limit applies to each).",
         },
         symbol: {
           type: "string",
@@ -251,7 +251,7 @@ export const CHAT_TOOLS: Anthropic.Tool[] = [
         },
         year: {
           type: "integer",
-          description: "For closed lots: filter sales by calendar year",
+          description: "For closed sales: filter by calendar year (does not limit open lots)",
         },
         sort_by: {
           type: "string",

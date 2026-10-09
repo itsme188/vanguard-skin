@@ -400,9 +400,9 @@ export function ScenarioModelingCard({ scope }: { scope?: string }) {
                             key={pos.securityId}
                             className="flex items-center justify-between text-xs"
                           >
-                            <div className="flex items-center gap-2 min-w-0">
+                            <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 min-w-0 flex-1">
                               <span
-                                className="font-mono font-medium text-ink min-w-[8rem] truncate whitespace-nowrap"
+                                className="font-mono font-medium text-ink break-words"
                                 title={formatCompactOptionSymbol(pos.symbol)}
                               >
                                 {formatCompactOptionSymbol(pos.symbol)}
@@ -431,7 +431,7 @@ export function ScenarioModelingCard({ scope }: { scope?: string }) {
                                 )
                               )}
                             </div>
-                            <div className="flex items-center gap-3 shrink-0 ml-2">
+                            <div className="flex items-center gap-3 shrink-0 ml-2 whitespace-nowrap">
                               <PrivateText className="font-mono tabular-nums text-down">
                                 {formatPct(pos.changePercent)}
                               </PrivateText>
@@ -457,9 +457,9 @@ export function ScenarioModelingCard({ scope }: { scope?: string }) {
                             key={pos.securityId}
                             className="flex items-center justify-between text-xs"
                           >
-                            <div className="flex items-center gap-2 min-w-0">
+                            <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 min-w-0 flex-1">
                               <span
-                                className="font-mono font-medium text-ink min-w-[8rem] truncate whitespace-nowrap"
+                                className="font-mono font-medium text-ink break-words"
                                 title={formatCompactOptionSymbol(pos.symbol)}
                               >
                                 {formatCompactOptionSymbol(pos.symbol)}
@@ -485,7 +485,7 @@ export function ScenarioModelingCard({ scope }: { scope?: string }) {
                                 )
                               )}
                             </div>
-                            <div className="flex items-center gap-3 shrink-0 ml-2">
+                            <div className="flex items-center gap-3 shrink-0 ml-2 whitespace-nowrap">
                               <PrivateText className="font-mono tabular-nums text-up">
                                 {formatPct(pos.changePercent)}
                               </PrivateText>
@@ -535,7 +535,7 @@ export function ScenarioModelingCard({ scope }: { scope?: string }) {
                           .map((pos) => (
                             <div key={pos.securityId} className="flex items-center justify-between gap-3 text-xs">
                               <span
-                                className="font-mono font-medium text-ink truncate whitespace-nowrap min-w-[8rem]"
+                                className="font-mono font-medium text-ink break-words min-w-0"
                                 title={formatCompactOptionSymbol(pos.symbol)}
                               >
                                 {formatCompactOptionSymbol(pos.symbol)}
