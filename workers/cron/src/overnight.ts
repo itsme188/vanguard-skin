@@ -94,10 +94,15 @@ export async function fetchOvernightMovesWorker(today: string): Promise<Overnigh
   return moves;
 }
 
-/** +0.8% / −2.1% — real minus sign (U+2212), matching the Mac renderer. */
+/**
+ * +0.8% / −2.1% — real minus sign (U+2212), matching the Mac renderer.
+ * The sign is chosen AFTER rounding: a move of −0.04% rounds to 0.0 and prints
+ * "0.0%", never "−0.0%" (qa:dashboard-research-view-feeds-digest-preview-structured-tab-overnight-scoreboard-digest-overnight-scoreboard-p; mirrored from lib/digest/overnight.ts).
+ */
 function fmtPct(pct: number): string {
-  const sign = pct >= 0 ? "+" : "−";
-  return `${sign}${Math.abs(pct).toFixed(1)}%`;
+  const magnitude = Math.abs(pct).toFixed(1);
+  if (Number(magnitude) === 0) return "0.0%";
+  return `${pct > 0 ? "+" : "−"}${magnitude}%`;
 }
 
 /** Numbers-only render — same block shape as the Mac minus the VK quote. */
