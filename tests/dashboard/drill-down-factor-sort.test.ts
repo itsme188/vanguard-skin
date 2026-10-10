@@ -1,52 +1,42 @@
 /**
  * QA finding: [qa:dashboard-analysis-view-diagnostics-scope-all-view-top-10-by-risk-drawer-and-the-sector-drill-down-drawer-same]
  * The drill-down AI and Reg columns sorted the raw factor text, so a
- * descending sort gave "Very High > Moderate > Low > High". They now sort
- * by ordinal rank; an unknown or missing value is null (sorts last).
+ * descending sort gave "Very High > Moderate > Low > High". They now sort by
+ * FACTOR_SORT_RANK (the heatmap's table); a missing value is null (last).
  */
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { factorOrdinalRank } from "@/lib/factor-ordinal";
+import { FACTOR_SORT_RANK } from "@/lib/factors";
 import { compareValues } from "@/lib/hooks/useSortParam";
 import { anchorIndex } from "@/tests/helpers/source-anchor";
 
-describe("factorOrdinalRank", () => {
-  it("orders Very High > High > Moderate > Low > No", () => {
-    const r = ["Very High", "High", "Moderate", "Low", "No"].map(factorOrdinalRank);
-    expect(r).toEqual([4, 3, 2, 1, 0]);
-  });
-  it("is case-insensitive and accepts aliases", () => {
-    expect(factorOrdinalRank("VERY HIGH")).toBe(4);
-    expect(factorOrdinalRank(" medium ")).toBe(2);
-    expect(factorOrdinalRank("None")).toBe(0);
-  });
-  it("returns null for unknown or missing values", () => {
-    expect(factorOrdinalRank("Banana")).toBeNull();
-    expect(factorOrdinalRank("")).toBeNull();
-    expect(factorOrdinalRank(null)).toBeNull();
-    expect(factorOrdinalRank(undefined)).toBeNull();
-  });
-  it("sorts descending in ordinal order with unknown last", () => {
-    const vals = ["Low", "Very High", null, "High", "Moderate"];
-    const sorted = [...vals].sort((a, b) =>
-      compareValues(factorOrdinalRank(a), factorOrdinalRank(b), "desc"),
-    );
-    expect(sorted).toEqual(["Very High", "High", "Moderate", "Low", null]);
+describe("drill-down factor ordinal sort", () => {
+  const rank = (v: string | null) => FACTOR_SORT_RANK[v ?? ""] ?? null;
+
+  it("sorts descending Very High > High > Moderate > Low > No, missing last", () => {
+    const vals = ["Low", "Very High", null, "No", "High", "Moderate"];
+    const desc = [...vals].sort((a, b) => compareValues(rank(a), rank(b), "desc"));
+    expect(desc).toEqual(["Very High", "High", "Moderate", "Low", "No", null]);
+    const asc = [...vals].sort((a, b) => compareValues(rank(a), rank(b), "asc"));
+    expect(asc).toEqual(["No", "Low", "Moderate", "High", "Very High", null]);
   });
 });
 
-describe("DrillDownPanel sortValue uses the rank helper", () => {
+describe("DrillDownPanel sortValue uses the shared rank table", () => {
   const source = readFileSync(
     path.join(process.cwd(), "app/dashboard/components/analysis/DrillDownPanel.tsx"),
     "utf8",
   );
-  it("ai and reg cases call factorOrdinalRank", () => {
+  it("imports FACTOR_SORT_RANK from lib/factors", () => {
+    expect(source).toMatch(/import\s*\{\s*FACTOR_SORT_RANK\s*\}\s*from\s*["']@\/lib\/factors["']/);
+  });
+  it("ai and reg cases read FACTOR_SORT_RANK", () => {
     const start = anchorIndex(source, "function sortValue");
     const ai = anchorIndex(source, 'case "ai":', start);
     const reg = anchorIndex(source, 'case "reg":', ai);
-    expect(source.slice(ai, reg)).toContain("factorOrdinalRank(row.factors.ai_exposure)");
     const beta = anchorIndex(source, 'case "beta":', reg);
-    expect(source.slice(reg, beta)).toContain("factorOrdinalRank(row.factors.regulatory_risk)");
+    expect(source.slice(ai, reg)).toContain("FACTOR_SORT_RANK[row.factors.ai_exposure");
+    expect(source.slice(reg, beta)).toContain("FACTOR_SORT_RANK[row.factors.regulatory_risk");
   });
 });
