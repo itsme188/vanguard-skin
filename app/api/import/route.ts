@@ -132,120 +132,153 @@ export async function POST(request: NextRequest) {
     const knownAccountNames =
       mode === "preview" ? getAllAccounts(db).map((a) => a.name) : undefined;
 
+    // Per-file isolation: a parser that THROWS for one file (e.g. the Vanguard
+    // PDF parser on a document that is not a statement) is recorded as that
+    // file's failure, exactly like a parser that RETURNS sourceType "unknown",
+    // so the other files in the drop still preview or commit. The thrown error
+    // is classified the same way the outer catch does. When EVERY file threw,
+    // the response below is the one the outer catch would have given for the
+    // first thrown error, so the single-file contract is unchanged.
+    let firstThrown: { status: 400 | 500; userMessage: string } | null = null;
+    let thrownCount = 0;
+
     for (const file of files) {
-      const isPdf = file.type === "application/pdf" || file.name.endsWith(".pdf");
-      let content: string | Buffer;
+      try {
+        const isPdf = file.type === "application/pdf" || file.name.endsWith(".pdf");
+        let content: string | Buffer;
 
-      if (isPdf) {
-        const arrayBuffer = await file.arrayBuffer();
-        content = Buffer.from(arrayBuffer);
-      } else {
-        content = await file.text();
-      }
+        if (isPdf) {
+          const arrayBuffer = await file.arrayBuffer();
+          content = Buffer.from(arrayBuffer);
+        } else {
+          content = await file.text();
+        }
 
-      // Parse
-      const parsed = await parseImport(content, file.name);
+        // Parse
+        const parsed = await parseImport(content, file.name);
 
-      if (parsed.errors.length > 0 && parsed.sourceType === "unknown") {
-        results.push({
-          filename: file.name,
-          success: false,
-          error: parsed.errors.join("; "),
-        });
-        continue;
-      }
+        if (parsed.errors.length > 0 && parsed.sourceType === "unknown") {
+          results.push({
+            filename: file.name,
+            success: false,
+            error: parsed.errors.join("; "),
+          });
+          continue;
+        }
 
-      // Preview mode — run validation and return summary with any issues
-      if (mode === "preview") {
-        const { skippedRows, validatedResult } = validateParsedResult(parsed, {
-          knownAccountNames,
-        });
+        // Preview mode — run validation and return summary with any issues
+        if (mode === "preview") {
+          const { skippedRows, validatedResult } = validateParsedResult(parsed, {
+            knownAccountNames,
+          });
+          results.push({
+            filename: file.name,
+            success: true,
+            sourceType: parsed.sourceType,
+            preview: {
+              transactionCount: validatedResult.transactions.length,
+              securityCount: validatedResult.securities.length,
+              holdingCount: validatedResult.holdings.length,
+              priceCount: validatedResult.prices.length,
+              snapshotCount: validatedResult.snapshots.length,
+              factorCount: validatedResult.factors?.length ?? 0,
+              corporateActions: {
+                count: validatedResult.corporateActions.length,
+                sample: validatedResult.corporateActions.slice(0, 5).map((ca) => ({
+                  symbol: ca.symbol,
+                  description: `${ca.ratioNumerator}:${ca.ratioDenominator} ${ca.actionType === "SPLIT" ? "split" : "reverse split"}`,
+                  effectiveDate: ca.effectiveDate,
+                })),
+              },
+              donations: previewDonations(db, validatedResult.donations ?? []),
+            },
+            skippedRows: skippedRows.length > 0 ? skippedRows : undefined,
+            errors: parsed.errors,
+            warnings: validatedResult.warnings,
+          });
+          continue;
+        }
+
+        // Commit mode — write to DB
+        // Opt-in: exclude unknown-account rows exactly as preview reported them
+        // (CLI scripts omit this and fail loudly on an unknown account instead).
+        const commitResult = commitImport(db, parsed, { excludeUnknownAccounts: true });
+        commitResultsRaw.push(commitResult);
+
+        // Phase 3: archive source PDFs to R2 (fire-and-forget; never blocks).
+        // Only PDFs are archived — CSVs are usually user-managed/version-tracked
+        // and less likely to be lost.
+        // An all-excluded file (null batchId) wrote nothing, so there is no
+        // batch to attach the archive to.
+        const batchId = commitResult.batchId;
+        if (batchId !== null && isPdf && Buffer.isBuffer(content) && isR2Configured()) {
+          const key = buildStatementKey({
+            sourceType: parsed.sourceType,
+            filename: file.name,
+          });
+          uploadStatementPdf(key, content)
+            .then((returnedKey) => {
+              if (returnedKey) setImportBatchR2Key(db, batchId, returnedKey);
+            })
+            .catch((err) => {
+              console.warn(
+                `[import] R2 archive failed for batch ${batchId} (${file.name}):`,
+                err instanceof Error ? err.message : err
+              );
+            });
+        }
+
         results.push({
           filename: file.name,
           success: true,
           sourceType: parsed.sourceType,
-          preview: {
-            transactionCount: validatedResult.transactions.length,
-            securityCount: validatedResult.securities.length,
-            holdingCount: validatedResult.holdings.length,
-            priceCount: validatedResult.prices.length,
-            snapshotCount: validatedResult.snapshots.length,
-            factorCount: validatedResult.factors?.length ?? 0,
-            corporateActions: {
-              count: validatedResult.corporateActions.length,
-              sample: validatedResult.corporateActions.slice(0, 5).map((ca) => ({
-                symbol: ca.symbol,
-                description: `${ca.ratioNumerator}:${ca.ratioDenominator} ${ca.actionType === "SPLIT" ? "split" : "reverse split"}`,
-                effectiveDate: ca.effectiveDate,
-              })),
-            },
-            donations: previewDonations(db, validatedResult.donations ?? []),
+          batchId: commitResult.batchId,
+          committed: {
+            newTransactions: commitResult.newTransactions,
+            newHoldings: commitResult.newHoldings,
+            newPrices: commitResult.newPrices,
+            newSnapshots: commitResult.newSnapshots,
+            newSecurities: commitResult.newSecurities,
+            newFactors: commitResult.newFactors,
+            newCorporateActions: commitResult.newCorporateActions,
+            newDonations: commitResult.newDonations,
+            updatedDonations: commitResult.updatedDonations,
+            skippedDuplicates: commitResult.skippedDuplicates,
+            totalRecords: commitResult.recordCount,
+            unmatchedFactors: commitResult.unmatchedFactors,
           },
-          skippedRows: skippedRows.length > 0 ? skippedRows : undefined,
           errors: parsed.errors,
-          warnings: validatedResult.warnings,
+          // Parser-level warnings (e.g. skipped merger/malformed CA rows) plus
+          // commit-time corporate-action warnings (unresolved symbol, ratio
+          // collision) — both are meaningful post-commit, neither should be lost.
+          warnings: [...parsed.warnings, ...commitResult.warnings],
+          // Rows validation excluded at commit (same predicate as preview, e.g.
+          // an unknown account name) — reported, never silently dropped.
+          skippedRows:
+            commitResult.skippedRows.length > 0 ? commitResult.skippedRows : undefined,
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Unknown error";
+        const classified = classifyImportError(message);
+        if (classified.status === 500) {
+          console.error(`[import] ${file.name} failed:`, error);
+        }
+        firstThrown ??= classified;
+        thrownCount += 1;
+        results.push({
+          filename: file.name,
+          success: false,
+          error: classified.userMessage,
         });
         continue;
       }
+    }
 
-      // Commit mode — write to DB
-      // Opt-in: exclude unknown-account rows exactly as preview reported them
-      // (CLI scripts omit this and fail loudly on an unknown account instead).
-      const commitResult = commitImport(db, parsed, { excludeUnknownAccounts: true });
-      commitResultsRaw.push(commitResult);
-
-      // Phase 3: archive source PDFs to R2 (fire-and-forget; never blocks).
-      // Only PDFs are archived — CSVs are usually user-managed/version-tracked
-      // and less likely to be lost.
-      // An all-excluded file (null batchId) wrote nothing, so there is no
-      // batch to attach the archive to.
-      const batchId = commitResult.batchId;
-      if (batchId !== null && isPdf && Buffer.isBuffer(content) && isR2Configured()) {
-        const key = buildStatementKey({
-          sourceType: parsed.sourceType,
-          filename: file.name,
-        });
-        uploadStatementPdf(key, content)
-          .then((returnedKey) => {
-            if (returnedKey) setImportBatchR2Key(db, batchId, returnedKey);
-          })
-          .catch((err) => {
-            console.warn(
-              `[import] R2 archive failed for batch ${batchId} (${file.name}):`,
-              err instanceof Error ? err.message : err
-            );
-          });
-      }
-
-      results.push({
-        filename: file.name,
-        success: true,
-        sourceType: parsed.sourceType,
-        batchId: commitResult.batchId,
-        committed: {
-          newTransactions: commitResult.newTransactions,
-          newHoldings: commitResult.newHoldings,
-          newPrices: commitResult.newPrices,
-          newSnapshots: commitResult.newSnapshots,
-          newSecurities: commitResult.newSecurities,
-          newFactors: commitResult.newFactors,
-          newCorporateActions: commitResult.newCorporateActions,
-          newDonations: commitResult.newDonations,
-          updatedDonations: commitResult.updatedDonations,
-          skippedDuplicates: commitResult.skippedDuplicates,
-          totalRecords: commitResult.recordCount,
-          unmatchedFactors: commitResult.unmatchedFactors,
-        },
-        errors: parsed.errors,
-        // Parser-level warnings (e.g. skipped merger/malformed CA rows) plus
-        // commit-time corporate-action warnings (unresolved symbol, ratio
-        // collision) — both are meaningful post-commit, neither should be lost.
-        warnings: [...parsed.warnings, ...commitResult.warnings],
-        // Rows validation excluded at commit (same predicate as preview, e.g.
-        // an unknown account name) — reported, never silently dropped.
-        skippedRows:
-          commitResult.skippedRows.length > 0 ? commitResult.skippedRows : undefined,
-      });
+    if (firstThrown !== null && thrownCount === files.length) {
+      return NextResponse.json(
+        { success: false, error: firstThrown.userMessage },
+        { status: firstThrown.status }
+      );
     }
 
     // Auto-classify and compute tax lots after commit. The route loops over
