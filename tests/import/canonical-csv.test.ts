@@ -514,6 +514,22 @@ VTI,2025-06-30,242.00`;
     ).toBe(true);
   });
 
+  it("reports a blank close_price as a skipped row, while still parsing the valid rows", () => {
+    const csv = `symbol,date,close_price
+AAA,2026-01-30,100
+AAA,2026-01-31,
+AAA,2026-02-01,102`;
+
+    const result = parseCanonicalCsv(csv, "prices.csv");
+    expect(result.prices).toHaveLength(2);
+    expect(result.prices.map((p) => p.date)).toEqual(["2026-01-30", "2026-02-01"]);
+    expect(
+      result.warnings.some(
+        (w) => /AAA/.test(w) && /2026-01-31/.test(w) && /empty close_price/.test(w)
+      )
+    ).toBe(true);
+  });
+
   it("skips rows with missing fields", () => {
     const csv = `symbol,date,close_price
 ,2025-06-30,195.00
@@ -591,6 +607,21 @@ IBKR,2025-05-31,290000,,,,,,,,`;
     expect(result.snapshots[0].monthEndDate).toBe("2025-05-31");
     expect(
       result.warnings.some((w) => /IBKR/.test(w) && /total_value/i.test(w))
+    ).toBe(true);
+  });
+
+  it("reports a blank total_value as a skipped row, while still parsing the valid rows", () => {
+    const csv = `${header}
+Acct,2025-12-31,100000,,,,,,,,
+Acct,2026-01-31,,,,,,,,,
+Acct,2026-02-28,102000,,,,,,,,`;
+
+    const result = parseCanonicalCsv(csv, "snapshots.csv");
+    expect(result.snapshots).toHaveLength(2);
+    expect(
+      result.warnings.some(
+        (w) => /Acct/.test(w) && /2026-01-31/.test(w) && /empty total_value/.test(w)
+      )
     ).toBe(true);
   });
 });
