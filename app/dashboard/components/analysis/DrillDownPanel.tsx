@@ -28,7 +28,7 @@ import Link from "next/link";
 import { Money, Pct } from "@/lib/privacy/components";
 import { usePrivacy } from "@/lib/privacy/context";
 import { ScrollFade } from "../ScrollFade";
-import { factorOrdinalRank } from "@/lib/factor-ordinal";
+import { FACTOR_SORT_RANK } from "@/lib/factors";
 import { SortableHeader } from "../SortableHeader";
 import { compareValues, useSortParam } from "@/lib/hooks/useSortParam";
 import {
@@ -413,9 +413,9 @@ function sortValue(row: DrillDownRow, field: SortField): unknown {
     case "sector":
       return row.sector;
     case "ai":
-      return factorOrdinalRank(row.factors.ai_exposure);
+      return FACTOR_SORT_RANK[row.factors.ai_exposure ?? ""] ?? null;
     case "reg":
-      return factorOrdinalRank(row.factors.regulatory_risk);
+      return FACTOR_SORT_RANK[row.factors.regulatory_risk ?? ""] ?? null;
     case "beta":
       return row.beta;
     case "risk":
