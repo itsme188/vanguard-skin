@@ -336,7 +336,13 @@ export function parseCanonicalCsv(
 
       case "prices": {
         const symbol = row.symbol?.trim();
-        if (!symbol || !row.date || !row.close_price) continue;
+        if (!symbol || !row.date) continue;
+        if (!row.close_price?.trim()) {
+          warnings.push(
+            `Skipped price ${symbol} ${row.date.trim()}: empty close_price`
+          );
+          continue;
+        }
         const closePrice = parseStrictNumber(row.close_price);
         if (isNaN(closePrice)) {
           // Silent before this fix: a non-numeric close_price cell just
@@ -359,7 +365,13 @@ export function parseCanonicalCsv(
       }
 
       case "snapshots": {
-        if (!row.account || !row.month_end_date || !row.total_value) continue;
+        if (!row.account || !row.month_end_date) continue;
+        if (!row.total_value?.trim()) {
+          warnings.push(
+            `Skipped snapshot ${row.account.trim()} ${row.month_end_date.trim()}: empty total_value`
+          );
+          continue;
+        }
         const totalValue = parseStrictNumber(row.total_value);
         if (isNaN(totalValue)) {
           // Silent before this fix: a non-numeric total_value cell just
