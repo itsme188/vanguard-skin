@@ -92,10 +92,15 @@ export async function fetchOvernightMoves(
   return results.filter((m): m is OvernightMove => m !== null);
 }
 
-/** +0.8% / −2.1% — real minus sign (U+2212) for email typography. */
+/**
+ * +0.8% / −2.1% — real minus sign (U+2212) for email typography.
+ * The sign is chosen AFTER rounding: a move of −0.04% rounds to 0.0 and prints
+ * "0.0%", never "−0.0%" (qa:dashboard-research-view-feeds-digest-preview-structured-tab-overnight-scoreboard-digest-overnight-scoreboard-p).
+ */
 function fmtPct(pct: number): string {
-  const sign = pct >= 0 ? "+" : "−";
-  return `${sign}${Math.abs(pct).toFixed(1)}%`;
+  const magnitude = Math.abs(pct).toFixed(1);
+  if (Number(magnitude) === 0) return "0.0%";
+  return `${pct > 0 ? "+" : "−"}${magnitude}%`;
 }
 
 /**
