@@ -980,42 +980,82 @@ export function LevelsPanel({
     const priceNum = price ? parseFloat(price) : currentPrice ?? 0;
     if (priceSource === "static" && (!priceNum || Number.isNaN(priceNum))) return;
 
+    await submitAdd({
+      security_id: securityId,
+      level_type: levelType,
+      price: priceNum,
+      price_source: priceSource,
+      direction: direction || null,
+      action_hint: actionHint || null,
+      source: "user",
+      source_author: sourceAuthor || null,
+      thesis: thesis || null,
+      timeframe: timeframe || null,
+      expires_at: expiresAt || null,
+    });
+  }
+
+  // A create lands armed, so the server asks the same arm guard as Edit and
+  // Reactivate. `confirmed` names the refusal the user just overrode (null on
+  // the first try); the retry resends the SAME body with `force`.
+  async function submitAdd(
+    addBody: Record<string, unknown>,
+    confirmed: ArmRefusalCode | null = null,
+  ) {
+    const addedType = String(addBody.level_type);
     setLoading(true);
     try {
       const res = await apiFetch("/api/levels", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          security_id: securityId,
-          level_type: levelType,
-          price: priceNum,
-          price_source: priceSource,
-          direction: direction || null,
-          action_hint: actionHint || null,
-          source: "user",
-          source_author: sourceAuthor || null,
-          thesis: thesis || null,
-          timeframe: timeframe || null,
-          expires_at: expiresAt || null,
-        }),
+        body: JSON.stringify({ ...addBody, force: confirmed !== null }),
       });
-      const result = await readMutationResult<{ warning?: unknown }>(res);
+      const raw = (await res.clone().json().catch(() => null)) as
+        | { code?: unknown; currentPrice?: unknown; effectivePrice?: unknown }
+        | null;
+      const result = { ...(await readMutationResult<{ warning?: unknown }>(res)), code: raw?.code };
+      const current =
+        typeof raw?.currentPrice === "number" ? formatLevelPrice(currency, raw.currentPrice) : "the current price";
+      const effective =
+        typeof raw?.effectivePrice === "number" ? formatLevelPrice(currency, raw.effectivePrice) : "the new level";
       if (!result.ok) {
-        toast(`Couldn't add the level: ${result.message}`, "error");
+        if (result.status === 409 && result.code === "would_fire_immediately") {
+          setConfirmPrompt({
+            title: "Add this level?",
+            message: `Price ${current} is already past the new level (${effective}). Adding it will fire an alert on the next scan. Add anyway?`,
+            confirmLabel: "Add anyway",
+            onConfirm: () => submitAdd(addBody, "would_fire_immediately"),
+            onCancel: () => toast("Nothing was saved. The level was not added.", "info"),
+          });
+        } else if (result.status === 409 && result.code === "beyond_scan_range") {
+          setConfirmPrompt({
+            title: "Add this level?",
+            message: `The new level (${effective}) is outside the scanner's range at the current price ${current}, so every scan would skip it and it could not alert. This usually means a mis-scaled price. Add anyway?`,
+            confirmLabel: "Add anyway",
+            onConfirm: () => submitAdd(addBody, "beyond_scan_range"),
+            onCancel: () => toast("Nothing was saved. The level was not added.", "info"),
+          });
+        } else {
+          toast(`Couldn't add the level: ${result.message}`, "error");
+        }
         return;
       }
       const json = result.data;
       // Honest feedback: the save succeeded, but a level outside the scanner's
-      // range is not monitored coverage. The form warns before the save too —
-      // this covers the case where the user pressed on anyway, and the "info"
-      // tone keeps it from reading as an outright failure.
-      if (json.warning) {
+      // range is not monitored coverage. The "info" tone keeps it from
+      // reading as an outright failure.
+      if (confirmed === "beyond_scan_range" || json.warning) {
         toast(
-          `${symbol} ${levelType} level added — but it is outside the scanner's range, so it will not alert`,
+          `${symbol} ${addedType} level added — but it is outside the scanner's range, so it will not alert`,
           "info",
         );
+      } else if (confirmed === "would_fire_immediately") {
+        toast(
+          `${symbol} ${addedType} level added. The price is already past it, so it will alert on the next scan.`,
+          "success",
+        );
       } else {
-        toast(`${symbol} ${levelType} level added`, "success");
+        toast(`${symbol} ${addedType} level added`, "success");
       }
       // Reset form — keep "Me" as the default author after submit so a quick
       // series of self-originated entries doesn't need re-typing.
