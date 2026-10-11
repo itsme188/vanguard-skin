@@ -4,6 +4,12 @@ import { CHIP_TONE_CLASSES } from "@/app/dashboard/components/Chip";
 import { readMutationResult, networkFailureMessage } from "@/lib/ui/mutation-result";
 import { useEffect, useRef, useState } from "react";
 import { useToast } from "./Toast";
+import { useConfirmPrompt } from "./useConfirmPrompt";
+import {
+  CREATE_DECLINED_MESSAGE,
+  createRefusalPrompt,
+  type CreateRefusalCode,
+} from "@/lib/levels/create-level-prompt";
 import { formatChartPrice } from "@/lib/chart/price-formatter";
 import apiFetch from "@/lib/http/apiFetch";
 import {
@@ -43,8 +49,15 @@ export function AddLevelPopover({
   const { toast } = useToast();
   const [submitting, setSubmitting] = useState<"support" | "resistance" | null>(null);
   const ref = useRef<HTMLDivElement>(null);
+  const prompt = useConfirmPrompt();
+  // The question is portalled to the document body, outside `ref`, so the
+  // close-on-outside-click and close-on-Escape listeners below must stand
+  // down while it is open: otherwise answering it would close the popover,
+  // and unmounting the popover answers the question "no".
+  const promptOpen = prompt.isOpen;
 
   useEffect(() => {
+    if (promptOpen) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
     };
@@ -58,7 +71,7 @@ export function AddLevelPopover({
       window.removeEventListener("keydown", onKey);
       window.removeEventListener("mousedown", onClick);
     };
-  }, [onClose]);
+  }, [onClose, promptOpen]);
 
   // Suggest a default based on proximity to current price. User still has to
   // pick (2-click confirm) — we just highlight the likely one so the common
@@ -70,12 +83,18 @@ export function AddLevelPopover({
         ? "support"
         : "resistance";
 
-  // Non-blocking: a level this far from spot is still savable (the user may be
-  // marking structure for later), but the scanner will skip it on every pass,
-  // so saying nothing would promise an alert that never comes.
+  // A level this far from spot can still be saved (the user may be marking
+  // structure for later), but the scanner will skip it on every pass, so the
+  // popover says so up front. The server asks the arm guard on every create
+  // (lib/levels/create-level.ts) and refuses such a level, or one the price is
+  // already past, with a 409; submit() then asks "Add anyway?" before
+  // resending with `force`.
   const beyondScanRange = isLevelBeyondScanRange(price, currentPrice, securityType);
 
-  async function submit(type: "support" | "resistance") {
+  async function submit(
+    type: "support" | "resistance",
+    confirmed: CreateRefusalCode | null = null,
+  ) {
     setSubmitting(type);
     try {
       const res = await apiFetch("/api/levels", {
@@ -93,15 +112,42 @@ export function AddLevelPopover({
           thesis: `Added by chart click at ${formatChartPrice(currency, price)}`,
           timeframe: null,
           expires_at: null,
+          force: confirmed !== null,
         }),
       });
-      const result = await readMutationResult(res);
+      const raw = (await res.clone().json().catch(() => null)) as
+        | { code?: unknown; currentPrice?: unknown; effectivePrice?: unknown }
+        | null;
+      const result = await readMutationResult<{ warning?: unknown }>(res);
       if (!result.ok) {
+        const question = createRefusalPrompt(result.status, raw, (p) => formatChartPrice(currency, p));
+        if (question) {
+          // Same body, resent with force when the user confirms.
+          if (!(await prompt.ask(question))) {
+            toast(CREATE_DECLINED_MESSAGE, "info");
+            setSubmitting(null);
+            return;
+          }
+          await submit(type, question.code);
+          return;
+        }
         toast(`Couldn't add the level: ${result.message}`, "error");
         setSubmitting(null);
         return;
       }
-      toast(`${symbol} ${type} at ${formatChartPrice(currency, price)} added`, "success");
+      if (confirmed === "beyond_scan_range" || result.data.warning) {
+        toast(
+          `${symbol} ${type} at ${formatChartPrice(currency, price)} added — but it is outside the scanner's range, so it will not alert`,
+          "info",
+        );
+      } else if (confirmed === "would_fire_immediately") {
+        toast(
+          `${symbol} ${type} at ${formatChartPrice(currency, price)} added. The price is already past it, so it will alert on the next scan.`,
+          "success",
+        );
+      } else {
+        toast(`${symbol} ${type} at ${formatChartPrice(currency, price)} added`, "success");
+      }
       window.dispatchEvent(new CustomEvent("level-added"));
       onAdded();
     } catch {
@@ -177,6 +223,7 @@ export function AddLevelPopover({
       <p className="text-[10px] text-ink-faint mt-2">
         Esc or click outside to cancel
       </p>
+      {prompt.dialog}
     </div>
   );
 }

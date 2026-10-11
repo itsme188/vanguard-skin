@@ -152,7 +152,7 @@ async function postLevel(body: unknown) {
 }
 
 describe("POST /api/levels — beyond-scan-range warning", () => {
-  it("creates the level but warns that the scanner will skip it", async () => {
+  it("refuses an unforced beyond-range create with 409 beyond_scan_range and writes nothing", async () => {
     const secId = seedSecurity("MISSCALEQA");
     seedPriceDaysAgo(secId, 748, 0);
 
@@ -160,6 +160,25 @@ describe("POST /api/levels — beyond-scan-range warning", () => {
       security_id: secId,
       level_type: "support",
       price: 7100,
+    });
+
+    expect(status).toBe(409);
+    expect(body.success).toBe(false);
+    expect((body as { code?: string }).code).toBe("beyond_scan_range");
+    expect(
+      (hoisted.db.prepare("SELECT COUNT(*) AS n FROM security_levels").get() as { n: number }).n,
+    ).toBe(0);
+  });
+
+  it("a forced beyond-range create is saved with the warning that the scanner will skip it", async () => {
+    const secId = seedSecurity("MISSCALEQA");
+    seedPriceDaysAgo(secId, 748, 0);
+
+    const { status, body } = await postLevel({
+      security_id: secId,
+      level_type: "support",
+      price: 7100,
+      force: true,
     });
 
     expect(status).toBe(200);
