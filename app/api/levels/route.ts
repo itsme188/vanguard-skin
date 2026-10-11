@@ -21,6 +21,7 @@ import {
 } from "@/lib/mutations/security-levels";
 import { levelPauseRefusal } from "@/lib/levels/action-visibility";
 import { editLevel } from "@/lib/levels/edit-level";
+import { createLevelGuarded } from "@/lib/levels/create-level";
 import { resolveLevelPrice } from "@/lib/alerts/resolve-level-price";
 import { todayET } from "@/lib/calendar/date-utils";
 
@@ -131,14 +132,41 @@ export async function POST(request: NextRequest) {
         { status: 400 }
       );
     }
-    const id = upsertLevel(db, body);
+    // A create lands ALREADY auto_approved (armed), so it asks the shared arm
+    // guard the way Edit and Reactivate do (lib/levels/create-level.ts): a
+    // level the current price is already past would fire on the next scan
+    // from a stale close, and a mis-scaled one buys coverage the scanner
+    // skips on every pass. Either refusal answers 409 and saves nothing;
+    // `force: true` (the panel's "Add anyway") overrides it.
+    const { force, id: _postedId, ...fields } = body;
+    void _postedId;
+    const result = createLevelGuarded(db, fields, { force: force === true });
+    if (!result.ok) {
+      // No currency glyph, as in the PATCH refusals below.
+      const current = result.currentPrice.toFixed(2);
+      const effective = result.effectivePrice.toFixed(2);
+      const error =
+        result.code === "beyond_scan_range"
+          ? `The new level ${effective} is outside the scanner's range at the current price ${current}, so every scan would skip it and it could never alert. Nothing was saved.`
+          : `Price ${current} is already past the new level (${effective}), so adding it will fire an alert on the next scan. Nothing was saved.`;
+      return NextResponse.json(
+        {
+          success: false,
+          error,
+          code: result.code,
+          currentPrice: result.currentPrice,
+          effectivePrice: result.effectivePrice,
+          alertedToday: result.alertedToday,
+        },
+        { status: 409 }
+      );
+    }
+    const id = result.id;
     const level = getLevelById(db, id);
-    // A create lands ALREADY auto_approved (armed), so a mis-scaled level buys
-    // coverage the scanner skips on every pass. The Add forms warn before the
-    // save, but a headless POST had no signal at all — hence this non-blocking
-    // `warning`. Not a refusal: marking structure to arm later is legitimate,
-    // and unlike the review-approve guard this path has no force flag to
-    // override one with. The arm-time refusal lives in approveLevelGuarded.
+    // Non-blocking `warning` for a level beyond the scanner's range that was
+    // still saved: with a fresh price the guard refuses such a level unless
+    // the caller forced it, so this fires for a forced create (and for a
+    // level created outside the armed universe).
     const priceInfo = getLatestScanPriceForSecurity(db, body.security_id);
     const warning =
       priceInfo.isFresh &&
