@@ -21,6 +21,7 @@ import type {
 import { formatLevelPrice } from "@/lib/chart/price-formatter";
 import { detectionPrefix } from "@/lib/levels/narrative-detection-prefix";
 import { readMutationResult, networkFailureMessage } from "@/lib/ui/mutation-result";
+import { CREATE_DECLINED_MESSAGE, createRefusalPrompt } from "@/lib/levels/create-level-prompt";
 // What a suggested-level card says is one composed string: a templated fact
 // sentence written from the same metadata the chip prints (touch count, touch
 // dates), then the model's sentence as the rationale — shown only when every
@@ -1013,27 +1014,16 @@ export function LevelsPanel({
       const raw = (await res.clone().json().catch(() => null)) as
         | { code?: unknown; currentPrice?: unknown; effectivePrice?: unknown }
         | null;
-      const result = { ...(await readMutationResult<{ warning?: unknown }>(res)), code: raw?.code };
-      const current =
-        typeof raw?.currentPrice === "number" ? formatLevelPrice(currency, raw.currentPrice) : "the current price";
-      const effective =
-        typeof raw?.effectivePrice === "number" ? formatLevelPrice(currency, raw.effectivePrice) : "the new level";
+      const result = await readMutationResult<{ warning?: unknown }>(res);
       if (!result.ok) {
-        if (result.status === 409 && result.code === "would_fire_immediately") {
+        const question = createRefusalPrompt(result.status, raw, (p) => formatLevelPrice(currency, p));
+        if (question) {
           setConfirmPrompt({
-            title: "Add this level?",
-            message: `Price ${current} is already past the new level (${effective}). Adding it will fire an alert on the next scan. Add anyway?`,
-            confirmLabel: "Add anyway",
-            onConfirm: () => submitAdd(addBody, "would_fire_immediately"),
-            onCancel: () => toast("Nothing was saved. The level was not added.", "info"),
-          });
-        } else if (result.status === 409 && result.code === "beyond_scan_range") {
-          setConfirmPrompt({
-            title: "Add this level?",
-            message: `The new level (${effective}) is outside the scanner's range at the current price ${current}, so every scan would skip it and it could not alert. This usually means a mis-scaled price. Add anyway?`,
-            confirmLabel: "Add anyway",
-            onConfirm: () => submitAdd(addBody, "beyond_scan_range"),
-            onCancel: () => toast("Nothing was saved. The level was not added.", "info"),
+            title: question.title,
+            message: question.message,
+            confirmLabel: question.confirmLabel,
+            onConfirm: () => submitAdd(addBody, question.code),
+            onCancel: () => toast(CREATE_DECLINED_MESSAGE, "info"),
           });
         } else {
           toast(`Couldn't add the level: ${result.message}`, "error");
