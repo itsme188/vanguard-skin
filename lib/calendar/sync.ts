@@ -561,11 +561,29 @@ export async function syncCalendarForWeek(
             finnhubFailures.length > 0
               ? "Finnhub did not return this date on this refresh (some symbols were not scanned)"
               : "Finnhub did not return this date on this refresh";
+          // A symbol Finnhub did not answer keeps every stored finnhub row
+          // (any date, superseded or not) until a scan actually returns it.
+          const lookupKeys = db.prepare(
+            `SELECT source_key FROM calendar_events
+              WHERE week_of = ? AND source = 'finnhub' AND UPPER(symbol) = ?`,
+          );
+          const keepSourceKeys: string[] = [];
+          for (const sym of new Set(finnhubFailures.map((f) => f.symbol.toUpperCase()))) {
+            for (const r of lookupKeys.all(weekOf, sym) as { source_key: string }[]) {
+              keepSourceKeys.push(r.source_key);
+            }
+          }
           finnhubNew = writeAndCountNewKeys(db, finnhubInputs, () => {
             removed.push(
               ...writeAndCollectRemoved(db, weekOf, "finnhub", finnhubReason, () => {
                 hiddenAtWrite.push(
-                  ...(replaceWeekRowsPublishingRemovals(db, weekOf, "finnhub", finnhubInputs)
+                  ...(replaceWeekRowsPublishingRemovals(
+                    db,
+                    weekOf,
+                    "finnhub",
+                    finnhubInputs,
+                    keepSourceKeys,
+                  )
                     .hiddenBehindManual ?? []),
                 );
               }),
