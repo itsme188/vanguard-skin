@@ -1664,7 +1664,8 @@ export async function executeTool(
           addDays(today, daysAhead),
         ];
 
-        let evtWhere = "event_date BETWEEN ? AND ?";
+        // Same predicate the Earnings Hub reads: skip rows the reconciler hid.
+        let evtWhere = "event_date BETWEEN ? AND ? AND COALESCE(superseded, 0) = 0";
         if (input.event_type) {
           evtWhere += " AND LOWER(event_type) LIKE '%' || LOWER(?) || '%'";
           evtParams.push(String(input.event_type));
