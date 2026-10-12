@@ -127,6 +127,8 @@ export interface SecurityDetailData {
   closedSalesTotal: number;
   recentTransactions: SecurityDetailTransaction[];
   relatedOptionTransactions: SecurityDetailTransaction[];
+  /** True, uncapped counts behind the two transaction lists above. */
+  transactionTotals: SecurityTransactionTotals;
   notes: NoteWithContext[];
   upcomingEvents: CalendarEvent[];
   factors: SecurityFactor | null;
@@ -353,6 +355,55 @@ export function countClosedSalesBySecurity(db: Database.Database, securityId: nu
 }
 
 /**
+ * The rows behind the security's own transaction list: one FROM / JOIN / WHERE,
+ * read by the capped list AND by every count of it, so a total can never use a
+ * different predicate from the list it describes. Binds: (securityId).
+ */
+const OWN_TRANSACTIONS_FROM_WHERE = `
+      FROM transactions t
+      LEFT JOIN securities s ON s.id = t.security_id
+      LEFT JOIN fx_rates fx ON fx.currency = s.currency
+      JOIN accounts a ON a.id = t.account_id
+      WHERE t.security_id = ?`;
+
+/**
+ * The rows behind the related-options list (option contracts on this stock).
+ * Shared by the capped list and its counts, like the fragment above.
+ * Binds: (underlyingSymbol, underlyingSymbol).
+ *
+ * Dual match logic: historical IBKR-imported options often have a NULL
+ * `underlying_symbol` — their ticker lives only in the symbol prefix
+ * (e.g. "HOOD 03JUL25 89 C" or the OCC-padded "HOOD  250620C00043000").
+ * The symbol-prefix LIKE (`ticker + ' %'`) picks those up. The required
+ * space after the ticker prevents cross-ticker false matches (ticker "HO"
+ * won't match "HOOD ..." because position 3 is 'O', not a space).
+ */
+const RELATED_OPTION_TRANSACTIONS_FROM_WHERE = `
+       FROM transactions t
+       JOIN securities s ON s.id = t.security_id
+       JOIN accounts a ON a.id = t.account_id
+       WHERE LOWER(s.security_type) = 'option'
+         AND (
+           UPPER(s.underlying_symbol) = UPPER(?)
+           OR UPPER(s.symbol) LIKE UPPER(?) || ' %'
+         )`;
+
+/**
+ * SQL twin of the card's per-row rule (`isOptionTxn` in
+ * app/dashboard/components/TransactionsSection.tsx): a row is an option row
+ * when its security carries an option type, is typed Option (any case), or the
+ * transaction itself is an option open/close. The card's Stocks / Options
+ * chips filter rows with the JS rule and print totals counted with this one,
+ * so the two must change together (parity is pinned in
+ * tests/queries/security-detail-transaction-counts.test.ts).
+ */
+const OPTION_TRANSACTION_ROW_SQL = `(
+        s.option_type IS NOT NULL
+        OR LOWER(COALESCE(s.security_type, '')) = 'option'
+        OR t.type IN ('BUY_TO_OPEN', 'SELL_TO_OPEN', 'BUY_TO_CLOSE', 'SELL_TO_CLOSE')
+      )`;
+
+/**
  * Get recent transactions for a specific security across all accounts.
  *
  * price_per_share / amount are stored in the security's NATIVE currency
@@ -375,11 +426,7 @@ export function getTransactionsBySecurity(
               s.symbol, s.name AS security_name, a.name AS account_name,
               s.security_type, s.option_type, s.underlying_symbol,
               s.strike_price, s.expiration_date
-      FROM transactions t
-      LEFT JOIN securities s ON s.id = t.security_id
-      LEFT JOIN fx_rates fx ON fx.currency = s.currency
-      JOIN accounts a ON a.id = t.account_id
-      WHERE t.security_id = ?
+      ${OWN_TRANSACTIONS_FROM_WHERE}
       ORDER BY t.trade_date DESC
       LIMIT ?`
     )
@@ -387,21 +434,15 @@ export function getTransactionsBySecurity(
 }
 
 /**
- * True row count behind getTransactionsBySecurity (same FROM/JOIN/WHERE, no
- * LIMIT), so the card's totals never disagree with its capped list.
+ * True row count behind getTransactionsBySecurity (the same FROM/JOIN/WHERE
+ * fragment, no LIMIT), so a total never disagrees with the capped list.
  */
 export function countTransactionsBySecurity(
   db: Database.Database,
   securityId: number
 ): number {
   const row = db
-    .prepare(
-      `SELECT COUNT(*) AS n
-      FROM transactions t
-      LEFT JOIN securities s ON s.id = t.security_id
-      JOIN accounts a ON a.id = t.account_id
-      WHERE t.security_id = ?`
-    )
+    .prepare(`SELECT COUNT(*) AS n ${OWN_TRANSACTIONS_FROM_WHERE}`)
     .get(securityId) as { n: number };
   return row.n;
 }
@@ -409,14 +450,8 @@ export function countTransactionsBySecurity(
 /**
  * Get option transactions whose underlying is this stock. Lets the Security
  * Detail page for e.g. APP surface the user's APP calls/puts alongside the
- * stock's own transactions.
- *
- * Dual match logic: historical IBKR-imported options often have a NULL
- * `underlying_symbol` — their ticker lives only in the symbol prefix
- * (e.g. "HOOD 03JUL25 89 C" or the OCC-padded "HOOD  250620C00043000").
- * The symbol-prefix LIKE (`ticker + ' %'`) picks those up. The required
- * space after the ticker prevents cross-ticker false matches (ticker "HO"
- * won't match "HOOD ..." because position 3 is 'O', not a space).
+ * stock's own transactions. Match logic: see
+ * RELATED_OPTION_TRANSACTIONS_FROM_WHERE.
  */
 export function getRelatedOptionTransactions(
   db: Database.Database,
@@ -428,14 +463,7 @@ export function getRelatedOptionTransactions(
       `SELECT t.*, s.symbol, s.name AS security_name, a.name AS account_name,
               s.security_type, s.option_type, s.underlying_symbol,
               s.strike_price, s.expiration_date
-       FROM transactions t
-       JOIN securities s ON s.id = t.security_id
-       JOIN accounts a ON a.id = t.account_id
-       WHERE LOWER(s.security_type) = 'option'
-         AND (
-           UPPER(s.underlying_symbol) = UPPER(?)
-           OR UPPER(s.symbol) LIKE UPPER(?) || ' %'
-         )
+       ${RELATED_OPTION_TRANSACTIONS_FROM_WHERE}
        ORDER BY t.trade_date DESC
        LIMIT ?`
     )
@@ -443,27 +471,81 @@ export function getRelatedOptionTransactions(
 }
 
 /**
- * True row count behind getRelatedOptionTransactions (identical predicate,
- * no LIMIT).
+ * True row count behind getRelatedOptionTransactions (the same fragment, no
+ * LIMIT).
  */
 export function countRelatedOptionTransactions(
   db: Database.Database,
   underlyingSymbol: string
 ): number {
   const row = db
-    .prepare(
-      `SELECT COUNT(*) AS n
-       FROM transactions t
-       JOIN securities s ON s.id = t.security_id
-       JOIN accounts a ON a.id = t.account_id
-       WHERE LOWER(s.security_type) = 'option'
-         AND (
-           UPPER(s.underlying_symbol) = UPPER(?)
-           OR UPPER(s.symbol) LIKE UPPER(?) || ' %'
-         )`
-    )
+    .prepare(`SELECT COUNT(*) AS n ${RELATED_OPTION_TRANSACTIONS_FROM_WHERE}`)
     .get(underlyingSymbol, underlyingSymbol) as { n: number };
   return row.n;
+}
+
+/**
+ * The one copy of "does this page list option contracts on this security":
+ * only a stock (or unknown-type) page with a symbol does. An option page does
+ * not cross-link to sibling strikes. Read by the list AND by the totals.
+ */
+export function listsRelatedOptionTransactions(
+  security: Pick<Security, "symbol" | "security_type">
+): boolean {
+  return (security.security_type ?? "").toLowerCase() !== "option" && !!security.symbol;
+}
+
+/** True row counts for one view of the card, split by the per-row rule. */
+export interface TransactionScopeTotals {
+  stocks: number;
+  options: number;
+}
+
+/**
+ * True (uncapped) totals for the Recent Transactions card.
+ * `byAccount` is keyed by ACCOUNT NAME — the value the card's account filter
+ * compares (`account_name`) — so two accounts sharing a name are summed, the
+ * same way the card's filter shows them together.
+ */
+export interface SecurityTransactionTotals {
+  all: TransactionScopeTotals;
+  byAccount: Record<string, TransactionScopeTotals>;
+}
+
+/**
+ * Count every row the card's two lists would hold with no cap, per account,
+ * split into stock rows and option rows by OPTION_TRANSACTION_ROW_SQL. Both
+ * counts run over the list readers' own FROM/JOIN/WHERE fragments.
+ */
+export function getSecurityTransactionTotals(
+  db: Database.Database,
+  security: Pick<Security, "id" | "symbol" | "security_type">
+): SecurityTransactionTotals {
+  const select = `SELECT a.name AS account_name,
+              SUM(CASE WHEN ${OPTION_TRANSACTION_ROW_SQL} THEN 1 ELSE 0 END) AS options,
+              COUNT(*) AS n`;
+  type Row = { account_name: string; options: number; n: number };
+  const rows = db
+    .prepare(`${select} ${OWN_TRANSACTIONS_FROM_WHERE} GROUP BY a.name`)
+    .all(security.id) as Row[];
+  if (listsRelatedOptionTransactions(security)) {
+    rows.push(
+      ...(db
+        .prepare(`${select} ${RELATED_OPTION_TRANSACTIONS_FROM_WHERE} GROUP BY a.name`)
+        .all(security.symbol, security.symbol) as Row[])
+    );
+  }
+
+  const all: TransactionScopeTotals = { stocks: 0, options: 0 };
+  const byAccount: Record<string, TransactionScopeTotals> = {};
+  for (const r of rows) {
+    const bucket = (byAccount[r.account_name] ??= { stocks: 0, options: 0 });
+    bucket.options += r.options;
+    bucket.stocks += r.n - r.options;
+    all.options += r.options;
+    all.stocks += r.n - r.options;
+  }
+  return { all, byAccount };
 }
 
 /**
@@ -1086,13 +1168,10 @@ export function getSecurityDetail(
   const closedSales = getClosedSalesBySecurity(db, securityId);
   const closedSalesTotal = countClosedSalesBySecurity(db, securityId);
   const recentTransactions = getTransactionsBySecurity(db, securityId);
-  // Related options: only when the current security is a stock (or unknown) —
-  // option pages don't cross-link to sibling strikes.
-  const isOption = (security.security_type ?? "").toLowerCase() === "option";
-  const relatedOptionTransactions =
-    !isOption && security.symbol
-      ? getRelatedOptionTransactions(db, security.symbol)
-      : [];
+  const relatedOptionTransactions = listsRelatedOptionTransactions(security)
+    ? getRelatedOptionTransactions(db, security.symbol)
+    : [];
+  const transactionTotals = getSecurityTransactionTotals(db, security);
   const notes = getNotesForSecurity(db, securityId);
   const factors = getFactorsForSecurity(db, securityId);
   const transcripts = getTranscriptsForSecurity(db, securityId);
@@ -1141,6 +1220,7 @@ export function getSecurityDetail(
     closedSalesTotal,
     recentTransactions,
     relatedOptionTransactions,
+    transactionTotals,
     notes,
     upcomingEvents,
     factors,

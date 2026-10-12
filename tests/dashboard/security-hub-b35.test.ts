@@ -196,9 +196,14 @@ describe("transaction type chips count what they return", () => {
     expect(countTransactionScopes(rows, "Acct Two")).toEqual({ all: 3, stocks: 1, options: 2 });
   });
 
-  it("the chips read those counts, and Stocks carries one too", () => {
-    expect(txnSrc).toContain("label={`Stocks (${scopeCounts.stocks})`}");
-    expect(txnSrc).toContain("label={`Options (${scopeCounts.options})`}");
+  // The chips now print the server's true totals for the selected account
+  // (the loaded lists are capped), masked under Hide amounts. The SQL totals
+  // are held to countTransactionScopes in
+  // tests/queries/security-detail-transaction-counts.test.ts.
+  it("the chips read the per-account totals, and Stocks carries one too", () => {
+    expect(txnSrc).toContain("label={<>Stocks (<Count value={scopeTotals.stocks} />)</>}");
+    expect(txnSrc).toContain("label={<>Options (<Count value={scopeTotals.options} />)</>}");
+    expect(txnSrc).toContain("totals.byAccount[account]");
     expect(txnSrc).not.toContain("Options (${optionTransactions.length})");
   });
 });

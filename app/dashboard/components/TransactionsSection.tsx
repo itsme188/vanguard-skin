@@ -1,8 +1,13 @@
 "use client";
 
-import { useMemo, useState } from "react";
-import type { SecurityDetailTransaction } from "@/lib/queries/security-detail";
-import { Money, Shares } from "@/lib/privacy/components";
+import { useMemo, useState, type ReactNode } from "react";
+import type {
+  SecurityDetailTransaction,
+  SecurityTransactionTotals,
+  TransactionScopeTotals,
+} from "@/lib/queries/security-detail";
+import { Count, Money, Shares } from "@/lib/privacy/components";
+import { usePrivacy } from "@/lib/privacy/context";
 import { resolveOptionFields } from "@/lib/format";
 import { displayCashEffect } from "@/lib/format/cash-effect";
 import { SortableHeader } from "./SortableHeader";
@@ -17,6 +22,9 @@ type SortField = "trade_date" | "type" | "account_name" | "quantity" | "price_pe
 type TypeScope = "all" | "stocks" | "options";
 
 // Option transaction types — anything else is "stock/other".
+// isOptionTxn below is THE split rule for this card. The true totals are
+// counted in SQL by its twin (OPTION_TRANSACTION_ROW_SQL in
+// lib/queries/security-detail.ts); change both together.
 const OPTION_TYPES = new Set([
   "BUY_TO_OPEN",
   "SELL_TO_OPEN",
@@ -63,10 +71,10 @@ export function sortSecurityTransactions(
 }
 
 /**
- * What each type chip returns under the active account filter. The Options
- * chip used to print the all-account count while an account was selected, so
- * it promised more rows than the click delivered. Same account predicate as
- * the row filter below.
+ * How many of the given rows each type chip returns under the account filter,
+ * by the per-row rule. The card itself prints the server's true totals (the
+ * loaded lists are capped); this is the JS statement of the same split, and
+ * the tests hold the SQL totals to it over uncapped lists.
  */
 export function countTransactionScopes(
   rows: SecurityDetailTransaction[],
@@ -95,15 +103,17 @@ const TD_MONO = "px-4 py-2.5 text-sm text-ink font-mono tabular-nums border-b bo
 export function TransactionsSection({
   stockTransactions,
   optionTransactions,
-  stockTotal,
-  optionTotal,
+  totals,
 }: {
   stockTransactions: SecurityDetailTransaction[];
   optionTransactions: SecurityDetailTransaction[];
-  /** True row counts (same predicate as the capped lists above). */
-  stockTotal: number;
-  optionTotal: number;
+  /**
+   * True row counts behind the capped lists above: every account together and
+   * each account by name, each split into stock and option rows.
+   */
+  totals: SecurityTransactionTotals;
 }) {
+  const { isPrivate } = usePrivacy();
   // Merge + stable sort by trade_date DESC.
   const all = useMemo(() => {
     const merged = [...stockTransactions, ...optionTransactions];
@@ -131,24 +141,30 @@ export function TransactionsSection({
     return sortSecurityTransactions(base, sort.field, sort.dir);
   }, [all, account, typeScope, sort]);
 
-  const loadedCounts = useMemo(() => countTransactionScopes(all, account), [all, account]);
-
   if (all.length === 0) return null;
 
-  // The lists are capped; the header and chips report the true totals. With an
-  // account selected the filter runs client-side over the loaded rows, so the
-  // chips keep their per-account loaded counts there.
-  const totalForScope =
-    typeScope === "stocks"
-      ? stockTotal
-      : typeScope === "options"
-        ? optionTotal
-        : stockTotal + optionTotal;
-  const capped = all.length < stockTotal + optionTotal;
-  const scopeCounts =
+  // The lists are capped, so every figure printed here is a true total from
+  // the server: all accounts, or the selected account's own.
+  const scopeTotals: TransactionScopeTotals =
     account === "All"
-      ? { ...loadedCounts, stocks: stockTotal, options: optionTotal }
-      : loadedCounts;
+      ? totals.all
+      : (totals.byAccount[account] ?? { stocks: 0, options: 0 });
+  const totalInView =
+    typeScope === "stocks"
+      ? scopeTotals.stocks
+      : typeScope === "options"
+        ? scopeTotals.options
+        : scopeTotals.stocks + scopeTotals.options;
+  // Truncated means: the view on screen (this account, this type) has rows on
+  // file that are not loaded. A cap on a list that is filtered out says nothing.
+  const viewTruncated = filtered.length < totalInView;
+  // Under Hide amounts the note must not say whether the list is long, so it
+  // is one fixed sentence that is true either way.
+  const loadedNote = isPrivate
+    ? " (a long list shows only the newest)"
+    : viewTruncated
+      ? " (newest loaded)"
+      : "";
 
   // Hide filters entirely when there's nothing useful to filter on.
   const showAccountFilter = accountOptions.length > 1;
@@ -159,8 +175,8 @@ export function TransactionsSection({
       title="Recent Transactions"
       action={
         <span className="text-xs font-mono text-ink-faint">
-          {filtered.length} of {Math.max(totalForScope, filtered.length)}
-          {capped && " (newest loaded)"}
+          <Count value={filtered.length} /> of <Count value={totalInView} />
+          {loadedNote}
         </span>
       }
     >
@@ -194,12 +210,12 @@ export function TransactionsSection({
                 onClick={() => setTypeScope("all")}
               />
               <FilterPill
-                label={`Stocks (${scopeCounts.stocks})`}
+                label={<>Stocks (<Count value={scopeTotals.stocks} />)</>}
                 active={typeScope === "stocks"}
                 onClick={() => setTypeScope("stocks")}
               />
               <FilterPill
-                label={`Options (${scopeCounts.options})`}
+                label={<>Options (<Count value={scopeTotals.options} />)</>}
                 active={typeScope === "options"}
                 onClick={() => setTypeScope("options")}
               />
@@ -305,7 +321,7 @@ function FilterPill({
   active,
   onClick,
 }: {
-  label: string;
+  label: ReactNode;
   active: boolean;
   onClick: () => void;
 }) {

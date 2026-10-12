@@ -3,7 +3,7 @@ export const dynamic = "force-dynamic";
 import { GOLD_FILL_CLASSES } from "@/app/dashboard/components/chip-tone-text";
 import { db } from "@/lib/db";
 import { unrealizedGainRatio } from "@/lib/format";
-import { assetClassLabel, countRelatedOptionTransactions, countTransactionsBySecurity, getSecurityDetail, transcriptPreviewText } from "@/lib/queries/security-detail";
+import { assetClassLabel, getSecurityDetail, transcriptPreviewText } from "@/lib/queries/security-detail";
 import { MarkdownMessage } from "../../components/MarkdownMessage";
 import { isOnWatchlist, getWatchlistItem } from "@/lib/queries/watchlist";
 import { getResearchDocumentsForSymbol } from "@/lib/queries/research-documents";
@@ -245,7 +245,7 @@ export default async function SecurityDetailPage(props: {
 
   if (!detail) notFound();
 
-  const { security, price, kpis, positions, openTaxLots, expiredOptionLotsAwaitingClose, closedSales, closedSalesTotal, recentTransactions, relatedOptionTransactions, notes, upcomingEvents, factors, transcripts, tradeGrades, tradeGradesExcluded, researchMentions, researchMentionsTotal } = detail;
+  const { security, price, kpis, positions, openTaxLots, expiredOptionLotsAwaitingClose, closedSales, closedSalesTotal, recentTransactions, relatedOptionTransactions, transactionTotals, notes, upcomingEvents, factors, transcripts, tradeGrades, tradeGradesExcluded, researchMentions, researchMentionsTotal } = detail;
 
   const expiredContracts = expiredContractQuantity(expiredOptionLotsAwaitingClose);
   // The Tax Lots page shows one sale year at a time, so the link under Recent
@@ -996,12 +996,7 @@ export default async function SecurityDetailPage(props: {
       <TransactionsSection
         stockTransactions={recentTransactions}
         optionTransactions={relatedOptionTransactions}
-        stockTotal={countTransactionsBySecurity(db, security.id)}
-        optionTotal={
-          (security.security_type ?? "").toLowerCase() !== "option" && security.symbol
-            ? countRelatedOptionTransactions(db, security.symbol)
-            : 0
-        }
+        totals={transactionTotals}
       />
 
 
