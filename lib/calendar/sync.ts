@@ -555,11 +555,11 @@ export async function syncCalendarForWeek(
         if (finnhubInputs.length > 0) {
           // Same enrichment-preserving cleanup as the macro phase — an enriched
           // earnings row also anchors earnings_emails dedup rows (CASCADE).
-          // A partial scan deletes rows for names it never asked about, so
-          // the reason must not claim the vendor dropped the date.
+          // Symbols that failed keep their rows, so on a partial scan the rows
+          // removed belong to scanned symbols the vendor no longer lists.
           const finnhubReason =
             finnhubFailures.length > 0
-              ? "Finnhub did not return this date on this refresh (some symbols were not scanned)"
+              ? "Finnhub no longer lists this date (symbols that could not be scanned kept their rows)"
               : "Finnhub did not return this date on this refresh";
           // A symbol Finnhub did not answer keeps every stored finnhub row
           // (any date, superseded or not) until a scan actually returns it.

@@ -111,6 +111,21 @@ describe("syncCalendarForWeek — a rate-limited Finnhub symbol keeps its rows",
     expect(res.errors.join(" ")).toMatch(/1 of 2/);
   });
 
+  it("keeps every stored row for a symbol that failed with a non-rate-limit error", async () => {
+    await seed();
+    const before = rowsFor("ZZZ");
+    vi.mocked(fetchFinnhubEarningsForSymbols).mockImplementationOnce(
+      async (_db, _s, _a, _b, _w, _p, onFail) => {
+        onFail?.({ symbol: "ZZZ", message: "Finnhub 500: Internal server error", rateLimited: false });
+        return [earnings("AAA", day(1))];
+      },
+    );
+    const res = await syncCalendarForWeek(db, WEEK, opts);
+
+    expect(rowsFor("ZZZ")).toEqual(before);
+    expect(res.removed.filter((r) => r.title.startsWith("ZZZ"))).toEqual([]);
+  });
+
   it("still removes a scanned symbol the vendor dropped", async () => {
     await seed();
     vi.mocked(fetchFinnhubEarningsForSymbols).mockResolvedValueOnce([earnings("AAA", day(1))]);

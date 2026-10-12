@@ -163,6 +163,8 @@ interface TodayHoldingRow extends TodayHolding {
  * its SQL close-to-close figures, but any quantity opened or added in the
  * session is priced from the session book's cost, never the later row's
  * (2026-10-12: a restated cost had flipped the sign of a session gain).
+ * A missing session cost is never replaced by the later row's cost: the
+ * quantity opened in the session is left out and counted as unmeasured.
  */
 export function getIbkrTodayHoldings(
   db: Database.Database,

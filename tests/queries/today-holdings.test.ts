@@ -974,6 +974,51 @@ describe("getIbkrTodayHoldings: a row dated after the measured session", () => {
     expect(z.change_undated).toBe(false);
   });
 
+  it("opened in the session with no recorded cost: a later row's cost is not borrowed, the name is left out and counted", () => {
+    const acct = ibkrAccountId();
+    const zza = seedName("ZZA");
+    const morn = seedName("MORN");
+    holdAt(acct, morn, 100, 4000, PRIOR); // the book was seen at the prior close
+    holdAt(acct, zza, 200, null, LATEST); // opened in the session, cost unknown
+    holdAt(acct, zza, 200, 10400, NEXT); // later row: 200 at a real cost of 52
+
+    const rows = getIbkrTodayHoldings(db, acct, PAIR);
+    const z = find(rows, "ZZA");
+    // Old code borrowed the later cost: 200 x (55 - 52) = +600. Now: unknown cost, no figure.
+    expect(z.today_gain).toBeNull();
+    expect(z.today_pct).toBeNull();
+    expect(z.day_move_basis).toBe("excluded");
+    expect(summarizeIbkrDayMove(rows).excludedCount).toBe(1);
+  });
+
+  it("an add in the session with no recorded cost: only the held part is measured, the added cost is flagged unknown", () => {
+    const acct = ibkrAccountId();
+    const zza = seedName("ZZA");
+    holdAt(acct, zza, 100, 4000, PRIOR);
+    holdAt(acct, zza, 200, null, LATEST); // 100 added in the session, cost unknown
+    holdAt(acct, zza, 200, 11800, NEXT); // later row carries a cost
+
+    const z = find(getIbkrTodayHoldings(db, acct, PAIR), "ZZA");
+    expect(z.today_gain).toBeCloseTo(500, 6); // held 100 x (55 - 50); the added 100 is not measured
+    expect(z.day_move_basis).toBe("prior_close");
+    expect(z.added_cost_unknown).toBe(true);
+  });
+
+  it("a short opened in the session, restated at a different cost the next day: measured from the session proceeds", () => {
+    const acct = ibkrAccountId();
+    const zzs = seedName("ZZS");
+    const morn = seedName("MORN");
+    holdAt(acct, morn, 100, 4000, PRIOR);
+    holdAt(acct, zzs, -200, -10400, LATEST); // sold 200 short at 52 (cost stored as negative proceeds)
+    holdAt(acct, zzs, -200, -10000, NEXT); // same short, restated at 50
+
+    const z = find(getIbkrTodayHoldings(db, acct, PAIR), "ZZS");
+    // (55 - 52) x -200 = -600; the restated 50 would have given -1000.
+    expect(z.today_gain).toBeCloseTo(-600, 6);
+    expect(z.day_move_basis).toBe("cost");
+    expect(z.opened_today).toBe(true);
+  });
+
   it("a later row with the SAME quantity changes nothing", () => {
     const acct = ibkrAccountId();
     const zza = seedName("ZZA");
