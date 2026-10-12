@@ -161,6 +161,22 @@ describe("renderOvernightBlock", () => {
     expect(block).toContain("KOSPI +0.8% · Bitcoin −2.1% · Nikkei +1.2% · Hang Seng −0.3%");
   });
 
+  it("prints a move that rounds to zero as 0.0%, never a signed negative zero", () => {
+    // (-0.04).toFixed(1) === "-0.0"; the sign must be decided after rounding.
+    const block = renderOvernightBlock(
+      [
+        { label: "Nikkei", pct: -0.04 },
+        { label: "KOSPI", pct: 0.04 },
+        { label: "Bitcoin", pct: 0 },
+        { label: "Hang Seng", pct: -0.05 },
+      ],
+      null,
+    );
+    expect(block).toContain("Nikkei 0.0% · KOSPI 0.0% · Bitcoin 0.0% · Hang Seng −0.1%");
+    expect(block).not.toContain("−0.0%");
+    expect(block).not.toContain("-0.0%");
+  });
+
   it("renders a closed market as '<label> closed'", () => {
     const block = renderOvernightBlock(
       [{ label: "KOSPI", pct: 0.8 }, { label: "Nikkei", closed: true }],

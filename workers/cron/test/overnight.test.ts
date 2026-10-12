@@ -123,6 +123,17 @@ describe("renderOvernightLines", () => {
     expect(block).toContain("KOSPI +0.8% · Bitcoin −2.1% · Nikkei closed · Hang Seng −0.3%");
   });
 
+  it("prints a move that rounds to zero as 0.0%, never a signed negative zero (Mac parity)", () => {
+    const block = renderOvernightLines([
+      { label: "Nikkei", pct: -0.04 },
+      { label: "KOSPI", pct: 0.04 },
+      { label: "Bitcoin", pct: 0 },
+      { label: "Hang Seng", pct: -0.05 },
+    ]);
+    expect(block).toContain("Nikkei 0.0% · KOSPI 0.0% · Bitcoin 0.0% · Hang Seng −0.1%");
+    expect(block).not.toContain("−0.0%");
+  });
+
   it("returns null for no moves", () => {
     expect(renderOvernightLines([])).toBeNull();
   });
