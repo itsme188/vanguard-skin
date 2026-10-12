@@ -387,6 +387,26 @@ export function getTransactionsBySecurity(
 }
 
 /**
+ * True row count behind getTransactionsBySecurity (same FROM/JOIN/WHERE, no
+ * LIMIT), so the card's totals never disagree with its capped list.
+ */
+export function countTransactionsBySecurity(
+  db: Database.Database,
+  securityId: number
+): number {
+  const row = db
+    .prepare(
+      `SELECT COUNT(*) AS n
+      FROM transactions t
+      LEFT JOIN securities s ON s.id = t.security_id
+      JOIN accounts a ON a.id = t.account_id
+      WHERE t.security_id = ?`
+    )
+    .get(securityId) as { n: number };
+  return row.n;
+}
+
+/**
  * Get option transactions whose underlying is this stock. Lets the Security
  * Detail page for e.g. APP surface the user's APP calls/puts alongside the
  * stock's own transactions.
@@ -420,6 +440,30 @@ export function getRelatedOptionTransactions(
        LIMIT ?`
     )
     .all(underlyingSymbol, underlyingSymbol, limit) as SecurityDetailTransaction[];
+}
+
+/**
+ * True row count behind getRelatedOptionTransactions (identical predicate,
+ * no LIMIT).
+ */
+export function countRelatedOptionTransactions(
+  db: Database.Database,
+  underlyingSymbol: string
+): number {
+  const row = db
+    .prepare(
+      `SELECT COUNT(*) AS n
+       FROM transactions t
+       JOIN securities s ON s.id = t.security_id
+       JOIN accounts a ON a.id = t.account_id
+       WHERE LOWER(s.security_type) = 'option'
+         AND (
+           UPPER(s.underlying_symbol) = UPPER(?)
+           OR UPPER(s.symbol) LIKE UPPER(?) || ' %'
+         )`
+    )
+    .get(underlyingSymbol, underlyingSymbol) as { n: number };
+  return row.n;
 }
 
 /**

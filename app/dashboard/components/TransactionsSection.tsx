@@ -95,9 +95,14 @@ const TD_MONO = "px-4 py-2.5 text-sm text-ink font-mono tabular-nums border-b bo
 export function TransactionsSection({
   stockTransactions,
   optionTransactions,
+  stockTotal,
+  optionTotal,
 }: {
   stockTransactions: SecurityDetailTransaction[];
   optionTransactions: SecurityDetailTransaction[];
+  /** True row counts (same predicate as the capped lists above). */
+  stockTotal: number;
+  optionTotal: number;
 }) {
   // Merge + stable sort by trade_date DESC.
   const all = useMemo(() => {
@@ -126,9 +131,24 @@ export function TransactionsSection({
     return sortSecurityTransactions(base, sort.field, sort.dir);
   }, [all, account, typeScope, sort]);
 
-  const scopeCounts = useMemo(() => countTransactionScopes(all, account), [all, account]);
+  const loadedCounts = useMemo(() => countTransactionScopes(all, account), [all, account]);
 
   if (all.length === 0) return null;
+
+  // The lists are capped; the header and chips report the true totals. With an
+  // account selected the filter runs client-side over the loaded rows, so the
+  // chips keep their per-account loaded counts there.
+  const totalForScope =
+    typeScope === "stocks"
+      ? stockTotal
+      : typeScope === "options"
+        ? optionTotal
+        : stockTotal + optionTotal;
+  const capped = all.length < stockTotal + optionTotal;
+  const scopeCounts =
+    account === "All"
+      ? { ...loadedCounts, stocks: stockTotal, options: optionTotal }
+      : loadedCounts;
 
   // Hide filters entirely when there's nothing useful to filter on.
   const showAccountFilter = accountOptions.length > 1;
@@ -139,7 +159,8 @@ export function TransactionsSection({
       title="Recent Transactions"
       action={
         <span className="text-xs font-mono text-ink-faint">
-          {filtered.length} of {all.length}
+          {filtered.length} of {Math.max(totalForScope, filtered.length)}
+          {capped && " (newest loaded)"}
         </span>
       }
     >

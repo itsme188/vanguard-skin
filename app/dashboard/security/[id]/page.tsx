@@ -3,7 +3,7 @@ export const dynamic = "force-dynamic";
 import { GOLD_FILL_CLASSES } from "@/app/dashboard/components/chip-tone-text";
 import { db } from "@/lib/db";
 import { unrealizedGainRatio } from "@/lib/format";
-import { assetClassLabel, getSecurityDetail, transcriptPreviewText } from "@/lib/queries/security-detail";
+import { assetClassLabel, countRelatedOptionTransactions, countTransactionsBySecurity, getSecurityDetail, transcriptPreviewText } from "@/lib/queries/security-detail";
 import { MarkdownMessage } from "../../components/MarkdownMessage";
 import { isOnWatchlist, getWatchlistItem } from "@/lib/queries/watchlist";
 import { getResearchDocumentsForSymbol } from "@/lib/queries/research-documents";
@@ -996,6 +996,12 @@ export default async function SecurityDetailPage(props: {
       <TransactionsSection
         stockTransactions={recentTransactions}
         optionTransactions={relatedOptionTransactions}
+        stockTotal={countTransactionsBySecurity(db, security.id)}
+        optionTotal={
+          (security.security_type ?? "").toLowerCase() !== "option" && security.symbol
+            ? countRelatedOptionTransactions(db, security.symbol)
+            : 0
+        }
       />
 
 
