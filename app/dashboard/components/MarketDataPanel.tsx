@@ -338,14 +338,15 @@ export function MarketDataPanel({
           ticker plus the price overran a 350px phone panel and the section's
           overflow-hidden cut the last digit and the whole change column.
           Scaling alone is not enough for an option: its padded OCC symbol
-          ("QQQ   270115P00730000") is 20+ characters, and an `auto` column
+          ("ZZZ   270115P00100000") is 20+ characters, and an `auto` column
           took its full width and pushed the price and change past the
-          card's edge. So on a phone the hero is one column (the price block
-          sits under the symbol), and from sm: up the symbol column may
-          shrink (minmax(0,auto)) and the symbol wraps anywhere inside it.
-          A short equity ticker fits either way and looks unchanged. */}
+          card's edge. So the hero is a two-column grid at every width whose
+          symbol column may shrink (minmax(0,auto)) and whose symbol wraps
+          anywhere inside it. A short ticker keeps the price beside it on a
+          phone; only a long symbol wraps, and the price column (1fr,
+          whitespace-nowrap) keeps its digits on one line. */}
       <div
-        className="grid grid-cols-1 sm:[grid-template-columns:minmax(0,auto)_1fr] gap-3 sm:gap-6 px-6 py-6 items-center"
+        className="grid grid-cols-[minmax(0,auto)_1fr] gap-3 sm:gap-6 px-6 py-6 items-center"
         style={{
           borderBottom: "1px solid #1f1f1f",
         }}
