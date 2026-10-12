@@ -292,11 +292,20 @@ function SuggestedLevels({
   onAccepted,
   embedded = false,
   currency = null,
+  askQuestion,
 }: {
   securityId: number;
   symbol: string;
   userLevels: EnrichedLevel[];
   onAccepted: () => void;
+  /** Opens the panel's app dialog; the panel owns the one ConfirmDialog. */
+  askQuestion: (q: {
+    title: string;
+    message: string;
+    confirmLabel: string;
+    onConfirm: () => void;
+    onCancel?: () => void;
+  }) => void;
   embedded?: boolean;
   /** Security's native currency (e.g. "KRW") — see LevelsPanel below. */
   currency?: string | null;
@@ -398,7 +407,11 @@ function SuggestedLevels({
   const narrativeUnavailable = (sug: SuggestedLevel) =>
     sug.narrative == null && (sug.narrativeUnavailable === true || narrativeRequestFailed);
 
-  async function accept(sug: SuggestedLevel, index: number) {
+  // Accepting a suggestion is a create, so it meets the same arm guard as the
+  // Add form. `confirmed` names the refusal the user just overrode (null on the
+  // first try); the retry resends the SAME body with `force`. Declining leaves
+  // the suggestion where it is.
+  async function accept(sug: SuggestedLevel, index: number, confirmed: ArmRefusalCode | null = null) {
     setAccepting(index);
     try {
       const res = await apiFetch("/api/levels", {
@@ -416,11 +429,26 @@ function SuggestedLevels({
           thesis: resolveAcceptedThesis(sug, data?.currentPrice ?? null),
           timeframe: null,
           expires_at: null,
+          force: confirmed !== null,
         }),
       });
+      const raw = (await res.clone().json().catch(() => null)) as
+        | { code?: unknown; currentPrice?: unknown; effectivePrice?: unknown }
+        | null;
       const result = await readMutationResult(res);
       if (!result.ok) {
-        toast(`Couldn't add the level: ${result.message}`, "error");
+        const question = createRefusalPrompt(result.status, raw, (p) => formatLevelPrice(currency, p));
+        if (question) {
+          askQuestion({
+            title: question.title,
+            message: question.message,
+            confirmLabel: question.confirmLabel,
+            onConfirm: () => accept(sug, index, question.code),
+            onCancel: () => toast(CREATE_DECLINED_MESSAGE, "info"),
+          });
+        } else {
+          toast(`Couldn't add the level: ${result.message}`, "error");
+        }
         return;
       }
       toast(`${symbol} ${sug.type} at ${formatLevelPrice(currency, sug.price)} added`, "success");
@@ -1615,6 +1643,7 @@ export function LevelsPanel({
         onAccepted={refresh}
         embedded={embedded}
         currency={currency}
+        askQuestion={setConfirmPrompt}
       />
 
       {/* Provenance filter — derived from distinct authors on this security's

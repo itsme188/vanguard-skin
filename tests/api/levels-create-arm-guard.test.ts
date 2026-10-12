@@ -139,5 +139,11 @@ describe("POST /api/levels create runs the arm guard", () => {
     });
     expect(result.ok).toBe(true);
     expect(levelCount()).toBe(1);
+    // Stored outside the armed universe, and never stamped as already crossed.
+    const row = hoisted.db
+      .prepare("SELECT review_status, armed_crossed_at FROM security_levels")
+      .get() as { review_status: string; armed_crossed_at: string | null };
+    expect(row.review_status).toBe("pending_review");
+    expect(row.armed_crossed_at).toBeNull();
   });
 });

@@ -29,13 +29,13 @@ export function createRefusalPrompt(
   if (status !== 409 || !raw) return null;
   const code = raw.code;
   if (code !== "would_fire_immediately" && code !== "beyond_scan_range") return null;
-  const current =
-    typeof raw.currentPrice === "number" ? formatPrice(raw.currentPrice) : "the current price";
-  const effective =
-    typeof raw.effectivePrice === "number" ? formatPrice(raw.effectivePrice) : "the new level";
+  const current = typeof raw.currentPrice === "number" ? formatPrice(raw.currentPrice) : null;
+  const effective = typeof raw.effectivePrice === "number" ? formatPrice(raw.effectivePrice) : null;
+  const level = effective ? `The new level (${effective})` : "The new level";
+  const price = current ? `the current price ${current}` : "the current price";
   const message =
     code === "would_fire_immediately"
-      ? `Price ${current} is already past the new level (${effective}). Adding it will fire an alert on the next scan. Add anyway?`
-      : `The new level (${effective}) is outside the scanner's range at the current price ${current}, so every scan would skip it and it could not alert. This usually means a mis-scaled price. Add anyway?`;
+      ? `${current ? `Price ${current} is` : "The current price is"} already past ${effective ? `the new level (${effective})` : "the new level"}. Adding it will fire an alert on the next scan. Add anyway?`
+      : `${level} is outside the scanner's range at ${price}, so every scan would skip it and it could not alert. This usually means a mis-scaled price. Add anyway?`;
   return { code, title: "Add this level?", message, confirmLabel: "Add anyway" };
 }

@@ -10,7 +10,7 @@ import {
   createRefusalPrompt,
   type CreateRefusalCode,
 } from "@/lib/levels/create-level-prompt";
-import { formatChartPrice } from "@/lib/chart/price-formatter";
+import { formatChartPrice, formatLevelPrice } from "@/lib/chart/price-formatter";
 import apiFetch from "@/lib/http/apiFetch";
 import {
   BEYOND_SCAN_RANGE_EXPLANATION,
@@ -120,7 +120,7 @@ export function AddLevelPopover({
         | null;
       const result = await readMutationResult<{ warning?: unknown }>(res);
       if (!result.ok) {
-        const question = createRefusalPrompt(result.status, raw, (p) => formatChartPrice(currency, p));
+        const question = createRefusalPrompt(result.status, raw, (p) => formatLevelPrice(currency, p));
         if (question) {
           // Same body, resent with force when the user confirms.
           if (!(await prompt.ask(question))) {
