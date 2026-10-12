@@ -678,8 +678,10 @@ month all break the chain). Detail: `docs/reference/data-integrity.md` §18,
   `lib/compute/dietz.ts` depend on it), so the ruling is carried by the stored `twr` (Modified Dietz
   with each gift as a dated outflow) and `investment_gain` (gifts excluded). In a gift month
   `total_value − starting_value − deposits_withdrawals ≠ investment_gain`, on purpose — never "repair"
-  it. Earlier gift months were counted the old way and are not restated. The stored form is a
-  controller choice awaiting the owner's confirmation (`docs/DECISIONS.md` 2026-10-07).
+  it. June 2026 was restated the same way on 2026-10-12; gift months before it were counted the old
+  way and are not restated. The owner confirmed the stored form on 2026-10-12 (`docs/DECISIONS.md`
+  2026-10-12 evening). A gift that is sent back (the fund refused it) is not a gift: it has no donation
+  record, and its out and in legs sit in the months they happened.
 - **Gift valuation:** a donor-advised fund (DAF) values a stock gift at the MEAN of the day's high and
   low on the receipt date (the broker's gifted-shares summary does the same), not the close. The DAF
   value is the authority for the OUT leg's `amount`; linking the donation stamps it over the stand-in.
