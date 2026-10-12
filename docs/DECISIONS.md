@@ -1243,3 +1243,37 @@ The owner ruled on the 37 findings in `qa/findings/DECISIONS-PENDING.md` in one 
 - A dry run that does not print its database path cannot show that the override was ignored.
 - A backup written by `sqlite3 .backup` is in WAL mode; open it without `-readonly` to compare.
 - A recompute with no input change, run first on a copy, is the control that makes a later difference attributable to the repair.
+
+## 2026-10-12 (evening) — Decision queue: owner rulings, one record at a time
+
+**Authority.** The owner chose "clear the decision queue" at session start and answered each question below in the session. Nothing here was built in this entry; each ruling names what is owed.
+
+1. **A multi-file import that fails part-way says what was already written (`rule-landing-followups-2026-10-12`, item b).** When a later file fails at commit, the error screen lists the files already imported and says they can be undone from the import history. Wording only: the commit keeps its present behaviour (a throw fails the request; earlier files stay written). An all-or-nothing commit was offered and not chosen. This is the owner's yes for a change inside the protected import flow, limited to that message.
+2. **The "already crossed" level question opens with focus on Cancel (same record, item k).** Enter cancels; adding takes a deliberate click or Tab. Scope is the level-create question (all three create paths, which share `createRefusalPrompt`), not every app dialog: a dialog-wide change was offered and not chosen.
+3. **Gift months: the convention is confirmed as built (`confirm-gift-month-convention`).** The snapshot's deposits-and-withdrawals field stays cash-only, the stored monthly return treats each gift as a dated outflow, and the stored investment gain leaves gifts out. Putting gifts into the flow field was offered and not chosen.
+4. **June 2026 is restated the same way (same record).** Its three stock gifts become dated outflows. It changes a published return, so it is rehearsed on a copy first and the before-and-after goes to the owner before any live write. Restating every earlier gift month was offered and not chosen.
+5. **GitHub cache purge: draft the request (`github-support-history-purge`).** The draft is in gitignored `docs/private/`. Checked the same evening: pre-rewrite commit ids still load by URL and through the API, the repository's 95 pull-request refs still exist, and it has no forks. The owner sends it; the record stays open until then.
+6. **Bar volume: a live read-only TWS request was allowed, on a spare client id (`bar-volume-unit-open`).** Result below.
+
+### What the stored bar volume holds (settled by the live request, 2026-10-12)
+
+**Method.** A throwaway script connected to TWS on client id 77, asked for daily `TRADES` bars in the app's exact request shape (SMART, regular hours) for four US names, printed the raw fields and disconnected. It opened no database. The same sessions were then read from IBKR's own connector and from a public consolidated source.
+
+**Findings.**
+- **The app stores what TWS sends.** Raw volume and trade count equal the stored rows bar for bar (one share of difference on one bar).
+- **The field is in round lots, and the lot size differs by security.** IBKR's connector reports shares. For two names priced above 250 dollars it is exactly 40 times the TWS figure on every session; for two names priced below 250 dollars it is exactly 100 times. That is why no single multiplier fitted on 2026-10-12: the earlier check used one high-priced name and saw only 40.
+- **TWS applies today's lot size to the whole history.** A mid-2025 window for a name now in the 40 tier only makes sense at 40 (at 100 it would exceed the consolidated tape), although that name was priced under 250 dollars then.
+- **Even in shares, IBKR's figure is a filtered count.** It runs at roughly half to nine tenths of the public consolidated volume, varying by name and day. It will not match a quote screen.
+- **Inferred, not read from a document:** the 100 and 40 sizes match the price-tiered round-lot sizes US markets adopted in late 2025 (100, 40, 10 and 1 share by price band). Four names were tested, none in the 10 or 1 tiers, no option and no non-US contract. IBKR's documentation page refused the fetch.
+- **Seen on the way, separate defect:** one stored daily bar holds about half of what TWS now reports for that session. It looks like a bar captured before the close and never refreshed.
+
+**What this means for a build (not ruled, nothing built).** A fixed times-100 is wrong. A lot size guessed from the price is unsafe: the tier is assigned from an earlier average price and reviewed on a schedule. The build needs the lot size from the broker per security (not yet checked which contract field carries it), or a share-denominated source, or a TWS setting that sends shares; and a stored bar goes stale when a security changes tier, because TWS rescales the whole history. Until then the honest label is "round lots".
+
+### Second batch (same evening)
+
+7. **The 2026-10-07 builder judgment calls are all confirmed (`confirm-builder-rulings-2026-10-07`).** That covers the "controller rulings" and "controller choices" lists in the four 2026-10-07 entries (both build waves, the September import, the basis-verified marker), including the one live-data change that reached past the ruling it served: two earlier gifts of one stock had each other's lots and were corrected to the broker's gifted summary. One item was already overturned and stays overturned: the later of two hand-entered earnings rows is refused on the manual buttons too (2026-10-08).
+8. **The phone chat layout is kept (`confirm-phone-chat-layout`).** The owner looked at it on the iPhone.
+9. **The two flagged donated lots are marked "basis verified" by Claude through the app's own route (`giving-mark-lots-verified`),** with the fund's final partnership tax form as the source, behind a backup, with the rows shown before and after.
+10. **Still waiting on the outside world:** the brokers' realized-gain reports and the tax preparer's answer on the short-term gift lot. Both records stay open.
+
+**Item 9, done the same evening.** The Giving reader listed exactly two lots in the `implausible` state, matching the record. After a backup (`data/backups/`, gitignored), both were marked through `POST /api/donations/lots/:id/basis-verified` on the installed app with a session minted for the purpose and revoked straight after. Read back: the marker table went from no rows to two, each with its snapshot of basis and quantity, and the reader now returns `verified` for both (one lot feeds six gifts, the other one). No tax input changed and nothing was recomputed.
