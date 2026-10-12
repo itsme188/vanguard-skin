@@ -54,7 +54,9 @@ import { RateLimiter } from "../lib/tws/rate-limiter";
 import { shouldRetypeAsEtf } from "../lib/tws/security-type-map";
 import { liveOptionExpirationSql } from "../lib/compute/option-expiry";
 
-const DB_PATH = path.join(process.cwd(), "data", "vanguard.db");
+// REPAIR_DB_PATH points the script at a rehearsal copy. Without it the script
+// opens the LIVE database, so main() prints the path before anything else.
+const DB_PATH = process.env.REPAIR_DB_PATH ?? path.join(process.cwd(), "data", "vanguard.db");
 
 /** Small pacing delay between sequential TWS contract-details calls in
  *  --from-tws mode, on top of RateLimiter's 55-req/10-min window (see
@@ -419,6 +421,7 @@ async function main(): Promise<void> {
     );
   }
 
+  console.log(`ETF type repair [${apply ? "APPLY" : "DRY RUN"}], db: ${DB_PATH}`);
   const db = new Database(DB_PATH);
   db.pragma("journal_mode = WAL");
   db.pragma("foreign_keys = ON");

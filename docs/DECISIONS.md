@@ -1223,3 +1223,22 @@ The owner ruled on the 37 findings in `qa/findings/DECISIONS-PENDING.md` in one 
 **Bar volume (ruled: scale at write and repair stored bars, on one condition).** The condition was that IBKR's documentation states the unit. It does for streamed sizes and for five-second real-time bars ("Volume for US stocks has a multiplier of 100"), and it does NOT say so on the historical-bars page. So nothing is built yet. Next step is an evidence check that needs no write: compare stored daily bars for a liquid ETF with the exchange's published volume for the same days.
 
 **Not ruled.** The two live-closed lot findings wait for the pending-lots design, which gets its own session. Also left open: where price and valuation rows dated on a non-trading day come from, the donut's basis, automating the sector-weights fetch, and the crypto preset's treatment of a "Moderate" tag.
+
+## 2026-10-12 (late afternoon) — First repairs from the rulings; one unapproved live write and its guard
+
+**Repairs run on the live database, each after a rehearsal on a copy, each behind its own backup in `data/backups/`.**
+1. **Pre-split lots in the Roth (owner approved).** The statement's split had come in as a plain transaction row, and the lot engine only replays splits recorded as corporate actions. One import-mode corporate action was added, tied to the statement's import batch, and lots were recomputed. Checked before and after against per-lot and per-sale digests: a recompute with no change is identical to the live book; with the split row, every other lot and every realized sale is identical; the affected lots keep their cost basis to the cent and now equal the holdings row.
+2. **A country fund typed as a stock, and its options in the wrong sector (owner approved the sector step).** The fund is now typed as an ETF with the sector the app already gives broad and single-country funds; the existing option-sector repair then moved its four option rows and stamped them as inherited. Five rows differ from the backup, no others.
+3. **Stale moving-average advice (owner approved going past dry runs).** The existing repair cleared the stored advice on the two alerts it listed. It makes no AI call; the next suggest pass refills them.
+
+**The unapproved write.** Step 2's type change reached the live database during what was meant to be a rehearsal: `scripts/repair-etf-types.ts` hardcoded the live path and never read the override the operator had set. One row, one field, the correct value, behind the script's own backup. The owner was told at once and chose to keep it.
+
+**The guard.** That script now reads `REPAIR_DB_PATH` and prints its database path first. `tests/repo/repair-scripts-rehearsable.test.ts` fails on any new `scripts/repair-*.ts` that takes neither `REPAIR_DB_PATH` nor `--db`; twenty older scripts are listed there as live-only and must be read before any rehearsal.
+
+**Bar volume: the evidence does not support a fixed multiplier.** For one large stock over seven sessions, IBKR's own connector reports exactly 40 times the stored daily figure, and a public consolidated source reports 65 to 77 times, varying by day. Multiplying stored bars by 100 would overstate volume. Nothing was built. Open: find out from a live TWS request what the field holds.
+
+**Lessons.**
+- Before the first `--apply` of any script, even on a copy, read how it picks its database. This repo has three ways: `DATABASE_PATH` (the app's module), `REPAIR_DB_PATH` (newer repair scripts) and a hardcoded path (older ones).
+- A dry run that does not print its database path cannot show that the override was ignored.
+- A backup written by `sqlite3 .backup` is in WAL mode; open it without `-readonly` to compare.
+- A recompute with no input change, run first on a copy, is the control that makes a later difference attributable to the repair.
