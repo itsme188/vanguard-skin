@@ -132,13 +132,16 @@ export async function POST(request: NextRequest) {
     const knownAccountNames =
       mode === "preview" ? getAllAccounts(db).map((a) => a.name) : undefined;
 
-    // Per-file isolation: a parser that THROWS for one file (e.g. the Vanguard
-    // PDF parser on a document that is not a statement) is recorded as that
-    // file's failure, exactly like a parser that RETURNS sourceType "unknown",
-    // so the other files in the drop still preview or commit. The thrown error
+    // Per-file isolation, PREVIEW ONLY: a parser that THROWS for one file (e.g.
+    // the Vanguard PDF parser on a document that is not a statement) is recorded
+    // as that file's failure, exactly like a parser that RETURNS sourceType
+    // "unknown", so the other files in the drop still preview. The thrown error
     // is classified the same way the outer catch does. When EVERY file threw,
     // the response below is the one the outer catch would have given for the
     // first thrown error, so the single-file contract is unchanged.
+    // A throw at COMMIT is rethrown to the outer catch and fails the whole
+    // request: a statement that fails at commit must not be dropped quietly
+    // from a monthly import.
     let firstThrown: { status: 400 | 500; userMessage: string } | null = null;
     let thrownCount = 0;
 
@@ -258,6 +261,7 @@ export async function POST(request: NextRequest) {
             commitResult.skippedRows.length > 0 ? commitResult.skippedRows : undefined,
         });
       } catch (error) {
+        if (mode !== "preview") throw error;
         const message = error instanceof Error ? error.message : "Unknown error";
         const classified = classifyImportError(message);
         if (classified.status === 500) {

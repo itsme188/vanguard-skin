@@ -5,10 +5,14 @@
  * file (e.g. the Vanguard PDF parser's "Failed to parse Claude response as
  * JSON: This document is not a Vanguard brokerage statement ..." error) must
  * be recorded as a per-file failure, the same way a parser that RETURNS
- * sourceType "unknown" already is — the other files still preview (or
- * commit). When every file threw, the response is unchanged from the old
- * single-file contract pinned by tests/api/import-pdf-wrong-format-error.test.ts
- * (400 for a wrong-document explanation, 500 otherwise).
+ * sourceType "unknown" already is — the other files still preview. When every
+ * file threw, the response is unchanged from the old single-file contract
+ * pinned by tests/api/import-pdf-wrong-format-error.test.ts (400 for a
+ * wrong-document explanation, 500 otherwise).
+ *
+ * PREVIEW ONLY (owner ruling): a throw at COMMIT fails the whole request, as
+ * it did before the per-file catch — a statement that fails at commit must
+ * not be dropped quietly from a monthly import.
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
@@ -169,21 +173,72 @@ describe("POST /api/import — one thrown file does not discard the others", () 
     expect(hoisted.parsedNames).toEqual(["bad.pdf", "bad2.pdf"]);
   });
 
-  it("commit of [good, bad] keeps the good file's committed result", async () => {
+  it("preview of [good, bad] answers 200 with a preview for good and a failure for bad", async () => {
     const mod = await import("@/app/api/import/route");
-    const res = await mod.POST(importReq("commit", ["good.csv", "bad.pdf"]));
+    const res = await mod.POST(importReq("preview", ["good.csv", "bad.pdf"]));
 
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.success).toBe(true);
     const results = body.results as FileResult[];
-    expect(results).toHaveLength(2);
-    expect(results[0].success).toBe(true);
-    expect(results[1].success).toBe(false);
+    expect(results.map((r) => [r.filename, r.success])).toEqual([
+      ["good.csv", true],
+      ["bad.pdf", false],
+    ]);
+  });
+});
+
+describe("POST /api/import — a throw at COMMIT fails the whole request (no per-file isolation)", () => {
+  it("commit of [good, bad] answers exactly what a single thrown file answers, not a 200 with per-file results", async () => {
+    const mod = await import("@/app/api/import/route");
+
+    const single = await mod.POST(importReq("commit", ["bad.pdf"]));
+    const singleBody = await single.json();
+    expect(single.status).toBe(400);
+    expect(singleBody.success).toBe(false);
+
+    const res = await mod.POST(importReq("commit", ["good.csv", "bad.pdf"]));
+    const body = await res.json();
+
+    expect(res.status).toBe(single.status);
+    expect(body).toEqual(singleBody);
+    expect(body.results).toBeUndefined();
     expect(
-      results[1].error!.startsWith(
+      (body.error as string).startsWith(
         "This file doesn't look like a Vanguard brokerage statement.",
       ),
     ).toBe(true);
+  });
+
+  it("commit of [good, bad] throwing an unrelated error answers 500 with that message", async () => {
+    hoisted.throwMessage = "ECONNREFUSED: could not reach Claude API";
+    const mod = await import("@/app/api/import/route");
+    const res = await mod.POST(importReq("commit", ["good.csv", "bad.pdf"]));
+
+    expect(res.status).toBe(500);
+    expect(await res.json()).toEqual({
+      success: false,
+      error: "ECONNREFUSED: could not reach Claude API",
+    });
+  });
+
+  it("commit of [bad, good] stops at the thrown file: the later file is never parsed", async () => {
+    const mod = await import("@/app/api/import/route");
+    const res = await mod.POST(importReq("commit", ["bad.pdf", "good.csv"]));
+
+    expect(res.status).toBe(400);
+    expect((await res.json()).results).toBeUndefined();
+    expect(hoisted.parsedNames).toEqual(["bad.pdf"]);
+  });
+
+  it("commit of [good, bad]: the good file's batch is already committed when the bad one throws (as before the per-file catch)", async () => {
+    const mod = await import("@/app/api/import/route");
+    const res = await mod.POST(importReq("commit", ["good.csv", "bad.pdf"]));
+
+    expect(res.status).toBe(400);
+    const batches = hoisted.db
+      .prepare("SELECT filename FROM import_batches")
+      .all() as { filename: string }[];
+    expect(batches.map((b) => b.filename)).toEqual(["good.csv"]);
   });
 });
