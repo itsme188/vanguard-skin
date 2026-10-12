@@ -1190,3 +1190,36 @@ One commit, found by the final browser check of the finished build. One Codex re
 - A fix at one entry point needs a search for every caller of the same route; the reviewer found the third by grepping for the route, not by reading the diff.
 - A finding tag is part of the commit subject and can carry a live figure; scan tags as well as message bodies.
 - When a fix touches a protected file, the review brief should ask for the whitespace-ignored diff, so re-indentation does not hide the real change.
+
+## 2026-10-12 (afternoon) — Owner rulings on the pending QA decisions
+
+The owner ruled on the 37 findings in `qa/findings/DECISIONS-PENDING.md` in one session. Ledger rows carry `decided_by: user 2026-10-12 session` and the ruling in `disposition_plan`. Direction only here; figures stay in the gitignored ledger.
+
+**Ruled as recommended, code or wording only (20 findings now fixer material, 1 closed):**
+- Chat history under privacy mode: title a conversation from the user's first message and mask only figures in it.
+- Recap scoreboard: use the worksheet's adjusted actual and show the vendor figure as a footnote; a basis label when there is no worksheet actual. Mac and Worker together.
+- Today's IBKR line: label it with the session's date unless the session is today's Eastern date.
+- Macro cards: name the reference month from FRED's observation period.
+- Sector donut: reword the caption (a slice is a sector's net value). The donut's basis is not ruled.
+- A hand-entered earnings date in the same week as a confirmed vendor date asks first, with its own acknowledgement flag.
+- Rate presets: an interest-rate hedge fund is listed as not modelled, named and counted, never given a figure.
+- Digest Preview under privacy mode: a notice that the preview shows the email as sent. The composer is untouched.
+- Unmapped Vanguard account in an import preview: the warning says the rows are excluded, counts show none for them, and only the last four digits print. Wording and counts only; parsing and commit do not change.
+- Account footers: date the measurement; a carried day says where it was carried from; a price-date mismatch is named as one.
+- Canonical CSV rejection: detection stays strict; the message names the reason and the expected header; the guide is corrected.
+- Level suggestion prose: prefix it with its detection date and price.
+- Macro theme evidence line: build it from the event row.
+- Scenario "live now" badge: match on subject keywords; no badge without a match.
+- Integrity section: a "Checks run" line with every check's state.
+- Phone holdings table: sticky Symbol column.
+- Cash-Deploy: stop at each sector's gap and show the remainder as unallocated.
+- Source counts: label both counts.
+- Archived alert card: "Held when fired (date)".
+- Expected 409 answers that log a console line: accepted and closed; the status code is the contract.
+- Archived recap viewer with blank actuals: no viewer change; it follows the open earnings-reconcile decision and stays pending behind it.
+
+**Ruled in two halves (13 findings): the code half is fixer material; the repair half is run by the owner, one at a time, each rehearsed as a dry run on a database copy first.** Empty-enrichment articles; funds with no sector look-through; a macro actual on a different basis than its consensus; alert advice quoting a stale price; pre-split lots shown as a loss; a trade grade citing a wrong period high; a failed chat turn saved with no answer (the chat component and route are protected: smallest change, by PR); macro themes cached before the citation check; exclusion reasons cut mid-word; a crypto factor tag on banks; an 8-K viewer with run-together text; a put whose sale is booked twice. One more is a data step only: classify the underlying of an option that sits in the wrong sector.
+
+**Bar volume (ruled: scale at write and repair stored bars, on one condition).** The condition was that IBKR's documentation states the unit. It does for streamed sizes and for five-second real-time bars ("Volume for US stocks has a multiplier of 100"), and it does NOT say so on the historical-bars page. So nothing is built yet. Next step is an evidence check that needs no write: compare stored daily bars for a liquid ETF with the exchange's published volume for the same days.
+
+**Not ruled.** The two live-closed lot findings wait for the pending-lots design, which gets its own session. Also left open: where price and valuation rows dated on a non-trading day come from, the donut's basis, automating the sector-weights fetch, and the crypto preset's treatment of a "Moderate" tag.
