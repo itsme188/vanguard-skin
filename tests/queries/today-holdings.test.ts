@@ -938,6 +938,42 @@ describe("getIbkrTodayHoldings: a row dated after the measured session", () => {
     expect(z.day_move_base).toBeCloseTo(5000, 6);
   });
 
+  it("a later row with the same quantity but a restated cost: the session's purchase is measured from the SESSION cost", () => {
+    const acct = ibkrAccountId();
+    const zza = seedName("ZZA");
+    // Opened in the session at 52; the next day's row carries the same 200
+    // shares at a restated cost of 59, above the session close of 55. The
+    // move belongs to the session, so it is measured from 52, never from 59:
+    // the later cost would flip the sign of a gain the session really made.
+    const morn = seedName("MORN");
+    holdAt(acct, morn, 100, 4000, PRIOR); // the book was seen at the prior close
+    holdAt(acct, zza, 200, 10400, LATEST);
+    holdAt(acct, zza, 200, 11800, NEXT);
+
+    const z = find(getIbkrTodayHoldings(db, acct, PAIR), "ZZA");
+    expect(z.today_gain).toBeCloseTo(600, 6); // 200 x (55 - 52)
+    expect(z.day_move_basis).toBe("cost");
+    expect(z.opened_today).toBe(true);
+    expect(z.day_move_base).toBeCloseTo(10400, 6);
+    expect(z.change_undated).toBe(false);
+    expect(z.changed_after_session).toBeUndefined();
+  });
+
+  it("an add in the session, restated at a different cost the next day: the added part is measured from the session cost", () => {
+    const acct = ibkrAccountId();
+    const zza = seedName("ZZA");
+    holdAt(acct, zza, 100, 4000, PRIOR);
+    holdAt(acct, zza, 200, 9200, LATEST); // 100 more at 52 during the session
+    holdAt(acct, zza, 200, 9900, NEXT); // same 200 shares, cost restated
+
+    const z = find(getIbkrTodayHoldings(db, acct, PAIR), "ZZA");
+    // Held 100 x 5 = 500, added 100 x (55 - 52) = 300, exactly as with no later row.
+    expect(z.today_gain).toBeCloseTo(800, 6);
+    expect(z.day_move_basis).toBe("mixed");
+    expect(z.added_today_qty).toBe(100);
+    expect(z.change_undated).toBe(false);
+  });
+
   it("a later row with the SAME quantity changes nothing", () => {
     const acct = ibkrAccountId();
     const zza = seedName("ZZA");

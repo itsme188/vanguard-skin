@@ -159,7 +159,10 @@ interface TodayHoldingRow extends TodayHolding {
  * so it is not measured here: the move is taken on the book as of the pair's
  * later date (read the same way as the prior book), a name not held then is
  * left out, and the row is flagged `change_undated`. A row dated on or before
- * the pair's later date, or a later row with the same quantity, is untouched.
+ * the pair's later date is untouched. A later row with the same quantity keeps
+ * its SQL close-to-close figures, but any quantity opened or added in the
+ * session is priced from the session book's cost, never the later row's
+ * (2026-10-12: a restated cost had flipped the sign of a session gain).
  */
 export function getIbkrTodayHoldings(
   db: Database.Database,
@@ -347,15 +350,22 @@ export function getIbkrTodayHoldings(
       // what the book held when that session closed: measure the session's
       // own book, never the quantity traded afterwards.
       const sessionQty = session_quantity ?? 0;
-      const changedAfterSession =
-        holding_as_of_date > pair.latest && sessionQty !== row.quantity;
+      const datedAfterSession = holding_as_of_date > pair.latest;
+      const changedAfterSession = datedAfterSession && sessionQty !== row.quantity;
+      // A row dated after the session reads the SESSION book's cost whenever
+      // that book has the name, even with the quantity unchanged: a later row
+      // can restate the cost (a fill booked against a later price, an
+      // average-cost refresh), and the quantity opened in the session is
+      // measured from what it cost THEN. Pricing it from the later cost
+      // flipped the sign of a session gain (2026-10-12).
+      const readsSessionBook = datedAfterSession && session_quantity != null;
       const input = {
         priorQty: prior_quantity,
         currentQty: changedAfterSession ? sessionQty : row.quantity,
         priorClose: pair_prior_close,
         latestClose: pair_latest_close,
         priorCostBasis: prior_cost_basis_native,
-        currentCostBasis: changedAfterSession ? session_cost_basis_native : cost_basis_native,
+        currentCostBasis: readsSessionBook ? session_cost_basis_native : cost_basis_native,
         multiplier: value_per_point ?? 1,
       };
       let move = computePositionDayMove(input);
