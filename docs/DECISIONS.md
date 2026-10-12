@@ -1169,3 +1169,24 @@ One commit, found by the final browser check of the finished build. One Codex re
 **Decided by Claude after the review, for the owner to confirm.** If building the new list fails, the snapshot is still written with the field left out, and the cloud falls back to the old list. The alternative (abort the snapshot) would have stalled every cloud fallback on one helper bug.
 
 **Deploy order.** Worker first, then the Mac. The 02:00 snapshot runs from the main checkout, so version 14 starts with the first snapshot after the merge, whatever the Mac app runs; an older Worker ignores the field, so no order breaks anything.
+
+## 2026-10-12 — Nightly-QA landing (PRs #110 and #111, plus a stranded fixer commit) and four owner rulings
+
+**What landed.** Eleven nightly fixes: PR #110 (one commit, merged), PR #111 (nine commits, cherry-picked) and the 2026-10-12 fixer commit that never got a PR. Three read-only reviews that ran the code, then six review-fix commits, a sandbox browser pass and the full suite.
+
+**Why PR #111 was cherry-picked, not merged.** One commit's subject carried a live row count for a held security inside its finding tag. The code is unchanged; the tag is reworded. The PR is closed unmerged and its original commit is still reachable on GitHub under the PR ref (covered by the open `github-support-history-purge` decision).
+
+**Owner rulings (2026-10-12).**
+1. **Import: the per-file error guard is for previews only.** A file that throws during a preview is reported as that file's failure and the other files still preview. A throw at commit fails the whole request, as before the fix: a statement that fails at commit must not be dropped quietly from a monthly import. The import pipeline stays a protected area; the change there is one rethrow line.
+2. **Levels: adding a level outside the scanner's range asks first.** This reverses the earlier note in the route ("marking structure to arm later is legitimate", saved with a warning). Add, Edit and Reactivate now behave the same way, and one click overrides. An already-crossed level asks first on all three create paths: the Add form, the chart-click popover and the suggested-level Accept button.
+3. **Security page hero on a phone: narrow fix.** Ordinary tickers keep the price beside the symbol; only a long symbol wraps inside its column. The fixer's first version stacked the price under the symbol for every security.
+4. **Day move: a missing session cost is never borrowed.** A name whose cost in the measured session's book is missing is left out of the day move and counted, never measured from a later row's restated cost. This confirms the fix as built and follows the "never default a cost" rule.
+
+**What the reviews found that a green suite did not.** A third create path the fix missed (suggested-level Accept); the original transaction-count defect still present under an account filter, and new true totals that privacy mode did not mask; a real-looking option contract quoted in a test comment and a source comment; an out-of-scope behaviour change in commit-mode imports where the done screen would not have shown the failed file.
+
+**The nightly fixer died three nights running (2026-10-10 to 10-12).** Each night it started the test suite in the background and ended its turn to wait for the result. In headless mode that ends the process, so its commits were made and nothing was delivered: no PR for the last night, no run report for any of the three. The fixer skill now says to run every suite as a foreground command and never end a turn to wait on one. The deep-sweep skill already had the twin rule for its zone agents.
+
+**Lessons.**
+- A fix at one entry point needs a search for every caller of the same route; the reviewer found the third by grepping for the route, not by reading the diff.
+- A finding tag is part of the commit subject and can carry a live figure; scan tags as well as message bodies.
+- When a fix touches a protected file, the review brief should ask for the whitespace-ignored diff, so re-indentation does not hide the real change.
