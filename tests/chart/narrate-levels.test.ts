@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import { getOrGenerateNarrative } from "@/lib/chart/narrate-levels";
+import { todayET } from "@/lib/calendar/date-utils";
 import type { SuggestedLevel } from "@/lib/chart/suggested-levels";
 import type { OhlcBar } from "@/lib/chart/indicators";
 
@@ -305,7 +306,7 @@ describe("detected price (migration 098)", () => {
     db.pragma("foreign_keys = ON");
     runMigrations(db);
     db.prepare(`INSERT INTO securities (id, symbol, security_type) VALUES (1, 'ZZA', 'stock')`).run();
-    const day = new Date().toISOString().slice(0, 10);
+    const day = todayET();
     db.prepare(
       `INSERT INTO suggested_level_narratives (security_id, level_price, direction, narrative, computed_at_day)
        VALUES (1, 150, 'support', 'old', ?)`,

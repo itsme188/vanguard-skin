@@ -6,6 +6,7 @@ import {
   formatTriggeredAlertsSection,
 } from "@/lib/digest/daily-digest";
 import { upsertLevel, triggerLevel } from "@/lib/mutations/security-levels";
+import { todayET } from "@/lib/calendar/date-utils";
 
 let db: Database.Database;
 
@@ -73,7 +74,7 @@ describe("daily-digest — formatTriggeredAlertsSection", () => {
     });
     triggerLevel(db, { levelId, securityId: secId, triggeredPrice: 499 });
 
-    const today = new Date().toISOString().slice(0, 10);
+    const today = todayET();
     const block = formatTriggeredAlertsSection(db, today);
     expect(block).toContain("NVDA");
   });
