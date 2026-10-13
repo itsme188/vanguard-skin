@@ -200,7 +200,9 @@ export function getPortfolioSummaryForChat(db: Database.Database, accountName?: 
     .all(...holdingsParams, ...holdingsParams) as EnrichedHolding[];
 
   if (holdings.length > 0) {
-    lines.push("\n### Current Holdings (verified positions with quantity > 0)");
+    lines.push(
+      "\n### Current Holdings — long positions (verified, quantity > 0; short positions are listed in the next section)"
+    );
     for (const h of holdings) {
       const unit = h.security_type?.toLowerCase() === "bond" ? "face" : h.security_type?.toLowerCase() === "option" ? "contracts" : "shares";
       const value = h.market_value != null ? ` MV:${formatUSD(h.market_value)}` : "";
@@ -214,6 +216,57 @@ export function getPortfolioSummaryForChat(db: Database.Database, accountName?: 
       lines.push(
         `- ${h.symbol} (${h.account_name}): ${formatNumber(h.quantity)} ${unit}${value}${gain}${weight}${sector}`
       );
+    }
+  }
+
+  // ─── Short positions ─────────────────────────────────────────────
+  // The long list above is the book's long side only. A held short was
+  // missing from the context altogether, so the model, seeing it in the
+  // market snapshot, told the owner the book might not have synced it
+  // (QA 2026-10-13). Quantity and market value only: a short's gain is the
+  // lot engine's to sign (lib/queries/tax-lots.ts), never derived here.
+  const shorts = db
+    .prepare(
+      `WITH latest_prices AS (
+        SELECT p.security_id, p.close_price
+        FROM prices p
+        INNER JOIN (SELECT security_id, MAX(date) AS max_date FROM prices GROUP BY security_id) lp
+        ON p.security_id = lp.security_id AND p.date = lp.max_date
+      )
+      SELECT a.name AS account_name, s.symbol, s.security_type, s.sector,
+             h.quantity, h.as_of_date,
+             CASE WHEN lp.close_price IS NOT NULL
+               THEN ${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}
+               ELSE NULL
+             END AS market_value
+       FROM holdings h
+       JOIN accounts a ON a.id = h.account_id
+       JOIN securities s ON s.id = h.security_id
+       LEFT JOIN latest_prices lp ON lp.security_id = h.security_id
+       LEFT JOIN fx_rates fx ON fx.currency = s.currency
+       WHERE ${latestHoldingsPredicate({ includeShorts: true, accountFilter: "" })}
+         AND h.quantity < 0
+         AND ${unmaturedSecuritySql("s")}
+         ${holdingsFilter}
+       ORDER BY market_value ASC`
+    )
+    .all(...holdingsParams) as Array<{
+      account_name: string;
+      symbol: string;
+      security_type: string | null;
+      sector: string | null;
+      quantity: number;
+      as_of_date: string;
+      market_value: number | null;
+    }>;
+
+  if (shorts.length > 0) {
+    lines.push("\n### Current Short Positions (verified, quantity < 0; market value is the liability)");
+    for (const h of shorts) {
+      const unit = h.security_type?.toLowerCase() === "option" ? "contracts" : "shares";
+      const value = h.market_value != null ? ` MV:${formatUSD(h.market_value)}` : "";
+      const sector = h.sector ? ` [${h.sector}]` : "";
+      lines.push(`- ${h.symbol} (${h.account_name}): short ${formatNumber(Math.abs(h.quantity))} ${unit}${value}${sector}`);
     }
   }
 

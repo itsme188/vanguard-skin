@@ -11,7 +11,7 @@ import {
 } from "@/lib/queries/chat-tools";
 import { getNotesFiltered, getSecurityIdBySymbol } from "@/lib/queries/notes";
 import { createNote } from "@/lib/mutations/notes";
-import { addDays, todayET } from "@/lib/calendar/date-utils";
+import { addDays, todayET, nowET } from "@/lib/calendar/date-utils";
 import { NOTE_TYPES, NOTE_SENTIMENTS } from "@/lib/types";
 import { coerceNoteType, coerceNoteSentiment } from "@/lib/notes/coerce";
 import { computeTwr } from "@/lib/compute/twr";
@@ -778,7 +778,7 @@ export const CHAT_TOOLS: Anthropic.Tool[] = [
   {
     name: "query_calendar_events",
     description:
-      "Query upcoming or past market events from the calendar — earnings dates, FOMC meetings, CPI releases, jobs reports, GDP, PMI, retail sales, analyst meetings, and other macro/company events. Use when the user asks about upcoming events, 'what's on the calendar', 'when is the next FOMC/CPI/earnings', or wants to understand what market-moving events are ahead.",
+      "Query upcoming or past market events from the calendar — earnings dates, FOMC meetings, CPI releases, jobs reports, GDP, PMI, retail sales, analyst meetings, and other macro/company events. Use when the user asks about upcoming events, 'what's on the calendar', 'when is the next FOMC/CPI/earnings', or wants to understand what market-moving events are ahead. Every row carries report_state: 'reported' (a result is on file in actual_value), 'upcoming' (a later date), or 'not yet reported' (today or earlier with no result on file); the result carries now_et, the current Eastern date and clock. A company has reported ONLY when its report_state is 'reported' — a pre-open or after-close slot on today's date is a scheduled time, not a result, so never say a print is out or react to it before then.",
     input_schema: {
       type: "object" as const,
       properties: {
@@ -1675,15 +1675,35 @@ export async function executeTool(
           evtParams.push(String(input.symbol).toUpperCase());
         }
 
-        const events = db
+        const rows = db
           .prepare(
             `SELECT event_type, event_date, event_time, title, description, symbol,
-             expected_impact, consensus_estimate, previous_value
+             expected_impact, consensus_estimate, previous_value, actual_value
              FROM calendar_events WHERE ${evtWhere}
              ORDER BY event_date ASC, event_time ASC LIMIT 50`
           )
-          .all(...evtParams);
-        rawResult = { events, count: events.length };
+          .all(...evtParams) as Array<{
+            event_date: string;
+            event_time: string | null;
+            actual_value: string | null;
+            [k: string]: unknown;
+          }>;
+        // Whether a result is on file, said in words: the model read a dated
+        // pre-open row at 04:20 ET as "already reported" (QA 2026-10-13).
+        // Only a stored actual means reported; a slot is a scheduled time.
+        const clock = nowET();
+        const events = rows.map((e) => {
+          const hasActual = e.actual_value != null && String(e.actual_value).trim() !== "";
+          const report_state = hasActual
+            ? "reported"
+            : e.event_date > today
+              ? "upcoming"
+              : e.event_date === today
+                ? `not yet reported (scheduled today${e.event_time ? ` at ${e.event_time} ET` : ""}; it is now ${clock} ET)`
+                : "not yet reported (no result on file)";
+          return { ...e, report_state };
+        });
+        rawResult = { events, count: events.length, now_et: `${today} ${clock} ET` };
         break;
       }
 

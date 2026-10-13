@@ -20,6 +20,7 @@ import { resolveTradingDayPair, type TradingDayPair } from "@/lib/digest/anomali
 import { getIbkrTodayHoldings, type TodayHolding } from "@/lib/queries/today-holdings";
 import type { DayMoveBasis } from "@/lib/compute/day-move";
 import { todayET, nowET, calendarDaysBetween } from "@/lib/calendar/date-utils";
+import { isMarketClosed } from "@/lib/calendar/market-holidays";
 
 /** Calendar-day tolerance before the local book counts as stale. Matches the
  *  levels stale-price guard: tolerates Fri→Mon + a long-weekend Monday. */
@@ -339,15 +340,41 @@ function legNote(h: TodayHolding): string | null {
 const NO_LOCAL_SESSION_REASON =
   "The local book is behind, so what was held, opened or added this session is not known; no dollar day effect is given. Report the percent price move only.";
 
+// The book HAS the latest session; the one before it is missing (a close
+// stored under a closed day, a skipped sync), so the consecutive pair the
+// dollar day effect needs cannot form. Saying "behind" here told the owner
+// the book had not synced a session that was in fact in it (QA 2026-10-13).
+const NO_PRIOR_SESSION_REASON =
+  "The local book has this session, but the previous session's close is missing from it, so what was held, opened or added this session cannot be measured; no dollar day effect is given. Report the percent price move only.";
+
+/**
+ * The latest trading-day date the local book prices SPY on, closed-day rows
+ * dropped the way `resolveTradingDayPair` drops them; null when none.
+ */
+function latestLocalSession(db: Database.Database): string | null {
+  const rows = db
+    .prepare(
+      `SELECT p.date AS date
+         FROM prices p
+         JOIN securities s ON s.id = p.security_id
+        WHERE UPPER(s.symbol) = 'SPY'
+        ORDER BY p.date DESC
+        LIMIT 10`,
+    )
+    .all() as { date: string }[];
+  return rows.map((r) => r.date).find((d) => !isMarketClosed(d)) ?? null;
+}
+
 type PositionFields = Omit<MarketMove, "symbol" | "name" | "pct" | "kind">;
 
 /**
  * The position fields of a held row; empty for a benchmark so its row keeps
- * the percent-only shape. `sessionKnown` is false on the live fallback, where
- * the local book is behind: quantity and value are still the book's, but no
- * dollar day effect is claimed.
+ * the percent-only shape. `unmeasuredReason` is set on the live fallback,
+ * where the local book cannot measure the session (behind, or missing the
+ * prior close): quantity and value are still the book's, but no dollar day
+ * effect is claimed, and the reason says which.
  */
-function positionFields(u: UniverseEntry, sessionKnown: boolean): PositionFields {
+function positionFields(u: UniverseEntry, unmeasuredReason: string | null): PositionFields {
   if (!u.legs || !u.position) return {};
   const legs = [...u.legs].sort((a, b) => a.account.localeCompare(b.account));
   const many = legs.length > 1;
@@ -359,7 +386,7 @@ function positionFields(u: UniverseEntry, sessionKnown: boolean): PositionFields
       ? null
       : legs.reduce((sum, l) => sum + (l.holding.current_value ?? 0), 0),
   };
-  if (!sessionKnown) {
+  if (unmeasuredReason !== null) {
     return {
       ...base,
       day_effect: null,
@@ -367,7 +394,7 @@ function positionFields(u: UniverseEntry, sessionKnown: boolean): PositionFields
       day_effect_partial: false,
       opened_today: false,
       added_today: false,
-      day_effect_reason: NO_LOCAL_SESSION_REASON,
+      day_effect_reason: unmeasuredReason,
     };
   }
 
@@ -461,7 +488,7 @@ export async function getMarketSnapshot(
         const latest = closeOn(db, u.symbol, pair.latest);
         const prior = closeOn(db, u.symbol, pair.prior);
         if (latest == null || prior == null || prior === 0) return null;
-        return { symbol: u.symbol, name: u.name, pct: pct(latest, prior), kind: u.kind, ...positionFields(u, true) };
+        return { symbol: u.symbol, name: u.name, pct: pct(latest, prior), kind: u.kind, ...positionFields(u, null) };
       })
       .filter((m): m is MarketMove => m !== null);
     staleDays = calendarDaysBetween(pair.latest, today);
@@ -488,6 +515,16 @@ export async function getMarketSnapshot(
   }
 
   // ── Yahoo fallback (local missing or stale) ───────────────────────────────────
+  // Why the book could not measure the session. No pair while the book's
+  // latest SPY session is current: the session before it is missing, not the
+  // book. Anything else (no local session, or an old one): the book is behind.
+  const latestLocal = pair === null ? latestLocalSession(db) : null;
+  const priorSessionMissing =
+    latestLocal !== null && calendarDaysBetween(latestLocal, today) <= MARKET_SNAPSHOT_STALE_DAYS;
+  const unmeasuredReason = priorSessionMissing ? NO_PRIOR_SESSION_REASON : NO_LOCAL_SESSION_REASON;
+  const bookNote = priorSessionMissing
+    ? `The local book has the ${latestLocal} session but the previous session's close is missing from it, so no dollar day effect can be measured; the percent moves are a live fallback.`
+    : "The local book was behind so this is a best-effort live fallback.";
   if (opts.fetchQuotes) {
     let quotes: Awaited<ReturnType<QuoteFetcher>> = null;
     try {
@@ -504,7 +541,7 @@ export async function getMarketSnapshot(
         .map((u): MarketMove | null => {
           const q = quotes![u.symbol];
           if (!q || q.prior === 0) return null;
-          return { symbol: u.symbol, name: u.name, pct: pct(q.price, q.prior), kind: u.kind, ...positionFields(u, false) };
+          return { symbol: u.symbol, name: u.name, pct: pct(q.price, q.prior), kind: u.kind, ...positionFields(u, unmeasuredReason) };
         })
         .filter((m): m is MarketMove => m !== null);
       if (moves.length > 0) {
@@ -541,7 +578,7 @@ export async function getMarketSnapshot(
           stale: yahooStale,
           staleDays: yahooStaleDays,
           moves,
-          note: `${sessionNote} The local book was behind so this is a best-effort live fallback.`,
+          note: `${sessionNote} ${bookNote}`,
         };
       }
     }
