@@ -419,6 +419,30 @@ const LAST_TOUCH_CONTEXT_RE =
 // The date that follows names the FIRST touch ("11 times since December").
 const FIRST_TOUCH_CONTEXT_RE = /\bsince\s+(?:(?:early|mid|late)[-\s]+)?$/i;
 
+// A stated span of the touch window: "over eight months", "across a 10-month
+// stretch", "over the past year", "over more than a year", "over half a year".
+// QA regression security-detail-levels--suggestion-narrative-contradicts-chip-
+// accept-persists-regression-4 (2026-10-09): the model wrote "eleven touches
+// over eight months" under a fact sentence whose dates were twelve months
+// apart. The count and date checks never read a span.
+const SPAN_RE =
+  /\b(?:over|across|spanning|within|during|in)\s+((?:(?:the\s+)?(?:past|last|prior|previous)\s+|nearly\s+|almost\s+|about\s+|roughly\s+|around\s+|some\s+|more\s+than\s+|just\s+over\s+|under\s+|less\s+than\s+)*)(?:an?\s+(?=\d))?(half\s+an?|an?|\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)?[\s-]*(months?|weeks?|years?)\b/gi;
+/** A stated span may differ from the window by this many months either way. */
+const SPAN_TOLERANCE_MONTHS = 1;
+const DAYS_PER_MONTH = 365.25 / 12;
+
+function spanInMonths(count: string, unit: string): number {
+  const token = count.toLowerCase().replace(/\s+/g, " ");
+  const n =
+    token === "half a" || token === "half an"
+      ? 0.5
+      : token === "a" || token === "an"
+        ? 1
+        : (NUMBER_WORDS[token] ?? Number(token));
+  const u = unit.toLowerCase();
+  return u.startsWith("year") ? n * 12 : u.startsWith("week") ? n / (DAYS_PER_MONTH / 7) : n;
+}
+
 function parseIsoDate(value: string | undefined): { y: number; m: number; d: number } | null {
   const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(value ?? "");
   if (!m) return null;
@@ -474,6 +498,42 @@ export function checkNarrativeFacts(
   const first = parseIsoDate(level.firstTouchDate);
   const lastIso = isoOf(last.y, last.m, last.d);
   const firstIso = first ? isoOf(first.y, first.m, first.d) : null;
+
+  // --- spans ---
+  // The window the fact sentence prints, in months; needs both ends.
+  if (first) {
+    const windowMonths =
+      (Date.UTC(last.y, last.m, last.d) - Date.UTC(first.y, first.m, first.d)) /
+      86_400_000 /
+      DAYS_PER_MONTH;
+    for (const m of narrative.matchAll(SPAN_RE)) {
+      const qualifier = m[1].toLowerCase();
+      const recentWindow = /\b(?:past|last|prior|previous)\b/.test(qualifier);
+      // "over the past year": the count is implied. Without a count and
+      // without that qualifier ("in months") there is no claim.
+      if (m[2] == null && !recentWindow) continue;
+      const stated = spanInMonths(m[2] ?? "a", m[3]);
+      if (!Number.isFinite(stated)) continue;
+      const bareArticle = /^an?$/i.test((m[2] ?? "").trim()) && !recentWindow;
+      // "more than a year" / a bare "over a year" set a floor; "nearly",
+      // "almost", "under" a ceiling; "about" widens the tolerance; anything
+      // else ("the past year", "eight months") is taken as stated.
+      const floorOnly = bareArticle || /\b(?:more than|just over)\b/.test(qualifier);
+      const ceilingOnly = /\b(?:nearly|almost|under|less than)\b/.test(qualifier);
+      const tolerance = /\b(?:about|roughly|around|some)\b/.test(qualifier)
+        ? SPAN_TOLERANCE_MONTHS * 2
+        : SPAN_TOLERANCE_MONTHS;
+      const tooShort = windowMonths < stated - tolerance;
+      const tooLong = windowMonths > stated + tolerance;
+      const disagrees = floorOnly ? tooShort : ceilingOnly ? tooLong : tooShort || tooLong;
+      if (disagrees) {
+        return {
+          plausible: false,
+          reason: `span "${m[0].trim()}" contradicts the level's touch dates (${firstIso} to ${lastIso}, about ${windowMonths.toFixed(1)} months)`,
+        };
+      }
+    }
+  }
 
   for (const m of narrative.matchAll(ISO_DATE_RE)) {
     const iso = m[0];
