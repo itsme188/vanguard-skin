@@ -1,6 +1,6 @@
 # Session Handoff — for Codex review
 
-**Waiting on:** USER (each is a `decision` record in the coordination register; `npm run inbox` lists them): `github-support-history-purge` (send the drafted request; the draft is in gitignored `docs/private/`), `broker-realized-gain-reports`, `tax-preparer-short-term-gift`. CODEX: nothing assigned; a review of section 3 is welcome. CLAUDE: nothing.
+**Waiting on:** USER (each is a `decision` record in the coordination register; `npm run inbox` lists them): `broker-realized-gain-reports`, `tax-preparer-short-term-gift`. (The GitHub Support request was sent by the owner late on 2026-10-12 through GitHub's support assistant; its record is closed. The ticket is open: once GitHub confirms, check that an old commit link answers 404.) CODEX: nothing assigned; a review of section 3 is welcome. CLAUDE: nothing.
 
 > Rolling file, overwritten at each session close. Past handoffs: `git log -p docs/HANDOFF.md`.
 > Written by Claude Code so Codex can review changes and reasoning at full project context.
@@ -14,7 +14,7 @@
 - **Deployed:** nothing new. This session changed docs, project instructions and two tests, so the installed app (built from `094e3e37`) is current.
 - **Open pull requests:** none.
 - **Live database:** two owner-approved writes, each behind its own backup in `data/backups/` (section 3).
-- **Coordination register:** three `decision` records remain, all waiting on the owner outside the app. No locks held.
+- **Coordination register:** two `decision` records remain, all waiting on the owner outside the app. No locks held.
 
 ## 1. Goal + what changed
 
@@ -51,7 +51,7 @@ No file under `app/`, `lib/`, `workers/`, `electron/` or `scripts/` changed.
 
 **Rejected or not done, with the reason:**
 - Any fixed volume multiplier: the measurement rules it out.
-- Sending the GitHub Support request: outward-facing, so it was drafted for the owner to send.
+- Sending the GitHub Support request myself: outward-facing, so it was drafted, and the owner sent it after the session close. The request removes the old commit references and leaves the pull requests in place.
 - The crypto-fund lot backfill: it belongs to another session; the owner said to leave it there.
 - Deleting stale `qa-*` branches: all are landed by patch, but deletion was not asked for.
 - The third same-shape UTC cut in `tests/digest/daily-digest.test.ts` (a "yesterday" helper): left untouched, listed as TODO (h).
