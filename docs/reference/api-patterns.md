@@ -48,7 +48,8 @@ an inline message beside the control. These are designed outcomes, not failures:
 `pre_print` (the caller offers `force`); `POST /api/earnings/correct-date` refusals;
 `POST /api/reconciliation` `checkpoint_exists`; `POST /api/research/documents` on a duplicate
 upload; `POST` / `PATCH /api/calendar/events` `would_supersede_vendor` (`force`) and
-`slot_contradicts_known_time` (`forceSlot`); `POST /api/calendar/events` `manual_row_exists` and
+`slot_contradicts_known_time` (`forceSlot`) and `would_contradict_confirmed_date`
+(`forceContradictConfirmed`); `POST /api/calendar/events` `manual_row_exists` and
 `manual_row_hidden` (no flag skips them); `PATCH /api/levels`
 `{ action: "deactivate" }` on a level that is not armed; `POST /api/earnings/confirm-date` on a
 past or too-distant date; `POST /api/earnings/email` on the later of two hand-entered entries for
@@ -199,8 +200,12 @@ CRUD for manually-curated calendar events.
      time. `forceSlot: true` inserts and stores the slot default time.
   4. 409 `would_supersede_vendor`: the add would take a live vendor date in another week off the
      calendar. `force: true` inserts.
-  No flag skips 1 or 2. `forceSlot` answers only 3 and `force` only 4, so one add can be refused
-  twice in sequence, each time with its own reason.
+  5. 409 `would_contradict_confirmed_date` (2026-10-14; `vendorEventId`, `vendorDate`,
+     `vendorSource`, `basis`): another day in the same week holds a showing vendor date that is
+     confirmed (two sources agree, or web-verified for that day), so the add would leave two
+     prints. `forceContradictConfirmed: true` inserts.
+  No flag skips 1 or 2. `forceSlot` answers only 3, `force` only 4 and `forceContradictConfirmed`
+  only 5, so one add can be refused in sequence, each time with its own reason.
 - **POST success** returns `{ success, id, securityMatched, hiddenFeedRows }`. `hiddenFeedRows`
   (2026-10-08) is the number of showing feed rows on that symbol and date that the add hid in its
   own transaction.
@@ -211,7 +216,9 @@ CRUD for manually-curated calendar events.
   or a new symbol while the row keeps a before-open or after-close slot, and leaves the clock time
   to the server (`forceSlot`; `force` never answers it). When that check runs the release time
   follows the slot. A PATCH that keeps the slot and the symbol is never checked. A row moved onto
-  a date where a feed row shows hides that feed row in the same transaction. Test:
+  a date where a feed row shows hides that feed row in the same transaction.
+  `would_contradict_confirmed_date` runs when the date or the symbol changes
+  (`forceContradictConfirmed` only; the edited row is excluded). Test:
   `tests/api/calendar-events-manual-add-gaps.test.ts`.
 - DELETE (2026-07-26 `9cade35`): manual rows delete directly; sync-owned EARNINGS rows
   suppress-then-delete via `deleteAndSuppressCalendarEvent` (see the calendar-event-suppressions
