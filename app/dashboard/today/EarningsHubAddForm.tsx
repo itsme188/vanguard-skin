@@ -106,9 +106,25 @@ export interface SlotContradictionRefusal {
   slotDefaultTime: string;
 }
 
+/**
+ * A confirmed vendor date (two sources agree, or web-verified for that day)
+ * sits on another day of the same week — the 409
+ * `would_contradict_confirmed_date` refusal (owner ruling 2026-10-12). Nothing
+ * was written; the same add with `forceContradictConfirmed: true` goes through
+ * and leaves both prints showing.
+ */
+export interface ConfirmedDateRefusal {
+  /** The server's plain-English sentence — rendered as-is. */
+  message: string;
+  vendorDate: string;
+  vendorSource: string;
+  vendorEventId: number | null;
+}
+
 export type ManualAddOutcome =
   | { kind: "saved"; id: number | null }
   | { kind: "supersede_refused"; refusal: VendorSupersedeRefusal }
+  | { kind: "confirmed_refused"; refusal: ConfirmedDateRefusal }
   | { kind: "slot_refused"; refusal: SlotContradictionRefusal }
   | { kind: "failed"; message: string };
 
@@ -120,6 +136,8 @@ interface ManualAddInput {
   force?: boolean;
   /** Skip ONLY the slot-contradicts-known-time check (the user confirmed it). */
   forceSlot?: boolean;
+  /** Skip ONLY the same-week confirmed-vendor-date check (the user confirmed it). */
+  forceContradictConfirmed?: boolean;
 }
 
 /**
@@ -147,6 +165,7 @@ export async function postManualEarningsEvent(
         event_type: "earnings",
         ...(input.force ? { force: true } : {}),
         ...(input.forceSlot ? { forceSlot: true } : {}),
+        ...(input.forceContradictConfirmed ? { forceContradictConfirmed: true } : {}),
       }),
     });
     const data = (await res.json().catch(() => null)) as {
@@ -191,6 +210,21 @@ export async function postManualEarningsEvent(
         },
       };
     }
+    if (
+      res.status === 409 &&
+      data?.code === "would_contradict_confirmed_date" &&
+      typeof data.error === "string"
+    ) {
+      return {
+        kind: "confirmed_refused",
+        refusal: {
+          message: data.error,
+          vendorDate: data.vendorDate ?? "",
+          vendorSource: data.vendorSource ?? "",
+          vendorEventId: data.vendorEventId ?? null,
+        },
+      };
+    }
     if (!res.ok || data?.success !== true) {
       return { kind: "failed", message: data?.error ?? `Server returned ${res.status}` };
     }
@@ -224,12 +258,13 @@ export async function undoManualEarningsAdd(
   }
 }
 
-/** Which of the two server warnings the user has answered for THIS add. */
+/** Which of the three server warnings the user has answered for THIS add. */
 interface GuardAcks {
   force: boolean;
   forceSlot: boolean;
+  forceContradictConfirmed: boolean;
 }
-const NO_ACKS: GuardAcks = { force: false, forceSlot: false };
+const NO_ACKS: GuardAcks = { force: false, forceSlot: false, forceContradictConfirmed: false };
 
 export function EarningsHubAddForm({ weekOf }: Props) {
   const router = useRouter();
@@ -253,6 +288,9 @@ export function EarningsHubAddForm({ weekOf }: Props) {
   // Same contract for a 409 slot_contradicts_known_time: refused, nothing
   // written, the form asks inline (never a browser dialog).
   const [slotRefusal, setSlotRefusal] = useState<SlotContradictionRefusal | null>(null);
+  // Same contract for a 409 would_contradict_confirmed_date: refused, nothing
+  // written, the form asks inline before a second print is added.
+  const [confirmedRefusal, setConfirmedRefusal] = useState<ConfirmedDateRefusal | null>(null);
   // Each warning has its own acknowledgement. One already given is carried
   // into the resend if the OTHER guard then fires, so the user clicks at most
   // once per warning — and never answers a warning they were not shown.
@@ -269,6 +307,7 @@ export function EarningsHubAddForm({ weekOf }: Props) {
     setWeekendAsk(null);
     setSupersede(null);
     setSlotRefusal(null);
+    setConfirmedRefusal(null);
     setAcks(NO_ACKS);
   }
 
@@ -282,6 +321,7 @@ export function EarningsHubAddForm({ weekOf }: Props) {
     setWeekendAsk(null);
     setSupersede(null);
     setSlotRefusal(null);
+    setConfirmedRefusal(null);
     setAcks(nextAcks);
     try {
       const outcome = await postManualEarningsEvent({ symbol, date, slot, ...nextAcks });
@@ -291,6 +331,10 @@ export function EarningsHubAddForm({ weekOf }: Props) {
       }
       if (outcome.kind === "supersede_refused") {
         setSupersede(outcome.refusal);
+        return;
+      }
+      if (outcome.kind === "confirmed_refused") {
+        setConfirmedRefusal(outcome.refusal);
         return;
       }
       if (outcome.kind === "failed") {
@@ -526,6 +570,29 @@ export function EarningsHubAddForm({ weekOf }: Props) {
               className="px-3 py-1 text-[11px] rounded text-ink-dim hover:text-ink disabled:opacity-50"
             >
               Keep the vendor date
+            </button>
+          </div>
+        </div>
+      )}
+      {confirmedRefusal && (
+        <div className={`w-full rounded-lg border border-gold/30 bg-gold/10 p-2 text-[11px] ${CHIP_TONE_TEXT.gold}`}>
+          {confirmedRefusal.message}
+          <div className="mt-1.5 flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => save({ ...acks, forceContradictConfirmed: true })}
+              disabled={submitting}
+              className={`px-3 py-1 text-[11px] font-semibold rounded border border-gold-ink/40 text-gold-ink ${GOLD_OUTLINE_HOVER} disabled:opacity-50`}
+            >
+              {submitting ? "Adding…" : "Add anyway (two prints this week)"}
+            </button>
+            <button
+              type="button"
+              onClick={resetGuards}
+              disabled={submitting}
+              className="px-3 py-1 text-[11px] rounded text-ink-dim hover:text-ink disabled:opacity-50"
+            >
+              Keep the confirmed date
             </button>
           </div>
         </div>
