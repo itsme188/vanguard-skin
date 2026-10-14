@@ -391,7 +391,7 @@ export function EarningsHub() {
                     {byDay.get(day)!.map((e) => (
                       <div key={e.id}>
                         <DesktopRow event={e} />
-                        <LivePrintSlot eventId={e.id} symbol={e.symbol ?? ""} armed={e.worksheetArmed} />
+                        <LivePrintSlot eventId={e.id} symbol={e.symbol ?? ""} armed={e.worksheetArmed} eventDate={e.event_date} />
                       </div>
                     ))}
                   </div>
@@ -417,7 +417,7 @@ export function EarningsHub() {
                     {byDay.get(day)!.map((e) => (
                       <div key={e.id}>
                         <MobileCard event={e} />
-                        <LivePrintSlot eventId={e.id} symbol={e.symbol ?? ""} armed={e.worksheetArmed} />
+                        <LivePrintSlot eventId={e.id} symbol={e.symbol ?? ""} armed={e.worksheetArmed} eventDate={e.event_date} />
                       </div>
                     ))}
                   </div>

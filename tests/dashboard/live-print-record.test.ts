@@ -264,6 +264,19 @@ describe("source pins", () => {
     expect(slot.slice(i - 200, i)).toContain("open && isVisibleTwin");
   });
 
+  it("a past print with no cockpit row still reaches the record: the slot falls back to the Hub row's own date", () => {
+    // The cockpit payload covers the Hub week plus yesterday, so an armed print
+    // two days back has no cockpit row and `eventDate` read from it alone is
+    // null, which slotBodyKind reads as "waiting" (the 2026-10-14 ledger row:
+    // a row printed yesterday still said its window would open). The Hub row
+    // knows its own date, so the slot takes it as a prop and reads the cockpit
+    // first, the prop second.
+    const slot = hub.slice(anchorIndex(hub, "export function LivePrintSlot"));
+    expect(slot).toMatch(/cockpitByEvent\[eventId\]\?\.eventDate \?\? eventDateProp \?\? null/);
+    const hubPage = readFileSync("app/dashboard/today/EarningsHub.tsx", "utf8");
+    expect(hubPage.match(/<LivePrintSlot\b[^>]*eventDate=\{e\.event_date\}/g)).toHaveLength(2); // desktop + mobile
+  });
+
   it("the client never imports the server outputs module", () => {
     for (const src of [row, hub]) {
       expect(src).not.toMatch(/from "@\/lib\/earnings\/print-(outputs|record)"/);
