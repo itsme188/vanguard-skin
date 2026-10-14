@@ -337,8 +337,11 @@ describe("every account and a non-empty list answer as before", () => {
     // 2026-10-09 when the trust state's bond durations gained storedCount,
     // estimated and a reason per not-modelled bond: with those three removed
     // the output still hashed to the earlier digest (1e4e771a...).
+    // Re-captured 2026-10-14 when every scenario result gained the
+    // rateHedgesUnmodelled disclosure: with that one key removed the output
+    // still hashed to the 2026-10-09 digest (9b91055a...).
     expect(createHash("sha256").update(json).digest("hex")).toBe(
-      "9b91055a80505ab339ad1de16f8faaefffdd48e1d8e832654a6912cbab20b7b5",
+      "fb5730b5e48cfd049baefc448d482fa9c3f11b90ece4d1053859839ac76b5a92",
     );
   });
 
