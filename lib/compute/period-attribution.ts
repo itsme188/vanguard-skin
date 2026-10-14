@@ -121,33 +121,49 @@ function computeBetaForPeriod(
     .all(startDate, endDate, ...flowFilter.params) as { trade_date: string; amount: number }[];
   const flowByDate = new Map(flowRows.map((f) => [f.trade_date, f.amount]));
 
-  const benchByDate = new Map(benchmarks.map((b) => [b.date, b.close_price]));
+  // Pairs are consecutive BENCHMARK sessions, with the portfolio valuation
+  // looked up on each session date. daily_valuations carries a row for every
+  // calendar day (the fallback writes weekends and holidays too) and those
+  // rows have no benchmark close, so walking valuation rows dropped every
+  // Friday-to-Monday session. Walking sessions means a weekend or holiday
+  // valuation row can never break a Friday-to-Monday pair. A session whose
+  // date has no valuation drops the two pairs it belongs to, never more.
+  const valueByDate = new Map(valuations.map((v) => [v.valuation_date, v.total_value]));
   const aligned: { portReturn: number; benchReturn: number }[] = [];
   let windowStart: string | null = null;
   let windowEnd: string | null = null;
 
-  for (let i = 1; i < valuations.length; i++) {
-    const prev = valuations[i - 1];
-    const curr = valuations[i];
+  for (let i = 1; i < benchmarks.length; i++) {
+    const prev = benchmarks[i - 1];
+    const curr = benchmarks[i];
     // Gap guard: never compute a "daily" return across a multi-week hole
-    if (calendarDaysBetween(prev.valuation_date, curr.valuation_date) > MAX_RETURN_GAP_DAYS) {
+    // in either series (measured between the two session dates).
+    if (calendarDaysBetween(prev.date, curr.date) > MAX_RETURN_GAP_DAYS) {
       continue;
     }
-    const benchPrev = benchByDate.get(prev.valuation_date);
-    const benchCurr = benchByDate.get(curr.valuation_date);
-    if (benchPrev && benchCurr && prev.total_value > 0 && benchPrev > 0) {
-      // Net external flow attributed to this pair: flows dated after prev up
-      // to and including curr (the first valuation already reflects earlier flows).
+    const valuePrev = valueByDate.get(prev.date);
+    const valueCurr = valueByDate.get(curr.date);
+    if (
+      valuePrev !== undefined &&
+      valueCurr !== undefined &&
+      valuePrev > 0 &&
+      valueCurr > 0 &&
+      prev.close_price > 0
+    ) {
+      // Net external flow attributed to this pair: flows dated after the
+      // previous session up to and including this one (a weekend flow lands
+      // in the Friday-to-Monday pair; the first valuation already reflects
+      // earlier flows).
       let flow = 0;
       for (const [date, amount] of flowByDate) {
-        if (date > prev.valuation_date && date <= curr.valuation_date) flow += amount;
+        if (date > prev.date && date <= curr.date) flow += amount;
       }
       aligned.push({
-        portReturn: (curr.total_value - prev.total_value - flow) / prev.total_value,
-        benchReturn: (benchCurr - benchPrev) / benchPrev,
+        portReturn: (valueCurr - valuePrev - flow) / valuePrev,
+        benchReturn: (curr.close_price - prev.close_price) / prev.close_price,
       });
-      windowStart ??= prev.valuation_date;
-      windowEnd = curr.valuation_date;
+      windowStart ??= prev.date;
+      windowEnd = curr.date;
     }
   }
 
