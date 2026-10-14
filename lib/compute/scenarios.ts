@@ -31,6 +31,7 @@ import {
   type RateDurationSource,
 } from "./bond-duration";
 import { todayET } from "@/lib/calendar/date-utils";
+import { isInterestRateHedgeFund, scenarioMovesRates, summarizeUnmodelledRateHedges } from "./rate-hedge";
 import {
   SCENARIO_RECIPES,
   findRecipe,
@@ -88,6 +89,11 @@ export interface PositionImpact {
    * not be priced; the rate leg is then zero.
    */
   bondUnmodelledReason?: BondUnmodelledReason;
+  /**
+   * Interest-rate hedge funds under a scenario that moves rates (owner ruling
+   * 2026-10-12): set when the fund was left out; its change is then zero.
+   */
+  rateHedgeUnmodelled?: boolean;
 }
 
 export interface ScenarioResult {
@@ -107,6 +113,12 @@ export interface ScenarioResult {
    * default was refused (`fundCount`).
    */
   bondsUnmodelled: { count: number; valueShare: number; fundCount: number };
+  /**
+   * Interest-rate hedge funds left out of a scenario that moves rates
+   * (`isInterestRateHedgeFund`): count, share of the book's gross value, and
+   * symbols (sorted). Reporting only; no figure reads it.
+   */
+  rateHedgesUnmodelled: { count: number; valueShare: number; symbols: string[] };
   /**
    * Custom scenarios only. Held equity funds a sector shock could not look
    * through because no sector weights are cached for them: they took the
@@ -241,10 +253,32 @@ ${OPTION_PRICING_JOINS_SQL}
     typeof scenario.rateMove === "number" && Number.isFinite(scenario.rateMove) && scenario.rateMove !== 0
       ? scenario.rateMove
       : null;
+  const movesRates = scenarioMovesRates(scenario);
 
   // 2. Estimate beta for each position
-  const positionImpacts: PositionImpact[] = positions.map((pos) => {
+  const positionImpacts: PositionImpact[] = positions.map((pos): PositionImpact => {
     const isOption = isOptionSecurityType(pos.security_type);
+    // A fund built to gain when rates rise takes no figure under a rate move:
+    // neither the loss nor an inverted sign is right (owner ruling 2026-10-12).
+    // It is named and counted under rateHedgesUnmodelled instead.
+    if (
+      movesRates &&
+      isInterestRateHedgeFund({ security_type: pos.security_type, fund_category: pos.fund_category, name: pos.security_name })
+    ) {
+      return {
+        securityId: pos.security_id,
+        symbol: pos.symbol,
+        securityName: pos.security_name,
+        securityType: pos.security_type,
+        sector: pos.sector,
+        currentValue: pos.market_value,
+        estimatedChange: 0,
+        estimatedNewValue: pos.market_value,
+        changePercent: 0,
+        beta: 1.0,
+        rateHedgeUnmodelled: true,
+      };
+    }
     // Cash-equivalent identity is single-sourced (fund_category-driven): the
     // live sweep funds are typed 'Mutual Fund', so a type-string test alone
     // handed them the full market shock.
@@ -418,6 +452,7 @@ ${OPTION_PRICING_JOINS_SQL}
     biggestWinners,
     optionsUnmodelled: summarizeUnmodelledOptions(positionImpacts),
     bondsUnmodelled: summarizeUnmodelledBonds(positionImpacts),
+    rateHedgesUnmodelled: summarizeUnmodelledRateHedges(positionImpacts),
     fundsWithoutSectorWeights,
   };
 }

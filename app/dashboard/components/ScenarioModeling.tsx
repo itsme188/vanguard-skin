@@ -372,6 +372,12 @@ export function ScenarioModelingCard({ scope }: { scope?: string }) {
                   {result.optionsUnmodelled.count === 1 ? "option" : "options"} not modelled
                 </div>
               )}
+              {!isExpanded && result.rateHedgesUnmodelled.count > 0 && (
+                <div className="mt-1 text-[10px] text-ink-faint">
+                  <Count value={result.rateHedgesUnmodelled.count} /> rate hedge{" "}
+                  {result.rateHedgesUnmodelled.count === 1 ? "fund" : "funds"} not modelled
+                </div>
+              )}
 
               {/* ── Expanded detail ── */}
               {isExpanded && (
@@ -546,6 +552,24 @@ export function ScenarioModelingCard({ scope }: { scope?: string }) {
                             </div>
                           ))}
                       </div>
+                    </div>
+                  )}
+
+                  {/* Rate hedge funds a rate move does not model: a fund built to
+                      gain when rates rise is given no figure (owner ruling
+                      2026-10-12), so it is named here, not hidden. Symbols
+                      are public data. */}
+                  {result.rateHedgesUnmodelled.count > 0 && (
+                    <div>
+                      <h4 className="text-[10px] text-ink-faint uppercase tracking-wider mb-1.5">
+                        Rate Hedges Not Modelled
+                      </h4>
+                      <p className="text-xs text-ink-dim">
+                        <Count value={result.rateHedgesUnmodelled.count} /> interest-rate hedge{" "}
+                        {result.rateHedgesUnmodelled.count === 1 ? "fund" : "funds"} not modelled:{" "}
+                        <span className="font-mono">{result.rateHedgesUnmodelled.symbols.join(", ")}</span>{" "}
+                        — a rate hedge’s move is not a linear rate leg, so no figure is shown.
+                      </p>
                     </div>
                   )}
 
