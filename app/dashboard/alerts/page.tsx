@@ -1376,7 +1376,10 @@ function SentEmailsList({ emails }: { emails: SentEarningsEmail[] }) {
                   {e.phase}
                 </Chip>
                 <span className="text-[11px] text-ink-dim">
-                  reports {e.event_date}
+                  {/* The date sits in its own no-wrap span: on a phone this
+                      row wraps, and a bare date breaks at its hyphens. */}
+                  reports{" "}
+                  <span className="whitespace-nowrap">{e.event_date}</span>
                 </span>
                 {e.sent_by_cloud === 1 && (
                   <Chip tone="neutral" size="xs">cloud</Chip>
