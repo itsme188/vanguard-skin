@@ -2115,7 +2115,7 @@ export function LevelsPanel({
                           to it, not a second Approve / Reject. */}
                       {pendingReview && (
                         <Link
-                          href="/dashboard/alerts?view=review"
+                          href={`/dashboard/alerts?view=review&symbol=${encodeURIComponent(symbol)}`}
                           title="Approve or reject this level in the alerts inbox"
                           className="relative pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-1"
                           style={{
@@ -2384,7 +2384,7 @@ export function LevelsPanel({
                 {/* The alerts inbox is the one review surface; link to it. */}
                 {pendingReview && (
                   <Link
-                    href="/dashboard/alerts?view=review"
+                    href={`/dashboard/alerts?view=review&symbol=${encodeURIComponent(symbol)}`}
                     className="text-[10px] text-warn hover:decoration-2 underline"
                     title="Approve or reject this level in the alerts inbox"
                   >
