@@ -219,6 +219,29 @@ describe("chat movers: the opened-today rule reaches the snapshot", () => {
     expect(row.pct).toBeCloseTo(((103 - 90) / 90) * 100, 6);
   });
 
+  it("a position opened today whose name has NO prior close in the book is still listed, measured from its cost", async () => {
+    // Bought during the session: the book has no price row for the prior
+    // date at all (nothing was tracked before the buy). Today's IBKR line
+    // measures it from cost; the chat must list the same row with the same
+    // day effect, not drop it and contradict the line's total.
+    const id = seedSecurity("ZZP");
+    seedPrice(id, LATEST, 103);
+    seedHolding(IBKR, id, LATEST, 50, 5000); // bought at 100
+
+    const snap = await getMarketSnapshot(db, { today: LATEST });
+    const [row] = rowsFor(snap.moves, "ZZP");
+    expect(row).toBeDefined();
+    expect(row.day_effect).toBeCloseTo(150, 6);
+    expect(row.day_effect_basis).toBe("cost");
+    expect(row.opened_today).toBe(true);
+    // No prior close exists, so there is no price move to report.
+    expect(row.pct).toBeNull();
+    expect(row.quantity).toBe(50);
+    expect(row.market_value).toBeCloseTo(5150, 6);
+    // A benchmark with no prior close is still left out: it has nothing to say.
+    expect(snap.moves.filter((m) => m.kind === "benchmark" && m.pct === null)).toHaveLength(0);
+  });
+
   it("a position opened today with no usable cost has a null day effect and says why", async () => {
     const id = seedSecurity("ZZX");
     seedPrice(id, PRIOR, 90);

@@ -31,8 +31,13 @@ export const DEFAULT_BENCHMARKS = ["SPY", "QQQ", "DIA"];
 export interface MarketMove {
   symbol: string;
   name: string | null;
-  /** Percent change of latest close vs prior close (or live vs prior on Yahoo). */
-  pct: number;
+  /**
+   * Percent change of latest close vs prior close (or live vs prior on Yahoo).
+   * null on a held row whose name has NO prior close in the local book (a
+   * name first bought during the session): there is no price move to
+   * report, but the row still carries its position and `day_effect`.
+   */
+  pct: number | null;
   kind: "benchmark" | "holding";
   /**
    * Direction of the held position, holdings only. `pct` is the PRICE move,
@@ -460,7 +465,16 @@ export async function getMarketSnapshot(
       .map((u): MarketMove | null => {
         const latest = closeOn(db, u.symbol, pair.latest);
         const prior = closeOn(db, u.symbol, pair.prior);
-        if (latest == null || prior == null || prior === 0) return null;
+        if (latest == null) return null;
+        if (prior == null || prior === 0) {
+          // A benchmark with no prior close has nothing to say. A HELD name
+          // without one (first bought during the session, so nothing was
+          // priced before) is still a position: the Today line measures it
+          // from its cost, and the chat must list the same row with the same
+          // day effect rather than drop it and contradict the line's total.
+          if (u.kind !== "holding") return null;
+          return { symbol: u.symbol, name: u.name, pct: null, kind: u.kind, ...positionFields(u, true) };
+        }
         return { symbol: u.symbol, name: u.name, pct: pct(latest, prior), kind: u.kind, ...positionFields(u, true) };
       })
       .filter((m): m is MarketMove => m !== null);
