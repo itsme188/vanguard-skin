@@ -1,6 +1,7 @@
 import type Database from "better-sqlite3";
 import { easternDaySql, unmaturedSecuritySql } from "@/lib/db/eastern-day-sql";
 import { todayET } from "@/lib/calendar/date-utils";
+import { liveOptionExpirationSql } from "@/lib/compute/option-expiry";
 import {
   estimateBondRateLeg,
   type BondUnmodelledReason,
@@ -254,6 +255,11 @@ export function getAnalysisTrustState(
     -- metric contradicts the heatmap it sits above.
     LEFT JOIN securities s_u ON s_u.symbol = s.underlying_symbol
     LEFT JOIN security_factors sf_u ON sf_u.security_id = s_u.id
+    -- The same names the Factor Coverage card counts (getFactorCoverage,
+    -- lib/queries/analysis.ts): a matured bond or an expired option is not
+    -- a held name, so the strip cannot read 9/9 above a card that says 8.
+    WHERE ${unmaturedSecuritySql("s", today)}
+      AND ${liveOptionExpirationSql("s", today)}
   `
     )
     .get(...params) as { total: number; classified: number; missing: string | null };

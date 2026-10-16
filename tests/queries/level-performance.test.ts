@@ -296,6 +296,34 @@ describe("getRecentReleaseReactions", () => {
     expect(cpi[0].event_type).toBe("cpi");
   });
 
+  it("never returns a hidden duplicate twin (superseded = 1) beside the kept row", () => {
+    // Kept row and its hidden vendor twin for one print; each carries its own
+    // reaction snapshot anchored on a different prior close. The chat must
+    // see ONE reaction per print, read from the kept row only.
+    insertEnrichedEvent({
+      event_type: "earnings",
+      event_date: "2026-05-21",
+      symbol: "AAA",
+      actual: "EPS 1.00",
+      snapshot: { t_pre: 100, t_2h: 102 },
+      source_key: "finnhub:AAA:2026-05-21",
+    });
+    insertEnrichedEvent({
+      event_type: "earnings",
+      event_date: "2026-05-21",
+      symbol: "AAA",
+      actual: "EPS 1.00",
+      snapshot: { t_pre: 99, t_2h: 102 },
+      source_key: "nasdaq:AAA:2026-05-21",
+    });
+    db.prepare(`UPDATE calendar_events SET superseded = 1 WHERE source_key = 'nasdaq:AAA:2026-05-21'`).run();
+
+    const rows = getRecentReleaseReactions(db, { eventType: "earnings_AAA" });
+    expect(rows).toHaveLength(1);
+    expect(JSON.parse(rows[0].reaction_snapshot as string)).toEqual({ t_pre: 100, t_2h: 102 });
+    expect(getRecentReleaseReactions(db, { symbol: "AAA" })).toHaveLength(1);
+  });
+
   it("parses earnings_TICKER shortcut", () => {
     insertEnrichedEvent({
       event_type: "earnings",
