@@ -1,4 +1,5 @@
 import { DIGEST_EDITORIAL_RULES, retainSuppliedSourceLinks, splitDigestOpening } from "./synthesis-editorial";
+import { digestDatingRules } from "./synthesis-dating";
 /**
  * Cloud-fallback evening email — runs when the Mac primary path fails.
  *
@@ -492,6 +493,8 @@ TIMEFRAME & THREAD COHERENCE (HARD):
 ATTRIBUTION & PROVENANCE (HARD):
 - A source's summary sometimes RELAYS a third party's views rather than voicing the source's own opinion — a podcast guest, an interview subject, or a quoted analyst (the summary will say so, e.g. "TMT Breakout summarizes Gavin Baker's podcast remarks"). When it does, attribute the view to the ORIGINATOR, not the newsletter: write "Gavin Baker (via TMT Breakout) argued ..." — never "TMT Breakout argued ..." as if it were the newsletter's own call.
 - Do not strip a named originator out of a relayed view. And do not invent an originator when the summary names none — a summary with no relay attribution IS the source's own view.
+
+${digestDatingRules(dateStr)}
 
 Output markdown only. No preamble, no sign-off.`;
 }
