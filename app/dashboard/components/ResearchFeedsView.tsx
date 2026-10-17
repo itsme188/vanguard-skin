@@ -1092,7 +1092,7 @@ export function ResearchFeedsView({
                 ? `bg-gold/15 border-gold/40 ${CHIP_TONE_TEXT.gold}`
                 : "border-edge text-ink-dim hover:text-ink hover:bg-raised"
             }`}
-            title="Articles flipped to is_relevant=0 by the D1/D2 short-circuit or D3 portfolio-relevance gate"
+            title="Articles kept out of the feed and digest: off-topic, receipts and welcome mails, or not relevant to the portfolio"
           >
             Filtered
             <span
