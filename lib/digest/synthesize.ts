@@ -15,6 +15,7 @@
 import { generateTextForFeature, AIRefusalError } from "@/lib/ai/generate";
 import { stripModelPreamble } from "@/lib/ai/strip-preamble";
 import { DIGEST_EDITORIAL_RULES, retainSuppliedSourceLinks } from "./synthesis-editorial";
+import { digestDatingRules } from "./synthesis-dating";
 import type { CompanyBucket } from "@/lib/digest/group-by-company";
 
 // ─── Error class ─────────────────────────────────────────────────────────────
@@ -45,6 +46,13 @@ export interface SynthesisInput {
    * "Overnight & Setup" (morning). Defaults to "The Session".
    */
   sessionHeading?: string;
+  /**
+   * The Eastern calendar day the email is sent (YYYY-MM-DD). When given, the
+   * system prompt states it with its Monday-to-Friday trading week so a
+   * source's "next week" or "after the close" is re-dated from the send
+   * date (lib/digest/synthesis-dating.ts). Omitted: no dating block.
+   */
+  sendDate?: string;
 }
 
 // ─── System prompt ────────────────────────────────────────────────────────────
@@ -67,8 +75,9 @@ ATTRIBUTION & PROVENANCE (HARD):
 - A source's summary sometimes RELAYS a third party's views rather than voicing the source's own opinion — a podcast guest, an interview subject, or a quoted analyst (the summary will say so, e.g. "TMT Breakout summarizes Gavin Baker's podcast remarks"). When it does, attribute the view to the ORIGINATOR, not the newsletter: write "Gavin Baker (via TMT Breakout) argued ..." — never "TMT Breakout argued ..." as if it were the newsletter's own call.
 - Do not strip a named originator out of a relayed view. And do not invent an originator when the summary names none — a summary with no relay attribution IS the source's own view.`;
 
-function buildSystemPrompt(sessionHeading: string): string {
-  return `${SYNTHESIS_SYSTEM_PROMPT_BASE}
+function buildSystemPrompt(sessionHeading: string, sendDate?: string): string {
+  const dating = sendDate ? digestDatingRules(sendDate) : "";
+  return `${SYNTHESIS_SYSTEM_PROMPT_BASE}${dating ? `\n\n${dating}` : ""}
 
 EDITION COLLAPSING (HARD):
 - Some bucket lines carry an edition tag like [dawn], [midday], [recap], [morning_wrap], [eod_wrap], [one-off note]. Tagged articles are installments of ONE publication's daily cycle: dawn → midday → recap narrate the SAME trading session as it develops, and later editions supersede earlier ones.
@@ -155,7 +164,7 @@ export async function synthesize(input: SynthesisInput): Promise<string> {
   let result: Awaited<ReturnType<typeof generateTextForFeature>>;
   try {
     result = await generateTextForFeature("dailyDigestSynthesis", {
-      system: buildSystemPrompt(sessionHeading),
+      system: buildSystemPrompt(sessionHeading, input.sendDate),
       prompt,
       // Allow the bounded company sections room to complete; mirror in Worker.
       maxOutputTokens: 16384,
