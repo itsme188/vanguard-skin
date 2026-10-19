@@ -6,6 +6,8 @@ import {
   getAllocationBreakdown,
   getTaxLotsForChat,
   getTransactionsForChat,
+  getClosedPerLiveDataForChat,
+  getLedgerLastDateForChat,
   getPerformanceForChat,
   getIncomeSummaryForChat,
 } from "@/lib/queries/chat-tools";
@@ -142,7 +144,7 @@ export const CHAT_TOOLS: Anthropic.Tool[] = [
   {
     name: "query_holdings",
     description:
-      "Query current holdings with optional filters. Returns detailed position data including cost basis, market value, unrealized gain/loss, position weight, sector, asset class, and maturity info for bonds. Includes SHORT positions: quantity and market_value are signed (negative = short), each row carries position_side ('long' or 'short'), and position_weight_pct is each position's share of GROSS exposure (always positive; longs and shorts together sum to 100%). Automatically excludes matured bonds, expired options and zero-quantity positions. Use when the user asks about specific positions, accounts, asset classes, sectors, or portfolio composition.",
+      "Query current holdings with optional filters. Returns detailed position data including cost basis, market value, unrealized gain/loss, position weight, sector, asset class, and maturity info for bonds. Includes SHORT positions: quantity and market_value are signed (negative = short), each row carries position_side ('long' or 'short'), and position_weight_pct is each position's share of GROSS exposure (always positive; longs and shorts together sum to 100%). Automatically excludes matured bonds, expired options and zero-quantity positions. When a symbol filter finds no current row but the position was closed per LIVE broker data (awaiting the broker statement for the closing trade), the result is an object instead of a list: holdings is empty and closed_per_live_data lists, per account, the last date and quantity the position was seen held (pending_statement: true, with a status_note). Such a position is not a current holding, but it WAS held until about that date: never describe it as flat since an earlier ledger sale. Use when the user asks about specific positions, accounts, asset classes, sectors, or portfolio composition.",
     input_schema: {
       type: "object" as const,
       properties: {
@@ -268,7 +270,7 @@ export const CHAT_TOOLS: Anthropic.Tool[] = [
   {
     name: "query_transactions",
     description:
-      "Search transaction history with filters. Returns trade date, type, symbol, quantity, price, amount, and fees. Use for activity analysis, cash flow tracking, dividend history, fee analysis, or trade reconstruction.",
+      "Search transaction history with filters. Returns { transactions, ledger_last_date }: each transaction has trade date, type, symbol, quantity, price, amount, and fees; ledger_last_date is the newest trade date in the imported ledger for the same account and symbol (ignoring type and date filters). The ledger ends there: later trades may not be imported yet and may only show in query_holdings (live broker data awaiting the statement), so never claim nothing was traded, or that a position has been flat, after ledger_last_date without checking query_holdings. Use for activity analysis, cash flow tracking, dividend history, fee analysis, or trade reconstruction.",
     input_schema: {
       type: "object" as const,
       properties: {
@@ -1023,11 +1025,11 @@ export async function executeTool(
     let rawResult: unknown;
 
     switch (toolName) {
-      case "query_holdings":
+      case "query_holdings": {
         // Stays an ARRAY: annotateToolResult only inspects holdings when the
         // raw result is one. Each row names its side so the sign of quantity
         // and market_value is never left to inference.
-        rawResult = getHoldingsForChat(db, {
+        const holdingRows = getHoldingsForChat(db, {
           account_name: accountName,
           symbol: input.symbol as string | undefined,
           security_type: input.security_type as string | undefined,
@@ -1043,7 +1045,18 @@ export async function executeTool(
           ...h,
           position_side: h.quantity < 0 ? ("short" as const) : ("long" as const),
         }));
+        rawResult = holdingRows;
+        // A symbol with no current row may still have been held until
+        // recently: closed per live broker data, awaiting the statement.
+        // Only then does the result become an object (no holdings to
+        // annotate, so nothing is lost).
+        const symbolFilter = input.symbol as string | undefined;
+        if (symbolFilter && holdingRows.length === 0) {
+          const closed = getClosedPerLiveDataForChat(db, { account_name: accountName, symbol: symbolFilter });
+          if (closed.length > 0) rawResult = { holdings: [], closed_per_live_data: closed };
+        }
         break;
+      }
 
       case "query_price_history":
         rawResult = getPriceHistory(
@@ -1074,14 +1087,22 @@ export async function executeTool(
         break;
 
       case "query_transactions":
-        rawResult = getTransactionsForChat(db, {
-          account_name: accountName,
-          symbol: input.symbol as string | undefined,
-          type: input.type as string | undefined,
-          start_date: input.start_date as string | undefined,
-          end_date: input.end_date as string | undefined,
-          limit: input.limit as number | undefined,
-        });
+        // ledger_last_date says where the imported ledger ends, so a gap
+        // after it is never read as "nothing traded".
+        rawResult = {
+          transactions: getTransactionsForChat(db, {
+            account_name: accountName,
+            symbol: input.symbol as string | undefined,
+            type: input.type as string | undefined,
+            start_date: input.start_date as string | undefined,
+            end_date: input.end_date as string | undefined,
+            limit: input.limit as number | undefined,
+          }),
+          ledger_last_date: getLedgerLastDateForChat(db, {
+            account_name: accountName,
+            symbol: input.symbol as string | undefined,
+          }),
+        };
         break;
 
       case "query_performance":
