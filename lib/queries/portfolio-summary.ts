@@ -1,7 +1,8 @@
 import type Database from "better-sqlite3";
 import { unmaturedSecuritySql } from "@/lib/db/eastern-day-sql";
 import { adjustedMarketValueSQL } from "@/lib/valuation";
-import { formatUSD, formatNumber } from "@/lib/format";
+import { formatUSD, formatNumber, resolveOptionFields } from "@/lib/format";
+import { parseOCCSymbol } from "@/lib/import/occ-symbol";
 import { getTaxConventionState } from "@/lib/compute/tax-convention";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 import { todayET } from "@/lib/calendar/date-utils";
@@ -41,6 +42,10 @@ interface EnrichedHolding {
   market_value: number | null;
   unrealized_gain: number | null;
   position_weight_pct: number | null;
+  option_type?: string | null;
+  strike_price?: number | null;
+  expiration_date?: string | null;
+  underlying_symbol?: string | null;
 }
 
 interface RecentTransaction {
@@ -83,6 +88,30 @@ interface PairKeyed {
   account_id: number;
   security_id: number;
   is_short: number;
+}
+
+/**
+ * Plain-language leg for an option in the verified-holdings list, e.g.
+ * " — long put on AAA, $215 strike, expires 2027-12-17". The list is long
+ * only (includeShorts: false), so the side is always long. Fields come from
+ * the stored columns, else parsed from the OCC symbol (resolveOptionFields),
+ * so the model never decodes "271217P" itself: it once read a long December
+ * 2027 put as a short January 2027 put. Empty for a non-option or when
+ * nothing can be read.
+ */
+function describeOptionLeg(h: EnrichedHolding): string {
+  if ((h.security_type ?? "").toLowerCase() !== "option") return "";
+  const fields = resolveOptionFields(h.symbol, h.option_type as "CALL" | "PUT" | null | undefined, h.strike_price, h.expiration_date);
+  const kind = fields.optionType === "CALL" ? "call" : fields.optionType === "PUT" ? "put" : null;
+  if (!kind) return "";
+  const underlying = h.underlying_symbol?.trim() || parseOCCSymbol(h.symbol)?.underlying || null;
+  const strike =
+    fields.strike != null
+      ? `$${Number.isInteger(fields.strike) ? fields.strike : fields.strike.toFixed(2).replace(/\.?0+$/, "")} strike`
+      : null;
+  const expiry = fields.expiration ? `expires ${fields.expiration}` : null;
+  const parts = [strike, expiry].filter((p): p is string => p !== null);
+  return ` — long ${kind}${underlying ? ` on ${underlying}` : ""}${parts.length ? `, ${parts.join(", ")}` : ""}`;
 }
 
 export function getPortfolioSummaryForChat(db: Database.Database, accountName?: string): string {
@@ -173,6 +202,7 @@ export function getPortfolioSummaryForChat(db: Database.Database, accountName?: 
       )
       SELECT a.name AS account_name, s.symbol, s.name AS security_name,
               s.security_type, s.asset_class, s.sector,
+              s.option_type, s.strike_price, s.expiration_date, s.underlying_symbol,
               h.quantity, h.cost_basis * COALESCE(fx.usd_per_unit, 1) AS cost_basis, h.as_of_date,
               lp.close_price AS latest_price,
               CASE WHEN lp.close_price IS NOT NULL
@@ -211,8 +241,9 @@ export function getPortfolioSummaryForChat(db: Database.Database, accountName?: 
         ? ` (${h.position_weight_pct.toFixed(1)}%)`
         : "";
       const sector = h.sector ? ` [${h.sector}]` : "";
+      const leg = describeOptionLeg(h);
       lines.push(
-        `- ${h.symbol} (${h.account_name}): ${formatNumber(h.quantity)} ${unit}${value}${gain}${weight}${sector}`
+        `- ${h.symbol} (${h.account_name}): ${formatNumber(h.quantity)} ${unit}${leg}${value}${gain}${weight}${sector}`
       );
     }
   }
