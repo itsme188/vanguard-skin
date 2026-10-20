@@ -3,6 +3,10 @@ import { correctEarningsEventDate } from "@/lib/mutations/calendar";
 import { attemptPostCommitDrain } from "@/lib/earnings/cloud-outbox";
 import { todayET } from "@/lib/calendar/date-utils";
 import { manualEventDateError, tickerShapeError } from "@/lib/calendar/manual-event-input";
+import {
+  checkManualAddContradictsConfirmedDate,
+  WOULD_CONTRADICT_CONFIRMED_DATE,
+} from "@/lib/calendar/manual-add-contradicts-confirmed";
 
 export const dynamic = "force-dynamic";
 
@@ -26,6 +30,14 @@ const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
  * 400 when the symbol cannot be a ticker, or when correctDate is not a real
  * day from 2000 to two years ahead: this route mints a manual row at that
  * date, and a typo'd year would store one no screen shows.
+ *
+ * 409 `would_contradict_confirmed_date` (owner ruling 2026-10-20): a move to
+ * another day in the same week as a showing, confirmed vendor date for the
+ * same company (two sources agree, or web-verified for that day) would leave
+ * two prints, each with its own emails. The rows on wrongDate are excluded:
+ * the correction deletes them. A same-date slot fix is never checked.
+ * `forceContradictConfirmed: true` answers ONLY this question; the route has
+ * no other acknowledgement, and the vendor-supersede guard stays off it.
  */
 export async function POST(request: Request) {
   const body = (await request.json().catch(() => ({}))) as {
@@ -33,6 +45,7 @@ export async function POST(request: Request) {
     wrongDate?: string;
     correctDate?: string;
     slot?: string;
+    forceContradictConfirmed?: boolean;
   };
 
   if (typeof body.symbol !== "string" || body.symbol.trim() === "") {
@@ -67,13 +80,16 @@ export async function POST(request: Request) {
   }
 
   const symbol = body.symbol.trim().toUpperCase();
-  const existing = db
-    .prepare(
-      `SELECT COUNT(*) AS n FROM calendar_events
-        WHERE UPPER(symbol) = ? AND event_date = ? AND event_type = 'earnings'`,
-    )
-    .get(symbol, body.wrongDate) as { n: number };
-  if (existing.n === 0) {
+  // The same row set correctEarningsEventDate deletes.
+  const wrongIds = (
+    db
+      .prepare(
+        `SELECT id FROM calendar_events
+          WHERE UPPER(symbol) = ? AND event_date = ? AND event_type = 'earnings'`,
+      )
+      .all(symbol, body.wrongDate) as Array<{ id: number }>
+  ).map((r) => r.id);
+  if (wrongIds.length === 0) {
     return Response.json(
       {
         success: false,
@@ -81,6 +97,30 @@ export async function POST(request: Request) {
       },
       { status: 404 },
     );
+  }
+
+  if (body.forceContradictConfirmed !== true && body.correctDate !== body.wrongDate) {
+    const found = checkManualAddContradictsConfirmedDate(db, {
+      symbol,
+      eventDate: body.correctDate,
+      excludeEventIds: wrongIds,
+    });
+    if (found) {
+      return Response.json(
+        {
+          success: false,
+          error: found.message
+            .replace("Nothing was added.", "Nothing was changed.")
+            .replace("Change the date, or add anyway to keep both.", "Pick another date, or fix anyway to keep both."),
+          code: WOULD_CONTRADICT_CONFIRMED_DATE,
+          vendorEventId: found.vendorEventId,
+          vendorDate: found.vendorDate,
+          vendorSource: found.vendorSource,
+          basis: found.basis,
+        },
+        { status: 409 },
+      );
+    }
   }
 
   const result = correctEarningsEventDate(db, {

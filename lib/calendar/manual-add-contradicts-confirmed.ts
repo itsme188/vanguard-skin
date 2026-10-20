@@ -10,7 +10,9 @@
  * prints a day apart, each with its own preview and recap emails, and nothing
  * marking the conflict. POST and PATCH on /api/calendar/events now answer 409
  * `would_contradict_confirmed_date` until the body carries
- * `forceContradictConfirmed: true`. That flag answers ONLY this question;
+ * `forceContradictConfirmed: true`. So does POST /api/earnings/correct-date
+ * when it moves a date (owner ruling 2026-10-20), excluding the rows the
+ * correction deletes. That flag answers ONLY this question;
  * `force` and `forceSlot` never answer it.
  *
  * "Confirmed" means either:
@@ -55,6 +57,11 @@ export function checkManualAddContradictsConfirmedDate(
     eventType?: string;
     /** The row being edited (PATCH): never its own contradiction. */
     excludeEventId?: number;
+    /**
+     * Rows the caller is about to remove (the Fix-date action deletes every
+     * earnings row on the date it names as wrong): never a contradiction.
+     */
+    excludeEventIds?: readonly number[];
   },
 ): ConfirmedDateContradiction | null {
   if ((opts.eventType ?? "earnings") !== "earnings") return null;
@@ -87,7 +94,7 @@ export function checkManualAddContradictsConfirmedDate(
   }>;
 
   for (const row of rows) {
-    if (row.id === opts.excludeEventId) continue;
+    if (row.id === opts.excludeEventId || opts.excludeEventIds?.includes(row.id)) continue;
     let basis: ConfirmedDateContradiction["basis"] | null = null;
     if (row.date_status === "confirmed") {
       basis = "two_sources";

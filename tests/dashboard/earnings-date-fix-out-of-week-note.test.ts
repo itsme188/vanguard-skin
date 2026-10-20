@@ -15,7 +15,10 @@ describe("Fix date out-of-week notice", () => {
     const failIdx = body.indexOf("setConfirmError(body?.error");
     const dispatchIdx = body.indexOf("EARNINGS_DATE_CORRECTED_EVENT");
     expect(dispatchIdx).toBeGreaterThan(failIdx); // after the early failure return
-    expect(body).toContain("detail: { date: fixDate }");
+    // The date actually sent: after the confirmed-date question the resend
+    // carries the date that was asked about (2026-10-20).
+    expect(body).toContain("detail: { date } }");
+    expect(body).toMatch(/correctDate: date,/);
     expect(dispatchIdx).toBeLessThan(body.indexOf("router.refresh()"));
   });
 

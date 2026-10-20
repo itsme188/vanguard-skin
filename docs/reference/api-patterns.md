@@ -45,7 +45,7 @@ A guard that refuses an action the user can still choose answers **409 with noth
 an inline message beside the control. These are designed outcomes, not failures:
 `POST /api/earnings/release-time` `slot_mismatch` (no bypass) and `would_replace_web_verified`
 (until `replaceWebVerified: true`); `POST /api/earnings/actuals`
-`pre_print` (the caller offers `force`); `POST /api/earnings/correct-date` refusals;
+`pre_print` (the caller offers `force`); `POST /api/earnings/correct-date` refusals and `would_contradict_confirmed_date` (`forceContradictConfirmed`);
 `POST /api/reconciliation` `checkpoint_exists`; `POST /api/research/documents` on a duplicate
 upload; `POST` / `PATCH /api/calendar/events` `would_supersede_vendor` (`force`) and
 `slot_contradicts_known_time` (`forceSlot`) and `would_contradict_confirmed_date`
@@ -778,6 +778,12 @@ Fix a wrong sync-sourced earnings date/slot from the UI (feedback #7, 2026-08-03
   `correctEarningsEventDate` (suppress+delete, manual mint / vendor adoption, bogeys migration).
 - 404 when no earnings row exists on `wrongDate` (a typo'd date must not mint a phantom); 409 with
   the lib's `refusedReason` verbatim on captured actuals.
+- 409 `would_contradict_confirmed_date` (owner ruling 2026-10-20; `vendorEventId`, `vendorDate`,
+  `vendorSource`, `basis`): the move would leave the corrected date on another day of the same week
+  as a showing, confirmed vendor date for the same company (two sources agree, or web-verified for
+  that day). The rows on `wrongDate` never count (the correction deletes them); a same-date slot
+  fix is never checked. `forceContradictConfirmed: true` answers only this question; the chip asks
+  through the app dialog and resends. The vendor-supersede guard (`force`) stays off this route.
 - In-app (no cron auth).
 - UI: **every non-null-status `EarningsDateChip` is now tappable** — the passive statuses
   (✓ 2 src / 1 src / 🔒) open a "Date is wrong?" popover (date pre-filled for one-tap slot-only

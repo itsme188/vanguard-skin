@@ -197,6 +197,25 @@ export function releaseTimeAskFirst(status: number, body: unknown): { message: s
 }
 
 /**
+ * Mirrors WOULD_CONTRADICT_CONFIRMED_DATE
+ * (lib/calendar/manual-add-contradicts-confirmed.ts); a test pins the pair.
+ */
+export const CONTRADICT_CONFIRMED_CODE = "would_contradict_confirmed_date";
+
+/**
+ * The question a Fix date must put first (owner ruling 2026-10-20): the
+ * server's 409 when the move would leave the corrected date beside a
+ * confirmed vendor date in the same week. Null for every other reply.
+ */
+export function fixDateAskFirst(status: number, body: unknown): { message: string } | null {
+  if (status !== 409 || !body || typeof body !== "object") return null;
+  const { code, error } = body as { code?: unknown; error?: unknown };
+  if (code !== CONTRADICT_CONFIRMED_CODE) return null;
+  if (typeof error !== "string" || !error.trim()) return null;
+  return { message: error.trim() };
+}
+
+/**
  * What the override time input holds. `edited` is what the user typed, or
  * null when they have not typed since the last load or save. Untouched, the
  * input FOLLOWS the standing override when the app uses it, else the very time
@@ -374,6 +393,14 @@ function EarningsDateChipInner({
   // The server's question before a Save that would replace a web-verified
   // time (409 would_replace_web_verified), with the time it was asked about.
   const [rtAsk, setRtAsk] = useState<{ value: string; message: string } | null>(null);
+  // The server's question before a Fix date that would leave a second print
+  // beside a confirmed vendor date (409 would_contradict_confirmed_date), with
+  // the date and slot it was asked about.
+  const [fixAsk, setFixAsk] = useState<{
+    date: string;
+    slot: "bmo" | "amc";
+    message: string;
+  } | null>(null);
 
   // Viewport-aware popover alignment (QA 2026-08-07): popoverAlign is a
   // static hint from the call site, but the chip's actual position decides
@@ -461,9 +488,9 @@ function EarningsDateChipInner({
       setOpen(false);
     }
     function handleKeyDown(e: KeyboardEvent) {
-      // While the replace question is up, Escape answers IT (the dialog's
-      // own cancel), not the popover underneath.
-      if (rtAsk) return;
+      // While a question is up, Escape answers IT (the dialog's own cancel),
+      // not the popover underneath.
+      if (rtAsk || fixAsk) return;
       if (e.key === "Escape") setOpen(false);
     }
     document.addEventListener("pointerdown", handlePointerDown);
@@ -472,7 +499,7 @@ function EarningsDateChipInner({
       document.removeEventListener("pointerdown", handlePointerDown);
       document.removeEventListener("keydown", handleKeyDown);
     };
-  }, [open, rtAsk]);
+  }, [open, rtAsk, fixAsk]);
 
   const slotParam = releaseTime && releaseTime < "12:00" ? "bmo" : "amc";
   const rtEdit = releaseTimeInputValue(rtEdited, rt, releaseTime);
@@ -551,13 +578,28 @@ function EarningsDateChipInner({
     setRtMsg("Nothing was saved. The web-verified time stands.");
   }
 
+  function confirmContradictConfirmed() {
+    const asked = fixAsk;
+    setFixAsk(null);
+    if (asked) void submitCorrection(asked.date, asked.slot, true);
+  }
+
+  function cancelContradictConfirmed() {
+    setFixAsk(null);
+    setConfirmError("Nothing was changed. The confirmed vendor date stands.");
+  }
+
   // Submitting the pre-filled form unchanged used to doom the vendor row and
   // write a permanent sync suppression for zero semantic change — the server
   // now 400s it (code no_change) and the button stays disabled client-side.
   const noChange = fixDate === eventDate && fixSlot === slotParam;
 
-  async function submitCorrection() {
-    if (submitting || !fixDate) return;
+  async function submitCorrection(
+    date: string = fixDate,
+    slot: "bmo" | "amc" = fixSlot,
+    forceContradictConfirmed = false,
+  ) {
+    if (submitting || !date) return;
     setSubmitting(true);
     setConfirmError(null);
     try {
@@ -567,11 +609,21 @@ function EarningsDateChipInner({
         body: JSON.stringify({
           symbol,
           wrongDate: eventDate,
-          correctDate: fixDate,
-          slot: fixSlot,
+          correctDate: date,
+          slot,
+          ...(forceContradictConfirmed ? { forceContradictConfirmed: true } : {}),
         }),
       });
       const body = await res.json().catch(() => null);
+      // A move beside a confirmed vendor date is asked about first: nothing
+      // was changed, and the answer re-sends with the acknowledgement.
+      if (!forceContradictConfirmed) {
+        const ask = fixDateAskFirst(res.status, body);
+        if (ask) {
+          setFixAsk({ date, slot, message: ask.message });
+          return;
+        }
+      }
       if (!res.ok || !body?.success) {
         // Keep the popover open — the server's reason (e.g. the
         // captured-actuals refusal) must stay readable.
@@ -582,7 +634,7 @@ function EarningsDateChipInner({
       // This row may vanish from the shown week after the refresh; the hub's
       // note component (which survives) tells the user where it went.
       window.dispatchEvent(
-        new CustomEvent(EARNINGS_DATE_CORRECTED_EVENT, { detail: { date: fixDate } }),
+        new CustomEvent(EARNINGS_DATE_CORRECTED_EVENT, { detail: { date } }),
       );
       onConfirmed?.();
       startTransition(() => router.refresh());
@@ -679,7 +731,7 @@ function EarningsDateChipInner({
                 type="button"
                 disabled={submitting || !fixDate || noChange}
                 title={noChange ? "Change the date or slot first" : undefined}
-                onClick={submitCorrection}
+                onClick={() => void submitCorrection()}
                 className={`text-[10px] font-mono px-1.5 py-0.5 rounded ${CHIP_TONE_TEXT.up} bg-up/15 hover:bg-up/25 disabled:opacity-40 whitespace-nowrap`}
               >
                 Fix date
@@ -702,6 +754,14 @@ function EarningsDateChipInner({
             {confirmError && (
               <p className="text-[10px] text-down pt-1">{confirmError}</p>
             )}
+            <ConfirmDialog
+              open={fixAsk !== null}
+              title="Add a second print this week?"
+              message={fixAsk?.message ?? ""}
+              confirmLabel="Fix anyway (two prints this week)"
+              onConfirm={confirmContradictConfirmed}
+              onCancel={cancelContradictConfirmed}
+            />
           </div>
         )}
       </span>
