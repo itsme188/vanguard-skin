@@ -93,7 +93,10 @@ describe("LevelsPanel suggestion cards, full level set and row extras (source pi
   // security-detail-levels--pending-review-rows-no-approve-reject-on-hub
   // (owner ruling 2026-09-14: link to the inbox, no second review surface)
   it("a pending-review row links to the alerts inbox and the panel has no approve / reject of its own", () => {
-    expect(panel.split('href="/dashboard/alerts?view=review"').length - 1).toBe(2);
+    // Scoped to the security's symbol since 2026-10-15 (the inbox reads ?symbol=).
+    expect(
+      panel.split("href={`/dashboard/alerts?view=review&symbol=${encodeURIComponent(symbol)}`}").length - 1,
+    ).toBe(2);
     expect(panel.split("{pendingReview && (").length - 1).toBe(2);
     expect(panel.split('const pendingReview = levelRowStatus(l) === "pending_review";').length - 1).toBe(2);
     // The only review write this panel makes is Re-queue (back to pending).

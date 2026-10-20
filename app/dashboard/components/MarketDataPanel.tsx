@@ -142,8 +142,13 @@ function FreshnessStamp({ priceDate }: { priceDate: string | null }) {
   // Green only while live; amber for a price a session has passed by; the
   // strip's own dim grey otherwise.
   const color = state === "live" ? "#22c55e" : state === "stale" ? "#ffb84d" : "#8a8a8a";
+  // flex-wrap + min-w-0, not shrink-0: with the "stale"/"market closed"
+  // label the group runs ~370px in uppercase tracking, wider than a 390px
+  // phone's card content box, so pinned at content width it overran the
+  // card's overflow-hidden edge and the clock read "· NO". Each part keeps
+  // its own nowrap so a wrap happens between parts, never inside a time.
   return (
-    <div className="flex items-center gap-2 shrink-0">
+    <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 min-w-0">
       {label && (
         <>
           <span
@@ -159,8 +164,10 @@ function FreshnessStamp({ priceDate }: { priceDate: string | null }) {
           <span style={{ color }}>{label}</span>
         </>
       )}
-      {priceDate && <span>{label ? "· " : ""}as of {priceDate}</span>}
-      {now && <span>· now {ET_CLOCK.format(now)} ET</span>}
+      {priceDate && (
+        <span className="whitespace-nowrap">{label ? "· " : ""}as of {priceDate}</span>
+      )}
+      {now && <span className="whitespace-nowrap">· now {ET_CLOCK.format(now)} ET</span>}
     </div>
   );
 }

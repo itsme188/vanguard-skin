@@ -658,13 +658,22 @@ function scanLotDriftHits(db: Database.Database): IntegrityHit[] {
     // today's lots; the roll-back above already reconciled every row after
     // the statement. No difference left.
     if (ledgerNewerThanStatement && snapshotOlderThanLedger) continue;
+    // The statement agrees with the lots and the newest live row is a
+    // quantity-0 tombstone: the position is closed per live data, whatever
+    // the security type. Options and shorts sit outside the stock/ETF
+    // pending-statement read model (pendingKeys above), so without this
+    // branch they were worded as a live position that still differs, which
+    // tells the user a closed contract is still held.
+    const closedPerLive = latestDrift.shape === "lots-no-position";
     hits.push({
       magnitude: 0,
       hit: {
         key: hitKey,
         severity: "warning",
         kind: "statement-lag",
-        reason: `${label}: live position differs from tax lots — pending statement`,
+        reason: closedPerLive
+          ? `${label}: closed per live data — awaiting statement`
+          : `${label}: live position differs from tax lots — pending statement`,
       },
     });
   }

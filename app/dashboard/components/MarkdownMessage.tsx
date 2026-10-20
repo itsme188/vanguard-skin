@@ -126,7 +126,10 @@ const components: Components = {
 
 export function MarkdownMessage({ content }: { content: string }) {
   return (
-    <Markdown remarkPlugins={[remarkGfm]} components={components}>
+    // singleTilde: false — chat prose writes approximate figures as "~$136";
+    // with GFM's default a lone "~" opens strikethrough, so two such figures in
+    // one paragraph rendered struck through. Only "~~text~~" strikes now.
+    <Markdown remarkPlugins={[[remarkGfm, { singleTilde: false }]]} components={components}>
       {content}
     </Markdown>
   );

@@ -34,20 +34,25 @@ export async function GET(request: NextRequest) {
   try {
     const results: SearchResult[] = [];
     const pattern = `%${q}%`;
+    // An OCC option symbol pads its root to six characters ("SPY   251219C…").
+    // A reader types it with one space or none, so symbols are also compared
+    // with every space removed.
+    const compactQ = q.replace(/\s+/g, "");
+    const compactPattern = `%${compactQ}%`;
 
     // ── Securities (symbol or name) ─────────────────────────────
     const securities = db
       .prepare(
         `SELECT id, symbol, name, security_type, sector
          FROM securities
-         WHERE symbol LIKE ? OR name LIKE ?
+         WHERE symbol LIKE ? OR REPLACE(symbol, ' ', '') LIKE ? OR name LIKE ?
          ORDER BY
-           CASE WHEN symbol LIKE ? THEN 0 ELSE 1 END,
+           CASE WHEN symbol LIKE ? OR REPLACE(symbol, ' ', '') LIKE ? THEN 0 ELSE 1 END,
            CASE WHEN ${liveOptionExpirationSql("securities", todayET())} THEN 0 ELSE 1 END,
            symbol
          LIMIT 8`
       )
-      .all(pattern, pattern, `${q}%`) as {
+      .all(pattern, compactPattern, pattern, `${q}%`, `${compactQ}%`) as {
       id: number;
       symbol: string;
       name: string | null;
