@@ -762,7 +762,7 @@ function EarningsDateChipInner({
         }}
         disabled={pending}
         className={`text-[10px] font-mono px-1.5 py-0.5 rounded ${CHIP_TONE_TEXT.gold} bg-gold/15 hover:bg-gold/25 disabled:opacity-50 cursor-pointer`}
-        title="Sources disagree on the date — confirm against IBKR"
+        title="Sources disagree on the date — check your broker's calendar and pick one"
       >
         ⚠ confirm
       </button>
@@ -778,7 +778,7 @@ function EarningsDateChipInner({
           }`}
         >
           <p className="text-[11px] text-ink-dim mb-1.5">
-            Sources disagree — pick the IBKR date:
+            Sources disagree — check your broker's calendar and pick the right date:
           </p>
           <div className="space-y-1">
             <button
