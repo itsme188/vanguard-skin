@@ -184,6 +184,7 @@ export async function generateWeeklyBriefing(
        WHERE enriched_at IS NOT NULL
          AND event_date BETWEEN ? AND ?
          AND actual_value IS NOT NULL
+         AND COALESCE(superseded, 0) = 0
        ORDER BY event_date ASC, release_time ASC`,
     )
     .all(priorWeekStart, priorWeekEnd) as CalendarEvent[];
