@@ -584,6 +584,7 @@ export async function generateDigestSinceAdaptive(
         watchlist,
         anomalies,
         sessionHeading: edition === "evening" ? "The Session" : "Overnight & Setup",
+        sendDate: todayET(),
       });
       const lead = splitDigestOpening(synth);
       if (lead) {

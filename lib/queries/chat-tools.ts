@@ -4,7 +4,7 @@ import { adjustedMarketValueSQL } from "@/lib/valuation";
 import { todayET, addDays } from "@/lib/calendar/date-utils";
 import { SECTOR_OWN_BUCKET_SQL } from "@/lib/queries/analysis";
 import { normalizeSector } from "@/lib/securities/normalize-sector";
-import { isCashEquivalentSecurity } from "@/lib/compute/cash-equivalents";
+import { isCashEquivalentSecurity, cashEquivalentSecuritySql } from "@/lib/compute/cash-equivalents";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 import { marketCapCategoryBucketSql } from "@/lib/securities/normalize-market-cap";
 import { isPendingStatementLot, pendingStatementKeySet } from "@/lib/queries/pending-statement";
@@ -212,6 +212,11 @@ export interface IncomeResult {
   net_income: number;
 }
 
+/** 'mutual_fund' / 'Mutual Fund' / ' MUTUAL FUND ' all read as 'mutual fund'. */
+function normalizeSecurityTypeToken(value: string): string {
+  return value.trim().toLowerCase().replace(/_/g, " ").replace(/\s+/g, " ");
+}
+
 // ─── Query functions ──────────────────────────────────────────────
 
 /**
@@ -295,8 +300,18 @@ export function getHoldingsForChat(
     params.push(symbol);
   }
   if (security_type) {
-    conditions.push("s.security_type = ?");
-    params.push(security_type);
+    // The tool hands the model lowercase tokens ('option', 'mutual_fund');
+    // the table stores 'Option', 'Mutual Fund'. Compare the normalized
+    // spellings, and read 'money_market' through the one cash-equivalent
+    // predicate: a sweep fund is stored as a Mutual Fund with a cash
+    // fund_category, never with a money-market type.
+    const token = normalizeSecurityTypeToken(security_type);
+    if (token === "money market") {
+      conditions.push(cashEquivalentSecuritySql("s"));
+    } else {
+      conditions.push("LOWER(REPLACE(TRIM(COALESCE(s.security_type, '')), '_', ' ')) = ?");
+      params.push(token);
+    }
   }
   if (sector) {
     conditions.push("s.sector = ?");
