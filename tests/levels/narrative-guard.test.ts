@@ -428,6 +428,38 @@ describe("touch-count and date claims are held to the chip's metadata", () => {
     expect(checkNarrativeFacts(prose, ELEVEN)).toEqual({ plausible: true });
   });
 
+  it("flags a stated span that disagrees with the touch window by more than a month", () => {
+    // ELEVEN runs 2025-06-02 to 2025-12-10: about six months.
+    expect(checkNarrativeFacts("Eleven touches over eight months.", ELEVEN).plausible).toBe(false);
+    expect(checkNarrativeFacts("Held 11 times across a 10-month stretch.", ELEVEN).plausible).toBe(false);
+    expect(checkNarrativeFacts("Eleven bounces over two years.", ELEVEN).plausible).toBe(false);
+    const sixteen = { price: 80, type: "support" as const, touches: 15, lastTouchDate: "2026-03-27", firstTouchDate: "2024-11-21" };
+    expect(checkNarrativeFacts("Fifteen touches over nine months.", sixteen).plausible).toBe(false);
+    expect(checkNarrativeFacts("Fifteen touches over the past year.", sixteen).plausible).toBe(false);
+    const reason = checkNarrativeFacts("Eleven touches over eight months.", ELEVEN).reason ?? "";
+    expect(reason).toContain("span");
+  });
+
+  it.each([
+    ["the span in months", "Eleven touches over six months."],
+    ["the span a month off", "Eleven touches over seven months."],
+    ["the span in weeks", "Eleven touches over 27 weeks."],
+    ["the span as 'half a year'", "Eleven touches over half a year."],
+  ])("passes %s", (_label, prose) => {
+    expect(checkNarrativeFacts(prose, ELEVEN)).toEqual({ plausible: true });
+  });
+
+  it("passes a span of 'over a year' on a sixteen-month window, and 'more than a year'", () => {
+    const sixteen = { price: 80, type: "support" as const, touches: 15, lastTouchDate: "2026-03-27", firstTouchDate: "2024-11-21" };
+    expect(checkNarrativeFacts("Fifteen touches over a year.", sixteen)).toEqual({ plausible: true });
+    expect(checkNarrativeFacts("Fifteen touches over more than a year.", sixteen)).toEqual({ plausible: true });
+  });
+
+  it("fails open on a span when the first touch date is unknown", () => {
+    const noFirst = { price: 80, type: "support" as const, touches: 4, lastTouchDate: "2026-01-14" };
+    expect(checkNarrativeFacts("Four touches over nine months.", noFirst).plausible).toBe(true);
+  });
+
   it("fails open on window checks when the first touch date is unknown", () => {
     const noFirst = { price: 80, type: "support" as const, touches: 4, lastTouchDate: "2026-01-14" };
     expect(checkNarrativeFacts("Four touches since October, last bounce in January.", noFirst).plausible).toBe(true);
