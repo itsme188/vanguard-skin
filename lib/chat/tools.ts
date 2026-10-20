@@ -23,6 +23,7 @@ import { resolveChatAccounts, type ChatAccountResolution } from "@/lib/chat/acco
 import { getAllAccounts } from "@/lib/queries/accounts";
 import { annotateToolResult } from "@/lib/chat/validate";
 import { isPreReleaseActual } from "@/lib/calendar/pre-release-actual";
+import { deriveEarningsSlot } from "@/lib/earnings/earnings-slot";
 import { actualsAreImplausible } from "@/lib/earnings/actuals-display";
 import { applyClusterManualActuals } from "@/lib/queries/manual-actuals-cluster";
 import { getSeriesData, searchSeries, getLatestValue, FRED_SERIES } from "@/lib/apis/fred";
@@ -1753,7 +1754,14 @@ export async function executeTool(
           void release_time;
           const hasActual = e.actual_value != null && String(e.actual_value).trim() !== "";
           const enteredManually = manual_actuals_at ? { entered_manually: true } : {};
-          if (hasActual && isPreReleaseActual(row)) {
+          // A VENDOR figure on a row with no real slot (only the stored 16:15
+          // default) is itself evidence the print is out: Today clears its
+          // chip by the usual side, which chat cannot see, so the default
+          // must not hold the figure back until 16:15 (landing re-review).
+          // A hand-entered figure keeps the stored time as its floor.
+          const slotKnown = deriveEarningsSlot({ event_time: row.event_time, raw_json }) !== null;
+          const preReleaseRow = !slotKnown && !manual_actuals_at ? { ...row, release_time: null } : row;
+          if (hasActual && isPreReleaseActual(preReleaseRow)) {
             return {
               ...e,
               actual_value: null,

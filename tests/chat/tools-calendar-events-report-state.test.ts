@@ -122,6 +122,25 @@ describe("chat query_calendar_events: pre-release figures and implausible actual
     expect(by.BMO.report_state).toMatch(/^pre_release_figure/);
   });
 
+  it("a vendor figure on a slot-less row is reported, not held back by the stored 16:15 default", async () => {
+    // 10:30 ET on 2026-03-10. Only a stored default release time, no slot.
+    vi.setSystemTime(new Date("2026-03-10T14:30:00Z"));
+    const add = (symbol: string, manualAt: string | null) =>
+      db.prepare(
+        `INSERT INTO calendar_events
+           (source, event_type, event_date, event_time, release_time, title, symbol, actual_value,
+            manual_actuals_at, superseded, source_key, week_of)
+         VALUES ('finnhub', 'earnings', '2026-03-10', NULL, '16:15', ?, ?, 'EPS 1.00', ?, 0, ?, '2026-03-09')`,
+      ).run(`${symbol} earnings`, symbol, manualAt, `t:${symbol}`);
+    add("VND", null);
+    add("HND", "2026-03-10 09:00:00");
+    const by = await bySymbol();
+    expect(by.VND.report_state).toBe("reported");
+    expect(by.VND.actual_value).toBe("EPS 1.00");
+    // A hand-entered figure keeps the stored time as its floor.
+    expect(by.HND.report_state).toMatch(/^pre_release_figure/);
+  });
+
   it("an implausible vendor figure is withheld; a hand-accepted one is not", async () => {
     insert("BAD", "2026-03-09", "16:05", "EPS 5.00", { consensus: "EPS 1.00" });
     insert("OKM", "2026-03-09", "16:05", "EPS 5.00", { consensus: "EPS 1.00", manualAt: "2026-03-09 21:00:00" });
