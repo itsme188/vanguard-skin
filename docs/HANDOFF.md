@@ -1,6 +1,6 @@
 # Session Handoff — for Codex review
 
-**Waiting on:** USER: (1) confirm the Mac app deploy (`npm run deploy`) finished; it was running at session end. (2) First live check of the deep read and the watch lines on an armed name (TODO w1, w6). (3) Rule on TODO w5: should the preview email list topic-only watch lines? The two decision records from the last handoff (`broker-realized-gain-reports`, `tax-preparer-short-term-gift`) were not touched. CODEX: a review of section 3 is welcome, especially the bogey source ranking. CLAUDE: nothing.
+**Waiting on:** USER: (1) merge this handoff PR. (2) First live check of the deep read and the watch lines on an armed name (TODO w1, w6). (3) Rule on TODO w5: should the preview email list topic-only watch lines? The two decision records from the last handoff (`broker-realized-gain-reports`, `tax-preparer-short-term-gift`) were not touched. CODEX: a review of section 3 is welcome, especially the bogey source ranking. CLAUDE: nothing.
 
 > Rolling file, overwritten at each session close. Past handoffs: `git log -p docs/HANDOFF.md`.
 > Written by Claude Code so Codex can review changes and reasoning at full project context.
@@ -14,7 +14,7 @@
 
 - `main` holds everything from this session through PR #117 (merge `9603551`). This close-out commit is on `claude/zen-ritchie-dek9gs`, restarted from that merge, in its own pull request.
 - **Verified:** `bash scripts/verify.sh full --base main` on the Mac at the PR head `26699252`: passed.
-- **Deployed:** Worker `vanguard-skin-cron`, version `ba8380d7-77dd-479a-9823-bcdd9c6b24a8` (owner, from `workers/cron`). Mac app: `npm run deploy` in progress at session end; outcome not seen by this session.
+- **Deployed:** Worker `vanguard-skin-cron`, version `ba8380d7-77dd-479a-9823-bcdd9c6b24a8` (owner, from `workers/cron`), then the Mac app through `npm run deploy` at `9603551`: build `YApPmBe9n2uzDJn0ehNNa` installed to `/Applications`, codesign verified, a fresh `:3099` listener answering the login page.
 - **The Mac's local `main` held 12 unpushed nightly-fixer commits** (through `ac87fdac`). The owner scanned their test diffs for real figures (only OCC symbols with synthetic tickers and one expired SPY format example in a comment) and pushed them before the merge; PR #117 was merged on top.
 
 ## 1. Goal + what changed
@@ -39,7 +39,7 @@ Files (commits `670e496`, `b101b62`, `823d304`, `1e89d3c`, `b36e4f7`, `b61924a`,
 | `tsc --noEmit` | clean |
 | Browser pass | not run |
 | Real model call | none: the deep read and the extractors are tested against a mocked model |
-| Deploy | Worker deployed; Mac app in progress (above) |
+| Deploy | Worker `ba8380d7`, then the Mac app at `9603551` (build `YApPmBe9n2uzDJn0ehNNa`); wrapper post-verify passed |
 
 ## 3. Open concerns, rejected approaches, decisions
 
@@ -53,7 +53,7 @@ Files (commits `670e496`, `b101b62`, `823d304`, `1e89d3c`, `b36e4f7`, `b61924a`,
 
 ## 4. Uncommitted changes / live state
 
-None in this checkout beyond this close-out commit. No worktrees. PR #117 merged; this close-out is its own pull request. Live: Worker `ba8380d7`; Mac app build depends on the in-progress deploy.
+None in this checkout beyond this close-out commit. No worktrees. PR #117 merged; this close-out is its own pull request. Live: Worker `ba8380d7`; Mac app build `YApPmBe9n2uzDJn0ehNNa` from `9603551`.
 
 ## 5. Agent + session
 

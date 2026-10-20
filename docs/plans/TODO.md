@@ -1051,4 +1051,4 @@ Deployment: headline correction pushed through `08e89a63`, desktop build `EzPYsK
 - ✅ **Round, then sign, Mac and Worker (2026-10-12 (a))** (`1e89d3c`).
 - ✅ **Armed-event deep read on the frontier tier; bogey sources ranked on the sheet** (`d6f1a48`).
 
-Landing: PR #117, merge `9603551`, verified on the Mac with `bash scripts/verify.sh full --base main` at `26699252` (passed). Worker deployed by the owner (version `ba8380d7`); the Mac app deploy was in progress at session end. Follow-ups w1 to w6 are in the 2026-10-20 block near the top.
+Landing: PR #117, merge `9603551`, verified on the Mac with `bash scripts/verify.sh full --base main` at `26699252` (passed). Worker deployed by the owner (version `ba8380d7`), then the Mac app at `9603551` (build `YApPmBe9n2uzDJn0ehNNa`, wrapper post-verify passed). Follow-ups w1 to w6 are in the 2026-10-20 block near the top.
