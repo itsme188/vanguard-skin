@@ -69,7 +69,7 @@ function AccountValueLines({ cashLine }: { cashLine: AccountCashLine | null }) {
   // share one as-of that names the measured day and the day it is carried to.
   const asOf = (
     <span className="font-mono">
-      as of {cashLine.measuredDate ?? cashLine.valuationDate}
+      as of {cashLine.carried ? cashLine.measuredDate : cashLine.valuationDate}
       {cashLine.carried && <> · carried to {cashLine.valuationDate}</>}
     </span>
   );

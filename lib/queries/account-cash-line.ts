@@ -96,9 +96,12 @@ export interface AccountCashLine {
    *  `valuationDate` when the latest row is measured; null when every row is
    *  'estimated'. */
   measuredDate: string | null;
-  /** True when the latest row is 'estimated' and carries the figures of an
-   *  earlier measured day (`measuredDate`). The surface then dates the
-   *  figures by `measuredDate`, not by the row (owner ruling 2026-10-12). */
+  /** True when the latest row is 'estimated', has no holdings row of its
+   *  own day, and carries the figures of an earlier measured day
+   *  (`measuredDate`). The surface then dates the figures by
+   *  `measuredDate`, not by the row (owner ruling 2026-10-12). A day with
+   *  its own holdings row is never carried, even when stale prices made
+   *  the engine label it 'estimated'. */
   carried: boolean;
   /** Newest close-price date on or before `valuationDate` across the
    *  account's currently held non-cash-equivalent securities. Null when
@@ -204,8 +207,20 @@ export function getAccountCashLine(
           .get(accountId, valuation.valuation_date) as { valuation_date: string } | undefined)
       : { valuation_date: valuation.valuation_date };
   const measuredDate = measured?.valuation_date ?? null;
+  // 'estimated' is also written for a day with its OWN holdings snapshot
+  // whose prices are stale, or that holds only sweep funds. That day is
+  // measured, not carried: a holdings row dated the valuation day means
+  // broker data did arrive. Only a day with no holdings row of its own is
+  // carried from the earlier measured day.
+  const hasOwnHoldingsRow =
+    (db
+      .prepare(
+        `SELECT 1 FROM holdings WHERE account_id = ? AND as_of_date = ? LIMIT 1`,
+      )
+      .get(accountId, valuation.valuation_date) as { 1: number } | undefined) !== undefined;
   const carried =
     valuation.data_quality === "estimated" &&
+    !hasOwnHoldingsRow &&
     measuredDate !== null &&
     measuredDate !== valuation.valuation_date;
 

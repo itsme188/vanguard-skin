@@ -96,6 +96,21 @@ describe("getAccountCashLine: measured date and price-date mismatch", () => {
       expect(line.carried).toBe(false);
     });
 
+    it("an 'estimated' day with its own holdings row is measured that day, not carried", () => {
+      // Stale fund prices (or a sweep-only book) make the engine write
+      // 'estimated' on a day whose holdings did arrive. Broker data for the
+      // day exists, so the figures are dated by the row, not carried.
+      seedValuation("2026-03-05", "live");
+      seedValuation("2026-03-06", "estimated");
+      const sec = seedSecurity("AAA");
+      seedHolding(sec, "2026-03-06");
+
+      const line = getAccountCashLine(db, accountId)!;
+      expect(line.valuationDate).toBe("2026-03-06");
+      expect(line.measuredDate).toBe("2026-03-05");
+      expect(line.carried).toBe(false);
+    });
+
     it("has no measured date, and is not carried, when every row is 'estimated'", () => {
       seedValuation("2026-03-06", "estimated");
       seedValuation("2026-03-07", "estimated");
