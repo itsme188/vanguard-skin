@@ -42,4 +42,9 @@ describe("DigestEmailViewer privacy gate", () => {
     expect(block).toMatch(/onClick=\{\(\) => setRevealed\(true\)\}[\s\S]*Show the preview anyway/);
     expect(block).toMatch(/onClick=\{onClose\}[\s\S]*Keep it closed/);
   });
+
+  it("hides the preview again when Hide amounts turns on while it is revealed", () => {
+    const effect = anchorIndex(source, "if (isPrivate) setRevealed(false)", 0, "re-hide on privacy on");
+    expect(source.slice(effect, effect + 120)).toMatch(/\[isPrivate\]/);
+  });
 });

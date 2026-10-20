@@ -161,6 +161,12 @@ export function DigestEmailViewer({ open, onClose, digestWindow, onDigestWindowC
     if (open) setRevealed(false);
   }, [open]);
 
+  // Turning Hide amounts on while the Preview is open and already revealed
+  // hides it again.
+  useEffect(() => {
+    if (isPrivate) setRevealed(false);
+  }, [isPrivate]);
+
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
