@@ -12,6 +12,7 @@
  */
 
 import { formatLargeUSD } from "@/lib/format";
+import { signedFixed } from "@/lib/format/signed-fixed";
 
 export interface ParsedFinnhubFigure {
   eps: number | null;
@@ -102,7 +103,7 @@ export function formatFinnhubFigure(s: string | null | undefined): FormattedFinn
   return {
     eps:
       parsed.eps != null
-        ? `${parsed.eps < 0 ? "-" : ""}$${Math.abs(parsed.eps).toFixed(2)}`
+        ? signedFixed(parsed.eps, 2, { prefix: "$", plus: false })
         : null,
     revenue: parsed.revenue != null ? formatRevenueUSD(parsed.revenue) : null,
     fallback: null,

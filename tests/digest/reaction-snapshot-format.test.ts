@@ -47,8 +47,9 @@ describe("formatReactionSnapshot", () => {
     // symbol leg here is a pre-price ECHO (100 -> 100.002), not a genuine
     // 0/0 division — both prices are finite and positive, so
     // isUsableReactionLeg cannot tell it apart from a real (if tiny) move
-    // and it still renders "+0.00%". Only the zero/negative/non-finite
-    // sentinel class is caught by this predicate.
-    expect(out).toContain("+0.00%");
+    // and it still renders, as an unsigned "0.00%" (a figure that rounds to
+    // zero carries no sign, lib/format/signed-fixed.ts). Only the
+    // zero/negative/non-finite sentinel class is caught by this predicate.
+    expect(out).toContain("- stock: 0.00%");
   });
 });

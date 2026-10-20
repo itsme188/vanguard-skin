@@ -142,7 +142,7 @@ describe("recap prompt block (formatReactionSnapshot)", () => {
     expect(formatReactionSnapshot(j(LEGACY_ALL_ECHO))).toBeNull();
   });
   it("legacy zero move on a row enriched before the window: pending with the stamp", () => {
-    expect(formatReactionSnapshot(j(LEGACY_ZERO_SPY))).toContain("- SPY: +0.00%");
+    expect(formatReactionSnapshot(j(LEGACY_ZERO_SPY))).toContain("- SPY: 0.00%");
     expect(formatReactionSnapshot(j(LEGACY_ZERO_SPY), { rowEnrichedAt: EARLY_ENRICHED_AT })).not.toContain("SPY");
   });
 });
@@ -188,7 +188,7 @@ describe("scoreboard reaction rows (renderHeadlineTable)", () => {
   });
   it("threads the row's enriched_at for the legacy zero-move rule", () => {
     const late = rowsOf(renderHeadlineTable(makeEvent({ reaction_snapshot: j(LEGACY_ZERO_SPY) }), "ZZA", "recap", INTEL));
-    expect(late).toContain("| **SPY @ T+2h** | — | +0.00% | — |");
+    expect(late).toContain("| **SPY @ T+2h** | — | 0.00% | — |");
     const early = rowsOf(
       renderHeadlineTable(makeEvent({ reaction_snapshot: j(LEGACY_ZERO_SPY), enriched_at: EARLY_ENRICHED_AT }), "ZZA", "recap", INTEL),
     );

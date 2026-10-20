@@ -89,6 +89,7 @@ import { renderActualsBasisLine } from "./actuals-basis";
 import { emailIgnoredManualTwins, type ManualTwinRow } from "./manual-twin-email";
 import { resolveExpectedMove } from "./expected-move";
 import { formatEtTimestamp, todayET } from "./dst";
+import { signedPct } from "./signed-fixed";
 
 // Issuer-family map mirrored from lib/securities/issuer-family.ts. Worker
 // can't cross the Next.js path-alias boundary, so this is a hand copy.
@@ -1282,7 +1283,7 @@ function readReactionPct(
  */
 export function renderPastPrintsBlock(rows: EarningsHistorySnapshotRow[]): string {
   if (rows.length === 0) return "";
-  const sign = (n: number) => `${n >= 0 ? "+" : ""}${n.toFixed(1)}%`;
+  const sign = (n: number) => signedPct(n, 1);
   const lines = rows.map((h) => {
     const eps = h.epsActual != null && h.epsEstimate != null
       ? `${h.epsActual.toFixed(2)} / ${h.epsEstimate.toFixed(2)}`
@@ -1391,7 +1392,7 @@ export function renderScoreboard(
     if (isRecap && intelCtx?.intel?.impliedMovePct != null) {
       const realized = readReactionPct(reactionJson, "symbol", rowEnrichedAt);
       if (realized != null) {
-        impliedActual = `${realized >= 0 ? "+" : ""}${realized.toFixed(1)}%`;
+        impliedActual = signedPct(realized, 1);
         impliedVerdict = Math.abs(realized) <= intelCtx.intel.impliedMovePct ? "inside" : "outside";
       } else {
         // A stored-but-unusable (or missing) symbol leg — never publish an
@@ -1719,7 +1720,7 @@ function formatPctDelta(actual: number, consensus: number, kind: "eps" | "revenu
   const pct = ((actual - consensus) / Math.abs(consensus)) * 100;
   const abs = Math.abs(pct);
   if (abs < 0.05) return "in-line";
-  return `${pct >= 0 ? "+" : ""}${pct.toFixed(1)}%`;
+  return signedPct(pct, 1);
 }
 
 // ── Is a stored reaction leg a measurement yet? ──────────────────────────────
@@ -1834,7 +1835,7 @@ function readReactionDelta(
 ): string {
   const v = readMeasuredReactionPct(json, key, rowEnrichedAt);
   if (v == null) return "—";
-  return `${v >= 0 ? "+" : ""}${v.toFixed(2)}%`;
+  return signedPct(v, 2);
 }
 
 function formatDate(iso: string): string {
