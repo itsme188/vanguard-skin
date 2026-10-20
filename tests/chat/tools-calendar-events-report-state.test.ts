@@ -57,3 +57,79 @@ describe("chat query_calendar_events says whether a result is on file", () => {
     expect(out.data.now_et).toMatch(/^2026-03-10 04:20/);
   });
 });
+
+/**
+ * Review of 30c73e22: a figure can be saved before the print (Today shows it
+ * with a "pre-release" chip). The chat must not call such a row "reported",
+ * and a vendor figure that fails the plausibility guard is withheld.
+ */
+describe("chat query_calendar_events: pre-release figures and implausible actuals", () => {
+  function insert(
+    symbol: string,
+    date: string,
+    time: string | null,
+    actual: string | null,
+    extra: { consensus?: string; manualAt?: string } = {},
+  ): void {
+    db.prepare(
+      `INSERT INTO calendar_events
+         (source, event_type, event_date, event_time, title, symbol, actual_value,
+          consensus_estimate, manual_actuals_at, superseded, source_key, week_of)
+       VALUES ('manual', 'earnings', ?, ?, ?, ?, ?, ?, ?, 0, ?, '2026-03-09')`,
+    ).run(date, time, `${symbol} earnings`, symbol, actual, extra.consensus ?? null, extra.manualAt ?? null, `t:${symbol}`);
+  }
+
+  async function bySymbol(): Promise<Record<string, Row & Record<string, unknown>>> {
+    const out = (await executeTool(db, "query_calendar_events", { event_type: "earnings", days_back: 2 })) as {
+      data: { events: Array<Row & Record<string, unknown>> };
+    };
+    return Object.fromEntries(out.data.events.map((e) => [e.symbol, e]));
+  }
+
+  it("a figure on an event dated tomorrow is a pre-release figure, not a result", async () => {
+    insert("PRE", "2026-03-11", "07:00", "EPS 1.00");
+    const by = await bySymbol();
+    expect(by.PRE.report_state).toMatch(/^pre_release_figure/);
+    expect(by.PRE.report_state).toMatch(/NOT a reported result/);
+    expect(by.PRE.report_state).toMatch(/2026-03-11/);
+    expect(by.PRE.actual_value).toBeNull();
+    expect(by.PRE.figure_saved_before_release).toBe("EPS 1.00");
+    expect(by.PRE).not.toHaveProperty("raw_json");
+  });
+
+  it("an after-close event today with a figure, asked before 16:00 ET, is a pre-release figure", async () => {
+    // 11:38 ET on 2026-03-10 (15:38 UTC).
+    vi.setSystemTime(new Date("2026-03-10T15:38:00Z"));
+    insert("AMC", "2026-03-10", "16:15", "EPS 2.00", { manualAt: "2026-03-10 15:00:00" });
+    const by = await bySymbol();
+    expect(by.AMC.report_state).toMatch(/^pre_release_figure/);
+    expect(by.AMC.report_state).toMatch(/today at 16:15 ET; it is now 11:38 ET/);
+    expect(by.AMC.entered_manually).toBe(true);
+  });
+
+  it("the same row once the after-close window opens is reported", async () => {
+    // 16:20 ET.
+    vi.setSystemTime(new Date("2026-03-10T20:20:00Z"));
+    insert("AMC", "2026-03-10", "16:15", "EPS 2.00");
+    const by = await bySymbol();
+    expect(by.AMC.report_state).toBe("reported");
+    expect(by.AMC.actual_value).toBe("EPS 2.00");
+  });
+
+  it("a before-open row today with a figure is pre-release at 04:20 ET", async () => {
+    insert("BMO", "2026-03-10", "07:00", "EPS 0.50");
+    const by = await bySymbol();
+    expect(by.BMO.report_state).toMatch(/^pre_release_figure/);
+  });
+
+  it("an implausible vendor figure is withheld; a hand-accepted one is not", async () => {
+    insert("BAD", "2026-03-09", "16:05", "EPS 5.00", { consensus: "EPS 1.00" });
+    insert("OKM", "2026-03-09", "16:05", "EPS 5.00", { consensus: "EPS 1.00", manualAt: "2026-03-09 21:00:00" });
+    const by = await bySymbol();
+    expect(by.BAD.actual_value).toBeNull();
+    expect(by.BAD.report_state).toMatch(/^reported, figure withheld/);
+    expect(JSON.stringify(by.BAD)).not.toContain("5.00");
+    expect(by.OKM.report_state).toBe("reported");
+    expect(by.OKM.actual_value).toBe("EPS 5.00");
+  });
+});

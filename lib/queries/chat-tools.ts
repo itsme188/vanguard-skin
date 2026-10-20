@@ -14,6 +14,7 @@ import {
   pendingStatementKeySet,
 } from "@/lib/queries/pending-statement";
 import { liveOriginHoldingSql } from "@/lib/db/holding-sources";
+import { accountScopeAndSql } from "@/lib/queries/account-scope-sql";
 import { isOptionLive, liveOptionExpirationSql } from "@/lib/compute/option-expiry";
 import { isCurrencyConversionSecurityType, lotSideSignSql, remainingLotBasisSql } from "@/lib/queries/tax-lots";
 import { isLongTermSql, longTermDateSql } from "@/lib/queries/long-term-sql";
@@ -409,6 +410,11 @@ export interface ClosedPerLiveDataResult {
   quantity: number;
   /** Date of the live-origin zero row that says it is closed. */
   closed_as_of_date: string;
+  /**
+   * Newest transaction date in this ACCOUNT's imported ledger, any symbol:
+   * where the account's ledger ends. Null when the account has none.
+   */
+  account_ledger_last_date: string | null;
   pending_statement: true;
   status_note: string;
 }
@@ -487,18 +493,24 @@ export function getClosedPerLiveDataForChat(
       LIMIT 1`
   );
 
+  const accountLedgerEnd = db.prepare(
+    "SELECT MAX(trade_date) AS last_date FROM transactions WHERE account_id = ?"
+  );
+
   const out: ClosedPerLiveDataResult[] = [];
   for (const pair of pairs.values()) {
     const row = lastNonZero.get(pair.account_id, pair.security_id) as
       | { account_name: string; symbol: string; as_of_date: string; quantity: number }
       | undefined;
     if (!row) continue;
+    const ledgerEnd = accountLedgerEnd.get(pair.account_id) as { last_date: string | null } | undefined;
     out.push({
       account_name: row.account_name,
       symbol: row.symbol,
       as_of_date: row.as_of_date,
       quantity: row.quantity,
       closed_as_of_date: pair.closed_as_of_date,
+      account_ledger_last_date: ledgerEnd?.last_date ?? null,
       pending_statement: true,
       status_note: PENDING_STATEMENT_CHAT_NOTE,
     });
@@ -911,11 +923,11 @@ export function getTransactionsForChat(
 }
 
 /**
- * The newest transaction date in the ledger within the account and symbol
- * filter (type and date filters deliberately NOT applied: this says where
- * the imported ledger ends, not where a filtered result ends). Null when
- * the filter matches no transaction. Activity after this date may exist
- * only in holdings (live broker data awaiting the statement).
+ * The newest transaction date within the account and symbol filter (type and
+ * date filters deliberately NOT applied). With a symbol this is that
+ * symbol's LAST TRADE, not where the ledger ends: the account's ledger can
+ * run weeks past it (use {@link getLedgerEndByAccountForChat} for that).
+ * Null when the filter matches no transaction.
  */
 export function getLedgerLastDateForChat(
   db: Database.Database,
@@ -942,6 +954,49 @@ export function getLedgerLastDateForChat(
     )
     .get(...params) as { last_date: string | null } | undefined;
   return row?.last_date ?? null;
+}
+
+/** Where one account's imported ledger ends. */
+export interface LedgerEndForAccount {
+  account_name: string;
+  /** Newest transaction date in the account, any symbol and type. Null when it has none. */
+  ledger_last_date: string | null;
+}
+
+/**
+ * Where the imported ledger ends, per ACCOUNT (symbol, type and date filters
+ * never narrow the date: a symbol's last trade is not the ledger's end).
+ * Activity after an account's date may exist only in holdings (live broker
+ * data awaiting the statement).
+ *
+ * Accounts listed: those in `accountIds` (undefined = every account, an empty
+ * list = none) that are involved: with a symbol, the accounts holding or
+ * trading it (any holdings or transaction row); without one, the accounts
+ * with any transaction.
+ */
+export function getLedgerEndByAccountForChat(
+  db: Database.Database,
+  filters: { accountIds?: readonly number[]; symbol?: string } = {}
+): LedgerEndForAccount[] {
+  const scope = accountScopeAndSql(filters.accountIds, "a.id");
+  const involvedSql = filters.symbol
+    ? `AND (
+         EXISTS (SELECT 1 FROM transactions t JOIN securities s ON s.id = t.security_id
+                  WHERE t.account_id = a.id AND s.symbol = ?)
+         OR EXISTS (SELECT 1 FROM holdings h JOIN securities s ON s.id = h.security_id
+                     WHERE h.account_id = a.id AND s.symbol = ?)
+       )`
+    : "AND EXISTS (SELECT 1 FROM transactions t WHERE t.account_id = a.id)";
+  const involvedParams = filters.symbol ? [filters.symbol, filters.symbol] : [];
+  return db
+    .prepare(
+      `SELECT a.name AS account_name,
+              (SELECT MAX(t.trade_date) FROM transactions t WHERE t.account_id = a.id) AS ledger_last_date
+         FROM accounts a
+        WHERE 1 = 1 ${scope.sql} ${involvedSql}
+        ORDER BY a.name`
+    )
+    .all(...scope.params, ...involvedParams) as LedgerEndForAccount[];
 }
 
 /**

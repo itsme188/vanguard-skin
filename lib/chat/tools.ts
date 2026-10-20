@@ -8,6 +8,7 @@ import {
   getTransactionsForChat,
   getClosedPerLiveDataForChat,
   getLedgerLastDateForChat,
+  getLedgerEndByAccountForChat,
   getPerformanceForChat,
   getIncomeSummaryForChat,
 } from "@/lib/queries/chat-tools";
@@ -21,6 +22,9 @@ import { computeXirr } from "@/lib/compute/xirr";
 import { resolveChatAccounts, type ChatAccountResolution } from "@/lib/chat/account-scope";
 import { getAllAccounts } from "@/lib/queries/accounts";
 import { annotateToolResult } from "@/lib/chat/validate";
+import { isPreReleaseActual } from "@/lib/calendar/pre-release-actual";
+import { actualsAreImplausible } from "@/lib/earnings/actuals-display";
+import { applyClusterManualActuals } from "@/lib/queries/manual-actuals-cluster";
 import { getSeriesData, searchSeries, getLatestValue, FRED_SERIES } from "@/lib/apis/fred";
 import { getCompanyFinancials, getCompanyInfo, getRecentFilings, getInsiderTransactions } from "@/lib/apis/edgar";
 import { getTranscriptForChat } from "@/lib/transcripts/fetch";
@@ -144,7 +148,7 @@ export const CHAT_TOOLS: Anthropic.Tool[] = [
   {
     name: "query_holdings",
     description:
-      "Query current holdings with optional filters. Returns detailed position data including cost basis, market value, unrealized gain/loss, position weight, sector, asset class, and maturity info for bonds. Includes SHORT positions: quantity and market_value are signed (negative = short), each row carries position_side ('long' or 'short'), and position_weight_pct is each position's share of GROSS exposure (always positive; longs and shorts together sum to 100%). Automatically excludes matured bonds, expired options and zero-quantity positions. When a symbol filter finds no current row but the position was closed per LIVE broker data (awaiting the broker statement for the closing trade), the result is an object instead of a list: holdings is empty and closed_per_live_data lists, per account, the last date and quantity the position was seen held (pending_statement: true, with a status_note). Such a position is not a current holding, but it WAS held until about that date: never describe it as flat since an earlier ledger sale. Use when the user asks about specific positions, accounts, asset classes, sectors, or portfolio composition.",
+      "Query current holdings with optional filters. Returns detailed position data including cost basis, market value, unrealized gain/loss, position weight, sector, asset class, and maturity info for bonds. Includes SHORT positions: quantity and market_value are signed (negative = short), each row carries position_side ('long' or 'short'), and position_weight_pct is each position's share of GROSS exposure (always positive; longs and shorts together sum to 100%). Automatically excludes matured bonds, expired options and zero-quantity positions. When a symbol filter matches a position closed per LIVE broker data in some account (awaiting the broker statement for the closing trade), the result is an object instead of a list: holdings carries any current rows (another account may still hold it) and closed_per_live_data lists, per closed account, the last date and quantity the position was seen held, closed_as_of_date, and account_ledger_last_date (where that account's imported ledger ends, any symbol) (pending_statement: true, with a status_note). Such a position is not a current holding, but it WAS held until about that date: never describe it as flat since an earlier ledger sale. Use when the user asks about specific positions, accounts, asset classes, sectors, or portfolio composition.",
     input_schema: {
       type: "object" as const,
       properties: {
@@ -270,7 +274,7 @@ export const CHAT_TOOLS: Anthropic.Tool[] = [
   {
     name: "query_transactions",
     description:
-      "Search transaction history with filters. Returns { transactions, ledger_last_date }: each transaction has trade date, type, symbol, quantity, price, amount, and fees; ledger_last_date is the newest trade date in the imported ledger for the same account and symbol (ignoring type and date filters). The ledger ends there: later trades may not be imported yet and may only show in query_holdings (live broker data awaiting the statement), so never claim nothing was traded, or that a position has been flat, after ledger_last_date without checking query_holdings. Use for activity analysis, cash flow tracking, dividend history, fee analysis, or trade reconstruction.",
+      "Search transaction history with filters. Returns { transactions, ledger_end_by_account, symbol_last_trade_date }: each transaction has trade date, type, symbol, quantity, price, amount, and fees; ledger_end_by_account lists, per account involved, ledger_last_date: the newest trade date in that account's imported ledger, any symbol (ignoring every filter). Each account's ledger ends there: later trades may not be imported yet and may only show in query_holdings (live broker data awaiting the statement), so never claim nothing was traded, or that a position has been flat, after that date without checking query_holdings. With a symbol filter, symbol_last_trade_date is that symbol's newest trade in the ledger: the last imported trade, NOT where the ledger ends. Use for activity analysis, cash flow tracking, dividend history, fee analysis, or trade reconstruction.",
     input_schema: {
       type: "object" as const,
       properties: {
@@ -780,7 +784,7 @@ export const CHAT_TOOLS: Anthropic.Tool[] = [
   {
     name: "query_calendar_events",
     description:
-      "Query upcoming or past market events from the calendar — earnings dates, FOMC meetings, CPI releases, jobs reports, GDP, PMI, retail sales, analyst meetings, and other macro/company events. Use when the user asks about upcoming events, 'what's on the calendar', 'when is the next FOMC/CPI/earnings', or wants to understand what market-moving events are ahead. Every row carries report_state: 'reported' (a result is on file in actual_value), 'upcoming' (a later date), or 'not yet reported' (today or earlier with no result on file); the result carries now_et, the current Eastern date and clock. A company has reported ONLY when its report_state is 'reported' — a pre-open or after-close slot on today's date is a scheduled time, not a result, so never say a print is out or react to it before then.",
+      "Query upcoming or past market events from the calendar — earnings dates, FOMC meetings, CPI releases, jobs reports, GDP, PMI, retail sales, analyst meetings, and other macro/company events. Use when the user asks about upcoming events, 'what's on the calendar', 'when is the next FOMC/CPI/earnings', or wants to understand what market-moving events are ahead. Every row carries report_state: 'reported' (a result is on file in actual_value), 'reported, figure withheld' (a vendor figure failed the plausibility check: do not quote one), 'pre_release_figure' (a figure was saved ahead of the release window, shown in figure_saved_before_release: NOT a result, never say the company reported it), 'upcoming' (a later date), or 'not yet reported' (today or earlier with no result on file); the result carries now_et, the current Eastern date and clock. A company has reported ONLY when its report_state is 'reported' — a pre-open or after-close slot on today's date is a scheduled time, not a result, so never say a print is out or react to it before then.",
     input_schema: {
       type: "object" as const,
       properties: {
@@ -1046,14 +1050,15 @@ export async function executeTool(
           position_side: h.quantity < 0 ? ("short" as const) : ("long" as const),
         }));
         rawResult = holdingRows;
-        // A symbol with no current row may still have been held until
-        // recently: closed per live broker data, awaiting the statement.
-        // Only then does the result become an object (no holdings to
-        // annotate, so nothing is lost).
+        // A symbol may also have been held until recently in an account
+        // where it is now closed per live broker data, awaiting the
+        // statement, whether or not another account still holds it. Only
+        // then does the result become an object; the held rows are still
+        // annotated (see the annotation step below).
         const symbolFilter = input.symbol as string | undefined;
-        if (symbolFilter && holdingRows.length === 0) {
+        if (symbolFilter) {
           const closed = getClosedPerLiveDataForChat(db, { account_name: accountName, symbol: symbolFilter });
-          if (closed.length > 0) rawResult = { holdings: [], closed_per_live_data: closed };
+          if (closed.length > 0) rawResult = { holdings: holdingRows, closed_per_live_data: closed };
         }
         break;
       }
@@ -1087,8 +1092,10 @@ export async function executeTool(
         break;
 
       case "query_transactions":
-        // ledger_last_date says where the imported ledger ends, so a gap
-        // after it is never read as "nothing traded".
+        // ledger_end_by_account says where each account's imported ledger
+        // ends (any symbol), so a gap after it is never read as "nothing
+        // traded". A symbol's own last trade is a different, earlier date
+        // and is named as such (review of d0a8321a).
         rawResult = {
           transactions: getTransactionsForChat(db, {
             account_name: accountName,
@@ -1098,10 +1105,18 @@ export async function executeTool(
             end_date: input.end_date as string | undefined,
             limit: input.limit as number | undefined,
           }),
-          ledger_last_date: getLedgerLastDateForChat(db, {
-            account_name: accountName,
+          ledger_end_by_account: getLedgerEndByAccountForChat(db, {
+            accountIds,
             symbol: input.symbol as string | undefined,
           }),
+          ...(input.symbol
+            ? {
+                symbol_last_trade_date: getLedgerLastDateForChat(db, {
+                  account_name: accountName,
+                  symbol: input.symbol as string,
+                }),
+              }
+            : {}),
         };
         break;
 
@@ -1699,22 +1714,62 @@ export async function executeTool(
         const rows = db
           .prepare(
             `SELECT event_type, event_date, event_time, title, description, symbol,
-             expected_impact, consensus_estimate, previous_value, actual_value
+             expected_impact, consensus_estimate, previous_value, actual_value,
+             release_time, raw_json, manual_actuals_at
              FROM calendar_events WHERE ${evtWhere}
              ORDER BY event_date ASC, event_time ASC LIMIT 50`
           )
           .all(...evtParams) as Array<{
+            event_type: string | null;
             event_date: string;
             event_time: string | null;
+            symbol: string | null;
+            consensus_estimate: string | null;
             actual_value: string | null;
+            release_time: string | null;
+            raw_json: string | null;
+            manual_actuals_at: string | null;
             [k: string]: unknown;
           }>;
+        // A hand-accepted figure is stamped on one twin of the print; read
+        // the stamp across the cluster, as every other actuals reader does.
+        applyClusterManualActuals(db, rows);
         // Whether a result is on file, said in words: the model read a dated
         // pre-open row at 04:20 ET as "already reported" (QA 2026-10-13).
         // Only a stored actual means reported; a slot is a scheduled time.
+        //
+        // Two checks come BEFORE "reported" (review of 30c73e22):
+        //  - a figure saved ahead of the print (the app allows it, Today shows
+        //    it with a "pre-release" chip) is not a result. Same rule as that
+        //    chip, isPreReleaseActual; chat attaches no usual-side estimate,
+        //    so the row's own slot or stored time decides.
+        //  - a vendor actual that fails the plausibility guard is withheld,
+        //    as on every other surface; a hand-accepted figure is exempt.
         const clock = nowET();
-        const events = rows.map((e) => {
+        const events = rows.map((row) => {
+          // raw_json / release_time feed the checks only; the model gets neither.
+          const { raw_json, release_time, manual_actuals_at, ...e } = row;
+          void raw_json;
+          void release_time;
           const hasActual = e.actual_value != null && String(e.actual_value).trim() !== "";
+          const enteredManually = manual_actuals_at ? { entered_manually: true } : {};
+          if (hasActual && isPreReleaseActual(row)) {
+            return {
+              ...e,
+              actual_value: null,
+              figure_saved_before_release: e.actual_value,
+              ...enteredManually,
+              report_state: `pre_release_figure (a figure was saved before the release window opened; it is NOT a reported result. The print is ${e.event_date > today ? `scheduled for ${e.event_date}` : `scheduled today${e.event_time ? ` at ${e.event_time} ET` : ""}; it is now ${clock} ET`})`,
+            };
+          }
+          if (hasActual && actualsAreImplausible(e.consensus_estimate, e.actual_value, manual_actuals_at)) {
+            return {
+              ...e,
+              actual_value: null,
+              report_state:
+                "reported, figure withheld (the stored vendor figure failed the plausibility check against consensus; do not quote a result)",
+            };
+          }
           const report_state = hasActual
             ? "reported"
             : e.event_date > today
@@ -1722,7 +1777,7 @@ export async function executeTool(
               : e.event_date === today
                 ? `not yet reported (scheduled today${e.event_time ? ` at ${e.event_time} ET` : ""}; it is now ${clock} ET)`
                 : "not yet reported (no result on file)";
-          return { ...e, report_state };
+          return { ...e, ...enteredManually, report_state };
         });
         rawResult = { events, count: events.length, now_et: `${today} ${clock} ET` };
         break;
@@ -1898,8 +1953,17 @@ export async function executeTool(
         return { error: `Unknown tool: ${toolName}` };
     }
 
-    // Wrap result with data quality annotations
-    const annotations = annotateToolResult(db, toolName, rawResult);
+    // Wrap result with data quality annotations. A holdings result that
+    // became an object (closures alongside) is annotated on its held rows.
+    const annotated =
+      toolName === "query_holdings" &&
+      rawResult != null &&
+      typeof rawResult === "object" &&
+      !Array.isArray(rawResult) &&
+      Array.isArray((rawResult as { holdings?: unknown }).holdings)
+        ? (rawResult as { holdings: unknown[] }).holdings
+        : rawResult;
+    const annotations = annotateToolResult(db, toolName, annotated);
     return {
       data: rawResult,
       ...annotations,

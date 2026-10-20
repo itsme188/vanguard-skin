@@ -10,6 +10,7 @@ import { runMigrations } from "@/lib/db/migrate";
 import { executeTool, CHAT_TOOLS } from "@/lib/chat/tools";
 import {
   getClosedPerLiveDataForChat,
+  getLedgerEndByAccountForChat,
   getLedgerLastDateForChat,
   PENDING_STATEMENT_CHAT_NOTE,
 } from "@/lib/queries/chat-tools";
@@ -76,6 +77,7 @@ describe("getClosedPerLiveDataForChat", () => {
         as_of_date: "2026-09-25",
         quantity: 100,
         closed_as_of_date: "2026-09-30",
+        account_ledger_last_date: "2026-08-20",
         pending_statement: true,
         status_note: PENDING_STATEMENT_CHAT_NOTE,
       },
@@ -146,27 +148,112 @@ describe("query_holdings tool", () => {
   });
 });
 
-describe("ledger_last_date", () => {
-  it("is the newest trade date within the scope and symbol filter", () => {
+describe("held in one account, closed per live data in another", () => {
+  it("query_holdings returns the held row AND the closure", async () => {
     const { other, zzz } = seedScenario();
-    const aaa = seedStock("AAA");
-    seedTxn(other, aaa, "2026-10-01", "BUY", 100, "t3");
-    expect(getLedgerLastDateForChat(db, { symbol: "ZZZ" })).toBe("2026-08-20");
-    expect(getLedgerLastDateForChat(db, {})).toBe("2026-10-01");
-    expect(getLedgerLastDateForChat(db, { account_name: "IBKR" })).toBe("2026-08-20");
-    expect(getLedgerLastDateForChat(db, { symbol: "ZZZ", account_name: "Other Acct" })).toBeNull();
-    void zzz;
+    seedHolding(other, zzz, 50, "2026-10-02", "tws-ZZZ-other-2026-10-02");
+    const result = (await executeTool(db, "query_holdings", { symbol: "ZZZ" })) as {
+      error?: string;
+      data: {
+        holdings: Array<{ account_name: string; quantity: number }>;
+        closed_per_live_data: Array<Record<string, unknown>>;
+      };
+      warnings?: string[];
+    };
+    expect(result.error).toBeUndefined();
+    expect(result.data.holdings.map((h) => [h.account_name, h.quantity])).toEqual([["Other Acct", 50]]);
+    expect(result.data.closed_per_live_data).toHaveLength(1);
+    expect(result.data.closed_per_live_data[0]).toMatchObject({
+      account_name: "IBKR",
+      as_of_date: "2026-09-25",
+      closed_as_of_date: "2026-09-30",
+      pending_statement: true,
+    });
+    // The held rows are still annotated (the cash-estimate note is always added for holdings).
+    expect(JSON.stringify(result)).toMatch(/Cash balances are estimated/);
   });
 
-  it("query_transactions returns rows with ledger_last_date and the description says the ledger ends there", async () => {
-    seedScenario();
+  it("scoped to the holding account, no closure is reported", async () => {
+    const { other, zzz } = seedScenario();
+    seedHolding(other, zzz, 50, "2026-10-02", "tws-ZZZ-other-2026-10-02");
+    const result = (await executeTool(db, "query_holdings", { symbol: "ZZZ", account_name: "Other Acct" })) as {
+      data: unknown;
+    };
+    expect(Array.isArray(result.data)).toBe(true);
+  });
+});
+
+describe("where the ledger ends", () => {
+  /** IBKR's ledger runs past ZZZ's last trade: another symbol trades later. */
+  function seedLaterIbkrTrade(ibkr: number): void {
+    const bbb = seedStock("BBB");
+    seedTxn(ibkr, bbb, "2026-09-28", "BUY", 10, "t-bbb");
+  }
+
+  it("is per account and ignores the symbol; the symbol's last trade is a separate date", () => {
+    const { ibkr, other } = seedScenario();
+    seedLaterIbkrTrade(ibkr);
+    const aaa = seedStock("AAA");
+    seedTxn(other, aaa, "2026-10-01", "BUY", 100, "t3");
+
+    expect(getLedgerLastDateForChat(db, { symbol: "ZZZ" })).toBe("2026-08-20");
+    expect(getLedgerEndByAccountForChat(db, { symbol: "ZZZ" })).toEqual([
+      { account_name: "IBKR", ledger_last_date: "2026-09-28" },
+    ]);
+    expect(getLedgerEndByAccountForChat(db, {})).toEqual([
+      { account_name: "IBKR", ledger_last_date: "2026-09-28" },
+      { account_name: "Other Acct", ledger_last_date: "2026-10-01" },
+    ]);
+    expect(getLedgerEndByAccountForChat(db, { accountIds: [other] })).toEqual([
+      { account_name: "Other Acct", ledger_last_date: "2026-10-01" },
+    ]);
+    // A defined empty list is no accounts.
+    expect(getLedgerEndByAccountForChat(db, { accountIds: [] })).toEqual([]);
+    expect(getLedgerEndByAccountForChat(db, { symbol: "ZZZ", accountIds: [other] })).toEqual([]);
+  });
+
+  it("an account that only holds the symbol (no trade in it) is still listed", () => {
+    const { ibkr, other, zzz } = seedScenario();
+    seedLaterIbkrTrade(ibkr);
+    seedHolding(other, zzz, 50, "2026-10-02", "tws-ZZZ-other-2026-10-02");
+    expect(getLedgerEndByAccountForChat(db, { symbol: "ZZZ" })).toEqual([
+      { account_name: "IBKR", ledger_last_date: "2026-09-28" },
+      { account_name: "Other Acct", ledger_last_date: null },
+    ]);
+  });
+
+  it("the closed-per-live-data row carries the account's ledger end, not the symbol's last trade", () => {
+    const { ibkr } = seedScenario();
+    seedLaterIbkrTrade(ibkr);
+    const [row] = getClosedPerLiveDataForChat(db, { symbol: "ZZZ" });
+    expect(row.account_ledger_last_date).toBe("2026-09-28");
+  });
+
+  it("query_transactions names the account ledger end and the symbol's last trade separately", async () => {
+    const { ibkr } = seedScenario();
+    seedLaterIbkrTrade(ibkr);
     const result = (await executeTool(db, "query_transactions", { symbol: "ZZZ" })) as {
-      data: { transactions: Array<{ trade_date: string }>; ledger_last_date: string | null };
+      data: {
+        transactions: Array<{ trade_date: string }>;
+        ledger_end_by_account: Array<{ account_name: string; ledger_last_date: string | null }>;
+        symbol_last_trade_date?: string | null;
+        ledger_last_date?: unknown;
+      };
     };
     expect(result.data.transactions.map((t) => t.trade_date)).toEqual(["2026-08-20", "2026-08-05"]);
-    expect(result.data.ledger_last_date).toBe("2026-08-20");
+    expect(result.data.ledger_end_by_account).toEqual([{ account_name: "IBKR", ledger_last_date: "2026-09-28" }]);
+    expect(result.data.symbol_last_trade_date).toBe("2026-08-20");
+    expect(result.data.ledger_last_date).toBeUndefined();
     const tool = CHAT_TOOLS.find((t) => t.name === "query_transactions")!;
-    expect(tool.description).toContain("ledger_last_date");
+    expect(tool.description).toContain("ledger_end_by_account");
+    expect(tool.description).toContain("symbol_last_trade_date");
     expect(tool.description).toContain("query_holdings");
+  });
+
+  it("query_transactions without a symbol omits symbol_last_trade_date", async () => {
+    seedScenario();
+    const result = (await executeTool(db, "query_transactions", {})) as { data: Record<string, unknown> };
+    expect("symbol_last_trade_date" in result.data).toBe(false);
+    expect(result.data.ledger_end_by_account).toEqual([{ account_name: "IBKR", ledger_last_date: "2026-08-20" }]);
   });
 });

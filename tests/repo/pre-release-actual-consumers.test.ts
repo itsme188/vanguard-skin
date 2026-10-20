@@ -52,8 +52,16 @@ describe("pre-release-actual is imported by display surfaces only", () => {
     expect(found.some((f) => f.startsWith("app/"))).toBe(true);
   });
 
-  it("every importer is under app/**", () => {
-    const offenders = found.filter((f) => !f.startsWith("app/"));
+  // Named exceptions outside app/**, each a display surface with its reason.
+  const DISPLAY_EXCEPTIONS = new Set([
+    // The chat calendar tool words a row for the model's answer to the user
+    // ("figure saved before the release", not "reported"); it sends, stores
+    // and gates nothing (QA landing 2026-10-20).
+    "lib/chat/tools.ts",
+  ]);
+
+  it("every importer is under app/** or a named display exception", () => {
+    const offenders = found.filter((f) => !f.startsWith("app/") && !DISPLAY_EXCEPTIONS.has(f));
     expect(offenders).toEqual([]);
   });
 });
