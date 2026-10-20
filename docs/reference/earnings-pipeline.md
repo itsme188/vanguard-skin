@@ -1342,10 +1342,14 @@ source's bogey row, so `compileContracts` compiles it like a desk-defined line.
   (`attempts = 0`, `DO NOTHING` on conflict) and R20 reads that. An armed
   event's rescan therefore re-reads, once, the last 14 days of previews that
   mention it.
-- **Emails.** A numberless line prints nothing in the email prompt block
+- **Emails.** A numberless line prints nothing in the bogey entries
   (`extraMetricLines` skips it), so a topic-only row is not a printed entry and
-  no email claims bogeys from it. The modal card shows it as "— no bogey yet".
-  The nightly snapshot still carries no `extra_metrics_json`.
+  no email claims bogeys from it. The PREVIEW prompt lists those lines in a
+  separate "Watch lines with no bogey yet" block (`topicWatchLines`, owner
+  ruling 2026-10-20), one table row each, `—` unless a cited web figure is
+  found; the recap lists none. The modal card shows such a line as "— no
+  bogey yet". The nightly snapshot still carries no `extra_metrics_json`, so
+  the Worker's fallback preview lists no watch lines.
 
 ### The armed-event deep read (2026-10-20)
 

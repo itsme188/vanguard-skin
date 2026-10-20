@@ -25,7 +25,7 @@
     - (w3) **Next-quarter revenue / EPS guide bogeys stay free text.** The built-in guide lines carry no bogey, and a watch line for them is dropped as a duplicate. Putting the Street / whisper guide figure on those lines needs a small binding in `compileContracts`.
     - (w4) **A newsletter that lands after a sheet has evidence adds no watch line to it** (the newsletter scan does not recompile; the watcher refreshes only an untouched sheet).
     - (w6) **First live deep read:** after arming a name this week, its prep line should read "deep read" done with a count of articles, and the bogeys modal should show a `Deep read` card whose notes name the issues it read and any disagreement. Check one against the newsletters by eye before trusting the ranking.
-    - (w5) **Owner question:** should the preview email list the topic-only watch lines ("what the print is judged on") as well as the numbered ones? Today only lines with a figure print.
+    - ~~(w5) **Owner question:** should the preview email list the topic-only watch lines?~~ RULED 2026-10-20: yes. BUILT the same day: a "Watch lines with no bogey yet" block in the preview prompt (`topicWatchLines`), one table row each, no bogey claim; recap and Worker unchanged (`docs/DECISIONS.md` 2026-10-20 (later)). Check it in the first live preview with watch lines (w1).
 
 > R1/R1b (away-from-home refresh), R2 (long-email ingestion), R3 (Defense/Hedging tab), and the earnings skip-touch fix all shipped — see archive.
 

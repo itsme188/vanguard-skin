@@ -83,6 +83,15 @@ function formatExtraValue(n: number, unit: ExtraMetricSpec["unit"]): string {
   return n.toLocaleString("en-US");
 }
 
+/** "Gross margin (next-quarter guide, non-GAAP)": the label with its period and basis. */
+function specHeading(spec: ExtraMetricSpec): string {
+  const basis = spec.basis === "gaap" ? ", GAAP" : spec.basis === "non_gaap" ? ", non-GAAP" : "";
+  return `${spec.label} (${PERIOD_LABEL[spec.period]}${basis})`;
+}
+
+const specHasFigure = (spec: ExtraMetricSpec): boolean =>
+  finite(spec.consensus) || finite(spec.whisper);
+
 /** One line per desk-defined extra metric that carries a figure. Read through
  *  `parseExtraMetrics` (all-or-nothing: an invalid stored value prints nothing). */
 function extraMetricLines(json: string | null): string[] {
@@ -92,8 +101,31 @@ function extraMetricLines(json: string | null): string[] {
     if (finite(spec.consensus)) figures.push(`consensus ${formatExtraValue(spec.consensus, spec.unit)}`);
     if (finite(spec.whisper)) figures.push(`whisper ${formatExtraValue(spec.whisper, spec.unit)}`);
     if (figures.length === 0) continue;
-    const basis = spec.basis === "gaap" ? ", GAAP" : spec.basis === "non_gaap" ? ", non-GAAP" : "";
-    lines.push(`  - ${spec.label} (${PERIOD_LABEL[spec.period]}${basis}): ${figures.join(", ")}`);
+    lines.push(`  - ${specHeading(spec)}: ${figures.join(", ")}`);
+  }
+  return lines;
+}
+
+/**
+ * The watch lines no source gives a figure for ("Greater China revenue growth
+ * (this quarter)"), once each, in row order. Owner ruling 2026-10-20: the
+ * PREVIEW email lists them too. They are never a bogey entry: a row holding
+ * only these still prints nothing in `bogeyPromptEntryBody`, so it makes no
+ * bogey claim. Ids are derived from the figure's identity
+ * (lib/earnings/watch-metrics.ts), so the id is the dedupe key; a line any
+ * row gives a figure for is left out (it prints as a numbered line there).
+ */
+export function topicWatchLines(
+  rows: readonly Pick<BogeyPromptFields, "extra_metrics_json">[],
+): string[] {
+  const specs = rows.flatMap((r) => parseExtraMetrics(r.extra_metrics_json).specs);
+  const numbered = new Set(specs.filter(specHasFigure).map((s) => s.id));
+  const seen = new Set<string>();
+  const lines: string[] = [];
+  for (const spec of specs) {
+    if (numbered.has(spec.id) || seen.has(spec.id)) continue;
+    seen.add(spec.id);
+    lines.push(specHeading(spec));
   }
   return lines;
 }

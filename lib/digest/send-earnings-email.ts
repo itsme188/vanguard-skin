@@ -30,6 +30,7 @@ import {
 import {
   bogeyPrintsVendorEps,
   bogeysPrintedInPrompt,
+  topicWatchLines,
 } from "@/lib/earnings/bogey-prompt-entries";
 import { bogeyClaim } from "@/lib/earnings/bogey-claim";
 import { resolveExpectedMove } from "@/lib/earnings/expected-move";
@@ -998,6 +999,11 @@ interface PreviewContext {
   recentPressReleases: string | null;
   priorTranscript: EarningsTranscript | null;
   bogeys: EarningsBogey[];
+  /** Watch lines no source gives a figure for (`topicWatchLines`), read from
+   *  every row with content, not only the printed `bogeys`. Only the PREVIEW
+   *  prompt lists them (owner ruling 2026-10-20). Optional because test files
+   *  build this context by hand; absent means no block. */
+  topicWatchLines?: string[];
   readThroughs: ReadThroughEntry[];
   priorCallNote: EarningsCallNote | null;
   // Earnings-intelligence tier (Task 7). Optional + best-effort: absent
@@ -1080,9 +1086,11 @@ function buildPreviewContext(
   // Rows the prompt block prints something from only: the prompt names the
   // newest entry "the primary consensus reference", and a row with nothing
   // under it must never be that. Same helper `renderBogeysBlock` renders with.
-  const bogeys = bogeysPrintedInPrompt(getBogeysWithContentForEvent(db, event.id)).map(
-    (e) => e.bogey,
-  );
+  const contentRows = getBogeysWithContentForEvent(db, event.id);
+  const bogeys = bogeysPrintedInPrompt(contentRows).map((e) => e.bogey);
+  // From every row with content: a row holding only numberless watch lines is
+  // not a printed entry, but its lines are still listed (ruling 2026-10-20).
+  const topicLines = topicWatchLines(contentRows);
   const readThroughs = buildReadThroughEntries(db, family, event.event_date);
   const priorCallNote = getLatestCallNoteForFamily(db, symbol, event.event_date);
   let intel: EarningsIntelView | undefined;
@@ -1109,6 +1117,7 @@ function buildPreviewContext(
     recentPressReleases,
     priorTranscript,
     bogeys,
+    topicWatchLines: topicLines,
     readThroughs,
     priorCallNote,
     intel,
@@ -2033,6 +2042,7 @@ export function renderPreviewPrompt(ctx: PreviewContext): string {
   const positionsBlock = renderPositionsBlock(ctx);
   const userNotesBlock = renderUserNotesBlock(ctx);
   const bogeysBlock = renderBogeysBlock(ctx);
+  const topicWatchBlock = renderTopicWatchLinesBlock(ctx);
   // Code-rendered, never AI-generated (same discipline as the scoreboard
   // rows it accompanies) — gives the model quantitative context on implied
   // move + surprise/reaction history without asking it to compute or recall
@@ -2057,7 +2067,7 @@ export function renderPreviewPrompt(ctx: PreviewContext): string {
 - Expected impact: ${ctx.event.expected_impact ?? "n/a"}
 ${userNotesBlock}
 ${renderPriorCallNoteBlock(ctx.priorCallNote)}
-${bogeysBlock}
+${bogeysBlock}${topicWatchBlock}
 ${pastPrintsBlock}
 ${consensusBlock}
 ${positionsBlock}
@@ -2515,6 +2525,25 @@ export function renderSheetBogeysBlock(bogeys: EarningsBogey[]): string {
  */
 export function sheetBogeysWithCells(bogeys: EarningsBogey[]): EarningsBogey[] {
   return bogeys.filter((b) => renderSheetBogeysBlock([b]) !== "");
+}
+
+/**
+ * PREVIEW only (owner ruling 2026-10-20): the watch lines no source gives a
+ * figure for, each to become a row of the model's line-by-line table. Kept out
+ * of the bogey entries so it never feeds the curated / vendor-only claim or
+ * "the primary consensus reference". "" when there are none, so a prompt
+ * without them is byte-identical to before.
+ */
+function renderTopicWatchLinesBlock(ctx: PreviewContext): string {
+  const lines = ctx.topicWatchLines ?? [];
+  if (lines.length === 0) return "";
+  return `
+## Watch lines with no bogey yet
+
+The previews name these as figures this print will be judged on, but no source on file gives a number for them. Each MUST get its own row in your "Line-by-line bogies" table, labelled as written here. Put \`—\` in Consensus / Prior unless web_search finds a published figure, and cite its source inline when it does. Never invent a number. These are not bogeys: never describe them as curated, as a whisper or as a consensus.
+
+${lines.map((l) => `- ${l}`).join("\n")}
+`;
 }
 
 function renderBogeysBlock(ctx: PreviewContext): string {

@@ -227,7 +227,13 @@ Notes: a note
     seedCols("Broken segments", "2026-08-03 09:00:00", { segment_breakdown_json: "{not json" });
     const after = await promptFor(phase);
     expect(after.prompt).not.toContain(BLOCK_HEADING);
-    expect(after.prompt).toBe(bare.prompt);
+    // Owner ruling 2026-10-20: the PREVIEW lists a watch line with no figure in
+    // its own block (never as a bogey entry); apart from that block the prompt
+    // is the bare one. The recap lists none.
+    const watchBlock = /\n## Watch lines with no bogey yet\n[\s\S]*?\n- Bookings \(this quarter\)\n/;
+    if (phase === "preview") expect(after.prompt).toMatch(watchBlock);
+    else expect(after.prompt).not.toContain("## Watch lines with no bogey yet");
+    expect(after.prompt.replace(watchBlock, "")).toBe(bare.prompt);
     expect(after.markdown).toBe(bare.markdown);
   });
 
