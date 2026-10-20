@@ -428,6 +428,12 @@ describe("touch-count and date claims are held to the chip's metadata", () => {
     expect(checkNarrativeFacts(prose, ELEVEN)).toEqual({ plausible: true });
   });
 
+  it("flags a spelled number after an article ('a ten-month stretch')", () => {
+    expect(checkNarrativeFacts("Eleven touches across a ten-month stretch.", ELEVEN).plausible).toBe(false);
+    expect(checkNarrativeFacts("Eleven touches over a ten month period.", ELEVEN).plausible).toBe(false);
+    expect(checkNarrativeFacts("Eleven touches across a six-month stretch.", ELEVEN)).toEqual({ plausible: true });
+  });
+
   it("flags a stated span that disagrees with the touch window by more than a month", () => {
     // ELEVEN runs 2025-06-02 to 2025-12-10: about six months.
     expect(checkNarrativeFacts("Eleven touches over eight months.", ELEVEN).plausible).toBe(false);

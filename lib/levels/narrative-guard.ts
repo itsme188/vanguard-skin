@@ -426,7 +426,7 @@ const FIRST_TOUCH_CONTEXT_RE = /\bsince\s+(?:(?:early|mid|late)[-\s]+)?$/i;
 // over eight months" under a fact sentence whose dates were twelve months
 // apart. The count and date checks never read a span.
 const SPAN_RE =
-  /\b(?:over|across|spanning|within|during|in)\s+((?:(?:the\s+)?(?:past|last|prior|previous)\s+|nearly\s+|almost\s+|about\s+|roughly\s+|around\s+|some\s+|more\s+than\s+|just\s+over\s+|under\s+|less\s+than\s+)*)(?:an?\s+(?=\d))?(half\s+an?|an?|\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)?[\s-]*(months?|weeks?|years?)\b/gi;
+  /\b(?:over|across|spanning|within|during|in)\s+((?:(?:the\s+)?(?:past|last|prior|previous)\s+|nearly\s+|almost\s+|about\s+|roughly\s+|around\s+|some\s+|more\s+than\s+|just\s+over\s+|under\s+|less\s+than\s+)*)(?:an?\s+(?=\d|(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\b))?(half\s+an?|an?|\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)?[\s-]*(months?|weeks?|years?)\b/gi;
 /** A stated span may differ from the window by this many months either way. */
 const SPAN_TOLERANCE_MONTHS = 1;
 const DAYS_PER_MONTH = 365.25 / 12;
