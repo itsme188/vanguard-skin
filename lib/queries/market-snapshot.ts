@@ -349,6 +349,9 @@ const NO_LOCAL_SESSION_REASON =
 // stored under a closed day, a skipped sync), so the consecutive pair the
 // dollar day effect needs cannot form. Saying "behind" here told the owner
 // the book had not synced a session that was in fact in it (QA 2026-10-13).
+const NO_PRICED_NAMES_REASON =
+  "The local book has recent sessions but no usable prices for this name, so what was held, opened or added this session cannot be measured; no dollar day effect is given. Report the percent price move only.";
+
 const NO_PRIOR_SESSION_REASON =
   "The local book has this session, but the previous session's close is missing from it, so what was held, opened or added this session cannot be measured; no dollar day effect is given. Report the percent price move only.";
 
@@ -529,16 +532,38 @@ export async function getMarketSnapshot(
   }
 
   // ── Yahoo fallback (local missing or stale) ───────────────────────────────────
-  // Why the book could not measure the session. No pair while the book's
-  // latest SPY session is current: the session before it is missing, not the
-  // book. Anything else (no local session, or an old one): the book is behind.
+  // Why the book could not measure the session. The missing-prior-close
+  // wording is true only when the book's latest SPY session IS the session the
+  // quotes cover (no pair formed, so the session before it is missing). A book
+  // whose latest session is older than the quotes' is behind. Decided once the
+  // quotes' own session date is known (`bookReasons`).
   const latestLocal = pair === null ? latestLocalSession(db) : null;
-  const priorSessionMissing =
-    latestLocal !== null && calendarDaysBetween(latestLocal, today) <= MARKET_SNAPSHOT_STALE_DAYS;
-  const unmeasuredReason = priorSessionMissing ? NO_PRIOR_SESSION_REASON : NO_LOCAL_SESSION_REASON;
-  const bookNote = priorSessionMissing
-    ? `The local book has the ${latestLocal} session but the previous session's close is missing from it, so no dollar day effect can be measured; the percent moves are a live fallback.`
-    : "The local book was behind so this is a best-effort live fallback.";
+  // A fresh pair with no priced names: the book is not behind, it has nothing
+  // usable for this universe.
+  const pairButNoMoves = pair !== null && !localStale && localMoves.length === 0;
+  const bookReasons = (quoteDate: string | null) => {
+    const missingPrior =
+      latestLocal !== null &&
+      quoteDate !== null &&
+      latestLocal === quoteDate &&
+      calendarDaysBetween(latestLocal, today) <= MARKET_SNAPSHOT_STALE_DAYS;
+    if (missingPrior) {
+      return {
+        reason: NO_PRIOR_SESSION_REASON,
+        note: `The local book has the ${latestLocal} session but the previous session's close is missing from it, so no dollar day effect can be measured; the percent moves are a live fallback.`,
+      };
+    }
+    if (pairButNoMoves) {
+      return {
+        reason: NO_PRICED_NAMES_REASON,
+        note: "The local book has recent sessions but no usable prices for these names, so no dollar day effect can be measured; the percent moves are a live fallback.",
+      };
+    }
+    return {
+      reason: NO_LOCAL_SESSION_REASON,
+      note: "The local book was behind so this is a best-effort live fallback.",
+    };
+  };
   if (opts.fetchQuotes) {
     let quotes: Awaited<ReturnType<QuoteFetcher>> = null;
     try {
@@ -551,32 +576,33 @@ export async function getMarketSnapshot(
       quotes = null;
     }
     if (quotes) {
+      // Date the snapshot by the quotes' own session (the most common
+      // per-symbol ET date; ties → the later date), not by today — pre-open
+      // or on a weekend the latest Yahoo session is an earlier day.
+      // One vote per symbol, however many rows it has.
+      const counts = new Map<string, number>();
+      for (const symbol of new Set(universe.map((u) => u.symbol))) {
+        const d = quotes[symbol]?.asOf;
+        if (d) counts.set(d, (counts.get(d) ?? 0) + 1);
+      }
+      let asOf: string | null = null;
+      let best = 0;
+      for (const [d, n] of counts) {
+        if (n > best || (n === best && asOf !== null && d > asOf)) {
+          asOf = d;
+          best = n;
+        }
+      }
+      const quoteDate = asOf ?? today;
+      const reasons = bookReasons(asOf);
       const moves = universe
         .map((u): MarketMove | null => {
           const q = quotes![u.symbol];
           if (!q || q.prior === 0) return null;
-          return { symbol: u.symbol, name: u.name, pct: pct(q.price, q.prior), kind: u.kind, ...positionFields(u, unmeasuredReason) };
+          return { symbol: u.symbol, name: u.name, pct: pct(q.price, q.prior), kind: u.kind, ...positionFields(u, reasons.reason) };
         })
         .filter((m): m is MarketMove => m !== null);
       if (moves.length > 0) {
-        // Date the snapshot by the quotes' own session (the most common
-        // per-symbol ET date; ties → the later date), not by today — pre-open
-        // or on a weekend the latest Yahoo session is an earlier day.
-        // One vote per symbol, however many rows it has.
-        const counts = new Map<string, number>();
-        for (const symbol of new Set(universe.map((u) => u.symbol))) {
-          const d = quotes[symbol]?.asOf;
-          if (d) counts.set(d, (counts.get(d) ?? 0) + 1);
-        }
-        let asOf: string | null = null;
-        let best = 0;
-        for (const [d, n] of counts) {
-          if (n > best || (n === best && asOf !== null && d > asOf)) {
-            asOf = d;
-            best = n;
-          }
-        }
-        const quoteDate = asOf ?? today;
         const yahooStaleDays = Math.max(0, calendarDaysBetween(quoteDate, today));
         // A gap of up to 3 calendar days is the normal "latest session" case
         // (pre-open → yesterday, Monday pre-open → Friday). Beyond that the
@@ -592,7 +618,7 @@ export async function getMarketSnapshot(
           stale: yahooStale,
           staleDays: yahooStaleDays,
           moves,
-          note: `${sessionNote} ${bookNote}`,
+          note: `${sessionNote} ${reasons.note}`,
         };
       }
     }

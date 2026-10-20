@@ -92,4 +92,31 @@ describe("market snapshot when the latest session is in the book but the prior c
     const row = snap.moves.find((m) => m.symbol === "ZZA" && m.position);
     expect(row?.day_effect_reason).toMatch(/behind/i);
   });
+
+  it("says the book is behind when it lacks both the quotes' session and the one before", async () => {
+    const spy = seedSecurity("SPY");
+    seedPrice(spy, "2026-06-04", 600);
+    seedPrice(spy, "2026-06-08", 610); // Mon; 06-09 and 06-10 are missing
+    const zza = seedSecurity("ZZA");
+    seedPrice(zza, "2026-06-04", 100);
+    seedPrice(zza, "2026-06-08", 105);
+    seedHolding(1, zza, "2026-06-08", 100);
+
+    const behindQuotes: QuoteFetcher = async () => ({
+      SPY: { price: 620, prior: 610, asOf: "2026-06-10" },
+      ZZA: { price: 108, prior: 105, asOf: "2026-06-10" },
+    });
+    const snap = await getMarketSnapshot(db, {
+      today: "2026-06-10",
+      now: new Date("2026-06-10T21:00:00Z"),
+      fetchQuotes: behindQuotes,
+    });
+
+    expect(snap.source).toBe("yahoo");
+    expect(snap.note).toMatch(/behind/i);
+    expect(snap.note).not.toMatch(/previous session's close is missing/i);
+    const row = snap.moves.find((m) => m.symbol === "ZZA" && m.position);
+    expect(row?.day_effect_reason).toMatch(/behind/i);
+    expect(row?.day_effect_reason).not.toMatch(/previous session's close is missing/i);
+  });
 });
