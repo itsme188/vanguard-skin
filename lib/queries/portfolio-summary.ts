@@ -10,7 +10,7 @@ import {
   getPortfolioCurrentValues,
   type AccountValueSourceKind,
 } from "@/lib/queries/dashboard";
-import { liveOptionExpirationSql } from "@/lib/compute/option-expiry";
+import { liveOptionExpirationSql, normalizeOptionExpiration } from "@/lib/compute/option-expiry";
 import { CURRENCY_CONVERSION_SECURITY_SQL, USD_ONLY, lotSideSignSql, remainingLotBasisSql } from "@/lib/queries/tax-lots";
 import { longTermDateSql } from "@/lib/queries/long-term-sql";
 import {
@@ -92,14 +92,17 @@ interface PairKeyed {
 
 /**
  * Plain-language leg for an option in the verified-holdings list, e.g.
- * " — long put on AAA, $215 strike, expires 2027-12-17". The list is long
- * only (includeShorts: false), so the side is always long. Fields come from
+ * " — long put on AAA, $50 strike, expires 2027-06-18". The caller passes
+ * the side (long list or short list). Fields come from
  * the stored columns, else parsed from the OCC symbol (resolveOptionFields),
  * so the model never decodes "271217P" itself: it once read a long December
  * 2027 put as a short January 2027 put. Empty for a non-option or when
  * nothing can be read.
  */
-function describeOptionLeg(h: EnrichedHolding): string {
+function describeOptionLeg(
+  h: Pick<EnrichedHolding, "symbol" | "security_type" | "option_type" | "strike_price" | "expiration_date" | "underlying_symbol">,
+  side: "long" | "short" = "long"
+): string {
   if ((h.security_type ?? "").toLowerCase() !== "option") return "";
   const fields = resolveOptionFields(h.symbol, h.option_type as "CALL" | "PUT" | null | undefined, h.strike_price, h.expiration_date);
   const kind = fields.optionType === "CALL" ? "call" : fields.optionType === "PUT" ? "put" : null;
@@ -109,9 +112,9 @@ function describeOptionLeg(h: EnrichedHolding): string {
     fields.strike != null
       ? `$${Number.isInteger(fields.strike) ? fields.strike : fields.strike.toFixed(2).replace(/\.?0+$/, "")} strike`
       : null;
-  const expiry = fields.expiration ? `expires ${fields.expiration}` : null;
+  const expiry = fields.expiration ? `expires ${normalizeOptionExpiration(fields.expiration)}` : null;
   const parts = [strike, expiry].filter((p): p is string => p !== null);
-  return ` — long ${kind}${underlying ? ` on ${underlying}` : ""}${parts.length ? `, ${parts.join(", ")}` : ""}`;
+  return ` — ${side} ${kind}${underlying ? ` on ${underlying}` : ""}${parts.length ? `, ${parts.join(", ")}` : ""}`;
 }
 
 export function getPortfolioSummaryForChat(db: Database.Database, accountName?: string): string {
@@ -198,6 +201,7 @@ export function getPortfolioSummaryForChat(db: Database.Database, accountName?: 
         LEFT JOIN fx_rates fx ON fx.currency = s.currency
         WHERE ${latestHoldingsPredicate({ includeShorts: false, accountFilter: "" })}
         AND ${unmaturedSecuritySql("s")}
+        AND ${liveOptionExpirationSql("s", today)}
         ${holdingsFilter}
       )
       SELECT a.name AS account_name, s.symbol, s.name AS security_name,
@@ -224,6 +228,7 @@ export function getPortfolioSummaryForChat(db: Database.Database, accountName?: 
        LEFT JOIN fx_rates fx ON fx.currency = s.currency
        WHERE ${latestHoldingsPredicate({ includeShorts: false, accountFilter: "" })}
        AND ${unmaturedSecuritySql("s")}
+       AND ${liveOptionExpirationSql("s", today)}
        ${holdingsFilter}
        ORDER BY market_value DESC`
     )
@@ -265,6 +270,7 @@ export function getPortfolioSummaryForChat(db: Database.Database, accountName?: 
         ON p.security_id = lp.security_id AND p.date = lp.max_date
       )
       SELECT a.name AS account_name, s.symbol, s.security_type, s.sector,
+             s.option_type, s.strike_price, s.expiration_date, s.underlying_symbol,
              h.quantity, h.as_of_date,
              CASE WHEN lp.close_price IS NOT NULL
                THEN ${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}
@@ -278,6 +284,7 @@ export function getPortfolioSummaryForChat(db: Database.Database, accountName?: 
        WHERE ${latestHoldingsPredicate({ includeShorts: true, accountFilter: "" })}
          AND h.quantity < 0
          AND ${unmaturedSecuritySql("s")}
+         AND ${liveOptionExpirationSql("s", today)}
          ${holdingsFilter}
        ORDER BY market_value ASC`
     )
@@ -286,6 +293,10 @@ export function getPortfolioSummaryForChat(db: Database.Database, accountName?: 
       symbol: string;
       security_type: string | null;
       sector: string | null;
+      option_type: string | null;
+      strike_price: number | null;
+      expiration_date: string | null;
+      underlying_symbol: string | null;
       quantity: number;
       as_of_date: string;
       market_value: number | null;
@@ -297,7 +308,8 @@ export function getPortfolioSummaryForChat(db: Database.Database, accountName?: 
       const unit = h.security_type?.toLowerCase() === "option" ? "contracts" : "shares";
       const value = h.market_value != null ? ` MV:${formatUSD(h.market_value)}` : "";
       const sector = h.sector ? ` [${h.sector}]` : "";
-      lines.push(`- ${h.symbol} (${h.account_name}): short ${formatNumber(Math.abs(h.quantity))} ${unit}${value}${sector}`);
+      const leg = describeOptionLeg(h, "short");
+      lines.push(`- ${h.symbol} (${h.account_name}): short ${formatNumber(Math.abs(h.quantity))} ${unit}${leg}${value}${sector}`);
     }
   }
 
