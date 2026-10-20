@@ -1092,7 +1092,7 @@ If the app applied 089 implicitly instead, it is not a corruption — the migrat
 - *EDGAR acceptance time is not what the JSON says.* `data.sec.gov/submissions/CIK….json` reports `acceptanceDateTime` as the Eastern wall-clock with a bogus `Z` while a filing is FRESH (Snowflake `16:08:29Z` = 16:08 ET; Entergy nine minutes after acceptance the same way) and as true UTC after a later rebuild (Dell's 9/1 filing: JSON `20:10:14Z`, header `20260901161014`). Parsing as UTC read the 8-K as 12:08 ET, outside the 15:45–17:00 window — the lane reported "ok — 0 filings". `pollEdgar` now prefilters on BOTH readings and decides on the filing's own `-index-headers.html` `<ACCEPTANCE-DATETIME>` (always Eastern), which it was already fetching for the exhibit list. Never go back to a single `Date.parse` of the JSON value.
 - *Unheld names have no contract id, so the wire is off.* `enrichSecurities` walks HELD securities only; an armed event on a name the desk does not own arrives with `ib_con_id NULL` and the panel reads "DJ: no conId — wire off" (also silencing straddle intel and the TWS reaction snapshot). The DJ lane now backfills the conId once per print through `enrichSecurities(db, [securityId])` when TWS is up (TWS down is not an attempt; retried when it returns), and the coverage note says which of the four outcomes happened.
 
-Recovery that night: the EX-99.1 was fetched from EDGAR and posted to `POST /api/print-watch/drop` (human route: session cookie + `vgs_csrf` + `x-csrf-token` + a trusted `Origin` header); the drop parsed in 35s and all four greened lines matched the release. Still open from that run: a same-day manual add gets no preview, so the worksheet auto-print waits forever ("armed but no local preview yet"); the sheet has no line for the metric the name is actually traded on (product-revenue guidance) because contract lines derive from bogey rows.
+Recovery that night: the EX-99.1 was fetched from EDGAR and posted to `POST /api/print-watch/drop` (human route: session cookie + `vgs_csrf` + `x-csrf-token` + a trusted `Origin` header); the drop parsed in 35s and all four greened lines matched the release. Still open from that run: a same-day manual add gets no preview, so the worksheet auto-print waits forever ("armed but no local preview yet"); the sheet has no line for the metric the name is actually traded on (product-revenue guidance) because contract lines derive from bogey rows. (Addressed 2026-10-20 for figures a preview names: §Watch metrics from previews. A guided metric no preview mentions still has no line.)
 
 ## Armed coverage + prepare steps (v2 slice A)
 
@@ -1139,6 +1139,7 @@ alphabetical and registration order buys nothing**:
 | `consensus_row` | Upserts the engine-owned `finnhub` bogey row from the event's vendor estimates | event source + the parsed vendor pair + the event's consensus columns |
 | `intel` | Runs `ensureIntelForEvents` so an armed-but-unheld name has implied-move data by print time | symbol + event date + release time |
 | `newsletter_rescan` | Re-reads recent research articles for THIS event through the pure per-event path | event id + symbol + window + extractor version |
+| `newsletter_synthesis` (2026-10-20) | The deep read: one frontier-tier call over every preview of the 10 days before the print that names the company, stored as one reconciled `Deep read` bogey row (see below) | version + event + slot-floor cutoff + the ids of the articles it would read |
 
 Outcomes are `done`, `pending` and `failed`. **`pending` is a precondition failure, not an
 attempt** — TWS being down, or intel not yet computed, costs nothing and retries next tick; only
@@ -1263,11 +1264,12 @@ renders as a banner. Numbers merge first-non-null by bogey rowid.
 
 `recompileContracts(db, printId)` (`lib/print-watch/recompile.ts`) is explicit and
 runs in ONE immediate transaction; `POST` and `DELETE /api/earnings/bogeys` call
-it for the event's live print (any state but `expired`/`disarmed`) — the two
-direct `upsertBogey` callers (the bogeys-upload route and the `consensus_row`
-prepare step) do NOT recompile, which is benign because an extra metric only
-ever originates from the modal, and the watcher self-heals `expected` on the
-next parse. Per existing line: same semantics → update `contract_json`/
+it for the event's live print (any state but `expired`/`disarmed`), and so do
+the bogeys-upload route and the `consensus_row` prepare step
+(`saveBogeyWithRecompile`). The newsletter scan writes with plain `upsertBogey`
+and does NOT recompile: its watch lines (below) reach a sheet through the
+watcher's pre-print refresh, which runs only while the sheet is untouched, so a
+newsletter that lands after the first evidence adds no line to that print. Per existing line: same semantics → update `contract_json`/
 `expected_json` in place; semantic change (unit / kind / basis / period) WITH
 evidence (`value IS NOT NULL`, a non-empty `candidates_json`, or
 `state = 'accepted'`) → the old row is RENAMED to `<metric_id>~retired~<n>` and
@@ -1296,6 +1298,91 @@ renders collapsed with no accept control) and it cannot reach promote or any
 outbound send. The route is outside slice F's edit list; the fix has to gate
 on the `~retired~` id substring rather than on `state`, because `state` is what
 the bug flips.
+
+### Watch metrics from previews (2026-10-20)
+
+The sheet always carries total revenue and EPS (and, with guidance notes, the
+next-quarter revenue / EPS guide). Before this change the figures a print is
+actually judged on (Micron's gross margin and its guide, Nike's Greater China
+revenue, a software name's net new ARR) went into free-text `guidance_notes`,
+so no line existed and the release extractor never looked for them (the SNOW
+night above was the same gap).
+
+Both preview extractors now ask for `watch_metrics`
+(`lib/earnings/watch-metrics.ts`, one shared prompt block): the newsletter scan
+(`lib/earnings/extract-newsletter-bogeys.ts`) and the PDF / image upload
+(`lib/earnings/extract-bogeys.ts`). Each becomes an extra metric spec on that
+source's bogey row, so `compileContracts` compiles it like a desk-defined line.
+
+- **A topic is a line too.** "China recovery" with no number becomes a
+  "Greater China revenue growth" line with no bogey; the release extractor
+  fills it if the release prints it (it never computes a growth rate). A topic
+  no printed figure measures is skipped.
+- **Ids are derived, not minted.** `watchMetricId` hashes the label's name
+  tokens (basis and period words dropped) with period, unit and basis into a
+  v4-shaped uuid, so two issues or two newsletters naming the same figure land
+  on ONE line; numbers merge first-non-null by rowid as for any extra metric.
+  Kind follows the period (`Q` point, guides range) and is never the model's
+  call, because it is a conflict field the id does not carry. The newsletter
+  prompt also lists the event's existing lines so a later issue reuses a label.
+- **Value-free.** Labels and definitions reach the release-extraction prompt.
+  A label carrying a figure (`carriesFigure`) drops the line; a definition
+  carrying one is replaced by a generic sentence.
+- **No duplicates of the built-ins.** Total revenue / EPS for the quarter or the
+  next-quarter guide are dropped (`isBuiltInLine`); a full-year revenue guide is
+  kept (no built-in line).
+- **Merges never drop.** A re-scan merges into the row's stored specs
+  (`mergeWatchMetricsJson`): stored specs win, missing figures are filled, an
+  unreadable stored value is left untouched. Capped at 6 lines per extraction
+  and 10 per row.
+- **Rescan re-reads version-1 articles.** `NEWSLETTER_EXTRACTOR_VERSION` is 2.
+  The rescan's R20 shortcut used to bank a pair as read off any `earnings_bogeys`
+  row with that article id, which carries no version, so a bump could never
+  re-read. The global scan now banks its own `earnings_bogey_scans` row
+  (`attempts = 0`, `DO NOTHING` on conflict) and R20 reads that. An armed
+  event's rescan therefore re-reads, once, the last 14 days of previews that
+  mention it.
+- **Emails.** A numberless line prints nothing in the email prompt block
+  (`extraMetricLines` skips it), so a topic-only row is not a printed entry and
+  no email claims bogeys from it. The modal card shows it as "— no bogey yet".
+  The nightly snapshot still carries no `extra_metrics_json`.
+
+### The armed-event deep read (2026-10-20)
+
+Owner request: once a name is armed, read the week's newsletters about it with
+the best model and find the proper bogeys. `newsletter_synthesis`
+(`lib/earnings/prepare-steps/newsletter-synthesis.ts`) runs
+`runDeepRead` (`lib/earnings/deep-read-bogeys.ts`) on the `armedBogeyDeepRead`
+feature, frontier tier.
+
+- **What it reads.** Articles received in the 10 days before the print's slot
+  floor (07:00 ET before-open or unknown slot, 16:00 ET after-close; instants
+  compared with `datetime()` on both sides, then again in JS) whose subject or
+  body names the company by ticker family OR by name (`companyNameAliases`: the
+  cleaned security name, and its first word when distinctive). The per-article
+  scan matches tickers only, so a "Micron" preview with no "MU" reached no
+  sheet before. Only windows around the mentions are sent (±2,500 characters,
+  12,000 per article, 80,000 in all, newest first, at most 25 articles).
+- **What it asks.** One reconciled sheet: Street consensus, buyside whisper and
+  company guidance kept apart; the latest issue wins a disagreement and the
+  disagreement is named; no computed figures; article ids cited per figure;
+  watch metrics in the shared block. Stored numbers are NOT shown to the model,
+  so a vendor figure cannot be relabelled as the newsletters' reading.
+- **What it writes.** One row per event, `source = 'newsletter'`,
+  `source_label = DEEP_READ_BOGEY_LABEL` ("Deep read",
+  `lib/earnings/bogey-claim.ts`), overwrite mode through
+  `saveBogeyWithRecompile` (a live sheet is recompiled). An empty answer writes
+  nothing and keeps the last reading. Notes carry the debate line, the
+  disagreements and the issues it read from.
+- **When it re-runs.** The fingerprint is the set of article ids, so a new
+  preview before the floor re-runs it (one frontier call each time) and nothing
+  received after the floor ever does: a recap cannot become a bogey.
+- **Precedence on the sheet.** `compileContracts` now merges bogey rows in
+  `BOGEY_SOURCE_RANK_SQL` order, then rowid: `manual`, `pdf_upload`, the deep
+  read, other `newsletter` rows, then everything else (the `finnhub` vendor row
+  included). Before, rowid alone decided, so the vendor row minted at arm time
+  or an older issue beat a figure the desk typed later. The email composers'
+  newest-first readers are unchanged.
 
 ## An armed row after its print: the read-only record (2026-10-08)
 

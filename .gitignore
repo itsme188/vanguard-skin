@@ -102,3 +102,7 @@ next-env.d.ts
 # Private local-only docs (real financial figures) — never commit
 docs/private/
 /qa/verify-evidence/
+
+# Python bytecode (scripts/coord tests import the listener module)
+__pycache__/
+*.pyc

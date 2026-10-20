@@ -66,3 +66,40 @@ export function buildBogeyEventMatchMap(
   }
   return map;
 }
+
+/**
+ * Why an uploaded symbol matched no event, in one short clause the upload
+ * button can print after the symbol (to-do n1: "a bogey upload that matched
+ * nothing gives no reason"). Read-only, issuer-family aware, the same live-row
+ * rule as the match map.
+ *
+ *   - "next earnings on the calendar is 2026-11-05, outside 10/17–10/30"
+ *   - "last earnings on the calendar was 2026-07-30, outside 10/17–10/30"
+ *   - "no earnings date on the calendar for it"
+ */
+export function unmatchedBogeyReason(
+  db: Database.Database,
+  family: readonly string[],
+  startDate: string,
+  endDate: string,
+): string {
+  const symbols = [...new Set(family.map((s) => s.toUpperCase()))];
+  if (symbols.length === 0) return "no earnings date on the calendar for it";
+  const marks = symbols.map(() => "?").join(", ");
+  const live = `event_type = 'earnings' AND UPPER(symbol) IN (${marks}) AND COALESCE(superseded, 0) = 0`;
+  const next = db
+    .prepare(`SELECT MIN(event_date) AS d FROM calendar_events WHERE ${live} AND event_date > ?`)
+    .get(...symbols, endDate) as { d: string | null };
+  const last = db
+    .prepare(`SELECT MAX(event_date) AS d FROM calendar_events WHERE ${live} AND event_date < ?`)
+    .get(...symbols, startDate) as { d: string | null };
+  const span = `${shortMonthDay(startDate)}–${shortMonthDay(endDate)}`;
+  if (next.d) return `next earnings on the calendar is ${next.d}, outside ${span}`;
+  if (last.d) return `last earnings on the calendar was ${last.d}, outside ${span}`;
+  return "no earnings date on the calendar for it";
+}
+
+function shortMonthDay(iso: string): string {
+  const m = /^\d{4}-(\d{2})-(\d{2})$/.exec(iso);
+  return m ? `${Number(m[1])}/${Number(m[2])}` : iso;
+}

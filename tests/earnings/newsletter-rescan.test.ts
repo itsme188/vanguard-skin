@@ -247,7 +247,7 @@ describe("newsletter_rescan step + earnings_bogey_scans ledger", () => {
     expect(RESCAN_WINDOW_DAYS).toBe(14);
     expect(SCAN_MAX_ATTEMPTS).toBe(3);
     expect(RESCAN_MAX_ARTICLES_PER_PASS).toBe(8);
-    expect(NEWSLETTER_EXTRACTOR_VERSION).toBe(1);
+    expect(NEWSLETTER_EXTRACTOR_VERSION).toBe(2);
   });
 
   it("claims before the call, finalises hit / no_numbers, skips articles older than the window, and never re-calls a finalised article", async () => {
@@ -428,21 +428,43 @@ describe("newsletter_rescan step + earnings_bogey_scans ledger", () => {
     expect(extract).toHaveBeenCalledTimes(1);
   });
 
-  it("[R20] a pair the global scan already extracted is banked as a hit with no model call", async () => {
+  it("[R20] a pair the global scan already read at this version costs no model call", async () => {
     const ev = seedEvent();
     const a1 = seedArticle("ACME EPS 0.60", daysAgo(3));
+    const a2 = seedArticle("ACME nothing new", daysAgo(4));
+    // What bankGlobalScan writes: attempts 0, one row per pair it read.
     db.prepare(
-      `INSERT INTO earnings_bogeys (event_id, source, source_label, research_article_id, eps_consensus)
-       VALUES (?, 'newsletter', 'Desk Notes 8/30', ?, 0.6)`,
-    ).run(ev, a1);
+      `INSERT INTO earnings_bogey_scans (event_id, article_id, extractor_version, status, model_id, attempts, scanned_at)
+       VALUES (?, ?, ?, 'hit', 'm', 0, datetime('now')), (?, ?, ?, 'no_numbers', 'm', 0, datetime('now'))`,
+    ).run(ev, a1, NEWSLETTER_EXTRACTOR_VERSION, ev, a2, NEWSLETTER_EXTRACTOR_VERSION);
 
     const extract = vi.fn();
     expect(await makeNewsletterRescanStep({ extract }).run(db, ev, ctx)).toEqual({
       status: "done",
-      note: "0 scanned, 0 hit (1 pre-existing from the global scan)",
+      note: "0 scanned, 0 hit (2 pre-existing from the global scan)",
     });
     expect(extract).not.toHaveBeenCalled();
-    expect(ledger(ev)).toEqual([{ article_id: a1, status: "hit", attempts: 0, model_id: null }]);
+  });
+
+  it("a bogey row an EARLIER extractor version wrote is read again, so the new version's lines reach the sheet", async () => {
+    const ev = seedEvent();
+    const a1 = seedArticle("ACME EPS 0.60, gross margin the debate", daysAgo(3));
+    // Version 1's global scan stored the numbers and banked no ledger row.
+    db.prepare(
+      `INSERT INTO earnings_bogeys (event_id, source, source_label, research_article_id, eps_consensus)
+       VALUES (?, 'newsletter', 'Desk Notes 8/30', ?, 0.6)`,
+    ).run(ev, a1);
+    db.prepare(
+      `INSERT INTO earnings_bogey_scans (event_id, article_id, extractor_version, status, attempts, scanned_at)
+       VALUES (?, ?, ?, 'hit', 0, datetime('now'))`,
+    ).run(ev, a1, NEWSLETTER_EXTRACTOR_VERSION - 1);
+
+    const extract = vi.fn(async () => ({ bogeysStored: 1, modelId: "m", called: true }));
+    expect(await makeNewsletterRescanStep({ extract }).run(db, ev, ctx)).toEqual({
+      status: "done",
+      note: "1 scanned, 1 hit",
+    });
+    expect(extract).toHaveBeenCalledTimes(1);
   });
 
   it("an all-empty row from the global scan is not an extraction: the pair is scanned, not banked as a hit", async () => {

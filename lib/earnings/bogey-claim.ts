@@ -24,6 +24,12 @@ export type BogeyClaim = "none" | "curated" | "vendor_only";
 /** The `earnings_bogeys.source` of the engine-owned vendor consensus row. */
 export const VENDOR_BOGEY_SOURCE = "finnhub";
 
+/** The `source_label` of the armed-event deep read's one reconciled row
+ *  (source `newsletter`; lib/earnings/deep-read-bogeys.ts). It is the newsletters'
+ *  reading, not the desk's own curation, but it is not the vendor either, so
+ *  `bogeyClaim` counts it as curated like any newsletter row. */
+export const DEEP_READ_BOGEY_LABEL = "Deep read";
+
 export function bogeyClaim(printed: ReadonlyArray<{ source: string }>): BogeyClaim {
   if (printed.length === 0) return "none";
   return printed.every((b) => b.source === VENDOR_BOGEY_SOURCE) ? "vendor_only" : "curated";

@@ -27,6 +27,7 @@ const STEP_LABELS: Record<string, string> = {
   consensus_row: "consensus row",
   intel: "intel",
   newsletter_rescan: "newsletter re-scan",
+  newsletter_synthesis: "deep read",
   ir_baseline: "IR baseline",
 };
 

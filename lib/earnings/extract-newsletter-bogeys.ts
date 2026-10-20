@@ -23,6 +23,13 @@ import { coercePercent, parseLargeUSD } from "@/lib/format";
 import { coveredForEvents } from "@/lib/queries/briefing-symbols";
 import { issuerSiblings } from "@/lib/securities/issuer-family";
 import { todayET, addDays } from "@/lib/calendar/date-utils";
+import type { ExtraMetricSpec } from "@/lib/print-watch/extra-metrics";
+import {
+  WATCH_METRICS_INSTRUCTIONS,
+  existingWatchLinesForEvent,
+  mergeWatchMetricsJson,
+  parseWatchMetrics,
+} from "@/lib/earnings/watch-metrics";
 
 // Max chars per article sent to Claude. Bogey mentions are almost always in
 // prose context near the top of a preview newsletter, not buried deep in a
@@ -50,6 +57,9 @@ export interface UpcomingReporter {
   symbol: string;
   event_id: number;
   event_date: string;
+  /** Extra metric lines already on this event's sheet (prompt text from
+   *  `existingWatchLinesForEvent`), so a later issue reuses their labels. */
+  existing_lines?: string[];
 }
 
 export interface ExtractedBogey {
@@ -62,6 +72,9 @@ export interface ExtractedBogey {
   /** Forward-looking company/author guidance prose — never a bogey number. */
   guidance_notes: string | null;
   notes: string | null;
+  /** The company-specific figures the print is judged on, as sheet lines
+   *  (lib/earnings/watch-metrics.ts). [] when the author names none. */
+  watch_metrics: ExtraMetricSpec[];
 }
 
 /**
@@ -75,7 +88,11 @@ export function buildExtractionPrompt(
   reporters: UpcomingReporter[]
 ): string {
   const reportersList = reporters
-    .map((r) => `${r.symbol} (reports ${r.event_date})`)
+    .map((r) => {
+      const head = `${r.symbol} (reports ${r.event_date})`;
+      const lines = r.existing_lines ?? [];
+      return lines.length > 0 ? `${head}; lines already on its sheet: ${lines.join("; ")}` : head;
+    })
     .join("\n");
 
   const truncatedText =
@@ -108,9 +125,12 @@ export function buildExtractionPrompt(
     `  "revenue_consensus": number | null,   // RAW dollars, not abbreviated (e.g. 40200000000, not "$40.2B")`,
     `  "revenue_whisper": number | null,     // RAW dollars`,
     `  "expected_move_pct": number | null,   // expected/implied earnings move the author states, as an absolute percent ("±6%" -> 6)`,
-    `  "guidance_notes": string | null,      // forward-looking guidance/metrics as SHORT text: company guides, next-quarter guide bogeys, ARR/cRPO/margin bogeys. Never a bogey number field. <300 chars`,
-    `  "notes": string | null                // brief paraphrase of the author's reasoning, <200 chars`,
+    `  "guidance_notes": string | null,      // forward-looking guidance as SHORT text: company guides, next-quarter guide bogeys, and a one-line summary of the watch metrics. Never a bogey number field. <300 chars`,
+    `  "notes": string | null,               // brief paraphrase of the author's reasoning, <200 chars`,
+    `  "watch_metrics": array                // the company-specific figures this print is judged on; see WATCH METRICS`,
     `}`,
+    ``,
+    WATCH_METRICS_INSTRUCTIONS,
     ``,
     `KNOWN FORMATS:`,
     `Some authors (e.g. TMT Breakout's "Buyside Bogeys") post a compact per-ticker block:`,
@@ -128,15 +148,15 @@ export function buildExtractionPrompt(
     `- "Street @" / "street at" / "consensus" is the SELL-SIDE consensus — "Street @ $92.4B" means revenue_consensus = 92400000000.`,
     `- "guide of" / "prior guide" / "the guide" is COMPANY guidance, never a bogey number. Summarize it in guidance_notes.`,
     `- ONLY the CURRENT-quarter Revenue and EPS lines map to revenue_*/eps_*. The current quarter is the one that is about to be reported.`,
-    `- NEXT-quarter guide lines ("FQ3 Revenue Guide", "FY'27 Rev Guide") and non-GAAP metric lines (ARR, NN ARR, cRPO, RPO, GM, gross/operating margin) go into guidance_notes as short text — they are forward-looking, not this quarter's print. Other commentary goes in notes.`,
+    `- NEXT-quarter total revenue / EPS guide lines ("FQ3 Revenue Guide") go into guidance_notes as short text — they are forward-looking, not this quarter's print. Metric lines (ARR, NN ARR, cRPO, RPO, GM, gross/operating margin) and full-year guides ("FY'27 Rev Guide") go into watch_metrics with their numbers, and may also be summarized in guidance_notes. Other commentary goes in notes.`,
     `- A header like "4:15p / 5:00p" is the print time / call time. Ignore it — it is not a number to extract.`,
-    `- A block like this usually carries SEVERAL numbers per ticker. Capture every one of them: the whisper, the consensus, and each guide/metric line in guidance_notes.`,
+    `- A block like this usually carries SEVERAL numbers per ticker. Capture every one of them: the whisper, the consensus, each metric line in watch_metrics, and the next-quarter guide in guidance_notes.`,
     ``,
     `RULES:`,
     `- Only extract for the listed upcoming reporters.`,
     `- Use null (not 0) for any field the author doesn't give a number for.`,
     `- Numbers are RAW dollars: convert "$40.2B" to 40200000000.`,
-    `- If the article gives no forward-looking numbers for any listed reporter, return [].`,
+    `- If the article gives no numbers and flags no watch metric for any listed reporter, return [].`,
     `- Return ONLY the JSON array. No other text.`,
   ].join("\n");
 }
@@ -175,6 +195,7 @@ export function parseExtractionResponse(raw: string): ExtractedBogey[] {
       expected_move_pct: coercePercent(obj.expected_move_pct),
       guidance_notes: normalizeStringField(obj.guidance_notes),
       notes: normalizeStringField(obj.notes),
+      watch_metrics: parseWatchMetrics(obj.watch_metrics),
     });
   }
   return out;
@@ -337,8 +358,12 @@ function markArticleScanned(db: Database.Database, articleId: number): void {
 /** Extractor identity stamped on every `earnings_bogey_scans` ledger row. Bump
  *  it when the prompt/parser changes materially enough that an already-scanned
  *  (event, article) pair deserves a fresh pass — the ledger PK carries it, so a
- *  bump re-opens every pair without touching the rows the old version wrote. */
-export const NEWSLETTER_EXTRACTOR_VERSION = 1;
+ *  bump re-opens every pair without touching the rows the old version wrote.
+ *
+ *  2 (2026-10-20): watch metrics. An armed event's rescan re-reads the previews
+ *  version 1 already extracted, so their margin / segment / KPI lines reach the
+ *  sheet; the stored numbers are kept (`preserveExisting`). */
+export const NEWSLETTER_EXTRACTOR_VERSION = 2;
 
 /**
  * [C-3] Issue-scoped bogey label: "<publication> <M/D>" with the issue date in
@@ -380,8 +405,47 @@ function hasExtractedContent(bogey: ExtractedBogey): boolean {
     bogey.revenue_whisper != null ||
     bogey.expected_move_pct != null ||
     bogey.guidance_notes != null ||
-    bogey.notes != null
+    bogey.notes != null ||
+    bogey.watch_metrics.length > 0
   );
+}
+
+/**
+ * The global scan's half of the `earnings_bogey_scans` ledger: one row per
+ * (event, article) it read, at this extractor version, with `attempts = 0`
+ * (no rescan attempt was spent). An event armed later then finds the pair
+ * already read and spends no second model call on it. `DO NOTHING` on a
+ * conflict: a row the rescan wrote, or a live claim it holds, is its own.
+ */
+function bankGlobalScan(
+  db: Database.Database,
+  eventId: number,
+  articleId: number,
+  status: "hit" | "no_numbers",
+  modelId: string | null,
+): void {
+  db.prepare(
+    `INSERT INTO earnings_bogey_scans
+       (event_id, article_id, extractor_version, status, model_id, attempts, scanned_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, 0, datetime('now'), datetime('now'))
+     ON CONFLICT(event_id, article_id, extractor_version) DO NOTHING`,
+  ).run(eventId, articleId, NEWSLETTER_EXTRACTOR_VERSION, status, modelId);
+}
+
+/** The stored watch lines of the row this write lands on, so a re-scan adds to
+ *  them instead of replacing what the desk kept or edited. */
+function storedExtraMetricsJson(
+  db: Database.Database,
+  eventId: number,
+  sourceLabel: string,
+): string | null {
+  const row = db
+    .prepare(
+      `SELECT extra_metrics_json FROM earnings_bogeys
+        WHERE event_id = ? AND source = 'newsletter' AND COALESCE(source_label, '') = ?`,
+    )
+    .get(eventId, sourceLabel) as { extra_metrics_json: string | null } | undefined;
+  return row?.extra_metrics_json ?? null;
 }
 
 interface CallAndStoreResult {
@@ -408,7 +472,8 @@ interface CallAndStoreResult {
 async function callAndStore(
   db: Database.Database,
   article: ArticleInput,
-  reporters: UpcomingReporter[]
+  mentioned: UpcomingReporter[],
+  opts: { bankLedger: boolean },
 ): Promise<CallAndStoreResult> {
   const nothing: CallAndStoreResult = {
     bogeysStored: 0,
@@ -417,12 +482,18 @@ async function callAndStore(
     called: false,
     failed: false,
   };
-  if (reporters.length === 0) return nothing;
+  if (mentioned.length === 0) return nothing;
+  const reporters = mentioned.map((r) => ({
+    ...r,
+    existing_lines: existingWatchLinesForEvent(db, r.event_id),
+  }));
 
   let responseText: string;
   try {
     const { text } = await generateTextForFeature("newsletterBogeyExtraction", {
-      maxOutputTokens: 2048,
+      // Watch metrics run ~80 tokens a line, up to six lines a company: 2,048
+      // truncated a multi-company preview mid-array, which parses as nothing.
+      maxOutputTokens: 6144,
       prompt: buildExtractionPrompt(article, reporters),
     });
     responseText = text;
@@ -440,7 +511,16 @@ async function callAndStore(
   // succeeds so the rescan ledger can record WHICH model said "no numbers".
   const { modelId } = resolveFeatureModel("newsletterBogeyExtraction");
 
+  const storedEvents = new Set<number>();
+  const bank = () => {
+    if (!opts.bankLedger) return;
+    for (const r of reporters) {
+      bankGlobalScan(db, r.event_id, article.id, storedEvents.has(r.event_id) ? "hit" : "no_numbers", modelId);
+    }
+  };
+
   if (!responseText.trim()) {
+    bank();
     return { bogeysStored: 0, eventsMatched: 0, modelId, called: true, failed: false };
   }
 
@@ -470,11 +550,12 @@ async function callAndStore(
     // Mirrors CONTENT_COLUMNS in lib/mutations/earnings-bogeys.ts.
     if (!hasExtractedContent(bogey)) continue;
 
+    // [C-3] Issue-dated, so a LATER issue lands beside the earlier one.
+    const sourceLabel = newsletterIssueLabel(article);
     upsertBogey(db, {
       event_id: matched.event_id,
       source: "newsletter",
-      // [C-3] Issue-dated, so a LATER issue lands beside the earlier one.
-      source_label: newsletterIssueLabel(article),
+      source_label: sourceLabel,
       research_article_id: article.id,
       eps_consensus: bogey.eps_consensus,
       eps_whisper: bogey.eps_whisper,
@@ -483,6 +564,12 @@ async function callAndStore(
       expected_move_pct: bogey.expected_move_pct,
       guidance_notes: bogey.guidance_notes,
       notes: bogey.notes,
+      // Added to the row's stored lines, never replacing them; null (nothing
+      // new and nothing stored) is a no-op under preserveExisting.
+      extra_metrics_json: mergeWatchMetricsJson(
+        storedExtraMetricsJson(db, matched.event_id, sourceLabel),
+        bogey.watch_metrics,
+      ),
       ai_extraction_model: modelId,
       // Even within one issue label, a RE-scan of the same article (a rescan
       // step re-run after fingerprint drift) must never let a null erase an
@@ -492,8 +579,10 @@ async function callAndStore(
     });
     bogeysStored++;
     eventsMatched++;
+    storedEvents.add(matched.event_id);
   }
 
+  bank();
   return { bogeysStored, eventsMatched, modelId, called: true, failed: false };
 }
 
@@ -509,7 +598,7 @@ export async function extractBogeysFromArticle(
   reporters: UpcomingReporter[]
 ): Promise<{ bogeysStored: number; eventsMatched: number }> {
   const mentioned = filterReportersMentionedInArticle(article, reporters);
-  const result = await callAndStore(db, article, mentioned);
+  const result = await callAndStore(db, article, mentioned, { bankLedger: true });
 
   // Don't mark scanned on a transient AI failure — it should retry next run.
   if (result.failed) return { bogeysStored: 0, eventsMatched: 0 };
@@ -549,7 +638,7 @@ export async function extractBogeysFromArticleForEvent(
     return { bogeysStored: 0, modelId: null, called: false };
   }
 
-  const result = await callAndStore(db, article, [reporter]);
+  const result = await callAndStore(db, article, [reporter], { bankLedger: false });
   if (result.failed) {
     throw new Error(
       `newsletter extraction failed for article ${article.id} / event ${event.event_id}`

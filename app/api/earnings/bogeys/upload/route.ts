@@ -7,7 +7,7 @@ import {
 import { saveBogeyWithRecompile } from "@/lib/mutations/earnings-bogeys";
 import { issuerSiblings } from "@/lib/securities/issuer-family";
 import { addDays, todayET } from "@/lib/calendar/date-utils";
-import { buildBogeyEventMatchMap } from "@/lib/queries/bogey-event-match";
+import { buildBogeyEventMatchMap, unmatchedBogeyReason } from "@/lib/queries/bogey-event-match";
 import { buildStatementKey, uploadStatementPdf } from "@/lib/storage/r2";
 
 export const dynamic = "force-dynamic";
@@ -121,6 +121,8 @@ export async function POST(request: Request) {
     bogeyId?: number;
     eventDate?: string;
     eventSymbol?: string;
+    /** Why no event matched, when none did. */
+    unmatchedReason?: string;
   }> = [];
 
   for (const bogey of extraction.bogeys) {
@@ -133,7 +135,11 @@ export async function POST(request: Request) {
     const matchedEventId = matched?.eventId ?? null;
 
     if (!matched || matchedEventId == null) {
-      results.push({ symbol: bogey.symbol, eventId: null });
+      results.push({
+        symbol: bogey.symbol,
+        eventId: null,
+        unmatchedReason: unmatchedBogeyReason(db, family, startDate, endDate),
+      });
       continue;
     }
 
@@ -152,6 +158,10 @@ export async function POST(request: Request) {
         : null,
       guidance_notes: bogey.guidance_notes,
       notes: bogey.notes,
+      extra_metrics_json:
+        Array.isArray(bogey.watch_metrics) && bogey.watch_metrics.length > 0
+          ? JSON.stringify(bogey.watch_metrics)
+          : null,
       ai_extraction_model: extraction.modelId,
     });
     results.push({

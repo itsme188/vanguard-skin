@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import { compileContracts } from "@/lib/print-watch/contracts";
+import { DEEP_READ_BOGEY_LABEL } from "@/lib/earnings/bogey-claim";
 
 function insertCalendarEvent(db: Database.Database, sourceKey: string, eventDate = "2026-08-20"): number {
   const result = db
@@ -14,7 +15,7 @@ function insertCalendarEvent(db: Database.Database, sourceKey: string, eventDate
 }
 
 interface BogeyInput {
-  source?: "pdf_upload" | "manual" | "newsletter";
+  source?: "pdf_upload" | "manual" | "newsletter" | "finnhub";
   source_label?: string | null;
   eps_consensus?: number | null;
   eps_whisper?: number | null;
@@ -128,11 +129,11 @@ describe("compileContracts", () => {
     });
   });
 
-  it("dedupes across multiple bogey rows: first non-null by rowid wins, per field independently", () => {
+  it("dedupes across multiple bogey rows: within one source rank, first non-null by rowid wins, per field independently", () => {
     const eventId = insertCalendarEvent(db, "finnhub:ACME:2026-08-20");
     // Row 1 (earlier rowid): no EPS consensus, but a revenue consensus.
     insertBogey(db, eventId, {
-      source: "pdf_upload",
+      source: "manual",
       source_label: "PDF preview",
       eps_consensus: null,
       revenue_consensus_usd: 5_000_000_000,
@@ -155,6 +156,23 @@ describe("compileContracts", () => {
     // revenue_q: row 1 already had a non-null value, so it wins over row 2.
     expect(expected["revenue_q"].value).toBe(5_000_000_000);
     expect(expected["revenue_q"].source_label).toBe("PDF preview");
+  });
+
+  it("ranks sources before rowid: manual, upload, deep read, newsletter, then the vendor row (2026-10-20)", () => {
+    const eventId = insertCalendarEvent(db, "finnhub:ACME:2026-08-20");
+    // Inserted worst-first, so rowid alone would pick the vendor row.
+    insertBogey(db, eventId, { source: "finnhub", source_label: "Finnhub consensus", eps_consensus: 1.0, revenue_consensus_usd: 1_000_000_000, eps_whisper: 1.01 });
+    insertBogey(db, eventId, { source: "newsletter", source_label: "Desk Notes 10/18", eps_consensus: 1.1, revenue_consensus_usd: 1_100_000_000, eps_whisper: 1.11 });
+    insertBogey(db, eventId, { source: "newsletter", source_label: DEEP_READ_BOGEY_LABEL, eps_consensus: 1.2, revenue_consensus_usd: 1_200_000_000 });
+    insertBogey(db, eventId, { source: "pdf_upload", source_label: "Sheet", revenue_consensus_usd: 1_300_000_000 });
+    insertBogey(db, eventId, { source: "manual", source_label: "Desk", eps_consensus: 1.4 });
+
+    const { expected } = compileContracts(db, eventId, "ACME");
+    expect(expected["eps_adj_q"]).toMatchObject({ value: 1.4, source_label: "Desk" });
+    expect(expected["revenue_q"]).toMatchObject({ value: 1_300_000_000, source_label: "Sheet" });
+    // Neither desk row has a whisper and the deep read gave none: the
+    // single-article newsletter row comes before the vendor's.
+    expect(expected["eps_adj_q"].whisper).toBe(1.11);
   });
 
   it("emits one seg_<slug>_revenue_q contract per segment key, with expected from that segment's consensus/whisper", () => {
@@ -197,7 +215,7 @@ describe("compileContracts", () => {
   it("merges segment splits across multiple bogey rows, first non-null per segment field wins", () => {
     const eventId = insertCalendarEvent(db, "finnhub:ACME:2026-08-20");
     insertBogey(db, eventId, {
-      source: "pdf_upload",
+      source: "manual",
       source_label: "first upload",
       segment_breakdown_json: JSON.stringify({
         Network: { consensus: null, whisper: 800_000_000 },

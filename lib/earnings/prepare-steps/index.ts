@@ -5,7 +5,9 @@
  * that file's header for why the registration must stay lazy.
  *
  * Ruling R2 (plan defect fix): the four steps are newsletter_rescan,
- * consensus_row, intel, con_id. Registration order below carries no runtime
+ * consensus_row, intel, con_id. A fifth, newsletter_synthesis (the frontier
+ * deep read, 2026-10-20), sorts after newsletter_rescan, so in one pass the
+ * per-article rows land first. Registration order below carries no runtime
  * meaning — the runner selects work `ORDER BY p.step` (alphabetical: con_id,
  * consensus_row, intel, newsletter_rescan), not registration order.
  * `newsletter_rescan` is listed first purely to match spec §4.1's
@@ -16,6 +18,7 @@ import { consensusRowStep } from "./consensus-row";
 import { intelStep } from "./intel";
 import { conIdStep } from "./con-id";
 import { newsletterRescanStep } from "./newsletter-rescan";
+import { newsletterSynthesisStep } from "./newsletter-synthesis";
 
 /** Idempotent: safe to call from every entry point (route, sweep, scripts). The order steps are
  *  registered in here has no runtime meaning — the runner (prepare-armed-event.ts) always selects
@@ -26,6 +29,7 @@ export function registerPrepareStepsOnce(): void {
   if (!have.has("consensus_row")) registerPrepareStep("consensus_row", consensusRowStep);
   if (!have.has("intel")) registerPrepareStep("intel", intelStep);
   if (!have.has("con_id")) registerPrepareStep("con_id", conIdStep);
+  if (!have.has("newsletter_synthesis")) registerPrepareStep("newsletter_synthesis", newsletterSynthesisStep);
 }
 // NO top-level call: registration happens through bootstrapEarningsRegistries() (registry-bootstrap.ts),
 // lazily, so the import cycle prepare-armed-event → registry-bootstrap → prepare-steps →

@@ -17,6 +17,7 @@
  */
 
 import { resolveExpectedMove } from "./expected-move";
+import { signedFixed } from "./signed-fixed";
 import type { ArmedEventsDelta, Snapshot, CalendarEventRow } from "./state";
 import { issuerSiblings } from "./fallback-earnings";
 import { earningsHeldSet } from "./earnings-held";
@@ -75,7 +76,7 @@ function formatCompactConsensus(raw: string | null): string | null {
   const epsMatch = /EPS\s+(-?\d+(?:\.\d+)?)/i.exec(raw);
   if (epsMatch) {
     const v = Number(epsMatch[1]);
-    if (Number.isFinite(v)) parts.push(`${v < 0 ? "-" : ""}$${Math.abs(v).toFixed(2)}`);
+    if (Number.isFinite(v)) parts.push(signedFixed(v, 2, { prefix: "$", plus: false }));
   }
   const revMatch = /Rev\s+([\d.,]+)/i.exec(raw);
   if (revMatch) {

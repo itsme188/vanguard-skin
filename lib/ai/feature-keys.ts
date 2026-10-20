@@ -41,6 +41,7 @@ export type FeatureKey =
   | "earningsPreview"
   | "earningsRecap"
   | "newsletterBogeyExtraction"
+  | "armedBogeyDeepRead"
   | "etfSectorWeights"
   | "transcriptSummary"
   | "earningsDebrief"

@@ -91,6 +91,13 @@ export const FEATURE_MODELS: Record<FeatureKey, string> = {
   // earnings numbers instead of price levels.
   newsletterBogeyExtraction: "anthropic/$workhorse",
 
+  // The armed-event deep read (lib/earnings/deep-read-bogeys.ts): one call
+  // that reads every preview of the week before an ARMED print together and
+  // reconciles the bogeys. Frontier by owner request (2026-10-20): it runs at
+  // most a few times per armed name, and its figures rank above the
+  // per-article workhorse rows on the live sheet.
+  armedBogeyDeepRead: "anthropic/$frontier",
+
   // Per-ETF GICS sector-weight look-through. Must stay on Anthropic — uses
   // Claude-native web_search (Finnhub ETF data is premium-gated).
   etfSectorWeights: "anthropic/$workhorse",

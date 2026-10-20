@@ -2683,12 +2683,12 @@ describe("pending reaction legs in the cloud recap (parity with the Mac)", () =>
     expect(r.expected).toMatch(/\| — \| — no reaction quote \|$/);
   });
 
-  it("a flat move stamped after the window is a real measurement and prints +0.00%", () => {
+  it("a flat move stamped after the window is a real measurement and prints 0.00% (no sign on a zero)", () => {
     const r = render({
       t0_utc: T0, window_min: 120, captured_at: AFTER_WINDOW,
       ...moved, spy: flat(500),
     });
-    expect(r.spy).toBe("| **SPY @ T+2h** | — | +0.00% | — |");
+    expect(r.spy).toBe("| **SPY @ T+2h** | — | 0.00% | — |");
   });
 
   describe("legacy 0.00% leg and the row's enriched_at", () => {
@@ -2707,17 +2707,17 @@ describe("pending reaction legs in the cloud recap (parity with the Mac)", () =>
 
     it("enriched after the window ended: the zero leg is trusted", () => {
       const r = render(snapshot, { enriched_at: "2026-06-15 22:10:00" });
-      expect(r.stock).toBe("| **ZZA @ T+2h** | — | +0.00% | — |");
+      expect(r.stock).toBe("| **ZZA @ T+2h** | — | 0.00% | — |");
     });
 
     it("enriched inside the ten-minute bar tolerance before the window end: trusted", () => {
       const r = render(snapshot, { enriched_at: "2026-06-15 21:55:00" });
-      expect(r.stock).toBe("| **ZZA @ T+2h** | — | +0.00% | — |");
+      expect(r.stock).toBe("| **ZZA @ T+2h** | — | 0.00% | — |");
     });
 
     it("no enriched_at on the row: trusted (enriched_at is the only evidence for this rule)", () => {
       const r = render(snapshot);
-      expect(r.stock).toBe("| **ZZA @ T+2h** | — | +0.00% | — |");
+      expect(r.stock).toBe("| **ZZA @ T+2h** | — | 0.00% | — |");
     });
 
     it("the row's enriched_at is not applied to a reaction that came from the cloud payload", () => {
@@ -2731,7 +2731,7 @@ describe("pending reaction legs in the cloud recap (parity with the Mac)", () =>
         false,
         intelCtx,
       );
-      expect(rowsOf(md).stock).toBe("| **ZZA @ T+2h** | — | +0.00% | — |");
+      expect(rowsOf(md).stock).toBe("| **ZZA @ T+2h** | — | 0.00% | — |");
     });
   });
 

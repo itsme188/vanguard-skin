@@ -4,7 +4,8 @@
  * acquisition pass, the DJ query bounds, the EDGAR window — reads this, so a
  * go press or an extension changes every one of them at once.
  *
- *   start = min(release − WINDOW_PRE_MS, forced_open_at − FORCED_PRE_MS)
+ *   start = min(release − pre, forced_open_at − FORCED_PRE_MS)
+ *           pre = WINDOW_PRE_MS, or SLOT_DEFAULT_PRE_MS[release] for a slot-default stamp
  *   end   = max(release + WINDOW_POST_MS, forced_open_at + FORCED_POST_MS, window_extended_until)
  *
  * pooled over whichever terms are present. The 60-minute forced lookback
@@ -28,6 +29,24 @@ export const FORCED_PRE_MS = 60 * 60_000;
 export const FORCED_POST_MS = 90 * 60_000;
 export const EXTEND_MS = 30 * 60_000;
 
+/**
+ * The two stamps a release time takes when nothing better is known: the slot
+ * defaults of `earningsHourToReleaseTime` (lib/calendar/release-times.ts) and
+ * of the watcher's own last-resort fallback (`buildArmedEventDto`). They are
+ * conventions, not predictions: before-open companies commonly print 06:00 to
+ * 07:30 and after-close ones 16:00 to 16:10, so ten minutes before the stamp
+ * (07:50, 16:05) opened the window after the release for a name with no
+ * release-time history. The wire road then dropped the headline as earlier than
+ * the window and EDGAR's 15-minute lookback did not reach it (bug audit
+ * 2026-10-20). For these two stamps the window opens at 06:00 and 15:55
+ * instead. The end is unchanged, so an 08:00 or 16:15 print is still covered;
+ * a resolved time that happens to equal a stamp only costs earlier polling.
+ */
+export const SLOT_DEFAULT_PRE_MS: Readonly<Record<string, number>> = {
+  "08:00": 2 * 60 * 60_000,
+  "16:15": 20 * 60_000,
+};
+
 export interface WindowInputs {
   event_date: string;
   release_time_et: string | null;
@@ -50,7 +69,7 @@ function parseIso(value: string | null): number | null {
   return Number.isNaN(ms) ? null : ms;
 }
 
-/** start = min(release − 10m, forced − 60m); end = max(release + 45m, forced + 90m, extended_until); each term only when its input is present; null when none is. */
+/** start = min(release − 10m (more for a slot-default stamp), forced − 60m); end = max(release + 45m, forced + 90m, extended_until); each term only when its input is present; null when none is. */
 export function effectiveWindow(p: WindowInputs): EffectiveWindow | null {
   const composed = p.release_time_et ? composeReleaseInstant(p.event_date, p.release_time_et) : null;
   const composedMs = composed ? composed.getTime() : null;
@@ -61,7 +80,8 @@ export function effectiveWindow(p: WindowInputs): EffectiveWindow | null {
   const starts: number[] = [];
   const ends: number[] = [];
   if (scheduledMs !== null) {
-    starts.push(scheduledMs - WINDOW_PRE_MS);
+    const pre = (p.release_time_et && SLOT_DEFAULT_PRE_MS[p.release_time_et]) || WINDOW_PRE_MS;
+    starts.push(scheduledMs - pre);
     ends.push(scheduledMs + WINDOW_POST_MS);
   }
   if (forcedMs !== null) {

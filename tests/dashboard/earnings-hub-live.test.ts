@@ -58,15 +58,27 @@ describe("statusIntervalMs — polling follows the print state (spec §4.6)", ()
     expect(statusIntervalMs([entry(), entry({ printId: 2, state: "expired" })])).toBe(30_000);
   });
 
-  it("stays HOT on a fresh parse until a read exists or an attempt has failed (Codex 9b)", () => {
-    // Slice D arms the first-pass read five seconds AFTER the parse lands.
-    // Cooling to 30s the instant the state flips would hide that read for up
-    // to half a minute at the busiest moment of the desk's day.
-    expect(statusIntervalMs([entry({ state: "parsed" })])).toBe(2_000);
-    expect(statusIntervalMs([entry({ state: "parsed", read: { id: 1 } as never })])).toBe(30_000);
-    expect(statusIntervalMs([entry({ state: "parsed", lastAttempt: { id: 2 } as never })])).toBe(
-      30_000,
-    );
+  it("stays HOT after the first accept until a read exists or an attempt has failed (Codex 9b, R-D21)", () => {
+    // The first-pass read is armed five seconds AFTER the desk's first accept.
+    // Cooling to 30s then would hide that read for up to half a minute at the
+    // busiest moment of the desk's day.
+    const accepted = [{ metric_id: "eps_adj_q", state: "accepted" }] as never;
+    expect(statusIntervalMs([entry({ state: "parsed", lines: accepted })])).toBe(2_000);
+    expect(
+      statusIntervalMs([entry({ state: "parsed", lines: accepted, read: { id: 1 } as never })]),
+    ).toBe(30_000);
+    expect(
+      statusIntervalMs([entry({ state: "parsed", lines: accepted, lastAttempt: { id: 2 } as never })]),
+    ).toBe(30_000);
+  });
+
+  it("is cool on a parse nobody has accepted: no read is coming (bug audit 2026-10-20)", () => {
+    // Facts are accepted lines only, so the read never runs and never fails;
+    // the old rule polled every two seconds into the next day.
+    expect(statusIntervalMs([entry({ state: "parsed" })])).toBe(30_000);
+    expect(
+      statusIntervalMs([entry({ state: "parsed", lines: [{ metric_id: "eps_adj_q", state: "agreed" }] as never })]),
+    ).toBe(30_000);
   });
 
   it("is hot while any print is window_open or acquired", () => {

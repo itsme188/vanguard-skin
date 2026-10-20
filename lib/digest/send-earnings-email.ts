@@ -12,6 +12,7 @@ import {
 import { loadPrintWatchReadBlock } from "@/lib/digest/print-watch-read-block";
 import { formatLargeUSD } from "@/lib/format";
 import { formatRevenueUSD, parseFinnhubFigure } from "@/lib/format/finnhub-figure";
+import { signedPct, signedUsd } from "@/lib/format/signed-fixed";
 import { issuerSiblings } from "@/lib/securities/issuer-family";
 import { listPressReleases } from "@/lib/queries/press-releases";
 import {
@@ -1726,8 +1727,7 @@ export function formatReactionSnapshot(
 function pctSign(v: number): string {
   // delta_pct arrives already in percent (matchBarsToReaction multiplies by
   // 100 at capture time) — format as-is.
-  const n = v.toFixed(2);
-  return v >= 0 ? `+${n}%` : `${n}%`;
+  return signedPct(v, 2);
 }
 
 // ── Deterministic headline scoreboard ──────────────────────────────
@@ -1756,8 +1756,7 @@ function formatPctDelta(actual: number, consensus: number, kind: "eps" | "revenu
   const pct = ((actual - consensus) / Math.abs(consensus)) * 100;
   const abs = Math.abs(pct);
   if (abs < 0.05) return "in-line";
-  const sign = pct >= 0 ? "+" : "";
-  return `${sign}${pct.toFixed(1)}%`;
+  return signedPct(pct, 1);
 }
 
 // One scoreboard reaction leg, read through the validity rule
@@ -1788,8 +1787,7 @@ function readScoreboardLeg(
 // the in-app viewer passes `pendingLabel` and shows the word.
 function formatScoreboardLeg(leg: ScoreboardLeg, pendingLabel: boolean): string {
   if (leg.pct == null) return leg.state === "pending" && pendingLabel ? "pending" : "—";
-  const sign = leg.pct >= 0 ? "+" : "";
-  return `${sign}${leg.pct.toFixed(2)}%`;
+  return signedPct(leg.pct, 2);
 }
 
 export interface HeadlineTableOptions {
@@ -1865,7 +1863,7 @@ function histPrintsLabel(intel: EarningsIntelView | null | undefined): string {
 // without producing an empty "## Past prints" section.
 export function renderPastPrintsBlock(history: ReportHistoryRow[]): string {
   if (history.length === 0) return "";
-  const sign = (n: number) => `${n >= 0 ? "+" : ""}${n.toFixed(1)}%`;
+  const sign = (n: number) => signedPct(n, 1);
   const rows = history.map((h) => {
     const eps = h.epsActual != null && h.epsEstimate != null
       ? `${h.epsActual.toFixed(2)} / ${h.epsEstimate.toFixed(2)}`
@@ -1971,7 +1969,7 @@ export function renderHeadlineTable(
   if (isRecap && intel?.impliedMovePct != null) {
     const realized = stockLeg.pct;
     if (realized != null) {
-      impliedActual = `${realized >= 0 ? "+" : ""}${realized.toFixed(1)}%`;
+      impliedActual = signedPct(realized, 1);
       impliedVerdict = Math.abs(realized) <= intel.impliedMovePct ? "inside" : "outside";
     } else {
       // A stored-but-unusable (or missing) symbol leg — never publish an
@@ -2364,8 +2362,7 @@ export function renderReadThroughsBlock(ctx: {
 }
 
 function signedPct1dp(v: number): string {
-  const sign = v >= 0 ? "+" : "";
-  return `${sign}${v.toFixed(1)}%`;
+  return signedPct(v, 1);
 }
 
 // EPS dollar-delta — percentage math is misleading at small/zero/negative
@@ -2373,18 +2370,14 @@ function signedPct1dp(v: number): string {
 // delta is what every trader actually quotes pre-/post-print.
 function beatEpsText(consensus: number | null, actual: number | null): string | null {
   if (consensus == null || actual == null) return null;
-  const delta = actual - consensus;
-  const sign = delta >= 0 ? "+" : "";
-  return `${sign}$${delta.toFixed(2)}`;
+  return signedUsd(actual - consensus, 2);
 }
 
 // Revenue beat as a percentage — both values are large positives, so pct
 // math is well-defined and what the Street quotes ("rev beat by 1.1%").
 function beatRevPctText(consensus: number | null, actual: number | null): string | null {
   if (consensus == null || actual == null || consensus <= 0) return null;
-  const pct = ((actual - consensus) / consensus) * 100;
-  const sign = pct >= 0 ? "+" : "";
-  return `${sign}${pct.toFixed(1)}%`;
+  return signedPct(((actual - consensus) / consensus) * 100, 1);
 }
 
 // Moved to lib/earnings/plausibility.ts (zero-import single source with a

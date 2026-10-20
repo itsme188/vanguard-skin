@@ -27,6 +27,7 @@ import {
 } from "@/lib/calendar/briefing-self-admission";
 import { readReactionLegs } from "@/lib/calendar/reaction-validity";
 import { formatOutboundLevelPrice } from "@/lib/alerts/outbound-level-price";
+import { signedPct } from "@/lib/format/signed-fixed";
 
 // Preferred weekend-reading sources — full raw_text is sent to the model.
 // ids correspond to research_sources.id. Keep aligned with DB; wrong ids
@@ -1111,7 +1112,6 @@ export function formatReleasedEventForPrompt(event: CalendarEvent, index: number
 
 function fmtSignedPct(n: number | null | undefined): string {
   if (n == null) return "—";
-  const sign = n > 0 ? "+" : "";
-  return `${sign}${n.toFixed(2)}%`;
+  return signedPct(n, 2);
 }
 

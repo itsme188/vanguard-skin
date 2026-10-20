@@ -101,6 +101,30 @@ ${CONTENT_COLUMNS.map(
        uploaded_at = datetime('now'),
        ai_extraction_model = excluded.ai_extraction_model`;
 
+/**
+ * The same two write modes as an UPDATE of a row already found by id. Used
+ * whenever `upsertBogey`'s lookup found the row, because the ON CONFLICT
+ * clauses above never fire for a NULL `source_label`: SQLite's UNIQUE treats
+ * every NULL as distinct, so an unlabelled hand-entered sheet saved twice used
+ * to INSERT a second row, report the first row's id as updated, and leave the
+ * live sheet on the OLDER figure (compileContracts reads first-by-rowid; bug
+ * audit 2026-10-20). Bind order: the four provenance columns, every content
+ * column, ai_extraction_model, then the id.
+ */
+const OVERWRITE_BY_ID_SQL = `UPDATE earnings_bogeys SET
+       source_url = ?, raw_pdf_r2_key = ?, research_document_id = ?, research_article_id = ?,
+${CONTENT_COLUMNS.map((c) => `       ${c} = ?`).join(",\n")},
+       uploaded_at = datetime('now'),
+       ai_extraction_model = ?
+     WHERE id = ?`;
+
+const PRESERVE_BY_ID_SQL = `UPDATE earnings_bogeys SET
+       source_url = ?, raw_pdf_r2_key = ?, research_document_id = ?, research_article_id = ?,
+${CONTENT_COLUMNS.map((c) => `       ${c} = COALESCE(?, ${c})`).join(",\n")},
+       uploaded_at = datetime('now'),
+       ai_extraction_model = ?
+     WHERE id = ?`;
+
 /** The content columns that hold text (prose or JSON). The rest are numbers. */
 const TEXT_CONTENT_COLUMNS: ReadonlySet<string> = new Set([
   "segment_breakdown_json",
@@ -212,10 +236,14 @@ export function upsertBogey(
     extra_metrics_json: normalizeTextContent(input.extra_metrics_json),
   };
 
+  // Oldest first: where duplicates already exist (the NULL-label rows stored
+  // before the by-id update below), the row the sheet reads first is the one
+  // that takes the new figures.
   const before = db
     .prepare(
       `SELECT id FROM earnings_bogeys
-        WHERE event_id = ? AND source = ? AND COALESCE(source_label, '') = COALESCE(?, '')`,
+        WHERE event_id = ? AND source = ? AND COALESCE(source_label, '') = COALESCE(?, '')
+        ORDER BY id ASC LIMIT 1`,
     )
     .get(
       normalized.event_id,
@@ -226,6 +254,19 @@ export function upsertBogey(
   if (!bogeyHasContent(normalized)) {
     if (!before) return { id: 0, created: false, skipped: true };
     return { id: before.id, created: false, skipped: true };
+  }
+
+  if (before) {
+    db.prepare(normalized.preserveExisting ? PRESERVE_BY_ID_SQL : OVERWRITE_BY_ID_SQL).run(
+      normalized.source_url ?? null,
+      normalized.raw_pdf_r2_key ?? null,
+      normalized.research_document_id ?? null,
+      normalized.research_article_id ?? null,
+      ...CONTENT_COLUMNS.map((c) => normalized[c] ?? null),
+      normalized.ai_extraction_model ?? null,
+      before.id,
+    );
+    return { id: before.id, created: false };
   }
 
   const stmt = db.prepare(normalized.preserveExisting ? PRESERVE_SQL : OVERWRITE_SQL);
@@ -251,9 +292,6 @@ export function upsertBogey(
     normalized.ai_extraction_model ?? null,
   );
 
-  if (before) {
-    return { id: before.id, created: false };
-  }
   return { id: result.lastInsertRowid as number, created: true };
 }
 

@@ -27,6 +27,7 @@ import { renderSheetBogeysBlock, sheetBogeysWithCells } from "@/lib/digest/send-
 import { getPrintById, getSheet } from "@/lib/print-watch/store";
 import { getLatestDoneRead, listCallouts } from "@/lib/print-watch/read-store";
 import { deltaPctNumber } from "@/lib/print-watch/read-facts";
+import { signedPct } from "@/lib/format/signed-fixed";
 import { formatValue, sanitizeProseLines } from "@/lib/print-watch/first-pass-format";
 import {
   composePostPrintSheetHtml,
@@ -82,7 +83,7 @@ function toSheetLine(line: PrintWatchLine): PostPrintSheetLine {
     stateWord: STATE_WORDS[line.state] ?? line.state,
     bogeyText: figure(line, expected),
     reportedText: reported,
-    deltaText: delta === null ? DASH : `${delta > 0 ? "+" : ""}${delta.toFixed(1)}%`,
+    deltaText: delta === null ? DASH : signedPct(delta, 1),
   };
 }
 

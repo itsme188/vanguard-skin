@@ -27,7 +27,7 @@ describe("registry-bootstrap cold process (Ruling R1/R2)", () => {
     vi.resetModules();
   });
 
-  it("enqueuePrepareSteps lazily registers exactly A's four steps plus B's ir_baseline, in registration order, with nothing else imported", async () => {
+  it("enqueuePrepareSteps lazily registers exactly A's four steps, the deep read, and B's ir_baseline, in registration order, with nothing else imported", async () => {
     const { runMigrations } = await import("@/lib/db/migrate");
     const { armWorksheet } = await import("@/lib/mutations/earnings-worksheet-flags");
     const { enqueuePrepareSteps, listPrepareSteps, getPrepareStepRows } = await import(
@@ -48,14 +48,14 @@ describe("registry-bootstrap cold process (Ruling R1/R2)", () => {
     armWorksheet(db, id);
 
     const inserted = enqueuePrepareSteps(db, id);
-    expect(inserted).toBe(5);
-    expect(listPrepareSteps()).toEqual(["newsletter_rescan", "consensus_row", "intel", "con_id", "ir_baseline"]);
-    expect(getPrepareStepRows(db, id).map((r) => r.step)).toEqual(["con_id", "consensus_row", "intel", "ir_baseline", "newsletter_rescan"]);
+    expect(inserted).toBe(6);
+    expect(listPrepareSteps()).toEqual(["newsletter_rescan", "consensus_row", "intel", "con_id", "newsletter_synthesis", "ir_baseline"]);
+    expect(getPrepareStepRows(db, id).map((r) => r.step)).toEqual(["con_id", "consensus_row", "intel", "ir_baseline", "newsletter_rescan", "newsletter_synthesis"]);
 
     // A second enqueue on the same event is a no-op — steps registered once, rows inserted once.
     const insertedAgain = enqueuePrepareSteps(db, id);
     expect(insertedAgain).toBe(0);
-    expect(listPrepareSteps()).toEqual(["newsletter_rescan", "consensus_row", "intel", "con_id", "ir_baseline"]);
+    expect(listPrepareSteps()).toEqual(["newsletter_rescan", "consensus_row", "intel", "con_id", "newsletter_synthesis", "ir_baseline"]);
   });
 
   it("[nit] registerPrepareStepsOnce is idempotent when called directly, twice, in the same process", async () => {
@@ -68,9 +68,9 @@ describe("registry-bootstrap cold process (Ruling R1/R2)", () => {
     const { registerPrepareStepsOnce } = await import("@/lib/earnings/prepare-steps");
 
     registerPrepareStepsOnce();
-    expect(listPrepareSteps()).toEqual(["newsletter_rescan", "consensus_row", "intel", "con_id"]);
+    expect(listPrepareSteps()).toEqual(["newsletter_rescan", "consensus_row", "intel", "con_id", "newsletter_synthesis"]);
 
     expect(() => registerPrepareStepsOnce()).not.toThrow();
-    expect(listPrepareSteps()).toEqual(["newsletter_rescan", "consensus_row", "intel", "con_id"]);
+    expect(listPrepareSteps()).toEqual(["newsletter_rescan", "consensus_row", "intel", "con_id", "newsletter_synthesis"]);
   });
 });
