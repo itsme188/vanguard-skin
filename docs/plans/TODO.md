@@ -1042,3 +1042,13 @@ Deployment: digest editorial changes are pushed through `02ede3be`, installed in
 - ✅ **Market headline and subhead** (`3c6fe57e`, 2026-09-17): user rejected generic document labels and production notes above the approved digest body. Both AI prompts now request the market story first; composers promote it ahead of delivery metadata and move source counts below the body. Malformed/missing openings retain the fallback layout. Updated local preview reopened for review; full suite, types, synthetic generation and rendered-output checks pass.
 
 Deployment: headline correction pushed through `08e89a63`, desktop build `EzPYsKSUuJpLbp88_QJJX` installed/verified, and Worker `60e94373-bba6-4ed6-8f77-bd56c58aff0e` live/healthy.
+
+## Closed this session — 2026-10-20 earnings week
+
+- ✅ **Watch metrics from previews** (`670e496`, 2026-10-20): the newsletter scan and the bogey upload turn the figures a print is judged on (margins, segments, KPIs, topic-only lines) into live-sheet lines; extractor version 2; the rescan's R20 shortcut reads the scan ledger. Also: an unlabelled hand-entered bogey no longer duplicates on save.
+- ✅ **Print-watch window for slot-default stamps; no hot polling of an unaccepted parse** (`b101b62`).
+- ✅ **Bogey upload says why a symbol matched nothing (n1); a Finnhub 200 error body is a failed fetch (2026-10-12 (d))** (`823d304`).
+- ✅ **Round, then sign, Mac and Worker (2026-10-12 (a))** (`1e89d3c`).
+- ✅ **Armed-event deep read on the frontier tier; bogey sources ranked on the sheet** (`d6f1a48`).
+
+Landing: PR #117, merge `9603551`, verified on the Mac with `bash scripts/verify.sh full --base main` at `26699252` (passed). Worker deployed by the owner (version `ba8380d7`), then the Mac app at `9603551` (build `YApPmBe9n2uzDJn0ehNNa`, wrapper post-verify passed). Follow-ups w1 to w6 are in the 2026-10-20 block near the top.
