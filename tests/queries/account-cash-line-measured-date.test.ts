@@ -107,8 +107,49 @@ describe("getAccountCashLine: measured date and price-date mismatch", () => {
 
       const line = getAccountCashLine(db, accountId)!;
       expect(line.valuationDate).toBe("2026-03-06");
-      expect(line.measuredDate).toBe("2026-03-05");
+      expect(line.measuredDate).toBe("2026-03-06");
       expect(line.carried).toBe(false);
+    });
+
+    it("an account 'estimated' every day is measured on its newest holdings day, not its last non-estimated row", () => {
+      // Lagging fund prices make the engine write 'estimated' every day; the
+      // only non-estimated row is weeks old. Holdings arrived on Friday
+      // 2026-03-13 and the latest row is Saturday 2026-03-14: the figures are
+      // Friday's, carried to Saturday.
+      seedValuation("2026-02-20", "live");
+      for (const d of ["2026-03-09", "2026-03-10", "2026-03-11", "2026-03-12", "2026-03-13", "2026-03-14"]) {
+        seedValuation(d, "estimated");
+      }
+      const sec = seedSecurity("AAA");
+      seedHolding(sec, "2026-03-12");
+      seedHolding(sec, "2026-03-13");
+
+      const line = getAccountCashLine(db, accountId)!;
+      expect(line.valuationDate).toBe("2026-03-14");
+      expect(line.measuredDate).toBe("2026-03-13");
+      expect(line.measuredDate).not.toBe("2026-02-20");
+      expect(line.carried).toBe(true);
+    });
+
+    it("ignores a holdings row dated after the valuation date and another account's holdings", () => {
+      const other = db.prepare("INSERT INTO accounts (name) VALUES ('ZZ Other')").run()
+        .lastInsertRowid as number;
+      seedValuation("2026-03-12", "estimated");
+      seedValuation("2026-03-14", "estimated");
+      const sec = seedSecurity("AAA");
+      seedHolding(sec, "2026-03-12");
+      db.prepare(
+        `INSERT INTO holdings (account_id, security_id, quantity, cost_basis, as_of_date, source_key)
+         VALUES (?, ?, 10, NULL, '2026-03-13', 'zz:other')`,
+      ).run(other, sec);
+      db.prepare(
+        `INSERT INTO holdings (account_id, security_id, quantity, cost_basis, as_of_date, source_key)
+         VALUES (?, ?, 10, NULL, '2026-03-20', 'zz:future')`,
+      ).run(accountId, sec);
+
+      const line = getAccountCashLine(db, accountId)!;
+      expect(line.measuredDate).toBe("2026-03-12");
+      expect(line.carried).toBe(true);
     });
 
     it("has no measured date, and is not carried, when every row is 'estimated'", () => {

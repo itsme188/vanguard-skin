@@ -91,10 +91,11 @@ export interface AccountCashLine {
   /** The latest row's `data_quality` ('live' / 'recent' / 'estimated', or
    *  'computed' / null on a legacy row). */
   dataQuality: string | null;
-  /** The day the figures were actually measured: the newest valuation date
-   *  on or before `valuationDate` whose row is not 'estimated'. Equals
-   *  `valuationDate` when the latest row is measured; null when every row is
-   *  'estimated'. */
+  /** The day the figures were actually measured. Equals `valuationDate`
+   *  when the latest row is not 'estimated'. Otherwise the account's newest
+   *  holdings snapshot date on or before `valuationDate`; for an account
+   *  with no holdings rows, the newest non-'estimated' valuation date, and
+   *  null when there is none. */
   measuredDate: string | null;
   /** True when the latest row is 'estimated', has no holdings row of its
    *  own day, and carries the figures of an earlier measured day
@@ -188,12 +189,30 @@ export function getAccountCashLine(
   const anchor = newest?.resolved === 1 ? newest : undefined;
 
   // Date the measurement, not the row (owner ruling 2026-10-12). The
-  // valuation engine writes 'estimated' on a day whose holdings snapshot is
-  // older than the day (a weekend or holiday carrying the last measured
-  // figures), so the figures belong to the newest non-estimated row.
-  // 'computed' and NULL are legacy rows and count as measured.
-  const measured =
-    valuation.data_quality === "estimated"
+  // measured day is the newest day on which the account's OWN broker data
+  // arrived: its newest holdings snapshot on or before the valuation date.
+  // It is NOT the newest non-'estimated' valuation row: an account whose
+  // fund prices lag (a Vanguard book) is 'estimated' every day, so that
+  // rule dated a footer weeks back although holdings arrived the day
+  // before. This is a freshness read of one date, not a choice of which
+  // holdings rows are current, so it does not go through
+  // latestHoldingsPredicate. The valuation date is bound as a parameter.
+  const newestHoldings = db
+    .prepare(
+      `SELECT as_of_date
+       FROM holdings
+       WHERE account_id = ?
+         AND as_of_date <= ?
+       ORDER BY as_of_date DESC
+       LIMIT 1`,
+    )
+    .get(accountId, valuation.valuation_date) as { as_of_date: string } | undefined;
+  // A non-'estimated' row is measured on its own date. An account with no
+  // holdings rows at all (a cash-only book) falls back to the newest
+  // non-'estimated' valuation row; 'computed' and NULL are legacy rows and
+  // count as measured.
+  const fallback =
+    valuation.data_quality === "estimated" && newestHoldings === undefined
       ? (db
           .prepare(
             `SELECT valuation_date
@@ -205,22 +224,18 @@ export function getAccountCashLine(
              LIMIT 1`,
           )
           .get(accountId, valuation.valuation_date) as { valuation_date: string } | undefined)
-      : { valuation_date: valuation.valuation_date };
-  const measuredDate = measured?.valuation_date ?? null;
+      : undefined;
+  const measuredDate =
+    valuation.data_quality !== "estimated"
+      ? valuation.valuation_date
+      : (newestHoldings?.as_of_date ?? fallback?.valuation_date ?? null);
   // 'estimated' is also written for a day with its OWN holdings snapshot
   // whose prices are stale, or that holds only sweep funds. That day is
-  // measured, not carried: a holdings row dated the valuation day means
-  // broker data did arrive. Only a day with no holdings row of its own is
-  // carried from the earlier measured day.
-  const hasOwnHoldingsRow =
-    (db
-      .prepare(
-        `SELECT 1 FROM holdings WHERE account_id = ? AND as_of_date = ? LIMIT 1`,
-      )
-      .get(accountId, valuation.valuation_date) as { 1: number } | undefined) !== undefined;
+  // measured (measuredDate equals the valuation date), never carried. Only
+  // a day with no holdings row of its own carries the earlier measured
+  // day's figures.
   const carried =
     valuation.data_quality === "estimated" &&
-    !hasOwnHoldingsRow &&
     measuredDate !== null &&
     measuredDate !== valuation.valuation_date;
 
