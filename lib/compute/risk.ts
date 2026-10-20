@@ -15,6 +15,7 @@ import { accountIdsFilterSql, normalizeAccountIds } from "@/lib/compute/factors"
 import { buildFlowAdjustedIndex, fetchNetFlowsByDate, fetchAnchorSourceSeamDates } from "@/lib/compute/flow-adjusted";
 import { addDays, calendarDaysBetween, todayET } from "@/lib/calendar/date-utils";
 import { isCashEquivalentSecurity } from "@/lib/compute/cash-equivalents";
+import { liveOptionExpirationSql } from "@/lib/compute/option-expiry";
 
 // Drop per-position return pairs whose dates straddle a multi-week hole. The
 // prices table mixes sparse month-end statement anchors with dense daily TWS
@@ -623,6 +624,13 @@ export function computePositionRisk(
   }
   const latestPriceBound = options?.asOfDate ? `WHERE date <= '${asOf}'` : "";
 
+  // An option past its expiration is not a held long (the purge keeps a
+  // grace day, so an expired contract can still be in the book). Judged on
+  // the same as-of day as the maturity cut, through the one reader of a
+  // stored expiry, so this card agrees with Greeks, Concentration and
+  // Classification on how many names the scope holds.
+  const liveOptionSql = liveOptionExpirationSql("s", asOf);
+
   // 1. Get current positions with weights
   const positions = db
     .prepare(
@@ -652,6 +660,7 @@ export function computePositionRisk(
        LEFT JOIN fx_rates fx ON fx.currency = s.currency
        WHERE COALESCE(lp.close_price, 0) > 0
          AND (s.maturity_date IS NULL OR s.maturity_date >= ?)
+         AND ${liveOptionSql}
        ORDER BY market_value DESC
        LIMIT ?`
     )
@@ -694,7 +703,8 @@ export function computePositionRisk(
        LEFT JOIN latest_prices lp ON lp.security_id = lh.security_id
        LEFT JOIN fx_rates fx ON fx.currency = s.currency
        WHERE COALESCE(lp.close_price, 0) > 0
-         AND (s.maturity_date IS NULL OR s.maturity_date >= ?)`
+         AND (s.maturity_date IS NULL OR s.maturity_date >= ?)
+         AND ${liveOptionSql}`
     )
     .get(...accountParams, maturityCutoff) as { total: number | null };
   const subsetValue = positions.reduce((s, p) => s + p.market_value, 0);

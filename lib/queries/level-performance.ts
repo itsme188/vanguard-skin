@@ -318,7 +318,10 @@ export function getRecentReleaseReactions(
   db: Database.Database,
   opts: { eventType?: string; symbol?: string; sinceDate?: string; limit?: number } = {},
 ): ReleaseReactionRow[] {
-  const conds: string[] = ["enriched_at IS NOT NULL"];
+  // A hidden duplicate twin (the reconciler's superseded row for the same
+  // print) carries its own reaction snapshot anchored on a different prior
+  // close; the chat must read ONE reaction per print, from the kept row only.
+  const conds: string[] = ["enriched_at IS NOT NULL", "COALESCE(superseded, 0) = 0"];
   const params: (string | number)[] = [];
 
   if (opts.eventType) {

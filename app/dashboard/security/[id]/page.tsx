@@ -365,6 +365,7 @@ export default async function SecurityDetailPage(props: {
         priceChange={price?.change ?? null}
         priceChangePct={price?.change_pct ?? null}
         priceDate={price?.date ?? null}
+        prevPriceDate={price?.prev_date ?? null}
         kpis={kpis}
         usdPerUnit={detail.usdPerUnit}
         currency={security.currency}

@@ -60,6 +60,9 @@ export interface SecurityPriceInfo {
   close_price: number;
   date: string;
   prev_close: number | null;
+  /** Date of the stored row `prev_close` comes from; null when there is none.
+   *  The prices table has gaps, so this is not always the prior session. */
+  prev_date: string | null;
   change: number | null;
   change_pct: number | null;
 }
@@ -190,7 +193,8 @@ export function getLatestPriceForSecurity(
     .prepare(
       `SELECT
         p.close_price, p.date,
-        prev.close_price AS prev_close
+        prev.close_price AS prev_close,
+        prev.date AS prev_date
       FROM prices p
       LEFT JOIN prices prev ON prev.security_id = p.security_id
         AND prev.date = (
@@ -205,6 +209,7 @@ export function getLatestPriceForSecurity(
     close_price: number;
     date: string;
     prev_close: number | null;
+    prev_date: string | null;
   } | undefined;
 
   if (!row) return null;
@@ -219,6 +224,7 @@ export function getLatestPriceForSecurity(
     close_price: row.close_price,
     date: row.date,
     prev_close: row.prev_close,
+    prev_date: row.prev_close != null ? (row.prev_date ?? null) : null,
     change,
     change_pct,
   };
