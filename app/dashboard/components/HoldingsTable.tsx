@@ -64,7 +64,15 @@ function AccountValueLines({ cashLine }: { cashLine: AccountCashLine | null }) {
     );
   }
 
-  const asOf = <span className="font-mono">as of {cashLine.valuationDate}</span>;
+  // Date the measurement, not the row (owner ruling 2026-10-12): a carried
+  // 'estimated' day repeats an earlier day's figures, so all three lines
+  // share one as-of that names the measured day and the day it is carried to.
+  const asOf = (
+    <span className="font-mono">
+      as of {cashLine.measuredDate ?? cashLine.valuationDate}
+      {cashLine.carried && <> · carried to {cashLine.valuationDate}</>}
+    </span>
+  );
   const sweepSymbols = cashLine.cashEquivalentSymbols;
   const hasUnpriced =
     cashLine.holdingsCount !== null &&
@@ -166,6 +174,13 @@ function AccountValueLines({ cashLine }: { cashLine: AccountCashLine | null }) {
             <Money value={cashLine.totalValue} precise />
           </span>
         </div>
+      )}
+      {cashLine.carried && (
+        <p data-account-value="carried-note" className="text-xs text-ink-dim">
+          No new broker data arrived after{" "}
+          <span className="font-mono">{cashLine.measuredDate}</span>; the figures for{" "}
+          <span className="font-mono">{cashLine.valuationDate}</span> are carried from that day.
+        </p>
       )}
     </div>
   );
