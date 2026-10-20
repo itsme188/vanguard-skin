@@ -4,6 +4,7 @@ import { CHIP_TONE_TEXT } from "@/app/dashboard/components/chip-tone-text";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import apiFetch from "@/lib/http/apiFetch";
+import { usePrivacy } from "@/lib/privacy/context";
 import { EMAIL_FRAME_SANDBOX, withExternalLinkTarget } from "@/lib/email/archive-srcdoc";
 import {
   DIGEST_WINDOW_OPTIONS,
@@ -124,6 +125,10 @@ export function DigestEmailViewer({ open, onClose, digestWindow, onDigestWindowC
   // sender's since-last-email rule. A date mode with no date loads nothing.
   const since = digestPreviewSince(digestWindow);
   const needsDate = digestWindowNeedsDate(digestWindow);
+  // Hide amounts: the Preview renders the email exactly as it is sent, so under
+  // privacy mode it asks before showing it. The choice lasts for one open.
+  const { isPrivate } = usePrivacy();
+  const [revealed, setRevealed] = useState(false);
   const [data, setData] = useState<DigestPreviewResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -151,6 +156,10 @@ export function DigestEmailViewer({ open, onClose, digestWindow, onDigestWindowC
     const qs = since ? `?since=${encodeURIComponent(since)}` : "";
     return `/api/digest/preview${qs}`;
   };
+
+  useEffect(() => {
+    if (open) setRevealed(false);
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;
@@ -276,6 +285,7 @@ export function DigestEmailViewer({ open, onClose, digestWindow, onDigestWindowC
     failed: genFailed,
     attempted,
   });
+  const gated = isPrivate && !revealed;
   const capText = data ? capCaption(layout, data.caps) : "";
 
   return createPortal(
@@ -451,7 +461,25 @@ export function DigestEmailViewer({ open, onClose, digestWindow, onDigestWindowC
               AI synthesis was unavailable for this preview, so this is the per-source fallback layout.
             </div>
           )}
-          {data && !data.empty && activeHtml && (
+          {gated && (
+            <div
+              role="status"
+              data-digest-privacy-gate
+              className="px-5 py-12 text-center text-[13px] text-ink-dim"
+            >
+              Hide amounts is on. The Preview shows the email exactly as it is sent, so amounts, held names and the
+              portfolio-relevance text are not hidden here.
+              <div className="mt-4 flex items-center justify-center gap-4 text-[12px]">
+                <button type="button" onClick={() => setRevealed(true)} className="text-gold-ink hover:underline">
+                  Show the preview anyway
+                </button>
+                <button type="button" onClick={onClose} className="text-gold-ink hover:underline">
+                  Keep it closed
+                </button>
+              </div>
+            </div>
+          )}
+          {!gated && data && !data.empty && activeHtml && (
             <iframe
               title="Morning Research Digest"
               srcDoc={withExternalLinkTarget(activeHtml)}
@@ -460,12 +488,12 @@ export function DigestEmailViewer({ open, onClose, digestWindow, onDigestWindowC
               sandbox={EMAIL_FRAME_SANDBOX}
             />
           )}
-          {data && !data.empty && !activeHtml && layout === "structured" && structuredPane === "generating" && (
+          {!gated && data && !data.empty && !activeHtml && layout === "structured" && structuredPane === "generating" && (
             <div className="px-5 py-12 text-center text-[14px] text-ink-faint">
               Generating structured view (one AI call, about a minute)…
             </div>
           )}
-          {data && !data.empty && !activeHtml && layout === "structured" && structuredPane === "offer" && (
+          {!gated && data && !data.empty && !activeHtml && layout === "structured" && structuredPane === "offer" && (
             <div className="px-5 py-12 text-center text-[14px] text-ink-faint">
               The Structured view is the AI-written layout the email sends. It runs one AI call, about a minute.
               <button
@@ -477,7 +505,7 @@ export function DigestEmailViewer({ open, onClose, digestWindow, onDigestWindowC
               </button>
             </div>
           )}
-          {data && !data.empty && !activeHtml && layout === "structured" && structuredPane === "failed" && (
+          {!gated && data && !data.empty && !activeHtml && layout === "structured" && structuredPane === "failed" && (
             <div className="px-5 py-12 text-center text-[14px] text-ink-faint">
               The Structured view could not be generated this time.
               <button
@@ -489,7 +517,7 @@ export function DigestEmailViewer({ open, onClose, digestWindow, onDigestWindowC
               </button>
             </div>
           )}
-          {data && !data.empty && !activeHtml && (layout !== "structured" || structuredPane === "none") && (
+          {!gated && data && !data.empty && !activeHtml && (layout !== "structured" || structuredPane === "none") && (
             <div className="px-5 py-12 text-center text-[14px] text-ink-faint">
               {layout === "structured" ? "Structured" : layout === "by_source" ? "By-publication" : "By-company"} view unavailable.
               {otherAvailable && (
