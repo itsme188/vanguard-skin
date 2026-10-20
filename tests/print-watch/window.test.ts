@@ -3,6 +3,7 @@ import {
   effectiveWindow, extendedUntil, windowToIso, composeReleaseInstant,
   WINDOW_PRE_MS, WINDOW_POST_MS, FORCED_PRE_MS, FORCED_POST_MS, EXTEND_MS,
 } from "@/lib/print-watch/window";
+import { earningsHourToReleaseTime } from "@/lib/calendar/release-times";
 
 const RELEASE = composeReleaseInstant("2026-09-03", "16:05")!.getTime(); // 20:05Z (EDT); the helper returns Date | null
 
@@ -13,6 +14,28 @@ describe("effectiveWindow", () => {
     expect(w.endMs).toBe(RELEASE + WINDOW_POST_MS);
     expect(w.scheduledMs).toBe(RELEASE);
     expect(w.forcedMs).toBeNull();
+  });
+
+  it("a slot-default stamp opens early enough for the usual release, and ends where it did (bug audit 2026-10-20)", () => {
+    const at = (t: string) => composeReleaseInstant("2026-10-21", t)!.getTime();
+    // The stamps the watcher actually receives for a name with no history.
+    expect(earningsHourToReleaseTime("bmo")).toBe("08:00");
+    expect(earningsHourToReleaseTime("amc")).toBe("16:15");
+
+    const bmo = effectiveWindow({ event_date: "2026-10-21", release_time_et: "08:00", forced_open_at: null, window_extended_until: null })!;
+    expect(bmo.startMs).toBe(at("06:00"));
+    expect(bmo.endMs).toBe(at("08:00") + WINDOW_POST_MS);
+    // A 07:00 before-open release is inside; before the fix the window opened 07:50.
+    expect(at("07:00")).toBeGreaterThanOrEqual(bmo.startMs);
+
+    const amc = effectiveWindow({ event_date: "2026-10-21", release_time_et: "16:15", forced_open_at: null, window_extended_until: null })!;
+    expect(amc.startMs).toBe(at("15:55"));
+    expect(amc.endMs).toBe(at("16:15") + WINDOW_POST_MS);
+    expect(at("16:01")).toBeGreaterThanOrEqual(amc.startMs);
+
+    // Any other resolved time keeps the ten-minute lead.
+    const other = effectiveWindow({ event_date: "2026-10-21", release_time_et: "07:05", forced_open_at: null, window_extended_until: null })!;
+    expect(other.startMs).toBe(at("07:05") - WINDOW_PRE_MS);
   });
 
   it("unresolved TAS row with no press → null (no term at all)", () => {

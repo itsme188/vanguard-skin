@@ -97,11 +97,22 @@ export function statusIntervalMs(prints: PrintStatusEntry[]): number {
     if (p.goRequest?.status === "queued" || p.goRequest?.status === "claimed") return true;
     // A read is generating.
     if (p.activeRead != null) return true;
-    // Just parsed, no read yet, nothing has failed: slice D arms the read five
-    // seconds from the parse, so one IS coming. Going cool here would show a
-    // filled sheet with no read for 30 s and look like a stall. Once a read is
-    // done, or an attempt has failed or capped, this goes cool again.
-    if (p.state === "parsed" && p.read == null && p.lastAttempt == null) return true;
+    // Parsed, a line accepted, no read yet, nothing has failed: the read is
+    // armed five seconds after the desk's first ACCEPT (R-D21; its facts are
+    // accepted lines only), so one IS coming. Going cool here would show a
+    // filled sheet with no read for 30 s and look like a stall. Without an
+    // accepted line no read is coming at all, and staying hot polled every two
+    // seconds until the print left the list, into the next day (bug audit
+    // 2026-10-20). Once a read is done, or an attempt has failed or capped,
+    // this goes cool again.
+    if (
+      p.state === "parsed" &&
+      p.read == null &&
+      p.lastAttempt == null &&
+      p.lines.some((l) => l.state === "accepted")
+    ) {
+      return true;
+    }
     return false;
   });
   return hot ? HOT_POLL_MS : COOL_POLL_MS;
