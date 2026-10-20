@@ -24,6 +24,7 @@
     - (w2) **Stored duplicate unlabelled hand-entered bogey rows are not removed.** New saves update the oldest copy, so the sheet now reads the new figure; the older duplicates still show as cards in the modal. Delete them there, or ask for a rehearsed repair script.
     - (w3) **Next-quarter revenue / EPS guide bogeys stay free text.** The built-in guide lines carry no bogey, and a watch line for them is dropped as a duplicate. Putting the Street / whisper guide figure on those lines needs a small binding in `compileContracts`.
     - (w4) **A newsletter that lands after a sheet has evidence adds no watch line to it** (the newsletter scan does not recompile; the watcher refreshes only an untouched sheet).
+    - (w6) **First live deep read:** after arming a name this week, its prep line should read "deep read" done with a count of articles, and the bogeys modal should show a `Deep read` card whose notes name the issues it read and any disagreement. Check one against the newsletters by eye before trusting the ranking.
     - (w5) **Owner question:** should the preview email list the topic-only watch lines ("what the print is judged on") as well as the numbered ones? Today only lines with a figure print.
 
 > R1/R1b (away-from-home refresh), R2 (long-email ingestion), R3 (Defense/Hedging tab), and the earnings skip-touch fix all shipped — see archive.

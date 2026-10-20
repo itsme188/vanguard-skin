@@ -7,6 +7,7 @@
 
 import type Database from "better-sqlite3";
 import type { LineContract, ExpectedValue } from "./types";
+import { DEEP_READ_BOGEY_LABEL } from "@/lib/earnings/bogey-claim";
 import {
   parseExtraMetrics,
   mergeExtraMetrics,
@@ -45,9 +46,30 @@ function slugifySegment(name: string): string {
     .replace(/^_+|_+$/g, "");
 }
 
-/** First non-null value across bogey rows in rowid order, plus the
- *  source_label of the row it came from ("first non-null by rowid wins" —
- *  task-2 brief, applied independently per field). */
+/**
+ * Which bogey row speaks first for a figure (2026-10-20). Every merge below is
+ * first-non-null in this order, applied per field:
+ *   0. the desk's own hand-entered rows (`manual`),
+ *   1. a sheet the desk uploaded (`pdf_upload`),
+ *   2. the armed-event deep read (`newsletter` + DEEP_READ_BOGEY_LABEL), which
+ *      reads every preview together and prefers the latest issue,
+ *   3. single-article newsletter rows,
+ *   4. anything else, the vendor consensus row (`finnhub`) included;
+ * then rowid. Before this the order was rowid alone, so a vendor row created at
+ * arm time, or an older newsletter issue, outranked a figure the desk typed in
+ * later.
+ */
+export const BOGEY_SOURCE_RANK_SQL = `CASE
+           WHEN source = 'manual' THEN 0
+           WHEN source = 'pdf_upload' THEN 1
+           WHEN source = 'newsletter' AND source_label = ? THEN 2
+           WHEN source = 'newsletter' THEN 3
+           ELSE 4
+         END`;
+
+/** First non-null value across bogey rows in rank order (BOGEY_SOURCE_RANK_SQL,
+ *  then rowid), plus the source_label of the row it came from, applied
+ *  independently per field. */
 function pickFirst(
   rows: BogeyRow[],
   field: "eps_consensus" | "eps_whisper" | "revenue_consensus_usd" | "revenue_whisper_usd",
@@ -111,9 +133,9 @@ export function compileContracts(
               segment_breakdown_json, guidance_notes, source_label, extra_metrics_json
          FROM earnings_bogeys
         WHERE event_id = ?
-        ORDER BY id ASC`,
+        ORDER BY ${BOGEY_SOURCE_RANK_SQL}, id ASC`,
     )
-    .all(eventId) as BogeyRow[];
+    .all(eventId, DEEP_READ_BOGEY_LABEL) as BogeyRow[];
 
   const contracts: LineContract[] = [];
   const expected: Record<string, ExpectedValue> = {};

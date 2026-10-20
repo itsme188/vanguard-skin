@@ -1139,6 +1139,7 @@ alphabetical and registration order buys nothing**:
 | `consensus_row` | Upserts the engine-owned `finnhub` bogey row from the event's vendor estimates | event source + the parsed vendor pair + the event's consensus columns |
 | `intel` | Runs `ensureIntelForEvents` so an armed-but-unheld name has implied-move data by print time | symbol + event date + release time |
 | `newsletter_rescan` | Re-reads recent research articles for THIS event through the pure per-event path | event id + symbol + window + extractor version |
+| `newsletter_synthesis` (2026-10-20) | The deep read: one frontier-tier call over every preview of the 10 days before the print that names the company, stored as one reconciled `Deep read` bogey row (see below) | version + event + slot-floor cutoff + the ids of the articles it would read |
 
 Outcomes are `done`, `pending` and `failed`. **`pending` is a precondition failure, not an
 attempt** — TWS being down, or intel not yet computed, costs nothing and retries next tick; only
@@ -1345,6 +1346,43 @@ source's bogey row, so `compileContracts` compiles it like a desk-defined line.
   (`extraMetricLines` skips it), so a topic-only row is not a printed entry and
   no email claims bogeys from it. The modal card shows it as "— no bogey yet".
   The nightly snapshot still carries no `extra_metrics_json`.
+
+### The armed-event deep read (2026-10-20)
+
+Owner request: once a name is armed, read the week's newsletters about it with
+the best model and find the proper bogeys. `newsletter_synthesis`
+(`lib/earnings/prepare-steps/newsletter-synthesis.ts`) runs
+`runDeepRead` (`lib/earnings/deep-read-bogeys.ts`) on the `armedBogeyDeepRead`
+feature, frontier tier.
+
+- **What it reads.** Articles received in the 10 days before the print's slot
+  floor (07:00 ET before-open or unknown slot, 16:00 ET after-close; instants
+  compared with `datetime()` on both sides, then again in JS) whose subject or
+  body names the company by ticker family OR by name (`companyNameAliases`: the
+  cleaned security name, and its first word when distinctive). The per-article
+  scan matches tickers only, so a "Micron" preview with no "MU" reached no
+  sheet before. Only windows around the mentions are sent (±2,500 characters,
+  12,000 per article, 80,000 in all, newest first, at most 25 articles).
+- **What it asks.** One reconciled sheet: Street consensus, buyside whisper and
+  company guidance kept apart; the latest issue wins a disagreement and the
+  disagreement is named; no computed figures; article ids cited per figure;
+  watch metrics in the shared block. Stored numbers are NOT shown to the model,
+  so a vendor figure cannot be relabelled as the newsletters' reading.
+- **What it writes.** One row per event, `source = 'newsletter'`,
+  `source_label = DEEP_READ_BOGEY_LABEL` ("Deep read",
+  `lib/earnings/bogey-claim.ts`), overwrite mode through
+  `saveBogeyWithRecompile` (a live sheet is recompiled). An empty answer writes
+  nothing and keeps the last reading. Notes carry the debate line, the
+  disagreements and the issues it read from.
+- **When it re-runs.** The fingerprint is the set of article ids, so a new
+  preview before the floor re-runs it (one frontier call each time) and nothing
+  received after the floor ever does: a recap cannot become a bogey.
+- **Precedence on the sheet.** `compileContracts` now merges bogey rows in
+  `BOGEY_SOURCE_RANK_SQL` order, then rowid: `manual`, `pdf_upload`, the deep
+  read, other `newsletter` rows, then everything else (the `finnhub` vendor row
+  included). Before, rowid alone decided, so the vendor row minted at arm time
+  or an older issue beat a figure the desk typed later. The email composers'
+  newest-first readers are unchanged.
 
 ## An armed row after its print: the read-only record (2026-10-08)
 
