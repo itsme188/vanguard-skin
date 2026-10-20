@@ -50,6 +50,7 @@ import { getRiskFreeRate } from "@/lib/queries/risk-free-rate";
 import { liveOptionExpirationSql } from "@/lib/compute/option-expiry";
 import { normalizeSector } from "@/lib/securities/normalize-sector";
 import { isCashEquivalentSecurity } from "@/lib/compute/cash-equivalents";
+import { isInterestRateHedgeFund, scenarioMovesRates, summarizeUnmodelledRateHedges } from "./rate-hedge";
 
 // ─── Per-factor bucket sensitivities ─────────────────────────────────────
 //
@@ -618,6 +619,7 @@ ${OPTION_PRICING_JOINS_SQL}
   // The rate recipe's shock is the equity-side impact of its rate move
   // (-0.025 for +25bp), so the move in basis points is -shock x 1000.
   const rateBps = recipe.category === "rate" ? -recipe.shockMagnitude * 1000 : null;
+  const movesRates = scenarioMovesRates({ rateMove: rateBps, primaryFactor: recipe.primaryFactor });
 
   const impacts: PositionImpact[] = positions.map((pos) => {
     const blend = factorBlend(recipe, pos);
@@ -625,10 +627,18 @@ ${OPTION_PRICING_JOINS_SQL}
 
     let changePercent: number;
     let subjectShare: number;
+    // A fund built to gain when rates rise: its "High" rate bucket would make
+    // it a subject of the shock it hedges. Under a rate move it takes no
+    // figure and is disclosed (owner ruling 2026-10-12, lib/compute/rate-hedge.ts).
+    const rateHedgeUnmodelled =
+      movesRates &&
+      isInterestRateHedgeFund({ security_type: pos.security_type, fund_category: pos.fund_category, name: pos.security_name });
     // Null for anything that is not an individual bond or a bond fund, and
     // for every recipe that is not a rate shock.
     const rawBondLeg: BondRateLeg | null =
-      rateBps != null && !isCashEquivalentSecurity(pos) ? estimateBondRateLeg(pos, rateBps, runToday) : null;
+      rateBps != null && !rateHedgeUnmodelled && !isCashEquivalentSecurity(pos)
+        ? estimateBondRateLeg(pos, rateBps, runToday)
+        : null;
     // A fund labelled with a bond category but carrying equity evidence (an
     // equity sector, or an equity word in its name) is refused the duration
     // default. The shared rule returns that reason only when the fund has no
@@ -651,6 +661,9 @@ ${OPTION_PRICING_JOINS_SQL}
     // the SUBJECT path with no cash check (only the SPILLOVER leg, via
     // transmitsEquitySpillover, was guarded).
     if (isCashEquivalentSecurity(pos)) {
+      changePercent = 0;
+      subjectShare = 0;
+    } else if (rateHedgeUnmodelled) {
       changePercent = 0;
       subjectShare = 0;
     } else if (bondLeg) {
@@ -742,6 +755,7 @@ ${OPTION_PRICING_JOINS_SQL}
       rateDurationYears: bondLeg?.durationYears,
       rateDurationSource: bondLeg?.durationSource,
       bondUnmodelledReason: bondLeg?.unmodelledReason,
+      rateHedgeUnmodelled: rateHedgeUnmodelled || undefined,
     };
   });
 
@@ -768,6 +782,7 @@ ${OPTION_PRICING_JOINS_SQL}
     biggestWinners,
     optionsUnmodelled: summarizeUnmodelledOptions(impacts),
     bondsUnmodelled: summarizeUnmodelledBonds(impacts),
+    rateHedgesUnmodelled: summarizeUnmodelledRateHedges(impacts),
   };
 }
 

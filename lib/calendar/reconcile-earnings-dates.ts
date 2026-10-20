@@ -649,7 +649,7 @@ const VENDOR_DISPLAY_NAMES: Record<string, string> = {
   wsh: "Wall Street Horizon",
 };
 
-function vendorDisplayName(source: string): string {
+export function vendorDisplayName(source: string): string {
   return VENDOR_DISPLAY_NAMES[source.toLowerCase()] ?? source;
 }
 

@@ -22,6 +22,11 @@ import {
 import { attemptPostCommitDrain } from "@/lib/earnings/cloud-outbox";
 import { checkManualAddWouldSupersedeVendor } from "@/lib/calendar/reconcile-earnings-dates";
 import { checkManualSlotAgainstKnownTime } from "@/lib/earnings/wire-times";
+import {
+  checkManualAddContradictsConfirmedDate,
+  WOULD_CONTRADICT_CONFIRMED_DATE,
+  type ConfirmedDateContradiction,
+} from "@/lib/calendar/manual-add-contradicts-confirmed";
 import { fixDateOrigin, liftEarningsSuppression } from "@/lib/calendar/fix-date-suppression";
 import {
   findManualAddCollision,
@@ -72,6 +77,22 @@ function collisionRefusal(
       hiddenEventId: collision.eventId,
       replacedByEventId: collision.replacedBy?.eventId ?? null,
       replacedByDate: collision.replacedBy?.eventDate ?? null,
+    },
+    { status: 409 },
+  );
+}
+
+/** 409 for a hand-entered date beside a confirmed vendor date in the same week. */
+function contradictionRefusal(found: ConfirmedDateContradiction, error: string): Response {
+  return Response.json(
+    {
+      success: false,
+      error,
+      code: WOULD_CONTRADICT_CONFIRMED_DATE,
+      vendorEventId: found.vendorEventId,
+      vendorDate: found.vendorDate,
+      vendorSource: found.vendorSource,
+      basis: found.basis,
     },
     { status: 409 },
   );
@@ -155,12 +176,21 @@ export async function GET(request: Request) {
  * same-side known time is kept. An explicit `release_time` in the body is the
  * caller's own statement and is not second-guessed.
  *
- * The two acknowledgements are SEPARATE and specific: `forceSlot` skips only
+ * Fourth 409, `would_contradict_confirmed_date` (owner ruling 2026-10-12): an
+ * earnings add on a DIFFERENT day in the same Monday-to-Sunday week as a
+ * showing vendor date for the same company that is confirmed (two sources
+ * agree, or its release time is web-verified for that day) would leave two
+ * prints a day apart, each with its own emails
+ * (checkManualAddContradictsConfirmedDate). `forceContradictConfirmed: true`
+ * inserts anyway.
+ *
+ * The three acknowledgements are SEPARATE and specific: `forceSlot` skips only
  * the slot guard, `force` skips only the vendor-supersede guard (its meaning
- * before the slot guard existed). A guard that was not acknowledged still
- * returns its own 409, so one add can be refused twice in sequence — slot
- * first, then supersede — each with its own reason. Answering one warning
- * never silently answers the other.
+ * before the slot guard existed), `forceContradictConfirmed` skips only the
+ * confirmed-date guard. A guard that was not acknowledged still returns its
+ * own 409, so one add can be refused in sequence — slot, then supersede, then
+ * confirmed date — each with its own reason. Answering one warning never
+ * silently answers another.
  *
  * Typed-input checks run before every guard and neither flag skips them: the
  * symbol must have the shape of a ticker (400 `invalid_symbol`; a well-formed
@@ -180,6 +210,7 @@ export async function POST(request: Request) {
     description?: string | null;
     force?: boolean;
     forceSlot?: boolean;
+    forceContradictConfirmed?: boolean;
   };
 
   if (typeof body.symbol !== "string" || body.symbol.trim() === "") {
@@ -253,6 +284,15 @@ export async function POST(request: Request) {
           { status: 409 },
         );
       }
+    }
+
+    if (body.forceContradictConfirmed !== true) {
+      const contradiction = checkManualAddContradictsConfirmedDate(db, {
+        symbol,
+        eventDate: body.event_date,
+        eventType,
+      });
+      if (contradiction) return contradictionRefusal(contradiction, contradiction.message);
     }
 
     const securityId = resolveEventSecurityId(symbol);
@@ -329,6 +369,11 @@ export async function POST(request: Request) {
  * is never checked and keeps its stored time. Slot first, then supersede, as
  * on POST.
  *
+ * Same `would_contradict_confirmed_date` 409 as POST, with its own
+ * acknowledgement `forceContradictConfirmed` (`force` / `forceSlot` never
+ * answer it). Runs only when the PATCH changes the date or the symbol; the
+ * edited row is excluded. Checked after the supersede guard.
+ *
  * A row moved onto a date where a feed row shows hides that feed row in the
  * update's own transaction (updateCalendarEvent), as an add there would.
  *
@@ -348,6 +393,7 @@ export async function PATCH(request: Request) {
     description?: string | null;
     force?: boolean;
     forceSlot?: boolean;
+    forceContradictConfirmed?: boolean;
   };
 
   if (typeof body.id !== "number" || !Number.isInteger(body.id)) {
@@ -466,6 +512,28 @@ export async function PATCH(request: Request) {
           vendorSource: vendor.source,
         },
         { status: 409 },
+      );
+    }
+  }
+
+  const patchedDate = typeof body.event_date === "string" ? body.event_date : existing.event_date;
+  if (
+    body.forceContradictConfirmed !== true &&
+    (patchedDate !== existing.event_date || patchedSymbol !== storedSymbol) &&
+    patchedSymbol !== ""
+  ) {
+    const contradiction = checkManualAddContradictsConfirmedDate(db, {
+      symbol: patchedSymbol,
+      eventDate: patchedDate,
+      eventType: body.event_type ?? existing.event_type,
+      excludeEventId: body.id,
+    });
+    if (contradiction) {
+      return contradictionRefusal(
+        contradiction,
+        contradiction.message
+          .replace("Nothing was added.", "Nothing was changed.")
+          .replace("or add anyway to keep both", "or save anyway to keep both"),
       );
     }
   }

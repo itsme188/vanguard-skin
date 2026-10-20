@@ -759,10 +759,18 @@ export function LivePrintSlot({
   eventId,
   symbol,
   armed,
+  eventDate: eventDateProp = null,
 }: {
   eventId: number;
   symbol: string;
   armed: boolean;
+  /**
+   * The Hub row's own calendar date (`YYYY-MM-DD`). The cockpit payload covers
+   * the Hub week plus yesterday, so an armed print further back has no cockpit
+   * row; without this the slot read a null date and called a finished print
+   * "waiting" (2026-10-14). The cockpit row is still read first.
+   */
+  eventDate?: string | null;
 }) {
   const live = useHubLive();
   const print = live?.printByEvent[eventId] ?? null;
@@ -851,12 +859,13 @@ export function LivePrintSlot({
    * WHICH BODY? An armed row with no live print is one of two different things:
    * a print still to come (the pre-window controls), or a print that is over
    * and has dropped out of the status feed (the read-only record). The event's
-   * date decides, read off the cockpit row the Hub already holds; the print's
+   * date decides, read off the cockpit row the Hub already holds, or off the
+   * Hub row itself when the cockpit window has moved past the print; the print's
    * own record is fetched only once the row is expanded. Today comes from the
    * provider's shared clock, never the wall clock in render, and is unknown
    * until that clock starts, which reads as "still to come".
    */
-  const eventDate = live?.cockpitByEvent[eventId]?.eventDate ?? null;
+  const eventDate = live?.cockpitByEvent[eventId]?.eventDate ?? eventDateProp ?? null;
   const todayEt = live && live.nowMs > 0 ? todayET(new Date(live.nowMs)) : null;
   const body = slotBodyKind({ armed, hasLivePrint: print !== null, eventDate, todayEt });
 
