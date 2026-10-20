@@ -56,6 +56,12 @@ describe("computeSecurityRegression — split-adjusted closes", () => {
     rawPreSplitMultiple: number; // 4 = unadjusted series, 1 = already adjusted
     action?: { source: string };
     crashIndex?: number;
+    /** Omit the benchmark row on this index (a market holiday for the benchmark). */
+    benchHolidayIndex?: number;
+    /** Multiply closes from this index on (a real move, not split-shaped). */
+    bump?: { index: number; factor: number };
+    /** Store no rows at all for these indexes (a sync outage). */
+    missing?: Set<number>;
   }): void {
     const { bench, sec } = series();
     const insP = db.prepare(
@@ -67,15 +73,19 @@ describe("computeSecurityRegression — split-adjusted closes", () => {
     for (let i = 0; i < DAYS; i++) {
       let close = sec[i] * (i < SPLIT_INDEX ? opts.rawPreSplitMultiple : 1);
       if (opts.crashIndex !== undefined && i >= opts.crashIndex) close *= 0.7;
+      if (opts.bump && i >= opts.bump.index) close *= opts.bump.factor;
+      if (opts.missing?.has(i)) continue;
       insP.run(SEC_ID, dates[i], close);
-      insB.run(BENCH, dates[i], bench[i]);
+      if (i !== opts.benchHolidayIndex) insB.run(BENCH, dates[i], bench[i]);
     }
+    // The effective date is the LAST pre-split session: its close is still a
+    // pre-split print (end-of-day rule, as the lot engine replays it).
     if (opts.action) {
       db.prepare(
         `INSERT INTO corporate_actions
            (security_id, action_type, effective_date, ratio_numerator, ratio_denominator, source)
          VALUES (?, 'SPLIT', ?, 4, 1, ?)`
-      ).run(SEC_ID, dates[SPLIT_INDEX], opts.action.source);
+      ).run(SEC_ID, dates[SPLIT_INDEX - 1], opts.action.source);
     }
   }
 
@@ -107,11 +117,40 @@ describe("computeSecurityRegression — split-adjusted closes", () => {
     expect(r.dataPoints).toBe(DAYS - 2);
   });
 
-  it("an already-adjusted series with an import row does not gain a fake jump", () => {
+  it("an already-adjusted series with an import row is left alone (no day dropped)", () => {
     seed({ rawPreSplitMultiple: 1, action: { source: "import" } });
     const r = computeSecurityRegression(db, SEC_ID, BENCH, 252)!;
     expect(r.vol).toBeLessThan(1.0);
     expect(r.rSquared).toBeGreaterThan(0.5);
+    // The split is detected as absorbed, so no fake 4x step is created and
+    // the guard has nothing to drop.
+    expect(r.dataPoints).toBe(DAYS - 1);
+  });
+
+  it("effective-date close is pre-split and the next day is a benchmark holiday: no fake return", () => {
+    // The aligned pair spans the split AND a real two-session move, so its
+    // raw ratio (4 / 1.06) is not split-shaped and the guard would not catch it.
+    seed({
+      rawPreSplitMultiple: 4,
+      action: { source: "import" },
+      benchHolidayIndex: SPLIT_INDEX,
+      bump: { index: SPLIT_INDEX, factor: 1.06 },
+    });
+    const r = computeSecurityRegression(db, SEC_ID, BENCH, 252)!;
+    expect(r.vol).toBeLessThan(1.0);
+    // One aligned date fewer (the holiday); no pair dropped.
+    expect(r.dataPoints).toBe(DAYS - 2);
+    expect(r.rSquared).toBeGreaterThan(0.3);
+  });
+
+  it("a pair spanning a multi-week hole is dropped, not treated as one daily return", () => {
+    const missing = new Set<number>();
+    for (let i = 40; i < 50; i++) missing.add(i); // two trading weeks
+    seed({ rawPreSplitMultiple: 1, missing, bump: { index: 50, factor: 0.6 } });
+    const r = computeSecurityRegression(db, SEC_ID, BENCH, 252)!;
+    expect(r.vol).toBeLessThan(1.0);
+    // DAYS - 10 rows -> DAYS - 11 pairs, minus the gap pair.
+    expect(r.dataPoints).toBe(DAYS - 12);
   });
 
   it("a genuine -30% day is kept as a real return", () => {
