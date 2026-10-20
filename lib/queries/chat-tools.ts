@@ -7,7 +7,13 @@ import { normalizeSector } from "@/lib/securities/normalize-sector";
 import { isCashEquivalentSecurity, cashEquivalentSecuritySql } from "@/lib/compute/cash-equivalents";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 import { marketCapCategoryBucketSql } from "@/lib/securities/normalize-market-cap";
-import { isPendingStatementLot, pendingStatementKeySet } from "@/lib/queries/pending-statement";
+import {
+  getPendingStatementPairs,
+  isPendingStatementLot,
+  pendingStatementKey,
+  pendingStatementKeySet,
+} from "@/lib/queries/pending-statement";
+import { liveOriginHoldingSql } from "@/lib/db/holding-sources";
 import { isOptionLive, liveOptionExpirationSql } from "@/lib/compute/option-expiry";
 import { isCurrencyConversionSecurityType, lotSideSignSql, remainingLotBasisSql } from "@/lib/queries/tax-lots";
 import { isLongTermSql, longTermDateSql } from "@/lib/queries/long-term-sql";
@@ -391,6 +397,113 @@ export function getHoldingsForChat(
   params.push(limit);
 
   return db.prepare(sql).all(...params) as HoldingResult[];
+}
+
+/** A position closed per LIVE broker data whose closing trade awaits the statement. */
+export interface ClosedPerLiveDataResult {
+  account_name: string;
+  symbol: string;
+  /** Date of the pair's last NON-ZERO holdings row (the last day it was seen held). */
+  as_of_date: string;
+  /** Quantity on that last non-zero row (signed: negative = short). */
+  quantity: number;
+  /** Date of the live-origin zero row that says it is closed. */
+  closed_as_of_date: string;
+  pending_statement: true;
+  status_note: string;
+}
+
+/**
+ * For a symbol with no live holdings row: every (account, security) pair of
+ * that symbol whose newest holdings row is a LIVE-origin zero (a `:live`
+ * reconciler tombstone, a legacy live tombstone, or a live-sync zero row;
+ * `liveOriginHoldingSql`), plus every pair the pending-statement read model
+ * lists. Each comes back as its last NON-ZERO row, flagged pending statement.
+ *
+ * A pair whose newest row is statement-grade closure evidence is closed per
+ * the statement and is NOT listed. Same account filter as
+ * `getHoldingsForChat` (an exact account name; omitted = every account).
+ * Read-only; never feeds a total or a weight.
+ */
+export function getClosedPerLiveDataForChat(
+  db: Database.Database,
+  filters: { account_name?: string; symbol: string }
+): ClosedPerLiveDataResult[] {
+  const { account_name, symbol } = filters;
+
+  let accountIds: number[] | undefined;
+  if (account_name) {
+    accountIds = (
+      db.prepare("SELECT id FROM accounts WHERE name = ?").all(account_name) as { id: number }[]
+    ).map((r) => r.id);
+    if (accountIds.length === 0) return [];
+  }
+  const accountSql = accountIds ? `AND h.account_id IN (${accountIds.map(() => "?").join(", ")})` : "";
+
+  // Newest row of the pair (per-(account, security) correlated) is a
+  // live-origin zero, and no non-zero row shares that date.
+  const zeroRows = db
+    .prepare(
+      `SELECT h.account_id, h.security_id, h.as_of_date AS closed_as_of_date
+         FROM holdings h
+         JOIN securities s ON s.id = h.security_id
+        WHERE s.symbol = ?
+          AND h.as_of_date = (
+            SELECT MAX(h2.as_of_date) FROM holdings h2
+             WHERE h2.account_id = h.account_id AND h2.security_id = h.security_id
+          )
+          AND h.quantity = 0
+          AND ${liveOriginHoldingSql("h")}
+          AND NOT EXISTS (
+            SELECT 1 FROM holdings hn
+             WHERE hn.account_id = h.account_id AND hn.security_id = h.security_id
+               AND hn.as_of_date = h.as_of_date AND hn.quantity != 0
+          )
+          ${accountSql}`
+    )
+    .all(symbol, ...(accountIds ?? [])) as {
+    account_id: number;
+    security_id: number;
+    closed_as_of_date: string;
+  }[];
+
+  const pairs = new Map<string, { account_id: number; security_id: number; closed_as_of_date: string }>();
+  for (const r of zeroRows) pairs.set(pendingStatementKey(r), r);
+  for (const p of getPendingStatementPairs(db, accountIds)) {
+    if (p.symbol !== symbol) continue;
+    const key = pendingStatementKey(p);
+    if (!pairs.has(key)) {
+      pairs.set(key, { account_id: p.account_id, security_id: p.security_id, closed_as_of_date: p.live_flat_date });
+    }
+  }
+
+  const lastNonZero = db.prepare(
+    `SELECT a.name AS account_name, s.symbol, h.as_of_date, h.quantity
+       FROM holdings h
+       JOIN accounts a ON a.id = h.account_id
+       JOIN securities s ON s.id = h.security_id
+      WHERE h.account_id = ? AND h.security_id = ? AND h.quantity != 0
+      ORDER BY h.as_of_date DESC
+      LIMIT 1`
+  );
+
+  const out: ClosedPerLiveDataResult[] = [];
+  for (const pair of pairs.values()) {
+    const row = lastNonZero.get(pair.account_id, pair.security_id) as
+      | { account_name: string; symbol: string; as_of_date: string; quantity: number }
+      | undefined;
+    if (!row) continue;
+    out.push({
+      account_name: row.account_name,
+      symbol: row.symbol,
+      as_of_date: row.as_of_date,
+      quantity: row.quantity,
+      closed_as_of_date: pair.closed_as_of_date,
+      pending_statement: true,
+      status_note: PENDING_STATEMENT_CHAT_NOTE,
+    });
+  }
+  return out.sort((a, b) => a.account_name.localeCompare(b.account_name));
 }
 
 /**
@@ -795,6 +908,40 @@ export function getTransactionsForChat(
       LIMIT ?`
     )
     .all(...params, limit) as TransactionResult[];
+}
+
+/**
+ * The newest transaction date in the ledger within the account and symbol
+ * filter (type and date filters deliberately NOT applied: this says where
+ * the imported ledger ends, not where a filtered result ends). Null when
+ * the filter matches no transaction. Activity after this date may exist
+ * only in holdings (live broker data awaiting the statement).
+ */
+export function getLedgerLastDateForChat(
+  db: Database.Database,
+  filters: { account_name?: string; symbol?: string } = {}
+): string | null {
+  const conditions: string[] = [];
+  const params: string[] = [];
+  if (filters.account_name) {
+    conditions.push("a.name = ?");
+    params.push(filters.account_name);
+  }
+  if (filters.symbol) {
+    conditions.push("s.symbol = ?");
+    params.push(filters.symbol);
+  }
+  const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+  const row = db
+    .prepare(
+      `SELECT MAX(t.trade_date) AS last_date
+         FROM transactions t
+         JOIN accounts a ON a.id = t.account_id
+         LEFT JOIN securities s ON s.id = t.security_id
+         ${whereClause}`
+    )
+    .get(...params) as { last_date: string | null } | undefined;
+  return row?.last_date ?? null;
 }
 
 /**
