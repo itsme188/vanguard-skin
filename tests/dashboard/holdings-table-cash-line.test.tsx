@@ -64,6 +64,11 @@ function cashLine(over: Partial<AccountCashLine> = {}): AccountCashLine {
     isLiveSource: false,
     liveSourceCaption: null,
     cashEquivalentSymbols: [],
+    dataQuality: "live",
+    measuredDate: "2026-03-03",
+    carried: false,
+    positionsPriceDate: "2026-03-03",
+    priceDateMismatch: false,
     ...over,
   };
 }
@@ -209,6 +214,67 @@ describe("HoldingsTable account value footer (rendered)", () => {
       expect(note).toContain("not in Positions");
       expect(note).not.toContain("Cash figure");
     });
+  });
+
+  describe("a carried 'estimated' day dates the measurement, not the row (ruling 2026-10-12)", () => {
+    const carried = {
+      valuationDate: "2026-03-07",
+      dataQuality: "estimated",
+      measuredDate: "2026-03-05",
+      carried: true,
+    };
+
+    it("each of the three lines reads as of the measured day, carried to the row's day", () => {
+      const html = render(ROWS, cashLine(carried));
+      const block = html.slice(anchorIndex(html, 'data-account-value="lines"'));
+      const text = block.replace(/<[^>]+>/g, "");
+      expect(text.match(/as of 2026-03-05 · carried to 2026-03-07/g)!.length).toBe(3);
+      expect(text).not.toMatch(/as of 2026-03-07/);
+    });
+
+    it("adds one note saying no new broker data arrived after the measured day", () => {
+      const html = render(ROWS, cashLine(carried));
+      const note = sliceBetween(html, 'data-account-value="carried-note"', "</p>").replace(
+        /<[^>]+>/g,
+        "",
+      );
+      expect(note).toContain(
+        "No new broker data arrived after 2026-03-05; the figures for 2026-03-07 are carried from that day.",
+      );
+    });
+
+    it("a measured day prints its own date and no carried note", () => {
+      const html = render(ROWS, cashLine());
+      expect(html).not.toContain('data-account-value="carried-note"');
+      expect(html).not.toContain("carried to");
+      const text = html.replace(/<[^>]+>/g, "");
+      expect(text.match(/as of 2026-03-03/g)!.length).toBe(3);
+    });
+
+    it("falls back to the row's date when no measured day exists", () => {
+      const html = render(ROWS, cashLine({ dataQuality: "estimated", measuredDate: null, carried: false }));
+      const text = html.replace(/<[^>]+>/g, "");
+      expect(text.match(/as of 2026-03-03/g)!.length).toBe(3);
+      expect(html).not.toContain('data-account-value="carried-note"');
+    });
+  });
+
+  it("prints the price-date mismatch caption the query supplies in place of the live one", () => {
+    const caption =
+      "The broker total is from 2026-03-03 but the positions are priced at the 2026-03-02 close, so this cash figure is a price-date mismatch, not a literal cash balance.";
+    const html = render(
+      ROWS,
+      cashLine({
+        isLiveSource: true,
+        anchorDate: "2026-03-03",
+        positionsPriceDate: "2026-03-02",
+        priceDateMismatch: true,
+        liveSourceCaption: caption,
+      }),
+    );
+    const note = sliceBetween(html, 'data-account-value="live-note"', "</p>");
+    expect(note).toContain("price-date mismatch");
+    expect(note).not.toContain("timing residual");
   });
 
   it("explains the gap instead of rendering nothing when there is no daily valuation", () => {

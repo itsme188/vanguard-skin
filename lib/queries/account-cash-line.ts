@@ -47,6 +47,14 @@ export const LIVE_SNAPSHOT_TIMING_RESIDUAL_PHRASE =
  *  (Plaid/TWS) anchor. */
 export const LIVE_SNAPSHOT_CASH_CAPTION = `This is a ${LIVE_SNAPSHOT_TIMING_RESIDUAL_PHRASE}, not a literal cash balance.`;
 
+/** Caption shown under the Cash line instead of `LIVE_SNAPSHOT_CASH_CAPTION`
+ *  when the live broker total is from the anchor day but the positions were
+ *  priced at an older close (owner ruling 2026-10-12): the gap is a
+ *  price-date mismatch, not an intraday timing residual. */
+export function priceDateMismatchCaption(anchorDate: string, priceDate: string): string {
+  return `The broker total is from ${anchorDate} but the positions are priced at the ${priceDate} close, so this cash figure is a price-date mismatch, not a literal cash balance.`;
+}
+
 export interface AccountCashLine {
   accountId: number;
   /** Date of the latest daily valuation — the as-of date of all three figures. */
@@ -76,8 +84,33 @@ export interface AccountCashLine {
   anchorDate: string | null;
   /** True when that anchor is a live broker snapshot (Plaid or TWS). */
   isLiveSource: boolean;
-  /** `LIVE_SNAPSHOT_CASH_CAPTION` when `isLiveSource`, else null. */
+  /** `LIVE_SNAPSHOT_CASH_CAPTION` when `isLiveSource`, replaced by
+   *  `priceDateMismatchCaption(anchorDate, positionsPriceDate)` when
+   *  `priceDateMismatch`; null when not `isLiveSource`. */
   liveSourceCaption: string | null;
+  /** The latest row's `data_quality` ('live' / 'recent' / 'estimated', or
+   *  'computed' / null on a legacy row). */
+  dataQuality: string | null;
+  /** The day the figures were actually measured: the newest valuation date
+   *  on or before `valuationDate` whose row is not 'estimated'. Equals
+   *  `valuationDate` when the latest row is measured; null when every row is
+   *  'estimated'. */
+  measuredDate: string | null;
+  /** True when the latest row is 'estimated', has no holdings row of its
+   *  own day, and carries the figures of an earlier measured day
+   *  (`measuredDate`). The surface then dates the figures by
+   *  `measuredDate`, not by the row (owner ruling 2026-10-12). A day with
+   *  its own holdings row is never carried, even when stale prices made
+   *  the engine label it 'estimated'. */
+  carried: boolean;
+  /** Newest close-price date on or before `valuationDate` across the
+   *  account's currently held non-cash-equivalent securities. Null when
+   *  none of them has a price. */
+  positionsPriceDate: string | null;
+  /** True when the live anchor is ON `valuationDate` but the positions were
+   *  priced at an older close (`positionsPriceDate < anchorDate`): the cash
+   *  residual is a price-date mismatch, not an intraday timing residual. */
+  priceDateMismatch: boolean;
   /** Symbols of the account's currently held money-market sweep funds,
    *  sorted. Their value is inside `cashBalance`, not `holdingsValue`. */
   cashEquivalentSymbols: string[];
@@ -90,6 +123,7 @@ interface ValuationRow {
   total_value: number;
   holdings_count: number | null;
   priced_count: number | null;
+  data_quality: string | null;
 }
 
 interface AnchorRow {
@@ -99,6 +133,7 @@ interface AnchorRow {
 
 interface HeldSecurityRow {
   symbol: string;
+  price_date: string | null;
   security_type: string | null;
   fund_category: string | null;
 }
@@ -110,7 +145,7 @@ export function getAccountCashLine(
   const valuation = db
     .prepare(
       `SELECT valuation_date, cash_balance, holdings_value, total_value,
-              holdings_count, priced_count
+              holdings_count, priced_count, data_quality
        FROM daily_valuations
        WHERE account_id = ?
        ORDER BY valuation_date DESC
@@ -152,19 +187,80 @@ export function getAccountCashLine(
     .get(accountId, valuation.valuation_date) as (AnchorRow & { resolved: number }) | undefined;
   const anchor = newest?.resolved === 1 ? newest : undefined;
 
+  // Date the measurement, not the row (owner ruling 2026-10-12). The
+  // valuation engine writes 'estimated' on a day whose holdings snapshot is
+  // older than the day (a weekend or holiday carrying the last measured
+  // figures), so the figures belong to the newest non-estimated row.
+  // 'computed' and NULL are legacy rows and count as measured.
+  const measured =
+    valuation.data_quality === "estimated"
+      ? (db
+          .prepare(
+            `SELECT valuation_date
+             FROM daily_valuations
+             WHERE account_id = ?
+               AND valuation_date <= ?
+               AND (data_quality IS NULL OR data_quality != 'estimated')
+             ORDER BY valuation_date DESC
+             LIMIT 1`,
+          )
+          .get(accountId, valuation.valuation_date) as { valuation_date: string } | undefined)
+      : { valuation_date: valuation.valuation_date };
+  const measuredDate = measured?.valuation_date ?? null;
+  // 'estimated' is also written for a day with its OWN holdings snapshot
+  // whose prices are stale, or that holds only sweep funds. That day is
+  // measured, not carried: a holdings row dated the valuation day means
+  // broker data did arrive. Only a day with no holdings row of its own is
+  // carried from the earlier measured day.
+  const hasOwnHoldingsRow =
+    (db
+      .prepare(
+        `SELECT 1 FROM holdings WHERE account_id = ? AND as_of_date = ? LIMIT 1`,
+      )
+      .get(accountId, valuation.valuation_date) as { 1: number } | undefined) !== undefined;
+  const carried =
+    valuation.data_quality === "estimated" &&
+    !hasOwnHoldingsRow &&
+    measuredDate !== null &&
+    measuredDate !== valuation.valuation_date;
+
+  // Each held security with its newest close on or before the valuation
+  // date. The valuation date is bound as a parameter: never SQLite
+  // date('now'), which is the UTC day.
   const held = db
     .prepare(
-      `SELECT s.symbol, s.security_type, s.fund_category
+      `SELECT s.symbol, s.security_type, s.fund_category,
+              (SELECT MAX(p.date) FROM prices p
+               WHERE p.security_id = s.id AND p.date <= ?) AS price_date
        FROM holdings h
        JOIN securities s ON s.id = h.security_id
        WHERE h.account_id = ?
          AND ${latestHoldingsPredicate({ accountFilter: "" })}
        ORDER BY s.symbol`,
     )
-    .all(accountId) as HeldSecurityRow[];
+    .all(valuation.valuation_date, accountId) as HeldSecurityRow[];
 
   const cashAnchored = anchor !== undefined;
   const isLiveSource = anchor?.is_live === 1;
+  const anchorDate = anchor?.month_end_date ?? null;
+
+  // Sweep funds are cash to the valuation engine, so their prices do not
+  // date the positions figure.
+  let positionsPriceDate: string | null = null;
+  for (const h of held) {
+    if (isCashEquivalentSecurity(h) || h.price_date === null) continue;
+    if (positionsPriceDate === null || h.price_date > positionsPriceDate) {
+      positionsPriceDate = h.price_date;
+    }
+  }
+  // The broker total is from the anchor day; when the positions it is
+  // netted against were priced at an older close, the residual is a
+  // price-date mismatch, not an intraday timing residual.
+  const priceDateMismatch =
+    isLiveSource &&
+    anchorDate === valuation.valuation_date &&
+    positionsPriceDate !== null &&
+    positionsPriceDate < anchorDate;
 
   return {
     accountId,
@@ -175,9 +271,18 @@ export function getAccountCashLine(
     totalValue: cashAnchored ? valuation.total_value : null,
     holdingsCount: valuation.holdings_count,
     pricedCount: valuation.priced_count,
-    anchorDate: anchor?.month_end_date ?? null,
+    anchorDate,
     isLiveSource,
-    liveSourceCaption: isLiveSource ? LIVE_SNAPSHOT_CASH_CAPTION : null,
+    liveSourceCaption: !isLiveSource
+      ? null
+      : priceDateMismatch && anchorDate !== null && positionsPriceDate !== null
+        ? priceDateMismatchCaption(anchorDate, positionsPriceDate)
+        : LIVE_SNAPSHOT_CASH_CAPTION,
+    dataQuality: valuation.data_quality,
+    measuredDate,
+    carried,
+    positionsPriceDate,
+    priceDateMismatch,
     cashEquivalentSymbols: held.filter((h) => isCashEquivalentSecurity(h)).map((h) => h.symbol),
   };
 }
