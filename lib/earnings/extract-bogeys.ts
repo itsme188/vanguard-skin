@@ -21,6 +21,8 @@ import { resolveFeatureModel } from "@/lib/ai/models";
 import { classifyAnthropicError } from "@/lib/ai/classify-anthropic-error";
 import { coercePercent, parseLargeUSD } from "@/lib/format";
 import { extractJsonArray } from "@/lib/ai/extract-json";
+import type { ExtraMetricSpec } from "@/lib/print-watch/extra-metrics";
+import { WATCH_METRICS_INSTRUCTIONS, parseWatchMetrics } from "@/lib/earnings/watch-metrics";
 
 /**
  * User-presentable extraction failure. `message` is safe to render
@@ -49,6 +51,9 @@ export interface ExtractedBogey {
   segment_breakdown: Record<string, { consensus?: number; whisper?: number }> | null;
   guidance_notes: string | null;
   notes: string | null;
+  /** The company-specific figures the print is judged on, as sheet lines
+   *  (lib/earnings/watch-metrics.ts). [] when the sheet names none. */
+  watch_metrics: ExtraMetricSpec[];
 }
 
 export interface ExtractBogeysResult {
@@ -65,6 +70,7 @@ Extract one entry per company mentioned. For each, capture the bogeys analysts a
 - The expected/implied earnings MOVE the sheet states for the name (e.g., "expected move ±6%", "options pricing a 5.5% move") as an absolute percent number
 - Any segment-level breakdown (e.g., GLW: Optical $1.5B / Display $0.9B)
 - Guidance bogeys (e.g., "FY26 revenue guide $19.5–20.0B")
+- The company-specific figures the print will be judged on beyond revenue and EPS (margins, KPIs, region or product lines, their guides) as "watch_metrics" — see WATCH METRICS below. A segment already given in "segment_breakdown" is not repeated there.
 - Any other relevant notes (catalyst risk, key call topics)
 
 Output ONLY a JSON array. No prose, no markdown fences. Each entry must have this exact shape (use null for fields not mentioned):
@@ -79,9 +85,14 @@ Output ONLY a JSON array. No prose, no markdown fences. Each entry must have thi
     "expected_move_pct": 6.0,
     "segment_breakdown": {"Optical": {"consensus": 1500000000, "whisper": 1520000000}},
     "guidance_notes": "FY26 revenue guide $19.5–20.0B",
-    "notes": "Key topic: optical fiber capacity expansion"
+    "notes": "Key topic: optical fiber capacity expansion",
+    "watch_metrics": [
+      {"label": "Gross margin", "definition": "Core gross margin for the quarter as stated in the release.", "unit": "pct", "kind": "point", "period": "Q", "basis": "non_gaap", "consensus": 37.5, "whisper": 38.0}
+    ]
   }
 ]
+
+${WATCH_METRICS_INSTRUCTIONS}
 
 Strict rules:
 - Symbols must be the listed ticker symbol, uppercase, no exchange prefix.
@@ -319,6 +330,7 @@ export function parseExtractionResponse(raw: string): ExtractedBogey[] {
       segment_breakdown: segments,
       guidance_notes: typeof e.guidance_notes === "string" ? e.guidance_notes : null,
       notes: typeof e.notes === "string" ? e.notes : null,
+      watch_metrics: parseWatchMetrics(e.watch_metrics),
     });
   }
   return out;

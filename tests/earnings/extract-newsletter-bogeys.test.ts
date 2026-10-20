@@ -93,6 +93,18 @@ function makeDb(): Database.Database {
       extra_metrics_json TEXT,
       UNIQUE(event_id, source, source_label)
     );
+    CREATE TABLE earnings_bogey_scans (
+      event_id          INTEGER NOT NULL REFERENCES calendar_events(id) ON DELETE CASCADE,
+      article_id        INTEGER NOT NULL REFERENCES research_articles(id) ON DELETE CASCADE,
+      extractor_version INTEGER NOT NULL,
+      status            TEXT    NOT NULL CHECK (status IN ('claimed','hit','no_numbers','error')),
+      claim_token       TEXT,
+      model_id          TEXT,
+      attempts          INTEGER NOT NULL DEFAULT 0,
+      scanned_at        TEXT,
+      updated_at        TEXT    NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (event_id, article_id, extractor_version)
+    );
     CREATE TABLE earnings_worksheet_flags (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       event_id INTEGER NOT NULL UNIQUE REFERENCES calendar_events(id) ON DELETE CASCADE,
@@ -178,7 +190,9 @@ describe("buildExtractionPrompt", () => {
     );
     expect(prompt).toContain("TSM");
     expect(prompt).toContain("2026-07-24");
-    expect(prompt.length).toBeLessThan(35_000);
+    // 30,000 of article plus the instructions (the watch-metrics block made
+    // them ~6,000 characters); an uncapped body would be far past this.
+    expect(prompt.length).toBeLessThan(40_000);
     expect(prompt).toContain("[truncated]");
   });
 
@@ -246,6 +260,7 @@ describe("parseExtractionResponse", () => {
       expected_move_pct: null,
       guidance_notes: null,
       notes: "street leaning higher",
+      watch_metrics: [],
     });
   });
 

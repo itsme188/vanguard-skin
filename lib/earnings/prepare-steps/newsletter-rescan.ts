@@ -16,10 +16,13 @@
  * SCAN_MAX_ATTEMPTS model calls per pair [C-11], because a takeover counts the
  * dead attempt.
  *
- * [R20] A pair the GLOBAL scan already extracted for this event (the normal case
- * for a held — therefore covered — name that is then armed) is banked straight
- * into the ledger as `hit` off the existing `earnings_bogeys` row, with no model
- * call at all.
+ * [R20] A pair the GLOBAL scan already read for this event at THIS extractor
+ * version (the normal case for a held — therefore covered — name that is then
+ * armed) costs no model call: the global scan banks its own ledger row with
+ * `attempts = 0` (`bankGlobalScan`, lib/earnings/extract-newsletter-bogeys.ts).
+ * Until 2026-10-20 the shortcut read the `earnings_bogeys` row instead, which
+ * carries no extractor version, so a version bump could never re-read an
+ * article version 1 had already extracted.
  *
  * [R13]/[R22] The step is a LOOP OF MODEL CALLS, each tens of seconds. Three
  * things stop a pass, all of them `pending` (which costs no attempt) so the next
@@ -37,7 +40,6 @@ import {
   extractBogeysFromArticleForEvent,
   NEWSLETTER_EXTRACTOR_VERSION,
 } from "@/lib/earnings/extract-newsletter-bogeys";
-import { bogeyHasContentSql } from "@/lib/mutations/earnings-bogeys";
 import { stableHash, type PrepareStepDefinition } from "../prepare-armed-event";
 
 /** How far back the rescan reaches. Bogeys age out fast; two weeks covers the
@@ -146,28 +148,18 @@ export function makeNewsletterRescanStep(
           break;
         }
 
-        // [R20] The global scan may already have extracted this very article for
-        // this event — the normal case for a name that was HELD (so covered) and
-        // is then armed. Bank the pair as a hit from the existing bogey row and
-        // spend no model call on it. Never disturbs a live claim.
-        const already = db
-          // Only a row that holds something is an extraction. An all-empty row
-          // (the pre-ruling global scan stored them) banked as a hit would stop
-          // this pair from ever being read for the armed event.
+        // [R20] The global scan may already have read this very article for this
+        // event at this version — the normal case for a name that was HELD (so
+        // covered) and is then armed. Its ledger row (attempts 0: no rescan
+        // attempt was spent) is the record; spend no model call on the pair.
+        const banked = db
           .prepare(
-            `SELECT 1 AS present FROM earnings_bogeys
-              WHERE event_id = ? AND research_article_id = ? AND ${bogeyHasContentSql()} LIMIT 1`,
+            `SELECT 1 AS present FROM earnings_bogey_scans
+              WHERE event_id = ? AND article_id = ? AND extractor_version = ?
+                AND status IN ('hit', 'no_numbers') AND attempts = 0`,
           )
-          .get(e.id, article.id) as { present: number } | undefined;
-        if (already) {
-          db.prepare(
-            `INSERT INTO earnings_bogey_scans (event_id, article_id, extractor_version, status, attempts, scanned_at, updated_at)
-             VALUES (?, ?, ?, 'hit', 0, datetime('now'), datetime('now'))
-             ON CONFLICT(event_id, article_id, extractor_version) DO UPDATE SET
-               status = 'hit', scanned_at = COALESCE(earnings_bogey_scans.scanned_at, datetime('now')),
-               claim_token = NULL, updated_at = datetime('now')
-             WHERE earnings_bogey_scans.status <> 'claimed'`,
-          ).run(e.id, article.id, NEWSLETTER_EXTRACTOR_VERSION);
+          .get(e.id, article.id, NEWSLETTER_EXTRACTOR_VERSION) as { present: number } | undefined;
+        if (banked) {
           preExisting += 1;
           continue;
         }
