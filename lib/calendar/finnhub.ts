@@ -153,10 +153,16 @@ export async function fetchFinnhubEarningsForSymbols(
       `?from=${startDate}&to=${endDate}&symbol=${encodeURIComponent(symbol)}&token=${apiKey}`;
     try {
       const data = await fetchJson<EarningsCalendarResponse>(url);
-      if (data.earningsCalendar && data.earningsCalendar.length > 0) {
-        for (const entry of data.earningsCalendar) {
-          hits.push({ queried: symbol, entry });
-        }
+      // A real answer always carries the array, empty when the symbol has no
+      // print in range. A 200 without it (`{"error": "..."}`, or not an object
+      // at all) is a failed fetch, never "scanned, nothing found": read as
+      // empty it let the sync's cleanup drop the symbol's stored rows
+      // (to-do 2026-10-12 (d)).
+      if (!Array.isArray(data?.earningsCalendar)) {
+        throw new Error(`Finnhub 200 without an earnings calendar: ${JSON.stringify(data).slice(0, 200)}`);
+      }
+      for (const entry of data.earningsCalendar) {
+        hits.push({ queried: symbol, entry });
       }
     } catch (err) {
       // One symbol's failure shouldn't abort the whole scan — but it must not

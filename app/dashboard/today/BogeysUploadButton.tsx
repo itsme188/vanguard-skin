@@ -37,6 +37,8 @@ export interface UploadResponse {
     eventSymbol?: string | null;
     offWeek?: boolean;
     weekFromServer?: boolean;
+    /** From the route: why no event matched this symbol. */
+    unmatchedReason?: string;
   }>;
   error?: string;
 }
@@ -96,7 +98,16 @@ export function describeUploadOutcome(result: UploadResponse, fileName: string):
     });
   }
   if (result.eventsUnmatched && result.eventsUnmatched.length > 0) {
-    lines.push({ text: `${result.eventsUnmatched.join(", ")} unmatched`, tone: "warn" });
+    const reasons = new Map(
+      (result.results ?? []).flatMap((r) =>
+        r.eventId == null && r.unmatchedReason ? [[r.symbol, r.unmatchedReason] as const] : [],
+      ),
+    );
+    const named = result.eventsUnmatched.map((sym) => {
+      const why = reasons.get(sym);
+      return why ? `${sym} (${why})` : sym;
+    });
+    lines.push({ text: `${named.join(", ")} unmatched`, tone: "warn" });
   }
   return lines;
 }

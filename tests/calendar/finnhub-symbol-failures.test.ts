@@ -105,6 +105,27 @@ describe("fetchFinnhubEarningsForSymbols — per-symbol failure reporting", () =
     expect(failures[0].message).toContain("429");
   });
 
+  it("a 200 carrying an error body is a failure, not an empty scan (to-do 2026-10-12 (d))", async () => {
+    (global.fetch as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce(httpOk({ error: "API limit reached. Please try again later." }))
+      // A genuine empty answer stays an empty answer.
+      .mockResolvedValueOnce(httpOk({ earningsCalendar: [] }));
+
+    const failures: FinnhubSymbolFailure[] = [];
+    const events = await fetchFinnhubEarningsForSymbols(
+      db,
+      ["AAA", "BBB"],
+      "2026-07-13",
+      "2026-07-19",
+      "2026-07-13",
+      undefined,
+      (failure) => failures.push(failure),
+    );
+    expect(events).toEqual([]);
+    expect(failures.map((f) => f.symbol)).toEqual(["AAA"]);
+    expect(failures[0].message).toContain("API limit reached");
+  });
+
   it("classifies a non-429 failure as not rate-limited", async () => {
     (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce(
       httpError(503, "Service unavailable"),

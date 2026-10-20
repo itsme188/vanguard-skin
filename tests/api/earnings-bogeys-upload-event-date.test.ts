@@ -135,7 +135,12 @@ describe("POST /api/earnings/bogeys/upload — the matched event's date", () => 
 
     const { body } = await upload("2026-09-07");
     expect(body.eventsUnmatched).toEqual(["XMPL4"]);
-    expect(body.results[0]).toEqual({ symbol: "XMPL4", eventId: null });
+    // No date, and the reason it matched nothing (to-do n1).
+    expect(body.results[0]).toEqual({
+      symbol: "XMPL4",
+      eventId: null,
+      unmatchedReason: "no earnings date on the calendar for it",
+    });
   });
 
   it("a rejected upload answers success false with its reason", async () => {

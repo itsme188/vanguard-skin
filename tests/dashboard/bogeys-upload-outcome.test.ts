@@ -8,6 +8,9 @@ import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { describeUploadOutcome } from "@/app/dashboard/today/BogeysUploadButton";
 import { anchorIndex } from "@/tests/helpers/source-anchor";
+import Database from "better-sqlite3";
+import { runMigrations } from "@/lib/db/migrate";
+import { unmatchedBogeyReason } from "@/lib/queries/bogey-event-match";
 
 const text = (r: Parameters<typeof describeUploadOutcome>[0], file = "sheet.pdf") =>
   describeUploadOutcome(r, file).map((l) => l.text);
@@ -78,6 +81,48 @@ describe("describeUploadOutcome", () => {
       { text: "0/2 matched", tone: "plain" },
       { text: "AAA, ZZZ unmatched", tone: "warn" },
     ]);
+  });
+});
+
+describe("describeUploadOutcome — why a symbol matched nothing (to-do n1)", () => {
+  it("prints the route's reason after each unmatched symbol that has one", () => {
+    const lines = describeUploadOutcome(
+      { symbolsExtracted: 2, eventsMatched: 0, eventsUnmatched: ["AAA", "ZZZ"], results: [
+        { symbol: "AAA", eventId: null, unmatchedReason: "next earnings on the calendar is 2026-11-05, outside 10/17–10/30" },
+        { symbol: "ZZZ", eventId: null },
+      ] },
+      "sheet.pdf",
+    );
+    expect(lines[1]).toEqual({
+      text: "AAA (next earnings on the calendar is 2026-11-05, outside 10/17–10/30), ZZZ unmatched",
+      tone: "warn",
+    });
+  });
+});
+
+describe("unmatchedBogeyReason", () => {
+  const db = new Database(":memory:");
+  runMigrations(db);
+  const add = (symbol: string, date: string, superseded = 0) =>
+    db.prepare(
+      `INSERT INTO calendar_events (source, event_type, event_date, title, source_key, symbol, superseded)
+       VALUES ('manual','earnings',?,?,?,?,?)`,
+    ).run(date, symbol, `manual:${symbol}:${date}:${superseded}`, symbol, superseded);
+  add("NXTQ", "2026-11-05");
+  add("LSTQ", "2026-07-30");
+  add("SUPQ", "2026-10-21", 1);
+
+  it("names the next live date outside the window, else the last, else says there is none", () => {
+    expect(unmatchedBogeyReason(db, ["NXTQ"], "2026-10-17", "2026-10-30")).toBe(
+      "next earnings on the calendar is 2026-11-05, outside 10/17–10/30",
+    );
+    expect(unmatchedBogeyReason(db, ["lstq"], "2026-10-17", "2026-10-30")).toBe(
+      "last earnings on the calendar was 2026-07-30, outside 10/17–10/30",
+    );
+    // A superseded row in the window is not a live date.
+    expect(unmatchedBogeyReason(db, ["SUPQ"], "2026-10-17", "2026-10-30")).toBe(
+      "no earnings date on the calendar for it",
+    );
   });
 });
 
