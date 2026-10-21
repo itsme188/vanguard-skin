@@ -38,7 +38,9 @@ import type Database from "better-sqlite3";
 import { randomUUID } from "node:crypto";
 import {
   extractBogeysFromArticleForEvent,
+  newsletterExtractorVersionForArticle,
   NEWSLETTER_EXTRACTOR_VERSION,
+  NEWSLETTER_IMAGE_EXTRACTOR_VERSION,
 } from "@/lib/earnings/extract-newsletter-bogeys";
 import { stableHash, type PrepareStepDefinition } from "../prepare-armed-event";
 
@@ -69,6 +71,8 @@ interface ArticleRow {
   subject: string;
   received_at: string;
   raw_text: string;
+  /** 1 when the stored HTML has any <img>; the HTML itself is read lazily. */
+  has_img: number;
 }
 interface EventRow {
   id: number;
@@ -101,6 +105,10 @@ export function makeNewsletterRescanStep(
         e?.symbol ?? null,
         RESCAN_WINDOW_DAYS,
         NEWSLETTER_EXTRACTOR_VERSION,
+        // 2026-10-21: drifts every armed event ONCE so image-bearing articles are
+        // re-read at the image version. Text-only articles keep their version-2
+        // ledger rows, so that pass makes no model call for them.
+        NEWSLETTER_IMAGE_EXTRACTOR_VERSION,
       ]);
     },
 
@@ -115,7 +123,8 @@ export function makeNewsletterRescanStep(
       // articles the sweep never offered the model.
       const candidates = db
         .prepare(
-          `SELECT a.id, rs.name AS source_name, a.subject, a.received_at, a.raw_text
+          `SELECT a.id, rs.name AS source_name, a.subject, a.received_at, a.raw_text,
+                  CASE WHEN instr(COALESCE(a.raw_html, ''), '<img') > 0 THEN 1 ELSE 0 END AS has_img
              FROM research_articles a JOIN research_sources rs ON rs.id = a.source_id
             WHERE datetime(a.received_at) >= datetime('now', ?) AND a.raw_text IS NOT NULL AND length(a.raw_text) > 200
             ORDER BY a.received_at DESC, a.id DESC`,
@@ -128,11 +137,29 @@ export function makeNewsletterRescanStep(
       let errors = 0;
       let deferred = 0;
       let preExisting = 0;
+      let imageRetries = 0;
       let modelCalls = 0;
       let budgetReached = false;
       const startedAt = ctx.now();
 
-      for (const article of candidates) {
+      const htmlStmt = db.prepare(`SELECT raw_html FROM research_articles WHERE id = ?`);
+      for (const candidate of candidates) {
+        // The HTML is only needed for its images; read it per article rather
+        // than holding two weeks of it in memory.
+        const rawHtml = candidate.has_img
+          ? ((htmlStmt.get(candidate.id) as { raw_html: string | null } | undefined)?.raw_html ?? null)
+          : null;
+        const article = {
+          id: candidate.id,
+          source_name: candidate.source_name,
+          subject: candidate.subject,
+          received_at: candidate.received_at,
+          raw_text: candidate.raw_text,
+          raw_html: rawHtml,
+        };
+        // Image-bearing articles are read at the image version, everything else
+        // at the text version (lib/earnings/extract-newsletter-bogeys.ts).
+        const version = newsletterExtractorVersionForArticle(article);
         // [R13] Between articles only: an in-flight call is allowed to finish and
         // be BOOKED, because its bogey write has already landed — dropping the
         // ledger row would just buy a duplicate model call on the next tick.
@@ -158,7 +185,7 @@ export function makeNewsletterRescanStep(
               WHERE event_id = ? AND article_id = ? AND extractor_version = ?
                 AND status IN ('hit', 'no_numbers') AND attempts = 0`,
           )
-          .get(e.id, article.id, NEWSLETTER_EXTRACTOR_VERSION) as { present: number } | undefined;
+          .get(e.id, article.id, version) as { present: number } | undefined;
         if (banked) {
           preExisting += 1;
           continue;
@@ -186,7 +213,7 @@ export function makeNewsletterRescanStep(
           .run(
             e.id,
             article.id,
-            NEWSLETTER_EXTRACTOR_VERSION,
+            version,
             token,
             SCAN_MAX_ATTEMPTS,
             `-${CLAIM_STALE_MINUTES} minutes`,
@@ -200,7 +227,7 @@ export function makeNewsletterRescanStep(
                  FROM earnings_bogey_scans
                 WHERE event_id = ? AND article_id = ? AND extractor_version = ?`,
             )
-            .get(`-${CLAIM_STALE_MINUTES} minutes`, e.id, article.id, NEWSLETTER_EXTRACTOR_VERSION) as
+            .get(`-${CLAIM_STALE_MINUTES} minutes`, e.id, article.id, version) as
             | { status: string; attempts: number; stale: number }
             | undefined;
           if (row?.status === "claimed" && row.stale === 0) {
@@ -228,21 +255,22 @@ export function makeNewsletterRescanStep(
                       claim_token = NULL, updated_at = datetime('now')
                 WHERE event_id = ? AND article_id = ? AND extractor_version = ? AND claim_token = ?`,
             )
-            .run(status, modelId, attemptDelta, status, e.id, article.id, NEWSLETTER_EXTRACTOR_VERSION, token);
+            .run(status, modelId, attemptDelta, status, e.id, article.id, version, token);
 
         try {
-          const r = await extract(db, article, {
-            event_id: e.id,
-            symbol: e.symbol,
-            event_date: e.event_date,
-          });
+          const r = await extract(
+            db,
+            article,
+            { event_id: e.id, symbol: e.symbol, event_date: e.event_date },
+            { signal: ctx.signal },
+          );
           if (!r.called) {
             // The symbol isn't in this article: not a scan, and not something to
             // bank. Release the claim row so a later re-symbol of the event (or a
             // corrected article body) is free to try again.
             db.prepare(
               `DELETE FROM earnings_bogey_scans WHERE event_id = ? AND article_id = ? AND extractor_version = ? AND claim_token = ?`,
-            ).run(e.id, article.id, NEWSLETTER_EXTRACTOR_VERSION, token);
+            ).run(e.id, article.id, version, token);
             continue;
           }
           scanned += 1;
@@ -250,6 +278,13 @@ export function makeNewsletterRescanStep(
           if (r.bogeysStored > 0) {
             hits += 1;
             finalize("hit", r.modelId, 1);
+          } else if (r.imagesIncomplete) {
+            // The model read the text but not every picture: never a final
+            // "no numbers". Booked as a retryable error, which spends one of the
+            // pair's SCAN_MAX_ATTEMPTS, so a picture that is gone for good stops
+            // costing calls; the step itself goes `pending`, not `failed`.
+            imageRetries += 1;
+            finalize("error", r.modelId, 1);
           } else {
             finalize("no_numbers", r.modelId, 1);
           }
@@ -272,6 +307,9 @@ export function makeNewsletterRescanStep(
         return { status: "pending", reason: `${deferred} pair(s) claimed by another pass; resume next tick` };
       }
       if (budgetReached) return { status: "pending", reason: "budget reached; resume next tick" };
+      if (imageRetries > 0) {
+        return { status: "pending", reason: `${imageRetries} article(s) had unreadable images; retry next tick` };
+      }
 
       const extras: string[] = [];
       if (preExisting > 0) extras.push(`${preExisting} pre-existing from the global scan`);

@@ -160,6 +160,67 @@ export async function backfillArticleHtml(
   return { updated, failed };
 }
 
+export interface RefetchHtmlOutcome {
+  id: number;
+  /** `rewritten` only when `apply` and the stored HTML changed. */
+  status: "rewritten" | "would_rewrite" | "unchanged" | "no_html" | "not_found" | "error";
+  beforeLength: number;
+  afterLength: number;
+  error?: string;
+}
+
+/**
+ * Re-fetch and re-sanitize the stored HTML of specific articles (2026-10-21).
+ *
+ * `backfillArticleHtml` fills only a NULL `raw_html`. An article stored before
+ * the footer-trim fix (lib/gmail/sanitize.ts: "View in browser" is no longer a
+ * footer marker) can hold a body cut off at its header link, with every image
+ * gone; only Gmail still has the original. Dry run unless `apply`. The caller
+ * picks the articles; this never sweeps the table.
+ */
+export async function refetchArticleHtml(
+  db: Database.Database,
+  gmail: gmail_v1.Gmail,
+  articleIds: number[],
+  opts: { apply: boolean },
+): Promise<RefetchHtmlOutcome[]> {
+  const select = db.prepare(`SELECT id, gmail_message_id, raw_html FROM research_articles WHERE id = ?`);
+  const update = db.prepare(`UPDATE research_articles SET raw_html = ? WHERE id = ?`);
+  const out: RefetchHtmlOutcome[] = [];
+  for (const id of articleIds) {
+    const row = select.get(id) as { id: number; gmail_message_id: string | null; raw_html: string | null } | undefined;
+    const beforeLength = row?.raw_html?.length ?? 0;
+    if (!row || !row.gmail_message_id) {
+      out.push({ id, status: "not_found", beforeLength, afterLength: 0 });
+      continue;
+    }
+    try {
+      const msg = await gmail.users.messages.get({ userId: "me", id: row.gmail_message_id, format: "full" });
+      const { html } = extractBody(msg.data.payload);
+      if (!html) {
+        out.push({ id, status: "no_html", beforeLength, afterLength: 0 });
+        continue;
+      }
+      const cleaned = normalizeNewsletterHtml(sanitizeNewsletterHtml(html)).slice(0, RAW_HTML_STORE_CAP);
+      if (cleaned === row.raw_html) {
+        out.push({ id, status: "unchanged", beforeLength, afterLength: cleaned.length });
+        continue;
+      }
+      if (opts.apply) update.run(cleaned, id);
+      out.push({ id, status: opts.apply ? "rewritten" : "would_rewrite", beforeLength, afterLength: cleaned.length });
+    } catch (err) {
+      out.push({
+        id,
+        status: "error",
+        beforeLength,
+        afterLength: 0,
+        error: (err instanceof Error ? err.message : String(err)).slice(0, 200),
+      });
+    }
+  }
+  return out;
+}
+
 // ── Helpers ─────────────────────────────────────────────────────────
 
 function buildGmailQuery(source: {

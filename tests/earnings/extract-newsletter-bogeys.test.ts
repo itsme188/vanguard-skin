@@ -68,6 +68,7 @@ function makeDb(): Database.Database {
       subject TEXT NOT NULL,
       received_at TEXT NOT NULL,
       raw_text TEXT,
+      raw_html TEXT,
       bogeys_scanned_at TEXT
     );
     CREATE TABLE earnings_bogeys (

@@ -29,7 +29,12 @@ export function makeNewsletterSynthesisStep(
         inputs?.event.symbol ?? null,
         inputs?.event.event_date ?? null,
         inputs?.cutoffIso ?? null,
-        (inputs?.articles ?? []).map((a) => a.id).sort((x, y) => x - y),
+        // An article with images the read can fetch is keyed with a marker, so
+        // the read re-runs once for an event whose previews carry pictures
+        // (2026-10-21) while every text-only event keeps its fingerprint.
+        [...(inputs?.articles ?? [])]
+          .sort((x, y) => x.id - y.id)
+          .map((a) => (a.imageUrls.length > 0 ? `${a.id}:img${a.imageUrls.length}` : a.id)),
       ]);
     },
 
@@ -37,9 +42,13 @@ export function makeNewsletterSynthesisStep(
       try {
         const out = await run(db, eventId, { signal: ctx.signal });
         if (out.articlesRead === 0) return { status: "done", note: "no preview names the company yet" };
+        const read = out.imagesRead ?? 0;
+        const unreadable = out.imagesUnreadable ?? 0;
+        const images =
+          read > 0 || unreadable > 0 ? `, ${read} image(s)${unreadable > 0 ? ` (${unreadable} unreadable)` : ""}` : "";
         return {
           status: "done",
-          note: `${out.articlesRead} article(s) read${out.stored ? "" : ", nothing about this print"}`,
+          note: `${out.articlesRead} article(s) read${images}${out.stored ? "" : ", nothing about this print"}`,
         };
       } catch (err) {
         return { status: "failed", error: (err instanceof Error ? err.message : String(err)).slice(0, 300) };

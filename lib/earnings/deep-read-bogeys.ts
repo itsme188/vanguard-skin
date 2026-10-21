@@ -48,6 +48,12 @@ import {
 import { saveBogeyWithRecompile } from "@/lib/mutations/earnings-bogeys";
 import { issuerSiblings } from "@/lib/securities/issuer-family";
 import type { ExtraMetricSpec } from "@/lib/print-watch/extra-metrics";
+import {
+  fetchNewsletterImages,
+  newsletterImageUrls,
+  MAX_NEWSLETTER_IMAGES,
+  type FetchNewsletterImagesFn,
+} from "@/lib/earnings/newsletter-images";
 
 /** Bump when the prompt or parser changes enough that a stored reading should
  *  be redone; it is part of the prepare step's fingerprint. */
@@ -182,8 +188,9 @@ export function mentionExcerpt(text: string, offsets: number[]): string {
 export interface DeepReadInputs {
   event: { id: number; symbol: string; event_date: string; slot: "bmo" | "amc" | null };
   companyName: string | null;
-  /** Articles before the slot floor that mention the company, newest first, with excerpts. */
-  articles: Array<DeepReadArticle & { excerpt: string; label: string }>;
+  /** Articles before the slot floor that mention the company, newest first, with
+   *  excerpts and the content images the read may fetch ([] = text only). */
+  articles: Array<DeepReadArticle & { excerpt: string; label: string; imageUrls: string[] }>;
   /** ISO UTC instant; only articles received before it are read. */
   cutoffIso: string;
 }
@@ -230,17 +237,21 @@ export function gatherDeepReadInputs(db: Database.Database, eventId: number): De
   const sqlInstant = (ms: number) => new Date(ms).toISOString().slice(0, 19).replace("T", " ");
   const rows = db
     .prepare(
-      `SELECT a.id, rs.name AS source_name, a.subject, a.received_at, a.raw_text
+      `SELECT a.id, rs.name AS source_name, a.subject, a.received_at, a.raw_text,
+              CASE WHEN instr(COALESCE(a.raw_html, ''), '<img') > 0 THEN 1 ELSE 0 END AS has_img
          FROM research_articles a JOIN research_sources rs ON rs.id = a.source_id
         WHERE a.raw_text IS NOT NULL AND length(a.raw_text) > 200
           AND datetime(a.received_at) >= datetime(?) AND datetime(a.received_at) < datetime(?)
         ORDER BY a.received_at DESC, a.id DESC`,
     )
-    .all(sqlInstant(fromMs), sqlInstant(cutoffMs)) as DeepReadArticle[];
+    .all(sqlInstant(fromMs), sqlInstant(cutoffMs)) as Array<DeepReadArticle & { has_img: number }>;
+  // The HTML is read only for an article that names the company and has an
+  // <img> at all, and only for its image URLs (this runs on every fingerprint).
+  const htmlStmt = db.prepare(`SELECT raw_html FROM research_articles WHERE id = ?`);
 
   const articles: DeepReadInputs["articles"] = [];
   let total = 0;
-  for (const a of rows) {
+  for (const { has_img, ...a } of rows) {
     const at = receivedMs(a.received_at);
     if (!Number.isFinite(at) || at >= cutoffMs || at < fromMs) continue;
     const text = `${a.subject}\n${a.raw_text}`;
@@ -248,7 +259,10 @@ export function gatherDeepReadInputs(db: Database.Database, eventId: number): De
     if (!excerpt) continue;
     if (articles.length >= MAX_ARTICLES || total + excerpt.length > MAX_TOTAL_EXCERPT_CHARS) break;
     total += excerpt.length;
-    articles.push({ ...a, excerpt, label: newsletterIssueLabel(a) });
+    const imageUrls = has_img
+      ? newsletterImageUrls((htmlStmt.get(a.id) as { raw_html: string | null } | undefined)?.raw_html ?? null)
+      : [];
+    articles.push({ ...a, excerpt, label: newsletterIssueLabel(a), imageUrls });
   }
 
   return {
@@ -259,7 +273,32 @@ export function gatherDeepReadInputs(db: Database.Database, eventId: number): De
   };
 }
 
-export function buildDeepReadPrompt(inputs: DeepReadInputs, existingLines: string[]): string {
+/** One attached image and the article it came from, in attachment order. */
+export interface DeepReadImageRef {
+  articleId: number;
+  label: string;
+}
+
+/**
+ * Which images the read attaches: newest article first, in document order
+ * within an article, at most MAX_NEWSLETTER_IMAGES in all.
+ */
+export function selectDeepReadImages(inputs: DeepReadInputs): Array<DeepReadImageRef & { url: string }> {
+  const out: Array<DeepReadImageRef & { url: string }> = [];
+  for (const a of inputs.articles) {
+    for (const url of a.imageUrls) {
+      if (out.length >= MAX_NEWSLETTER_IMAGES) return out;
+      out.push({ articleId: a.id, label: a.label, url });
+    }
+  }
+  return out;
+}
+
+export function buildDeepReadPrompt(
+  inputs: DeepReadInputs,
+  existingLines: string[],
+  attached: DeepReadImageRef[] = [],
+): string {
   const { event, companyName } = inputs;
   const who = companyName ? `${event.symbol} (${companyName})` : event.symbol;
   const when = event.slot === "amc" ? "after the close" : event.slot === "bmo" ? "before the open" : "time not known";
@@ -295,6 +334,14 @@ export function buildDeepReadPrompt(inputs: DeepReadInputs, existingLines: strin
     `}]`,
     `If no article gives anything about this print, return [{}].`,
     ``,
+    ...(attached.length > 0
+      ? [
+          `IMAGES: ${attached.length} image(s) are attached after this text, in this order: ${attached
+            .map((r, i) => `image ${i + 1} is from ARTICLE ${r.articleId} (${r.label})`)
+            .join("; ")}. They are part of those articles: many authors post their figures only as screenshots. One image often holds several companies; read only the block headed by ${event.symbol}${companyName ? ` or ${companyName}` : ""}, never a neighbouring company's numbers. Cite a figure read from an image with that image's ARTICLE id.`,
+          ``,
+        ]
+      : []),
     ...blocks,
   ].join("\n");
 }
@@ -378,6 +425,10 @@ export interface DeepReadOutcome {
   articlesRead: number;
   stored: boolean;
   modelId: string | null;
+  /** Images attached to the call, and images that could not be fetched (the
+   *  read went ahead without those). */
+  imagesRead?: number;
+  imagesUnreadable?: number;
 }
 
 /**
@@ -388,15 +439,49 @@ export interface DeepReadOutcome {
 export async function runDeepRead(
   db: Database.Database,
   eventId: number,
-  opts: { signal?: AbortSignal } = {},
+  opts: { signal?: AbortSignal; fetchImages?: FetchNewsletterImagesFn } = {},
 ): Promise<DeepReadOutcome> {
   const inputs = gatherDeepReadInputs(db, eventId);
-  if (!inputs || inputs.articles.length === 0) return { articlesRead: 0, stored: false, modelId: null };
+  if (!inputs || inputs.articles.length === 0) {
+    return { articlesRead: 0, stored: false, modelId: null };
+  }
 
-  const prompt = buildDeepReadPrompt(inputs, existingWatchLinesForEvent(db, eventId));
+  // Images degrade, never fail: a picture that cannot be fetched is left out
+  // and counted, and the read goes ahead on the rest.
+  const wanted = selectDeepReadImages(inputs);
+  const attached: Array<DeepReadImageRef & { mediaType: string; data: Uint8Array }> = [];
+  if (wanted.length > 0) {
+    try {
+      const fetched = await (opts.fetchImages ?? fetchNewsletterImages)(
+        wanted.map((w) => w.url),
+        { signal: opts.signal },
+      );
+      const byUrl = new Map((Array.isArray(fetched?.images) ? fetched.images : []).map((img) => [img.url, img]));
+      for (const w of wanted) {
+        const img = byUrl.get(w.url);
+        if (img) attached.push({ articleId: w.articleId, label: w.label, mediaType: img.mediaType, data: img.data });
+      }
+    } catch (err) {
+      console.warn(`[deep-read] event ${eventId}: image fetch failed; reading text only:`, err instanceof Error ? err.message : err);
+    }
+  }
+
+  const prompt = buildDeepReadPrompt(inputs, existingWatchLinesForEvent(db, eventId), attached);
   const { text: responseText } = await generateTextForFeature("armedBogeyDeepRead", {
     maxOutputTokens: 8_192,
-    prompt,
+    ...(attached.length > 0
+      ? {
+          messages: [
+            {
+              role: "user" as const,
+              content: [
+                { type: "text" as const, text: prompt },
+                ...attached.map((a) => ({ type: "image" as const, image: a.data, mediaType: a.mediaType })),
+              ],
+            },
+          ],
+        }
+      : { prompt }),
     abortSignal: opts.signal,
   });
   const { modelId } = resolveFeatureModel("armedBogeyDeepRead");
@@ -423,5 +508,11 @@ export async function runDeepRead(
     extra_metrics_json: result.watch_metrics.length > 0 ? JSON.stringify(result.watch_metrics) : null,
     ai_extraction_model: modelId,
   });
-  return { articlesRead: inputs.articles.length, stored: !upsert.skipped, modelId };
+  return {
+    articlesRead: inputs.articles.length,
+    stored: !upsert.skipped,
+    modelId,
+    // Only when the read involved images, so a text-only outcome keeps its shape.
+    ...(wanted.length > 0 ? { imagesRead: attached.length, imagesUnreadable: wanted.length - attached.length } : {}),
+  };
 }

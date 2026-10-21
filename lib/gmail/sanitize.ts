@@ -41,9 +41,11 @@ export function sanitizeNewsletterHtml(html: string): string {
   // 2. Remove HTML comments (may contain conditional IE hacks, tracking, etc.)
   result = result.replace(/<!--[\s\S]*?-->/g, "");
 
-  // 3. Remove tracking pixels (1x1 images, hidden images)
+  // 3. Remove tracking pixels (0- or 1-pixel images, hidden images). The
+  //    dimension must END at the 0/1: the old pattern matched the leading "1"
+  //    of width="100" or width="1456" and deleted real content images.
   result = result.replace(
-    /<img[^>]*(?:width\s*=\s*["']?1["']?|height\s*=\s*["']?1["']?)[^>]*\/?>/gi,
+    /<img[^>]*(?:width\s*=\s*["']?[01](?:px)?(?![\d.])|height\s*=\s*["']?[01](?:px)?(?![\d.]))[^>]*\/?>/gi,
     ""
   );
   result = result.replace(
@@ -133,8 +135,11 @@ export function trimEmailFooter(html: string): string {
     /email\s+preferences/i,                                          // Email preferences
     /powered\s+by\s+\w/i,                                           // Powered by Mailchimp/etc.
     /\d{2,5}\s+\w[\w\s]*(?:street|st|ave|avenue|blvd|road|rd),/i,   // Physical addresses
-    /view\s+(?:this\s+)?(?:email\s+)?in\s+(?:your\s+)?browser/i,    // View in browser
     /sent\s+(?:to|by)\s+\S+@\S+/i,                                  // Sent to/by email
+    // NOT "View in browser": it is a HEADER link in nearly every template
+    // (normalizeNewsletterHtml strips it there). Behind a long preheader it
+    // fell past the 20% skip below and cut the whole post — Substack's TMT
+    // Breakout bogey screenshots were lost this way (2026-10-21).
   ];
 
   // Skip the first 20% to avoid false positives in article body.

@@ -30,6 +30,12 @@ import {
   mergeWatchMetricsJson,
   parseWatchMetrics,
 } from "@/lib/earnings/watch-metrics";
+import {
+  fetchNewsletterImages,
+  newsletterImageUrls,
+  type FetchNewsletterImagesFn,
+  type NewsletterImage,
+} from "@/lib/earnings/newsletter-images";
 
 // Max chars per article sent to Claude. Bogey mentions are almost always in
 // prose context near the top of a preview newsletter, not buried deep in a
@@ -51,6 +57,15 @@ export interface ArticleInput {
   subject: string;
   received_at: string;
   raw_text: string;
+  /** Stored sanitized HTML. Read only for its content images
+   *  (lib/earnings/newsletter-images.ts); absent or null = text only. */
+  raw_html?: string | null;
+}
+
+/** Seams for the image half of the scan. Production passes nothing. */
+export interface NewsletterScanDeps {
+  fetchImages?: FetchNewsletterImagesFn;
+  signal?: AbortSignal;
 }
 
 export interface UpcomingReporter {
@@ -85,8 +100,10 @@ export interface ExtractedBogey {
  */
 export function buildExtractionPrompt(
   article: ArticleInput,
-  reporters: UpcomingReporter[]
+  reporters: UpcomingReporter[],
+  opts: { imageCount?: number } = {},
 ): string {
+  const imageCount = opts.imageCount ?? 0;
   const reportersList = reporters
     .map((r) => {
       const head = `${r.symbol} (reports ${r.event_date})`;
@@ -114,6 +131,7 @@ export function buildExtractionPrompt(
     `CONTENT:`,
     truncatedText,
     ``,
+    ...(imageCount > 0 ? [imagesInstruction(imageCount), ``] : []),
     `INSTRUCTIONS:`,
     `Return a JSON array (and nothing else — no markdown fence, no preamble). Each element captures the bogeys the author gives for ONE of the listed upcoming reporters.`,
     ``,
@@ -158,6 +176,19 @@ export function buildExtractionPrompt(
     `- Numbers are RAW dollars: convert "$40.2B" to 40200000000.`,
     `- If the article gives no numbers and flags no watch metric for any listed reporter, return [].`,
     `- Return ONLY the JSON array. No other text.`,
+  ].join("\n");
+}
+
+/**
+ * The prompt paragraph that goes with attached newsletter images. Exported for
+ * the tests. One screenshot often holds several companies (a day's reporters
+ * side by side), so the model is told to read only the listed reporters' block.
+ */
+export function imagesInstruction(imageCount: number): string {
+  return [
+    `IMAGES: ${imageCount} image(s) from this newsletter are attached after this text, in the order they appear in it. They are part of the CONTENT: many authors post their figures only as screenshots, so read them as carefully as the text.`,
+    `- One image often holds blocks for SEVERAL companies. Find the block headed by a listed reporter's ticker or company name and read only that block. Never take a number from another company's block, even when it sits right beside it.`,
+    `- A listed reporter that appears in no image and no text gets no element.`,
   ].join("\n");
 }
 
@@ -337,7 +368,7 @@ function getUnscannedArticles(
   const batchSize = opts.batchSize ?? DEFAULT_BATCH_SIZE;
   return db
     .prepare(
-      `SELECT a.id, rs.name AS source_name, a.subject, a.received_at, a.raw_text
+      `SELECT a.id, rs.name AS source_name, a.subject, a.received_at, a.raw_text, a.raw_html
        FROM research_articles a
        JOIN research_sources rs ON rs.id = a.source_id
        WHERE a.bogeys_scanned_at IS NULL
@@ -364,6 +395,24 @@ function markArticleScanned(db: Database.Database, articleId: number): void {
  *  version 1 already extracted, so their margin / segment / KPI lines reach the
  *  sheet; the stored numbers are kept (`preserveExisting`). */
 export const NEWSLETTER_EXTRACTOR_VERSION = 2;
+
+/**
+ * 3 (2026-10-21): images. The version an article is read at when it carries
+ * content images the scan can fetch (`newsletterImageUrls`). Only those
+ * articles move: a text-only article keeps NEWSLETTER_EXTRACTOR_VERSION, so
+ * its banked ledger rows still answer the rescan's R20 shortcut and no model
+ * call is spent re-reading it. An image-bearing article read text-only under
+ * version 2 (and banked `no_numbers`) has no version-3 row, so the armed
+ * rescan reads it again, this time with its pictures.
+ */
+export const NEWSLETTER_IMAGE_EXTRACTOR_VERSION = 3;
+
+/** The ledger version this article is read at (see the two constants above). */
+export function newsletterExtractorVersionForArticle(article: Pick<ArticleInput, "raw_html">): number {
+  return newsletterImageUrls(article.raw_html).length > 0
+    ? NEWSLETTER_IMAGE_EXTRACTOR_VERSION
+    : NEWSLETTER_EXTRACTOR_VERSION;
+}
 
 /**
  * [C-3] Issue-scoped bogey label: "<publication> <M/D>" with the issue date in
@@ -421,6 +470,7 @@ function bankGlobalScan(
   db: Database.Database,
   eventId: number,
   articleId: number,
+  version: number,
   status: "hit" | "no_numbers",
   modelId: string | null,
 ): void {
@@ -429,7 +479,7 @@ function bankGlobalScan(
        (event_id, article_id, extractor_version, status, model_id, attempts, scanned_at, updated_at)
      VALUES (?, ?, ?, ?, ?, 0, datetime('now'), datetime('now'))
      ON CONFLICT(event_id, article_id, extractor_version) DO NOTHING`,
-  ).run(eventId, articleId, NEWSLETTER_EXTRACTOR_VERSION, status, modelId);
+  ).run(eventId, articleId, version, status, modelId);
 }
 
 /** The stored watch lines of the row this write lands on, so a re-scan adds to
@@ -456,6 +506,12 @@ interface CallAndStoreResult {
   called: boolean;
   /** The model call itself failed — the caller decides whether to retry. */
   failed: boolean;
+  /** The article carries content images and at least one could not be
+   *  fetched, so the model read less than the whole article. A reporter with
+   *  no hit is then NOT a final "no numbers". */
+  imagesIncomplete: boolean;
+  /** Ledger version the article was read at. */
+  version: number;
 }
 
 /**
@@ -474,13 +530,18 @@ async function callAndStore(
   article: ArticleInput,
   mentioned: UpcomingReporter[],
   opts: { bankLedger: boolean },
+  deps: NewsletterScanDeps = {},
 ): Promise<CallAndStoreResult> {
+  const imageUrls = newsletterImageUrls(article.raw_html);
+  const version = imageUrls.length > 0 ? NEWSLETTER_IMAGE_EXTRACTOR_VERSION : NEWSLETTER_EXTRACTOR_VERSION;
   const nothing: CallAndStoreResult = {
     bogeysStored: 0,
     eventsMatched: 0,
     modelId: null,
     called: false,
     failed: false,
+    imagesIncomplete: false,
+    version,
   };
   if (mentioned.length === 0) return nothing;
   const reporters = mentioned.map((r) => ({
@@ -488,13 +549,49 @@ async function callAndStore(
     existing_lines: existingWatchLinesForEvent(db, r.event_id),
   }));
 
+  // Images first, so a fetch failure degrades this call to text instead of
+  // failing it. `fetchNewsletterImages` never throws; the guard is for a seam.
+  let images: NewsletterImage[] = [];
+  let imagesIncomplete = false;
+  if (imageUrls.length > 0) {
+    try {
+      const fetched = await (deps.fetchImages ?? fetchNewsletterImages)(imageUrls, { signal: deps.signal });
+      images = Array.isArray(fetched?.images) ? fetched.images : [];
+      imagesIncomplete = images.length < imageUrls.length;
+      if (imagesIncomplete) {
+        console.warn(
+          `[earnings/extract-newsletter-bogeys] article ${article.id}: ${imageUrls.length - images.length} of ${imageUrls.length} image(s) unreadable; reading the rest`,
+        );
+      }
+    } catch (err) {
+      imagesIncomplete = true;
+      console.warn(
+        `[earnings/extract-newsletter-bogeys] article ${article.id}: image fetch failed; reading text only:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
+
+  const prompt = buildExtractionPrompt(article, reporters, { imageCount: images.length });
   let responseText: string;
   try {
     const { text } = await generateTextForFeature("newsletterBogeyExtraction", {
       // Watch metrics run ~80 tokens a line, up to six lines a company: 2,048
       // truncated a multi-company preview mid-array, which parses as nothing.
       maxOutputTokens: 6144,
-      prompt: buildExtractionPrompt(article, reporters),
+      ...(images.length > 0
+        ? {
+            messages: [
+              {
+                role: "user" as const,
+                content: [
+                  { type: "text" as const, text: prompt },
+                  ...images.map((img) => ({ type: "image" as const, image: img.data, mediaType: img.mediaType })),
+                ],
+              },
+            ],
+          }
+        : { prompt }),
     });
     responseText = text;
   } catch (err) {
@@ -502,7 +599,7 @@ async function callAndStore(
       `[earnings/extract-newsletter-bogeys] Claude failed for article ${article.id}:`,
       err instanceof Error ? err.message : err
     );
-    return { ...nothing, called: true, failed: true };
+    return { ...nothing, called: true, failed: true, imagesIncomplete };
   }
 
   // Mirrors app/api/earnings/bogeys/upload/route.ts:149 — never record
@@ -515,13 +612,19 @@ async function callAndStore(
   const bank = () => {
     if (!opts.bankLedger) return;
     for (const r of reporters) {
-      bankGlobalScan(db, r.event_id, article.id, storedEvents.has(r.event_id) ? "hit" : "no_numbers", modelId);
+      const hit = storedEvents.has(r.event_id);
+      // A reporter the model found nothing for while some images were
+      // unreadable is not a final "no numbers": bank nothing, so the armed
+      // rescan reads the article again (with its pictures) instead of taking
+      // the R20 shortcut past it.
+      if (!hit && imagesIncomplete) continue;
+      bankGlobalScan(db, r.event_id, article.id, version, hit ? "hit" : "no_numbers", modelId);
     }
   };
 
   if (!responseText.trim()) {
     bank();
-    return { bogeysStored: 0, eventsMatched: 0, modelId, called: true, failed: false };
+    return { bogeysStored: 0, eventsMatched: 0, modelId, called: true, failed: false, imagesIncomplete, version };
   }
 
   const extracted = parseExtractionResponse(responseText);
@@ -583,7 +686,7 @@ async function callAndStore(
   }
 
   bank();
-  return { bogeysStored, eventsMatched, modelId, called: true, failed: false };
+  return { bogeysStored, eventsMatched, modelId, called: true, failed: false, imagesIncomplete, version };
 }
 
 /**
@@ -595,10 +698,11 @@ async function callAndStore(
 export async function extractBogeysFromArticle(
   db: Database.Database,
   article: ArticleInput,
-  reporters: UpcomingReporter[]
+  reporters: UpcomingReporter[],
+  deps: NewsletterScanDeps = {},
 ): Promise<{ bogeysStored: number; eventsMatched: number }> {
   const mentioned = filterReportersMentionedInArticle(article, reporters);
-  const result = await callAndStore(db, article, mentioned, { bankLedger: true });
+  const result = await callAndStore(db, article, mentioned, { bankLedger: true }, deps);
 
   // Don't mark scanned on a transient AI failure — it should retry next run.
   if (result.failed) return { bogeysStored: 0, eventsMatched: 0 };
@@ -627,8 +731,15 @@ export async function extractBogeysFromArticle(
 export async function extractBogeysFromArticleForEvent(
   db: Database.Database,
   article: ArticleInput,
-  event: { event_id: number; symbol: string; event_date: string }
-): Promise<{ bogeysStored: number; modelId: string | null; called: boolean }> {
+  event: { event_id: number; symbol: string; event_date: string },
+  deps: NewsletterScanDeps = {},
+): Promise<{
+  bogeysStored: number;
+  modelId: string | null;
+  called: boolean;
+  /** Some content images were unreadable; optional so a test double may omit it. */
+  imagesIncomplete?: boolean;
+}> {
   const reporter: UpcomingReporter = {
     symbol: event.symbol.toUpperCase(),
     event_id: event.event_id,
@@ -638,13 +749,18 @@ export async function extractBogeysFromArticleForEvent(
     return { bogeysStored: 0, modelId: null, called: false };
   }
 
-  const result = await callAndStore(db, article, [reporter], { bankLedger: false });
+  const result = await callAndStore(db, article, [reporter], { bankLedger: false }, deps);
   if (result.failed) {
     throw new Error(
       `newsletter extraction failed for article ${article.id} / event ${event.event_id}`
     );
   }
-  return { bogeysStored: result.bogeysStored, modelId: result.modelId, called: true };
+  return {
+    bogeysStored: result.bogeysStored,
+    modelId: result.modelId,
+    called: true,
+    ...(result.imagesIncomplete ? { imagesIncomplete: true } : {}),
+  };
 }
 
 /**
