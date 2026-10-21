@@ -10,7 +10,9 @@
  *
  * Outcomes: no article names the company -> `done` with a note (nothing to
  * read is not a failure, and a later preview drifts the fingerprint); a model
- * or parse failure -> `failed` (an attempt; the runner caps at five).
+ * or parse failure -> `failed` (an attempt; the runner caps at five). A read
+ * that could not fetch some of its images stores the text reading and is also
+ * `failed`, so it is retried within that same cap (2026-10-21).
  */
 import { gatherDeepReadInputs, runDeepRead, DEEP_READ_VERSION } from "@/lib/earnings/deep-read-bogeys";
 import { stableHash, type PrepareStepDefinition } from "../prepare-armed-event";
@@ -44,6 +46,17 @@ export function makeNewsletterSynthesisStep(
         if (out.articlesRead === 0) return { status: "done", note: "no preview names the company yet" };
         const read = out.imagesRead ?? 0;
         const unreadable = out.imagesUnreadable ?? 0;
+        if (unreadable > 0) {
+          // The text reading is stored, but a bogey screenshot may be among the
+          // pictures it missed, so the read is not final. `failed` (one of the
+          // runner's capped attempts), not `pending`: a pending step costs no
+          // attempt and would re-run a frontier call every tick for a picture
+          // that is gone for good.
+          return {
+            status: "failed",
+            error: `${unreadable} image(s) unreadable; read ${out.articlesRead} article(s) without them, will retry`,
+          };
+        }
         const images =
           read > 0 || unreadable > 0 ? `, ${read} image(s)${unreadable > 0 ? ` (${unreadable} unreadable)` : ""}` : "";
         return {

@@ -15,11 +15,11 @@ vi.mock("@/lib/ai/generate", () => ({
   AIRefusalError: class AIRefusalError extends Error {},
 }));
 
-import { gatherDeepReadInputs, runDeepRead, DEEP_READ_VERSION } from "@/lib/earnings/deep-read-bogeys";
+import { gatherDeepReadInputs, runDeepRead, selectDeepReadImages, DEEP_READ_VERSION } from "@/lib/earnings/deep-read-bogeys";
 import { makeNewsletterSynthesisStep } from "@/lib/earnings/prepare-steps/newsletter-synthesis";
 import { stableHash } from "@/lib/earnings/prepare-armed-event";
 import type { FetchNewsletterImagesFn, NewsletterImageFetchResult } from "@/lib/earnings/newsletter-images";
-import { IMG_DAY1, IMG_DAY2, PNG_BYTES } from "../helpers/substack-email-fixture";
+import { CDN_DAY1, CDN_DAY2, IMG_DAY1, IMG_DAY2, PNG_BYTES } from "../helpers/substack-email-fixture";
 
 const FILLER = " Market color with nothing about any company in it, padding the body past the scan floor.".repeat(4);
 const IMAGE_HTML = `<h3>Tuesday: XMPL, ZETA</h3><figure><img src="${IMG_DAY1}" width="550"></figure><figure><img src="${IMG_DAY2}" width="550"></figure>`;
@@ -77,7 +77,7 @@ describe("deep read with images", () => {
     const txt = seedArticle("2026-10-20 12:00:00", "XMPL whisper above the Street.", "<p>XMPL words</p>");
     const inputs = gatherDeepReadInputs(db, ev)!;
     expect(inputs.articles.map((a) => [a.id, a.imageUrls])).toEqual([
-      [img, [IMG_DAY1, IMG_DAY2]],
+      [img, [CDN_DAY1, CDN_DAY2]],
       [txt, []],
     ]);
   });
@@ -131,5 +131,52 @@ describe("deep read with images", () => {
     const opts = generateTextMock.mock.calls[0][1];
     expect(typeof opts.prompt).toBe("string");
     expect(opts.prompt).not.toContain("IMAGES:");
+  });
+
+  it("the step is not final while an image was unreadable: it books a capped retry, keeping the text reading", async () => {
+    const ev = seedEvent();
+    const img = seedArticle("2026-10-21 12:00:00", "Tuesday: XMPL, ZETA", IMAGE_HTML);
+    generateTextMock.mockResolvedValueOnce({ text: SHEET(img) });
+    const step = makeNewsletterSynthesisStep({ run: (d, e, o) => runDeepRead(d, e, { ...o, fetchImages: fetchNone }) });
+    const out = await step.run(db, ev, { now: () => Date.now(), signal: new AbortController().signal });
+    // `failed` costs one of the runner's capped attempts; `pending` would not,
+    // and would re-run a frontier call every tick for a picture that is gone.
+    expect(out.status).toBe("failed");
+    expect(out.status === "failed" && out.error).toMatch(/2 image\(s\) unreadable/);
+    expect(db.prepare(`SELECT COUNT(*) AS n FROM earnings_bogeys`).get()).toEqual({ n: 1 });
+  });
+
+  it("all images read: the step is done and says so", async () => {
+    const ev = seedEvent();
+    const img = seedArticle("2026-10-21 12:00:00", "Tuesday: XMPL, ZETA", IMAGE_HTML);
+    generateTextMock.mockResolvedValueOnce({ text: SHEET(img) });
+    const step = makeNewsletterSynthesisStep({ run: (d, e, o) => runDeepRead(d, e, { ...o, fetchImages: fetchAll }) });
+    const out = await step.run(db, ev, { now: () => Date.now(), signal: new AbortController().signal });
+    expect(out).toEqual({ status: "done", note: "1 article(s) read, 2 image(s)" });
+  });
+
+  it("images come first from articles whose SUBJECT names the company, so a passing mention's charts cannot crowd them out", () => {
+    const ev = seedEvent();
+    const charts = Array.from(
+      { length: 4 },
+      (_, i) => `<figure><img src="https://substack-post-media.s3.amazonaws.com/public/images/chart${i}.png" width="550"></figure>`,
+    ).join("");
+    // Newer, names XMPL only in passing, four charts.
+    db.prepare(
+      `INSERT INTO research_articles (source_id, subject, sender, received_at, raw_text, raw_html)
+       VALUES (9001, 'Macro wrap', 'desk@example.test', '2026-10-21 18:00:00', ?, ?)`,
+    ).run("Rates, oil, and XMPL in passing." + FILLER, charts);
+    // Older, the bogey post itself.
+    const bogeys = Number(
+      db
+        .prepare(
+          `INSERT INTO research_articles (source_id, subject, sender, received_at, raw_text, raw_html)
+           VALUES (9001, 'Buyside bogeys: XMPL', 'desk@example.test', '2026-10-20 12:00:00', ?, ?)`,
+        )
+        .run("XMPL screenshot below." + FILLER, `<figure><img src="${IMG_DAY1}" width="550"></figure>`).lastInsertRowid,
+    );
+    const picked = selectDeepReadImages(gatherDeepReadInputs(db, ev)!);
+    expect(picked).toHaveLength(4);
+    expect(picked[0]).toMatchObject({ articleId: bogeys, url: CDN_DAY1 });
   });
 });

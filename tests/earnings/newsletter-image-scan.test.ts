@@ -15,6 +15,7 @@
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import Database from "better-sqlite3";
+import { APICallError } from "ai";
 import { runMigrations } from "@/lib/db/migrate";
 
 const generateTextMock = vi.fn();
@@ -38,8 +39,8 @@ import { makeNewsletterRescanStep, SCAN_MAX_ATTEMPTS } from "@/lib/earnings/prep
 import type { FetchNewsletterImagesFn, NewsletterImageFetchResult } from "@/lib/earnings/newsletter-images";
 import { normalizeNewsletterHtml, sanitizeNewsletterHtml } from "@/lib/gmail/sanitize";
 import {
-  IMG_DAY1,
-  IMG_DAY2,
+  CDN_DAY1,
+  CDN_DAY2,
   PNG_BYTES,
   SUBSTACK_IMAGE_ONLY_TEXT,
   substackImageOnlyEmail,
@@ -143,7 +144,7 @@ describe("global scan with images", () => {
       fetchImages: fetchAll,
     });
 
-    expect(fetchAll).toHaveBeenCalledWith([IMG_DAY1, IMG_DAY2], expect.anything());
+    expect(fetchAll).toHaveBeenCalledWith([CDN_DAY1, CDN_DAY2], expect.anything());
     const opts = generateTextMock.mock.calls[0][1];
     expect(opts.prompt).toBeUndefined();
     const content = opts.messages[0].content;
@@ -223,6 +224,84 @@ describe("global scan with images", () => {
       { fetchImages: vi.fn(async () => Promise.reject(new Error("boom"))) },
     );
     expect(r).toMatchObject({ called: true, bogeysStored: 0, imagesIncomplete: true });
+  });
+});
+
+describe("the model refuses the images", () => {
+  const rejected = (statusCode: number) =>
+    new APICallError({
+      message: "image exceeds 8000 pixels",
+      url: "https://api.example.test/v1/messages",
+      requestBodyValues: {},
+      statusCode,
+      isRetryable: false,
+    });
+
+  it("a 400 with images attached is retried ONCE as text, and the article is consumed (no endless retry)", async () => {
+    const ev = seedEvent("ACME");
+    const art = seedArticle(STORED_HTML);
+    generateTextMock
+      .mockRejectedValueOnce(rejected(400))
+      .mockResolvedValueOnce({ text: JSON.stringify([{ symbol: "ACME", eps_consensus: 1.11 }]) });
+
+    const r = await extractBogeysFromArticle(
+      db,
+      loadArticle(art),
+      [{ symbol: "ACME", event_id: ev, event_date: daysAhead(2) }],
+      { fetchImages: fetchAll },
+    );
+
+    expect(generateTextMock).toHaveBeenCalledTimes(2);
+    expect(generateTextMock.mock.calls[0][1].messages).toBeDefined();
+    expect(typeof generateTextMock.mock.calls[1][1].prompt).toBe("string");
+    expect(generateTextMock.mock.calls[1][1].prompt).not.toContain("IMAGES:");
+    expect(r).toEqual({ bogeysStored: 1, eventsMatched: 1 });
+    const row = db.prepare(`SELECT bogeys_scanned_at FROM research_articles WHERE id = ?`).get(art) as {
+      bogeys_scanned_at: string | null;
+    };
+    expect(row.bogeys_scanned_at).not.toBeNull();
+  });
+
+  it("the text-only retry finding nothing banks no final no_numbers (images were not read)", async () => {
+    const ev = seedEvent("ACME");
+    const art = seedArticle(STORED_HTML);
+    generateTextMock.mockRejectedValueOnce(rejected(413)).mockResolvedValueOnce({ text: "[]" });
+    const out = await extractBogeysFromArticleForEvent(
+      db,
+      loadArticle(art),
+      { event_id: ev, symbol: "ACME", event_date: daysAhead(2) },
+      { fetchImages: fetchAll },
+    );
+    expect(out).toMatchObject({ called: true, bogeysStored: 0, imagesIncomplete: true });
+    expect(ledger(ev)).toEqual([]);
+  });
+
+  it("a server-side failure (5xx) is not an image problem: no text retry, the scan retries later", async () => {
+    const ev = seedEvent("ACME");
+    const art = seedArticle(STORED_HTML);
+    generateTextMock.mockRejectedValueOnce(rejected(529));
+    const r = await extractBogeysFromArticle(
+      db,
+      loadArticle(art),
+      [{ symbol: "ACME", event_id: ev, event_date: daysAhead(2) }],
+      { fetchImages: fetchAll },
+    );
+    expect(generateTextMock).toHaveBeenCalledTimes(1);
+    expect(r).toEqual({ bogeysStored: 0, eventsMatched: 0 });
+    const row = db.prepare(`SELECT bogeys_scanned_at FROM research_articles WHERE id = ?`).get(art) as {
+      bogeys_scanned_at: string | null;
+    };
+    expect(row.bogeys_scanned_at).toBeNull();
+  });
+
+  it("a 400 on a text-only call is not retried", async () => {
+    const ev = seedEvent("ACME");
+    const art = seedArticle(TEXT_ONLY_HTML);
+    generateTextMock.mockRejectedValueOnce(rejected(400));
+    await extractBogeysFromArticle(db, loadArticle(art), [{ symbol: "ACME", event_id: ev, event_date: daysAhead(2) }], {
+      fetchImages: fetchAll,
+    });
+    expect(generateTextMock).toHaveBeenCalledTimes(1);
   });
 });
 

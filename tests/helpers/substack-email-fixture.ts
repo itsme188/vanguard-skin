@@ -12,6 +12,13 @@ export const POST_MEDIA = "https://substack-post-media.s3.amazonaws.com/public/i
 export const IMG_DAY1 = `${POST_MEDIA}/00000000-aaaa-4000-8000-000000000001_1456x1411.png`;
 export const IMG_DAY2 = `${POST_MEDIA}/00000000-aaaa-4000-8000-000000000002_1456x2631.png`;
 
+/** What the scan fetches for an original: the CDN with a bounded PNG transform
+ *  (written out literally here, so a change to the transform is a test change). */
+export const bounded = (original: string) =>
+  `https://substackcdn.com/image/fetch/w_1456,h_8000,c_limit,f_png,q_auto:good/${encodeURIComponent(original)}`;
+export const CDN_DAY1 = bounded(IMG_DAY1);
+export const CDN_DAY2 = bounded(IMG_DAY2);
+
 function cdn(original: string, transforms = "$s_!abcd!,w_1100,c_limit,f_auto,q_auto:good,fl_progressive:steep"): string {
   return `https://substackcdn.com/image/fetch/${transforms}/${encodeURIComponent(original)}`;
 }

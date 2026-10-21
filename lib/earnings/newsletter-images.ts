@@ -19,8 +19,9 @@
  * A failure never throws: the caller gets the images that worked plus a
  * count of the ones that did not, and degrades to text for the rest.
  */
+import { APICallError } from "ai";
 import { hardenedFetchBytes } from "@/lib/print-watch/url-fetch";
-import { extractContentImageUrls } from "@/lib/gmail/content-images";
+import { extractContentImageUrls, SUBSTACK_BOUNDED_TRANSFORM } from "@/lib/gmail/content-images";
 
 /** Hosts a newsletter image may be fetched from. Exact match, no subdomains
  *  (`eotrx.substackcdn.com` is Substack's open tracker). */
@@ -101,6 +102,14 @@ export function sniffImageMediaType(bytes: Uint8Array): NewsletterImageMediaType
   return null;
 }
 
+/** The JPEG twin of a bounded substackcdn PNG URL, else null. */
+function jpegFallbackUrl(url: string): string | null {
+  if (!url.startsWith(`https://substackcdn.com/image/fetch/`)) return null;
+  const marker = `/${SUBSTACK_BOUNDED_TRANSFORM}/`;
+  if (!url.includes(marker)) return null;
+  return url.replace(marker, `/${SUBSTACK_BOUNDED_TRANSFORM.replace("f_png", "f_jpg")}/`);
+}
+
 /** Test seam: the byte fetch. Same shape as `hardenedFetchBytes`. */
 export type ImageBytesFetcher = typeof hardenedFetchBytes;
 
@@ -120,23 +129,34 @@ export async function fetchNewsletterImages(
     wanted.push(url);
   }
 
+  const fetchOne = async (url: string): Promise<{ mediaType: NewsletterImageMediaType; data: Uint8Array } | string> => {
+    try {
+      const res = await fetchBytes(url, {
+        label: "newsletter image",
+        maxBytes: MAX_IMAGE_BYTES,
+        timeoutMs: IMAGE_FETCH_TIMEOUT_MS,
+        allowHost: isAllowedNewsletterImageHost,
+        headers: { Accept: "image/png,image/jpeg,image/webp,image/gif;q=0.9" },
+        signal: opts.signal,
+      });
+      const mediaType = sniffImageMediaType(res.bytes);
+      if (!mediaType) return "not a PNG, JPEG, GIF or WebP image";
+      return { mediaType, data: new Uint8Array(res.bytes) };
+    } catch (err) {
+      return (err instanceof Error ? err.message : String(err)).slice(0, 200);
+    }
+  };
+
   const settled = await Promise.all(
     wanted.map(async (url): Promise<NewsletterImage | string> => {
-      try {
-        const res = await fetchBytes(url, {
-          label: "newsletter image",
-          maxBytes: MAX_IMAGE_BYTES,
-          timeoutMs: IMAGE_FETCH_TIMEOUT_MS,
-          allowHost: isAllowedNewsletterImageHost,
-          headers: { Accept: "image/png,image/jpeg,image/webp,image/gif;q=0.9" },
-          signal: opts.signal,
-        });
-        const mediaType = sniffImageMediaType(res.bytes);
-        if (!mediaType) return "not a PNG, JPEG, GIF or WebP image";
-        return { url, mediaType, data: new Uint8Array(res.bytes) };
-      } catch (err) {
-        return (err instanceof Error ? err.message : String(err)).slice(0, 200);
-      }
+      const first = await fetchOne(url);
+      if (typeof first !== "string") return { url, ...first };
+      // A bounded CDN PNG of a busy screenshot can outgrow the byte cap, and a
+      // conversion can fail; the same image as JPEG is far smaller. One retry,
+      // only for our own bounded CDN URL (lib/gmail/content-images.ts).
+      if (!jpegFallbackUrl(url)) return first;
+      const second = await fetchOne(jpegFallbackUrl(url)!);
+      return typeof second === "string" ? `${first}; as JPEG: ${second}` : { url, ...second };
     }),
   );
 
@@ -146,4 +166,16 @@ export async function fetchNewsletterImages(
     else images.push(s);
   }
   return { images, expected: urls.length === 0 ? 0 : Math.min(urls.length, MAX_NEWSLETTER_IMAGES), failures };
+}
+
+/**
+ * The model API refused the request as sent: HTTP 400 (invalid request — an
+ * image over the pixel limit, a corrupt image) or 413 (request too large).
+ * A typed check on the AI SDK's `APICallError`, which is what
+ * `generateTextForFeature` rethrows; never a match on message text. Rate
+ * limits, overload and server errors are not this: they are worth retrying
+ * with the images.
+ */
+export function isRequestRejectedAsSent(err: unknown): boolean {
+  return APICallError.isInstance(err) && (err.statusCode === 400 || err.statusCode === 413);
 }

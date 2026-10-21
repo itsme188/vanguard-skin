@@ -136,10 +136,12 @@ export function trimEmailFooter(html: string): string {
     /powered\s+by\s+\w/i,                                           // Powered by Mailchimp/etc.
     /\d{2,5}\s+\w[\w\s]*(?:street|st|ave|avenue|blvd|road|rd),/i,   // Physical addresses
     /sent\s+(?:to|by)\s+\S+@\S+/i,                                  // Sent to/by email
-    // NOT "View in browser": it is a HEADER link in nearly every template
-    // (normalizeNewsletterHtml strips it there). Behind a long preheader it
-    // fell past the 20% skip below and cut the whole post — Substack's TMT
-    // Breakout bogey screenshots were lost this way (2026-10-21).
+    // NOT "View in browser": it is a HEADER link in nearly every template.
+    // Behind a long preheader it fell past the 20% skip below and cut the
+    // whole post — Substack's TMT Breakout bogey screenshots were lost this
+    // way (2026-10-21). normalizeNewsletterHtml's chrome strip only looks at
+    // the head of the document, so behind that same preheader the header link
+    // can survive as a stray "View in browser" line: harmless, unlike the cut.
   ];
 
   // Skip the first 20% to avoid false positives in article body.

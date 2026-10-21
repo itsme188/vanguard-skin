@@ -32,6 +32,7 @@ import {
 } from "@/lib/earnings/watch-metrics";
 import {
   fetchNewsletterImages,
+  isRequestRejectedAsSent,
   newsletterImageUrls,
   type FetchNewsletterImagesFn,
   type NewsletterImage,
@@ -572,28 +573,47 @@ async function callAndStore(
     }
   }
 
-  const prompt = buildExtractionPrompt(article, reporters, { imageCount: images.length });
-  let responseText: string;
-  try {
+  const callModel = async (withImages: NewsletterImage[]): Promise<string> => {
+    const prompt = buildExtractionPrompt(article, reporters, { imageCount: withImages.length });
     const { text } = await generateTextForFeature("newsletterBogeyExtraction", {
       // Watch metrics run ~80 tokens a line, up to six lines a company: 2,048
       // truncated a multi-company preview mid-array, which parses as nothing.
       maxOutputTokens: 6144,
-      ...(images.length > 0
+      ...(withImages.length > 0
         ? {
             messages: [
               {
                 role: "user" as const,
                 content: [
                   { type: "text" as const, text: prompt },
-                  ...images.map((img) => ({ type: "image" as const, image: img.data, mediaType: img.mediaType })),
+                  ...withImages.map((img) => ({ type: "image" as const, image: img.data, mediaType: img.mediaType })),
                 ],
               },
             ],
           }
         : { prompt }),
     });
-    responseText = text;
+    return text;
+  };
+
+  let responseText: string;
+  try {
+    try {
+      responseText = await callModel(images);
+    } catch (err) {
+      // The request was refused AS SENT (400/413) and carried images: an
+      // oversize or corrupt picture is the likely cause, and it would be
+      // refused on every retry, holding the article unscanned forever (the
+      // global scan has no attempt cap). Read the text once instead; the
+      // images count as unread, so nothing is banked as a final "no numbers".
+      if (images.length === 0 || !isRequestRejectedAsSent(err)) throw err;
+      console.warn(
+        `[earnings/extract-newsletter-bogeys] article ${article.id}: request with ${images.length} image(s) refused; reading text only:`,
+        err instanceof Error ? err.message : err,
+      );
+      imagesIncomplete = true;
+      responseText = await callModel([]);
+    }
   } catch (err) {
     console.warn(
       `[earnings/extract-newsletter-bogeys] Claude failed for article ${article.id}:`,

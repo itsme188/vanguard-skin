@@ -10,7 +10,7 @@ import type { gmail_v1 } from "googleapis";
 import { runMigrations } from "@/lib/db/migrate";
 import { refetchArticleHtml } from "@/lib/gmail/fetch";
 import { newsletterImageUrls } from "@/lib/earnings/newsletter-images";
-import { IMG_DAY1, IMG_DAY2, substackImageOnlyEmail } from "../helpers/substack-email-fixture";
+import { CDN_DAY1, CDN_DAY2, substackImageOnlyEmail } from "../helpers/substack-email-fixture";
 
 let db: Database.Database;
 beforeEach(() => {
@@ -57,7 +57,7 @@ describe("refetchArticleHtml", () => {
     const { client } = gmailWith(substackImageOnlyEmail());
     const out = await refetchArticleHtml(db, client, [id], { apply: true });
     expect(out[0]).toMatchObject({ id, status: "rewritten", beforeLength: TRUNCATED.length });
-    expect(newsletterImageUrls(storedHtml(id))).toEqual([IMG_DAY1, IMG_DAY2]);
+    expect(newsletterImageUrls(storedHtml(id))).toEqual([CDN_DAY1, CDN_DAY2]);
   });
 
   it("an article with no Gmail id, or a Gmail error, is reported and left alone", async () => {

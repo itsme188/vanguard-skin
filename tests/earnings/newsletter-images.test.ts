@@ -13,7 +13,7 @@ import {
   sniffImageMediaType,
   type ImageBytesFetcher,
 } from "@/lib/earnings/newsletter-images";
-import { IMG_DAY1, IMG_DAY2, JPEG_BYTES, PNG_BYTES, WEBP_BYTES, substackImageOnlyEmail } from "../helpers/substack-email-fixture";
+import { CDN_DAY1, CDN_DAY2, IMG_DAY1, IMG_DAY2, JPEG_BYTES, PNG_BYTES, WEBP_BYTES, substackImageOnlyEmail } from "../helpers/substack-email-fixture";
 
 const okFetch = (bytes: Buffer) =>
   vi.fn(async (url: string) => ({ bytes, finalUrl: url, status: 200, contentType: "image/png" })) as unknown as ImageBytesFetcher &
@@ -38,7 +38,7 @@ describe("isAllowedNewsletterImageUrl", () => {
 
 describe("newsletterImageUrls", () => {
   it("keeps allowlisted content images, capped", () => {
-    expect(newsletterImageUrls(substackImageOnlyEmail())).toEqual([IMG_DAY1, IMG_DAY2]);
+    expect(newsletterImageUrls(substackImageOnlyEmail())).toEqual([CDN_DAY1, CDN_DAY2]);
     const many = Array.from({ length: 7 }, (_, i) => `<figure><img src="${IMG_DAY1}?n=${i}"></figure>`).join("");
     expect(newsletterImageUrls(many)).toHaveLength(MAX_NEWSLETTER_IMAGES);
     expect(newsletterImageUrls(`<figure><img src="https://cdn.example.test/a.png"></figure>`)).toEqual([]);
@@ -91,6 +91,28 @@ describe("fetchNewsletterImages", () => {
     expect(r.failures).toHaveLength(2);
     expect(r.failures[0]).toMatch(/404/);
     expect(r.failures[1]).toMatch(/not a PNG/);
+  });
+
+  it("a bounded CDN PNG that is too big or unreadable is retried once as JPEG", async () => {
+    const seen: string[] = [];
+    const fetchBytes = vi.fn(async (url: string) => {
+      seen.push(url);
+      if (url.includes(",f_png,")) throw new Error("newsletter image: content-length 9000000 exceeds 3750000-byte cap");
+      return { bytes: JPEG_BYTES, finalUrl: url, status: 200, contentType: "image/jpeg" };
+    }) as unknown as ImageBytesFetcher;
+    const r = await fetchNewsletterImages([CDN_DAY1], { fetchBytes });
+    expect(seen).toEqual([CDN_DAY1, CDN_DAY1.replace(",f_png,", ",f_jpg,")]);
+    expect(r.images).toEqual([{ url: CDN_DAY1, mediaType: "image/jpeg", data: new Uint8Array(JPEG_BYTES) }]);
+    expect(r.failures).toEqual([]);
+  });
+
+  it("a non-CDN URL is never retried", async () => {
+    const fetchBytes = vi.fn(async () => {
+      throw new Error("HTTP 404");
+    }) as unknown as ImageBytesFetcher & ReturnType<typeof vi.fn>;
+    const r = await fetchNewsletterImages([IMG_DAY1], { fetchBytes });
+    expect(fetchBytes).toHaveBeenCalledTimes(1);
+    expect(r.failures).toHaveLength(1);
   });
 
   it("fetches at most MAX_NEWSLETTER_IMAGES", async () => {

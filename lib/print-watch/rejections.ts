@@ -17,7 +17,12 @@
  */
 import type { DocumentRoadRow, DocumentRow, PrintWatchDocKind } from "./types";
 
-export type RejectionRoad = "edgar" | "dj" | "ir" | "user-drop" | "user-url";
+/** `document`: a kind this table does not map yet — named plainly, never `undefined`. */
+export type RejectionRoad = "edgar" | "dj" | "ir" | "user-drop" | "user-url" | "document";
+
+/** The IR road runs two lanes that both deliver `ir-page` documents: the RSS
+ *  feed (source `ir-rss:…`) and the IR page itself (`ir-page:…`). */
+export type IrLane = "rss" | "page";
 
 export interface RejectedDocument {
   docId: number;
@@ -32,15 +37,27 @@ export interface RejectedDocument {
   /** `content`: the document is not this event's. `road`: the content fits but
    *  no road we trust carried it yet. */
   scope: "content" | "road";
+  /** IR documents only: which IR lane delivered it, so each lane's status line
+   *  counts its own refusals instead of both lanes repeating every one. */
+  lane?: IrLane;
 }
 
-const ROAD_OF_KIND: Record<PrintWatchDocKind, RejectionRoad> = {
+const ROAD_OF_KIND: Record<PrintWatchDocKind, Exclude<RejectionRoad, "document">> = {
   "edgar-ex99": "edgar",
   "dj-release": "dj",
   "ir-page": "ir",
   "user-drop": "user-drop",
   "user-url": "user-url",
 };
+
+function roadOfKind(kind: string): RejectionRoad {
+  return (ROAD_OF_KIND as Record<string, RejectionRoad | undefined>)[kind] ?? "document";
+}
+
+function irLaneOf(kind: string, source: string): { lane?: IrLane } {
+  if (kind !== "ir-page") return {};
+  return { lane: source.startsWith("ir-rss:") ? "rss" : "page" };
+}
 
 export function summarizeRejections(
   docs: DocumentRow[],
@@ -55,11 +72,12 @@ export function summarizeRejections(
       for (const r of via) {
         out.push({
           docId: doc.id,
-          road: ROAD_OF_KIND[r.kind],
+          road: roadOfKind(r.kind),
           kind: r.kind,
           label: r.url ?? r.source,
           reason,
           scope: "content",
+          ...irLaneOf(r.kind, r.source),
         });
       }
       continue;
@@ -68,11 +86,12 @@ export function summarizeRejections(
       if (r.road_verdict !== "rejected") continue;
       out.push({
         docId: doc.id,
-        road: ROAD_OF_KIND[r.kind],
+        road: roadOfKind(r.kind),
         kind: r.kind,
         label: r.url ?? r.source,
         reason: r.road_reason ?? "rejected",
         scope: "road",
+        ...irLaneOf(r.kind, r.source),
       });
     }
   }
@@ -82,8 +101,12 @@ export function summarizeRejections(
 /** The suffix a road's status line carries: ` · 1 rejected: <reason>`. Empty
  *  when nothing from that road was refused. Distinct documents are counted
  *  once; distinct reasons are listed once each. */
-export function rejectionSuffix(rejections: RejectedDocument[], road: RejectionRoad): string {
-  const mine = rejections.filter((r) => r.road === road);
+export function rejectionSuffix(
+  rejections: RejectedDocument[],
+  road: RejectionRoad,
+  opts: { lane?: IrLane } = {},
+): string {
+  const mine = rejections.filter((r) => r.road === road && (opts.lane === undefined || r.lane === opts.lane));
   if (mine.length === 0) return "";
   const docs = new Set(mine.map((r) => r.docId)).size;
   const reasons = [...new Set(mine.map((r) => r.reason))];

@@ -13,15 +13,33 @@
  * What never does: tracking pixels, avatars, icons, buttons, logos, and any
  * image the HTML says is under SMALL_IMAGE_MAX px on a side.
  *
- * URL choice, best first:
- *   1. the `src` inside Substack's `data-attrs` JSON (the original upload on
- *      substack-post-media) — present in Gmail's raw HTML, dropped by the
- *      sanitizer, so stored `raw_html` never carries it;
- *   2. a substackcdn.com `/image/fetch/` URL unwrapped to the original upload it
- *      names in its last path segment (so stored HTML reaches the same file);
+ * URL choice. First the ORIGINAL upload is found, best first:
+ *   1. the `src` inside Substack's `data-attrs` JSON — present in Gmail's raw
+ *      HTML, dropped by the sanitizer, so stored `raw_html` never carries it;
+ *   2. the original a substackcdn.com `/image/fetch/` URL names in its last
+ *      path segment (so stored HTML reaches the same file);
  *   3. the `src` as written.
+ * Then a Substack image (reached through substackcdn, or an upload on
+ * substack-post-media) is fetched THROUGH the CDN with a bounded transform
+ * (`substackBoundedFetchUrl`), never as the raw upload: the raw upload can be
+ * HEIC, SVG or an untyped blob the model cannot read, or 8400 px wide (the
+ * model API refuses an image over 8000 px a side). The CDN converts to PNG and
+ * caps the size. Measured live 2026-10-21: 62 raw originals in 30 days were
+ * HEIC / SVG / untyped, and the CDN serves every one of them as PNG.
  * Only https URLs are returned. Host allowlisting is the FETCHER's job.
  */
+
+/** The CDN transform every Substack image is fetched with: at most 1456 px
+ *  wide and 8000 px tall (inside the model's 8000 px-a-side limit), aspect
+ *  kept, converted to PNG (sharp text on a screenshot). */
+export const SUBSTACK_BOUNDED_TRANSFORM = "w_1456,h_8000,c_limit,f_png,q_auto:good";
+const SUBSTACK_CDN_FETCH = "https://substackcdn.com/image/fetch/";
+const SUBSTACK_UPLOAD_HOST = "substack-post-media.s3.amazonaws.com";
+
+/** The bounded CDN URL for an original upload (see SUBSTACK_BOUNDED_TRANSFORM). */
+export function substackBoundedFetchUrl(original: string, transform = SUBSTACK_BOUNDED_TRANSFORM): string {
+  return `${SUBSTACK_CDN_FETCH}${transform}/${encodeURIComponent(original)}`;
+}
 
 /** An image this wide or wider is content even outside a <figure>. */
 export const CONTENT_MIN_WIDTH = 300;
@@ -118,6 +136,14 @@ export function unwrapSubstackCdnUrl(url: string): string | null {
   }
 }
 
+function hostOf(url: string): string | null {
+  try {
+    return new URL(url).hostname.toLowerCase();
+  } catch {
+    return null;
+  }
+}
+
 function looksLikeChrome(url: string): boolean {
   const lower = url.toLowerCase();
   let decoded = lower;
@@ -157,8 +183,12 @@ export function extractContentImageUrls(html: string | null | undefined): string
     const wide = width != null && width >= CONTENT_MIN_WIDTH;
     if (!inFigure && !wide && !fromData) continue;
 
-    const chosen = fromData ?? (src ? unwrapSubstackCdnUrl(src) ?? src : null);
-    if (!chosen || !isHttps(chosen) || seen.has(chosen)) continue;
+    const unwrapped = src ? unwrapSubstackCdnUrl(src) : null;
+    const original = fromData ?? unwrapped ?? (src || null);
+    if (!original || !isHttps(original)) continue;
+    const viaSubstack = unwrapped !== null || hostOf(original) === SUBSTACK_UPLOAD_HOST;
+    const chosen = viaSubstack ? substackBoundedFetchUrl(original) : original;
+    if (seen.has(chosen)) continue;
     seen.add(chosen);
     out.push(chosen);
   }

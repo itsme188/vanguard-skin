@@ -10,7 +10,7 @@
 import { describe, it, expect } from "vitest";
 import { extractContentImageUrls, unwrapSubstackCdnUrl } from "@/lib/gmail/content-images";
 import { normalizeNewsletterHtml, sanitizeNewsletterHtml } from "@/lib/gmail/sanitize";
-import { IMG_DAY1, IMG_DAY2, substackImageOnlyEmail } from "../helpers/substack-email-fixture";
+import { CDN_DAY1, CDN_DAY2, IMG_DAY1, bounded, substackImageOnlyEmail } from "../helpers/substack-email-fixture";
 
 const stored = () => normalizeNewsletterHtml(sanitizeNewsletterHtml(substackImageOnlyEmail()));
 
@@ -40,12 +40,37 @@ describe("stored newsletter HTML keeps the post body", () => {
 
 describe("extractContentImageUrls", () => {
   it("raw Gmail HTML: picks the figure images by their data-attrs original, nothing else", () => {
-    expect(extractContentImageUrls(substackImageOnlyEmail())).toEqual([IMG_DAY1, IMG_DAY2]);
+    expect(extractContentImageUrls(substackImageOnlyEmail())).toEqual([CDN_DAY1, CDN_DAY2]);
   });
 
   it("stored (sanitized) HTML has no data-attrs: the CDN URL is unwrapped to the same original", () => {
     expect(stored()).not.toContain("data-attrs");
-    expect(extractContentImageUrls(stored())).toEqual([IMG_DAY1, IMG_DAY2]);
+    expect(extractContentImageUrls(stored())).toEqual([CDN_DAY1, CDN_DAY2]);
+  });
+
+  it("a Substack image is fetched through the CDN with the bounded PNG transform, never as the raw upload", () => {
+    // HEIC, SVG and an 8400 px PNG: the raw uploads the model cannot take.
+    const heic = "https://substack-post-media.s3.amazonaws.com/public/images/x_1148x1578.heic";
+    const svg = "https://substack-post-media.s3.amazonaws.com/public/images/y.svg";
+    const huge = "https://substack-post-media.s3.amazonaws.com/public/images/z_8400x5400.png";
+    const html =
+      `<figure><img src="https://substackcdn.com/image/fetch/$s_!a!,w_1100,f_auto/${encodeURIComponent(heic)}" width="550"></figure>` +
+      `<figure><img src="${svg}" width="550"></figure>` +
+      `<figure><img data-attrs="{&quot;src&quot;:&quot;${huge}&quot;}" src="https://substackcdn.com/image/fetch/w_1100/${encodeURIComponent(huge)}" width="550"></figure>`;
+    const urls = extractContentImageUrls(html);
+    expect(urls).toEqual([bounded(heic), bounded(svg), bounded(huge)]);
+    for (const u of urls) {
+      expect(new URL(u).hostname).toBe("substackcdn.com");
+      expect(u).toContain("/w_1456,h_8000,c_limit,f_png,");
+    }
+  });
+
+  it("an outside image Substack proxied stays on the CDN; a plain outside image keeps its URL", () => {
+    const outside = "https://charts.example.test/c.png";
+    const html =
+      `<figure><img src="https://substackcdn.com/image/fetch/w_1100/${encodeURIComponent(outside)}"></figure>` +
+      `<figure><img src="https://cdn.example.test/d.png"></figure>`;
+    expect(extractContentImageUrls(html)).toEqual([bounded(outside), "https://cdn.example.test/d.png"]);
   });
 
   it("excludes pixels, avatars, icons and buttons even when they sit in a figure or are wide", () => {

@@ -56,3 +56,30 @@ describe("rejectionSuffix", () => {
     expect(rejectionSuffix(rej, "dj")).toBe("");
   });
 });
+
+describe("the two IR lanes and unmapped kinds (2026-10-21)", () => {
+  const irDoc = (id: number, source: string) =>
+    doc({ id, kind: "ir-page", source, url: `https://ir.example/${id}`, gate_verdict: "rejected", gate_reason: `reason ${id}` });
+  const irRoad = (id: number, source: string) =>
+    road({ document_id: id, kind: "ir-page", source, url: `https://ir.example/${id}` });
+
+  it("an IR refusal is counted on the lane that delivered it, not on both", () => {
+    const rej = summarizeRejections(
+      [irDoc(1, "ir-rss:Q3 results"), irDoc(2, "ir-page:Q3 results")],
+      [irRoad(1, "ir-rss:Q3 results"), irRoad(2, "ir-page:Q3 results")],
+    );
+    expect(rejectionSuffix(rej, "ir", { lane: "rss" })).toBe(" · 1 rejected: reason 1");
+    expect(rejectionSuffix(rej, "ir", { lane: "page" })).toBe(" · 1 rejected: reason 2");
+    // Without a lane the road still reads all of its documents.
+    expect(rejectionSuffix(rej, "ir")).toBe(" · 2 rejected: reason 1; reason 2");
+  });
+
+  it("an unmapped document kind never yields an undefined road", () => {
+    const out = summarizeRejections(
+      [doc({ kind: "future-kind" as never, gate_verdict: "rejected", gate_reason: "x" })],
+      [],
+    );
+    expect(out).toHaveLength(1);
+    expect(out[0].road).toBe("document");
+  });
+});

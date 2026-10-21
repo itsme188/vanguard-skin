@@ -280,12 +280,20 @@ export interface DeepReadImageRef {
 }
 
 /**
- * Which images the read attaches: newest article first, in document order
- * within an article, at most MAX_NEWSLETTER_IMAGES in all.
+ * Which images the read attaches, at most MAX_NEWSLETTER_IMAGES in all, in
+ * document order within an article. Articles whose SUBJECT names the company
+ * (ticker or name) go first, then the rest; newest first within each group.
+ * A newer issue that names the company in passing must not crowd the bogey
+ * post's screenshot out with its own charts.
  */
 export function selectDeepReadImages(inputs: DeepReadInputs): Array<DeepReadImageRef & { url: string }> {
+  const family = issuerSiblings(inputs.event.symbol).map((s) => s.toUpperCase());
+  const aliases = companyNameAliases(inputs.companyName);
+  const named = (a: DeepReadInputs["articles"][number]) => mentionOffsets(a.subject, family, aliases).length > 0;
+  // `articles` is newest first; a stable partition keeps that order inside each group.
+  const ordered = [...inputs.articles.filter(named), ...inputs.articles.filter((a) => !named(a))];
   const out: Array<DeepReadImageRef & { url: string }> = [];
-  for (const a of inputs.articles) {
+  for (const a of ordered) {
     for (const url of a.imageUrls) {
       if (out.length >= MAX_NEWSLETTER_IMAGES) return out;
       out.push({ articleId: a.id, label: a.label, url });
