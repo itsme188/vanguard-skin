@@ -105,6 +105,7 @@ import {
   hasParsableDocuments,
   listActivePrints,
   listDocuments,
+  listDocumentRoads,
   listParseQueue,
   listTodaysExpiredPrints,
   setPrintState,
@@ -117,6 +118,7 @@ import {
   PARSE_CLAIM_STALE_MS,
 } from "./store";
 import { recordDelivery, sha256Hex, type DeliveryInput } from "./delivery";
+import { rejectionSuffix, summarizeRejections, type RejectedDocument, type RejectionRoad } from "./rejections";
 import { classifyBytes, hardenedFetchBytes } from "./url-fetch";
 import { redactUrl } from "./hardened-fetch";
 import { scheduleFirstPassRead } from "./read-scheduler";
@@ -244,6 +246,9 @@ export interface WatchStatusRow {
   state: PrintWatchState;
   /** Per-source last outcome, plain short strings for the panel's ladder. */
   sources: Record<string, string>;
+  /** Documents a road delivered that the gate refused, with the reason — read
+   *  from the stored verdicts, so it outlives the poll that saw it. */
+  rejectedDocs: RejectedDocument[];
   /** Static capability notes (Codex #23) — what CAN and cannot fire tonight. */
   coverage: string[];
   /** ISO UTC of the FIRST go press, or null — the once-only forced stamp. */
@@ -1071,6 +1076,7 @@ export function getWatchStatus(db: Database.Database): WatchStatusRow[] {
       eventDate: print.event_date,
       state: print.state,
       sources,
+      rejectedDocs: summarizeRejections(listDocuments(db, print.id), listDocumentRoads(db, print.id)),
       coverage: status?.coverage ?? [],
       forcedOpenAt: print.forced_open_at,
       windowExtendedUntil: print.window_extended_until,
@@ -1315,6 +1321,17 @@ async function pass(db: Database.Database, rt: PrintRuntime, signal: AbortSignal
  *    desk should chase (spec §7);
  *  - anything else — it tried and failed.
  */
+/** " · N rejected: <reason>" for documents this road delivered that the gate
+ *  refused (empty when none). Read from the stored verdicts, so it survives the
+ *  later polls that find nothing new. A failed read must never take a lane down. */
+function rejectedNote(db: Database.Database, printId: number, road: RejectionRoad): string {
+  try {
+    return rejectionSuffix(summarizeRejections(listDocuments(db, printId), listDocumentRoads(db, printId)), road);
+  } catch {
+    return "";
+  }
+}
+
 function roadOutcome(note: string): string {
   if (note === "") return "skipped";
   if (/^(ok|baseline|no baseline)\b/i.test(note)) return "ok";
@@ -1577,7 +1594,9 @@ async function pollDjSource(
     // uniform — nothing is retired until the caller has it in hand.
     for (const id of flashIds) rt.djState.seenArticleIds.add(id);
 
-    status.sources.dj = `ok — ${out.completedReleases.length} release(s), ${rt.flashHeadlines.length} flash(es)`;
+    status.sources.dj =
+      `ok — ${out.completedReleases.length} release(s), ${rt.flashHeadlines.length} flash(es)` +
+      rejectedNote(db, rt.printId, "dj");
     return true;
   } catch (err) {
     // A cancelled wire read is a deadline, not a wire fault (finding #10).
@@ -1697,7 +1716,11 @@ async function pollEdgarSource(
       // (the sha256 dedupe makes a re-ingest a no-op).
       rt.seenAccessions.add(filing.accession);
     }
-    status.sources.edgar = `ok — ${filings.length} filing(s), ${exhibits} exhibit(s)`;
+    // The counts are what THIS poll found NEW; an accession already ingested is
+    // skipped by `pollEdgar`, so a later poll reads zero. A refusal the gate
+    // already made is durable, so it is appended from the stored verdicts.
+    status.sources.edgar =
+      `ok — ${filings.length} filing(s), ${exhibits} exhibit(s)` + rejectedNote(db, rt.printId, "edgar");
   } catch (err) {
     status.sources.edgar = errText(err);
   }
@@ -1753,9 +1776,10 @@ async function pollIrRssSource(
       // Marked seen only after the bytes are in hand and ingested (finding F).
       rt.seenIrLinks.add(item.link);
     }
-    status.sources.rss = baseline
-      ? `baseline — ${rt.seenIrLinks.size} existing item(s) ignored`
-      : `ok — ${items.length} item(s)`;
+    status.sources.rss =
+      (baseline
+        ? `baseline — ${rt.seenIrLinks.size} existing item(s) ignored`
+        : `ok — ${items.length} item(s)`) + rejectedNote(db, rt.printId, "ir");
   } catch (err) {
     status.sources.rss = errText(err);
   }
@@ -1909,7 +1933,7 @@ async function pollIrPageSource(
     const summary =
       `${head} — ${matching.length} matching links, ${durable} new` +
       (retired > 0 ? ` (${retired} link(s) retired after ${IR_REFUSAL_LIMIT} refusals)` : "");
-    status.sources.ir = [summary, ...refusals].join("; ");
+    status.sources.ir = [summary + rejectedNote(db, rt.printId, "ir"), ...refusals].join("; ");
   } catch (err) {
     // A page-level failure (refused, 503, timed out) leaves every link
     // unseen, so the next poll simply tries again.

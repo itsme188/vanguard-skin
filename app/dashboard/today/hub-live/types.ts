@@ -79,6 +79,16 @@ export interface PrintOutputsWire {
  *  rather than crash the Hub. `eventId` in particular stays optional as
  *  defence-in-depth — every mutating control keyed on it disables itself with
  *  an explanatory title instead of guessing an id. */
+/** Mirrors `RejectedDocument` (`lib/print-watch/rejections.ts`). */
+export interface RejectedDocWire {
+  docId: number;
+  road: string;
+  kind: string;
+  label: string;
+  reason: string;
+  scope: "content" | "road";
+}
+
 export interface PrintStatusEntry {
   printId: number;
   eventId?: number;
@@ -96,6 +106,10 @@ export interface PrintStatusEntry {
   /** doc id → the roads that produced it. Sent since slice B; nothing
    *  consumed it until F. */
   documentRoads?: Record<number, Array<{ kind: string; source: string; verdict: string }>>;
+  /** Documents a road delivered that the gate REFUSED, with the gate's reason
+   *  (`summarizeRejections`, `lib/print-watch/rejections.ts`). Absent on an
+   *  older server — render nothing. */
+  rejectedDocs?: RejectedDocWire[];
   /** Slice C — ISO UTC of the first "Print is live" press, once made. */
   forcedOpenAt?: string | null;
   /** Slice C — ISO UTC written by "Extend 30 min"; presses stack. */

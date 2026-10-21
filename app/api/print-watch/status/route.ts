@@ -143,6 +143,9 @@ export async function GET() {
               })),
           ]),
         ) as Record<number, Array<{ kind: string; source: string; verdict: string }>>,
+        // Documents a road delivered that the gate refused, with the gate's
+        // reason — stored verdicts, so a refusal outlives the poll that made it.
+        rejectedDocs: row.rejectedDocs,
         read: toReadDto(doneRead),
         activeRead: toActiveDto(getGeneratingRead(db, row.printId)),
         lastAttempt: toLastAttemptDto(getLastFailedAttempt(db, row.printId), doneRead?.id ?? null),

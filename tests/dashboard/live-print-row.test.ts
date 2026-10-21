@@ -402,3 +402,23 @@ describe("LivePrintRow renders the pre-gate disclosure (R-F23)", () => {
     expect(rowHtml()).toMatch(/text-ink-faint[^>]*"[^>]*font-size:11px/);
   });
 });
+
+describe("rejected documents on the live print row", () => {
+  it("rejectionLines names the road, the gate reason and the document", async () => {
+    const { rejectionLines } = await import("@/app/dashboard/today/live-print/helpers");
+    expect(rejectionLines(undefined)).toEqual([]);
+    expect(
+      rejectionLines([
+        { docId: 1, road: "edgar", kind: "edgar-ex99", label: "https://sec.example/ex99.htm", reason: "no fiscal-period token for this event", scope: "content" },
+      ]),
+    ).toEqual(["EDGAR exhibit rejected — no fiscal-period token for this event (https://sec.example/ex99.htm)"]);
+  });
+
+  it("the row renders a warning line per refused document, in the checked gold text tone", () => {
+    const src = readFileSync("app/dashboard/today/LivePrintRow.tsx", "utf8");
+    expect(src).toContain("rejectionLines(print.rejectedDocs)");
+    expect(src).toContain("CHIP_TONE_TEXT.gold");
+    expect(src).toContain('data-testid="print-watch-rejections"');
+    expect(src).not.toMatch(/text-(down|gold)\/\d+/);
+  });
+});

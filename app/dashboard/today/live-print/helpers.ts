@@ -22,7 +22,7 @@
 import { reconcile } from "@/lib/print-watch/reconcile";
 import { formatLargeUSD, formatPercent } from "@/lib/format";
 import type { ChipTone } from "../../components/Chip";
-import type { GoRequestWire } from "../hub-live/types";
+import type { GoRequestWire, RejectedDocWire } from "../hub-live/types";
 import type {
   ExpectedValue,
   LineContract,
@@ -732,5 +732,24 @@ export function fileToBase64(file: File): Promise<string> {
     };
     reader.onerror = () => reject(reader.error ?? new Error("File read failed."));
     reader.readAsDataURL(file);
+  });
+}
+
+const REJECTION_ROAD_LABELS: Record<string, string> = {
+  edgar: "EDGAR exhibit",
+  dj: "Dow Jones release",
+  ir: "IR page",
+  "user-drop": "Dropped file",
+  "user-url": "Linked page",
+};
+
+/** One plain warning line per refused document, e.g. "EDGAR exhibit rejected —
+ *  no fiscal-period token for this event (https://…)". A `road`-scope refusal
+ *  says the content fits but no trusted road carried it. Empty list → []. */
+export function rejectionLines(rejected: ReadonlyArray<RejectedDocWire> | undefined): string[] {
+  return (rejected ?? []).map((r) => {
+    const who = REJECTION_ROAD_LABELS[r.road] ?? r.road;
+    const where = r.label ? ` (${r.label})` : "";
+    return `${who} rejected — ${r.reason}${where}`;
   });
 }

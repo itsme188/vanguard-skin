@@ -25,6 +25,7 @@ import { useCallback, useState, type DragEvent as ReactDragEvent } from "react";
 import { useRouter } from "next/navigation";
 import apiFetch from "@/lib/http/apiFetch";
 import { Chip } from "../components/Chip";
+import { CHIP_TONE_TEXT } from "../components/chip-tone-text";
 import { ScrollFade } from "../components/ScrollFade";
 import { useConfirmPrompt } from "../components/useConfirmPrompt";
 import FirstPassRead from "./FirstPassRead";
@@ -52,6 +53,7 @@ import {
   recordHeaderText,
   recordLineStatus,
   recordLines,
+  rejectionLines,
   windowText,
 } from "./live-print/helpers";
 import type { PrepareStepWire, PrintRecordWire, PrintStatusEntry } from "./hub-live/types";
@@ -123,6 +125,7 @@ export default function LivePrintRow({
   }, []);
 
   const ladder = ladderText(print.sources);
+  const rejections = rejectionLines(print.rejectedDocs);
   const finished = isPrintFinished(print.state, print.effectiveWindow, Date.now());
   const summary = promoteSummary(print.lines);
   const agreedIds = print.lines.filter((l) => l.state === "agreed").map((l) => l.metric_id);
@@ -460,6 +463,20 @@ export default function LivePrintRow({
           </span>
         )}
       </p>
+
+      {rejections.length > 0 && (
+        <ul
+          role="alert"
+          data-testid="print-watch-rejections"
+          className={`mb-2 space-y-0.5 text-[12px] font-mono ${CHIP_TONE_TEXT.gold}`}
+        >
+          {rejections.map((text, i) => (
+            <li key={i} className="[overflow-wrap:anywhere]">
+              {text}
+            </li>
+          ))}
+        </ul>
+      )}
 
       <p className="text-[12px] font-mono text-ink-dim">
         {windowText(print.effectiveWindow ?? null, Date.now())}

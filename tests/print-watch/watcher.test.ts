@@ -1383,6 +1383,44 @@ describe("source seen-sets", () => {
   });
 });
 
+describe("rejected documents stay visible on the road status", () => {
+  it("EDGAR keeps saying a delivered exhibit was rejected after later polls find nothing new", async () => {
+    seedArmedEvent();
+    fake.cik = "0001045810";
+    let served = false;
+    fake.edgar = async () => {
+      if (served) return [];
+      served = true;
+      return [
+        {
+          accession: "0001045810-26-000999",
+          form: "8-K",
+          acceptanceDateTime: "2026-08-26T20:22:00Z",
+          exhibits: [
+            {
+              name: "ex991.htm",
+              url: "https://www.sec.gov/Archives/edgar/data/1045810/x/ex991.htm",
+              html: "<html><body><p>NVIDIA announces a new board member.</p></body></html>",
+            },
+          ],
+        },
+      ];
+    };
+
+    ensurePrintWatch(db);
+    await tickUntilSecondPoll(() => fake.edgarSeen.length);
+    await flushIo();
+
+    const row = getWatchStatus(db)[0];
+    // The later poll found 0 new filings, yet the line still says what the gate did.
+    expect(row.sources.edgar).toMatch(/^ok — 0 filing\(s\), 0 exhibit\(s\) · 1 rejected: .+/);
+    expect(row.rejectedDocs.length).toBe(1);
+    expect(row.rejectedDocs[0]).toMatchObject({ road: "edgar", kind: "edgar-ex99", scope: "content" });
+    expect(row.rejectedDocs[0].reason).toBeTruthy();
+    expect(row.rejectedDocs[0].label).toContain("ex991.htm");
+  });
+});
+
 // ---------------------------------------------------------------------------
 // stored IR page lane
 // ---------------------------------------------------------------------------
