@@ -874,7 +874,8 @@ export function getTransactionsForChat(
 ): TransactionResult[] {
   const { account_name, symbol, type, start_date, end_date, limit = 50 } = filters;
 
-  const conditions: string[] = [];
+  // Engine-owned synthetic closes are never user activity (same rule as lib/queries/transactions.ts).
+  const conditions: string[] = ["t.type != 'RECONCILE_CLOSE'"];
   const params: (string | number)[] = [];
 
   if (account_name) {

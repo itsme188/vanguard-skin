@@ -62,6 +62,7 @@ const CONSUMERS: Record<string, { role: Role; why: string }> = {
     why: "flags closed sales + engine-estimated totals; excludeFiling drops them from filing surfaces",
   },
   "lib/queries/trade-reviews.ts": { role: "include-with-disclosure", why: "is_synthetic_close flag for the review view" },
+  "lib/queries/chat-tools.ts": { role: "exclude", why: "chat transactions tool never lists engine-owned closes as user activity" },
   "lib/queries/transactions.ts": { role: "exclude", why: "engine-owned rows never list as user transactions" },
   "app/api/trade-review/route.ts": { role: "include-with-disclosure", why: "passes isSyntheticClose to the view" },
   "app/dashboard/components/TaxLotTables.tsx": { role: "include-with-disclosure", why: "renders the Estimated chip" },
