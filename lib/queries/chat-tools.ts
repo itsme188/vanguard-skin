@@ -1,6 +1,6 @@
 import type Database from "better-sqlite3";
 import { easternDaySql, unmaturedSecuritySql } from "@/lib/db/eastern-day-sql";
-import { adjustedMarketValueSQL } from "@/lib/valuation";
+import { adjustedMarketValueSQL, scaledCostBasisFallbackSQL } from "@/lib/valuation";
 import { todayET, addDays } from "@/lib/calendar/date-utils";
 import { SECTOR_OWN_BUCKET_SQL } from "@/lib/queries/analysis";
 import { normalizeSector } from "@/lib/securities/normalize-sector";
@@ -339,6 +339,9 @@ export function getHoldingsForChat(
     symbol: "s.symbol ASC",
   };
 
+  // Same basis the Accounts page shows: the row's own, else the latest earlier row of the pair, scaled by quantity.
+  const costBasisExpr = scaledCostBasisFallbackSQL("h", "h3");
+
   const sql = `
     WITH latest_prices AS (
       SELECT p.security_id, p.close_price
@@ -354,16 +357,16 @@ export function getHoldingsForChat(
       s.asset_class,
       s.sector,
       h.quantity,
-      h.cost_basis * COALESCE(fx.usd_per_unit, 1) AS cost_basis,
+      ${costBasisExpr} * COALESCE(fx.usd_per_unit, 1) AS cost_basis,
       lp.close_price AS latest_price,
       CASE WHEN lp.close_price IS NOT NULL
         THEN ${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}
         ELSE NULL END AS market_value,
-      CASE WHEN lp.close_price IS NOT NULL AND h.cost_basis IS NOT NULL AND h.cost_basis > 0
-        THEN ${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")} - (h.cost_basis * COALESCE(fx.usd_per_unit, 1))
+      CASE WHEN lp.close_price IS NOT NULL AND ${costBasisExpr} IS NOT NULL AND ${costBasisExpr} > 0
+        THEN ${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")} - (${costBasisExpr} * COALESCE(fx.usd_per_unit, 1))
         ELSE NULL END AS unrealized_gain,
-      CASE WHEN lp.close_price IS NOT NULL AND h.cost_basis IS NOT NULL AND h.cost_basis > 0
-        THEN (${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")} - (h.cost_basis * COALESCE(fx.usd_per_unit, 1))) * 100.0 / (h.cost_basis * COALESCE(fx.usd_per_unit, 1))
+      CASE WHEN lp.close_price IS NOT NULL AND ${costBasisExpr} IS NOT NULL AND ${costBasisExpr} > 0
+        THEN (${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")} - (${costBasisExpr} * COALESCE(fx.usd_per_unit, 1))) * 100.0 / (${costBasisExpr} * COALESCE(fx.usd_per_unit, 1))
         ELSE NULL END AS unrealized_gain_pct,
       -- Gross-exposure convention: when includeShorts is true, both this
       -- numerator and the denominator above (totalPortfolioValue) are ABS(mv)
