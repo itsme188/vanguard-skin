@@ -100,6 +100,12 @@ export function validateDocForEvent(text: string, ctx: DocGateContext): DocGateV
   for (const { q, year } of candidateQuarters(ctx.eventDate)) {
     if (new RegExp(`\\bq${q}\\b[^\\n]{0,24}${year}`, "i").test(lower)) return { ok: true };
     if (new RegExp(`${year}[^\\n]{0,24}\\bq${q}\\b`, "i").test(lower)) return { ok: true };
+    // Two-digit-year forms: "Q3'26" / "Q3 \u201926" (Netflix) and "3Q26" / "3Q'26"
+    // (sell-side/IR). Tight boundaries on both ends so "Q3'261", "XQ3'26" and a
+    // prior-year "Q3'25" never count.
+    const yy = String(year % 100).padStart(2, "0");
+    if (new RegExp(`(?<![a-z0-9])q${q} ?['\u2019\u2018]${yy}(?![0-9])`).test(lower)) return { ok: true };
+    if (new RegExp(`(?<![a-z0-9])${q}q['\u2019\u2018]?${yy}(?![0-9])`).test(lower)) return { ok: true };
     // The ordinal branch carries the same year requirement as the Qn branches
     // (review round 1, minor #6) — "second quarter" on its own appears in
     // prior-year comparatives and in last year's release just as readily.
