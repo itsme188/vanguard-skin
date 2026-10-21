@@ -126,7 +126,13 @@ export function goStatusText(go: GoRequestWire | null): string | null {
   if (go.status === "claimed") return `Print is live — acquiring (attempt ${go.attempts})…`;
   const roads = (go.result ?? []).map((r) => {
     const label = ROAD_LABELS[r.road] ?? r.road;
-    return r.outcome === "ok" ? `${label}: ok` : `${label}: ${r.outcome}${r.detail ? ` (${r.detail})` : ""}`;
+    if (r.outcome === "ok") {
+      // An ok road whose delivery the gate refused keeps the refusal visible
+      // (the `rejectionSuffix` tail of its note); the counts stay out.
+      const refused = r.detail?.match(/·\s*(\d+ rejected: .*)$/);
+      return refused ? `${label}: ok (${refused[1]})` : `${label}: ok`;
+    }
+    return `${label}: ${r.outcome}${r.detail ? ` (${r.detail})` : ""}`;
   });
   if (go.status === "failed") {
     const why = (go.result ?? []).find((r) => r.outcome === "failed")?.detail ?? "no detail";
@@ -746,6 +752,21 @@ const REJECTION_ROAD_LABELS: Record<string, string> = {
 /** One plain warning line per refused document, e.g. "EDGAR exhibit rejected —
  *  no fiscal-period token for this event (https://…)". A `road`-scope refusal
  *  says the content fits but no trusted road carried it. Empty list → []. */
+/** doc id → the roads that produced it, in desk language. The stored road
+ *  verdict is about the ROAD (was it a trusted carrier), not the content, so it
+ *  is labelled as the road's; a document the gate refused says so beside it —
+ *  otherwise a refused release read "— accepted" (2026-10-20 Netflix). */
+export function documentRoadLines(
+  documentRoads: Record<number, ReadonlyArray<{ kind: string; source: string; verdict: string }>> | undefined,
+  rejected: ReadonlyArray<RejectedDocWire> | undefined,
+): string[] {
+  return Object.entries(documentRoads ?? {}).map(([docId, roads]) => {
+    const refusal = (rejected ?? []).find((r) => String(r.docId) === docId && r.scope === "content");
+    const tail = refusal ? ` · content rejected: ${refusal.reason}` : "";
+    return `doc #${docId}: ${roads.map((r) => `${r.kind} via ${r.source} — road ${r.verdict}`).join(" · ")}${tail}`;
+  });
+}
+
 export function rejectionLines(rejected: ReadonlyArray<RejectedDocWire> | undefined): string[] {
   return (rejected ?? []).map((r) => {
     const who = REJECTION_ROAD_LABELS[r.road] ?? r.road;

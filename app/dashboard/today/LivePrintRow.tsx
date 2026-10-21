@@ -54,6 +54,7 @@ import {
   recordLineStatus,
   recordLines,
   rejectionLines,
+  documentRoadLines,
   windowText,
 } from "./live-print/helpers";
 import type { PrepareStepWire, PrintRecordWire, PrintStatusEntry } from "./hub-live/types";
@@ -380,10 +381,7 @@ export default function LivePrintRow({
   const stateChip = printStateLabel(print.state);
 
   /** doc id -> the roads that produced it, in desk language. */
-  const roadLines = Object.entries(print.documentRoads ?? {}).map(
-    ([docId, roads]) =>
-      `doc #${docId}: ${roads.map((r) => `${r.kind} via ${r.source} — ${r.verdict}`).join(" · ")}`,
-  );
+  const roadLines = documentRoadLines(print.documentRoads, print.rejectedDocs);
 
   /** The promote control, finished here and handed to `PrintOutputs`, so the
    *  three 409 confirms in `postAccept` stay the only copy (F-S8). */

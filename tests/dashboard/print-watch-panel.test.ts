@@ -16,6 +16,7 @@ import {
   PRE_GATE_DISCLOSURE,
   SUPERSEDED_CONFIRM_COPY,
   goStatusText,
+  documentRoadLines,
   windowText,
   printHeadlineText,
   stateAndWindowSegments,
@@ -945,6 +946,27 @@ describe("goStatusText", () => {
       { road: "user-url", outcome: "rejected", detail: "wrong period" }, { road: "dj", outcome: "skipped", detail: "tws offline" }, { road: "edgar", outcome: "ok", detail: "ok — 1 filing(s), 1 exhibit(s)" }, { road: "ir", outcome: "skipped", detail: "IR: none configured" },
     ] })).toBe("Print is live — link: rejected (wrong period) · DJ: skipped (tws offline) · EDGAR: ok · IR: skipped (IR: none configured)");
     expect(goStatusText({ id: 1, status: "failed", attempts: 3, requestedAt: "2026-09-03T20:00:00.000Z", result: [{ road: "dj", outcome: "failed", detail: "scheduler exploded" }] })).toBe("Print is live — FAILED after 3 attempt(s): scheduler exploded");
+  });
+
+  it("keeps a gate rejection on an ok road visible (2026-10-20 Netflix: the press read 'EDGAR: ok' while the gate refused the release)", () => {
+    expect(goStatusText({ id: 1, status: "done", attempts: 1, requestedAt: "2026-10-20T20:02:26.000Z", result: [
+      { road: "dj", outcome: "ok", detail: "ok — 0 release(s), 23 flash(es)" },
+      { road: "edgar", outcome: "ok", detail: "ok — 0 filing(s), 0 exhibit(s) · 1 rejected: no fiscal-period token for this event" },
+    ] })).toBe("Print is live — DJ: ok · EDGAR: ok (1 rejected: no fiscal-period token for this event)");
+  });
+});
+
+describe("documentRoadLines", () => {
+  it("names the road verdict as the road's and adds the content refusal, so one document never reads only 'accepted'", () => {
+    const roads = { 22: [{ kind: "edgar-ex99", source: "edgar:0001065280-26-000290:ex991_q326.htm", verdict: "accepted" }] };
+    const rejected = [{ docId: 22, road: "edgar" as const, kind: "edgar-ex99", label: "https://www.sec.gov/x/ex991_q326.htm", reason: "no fiscal-period token for this event", scope: "content" as const }];
+    expect(documentRoadLines(roads, rejected)).toEqual([
+      "doc #22: edgar-ex99 via edgar:0001065280-26-000290:ex991_q326.htm — road accepted · content rejected: no fiscal-period token for this event",
+    ]);
+    expect(documentRoadLines(roads, [])).toEqual([
+      "doc #22: edgar-ex99 via edgar:0001065280-26-000290:ex991_q326.htm — road accepted",
+    ]);
+    expect(documentRoadLines(undefined, undefined)).toEqual([]);
   });
 });
 
