@@ -50,7 +50,7 @@ describe("chat query_calendar_events says whether a result is on file", () => {
     expect(by.AAA.report_state).toMatch(/^not yet reported/);
     expect(by.AAA.report_state).toMatch(/today/);
     expect(by.BBB.report_state).toBe("reported");
-    expect(by.CCC.report_state).toMatch(/^not yet reported/);
+    expect(by.CCC.report_state).toMatch(/^print date passed/);
     expect(by.CCC.report_state).not.toMatch(/today/);
     expect(by.DDD.report_state).toBe("upcoming");
 
@@ -150,5 +150,33 @@ describe("chat query_calendar_events: pre-release figures and implausible actual
     expect(JSON.stringify(by.BAD)).not.toContain("5.00");
     expect(by.OKM.report_state).toBe("reported");
     expect(by.OKM.actual_value).toBe("EPS 5.00");
+  });
+});
+
+describe("chat query_calendar_events: a past print with no captured figure", () => {
+  async function stateFor(daysBack: number, offsetDays: number): Promise<string> {
+    // Fake clock is 2026-03-10 ET; dates are built relative to it.
+    const d = new Date(Date.UTC(2026, 2, 10 + offsetDays)).toISOString().slice(0, 10);
+    db.prepare(
+      `INSERT INTO calendar_events
+         (source, event_type, event_date, event_time, title, symbol, actual_value, superseded, source_key, week_of)
+       VALUES ('manual', 'earnings', ?, '16:05', 'ZZZ earnings', 'ZZZ', NULL, 0, 't:zzz', '2026-03-09')`,
+    ).run(d);
+    const out = (await executeTool(db, "query_calendar_events", { event_type: "earnings", days_back: daysBack })) as Out;
+    return out.data.events.find((e) => e.symbol === "ZZZ")!.report_state;
+  }
+
+  it("a row dated 6 days ago with no actual is print date passed, never not yet reported", async () => {
+    const s = await stateFor(8, -6);
+    expect(s).toMatch(/^print date passed, no result on file/);
+    expect(s).toMatch(/do not say the company has not reported/);
+  });
+
+  it("a row dated today with no actual keeps the clock-aware not yet reported text", async () => {
+    expect(await stateFor(8, 0)).toMatch(/^not yet reported \(scheduled today/);
+  });
+
+  it("a row dated tomorrow is upcoming", async () => {
+    expect(await stateFor(8, 1)).toBe("upcoming");
   });
 });

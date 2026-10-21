@@ -785,7 +785,7 @@ export const CHAT_TOOLS: Anthropic.Tool[] = [
   {
     name: "query_calendar_events",
     description:
-      "Query upcoming or past market events from the calendar — earnings dates, FOMC meetings, CPI releases, jobs reports, GDP, PMI, retail sales, analyst meetings, and other macro/company events. Use when the user asks about upcoming events, 'what's on the calendar', 'when is the next FOMC/CPI/earnings', or wants to understand what market-moving events are ahead. Every row carries report_state: 'reported' (a result is on file in actual_value), 'reported, figure withheld' (a vendor figure failed the plausibility check: do not quote one), 'pre_release_figure' (a figure was saved ahead of the release window, shown in figure_saved_before_release: NOT a result, never say the company reported it), 'upcoming' (a later date), or 'not yet reported' (today or earlier with no result on file); the result carries now_et, the current Eastern date and clock. A company has reported ONLY when its report_state is 'reported' — a pre-open or after-close slot on today's date is a scheduled time, not a result, so never say a print is out or react to it before then.",
+      "Query upcoming or past market events from the calendar — earnings dates, FOMC meetings, CPI releases, jobs reports, GDP, PMI, retail sales, analyst meetings, and other macro/company events. Use when the user asks about upcoming events, 'what's on the calendar', 'when is the next FOMC/CPI/earnings', or wants to understand what market-moving events are ahead. Every row carries report_state: 'reported' (a result is on file in actual_value), 'reported, figure withheld' (a vendor figure failed the plausibility check: do not quote one), 'pre_release_figure' (a figure was saved ahead of the release window, shown in figure_saved_before_release: NOT a result, never say the company reported it), 'upcoming' (a later date), 'not yet reported' (dated today with no result on file), or 'print date passed, no result on file' (a date before today with no result: the figures were not captured, so neither reported nor not-reported can be asserted); the result carries now_et, the current Eastern date and clock. A company has reported ONLY when its report_state is 'reported', and a 'print date passed' row must not be described as not yet reported either — a pre-open or after-close slot on today's date is a scheduled time, not a result, so never say a print is out or react to it before then.",
     input_schema: {
       type: "object" as const,
       properties: {
@@ -1784,7 +1784,7 @@ export async function executeTool(
               ? "upcoming"
               : e.event_date === today
                 ? `not yet reported (scheduled today${e.event_time ? ` at ${e.event_time} ET` : ""}; it is now ${clock} ET)`
-                : "not yet reported (no result on file)";
+                : "print date passed, no result on file (the figures were not captured; do not say the company has not reported, and do not quote a result)";
           return { ...e, ...enteredManually, report_state };
         });
         rawResult = { events, count: events.length, now_et: `${today} ${clock} ET` };
