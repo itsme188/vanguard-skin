@@ -284,6 +284,39 @@ function escapeRe(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+/**
+ * The clause of a (normalised) sentence that holds the character at `at`
+ * (fix round 2 ruling). Basis words describe the number in their own clause:
+ * in "Revenue was $64.60 billion, an increase of 26% year-over-year, or 27% on
+ * a constant currency basis", "constant currency" belongs to the 27% only.
+ * Clauses break at ", or", " or", ";", " and " before a number, and at a comma
+ * whose following stretch holds a number.
+ */
+export function clauseAt(text: string, at: number): string {
+  const cuts: Array<[number, number]> = [];
+  const sep = /,\s*or\s+|\s+or\s+|;\s*|\s+and\s+|,\s*/g;
+  for (const m of text.matchAll(sep)) {
+    const start = m.index ?? 0;
+    const end = start + m[0].length;
+    const sepText = m[0].trim();
+    if (sepText === "or" || sepText === ";" || /^,\s*or$/.test(sepText)) {
+      cuts.push([start, end]);
+    } else if (sepText === "and") {
+      if (/^[-−(]?\$?\d/.test(text.slice(end))) cuts.push([start, end]);
+    } else {
+      // A plain comma: a cut when the stretch up to the next comma or semicolon holds a number.
+      const next = text.slice(end).search(/[,;]/);
+      if (/\d/.test(next < 0 ? text.slice(end) : text.slice(end, end + next))) cuts.push([start, end]);
+    }
+  }
+  let from = 0;
+  for (const [start, end] of cuts) {
+    if (at < start) return text.slice(from, start);
+    from = end;
+  }
+  return text.slice(from);
+}
+
 function bindProse(fig: ModelFigure, stated: StatedNumber, located: LocatedQuote, eventDate: string): Binding {
   const reasons: CheckReason[] = [];
   const sentence = located.sentence ?? "";
@@ -326,7 +359,7 @@ function bindProse(fig: ModelFigure, stated: StatedNumber, located: LocatedQuote
     half: halfUnit(hit.decimals, scale),
     period: period ? { ...period, anchor: null } : null,
     table: null,
-    basisConfirmed: basisConfirmed(fig.basis, basisEvidence([sentence])),
+    basisConfirmed: basisConfirmed(fig.basis, basisEvidence([clauseAt(ns, hit.start)])),
     reasons,
   };
 }

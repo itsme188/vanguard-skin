@@ -24,6 +24,9 @@ const PHRASES: Array<[RegExp, string]> = [
   [/\bcapital\s+expenditures?\b/g, " capex "],
   [/\bcosts?\s+of\s+(?:revenues?|sales|goods\s+sold)\b/g, " cost "],
   [/\bnon[\s-]+gaap\b/g, " nongaap "],
+  // A standard GAAP tail names no different line item (fix round 2). The
+  // noncontrolling-interest tail is NOT stripped: that row is a different figure.
+  [/\battributable\s+to\s+(?:common\s+)?(?:stockholders|shareholders)\b/g, " "],
 ];
 
 // Words that never identify anything: function words, period words, filler.

@@ -121,7 +121,7 @@ const PLACEHOLDER = /\{([A-Za-z][\w.-]*)\}/g;
 // exhibit number, an SEC form name ("8-K", "10-Q", "PRE 14C", "424B3").
 const ALLOWED_DIGITS: RegExp[] = [
   /\b(?:19|20)\d\d\b/g,
-  /\bItem \d{1,2}(?:\.\d{2})?(?![\d.])/g,
+  /\bItem \d{1,2}(?:\.\d{2})?(?!\d)(?!\.\d)/g, // a sentence period may follow ("Item 7.")
   /\bEX-\d+(?:\.\d+)*/gi,
   /\bExhibits?\s+\d+(?:\.\d+)*/gi,
   /\b(?:8-K|10-K|10-Q|6-K|20-F|40-F|S-[1348](?:ASR)?|F-[13]|424B\d)(?:\/A)?(?![\w])/gi,

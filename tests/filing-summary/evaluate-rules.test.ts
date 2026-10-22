@@ -5,6 +5,7 @@
 import { describe, it, expect } from "vitest";
 import { extractDocText } from "@/lib/filing-summary/doc-text";
 import { metricMatchesLabel } from "@/lib/filing-summary/evaluate-words";
+import { clauseAt } from "@/lib/filing-summary/evaluate-figures";
 import { latestQuarterEnd, sectionAnchors, tableContext } from "@/lib/filing-summary/evaluate-periods";
 import { REASON_CODES, renderClaimText } from "@/lib/filing-summary/evaluate";
 import type { DocText, PeriodSpec } from "@/lib/filing-summary/types";
@@ -381,5 +382,66 @@ describe("real-shape follow-ups (smoke check on the Meta exhibit)", () => {
       { docs: docs(extractDocText(html)), bogeys: [bogey("b7.revenue_consensus_usd", 64.57e9)] },
     );
     expect(c.status).toBe("checked");
+  });
+});
+
+describe("fix round 2", () => {
+  const ccSentence =
+    "Revenue was $64.60 billion for the three months ended September 30, 2026, an increase of 26% year-over-year, or 27% on a constant currency basis.";
+  const ccDocs = [{ fileName: EX991, text: extractDocText(`<p>${ccSentence}</p>`) }, { fileName: "t.htm", text: exhibit }];
+  const ccQuote = cite("q1", "Revenue was $64.60 billion for the three months ended September 30, 2026", false);
+
+  it("clauses: basis words belong to the number in their own clause", () => {
+    const s = ccSentence.toLowerCase();
+    expect(clauseAt(s, s.indexOf("26%"))).toBe("an increase of 26% year-over-year");
+    expect(clauseAt(s, s.indexOf("27%"))).toContain("constant currency");
+    expect(clauseAt(s, s.indexOf("$64.60"))).not.toContain("constant currency");
+  });
+
+  it("item 1: the reported 26% typed constant_currency, 'below' a 26.8% constant-currency guide, is not checked (basis_unconfirmed)", () => {
+    const c = one(
+      claim("Revenue grew {f1}, below the {f2} constant-currency guide.", [ccQuote], [
+        quoteFig("f1", "q1", { valueText: "26%", value: 26, unit: "percent", scale: "units", metric: "revenue", label: "Revenue", basis: "constant_currency" }),
+        bogeyFig("f2", "g", { valueText: "26.8%", value: 26.8, unit: "percent", scale: "units" }),
+      ], [cmp("f1", "f2", "below")]),
+      { docs: ccDocs, bogeys: [bogey("g", 26.8, { unit: "percent", basis: "constant_currency", label: "Revenue growth cc" })] },
+    );
+    expect(c.status).toBe("unconfirmed");
+    expect(codes(c)).toContain("basis_unconfirmed");
+  });
+
+  it("item 1: reported revenue in a sentence that also gives a constant-currency rate is checked against a reported consensus", () => {
+    const c = one(
+      claim("Revenue of {f1} beat the {f2} consensus.", [ccQuote], [
+        quoteFig("f1", "q1", { valueText: "$64.60 billion", value: 64.6, scale: "billions", metric: "revenue", label: "Revenue" }),
+        bogeyFig("f2", "rev", { valueText: "$64.0 billion", value: 64, scale: "billions" }),
+      ], [cmp("f1", "f2", "above")]),
+      { docs: ccDocs, bogeys: [bogey("rev", 64e9)] },
+    );
+    expect(c.status).toBe("checked");
+  });
+
+  it("item 2: 'attributable to common stockholders' is a standard tail; the noncontrolling-interest row is a different figure", () => {
+    expect(metricMatchesLabel("net income", "Net income attributable to common stockholders")).toBe(true);
+    expect(metricMatchesLabel("net income", "Net income attributable to Class A shareholders")).toBe(false);
+    expect(metricMatchesLabel("net income", "Net income attributable to noncontrolling interests")).toBe(false);
+    const nci = extractDocText(
+      "<p>(In millions)</p><table><tr><td></td><td>Three Months Ended September 30, 2026</td><td>Three Months Ended September 30, 2025</td></tr>" +
+        "<tr><td>Net income attributable to noncontrolling interests</td><td>120</td><td>95</td></tr></table>",
+    );
+    const c = one(
+      claim("Net income was {f1}.", [cite("q1", "Net income attributable to noncontrolling interests | 120")], [
+        quoteFig("f1", "q1", { valueText: "$120 million", value: 120, metric: "net income", label: "Net income attributable to noncontrolling interests" }),
+      ]),
+      { docs: docs(nci) },
+    );
+    expect(c.status).toBe("unconfirmed");
+    expect(codes(c)).toEqual(["metric_unconfirmed"]);
+  });
+
+  it("item 3: an Item number may end a sentence ('Item 2.02.', 'Item 7.')", () => {
+    expect(renderClaimText(claim("Revenue {f1}, per Item 2.02.", [], [revenueQ3({ valueText: "$1B", value: 1, scale: "billions" })])).unbound).toBe(false);
+    expect(renderClaimText(claim("The risk factors sit under Item 7.", [])).unbound).toBe(false);
+    expect(renderClaimText(claim("Under Item 2.0 nothing changed.", [])).unbound).toBe(true);
   });
 });
