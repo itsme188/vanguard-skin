@@ -85,16 +85,18 @@ const BASIS_WORDS = /\bnon[\s-]*gaap\b|\badjusted\b|\bexclud(?:ing|es|ed)\b|\bco
 export function metricMatchesLabel(
   metric: string,
   label: string,
-  opts: { section?: string | null; context?: string } = {},
+  opts: { section?: string | null; context?: string; labelUnique?: boolean } = {},
 ): boolean {
   const m = words(metric);
   const own = words(label);
   const sec = words(opts.section ?? "");
-  // The metric IS the label, word for word: nothing to confirm beyond a basis word (task 8b; the
-  // section header's measure, "Cash flows from financing activities", does not change that).
+  // The metric IS the label, word for word, and that label names ONE row of its table: nothing to
+  // confirm beyond a basis word (task 8b; the section header's measure, "Cash flows from financing
+  // activities", does not change that). A label repeated under two sections ("Family of Apps" under
+  // "Revenue:" and under "Income from operations:") keeps the section rule (review round 1).
   const same = (a: Words, b: Words) => a.measures.size === b.measures.size && a.distinct.size === b.distinct.size
     && [...a.measures].every((x) => b.measures.has(x)) && [...a.distinct].every((x) => b.distinct.has(x));
-  const identical = same(m, own) && (m.measures.size > 0 || m.distinct.size > 0);
+  const identical = opts.labelUnique === true && same(m, own) && (m.measures.size > 0 || m.distinct.size > 0);
   // Measures: the label's own, else its section's. Both named and agreeing, or neither named.
   const lm = own.measures.size > 0 ? own.measures : sec.measures;
   if (!identical && (m.measures.size > 0 || lm.size > 0)) {

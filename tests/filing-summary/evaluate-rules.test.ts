@@ -105,7 +105,7 @@ describe("item 3: basis needs source evidence", () => {
       { bogeys: [bogey("b5.x.eps", 7, { unit: "usd_per_share", basis: "non_gaap", label: "Adjusted EPS" })] },
     );
     expect(c.status).toBe("unconfirmed");
-    expect(c.comparisonChecks[0].reasons.map((r) => r.code)).toEqual(["basis_unconfirmed"]);
+    expect(codes(c)).toContain("basis_unconfirmed"); // the figure itself carries it since review round 1
   });
 
   const recon = extractDocText(
@@ -662,7 +662,7 @@ describe("fix round 5: repeated labels pair forward only, a trailing clause deni
     });
     it("h1's $2.10 still reaches the basis rule through the second label place", () => {
       const h1 = `Diluted earnings per share was $1.80${P}; on a non-GAAP basis, diluted earnings per share was $2.10.`;
-      expect(codes(vsBogey(h1, eps("non_gaap", "$2.10"), epsBogey("non_gaap")))).toEqual(["basis_unconfirmed"]);
+      expect(codes(vsBogey(h1, eps("non_gaap", "$2.10"), epsBogey("non_gaap")))).toContain("basis_unconfirmed");
     });
   });
 

@@ -85,6 +85,10 @@ export function evalComputed(fig: ModelFigure, byId: Map<string, ResolvedFigure>
   out.period = inputs[0].period;
   out.table = inputs.find((r) => r.table)?.table ?? null;
   out.basis = inputs.find((r) => !r.basis.startsWith("guidance_"))?.basis ?? inputs[0].basis;
+  // The computed figure's typed basis is confirmed only when every input's basis is confirmed and is
+  // that basis (review round 1, item 1); a guidance end carries no accounting basis of its own.
+  out.basisConfirmed = inputs.every((r) => r.basisConfirmed && (r.basis.startsWith("guidance_") || r.basis === fig.basis));
+  if (!out.basisConfirmed && basis === "ok") add("basis_unconfirmed", `the inputs are not all on the ${fig.basis.replace("_", " ")} basis the figure states`);
   const self = periodsMatch({ ...fig.period, anchor: null }, out.period);
   if (self === false) add("periods_differ", `the inputs are for another period than ${fig.period.label}`);
   if (self === null) add("period_unconfirmed", `${fig.period.label} cannot be matched to the inputs' period`);
@@ -192,11 +196,6 @@ export function evalComparison(cmp: ModelComparison, byId: Map<string, ResolvedF
   const RH = get(cmp.rightHigh);
   const ops = [L, LH, R, RH].filter((x): x is ResolvedFigure => x !== null);
   const unsettled = ops.filter((r) => !r.established);
-  if (unsettled.length > 0) {
-    for (const r of unsettled) add("operand_unconfirmed", `operand ${r.figure.id} is not established`);
-    return check;
-  }
-
   let differ = false;
   let unsure = false;
   const pairs: Array<[ResolvedFigure, ResolvedFigure]> = [[L, R]];
@@ -204,9 +203,16 @@ export function evalComparison(cmp: ModelComparison, byId: Map<string, ResolvedF
   if (RH) pairs.push([R, RH]);
   for (const [a, b] of pairs) {
     // A quarter's actual and that quarter's guidance are one period for a comparison (fix-round ruling 5).
+    // Two bound periods that differ are flagged even when an operand is otherwise unconfirmed (spec case B:
+    // the owner must see that a nine-month figure met a full-year one, whatever else is unsettled).
     const same = periodsMatch(a.period, b.period, { ignoreRole: true });
     if (same === false) { differ = true; add("periods_differ", `${a.figure.id} and ${b.figure.id} are for different periods`); }
-    if (same === null) { unsure = true; add("period_unconfirmed", `${a.figure.id} and ${b.figure.id} cannot be matched by period`); }
+    if (same === null && unsettled.length === 0) { unsure = true; add("period_unconfirmed", `${a.figure.id} and ${b.figure.id} cannot be matched by period`); }
+  }
+  if (unsettled.length > 0) {
+    for (const r of unsettled) add("operand_unconfirmed", `operand ${r.figure.id} is not established`);
+    if (differ) check.verdict = "periods_differ";
+    return check;
   }
   const basis = basisCompat(ops);
   if (basis === "differ") { differ = true; add("bases_differ", "the operands are on different bases"); }

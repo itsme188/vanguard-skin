@@ -61,6 +61,7 @@ const REASON_STATUS: Record<string, ClaimStatus | "info"> = {
   dangling_operand: "figure_not_bound",
   dangling_input: "figure_not_bound",
   unbound_value_text: "figure_not_bound",
+  loss_sign_double: "figure_not_bound", // a loss metric typed as a negative number (review round 1)
   // periods differ (R5, R9: a warning, never contradicted)
   periods_differ: "periods_differ",
   bases_differ: "periods_differ",
@@ -123,8 +124,11 @@ const PLACEHOLDER = /\{([A-Za-z][\w.-]*)\}/g;
 const ALLOWED_DIGITS: RegExp[] = [
   /\b(?:19|20)\d\d\b/g,
   // A period label names a period, as a year does: "Q3", "Q4 2026", "3Q26", "FY26", "H1 2027" (task 8b).
-  /\b(?:Q[1-4]|[1-4]Q|H[12])(?:\s?(?:FY)?'?\d{2}(?:\d{2})?)?\b/g,
-  /\bFY\s?'?\d{2}(?:\d{2})?\b/g,
+  // A two-digit year only glued or after an apostrophe ("3Q26", "Q3'26", "Q3 FY26"); a space only
+  // before a four-digit year ("Q4 2026"); never running on into a number ("Q3 26%", "3Q26,500" and
+  // "Q3 26.5" leave their numbers stray; a plain comma or full stop after the label is fine).
+  /\b(?:Q[1-4]|[1-4]Q|H[12])(?:'?\d{2}(?:\d{2})?|\s?FY'?\d{2}(?:\d{2})?|\s(?:19|20)\d\d)?\b(?![\d%])(?![.,]\d)/g,
+  /\bFY'?\d{2}(?:\d{2})?\b(?![\d%])(?![.,]\d)/g,
   /\bItem \d{1,2}(?:\.\d{2})?(?!\d)(?!\.\d)/g, // a sentence period may follow ("Item 7.")
   /\bEX-\d+(?:\.\d+)*/gi,
   /\bExhibits?\s+\d+(?:\.\d+)*/gi,

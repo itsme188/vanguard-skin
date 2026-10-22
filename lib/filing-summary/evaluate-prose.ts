@@ -325,13 +325,13 @@ export function headingPeriod(doc: DocText, block: TextBlock, eventDate: string)
   for (let i = block.index - 1; i >= 0; i--) {
     const b = doc.blocks[i];
     if (!b || b.page !== block.page) return null;
-    if (b.tableId !== null && b.rowIndex !== null) continue;
+    if (b.tableId !== null) return null; // a table's headers belong to that table, never to a later paragraph
     const p = parsePeriodPhrase(b.text, eventDate);
     if (!isHeadingBlock(b)) {
       if (p && p.kind !== "instant") passed.push(p); // a balance "as of" a date is not another period for a quarter heading
       continue;
     }
-    if (!p) continue;
+    if (!p) return null; // the nearest heading names no period: a sub-section of its own, not the quarter's
     return passed.every((q) => periodsMatch({ ...q, anchor: null }, { ...p, anchor: null }) !== false) ? p : null;
   }
   return null;
@@ -341,10 +341,17 @@ export function headingPeriod(doc: DocText, block: TextBlock, eventDate: string)
 // Binding
 // ---------------------------------------------------------------------------
 
+// "would have been $7.40", "would have totaled", "would have reached", "would have amounted to": a restated,
+// hypothetical figure, as in a "would have increased … to" sentence (review round 1, item 2).
+const WOULD_HAVE =
+  /\bwould\s+(?:have\s+)?(?:been|totaled|totalled|reached|amounted\s+to|risen\s+to|grown\s+to|come\s+in\s+at|stood\s+at|equaled|equalled)\s+(?:approximately\s+|about\s+|roughly\s+|around\s+)?$/;
+
 const CHANGE_METRIC = /\b(?:growth|increase|decrease|change|decline|rise|gain|drop|improvement|reduction|delta|up|down)\b/i;
 // A percent figure whose metric is a money measure ("revenue", 27%) can only be a rate of change; a
 // margin, a tax rate or a share of something is a level.
 const MONEY_MEASURES = new Set(["revenue", "income", "expense", "cash", "flow", "eps", "assets", "liabilities", "debt", "capex"]);
+
+const LOSS_WORD = /\bloss(?:es)?\b/i;
 
 /** May this figure be the change a sentence states ("increased $X", "grew N%")? */
 function isChangeFigure(fig: ModelFigure): boolean {
@@ -368,11 +375,26 @@ export function bindProse(fig: ModelFigure, stated: StatedNumber, located: Locat
   const percent = fig.unit === "percent";
   const all = proseTokens(ns, fig.unit); // years and date days are never the figure
   const tokens = all.filter((t) => t.isPercent === percent);
-  const matches = (t: NumberToken) => matchesWithRounding(stated, toUnits(t.value, t.wordScale ?? "units"));
+  // "losses of $18 billion" is a positive loss figure: a number signed only by a loss word matches a
+  // loss-named metric by its size (review round 1, item 6; the negative-typed case is loss_sign_double).
+  const matches = (t: NumberToken) =>
+    matchesWithRounding(stated, toUnits(lossMetric && t.signWord === "loss" ? Math.abs(t.value) : t.value, t.wordScale ?? "units"));
   const taken = new Set<number>();
   const changes = changeRoles(ns, all);
   const bounds = rangeBounds(ns, all, changes);
+  // A sign a word gives the first end of a range carries to the second ("losses of between $18 billion
+  // and $19 billion"); a range whose ends still disagree in sign is refused (review round 1, item 6).
+  const refused = new Set<number>();
+  for (const [start, side] of bounds) {
+    if (side !== "low") continue;
+    const low = all.find((t) => t.start === start);
+    const high = low && all[all.indexOf(low) + 1];
+    if (!low || !high || bounds.get(high.start) !== "high") continue;
+    if (low.signWord && low.value < 0 && high.value > 0 && !high.signWord) { high.value = -high.value; high.signWord = low.signWord; }
+    if (Math.sign(low.value) !== Math.sign(high.value)) { refused.add(low.start); refused.add(high.start); }
+  }
   const changeMetric = isChangeFigure(fig);
+  const lossMetric = LOSS_WORD.test(fig.metric);
   const partner = (t: NumberToken, side: "low" | "high"): NumberToken | undefined => {
     const i = all.indexOf(t);
     const p = all[side === "high" ? i + 1 : i - 1];
@@ -421,11 +443,14 @@ export function bindProse(fig: ModelFigure, stated: StatedNumber, located: Locat
   if (!hit) {
     return failed([...reasons, reason("value_not_in_quote", fig.id, `${fig.valueText} is not the number ${starts.length ? `next to "${fig.label}"` : "in the cited sentence"}`)]);
   }
+  if (refused.has(hit.start)) {
+    return failed([...reasons, reason("value_not_in_quote", fig.id, `${fig.valueText} is one end of a range whose ends disagree in sign`)]);
+  }
   const ch = changes.get(hit.start);
   if (ch?.role === "change" && !changeMetric) {
     return failed([...reasons, reason("value_not_in_quote", fig.id, `${fig.valueText} is the change the sentence states, not the ${fig.metric} figure`)]);
   }
-  if (ch?.role === "current" && ch.hypothetical && fig.basis !== "excluding_item" && fig.basis !== "non_gaap") {
+  if ((ch?.role === "current" && ch.hypothetical || WOULD_HAVE.test(ns.slice(0, hit.start))) && fig.basis !== "excluding_item" && fig.basis !== "non_gaap") {
     return failed([...reasons, reason("basis_unconfirmed", fig.id, `${fig.valueText} is a "would have" figure, not a ${fig.basis} one`)]);
   }
   // A bound of a stated range is a guidance end, never an actual (fix round 5); each end answers only its own side (ruling 2).

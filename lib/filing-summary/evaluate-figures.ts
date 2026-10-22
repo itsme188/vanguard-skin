@@ -132,7 +132,11 @@ function tableCaption(doc: DocText, grid: TableGrid): string {
   return parts.join(" | ");
 }
 
-const CASH_USE_LABEL = /\b(?:repurchases?|purchases?|payments?|paid|capital expenditures?|acquisitions?|dividends)\b/i;
+// A cash USE row of a cash flow statement: named at the START of the label, never a gain/loss, income,
+// proceeds or sales line, never a label with a parenthetical alternative ("Net purchases (sales) of").
+const CASH_USE_LABEL = /^(?:repurchases? of|purchases? of|payments? (?:of|for|on|to)|capital expenditures|acquisitions? of|dividends paid)\b/i;
+const CASH_USE_REFUSED = /\(|\b(?:gain|gains|loss|losses|income|proceeds|sales)\b/i;
+const CASH_FLOW_TABLE = /\bcash flows?\b/i;
 
 function bindTableRow(fig: ModelFigure, stated: StatedNumber, doc: DocText, tableId: number, rowIndex: number, eventDate: string): Binding {
   const reasons: CheckReason[] = [];
@@ -150,7 +154,8 @@ function bindTableRow(fig: ModelFigure, stated: StatedNumber, doc: DocText, tabl
   // A cash USE is printed in parentheses on the cash flow statement, "(26,248)", and stated as the amount
   // spent, "$26,248 million of repurchases" (task 8b, ruling 6). Only a row whose label names a use of
   // cash may match with the sign flipped; "Net income (loss)" never does.
-  if (matched.length === 0 && stated.value > 0 && CASH_USE_LABEL.test(rowLabel)) {
+  if (matched.length === 0 && stated.value > 0 && CASH_USE_LABEL.test(rowLabel.trim()) && !CASH_USE_REFUSED.test(rowLabel)
+    && CASH_FLOW_TABLE.test(`${section ?? ""} ${caption}`)) {
     matched = numericCells(grid, rowIndex).filter((c) => c.value < 0 && matchesWithRounding(stated, -toUnits(c.value, scale)));
   }
   if (matched.length === 0) return fail("value_not_in_quote", `${fig.valueText} is not in row "${rowLabel}"`);
@@ -173,7 +178,8 @@ function bindTableRow(fig: ModelFigure, stated: StatedNumber, doc: DocText, tabl
     return fail("period_unconfirmed", `no column header names the period of ${fig.valueText}`);
   }
   const hit = same[0];
-  if (!metricMatchesLabel(fig.metric, rowLabel, { section, context: `${grid.columnHeaders[hit.c.col] ?? ""} ${caption}` })) {
+  const labelUnique = grid.rowLabels.filter((l) => normalizeForMatch(l) === normalizeForMatch(rowLabel)).length === 1;
+  if (!metricMatchesLabel(fig.metric, rowLabel, { section, context: `${grid.columnHeaders[hit.c.col] ?? ""} ${caption}`, labelUnique })) {
     reasons.push(reason("metric_unconfirmed", fig.id, `metric "${fig.metric}" does not name row "${section ? `${section} ` : ""}${rowLabel}"`));
   }
   return {
@@ -208,6 +214,8 @@ export function bindQuoteFigure(
 
   const stated = statedNumber(fig);
   if (!stated) { add("value_text_mismatch", `the shown text "${fig.valueText}" does not state the typed value`); return out; }
+  // A loss is a negative result already; "net loss" typed as a negative number says it twice (review round 1).
+  if (fig.value < 0 && LOSS_METRIC.test(fig.metric)) add("loss_sign_double", `"${fig.metric}" names a loss, and ${fig.valueText} is negative as well`);
   const label = fig.label?.trim() ?? "";
   if (!label) add("label_missing", "the figure names no row label or phrase");
   else if (!normalizeForMatch(located.block.text).includes(normalizeForMatch(label))) add("label_not_in_quote", `"${label}" is not in the cited line`);
@@ -226,9 +234,19 @@ export function bindQuoteFigure(
   out.period = binding.period;
   out.table = binding.table;
   out.basisConfirmed = binding.basisConfirmed;
+  // Basis is judged on EVERY quote figure (review round 1, item 1): a non-GAAP, excluding-item or
+  // constant-currency figure needs its words in the source; a reported figure stands unless the source
+  // carries a contrary basis word. (`basisConfirmed` already reads the row, caption or clauses that way.)
+  if (binding.units !== null && !binding.basisConfirmed && fig.basis !== "unknown" && !fig.basis.startsWith("guidance_")) {
+    add("basis_unconfirmed", fig.basis === "reported"
+      ? `the source speaks of another basis than reported for ${fig.valueText}`
+      : `the source does not say ${fig.valueText} is ${fig.basis.replace("_", " ")}`);
+  }
   out.established = binding.established && out.reasons.length === 0;
   return out;
 }
+
+const LOSS_METRIC = /\bloss(?:es)?\b/i;
 
 // ---------------------------------------------------------------------------
 // Bogey figures (R6, ruling 6)

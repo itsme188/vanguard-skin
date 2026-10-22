@@ -168,14 +168,17 @@ describe("ruling 4: change sentences", () => {
     expect(r.status).not.toBe("checked");
     expect(r.codes).toContain("range_bound");
   });
-  it("'A of $X would have increased by $Z to $Y': Y binds only as an excluding_item / non_gaap figure", () => {
-    const s = `Income from operations of $12.99 billion would have increased by $9.89 billion to $22.88 billion${P}.`;
-    const ex = usdB("$22.88 billion", 22.88, "income from operations", "Income from operations", { basis: "excluding_item", basisNote: "excludes the litigation charge" });
+  it("'A of $X would have increased by $Z to $Y': Y binds only as an excluding_item / non_gaap figure the sentence states", () => {
+    const s = `Excluding the charge, income from operations of $12.99 billion would have increased by $9.89 billion to $22.88 billion${P}.`;
+    const ex = usdB("$22.88 billion", 22.88, "income from operations", "income from operations", { basis: "excluding_item", basisNote: "excludes the litigation charge" });
     expect(bind(s, ex).status).toBe("checked");
-    const rep = bind(s, usdB("$22.88 billion", 22.88, "income from operations", "Income from operations"));
+    const rep = bind(s, usdB("$22.88 billion", 22.88, "income from operations", "income from operations"));
     expect(rep.status).not.toBe("checked");
     expect(rep.codes).toContain("basis_unconfirmed");
-    expect(bind(s, usdB("$12.99 billion", 12.99, "income from operations", "Income from operations")).status).toBe("checked");
+    // Without the word, even an excluding_item figure is unconfirmed (review round 1: basis on every figure).
+    const bare = `Income from operations of $12.99 billion would have increased by $9.89 billion to $22.88 billion${P}.`;
+    expect(bind(bare, ex).codes).toContain("basis_unconfirmed");
+    expect(bind(bare, usdB("$12.99 billion", 12.99, "income from operations", "Income from operations")).status).toBe("checked");
   });
   it("a percent figure of a money metric may be the growth ('revenue grew 27%'); a margin may not be its own change", () => {
     expect(bind(`Revenue grew 27%${P}.`, pct("27%", 27, "revenue", "revenue")).status).toBe("checked");
@@ -214,6 +217,105 @@ describe("ruling 5: dash ranges", () => {
     expect(bind(s, g("15%", 15, "guidance_low")).status).toBe("checked");
     expect(bind(s, g("17%", 17, "guidance_high")).status).toBe("checked");
     expect(bind(s, g("15%", 15, "guidance_high")).status).not.toBe("checked");
+  });
+});
+
+describe("review round 1", () => {
+  const Q3 = period({ fiscalYear: 2026, fiscalQuarter: 3 });
+  it("A1: basis is judged on every quote figure: a non_gaap figure on a plain GAAP sentence is unconfirmed", () => {
+    const r = bind(`Diluted earnings per share was $3.83${P}.`, { valueText: "$3.83", value: 3.83, scale: "units", unit: "usd_per_share", metric: "diluted EPS", label: "Diluted earnings per share", basis: "non_gaap" });
+    expect(r.status).toBe("unconfirmed");
+    expect(r.codes).toEqual(["basis_unconfirmed"]);
+    // reported stands absent any basis word, and fails on a contrary word in its own clause
+    expect(bind(`Diluted earnings per share was $3.83${P}.`, { valueText: "$3.83", value: 3.83, scale: "units", unit: "usd_per_share", metric: "diluted EPS", label: "Diluted earnings per share" }).status).toBe("checked");
+    expect(bind(`Non-GAAP diluted earnings per share was $3.83${P}.`, { valueText: "$3.83", value: 3.83, scale: "units", unit: "usd_per_share", metric: "diluted EPS", label: "Diluted earnings per share" }).codes).toContain("basis_unconfirmed");
+  });
+  it("A1 table: a row without basis words confirms reported and not non_gaap; a computed figure takes its inputs' basis", () => {
+    const html = `<p>In millions</p><table><tr><td></td><td colspan="2">Three Months Ended September 30,</td></tr><tr><td></td><td>2026</td><td>2025</td></tr><tr><td>Revenue</td><td>64,601</td><td>51,242</td></tr></table>`;
+    const docs = [{ fileName: EX991, text: extractDocText(html) }];
+    const row = "Revenue | 64,601 | 51,242";
+    const rev = (basis: ModelFigure["basis"]) => quoteFig("f1", "q1", { valueText: "$64,601 million", value: 64601, metric: "revenue", label: "Revenue", basis });
+    expect(one(claim("Revenue {f1}.", [cite("q1", row)], [rev("reported")]), { docs }).status).toBe("checked");
+    expect(codes(one(claim("Revenue {f1}.", [cite("q1", row)], [rev("non_gaap")]), { docs }))).toEqual(["basis_unconfirmed"]);
+    const growth = (basis: ModelFigure["basis"]) => one(claim("Revenue grew {f3} ({f1} from {f2}).", [cite("q1", row)], [
+      rev("reported"),
+      quoteFig("f2", "q1", { valueText: "$51,242 million", value: 51242, metric: "revenue", label: "Revenue", period: period({ endDate: "2025-09-30", label: "Q3 2025" }) }),
+      { ...quoteFig("f3", "", { valueText: "26%", value: 26, unit: "percent", scale: "units", metric: "revenue", basis }), sourceKind: "computed", citationId: null, operation: "growth", inputs: ["f1", "f2"] },
+    ]), { docs });
+    expect(growth("reported").status).toBe("checked");
+    expect(codes(growth("non_gaap"))).toContain("basis_unconfirmed");
+  });
+  it("A3: 'would have been $7.40' is a hypothetical figure, not a reported one", () => {
+    const s = `Excluding the litigation charge, diluted earnings per share would have been $7.40${P}.`;
+    const f = (basis: ModelFigure["basis"]) => ({ valueText: "$7.40", value: 7.4, scale: "units", unit: "usd_per_share", metric: "diluted EPS", label: "diluted earnings per share", basis }) as Fig;
+    expect(bind(s, f("reported")).codes).toContain("basis_unconfirmed");
+    expect(bind(s, f("reported")).status).not.toBe("checked");
+    expect(bind(s, f("excluding_item")).status).toBe("checked");
+  });
+  it("B1/B2: a period label never swallows the number after it ('Q3 26%', 'Q4 12 new')", () => {
+    const f = usdB("$64.6 billion", 64.6, "revenue", "Revenue");
+    const c1 = one(claim("Revenue was {f1} in Q3 26% above plan.", [cite("q1", `Revenue was $64.6 billion${P}`, false)], [quoteFig("f1", "q1", f)]), { docs: prose(`Revenue was $64.6 billion${P}.`) });
+    expect(c1.status).toBe("figure_not_bound");
+    const c2 = one(claim("Revenue was {f1}; Q4 12 new data centers.", [cite("q1", `Revenue was $64.6 billion${P}`, false)], [quoteFig("f1", "q1", f)]), { docs: prose(`Revenue was $64.6 billion${P}.`) });
+    expect(c2.status).toBe("figure_not_bound");
+    const ok = one(claim("Revenue was {f1} in Q3 2026, 3Q26 and Q3'26, FY26 and Q3 FY26.", [cite("q1", `Revenue was $64.6 billion${P}`, false)], [quoteFig("f1", "q1", f)]), { docs: prose(`Revenue was $64.6 billion${P}.`) });
+    expect(ok.status).toBe("checked");
+  });
+  it("C1/C2: the cash-use sign flip refuses a gain/loss line and a label with a parenthetical; it needs a cash flow table", () => {
+    const pl = `<p>(In millions)</p><table><tr><td></td><td colspan="2">Three Months Ended September 30,</td></tr><tr><td></td><td>2026</td><td>2025</td></tr>
+      <tr><td>Cash flows from investing activities</td><td></td><td></td></tr>
+      <tr><td>Gain (loss) on acquisitions</td><td>(500)</td><td>20</td></tr>
+      <tr><td>Net purchases (sales) of marketable securities</td><td>(700)</td><td>30</td></tr>
+      <tr><td>Purchases of marketable securities</td><td>(900)</td><td>40</td></tr></table>`;
+    const docs = [{ fileName: EX991, text: extractDocText(pl) }];
+    const f = (vt: string, v: number, metric: string, label: string) => quoteFig("f1", "q1", { valueText: vt, value: v, scale: "millions", metric, label });
+    expect(one(claim("Gain of {f1}.", [cite("q1", "Gain (loss) on acquisitions | (500) | 20")], [f("$500 million", 500, "gain (loss) on acquisitions", "Gain (loss) on acquisitions")]), { docs }).status).not.toBe("checked");
+    expect(one(claim("Purchases of {f1}.", [cite("q1", "Net purchases (sales) of marketable securities | (700) | 30")], [f("$700 million", 700, "net purchases (sales) of marketable securities", "Net purchases (sales) of marketable securities")]), { docs }).status).not.toBe("checked");
+    expect(one(claim("Purchases of {f1}.", [cite("q1", "Purchases of marketable securities | (900) | 40")], [f("$900 million", 900, "purchases of marketable securities", "Purchases of marketable securities")]), { docs }).status).toBe("checked");
+    const noCf = [{ fileName: EX991, text: extractDocText(pl.replace("Cash flows from investing activities", "Investing")) }];
+    expect(one(claim("Purchases of {f1}.", [cite("q1", "Purchases of marketable securities | (900) | 40")], [f("$900 million", 900, "purchases of marketable securities", "Purchases of marketable securities")]), { docs: noCf }).status).not.toBe("checked");
+  });
+  it("D1: the identical-label bypass needs a unique row label ('Family of Apps' under Revenue: and under Income from operations:)", () => {
+    const seg = `<p>(In millions)</p><table><tr><td></td><td colspan="2">Three Months Ended September 30,</td></tr><tr><td></td><td>2026</td><td>2025</td></tr>
+      <tr><td>Revenue:</td><td></td><td></td></tr><tr><td>Family of Apps</td><td>63,000</td><td>50,000</td></tr>
+      <tr><td>Income (loss) from operations:</td><td></td><td></td></tr><tr><td>Family of Apps</td><td>30,000</td><td>25,000</td></tr></table>`;
+    const docs = [{ fileName: EX991, text: extractDocText(seg) }];
+    const c = one(claim("Family of Apps revenue was {f1}.", [cite("q1", "Family of Apps | 30,000 | 25,000")], [quoteFig("f1", "q1", { valueText: "$30,000 million", value: 30000, metric: "Family of Apps", label: "Family of Apps" })]), { docs });
+    expect(c.status).not.toBe("checked");
+    expect(codes(c)).toContain("metric_unconfirmed");
+  });
+  it("E1b/E2: the heading walk stops at a periodless heading and at any table block", () => {
+    const leak1 = `<p>Third Quarter 2026 Results</p><p>Revenue was $64.6 billion.</p><p>CFO Outlook Commentary</p><p>We expect total expenses to be $50.0 billion.</p>`;
+    expect(bind("We expect total expenses to be $50.0 billion", usdB("$50.0 billion", 50, "total expenses", "total expenses", { period: Q3 }), docsOf(leak1)).codes).toContain("period_unconfirmed");
+    const leak2 = `<table><tr><td></td><td>Three Months Ended September 30, 2026</td></tr><tr><td>Revenue</td><td>64,601</td></tr></table><p>Headcount was 66,775.</p><p>Capital expenditures are expected to be $35.0 billion.</p>`;
+    expect(bind("Capital expenditures are expected to be $35.0 billion", usdB("$35.0 billion", 35, "capital expenditures", "Capital expenditures"), docsOf(leak2)).codes).toContain("period_unconfirmed");
+  });
+  it("F2/F3: a loss metric typed negative is loss_sign_double; a loss word signs both ends of a range; a positive loss figure still binds", () => {
+    const s = "We expect Reality Labs operating losses of $18-19 billion for full year 2026";
+    const fy = period({ kind: "fiscal_year", role: "outlook", endDate: "2026-12-31", fiscalYear: 2026, label: "FY 2026" });
+    const rl = (vt: string, v: number, basis: ModelFigure["basis"]) => usdB(vt, v, "Reality Labs operating losses", "Reality Labs operating losses", { basis, period: fy });
+    const d = docsOf(`<p>${s}.</p>`);
+    const f2 = bind(s, rl("-$18 billion", -18, "guidance_low"), d);
+    expect(f2.status).toBe("figure_not_bound");
+    expect(f2.codes).toContain("loss_sign_double");
+    const f3 = one(claim("RL losses between {f1} and {f2}.", [cite("q1", s, false)], [quoteFig("f1", "q1", rl("-$18 billion", -18, "guidance_low")), quoteFig("f2", "q1", rl("$19 billion", 19, "guidance_high"))]), { docs: d });
+    expect(f3.status).toBe("figure_not_bound");
+    expect(bind(s, rl("$19 billion", 19, "guidance_high"), d).status).toBe("checked");
+    expect(scanNumbers("losses of $18-19 billion").map((t) => [t.value, t.signWord])).toEqual([[-18, "loss"], [-19, "loss"]]);
+    // "between X and Y" / "X to Y": the sign carries too, and a loss metric typed −19 is still refused
+    const b = "We expect Reality Labs operating losses of between $18 billion and $19 billion for full year 2026";
+    expect(bind(b, rl("$19 billion", 19, "guidance_high"), docsOf(`<p>${b}.</p>`)).status).toBe("checked");
+    expect(bind(b, rl("-$19 billion", -19, "guidance_high"), docsOf(`<p>${b}.</p>`)).codes).toContain("loss_sign_double");
+  });
+  it("spec case B still flags periods even when an operand's basis is unconfirmed", () => {
+    const html = `<p>In millions</p><table><tr><td></td><td colspan="2">Nine Months Ended September 30,</td></tr><tr><td></td><td>2026</td><td>2025</td></tr><tr><td>Free cash flow</td><td>11,049</td><td>29,508</td></tr></table>`;
+    const docs = [{ fileName: EX991, text: extractDocText(html) }, { fileName: "t.htm", text: exhibit }];
+    const c = one(claim("FCF of {f1} above the {f2} full-year figure.", [cite("q1", "Free cash flow | 11,049 | 29,508")], [
+      quoteFig("f1", "q1", { valueText: "$11,049 million", value: 11049, metric: "free cash flow", label: "Free cash flow", basis: "non_gaap", period: period({ kind: "year_to_date", label: "nine months 2026" }) }),
+      bogeyFig("f2", "b9", { valueText: "−$7.3 billion", value: -7.3, scale: "billions" }),
+    ], [cmp("f1", "f2", "above")]), { docs, bogeys: [bogey("b9", -7.3e9, { label: "FCF", period: { kind: "fiscal_year", role: "outlook", endDate: null, fiscalYear: null, fiscalQuarter: null, anchor: "fiscal_year", label: "FY" }, basis: "non_gaap" })] });
+    expect(c.status).toBe("periods_differ");
+    expect(codes(c)).toContain("basis_unconfirmed");
   });
 });
 
@@ -265,7 +367,8 @@ describe("ruling 6: classes from the real Meta 8-K, in synthetic form", () => {
     const fcf = "Cash flow from operating activities was $32.79 billion, and free cash flow was negative $2.12 billion";
     const r = bind(fcf, usdB("negative $2.12 billion", -2.12, "free cash flow", "free cash flow", { basis: "non_gaap", period: Q3 }), docsOf(html));
     expect(r.codes).not.toContain("period_unconfirmed");
-    expect(r.status).toBe("checked");
+    expect(r.codes).toEqual(["basis_unconfirmed"]); // the sentence does not say non-GAAP (review round 1)
+    expect(bind(fcf, usdB("negative $2.12 billion", -2.12, "free cash flow", "free cash flow", { period: Q3 }), docsOf(html)).status).toBe("checked");
   });
   it("a metric that is the row label word for word matches under any section header", () => {
     const html = `<p>In millions</p><table><tr><td></td><td colspan="2">Nine Months Ended September 30,</td></tr><tr><td></td><td>2026</td><td>2025</td></tr>
@@ -316,6 +419,7 @@ describe("ruling 6: classes from the real Meta 8-K, in synthetic form", () => {
   it("a split parenthesised table negative, '(26,248' and ')' in adjacent cells, is one number", () => {
     const html = `<p>In millions</p><table>
       <tr><td></td><td colspan="2">Nine Months Ended September 30,</td></tr><tr><td></td><td>2026</td><td>2025</td></tr>
+      <tr><td>Cash flows from financing activities</td><td></td><td></td></tr>
       <tr><td>Repurchases of Class A common stock</td><td>—</td><td>(26,248</td><td>)</td></tr>
       <tr><td>Net income (loss)</td><td>(1,200</td><td>)</td><td>900</td></tr></table>`;
     const docs = [{ fileName: EX991, text: extractDocText(html) }];

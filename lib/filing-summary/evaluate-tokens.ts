@@ -40,7 +40,7 @@ const DIGIT_DASH =
   /(\d)([-−–])(?=\$?\d[\d,]*(?:\.\d+)?\s?(?:%|percent\b|billions?\b|millions?\b|thousands?\b|bn\b|mn\b|mm\b|[bmk]\b)|\$\d)/g;
 
 // "negative $2.12 billion", "minus 3%", "a net loss of $1.2 billion": the words give the sign (task 8b, ruling 6).
-const NEGATIVE_WORDS = /\b(?:negative|minus|(?:net\s+)?loss(?:es)?\s+of)\s*$/i;
+const NEGATIVE_WORDS = /\b(negative|minus|(?:net\s+)?loss(?:es)?\s+of)\s*$/i;
 
 export interface NumberToken {
   value: number;
@@ -51,6 +51,8 @@ export interface NumberToken {
   /** Character offsets of the token in the scanned text. */
   start: number;
   end: number;
+  /** The word that made the number negative, when one did: "negative" / "minus", or "loss of". */
+  signWord?: "negative" | "loss";
 }
 
 /**
@@ -75,17 +77,29 @@ export function scanNumbers(text: string): NumberToken[] {
     if (!isPercent && !word && /^(?:19|20)\d\d$/.test(core)) continue;
     const parsed = parseNumberToken(core);
     if (!parsed) continue;
-    let value = parsed.value;
-    if (value > 0 && NEGATIVE_WORDS.test(text.slice(0, m.index ?? 0))) value = -value;
-    out.push({ value, decimals: parsed.decimals, wordScale: word ? WORD_SCALE[word] : null, isPercent, start: m.index ?? 0, end });
+    const value = parsed.value;
+    const sw = NEGATIVE_WORDS.exec(text.slice(0, m.index ?? 0));
+    const tok: NumberToken = { value, decimals: parsed.decimals, wordScale: word ? WORD_SCALE[word] : null, isPercent, start: m.index ?? 0, end };
+    if (value > 0 && sw) {
+      tok.value = -value;
+      tok.signWord = /^loss|^net/i.test(sw[1]) ? "loss" : "negative";
+    }
+    out.push(tok);
   }
   for (let i = 0; i + 1 < out.length; i++) {
     const a = out[i];
     const b = out[i + 1];
-    if (a.isPercent || a.wordScale || !/^\s?[-−–]\s?$/.test(text.slice(a.end, b.start))) continue;
-    if (!b.isPercent && !b.wordScale) continue;
-    a.isPercent = b.isPercent;
-    a.wordScale = b.wordScale;
+    if (!/^\s?[-−–]\s?$/.test(text.slice(a.end, b.start))) continue;
+    // A compact range: an end with no unit takes the range's unit; a sign given by a word before the
+    // first end ("losses of $18-19 billion") carries to the second (review round 1, item 6).
+    if (!a.isPercent && !a.wordScale && (b.isPercent || b.wordScale)) {
+      a.isPercent = b.isPercent;
+      a.wordScale = b.wordScale;
+    }
+    if (a.signWord && a.value < 0 && b.value > 0) {
+      b.value = -b.value;
+      b.signWord = a.signWord;
+    }
   }
   return out;
 }
