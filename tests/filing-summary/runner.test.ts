@@ -15,6 +15,7 @@ import {
   onEarningsAccepted,
   retryRun,
   retryRunWithReason,
+  ROUTINE_SKIP_REASON,
   runNextSection,
   SECTION_CALL_TIMEOUT_MS,
   SECTION_MAX_OUTPUT_TOKENS,
@@ -312,9 +313,10 @@ describe("runNextSection", () => {
     const coverage = JSON.parse(sec.coverageJson!) as CoverageEntry[];
     expect(coverage).toEqual([
       { fileName: "ex991.htm", docType: "EX-99.1", status: "read", reason: null },
-      { fileName: "logo.jpg", docType: "GRAPHIC", status: "skipped", reason: "graphic" },
+      { fileName: "logo.jpg", docType: "GRAPHIC", status: "skipped", reason: "not text (image or XBRL)" },
     ]);
-    expect(sec.incomplete).toBe(true);
+    // A routine skip (a graphic) is listed but leaves nothing out.
+    expect(sec.incomplete).toBe(false);
     expect(JSON.parse(sec.usageJson!)).toEqual({ inputTokens: 1200, outputTokens: 340, reasoningTokens: 90 });
     expect(JSON.parse(sec.versionsJson!)).toEqual({
       schema: SCHEMA_VERSION, prompt: PROMPT_VERSION, extractor: EXTRACTOR_VERSION, checker: CHECKER_VERSION,
@@ -513,6 +515,61 @@ describe("runNextSection", () => {
     release();
     expect(await pending).toBe("lost_claim");
     expect(sectionsOf(runId)[0]).toMatchObject({ status: "running", claimToken: "tok-B", checkedJson: null });
+  });
+
+  describe("incomplete: routine skips are listed, only a left-out document counts (browser pass ruling)", () => {
+    function skipped(filingId: number, fileName: string, docType: string, seq: number, status: "skipped" | "failed", reason: string): void {
+      upsertDocument(db, {
+        filingId, fileName, docType, sequence: seq, status,
+        skipReason: reason, sha256: null, byteLen: null, storedPath: null,
+      });
+    }
+
+    async function runOne(): Promise<{ incomplete: boolean; coverage: CoverageEntry[] }> {
+      const runId = start();
+      const { s } = seams(ok(EARNINGS_OUT));
+      await runNextSection(db, eventId, s);
+      const sec = sectionsOf(runId)[0];
+      return { incomplete: sec.incomplete, coverage: JSON.parse(sec.coverageJson!) as CoverageEntry[] };
+    }
+
+    it("graphics, XBRL parts, XML/JSON/ZIP and images do not make a section incomplete", async () => {
+      const id = seedEarnings();
+      skipped(id, "meta-20261021.xsd", "EX-101.SCH", 4, "skipped", "skipped: XBRL part (EX-101.SCH)");
+      skipped(id, "R1.htm", "XML", 5, "skipped", "skipped: XML document");
+      skipped(id, "report.css", "XML", 6, "skipped", "skipped: XML document");
+      skipped(id, "FilingSummary.json", "JSON", 7, "skipped", "skipped: JSON document");
+      skipped(id, "0000000001-26-000001-xbrl.zip", "ZIP", 8, "skipped", "skipped: ZIP document");
+      skipped(id, "chart.png", "EX-99.3", 9, "skipped", "skipped: .png file");
+      const { incomplete, coverage } = await runOne();
+      expect(incomplete).toBe(false);
+      const routine = coverage.filter((c) => c.status === "skipped");
+      expect(routine).toHaveLength(7);
+      for (const c of routine) expect(c.reason).toBe(ROUTINE_SKIP_REASON);
+    });
+
+    it("a failed fetch makes the section incomplete", async () => {
+      const id = seedEarnings();
+      skipped(id, "ex992.htm", "EX-99.2", 4, "failed", "fetch failed");
+      const { incomplete, coverage } = await runOne();
+      expect(incomplete).toBe(true);
+      expect(coverage.find((c) => c.fileName === "ex992.htm")).toMatchObject({ status: "failed", reason: "fetch failed" });
+    });
+
+    it("an oversized document makes the section incomplete", async () => {
+      const id = seedEarnings();
+      skipped(id, "ex992.htm", "EX-99.2", 4, "skipped", "over the per-document size cap");
+      const { incomplete, coverage } = await runOne();
+      expect(incomplete).toBe(true);
+      expect(coverage.find((c) => c.fileName === "ex992.htm")?.reason).toBe("over the per-document size cap");
+    });
+
+    it("a filing whose fetch failed is incomplete even when every stored document was read", async () => {
+      const { id } = insertFiling(db, filing("0000000001-26-000003", { fetchState: "failed" }));
+      addDoc(id, "ex991.htm", "EX-99.1", 1, EX991_HTML);
+      const { incomplete } = await runOne();
+      expect(incomplete).toBe(true);
+    });
   });
 
   it("the input cap skips later documents in sequence order and marks the section incomplete", async () => {

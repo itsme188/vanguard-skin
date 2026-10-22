@@ -24,6 +24,7 @@
  */
 import type Database from "better-sqlite3";
 import { parseStoredTimestamp } from "@/lib/format";
+import { todayET } from "@/lib/calendar/date-utils";
 import { familyNowLabel, modelLabel } from "@/lib/ai/model-families";
 import { choiceLabel, SUMMARY_CHOICES } from "./choice";
 import { countStatuses } from "./evaluate";
@@ -151,6 +152,14 @@ export interface PanelView {
   nowLabel: string;
   /** Null when the event has no filing-summary state yet. */
   pollState: PollState | null;
+  /**
+   * True for a print dated before today (Eastern) that has no filing-summary
+   * state and no run: it was armed before this feature or never polled, and
+   * the poller (today and yesterday only) will never look at it. The panel
+   * says "No filing summary for this print", stops polling, and the model
+   * select is disabled.
+   */
+  pastWithoutSummary: boolean;
   pollDetail: string | null;
   shown: RunSummary | null;
   inProgress: RunSummary | null;
@@ -536,6 +545,15 @@ function modelClaimsById(outputJson: string | null): Map<string, ModelSectionOut
   return out;
 }
 
+/**
+ * The model's own id for a stored claim. The runner namespaces checked claim ids as `s<seq>.<id>`
+ * (so ids stay unique across a run's sections), while output_json keeps the model's raw ids.
+ */
+export function rawClaimId(claimId: string, seq: number): string {
+  const prefix = `s${seq}.`;
+  return claimId.startsWith(prefix) ? claimId.slice(prefix.length) : claimId;
+}
+
 function describeOperand(
   id: string | null,
   figures: ModelFigure[],
@@ -591,7 +609,7 @@ function buildSections(rows: SectionRow[], filingsById: Map<number, FilingRow>, 
     const checked = s.status === "done" ? parseJson<CheckedSection>(s.checkedJson) : null;
     const models = checked ? modelClaimsById(s.outputJson) : new Map();
     const claims: ViewClaim[] = (checked?.claims ?? []).map((c) => {
-      const model = models.get(c.claimId);
+      const model = models.get(rawClaimId(c.claimId, s.seq)) ?? models.get(c.claimId);
       const quotes = new Map<string, string>();
       for (const cit of Array.isArray(model?.citations) ? model.citations : []) {
         if (cit && typeof cit.id === "string" && typeof cit.quote === "string") quotes.set(cit.id, cit.quote);
@@ -815,7 +833,8 @@ function readingDocsFor(db: Database.Database, candidates: Array<BuiltRun | null
   return { form: section.form, exhibits };
 }
 
-function panelFor(db: Database.Database, eventId: number, catalogIds: string[]): PanelView {
+function panelFor(db: Database.Database, ev: EventRow, catalogIds: string[], today: string): PanelView {
+  const eventId = ev.id;
   const { choice, isDefault, locked } = getChoice(db, eventId);
   const state = getEventState(db, eventId);
   const { filings, built, shown, inProgress } = buildAll(db, eventId);
@@ -829,6 +848,7 @@ function panelFor(db: Database.Database, eventId: number, catalogIds: string[]):
     locked,
     nowLabel: familyNowLabel(choice.family, catalogIds),
     pollState: state?.pollState ?? null,
+    pastWithoutSummary: !state && built.length === 0 && ev.eventDate < today,
     pollDetail: state?.pollDetail ?? null,
     shown: shown?.summary ?? null,
     inProgress: inProgress?.summary ?? null,
@@ -843,11 +863,14 @@ export function getPanelViews(
   db: Database.Database,
   eventIds: number[],
   catalogIds: string[],
+  now: Date = new Date(),
 ): Record<number, PanelView> {
   const out: Record<number, PanelView> = {};
+  const today = todayET(now);
   for (const id of eventIds) {
-    if (!eventRow(db, id)) continue;
-    out[id] = panelFor(db, id, catalogIds);
+    const ev = eventRow(db, id);
+    if (!ev) continue;
+    out[id] = panelFor(db, ev, catalogIds, today);
   }
   return out;
 }

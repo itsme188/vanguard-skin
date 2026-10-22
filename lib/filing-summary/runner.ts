@@ -35,6 +35,7 @@ import { buildBogeySnapshot } from "./bogey-snapshot";
 import { blockText, extractDocText, EXTRACTOR_VERSION } from "./doc-text";
 import { CHECKER_VERSION, evaluateSection } from "./evaluate";
 import { readFilingDocument } from "./files";
+import { shouldSkipDocument } from "./edgar";
 import { easternClock } from "./poller";
 import { buildSectionPrompt, PROMPT_VERSION } from "./prompt";
 import { parseSectionOutput, SCHEMA_VERSION, SECTION_JSON_SCHEMA } from "./schema";
@@ -434,7 +435,16 @@ interface Coverage {
   entries: CoverageEntry[];
   docs: Array<{ fileName: string; docType: string; text: string; docText: DocText }>;
   overCap: boolean;
+  /**
+   * True when a document the summary should have read was left out: a failed
+   * fetch, an oversized document, a stored copy that is missing or unreadable,
+   * or the input cap. A routine skip (not text) never counts.
+   */
+  leftOut: boolean;
 }
+
+/** The coverage reason for a routine skip: graphics, XBRL parts, XML/JSON/ZIP. */
+export const ROUTINE_SKIP_REASON = "not text (image or XBRL)";
 
 /** Every document of the filing, in sequence order, with the 1.6M-character cap applied. */
 function buildCoverage(filing: FilingRow, readDocument: (p: string) => string | null, db: Database.Database): Coverage {
@@ -442,9 +452,19 @@ function buildCoverage(filing: FilingRow, readDocument: (p: string) => string | 
   const docs: Coverage["docs"] = [];
   let used = 0;
   let overCap = false;
+  let leftOut = false;
   for (const d of listDocuments(db, filing.id)) {
     const base = { fileName: d.fileName, docType: d.docType };
     if (d.status !== "fetched") {
+      // A routine skip (the poller's shouldSkipDocument list: graphics, XBRL
+      // parts, XML/JSON/ZIP, images) is listed but leaves nothing out: it is
+      // not text. Every 8-K has some, so counting them would flag every
+      // filing incomplete (browser pass ruling, 2026-10-22).
+      if (d.status === "skipped" && shouldSkipDocument(d.docType, d.fileName) !== null) {
+        entries.push({ ...base, status: "skipped", reason: ROUTINE_SKIP_REASON });
+        continue;
+      }
+      leftOut = true;
       entries.push({ ...base, status: d.status, reason: d.skipReason });
       continue;
     }
@@ -454,6 +474,7 @@ function buildCoverage(filing: FilingRow, readDocument: (p: string) => string | 
     }
     const html = d.storedPath ? readDocument(d.storedPath) : null;
     if (html === null) {
+      leftOut = true;
       entries.push({ ...base, status: "failed", reason: "stored copy missing" });
       continue;
     }
@@ -463,6 +484,7 @@ function buildCoverage(filing: FilingRow, readDocument: (p: string) => string | 
       docText = extractDocText(html);
       text = blockText(docText);
     } catch {
+      leftOut = true;
       entries.push({ ...base, status: "failed", reason: "could not be read" });
       continue;
     }
@@ -475,7 +497,7 @@ function buildCoverage(filing: FilingRow, readDocument: (p: string) => string | 
     docs.push({ ...base, text, docText });
     entries.push({ ...base, status: "read", reason: null });
   }
-  return { entries, docs, overCap };
+  return { entries, docs, overCap, leftOut: leftOut || overCap };
 }
 
 function parseChecked(json: string | null): CheckedSection | null {
@@ -586,8 +608,7 @@ export async function runNextSection(
 
   const coverage = buildCoverage(filing, seams.readDocument, db);
   const coverageJson = JSON.stringify(coverage.entries);
-  const incomplete =
-    filing.fetchState === "failed" || coverage.entries.some((e) => e.status !== "read");
+  const incomplete = filing.fetchState === "failed" || coverage.leftOut;
   if (coverage.docs.length === 0) {
     return finalizeFailed(
       failedResult(run, coverage.overCap ? "input_too_large" : "cancelled", coverage.overCap ? OVER_INPUT_CAP : NOTHING_READ_TEXT, {

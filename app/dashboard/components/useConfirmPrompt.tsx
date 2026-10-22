@@ -11,6 +11,9 @@ export interface ConfirmPromptRequest {
   message: string;
   confirmLabel?: string;
   variant?: "danger" | "default";
+  /** Which button has focus when the question opens (default "confirm"). A
+   *  question that spends money passes "cancel" so Enter never spends. */
+  initialFocus?: "confirm" | "cancel";
 }
 
 export interface ConfirmPrompt {
@@ -84,6 +87,7 @@ export function useConfirmPrompt(): ConfirmPrompt {
           message={first}
           confirmLabel={request.confirmLabel}
           variant={request.variant}
+          initialFocus={request.initialFocus}
           onConfirm={confirm}
           onCancel={cancel}
         >

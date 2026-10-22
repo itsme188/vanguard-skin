@@ -16,6 +16,13 @@
  * lock and options), measured with `offsetParent` the way LivePrintSlot does.
  * The select id comes from `useId`, so the two twins never share one.
  *
+ * The closed select shows the choice label only ("Opus · high"): the full
+ * option text ("Opus · high — now 5.5") was cut off in the narrow Hub row
+ * (browser pass, 2026-10-22). A transparent native select sits over that
+ * label, so the open list still shows each option with its now-label, and the
+ * wrapper's title carries the current one. A print from an earlier day with no
+ * summary state (`pastWithoutSummary`) gets a disabled select: nothing will run.
+ *
  * Every outcome reaches the user as a toast; a refused or failed change puts
  * the select back.
  */
@@ -32,6 +39,8 @@ import { choiceValue, optionText } from "./filing-summary-text";
 interface ChoiceState {
   current: SummaryChoice;
   locked: boolean;
+  /** An earlier day's print with no summary state: nothing will ever run. */
+  past: boolean;
   options: ChoiceOption[];
 }
 
@@ -77,7 +86,7 @@ export default function FilingSummaryChoice({ eventId }: { eventId: number }) {
           setLoadError(r.ok ? "the server sent no choice." : r.message);
           return;
         }
-        setState({ current: v.choice, locked: v.locked, options: v.choiceOptions });
+        setState({ current: v.choice, locked: v.locked, past: v.pastWithoutSummary, options: v.choiceOptions });
         setLoadError(null);
       } catch {
         if (!cancelled) setLoadError(networkFailureMessage("read the summary model"));
@@ -138,25 +147,42 @@ export default function FilingSummaryChoice({ eventId }: { eventId: number }) {
     );
   }
 
+  const currentOption = state.options.find((o) => choiceValue(o.choice) === choiceValue(state.current));
+  const currentText = currentOption ? optionText(currentOption) : choiceLabel(state.current);
+  const disabled = state.locked || state.past || saving;
+  const selectTitle = state.past
+    ? `No filing summary for this print: it is from an earlier day. ${currentText}`
+    : state.locked
+      ? `Locked at ${currentText}: the summary has started. Re-run from the full summary to change the model.`
+      : `The model that writes this print's filing summary: ${currentText}`;
+
   return (
     <span ref={rootRef} className="inline-flex items-center gap-1 flex-wrap min-w-0 max-w-full">
       <label className="text-[10px] font-mono text-ink-dim whitespace-nowrap" htmlFor={selectId}>
         Filing summary
       </label>
-      <select
-        id={selectId}
-        value={choiceValue(state.current)}
-        onChange={(e) => void change(e.target.value)}
-        disabled={state.locked || saving}
-        title={state.locked ? "Locked: the summary has started. Re-run from the full summary to change the model." : "The model that writes this print's filing summary"}
-        className="text-[10px] font-mono text-ink bg-raised border border-edge rounded px-1 py-0.5 max-w-full min-w-0 disabled:opacity-70 pointer-coarse:min-h-6"
+      <span
+        title={selectTitle}
+        className={`relative inline-flex shrink-0 items-center whitespace-nowrap text-[10px] font-mono text-ink bg-raised border border-edge rounded px-1 py-0.5 focus-within:outline focus-within:outline-ink pointer-coarse:min-h-6 ${
+          disabled ? "opacity-70" : ""
+        }`}
       >
-        {state.options.map((o) => (
-          <option key={choiceValue(o.choice)} value={choiceValue(o.choice)}>
-            {optionText(o)}
-          </option>
-        ))}
-      </select>
+        <span aria-hidden="true">{choiceLabel(state.current)}</span>
+        <select
+          id={selectId}
+          value={choiceValue(state.current)}
+          onChange={(e) => void change(e.target.value)}
+          disabled={disabled}
+          title={selectTitle}
+          className="absolute inset-0 h-full w-full opacity-0 cursor-pointer disabled:cursor-default text-[10px] font-mono"
+        >
+          {state.options.map((o) => (
+            <option key={choiceValue(o.choice)} value={choiceValue(o.choice)}>
+              {optionText(o)}
+            </option>
+          ))}
+        </select>
+      </span>
       {state.locked && <span className="text-[10px] font-mono text-ink-dim whitespace-nowrap">locked — re-run to change</span>}
     </span>
   );

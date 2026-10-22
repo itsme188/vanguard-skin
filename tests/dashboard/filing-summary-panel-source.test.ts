@@ -231,6 +231,7 @@ function view(o: Partial<PanelView> = {}): PanelView {
     locked: true,
     nowLabel: "Opus · now 5.5",
     pollState: "found",
+    pastWithoutSummary: false,
     pollDetail: null,
     shown: run(),
     inProgress: null,

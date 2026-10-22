@@ -153,6 +153,8 @@ export default function FilingSummaryPanel({
       title: "Run the filing summary?",
       message: runConfirmMessage(view.choice, view.nowLabel),
       confirmLabel: "Run summary",
+      // It spends money: Enter must not answer yes.
+      initialFocus: "cancel",
     });
     if (!ok) {
       setNote("Not run — nothing was spent.");
@@ -174,6 +176,7 @@ export default function FilingSummaryPanel({
       title: "Retry the filing summary?",
       message: retryConfirmMessage(run),
       confirmLabel: "Retry",
+      initialFocus: "cancel",
     });
     if (!ok) {
       setNote("Not retried — nothing was spent.");

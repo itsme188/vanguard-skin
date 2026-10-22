@@ -92,6 +92,8 @@ function capitalise(s: string): string {
 /** The panel's status line (brief copy; the run's state wins over the poll's). */
 export function pollStateText(view: PanelView, reading: ReadingDocs | null = view.readingDocs ?? null): string {
   if (view.pollState === "cancelled") return "Disarmed — summary stopped";
+  // A print from an earlier day the poller never looked at: it never will.
+  if (view.pastWithoutSummary) return "No filing summary for this print";
 
   const active = view.inProgress?.status === "running" ? view.inProgress : view.shown?.status === "running" ? view.shown : null;
   if (active) {
@@ -160,10 +162,12 @@ export function sectionNotes(run: RunSummary): string[] {
 /**
  * True while the panel should keep re-reading: a run runs, the filing is
  * still looked for, or the event has no state yet (the poller has not seen a
- * just-armed print). A read-only panel (a closed record) never polls.
+ * just-armed print). A read-only panel (a closed record) never polls, nor
+ * does a print from an earlier day with no state (nothing will change).
  */
 export function needsPolling(view: PanelView, readOnly = false): boolean {
   if (readOnly) return false;
+  if (view.pastWithoutSummary) return false;
   if (view.inProgress?.status === "running" || view.shown?.status === "running") return true;
   return (
     view.pollState === null ||

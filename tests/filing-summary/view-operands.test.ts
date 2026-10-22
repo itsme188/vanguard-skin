@@ -7,7 +7,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
-import { createRun, insertFiling, upsertDocument, type NewFiling } from "@/lib/filing-summary/store";
+import { createRun, insertFiling, upsertDocument, upsertEventState, type NewFiling } from "@/lib/filing-summary/store";
 import { getFullView, getPanelViews } from "@/lib/filing-summary/view";
 import { countStatuses } from "@/lib/filing-summary/evaluate";
 import { SUMMARY_CHOICES, choiceLabel } from "@/lib/filing-summary/choice";
@@ -115,13 +115,14 @@ beforeEach(() => {
   );
 });
 
-function seedDoneRun(): { runId: number; filingId: number } {
+function seedDoneRun(claimId = "c1"): { runId: number; filingId: number } {
   const { id: filingId } = insertFiling(db, filing("0000000001-26-000001"));
   const runId = createRun(db, {
     eventId, trigger: "auto", choice: { family: "opus", effort: "high" }, modelId: "claude-opus-5-5",
     fallbackNote: null, requestKey: null, bogeySnapshotJson: JSON.stringify(SNAPSHOT), filingIds: [filingId],
   }).runId;
-  const checked: CheckedSection = { headline: "Synthetic Q3", claims: [CHECKED_CLAIM], counts: countStatuses([CHECKED_CLAIM]) };
+  const claim: CheckedClaim = { ...CHECKED_CLAIM, claimId };
+  const checked: CheckedSection = { headline: "Synthetic Q3", claims: [claim], counts: countStatuses([claim]) };
   db.prepare(
     `UPDATE filing_summary_sections SET status='done', checked_json=?, counts_json=?, output_json=?, coverage_json='[]',
        model_id='claude-opus-5-5', effort='high', finished_at=datetime('now') WHERE run_id=?`,
@@ -202,5 +203,44 @@ describe("panel readingDocs and choiceOptions (2c)", () => {
     expect(panel.choiceOptions.map((o) => o.label)).toEqual(SUMMARY_CHOICES.map(choiceLabel));
     expect(panel.choiceOptions.find((o) => o.value === "fable·high")?.nowLabel).toBe("Fable · now 5.1");
     expect(getFullView(db, eventId, CATALOG)!.choice.options).toEqual(panel.choiceOptions);
+  });
+});
+
+describe("the runner's namespaced claim ids (browser pass Bug 1)", () => {
+  // The runner stores checked claim ids as `s<seq>.<id>`; output_json keeps the model's raw ids.
+  it("joins a namespaced checked claim to the model's raw-id claim", () => {
+    const { runId } = seedDoneRun("s1.c1");
+    const seq = db.prepare("SELECT seq FROM filing_summary_sections WHERE run_id=?").get(runId) as { seq: number };
+    expect(seq.seq).toBe(1);
+    const claim = getFullView(db, eventId, CATALOG)!.runs[0].sections[0].claims[0];
+    expect(claim.claimId).toBe("s1.c1");
+    const [cc1, cc2] = claim.comparisonChecks;
+    expect(cc1.left).toEqual({ figureId: "f1", displayText: "$64.601B", source: "filing" });
+    expect(cc1.right?.bogey?.provenance).toBe("Finnhub consensus");
+    expect(cc2.leftHigh?.displayText).toBe("$1.20");
+    const [found, missing] = claim.footnotes;
+    expect(found.modelQuote).toBeNull();
+    expect(missing.modelQuote).toBe("a quote the model made up");
+    const panel = getPanelViews(db, [eventId], CATALOG)[eventId];
+    expect(panel.shown?.top[0].comparisonChecks[0].left?.displayText).toBe("$64.601B");
+  });
+});
+
+describe("pastWithoutSummary (browser pass Bug 2)", () => {
+  // The event is dated 2026-10-22.
+  const NEXT_DAY = new Date("2026-10-23T15:00:00Z");
+  const SAME_DAY_LATE = new Date("2026-10-23T03:30:00Z"); // 23:30 Eastern on 2026-10-22
+
+  it("is true for an earlier day's print with no filing-summary state and no run", () => {
+    expect(getPanelViews(db, [eventId], CATALOG, NEXT_DAY)[eventId].pastWithoutSummary).toBe(true);
+  });
+
+  it("is false on the print's own Eastern day, even after UTC midnight", () => {
+    expect(getPanelViews(db, [eventId], CATALOG, SAME_DAY_LATE)[eventId].pastWithoutSummary).toBe(false);
+  });
+
+  it("is false once the event has a filing-summary state row or a run", () => {
+    upsertEventState(db, eventId, { pollState: "past_cutoff" });
+    expect(getPanelViews(db, [eventId], CATALOG, NEXT_DAY)[eventId].pastWithoutSummary).toBe(false);
   });
 });

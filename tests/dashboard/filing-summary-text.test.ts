@@ -48,6 +48,7 @@ function view(o: Partial<PanelView> = {}): PanelView {
     locked: false,
     nowLabel: "Opus · now 5.5",
     pollState: "waiting",
+    pastWithoutSummary: false,
     pollDetail: null,
     shown: null,
     inProgress: null,
@@ -258,6 +259,15 @@ describe("an earnings filing whose time could not be confirmed (round 2 ruling)"
   it("gives way to the run once one exists", () => {
     const v = view({ pollState: "past_cutoff", earningsTimeUnconfirmed: true, shown: run({ status: "done" }) });
     expect(pollStateText(v)).toBe("Summary ready · Opus 5.5 high");
+  });
+});
+
+describe("an earlier day's print with no summary state (browser pass Bug 2)", () => {
+  it("reads No filing summary for this print, never Waiting", () => {
+    expect(pollStateText(view({ pollState: null, pastWithoutSummary: true }))).toBe("No filing summary for this print");
+  });
+  it("never polls", () => {
+    expect(needsPolling(view({ pollState: null, pastWithoutSummary: true }))).toBe(false);
   });
 });
 

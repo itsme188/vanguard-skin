@@ -454,6 +454,7 @@ function ClaimRow({
                 {f.status !== "found" && f.modelQuote && (
                   <span className="block text-ink [overflow-wrap:anywhere]">{modelQuoteLine(f.modelQuote)}</span>
                 )}
+                {f.url && " "}
                 {f.url && (
                   <a href={f.url} target="_blank" rel="noreferrer" className="text-ink underline underline-offset-2">
                     open on sec.gov

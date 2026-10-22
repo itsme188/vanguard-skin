@@ -19,6 +19,10 @@ interface ConfirmDialogProps {
    *  `children`) without changing its label. Defaults to false so existing
    *  callers behave identically. */
   confirmDisabled?: boolean;
+  /** Which button takes focus when the dialog opens. Defaults to "confirm"
+   *  so existing callers behave identically; a question that spends money
+   *  passes "cancel" so pressing Enter never spends. */
+  initialFocus?: "confirm" | "cancel";
 }
 
 export function ConfirmDialog({
@@ -31,9 +35,11 @@ export function ConfirmDialog({
   onCancel,
   children,
   confirmDisabled = false,
+  initialFocus = "confirm",
 }: ConfirmDialogProps) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const confirmRef = useRef<HTMLButtonElement>(null);
+  const cancelRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     const dialog = dialogRef.current;
@@ -41,11 +47,12 @@ export function ConfirmDialog({
 
     if (open && !dialog.open) {
       dialog.showModal();
-      confirmRef.current?.focus();
+      (initialFocus === "cancel" ? cancelRef : confirmRef).current?.focus();
     } else if (!open && dialog.open) {
       dialog.close();
     }
-  }, [open]);
+    // initialFocus is only read on opening; re-running for it changes nothing.
+  }, [open, initialFocus]);
 
   useEffect(() => {
     const dialog = dialogRef.current;
@@ -75,6 +82,7 @@ export function ConfirmDialog({
       </div>
       <div className="flex justify-end gap-3 px-6 pb-6">
         <button
+          ref={cancelRef}
           onClick={onCancel}
           className="px-4 py-2 rounded-lg border border-edge text-sm text-ink-dim hover:text-ink hover:bg-raised transition-colors focus-ring"
         >
