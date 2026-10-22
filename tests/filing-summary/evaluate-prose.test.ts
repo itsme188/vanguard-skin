@@ -7,9 +7,9 @@ import { extractDocText } from "@/lib/filing-summary/doc-text";
 import { normalizeForMatch } from "@/lib/filing-summary/locate";
 import { scanNumbers, statedNumber } from "@/lib/filing-summary/evaluate-tokens";
 import {
-  changeRoles, headingPeriod, isHeadingBlock, isOrRestatement, proseBasisClauses, quantityTokens, rangeBounds, spelledNumbers,
+  changeRoles, headingPeriod, isHeadingBlock, isOrRestatement, leadInBlock, proseBasisClauses, quantityTokens, rangeBounds, spelledNumbers,
 } from "@/lib/filing-summary/evaluate-prose";
-import { proseBasisConfirmed, saysBothBases } from "@/lib/filing-summary/evaluate-words";
+import { isDefinitionalNonGaap, isLossMetric, proseBasisConfirmed, saysBothBases } from "@/lib/filing-summary/evaluate-words";
 import type { DocText, ModelFigure, PeriodSpec } from "@/lib/filing-summary/types";
 import {
   EX991, bogey, bogeyFig, cite, claim, cmp, codes, exhibit, one, period, quoteFig,
@@ -315,7 +315,101 @@ describe("review round 1", () => {
       bogeyFig("f2", "b9", { valueText: "−$7.3 billion", value: -7.3, scale: "billions" }),
     ], [cmp("f1", "f2", "above")]), { docs, bogeys: [bogey("b9", -7.3e9, { label: "FCF", period: { kind: "fiscal_year", role: "outlook", endDate: null, fiscalYear: null, fiscalQuarter: null, anchor: "fiscal_year", label: "FY" }, basis: "non_gaap" })] });
     expect(c.status).toBe("periods_differ");
-    expect(codes(c)).toContain("basis_unconfirmed");
+    // Free cash flow is non-GAAP by definition (review round 2), so the figure itself is established here;
+    // the period difference is still the claim's status.
+    expect(c.figureChecks[0].established).toBe(true);
+    const rep = one(claim("FCF of {f1} above the {f2} full-year figure.", [cite("q1", "Free cash flow | 11,049 | 29,508")], [
+      quoteFig("f1", "q1", { valueText: "$11,049 million", value: 11049, metric: "free cash flow", label: "Free cash flow", period: period({ kind: "year_to_date", label: "nine months 2026" }) }),
+      bogeyFig("f2", "b9", { valueText: "−$7.3 billion", value: -7.3, scale: "billions" }),
+    ], [cmp("f1", "f2", "above")]), { docs, bogeys: [bogey("b9", -7.3e9, { label: "FCF", period: { kind: "fiscal_year", role: "outlook", endDate: null, fiscalYear: null, fiscalQuarter: null, anchor: "fiscal_year", label: "FY" }, basis: "non_gaap" })] });
+    expect(codes(rep)).toContain("basis_unconfirmed");
+    expect(rep.status).toBe("periods_differ");
+  });
+});
+
+describe("review round 2", () => {
+  const Q3 = period({ fiscalYear: 2026, fiscalQuarter: 3 });
+  const FY = period({ kind: "fiscal_year", role: "outlook", endDate: "2026-12-31", fiscalYear: 2026, label: "FY 2026" });
+  const eps = (v: number, basis: ModelFigure["basis"]): Fig => ({ valueText: `$${v.toFixed(2)}`, value: v, scale: "units", unit: "usd_per_share", metric: "diluted EPS", label: "diluted earnings per share", basis });
+
+  it("1: one loss predicate: 'net loss' is a loss metric; 'net income (loss)', 'income/loss', 'gain (loss)' are not", () => {
+    expect(isLossMetric("net loss")).toBe(true);
+    expect(isLossMetric("Reality Labs operating losses")).toBe(true);
+    expect(isLossMetric("net income (loss)")).toBe(false);
+    expect(isLossMetric("income/loss from operations")).toBe(false);
+    expect(isLossMetric("gain (loss) on acquisitions")).toBe(false);
+    expect(isLossMetric("(loss)")).toBe(false);
+  });
+  it("1: inside an income-or-loss metric a reported loss keeps its sign (H6a–H6d)", () => {
+    const s = `We reported a net loss of $1.2 billion${P}.`;
+    expect(bind(s, usdB("$1.2 billion", 1.2, "net income (loss)", "net loss")).status).not.toBe("checked");
+    expect(bind(s, usdB("-$1.2 billion", -1.2, "net income (loss)", "net loss")).status).toBe("checked");
+    const r = "We expect operating income (loss) to reflect net losses of $1.2-1.5 billion for full year 2026";
+    expect(bind(r, usdB("$1.5 billion", 1.5, "operating income (loss)", "operating income (loss)", { basis: "guidance_high", period: FY }), docsOf(`<p>${r}.</p>`)).status).not.toBe("checked");
+    const html = `<p>(In millions)</p><table><tr><td></td><td>Three Months Ended September 30, 2026</td></tr><tr><td>Net income (loss)</td><td>(1,200)</td></tr></table>`;
+    const docs = [{ fileName: EX991, text: extractDocText(html) }];
+    const row = (vt: string, v: number) => one(claim("Net income (loss) of {f1}.", [cite("q1", "Net income (loss) | (1,200)")], [quoteFig("f1", "q1", { valueText: vt, value: v, scale: "millions", metric: "net income (loss)", label: "Net income (loss)" })]), { docs });
+    expect(row("-$1,200 million", -1200).status).toBe("checked");
+    expect(row("$1,200 million", 1200).status).not.toBe("checked");
+    // a pure loss metric keeps the size match and the loss_sign_double refusal
+    expect(bind(s, usdB("$1.2 billion", 1.2, "net loss", "net loss")).status).toBe("checked");
+    expect(bind(s, usdB("-$1.2 billion", -1.2, "net loss", "net loss")).codes).toContain("loss_sign_double");
+  });
+  it("2: 'would otherwise have been' and 'would have come to' are hypothetical (H2a, H2b)", () => {
+    for (const s of [`Without the tax benefit, diluted earnings per share would otherwise have been $7.40${P}.`, `Without the tax benefit, diluted earnings per share would have come to $7.40${P}.`]) {
+      const r = bind(s, eps(7.4, "reported"));
+      expect(r.status).not.toBe("checked");
+      expect(r.codes).toContain("basis_unconfirmed");
+    }
+  });
+  it("3: a lead-in block ending in ':' with basis words governs the list after it (H1; Meta's 'Excluding this charge:')", () => {
+    const lead = `<p>Third Quarter 2026 Results</p><p>Excluding the litigation charge, our results would have been as follows:</p><p>Operating margin was 45%${P}.</p>`;
+    const m = (basis: ModelFigure["basis"]) => pct("45%", 45, "operating margin", "Operating margin", { basis });
+    expect(bind(`Operating margin was 45%${P}.`, m("reported"), docsOf(lead)).status).not.toBe("checked");
+    expect(bind(`Operating margin was 45%${P}.`, m("excluding_item"), docsOf(lead)).status).toBe("checked");
+    const meta = `<p>Third Quarter 2026 Financial Highlights</p><p>Third quarter 2026 costs and expenses includes a $9.89 billion charge related to this agreement. Excluding this charge, the third quarter 2026:</p><p>•Income from operations of $12.99 billion would have increased by $9.89 billion to $22.88 billion.</p><p>•Diluted EPS of $3.83 would have increased by $3.57 to $7.40.</p>`;
+    const q = "Diluted EPS of $3.83 would have increased by $3.57 to $7.40";
+    expect(bind(q, { ...eps(7.4, "excluding_item"), label: "Diluted EPS", period: Q3 }, docsOf(meta)).status).toBe("checked");
+    expect(bind(q, { ...eps(7.4, "reported"), label: "Diluted EPS", period: Q3 }, docsOf(meta)).status).not.toBe("checked");
+    // the list ends at a heading or a plain paragraph; a clause naming another basis is not overridden
+    const ended = `<p>On a non-GAAP basis:</p><p>Revenue was $1.0 billion.</p><p>Later Developments</p><p>Operating margin was 45%${P}.</p>`;
+    expect(bind(`Operating margin was 45%${P}.`, m("reported"), docsOf(ended)).status).toBe("checked");
+    const conflict = `<p>Excluding the charge:</p><p>GAAP operating margin was 45%${P}.</p>`;
+    expect(bind(`GAAP operating margin was 45%${P}.`, m("excluding_item"), docsOf(conflict)).status).not.toBe("checked");
+    const doc = extractDocText(meta);
+    expect(leadInBlock(doc, doc.blocks[3])).toMatch(/Excluding this charge/);
+    expect(leadInBlock(doc, doc.blocks[1])).toBeNull();
+  });
+  it("4: free cash flow is non-GAAP by definition: typed non_gaap in a reconciliation table confirms, typed reported does not", () => {
+    const html = `<p>Reconciliation of GAAP to Non-GAAP Results</p><p>(In millions)</p><table><tr><td></td><td colspan="2">Nine Months Ended September 30,</td></tr><tr><td></td><td>2026</td><td>2025</td></tr><tr><td>Free cash flow</td><td>11,049</td><td>29,508</td></tr></table>`;
+    const docs = [{ fileName: EX991, text: extractDocText(html) }];
+    const nm = period({ kind: "year_to_date", label: "nine months 2026" });
+    const f = (basis: ModelFigure["basis"]) => one(claim("FCF of {f1}.", [cite("q1", "Free cash flow | 11,049 | 29,508")], [quoteFig("f1", "q1", { valueText: "$11,049 million", value: 11049, metric: "free cash flow", label: "Free cash flow", period: nm, basis })]), { docs });
+    expect(f("non_gaap").status).toBe("checked");
+    expect(codes(f("reported"))).toEqual(["basis_unconfirmed"]);
+    expect(isDefinitionalNonGaap("Adjusted EBITDA")).toBe(true);
+    expect(isDefinitionalNonGaap("non-GAAP operating margin")).toBe(true);
+    expect(isDefinitionalNonGaap("operating income")).toBe(false);
+  });
+  it("5: range ends are ordered by value after signs: 'losses of $18-19 billion' under a non-loss metric runs −19 to −18", () => {
+    const s = "We expect the Reality Labs segment result to show losses of $18-19 billion for full year 2026";
+    const d = docsOf(`<p>${s}.</p>`);
+    const seg = (vt: string, v: number, basis: ModelFigure["basis"]) => usdB(vt, v, "Reality Labs segment result", "Reality Labs segment result", { basis, period: FY });
+    expect(bind(s, seg("-$19 billion", -19, "guidance_low"), d).status).toBe("checked");
+    expect(bind(s, seg("-$18 billion", -18, "guidance_high"), d).status).toBe("checked");
+    expect(bind(s, seg("-$18 billion", -18, "guidance_low"), d).status).not.toBe("checked");
+    expect(bind(s, seg("$19 billion", 19, "guidance_high"), d).status).not.toBe("checked");
+    // under a loss metric the size match keeps 18 as the low end (H7a)
+    const l = "We expect Reality Labs operating losses of $18 billion to $19 billion for full year 2026";
+    expect(bind(l, usdB("$18 billion", 18, "Reality Labs operating losses", "Reality Labs operating losses", { basis: "guidance_low", period: FY }), docsOf(`<p>${l}.</p>`)).status).toBe("checked");
+  });
+  it("6: a 'Cash flow hedges:' section is not a cash flow statement (H5); 'Cash flows from …' and the statement's caption are", () => {
+    const oci = `<p>Condensed Consolidated Statements of Comprehensive Income</p><p>(In millions)</p><table><tr><td></td><td>Three Months Ended September 30, 2026</td></tr><tr><td>Cash flow hedges:</td><td></td></tr><tr><td>Payments of hedge settlements reclassified</td><td>(300)</td></tr></table>`;
+    const h = one(claim("Payments of {f1}.", [cite("q1", "Payments of hedge settlements reclassified | (300)")], [quoteFig("f1", "q1", { valueText: "$300 million", value: 300, scale: "millions", metric: "payments of hedge settlements reclassified", label: "Payments of hedge settlements reclassified" })]), { docs: [{ fileName: EX991, text: extractDocText(oci) }] });
+    expect(h.status).not.toBe("checked");
+    const cf = `<p>Condensed Consolidated Statements of Cash Flows</p><p>(In millions)</p><table><tr><td></td><td>Three Months Ended September 30, 2026</td></tr><tr><td>Investing</td><td></td></tr><tr><td>Purchases of marketable securities</td><td>(900)</td></tr></table>`;
+    const c = one(claim("Purchases of {f1}.", [cite("q1", "Purchases of marketable securities | (900)")], [quoteFig("f1", "q1", { valueText: "$900 million", value: 900, scale: "millions", metric: "purchases of marketable securities", label: "Purchases of marketable securities" })]), { docs: [{ fileName: EX991, text: extractDocText(cf) }] });
+    expect(c.status).toBe("checked");
   });
 });
 
@@ -367,8 +461,9 @@ describe("ruling 6: classes from the real Meta 8-K, in synthetic form", () => {
     const fcf = "Cash flow from operating activities was $32.79 billion, and free cash flow was negative $2.12 billion";
     const r = bind(fcf, usdB("negative $2.12 billion", -2.12, "free cash flow", "free cash flow", { basis: "non_gaap", period: Q3 }), docsOf(html));
     expect(r.codes).not.toContain("period_unconfirmed");
-    expect(r.codes).toEqual(["basis_unconfirmed"]); // the sentence does not say non-GAAP (review round 1)
-    expect(bind(fcf, usdB("negative $2.12 billion", -2.12, "free cash flow", "free cash flow", { period: Q3 }), docsOf(html)).status).toBe("checked");
+    // Free cash flow is non-GAAP by definition (review round 2): typed non_gaap it is checked, typed reported it is not.
+    expect(r.status).toBe("checked");
+    expect(bind(fcf, usdB("negative $2.12 billion", -2.12, "free cash flow", "free cash flow", { period: Q3 }), docsOf(html)).codes).toEqual(["basis_unconfirmed"]);
   });
   it("a metric that is the row label word for word matches under any section header", () => {
     const html = `<p>In millions</p><table><tr><td></td><td colspan="2">Nine Months Ended September 30,</td></tr><tr><td></td><td>2026</td><td>2025</td></tr>

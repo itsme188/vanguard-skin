@@ -120,6 +120,27 @@ export function metricMatchesLabel(
 }
 
 // ---------------------------------------------------------------------------
+// Loss metrics and definitional non-GAAP measures (review round 2)
+// ---------------------------------------------------------------------------
+
+/**
+ * Does the metric (or row label) name a LOSS, with no income / gain / profit /
+ * earnings counterpart? "net loss" and "operating losses" do; "net income
+ * (loss)", "income/loss", "gain (loss)" and a parenthesised "(loss)" do not:
+ * those are income-or-loss lines whose loss keeps its negative sign.
+ */
+export function isLossMetric(text: string): boolean {
+  const t = text.toLowerCase().replace(/\(\s*loss(?:es)?\s*\)/g, " ").replace(/\b(?:income|gain|profit|earnings)\s*\/\s*loss(?:es)?\b/g, " ");
+  if (!/\bloss(?:es)?\b/.test(t)) return false;
+  return !/\b(?:income|gains?|profits?|earnings)\b/.test(t);
+}
+
+/** A measure that is non-GAAP by definition: free cash flow, adjusted EBITDA, anything "adjusted …" or "non-GAAP …". */
+export function isDefinitionalNonGaap(text: string): boolean {
+  return /\bfree\s+cash\s+flow\b|\badjusted\s+ebitda\b|\badjusted\s+operating\s+income\b|^\s*(?:adjusted|non[\s-]*gaap)\s/i.test(text);
+}
+
+// ---------------------------------------------------------------------------
 // Basis evidence (R6)
 // ---------------------------------------------------------------------------
 
@@ -209,6 +230,7 @@ export function proseBasisConfirmed(typed: Basis, c: { own: string; attached: st
     return ![...c.attached, ...c.others].some((t) => nonReported(kindsIn(t)) && !saysBothBases(t));
   }
   const want = typed as EvidenceKind;
+  if (own.size > 0 && !own.has(want)) return false; // the clause names another basis: a lead-in cannot override it
   return own.has(want) || c.attached.some((t) => kindsIn(t).has(want));
 }
 

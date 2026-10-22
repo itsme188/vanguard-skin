@@ -20,7 +20,7 @@
  */
 import { normalizeForMatch, type LocatedQuote } from "./locate";
 import { matchesWithRounding, parsePeriodPhrase, toUnits, type PeriodCore } from "./figures";
-import { extendLabelLeft, measureClasses, metricMatchesLabel, proseBasisConfirmed } from "./evaluate-words";
+import { extendLabelLeft, isDefinitionalNonGaap, isLossMetric, measureClasses, metricMatchesLabel, proseBasisConfirmed } from "./evaluate-words";
 import { periodsMatch } from "./evaluate-periods";
 import { failed, halfUnit, reason, scanNumbers, type Binding, type NumberToken, type StatedNumber } from "./evaluate-tokens";
 import type { CheckReason, DocText, FigureUnit, ModelFigure, TextBlock } from "./types";
@@ -341,17 +341,17 @@ export function headingPeriod(doc: DocText, block: TextBlock, eventDate: string)
 // Binding
 // ---------------------------------------------------------------------------
 
-// "would have been $7.40", "would have totaled", "would have reached", "would have amounted to": a restated,
-// hypothetical figure, as in a "would have increased … to" sentence (review round 1, item 2).
+// "would have been $7.40", "would otherwise have been", "would have come to", "would have amounted to": a
+// restated, hypothetical figure, as in a "would have increased … to" sentence (review rounds 1–2). "would",
+// up to two adverbs, "have", any verb (with an optional "to" / "at" / "in"), then the number, all in the
+// figure's own clause.
 const WOULD_HAVE =
-  /\bwould\s+(?:have\s+)?(?:been|totaled|totalled|reached|amounted\s+to|risen\s+to|grown\s+to|come\s+in\s+at|stood\s+at|equaled|equalled)\s+(?:approximately\s+|about\s+|roughly\s+|around\s+)?$/;
+  /\bwould(?:\s+\w+){0,2}\s+have\s+\w+(?:\s+(?:to|at|in))?\s+(?:approximately\s+|about\s+|roughly\s+|around\s+)?$/;
 
 const CHANGE_METRIC = /\b(?:growth|increase|decrease|change|decline|rise|gain|drop|improvement|reduction|delta|up|down)\b/i;
 // A percent figure whose metric is a money measure ("revenue", 27%) can only be a rate of change; a
 // margin, a tax rate or a share of something is a level.
 const MONEY_MEASURES = new Set(["revenue", "income", "expense", "cash", "flow", "eps", "assets", "liabilities", "debt", "capex"]);
-
-const LOSS_WORD = /\bloss(?:es)?\b/i;
 
 /** May this figure be the change a sentence states ("increased $X", "grew N%")? */
 function isChangeFigure(fig: ModelFigure): boolean {
@@ -394,12 +394,23 @@ export function bindProse(fig: ModelFigure, stated: StatedNumber, located: Locat
     if (Math.sign(low.value) !== Math.sign(high.value)) { refused.add(low.start); refused.add(high.start); }
   }
   const changeMetric = isChangeFigure(fig);
-  const lossMetric = LOSS_WORD.test(fig.metric);
-  const partner = (t: NumberToken, side: "low" | "high"): NumberToken | undefined => {
-    const i = all.indexOf(t);
-    const p = all[side === "high" ? i + 1 : i - 1];
-    return p && bounds.get(p.start) === side ? p : undefined;
-  };
+  const lossMetric = isLossMetric(fig.metric);
+  // Each range's ends are ORDERED BY VALUE once signs are applied (review round 2): "losses of $18-19
+  // billion" under an income-or-loss metric runs from −19 (low) to −18 (high); under a loss metric,
+  // which matches by size, from 18 to 19.
+  const eff = (t: NumberToken) => (lossMetric && t.signWord === "loss" ? Math.abs(t.value) : t.value);
+  const pairs = new Map<number, { low: NumberToken; high: NumberToken }>();
+  for (const [start, side] of bounds) {
+    if (side !== "low") continue;
+    const a = all.find((t) => t.start === start);
+    const b = a && all[all.indexOf(a) + 1];
+    if (!a || !b || bounds.get(b.start) !== "high" || refused.has(a.start)) continue;
+    const pair = eff(a) <= eff(b) ? { low: a, high: b } : { low: b, high: a };
+    pairs.set(a.start, pair);
+    pairs.set(b.start, pair);
+    bounds.set(pair.low.start, "low");
+    bounds.set(pair.high.start, "high");
+  }
   const pairedAt = (at: number, firstPlace: boolean): NumberToken | undefined => {
     const end = at + nl.length;
     const inside = tokens.find((t) => t.start >= at && t.end <= end && matches(t));
@@ -416,12 +427,13 @@ export function bindProse(fig: ModelFigure, stated: StatedNumber, located: Locat
       const next = all[all.indexOf(paired) + 1];
       const ch = changes.get(paired.start) ?? (next && !matches(next) && changes.get(next.start)?.role === "change" ? changes.get(next.start) : undefined);
       if (ch && ch.role !== "current" && ch.current && !changeMetric && matches(ch.current)) paired = ch.current;
-      // The label introduces a range at its LOW end; a figure that is the HIGH end reaches it, where
-      // guidance_high binds and any other basis gets `range_bound`. guidance_low never reaches past its
-      // own end (ruling 2).
-      else if (fig.basis !== "guidance_low" && bounds.get(paired.start) === "low") {
-        const high = partner(paired, "high");
-        if (high && matches(high)) paired = high;
+      // The label introduces a range by its first-written end; a figure for the other end reaches it:
+      // guidance_low takes the pair's low end and guidance_high its high end (ordered by value), and any
+      // other basis reaches the other end only to get `range_bound` (ruling 2; review round 2 item 5).
+      else if (pairs.has(paired.start)) {
+        const pair = pairs.get(paired.start) as { low: NumberToken; high: NumberToken };
+        const want = fig.basis === "guidance_low" ? pair.low : fig.basis === "guidance_high" ? pair.high : paired === pair.low ? pair.high : pair.low;
+        if (want !== paired && matches(want)) paired = want;
       }
     }
     if (paired) taken.add(paired.start);
@@ -450,7 +462,9 @@ export function bindProse(fig: ModelFigure, stated: StatedNumber, located: Locat
   if (ch?.role === "change" && !changeMetric) {
     return failed([...reasons, reason("value_not_in_quote", fig.id, `${fig.valueText} is the change the sentence states, not the ${fig.metric} figure`)]);
   }
-  if ((ch?.role === "current" && ch.hypothetical || WOULD_HAVE.test(ns.slice(0, hit.start))) && fig.basis !== "excluding_item" && fig.basis !== "non_gaap") {
+  const ownClause = splitClauses(ns).find((c) => hit!.start < c.end);
+  const hypothetical = (ch?.role === "current" && ch.hypothetical) || WOULD_HAVE.test(ns.slice(ownClause?.start ?? 0, hit.start));
+  if (hypothetical && fig.basis !== "excluding_item" && fig.basis !== "non_gaap") {
     return failed([...reasons, reason("basis_unconfirmed", fig.id, `${fig.valueText} is a "would have" figure, not a ${fig.basis} one`)]);
   }
   // A bound of a stated range is a guidance end, never an actual (fix round 5); each end answers only its own side (ruling 2).
@@ -497,7 +511,39 @@ export function bindProse(fig: ModelFigure, stated: StatedNumber, located: Locat
     half: halfUnit(hit.decimals, scale),
     period: period ? { ...period, anchor: null } : null,
     table: null,
-    basisConfirmed: proseBasisConfirmed(fig.basis, proseBasisClauses(ns, hit.start)),
+    basisConfirmed: proseBasisConfirmed(fig.basis, proseBasis(ns, hit.start, fig, doc, located.block)),
     reasons,
   };
+}
+
+const BULLET_BLOCK = /^\s*(?:[•·▪◦\-–—*]|\(?[a-z0-9]{1,2}[.)])\s*/i;
+
+/**
+ * The lead-in that governs a list (review round 2 ruling): a block ending in ":" whose text carries basis
+ * words ("Excluding this charge:", "On a non-GAAP basis:") applies to the consecutive bullet blocks after
+ * it, until a heading or a block that is not a bullet. Null when none governs `block`.
+ */
+export function leadInBlock(doc: DocText, block: TextBlock): string | null {
+  let i = block.index - 1;
+  while (i >= 0) {
+    const b = doc.blocks[i];
+    if (b.page !== block.page || b.tableId !== null) return null;
+    if (BULLET_BLOCK.test(b.text) && !/:\s*$/.test(b.text)) { i--; continue; }
+    // A short lead-in ("Excluding the charge, results were as follows:") looks like a heading; the colon decides first.
+    if (/:\s*$/.test(b.text)) {
+      return /\bnon[\s-]*gaap\b|\bexclud(?:ing|es|ed)\b|\bconstant[\s-]+currency\b|\badjusted\b|\bgaap\b/i.test(b.text) ? b.text : null;
+    }
+    return null; // a heading or a plain paragraph: nothing governs the list
+  }
+  return null;
+}
+
+/** The clauses that speak for a prose figure's basis, plus a governing lead-in and a definitional non-GAAP measure. */
+function proseBasis(ns: string, at: number, fig: ModelFigure, doc: DocText | undefined, block: TextBlock | null): ProseBasisClauses {
+  const c = proseBasisClauses(ns, at);
+  const lead = doc && block ? leadInBlock(doc, block) : null;
+  if (lead) c.attached.push(normalizeForMatch(lead));
+  // Free cash flow, adjusted EBITDA, …: the measure's own name is non-GAAP evidence in the figure's clause.
+  if (isDefinitionalNonGaap(fig.metric) || isDefinitionalNonGaap(fig.label ?? "")) c.own = `${c.own} (non-gaap by definition)`;
+  return c;
 }

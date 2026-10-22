@@ -75,11 +75,9 @@ describe("spec acceptance cases", () => {
     );
     expect(c.status).toBe("periods_differ");
     expect(c.comparisonChecks[0].verdict).toBe("periods_differ");
-    // Since review round 1 the basis is judged on every figure: a "Free cash flow" row in a GAAP-to-non-GAAP
-    // reconciliation carries no basis word of its own, so the non_gaap figure is unconfirmed on basis, while
-    // the period difference is still flagged (the owner must see it).
-    expect(c.figureChecks.map((f) => f.established)).toEqual([false, true]);
-    expect(codes(c)).toContain("basis_unconfirmed");
+    // Free cash flow is non-GAAP by definition (review round 2), so the non_gaap figure is established;
+    // the period difference is the claim's status.
+    expect(c.figureChecks.every((f) => f.established)).toBe(true);
   });
 
   it("C1: a '29%' growth figure with no inputs is not_in_filing", () => {

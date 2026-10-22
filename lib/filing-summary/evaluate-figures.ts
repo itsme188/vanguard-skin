@@ -14,7 +14,7 @@
  */
 import { normalizeForMatch, type LocatedQuote } from "./locate";
 import { matchesWithRounding, parseNumberToken, scaleFromNote, toUnits } from "./figures";
-import { basisConfirmed, basisEvidence, metricMatchesLabel } from "./evaluate-words";
+import { basisConfirmed, basisEvidence, isDefinitionalNonGaap, isLossMetric, metricMatchesLabel } from "./evaluate-words";
 import { bindProse } from "./evaluate-prose";
 import { failed, halfUnit, reason, statedNumber, type Binding, type StatedNumber } from "./evaluate-tokens";
 import {
@@ -136,7 +136,10 @@ function tableCaption(doc: DocText, grid: TableGrid): string {
 // proceeds or sales line, never a label with a parenthetical alternative ("Net purchases (sales) of").
 const CASH_USE_LABEL = /^(?:repurchases? of|purchases? of|payments? (?:of|for|on|to)|capital expenditures|acquisitions? of|dividends paid)\b/i;
 const CASH_USE_REFUSED = /\(|\b(?:gain|gains|loss|losses|income|proceeds|sales)\b/i;
-const CASH_FLOW_TABLE = /\bcash flows?\b/i;
+// A cash flow statement: "Cash flows from … activities" as the section, or a caption naming the statement.
+// A "Cash flow hedges:" section of the comprehensive income statement is not one (review round 2).
+const CASH_FLOW_SECTION = /\bcash flows from\b/i;
+const CASH_FLOW_CAPTION = /\bstatements?\s+of\s+cash\s+flows?\b/i;
 
 function bindTableRow(fig: ModelFigure, stated: StatedNumber, doc: DocText, tableId: number, rowIndex: number, eventDate: string): Binding {
   const reasons: CheckReason[] = [];
@@ -155,7 +158,7 @@ function bindTableRow(fig: ModelFigure, stated: StatedNumber, doc: DocText, tabl
   // spent, "$26,248 million of repurchases" (task 8b, ruling 6). Only a row whose label names a use of
   // cash may match with the sign flipped; "Net income (loss)" never does.
   if (matched.length === 0 && stated.value > 0 && CASH_USE_LABEL.test(rowLabel.trim()) && !CASH_USE_REFUSED.test(rowLabel)
-    && CASH_FLOW_TABLE.test(`${section ?? ""} ${caption}`)) {
+    && (CASH_FLOW_SECTION.test(section ?? "") || CASH_FLOW_CAPTION.test(caption))) {
     matched = numericCells(grid, rowIndex).filter((c) => c.value < 0 && matchesWithRounding(stated, -toUnits(c.value, scale)));
   }
   if (matched.length === 0) return fail("value_not_in_quote", `${fig.valueText} is not in row "${rowLabel}"`);
@@ -163,8 +166,10 @@ function bindTableRow(fig: ModelFigure, stated: StatedNumber, doc: DocText, tabl
   const dated = matched
     .map((c) => ({ c, p: columnPeriod(ctx, c.col, eventDate) }))
     .filter((x): x is { c: Cell; p: NonNullable<ReturnType<typeof columnPeriod>> } => x.p !== null); // ruling 2
+  // A measure that is non-GAAP by definition (free cash flow, adjusted EBITDA) is row-level non-GAAP evidence.
+  const definitional = isDefinitionalNonGaap(rowLabel) || isDefinitionalNonGaap(fig.metric) ? "non-GAAP" : "";
   const evidenceAt = (col: number) =>
-    basisEvidence([grid.columnHeaders[col] ?? "", `${section ?? ""} ${rowLabel}`, caption]);
+    basisEvidence([grid.columnHeaders[col] ?? "", `${definitional} ${section ?? ""} ${rowLabel}`, caption]);
   let same = dated.filter((x) => periodsMatch({ ...x.p, anchor: null }, want) === true);
   // Two same-period columns (GAAP and non-GAAP side by side): the typed basis may pick one.
   if (same.length > 1) {
@@ -215,7 +220,7 @@ export function bindQuoteFigure(
   const stated = statedNumber(fig);
   if (!stated) { add("value_text_mismatch", `the shown text "${fig.valueText}" does not state the typed value`); return out; }
   // A loss is a negative result already; "net loss" typed as a negative number says it twice (review round 1).
-  if (fig.value < 0 && LOSS_METRIC.test(fig.metric)) add("loss_sign_double", `"${fig.metric}" names a loss, and ${fig.valueText} is negative as well`);
+  if (fig.value < 0 && isLossMetric(fig.metric)) add("loss_sign_double", `"${fig.metric}" names a loss, and ${fig.valueText} is negative as well`);
   const label = fig.label?.trim() ?? "";
   if (!label) add("label_missing", "the figure names no row label or phrase");
   else if (!normalizeForMatch(located.block.text).includes(normalizeForMatch(label))) add("label_not_in_quote", `"${label}" is not in the cited line`);
@@ -246,7 +251,6 @@ export function bindQuoteFigure(
   return out;
 }
 
-const LOSS_METRIC = /\bloss(?:es)?\b/i;
 
 // ---------------------------------------------------------------------------
 // Bogey figures (R6, ruling 6)
