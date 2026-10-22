@@ -328,7 +328,7 @@ export function headingPeriod(doc: DocText, block: TextBlock, eventDate: string)
     if (b.tableId !== null && b.rowIndex !== null) continue;
     const p = parsePeriodPhrase(b.text, eventDate);
     if (!isHeadingBlock(b)) {
-      if (p) passed.push(p);
+      if (p && p.kind !== "instant") passed.push(p); // a balance "as of" a date is not another period for a quarter heading
       continue;
     }
     if (!p) continue;

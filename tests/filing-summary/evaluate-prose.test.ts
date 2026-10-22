@@ -258,6 +258,26 @@ describe("ruling 6: classes from the real Meta 8-K, in synthetic form", () => {
     expect(r.codes).toContain("period_unconfirmed");
     expect(r.codes).not.toContain("periods_differ");
   });
+  it("a balance bullet ('as of September 30, 2026') on the way up does not block the heading", () => {
+    const html = `<p>Third Quarter 2026 Operational and Other Financial Highlights</p>
+      <p>•Cash, cash equivalents, and marketable securities – Cash, cash equivalents, and marketable securities were $82.45 billion as of September 30, 2026.</p>
+      <p>•Cash flow – Cash flow from operating activities was $32.79 billion, and free cash flow was negative $2.12 billion.(1)</p>`;
+    const fcf = "Cash flow from operating activities was $32.79 billion, and free cash flow was negative $2.12 billion";
+    const r = bind(fcf, usdB("negative $2.12 billion", -2.12, "free cash flow", "free cash flow", { basis: "non_gaap", period: Q3 }), docsOf(html));
+    expect(r.codes).not.toContain("period_unconfirmed");
+    expect(r.status).toBe("checked");
+  });
+  it("a metric that is the row label word for word matches under any section header", () => {
+    const html = `<p>In millions</p><table><tr><td></td><td colspan="2">Nine Months Ended September 30,</td></tr><tr><td></td><td>2026</td><td>2025</td></tr>
+      <tr><td>Cash flows from financing activities</td><td></td><td></td></tr>
+      <tr><td>Repurchases of Class A common stock</td><td>—</td><td>(26,248)</td></tr></table>`;
+    const docs = [{ fileName: EX991, text: extractDocText(html) }];
+    const nm25 = period({ kind: "year_to_date", endDate: "2025-09-30", label: "nine months 2025" });
+    const c = one(claim("Buybacks of {f1}.", [cite("q1", "Repurchases of Class A common stock | — | (26,248)")], [quoteFig("f1", "q1", { valueText: "-$26,248 million", value: -26248, scale: "millions", metric: "repurchases of Class A common stock", label: "Repurchases of Class A common stock", period: nm25 })]), { docs });
+    expect(c.status).toBe("checked");
+    const wrong = one(claim("Buybacks of {f1}.", [cite("q1", "Repurchases of Class A common stock | — | (26,248)")], [quoteFig("f1", "q1", { valueText: "-$26,248 million", value: -26248, scale: "millions", metric: "free cash flow", label: "Repurchases of Class A common stock", period: nm25 })]), { docs });
+    expect(codes(wrong)).toContain("metric_unconfirmed");
+  });
   it("isHeadingBlock / headingPeriod", () => {
     const doc: DocText = extractDocText(meta);
     expect(doc.blocks.map(isHeadingBlock)).toEqual([true, false, false, false]);

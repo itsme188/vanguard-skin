@@ -90,9 +90,14 @@ export function metricMatchesLabel(
   const m = words(metric);
   const own = words(label);
   const sec = words(opts.section ?? "");
+  // The metric IS the label, word for word: nothing to confirm beyond a basis word (task 8b; the
+  // section header's measure, "Cash flows from financing activities", does not change that).
+  const same = (a: Words, b: Words) => a.measures.size === b.measures.size && a.distinct.size === b.distinct.size
+    && [...a.measures].every((x) => b.measures.has(x)) && [...a.distinct].every((x) => b.distinct.has(x));
+  const identical = same(m, own) && (m.measures.size > 0 || m.distinct.size > 0);
   // Measures: the label's own, else its section's. Both named and agreeing, or neither named.
   const lm = own.measures.size > 0 ? own.measures : sec.measures;
-  if (m.measures.size > 0 || lm.size > 0) {
+  if (!identical && (m.measures.size > 0 || lm.size > 0)) {
     if (m.measures.size === 0 || lm.size === 0) return false;
     if (![...m.measures].some((x) => lm.has(x))) return false;
   }
@@ -100,7 +105,7 @@ export function metricMatchesLabel(
   // word of the section too when the section supplies the measure (a sub-row
   // like "Diluted"): "Weighted-average shares …: Diluted" is not "diluted EPS".
   // The metric may use a section word ("current assets"), never a foreign one.
-  const required = new Set([...own.distinct, ...(own.measures.size === 0 ? sec.distinct : [])]);
+  const required = new Set([...own.distinct, ...(own.measures.size === 0 && !identical ? sec.distinct : [])]);
   for (const d of required) if (!m.distinct.has(d)) return false;
   for (const d of m.distinct) if (!own.distinct.has(d) && !sec.distinct.has(d)) return false;
   // A basis word in the metric must be backed by the source.
