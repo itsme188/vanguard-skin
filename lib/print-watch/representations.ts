@@ -80,23 +80,24 @@ function preClean(html: string): string {
     .replace(/<(script|style)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, " ");
 }
 
-interface TagToken {
+export interface TagToken {
   kind: "tag";
   name: string;
   closing: boolean;
   attrs: Record<string, string>;
 }
-interface TextToken {
+export interface TextToken {
   kind: "text";
   text: string;
 }
-type Token = TagToken | TextToken;
+export type Token = TagToken | TextToken;
 
 /**
  * Minimal HTML scanner. Quote-aware inside tags so a `>` in an attribute value
- * (rare but legal) doesn't split the tag early.
+ * (rare but legal) doesn't split the tag early. Exported for the filing
+ * summary's page/paragraph extractor (`lib/filing-summary/doc-text.ts`).
  */
-function* tokenize(html: string): Generator<Token> {
+export function* tokenize(html: string): Generator<Token> {
   let i = 0;
   const n = html.length;
   while (i < n) {
