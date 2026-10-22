@@ -28,6 +28,15 @@ interface FeatureModelRow {
   effective: string;
 }
 
+/**
+ * Features whose model is chosen somewhere else, so a global override here
+ * would have no effect. The filing summary's model is picked per print when
+ * it is armed (the per-print choice always wins), so its row only says where.
+ */
+const CHOSEN_ELSEWHERE: Record<string, string> = {
+  printFilingSummary: "Set per print in the Earnings Hub",
+};
+
 type RowStatus =
   | { kind: "saved" | "info"; message: string }
   | { kind: "error"; message: string };
@@ -168,6 +177,15 @@ export function AiModelsSection() {
               const isDirty = draft.trim() !== (row.override ?? "");
               const rowStatus = status[row.key];
               const isSaving = !!saving[row.key];
+              const elsewhere = CHOSEN_ELSEWHERE[row.key];
+              if (elsewhere) {
+                return (
+                  <div key={row.key} className="flex items-baseline justify-between gap-2">
+                    <span className="block text-[11px] text-ink-dim">{row.key}</span>
+                    <span className="text-[10px] text-ink-dim">{elsewhere}</span>
+                  </div>
+                );
+              }
               return (
                 <div key={row.key}>
                   <div className="flex items-baseline justify-between gap-2">

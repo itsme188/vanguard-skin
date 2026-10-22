@@ -12,6 +12,7 @@ import {
   type InlineEmailData,
 } from "../components/EarningsEmailViewer";
 import { BogeysEditModal } from "./BogeysEditModal";
+import FilingSummaryChoice from "./FilingSummaryChoice";
 import { StageChipStrip, RowIntelLine, fmtCountdown } from "./hub-live/send-state-chips";
 import { useHubLive } from "./EarningsHubLive";
 import apiFetch from "@/lib/http/apiFetch";
@@ -603,6 +604,10 @@ export function EarningsRowChips({
           </button>
         )}
       </span>
+      {/* The filing summary's model for this print, chosen at arming (spec
+          §1), beside the worksheet chip. Its own wrap item, not inside the
+          shrink-0 group above, so a phone row wraps instead of spilling. */}
+      {worksheetArmed && <FilingSummaryChoice eventId={eventId} />}
       <RecapGenerateDialog
         state={gen}
         onCancel={cancelRecap}

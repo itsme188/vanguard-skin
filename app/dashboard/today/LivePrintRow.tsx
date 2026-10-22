@@ -28,6 +28,7 @@ import { Chip } from "../components/Chip";
 import { CHIP_TONE_TEXT } from "../components/chip-tone-text";
 import { ScrollFade } from "../components/ScrollFade";
 import { useConfirmPrompt } from "../components/useConfirmPrompt";
+import FilingSummaryPanel from "./FilingSummaryPanel";
 import FirstPassRead from "./FirstPassRead";
 import GoControls from "./live-print/GoControls";
 import IrPageField from "./live-print/IrPageField";
@@ -541,6 +542,7 @@ export default function LivePrintRow({
         </table>
       </ScrollFade>
       <FirstPassRead eventId={print.eventId} read={print.read ?? null} activeRead={print.activeRead ?? null} lastAttempt={print.lastAttempt ?? null} callouts={print.callouts ?? []} onChanged={onChanged} />
+      {print.eventId !== undefined && <FilingSummaryPanel eventId={print.eventId} />}
 
       <div className="flex items-center gap-2 mt-3 flex-wrap">
         <button
@@ -626,10 +628,14 @@ export function PrintRecordView({
   const print = record.print;
   if (!print) {
     return (
-      <p className="mt-2 text-[12px] text-ink-dim">
-        No print was captured for this release. The watch window passed without a print being
-        opened for it.
-      </p>
+      <div className="mt-2">
+        <p className="text-[12px] text-ink-dim">
+          No print was captured for this release. The watch window passed without a print being
+          opened for it.
+        </p>
+        {/* The filing summary hangs off the event, not the print, so it can exist without one. */}
+        <FilingSummaryPanel eventId={record.eventId} readOnly />
+      </div>
     );
   }
 
@@ -646,6 +652,11 @@ export function PrintRecordView({
       <p className="text-[11px] text-ink-dim mb-2">
         Read-only record. Accepting and promoting closed with the window.
       </p>
+
+      {/* The filing summary, read-only: no Run or Retry on a closed record. */}
+      <div className="mb-2">
+        <FilingSummaryPanel eventId={record.eventId} readOnly />
+      </div>
 
       {lines.length === 0 ? (
         <p className="text-[12px] text-ink-dim">
