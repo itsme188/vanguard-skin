@@ -119,7 +119,7 @@ describe("textFragmentUrl", () => {
     const s = "one two three four five six seven eight nine ten eleven twelve thirteen, fourteen-x";
     const u = textFragmentUrl("https://x/y", s);
     expect(u).toBe(
-      "https://x/y#:~:text=one%20two%20three%20four%20five%20six%20seven%20eight,twelve%20thirteen%2C%20fourteen%2Dx",
+      "https://x/y#:~:text=one%20two%20three%20four%20five%20six%20seven%20eight,eleven%20twelve%20thirteen%2C%20fourteen%2Dx",
     );
   });
 });
