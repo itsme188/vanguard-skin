@@ -745,6 +745,22 @@ export function markPush(db: Database.Database, key: string, state: PushState): 
   ).run(state, key);
 }
 
+/**
+ * Compare-and-set into `sending` (R16): true for exactly one caller, and only
+ * from `pending`. A false result means another caller owns the push or it
+ * already ended, so nothing is sent.
+ */
+export function claimPushForSending(db: Database.Database, key: string): boolean {
+  return (
+    db
+      .prepare(
+        `UPDATE filing_summary_pushes SET state = ?, updated_at = datetime('now')
+         WHERE push_key = ? AND state = 'pending'`,
+      )
+      .run(SENDING, key).changes > 0
+  );
+}
+
 /** Startup sweep (R16): a push left in `sending` may or may not have gone out. */
 export function markSendingAsUnknown(db: Database.Database): number {
   return db

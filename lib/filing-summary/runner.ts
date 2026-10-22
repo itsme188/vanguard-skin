@@ -19,6 +19,7 @@
  * Logging carries ids, error classes and counts only: never document text,
  * prompt text, error bodies or model output.
  */
+import { sendSummaryPushIfDue } from "./push";
 import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import { jsonSchema } from "ai";
@@ -92,10 +93,18 @@ export interface RunnerSeams {
 }
 
 /**
- * What happens after a section is finalized as done. A no-op until Task 11
- * wires the push here; this is the one place the default is replaced.
+ * What happens after a section is finalized as done: the at-most-once push.
+ * A push problem never fails the section; only ids and the reason are logged.
  */
-async function defaultOnSectionDone(): Promise<void> {}
+async function defaultOnSectionDone(db: Database.Database, sectionId: number): Promise<void> {
+  try {
+    await sendSummaryPushIfDue(db, sectionId);
+  } catch (err) {
+    console.warn(
+      `[filing-summary] push skipped for section ${sectionId}: ${err instanceof Error ? err.name : "error"}`,
+    );
+  }
+}
 
 export function defaultRunnerSeams(): RunnerSeams {
   return {

@@ -34,6 +34,8 @@
  */
 
 export const IN_PROGRESS = "in_progress";
+// Also used by filing_summary_pushes (migration 099): its push-state CHECK and
+// lib/filing-summary/store.ts share SENDING and DELIVERY_UNKNOWN.
 export const SENDING = "sending";
 export const SENT_BY_CLOUD = "sent-by-cloud";
 export const DELIVERY_UNKNOWN = "delivery_unknown";
