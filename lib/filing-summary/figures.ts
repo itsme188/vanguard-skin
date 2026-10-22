@@ -416,10 +416,9 @@ export function parsePeriodPhrase(sentence: string, eventDate: string): PeriodCo
 export function samePeriod(a: PeriodCore, b: PeriodCore): boolean | null {
   if (a.kind !== b.kind || a.role !== b.role) return false;
   if (a.endDate && b.endDate) return a.endDate === b.endDate;
-  if (a.endDate || b.endDate) return null;
   if (a.kind === "instant") return null;
   if (a.fiscalYear === null || b.fiscalYear === null) return null;
-  if (a.kind === "fiscal_year") return a.fiscalYear === b.fiscalYear;
+  if (a.kind !== "quarter") return a.fiscalYear === b.fiscalYear;
   if (a.fiscalQuarter === null || b.fiscalQuarter === null) return null;
   return a.fiscalYear === b.fiscalYear && a.fiscalQuarter === b.fiscalQuarter;
 }

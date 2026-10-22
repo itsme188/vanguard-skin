@@ -306,6 +306,13 @@ describe("samePeriod (R5)", () => {
     expect(samePeriod(p({}), p({}))).toBeNull();
     expect(samePeriod(p({ kind: "instant" }), p({ kind: "instant" }))).toBeNull();
   });
+
+  it("one side missing its end date falls back to fiscal year and quarter (R5)", () => {
+    const q3 = { endDate: "2026-09-30", fiscalYear: 2026, fiscalQuarter: 3 };
+    expect(samePeriod(p(q3), p({ fiscalYear: 2026, fiscalQuarter: 3 }))).toBe(true);
+    expect(samePeriod(p(q3), p({ fiscalYear: 2026, fiscalQuarter: 2 }))).toBe(false);
+    expect(samePeriod(p({ endDate: "2026-09-30" }), p({ fiscalYear: 2026, fiscalQuarter: 3 }))).toBeNull();
+  });
 });
 
 describe("checkRelation (R7)", () => {
