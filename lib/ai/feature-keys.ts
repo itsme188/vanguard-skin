@@ -45,4 +45,7 @@ export type FeatureKey =
   | "etfSectorWeights"
   | "transcriptSummary"
   | "earningsDebrief"
-  | "printWatchFirstPass";
+  | "printWatchFirstPass"
+  // Armed-print filing summary (lib/filing-summary/). The per-print model
+  // choice picks the model explicitly; see FEATURE_MODELS for the fallback.
+  | "printFilingSummary";

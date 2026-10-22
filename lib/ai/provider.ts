@@ -134,6 +134,34 @@ export function getModelForFeature(feature: FeatureKey): LanguageModel {
 }
 
 /**
+ * Build an Anthropic LanguageModel for an EXPLICIT model id (one the caller
+ * resolved itself, e.g. through lib/ai/model-families.ts), with the same
+ * Gateway routing and per-feature headers as getModelForFeature. Anthropic
+ * only: a non-"claude-" id throws. The id must come from the live catalog,
+ * never a literal at the call site.
+ */
+export function getModelForId(feature: FeatureKey, modelId: string): LanguageModel {
+  if (!modelId.startsWith("claude-")) {
+    throw new Error(
+      `getModelForId supports Anthropic models only (feature "${feature}", model: ${modelId})`
+    );
+  }
+  const apiKey = getAnthropicApiKey();
+  if (!apiKey) {
+    throw new Error(
+      `ANTHROPIC_API_KEY is required for feature "${feature}" (model: ${modelId})`
+    );
+  }
+  const gw = getCloudflareGateway();
+  const anthropic = createAnthropic({
+    apiKey,
+    baseURL: gw ? buildAnthropicBaseURL(gw) : undefined,
+    headers: gatewayHeaders(gw, feature),
+  });
+  return anthropic(modelId);
+}
+
+/**
  * Escape hatch for the one call site (vanguard-pdf.ts) that relies on the raw
  * @anthropic-ai/sdk streaming API with custom retry logic. Returns a configured
  * Anthropic client with Gateway routing when available.

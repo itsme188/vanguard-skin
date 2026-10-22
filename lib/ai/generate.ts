@@ -28,9 +28,10 @@
  * typed as optional number on the class.
  */
 
-import { generateText, generateObject, APICallError } from "ai";
+import { generateText, generateObject, APICallError, NoObjectGeneratedError } from "ai";
 import type { FeatureKey } from "@/lib/ai/feature-keys";
-import { getModelForFeature } from "@/lib/ai/provider";
+import { getModelForFeature, getModelForId } from "@/lib/ai/provider";
+import type { SummaryEffort, SummaryFamily } from "@/lib/filing-summary/types";
 import { resolveFeatureModel } from "@/lib/ai/models";
 import { dropModelFromCatalog } from "@/lib/ai/catalog-source";
 import { FORCED_TOOL_UNSUPPORTED_RE } from "@/lib/ai/classify-anthropic-error";
@@ -216,4 +217,78 @@ export async function generateObjectForFeature(feature: FeatureKey, opts: GenObj
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any);
   }
+}
+
+/** The explicitly chosen model is not callable (404 / not_found). No failover. */
+export class AIModelUnavailableError extends Error {
+  constructor(public feature: FeatureKey, public modelId: string) {
+    super(`Model ${modelId} is unavailable for feature "${feature}"`);
+    this.name = "AIModelUnavailableError";
+  }
+}
+
+/** The model stopped at the output-token limit; the object is incomplete. */
+export class AITruncatedError extends Error {
+  constructor(public feature: FeatureKey, public modelId: string) {
+    super(`AI output truncated at the token limit for feature "${feature}" (model ${modelId})`);
+    this.name = "AITruncatedError";
+  }
+}
+
+export interface ExplicitModelTarget {
+  modelId: string;
+  effort: SummaryEffort;
+  family: SummaryFamily;
+}
+
+/**
+ * One structured call on an EXPLICIT model at an EXPLICIT effort, for a caller
+ * that resolved the model itself (lib/ai/model-families.ts) and owns its own
+ * attempt budget. Unlike generateObjectForFeature there is no failover and no
+ * mode retry, and the SDK's own retries are off (`maxRetries: 0`) so every
+ * request counts inside the caller's budget:
+ *   - model unavailable  → AIModelUnavailableError (the caller decides)
+ *   - finish "content-filter" (refusal) → AIRefusalError
+ *   - finish "length" (truncated)       → AITruncatedError
+ * Native structured output is always requested; adaptive thinking is sent for
+ * every family except Fable (thinking is always on there and the parameter 400s).
+ */
+export async function generateObjectWithModel(
+  feature: FeatureKey,
+  target: ExplicitModelTarget,
+  opts: GenObjOpts & { maxOutputTokens: number },
+): Promise<{ object: unknown; usage: unknown; finishReason: string }> {
+  const { modelId, effort, family } = target;
+  const callerProviderOptions = (opts as { providerOptions?: Record<string, Record<string, unknown>> })
+    .providerOptions;
+  const anthropic = {
+    structuredOutputMode: "outputFormat",
+    effort,
+    ...(family === "fable" ? {} : { thinking: { type: "adaptive" } }),
+  };
+  let res: { object: unknown; usage: unknown; finishReason: string };
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    res = await generateObject({
+      ...opts,
+      providerOptions: { ...callerProviderOptions, anthropic },
+      model: getModelForId(feature, modelId),
+      maxRetries: 0,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
+  } catch (err) {
+    if (isModelUnavailable(err)) throw new AIModelUnavailableError(feature, modelId);
+    // A truncated or refused response often fails to parse; the SDK then
+    // throws NoObjectGeneratedError carrying the finish reason.
+    if (NoObjectGeneratedError.isInstance(err)) {
+      if (err.finishReason === "length") throw new AITruncatedError(feature, modelId);
+      if (err.finishReason && REFUSAL_FINISH.has(err.finishReason)) {
+        throw new AIRefusalError(feature, modelId);
+      }
+    }
+    throw err;
+  }
+  if (REFUSAL_FINISH.has(res.finishReason)) throw new AIRefusalError(feature, modelId);
+  if (res.finishReason === "length") throw new AITruncatedError(feature, modelId);
+  return { object: res.object, usage: res.usage, finishReason: res.finishReason };
 }

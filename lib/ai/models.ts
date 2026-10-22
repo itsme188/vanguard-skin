@@ -45,6 +45,10 @@ export const FEATURE_MODELS: Record<FeatureKey, string> = {
   // Live print v2 slice D — the on-screen first-pass read of a print (spec §4.4
   // "Model": frontier; extraction stays on the workhorse tier).
   printWatchFirstPass: "anthropic/$frontier",
+  // Armed-print filing summary. The per-print choice (family + effort,
+  // lib/filing-summary/choice.ts) resolves the model through
+  // lib/ai/model-families.ts; this entry is only the Settings fallback.
+  printFilingSummary: "anthropic/$frontier",
 
   // workhorse (was Sonnet)
   dailyDigestSynthesis: "anthropic/$workhorse",

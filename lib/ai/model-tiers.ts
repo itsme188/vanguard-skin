@@ -59,7 +59,7 @@ export function parseModelId(id: string): ParsedModel | null {
 }
 
 /** Compare version tuples: [4,10] > [4,8] > [4,7]; longer wins on shared prefix. */
-function compareVersions(a: number[], b: number[]): number {
+export function compareVersions(a: number[], b: number[]): number {
   const len = Math.max(a.length, b.length);
   for (let i = 0; i < len; i++) {
     const av = a[i] ?? 0;
