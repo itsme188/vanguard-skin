@@ -121,8 +121,10 @@ type EvidenceKind = "reported" | "non_gaap" | "excluding_item" | "constant_curre
 /** The basis the source text supports, read from the most specific level that says one. */
 export interface BasisEvidence { decided: Set<EvidenceKind> | null; mixedSeen: boolean }
 
-// "adjusted" as a verb ("we adjusted our outlook", "adjusted downward") names no basis (fix round 4).
-const ADJUSTED_BASIS = /(?<!\b(?:we|they|it|which|that|company|management)\s+)\badjusted\b(?!\s+(?:our|its|their|the|this|these|those|down|downward|up|upward|lower|higher|accordingly)\b)/i;
+// "adjusted" as a verb ("we adjusted our outlook", "adjusted downward") names no basis (fix rounds 4-5).
+// Only a pronoun subject or a possessive/direction object marks the verb: "that adjusted EPS",
+// "management adjusted EPS" and "adjusted the same way" all keep the word as basis evidence.
+const ADJUSTED_BASIS = /(?<!\b(?:we|they|it)\s+)\badjusted\b(?!\s+(?:our|its|their|down|downward|up|upward|lower|higher|accordingly)\b)/i;
 
 function kindsIn(text: string): Set<EvidenceKind> {
   const k = new Set<EvidenceKind>();

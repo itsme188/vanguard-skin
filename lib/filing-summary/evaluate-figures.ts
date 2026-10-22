@@ -68,9 +68,10 @@ const SCALE_FACTOR: Record<FigureScale, number> = { units: 1, thousands: 1e3, mi
 
 // Optional sign, optional "$", optional sign after it ("$-1.5B"), optional "(", the number, optional ")", then an
 // optional percent and an optional scale word. The look-behind keeps a token
-// from starting inside a word or an identifier ("Q3", "EX-99.1", "$64").
+// from starting inside a word or an identifier ("Q3", "EX-99.1", "$64"). A minus is a sign only when it touches
+// the number: "$64.5 billion - $64.7 billion" is a range, not a negative (fix round 5).
 const TOKEN_RE =
-  /(?<![\w.$\-−–])([-−–]?\s?\$?\s?[-−–]?\(?\s?\$?\s?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?\s?\)?)(\s?%|\s+percent\b)?(?:\s?(billions?|millions?|thousands?|bn|mn|mm|[bmk])(?![a-z]))?/gi;
+  /(?<![\w.$\-−–])((?:[-−–](?=[$\d(]))?\$?\s?(?:[-−–](?=[\d(]))?\(?\s?\$?\s?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?\s?\)?)(\s?%|\s+percent\b)?(?:\s?(billions?|millions?|thousands?|bn|mn|mm|[bmk])(?![a-z]))?/gi;
 
 export interface NumberToken {
   value: number;
@@ -367,7 +368,62 @@ export function proseBasisClauses(text: string, at: number): ProseBasisClauses {
     const trails = i > last && ownIndex === last;
     (leads || trails ? attached : others).push(c.text);
   });
+  // Fix round 5: the text after the sentence's LAST quantity is a trailing
+  // clause for every figure, comma or not ("…$9.0 billion and EPS of $2.10,
+  // on a non-GAAP basis"; "…, each excluding the tax benefit"). It can deny
+  // "reported", never confirm. The one exception is a ", or X on a … basis"
+  // restatement: there the words belong to that alternative number alone.
+  const lastQ = quantityTokens(text).pop();
+  if (lastQ) {
+    const lastClause = clauses.find((c) => lastQ.start < c.end) ?? clauses[clauses.length - 1];
+    const orClause = /(?:^|[,;]\s*|\s)or\s+$/.test(text.slice(0, lastClause.start));
+    const tail = text.slice(lastQ.end);
+    if (!orClause && /[a-z]/.test(tail) && !others.includes(tail)) others.push(tail);
+  }
   return { own: clauses[ownIndex].text, attached, others };
+}
+
+/**
+ * Numbers that are the bounds of a stated range ("between X and Y",
+ * "X to Y" not after "from", "X - Y"), by token start (fix round 5). Both
+ * numbers must be of one kind: "grew 26% to $64.6 billion" is no range.
+ */
+export function rangeBoundStarts(ns: string, all: NumberToken[]): Set<number> {
+  const out = new Set<number>();
+  for (let i = 0; i + 1 < all.length; i++) {
+    const a = all[i];
+    const b = all[i + 1];
+    if (a.isPercent !== b.isPercent) continue;
+    const between = ns.slice(a.end, b.start).trim();
+    const before = ns.slice(0, a.start);
+    const isRange = (between === "and" && /\bbetween\s*$/.test(before))
+      || (between === "to" && !/\bfrom\s*$/.test(before))
+      || between === "-";
+    if (isRange) { out.add(a.start); out.add(b.start); }
+  }
+  return out;
+}
+
+const NUMBER_WORDS: Record<string, number> = {
+  one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12,
+  thirteen: 13, fourteen: 14, fifteen: 15, sixteen: 16, seventeen: 17, eighteen: 18, nineteen: 19, twenty: 20,
+  thirty: 30, forty: 40, fifty: 50, sixty: 60, seventy: 70, eighty: 80, ninety: 90,
+};
+const NUMBER_WORD_RE = new RegExp(`\\b(${Object.keys(NUMBER_WORDS).join("|")})\\s+(?!of\\b)[a-z]`, "g");
+
+/**
+ * The quantities of a sentence for pairing. For a count/other figure a
+ * spelled-out small number before a noun ("eight years", "three directors")
+ * counts too (fix round 5); "one of", "one-time" do not.
+ */
+function proseTokens(ns: string, unit: FigureUnit): NumberToken[] {
+  const out = quantityTokens(ns);
+  if (unit !== "count" && unit !== "other") return out;
+  for (const m of ns.matchAll(NUMBER_WORD_RE)) {
+    const word = m[1];
+    out.push({ value: NUMBER_WORDS[word], decimals: 0, wordScale: null, isPercent: false, start: m.index ?? 0, end: (m.index ?? 0) + word.length });
+  }
+  return out.sort((a, b) => a.start - b.start);
 }
 
 /**
@@ -391,26 +447,41 @@ function bindProse(fig: ModelFigure, stated: StatedNumber, located: LocatedQuote
   // Every place the label sits at word boundaries ("income" never matches inside "incomes").
   const starts = nl ? [...ns.matchAll(new RegExp(`(?<![a-z0-9])${escapeRe(nl)}(?![a-z0-9])`, "g"))].map((x) => x.index ?? 0) : [];
   if (starts.length === 0 && nl) reasons.push(reason("label_not_in_quote", fig.id, `"${fig.label}" is not a phrase of the cited sentence`));
-  // Pair the number with its label: the first number of the same kind after it, else the nearest before it.
-  // "Revenue and net income were $X and $Y, respectively": the k-th label takes the k-th number after it.
-  // A label used twice ("EPS was $1.80; non-GAAP EPS was $2.10") is tried at each place (fix round 4).
+  // Pair the number with its label: a number inside the label phrase when it IS the value ("20% of the
+  // outstanding shares"), else the first number of the same kind after the label, else (first place only)
+  // the nearest before it. "Revenue and net income were $X and $Y, respectively": the k-th label takes the
+  // k-th number after it. A label used twice ("EPS was $1.80; non-GAAP EPS was $2.10") is tried at each
+  // place; a later place pairs only forward and never a number an earlier place already took (fix round 5).
   const percent = fig.unit === "percent";
-  const all = quantityTokens(ns); // years and date days are never the figure
+  const all = proseTokens(ns, fig.unit); // years and date days are never the figure
   const tokens = all.filter((t) => t.isPercent === percent);
   const matches = (t: NumberToken) => matchesWithRounding(stated, toUnits(t.value, t.wordScale ?? "units"));
-  const pairedAt = (at: number): NumberToken | undefined => {
+  const taken = new Set<number>();
+  const bounds = rangeBoundStarts(ns, all);
+  const pairedAt = (at: number, firstPlace: boolean): NumberToken | undefined => {
+    const end = at + nl.length;
+    const inside = tokens.find((t) => t.start >= at && t.end <= end && matches(t));
+    if (inside) return inside;
     const k = respectivelyIndex(ns, at, all);
-    const paired = k > 0
-      ? all.filter((t) => t.start >= at + nl.length)[k]
-      : tokens.find((t) => t.start >= at + nl.length) ?? [...tokens].reverse().find((t) => t.end <= at);
+    const after = all.filter((t) => t.start >= end && !taken.has(t.start));
+    let paired = k > 0
+      ? after[k]
+      : after.find((t) => t.isPercent === percent) ?? (firstPlace ? [...tokens].reverse().find((t) => t.end <= at) : undefined);
+    // A range's lower bound hands over to its upper bound when that is the figure ("$64.5 billion to $64.7 billion").
+    if (paired && !matches(paired) && bounds.has(paired.start)) {
+      const upper = all[all.indexOf(paired) + 1];
+      if (upper && bounds.has(upper.start) && matches(upper)) paired = upper;
+    }
+    if (paired) taken.add(paired.start);
     return paired && paired.isPercent === percent && matches(paired) ? paired : undefined;
   };
   let hit: NumberToken | undefined;
   let labelAt = starts[0];
-  for (const at of starts) {
-    hit = pairedAt(at);
-    if (hit) { labelAt = at; break; }
-  }
+  starts.forEach((at, i) => {
+    if (hit) return;
+    hit = pairedAt(at, i === 0);
+    if (hit) labelAt = at;
+  });
   if (starts.length === 0) hit = tokens.find(matches);
   // The label widened to its noun phrase, at the place that paired (else the first).
   const phrase = labelAt !== undefined ? `${extendLabelLeft(ns.slice(0, labelAt))} ${nl}`.trim() : nl;
@@ -419,6 +490,10 @@ function bindProse(fig: ModelFigure, stated: StatedNumber, located: LocatedQuote
   }
   if (!hit) {
     return failed([...reasons, reason("value_not_in_quote", fig.id, `${fig.valueText} is not the number ${starts.length ? `next to "${fig.label}"` : "in the cited sentence"}`)]);
+  }
+  // A bound of a stated range is a guidance end, never an actual (fix round 5).
+  if (bounds.has(hit.start) && !fig.basis.startsWith("guidance_")) {
+    reasons.push(reason("range_bound", fig.id, `${fig.valueText} is one end of a range the sentence states, not a ${fig.basis} figure`));
   }
   const period = parsePeriodPhrase(sentence, eventDate) ?? parsePeriodPhrase(located.block?.text ?? "", eventDate);
   if (!period) {

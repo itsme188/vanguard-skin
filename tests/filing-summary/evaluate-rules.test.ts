@@ -641,3 +641,107 @@ describe("fix round 4: asymmetric basis attachment (a numberless clause between 
     });
   });
 });
+
+describe("fix round 5: repeated labels pair forward only, a trailing clause denies reported, range bounds, labels with numbers", () => {
+  const ni = (valueText: string, basis: "reported" | "non_gaap" = "reported") =>
+    ({ valueText, value: Number(valueText.replace(/[$ billion]/g, "")), scale: "billions", metric: "net income", label: "net income", basis }) as const;
+  const niBogey = { valueText: "$8.0 billion", value: 8, unit: "usd", scale: "billions", units: 8e9 } as const;
+  const rev = (valueText: string, basis: "reported" | "guidance_low" | "guidance_high" = "reported") =>
+    ({ valueText, value: Number(valueText.replace(/[$ billion]/g, "")), scale: "billions", metric: "revenue", label: "revenue", basis }) as const;
+  const revBogey = { valueText: "$60.0 billion", value: 60, unit: "usd", scale: "billions", units: 60e9 } as const;
+
+  describe("A: a label used twice", () => {
+    it("the second place pairs only a number after it, never one the first place took: the prior-year figure is not confirmed", () => {
+      const b1 = `Revenue${P} was $64.6 billion, compared with $55.0 billion, and revenue grew 17% year-over-year.`;
+      const c = vsBogey(b1, rev("$55.0 billion"), revBogey);
+      expect(c.status).toBe("unconfirmed");
+      expect(codes(c)).toContain("value_not_in_quote");
+      expect(vsBogey(b1, rev("$64.6 billion"), revBogey).status).toBe("checked");
+      const b2 = `Net income${P} was $18.6 billion, up from $15.7 billion, driven by net income growth in advertising.`;
+      expect(codes(vsBogey(b2, ni("$15.7 billion"), niBogey))).toContain("value_not_in_quote");
+    });
+    it("h1's $2.10 still reaches the basis rule through the second label place", () => {
+      const h1 = `Diluted earnings per share was $1.80${P}; on a non-GAAP basis, diluted earnings per share was $2.10.`;
+      expect(codes(vsBogey(h1, eps("non_gaap", "$2.10"), epsBogey("non_gaap")))).toEqual(["basis_unconfirmed"]);
+    });
+  });
+
+  describe("B: the text after the sentence's last number is a trailing clause for every figure", () => {
+    it.each([
+      ["comma", `Net income of $9.0 billion and diluted earnings per share of $2.10, on a non-GAAP basis,${P}.`],
+      ["no comma", `Net income of $9.0 billion and diluted earnings per share of $2.10 on a non-GAAP basis${P}.`],
+      ["respectively", `Net income and diluted earnings per share were $9.0 billion and $2.10, respectively, on a non-GAAP basis,${P}.`],
+      ["each excluding", `Net income of $9.0 billion and diluted earnings per share of $2.10${P}, each excluding the tax benefit.`],
+    ])("%s: net income $9.0B typed reported is not checked", (_n, s) => {
+      const c = vsBogey(s, ni("$9.0 billion"), niBogey);
+      expect(c.status).toBe("unconfirmed");
+      expect(codes(c)).toContain("basis_unconfirmed");
+    });
+    it("the trailing words confirm nothing for an earlier figure (attachment unchanged): $9.0B typed non_gaap is not checked either", () => {
+      expect(codes(vsBogey(`Net income of $9.0 billion and diluted earnings per share of $2.10, on a non-GAAP basis,${P}.`, ni("$9.0 billion", "non_gaap"), { ...niBogey, basis: "non_gaap" }))).toContain("basis_unconfirmed");
+    });
+    it("a ', or X on a … basis' restatement keeps its words to itself: h1c, b5 and q2 stay checked", () => {
+      const h1c = `GAAP diluted earnings per share was $1.80${P}, and diluted earnings per share was $2.10, on a non-GAAP basis.`;
+      expect(vsBogey(h1c, eps("reported", "$1.80"), epsBogey("reported"), "below").status).toBe("checked");
+      const b5 = `Revenue was $64.60 billion${P}, an increase of 26% year-over-year, or 27% on a constant currency basis.`;
+      expect(vsBogey(b5, { valueText: "$64.60 billion", value: 64.6, scale: "billions", metric: "revenue", label: "Revenue" }, revBogey).status).toBe("checked");
+      const q2 = `Diluted earnings per share was $1.80, or $2.10 (non-GAAP),${P}.`;
+      expect(vsBogey(q2, eps("reported", "$1.80"), epsBogey("reported"), "below").status).toBe("checked");
+      expect(vsBogey(`On a constant currency basis, revenue grew 27%${P}.`,
+        { valueText: "27%", value: 27, unit: "percent", scale: "units", metric: "revenue", label: "revenue", basis: "constant_currency" },
+        { valueText: "25%", value: 25, unit: "percent", scale: "units", units: 25, basis: "constant_currency" }).status).toBe("checked");
+    });
+  });
+
+  it("C: 'that adjusted diluted EPS' keeps 'adjusted' as a basis word; typed reported is not checked", () => {
+    const c = vsBogey(`We note that adjusted diluted earnings per share was $2.10${P}.`, eps("reported"), epsBogey("reported"));
+    expect(c.status).toBe("unconfirmed");
+    expect(codes(c)).toContain("basis_unconfirmed");
+  });
+
+  describe("D: a bound of a stated range", () => {
+    it.each([
+      ["between X and Y", `Revenue was between $64.5 billion and $64.7 billion${P}.`, "$64.5 billion"],
+      ["X to Y (the upper bound)", `Revenue was $64.5 billion to $64.7 billion${P}.`, "$64.7 billion"],
+      ["range of X - Y", `Revenue in the range of $64.5 billion - $64.7 billion${P}.`, "$64.5 billion"],
+    ])("%s typed reported is unconfirmed with range_bound", (_n, s, v) => {
+      const c = vsBogey(s, rev(v), revBogey);
+      expect(c.status).toBe("unconfirmed");
+      expect(codes(c)).toContain("range_bound");
+    });
+    it("typed guidance_high binds the bound without the reason; 'from X to Y' and '26% to $64.6 billion' are not ranges", () => {
+      const s = `Revenue was $64.5 billion to $64.7 billion${P}.`;
+      const g = one(claim("Revenue of {f1}.", [cite("q1", s.replace(/\.$/, ""), false)], [quoteFig("f1", "q1", rev("$64.7 billion", "guidance_high"))]), { docs: prose(s) });
+      expect(codes(g)).not.toContain("range_bound");
+      expect(codes(vsBogey(`Revenue rose from $55.0 billion to $64.6 billion${P}.`, rev("$64.6 billion"), revBogey))).not.toContain("range_bound");
+      expect(codes(vsBogey(`Revenue grew 17% to $64.6 billion${P}.`, rev("$64.6 billion"), revBogey))).not.toContain("range_bound");
+    });
+    it("range_bound is a reason code the checker declares", () => {
+      expect(REASON_CODES).toContain("range_bound");
+    });
+  });
+
+  describe("E: a label that contains a number; spelled-out small numbers", () => {
+    const bind = (s: string, fig: Parameters<typeof quoteFig>[2]) =>
+      codes(one(claim("It says {f1}.", [cite("q1", s.replace(/\.$/, ""), false)], [quoteFig("f1", "q1", fig)]), { docs: prose(s) }));
+    it("the label's own number IS the value: '20% of the outstanding shares' binds 20%, '$1 annual salary' binds $1", () => {
+      const s = `The founder may sell 20% of the outstanding shares${P}.`;
+      expect(bind(s, { valueText: "20%", value: 20, unit: "percent", scale: "units", metric: "shares saleable", label: "20% of the outstanding shares" })).not.toContain("value_not_in_quote");
+      const t = `The CEO receives a $1 annual salary${P}.`;
+      expect(bind(t, { valueText: "$1", value: 1, unit: "usd", scale: "units", metric: "annual salary", label: "$1 annual salary" })).not.toContain("value_not_in_quote");
+    });
+    it("the label's number is not the value: the figure is paired after the label, and a wrong value is still not found", () => {
+      const s = `The 20% of the outstanding shares equals 1.2 billion shares${P}.`;
+      expect(bind(s, { valueText: "1.2 billion", value: 1.2, unit: "shares", scale: "billions", metric: "shares saleable", label: "20% of the outstanding shares" })).not.toContain("value_not_in_quote");
+      expect(bind(s, { valueText: "1.5 billion", value: 1.5, unit: "shares", scale: "billions", metric: "shares saleable", label: "20% of the outstanding shares" })).toContain("value_not_in_quote");
+    });
+    it("'eight years' and 'three directors' match 8 and 3 with unit count/other; 'one of' does not", () => {
+      const s = `The commitment runs for eight years${P}.`;
+      expect(bind(s, { valueText: "8 years", value: 8, unit: "count", scale: "units", metric: "commitment", label: "commitment" })).not.toContain("value_not_in_quote");
+      const t = `The board adds three directors${P}.`;
+      expect(bind(t, { valueText: "3", value: 3, unit: "other", scale: "units", metric: "directors", label: "directors" })).not.toContain("value_not_in_quote");
+      const u = `The directors, one of whom is independent, serve${P}.`;
+      expect(bind(u, { valueText: "1", value: 1, unit: "count", scale: "units", metric: "directors", label: "directors" })).toContain("value_not_in_quote");
+    });
+  });
+});

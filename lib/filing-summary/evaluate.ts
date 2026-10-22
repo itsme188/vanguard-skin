@@ -82,6 +82,7 @@ const REASON_STATUS: Record<string, ClaimStatus | "info"> = {
   period_unconfirmed: "unconfirmed",
   column_ambiguous: "unconfirmed",
   basis_unconfirmed: "unconfirmed",
+  range_bound: "unconfirmed", // a bound of a stated range ("between X and Y") claimed as an actual (fix round 5)
   operand_unconfirmed: "unconfirmed",
   input_unconfirmed: "unconfirmed",
   input_not_sourced: "unconfirmed",
