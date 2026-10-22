@@ -14,7 +14,7 @@
  */
 import { normalizeForMatch, type LocatedQuote } from "./locate";
 import { matchesWithRounding, parseNumberToken, parsePeriodPhrase, scaleFromNote, toUnits } from "./figures";
-import { basisConfirmed, basisEvidence, extendLabelLeft, metricMatchesLabel } from "./evaluate-words";
+import { basisConfirmed, basisEvidence, extendLabelLeft, metricMatchesLabel, proseBasisConfirmed } from "./evaluate-words";
 import {
   columnPeriod,
   periodsMatch,
@@ -300,9 +300,10 @@ export function quantityTokens(text: string): NumberToken[] {
 }
 
 /**
- * Cut a (normalised) sentence into clauses (fix rounds 2 and 3). Breaks: ", or", " or", ";", " and " before a
- * number, and a comma whose following stretch holds a quantity. A comma inside a date ("September 30, 2026")
- * or before a four-digit year is never a break.
+ * Cut a (normalised) sentence into clauses (fix rounds 2–4). Breaks: ", or", " or", ";", and a comma or an
+ * " and " whose following stretch (up to the next comma or semicolon) holds a quantity. A comma inside a
+ * date ("September 30, 2026") or before a four-digit year is never a break; "the three and nine months
+ * ended" is not either (a date day is not a quantity).
  */
 export function splitClauses(text: string): Array<{ start: number; end: number; text: string }> {
   const cuts: Array<[number, number]> = [];
@@ -313,15 +314,15 @@ export function splitClauses(text: string): Array<{ start: number; end: number; 
     const sepText = m[0].trim();
     if (sepText === "or" || sepText === ";" || /^,\s*or$/.test(sepText)) {
       cuts.push([start, end]);
-    } else if (sepText === "and") {
-      if (/^[-−(]?\$?\d/.test(text.slice(end))) cuts.push([start, end]);
-    } else {
+      continue;
+    }
+    if (sepText !== "and") {
       if (/^(?:19|20)\d\d\b/.test(text.slice(end))) continue; // "September 30, 2026", "in 2025, 2026"
       if (new RegExp(`\\b${MONTH_WORD}\\s+\\d{1,2}$`, "i").test(text.slice(0, start))) continue;
-      const next = text.slice(end).search(/[,;]/);
-      const stretch = next < 0 ? text.slice(end) : text.slice(end, end + next);
-      if (quantityTokens(stretch).length > 0) cuts.push([start, end]);
     }
+    const next = text.slice(end).search(/[,;]/);
+    const stretch = next < 0 ? text.slice(end) : text.slice(end, end + next);
+    if (quantityTokens(stretch).length > 0) cuts.push([start, end]);
   }
   const out: Array<{ start: number; end: number; text: string }> = [];
   let from = 0;
@@ -340,17 +341,46 @@ export function clauseAt(text: string, at: number): string {
 }
 
 /**
- * A prose figure's basis evidence (fix round 3 ruling): its own clause first,
- * then every clause of the sentence that holds no quantity. "On a non-GAAP
- * basis, EPS was $2.10" and "EPS was $2.10, on a non-GAAP basis" both speak
- * of the $2.10; "…26% year-over-year, or 27% on a constant currency basis"
- * gives the constant-currency words to the 27% alone.
+ * The clauses that speak for a prose figure's basis (fix round 4 ruling).
+ * `own` is the clause holding the number. A numberless clause ATTACHES to a
+ * number clause only when that clause is its nearest number clause on one
+ * side and no number clause sits on its other side: "On a non-GAAP basis,
+ * EPS was $2.10" and "EPS was $2.10, on a non-GAAP basis" both speak of the
+ * $2.10, but in "…$1.80…; on a non-GAAP basis, … $2.10" the middle clause
+ * attaches to neither number. `others` are the remaining numberless clauses
+ * (they can still deny "reported", never confirm anything).
  */
-export function proseBasisLevels(text: string, at: number): string[] {
+export interface ProseBasisClauses { own: string; attached: string[]; others: string[] }
+
+export function proseBasisClauses(text: string, at: number): ProseBasisClauses {
   const clauses = splitClauses(text);
-  const own = clauses.find((c) => at < c.end) ?? clauses[clauses.length - 1];
-  const free = clauses.filter((c) => c !== own && quantityTokens(c.text.replace(DATE_RE, " ")).length === 0);
-  return [own.text, ...free.map((c) => c.text)];
+  const found = clauses.findIndex((c) => at < c.end);
+  const ownIndex = found < 0 ? clauses.length - 1 : found;
+  const isNumber = clauses.map((c) => quantityTokens(c.text.replace(DATE_RE, " ")).length > 0);
+  const first = isNumber.indexOf(true);
+  const last = isNumber.lastIndexOf(true);
+  const attached: string[] = [];
+  const others: string[] = [];
+  clauses.forEach((c, i) => {
+    if (isNumber[i]) return;
+    const leads = i < first && ownIndex === first;
+    const trails = i > last && ownIndex === last;
+    (leads || trails ? attached : others).push(c.text);
+  });
+  return { own: clauses[ownIndex].text, attached, others };
+}
+
+/**
+ * In a sentence that lists figures "respectively", the k-th label takes the
+ * k-th number after the labels: k is the count of list separators (",",
+ * "and", "as well as") between the label and the nearest quantity before it.
+ * A count that overshoots the numbers binds nothing (a safe miss).
+ */
+function respectivelyIndex(ns: string, labelStart: number, tokens: NumberToken[]): number {
+  if (!/\brespectively\b/.test(ns)) return 0;
+  const prev = [...tokens].reverse().find((t) => t.end <= labelStart);
+  const before = ns.slice(prev ? prev.end : 0, labelStart);
+  return (before.match(/,|\band\b|\bas well as\b/g) ?? []).length;
 }
 
 function bindProse(fig: ModelFigure, stated: StatedNumber, located: LocatedQuote, eventDate: string): Binding {
@@ -358,27 +388,37 @@ function bindProse(fig: ModelFigure, stated: StatedNumber, located: LocatedQuote
   const sentence = located.sentence ?? "";
   const ns = normalizeForMatch(sentence);
   const nl = normalizeForMatch(fig.label ?? "");
-  // The label at word boundaries ("income" never matches inside "incomes"), widened to its noun phrase.
-  const m = nl ? new RegExp(`(?<![a-z0-9])${escapeRe(nl)}(?![a-z0-9])`).exec(ns) : null;
-  const phrase = m ? `${extendLabelLeft(ns.slice(0, m.index))} ${nl}`.trim() : nl;
-  if (!m && nl) reasons.push(reason("label_not_in_quote", fig.id, `"${fig.label}" is not a phrase of the cited sentence`));
+  // Every place the label sits at word boundaries ("income" never matches inside "incomes").
+  const starts = nl ? [...ns.matchAll(new RegExp(`(?<![a-z0-9])${escapeRe(nl)}(?![a-z0-9])`, "g"))].map((x) => x.index ?? 0) : [];
+  if (starts.length === 0 && nl) reasons.push(reason("label_not_in_quote", fig.id, `"${fig.label}" is not a phrase of the cited sentence`));
+  // Pair the number with its label: the first number of the same kind after it, else the nearest before it.
+  // "Revenue and net income were $X and $Y, respectively": the k-th label takes the k-th number after it.
+  // A label used twice ("EPS was $1.80; non-GAAP EPS was $2.10") is tried at each place (fix round 4).
+  const percent = fig.unit === "percent";
+  const all = quantityTokens(ns); // years and date days are never the figure
+  const tokens = all.filter((t) => t.isPercent === percent);
+  const matches = (t: NumberToken) => matchesWithRounding(stated, toUnits(t.value, t.wordScale ?? "units"));
+  const pairedAt = (at: number): NumberToken | undefined => {
+    const k = respectivelyIndex(ns, at, all);
+    const paired = k > 0
+      ? all.filter((t) => t.start >= at + nl.length)[k]
+      : tokens.find((t) => t.start >= at + nl.length) ?? [...tokens].reverse().find((t) => t.end <= at);
+    return paired && paired.isPercent === percent && matches(paired) ? paired : undefined;
+  };
+  let hit: NumberToken | undefined;
+  let labelAt = starts[0];
+  for (const at of starts) {
+    hit = pairedAt(at);
+    if (hit) { labelAt = at; break; }
+  }
+  if (starts.length === 0) hit = tokens.find(matches);
+  // The label widened to its noun phrase, at the place that paired (else the first).
+  const phrase = labelAt !== undefined ? `${extendLabelLeft(ns.slice(0, labelAt))} ${nl}`.trim() : nl;
   if (!metricMatchesLabel(fig.metric, phrase, { context: sentence })) {
     reasons.push(reason("metric_unconfirmed", fig.id, `metric "${fig.metric}" does not match "${phrase}"`));
   }
-  // Pair the number with its label: the first number of the same kind after it, else the nearest before it.
-  const percent = fig.unit === "percent";
-  const tokens = quantityTokens(ns).filter((t) => t.isPercent === percent); // years and date days are never the figure
-  const matches = (t: NumberToken) => matchesWithRounding(stated, toUnits(t.value, t.wordScale ?? "units"));
-  let hit: NumberToken | undefined;
-  if (m) {
-    const at = m.index;
-    const paired = tokens.find((t) => t.start >= at + nl.length) ?? [...tokens].reverse().find((t) => t.end <= at);
-    hit = paired && matches(paired) ? paired : undefined;
-  } else {
-    hit = tokens.find(matches);
-  }
   if (!hit) {
-    return failed([...reasons, reason("value_not_in_quote", fig.id, `${fig.valueText} is not the number ${m ? `next to "${fig.label}"` : "in the cited sentence"}`)]);
+    return failed([...reasons, reason("value_not_in_quote", fig.id, `${fig.valueText} is not the number ${starts.length ? `next to "${fig.label}"` : "in the cited sentence"}`)]);
   }
   const period = parsePeriodPhrase(sentence, eventDate) ?? parsePeriodPhrase(located.block?.text ?? "", eventDate);
   if (!period) {
@@ -395,7 +435,7 @@ function bindProse(fig: ModelFigure, stated: StatedNumber, located: LocatedQuote
     half: halfUnit(hit.decimals, scale),
     period: period ? { ...period, anchor: null } : null,
     table: null,
-    basisConfirmed: basisConfirmed(fig.basis, basisEvidence(proseBasisLevels(ns, hit.start))),
+    basisConfirmed: proseBasisConfirmed(fig.basis, proseBasisClauses(ns, hit.start)),
     reasons,
   };
 }

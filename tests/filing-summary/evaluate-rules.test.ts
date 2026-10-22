@@ -4,8 +4,8 @@
  */
 import { describe, it, expect } from "vitest";
 import { extractDocText } from "@/lib/filing-summary/doc-text";
-import { metricMatchesLabel } from "@/lib/filing-summary/evaluate-words";
-import { clauseAt } from "@/lib/filing-summary/evaluate-figures";
+import { metricMatchesLabel, proseBasisConfirmed } from "@/lib/filing-summary/evaluate-words";
+import { clauseAt, proseBasisClauses, splitClauses } from "@/lib/filing-summary/evaluate-figures";
 import { latestQuarterEnd, sectionAnchors, tableContext } from "@/lib/filing-summary/evaluate-periods";
 import { REASON_CODES, renderClaimText } from "@/lib/filing-summary/evaluate";
 import type { DocText, PeriodSpec } from "@/lib/filing-summary/types";
@@ -446,29 +446,31 @@ describe("fix round 2", () => {
   });
 });
 
-describe("fix round 3: basis from the number's clause plus quantity-free clauses; dates never pair", () => {
-  const P = " for the three months ended September 30, 2026";
-  const prose = (sentence: string) => [
-    { fileName: EX991, text: extractDocText(`<p>Third Quarter 2026 Results</p><p>${sentence}</p>`) },
-    { fileName: "t.htm", text: exhibit },
-  ];
-  const vsBogey = (
-    sentence: string,
-    fig: Parameters<typeof quoteFig>[2],
-    b: { value: number; valueText: string; unit: "usd" | "usd_per_share" | "percent"; scale: "units" | "billions"; units: number; basis?: "reported" | "non_gaap" | "constant_currency" },
-  ) =>
-    one(
-      claim("It was {f1} against {f2}.", [cite("q1", sentence.replace(/\.$/, ""), false)], [
-        quoteFig("f1", "q1", fig),
-        bogeyFig("f2", "bg", { valueText: b.valueText, value: b.value, unit: b.unit, scale: b.scale }),
-      ], [cmp("f1", "f2", "above")]),
-      { docs: prose(sentence), bogeys: [bogey("bg", b.units, { unit: b.unit, basis: b.basis ?? "reported", label: "Consensus" })] },
-    );
-  const eps = (basis: "reported" | "non_gaap") =>
-    ({ valueText: "$2.10", value: 2.1, scale: "units", unit: "usd_per_share", metric: "diluted EPS", label: "diluted earnings per share", basis }) as const;
-  const epsBogey = (basis: "reported" | "non_gaap") =>
-    ({ valueText: "$2.00", value: 2, unit: "usd_per_share", scale: "units", units: 2, basis }) as const;
+// Prose sentence helpers shared by the fix round 3 and 4 blocks.
+const P = " for the three months ended September 30, 2026";
+const prose = (sentence: string) => [
+  { fileName: EX991, text: extractDocText(`<p>Third Quarter 2026 Results</p><p>${sentence}</p>`) },
+  { fileName: "t.htm", text: exhibit },
+];
+type ProseBogey = {
+  value: number; valueText: string; unit: "usd" | "usd_per_share" | "percent"; scale: "units" | "billions"; units: number;
+  basis?: "reported" | "non_gaap" | "constant_currency";
+};
+/** One prose figure (f1) compared with one bogey (f2), cited from `sentence`. */
+const vsBogey = (sentence: string, fig: Parameters<typeof quoteFig>[2], b: ProseBogey, relation: "above" | "below" = "above") =>
+  one(
+    claim("It was {f1} against {f2}.", [cite("q1", sentence.replace(/\.$/, ""), false)], [
+      quoteFig("f1", "q1", fig),
+      bogeyFig("f2", "bg", { valueText: b.valueText, value: b.value, unit: b.unit, scale: b.scale }),
+    ], [cmp("f1", "f2", relation)]),
+    { docs: prose(sentence), bogeys: [bogey("bg", b.units, { unit: b.unit, basis: b.basis ?? "reported", label: "Consensus" })] },
+  );
+const eps = (basis: "reported" | "non_gaap", valueText = "$2.10", label = "diluted earnings per share") =>
+  ({ valueText, value: Number(valueText.replace("$", "")), scale: "units", unit: "usd_per_share", metric: "diluted EPS", label, basis }) as const;
+const epsBogey = (basis: "reported" | "non_gaap") =>
+  ({ valueText: "$2.00", value: 2, unit: "usd_per_share", scale: "units", units: 2, basis }) as const;
 
+describe("fix round 3: basis from the number's clause plus quantity-free clauses; dates never pair", () => {
   it("p1: 'On a non-GAAP basis, diluted EPS was $2.10 …' typed reported is not checked (basis_unconfirmed)", () => {
     const c = vsBogey(`On a non-GAAP basis, diluted earnings per share was $2.10${P}.`, eps("reported"), epsBogey("reported"));
     expect(c.status).toBe("unconfirmed");
@@ -520,5 +522,122 @@ describe("fix round 3: basis from the number's clause plus quantity-free clauses
     expect(codes(c)).not.toContain("value_not_in_quote");
     expect(c.status).toBe("unconfirmed");
     expect(codes(c)).toContain("basis_unconfirmed");
+  });
+});
+
+describe("fix round 4: asymmetric basis attachment (a numberless clause between two numbers speaks for neither)", () => {
+  const h1 = `Diluted earnings per share was $1.80${P}; on a non-GAAP basis, diluted earnings per share was $2.10.`;
+  const h1c = `GAAP diluted earnings per share was $1.80${P}, and diluted earnings per share was $2.10, on a non-GAAP basis.`;
+  const at = (s: string, n: string) => s.toLowerCase().indexOf(n);
+
+  it("h1: the GAAP $1.80 typed non_gaap, 'below' a $2.00 non-GAAP consensus, is NOT checked", () => {
+    const c = vsBogey(h1, eps("non_gaap", "$1.80"), epsBogey("non_gaap"), "below");
+    expect(c.status).toBe("unconfirmed");
+    expect(codes(c)).toContain("basis_unconfirmed");
+  });
+
+  it("h1: the $2.10 typed non_gaap is NOT confirmed either, a DELIBERATE FALSE NEGATIVE: the non-GAAP clause sits between two number clauses", () => {
+    const c = vsBogey(h1, eps("non_gaap", "$2.10"), epsBogey("non_gaap"), "above");
+    expect(c.status).toBe("unconfirmed");
+    expect(codes(c)).toContain("basis_unconfirmed");
+    const clauses = proseBasisClauses(h1.toLowerCase(), at(h1, "$2.10"));
+    expect(clauses.attached).toEqual([]);
+    expect(clauses.others).toEqual(["on a non-gaap basis"]);
+  });
+
+  it("h1b: the $1.80 typed reported is not checked: a numberless clause of the sentence carries non-GAAP", () => {
+    const c = vsBogey(h1, eps("reported", "$1.80"), epsBogey("reported"), "below");
+    expect(c.status).toBe("unconfirmed");
+    expect(codes(c)).toContain("basis_unconfirmed");
+  });
+
+  it("h1c: 'GAAP diluted EPS was $1.80 …, and … $2.10, on a non-GAAP basis' typed reported is checked (explicit GAAP in its own clause)", () => {
+    expect(vsBogey(h1c, eps("reported", "$1.80"), epsBogey("reported"), "below").status).toBe("checked");
+    expect(vsBogey(h1c, eps("non_gaap", "$1.80"), epsBogey("non_gaap"), "below").status).toBe("unconfirmed");
+  });
+
+  it.each([
+    ["p1", `On a non-GAAP basis, diluted earnings per share was $2.10${P}.`],
+    ["p4", `Diluted earnings per share was $2.10${P}, on a non-GAAP basis.`],
+  ])("%s: a leading or trailing non-GAAP clause attaches to the only number; typed reported is not checked, typed non_gaap is", (_n, s) => {
+    const r = vsBogey(s, eps("reported"), epsBogey("reported"));
+    expect(r.status).toBe("unconfirmed");
+    expect(codes(r)).toContain("basis_unconfirmed");
+    expect(vsBogey(s, eps("non_gaap"), epsBogey("non_gaap")).status).toBe("checked");
+  });
+
+  it("p2: a leading 'Excluding …' clause denies reported", () => {
+    const c = vsBogey(`Excluding the legal accrual, income from operations was $5.0 billion${P}.`,
+      { valueText: "$5.0 billion", value: 5, scale: "billions", metric: "income from operations", label: "income from operations" },
+      { valueText: "$4.8 billion", value: 4.8, unit: "usd", scale: "billions", units: 4.8e9 });
+    expect(c.status).toBe("unconfirmed");
+    expect(codes(c)).toContain("basis_unconfirmed");
+  });
+
+  const ccSentence = `Revenue was $64.60 billion${P}, an increase of 26% year-over-year, or 27% on a constant currency basis.`;
+  const revenue = { valueText: "$64.60 billion", value: 64.6, scale: "billions", metric: "revenue", label: "Revenue" } as const;
+  it("b5: the reported revenue in a sentence whose 27% is constant-currency is checked (that word sits in another number's clause)", () => {
+    expect(vsBogey(ccSentence, revenue, { valueText: "$64.0 billion", value: 64, unit: "usd", scale: "billions", units: 64e9 }).status).toBe("checked");
+  });
+  it("b6: the reported 26% typed constant_currency 'below' a 26.8% constant-currency guide is not checked", () => {
+    const c = vsBogey(ccSentence, { valueText: "26%", value: 26, unit: "percent", scale: "units", metric: "revenue", label: "Revenue", basis: "constant_currency" },
+      { valueText: "26.8%", value: 26.8, unit: "percent", scale: "units", units: 26.8, basis: "constant_currency" }, "below");
+    expect(c.status).toBe("unconfirmed");
+    expect(codes(c)).toContain("basis_unconfirmed");
+  });
+
+  it("splitClauses: ' and ' cuts before a stretch holding a quantity, never inside 'the three and nine months ended'", () => {
+    expect(splitClauses("revenue was $5.0 billion and operating income was $2.0 billion").map((c) => c.text))
+      .toEqual(["revenue was $5.0 billion", "operating income was $2.0 billion"]);
+    const s = "revenue was $5.0 billion for the three and nine months ended september 30, 2026";
+    expect(splitClauses(s).map((c) => c.text)).toEqual([s]);
+  });
+
+  describe("probe12 shapes", () => {
+    const ni = (valueText: string) => ({ valueText, value: Number(valueText.replace(/[$ billion]/g, "")), scale: "billions", metric: "net income", label: "net income" }) as const;
+    const niBogey = { valueText: "$18.0 billion", value: 18, unit: "usd", scale: "billions", units: 18e9 } as const;
+    const r1 = `Revenue and net income were $64.6 billion and $18.6 billion, respectively,${P}.`;
+    it("respectively: the second label takes the second number; the revenue figure is never confirmed as net income", () => {
+      expect(vsBogey(r1, ni("$18.6 billion"), niBogey).status).toBe("checked");
+      const wrong = vsBogey(r1, ni("$64.6 billion"), niBogey);
+      expect(wrong.status).toBe("unconfirmed");
+      expect(codes(wrong)).toContain("value_not_in_quote");
+    });
+
+    const q1 = `Diluted earnings per share was $2.10 (non-GAAP) and $1.80 (GAAP)${P}.`;
+    it("a parenthetical '(non-GAAP)' after the number confirms non_gaap and denies reported for that number only", () => {
+      expect(vsBogey(q1, eps("non_gaap"), epsBogey("non_gaap")).status).toBe("checked");
+      expect(codes(vsBogey(q1, eps("reported"), epsBogey("reported")))).toContain("basis_unconfirmed");
+      const q2 = `Diluted earnings per share was $1.80, or $2.10 (non-GAAP),${P}.`;
+      expect(vsBogey(q2, eps("reported", "$1.80"), epsBogey("reported"), "below").status).toBe("checked");
+      expect(codes(vsBogey(q2, eps("non_gaap", "$1.80"), epsBogey("non_gaap"), "below"))).toContain("basis_unconfirmed");
+    });
+
+    it("'adjusted' as a verb names no basis; 'adjusted for' does", () => {
+      const verb = `we adjusted our estimates; diluted earnings per share was $1.80${P.toLowerCase()}.`;
+      expect(proseBasisConfirmed("non_gaap", proseBasisClauses(verb, at(verb, "$1.80")))).toBe(false);
+      expect(proseBasisConfirmed("reported", proseBasisClauses(verb, at(verb, "$1.80")))).toBe(true);
+      const trailing = `diluted earnings per share was $1.80${P.toLowerCase()}, and we adjusted our full-year outlook upward.`;
+      expect(proseBasisConfirmed("non_gaap", proseBasisClauses(trailing, at(trailing, "$1.80")))).toBe(false);
+      const basis = `diluted earnings per share was $1.80${P.toLowerCase()}, adjusted for the legal accrual.`;
+      expect(proseBasisConfirmed("reported", proseBasisClauses(basis, at(basis, "$1.80")))).toBe(false);
+      expect(proseBasisConfirmed("non_gaap", proseBasisClauses(basis, at(basis, "$1.80")))).toBe(true);
+      // End to end, with a sentence the period parser can read.
+      const s = `We adjusted our estimates; diluted earnings per share was $1.80${P}.`;
+      expect(codes(vsBogey(s, eps("non_gaap", "$1.80"), epsBogey("non_gaap"), "below"))).toContain("basis_unconfirmed");
+      expect(vsBogey(s, eps("reported", "$1.80"), epsBogey("reported"), "below").status).toBe("checked");
+    });
+
+    it("a bullet with no verb: each number keeps its own basis words", () => {
+      const b1 = `Diluted EPS: $1.80 GAAP; $2.10 non-GAAP${P}.`;
+      expect(vsBogey(b1, eps("reported", "$1.80", "diluted eps"), epsBogey("reported"), "below").status).toBe("checked");
+      expect(codes(vsBogey(b1, eps("non_gaap", "$1.80", "diluted eps"), epsBogey("non_gaap"), "below"))).toContain("basis_unconfirmed");
+      const b2 = `Non-GAAP diluted EPS of $2.10 and GAAP diluted EPS of $1.80${P}.`;
+      expect(vsBogey(b2, eps("non_gaap", "$2.10", "diluted eps"), epsBogey("non_gaap")).status).toBe("checked");
+      expect(codes(vsBogey(b2, eps("reported", "$2.10", "diluted eps"), epsBogey("reported")))).toContain("basis_unconfirmed");
+      const b3 = `Diluted EPS of $1.80, up 20% year-over-year, non-GAAP diluted EPS of $2.10${P}.`;
+      expect(vsBogey(b3, eps("reported", "$1.80", "diluted eps"), epsBogey("reported"), "below").status).toBe("checked");
+      expect(codes(vsBogey(b3, eps("non_gaap", "$1.80", "diluted eps"), epsBogey("non_gaap"), "below"))).toContain("basis_unconfirmed");
+    });
   });
 });

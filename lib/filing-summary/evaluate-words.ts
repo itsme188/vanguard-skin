@@ -121,9 +121,12 @@ type EvidenceKind = "reported" | "non_gaap" | "excluding_item" | "constant_curre
 /** The basis the source text supports, read from the most specific level that says one. */
 export interface BasisEvidence { decided: Set<EvidenceKind> | null; mixedSeen: boolean }
 
+// "adjusted" as a verb ("we adjusted our outlook", "adjusted downward") names no basis (fix round 4).
+const ADJUSTED_BASIS = /(?<!\b(?:we|they|it|which|that|company|management)\s+)\badjusted\b(?!\s+(?:our|its|their|the|this|these|those|down|downward|up|upward|lower|higher|accordingly)\b)/i;
+
 function kindsIn(text: string): Set<EvidenceKind> {
   const k = new Set<EvidenceKind>();
-  if (/\bnon[\s-]*gaap\b|\badjusted\b/i.test(text)) k.add("non_gaap");
+  if (/\bnon[\s-]*gaap\b/i.test(text) || ADJUSTED_BASIS.test(text)) k.add("non_gaap");
   if (/\bexclud(?:ing|es|ed)\b|\bexclusive\s+of\b/i.test(text)) k.add("excluding_item");
   if (/\bconstant[\s-]+currency\b/i.test(text)) k.add("constant_currency");
   if (/(?<!non[\s-]{0,2})\bgaap\b/i.test(text)) k.add("reported");
@@ -162,6 +165,33 @@ export function basisConfirmed(typed: Basis, ev: BasisEvidence): boolean {
   if (typed === "unknown") return false;
   if (typed === "reported") return ev.decided ? ev.decided.has("reported") && ev.decided.size === 1 : !ev.mixedSeen;
   return ev.decided?.has(typed as EvidenceKind) ?? false;
+}
+
+/**
+ * The prose rule (fix round 4, asymmetric). `own` is the figure's clause,
+ * `attached` the numberless clauses that attach to it, `others` the rest of
+ * the sentence's numberless clauses (see `proseBasisClauses`).
+ * - non_gaap / excluding_item / constant_currency: the word must be in the
+ *   own clause or an attached clause.
+ * - reported: explicit GAAP in the own clause confirms it; otherwise the own
+ *   clause has no basis word AND no numberless clause anywhere has one.
+ *   Basis words inside OTHER numbers' clauses do not count against it.
+ * - An own clause that says both GAAP and a non-GAAP basis is mixed and
+ *   confirms nothing.
+ */
+export function proseBasisConfirmed(typed: Basis, c: { own: string; attached: string[]; others: string[] }): boolean {
+  if (typed.startsWith("guidance_")) return true;
+  if (typed === "unknown") return false;
+  const own = kindsIn(c.own);
+  if (own.has("reported") && own.size > 1) return false;
+  const nonReported = (k: Set<EvidenceKind>) => [...k].some((x) => x !== "reported");
+  if (typed === "reported") {
+    if (own.has("reported")) return true;
+    if (own.size > 0) return false;
+    return ![...c.attached, ...c.others].some((t) => nonReported(kindsIn(t)));
+  }
+  const want = typed as EvidenceKind;
+  return own.has(want) || c.attached.some((t) => kindsIn(t).has(want));
 }
 
 // ---------------------------------------------------------------------------
