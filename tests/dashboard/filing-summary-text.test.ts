@@ -54,6 +54,8 @@ function view(o: Partial<PanelView> = {}): PanelView {
     runSummaryAvailable: false,
     readingDocs: null,
     choiceOptions: [],
+    earningsTimeUnconfirmed: false,
+    earningsForm: null,
     ...o,
   };
 }
@@ -98,6 +100,8 @@ describe("pollStateText: the brief's exact copy", () => {
     expect(pollStateText(view({ pollState: "past_cutoff", pollDetail: "earnings 8-K time unconfirmed — Run summary to spend" }))).toBe(
       "No earnings 8-K filed by 8 pm",
     );
+    // The view's own form wins over any detail text.
+    expect(pollStateText(view({ pollState: "past_cutoff", earningsForm: "6-K" }))).toBe("No earnings 6-K filed by 8 pm");
     expect(pollStateText(view({ pollState: "past_cutoff", pollDetail: null }))).toBe("No earnings 8-K filed by 8 pm");
     // An accepted filing with no run yet: Run summary is offered instead.
     expect(pollStateText(view({ pollState: "past_cutoff", pollDetail: "polling ended at 8 pm", runSummaryAvailable: true }))).toBe(
@@ -236,6 +240,24 @@ describe("optionText", () => {
     expect(
       optionText({ choice: { family: "sonnet", effort: "medium" }, label: "Sonnet · medium", nowLabel: "Sonnet · not available" }),
     ).toBe("Sonnet · medium — not available");
+  });
+});
+
+describe("an earnings filing whose time could not be confirmed (round 2 ruling)", () => {
+  it("is not 'no filing': it says found, not run automatically, with Run summary offered", () => {
+    for (const pollState of ["past_cutoff", "waiting"] as const) {
+      const v = view({ pollState, earningsTimeUnconfirmed: true, runSummaryAvailable: true, earningsForm: "8-K" });
+      expect(pollStateText(v), pollState).toBe(
+        "Earnings 8-K found, but its filing time could not be confirmed — not run automatically",
+      );
+    }
+    expect(
+      pollStateText(view({ pollState: "past_cutoff", earningsTimeUnconfirmed: true, runSummaryAvailable: true, earningsForm: "6-K" })),
+    ).toBe("Earnings 6-K found, but its filing time could not be confirmed — not run automatically");
+  });
+  it("gives way to the run once one exists", () => {
+    const v = view({ pollState: "past_cutoff", earningsTimeUnconfirmed: true, shown: run({ status: "done" }) });
+    expect(pollStateText(v)).toBe("Summary ready · Opus 5.5 high");
   });
 });
 

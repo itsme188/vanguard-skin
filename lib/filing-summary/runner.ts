@@ -151,9 +151,19 @@ function companyName(db: Database.Database, symbol: string): string | null {
   return r?.name ?? null;
 }
 
-/** The frozen filing list: the accepted earnings filing, then accepted companions by discovery order. */
-function runFilingIds(filings: FilingRow[]): number[] {
-  const earnings = filings.find((f) => f.role === "earnings" && f.identityVerdict === "accepted");
+/**
+ * The frozen filing list: the accepted earnings filing, then accepted
+ * companions by discovery order. An owner click (`manual_run`, `rerun`) may
+ * also read an earnings filing whose time could not be confirmed when no
+ * accepted one exists (controller ruling, Task 13 round 2); an automatic run
+ * never does.
+ */
+function runFilingIds(filings: FilingRow[], trigger: "auto" | "rerun" | "manual_run"): number[] {
+  const earnings =
+    filings.find((f) => f.role === "earnings" && f.identityVerdict === "accepted") ??
+    (trigger === "auto"
+      ? undefined
+      : filings.find((f) => f.role === "earnings" && f.identityVerdict === "time_unconfirmed"));
   if (!earnings) return [];
   const companions = filings
     .filter((f) => f.role === "companion" && f.identityVerdict === "accepted")
@@ -275,7 +285,7 @@ function startRunTx(
     }
   }
 
-  const filingIds = runFilingIds(listFilings(db, eventId));
+  const filingIds = runFilingIds(listFilings(db, eventId), trigger);
   if (filingIds.length === 0) return { ok: false, reason: "no_filings" };
 
   const choice = opts.choice ?? getChoice(db, eventId).choice;

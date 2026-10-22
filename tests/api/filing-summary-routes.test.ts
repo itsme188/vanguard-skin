@@ -105,6 +105,29 @@ describe("POST set_choice", () => {
 });
 
 describe("POST paid actions", () => {
+  it("run on a print whose earnings filing time is unconfirmed creates a manual run (round 2 ruling)", async () => {
+    const id = insertFiling(hoisted.db, {
+      eventId, accession: "0000000001-26-000001", cik: "0000000001", form: "8-K", role: "earnings", items: "2.02",
+      acceptedAt: null, discoveredAt: "2026-10-22T20:06:00.000Z",
+      identityVerdict: "time_unconfirmed", identityReason: "header has no acceptance time", fetchState: "fetched",
+    }).id;
+    upsertEventState(hoisted.db, eventId, { pollState: "past_cutoff", pollDetail: "earnings 8-K time unconfirmed — Run summary to spend" });
+
+    const panel = await (await listGET(new Request(`http://localhost/api/filing-summary?eventIds=${eventId}`))).json();
+    expect(panel.data[eventId]).toMatchObject({ earningsTimeUnconfirmed: true, earningsForm: "8-K", runSummaryAvailable: true });
+
+    const res = await post({ eventId, action: "run", requestKey: "k-unconfirmed" });
+    expect(res.status).toBe(200);
+    const runs = listRuns(hoisted.db, eventId);
+    expect(runs).toHaveLength(1);
+    expect(runs[0].trigger).toBe("manual_run");
+    const sections = hoisted.db
+      .prepare("SELECT filing_id FROM filing_summary_sections WHERE run_id = ?")
+      .all(runs[0].id) as Array<{ filing_id: number }>;
+    expect(sections.map((s) => s.filing_id)).toEqual([id]);
+    expect(hoisted.runNextSection).toHaveBeenCalledWith(hoisted.db, eventId);
+  });
+
   it("requires a requestKey", async () => {
     seedEarningsFiling();
     const res = await post({ eventId, action: "run" });

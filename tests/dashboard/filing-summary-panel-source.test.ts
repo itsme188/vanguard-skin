@@ -237,6 +237,8 @@ function view(o: Partial<PanelView> = {}): PanelView {
     runSummaryAvailable: false,
     readingDocs: null,
     choiceOptions: [],
+    earningsTimeUnconfirmed: false,
+    earningsForm: null,
     ...o,
   };
 }
@@ -302,6 +304,21 @@ describe("FilingSummaryPanelBody", () => {
       view: view({ shown: run({ fallbackNote: "Fable unavailable — Opus 5.5 ran instead" }) }),
     });
     expect(html).toContain("Fable unavailable — Opus 5.5 ran instead");
+  });
+
+  it("a time-unconfirmed earnings filing reads as found and offers Run summary", () => {
+    const v = view({
+      shown: null,
+      pollState: "past_cutoff",
+      runSummaryAvailable: true,
+      earningsTimeUnconfirmed: true,
+      earningsForm: "8-K",
+      locked: false,
+    });
+    const html = render({ view: v });
+    expect(html).toContain("Earnings 8-K found, but its filing time could not be confirmed — not run automatically");
+    expect(html).toContain("Run summary");
+    expect(html).not.toContain("No earnings 8-K filed by 8 pm");
   });
 
   it("offers Run summary when money waits on a click, never when read-only", () => {

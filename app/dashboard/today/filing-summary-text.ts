@@ -65,6 +65,7 @@ export function retryConfirmMessage(run: RunSummary): string {
  * decided from the view's runs and `runSummaryAvailable`, never from the text.
  */
 function filerForm(view: PanelView): string {
+  if (view.earningsForm) return view.earningsForm;
   const forms = [...(view.shown?.sectionStates ?? []), ...(view.inProgress?.sectionStates ?? [])].map((s) => s.form);
   if (forms.some((f) => f.toUpperCase().startsWith("6-K"))) return "6-K";
   if (view.readingDocs?.form.toUpperCase().startsWith("6-K")) return "6-K";
@@ -77,7 +78,7 @@ function filerForm(view: PanelView): string {
  * earnings filing exists and no run does).
  */
 export function hasNoAcceptedEarningsFiling(view: PanelView): boolean {
-  return !view.shown && !view.inProgress && !view.runSummaryAvailable;
+  return !view.shown && !view.inProgress && !view.runSummaryAvailable && !view.earningsTimeUnconfirmed;
 }
 
 function runningSection(run: RunSummary): SectionState | undefined {
@@ -109,6 +110,11 @@ export function pollStateText(view: PanelView, reading: ReadingDocs | null = vie
   }
 
   const form = filerForm(view);
+  // A filing was found but its header gave no acceptance time: it is not
+  // "no filing", and nothing runs on its own (controller ruling, round 2).
+  if (view.earningsTimeUnconfirmed && !view.shown && !view.inProgress) {
+    return `Earnings ${form} found, but its filing time could not be confirmed — not run automatically`;
+  }
   switch (view.pollState) {
     case "sec_unreachable":
       return "SEC not reachable — still trying";

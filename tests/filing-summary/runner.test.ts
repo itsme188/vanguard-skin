@@ -210,6 +210,34 @@ describe("startRun", () => {
     expect(startRun(db, 99_999, "auto", { catalogIds: CATALOG })).toEqual({ ok: false, reason: "not_found" });
   });
 
+  it("a time-unconfirmed earnings filing: an owner click reads it, an automatic run never does (round 2 ruling)", () => {
+    const { id } = insertFiling(
+      db,
+      filing("0000000001-26-000001", { acceptedAt: null, identityVerdict: "time_unconfirmed", identityReason: "header has no acceptance time" }),
+    );
+    addDoc(id, "ex991.htm", "EX-99.1", 2, EX991_HTML);
+    expect(startRun(db, eventId, "auto", { catalogIds: CATALOG })).toEqual({ ok: false, reason: "no_filings" });
+    onEarningsAccepted(db, eventId);
+    expect(listRuns(db, eventId)).toHaveLength(0);
+
+    const r = startRun(db, eventId, "manual_run", { requestKey: "rk-manual", catalogIds: CATALOG });
+    expect(r.ok).toBe(true);
+    const runs = listRuns(db, eventId);
+    expect(runs).toHaveLength(1);
+    expect(runs[0].trigger).toBe("manual_run");
+    expect(sectionsOf(runs[0].id).map((s) => s.filingId)).toEqual([id]);
+
+    // A re-run of that run reads the same filing (also an owner click).
+    expect(startRun(db, eventId, "rerun", { requestKey: "rk-rerun", catalogIds: CATALOG }).ok).toBe(true);
+  });
+
+  it("an accepted earnings filing is preferred over a time-unconfirmed one on a manual run", () => {
+    insertFiling(db, filing("0000000001-26-000001", { acceptedAt: null, identityVerdict: "time_unconfirmed", role: "companion" }));
+    const accepted = seedEarnings("0000000001-26-000002");
+    startRun(db, eventId, "manual_run", { requestKey: "rk-m", catalogIds: CATALOG });
+    expect(sectionsOf(listRuns(db, eventId)[0].id).map((s) => s.filingId)).toEqual([accepted]);
+  });
+
   it("onEarningsAccepted starts one auto run, never for a manual-only event", () => {
     seedEarnings();
     upsertEventState(db, eventId, { pollState: "manual_only" });

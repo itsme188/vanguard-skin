@@ -160,6 +160,15 @@ export interface PanelView {
   readingDocs: ReadingDocs | null;
   /** All five picker choices with their now-labels. */
   choiceOptions: ChoiceOption[];
+  /**
+   * True when there is no accepted earnings filing but an earnings-role
+   * filing whose header gave no acceptance time (`time_unconfirmed`) exists:
+   * a filing was found, it was not run automatically, and Run summary may
+   * still read it on the owner's click.
+   */
+  earningsTimeUnconfirmed: boolean;
+  /** "8-K" or "6-K": the base form of the live earnings filing; null when there is none. */
+  earningsForm: "8-K" | "6-K" | null;
 }
 
 /** The filing being read and how many fetched exhibits it has: "8-K + 3 exhibits". */
@@ -448,14 +457,36 @@ function companyName(db: Database.Database, symbol: string | null): string | nul
   return r?.name ?? null;
 }
 
-/** Same rule as the runner's frozen list: Run summary needs an accepted earnings filing. */
+/** Same rule as the runner's frozen list: an accepted earnings filing. */
 function hasAcceptedEarnings(filings: FilingRow[]): boolean {
   return filings.some((f) => f.role === "earnings" && f.identityVerdict === "accepted");
 }
 
 /**
+ * No accepted earnings filing, but an earnings-role filing whose time could
+ * not be confirmed (controller ruling, Task 13 round 2): not "no filing", and
+ * a manual run may read it (the runner's owner-click rule).
+ */
+function earningsTimeUnconfirmedFrom(filings: FilingRow[]): boolean {
+  return (
+    !hasAcceptedEarnings(filings) &&
+    filings.some((f) => f.role === "earnings" && f.identityVerdict === "time_unconfirmed")
+  );
+}
+
+/** The base form ("8-K" / "6-K") of the accepted, else time-unconfirmed, earnings filing. */
+function earningsFormFrom(filings: FilingRow[]): "8-K" | "6-K" | null {
+  const f =
+    filings.find((x) => x.role === "earnings" && x.identityVerdict === "accepted") ??
+    filings.find((x) => x.role === "earnings" && x.identityVerdict === "time_unconfirmed");
+  if (!f) return null;
+  return f.form.toUpperCase().startsWith("6-K") ? "6-K" : "8-K";
+}
+
+/**
  * Whether `run` (Run summary) may spend for this event: an accepted earnings
- * filing, no run yet, and not disarmed. The route uses the same predicate.
+ * filing (or, with none, a time-unconfirmed one), no run yet, and not
+ * disarmed. The route uses the same predicate.
  */
 export function runSummaryAvailable(db: Database.Database, eventId: number): boolean {
   return runSummaryAvailableFrom(
@@ -466,7 +497,11 @@ export function runSummaryAvailable(db: Database.Database, eventId: number): boo
 }
 
 function runSummaryAvailableFrom(pollState: PollState | null, runCount: number, filings: FilingRow[]): boolean {
-  return pollState !== "cancelled" && runCount === 0 && hasAcceptedEarnings(filings);
+  return (
+    pollState !== "cancelled" &&
+    runCount === 0 &&
+    (hasAcceptedEarnings(filings) || earningsTimeUnconfirmedFrom(filings))
+  );
 }
 
 // ---------------------------------------------------------------- run assembly
@@ -797,6 +832,8 @@ function panelFor(db: Database.Database, eventId: number, catalogIds: string[]):
     shown: shown?.summary ?? null,
     inProgress: inProgress?.summary ?? null,
     runSummaryAvailable: runSummaryAvailableFrom(state?.pollState ?? null, built.length, filings),
+    earningsTimeUnconfirmed: earningsTimeUnconfirmedFrom(filings),
+    earningsForm: earningsFormFrom(filings),
   };
 }
 

@@ -153,6 +153,49 @@ describe("panel view", () => {
     expect(v.shown).toBeNull();
   });
 
+  it("a time-unconfirmed earnings filing is found, not 'no filing', and Run summary is offered (round 2 ruling)", () => {
+    const before = getPanelViews(db, [eventId], CATALOG)[eventId];
+    expect(before.earningsTimeUnconfirmed).toBe(false);
+    expect(before.earningsForm).toBeNull();
+
+    insertFiling(
+      db,
+      filing("0000000001-26-000001", {
+        form: "6-K",
+        acceptedAt: null,
+        identityVerdict: "time_unconfirmed",
+        identityReason: "header has no acceptance time",
+      }),
+    );
+    upsertEventState(db, eventId, { pollState: "past_cutoff", pollDetail: "earnings 6-K time unconfirmed — Run summary to spend" });
+    const v = getPanelViews(db, [eventId], CATALOG)[eventId];
+    expect(v.earningsTimeUnconfirmed).toBe(true);
+    expect(v.earningsForm).toBe("6-K");
+    expect(v.runSummaryAvailable).toBe(true);
+
+    // Disarmed: nothing is offered.
+    upsertEventState(db, eventId, { pollState: "cancelled" });
+    expect(getPanelViews(db, [eventId], CATALOG)[eventId].runSummaryAvailable).toBe(false);
+  });
+
+  it("an accepted earnings filing wins over a time-unconfirmed one, and a run ends the offer", () => {
+    insertFiling(db, filing("0000000001-26-000001", { acceptedAt: null, identityVerdict: "time_unconfirmed", role: "companion" }));
+    const { id: f2 } = insertFiling(db, filing("0000000001-26-000002"));
+    const v = getPanelViews(db, [eventId], CATALOG)[eventId];
+    expect(v.earningsTimeUnconfirmed).toBe(false);
+    expect(v.earningsForm).toBe("8-K");
+    expect(v.runSummaryAvailable).toBe(true);
+    run([f2]);
+    expect(getPanelViews(db, [eventId], CATALOG)[eventId].runSummaryAvailable).toBe(false);
+  });
+
+  it("a rejected earnings filing is neither accepted nor time-unconfirmed", () => {
+    insertFiling(db, filing("0000000001-26-000001", { identityVerdict: "rejected", identityReason: "accepted after 8 pm" }));
+    const v = getPanelViews(db, [eventId], CATALOG)[eventId];
+    expect(v.earningsTimeUnconfirmed).toBe(false);
+    expect(v.runSummaryAvailable).toBe(false);
+  });
+
   it("leaves out unknown event ids and reports the stored choice", () => {
     setChoice(db, eventId, { family: "fable", effort: "medium" });
     const views = getPanelViews(db, [eventId, 999], CATALOG);
