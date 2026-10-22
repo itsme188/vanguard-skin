@@ -69,17 +69,16 @@ export function choiceValue(c: SummaryChoice): string {
 }
 
 /**
- * Rough cost per filing by choice, keyed by `choiceValue`. Measured on the
- * Meta test 2026-10-21 (spec, Cost and time) for three choices; the two
- * medium efforts of the larger families were not measured and say only how
- * they compare.
+ * Rough cost by choice, keyed by `choiceValue`. Only Opus · high was measured
+ * with the current prompt: about $0.80 for one 8-K section (Meta replay,
+ * 2026-10-22). The other choices say how they compare, by list price per token.
  */
 export const ROUGH_COST_BY_CHOICE: Record<string, string> = {
-  "sonnet·medium": "about $0.11 per filing",
-  "opus·medium": "less than about $0.32 per filing (Opus · high)",
-  "opus·high": "about $0.32 per filing",
-  "fable·medium": "less than about $0.68 per filing (Fable · high)",
-  "fable·high": "about $0.68 per filing",
+  "sonnet·medium": "Sonnet costs half as much per token as Opus",
+  "opus·medium": "less than Opus · high",
+  "opus·high": "about $0.80 per 8-K (measured); long filings cost more",
+  "fable·medium": "Fable costs 2.5 times as much per token as Opus",
+  "fable·high": "Fable costs 2.5 times as much per token as Opus",
 };
 
 export function roughCostText(c: SummaryChoice): string {

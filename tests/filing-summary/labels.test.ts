@@ -62,14 +62,16 @@ describe("statuses and counts", () => {
 describe("choices and cost", () => {
   it("five choices, each with its rough cost", () => {
     const expected: Record<string, string> = {
-      "Sonnet · medium": "about $0.11 per filing",
-      "Opus · medium": "less than about $0.32 per filing (Opus · high)",
-      "Opus · high": "about $0.32 per filing",
-      "Fable · medium": "less than about $0.68 per filing (Fable · high)",
-      "Fable · high": "about $0.68 per filing",
+      "Sonnet · medium": "Sonnet costs half as much per token as Opus",
+      "Opus · medium": "less than Opus · high",
+      "Opus · high": "about $0.80 per 8-K (measured); long filings cost more",
+      "Fable · medium": "Fable costs 2.5 times as much per token as Opus",
+      "Fable · high": "Fable costs 2.5 times as much per token as Opus",
     };
     for (const c of SUMMARY_CHOICES) expect(roughCostText(c), choiceLabel(c)).toBe(expected[choiceLabel(c)]);
     expect(Object.keys(ROUGH_COST_BY_CHOICE).sort()).toEqual(SUMMARY_CHOICES.map(choiceValue).sort());
+    // The pre-typed-figures estimates are gone everywhere (browser pass ruling).
+    for (const text of Object.values(ROUGH_COST_BY_CHOICE)) expect(text).not.toMatch(/\$0\.(11|32|68)\b/);
   });
 
   it("option text carries the now-label", () => {

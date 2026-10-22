@@ -68,16 +68,21 @@ function capitalise(s: string): string {
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
+/** A question that spends money: Cancel has focus, so Enter never spends. */
+export interface PaidPrompt {
+  title: string;
+  message: string;
+  confirmLabel: string;
+  initialFocus: "cancel";
+}
+
 /** The question the Re-run button asks: names the model and the rough cost. */
-export function rerunPrompt(o: ChoiceOption, filingCount: number): { title: string; message: string; confirmLabel: string } {
+export function rerunPrompt(o: ChoiceOption, filingCount: number): PaidPrompt {
   const family = capitalise(o.choice.family);
   const now = nowPart(o.nowLabel);
   const model = now.startsWith("now ") ? `${family} ${now.slice(4)}` : `${family} (no ${family} model is available right now)`;
-  const cost = roughCostText(o.choice);
-  const costLine =
-    o.choice.effort === "medium" && o.choice.family !== "sonnet"
-      ? `${cost} (${roughCostText({ family: o.choice.family, effort: "high" })})`
-      : cost;
+  // One cost statement only: the medium choices already compare themselves.
+  const costLine = roughCostText(o.choice);
   const filings = `${filingCount} ${filingCount === 1 ? "filing" : "filings"}`;
   return {
     title: `Re-run with ${o.label}?`,
@@ -85,6 +90,7 @@ export function rerunPrompt(o: ChoiceOption, filingCount: number): { title: stri
       `This reads the same ${filings} again with ${model} at ${o.choice.effort} effort, as a new run. ` +
       `Earlier runs stay and can still be opened.\n\nRough cost: ${costLine}.\n\nCancel spends nothing.`,
     confirmLabel: "Re-run",
+    initialFocus: "cancel",
   };
 }
 
@@ -92,7 +98,7 @@ export function rerunPrompt(o: ChoiceOption, filingCount: number): { title: stri
  * The question the Retry button asks (ruling C): the run's model, effort,
  * rough cost and how many sections it reads again.
  */
-export function retryPrompt(run: FullRun): { title: string; message: string; confirmLabel: string } {
+export function retryPrompt(run: FullRun): PaidPrompt {
   const count = run.sections.filter((s) => s.status === "failed" || s.status === "waiting_retry").length;
   const sections = `${count} ${count === 1 ? "section" : "sections"}`;
   return {
@@ -101,6 +107,7 @@ export function retryPrompt(run: FullRun): { title: string; message: string; con
       `This reads ${sections} again with ${run.modelLabel} at ${run.effort} effort. Sections already done are kept.` +
       `\n\nRough cost: ${roughCostText({ family: run.family, effort: run.effort })}.\n\nCancel spends nothing.`,
     confirmLabel: "Retry",
+    initialFocus: "cancel",
   };
 }
 

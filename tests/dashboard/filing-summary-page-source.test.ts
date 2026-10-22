@@ -135,7 +135,8 @@ describe("page-text helpers", () => {
     const p = rerunPrompt(opt, 2);
     expect(p.title).toMatch(/Fable · high/);
     expect(p.message).toMatch(/Fable 5\.1/);
-    expect(p.message).toMatch(/about \$0\.68 per filing/);
+    expect(p.message).toContain("Rough cost: Fable costs 2.5 times as much per token as Opus.");
+    expect(p.message.match(/Rough cost/g)).toHaveLength(1);
     expect(p.message).toMatch(/2 filings/);
     expect(p.message).toMatch(/Cancel spends nothing/);
   });
@@ -155,7 +156,7 @@ describe("page-text helpers", () => {
     const p = retryPrompt(r);
     expect(p.title).toBe("Retry run 2?");
     expect(p.message).toMatch(/2 sections again with Opus 5\.5 at high effort/);
-    expect(p.message).toMatch(/about \$0\.32 per filing/);
+    expect(p.message).toContain("Rough cost: about $0.80 per 8-K (measured); long filings cost more.");
     expect(p.message).toMatch(/Cancel spends nothing/);
   });
 

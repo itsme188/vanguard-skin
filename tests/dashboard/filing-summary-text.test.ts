@@ -212,11 +212,11 @@ describe("statusLabel and statusTone", () => {
 describe("rough cost copy (controller ruling 2)", () => {
   it("covers every picker choice with the measured or relative figure", () => {
     const expected: Record<string, string> = {
-      "Sonnet · medium": "about $0.11 per filing",
-      "Opus · medium": "less than about $0.32 per filing (Opus · high)",
-      "Opus · high": "about $0.32 per filing",
-      "Fable · medium": "less than about $0.68 per filing (Fable · high)",
-      "Fable · high": "about $0.68 per filing",
+      "Sonnet · medium": "Sonnet costs half as much per token as Opus",
+      "Opus · medium": "less than Opus · high",
+      "Opus · high": "about $0.80 per 8-K (measured); long filings cost more",
+      "Fable · medium": "Fable costs 2.5 times as much per token as Opus",
+      "Fable · high": "Fable costs 2.5 times as much per token as Opus",
     };
     for (const c of SUMMARY_CHOICES) {
       expect(roughCostText(c), choiceLabel(c)).toBe(expected[choiceLabel(c)]);
@@ -228,7 +228,7 @@ describe("rough cost copy (controller ruling 2)", () => {
     const msg = runConfirmMessage({ family: "opus", effort: "high" }, "Opus · now 5.5");
     expect(msg).toContain("Opus · high");
     expect(msg).toContain("Opus · now 5.5");
-    expect(msg).toContain("about $0.32 per filing");
+    expect(msg).toContain("Rough cost: about $0.80 per 8-K (measured); long filings cost more.");
   });
 });
 
