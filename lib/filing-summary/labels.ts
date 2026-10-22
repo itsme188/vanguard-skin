@@ -231,6 +231,41 @@ export function operandText(low: OperandDescriptor | null, high?: OperandDescrip
 }
 
 /**
+ * The relation words for a comparison line, from the app's arithmetic, never
+ * from the model's claim when the claim is contradicted (figures.ts):
+ * - narrowed: `difference` is the change in range WIDTH → wider / same width / narrower;
+ * - unchanged: matches → "is unchanged from"; contradicted → "differs from";
+ * - raised / lowered: by the MIDPOINT sign → raised from / lowered from;
+ * - above / below / in line (points): by the sign → above / below / in line with.
+ * An undecided comparison (periods differ, unconfirmed, no difference) only compares.
+ */
+function comparisonRelationWords(cc: ViewComparisonCheck): string {
+  const decided = cc.verdict === "matches" || cc.verdict === "contradicted";
+  const d = cc.difference;
+  if (!decided) return "compared with";
+  switch (cc.relation) {
+    case "narrowed":
+      if (d === null) return "compared with";
+      return d > 0 ? "is wider than" : d < 0 ? "is narrower than" : "is the same width as";
+    case "unchanged":
+      return cc.verdict === "matches" ? "is unchanged from" : "differs from";
+    case "raised":
+    case "lowered":
+      if (cc.verdict === "matches") return `is ${STATED_RELATION[cc.relation]}`;
+      if (d === null) return "compared with";
+      return d > 0 ? "is raised from" : d < 0 ? "is lowered from" : "has the same midpoint as";
+    case "above":
+    case "below":
+    case "in_line":
+      if (cc.verdict === "matches") return `is ${STATED_RELATION[cc.relation]}`;
+      if (d === null) return "compared with";
+      return d > 0 ? "is above" : d < 0 ? "is below" : "is in line with";
+    default:
+      return "compared with";
+  }
+}
+
+/**
  * The app's own reading of a comparison (spec, What the owner sees):
  * "filing: $64.601B is above $64.57B (Finnhub consensus, 2026-10-20), +0.05%".
  * A matching comparison repeats the stated relation; a contradicted one says
@@ -242,20 +277,7 @@ export function comparisonLine(cc: ViewComparisonCheck): string {
     // Neither operand could be described (the model named figures it did not supply).
     return cc.shownText ? `filing difference: ${cc.shownText}` : "filing: the compared figures were not supplied";
   }
-  let relation: string;
-  if (cc.verdict === "matches") {
-    relation = `is ${STATED_RELATION[cc.relation] ?? "compared with"}`;
-  } else if (cc.verdict === "contradicted" && cc.difference !== null) {
-    const guidance = cc.relation === "raised" || cc.relation === "lowered" || cc.relation === "narrowed" || cc.relation === "unchanged";
-    relation =
-      cc.difference > 0
-        ? guidance ? "is raised from" : "is above"
-        : cc.difference < 0
-          ? guidance ? "is lowered from" : "is below"
-          : guidance ? "is unchanged from" : "equals";
-  } else {
-    relation = "compared with";
-  }
+  const relation = comparisonRelationWords(cc);
   const left = operandText(cc.left, cc.leftHigh);
   const right = operandText(cc.right, cc.rightHigh);
   return `filing: ${left} ${relation} ${right}${cc.shownText ? `, ${cc.shownText}` : ""}`;

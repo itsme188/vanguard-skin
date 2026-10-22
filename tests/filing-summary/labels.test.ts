@@ -123,6 +123,54 @@ describe("comparison line (ruling A)", () => {
     );
   });
 
+  it("narrowed reads the change in range width: wider, same width, narrower", () => {
+    const base = { relation: "narrowed" as const, left: filing("a", "$1.00"), leftHigh: filing("b", "$1.30"), right: filing("c", "$1.10"), rightHigh: filing("d", "$1.30") };
+    expect(comparisonLine(cc({ ...base, verdict: "contradicted", difference: 0.1, shownText: "+50.00% in width" }))).toBe(
+      "filing: $1.00–$1.30 is wider than $1.10–$1.30, +50.00% in width",
+    );
+    expect(comparisonLine(cc({ ...base, verdict: "contradicted", difference: 0, shownText: "0.00% in width" }))).toBe(
+      "filing: $1.00–$1.30 is the same width as $1.10–$1.30, 0.00% in width",
+    );
+    expect(comparisonLine(cc({ ...base, verdict: "matches", difference: -0.1, shownText: "-33.33% in width" }))).toBe(
+      "filing: $1.00–$1.30 is narrower than $1.10–$1.30, -33.33% in width",
+    );
+    // Never a raised/lowered word for a width change.
+    expect(comparisonLine(cc({ ...base, verdict: "contradicted", difference: 0.1 }))).not.toMatch(/raised|lowered/);
+  });
+
+  it("unchanged: matches reads unchanged, contradicted reads differs from", () => {
+    const base = { relation: "unchanged" as const, left: filing("a", "$1.00"), leftHigh: filing("b", "$1.30"), right: filing("c", "$1.10"), rightHigh: filing("d", "$1.30") };
+    expect(comparisonLine(cc({ ...base, verdict: "matches", difference: 0, shownText: "0.00% at midpoint" }))).toBe(
+      "filing: $1.00–$1.30 is unchanged from $1.10–$1.30, 0.00% at midpoint",
+    );
+    expect(comparisonLine(cc({ ...base, verdict: "contradicted", difference: -0.05, shownText: "-4.17% at midpoint" }))).toBe(
+      "filing: $1.00–$1.30 differs from $1.10–$1.30, -4.17% at midpoint",
+    );
+    expect(comparisonLine(cc({ ...base, verdict: "contradicted", difference: 0, shownText: "0.00% at midpoint" }))).not.toMatch(/unchanged/);
+  });
+
+  it("a contradicted raised whose arithmetic says lowered reads lowered (midpoint sign)", () => {
+    expect(
+      comparisonLine(cc({
+        relation: "raised", verdict: "contradicted", difference: -0.05, shownText: "-4.17% at midpoint",
+        left: filing("a", "$1.10"), leftHigh: filing("b", "$1.20"), right: filing("c", "$1.15"), rightHigh: filing("d", "$1.25"),
+      })),
+    ).toBe("filing: $1.10–$1.20 is lowered from $1.15–$1.25, -4.17% at midpoint");
+    expect(
+      comparisonLine(cc({ relation: "raised", verdict: "matches", difference: 0.05, shownText: "+4.17% at midpoint",
+        left: filing("a", "$1.20"), right: filing("c", "$1.15") })),
+    ).toBe("filing: $1.20 is raised from $1.15, +4.17% at midpoint");
+  });
+
+  it("points: a contradicted in-line reads the sign; a matching one keeps its words", () => {
+    expect(comparisonLine(cc({ relation: "in_line", verdict: "contradicted", difference: -2, shownText: "-3.10%", right: filing("r", "$64.57B") }))).toBe(
+      "filing: $64.601B is below $64.57B, -3.10%",
+    );
+    expect(comparisonLine(cc({ relation: "above", verdict: "contradicted", difference: 0, shownText: "0.00%", right: filing("r", "$64.601B") }))).toBe(
+      "filing: $64.601B is in line with $64.601B, 0.00%",
+    );
+  });
+
   it("model quote line", () => {
     expect(modelQuoteLine("a quote")).toBe("Quote as the model gave it: “a quote”");
   });
