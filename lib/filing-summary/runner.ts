@@ -19,8 +19,8 @@
  * Logging carries ids, error classes and counts only: never document text,
  * prompt text, error bodies or model output.
  */
-import { sendSummaryPushIfDue } from "./push";
 import { randomUUID } from "node:crypto";
+import { sendSummaryPushIfDue } from "./push";
 import type Database from "better-sqlite3";
 import { jsonSchema } from "ai";
 import { getCachedModelCatalog } from "@/lib/ai/catalog-source";

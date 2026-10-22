@@ -64,10 +64,20 @@ interface PushSectionRow {
   trigger: string;
   event_id: number;
   symbol: string | null;
+  cik: string;
   accession: string;
   form: string;
   role: "earnings" | "companion";
   accepted_at: string | null;
+}
+
+/**
+ * sendPushover swallows network errors into `{sent:false, reason:<message>}`,
+ * so only the reasons that prove the request never went out, or that got an
+ * HTTP answer, are a plain failure. Anything else may have reached Pushover.
+ */
+function isExplicitRefusal(reason: string | undefined): boolean {
+  return reason === "pushover_not_configured" || /^http_\d+$/.test(reason ?? "");
 }
 
 export async function sendSummaryPushIfDue(
@@ -78,7 +88,7 @@ export async function sendSummaryPushIfDue(
   const row = db
     .prepare(
       `SELECT s.status, s.incomplete, s.checked_json, r.trigger, r.event_id, e.symbol,
-              f.accession, f.form, f.role, f.accepted_at
+              f.cik, f.accession, f.form, f.role, f.accepted_at
          FROM filing_summary_sections s
          JOIN filing_summary_runs r ON r.id = s.run_id
          JOIN filing_summary_filings f ON f.id = s.filing_id
@@ -105,7 +115,9 @@ export async function sendSummaryPushIfDue(
     acceptedAtEt: easternTimeText(row.accepted_at),
   });
 
-  const key = `fs:${row.event_id}:${row.accession}`;
+  // One push per SEC filing, ever: keyed on the filing, not the event, so an
+  // event merge (which moves rows by event id) cannot allow a second send.
+  const key = `fs:${row.cik}:${row.accession}`;
   if (!beginPush(db, key, row.event_id, title, message)) return;
   if (!claimPushForSending(db, key)) return;
 
@@ -117,7 +129,7 @@ export async function sendSummaryPushIfDue(
       url: `${base}/dashboard/print/${row.event_id}/filings`,
       urlTitle: "Open summary",
     });
-    markPush(db, key, res.sent ? "sent" : "failed");
+    markPush(db, key, res.sent ? "sent" : isExplicitRefusal(res.reason) ? "failed" : DELIVERY_UNKNOWN);
   } catch {
     // The message may or may not have left the machine: never resend.
     markPush(db, key, DELIVERY_UNKNOWN);

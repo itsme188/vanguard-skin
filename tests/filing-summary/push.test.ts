@@ -91,7 +91,7 @@ describe("sendSummaryPushIfDue", () => {
   });
   it("a crash mid-send becomes delivery_unknown and is not resent", async () => {
     const id = setup("auto");
-    const key = `fs:${eventId}:0000000001-26-000001`;
+    const key = "fs:0000000001:0000000001-26-000001";
     beginPush(db, key, eventId, "t", "m");
     expect(claimPushForSending(db, key)).toBe(true);
     expect(claimPushForSending(db, key)).toBe(false);
@@ -100,6 +100,35 @@ describe("sendSummaryPushIfDue", () => {
     await sendSummaryPushIfDue(db, id, async () => { n++; return { sent: true }; });
     expect(n).toBe(0);
     expect((db.prepare("SELECT state FROM filing_summary_pushes").get() as { state: string }).state).toBe(DELIVERY_UNKNOWN);
+  });
+  it("survives an event merge: no second send once the rows move to another event", async () => {
+    const id = setup("auto");
+    let n = 0;
+    const send = async () => { n++; return { sent: true }; };
+    await sendSummaryPushIfDue(db, id, send);
+    const other = Number(
+      db.prepare(`INSERT INTO calendar_events (source,event_type,event_date,title,source_key,symbol)
+        VALUES ('finnhub','earnings','2026-10-23','META earnings','k2','META')`).run().lastInsertRowid,
+    );
+    db.prepare("UPDATE filing_summary_runs SET event_id=?").run(other);
+    db.prepare("UPDATE filing_summary_filings SET event_id=?").run(other);
+    db.prepare("UPDATE filing_summary_pushes SET event_id=?").run(other);
+    await sendSummaryPushIfDue(db, id, send);
+    expect(n).toBe(1);
+    expect(db.prepare("SELECT COUNT(*) c FROM filing_summary_pushes").get()).toEqual({ c: 1 });
+  });
+  it("a network-style reason is delivery_unknown; not-configured and http errors are failed", async () => {
+    const cases: [string, string][] = [
+      ["fetch failed", DELIVERY_UNKNOWN],
+      ["pushover_not_configured", "failed"],
+      ["http_500", "failed"],
+    ];
+    for (const [i, [reason, state]] of cases.entries()) {
+      const id = setup("auto", `0000000001-26-00010${i}`);
+      await sendSummaryPushIfDue(db, id, async () => ({ sent: false, reason }));
+      const r = db.prepare("SELECT state FROM filing_summary_pushes WHERE push_key LIKE ?").get(`%00010${i}`) as { state: string };
+      expect(r.state).toBe(state);
+    }
   });
   it("a refused send is failed and not retried; a throw is delivery_unknown", async () => {
     const id = setup("auto");
