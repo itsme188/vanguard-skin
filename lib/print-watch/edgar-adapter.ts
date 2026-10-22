@@ -71,7 +71,9 @@ import {
 
 export type { FetchLike };
 
-const SEC_USER_AGENT = "PortfolioDesk contact@myportfoliodesk.com";
+/** The SEC fair-access User-Agent every EDGAR request declares. Also used by
+ *  the filing-summary discovery (`lib/filing-summary/edgar.ts`). */
+export const SEC_USER_AGENT = "PortfolioDesk contact@myportfoliodesk.com";
 const SEC_WWW_HOST = "www.sec.gov";
 const SEC_DATA_HOST = "data.sec.gov";
 
@@ -218,7 +220,7 @@ export async function resolveCik(symbol: string, fetchFn: FetchLike = fetch): Pr
   return null;
 }
 
-interface SubmissionsRecent {
+export interface SubmissionsRecent {
   form: string[];
   acceptanceDateTime: string[];
   accessionNumber: string[];
@@ -244,7 +246,9 @@ async function fetchSubmissions(cik: string, fetchFn: FetchLike): Promise<Submis
   };
 }
 
-const EDGAR_HEADER_ACCEPTANCE_RE = /&lt;ACCEPTANCE-DATETIME&gt;\s*(\d{14})/;
+/** The escaped `<ACCEPTANCE-DATETIME>YYYYMMDDHHMMSS` in a filing's
+ *  `-index-headers.html` (always Eastern wall-clock). */
+export const EDGAR_HEADER_ACCEPTANCE_RE = /&lt;ACCEPTANCE-DATETIME&gt;\s*(\d{14})/;
 
 interface FilingHeader {
   exhibits: Array<{ filename: string; url: string }>;
@@ -413,3 +417,8 @@ export async function pollEdgar(
 
   return out;
 }
+
+/** The filer's recent submissions list (forms, JSON acceptance times,
+ *  accessions), read through the hardened fetch with the SEC User-Agent.
+ *  Throws when the fetch fails. Shared with the filing-summary discovery. */
+export { fetchSubmissions as fetchSubmissionsRecent };

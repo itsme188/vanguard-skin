@@ -129,9 +129,23 @@ type CancellableTransformer = Transformer<Uint8Array, Uint8Array> & {
   cancel?: (reason?: unknown) => void;
 };
 
+/**
+ * A request's place in its host family's queue. Every existing caller is
+ * "normal" (the default). "low" is the filing-summary lane (spec hardening
+ * 11): print-watch release acquisition goes first, so a low waiter is granted
+ * only when no normal waiter is queued for that family. It is never starved
+ * for good: once the normal waiters drain, the low ones are served FIFO.
+ */
+export type ThrottlePriority = "normal" | "low";
+
+export interface ThrottleOptions {
+  priority?: ThrottlePriority;
+}
+
 /** One parked `throttle` call. `grant` hands over a fresh release function;
  *  `fail` rejects it; `detach` drops its abort listener. */
 interface ThrottleWaiter {
+  priority: ThrottlePriority;
   grant: (release: () => void) => void;
   fail: (err: unknown) => void;
   detach: () => void;
@@ -236,6 +250,13 @@ export class AcquisitionScheduler {
     };
   }
 
+  /** The next waiter in line: the oldest normal waiter, or — only when no
+   *  normal waiter is queued — the oldest low one. */
+  private nextWaiterIndex(bucket: Bucket): number {
+    const normal = bucket.waiters.findIndex((w) => w.priority === "normal");
+    return normal >= 0 ? normal : 0;
+  }
+
   /** Grant as many parked waiters as the bucket currently allows. */
   private pump(family: string): void {
     const { bucket, policy } = this.bucketFor(family);
@@ -246,7 +267,7 @@ export class AcquisitionScheduler {
         this.armRefillTimer(family, bucket, policy);
         return;
       }
-      const waiter = bucket.waiters.shift();
+      const [waiter] = bucket.waiters.splice(this.nextWaiterIndex(bucket), 1);
       if (!waiter) return;
       const release = this.take(family, bucket);
       waiter.detach();
@@ -269,9 +290,15 @@ export class AcquisitionScheduler {
    * Waits for a token AND a concurrency slot for the host's family; resolves
    * to the release function. Rejects with `AbortedError` when the signal
    * aborts while waiting — an aborted waiter consumes neither a token nor a
-   * slot.
+   * slot. `opts.priority` "low" waits behind every queued normal waiter of
+   * the family (see `ThrottlePriority`); the default is "normal".
    */
-  throttle(hostname: string, signal?: AbortSignal): Promise<() => void> {
+  throttle(
+    hostname: string,
+    signal?: AbortSignal,
+    opts: ThrottleOptions = {},
+  ): Promise<() => void> {
+    const priority: ThrottlePriority = opts.priority ?? "normal";
     const family = hostFamily(hostname);
     if (signal?.aborted) {
       return Promise.reject(new AbortedError(`throttle(${family}) aborted before it started`));
@@ -288,6 +315,7 @@ export class AcquisitionScheduler {
     return new Promise<() => void>((resolve, reject) => {
       let settled = false;
       const waiter: ThrottleWaiter = {
+        priority,
         grant: (release) => {
           if (settled) {
             // Raced with an abort: hand back BOTH halves of the capacity
@@ -336,10 +364,16 @@ export class AcquisitionScheduler {
    * gives its slot back after `MAX_BODY_HOLD_MS`. For a status ≥ 300 (and for
    * a null body) the slot is released at HEADERS — no caller streams a
    * redirect or an error, and holding those stalled the SEC lane at print time.
+   *
+   * `opts.priority` is handed to `throttle` for every request this fetch makes.
    */
-  fetchFor(signal: AbortSignal, fetchImpl: FetchLike = (url, init) => fetch(url, init)): FetchLike {
+  fetchFor(
+    signal: AbortSignal,
+    fetchImpl: FetchLike = (url, init) => fetch(url, init),
+    opts: ThrottleOptions = {},
+  ): FetchLike {
     return async (url, init) => {
-      const release = await this.throttle(new URL(url).hostname, signal);
+      const release = await this.throttle(new URL(url).hostname, signal, opts);
       let handedOff = false;
       try {
         const merged = init?.signal ? AbortSignal.any([init.signal, signal]) : signal;
