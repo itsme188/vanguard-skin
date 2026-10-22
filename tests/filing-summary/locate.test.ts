@@ -143,3 +143,28 @@ describe("toFootnote", () => {
     expect(f.url).toBe("https://www.sec.gov/Archives/edgar/data/1045810/000104581026000123/a.htm");
   });
 });
+
+describe("table-row quotes match whole cells", () => {
+  const row = (i: number, text: string) => block(i, text, { tableId: 1, rowIndex: i });
+  const d = doc([
+    row(0, "Total revenue | 64,601 | 50,000"),
+    row(1, "Revenue | 64,601 | 50,000"),
+    row(2, "GAAP revenue | 64,601 | 50,000"),
+  ]);
+  it("Revenue | 64,601 matches only the Revenue row", () => {
+    const r = locateQuote([{ fileName: "a.htm", text: d }], cite("Revenue | 64,601", "a.htm", true));
+    expect(r.status).toBe("found");
+    expect(r.block?.index).toBe(1);
+  });
+  it("a bare number does not match inside a longer cell", () => {
+    const dd = doc([row(0, "Revenue | 164,601")]);
+    expect(locateQuote([{ fileName: "a.htm", text: dd }], cite("Revenue | 64,601", "a.htm", true)).status).toBe("not_found");
+    expect(locateQuote([{ fileName: "a.htm", text: dd }], cite("64,601 | 1", "a.htm", true)).status).toBe("not_found");
+  });
+  it("ignores a trailing colon and footnote marker, and skipped cells", () => {
+    const dd = doc([row(0, "Revenue (1) |  | $ | 64,601")]);
+    expect(locateQuote([{ fileName: "a.htm", text: dd }], cite("Revenue: | 64,601", "a.htm", true)).status).toBe("found");
+    const d2 = doc([row(0, "Revenue | 64,601")]);
+    expect(locateQuote([{ fileName: "a.htm", text: d2 }], cite("Revenue: | 64,601", "a.htm", true)).status).toBe("found");
+  });
+});

@@ -21,15 +21,26 @@ export function normalizeForMatch(s: string): string {
 
 const CELL_SEP = " | ";
 
+/** Normalize a cell or quote part for whole-cell equality: drop a trailing ":" and a trailing footnote marker. */
+function cellKey(s: string): string {
+  let t = normalizeForMatch(s);
+  for (let i = 0; i < 3; i++) {
+    const next = t.replace(/\s*(?:\(\s*[a-z0-9]{1,3}\s*\)|\*+)$/, "").replace(/\s*:$/, "").trim();
+    if (next === t) break;
+    t = next;
+  }
+  return t;
+}
+
 function rowMatches(blockText: string, quote: string): boolean {
-  const parts = quote.split(CELL_SEP).map(normalizeForMatch).filter((p) => p.length > 0);
+  const parts = quote.split(CELL_SEP).map(cellKey).filter((p) => p.length > 0);
   if (parts.length === 0) return false;
-  const cells = blockText.split(CELL_SEP).map(normalizeForMatch);
+  const cells = blockText.split(CELL_SEP).map(cellKey);
   let from = 0;
   for (const part of parts) {
     let hit = -1;
     for (let i = from; i < cells.length; i++) {
-      if (cells[i].includes(part)) {
+      if (cells[i] === part) {
         hit = i;
         break;
       }
