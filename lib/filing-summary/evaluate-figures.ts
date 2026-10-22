@@ -284,15 +284,27 @@ function escapeRe(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+const MONTH_WORD = "(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sept?(?:ember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\\.?";
+const MONTH_BEFORE = new RegExp(`\\b${MONTH_WORD}\\s+$`, "i");
+const DATE_RE = new RegExp(`\\b${MONTH_WORD}\\s+\\d{1,2}(?:,\\s*(?:19|20)\\d\\d)?\\b`, "gi");
+
+/** A token that is the day of a date ("September 30"), not a quantity. */
+function isDateDay(text: string, t: NumberToken): boolean {
+  return !t.isPercent && t.wordScale === null && Number.isInteger(t.value) && t.value >= 1 && t.value <= 31
+    && !/\$/.test(text.slice(t.start, t.end)) && MONTH_BEFORE.test(text.slice(0, t.start));
+}
+
+/** Numbers of a text that are quantities: no bare year (scanNumbers skips those) and no date day. */
+export function quantityTokens(text: string): NumberToken[] {
+  return scanNumbers(text).filter((t) => !isDateDay(text, t));
+}
+
 /**
- * The clause of a (normalised) sentence that holds the character at `at`
- * (fix round 2 ruling). Basis words describe the number in their own clause:
- * in "Revenue was $64.60 billion, an increase of 26% year-over-year, or 27% on
- * a constant currency basis", "constant currency" belongs to the 27% only.
- * Clauses break at ", or", " or", ";", " and " before a number, and at a comma
- * whose following stretch holds a number.
+ * Cut a (normalised) sentence into clauses (fix rounds 2 and 3). Breaks: ", or", " or", ";", " and " before a
+ * number, and a comma whose following stretch holds a quantity. A comma inside a date ("September 30, 2026")
+ * or before a four-digit year is never a break.
  */
-export function clauseAt(text: string, at: number): string {
+export function splitClauses(text: string): Array<{ start: number; end: number; text: string }> {
   const cuts: Array<[number, number]> = [];
   const sep = /,\s*or\s+|\s+or\s+|;\s*|\s+and\s+|,\s*/g;
   for (const m of text.matchAll(sep)) {
@@ -304,17 +316,41 @@ export function clauseAt(text: string, at: number): string {
     } else if (sepText === "and") {
       if (/^[-−(]?\$?\d/.test(text.slice(end))) cuts.push([start, end]);
     } else {
-      // A plain comma: a cut when the stretch up to the next comma or semicolon holds a number.
+      if (/^(?:19|20)\d\d\b/.test(text.slice(end))) continue; // "September 30, 2026", "in 2025, 2026"
+      if (new RegExp(`\\b${MONTH_WORD}\\s+\\d{1,2}$`, "i").test(text.slice(0, start))) continue;
       const next = text.slice(end).search(/[,;]/);
-      if (/\d/.test(next < 0 ? text.slice(end) : text.slice(end, end + next))) cuts.push([start, end]);
+      const stretch = next < 0 ? text.slice(end) : text.slice(end, end + next);
+      if (quantityTokens(stretch).length > 0) cuts.push([start, end]);
     }
   }
+  const out: Array<{ start: number; end: number; text: string }> = [];
   let from = 0;
   for (const [start, end] of cuts) {
-    if (at < start) return text.slice(from, start);
+    out.push({ start: from, end: start, text: text.slice(from, start) });
     from = end;
   }
-  return text.slice(from);
+  out.push({ start: from, end: text.length, text: text.slice(from) });
+  return out;
+}
+
+/** The clause holding the character at `at`. */
+export function clauseAt(text: string, at: number): string {
+  const clauses = splitClauses(text);
+  return (clauses.find((c) => at < c.end) ?? clauses[clauses.length - 1]).text;
+}
+
+/**
+ * A prose figure's basis evidence (fix round 3 ruling): its own clause first,
+ * then every clause of the sentence that holds no quantity. "On a non-GAAP
+ * basis, EPS was $2.10" and "EPS was $2.10, on a non-GAAP basis" both speak
+ * of the $2.10; "…26% year-over-year, or 27% on a constant currency basis"
+ * gives the constant-currency words to the 27% alone.
+ */
+export function proseBasisLevels(text: string, at: number): string[] {
+  const clauses = splitClauses(text);
+  const own = clauses.find((c) => at < c.end) ?? clauses[clauses.length - 1];
+  const free = clauses.filter((c) => c !== own && quantityTokens(c.text.replace(DATE_RE, " ")).length === 0);
+  return [own.text, ...free.map((c) => c.text)];
 }
 
 function bindProse(fig: ModelFigure, stated: StatedNumber, located: LocatedQuote, eventDate: string): Binding {
@@ -331,7 +367,7 @@ function bindProse(fig: ModelFigure, stated: StatedNumber, located: LocatedQuote
   }
   // Pair the number with its label: the first number of the same kind after it, else the nearest before it.
   const percent = fig.unit === "percent";
-  const tokens = scanNumbers(ns).filter((t) => t.isPercent === percent);
+  const tokens = quantityTokens(ns).filter((t) => t.isPercent === percent); // years and date days are never the figure
   const matches = (t: NumberToken) => matchesWithRounding(stated, toUnits(t.value, t.wordScale ?? "units"));
   let hit: NumberToken | undefined;
   if (m) {
@@ -359,7 +395,7 @@ function bindProse(fig: ModelFigure, stated: StatedNumber, located: LocatedQuote
     half: halfUnit(hit.decimals, scale),
     period: period ? { ...period, anchor: null } : null,
     table: null,
-    basisConfirmed: basisConfirmed(fig.basis, basisEvidence([clauseAt(ns, hit.start)])),
+    basisConfirmed: basisConfirmed(fig.basis, basisEvidence(proseBasisLevels(ns, hit.start))),
     reasons,
   };
 }

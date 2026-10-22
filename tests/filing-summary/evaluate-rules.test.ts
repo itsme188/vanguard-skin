@@ -445,3 +445,80 @@ describe("fix round 2", () => {
     expect(renderClaimText(claim("Under Item 2.0 nothing changed.", [])).unbound).toBe(true);
   });
 });
+
+describe("fix round 3: basis from the number's clause plus quantity-free clauses; dates never pair", () => {
+  const P = " for the three months ended September 30, 2026";
+  const prose = (sentence: string) => [
+    { fileName: EX991, text: extractDocText(`<p>Third Quarter 2026 Results</p><p>${sentence}</p>`) },
+    { fileName: "t.htm", text: exhibit },
+  ];
+  const vsBogey = (
+    sentence: string,
+    fig: Parameters<typeof quoteFig>[2],
+    b: { value: number; valueText: string; unit: "usd" | "usd_per_share" | "percent"; scale: "units" | "billions"; units: number; basis?: "reported" | "non_gaap" | "constant_currency" },
+  ) =>
+    one(
+      claim("It was {f1} against {f2}.", [cite("q1", sentence.replace(/\.$/, ""), false)], [
+        quoteFig("f1", "q1", fig),
+        bogeyFig("f2", "bg", { valueText: b.valueText, value: b.value, unit: b.unit, scale: b.scale }),
+      ], [cmp("f1", "f2", "above")]),
+      { docs: prose(sentence), bogeys: [bogey("bg", b.units, { unit: b.unit, basis: b.basis ?? "reported", label: "Consensus" })] },
+    );
+  const eps = (basis: "reported" | "non_gaap") =>
+    ({ valueText: "$2.10", value: 2.1, scale: "units", unit: "usd_per_share", metric: "diluted EPS", label: "diluted earnings per share", basis }) as const;
+  const epsBogey = (basis: "reported" | "non_gaap") =>
+    ({ valueText: "$2.00", value: 2, unit: "usd_per_share", scale: "units", units: 2, basis }) as const;
+
+  it("p1: 'On a non-GAAP basis, diluted EPS was $2.10 …' typed reported is not checked (basis_unconfirmed)", () => {
+    const c = vsBogey(`On a non-GAAP basis, diluted earnings per share was $2.10${P}.`, eps("reported"), epsBogey("reported"));
+    expect(c.status).toBe("unconfirmed");
+    expect(codes(c)).toContain("basis_unconfirmed");
+  });
+
+  it("p2: 'Excluding the legal accrual, income from operations was $5.0 billion …' typed reported is not checked", () => {
+    const c = vsBogey(`Excluding the legal accrual, income from operations was $5.0 billion${P}.`,
+      { valueText: "$5.0 billion", value: 5, scale: "billions", metric: "income from operations", label: "income from operations" },
+      { valueText: "$4.8 billion", value: 4.8, unit: "usd", scale: "billions", units: 4.8e9 });
+    expect(c.status).toBe("unconfirmed");
+    expect(codes(c)).toContain("basis_unconfirmed");
+  });
+
+  it("p4: '… was $2.10 for the three months ended September 30, 2026, on a non-GAAP basis.' typed reported is not checked", () => {
+    const c = vsBogey(`Diluted earnings per share was $2.10${P}, on a non-GAAP basis.`, eps("reported"), epsBogey("reported"));
+    expect(c.status).toBe("unconfirmed");
+    expect(codes(c)).toContain("basis_unconfirmed");
+  });
+
+  it("p4 control: the same sentence typed non_gaap against a non-GAAP consensus is checked", () => {
+    expect(vsBogey(`Diluted earnings per share was $2.10${P}, on a non-GAAP basis.`, eps("non_gaap"), epsBogey("non_gaap")).status).toBe("checked");
+  });
+
+  it("p5: 'On a constant currency basis, revenue grew 27% …' typed constant_currency is checked", () => {
+    const c = vsBogey(`On a constant currency basis, revenue grew 27%${P}.`,
+      { valueText: "27%", value: 27, unit: "percent", scale: "units", metric: "revenue", label: "revenue", basis: "constant_currency" },
+      { valueText: "25%", value: 25, unit: "percent", scale: "units", units: 25, basis: "constant_currency" });
+    expect(c.status).toBe("checked");
+  });
+
+  it("a comma inside a date or before a year is not a clause break", () => {
+    const s = `diluted earnings per share was $2.10${P.toLowerCase()}, on a non-gaap basis.`;
+    expect(clauseAt(s, s.indexOf("$2.10"))).toBe(s);
+  });
+
+  it("p6: pairing skips the date: 'Non-GAAP diluted EPS for the three months ended September 30, 2026 was $2.10' binds $2.10", () => {
+    const s6 = "Non-GAAP diluted earnings per share for the three months ended September 30, 2026 was $2.10.";
+    expect(vsBogey(s6, eps("non_gaap"), epsBogey("non_gaap")).status).toBe("checked");
+    const typedReported = vsBogey(s6, eps("reported"), epsBogey("reported"));
+    expect(codes(typedReported)).not.toContain("value_not_in_quote");
+    expect(codes(typedReported)).toContain("basis_unconfirmed");
+  });
+
+  it("p7: 'Excluding the tax benefit, net income for the three months ended September 30, 2026 was $9.0 billion' binds $9.0B and is not checked as reported", () => {
+    const c = vsBogey("Excluding the tax benefit, net income for the three months ended September 30, 2026 was $9.0 billion.",
+      { valueText: "$9.0 billion", value: 9, scale: "billions", metric: "net income", label: "net income" },
+      { valueText: "$8.0 billion", value: 8, unit: "usd", scale: "billions", units: 8e9 });
+    expect(codes(c)).not.toContain("value_not_in_quote");
+    expect(c.status).toBe("unconfirmed");
+    expect(codes(c)).toContain("basis_unconfirmed");
+  });
+});
