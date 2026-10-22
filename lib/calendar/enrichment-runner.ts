@@ -42,6 +42,7 @@ import {
   DEFAULT_REACTION_WINDOW_MIN,
   isReactionWindowElapsed,
   REACTION_RECAPTURE_HORIZON_MS,
+  readReactionLegs,
 } from "./reaction-validity";
 
 // Macro releases (FRED/FOMC/nonfred): data is typically published within
@@ -98,6 +99,8 @@ interface EnrichmentCandidate {
   reaction_snapshot: string | null;
   enrichment_attempted_at: string | null;
   wire_probe_empty_at: string | null;
+  /** Evidence for readReactionLegs; NULL on the windowed sweep by its filter. */
+  enriched_at?: string | null;
 }
 
 export interface EnrichOptions {
@@ -168,7 +171,7 @@ function findCandidates(
         `SELECT id, source, source_key, event_type, event_date, release_time, event_time,
                 symbol, title, consensus_estimate, raw_json, security_id,
                 actual_value, reaction_snapshot, enrichment_attempted_at,
-                wire_probe_empty_at
+                wire_probe_empty_at, enriched_at
          FROM calendar_events
          WHERE id = ?`,
       )
@@ -427,9 +430,14 @@ export async function runEnrichment(
         : fetchedActual;
 
       // Reaction snapshot — never before the window has elapsed (the gate
-      // is inside captureReactionForRow).
+      // is inside captureReactionForRow), and never over a stored
+      // measurement: a snapshot holding a measured leg stays as stored
+      // (2026-10-22: a "gen recap" pass replaced a TWS measurement with a
+      // later Yahoo capture). A stored snapshot with no measured leg (all
+      // pending: captured before its window ended) is re-captured as before.
+      // Only the explicit upgradeReactionToTws road overwrites a measurement.
       let reaction: ReactionSnapshot | null = null;
-      if (event.release_time) {
+      if (event.release_time && !holdsMeasuredReaction(event)) {
         const releaseInstant = composeReleaseInstant(
           event.event_date,
           event.release_time,
@@ -581,6 +589,20 @@ export async function runEnrichment(
   }
 
   return results;
+}
+
+/**
+ * True when the row's stored reaction_snapshot already holds at least one
+ * measured leg (per readReactionLegs, the one reader of that question). Such
+ * a snapshot is a measurement and no later capture may replace it.
+ */
+function holdsMeasuredReaction(
+  event: Pick<EnrichmentCandidate, "reaction_snapshot" | "enriched_at">,
+): boolean {
+  const read = readReactionLegs(event.reaction_snapshot, {
+    rowEnrichedAt: event.enriched_at ?? null,
+  });
+  return read != null && Object.keys(read.measured).length > 0;
 }
 
 /**
