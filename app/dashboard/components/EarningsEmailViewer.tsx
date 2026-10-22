@@ -108,7 +108,10 @@ export function EmailViewerHeader({ data }: { data: EmailContentResponse | null 
     data && data.phase === "recap"
       ? scoreboardRefreshSentence(data.sentAt, data.reactionLegAt, data.actualsChangedAt)
       : null;
-  const isSentRecap = !!data && data.phase === "recap" && !!data.sentAt;
+  // The route rebuilds the scoreboard from the current row for both phases, so a
+  // sent preview needs the disclosure too (vendor consensus may have moved).
+  const isSentWithRebuiltScoreboard =
+    !!data && (data.phase === "preview" || data.phase === "recap") && !!data.sentAt;
   return (
     <div className="flex flex-col min-w-0">
       <h2 className="text-sm font-medium text-ink truncate whitespace-nowrap!">
@@ -134,7 +137,7 @@ export function EmailViewerHeader({ data }: { data: EmailContentResponse | null 
       {refreshNote && (
         <p className="text-[11px] text-gold-ink font-mono mt-0.5 truncate">{refreshNote}</p>
       )}
-      {isSentRecap && (
+      {isSentWithRebuiltScoreboard && (
         <p className="text-[11px] text-ink-dim mt-0.5 truncate">
           The scoreboard is rebuilt from current data; the text below is what was sent.
         </p>

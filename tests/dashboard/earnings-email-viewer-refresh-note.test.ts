@@ -54,10 +54,12 @@ describe("EmailViewerHeader standing line", () => {
   it("shows on every sent recap, even with no refresh", () => {
     expect(renderToStaticMarkup(createElement(EmailViewerHeader, { data: base }))).toContain(LINE);
   });
-  it("is absent from a preview and from a live (unsent) view", () => {
+  it("shows on a sent preview too (its scoreboard is rebuilt as well)", () => {
     expect(
       renderToStaticMarkup(createElement(EmailViewerHeader, { data: { ...base, phase: "preview" } })),
-    ).not.toContain(LINE);
+    ).toContain(LINE);
+  });
+  it("is absent from a live (unsent) view", () => {
     expect(
       renderToStaticMarkup(createElement(EmailViewerHeader, { data: { ...base, sentAt: "", sentTo: "" } })),
     ).not.toContain(LINE);
