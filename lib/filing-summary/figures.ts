@@ -338,6 +338,13 @@ function scanLabelledPeriods(input: string): LabelledScan {
   take(/\bFY\s?'?(\d{4}|\d{2})\b/gi, (m) => ({
     kind: "fiscal_year", endDate: null, fiscalYear: fullYear(m[1]), fiscalQuarter: null,
   }));
+  // A bare year the sentence speaks FOR ("in 2026", "for 2027", "we anticipate 2026 capital
+  // expenditures") is that fiscal year (task 8b). A year after a month ("August 2026") or a
+  // comparison word ("compared to 2025", "above 2025") is left alone.
+  take(
+    new RegExp(`\\b(?:in|for|during|throughout|calendar|expects?|anticipates?)\\s+${YEAR_RE}\\b(?!\\s*[-–]\\s*(?:19|20)\\d\\d)`, "gi"),
+    (m) => ({ kind: "fiscal_year", endDate: null, fiscalYear: Number(m[1]), fiscalQuarter: null }),
+  );
 
   const unresolved =
     /\b(?:first|second|third|fourth|1st|2nd|3rd|4th)[\s-]+(?:fiscal\s+)?quarter\b|\bQ[1-4]\b|\b[1-4]Q\b|\b(?:three|six|nine|twelve)\s+months\b|\bfirst\s+half\b|\bfull[\s-]+year\b|\bfiscal\s+year\b|\byear[\s-]+to[\s-]+date\b|\b(?:prior|previous|last|next|year[\s-]+ago|same)[\s-]+(?:fiscal\s+)?(?:year|quarter|period)\b|\ba\s+year\s+(?:earlier|ago)\b|\bsequential(?:ly)?\b/i.test(

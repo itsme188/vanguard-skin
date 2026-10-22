@@ -138,6 +138,7 @@ const REASON_SENTENCES: Record<string, string> = {
   range_operand_unsupported: "A range cannot be used in this kind of comparison.",
   non_finite_operand: "A figure in the comparison is not a usable number.",
   within_rounding: "The printed figures' rounding is too coarse to decide this either way.",
+  range_bound: "The number is one end of a range the filing states, not a reported figure.",
   computed: "The app calculated this figure from the filing.",
   correction_unresolved: "A later amendment says it corrects this, but its correcting quote was not found.",
 };

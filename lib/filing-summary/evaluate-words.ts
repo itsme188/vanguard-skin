@@ -181,6 +181,15 @@ export function basisConfirmed(typed: Basis, ev: BasisEvidence): boolean {
  * - An own clause that says both GAAP and a non-GAAP basis is mixed and
  *   confirms nothing.
  */
+// "on both a reported and constant currency basis": the figure is the same either way, so the
+// clause denies "reported" to nothing (task 8b; found on the real Meta revenue line).
+const BOTH_BASES =
+  /\b(?:reported|gaap)\s+(?:and|or)\s+(?:a\s+|an\s+)?(?:constant[\s-]+currency|non[\s-]*gaap|adjusted)\b|\b(?:constant[\s-]+currency|non[\s-]*gaap|adjusted)\s+(?:and|or)\s+(?:a\s+)?(?:reported|gaap)\b/i;
+
+export function saysBothBases(text: string): boolean {
+  return BOTH_BASES.test(text);
+}
+
 export function proseBasisConfirmed(typed: Basis, c: { own: string; attached: string[]; others: string[] }): boolean {
   if (typed.startsWith("guidance_")) return true;
   if (typed === "unknown") return false;
@@ -190,7 +199,7 @@ export function proseBasisConfirmed(typed: Basis, c: { own: string; attached: st
   if (typed === "reported") {
     if (own.has("reported")) return true;
     if (own.size > 0) return false;
-    return ![...c.attached, ...c.others].some((t) => nonReported(kindsIn(t)));
+    return ![...c.attached, ...c.others].some((t) => nonReported(kindsIn(t)) && !saysBothBases(t));
   }
   const want = typed as EvidenceKind;
   return own.has(want) || c.attached.some((t) => kindsIn(t).has(want));

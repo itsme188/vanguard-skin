@@ -504,7 +504,9 @@ describe("renderClaimText and reason codes", () => {
   it("an unknown placeholder or a stray digit is unbound", () => {
     expect(renderClaimText(claim("Up {f2}.", [], [revenueQ3()])).unbound).toBe(true);
     expect(renderClaimText(claim("Up {f1} and 3 points.", [], [revenueQ3()])).unbound).toBe(true);
-    expect(renderClaimText(claim("Q3 was strong.", [])).unbound).toBe(true);
+    expect(renderClaimText(claim("All 3 segments were strong.", [])).unbound).toBe(true);
+    // A period label names a period, as a year does (task 8b): "Q3", "Q4 2026", "3Q26", "FY26", "H1 2027".
+    expect(renderClaimText(claim("Q3 was strong; Q4 2026 and 3Q26 guidance, FY26 and H1 2027 too.", [])).unbound).toBe(false);
   });
 
   it("REASON_CODES covers figures.ts codes, is de-duplicated and every code maps to a status", () => {

@@ -24,7 +24,10 @@
  *   --effort medium|high (high) · --only-earnings (drop companions) ·
  *   --bogeys <file> · --env <file> (reads ONLY ANTHROPIC_API_KEY from it; never
  *   printed) · --out <folder> (default: the OS temp folder) · --db <path> ·
- *   --symbol / --name / --date / --slot.
+ *   --symbol / --name / --date / --slot · --save-output <file> (write the
+ *   model catalog and every call's raw object + usage to a JSON file) ·
+ *   --from-output <file> (NO model call: replay the saved calls through the
+ *   checker, so a checker change can be re-run free; no API key needed).
  *
  * Run FROM THE REPO ROOT (tsx resolves the `@/` alias off the cwd's tsconfig):
  *   PATH=/opt/homebrew/opt/node@24/bin:$PATH npx tsx scripts/filing-summary-replay.ts \
@@ -53,6 +56,14 @@ interface Args {
   name: string;
   date: string;
   slot: "AMC" | "BMO";
+  saveOutput: string | null;
+  fromOutput: string | null;
+}
+
+/** The file `--save-output` writes and `--from-output` reads. */
+interface SavedOutput {
+  catalog: string[];
+  calls: Array<{ object: unknown; usage: unknown; finishReason: string }>;
 }
 
 function parseArgs(argv: string[]): Args {
@@ -86,6 +97,8 @@ function parseArgs(argv: string[]): Args {
     name: get("--name") ?? "Meta Platforms, Inc.",
     date,
     slot,
+    saveOutput: get("--save-output"),
+    fromOutput: get("--from-output"),
   };
 }
 
@@ -177,8 +190,12 @@ async function main(): Promise<void> {
   fs.mkdirSync(args.out, { recursive: true });
   const decoy = path.join(args.out, "decoy-singleton.db");
   process.env.DATABASE_PATH = decoy;
-  if (args.env) loadApiKey(args.env);
-  if (!process.env.ANTHROPIC_API_KEY) {
+  const saved: SavedOutput | null = args.fromOutput
+    ? (JSON.parse(fs.readFileSync(args.fromOutput, "utf8")) as SavedOutput)
+    : null;
+  if (saved) console.log(`replaying ${saved.calls.length} saved call(s) from ${path.resolve(args.fromOutput as string)} (no model call)`);
+  if (args.env && !saved) loadApiKey(args.env);
+  if (!process.env.ANTHROPIC_API_KEY && !saved) {
     console.error("ANTHROPIC_API_KEY is not set (pass --env <file>)");
     process.exit(2);
   }
@@ -308,9 +325,12 @@ async function main(): Promise<void> {
   }
 
   // ---- the model catalog (listed ids; no probe calls)
-  const client = getRawAnthropicClient("printFilingSummary");
   const catalog: string[] = [];
-  for await (const m of client.models.list()) if (typeof m.id === "string") catalog.push(m.id);
+  if (saved) catalog.push(...saved.catalog);
+  else {
+    const client = getRawAnthropicClient("printFilingSummary");
+    for await (const m of client.models.list()) if (typeof m.id === "string") catalog.push(m.id);
+  }
   const resolved = resolveFamilyModel(args.family, catalog);
   console.log(`\n== model: ${resolved?.modelId ?? "none"} (family ${args.family}, effort ${args.effort})`);
 
@@ -322,11 +342,23 @@ async function main(): Promise<void> {
 
   // ---- run every section with the real call; record wall time and any call error
   const callLog: Array<{ ms: number; error: string | null }> = [];
+  const toSave: SavedOutput = { catalog, calls: [] };
   const generate: typeof generateObjectWithModel = async (feature, target, opts) => {
     const t0 = Date.now();
+    if (saved) {
+      const call = saved.calls[callLog.length];
+      if (!call) throw new Error(`--from-output holds ${saved.calls.length} call(s); call ${callLog.length + 1} has none`);
+      callLog.push({ ms: 0, error: null });
+      return call;
+    }
     try {
       const res = await generateObjectWithModel(feature, target, opts);
       callLog.push({ ms: Date.now() - t0, error: null });
+      if (args.saveOutput) {
+        // Written after EVERY call, so a crash in the checker never loses a paid output.
+        toSave.calls.push({ object: res.object, usage: res.usage, finishReason: res.finishReason });
+        fs.writeFileSync(args.saveOutput, JSON.stringify(toSave, null, 2));
+      }
       return res;
     } catch (err) {
       const e = err as { name?: string; statusCode?: number; message?: string; responseBody?: string };

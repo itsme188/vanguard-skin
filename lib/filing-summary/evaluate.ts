@@ -118,10 +118,13 @@ const PRECEDENCE: ClaimStatus[] = [
 // ---------------------------------------------------------------------------
 
 const PLACEHOLDER = /\{([A-Za-z][\w.-]*)\}/g;
-// Digits that are identifiers, not quantities: a year, an Item number, an
-// exhibit number, an SEC form name ("8-K", "10-Q", "PRE 14C", "424B3").
+// Digits that are identifiers, not quantities: a year, a period label, an Item
+// number, an exhibit number, an SEC form name ("8-K", "10-Q", "PRE 14C", "424B3").
 const ALLOWED_DIGITS: RegExp[] = [
   /\b(?:19|20)\d\d\b/g,
+  // A period label names a period, as a year does: "Q3", "Q4 2026", "3Q26", "FY26", "H1 2027" (task 8b).
+  /\b(?:Q[1-4]|[1-4]Q|H[12])(?:\s?(?:FY)?'?\d{2}(?:\d{2})?)?\b/g,
+  /\bFY\s?'?\d{2}(?:\d{2})?\b/g,
   /\bItem \d{1,2}(?:\.\d{2})?(?!\d)(?!\.\d)/g, // a sentence period may follow ("Item 7.")
   /\bEX-\d+(?:\.\d+)*/gi,
   /\bExhibits?\s+\d+(?:\.\d+)*/gi,
