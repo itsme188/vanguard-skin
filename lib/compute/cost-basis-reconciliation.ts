@@ -9,6 +9,7 @@ import type Database from "better-sqlite3";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 import { getTaxConventionState } from "@/lib/compute/tax-convention";
 import { cashEquivalentSecuritySql } from "@/lib/compute/cash-equivalents";
+import { lotSideSignSql } from "@/lib/queries/tax-lots";
 
 // ─── Types ──────────────────────────────────────────────────────
 
@@ -21,8 +22,9 @@ export interface ReconciliationRow {
   securityType: string | null;
   /** Quantity from latest holdings snapshot */
   holdingsQuantity: number;
-  /** Quantity remaining in open tax lots */
+  /** SIGNED quantity remaining in open tax lots (short lots negative, like the holdings quantity) */
   computedQuantity: number;
+  /** Signed: holdingsQuantity - computedQuantity (negative = holdings shorter than lots) */
   quantityDiff: number;
   /** Cost basis from broker (holdings table) — null if not imported */
   brokerCostBasis: number | null;
@@ -133,7 +135,7 @@ export function reconcileCostBasis(
       `SELECT
         tl.account_id,
         tl.security_id,
-        SUM(tl.quantity_remaining) AS total_quantity,
+        SUM(${lotSideSignSql("tl")} * tl.quantity_remaining) AS total_quantity,
         SUM(tl.cost_basis * tl.quantity_remaining / tl.quantity_acquired) * COALESCE(fx.usd_per_unit, 1) AS total_cost_basis
        FROM tax_lots tl
        JOIN securities s ON s.id = tl.security_id
@@ -165,7 +167,7 @@ export function reconcileCostBasis(
     const key = `${h.account_id}-${h.security_id}`;
     const computed = computedMap.get(key) ?? { quantity: 0, costBasis: 0 };
 
-    const quantityDiff = Math.abs(h.quantity) - computed.quantity;
+    const quantityDiff = h.quantity - computed.quantity;
     const costBasisDiff =
       h.broker_cost_basis != null
         ? h.broker_cost_basis - computed.costBasis
