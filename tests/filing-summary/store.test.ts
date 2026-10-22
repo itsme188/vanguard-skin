@@ -255,6 +255,17 @@ describe("filings and documents", () => {
     expect(listFilings(db, other).map((f) => f.discoverySeq)).toEqual([1]);
   });
 
+  it("migration 099 gate_passed: defaults to 0, stores and maps 1, refuses other values", () => {
+    const cols = db.prepare("PRAGMA table_info(filing_summary_filings)").all() as Array<{ name: string; notnull: number; dflt_value: string | null }>;
+    expect(cols.find((c) => c.name === "gate_passed")).toMatchObject({ notnull: 1, dflt_value: "0" });
+    const a = insertFiling(db, filing("A")).id;
+    const b = insertFiling(db, filing("B", { gatePassed: true })).id;
+    const rows = listFilings(db, eventId);
+    expect(rows.find((f) => f.id === a)?.gatePassed).toBe(false);
+    expect(rows.find((f) => f.id === b)?.gatePassed).toBe(true);
+    expect(() => db.prepare("UPDATE filing_summary_filings SET gate_passed = 2 WHERE id = ?").run(a)).toThrow();
+  });
+
   it("upserts documents by file name and lists them by sequence", () => {
     const f = insertFiling(db, filing("A")).id;
     const d2 = upsertDocument(db, {

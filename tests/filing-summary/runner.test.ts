@@ -213,7 +213,12 @@ describe("startRun", () => {
   it("a time-unconfirmed earnings filing: an owner click reads it, an automatic run never does (round 2 ruling)", () => {
     const { id } = insertFiling(
       db,
-      filing("0000000001-26-000001", { acceptedAt: null, identityVerdict: "time_unconfirmed", identityReason: "header has no acceptance time" }),
+      filing("0000000001-26-000001", {
+        acceptedAt: null,
+        identityVerdict: "time_unconfirmed",
+        identityReason: "header has no acceptance time",
+        gatePassed: true,
+      }),
     );
     addDoc(id, "ex991.htm", "EX-99.1", 2, EX991_HTML);
     expect(startRun(db, eventId, "auto", { catalogIds: CATALOG })).toEqual({ ok: false, reason: "no_filings" });
@@ -229,6 +234,22 @@ describe("startRun", () => {
 
     // A re-run of that run reads the same filing (also an owner click).
     expect(startRun(db, eventId, "rerun", { requestKey: "rk-rerun", catalogIds: CATALOG }).ok).toBe(true);
+  });
+
+  it("manual_run refuses an untimed earnings filing that has not passed the gate (round 3 ruling)", () => {
+    const { id } = insertFiling(
+      db,
+      filing("0000000001-26-000001", { acceptedAt: null, identityVerdict: "time_unconfirmed", gatePassed: false }),
+    );
+    addDoc(id, "ex991.htm", "EX-99.1", 2, EX991_HTML);
+    expect(startRun(db, eventId, "manual_run", { requestKey: "rk-ng", catalogIds: CATALOG })).toEqual({
+      ok: false,
+      reason: "no_filings",
+    });
+    // An untimed one whose gate failed (ambiguous) is refused too.
+    db.prepare("UPDATE filing_summary_filings SET identity_verdict = 'ambiguous' WHERE id = ?").run(id);
+    expect(startRun(db, eventId, "manual_run", { requestKey: "rk-amb", catalogIds: CATALOG }).ok).toBe(false);
+    expect(listRuns(db, eventId)).toHaveLength(0);
   });
 
   it("an accepted earnings filing is preferred over a time-unconfirmed one on a manual run", () => {

@@ -165,6 +165,7 @@ describe("panel view", () => {
         acceptedAt: null,
         identityVerdict: "time_unconfirmed",
         identityReason: "header has no acceptance time",
+        gatePassed: true,
       }),
     );
     upsertEventState(db, eventId, { pollState: "past_cutoff", pollDetail: "earnings 6-K time unconfirmed — Run summary to spend" });
@@ -187,6 +188,26 @@ describe("panel view", () => {
     expect(v.runSummaryAvailable).toBe(true);
     run([f2]);
     expect(getPanelViews(db, [eventId], CATALOG)[eventId].runSummaryAvailable).toBe(false);
+  });
+
+  it("an untimed earnings filing that has not passed the gate is not runnable (round 3 ruling)", () => {
+    insertFiling(db, filing("0000000001-26-000001", { acceptedAt: null, identityVerdict: "time_unconfirmed", gatePassed: false }));
+    const v = getPanelViews(db, [eventId], CATALOG)[eventId];
+    expect(v.earningsTimeUnconfirmed).toBe(false);
+    expect(v.runSummaryAvailable).toBe(false);
+  });
+
+  it("an untimed earnings filing whose gate failed is ambiguous: not runnable, and the panel carries the reason", () => {
+    insertFiling(
+      db,
+      filing("0000000001-26-000001", { acceptedAt: null, identityVerdict: "ambiguous", identityReason: "issuer not named" }),
+    );
+    upsertEventState(db, eventId, { pollState: "ambiguous", pollDetail: "issuer not named" });
+    const v = getPanelViews(db, [eventId], CATALOG)[eventId];
+    expect(v.earningsTimeUnconfirmed).toBe(false);
+    expect(v.runSummaryAvailable).toBe(false);
+    expect(v.pollState).toBe("ambiguous");
+    expect(v.pollDetail).toBe("issuer not named");
   });
 
   it("a rejected earnings filing is neither accepted nor time-unconfirmed", () => {

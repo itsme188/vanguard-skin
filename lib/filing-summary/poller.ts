@@ -382,11 +382,26 @@ function acceptedMs(f: FilingRow): number | null {
 
 /** The event's earnings filing: the earnings-role row that passed or failed the
  *  identity gate (an after-8-pm or time-unconfirmed row is not it). */
+/**
+ * The event's earnings reference: the timed earnings-role filing that was
+ * accepted or found ambiguous. An UNTIMED earnings row (time_unconfirmed, or
+ * ambiguous after its gate failed) is never the reference: a later timed
+ * earnings filing still becomes the earnings row and demotes it.
+ */
 function earningsReference(filings: FilingRow[]): FilingRow | null {
   return (
     filings.find(
-      (f) => f.role === "earnings" && (f.identityVerdict === "accepted" || f.identityVerdict === "ambiguous"),
+      (f) =>
+        f.role === "earnings" &&
+        (f.identityVerdict === "accepted" || (f.identityVerdict === "ambiguous" && f.acceptedAt !== null)),
     ) ?? null
+  );
+}
+
+/** An untimed earnings-role filing whose gate failed (ambiguous, no acceptance time). */
+function untimedAmbiguousEarnings(filings: FilingRow[]): FilingRow | null {
+  return (
+    filings.find((f) => f.role === "earnings" && f.identityVerdict === "ambiguous" && f.acceptedAt === null) ?? null
   );
 }
 
@@ -545,16 +560,23 @@ export async function pollEvent(
   let deferred = false;
   let reference = earningsReference([...existing.values()]);
 
+  /**
+   * `gate`: the timed earnings filing — pass → accepted, fail → ambiguous.
+   * `gate_untimed`: an untimed earnings filing (Hardening 1 covers it too) —
+   * pass → stays time_unconfirmed with gate_passed, fail → ambiguous. Either
+   * way gate_passed = 1 on a pass, and unreadable gate text defers.
+   */
   const insert = async (
     c: Candidate,
     role: FilingRole,
-    verdict: IdentityVerdict | "gate",
+    verdict: IdentityVerdict | "gate" | "gate_untimed",
     reason: string | null,
   ): Promise<FilingRow | null> => {
     const fetched = await fetchDocuments(filerCik, c.accession, c.form, c.header, seams.fetchFn, seams.storageRoot?.());
     let identityVerdict: IdentityVerdict;
     let identityReason = reason;
-    if (verdict === "gate") {
+    let gatePassed = false;
+    if (verdict === "gate" || verdict === "gate_untimed") {
       if (fetched.gateText === null) {
         // Nothing readable to check the issuer and quarter against: a
         // transient fetch failure, retried next tick rather than guessed.
@@ -566,8 +588,14 @@ export async function pollEvent(
         issuerName: seams.issuerName(db, eventId),
         eventDate,
       });
-      identityVerdict = v.ok ? "accepted" : "ambiguous";
-      identityReason = v.ok ? null : v.reason;
+      gatePassed = v.ok;
+      if (verdict === "gate") {
+        identityVerdict = v.ok ? "accepted" : "ambiguous";
+        identityReason = v.ok ? null : v.reason;
+      } else {
+        identityVerdict = v.ok ? "time_unconfirmed" : "ambiguous";
+        identityReason = v.ok ? reason : v.reason;
+      }
     } else {
       identityVerdict = verdict;
     }
@@ -584,6 +612,7 @@ export async function pollEvent(
         identityVerdict,
         identityReason,
         fetchState: fetched.fetchState,
+        gatePassed,
       });
       if (r.inserted) {
         for (const d of fetched.documents) upsertDocument(db, { filingId: r.id, ...d });
@@ -601,7 +630,10 @@ export async function pollEvent(
     const role: FilingRole = isEarningsClass && !reference ? "earnings" : "companion";
 
     if (c.acceptanceMs === null) {
-      await insert(c, role, "time_unconfirmed", NO_ACCEPTANCE_REASON);
+      // An untimed EARNINGS filing runs the same document gate (Hardening 1):
+      // it may later run on the owner's click, so its issuer and quarter
+      // must be checked. An untimed companion is only recorded.
+      await insert(c, role, role === "earnings" ? "gate_untimed" : "time_unconfirmed", NO_ACCEPTANCE_REASON);
       continue;
     }
     if (c.afterCutoff) {
@@ -613,10 +645,13 @@ export async function pollEvent(
       if (!row) continue;
       reference = row;
       // One live earnings row per event: an earlier earnings-class filing
-      // whose header had no time becomes a companion (it keeps its verdict).
+      // whose header had no time becomes a companion (it keeps its verdict),
+      // whether its gate passed (time_unconfirmed) or failed (ambiguous, untimed).
       db.prepare(
         `UPDATE filing_summary_filings SET role = 'companion'
-          WHERE event_id = ? AND id <> ? AND role = 'earnings' AND identity_verdict = 'time_unconfirmed'`,
+          WHERE event_id = ? AND id <> ? AND role = 'earnings'
+            AND (identity_verdict = 'time_unconfirmed'
+                 OR (identity_verdict = 'ambiguous' AND accepted_at IS NULL))`,
       ).run(eventId, row.id);
       if (row.identityVerdict === "accepted") {
         callSafely("onEarningsAccepted", eventId, () => seams.onEarningsAccepted(db, eventId));
@@ -635,7 +670,10 @@ export async function pollEvent(
   // ---- event state from the stored filings
   const all = listFilings(db, eventId);
   const ref = earningsReference(all);
-  const unconfirmed = all.find((f) => f.role === "earnings" && f.identityVerdict === "time_unconfirmed");
+  const unconfirmed = all.find(
+    (f) => f.role === "earnings" && f.identityVerdict === "time_unconfirmed" && f.gatePassed,
+  );
+  const untimedFailed = ref ? null : untimedAmbiguousEarnings(all);
   let pollState: PollState;
   let pollDetail: string | null;
   if (ref?.identityVerdict === "accepted") {
@@ -644,6 +682,10 @@ export async function pollEvent(
   } else if (ref) {
     pollState = "ambiguous";
     pollDetail = ref.identityReason;
+  } else if (untimedFailed) {
+    // An untimed earnings filing whose gate failed: say why, like a timed one.
+    pollState = "ambiguous";
+    pollDetail = untimedFailed.identityReason;
   } else {
     pollState = "waiting";
     pollDetail = unconfirmed ? `earnings ${formName} time unconfirmed` : null;
@@ -736,7 +778,9 @@ export function eventsWithLiveFilings(db: Database.Database): number[] {
  *     rejected, "event date changed";
  *  2. the accepted earnings filing is re-gated on its stored EX-99 text (else
  *     the main document) with the current symbol, issuer and date; a failure,
- *     or no stored text, rejects it, "issuer changed";
+ *     or no stored text, rejects it, "issuer changed". A gate-passed UNTIMED
+ *     earnings filing (time_unconfirmed) is re-gated the same way; rule 1
+ *     cannot apply to it, because it has no acceptance time;
  *  3. a companion whose CIK differs from the earnings filing's, or that shares
  *     the CIK of an earnings filing just rejected for its issuer, is
  *     rejected, "issuer changed".
@@ -791,11 +835,20 @@ export function revalidateStoredFilings(
   const accepted = live.find(
     (f) => f.role === "earnings" && f.identityVerdict === "accepted" && !decisions.has(f.id),
   );
-  if (accepted) {
-    const text = gateTextFromStored(accepted.form, listDocuments(db, accepted.id));
+  // An untimed earnings filing that passed the gate is re-gated too. The date
+  // rule (1) cannot apply to it: there is no acceptance time to read a day from,
+  // so the gate's own date check against the event's current date is the only one.
+  const untimedPassed = accepted
+    ? undefined
+    : live.find(
+        (f) => f.role === "earnings" && f.identityVerdict === "time_unconfirmed" && f.gatePassed && !decisions.has(f.id),
+      );
+  for (const f of [accepted, untimedPassed]) {
+    if (!f) continue;
+    const text = gateTextFromStored(f.form, listDocuments(db, f.id));
     const ok =
       text !== null && validateDocForEvent(text, { symbol, issuerName: issuer, eventDate: ev.event_date }).ok;
-    if (!ok) decisions.set(accepted.id, ISSUER_CHANGED_REASON);
+    if (!ok) decisions.set(f.id, ISSUER_CHANGED_REASON);
   }
   // Rule 3: companions belong to the earnings filing's issuer.
   const earnings = earningsReference(live);
@@ -812,8 +865,10 @@ export function revalidateStoredFilings(
     return none;
   }
 
+  // The event's earnings row: the timed reference, else the gate-passed untimed one.
+  const earningsRow = earnings ?? untimedPassed ?? null;
   const earningsReason =
-    earnings && decisions.has(earnings.id) ? (decisions.get(earnings.id) as string) : null;
+    earningsRow && decisions.has(earningsRow.id) ? (decisions.get(earningsRow.id) as string) : null;
   db.transaction(() => {
     const reject = db.prepare(
       `UPDATE filing_summary_filings SET identity_verdict = 'rejected', identity_reason = ? WHERE id = ?`,

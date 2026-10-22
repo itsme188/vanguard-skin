@@ -779,3 +779,78 @@ describe("fix round 1", () => {
     __resetFilingSummaryTickForTests();
   });
 });
+
+describe("fix round 3: the document gate covers an untimed earnings filing (Hardening 1)", () => {
+  const untimed = (accession: string, ex99 = EX99_GOOD): FakeFiling => ({
+    ...earnings8k(accession, "160000", ex99),
+    header: null,
+  });
+
+  it("gate pass: stays time_unconfirmed with gate_passed, nothing runs automatically", async () => {
+    arm(et("09:00"));
+    edgar.filings.push(untimed("0000123456-26-000100"));
+    await tick(et("16:01"));
+    const [f] = listFilings(db, eventId);
+    expect(f).toMatchObject({ role: "earnings", identityVerdict: "time_unconfirmed", gatePassed: true });
+    expect(f.acceptedAt).toBeNull();
+    expect(earningsCalls).toEqual([]);
+    const s = getEventState(db, eventId)!;
+    expect(s.pollState).toBe("waiting");
+    expect(s.pollDetail).toBe("earnings 8-K time unconfirmed");
+  });
+
+  it("gate fail: ambiguous with the gate's reason, never runnable, and the event says why", async () => {
+    arm(et("09:00"));
+    edgar.filings.push(untimed("0000123456-26-000100", EX99_WRONG_ISSUER));
+    await tick(et("16:01"));
+    const [f] = listFilings(db, eventId);
+    expect(f).toMatchObject({ role: "earnings", identityVerdict: "ambiguous", gatePassed: false });
+    expect(f.identityReason).toMatch(/issuer not named/);
+    const s = getEventState(db, eventId)!;
+    expect(s.pollState).toBe("ambiguous");
+    expect(s.pollDetail).toMatch(/issuer not named/);
+    expect(earningsCalls).toEqual([]);
+  });
+
+  it("gate text not yet readable: the untimed filing is deferred, not stored", async () => {
+    arm(et("09:00"));
+    const f = untimed("0000123456-26-000100");
+    f.docs = f.docs.map((d) => (d.type === "GRAPHIC" ? d : { ...d, status: 500 }));
+    edgar.filings.push(f);
+    await tick(et("16:01"));
+    expect(listFilings(db, eventId)).toEqual([]);
+  });
+
+  it("a timed earnings filing demotes an earlier untimed row whose gate failed: one earnings reference", async () => {
+    arm(et("09:00"));
+    edgar.filings.push(untimed("0000123456-26-000100", EX99_WRONG_ISSUER));
+    await tick(et("16:01"));
+    edgar.filings.push(earnings8k("0000123456-26-000101", "160500"));
+    await tick(et("16:06"));
+    const filings = listFilings(db, eventId);
+    expect(filings.map((f) => [f.accession, f.role, f.identityVerdict, f.gatePassed])).toEqual([
+      ["0000123456-26-000100", "companion", "ambiguous", false],
+      ["0000123456-26-000101", "earnings", "accepted", true],
+    ]);
+    expect(getEventState(db, eventId)!.pollState).toBe("found");
+    expect(earningsCalls).toEqual([eventId]);
+  });
+
+  it("revalidation re-gates a gate-passed untimed earnings filing: an issuer change rejects it and resets the event", async () => {
+    arm(et("09:00"));
+    edgar.filings.push(untimed("0000123456-26-000100"));
+    await tick(et("16:01"));
+    expect(listFilings(db, eventId)[0]).toMatchObject({ identityVerdict: "time_unconfirmed", gatePassed: true });
+
+    db.prepare(`INSERT INTO securities (symbol, name, security_type) VALUES ('ZETA', 'Zeta Corp', 'Stock')`).run();
+    db.prepare(`UPDATE calendar_events SET symbol = 'ZETA' WHERE id = ?`).run(eventId);
+    await tick(et("16:10"));
+    const [f] = listFilings(db, eventId);
+    expect(f.identityVerdict).toBe("rejected");
+    expect(f.identityReason).toBe(ISSUER_CHANGED_REASON);
+    const s = getEventState(db, eventId)!;
+    // Reset to waiting (the same tick's poll then looks again from scratch).
+    expect(s.pollState).toBe("waiting");
+    expect(s.catchupDone).toBe(false);
+  });
+});

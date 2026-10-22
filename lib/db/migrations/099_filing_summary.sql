@@ -41,6 +41,10 @@ CREATE TABLE filing_summary_filings (
   identity_verdict TEXT NOT NULL CHECK (identity_verdict IN ('accepted','ambiguous','rejected','time_unconfirmed')),
   identity_reason TEXT,
   fetch_state TEXT NOT NULL DEFAULT 'pending' CHECK (fetch_state IN ('pending','fetched','failed')),
+  -- 1 when the print-watch document gate (issuer and quarter) passed for this
+  -- earnings filing: every accepted earnings filing, and an untimed
+  -- (time_unconfirmed) one that may run on the owner's click (Hardening 1).
+  gate_passed INTEGER NOT NULL DEFAULT 0 CHECK (gate_passed IN (0,1)),
   UNIQUE (event_id, accession)
 );
 CREATE TABLE filing_summary_documents (

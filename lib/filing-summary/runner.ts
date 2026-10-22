@@ -154,8 +154,9 @@ function companyName(db: Database.Database, symbol: string): string | null {
 /**
  * The frozen filing list: the accepted earnings filing, then accepted
  * companions by discovery order. An owner click (`manual_run`, `rerun`) may
- * also read an earnings filing whose time could not be confirmed when no
- * accepted one exists (controller ruling, Task 13 round 2); an automatic run
+ * also read an earnings filing whose time could not be confirmed, once its
+ * document gate passed (issuer and quarter, Hardening 1), when no accepted
+ * one exists (controller ruling, Task 13 round 2); an automatic run
  * never does.
  */
 function runFilingIds(filings: FilingRow[], trigger: "auto" | "rerun" | "manual_run"): number[] {
@@ -163,7 +164,7 @@ function runFilingIds(filings: FilingRow[], trigger: "auto" | "rerun" | "manual_
     filings.find((f) => f.role === "earnings" && f.identityVerdict === "accepted") ??
     (trigger === "auto"
       ? undefined
-      : filings.find((f) => f.role === "earnings" && f.identityVerdict === "time_unconfirmed"));
+      : filings.find((f) => f.role === "earnings" && f.identityVerdict === "time_unconfirmed" && f.gatePassed));
   if (!earnings) return [];
   const companions = filings
     .filter((f) => f.role === "companion" && f.identityVerdict === "accepted")

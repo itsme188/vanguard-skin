@@ -464,13 +464,14 @@ function hasAcceptedEarnings(filings: FilingRow[]): boolean {
 
 /**
  * No accepted earnings filing, but an earnings-role filing whose time could
- * not be confirmed (controller ruling, Task 13 round 2): not "no filing", and
- * a manual run may read it (the runner's owner-click rule).
+ * not be confirmed and whose document gate passed (controller rulings, Task
+ * 13 rounds 2 and 3): not "no filing", and a manual run may read it (the
+ * runner's owner-click rule). One whose gate failed is ambiguous instead.
  */
 function earningsTimeUnconfirmedFrom(filings: FilingRow[]): boolean {
   return (
     !hasAcceptedEarnings(filings) &&
-    filings.some((f) => f.role === "earnings" && f.identityVerdict === "time_unconfirmed")
+    filings.some((f) => f.role === "earnings" && f.identityVerdict === "time_unconfirmed" && f.gatePassed)
   );
 }
 
@@ -478,7 +479,7 @@ function earningsTimeUnconfirmedFrom(filings: FilingRow[]): boolean {
 function earningsFormFrom(filings: FilingRow[]): "8-K" | "6-K" | null {
   const f =
     filings.find((x) => x.role === "earnings" && x.identityVerdict === "accepted") ??
-    filings.find((x) => x.role === "earnings" && x.identityVerdict === "time_unconfirmed");
+    filings.find((x) => x.role === "earnings" && x.identityVerdict === "time_unconfirmed" && x.gatePassed);
   if (!f) return null;
   return f.form.toUpperCase().startsWith("6-K") ? "6-K" : "8-K";
 }

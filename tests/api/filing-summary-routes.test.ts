@@ -110,6 +110,7 @@ describe("POST paid actions", () => {
       eventId, accession: "0000000001-26-000001", cik: "0000000001", form: "8-K", role: "earnings", items: "2.02",
       acceptedAt: null, discoveredAt: "2026-10-22T20:06:00.000Z",
       identityVerdict: "time_unconfirmed", identityReason: "header has no acceptance time", fetchState: "fetched",
+      gatePassed: true,
     }).id;
     upsertEventState(hoisted.db, eventId, { pollState: "past_cutoff", pollDetail: "earnings 8-K time unconfirmed — Run summary to spend" });
 

@@ -78,6 +78,8 @@ export interface NewFiling {
   identityVerdict: IdentityVerdict;
   identityReason: string | null;
   fetchState?: FetchState;
+  /** The document gate passed (issuer and quarter); default false. */
+  gatePassed?: boolean;
 }
 
 export interface FilingRow {
@@ -94,6 +96,8 @@ export interface FilingRow {
   identityVerdict: IdentityVerdict;
   identityReason: string | null;
   fetchState: FetchState;
+  /** The document gate (issuer and quarter) passed for this filing. */
+  gatePassed: boolean;
 }
 
 export interface NewDocument {
@@ -208,6 +212,7 @@ function toFiling(r: Raw): FilingRow {
     identityVerdict: String(r.identity_verdict) as IdentityVerdict,
     identityReason: str(r.identity_reason),
     fetchState: String(r.fetch_state) as FetchState,
+    gatePassed: Number(r.gate_passed) === 1,
   };
 }
 
@@ -370,8 +375,8 @@ export function insertFiling(
       .prepare(
         `INSERT INTO filing_summary_filings
            (event_id, accession, cik, form, role, items, accepted_at, discovered_at,
-            discovery_seq, identity_verdict, identity_reason, fetch_state)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            discovery_seq, identity_verdict, identity_reason, fetch_state, gate_passed)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         f.eventId,
@@ -386,6 +391,7 @@ export function insertFiling(
         f.identityVerdict,
         f.identityReason,
         f.fetchState ?? "pending",
+        f.gatePassed ? 1 : 0,
       );
     return { id: Number(info.lastInsertRowid), inserted: true };
   }).immediate();

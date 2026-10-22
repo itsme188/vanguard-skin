@@ -4,9 +4,12 @@
  * route stays a thin wrapper.
  *
  *   set_choice → stores the per-print choice; refused once a run locked it.
- *   run        → Run summary: only with an accepted earnings filing and no run
- *                yet (armed after 8 pm, or a past print).
- *   rerun      → a new run over the same filings with the given choice.
+ *   run        → Run summary: only with an accepted earnings filing (or an
+ *                untimed one whose document gate passed) and no run yet
+ *                (armed after 8 pm, a past print, or an untimed filing).
+ *   rerun      → a new run with the given choice; its filing list is rebuilt
+ *                from the event's current filings (a companion found since
+ *                the last run is included, a filing rejected since is not).
  *   retry      → every failed section of one run goes back to pending.
  *
  * Every paid action (run, rerun, retry) needs a request key and is
