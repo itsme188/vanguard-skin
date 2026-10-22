@@ -168,3 +168,65 @@ describe("extractDocText — scale note per cell", () => {
     expect(doc.documentScaleNote).toBe("In millions, except percentages");
   });
 });
+
+describe("extractDocText — section labels and title rows (review fix 1)", () => {
+  it("balance-sheet shape: title rows stay out of columnHeaders, section labels stay body rows", () => {
+    const html =
+      "<table>" +
+      '<tr><td colspan="5">EXAMPLE WIDGETS, INC.</td></tr>' +
+      '<tr><td colspan="5">CONDENSED CONSOLIDATED BALANCE SHEETS</td></tr>' +
+      '<tr><td colspan="5">(In millions)</td></tr>' +
+      '<tr><td></td><td colspan="2">September 30, 2026</td><td colspan="2">December 31, 2025</td></tr>' +
+      "<tr><td>Assets</td><td></td><td></td><td></td><td></td></tr>" +
+      "<tr><td>Current assets:</td><td></td><td></td><td></td><td></td></tr>" +
+      "<tr><td>Cash and cash equivalents</td><td>$</td><td>1,250</td><td>$</td><td>1,100</td></tr>" +
+      "<tr><td>Total current assets</td><td></td><td>2,400</td><td></td><td>2,050</td></tr>" +
+      "</table>";
+    const t = extractDocText(html).tables[0];
+    expect(t.columnHeaders).toEqual([
+      "",
+      "September 30, 2026",
+      "September 30, 2026",
+      "December 31, 2025",
+      "December 31, 2025",
+    ]);
+    expect(t.rowLabels).toEqual(["Assets", "Current assets:", "Cash and cash equivalents", "Total current assets"]);
+    expect(t.rows[2]).toEqual(["Cash and cash equivalents", "$", "1,250", "$", "1,100"]);
+    expect(t.scaleNote).toBe("In millions");
+    for (const h of t.columnHeaders) {
+      expect(h).not.toContain("EXAMPLE WIDGETS");
+      expect(h).not.toContain("BALANCE SHEETS");
+      expect(h).not.toContain("In millions");
+    }
+  });
+
+  it("segment shape with a wide label cell: 'Revenue:' is a body row label", () => {
+    const html =
+      "<table>" +
+      '<tr><td colspan="7">Segment Information</td></tr>' +
+      '<tr><td colspan="7">(In millions)</td></tr>' +
+      '<tr><td colspan="3"></td><td colspan="2">Three Months Ended September 30,</td><td colspan="2">Nine Months Ended September 30,</td></tr>' +
+      '<tr><td colspan="3"></td><td>2026</td><td>2025(1)</td><td>2026</td><td>2025</td></tr>' +
+      '<tr><td colspan="3">Revenue:</td><td></td><td></td><td></td><td></td></tr>' +
+      '<tr><td colspan="3">Advertising</td><td>50,100</td><td>40,200</td><td>140,300</td><td>115,400</td></tr>' +
+      "</table>";
+    const doc = extractDocText(html);
+    const t = doc.tables[0];
+    expect(t.rowLabels).toEqual(["Revenue:", "Advertising"]);
+    expect(t.columnHeaders[3]).toBe("Three Months Ended September 30, / 2026");
+    expect(t.columnHeaders[4]).toBe("Three Months Ended September 30, / 2025(1)");
+    expect(t.columnHeaders[0]).toBe("");
+    expect(t.columnHeaders.join(" ")).not.toContain("Segment Information");
+    expect(t.scaleNote).toBe("In millions");
+    const revenueBlock = doc.blocks.find((b) => b.text === "Revenue:");
+    expect(revenueBlock).toMatchObject({ tableId: 1, rowIndex: 0 });
+  });
+
+  it("a year with a footnote marker is not a numeric cell, so its row stays a header row", () => {
+    const doc = extractDocText(
+      "<table><tr><td></td><td>2026</td><td>2025(1)</td></tr><tr><td>Sales</td><td>10</td><td>9</td></tr></table>",
+    );
+    expect(doc.tables[0].columnHeaders).toEqual(["", "2026", "2025(1)"]);
+    expect(doc.tables[0].rowLabels).toEqual(["Sales"]);
+  });
+});

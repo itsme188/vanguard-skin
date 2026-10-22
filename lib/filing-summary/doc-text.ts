@@ -18,7 +18,11 @@
  *   collapse to their innermost text. `para` counts blocks from 1 within each
  *   page; a table row is one block.
  * - Tables: header rows are the leading rows with no numeric cell (a bare
- *   year such as "2026" is not numeric). colspan text is spread across every
+ *   year such as "2026", or "2025(1)", is not numeric). A leading row whose
+ *   text sits only in the label column ("Assets", "Revenue:") ends the
+ *   header rows and stays a body row; a full-width title row (company name,
+ *   "(In millions)") is left out of the body and of `columnHeaders`, though
+ *   the scale note still reads it. colspan text is spread across every
  *   covered column (R3; unlike repA in `lib/print-watch/representations.ts`,
  *   which puts it in the first column only). A table where no row has a
  *   numeric cell has no header rows (every row is a body row), so text-only
@@ -75,7 +79,8 @@ function breakStyle(attrs: Record<string, string>): { before: boolean; after: bo
 function isNumericCell(text: string): boolean {
   const t = text.trim();
   if (!t) return false;
-  if (/^(19|20)\d{2}$/.test(t)) return false;
+  // A bare year, or a year with a footnote marker such as "2025(1)".
+  if (/^(19|20)\d{2}$/.test(t) || /^(19|20)\d{2}\s*\(\w{1,2}\)$/.test(t)) return false;
   const stripped = t.replace(/[$€£¥%,()\s]/g, "").replace(/^[-+−–]/, "");
   return /^(\d+(\.\d+)?|\.\d+)$/.test(stripped);
 }
@@ -98,6 +103,19 @@ interface CellBuild { parts: string[]; colspan: number }
 interface RowBuild { cells: CellBuild[]; current: CellBuild | null }
 interface DoneRow { cells: Array<{ text: string; colspan: number }>; breakBefore: boolean }
 interface TableBuild { rows: DoneRow[]; current: RowBuild | null }
+
+/** Where a leading (pre-numeric) table row's text sits; see finishTable. */
+function classifyLeadingRow(row: DoneRow, labelSpan: number): "label" | "title" | "header" {
+  let col = 0;
+  const spans: Array<{ start: number; end: number }> = [];
+  for (const c of row.cells) {
+    if (c.text) spans.push({ start: col, end: col + c.colspan });
+    col += c.colspan;
+  }
+  if (spans.every((sp) => sp.end <= labelSpan)) return "label";
+  if (spans.length === 1 && spans[0].start === 0) return "title";
+  return "header";
+}
 
 function colspanOf(attrs: Record<string, string>): number {
   const n = parseInt(attrs.colspan ?? "1", 10);
@@ -171,14 +189,6 @@ export function extractDocText(html: string): DocText {
     if (done.rows.length === 0) return; // layout spacer table
 
     const id = tables.length + 1;
-    const anyNumeric = done.rows.some((r) => r.cells.some((c) => isNumericCell(c.text)));
-    let headerCount = 0;
-    if (anyNumeric) {
-      while (headerCount < done.rows.length && !done.rows[headerCount].cells.some((c) => isNumericCell(c.text))) {
-        headerCount++;
-      }
-    }
-
     // Grid with colspan text spread across every covered column (R3).
     const grids = done.rows.map((r) => {
       const out: string[] = [];
@@ -188,7 +198,29 @@ export function extractDocText(html: string): DocText {
     const width = Math.max(...grids.map((g) => g.length));
     for (const g of grids) while (g.length < width) g.push("");
 
-    const headerGrids = grids.slice(0, headerCount);
+    // Header region: the leading rows before the first row with a numeric
+    // cell. Within it, a row is classified by where its text sits:
+    // - label-only (all text inside the label column, e.g. "Assets",
+    //   "Revenue:") ends the header region; it is a body row;
+    // - title (one text cell starting at column 0 and reaching into the value
+    //   columns, e.g. the company name or "(In millions)") stays out of the
+    //   body and out of columnHeaders, but the scale note may read it;
+    // - otherwise a column header (text in at least one value column).
+    // The label column's width is the span of the first numeric row's first
+    // cell (EDGAR often gives the label cell a colspan).
+    const firstNumeric = done.rows.findIndex((r) => r.cells.some((c) => isNumericCell(c.text)));
+    let headerCount = 0;
+    const titleRows = new Set<number>();
+    if (firstNumeric !== -1) {
+      const labelSpan = done.rows[firstNumeric].cells[0]?.colspan ?? 1;
+      for (; headerCount < firstNumeric; headerCount++) {
+        const kind = classifyLeadingRow(done.rows[headerCount], labelSpan);
+        if (kind === "label") break;
+        if (kind === "title") titleRows.add(headerCount);
+      }
+    }
+
+    const headerGrids = grids.slice(0, headerCount).filter((_, i) => !titleRows.has(i));
     const bodyGrids = grids.slice(headerCount);
     const columnHeaders: string[] = [];
     for (let c = 0; c < width; c++) {
