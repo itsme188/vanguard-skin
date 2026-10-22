@@ -64,9 +64,12 @@ describe("print-watch × slice A registries", () => {
     // reference print_watch_prints with no cascade, so the reverse order fails
     // the merge with a FOREIGN KEY error (R-C7, plan M-D12). C before D only
     // matches slice order — no foreign key runs between the two.
+    // The filing summary (2026-10-22) sits after D's and before B's; its
+    // tables reference calendar_events only, so its place is not load-bearing.
     expect(listEventMergeHandlers()).toEqual([
       "print-watch-go",
       "print-watch-first-pass",
+      "filing-summary",
       "print-watch",
     ]);
     expect(listPrepareSteps()).toEqual(["ir_baseline"]);

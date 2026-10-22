@@ -24,6 +24,10 @@ import { mergePrintWatchState, PRINT_WATCH_MERGE_HANDLER_NAME } from "./merge-ha
 import { mergePrintWatchGoState, PRINT_WATCH_GO_MERGE_HANDLER_NAME } from "./go";
 import { IR_BASELINE_STEP, IR_BASELINE_STEP_NAME } from "./ir-baseline-step";
 import { registerFirstPass, __resetFirstPassRegisterForTests } from "./first-pass-register";
+import {
+  registerFilingSummary,
+  __resetFilingSummaryRegisterForTests,
+} from "@/lib/filing-summary/register";
 
 let registered = false;
 
@@ -42,6 +46,11 @@ export function registerPrintWatch(db?: Database.Database): void {
   // key runs between the go tables and the first-pass tables.
   registerEventMergeHandler(PRINT_WATCH_GO_MERGE_HANDLER_NAME, mergePrintWatchGoState);
   registerFirstPass(db);
+  // The armed-print filing summary: its tables hang off calendar_events only
+  // (no print_watch_prints reference), so its place relative to B's handler
+  // does not matter; it sits after D's like the brief says. With a db it also
+  // starts its 60-second tick.
+  registerFilingSummary(db);
   registerEventMergeHandler(PRINT_WATCH_MERGE_HANDLER_NAME, mergePrintWatchState);
   registerPrepareStep(IR_BASELINE_STEP_NAME, IR_BASELINE_STEP);
 }
@@ -52,4 +61,5 @@ export function registerPrintWatch(db?: Database.Database): void {
 export function __resetRegisterForTests(): void {
   registered = false;
   __resetFirstPassRegisterForTests();
+  __resetFilingSummaryRegisterForTests();
 }

@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { ensurePrintWatch, getWatchStatus } from "@/lib/print-watch/watcher";
 import { armReconcileTimer } from "@/lib/print-watch/read-scheduler";
+import { startFilingSummaryTick } from "@/lib/filing-summary/tick";
 
 /**
  * POST /api/print-watch/ensure — the ONLY route allowed to start or advance
@@ -18,11 +19,16 @@ import { armReconcileTimer } from "@/lib/print-watch/read-scheduler";
  * (#16). `bootstrapEarningsRegistries()` takes no `db`, and the panel calls
  * this route on every load, so it is the natural place: `armReconcileTimer`
  * is idempotent, unref'd, and inert while the scheduler is disabled.
+ *
+ * The armed-print filing summary's 60-second tick starts here for the same
+ * reason (no server-start path hands `registerPrintWatch` a db); the start is
+ * idempotent and unref'd too.
  */
 export async function POST() {
   try {
     ensurePrintWatch(db);
     armReconcileTimer(db);
+    startFilingSummaryTick(db);
     return NextResponse.json({ success: true, data: { prints: getWatchStatus(db).length } });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";
