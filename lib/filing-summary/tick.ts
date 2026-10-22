@@ -24,11 +24,20 @@
  * without a runner would insert filings whose "accepted" callback is lost).
  */
 import type Database from "better-sqlite3";
-import { addDays, todayET } from "@/lib/calendar/date-utils";
+import { addDays, parseDbTimestamp, todayET } from "@/lib/calendar/date-utils";
 import { getArmedWorksheetEvents } from "@/lib/queries/earnings-worksheet-flags";
 import { resolveCik } from "@/lib/print-watch/edgar-adapter";
 import { acquisitionScheduler } from "@/lib/print-watch/scheduler";
-import { MANUAL_ONLY_DETAIL, pollEvent, pollPhase, type PollSeams } from "./poller";
+import {
+  eventsWithLiveFilings,
+  issuerNameForEvent,
+  MANUAL_ONLY_DETAIL,
+  pollEvent,
+  pollPhase,
+  revalidateStoredFilings,
+  type PollSeams,
+} from "./poller";
+import { failPendingSections } from "./run-status";
 import {
   getEventState,
   listEventsWithPendingSections,
@@ -53,74 +62,50 @@ export interface TickOutcome {
   rearmed: number[];
   polled: number[];
   ran: number[];
+  /** Events where revalidation rejected at least one stored filing. */
+  revalidated: number[];
 }
 
 // ---------------------------------------------------------------- cancel / re-arm
 
-/** Disarmed events: state → cancelled, pending sections → failed/cancelled. */
-function cancelDisarmed(db: Database.Database): number[] {
+/**
+ * Disarmed events dated today or later (Eastern): state → cancelled, pending
+ * sections → failed/cancelled. An older print disarmed later keeps its state
+ * and its sections as they are (ruling 8).
+ */
+function cancelDisarmed(db: Database.Database, today: string): number[] {
   const ids = (
     db
       .prepare(
         `SELECT e.event_id FROM filing_summary_events e
+           JOIN calendar_events ce ON ce.id = e.event_id
           WHERE e.poll_state <> 'cancelled'
+            AND ce.event_date >= ?
             AND NOT EXISTS (SELECT 1 FROM earnings_worksheet_flags f WHERE f.event_id = e.event_id)
           ORDER BY e.event_id`,
       )
-      .all() as Array<{ event_id: number }>
+      .all(today) as Array<{ event_id: number }>
   ).map((r) => r.event_id);
   const cancelOne = db.transaction((eventId: number) => {
     upsertEventState(db, eventId, { pollState: "cancelled", pollDetail: DISARMED_DETAIL });
-    const runIds = (
-      db
-        .prepare(
-          `SELECT DISTINCT s.run_id FROM filing_summary_sections s
-             JOIN filing_summary_runs r ON r.id = s.run_id
-            WHERE r.event_id = ? AND s.status = 'pending'`,
-        )
-        .all(eventId) as Array<{ run_id: number }>
-    ).map((r) => r.run_id);
-    db.prepare(
-      `UPDATE filing_summary_sections
-          SET status = 'failed', error_class = 'cancelled', error_text = 'disarmed',
-              claim_token = NULL, claimed_at = NULL, heartbeat_at = NULL,
-              finished_at = datetime('now')
-        WHERE status = 'pending'
-          AND run_id IN (SELECT id FROM filing_summary_runs WHERE event_id = ?)`,
-    ).run(eventId);
-    // The run status rule the store applies on finalize: all done → done; any
-    // failed with nothing open → failed; otherwise running.
-    const recompute = db.prepare(
-      `UPDATE filing_summary_runs
-          SET status = CASE
-                WHEN (SELECT COUNT(*) FROM filing_summary_sections WHERE run_id = :id) > 0
-                 AND (SELECT COUNT(*) FROM filing_summary_sections WHERE run_id = :id AND status <> 'done') = 0
-                  THEN 'done'
-                WHEN (SELECT COUNT(*) FROM filing_summary_sections WHERE run_id = :id AND status = 'failed') > 0
-                 AND (SELECT COUNT(*) FROM filing_summary_sections WHERE run_id = :id AND status IN ('pending','running')) = 0
-                  THEN 'failed'
-                ELSE 'running' END
-        WHERE id = :id`,
-    );
-    const stampFinished = db.prepare(
-      `UPDATE filing_summary_runs SET finished_at = COALESCE(finished_at, datetime('now'))
-        WHERE id = ? AND status <> 'running'`,
-    );
-    for (const runId of runIds) {
-      recompute.run({ id: runId });
-      stampFinished.run(runId);
-    }
+    failPendingSections(db, "event", eventId, "disarmed");
   });
   for (const id of ids) cancelOne(id);
   return ids;
 }
 
 /**
- * Armed again after a disarm (ruling 7): on the event date before 20:00 →
- * `waiting` (an existing run is kept, none starts); later → `manual_only`.
+ * Armed again after a disarm (ruling 7): armed on the event date before 20:00
+ * → `waiting` (an existing run is kept, none starts); armed later →
+ * `manual_only`. The arm time is the new flag's `created_at`, the same rule
+ * as a first arm.
  */
 function rearm(db: Database.Database, eventId: number, eventDate: string, nowMs: number): void {
-  if (pollPhase(eventDate, nowMs) === "after_cutoff") {
+  const flag = db
+    .prepare(`SELECT created_at FROM earnings_worksheet_flags WHERE event_id = ?`)
+    .get(eventId) as { created_at: string } | undefined;
+  const armedAtMs = flag ? (parseDbTimestamp(flag.created_at)?.getTime() ?? nowMs) : nowMs;
+  if (pollPhase(eventDate, armedAtMs) === "after_cutoff") {
     upsertEventState(db, eventId, {
       pollState: "manual_only",
       pollDetail: MANUAL_ONLY_DETAIL,
@@ -133,8 +118,23 @@ function rearm(db: Database.Database, eventId: number, eventDate: string, nowMs:
 
 // ---------------------------------------------------------------- the tick
 
-let ticking = false;
-let sendingSwept = false;
+/**
+ * Process-wide tick state, kept on globalThis so a dev hot reload (which
+ * re-evaluates this module) finds the running timer and latch instead of
+ * starting a second 60-second timer.
+ */
+interface FilingSummaryTickGlobal {
+  handle: ReturnType<typeof setInterval> | null;
+  ticking: boolean;
+  sendingSwept: boolean;
+  optedIn: boolean;
+}
+const globalKey = "__filingSummaryTick";
+function tickState(): FilingSummaryTickGlobal {
+  const g = globalThis as typeof globalThis & { [globalKey]?: FilingSummaryTickGlobal };
+  g[globalKey] ??= { handle: null, ticking: false, sendingSwept: false, optedIn: false };
+  return g[globalKey];
+}
 
 function isAbort(err: unknown): boolean {
   return err instanceof Error && err.name === "AbortError";
@@ -145,18 +145,38 @@ export async function runTick(
   nowMs: number,
   seams: TickSeams,
 ): Promise<TickOutcome> {
-  const out: TickOutcome = { skipped: false, cancelled: [], rearmed: [], polled: [], ran: [] };
-  if (ticking) return { ...out, skipped: true };
-  ticking = true;
+  const out: TickOutcome = {
+    skipped: false,
+    cancelled: [],
+    rearmed: [],
+    polled: [],
+    ran: [],
+    revalidated: [],
+  };
+  const st = tickState();
+  if (st.ticking) return { ...out, skipped: true };
+  st.ticking = true;
   try {
-    if (!sendingSwept) {
+    if (!st.sendingSwept) {
       markSendingAsUnknown(db);
-      sendingSwept = true;
+      st.sendingSwept = true;
     }
 
-    out.cancelled = cancelDisarmed(db);
-
     const today = todayET(new Date(nowMs));
+    out.cancelled = cancelDisarmed(db, today);
+
+    // Hardening 2: a date correction or merge may have moved stored filings
+    // under a new date or issuer. Checked for every event with a live filing,
+    // whatever its date, before any poll decides the event is finished.
+    for (const eventId of eventsWithLiveFilings(db)) {
+      try {
+        const r = revalidateStoredFilings(db, eventId, seams);
+        if (r.rejected.length > 0) out.revalidated.push(eventId);
+      } catch {
+        console.warn(`[filing-summary] revalidation for event ${eventId} failed`);
+      }
+    }
+
     const armed = getArmedWorksheetEvents(db, [addDays(today, -1), today]);
     for (const ev of armed) {
       if (getEventState(db, ev.eventId)?.pollState === "cancelled") {
@@ -185,7 +205,7 @@ export async function runTick(
     }
     return out;
   } finally {
-    ticking = false;
+    st.ticking = false;
   }
 }
 
@@ -200,16 +220,14 @@ interface RunnerModule {
 
 /** Lazy, so loading the tick never drags the model call chain into memory. */
 function loadRunner(): Promise<RunnerModule> {
+  // `./runner` (Task 10) must export exactly these three:
+  //   onEarningsAccepted(db, eventId): void
+  //   onCompanionAccepted(db, eventId, filingId): void
+  //   runNextSection(db, eventId, seams?): Promise<unknown>
   // The `as string` only keeps the type checker from resolving the module
-  // (it is built in parallel); the emitted import is the plain literal.
+  // while it is built in parallel (Task 10 drops it); the emitted import is
+  // the plain literal.
   return import("./runner" as string) as Promise<RunnerModule>;
-}
-
-function issuerNameFor(db: Database.Database, symbol: string): string | null {
-  const row = db
-    .prepare(`SELECT name FROM securities WHERE UPPER(symbol) = UPPER(?) LIMIT 1`)
-    .get(symbol) as { name: string | null } | undefined;
-  return row?.name ?? null;
 }
 
 async function productionTick(db: Database.Database): Promise<void> {
@@ -228,7 +246,7 @@ async function productionTick(db: Database.Database): Promise<void> {
       fetchFn: acquisitionScheduler.fetchFor(controller.signal, undefined, { priority: "low" }),
       resolveCik: (symbol, fetchFn) => resolveCik(symbol, fetchFn),
       now: () => Date.now(),
-      issuerName: issuerNameFor,
+      issuerName: issuerNameForEvent,
       onEarningsAccepted: (d, eventId) => runner.onEarningsAccepted(d, eventId),
       onCompanionAccepted: (d, eventId, filingId) => runner.onCompanionAccepted(d, eventId, filingId),
       runNextSection: (d, eventId) => runner.runNextSection(d, eventId),
@@ -242,18 +260,15 @@ async function productionTick(db: Database.Database): Promise<void> {
 
 // ---------------------------------------------------------------- timer
 
-let optedIn = false;
-let handle: ReturnType<typeof setInterval> | null = null;
-
 /** Tests opt in; production is always on. */
 export function enableFilingSummaryTick(): void {
-  optedIn = true;
+  tickState().optedIn = true;
 }
 export function disableFilingSummaryTick(): void {
-  optedIn = false;
+  tickState().optedIn = false;
 }
 function tickEnabled(): boolean {
-  return !process.env.VITEST || optedIn;
+  return !process.env.VITEST || tickState().optedIn;
 }
 
 /**
@@ -265,21 +280,23 @@ export function startFilingSummaryTick(
   db: Database.Database,
   tick: (db: Database.Database) => Promise<void> = productionTick,
 ): boolean {
-  if (!tickEnabled() || handle !== null) return false;
+  const st = tickState();
+  if (!tickEnabled() || st.handle !== null) return false;
   const fire = (): void => {
     tick(db).catch(() => console.warn("[filing-summary] tick failed"));
   };
-  handle = setInterval(fire, FILING_SUMMARY_TICK_MS);
-  (handle as { unref?: () => void }).unref?.();
+  st.handle = setInterval(fire, FILING_SUMMARY_TICK_MS);
+  (st.handle as { unref?: () => void }).unref?.();
   const first = setTimeout(fire, 0);
   (first as { unref?: () => void }).unref?.();
   return true;
 }
 
 export function __resetFilingSummaryTickForTests(): void {
-  if (handle !== null) clearInterval(handle);
-  handle = null;
-  ticking = false;
-  sendingSwept = false;
-  optedIn = false;
+  const st = tickState();
+  if (st.handle !== null) clearInterval(st.handle);
+  st.handle = null;
+  st.ticking = false;
+  st.sendingSwept = false;
+  st.optedIn = false;
 }

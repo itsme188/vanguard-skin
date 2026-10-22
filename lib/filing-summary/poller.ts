@@ -68,11 +68,13 @@ import {
   type FilingClass,
   type FilingHeader,
 } from "./edgar";
-import { writeFilingDocument } from "./files";
+import { readFilingDocument, writeFilingDocument } from "./files";
+import { failPendingSections } from "./run-status";
 import { secArchiveUrl } from "./locate";
 import {
   getEventState,
   insertFiling,
+  listDocuments,
   listFilings,
   upsertDocument,
   upsertEventState,
@@ -110,7 +112,8 @@ export interface PollSeams {
   fetchFn: FetchLike;
   resolveCik(symbol: string, fetchFn: FetchLike): Promise<string | null>;
   now(): number;
-  issuerName(db: Database.Database, symbol: string): string | null;
+  /** The event's issuer name (`issuerNameForEvent` in production). */
+  issuerName(db: Database.Database, eventId: number): string | null;
   /** A newly inserted earnings filing passed the identity gate. */
   onEarningsAccepted(db: Database.Database, eventId: number): void;
   /** A newly inserted companion, accepted after an accepted earnings filing. */
@@ -174,9 +177,12 @@ export function pollPhase(eventDate: string, ms: number): PollPhase {
 // ---------------------------------------------------------------- header cache
 
 const headerCache = new Map<string, FilingHeader>();
+/** Per event, the inputs revalidation last checked (see revalidateStoredFilings). */
+const revalidatedKeys = new Map<number, string>();
 
 export function __resetPollerCacheForTests(): void {
   headerCache.clear();
+  revalidatedKeys.clear();
 }
 
 function isAbort(err: unknown): boolean {
@@ -265,6 +271,32 @@ interface FetchedFiling {
   gateText: string | null;
 }
 
+/**
+ * The text the identity gate reads, from the STORED copies: every fetched
+ * EX-99* document joined, else the main document (the one whose type is the
+ * form, else the lowest sequence). Null when none can be read. One rule for
+ * the first gate and for revalidation.
+ */
+export function gateTextFromStored(
+  form: string,
+  documents: ReadonlyArray<{ docType: string; sequence: number; status: DocumentStatus; storedPath: string | null }>,
+): string | null {
+  const fetched = documents.filter((d) => d.status === "fetched" && d.storedPath !== null);
+  let chosen = fetched.filter((d) => /^EX-99/i.test(d.docType.trim()));
+  if (chosen.length === 0) {
+    const mainForm = normalizeForm(form);
+    const isForm = (d: { docType: string }): number => (normalizeForm(d.docType) === mainForm ? 1 : 0);
+    const main = [...fetched].sort((a, b) => isForm(b) - isForm(a) || a.sequence - b.sequence)[0];
+    chosen = main ? [main] : [];
+  }
+  const texts: string[] = [];
+  for (const d of chosen) {
+    const html = readFilingDocument(d.storedPath as string);
+    if (html !== null) texts.push(htmlToRawText(html));
+  }
+  return texts.length > 0 ? texts.join("\n") : null;
+}
+
 async function fetchDocuments(
   cik: string,
   accession: string,
@@ -274,9 +306,6 @@ async function fetchDocuments(
   storageRoot: string | undefined,
 ): Promise<FetchedFiling> {
   const documents: PreparedDocument[] = [];
-  const exhibitTexts: string[] = [];
-  const mainForm = normalizeForm(form);
-  let mainText: { seq: number; isForm: boolean; text: string } | null = null;
   let toFetch = 0;
   let fetched = 0;
 
@@ -314,18 +343,9 @@ async function fetchDocuments(
       byteLen: written.bytes,
       storedPath: written.path,
     });
-    const type = d.type.trim().toUpperCase();
-    if (/^EX-99/.test(type)) {
-      exhibitTexts.push(htmlToRawText(res.html));
-    } else {
-      const isForm = type === mainForm;
-      if (!mainText || (isForm && !mainText.isForm) || (isForm === mainText.isForm && d.sequence < mainText.seq)) {
-        mainText = { seq: d.sequence, isForm, text: htmlToRawText(res.html) };
-      }
-    }
   }
 
-  const gateText = exhibitTexts.length > 0 ? exhibitTexts.join("\n") : (mainText?.text ?? null);
+  const gateText = gateTextFromStored(form, documents);
   const fetchState: FetchState = fetched === toFetch ? "fetched" : "failed";
   return { documents, fetchState, gateText };
 }
@@ -543,7 +563,7 @@ export async function pollEvent(
       }
       const v = validateDocForEvent(fetched.gateText, {
         symbol,
-        issuerName: seams.issuerName(db, symbol),
+        issuerName: seams.issuerName(db, eventId),
         eventDate,
       });
       identityVerdict = v.ok ? "accepted" : "ambiguous";
@@ -592,6 +612,12 @@ export async function pollEvent(
       const row = await insert(c, "earnings", "gate", null);
       if (!row) continue;
       reference = row;
+      // One live earnings row per event: an earlier earnings-class filing
+      // whose header had no time becomes a companion (it keeps its verdict).
+      db.prepare(
+        `UPDATE filing_summary_filings SET role = 'companion'
+          WHERE event_id = ? AND id <> ? AND role = 'earnings' AND identity_verdict = 'time_unconfirmed'`,
+      ).run(eventId, row.id);
       if (row.identityVerdict === "accepted") {
         callSafely("onEarningsAccepted", eventId, () => seams.onEarningsAccepted(db, eventId));
       }
@@ -651,4 +677,163 @@ export async function pollEvent(
     catchupDone,
   });
   return result("polled", pollState, inserted);
+}
+
+// ---------------------------------------------------------------- issuer
+
+/**
+ * The event's issuer name, resolved the way `getArmedWorksheetEvents` does:
+ * the event's own `security_id` first, else the security with that symbol.
+ */
+export function issuerNameForEvent(db: Database.Database, eventId: number): string | null {
+  const row = db
+    .prepare(
+      `SELECT s.name AS name
+         FROM calendar_events ce
+         LEFT JOIN securities s
+                ON s.id = COALESCE(
+                     ce.security_id,
+                     (SELECT id FROM securities WHERE UPPER(symbol) = UPPER(ce.symbol) LIMIT 1)
+                   )
+        WHERE ce.id = ?`,
+    )
+    .get(eventId) as { name: string | null } | undefined;
+  return row?.name ?? null;
+}
+
+// ---------------------------------------------------------------- revalidation (Hardening 2)
+
+export const EVENT_DATE_CHANGED_REASON = "event date changed";
+export const ISSUER_CHANGED_REASON = "issuer changed";
+
+export interface RevalidateOutcome {
+  /** Filing ids this call rejected. */
+  rejected: number[];
+  /** The earnings filing was rejected and the event reset to `waiting`. */
+  eventReset: boolean;
+}
+
+/** Events with at least one filing that is not rejected, any date. */
+export function eventsWithLiveFilings(db: Database.Database): number[] {
+  return (
+    db
+      .prepare(
+        `SELECT DISTINCT e.event_id FROM filing_summary_events e
+           JOIN filing_summary_filings f ON f.event_id = e.event_id
+          WHERE f.identity_verdict <> 'rejected'
+          ORDER BY e.event_id`,
+      )
+      .all() as Array<{ event_id: number }>
+  ).map((r) => r.event_id);
+}
+
+/**
+ * Re-checks an event's stored filings against its CURRENT date and issuer, so
+ * a date correction or merge never leaves a summary hanging off the wrong
+ * print (Hardening 2):
+ *
+ *  1. a filing accepted on an Eastern day other than the event's date is
+ *     rejected, "event date changed";
+ *  2. the accepted earnings filing is re-gated on its stored EX-99 text (else
+ *     the main document) with the current symbol, issuer and date; a failure,
+ *     or no stored text, rejects it, "issuer changed";
+ *  3. a companion whose CIK differs from the earnings filing's, or that shares
+ *     the CIK of an earnings filing just rejected for its issuer, is
+ *     rejected, "issuer changed".
+ *
+ * In the same transaction, every pending section of a rejected filing fails
+ * with `cancelled` and its run status is recomputed. When the earnings filing
+ * is rejected the event goes back to `waiting` (catch-up and last poll
+ * cleared; the CIK too when the issuer changed), so the next poll looks again
+ * and the late-arm rule re-applies to the new date.
+ *
+ * Synchronous; reads stored documents only. Skips the work when the event's
+ * date, symbol, issuer and live filings are what this process last checked.
+ */
+export function revalidateStoredFilings(
+  db: Database.Database,
+  eventId: number,
+  seams: Pick<PollSeams, "issuerName">,
+): RevalidateOutcome {
+  const none: RevalidateOutcome = { rejected: [], eventReset: false };
+  const ev = db
+    .prepare(`SELECT symbol, event_date FROM calendar_events WHERE id = ?`)
+    .get(eventId) as { symbol: string | null; event_date: string } | undefined;
+  if (!ev || !ev.symbol) return none;
+  const symbol = ev.symbol;
+  const issuer = seams.issuerName(db, eventId);
+
+  const keyFor = (filings: FilingRow[]): string =>
+    [
+      ev.event_date,
+      symbol,
+      issuer ?? "",
+      filings
+        .filter((f) => f.identityVerdict !== "rejected")
+        .map((f) => `${f.id}:${f.role}:${f.identityVerdict}`)
+        .join(","),
+    ].join("|");
+
+  const filings = listFilings(db, eventId);
+  const live = filings.filter((f) => f.identityVerdict !== "rejected");
+  if (live.length === 0) return none;
+  if (revalidatedKeys.get(eventId) === keyFor(filings)) return none;
+
+  const decisions = new Map<number, string>();
+  // Rule 1: the acceptance day must be the event's current date.
+  for (const f of live) {
+    const ms = acceptedMs(f);
+    if (ms !== null && easternClock(ms).date !== ev.event_date) {
+      decisions.set(f.id, EVENT_DATE_CHANGED_REASON);
+    }
+  }
+  // Rule 2: the accepted earnings filing passes the gate again.
+  const accepted = live.find(
+    (f) => f.role === "earnings" && f.identityVerdict === "accepted" && !decisions.has(f.id),
+  );
+  if (accepted) {
+    const text = gateTextFromStored(accepted.form, listDocuments(db, accepted.id));
+    const ok =
+      text !== null && validateDocForEvent(text, { symbol, issuerName: issuer, eventDate: ev.event_date }).ok;
+    if (!ok) decisions.set(accepted.id, ISSUER_CHANGED_REASON);
+  }
+  // Rule 3: companions belong to the earnings filing's issuer.
+  const earnings = earningsReference(live);
+  if (earnings) {
+    const issuerGone = decisions.get(earnings.id) === ISSUER_CHANGED_REASON;
+    for (const c of live) {
+      if (c.role !== "companion" || decisions.has(c.id)) continue;
+      if (c.cik !== earnings.cik || issuerGone) decisions.set(c.id, ISSUER_CHANGED_REASON);
+    }
+  }
+
+  if (decisions.size === 0) {
+    revalidatedKeys.set(eventId, keyFor(filings));
+    return none;
+  }
+
+  const earningsReason =
+    earnings && decisions.has(earnings.id) ? (decisions.get(earnings.id) as string) : null;
+  db.transaction(() => {
+    const reject = db.prepare(
+      `UPDATE filing_summary_filings SET identity_verdict = 'rejected', identity_reason = ? WHERE id = ?`,
+    );
+    for (const [filingId, reason] of decisions) {
+      reject.run(reason, filingId);
+      failPendingSections(db, "filing", filingId, reason);
+    }
+    if (earningsReason !== null) {
+      // A disarmed event stays cancelled; everything else looks again.
+      const cancelled = getEventState(db, eventId)?.pollState === "cancelled";
+      upsertEventState(db, eventId, {
+        pollState: cancelled ? "cancelled" : "waiting",
+        pollDetail: `earnings filing rejected: ${earningsReason}`,
+        catchupDone: false,
+        lastPolledAt: null,
+        ...(earningsReason === ISSUER_CHANGED_REASON ? { cik: null } : {}),
+      });
+    }
+  })();
+  revalidatedKeys.set(eventId, keyFor(listFilings(db, eventId)));
+  return { rejected: [...decisions.keys()], eventReset: earningsReason !== null };
 }

@@ -7,7 +7,7 @@
  * Event: ACME (Acme Widgets Inc) reports after the close on 2026-10-21, an
  * EDT day, so Eastern = UTC - 4h.
  */
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import Database from "better-sqlite3";
 import fs from "node:fs";
 import os from "node:os";
@@ -15,14 +15,24 @@ import path from "node:path";
 import { runMigrations } from "@/lib/db/migrate";
 import type { FetchLike } from "@/lib/print-watch/hardened-fetch";
 import {
+  issuerNameForEvent,
   pollEvent,
   pollPhase,
+  EVENT_DATE_CHANGED_REASON,
+  ISSUER_CHANGED_REASON,
   __resetPollerCacheForTests,
   AFTER_CUTOFF_REASON,
   MANUAL_ONLY_DETAIL,
   type PollSeams,
 } from "@/lib/filing-summary/poller";
-import { runTick, __resetFilingSummaryTickForTests, type TickSeams } from "@/lib/filing-summary/tick";
+import {
+  runTick,
+  startFilingSummaryTick,
+  enableFilingSummaryTick,
+  __resetFilingSummaryTickForTests,
+  type TickSeams,
+} from "@/lib/filing-summary/tick";
+import { mergeFilingSummaryState } from "@/lib/filing-summary/merge";
 import {
   claimNextSection,
   createRun,
@@ -135,12 +145,13 @@ class FakeEdgar {
 const EX99_GOOD = "<p>Acme Widgets Inc reports Q3 2026 results. Revenue rose.</p>";
 const EX99_WRONG_ISSUER = "<p>Some other company reports Q3 2026 results.</p>";
 
-function earnings8k(accession: string, hhmmss: string, ex99 = EX99_GOOD): FakeFiling {
+function earnings8k(accession: string, hhmmss: string, ex99 = EX99_GOOD, day = "20261021"): FakeFiling {
+  const dashed = `${day.slice(0, 4)}-${day.slice(4, 6)}-${day.slice(6, 8)}`;
   return {
     accession,
     form: "8-K",
-    json: `2026-10-21T${hhmmss.slice(0, 2)}:${hhmmss.slice(2, 4)}:${hhmmss.slice(4, 6)}.000Z`,
-    header: `20261021${hhmmss}`,
+    header: `${day}${hhmmss}`,
+    json: `${dashed}T${hhmmss.slice(0, 2)}:${hhmmss.slice(2, 4)}:${hhmmss.slice(4, 6)}.000Z`,
     items: ["2.02", "9.01"],
     docs: [
       { type: "8-K", seq: 1, file: "acme-8k.htm", body: "<p>Item 2.02 Results of Operations</p>" },
@@ -176,9 +187,7 @@ function seams(): TickSeams {
     fetchFn: edgar.fetchFn,
     resolveCik: async () => CIK,
     now: () => clock,
-    issuerName: (d, symbol) =>
-      (d.prepare(`SELECT name FROM securities WHERE symbol = ?`).get(symbol) as { name: string } | undefined)
-        ?.name ?? null,
+    issuerName: issuerNameForEvent,
     onEarningsAccepted: (_d, id) => earningsCalls.push(id),
     onCompanionAccepted: (_d, id, filingId) => companionCalls.push([id, filingId]),
     storageRoot: () => root,
@@ -238,6 +247,13 @@ describe("pollPhase (Eastern window)", () => {
     expect(pollPhase(EVENT_DATE, et("19:59"))).toBe("in_window");
     expect(pollPhase(EVENT_DATE, et("20:00"))).toBe("after_cutoff");
     expect(pollPhase(EVENT_DATE, et("01:00", "2026-10-22"))).toBe("after_cutoff");
+  });
+
+  it("follows the clock change: on 2026-11-01 (EST from 02:00) the window is 11:00Z to 01:00Z", () => {
+    expect(pollPhase("2026-11-01", Date.parse("2026-11-01T10:59:00Z"))).toBe("before_window");
+    expect(pollPhase("2026-11-01", Date.parse("2026-11-01T11:00:00Z"))).toBe("in_window");
+    expect(pollPhase("2026-11-01", Date.parse("2026-11-02T00:59:59Z"))).toBe("in_window");
+    expect(pollPhase("2026-11-01", Date.parse("2026-11-02T01:00:00Z"))).toBe("after_cutoff");
   });
 });
 
@@ -601,5 +617,165 @@ describe("runTick: disarm, re-arm, runner, sweep", () => {
     markPush(db, "k1", "sending");
     await tick(et("15:01"));
     expect(state()).toBe("sending");
+  });
+});
+
+describe("fix round 1", () => {
+  function seedEventOn(date: string, key: string, symbol = "ACME"): number {
+    return Number(
+      db
+        .prepare(
+          `INSERT INTO calendar_events (source, event_type, event_date, title, source_key, symbol)
+           VALUES ('finnhub','earnings',?, 'earnings', ?, ?)`,
+        )
+        .run(date, key, symbol).lastInsertRowid,
+    );
+  }
+  function runFor(id: number, filingIds: number[]): number {
+    return createRun(db, {
+      eventId: id,
+      trigger: "auto",
+      choice: { family: "opus", effort: "high" },
+      modelId: null,
+      fallbackNote: null,
+      requestKey: null,
+      bogeySnapshotJson: "{}",
+      filingIds,
+    }).runId;
+  }
+
+  it("Hardening 2: a merge onto a new date rejects the old-date filing, fails its pending section, and the new date is polled again", async () => {
+    const donor = seedEventOn("2026-10-20", "fs-poll-donor");
+    arm(et("09:00", "2026-10-20"), donor);
+    edgar.filings.push(earnings8k("0000123456-26-000090", "160500", EX99_GOOD, "20261020"));
+    await tick(et("16:06", "2026-10-20"));
+    const [old] = listFilings(db, donor);
+    expect(old.identityVerdict).toBe("accepted");
+    const runId = runFor(donor, [old.id]);
+
+    // Date correction: the donor folds into the 2026-10-21 event.
+    db.transaction(() => {
+      mergeFilingSummaryState({ db, donorEventId: donor, targetEventId: eventId });
+      db.prepare(`UPDATE earnings_worksheet_flags SET event_id = ? WHERE event_id = ?`).run(eventId, donor);
+      db.prepare(`DELETE FROM calendar_events WHERE id = ?`).run(donor);
+    })();
+
+    edgar.filings.push(earnings8k("0000123456-26-000101", "160500"));
+    const t = await tick(et("16:06"));
+    expect(t.revalidated).toEqual([eventId]);
+
+    const filings = listFilings(db, eventId);
+    expect(filings.map((f) => [f.accession, f.identityVerdict, f.identityReason])).toEqual([
+      ["0000123456-26-000090", "rejected", EVENT_DATE_CHANGED_REASON],
+      ["0000123456-26-000101", "accepted", null],
+    ]);
+    expect(listSections(db, runId)[0]).toMatchObject({ status: "failed", errorClass: "cancelled" });
+    expect(listRuns(db, eventId)[0].status).toBe("failed");
+    expect(getEventState(db, eventId)!.pollState).toBe("found");
+    expect(earningsCalls).toEqual([donor, eventId]);
+  });
+
+  it("Hardening 2: a symbol change rejects the earnings filing and its companion as 'issuer changed' and resets the event", async () => {
+    arm(et("09:00"));
+    edgar.filings.push(earnings8k("0000123456-26-000101", "160500"));
+    edgar.filings.push(companion("0000123456-26-000102", "PRE 14C", "161200"));
+    await tick(et("16:13"));
+    expect(getEventState(db, eventId)!.pollState).toBe("found");
+
+    db.prepare(`INSERT INTO securities (symbol, name, security_type) VALUES ('ZETA', 'Zeta Corp', 'Stock')`).run();
+    db.prepare(`UPDATE calendar_events SET symbol = 'ZETA' WHERE id = ?`).run(eventId);
+    let cikAsked = 0;
+    clock = et("16:20");
+    await runTick(db, clock, {
+      ...seams(),
+      resolveCik: async () => {
+        cikAsked += 1;
+        return CIK;
+      },
+    });
+    const filings = listFilings(db, eventId);
+    expect(filings.map((f) => [f.form, f.identityVerdict, f.identityReason])).toEqual([
+      ["8-K", "rejected", ISSUER_CHANGED_REASON],
+      ["PRE 14C", "rejected", ISSUER_CHANGED_REASON],
+    ]);
+    expect(cikAsked).toBe(1); // the CIK was cleared and resolved again
+    const s = getEventState(db, eventId)!;
+    expect(s.pollState).toBe("waiting");
+    expect(s.catchupDone).toBe(false);
+  });
+
+  it("an unchanged event is not re-gated every tick (no document reads after the first check)", async () => {
+    arm(et("09:00"));
+    edgar.filings.push(earnings8k("0000123456-26-000101", "160500"));
+    await tick(et("16:06"));
+    const [f] = listFilings(db, eventId);
+    const ex = listDocuments(db, f.id).find((d) => d.fileName === "acme-ex991.htm")!;
+    await tick(et("16:07"));
+    fs.rmSync(ex.storedPath!); // a re-gate now would reject for missing text
+    await tick(et("16:08"));
+    expect(listFilings(db, eventId)[0].identityVerdict).toBe("accepted");
+  });
+
+  it("only one live earnings row: a time-unconfirmed 8-K seen first becomes a companion once a timed one is accepted", async () => {
+    arm(et("09:00"));
+    edgar.filings.push({ ...earnings8k("0000123456-26-000100", "160000"), header: null });
+    await tick(et("16:01"));
+    expect(listFilings(db, eventId)[0]).toMatchObject({ role: "earnings", identityVerdict: "time_unconfirmed" });
+    edgar.filings.push(earnings8k("0000123456-26-000101", "160500"));
+    await tick(et("16:06"));
+    const filings = listFilings(db, eventId);
+    expect(filings.map((f) => [f.accession, f.role, f.identityVerdict])).toEqual([
+      ["0000123456-26-000100", "companion", "time_unconfirmed"],
+      ["0000123456-26-000101", "earnings", "accepted"],
+    ]);
+    expect(filings.filter((f) => f.role === "earnings" && f.identityVerdict !== "rejected")).toHaveLength(1);
+    expect(earningsCalls).toEqual([eventId]);
+  });
+
+  it("midnight: yesterday's event ticked at 00:30 Eastern still runs its catch-up", async () => {
+    arm(et("09:00"));
+    await tick(et("15:00"));
+    edgar.filings.push(earnings8k("0000123456-26-000101", "160500"));
+    await tick(et("00:30", "2026-10-22"));
+    const s = getEventState(db, eventId)!;
+    expect(s.pollState).toBe("past_cutoff");
+    expect(s.catchupDone).toBe(true);
+    expect(earningsCalls).toEqual([eventId]);
+  });
+
+  it("re-arm reads the flag's created_at: armed again at 19:50, first ticked at 20:05 → catch-up, not manual_only", async () => {
+    arm(et("09:00"));
+    await tick(et("15:00"));
+    disarm();
+    await tick(et("16:00"));
+    arm(et("19:50"));
+    edgar.filings.push(earnings8k("0000123456-26-000101", "160500"));
+    await tick(et("20:05"));
+    expect(getEventState(db, eventId)!.pollState).toBe("past_cutoff");
+    expect(earningsCalls).toEqual([eventId]);
+  });
+
+  it("ruling 8: an old print disarmed later keeps its state and its pending sections", async () => {
+    arm(et("09:00"));
+    edgar.filings.push(earnings8k("0000123456-26-000101", "160500"));
+    await tick(et("16:06"));
+    const [f] = listFilings(db, eventId);
+    const runId = runFor(eventId, [f.id]);
+    disarm();
+    const t = await tick(et("10:00", "2026-10-23"));
+    expect(t.cancelled).toEqual([]);
+    expect(getEventState(db, eventId)!.pollState).toBe("found");
+    expect(listSections(db, runId)[0].status).toBe("pending");
+  });
+
+  it("the tick timer lives on globalThis: a re-evaluated module does not start a second one", async () => {
+    enableFilingSummaryTick();
+    const noop = async () => {};
+    expect(startFilingSummaryTick(db, noop)).toBe(true);
+    expect(startFilingSummaryTick(db, noop)).toBe(false);
+    vi.resetModules();
+    const fresh = await import("@/lib/filing-summary/tick");
+    expect(fresh.startFilingSummaryTick(db, noop)).toBe(false);
+    __resetFilingSummaryTickForTests();
   });
 });
