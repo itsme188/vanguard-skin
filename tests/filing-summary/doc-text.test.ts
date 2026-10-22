@@ -12,8 +12,8 @@ describe("extractDocText — synthetic 8-K", () => {
   const doc = extractDocText(FIXTURE);
 
   it("stamps the extractor version", () => {
-    expect(EXTRACTOR_VERSION).toBe(1);
-    expect(doc.extractorVersion).toBe(1);
+    expect(EXTRACTOR_VERSION).toBe(2);
+    expect(doc.extractorVersion).toBe(2);
   });
 
   it("counts three pages from two breaks; a trailing break opens no empty page", () => {

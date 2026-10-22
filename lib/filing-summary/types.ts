@@ -12,7 +12,11 @@ export type SummaryEffort = "medium" | "high";
 export interface SummaryChoice { family: SummaryFamily; effort: SummaryEffort }
 
 // ---- extracted document text (Task 3) ----
-export interface TextBlock { index: number; page: number; para: number; text: string; tableId: number | null; rowIndex: number | null }
+export interface TextBlock {
+  index: number; page: number; para: number; text: string; tableId: number | null; rowIndex: number | null;
+  /** Set when the block's text came from an HTML <li> (extractor 2; absent on older stored text). */
+  listItem?: boolean;
+}
 export interface TableGrid {
   id: number; page: number;
   rows: string[][];            // body rows, colspan spread across covered columns (R3)

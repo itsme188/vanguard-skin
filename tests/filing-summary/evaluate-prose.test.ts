@@ -7,10 +7,10 @@ import { extractDocText } from "@/lib/filing-summary/doc-text";
 import { normalizeForMatch } from "@/lib/filing-summary/locate";
 import { scanNumbers, statedNumber } from "@/lib/filing-summary/evaluate-tokens";
 import {
-  changeRoles, headingPeriod, isHeadingBlock, isOrRestatement, leadInBlock, proseBasisClauses, quantityTokens, rangeBounds, spelledNumbers,
+  changeRoles, headingPeriod, isHeadingBlock, isListItem, isOrRestatement, leadInBlock, proseBasisClauses, quantityTokens, rangeBounds, spelledNumbers,
 } from "@/lib/filing-summary/evaluate-prose";
 import { isDefinitionalNonGaap, isLossMetric, proseBasisConfirmed, saysBothBases } from "@/lib/filing-summary/evaluate-words";
-import type { DocText, ModelFigure, PeriodSpec } from "@/lib/filing-summary/types";
+import type { DocText, ModelFigure, PeriodSpec, TextBlock } from "@/lib/filing-summary/types";
 import {
   EX991, bogey, bogeyFig, cite, claim, cmp, codes, exhibit, one, period, quoteFig,
 } from "./evaluate-helpers";
@@ -365,8 +365,11 @@ describe("review round 2", () => {
   it("3: a lead-in block ending in ':' with basis words governs the list after it (H1; Meta's 'Excluding this charge:')", () => {
     const lead = `<p>Third Quarter 2026 Results</p><p>Excluding the litigation charge, our results would have been as follows:</p><p>Operating margin was 45%${P}.</p>`;
     const m = (basis: ModelFigure["basis"]) => pct("45%", 45, "operating margin", "Operating margin", { basis });
+    // H1: a plain paragraph after the lead-in is DENIED "reported" but (review round 3) not CONFIRMED either.
     expect(bind(`Operating margin was 45%${P}.`, m("reported"), docsOf(lead)).status).not.toBe("checked");
-    expect(bind(`Operating margin was 45%${P}.`, m("excluding_item"), docsOf(lead)).status).toBe("checked");
+    expect(bind(`Operating margin was 45%${P}.`, m("excluding_item"), docsOf(lead)).status).not.toBe("checked");
+    const bullet = lead.replace("<p>Operating margin", "<p>• Operating margin");
+    expect(bind(`Operating margin was 45%${P}.`, m("excluding_item"), docsOf(bullet)).status).toBe("checked");
     const meta = `<p>Third Quarter 2026 Financial Highlights</p><p>Third quarter 2026 costs and expenses includes a $9.89 billion charge related to this agreement. Excluding this charge, the third quarter 2026:</p><p>•Income from operations of $12.99 billion would have increased by $9.89 billion to $22.88 billion.</p><p>•Diluted EPS of $3.83 would have increased by $3.57 to $7.40.</p>`;
     const q = "Diluted EPS of $3.83 would have increased by $3.57 to $7.40";
     expect(bind(q, { ...eps(7.4, "excluding_item"), label: "Diluted EPS", period: Q3 }, docsOf(meta)).status).toBe("checked");
@@ -377,7 +380,8 @@ describe("review round 2", () => {
     const conflict = `<p>Excluding the charge:</p><p>GAAP operating margin was 45%${P}.</p>`;
     expect(bind(`GAAP operating margin was 45%${P}.`, m("excluding_item"), docsOf(conflict)).status).not.toBe("checked");
     const doc = extractDocText(meta);
-    expect(leadInBlock(doc, doc.blocks[3])).toMatch(/Excluding this charge/);
+    expect(leadInBlock(doc, doc.blocks[3])).toMatchObject({ confirms: true });
+    expect(leadInBlock(doc, doc.blocks[3])?.text).toMatch(/Excluding this charge/);
     expect(leadInBlock(doc, doc.blocks[1])).toBeNull();
   });
   it("4: free cash flow is non-GAAP by definition: typed non_gaap in a reconciliation table confirms, typed reported does not", () => {
@@ -410,6 +414,73 @@ describe("review round 2", () => {
     const cf = `<p>Condensed Consolidated Statements of Cash Flows</p><p>(In millions)</p><table><tr><td></td><td>Three Months Ended September 30, 2026</td></tr><tr><td>Investing</td><td></td></tr><tr><td>Purchases of marketable securities</td><td>(900)</td></tr></table>`;
     const c = one(claim("Purchases of {f1}.", [cite("q1", "Purchases of marketable securities | (900)")], [quoteFig("f1", "q1", { valueText: "$900 million", value: 900, scale: "millions", metric: "purchases of marketable securities", label: "Purchases of marketable securities" })]), { docs: [{ fileName: EX991, text: extractDocText(cf) }] });
     expect(c.status).toBe("checked");
+  });
+});
+
+describe("review round 3", () => {
+  const eps = (v: number, basis: ModelFigure["basis"], metric = "diluted EPS", label = "diluted earnings per share"): Fig =>
+    ({ valueText: `$${v.toFixed(2)}`, value: v, scale: "units", unit: "usd_per_share", metric, label, basis });
+  const head = `<p>Third Quarter 2026 Results</p>`;
+
+  it("1/B1/B5: a lead-in DENIES reported to the plain paragraphs after it but CONFIRMS only genuine list items", () => {
+    const B1 = `${head}<p>On a non-GAAP basis:</p><p>Diluted earnings per share was $3.83${P}.</p>`;
+    expect(bind(`Diluted earnings per share was $3.83${P}.`, eps(3.83, "non_gaap"), docsOf(B1)).status).not.toBe("checked");
+    expect(bind(`Diluted earnings per share was $3.83${P}.`, eps(3.83, "reported"), docsOf(B1)).codes).toContain("basis_unconfirmed");
+    const B5 = `${head}<p>On a non-GAAP basis:</p><p>• Revenue was $40.0 billion${P}.</p><p>Diluted earnings per share was $3.83${P}.</p>`;
+    expect(bind(`Diluted earnings per share was $3.83${P}.`, eps(3.83, "non_gaap"), docsOf(B5)).status).not.toBe("checked");
+    expect(bind(`Diluted earnings per share was $3.83${P}.`, eps(3.83, "reported"), docsOf(B5)).status).not.toBe("checked");
+    // a second plain paragraph is out of reach: reported stands again
+    const far = `${head}<p>On a non-GAAP basis:</p><p>Revenue was $40.0 billion${P}.</p><p>Diluted earnings per share was $3.83${P}.</p>`;
+    expect(bind(`Diluted earnings per share was $3.83${P}.`, eps(3.83, "reported"), docsOf(far)).status).toBe("checked");
+    // a bullet is confirmed
+    const bul = `${head}<p>On a non-GAAP basis:</p><p>• Diluted earnings per share was $3.83${P}.</p>`;
+    expect(bind(`Diluted earnings per share was $3.83${P}.`, eps(3.83, "non_gaap"), docsOf(bul)).status).toBe("checked");
+  });
+  it("2/B2/B3: genuine list items are bullet glyphs, list markers that are not abbreviations, and HTML <li>", () => {
+    const mk = (text: string): TextBlock => ({ index: 0, page: 1, para: 1, text, tableId: null, rowIndex: null });
+    expect(isListItem(mk("• Revenue was up"))).toBe(true);
+    expect(isListItem(mk("– Revenue was up"))).toBe(true);
+    expect(isListItem(mk("(a) Revenue was up"))).toBe(true);
+    expect(isListItem(mk("1. Revenue was up"))).toBe(true);
+    expect(isListItem(mk("b) Revenue was up"))).toBe(true);
+    expect(isListItem(mk("U.S. diluted earnings per share was $3.83"))).toBe(false);
+    expect(isListItem(mk("No. 5 on the list"))).toBe(false);
+    expect(isListItem(mk("Mr. Smith said"))).toBe(false);
+    expect(isListItem(mk("Inc. results"))).toBe(false);
+    expect(isListItem(mk("Revenue was up"))).toBe(false);
+    expect(isListItem({ ...mk("Revenue was up"), listItem: true })).toBe(true);
+    const B2 = `${head}<p>On a non-GAAP basis:</p><p>• Revenue was $40.0 billion${P}.</p><p>U.S. diluted earnings per share was $3.83${P}.</p>`;
+    expect(bind(`U.S. diluted earnings per share was $3.83${P}.`, eps(3.83, "non_gaap", "U.S. diluted EPS", "U.S. diluted earnings per share"), docsOf(B2)).status).not.toBe("checked");
+    const B3 = `${head}<p>Excluding the litigation charge, the third quarter 2026:</p><ul><li>Revenue was $40.0 billion${P}.</li><li>Diluted earnings per share was $7.40${P}.</li></ul>`;
+    const d = extractDocText(B3);
+    expect(d.blocks.map((b) => b.listItem ?? false)).toEqual([false, false, true, true]);
+    expect(d.extractorVersion).toBe(2);
+    expect(bind(`Diluted earnings per share was $7.40${P}.`, eps(7.4, "reported"), docsOf(B3)).status).not.toBe("checked");
+    expect(bind(`Diluted earnings per share was $7.40${P}.`, eps(7.4, "excluding_item"), docsOf(B3)).status).toBe("checked");
+  });
+  it("3/B4: a mixed lead-in confirms nothing and denies nothing", () => {
+    const B4 = `${head}<p>Reconciliation of GAAP to non-GAAP results:</p><p>• Diluted earnings per share was $3.83${P}.</p>`;
+    expect(bind(`Diluted earnings per share was $3.83${P}.`, eps(3.83, "non_gaap"), docsOf(B4)).status).not.toBe("checked");
+    expect(bind(`Diluted earnings per share was $3.83${P}.`, eps(3.83, "reported"), docsOf(B4)).status).toBe("checked");
+    const doc = extractDocText(B4);
+    expect(leadInBlock(doc, doc.blocks[2])).toBeNull();
+  });
+  it("4/D4: a loss word earlier in the own clause signs the number; 'income taxes' is no income counterpart", () => {
+    expect(isLossMetric("loss before income taxes")).toBe(true);
+    expect(isLossMetric("income (loss) before taxes")).toBe(false);
+    const s = `We reported a loss before income taxes of $1.2 billion${P}.`;
+    expect(bind(s, usdB("$1.2 billion", 1.2, "income (loss) before taxes", "loss before income taxes")).status).not.toBe("checked");
+    expect(bind(s, usdB("-$1.2 billion", -1.2, "income (loss) before taxes", "loss before income taxes")).status).toBe("checked");
+    expect(bind(s, usdB("$1.2 billion", 1.2, "loss before income taxes", "loss before income taxes")).status).toBe("checked");
+    expect(bind(s, usdB("-$1.2 billion", -1.2, "loss before income taxes", "loss before income taxes")).codes).toContain("loss_sign_double");
+    // the sign does not cross a clause break
+    expect(bind(`After the loss, revenue was $5.0 billion${P}.`, usdB("$5.0 billion", 5, "revenue", "revenue")).status).toBe("checked");
+  });
+  it("4/E3: 'would … have' before the number, with words between, is hypothetical", () => {
+    const r = bind(`Diluted earnings per share would have been, in that case, $7.40${P}.`, eps(7.4, "reported"));
+    expect(r.status).not.toBe("checked");
+    expect(r.codes).toContain("basis_unconfirmed");
+    expect(bind(`We retained subscribers that would have churned, totaling 12 million${P}.`, { valueText: "12 million", value: 12, scale: "millions", unit: "count", metric: "retained subscribers", label: "subscribers" }).status).toBe("checked");
   });
 });
 

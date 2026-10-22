@@ -36,7 +36,7 @@
 import { decodeEntities, tokenize } from "@/lib/print-watch/representations";
 import type { DocText, TableGrid, TextBlock } from "./types";
 
-export const EXTRACTOR_VERSION = 1;
+export const EXTRACTOR_VERSION = 2; // 2: prose blocks from an HTML <li> carry listItem: true
 
 const SCALE_RE = /\b(in|amounts in)\s+(thousands|millions|billions)\b[^)\n]*/i;
 
@@ -133,6 +133,9 @@ export function extractDocText(html: string): DocText {
   let breaksFound = 0;
 
   let bodyText: string[] = [];
+  /** Open <li> elements; body text sunk while one is open marks its block a list item. */
+  let liDepth = 0;
+  let bodyInLi = false;
   /** Open non-void elements with a break-after style, by tag name. */
   const openStack: Array<{ name: string; breakAfter: boolean }> = [];
   /** Outermost table being read; nested tables only add text to its cell. */
@@ -144,13 +147,13 @@ export function extractDocText(html: string): DocText {
     pendingBreak = true;
   };
 
-  const emit = (text: string, tableId: number | null, rowIndex: number | null, breakBefore: boolean): TextBlock => {
+  const emit = (text: string, tableId: number | null, rowIndex: number | null, breakBefore: boolean, listItem = false): TextBlock => {
     if (breakBefore && blocks.length > 0) {
       page++;
       para = 0;
     }
     para++;
-    const block: TextBlock = { index: blocks.length, page, para, text, tableId, rowIndex };
+    const block: TextBlock = { index: blocks.length, page, para, text, tableId, rowIndex, ...(listItem ? { listItem: true } : {}) };
     blocks.push(block);
     return block;
   };
@@ -159,8 +162,10 @@ export function extractDocText(html: string): DocText {
     if (bodyText.length === 0) return;
     const text = squash(bodyText.join(""));
     bodyText = [];
+    const inLi = bodyInLi;
+    bodyInLi = false;
     if (!text) return;
-    emit(text, null, null, pendingBreak);
+    emit(text, null, null, pendingBreak, inLi);
     pendingBreak = false;
   };
 
@@ -257,6 +262,7 @@ export function extractDocText(html: string): DocText {
       // text inside <table> but outside a cell is layout noise — drop it
       return;
     }
+    if (liDepth > 0 && text.trim()) bodyInLi = true;
     bodyText.push(text);
   };
 
@@ -319,6 +325,7 @@ export function extractDocText(html: string): DocText {
       }
     } else if (BOUNDARY_TAGS.has(name)) {
       flushBody();
+      if (name === "li") liDepth = closing ? Math.max(0, liDepth - 1) : liDepth + 1;
     } else if (name === "br") {
       bodyText.push(" ");
     }

@@ -130,7 +130,10 @@ export function metricMatchesLabel(
  * those are income-or-loss lines whose loss keeps its negative sign.
  */
 export function isLossMetric(text: string): boolean {
-  const t = text.toLowerCase().replace(/\(\s*loss(?:es)?\s*\)/g, " ").replace(/\b(?:income|gain|profit|earnings)\s*\/\s*loss(?:es)?\b/g, " ");
+  const t = text.toLowerCase()
+    .replace(/\(\s*loss(?:es)?\s*\)/g, " ")
+    .replace(/\b(?:income|gain|profit|earnings)\s*\/\s*loss(?:es)?\b/g, " ")
+    .replace(/\bincome\s+tax(?:es)?\b/g, " "); // "loss before income taxes": the tax, not an income counterpart
   if (!/\bloss(?:es)?\b/.test(t)) return false;
   return !/\b(?:income|gains?|profits?|earnings)\b/.test(t);
 }
@@ -154,7 +157,7 @@ export interface BasisEvidence { decided: Set<EvidenceKind> | null; mixedSeen: b
 // "management adjusted EPS" and "adjusted the same way" all keep the word as basis evidence.
 const ADJUSTED_BASIS = /(?<!\b(?:we|they|it)\s+)\badjusted\b(?!\s+(?:our|its|their|down|downward|up|upward|lower|higher|accordingly)\b)/i;
 
-function kindsIn(text: string): Set<EvidenceKind> {
+export function kindsIn(text: string): Set<EvidenceKind> {
   const k = new Set<EvidenceKind>();
   if (/\bnon[\s-]*gaap\b/i.test(text) || ADJUSTED_BASIS.test(text)) k.add("non_gaap");
   if (/\bexclud(?:ing|es|ed)\b|\bexclusive\s+of\b/i.test(text)) k.add("excluding_item");

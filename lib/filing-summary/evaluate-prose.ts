@@ -20,7 +20,7 @@
  */
 import { normalizeForMatch, type LocatedQuote } from "./locate";
 import { matchesWithRounding, parsePeriodPhrase, toUnits, type PeriodCore } from "./figures";
-import { extendLabelLeft, isDefinitionalNonGaap, isLossMetric, measureClasses, metricMatchesLabel, proseBasisConfirmed } from "./evaluate-words";
+import { extendLabelLeft, isDefinitionalNonGaap, isLossMetric, kindsIn, measureClasses, metricMatchesLabel, proseBasisConfirmed } from "./evaluate-words";
 import { periodsMatch } from "./evaluate-periods";
 import { failed, halfUnit, reason, scanNumbers, type Binding, type NumberToken, type StatedNumber } from "./evaluate-tokens";
 import type { CheckReason, DocText, FigureUnit, ModelFigure, TextBlock } from "./types";
@@ -345,8 +345,7 @@ export function headingPeriod(doc: DocText, block: TextBlock, eventDate: string)
 // restated, hypothetical figure, as in a "would have increased … to" sentence (review rounds 1–2). "would",
 // up to two adverbs, "have", any verb (with an optional "to" / "at" / "in"), then the number, all in the
 // figure's own clause.
-const WOULD_HAVE =
-  /\bwould(?:\s+\w+){0,2}\s+have\s+\w+(?:\s+(?:to|at|in))?\s+(?:approximately\s+|about\s+|roughly\s+|around\s+)?$/;
+const WOULD_HAVE = /\bwould\b(?:\s+\w+){0,2}\s+have\b/;
 
 const CHANGE_METRIC = /\b(?:growth|increase|decrease|change|decline|rise|gain|drop|improvement|reduction|delta|up|down)\b/i;
 // A percent figure whose metric is a money measure ("revenue", 27%) can only be a rate of change; a
@@ -374,6 +373,15 @@ export function bindProse(fig: ModelFigure, stated: StatedNumber, located: Locat
   // place; a later place pairs only forward and never a number an earlier place already took (fix round 5).
   const percent = fig.unit === "percent";
   const all = proseTokens(ns, fig.unit); // years and date days are never the figure
+  // A loss word anywhere earlier in the number's own clause signs it ("a loss before income taxes of $1.2
+  // billion" is −1.2; review round 3). A parenthesised "(loss)" or "income/loss" is a label, not a sign.
+  const clauses = splitClauses(ns);
+  for (const t of all) {
+    if (t.signWord || t.value <= 0) continue;
+    const c = clauses.find((x) => t.start < x.end);
+    const before = (c ? ns.slice(c.start, t.start) : ns.slice(0, t.start)).replace(/\(\s*loss(?:es)?\s*\)/g, " ").replace(/\b\w+\s*\/\s*loss(?:es)?\b/g, " ");
+    if (/\bloss(?:es)?\b/.test(before)) { t.value = -t.value; t.signWord = "loss"; }
+  }
   const tokens = all.filter((t) => t.isPercent === percent);
   // "losses of $18 billion" is a positive loss figure: a number signed only by a loss word matches a
   // loss-named metric by its size (review round 1, item 6; the negative-typed case is loss_sign_double).
@@ -462,8 +470,15 @@ export function bindProse(fig: ModelFigure, stated: StatedNumber, located: Locat
   if (ch?.role === "change" && !changeMetric) {
     return failed([...reasons, reason("value_not_in_quote", fig.id, `${fig.valueText} is the change the sentence states, not the ${fig.metric} figure`)]);
   }
-  const ownClause = splitClauses(ns).find((c) => hit!.start < c.end);
-  const hypothetical = (ch?.role === "current" && ch.hypothetical) || WOULD_HAVE.test(ns.slice(ownClause?.start ?? 0, hit.start));
+  // "would … have …" anywhere in the figure's own clause before the number, words between allowed; when the
+  // number opens its clause ("would have been, in that case, $7.40") the clauses before it, as long as they
+  // hold no quantity, are part of the same statement (review round 3).
+  const ownIdx = clauses.findIndex((c) => hit!.start < c.end);
+  let scopeStart = clauses[ownIdx]?.start ?? 0;
+  if (ownIdx >= 0 && !/[a-z]/.test(ns.slice(scopeStart, hit.start))) {
+    for (let k = ownIdx - 1; k >= 0 && quantityTokens(clauses[k].text.replace(DATE_RE, " ")).length === 0; k--) scopeStart = clauses[k].start;
+  }
+  const hypothetical = (ch?.role === "current" && ch.hypothetical) || WOULD_HAVE.test(ns.slice(scopeStart, hit.start));
   if (hypothetical && fig.basis !== "excluding_item" && fig.basis !== "non_gaap") {
     return failed([...reasons, reason("basis_unconfirmed", fig.id, `${fig.valueText} is a "would have" figure, not a ${fig.basis} one`)]);
   }
@@ -516,24 +531,55 @@ export function bindProse(fig: ModelFigure, stated: StatedNumber, located: Locat
   };
 }
 
-const BULLET_BLOCK = /^\s*(?:[•·▪◦\-–—*]|\(?[a-z0-9]{1,2}[.)])\s*/i;
+// A genuine list item (review round 3 ruling): a bullet glyph; a marker "(a)", "a)", "1." or "1)" and a
+// space that is not a known abbreviation; or an HTML <li> (extractor 2, `listItem`). A glyph that also
+// occurs in running text (*, –, —) needs a space after it; a pure bullet glyph (•·▪◦‣) does not, because
+// EDGAR filers set it in its own span and the extractor squashes the gap ("•Income from operations …").
+const BULLET_GLYPH = /^\s*(?:[•·▪◦‣]|[*–—]\s)/;
+const LIST_MARKER = /^\s*(\(?[a-z0-9]{1,2})[.)]\s/i;
+const ABBREVIATIONS = new Set(["u.s", "u.k", "mr", "ms", "dr", "no", "inc", "co"]);
+
+export function isListItem(b: TextBlock): boolean {
+  if (b.listItem) return true;
+  if (BULLET_GLYPH.test(b.text)) return true;
+  const m = LIST_MARKER.exec(b.text);
+  if (!m) return false;
+  const marker = m[1].replace("(", "").toLowerCase();
+  if (ABBREVIATIONS.has(marker)) return false;
+  // "U.S." reads as marker "U." followed by "S": refuse a dotted abbreviation outright.
+  return !/^\s*[a-z]\.[a-z]\./i.test(b.text);
+}
+
+const BASIS_WORDS_RE = /\bnon[\s-]*gaap\b|\bexclud(?:ing|es|ed)\b|\bconstant[\s-]+currency\b|\badjusted\b|\bgaap\b/i;
+
+/** What a lead-in does for a figure's block: deny "reported" (every governed block) and, for a genuine list item, confirm its basis. */
+export interface LeadIn { text: string; confirms: boolean }
 
 /**
- * The lead-in that governs a list (review round 2 ruling): a block ending in ":" whose text carries basis
- * words ("Excluding this charge:", "On a non-GAAP basis:") applies to the consecutive bullet blocks after
- * it, until a heading or a block that is not a bullet. Null when none governs `block`.
+ * The lead-in that governs `block` (review rounds 2–3, asymmetric by ruling): a block ending in ":" whose
+ * text carries basis words ("Excluding this charge, the third quarter 2026:", "On a non-GAAP basis:").
+ * Its DENIAL of "reported" reaches the blocks after it, list items or not, until a heading or a second
+ * plain paragraph; its CONFIRMATION of a non-reported basis reaches genuine list items only. A mixed
+ * lead-in ("Reconciliation of GAAP to non-GAAP results:") governs nothing. Null when none governs.
  */
-export function leadInBlock(doc: DocText, block: TextBlock): string | null {
+export function leadInBlock(doc: DocText, block: TextBlock): LeadIn | null {
+  let plain = isListItem(block) ? 0 : 1;
   let i = block.index - 1;
   while (i >= 0) {
     const b = doc.blocks[i];
     if (b.page !== block.page || b.tableId !== null) return null;
-    if (BULLET_BLOCK.test(b.text) && !/:\s*$/.test(b.text)) { i--; continue; }
-    // A short lead-in ("Excluding the charge, results were as follows:") looks like a heading; the colon decides first.
-    if (/:\s*$/.test(b.text)) {
-      return /\bnon[\s-]*gaap\b|\bexclud(?:ing|es|ed)\b|\bconstant[\s-]+currency\b|\badjusted\b|\bgaap\b/i.test(b.text) ? b.text : null;
+    const colon = /:\s*$/.test(b.text);
+    if (!colon) {
+      if (isListItem(b)) { i--; continue; }
+      if (isHeadingBlock(b) || ++plain > 1) return null; // a heading, or a second plain paragraph, ends the reach
+      i--;
+      continue;
     }
-    return null; // a heading or a plain paragraph: nothing governs the list
+    // A short lead-in ("Excluding the charge, results were as follows:") looks like a heading; the colon decides first.
+    if (!BASIS_WORDS_RE.test(b.text)) return null;
+    const k = kindsIn(b.text);
+    if (k.has("reported") && k.size > 1) return null; // mixed: confirms nothing, denies nothing
+    return { text: b.text, confirms: isListItem(block) };
   }
   return null;
 }
@@ -542,7 +588,8 @@ export function leadInBlock(doc: DocText, block: TextBlock): string | null {
 function proseBasis(ns: string, at: number, fig: ModelFigure, doc: DocText | undefined, block: TextBlock | null): ProseBasisClauses {
   const c = proseBasisClauses(ns, at);
   const lead = doc && block ? leadInBlock(doc, block) : null;
-  if (lead) c.attached.push(normalizeForMatch(lead));
+  // `attached` confirms and denies; `others` only denies "reported" (fix round 4 asymmetry).
+  if (lead) (lead.confirms ? c.attached : c.others).push(normalizeForMatch(lead.text));
   // Free cash flow, adjusted EBITDA, …: the measure's own name is non-GAAP evidence in the figure's clause.
   if (isDefinitionalNonGaap(fig.metric) || isDefinitionalNonGaap(fig.label ?? "")) c.own = `${c.own} (non-gaap by definition)`;
   return c;
