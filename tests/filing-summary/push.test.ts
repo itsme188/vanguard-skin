@@ -132,7 +132,7 @@ describe("sendSummaryPushIfDue", () => {
   });
   it("a refused send is failed and not retried; a throw is delivery_unknown", async () => {
     const id = setup("auto");
-    await sendSummaryPushIfDue(db, id, async () => ({ sent: false, reason: "x" }));
+    await sendSummaryPushIfDue(db, id, async () => ({ sent: false, reason: "http_400" }));
     expect((db.prepare("SELECT state FROM filing_summary_pushes").get() as { state: string }).state).toBe("failed");
     const id2 = setup("auto", "0000000001-26-000002", "companion");
     await sendSummaryPushIfDue(db, id2, async () => { throw new Error("net"); });
