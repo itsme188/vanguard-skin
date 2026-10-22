@@ -227,7 +227,7 @@ function loadRunner(): Promise<RunnerModule> {
   // The `as string` only keeps the type checker from resolving the module
   // while it is built in parallel (Task 10 drops it); the emitted import is
   // the plain literal.
-  return import("./runner" as string) as Promise<RunnerModule>;
+  return import("./runner") as Promise<RunnerModule>;
 }
 
 async function productionTick(db: Database.Database): Promise<void> {
