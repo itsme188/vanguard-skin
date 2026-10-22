@@ -52,10 +52,15 @@ export function parseNumberToken(raw: string): { value: number; decimals: number
   if (MISSING_TOKENS.has(s.toLowerCase())) return null;
 
   let negative = false;
+  let hadSign = false;
+  // Trailing footnote marker after a number: "5,313 (1)", "12.5 (a)". A cell
+  // that is only "(1)" keeps its accounting meaning (−1).
+  s = s.replace(/([\d)%])\s+\((?:\d{1,2}|[a-z])\)$/i, "$1");
   // Leading sign (before or after a currency sign): "-$1.20", "−3.2", "+3.1%".
   const leadSign = /^([+\-−–])\s*/.exec(s);
   if (leadSign) {
     negative = leadSign[1] !== "+";
+    hadSign = true;
     s = s.slice(leadSign[0].length);
   }
   s = s.replace(/^\$\s*/, "");
@@ -63,13 +68,14 @@ export function parseNumberToken(raw: string): { value: number; decimals: number
     const afterCurrencySign = /^([+\-−–])\s*/.exec(s);
     if (afterCurrencySign) {
       negative = afterCurrencySign[1] !== "+";
+      hadSign = true;
       s = s.slice(afterCurrencySign[0].length);
     }
   }
   s = s.replace(/\s*%$/, ""); // "(2.1)%"
   const paren = /^\(\s*\$?\s*([^()]*?)\s*\)$/.exec(s);
   if (paren) {
-    if (negative) return null; // "-(5)" is not a filing number
+    if (hadSign) return null; // "-(5)" / "+(5)" are not filing numbers
     negative = true;
     s = paren[1];
   }
@@ -222,19 +228,30 @@ function durationKinds(text: string): DurationKind[] {
  * year_to_date, "Year Ended" / "Twelve Months Ended" → fiscal_year, "As of" /
  * "At" a date → instant. The year may sit in a later header part. A header
  * with no duration word but a quarter or fiscal-year label ("Q3 2026") is read
- * like a sentence. Two durations, two dates, two years, a bare date or an
- * impossible date → null. Role is always "actual".
+ * like a sentence. Two durations, two dates, two years or an impossible date
+ * → null. A bare date with no duration word → null, unless
+ * `opts.bareDateIsInstant` is set, which reads it as an instant. Role is
+ * always "actual".
  */
-export function parsePeriodHeader(text: string): PeriodCore | null {
+export function parsePeriodHeader(
+  text: string,
+  opts?: { bareDateIsInstant?: boolean },
+): PeriodCore | null {
   if (!text || !text.trim()) return null;
   const kinds = durationKinds(text);
-  const instant = INSTANT_LEAD.test(text);
+  let instant = INSTANT_LEAD.test(text);
   if (kinds.length + (instant ? 1 : 0) > 1) return null;
 
   if (kinds.length === 0 && !instant) {
     const labelled = scanLabelledPeriods(text);
-    if (labelled.unresolved || labelled.periods.length !== 1) return null;
-    return { ...labelled.periods[0], role: "actual" };
+    if (labelled.periods.length > 0 || labelled.unresolved) {
+      if (labelled.unresolved || labelled.periods.length !== 1) return null;
+      return { ...labelled.periods[0], role: "actual" };
+    }
+    // A bare date ("September 30, 2026"): an instant only when the caller
+    // says so (balance-sheet style tables); otherwise cannot tell.
+    if (!opts?.bareDateIsInstant) return null;
+    instant = true;
   }
 
   const dayMatches = [...text.matchAll(new RegExp(`\\b${MONTH_RE}\\s+(\\d{1,2})\\b`, "gi"))];
@@ -445,12 +462,12 @@ function signed(x: number, decimals: number): string {
 }
 
 /**
- * Shown difference: percentage points (1 decimal) for percent operands,
+ * Shown difference: percentage points (2 decimals) for percent operands,
  * otherwise the relative difference in percent (2 decimals). Null when a
  * relative figure cannot be formed (zero comparator).
  */
 function shown(unit: FigureUnit, difference: number, differencePct: number | null, suffix: string): string | null {
-  if (unit === "percent") return `${signed(difference, 1)} pp${suffix}`;
+  if (unit === "percent") return `${signed(difference, 2)} pp${suffix}`;
   if (differencePct === null) return null;
   return `${signed(differencePct, 2)}%${suffix}`;
 }
@@ -485,9 +502,11 @@ function measure(unit: FigureUnit, d: number, comparator: number, suffix: string
  * - A range comparator: in line = inside the range inclusive; above / below =
  *   outside it. The difference is measured against the end crossed ("vs high
  *   end" / "vs low end"), or the midpoint when inside.
- * - raised / lowered compare midpoints, narrowed compares widths, unchanged
- *   needs equal low and equal high. A single number is a range of zero width.
- * - Percent operands report the difference in percentage points ("+0.3 pp");
+ * - raised / lowered compare midpoints; a single number is a range of zero
+ *   width there. narrowed compares widths and unchanged needs equal low and
+ *   equal high; both need BOTH operands to be ranges, else unconfirmed
+ *   (`range_operand_unsupported`).
+ * - Percent operands report the difference in percentage points ("+0.30 pp");
  *   `differencePct` is always difference / |comparator| × 100.
  */
 export function checkRelation(relation: Relation, left: Operand, right: Operand): RelationResult {
@@ -535,6 +554,10 @@ export function checkRelation(relation: Relation, left: Operand, right: Operand)
     return { verdict: holds ? "matches" : "contradicted", ...m, reasons: [] };
   }
 
+  if ((relation === "narrowed" || relation === "unchanged") && (!l.isRange || !r.isRange)) {
+    return unconfirmed("range_operand_unsupported", `${relation} needs a low-high range on both sides`);
+  }
+
   if (relation === "narrowed") {
     const raw = l.width - r.width;
     const d = nearlyZero(raw, l.width, r.width, l.mid, r.mid) ? 0 : raw;
@@ -561,8 +584,9 @@ export function checkRelation(relation: Relation, left: Operand, right: Operand)
 /**
  * The arithmetic of a computed figure, inputs in order:
  * difference(a, b) = a − b; sum(a, b, …) needs at least two inputs;
- * ratio(a, b) = a / b × 100 (a percentage); growth(new, old) = new / old − 1
- * (a fraction: 0.2881 for 28.81%). A zero divisor, a non-positive `old`, the
+ * ratio(a, b) = a / b × 100 (a percentage); growth(new, old) is defined as
+ * new / old − 1 and returned as a percentage too (×100: 28.81, not 0.2881),
+ * like ratio and every percent operand. A zero divisor, a non-positive `old`, the
  * wrong number of inputs or a non-finite input → null.
  *
  * Unit, scale and period compatibility (R8) is the caller's job.
@@ -579,6 +603,6 @@ export function computeOp(op: ComputeOp, inputs: number[]): number | null {
       return (inputs[0] / inputs[1]) * 100;
     case "growth":
       if (inputs.length !== 2 || inputs[1] <= 0) return null;
-      return inputs[0] / inputs[1] - 1;
+      return (inputs[0] / inputs[1] - 1) * 100;
   }
 }

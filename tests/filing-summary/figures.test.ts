@@ -39,6 +39,15 @@ describe("parseNumberToken (R4)", () => {
     expect(parseNumberToken(" 64,601 ")).toEqual({ value: 64601, decimals: 0 });
   });
 
+  it("strips a trailing footnote marker after a number", () => {
+    expect(parseNumberToken("5,313 (1)")).toEqual({ value: 5313, decimals: 0 });
+    expect(parseNumberToken("12.5 (a)")).toEqual({ value: 12.5, decimals: 1 });
+    expect(parseNumberToken("(5,313) (2)")).toEqual({ value: -5313, decimals: 0 });
+    expect(parseNumberToken("12.5% (a)")).toEqual({ value: 12.5, decimals: 1 });
+    expect(parseNumberToken("(1)")).toEqual({ value: -1, decimals: 0 });
+    expect(parseNumberToken("$ (1)")).toEqual({ value: -1, decimals: 0 });
+  });
+
   it("treats dash and not-applicable cells as missing, never zero", () => {
     for (const raw of ["—", "–", "-", "−", "n/a", "N/A", "nm", "NM", "", "   ", "$ —"]) {
       expect(parseNumberToken(raw)).toBeNull();
@@ -46,7 +55,7 @@ describe("parseNumberToken (R4)", () => {
   });
 
   it("refuses text that is not one number", () => {
-    for (const raw of ["abc", "12,99", "1,2345", "12.3.4", "5 (1)", "$", "()", "--5", "(-5)"]) {
+    for (const raw of ["abc", "12,99", "1,2345", "12.3.4", "$", "+(5)", "-(5)", "$+(5)", "()", "--5", "(-5)"]) {
       expect(parseNumberToken(raw)).toBeNull();
     }
   });
@@ -168,6 +177,18 @@ describe("parsePeriodHeader (R5)", () => {
       fiscalYear: 2026,
       fiscalQuarter: 3,
     });
+  });
+
+  it("reads a bare date as an instant only when asked", () => {
+    const instant = { kind: "instant", role: "actual", endDate: "2026-09-30", fiscalYear: null, fiscalQuarter: null };
+    expect(parsePeriodHeader("September 30, 2026", { bareDateIsInstant: true })).toEqual(instant);
+    expect(parsePeriodHeader("September 30, / 2026", { bareDateIsInstant: true })).toEqual(instant);
+    expect(parsePeriodHeader("September 30, / 2026", { bareDateIsInstant: false })).toBeNull();
+    expect(parsePeriodHeader("September 30, / 2026")).toBeNull();
+    // the flag never overrides a duration or a bad date
+    expect(parsePeriodHeader("Nine Months Ended September 30, 2026", { bareDateIsInstant: true })?.kind).toBe("year_to_date");
+    expect(parsePeriodHeader("February 30, 2026", { bareDateIsInstant: true })).toBeNull();
+    expect(parsePeriodHeader("2026", { bareDateIsInstant: true })).toBeNull();
   });
 
   it("returns null when it cannot tell", () => {
@@ -340,8 +361,12 @@ describe("checkRelation (R7)", () => {
     const r = checkRelation("above", pct(45.3), pct(45.0));
     expect(r.verdict).toBe("matches");
     expect(r.difference).toBeCloseTo(0.3, 9);
-    expect(r.shownText).toBe("+0.3 pp");
-    expect(checkRelation("below", pct(44.7), pct(45.0)).shownText).toBe("-0.3 pp");
+    expect(r.shownText).toBe("+0.30 pp");
+    expect(checkRelation("below", pct(44.7), pct(45.0)).shownText).toBe("-0.30 pp");
+    // a tiny but real difference never reads as zero beside "matches"
+    const tiny = checkRelation("above", pct(45.04), pct(45.0));
+    expect(tiny.verdict).toBe("matches");
+    expect(tiny.shownText).toBe("+0.04 pp");
     expect(checkRelation("in_line", pct(45.2), pct(45.0)).verdict).toBe("matches"); // 0.44% relative
     expect(checkRelation("in_line", pct(45.3), pct(45.0)).verdict).toBe("contradicted"); // 0.67% relative
   });
@@ -377,6 +402,23 @@ describe("checkRelation (R7)", () => {
     expect(checkRelation("unchanged", range(10.1, 10.3), range(10.0, 10.4)).verdict).toBe("contradicted");
   });
 
+  it("narrowed and unchanged need a range on both sides", () => {
+    for (const rel of ["narrowed", "unchanged"] as const) {
+      for (const [l, r] of [
+        [usd(10.2), range(10.0, 10.4)],
+        [range(10.0, 10.4), usd(10.2)],
+        [usd(10.2), usd(10.2)],
+      ] as const) {
+        const res = checkRelation(rel, l, r);
+        expect(res.verdict).toBe("unconfirmed");
+        expect(res.reasons.map((x) => x.code)).toEqual(["range_operand_unsupported"]);
+      }
+    }
+    // raised / lowered still accept a point on either side
+    expect(checkRelation("raised", usd(10.3), range(10.0, 10.4)).verdict).toBe("matches");
+    expect(checkRelation("lowered", range(9.8, 10.0), usd(10.2)).verdict).toBe("matches");
+  });
+
   it("a range on the stated side of above/below/in line is unconfirmed", () => {
     const r = checkRelation("above", range(10, 12), usd(9));
     expect(r.verdict).toBe("unconfirmed");
@@ -398,8 +440,11 @@ describe("checkRelation (R7)", () => {
 });
 
 describe("computeOp (R8)", () => {
-  it("growth is new / old − 1 and refuses a non-positive old value", () => {
-    expect(computeOp("growth", [181_712, 141_073])).toBeCloseTo(0.2881, 4);
+  it("growth is new / old − 1 as a percent and refuses a non-positive old value", () => {
+    expect(computeOp("growth", [181_712, 141_073])).toBeCloseTo(28.81, 2);
+    expect(
+      matchesWithRounding({ value: 29, decimals: 0, scale: "units" }, computeOp("growth", [181_712, 141_073]) as number),
+    ).toBe(true);
     expect(computeOp("growth", [10, -5])).toBeNull();
     expect(computeOp("growth", [10, 0])).toBeNull();
     expect(computeOp("growth", [10])).toBeNull();
