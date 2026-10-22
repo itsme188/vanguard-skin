@@ -7,7 +7,8 @@ import {
   newRequestKey,
   optionText,
   pollStateText,
-  readingDocs,
+  claimReasonLine,
+  contradictionLines,
   roughCostText,
   runConfirmMessage,
   statusLabel,
@@ -15,7 +16,8 @@ import {
 } from "@/app/dashboard/today/filing-summary-text";
 import { SUMMARY_CHOICES, choiceLabel } from "@/lib/filing-summary/choice";
 import { STATUS_SEVERITY, type ClaimStatus, type StatusCounts } from "@/lib/filing-summary/types";
-import type { FullView, PanelView, RunSummary } from "@/lib/filing-summary/view";
+import type { PanelView, RunSummary, ViewClaim, ViewComparisonCheck } from "@/lib/filing-summary/view";
+import { comparisonLine, reasonText } from "@/lib/filing-summary/labels";
 
 const ZERO: StatusCounts = { claims: 0, checked: 0, contradicted: 0, warning: 0, unconfirmed: 0, qualitative: 0 };
 
@@ -70,6 +72,10 @@ describe("pollStateText: the brief's exact copy", () => {
     expect(pollStateText(v, { form: "8-K", exhibits: 0 })).toBe("Reading 8-K · Opus 5.5 high");
     // Without the document list the form comes from the running section.
     expect(pollStateText(v)).toBe("Reading 8-K · Opus 5.5 high");
+    // By default the line reads the view's own readingDocs (no second fetch).
+    expect(pollStateText({ ...v, readingDocs: { form: "8-K", exhibits: 3 } })).toBe(
+      "Reading 8-K + 3 exhibits · Opus 5.5 high",
+    );
   });
 
   it("a re-run in progress is what the status line reads", () => {
@@ -88,6 +94,15 @@ describe("pollStateText: the brief's exact copy", () => {
   });
 
   it("past the cutoff with no filing, 8-K and 6-K", () => {
+    // Decided from the view (no run, Run summary not offered), not the detail text.
+    expect(pollStateText(view({ pollState: "past_cutoff", pollDetail: "earnings 8-K time unconfirmed — Run summary to spend" }))).toBe(
+      "No earnings 8-K filed by 8 pm",
+    );
+    expect(pollStateText(view({ pollState: "past_cutoff", pollDetail: null }))).toBe("No earnings 8-K filed by 8 pm");
+    // An accepted filing with no run yet: Run summary is offered instead.
+    expect(pollStateText(view({ pollState: "past_cutoff", pollDetail: "polling ended at 8 pm", runSummaryAvailable: true }))).toBe(
+      "Polling ended at 8 pm — Run summary to start",
+    );
     expect(pollStateText(view({ pollState: "past_cutoff", pollDetail: "no earnings 8-K filed by 8 pm" }))).toBe(
       "No earnings 8-K filed by 8 pm",
     );
@@ -194,9 +209,9 @@ describe("rough cost copy (controller ruling 2)", () => {
   it("covers every picker choice with the measured or relative figure", () => {
     const expected: Record<string, string> = {
       "Sonnet · medium": "about $0.11 per filing",
-      "Opus · medium": "less than Opus · high",
+      "Opus · medium": "less than about $0.32 per filing (Opus · high)",
       "Opus · high": "about $0.32 per filing",
-      "Fable · medium": "less than Fable · high",
+      "Fable · medium": "less than about $0.68 per filing (Fable · high)",
       "Fable · high": "about $0.68 per filing",
     };
     for (const c of SUMMARY_CHOICES) {
@@ -232,6 +247,15 @@ describe("needsPolling", () => {
     expect(needsPolling(view({ pollState: "past_cutoff", shown: run() }))).toBe(true);
     expect(needsPolling(view({ pollState: "past_cutoff", shown: run({ status: "done" }), inProgress: run() }))).toBe(true);
   });
+  it("polls a just-armed print the poller has not seen yet (no state row)", () => {
+    expect(needsPolling(view({ pollState: null }))).toBe(true);
+    expect(needsPolling(view({ pollState: null }), false)).toBe(true);
+  });
+  it("a read-only panel never polls, whatever the state", () => {
+    expect(needsPolling(view({ pollState: null }), true)).toBe(false);
+    expect(needsPolling(view({ pollState: "waiting" }), true)).toBe(false);
+    expect(needsPolling(view({ pollState: "found", shown: run() }), true)).toBe(false);
+  });
   it("stops once nothing will change on its own", () => {
     for (const s of ["past_cutoff", "manual_only", "cancelled", "ambiguous", "no_cik"] as const) {
       expect(needsPolling(view({ pollState: s, shown: run({ status: "done" }) })), s).toBe(false);
@@ -239,34 +263,77 @@ describe("needsPolling", () => {
   });
 });
 
-describe("readingDocs", () => {
-  it("counts the read exhibits of the running section's filing", () => {
-    const full = {
-      runs: [
-        {
-          runId: 7,
-          sections: [
-            { filingId: 1, form: "8-K", status: "running" },
-            { filingId: 2, form: "10-Q", status: "pending" },
-          ],
-        },
-      ],
-      filings: [
-        {
-          filingId: 1,
-          form: "8-K",
-          documents: [
-            { fileName: "a.htm", docType: "8-K", status: "fetched" },
-            { fileName: "b.htm", docType: "EX-99.1", status: "fetched" },
-            { fileName: "c.htm", docType: "EX-99.2", status: "fetched" },
-            { fileName: "d.htm", docType: "EX-104", status: "fetched" },
-            { fileName: "e.xsd", docType: "EX-101.SCH", status: "skipped" },
-          ],
-        },
-      ],
-    } as unknown as FullView;
-    expect(readingDocs(full, 7)).toEqual({ form: "8-K", exhibits: 3 });
-    expect(readingDocs(full, 99)).toBeNull();
+function cmp(o: Partial<ViewComparisonCheck> = {}): ViewComparisonCheck {
+  return {
+    relation: "below",
+    verdict: "contradicted",
+    difference: 31_000_000,
+    differencePct: 0.05,
+    shownText: "+0.05%",
+    reasons: [{ code: "relation_contradicted", figureId: null, detail: "" }],
+    left: { figureId: "f1", displayText: "$64.601B", source: "filing" },
+    right: {
+      figureId: "b1",
+      displayText: "$64.57B",
+      source: "bogey",
+      bogey: { label: "Revenue", value: 64_570_000_000, unit: "usd", provenance: "Finnhub consensus", asOf: "2026-10-20" },
+    },
+    ...o,
+  } as ViewComparisonCheck;
+}
+
+function claimOf(o: Partial<ViewClaim>): ViewClaim {
+  return {
+    claimId: "c",
+    renderedText: "t",
+    status: "checked",
+    top: true,
+    routine: false,
+    footnotes: [],
+    figureChecks: [],
+    comparisonChecks: [],
+    reasons: [],
+    correction: null,
+    correctedBy: null,
+    ...o,
+  } as ViewClaim;
+}
+
+describe("contradictionLines", () => {
+  it("shows the app's arithmetic with the bogey's source and date", () => {
+    const lines = contradictionLines(claimOf({ status: "contradicted", comparisonChecks: [cmp(), cmp()] }));
+    expect(lines).toEqual(["filing: $64.601B is above $64.57B (Finnhub consensus, 2026-10-20), +0.05%"]);
+    expect(lines[0]).toBe(comparisonLine(cmp()));
+  });
+  it("is empty for a claim that is not contradicted, and skips matching comparisons", () => {
+    expect(contradictionLines(claimOf({ status: "checked", comparisonChecks: [cmp()] }))).toEqual([]);
+    expect(
+      contradictionLines(claimOf({ status: "contradicted", comparisonChecks: [cmp({ verdict: "matches" })] })),
+    ).toEqual([]);
+  });
+});
+
+describe("claimReasonLine", () => {
+  it("gives one deduplicated line of reasons for a warning or muted claim", () => {
+    const line = claimReasonLine(
+      claimOf({
+        status: "quote_not_found",
+        reasons: [{ code: "quote_not_found", figureId: null, detail: "" }],
+        figureChecks: [
+          { figureId: "f", established: false, foundValue: null, reasons: [{ code: "quote_not_found", figureId: "f", detail: "" }, { code: "scale_unconfirmed", figureId: "f", detail: "" }] },
+        ],
+      }),
+    );
+    expect(line).toBe(`${reasonText("quote_not_found")} ${reasonText("scale_unconfirmed")}`);
+    expect(
+      claimReasonLine(claimOf({ status: "unconfirmed", reasons: [{ code: "period_unconfirmed", figureId: null, detail: "" }] })),
+    ).toBe(reasonText("period_unconfirmed"));
+  });
+  it("is null for checked, qualitative and contradicted claims, and when no reason is stored", () => {
+    for (const status of ["checked", "qualitative", "contradicted"] as const) {
+      expect(claimReasonLine(claimOf({ status, reasons: [{ code: "computed", figureId: null, detail: "" }] })), status).toBeNull();
+    }
+    expect(claimReasonLine(claimOf({ status: "unconfirmed" }))).toBeNull();
   });
 });
 

@@ -63,9 +63,9 @@ describe("choices and cost", () => {
   it("five choices, each with its rough cost", () => {
     const expected: Record<string, string> = {
       "Sonnet · medium": "about $0.11 per filing",
-      "Opus · medium": "less than Opus · high",
+      "Opus · medium": "less than about $0.32 per filing (Opus · high)",
       "Opus · high": "about $0.32 per filing",
-      "Fable · medium": "less than Fable · high",
+      "Fable · medium": "less than about $0.68 per filing (Fable · high)",
       "Fable · high": "about $0.68 per filing",
     };
     for (const c of SUMMARY_CHOICES) expect(roughCostText(c), choiceLabel(c)).toBe(expected[choiceLabel(c)]);

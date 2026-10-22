@@ -76,9 +76,9 @@ export function choiceValue(c: SummaryChoice): string {
  */
 export const ROUGH_COST_BY_CHOICE: Record<string, string> = {
   "sonnet·medium": "about $0.11 per filing",
-  "opus·medium": "less than Opus · high",
+  "opus·medium": "less than about $0.32 per filing (Opus · high)",
   "opus·high": "about $0.32 per filing",
-  "fable·medium": "less than Fable · high",
+  "fable·medium": "less than about $0.68 per filing (Fable · high)",
   "fable·high": "about $0.68 per filing",
 };
 

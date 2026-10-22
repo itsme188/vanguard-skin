@@ -44,6 +44,35 @@ describe("where the panel and the choice mount", () => {
     expect(at).toBeGreaterThan(anchorIndex(chips, "onClick={toggleWorksheet}"));
   });
 
+  it("the choice mounts in both responsive twins through the row chips", () => {
+    const hub = readFileSync("app/dashboard/today/EarningsHub.tsx", "utf8");
+    const desktop = hub.slice(anchorIndex(hub, "function DesktopRow"), anchorIndex(hub, "function MobileCard"));
+    const mobile = hub.slice(anchorIndex(hub, "function MobileCard"));
+    expect(desktop).toMatch(/<EarningsRowChips[\s\S]*?worksheetArmed=\{event\.worksheetArmed\}/);
+    expect(mobile).toMatch(/<EarningsRowChips[\s\S]*?worksheetArmed=\{event\.worksheetArmed\}/);
+  });
+
+  it("the choice reads the light PanelView only, from the visible twin, with a useId select id", () => {
+    expect(choice).toContain("/api/filing-summary?eventIds=");
+    // Never the FullView route (/api/filing-summary/<id>).
+    expect(choice).not.toMatch(/\/api\/filing-summary\/\$\{/);
+    expect(choice).not.toMatch(/\bFullView\b/);
+    expect(choice).toContain("v.choiceOptions");
+    expect(choice).toContain("useId()");
+    expect(choice).toContain("id={selectId}");
+    expect(choice).not.toMatch(/id=\{`filing-summary-choice/);
+    expect(choice).toContain("offsetParent");
+    const read = anchorIndex(choice, "apiFetch(`/api/filing-summary?eventIds=");
+    const effect = choice.lastIndexOf("useEffect(", read);
+    expect(choice.slice(effect, read)).toContain("if (!isVisibleTwin) return;");
+  });
+
+  it("the panel reads no FullView either: the reading line comes from PanelView", () => {
+    expect(panel).not.toMatch(/\/api\/filing-summary\/\$\{/);
+    expect(panel).not.toMatch(/\bFullView\b/);
+    expect(panel).toContain("needsPolling(last, readOnly)");
+  });
+
   it("Settings says the summary model is set per print and offers no override for it", () => {
     expect(models).toContain("Set per print in the Earnings Hub");
     expect(models).toContain("printFilingSummary");
@@ -93,7 +122,7 @@ describe("UI rules in the new files", () => {
     // The loop decides on the last view through a ref; its effect depends on
     // the event and the reload nonce only.
     expect(panel).toContain("viewRef.current");
-    expect(panel).toContain("}, [eventId, reloadNonce]);");
+    expect(panel).toContain("}, [eventId, readOnly, reloadNonce]);");
   });
 
   it("Run and Retry carry a fresh request key held in a ref", () => {
@@ -146,7 +175,26 @@ function run(o: Partial<RunSummary> = {}): RunSummary {
     counts: { ...ZERO, claims: 3, checked: 2, contradicted: 1 },
     incomplete: false,
     top: [
-      claim("a", { status: "contradicted" }),
+      claim("a", {
+        status: "contradicted",
+        comparisonChecks: [
+          {
+            relation: "below",
+            verdict: "contradicted",
+            difference: 31_000_000,
+            differencePct: 0.05,
+            shownText: "+0.05%",
+            reasons: [{ code: "relation_contradicted", figureId: null, detail: "" }],
+            left: { figureId: "f1", displayText: "$64.601B", source: "filing" },
+            right: {
+              figureId: "b1",
+              displayText: "$64.57B",
+              source: "bogey",
+              bogey: { label: "Revenue", value: 64_570_000_000, unit: "usd", provenance: "Finnhub consensus", asOf: "2026-10-20" },
+            },
+          },
+        ],
+      }),
       claim("b", {
         footnotes: [
           {
@@ -161,6 +209,10 @@ function run(o: Partial<RunSummary> = {}): RunSummary {
           },
         ],
         status: "quote_not_found",
+        reasons: [
+          { code: "quote_not_found", figureId: null, detail: "" },
+          { code: "quote_not_found", figureId: null, detail: "" },
+        ],
       }),
       claim("c"),
     ],
@@ -192,7 +244,6 @@ function view(o: Partial<PanelView> = {}): PanelView {
 const render = (props: Partial<Parameters<typeof FilingSummaryPanelBody>[0]> & { view: PanelView }) =>
   renderToStaticMarkup(
     createElement(FilingSummaryPanelBody, {
-      reading: null,
       readOnly: false,
       busy: null,
       error: null,
@@ -204,6 +255,19 @@ const render = (props: Partial<Parameters<typeof FilingSummaryPanelBody>[0]> & {
   );
 
 describe("FilingSummaryPanelBody", () => {
+  it("shows the app's arithmetic under a contradicted claim in the danger tone", () => {
+    const html = render({ view: view() });
+    expect(html).toContain("filing: $64.601B is above $64.57B (Finnhub consensus, 2026-10-20), +0.05%");
+    const line = html.indexOf("filing: $64.601B");
+    expect(html.slice(html.lastIndexOf("<span", line), line)).toContain("var(--down)");
+  });
+
+  it("gives a warning claim one deduplicated reason line", () => {
+    const html = render({ view: view() });
+    const sentence = "The quoted words were not found in the filing.";
+    expect(html.split(sentence)).toHaveLength(2);
+  });
+
   it("shows the status, counts, Top 3 with chips and sec.gov footnotes, and the full-summary link", () => {
     const html = render({ view: view() });
     expect(html).toContain("Summary ready · Opus 5.5 high");

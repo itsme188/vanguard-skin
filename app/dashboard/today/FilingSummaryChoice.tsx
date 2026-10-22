@@ -10,16 +10,22 @@
  * only; the choice locks when the summary starts, after which a different
  * model means a re-run from the full summary page.
  *
+ * The Hub renders every row twice (DesktopRow and MobileCard; CSS hides one),
+ * so this component is mounted in both twins. Only the twin the desk can see
+ * reads `GET /api/filing-summary?eventIds=…` (the light PanelView: choice,
+ * lock and options), measured with `offsetParent` the way LivePrintSlot does.
+ * The select id comes from `useId`, so the two twins never share one.
+ *
  * Every outcome reaches the user as a toast; a refused or failed change puts
  * the select back.
  */
 
-import { useEffect, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import apiFetch from "@/lib/http/apiFetch";
 import { networkFailureMessage, readMutationResult } from "@/lib/ui/mutation-result";
 import { choiceLabel } from "@/lib/filing-summary/choice";
 import type { SummaryChoice } from "@/lib/filing-summary/types";
-import type { ChoiceOption, FullView } from "@/lib/filing-summary/view";
+import type { ChoiceOption, PanelView } from "@/lib/filing-summary/view";
 import { useToast } from "../components/Toast";
 import { choiceValue, optionText } from "./filing-summary-text";
 
@@ -31,23 +37,47 @@ interface ChoiceState {
 
 export default function FilingSummaryChoice({ eventId }: { eventId: number }) {
   const { toast } = useToast();
+  const selectId = useId();
+  const rootRef = useRef<HTMLSpanElement>(null);
+  const [isVisibleTwin, setIsVisibleTwin] = useState(false);
   const [state, setState] = useState<ChoiceState | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
+  // Which twin is on screen. `offsetParent` is null whenever an ancestor is
+  // display:none. Re-measured on resize and on the chat rail attribute, which
+  // swaps the twins without a page load (same as LivePrintSlot).
   useEffect(() => {
+    const measure = () => {
+      const visible = rootRef.current !== null && rootRef.current.offsetParent !== null;
+      setIsVisibleTwin((was) => (was === visible ? was : visible));
+    };
+    measure();
+    window.addEventListener("resize", measure);
+    const observer = new MutationObserver(measure);
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ["data-chat-rail"] });
+    return () => {
+      window.removeEventListener("resize", measure);
+      observer.disconnect();
+    };
+  }, []);
+
+  // Read the choice once the twin is visible. A twin that becomes visible
+  // later (rail toggle, resize) reads then; the hidden twin never reads.
+  useEffect(() => {
+    if (!isVisibleTwin) return;
     let cancelled = false;
     (async () => {
       try {
-        const res = await apiFetch(`/api/filing-summary/${eventId}`);
-        const r = await readMutationResult<{ data?: FullView }>(res);
+        const res = await apiFetch(`/api/filing-summary?eventIds=${eventId}`);
+        const r = await readMutationResult<{ data?: Record<string, PanelView> }>(res);
         if (cancelled) return;
-        if (!r.ok || !r.data.data) {
+        const v = r.ok ? r.data.data?.[String(eventId)] : undefined;
+        if (!v) {
           setLoadError(r.ok ? "the server sent no choice." : r.message);
           return;
         }
-        const c = r.data.data.choice;
-        setState({ current: c.current, locked: c.locked, options: c.options });
+        setState({ current: v.choice, locked: v.locked, options: v.choiceOptions });
         setLoadError(null);
       } catch {
         if (!cancelled) setLoadError(networkFailureMessage("read the summary model"));
@@ -56,7 +86,7 @@ export default function FilingSummaryChoice({ eventId }: { eventId: number }) {
     return () => {
       cancelled = true;
     };
-  }, [eventId]);
+  }, [eventId, isVisibleTwin]);
 
   async function change(value: string): Promise<void> {
     if (!state || saving) return;
@@ -99,6 +129,7 @@ export default function FilingSummaryChoice({ eventId }: { eventId: number }) {
   if (!state) {
     return (
       <span
+        ref={rootRef}
         className="text-[10px] font-mono text-ink-faint [overflow-wrap:anywhere]"
         title={loadError ? `Couldn't read the summary model: ${loadError}` : undefined}
       >
@@ -108,12 +139,12 @@ export default function FilingSummaryChoice({ eventId }: { eventId: number }) {
   }
 
   return (
-    <span className="inline-flex items-center gap-1 flex-wrap min-w-0 max-w-full">
-      <label className="text-[10px] font-mono text-ink-dim whitespace-nowrap" htmlFor={`filing-summary-choice-${eventId}`}>
+    <span ref={rootRef} className="inline-flex items-center gap-1 flex-wrap min-w-0 max-w-full">
+      <label className="text-[10px] font-mono text-ink-dim whitespace-nowrap" htmlFor={selectId}>
         Filing summary
       </label>
       <select
-        id={`filing-summary-choice-${eventId}`}
+        id={selectId}
         value={choiceValue(state.current)}
         onChange={(e) => void change(e.target.value)}
         disabled={state.locked || saving}

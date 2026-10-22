@@ -7,9 +7,9 @@
  * comes from here, so the tests can pin the copy without a DOM.
  */
 import { choiceLabel } from "@/lib/filing-summary/choice";
-import { errorWords, roughCostText } from "@/lib/filing-summary/labels";
+import { comparisonLine, errorWords, reasonText, roughCostText, statusSeverity } from "@/lib/filing-summary/labels";
 import type { Footnote, SummaryChoice } from "@/lib/filing-summary/types";
-import type { FullView, PanelView, ReadingDocs, RunSummary, SectionState } from "@/lib/filing-summary/view";
+import type { PanelView, ReadingDocs, RunSummary, SectionState, ViewClaim } from "@/lib/filing-summary/view";
 
 // The single copy of the status, count, cost, choice, failure and request-key
 // words lives in lib/filing-summary/labels.ts (shared with the full page and
@@ -58,24 +58,26 @@ export function retryConfirmMessage(run: RunSummary): string {
 
 // ---------------------------------------------------------------- status line
 
-/** The running (else first pending) section's filing and its read exhibits. */
-export function readingDocs(full: FullView, runId: number): ReadingDocs | null {
-  const r = full.runs.find((x) => x.runId === runId);
-  if (!r) return null;
-  const section = r.sections.find((s) => s.status === "running") ?? r.sections.find((s) => s.status === "pending");
-  if (!section) return null;
-  const filing = full.filings.find((f) => f.filingId === section.filingId);
-  const exhibits = (filing?.documents ?? []).filter(
-    (d) => d.status === "fetched" && d.docType.toUpperCase().startsWith("EX-"),
-  ).length;
-  return { form: section.form, exhibits };
+/**
+ * "8-K" or "6-K". A foreign filer shows up as a 6-K section, or in the
+ * poller's own detail (the only place PanelView names the form before any
+ * filing is accepted). This picks the WORD only; whether a filing exists is
+ * decided from the view's runs and `runSummaryAvailable`, never from the text.
+ */
+function filerForm(view: PanelView): string {
+  const forms = [...(view.shown?.sectionStates ?? []), ...(view.inProgress?.sectionStates ?? [])].map((s) => s.form);
+  if (forms.some((f) => f.toUpperCase().startsWith("6-K"))) return "6-K";
+  if (view.readingDocs?.form.toUpperCase().startsWith("6-K")) return "6-K";
+  return view.pollDetail && /\b6-K\b/.test(view.pollDetail) ? "6-K" : "8-K";
 }
 
-/** "8-K" or "6-K": a foreign filer shows up as a 6-K in the poller's words or a section. */
-function filerForm(view: PanelView): string {
-  if (view.pollDetail && /\b6-K\b/.test(view.pollDetail)) return "6-K";
-  const forms = [...(view.shown?.sectionStates ?? []), ...(view.inProgress?.sectionStates ?? [])].map((s) => s.form);
-  return forms.some((f) => f.toUpperCase().startsWith("6-K")) ? "6-K" : "8-K";
+/**
+ * True when the view shows no accepted earnings filing: no run was ever made
+ * and Run summary is not offered (it is offered exactly when an accepted
+ * earnings filing exists and no run does).
+ */
+export function hasNoAcceptedEarningsFiling(view: PanelView): boolean {
+  return !view.shown && !view.inProgress && !view.runSummaryAvailable;
 }
 
 function runningSection(run: RunSummary): SectionState | undefined {
@@ -87,7 +89,7 @@ function capitalise(s: string): string {
 }
 
 /** The panel's status line (brief copy; the run's state wins over the poll's). */
-export function pollStateText(view: PanelView, reading: ReadingDocs | null = null): string {
+export function pollStateText(view: PanelView, reading: ReadingDocs | null = view.readingDocs ?? null): string {
   if (view.pollState === "cancelled") return "Disarmed — summary stopped";
 
   const active = view.inProgress?.status === "running" ? view.inProgress : view.shown?.status === "running" ? view.shown : null;
@@ -111,8 +113,10 @@ export function pollStateText(view: PanelView, reading: ReadingDocs | null = nul
     case "sec_unreachable":
       return "SEC not reachable — still trying";
     case "past_cutoff":
-      if (view.pollDetail && /^no earnings/i.test(view.pollDetail)) return `No earnings ${form} filed by 8 pm`;
-      return view.pollDetail ? capitalise(view.pollDetail) : "Polling ended at 8 pm";
+      if (hasNoAcceptedEarningsFiling(view)) return `No earnings ${form} filed by 8 pm`;
+      return view.runSummaryAvailable
+        ? `Polling ended at 8 pm — Run summary to start`
+        : "Polling ended at 8 pm";
     case "manual_only":
       return "Armed after 8 pm — nothing runs on its own";
     case "ambiguous":
@@ -147,10 +151,49 @@ export function sectionNotes(run: RunSummary): string[] {
     });
 }
 
-/** True while the panel should keep re-reading: a run runs, or the filing is still looked for. */
-export function needsPolling(view: PanelView): boolean {
+/**
+ * True while the panel should keep re-reading: a run runs, the filing is
+ * still looked for, or the event has no state yet (the poller has not seen a
+ * just-armed print). A read-only panel (a closed record) never polls.
+ */
+export function needsPolling(view: PanelView, readOnly = false): boolean {
+  if (readOnly) return false;
   if (view.inProgress?.status === "running" || view.shown?.status === "running") return true;
-  return view.pollState === "waiting" || view.pollState === "found" || view.pollState === "sec_unreachable";
+  return (
+    view.pollState === null ||
+    view.pollState === "waiting" ||
+    view.pollState === "found" ||
+    view.pollState === "sec_unreachable"
+  );
+}
+
+/**
+ * One line per Top claim with a warning or muted status: its reasons' plain
+ * sentences, deduplicated, in order. Null for a checked, qualitative or
+ * contradicted claim (the contradicted one gets its comparison lines instead)
+ * or when there is no reason to give.
+ */
+export function claimReasonLine(claim: Pick<ViewClaim, "status" | "reasons" | "figureChecks" | "comparisonChecks">): string | null {
+  const sev = statusSeverity(claim.status);
+  if (sev !== "warning" && sev !== "muted") return null;
+  const codes = [
+    ...claim.reasons,
+    ...claim.figureChecks.flatMap((f) => f.reasons),
+    ...claim.comparisonChecks.flatMap((c) => c.reasons),
+  ].map((r) => r.code);
+  const sentences: string[] = [];
+  for (const code of codes) {
+    const t = reasonText(code);
+    if (!sentences.includes(t)) sentences.push(t);
+  }
+  return sentences.length ? sentences.join(" ") : null;
+}
+
+/** The app's arithmetic under a contradicted claim, one line per contradicted comparison. */
+export function contradictionLines(claim: Pick<ViewClaim, "status" | "comparisonChecks">): string[] {
+  if (claim.status !== "contradicted") return [];
+  const lines = claim.comparisonChecks.filter((c) => c.verdict === "contradicted").map((c) => comparisonLine(c));
+  return [...new Set(lines)];
 }
 
 // ---------------------------------------------------------------- footnotes

@@ -12,32 +12,37 @@
  *
  * `readOnly` (the finished-print record) renders no buttons at all.
  *
- * Privacy: filing text and the app's checks are public market data and render
- * plain. Bogey figures are never shown here (they live on the full page).
+ * Under a contradicted Top claim the app's own arithmetic is shown in the
+ * danger tone ("filing: $64.601B is above $64.57B (Finnhub consensus,
+ * 2026-10-20), +0.05%"); a warning or muted claim gets one line of plain
+ * reasons.
+ *
+ * Privacy: filing text, the app's checks and the bogeys (pre-print market
+ * estimates with their public source) are not portfolio data and render plain.
  */
 
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import apiFetch from "@/lib/http/apiFetch";
 import { networkFailureMessage, readMutationResult } from "@/lib/ui/mutation-result";
-import type { FullView, PanelView, ViewClaim } from "@/lib/filing-summary/view";
+import { newRequestKey } from "@/lib/filing-summary/labels";
+import type { PanelView, ViewClaim } from "@/lib/filing-summary/view";
 import { CHIP_TONE_CLASSES, Chip } from "../components/Chip";
 import { CHIP_TONE_TEXT } from "../components/chip-tone-text";
 import { useConfirmPrompt } from "../components/useConfirmPrompt";
 import {
   FILING_SUMMARY_POLL_MS,
+  claimReasonLine,
+  contradictionLines,
   countsText,
   footnoteTitle,
   needsPolling,
-  newRequestKey,
   pollStateText,
-  readingDocs,
   retryConfirmMessage,
   runConfirmMessage,
   sectionNotes,
   statusLabel,
   statusTone,
-  type ReadingDocs,
 } from "./filing-summary-text";
 
 type Busy = "run" | "retry" | null;
@@ -54,7 +59,6 @@ export default function FilingSummaryPanel({
   readOnly?: boolean;
 }) {
   const [view, setView] = useState<PanelView | null>(null);
-  const [reading, setReading] = useState<ReadingDocs | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [busy, setBusy] = useState<Busy>(null);
   const [error, setError] = useState<string | null>(null);
@@ -88,23 +92,8 @@ export default function FilingSummaryPanel({
         viewRef.current = next;
         setView(next);
         setLoadError(next ? null : "No filing summary state was found for this print.");
-        const active = next?.inProgress?.status === "running" ? next.inProgress : next?.shown?.status === "running" ? next.shown : null;
-        const docs = active ? await readDocs(active.runId) : null;
-        if (!cancelled) setReading(docs);
       } catch {
         if (!cancelled) setLoadError(networkFailureMessage("read the filing summary"));
-      }
-    }
-
-    async function readDocs(runId: number): Promise<ReadingDocs | null> {
-      // The document count is a nicety on the status line; when the full view
-      // cannot be read the line falls back to the form alone.
-      try {
-        const res = await apiFetch(`/api/filing-summary/${eventId}`);
-        const r = await readMutationResult<{ data?: FullView }>(res);
-        return r.ok && r.data.data ? readingDocs(r.data.data, runId) : null;
-      } catch {
-        return null;
       }
     }
 
@@ -112,8 +101,10 @@ export default function FilingSummaryPanel({
       await readOnce();
       if (cancelled) return;
       const last = viewRef.current;
-      // Keep trying after a failed first read; stop once nothing will change.
-      if (!last || needsPolling(last)) timer = setTimeout(tick, FILING_SUMMARY_POLL_MS);
+      // A read-only record reads once and never polls. Otherwise keep trying
+      // after a failed first read, and stop once nothing will change.
+      if (readOnly) return;
+      if (!last || needsPolling(last, readOnly)) timer = setTimeout(tick, FILING_SUMMARY_POLL_MS);
     }
 
     void tick();
@@ -121,7 +112,7 @@ export default function FilingSummaryPanel({
       cancelled = true;
       if (timer) clearTimeout(timer);
     };
-  }, [eventId, reloadNonce]);
+  }, [eventId, readOnly, reloadNonce]);
 
   async function post(
     kind: Exclude<Busy, null>,
@@ -205,7 +196,6 @@ export default function FilingSummaryPanel({
     <>
       <FilingSummaryPanelBody
         view={view}
-        reading={reading}
         readOnly={readOnly}
         busy={busy}
         error={error ?? loadError}
@@ -216,6 +206,14 @@ export default function FilingSummaryPanel({
       {prompt.dialog}
     </>
   );
+}
+
+/** One deduplicated line of plain reasons under a warning or muted Top claim. */
+function ClaimReason({ claim }: { claim: ViewClaim }) {
+  const reason = claimReasonLine(claim);
+  if (!reason) return null;
+  const tone = statusTone(claim.status) === "warn" ? CHIP_TONE_TEXT.warn : "text-ink-dim";
+  return <span className={`block text-[11px] ${tone} [overflow-wrap:anywhere]`}>{reason}</span>;
 }
 
 function FootnoteMarker({ n, fn }: { n: number; fn: ViewClaim["footnotes"][number] }) {
@@ -244,7 +242,6 @@ function FootnoteMarker({ n, fn }: { n: number; fn: ViewClaim["footnotes"][numbe
  */
 export function FilingSummaryPanelBody({
   view,
-  reading,
   readOnly,
   busy,
   error,
@@ -253,7 +250,6 @@ export function FilingSummaryPanelBody({
   onRetry,
 }: {
   view: PanelView;
-  reading: ReadingDocs | null;
   readOnly: boolean;
   busy: Busy;
   error: string | null;
@@ -277,7 +273,7 @@ export function FilingSummaryPanelBody({
     <section className="mt-3 border-t border-edge pt-2 min-w-0">
       <div className="flex items-baseline gap-2 flex-wrap">
         <h4 className="text-[11px] font-mono uppercase tracking-wider text-ink-faint whitespace-nowrap!">Filing summary</h4>
-        <p className="text-[12px] text-ink [overflow-wrap:anywhere]">{pollStateText(view, reading)}</p>
+        <p className="text-[12px] text-ink [overflow-wrap:anywhere]">{pollStateText(view)}</p>
       </div>
 
       {contradictedTop && (
@@ -326,6 +322,12 @@ export function FilingSummaryPanelBody({
                   <FootnoteMarker n={i + 1} fn={fn} />
                 </span>
               ))}
+              {contradictionLines(c).map((line) => (
+                <span key={line} className={`block text-[12px] ${CHIP_TONE_TEXT.down} [overflow-wrap:anywhere]`}>
+                  {line}
+                </span>
+              ))}
+              <ClaimReason claim={c} />
               {c.correctedBy && (
                 <span className={`block text-[11px] ${CHIP_TONE_TEXT.warn}`}>
                   Corrected by {c.correctedBy.form}
