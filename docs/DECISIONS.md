@@ -1341,3 +1341,73 @@ The owner left the session free for work that needs no ruling. Six nightly-QA PR
 - **Ruling, `correct-date-contradict-confirmed-guard`: yes.** The Fix-date action on a hand-entered earnings chip (`POST /api/earnings/correct-date`) will also ask before it leaves a hand-entered date in the same week as a two-source-confirmed vendor date, with its own acknowledgement flag. The harm is the same as on the add path (two showing prints for one quarter); the question is separate, so it gets its own flag and never reuses `force` or `forceSlot`. The supersede guard stays off this route, as before. Build owed (TODO, QA landing 2026-10-20 item a).
 - **Noted by the owner:** the closed-day stamp question (2026-10-12 evening, item 14) now also blocks CRWD's beta and the account footer's price-date warning.
 - **Built the same day:** `POST /api/earnings/correct-date` answers 409 `would_contradict_confirmed_date` when a date move would leave a second print beside a confirmed vendor date, through the same check as the add path (`checkManualAddContradictsConfirmedDate`, which now also takes `excludeEventIds`: the rows on the date named as wrong are deleted by the correction, so a confirmed vendor date the user names as wrong never asks). The check applies to every Fix date that moves a date, not only on a hand-entered chip: the harm is the outcome, two showing prints, whatever chip started it. A same-date slot fix is never checked. The chip asks through the app dialog ("Fix anyway (two prints this week)") and resends the asked date and slot with `forceContradictConfirmed` only. Guards: `tests/api/earnings-correct-date-contradict-confirmed.test.ts`, `tests/dashboard/earnings-date-chip-fix-date-ask.test.ts`.
+
+## 2026-10-22 — Armed-print filing summary: owner rulings and the calls made for the owner
+
+Built on branch `filing-summary` (spec `docs/superpowers/specs/2026-10-21-armed-print-filing-summary-design.md`, reference `docs/reference/earnings-pipeline.md` §Filing summary). Codex reviewed the design twice (18 findings each, all adopted); the owner approved going straight to build. Every call below was made without the owner and is listed with what it costs if wrong.
+
+**Owner rulings (2026-10-21 and 22).**
+
+- Runs on every armed print, earnings 8-K only, plus its same-evening companion filings read through 20:00 Eastern.
+- Default model Opus, high effort. Picker: Sonnet medium, Opus medium, Opus high, Fable medium, Fable high, framed as families that follow new releases.
+- The choice is made per print from the Earnings Hub when arming, and can change until the print goes live.
+- Every statement is footnoted to document, page and paragraph. Display stays in the app; a button makes the shareable HTML page, never by default.
+- Playback agreed: armed row shows the choice; a push when the summary is ready and when a companion adds a section; re-run keeps earlier versions; failures say so in plain words with a retry; a half summary is never shown as complete.
+- Figures are checked by the app (Codex finding 1, in full). A contradiction is shown, never hidden.
+- Late arms: armed on the print day after the 8-K landed and before 20:00, the job goes back and runs at once; armed after 20:00 or for a past print, nothing runs until the owner clicks Run summary; disarm and re-arm the same day keeps the summary and re-runs nothing.
+
+**Spec calls (mine, in the approved spec).**
+
+- The choice locks when the first run is created. Cost if wrong: a change needs a paid re-run.
+- Choice is a side table keyed by event, not a flag column; summary state follows the event through a date correction or merge. Cost: none visible.
+- Fallback walks down the ladder (fable, opus, sonnet), never up. Cost: a cheaper model than the owner picked ran, and the panel says so.
+- Foreign filers: first 6-K with an EX-99 is the earnings filing. Cost: a rare wrong pick shown as ambiguous.
+- Companion allow list as in the reference. Cost: a form not on it is not read.
+- A re-run redoes the whole chain; a later companion appends to the newest run only. Cost: older versions say they do not include it.
+- Two attempts per section; a refusal or truncation is not retried. Cost: a one-off failure needs the Retry click.
+- "In line" means within 0.5% of the comparator, inclusive. Cost: a narrow miss reads in line (the exact difference is shown beside it).
+- A lost push beats a double one. Cost: a missed phone alert after a crash.
+- The per-print choice wins over the Settings AI-models override. Cost: the Settings row for this feature does nothing (labelled "set per print").
+
+**Build-time rulings (the SDD ledger, `.superpowers/sdd/2026-10-22-armed-print-filing-summary/progress.md`).**
+
+- Task order: `choice.ts` first and alone, then the independent tasks in parallel. Cost: none.
+- `REASON_CODES` exported from the checker; labels coverage tests pin it. Cost: a new code with no sentence fails two tests.
+- The tick reaches the runner only through seams with a lazy import. Cost: a broken import skips the tick, loudly.
+- A filing accepted after 20:00 on the event day is listed as rejected ("accepted after 8 pm") and not read. The owner's cutoff is kept exactly. Cost: Meta's 10-Q (accepted 8 seconds late) goes unread; see TODO.
+- The tick starts from the print-watch `ensure` route (the Today hub), not at process boot. Cost: with no Today window open, the evening poll does not start until the hub is opened.
+- Every stored filing is re-checked each tick against the event's current date and issuer. Cost: one extra pass over a handful of rows per tick.
+- Disarm cancellation applies only to events dated today or later. Cost: a weeks-old pending Retry stays retryable after disarm.
+- For a foreign filer a 6-K/A is a companion. Cost: one extra read on a rare evening.
+- Growth is a percent (28.81), like ratio and percent operands. Cost: none; one convention.
+- "Narrowed" and "unchanged" need two ranges; "raised" and "lowered" accept point figures. Cost: a point-vs-range raise compares midpoints.
+- A bare date header reads as an instant only when no table column carries a duration word. Cost: a lost duration gives "periods differ", a warning, never a silent pass.
+- "Periods differ" is a warning, never Contradicted. Cost: none.
+- A bogey's period, unit and basis come from the frozen snapshot; the model's copy is ignored. Cost: none.
+- A section headline containing a disallowed digit is blanked; the page heads it with form and time. Cost: an occasional blank headline.
+- A dangling reference (placeholder with no figure, unknown citation, operand not in the claim) makes the claim "figure not bound". Cost: none.
+- A bare four-digit year in claim text stays allowed. Cost: "opened 2000 new stores" is not flagged; deferred.
+- Metric identity ignores qualifiers (net, total, gaap, adjusted, consolidated) and requires the measure nouns to agree. Cost: more "metric unconfirmed" on oddly worded labels (visible, honest).
+- Basis needs source evidence. Confirming a non-reported basis needs the word in the figure's own clause or one unambiguously attached numberless clause; confirming "reported" needs no basis word in its clause or any numberless clause of the sentence, and text after the last quantity denies it. Cost: some correct reported figures in mixed sentences read "basis unconfirmed" (the safe side). Reached after five review rounds and a breaker trip on the checker.
+- Source rounding is carried as intervals; Contradicted only when the stated value fails over the whole interval. Cost: none (fewer false Contradicted).
+- For comparisons only, an actual and an outlook figure of the same kind and end date count as one period (actual against its own guidance). Cost: none.
+- Quarter anchors (reported quarter, next quarter, fiscal year) resolve from the latest quarter column ending on or before the event date. Cost: a mis-dated column would mislead the anchor.
+- Range bounds bind only to guidance low and high; repeated labels pair forward only. Cost: some range claims unconfirmed.
+- A table-row quote must equal whole cells in order. Cost: a quote with a truncated label becomes "not found", visible.
+- Task 8b (separate fresh agent) takes the open checker findings and the gaps the real Meta replay showed, because "0 checked" on a real 8-K would defeat the feature: hyphenated ranges, periods from section headings, "negative X", split parenthesised negatives, "eight (8) years". Cost: one more agent cycle and a couple of replays.
+- Migration 099 grew before the owner saw it: `awaiting_retry` error class and `last_retry_key` (waiting companion, retry idempotency), then `filings.gate_passed`. Cost: the migration text the owner reads is the final one; rehearsal re-run on a VACUUM copy, foreign-key and integrity checks clean.
+- On `model_unavailable` the run's other pending sections fail in the same transaction; Retry skips them and Re-run is the remedy; a cancelled event is not retried. A failed heartbeat aborts the in-flight call. Cost: none.
+- Auto start uses the key `auto:<eventId>:<filingId>`; a new accepted earnings filing after a rejected one auto-runs. Cost: one extra paid run after a date correction.
+- `actions.ts` sits beside the route so the route stays thin. Run summary is offered when an accepted filing exists and no run does. Cost: none.
+- The panel shows the newest run whose earnings section is done, even while a companion reads; "in progress" means a newer re-run without a done earnings section. Cost: a re-run's companion is not shown until its earnings section finishes.
+- The push key is `fs:<cik>:<accession>`, so a merge cannot double-push; network-failure reasons read `delivery_unknown`. Cost: a lost push after a failure.
+- The company name may appear on the share page; raw error text never does. Cost: none.
+- Retry also asks first (it spends money). Re-run is allowed while a companion of the shown run reads. Cost: none.
+- The panel shows a contradicted claim's app arithmetic including the bogey value and its provenance. Bogeys are the owner's expectations, not portfolio data. Cost: none.
+- One plain module `labels.ts` holds every owner-facing word; chip words are its set ("Not in the filing", "Quote matches more than once", "Figure not tied to the filing"). Cost: wording changes in one file.
+- A print past 20:00 whose earnings filing is `time_unconfirmed` reads "found, but its filing time could not be confirmed — not run automatically", with Run summary offered. A manual Run summary or Re-run may use such a filing; automatic runs never do. Cost: an owner click is taken as the owner's judgement.
+- Only gate-passed untimed earnings filings are runnable by click; revalidation covers them. Cost: an untimed filing that fails the gate shows "ambiguous".
+- Output budget after the first live replay truncated at 32k tokens: 64k output cap, 10-minute call timeout, prompt bounds (12 bullets, 2 claims per bullet, 4 figures per claim, quotes of 30 words), schema version 2, usage kept on truncated and refused calls. Cost: worst case about $1.30 of output for one Opus high section.
+- Real cost is about $0.77 for an Opus high 8-K section and $1.10 for a long PRE 14C, not the spec's $0.32. The owner is told $1 to $2 per print. Cost: the original budget estimate was low by two to three times.
+
+**Not built or deferred.** See the TODO entry "Filing summary follow-ups (2026-10-22)": the 20:00 cutoff question, the Settings redesign, the tick starting with the Today hub, and the deferred minors.
