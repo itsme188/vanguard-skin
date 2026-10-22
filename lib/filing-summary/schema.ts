@@ -7,7 +7,8 @@
  * constraint (CLAUDE.md "Frontier structured output rejects array count
  * keywords"), so every object node is closed (`additionalProperties: false`),
  * every property is required (nullable instead of optional), and the counts
- * (12 bullets, 3 Top) are enforced here in code by `parseSectionOutput`.
+ * (12 bullets, 3 Top, 2 claims per bullet, 4 figures per claim) are enforced
+ * here in code by `parseSectionOutput`.
  *
  * `parseSectionOutput` checks every field and enum, refuses duplicate ids,
  * and rebuilds the value from known keys only. It checks no references
@@ -34,11 +35,13 @@ import type {
 } from "@/lib/filing-summary/types";
 
 /** Bumped whenever the schema or its reader changes meaning; stored per section (R14). */
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
 
 /** Code-enforced caps (spec §5); the schema cannot carry them. */
 export const MAX_BULLETS = 12;
 export const MAX_TOP = 3;
+export const MAX_CLAIMS_PER_BULLET = 2;
+export const MAX_FIGURES_PER_CLAIM = 4;
 
 export const FIGURE_UNITS: readonly FigureUnit[] = ["usd", "usd_per_share", "percent", "shares", "count", "people", "other"];
 export const FIGURE_SCALES: readonly FigureScale[] = ["units", "thousands", "millions", "billions"];
@@ -316,10 +319,15 @@ export type ParseSectionResult =
 
 /**
  * Validates the model's answer and applies the code-enforced caps. Order:
- * shape and enums (any failure → invalid), drop bullets with no claims, keep
- * the first 12 bullets, keep `top` on the first three Top bullets and demote
- * the rest, then refuse duplicate ids among what is kept. Every adjustment is
- * described in `notes`.
+ * shape and enums (any failure → invalid), keep the first 2 claims of each
+ * bullet and the first 4 figures of each claim, drop bullets with no claims,
+ * keep the first 12 bullets, keep `top` on the first three Top bullets and
+ * demote the rest, then refuse duplicate ids among what is kept. Every
+ * adjustment is described in `notes`.
+ *
+ * A dropped figure is not repaired elsewhere: a placeholder, comparison or
+ * computed input that named it is left as the model wrote it, and the checker
+ * reports that claim's missing figure as a status (never a silent pass).
  */
 export function parseSectionOutput(raw: unknown): ParseSectionResult {
   try {
@@ -328,9 +336,28 @@ export function parseSectionOutput(raw: unknown): ParseSectionResult {
     const all = readArray(o, "bullets", "$").map((b, i) => readBullet(b, `$.bullets[${i}]`));
     const notes: string[] = [];
 
-    let bullets = all.filter((b) => b.claims.length > 0);
-    if (bullets.length < all.length) {
-      notes.push(`Dropped ${all.length - bullets.length} bullet(s) with no claims.`);
+    let claimsDropped = 0;
+    const capped = all.map((b) => {
+      const claims = b.claims.slice(0, MAX_CLAIMS_PER_BULLET).map((c) => {
+        if (c.figures.length <= MAX_FIGURES_PER_CLAIM) return c;
+        notes.push(
+          `Claim ${c.id}: kept the first ${MAX_FIGURES_PER_CLAIM} of ${c.figures.length} figures; dropped ${c.figures
+            .slice(MAX_FIGURES_PER_CLAIM)
+            .map((f) => f.id)
+            .join(", ")}.`,
+        );
+        return { ...c, figures: c.figures.slice(0, MAX_FIGURES_PER_CLAIM) };
+      });
+      claimsDropped += b.claims.length - claims.length;
+      return claims.length === b.claims.length && claims.every((c, i) => c === b.claims[i]) ? b : { ...b, claims };
+    });
+    if (claimsDropped > 0) {
+      notes.push(`Dropped ${claimsDropped} claim(s) beyond the first ${MAX_CLAIMS_PER_BULLET} of a bullet.`);
+    }
+
+    let bullets = capped.filter((b) => b.claims.length > 0);
+    if (bullets.length < capped.length) {
+      notes.push(`Dropped ${capped.length - bullets.length} bullet(s) with no claims.`);
     }
     if (bullets.length > MAX_BULLETS) {
       notes.push(`Kept the first ${MAX_BULLETS} of ${bullets.length} bullets; the rest were dropped.`);

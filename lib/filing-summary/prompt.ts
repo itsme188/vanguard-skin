@@ -18,7 +18,7 @@ import { createHash } from "node:crypto";
 import type { BogeySnapshotFigure } from "@/lib/filing-summary/types";
 
 /** Bumped whenever the prompt text or its inputs change meaning; stored per section (R14). */
-export const PROMPT_VERSION = 2;
+export const PROMPT_VERSION = 3;
 
 export interface SectionPromptInput {
   symbol: string;
@@ -50,10 +50,15 @@ function systemText(token: string): string {
 
 SHAPE
 - Return only the JSON object the schema describes: a headline and a list of bullets.
-- headline: one line naming the single most important thing. It carries no numbers.
-- Bullets go most important first. Mark the three most important bullets top = true (never more than three); every other bullet is top = false. 12 bullets maximum in total. Do not pad: fewer bullets is better than filler.
+- headline: one sentence naming the single most important thing. It carries no numbers.
+- Bullets go most important first. Mark the three most important bullets top = true (never more than three); every other bullet is top = false. At most 12 bullets in total. Do not pad: fewer bullets is better than filler.
 - routine = true on a bullet that is routine or boilerplate; say plainly in its text that it is routine.
-- Each bullet holds one or more claims. A claim is one statement with its own evidence.
+- Each bullet holds one or two claims, never more than 2 claims per bullet. A claim is one statement with its own evidence.
+- A claim carries at most 4 figures. Pick the figures that make the point; leave out the rest.
+- Say each thing once. Do not restate a claim, or the same figure's point, in another bullet.
+
+LENGTH
+- Keep the answer short. Every quote is at most 30 words: cite the shortest exact span that carries the point, not the whole paragraph.
 
 NUMBERS - every number goes through a typed figure
 - Write each claim's text as a template. Every number in it is a placeholder naming one of THAT claim's figures, like {f1} or {f2}; the app puts the figure's valueText in its place. Example: "Revenue of {f1} was above the {f2} Synthetic Weekly consensus."
@@ -78,7 +83,7 @@ COMPARISONS
 
 CITATIONS
 - Every claim carries at least one citation, including a claim with no numbers (governance, tone). Each citation: id, document = the document's file name exactly as given in the DOCUMENTS list and block headers (spaces collapsed, no pipes), quote, isTableRow.
-- quote is a short exact sentence or phrase copied character for character from that document. Do not paraphrase, join separate sentences or add ellipses.
+- quote is a short exact sentence or phrase, at most 30 words, copied character for character from that document. Do not paraphrase, join separate sentences or add ellipses.
 - For a table row, copy the cells exactly and join them with " | " in their order, from the row label to the cell you rely on (for example "Income from operations | 12,988 | 10,034"), and set isTableRow = true.
 
 IDS

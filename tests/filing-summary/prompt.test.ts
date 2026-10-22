@@ -47,7 +47,7 @@ function input(over: Partial<Input> = {}): Input {
 
 describe("buildSectionPrompt", () => {
   it("has a version", () => {
-    expect(PROMPT_VERSION).toBe(2);
+    expect(PROMPT_VERSION).toBe(3);
     expect(buildSectionPrompt(input()).system).toContain("percentage points");
   });
 
@@ -59,6 +59,16 @@ describe("buildSectionPrompt", () => {
     expect(a.fingerprint).toBe(b.fingerprint);
     expect(a.fingerprint).toMatch(/^[0-9a-f]{64}$/);
     expect(a.fingerprint).toBe(createHash("sha256").update(`${a.system}\u0000${a.user}`).digest("hex"));
+  });
+
+  it("bounds the output (v3): bullets, claims, figures, quote length, no restating, one-sentence headline", () => {
+    const { system } = buildSectionPrompt(input());
+    expect(system).toMatch(/At most 12 bullets/);
+    expect(system).toMatch(/never more than 2 claims per bullet/);
+    expect(system).toMatch(/at most 4 figures/);
+    expect(system).toMatch(/at most 30 words/);
+    expect(system).toMatch(/Say each thing once/);
+    expect(system).toMatch(/headline: one sentence/);
   });
 
   it("changes the fingerprint when a bogey value changes", () => {

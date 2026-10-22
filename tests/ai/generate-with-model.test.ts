@@ -143,6 +143,58 @@ describe("generateObjectWithModel", () => {
     expect(generateObjectMock).toHaveBeenCalledTimes(1);
   });
 
+  it("a truncation carries the SDK usage: from the result, and from NoObjectGeneratedError.usage", async () => {
+    const target = { modelId: OPUS, effort: "high" as const, family: "opus" as const };
+    const opts = { schema, prompt: "p", maxOutputTokens: 64000 };
+    generateObjectMock.mockResolvedValueOnce({
+      ...ok("length"),
+      usage: { inputTokens: 40000, outputTokens: 64000, reasoningTokens: 50000 },
+    });
+    const e1 = await generateObjectWithModel("printFilingSummary", target, opts).catch((e: unknown) => e);
+    expect(e1).toBeInstanceOf(AITruncatedError);
+    expect((e1 as AITruncatedError).usage).toEqual({ inputTokens: 40000, outputTokens: 64000, reasoningTokens: 50000 });
+
+    generateObjectMock.mockRejectedValueOnce(
+      new NoObjectGeneratedError({
+        message: "no object",
+        text: "{\"a\":",
+        response: { id: "r", timestamp: new Date(0), modelId: OPUS },
+        usage: { inputTokens: 41000, outputTokens: 64000, totalTokens: 105000 },
+        finishReason: "length",
+      } as ConstructorParameters<typeof NoObjectGeneratedError>[0]),
+    );
+    const e2 = await generateObjectWithModel("printFilingSummary", target, opts).catch((e: unknown) => e);
+    expect(e2).toBeInstanceOf(AITruncatedError);
+    expect((e2 as AITruncatedError).usage).toMatchObject({ inputTokens: 41000, outputTokens: 64000 });
+  });
+
+  it("a refusal carries the SDK usage from the result and from NoObjectGeneratedError.usage", async () => {
+    const target = { modelId: OPUS, effort: "high" as const, family: "opus" as const };
+    const opts = { schema, prompt: "p", maxOutputTokens: 64000 };
+    generateObjectMock.mockResolvedValueOnce({ ...ok("content-filter"), usage: { inputTokens: 9, outputTokens: 3 } });
+    const e1 = await generateObjectWithModel("printFilingSummary", target, opts).catch((e: unknown) => e);
+    expect(e1).toBeInstanceOf(AIRefusalError);
+    expect((e1 as AIRefusalError).usage).toEqual({ inputTokens: 9, outputTokens: 3 });
+
+    generateObjectMock.mockRejectedValueOnce(
+      new NoObjectGeneratedError({
+        message: "no object",
+        text: "",
+        response: { id: "r", timestamp: new Date(0), modelId: OPUS },
+        usage: { inputTokens: 7, outputTokens: 2, totalTokens: 9 },
+        finishReason: "content-filter",
+      } as ConstructorParameters<typeof NoObjectGeneratedError>[0]),
+    );
+    const e2 = await generateObjectWithModel("printFilingSummary", target, opts).catch((e: unknown) => e);
+    expect(e2).toBeInstanceOf(AIRefusalError);
+    expect((e2 as AIRefusalError).usage).toMatchObject({ inputTokens: 7, outputTokens: 2 });
+  });
+
+  it("an error built without usage has none (other callers unchanged)", () => {
+    expect(new AITruncatedError("printFilingSummary", OPUS).usage).toBeUndefined();
+    expect(new AIRefusalError("printFilingSummary", OPUS).usage).toBeUndefined();
+  });
+
   it("other errors pass through unchanged", async () => {
     const boom = new Error("boom");
     generateObjectMock.mockRejectedValueOnce(boom);

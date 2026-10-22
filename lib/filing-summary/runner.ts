@@ -72,8 +72,19 @@ import type {
 export const INPUT_CAP_CHARS = 1_600_000;
 export const OVER_INPUT_CAP = "over the input cap";
 export const MAX_SECTION_ATTEMPTS = 2;
-export const SECTION_MAX_OUTPUT_TOKENS = 32_000;
-export const SECTION_CALL_TIMEOUT_MS = 300_000;
+/**
+ * Output cap per section call. Thinking tokens count against it, so it has to
+ * hold the typed-figure JSON AND the model's reasoning: 32k truncated on a real
+ * earnings 8-K at Opus high effort (2026-10-22 replay).
+ */
+export const SECTION_MAX_OUTPUT_TOKENS = 64_000;
+/**
+ * Wall-clock cap per section call (10 minutes). Longer than the store's
+ * 5-minute stale window on purpose: the heartbeat below refreshes the claim
+ * every minute while the call is open, so a live call is never taken over;
+ * only a worker that died stops beating and goes stale.
+ */
+export const SECTION_CALL_TIMEOUT_MS = 600_000;
 /** Kept well under the store's 5-minute stale window while a call is open. */
 const HEARTBEAT_EVERY_MS = 60_000;
 export const MODEL_GONE_TEXT = "model no longer available — re-run";
@@ -637,6 +648,8 @@ export async function runNextSection(
     usage = res.usage;
   } catch (err) {
     callError = errorClassOf(err);
+    // A truncated or refused call was still billed: keep its usage for the cost line.
+    if (err instanceof AITruncatedError || err instanceof AIRefusalError) usage = err.usage;
   } finally {
     clearInterval(beat);
   }

@@ -37,9 +37,12 @@ import { dropModelFromCatalog } from "@/lib/ai/catalog-source";
 import { FORCED_TOOL_UNSUPPORTED_RE } from "@/lib/ai/classify-anthropic-error";
 
 export class AIRefusalError extends Error {
-  constructor(public feature: FeatureKey, public modelId: string) {
+  /** The SDK usage of the refused call when the SDK reported one (it was still billed). */
+  public usage?: unknown;
+  constructor(public feature: FeatureKey, public modelId: string, usage?: unknown) {
     super(`AI refused request for feature "${feature}" (model ${modelId})`);
     this.name = "AIRefusalError";
+    if (usage !== undefined) this.usage = usage;
   }
 }
 
@@ -229,9 +232,12 @@ export class AIModelUnavailableError extends Error {
 
 /** The model stopped at the output-token limit; the object is incomplete. */
 export class AITruncatedError extends Error {
-  constructor(public feature: FeatureKey, public modelId: string) {
+  /** The SDK usage of the truncated call when the SDK reported one (it was still billed). */
+  public usage?: unknown;
+  constructor(public feature: FeatureKey, public modelId: string, usage?: unknown) {
     super(`AI output truncated at the token limit for feature "${feature}" (model ${modelId})`);
     this.name = "AITruncatedError";
+    if (usage !== undefined) this.usage = usage;
   }
 }
 
@@ -281,14 +287,15 @@ export async function generateObjectWithModel(
     // A truncated or refused response often fails to parse; the SDK then
     // throws NoObjectGeneratedError carrying the finish reason.
     if (NoObjectGeneratedError.isInstance(err)) {
-      if (err.finishReason === "length") throw new AITruncatedError(feature, modelId);
+      // The error carries the call's usage (ai v6 NoObjectGeneratedError.usage).
+      if (err.finishReason === "length") throw new AITruncatedError(feature, modelId, err.usage);
       if (err.finishReason && REFUSAL_FINISH.has(err.finishReason)) {
-        throw new AIRefusalError(feature, modelId);
+        throw new AIRefusalError(feature, modelId, err.usage);
       }
     }
     throw err;
   }
-  if (REFUSAL_FINISH.has(res.finishReason)) throw new AIRefusalError(feature, modelId);
-  if (res.finishReason === "length") throw new AITruncatedError(feature, modelId);
+  if (REFUSAL_FINISH.has(res.finishReason)) throw new AIRefusalError(feature, modelId, res.usage);
+  if (res.finishReason === "length") throw new AITruncatedError(feature, modelId, res.usage);
   return { object: res.object, usage: res.usage, finishReason: res.finishReason };
 }

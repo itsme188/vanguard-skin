@@ -16,6 +16,8 @@ import {
   retryRun,
   retryRunWithReason,
   runNextSection,
+  SECTION_CALL_TIMEOUT_MS,
+  SECTION_MAX_OUTPUT_TOKENS,
   startRun,
   type RunnerSeams,
 } from "@/lib/filing-summary/runner";
@@ -250,7 +252,7 @@ describe("runNextSection", () => {
     const [feature, target, opts] = gen.mock.calls[0];
     expect(feature).toBe("printFilingSummary");
     expect(target).toEqual({ modelId: "claude-opus-5-5", effort: "high", family: "opus" });
-    expect(opts.maxOutputTokens).toBe(32000);
+    expect(opts.maxOutputTokens).toBe(64000);
 
     const sec = sectionsOf(runId)[0];
     expect(sec.status).toBe("done");
@@ -313,6 +315,77 @@ describe("runNextSection", () => {
       errorClass: "model_unavailable",
       errorText: "model no longer available — re-run",
     });
+  });
+
+  it("a truncated or refused call keeps its usage on the failed section (the cost line counts it)", async () => {
+    seedEarnings();
+    const runId = start();
+    const { s } = seams(async () => {
+      throw new AITruncatedError("printFilingSummary", "claude-opus-5-5", {
+        inputTokens: 40000, outputTokens: 64000, reasoningTokens: 51000, totalTokens: 104000,
+      });
+    });
+    await runNextSection(db, eventId, s);
+    const sec = sectionsOf(runId)[0];
+    expect(sec).toMatchObject({ status: "failed", errorClass: "truncated" });
+    expect(JSON.parse(sec.usageJson!)).toEqual({ inputTokens: 40000, outputTokens: 64000, reasoningTokens: 51000 });
+
+    eventId = seedEvent("RFSD", "k9");
+    seedEarnings("0000000001-26-000099");
+    const run2 = start();
+    const { s: s2 } = seams(async () => {
+      throw new AIRefusalError("printFilingSummary", "claude-opus-5-5", { inputTokens: 900, outputTokens: 12 });
+    });
+    await runNextSection(db, eventId, s2);
+    const sec2 = sectionsOf(run2)[0];
+    expect(sec2).toMatchObject({ status: "failed", errorClass: "refusal" });
+    expect(JSON.parse(sec2.usageJson!)).toEqual({ inputTokens: 900, outputTokens: 12 });
+  });
+
+  it("a truncation with no usage reported stores no usage", async () => {
+    seedEarnings();
+    const runId = start();
+    const { s } = seams(async () => {
+      throw new AITruncatedError("printFilingSummary", "claude-opus-5-5");
+    });
+    await runNextSection(db, eventId, s);
+    expect(sectionsOf(runId)[0].usageJson).toBeNull();
+  });
+
+  it("pins the call budget: 64k output tokens, a 10-minute timeout", () => {
+    expect(SECTION_CALL_TIMEOUT_MS).toBe(600_000);
+    expect(SECTION_MAX_OUTPUT_TOKENS).toBe(64_000);
+  });
+
+  it("a live call open for 9 minutes is never taken over: the heartbeat keeps it fresh", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    try {
+      seedEarnings();
+      const runId = start();
+      let clock = T0;
+      let finish!: () => void;
+      const { s } = seams(
+        async () => {
+          await new Promise<void>((resolve) => { finish = resolve; });
+          return ok(EARNINGS_OUT)();
+        },
+        { now: () => clock },
+      );
+      const pending = runNextSection(db, eventId, s);
+      await Promise.resolve();
+      for (let minute = 1; minute <= 9; minute++) {
+        clock = T0 + minute * MIN;
+        vi.advanceTimersByTime(60_000);
+        // Another worker looks for stale work at each minute: nothing to take.
+        expect(claimNextSection(db, eventId, "tok-B", clock)).toBeNull();
+      }
+      expect(SECTION_CALL_TIMEOUT_MS).toBeGreaterThan(9 * MIN);
+      finish();
+      expect(await pending).toBe("ran");
+      expect(sectionsOf(runId)[0]).toMatchObject({ status: "done" });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("a timeout then a success: done with attempts = 2", async () => {

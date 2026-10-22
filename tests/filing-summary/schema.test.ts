@@ -60,8 +60,8 @@ function output(bullets: Json[]): Json {
 }
 
 describe("SCHEMA_VERSION", () => {
-  it("is 1", () => {
-    expect(SCHEMA_VERSION).toBe(1);
+  it("is 2 (claim and figure caps added to the reader)", () => {
+    expect(SCHEMA_VERSION).toBe(2);
   });
 });
 
@@ -200,6 +200,46 @@ describe("parseSectionOutput", () => {
     expect(res.value.bullets).toHaveLength(12);
     expect(res.value.bullets[11].claims[0].id).toBe("c12");
     expect(res.notes.join(" ")).toMatch(/12/);
+  });
+
+  it("keeps the first 2 claims of a bullet, drops the rest and notes it", () => {
+    const b = { top: false, routine: false, claims: [claim("c1", 1), claim("c2", 2), claim("c3", 3)] };
+    const res = parseSectionOutput(output([b, bullet(4)]));
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.value.bullets[0].claims.map((c) => c.id)).toEqual(["c1", "c2"]);
+    expect(res.value.bullets[1].claims.map((c) => c.id)).toEqual(["c4"]);
+    expect(res.notes.join(" ")).toMatch(/Dropped 1 claim\(s\) beyond the first 2/);
+  });
+
+  it("keeps the first 4 figures of a claim, drops the rest and names them in notes", () => {
+    const b = bullet(1);
+    const c = (b.claims as Json[])[0];
+    c.figures = ["f1", "f2", "f3", "f4", "f5", "f6"].map((id) => figure(id, { citationId: "q1" }));
+    const res = parseSectionOutput(output([b]));
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.value.bullets[0].claims[0].figures.map((f) => f.id)).toEqual(["f1", "f2", "f3", "f4"]);
+    expect(res.notes.join(" ")).toMatch(/Claim c1: kept the first 4 of 6 figures; dropped f5, f6/);
+  });
+
+  it("leaves a claim with exactly 2 claims and 4 figures untouched, with no notes", () => {
+    const b = bullet(1);
+    const c = (b.claims as Json[])[0];
+    c.figures = ["f1", "f2", "f3", "f4"].map((id) => figure(id, { citationId: "q1" }));
+    b.claims = [c, claim("c2", 9)];
+    const res = parseSectionOutput(output([b]));
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.value.bullets[0].claims).toHaveLength(2);
+    expect(res.value.bullets[0].claims[0].figures).toHaveLength(4);
+    expect(res.notes).toEqual([]);
+  });
+
+  it("caps claims before the duplicate-id check, so a duplicate only in a dropped claim does not fail", () => {
+    const b = { top: false, routine: false, claims: [claim("c1", 1), claim("c2", 2), claim("c1", 1)] };
+    const res = parseSectionOutput(output([b]));
+    expect(res.ok).toBe(true);
   });
 
   it("drops a bullet with no claims and notes it", () => {
