@@ -48,7 +48,7 @@ function input(over: Partial<Input> = {}): Input {
 describe("buildSectionPrompt", () => {
   it("has a version", () => {
     expect(PROMPT_VERSION).toBe(2);
-    expect(buildSectionPrompt(base()).system).toContain("percentage points");
+    expect(buildSectionPrompt(input()).system).toContain("percentage points");
   });
 
   it("fingerprints the exact system and user text, stably", () => {
