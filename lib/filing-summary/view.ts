@@ -203,6 +203,8 @@ export interface FullRun {
   /** Summed over sections. */
   usage: Record<string, number>;
   bogeys: PublicBogey[];
+  /** "Q3" from this run's earnings section figures; null when they do not agree. */
+  quarterLabel: string | null;
   sections: FullSection[];
 }
 
@@ -212,7 +214,7 @@ export interface FullView {
     symbol: string | null;
     companyName: string | null;
     eventDate: string;
-    /** "Q3" when the earnings section's own figures agree on one quarter. */
+    /** The shown run's `quarterLabel`. */
     quarterLabel: string | null;
     pollState: PollState | null;
     pollDetail: string | null;
@@ -420,14 +422,11 @@ interface BuiltRun {
   full: FullRun;
   summary: RunSummary;
   filingIds: Set<number>;
+  /** The run has an earnings-role section whose view status is done. */
+  earningsDone: boolean;
 }
 
-function buildSections(
-  db: Database.Database,
-  run: RunRow,
-  filingsById: Map<number, FilingRow>,
-): FullSection[] {
-  const rows = listSections(db, run.id);
+function buildSections(rows: SectionRow[], filingsById: Map<number, FilingRow>): FullSection[] {
   const sections: FullSection[] = rows.map((s) => {
     const filing = filingsById.get(s.filingId);
     const cik = filing?.cik ?? "";
@@ -485,7 +484,8 @@ function buildSections(
 }
 
 function buildRun(db: Database.Database, run: RunRow, filingsById: Map<number, FilingRow>): BuiltRun {
-  const sections = buildSections(db, run, filingsById);
+  const rows = listSections(db, run.id);
+  const sections = buildSections(rows, filingsById);
   const status = runViewStatus(run, sections);
   const doneClaims = sections.filter((s) => s.status === "done").flatMap((s) => s.claims);
   const counts = countStatuses(doneClaims);
@@ -512,6 +512,7 @@ function buildRun(db: Database.Database, run: RunRow, filingsById: Map<number, F
     excludesAfterEt: null,
     usage,
     bogeys: publicBogeys(run.bogeySnapshotJson),
+    quarterLabel: quarterLabel(rows, filingsById),
     sections,
   };
   const summary: RunSummary = {
@@ -533,7 +534,10 @@ function buildRun(db: Database.Database, run: RunRow, filingsById: Map<number, F
     })),
     excludesAfterEt: null,
   };
-  return { full, summary, filingIds: new Set(sections.map((s) => s.filingId)) };
+  const earningsDone = sections.some(
+    (s) => s.status === "done" && filingsById.get(s.filingId)?.role === "earnings",
+  );
+  return { full, summary, filingIds: new Set(sections.map((s) => s.filingId)), earningsDone };
 }
 
 /** R13: "does not include filings found after 4:10 pm" on an older run. */
@@ -560,33 +564,39 @@ function markExclusions(built: BuiltRun[], filingsById: Map<number, FilingRow>):
   }
 }
 
+/**
+ * `shown` = the newest run whose earnings section is done (a companion still
+ * running, failed or waiting for Retry on that run shows through its section
+ * states); the newest run when none qualifies. `inProgress` = a newer run
+ * that is still running and has no done earnings section (a re-run).
+ */
 function pickShown(built: BuiltRun[]): { shown: BuiltRun | null; inProgress: BuiltRun | null } {
   if (built.length === 0) return { shown: null, inProgress: null };
-  const done = [...built].reverse().find((b) => b.full.status === "done");
-  const shown = done ?? built[built.length - 1];
+  const newestFirst = [...built].reverse();
+  const shown = newestFirst.find((b) => b.earningsDone) ?? built[built.length - 1];
   const inProgress =
-    [...built].reverse().find((b) => b.full.runNo > shown.full.runNo && b.full.status === "running") ?? null;
+    newestFirst.find(
+      (b) => b.full.runNo > shown.full.runNo && !b.earningsDone && b.full.status === "running",
+    ) ?? null;
   return { shown, inProgress };
 }
 
-/** "Q3" when the earnings section's quoted actual-quarter figures name one quarter. */
-function quarterLabel(db: Database.Database, built: BuiltRun[], filingsById: Map<number, FilingRow>): string | null {
+/** "Q3" when one run's earnings section's quoted actual-quarter figures name one quarter. */
+function quarterLabel(rows: SectionRow[], filingsById: Map<number, FilingRow>): string | null {
   const counts = new Map<number, number>();
-  for (const b of built) {
-    for (const s of listSections(db, b.full.runId)) {
-      if (s.status !== "done" || filingsById.get(s.filingId)?.role !== "earnings") continue;
-      const out = parseJson<{ bullets?: Array<{ claims?: Array<{ figures?: unknown[] }> }> }>(s.outputJson);
-      for (const bullet of out?.bullets ?? []) {
-        for (const claim of bullet.claims ?? []) {
-          for (const fig of claim.figures ?? []) {
-            const f = fig as { sourceKind?: unknown; period?: { kind?: unknown; role?: unknown; fiscalQuarter?: unknown } };
-            const q = f.period?.fiscalQuarter;
-            if (
-              f.sourceKind === "quote" && f.period?.kind === "quarter" && f.period.role === "actual" &&
-              typeof q === "number" && Number.isInteger(q) && q >= 1 && q <= 4
-            ) {
-              counts.set(q, (counts.get(q) ?? 0) + 1);
-            }
+  for (const s of rows) {
+    if (s.status !== "done" || filingsById.get(s.filingId)?.role !== "earnings") continue;
+    const out = parseJson<{ bullets?: Array<{ claims?: Array<{ figures?: unknown[] }> }> }>(s.outputJson);
+    for (const bullet of out?.bullets ?? []) {
+      for (const claim of bullet.claims ?? []) {
+        for (const fig of claim.figures ?? []) {
+          const f = fig as { sourceKind?: unknown; period?: { kind?: unknown; role?: unknown; fiscalQuarter?: unknown } };
+          const q = f.period?.fiscalQuarter;
+          if (
+            f.sourceKind === "quote" && f.period?.kind === "quarter" && f.period.role === "actual" &&
+            typeof q === "number" && Number.isInteger(q) && q >= 1 && q <= 4
+          ) {
+            counts.set(q, (counts.get(q) ?? 0) + 1);
           }
         }
       }
@@ -656,14 +666,14 @@ export function getFullView(db: Database.Database, eventId: number, catalogIds: 
   if (!ev) return null;
   const { choice, isDefault, locked } = getChoice(db, eventId);
   const state = getEventState(db, eventId);
-  const { filings, filingsById, built, shown, inProgress } = buildAll(db, eventId);
+  const { filings, built, shown, inProgress } = buildAll(db, eventId);
   return {
     event: {
       eventId,
       symbol: ev.symbol,
       companyName: companyName(db, ev.symbol),
       eventDate: ev.eventDate,
-      quarterLabel: quarterLabel(db, built, filingsById),
+      quarterLabel: shown?.full.quarterLabel ?? null,
       pollState: state?.pollState ?? null,
       pollDetail: state?.pollDetail ?? null,
     },

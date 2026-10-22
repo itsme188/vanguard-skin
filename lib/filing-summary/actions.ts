@@ -51,8 +51,11 @@ export interface ActionSeams {
 
 function defaultKick(db: Database.Database, eventId: number): void {
   startFilingSummaryTick(db);
-  void runNextSection(db, eventId).catch(() =>
-    console.warn(`[filing-summary] kicked section run for event ${eventId} failed`),
+  // The error's class name only: a message can quote filing content.
+  void runNextSection(db, eventId).catch((err: unknown) =>
+    console.warn(
+      `[filing-summary] kicked section run for event ${eventId} failed: ${err instanceof Error ? err.name : typeof err}`,
+    ),
   );
 }
 
@@ -165,14 +168,16 @@ export function applyFilingSummaryAction(
     }
     result = { ok: true, data: { eventId, runId } };
   } else {
+    // A repeated request with the same key answers with the run it created,
+    // before any other check (a later disarm does not turn a replay into a refusal).
+    if (action === "rerun" && choice === null) return INVALID_CHOICE;
+    const replay = startRunReplay(db, eventId, requestKey);
+    if (replay) return replay;
     // A disarmed print starts nothing new (the tick would cancel it anyway).
     if (getEventState(db, eventId)?.pollState === "cancelled") {
       return { ok: false, status: 409, error: DISARMED_TEXT };
     }
     if (action === "run") {
-      // A repeated click with the same key answers with the run it created.
-      const replay = startRunReplay(db, eventId, requestKey);
-      if (replay) return replay;
       if (!runSummaryAvailable(db, eventId)) {
         return { ok: false, status: 409, error: RUN_NOT_AVAILABLE_TEXT };
       }
@@ -186,8 +191,6 @@ export function applyFilingSummaryAction(
       );
     } else {
       if (choice === null) return INVALID_CHOICE;
-      const replay = startRunReplay(db, eventId, requestKey);
-      if (replay) return replay;
       if (listRuns(db, eventId).length === 0) {
         return { ok: false, status: 409, error: NO_RUN_TO_RERUN_TEXT };
       }

@@ -25,7 +25,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ even
     status: 200,
     headers: {
       "Content-Type": "text/html; charset=utf-8",
-      "Content-Disposition": `attachment; filename="${shareFileName(view, runId)}"`,
+      "Content-Disposition": `attachment; filename="${shareFileName(view, run.runNo)}"`,
       "Cache-Control": "no-store",
     },
   });

@@ -175,6 +175,17 @@ describe("POST paid actions", () => {
     expect(res.status).toBe(409);
   });
 
+  it("replays a used request key before the disarmed check", async () => {
+    seedEarningsFiling();
+    const first = await (await post({ eventId, action: "run", requestKey: "k1" })).json();
+    upsertEventState(hoisted.db, eventId, { pollState: "cancelled" });
+    const again = await post({ eventId, action: "run", requestKey: "k1" });
+    expect(again.status).toBe(200);
+    expect((await again.json()).data).toEqual({ eventId, runId: first.data.runId, created: false });
+    const fresh = await post({ eventId, action: "rerun", family: "opus", effort: "high", requestKey: "k2" });
+    expect(fresh.status).toBe(409);
+  });
+
   it("retries a failed run, idempotently on the key, and checks the run belongs to the print", async () => {
     seedEarningsFiling();
     await post({ eventId, action: "run", requestKey: "k1" });
@@ -226,7 +237,7 @@ describe("GET routes", () => {
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toBe("text/html; charset=utf-8");
     expect(res.headers.get("content-disposition")).toBe(
-      `attachment; filename="SYNW-2026-10-22-filing-summary-run${runId}.html"`,
+      'attachment; filename="SYNW-2026-10-22-filing-summary-run1.html"',
     );
     expect(res.headers.get("cache-control")).toBe("no-store");
     const missing = await shareGET(

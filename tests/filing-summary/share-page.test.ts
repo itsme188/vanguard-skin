@@ -152,6 +152,24 @@ describe("renderSharePage", () => {
   it("names the file from validated parts", () => {
     expect(shareFileName(view(), 7)).toBe("SYNW-2026-10-22-filing-summary-run7.html");
   });
+
+  it("never prints a section's stored error text, only a fixed sentence for its class", () => {
+    db.prepare(
+      "UPDATE filing_summary_sections SET status='failed', error_class='timeout', error_text='CANARY-ERR' WHERE run_id=?",
+    ).run(runId);
+    db.prepare("UPDATE filing_summary_runs SET status='failed' WHERE id=?").run(runId);
+    const html = renderSharePage(view(), runId);
+    expect(html).not.toContain("CANARY-ERR");
+    expect(html).toContain("Not summarised: the model call timed out.");
+  });
+
+  it("reads the severity class by own property only", () => {
+    const v = view();
+    (v.runs[0].sections[0].claims[0] as { status: string }).status = "constructor";
+    const html = renderSharePage(v, runId);
+    expect(html).toContain('class="status s-muted"');
+    expect(html).not.toContain("s-function");
+  });
 });
 
 describe("reason sentences", () => {

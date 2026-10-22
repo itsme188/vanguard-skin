@@ -5,7 +5,15 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
-import { createRun, insertFiling, listSections, setChoice, upsertEventState, type NewFiling } from "@/lib/filing-summary/store";
+import {
+  appendSection,
+  createRun,
+  insertFiling,
+  listSections,
+  setChoice,
+  upsertEventState,
+  type NewFiling,
+} from "@/lib/filing-summary/store";
 import {
   etTime,
   getFullView,
@@ -152,6 +160,68 @@ describe("panel view", () => {
     expect(views[eventId].choiceLabel).toBe("Fable · medium");
     expect(views[eventId].isDefault).toBe(false);
     expect(views[eventId].nowLabel).toBe("Fable · not available");
+  });
+});
+
+describe("which run is shown (fix round 1)", () => {
+  it("keeps showing a run after a companion is appended to it, with no in-progress run", () => {
+    const { id: f1 } = insertFiling(db, filing("0000000001-26-000001"));
+    const r1 = run([f1]);
+    completeSection(r1, 1, [claim("s1.c1")]);
+    const { id: f2 } = insertFiling(db, filing("0000000001-26-000002", { form: "PRE 14C", role: "companion" }));
+    appendSection(db, r1, f2);
+    const v = getPanelViews(db, [eventId], CATALOG)[eventId];
+    expect(v.shown?.runId).toBe(r1);
+    expect(v.shown?.status).toBe("running");
+    expect(v.shown?.sectionStates.map((s) => s.status)).toEqual(["done", "pending"]);
+    expect(v.inProgress).toBeNull();
+  });
+
+  it("keeps showing the newer run when its earnings section is done and a companion failed", () => {
+    const { id: f1 } = insertFiling(db, filing("0000000001-26-000001"));
+    const r1 = run([f1]);
+    completeSection(r1, 1, [claim("s1.c1")]);
+    const { id: f2 } = insertFiling(db, filing("0000000001-26-000002", { form: "PRE 14C", role: "companion" }));
+    const r2 = run([f1, f2], "rerun");
+    completeSection(r2, 1, [claim("s1.c1")]);
+    db.prepare(
+      "UPDATE filing_summary_sections SET status='failed', error_class='timeout' WHERE run_id=? AND seq=2",
+    ).run(r2);
+    db.prepare("UPDATE filing_summary_runs SET status='failed' WHERE id=?").run(r2);
+    const v = getPanelViews(db, [eventId], CATALOG)[eventId];
+    expect(v.shown?.runId).toBe(r2);
+    expect(v.shown?.status).toBe("failed");
+    expect(v.inProgress).toBeNull();
+    expect(getFullView(db, eventId, CATALOG)!.shownRunId).toBe(r2);
+  });
+
+  it("falls back to the newest run when no earnings section is done", () => {
+    const { id: f1 } = insertFiling(db, filing("0000000001-26-000001"));
+    run([f1]);
+    const r2 = run([f1], "rerun");
+    const v = getPanelViews(db, [eventId], CATALOG)[eventId];
+    expect(v.shown?.runId).toBe(r2);
+    expect(v.inProgress).toBeNull();
+  });
+
+  it("labels the quarter per run, and the event from the shown run", () => {
+    const { id: f1 } = insertFiling(db, filing("0000000001-26-000001"));
+    const out = (q: number) =>
+      JSON.stringify({
+        headline: "h",
+        bullets: [{ top: true, routine: false, claims: [{ figures: [
+          { sourceKind: "quote", period: { kind: "quarter", role: "actual", fiscalQuarter: q } },
+        ] }] }],
+      });
+    const r1 = run([f1]);
+    completeSection(r1, 1, [claim("s1.c1")]);
+    db.prepare("UPDATE filing_summary_sections SET output_json=? WHERE run_id=?").run(out(3), r1);
+    const r2 = run([f1], "rerun");
+    completeSection(r2, 1, [claim("s1.c1")]);
+    db.prepare("UPDATE filing_summary_sections SET output_json=? WHERE run_id=?").run(out(4), r2);
+    const full = getFullView(db, eventId, CATALOG)!;
+    expect(full.runs.map((r) => r.quarterLabel)).toEqual(["Q3", "Q4"]);
+    expect(full.event.quarterLabel).toBe("Q4");
   });
 });
 

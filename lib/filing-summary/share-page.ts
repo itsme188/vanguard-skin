@@ -115,7 +115,7 @@ export function shareCountsText(c: StatusCounts): string {
 /** "META · Q3 filing summary · Opus 5.5 high · 12 claims · 9 checked · …" */
 export function shareHeaderLine(view: FullView, run: FullRun): string {
   const who = view.event.symbol ?? "Filing";
-  const title = view.event.quarterLabel ? `${view.event.quarterLabel} filing summary` : "filing summary";
+  const title = run.quarterLabel ? `${run.quarterLabel} filing summary` : "filing summary";
   return `${who} · ${title} · ${run.modelLabel} ${run.effort} · ${shareCountsText(run.counts)}`;
 }
 
@@ -137,6 +137,31 @@ function formatBogeyValue(b: PublicBogey): string {
     default:
       return v.toLocaleString("en-US");
   }
+}
+
+/**
+ * A fixed sentence per section error class. The stored error text is never
+ * printed: it is internal wording and the page leaves the app.
+ */
+const ERROR_SENTENCES: Record<string, string> = {
+  model_error: "Not summarised: the model call failed.",
+  timeout: "Not summarised: the model call timed out.",
+  refusal: "Not summarised: the model declined to answer.",
+  truncated: "Not summarised: the answer was cut off at the length limit.",
+  invalid_output: "Not summarised: the model's answer was not in the expected shape.",
+  model_unavailable: "Not summarised: the model is no longer available.",
+  input_too_large: "Not summarised: the filing is over the input cap.",
+  attempt_cap: "Not summarised: both attempts failed.",
+  takeover: "Not summarised: the attempt was interrupted.",
+  cancelled: "Not summarised: the summary was stopped.",
+  awaiting_retry: "Waiting for Retry: this filing arrived after the run failed.",
+};
+
+export function sectionErrorSentence(errorClass: string | null): string {
+  if (errorClass && Object.prototype.hasOwnProperty.call(ERROR_SENTENCES, errorClass)) {
+    return ERROR_SENTENCES[errorClass];
+  }
+  return "Not summarised.";
 }
 
 // ---------------------------------------------------------------- links
@@ -186,7 +211,9 @@ footer{margin-top:32px;color:var(--dim);font-size:0.9rem}
 `;
 
 function claimBlock(section: FullSection, claim: ViewClaim, fnNumbers: Map<string, number>): string {
-  const severity = STATUS_SEVERITY[claim.status] ?? "muted";
+  const severity = Object.prototype.hasOwnProperty.call(STATUS_SEVERITY, claim.status)
+    ? STATUS_SEVERITY[claim.status]
+    : "muted";
   const markers = claim.footnotes
     .map((f) => {
       const n = fnNumbers.get(`${claim.claimId}:${f.citationId}`);
@@ -231,7 +258,7 @@ function sectionBlock(section: FullSection): string {
       section.status === "waiting_retry"
         ? "Waiting for Retry: this filing arrived after the run failed."
         : section.status === "failed"
-          ? `Not summarised${section.errorText ? `: ${section.errorText}` : section.errorClass ? ` (${section.errorClass.replace(/_/g, " ")})` : ""}.`
+          ? sectionErrorSentence(section.errorClass)
           : "Still being read.";
     return `${head}<p class="banner">${escapeHtml(state)}</p>`;
   }
@@ -365,8 +392,8 @@ ${filingsBlock(view, run)}
 }
 
 /** `<SYMBOL>-<date>-filing-summary-run<N>.html`, with only safe file-name characters. */
-export function shareFileName(view: FullView, runId: number): string {
+export function shareFileName(view: FullView, runNo: number): string {
   const symbol = (view.event.symbol ?? "filing").replace(/[^A-Za-z0-9.-]/g, "") || "filing";
   const date = /^\d{4}-\d{2}-\d{2}$/.test(view.event.eventDate) ? view.event.eventDate : "undated";
-  return `${symbol}-${date}-filing-summary-run${runId}.html`;
+  return `${symbol}-${date}-filing-summary-run${runNo}.html`;
 }
