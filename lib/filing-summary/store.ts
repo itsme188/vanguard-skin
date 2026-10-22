@@ -42,7 +42,9 @@ export type SectionErrorClass =
   | "input_too_large"
   | "attempt_cap"
   | "takeover"
-  | "cancelled";
+  | "cancelled"
+  /** A companion added to a failed run; it runs on Retry. */
+  | "awaiting_retry";
 /**
  * Push send states. `sending` and `delivery_unknown` reuse the send-state
  * vocabulary of `lib/earnings/email-states.ts` (same meaning: a send in flight,
@@ -120,6 +122,8 @@ export interface RunRow {
   modelId: string | null;
   fallbackNote: string | null;
   requestKey: string | null;
+  /** The request key of the last Retry applied to this run (a repeat click is a no-op). */
+  lastRetryKey: string | null;
   status: RunStatus;
   bogeySnapshotJson: string;
   createdAt: string;
@@ -233,6 +237,7 @@ function toRun(r: Raw): RunRow {
     modelId: str(r.model_id),
     fallbackNote: str(r.fallback_note),
     requestKey: str(r.request_key),
+    lastRetryKey: str(r.last_retry_key),
     status: String(r.status) as RunStatus,
     bogeySnapshotJson: String(r.bogey_snapshot_json),
     createdAt: String(r.created_at),

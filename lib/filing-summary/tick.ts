@@ -224,9 +224,7 @@ function loadRunner(): Promise<RunnerModule> {
   //   onEarningsAccepted(db, eventId): void
   //   onCompanionAccepted(db, eventId, filingId): void
   //   runNextSection(db, eventId, seams?): Promise<unknown>
-  // The `as string` only keeps the type checker from resolving the module
-  // while it is built in parallel (Task 10 drops it); the emitted import is
-  // the plain literal.
+  // The import is type-checked against RunnerModule.
   return import("./runner") as Promise<RunnerModule>;
 }
 

@@ -9,7 +9,8 @@
 -- a fixed choice with a frozen bogey snapshot; it holds one section per
 -- filing, claimed with a CAS token + heartbeat (the 091 read pattern), and its
 -- status is recomputed whenever a section finishes. request_key makes a
--- client retry of "create run" idempotent. filing_summary_pushes records each
+-- client retry of "create run" idempotent, and last_retry_key does the same
+-- for a Retry click. filing_summary_pushes records each
 -- phone push before it is sent, so a crash mid-send reads delivery_unknown
 -- rather than being sent twice.
 CREATE TABLE filing_summary_events (
@@ -63,6 +64,7 @@ CREATE TABLE filing_summary_runs (
   model_id TEXT,
   fallback_note TEXT,
   request_key TEXT UNIQUE,
+  last_retry_key TEXT,
   status TEXT NOT NULL DEFAULT 'running' CHECK (status IN ('running','done','failed')),
   bogey_snapshot_json TEXT NOT NULL,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -83,7 +85,7 @@ CREATE TABLE filing_summary_sections (
   incomplete INTEGER NOT NULL DEFAULT 0,
   counts_json TEXT, usage_json TEXT, versions_json TEXT,
   error_class TEXT CHECK (error_class IS NULL OR error_class IN
-    ('model_error','timeout','refusal','truncated','invalid_output','model_unavailable','input_too_large','attempt_cap','takeover','cancelled')),
+    ('model_error','timeout','refusal','truncated','invalid_output','model_unavailable','input_too_large','attempt_cap','takeover','cancelled','awaiting_retry')),
   error_text TEXT,
   finished_at TEXT,
   UNIQUE (run_id, filing_id),

@@ -78,6 +78,7 @@ const HEARTBEAT_EVERY_MS = 60_000;
 export const MODEL_GONE_TEXT = "model no longer available — re-run";
 export const WAITS_FOR_RETRY_TEXT = "added after the run failed — runs on Retry";
 const FILING_REJECTED_TEXT = "filing no longer matches the print";
+const RUN_MISSING_TEXT = "run no longer exists";
 const NOTHING_READ_TEXT = "no document of the filing could be read";
 
 // ---------------------------------------------------------------- seams
@@ -230,6 +231,17 @@ export function startRun(
   trigger: "auto" | "rerun" | "manual_run",
   opts: { choice?: SummaryChoice; requestKey?: string | null; catalogIds?: string[] } = {},
 ): StartRunResult {
+  // One immediate transaction: the key lookup, the frozen inputs and the
+  // insert are atomic (createRun nests as a savepoint).
+  return db.transaction((): StartRunResult => startRunTx(db, eventId, trigger, opts)).immediate();
+}
+
+function startRunTx(
+  db: Database.Database,
+  eventId: number,
+  trigger: "auto" | "rerun" | "manual_run",
+  opts: { choice?: SummaryChoice; requestKey?: string | null; catalogIds?: string[] },
+): StartRunResult {
   if (!eventRow(db, eventId)) return { ok: false, reason: "not_found" };
   const requestKey = opts.requestKey ?? null;
 
@@ -264,13 +276,6 @@ export function startRun(
     bogeySnapshotJson: JSON.stringify(bogeys),
     filingIds,
   });
-  if (!res.created) {
-    // A concurrent call with the same key won the insert: same rule as above.
-    const owner = db
-      .prepare("SELECT event_id FROM filing_summary_runs WHERE id = ?")
-      .get(res.runId) as { event_id: number } | undefined;
-    if (owner?.event_id !== eventId) return { ok: false, reason: "request_key_conflict" };
-  }
   return { ok: true, runId: res.runId, created: res.created };
 }
 
@@ -278,7 +283,7 @@ export function startRun(
  * R13: a companion found after a run started goes to the newest run that is
  * running or done; if the newest failed, to the newest done run; with none
  * done, to the newest failed run, where it waits for Retry (stored failed /
- * cancelled with that reason, so nothing runs it before the click). Returns
+ * `awaiting_retry`, so nothing runs it before the click). Returns
  * the new section id, or null (no run yet, not the event's accepted filing,
  * or the run already has it).
  */
@@ -304,7 +309,7 @@ export function appendCompanion(
     if (sectionId === null || !waitsForRetry) return sectionId;
     db.prepare(
       `UPDATE filing_summary_sections
-          SET status = 'failed', error_class = 'cancelled', error_text = ?,
+          SET status = 'failed', error_class = 'awaiting_retry', error_text = ?,
               finished_at = datetime('now')
         WHERE id = ?`,
     ).run(WAITS_FOR_RETRY_TEXT, sectionId);
@@ -317,12 +322,24 @@ export function appendCompanion(
   })();
 }
 
-/** Poller callback: the accepted earnings filing starts the automatic run, once. */
+/**
+ * Poller callback: an accepted earnings filing starts the automatic run, once
+ * per filing. The deterministic key `auto:<eventId>:<filingId>` makes a
+ * repeat (a re-arm, a second poll) return the existing run, while a NEW
+ * accepted earnings filing (an earlier one was rejected) gets its own run.
+ */
+export function autoRunKey(eventId: number, filingId: number): string {
+  return `auto:${eventId}:${filingId}`;
+}
+
 export function onEarningsAccepted(db: Database.Database, eventId: number): void {
   const state = getEventState(db, eventId)?.pollState;
   if (state === "manual_only" || state === "cancelled") return;
-  if (listRuns(db, eventId).length > 0) return;
-  const res = startRun(db, eventId, "auto");
+  const earnings = listFilings(db, eventId).find(
+    (f) => f.role === "earnings" && f.identityVerdict === "accepted",
+  );
+  if (!earnings) return;
+  const res = startRun(db, eventId, "auto", { requestKey: autoRunKey(eventId, earnings.id) });
   if (!res.ok) warn(`auto run for event ${eventId} not started: ${res.reason}`);
 }
 
@@ -331,36 +348,53 @@ export function onCompanionAccepted(db: Database.Database, eventId: number, fili
   appendCompanion(db, eventId, filingId);
 }
 
+export type RetryRunResult =
+  | { ok: true }
+  | { ok: false; reason: "not_found" | "event_cancelled" | "nothing_to_retry" };
+
 /**
- * Retry on an explicit click: every failed section of the run (refusal and
- * truncation included) goes back to pending with its attempts reset. The
- * request key makes a repeated click a no-op (recorded in `settings`).
- * False when the run does not exist or had nothing to retry.
+ * Retry on an explicit click: every failed section of the run (refusal,
+ * truncation and `awaiting_retry` included) goes back to pending with its
+ * attempts reset. A `model_unavailable` section is left alone: the pinned
+ * model is gone and Re-run is the remedy. Refused while the event is
+ * cancelled (disarmed). The run's `last_retry_key` makes a repeated click with
+ * the same key a no-op that still answers ok.
  */
-export function retryRun(db: Database.Database, runId: number, requestKey: string): boolean {
-  return db.transaction(() => {
-    const run = db.prepare("SELECT id FROM filing_summary_runs WHERE id = ?").get(runId);
-    if (!run) return false;
-    const key = `filing_summary_retry:${requestKey}`;
-    const seen = db.prepare("SELECT value FROM settings WHERE key = ?").get(key) as
-      | { value: string }
-      | undefined;
-    if (seen) return seen.value === String(runId);
+export function retryRunWithReason(
+  db: Database.Database,
+  runId: number,
+  requestKey: string,
+): RetryRunResult {
+  return db.transaction((): RetryRunResult => {
+    const run = db
+      .prepare("SELECT event_id, last_retry_key FROM filing_summary_runs WHERE id = ?")
+      .get(runId) as { event_id: number; last_retry_key: string | null } | undefined;
+    if (!run) return { ok: false, reason: "not_found" };
+    if (run.last_retry_key === requestKey) return { ok: true };
+    if (getEventState(db, run.event_id)?.pollState === "cancelled") {
+      return { ok: false, reason: "event_cancelled" };
+    }
     const changes = db
       .prepare(
         `UPDATE filing_summary_sections
             SET status = 'pending', attempts = 0, claim_token = NULL, claimed_at = NULL,
                 heartbeat_at = NULL, error_class = NULL, error_text = NULL, finished_at = NULL
-          WHERE run_id = ? AND status = 'failed'`,
+          WHERE run_id = ? AND status = 'failed'
+            AND (error_class IS NULL OR error_class <> 'model_unavailable')`,
       )
       .run(runId).changes;
-    if (changes === 0) return false;
+    if (changes === 0) return { ok: false, reason: "nothing_to_retry" };
     db.prepare(
-      "UPDATE filing_summary_runs SET status = 'running', finished_at = NULL WHERE id = ?",
-    ).run(runId);
-    db.prepare("INSERT INTO settings (key, value) VALUES (?, ?)").run(key, String(runId));
-    return true;
+      `UPDATE filing_summary_runs SET status = 'running', finished_at = NULL, last_retry_key = ?
+        WHERE id = ?`,
+    ).run(requestKey, runId);
+    return { ok: true };
   }).immediate();
+}
+
+/** `retryRunWithReason` as a boolean (true = applied now or by an earlier click with this key). */
+export function retryRun(db: Database.Database, runId: number, requestKey: string): boolean {
+  return retryRunWithReason(db, runId, requestKey).ok;
 }
 
 // ---------------------------------------------------------------- running a section
@@ -424,6 +458,9 @@ function parseChecked(json: string | null): CheckedSection | null {
 
 export type RunNextSectionResult = "ran" | "idle" | "lost_claim";
 
+/** Thrown inside the finalize transaction to roll back when the claim is lost. */
+class LostClaim extends Error {}
+
 /**
  * Claims and runs the event's next section. "idle" = nothing to claim (or
  * another section is running); "lost_claim" = a takeover happened and this
@@ -441,37 +478,87 @@ export async function runNextSection(
 
   const run = listRuns(db, eventId).find((r) => r.id === section.runId) ?? null;
   const filing = listFilings(db, eventId).find((f) => f.id === section.filingId) ?? null;
-  const finalize = (result: SectionResult): RunNextSectionResult => {
-    if (!finalizeSection(db, section.id, token, result)) {
+  /**
+   * Compare-and-set finalize, in one transaction with two re-checks:
+   *  - a done result whose filing was rejected while the call ran becomes
+   *    failed / cancelled (its usage kept: the money was spent);
+   *  - a model_unavailable result fails the run's other pending sections the
+   *    same way (R17: the pinned model is gone for the whole run).
+   * Returns the stored status, or null when the claim was lost (nothing written).
+   */
+  const finalizeTx = db.transaction((result: SectionResult): "done" | "failed" | null => {
+    let r = result;
+    if (r.status === "done") {
+      const v = db
+        .prepare("SELECT identity_verdict FROM filing_summary_filings WHERE id = ?")
+        .get(section.filingId) as { identity_verdict: string } | undefined;
+      if (!v || v.identity_verdict === "rejected") {
+        r = failedResult(run, "cancelled", FILING_REJECTED_TEXT, {
+          inputFingerprint: r.inputFingerprint,
+          coverageJson: r.coverageJson,
+          incomplete: r.incomplete,
+          usageJson: r.usageJson,
+          versionsJson: r.versionsJson,
+        });
+      }
+    }
+    if (r.status === "failed" && r.errorClass === "model_unavailable") {
+      // Only while this worker still holds its claim; otherwise roll back below.
+      db.prepare(
+        `UPDATE filing_summary_sections
+            SET status = 'failed', error_class = 'model_unavailable', error_text = ?,
+                finished_at = datetime('now')
+          WHERE run_id = ? AND status = 'pending' AND id <> ?`,
+      ).run(MODEL_GONE_TEXT, section.runId, section.id);
+    }
+    if (!finalizeSection(db, section.id, token, r)) throw new LostClaim();
+    return r.status;
+  });
+  const finalize = (result: SectionResult): RunNextSectionResult | "ran_failed" => {
+    let status: "done" | "failed" | null;
+    try {
+      status = finalizeTx.immediate(result);
+    } catch (err) {
+      if (!(err instanceof LostClaim)) throw err;
+      status = null;
+    }
+    if (status === null) {
       warn(`section ${section.id} lost its claim; nothing written`);
       return "lost_claim";
     }
-    if (result.status === "failed") {
-      warn(`section ${section.id} failed: ${result.errorClass}`);
+    if (status === "failed") {
+      warn(`section ${section.id} failed: ${result.status === "done" ? "cancelled" : result.errorClass}`);
+      return "ran_failed";
     }
     return "ran";
   };
+  const finalizeFailed = (result: SectionResult): RunNextSectionResult => {
+    const out = finalize(result);
+    return out === "ran_failed" ? "ran" : out;
+  };
 
   // Ruling 2: the store counts claims; the cap is enforced here, with no call.
+  // Past the cap at claim time means the previous attempt never finished
+  // (a takeover: attempt 2 failing normally goes straight to attempt_cap).
   if (section.attempts > MAX_SECTION_ATTEMPTS) {
-    const last = section.errorClass ?? "takeover";
-    return finalize(failedResult(run, "attempt_cap", last));
+    return finalizeFailed(failedResult(run, "attempt_cap", "takeover"));
   }
-  if (!run || !filing) return finalize(failedResult(run, "cancelled", FILING_REJECTED_TEXT));
+  if (!run) return finalizeFailed(failedResult(run, "cancelled", RUN_MISSING_TEXT));
+  if (!filing) return finalizeFailed(failedResult(run, "cancelled", FILING_REJECTED_TEXT));
   // Ruling 3: a filing the revalidation rejected is never sent to the model.
   if (filing.identityVerdict === "rejected") {
-    return finalize(failedResult(run, "cancelled", FILING_REJECTED_TEXT));
+    return finalizeFailed(failedResult(run, "cancelled", FILING_REJECTED_TEXT));
   }
-  if (!run.modelId) return finalize(failedResult(run, "model_unavailable", MODEL_GONE_TEXT));
+  if (!run.modelId) return finalizeFailed(failedResult(run, "model_unavailable", MODEL_GONE_TEXT));
   const ev = eventRow(db, eventId);
-  if (!ev) return finalize(failedResult(run, "cancelled", FILING_REJECTED_TEXT));
+  if (!ev) return finalizeFailed(failedResult(run, "cancelled", FILING_REJECTED_TEXT));
 
   const coverage = buildCoverage(filing, seams.readDocument, db);
   const coverageJson = JSON.stringify(coverage.entries);
   const incomplete =
     filing.fetchState === "failed" || coverage.entries.some((e) => e.status !== "read");
   if (coverage.docs.length === 0) {
-    return finalize(
+    return finalizeFailed(
       failedResult(run, coverage.overCap ? "input_too_large" : "cancelled", coverage.overCap ? OVER_INPUT_CAP : NOTHING_READ_TEXT, {
         coverageJson,
         incomplete: true,
@@ -515,8 +602,11 @@ export async function runNextSection(
     return "lost_claim";
   }
 
+  // A heartbeat that fails means another worker owns the section now: stop
+  // paying for this call at once.
+  const lost = new AbortController();
   const beat = setInterval(() => {
-    heartbeatSection(db, section.id, token, seams.now());
+    if (!heartbeatSection(db, section.id, token, seams.now())) lost.abort();
   }, HEARTBEAT_EVERY_MS);
   (beat as { unref?: () => void }).unref?.();
   let object: unknown;
@@ -531,7 +621,7 @@ export async function runNextSection(
         system: prompt.system,
         prompt: prompt.user,
         maxOutputTokens: SECTION_MAX_OUTPUT_TOKENS,
-        abortSignal: AbortSignal.timeout(SECTION_CALL_TIMEOUT_MS),
+        abortSignal: AbortSignal.any([lost.signal, AbortSignal.timeout(SECTION_CALL_TIMEOUT_MS)]),
       },
     );
     object = res.object;
@@ -541,6 +631,11 @@ export async function runNextSection(
   } finally {
     clearInterval(beat);
   }
+  if (lost.signal.aborted) {
+    warn(`section ${section.id} lost its claim during the call; aborted`);
+    return "lost_claim";
+  }
+  const usageJson = usage === undefined ? null : JSON.stringify(readUsage(usage));
 
   let parsed: ReturnType<typeof parseSectionOutput> | null = null;
   if (callError === null) {
@@ -552,7 +647,7 @@ export async function runNextSection(
     const cls: SectionErrorClass = callError ?? "invalid_output";
     const errorText = cls === "model_unavailable" ? MODEL_GONE_TEXT : null;
     if (NEVER_RETRIED.has(cls)) {
-      return finalize(failedResult(run, cls, errorText, { coverageJson, incomplete }));
+      return finalizeFailed(failedResult(run, cls, errorText, { coverageJson, incomplete, usageJson }));
     }
     if (section.attempts < MAX_SECTION_ATTEMPTS) {
       if (!requeueSection(db, section.id, token, cls, errorText)) {
@@ -562,7 +657,7 @@ export async function runNextSection(
       warn(`section ${section.id} attempt ${section.attempts} failed: ${cls}; requeued`);
       return "ran";
     }
-    return finalize(failedResult(run, "attempt_cap", cls, { coverageJson, incomplete }));
+    return finalizeFailed(failedResult(run, "attempt_cap", cls, { coverageJson, incomplete, usageJson }));
   }
 
   const checked = namespaceClaims(
@@ -587,7 +682,7 @@ export async function runNextSection(
     coverageJson,
     incomplete,
     countsJson: JSON.stringify(checked.counts),
-    usageJson: JSON.stringify(readUsage(usage)),
+    usageJson,
     versionsJson: JSON.stringify({
       schema: SCHEMA_VERSION,
       prompt: PROMPT_VERSION,
@@ -597,6 +692,7 @@ export async function runNextSection(
     errorClass: null,
     errorText: null,
   });
+  if (outcome === "ran_failed") return "ran"; // rejected mid-call: no hook
   if (outcome !== "ran") return outcome;
   try {
     await seams.onSectionDone(db, section.id);

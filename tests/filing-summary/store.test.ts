@@ -295,3 +295,18 @@ describe("push rows", () => {
     ]);
   });
 });
+
+describe("migration 099 retry columns", () => {
+  it("stores the awaiting_retry class and maps last_retry_key", () => {
+    const f = insertFiling(db, filing("0000000001-26-000031")).id;
+    const { runId } = newRun([f]);
+    expect(listRuns(db, eventId)[0].lastRetryKey).toBeNull();
+    db.prepare("UPDATE filing_summary_runs SET last_retry_key = 'rk' WHERE id = ?").run(runId);
+    db.prepare("UPDATE filing_summary_sections SET status = 'failed', error_class = 'awaiting_retry' WHERE run_id = ?").run(runId);
+    expect(listRuns(db, eventId)[0].lastRetryKey).toBe("rk");
+    expect(listSections(db, runId)[0].errorClass).toBe("awaiting_retry");
+    expect(() =>
+      db.prepare("UPDATE filing_summary_sections SET error_class = 'waiting' WHERE run_id = ?").run(runId),
+    ).toThrow(/CHECK/);
+  });
+});

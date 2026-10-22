@@ -3,15 +3,18 @@
  * companion ordering, against the migrated in-memory schema with a fake
  * model call. Synthetic data only; model ids come from a catalog fixture.
  */
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
+import { setModelCatalogSource } from "@/lib/ai/catalog-source";
 import { AIRefusalError, AITruncatedError, AIModelUnavailableError } from "@/lib/ai/generate";
 import {
   appendCompanion,
+  autoRunKey,
   INPUT_CAP_CHARS,
   onEarningsAccepted,
   retryRun,
+  retryRunWithReason,
   runNextSection,
   startRun,
   type RunnerSeams,
@@ -158,6 +161,11 @@ beforeEach(() => {
   eventId = seedEvent("SYNW", "k1");
   files = new Map();
   tokenN = 0;
+  setModelCatalogSource(() => CATALOG);
+});
+
+afterEach(() => {
+  setModelCatalogSource(null);
 });
 
 describe("startRun", () => {
@@ -205,6 +213,24 @@ describe("startRun", () => {
     upsertEventState(db, eventId, { pollState: "manual_only" });
     onEarningsAccepted(db, eventId);
     expect(listRuns(db, eventId)).toHaveLength(0);
+  });
+
+  it("onEarningsAccepted keys the run per filing: a repeat is a no-op, a new accepted filing runs", () => {
+    const first = seedEarnings();
+    onEarningsAccepted(db, eventId);
+    onEarningsAccepted(db, eventId); // a re-arm or a second poll
+    let runs = listRuns(db, eventId);
+    expect(runs).toHaveLength(1);
+    expect(runs[0]).toMatchObject({ trigger: "auto", requestKey: autoRunKey(eventId, first) });
+
+    // The first earnings filing is rejected; a corrected one is accepted later.
+    db.prepare("UPDATE filing_summary_filings SET identity_verdict = 'rejected' WHERE id = ?").run(first);
+    const second = seedEarnings("0000000001-26-000042");
+    onEarningsAccepted(db, eventId);
+    runs = listRuns(db, eventId);
+    expect(runs).toHaveLength(2);
+    expect(runs[1].requestKey).toBe(autoRunKey(eventId, second));
+    expect(sectionsOf(runs[1].id)[0].filingId).toBe(second);
   });
 });
 
@@ -333,7 +359,9 @@ describe("runNextSection", () => {
     const { s, gen } = seams(ok(EARNINGS_OUT));
     expect(await runNextSection(db, eventId, s)).toBe("ran");
     expect(gen).not.toHaveBeenCalled();
-    expect(sectionsOf(runId)[0]).toMatchObject({ status: "failed", errorClass: "attempt_cap", attempts: 3 });
+    expect(sectionsOf(runId)[0]).toMatchObject({
+      status: "failed", errorClass: "attempt_cap", errorText: "takeover", attempts: 3,
+    });
   });
 
   it("a rejected filing is cancelled without a call", async () => {
@@ -381,6 +409,80 @@ describe("runNextSection", () => {
     ]);
     expect(sec.incomplete).toBe(true);
     expect((gen.mock.calls[0][2].prompt as string).length).toBeLessThan(INPUT_CAP_CHARS + 50_000);
+  });
+
+  it("a filing rejected while the call ran ends failed/cancelled, usage kept, no hook", async () => {
+    const id = seedEarnings();
+    const runId = start();
+    const { s, onSectionDone } = seams(async () => {
+      db.prepare("UPDATE filing_summary_filings SET identity_verdict = 'rejected' WHERE id = ?").run(id);
+      return ok(EARNINGS_OUT)();
+    });
+    expect(await runNextSection(db, eventId, s)).toBe("ran");
+    const sec = sectionsOf(runId)[0];
+    expect(sec).toMatchObject({ status: "failed", errorClass: "cancelled", errorText: "filing no longer matches the print", checkedJson: null });
+    expect(JSON.parse(sec.usageJson!)).toMatchObject({ inputTokens: 1200, outputTokens: 340 });
+    expect(onSectionDone).not.toHaveBeenCalled();
+    expect(listRuns(db, eventId)[0].status).toBe("failed");
+  });
+
+  it("a lost model fails the run's other pending sections; Retry leaves them; Re-run is the remedy", async () => {
+    seedEarnings();
+    seedCompanion("0000000001-26-000011");
+    const runId = start();
+    const { s, gen } = seams(async () => {
+      throw new AIModelUnavailableError("printFilingSummary", "claude-opus-5-5");
+    });
+    await runNextSection(db, eventId, s);
+    expect(await runNextSection(db, eventId, s)).toBe("idle");
+    expect(gen).toHaveBeenCalledTimes(1);
+    expect(sectionsOf(runId).map((x) => [x.status, x.errorClass, x.errorText])).toEqual([
+      ["failed", "model_unavailable", "model no longer available — re-run"],
+      ["failed", "model_unavailable", "model no longer available — re-run"],
+    ]);
+    expect(listRuns(db, eventId)[0].status).toBe("failed");
+    expect(retryRunWithReason(db, runId, "r-a")).toEqual({ ok: false, reason: "nothing_to_retry" });
+  });
+
+  it("Retry is refused while the event is cancelled", async () => {
+    seedEarnings();
+    const runId = start();
+    await runNextSection(db, eventId, seams(async () => {
+      throw new AIRefusalError("printFilingSummary", "claude-opus-5-5");
+    }).s);
+    upsertEventState(db, eventId, { pollState: "cancelled" });
+    expect(retryRunWithReason(db, runId, "r-b")).toEqual({ ok: false, reason: "event_cancelled" });
+    expect(retryRun(db, 424242, "r-c")).toBe(false);
+  });
+
+  it("a failed heartbeat aborts the call in flight", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    try {
+      seedEarnings();
+      const runId = start();
+      let sawAbort = false;
+      const { s } = seams(async (_f, _t, opts) => {
+        const signal = opts.abortSignal as AbortSignal;
+        await new Promise<void>((_, reject) => {
+          signal.addEventListener("abort", () => {
+            sawAbort = true;
+            const e = new Error("aborted");
+            e.name = "AbortError";
+            reject(e);
+          });
+        });
+        return ok(EARNINGS_OUT)();
+      });
+      const pending = runNextSection(db, eventId, s);
+      // Another worker takes over: this worker's next heartbeat fails.
+      claimNextSection(db, eventId, "tok-B", T0 + 10 * MIN);
+      vi.advanceTimersByTime(60_000);
+      expect(await pending).toBe("lost_claim");
+      expect(sawAbort).toBe(true);
+      expect(sectionsOf(runId)[0]).toMatchObject({ status: "running", claimToken: "tok-B" });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("the prompt carries none of the privacy canaries", async () => {
@@ -457,6 +559,7 @@ describe("companions (R13)", () => {
     }).s);
     const comp = seedCompanion("0000000001-26-000005");
     appendCompanion(db, eventId, comp);
+    expect(sectionsOf(r.runId)[1]).toMatchObject({ status: "failed", errorClass: "awaiting_retry" });
     const idle = seams(ok(EARNINGS_OUT));
     expect(await runNextSection(db, eventId, idle.s)).toBe("idle");
     expect(idle.gen).not.toHaveBeenCalled();
@@ -474,6 +577,7 @@ describe("companions (R13)", () => {
     await runNextSection(db, eventId, s);
     expect(gen).toHaveBeenCalledTimes(2);
     expect(listRuns(db, eventId)[0].status).toBe("done");
-    expect(retryRun(db, r.runId, "retry-2")).toBe(false);
+    expect(retryRunWithReason(db, r.runId, "retry-2")).toEqual({ ok: false, reason: "nothing_to_retry" });
+    expect(db.prepare("SELECT COUNT(*) AS n FROM settings WHERE key LIKE 'filing_summary%'").get()).toEqual({ n: 0 });
   });
 });
