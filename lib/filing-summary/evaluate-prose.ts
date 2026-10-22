@@ -531,23 +531,18 @@ export function bindProse(fig: ModelFigure, stated: StatedNumber, located: Locat
   };
 }
 
-// A genuine list item (review round 3 ruling): a bullet glyph; a marker "(a)", "a)", "1." or "1)" and a
-// space that is not a known abbreviation; or an HTML <li> (extractor 2, `listItem`). A glyph that also
-// occurs in running text (*, –, —) needs a space after it; a pure bullet glyph (•·▪◦‣) does not, because
-// EDGAR filers set it in its own span and the extractor squashes the gap ("•Income from operations …").
-const BULLET_GLYPH = /^\s*(?:[•·▪◦‣]|[*–—]\s)/;
-const LIST_MARKER = /^\s*(\(?[a-z0-9]{1,2})[.)]\s/i;
-const ABBREVIATIONS = new Set(["u.s", "u.k", "mr", "ms", "dr", "no", "inc", "co"]);
+// A genuine list item (review rounds 3–4): a bullet glyph; a list marker and a space; or an HTML <li>
+// (extractor 2, `listItem`). A glyph that also occurs in running text (*, -, –, —) needs a space after it;
+// a pure bullet glyph (•·▪◦‣) does not, because EDGAR filers set it in its own span and the extractor
+// squashes the gap ("•Income from operations …"). A letter marker is a lowercase single letter ("a.",
+// "a)", "(a)") or a parenthesised letter or roman numeral ("(A)", "(iv)"); digits are "1.", "1)", "(1)".
+// "A. Smith", "St. Louis", "No. 5", "vs. …" and "U.S. …" are not markers.
+const BULLET_GLYPH = /^\s*(?:[•·▪◦‣]|[*\-–—]\s)/;
+const LIST_MARKER = /^\s*(?:\(\s*(?:[A-Za-z]|[ivxIVX]{1,4}|\d{1,2})\s*\)|[a-z][.)]|\d{1,2}[.)])\s/;
 
 export function isListItem(b: TextBlock): boolean {
   if (b.listItem) return true;
-  if (BULLET_GLYPH.test(b.text)) return true;
-  const m = LIST_MARKER.exec(b.text);
-  if (!m) return false;
-  const marker = m[1].replace("(", "").toLowerCase();
-  if (ABBREVIATIONS.has(marker)) return false;
-  // "U.S." reads as marker "U." followed by "S": refuse a dotted abbreviation outright.
-  return !/^\s*[a-z]\.[a-z]\./i.test(b.text);
+  return BULLET_GLYPH.test(b.text) || LIST_MARKER.test(b.text);
 }
 
 const BASIS_WORDS_RE = /\bnon[\s-]*gaap\b|\bexclud(?:ing|es|ed)\b|\bconstant[\s-]+currency\b|\badjusted\b|\bgaap\b/i;
@@ -559,10 +554,14 @@ export interface LeadIn { text: string; confirms: boolean }
  * The lead-in that governs `block` (review rounds 2–3, asymmetric by ruling): a block ending in ":" whose
  * text carries basis words ("Excluding this charge, the third quarter 2026:", "On a non-GAAP basis:").
  * Its DENIAL of "reported" reaches the blocks after it, list items or not, until a heading or a second
- * plain paragraph; its CONFIRMATION of a non-reported basis reaches genuine list items only. A mixed
+ * plain paragraph; its CONFIRMATION of a non-reported basis reaches only the contiguous run of genuine
+ * list items directly after it (a plain paragraph in between ends it). A mixed
  * lead-in ("Reconciliation of GAAP to non-GAAP results:") governs nothing. Null when none governs.
  */
 export function leadInBlock(doc: DocText, block: TextBlock): LeadIn | null {
+  // `plain` counts the plain paragraphs between the lead-in and the figure's block (its own block included).
+  // Confirmation needs the block to sit in the CONTIGUOUS run of list items right after the lead-in
+  // (plain === 0, review round 4); denial reaches one plain paragraph further.
   let plain = isListItem(block) ? 0 : 1;
   let i = block.index - 1;
   while (i >= 0) {
@@ -579,7 +578,7 @@ export function leadInBlock(doc: DocText, block: TextBlock): LeadIn | null {
     if (!BASIS_WORDS_RE.test(b.text)) return null;
     const k = kindsIn(b.text);
     if (k.has("reported") && k.size > 1) return null; // mixed: confirms nothing, denies nothing
-    return { text: b.text, confirms: isListItem(block) };
+    return { text: b.text, confirms: plain === 0 };
   }
   return null;
 }

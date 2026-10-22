@@ -36,7 +36,7 @@
 import { decodeEntities, tokenize } from "@/lib/print-watch/representations";
 import type { DocText, TableGrid, TextBlock } from "./types";
 
-export const EXTRACTOR_VERSION = 2; // 2: prose blocks from an HTML <li> carry listItem: true
+export const EXTRACTOR_VERSION = 2; // 2: prose blocks from an HTML <li> (inside a <ul>/<ol>) carry listItem: true
 
 const SCALE_RE = /\b(in|amounts in)\s+(thousands|millions|billions)\b[^)\n]*/i;
 
@@ -133,8 +133,11 @@ export function extractDocText(html: string): DocText {
   let breaksFound = 0;
 
   let bodyText: string[] = [];
-  /** Open <li> elements; body text sunk while one is open marks its block a list item. */
-  let liDepth = 0;
+  /**
+   * List nesting: one entry per open <ul>/<ol>, true while that level has an open <li>. A new <li> at a
+   * level closes the previous one (HTML4 lists omit </li>); a block outside any list is never a list item.
+   */
+  const listStack: boolean[] = [];
   let bodyInLi = false;
   /** Open non-void elements with a break-after style, by tag name. */
   const openStack: Array<{ name: string; breakAfter: boolean }> = [];
@@ -262,7 +265,7 @@ export function extractDocText(html: string): DocText {
       // text inside <table> but outside a cell is layout noise — drop it
       return;
     }
-    if (liDepth > 0 && text.trim()) bodyInLi = true;
+    if (listStack[listStack.length - 1] && text.trim()) bodyInLi = true;
     bodyText.push(text);
   };
 
@@ -325,7 +328,12 @@ export function extractDocText(html: string): DocText {
       }
     } else if (BOUNDARY_TAGS.has(name)) {
       flushBody();
-      if (name === "li") liDepth = closing ? Math.max(0, liDepth - 1) : liDepth + 1;
+      if (name === "ul" || name === "ol") {
+        if (!closing) listStack.push(false);
+        else listStack.pop();
+      } else if (name === "li" && listStack.length > 0) {
+        listStack[listStack.length - 1] = !closing;
+      }
     } else if (name === "br") {
       bodyText.push(" ");
     }

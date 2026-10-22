@@ -484,6 +484,43 @@ describe("review round 3", () => {
   });
 });
 
+describe("review round 4", () => {
+  const head = `<p>Third Quarter 2026 Results</p>`;
+  const S = `Net income was $5.0 billion${P}.`;
+  const ni = (basis: ModelFigure["basis"]): Fig => usdB("$5.0 billion", 5, "net income", "net income", { basis });
+  const mk = (text: string): TextBlock => ({ index: 0, page: 1, para: 1, text, tableId: null, rowIndex: null });
+
+  it("P2: a '- ' hyphen bullet is a list item, so a lead-in's denial reaches every item of a hyphen list", () => {
+    const html = `${head}<p>On a non-GAAP basis:</p><p>- Revenue was $40.0 billion${P}.</p><p>- Operating income was $9.0 billion${P}.</p><p>- ${S}</p>`;
+    expect(bind(`- ${S}`, ni("reported"), docsOf(html)).status).not.toBe("checked");
+    expect(bind(`- ${S}`, ni("non_gaap"), docsOf(html)).status).toBe("checked");
+    expect(isListItem(mk("- item"))).toBe(true);
+    expect(isListItem(mk("-item"))).toBe(false);
+  });
+  it("P7: confirmation reaches only the contiguous run of list items after the lead-in; a plain paragraph between ends it", () => {
+    const html = `${head}<p>On a non-GAAP basis:</p><p>• Revenue was $40.0 billion${P}.</p><p>On a GAAP basis, results were weaker this quarter.</p><p>• ${S}</p>`;
+    const r = bind(`• ${S}`, ni("non_gaap"), docsOf(html));
+    expect(r.status).not.toBe("checked");
+    expect(r.codes).toContain("basis_unconfirmed");
+    expect(bind(`• ${S}`, ni("reported"), docsOf(html)).status).not.toBe("checked"); // the denial still reaches it
+    const doc = extractDocText(html);
+    expect(leadInBlock(doc, doc.blocks[4])).toMatchObject({ confirms: false });
+  });
+  it("P8: an unclosed <li> ends at the next <li> or at </ul>; a paragraph after the list is not a list item", () => {
+    const html = `${head}<p>On a non-GAAP basis:</p><ul><li>Revenue was $40.0 billion${P}.<li>Operating income was $9.0 billion${P}.</ul><p>${S}</p>`;
+    const doc = extractDocText(html);
+    expect(doc.blocks.map((b) => b.listItem ?? false)).toEqual([false, false, true, true, false]);
+    expect(bind(S, ni("non_gaap"), docsOf(html)).status).not.toBe("checked");
+    expect(bind(S, ni("reported"), docsOf(html)).status).not.toBe("checked");
+    const nested = `${head}<p>On a non-GAAP basis:</p><ul><li>Revenue was $40.0 billion${P}.<ul><li>${S}</li></ul></li></ul>`;
+    expect(bind(S, ni("non_gaap"), docsOf(nested)).status).toBe("checked");
+  });
+  it("marker tightening: a letter marker is a lowercase single letter or parenthesised; 'A. Smith', 'St. Louis', 'vs. …' are not list items", () => {
+    for (const t of ["a. first", "a) first", "(a) first", "(A) first", "(iv) first", "(1) first", "12. first", "3) first"]) expect(isListItem(mk(t))).toBe(true);
+    for (const t of ["A. Smith reported", "St. Louis plant", "vs. the prior year", "No. 5 on the list", "Mr. Smith said", "U.S. revenue was", "Inc. results", "ab) first", "revenue was"]) expect(isListItem(mk(t))).toBe(false);
+  });
+});
+
 describe("ruling 6: classes from the real Meta 8-K, in synthetic form", () => {
   const Q3 = period({ fiscalYear: 2026, fiscalQuarter: 3 });
   const meta = `<p>Third Quarter 2026 Operational and Other Financial Highlights</p>

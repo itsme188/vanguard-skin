@@ -13,6 +13,13 @@ describe("extractDocText — synthetic 8-K", () => {
 
   it("stamps the extractor version", () => {
     expect(EXTRACTOR_VERSION).toBe(2);
+  });
+
+  it("marks <li> text a list item, closes an unclosed <li> at the next one or at </ul>, and never a block outside a list", () => {
+    const doc = extractDocText("<p>Lead:</p><ul><li>A<li>B</ul><p>after</p><li>stray</li><ol><li>C<ol><li>D</li></ol>E</li></ol><p>tail</p>");
+    expect(doc.blocks.map((b) => [b.text, b.listItem ?? false])).toEqual([
+      ["Lead:", false], ["A", true], ["B", true], ["after", false], ["stray", false], ["C", true], ["D", true], ["E", true], ["tail", false],
+    ]);
     expect(doc.extractorVersion).toBe(2);
   });
 
