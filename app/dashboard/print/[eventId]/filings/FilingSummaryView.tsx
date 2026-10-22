@@ -7,25 +7,32 @@ import { networkFailureMessage, readMutationResult } from "@/lib/ui/mutation-res
 import { Chip, CHIP_TONE_CLASSES } from "@/app/dashboard/components/Chip";
 import { CHIP_TONE_TEXT } from "@/app/dashboard/components/chip-tone-text";
 import { useConfirmPrompt } from "@/app/dashboard/components/useConfirmPrompt";
-import type { FullRun, FullSection, FullView, ViewClaim } from "@/lib/filing-summary/view";
-import { reasonText } from "./reason-text";
+import type { FullRun, FullSection, FullView, PublicBogey, ViewClaim } from "@/lib/filing-summary/view";
 import {
-  choiceKey,
+  bogeyValueText,
+  choiceValue,
+  comparisonLine,
+  countsText,
+  modelQuoteLine,
+  newRequestKey,
+  optionText,
+  reasonText,
+  sectionErrorSentence,
+  statusLabel,
+  statusTone,
+} from "@/lib/filing-summary/labels";
+import {
   claimReasonCodes,
   correctedByText,
-  countsText,
   defaultRunId,
   filingLine,
   footnoteWhere,
   numberFootnotes,
-  optionLabel,
   rerunPrompt,
   retryAvailable,
+  retryPrompt,
   runPillLabel,
-  sectionError,
   sectionHeading,
-  statusLabel,
-  statusTone,
   topContradicted,
 } from "./page-text";
 
@@ -39,7 +46,7 @@ export function FilingSummaryView({ view }: { view: FullView }) {
   const router = useRouter();
   const prompt = useConfirmPrompt();
   const [picked, setPicked] = useState<number | null>(null);
-  const [choice, setChoice] = useState<string>(choiceKey(view.choice.current));
+  const [choice, setChoice] = useState<string>(choiceValue(view.choice.current));
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
 
@@ -55,7 +62,7 @@ export function FilingSummaryView({ view }: { view: FullView }) {
   }, [anyRunning, router]);
 
   async function rerun() {
-    const option = view.choice.options.find((o) => choiceKey(o.choice) === choice);
+    const option = view.choice.options.find((o) => choiceValue(o.choice) === choice);
     if (!option) return;
     // A re-run reads the newest run's filing list again.
     const filingCount = Math.max(0, ...view.runs.map((r) => r.sections.length));
@@ -63,7 +70,8 @@ export function FilingSummaryView({ view }: { view: FullView }) {
     setBusy(true);
     setMessage(null);
     // A fresh key per confirmed click: a double-submit of this click is one run, a new click is a new run.
-    const requestKey = crypto.randomUUID();
+    // newRequestKey falls back to getRandomValues where randomUUID is missing (the phone over plain http).
+    const requestKey = newRequestKey();
     try {
       let res: Response;
       try {
@@ -97,6 +105,7 @@ export function FilingSummaryView({ view }: { view: FullView }) {
   }
 
   async function retry(target: FullRun) {
+    if (!(await prompt.ask(retryPrompt(target)))) return;
     setBusy(true);
     setMessage(null);
     try {
@@ -109,7 +118,7 @@ export function FilingSummaryView({ view }: { view: FullView }) {
             eventId: view.event.eventId,
             action: "retry",
             runId: target.runId,
-            requestKey: crypto.randomUUID(),
+            requestKey: newRequestKey(),
           }),
         });
       } catch {
@@ -132,8 +141,8 @@ export function FilingSummaryView({ view }: { view: FullView }) {
   const disarmed = view.event.pollState === "cancelled";
   const rerunBlocked = disarmed
     ? "This print was disarmed; re-arm it on Today to re-run."
-    : anyRunning
-      ? "A run is reading now; wait for it to finish before starting another."
+    : view.inProgressRunId !== null
+      ? "A re-run is reading now; wait for it to finish before starting another."
       : null;
 
   return (
@@ -185,8 +194,8 @@ export function FilingSummaryView({ view }: { view: FullView }) {
             className="max-w-full rounded-md border border-edge bg-panel px-2 py-1.5 text-sm text-ink"
           >
             {view.choice.options.map((o) => (
-              <option key={choiceKey(o.choice)} value={choiceKey(o.choice)}>
-                {optionLabel(o)}
+              <option key={choiceValue(o.choice)} value={choiceValue(o.choice)}>
+                {optionText(o)}
               </option>
             ))}
           </select>
@@ -290,7 +299,29 @@ function RunBlock({
       {run.sections.map((s) => (
         <SectionBlock key={s.sectionId} section={s} />
       ))}
+
+      <BogeyList bogeys={run.bogeys} />
     </div>
+  );
+}
+
+/** "Bogeys before the print": the run's frozen snapshot, public fields only (R15). */
+function BogeyList({ bogeys }: { bogeys: PublicBogey[] }) {
+  return (
+    <section className="space-y-2 rounded-xl bg-panel p-4 card-elev">
+      <h2 className="text-base font-semibold text-ink whitespace-nowrap!">Bogeys before the print</h2>
+      {bogeys.length === 0 ? (
+        <p className="text-sm text-ink-dim">No bogeys were on file before the print.</p>
+      ) : (
+        <ul className="space-y-1 text-sm">
+          {bogeys.map((b) => (
+            <li key={b.key} className="text-ink-dim [overflow-wrap:anywhere]">
+              <span className="text-ink">{b.label}</span>: {bogeyValueText(b)} · {b.provenance} · {b.asOf}
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
   );
 }
 
@@ -314,9 +345,9 @@ function SectionBlock({ section }: { section: FullSection }) {
       ) : (
         <p className="text-sm text-ink">
           {section.status === "waiting_retry"
-            ? sectionError("awaiting_retry")
+            ? sectionErrorSentence("awaiting_retry")
             : section.status === "failed"
-              ? sectionError(section.errorClass)
+              ? sectionErrorSentence(section.errorClass)
               : section.status === "running"
                 ? "Reading now."
                 : "Waiting its turn."}
@@ -362,7 +393,7 @@ function ClaimRow({
   numbers: Map<string, number>;
 }) {
   const reasons = claimReasonCodes(claim);
-  const shown = claim.comparisonChecks.filter((cc) => cc.shownText);
+  const comparisons = claim.comparisonChecks;
   return (
     <li className="grid gap-2 border-t border-edge pt-3 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)] lg:gap-4">
       <div className="min-w-0 space-y-1">
@@ -387,11 +418,14 @@ function ClaimRow({
           })}
         </p>
         {claim.correctedBy && <p className="text-sm text-ink-dim">{correctedByText(claim.correctedBy)}</p>}
-        {shown.length > 0 && (
+        {comparisons.length > 0 && (
           <ul className="space-y-0.5 text-sm text-ink">
-            {shown.map((cc, i) => (
-              <li key={i} className={cc.verdict === "contradicted" ? CHIP_TONE_TEXT.down : undefined}>
-                Filing difference: {cc.shownText}
+            {comparisons.map((cc, i) => (
+              <li
+                key={i}
+                className={`[overflow-wrap:anywhere] ${cc.verdict === "contradicted" ? CHIP_TONE_TEXT.down : ""}`}
+              >
+                {comparisonLine(cc)}
               </li>
             ))}
           </ul>
@@ -417,6 +451,9 @@ function ClaimRow({
                 {" · "}
                 {footnoteWhere(f)}
                 {f.sentence && <span className="block text-ink [overflow-wrap:anywhere]">“{f.sentence}”</span>}
+                {f.status !== "found" && f.modelQuote && (
+                  <span className="block text-ink [overflow-wrap:anywhere]">{modelQuoteLine(f.modelQuote)}</span>
+                )}
                 {f.url && (
                   <a href={f.url} target="_blank" rel="noreferrer" className="text-ink underline underline-offset-2">
                     open on sec.gov

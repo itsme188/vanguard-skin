@@ -10,14 +10,13 @@ import { createRun, insertFiling } from "@/lib/filing-summary/store";
 import { getFullView, type FullView } from "@/lib/filing-summary/view";
 import {
   escapeHtml,
-  hasShareReasonText,
   renderSharePage,
-  shareCountsText,
   shareFileName,
   shareHeaderLine,
 } from "@/lib/filing-summary/share-page";
 import { countStatuses, REASON_CODES } from "@/lib/filing-summary/evaluate";
-import type { CheckedClaim, CheckedSection } from "@/lib/filing-summary/types";
+import { countsText, hasReasonText } from "@/lib/filing-summary/labels";
+import type { CheckedClaim, CheckedSection, ModelSectionOutput } from "@/lib/filing-summary/types";
 
 const CATALOG = ["claude-opus-5-5"];
 let db: Database.Database;
@@ -34,11 +33,12 @@ const claims: CheckedClaim[] = [
     footnotes: [
       { citationId: "q1", document: "ex991.htm", status: "found", page: null, para: 3,
         sentence: "Revenue was \"strong\" & rising.", url: "javascript:alert(1)" },
+      { citationId: "q2", document: "ex991.htm", status: "not_found", page: null, para: null, sentence: null, url: null },
     ],
     figureChecks: [],
     comparisonChecks: [
       { relation: "above", verdict: "contradicted", difference: -1, differencePct: -0.1,
-        shownText: "filing: $64.5B is below $64.57B", reasons: [{ code: "relation_contradicted", figureId: null, detail: "x" }] },
+        shownText: "-0.10%", reasons: [{ code: "relation_contradicted", figureId: null, detail: "x" }] },
     ],
     reasons: [{ code: "relation_contradicted", figureId: null, detail: "x" }],
     correction: null,
@@ -50,6 +50,30 @@ const claims: CheckedClaim[] = [
       reasons: [{ code: "metric_unconfirmed", figureId: "f1", detail: "" }] }],
     comparisonChecks: [], reasons: [], correction: null },
 ];
+
+// fiscalQuarter null: the header test below expects no quarter label.
+const PERIOD = { kind: "quarter", role: "actual", endDate: null, fiscalYear: 2026, fiscalQuarter: null, anchor: null, label: "Q3 2026" } as const;
+const output: ModelSectionOutput = {
+  headline: "Mixed",
+  bullets: [{
+    top: true, routine: false,
+    claims: [{
+      id: "s1.c1", text: "Revenue {f1} beat {f2}.",
+      citations: [
+        { id: "q1", document: "ex991.htm", quote: "Revenue was strong", isTableRow: false },
+        { id: "q2", document: "ex991.htm", quote: "A <made up> quote", isTableRow: false },
+      ],
+      figures: [
+        { id: "f1", valueText: "$64.5B", value: 64.5, unit: "usd", scale: "billions", metric: "revenue", period: { ...PERIOD },
+          basis: "reported", basisNote: null, sourceKind: "quote", citationId: "q1", label: "Revenue", bogeyKey: null, operation: null, inputs: [] },
+        { id: "f2", valueText: "$64.57B", value: 64.57, unit: "usd", scale: "billions", metric: "revenue", period: { ...PERIOD },
+          basis: "reported", basisNote: null, sourceKind: "bogey", citationId: null, label: null, bogeyKey: "b1.revenue_consensus_usd", operation: null, inputs: [] },
+      ],
+      comparisons: [{ left: "f1", leftHigh: null, right: "f2", rightHigh: null, relation: "above" }],
+      corrects: null,
+    }],
+  }],
+};
 
 function view(): FullView {
   return getFullView(db, eventId, CATALOG)!;
@@ -83,10 +107,11 @@ beforeEach(() => {
   }).runId;
   const checked: CheckedSection = { headline: "Mixed <i>quarter</i>", claims, counts: countStatuses(claims) };
   db.prepare(
-    `UPDATE filing_summary_sections SET status='done', checked_json=?, incomplete=1,
+    `UPDATE filing_summary_sections SET status='done', checked_json=?, output_json=?, incomplete=1,
        coverage_json=?, model_id='claude-opus-5-5', effort='high' WHERE run_id=?`,
   ).run(
     JSON.stringify(checked),
+    JSON.stringify(output),
     JSON.stringify([
       { fileName: "ex991.htm", docType: "EX-99.1", status: "read", reason: null },
       { fileName: "logo.jpg", docType: "GRAPHIC", status: "skipped", reason: "graphic" },
@@ -119,7 +144,7 @@ describe("renderSharePage", () => {
   it("states the header counts exactly as countStatuses gives them", () => {
     const v = view();
     const html = renderSharePage(v, runId);
-    const expected = shareCountsText(countStatuses(claims));
+    const expected = countsText(countStatuses(claims));
     expect(expected).toBe("3 claims · 1 checked · 1 contradicted · 1 unconfirmed");
     expect(shareHeaderLine(v, v.runs[0])).toBe(`SYNW · filing summary · Opus 5.5 high · ${expected}`);
     expect(html).toContain(`<h1>${escapeHtml(`SYNW · filing summary · Opus 5.5 high · ${expected}`)}</h1>`);
@@ -130,7 +155,13 @@ describe("renderSharePage", () => {
     expect(html).toContain("Incomplete:");
     expect(html).toContain("The filing&#39;s own figures do not support the stated comparison.");
     expect(html).toContain("The number is in the cited line, but the line&#39;s label does not name this metric.");
-    expect(html).toContain("Filing: filing: $64.5B is below $64.57B");
+    // Ruling A: the comparison line names both operands and the bogey's source and date.
+    expect(html).toContain(
+      `<li class="s-danger">${escapeHtml("filing: $64.5B is below $64.57B (Synthetic Weekly <b>, 2026-10-20), -0.10%")}</li>`,
+    );
+    // Ruling B: an unlocated quote prints the quote as the model gave it, escaped.
+    expect(html).toContain(escapeHtml("Quote as the model gave it: “A <made up> quote”"));
+    expect(html).not.toContain("<made up>");
     expect(html).toContain("$64.57B");
     expect(html).toContain("2026-10-20");
     expect(html).toContain("accepted 4:05 pm ET");
@@ -174,7 +205,7 @@ describe("renderSharePage", () => {
 
 describe("reason sentences", () => {
   it("has a sentence for every reason code the checker can emit", () => {
-    const missing = REASON_CODES.filter((c) => !hasShareReasonText(c));
+    const missing = REASON_CODES.filter((c) => !hasReasonText(c));
     expect(missing).toEqual([]);
   });
 });

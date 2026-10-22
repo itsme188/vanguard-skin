@@ -1,30 +1,21 @@
 import { describe, it, expect } from "vitest";
 import { existsSync, readFileSync } from "node:fs";
-import { REASON_CODES } from "@/lib/filing-summary/evaluate";
-import { sectionErrorSentence, shareCountsText, shareReasonText } from "@/lib/filing-summary/share-page";
-import { STATUS_SEVERITY, type CheckedClaim, type ClaimStatus, type Footnote, type StatusCounts } from "@/lib/filing-summary/types";
-import { SUMMARY_CHOICES } from "@/lib/filing-summary/choice";
+import type { CheckedClaim, StatusCounts } from "@/lib/filing-summary/types";
 import { anchorIndex } from "@/tests/helpers/source-anchor";
-import { hasReasonText, reasonText } from "@/app/dashboard/print/[eventId]/filings/reason-text";
 import {
   claimReasonCodes,
   correctedByText,
-  countsText,
   defaultRunId,
   filingLine,
   footnoteWhere,
   numberFootnotes,
-  optionLabel,
   rerunPrompt,
-  roughCost,
+  retryPrompt,
   runPillLabel,
-  sectionError,
   sectionHeading,
-  statusLabel,
-  statusTone,
   topContradicted,
 } from "@/app/dashboard/print/[eventId]/filings/page-text";
-import type { FullFiling, FullRun, FullSection, FullView, ViewClaim } from "@/lib/filing-summary/view";
+import type { ChoiceOption, FullFiling, FullRun, FullSection, FullView, ViewClaim, ViewFootnote } from "@/lib/filing-summary/view";
 
 const DIR = "app/dashboard/print/[eventId]/filings";
 
@@ -35,7 +26,7 @@ function counts(p: Partial<StatusCounts> = {}): StatusCounts {
 }
 
 function claim(p: Partial<ViewClaim> = {}): ViewClaim {
-  const base: CheckedClaim = {
+  const base: Omit<CheckedClaim, "footnotes" | "comparisonChecks" | "correction"> & Pick<ViewClaim, "footnotes" | "comparisonChecks" | "correction"> = {
     claimId: "c1",
     renderedText: "Revenue was $10.0B.",
     status: "checked",
@@ -76,49 +67,9 @@ function filing(p: Partial<FullFiling> = {}): FullFiling {
   };
 }
 
-// ---------------------------------------------------------------- reason sentences
-
-describe("reasonText: one owner-facing sentence per reason code", () => {
-  it("has its own sentence for every code evaluate.ts can emit", () => {
-    expect(REASON_CODES.length).toBeGreaterThan(10);
-    for (const code of REASON_CODES) {
-      expect(hasReasonText(code), code).toBe(true);
-      expect(reasonText(code).length).toBeGreaterThan(10);
-      expect(reasonText(code).endsWith("."), code).toBe(true);
-    }
-  });
-
-  it("reads the same as the shareable page for every code, so the two never drift", () => {
-    for (const code of REASON_CODES) expect(reasonText(code), code).toBe(shareReasonText(code));
-    expect(reasonText("no_such_code")).toBe(shareReasonText("no_such_code"));
-  });
-
-  it("metric_unconfirmed reads as the spec words it", () => {
-    expect(reasonText("metric_unconfirmed")).toBe(
-      "The number is in the cited line, but the line's label does not name this metric.",
-    );
-  });
-});
-
 // ---------------------------------------------------------------- small helpers
 
 describe("page-text helpers", () => {
-  it("countsText matches the shareable page and leaves out zero parts", () => {
-    const c = counts({ claims: 12, checked: 9, contradicted: 1, unconfirmed: 2 });
-    expect(countsText(c)).toBe("12 claims · 9 checked · 1 contradicted · 2 unconfirmed");
-    expect(countsText(c)).toBe(shareCountsText(c));
-    const d = counts({ claims: 1, warning: 1, qualitative: 0 });
-    expect(countsText(d)).toBe(shareCountsText(d));
-  });
-
-  it("statusTone follows STATUS_SEVERITY: danger, warning, neutral, up", () => {
-    const want = { danger: "down", warning: "warn", muted: "neutral", ok: "up" } as const;
-    for (const s of Object.keys(STATUS_SEVERITY) as ClaimStatus[]) {
-      expect(statusTone(s)).toBe(want[STATUS_SEVERITY[s]]);
-      expect(statusLabel(s).length).toBeGreaterThan(0);
-    }
-  });
-
   it("section heading is form · time, or says the time is unconfirmed", () => {
     expect(sectionHeading(section())).toBe("8-K · 4:05 pm");
     expect(sectionHeading(section({ form: "PRE 14C", acceptedAtEt: "4:12 pm" }))).toBe("PRE 14C · 4:12 pm");
@@ -126,8 +77,8 @@ describe("page-text helpers", () => {
   });
 
   it("footnote location: page and paragraph, paragraph only, or a plain not-found sentence", () => {
-    const f = (p: Partial<Footnote>): Footnote => ({
-      citationId: "q1", document: "ex99.htm", status: "found", page: 3, para: 4, sentence: "x", url: null, ...p,
+    const f = (p: Partial<ViewFootnote>): ViewFootnote => ({
+      citationId: "q1", document: "ex99.htm", status: "found", page: 3, para: 4, sentence: "x", url: null, modelQuote: null, ...p,
     });
     expect(footnoteWhere(f({}))).toBe("page 3, paragraph 4");
     expect(footnoteWhere(f({ page: null }))).toBe("paragraph 4");
@@ -136,8 +87,8 @@ describe("page-text helpers", () => {
   });
 
   it("footnotes are numbered in claim order within a section, like the shareable page", () => {
-    const fn = (id: string): Footnote => ({
-      citationId: id, document: "d.htm", status: "found", page: null, para: 1, sentence: "s", url: null,
+    const fn = (id: string): ViewFootnote => ({
+      citationId: id, document: "d.htm", status: "found", page: null, para: 1, sentence: "s", url: null, modelQuote: null,
     });
     const s = section({
       claims: [
@@ -159,7 +110,7 @@ describe("page-text helpers", () => {
         { code: "quote_not_found", figureId: "f1", detail: "" },
       ] }],
       comparisonChecks: [{ relation: "above", verdict: "periods_differ", difference: null, differencePct: null, shownText: null,
-        reasons: [{ code: "periods_differ", figureId: null, detail: "" }] }],
+        reasons: [{ code: "periods_differ", figureId: null, detail: "" }], left: null, right: null }],
     });
     expect(claimReasonCodes(c)).toEqual(["quote_not_found", "scale_unconfirmed", "periods_differ"]);
   });
@@ -179,29 +130,9 @@ describe("page-text helpers", () => {
     expect(runPillLabel(run({ runNo: 3, status: "running", createdAtEt: "8:01 pm" }))).toMatch(/· running$/);
   });
 
-  it("option label names the choice and the version it resolves to now", () => {
-    expect(optionLabel({ choice: { family: "fable", effort: "high" }, label: "Fable · high", nowLabel: "Fable · now 5.1" })).toBe(
-      "Fable · high — now 5.1",
-    );
-    expect(optionLabel({ choice: { family: "fable", effort: "high" }, label: "Fable · high", nowLabel: "Fable · not available" })).toBe(
-      "Fable · high — not available",
-    );
-  });
-
-  it("rough cost per choice: measured three, two stated relative to the high effort", () => {
-    expect(roughCost({ family: "sonnet", effort: "medium" })).toBe("about $0.11 per filing");
-    expect(roughCost({ family: "opus", effort: "high" })).toBe("about $0.32 per filing");
-    expect(roughCost({ family: "fable", effort: "high" })).toBe("about $0.68 per filing");
-    expect(roughCost({ family: "opus", effort: "medium" })).toBe("less than Opus · high");
-    expect(roughCost({ family: "fable", effort: "medium" })).toBe("less than Fable · high");
-    for (const c of SUMMARY_CHOICES) expect(roughCost(c).length).toBeGreaterThan(0);
-  });
-
   it("the re-run question names the model and the rough cost", () => {
-    const p = rerunPrompt(
-      { choice: { family: "fable", effort: "high" }, label: "Fable · high", nowLabel: "Fable · now 5.1" },
-      2,
-    );
+    const opt: ChoiceOption = { choice: { family: "fable", effort: "high" }, value: "fable·high", label: "Fable · high", nowLabel: "Fable · now 5.1" };
+    const p = rerunPrompt(opt, 2);
     expect(p.title).toMatch(/Fable · high/);
     expect(p.message).toMatch(/Fable 5\.1/);
     expect(p.message).toMatch(/about \$0\.68 per filing/);
@@ -216,10 +147,16 @@ describe("page-text helpers", () => {
     expect(filingLine(filing({}))).toMatch(/8-K · 4:05 pm/);
   });
 
-  it("section error lines match the shareable page's sentences", () => {
-    for (const cls of ["model_error", "refusal", "truncated", "model_unavailable", "awaiting_retry", null, "unknown"]) {
-      expect(sectionError(cls)).toBe(sectionErrorSentence(cls));
-    }
+  it("the Retry question names the model, effort, rough cost and the sections it reads again (ruling C)", () => {
+    const r = run({
+      runNo: 2, family: "opus", effort: "high", modelLabel: "Opus 5.5", status: "failed",
+      sections: [section(), section({ sectionId: 2, status: "failed" }), section({ sectionId: 3, status: "waiting_retry" })],
+    });
+    const p = retryPrompt(r);
+    expect(p.title).toBe("Retry run 2?");
+    expect(p.message).toMatch(/2 sections again with Opus 5\.5 at high effort/);
+    expect(p.message).toMatch(/about \$0\.32 per filing/);
+    expect(p.message).toMatch(/Cancel spends nothing/);
   });
 
   it("topContradicted lists only contradicted claims within the first three Top claims of done sections", () => {
@@ -247,7 +184,6 @@ describe("full summary page (source pins)", () => {
   const page = readFileSync(`${DIR}/page.tsx`, "utf8");
   const view = readFileSync(`${DIR}/FilingSummaryView.tsx`, "utf8");
   const text = readFileSync(`${DIR}/page-text.ts`, "utf8");
-  const reasons = readFileSync(`${DIR}/reason-text.ts`, "utf8");
 
   it("the server page is force-dynamic and loads getFullView with the live catalog", () => {
     expect(page).toMatch(/export const dynamic = "force-dynamic";/);
@@ -286,7 +222,7 @@ describe("full summary page (source pins)", () => {
     const body = view.slice(at, at + 1500);
     expect(body).toMatch(/await prompt\.ask\(/);
     expect(body.indexOf("prompt.ask(")).toBeLessThan(body.indexOf("apiFetch("));
-    expect(body).toMatch(/crypto\.randomUUID\(\)/);
+    expect(body).toMatch(/newRequestKey\(\)/);
     expect(body).toMatch(/readMutationResult/);
     expect(body).toMatch(/networkFailureMessage/);
   });
@@ -317,8 +253,38 @@ describe("full summary page (source pins)", () => {
     expect(correctedByText({ form: "8-K/A", acceptedAtEt: "5:40 pm" })).toBe("corrected by 8-K/A, 5:40 pm");
   });
 
+  it("the shared words come from labels.ts, not a page copy", () => {
+    expect(view).toMatch(/from "@\/lib\/filing-summary\/labels"/);
+    expect(existsSync(`${DIR}/reason-text.ts`)).toBe(false);
+    expect(text).not.toMatch(/REASON_SENTENCES|STATUS_LABELS|ROUGH_COST|ERROR_SENTENCES/);
+    expect(view).not.toMatch(/crypto\.randomUUID/);
+  });
+
+  it("Retry asks first through the app dialog, with a fresh key (ruling C)", () => {
+    const at = anchorIndex(view, "async function retry(");
+    const body = view.slice(at, at + 1200);
+    expect(body).toMatch(/await prompt\.ask\(retryPrompt\(target\)\)/);
+    expect(body.indexOf("prompt.ask(")).toBeLessThan(body.indexOf("apiFetch("));
+    expect(body).toMatch(/newRequestKey\(\)/);
+  });
+
+  it("Re-run is blocked only by a re-run in progress or a disarmed print (ruling D)", () => {
+    const at = anchorIndex(view, "const rerunBlocked =");
+    const decl = view.slice(at, anchorIndex(view, ": null;", at));
+    expect(decl).toMatch(/view\.inProgressRunId !== null/);
+    expect(decl).not.toMatch(/anyRunning/);
+  });
+
+  it("comparison lines, the model's quote and the bogey list are rendered (rulings A, B)", () => {
+    expect(view).toMatch(/\{comparisonLine\(cc\)\}/);
+    expect(view).toMatch(/cc\.verdict === "contradicted" \? CHIP_TONE_TEXT\.down/);
+    expect(view).toMatch(/f\.status !== "found" && f\.modelQuote && [\s\S]{0,200}modelQuoteLine\(f\.modelQuote\)/);
+    expect(view).toMatch(/Bogeys before the print/);
+    expect(view).toMatch(/<BogeyList bogeys=\{run\.bogeys\} \/>/);
+  });
+
   it("helper modules are plain (no client directive, no server-only import)", () => {
-    for (const src of [text, reasons]) {
+    for (const src of [text]) {
       expect(src).not.toMatch(/^"use client"/);
       // Type-only imports are erased; a value import would pull server code into the client bundle.
       expect(src).not.toMatch(/^import (?!type )[^;]*from "[^"]*(@\/lib\/db|share-page|\/view|\/evaluate|\/store|\/locate)"/m);

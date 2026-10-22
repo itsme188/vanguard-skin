@@ -15,7 +15,6 @@ import {
 } from "@/app/dashboard/today/filing-summary-text";
 import { SUMMARY_CHOICES, choiceLabel } from "@/lib/filing-summary/choice";
 import { STATUS_SEVERITY, type ClaimStatus, type StatusCounts } from "@/lib/filing-summary/types";
-import { shareCountsText } from "@/lib/filing-summary/share-page";
 import type { FullView, PanelView, RunSummary } from "@/lib/filing-summary/view";
 
 const ZERO: StatusCounts = { claims: 0, checked: 0, contradicted: 0, warning: 0, unconfirmed: 0, qualitative: 0 };
@@ -51,6 +50,8 @@ function view(o: Partial<PanelView> = {}): PanelView {
     shown: null,
     inProgress: null,
     runSummaryAvailable: false,
+    readingDocs: null,
+    choiceOptions: [],
     ...o,
   };
 }
@@ -160,25 +161,16 @@ describe("countsText", () => {
       "3 claims · 2 with warnings · 1 qualitative",
     );
   });
-
-  it("reads the same as the shareable page's header", () => {
-    const samples: StatusCounts[] = [
-      ZERO,
-      { claims: 12, checked: 9, contradicted: 1, warning: 0, unconfirmed: 2, qualitative: 0 },
-      { claims: 5, checked: 0, contradicted: 0, warning: 3, unconfirmed: 1, qualitative: 1 },
-    ];
-    for (const c of samples) expect(countsText(c)).toBe(shareCountsText(c));
-  });
 });
 
 describe("statusLabel and statusTone", () => {
   const LABELS: Record<ClaimStatus, string> = {
     contradicted: "Contradicted",
     periods_differ: "Periods differ",
-    not_in_filing: "Not in filing",
+    not_in_filing: "Not in the filing",
     quote_not_found: "Quote not found",
-    ambiguous_quote: "Ambiguous quote",
-    figure_not_bound: "Figure not bound",
+    ambiguous_quote: "Quote matches more than once",
+    figure_not_bound: "Figure not tied to the filing",
     unconfirmed: "Unconfirmed",
     checked: "Checked",
     qualitative: "Qualitative",

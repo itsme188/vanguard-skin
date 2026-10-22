@@ -76,7 +76,7 @@ describe("UI rules in the new files", () => {
       const imports = src.match(/^import[^;]*from "@\/lib\/filing-summary\/[^"]+";/gm) ?? [];
       for (const line of imports) {
         if (/^import type /.test(line)) continue;
-        expect(line).toMatch(/"@\/lib\/filing-summary\/(choice|types)"/);
+        expect(line).toMatch(/"@\/lib\/filing-summary\/(choice|labels|types)"/);
       }
     }
   });
@@ -122,6 +122,7 @@ function claim(id: string, o: Partial<ViewClaim> = {}): ViewClaim {
         para: 3,
         sentence: "Revenue was $1.2 billion.",
         url: `https://www.sec.gov/Archives/edgar/data/1/000000000126000001/ex99.htm#:~:text=${id}`,
+        modelQuote: null,
       },
     ],
     figureChecks: [],
@@ -156,6 +157,7 @@ function run(o: Partial<RunSummary> = {}): RunSummary {
             para: null,
             sentence: null,
             url: "https://www.sec.gov/Archives/edgar/data/1/000000000126000001/ex99.htm",
+            modelQuote: "Revenue was about $1.2 billion",
           },
         ],
         status: "quote_not_found",
@@ -181,6 +183,8 @@ function view(o: Partial<PanelView> = {}): PanelView {
     shown: run(),
     inProgress: null,
     runSummaryAvailable: false,
+    readingDocs: null,
+    choiceOptions: [],
     ...o,
   };
 }

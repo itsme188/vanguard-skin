@@ -45,10 +45,14 @@ import {
   type RunTrigger,
   type SectionRow,
 } from "./store";
+import { choiceValue } from "./labels";
 import type {
   CheckedClaim,
   CheckedSection,
+  ComparisonCheck,
   CoverageEntry,
+  ModelFigure,
+  ModelSectionOutput,
   FigureUnit,
   Footnote,
   StatusCounts,
@@ -67,8 +71,45 @@ export type SectionViewStatus = "pending" | "running" | "done" | "failed" | "wai
 /** The error class a waiting companion is stored with (R13; migration 099). */
 export const AWAITING_RETRY_CLASS = "awaiting_retry";
 
+/** A bogey's public fields (R15): no notes, no definitions, no row ids. */
+export interface OperandBogey {
+  label: string;
+  value: number;
+  unit: FigureUnit;
+  provenance: string;
+  asOf: string;
+}
+
+/** One side of a comparison, as the model stated it, with its source. */
+export interface OperandDescriptor {
+  figureId: string;
+  /** The stated value text, e.g. "$64.601B". */
+  displayText: string;
+  /** "bogey" for a bogey figure; "filing" for a quoted or computed one. */
+  source: "filing" | "bogey";
+  /** Set for a bogey figure found in the run's snapshot. */
+  bogey?: OperandBogey;
+}
+
+/** A comparison check with its operands described (null: the model named a figure it did not supply). */
+export interface ViewComparisonCheck extends ComparisonCheck {
+  left: OperandDescriptor | null;
+  right: OperandDescriptor | null;
+  leftHigh?: OperandDescriptor;
+  rightHigh?: OperandDescriptor;
+}
+
+/** A footnote with, when the quote was not located, the quote as the model gave it. */
+export interface ViewFootnote extends Footnote {
+  /** The model's quote for a not_found / ambiguous footnote; null when found or unknown. */
+  modelQuote: string | null;
+}
+
 /** A checked claim with its footnote links rebuilt and its correction mark (Hardening 14). */
 export interface ViewClaim extends CheckedClaim {
+  footnotes: ViewFootnote[];
+  comparisonChecks: ViewComparisonCheck[];
+  correction: { claimId: string; resolved: boolean; footnote: ViewFootnote | null } | null;
   /** Set on an earlier claim when a later 8-K/A section's correction resolved. */
   correctedBy: { form: string; acceptedAtEt: string | null } | null;
 }
@@ -115,10 +156,22 @@ export interface PanelView {
   inProgress: RunSummary | null;
   /** True when Run summary may spend: an accepted earnings filing and no run. */
   runSummaryAvailable: boolean;
+  /** What the running run reads now (its running, else first pending, section); null when nothing runs. */
+  readingDocs: ReadingDocs | null;
+  /** All five picker choices with their now-labels. */
+  choiceOptions: ChoiceOption[];
+}
+
+/** The filing being read and how many fetched exhibits it has: "8-K + 3 exhibits". */
+export interface ReadingDocs {
+  form: string;
+  exhibits: number;
 }
 
 export interface ChoiceOption {
   choice: SummaryChoice;
+  /** `choiceValue(choice)`: "opus·high". */
+  value: string;
   label: string;
   nowLabel: string;
 }
@@ -426,23 +479,100 @@ interface BuiltRun {
   earningsDone: boolean;
 }
 
-function buildSections(rows: SectionRow[], filingsById: Map<number, FilingRow>): FullSection[] {
+/** The snapshot's bogeys by key, public fields only (R15). */
+function bogeysByKey(snapshotJson: string): Map<string, OperandBogey> {
+  const out = new Map<string, OperandBogey>();
+  for (const b of publicBogeys(snapshotJson)) {
+    out.set(b.key, { label: b.label, value: b.value, unit: b.unit, provenance: b.provenance, asOf: b.asOf });
+  }
+  return out;
+}
+
+/** The model's own claims, by claim id, from a section's stored output. */
+function modelClaimsById(outputJson: string | null): Map<string, ModelSectionOutput["bullets"][number]["claims"][number]> {
+  const out = new Map<string, ModelSectionOutput["bullets"][number]["claims"][number]>();
+  const parsed = parseJson<ModelSectionOutput>(outputJson);
+  for (const bullet of Array.isArray(parsed?.bullets) ? parsed.bullets : []) {
+    for (const claim of Array.isArray(bullet?.claims) ? bullet.claims : []) {
+      if (claim && typeof claim.id === "string") out.set(claim.id, claim);
+    }
+  }
+  return out;
+}
+
+function describeOperand(
+  id: string | null,
+  figures: ModelFigure[],
+  bogeys: Map<string, OperandBogey>,
+): OperandDescriptor | null {
+  if (id === null) return null;
+  const fig = figures.find((f) => f && f.id === id);
+  if (!fig) return null;
+  const displayText = typeof fig.valueText === "string" && fig.valueText.trim() ? fig.valueText : String(fig.value);
+  if (fig.sourceKind === "bogey") {
+    const bogey = fig.bogeyKey ? bogeys.get(fig.bogeyKey) : undefined;
+    return bogey ? { figureId: id, displayText, source: "bogey", bogey: { ...bogey } } : { figureId: id, displayText, source: "bogey" };
+  }
+  return { figureId: id, displayText, source: "filing" };
+}
+
+/** Adds operand descriptors to each check; checks pair with the model's comparisons by position (evaluate.ts maps them 1:1). */
+function describeComparisons(
+  checks: ComparisonCheck[],
+  model: ModelSectionOutput["bullets"][number]["claims"][number] | undefined,
+  bogeys: Map<string, OperandBogey>,
+): ViewComparisonCheck[] {
+  const figures = Array.isArray(model?.figures) ? model.figures : [];
+  const comparisons = Array.isArray(model?.comparisons) ? model.comparisons : [];
+  return checks.map((cc, i) => {
+    const cmp = comparisons[i];
+    const out: ViewComparisonCheck = {
+      ...cc,
+      left: cmp ? describeOperand(cmp.left, figures, bogeys) : null,
+      right: cmp ? describeOperand(cmp.right, figures, bogeys) : null,
+    };
+    const leftHigh = cmp ? describeOperand(cmp.leftHigh, figures, bogeys) : null;
+    const rightHigh = cmp ? describeOperand(cmp.rightHigh, figures, bogeys) : null;
+    if (leftHigh) out.leftHigh = leftHigh;
+    if (rightHigh) out.rightHigh = rightHigh;
+    return out;
+  });
+}
+
+/** Rebuilds the link and, for an unlocated quote, attaches the model's own quote. */
+function viewFootnote(f: Footnote, cik: string, accession: string, quotes: Map<string, string>): ViewFootnote {
+  return {
+    ...rebuildFootnote(f, cik, accession),
+    modelQuote: f.status === "found" ? null : (quotes.get(f.citationId) ?? null),
+  };
+}
+
+function buildSections(rows: SectionRow[], filingsById: Map<number, FilingRow>, bogeys: Map<string, OperandBogey>): FullSection[] {
   const sections: FullSection[] = rows.map((s) => {
     const filing = filingsById.get(s.filingId);
     const cik = filing?.cik ?? "";
     const accession = filing?.accession ?? "";
     const checked = s.status === "done" ? parseJson<CheckedSection>(s.checkedJson) : null;
-    const claims: ViewClaim[] = (checked?.claims ?? []).map((c) => ({
-      ...c,
-      footnotes: (c.footnotes ?? []).map((f) => rebuildFootnote(f, cik, accession)),
-      correction: c.correction
-        ? {
-            ...c.correction,
-            footnote: c.correction.footnote ? rebuildFootnote(c.correction.footnote, cik, accession) : null,
-          }
-        : null,
-      correctedBy: null,
-    }));
+    const models = checked ? modelClaimsById(s.outputJson) : new Map();
+    const claims: ViewClaim[] = (checked?.claims ?? []).map((c) => {
+      const model = models.get(c.claimId);
+      const quotes = new Map<string, string>();
+      for (const cit of Array.isArray(model?.citations) ? model.citations : []) {
+        if (cit && typeof cit.id === "string" && typeof cit.quote === "string") quotes.set(cit.id, cit.quote);
+      }
+      return {
+        ...c,
+        footnotes: (c.footnotes ?? []).map((f) => viewFootnote(f, cik, accession, quotes)),
+        comparisonChecks: describeComparisons(c.comparisonChecks ?? [], model, bogeys),
+        correction: c.correction
+          ? {
+              ...c.correction,
+              footnote: c.correction.footnote ? viewFootnote(c.correction.footnote, cik, accession, quotes) : null,
+            }
+          : null,
+        correctedBy: null,
+      };
+    });
     const coverage = parseJson<CoverageEntry[]>(s.coverageJson);
     return {
       sectionId: s.id,
@@ -485,7 +615,7 @@ function buildSections(rows: SectionRow[], filingsById: Map<number, FilingRow>):
 
 function buildRun(db: Database.Database, run: RunRow, filingsById: Map<number, FilingRow>): BuiltRun {
   const rows = listSections(db, run.id);
-  const sections = buildSections(rows, filingsById);
+  const sections = buildSections(rows, filingsById, bogeysByKey(run.bogeySnapshotJson));
   const status = runViewStatus(run, sections);
   const doneClaims = sections.filter((s) => s.status === "done").flatMap((s) => s.claims);
   const counts = countStatuses(doneClaims);
@@ -627,12 +757,36 @@ function buildAll(db: Database.Database, eventId: number) {
 
 // ---------------------------------------------------------------- public API
 
+function choiceOptions(catalogIds: string[]): ChoiceOption[] {
+  return SUMMARY_CHOICES.map((c) => ({
+    choice: { ...c },
+    value: choiceValue(c),
+    label: choiceLabel(c),
+    nowLabel: familyNowLabel(c.family, catalogIds),
+  }));
+}
+
+/** The running run's running (else first pending) section, with its fetched exhibit count. */
+function readingDocsFor(db: Database.Database, candidates: Array<BuiltRun | null>): ReadingDocs | null {
+  const run = candidates.find((b) => b && b.full.status === "running") ?? null;
+  if (!run) return null;
+  const sections = run.full.sections;
+  const section = sections.find((s) => s.status === "running") ?? sections.find((s) => s.status === "pending");
+  if (!section) return null;
+  const exhibits = listDocuments(db, section.filingId).filter(
+    (d) => d.status === "fetched" && d.docType.toUpperCase().startsWith("EX-"),
+  ).length;
+  return { form: section.form, exhibits };
+}
+
 function panelFor(db: Database.Database, eventId: number, catalogIds: string[]): PanelView {
   const { choice, isDefault, locked } = getChoice(db, eventId);
   const state = getEventState(db, eventId);
   const { filings, built, shown, inProgress } = buildAll(db, eventId);
   return {
     eventId,
+    readingDocs: readingDocsFor(db, [inProgress, shown]),
+    choiceOptions: choiceOptions(catalogIds),
     choice,
     choiceLabel: choiceLabel(choice),
     isDefault,
@@ -683,11 +837,7 @@ export function getFullView(db: Database.Database, eventId: number, catalogIds: 
       isDefault,
       locked,
       nowLabel: familyNowLabel(choice.family, catalogIds),
-      options: SUMMARY_CHOICES.map((c) => ({
-        choice: { ...c },
-        label: choiceLabel(c),
-        nowLabel: familyNowLabel(c.family, catalogIds),
-      })),
+      options: choiceOptions(catalogIds),
     },
     runSummaryAvailable: runSummaryAvailableFrom(state?.pollState ?? null, built.length, filings),
     shownRunId: shown?.full.runId ?? null,

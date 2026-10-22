@@ -1,91 +1,36 @@
 /**
  * Pure copy helpers for the print-row filing summary panel and the per-print
  * model choice (Task 13). Client-safe: it imports only types from the view
- * model plus the two pure modules `choice` and `types`, never a server module.
+ * model plus the pure modules `choice`, `labels` and `types`, never a server module.
  *
  * Every word the panel shows about a status, a count, a cost or a failure
  * comes from here, so the tests can pin the copy without a DOM.
  */
-import type { ChipTone } from "../components/Chip";
 import { choiceLabel } from "@/lib/filing-summary/choice";
-import {
-  STATUS_SEVERITY,
-  type ClaimStatus,
-  type Footnote,
-  type StatusCounts,
-  type SummaryChoice,
-} from "@/lib/filing-summary/types";
-import type {
-  ChoiceOption,
-  FullView,
-  PanelView,
-  RunSummary,
-  SectionState,
-} from "@/lib/filing-summary/view";
+import { errorWords, roughCostText } from "@/lib/filing-summary/labels";
+import type { Footnote, SummaryChoice } from "@/lib/filing-summary/types";
+import type { FullView, PanelView, ReadingDocs, RunSummary, SectionState } from "@/lib/filing-summary/view";
+
+// The single copy of the status, count, cost, choice, failure and request-key
+// words lives in lib/filing-summary/labels.ts (shared with the full page and
+// the shareable page); re-exported here so the panel's imports stay put.
+export {
+  ROUGH_COST_BY_CHOICE,
+  choiceValue,
+  countsText,
+  errorWords,
+  newRequestKey,
+  optionText,
+  roughCostText,
+  statusLabel,
+  statusTone,
+} from "@/lib/filing-summary/labels";
+export type { ReadingDocs } from "@/lib/filing-summary/view";
 
 /** The panel re-reads its state this often while something can change. */
 export const FILING_SUMMARY_POLL_MS = 30_000;
 
-// ---------------------------------------------------------------- statuses
-
-const STATUS_LABEL: Record<ClaimStatus, string> = {
-  contradicted: "Contradicted",
-  periods_differ: "Periods differ",
-  not_in_filing: "Not in filing",
-  quote_not_found: "Quote not found",
-  ambiguous_quote: "Ambiguous quote",
-  figure_not_bound: "Figure not bound",
-  unconfirmed: "Unconfirmed",
-  checked: "Checked",
-  qualitative: "Qualitative",
-};
-
-/** The short status word on a claim's chip. */
-export function statusLabel(status: ClaimStatus): string {
-  return STATUS_LABEL[status] ?? "Unconfirmed";
-}
-
-const TONE_BY_SEVERITY: Record<(typeof STATUS_SEVERITY)[ClaimStatus], ChipTone> = {
-  danger: "down",
-  warning: "warn",
-  muted: "neutral",
-  ok: "up",
-};
-
-/** The Chip tone for a claim's status, through STATUS_SEVERITY. */
-export function statusTone(status: ClaimStatus): ChipTone {
-  return TONE_BY_SEVERITY[STATUS_SEVERITY[status] ?? "muted"];
-}
-
-/** "12 claims · 9 checked · 1 contradicted · 2 unconfirmed"; zero parts are left out. */
-export function countsText(c: StatusCounts): string {
-  const parts = [`${c.claims} ${c.claims === 1 ? "claim" : "claims"}`];
-  if (c.checked) parts.push(`${c.checked} checked`);
-  if (c.contradicted) parts.push(`${c.contradicted} contradicted`);
-  if (c.warning) parts.push(`${c.warning} with warnings`);
-  if (c.unconfirmed) parts.push(`${c.unconfirmed} unconfirmed`);
-  if (c.qualitative) parts.push(`${c.qualitative} qualitative`);
-  return parts.join(" · ");
-}
-
 // ---------------------------------------------------------------- cost
-
-/**
- * Rough cost per filing by choice (controller ruling 2). Measured on the Meta
- * test 2026-10-21 for three choices; the two medium-effort choices of the
- * larger families were not measured and say only how they compare.
- */
-export const ROUGH_COST_BY_CHOICE: Record<string, string> = {
-  "sonnet·medium": "about $0.11 per filing",
-  "opus·medium": "less than Opus · high",
-  "opus·high": "about $0.32 per filing",
-  "fable·medium": "less than Fable · high",
-  "fable·high": "about $0.68 per filing",
-};
-
-export function roughCostText(c: SummaryChoice): string {
-  return ROUGH_COST_BY_CHOICE[`${c.family}·${c.effort}`] ?? "cost not known";
-}
 
 /** The Run summary question: the choice, the model it now means, the cost. */
 export function runConfirmMessage(choice: SummaryChoice, nowLabel: string): string {
@@ -111,27 +56,7 @@ export function retryConfirmMessage(run: RunSummary): string {
   ].join("\n\n");
 }
 
-// ---------------------------------------------------------------- choice
-
-/** "Fable · high — now 5.1" (or "— not available"). */
-export function optionText(o: ChoiceOption): string {
-  const sep = o.nowLabel.indexOf(" · ");
-  const now = sep >= 0 ? o.nowLabel.slice(sep + 3) : o.nowLabel;
-  return `${o.label} — ${now}`;
-}
-
-/** A stable `<option>` value for a choice. */
-export function choiceValue(c: SummaryChoice): string {
-  return `${c.family}·${c.effort}`;
-}
-
 // ---------------------------------------------------------------- status line
-
-/** What the panel says is being read: the form and how many exhibits. */
-export interface ReadingDocs {
-  form: string;
-  exhibits: number;
-}
 
 /** The running (else first pending) section's filing and its read exhibits. */
 export function readingDocs(full: FullView, runId: number): ReadingDocs | null {
@@ -151,26 +76,6 @@ function filerForm(view: PanelView): string {
   if (view.pollDetail && /\b6-K\b/.test(view.pollDetail)) return "6-K";
   const forms = [...(view.shown?.sectionStates ?? []), ...(view.inProgress?.sectionStates ?? [])].map((s) => s.form);
   return forms.some((f) => f.toUpperCase().startsWith("6-K")) ? "6-K" : "8-K";
-}
-
-const ERROR_WORDS: Record<string, string> = {
-  model_error: "the model call failed",
-  timeout: "the model call timed out",
-  refusal: "the model declined to answer",
-  truncated: "the answer was cut off",
-  invalid_output: "the answer did not have the required shape",
-  model_unavailable: "no model in that family was available",
-  input_too_large: "the filing was over the input cap",
-  attempt_cap: "gave up after two attempts",
-  takeover: "another worker took it over",
-  cancelled: "stopped when the print was disarmed",
-  awaiting_retry: "waits for Retry",
-};
-
-/** Plain words for a section's error class; an unknown class is named as stored. */
-export function errorWords(errorClass: string | null): string {
-  if (!errorClass) return "no reason recorded";
-  return ERROR_WORDS[errorClass] ?? errorClass;
 }
 
 function runningSection(run: RunSummary): SectionState | undefined {
@@ -265,19 +170,4 @@ export function footnoteTitle(fn: Pick<Footnote, "status" | "page" | "para">): s
         ? `Paragraph ${fn.para}`
         : "Filing";
   return `${where} · opens on sec.gov`;
-}
-
-// ---------------------------------------------------------------- request key
-
-/**
- * A fresh request key for one Run or Retry click. `crypto.randomUUID` exists
- * only in a secure context; the phone over the private network reaches the
- * app on plain http, so fall back to `getRandomValues`, which exists everywhere.
- */
-export function newRequestKey(): string {
-  const c = globalThis.crypto;
-  if (c && typeof c.randomUUID === "function") return c.randomUUID();
-  const bytes = new Uint8Array(16);
-  c.getRandomValues(bytes);
-  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
 }
