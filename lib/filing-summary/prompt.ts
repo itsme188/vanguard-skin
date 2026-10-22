@@ -18,7 +18,7 @@ import { createHash } from "node:crypto";
 import type { BogeySnapshotFigure } from "@/lib/filing-summary/types";
 
 /** Bumped whenever the prompt text or its inputs change meaning; stored per section (R14). */
-export const PROMPT_VERSION = 1;
+export const PROMPT_VERSION = 2;
 
 export interface SectionPromptInput {
   symbol: string;
@@ -62,21 +62,22 @@ NUMBERS - every number goes through a typed figure
 - basis: reported (GAAP / as reported), non_gaap, constant_currency, excluding_item (name the item in basisNote), guidance_low / guidance_high / guidance_mid for the ends or midpoint of a guidance range, unknown when the source does not say.
 - sourceKind says where the number comes from:
   - "quote": it appears in one of this claim's citations. citationId = that citation's id; label = the exact row label (table) or the exact phrase in the sentence that names the number. bogeyKey null, operation null, inputs [].
-  - "bogey": it is one of the supplied pre-print bogeys. bogeyKey = the bogey's key exactly; copy its unit, period and basis; the value may be restated at another scale (64.57 with scale "billions" for 64570000000). citationId null, label null, operation null, inputs [].
+  - "bogey": it is one of the supplied pre-print bogeys. bogeyKey = the bogey's key exactly; copy its unit, period and basis, but endDate, fiscalYear and fiscalQuarter stay null (the app supplies the bogey's period); the value may be restated at another scale (64.57 with scale "billions" for 64570000000). citationId null, label null, operation null, inputs [].
   - "computed": you derived it. operation is difference(a, b) = a - b, sum(a, b, ...), ratio(a, b) = a / b shown as a percent, or growth(new, old) = new / old - 1 shown as a percent; inputs = the ordered ids of figures in the same claim, each a quote or bogey figure. citationId null, label null, bogeyKey null. Compute only when the point needs it, and never state a computed figure without its inputs.
 - Use only figures that appear in the filing or the supplied bogeys.
 
 PERIODS
-- Give the period the source states. A column headed "Three Months Ended September 30, 2026" is kind quarter with endDate 2026-09-30; "Nine Months Ended" is year_to_date; "Year Ended" or a full-year outlook is fiscal_year; a balance "As of" a date is instant. role is "outlook" for guidance and "actual" otherwise. Fill fiscalYear and fiscalQuarter when the source states them, else null. anchor is always null on a figure you read from the filing. label is a plain period name ("Q3 2026", "nine months 2026", "FY 2027 outlook").
+- Give the period the source states. A column headed "Three Months Ended September 30, 2026" is kind quarter with endDate 2026-09-30; "Nine Months Ended" is year_to_date; "Year Ended" or a full-year outlook is fiscal_year; a balance "As of" a date is instant. role is "outlook" for guidance and "actual" otherwise. Fill BOTH endDate (YYYY-MM-DD, from the column header or the sentence) AND fiscalYear/fiscalQuarter whenever the filing states them; leave a field null rather than guess. anchor is always null on a figure you read from the filing. label is a plain period name ("Q3 2026", "nine months 2026", "FY 2027 outlook").
 - Never compare different periods without saying so in the claim text: a nine-month figure is not a full-year figure, and a quarter is not a year.
 
 COMPARISONS
 - A claim that compares two numbers carries a comparison naming both operands by figure id: left is the filing's figure, right the comparator (usually a bogey or a prior range). For a range give its low end in left (or right) and its high end in leftHigh (or rightHigh); otherwise those are null.
 - relation: above, below, in_line (within half a percent of the comparator), raised, lowered, narrowed (a guidance range against the prior range), unchanged.
+- Comparisons between percentages are judged in percentage points of difference relative to the comparator, and the shown difference is in percentage points.
 - Call a beat a beat: decide above or below from the numbers, never from the company's wording. When you compare with a bogey, name its source in the text.
 
 CITATIONS
-- Every claim carries at least one citation, including a claim with no numbers (governance, tone). Each citation: id, document = the document's file name exactly as given, quote, isTableRow.
+- Every claim carries at least one citation, including a claim with no numbers (governance, tone). Each citation: id, document = the document's file name exactly as given in the DOCUMENTS list and block headers (spaces collapsed, no pipes), quote, isTableRow.
 - quote is a short exact sentence or phrase copied character for character from that document. Do not paraphrase, join separate sentences or add ellipses.
 - For a table row, copy the cells exactly and join them with " | " in their order, from the row label to the cell you rely on (for example "Income from operations | 12,988 | 10,034"), and set isTableRow = true.
 
@@ -110,7 +111,7 @@ function userText(input: SectionPromptInput, token: string): string {
   parts.push(`COMPANY: ${input.symbol}${name}`);
   parts.push(`EARNINGS DATE: ${input.eventDate}`);
   parts.push(`FILING: ${input.filing.form} · accepted ${input.filing.acceptedAtEt} ET · role ${input.filing.role}`);
-  parts.push(`DOCUMENTS: ${input.documents.map((d) => `${d.fileName} (${d.docType})`).join(", ") || "none"}`);
+  parts.push(`DOCUMENTS: ${input.documents.map((d) => `${oneLine(d.fileName)} (${oneLine(d.docType)})`).join(", ") || "none"}`);
   parts.push("");
   parts.push(`<<<BOGEYS:${token}>>>`);
   parts.push(bogeyLines(input.bogeys));
