@@ -1,118 +1,30 @@
 import { describe, it, expect } from "vitest";
-import { readFileSync } from "node:fs";
-import path from "node:path";
 import { extractDocText } from "@/lib/filing-summary/doc-text";
 import { FIGURE_REASON_CODES } from "@/lib/filing-summary/figures";
+import { CHECKER_VERSION, REASON_CODES, countStatuses, reasonStatus, renderClaimText } from "@/lib/filing-summary/evaluate";
+import type { CheckedClaim, ClaimStatus, DocText, ModelClaim, ModelComparison, ModelFigure } from "@/lib/filing-summary/types";
 import {
-  CHECKER_VERSION,
-  REASON_CODES,
-  countStatuses,
-  evaluateSection,
-  reasonStatus,
-  renderClaimText,
-} from "@/lib/filing-summary/evaluate";
-import type {
-  BogeySnapshotFigure,
-  CheckedClaim,
-  ClaimStatus,
-  DocText,
-  ModelCitation,
-  ModelClaim,
-  ModelComparison,
-  ModelFigure,
-  PeriodSpec,
-} from "@/lib/filing-summary/types";
-
-// ---------------------------------------------------------------------------
-// Fixtures: a synthetic Q3 2026 exhibit shaped like the real Meta tables
-// ---------------------------------------------------------------------------
-
-const FIXTURE = path.join(__dirname, "../fixtures/filing-summary/synthetic-q3-exhibit.htm");
-const EX991 = "ex991.htm";
-const exhibit: DocText = extractDocText(readFileSync(FIXTURE, "utf8"));
-const CIK = "1234567";
-const ACCESSION = "0001234567-26-000123";
-const EVENT_DATE = "2026-10-29";
-
-/** A one-table income statement with the given rows (values: Q3 2026, Q3 2025, 9M 2026, 9M 2025). */
-function incomeDoc(rows: Array<[string, string, string, string, string]>, note = "(In millions, except per share amounts)"): DocText {
-  const body = rows.map((r) => `<tr>${r.map((c) => `<td>${c}</td>`).join("")}</tr>`).join("");
-  return extractDocText(
-    `<p>${note}</p><table>` +
-      '<tr><td></td><td colspan="2">Three Months Ended September 30,</td><td colspan="2">Nine Months Ended September 30,</td></tr>' +
-      "<tr><td></td><td>2026</td><td>2025</td><td>2026</td><td>2025</td></tr>" +
-      `${body}</table>`,
-  );
-}
-
-const period = (over: Partial<PeriodSpec>): PeriodSpec => ({
-  kind: "quarter", role: "actual", endDate: "2026-09-30", fiscalYear: null, fiscalQuarter: null, anchor: null, label: "Q3 2026", ...over,
-});
-const Q3_26 = period({});
-const NM_26 = period({ kind: "year_to_date", label: "nine months 2026" });
-const NM_25 = period({ kind: "year_to_date", endDate: "2025-09-30", label: "nine months 2025" });
-const AT_Q3_26 = period({ kind: "instant", label: "September 30, 2026" });
-const THIS_QUARTER: PeriodSpec = {
-  kind: "quarter", role: "actual", endDate: null, fiscalYear: null, fiscalQuarter: null, anchor: "reported_quarter", label: "this print's quarter",
-};
-const FY_OUTLOOK: PeriodSpec = {
-  kind: "fiscal_year", role: "outlook", endDate: null, fiscalYear: null, fiscalQuarter: null, anchor: "fiscal_year", label: "fiscal year outlook",
-};
-
-function quoteFig(id: string, citationId: string, over: Partial<ModelFigure>): ModelFigure {
-  return {
-    id, valueText: "", value: 0, unit: "usd", scale: "millions", metric: "", period: Q3_26, basis: "reported", basisNote: null,
-    sourceKind: "quote", citationId, label: null, bogeyKey: null, operation: null, inputs: [], ...over,
-  };
-}
-function bogeyFig(id: string, bogeyKey: string, over: Partial<ModelFigure>): ModelFigure {
-  return quoteFig(id, "", { sourceKind: "bogey", citationId: null, bogeyKey, period: THIS_QUARTER, ...over });
-}
-function computedFig(id: string, over: Partial<ModelFigure>): ModelFigure {
-  return quoteFig(id, "", { sourceKind: "computed", citationId: null, unit: "percent", scale: "units", ...over });
-}
-function cite(id: string, quote: string, isTableRow = quote.includes(" | "), document = EX991): ModelCitation {
-  return { id, document, quote, isTableRow };
-}
-function claim(
-  text: string,
-  citations: ModelCitation[],
-  figures: ModelFigure[] = [],
-  comparisons: ModelComparison[] = [],
-  id = "c1",
-): ModelClaim {
-  return { id, text, citations, figures, comparisons, corrects: null };
-}
-const cmp = (left: string, right: string, relation: ModelComparison["relation"]): ModelComparison => ({
-  left, leftHigh: null, right, rightHigh: null, relation,
-});
-function bogey(key: string, value: number, over: Partial<BogeySnapshotFigure> = {}): BogeySnapshotFigure {
-  return {
-    key, label: "Revenue consensus", value, unit: "usd", scale: "units", period: THIS_QUARTER, basis: "reported",
-    provenance: "Synthetic Weekly", asOf: "2026-10-27", rowKind: "newsletter", ...over,
-  };
-}
-
-function run(
-  claims: ModelClaim[],
-  opts: { bogeys?: BogeySnapshotFigure[]; docs?: Array<{ fileName: string; text: DocText }>; priorClaims?: CheckedClaim[]; headline?: string } = {},
-) {
-  return evaluateSection({
-    output: { headline: opts.headline ?? "Results headline", bullets: claims.map((c, i) => ({ top: i === 0, routine: false, claims: [c] })) },
-    docs: opts.docs ?? [{ fileName: EX991, text: exhibit }],
-    cik: CIK,
-    accession: ACCESSION,
-    eventDate: EVENT_DATE,
-    bogeys: opts.bogeys ?? [],
-    priorClaims: opts.priorClaims ?? [],
-  });
-}
-const one = (c: ModelClaim, opts: Parameters<typeof run>[1] = {}) => run([c], opts).claims[0];
-const codes = (c: CheckedClaim) => c.reasons.map((r) => r.code);
-
-// Reusable claims
-const revenueQ3 = (over: Partial<ModelFigure> = {}) =>
-  quoteFig("f1", "q1", { valueText: "$64,601 million", value: 64601, metric: "revenue", label: "Revenue", ...over });
+  AT_Q3_26,
+  EX991,
+  FY_OUTLOOK,
+  NM_25,
+  NM_26,
+  Q3_26,
+  bogey,
+  bogeyFig,
+  cite,
+  claim,
+  cmp,
+  codes,
+  computedFig,
+  exhibit,
+  incomeDoc,
+  one,
+  period,
+  quoteFig,
+  revenueQ3,
+  run,
+} from "./evaluate-helpers";
 // ---------------------------------------------------------------------------
 // Spec acceptance cases
 // ---------------------------------------------------------------------------
@@ -370,9 +282,12 @@ describe("table binding rules", () => {
   it("ruling 4: numbers bind per whole cell, so 64,601 never matches a cell 164,601", () => {
     const doc = incomeDoc([["Revenue", "164,601", "51,242", "181,712", "141,073"]]);
     const c = one(claim("Revenue was {f1}.", [cite("q1", "Revenue | 64,601")], [revenueQ3()]), { docs: [{ fileName: EX991, text: doc }] });
-    expect(c.footnotes[0].status).toBe("found"); // the row is found by the locate step …
-    expect(c.status).toBe("unconfirmed"); // … but the number is not in it
-    expect(codes(c)).toEqual(["value_not_in_quote"]);
+    // Whole-cell locate: the quote's "64,601" is no cell of that row, so the quote is not found …
+    expect(c.footnotes[0].status).toBe("not_found");
+    // … and the figure is never checked.
+    expect(c.figureChecks[0].established).toBe(false);
+    expect(c.status).not.toBe("checked");
+    expect(c.status).toBe("quote_not_found");
   });
 
   it("a negative split across two cells ('(1,200' then ')') reads as -1,200", () => {

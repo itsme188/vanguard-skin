@@ -17,31 +17,27 @@
  * Figure binding lives in `evaluate-figures.ts`. Pure: no database, no clock.
  */
 import { locateQuote, toFootnote, type LocatedQuote } from "./locate";
-import { FIGURE_REASON_CODES, checkRelation, computeOp, matchesWithRounding, type Operand } from "./figures";
+import { FIGURE_REASON_CODES } from "./figures";
 import {
-  basisCompat,
   bindBogeyFigure,
   bindQuoteFigure,
-  figurePeriod,
-  periodsEqual,
+  emptyResolved,
   reason,
-  statedNumber,
+  valueTextHasExtraDigit,
   type ResolvedFigure,
-  type SourcePeriod,
 } from "./evaluate-figures";
+import { evalComparison, evalComputed } from "./evaluate-arith";
+import { sectionAnchors, type SectionAnchors } from "./evaluate-periods";
 import type {
   BogeySnapshotFigure,
   CheckReason,
   CheckedClaim,
   CheckedSection,
   ClaimStatus,
-  ComparisonCheck,
   DocText,
   FigureCheck,
   Footnote,
   ModelClaim,
-  ModelComparison,
-  ModelFigure,
   ModelSectionOutput,
   StatusCounts,
 } from "./types";
@@ -64,6 +60,7 @@ const REASON_STATUS: Record<string, ClaimStatus | "info"> = {
   dangling_citation: "figure_not_bound",
   dangling_operand: "figure_not_bound",
   dangling_input: "figure_not_bound",
+  unbound_value_text: "figure_not_bound",
   // periods differ (R5, R9: a warning, never contradicted)
   periods_differ: "periods_differ",
   bases_differ: "periods_differ",
@@ -92,6 +89,7 @@ const REASON_STATUS: Record<string, ClaimStatus | "info"> = {
   no_operation: "unconfirmed",
   compute_undefined: "unconfirmed",
   no_citation: "unconfirmed",
+  within_rounding: "unconfirmed",
   zero_comparator: "unconfirmed",
   unit_mismatch: "unconfirmed",
   range_operand_unsupported: "unconfirmed",
@@ -109,9 +107,9 @@ export function reasonStatus(code: string): ClaimStatus | "info" {
   return REASON_STATUS[code] ?? "unconfirmed";
 }
 
-/** Worst first. Warnings in the order the brief lists them (step 7). */
+/** Worst first, in the declaration order of `ClaimStatus` (types.ts). */
 const PRECEDENCE: ClaimStatus[] = [
-  "contradicted", "periods_differ", "not_in_filing", "quote_not_found", "ambiguous_quote", "figure_not_bound", "unconfirmed",
+  "contradicted", "figure_not_bound", "periods_differ", "not_in_filing", "quote_not_found", "ambiguous_quote", "unconfirmed",
 ];
 
 // ---------------------------------------------------------------------------
@@ -123,7 +121,7 @@ const PLACEHOLDER = /\{([A-Za-z][\w.-]*)\}/g;
 // exhibit number, an SEC form name ("8-K", "10-Q", "PRE 14C", "424B3").
 const ALLOWED_DIGITS: RegExp[] = [
   /\b(?:19|20)\d\d\b/g,
-  /\bItems?\s+\d+(?:\.\d+)?/gi,
+  /\bItem \d{1,2}(?:\.\d{2})?(?![\d.])/g,
   /\bEX-\d+(?:\.\d+)*/gi,
   /\bExhibits?\s+\d+(?:\.\d+)*/gi,
   /\b(?:8-K|10-K|10-Q|6-K|20-F|40-F|S-[1348](?:ASR)?|F-[13]|424B\d)(?:\/A)?(?![\w])/gi,
@@ -145,9 +143,10 @@ function placeholderIds(text: string): string[] {
 
 /**
  * Fill `{fN}` with that figure's `valueText`. `unbound` when a placeholder
- * names no figure of the claim, or a digit sits outside the placeholders that
- * is not a year, an Item / exhibit number or a form name (R1). An unknown
- * placeholder is left as written.
+ * names no figure of the claim, a placed figure's valueText carries a digit
+ * beyond its one number, or a digit sits outside the placeholders that is not
+ * a year, an Item / exhibit number or a form name (R1). An unknown placeholder
+ * is left as written.
  */
 export function renderClaimText(claim: ModelClaim): { text: string; unbound: boolean } {
   const byId = new Map(claim.figures.map((f) => [f.id, f]));
@@ -158,178 +157,11 @@ export function renderClaimText(claim: ModelClaim): { text: string; unbound: boo
       unbound = true;
       return whole;
     }
+    if (valueTextHasExtraDigit(f.valueText)) unbound = true;
     return f.valueText;
   });
   if (hasStrayDigit(claim.text.replace(PLACEHOLDER, " "))) unbound = true;
   return { text, unbound };
-}
-
-// ---------------------------------------------------------------------------
-// Computed figures (R8)
-// ---------------------------------------------------------------------------
-
-function addMonths(iso: string, months: number): Date {
-  const [y, m, d] = iso.split("-").map(Number);
-  const last = new Date(Date.UTC(y, m - 1 + months + 1, 0)).getUTCDate();
-  const wasLast = d === new Date(Date.UTC(y, m, 0)).getUTCDate();
-  return new Date(Date.UTC(y, m - 1 + months, wasLast ? last : Math.min(d, last)));
-}
-
-/** Within a week: a 52/53-week fiscal calendar moves its period ends by a day or two. */
-function withinWeek(a: Date, iso: string): boolean {
-  const [y, m, d] = iso.split("-").map(Number);
-  return Math.abs(a.getTime() - Date.UTC(y, m - 1, d)) <= 7 * 86_400_000;
-}
-
-/** R8: `old` ends one year (or, for a quarter, one quarter) before `new`. Null = cannot tell. */
-function isPriorPeriod(nw: SourcePeriod, old: SourcePeriod): boolean | null {
-  if (nw.kind !== old.kind || nw.role !== old.role) return false;
-  if (nw.endDate && old.endDate) {
-    if (withinWeek(addMonths(nw.endDate, -12), old.endDate)) return true;
-    return nw.kind === "quarter" && withinWeek(addMonths(nw.endDate, -3), old.endDate);
-  }
-  if (nw.endDate || old.endDate || nw.fiscalYear === null || old.fiscalYear === null) return null;
-  if (nw.kind === "fiscal_year") return old.fiscalYear === nw.fiscalYear - 1;
-  if (nw.fiscalQuarter === null || old.fiscalQuarter === null) return null;
-  if (old.fiscalYear === nw.fiscalYear - 1 && old.fiscalQuarter === nw.fiscalQuarter) return true;
-  if (nw.kind !== "quarter") return false;
-  const prevQ = nw.fiscalQuarter === 1 ? { y: nw.fiscalYear - 1, q: 4 } : { y: nw.fiscalYear, q: nw.fiscalQuarter - 1 };
-  return old.fiscalYear === prevQ.y && old.fiscalQuarter === prevQ.q;
-}
-
-function evalComputed(fig: ModelFigure, byId: Map<string, ResolvedFigure>, shownIds: Set<string>): ResolvedFigure {
-  const out: ResolvedFigure = {
-    figure: fig, established: false, contradicted: false, units: null, unit: fig.unit,
-    period: null, basis: fig.basis, table: null, reasons: [],
-  };
-  const add = (code: string, detail: string) => out.reasons.push(reason(code, fig.id, detail));
-  if (fig.inputs.length === 0) { add("no_inputs", "a computed figure with no inputs is not from the filing"); return out; }
-  if (!fig.operation) { add("no_operation", "a computed figure must name its operation"); return out; }
-
-  const inputs: ResolvedFigure[] = [];
-  for (const id of fig.inputs) {
-    const r = byId.get(id);
-    if (!r) { add("dangling_input", `input ${id} is not a figure of this claim`); continue; }
-    if (r.figure.sourceKind === "computed") { add("input_not_sourced", `input ${id} is itself computed`); continue; }
-    if (!r.established) add("input_unconfirmed", `input ${id} is not established`);
-    if (!shownIds.has(id)) add("inputs_not_shown", `input ${id} is not shown in the claim text`);
-    inputs.push(r);
-  }
-  if (out.reasons.length > 0) return out;
-
-  const op = fig.operation;
-  const unit = inputs[0].unit;
-  if (inputs.some((r) => r.unit !== unit)) { add("unit_mismatch", "the inputs are in different units"); return out; }
-  const wantUnit = op === "growth" || op === "ratio" ? "percent" : unit;
-  if (fig.unit !== wantUnit) { add("unit_mismatch", `${op} gives ${wantUnit}, the figure says ${fig.unit}`); return out; }
-
-  // Periods: difference / sum / ratio need one period; growth needs new vs the prior year (or quarter).
-  if (op === "growth") {
-    if (inputs.length !== 2) { add("compute_undefined", "growth takes exactly two inputs (new, old)"); return out; }
-    const [nw, old] = inputs;
-    const prior = nw.period && old.period ? isPriorPeriod(nw.period, old.period) : null;
-    if (prior === false) add("periods_differ", "the old input does not end a year (or quarter) before the new one");
-    if (prior === null) add("period_unconfirmed", "the inputs' periods cannot be placed a year apart");
-  } else {
-    for (const r of inputs.slice(1)) {
-      const same = periodsEqual(inputs[0], r);
-      if (same === false) add("periods_differ", `inputs ${inputs[0].figure.id} and ${r.figure.id} are for different periods`);
-      if (same === null) add("period_unconfirmed", `inputs ${inputs[0].figure.id} and ${r.figure.id} cannot be matched by period`);
-    }
-  }
-  const basis = basisCompat(inputs);
-  if (basis === "differ") add("bases_differ", "the inputs are on different bases");
-  if (basis === "unknown") add("basis_unconfirmed", "an input's basis is unknown");
-
-  // The result's period: the shared period, or the NEW input's for growth.
-  out.period = inputs[0].period;
-  out.table = inputs.find((r) => r.table)?.table ?? null;
-  out.basis = inputs.find((r) => !r.basis.startsWith("guidance_"))?.basis ?? inputs[0].basis;
-  // The claim's own period label for the result must agree with the inputs.
-  if (out.period) {
-    const self = periodsEqual({ ...out, period: { ...figurePeriod(fig), anchor: null } }, out);
-    if (self === false) add("periods_differ", `the inputs are for another period than ${fig.period.label}`);
-    if (self === null) add("period_unconfirmed", `${fig.period.label} cannot be matched to the inputs' period`);
-  }
-
-  const result = computeOp(op, inputs.map((r) => r.units as number));
-  if (result === null) { add("compute_undefined", `${op} is undefined for these inputs`); return out; }
-  const stated = statedNumber(fig);
-  if (!stated) { add("value_text_mismatch", `the shown text "${fig.valueText}" does not state the typed value`); return out; }
-  const blocking = out.reasons.length > 0;
-  if (matchesWithRounding(stated, result)) {
-    out.units = result;
-    out.established = !blocking;
-    if (!blocking) add("computed", `computed: ${op} of ${fig.inputs.join(", ")}`);
-    return out;
-  }
-  // Every input established and of one unit; a period or basis doubt keeps it from contradicted.
-  if (!blocking) {
-    out.contradicted = true;
-    add("computed_mismatch", `recomputed ${formatNumber(result, wantUnit)}; stated ${fig.valueText}`);
-  }
-  return out;
-}
-
-function formatNumber(units: number, unit: string): string {
-  return unit === "percent" ? `${units.toFixed(2)}%` : String(Math.round(units * 100) / 100);
-}
-
-// ---------------------------------------------------------------------------
-// Comparisons (R7)
-// ---------------------------------------------------------------------------
-
-function evalComparison(cmp: ModelComparison, byId: Map<string, ResolvedFigure>): ComparisonCheck {
-  const check: ComparisonCheck = {
-    relation: cmp.relation, verdict: "unconfirmed", difference: null, differencePct: null, shownText: null, reasons: [],
-  };
-  const add = (code: string, detail: string) => check.reasons.push(reason(code, null, detail));
-  const ids = [cmp.left, cmp.leftHigh, cmp.right, cmp.rightHigh].filter((x): x is string => x !== null);
-  for (const id of ids) {
-    if (!byId.has(id)) check.reasons.push(reason("dangling_operand", id, `comparison operand ${id} is not a figure of this claim`));
-  }
-  if (check.reasons.length > 0) return check;
-  const get = (id: string | null) => (id === null ? null : (byId.get(id) as ResolvedFigure));
-  const [L, LH, R, RH] = [get(cmp.left), get(cmp.leftHigh), get(cmp.right), get(cmp.rightHigh)] as [
-    ResolvedFigure, ResolvedFigure | null, ResolvedFigure, ResolvedFigure | null,
-  ];
-  const ops = [L, LH, R, RH].filter((x): x is ResolvedFigure => x !== null);
-  const unsettled = ops.filter((r) => !r.established);
-  if (unsettled.length > 0) {
-    for (const r of unsettled) add("operand_unconfirmed", `operand ${r.figure.id} is not established`);
-    return check;
-  }
-
-  let differ = false;
-  let unsure = false;
-  const pairs: Array<[ResolvedFigure, ResolvedFigure]> = [[L, R]];
-  if (LH) pairs.push([L, LH]);
-  if (RH) pairs.push([R, RH]);
-  for (const [a, b] of pairs) {
-    const same = periodsEqual(a, b);
-    if (same === false) { differ = true; add("periods_differ", `${a.figure.id} and ${b.figure.id} are for different periods`); }
-    if (same === null) { unsure = true; add("period_unconfirmed", `${a.figure.id} and ${b.figure.id} cannot be matched by period`); }
-  }
-  const basis = basisCompat(ops);
-  if (basis === "differ") { differ = true; add("bases_differ", "the operands are on different bases"); }
-  if (basis === "unknown") { unsure = true; add("basis_unconfirmed", "an operand's basis is unknown"); }
-  if ((LH && LH.unit !== L.unit) || (RH && RH.unit !== R.unit)) { unsure = true; add("unit_mismatch", "a range's ends are in different units"); }
-  if (differ) { check.verdict = "periods_differ"; return check; }
-  if (unsure) return check;
-
-  const operand = (lo: ResolvedFigure, hi: ResolvedFigure | null): Operand =>
-    hi ? { units: lo.units as number, unit: lo.unit, low: lo.units as number, high: hi.units as number }
-      : { units: lo.units as number, unit: lo.unit };
-  const rel = checkRelation(cmp.relation, operand(L, LH), operand(R, RH));
-  check.verdict = rel.verdict;
-  check.difference = rel.difference;
-  check.differencePct = rel.differencePct;
-  check.shownText = rel.shownText;
-  check.reasons.push(...rel.reasons);
-  if (rel.verdict === "contradicted") {
-    add("relation_contradicted", `the filing's figures do not support "${cmp.relation}"${rel.shownText ? ` (${rel.shownText})` : ""}`);
-  }
-  return check;
 }
 
 // ---------------------------------------------------------------------------
@@ -343,6 +175,7 @@ interface ClaimContext {
   eventDate: string;
   bogeys: BogeySnapshotFigure[];
   priorIds: Set<string>;
+  anchors: SectionAnchors;
 }
 
 function deriveStatus(claim: ModelClaim, reasons: CheckReason[]): ClaimStatus {
@@ -365,6 +198,12 @@ function evaluateClaim(claim: ModelClaim, top: boolean, routine: boolean, ctx: C
   if (hasStrayDigit(claim.text.replace(PLACEHOLDER, " "))) {
     claimReasons.push(reason("unbound_digit", null, "the claim text has a number outside a typed figure"));
   }
+  for (const id of new Set(placeholderIds(claim.text))) {
+    const f = claim.figures.find((x) => x.id === id);
+    if (f && valueTextHasExtraDigit(f.valueText)) {
+      claimReasons.push(reason("unbound_value_text", f.id, `the shown text "${f.valueText}" carries a number besides the figure`));
+    }
+  }
   if (claim.citations.length === 0) claimReasons.push(reason("no_citation", null, "the claim cites nothing"));
 
   // Footnotes: one per citation; page breaks are the LOCATED document's (ruling 5).
@@ -385,16 +224,14 @@ function evaluateClaim(claim: ModelClaim, top: boolean, routine: boolean, ctx: C
     if (f.sourceKind === "computed") continue;
     let r: ResolvedFigure;
     if (f.sourceKind === "bogey") {
-      r = bindBogeyFigure(f, ctx.bogeys);
+      r = bindBogeyFigure(f, ctx.bogeys, ctx.anchors);
     } else if (f.citationId === null) {
-      r = { figure: f, established: false, contradicted: false, units: null, unit: f.unit, period: null, basis: f.basis, table: null,
-        reasons: [reason("no_source", f.id, "a quoted figure with no citation")] };
+      r = emptyResolved(f, [reason("no_source", f.id, "a quoted figure with no citation")]);
     } else {
       const loc = located.get(f.citationId);
       r = loc
         ? bindQuoteFigure(f, loc, ctx.docs, ctx.eventDate)
-        : { figure: f, established: false, contradicted: false, units: null, unit: f.unit, period: null, basis: f.basis, table: null,
-          reasons: [reason("dangling_citation", f.id, `citation ${f.citationId} is not a citation of this claim`)] };
+        : emptyResolved(f, [reason("dangling_citation", f.id, `citation ${f.citationId} is not a citation of this claim`)]);
     }
     byId.set(f.id, r);
   }
@@ -460,6 +297,7 @@ export function evaluateSection(input: EvaluateSectionInput): CheckedSection {
     eventDate: input.eventDate,
     bogeys: input.bogeys,
     priorIds: new Set(input.priorClaims.map((c) => c.claimId)),
+    anchors: sectionAnchors(input.docs, input.eventDate),
   };
   const claims: CheckedClaim[] = [];
   for (const b of input.output.bullets) {
