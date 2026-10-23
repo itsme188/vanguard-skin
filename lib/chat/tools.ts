@@ -6,6 +6,7 @@ import {
   getAllocationBreakdown,
   getTaxLotsForChat,
   getTransactionsForChat,
+  getReconcileGapNotesForChat,
   getClosedPerLiveDataForChat,
   getLedgerLastDateForChat,
   getLedgerEndByAccountForChat,
@@ -1109,6 +1110,12 @@ export async function executeTool(
           ledger_end_by_account: getLedgerEndByAccountForChat(db, {
             accountIds,
             symbol: input.symbol as string | undefined,
+          }),
+          ledger_gap_notes: getReconcileGapNotesForChat(db, {
+            account_name: accountName,
+            symbol: input.symbol as string | undefined,
+            start_date: input.start_date as string | undefined,
+            end_date: input.end_date as string | undefined,
           }),
           ...(input.symbol
             ? {

@@ -924,6 +924,52 @@ export function getTransactionsForChat(
 }
 
 /**
+ * Notes for engine-made RECONCILE_CLOSE rows the transactions tool hides.
+ * The engine mints one only when the broker's holdings showed the position
+ * flat while the ledger still held shares, so the ledger is missing the real
+ * closing sale. Without a note the model reads buys with no sale as a
+ * position that stayed open.
+ */
+export function getReconcileGapNotesForChat(
+  db: Database.Database,
+  filters: TransactionFilters = {}
+): string[] {
+  const conditions: string[] = ["t.type = 'RECONCILE_CLOSE'"];
+  const params: string[] = [];
+  if (filters.account_name) {
+    conditions.push("a.name = ?");
+    params.push(filters.account_name);
+  }
+  if (filters.symbol) {
+    conditions.push("s.symbol = ?");
+    params.push(filters.symbol);
+  }
+  if (filters.start_date) {
+    conditions.push("t.trade_date >= ?");
+    params.push(filters.start_date);
+  }
+  if (filters.end_date) {
+    conditions.push("t.trade_date <= ?");
+    params.push(filters.end_date);
+  }
+  const rows = db
+    .prepare(
+      `SELECT t.trade_date, t.quantity, s.symbol, a.name AS account_name
+         FROM transactions t
+         JOIN accounts a ON a.id = t.account_id
+         LEFT JOIN securities s ON s.id = t.security_id
+        WHERE ${conditions.join(" AND ")}
+        ORDER BY t.trade_date DESC, t.id DESC`
+    )
+    .all(...params) as { trade_date: string; quantity: number | null; symbol: string | null; account_name: string }[];
+  return rows.map((r) => {
+    const qty = Math.abs(r.quantity ?? 0);
+    const sym = r.symbol ?? "this security";
+    return `Ledger gap: the ledger has no closing sale for ${sym} in ${r.account_name} on or after ${r.trade_date}, but the broker's holdings showed it flat as of ${r.trade_date} with ${qty} shares still open in the ledger. Report a ledger gap and read the holdings history; do not say the position stayed open or invent a purchase to explain a later quantity.`;
+  });
+}
+
+/**
  * The newest transaction date within the account and symbol filter (type and
  * date filters deliberately NOT applied). With a symbol this is that
  * symbol's LAST TRADE, not where the ledger ends: the account's ledger can
