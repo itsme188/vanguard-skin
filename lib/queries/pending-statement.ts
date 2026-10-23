@@ -22,7 +22,8 @@ import {
  * `pendingStatementKeySet` built from it) — never a local re-derivation.
  *
  * A pair is pending when ALL of:
- *  (a) its newest holdings row of ANY source has quantity = 0 AND is
+ *  (a) its newest holdings row of ANY source has quantity <= 0 (flat or
+ *      flipped short: the long lots were sold either way) AND is
  *      live-origin (`liveOriginHoldingSql`);
  *  (b) no statement-grade zero row is the pair's newest statement-grade row
  *      (a statement-flat pair is the engine's job, never "pending");
@@ -84,8 +85,8 @@ export function getPendingStatementPairs(
           )
         WHERE tl.quantity_remaining > 0 AND tl.is_short = 0
           AND LOWER(COALESCE(s.security_type, '')) IN ('stock', 'etf')
-          -- (a) newest row of any source: a LIVE-origin zero
-          AND h.quantity = 0
+          -- (a) newest row of any source: a LIVE-origin flat or short row
+          AND h.quantity <= 0
           AND ${liveOriginHoldingSql("h")}
           -- (b) no statement-grade zero that is the newest statement-grade row
           AND NOT EXISTS (
