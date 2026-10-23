@@ -6,7 +6,10 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
-import { buildBogeySnapshot } from "@/lib/filing-summary/bogey-snapshot";
+import { bogeyRowKind, buildBogeySnapshot, ROW_KIND_RANK } from "@/lib/filing-summary/bogey-snapshot";
+import { BOGEY_SOURCE_RANK_SQL } from "@/lib/print-watch/contracts";
+import { DEEP_READ_BOGEY_LABEL } from "@/lib/earnings/bogey-claim";
+import type { EarningsBogey } from "@/lib/queries/earnings-bogeys";
 import type { BogeySnapshotFigure } from "@/lib/filing-summary/types";
 
 const X1 = "11111111-1111-4111-8111-111111111111";
@@ -197,5 +200,30 @@ describe("buildBogeySnapshot — figures and provenance", () => {
     const b = seedBogey(ev, { source: "newsletter", label: "Newer", articleId: seedArticle("2026-10-22 13:00:00"), epsConsensus: 2 });
     expect(buildBogeySnapshot(db, ev).map((f) => f.key)).toEqual([`b${a}.eps_consensus`, `b${b}.eps_consensus`]);
     expect(buildBogeySnapshot(db, 999_999)).toEqual([]);
+  });
+});
+
+describe("bogeyRowKind parity with BOGEY_SOURCE_RANK_SQL (final review minor)", () => {
+  it("the SQL CASE and the TypeScript kind put every source in the same rank; an unknown source is 'other source'", () => {
+    // An unknown source is cast in: the stored column is free text even though the type lists the known ones.
+    const rows = [
+      { source: "manual", source_label: "my note" },
+      { source: "pdf_upload", source_label: "file.pdf" },
+      { source: "newsletter", source_label: DEEP_READ_BOGEY_LABEL },
+      { source: "newsletter", source_label: "Some Newsletter" },
+      { source: "newsletter", source_label: null },
+      { source: "finnhub", source_label: "finnhub" },
+      { source: "mystery_feed", source_label: "x" },
+    ] as Array<Pick<EarningsBogey, "source" | "source_label">>;
+    const mem = new Database(":memory:");
+    for (const r of rows) {
+      const { rank } = mem
+        .prepare(`SELECT ${BOGEY_SOURCE_RANK_SQL} AS rank FROM (SELECT ? AS source, ? AS source_label)`)
+        .get(DEEP_READ_BOGEY_LABEL, r.source, r.source_label) as { rank: number };
+      expect(ROW_KIND_RANK[bogeyRowKind(r)], `${r.source}/${r.source_label}`).toBe(rank);
+    }
+    expect(rows.map((r) => bogeyRowKind(r))).toEqual([
+      "manual", "upload", "deep_read", "newsletter", "newsletter", "vendor", "other",
+    ]);
   });
 });

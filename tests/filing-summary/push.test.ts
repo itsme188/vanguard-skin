@@ -11,7 +11,7 @@ let db: Database.Database;
 let eventId: number;
 const counts = { claims: 12, checked: 9, contradicted: 1, warning: 0, unconfirmed: 2, qualitative: 0 };
 
-function setup(trigger: "auto" | "rerun", accession = "0000000001-26-000001", role: "earnings" | "companion" = "earnings") {
+function setup(trigger: "auto" | "rerun" | "manual_run", accession = "0000000001-26-000001", role: "earnings" | "companion" = "earnings") {
   const f = insertFiling(db, {
     eventId, accession, cik: "0000000001", form: role === "earnings" ? "8-K" : "PRE 14C", role, items: null,
     acceptedAt: "2026-10-22T16:12:00-04:00", discoveredAt: "2026-10-22T20:20:00.000Z",
@@ -71,6 +71,31 @@ describe("sendSummaryPushIfDue", () => {
     let n = 0;
     await sendSummaryPushIfDue(db, id, async () => { n++; return { sent: true }; });
     expect(n).toBe(0);
+  });
+  it("I4: a manual Run summary pushes like an automatic run", async () => {
+    const id = setup("manual_run");
+    const sent: { title: string }[] = [];
+    await sendSummaryPushIfDue(db, id, async (m) => { sent.push(m); return { sent: true }; });
+    expect(sent).toEqual([expect.objectContaining({ title: "META filing summary" })]);
+    expect((db.prepare("SELECT push_key FROM filing_summary_pushes").get() as { push_key: string }).push_key)
+      .toBe("fs:0000000001:0000000001-26-000001");
+  });
+  it("I4: the push key stays per filing — a manual run after an auto push of the same filing sends nothing", async () => {
+    const autoId = setup("auto");
+    let n = 0;
+    const send = async () => { n++; return { sent: true }; };
+    await sendSummaryPushIfDue(db, autoId, send);
+    // A second run (the owner's click) over the same SEC filing.
+    const filingId = (db.prepare("SELECT id FROM filing_summary_filings").get() as { id: number }).id;
+    const { runId } = createRun(db, {
+      eventId, trigger: "manual_run", choice: { family: "opus", effort: "high" }, modelId: "m", fallbackNote: null,
+      requestKey: "rk-manual", bogeySnapshotJson: "[]", filingIds: [filingId],
+    });
+    const sec = listSections(db, runId)[0];
+    db.prepare("UPDATE filing_summary_sections SET status='done', checked_json=?, incomplete=0 WHERE id=?")
+      .run(JSON.stringify({ headline: "x", claims: [], counts }), sec.id);
+    await sendSummaryPushIfDue(db, sec.id, send);
+    expect(n).toBe(1);
   });
   it("sends nothing for a failed section", async () => {
     const id = setup("auto");

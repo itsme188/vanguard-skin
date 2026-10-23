@@ -125,6 +125,25 @@ describe("panel view", () => {
     expect(v.runSummaryAvailable).toBe(false);
   });
 
+  it("final review minor: a re-run whose section is being read keeps `shown` on the older done run, with `inProgress` set", () => {
+    const { id: f1 } = insertFiling(db, filing("0000000001-26-000001"));
+    const r1 = run([f1]);
+    completeSection(r1, 1, [claim("s1.c1")]);
+    const r2 = run([f1], "rerun");
+    db.prepare(
+      `UPDATE filing_summary_sections SET status='running', claim_token='t', claimed_at=datetime('now'), attempts=1
+        WHERE run_id=?`,
+    ).run(r2);
+    const v = getPanelViews(db, [eventId], CATALOG)[eventId];
+    expect(v.shown?.runId).toBe(r1);
+    expect(v.shown?.status).toBe("done");
+    expect(v.inProgress?.runId).toBe(r2);
+    expect(v.inProgress?.status).toBe("running");
+    const full = getFullView(db, eventId, CATALOG)!;
+    expect(full.shownRunId).toBe(r1);
+    expect(full.inProgressRunId).toBe(r2);
+  });
+
   it("sets excludesAfterEt on an older run when a newer run has more filings", () => {
     const { id: f1 } = insertFiling(db, filing("0000000001-26-000001"));
     const r1 = run([f1]);

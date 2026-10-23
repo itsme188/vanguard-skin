@@ -80,6 +80,9 @@ function isExplicitRefusal(reason: string | undefined): boolean {
   return reason === "pushover_not_configured" || /^http_\d+$/.test(reason ?? "");
 }
 
+/** Run triggers whose finished sections push. */
+const PUSHING_TRIGGERS: ReadonlySet<string> = new Set(["auto", "manual_run"]);
+
 export async function sendSummaryPushIfDue(
   db: Database.Database,
   sectionId: number,
@@ -96,7 +99,11 @@ export async function sendSummaryPushIfDue(
         WHERE s.id = ?`,
     )
     .get(sectionId) as PushSectionRow | undefined;
-  if (!row || row.status !== "done" || row.trigger !== "auto" || !row.symbol) return;
+  // An automatic run and the owner's Run summary click both push (the late-arm
+  // run is the owner's only way to get a summary); a Re-run never does, since
+  // the owner asked for it and is looking (Hardening 15). The key stays per
+  // filing, so a filing pushed once is never pushed again by any trigger.
+  if (!row || row.status !== "done" || !PUSHING_TRIGGERS.has(row.trigger) || !row.symbol) return;
 
   let counts: StatusCounts | undefined;
   try {

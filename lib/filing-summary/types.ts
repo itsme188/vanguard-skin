@@ -70,7 +70,7 @@ export interface BogeySnapshotFigure {
   period: PeriodSpec; basis: Basis;
   provenance: string;          // public-safe (R15)
   asOf: string;                // YYYY-MM-DD Eastern
-  rowKind: "manual" | "upload" | "deep_read" | "newsletter" | "vendor";
+  rowKind: "manual" | "upload" | "deep_read" | "newsletter" | "vendor" | "other";
 }
 
 // ---- checks (Tasks 4, 5, 8) ----

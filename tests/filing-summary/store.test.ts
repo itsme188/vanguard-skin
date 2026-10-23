@@ -154,6 +154,44 @@ describe("createRun", () => {
     expect(getChoice(db, eventId).choice).toEqual({ family: "opus", effort: "high" });
   });
 
+  it("final review: a request_key race (the UNIQUE index refuses the second insert) answers with the existing run", () => {
+    const a = insertFiling(db, filing("0000000001-26-000001")).id;
+    const first = newRun([a], "k-race");
+    // A second writer whose key lookup ran before the first writer committed:
+    // its lookup sees nothing, so it reaches the INSERT and hits the UNIQUE index.
+    let missed = false;
+    const blind = new Proxy(db, {
+      get(target, prop) {
+        if (prop === "prepare") {
+          return (sql: string) => {
+            const stmt = target.prepare(sql);
+            if (!missed && /SELECT id FROM filing_summary_runs WHERE request_key = \?/.test(sql)) {
+              missed = true;
+              return { get: () => undefined };
+            }
+            return stmt;
+          };
+        }
+        const v = Reflect.get(target, prop, target);
+        return typeof v === "function" ? v.bind(target) : v;
+      },
+    }) as Database.Database;
+    const second = createRun(blind, {
+      eventId,
+      trigger: "auto",
+      choice: { family: "opus", effort: "high" },
+      modelId: "model-x",
+      fallbackNote: null,
+      requestKey: "k-race",
+      bogeySnapshotJson: "[]",
+      filingIds: [a],
+    });
+    expect(missed).toBe(true);
+    expect(second).toEqual({ runId: first.runId, created: false });
+    expect(listRuns(db, eventId)).toHaveLength(1);
+    expect(listSections(db, first.runId)).toHaveLength(1);
+  });
+
   it("appendSection adds the next seq once per filing", () => {
     const a = insertFiling(db, filing("A")).id;
     const b = insertFiling(db, filing("B")).id;

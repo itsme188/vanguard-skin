@@ -26,7 +26,7 @@
 import type Database from "better-sqlite3";
 import { getBogeysWithContentForEvent, type EarningsBogey } from "@/lib/queries/earnings-bogeys";
 import { parseExtraMetrics, type ExtraMetricSpec } from "@/lib/print-watch/extra-metrics";
-import { DEEP_READ_BOGEY_LABEL } from "@/lib/earnings/bogey-claim";
+import { DEEP_READ_BOGEY_LABEL, VENDOR_BOGEY_SOURCE } from "@/lib/earnings/bogey-claim";
 import { AMC_FLOOR_ET, BMO_FLOOR_ET } from "@/lib/earnings/pre-print-floor";
 import { composeReleaseInstant } from "@/lib/calendar/reaction-snapshot";
 import { deriveEarningsSlot } from "@/lib/earnings/earnings-slot";
@@ -37,16 +37,30 @@ type RowKind = BogeySnapshotFigure["rowKind"];
 
 /**
  * The row's kind, by the same rule as `BOGEY_SOURCE_RANK_SQL`
- * (lib/print-watch/contracts.ts): manual, upload, deep read (a newsletter row
- * carrying the deep read label), newsletter, and everything else is vendor.
+ * (lib/print-watch/contracts.ts): manual (rank 0), upload (1), deep read (2,
+ * a newsletter row carrying the deep read label), newsletter (3). The SQL's
+ * last rank (4) holds the vendor row (`finnhub`) AND any unknown source; an
+ * unknown source is `other` ("other source"), never labelled as Finnhub's
+ * consensus. Parity is pinned in tests/filing-summary/bogey-snapshot.test.ts.
  */
 export function bogeyRowKind(row: Pick<EarningsBogey, "source" | "source_label">): RowKind {
   if (row.source === "manual") return "manual";
   if (row.source === "pdf_upload") return "upload";
   if (row.source === "newsletter" && row.source_label === DEEP_READ_BOGEY_LABEL) return "deep_read";
   if (row.source === "newsletter") return "newsletter";
-  return "vendor";
+  if (row.source === VENDOR_BOGEY_SOURCE) return "vendor";
+  return "other";
 }
+
+/** The SQL rank (BOGEY_SOURCE_RANK_SQL) each kind falls in. */
+export const ROW_KIND_RANK: Record<RowKind, number> = {
+  manual: 0,
+  upload: 1,
+  deep_read: 2,
+  newsletter: 3,
+  vendor: 4,
+  other: 4,
+};
 
 /** Public-safe provenance (R15). A manual or upload row's own label is never shown. */
 function provenanceFor(kind: RowKind, sourceLabel: string | null): string {
@@ -54,6 +68,7 @@ function provenanceFor(kind: RowKind, sourceLabel: string | null): string {
     case "manual": return "your manual entry";
     case "upload": return "uploaded PDF";
     case "vendor": return "Finnhub consensus";
+    case "other": return "other source";
     case "deep_read": return sourceLabel ?? DEEP_READ_BOGEY_LABEL;
     case "newsletter": return sourceLabel?.trim() ? sourceLabel : "newsletter";
   }

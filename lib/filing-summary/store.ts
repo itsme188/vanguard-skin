@@ -442,6 +442,16 @@ export function listDocuments(db: Database.Database, filingId: number): Document
 
 // ---------------------------------------------------------------- runs and sections
 
+/** A UNIQUE-constraint failure on `filing_summary_runs.request_key`. */
+function isRequestKeyConflict(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  const code = (err as { code?: unknown }).code;
+  return (
+    (code === "SQLITE_CONSTRAINT_UNIQUE" || code === "SQLITE_CONSTRAINT") &&
+    /request_key/.test(err.message)
+  );
+}
+
 /**
  * One transaction: returns the existing run for a known request key, or
  * creates run `max+1` with one pending section per filing (seq 1..n in the
@@ -472,26 +482,40 @@ export function createRun(
         "SELECT COALESCE(MAX(run_no), 0) + 1 AS next FROM filing_summary_runs WHERE event_id = ?",
       )
       .get(r.eventId) as { next: number };
-    const runId = Number(
-      db
-        .prepare(
-          `INSERT INTO filing_summary_runs
-             (event_id, run_no, trigger, family, effort, model_id, fallback_note, request_key,
-              bogey_snapshot_json)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        )
-        .run(
-          r.eventId,
-          next,
-          r.trigger,
-          r.choice.family,
-          r.choice.effort,
-          r.modelId,
-          r.fallbackNote,
-          r.requestKey,
-          r.bogeySnapshotJson,
-        ).lastInsertRowid,
-    );
+    let runId: number;
+    try {
+      runId = Number(
+        db
+          .prepare(
+            `INSERT INTO filing_summary_runs
+               (event_id, run_no, trigger, family, effort, model_id, fallback_note, request_key,
+                bogey_snapshot_json)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          )
+          .run(
+            r.eventId,
+            next,
+            r.trigger,
+            r.choice.family,
+            r.choice.effort,
+            r.modelId,
+            r.fallbackNote,
+            r.requestKey,
+            r.bogeySnapshotJson,
+          ).lastInsertRowid,
+      );
+    } catch (err) {
+      // Another writer (a second process on the same database) inserted the
+      // same request key between the lookup above and this insert: the
+      // UNIQUE index refused ours, so answer as the lookup would have.
+      const raced = r.requestKey !== null && isRequestKeyConflict(err)
+        ? (db.prepare("SELECT id FROM filing_summary_runs WHERE request_key = ?").get(r.requestKey) as
+            | { id: number }
+            | undefined)
+        : undefined;
+      if (raced) return { runId: raced.id, created: false };
+      throw err;
+    }
     const insertSection = db.prepare(
       "INSERT INTO filing_summary_sections (run_id, filing_id, seq) VALUES (?, ?, ?)",
     );
