@@ -43,6 +43,8 @@ import {
   isReactionWindowElapsed,
   REACTION_RECAPTURE_HORIZON_MS,
   readReactionLegs,
+  REACTION_LEG_KEYS,
+  type ReactionLegKey,
 } from "./reaction-validity";
 
 // Macro releases (FRED/FOMC/nonfred): data is typically published within
@@ -431,25 +433,36 @@ export async function runEnrichment(
 
       // Reaction snapshot — never before the window has elapsed (the gate
       // is inside captureReactionForRow), and never over a stored
-      // measurement: a snapshot holding a measured leg stays as stored
-      // (2026-10-22: a "gen recap" pass replaced a TWS measurement with a
-      // later Yahoo capture). A stored snapshot with no measured leg (all
-      // pending: captured before its window ended) is re-captured as before.
-      // Only the explicit upgradeReactionToTws road overwrites a measurement.
+      // measurement (2026-10-22: a "gen recap" pass replaced a TWS
+      // measurement with a later Yahoo capture). A capture still FILLS a
+      // leg the stored snapshot lacks or holds only as pending (2026-10-23:
+      // a snapshot whose own-stock leg was dropped as a dead quote counted
+      // as measured and was never re-captured); mergeReactionCapture keeps
+      // every measured stored leg as stored. The capture is skipped only
+      // when every leg the row would carry is already measured. Only the
+      // explicit upgradeReactionToTws road overwrites a measurement.
       let reaction: ReactionSnapshot | null = null;
-      if (event.release_time && !holdsMeasuredReaction(event)) {
+      const storedMeasured = measuredReactionLegs(event);
+      if (
+        event.release_time &&
+        (storedMeasured == null ||
+          expectedReactionLegs(db, event).some((key) => storedMeasured[key] == null))
+      ) {
         const releaseInstant = composeReleaseInstant(
           event.event_date,
           event.release_time,
         );
         if (releaseInstant) {
-          reaction = await captureReactionForRow(
+          const captured = await captureReactionForRow(
             db,
             event,
             releaseInstant,
             opts,
             (opts.now ?? new Date()).getTime(),
           );
+          reaction = storedMeasured
+            ? mergeReactionCapture(event.reaction_snapshot, storedMeasured, captured)
+            : captured;
         }
       }
 
@@ -592,17 +605,94 @@ export async function runEnrichment(
 }
 
 /**
- * True when the row's stored reaction_snapshot already holds at least one
- * measured leg (per readReactionLegs, the one reader of that question). Such
- * a snapshot is a measurement and no later capture may replace it.
+ * The measured legs of the row's stored reaction_snapshot (per
+ * readReactionLegs, the one reader of that question), or null when it holds
+ * none (no snapshot, unreadable, or every leg pending/absent). A measured leg
+ * is a measurement and no later capture may replace it.
  */
-function holdsMeasuredReaction(
+function measuredReactionLegs(
   event: Pick<EnrichmentCandidate, "reaction_snapshot" | "enriched_at">,
-): boolean {
+): Partial<Record<ReactionLegKey, unknown>> | null {
   const read = readReactionLegs(event.reaction_snapshot, {
     rowEnrichedAt: event.enriched_at ?? null,
   });
-  return read != null && Object.keys(read.measured).length > 0;
+  return read != null && Object.keys(read.measured).length > 0 ? read.measured : null;
+}
+
+/** The sector ETF a capture for this row would ask for (no gap logging). */
+function reactionSectorEtf(
+  db: Database.Database,
+  event: Pick<EnrichmentCandidate, "event_type" | "security_id">,
+): string | null {
+  return event.event_type === "earnings"
+    ? resolveSectorForEarnings(db, event.security_id).etf
+    : resolveSectorEtf(event.event_type, null);
+}
+
+/**
+ * The legs a capture for this row would carry: SPY/QQQ/TLT always, the
+ * event's own stock on an earnings row with a symbol, and the sector ETF
+ * when one resolves. Mirrors the arguments captureReactionForRow passes.
+ */
+function expectedReactionLegs(
+  db: Database.Database,
+  event: Pick<EnrichmentCandidate, "event_type" | "symbol" | "security_id">,
+): ReactionLegKey[] {
+  const keys: ReactionLegKey[] = ["spy", "qqq", "tlt"];
+  if (event.event_type === "earnings" && event.symbol) keys.push("symbol");
+  if (reactionSectorEtf(db, event)) keys.push("sector");
+  return keys;
+}
+
+/**
+ * Fill a stored snapshot's missing or pending legs from a fresh capture,
+ * keeping every measured stored leg exactly as stored. Returns null when the
+ * fresh capture adds nothing (the caller then leaves the column untouched).
+ *
+ * Capture metadata: reaction-validity judges legs by ONE snapshot-level
+ * `captured_at`, so a per-leg stamp is impossible. The merged snapshot holds
+ * only legs that read as measured: the kept stored legs, and fresh legs that
+ * passed admitCapturedReaction (stamped at or after the window end). A stored
+ * pending leg the fresh capture cannot fill is dropped, never carried, so no
+ * stamp can promote it. The stored stamp is kept when there is one (a stored
+ * snapshot with a measured leg and a stamp is stamped past its window end,
+ * so it also covers the fresh legs); a legacy snapshot with no stamp takes
+ * the fresh capture's stamp, which turns no non-measurement into one.
+ * `source` keeps the stored value (the type holds one source per snapshot).
+ *
+ * A fresh capture measured against a different t0, window or pre-anchor is
+ * not comparable leg for leg; the stored snapshot is then left as stored.
+ */
+function mergeReactionCapture(
+  storedRaw: string | null,
+  storedMeasured: Partial<Record<ReactionLegKey, unknown>>,
+  fresh: ReactionSnapshot | null,
+): ReactionSnapshot | null {
+  if (!fresh || !storedRaw) return null;
+  const stored = JSON.parse(storedRaw) as ReactionSnapshot;
+  if (
+    Date.parse(stored.t0_utc) !== Date.parse(fresh.t0_utc) ||
+    (stored.window_min ?? DEFAULT_REACTION_WINDOW_MIN) !==
+      (fresh.window_min ?? DEFAULT_REACTION_WINDOW_MIN) ||
+    (stored.pre_anchor ?? null) !== (fresh.pre_anchor ?? null)
+  ) {
+    return null;
+  }
+
+  const merged: ReactionSnapshot = { ...stored };
+  let filled = false;
+  for (const key of REACTION_LEG_KEYS) {
+    if (storedMeasured[key] != null) continue;
+    if (fresh[key] != null) {
+      (merged as unknown as Record<string, unknown>)[key] = fresh[key];
+      filled = true;
+    } else {
+      delete merged[key];
+    }
+  }
+  if (!filled) return null;
+  merged.captured_at = stored.captured_at ?? fresh.captured_at;
+  return merged;
 }
 
 /**

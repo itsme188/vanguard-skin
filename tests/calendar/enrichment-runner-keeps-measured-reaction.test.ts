@@ -169,6 +169,100 @@ describe("single-event enrichment keeps a measured reaction", () => {
     expect(assessReactionSnapshot(stored).valid).toBe(true);
   });
 
+  it("a measured snapshot missing its own-stock leg is re-captured: the stock leg is filled, the measured legs stay as stored", async () => {
+    const stamp = new Date(release().getTime() + 125 * MIN);
+    const partial = storedTwsSnapshot(stamp);
+    delete partial.symbol; // dropped at capture as a dead quote
+    const seeded = JSON.stringify(partial);
+    expect(Object.keys(readReactionLegs(seeded)!.measured)).toContain("spy");
+    const id = insertEarnings(db, seeded);
+    mockYahooCapture.mockResolvedValue(yahooSnapshot());
+
+    const now = new Date(release().getTime() + 19 * 60 * MIN);
+    await runEnrichment(db, { eventId: id, now, pacingMs: 0 });
+
+    expect(mockYahooCapture).toHaveBeenCalledTimes(1);
+    const stored = JSON.parse(readSnapshot(db, id)!) as ReactionSnapshot;
+    expect(stored.symbol).toEqual(yahooSnapshot().symbol);
+    expect(stored.spy).toEqual(partial.spy);
+    expect(stored.qqq).toEqual(partial.qqq);
+    expect(stored.tlt).toEqual(partial.tlt);
+    expect(stored.sector).toEqual(partial.sector);
+    // The kept legs' stamp stays: it is already past the window end.
+    expect(stored.captured_at).toBe(stamp.toISOString());
+    expect(stored.source).toBe("tws");
+    const read = readReactionLegs(stored)!;
+    expect(Object.keys(read.measured).sort()).toEqual(["qqq", "sector", "spy", "symbol", "tlt"]);
+    expect(read.pending).toEqual([]);
+  });
+
+  it("a legacy snapshot (no captured_at) with SPY measured and the stock leg pending gets the stock leg filled", async () => {
+    const legacy = storedTwsSnapshot(new Date(0));
+    delete legacy.captured_at;
+    legacy.symbol = { symbol: "ZZZ", t_pre: 100, t_post: 100, delta_pct: 0 }; // identical pre/post: pending
+    const seeded = JSON.stringify(legacy);
+    const before = readReactionLegs(seeded)!;
+    expect(before.pending).toEqual(["symbol"]);
+    expect(before.measured.spy).toBeDefined();
+    const id = insertEarnings(db, seeded);
+    mockYahooCapture.mockResolvedValue(yahooSnapshot());
+
+    const now = new Date(release().getTime() + 19 * 60 * MIN);
+    await runEnrichment(db, { eventId: id, now, pacingMs: 0 });
+
+    expect(mockYahooCapture).toHaveBeenCalledTimes(1);
+    const stored = JSON.parse(readSnapshot(db, id)!) as ReactionSnapshot;
+    expect(stored.symbol).toEqual(yahooSnapshot().symbol);
+    expect(stored.spy).toEqual(legacy.spy);
+    expect(stored.sector).toEqual(legacy.sector);
+    // Every leg it carries reads as a measurement, so the merge may carry
+    // the new capture's stamp.
+    expect(stored.captured_at).toBe(now.toISOString());
+    const read = readReactionLegs(stored)!;
+    expect(read.pending).toEqual([]);
+    expect(read.measured.symbol).toEqual(yahooSnapshot().symbol);
+  });
+
+  it("a legacy snapshot's pending leg the new capture cannot fill is dropped, never promoted by the new stamp", async () => {
+    const legacy = storedTwsSnapshot(new Date(0));
+    delete legacy.captured_at;
+    delete legacy.symbol;
+    legacy.sector = { symbol: "XLK", t_pre: 200, t_post: 200, delta_pct: 0 }; // pending
+    const id = insertEarnings(db, JSON.stringify(legacy));
+    mockYahooCapture.mockResolvedValue(yahooSnapshot()); // carries no sector leg
+
+    await runEnrichment(db, {
+      eventId: id,
+      now: new Date(release().getTime() + 19 * 60 * MIN),
+      pacingMs: 0,
+    });
+
+    const stored = JSON.parse(readSnapshot(db, id)!) as ReactionSnapshot;
+    expect(stored.symbol).toEqual(yahooSnapshot().symbol);
+    expect(stored.sector).toBeUndefined();
+    expect(stored.spy).toEqual(legacy.spy);
+    expect(readReactionLegs(stored)!.pending).toEqual([]);
+  });
+
+  it("a capture that adds nothing missing leaves the stored snapshot byte-identical", async () => {
+    const partial = storedTwsSnapshot(new Date(release().getTime() + 125 * MIN));
+    delete partial.symbol;
+    const seeded = JSON.stringify(partial);
+    const id = insertEarnings(db, seeded);
+    const noStock = yahooSnapshot();
+    delete noStock.symbol;
+    mockYahooCapture.mockResolvedValue(noStock);
+
+    await runEnrichment(db, {
+      eventId: id,
+      now: new Date(release().getTime() + 19 * 60 * MIN),
+      pacingMs: 0,
+    });
+
+    expect(mockYahooCapture).toHaveBeenCalledTimes(1);
+    expect(readSnapshot(db, id)).toBe(seeded);
+  });
+
   it("the explicit upgrade-to-TWS road still overwrites a stored measurement", async () => {
     const seeded = storedTwsSnapshot(new Date(release().getTime() + 125 * MIN));
     const id = insertEarnings(db, JSON.stringify({ ...seeded, source: "yahoo" }));
