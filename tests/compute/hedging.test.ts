@@ -116,7 +116,7 @@ describe("classifyBook — Tier 1 pairs", () => {
       inst({ securityId: 2, symbol: "ZZF   260116P00050000", isOption: true, optionType: "PUT", quantity: -10, exposure: 15000, marketValue: -4000, thetaPerDay: 900 }),
     ])]));
     expect(r.proxyCandidates.find((c) => c.underlying === "ZZF")).toBeUndefined();
-    expect(r.pairs.find((p) => p.underlying === "ZZF")).toBeUndefined();
+    expect(r.pairs.some((p) => p.underlying === "ZZF" && p.offsetCredited > 0)).toBe(false);
   });
 
   it("a long call does not reduce a short ETF stack's crash protection", () => {
@@ -215,6 +215,22 @@ describe("classifyBook — Tier 1 pairs", () => {
       inst({ securityId: 3, symbol: "ZZG   260116C00260000", isOption: true, optionType: "CALL", quantity: -2, exposure: -4000, marketValue: -700 }),
     ])]));
     expect(r.proxyCandidates.find((c) => c.underlying === "ZZG")).toBeUndefined();
+    // Open-ended risk in a rally: it is a bearish bet, not a vanished leg.
+    const bet = r.standaloneBets.find((b) => b.underlying === "ZZG")!;
+    expect(bet.kind).toBe("etf_bearish_options");
+    expect(bet.exposure).toBe(-4000);
+  });
+
+  it("an ETF written call beside a long put with no core is its own bearish bet", () => {
+    const writtenCall = inst({ securityId: 3, symbol: "ZZG   260116C00260000", isOption: true, optionType: "CALL", quantity: -1, exposure: -2000, marketValue: -400 });
+    const r = classifyBook(new Map([group("ZZG", true, [
+      inst({ securityId: 2, symbol: "ZZG   260116P00200000", isOption: true, optionType: "PUT", quantity: 2, exposure: -3000, marketValue: 900 }),
+      writtenCall,
+    ])]));
+    expect(r.proxyCandidates.find((c) => c.underlying === "ZZG")!.protectiveNotional).toBe(3000);
+    const bet = r.standaloneBets.find((b) => b.underlying === "ZZG")!;
+    expect(bet.kind).toBe("etf_bearish_options");
+    expect(bet.instruments).toEqual([writtenCall]);
   });
 
   it("an ETF written put with no core is subtracted from the long puts' protection", () => {
@@ -226,6 +242,9 @@ describe("classifyBook — Tier 1 pairs", () => {
     const c = r.proxyCandidates.find((c) => c.underlying === "ZZG")!;
     expect(c.protectiveNotional).toBe(4000);
     expect(proxyHedgeInstruments(c)).not.toContain(writtenPut);
+    // The written put is netted into the protection row, never a second row.
+    expect(c.instruments).toContain(writtenPut);
+    expect(r.pairs.find((p) => p.underlying === "ZZG")).toBeUndefined();
   });
 
   it("an ETF written put larger than the long puts with no core leaves no protection", () => {
@@ -234,6 +253,23 @@ describe("classifyBook — Tier 1 pairs", () => {
       inst({ securityId: 3, symbol: "ZZG   260116P00150000", isOption: true, optionType: "PUT", quantity: -3, exposure: 6000, marketValue: -900 }),
     ])]));
     expect(r.proxyCandidates.find((c) => c.underlying === "ZZG")).toBeUndefined();
+    // The net-long remainder shows in the speculative row.
+    const pair = r.pairs.find((p) => p.underlying === "ZZG")!;
+    expect(pair.classification).toBe("speculative");
+    expect(pair.netExposure).toBe(4000);
+    expect(pair.instruments).toHaveLength(2);
+  });
+
+  it("a short ETF stack outweighed by written puts shows its net-long remainder in a row", () => {
+    const r = classifyBook(new Map([group("ZZF", true, [
+      inst({ securityId: 1, symbol: "ZZF", quantity: -100, exposure: -10000, marketValue: -10000 }),
+      inst({ securityId: 2, symbol: "ZZF   260116P00050000", isOption: true, optionType: "PUT", quantity: -10, exposure: 15000, marketValue: -4000 }),
+    ])]));
+    expect(r.proxyCandidates.find((c) => c.underlying === "ZZF")).toBeUndefined();
+    const pair = r.pairs.find((p) => p.underlying === "ZZF")!;
+    expect(pair.classification).toBe("speculative");
+    expect(pair.netExposure).toBe(5000);
+    expect(pair.offsetCredited).toBe(0);
   });
 
   it("routes ETF puts with no core to proxy candidates", () => {
@@ -282,6 +318,80 @@ function dailySeries(start: string, closes: number[]): Array<{ date: string; clo
     d.setUTCDate(d.getUTCDate() + 1);
   }
   return out;
+}
+
+describe("classifyBook — every instrument lands in exactly one row", () => {
+  // Invariant: for every underlying, the rows classifyBook emits (pairs,
+  // standalone bets, proxy candidates) list instruments whose exposure sums
+  // to the group's net exposure, no instrument is listed twice, and every
+  // standalone bet is net negative.
+  // tier1_spill is left out on purpose: it is the excess of a long-core
+  // pair's own puts (the same instruments), scored as a fraction of them.
+  function rng(seed: number) {
+    let x = seed;
+    return () => {
+      x = (x * 1103515245 + 12345) % 2147483648;
+      return x / 2147483648;
+    };
+  }
+
+  it("a single-name short outweighed by a written put is net long, not a naked short", () => {
+    const r = classifyBook(new Map([group("ZZC", false, [
+      inst({ securityId: 1, symbol: "ZZC", quantity: -100, exposure: -10000, marketValue: -10000 }),
+      inst({ securityId: 2, symbol: "ZZC   260116P00200000", isOption: true, optionType: "PUT", quantity: -10, exposure: 15000, marketValue: -3000 }),
+    ])]));
+    expect(r.standaloneBets).toHaveLength(0);
+    const pair = r.pairs.find((p) => p.underlying === "ZZC")!;
+    expect(pair.classification).toBe("speculative");
+    expect(pair.netExposure).toBe(5000);
+    expect(pair.offsetCredited).toBe(0);
+  });
+
+  it("holds over many generated books", () => {
+    const rand = rng(7);
+    const pick = <T,>(xs: T[]) => xs[Math.floor(rand() * xs.length)];
+    for (let n = 0; n < 2000; n++) {
+      const isEtf = rand() < 0.6;
+      const instruments: DefenseInstrument[] = [];
+      let id = 1;
+      const shares = pick([0, 0, 1]);
+      if (shares) {
+        const e = pick([-1, 1]) * pick([2000, 5000, 10000, 20000]);
+        instruments.push(inst({ securityId: id++, symbol: "ZZX", quantity: Math.sign(e) * 100, exposure: e, marketValue: e }));
+      }
+      const legs = pick([0, 1, 2, 3, 4]);
+      for (let k = 0; k < legs; k++) {
+        const type = pick(["PUT", "CALL"] as const);
+        const long = rand() < 0.5;
+        const size = pick([500, 1000, 2500, 4000, 6000, 15000]);
+        // Long put / written call: negative exposure; long call / written put: positive.
+        const sign = (type === "PUT") === long ? -1 : 1;
+        const deep = type === "CALL" && long && rand() < 0.2;
+        instruments.push(inst({
+          securityId: id++, symbol: `ZZX OPT${k}`, isOption: true, optionType: type,
+          quantity: long ? 1 : -1, exposure: sign * size, marketValue: sign * size,
+          ...(deep ? { delta: 0.9, ivSource: "computed" as const } : {}),
+        }));
+      }
+      if (instruments.length === 0) continue;
+      const r = classifyBook(new Map([group("ZZX", isEtf, instruments)]));
+      const rows = [
+        ...r.pairs,
+        ...r.standaloneBets,
+        ...r.proxyCandidates.filter((c) => c.source !== "tier1_spill"),
+      ].filter((row) => row.underlying === "ZZX");
+      const listed = rows.flatMap((row) => row.instruments);
+      const label = JSON.stringify({ isEtf, legs: instruments.map((i) => [i.optionType, i.quantity, i.exposure]) });
+      expect(new Set(listed.map((i) => i.securityId)).size, label).toBe(listed.length);
+      expect(sum(listed.map((i) => i.exposure)), label).toBeCloseTo(sum(instruments.map((i) => i.exposure)), 6);
+      // A standalone bet is a bearish row: its exposure is always negative.
+      for (const bet of r.standaloneBets) expect(bet.exposure, label).toBeLessThan(0);
+    }
+  });
+});
+
+function sum(xs: number[]): number {
+  return xs.reduce((a, b) => a + b, 0);
 }
 
 describe("computeGapGuardedBeta", () => {

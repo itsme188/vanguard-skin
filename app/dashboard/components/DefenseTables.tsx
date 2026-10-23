@@ -271,6 +271,7 @@ const BET_KIND_LABEL: Record<StandaloneBet["kind"], string> = {
   single_name_put: "bearish bet",
   single_name_short_call: "short call",
   single_name_bearish_options: "bearish options",
+  etf_bearish_options: "bearish ETF options",
   naked_short: "naked short",
 };
 

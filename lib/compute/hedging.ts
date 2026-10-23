@@ -202,16 +202,22 @@ export interface ProxyCandidate {
  *   - `single_name_put`: every bearish leg is a put;
  *   - `single_name_short_call`: every bearish leg is a short call;
  *   - `single_name_bearish_options`: both (a long put with a short call).
+ * `etf_bearish_options` is an ETF's options (or a short ETF stack outweighed
+ * by written puts) that net bearish without being protection: a written ETF
+ * call is open-ended risk in a rally, not a hedge.
  * `naked_short` is short shares with nothing against them.
  */
 export type StandaloneBetKind =
   | "single_name_put"
   | "single_name_short_call"
   | "single_name_bearish_options"
+  | "etf_bearish_options"
   | "naked_short";
 
 /** The option kind for a set of bearish (negative-exposure) option legs. */
-function bearishOptionKind(bearishLegs: DefenseInstrument[]): Exclude<StandaloneBetKind, "naked_short"> {
+function bearishOptionKind(
+  bearishLegs: DefenseInstrument[],
+): Exclude<StandaloneBetKind, "naked_short" | "etf_bearish_options"> {
   const calls = bearishLegs.filter((o) => (o.optionType ?? "").toUpperCase() === "CALL").length;
   // No bearish leg at all, or a leg of unknown type, keeps the kind it had.
   if (calls === 0) return "single_name_put";
@@ -269,6 +275,43 @@ export function classifyBook(groups: Map<string, UnderlyingGroup>): ClassifyResu
       ...(notes.length > 0 ? { notes } : {}),
     };
 
+    // Legs left over once protection is taken out get ONE row, so every
+    // instrument lands in exactly one row: net bearish = a standalone bet of
+    // `bearishKind`; otherwise a speculative row (the book's net-long row).
+    const pushRemainderRow = (
+      legs: DefenseInstrument[],
+      coreExposure: number,
+      bearishKind: StandaloneBetKind,
+    ) => {
+      if (legs.length === 0) return;
+      const net = sum(legs.map((o) => o.exposure));
+      if (net < 0) {
+        standaloneBets.push({
+          underlying: g.underlying,
+          exposure: net,
+          kind: bearishKind,
+          instruments: legs,
+          ...(notes.length > 0 ? { notes } : {}),
+        });
+        return;
+      }
+      const bullishLegs = legs.filter((o) => o.isOption && o.exposure > 0);
+      pairs.push({
+        underlying: g.underlying,
+        classification: "speculative",
+        coreExposure,
+        offsetExposure: 0,
+        offsetCredited: 0,
+        amplifierExposure: sum(bullishLegs.map((o) => o.exposure)),
+        hasAmplifiers: bullishLegs.length > 0,
+        netExposure: net,
+        coveragePct: null,
+        sector,
+        instruments: legs,
+        ...extras,
+      });
+    };
+
     if (core > 0) {
       // TODO (owner ruling needed): a written call against a long core is credited as a hedge the same way
       const opposing = options.filter((o) => o.exposure < 0);
@@ -317,8 +360,9 @@ export function classifyBook(groups: Map<string, UnderlyingGroup>): ClassifyResu
         // short core and every LONG put gain; a WRITTEN put loses as prices
         // fall, so its delta comes off. Calls are neither credited nor
         // subtracted: a long call expires worthless in a crash and a written
-        // call only keeps its premium. Floored at 0 (a written put larger
-        // than the stack leaves no protection).
+        // call only keeps its premium. Floored at 0: a written put larger
+        // than the stack leaves no protection, and the group then shows as
+        // its net row instead of vanishing.
         const longPuts = options.filter(isLongPutLeg);
         const writtenPuts = options.filter(isWrittenPutLeg);
         const notional = Math.max(
@@ -334,6 +378,8 @@ export function classifyBook(groups: Map<string, UnderlyingGroup>): ClassifyResu
             source: "etf_negative_stack",
             instruments: g.instruments,
           });
+        } else {
+          pushRemainderRow(g.instruments, core, "etf_bearish_options");
         }
         continue;
       }
@@ -353,13 +399,17 @@ export function classifyBook(groups: Map<string, UnderlyingGroup>): ClassifyResu
           sector,
           instruments: g.instruments,
         });
-      } else {
+      } else if (netExposure < 0) {
         standaloneBets.push({
           underlying: g.underlying,
           exposure: netExposure,
           kind: "naked_short",
           instruments: g.instruments,
         });
+      } else {
+        // Written puts outweigh the short: the group is net long, so it is
+        // not a naked short. It shows as the book's net-long row.
+        pushRemainderRow(g.instruments, core, "naked_short");
       }
       continue;
     }
@@ -371,40 +421,28 @@ export function classifyBook(groups: Map<string, UnderlyingGroup>): ClassifyResu
     if (g.underlyingIsEtf) {
       // An ETF's options with no core, judged in a crash like a short ETF
       // stack: long puts are portfolio protection, less the delta of any
-      // written puts (they lose as prices fall), floored at 0. A written
-      // call is never protection (it only keeps its premium). Bullish legs
-      // stay their own speculative row. The protection is not a "Most
-      // exposed" row, so this already renders one row per underlying.
-      const longPuts = options.filter(isLongPutLeg);
-      const writtenPuts = options.filter(isWrittenPutLeg);
-      const putProtection = Math.max(
-        0,
-        Math.abs(sum(longPuts.map((o) => o.exposure))) - sum(writtenPuts.map((o) => o.exposure)),
-      );
-      if (putProtection > 0) {
+      // written puts (they lose as prices fall). The put legs are one
+      // protection row only while they net short; otherwise they join the
+      // remainder. A written call is never protection (it only keeps its
+      // premium in a crash). Every other leg nets into ONE remainder row: a
+      // bearish bet or the speculative row. The protection is not a "Most
+      // exposed" row, so this still renders one exposure row per underlying.
+      const putLegs = options.filter((o) => isLongPutLeg(o) || isWrittenPutLeg(o));
+      const putNet = sum(putLegs.map((o) => o.exposure));
+      const putsProtect = putLegs.some(isLongPutLeg) && putNet < 0;
+      if (putsProtect) {
         proxyCandidates.push({
           underlying: g.underlying,
-          protectiveNotional: putProtection,
+          protectiveNotional: -putNet,
           source: "no_core_etf",
-          instruments: longPuts,
+          instruments: putLegs,
         });
       }
-      if (bullish.length > 0) {
-        pairs.push({
-          underlying: g.underlying,
-          classification: "speculative",
-          coreExposure: 0,
-          offsetExposure: 0,
-          offsetCredited: 0,
-          amplifierExposure: sum(bullish.map((o) => o.exposure)),
-          hasAmplifiers: true,
-          netExposure: sum(bullish.map((o) => o.exposure)),
-          coveragePct: null,
-          sector,
-          instruments: bullish,
-          ...extras,
-        });
-      }
+      pushRemainderRow(
+        options.filter((o) => o.exposure !== 0 && !(putsProtect && putLegs.includes(o))),
+        0,
+        "etf_bearish_options",
+      );
       continue;
     }
 
