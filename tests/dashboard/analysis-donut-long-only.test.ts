@@ -179,3 +179,45 @@ describe("donut splits long and short inside a bucket", () => {
     expect(src).toContain("The Breakdown table nets longs and shorts");
   });
 });
+
+// Reviewer probe on PR #123: the roll-up into "Other" must rank by LONG value,
+// not by the query's net order, or a hedged bucket with the largest gross long
+// is folded away and loses its colour and drill-down. Synthetic figures.
+describe("donut roll-up ranks by long value", () => {
+  const split = (name: string, long: number, short: number): AllocationEntry => ({
+    group_name: name,
+    total_market_value: long + short,
+    percentage: 0,
+    net_exposure: long + short,
+    exposure_pct: 0,
+    position_count: 1,
+    long_value: long,
+    short_value: short,
+  });
+
+  it("a hedged bucket with the biggest long keeps its own slice and colour", () => {
+    // Net-descending input (the query's order): the hedge nets to 50, so last.
+    const rows: AllocationEntry[] = [];
+    for (let i = 0; i < 8; i++) rows.push(split(`Plain ${i}`, 800 - i * 10, 0));
+    rows.push(split("Hedged", 9000, -8950));
+    const book = splitAllocationForDonut(rows);
+    expect(book.longRows[0].group_name).toBe("Hedged");
+    const slices = donutChartData(book);
+    expect(slices).toHaveLength(8);
+    expect(slices[0].group_name).toBe("Hedged");
+    expect(slices[7].group_name).toBe("Other (2)");
+    const colors = donutSliceColorByGroup(book);
+    expect(colors.get("Hedged")).not.toBe(colors.get("Plain 7"));
+    expect(colors.get("Plain 7")).toBe(colors.get("Plain 6"));
+    expect(slices.reduce((s, r) => s + r.total_market_value, 0)).toBe(book.longTotal);
+  });
+
+  it("the empty state names the missing long positions, not net-short rows", () => {
+    const src = fs.readFileSync(
+      path.join(process.cwd(), "app/dashboard/components/AnalysisView.tsx"),
+      "utf8",
+    );
+    expect(src).toContain("No long exposure to chart: this scope has no long positions.");
+    expect(src).not.toContain("is net short.");
+  });
+});

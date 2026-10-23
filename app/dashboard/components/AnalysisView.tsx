@@ -140,7 +140,10 @@ export function splitAllocationForDonut(allocation: AllocationEntry[]): DonutBoo
   const shortOf = (r: AllocationEntry) => r.short_value ?? Math.min(r.total_market_value, 0);
   const longRows = allocation
     .filter((r) => longOf(r) > 0)
-    .map((r) => ({ ...r, total_market_value: longOf(r) }));
+    .map((r) => ({ ...r, total_market_value: longOf(r) }))
+    // Rank by LONG value: the query's order is by net, and the roll-up into
+    // "Other" would otherwise fold a hedged bucket with a large gross long.
+    .sort((a, b) => b.total_market_value - a.total_market_value);
   const shortRows = allocation.filter((r) => shortOf(r) < 0);
   return {
     longRows,
@@ -491,7 +494,7 @@ export function AnalysisView({
             </ResponsiveContainer>
           ) : donutBook.hasShorts ? (
             <div className="h-[360px] flex items-center justify-center text-ink-faint text-sm">
-              No long exposure to chart: every row in this breakdown is net short.
+              No long exposure to chart: this scope has no long positions.
             </div>
           ) : (
             <div className="h-[360px] flex items-center justify-center text-ink-faint text-sm">
