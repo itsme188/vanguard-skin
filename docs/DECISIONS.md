@@ -1410,4 +1410,35 @@ Built on branch `filing-summary` (spec `docs/superpowers/specs/2026-10-21-armed-
 - Output budget after the first live replay truncated at 32k tokens: 64k output cap, 10-minute call timeout, prompt bounds (12 bullets, 2 claims per bullet, 4 figures per claim, quotes of 30 words), schema version 2, usage kept on truncated and refused calls. Cost: worst case about $1.30 of output for one Opus high section.
 - Real cost is about $0.77 for an Opus high 8-K section and $1.10 for a long PRE 14C, not the spec's $0.32. The owner is told $1 to $2 per print. Cost: the original budget estimate was low by two to three times.
 
+**Build-time rulings after the docs commit (browser pass, UI fix wave, Task 8b).**
+
+- Routine skips (graphics, XBRL parts, XML, JSON, ZIP, images) are listed in the coverage but do not mark a section incomplete; only a failed fetch, an oversized document, a missing stored copy or the input cap do. Deviates from Hardening 6's letter, because every 8-K would read incomplete. Cost: the owner is not alerted that an image exhibit went unread.
+- Cost copy states the measured Opus high figure (about $0.80 per 8-K section, more for long filings) and price ratios (Sonnet half of Opus, Fable 2.5 times). Cost: none.
+- Paid confirmations (Run summary, Retry, Re-run) focus Cancel, so Enter never spends. Cost: one extra click.
+- A past armed print with no filing-summary state reads "No filing summary for this print" and its select is disabled (narrowed in the final review to prints dated before yesterday). Cost: none.
+- Period labels (Q3, Q4 2026, 3Q26, FY26, H1) are allowed in claim text like a year. Cost: none; a label carries no magnitude.
+- Basis is checked on every quote figure: a non-reported basis needs evidence, a reported figure fails on contrary evidence; a computed figure's basis is confirmed only when every input's is and they are equal. Cost: some lone figures read "basis unconfirmed".
+- The prompt asks for the noun phrase naming the figure in the filing as its label (prompt version 4). Cost: none.
+- A negative value for a metric named as a loss is refused (`loss_sign_double`); "income (loss)" lines are not loss metrics and keep the minus sign (one loss predicate). Cost: none.
+- Definitional non-GAAP measures (free cash flow, "adjusted …", "non-GAAP …") are their own basis evidence. Cost: none.
+- A colon-ended lead-in with basis words denies "reported" to the following blocks until a heading or a second plain paragraph, and confirms a non-reported basis only for the contiguous run of genuine list items right after it (bullet glyphs with or without a space, "- ", letter, roman or number markers, HTML list items tracked with a stack); a mixed GAAP/non-GAAP lead-in decides nothing. Cost: a list laid out as table cells gets no confirmation (a safe miss); Meta's reported $3.83 in a governed bullet reads "basis unconfirmed".
+- Deferred, safe misses: a lead-in supplying the period as well as the basis; exempting the figure before "would have" from the lead-in's denial. Cost: those figures stay unconfirmed.
+- `lib/ai/model-tiers.ts` keeps its comparator private (it must stay byte-identical to the Worker copy); `lib/ai/model-families.ts` has its own `compareFamilyVersions`. Cost: two copies of six lines.
+
+**Final whole-branch review rulings (2026-10-22, all reviewer findings accepted).**
+
+- C1: a late arm (`manual_only`, armed at or after 20:00 or for a past print) gets ONE discovery pass that stores the event date's filings like a catch-up and creates no run; completion is recorded in `catchup_done` so it never repeats; the tick visits such events whatever their date (at most five a tick); a print armed before its date and never polled is not backfilled. Cost if wrong: one extra SEC look per late arm.
+- C1: the panel copy stays "Armed after 8 pm — nothing runs on its own", with Run summary once an accepted earnings filing is stored. Cost: none.
+- `pastWithoutSummary` is "dated before yesterday (Eastern)", because the tick still polls yesterday's print. Cost: none.
+- I1: a heartbeat that throws inside its timer is ignored (the claim goes stale; the compare-and-set finalize refuses safely). Cost: a takeover after five silent minutes.
+- I2: polling and section running have separate latches (a poll latch and a per-event in-flight set); DB claims remain the only money guard. Cost: two model calls for two different events may run at once.
+- I3: a missing stored copy never rejects or resets; the event's detail says "stored copy … missing — not re-checked". Revalidation covers events dated within the last 14 days (the simpler option: a correction moves filings onto the event's current, recent date). Cost if wrong: a correction that moves filings onto a date more than 14 days old is not re-checked.
+- I4: a manual Run summary pushes like an automatic run; a re-run never does; the key stays per SEC filing. Cost: none.
+- I5: a runner that fails to load is logged with `console.error` and every armed event of today and yesterday shows "summary runner failed to load — report this" until a tick loads it. Cost: the stored detail is overwritten while the fault lasts.
+- Any armed event left `cancelled` is re-armed whatever its date (a later re-arm is a late arm; the discovery pass is owed only when nothing is stored). Cost: none.
+- `sec_unreachable` on a print outside the tick's window reads "SEC was not reachable; nothing more will run on its own" and the panel stops polling. Cost: none.
+- An accepted earnings filing whose automatic start found no model is started on a later tick under the same key (`ensureAutoRun`: `found`, or `past_cutoff` on its own day, and no run). Cost: none; the key makes a repeat a no-op.
+- A `request_key` UNIQUE race at insert answers with the existing run. Cost: none.
+- A bogey row from an unknown source is labelled "other source", never "Finnhub consensus"; a parity test pins the TypeScript kinds to `BOGEY_SOURCE_RANK_SQL`. Cost: none.
+
 **Not built or deferred.** See the TODO entry "Filing summary follow-ups (2026-10-22)": the 20:00 cutoff question, the Settings redesign, the tick starting with the Today hub, and the deferred minors.
