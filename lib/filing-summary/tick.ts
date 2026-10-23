@@ -37,12 +37,17 @@ import { addDays, parseDbTimestamp, todayET } from "@/lib/calendar/date-utils";
 import { getArmedWorksheetEvents } from "@/lib/queries/earnings-worksheet-flags";
 import { resolveCik } from "@/lib/print-watch/edgar-adapter";
 import { acquisitionScheduler } from "@/lib/print-watch/scheduler";
-import { RUNNER_LOAD_FAILED_DETAIL } from "./labels";
+import {
+  DISCOVERY_GAVE_UP_DETAIL,
+  RUNNER_FAULT_SETTING_KEY,
+  STALE_WAITING_DETAIL,
+} from "./labels";
 import {
   eventsWithLiveFilings,
   issuerNameForEvent,
   MANUAL_DISCOVERY_PENDING_DETAIL,
   MANUAL_ONLY_DETAIL,
+  NOT_POLLED_PENDING_DETAIL,
   pollEvent,
   pollPhase,
   revalidateStoredFilings,
@@ -62,6 +67,9 @@ export const FILING_SUMMARY_TICK_FETCH_DEADLINE_MS = 4 * 60_000;
 export const DISARMED_DETAIL = "disarmed — nothing new starts";
 /** Late-arm discovery passes started per tick (bounds SEC traffic after a backlog). */
 export const MAX_DISCOVERY_PER_TICK = 5;
+/** Failed discovery passes for one event before the tick stops trying. */
+export const MAX_DISCOVERY_ATTEMPTS = 10;
+const discoveryFailuresKey = (eventId: number): string => `filing_summary_discovery_failures:${eventId}`;
 
 export interface TickSeams extends PollSeams {
   /** Task 10: claim and run the event's next section. */
@@ -165,26 +173,85 @@ function armedEventsAnyDate(db: Database.Database): ArmedRow[] {
 }
 
 /**
- * Armed events outside today/yesterday that the poll must still visit: a
- * late arm (armed at or after 20:00 on its date, or on a later day) with no
- * state yet or reset to a never-polled `waiting` by revalidation, and a
- * `manual_only` event whose one discovery pass has not completed (C1).
+ * Armed events dated BEFORE yesterday (outside the tick's window) that the
+ * poll must still visit, oldest look first (`last_polled_at` ascending,
+ * never-looked first) so a failing event cannot starve the rest:
+ *  - a `manual_only` event whose one discovery pass has not completed (C1);
+ *  - an armed event with NO state row, or reset to a never-polled `waiting`
+ *    by revalidation: a late arm, or a print armed in time that the app never
+ *    polled (off on the print day and the day after), or one armed before
+ *    this feature existed. It is made `manual_only` FIRST (with the pending
+ *    discovery detail, as `rearm` does), so the catch-up can never take the
+ *    automatic path and start a paid run days later without a click.
  */
-function lateArmsOwedDiscovery(db: Database.Database, armed: ArmedRow[], window: Set<string>, nowMs: number): number[] {
-  const out: number[] = [];
+function lateArmsOwedDiscovery(db: Database.Database, armed: ArmedRow[], yesterday: string, nowMs: number): number[] {
+  const out: Array<{ eventId: number; last: string | null }> = [];
   for (const a of armed) {
-    if (window.has(a.event_date)) continue;
+    if (a.event_date >= yesterday) continue;
     const st = getEventState(db, a.eventId);
     if (st?.pollState === "manual_only") {
-      if (!st.catchupDone) out.push(a.eventId);
+      if (!st.catchupDone) out.push({ eventId: a.eventId, last: st.lastPolledAt });
       continue;
     }
     const neverPolled = !st || (st.pollState === "waiting" && st.lastPolledAt === null && !st.catchupDone);
     if (!neverPolled) continue;
     const armedAtMs = parseDbTimestamp(a.created_at)?.getTime() ?? nowMs;
-    if (pollPhase(a.event_date, armedAtMs) === "after_cutoff") out.push(a.eventId);
+    const late = pollPhase(a.event_date, armedAtMs) === "after_cutoff";
+    upsertEventState(db, a.eventId, {
+      pollState: "manual_only",
+      pollDetail: late ? MANUAL_DISCOVERY_PENDING_DETAIL : NOT_POLLED_PENDING_DETAIL,
+      catchupDone: false,
+    });
+    out.push({ eventId: a.eventId, last: null });
   }
-  return out;
+  out.sort((x, y) => (x.last === null ? (y.last === null ? 0 : -1) : y.last === null ? 1 : x.last.localeCompare(y.last)));
+  return out.map((x) => x.eventId);
+}
+
+/**
+ * Counts a late-arm discovery pass that did not complete; after
+ * `MAX_DISCOVERY_ATTEMPTS` the event stops being visited and says so. A
+ * completed pass clears the count.
+ */
+function recordDiscoveryOutcome(db: Database.Database, eventId: number): void {
+  const st = getEventState(db, eventId);
+  const key = discoveryFailuresKey(eventId);
+  if (!st || st.pollState !== "manual_only" || st.catchupDone) {
+    db.prepare(`DELETE FROM settings WHERE key = ?`).run(key);
+    return;
+  }
+  const row = db.prepare(`SELECT value FROM settings WHERE key = ?`).get(key) as { value: string } | undefined;
+  const failures = (Number(row?.value) || 0) + 1;
+  if (failures >= MAX_DISCOVERY_ATTEMPTS) {
+    upsertEventState(db, eventId, { catchupDone: true, pollDetail: DISCOVERY_GAVE_UP_DETAIL });
+    db.prepare(`DELETE FROM settings WHERE key = ?`).run(key);
+    console.warn(`[filing-summary] discovery for event ${eventId} failed ${failures} times; stopped`);
+    return;
+  }
+  db.prepare(
+    `INSERT INTO settings (key, value, updated_at) VALUES (?, ?, datetime('now'))
+     ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
+  ).run(key, String(failures));
+}
+
+/**
+ * An armed event still `waiting` (after at least one look) or `found` when
+ * its date has left the tick's window: no catch-up will come, so it is
+ * resolved to `past_cutoff` now, with no fetch and no run. A `found` event
+ * reads the normal "polling ended" line; a `waiting` one says the app was not
+ * running at 8 pm, never "no filing".
+ */
+function resolveStaleInWindowStates(db: Database.Database, armed: ArmedRow[], yesterday: string): void {
+  for (const a of armed) {
+    if (a.event_date >= yesterday) continue;
+    const st = getEventState(db, a.eventId);
+    if (!st || st.catchupDone) continue;
+    if (st.pollState === "found") {
+      upsertEventState(db, a.eventId, { pollState: "past_cutoff", pollDetail: "polling ended at 8 pm", catchupDone: true });
+    } else if (st.pollState === "waiting" && st.lastPolledAt !== null) {
+      upsertEventState(db, a.eventId, { pollState: "past_cutoff", pollDetail: STALE_WAITING_DETAIL, catchupDone: true });
+    }
+  }
 }
 
 // ---------------------------------------------------------------- the tick
@@ -282,9 +349,12 @@ async function pollPart(
     }
   }
 
-  const windowDates = [addDays(today, -1), today];
+  const yesterday = addDays(today, -1);
+  const windowDates = [yesterday, today];
   const inWindow = getArmedWorksheetEvents(db, windowDates).map((ev) => ev.eventId);
-  const late = lateArmsOwedDiscovery(db, armedAll, new Set(windowDates), nowMs).slice(0, MAX_DISCOVERY_PER_TICK);
+  resolveStaleInWindowStates(db, armedAll, yesterday);
+  const late = lateArmsOwedDiscovery(db, armedAll, yesterday, nowMs).slice(0, MAX_DISCOVERY_PER_TICK);
+  const lateSet = new Set(late);
   for (const eventId of [...inWindow, ...late]) {
     try {
       const res = await pollEvent(db, eventId, nowMs, seams);
@@ -292,6 +362,13 @@ async function pollPart(
     } catch (err) {
       // Ids only: never the error text, which can quote filing content.
       console.warn(`[filing-summary] poll for event ${eventId} ${isAbort(err) ? "was aborted" : "failed"}`);
+    }
+    if (lateSet.has(eventId)) {
+      try {
+        recordDiscoveryOutcome(db, eventId);
+      } catch {
+        console.warn(`[filing-summary] discovery count for event ${eventId} failed`);
+      }
     }
   }
 
@@ -365,22 +442,22 @@ function loadRunner(): Promise<RunnerModule> {
 
 /**
  * The runner module failed to load (a packaging fault: every summary would
- * silently stop). Loud in the log, and visible on the panel: every armed
- * event of today and yesterday, and every event already showing the fault,
- * carries `RUNNER_LOAD_FAILED_DETAIL` until a tick loads the runner again.
+ * silently stop). Loud in the log, and visible on the panel: the fault is
+ * recorded under its own settings key (`RUNNER_FAULT_SETTING_KEY`, value =
+ * when), never written over a stored poll detail; the view shows
+ * `RUNNER_LOAD_FAILED_DETAIL` for every print still in the tick's window
+ * until a tick loads the runner again.
  */
 export function markRunnerLoadFailed(db: Database.Database, nowMs: number): void {
-  const today = todayET(new Date(nowMs));
-  for (const ev of getArmedWorksheetEvents(db, [addDays(today, -1), today])) {
-    upsertEventState(db, ev.eventId, { pollDetail: RUNNER_LOAD_FAILED_DETAIL });
-  }
+  db.prepare(
+    `INSERT INTO settings (key, value, updated_at) VALUES (?, ?, datetime('now'))
+     ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
+  ).run(RUNNER_FAULT_SETTING_KEY, new Date(nowMs).toISOString());
 }
 
-/** Clears the fault detail once the runner loads again (the next poll rewrites the detail). */
+/** Clears the fault once the runner loads again; stored details were never touched. */
 export function clearRunnerLoadFailed(db: Database.Database): void {
-  db.prepare(
-    `UPDATE filing_summary_events SET poll_detail = NULL, updated_at = datetime('now') WHERE poll_detail = ?`,
-  ).run(RUNNER_LOAD_FAILED_DETAIL);
+  db.prepare(`DELETE FROM settings WHERE key = ?`).run(RUNNER_FAULT_SETTING_KEY);
 }
 
 /**

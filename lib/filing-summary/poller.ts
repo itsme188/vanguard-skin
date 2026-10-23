@@ -101,12 +101,19 @@ export const POLL_START_ET = "06:00:00";
 /** The companion cutoff (R11), inclusive: a filing at 20:00:00 counts. */
 export const CUTOFF_ET = "20:00:00";
 
+export const LATE_ARM_PREFIX = "armed after 8 pm";
+/**
+ * A print armed BEFORE its date that the app never polled (it was off on the
+ * print day and the day after): handled like a late arm, but said truthfully.
+ */
+export const NOT_POLLED_PREFIX = "not polled on the print day";
 export const MANUAL_ONLY_DETAIL = "armed after 8 pm — Run summary to spend";
+export const NOT_POLLED_PENDING_DETAIL = `${NOT_POLLED_PREFIX} — looking up the day's filings once`;
 /** A late arm whose one discovery pass has not completed yet. */
 export const MANUAL_DISCOVERY_PENDING_DETAIL = "armed after 8 pm — looking up the day's filings once";
 /** A late arm whose discovery pass found no earnings filing. */
-export function manualNoFilingDetail(formName: string): string {
-  return `armed after 8 pm — no earnings ${formName} filed by 8 pm`;
+export function manualNoFilingDetail(formName: string, prefix: string = LATE_ARM_PREFIX): string {
+  return `${prefix} — no earnings ${formName} filed by 8 pm`;
 }
 /** Revalidation could not read the stored copy: the verdict is left alone. */
 export const STORED_COPY_MISSING_DETAIL = "stored copy of the earnings filing is missing — not re-checked";
@@ -719,14 +726,16 @@ export async function pollEvent(
     // The late arm stays manual_only whatever was found: the runner refuses
     // manual_only, so nothing runs on its own. The detail says what is there.
     catchupDone = complete;
+    // Keeps the reason the print is manual (armed late, or never polled).
+    const prefix = current.pollDetail?.startsWith(NOT_POLLED_PREFIX) ? NOT_POLLED_PREFIX : LATE_ARM_PREFIX;
     const what =
       pollState === "ambiguous"
-        ? `armed after 8 pm — ${pollDetail ?? "earnings filing does not name this quarter"}`
+        ? `${prefix} — ${pollDetail ?? "earnings filing does not name this quarter"}`
         : ref?.identityVerdict === "accepted" || unconfirmed
-          ? MANUAL_ONLY_DETAIL
-          : manualNoFilingDetail(formName);
+          ? `${prefix} — Run summary to spend`
+          : manualNoFilingDetail(formName, prefix);
     pollState = "manual_only";
-    pollDetail = complete ? what : MANUAL_DISCOVERY_PENDING_DETAIL;
+    pollDetail = complete ? what : current.pollDetail ?? MANUAL_DISCOVERY_PENDING_DETAIL;
   } else if (catchup) {
     if (complete) {
       catchupDone = true;

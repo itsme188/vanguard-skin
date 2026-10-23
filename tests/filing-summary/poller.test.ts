@@ -27,12 +27,14 @@ import {
   eventsWithLiveFilings,
   type PollSeams,
 } from "@/lib/filing-summary/poller";
-import { RUNNER_LOAD_FAILED_DETAIL } from "@/lib/filing-summary/labels";
+import { DISCOVERY_GAVE_UP_DETAIL, RUNNER_LOAD_FAILED_DETAIL } from "@/lib/filing-summary/labels";
+import { needsPolling, pollStateText } from "@/app/dashboard/today/filing-summary-text";
 import {
   runTick,
   startFilingSummaryTick,
   enableFilingSummaryTick,
   loadRunnerOrReport,
+  MAX_DISCOVERY_ATTEMPTS,
   __resetFilingSummaryTickForTests,
   type TickSeams,
 } from "@/lib/filing-summary/tick";
@@ -536,13 +538,36 @@ describe("pollEvent lifecycle", () => {
     expect(earningsCalls).toEqual([eventId]); // the runner refuses manual_only: no run
   });
 
-  it("C1: an old print armed BEFORE its date is never visited outside the window (no backfill)", async () => {
-    arm(et("09:00"));
-    edgar.filings.push(earnings8k("0000123456-26-000101", "160500"));
-    const t = await tick(et("11:00", "2026-10-26"));
-    expect(t.polled).toEqual([]);
-    expect(edgar.calls).toEqual([]);
-    expect(getEventState(db, eventId)).toBeNull();
+  it("follow-up 1: armed Monday for a Wednesday print, app first ticks Friday → discovered as manual, no run, Run summary offered", async () => {
+    setModelCatalogSource(() => ["claude-opus-5-5"]);
+    try {
+      arm(et("10:00", "2026-10-19")); // Monday, before the print
+      edgar.filings.push(earnings8k("0000123456-26-000101", "160500"));
+      clock = et("11:00", "2026-10-23"); // Friday: the print (Wednesday) is before yesterday
+      const t = await runTick(db, clock, {
+        ...seams(),
+        onEarningsAccepted: (d, id) => runnerOnEarningsAccepted(d, id),
+        onCompanionAccepted: (d, id, filingId) => runnerOnCompanionAccepted(d, id, filingId),
+        ensureAutoRun: (d, id) => runnerEnsureAutoRun(d, id, clock),
+      });
+      expect(t.polled).toEqual([eventId]);
+      const s = getEventState(db, eventId)!;
+      expect(s.pollState).toBe("manual_only");
+      expect(s.catchupDone).toBe(true);
+      expect(s.pollDetail).toBe("not polled on the print day — Run summary to spend");
+      expect(listFilings(db, eventId).map((f) => f.identityVerdict)).toEqual(["accepted"]);
+      expect(listRuns(db, eventId)).toEqual([]); // no paid run without a click
+      const panel = getPanelViews(db, [eventId], ["claude-opus-5-5"], new Date(clock))[eventId];
+      expect(panel.runSummaryAvailable).toBe(true);
+      expect(panel.pastWithoutSummary).toBe(false);
+      // A later tick neither looks again nor starts anything.
+      const calls = edgar.calls.length;
+      await runTick(db, et("11:01", "2026-10-23"), { ...seams(), onEarningsAccepted: (d, id) => runnerOnEarningsAccepted(d, id) });
+      expect(edgar.calls.length).toBe(calls);
+      expect(listRuns(db, eventId)).toEqual([]);
+    } finally {
+      setModelCatalogSource(null);
+    }
   });
 
   it("armed at 15:00 but first seen at 21:30 (app asleep) still gets its catch-up", async () => {
@@ -1085,7 +1110,6 @@ describe("final review fixes", () => {
       });
       expect(failed).toBeNull();
       expect(errors).toHaveBeenCalled();
-      expect(getEventState(db, eventId)!.pollDetail).toBe(RUNNER_LOAD_FAILED_DETAIL);
       const panel = getPanelViews(db, [eventId], [], new Date(et("15:01")))[eventId];
       expect(panel.pollDetail).toBe(RUNNER_LOAD_FAILED_DETAIL);
     } finally {
@@ -1094,7 +1118,94 @@ describe("final review fixes", () => {
     const fake = { onEarningsAccepted() {}, onCompanionAccepted() {}, ensureAutoRun() {}, runNextSection: async () => "idle" };
     const ok = await loadRunnerOrReport(db, et("15:02"), async () => fake);
     expect(ok).toBe(fake);
-    expect(getEventState(db, eventId)!.pollDetail).toBeNull();
+    expect(getPanelViews(db, [eventId], [], new Date(et("15:02")))[eventId].pollDetail).toBeNull();
+  });
+
+  it("follow-up 2: the runner fault never overwrites a stored detail; the fault shows, then the stored detail comes back", async () => {
+    arm(et("09:00"));
+    const kept: Array<[string, string]> = [
+      ["ambiguous", "the filing names Q2 2026, not this quarter"],
+      ["no_cik", "no SEC filer found for ACME"],
+      ["manual_only", "armed after 8 pm — no earnings 6-K filed by 8 pm"],
+    ];
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      for (const [state, detail] of kept) {
+        upsertEventState(db, eventId, { pollState: state as "ambiguous", pollDetail: detail, catchupDone: true });
+        await loadRunnerOrReport(db, et("15:01"), async () => {
+          throw new Error("load failed");
+        });
+        expect(getEventState(db, eventId)!.pollDetail).toBe(detail); // stored value untouched
+        expect(getPanelViews(db, [eventId], [], new Date(et("15:01")))[eventId].pollDetail).toBe(RUNNER_LOAD_FAILED_DETAIL);
+        const fake = { onEarningsAccepted() {}, onCompanionAccepted() {}, ensureAutoRun() {}, runNextSection: async () => "idle" };
+        await loadRunnerOrReport(db, et("15:02"), async () => fake);
+        expect(getPanelViews(db, [eventId], [], new Date(et("15:02")))[eventId].pollDetail).toBe(detail);
+      }
+    } finally {
+      errors.mockRestore();
+    }
+  });
+
+  it("follow-up 3: late-arm candidates rotate (oldest look first), so a failing batch cannot starve a sixth event", async () => {
+    edgar.submissionsFail = true;
+    const ids: number[] = [];
+    for (let i = 0; i < 6; i++) {
+      const id = seedEvent("2026-10-15", `fs-poll-rot-${i}`);
+      arm(et("21:00", "2026-10-15"), id);
+      ids.push(id);
+    }
+    const t1 = await tick(et("10:00", "2026-10-23"));
+    expect(t1.polled).toEqual(ids.slice(0, 5));
+    const t2 = await tick(et("10:01", "2026-10-23"));
+    expect(t2.polled[0]).toBe(ids[5]); // never looked at: first
+    expect(t2.polled).toHaveLength(5);
+  });
+
+  it("follow-up 3: after 10 failed discovery passes the event stops and says Run summary is unavailable", async () => {
+    edgar.submissionsFail = true;
+    arm(et("21:00"));
+    for (let i = 0; i < MAX_DISCOVERY_ATTEMPTS; i++) await tick(et(`10:0${i}`, "2026-10-23"));
+    const s = getEventState(db, eventId)!;
+    expect(s.pollState).toBe("manual_only");
+    expect(s.catchupDone).toBe(true);
+    expect(s.pollDetail).toBe(DISCOVERY_GAVE_UP_DETAIL);
+    expect(edgar.submissionsCalls()).toBe(MAX_DISCOVERY_ATTEMPTS);
+    await tick(et("10:30", "2026-10-23"));
+    expect(edgar.submissionsCalls()).toBe(MAX_DISCOVERY_ATTEMPTS);
+    const panel = getPanelViews(db, [eventId], [], new Date(et("10:30", "2026-10-23")))[eventId];
+    expect(pollStateText(panel)).toBe(DISCOVERY_GAVE_UP_DETAIL);
+  });
+
+  it("follow-up 4: a print left waiting when its date leaves the window resolves to past_cutoff, no fetch, no run", async () => {
+    arm(et("09:00"));
+    await tick(et("15:00")); // waiting, looked at once; then the app is off
+    const calls = edgar.calls.length;
+    await tick(et("10:00", "2026-10-23"));
+    expect(edgar.calls.length).toBe(calls);
+    const s = getEventState(db, eventId)!;
+    expect(s.pollState).toBe("past_cutoff");
+    expect(s.catchupDone).toBe(true);
+    const panel = getPanelViews(db, [eventId], [], new Date(et("10:00", "2026-10-23")))[eventId];
+    expect(pollStateText(panel)).toBe("Polling stopped before 8 pm (the app was not running) — nothing more will run on its own");
+    expect(needsPolling(panel)).toBe(false);
+  });
+
+  it("follow-up 4: a found print past the window resolves to past_cutoff with the normal line and starts no run", async () => {
+    arm(et("09:00"));
+    edgar.filings.push(earnings8k("0000123456-26-000101", "160500"));
+    await tick(et("16:06"));
+    expect(getEventState(db, eventId)!.pollState).toBe("found");
+    const calls = edgar.calls.length;
+    const asked: number[] = [];
+    await runTick(db, et("10:00", "2026-10-23"), { ...seams(), ensureAutoRun: (_d, id) => asked.push(id) });
+    expect(edgar.calls.length).toBe(calls);
+    expect(asked).toEqual([]);
+    expect(earningsCalls).toEqual([eventId]); // only the original acceptance
+    const s = getEventState(db, eventId)!;
+    expect(s.pollState).toBe("past_cutoff");
+    const panel = getPanelViews(db, [eventId], [], new Date(et("10:00", "2026-10-23")))[eventId];
+    expect(pollStateText(panel)).toBe("Polling ended at 8 pm — Run summary to start");
+    expect(needsPolling(panel)).toBe(false);
   });
 
   it("minor: the tick asks the runner to retry an automatic start for each armed event in the window", async () => {

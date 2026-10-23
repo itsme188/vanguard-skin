@@ -46,7 +46,7 @@ import {
   type RunTrigger,
   type SectionRow,
 } from "./store";
-import { choiceValue, SEC_GAVE_UP_TEXT } from "./labels";
+import { choiceValue, RUNNER_FAULT_SETTING_KEY, RUNNER_LOAD_FAILED_DETAIL, SEC_GAVE_UP_TEXT } from "./labels";
 import type {
   CheckedClaim,
   CheckedSection,
@@ -858,7 +858,7 @@ function panelFor(db: Database.Database, ev: EventRow, catalogIds: string[], tod
     pollState: state?.pollState ?? null,
     pastWithoutSummary: !state && built.length === 0 && outsideWindow(ev.eventDate, today),
     outsideTickWindow: outsideWindow(ev.eventDate, today),
-    pollDetail: shownPollDetail(state, ev.eventDate, today),
+    pollDetail: shownPollDetail(state, ev.eventDate, today, runnerFault(db)),
     shown: shown?.summary ?? null,
     inProgress: inProgress?.summary ?? null,
     runSummaryAvailable: runSummaryAvailableFrom(state?.pollState ?? null, built.length, filings),
@@ -872,15 +872,31 @@ function outsideWindow(eventDate: string, today: string): boolean {
   return eventDate < addDays(today, -1);
 }
 
+/** True while the tick could not load the runner (its own settings record). */
+function runnerFault(db: Database.Database): boolean {
+  try {
+    return !!db.prepare(`SELECT 1 FROM settings WHERE key = ?`).get(RUNNER_FAULT_SETTING_KEY);
+  } catch {
+    return false;
+  }
+}
+
 /**
- * The stored poll detail, except that "SEC unreachable — retrying" is not
- * shown for a print the tick no longer visits: nothing more will run.
+ * The stored poll detail as shown, never written back: the runner fault
+ * outranks it for a print still in the tick's window (a late arm owed its
+ * discovery pass too), and "SEC unreachable — retrying" is not shown for a
+ * print the tick no longer visits: nothing more will run.
  */
 function shownPollDetail(
-  state: { pollState: PollState; pollDetail: string | null } | null,
+  state: { pollState: PollState; pollDetail: string | null; catchupDone?: boolean } | null,
   eventDate: string,
   today: string,
+  fault = false,
 ): string | null {
+  const owedDiscovery = state?.pollState === "manual_only" && state.catchupDone === false;
+  if (fault && state?.pollState !== "cancelled" && (!outsideWindow(eventDate, today) || owedDiscovery)) {
+    return RUNNER_LOAD_FAILED_DETAIL;
+  }
   if (!state) return null;
   if (state.pollState === "sec_unreachable" && outsideWindow(eventDate, today)) return SEC_GAVE_UP_TEXT;
   return state.pollDetail;
@@ -923,7 +939,7 @@ export function getFullView(
       eventDate: ev.eventDate,
       quarterLabel: shown?.full.quarterLabel ?? null,
       pollState: state?.pollState ?? null,
-      pollDetail: shownPollDetail(state, ev.eventDate, todayET(now)),
+      pollDetail: shownPollDetail(state, ev.eventDate, todayET(now), runnerFault(db)),
     },
     choice: {
       current: choice,

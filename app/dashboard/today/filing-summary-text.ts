@@ -12,8 +12,10 @@ import {
   errorWords,
   reasonText,
   roughCostText,
+  DISCOVERY_GAVE_UP_DETAIL,
   RUNNER_LOAD_FAILED_DETAIL,
   SEC_GAVE_UP_TEXT,
+  STALE_WAITING_DETAIL,
   statusSeverity,
 } from "@/lib/filing-summary/labels";
 import type { Footnote, SummaryChoice } from "@/lib/filing-summary/types";
@@ -131,11 +133,20 @@ export function pollStateText(view: PanelView, reading: ReadingDocs | null = vie
     case "sec_unreachable":
       return view.outsideTickWindow ? SEC_GAVE_UP_TEXT : "SEC not reachable — still trying";
     case "past_cutoff":
+      // Polling stopped with the app off: never claim "no filing".
+      if (view.pollDetail === STALE_WAITING_DETAIL && hasNoAcceptedEarningsFiling(view)) {
+        return capitalise(STALE_WAITING_DETAIL);
+      }
       if (hasNoAcceptedEarningsFiling(view)) return `No earnings ${form} filed by 8 pm`;
       return view.runSummaryAvailable
         ? `Polling ended at 8 pm — Run summary to start`
         : "Polling ended at 8 pm";
     case "manual_only":
+      if (view.pollDetail === DISCOVERY_GAVE_UP_DETAIL && !view.runSummaryAvailable) return DISCOVERY_GAVE_UP_DETAIL;
+      // A print armed in time that the app never polled: said truthfully.
+      if (view.pollDetail?.startsWith("not polled on the print day")) {
+        return "Not polled on the print day — nothing runs on its own";
+      }
       return "Armed after 8 pm — nothing runs on its own";
     case "ambiguous":
       return `Filing found but it does not name this quarter: ${view.pollDetail ?? "no reason recorded"}`;
