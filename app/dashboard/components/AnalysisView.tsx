@@ -123,7 +123,7 @@ export interface DonutBook {
   longRows: AllocationEntry[];
   /** Sum of the slices: the denominator every slice is a share of. */
   longTotal: number;
-  /** Sum of the net-short buckets — zero or negative. */
+  /** The whole short book (every short position) — zero or negative. */
   shortTotal: number;
   /** Sum over EVERY bucket: what the Breakdown table adds up to. */
   netTotal: number;
@@ -132,12 +132,20 @@ export interface DonutBook {
 }
 
 export function splitAllocationForDonut(allocation: AllocationEntry[]): DonutBook {
-  const longRows = allocation.filter((r) => r.total_market_value > 0);
-  const shortRows = allocation.filter((r) => r.total_market_value < 0);
+  // Owner ruling 2026-10-12: a slice is the sum of the bucket's LONG
+  // positions (no netting inside a slice) and the caption's excluded figure
+  // is the WHOLE short book, including a short inside a mostly-long bucket.
+  // A row without the split falls back to its net (positive = long).
+  const longOf = (r: AllocationEntry) => r.long_value ?? Math.max(r.total_market_value, 0);
+  const shortOf = (r: AllocationEntry) => r.short_value ?? Math.min(r.total_market_value, 0);
+  const longRows = allocation
+    .filter((r) => longOf(r) > 0)
+    .map((r) => ({ ...r, total_market_value: longOf(r) }));
+  const shortRows = allocation.filter((r) => shortOf(r) < 0);
   return {
     longRows,
     longTotal: longRows.reduce((s, r) => s + r.total_market_value, 0),
-    shortTotal: shortRows.reduce((s, r) => s + r.total_market_value, 0),
+    shortTotal: allocation.reduce((s, r) => s + shortOf(r), 0),
     netTotal: allocation.reduce((s, r) => s + r.total_market_value, 0),
     shortCount: shortRows.length,
     hasShorts: shortRows.length > 0,
@@ -497,7 +505,8 @@ export function AnalysisView({
               <Money value={donutBook.longTotal} /> long book. Shorts excluded:{" "}
               <Money value={donutBook.shortTotal} /> (net{" "}
               <Money value={donutBook.netTotal} />). A hollow dot in the Breakdown
-              marks a row with no slice.
+              marks a row with no slice. The Breakdown table nets longs and shorts
+              within a row; the chart does not.
             </p>
           )}
         </div>

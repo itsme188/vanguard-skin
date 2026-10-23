@@ -7,6 +7,7 @@ import type {
   ParsedDonation,
 } from "./types";
 import { validateCorporateActionInput } from "@/lib/compute/corporate-actions";
+import { maskUnmappedAccountName } from "@/lib/import/vanguard-account-names";
 import { todayET } from "@/lib/calendar/date-utils";
 
 // ── Known transaction types ─────────────────────────────────────────
@@ -223,7 +224,7 @@ export function validateParsedResult(
   function unknownAccountReason(accountName: string): string | null {
     if (!knownAccountNamesSet || knownAccountNamesSet.has(accountName)) return null;
     unknownAccountNamesSeen.add(accountName);
-    return `Unknown account "${accountName}" — valid accounts: ${sortedKnownAccountNames.join(", ")}`;
+    return `Unknown account "${maskUnmappedAccountName(accountName)}" — valid accounts: ${sortedKnownAccountNames.join(", ")}`;
   }
 
   // ── Transactions ────────────────────────────────────────────────
@@ -654,7 +655,7 @@ export function validateParsedResult(
   // a typo'd account name is why a preview came back with skipped rows.
   if (unknownAccountNamesSeen.size > 0) {
     warnings.unshift(
-      `Unknown account(s): ${[...unknownAccountNamesSeen].sort().join(", ")} — valid accounts: ${sortedKnownAccountNames.join(", ")}`,
+      `Unknown account(s): ${[...unknownAccountNamesSeen].sort().map(maskUnmappedAccountName).join(", ")} — valid accounts: ${sortedKnownAccountNames.join(", ")}`,
     );
   }
 

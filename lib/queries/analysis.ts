@@ -47,6 +47,11 @@ export interface AllocationEntry {
    *  `percentage` so the two columns are directly comparable. */
   exposure_pct: number;
   position_count: number;
+  /** Sum of the bucket's positive-value parts (no netting). The long-only
+   *  donut draws this; `total_market_value` stays the net the table shows. */
+  long_value?: number;
+  /** Sum of the bucket's negative-value parts (zero or negative). */
+  short_value?: number;
 }
 
 export interface ConcentrationMetrics {
@@ -452,23 +457,31 @@ export function getAllocationByDimension(
   const optionExposures = getOptionExposureMap(db, accountIds);
   // position_count is DISTINCT securities per bucket: a name held in two
   // accounts is one position, exactly as the drill-down panel lists it.
-  const byGroup = new Map<string, { mv: number; exposure: number; securities: Set<number> }>();
+  const byGroup = new Map<
+    string,
+    { mv: number; exposure: number; long: number; short: number; securities: Set<number> }
+  >();
   let total = 0;
   for (const row of rows) {
     total += row.mv;
     const exposure = exposureForHolding(row, optionExposures);
     const entry =
-      byGroup.get(row.group_name) ?? { mv: 0, exposure: 0, securities: new Set<number>() };
+      byGroup.get(row.group_name) ??
+      { mv: 0, exposure: 0, long: 0, short: 0, securities: new Set<number>() };
     entry.mv += row.mv;
+    if (row.mv > 0) entry.long += row.mv;
+    else if (row.mv < 0) entry.short += row.mv;
     entry.exposure += exposure;
     entry.securities.add(row.security_id);
     byGroup.set(row.group_name, entry);
   }
 
   return [...byGroup.entries()]
-    .map(([group_name, { mv, exposure, securities }]) => ({
+    .map(([group_name, { mv, exposure, long, short, securities }]) => ({
       group_name,
       total_market_value: mv,
+      long_value: long,
+      short_value: short,
       percentage: total !== 0 ? (mv * 100) / total : 0,
       net_exposure: exposure,
       exposure_pct: total !== 0 ? (exposure * 100) / total : 0,
@@ -539,7 +552,7 @@ function getSectorAllocationWithLookThrough(
   const optionExposures = getOptionExposureMap(db, accountIds);
   const bySector = new Map<
     string,
-    { value: number; exposure: number; securities: Set<number> }
+    { value: number; exposure: number; long: number; short: number; securities: Set<number> }
   >();
   let total = 0;
 
@@ -555,8 +568,11 @@ function getSectorAllocationWithLookThrough(
     );
     for (const part of parts) {
       const entry =
-        bySector.get(part.sector) ?? { value: 0, exposure: 0, securities: new Set<number>() };
+        bySector.get(part.sector) ??
+        { value: 0, exposure: 0, long: 0, short: 0, securities: new Set<number>() };
       entry.value += part.value;
+      if (part.value > 0) entry.long += part.value;
+      else if (part.value < 0) entry.short += part.value;
       entry.exposure += r.mv !== 0 ? rowExposure * (part.value / r.mv) : 0;
       entry.securities.add(r.security_id);
       bySector.set(part.sector, entry);
@@ -564,9 +580,11 @@ function getSectorAllocationWithLookThrough(
   }
 
   return [...bySector.entries()]
-    .map(([group_name, { value, exposure, securities }]) => ({
+    .map(([group_name, { value, exposure, long, short, securities }]) => ({
       group_name,
       total_market_value: value,
+      long_value: long,
+      short_value: short,
       percentage: total !== 0 ? (value * 100) / total : 0,
       net_exposure: exposure,
       exposure_pct: total !== 0 ? (exposure * 100) / total : 0,

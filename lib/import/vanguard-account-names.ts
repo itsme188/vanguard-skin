@@ -70,5 +70,15 @@ export function resolveVanguardAccountName(
 /** Preview warning for an unmapped account. Shows only the last four digits. */
 export function unmappedAccountWarning(accountNumber: string): string {
   const last4 = accountNumber.trim().slice(-4);
-  return `Account ending ${last4} is not in ${VANGUARD_ACCOUNTS_FILENAME} (next to the database); it will import as a new account named 'Vanguard ...${last4}'. Add it to that file and preview again.`;
+  return `Account ending ${last4} is not in ${VANGUARD_ACCOUNTS_FILENAME} (next to the database), so its rows are excluded until it is mapped. Add the account number to that file and preview again.`;
+}
+
+/**
+ * Display form of an account name. The fallback name for an unmapped account
+ * ("Vanguard <number>") shows only the last four digits ("Vanguard ...1234");
+ * every other name passes through unchanged.
+ */
+export function maskUnmappedAccountName(accountName: string): string {
+  const m = /^(Vanguard )(\d{5,})$/.exec(accountName.trim());
+  return m ? `${m[1]}...${m[2].slice(-4)}` : accountName;
 }

@@ -340,8 +340,11 @@ describe("every account and a non-empty list answer as before", () => {
     // Re-captured 2026-10-14 when every scenario result gained the
     // rateHedgesUnmodelled disclosure: with that one key removed the output
     // still hashed to the 2026-10-09 digest (9b91055a...).
+    // Re-captured 2026-10-23 when every allocation row gained long_value and
+    // short_value (the long-only donut split): with those two keys removed
+    // the output still hashed to the 2026-10-14 digest (fb5730b5...).
     expect(createHash("sha256").update(json).digest("hex")).toBe(
-      "fb5730b5e48cfd049baefc448d482fa9c3f11b90ece4d1053859839ac76b5a92",
+      "a5182e0bd2ea67e595553f8999443b262a8eaaebbd6d8e9eaf2c55507b3c864b",
     );
   });
 
