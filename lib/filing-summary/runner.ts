@@ -375,6 +375,26 @@ export function onEarningsAccepted(db: Database.Database, eventId: number): void
   if (!res.ok) warn(`auto run for event ${eventId} not started: ${res.reason}`);
 }
 
+/**
+ * Tick callback: retries an automatic start that never happened. An event
+ * that is `found` (or `past_cutoff` on its own date), has an accepted
+ * earnings filing and has NO run at all gets `onEarningsAccepted` again,
+ * under the same deterministic key, so a start that failed for `no_model`
+ * (no callable model at the time) starts once a model is back, and a repeat
+ * is a no-op. A manual-only or cancelled event is refused inside
+ * `onEarningsAccepted`, as before.
+ */
+export function ensureAutoRun(db: Database.Database, eventId: number, nowMs: number = Date.now()): void {
+  const state = getEventState(db, eventId)?.pollState;
+  const ev = eventRow(db, eventId);
+  if (!ev) return;
+  const onItsDay = easternClock(nowMs).date === ev.eventDate;
+  if (state !== "found" && !(state === "past_cutoff" && onItsDay)) return;
+  if (listRuns(db, eventId).length > 0) return;
+  if (!listFilings(db, eventId).some((f) => f.role === "earnings" && f.identityVerdict === "accepted")) return;
+  onEarningsAccepted(db, eventId);
+}
+
 /** Poller callback: an accepted companion joins the right run (R13). */
 export function onCompanionAccepted(db: Database.Database, eventId: number, filingId: number): void {
   appendCompanion(db, eventId, filingId);
@@ -654,11 +674,19 @@ export async function runNextSection(
     return "lost_claim";
   }
 
-  // A heartbeat that fails means another worker owns the section now: stop
-  // paying for this call at once.
+  // A heartbeat that answers false means another worker owns the section now:
+  // stop paying for this call at once. A heartbeat that THROWS (a locked or
+  // closed database) must never crash the process from inside a timer: it is
+  // ignored, and the worst case is that the claim goes stale and is taken
+  // over, which the compare-and-set finalize already refuses safely (the
+  // same rule as the first-pass read, lib/print-watch/read.ts).
   const lost = new AbortController();
   const beat = setInterval(() => {
-    if (!heartbeatSection(db, section.id, token, seams.now())) lost.abort();
+    try {
+      if (!heartbeatSection(db, section.id, token, seams.now())) lost.abort();
+    } catch {
+      /* a failed heartbeat must never kill the run */
+    }
   }, HEARTBEAT_EVERY_MS);
   (beat as { unref?: () => void }).unref?.();
   let object: unknown;

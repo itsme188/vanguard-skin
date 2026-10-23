@@ -11,6 +11,13 @@
 import { STATUS_SEVERITY, type ClaimStatus, type Relation, type StatusCounts, type SummaryChoice } from "./types";
 import type { ChoiceOption, OperandDescriptor, ViewComparisonCheck } from "./view";
 
+// ---------------------------------------------------------------- poll faults
+
+/** Stored as the event's poll detail while the runner module cannot be loaded. */
+export const RUNNER_LOAD_FAILED_DETAIL = "summary runner failed to load — report this";
+/** SEC was unreachable and the print has left the tick's window (today and yesterday). */
+export const SEC_GAVE_UP_TEXT = "SEC was not reachable; nothing more will run on its own";
+
 // ---------------------------------------------------------------- statuses
 
 const STATUS_LABELS: Record<ClaimStatus, string> = {

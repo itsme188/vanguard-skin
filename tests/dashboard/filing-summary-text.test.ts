@@ -49,6 +49,7 @@ function view(o: Partial<PanelView> = {}): PanelView {
     nowLabel: "Opus · now 5.5",
     pollState: "waiting",
     pastWithoutSummary: false,
+    outsideTickWindow: false,
     pollDetail: null,
     shown: null,
     inProgress: null,
@@ -268,6 +269,33 @@ describe("an earlier day's print with no summary state (browser pass Bug 2)", ()
   });
   it("never polls", () => {
     expect(needsPolling(view({ pollState: null, pastWithoutSummary: true }))).toBe(false);
+  });
+});
+
+describe("final review: SEC unreachable after the print left the tick window", () => {
+  it("says nothing more will run, never 'still trying', and stops polling", () => {
+    const v = view({ pollState: "sec_unreachable", outsideTickWindow: true });
+    expect(pollStateText(v)).toBe("SEC was not reachable; nothing more will run on its own");
+    expect(needsPolling(v)).toBe(false);
+  });
+  it("inside the window it is still trying", () => {
+    expect(pollStateText(view({ pollState: "sec_unreachable" }))).toBe("SEC not reachable — still trying");
+  });
+});
+
+describe("final review I5: the runner failed to load", () => {
+  it("the panel says so ahead of any other state", () => {
+    expect(pollStateText(view({ pollState: "waiting", pollDetail: "summary runner failed to load — report this" }))).toBe(
+      "Summary runner failed to load — report this",
+    );
+  });
+});
+
+describe("final review C1: a late arm", () => {
+  it("keeps the manual_only copy, and Run summary is offered once filings exist", () => {
+    expect(pollStateText(view({ pollState: "manual_only", runSummaryAvailable: true }))).toBe(
+      "Armed after 8 pm — nothing runs on its own",
+    );
   });
 });
 

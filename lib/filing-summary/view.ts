@@ -24,7 +24,7 @@
  */
 import type Database from "better-sqlite3";
 import { parseStoredTimestamp } from "@/lib/format";
-import { todayET } from "@/lib/calendar/date-utils";
+import { addDays, todayET } from "@/lib/calendar/date-utils";
 import { familyNowLabel, modelLabel } from "@/lib/ai/model-families";
 import { choiceLabel, SUMMARY_CHOICES } from "./choice";
 import { countStatuses } from "./evaluate";
@@ -46,7 +46,7 @@ import {
   type RunTrigger,
   type SectionRow,
 } from "./store";
-import { choiceValue } from "./labels";
+import { choiceValue, SEC_GAVE_UP_TEXT } from "./labels";
 import type {
   CheckedClaim,
   CheckedSection,
@@ -153,13 +153,21 @@ export interface PanelView {
   /** Null when the event has no filing-summary state yet. */
   pollState: PollState | null;
   /**
-   * True for a print dated before today (Eastern) that has no filing-summary
-   * state and no run: it was armed before this feature or never polled, and
-   * the poller (today and yesterday only) will never look at it. The panel
-   * says "No filing summary for this print", stops polling, and the model
-   * select is disabled.
+   * True for a print dated before YESTERDAY (Eastern) that has no
+   * filing-summary state and no run: it was armed before this feature or
+   * never polled, and the tick (today and yesterday, plus late arms owed
+   * their discovery pass, which create a state row) will never look at it.
+   * Yesterday's print is still polled (the catch-up after midnight). The
+   * panel says "No filing summary for this print", stops polling, and the
+   * model select is disabled.
    */
   pastWithoutSummary: boolean;
+  /**
+   * True for a print dated before yesterday (Eastern): it has left the
+   * tick's window, so a state like `sec_unreachable` will never change on
+   * its own.
+   */
+  outsideTickWindow: boolean;
   pollDetail: string | null;
   shown: RunSummary | null;
   inProgress: RunSummary | null;
@@ -848,14 +856,34 @@ function panelFor(db: Database.Database, ev: EventRow, catalogIds: string[], tod
     locked,
     nowLabel: familyNowLabel(choice.family, catalogIds),
     pollState: state?.pollState ?? null,
-    pastWithoutSummary: !state && built.length === 0 && ev.eventDate < today,
-    pollDetail: state?.pollDetail ?? null,
+    pastWithoutSummary: !state && built.length === 0 && outsideWindow(ev.eventDate, today),
+    outsideTickWindow: outsideWindow(ev.eventDate, today),
+    pollDetail: shownPollDetail(state, ev.eventDate, today),
     shown: shown?.summary ?? null,
     inProgress: inProgress?.summary ?? null,
     runSummaryAvailable: runSummaryAvailableFrom(state?.pollState ?? null, built.length, filings),
     earningsTimeUnconfirmed: earningsTimeUnconfirmedFrom(filings),
     earningsForm: earningsFormFrom(filings),
   };
+}
+
+/** Before yesterday (Eastern): the tick's window is today and yesterday. */
+function outsideWindow(eventDate: string, today: string): boolean {
+  return eventDate < addDays(today, -1);
+}
+
+/**
+ * The stored poll detail, except that "SEC unreachable — retrying" is not
+ * shown for a print the tick no longer visits: nothing more will run.
+ */
+function shownPollDetail(
+  state: { pollState: PollState; pollDetail: string | null } | null,
+  eventDate: string,
+  today: string,
+): string | null {
+  if (!state) return null;
+  if (state.pollState === "sec_unreachable" && outsideWindow(eventDate, today)) return SEC_GAVE_UP_TEXT;
+  return state.pollDetail;
 }
 
 /** Panel views for the given events; ids with no calendar row are left out. */
@@ -876,7 +904,12 @@ export function getPanelViews(
 }
 
 /** The full summary page's data; null when the event does not exist. */
-export function getFullView(db: Database.Database, eventId: number, catalogIds: string[]): FullView | null {
+export function getFullView(
+  db: Database.Database,
+  eventId: number,
+  catalogIds: string[],
+  now: Date = new Date(),
+): FullView | null {
   const ev = eventRow(db, eventId);
   if (!ev) return null;
   const { choice, isDefault, locked } = getChoice(db, eventId);
@@ -890,7 +923,7 @@ export function getFullView(db: Database.Database, eventId: number, catalogIds: 
       eventDate: ev.eventDate,
       quarterLabel: shown?.full.quarterLabel ?? null,
       pollState: state?.pollState ?? null,
-      pollDetail: state?.pollDetail ?? null,
+      pollDetail: shownPollDetail(state, ev.eventDate, todayET(now)),
     },
     choice: {
       current: choice,

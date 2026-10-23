@@ -23,16 +23,28 @@ import {
   __resetPollerCacheForTests,
   AFTER_CUTOFF_REASON,
   MANUAL_ONLY_DETAIL,
+  STORED_COPY_MISSING_DETAIL,
+  eventsWithLiveFilings,
   type PollSeams,
 } from "@/lib/filing-summary/poller";
+import { RUNNER_LOAD_FAILED_DETAIL } from "@/lib/filing-summary/labels";
 import {
   runTick,
   startFilingSummaryTick,
   enableFilingSummaryTick,
+  loadRunnerOrReport,
   __resetFilingSummaryTickForTests,
   type TickSeams,
 } from "@/lib/filing-summary/tick";
 import { mergeFilingSummaryState } from "@/lib/filing-summary/merge";
+import {
+  ensureAutoRun as runnerEnsureAutoRun,
+  onCompanionAccepted as runnerOnCompanionAccepted,
+  onEarningsAccepted as runnerOnEarningsAccepted,
+} from "@/lib/filing-summary/runner";
+import { applyFilingSummaryAction } from "@/lib/filing-summary/actions";
+import { getPanelViews } from "@/lib/filing-summary/view";
+import { setModelCatalogSource } from "@/lib/ai/catalog-source";
 import {
   claimNextSection,
   createRun,
@@ -43,6 +55,7 @@ import {
   listSections,
   beginPush,
   markPush,
+  upsertEventState,
 } from "@/lib/filing-summary/store";
 
 const CIK = "0000123456";
@@ -430,16 +443,106 @@ describe("pollEvent lifecycle", () => {
     expect(getEventState(db, eventId)!.pollState).toBe("waiting");
   });
 
-  it("armed at 20:30 → manual_only, and no fetch is made", async () => {
+  it("C1: armed at 20:30 → manual_only; ONE discovery pass stores the day's filings and never repeats", async () => {
     arm(et("20:30"));
     edgar.filings.push(earnings8k("0000123456-26-000101", "160500"));
+    edgar.filings.push(companion("0000123456-26-000102", "PRE 14C", "161200"));
     await tick(et("20:31"));
-    await tick(et("20:32"));
     const s = getEventState(db, eventId)!;
     expect(s.pollState).toBe("manual_only");
     expect(s.pollDetail).toBe(MANUAL_ONLY_DETAIL);
+    expect(s.catchupDone).toBe(true);
+    const filings = listFilings(db, eventId);
+    expect(filings.map((f) => [f.role, f.identityVerdict])).toEqual([
+      ["earnings", "accepted"],
+      ["companion", "accepted"],
+    ]);
+    expect(listDocuments(db, filings[0].id).find((d) => d.docType === "EX-99.1")?.status).toBe("fetched");
+    // Completion is recorded: the next ticks make no SEC request at all.
+    const calls = edgar.calls.length;
+    await tick(et("20:32"));
+    await tick(et("10:00", "2026-10-22"));
+    expect(edgar.calls.length).toBe(calls);
+  });
+
+  it("C1: with the real runner callbacks the discovery creates no run, Run summary is offered, and the run action starts it", async () => {
+    setModelCatalogSource(() => ["claude-opus-5-5"]);
+    try {
+      arm(et("20:30"));
+      edgar.filings.push(earnings8k("0000123456-26-000101", "160500"));
+      clock = et("20:31");
+      await runTick(db, clock, {
+        ...seams(),
+        onEarningsAccepted: (d, id) => runnerOnEarningsAccepted(d, id),
+        onCompanionAccepted: (d, id, filingId) => runnerOnCompanionAccepted(d, id, filingId),
+        ensureAutoRun: (d, id) => runnerEnsureAutoRun(d, id, clock),
+      });
+      expect(getEventState(db, eventId)!.pollState).toBe("manual_only");
+      expect(listRuns(db, eventId)).toEqual([]);
+      const panel = getPanelViews(db, [eventId], ["claude-opus-5-5"], new Date(clock))[eventId];
+      expect(panel.runSummaryAvailable).toBe(true);
+      expect(panel.pollState).toBe("manual_only");
+
+      const kicked: number[] = [];
+      const res = applyFilingSummaryAction(
+        db,
+        { eventId, action: "run", requestKey: "rk-late-arm" },
+        { kick: (_d, id) => kicked.push(id), catalogIds: () => ["claude-opus-5-5"] },
+      );
+      expect(res.ok).toBe(true);
+      const runs = listRuns(db, eventId);
+      expect(runs).toHaveLength(1);
+      expect(runs[0].trigger).toBe("manual_run");
+      expect(kicked).toEqual([eventId]);
+    } finally {
+      setModelCatalogSource(null);
+    }
+  });
+
+  it("C1: a discovery pass that could not finish (SEC down) stays manual_only and is tried again", async () => {
+    arm(et("20:30"));
+    edgar.submissionsFail = true;
+    await tick(et("20:31"));
+    let s = getEventState(db, eventId)!;
+    expect(s.pollState).toBe("manual_only");
+    expect(s.catchupDone).toBe(false);
+    edgar.submissionsFail = false;
+    edgar.filings.push(earnings8k("0000123456-26-000101", "160500"));
+    await tick(et("10:00", "2026-10-24")); // outside today/yesterday: still visited
+    s = getEventState(db, eventId)!;
+    expect(s.pollState).toBe("manual_only");
+    expect(s.catchupDone).toBe(true);
+    expect(listFilings(db, eventId)).toHaveLength(1);
+  });
+
+  it("C1: a discovery that finds no earnings filing says so and stays manual_only", async () => {
+    arm(et("20:30"));
+    await tick(et("20:31"));
+    const s = getEventState(db, eventId)!;
+    expect(s.pollState).toBe("manual_only");
+    expect(s.pollDetail).toBe("armed after 8 pm — no earnings 8-K filed by 8 pm");
+    expect(s.catchupDone).toBe(true);
+  });
+
+  it("C1: a past print armed days later goes through the same discovery path", async () => {
+    arm(et("11:00", "2026-10-26"));
+    edgar.filings.push(earnings8k("0000123456-26-000101", "160500"));
+    const t = await tick(et("11:01", "2026-10-26"));
+    expect(t.polled).toEqual([eventId]);
+    const s = getEventState(db, eventId)!;
+    expect(s.pollState).toBe("manual_only");
+    expect(s.catchupDone).toBe(true);
+    expect(listFilings(db, eventId).map((f) => f.identityVerdict)).toEqual(["accepted"]);
+    expect(earningsCalls).toEqual([eventId]); // the runner refuses manual_only: no run
+  });
+
+  it("C1: an old print armed BEFORE its date is never visited outside the window (no backfill)", async () => {
+    arm(et("09:00"));
+    edgar.filings.push(earnings8k("0000123456-26-000101", "160500"));
+    const t = await tick(et("11:00", "2026-10-26"));
+    expect(t.polled).toEqual([]);
     expect(edgar.calls).toEqual([]);
-    expect(listFilings(db, eventId)).toEqual([]);
+    expect(getEventState(db, eventId)).toBeNull();
   });
 
   it("armed at 15:00 but first seen at 21:30 (app asleep) still gets its catch-up", async () => {
@@ -450,11 +553,15 @@ describe("pollEvent lifecycle", () => {
     expect(earningsCalls).toEqual([eventId]);
   });
 
-  it("armed late on the day before's print (event dated yesterday, armed today) → manual_only", async () => {
+  it("armed late on the day before's print (event dated yesterday, armed today) → manual_only, discovered once", async () => {
     arm(et("10:00", "2026-10-22"));
+    edgar.filings.push(earnings8k("0000123456-26-000101", "160500"));
     await tick(et("10:01", "2026-10-22"));
-    expect(getEventState(db, eventId)!.pollState).toBe("manual_only");
-    expect(edgar.calls).toEqual([]);
+    const s = getEventState(db, eventId)!;
+    expect(s.pollState).toBe("manual_only");
+    expect(s.catchupDone).toBe(true);
+    expect(listFilings(db, eventId)).toHaveLength(1);
+    expect(earningsCalls).toEqual([eventId]);
   });
 
   it("gate failure (issuer not named) → filing and event ambiguous, nothing run", async () => {
@@ -852,5 +959,149 @@ describe("fix round 3: the document gate covers an untimed earnings filing (Hard
     // Reset to waiting (the same tick's poll then looks again from scratch).
     expect(s.pollState).toBe("waiting");
     expect(s.catchupDone).toBe(false);
+  });
+});
+
+describe("final review fixes", () => {
+  function seedEvent(date: string, key: string): number {
+    return Number(
+      db
+        .prepare(
+          `INSERT INTO calendar_events (source, event_type, event_date, title, source_key, symbol)
+           VALUES ('finnhub','earnings',?, 'earnings', ?, 'ACME')`,
+        )
+        .run(date, key).lastInsertRowid,
+    );
+  }
+  function pendingRun(id: number): number {
+    const [f] = listFilings(db, id);
+    return createRun(db, {
+      eventId: id,
+      trigger: "auto",
+      choice: { family: "opus", effort: "high" },
+      modelId: null,
+      fallbackNote: null,
+      requestKey: null,
+      bogeySnapshotJson: "{}",
+      filingIds: [f.id],
+    }).runId;
+  }
+
+  it("I2: while one runNextSection is pending, a second tick still polls other events", async () => {
+    arm(et("09:00"));
+    edgar.filings.push(earnings8k("0000123456-26-000101", "160500"));
+    await tick(et("16:06"));
+    pendingRun(eventId);
+    const other = seedEvent(EVENT_DATE, "fs-poll-other");
+    arm(et("09:00"), other);
+
+    let release!: () => void;
+    let started!: () => void;
+    const inCall = new Promise<void>((r) => (started = r));
+    const hold = new Promise<void>((r) => (release = r));
+    const calls: number[] = [];
+    const slowRun: TickSeams["runNextSection"] = async (_d, id) => {
+      calls.push(id);
+      started();
+      await hold;
+    };
+    clock = et("16:07");
+    const first = runTick(db, clock, { ...seams(), runNextSection: slowRun });
+    await inCall; // the first tick is inside the (long) model call
+
+    clock = et("16:08");
+    const second = await runTick(db, clock, { ...seams(), runNextSection: slowRun });
+    expect(second.skipped).toBe(false);
+    expect(second.polled).toEqual(expect.arrayContaining([eventId, other]));
+    expect(second.inFlight).toEqual([eventId]); // not started twice
+    expect(calls).toEqual([eventId]);
+
+    release();
+    const f = await first;
+    expect(f.ran).toEqual([eventId]);
+    // The run latch is free again: the next tick starts the event's next section.
+    const third = await runTick(db, et("16:09"), { ...seams(), runNextSection: slowRun });
+    expect(third.ran).toEqual([eventId]);
+  });
+
+  it("minor: an armed event left cancelled is re-armed whatever its date", async () => {
+    // Re-armed (a new flag) days after the print; the state left from the disarm is cancelled.
+    arm(et("09:59", "2026-10-25"));
+    upsertEventState(db, eventId, { pollState: "cancelled", pollDetail: "disarmed — nothing new starts" });
+    const t = await tick(et("10:00", "2026-10-25"));
+    expect(t.rearmed).toEqual([eventId]);
+    const s = getEventState(db, eventId)!;
+    expect(s.pollState).toBe("manual_only");
+    // Re-armed late with no stored filing: the one discovery pass ran.
+    expect(s.catchupDone).toBe(true);
+    expect(edgar.submissionsCalls()).toBe(1);
+  });
+
+  it("I3: a deleted stored file does not reject or reset anything; the detail says the copy is missing", async () => {
+    arm(et("09:00"));
+    edgar.filings.push(earnings8k("0000123456-26-000101", "160500"));
+    await tick(et("16:06"));
+    const runId = pendingRun(eventId);
+    await tick(et("21:00")); // catch-up done: past_cutoff
+    expect(getEventState(db, eventId)!.pollState).toBe("past_cutoff");
+
+    fs.rmSync(root, { recursive: true, force: true });
+    fs.mkdirSync(root);
+    __resetPollerCacheForTests(); // a restart: revalidation looks again
+    const t = await tick(et("10:00", "2026-10-22"));
+    expect(t.revalidated).toEqual([]);
+    const [f] = listFilings(db, eventId);
+    expect(f.identityVerdict).toBe("accepted");
+    const s = getEventState(db, eventId)!;
+    expect(s.pollState).toBe("past_cutoff");
+    expect(s.cik).toBe(CIK);
+    expect(s.pollDetail).toBe(STORED_COPY_MISSING_DETAIL);
+    expect(listSections(db, runId)[0].status).toBe("pending");
+  });
+
+  it("I3: revalidation looks only at events dated within the last 14 days", async () => {
+    const old = seedEvent("2026-10-01", "fs-poll-old");
+    arm(et("09:00", "2026-10-01"), old);
+    arm(et("09:00"));
+    edgar.filings.push(earnings8k("0000123456-26-000101", "160500"));
+    await tick(et("16:06"));
+    // Move the stored filing under the old event: its acceptance day no longer matches.
+    db.prepare(`UPDATE filing_summary_filings SET event_id = ? WHERE event_id = ?`).run(old, eventId);
+    db.prepare(`INSERT OR IGNORE INTO filing_summary_events (event_id) VALUES (?)`).run(old);
+    expect(eventsWithLiveFilings(db, "2026-10-21")).toEqual([]);
+    expect(eventsWithLiveFilings(db, "2026-10-14")).toEqual([old]);
+    const t = await tick(et("16:07"));
+    expect(t.revalidated).toEqual([]);
+    expect(listFilings(db, old)[0].identityVerdict).toBe("accepted");
+  });
+
+  it("I5: a runner that cannot be loaded is loud and visible on the panel; a later load clears it", async () => {
+    arm(et("09:00"));
+    await tick(et("15:00"));
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const failed = await loadRunnerOrReport(db, et("15:01"), async () => {
+        throw new Error("Cannot find module './runner'");
+      });
+      expect(failed).toBeNull();
+      expect(errors).toHaveBeenCalled();
+      expect(getEventState(db, eventId)!.pollDetail).toBe(RUNNER_LOAD_FAILED_DETAIL);
+      const panel = getPanelViews(db, [eventId], [], new Date(et("15:01")))[eventId];
+      expect(panel.pollDetail).toBe(RUNNER_LOAD_FAILED_DETAIL);
+    } finally {
+      errors.mockRestore();
+    }
+    const fake = { onEarningsAccepted() {}, onCompanionAccepted() {}, ensureAutoRun() {}, runNextSection: async () => "idle" };
+    const ok = await loadRunnerOrReport(db, et("15:02"), async () => fake);
+    expect(ok).toBe(fake);
+    expect(getEventState(db, eventId)!.pollDetail).toBeNull();
+  });
+
+  it("minor: the tick asks the runner to retry an automatic start for each armed event in the window", async () => {
+    arm(et("09:00"));
+    const asked: number[] = [];
+    clock = et("15:00");
+    await runTick(db, clock, { ...seams(), ensureAutoRun: (_d, id) => asked.push(id) });
+    expect(asked).toEqual([eventId]);
   });
 });

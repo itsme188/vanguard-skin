@@ -7,7 +7,15 @@
  * comes from here, so the tests can pin the copy without a DOM.
  */
 import { choiceLabel } from "@/lib/filing-summary/choice";
-import { comparisonLine, errorWords, reasonText, roughCostText, statusSeverity } from "@/lib/filing-summary/labels";
+import {
+  comparisonLine,
+  errorWords,
+  reasonText,
+  roughCostText,
+  RUNNER_LOAD_FAILED_DETAIL,
+  SEC_GAVE_UP_TEXT,
+  statusSeverity,
+} from "@/lib/filing-summary/labels";
 import type { Footnote, SummaryChoice } from "@/lib/filing-summary/types";
 import type { PanelView, ReadingDocs, RunSummary, SectionState, ViewClaim } from "@/lib/filing-summary/view";
 
@@ -92,6 +100,8 @@ function capitalise(s: string): string {
 /** The panel's status line (brief copy; the run's state wins over the poll's). */
 export function pollStateText(view: PanelView, reading: ReadingDocs | null = view.readingDocs ?? null): string {
   if (view.pollState === "cancelled") return "Disarmed — summary stopped";
+  // A packaging fault: nothing can run until it is fixed, so it outranks everything.
+  if (view.pollDetail === RUNNER_LOAD_FAILED_DETAIL) return capitalise(RUNNER_LOAD_FAILED_DETAIL);
   // A print from an earlier day the poller never looked at: it never will.
   if (view.pastWithoutSummary) return "No filing summary for this print";
 
@@ -119,7 +129,7 @@ export function pollStateText(view: PanelView, reading: ReadingDocs | null = vie
   }
   switch (view.pollState) {
     case "sec_unreachable":
-      return "SEC not reachable — still trying";
+      return view.outsideTickWindow ? SEC_GAVE_UP_TEXT : "SEC not reachable — still trying";
     case "past_cutoff":
       if (hasNoAcceptedEarningsFiling(view)) return `No earnings ${form} filed by 8 pm`;
       return view.runSummaryAvailable
@@ -173,7 +183,7 @@ export function needsPolling(view: PanelView, readOnly = false): boolean {
     view.pollState === null ||
     view.pollState === "waiting" ||
     view.pollState === "found" ||
-    view.pollState === "sec_unreachable"
+    (view.pollState === "sec_unreachable" && !view.outsideTickWindow)
   );
 }
 

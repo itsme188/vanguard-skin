@@ -231,8 +231,14 @@ describe("pastWithoutSummary (browser pass Bug 2)", () => {
   const NEXT_DAY = new Date("2026-10-23T15:00:00Z");
   const SAME_DAY_LATE = new Date("2026-10-23T03:30:00Z"); // 23:30 Eastern on 2026-10-22
 
-  it("is true for an earlier day's print with no filing-summary state and no run", () => {
-    expect(getPanelViews(db, [eventId], CATALOG, NEXT_DAY)[eventId].pastWithoutSummary).toBe(true);
+  const TWO_DAYS_LATER = new Date("2026-10-24T15:00:00Z");
+
+  it("final review: is true only for a print dated before YESTERDAY (Eastern) with no state and no run", () => {
+    expect(getPanelViews(db, [eventId], CATALOG, TWO_DAYS_LATER)[eventId].pastWithoutSummary).toBe(true);
+  });
+
+  it("final review: is false for yesterday's print — the tick still polls it (the catch-up after midnight)", () => {
+    expect(getPanelViews(db, [eventId], CATALOG, NEXT_DAY)[eventId].pastWithoutSummary).toBe(false);
   });
 
   it("is false on the print's own Eastern day, even after UTC midnight", () => {
@@ -241,6 +247,19 @@ describe("pastWithoutSummary (browser pass Bug 2)", () => {
 
   it("is false once the event has a filing-summary state row or a run", () => {
     upsertEventState(db, eventId, { pollState: "past_cutoff" });
-    expect(getPanelViews(db, [eventId], CATALOG, NEXT_DAY)[eventId].pastWithoutSummary).toBe(false);
+    expect(getPanelViews(db, [eventId], CATALOG, TWO_DAYS_LATER)[eventId].pastWithoutSummary).toBe(false);
+  });
+
+  it("final review: sec_unreachable says 'still trying' only inside the tick window", () => {
+    upsertEventState(db, eventId, { pollState: "sec_unreachable", pollDetail: "SEC unreachable — retrying every minute" });
+    const inWindow = getPanelViews(db, [eventId], CATALOG, NEXT_DAY)[eventId];
+    expect(inWindow.outsideTickWindow).toBe(false);
+    expect(inWindow.pollDetail).toBe("SEC unreachable — retrying every minute");
+    const gone = getPanelViews(db, [eventId], CATALOG, TWO_DAYS_LATER)[eventId];
+    expect(gone.outsideTickWindow).toBe(true);
+    expect(gone.pollDetail).toBe("SEC was not reachable; nothing more will run on its own");
+    expect(getFullView(db, eventId, CATALOG, TWO_DAYS_LATER)!.event.pollDetail).toBe(
+      "SEC was not reachable; nothing more will run on its own",
+    );
   });
 });

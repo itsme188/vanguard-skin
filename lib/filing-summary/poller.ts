@@ -5,9 +5,14 @@
  * LIFECYCLE (all on the Eastern clock, per event):
  *  - The state row is created on first sight. A print ARMED at or after 20:00
  *    on its date, or armed on a later day, becomes `manual_only`: nothing is
- *    polled or run on its own (late-arm ruling). The arm time is the worksheet
- *    flag's `created_at`, so a print armed at 15:00 whose first tick only came
- *    at 21:30 (app asleep) still gets its catch-up pass (Hardening 10).
+ *    run on its own (late-arm ruling). It still gets ONE discovery pass that
+ *    looks up and stores the event date's filings exactly as a catch-up does
+ *    (`catchup_done = 0` until that pass completes, then 1, so it never
+ *    repeats); the runner's `onEarningsAccepted` refuses `manual_only`, so the
+ *    pass creates no run and only makes Run summary possible. The arm time is
+ *    the worksheet flag's `created_at`, so a print armed at 15:00 whose first
+ *    tick only came at 21:30 (app asleep) still gets its catch-up pass
+ *    (Hardening 10).
  *  - Before 06:00 on the event date: no work.
  *  - 06:00 to 20:00: poll. A submissions (or CIK) fetch failure is
  *    `sec_unreachable`, retried next tick, never "no filing".
@@ -44,7 +49,7 @@
  * header fetch is never cached. The prefilter is the same two-reading rule.
  */
 import type Database from "better-sqlite3";
-import { parseDbTimestamp, todayET } from "@/lib/calendar/date-utils";
+import { addDays, parseDbTimestamp, todayET } from "@/lib/calendar/date-utils";
 import {
   fetchSubmissionsRecent,
   parseEdgarAcceptanceDateTime,
@@ -97,6 +102,16 @@ export const POLL_START_ET = "06:00:00";
 export const CUTOFF_ET = "20:00:00";
 
 export const MANUAL_ONLY_DETAIL = "armed after 8 pm — Run summary to spend";
+/** A late arm whose one discovery pass has not completed yet. */
+export const MANUAL_DISCOVERY_PENDING_DETAIL = "armed after 8 pm — looking up the day's filings once";
+/** A late arm whose discovery pass found no earnings filing. */
+export function manualNoFilingDetail(formName: string): string {
+  return `armed after 8 pm — no earnings ${formName} filed by 8 pm`;
+}
+/** Revalidation could not read the stored copy: the verdict is left alone. */
+export const STORED_COPY_MISSING_DETAIL = "stored copy of the earnings filing is missing — not re-checked";
+/** Revalidation looks only at events dated within this many days of today. */
+export const REVALIDATE_WINDOW_DAYS = 14;
 export const AFTER_CUTOFF_REASON = "accepted after 8 pm";
 export const NO_ACCEPTANCE_REASON = "header has no acceptance time";
 export const SEC_UNREACHABLE_DETAIL = "SEC unreachable — retrying every minute";
@@ -125,7 +140,7 @@ export interface PollSeams {
 export type PollAction =
   /** Nothing to do this tick (before 06:00, terminal state, unknown event…). */
   | "skipped"
-  /** Late arm: the row was set to `manual_only`. */
+  /** Late arm: the row was set to `manual_only` (only from paths that do not poll). */
   | "manual_only"
   /** SEC was asked and the result recorded. */
   | "polled"
@@ -443,25 +458,27 @@ export async function pollEvent(
   if (neverPolled) {
     const armedAtMs = ev.armed_at ? (parseDbTimestamp(ev.armed_at)?.getTime() ?? nowMs) : nowMs;
     if (pollPhase(eventDate, armedAtMs) === "after_cutoff") {
+      // Late arm: nothing runs on its own, but the day's filings are looked
+      // up once (below) so Run summary can be offered.
       upsertEventState(db, eventId, {
         pollState: "manual_only",
-        pollDetail: MANUAL_ONLY_DETAIL,
-        catchupDone: true,
+        pollDetail: MANUAL_DISCOVERY_PENDING_DETAIL,
+        catchupDone: false,
       });
-      return result("manual_only", "manual_only");
-    }
-    if (!state) {
+    } else if (!state) {
       upsertEventState(db, eventId, {});
-      state = getEventState(db, eventId);
     }
+    state = getEventState(db, eventId);
   }
   if (!state) return result("skipped", null);
   const current: EventStateRow = state;
-  if (state.pollState === "manual_only" || state.pollState === "cancelled" || state.catchupDone) {
+  /** The late arm's one discovery pass (C1): a catch-up that keeps `manual_only`. */
+  const discovery = state.pollState === "manual_only" && !state.catchupDone;
+  if (!discovery && (state.pollState === "manual_only" || state.pollState === "cancelled" || state.catchupDone)) {
     return result("skipped", state.pollState);
   }
 
-  const phase = pollPhase(eventDate, nowMs);
+  const phase = discovery ? "after_cutoff" : pollPhase(eventDate, nowMs);
   if (phase === "before_window") return result("skipped", state.pollState);
   const catchup = phase === "after_cutoff";
 
@@ -473,6 +490,11 @@ export async function pollEvent(
   // State to fall back on when SEC cannot be reached: an earnings filing
   // already found keeps its state; otherwise the panel says SEC unreachable.
   const unreachable = (): PollOutcome => {
+    if (discovery) {
+      // The late arm stays manual_only; the discovery pass is tried again.
+      upsertEventState(db, eventId, { lastPolledAt: iso(nowMs) });
+      return result("sec_unreachable", "manual_only");
+    }
     const ref = earningsReference(listFilings(db, eventId));
     if (ref) return result("sec_unreachable", current.pollState);
     upsertEventState(db, eventId, {
@@ -693,7 +715,19 @@ export async function pollEvent(
 
   const complete = headerFailures === 0 && !deferred;
   let catchupDone = false;
-  if (catchup) {
+  if (discovery) {
+    // The late arm stays manual_only whatever was found: the runner refuses
+    // manual_only, so nothing runs on its own. The detail says what is there.
+    catchupDone = complete;
+    const what =
+      pollState === "ambiguous"
+        ? `armed after 8 pm — ${pollDetail ?? "earnings filing does not name this quarter"}`
+        : ref?.identityVerdict === "accepted" || unconfirmed
+          ? MANUAL_ONLY_DETAIL
+          : manualNoFilingDetail(formName);
+    pollState = "manual_only";
+    pollDetail = complete ? what : MANUAL_DISCOVERY_PENDING_DETAIL;
+  } else if (catchup) {
     if (complete) {
       catchupDone = true;
       if (pollState !== "ambiguous") {
@@ -755,17 +789,27 @@ export interface RevalidateOutcome {
   eventReset: boolean;
 }
 
-/** Events with at least one filing that is not rejected, any date. */
-export function eventsWithLiveFilings(db: Database.Database): number[] {
+/**
+ * Events with at least one filing that is not rejected, dated within the last
+ * `REVALIDATE_WINDOW_DAYS` days of `today` (Eastern) or later. A date
+ * correction or merge happens around the print, and it moves the filings
+ * onto the CURRENT event date, so a moved filing is always inside the window
+ * of its new date unless that date is itself old. Older prints are left as
+ * they are: re-gating them every restart only risks a spurious rejection.
+ */
+export function eventsWithLiveFilings(db: Database.Database, today: string): number[] {
+  const from = addDays(today, -REVALIDATE_WINDOW_DAYS);
   return (
     db
       .prepare(
         `SELECT DISTINCT e.event_id FROM filing_summary_events e
            JOIN filing_summary_filings f ON f.event_id = e.event_id
+           JOIN calendar_events ce ON ce.id = e.event_id
           WHERE f.identity_verdict <> 'rejected'
+            AND ce.event_date >= ?
           ORDER BY e.event_id`,
       )
-      .all() as Array<{ event_id: number }>
+      .all(from) as Array<{ event_id: number }>
   ).map((r) => r.event_id);
 }
 
@@ -777,8 +821,10 @@ export function eventsWithLiveFilings(db: Database.Database): number[] {
  *  1. a filing accepted on an Eastern day other than the event's date is
  *     rejected, "event date changed";
  *  2. the accepted earnings filing is re-gated on its stored EX-99 text (else
- *     the main document) with the current symbol, issuer and date; a failure,
- *     or no stored text, rejects it, "issuer changed". A gate-passed UNTIMED
+ *     the main document) with the current symbol, issuer and date; a gate
+ *     failure rejects it, "issuer changed". A stored copy that cannot be read
+ *     (a file deleted or a restored database) proves nothing: the verdict is
+ *     left alone and the event's detail says the copy is missing. A gate-passed UNTIMED
  *     earnings filing (time_unconfirmed) is re-gated the same way; rule 1
  *     cannot apply to it, because it has no acceptance time;
  *  3. a companion whose CIK differs from the earnings filing's, or that shares
@@ -843,12 +889,22 @@ export function revalidateStoredFilings(
     : live.find(
         (f) => f.role === "earnings" && f.identityVerdict === "time_unconfirmed" && f.gatePassed && !decisions.has(f.id),
       );
+  let storedCopyMissing = false;
   for (const f of [accepted, untimedPassed]) {
     if (!f) continue;
     const text = gateTextFromStored(f.form, listDocuments(db, f.id));
-    const ok =
-      text !== null && validateDocForEvent(text, { symbol, issuerName: issuer, eventDate: ev.event_date }).ok;
-    if (!ok) decisions.set(f.id, ISSUER_CHANGED_REASON);
+    if (text === null) {
+      // No stored text is not a gate failure: never reject or reset on it.
+      storedCopyMissing = true;
+      continue;
+    }
+    if (!validateDocForEvent(text, { symbol, issuerName: issuer, eventDate: ev.event_date }).ok) {
+      decisions.set(f.id, ISSUER_CHANGED_REASON);
+    }
+  }
+  if (storedCopyMissing && decisions.size === 0) {
+    upsertEventState(db, eventId, { pollDetail: STORED_COPY_MISSING_DETAIL });
+    console.warn(`[filing-summary] stored copy missing for event ${eventId}; filing not re-checked`);
   }
   // Rule 3: companions belong to the earnings filing's issuer.
   const earnings = earningsReference(live);

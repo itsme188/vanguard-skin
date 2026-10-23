@@ -11,6 +11,7 @@ import { AIRefusalError, AITruncatedError, AIModelUnavailableError } from "@/lib
 import {
   appendCompanion,
   autoRunKey,
+  ensureAutoRun,
   INPUT_CAP_CHARS,
   onEarningsAccepted,
   retryRun,
@@ -283,6 +284,47 @@ describe("startRun", () => {
     expect(runs).toHaveLength(2);
     expect(runs[1].requestKey).toBe(autoRunKey(eventId, second));
     expect(sectionsOf(runs[1].id)[0].filingId).toBe(second);
+  });
+});
+
+describe("ensureAutoRun (final review minor)", () => {
+  it("an accepted earnings filing whose auto start found no model is started on the next tick, once, under the same key", () => {
+    const filingId = seedEarnings();
+    upsertEventState(db, eventId, { pollState: "found" });
+    setModelCatalogSource(() => []);
+    onEarningsAccepted(db, eventId); // no_model: nothing created
+    expect(listRuns(db, eventId)).toHaveLength(0);
+    ensureAutoRun(db, eventId, T0); // still no model
+    expect(listRuns(db, eventId)).toHaveLength(0);
+
+    setModelCatalogSource(() => CATALOG);
+    ensureAutoRun(db, eventId, T0);
+    ensureAutoRun(db, eventId, T0);
+    const runs = listRuns(db, eventId);
+    expect(runs).toHaveLength(1);
+    expect(runs[0]).toMatchObject({ trigger: "auto", requestKey: autoRunKey(eventId, filingId) });
+  });
+
+  it("never starts for a manual_only event, an event with a run, or a waiting event", () => {
+    seedEarnings();
+    upsertEventState(db, eventId, { pollState: "manual_only" });
+    ensureAutoRun(db, eventId, T0);
+    upsertEventState(db, eventId, { pollState: "waiting" });
+    ensureAutoRun(db, eventId, T0);
+    expect(listRuns(db, eventId)).toHaveLength(0);
+    upsertEventState(db, eventId, { pollState: "found" });
+    startRun(db, eventId, "manual_run", { requestKey: "rk-x", catalogIds: CATALOG });
+    ensureAutoRun(db, eventId, T0);
+    expect(listRuns(db, eventId)).toHaveLength(1);
+  });
+
+  it("past_cutoff retries only on the print's own Eastern day", () => {
+    seedEarnings();
+    upsertEventState(db, eventId, { pollState: "past_cutoff" });
+    ensureAutoRun(db, eventId, Date.parse("2026-10-24T15:00:00Z"));
+    expect(listRuns(db, eventId)).toHaveLength(0);
+    ensureAutoRun(db, eventId, T0); // 2026-10-22 16:30 Eastern
+    expect(listRuns(db, eventId)).toHaveLength(1);
   });
 });
 
@@ -659,6 +701,40 @@ describe("runNextSection", () => {
       expect(await pending).toBe("lost_claim");
       expect(sawAbort).toBe(true);
       expect(sectionsOf(runId)[0]).toMatchObject({ status: "running", claimToken: "tok-B" });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("I1: a heartbeat that throws neither rejects nor crashes; the call finishes and is finalized", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    try {
+      seedEarnings();
+      const runId = start();
+      let explode = false;
+      let finish!: () => void;
+      const { s } = seams(
+        async () => {
+          await new Promise<void>((resolve) => { finish = resolve; });
+          return ok(EARNINGS_OUT)();
+        },
+        {
+          now: () => {
+            if (explode) throw new Error("database is locked");
+            return T0;
+          },
+        },
+      );
+      const pending = runNextSection(db, eventId, s);
+      await Promise.resolve();
+      explode = true;
+      // Without the guard this throws out of the timer (an uncaught exception in production).
+      expect(() => vi.advanceTimersByTime(60_000)).not.toThrow();
+      expect(() => vi.advanceTimersByTime(60_000)).not.toThrow();
+      explode = false;
+      finish();
+      expect(await pending).toBe("ran");
+      expect(sectionsOf(runId)[0]).toMatchObject({ status: "done" });
     } finally {
       vi.useRealTimers();
     }
