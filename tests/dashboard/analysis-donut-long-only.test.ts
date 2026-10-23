@@ -143,3 +143,39 @@ describe("AnalysisView donut wiring (source pin)", () => {
     expect(centre).toContain('isPrivate ? "•••" : formatMoney(donutBook.longTotal)');
   });
 });
+
+// [qa:dashboard-analysis-view-diagnostics-scope-ibkr-mode-classification-dimension-sector-allocation-donut-caption-d]
+// Owner ruling 2026-10-12: a slice is a bucket's LONG positions (no netting);
+// the excluded figure is the WHOLE short book. Synthetic figures.
+describe("donut splits long and short inside a bucket", () => {
+  const split = (name: string, long: number, short: number): AllocationEntry => ({
+    group_name: name,
+    total_market_value: long + short,
+    percentage: 0,
+    net_exposure: long + short,
+    exposure_pct: 0,
+    position_count: 1,
+    long_value: long,
+    short_value: short,
+  });
+
+  it("T holds a long 1000 and a short -400; F holds only a short -100", () => {
+    const book = splitAllocationForDonut([split("T", 1000, -400), split("F", 0, -100)]);
+    expect(book.longTotal).toBe(1000);
+    expect(book.shortTotal).toBe(-500);
+    expect(book.netTotal).toBe(500);
+    expect(book.hasShorts).toBe(true);
+    expect(donutChartData(book).map((r) => [r.group_name, r.total_market_value])).toEqual([
+      ["T", 1000],
+    ]);
+    expect(donutSliceColorByGroup(book).has("F")).toBe(false);
+  });
+
+  it("the caption says the table nets and the chart does not", () => {
+    const src = fs.readFileSync(
+      path.join(process.cwd(), "app/dashboard/components/AnalysisView.tsx"),
+      "utf8",
+    );
+    expect(src).toContain("The Breakdown table nets longs and shorts");
+  });
+});
