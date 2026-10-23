@@ -7,6 +7,7 @@ import {
   attributeProxies,
   scoreHedges,
   pairHedgeInstruments,
+  proxyHedgeInstruments,
   type DefenseInstrument,
   type UnderlyingGroup,
   type AttributionContext,
@@ -96,14 +97,58 @@ describe("classifyBook — Tier 1 pairs", () => {
     expect(pairHedgeInstruments(pair)).toEqual([longCall]);
   });
 
-  it("a written put is not credited against a short ETF stack", () => {
+  // Short ETF stacks are judged in a crash: the short shares and any LONG
+  // puts gain, a WRITTEN put loses as prices fall, and calls (long or
+  // written) neither add nor take away crash protection.
+  it("a written put is subtracted from a short ETF stack: it loses in a crash", () => {
     const r = classifyBook(new Map([group("ZZF", true, [
-      inst({ securityId: 1, symbol: "ZZF", quantity: -200, exposure: -12000, marketValue: -12000 }),
-      inst({ securityId: 2, symbol: "ZZF   260116P00050000", isOption: true, optionType: "PUT", quantity: -3, exposure: 4000, marketValue: -900, thetaPerDay: 300 }),
+      inst({ securityId: 1, symbol: "ZZF", quantity: -100, exposure: -10000, marketValue: -10000 }),
+      inst({ securityId: 2, symbol: "ZZF   260116P00050000", isOption: true, optionType: "PUT", quantity: -2, exposure: 4000, marketValue: -900, thetaPerDay: 300 }),
     ])]));
     const c = r.proxyCandidates.find((c) => c.underlying === "ZZF")!;
     expect(c.source).toBe("etf_negative_stack");
-    expect(c.protectiveNotional).toBe(12000);
+    expect(c.protectiveNotional).toBe(6000);
+  });
+
+  it("a written put larger than the short ETF core leaves no protection", () => {
+    const r = classifyBook(new Map([group("ZZF", true, [
+      inst({ securityId: 1, symbol: "ZZF", quantity: -100, exposure: -10000, marketValue: -10000 }),
+      inst({ securityId: 2, symbol: "ZZF   260116P00050000", isOption: true, optionType: "PUT", quantity: -10, exposure: 15000, marketValue: -4000, thetaPerDay: 900 }),
+    ])]));
+    expect(r.proxyCandidates.find((c) => c.underlying === "ZZF")).toBeUndefined();
+    expect(r.pairs.find((p) => p.underlying === "ZZF")).toBeUndefined();
+  });
+
+  it("a long call does not reduce a short ETF stack's crash protection", () => {
+    const r = classifyBook(new Map([group("ZZF", true, [
+      inst({ securityId: 1, symbol: "ZZF", quantity: -100, exposure: -10000, marketValue: -10000 }),
+      inst({ securityId: 2, symbol: "ZZF   260116C00060000", isOption: true, optionType: "CALL", quantity: 2, exposure: 4000, marketValue: 800 }),
+    ])]));
+    const c = r.proxyCandidates.find((c) => c.underlying === "ZZF")!;
+    expect(c.source).toBe("etf_negative_stack");
+    expect(c.protectiveNotional).toBe(10000);
+  });
+
+  it("a written call is not credited as protection on a short ETF stack and earns no hedge-book row", () => {
+    const writtenCall = inst({ securityId: 2, symbol: "ZZF   260116C00060000", isOption: true, optionType: "CALL", quantity: -2, exposure: -4000, marketValue: -800, thetaPerDay: 40 });
+    const longPut = inst({ securityId: 3, symbol: "ZZF   260116P00040000", isOption: true, optionType: "PUT", quantity: 1, exposure: -2000, marketValue: 300, thetaPerDay: -10 });
+    const shortShares = inst({ securityId: 1, symbol: "ZZF", quantity: -100, exposure: -10000, marketValue: -10000 });
+    const r = classifyBook(new Map([group("ZZF", true, [shortShares, writtenCall, longPut])]));
+    const c = r.proxyCandidates.find((c) => c.underlying === "ZZF")!;
+    expect(c.source).toBe("etf_negative_stack");
+    expect(c.protectiveNotional).toBe(12000); // short shares + long put only
+    expect(proxyHedgeInstruments(c)).toEqual([shortShares, longPut]);
+  });
+
+  it("a short ETF stack nets long puts and written puts and ignores calls", () => {
+    const r = classifyBook(new Map([group("ZZF", true, [
+      inst({ securityId: 1, symbol: "ZZF", quantity: -100, exposure: -10000, marketValue: -10000 }),
+      inst({ securityId: 2, symbol: "ZZF   260116P00040000", isOption: true, optionType: "PUT", quantity: 3, exposure: -6000, marketValue: 900 }),
+      inst({ securityId: 3, symbol: "ZZF   260116P00030000", isOption: true, optionType: "PUT", quantity: -1, exposure: 1000, marketValue: -200 }),
+      inst({ securityId: 4, symbol: "ZZF   260116C00060000", isOption: true, optionType: "CALL", quantity: 2, exposure: 4000, marketValue: 800 }),
+      inst({ securityId: 5, symbol: "ZZF   260116C00070000", isOption: true, optionType: "CALL", quantity: -1, exposure: -2000, marketValue: -300 }),
+    ])]));
+    expect(r.proxyCandidates.find((c) => c.underlying === "ZZF")!.protectiveNotional).toBe(15000);
   });
 
   it("flags same-sign options on a long core as amplifiers, not hedges", () => {
@@ -153,6 +198,42 @@ describe("classifyBook — Tier 1 pairs", () => {
     const c = r.proxyCandidates.find((c) => c.underlying === "ZZF")!;
     expect(c.protectiveNotional).toBe(24000);       // short shares + puts
     expect(c.source).toBe("etf_negative_stack");
+  });
+
+  it("an ETF written call with no core is not portfolio protection and earns no hedge-book row", () => {
+    const longPut = inst({ securityId: 2, symbol: "ZZG   260116P00200000", isOption: true, optionType: "PUT", quantity: 3, exposure: -6000, marketValue: 1500 });
+    const writtenCall = inst({ securityId: 3, symbol: "ZZG   260116C00260000", isOption: true, optionType: "CALL", quantity: -2, exposure: -4000, marketValue: -700, thetaPerDay: 30 });
+    const r = classifyBook(new Map([group("ZZG", true, [longPut, writtenCall])]));
+    const c = r.proxyCandidates.find((c) => c.underlying === "ZZG")!;
+    expect(c.source).toBe("no_core_etf");
+    expect(c.protectiveNotional).toBe(6000); // long put only
+    expect(proxyHedgeInstruments(c)).toEqual([longPut]);
+  });
+
+  it("an ETF written call alone with no core credits no protection", () => {
+    const r = classifyBook(new Map([group("ZZG", true, [
+      inst({ securityId: 3, symbol: "ZZG   260116C00260000", isOption: true, optionType: "CALL", quantity: -2, exposure: -4000, marketValue: -700 }),
+    ])]));
+    expect(r.proxyCandidates.find((c) => c.underlying === "ZZG")).toBeUndefined();
+  });
+
+  it("an ETF written put with no core is subtracted from the long puts' protection", () => {
+    const writtenPut = inst({ securityId: 3, symbol: "ZZG   260116P00150000", isOption: true, optionType: "PUT", quantity: -1, exposure: 2000, marketValue: -300 });
+    const r = classifyBook(new Map([group("ZZG", true, [
+      inst({ securityId: 2, symbol: "ZZG   260116P00200000", isOption: true, optionType: "PUT", quantity: 3, exposure: -6000, marketValue: 1500 }),
+      writtenPut,
+    ])]));
+    const c = r.proxyCandidates.find((c) => c.underlying === "ZZG")!;
+    expect(c.protectiveNotional).toBe(4000);
+    expect(proxyHedgeInstruments(c)).not.toContain(writtenPut);
+  });
+
+  it("an ETF written put larger than the long puts with no core leaves no protection", () => {
+    const r = classifyBook(new Map([group("ZZG", true, [
+      inst({ securityId: 2, symbol: "ZZG   260116P00200000", isOption: true, optionType: "PUT", quantity: 1, exposure: -2000, marketValue: 500 }),
+      inst({ securityId: 3, symbol: "ZZG   260116P00150000", isOption: true, optionType: "PUT", quantity: -3, exposure: 6000, marketValue: -900 }),
+    ])]));
+    expect(r.proxyCandidates.find((c) => c.underlying === "ZZG")).toBeUndefined();
   });
 
   it("routes ETF puts with no core to proxy candidates", () => {

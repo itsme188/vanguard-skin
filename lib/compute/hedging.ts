@@ -128,6 +128,30 @@ export function pairHedgeInstruments(pair: UnderlyingPair): DefenseInstrument[] 
   return pair.instruments.filter((i) => i.isOption && Math.sign(i.exposure) === -coreSign);
 }
 
+/** A long option with negative exposure: a long put. */
+function isLongPutLeg(o: DefenseInstrument): boolean {
+  return o.isOption && o.quantity > 0 && o.exposure < 0;
+}
+
+/** A written option with positive exposure: a written put. */
+function isWrittenPutLeg(o: DefenseInstrument): boolean {
+  return o.isOption && o.quantity < 0 && o.exposure > 0;
+}
+
+/**
+ * The instruments of a proxy candidate that are scored in the hedge book:
+ * those with negative exposure. On an ETF candidate (`etf_negative_stack`,
+ * `no_core_etf`) only short shares and long puts qualify: a written call
+ * (negative exposure, but only its premium in a crash) is left out, the same
+ * way classifyBook leaves it out of the protective notional. `tier1_spill`
+ * is unchanged (see the covered-call TODO in classifyBook).
+ */
+export function proxyHedgeInstruments(candidate: ProxyCandidate): DefenseInstrument[] {
+  const protective = candidate.instruments.filter((inst) => inst.exposure < 0);
+  if (candidate.source === "tier1_spill") return protective;
+  return protective.filter((inst) => !inst.isOption || isLongPutLeg(inst));
+}
+
 export interface UnderlyingGroup {
   underlying: string;
   underlyingIsEtf: boolean;
@@ -289,12 +313,20 @@ export function classifyBook(groups: Map<string, UnderlyingGroup>): ClassifyResu
       const opposing = options.filter(isShortCoreHedge);
       const sameSign = options.filter((o) => o.exposure < 0);
       if (g.underlyingIsEtf) {
-        // Negative ETF stack = portfolio protection: core remainder after
-        // opposing LONG calls offset, plus all same-sign puts (MAGS case).
-        // A written put is not credited as offsetting the short here either.
-        const offsetExposure = sum(opposing.map((o) => o.exposure));
-        const coreRemainder = Math.max(0, Math.abs(core) - offsetExposure);
-        const notional = coreRemainder + Math.abs(sum(sameSign.map((o) => o.exposure)));
+        // Negative ETF stack = portfolio protection, judged in a crash: the
+        // short core and every LONG put gain; a WRITTEN put loses as prices
+        // fall, so its delta comes off. Calls are neither credited nor
+        // subtracted: a long call expires worthless in a crash and a written
+        // call only keeps its premium. Floored at 0 (a written put larger
+        // than the stack leaves no protection).
+        const longPuts = options.filter(isLongPutLeg);
+        const writtenPuts = options.filter(isWrittenPutLeg);
+        const notional = Math.max(
+          0,
+          Math.abs(core) +
+            Math.abs(sum(longPuts.map((o) => o.exposure))) -
+            sum(writtenPuts.map((o) => o.exposure)),
+        );
         if (notional > 0) {
           proxyCandidates.push({
             underlying: g.underlying,
@@ -337,15 +369,24 @@ export function classifyBook(groups: Map<string, UnderlyingGroup>): ClassifyResu
     const bullish = options.filter((o) => o.exposure > 0);
 
     if (g.underlyingIsEtf) {
-      // An ETF's puts with no core are portfolio protection in full; its
-      // calls stay their own speculative row. The protection is not a
-      // "Most exposed" row, so this already renders one row per underlying.
-      if (protective.length > 0) {
+      // An ETF's options with no core, judged in a crash like a short ETF
+      // stack: long puts are portfolio protection, less the delta of any
+      // written puts (they lose as prices fall), floored at 0. A written
+      // call is never protection (it only keeps its premium). Bullish legs
+      // stay their own speculative row. The protection is not a "Most
+      // exposed" row, so this already renders one row per underlying.
+      const longPuts = options.filter(isLongPutLeg);
+      const writtenPuts = options.filter(isWrittenPutLeg);
+      const putProtection = Math.max(
+        0,
+        Math.abs(sum(longPuts.map((o) => o.exposure))) - sum(writtenPuts.map((o) => o.exposure)),
+      );
+      if (putProtection > 0) {
         proxyCandidates.push({
           underlying: g.underlying,
-          protectiveNotional: Math.abs(sum(protective.map((o) => o.exposure))),
+          protectiveNotional: putProtection,
           source: "no_core_etf",
-          instruments: protective,
+          instruments: longPuts,
         });
       }
       if (bullish.length > 0) {
@@ -1191,12 +1232,11 @@ export function computeDefenseAnalysis(db: Database.Database, accountIds?: numbe
   classifyResult.proxyCandidates.forEach((candidate, i) => {
     const hedge = proxies[i];
     const routeDescription = describeProxyRoute(hedge);
-    // Only protective (negative-exposure) instruments earn a hedge-book row.
-    // no_core_etf/tier1_spill candidates already carry all-protective
-    // instruments (filter is a no-op there); etf_negative_stack's
-    // `instruments` is the WHOLE underlying group — including opposing calls
-    // that offset the short — which must never surface as a "hedge".
-    const protective = candidate.instruments.filter((inst) => inst.exposure < 0);
+    // Only protective instruments earn a hedge-book row (proxyHedgeInstruments).
+    // tier1_spill and no_core_etf candidates already carry only protective
+    // instruments; etf_negative_stack's `instruments` is the WHOLE underlying
+    // group, whose calls and written puts must never surface as a "hedge".
+    const protective = proxyHedgeInstruments(candidate);
     if (candidate.source === "tier1_spill") {
       const pair = pairsByUnderlying.get(candidate.underlying);
       const ratio = pair && pair.offsetExposure > 0 ? candidate.protectiveNotional / pair.offsetExposure : 0;
@@ -1210,9 +1250,8 @@ export function computeDefenseAnalysis(db: Database.Database, accountIds?: numbe
     } else {
       // Scale to the credited notional so an etf_negative_stack core's full
       // (pre-offset) exposure never overstates what's actually protecting the
-      // book — mirrors the tier1_spill ratio above. No-op (ratio 1) for
-      // no_core_etf, whose protectiveNotional already equals the sum of its
-      // (already all-protective) instruments' exposure.
+      // book — mirrors the tier1_spill ratio above. For no_core_etf the
+      // ratio is 1 unless written puts reduced the long puts' protection.
       const protectiveSum = sum(protective.map((inst) => Math.abs(inst.exposure)));
       const ratio = protectiveSum > 0 ? candidate.protectiveNotional / protectiveSum : 0;
       for (const inst of protective) {

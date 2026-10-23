@@ -169,9 +169,9 @@ describe("computeDefenseAnalysis", () => {
 
   it("excludes the opposing CALL from an etf_negative_stack candidate's hedge-book rows and never over-scores its credited notional", () => {
     // Short 100 sh ZZQ (ETF) + 3 protective puts (same-sign as the short) +
-    // 1 opposing CALL that partially offsets the short — the CALL must not
-    // get a hedgeScores row, and the sum of what DOES get scored for this
-    // candidate must not exceed the credited protectiveNotional.
+    // 1 long CALL (neither credited nor subtracted in a crash) — the CALL
+    // must not get a hedgeScores row, and the sum of what DOES get scored for
+    // this candidate must not exceed the credited protectiveNotional.
     const expiry180 = daysFromNow(180);
     const expiryTag = expiry180.replace(/-/g, "").slice(2);
 
@@ -211,8 +211,7 @@ describe("computeDefenseAnalysis", () => {
     expect(result.hedgeScores.find((h) => h.securityId === zzqCallId)).toBeUndefined();
 
     // Everything scored for this candidate (core short + puts) sums to no
-    // more than the credited protectiveNotional (the call's offset already
-    // reduced what's credited via coreRemainder).
+    // more than the credited protectiveNotional.
     const scoredForCandidate = result.hedgeScores
       .filter((h) => h.underlying === "ZZQ")
       .reduce((a, h) => a + h.protectedNotional, 0);
