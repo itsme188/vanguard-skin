@@ -1,4 +1,5 @@
 import { describe, it, expect, afterEach } from "vitest";
+import { validateParsedResult } from "@/lib/import/validate";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -131,5 +132,33 @@ describe("parseVanguardCostBasis direct export with an injected map", () => {
   });
   it("is silent when all accounts are mapped", () => {
     expect(parseVanguardCostBasis(COST_CSV, "c.csv", { ...MAP, "00000009": "Vanguard Other" }).warnings).toEqual([]);
+  });
+});
+
+describe("an unmapped Vanguard account in the preview", () => {
+  const NUM = "87654321";
+  const csv = [
+    "Account Number,Investment Name,Symbol,Shares,Share Price,Total Value",
+    `${NUM},ZQ FUND,ZQVGX,10,100.00,1000.00`,
+    "",
+    "Account Number,Trade Date,Settlement Date,Transaction Type,Transaction Description,Investment Name,Symbol,Shares,Share Price,Principal Amount,Commissions and Fees,Net Amount,Accrued Interest,Account Type",
+    `${NUM},2026-01-06,2026-01-08,Buy,Buy,ZQ FUND,ZQVGX,1,100.00,-100.00,0,-100.00,0,CASH`,
+  ].join("\n");
+
+  it("masks the number everywhere and says the rows are excluded until mapped", () => {
+    const parsed = parseVanguardExport(csv, "x.csv", MAP);
+    const report = validateParsedResult(parsed, { knownAccountNames: Object.values(MAP) });
+    const texts = [
+      ...parsed.warnings,
+      ...report.warnings,
+      ...report.skippedRows.map((s) => s.reason),
+    ];
+    expect(report.skippedRows.length).toBeGreaterThan(0);
+    for (const t of texts) expect(t).not.toContain(NUM);
+    expect(texts.some((t) => t.includes("4321"))).toBe(true);
+    const w = parsed.warnings.find((x) => x.includes("vanguard-accounts.json"))!;
+    expect(w).toMatch(/excluded until/);
+    expect(w).not.toMatch(/will import/);
+    expect(report.skippedRows[0].reason).toContain("Vanguard ...4321");
   });
 });
