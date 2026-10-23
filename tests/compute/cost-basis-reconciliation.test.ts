@@ -300,9 +300,13 @@ describe("reconcileCostBasis v2 dollar convention (task 4: readers consume store
       db.prepare("INSERT INTO securities (id, symbol, name, security_type) VALUES (9, 'ZZA', 'Zed A', 'stock')").run();
       insertLot(9, 125, 1, 12500);
       insertHolding(9, -125, 12500, "2026-03-27");
-      const row = reconcileCostBasis(db).rows.find((r) => r.symbol === "ZZA")!;
+      const res = reconcileCostBasis(db);
+      const row = res.rows.find((r) => r.symbol === "ZZA")!;
       expect(row.flagged).toBe(false);
       expect(row.costBasisDiff).toBeCloseTo(0, 2);
+      expect(row.brokerCostBasis).toBeCloseTo(-12500, 2);
+      expect(res.totalBrokerCostBasis).toBeCloseTo(-12500, 2);
+      expect(res.totalComputedCostBasis).toBeCloseTo(-12500, 2);
     });
 
     it("a short whose basis really differs still flags the variance", () => {

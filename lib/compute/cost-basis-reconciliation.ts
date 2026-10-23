@@ -222,7 +222,7 @@ export function reconcileCostBasis(
       holdingsQuantity: h.quantity,
       computedQuantity: computed.quantity,
       quantityDiff,
-      brokerCostBasis: h.broker_cost_basis,
+      brokerCostBasis: brokerBasis,
       computedCostBasis: computed.costBasis,
       costBasisDiff,
       variancePct,
