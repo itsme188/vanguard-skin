@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
+  compareFamilyVersions,
   SUMMARY_FAMILY_LADDER,
   resolveFamilyModel,
   familyNowLabel,
@@ -90,5 +91,20 @@ describe("isSummaryChoice", () => {
   it("rejects a pair outside the five", () => {
     expect(isSummaryChoice({ family: "sonnet", effort: "high" })).toBe(false);
     expect(isSummaryChoice({ family: "opus", effort: "high" })).toBe(true);
+  });
+});
+
+describe("compareFamilyVersions (own comparator; model-tiers.ts stays Worker-identical)", () => {
+  it("orders by each part numerically, a missing part counting as 0", () => {
+    expect(compareFamilyVersions([5, 10], [5, 9])).toBeGreaterThan(0);
+    expect(compareFamilyVersions([5, 9], [5, 10])).toBeLessThan(0);
+    expect(compareFamilyVersions([6], [5, 9])).toBeGreaterThan(0);
+    expect(compareFamilyVersions([5], [5, 0])).toBe(0);
+    expect(compareFamilyVersions([5, 1], [5])).toBeGreaterThan(0);
+  });
+  it("sorts newest first when used as the resolver does", () => {
+    const vs = [[5, 1], [5, 10], [4, 7], [5, 9]];
+    vs.sort((a, b) => compareFamilyVersions(b, a));
+    expect(vs).toEqual([[5, 10], [5, 9], [5, 1], [4, 7]]);
   });
 });

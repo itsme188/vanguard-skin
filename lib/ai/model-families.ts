@@ -13,7 +13,23 @@
  *     fallback id here, so no model id is ever written in this file).
  */
 import type { SummaryFamily } from "@/lib/filing-summary/types";
-import { compareVersions, parseModelId, type ParsedModel } from "@/lib/ai/model-tiers";
+import { parseModelId, type ParsedModel } from "@/lib/ai/model-tiers";
+
+/**
+ * Compares two version tuples: [5,10] > [5,9] > [5]; a missing part counts as
+ * 0, so [5] equals [5,0]. This file's own copy on purpose: `model-tiers.ts`
+ * is kept byte-identical to the Worker's mirror (parity-pinned), so it does
+ * not export its comparator for this feature.
+ */
+export function compareFamilyVersions(a: readonly number[], b: readonly number[]): number {
+  const len = Math.max(a.length, b.length);
+  for (let i = 0; i < len; i++) {
+    const av = a[i] ?? 0;
+    const bv = b[i] ?? 0;
+    if (av !== bv) return av - bv;
+  }
+  return 0;
+}
 
 /** Capability order, highest first. */
 export const SUMMARY_FAMILY_LADDER = ["fable", "opus", "sonnet"] as const;
@@ -35,7 +51,7 @@ function newestOfFamily(
     .map((id) => ({ id, parsed: parseModelId(id) }))
     .filter((x): x is { id: string; parsed: ParsedModel } => x.parsed?.family === family);
   if (hits.length === 0) return null;
-  hits.sort((a, b) => compareVersions(b.parsed.version, a.parsed.version));
+  hits.sort((a, b) => compareFamilyVersions(b.parsed.version, a.parsed.version));
   return hits[0];
 }
 
