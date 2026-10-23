@@ -37,6 +37,29 @@ describe("a hidden synthetic close leaves a ledger-gap note", () => {
     expect(notes[0]).toContain("2025-01-20");
     expect(notes[0]).toContain("10");
     expect(notes[0]).toMatch(/ledger gap/i);
+    // The missing sale is on or BEFORE the statement-flat date, never after it.
+    expect(notes[0]).toContain("statement of 2025-01-20");
+    expect(notes[0]).not.toMatch(/on or after/i);
+    // Engine-owned: never a price, proceeds or a trade.
+    expect(notes[0]).not.toMatch(/\$|proceeds|110/);
+  });
+
+  it("caps the notes newest first and says how many were omitted", () => {
+    const sec = (db.prepare("SELECT id FROM securities WHERE symbol = 'ZZZ'").get() as { id: number }).id;
+    const ins = db.prepare(
+      `INSERT INTO transactions (account_id, security_id, trade_date, type, quantity, amount, price_per_share, fees, source_key)
+       VALUES (1, ?, ?, 'RECONCILE_CLOSE', -1, 1, 1, 0, ?)`
+    );
+    for (let i = 0; i < 54; i++) {
+      const d = new Date(Date.UTC(2024, 0, 1 + i)).toISOString().slice(0, 10);
+      ins.run(sec, d, `z-rc-${i}`);
+    }
+    // 55 closes in all (54 ZZZ + the AAA one).
+    const notes = getReconcileGapNotesForChat(db);
+    expect(notes).toHaveLength(51);
+    expect(notes[0]).toContain("AAA"); // newest first
+    expect(notes[50]).toMatch(/5 more ledger gaps omitted/);
+    expect(getReconcileGapNotesForChat(db, { symbol: "AAA" })).toHaveLength(1);
   });
 
   it("gives no note for a symbol without a synthetic close", () => {

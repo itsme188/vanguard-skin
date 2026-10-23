@@ -926,6 +926,8 @@ export function getTransactionsForChat(
     .all(...params, limit) as TransactionResult[];
 }
 
+const RECONCILE_GAP_NOTE_LIMIT = 50;
+
 /**
  * Notes for engine-made RECONCILE_CLOSE rows the transactions tool hides.
  * The engine mints one only when the broker's holdings showed the position
@@ -965,11 +967,21 @@ export function getReconcileGapNotesForChat(
         ORDER BY t.trade_date DESC, t.id DESC`
     )
     .all(...params) as { trade_date: string; quantity: number | null; symbol: string | null; account_name: string }[];
-  return rows.map((r) => {
+  // Same cap as the transactions tool, newest first.
+  const notes = rows.slice(0, RECONCILE_GAP_NOTE_LIMIT).map((r) => {
     const qty = Math.abs(r.quantity ?? 0);
     const sym = r.symbol ?? "this security";
-    return `Ledger gap: the ledger has no closing sale for ${sym} in ${r.account_name} on or after ${r.trade_date}, but the broker's holdings showed it flat as of ${r.trade_date} with ${qty} shares still open in the ledger. Report a ledger gap and read the holdings history; do not say the position stayed open or invent a purchase to explain a later quantity.`;
+    // The engine dates its close ON the statement-flat day, so the missing sale
+    // falls on or before that date (after the last ledger buy), never after it.
+    return `Ledger gap: the broker statement of ${r.trade_date} shows ${sym} flat in ${r.account_name}, but the ledger has no sale closing these ${qty} shares. Report a ledger gap and read the holdings history; do not say the position stayed open or invent a purchase to explain a later quantity.`;
   });
+  const omitted = rows.length - notes.length;
+  if (omitted > 0) {
+    notes.push(
+      `${omitted} more ledger gaps omitted (showing the newest ${RECONCILE_GAP_NOTE_LIMIT}); narrow by symbol, account or date to see them.`
+    );
+  }
+  return notes;
 }
 
 /**
