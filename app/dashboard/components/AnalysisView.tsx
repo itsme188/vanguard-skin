@@ -506,7 +506,7 @@ export function AnalysisView({
               <Money value={donutBook.shortTotal} /> (net{" "}
               <Money value={donutBook.netTotal} />). A hollow dot in the Breakdown
               marks a row with no slice. The Breakdown table nets longs and shorts
-              within a sector; the chart does not.
+              within a row; the chart does not.
             </p>
           )}
         </div>
