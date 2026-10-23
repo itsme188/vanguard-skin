@@ -1441,4 +1441,11 @@ Built on branch `filing-summary` (spec `docs/superpowers/specs/2026-10-21-armed-
 - A `request_key` UNIQUE race at insert answers with the existing run. Cost: none.
 - A bogey row from an unknown source is labelled "other source", never "Finnhub consensus"; a parity test pins the TypeScript kinds to `BOGEY_SOURCE_RANK_SQL`. Cost: none.
 
+**Final review follow-ups (2026-10-22).**
+
+- A print armed BEFORE its date that the app never polled is handled like a late arm once its date is before yesterday: made `manual_only` first, then one discovery pass; also prints armed before the feature existed, at most 5 per tick. Cost if wrong: one SEC look per old armed print, spread over ticks.
+- The runner-load fault is a settings record (`filing_summary_runner_fault`) read by the view, never written over a stored poll detail. Cost: none.
+- Late-arm candidates rotate by last look (never-looked first); after 10 failed discovery passes an event stops with "SEC discovery kept failing — Run summary unavailable" (failure counts in `settings`, no migration change). Cost: an event whose SEC data came back after ten failures needs a re-arm.
+- An armed print left `waiting` or `found` after its date leaves the window resolves to `past_cutoff` with no fetch and no run; a `waiting` one reads "Polling stopped before 8 pm (the app was not running)" instead of "No earnings 8-K filed by 8 pm", which would be untrue. Cost: such a print offers no Run summary unless a filing was already stored.
+
 **Not built or deferred.** See the TODO entry "Filing summary follow-ups (2026-10-22)": the 20:00 cutoff question, the Settings redesign, the tick starting with the Today hub, and the deferred minors.
