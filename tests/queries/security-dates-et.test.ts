@@ -11,7 +11,7 @@ import {
 // 23:30 ET on Sep 3, but already Sep 4 in UTC. This is the boundary where
 // slicing toISOString() produces the wrong user-facing/cache date.
 const AFTER_UTC_MIDNIGHT_BEFORE_ET_MIDNIGHT = new Date(
-  "2026-09-04T03:30:00.000Z",
+  "2026-10-22T03:30:00.000Z",
 );
 
 function createTestDb(): Database.Database {

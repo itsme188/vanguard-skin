@@ -7,8 +7,17 @@ export interface CachedRegression extends SecurityRegression {
 }
 
 /**
+ * The first Eastern day on which every cached row was written by the current
+ * regression engine (split-adjusted closes, long-gap pairs dropped). A row
+ * with an earlier computed_at_day came from the pre-split-adjustment engine
+ * and is treated as a cache miss. Bump this day whenever the regression math
+ * changes.
+ */
+export const REGRESSION_ENGINE_SINCE = "2026-10-21";
+
+/**
  * Returns the most recent cached regression for (security_id, benchmark_symbol),
- * or null if no row exists.
+ * or null if no row exists (rows older than REGRESSION_ENGINE_SINCE count as none).
  */
 export function getCachedRegression(
   db: Database.Database,
@@ -21,10 +30,11 @@ export function getCachedRegression(
               data_points AS dataPoints, computed_at_day AS computedAtDay
          FROM security_regressions
         WHERE security_id = ? AND benchmark_symbol = ?
+          AND computed_at_day >= ?
         ORDER BY computed_at_day DESC
         LIMIT 1`
     )
-    .get(securityId, benchmarkSymbol) as CachedRegression | undefined;
+    .get(securityId, benchmarkSymbol, REGRESSION_ENGINE_SINCE) as CachedRegression | undefined;
   return row ?? null;
 }
 

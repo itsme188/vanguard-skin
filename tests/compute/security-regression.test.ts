@@ -187,7 +187,7 @@ describe("computeSecurityRegression", () => {
           dataPoints: 100,
         },
       },
-      "2026-01-01"
+      "2026-10-21"
     );
     // Newer day — also pinned.
     upsertRegression(
@@ -203,11 +203,11 @@ describe("computeSecurityRegression", () => {
           dataPoints: 200,
         },
       },
-      "2026-05-01"
+      "2026-10-22"
     );
     const got = getCachedRegression(db, 1, "SPY");
     expect(got).not.toBeNull();
-    expect(got!.computedAtDay).toBe("2026-05-01");
+    expect(got!.computedAtDay).toBe("2026-10-22");
     expect(got!.beta).toBeCloseTo(1.7, 6);
     expect(got!.dataPoints).toBe(200);
   });
