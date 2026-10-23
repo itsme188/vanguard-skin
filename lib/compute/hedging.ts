@@ -107,6 +107,27 @@ export function stockEquivalentVerdict(i: DefenseInstrument): StockEquivalentVer
   return { counts: false, refusedReason: NO_VOL_SOURCE_NOT_STOCK_NOTE };
 }
 
+/**
+ * An option that hedges a SHORT core: held long (quantity > 0) with positive
+ * exposure, i.e. a long call. A written put has positive exposure too but is
+ * income, not protection, so it never qualifies.
+ */
+function isShortCoreHedge(o: DefenseInstrument): boolean {
+  return o.isOption && o.quantity > 0 && o.exposure > 0;
+}
+
+/**
+ * The instruments of a pair that are scored in the hedge book. For a long
+ * core: options with negative exposure (unchanged; see the TODO in
+ * classifyBook about written calls). For a short core: long calls only, the
+ * same rule classifyBook used to build the pair's offset.
+ */
+export function pairHedgeInstruments(pair: UnderlyingPair): DefenseInstrument[] {
+  const coreSign = Math.sign(pair.coreExposure);
+  if (coreSign < 0) return pair.instruments.filter(isShortCoreHedge);
+  return pair.instruments.filter((i) => i.isOption && Math.sign(i.exposure) === -coreSign);
+}
+
 export interface UnderlyingGroup {
   underlying: string;
   underlyingIsEtf: boolean;
@@ -225,6 +246,7 @@ export function classifyBook(groups: Map<string, UnderlyingGroup>): ClassifyResu
     };
 
     if (core > 0) {
+      // TODO (owner ruling needed): a written call against a long core is credited as a hedge the same way
       const opposing = options.filter((o) => o.exposure < 0);
       const amplifying = options.filter((o) => o.exposure > 0);
       const offsetExposure = Math.abs(sum(opposing.map((o) => o.exposure)));
@@ -257,11 +279,19 @@ export function classifyBook(groups: Map<string, UnderlyingGroup>): ClassifyResu
     }
 
     if (core < 0) {
-      const opposing = options.filter((o) => o.exposure > 0); // calls hedging the short
+      // Only an option the account is LONG with positive exposure (a long
+      // call) hedges a short core. A WRITTEN put also has positive delta
+      // exposure, but it is income (a covered put): if the stock rallies the
+      // short loses and the put only pays its premium. It is neither opposing
+      // nor an amplifier here; it stays in `g.instruments` (so it still lists
+      // under the underlying) and its exposure stays in `netExposure`, which
+      // sums every instrument because that is the position's true delta.
+      const opposing = options.filter(isShortCoreHedge);
       const sameSign = options.filter((o) => o.exposure < 0);
       if (g.underlyingIsEtf) {
         // Negative ETF stack = portfolio protection: core remainder after
-        // opposing calls offset, plus all same-sign puts (MAGS case).
+        // opposing LONG calls offset, plus all same-sign puts (MAGS case).
+        // A written put is not credited as offsetting the short here either.
         const offsetExposure = sum(opposing.map((o) => o.exposure));
         const coreRemainder = Math.max(0, Math.abs(core) - offsetExposure);
         const notional = coreRemainder + Math.abs(sum(sameSign.map((o) => o.exposure)));
@@ -1138,8 +1168,7 @@ export function computeDefenseAnalysis(db: Database.Database, accountIds?: numbe
 
   for (const pair of classifyResult.pairs) {
     if (pair.offsetExposure <= 0) continue;
-    const coreSign = Math.sign(pair.coreExposure);
-    const opposing = pair.instruments.filter((i) => i.isOption && Math.sign(i.exposure) === -coreSign);
+    const opposing = pairHedgeInstruments(pair);
     const creditRatio = pair.offsetCredited / pair.offsetExposure;
     for (const inst of opposing) {
       scoreInputs.push({

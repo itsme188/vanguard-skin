@@ -245,4 +245,34 @@ describe("reconcileCostBasis v2 dollar convention (task 4: readers consume store
     bumpTaxInputGeneration(db); // simulate a new tax-relevant mutation, no recompute yet
     expect(reconcileCostBasis(db).conventionPending).toBe(true);
   });
+
+  describe("signed lot quantity", () => {
+    function insertLot(secId: number, qty: number, isShort: number, basis: number) {
+      db.prepare(
+        `INSERT INTO tax_lots (account_id, security_id, acquisition_date, quantity_acquired, quantity_remaining, acquisition_price, cost_basis, is_short)
+         VALUES (3, ?, '2026-01-02', ?, ?, 100, ?, ?)`
+      ).run(secId, qty, qty, basis, isShort);
+    }
+
+    it("flags a short holding over an open LONG lot as a quantity mismatch (diff -60)", () => {
+      db.prepare("INSERT INTO securities (id, symbol, name, security_type) VALUES (9, 'ZZA', 'Zed A', 'stock')").run();
+      insertLot(9, 30, 0, 3000);
+      insertHolding(9, -30, 3000, "2026-03-27");
+      const row = reconcileCostBasis(db).rows.find((r) => r.symbol === "ZZA")!;
+      expect(row.flagged).toBe(true);
+      expect(row.flagReason).toMatch(/^Quantity mismatch/);
+      expect(row.computedQuantity).toBe(30);
+      expect(row.quantityDiff).toBe(-60);
+    });
+
+    it("reconciles a short holding over short lots (diff 0)", () => {
+      db.prepare("INSERT INTO securities (id, symbol, name, security_type) VALUES (9, 'ZZA', 'Zed A', 'stock')").run();
+      insertLot(9, 125, 1, 12500);
+      insertHolding(9, -125, 12500, "2026-03-27");
+      const row = reconcileCostBasis(db).rows.find((r) => r.symbol === "ZZA")!;
+      expect(row.computedQuantity).toBe(-125);
+      expect(row.quantityDiff).toBe(0);
+      expect(row.flagReason ?? "").not.toMatch(/^Quantity mismatch/);
+    });
+  });
 });

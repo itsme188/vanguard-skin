@@ -6,6 +6,7 @@ import {
   resolveProxyBeta,
   attributeProxies,
   scoreHedges,
+  pairHedgeInstruments,
   type DefenseInstrument,
   type UnderlyingGroup,
   type AttributionContext,
@@ -58,6 +59,51 @@ describe("classifyBook — Tier 1 pairs", () => {
     expect(pair.classification).toBe("hedged_short");
     expect(pair.offsetCredited).toBe(4000);
     expect(pair.coveragePct).toBeCloseTo(4000 / 12000);
+  });
+
+  it("a written put against a short stock is income, not a hedge: the short stays naked", () => {
+    const writtenPut = inst({ securityId: 2, symbol: "ZZC   260116P00200000", isOption: true, optionType: "PUT", quantity: -3, exposure: 4000, marketValue: -900, thetaPerDay: 300 });
+    const r = classifyBook(new Map([group("ZZC", false, [
+      inst({ securityId: 1, symbol: "ZZC", underlying: "ZZC", quantity: -30, exposure: -12000, marketValue: -12000 }),
+      writtenPut,
+    ])]));
+    expect(r.pairs.find((p) => p.underlying === "ZZC")).toBeUndefined();
+    expect(r.pairs.some((p) => p.classification === "hedged_short")).toBe(false);
+    const bet = r.standaloneBets.find((b) => b.underlying === "ZZC")!;
+    expect(bet.kind).toBe("naked_short");
+    // The put still shows in the instrument list, and netExposure sums everything.
+    expect(bet.instruments).toContain(writtenPut);
+    expect(bet.exposure).toBe(-8000);
+    // Summary protective notional = sum of pair offsetCredited + proxy credit: nothing here.
+    expect(r.proxyCandidates).toHaveLength(0);
+  });
+
+  it("a written put beside a long call on a short: only the long call is credited and scored", () => {
+    const longCall = inst({ securityId: 2, symbol: "ZZC   260116C00200000", isOption: true, optionType: "CALL", quantity: 1, exposure: 4000, marketValue: 1500, thetaPerDay: -20 });
+    const writtenPut = inst({ securityId: 3, symbol: "ZZC   260116P00150000", isOption: true, optionType: "PUT", quantity: -3, exposure: 4000, marketValue: -900, thetaPerDay: 300 });
+    const r = classifyBook(new Map([group("ZZC", false, [
+      inst({ securityId: 1, symbol: "ZZC", quantity: -30, exposure: -12000, marketValue: -12000 }),
+      longCall,
+      writtenPut,
+    ])]));
+    const pair = r.pairs.find((p) => p.underlying === "ZZC")!;
+    expect(pair.classification).toBe("hedged_short");
+    expect(pair.offsetExposure).toBe(4000);
+    expect(pair.offsetCredited).toBe(4000);
+    expect(pair.hasAmplifiers).toBe(false);
+    expect(pair.instruments).toContain(writtenPut);
+    // Hedge-book scoring picks only the long call.
+    expect(pairHedgeInstruments(pair)).toEqual([longCall]);
+  });
+
+  it("a written put is not credited against a short ETF stack", () => {
+    const r = classifyBook(new Map([group("ZZF", true, [
+      inst({ securityId: 1, symbol: "ZZF", quantity: -200, exposure: -12000, marketValue: -12000 }),
+      inst({ securityId: 2, symbol: "ZZF   260116P00050000", isOption: true, optionType: "PUT", quantity: -3, exposure: 4000, marketValue: -900, thetaPerDay: 300 }),
+    ])]));
+    const c = r.proxyCandidates.find((c) => c.underlying === "ZZF")!;
+    expect(c.source).toBe("etf_negative_stack");
+    expect(c.protectiveNotional).toBe(12000);
   });
 
   it("flags same-sign options on a long core as amplifiers, not hedges", () => {
