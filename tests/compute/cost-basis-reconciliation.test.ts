@@ -274,5 +274,56 @@ describe("reconcileCostBasis v2 dollar convention (task 4: readers consume store
       expect(row.quantityDiff).toBe(0);
       expect(row.flagReason ?? "").not.toMatch(/^Quantity mismatch/);
     });
+
+    it("flags open lots on both sides even when the signed net equals the holding (-100 vs long 50 + short 150)", () => {
+      db.prepare("INSERT INTO securities (id, symbol, name, security_type) VALUES (9, 'ZZA', 'Zed A', 'stock')").run();
+      insertLot(9, 50, 0, 5000);
+      insertLot(9, 150, 1, 15000);
+      insertHolding(9, -100, -10000, "2026-03-27");
+      const row = reconcileCostBasis(db).rows.find((r) => r.symbol === "ZZA")!;
+      expect(row.quantityDiff).toBe(0);
+      expect(row.flagged).toBe(true);
+      expect(row.flagReason).toMatch(/^Quantity mismatch/);
+      expect(row.flagReason).toMatch(/open lots on both sides/);
+    });
+
+    it("a short with a NEGATIVE broker basis (TWS shape) matches positive lot basis", () => {
+      db.prepare("INSERT INTO securities (id, symbol, name, security_type) VALUES (9, 'ZZA', 'Zed A', 'stock')").run();
+      insertLot(9, 125, 1, 12500);
+      insertHolding(9, -125, -12500, "2026-03-27");
+      const row = reconcileCostBasis(db).rows.find((r) => r.symbol === "ZZA")!;
+      expect(row.flagged).toBe(false);
+      expect(row.costBasisDiff).toBeCloseTo(0, 2);
+    });
+
+    it("a short with a POSITIVE broker basis (other source) also matches", () => {
+      db.prepare("INSERT INTO securities (id, symbol, name, security_type) VALUES (9, 'ZZA', 'Zed A', 'stock')").run();
+      insertLot(9, 125, 1, 12500);
+      insertHolding(9, -125, 12500, "2026-03-27");
+      const row = reconcileCostBasis(db).rows.find((r) => r.symbol === "ZZA")!;
+      expect(row.flagged).toBe(false);
+      expect(row.costBasisDiff).toBeCloseTo(0, 2);
+    });
+
+    it("a short whose basis really differs still flags the variance", () => {
+      db.prepare("INSERT INTO securities (id, symbol, name, security_type) VALUES (9, 'ZZA', 'Zed A', 'stock')").run();
+      insertLot(9, 125, 1, 12500);
+      insertHolding(9, -125, -20000, "2026-03-27");
+      const row = reconcileCostBasis(db).rows.find((r) => r.symbol === "ZZA")!;
+      expect(row.flagged).toBe(true);
+      expect(row.flagReason).toMatch(/^Cost basis variance/);
+    });
+
+    it("long-only pair is unchanged: positive computed basis, plain diff", () => {
+      db.prepare("INSERT INTO securities (id, symbol, name, security_type) VALUES (9, 'ZZA', 'Zed A', 'stock')").run();
+      insertLot(9, 100, 0, 10000);
+      insertHolding(9, 100, 10500, "2026-03-27");
+      const row = reconcileCostBasis(db).rows.find((r) => r.symbol === "ZZA")!;
+      expect(row.computedQuantity).toBe(100);
+      expect(row.computedCostBasis).toBeCloseTo(10000, 2);
+      expect(row.costBasisDiff).toBeCloseTo(500, 2);
+      expect(row.flagged).toBe(true);
+      expect(row.flagReason).toMatch(/^Cost basis variance/);
+    });
   });
 });

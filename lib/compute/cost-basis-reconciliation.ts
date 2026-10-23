@@ -9,7 +9,7 @@ import type Database from "better-sqlite3";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 import { getTaxConventionState } from "@/lib/compute/tax-convention";
 import { cashEquivalentSecuritySql } from "@/lib/compute/cash-equivalents";
-import { lotSideSignSql } from "@/lib/queries/tax-lots";
+import { lotSideSignSql, remainingLotBasisSql } from "@/lib/queries/tax-lots";
 
 // ─── Types ──────────────────────────────────────────────────────
 
@@ -136,7 +136,9 @@ export function reconcileCostBasis(
         tl.account_id,
         tl.security_id,
         SUM(${lotSideSignSql("tl")} * tl.quantity_remaining) AS total_quantity,
-        SUM(tl.cost_basis * tl.quantity_remaining / tl.quantity_acquired) * COALESCE(fx.usd_per_unit, 1) AS total_cost_basis
+        SUM(${lotSideSignSql("tl")} * ${remainingLotBasisSql()}) AS total_cost_basis,
+        MAX(CASE WHEN tl.is_short = 1 THEN 1 ELSE 0 END) AS has_short,
+        MAX(CASE WHEN tl.is_short = 1 THEN 0 ELSE 1 END) AS has_long
        FROM tax_lots tl
        JOIN securities s ON s.id = tl.security_id
        LEFT JOIN fx_rates fx ON fx.currency = s.currency
@@ -150,14 +152,17 @@ export function reconcileCostBasis(
     security_id: number;
     total_quantity: number;
     total_cost_basis: number;
+    has_short: number;
+    has_long: number;
   }>;
 
   // Index computed lots for lookup
-  const computedMap = new Map<string, { quantity: number; costBasis: number }>();
+  const computedMap = new Map<string, { quantity: number; costBasis: number; bothSides: boolean }>();
   for (const lot of computedLots) {
     computedMap.set(`${lot.account_id}-${lot.security_id}`, {
       quantity: lot.total_quantity,
       costBasis: lot.total_cost_basis,
+      bothSides: lot.has_short === 1 && lot.has_long === 1,
     });
   }
 
@@ -165,16 +170,23 @@ export function reconcileCostBasis(
 
   for (const h of holdings) {
     const key = `${h.account_id}-${h.security_id}`;
-    const computed = computedMap.get(key) ?? { quantity: 0, costBasis: 0 };
+    const computed = computedMap.get(key) ?? { quantity: 0, costBasis: 0, bothSides: false };
 
     const quantityDiff = h.quantity - computed.quantity;
+    // Basis is compared on the holding's own sign. Every IBKR source (TWS
+    // sync, Web API refresh, the statement's Open Positions) writes a short's
+    // cost basis NEGATIVE (position x avgCost); a source that stores it
+    // positive would still be a short, so a short's broker basis is read as
+    // minus its magnitude. A long holding's figure is used exactly as stored.
+    const brokerBasis =
+      h.broker_cost_basis != null && h.quantity < 0
+        ? -Math.abs(h.broker_cost_basis)
+        : h.broker_cost_basis;
     const costBasisDiff =
-      h.broker_cost_basis != null
-        ? h.broker_cost_basis - computed.costBasis
-        : null;
+      brokerBasis != null ? brokerBasis - computed.costBasis : null;
     const variancePct =
-      h.broker_cost_basis != null && h.broker_cost_basis !== 0
-        ? (costBasisDiff! / h.broker_cost_basis) * 100
+      brokerBasis != null && brokerBasis !== 0
+        ? (costBasisDiff! / brokerBasis) * 100
         : null;
 
     // Determine flag status
@@ -184,6 +196,11 @@ export function reconcileCostBasis(
     if (h.broker_cost_basis == null) {
       flagged = true;
       flagReason = "No broker cost basis imported";
+    } else if (computed.bothSides) {
+      // Signed netting would hide a long lot left open under a short holding
+      // (or the reverse), so open lots on both sides is itself a mismatch.
+      flagged = true;
+      flagReason = `Quantity mismatch: open lots on both sides (long and short) for holdings ${h.quantity}; lots net ${computed.quantity}`;
     } else if (Math.abs(quantityDiff) > 0.01) {
       flagged = true;
       flagReason = `Quantity mismatch: holdings ${h.quantity} vs lots ${computed.quantity}`;
