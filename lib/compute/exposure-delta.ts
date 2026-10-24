@@ -13,6 +13,7 @@ import type Database from "better-sqlite3";
 import { FACTOR_COLUMNS, type FactorColumn } from "@/lib/factors";
 import { marketValue } from "@/lib/valuation";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
+import { liveOptionExpirationSql } from "@/lib/compute/option-expiry";
 import { accountScopeAndSql } from "@/lib/queries/account-scope-sql";
 import { BETA_LOOKBACK_DAYS } from "@/lib/queries/security-betas";
 import { getUsdPerUnit } from "@/lib/queries/fx-rates";
@@ -85,7 +86,10 @@ interface HoldingRow {
 /**
  * Build the current holdings snapshot for the given scope.
  * Per-(account, security) latest-holdings CTE so IBKR intra-day rows don't
- * mask Vanguard statement positions.
+ * mask Vanguard statement positions. An expired option is left out (the one
+ * reader, lib/compute/option-expiry.ts), as Scenario Modeling, Defense and
+ * Concentration already do: a contract that expired at Friday's close is not
+ * part of the baseline the What-if is measured against (2026-10-24 QA).
  */
 function loadCurrentHoldings(
   db: Database.Database,
@@ -124,6 +128,7 @@ function loadCurrentHoldings(
       LEFT JOIN latest_prices lp ON lp.security_id = s.id
       LEFT JOIN security_factors sf ON sf.security_id = s.id
       LEFT JOIN security_betas sb ON sb.security_id = s.id AND sb.lookback_days = ${BETA_LOOKBACK_DAYS}
+      WHERE ${liveOptionExpirationSql("s")}
       GROUP BY s.id
     `
     )
