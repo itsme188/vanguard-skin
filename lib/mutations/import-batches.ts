@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { removeGhostSecurities, securitiesTouchedByBatch } from "@/lib/mutations/ghost-securities";
 import type { ImportBatch } from "@/lib/types";
 import { stripArtifactSuffix } from "@/lib/mutations/donation-links";
 import {
@@ -101,6 +102,10 @@ export function deleteImportBatch(db: Database.Database, batchId: number): void 
     const deletedPricePairs = db
       .prepare(`SELECT security_id AS securityId, date FROM prices WHERE import_batch_id = ?`)
       .all(batchId) as { securityId: number; date: string }[];
+    // The securities this batch's rows point at, read BEFORE those rows go:
+    // any of them left with nothing pointing at it after the delete is a
+    // ghost the batch created and is removed below (2026-10-24 QA).
+    const touchedSecurityIds = securitiesTouchedByBatch(db, batchId);
     db.prepare("DELETE FROM prices WHERE import_batch_id = ?").run(batchId);
     const holdingsDeleted = db
       .prepare("DELETE FROM holdings WHERE import_batch_id = ?")
@@ -155,6 +160,7 @@ export function deleteImportBatch(db: Database.Database, batchId: number): void 
       .prepare("DELETE FROM corporate_actions WHERE import_batch_id = ?")
       .run(batchId);
     db.prepare("DELETE FROM import_batches WHERE id = ?").run(batchId);
+    removeGhostSecurities(db, touchedSecurityIds);
 
     // Undo is material to tax inputs whenever it removed a transaction,
     // corporate action, or donation link/lot row — donation-only batches

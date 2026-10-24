@@ -1408,6 +1408,11 @@ export function deleteUnenrichedEventsForWeek(
    */
   deletedEarnings?: DeletedEarningsRow[],
 ): number {
+  // "Enriched" (protected) also means a row that carries an owner-facing child
+  // record keyed on its id: the bogey-scan ledger (stops an article being
+  // re-read at AI cost), a worksheet flag (the row is armed) and a
+  // filing-summary record. All three cascade on delete (2026-10-24 QA: a
+  // refresh re-minted 30 rows and cascade-deleted 28 scan rows).
   const where = `WHERE week_of = ? AND source = ?
           AND actual_value IS NULL
           AND consensus_value IS NULL
@@ -1416,7 +1421,10 @@ export function deleteUnenrichedEventsForWeek(
           AND wire_probe_empty_at IS NULL
           AND id NOT IN (SELECT event_id FROM earnings_emails)
           AND id NOT IN (SELECT event_id FROM earnings_email_skips)
-          AND id NOT IN (SELECT event_id FROM earnings_bogeys)`;
+          AND id NOT IN (SELECT event_id FROM earnings_bogeys)
+          AND id NOT IN (SELECT event_id FROM earnings_bogey_scans)
+          AND id NOT IN (SELECT event_id FROM earnings_worksheet_flags)
+          AND id NOT IN (SELECT event_id FROM filing_summary_events)`;
   const keepClause =
     keepSourceKeys === undefined
       ? ""
