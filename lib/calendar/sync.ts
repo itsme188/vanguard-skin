@@ -252,11 +252,16 @@ function writeAndCollectRemoved(
  * lists the old id, so without a `removedEvents` outbox entry the Worker could
  * still email for a print date that no longer exists.
  *
- * Only TRUE removals are published. The finnhub / nasdaq cleanup deletes every
- * unenriched row of the week and the upsert re-creates the re-listed ones
- * under the same source_key and date (new id). Those prints still stand, so
- * their old ids are deliberately NOT published — doing so would silence the
- * cloud for every re-listed name on every refresh.
+ * Only TRUE removals are published. Every source_key this fetch lists is on
+ * the cleanup's keep list (merged with the caller's own keep list), so a
+ * re-listed row is refreshed IN PLACE by the upsert: same id, and its
+ * date-verification stamp and every child record keyed on the id (bogey-scan
+ * ledger, worksheet flag, filing-summary record) stay. Before 2026-10-24 the
+ * cleanup deleted every unenriched row and the upsert re-created the
+ * re-listed ones under new ids, which wiped those records on every refresh.
+ * The macro phase has always passed its fresh keys this way. The re-listed
+ * check below stays for the one case a deleted key can still come back: a
+ * caller whose inputs omit a key its keep list protects.
  *
  * The macro phase does not come through here: a claude_macro row is never an
  * earnings row, so it has nothing to publish.
@@ -275,7 +280,10 @@ export function replaceWeekRowsPublishingRemovals(
 ): UpsertResult {
   return db.transaction((): UpsertResult => {
     const deletedEarnings: DeletedEarningsRow[] = [];
-    deleteUnenrichedEventsForWeek(db, weekOf, source, keepSourceKeys, deletedEarnings);
+    // A key this fetch lists again is never deleted: the upsert refreshes it
+    // in place and the row keeps its id.
+    const keep = [...(keepSourceKeys ?? []), ...inputs.map((e) => e.source_key)];
+    deleteUnenrichedEventsForWeek(db, weekOf, source, keep, deletedEarnings);
     const upserted = upsertCalendarEvents(db, inputs);
     if (deletedEarnings.length === 0) return upserted;
     // Re-listed = the same source_key is stored again ON THE SAME DATE. A key
