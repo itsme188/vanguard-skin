@@ -22,8 +22,8 @@ export const RUNNER_LOAD_FAILED_DETAIL = "summary runner failed to load — repo
 export const RUNNER_FAULT_SETTING_KEY = "filing_summary_runner_fault";
 /** A late arm whose discovery pass failed `MAX_DISCOVERY_ATTEMPTS` times. */
 export const DISCOVERY_GAVE_UP_DETAIL = "SEC discovery kept failing — Run summary unavailable";
-/** A print still waiting when it left the tick's window (the app was not running at 8 pm). */
-export const STALE_WAITING_DETAIL = "polling stopped before 8 pm (the app was not running) — nothing more will run on its own";
+/** A print still waiting when it left the tick's window (the app was not running at 9 pm). */
+export const STALE_WAITING_DETAIL = "polling stopped before 9 pm (the app was not running) — nothing more will run on its own";
 /** SEC was unreachable and the print has left the tick's window (today and yesterday). */
 export const SEC_GAVE_UP_TEXT = "SEC was not reachable; nothing more will run on its own";
 

@@ -256,19 +256,19 @@ afterEach(() => {
 // ---------------------------------------------------------------- tests
 
 describe("pollPhase (Eastern window)", () => {
-  it("06:00 to 20:00 Eastern on the event date is the window; 20:00:00 is past it", () => {
+  it("06:00 to 21:00 Eastern on the event date is the window; 21:00:00 is past it", () => {
     expect(pollPhase(EVENT_DATE, et("05:59"))).toBe("before_window");
     expect(pollPhase(EVENT_DATE, et("06:00"))).toBe("in_window");
-    expect(pollPhase(EVENT_DATE, et("19:59"))).toBe("in_window");
-    expect(pollPhase(EVENT_DATE, et("20:00"))).toBe("after_cutoff");
+    expect(pollPhase(EVENT_DATE, et("20:59"))).toBe("in_window");
+    expect(pollPhase(EVENT_DATE, et("21:00"))).toBe("after_cutoff");
     expect(pollPhase(EVENT_DATE, et("01:00", "2026-10-22"))).toBe("after_cutoff");
   });
 
-  it("follows the clock change: on 2026-11-01 (EST from 02:00) the window is 11:00Z to 01:00Z", () => {
+  it("follows the clock change: on 2026-11-01 (EST from 02:00) the window is 11:00Z to 02:00Z", () => {
     expect(pollPhase("2026-11-01", Date.parse("2026-11-01T10:59:00Z"))).toBe("before_window");
     expect(pollPhase("2026-11-01", Date.parse("2026-11-01T11:00:00Z"))).toBe("in_window");
-    expect(pollPhase("2026-11-01", Date.parse("2026-11-02T00:59:59Z"))).toBe("in_window");
-    expect(pollPhase("2026-11-01", Date.parse("2026-11-02T01:00:00Z"))).toBe("after_cutoff");
+    expect(pollPhase("2026-11-01", Date.parse("2026-11-02T01:59:59Z"))).toBe("in_window");
+    expect(pollPhase("2026-11-01", Date.parse("2026-11-02T02:00:00Z"))).toBe("after_cutoff");
   });
 });
 
@@ -341,6 +341,22 @@ describe("pollEvent lifecycle", () => {
     expect(earningsCalls).toEqual([eventId]);
   });
 
+  it("a 10-Q accepted 20:00:08 on the earnings day is inside the 21:00 cutoff: read, not rejected as after it", async () => {
+    arm(et("09:00"));
+    edgar.filings.push(earnings8k("0000123456-26-000101", "160500"));
+    await tick(et("16:06"));
+    edgar.filings.push(companion("0000123456-26-000104", "10-Q", "200008"));
+    await tick(et("20:30"));
+
+    const filings = listFilings(db, eventId);
+    expect(filings.map((f) => [f.form, f.role, f.identityVerdict, f.identityReason])).toEqual([
+      ["8-K", "earnings", "accepted", null],
+      ["10-Q", "companion", "accepted", null],
+    ]);
+    expect(filings[1].acceptedAt).toBe(new Date(et("20:00") + 8_000).toISOString());
+    expect(companionCalls).toEqual([[eventId, filings[1].id]]);
+  });
+
   it("a Form 4 is ignored without fetching its header", async () => {
     arm(et("09:00"));
     edgar.filings.push(earnings8k("0000123456-26-000101", "160500"));
@@ -350,13 +366,13 @@ describe("pollEvent lifecycle", () => {
     expect(edgar.headerCalls("0000123456-26-000109")).toBe(0);
   });
 
-  it("Review Focus 2: no tick 15:50 → 21:30; the catch-up reads the 16:05 8-K, lists the 20:01 10-Q as after 8 pm, then past_cutoff", async () => {
+  it("Review Focus 2: no tick 15:50 → 22:30; the catch-up reads the 16:05 8-K, lists the 21:01 10-Q as after 9 pm, then past_cutoff", async () => {
     arm(et("09:00"));
     await tick(et("15:00"));
     await tick(et("15:50"));
     edgar.filings.push(earnings8k("0000123456-26-000101", "160500"));
-    edgar.filings.push(companion("0000123456-26-000103", "10-Q", "200100"));
-    await tick(et("21:30"));
+    edgar.filings.push(companion("0000123456-26-000103", "10-Q", "210100"));
+    await tick(et("22:30"));
 
     const filings = listFilings(db, eventId);
     expect(filings.map((f) => [f.form, f.role, f.identityVerdict, f.identityReason])).toEqual([
@@ -370,17 +386,17 @@ describe("pollEvent lifecycle", () => {
     expect(s.catchupDone).toBe(true);
 
     const before = edgar.calls.length;
-    await tick(et("21:31"));
+    await tick(et("22:31"));
     expect(edgar.calls.length).toBe(before);
   });
 
-  it("the catch-up with no filing says no earnings 8-K by 8 pm", async () => {
+  it("the catch-up with no filing says no earnings 8-K by 9 pm", async () => {
     arm(et("09:00"));
     await tick(et("15:00"));
-    await tick(et("20:00"));
+    await tick(et("21:00"));
     const s = getEventState(db, eventId)!;
     expect(s.pollState).toBe("past_cutoff");
-    expect(s.pollDetail).toBe("no earnings 8-K filed by 8 pm");
+    expect(s.pollDetail).toBe("no earnings 8-K filed by 9 pm");
   });
 
   it("ruling 1: a filing whose HEADER day is the day before is ignored even when the JSON passes the prefilter", async () => {
@@ -407,7 +423,7 @@ describe("pollEvent lifecycle", () => {
     expect(s.catchupDone).toBe(false);
     expect(s.pollDetail).not.toMatch(/no earnings/);
 
-    // SEC is back: the retried catch-up finds the 8-K accepted before 20:00.
+    // SEC is back: the retried catch-up finds the 8-K accepted before 21:00.
     edgar.submissionsFail = false;
     edgar.filings.push(earnings8k("0000123456-26-000101", "160500"));
     await tick(et("21:01"));
@@ -421,12 +437,12 @@ describe("pollEvent lifecycle", () => {
     arm(et("09:00"));
     edgar.filings.push(earnings8k("0000123456-26-000101", "160500"));
     edgar.headerFail.add("0000123456-26-000101");
-    await tick(et("20:30"));
+    await tick(et("21:30"));
     let s = getEventState(db, eventId)!;
     expect(s.catchupDone).toBe(false);
     expect(s.pollState).toBe("sec_unreachable");
     edgar.headerFail.clear();
-    await tick(et("20:31"));
+    await tick(et("21:31"));
     s = getEventState(db, eventId)!;
     expect(s.catchupDone).toBe(true);
     expect(listFilings(db, eventId)).toHaveLength(1);
@@ -445,11 +461,11 @@ describe("pollEvent lifecycle", () => {
     expect(getEventState(db, eventId)!.pollState).toBe("waiting");
   });
 
-  it("C1: armed at 20:30 → manual_only; ONE discovery pass stores the day's filings and never repeats", async () => {
-    arm(et("20:30"));
+  it("C1: armed at 21:30 → manual_only; ONE discovery pass stores the day's filings and never repeats", async () => {
+    arm(et("21:30"));
     edgar.filings.push(earnings8k("0000123456-26-000101", "160500"));
     edgar.filings.push(companion("0000123456-26-000102", "PRE 14C", "161200"));
-    await tick(et("20:31"));
+    await tick(et("21:31"));
     const s = getEventState(db, eventId)!;
     expect(s.pollState).toBe("manual_only");
     expect(s.pollDetail).toBe(MANUAL_ONLY_DETAIL);
@@ -462,7 +478,7 @@ describe("pollEvent lifecycle", () => {
     expect(listDocuments(db, filings[0].id).find((d) => d.docType === "EX-99.1")?.status).toBe("fetched");
     // Completion is recorded: the next ticks make no SEC request at all.
     const calls = edgar.calls.length;
-    await tick(et("20:32"));
+    await tick(et("21:32"));
     await tick(et("10:00", "2026-10-22"));
     expect(edgar.calls.length).toBe(calls);
   });
@@ -470,9 +486,9 @@ describe("pollEvent lifecycle", () => {
   it("C1: with the real runner callbacks the discovery creates no run, Run summary is offered, and the run action starts it", async () => {
     setModelCatalogSource(() => ["claude-opus-5-5"]);
     try {
-      arm(et("20:30"));
+      arm(et("21:30"));
       edgar.filings.push(earnings8k("0000123456-26-000101", "160500"));
-      clock = et("20:31");
+      clock = et("21:31");
       await runTick(db, clock, {
         ...seams(),
         onEarningsAccepted: (d, id) => runnerOnEarningsAccepted(d, id),
@@ -502,9 +518,9 @@ describe("pollEvent lifecycle", () => {
   });
 
   it("C1: a discovery pass that could not finish (SEC down) stays manual_only and is tried again", async () => {
-    arm(et("20:30"));
+    arm(et("21:30"));
     edgar.submissionsFail = true;
-    await tick(et("20:31"));
+    await tick(et("21:31"));
     let s = getEventState(db, eventId)!;
     expect(s.pollState).toBe("manual_only");
     expect(s.catchupDone).toBe(false);
@@ -518,11 +534,11 @@ describe("pollEvent lifecycle", () => {
   });
 
   it("C1: a discovery that finds no earnings filing says so and stays manual_only", async () => {
-    arm(et("20:30"));
-    await tick(et("20:31"));
+    arm(et("21:30"));
+    await tick(et("21:31"));
     const s = getEventState(db, eventId)!;
     expect(s.pollState).toBe("manual_only");
-    expect(s.pollDetail).toBe("armed after 8 pm — no earnings 8-K filed by 8 pm");
+    expect(s.pollDetail).toBe("armed after 9 pm — no earnings 8-K filed by 9 pm");
     expect(s.catchupDone).toBe(true);
   });
 
@@ -668,7 +684,7 @@ describe("runTick: disarm, re-arm, runner, sweep", () => {
     }).runId;
   }
 
-  it("disarm → cancelled and pending sections failed/cancelled; re-arm before 20:00 → waiting, run kept, no new run", async () => {
+  it("disarm → cancelled and pending sections failed/cancelled; re-arm before 21:00 → waiting, run kept, no new run", async () => {
     arm(et("09:00"));
     edgar.filings.push(earnings8k("0000123456-26-000101", "160500"));
     await tick(et("16:06"));
@@ -693,13 +709,13 @@ describe("runTick: disarm, re-arm, runner, sweep", () => {
     expect(earningsCalls).toEqual([eventId]); // not called again for the same filing
   });
 
-  it("re-armed after 20:00 the cancelled event becomes manual_only", async () => {
+  it("re-armed after 21:00 the cancelled event becomes manual_only", async () => {
     arm(et("09:00"));
     await tick(et("15:00"));
     disarm();
     await tick(et("16:00"));
-    arm(et("20:15"));
-    await tick(et("20:16"));
+    arm(et("21:15"));
+    await tick(et("21:16"));
     expect(getEventState(db, eventId)!.pollState).toBe("manual_only");
   });
 
@@ -875,14 +891,14 @@ describe("fix round 1", () => {
     expect(earningsCalls).toEqual([eventId]);
   });
 
-  it("re-arm reads the flag's created_at: armed again at 19:50, first ticked at 20:05 → catch-up, not manual_only", async () => {
+  it("re-arm reads the flag's created_at: armed again at 20:50, first ticked at 21:05 → catch-up, not manual_only", async () => {
     arm(et("09:00"));
     await tick(et("15:00"));
     disarm();
     await tick(et("16:00"));
-    arm(et("19:50"));
+    arm(et("20:50"));
     edgar.filings.push(earnings8k("0000123456-26-000101", "160500"));
-    await tick(et("20:05"));
+    await tick(et("21:05"));
     expect(getEventState(db, eventId)!.pollState).toBe("past_cutoff");
     expect(earningsCalls).toEqual([eventId]);
   });
@@ -1126,7 +1142,7 @@ describe("final review fixes", () => {
     const kept: Array<[string, string]> = [
       ["ambiguous", "the filing names Q2 2026, not this quarter"],
       ["no_cik", "no SEC filer found for ACME"],
-      ["manual_only", "armed after 8 pm — no earnings 6-K filed by 8 pm"],
+      ["manual_only", "armed after 9 pm — no earnings 6-K filed by 9 pm"],
     ];
     const errors = vi.spyOn(console, "error").mockImplementation(() => {});
     try {
@@ -1186,7 +1202,7 @@ describe("final review fixes", () => {
     expect(s.pollState).toBe("past_cutoff");
     expect(s.catchupDone).toBe(true);
     const panel = getPanelViews(db, [eventId], [], new Date(et("10:00", "2026-10-23")))[eventId];
-    expect(pollStateText(panel)).toBe("Polling stopped before 8 pm (the app was not running) — nothing more will run on its own");
+    expect(pollStateText(panel)).toBe("Polling stopped before 9 pm (the app was not running) — nothing more will run on its own");
     expect(needsPolling(panel)).toBe(false);
   });
 
@@ -1204,7 +1220,7 @@ describe("final review fixes", () => {
     const s = getEventState(db, eventId)!;
     expect(s.pollState).toBe("past_cutoff");
     const panel = getPanelViews(db, [eventId], [], new Date(et("10:00", "2026-10-23")))[eventId];
-    expect(pollStateText(panel)).toBe("Polling ended at 8 pm — Run summary to start");
+    expect(pollStateText(panel)).toBe("Polling ended at 9 pm — Run summary to start");
     expect(needsPolling(panel)).toBe(false);
   });
 

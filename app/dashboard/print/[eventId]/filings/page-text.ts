@@ -148,7 +148,7 @@ export function correctedByText(c: NonNullable<ViewClaim["correctedBy"]>): strin
 
 /**
  * One line per filing found for the print, read or not:
- * "8-K · 4:05 pm · earnings · read", "8-K · 8:14 pm · accepted after 8 pm · not read",
+ * "8-K · 4:05 pm · earnings · read", "8-K · 9:14 pm · accepted after 9 pm · not read",
  * "8-K · time unconfirmed · not read on its own".
  */
 export function filingLine(f: FullFiling, inSummary = false): string {

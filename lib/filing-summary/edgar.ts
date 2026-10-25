@@ -18,7 +18,7 @@
 // here only as a cheap PREFILTER: a filing survives when EITHER reading (the
 // literal UTC instant, or the Eastern wall-clock reading) falls on the event
 // day in America/New_York. The header's `<ACCEPTANCE-DATETIME>` (always
-// Eastern) is what the caller decides on — the 20:00 cutoff and the companion
+// Eastern) is what the caller decides on — the 21:00 cutoff and the companion
 // ordering belong to the caller. A header without it gives
 // `acceptanceMs: null`, and the caller lists that filing as "time
 // unconfirmed" (never run automatically).
@@ -178,7 +178,7 @@ function isAllowListed(form: string, filerKind: FilerKind): boolean {
  *  - Foreign (6-K filer) earnings: a `6-K` with an `EX-99*` document.
  *  - Companion: any other allow-listed form (an `8-K` without 2.02, an
  *    `8-K/A`, a later `6-K` without EX-99 …). Whether it came AFTER the
- *    earnings filing and before 20:00 is the caller's decision, on the
+ *    earnings filing and before 21:00 is the caller's decision, on the
  *    header acceptance time.
  *  - Ignored: Forms 3, 4, 5, 144 and everything else off the list.
  */
