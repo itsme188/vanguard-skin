@@ -1722,7 +1722,7 @@ export async function executeTool(
         const rows = db
           .prepare(
             `SELECT event_type, event_date, event_time, title, description, symbol,
-             expected_impact, consensus_estimate, previous_value, actual_value,
+             expected_impact, consensus_estimate, consensus_value, previous_value, actual_value,
              release_time, raw_json, manual_actuals_at
              FROM calendar_events WHERE ${evtWhere}
              ORDER BY event_date ASC, event_time ASC LIMIT 50`
@@ -1733,6 +1733,7 @@ export async function executeTool(
             event_time: string | null;
             symbol: string | null;
             consensus_estimate: string | null;
+            consensus_value: string | null;
             actual_value: string | null;
             release_time: string | null;
             raw_json: string | null;
@@ -1742,6 +1743,14 @@ export async function executeTool(
         // A hand-accepted figure is stamped on one twin of the print; read
         // the stamp across the cluster, as every other actuals reader does.
         applyClusterManualActuals(db, rows);
+        // One consensus figure per print, on the Earnings Hub's basis:
+        // consensus_value, else the vendor estimate. Returned under the
+        // existing consensus_estimate key; consensus_value itself is dropped.
+        for (const r of rows) {
+          const cv = r.consensus_value;
+          if (cv != null && String(cv).trim() !== "") r.consensus_estimate = cv;
+          delete (r as { consensus_value?: unknown }).consensus_value;
+        }
         // Whether a result is on file, said in words: the model read a dated
         // pre-open row at 04:20 ET as "already reported" (QA 2026-10-13).
         // Only a stored actual means reported; a slot is a scheduled time.
