@@ -15,7 +15,7 @@ import {
 } from "@/lib/queries/chat-tools";
 import { getNotesFiltered, getSecurityIdBySymbol } from "@/lib/queries/notes";
 import { createNote } from "@/lib/mutations/notes";
-import { addDays, todayET, nowET } from "@/lib/calendar/date-utils";
+import { addDays, todayET, nowET, parseDbTimestamp } from "@/lib/calendar/date-utils";
 import { NOTE_TYPES, NOTE_SENTIMENTS } from "@/lib/types";
 import { coerceNoteType, coerceNoteSentiment } from "@/lib/notes/coerce";
 import { computeTwr } from "@/lib/compute/twr";
@@ -1816,7 +1816,33 @@ export async function executeTool(
             .all(weeksBack);
         }
 
-        rawResult = { briefings, count: briefings.length };
+        // generated_at is SQLite UTC; the model read it as Eastern (QA
+        // 2026-10-18). Return a labelled Eastern time and the UTC instant.
+        const etFormat = new Intl.DateTimeFormat("en-CA", {
+          timeZone: "America/New_York",
+          year: "numeric",
+          month: "2-digit",
+          day: "2-digit",
+          hour: "2-digit",
+          minute: "2-digit",
+          hourCycle: "h23",
+        });
+        const briefingsEt = (briefings as Array<{ generated_at: string; [k: string]: unknown }>).map(
+          ({ generated_at, ...rest }) => {
+            const d = parseDbTimestamp(generated_at);
+            let generated_at_et: string | null = null;
+            if (d) {
+              const p = Object.fromEntries(etFormat.formatToParts(d).map((x) => [x.type, x.value]));
+              generated_at_et = `${p.year}-${p.month}-${p.day} ${p.hour}:${p.minute} ET`;
+            }
+            return { ...rest, generated_at_et, generated_at_utc: generated_at };
+          },
+        );
+        rawResult = {
+          briefings: briefingsEt,
+          count: briefingsEt.length,
+          now_et: `${todayET()} ${nowET()} ET`,
+        };
         break;
       }
 
