@@ -165,7 +165,7 @@ describe("panel view", () => {
   it("offers Run summary only with an accepted earnings filing and no run", () => {
     expect(getPanelViews(db, [eventId], CATALOG)[eventId].runSummaryAvailable).toBe(false);
     insertFiling(db, filing("0000000001-26-000001"));
-    upsertEventState(db, eventId, { pollState: "manual_only", pollDetail: "armed after 8 pm" });
+    upsertEventState(db, eventId, { pollState: "manual_only", pollDetail: "armed after 9 pm" });
     const v = getPanelViews(db, [eventId], CATALOG)[eventId];
     expect(v.runSummaryAvailable).toBe(true);
     expect(v.pollState).toBe("manual_only");
@@ -230,7 +230,7 @@ describe("panel view", () => {
   });
 
   it("a rejected earnings filing is neither accepted nor time-unconfirmed", () => {
-    insertFiling(db, filing("0000000001-26-000001", { identityVerdict: "rejected", identityReason: "accepted after 8 pm" }));
+    insertFiling(db, filing("0000000001-26-000001", { identityVerdict: "rejected", identityReason: "accepted after 9 pm" }));
     const v = getPanelViews(db, [eventId], CATALOG)[eventId];
     expect(v.earningsTimeUnconfirmed).toBe(false);
     expect(v.runSummaryAvailable).toBe(false);
@@ -374,10 +374,10 @@ describe("full view", () => {
   it("lists rejected filings with their reason", () => {
     insertFiling(
       db,
-      filing("0000000001-26-000009", { identityVerdict: "rejected", identityReason: "accepted after 8 pm" }),
+      filing("0000000001-26-000009", { identityVerdict: "rejected", identityReason: "accepted after 9 pm" }),
     );
     const full = getFullView(db, eventId, CATALOG)!;
-    expect(full.filings[0]).toMatchObject({ identityVerdict: "rejected", identityReason: "accepted after 8 pm" });
+    expect(full.filings[0]).toMatchObject({ identityVerdict: "rejected", identityReason: "accepted after 9 pm" });
     expect(full.filings[0].indexUrl).toBe("https://www.sec.gov/Archives/edgar/data/1/000000000126000009/");
   });
 

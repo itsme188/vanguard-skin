@@ -137,17 +137,17 @@ export function pollStateText(view: PanelView, reading: ReadingDocs | null = vie
       if (view.pollDetail === STALE_WAITING_DETAIL && hasNoAcceptedEarningsFiling(view)) {
         return capitalise(STALE_WAITING_DETAIL);
       }
-      if (hasNoAcceptedEarningsFiling(view)) return `No earnings ${form} filed by 8 pm`;
+      if (hasNoAcceptedEarningsFiling(view)) return `No earnings ${form} filed by 9 pm`;
       return view.runSummaryAvailable
-        ? `Polling ended at 8 pm — Run summary to start`
-        : "Polling ended at 8 pm";
+        ? `Polling ended at 9 pm — Run summary to start`
+        : "Polling ended at 9 pm";
     case "manual_only":
       if (view.pollDetail === DISCOVERY_GAVE_UP_DETAIL && !view.runSummaryAvailable) return DISCOVERY_GAVE_UP_DETAIL;
       // A print armed in time that the app never polled: said truthfully.
       if (view.pollDetail?.startsWith("not polled on the print day")) {
         return "Not polled on the print day — nothing runs on its own";
       }
-      return "Armed after 8 pm — nothing runs on its own";
+      return "Armed after 9 pm — nothing runs on its own";
     case "ambiguous":
       return `Filing found but it does not name this quarter: ${view.pollDetail ?? "no reason recorded"}`;
     case "no_cik":

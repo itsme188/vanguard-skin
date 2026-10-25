@@ -3,7 +3,7 @@
  * and 10). One call = one look at EDGAR for one armed earnings event.
  *
  * LIFECYCLE (all on the Eastern clock, per event):
- *  - The state row is created on first sight. A print ARMED at or after 20:00
+ *  - The state row is created on first sight. A print ARMED at or after 21:00
  *    on its date, or armed on a later day, becomes `manual_only`: nothing is
  *    run on its own (late-arm ruling). It still gets ONE discovery pass that
  *    looks up and stores the event date's filings exactly as a catch-up does
@@ -14,18 +14,18 @@
  *    tick only came at 21:30 (app asleep) still gets its catch-up pass
  *    (Hardening 10).
  *  - Before 06:00 on the event date: no work.
- *  - 06:00 to 20:00: poll. A submissions (or CIK) fetch failure is
+ *  - 06:00 to 21:00: poll. A submissions (or CIK) fetch failure is
  *    `sec_unreachable`, retried next tick, never "no filing".
- *  - First tick at or after 20:00 with `catchup_done = 0`: one more poll, then
+ *  - First tick at or after 21:00 with `catchup_done = 0`: one more poll, then
  *    `past_cutoff` and `catchup_done = 1`. A catch-up that could not finish
  *    (SEC down, a header that would not load) leaves `catchup_done = 0` and is
  *    retried on the next tick.
  *
  * WHAT COUNTS (R11, controller rulings 1-3): a filing counts only on its
  * header's `<ACCEPTANCE-DATETIME>` (Eastern). A header day other than the
- * event date is ignored entirely. On the event date, after 20:00:00, the
+ * event date is ignored entirely. On the event date, after 21:00:00, the
  * filing is still inserted so the panel can list it, as `rejected` /
- * "accepted after 8 pm", and is never run. A header without the field is
+ * "accepted after 9 pm", and is never run. A header without the field is
  * inserted as `time_unconfirmed` and never run automatically.
  *
  * The earnings filing (the first 8-K with Item 2.02, or a foreign filer's
@@ -98,28 +98,28 @@ export type { FetchLike };
 
 /** Poll window on the event date, Eastern wall clock (R12). */
 export const POLL_START_ET = "06:00:00";
-/** The companion cutoff (R11), inclusive: a filing at 20:00:00 counts. */
-export const CUTOFF_ET = "20:00:00";
+/** The companion cutoff (R11), inclusive: a filing at 21:00:00 counts. */
+export const CUTOFF_ET = "21:00:00";
 
-export const LATE_ARM_PREFIX = "armed after 8 pm";
+export const LATE_ARM_PREFIX = "armed after 9 pm";
 /**
  * A print armed BEFORE its date that the app never polled (it was off on the
  * print day and the day after): handled like a late arm, but said truthfully.
  */
 export const NOT_POLLED_PREFIX = "not polled on the print day";
-export const MANUAL_ONLY_DETAIL = "armed after 8 pm — Run summary to spend";
+export const MANUAL_ONLY_DETAIL = "armed after 9 pm — Run summary to spend";
 export const NOT_POLLED_PENDING_DETAIL = `${NOT_POLLED_PREFIX} — looking up the day's filings once`;
 /** A late arm whose one discovery pass has not completed yet. */
-export const MANUAL_DISCOVERY_PENDING_DETAIL = "armed after 8 pm — looking up the day's filings once";
+export const MANUAL_DISCOVERY_PENDING_DETAIL = "armed after 9 pm — looking up the day's filings once";
 /** A late arm whose discovery pass found no earnings filing. */
 export function manualNoFilingDetail(formName: string, prefix: string = LATE_ARM_PREFIX): string {
-  return `${prefix} — no earnings ${formName} filed by 8 pm`;
+  return `${prefix} — no earnings ${formName} filed by 9 pm`;
 }
 /** Revalidation could not read the stored copy: the verdict is left alone. */
 export const STORED_COPY_MISSING_DETAIL = "stored copy of the earnings filing is missing — not re-checked";
 /** Revalidation looks only at events dated within this many days of today. */
 export const REVALIDATE_WINDOW_DAYS = 14;
-export const AFTER_CUTOFF_REASON = "accepted after 8 pm";
+export const AFTER_CUTOFF_REASON = "accepted after 9 pm";
 export const NO_ACCEPTANCE_REASON = "header has no acceptance time";
 export const SEC_UNREACHABLE_DETAIL = "SEC unreachable — retrying every minute";
 /** How long a "no CIK" answer is trusted before the ticker list is asked again. */
@@ -186,7 +186,7 @@ export function easternClock(ms: number): { date: string; time: string } {
 
 export type PollPhase = "before_window" | "in_window" | "after_cutoff";
 
-/** Where an instant falls relative to the event date's 06:00-20:00 window. */
+/** Where an instant falls relative to the event date's 06:00-21:00 window. */
 export function pollPhase(eventDate: string, ms: number): PollPhase {
   const { date, time } = easternClock(ms);
   if (date < eventDate) return "before_window";
@@ -742,10 +742,10 @@ export async function pollEvent(
       if (pollState !== "ambiguous") {
         pollDetail =
           pollState === "found"
-            ? "polling ended at 8 pm"
+            ? "polling ended at 9 pm"
             : unconfirmed
               ? `earnings ${formName} time unconfirmed — Run summary to spend`
-              : `no earnings ${formName} filed by 8 pm`;
+              : `no earnings ${formName} filed by 9 pm`;
         pollState = "past_cutoff";
       }
     } else if (pollState === "waiting") {

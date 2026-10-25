@@ -231,7 +231,7 @@ export interface FullFiling {
   acceptedOnEt: string | null;
   discoveredAtEt: string | null;
   identityVerdict: IdentityVerdict;
-  /** e.g. "accepted after 8 pm". */
+  /** e.g. "accepted after 9 pm". */
   identityReason: string | null;
   fetchState: FetchState;
   indexUrl: string | null;

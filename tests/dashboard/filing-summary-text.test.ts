@@ -100,20 +100,20 @@ describe("pollStateText: the brief's exact copy", () => {
   it("past the cutoff with no filing, 8-K and 6-K", () => {
     // Decided from the view (no run, Run summary not offered), not the detail text.
     expect(pollStateText(view({ pollState: "past_cutoff", pollDetail: "earnings 8-K time unconfirmed — Run summary to spend" }))).toBe(
-      "No earnings 8-K filed by 8 pm",
+      "No earnings 8-K filed by 9 pm",
     );
     // The view's own form wins over any detail text.
-    expect(pollStateText(view({ pollState: "past_cutoff", earningsForm: "6-K" }))).toBe("No earnings 6-K filed by 8 pm");
-    expect(pollStateText(view({ pollState: "past_cutoff", pollDetail: null }))).toBe("No earnings 8-K filed by 8 pm");
+    expect(pollStateText(view({ pollState: "past_cutoff", earningsForm: "6-K" }))).toBe("No earnings 6-K filed by 9 pm");
+    expect(pollStateText(view({ pollState: "past_cutoff", pollDetail: null }))).toBe("No earnings 8-K filed by 9 pm");
     // An accepted filing with no run yet: Run summary is offered instead.
-    expect(pollStateText(view({ pollState: "past_cutoff", pollDetail: "polling ended at 8 pm", runSummaryAvailable: true }))).toBe(
-      "Polling ended at 8 pm — Run summary to start",
+    expect(pollStateText(view({ pollState: "past_cutoff", pollDetail: "polling ended at 9 pm", runSummaryAvailable: true }))).toBe(
+      "Polling ended at 9 pm — Run summary to start",
     );
-    expect(pollStateText(view({ pollState: "past_cutoff", pollDetail: "no earnings 8-K filed by 8 pm" }))).toBe(
-      "No earnings 8-K filed by 8 pm",
+    expect(pollStateText(view({ pollState: "past_cutoff", pollDetail: "no earnings 8-K filed by 9 pm" }))).toBe(
+      "No earnings 8-K filed by 9 pm",
     );
-    expect(pollStateText(view({ pollState: "past_cutoff", pollDetail: "no earnings 6-K filed by 8 pm" }))).toBe(
-      "No earnings 6-K filed by 8 pm",
+    expect(pollStateText(view({ pollState: "past_cutoff", pollDetail: "no earnings 6-K filed by 9 pm" }))).toBe(
+      "No earnings 6-K filed by 9 pm",
     );
   });
 
@@ -124,8 +124,8 @@ describe("pollStateText: the brief's exact copy", () => {
   });
 
   it("manual only, ambiguous, cancelled", () => {
-    expect(pollStateText(view({ pollState: "manual_only", pollDetail: "armed after 8 pm — Run summary to spend" }))).toBe(
-      "Armed after 8 pm — nothing runs on its own",
+    expect(pollStateText(view({ pollState: "manual_only", pollDetail: "armed after 9 pm — Run summary to spend" }))).toBe(
+      "Armed after 9 pm — nothing runs on its own",
     );
     expect(pollStateText(view({ pollState: "ambiguous", pollDetail: "names Q2, not Q3" }))).toBe(
       "Filing found but it does not name this quarter: names Q2, not Q3",
@@ -294,7 +294,7 @@ describe("final review I5: the runner failed to load", () => {
 describe("final review C1: a late arm", () => {
   it("keeps the manual_only copy, and Run summary is offered once filings exist", () => {
     expect(pollStateText(view({ pollState: "manual_only", runSummaryAvailable: true }))).toBe(
-      "Armed after 8 pm — nothing runs on its own",
+      "Armed after 9 pm — nothing runs on its own",
     );
   });
 });

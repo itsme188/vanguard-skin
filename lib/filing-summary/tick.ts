@@ -8,10 +8,10 @@
  *     'cancelled'`, its pending sections `failed` / `cancelled` (a section
  *     already running finishes; nothing new starts);
  *  3. re-arm handling for every armed event whose state is `cancelled`,
- *     whatever its date (armed again before 20:00 on its date → `waiting`, an
+ *     whatever its date (armed again before 21:00 on its date → `waiting`, an
  *     existing run kept and no new run started; later → `manual_only`);
  *  4. `pollEvent` for every armed earnings event dated today or yesterday
- *     (Eastern), plus every armed LATE arm (armed after 20:00 on its date or
+ *     (Eastern), plus every armed LATE arm (armed after 21:00 on its date or
  *     on a later day) whose one discovery pass has not completed, whatever
  *     its date (late-arm ruling, C1);
  *  5. retries an automatic start that found no model (`ensureAutoRun`);
@@ -125,7 +125,7 @@ function cancelDisarmed(db: Database.Database, today: string): number[] {
 }
 
 /**
- * Armed again after a disarm (ruling 7): armed on the event date before 20:00
+ * Armed again after a disarm (ruling 7): armed on the event date before 21:00
  * → `waiting` (an existing run is kept, none starts); armed later →
  * `manual_only`, with the one discovery pass still owed only when the event
  * has no stored filing yet (a print already looked up is not looked up
@@ -239,7 +239,7 @@ function recordDiscoveryOutcome(db: Database.Database, eventId: number): void {
  * its date has left the tick's window: no catch-up will come, so it is
  * resolved to `past_cutoff` now, with no fetch and no run. A `found` event
  * reads the normal "polling ended" line; a `waiting` one says the app was not
- * running at 8 pm, never "no filing".
+ * running at 9 pm, never "no filing".
  */
 function resolveStaleInWindowStates(db: Database.Database, armed: ArmedRow[], yesterday: string): void {
   for (const a of armed) {
@@ -247,7 +247,7 @@ function resolveStaleInWindowStates(db: Database.Database, armed: ArmedRow[], ye
     const st = getEventState(db, a.eventId);
     if (!st || st.catchupDone) continue;
     if (st.pollState === "found") {
-      upsertEventState(db, a.eventId, { pollState: "past_cutoff", pollDetail: "polling ended at 8 pm", catchupDone: true });
+      upsertEventState(db, a.eventId, { pollState: "past_cutoff", pollDetail: "polling ended at 9 pm", catchupDone: true });
     } else if (st.pollState === "waiting" && st.lastPolledAt !== null) {
       upsertEventState(db, a.eventId, { pollState: "past_cutoff", pollDetail: STALE_WAITING_DETAIL, catchupDone: true });
     }

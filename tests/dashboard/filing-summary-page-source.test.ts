@@ -53,7 +53,7 @@ function section(p: Partial<FullSection> = {}): FullSection {
 function run(p: Partial<FullRun> = {}): FullRun {
   return {
     runId: 10, runNo: 1, status: "done", trigger: "auto", family: "opus", effort: "high", modelLabel: "Opus 5.5",
-    fallbackNote: null, createdAtEt: "4:06 pm", createdOnEt: "2026-10-22", finishedAtEt: "4:08 pm",
+    fallbackNote: null, createdAtEt: "4:06 pm", createdOnEt: "2026-10-22", finishedAtEt: "4:09 pm",
     counts: counts(), incomplete: false, excludesAfterEt: null, usage: {}, bogeys: [], quarterLabel: null,
     sections: [section()], ...p,
   };
@@ -141,9 +141,9 @@ describe("page-text helpers", () => {
     expect(p.message).toMatch(/Cancel spends nothing/);
   });
 
-  it("filings list: accepted after 8 pm is not read, a missing time says so, with reasons", () => {
-    expect(filingLine(filing({ identityVerdict: "rejected", identityReason: "accepted after 8 pm", acceptedAtEt: "8:14 pm" })))
-      .toMatch(/8:14 pm.*accepted after 8 pm.*not read/);
+  it("filings list: accepted after 9 pm is not read, a missing time says so, with reasons", () => {
+    expect(filingLine(filing({ identityVerdict: "rejected", identityReason: "accepted after 9 pm", acceptedAtEt: "9:14 pm" })))
+      .toMatch(/9:14 pm.*accepted after 9 pm.*not read/);
     expect(filingLine(filing({ identityVerdict: "time_unconfirmed", acceptedAtEt: null }))).toMatch(/time unconfirmed/);
     expect(filingLine(filing({}))).toMatch(/8-K · 4:05 pm/);
   });
