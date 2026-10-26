@@ -40,6 +40,7 @@ import { liveOptionExpirationSql } from "@/lib/compute/option-expiry";
 // exactly 0 is unknown.
 import { hasKnownBasis as hasKnownPositionBasis } from "@/lib/compute/known-basis";
 import { computeAggregateGainRatio } from "@/lib/compute/gain-ratio";
+import type { PendingReason } from "@/lib/queries/pending-statement-types";
 
 // ─── Result types ──────────────────────────────────────────────
 
@@ -1018,6 +1019,12 @@ export interface LotsWithoutPosition {
    * data and the statement carrying the closing trade is not imported yet.
    */
   allPendingStatement: boolean;
+  /**
+   * Why the lots are pending, when every lot is: the one reason they share,
+   * or "mixed" when they carry two different reasons. Null when any lot is
+   * not pending, or when no lot passed a reason (a caller that predates it).
+   */
+  pendingReason: PendingReason | "mixed" | null;
 }
 
 const LOT_DUST = 1e-6;
@@ -1037,13 +1044,22 @@ export function computeLotsWithoutPosition(
     quantity_remaining: number;
     is_short: number;
     pending_statement: boolean;
+    /** Optional: absent reads as null, so older callers still compile. */
+    pending_statement_reason?: PendingReason | null;
   }>
 ): LotsWithoutPosition[] {
   const held = new Set(positions.map((p) => p.account_id));
   const byAccount = new Map<number, LotsWithoutPosition>();
+  const reasonsByAccount = new Map<number, Set<PendingReason>>();
   for (const lot of openLots) {
     if (held.has(lot.account_id)) continue;
     if (Math.abs(lot.quantity_remaining) <= LOT_DUST) continue;
+    const reason = lot.pending_statement ? (lot.pending_statement_reason ?? null) : null;
+    if (reason) {
+      const set = reasonsByAccount.get(lot.account_id) ?? new Set<PendingReason>();
+      set.add(reason);
+      reasonsByAccount.set(lot.account_id, set);
+    }
     const entry = byAccount.get(lot.account_id);
     if (!entry) {
       byAccount.set(lot.account_id, {
@@ -1053,6 +1069,7 @@ export function computeLotsWithoutPosition(
         quantity: lot.quantity_remaining,
         shortLotCount: lot.is_short ? 1 : 0,
         allPendingStatement: lot.pending_statement,
+        pendingReason: null,
       });
       continue;
     }
@@ -1060,6 +1077,12 @@ export function computeLotsWithoutPosition(
     entry.quantity += lot.quantity_remaining;
     if (lot.is_short) entry.shortLotCount += 1;
     entry.allPendingStatement = entry.allPendingStatement && lot.pending_statement;
+  }
+  for (const entry of byAccount.values()) {
+    if (!entry.allPendingStatement) continue;
+    const reasons = reasonsByAccount.get(entry.accountId);
+    if (!reasons || reasons.size === 0) continue;
+    entry.pendingReason = reasons.size === 1 ? [...reasons][0] : "mixed";
   }
   return [...byAccount.values()];
 }

@@ -267,6 +267,7 @@ describe("open lots in an account with no current position", () => {
         quantity: 25,
         shortLotCount: 0,
         allPendingStatement: false,
+        pendingReason: null,
       },
     ]);
   });
@@ -314,6 +315,7 @@ describe("open lots in an account with no current position", () => {
         quantity: 10,
         shortLotCount: 0,
         allPendingStatement: true,
+        pendingReason: "awaiting_statement",
       },
     ]);
   });

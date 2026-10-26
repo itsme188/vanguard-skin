@@ -19,6 +19,10 @@ export interface LotCoveragePositionInput {
 export interface LotCoverageLotInput {
   account_id: number;
   quantity_remaining: number;
+  /** Absent reads as a long lot (callers that predate the side field). */
+  is_short?: number | boolean | null;
+  /** Absent reads as not pending. A pending lot covers no position. */
+  pending_statement?: boolean;
 }
 
 export interface LotCoverageGap {
@@ -26,7 +30,10 @@ export interface LotCoverageGap {
   accountName: string;
   /** Position quantity reported for this account. */
   positionQty: number;
-  /** Sum of quantity_remaining across this account's open lots (0 if none). */
+  /**
+   * Sum of quantity_remaining across this account's LONG, non-pending open
+   * lots (0 if none).
+   */
   coveredQty: number;
   /**
    * positionQty - coveredQty. Positive means shares are missing lot/cost-basis
@@ -43,6 +50,11 @@ export interface LotCoverageGap {
  * reconcile exactly are omitted. Only accounts present in `positions` are
  * considered — an account with lots but no position row is a different
  * (orphaned-lot) situation and out of scope here.
+ *
+ * Only LONG lots that are not pending a statement or a closing entry count
+ * (ruling R9, 2026-10-26). A short lot stores a positive quantity, so counting
+ * it would let a pending short lot of 10 "cover" a long position of 10. A
+ * pending lot is closed per the broker, so it covers nothing either.
  */
 export function computeLotCoverageGaps(
   positions: LotCoveragePositionInput[],
@@ -50,6 +62,8 @@ export function computeLotCoverageGaps(
 ): LotCoverageGap[] {
   const coveredByAccount = new Map<number, number>();
   for (const lot of openLots) {
+    if (lot.is_short) continue;
+    if (lot.pending_statement) continue;
     coveredByAccount.set(
       lot.account_id,
       (coveredByAccount.get(lot.account_id) ?? 0) + lot.quantity_remaining
@@ -98,14 +112,20 @@ export interface LotSignMismatch {
  * is the usual cause); this does not say which one is right. Per account,
  * like computeLotCoverageGaps. Short lots are the expected lots under a short
  * position and are not counted.
+ *
+ * Long lots pending a statement or a closing entry are not counted either
+ * (OPEN-1, 2026-10-26): a live short row over a long lot is how such a lot
+ * becomes pending (the position flipped per live data), and its own chip
+ * already explains it.
  */
 export function computeLotSignMismatches(
   positions: LotCoveragePositionInput[],
-  openLots: Array<LotCoverageLotInput & { is_short?: number | boolean | null }>
+  openLots: LotCoverageLotInput[]
 ): LotSignMismatch[] {
   const longByAccount = new Map<number, { qty: number; count: number }>();
   for (const lot of openLots) {
     if (lot.is_short) continue;
+    if (lot.pending_statement) continue;
     if (Math.abs(lot.quantity_remaining) <= EPSILON) continue;
     const entry = longByAccount.get(lot.account_id) ?? { qty: 0, count: 0 };
     entry.qty += lot.quantity_remaining;
