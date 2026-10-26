@@ -31,7 +31,10 @@ describe("SignificantMovesCard empty states and labels", () => {
   it("renders a privacy-aware coverage line for the evaluated universe", () => {
     expect(src).toMatch(/function CoverageLine/);
     expect(src).toMatch(/Evaluated <Count value=\{evaluated\} \/> of <Count value=\{total\} \/> holdings/);
-    expect(src).toMatch(/latestHoldingsPredicate\(\{ includeShorts: false \}\)/);
+    // The engine's own book filter (long and short, owner ruling 2026-10-26),
+    // so the coverage counts what the engine evaluates.
+    expect(src).toMatch(/AND \$\{CURRENT_BOOK_SQL\}/);
+    expect(src).not.toMatch(/includeShorts: false/);
   });
 
   it("renders the empty states through EmptySection with the threshold explanation visible, not in a hover title", () => {

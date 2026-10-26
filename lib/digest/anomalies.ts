@@ -5,7 +5,8 @@
  * significantly deviates from what their beta would predict given SPY's move.
  *
  * Privacy rule: output MUST NOT contain $ amounts, share counts, or position
- * size language. Only public market data (ticker, % move, beta) is emitted.
+ * size language. Only public market data (ticker, % move, beta) is emitted,
+ * plus the position's direction (long / short) for a short or mixed name.
  */
 
 import type Database from "better-sqlite3";
@@ -35,6 +36,32 @@ export interface AnomalyFlag {
   residualPct: number;  // actualPct − expectedPct (move the market doesn't explain)
   zScore: number | null; // |residualPct| / residualStd; null in degraded mode
   directionFlipped: boolean;
+  /**
+   * Which side of the security the evaluated accounts hold (owner ruling
+   * 2026-10-26: shorts are evaluated too). "mixed" = long in one account of
+   * the universe and short in another. `actualPct` stays the SECURITY's move;
+   * this field says what that move does to the position.
+   */
+  positionSide: PositionSide;
+  /** The move's effect on the position: see `positionEffect`. */
+  positionEffect: PositionEffect;
+}
+
+export type PositionSide = "long" | "short" | "mixed";
+export type PositionEffect = "favourable" | "adverse" | "mixed";
+
+/**
+ * A move's effect on a position. A rise helps a long and hurts a short; a fall
+ * the reverse. A security held long in one account and short in another has
+ * no single effect without position sizes, which this module never reads
+ * (privacy contract), so it is "mixed". A zero move cannot be flagged (the 3%
+ * floor), so it is not special-cased beyond reading as favourable for a long.
+ */
+export function positionEffect(side: PositionSide, actualPct: number): PositionEffect {
+  if (side === "mixed") return "mixed";
+  const rose = actualPct >= 0;
+  if (side === "long") return rose ? "favourable" : "adverse";
+  return rose ? "adverse" : "favourable";
 }
 
 // ─── Internal row types ───────────────────────────────────────────────────────
@@ -48,6 +75,8 @@ interface HeldSecurityRow {
   prior_close: number;
   beta: number | null;
   residual_std: number | null;
+  has_long: number;
+  has_short: number;
 }
 
 interface PricePairRow {
@@ -211,12 +240,13 @@ export interface ComputeAnomaliesOptions {
 }
 
 /**
- * The holdings filter for both universes: the current long book (the newest
- * row per account and security, quantity above zero). The card's coverage
- * query uses the same predicate, so "Evaluated N of M" counts the positions
- * this function actually looked at.
+ * The holdings filter for both universes: the current book, long AND short
+ * (the newest row per account and security, quantity not zero; owner ruling
+ * 2026-10-26). The card's coverage query uses the same predicate
+ * (`CURRENT_BOOK_SQL` is exported for it), so "Evaluated N of M" counts the
+ * positions this function actually looked at.
  */
-const CURRENT_LONG_BOOK_SQL = latestHoldingsPredicate({ includeShorts: false });
+export const CURRENT_BOOK_SQL = latestHoldingsPredicate({ includeShorts: true });
 
 /**
  * Compute anomaly flags for held securities.
@@ -232,11 +262,30 @@ const CURRENT_LONG_BOOK_SQL = latestHoldingsPredicate({ includeShorts: false });
  * mutual fund: `isMoverSecurityType`, the same list the cloud's universe
  * keeps), so an option or a bond is never named a mover.
  *
- * Either way only the CURRENT long book is read, through
- * `latestHoldingsPredicate`. Until 2026-10-08 the email path read every
+ * Either way only the CURRENT book is read, through
+ * `latestHoldingsPredicate`. Shorts are included (owner ruling 2026-10-26: a
+ * short-heavy scope otherwise hides its largest exposures).
+ *
+ * One flag per SECURITY, never per position (no double counting). The move,
+ * beta and z-score belong to the security, so it is tested once; the sides
+ * held across the universe's accounts are folded into `positionSide`: all
+ * long rows = "long", all short rows = "short", both = "mixed" (long in one
+ * account, short in another; no netting, because sizes are never read here).
+ * Within the universe, a position is the newest row per (account, security)
+ * and its side is the sign of that row's quantity.
+ *
+ * History: Until 2026-10-08 the email path read every
  * holdings row ever written, so a name sold months ago could be reported as a
  * held mover; the Worker's fallback email already read the latest positive row
  * per account and security (`getVanguardHoldingsForSnapshot`).
+ *
+ * KNOWN GAP (deliberate, 2026-10-26): the Worker's fallback evening email is
+ * still long-only. The snapshot's `vanguardHoldings` carries `quantity > 0`
+ * rows with no side, and giving it shorts needs a new snapshot field (a
+ * version bump, Worker deployed first). The email universe is the Vanguard
+ * (non-Roth) accounts, which hold no shorts in practice, so the two emails
+ * differ only for a short in a Vanguard account; pinned in
+ * tests/digest/anomalies-universe-type-parity.test.ts.
  *
  * Both read completed sessions only (owner ruling 2026-10-08): an SPY row
  * dated today is ignored until 16:00 ET.
@@ -307,11 +356,12 @@ export function computeAnomalies(
   // by the loop below — omission over a misleading number.
   const rows = db
     .prepare(
-      `SELECT DISTINCT
-              s.id AS security_id,
+      `SELECT s.id AS security_id,
               s.symbol,
               s.name,
               s.security_type,
+              MAX(CASE WHEN h.quantity > 0 THEN 1 ELSE 0 END) AS has_long,
+              MAX(CASE WHEN h.quantity < 0 THEN 1 ELSE 0 END) AS has_short,
               (SELECT close_price FROM prices
                 WHERE security_id = s.id AND date = ?) AS today_close,
               (SELECT close_price FROM prices
@@ -324,7 +374,8 @@ export function computeAnomalies(
                ON sb.security_id = s.id AND sb.lookback_days = ${BETA_LOOKBACK_DAYS}
         WHERE h.account_id IN (${placeholders})
           AND UPPER(s.symbol) != 'SPY'
-          AND ${CURRENT_LONG_BOOK_SQL}`
+          AND ${CURRENT_BOOK_SQL}
+        GROUP BY s.id`
     )
     .all(latest, prior, ...accountIds) as HeldSecurityRow[];
 
@@ -364,6 +415,9 @@ export function computeAnomalies(
       Math.sign(expectedPct) !== 0 &&
       Math.sign(actualPct) !== Math.sign(expectedPct);
 
+    const positionSide: PositionSide =
+      row.has_long && row.has_short ? "mixed" : row.has_short ? "short" : "long";
+
     flags.push({
       securityId: row.security_id,
       symbol,
@@ -375,6 +429,8 @@ export function computeAnomalies(
       residualPct,
       zScore,
       directionFlipped,
+      positionSide,
+      positionEffect: positionEffect(positionSide, actualPct),
     });
   }
 
@@ -396,6 +452,20 @@ function signedPct(value: number, decimals = 1): string {
   const rounded = parseFloat(value.toFixed(decimals));
   const sign = rounded >= 0 ? "+" : "";
   return `${sign}${rounded.toFixed(decimals)}%`;
+}
+
+/**
+ * The words the email adds after a flagged name's move for a position that is
+ * not plainly long. A long flag gets nothing, so the long-only line is
+ * byte-identical to the Worker's (workers/cron/src/fallback-evening.ts), which
+ * cannot see shorts. Direction only: no size, count or value.
+ */
+export function positionSideNote(flag: Pick<AnomalyFlag, "positionSide" | "positionEffect">): string {
+  if (flag.positionSide === "long") return "";
+  if (flag.positionSide === "mixed") return " (held long and short: mixed effect)";
+  return flag.positionEffect === "adverse"
+    ? " (short: move against the position)"
+    : " (short: move in the position's favour)";
 }
 
 /**
@@ -427,7 +497,7 @@ export function formatVanguardAnomaliesBlock(db: Database.Database): string {
         : `${signedActual} move.`;
 
     lines.push(
-      `- **${flag.symbol}** ${signedActual} — expected ${signedExpected} (beta ${flag.beta.toFixed(1)} × SPY ${signedSpy}). ${reason}`
+      `- **${flag.symbol}** ${signedActual}${positionSideNote(flag)} — expected ${signedExpected} (beta ${flag.beta.toFixed(1)} × SPY ${signedSpy}). ${reason}`
     );
   }
 

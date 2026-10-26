@@ -760,3 +760,137 @@ describe("completed sessions only", () => {
     ).toEqual(["ZZA"]);
   });
 });
+
+// ─── Shorts (owner ruling 2026-10-26) ─────────────────────────────────────────
+
+import { positionEffect, positionSideNote } from "@/lib/digest/anomalies";
+
+describe("computeAnomalies: short positions are evaluated, by their effect", () => {
+  /** A name whose close goes 100 → `latest` on a flat SPY day. */
+  function seedMoverTo(symbol: string, latest: number): number {
+    const id = seedSecurity(symbol);
+    seedPrice(id, "2026-05-07", 100);
+    seedPrice(id, "2026-05-08", latest);
+    seedBeta(id, 1.0, 1.0);
+    return id;
+  }
+  function seedPosition(accountId: number, securityId: number, quantity: number, date = "2026-05-08"): void {
+    db.prepare(
+      `INSERT INTO holdings (account_id, security_id, quantity, as_of_date, source_key)
+       VALUES (?, ?, ?, ?, ?)`,
+    ).run(accountId, securityId, quantity, date, `test:${accountId}:${securityId}:${date}:${quantity}`);
+  }
+
+  it("a short that rises is flagged as adverse; the printed move stays the security's own", () => {
+    seedSpy(400, 400);
+    const ibkr = seedAccount("IBKR Margin");
+    seedPosition(ibkr, seedMoverTo("ZZUP", 110), -50);
+
+    const [flag] = computeAnomalies(db, { accountIds: [ibkr] });
+    expect(flag.symbol).toBe("ZZUP");
+    expect(flag.actualPct).toBeCloseTo(10, 6);
+    expect(flag.positionSide).toBe("short");
+    expect(flag.positionEffect).toBe("adverse");
+  });
+
+  it("a short that falls is flagged as favourable", () => {
+    seedSpy(400, 400);
+    const ibkr = seedAccount("IBKR Margin");
+    seedPosition(ibkr, seedMoverTo("ZZDN", 90), -50);
+
+    const [flag] = computeAnomalies(db, { accountIds: [ibkr] });
+    expect(flag.actualPct).toBeCloseTo(-10, 6);
+    expect(flag.positionSide).toBe("short");
+    expect(flag.positionEffect).toBe("favourable");
+  });
+
+  it("a long keeps its old reading: a rise is favourable, a fall adverse", () => {
+    seedSpy(400, 400);
+    const ibkr = seedAccount("IBKR Margin");
+    seedPosition(ibkr, seedMoverTo("ZZLU", 110), 50);
+    seedPosition(ibkr, seedMoverTo("ZZLD", 90), 50);
+    const bySymbol = new Map(computeAnomalies(db, { accountIds: [ibkr] }).map((f) => [f.symbol, f]));
+    expect(bySymbol.get("ZZLU")).toMatchObject({ positionSide: "long", positionEffect: "favourable" });
+    expect(bySymbol.get("ZZLD")).toMatchObject({ positionSide: "long", positionEffect: "adverse" });
+  });
+
+  it("a short below the gates is not flagged (same two gates as a long)", () => {
+    seedSpy(400, 400);
+    const ibkr = seedAccount("IBKR Margin");
+    seedPosition(ibkr, seedMoverTo("ZZQ", 101), -50);
+    expect(computeAnomalies(db, { accountIds: [ibkr] })).toEqual([]);
+  });
+
+  it("a covered short (latest row zero) is not evaluated", () => {
+    seedSpy(400, 400);
+    const ibkr = seedAccount("IBKR Margin");
+    const id = seedMoverTo("ZZCOV", 110);
+    seedPosition(ibkr, id, -50, "2026-04-30");
+    seedPosition(ibkr, id, 0, "2026-05-08");
+    expect(computeAnomalies(db, { accountIds: [ibkr] })).toEqual([]);
+  });
+
+  it("long in one account and short in another: one flag, side mixed, never two rows", () => {
+    seedSpy(400, 400);
+    const a = seedAccount("IBKR Margin");
+    const b = seedAccount("IBKR Second");
+    const id = seedMoverTo("ZZMIX", 110);
+    seedPosition(a, id, 50);
+    seedPosition(b, id, -50);
+
+    const flags = computeAnomalies(db, { accountIds: [a, b] });
+    expect(flags).toHaveLength(1);
+    expect(flags[0]).toMatchObject({ symbol: "ZZMIX", positionSide: "mixed", positionEffect: "mixed" });
+    // Each account alone reads its own side.
+    expect(computeAnomalies(db, { accountIds: [a] })[0].positionSide).toBe("long");
+    expect(computeAnomalies(db, { accountIds: [b] })[0].positionSide).toBe("short");
+  });
+
+  it("short in two accounts is one flag, side short", () => {
+    seedSpy(400, 400);
+    const a = seedAccount("IBKR Margin");
+    const b = seedAccount("IBKR Second");
+    const id = seedMoverTo("ZZSS", 110);
+    seedPosition(a, id, -10);
+    seedPosition(b, id, -20);
+    const flags = computeAnomalies(db, { accountIds: [a, b] });
+    expect(flags).toHaveLength(1);
+    expect(flags[0].positionSide).toBe("short");
+  });
+
+  it("an option written short is still not a mover (type rule first)", () => {
+    seedSpy(400, 400);
+    const ibkr = seedAccount("IBKR Margin");
+    const id = seedMoverTo("ZZOPT", 110);
+    db.prepare("UPDATE securities SET security_type = 'Option' WHERE id = ?").run(id);
+    seedPosition(ibkr, id, -1);
+    expect(computeAnomalies(db, { accountIds: [ibkr] })).toEqual([]);
+  });
+
+  it("the email block labels a short's line by its effect and leaves a long's line unchanged", () => {
+    seedSpy(400, 400);
+    const vanguard = seedAccount("Vanguard Taxable");
+    seedPosition(vanguard, seedMoverTo("ZZUP", 110), -50);
+    seedPosition(vanguard, seedMoverTo("ZZDN", 90), -50);
+    seedPosition(vanguard, seedMoverTo("ZZLG", 110), 50);
+
+    const block = formatVanguardAnomaliesBlock(db);
+    expect(block).toContain("- **ZZUP** +10.0% (short: move against the position) — expected");
+    expect(block).toContain("- **ZZDN** -10.0% (short: move in the position's favour) — expected");
+    expect(block).toContain("- **ZZLG** +10.0% — expected");
+    // Direction only: no size language.
+    expect(block).not.toMatch(/\$|shares|-50|\b50\b/);
+  });
+
+  it("positionEffect and positionSideNote cover every side", () => {
+    expect(positionEffect("long", 5)).toBe("favourable");
+    expect(positionEffect("long", -5)).toBe("adverse");
+    expect(positionEffect("short", 5)).toBe("adverse");
+    expect(positionEffect("short", -5)).toBe("favourable");
+    expect(positionEffect("mixed", 5)).toBe("mixed");
+    expect(positionSideNote({ positionSide: "long", positionEffect: "favourable" })).toBe("");
+    expect(positionSideNote({ positionSide: "mixed", positionEffect: "mixed" })).toBe(
+      " (held long and short: mixed effect)",
+    );
+  });
+});
