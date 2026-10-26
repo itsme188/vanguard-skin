@@ -16,6 +16,10 @@ import {
 } from "@/lib/queries/tax-lots";
 import { getSecurityById } from "@/lib/queries/securities";
 import {
+  reducePendingDisclosure,
+  type PendingDisclosureInput,
+} from "@/lib/queries/pending-statement-types";
+import {
   getTaxConventionState,
   describeTaxLotStaleness,
 } from "@/lib/compute/tax-convention";
@@ -125,14 +129,31 @@ export default async function TaxLotsPage(props: {
   // account-wide activeSummary can't be used.
   const engineEstimatedRows = capitalClosedSales.filter((s) => s.is_synthetic_close);
 
-  // Pending-statement lots inside the narrowed view: positions closed per
-  // live data, awaiting the broker statement. The flag comes from the shared
-  // read model (lib/queries/pending-statement.ts via getOpenTaxLots) — never
-  // re-derived here. They leave the Unrealized tile and get their own line.
+  // Pending lots inside the narrowed view, for every reason (awaiting the
+  // statement, closing entry missing, re-symbol repair pending). The flag and
+  // the reason come from the shared read model (lib/queries/pending-statement.ts
+  // via getOpenTaxLots) — never re-derived here, and no position key is built
+  // here either. They leave the Unrealized tile; the summary lines describe
+  // them through the one reducer every surface shares, which keeps a long
+  // cost basis and a short's sale proceeds apart.
   const pendingStatementRows = capitalOpenLots.filter((l) => l.pending_statement);
   const heldOpenLots = capitalOpenLots.filter((l) => !l.pending_statement);
+  const pendingDisclosureInputs: PendingDisclosureInput[] = pendingStatementRows.flatMap((l) =>
+    l.pending_statement_reason
+      ? [
+          {
+            account_id: l.account_id,
+            security_id: l.security_id,
+            is_short: l.is_short,
+            reason: l.pending_statement_reason,
+            lotCount: 1,
+            figure: l.adjusted_cost_basis,
+          },
+        ]
+      : []
+  );
 
-  // ?pending=1 narrows the Open Lots TABLE to those lots (QA:
+  // ?pending=1 narrows the Open Lots TABLE to those lots, every reason (QA:
   // mobile-tax-lots-pending-statement--explanation-hover-only-banner-names-no-positions):
   // on a phone they are otherwise scattered through hundreds of rows. The
   // tiles and the summary line above keep describing the whole scope. With
@@ -239,11 +260,7 @@ export default async function TaxLotsPage(props: {
                 totalOpenLots: capitalOpenLots.length,
                 totalClosedSales: activeSummary?.totalClosedSales ?? capitalClosedSales.length,
                 totalUnrealizedGain: heldOpenLots.reduce((sum, l) => sum + (l.unrealized_gain ?? 0), 0),
-                pendingStatementPositions: new Set(
-                  pendingStatementRows.map((l) => `${l.account_id}:${l.security_id}`)
-                ).size,
-                pendingStatementLots: pendingStatementRows.length,
-                pendingStatementBasis: pendingStatementRows.reduce((sum, l) => sum + l.adjusted_cost_basis, 0),
+                pendingStatement: reducePendingDisclosure(pendingDisclosureInputs),
                 // USD totals only — non-USD sales are native figures (excluded + disclosed)
                 totalRealizedGain: activeSummary?.totalRealizedGain ?? capitalClosedSales.reduce((sum, s) => sum + (s.currency === "USD" ? s.realized_gain_loss : 0), 0),
                 longTermGain: activeSummary?.longTermGain ?? capitalClosedSales.filter(s => s.is_long_term && s.currency === "USD").reduce((sum, s) => sum + s.realized_gain_loss, 0),

@@ -19,7 +19,7 @@ import { readFileSync } from "node:fs";
 import { renderToStaticMarkup } from "react-dom/server";
 import {
   AccountSummaryCards,
-  PendingStatementLine,
+  PendingStatementLines,
   TaxLotSummaryCards,
 } from "@/app/dashboard/components/TaxLotSummary";
 import { costPerShareUnitLabel } from "@/app/dashboard/components/TaxLotTables";
@@ -34,6 +34,7 @@ import {
   securityFilterNotAppliedCopy,
 } from "@/lib/compute/tax-report";
 import type { AccountTaxSummary, TaxLotSummary } from "@/lib/queries/tax-lots";
+import type { PendingDisclosureRow } from "@/lib/queries/pending-statement-types";
 import { anchorIndex } from "@/tests/helpers/source-anchor";
 
 const privacyState = vi.hoisted(() => ({ isPrivate: false }));
@@ -67,12 +68,15 @@ function summary(over: Partial<TaxLotSummary> = {}): TaxLotSummary {
     engineEstimatedLongTermGain: 0,
     engineEstimatedShortTermSales: 0,
     engineEstimatedShortTermGain: 0,
-    pendingStatementPositions: 0,
-    pendingStatementLots: 0,
-    pendingStatementBasis: 0,
+    pendingStatement: [],
     ...over,
   };
 }
+
+/** One long "awaiting statement" row: two positions, a synthetic cost basis. */
+const AWAITING_LONG: PendingDisclosureRow[] = [
+  { reason: "awaiting_statement", side: "long", positions: 2, lots: 3, figure: 1100, figureKind: "cost_basis" },
+];
 
 function account(over: Partial<AccountTaxSummary> = {}): AccountTaxSummary {
   return {
@@ -182,7 +186,7 @@ describe("open-lot Cost/Share unit label", () => {
 
 describe("pending-statement line: visible explanation and filter", () => {
   it("carries the explanation as text, not as a title attribute", () => {
-    const html = renderToStaticMarkup(<PendingStatementLine positions={2} basis={1100} />);
+    const html = renderToStaticMarkup(<PendingStatementLines rows={AWAITING_LONG} />);
     expect(html).toContain("The closing trade is not imported yet.");
     expect(html).toContain("add nothing to Realized");
     expect(html).not.toContain("title=");
@@ -190,15 +194,14 @@ describe("pending-statement line: visible explanation and filter", () => {
   });
 
   it("no filter link unless the page supplies one", () => {
-    const html = renderToStaticMarkup(<PendingStatementLine positions={2} basis={1100} />);
+    const html = renderToStaticMarkup(<PendingStatementLines rows={AWAITING_LONG} />);
     expect(html).not.toContain("<a ");
   });
 
   it("offers 'Show pending only', and the way back once it is on", () => {
     const off = renderToStaticMarkup(
-      <PendingStatementLine
-        positions={2}
-        basis={1100}
+      <PendingStatementLines
+        rows={AWAITING_LONG}
         filter={{ href: "/dashboard/tax-lots?pending=1", active: false }}
       />
     );
@@ -207,7 +210,7 @@ describe("pending-statement line: visible explanation and filter", () => {
     expect(off).toContain("min-h-11");
 
     const on = renderToStaticMarkup(
-      <PendingStatementLine positions={2} basis={1100} filter={{ href: "/dashboard/tax-lots", active: true }} />
+      <PendingStatementLines rows={AWAITING_LONG} filter={{ href: "/dashboard/tax-lots", active: true }} />
     );
     expect(on).toContain('href="/dashboard/tax-lots"');
     expect(on).toContain(PENDING_STATEMENT_FILTER_OFF_LABEL);
@@ -216,7 +219,7 @@ describe("pending-statement line: visible explanation and filter", () => {
   it("TaxLotSummaryCards hands the filter through", () => {
     const html = renderToStaticMarkup(
       <TaxLotSummaryCards
-        summary={summary({ pendingStatementPositions: 3, pendingStatementLots: 4, pendingStatementBasis: 900 })}
+        summary={summary({ pendingStatement: AWAITING_LONG })}
         year={2026}
         pendingFilter={{ href: "/dashboard/tax-lots?pending=1", active: false }}
       />
