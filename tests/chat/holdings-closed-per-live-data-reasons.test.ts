@@ -10,7 +10,7 @@
  * read model agrees before checking the list. Synthetic symbols and small
  * round figures only.
  */
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import type Database from "better-sqlite3";
 import { computeTaxLots } from "@/lib/compute/tax-lots";
 import { executeTool } from "@/lib/chat/tools";
@@ -154,5 +154,50 @@ describe("R3: live-flipped pair", () => {
     expect(Array.isArray(result.data)).toBe(true);
     const rows = result.data as Array<{ symbol: string; quantity: number; position_side: string }>;
     expect(rows.map((r) => [r.symbol, r.quantity, r.position_side])).toEqual([["ZHFL", -5, "short"]]);
+  });
+});
+
+describe("an option across its expiry boundary", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  // A long option expiring 2026-11-20, held, then flat per live data on 2026-11-10.
+  function seedExpiring(): void {
+    const sec = Number(
+      db
+        .prepare(
+          `INSERT INTO securities (symbol, name, security_type, multiplier, expiration_date, currency)
+           VALUES ('ZHEX  261120C00030000', 'ZHEX contract', 'option', 100, '2026-11-20', 'USD')`
+        )
+        .run().lastInsertRowid
+    );
+    txn(sec, "2026-09-01", "BUY_TO_OPEN", 1, 4);
+    seedHold(db, ACCT, sec, "2026-10-01", "tws", 1);
+    seedHold(db, ACCT, sec, "2026-11-10", "live-zero");
+    computeTaxLots(db);
+  }
+
+  it("the expiration day: awaiting_statement, listed as closed per live data", () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-11-20T15:00:00Z")); // 10:00 Eastern, 2026-11-20
+    seedExpiring();
+    expect(reasons("ZHEX  261120C00030000")).toEqual([["long", "awaiting_statement"]]); // hand
+    expect(getClosedPerLiveDataForChat(db, { symbol: "ZHEX  261120C00030000" })).toMatchObject([
+      { as_of_date: "2026-10-01", quantity: 1, closed_as_of_date: "2026-11-10", pending_statement: true },
+    ]);
+  });
+
+  it("the next Eastern day: expired, not pending, and never listed as awaiting the statement", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-11-21T15:00:00Z")); // 10:00 Eastern, 2026-11-21
+    seedExpiring();
+    expect(reasons("ZHEX  261120C00030000")).toEqual([]); // hand: expired beats pending
+    // The live-zero seed alone would have listed this pair.
+    expect(getClosedPerLiveDataForChat(db, { symbol: "ZHEX  261120C00030000" })).toEqual([]);
+    const result = (await executeTool(db, "query_holdings", { symbol: "ZHEX  261120C00030000" })) as {
+      data: unknown;
+    };
+    expect(result.data).toEqual([]);
   });
 });

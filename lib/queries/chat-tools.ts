@@ -471,8 +471,14 @@ export function getClosedPerLiveDataForChat(
   }
   const accountSql = accountIds ? `AND h.account_id IN (${accountIds.map(() => "?").join(", ")})` : "";
 
+  // One Eastern day for the expiry rule here and in the pending index.
+  const today = todayET();
   // Newest row of the pair (per-(account, security) correlated) is a
-  // live-origin zero, and no non-zero row shares that date.
+  // live-origin zero, and no non-zero row shares that date. An option past
+  // its expiration is left out (the shared expiry rule,
+  // lib/compute/option-expiry.ts): it is expired, awaiting its closing
+  // entry, never "awaiting the statement", and this tool excludes expired
+  // options. The index merge below cannot reach one (expired beats pending).
   const zeroRows = db
     .prepare(
       `SELECT h.account_id, h.security_id, h.as_of_date AS closed_as_of_date
@@ -485,6 +491,7 @@ export function getClosedPerLiveDataForChat(
           )
           AND h.quantity = 0
           AND ${liveOriginHoldingSql("h")}
+          AND (LOWER(COALESCE(s.security_type, '')) != 'option' OR ${liveOptionExpirationSql("s", today)})
           AND NOT EXISTS (
             SELECT 1 FROM holdings hn
              WHERE hn.account_id = h.account_id AND hn.security_id = h.security_id
@@ -511,7 +518,7 @@ export function getClosedPerLiveDataForChat(
      HAVING SUM(CASE WHEN h.quantity = 0 THEN 1 ELSE 0 END) > 0
         AND SUM(CASE WHEN h.quantity != 0 THEN 1 ELSE 0 END) = 0`
   );
-  const index = getPendingStatementIndex(db, accountIds, { today: todayET() });
+  const index = getPendingStatementIndex(db, accountIds, { today });
   const listable = (accountId: number, securityId: number): boolean =>
     !blocksClosedPerLiveData(index, accountId, securityId) && newestIsZero.get(accountId, securityId) != null;
 
