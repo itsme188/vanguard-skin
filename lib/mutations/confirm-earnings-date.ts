@@ -8,6 +8,7 @@ import {
 import { addDays, mondayOf, MAX_EARNINGS_DAYS_AHEAD } from "@/lib/calendar/date-utils";
 import { resolveEarningsReleaseTime } from "@/lib/earnings/wire-times";
 import { writeArmedEventsOutboxRow } from "@/lib/earnings/cloud-outbox";
+import { releaseStalePreviewOnMove } from "@/lib/earnings/release-stale-preview";
 
 export interface ConfirmEarningsDateInput {
   symbol: string;
@@ -305,12 +306,10 @@ export function confirmEarningsDate(
     const releaseTimeToStore = keepTyped ? typed.releaseTime : releaseTime;
 
     if (mover) {
-      // Same id, new date: every row that hangs off this event stays attached.
-      // That includes a preview email or skip recorded for the OLD date. On a
-      // move to a later date such a row means no second preview goes out for
-      // the new date (the candidate finder reads any preview row as handled).
-      // Left attached on purpose: detaching it would change what is sent, and
-      // that needs an owner ruling.
+      // Same id, new date: every row that hangs off this event stays attached,
+      // EXCEPT a preview email or skip recorded for the old date that cannot
+      // cover the new, later date: that one is released right after the move
+      // so the new date gets its own preview (owner ruling 2026-10-26 #7).
       db.prepare(
         `UPDATE calendar_events
             SET event_date = ?,
@@ -331,6 +330,11 @@ export function confirmEarningsDate(
         securityId,
         mover.id,
       );
+      releaseStalePreviewOnMove(db, {
+        eventId: mover.id,
+        fromDate: mover.event_date,
+        toDate: input.confirmedDate,
+      });
       outcome.movedEventId = mover.id;
     } else {
       db.prepare(
@@ -373,6 +377,16 @@ export function confirmEarningsDate(
         .get(sourceKey) as { id: number } | undefined;
       if (kept && kept.id !== toFold.id) {
         createTwinFolder(db)(toFold, kept.id, input.confirmedDate);
+        // The fold leaves behind exactly the preview rows that could not cover
+        // the confirmed date. When the confirmed date is LATER, that preview
+        // was for a wrong date: release it (owner ruling 2026-10-26 #7), so
+        // the emptied row can be deleted instead of kept hidden. An earlier
+        // confirmed date keeps it, and the row stays hidden with the notice.
+        releaseStalePreviewOnMove(db, {
+          eventId: toFold.id,
+          fromDate: toFold.event_date,
+          toDate: input.confirmedDate,
+        });
         const remaining = remainingEventDependents(db, toFold.id);
         if (remaining.length > 0) {
           outcome.foldedEventId = toFold.id;

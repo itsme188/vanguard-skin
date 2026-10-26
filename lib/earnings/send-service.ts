@@ -75,10 +75,12 @@ import { DELIVERY_UNKNOWN, IN_PROGRESS, sentByFor } from "@/lib/earnings/email-s
 import {
   checkEarningsCloudMarker,
   clearEarningsRunningMarker,
+  fetchCloudSentEarnings,
   setEarningsRunningMarker,
   writeMacSentEarningsMarker,
 } from "@/lib/cron/earnings-marker-check";
 import { recordCloudSentAudit } from "@/lib/mutations/earnings-emails";
+import { previewStampCovers } from "@/lib/earnings/release-stale-preview";
 import { findLiveEntryForSupersededEvent } from "@/lib/queries/earnings-emails";
 import { getEmailIgnoredManualTwins } from "@/lib/queries/manual-twin-email";
 
@@ -204,6 +206,12 @@ export interface SendServiceSeams {
   /** Cloud-marker pre-flight (R-E6) — consulted in `sweep` and `nudge` only. */
   checkCloudMarker?: typeof checkEarningsCloudMarker;
   recordCloudSent?: typeof recordCloudSentAudit;
+  /**
+   * Send time of a live cloud-sent marker, or null when unknown. Read only
+   * for a PREVIEW whose cloud marker is present, to tell a marker for this
+   * print from one left by a preview released after its row moved later.
+   */
+  cloudSentAt?: (phase: "preview" | "recap", eventId: number) => Promise<string | null>;
   timeoutMs?: number;
 }
 
@@ -568,6 +576,15 @@ export async function deliverClaimedBatch(
   }
 }
 
+/** The live cloud-sent marker's send time for (phase, event), from the Worker's list. */
+async function defaultCloudSentAt(
+  phase: "preview" | "recap",
+  eventId: number,
+): Promise<string | null> {
+  const sends = await fetchCloudSentEarnings();
+  return sends.find((s) => s.phase === phase && s.eventId === eventId)?.sentAt ?? null;
+}
+
 export async function sendEarningsCandidate(
   db: Database.Database,
   candidate: SendCandidate,
@@ -579,6 +596,7 @@ export async function sendEarningsCandidate(
   const markers = seams.markers ?? DEFAULT_MARKERS;
   const checkCloud = seams.checkCloudMarker ?? checkEarningsCloudMarker;
   const recordCloud = seams.recordCloudSent ?? recordCloudSentAudit;
+  const cloudSentAt = seams.cloudSentAt ?? defaultCloudSentAt;
   const { eventId, phase } = candidate;
 
   // (1) recipient
@@ -593,7 +611,26 @@ export async function sendEarningsCandidate(
 
   // (1b) cloud pre-check — automatic modes only (R-E6)
   if (opts.mode !== "manual") {
-    const marker = await safeSeam("checkCloudSent", () => checkCloud(phase, eventId), null);
+    let marker = await safeSeam("checkCloudSent", () => checkCloud(phase, eventId), null);
+    if (marker?.sentBy === "cloud" && phase === "preview") {
+      // A cloud-sent preview marker lives 30 hours. When the hand-entered row
+      // moved to a later date since, the Mac released that preview
+      // (lib/earnings/release-stale-preview.ts) and the marker is about the
+      // OLD date: it must not stop the new date's preview. Same covers-test
+      // as the repoint invariant. An unknown send time keeps the marker
+      // (a missed preview is the lesser error than a duplicate).
+      const sentAt = await safeSeam("cloudSentAt", () => cloudSentAt(phase, eventId), null);
+      const event = db
+        .prepare(`SELECT event_date FROM calendar_events WHERE id = ?`)
+        .get(eventId) as { event_date: string } | undefined;
+      if (sentAt && event && !previewStampCovers(db, sentAt, event.event_date)) {
+        console.info(
+          `[release-stale-preview] event ${eventId} phase preview: cloud-sent marker ignored ` +
+            `(sent before the day before the event's date ${event.event_date})`,
+        );
+        marker = null;
+      }
+    }
     if (marker?.sentBy != null) {
       // Only a CLOUD send needs a local audit row; sentBy "mac" means a local
       // row (or a permanent skip) already exists — reporting is enough. The
