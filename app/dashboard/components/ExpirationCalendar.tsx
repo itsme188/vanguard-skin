@@ -29,6 +29,18 @@ const ALL_LIVE_DAYS = 36500;
  * window) and a count of the ones it does not, so the card can say how many
  * it left out instead of dropping them silently.
  */
+/**
+ * Unit under the days-to-expiry badge: "day" for exactly one day, "today"
+ * when the contract expires today, "days" otherwise. A fixed "days" read
+ * "1 DAYS" for tomorrow's expiries.
+ * [qa:dashboard-analysis-view-diagnostics-every-scope-option-expirations-card-option-expirations-card-reads-1-days-f]
+ */
+export function expiryCountdownUnit(daysToExpiry: number): "today" | "day" | "days" {
+  if (daysToExpiry === 0) return "today";
+  if (daysToExpiry === 1) return "day";
+  return "days";
+}
+
 export function splitExpirationWindow<T extends { daysToExpiry: number }>(
   options: T[],
   windowDays: number = EXPIRATION_WINDOW_DAYS,
@@ -110,7 +122,7 @@ export function ExpirationCalendar({ scope }: { scope?: string }) {
                 }`}
               >
                 <span className="text-lg font-mono font-bold leading-none">{dte}</span>
-                <span className="text-[10px] uppercase">days</span>
+                <span className="text-[10px] uppercase">{expiryCountdownUnit(dte)}</span>
               </div>
 
               {/* Options expiring on this date */}

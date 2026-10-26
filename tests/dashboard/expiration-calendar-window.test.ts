@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import {
   EXPIRATION_WINDOW_DAYS,
+  expiryCountdownUnit,
   splitExpirationWindow,
 } from "@/app/dashboard/components/ExpirationCalendar";
 import { anchorIndex, sliceBetween } from "../helpers/source-anchor";
@@ -56,5 +57,26 @@ describe("ExpirationCalendar source pins", () => {
     expect(src).not.toMatch(/import\s*\{[^}]*\bMoney\b[^}]*\}\s*from\s*"@\/lib\/privacy\/components"/);
     anchorIndex(src, "{formatUSDPrecise(o.strike)} {o.optionType[0]}");
     anchorIndex(src, "<Shares value={o.quantity} />");
+  });
+});
+
+// [qa:dashboard-analysis-view-diagnostics-every-scope-option-expirations-card-option-expirations-card-reads-1-days-f]
+describe("expiryCountdownUnit", () => {
+  it("reads 'day' for one day out, 'today' for today, 'days' otherwise", () => {
+    expect(expiryCountdownUnit(1)).toBe("day");
+    expect(expiryCountdownUnit(0)).toBe("today");
+    expect(expiryCountdownUnit(2)).toBe("days");
+    expect(expiryCountdownUnit(7)).toBe("days");
+    expect(expiryCountdownUnit(90)).toBe("days");
+  });
+
+  it("the badge renders the unit through the helper, not a fixed word (source pin)", () => {
+    const src = fs.readFileSync(
+      path.join(process.cwd(), "app/dashboard/components/ExpirationCalendar.tsx"),
+      "utf8",
+    );
+    const badge = src.slice(anchorIndex(src, "{/* DTE badge */}"));
+    expect(badge).toContain("{expiryCountdownUnit(dte)}");
+    expect(badge).not.toContain('uppercase">days<');
   });
 });
