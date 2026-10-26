@@ -2,7 +2,13 @@
 
 import { useState, useEffect, useRef, useCallback } from "react";
 import apiFetch from "@/lib/http/apiFetch";
+import { readMutationResult, networkFailureMessage } from "@/lib/ui/mutation-result";
 import type { LiveQuote } from "@/lib/tws/streaming";
+
+/** What the streaming Save did: prices written, or why none were. */
+export type StreamingSaveResult =
+  | { ok: true; pricesSaved: number; skippedReason: "market_closed" | null }
+  | { ok: false; message: string };
 
 interface StreamingState {
   quotes: Map<number, LiveQuote>;
@@ -17,7 +23,7 @@ interface StreamingState {
 export function useStreamingQuotes(enabled: boolean = false): StreamingState & {
   start: () => void;
   stop: () => void;
-  saveSnapshot: () => Promise<number>;
+  saveSnapshot: () => Promise<StreamingSaveResult>;
 } {
   const [quotes, setQuotes] = useState<Map<number, LiveQuote>>(new Map());
   const [isStreaming, setIsStreaming] = useState(false);
@@ -112,18 +118,24 @@ export function useStreamingQuotes(enabled: boolean = false): StreamingState & {
     setIsStreaming(false);
   }, []);
 
-  const saveSnapshot = useCallback(async (): Promise<number> => {
+  const saveSnapshot = useCallback(async (): Promise<StreamingSaveResult> => {
+    let res: Response;
     try {
-      const res = await apiFetch("/api/tws/stream", {
+      res = await apiFetch("/api/tws/stream", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "snapshot" }),
       });
-      const json = await res.json();
-      return json.pricesSaved ?? 0;
     } catch {
-      return 0;
+      return { ok: false, message: networkFailureMessage("save the streaming prices") };
     }
+    const r = await readMutationResult<{ pricesSaved?: number; skippedReason?: string | null }>(res);
+    if (!r.ok) return { ok: false, message: r.message };
+    return {
+      ok: true,
+      pricesSaved: typeof r.data.pricesSaved === "number" ? r.data.pricesSaved : 0,
+      skippedReason: r.data.skippedReason === "market_closed" ? "market_closed" : null,
+    };
   }, []);
 
   // Auto-connect when enabled

@@ -14,6 +14,8 @@
  */
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import Database from "better-sqlite3";
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import { SecType } from "@stoqey/ib";
 import { runMigrations } from "@/lib/db/migrate";
 import { getTaxInputGeneration } from "@/lib/compute/tax-convention";
@@ -190,6 +192,22 @@ describe("snapshotToDb on a closed market day", () => {
     const { snapshotToDb } = await import("@/lib/tws/streaming");
     expect(snapshotToDb(db, { asOfDate: day })).toBe(0);
     expect((db.prepare("SELECT COUNT(*) AS c FROM prices").get() as { c: number }).c).toBe(0);
+  });
+
+  it("saveStreamingSnapshot names the skip so the Save button can say why nothing was stored", async () => {
+    const { saveStreamingSnapshot } = await import("@/lib/tws/streaming");
+    expect(saveStreamingSnapshot(db, { asOfDate: SUNDAY })).toEqual({ pricesSaved: 0, skippedReason: "market_closed" });
+    expect(saveStreamingSnapshot(db, { asOfDate: TRADING_DAY })).toEqual({ pricesSaved: 1, skippedReason: null });
+  });
+
+  it("the stream route returns the skip reason and the Save button words it", () => {
+    const route = readFileSync(path.join(process.cwd(), "app/api/tws/stream/route.ts"), "utf8");
+    expect(route).toContain("pricesSaved, skippedReason");
+    const hook = readFileSync(path.join(process.cwd(), "lib/hooks/useStreamingQuotes.ts"), "utf8");
+    expect(hook).toContain("readMutationResult");
+    const ui = readFileSync(path.join(process.cwd(), "app/dashboard/components/TwsStatus.tsx"), "utf8");
+    expect(ui).toContain('saved.skippedReason === "market_closed"');
+    expect(ui).toContain("Market closed today: nothing dated today stored");
   });
 
   it("writes the price row on a trading day", async () => {

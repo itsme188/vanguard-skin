@@ -681,7 +681,15 @@ function TwsPanel({
                   <button
                     onClick={async () => {
                       const saved = await streaming.saveSnapshot();
-                      setResult(`Saved ${saved} prices to database`);
+                      if (!saved.ok) {
+                        setResult(`Error: ${saved.message}`);
+                      } else if (saved.skippedReason === "market_closed") {
+                        setResult("Market closed today: nothing dated today stored");
+                      } else if (saved.pricesSaved === 0) {
+                        setResult("No streaming prices to save yet");
+                      } else {
+                        setResult(`Saved ${saved.pricesSaved} prices to database`);
+                      }
                     }}
                     className={`px-3 py-1.5 text-xs font-medium rounded-lg ${CHIP_TONE_CLASSES.gold} hover:bg-gold/30 transition-colors`}
                     title="Save current streaming prices to database"

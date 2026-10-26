@@ -265,23 +265,33 @@ export function stopStreaming(): void {
   }
 }
 
-/**
- * Write current cache to prices table as a snapshot. Returns the count of
- * prices written; 0 on a market-closed day (weekend or full NYSE holiday),
- * when nothing is written (DECISIONS 2026-10-26 item 1): every reader treats
- * a `prices` row as that date's close, and a closed-day tick is not a close.
- */
+/** Write current cache to prices table as a snapshot. Returns the count of
+ *  prices written (0 on a closed market day; see saveStreamingSnapshot). */
 export function snapshotToDb(
   db: Database.Database,
   options?: { asOfDate?: string },
 ): number {
+  return saveStreamingSnapshot(db, options).pricesSaved;
+}
+
+/**
+ * Write current cache to prices table as a snapshot, with the reason when
+ * nothing could be written: on a market-closed day (weekend or full NYSE
+ * holiday) no price is stored (DECISIONS 2026-10-26 item 1): every reader
+ * treats a `prices` row as that date's close, and a closed-day tick is not a
+ * close. The Save button reports the skip reason to the owner.
+ */
+export function saveStreamingSnapshot(
+  db: Database.Database,
+  options?: { asOfDate?: string },
+): { pricesSaved: number; skippedReason: "market_closed" | null } {
   const state = getState();
   // Eastern market day, the same stamp lib/tws/snapshot.ts uses. A UTC slice
   // dated an evening flush (after 20:00 Eastern) tomorrow.
   const today = options?.asOfDate ?? todayET();
   if (isMarketClosed(today)) {
     console.log(`[streaming] Market closed on ${today}: no prices written`);
-    return 0;
+    return { pricesSaved: 0, skippedReason: "market_closed" };
   }
   const upsert = db.prepare(`
     INSERT OR REPLACE INTO prices (security_id, date, close_price, source)
@@ -303,5 +313,5 @@ export function snapshotToDb(
   });
   tx();
 
-  return count;
+  return { pricesSaved: count, skippedReason: null };
 }
