@@ -612,31 +612,44 @@ export async function sendEarningsCandidate(
   // (1b) cloud pre-check — automatic modes only (R-E6)
   if (opts.mode !== "manual") {
     let marker = await safeSeam("checkCloudSent", () => checkCloud(phase, eventId), null);
+    // The cloud preview marker's own send time, when it could be read.
+    let cloudPreviewSentAt: string | null = null;
     if (marker?.sentBy === "cloud" && phase === "preview") {
       // A cloud-sent preview marker lives 30 hours. When the hand-entered row
       // moved to a later date since, the Mac released that preview
       // (lib/earnings/release-stale-preview.ts) and the marker is about the
       // OLD date: it must not stop the new date's preview. Same covers-test
-      // as the repoint invariant. An unknown send time keeps the marker
-      // (a missed preview is the lesser error than a duplicate).
+      // as the repoint invariant.
       const sentAt = await safeSeam("cloudSentAt", () => cloudSentAt(phase, eventId), null);
+      if (sentAt == null) {
+        // Unknown send time (lookup failed, timed out, or the marker carries
+        // none): do not send (a duplicate is the worse error), and write NO
+        // audit row. A row stamped "now" would cover the event and turn a
+        // stale marker into a permanent block; with no row the next tick asks
+        // again and decides with the real time.
+        return { outcome: "already_sent", sentAt: "", sentBy: "cloud" };
+      }
       const event = db
         .prepare(`SELECT event_date FROM calendar_events WHERE id = ?`)
         .get(eventId) as { event_date: string } | undefined;
-      if (sentAt && event && !previewStampCovers(db, sentAt, event.event_date)) {
+      if (event && !previewStampCovers(db, sentAt, event.event_date)) {
         console.info(
           `[release-stale-preview] event ${eventId} phase preview: cloud-sent marker ignored ` +
             `(sent before the day before the event's date ${event.event_date})`,
         );
         marker = null;
+      } else {
+        cloudPreviewSentAt = sentAt;
       }
     }
     if (marker?.sentBy != null) {
       // Only a CLOUD send needs a local audit row; sentBy "mac" means a local
       // row (or a permanent skip) already exists — reporting is enough. The
       // row itself, not the marker, decides WHO sent it: recordCloudSentAudit
-      // is a DO NOTHING upsert, so an existing local row always wins.
-      if (marker.sentBy === "cloud") recordCloud(db, eventId, phase);
+      // is a DO NOTHING upsert, so an existing local row always wins. A
+      // preview row carries the marker's own send time (read above); a recap
+      // keeps the old stamp.
+      if (marker.sentBy === "cloud") recordCloud(db, eventId, phase, cloudPreviewSentAt);
       const row = getSendRow(db, eventId, phase);
       if (marker.sentBy === "mac" && row == null) {
         // The old sweep only short-circuited on a CLOUD marker; this arm short-

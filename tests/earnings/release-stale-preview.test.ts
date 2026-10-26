@@ -144,6 +144,21 @@ describe("releaseStalePreviewOnMove — the rule", () => {
     ]);
   });
 
+  it("an evening send keeps the preview: the test reads the stored UTC day (errs toward a missed preview, never a duplicate)", () => {
+    // Sent 21:00 Eastern on Sunday 2026-05-31 for the Monday print: stored
+    // as 2026-06-01 01:00:00 UTC. Moved to Tuesday. In Eastern days the
+    // preview went out two days before Tuesday and would be released; the
+    // test compares SQLite date() of the stored UTC stamp (the same reading
+    // the repoint invariant uses), which says Monday = Tuesday minus one day,
+    // so it is KEPT. The rule errs toward keeping: at worst a preview is
+    // missed for a one-day move; it never mails a second preview for a print
+    // the first one covered.
+    const id = addManual();
+    sentPreview(id, null, "2026-06-01 01:00:00");
+    updateCalendarEvent(db, { id, event_date: NEXT_DAY });
+    expect(emailCount(id)).toBe(1);
+  });
+
   it("an earlier move keeps the preview, even one sent long before", () => {
     const id = addManual();
     sentPreview(id, null, "2026-05-01 12:00:00");
@@ -379,7 +394,62 @@ describe("the cloud-sent marker does not bring a released preview back", () => {
       expect(sendEmail).not.toHaveBeenCalled();
     });
 
-    it("an unknown marker time keeps the marker (no duplicate risk taken)", async () => {
+    it("a covering cloud preview marker records the row with the MARKER's send time, not now", async () => {
+      const id = addManual("ZZQ", WEEK_LATER);
+      await sendEarningsCandidate(db, { eventId: id, symbol: "ZZQ", phase: "preview" }, {
+        mode: "sweep",
+        recipient: "desk@example.com",
+        seams: {
+          compose: async () => composed,
+          sendEmail: vi.fn(),
+          markers,
+          checkCloudMarker: async () => ({ sentBy: "cloud" as const }),
+          cloudSentAt: async () => "2026-06-08T18:15:00.000Z",
+        },
+      });
+      expect(db.prepare(`SELECT sent_at, error FROM earnings_emails WHERE event_id = ?`).get(id)).toEqual({
+        sent_at: "2026-06-08 18:15:00",
+        error: SENT_BY_CLOUD,
+      });
+    });
+
+    it("a failed time lookup writes NO row; the next tick with a working lookup sends past a stale marker", async () => {
+      const id = addManual();
+      updateCalendarEvent(db, { id, event_date: WEEK_LATER, week_of: mondayOf(WEEK_LATER) });
+      const sendEmail = vi.fn(async (o: { messageId?: string }) => ({ messageId: o.messageId!, response: "250 OK" }));
+      const seams = {
+        compose: async () => composed,
+        sendEmail,
+        markers,
+        checkCloudMarker: async () => ({ sentBy: "cloud" as const }),
+      };
+      const cand = { eventId: id, symbol: "ZZQ", phase: "preview" as const };
+
+      const first = await sendEarningsCandidate(db, cand, {
+        mode: "sweep",
+        recipient: "desk@example.com",
+        seams: {
+          ...seams,
+          cloudSentAt: async () => {
+            throw new Error("Worker unreachable");
+          },
+        },
+      });
+      expect(first).toMatchObject({ outcome: "already_sent", sentBy: "cloud" });
+      expect(sendEmail).not.toHaveBeenCalled();
+      expect(emailCount(id)).toBe(0);
+      expect(previewIds(WEEK_LATER)).toEqual([id]); // still a candidate next tick
+
+      const second = await sendEarningsCandidate(db, cand, {
+        mode: "sweep",
+        recipient: "desk@example.com",
+        seams: { ...seams, cloudSentAt: async () => "2026-06-01T18:15:00.000Z" },
+      });
+      expect(second).toMatchObject({ outcome: "sent" });
+      expect(sendEmail).toHaveBeenCalledTimes(1);
+    });
+
+    it("an unknown marker time keeps the marker (no duplicate risk taken) and writes no row", async () => {
       const id = addManual("ZZQ", WEEK_LATER);
       const sendEmail = vi.fn();
       const res = await sendEarningsCandidate(db, { eventId: id, symbol: "ZZQ", phase: "preview" }, {
@@ -395,6 +465,7 @@ describe("the cloud-sent marker does not bring a released preview back", () => {
       });
       expect(res).toMatchObject({ outcome: "already_sent" });
       expect(sendEmail).not.toHaveBeenCalled();
+      expect(emailCount(id)).toBe(0);
     });
   });
 });
