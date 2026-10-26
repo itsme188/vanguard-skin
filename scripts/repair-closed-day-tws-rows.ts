@@ -47,7 +47,13 @@ import path from "node:path";
 import BetterSqlite3 from "better-sqlite3";
 import type Database from "better-sqlite3";
 import { isMarketClosed } from "../lib/calendar/market-holidays";
-import { isTwsSourcedHolding } from "../lib/db/holding-sources";
+import {
+  isTwsSourcedHolding,
+  RECON_HOLDING_SOURCE_PREFIX,
+  RECON_LIVE_SUFFIX,
+  RECON_STMT_SUFFIX,
+} from "../lib/db/holding-sources";
+import { reconcileClosedEquityHoldings } from "../lib/mutations/closed-equity";
 import { LIVE_SNAPSHOT_SOURCES } from "../lib/db/live-sources";
 import { bumpIfPricesAffectSyntheticCloses, getTaxInputGeneration } from "../lib/compute/tax-convention";
 import { computeDailyValuations } from "../lib/compute/daily-valuation";
@@ -70,12 +76,38 @@ export interface ClosedDayTwsPlan {
   priceRows: Array<{ id: number; securityId: number; date: string }>;
   holdingIds: number[];
   snapshotIds: number[];
+  /**
+   * Engine tombstones (`recon:closed-equity:`) on an (account, closed date)
+   * that the delete leaves holding ONLY tombstones. Left alone, such a date
+   * stays a holdings "snapshot" of zeros and computeDailyValuations values the
+   * account at zero holdings until the next snapshot (reviewer, 2026-10-26).
+   * Tombstones on trading days, or on closed dates that keep a real row, are
+   * never touched.
+   *
+   *  - superseded: the pair has a later holdings row, so the tombstone is
+   *    inert history; deleted.
+   *  - redate: the tombstone is still the pair's newest row (the position is
+   *    closed now). It is moved, same row and same origin suffix, to the
+   *    account's next surviving real snapshot date: the date the reconciler
+   *    would have minted it on had the closed-day snapshot never existed.
+   *  - blocked: a case the script will not decide (a statement-pass tombstone,
+   *    or no later trading-day snapshot to move to). --apply refuses.
+   */
+  tombstones: {
+    superseded: Array<{ id: number; accountId: number; date: string }>;
+    redate: Array<{ id: number; accountId: number; securityId: number; from: string; to: string; newKey: string }>;
+    blocked: Array<{ id: number; accountId: number; date: string; reason: string }>;
+  };
 }
 
 export interface ClosedDayTwsResult {
   plan: ClosedDayTwsPlan;
   applied: boolean;
   deleted: { prices: number; holdings: number; snapshots: number };
+  tombstonesDeleted: number;
+  tombstonesRedated: number;
+  /** Positions the reconciler marked flat when run after the repair (expected 0). */
+  reconcilerMarked: number;
   taxGenerationBumped: boolean;
   valuations: { datesComputed: number; accountsProcessed: number } | null;
 }
@@ -112,11 +144,13 @@ export function planClosedDayTwsRepair(db: Database.Database): ClosedDayTwsPlan 
   }
 
   const holdingIds: number[] = [];
-  const holdingsOn = db.prepare("SELECT id, source_key FROM holdings WHERE as_of_date = ? ORDER BY id");
+  const touchedAccountDates = new Map<string, { accountId: number; date: string }>();
+  const holdingsOn = db.prepare("SELECT id, account_id, source_key FROM holdings WHERE as_of_date = ? ORDER BY id");
   for (const date of [...holdingDates].sort()) {
-    for (const r of holdingsOn.all(date) as Array<{ id: number; source_key: string | null }>) {
+    for (const r of holdingsOn.all(date) as Array<{ id: number; account_id: number; source_key: string | null }>) {
       if (isTwsSourcedHolding(r.source_key)) {
         holdingIds.push(r.id);
+        touchedAccountDates.set(`${r.account_id}|${date}`, { accountId: r.account_id, date });
         bump(date, "holdings");
       } else {
         kept.holdings += 1;
@@ -137,6 +171,8 @@ export function planClosedDayTwsRepair(db: Database.Database): ClosedDayTwsPlan 
     }
   }
 
+  const tombstones = planTombstones(db, touchedAccountDates, new Set(holdingIds));
+
   return {
     byDate: [...byDate.values()].sort((a, b) => a.date.localeCompare(b.date)),
     totals: { prices: priceRows.length, holdings: holdingIds.length, snapshots: snapshotIds.length },
@@ -144,7 +180,69 @@ export function planClosedDayTwsRepair(db: Database.Database): ClosedDayTwsPlan 
     priceRows,
     holdingIds,
     snapshotIds,
+    tombstones,
   };
+}
+
+function isReconTombstone(sourceKey: string | null): boolean {
+  return sourceKey?.startsWith(RECON_HOLDING_SOURCE_PREFIX) ?? false;
+}
+
+function originSuffix(sourceKey: string): string {
+  if (sourceKey.endsWith(RECON_LIVE_SUFFIX)) return RECON_LIVE_SUFFIX;
+  if (sourceKey.endsWith(RECON_STMT_SUFFIX)) return RECON_STMT_SUFFIX;
+  return "";
+}
+
+function planTombstones(
+  db: Database.Database,
+  touched: Map<string, { accountId: number; date: string }>,
+  deletedHoldingIds: Set<number>,
+): ClosedDayTwsPlan["tombstones"] {
+  const out: ClosedDayTwsPlan["tombstones"] = { superseded: [], redate: [], blocked: [] };
+  const rowsOn = db.prepare(
+    "SELECT id, security_id, source_key FROM holdings WHERE account_id = ? AND as_of_date = ? ORDER BY id",
+  );
+  const laterRowForPair = db.prepare(
+    "SELECT 1 AS x FROM holdings WHERE account_id = ? AND security_id = ? AND as_of_date > ? LIMIT 1",
+  );
+  const laterRowsForAccount = db.prepare(
+    "SELECT id, as_of_date, source_key FROM holdings WHERE account_id = ? AND as_of_date > ? ORDER BY as_of_date, id",
+  );
+
+  for (const { accountId, date } of [...touched.values()].sort((a, b) => a.date.localeCompare(b.date))) {
+    const remaining = (
+      rowsOn.all(accountId, date) as Array<{ id: number; security_id: number; source_key: string | null }>
+    ).filter((r) => !deletedHoldingIds.has(r.id));
+    if (remaining.length === 0 || !remaining.every((r) => isReconTombstone(r.source_key))) continue;
+
+    // The account's next surviving real snapshot date (not a row this repair
+    // deletes, not a tombstone).
+    const next = (
+      laterRowsForAccount.all(accountId, date) as Array<{ id: number; as_of_date: string; source_key: string | null }>
+    ).find((r) => !deletedHoldingIds.has(r.id) && !isReconTombstone(r.source_key))?.as_of_date;
+
+    for (const t of remaining) {
+      const key = t.source_key as string;
+      if (key.endsWith(RECON_STMT_SUFFIX)) {
+        out.blocked.push({ id: t.id, accountId, date, reason: "statement-pass tombstone (a tax input)" });
+      } else if (laterRowForPair.get(accountId, t.security_id, date) != null) {
+        out.superseded.push({ id: t.id, accountId, date });
+      } else if (next == null || isMarketClosed(next)) {
+        out.blocked.push({ id: t.id, accountId, date, reason: "no later trading-day snapshot to move the closure to" });
+      } else {
+        out.redate.push({
+          id: t.id,
+          accountId,
+          securityId: t.security_id,
+          from: date,
+          to: next,
+          newKey: `${RECON_HOLDING_SOURCE_PREFIX}${accountId}:${t.security_id}:${next}${originSuffix(key)}`,
+        });
+      }
+    }
+  }
+  return out;
 }
 
 export function runClosedDayTwsRepair(
@@ -156,6 +254,9 @@ export function runClosedDayTwsRepair(
       plan: planClosedDayTwsRepair(db),
       applied: false,
       deleted: { prices: 0, holdings: 0, snapshots: 0 },
+      tombstonesDeleted: 0,
+      tombstonesRedated: 0,
+      reconcilerMarked: 0,
       taxGenerationBumped: false,
       valuations: null,
     };
@@ -165,7 +266,22 @@ export function runClosedDayTwsRepair(
     const plan = planClosedDayTwsRepair(db);
     const deleted = { prices: 0, holdings: 0, snapshots: 0 };
     if (plan.priceRows.length + plan.holdingIds.length + plan.snapshotIds.length === 0) {
-      return { plan, applied: true, deleted, taxGenerationBumped: false, valuations: null };
+      return {
+        plan,
+        applied: true,
+        deleted,
+        tombstonesDeleted: 0,
+        tombstonesRedated: 0,
+        reconcilerMarked: 0,
+        taxGenerationBumped: false,
+        valuations: null,
+      };
+    }
+    if (plan.tombstones.blocked.length > 0) {
+      throw new Error(
+        `refusing: ${plan.tombstones.blocked.length} tombstone(s) on a tombstone-only closed date need a decision ` +
+          `(${[...new Set(plan.tombstones.blocked.map((b) => b.reason))].join("; ")}); nothing written`,
+      );
     }
 
     // Capture BEFORE the delete (the helper's contract).
@@ -194,12 +310,58 @@ export function runClosedDayTwsRepair(
       );
     }
 
+    // Tombstones on dates the delete left holding only tombstones.
+    // Classified as tombstones in planTombstones (isReconTombstone); the
+    // quantity check is a last guard that a real row is never deleted here.
+    const delTomb = db.prepare("DELETE FROM holdings WHERE id = ? AND as_of_date = ? AND quantity = 0");
+    let tombstonesDeleted = 0;
+    for (const t of plan.tombstones.superseded) tombstonesDeleted += delTomb.run(t.id, t.date).changes;
+    const redate = db.prepare(
+      "UPDATE holdings SET as_of_date = ?, source_key = ? WHERE id = ? AND as_of_date = ? AND quantity = 0",
+    );
+    let tombstonesRedated = 0;
+    for (const t of plan.tombstones.redate) tombstonesRedated += redate.run(t.to, t.newKey, t.id, t.from).changes;
+    if (
+      tombstonesDeleted !== plan.tombstones.superseded.length ||
+      tombstonesRedated !== plan.tombstones.redate.length
+    ) {
+      throw new Error("tombstone changes differ from the plan; rolled back");
+    }
+
+    // The engine's own check: with the closed-day snapshots gone, the
+    // reconciler must still see every moved closure as closed. Then verify
+    // each moved pair ends on a zero tombstone dated on a trading day.
+    const genBeforeReconcile = getTaxInputGeneration(db);
+    // Scoped to the accounts whose closures moved, so the run answers only
+    // that question.
+    let reconcilerMarked = 0;
+    for (const accountId of new Set(plan.tombstones.redate.map((t) => t.accountId))) {
+      reconcilerMarked += reconcileClosedEquityHoldings(db, { accountId });
+    }
+    const newestRow = db.prepare(
+      `SELECT quantity, as_of_date, source_key FROM holdings
+        WHERE account_id = ? AND security_id = ? ORDER BY as_of_date DESC LIMIT 1`,
+    );
+    for (const t of plan.tombstones.redate) {
+      const row = newestRow.get(t.accountId, t.securityId) as
+        | { quantity: number; as_of_date: string; source_key: string | null }
+        | undefined;
+      if (!row || row.quantity !== 0 || !isReconTombstone(row.source_key) || isMarketClosed(row.as_of_date)) {
+        throw new Error(
+          `closure for account ${t.accountId} security ${t.securityId} did not end on a trading-day tombstone; rolled back`,
+        );
+      }
+    }
+
     const v = computeDailyValuations(db);
     return {
       plan,
       applied: true,
       deleted,
-      taxGenerationBumped,
+      tombstonesDeleted,
+      tombstonesRedated,
+      reconcilerMarked,
+      taxGenerationBumped: taxGenerationBumped || getTaxInputGeneration(db) !== genBeforeReconcile,
       valuations: { datesComputed: v.datesComputed, accountsProcessed: v.accountsProcessed },
     };
   })();
@@ -223,7 +385,18 @@ function printResult(result: ClosedDayTwsResult): void {
     `Kept on those closed dates (not from the IBKR live sync): prices ${plan.kept.prices}, ` +
       `holdings ${plan.kept.holdings}, snapshots ${plan.kept.snapshots}`,
   );
+  const tb = plan.tombstones;
+  console.log(
+    `Tombstones on dates left tombstone-only: ${tb.superseded.length} superseded (delete), ` +
+      `${tb.redate.length} still newest (move to next snapshot), ${tb.blocked.length} blocked`,
+  );
+  for (const r of tb.redate) console.log(`  move: account ${r.accountId} ${r.from} -> ${r.to}`);
+  for (const b of tb.blocked) console.log(`  blocked: account ${b.accountId} ${b.date}: ${b.reason}`);
   if (result.applied) {
+    console.log(
+      `Tombstones deleted ${result.tombstonesDeleted}, moved ${result.tombstonesRedated}; ` +
+        `reconciler afterwards marked ${result.reconcilerMarked}`,
+    );
     console.log(`Tax input generation bumped: ${result.taxGenerationBumped ? "yes" : "no"}`);
     if (result.valuations) {
       console.log(

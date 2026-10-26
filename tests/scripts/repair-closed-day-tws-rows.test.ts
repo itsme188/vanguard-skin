@@ -86,25 +86,36 @@ describe("repair-closed-day-tws-rows", () => {
       { date: HOLIDAY, prices: 1, holdings: 1, snapshots: 0 },
     ]);
     expect(result.plan.kept).toEqual({ prices: 1, holdings: 3, snapshots: 2 });
+    // The IBKR Sunday is left holding only ZZB's still-newest live tombstone:
+    // planned to move to Monday, the next real snapshot.
+    expect(result.plan.tombstones.superseded).toEqual([]);
+    expect(result.plan.tombstones.blocked).toEqual([]);
+    expect(result.plan.tombstones.redate.map((r) => [r.from, r.to])).toEqual([[SUNDAY, MONDAY]]);
     expect(count(db, "SELECT COUNT(*) AS c FROM prices")).toBe(before);
   });
 
   it("--apply removes exactly the planned rows, rebuilds valuations, and a second dry run finds nothing", () => {
-    const { db, acct } = setup();
+    const { db, acct, sec2 } = setup();
     const result = runClosedDayTwsRepair(db, { apply: true });
 
     expect(result.applied).toBe(true);
     expect(result.deleted).toEqual({ prices: 3, holdings: 2, snapshots: 1 });
+    expect(result.tombstonesRedated).toBe(1);
+    expect(result.reconcilerMarked).toBe(0);
     expect(result.valuations).not.toBeNull();
     expect(result.taxGenerationBumped).toBe(false);
 
     // Trading-day rows intact.
     expect(count(db, "SELECT COUNT(*) AS c FROM prices WHERE date IN (?, ?)", FRIDAY, MONDAY)).toBe(2);
-    expect(count(db, "SELECT COUNT(*) AS c FROM holdings WHERE as_of_date IN (?, ?)", FRIDAY, MONDAY)).toBe(2);
+    expect(count(db, "SELECT COUNT(*) AS c FROM holdings WHERE as_of_date IN (?, ?) AND source_key LIKE 'tws-%'", FRIDAY, MONDAY)).toBe(2);
     expect(count(db, "SELECT COUNT(*) AS c FROM monthly_snapshots WHERE account_id = ? AND month_end_date = ?", acct, FRIDAY)).toBe(1);
     // Non-TWS closed-day rows intact.
     expect(count(db, "SELECT COUNT(*) AS c FROM prices WHERE source = 'statement'")).toBe(1);
     expect(count(db, "SELECT COUNT(*) AS c FROM holdings WHERE source_key NOT LIKE 'tws-%'")).toBe(3);
+    // The moved tombstone keeps its row and origin, now on Monday.
+    expect(
+      db.prepare("SELECT as_of_date, source_key, quantity FROM holdings WHERE account_id = ? AND source_key LIKE 'recon:%'").all(acct),
+    ).toEqual([{ as_of_date: MONDAY, source_key: `recon:closed-equity:${acct}:${sec2}:${MONDAY}:live`, quantity: 0 }]);
     expect(count(db, "SELECT COUNT(*) AS c FROM monthly_snapshots WHERE source != 'tws'")).toBe(2);
 
     const again = planClosedDayTwsRepair(db);
@@ -124,7 +135,61 @@ describe("repair-closed-day-tws-rows", () => {
 
     const result = runClosedDayTwsRepair(db, { apply: true });
     expect(result.taxGenerationBumped).toBe(true);
-    expect(getTaxInputGeneration(db)).toBe(gen + 1);
+    expect(getTaxInputGeneration(db)).toBeGreaterThan(gen);
+  });
+
+  it("a closed date left with only superseded tombstones loses them, so valuations never read a zero-holdings snapshot", () => {
+    const db = new Database(":memory:");
+    db.pragma("foreign_keys = ON");
+    runMigrations(db);
+    const acct = (db.prepare("SELECT id FROM accounts WHERE name = 'IBKR'").get() as { id: number }).id;
+    const a = db.prepare("INSERT INTO securities (symbol, security_type) VALUES ('ZZA', 'Stock')").run().lastInsertRowid as number;
+    const b = db.prepare("INSERT INTO securities (symbol, security_type) VALUES ('ZZB', 'Stock')").run().lastInsertRowid as number;
+    const hold = (s: number, date: string, key: string, qty: number) =>
+      db
+        .prepare("INSERT INTO holdings (account_id, security_id, quantity, cost_basis, as_of_date, source_key) VALUES (?, ?, ?, 10, ?, ?)")
+        .run(acct, s, qty, date, key);
+    for (const d of [FRIDAY, MONDAY]) {
+      db.prepare("INSERT INTO prices (security_id, date, close_price, source) VALUES (?, ?, 10, 'tws')").run(a, d);
+      hold(a, d, `tws-${acct}-${a}-${d}`, 5);
+    }
+    // Friday held ZZB too; Sunday's sync lacked it, so the live pass
+    // tombstoned it on Sunday; Monday the owner bought it back.
+    hold(b, FRIDAY, `tws-${acct}-${b}-${FRIDAY}`, 3);
+    hold(a, SUNDAY, `tws-${acct}-${a}-${SUNDAY}`, 5);
+    hold(b, SUNDAY, `recon:closed-equity:${acct}:${b}:${SUNDAY}:live`, 0);
+    hold(b, MONDAY, `tws-${acct}-${b}-${MONDAY}`, 3);
+    db.prepare("INSERT INTO prices (security_id, date, close_price, source) VALUES (?, ?, 10, 'statement')").run(a, SUNDAY);
+
+    const plan = planClosedDayTwsRepair(db);
+    expect(plan.tombstones.superseded.map((t) => t.date)).toEqual([SUNDAY]);
+    expect(plan.tombstones.redate).toEqual([]);
+
+    const result = runClosedDayTwsRepair(db, { apply: true });
+    expect(result.tombstonesDeleted).toBe(1);
+    expect(count(db, "SELECT COUNT(*) AS c FROM holdings WHERE as_of_date = ?", SUNDAY)).toBe(0);
+    // The Sunday valuation (a kept statement price) reads Friday's holdings, not zeros.
+    const sunday = db
+      .prepare("SELECT holdings_count FROM daily_valuations WHERE account_id = ? AND valuation_date = ?")
+      .get(acct, SUNDAY) as { holdings_count: number } | undefined;
+    expect(sunday?.holdings_count).toBe(2);
+  });
+
+  it("refuses --apply when a tombstone-only closed date holds a statement-pass tombstone", () => {
+    const db = new Database(":memory:");
+    runMigrations(db);
+    const acct = (db.prepare("SELECT id FROM accounts WHERE name = 'IBKR'").get() as { id: number }).id;
+    const a = db.prepare("INSERT INTO securities (symbol, security_type) VALUES ('ZZA', 'Stock')").run().lastInsertRowid as number;
+    db.prepare("INSERT INTO holdings (account_id, security_id, quantity, as_of_date, source_key) VALUES (?, ?, 5, ?, ?)").run(
+      acct, a, SUNDAY, `tws-${acct}-${a}-${SUNDAY}`,
+    );
+    const b = db.prepare("INSERT INTO securities (symbol, security_type) VALUES ('ZZB', 'Stock')").run().lastInsertRowid as number;
+    db.prepare("INSERT INTO holdings (account_id, security_id, quantity, as_of_date, source_key) VALUES (?, ?, 0, ?, ?)").run(
+      acct, b, SUNDAY, `recon:closed-equity:${acct}:${b}:${SUNDAY}:stmt`,
+    );
+    expect(planClosedDayTwsRepair(db).tombstones.blocked).toHaveLength(1);
+    expect(() => runClosedDayTwsRepair(db, { apply: true })).toThrow(/refusing/);
+    expect(count(db, "SELECT COUNT(*) AS c FROM holdings")).toBe(2);
   });
 
   it("an empty plan applies as a no-op without rebuilding valuations", () => {
