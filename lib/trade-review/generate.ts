@@ -436,7 +436,11 @@ export async function generateTradeReview(
     try {
       const fs = await import("node:fs/promises");
       const path = await import("node:path");
-      const dir = path.join(process.cwd(), "data", "trade-review-debug");
+      // Anchor on the data folder, not cwd (packaged app cwd is the read-only bundle).
+      const dir = path.join(
+        process.env.VANGUARD_DB_DIR || path.join(process.cwd(), "data"),
+        "trade-review-debug",
+      );
       await fs.mkdir(dir, { recursive: true });
       const stamp = new Date().toISOString().replace(/[:.]/g, "-");
       const file = path.join(

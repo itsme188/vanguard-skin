@@ -5,7 +5,7 @@
  * path (claim mutex, marker dance) proceeds untouched.
  */
 import type Database from "better-sqlite3";
-import { loadIbkrConfig } from "@/lib/ibkr/config";
+import { loadIbkrConfig, ibkrOAuthDir } from "@/lib/ibkr/config";
 import { openSession } from "@/lib/ibkr/web-api";
 import { resolveAtmContracts } from "@/lib/ibkr/option-chain";
 import { getMarketDataSnapshot, SNAPSHOT_FIELDS } from "@/lib/ibkr/market-data";
@@ -43,10 +43,12 @@ const lastComputedAt = new Map<number, number>();
 // over the rare duplicate.
 const inFlightEvents = new Set<number>();
 const inFlightFamilies = new Set<string>();
+let warnedNoIbkrConfig = false; // warn once per process
 export function __resetIntelTtlForTests(): void {
   lastComputedAt.clear();
   inFlightEvents.clear();
   inFlightFamilies.clear();
+  warnedNoIbkrConfig = false;
 }
 
 interface IntelDeps {
@@ -153,6 +155,12 @@ export async function ensureIntelForEvents(
   let lst: string | null = null;
   let sessionTried = false;
   const cfg = (() => { try { return deps.loadConfig(); } catch { return null; } })();
+  if (!cfg && !warnedNoIbkrConfig) {
+    warnedNoIbkrConfig = true;
+    console.warn(
+      `[ibkr] Web API straddles off: not configured (credentials folder not found: ${ibkrOAuthDir()})`,
+    );
+  }
 
   for (const ev of events) {
     if (!opts.forceFresh) {
