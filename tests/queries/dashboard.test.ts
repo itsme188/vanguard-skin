@@ -66,6 +66,16 @@ describe("getAccountSummaries", () => {
     expect(taxable.twr).toBe(0.08);
   });
 
+  // [qa:accounts-ibkr--monthly-snapshot-twr-corrupt-triple-digit-rows-regression-1]
+  it("reads an ibkr-activity TWR (stored as a percent) as a fraction", () => {
+    seedSnapshot(db, 3, "2025-01-31", 100000, 5.21, "ibkr-activity");
+
+    const summaries = getAccountSummaries(db);
+    const ibkr = summaries.find((s) => s.id === 3)!;
+
+    expect(ibkr.twr).toBeCloseTo(0.0521, 10);
+  });
+
   it("handles accounts with only one snapshot", () => {
     seedSnapshot(db, 1, "2025-01-31", 100000);
 
