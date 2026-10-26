@@ -13,6 +13,7 @@ import {
   describeUnfilterOutcome,
   feedTotalForSource,
   filteredMarkerText,
+  filteredRowActionName,
   isSelectableSource,
   resolveFilteredCategoryLabel,
   sourceOptionLabel,
@@ -287,5 +288,33 @@ describe("article reader frame", () => {
     expect(widerContentWidth(353, 352)).toBeNull();
     const render = frame.slice(anchorIndex(frame, "export function NewsletterArticleFrame("));
     expect(sliceBetween(render, "<ScrollFade>", "</ScrollFade>")).toContain("minWidth: contentWidth ?? undefined");
+  });
+});
+
+// [qa:dashboard-research-view-feeds-filtered-tab-97-filtered-tab-unfilter-buttons-share-one-accessible-nam]
+describe("Filtered-tab row actions name the article", () => {
+  it("filteredRowActionName joins the verb and the subject", () => {
+    expect(filteredRowActionName("Unfilter", "Weekly macro wrap")).toBe("Unfilter: Weekly macro wrap");
+    expect(filteredRowActionName("Retry enrichment", "  Fed minutes  ")).toBe(
+      "Retry enrichment: Fed minutes",
+    );
+  });
+
+  it("falls back to the bare verb for a blank subject", () => {
+    expect(filteredRowActionName("Unfilter", "")).toBe("Unfilter");
+    expect(filteredRowActionName("Unfilter", "   ")).toBe("Unfilter");
+    expect(filteredRowActionName("Unfilter", null)).toBe("Unfilter");
+    expect(filteredRowActionName("Unfilter", undefined)).toBe("Unfilter");
+  });
+
+  it("two articles get two names", () => {
+    expect(filteredRowActionName("Unfilter", "A")).not.toBe(filteredRowActionName("Unfilter", "B"));
+  });
+
+  it("both row buttons carry the per-article name (source pin)", () => {
+    const src = readFileSync("app/dashboard/components/ResearchFeedsView.tsx", "utf8");
+    const row = src.slice(anchorIndex(src, "function FilteredArticleRow("));
+    expect(row).toContain('aria-label={filteredRowActionName("Unfilter", article.subject)}');
+    expect(row).toContain('aria-label={filteredRowActionName("Retry enrichment", article.subject)}');
   });
 });

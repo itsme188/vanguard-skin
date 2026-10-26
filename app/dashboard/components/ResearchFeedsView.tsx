@@ -1656,6 +1656,17 @@ function FilteredArticlesList({
   );
 }
 
+/**
+ * Accessible name for a Filtered-tab row action: the verb plus the article
+ * it acts on, so ninety "Unfilter" buttons do not share one name (the
+ * Manage Sources "Remove <source>" pattern). A blank subject falls back to
+ * the bare verb. [qa:dashboard-research-view-feeds-filtered-tab-97-filtered-tab-unfilter-buttons-share-one-accessible-nam]
+ */
+export function filteredRowActionName(verb: string, subject: string | null | undefined): string {
+  const title = subject?.trim();
+  return title ? `${verb}: ${title}` : verb;
+}
+
 function FilteredArticleRow({
   article,
   onUnfilter,
@@ -1703,6 +1714,7 @@ function FilteredArticleRow({
           type="button"
           onClick={() => onRetryEnrichment(article.id)}
           className="shrink-0 px-3 py-1.5 rounded-md text-xs font-medium border border-edge text-ink-dim hover:text-ink hover:bg-raised transition-colors"
+          aria-label={filteredRowActionName("Retry enrichment", article.subject)}
           title="Queue this article for AI analysis again on the next feed sync"
         >
           Retry enrichment
@@ -1712,6 +1724,7 @@ function FilteredArticleRow({
           type="button"
           onClick={() => onUnfilter(article.id)}
           className="shrink-0 px-3 py-1.5 rounded-md text-xs font-medium border border-edge text-ink-dim hover:text-ink hover:bg-raised transition-colors"
+          aria-label={filteredRowActionName("Unfilter", article.subject)}
           title="Move back into the digest stream"
         >
           Unfilter
