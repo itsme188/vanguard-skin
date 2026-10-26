@@ -13,11 +13,33 @@ import {
 import { liveOptionExpirationSql, normalizeOptionExpiration } from "@/lib/compute/option-expiry";
 import { CURRENCY_CONVERSION_SECURITY_SQL, USD_ONLY, lotSideSignSql, remainingLotBasisSql } from "@/lib/queries/tax-lots";
 import { longTermDateSql } from "@/lib/queries/long-term-sql";
+import { getPendingStatementIndex, isPendingStatementLot } from "@/lib/queries/pending-statement";
 import {
-  isPendingStatementLot,
-  pendingStatementKey,
-  pendingStatementKeySet,
-} from "@/lib/queries/pending-statement";
+  reducePendingDisclosure,
+  type PendingDisclosureInput,
+  type PendingDisclosureRow,
+} from "@/lib/queries/pending-statement-types";
+
+/**
+ * One chat line per (reason, side) pending row. The long "awaiting statement"
+ * line keeps its historical text; the others name their reason and the figure
+ * kind (cost basis for a long side, short-sale proceeds for a short side).
+ * Sentences live here: lib files never import from app/.
+ */
+function pendingDisclosureLine(row: PendingDisclosureRow): string {
+  const lots = `${row.lots} lot${row.lots === 1 ? "" : "s"}`;
+  const figureWords = row.figureKind === "short_sale_proceeds" ? "short-sale proceeds" : "cost basis";
+  const detail = `${row.positions} (${lots}, ${figureWords}: ${formatUSD(row.figure)})`;
+  const sideNote = row.side === "short" ? " (short positions)" : "";
+  switch (row.reason) {
+    case "closing_entry_missing":
+      return `- Positions the broker statement shows closed but with no closing entry in the ledger${sideNote}: ${detail} — not counted as open holdings or unrealized; realized gain unknown until the closing entry is imported`;
+    case "resymbol_repair_pending":
+      return `- Option positions renamed to a new contract after a split, ledger entries not yet moved${sideNote}: ${detail} — not counted as open holdings or unrealized; realized gain unknown until the entries are moved to the new symbol`;
+    default:
+      return `- Positions closed per live data, awaiting broker statement${sideNote}: ${detail} — not counted as open holdings or unrealized; realized gain unknown until the statement is imported`;
+  }
+}
 
 const CONVENTION_PENDING_NOTE =
   "Note: cost-basis figures are pending a recompute under the corrected dollar convention and may be unit-inconsistent.";
@@ -412,7 +434,7 @@ export function getPortfolioSummaryForChat(db: Database.Database, accountName?: 
   // broker statement — lib/queries/pending-statement.ts) are NOT open
   // holdings: grouped per pair so the shared read model can split them out
   // into their own disclosed line, never re-derived here.
-  const pendingKeys = pendingStatementKeySet(db, accountId != null ? [accountId] : undefined);
+  const pendingIndex = getPendingStatementIndex(db, accountId != null ? [accountId] : undefined, { today });
   const taxLotGroups = db
     .prepare(
       `SELECT
@@ -437,12 +459,18 @@ export function getPortfolioSummaryForChat(db: Database.Database, accountName?: 
     total_cost_basis: number;
   }>;
   const taxSummary = { open_lots: 0, total_cost_basis: 0 };
-  const pendingSummary = { positions: new Set<string>(), lots: 0, cost_basis: 0 };
+  const pendingInputs: PendingDisclosureInput[] = [];
   for (const g of taxLotGroups) {
-    if (isPendingStatementLot(pendingKeys, g)) {
-      pendingSummary.positions.add(pendingStatementKey(g));
-      pendingSummary.lots += g.open_lots;
-      pendingSummary.cost_basis += g.total_cost_basis;
+    const reason = pendingIndex.reasonFor(g);
+    if (reason) {
+      pendingInputs.push({
+        account_id: g.account_id,
+        security_id: g.security_id,
+        is_short: g.is_short,
+        reason,
+        lotCount: g.open_lots,
+        figure: g.total_cost_basis,
+      });
     } else {
       taxSummary.open_lots += g.open_lots;
       taxSummary.total_cost_basis += g.total_cost_basis;
@@ -470,19 +498,16 @@ export function getPortfolioSummaryForChat(db: Database.Database, accountName?: 
     excludedNonUsdSales: number;
   };
 
+  const pendingRows = reducePendingDisclosure(pendingInputs);
   if (
     taxSummary.open_lots > 0 ||
     realizedGains.total !== 0 ||
     realizedGains.excludedNonUsdSales > 0 ||
-    pendingSummary.lots > 0
+    pendingRows.length > 0
   ) {
     lines.push("\n### Tax Summary");
     lines.push(`- Open lots: ${taxSummary.open_lots} (cost basis: ${formatUSD(taxSummary.total_cost_basis)})`);
-    if (pendingSummary.lots > 0) {
-      lines.push(
-        `- Positions closed per live data, awaiting broker statement: ${pendingSummary.positions.size} (${pendingSummary.lots} lot${pendingSummary.lots === 1 ? "" : "s"}, cost basis: ${formatUSD(pendingSummary.cost_basis)}) — not counted as open holdings or unrealized; realized gain unknown until the statement is imported`
-      );
-    }
+    for (const row of pendingRows) lines.push(pendingDisclosureLine(row));
     // Realized G/L is stored native per security, so only USD rows sum into
     // the dollar figures — same predicate and disclosure as the Tax Lots tiles.
     const nonUsdNote =
@@ -539,7 +564,7 @@ export function getPortfolioSummaryForChat(db: Database.Database, accountName?: 
     .all(today, ...taxLotsParams) as Array<HarvestCandidate & PairKeyed>)
     // A pending-statement lot is not held — nothing to harvest. LIMIT after
     // the exclusion so a pending lot never crowds out a real candidate.
-    .filter((c) => !isPendingStatementLot(pendingKeys, c))
+    .filter((c) => !isPendingStatementLot(pendingIndex, c))
     .slice(0, 5);
 
   if (harvestCandidates.length > 0) {
@@ -596,7 +621,7 @@ export function getPortfolioSummaryForChat(db: Database.Database, accountName?: 
       ORDER BY days_remaining ASC`
     )
     .all(today, today, today, ...taxLotsParams) as Array<ApproachingLongTerm & PairKeyed>)
-    .filter((lot) => !isPendingStatementLot(pendingKeys, lot))
+    .filter((lot) => !isPendingStatementLot(pendingIndex, lot))
     .slice(0, 10);
 
   if (approachingLT.length > 0) {
