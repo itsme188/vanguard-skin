@@ -13,7 +13,18 @@ import { isCashEquivalentSecurity } from "@/lib/compute/cash-equivalents";
 import { getTaxConventionState } from "@/lib/compute/tax-convention";
 import { statementGradeHoldingSql } from "@/lib/db/holding-sources";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
-import { pendingStatementKeySet } from "@/lib/queries/pending-statement";
+import {
+  getPendingStatementIndex,
+  type PendingStatementIndex,
+  type PendingStatementReadOptions,
+} from "@/lib/queries/pending-statement";
+import {
+  PENDING_REASON_PRECEDENCE,
+  type PendingReason,
+  type PendingSide,
+} from "@/lib/queries/pending-statement-types";
+import { scanClosingEntryAccountHits } from "@/lib/queries/closing-entry-account-mismatch";
+import { scanExerciseLegMissingHits, scanExercisePriceMissingHits } from "@/lib/queries/exercise-link-gaps";
 import { isCurrencyConversionSecurityType } from "@/lib/queries/tax-lots";
 import { addDays, todayET } from "@/lib/calendar/date-utils";
 
@@ -40,8 +51,38 @@ export interface IntegrityHit {
    * renders it as informational "awaiting statement". Absent on every other
    * hit.
    */
-  kind?: "statement-lag";
+  kind?: IntegrityHitKind;
+  /**
+   * Every pending reason of the pair (lib/queries/pending-statement.ts), in
+   * PENDING_REASON_ORDER, on a lot-drift hit whose kind is a pending reason
+   * other than plain "awaiting statement" (OPEN-4: one hit per pair, every
+   * reason kept and named in the text). Absent on every other hit, including
+   * the awaiting-statement-only hit, which keeps its pre-2026-10-26 shape.
+   */
+  pendingReasons?: PendingReason[];
 }
+
+/**
+ * Typed sub-kinds (plan docs/superpowers/plans/2026-10-26-pending-lots-options-shorts-plan.md, Task 8):
+ *  - "closing-entry-missing": a pending option or short side whose statement
+ *    shows it closed with no closing entry imported (warning, never caps).
+ *  - "resymbol-repair-pending": an option renamed to a new contract after a
+ *    split and still held under it in the same account (warning).
+ *  - "closing-entry-account-mismatch": a closing entry in another account the
+ *    engine matched to no lot there, inside a pending side's window (CRITICAL).
+ *  - "closing-entry-account-undecidable": such an entry that cannot be judged
+ *    (mixed evidence, or not loaded by the engine) (warning).
+ *  - "exercise-price-missing" / "exercise-leg-missing": an exercise or
+ *    assignment whose premium is not moved to the stock (warning, ledger only).
+ */
+export type IntegrityHitKind =
+  | "statement-lag"
+  | "closing-entry-missing"
+  | "resymbol-repair-pending"
+  | "closing-entry-account-mismatch"
+  | "closing-entry-account-undecidable"
+  | "exercise-price-missing"
+  | "exercise-leg-missing";
 
 // ── Check 1: type-identity contradictions ──────────────────────────────
 //
@@ -201,6 +242,24 @@ function scanUnexplainedResidualHits(db: Database.Database): IntegrityHit[] {
 //
 // Every pair with a statement book therefore ends in exactly one of: no
 // difference, a real hit, or a pending-statement warning.
+//
+// PENDING PAIRS (2026-10-26, plan
+// docs/superpowers/plans/2026-10-26-pending-lots-options-shorts-plan.md
+// rulings R12 and OPEN-4). A pair the pending read model lists
+// (`getPendingStatementIndex`, any side, any reason) gets exactly ONE pending
+// warning keyed `lot-drift:<a>:<s>`, whatever the signed drift is: a long and
+// a short side that cancel to zero still get it. Its kind is the first
+// present reason in PENDING_REASON_PRECEDENCE; awaiting-statement alone keeps
+// the "statement-lag" kind and text it always had. The assessment above
+// still runs for the pair and its output is sorted in two:
+//   * INDEPENDENT findings (real drift against the statement or the
+//     rolled-back statement: fills with zero lots, no lots and no fills, a
+//     ratio drift; and the roll-back uncertainty warning) are emitted beside
+//     the pending hit under the key suffix `:drift`, at their usual severity;
+//   * FALLBACK pending disclosures (a lots-without-position outcome on either
+//     comparator, and the step-4 statement-lag warning) are suppressed: the
+//     pending hit already explains the pair.
+// A pair with no pending reason follows the rules above exactly.
 
 const LOT_DRIFT_EPSILON = 1e-4; // shares
 const LOT_DRIFT_RATIO_THRESHOLD = 0.05; // 5%
@@ -353,7 +412,51 @@ function rollLotsBackToStatement(
   return { ok: true, quantity };
 }
 
-function scanLotDriftHits(db: Database.Database): IntegrityHit[] {
+const PENDING_HIT_KIND: Record<PendingReason, IntegrityHitKind> = {
+  awaiting_statement: "statement-lag",
+  closing_entry_missing: "closing-entry-missing",
+  resymbol_repair_pending: "resymbol-repair-pending",
+};
+
+/** This file's own words per reason (lib files never import app copy). */
+const PENDING_HIT_PHRASE: Record<PendingReason, string> = {
+  awaiting_statement: "closed per live data — awaiting statement",
+  closing_entry_missing: "statement shows the position closed but its closing entry is not imported — lots not valued",
+  resymbol_repair_pending:
+    "renamed to a new contract after a split and still held under it — the ledger entries must be moved to the new symbol before these lots are valued",
+};
+
+/**
+ * The one pending warning for a pair. Awaiting statement on its own keeps
+ * the exact pre-2026-10-26 hit (no `pendingReasons`); any other reason names
+ * every pending side and its reason.
+ */
+function pendingLotDriftHit(
+  hitKey: string,
+  label: string,
+  sides: readonly { side: PendingSide; reason: PendingReason }[],
+  reasons: PendingReason[]
+): IntegrityHit {
+  const lead = PENDING_REASON_PRECEDENCE.find((r) => reasons.includes(r))!;
+  if (lead === "awaiting_statement") {
+    return {
+      key: hitKey,
+      severity: "warning",
+      kind: "statement-lag",
+      reason: `${label}: ${PENDING_HIT_PHRASE.awaiting_statement}`,
+    };
+  }
+  const text = sides.map((p) => `${p.side} side: ${PENDING_HIT_PHRASE[p.reason]}`).join("; ");
+  return {
+    key: hitKey,
+    severity: "warning",
+    kind: PENDING_HIT_KIND[lead],
+    pendingReasons: reasons,
+    reason: `${label}: ${text}`,
+  };
+}
+
+function scanLotDriftHits(db: Database.Database, pendingIndex: PendingStatementIndex): IntegrityHit[] {
   const positions = db
     .prepare(
       `SELECT h.account_id AS accountId, h.security_id AS securityId, h.quantity AS posQty
@@ -413,13 +516,17 @@ function scanLotDriftHits(db: Database.Database): IntegrityHit[] {
     if (!prev || r.asOfDate > prev) statementDateByAccount.set(r.accountId, r.asOfDate);
   }
 
+  // Local pair keys (never a pending-statement key): every pair the pending
+  // index lists is scanned too (R12), even if no other source names it.
   const allKeys = Array.from(
-    new Set<string>([...posByKey.keys(), ...lotsByKey.keys(), ...statementByKey.keys()])
+    new Set<string>([
+      ...posByKey.keys(),
+      ...lotsByKey.keys(),
+      ...statementByKey.keys(),
+      ...pendingIndex.pairs.map((p) => `${p.account_id}:${p.security_id}`),
+    ])
   ).sort();
   if (allKeys.length === 0) return [];
-
-  // Same `${account}:${security}` key as posByKey/lotsByKey above.
-  const pendingKeys = pendingStatementKeySet(db);
 
   const accountNameById = new Map(
     (db.prepare(`SELECT id, name FROM accounts`).all() as { id: number; name: string }[]).map((a) => [
@@ -516,6 +623,25 @@ function scanLotDriftHits(db: Database.Database): IntegrityHit[] {
     const hitKey = `lot-drift:${accountId}:${securityId}`;
     const label = `${symbol} (${accountName})`;
 
+    // R12: a pending pair gets its one pending warning first; the
+    // assessment below then reports only its INDEPENDENT findings, under
+    // `:drift`, and its fallback pending disclosures are dropped.
+    const pendingReasons = pendingIndex.pairReasons(accountId, securityId);
+    const pending = pendingReasons.length > 0;
+    if (pending) {
+      hits.push({
+        magnitude: 0,
+        hit: pendingLotDriftHit(hitKey, label, pendingIndex.sidesFor(accountId, securityId), pendingReasons),
+      });
+    }
+    const emit = (hit: IntegrityHit, magnitude: number, role: "independent" | "fallback"): void => {
+      if (!pending) {
+        hits.push({ magnitude, hit });
+      } else if (role === "independent") {
+        hits.push({ magnitude, hit: { ...hit, key: `${hitKey}:drift` } });
+      }
+    };
+
     let fillsMemo: number | undefined;
     const fillCount = (): number => {
       if (fillsMemo === undefined) {
@@ -527,18 +653,18 @@ function scanLotDriftHits(db: Database.Database): IntegrityHit[] {
     const pushReal = (drift: LotDriftShape, fills: () => number = fillCount): void => {
       if (drift.shape === "fills-zero-lots") {
         const n = fills();
-        hits.push({
-          magnitude: drift.magnitude,
-          hit: {
+        emit(
+          {
             key: hitKey,
             severity: "critical",
             reason: `${label}: position has ${n} fill${n === 1 ? "" : "s"} but zero tax lots`,
           },
-        });
+          drift.magnitude,
+          "independent"
+        );
       } else if (drift.shape === "no-lots-no-fills") {
-        hits.push({
-          magnitude: 0,
-          hit: {
+        emit(
+          {
             key: hitKey,
             severity: "warning",
             // On the rolled-back path later transactions exist, so the plain
@@ -548,40 +674,30 @@ function scanLotDriftHits(db: Database.Database): IntegrityHit[] {
                 ? `${label}: position has zero lots and zero transactions`
                 : `${label}: statement position has no tax lots and no transactions up to the statement date`,
           },
-        });
+          0,
+          "independent"
+        );
       } else if (drift.shape === "lots-no-position") {
-        hits.push({
-          magnitude: 0,
-          hit: { key: hitKey, severity: "warning", reason: `${label}: open tax lots with no matching position` },
-        });
+        // A fallback disclosure: for a pending pair the index explains it.
+        emit(
+          { key: hitKey, severity: "warning", reason: `${label}: open tax lots with no matching position` },
+          0,
+          "fallback"
+        );
       } else {
-        hits.push({
-          magnitude: drift.magnitude,
-          hit: {
+        emit(
+          {
             key: hitKey,
             severity: "critical",
             reason: `${label}: position/lot drift ${(drift.magnitude * 100).toFixed(1)}%`,
           },
-        });
+          drift.magnitude,
+          "independent"
+        );
       }
     };
 
     const latestDrift = classifyLotDrift(latestQty, signedLotQty, hasLot, fillCount);
-
-    // Closed per live data, lots still open: the pending-statement read model
-    // owns this pair on every surface, so it wins here too.
-    if (latestDrift?.shape === "lots-no-position" && pendingKeys.has(key)) {
-      hits.push({
-        magnitude: 0,
-        hit: {
-          key: hitKey,
-          severity: "warning",
-          kind: "statement-lag",
-          reason: `${label}: closed per live data — awaiting statement`,
-        },
-      });
-      continue;
-    }
 
     // (1) No statement book for this account: nothing to wait for.
     const accountStatementDate = statementDateByAccount.get(accountId);
@@ -620,15 +736,17 @@ function scanLotDriftHits(db: Database.Database): IntegrityHit[] {
         // as the ledger that agrees with them is the only clean bill left;
         // anything else is said out loud, never skipped.
         if (!latestDrift && !snapshotOlderThanLedger) continue;
-        hits.push({
-          magnitude: 0,
-          hit: {
+        // Independent of the pending reason: the statement cannot judge the lots.
+        emit(
+          {
             key: hitKey,
             severity: "warning",
             kind: "statement-lag",
             reason: `${label}: tax lots cannot be checked against the statement (${rolled.why}) — pending statement`,
           },
-        });
+          0,
+          "independent"
+        );
         continue;
       }
       let fillsAsOfMemo: number | undefined;
@@ -660,14 +778,12 @@ function scanLotDriftHits(db: Database.Database): IntegrityHit[] {
     if (ledgerNewerThanStatement && snapshotOlderThanLedger) continue;
     // The statement agrees with the lots and the newest live row is a
     // quantity-0 tombstone: the position is closed per live data, whatever
-    // the security type. Options and shorts sit outside the stock/ETF
-    // pending-statement read model (pendingKeys above), so without this
-    // branch they were worded as a live position that still differs, which
-    // tells the user a closed contract is still held.
+    // the security type. A pair the pending index lists never reaches the
+    // owner through here (a fallback disclosure, suppressed for it, R12);
+    // this branch words the pairs the index does not list (2026-10-19).
     const closedPerLive = latestDrift.shape === "lots-no-position";
-    hits.push({
-      magnitude: 0,
-      hit: {
+    emit(
+      {
         key: hitKey,
         severity: "warning",
         kind: "statement-lag",
@@ -675,7 +791,9 @@ function scanLotDriftHits(db: Database.Database): IntegrityHit[] {
           ? `${label}: closed per live data — awaiting statement`
           : `${label}: live position differs from tax lots — pending statement`,
       },
-    });
+      0,
+      "fallback"
+    );
   }
 
   return hits.sort((a, b) => b.magnitude - a.magnitude).map((h) => h.hit);
@@ -837,7 +955,10 @@ export type IntegrityCheckId =
   | "type-contradiction"
   | "cash-residual"
   | "lot-drift"
+  | "closing-entry-account"
   | "duplicate-ledger"
+  | "exercise-price"
+  | "exercise-leg"
   | "reconcile-delta"
   | "other";
 
@@ -846,7 +967,10 @@ export const INTEGRITY_CHECK_ORDER: readonly IntegrityCheckId[] = [
   "type-contradiction",
   "cash-residual",
   "lot-drift",
+  "closing-entry-account",
   "duplicate-ledger",
+  "exercise-price",
+  "exercise-leg",
   "reconcile-delta",
   "other",
 ];
@@ -855,14 +979,27 @@ export const INTEGRITY_CHECK_LABELS: Record<IntegrityCheckId, string> = {
   "type-contradiction": "Security type contradicts its trades",
   "cash-residual": "Cash movement no transaction explains",
   "lot-drift": "Position does not match its tax lots",
+  "closing-entry-account": "Closing entry booked in another account",
   "duplicate-ledger": "Identical ledger rows on one day, possibly a duplicate import",
+  "exercise-price": "Option exercise or assignment with no price",
+  "exercise-leg": "Option exercise or assignment with no stock trade linked",
   "reconcile-delta": "Corporate action share count does not reconcile",
   other: "Other",
 };
 
+/** Key prefixes that are not themselves a check id. */
+const KEY_PREFIX_CHECK: Record<string, IntegrityCheckId> = {
+  "closing-entry-account-undecidable": "closing-entry-account",
+  "exercise-price-missing": "exercise-price",
+  "exercise-leg-missing": "exercise-leg",
+};
+
 export function integrityCheckIdOf(key: string): IntegrityCheckId {
   const prefix = key.split(":")[0];
+  const mapped = KEY_PREFIX_CHECK[prefix];
+  if (mapped) return mapped;
   return prefix === "type-contradiction" ||
+    prefix === "closing-entry-account" ||
     prefix === "cash-residual" ||
     prefix === "lot-drift" ||
     prefix === "duplicate-ledger" ||
@@ -895,7 +1032,11 @@ export function groupIntegrityHits(
 
 // ── Entry point ──────────────────────────────────────────────────────
 
-export function runIntegrityChecks(db: Database.Database): {
+export function runIntegrityChecks(
+  db: Database.Database,
+  /** `today` reaches the pending read model's option-expiry precedence (default todayET()). */
+  opts: PendingStatementReadOptions = {}
+): {
   critical: IntegrityHit[];
   warnings: IntegrityHit[];
   /** False means the position/lot comparison was skipped, not that it passed. */
@@ -914,7 +1055,13 @@ export function runIntegrityChecks(db: Database.Database): {
 
   const lotDriftChecked = getTaxConventionState(db).recomputeCurrent;
   if (lotDriftChecked) {
-    for (const hit of scanLotDriftHits(db)) {
+    const pendingIndex = getPendingStatementIndex(db, undefined, opts);
+    for (const hit of scanLotDriftHits(db, pendingIndex)) {
+      (hit.severity === "critical" ? critical : warnings).push(hit);
+    }
+    // Reads tax_lot_sales, so it shares the lot-drift gate (R4). Critical
+    // only for a decidable unmatched pure close; never for a pending reason.
+    for (const hit of scanClosingEntryAccountHits(db, pendingIndex.pairs)) {
       (hit.severity === "critical" ? critical : warnings).push(hit);
     }
   }
@@ -922,6 +1069,14 @@ export function runIntegrityChecks(db: Database.Database): {
   // Independent of the tax-lot convention marker: it reads the ledger only.
   // Always a warning, so it can never cap the score.
   for (const hit of scanPossibleDuplicateLedgerHits(db)) {
+    warnings.push(hit);
+  }
+
+  // Ledger only, outside the convention gate, always warnings (R5, R15).
+  for (const hit of scanExercisePriceMissingHits(db)) {
+    warnings.push(hit);
+  }
+  for (const hit of scanExerciseLegMissingHits(db)) {
     warnings.push(hit);
   }
 
