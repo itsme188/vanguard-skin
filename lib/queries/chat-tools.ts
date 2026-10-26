@@ -7,12 +7,8 @@ import { normalizeSector } from "@/lib/securities/normalize-sector";
 import { isCashEquivalentSecurity, cashEquivalentSecuritySql } from "@/lib/compute/cash-equivalents";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 import { marketCapCategoryBucketSql } from "@/lib/securities/normalize-market-cap";
-import {
-  getPendingStatementPairs,
-  isPendingStatementLot,
-  pendingStatementKey,
-  pendingStatementKeySet,
-} from "@/lib/queries/pending-statement";
+import { getPendingStatementIndex, type PendingStatementIndex } from "@/lib/queries/pending-statement";
+import { figureKindForSide, sideOf, type PendingFigureKind, type PendingReason } from "@/lib/queries/pending-statement-types";
 import { liveOriginHoldingSql } from "@/lib/db/holding-sources";
 import { accountScopeAndSql } from "@/lib/queries/account-scope-sql";
 import { isOptionLive, liveOptionExpirationSql } from "@/lib/compute/option-expiry";
@@ -171,12 +167,27 @@ export interface TaxLotResult {
    */
   position_side?: "long" | "short";
   /**
-   * Open lots only: the lot belongs to a position closed per LIVE broker data
-   * whose closing trade awaits the broker statement
-   * (lib/queries/pending-statement.ts). Not a current holding: no
-   * unrealized gain / market value, and `status_note` says so in words.
+   * Open lots only: the lot's (account, security, side) is pending in the
+   * shared read model (lib/queries/pending-statement.ts), for any reason.
+   * Not a current holding: no unrealized gain / market value, and
+   * `status_note` says so in words.
    */
   pending_statement?: boolean;
+  /**
+   * Open lots only: WHY the lot is pending, or null when it is not.
+   * `awaiting_statement` = closed per live broker data, the statement with
+   * the closing trade is not imported yet; `closing_entry_missing` = the
+   * statement shows the position closed but the ledger has no closing
+   * trade; `resymbol_repair_pending` = the option was renamed to a new
+   * contract after a split and is still held under it.
+   */
+  pending_statement_reason?: PendingReason | null;
+  /**
+   * Open lots only: what `cost_basis` is. `cost_basis` for a long lot;
+   * `short_sale_proceeds` for a short lot (the opening sale's net proceeds
+   * still open: money received, never a cost). Fixed by the side.
+   */
+  figure_kind?: PendingFigureKind;
   status_note?: string;
   // Only for closed lots:
   sale_date?: string;
@@ -426,8 +437,19 @@ export interface ClosedPerLiveDataResult {
  * For a symbol with no live holdings row: every (account, security) pair of
  * that symbol whose newest holdings row is a LIVE-origin zero (a `:live`
  * reconciler tombstone, a legacy live tombstone, or a live-sync zero row;
- * `liveOriginHoldingSql`), plus every pair the pending-statement read model
- * lists. Each comes back as its last NON-ZERO row, flagged pending statement.
+ * `liveOriginHoldingSql`), plus every pair whose side the pending read model
+ * lists as `awaiting_statement`. Each comes back as its last NON-ZERO row,
+ * flagged pending statement.
+ *
+ * Ruling R3 (plan 2026-10-26), applied to BOTH sources:
+ *  - a pair is dropped when any of its sides is pending for another reason
+ *    (`closing_entry_missing`: the statement already shows it closed and the
+ *    closing trade is missing, so "awaiting the statement" would be false;
+ *    `resymbol_repair_pending`: still held under the new contract, never
+ *    closed);
+ *  - a pair is listed only when its newest row is exactly zero: a pair whose
+ *    newest row is non-zero holds the opposite side (a live-flipped pair) and
+ *    is never described as closed.
  *
  * A pair whose newest row is statement-grade closure evidence is closed per
  * the statement and is NOT listed. Same account filter as
@@ -476,14 +498,34 @@ export function getClosedPerLiveDataForChat(
     closed_as_of_date: string;
   }[];
 
+  // The pair's newest date carries a zero row and no non-zero row: the
+  // position is flat there, not flipped to the other side.
+  const newestIsZero = db.prepare(
+    `SELECT 1 FROM holdings h
+      WHERE h.account_id = ? AND h.security_id = ?
+        AND h.as_of_date = (
+          SELECT MAX(h2.as_of_date) FROM holdings h2
+           WHERE h2.account_id = h.account_id AND h2.security_id = h.security_id
+        )
+      GROUP BY h.as_of_date
+     HAVING SUM(CASE WHEN h.quantity = 0 THEN 1 ELSE 0 END) > 0
+        AND SUM(CASE WHEN h.quantity != 0 THEN 1 ELSE 0 END) = 0`
+  );
+  const index = getPendingStatementIndex(db, accountIds, { today: todayET() });
+  const listable = (accountId: number, securityId: number): boolean =>
+    !blocksClosedPerLiveData(index, accountId, securityId) && newestIsZero.get(accountId, securityId) != null;
+
+  // A LOCAL (account, security) key for de-duplication only; never tested
+  // against the pending index (its keys carry the side).
   const pairs = new Map<string, { account_id: number; security_id: number; closed_as_of_date: string }>();
-  for (const r of zeroRows) pairs.set(pendingStatementKey(r), r);
-  for (const p of getPendingStatementPairs(db, accountIds)) {
-    if (p.symbol !== symbol) continue;
-    const key = pendingStatementKey(p);
-    if (!pairs.has(key)) {
-      pairs.set(key, { account_id: p.account_id, security_id: p.security_id, closed_as_of_date: p.live_flat_date });
-    }
+  for (const r of zeroRows) {
+    if (listable(r.account_id, r.security_id)) pairs.set(`${r.account_id}|${r.security_id}`, r);
+  }
+  for (const p of index.pairs) {
+    if (p.symbol !== symbol || p.reason !== "awaiting_statement") continue;
+    const localKey = `${p.account_id}|${p.security_id}`;
+    if (pairs.has(localKey) || !listable(p.account_id, p.security_id)) continue;
+    pairs.set(localKey, { account_id: p.account_id, security_id: p.security_id, closed_as_of_date: p.flat_date });
   }
 
   const lastNonZero = db.prepare(
@@ -519,6 +561,15 @@ export function getClosedPerLiveDataForChat(
     });
   }
   return out.sort((a, b) => a.account_name.localeCompare(b.account_name));
+}
+
+/**
+ * R3: a pair with any side pending for a reason other than
+ * `awaiting_statement` is never described as "closed per live data".
+ */
+function blocksClosedPerLiveData(index: PendingStatementIndex, accountId: number, securityId: number): boolean {
+  const reasons = index.pairReasons(accountId, securityId);
+  return reasons.includes("closing_entry_missing") || reasons.includes("resymbol_repair_pending");
 }
 
 /**
@@ -810,34 +861,46 @@ export function getTaxLotsForChat(
     Record<string, unknown> & { account_id: number; security_id: number; is_short: number }
   >;
 
-  // Pending statement (shared read model, never re-derived here): the
-  // position is closed per live data, so the lot is described as pending —
-  // not as an unrealized holding.
-  const pendingKeys = pendingStatementKeySet(db);
+  // Pending state comes from the shared read model, never re-derived here
+  // (one index, the same Eastern day as the expiry note). A lot that is not
+  // ordinary-open carries NO value and NO gain (ruling R1): a pending lot
+  // (any reason), and an expired option awaiting its closing entry, which
+  // the index never lists as pending (expired beats pending).
+  const pendingIndex = getPendingStatementIndex(db, undefined, { today });
   return rows.map(({ account_id, security_id, is_short, ...r }) => {
-    const pending = isPendingStatementLot(pendingKeys, { account_id, security_id, is_short });
+    const reason = pendingIndex.reasonFor({ account_id, security_id, is_short });
+    const expiredOption = isExpiredOptionRow(r, today);
     const baseNote = taxLotStatusNote(r, today);
     // A short lot says so in words as well as in the flag, so the model never
     // suggests "selling" it or waiting for long-term treatment.
     const short = is_short === 1;
+    const side = sideOf(is_short);
     const statusNote = short ? (baseNote ? `${SHORT_LOT_CHAT_NOTE} ${baseNote}` : SHORT_LOT_CHAT_NOTE) : baseNote;
-    return pending
-      ? {
-          ...r,
-          current_value: null,
-          unrealized_gain: null,
-          is_long_term: Boolean(r.is_long_term),
-          position_side: short ? ("short" as const) : ("long" as const),
-          pending_statement: true,
-          status_note: statusNote ? `${PENDING_STATEMENT_CHAT_NOTE} ${statusNote}` : PENDING_STATEMENT_CHAT_NOTE,
-        }
-      : {
-          ...r,
-          is_long_term: Boolean(r.is_long_term),
-          position_side: short ? ("short" as const) : ("long" as const),
-          pending_statement: false,
-          status_note: statusNote,
-        };
+    const common = {
+      is_long_term: Boolean(r.is_long_term),
+      position_side: side,
+      figure_kind: figureKindForSide(side),
+    };
+    if (reason != null) {
+      const lead = short ? `${pendingReasonChatNote(reason)} ${SHORT_PENDING_FIGURE_CHAT_NOTE}` : pendingReasonChatNote(reason);
+      return {
+        ...r,
+        ...common,
+        current_value: null,
+        unrealized_gain: null,
+        pending_statement: true,
+        pending_statement_reason: reason,
+        status_note: statusNote ? `${lead} ${statusNote}` : lead,
+      };
+    }
+    return {
+      ...r,
+      ...common,
+      ...(expiredOption ? { current_value: null, unrealized_gain: null } : {}),
+      pending_statement: false,
+      pending_statement_reason: null,
+      status_note: statusNote,
+    };
   }) as TaxLotResult[];
   };
 
@@ -857,14 +920,48 @@ export const PENDING_STATEMENT_CHAT_NOTE =
 const CURRENCY_CONVERSION_CHAT_NOTE =
   "Currency conversion: this is a Section 988 ordinary-income cash-management lot, not a capital tax lot.";
 
+/** How chat describes a lot whose statement shows the position closed with no closing trade in the ledger (pinned by tests). */
+export const CLOSING_ENTRY_MISSING_CHAT_NOTE =
+  "Closing entry missing: the broker statement shows this position closed, but the closing trade is not in the ledger. It is not a holding, and its realized result is unknown until that entry is imported.";
+
+/**
+ * How chat describes an old-symbol option lot whose contract was renamed
+ * after a split (pinned by tests). Says what must happen (the ledger
+ * entries move to the new symbol), never that a particular script will do
+ * it (ruling R7).
+ */
+export const RESYMBOL_REPAIR_PENDING_CHAT_NOTE =
+  "Re-symbolled: this option was renamed to a new contract after a split of the underlying. The position is still held under the new contract; these old-symbol lots are not valued until their ledger entries are moved to the new symbol. Do not describe it as closed.";
+
+/** Added for a pending SHORT lot: its figure is proceeds, not a cost. */
+export const SHORT_PENDING_FIGURE_CHAT_NOTE =
+  "Its cost_basis is the short-sale proceeds still open (money received when it was sold short), not a cost.";
+
+/** The chat note for each pending reason (one place). */
+export function pendingReasonChatNote(reason: PendingReason): string {
+  switch (reason) {
+    case "awaiting_statement":
+      return PENDING_STATEMENT_CHAT_NOTE;
+    case "closing_entry_missing":
+      return CLOSING_ENTRY_MISSING_CHAT_NOTE;
+    case "resymbol_repair_pending":
+      return RESYMBOL_REPAIR_PENDING_CHAT_NOTE;
+  }
+}
+
 const EXPIRED_OPTION_CHAT_NOTE =
   "Expired option: this contract is past expiration and is awaiting a real broker closing entry.";
 
+function isExpiredOptionRow(row: { security_type?: unknown; expiration_date?: unknown }, today: string): boolean {
+  return (
+    String(row.security_type ?? "").trim().toLowerCase() === "option" &&
+    !isOptionLive(row.expiration_date as string | null | undefined, today)
+  );
+}
+
 function taxLotStatusNote(row: { security_type?: string | null; expiration_date?: string | null }, today: string): string | undefined {
   if (isCurrencyConversionSecurityType(row.security_type)) return CURRENCY_CONVERSION_CHAT_NOTE;
-  if ((row.security_type ?? "").trim().toLowerCase() === "option" && !isOptionLive(row.expiration_date, today)) {
-    return EXPIRED_OPTION_CHAT_NOTE;
-  }
+  if (isExpiredOptionRow(row, today)) return EXPIRED_OPTION_CHAT_NOTE;
   return undefined;
 }
 
