@@ -54,6 +54,7 @@ export const LIVE_HOLDING_SOURCE_PREFIXES = [
 ] as const;
 
 const PLAID_PREFIX = "plaid:";
+const TWS_PREFIX = "tws-";
 
 /**
  * SQL fragment: the holdings row came from an imported statement.
@@ -79,6 +80,16 @@ export function statementSourcedHoldingSql(col = "h.source_key"): string {
 /** True when the holdings row came from the Plaid daily sync. */
 export function isPlaidSourcedHolding(sourceKey: string | null): boolean {
   return sourceKey?.startsWith(PLAID_PREFIX) ?? false;
+}
+
+/**
+ * True when the holdings row came from the IBKR live sync: the TWS sync
+ * (lib/tws/positions.ts) or the IBKR Web API fallback (lib/ibkr/refresh.ts),
+ * which stamps the same `tws-` key. The two writers cannot be told apart from
+ * the row. Never matches a statement, Plaid or recon row.
+ */
+export function isTwsSourcedHolding(sourceKey: string | null): boolean {
+  return sourceKey?.startsWith(TWS_PREFIX) ?? false;
 }
 
 /**
