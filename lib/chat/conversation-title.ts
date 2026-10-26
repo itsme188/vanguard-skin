@@ -43,17 +43,31 @@ export function conversationTitleFromMessages(messages: ReadonlyArray<TitleMessa
   return titleFromUserText(text);
 }
 
-const FIGURE_PATTERNS: RegExp[] = [
-  // currency: $1,234.56  $2k  $3.5M  (also trailing "USD" amounts like 3.5M USD)
-  /\$\s?\d[\d,]*(?:\.\d+)?(?:[kKmMbB]\b)?/g,
-  /\b\d[\d,]*(?:\.\d+)?[kKmMbB]?\s?USD\b/g,
-  // percentages
-  /[+-]?\d[\d,]*(?:\.\d+)?%/g,
-  // share counts: "150 shares", "1,200 sh"
-  /\b\d[\d,]*(?:\.\d+)?\s?(?:shares?|sh)\b/gi,
-];
+// Privacy-first: mask every standalone number. A digit run is left alone only
+// when glued to letters inside one token (450C, Q3, FY26, 10-K) or when it
+// is an ISO date. Over-masking is acceptable; leaking a figure is not.
+const FIGURE_RE = new RegExp(
+  [
+    "(\\d{4}-\\d{2}-\\d{2})|", // 1: ISO date, kept
+    "(?<![A-Za-z0-9])[+-]?(?:[$\u20ac\u00a3\u00a5]\\s?)?", // sign, currency sign
+    "(\\d(?:[\\d,]*\\d)?)(\\.\\d+)?", // 2: integer part, 3: decimals
+    "(?:\\s?(?:thousand|million|billion|bn|mm|k|b|m|percent|shares?|sh|contracts?)|%)?",
+    "(?:\\s?(?:USD|EUR))?",
+    "(?![A-Za-z0-9])(?!-[A-Za-z])",
+  ].join(""),
+  "gi",
+);
 
-/** Mask currency amounts, percentages and share counts; keep everything else. */
+/** Mask currency amounts, percentages, share counts and bare numbers; keep ticker-like tokens. */
 export function maskTitleFigures(title: string): string {
-  return FIGURE_PATTERNS.reduce((acc, re) => acc.replace(re, MASK), title);
+  return title.replace(FIGURE_RE, (match, isoDate: string | undefined, _int: string) => {
+    if (isoDate) return match;
+    return MASK;
+  });
+}
+
+/** Title as shown on screen: figures masked only while privacy mode is on. */
+export function displayConversationTitle(title: string | null | undefined, isPrivate: boolean): string | null {
+  if (title == null) return null;
+  return isPrivate ? maskTitleFigures(title) : title;
 }

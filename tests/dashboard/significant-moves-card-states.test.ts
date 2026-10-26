@@ -143,7 +143,7 @@ describe("scopeWording: the title and quiet text name the scope on screen", () =
   it("no scope's empty-scope hint claims the card is Vanguard-only", () => {
     for (const w of [scopeWording("IBKR", false), scopeWording("Vanguard", false)]) {
       expect(quietState(cov({}), PAIR, false, w).hint).toBe(
-        "It covers long positions held in the accounts of the scope selected above.",
+        "It covers long and short positions held in the accounts of the scope selected above.",
       );
     }
   });

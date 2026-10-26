@@ -87,9 +87,16 @@ export async function runAutoRefresh(
           },
         });
         positionsSynced = result.positionsSynced;
-        console.log(
-          `[auto-refresh] Positions synced: ${result.positionsSynced}, prices: ${result.pricesSaved}`,
-        );
+        if (result.skippedReason === "market_closed") {
+          // Closed market day: metadata only, no dated rows (2026-10-26
+          // ruling). The reconciler below still compares against the last
+          // trading day's live snapshot, so it finds nothing new to close.
+          console.log("[auto-refresh] Positions read; market closed, no dated rows written (market_closed)");
+        } else {
+          console.log(
+            `[auto-refresh] Positions synced: ${result.positionsSynced}, prices: ${result.pricesSaved}`,
+          );
+        }
       } catch (err) {
         const msg = err instanceof Error ? err.message : "Position sync failed";
         errors.push(msg);

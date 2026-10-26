@@ -20,6 +20,7 @@ import {
   type TwinDonor,
 } from "@/lib/calendar/reconcile-earnings-dates";
 import { isLiveClaim } from "@/lib/earnings/email-states";
+import { releaseStalePreviewOnMove } from "@/lib/earnings/release-stale-preview";
 import { getSuppressedEventTuples, suppressionKey } from "@/lib/calendar/event-suppressions";
 
 // ─── Result types ─────────────────────────────────────────────────
@@ -1178,6 +1179,17 @@ export function updateCalendarEvent(
           now.symbol.toUpperCase() !== (existing.symbol ?? "").toUpperCase());
       if (arrived && now.symbol) {
         hidden = hideShowingFeedRowsBehindManual(db, now.symbol, now.event_date).length;
+      }
+      // A preview sent (or skipped) for the old date that cannot cover the
+      // new, later date is released so the new date gets its own preview
+      // (owner ruling 2026-10-26 #7). The helper keeps earlier moves and
+      // moves of a day or less.
+      if (existing.event_type === "earnings" && now.event_type === "earnings") {
+        releaseStalePreviewOnMove(db, {
+          eventId: input.id,
+          fromDate: existing.event_date,
+          toDate: now.event_date,
+        });
       }
     }
     if (result.changes > 0 && existing.event_type === "earnings" && existing.symbol) {

@@ -6,7 +6,7 @@
  * import of the module under test so it picks up the mock).
  */
 
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import { SecType } from "@stoqey/ib";
@@ -79,6 +79,19 @@ vi.mock("@/lib/tws/client", () => ({
 }));
 
 const TEST_ACCOUNT = "U1234567";
+
+
+// Pin the clock to a trading day (Wed 2026-03-11, midday Eastern). The sync
+// writes nothing dated on a closed market day (DECISIONS 2026-10-26 item 1),
+// so a weekend or holiday run must not change what these tests see. Only Date
+// is faked; the mock observables' setTimeout stays real.
+beforeEach(() => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date("2026-03-11T16:00:00Z"));
+});
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 describe("syncPortfolio — tombstone-supersession + price bumps (reconciler-hardening, spec §4)", () => {
   let db: Database.Database;

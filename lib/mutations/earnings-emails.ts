@@ -18,6 +18,7 @@
 
 import type Database from "better-sqlite3";
 import { DELIVERY_UNKNOWN, SENT_BY_CLOUD } from "@/lib/earnings/email-states";
+import { previewStampCovers } from "@/lib/earnings/release-stale-preview";
 
 /**
  * When the Worker fallback already delivered an email, mirror that fact into
@@ -37,6 +38,24 @@ export function recordCloudSentAudit(
   phase: "preview" | "recap",
   sentAt?: string | null,
 ): number {
+  // A cloud-sent PREVIEW marker lives 30 hours. If the hand-entered row it
+  // was sent for has since moved to a later date the preview cannot cover,
+  // the Mac released that preview (lib/earnings/release-stale-preview.ts);
+  // writing it back here would block the new date's preview for good. Same
+  // test as the repoint invariant, on the marker's own send time. A marker
+  // with no readable time keeps the old behaviour (stamped now, which covers).
+  if (phase === "preview" && sentAt) {
+    const event = db
+      .prepare(`SELECT event_date FROM calendar_events WHERE id = ?`)
+      .get(eventId) as { event_date: string } | undefined;
+    if (event && !previewStampCovers(db, sentAt, event.event_date)) {
+      console.info(
+        `[release-stale-preview] event ${eventId} phase preview: cloud-sent marker not recorded ` +
+          `(sent before the day before the event's date ${event.event_date})`,
+      );
+      return 0;
+    }
+  }
   const result = db
     .prepare(
       `INSERT INTO earnings_emails (event_id, phase, recipient, sent_at, ai_output_md, error)

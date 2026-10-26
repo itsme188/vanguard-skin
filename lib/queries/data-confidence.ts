@@ -7,7 +7,8 @@
 
 import type Database from "better-sqlite3";
 import { excludeLiveSnapshotsSql } from "@/lib/db/live-sources";
-import { todayET } from "@/lib/calendar/date-utils";
+import { todayET, addDays } from "@/lib/calendar/date-utils";
+import { isMarketClosed } from "@/lib/calendar/market-holidays";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 import { liveOptionExpirationSql } from "@/lib/compute/option-expiry";
 import { isCashEquivalentSecurity } from "@/lib/compute/cash-equivalents";
@@ -92,7 +93,11 @@ export interface HoldingsRecencyScore extends DimensionScore {
      *  carried row no longer sets it. */
     date: string | null;
     source: string | null;
+    /** Calendar days since `date`: the figure the wording prints. */
     daysOld: number | null;
+    /** `holdingAgeDays` of `date` (closed market days not counted): what
+     *  every "more than a day old" check reads. */
+    ageDays: number | null;
     /** The stalest position's symbol, so the drawer/guidance can name
      *  exactly what to refresh instead of just an age. */
     stalestSymbol: string | null;
@@ -358,9 +363,32 @@ function scorePriceFreshness(db: Database.Database, now: Date = new Date()): Pri
   };
 }
 
-/** Age bucket score for one position (days since its as_of_date). */
-function holdingAgeBucketScore(daysOld: number): number {
-  if (daysOld <= 1) return 100;
+/**
+ * A holding's age in days, NOT counting the market-closed days (weekends,
+ * full NYSE holidays) between its date and today. The broker syncs write no
+ * holdings row on a closed day (DECISIONS 2026-10-26 item 1), so a row dated
+ * the last trading day before today is as fresh as a row can be: Friday's
+ * rows read 1 day old on Saturday, Sunday and Monday, and on the Tuesday
+ * after a Monday holiday. "More than a day old" (> 1) therefore means a
+ * trading day passed with no newer row. Calendar `daysOld` stays the figure
+ * the wording prints.
+ */
+export function holdingAgeDays(asOf: string, today: string): number {
+  const calendarDays = Math.round((Date.parse(today) - Date.parse(asOf)) / 86_400_000);
+  if (calendarDays <= 1) return calendarDays;
+  let closed = 0;
+  let d = addDays(asOf, 1);
+  for (let i = 1; i < calendarDays; i++) {
+    if (isMarketClosed(d)) closed++;
+    d = addDays(d, 1);
+  }
+  return calendarDays - closed;
+}
+
+/** Age bucket score for one position: fresh (100) when `holdingAgeDays` is a
+ *  day or less; past that the buckets read calendar days, as before. */
+function holdingAgeBucketScore(daysOld: number, ageDays: number = daysOld): number {
+  if (ageDays <= 1 || daysOld <= 1) return 100;
   if (daysOld <= 7) return 80;
   if (daysOld <= 30) return 50;
   if (daysOld <= 90) return 20;
@@ -443,7 +471,7 @@ function scoreHoldingsRecency(db: Database.Database, now: Date = new Date()): Ho
   const staleByAccount = new Map<number, { symbol: string; date: string }[]>();
   for (const r of holdingRows) {
     heldCountByAccount.set(r.account_id, (heldCountByAccount.get(r.account_id) ?? 0) + 1);
-    if (Math.round((Date.parse(today) - Date.parse(r.as_of_date)) / 86_400_000) > 1) {
+    if (holdingAgeDays(r.as_of_date, today) > 1) {
       const list = staleByAccount.get(r.account_id) ?? [];
       list.push({ symbol: r.symbol, date: r.as_of_date });
       staleByAccount.set(r.account_id, list);
@@ -484,6 +512,7 @@ function scoreHoldingsRecency(db: Database.Database, now: Date = new Date()): Ho
       date: worst?.as_of_date ?? null,
       source: worst ? classifyHoldingSourceKey(worst.source_key) : null,
       daysOld,
+      ageDays: worst ? holdingAgeDays(worst.as_of_date, today) : null,
       stalestSymbol: worst?.symbol ?? null,
       latestDate: latestByAccount.get(a.id) ?? null,
       heldCount: heldCountByAccount.get(a.id) ?? 0,
@@ -524,9 +553,12 @@ function scoreHoldingsRecency(db: Database.Database, now: Date = new Date()): Ho
   let unvaluedCount = 0;
   let unvaluedStaleCount = 0;
   let oldestRowDays: number | null = null;
+  let oldestRowAgeDays: number | null = null;
   for (const r of holdingRows) {
     const daysOld = Math.round((Date.parse(today) - Date.parse(r.as_of_date)) / 86_400_000);
+    const ageDays = holdingAgeDays(r.as_of_date, today);
     if (oldestRowDays === null || daysOld > oldestRowDays) oldestRowDays = daysOld;
+    if (oldestRowAgeDays === null || ageDays > oldestRowAgeDays) oldestRowAgeDays = ageDays;
     const marketValue =
       r.close_price !== null && r.close_price > 0 && r.market_value_usd !== null
         ? Math.abs(r.market_value_usd)
@@ -540,11 +572,11 @@ function scoreHoldingsRecency(db: Database.Database, now: Date = new Date()): Ho
           : 0;
     if (weight > 0) {
       valuedWeight += weight;
-      valuedScoreSum += weight * holdingAgeBucketScore(daysOld);
-      if (daysOld > 1) staleValuedWeight += weight;
+      valuedScoreSum += weight * holdingAgeBucketScore(daysOld, ageDays);
+      if (ageDays > 1) staleValuedWeight += weight;
     } else {
       unvaluedCount++;
-      if (daysOld > 1) unvaluedStaleCount++;
+      if (ageDays > 1) unvaluedStaleCount++;
     }
   }
 
@@ -552,6 +584,8 @@ function scoreHoldingsRecency(db: Database.Database, now: Date = new Date()): Ho
   // holdings anywhere it keeps the old 999-day sentinel (score 0, "weeks+
   // old" guidance) — the owner kept that case as it was.
   const worstDays = oldestRowDays ?? 999;
+  // The "more than a day old" gates read the closed-day-aware age.
+  const worstAgeDays = oldestRowAgeDays ?? 999;
 
   let score: number;
   let staleValueShare: number | null;
@@ -572,7 +606,7 @@ function scoreHoldingsRecency(db: Database.Database, now: Date = new Date()): Ho
   } else {
     // Nothing held can be valued (or nothing is held): there are no weights
     // to average, so the stalest row's bucket stands, as before.
-    score = holdingAgeBucketScore(worstDays);
+    score = holdingAgeBucketScore(worstDays, worstAgeDays);
     staleValueShare = null;
   }
 
@@ -616,7 +650,7 @@ function scoreHoldingsRecency(db: Database.Database, now: Date = new Date()): Ho
       ? ["refresh ", ...worstPositionLabel, " — import the latest monthly statement (Vanguard) or sync TWS (IBKR)."]
       : ["refresh ", ...worstPositionLabel, " now (import latest statements or reconnect TWS)."];
   let guidanceParts: CopyPart[];
-  if (worstDays <= 1) {
+  if (worstAgeDays <= 1) {
     guidanceParts =
       valuedWeight > 0 && unvaluedCount > 0
         ? [
@@ -645,7 +679,7 @@ function scoreHoldingsRecency(db: Database.Database, now: Date = new Date()): Ho
   // row is more than a day old (which covers every row older than 7 days,
   // however small its share of the book). deriveActions gates the
   // stale-holdings action row on this, so the two cannot disagree.
-  const guidanceActionable = worstDays > 1;
+  const guidanceActionable = worstAgeDays > 1;
 
   return {
     score,
@@ -1177,7 +1211,7 @@ function deriveActions(
   // held row more than a day old), not the old 30-day threshold that let the
   // guidance name a stale account with no matching action row.
   const staleAccounts = holdings.guidanceActionable
-    ? holdings.perAccount.filter(a => (a.daysOld ?? 999) > 1)
+    ? holdings.perAccount.filter(a => (a.ageDays ?? 999) > 1)
     : [];
   if (staleAccounts.length > 0) {
     const messageParts: CopyPart[] = [];

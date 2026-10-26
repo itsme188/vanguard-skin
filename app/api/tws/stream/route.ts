@@ -6,7 +6,7 @@ import {
   getQuotes,
   isStreaming,
   registerClient,
-  snapshotToDb,
+  saveStreamingSnapshot,
   type LiveQuote,
 } from "@/lib/tws/streaming";
 
@@ -110,8 +110,8 @@ export async function POST(request: NextRequest) {
     }
 
     if (body.action === "snapshot") {
-      const count = snapshotToDb(db);
-      return NextResponse.json({ success: true, pricesSaved: count });
+      const { pricesSaved, skippedReason } = saveStreamingSnapshot(db);
+      return NextResponse.json({ success: true, pricesSaved, skippedReason });
     }
 
     return NextResponse.json(

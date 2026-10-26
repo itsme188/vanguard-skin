@@ -41,7 +41,7 @@ describe("small chat controls extend their touch target", () => {
     expect(btn).toMatch(TOUCH_EXTENSION);
   });
   it("the conversation picker trigger, which must not clip its own extension", () => {
-    const btn = sliceBetween(iface, "onClick={() => setOpen((v) => !v)}", "title={isPrivate ? \"Current conversation\"");
+    const btn = sliceBetween(iface, "onClick={() => setOpen((v) => !v)}", "title={displayTitle}");
     expect(btn).toMatch(TOUCH_EXTENSION);
     const cls = btn.match(/className="([^"]*)"/)![1];
     // `truncate` sets overflow:hidden, which would clip the ::after box.

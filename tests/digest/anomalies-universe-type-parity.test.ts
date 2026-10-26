@@ -137,3 +137,26 @@ describe("Mac and cloud name the same securities", () => {
     expect(flagged()).toEqual(["ZZA"]);
   });
 });
+
+describe("shorts: the one deliberate difference (owner ruling 2026-10-26)", () => {
+  // The Mac evaluates shorts; the snapshot's vanguardHoldings is long-only and
+  // has no side field, so the Worker's fallback email cannot see a short
+  // without a snapshot version bump. A Vanguard (non-Roth) account holds no
+  // shorts in practice. If the snapshot ever ships shorts, this test fails and
+  // the Worker must learn the side (and the effect wording) at the same time.
+  it("a short in a Vanguard account is flagged on the Mac and absent from the cloud universe", () => {
+    heldMover("ZZA", "Stock");
+    const shortId = security("ZZS", "Stock");
+    db.prepare(
+      "INSERT INTO holdings (account_id, security_id, quantity, as_of_date, source_key) VALUES (?, ?, -100, ?, ?)",
+    ).run(vanguard, shortId, LATEST, `test:${vanguard}:${shortId}`);
+    price(shortId, PRIOR, 100);
+    price(shortId, LATEST, 110);
+    upsertBeta(db, { securityId: shortId, lookbackDays: 60, beta: 1.0, residualStd: 1.0 });
+
+    expect(flagged()).toEqual(["ZZA", "ZZS"]);
+    expect(cloudUniverse()).toEqual(["ZZA"]);
+    // The long names stay identical on both sides.
+    expect(flagged().filter((s) => s !== "ZZS")).toEqual(cloudUniverse());
+  });
+});

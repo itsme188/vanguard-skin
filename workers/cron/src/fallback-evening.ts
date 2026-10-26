@@ -217,6 +217,14 @@ interface AnomalyFlag {
  * `closesMap` must contain "SPY". Returns null when inputs are empty or SPY is
  * missing/invalid. A name is flagged when |move| >= 3% AND (residualStd unusable
  * OR zScore >= 2). Degraded mode (null/tiny residualStd) flags on the floor alone.
+ *
+ * LONG-ONLY, deliberately (2026-10-26). The Mac engine evaluates shorts too
+ * and labels a short's line with its effect on the position. The snapshot's
+ * `vanguardHoldings` carries only `quantity > 0` rows and no side, so this
+ * copy cannot see a short without a new snapshot field (version bump, Worker
+ * deployed first). Every flag here is a long, and a long's line is
+ * byte-identical to the Mac's. The gap matters only for a short in a Vanguard
+ * (non-Roth) account; pinned in tests/digest/anomalies-universe-type-parity.test.ts.
  */
 export function evaluateAnomalies(
   vanguardHoldings: NonNullable<Snapshot["vanguardHoldings"]>,

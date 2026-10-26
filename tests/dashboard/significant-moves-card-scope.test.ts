@@ -9,7 +9,7 @@ vi.mock("@/lib/db", () => ({ db: {} }));
 import { runMigrations } from "@/lib/db/migrate";
 import { computeAnomalies } from "@/lib/digest/anomalies";
 import { upsertBeta } from "@/lib/mutations/security-betas";
-import { loadCoverage, scopeAccountIds } from "@/app/dashboard/components/SignificantMovesCard";
+import { coverageAccountsForFlags, flagPresentation, loadCoverage, scopeAccountIds } from "@/app/dashboard/components/SignificantMovesCard";
 
 const PAIR = { prior: "2026-05-07", latest: "2026-05-08" };
 
@@ -168,5 +168,71 @@ describe("scopeAccountIds", () => {
     expect(
       computeAnomalies(db, { accountIds: scopeAccountIds(db, undefined) }).map((f) => f.symbol).sort(),
     ).toEqual(["ZZA", "ZZC"]);
+  });
+});
+
+describe("shorts are in the universe (owner ruling 2026-10-26)", () => {
+  it("a short is counted in coverage and flagged by the engine, in the same scope", () => {
+    const before = loadCoverage(db, PAIR, [ibkr]);
+    hold(ibkr, security("ZZS", { move: 10 }), -100);
+    const after = loadCoverage(db, PAIR, [ibkr]);
+    expect(after.total).toBe(before.total + 1);
+    expect(after.evaluated).toBe(before.evaluated + 1);
+    const flags = computeAnomalies(db, { accountIds: [ibkr] });
+    expect(flags.find((f) => f.symbol === "ZZS")).toMatchObject({
+      positionSide: "short",
+      positionEffect: "adverse",
+    });
+    expect(coverageAccountsForFlags(after, flags.length)).toBe(true);
+    // Not in the Vanguard scope.
+    expect(computeAnomalies(db, { accountIds: [vanguard] }).map((f) => f.symbol)).not.toContain("ZZS");
+  });
+
+  it("long in one account and short in another is one holding and one flag", () => {
+    const id = security("ZZM", { move: 10 });
+    hold(vanguard, id, 100);
+    hold(ibkr, id, -100);
+    const before = loadCoverage(db, PAIR, [vanguard, ibkr]).total;
+    expect(before).toBe(5);
+    const flags = computeAnomalies(db, { accountIds: [vanguard, ibkr] }).filter((f) => f.symbol === "ZZM");
+    expect(flags).toHaveLength(1);
+    expect(flags[0].positionSide).toBe("mixed");
+  });
+
+  it("a covered short is in neither count", () => {
+    const id = security("ZZX", { move: 10 });
+    hold(ibkr, id, -100, "2026-04-30");
+    hold(ibkr, id, 0, PAIR.latest);
+    expect(loadCoverage(db, PAIR, [ibkr]).total).toBe(2);
+    expect(computeAnomalies(db, { accountIds: [ibkr] }).map((f) => f.symbol)).not.toContain("ZZX");
+  });
+});
+
+describe("flagPresentation colours by effect on the position", () => {
+  it("a long is unchanged: no side label, tone by the move", () => {
+    expect(flagPresentation({ positionSide: "long", positionEffect: "favourable" })).toEqual({
+      tone: "up",
+      sideLabel: null,
+      effectTitle: null,
+    });
+    expect(flagPresentation({ positionSide: "long", positionEffect: "adverse" }).tone).toBe("down");
+  });
+
+  it("a short that rose reads as against the position, in the down tone", () => {
+    const p = flagPresentation({ positionSide: "short", positionEffect: "adverse" });
+    expect(p.tone).toBe("down");
+    expect(p.sideLabel).toBe("Short · against");
+  });
+
+  it("a short that fell reads as in favour, in the up tone", () => {
+    const p = flagPresentation({ positionSide: "short", positionEffect: "favourable" });
+    expect(p.tone).toBe("up");
+    expect(p.sideLabel).toBe("Short · in favour");
+  });
+
+  it("long and short across accounts is neutral", () => {
+    const p = flagPresentation({ positionSide: "mixed", positionEffect: "mixed" });
+    expect(p.tone).toBe("neutral");
+    expect(p.sideLabel).toBe("Long and short");
   });
 });

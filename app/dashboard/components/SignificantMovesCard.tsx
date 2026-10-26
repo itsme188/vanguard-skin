@@ -6,12 +6,16 @@
  * whose daily move deviates from what their beta predicts given SPY's move.
  *
  * Scope (owner ruling 2026-10-08): the card follows the page's scope
- * selector. It evaluates the current long book of exactly the accounts the
- * page resolved, and its title, coverage line and quiet text name that scope.
+ * selector. It evaluates the current book, long AND short (owner ruling
+ * 2026-10-26), of exactly the accounts the page resolved, and its title,
+ * coverage line and quiet text name that scope. A short is shown by its effect
+ * on the position: the printed move is still the security's own (+X%), but a
+ * rise on a short is coloured and labelled as a move against the position.
  * It reads completed sessions only: a close dated today is ignored until
  * 16:00 ET (rule single-sourced in the engine module).
  *
- * Privacy: all numbers here are PUBLIC market data (% moves, beta, SPY move) —
+ * Privacy: the position's side (long / short) is a word, never a size. All
+ * numbers here are PUBLIC market data (% moves, beta, SPY move) —
  * they appear identically on any terminal — so they are NOT masked. No $
  * amounts, share counts, or position sizing is rendered (per the anomalies
  * module's privacy contract).
@@ -20,13 +24,14 @@
 import type Database from "better-sqlite3";
 import { db } from "@/lib/db";
 import {
+  type AnomalyFlag,
+  CURRENT_BOOK_SQL,
   computeAnomalies,
   isMoverSecurityType,
   latestCompletedSession,
   resolveTradingDayPair,
 } from "@/lib/digest/anomalies";
 import { BETA_LOOKBACK_DAYS } from "@/lib/queries/security-betas";
-import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 import { SymbolLink } from "@/app/dashboard/components/SymbolLink";
 import { Chip } from "@/app/dashboard/components/Chip";
 import { EmptySection } from "@/app/dashboard/components/EmptySection";
@@ -89,7 +94,7 @@ const THRESHOLD_HINT =
   "A name is flagged when its daily move is at least 3% AND at least 2 standard deviations beyond that stock's own normal day-to-day noise (after adjusting for SPY). Needs cached betas, a residual volatility, and two consecutive closes.";
 
 export interface MovesCoverage {
-  /** Equity-like long holdings in the scope's accounts: the names the engine checks. */
+  /** Equity-like holdings (long or short) in the scope's accounts: the names the engine checks. */
   total: number;
   /** Of those, how many have a cached beta AND a close on both pair dates. */
   evaluated: number;
@@ -114,7 +119,8 @@ export function loadCoverage(
   if (accountIds.length === 0) return coverage;
   const placeholders = accountIds.map(() => "?").join(",");
   // One row per security: beta and the two closes are per security, so a
-  // name held in two accounts of the scope is still one holding.
+  // name held in two accounts of the scope (long in one, short in the other
+  // included) is still one holding, as it is one flag in the engine.
   const rows = db
     .prepare(
       `SELECT DISTINCT
@@ -133,7 +139,7 @@ export function loadCoverage(
        LEFT JOIN prices p_prior ON p_prior.security_id = s.id AND p_prior.date = ?
        WHERE h.account_id IN (${placeholders})
          AND UPPER(s.symbol) != 'SPY'
-         AND ${latestHoldingsPredicate({ includeShorts: false })}`,
+         AND ${CURRENT_BOOK_SQL}`,
     )
     .all(pair.latest, pair.prior, ...accountIds) as {
     security_id: number;
@@ -175,6 +181,39 @@ const OLDER_SESSION_LABEL = "older session — no newer close on file";
 export function coverageAccountsForFlags(coverage: MovesCoverage, flagCount: number): boolean {
   return coverage.evaluated >= flagCount;
 }
+
+/**
+ * How a flag is coloured and labelled: by its effect on the position, not by
+ * the sign of the price move. A long is unchanged (a rise is "up"); a rise on
+ * a short is "down" (against the position); a name held both ways is neutral.
+ */
+export function flagPresentation(
+  f: Pick<AnomalyFlag, "positionSide" | "positionEffect">,
+): { tone: "up" | "down" | "neutral"; sideLabel: string | null; effectTitle: string | null } {
+  const tone = f.positionEffect === "favourable" ? "up" : f.positionEffect === "adverse" ? "down" : "neutral";
+  if (f.positionSide === "long") return { tone, sideLabel: null, effectTitle: null };
+  if (f.positionSide === "mixed") {
+    return {
+      tone,
+      sideLabel: "Long and short",
+      effectTitle: "Held long in one account and short in another: the move helps one and hurts the other.",
+    };
+  }
+  return {
+    tone,
+    sideLabel: f.positionEffect === "adverse" ? "Short · against" : "Short · in favour",
+    effectTitle:
+      f.positionEffect === "adverse"
+        ? "Short position: this rise is a move against the position."
+        : "Short position: this fall is a move in the position's favour.",
+  };
+}
+
+const TONE_TEXT: Record<"up" | "down" | "neutral", string> = {
+  up: "text-up",
+  down: "text-down",
+  neutral: "text-ink",
+};
 
 function CoverageLine({ evaluated, total }: { evaluated: number; total: number }) {
   return (
@@ -245,7 +284,7 @@ export function SignificantMovesCard({
 
       <ul className="divide-y divide-edge -mx-4">
         {flags.map((f) => {
-          const up = f.actualPct >= 0;
+          const look = flagPresentation(f);
           return (
             <li key={f.securityId} className="px-4 py-2">
               <div className="flex items-center gap-3">
@@ -254,6 +293,11 @@ export function SignificantMovesCard({
                     <span className="font-mono text-[14px] font-medium">
                       <SymbolLink securityId={f.securityId} symbol={f.symbol} />
                     </span>
+                    {look.sideLabel ? (
+                      <Chip tone={look.tone} title={look.effectTitle ?? undefined}>
+                        {look.sideLabel}
+                      </Chip>
+                    ) : null}
                     {f.companyName && f.companyName !== f.symbol ? (
                       <span className="text-[11px] text-ink-faint truncate" title={f.companyName}>
                         {f.companyName}
@@ -266,7 +310,7 @@ export function SignificantMovesCard({
                   </div>
                 </div>
                 <div className="text-right shrink-0 flex items-center gap-2">
-                  <Chip tone={f.directionFlipped ? "warn" : up ? "up" : "down"}>
+                  <Chip tone={f.directionFlipped ? "warn" : look.tone}>
                     {f.directionFlipped
                       ? "Direction flipped"
                       : f.zScore != null
@@ -274,7 +318,8 @@ export function SignificantMovesCard({
                         : signedPct(f.actualPct)}
                   </Chip>
                   <span
-                    className={`text-[14px] font-mono tabular-nums ${up ? "text-up" : "text-down"}`}
+                    className={`text-[14px] font-mono tabular-nums ${TONE_TEXT[look.tone]}`}
+                    title={look.effectTitle ?? undefined}
                   >
                     {signedPct(f.actualPct)}
                   </span>
@@ -310,7 +355,7 @@ export function quietState(
   if (coverage.total === 0) {
     return {
       reason: `No ${scope.plural} are in scope for this card.`,
-      hint: "It covers long positions held in the accounts of the scope selected above.",
+      hint: "It covers long and short positions held in the accounts of the scope selected above.",
       showCoverage: false,
     };
   }

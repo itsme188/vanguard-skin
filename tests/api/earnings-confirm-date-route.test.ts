@@ -128,7 +128,33 @@ describe("POST /api/earnings/confirm-date — two rows for one symbol", () => {
   it("a record still attached to the other row keeps it hidden, and the answer says so", async () => {
     const earlierId = seedManualRow("AAA", earlier, "BMO", "08:00");
     const laterId = seedManualRow("AAA", later, "AMC", "16:10");
-    // A preview sent long before the confirmed date stays on the old row.
+    // A preview sent long before stays on the LATER row when the EARLIER date
+    // is confirmed: an earlier move never releases a preview (ruling
+    // 2026-10-26 #7 releases only on a move to a later date).
+    hoisted.db
+      .prepare(
+        `INSERT INTO earnings_emails (event_id, phase, recipient, sent_at)
+         VALUES (?, 'preview', 'desk@example.com', ?)`,
+      )
+      .run(laterId, `${addDays(todayET(), -20)} 12:00:00`);
+
+    const res = await post({ symbol: "AAA", confirmedDate: earlier, confirmedTime: "bmo" });
+    const body = await res.json();
+    expect(body.success).toBe(true);
+    expect(body.data.eventId).toBe(earlierId);
+    expect(body.data.foldedEventId).toBe(laterId);
+    expect(body.data).not.toHaveProperty("deletedEventId");
+    expect(body.data.note).toMatch(/hidden, not deleted/);
+    // The user-facing sentence travels in `notice` (the conflict marker shows it).
+    expect(body.data.notice).toBe(
+      `AAA still has an entry on ${later} because a preview email was already sent for it. Remove that entry if you no longer want it.`,
+    );
+    expect(rowById(laterId).superseded).toBe(1);
+  });
+
+  it("a preview sent for the old date is released when the LATER date is confirmed, and the old row is deleted", async () => {
+    const earlierId = seedManualRow("AAA", earlier, "BMO", "08:00");
+    const laterId = seedManualRow("AAA", later, "AMC", "16:10");
     hoisted.db
       .prepare(
         `INSERT INTO earnings_emails (event_id, phase, recipient, sent_at)
@@ -138,16 +164,10 @@ describe("POST /api/earnings/confirm-date — two rows for one symbol", () => {
 
     const res = await post({ symbol: "AAA", confirmedDate: later, confirmedTime: "amc" });
     const body = await res.json();
-    expect(body.success).toBe(true);
-    expect(body.data.eventId).toBe(laterId);
-    expect(body.data.foldedEventId).toBe(earlierId);
-    expect(body.data).not.toHaveProperty("deletedEventId");
-    expect(body.data.note).toMatch(/hidden, not deleted/);
-    // The user-facing sentence travels in `notice` (the conflict marker shows it).
-    expect(body.data.notice).toBe(
-      `AAA still has an entry on ${earlier} because a preview email was already sent for it. Remove that entry if you no longer want it.`,
-    );
-    expect(rowById(earlierId).superseded).toBe(1);
+    expect(body.data).toMatchObject({ eventId: laterId, deletedEventId: earlierId });
+    expect(rowById(earlierId)).toBeUndefined();
+    const n = hoisted.db.prepare("SELECT COUNT(*) AS n FROM earnings_emails").get() as { n: number };
+    expect(n.n).toBe(0);
   });
 
   it("one hand-entered row on another date is MOVED: same id, confirmed date, no second row", async () => {

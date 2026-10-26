@@ -574,11 +574,10 @@ describe("confirmEarningsDate moves the existing hand-entered row", () => {
       expect(payload.removedEventIds.map((r) => r.id)).toEqual([oldId]);
     });
 
-    it("a record still on the old row keeps it: hidden, not deleted, and the result says so", () => {
+    it("a preview sent for the old date is released when the confirmed date is later, and the emptied row is deleted (ruling 2026-10-26 #7)", () => {
       const oldId = addManual(dateA);
       const keptId = addManual(dateB);
-      // A preview sent for the old date long before the confirmed print: the
-      // fold leaves it behind (it is no promise about the confirmed date).
+      // A preview sent for the old date that cannot cover the confirmed print.
       db.prepare(
         `INSERT INTO earnings_emails (event_id, phase, recipient, sent_at)
          VALUES (?, 'preview', 'desk@example.com', ?)`,
@@ -586,6 +585,25 @@ describe("confirmEarningsDate moves the existing hand-entered row", () => {
       upsertBogey(db, { event_id: oldId, source: "manual", eps_consensus: 1.5 });
 
       const res = confirmEarningsDate(db, { symbol: "NVDA", confirmedDate: dateB, confirmedTime: "amc", today });
+
+      expect(res).toEqual({ ok: true, deletedEventId: oldId });
+      expect(showing().map((r) => r.id)).toEqual([keptId]);
+      expect(db.prepare("SELECT COUNT(*) AS n FROM earnings_emails").get()).toEqual({ n: 0 });
+      expect(db.prepare("SELECT event_id FROM earnings_bogeys").all()).toEqual([{ event_id: keptId }]);
+    });
+
+    it("a preview left on the old row by an EARLIER confirmed date keeps it: hidden, not deleted, and the result says so", () => {
+      // Confirm the earlier date (A); the row on B is the one folded. Its
+      // preview cannot cover A, and an earlier move never releases.
+      const keptId = addManual(dateA);
+      const oldId = addManual(dateB);
+      db.prepare(
+        `INSERT INTO earnings_emails (event_id, phase, recipient, sent_at)
+         VALUES (?, 'preview', 'desk@example.com', ?)`,
+      ).run(oldId, `${addDays(today, -20)} 12:00:00`);
+      upsertBogey(db, { event_id: oldId, source: "manual", eps_consensus: 1.5 });
+
+      const res = confirmEarningsDate(db, { symbol: "NVDA", confirmedDate: dateA, confirmedTime: "amc", today });
 
       expect(res.ok).toBe(true);
       if (!res.ok) return;
@@ -595,18 +613,18 @@ describe("confirmEarningsDate moves the existing hand-entered row", () => {
       // The user is told, in plain words, that the old entry is still there
       // and why (the next reconcile pass shows it again).
       expect(res.notice).toBe(
-        `NVDA still has an entry on ${dateA} because a preview email was already sent for it. Remove that entry if you no longer want it.`,
+        `NVDA still has an entry on ${dateB} because a preview email was already sent for it. Remove that entry if you no longer want it.`,
       );
       // No internal table name reaches the user.
       expect(res.notice).not.toMatch(/earnings_emails|_/);
-      expect(manualRows().find((r) => r.id === oldId)).toMatchObject({ event_date: dateA, superseded: 1 });
+      expect(manualRows().find((r) => r.id === oldId)).toMatchObject({ event_date: dateB, superseded: 1 });
       expect(showing().map((r) => r.id)).toEqual([keptId]);
       // The preview is still on file; the bogey moved.
       expect(db.prepare("SELECT event_id FROM earnings_emails").all()).toEqual([{ event_id: oldId }]);
       expect(db.prepare("SELECT event_id FROM earnings_bogeys").all()).toEqual([{ event_id: keptId }]);
     });
 
-    it("a recorded preview SKIP on the old row keeps it too, and the notice does not claim an email was sent", () => {
+    it("a recorded preview SKIP on the old row is released on a later confirmed date", () => {
       const oldId = addManual(dateA);
       addManual(dateB);
       db.prepare(
@@ -616,11 +634,25 @@ describe("confirmEarningsDate moves the existing hand-entered row", () => {
 
       const res = confirmEarningsDate(db, { symbol: "NVDA", confirmedDate: dateB, confirmedTime: "amc", today });
 
+      expect(res).toEqual({ ok: true, deletedEventId: oldId });
+      expect(db.prepare("SELECT COUNT(*) AS n FROM earnings_email_skips").get()).toEqual({ n: 0 });
+    });
+
+    it("a recorded preview SKIP left by an EARLIER confirmed date keeps the row, and the notice does not claim an email was sent", () => {
+      addManual(dateA);
+      const oldId = addManual(dateB);
+      db.prepare(
+        `INSERT INTO earnings_email_skips (event_id, phase, skipped_at)
+         VALUES (?, 'preview', ?)`,
+      ).run(oldId, `${addDays(today, -20)} 12:00:00`);
+
+      const res = confirmEarningsDate(db, { symbol: "NVDA", confirmedDate: dateA, confirmedTime: "amc", today });
+
       expect(res.ok).toBe(true);
       if (!res.ok) return;
       expect(res.foldedEventId).toBe(oldId);
       expect(res.notice).toBe(
-        `NVDA still has an entry on ${dateA} because other records are still attached to it. Remove that entry if you no longer want it.`,
+        `NVDA still has an entry on ${dateB} because other records are still attached to it. Remove that entry if you no longer want it.`,
       );
     });
 
