@@ -82,7 +82,7 @@ describe("sync orphan deletes are published to the armed-events outbox", () => {
     replaceWeekRowsPublishingRemovals(db, WEEK, "finnhub", [input("BBB", D1)]);
 
     const newId = (db.prepare(`SELECT id FROM calendar_events WHERE symbol = 'BBB'`).get() as { id: number }).id;
-    expect(newId).not.toBe(relisted); // the cleanup really did re-create it
+    expect(newId).toBe(relisted); // re-listed = refreshed in place, same id (2026-10-24)
     const payloads = outbox();
     expect(payloads).toHaveLength(1);
     // BBB's print still stands on the same date: silencing its old id would

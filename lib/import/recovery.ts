@@ -19,8 +19,11 @@
 //        raw_imports, prices, holdings, transactions, monthly_snapshots,
 //        corporate_actions. These ARE the manifest payload.
 //     3. The import_batches METADATA row (DELETE ... WHERE id = ?).
-//   securities / security_factors are NOT deleted by undo, so they survive
-//   and need no capture.
+//   securities a batch's rows point at SURVIVE undo unless the undo leaves
+//   nothing pointing at them (ghost removal, lib/mutations/ghost-securities.ts,
+//   2026-10-24); the v3 manifest captures those rows WITH their ids so a
+//   restore can put a removed ghost back before the rows that reference it.
+//   security_factors and the other derived tables are never captured.
 //
 // This is why a batch-bound manifest CAN reproduce the pre-undo state even
 // though undo clears global tables: the cleared tables are recomputable.
@@ -37,6 +40,7 @@ import { statementOverwritableHoldingSql, RECON_HOLDING_SOURCE_PREFIX } from "@/
 import { removeOrphanedReconTombstones, reconcileClosedEquityHoldings } from "@/lib/mutations/closed-equity";
 import { resolveDbDir, type EnvLike } from "@/lib/db/db-path";
 import { appendArtifactSuffix } from "@/lib/mutations/donation-links";
+import { securitiesTouchedByBatch } from "@/lib/mutations/ghost-securities";
 
 /**
  * The batch-owned source tables the manifest captures. Enumerated directly
@@ -67,7 +71,13 @@ export type RecoverySourceTable = (typeof RECOVERY_SOURCE_TABLES)[number];
 // back to real ids at restore time via source_key lookups. v1 manifest files
 // on disk predate this and simply lack these three payload keys — readers
 // must treat their absence as empty, never throw.
-export const MANIFEST_VERSION = 2;
+// v3 (2026-10-24, ghost removal): the manifest also captures the `securities`
+// rows the batch's own rows point at, id included — undo now deletes a
+// security the batch leaves unreferenced, and a restored transaction needs
+// its security back under the SAME id. A v2 (or v1) file lacks the key;
+// readers treat its absence as nothing to restore (those undos never deleted
+// a security, so the rows are still there).
+export const MANIFEST_VERSION = 3;
 export const DEFAULT_MANIFEST_RETENTION = 25;
 
 /**
@@ -125,6 +135,8 @@ export interface RecoveryPayload {
   donations?: Row[];
   donationLinkRelations?: DonationRelationRow[];
   donationLotRelations?: DonationRelationRow[];
+  /** v3: the securities rows the batch's rows point at, ids kept. */
+  securities?: Row[];
 }
 
 export interface RecoveryManifest {
@@ -211,12 +223,26 @@ export function buildRecoveryManifest(db: Database.Database, batchId: number): R
       .all(batchId) as DonationRelationRow[]
   ).map(stripRowId) as DonationRelationRow[];
 
+  // The securities this batch's rows point at, WITH their ids (a restored
+  // transaction's security_id must resolve to the same row). Undo removes any
+  // of them left unreferenced, so a restore re-inserts them first.
+  const touched = securitiesTouchedByBatch(db, batchId);
+  const securities =
+    touched.length === 0
+      ? []
+      : (db
+          .prepare(
+            `SELECT * FROM securities WHERE id IN (${touched.map(() => "?").join(",")}) ORDER BY id`,
+          )
+          .all(...touched) as Row[]);
+
   const payload: RecoveryPayload = {
     importBatch,
     tables,
     donations,
     donationLinkRelations,
     donationLotRelations,
+    securities,
   };
   return {
     version: MANIFEST_VERSION,
@@ -543,6 +569,50 @@ export function restoreImportBatch(db: Database.Database, manifest: RecoveryMani
     insertCapturedRow(db, "import_batches", m, { prefix: "OR IGNORE", conflict: "" });
     restored.import_batches = 1;
 
+    // Securities the batch's rows point at (v3). The symbol is the identity
+    // (UNIQUE): a security still stored under its symbol is left exactly as it
+    // is, and when it now lives under a DIFFERENT id (undo removed the ghost,
+    // a sync re-created the name) every restored row is re-pointed at that id.
+    // A name that is gone comes back under its original id when that id is
+    // free, else under a fresh id, re-pointed the same way.
+    let securitiesRestored = 0;
+    const securityIdMap = new Map<number, number>();
+    const findBySymbol = db.prepare("SELECT id FROM securities WHERE symbol = ?");
+    const findById = db.prepare("SELECT id FROM securities WHERE id = ?");
+    for (const row of manifest.payload.securities ?? []) {
+      const oldId = row.id as number;
+      const bySymbol = findBySymbol.get(row.symbol as string) as { id: number } | undefined;
+      if (bySymbol) {
+        if (bySymbol.id !== oldId) securityIdMap.set(oldId, bySymbol.id);
+        continue;
+      }
+      if (findById.get(oldId) === undefined) {
+        insertCapturedRow(db, "securities", row, { prefix: "", conflict: "" });
+        securitiesRestored++;
+        continue;
+      }
+      // The old id is taken by another name: a fresh id, remapped.
+      const { id: _oldId, ...rest } = row;
+      const cols = Object.keys(rest);
+      const fresh = db
+        .prepare(
+          `INSERT INTO securities (${cols.map((c) => `"${c}"`).join(", ")}) VALUES (${cols.map(() => "?").join(", ")})`,
+        )
+        .run(...cols.map((c) => rest[c] as never)).lastInsertRowid;
+      securityIdMap.set(oldId, Number(fresh));
+      securitiesRestored++;
+    }
+    restored.securities = securitiesRestored;
+    const remapSecurity = (row: Row): Row => {
+      if (securityIdMap.size === 0) return row;
+      const out = { ...row };
+      for (const col of ["security_id", "new_security_id"]) {
+        const v = out[col];
+        if (typeof v === "number" && securityIdMap.has(v)) out[col] = securityIdMap.get(v);
+      }
+      return out;
+    };
+
     for (const table of RECOVERY_SOURCE_TABLES) {
       const spec = restoreSpec(table);
       let n = 0;
@@ -559,7 +629,7 @@ export function restoreImportBatch(db: Database.Database, manifest: RecoveryMani
         }
         // Strip the child id so AUTOINCREMENT assigns a fresh one (see
         // stripRowId) — the FK import_batch_id is preserved inside the row.
-        insertCapturedRow(db, table, stripRowId(row), spec);
+        insertCapturedRow(db, table, remapSecurity(stripRowId(row)), spec);
         n++;
       }
       restored[table] = n;
@@ -573,7 +643,7 @@ export function restoreImportBatch(db: Database.Database, manifest: RecoveryMani
     // every other table here.
     let donationsRestored = 0;
     for (const row of manifest.payload.donations ?? []) {
-      insertCapturedRow(db, "donations", row, { prefix: "OR IGNORE", conflict: "" });
+      insertCapturedRow(db, "donations", remapSecurity(row), { prefix: "OR IGNORE", conflict: "" });
       donationsRestored++;
     }
     restored.donations = donationsRestored;
