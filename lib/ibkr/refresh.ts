@@ -60,6 +60,13 @@ export interface IbkrWriteResult {
   pricesWritten: number;
   netLiq: number | null;
   cash: number | null;
+  /**
+   * "market_closed" when the as-of day (Eastern) is a weekend or full NYSE
+   * holiday: security metadata updated, but no holdings, price, account
+   * snapshot or ledger FX-rate row was written (DECISIONS
+   * 2026-10-26 item 1, same rule as lib/tws/positions.ts). Null otherwise.
+   */
+  skippedReason: "market_closed" | null;
 }
 
 /**
@@ -118,6 +125,14 @@ export function writeIbkrHoldings(
   }
   const accountId = acctRow.id;
 
+  // Closed-market guard (DECISIONS 2026-10-26 item 1), the same rule as the
+  // TWS sync (lib/tws/positions.ts) and the quote path below. Every caller of
+  // this writer inherits it: the disconnected timer, the manual
+  // POST /api/tws/auto-refresh fallback and scripts/ibkr-refresh-holdings.ts.
+  // On a weekend or full holiday no holdings, price or live-snapshot row is
+  // dated that day; security metadata still updates.
+  const marketClosed = isMarketClosed(today);
+
   const upsertHolding = db.prepare(
     `INSERT OR REPLACE INTO holdings (account_id, security_id, quantity, cost_basis, as_of_date, source_key) VALUES (?,?,?,?,?,?)`,
   );
@@ -155,6 +170,9 @@ export function writeIbkrHoldings(
         currency: m.currency,
       });
       if (m.conid != null) updateConId.run(m.conid, securityId);
+      // Metadata only on a closed day (see above). The ledger FX rate is a
+      // dated measurement too, so it waits for the next trading day.
+      if (marketClosed) continue;
       upsertHolding.run(accountId, securityId, m.quantity, m.costBasis, today, `tws-${accountId}-${securityId}-${today}`);
       positionsWritten++;
       if (m.mktPrice != null && m.mktPrice > 0) {
@@ -188,7 +206,11 @@ export function writeIbkrHoldings(
     bumpIfPricesAffectSyntheticCloses(db, pricePairs);
   })();
 
-  if (snapshot.netLiq != null) {
+  if (marketClosed) {
+    console.log(
+      `[ibkr] Market closed on ${today}: security metadata updated; no holdings, price or account snapshot row written`,
+    );
+  } else if (snapshot.netLiq != null) {
     db.prepare(
       `INSERT INTO monthly_snapshots (account_id, month_end_date, total_value, cash_value, source)
        VALUES (?,?,?,?,'tws')
@@ -204,7 +226,15 @@ export function writeIbkrHoldings(
     // Non-critical (mirrors the TWS path).
   }
 
-  return { accountId, asOfDate: today, positionsWritten, pricesWritten, netLiq: snapshot.netLiq, cash: snapshot.cash };
+  return {
+    accountId,
+    asOfDate: today,
+    positionsWritten,
+    pricesWritten,
+    netLiq: snapshot.netLiq,
+    cash: snapshot.cash,
+    skippedReason: marketClosed ? "market_closed" : null,
+  };
 }
 
 /**

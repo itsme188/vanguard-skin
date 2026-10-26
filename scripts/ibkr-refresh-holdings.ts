@@ -65,6 +65,12 @@ async function main() {
   }
 
   const res = writeIbkrHoldings(db, snap, { asOfDate: today });
+  if (res.skippedReason === "market_closed") {
+    console.log(
+      `\nMarket closed on ${res.asOfDate} (market_closed): security metadata updated; no holdings, price, account snapshot or FX row written.`,
+    );
+    return;
+  }
   console.log(
     `\n✓ COMMITTED ${res.positionsWritten} positions + ${res.pricesWritten} prices + account snapshot (netLiq ${res.netLiq}) as of ${res.asOfDate}, source='tws'. Valuations recomputed.`,
   );

@@ -33,7 +33,9 @@ export async function POST(request: NextRequest) {
           success: true,
           via: "ibkr-webapi",
           message: res
-            ? `IBKR Web API refresh: ${res.positionsWritten} positions as of ${res.asOfDate}`
+            ? res.skippedReason === "market_closed"
+              ? `IBKR Web API refresh: market closed on ${res.asOfDate}; positions read, nothing dated that day stored`
+              : `IBKR Web API refresh: ${res.positionsWritten} positions as of ${res.asOfDate}`
             : "IBKR Web API refresh skipped — a sync is already in progress",
           result: res,
         });
