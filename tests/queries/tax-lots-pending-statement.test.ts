@@ -3,7 +3,9 @@
  * docs/superpowers/specs/2026-10-02-statement-only-synthetic-closes-design.md
  * §2.2, §3 item 6): pending lots carry `pending_statement`, unrealized totals
  * exclude them, a separate disclosed line counts them, and realized totals
- * are unchanged. Synthetic fixtures only.
+ * are unchanged. Long-stock values are unchanged by the 2026-10-26 options
+ * and shorts plan (Task 5); only the summary's shape changed (three scalars
+ * became the reducer's list). Synthetic fixtures only.
  */
 import { describe, it, expect, beforeEach } from "vitest";
 import type Database from "better-sqlite3";
@@ -88,11 +90,28 @@ describe("getTaxLotSummary (spec §3 item 6)", () => {
     expect(s.totalUnrealizedGain).toBeCloseTo(200, 6); // HELDX only
   });
 
-  it("reports the pending line: positions, lots and their basis", () => {
+  it("reports the pending line: positions, lots and their basis (one long awaiting_statement row)", () => {
     const s = getTaxLotSummary(db);
-    expect(s.pendingStatementPositions).toBe(2);
-    expect(s.pendingStatementLots).toBe(3);
-    expect(s.pendingStatementBasis).toBeCloseTo(1100, 6);
+    expect(s.pendingStatement).toHaveLength(1);
+    const [row] = s.pendingStatement;
+    expect(row).toMatchObject({
+      reason: "awaiting_statement",
+      side: "long",
+      positions: 2,
+      lots: 3,
+      figureKind: "cost_basis",
+    });
+    expect(row.figure).toBeCloseTo(1100, 6);
+  });
+
+  it("a pending lot names its reason and its figure kind; a held lot names neither", () => {
+    const lots = getOpenTaxLots(db);
+    const p = lots.find((l) => l.symbol === "PENDX")!;
+    expect(p.pending_statement_reason).toBe("awaiting_statement");
+    expect(p.pending_figure_kind).toBe("cost_basis");
+    const h = lots.find((l) => l.symbol === "HELDX")!;
+    expect(h.pending_statement_reason).toBeNull();
+    expect(h.pending_figure_kind).toBeNull();
   });
 
   it("open-lot count still matches the Open Lots table (pending lots stay listed, with their chip)", () => {
@@ -111,8 +130,7 @@ describe("getTaxLotSummary (spec §3 item 6)", () => {
   it("with no pending pairs the line reads zero and unrealized covers every lot", () => {
     db.prepare("DELETE FROM holdings WHERE quantity = 0").run();
     const s = getTaxLotSummary(db);
-    expect(s.pendingStatementPositions).toBe(0);
-    expect(s.pendingStatementLots).toBe(0);
+    expect(s.pendingStatement).toEqual([]);
     expect(s.totalUnrealizedGain).toBeCloseTo(200 + 500 - 20, 6);
   });
 });
