@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { getIbApi } from "@/lib/tws/client";
 import { runAutoRefresh, type RefreshLevel } from "@/lib/tws/auto-refresh";
-import { loadIbkrConfig } from "@/lib/ibkr/config";
+import { loadIbkrConfig, ibkrOAuthDir } from "@/lib/ibkr/config";
 import { refreshIbkrHoldingsFromWebApi } from "@/lib/ibkr/refresh";
 
 export async function POST(request: NextRequest) {
@@ -40,6 +40,7 @@ export async function POST(request: NextRequest) {
           result: res,
         });
       } catch (err) {
+        console.error("[ibkr] Web API refresh failed:", (err as Error)?.message ?? err);
         return NextResponse.json(
           {
             success: false,
@@ -50,6 +51,9 @@ export async function POST(request: NextRequest) {
         );
       }
     }
+    console.warn(
+      `[ibkr] Web API fallback: not configured (credentials folder not found: ${ibkrOAuthDir()})`,
+    );
     return NextResponse.json(
       { success: false, error: "TWS not connected (and IBKR OAuth not configured for fallback)" },
       { status: 400 },
