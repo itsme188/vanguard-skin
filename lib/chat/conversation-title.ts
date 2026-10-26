@@ -44,7 +44,7 @@ export function conversationTitleFromMessages(messages: ReadonlyArray<TitleMessa
 }
 
 // Privacy-first: mask every standalone number. A digit run is left alone only
-// when glued to letters inside one token (3M, 450C, Q3, FY26, 10-K) or when it
+// when glued to letters inside one token (450C, Q3, FY26, 10-K) or when it
 // is an ISO date. Over-masking is acceptable; leaking a figure is not.
 const FIGURE_RE = new RegExp(
   [
@@ -60,10 +60,8 @@ const FIGURE_RE = new RegExp(
 
 /** Mask currency amounts, percentages, share counts and bare numbers; keep ticker-like tokens. */
 export function maskTitleFigures(title: string): string {
-  return title.replace(FIGURE_RE, (match, isoDate: string | undefined, _int: string, dec: string | undefined) => {
+  return title.replace(FIGURE_RE, (match, isoDate: string | undefined, _int: string) => {
     if (isoDate) return match;
-    // "3M" / "3m": a bare integer glued to M reads as a company, not 3 million.
-    if (/^\d+m$/i.test(match) && !dec) return match;
     return MASK;
   });
 }

@@ -85,6 +85,9 @@ describe("maskTitleFigures: every standalone number", () => {
     ["€5,000 in EUR fund", /5,?000/],
     ["12 percent drawdown", /12/],
     ["Is $412k enough", /412/],
+    ["3M", /3/],
+    ["Portfolio hit 3M", /3/],
+    ["lost 5M", /5/],
     ["up 12%", /12/],
     ["300 shares", /300/],
     ["lost -$4,500", /4,?500/],
@@ -98,7 +101,7 @@ describe("maskTitleFigures: every standalone number", () => {
   it("keeps 450C when masking its neighbour", () => {
     expect(maskTitleFigures("Roll my 10 contracts of SPY 450C")).toContain("450C");
   });
-  for (const keep of ["3M", "450C", "Q3", "8-K", "10-K", "BRK.B"]) {
+  for (const keep of ["450C", "Q3", "8-K", "10-K", "BRK.B"]) {
     it(`keeps ${keep}`, () => {
       expect(maskTitleFigures(keep)).toBe(keep);
     });
