@@ -90,6 +90,23 @@ export function noteTypeLabel(raw: string): string {
   return type ? NOTE_TYPE_LABELS[type] : raw.replace(/_/g, " ");
 }
 
+/**
+ * The short description that tells one note card's controls from the
+ * next: type, symbol when the note has one, and its date. Thirty cards
+ * each carrying a bare "Edit note" / "Delete note" read as one control to
+ * a screen reader, and the delete question never said which note it was
+ * about. [qa:dashboard-research-view-notes-note-cards-32-note-edit-delete-buttons-share-one-name-the-delete-dialog-never-na]
+ */
+export function noteCardLabel(note: {
+  note_type: string;
+  symbol?: string | null;
+  event_date: string;
+}): string {
+  const type = noteTypeLabel(note.note_type);
+  const symbol = note.symbol?.trim();
+  return `${type}${symbol ? ` on ${symbol}` : ""}, ${formatDate(note.event_date)}`;
+}
+
 const TYPE_OPTIONS: { label: string; value: string }[] = [
   { label: "All", value: "" },
   ...NOTE_TYPES.map((value) => ({ label: NOTE_TYPE_LABELS[value], value })),
@@ -1415,6 +1432,8 @@ function NoteCard({
   const tags = parseNoteTags(note.tags);
   const draft = edit.editingId === note.id ? edit.draft : null;
   const isEditing = draft !== null;
+  // Names this card's controls and its delete question (type, symbol, date).
+  const cardLabel = noteCardLabel(note);
 
   return (
     <div
@@ -1427,7 +1446,7 @@ function NoteCard({
       <ConfirmDialog
         open={showDeleteConfirm}
         title="Delete note"
-        message="Are you sure you want to delete this note? This cannot be undone."
+        message={`Delete the note "${cardLabel}"? This cannot be undone.`}
         confirmLabel="Delete"
         variant="danger"
         onConfirm={() => {
@@ -1552,8 +1571,8 @@ function NoteCard({
               type="button"
               onClick={() => edit.onStart(note)}
               className="relative pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-2 p-1 text-ink-faint hover:text-ink rounded transition-colors focus-ring"
-              aria-label="Edit note"
-              title="Edit note"
+              aria-label={`Edit note: ${cardLabel}`}
+              title={`Edit note: ${cardLabel}`}
             >
               <svg
                 className="w-3.5 h-3.5"
@@ -1570,8 +1589,8 @@ function NoteCard({
               type="button"
               onClick={() => setShowDeleteConfirm(true)}
               className="relative pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-2 p-1 text-ink-faint hover:text-down rounded transition-colors focus-ring"
-              aria-label="Delete note"
-              title="Delete note"
+              aria-label={`Delete note: ${cardLabel}`}
+              title={`Delete note: ${cardLabel}`}
             >
               <svg
                 className="w-3.5 h-3.5"

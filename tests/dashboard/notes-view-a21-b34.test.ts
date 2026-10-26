@@ -374,8 +374,8 @@ describe("note card", () => {
 
   it("Edit and Delete are always rendered — no hover gate", () => {
     expect(card).not.toMatch(/onMouseEnter|onMouseLeave|showActions/);
-    expect(card).toContain('aria-label="Edit note"');
-    expect(card).toContain('aria-label="Delete note"');
+    expect(card).toContain('aria-label={`Edit note: ${cardLabel}`}');
+    expect(card).toContain('aria-label={`Delete note: ${cardLabel}`}');
     // Touch pointers get an extended tap target.
     expect(card.match(/pointer-coarse:after:-inset-2/g)).toHaveLength(2);
   });
