@@ -75,7 +75,7 @@ describe("pending-statement-types", () => {
     const rows = reducePendingDisclosure([mk({ figure: 100 }), mk({ is_short: 1, security_id: 2, figure: 40 })]);
     expect(rows).toHaveLength(2);
     expect(rows.some((r) => r.figure === 140)).toBe(false);
-    expect(rows.map((r) => r.figure).sort()).toEqual([40, 100]);
+    expect(rows.map((r) => r.figure)).toEqual([100, 40]);
     expect("total" in rows[0]).toBe(false);
   });
 
