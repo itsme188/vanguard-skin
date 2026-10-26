@@ -3,10 +3,15 @@
  * (spec docs/superpowers/specs/2026-10-02-statement-only-synthetic-closes-design.md
  * §2.2 (a)-(d), §3 items 1 and 10).
  *
- * A pair is "pending statement" when the newest holdings row of ANY source
- * is a LIVE-origin zero, the statement evidence does not already show it
- * flat (that is the engine's job), and it holds long stock/ETF lots the
- * engine's own split guard would not skip. Synthetic fixtures only.
+ * LONG STOCK/ETF (unchanged by the 2026-10-26 options-and-shorts build): a
+ * side is "pending statement" when the newest holdings row of ANY source is
+ * a LIVE-origin zero, the statement evidence does not already show it flat
+ * (that is the engine's job), and the engine's own guards would not skip it.
+ * Options and short stock are covered in
+ * tests/queries/pending-statement-options-shorts.test.ts. Since that build
+ * the row carries `side`, `reason`, `flat_date` (was `live_flat_date`),
+ * `open_figure` (was `open_basis`), `figure_kind` and `lot_count`, and the
+ * key carries the side. Synthetic fixtures only.
  */
 import { describe, it, expect, beforeEach } from "vitest";
 import type Database from "better-sqlite3";
@@ -49,9 +54,13 @@ describe("getPendingStatementPairs — pending cases", () => {
         account_id: 3,
         security_id: sec,
         symbol: "PNDA",
-        live_flat_date: "2026-07-10",
+        side: "long",
+        reason: "awaiting_statement",
+        flat_date: "2026-07-10",
         open_quantity: 10,
-        open_basis: 1000,
+        open_figure: 1000,
+        figure_kind: "cost_basis",
+        lot_count: 1,
       },
     ]);
   });
@@ -79,7 +88,7 @@ describe("getPendingStatementPairs — pending cases", () => {
 
     const [pair] = getPendingStatementPairs(db);
     expect(pair.open_quantity).toBe(5);
-    expect(pair.open_basis).toBeCloseTo(1000, 6); // 5 of the 200-dollar lot
+    expect(pair.open_figure).toBeCloseTo(1000, 6); // 5 of the 200-dollar lot
   });
 });
 
@@ -148,14 +157,17 @@ describe("getPendingStatementPairs — never pending (spec §3 item 10)", () => 
     expect(getPendingStatementPairs(db)).toEqual([]);
   });
 
-  it("short lots are never pending", () => {
+  it("a short stock lot under a live zero IS pending now, on its own side (2026-10-26 build)", () => {
     const sec = seedSec(db, "SHRT");
     seedLot(db, 3, sec, { isShort: 1 });
     seedHold(db, 3, sec, "2026-07-10", "live-zero");
-    expect(getPendingStatementPairs(db)).toEqual([]);
+    const pairs = getPendingStatementPairs(db);
+    expect(pairs.map((p) => [p.symbol, p.side, p.reason, p.flat_date, p.figure_kind])).toEqual([
+      ["SHRT", "short", "awaiting_statement", "2026-07-10", "short_sale_proceeds"],
+    ]);
   });
 
-  it.each([["Option"], ["Bond"], ["Mutual Fund"], ["Money Market"]])(
+  it.each([["Bond"], ["Mutual Fund"], ["Money Market"]])(
     "a %s is never pending",
     (type) => {
       const sec = seedSec(db, `T${type.replace(/\s/g, "").slice(0, 4).toUpperCase()}`, type);
@@ -218,8 +230,9 @@ describe("getPendingStatementPairs — scoping", () => {
     expect(getPendingStatementPairs(db, [])).toEqual([]);
   });
 
-  it("pendingStatementKey is the account:security key surfaces join on", () => {
+  it("pendingStatementKey is the account:security:side key surfaces join on", () => {
     const [pair] = getPendingStatementPairs(db, [3]);
-    expect(pendingStatementKey(pair)).toBe(`3:${pair.security_id}`);
+    expect(pendingStatementKey({ ...pair, is_short: 0 })).toBe(`3:${pair.security_id}:long`);
+    expect(pendingStatementKey({ ...pair, is_short: 1 })).toBe(`3:${pair.security_id}:short`);
   });
 });
