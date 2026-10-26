@@ -71,3 +71,36 @@ describe("maskTitleFigures", () => {
     expect(maskTitleFigures(s)).toBe(s);
   });
 });
+
+describe("maskTitleFigures: every standalone number", () => {
+  const masked: Array<[string, RegExp]> = [
+    ["My account is 412,000 now", /412|000/],
+    ["Portfolio hit 1.2M", /1\.2/],
+    ["Why did I lose 2.5k", /2\.5/],
+    ["Down -4,500 on TSLA today", /4,?500/],
+    ["Should I buy 500 AAPL", /500/],
+    ["Roll my 10 contracts of SPY 450C", /\b10\b/],
+    ["VTI at 1,234,567 total", /1,?234/],
+    ["1.2 million in bonds", /1\.2/],
+    ["€5,000 in EUR fund", /5,?000/],
+    ["12 percent drawdown", /12/],
+    ["Is $412k enough", /412/],
+    ["up 12%", /12/],
+    ["300 shares", /300/],
+    ["lost -$4,500", /4,?500/],
+    ["sold 1200 sh", /1200/],
+  ];
+  for (const [input, leak] of masked) {
+    it(`masks: ${input}`, () => {
+      expect(maskTitleFigures(input)).not.toMatch(leak);
+    });
+  }
+  it("keeps 450C when masking its neighbour", () => {
+    expect(maskTitleFigures("Roll my 10 contracts of SPY 450C")).toContain("450C");
+  });
+  for (const keep of ["3M", "450C", "Q3", "8-K", "10-K", "BRK.B"]) {
+    it(`keeps ${keep}`, () => {
+      expect(maskTitleFigures(keep)).toBe(keep);
+    });
+  }
+});
