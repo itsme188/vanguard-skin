@@ -334,3 +334,109 @@ describe("capReason (Codex)", () => {
     expect(conf.integrity.critical.some((h) => h.key === `closing-entry-account:${A}:${B}:${stk}:short`)).toBe(true);
   });
 });
+
+describe("review fixes (Wave 3): no-statement-book pairs, expired options, the day of `now`", () => {
+  const ROTH = 2; // carries no statement-grade row in these fixtures
+
+  function seedNoBookOption(symbol: string, expiration = "2027-01-15"): number {
+    return Number(
+      db
+        .prepare(
+          `INSERT INTO securities (symbol, name, security_type, multiplier, expiration_date)
+           VALUES (?, ?, 'option', 100, ?)`
+        )
+        .run(symbol, `${symbol} contract`, expiration).lastInsertRowid
+    );
+  }
+
+  it("W1b: long option pending under a live -2 row, the held short of 2 imported, no statement book → only the pending warning", () => {
+    const opt = seedNoBookOption("ZZWB  270115C00010000");
+    txn(ROTH, opt, "2026-06-01", "BUY_TO_OPEN", 2, 3);
+    txn(ROTH, opt, "2026-06-05", "SELL_TO_OPEN", 2, 4);
+    seedHold(db, ROTH, opt, "2026-07-10", "tws", -2);
+    computeTaxLots(db);
+    expect(lotsOf(opt, ROTH)).toEqual([
+      [0, 2, 2],
+      [1, 2, 2],
+    ]); // hand: long 2 (pending, flat under the short row), short 2 (held)
+    const { critical, warnings } = runIntegrityChecks(db, OPTS);
+    expect(hitsFor(critical, ROTH, opt)).toEqual([]);
+    expect(hitsFor(warnings, ROTH, opt)).toEqual([
+      {
+        key: `lot-drift:${ROTH}:${opt}`,
+        severity: "warning",
+        kind: "statement-lag",
+        reason: "ZZWB  270115C00010000 (Vanguard Roth IRA): closed per live data — awaiting statement",
+      },
+    ]);
+  });
+
+  it("W1: the held short's opening is not imported → a genuine gap stays a critical :drift hit", () => {
+    const opt = seedNoBookOption("ZZWA  270115C00010000");
+    txn(ROTH, opt, "2026-06-01", "BUY_TO_OPEN", 2, 3);
+    seedHold(db, ROTH, opt, "2026-07-10", "tws", -2);
+    computeTaxLots(db);
+    expect(lotsOf(opt, ROTH)).toEqual([[0, 2, 2]]);
+    const { critical, warnings } = runIntegrityChecks(db, OPTS);
+    expect(hitsFor(warnings, ROTH, opt).map((h) => h.kind)).toEqual(["statement-lag"]);
+    expect(hitsFor(critical, ROTH, opt)).toEqual([
+      {
+        key: `lot-drift:${ROTH}:${opt}:drift`,
+        severity: "critical",
+        reason: "ZZWA  270115C00010000 (Vanguard Roth IRA): position/lot drift 100.0%",
+      },
+    ]);
+  });
+
+  it("W1c: a held short that only partly matches the live short row is still a :drift hit, measured on the held lots", () => {
+    const opt = seedNoBookOption("ZZWC  270115C00010000");
+    txn(ROTH, opt, "2026-06-01", "BUY_TO_OPEN", 2, 3);
+    txn(ROTH, opt, "2026-06-05", "SELL_TO_OPEN", 1, 4);
+    seedHold(db, ROTH, opt, "2026-07-10", "tws", -2);
+    computeTaxLots(db);
+    const { critical } = runIntegrityChecks(db, OPTS);
+    expect(hitsFor(critical, ROTH, opt).map((h) => [h.key, h.reason])).toEqual([
+      [`lot-drift:${ROTH}:${opt}:drift`, "ZZWC  270115C00010000 (Vanguard Roth IRA): position/lot drift 50.0%"],
+    ]);
+  });
+
+  function seedExpiringAwaiting(): number {
+    const opt = seedNoBookOption("ZZEP  260717C00010000", "2026-07-17");
+    txn(A, opt, "2026-06-01", "BUY_TO_OPEN", 1, 5);
+    seedHold(db, A, opt, "2026-06-30", "stmt", 1);
+    seedHold(db, A, opt, "2026-07-10", "live-zero");
+    computeTaxLots(db);
+    return opt;
+  }
+
+  it("an option past expiry with a live zero reads expired, awaiting its closing entry, across the boundary", () => {
+    const opt = seedExpiringAwaiting();
+    const onExpiry = runIntegrityChecks(db, { today: "2026-07-17" });
+    expect(hitsFor(onExpiry.warnings, A, opt).map((h) => h.reason)).toEqual([
+      "ZZEP  260717C00010000 (IBKR): closed per live data — awaiting statement",
+    ]);
+    const dayAfter = runIntegrityChecks(db, { today: "2026-07-18" });
+    expect(hitsFor(dayAfter.warnings, A, opt)).toEqual([
+      {
+        key: `lot-drift:${A}:${opt}`,
+        severity: "warning",
+        kind: "statement-lag",
+        reason: "ZZEP  260717C00010000 (IBKR): expired — awaiting its closing entry",
+      },
+    ]);
+    expect(dayAfter.critical).toEqual([]);
+  });
+
+  it("getDataConfidence passes the Eastern day of `now` to the integrity scan", () => {
+    const opt = seedExpiringAwaiting();
+    // 23:30 Eastern on the expiration day is already the next UTC day.
+    const lateOnExpiry = getDataConfidence(db, new Date("2026-07-18T03:30:00Z"));
+    expect(hitsFor(lateOnExpiry.integrity.warnings, A, opt).map((h) => h.reason)).toEqual([
+      "ZZEP  260717C00010000 (IBKR): closed per live data — awaiting statement",
+    ]);
+    const nextDay = getDataConfidence(db, new Date("2026-07-18T16:00:00Z"));
+    expect(hitsFor(nextDay.integrity.warnings, A, opt).map((h) => h.reason)).toEqual([
+      "ZZEP  260717C00010000 (IBKR): expired — awaiting its closing entry",
+    ]);
+  });
+});

@@ -27,6 +27,7 @@ import { scanClosingEntryAccountHits } from "@/lib/queries/closing-entry-account
 import { scanExerciseLegMissingHits, scanExercisePriceMissingHits } from "@/lib/queries/exercise-link-gaps";
 import { isCurrencyConversionSecurityType } from "@/lib/queries/tax-lots";
 import { addDays, todayET } from "@/lib/calendar/date-utils";
+import { isOptionLive } from "@/lib/compute/option-expiry";
 
 /**
  * Cross-cutting number-trust integrity scan (spec: number-trust durable
@@ -456,7 +457,11 @@ function pendingLotDriftHit(
   };
 }
 
-function scanLotDriftHits(db: Database.Database, pendingIndex: PendingStatementIndex): IntegrityHit[] {
+function scanLotDriftHits(
+  db: Database.Database,
+  pendingIndex: PendingStatementIndex,
+  today: string = todayET()
+): IntegrityHit[] {
   const positions = db
     .prepare(
       `SELECT h.account_id AS accountId, h.security_id AS securityId, h.quantity AS posQty
@@ -535,14 +540,23 @@ function scanLotDriftHits(db: Database.Database, pendingIndex: PendingStatementI
     ])
   );
   const secRows = db
-    .prepare(`SELECT id, symbol, security_type, fund_category FROM securities`)
+    .prepare(`SELECT id, symbol, security_type, fund_category, expiration_date FROM securities`)
     .all() as {
     id: number;
     symbol: string;
     security_type: string | null;
     fund_category: string | null;
+    expiration_date: string | null;
   }[];
   const symbolBySecurityId = new Map(secRows.map((s) => [s.id, s.symbol]));
+  // Options past their expiration (Eastern day, the one expiry reader): their
+  // lots are "expired, awaiting the closing entry" on Tax Lots, never
+  // "awaiting statement", so the step-4 wording below says the same.
+  const expiredOptionIds = new Set(
+    secRows
+      .filter((s) => (s.security_type ?? "").toLowerCase() === "option" && !isOptionLive(s.expiration_date, today))
+      .map((s) => s.id)
+  );
   // Sweep / money-market funds carry no meaningful tax lots, so a position
   // with zero lots is expected, not drift (single source: isCashEquivalentSecurity).
   const cashEquivalentIds = new Set(secRows.filter((s) => isCashEquivalentSecurity(s)).map((s) => s.id));
@@ -702,7 +716,22 @@ function scanLotDriftHits(db: Database.Database, pendingIndex: PendingStatementI
     // (1) No statement book for this account: nothing to wait for.
     const accountStatementDate = statementDateByAccount.get(accountId);
     if (!accountStatementDate) {
-      if (latestDrift) pushReal(latestDrift);
+      if (!pending) {
+        if (latestDrift) pushReal(latestDrift);
+        continue;
+      }
+      // A pending pair: the pending sides are explained by the pending hit,
+      // so the latest position is compared with the OTHER lots only (signed
+      // lots with the pending sides' open quantity taken out). A held side
+      // that matches the position leaves nothing to report; a held side that
+      // does not is a genuine gap (`:drift`). `hasLot` keeps counting the
+      // pending lots, so a gap reads as a ratio drift, never as "fills but
+      // zero tax lots" (those fills opened the pending side).
+      const pendingSigned = pendingIndex
+        .sidesFor(accountId, securityId)
+        .reduce((sum, p) => sum + (p.side === "short" ? -p.open_quantity : p.open_quantity), 0);
+      const heldDrift = classifyLotDrift(latestQty, signedLotQty - pendingSigned, hasLot, fillCount);
+      if (heldDrift) pushReal(heldDrift);
       continue;
     }
 
@@ -787,9 +816,11 @@ function scanLotDriftHits(db: Database.Database, pendingIndex: PendingStatementI
         key: hitKey,
         severity: "warning",
         kind: "statement-lag",
-        reason: closedPerLive
-          ? `${label}: closed per live data — awaiting statement`
-          : `${label}: live position differs from tax lots — pending statement`,
+        reason: expiredOptionIds.has(securityId)
+          ? `${label}: expired — awaiting its closing entry`
+          : closedPerLive
+            ? `${label}: closed per live data — awaiting statement`
+            : `${label}: live position differs from tax lots — pending statement`,
       },
       0,
       "fallback"
@@ -1056,7 +1087,7 @@ export function runIntegrityChecks(
   const lotDriftChecked = getTaxConventionState(db).recomputeCurrent;
   if (lotDriftChecked) {
     const pendingIndex = getPendingStatementIndex(db, undefined, opts);
-    for (const hit of scanLotDriftHits(db, pendingIndex)) {
+    for (const hit of scanLotDriftHits(db, pendingIndex, opts.today)) {
       (hit.severity === "critical" ? critical : warnings).push(hit);
     }
     // Reads tax_lot_sales, so it shares the lot-drift gate (R4). Critical
@@ -1068,7 +1099,7 @@ export function runIntegrityChecks(
 
   // Independent of the tax-lot convention marker: it reads the ledger only.
   // Always a warning, so it can never cap the score.
-  for (const hit of scanPossibleDuplicateLedgerHits(db)) {
+  for (const hit of scanPossibleDuplicateLedgerHits(db, opts.today)) {
     warnings.push(hit);
   }
 
