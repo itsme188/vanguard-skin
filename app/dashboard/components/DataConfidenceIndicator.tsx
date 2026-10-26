@@ -8,7 +8,13 @@ import { PrivateText, Money, Count } from "@/lib/privacy/components";
 import apiFetch from "@/lib/http/apiFetch";
 import { Chip } from "./Chip";
 import { popoverAnchorFor } from "./data-confidence-popover-anchor";
-import { PENDING_STATEMENT_TITLE, STATEMENT_LAG_LABEL } from "./pending-statement-copy";
+import {
+  PENDING_INTEGRITY_CHIP_LABEL,
+  PENDING_INTEGRITY_SUFFIX,
+  PENDING_STATEMENT_TITLE,
+  STATEMENT_LAG_LABEL,
+  type PendingIntegrityKind,
+} from "./pending-statement-copy";
 
 // Fallback popover width (Tailwind `w-96` = 384px) used when the popover
 // element hasn't rendered yet at measurement time.
@@ -513,6 +519,16 @@ function IntegrityWarningsRow({ warnings }: { warnings: IntegrityHit[] }) {
                 <>
                   <Chip tone="neutral" size="xs" title={PENDING_STATEMENT_TITLE}>
                     {STATEMENT_LAG_LABEL}
+                  </Chip>{" "}
+                </>
+              )}
+              {/* The new pending-lot, account and exercise kinds: the chip text
+                  names the state on its own, and the title adds the plain
+                  sentence. Tone comes from the checked chip table. */}
+              {w.kind !== undefined && w.kind !== "statement-lag" && w.kind in PENDING_INTEGRITY_CHIP_LABEL && (
+                <>
+                  <Chip tone="neutral" size="xs" title={PENDING_INTEGRITY_SUFFIX[w.kind as PendingIntegrityKind]}>
+                    {PENDING_INTEGRITY_CHIP_LABEL[w.kind as PendingIntegrityKind]}
                   </Chip>{" "}
                 </>
               )}
