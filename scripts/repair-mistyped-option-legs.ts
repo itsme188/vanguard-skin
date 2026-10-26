@@ -35,6 +35,9 @@
 import fs from "node:fs";
 import path from "node:path";
 import type Database from "better-sqlite3";
+import { OPTION_RESYMBOL_TARGETS } from "../lib/securities/option-resymbol-targets";
+
+export { OPTION_RESYMBOL_TARGETS };
 
 /** Legacy spaced-strike option spelling inside a source_key, e.g. ":SHOP 250620 P 80.00:" */
 const LEGACY_KEY_RE = /:[A-Z/.]{1,6} \d{6} [CP] [\d.]+:/;
@@ -164,73 +167,6 @@ export const OPTION_SPLIT_TARGETS = [
   { occSymbol: "IBKR  270115C00220000", tradeDate: "2025-04-17", type: "BUY_TO_OPEN", preQty: 1, ratio: 4 },
 ] as const;
 
-/**
- * XLU ran a 2:1 split 2025-12-05 and — unlike IBKR — the broker RE-SYMBOLED
- * the calls (strike halved: 260618C00100000 → 260618C00050000, contracts ×2,
- * premium basis ÷2). The pre-split BUY_TO_OPEN was transcribed under the old
- * OCC symbol; the closes were transcribed under the new one, leaving two
- * orphan positions (+10 on the 100-strike, −20 on the 50-strike). Repair:
- * move the buy to the new symbol's security AND normalize qty ×2 / price ÷2
- * (amount + source_key untouched — same re-import caveat as all split
- * normalizations: re-importing the Nov-2025 file re-adds the old-symbol row;
- * re-run this script if that happens).
- */
-export const OPTION_RESYMBOL_TARGETS = [
-  {
-    fromSymbol: "XLU   260618C00100000",
-    toSymbol: "XLU   260618C00050000",
-    tradeDate: "2025-11-18",
-    type: "BUY_TO_OPEN",
-    preQty: 10,
-    ratio: 2,
-  },
-  // IBKR 4:1 (2025-06-18): buys were already quantity/price-normalized by
-  // OPTION_SPLIT_TARGETS above (ratio 1 here = pure move, no re-scale); the
-  // post-split legs (June-2025 expiry ×4 on the $35 put, the 2026 closes and
-  // live holdings on the $55 call) all live under the re-struck symbols.
-  {
-    fromSymbol: "IBKR  250620P00140000",
-    toSymbol: "IBKR  250620P00035000",
-    tradeDate: "2025-04-17",
-    type: "BUY_TO_OPEN",
-    preQty: 4,
-    ratio: 1,
-  },
-  {
-    fromSymbol: "IBKR  270115C00220000",
-    toSymbol: "IBKR  270115C00055000",
-    tradeDate: "2025-04-17",
-    type: "BUY_TO_OPEN",
-    preQty: 4,
-    ratio: 1,
-  },
-  // CRWD 4:1 (2026-07-01): the broker re-struck the March-2027 call
-  // (270319C00470000 → 270319C00117500, contracts ×4). The July statement
-  // transcribed the split as a quantity-only "SPLIT 6" row on the new symbol
-  // (not a replay event), so the two February opening legs stayed on the
-  // pre-split symbol while every close and the live position sit on the
-  // re-struck one. Pure re-symbol + product-preserving normalization
-  // (1 → 4 contracts, price ÷4, amount + source_key untouched). Verified
-  // 2026-09-15 against the July/August statements: 8 post-split contracts,
-  // sold 1 (07-06) + 2 (08-27) + 1 (08-31, unsettled section) → 4 held at
-  // 08-31 with the second February lot's basis remaining, i.e. FIFO.
-  {
-    fromSymbol: "CRWD  270319C00470000",
-    toSymbol: "CRWD  270319C00117500",
-    tradeDate: "2026-02-05",
-    type: "BUY_TO_OPEN",
-    preQty: 1,
-    ratio: 4,
-  },
-  {
-    fromSymbol: "CRWD  270319C00470000",
-    toSymbol: "CRWD  270319C00117500",
-    tradeDate: "2026-02-06",
-    type: "BUY_TO_OPEN",
-    preQty: 1,
-    ratio: 4,
-  },
-] as const;
 
 export function planOptionResymbols(db: Database.Database): OptionSplitPlan[] {
   const plans: OptionSplitPlan[] = [];
@@ -358,6 +294,48 @@ export function planExpiredQtyFix(db: Database.Database): RetypePlan {
   return { id: rows[0].id, label, newKey: null, ok: true, action: "qty 2→1" };
 }
 
+/** The plans the CLI computes, in the shapes the planners return. */
+export interface MistypedOptionLegPlans {
+  dups: DupPlan[];
+  retypes: RetypePlan[];
+  expFix: RetypePlan;
+  optSplits: OptionSplitPlan[];
+  resymbols: OptionSplitPlan[];
+}
+
+/**
+ * The CLI's apply step: one transaction, same statements in the same order.
+ * Takes no backup and does not recompute tax lots; the CLI does both around it.
+ */
+export function applyMistypedOptionLegPlans(db: Database.Database, plans: MistypedOptionLegPlans): void {
+  const { dups, retypes, expFix, optSplits, resymbols } = plans;
+  const run = db.transaction(() => {
+    // Lots are wiped + rebuilt by computeTaxLots below; clear them first so
+    // FK references to the deleted duplicate rows cannot block the DELETE.
+    db.prepare("DELETE FROM tax_lot_sales").run();
+    db.prepare("DELETE FROM tax_lots").run();
+    for (const d of dups) db.prepare("DELETE FROM transactions WHERE id = ?").run(d.deleteId);
+    for (const r of retypes) {
+      if (r.id === -1 || r.action !== "retype + key rewrite") continue;
+      db.prepare("UPDATE transactions SET type = 'SELL_TO_CLOSE', source_key = ? WHERE id = ?").run(r.newKey, r.id);
+    }
+    if (expFix.action === "qty 2→1") {
+      db.prepare("UPDATE transactions SET quantity = 1 WHERE id = ?").run(expFix.id);
+    }
+    for (const o of optSplits) {
+      if (o.action !== "normalize") continue;
+      db.prepare("UPDATE transactions SET quantity = ?, price_per_share = ? WHERE id = ?").run(o.newQty, o.newPrice, o.id);
+    }
+    for (const o of resymbols) {
+      if (o.action !== "resymbol + normalize") continue;
+      const target = OPTION_RESYMBOL_TARGETS.find((t) => `${t.fromSymbol.trim()} → ${t.toSymbol.trim()} ${t.tradeDate} ${t.type} ×${t.ratio}` === o.label)!;
+      const to = db.prepare(`SELECT id FROM securities WHERE symbol = ?`).get(target.toSymbol) as { id: number };
+      db.prepare("UPDATE transactions SET security_id = ?, quantity = ?, price_per_share = ? WHERE id = ?").run(to.id, o.newQty, o.newPrice, o.id);
+    }
+  });
+  run();
+}
+
 // ─── CLI ─────────────────────────────────────────────────────────
 
 const isMain =
@@ -438,31 +416,7 @@ if (isMain) {
     db.prepare("VACUUM INTO ?").run(backupPath);
     console.log(`\nBackup: ${backupPath}`);
 
-    const run = db.transaction(() => {
-      // Lots are wiped + rebuilt by computeTaxLots below; clear them first so
-      // FK references to the deleted duplicate rows cannot block the DELETE.
-      db.prepare("DELETE FROM tax_lot_sales").run();
-      db.prepare("DELETE FROM tax_lots").run();
-      for (const d of dups) db.prepare("DELETE FROM transactions WHERE id = ?").run(d.deleteId);
-      for (const r of retypes) {
-        if (r.id === -1 || r.action !== "retype + key rewrite") continue;
-        db.prepare("UPDATE transactions SET type = 'SELL_TO_CLOSE', source_key = ? WHERE id = ?").run(r.newKey, r.id);
-      }
-      if (expFix.action === "qty 2→1") {
-        db.prepare("UPDATE transactions SET quantity = 1 WHERE id = ?").run(expFix.id);
-      }
-      for (const o of optSplits) {
-        if (o.action !== "normalize") continue;
-        db.prepare("UPDATE transactions SET quantity = ?, price_per_share = ? WHERE id = ?").run(o.newQty, o.newPrice, o.id);
-      }
-      for (const o of resymbols) {
-        if (o.action !== "resymbol + normalize") continue;
-        const target = OPTION_RESYMBOL_TARGETS.find((t) => `${t.fromSymbol.trim()} → ${t.toSymbol.trim()} ${t.tradeDate} ${t.type} ×${t.ratio}` === o.label)!;
-        const to = db.prepare(`SELECT id FROM securities WHERE symbol = ?`).get(target.toSymbol) as { id: number };
-        db.prepare("UPDATE transactions SET security_id = ?, quantity = ?, price_per_share = ? WHERE id = ?").run(to.id, o.newQty, o.newPrice, o.id);
-      }
-    });
-    run();
+    applyMistypedOptionLegPlans(db, { dups, retypes, expFix, optSplits, resymbols });
 
     const { computeTaxLots } = await import("@/lib/compute/tax-lots");
     const lots = computeTaxLots(db);
