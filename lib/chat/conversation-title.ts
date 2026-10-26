@@ -57,3 +57,9 @@ const FIGURE_PATTERNS: RegExp[] = [
 export function maskTitleFigures(title: string): string {
   return FIGURE_PATTERNS.reduce((acc, re) => acc.replace(re, MASK), title);
 }
+
+/** Title as shown on screen: figures masked only while privacy mode is on. */
+export function displayConversationTitle(title: string | null | undefined, isPrivate: boolean): string | null {
+  if (title == null) return null;
+  return isPrivate ? maskTitleFigures(title) : title;
+}

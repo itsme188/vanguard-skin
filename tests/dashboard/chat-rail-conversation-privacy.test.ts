@@ -40,62 +40,22 @@ function isAttributeLine(line: string): boolean {
   return /\b(title|aria-label)=\{[^\n]*conv\.title \?\?/.test(line);
 }
 
-describe("ChatInterface conversation titles mask under privacy mode", () => {
+describe("ChatInterface conversation titles mask figures only under privacy mode (ruling 2026-10-26)", () => {
   const source = fs.readFileSync(COMPONENT_PATH, "utf8");
   const lines = source.split("\n");
 
-  it("imports PrivateText from the privacy components module", () => {
-    expect(source).toMatch(
-      /import\s*\{[^}]*PrivateText[^}]*\}\s*from\s*["']@\/lib\/privacy\/components["']/,
-    );
+  it("imports displayConversationTitle", () => {
+    expect(source).toMatch(/import\s*\{\s*displayConversationTitle\s*\}\s*from\s*["']@\/lib\/chat\/conversation-title["']/);
   });
 
-  it("finds at least two `conv.title ??` JSX text-node render sites (dropdown + empty state)", () => {
-    const textNodeLines = lines.filter(
-      (line) => line.includes("conv.title ??") && !isAttributeLine(line),
-    );
-    expect(textNodeLines.length).toBeGreaterThanOrEqual(2);
+  it("no line renders a raw conv.title ?? text node or fully masks it", () => {
+    expect(lines.filter((l) => l.includes("conv.title ??"))).toEqual([]);
   });
 
-  it("wraps every `conv.title ??` JSX text-node render site in <PrivateText>", () => {
-    const textNodeLines = lines.filter(
-      (line) => line.includes("conv.title ??") && !isAttributeLine(line),
-    );
-    for (const line of textNodeLines) {
-      expect(line).toMatch(TITLE_TEXT_NODE);
-    }
-  });
-
-  it("does not render a bare unwrapped `{conv.title ?? ...}` text node anywhere", () => {
-    const bareTextNode = lines.some((line) => {
-      if (isAttributeLine(line)) return false;
-      if (!line.includes("conv.title ??")) return false;
-      return !TITLE_TEXT_NODE.test(line);
-    });
-    expect(bareTextNode).toBe(false);
-  });
-
-  it("gates the conversation-list item's title= attribute on the privacy flag", () => {
-    const line = lines.find(
-      (l) => l.includes("title=") && l.includes("conv.title ??") && isAttributeLine(l),
-    );
-    expect(line, "expected a title= attribute referencing conv.title ??").toBeDefined();
-    expect(line).toMatch(/title=\{isPrivate \? `Conversation \$\{conv\.id\}` : /);
-  });
-
-  it("gates the delete button's aria-label= attribute on the privacy flag", () => {
-    const line = lines.find((l) => l.includes("aria-label=") && l.includes("Delete conversation"));
-    expect(line, "expected an aria-label= for the delete button").toBeDefined();
-    expect(line).toMatch(/aria-label=\{isPrivate \? `Delete conversation \$\{conv\.id\}` : /);
-  });
-
-  it("gates the current-conversation header title= attribute on the privacy flag", () => {
-    const line = lines.find((l) => l.includes("title=") && l.includes("displayTitle"));
-    expect(line, "expected a title= attribute referencing displayTitle").toBeDefined();
-    expect(line).toMatch(/title=\{isPrivate \? "Current conversation" : displayTitle\}/);
-  });
-
-  it("wraps the current-conversation header text node in <PrivateText>", () => {
-    expect(source).toMatch(/<PrivateText>\{displayTitle\}<\/PrivateText>/);
+  it("list item title=, row text, delete aria-label, header title and text use the helper", () => {
+    expect(source).toMatch(/title=\{displayConversationTitle\(conv\.title, isPrivate\) \?\? `Conversation/);
+    expect(source).toMatch(/aria-label=\{`Delete conversation \$\{displayConversationTitle\(conv\.title, isPrivate\)/);
+    expect(source).toMatch(/title=\{displayTitle\}/);
+    expect(source).toMatch(/<span className="truncate">\{displayTitle\}<\/span>/);
   });
 });
