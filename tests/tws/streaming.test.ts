@@ -264,6 +264,17 @@ describe("startStreaming — all-securities branch (no securityIds)", () => {
 describe("snapshotToDb — synthetic-close price bump (reconciler-hardening, spec §4)", () => {
   let db: Database.Database;
 
+  // Pin the clock to a trading day (Wed 2026-03-11): snapshotToDb writes
+  // nothing on a closed market day (DECISIONS 2026-10-26 item 1), so a
+  // weekend run must not change these tests. Only Date is faked.
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-03-11T16:00:00Z"));
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   beforeEach(() => {
     stopStreaming();
     getQuoteCache().clear();

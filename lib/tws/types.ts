@@ -94,4 +94,10 @@ export interface PositionSyncResult {
   valuationsRecomputed: boolean;
   /** Same-day tws ghost rows removed (positions closed between intraday syncs). */
   staleRowsRemoved: number;
+  /**
+   * "market_closed" when today (Eastern) is a weekend or full NYSE holiday:
+   * security metadata updated, but no holdings, price or account snapshot row
+   * was written (DECISIONS 2026-10-26 item 1). Null on a trading day.
+   */
+  skippedReason: "market_closed" | null;
 }

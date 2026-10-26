@@ -3,6 +3,7 @@ import { MarketDataType, SecType, IBApiTickType } from "@stoqey/ib";
 import type { Subscription } from "rxjs";
 import { getIbApi } from "./client";
 import { todayET } from "@/lib/calendar/date-utils";
+import { isMarketClosed } from "@/lib/calendar/market-holidays";
 import { mapSecurityType } from "./security-type-map";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 import { bumpIfPricesAffectSyntheticCloses } from "@/lib/compute/tax-convention";
@@ -264,12 +265,24 @@ export function stopStreaming(): void {
   }
 }
 
-/** Write current cache to prices table as a snapshot. */
-export function snapshotToDb(db: Database.Database): number {
+/**
+ * Write current cache to prices table as a snapshot. Returns the count of
+ * prices written; 0 on a market-closed day (weekend or full NYSE holiday),
+ * when nothing is written (DECISIONS 2026-10-26 item 1): every reader treats
+ * a `prices` row as that date's close, and a closed-day tick is not a close.
+ */
+export function snapshotToDb(
+  db: Database.Database,
+  options?: { asOfDate?: string },
+): number {
   const state = getState();
   // Eastern market day, the same stamp lib/tws/snapshot.ts uses. A UTC slice
   // dated an evening flush (after 20:00 Eastern) tomorrow.
-  const today = todayET();
+  const today = options?.asOfDate ?? todayET();
+  if (isMarketClosed(today)) {
+    console.log(`[streaming] Market closed on ${today}: no prices written`);
+    return 0;
+  }
   const upsert = db.prepare(`
     INSERT OR REPLACE INTO prices (security_id, date, close_price, source)
     VALUES (?, ?, ?, 'tws')

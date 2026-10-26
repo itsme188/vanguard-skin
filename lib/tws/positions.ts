@@ -5,6 +5,7 @@ import type { Position } from "@stoqey/ib/dist/api-next";
 import type { AccountUpdate } from "@stoqey/ib/dist/api-next/account/account-update";
 import { getIbApi } from "./client";
 import { todayET } from "../calendar/date-utils";
+import { isMarketClosed } from "../calendar/market-holidays";
 import { upsertSecurity } from "../mutations/securities";
 import { removeStaleSameDayTwsHoldings } from "../mutations/same-day-tws-holdings";
 import { countStatementGradeRowsOnDate } from "../mutations/closed-equity";
@@ -202,6 +203,8 @@ export async function syncPortfolio(
     onProgress?: (progress: PositionSyncProgress) => void;
     /** IBKR account code to filter positions. Defaults to personal account. */
     ibkrAccountCode?: string;
+    /** ET market date to stamp + guard on. Defaults to todayET(); injectable for tests. */
+    asOfDate?: string;
   },
 ): Promise<PositionSyncResult> {
   const api = getIbApi();
@@ -222,7 +225,16 @@ export async function syncPortfolio(
   // Eastern market day, the same stamp lib/tws/snapshot.ts uses. A UTC slice
   // dated an evening sync (after 20:00 Eastern) tomorrow: holdings, prices and
   // the account snapshot all landed on a day that had not started.
-  const today = todayET();
+  const today = options?.asOfDate ?? todayET();
+
+  // Closed-market guard (DECISIONS 2026-10-26 item 1), the same rule as the
+  // snapshot-price step (lib/tws/snapshot.ts) and the IBKR Web API quote
+  // path (lib/ibkr/refresh.ts): on a weekend or full-closure holiday no
+  // holdings, price or live-snapshot row is dated today. A closed-day
+  // marketPrice / NetLiquidation is a frozen tick, not a close, and a
+  // closed-day holdings row would become the "latest live snapshot".
+  // Security metadata (upsertSecurity, ib_con_id) still updates.
+  const marketClosed = isMarketClosed(today);
 
   const accountCode = options?.ibkrAccountCode ?? IBKR_PERSONAL_ACCOUNT;
 
@@ -336,6 +348,8 @@ export async function syncPortfolio(
         if (changes.changes > 0) securitiesUpdated++;
       }
 
+      if (marketClosed) continue; // metadata only on a closed day (see above)
+
       // Upsert holding
       const costBasis = pos.avgCost != null ? pos.pos * pos.avgCost : null;
       const sourceKey = `tws-${accountId}-${securityId}-${today}`;
@@ -368,11 +382,15 @@ export async function syncPortfolio(
     }
 
     // Clear ghost rows from earlier syncs today (shrink-guarded inside).
-    const cleanup = removeStaleSameDayTwsHoldings(db, {
-      accountId,
-      asOfDate: today,
-      syncedSecurityIds,
-    });
+    // Skipped on a closed day: this sync wrote no row for today, so an empty
+    // syncedSecurityIds must not be read as "every position closed".
+    const cleanup = marketClosed
+      ? { deleted: 0, skipped: false }
+      : removeStaleSameDayTwsHoldings(db, {
+          accountId,
+          asOfDate: today,
+          syncedSecurityIds,
+        });
     staleRowsRemoved = cleanup.deleted;
     // No bump: the ghost cleanup deletes only live `tws-` rows, which the
     // statement-only synthetic-close anchor never reads (spec 2026-10-02
@@ -414,7 +432,11 @@ export async function syncPortfolio(
   const { netLiquidation, cashBalance } = accountData;
   let snapshotInserted = false;
 
-  if (netLiquidation != null) {
+  if (marketClosed) {
+    console.log(
+      `[syncPortfolio] Market closed on ${today}: security metadata updated; no holdings, price or account snapshot row written`,
+    );
+  } else if (netLiquidation != null) {
     onProgress?.({ phase: "account_summary", message: "Saving account summary..." });
 
     try {
@@ -462,5 +484,6 @@ export async function syncPortfolio(
     snapshotInserted,
     valuationsRecomputed,
     staleRowsRemoved,
+    skippedReason: marketClosed ? "market_closed" : null,
   };
 }
