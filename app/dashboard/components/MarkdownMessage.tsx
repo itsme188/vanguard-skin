@@ -4,6 +4,7 @@ import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { Components } from "react-markdown";
 import { ScrollFade } from "./ScrollFade";
+import { softenTableBreaks } from "@/lib/chat/markdown-table-breaks";
 
 const components: Components = {
   p({ node, ...props }) {
@@ -129,8 +130,11 @@ export function MarkdownMessage({ content }: { content: string }) {
     // singleTilde: false — chat prose writes approximate figures as "~$136";
     // with GFM's default a lone "~" opens strikethrough, so two such figures in
     // one paragraph rendered struck through. Only "~~text~~" strikes now.
+    // softenTableBreaks: raw HTML is escaped on purpose, so a `<br>` the model
+    // writes inside a table cell printed as text; on table rows it becomes a
+    // cell separator instead.
     <Markdown remarkPlugins={[[remarkGfm, { singleTilde: false }]]} components={components}>
-      {content}
+      {softenTableBreaks(content)}
     </Markdown>
   );
 }
