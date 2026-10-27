@@ -58,6 +58,7 @@ import { getSentPhasesForEvents } from "@/lib/queries/earnings-emails";
 import { bogeyHasContentSql } from "@/lib/mutations/earnings-bogeys";
 import { statusChipClass, statusChipLabel } from "./status-chip";
 import { Chip } from "../components/Chip";
+import { aiPrepPauseNotice, getAiPrepPause } from "@/lib/earnings/ai-unavailable";
 import { preReleaseClearsAtMs } from "./pre-release-clear";
 import {
   isPreReleaseActual,
@@ -290,6 +291,11 @@ export function EarningsHub() {
   }
   const days = Array.from(byDay.keys()).sort();
 
+  // Armed prints whose AI prep is waiting on the AI account (out of credit,
+  // key rejected, provider down). The waiting rows decide; read-only.
+  const today = todayET();
+  const aiPause = getAiPrepPause(db, today);
+
   const heldCount = enriched.filter((e) => e.status === "held").length;
   const watchCount = enriched.filter((e) => e.status === "watchlist").length;
 
@@ -332,6 +338,13 @@ export function EarningsHub() {
           </Link>
         </div>
       </div>
+
+      {aiPause && (
+        <div role="status" className="flex items-baseline gap-2 px-5 py-2 border-b border-edge text-[13px] text-ink">
+          <Chip tone="warn" size="xs">AI paused</Chip>
+          <span>{aiPrepPauseNotice(aiPause, today)}</span>
+        </div>
+      )}
 
       <EarningsHubLive
         weekOf={weekOf}

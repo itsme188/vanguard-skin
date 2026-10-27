@@ -10,18 +10,22 @@
  *
  * Outcomes: no article names the company -> `done` with a note (nothing to
  * read is not a failure, and a later preview drifts the fingerprint); a model
- * or parse failure -> `failed` (an attempt; the runner caps at five). A read
+ * or parse failure -> `failed` (an attempt; the runner caps at five), except an
+ * account-level AI failure (out of credit, key rejected, provider down), which
+ * waits as `pending` and costs no attempt (2026-10-27). A read
  * that could not fetch some of its images stores the text reading and is also
  * `failed`, so it is retried within that same cap (2026-10-21).
  */
 import { gatherDeepReadInputs, runDeepRead, DEEP_READ_VERSION } from "@/lib/earnings/deep-read-bogeys";
 import { stableHash, type PrepareStepDefinition } from "../prepare-armed-event";
+import { accountFailureOf, aiUnavailableReason } from "../ai-unavailable";
 
 export function makeNewsletterSynthesisStep(
   deps: { run?: typeof runDeepRead } = {},
 ): PrepareStepDefinition {
   const run = deps.run ?? runDeepRead;
   return {
+    usesAi: true,
     fingerprint(db, eventId) {
       const inputs = gatherDeepReadInputs(db, eventId);
       return stableHash([
@@ -64,6 +68,8 @@ export function makeNewsletterSynthesisStep(
           note: `${out.articlesRead} article(s) read${images}${out.stored ? "" : ", nothing about this print"}`,
         };
       } catch (err) {
+        const accountFailure = accountFailureOf(err);
+        if (accountFailure) return { status: "pending", reason: aiUnavailableReason(accountFailure), accountFailure };
         return { status: "failed", error: (err instanceof Error ? err.message : String(err)).slice(0, 300) };
       }
     },

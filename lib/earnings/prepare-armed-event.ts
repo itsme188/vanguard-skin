@@ -44,11 +44,28 @@ import type Database from "better-sqlite3";
 import { createHash, randomUUID } from "node:crypto";
 import { todayET } from "@/lib/calendar/date-utils";
 import { bootstrapEarningsRegistries, __isBootstrapSuppressedForTests } from "./registry-bootstrap"; // lazy: called, never evaluated-into
+import {
+  accountFailureOf,
+  aiUnavailableReason,
+  clearAiUnavailable,
+  recordAiUnavailable,
+  type AccountFailureKind,
+} from "./ai-unavailable";
 
 export type PrepareStepStatus = "pending" | "claimed" | "done" | "failed";
 export type PrepareStepOutcome =
   | { status: "done"; note?: string }
-  | { status: "pending"; reason: string }
+  | {
+      status: "pending";
+      reason: string;
+      /**
+       * (2026-10-27) Set when the step is waiting on the AI ACCOUNT (out of
+       * credit, key rejected, provider down), not on its own inputs. Costs no
+       * attempt like any pending; the runner also records the outage marker
+       * the Earnings Hub reads (lib/earnings/ai-unavailable.ts).
+       */
+      accountFailure?: AccountFailureKind;
+    }
   | { status: "failed"; error: string };
 export interface PrepareStepContext {
   now: () => number;
@@ -63,6 +80,8 @@ export interface PrepareStepContext {
 export interface PrepareStepDefinition {
   fingerprint: (db: Database.Database, eventId: number) => string;
   run: (db: Database.Database, eventId: number, ctx: PrepareStepContext) => Promise<PrepareStepOutcome>;
+  /** The step calls the AI model: any outcome but an account failure means the account answered. */
+  usesAi?: true;
 }
 export interface PrepareStepRow { event_id: number; step: string; status: PrepareStepStatus; input_fingerprint: string | null; attempts: number; last_error: string | null; updated_at: string; }
 /**
@@ -350,7 +369,14 @@ export async function runPrepareSteps(
         outcome = raced;
       }
     } catch (err) {
-      outcome = { status: "failed", error: errText(err) };
+      // (2026-10-27) A step that THROWS an account-level AI failure waits
+      // instead of spending an attempt. Not when its own deadline fired: the
+      // abort reads as a network error to the classifier, and a timed-out
+      // step must still count.
+      const accountFailure = controller.signal.aborted ? null : accountFailureOf(err);
+      outcome = accountFailure
+        ? { status: "pending", reason: aiUnavailableReason(accountFailure), accountFailure }
+        : { status: "failed", error: errText(err) };
     } finally {
       // Always clear it: an uncleared 4-minute timer per fast step would keep the
       // process (and a short-lived tsx sweep) alive for no reason.
@@ -369,6 +395,15 @@ export async function runPrepareSteps(
     else if (outcome.status === "pending") { landed = finalize("pending", 0, outcome.reason.slice(0, 300), null); report.pending += 1; }
     else { landed = finalize("failed", 1, outcome.error.slice(0, 300), fp); report.failed += 1; }
     if (landed === 0) console.warn(`[prepare] ${r.step} for event ${r.event_id}: finalisation rejected (claim superseded)`);
+    // The outage marker for the hub: set on an account failure (first `since`
+    // kept), cleared once an AI step finishes or fails on its own. A pending
+    // with no account failure (budget, a foreign claim) may have made no model
+    // call, so it says nothing about the account and leaves the marker.
+    if (outcome.status === "pending" && outcome.accountFailure) {
+      recordAiUnavailable(db, outcome.accountFailure, new Date(now()));
+    } else if (def.usesAi && outcome.status !== "pending") {
+      clearAiUnavailable(db);
+    }
   }
   return report;
 }

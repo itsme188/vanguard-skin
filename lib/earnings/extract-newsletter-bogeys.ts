@@ -23,6 +23,7 @@ import { coercePercent, parseLargeUSD } from "@/lib/format";
 import { coveredForEvents } from "@/lib/queries/briefing-symbols";
 import { issuerSiblings } from "@/lib/securities/issuer-family";
 import { todayET, addDays } from "@/lib/calendar/date-utils";
+import { classifyEnrichmentError } from "@/lib/gmail/enrichment-failure";
 import type { ExtraMetricSpec } from "@/lib/print-watch/extra-metrics";
 import {
   WATCH_METRICS_INSTRUCTIONS,
@@ -513,6 +514,8 @@ interface CallAndStoreResult {
   imagesIncomplete: boolean;
   /** Ledger version the article was read at. */
   version: number;
+  /** The caught error when `failed`, kept so a caller can tell an account outage from a bad article. */
+  error?: unknown;
 }
 
 /**
@@ -606,7 +609,11 @@ async function callAndStore(
       // refused on every retry, holding the article unscanned forever (the
       // global scan has no attempt cap). Read the text once instead; the
       // images count as unread, so nothing is banked as a final "no numbers".
-      if (images.length === 0 || !isRequestRejectedAsSent(err)) throw err;
+      // An account-level failure (out of credit arrives as a 400 too) is not
+      // about the pictures: a text-only resend would just fail the same way.
+      if (images.length === 0 || !isRequestRejectedAsSent(err) || classifyEnrichmentError(err).scope === "account") {
+        throw err;
+      }
       console.warn(
         `[earnings/extract-newsletter-bogeys] article ${article.id}: request with ${images.length} image(s) refused; reading text only:`,
         err instanceof Error ? err.message : err,
@@ -619,7 +626,7 @@ async function callAndStore(
       `[earnings/extract-newsletter-bogeys] Claude failed for article ${article.id}:`,
       err instanceof Error ? err.message : err
     );
-    return { ...nothing, called: true, failed: true, imagesIncomplete };
+    return { ...nothing, called: true, failed: true, imagesIncomplete, error: err };
   }
 
   // Mirrors app/api/earnings/bogeys/upload/route.ts:149 — never record
@@ -746,7 +753,9 @@ export async function extractBogeysFromArticle(
  *
  * Throws when the model call fails, so the step's `earnings_bogey_scans`
  * ledger can book `error` + an attempt (and stop after SCAN_MAX_ATTEMPTS)
- * rather than silently recording a clean "no numbers".
+ * rather than silently recording a clean "no numbers". The provider's own
+ * error rides on `cause`, so the step can tell an account outage (no attempt
+ * counted) from a failure of this article.
  */
 export async function extractBogeysFromArticleForEvent(
   db: Database.Database,
@@ -772,7 +781,8 @@ export async function extractBogeysFromArticleForEvent(
   const result = await callAndStore(db, article, [reporter], { bankLedger: false }, deps);
   if (result.failed) {
     throw new Error(
-      `newsletter extraction failed for article ${article.id} / event ${event.event_id}`
+      `newsletter extraction failed for article ${article.id} / event ${event.event_id}`,
+      { cause: result.error },
     );
   }
   return {

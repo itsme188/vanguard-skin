@@ -43,6 +43,7 @@ import {
   NEWSLETTER_IMAGE_EXTRACTOR_VERSION,
 } from "@/lib/earnings/extract-newsletter-bogeys";
 import { stableHash, type PrepareStepDefinition } from "../prepare-armed-event";
+import { accountFailureOf, aiUnavailableReason } from "../ai-unavailable";
 
 /** How far back the rescan reaches. Bogeys age out fast; two weeks covers the
  *  weekly + preview newsletters that carry a name into its print. */
@@ -85,6 +86,7 @@ export function makeNewsletterRescanStep(
 ): PrepareStepDefinition {
   const extract = deps.extract ?? extractBogeysFromArticleForEvent;
   return {
+    usesAi: true,
     fingerprint(db, eventId) {
       const e = db.prepare(`SELECT symbol FROM calendar_events WHERE id = ?`).get(eventId) as
         | { symbol: string | null }
@@ -289,6 +291,18 @@ export function makeNewsletterRescanStep(
             finalize("no_numbers", r.modelId, 1);
           }
         } catch (err) {
+          // (2026-10-27) The ACCOUNT failed (out of credit, key rejected,
+          // provider down): the article is not at fault. Release the claim
+          // without spending an attempt and stop the pass, since every other
+          // article would fail the same way; the step waits as `pending`.
+          const accountFailure = accountFailureOf(err);
+          if (accountFailure) {
+            finalize("error", null, 0);
+            console.warn(
+              `[prepare/newsletter_rescan] event ${e.id} article ${article.id}: AI unavailable (${accountFailure}); stopping the pass, no attempt counted`,
+            );
+            return { status: "pending", reason: aiUnavailableReason(accountFailure), accountFailure };
+          }
           errors += 1;
           modelCalls += 1; // a failed call cost just as much time as a good one
           finalize("error", null, 1);
