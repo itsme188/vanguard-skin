@@ -40,7 +40,7 @@ import { liveOptionExpirationSql } from "@/lib/compute/option-expiry";
 // exactly 0 is unknown.
 import { hasKnownBasis as hasKnownPositionBasis } from "@/lib/compute/known-basis";
 import { computeAggregateGainRatio } from "@/lib/compute/gain-ratio";
-import type { PendingReason } from "@/lib/queries/pending-statement-types";
+import type { PendingFigureKind, PendingReason } from "@/lib/queries/pending-statement-types";
 
 // ─── Result types ──────────────────────────────────────────────
 
@@ -1097,6 +1097,8 @@ export interface UnknownBasisLotNote {
   lotQty: number;
   /** Sum of those lots' cost basis, as the lots table prints it. */
   lotCostBasis: number;
+  /** Short lots carry short-sale proceeds, long lots cost basis, or both. */
+  figureKind: PendingFigureKind | "mixed";
 }
 
 /**
@@ -1129,7 +1131,11 @@ export function computeUnknownBasisLotNotes(
         lot.adjusted_cost_basis != null
     );
     if (lots.length === 0) continue;
+    const shortCount = lots.filter((lot) => !!lot.is_short).length;
+    const figureKind: PendingFigureKind | "mixed" =
+      shortCount === 0 ? "cost_basis" : shortCount === lots.length ? "short_sale_proceeds" : "mixed";
     notes.push({
+      figureKind,
       accountId: position.account_id,
       accountName: position.account_name,
       positionQty: position.quantity,

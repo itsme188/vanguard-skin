@@ -128,7 +128,8 @@ describe("2. nouns beside a masked count do not switch", () => {
   it("security page: open-lot basis note, sign-mismatch line and excluded trips", () => {
     const page = read("app/dashboard/security/[id]/page.tsx");
     const note = sliceBetween(page, "{unknownBasisLotNotes.map((note) => (", "{basisDisagreements.length > 0 && (");
-    expect(note).toContain("Open-lot cost basis below: <Money value={note.lotCostBasis} />");
+    expect(note).toContain("below: <Money value={note.lotCostBasis} />");
+    expect(note).toContain("note.figureKind");
     expect(note).not.toContain("lotCount === 1");
 
     const mismatch = sliceBetween(page, "{lotSignMismatches.map((m) => (", "{expiredOptionLotsAwaitingClose.length > 0 && (");

@@ -102,6 +102,17 @@ export function pendingFigureWords(kind: PendingFigureKind): string {
   return kind === "short_sale_proceeds" ? "short-sale proceeds on short lots" : "cost basis on long lots";
 }
 
+// Owner ruling 2026-10-26 (pending lots): a short side's figure is short-sale
+// proceeds (money received), never called cost basis.
+export function lotFigureHeader(hasShortLots: boolean): string {
+  return hasShortLots ? "Cost Basis / Proceeds" : "Cost Basis";
+}
+
+/** Per-row label under a short lot's figure. */
+export function shortLotFigureNote(): string {
+  return "short-sale proceeds";
+}
+
 /** The security page note when the broker shows no current position. */
 export function lotsWithoutPositionNote(reason: PendingReason | "mixed"): string {
   switch (reason) {

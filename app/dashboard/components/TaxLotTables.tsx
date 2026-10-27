@@ -6,7 +6,7 @@ import { SymbolLink } from "@/app/dashboard/components/SymbolLink";
 import { Count, Money, PrivateText, Shares } from "@/lib/privacy/components";
 import { Chip, CHIP_TONE_CLASSES } from "./Chip";
 import { EmptySection } from "./EmptySection";
-import { pendingChipLabel, pendingChipTitle } from "./pending-statement-copy";
+import { lotFigureHeader, pendingChipLabel, pendingChipTitle, shortLotFigureNote } from "./pending-statement-copy";
 import { HoldingPeriodBadge } from "./HoldingPeriodBadge";
 import { ScrollFade } from "./ScrollFade";
 import { SortableHeader } from "./SortableHeader";
@@ -179,7 +179,7 @@ export function OpenLotsTable({
                   Cost/Share
                 </SortableHeader>
                 <SortableHeader field="adjusted_cost_basis" sort={sort} onSort={setSort} align="right">
-                  Cost Basis
+                  {lotFigureHeader(lots.some((l) => l.is_short === 1))}
                 </SortableHeader>
                 <SortableHeader
                   field="current_value"
@@ -237,6 +237,11 @@ export function OpenLotsTable({
                     </td>
                     <td className="px-4 py-3 text-right font-mono tabular-nums text-ink-dim">
                       <Money value={lot.adjusted_cost_basis} precise />
+                      {lot.is_short === 1 && (
+                        <span className="block font-sans text-[11px] text-ink-faint whitespace-nowrap">
+                          {shortLotFigureNote()}
+                        </span>
+                      )}
                       {/* Phone only: the Cost/Share column is hidden below
                           md:, so an option's or a bond's per-unit cost and its
                           unit ride under the basis they explain. */}

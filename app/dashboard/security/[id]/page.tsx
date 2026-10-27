@@ -21,7 +21,7 @@ import { Section } from "../../components/Section";
 import { SecurityEarningsEmails } from "../../components/SecurityEarningsEmails";
 import { getSentEarningsEmails } from "@/lib/queries/earnings-emails";
 import { Chip, type ChipTone } from "../../components/Chip";
-import { lotsWithoutPositionNote, pendingChipLabel, pendingChipTitle } from "../../components/pending-statement-copy";
+import { lotFigureHeader, lotsWithoutPositionNote, pendingChipLabel, pendingChipTitle, shortLotFigureNote } from "../../components/pending-statement-copy";
 import { HoldingPeriodBadge } from "../../components/HoldingPeriodBadge";
 import { TranscriptsRefreshButton } from "./TranscriptsRefreshButton";
 import { FactorProfileSection } from "./FactorProfileSection";
@@ -597,7 +597,13 @@ export default async function SecurityDetailPage(props: {
               {unknownBasisLotNotes.map((note) => (
                 <p key={note.accountId} className="text-xs text-ink-faint">
                   <span className="text-ink-dim">{note.accountName}</span>: cost basis and gain are unknown
-                  here because the holdings row carries no cost basis. Open-lot cost basis below: <Money value={note.lotCostBasis} /> for{" "}
+                  here because the holdings row carries no cost basis. Open-lot{" "}
+                  {note.figureKind === "short_sale_proceeds"
+                    ? "short-sale proceeds"
+                    : note.figureKind === "mixed"
+                      ? "cost basis (long lots) and short-sale proceeds (short lots)"
+                      : "cost basis"}{" "}
+                  below: <Money value={note.lotCostBasis} /> for{" "}
                   <Shares value={note.lotQty} />{" "}
                   <QuantityUnit securityType={security.security_type} quantity={note.lotQty} />; this row
                   does not use that figure.
@@ -723,7 +729,7 @@ export default async function SecurityDetailPage(props: {
                   <th className={TH_CLASS}>Acquired</th>
                   <th className={TH_CLASS}>Account</th>
                   <th className={TH_RIGHT}>Qty</th>
-                  <th className={TH_RIGHT}>Cost Basis</th>
+                  <th className={TH_RIGHT}>{lotFigureHeader(openTaxLots.some((l) => l.is_short === 1))}</th>
                   <th className={TH_RIGHT}>Unrealized</th>
                   <th className={TH_CENTER}>Term</th>
                 </tr>
@@ -752,6 +758,11 @@ export default async function SecurityDetailPage(props: {
                       </td>
                       <td className={`${TD_MONO} text-right text-ink-dim`}>
                         <Money value={lot.adjusted_cost_basis} />
+                        {lot.is_short === 1 && (
+                          <span className="block font-sans text-[11px] text-ink-faint whitespace-nowrap">
+                            {shortLotFigureNote()}
+                          </span>
+                        )}
                       </td>
                       <td className={`${TD_MONO} text-right ${gainClass(lot.unrealized_gain)}`}>
                         {/* Pending (awaiting a statement, closing entry

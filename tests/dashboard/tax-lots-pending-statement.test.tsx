@@ -203,7 +203,7 @@ describe("Open Lots table chip (source pin — client component)", () => {
   });
 
   it("imports the copy from the shared module (no inline duplicate)", () => {
-    expect(src).toMatch(/import \{ pendingChipLabel, pendingChipTitle \} from "\.\/pending-statement-copy";/);
+    expect(src).toMatch(/import \{ lotFigureHeader, pendingChipLabel, pendingChipTitle, shortLotFigureNote \} from "\.\/pending-statement-copy";/);
     expect(src).not.toMatch(/>\s*pending statement\s*</);
     expect(src).not.toMatch(/>\s*closing entry missing\s*</);
     expect(src).not.toContain("PENDING_STATEMENT_TITLE");

@@ -43,6 +43,7 @@ describe("computeUnknownBasisLotNotes", () => {
         lotCount: 2,
         lotQty: 100,
         lotCostBasis: 2000,
+        figureKind: "cost_basis",
       },
     ]);
   });
@@ -63,7 +64,7 @@ describe("computeUnknownBasisLotNotes", () => {
       { account_id: TAXABLE, quantity_remaining: 20, is_short: 0, adjusted_cost_basis: 300 },
     ];
     expect(computeUnknownBasisLotNotes(shortPos, lots)).toEqual([
-      { accountId: TAXABLE, accountName: "Taxable", positionQty: -50, lotCount: 1, lotQty: 50, lotCostBasis: -900 },
+      { accountId: TAXABLE, accountName: "Taxable", positionQty: -50, lotCount: 1, lotQty: 50, lotCostBasis: -900, figureKind: "short_sale_proceeds" },
     ]);
   });
 
