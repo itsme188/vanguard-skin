@@ -2,7 +2,7 @@
 
 import { CHIP_TONE_CLASSES } from "@/app/dashboard/components/Chip";
 import { networkFailureMessage } from "@/lib/ui/mutation-result";
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { createPortal } from "react-dom";
 import { useElectron } from "@/lib/hooks/useElectron";
 import { AiModelsSection } from "./AiModelsSection";
@@ -11,6 +11,7 @@ import { EmailRecipientsSection } from "./EmailRecipientsSection";
 import { PlaidSection } from "./PlaidSection";
 import { SecuritySection } from "./SecuritySection";
 import apiFetch from "@/lib/http/apiFetch";
+import { useModalFocus } from "./useModalFocus";
 
 /**
  * Settings source abstraction — either Electron IPC (packaged app) or the
@@ -171,6 +172,12 @@ export function SettingsModal() {
     return () => window.removeEventListener("open-settings", handleOpenEvent);
   }, []);
 
+  // Focus moves into the modal on open, Tab stays inside it, and focus goes
+  // back to the gear (or whatever opened it) on close. Before this, Tab kept
+  // walking the page behind the backdrop (deep-QA finding 2026-10-25).
+  const panelRef = useRef<HTMLDivElement>(null);
+  useModalFocus(open, panelRef);
+
   // Escape closes, matching every other modal in the app (deep-QA finding).
   useEffect(() => {
     if (!open) return;
@@ -275,10 +282,17 @@ export function SettingsModal() {
           {/* Modal — outer container scrolls the viewport; no internal height
               cap so content is never clipped. Sticky header keeps the close
               button pinned while scrolling. */}
-          <div className="relative w-full max-w-lg mx-auto my-12 electron:mt-16 rounded-xl border border-edge bg-panel shadow-2xl">
+          <div
+            ref={panelRef}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="settings-modal-title"
+            tabIndex={-1}
+            className="relative w-full max-w-lg mx-auto my-12 electron:mt-16 rounded-xl border border-edge bg-panel shadow-2xl outline-none"
+          >
             {/* Header — sticky relative to outer scroll container */}
             <div className="sticky top-0 z-10 flex items-center justify-between px-5 py-3.5 border-b border-edge bg-panel/95 backdrop-blur-sm rounded-t-xl">
-              <h2 className="text-sm font-medium text-ink">Settings</h2>
+              <h2 id="settings-modal-title" className="text-sm font-medium text-ink">Settings</h2>
               <button
                 onClick={() => setOpen(false)}
                 className="text-ink-faint hover:text-ink text-lg leading-none w-6 h-6 flex items-center justify-center rounded hover:bg-raised"
