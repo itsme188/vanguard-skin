@@ -6,7 +6,7 @@ import { SymbolLink } from "@/app/dashboard/components/SymbolLink";
 import { Count, Money, PrivateText, Shares } from "@/lib/privacy/components";
 import { Chip, CHIP_TONE_CLASSES } from "./Chip";
 import { EmptySection } from "./EmptySection";
-import { PENDING_STATEMENT_CHIP_LABEL, PENDING_STATEMENT_TITLE } from "./pending-statement-copy";
+import { pendingChipLabel, pendingChipTitle } from "./pending-statement-copy";
 import { HoldingPeriodBadge } from "./HoldingPeriodBadge";
 import { ScrollFade } from "./ScrollFade";
 import { SortableHeader } from "./SortableHeader";
@@ -140,7 +140,9 @@ export function OpenLotsTable({
   return (
     <div>
       <h4 className="text-xs font-medium text-ink-faint mb-2">
-        Open Lots{pendingOnly ? ` \u2014 ${PENDING_STATEMENT_CHIP_LABEL} only` : ""}
+        {/* Every pending reason, not only "awaiting statement": the filter
+            covers all of them, so the heading names none in particular. */}
+        Open Lots{pendingOnly ? " \u2014 pending only" : ""}
         <span className="ml-1.5 text-ink-faint">(<Count value={lots.length} />)</span>
       </h4>
       <div className="rounded-xl border border-edge overflow-hidden">
@@ -208,11 +210,15 @@ export function OpenLotsTable({
                     <td className="px-4 py-3 font-mono font-medium text-ink">
                       <SymbolLink securityId={lot.security_id} symbol={lot.symbol} />
                       {lot.is_short === 1 && <> <Chip tone="gold" size="xs">Short sale</Chip></>}
-                      {lot.pending_statement && (
+                      {/* The chip names the lot's own reason (the read model's
+                          per-side answer). An expired option is never pending
+                          (it waits for its closing entry under its own line),
+                          so it never carries this chip. */}
+                      {lot.pending_statement && !lot.expired_option && lot.pending_statement_reason && (
                         <>
                           {" "}
-                          <Chip tone="neutral" size="xs" title={PENDING_STATEMENT_TITLE}>
-                            {PENDING_STATEMENT_CHIP_LABEL}
+                          <Chip tone="neutral" size="xs" wrap title={pendingChipTitle(lot.pending_statement_reason)}>
+                            {pendingChipLabel(lot.pending_statement_reason)}
                           </Chip>
                         </>
                       )}

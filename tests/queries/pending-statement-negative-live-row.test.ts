@@ -22,7 +22,7 @@ describe("getPendingStatementPairs with a negative newest row", () => {
     const pairs = getPendingStatementPairs(db);
     expect(pairs).toHaveLength(1);
     expect(pairs[0].open_quantity).toBe(30);
-    expect(pairs[0].live_flat_date).toBe("2026-06-10");
+    expect(pairs[0].flat_date).toBe("2026-06-10");
   });
 
   it("does not flag a pair whose ledger holds only short lots", () => {

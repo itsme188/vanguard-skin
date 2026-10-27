@@ -64,3 +64,30 @@ describe("statement-lag integrity hits", () => {
     expect(conf.capReason).toBeNull();
   });
 });
+
+describe("statement-lag under the side-aware pending model (2026-10-26, Task 8)", () => {
+  it("an awaiting-statement pair is ONE warning and carries no pendingReasons (today's shape)", () => {
+    const { warnings } = runIntegrityChecks(db);
+    const forPair = warnings.filter((w) => w.key.startsWith(`lot-drift:3:${pend}`));
+    expect(forPair).toHaveLength(1);
+    expect(Object.prototype.hasOwnProperty.call(forPair[0], "pendingReasons")).toBe(false);
+  });
+
+  it("a long lot under a live SHORT row (PR #123) is one statement-lag warning, never critical", () => {
+    const flip = seedSec(db, "FLPX");
+    seedFill(db, 3, flip, "2026-06-01", "BUY", 10, 100);
+    seedHold(db, 3, flip, "2026-06-30", "stmt", 10);
+    seedHold(db, 3, flip, "2026-07-10", "tws", -5);
+    computeTaxLots(db);
+    const { warnings, critical } = runIntegrityChecks(db);
+    expect(critical.filter((h) => h.key.startsWith(`lot-drift:3:${flip}`))).toEqual([]);
+    expect(warnings.filter((w) => w.key.startsWith(`lot-drift:3:${flip}`))).toEqual([
+      {
+        key: `lot-drift:3:${flip}`,
+        severity: "warning",
+        kind: "statement-lag",
+        reason: "FLPX (IBKR): closed per live data — awaiting statement",
+      } satisfies IntegrityHit,
+    ]);
+  });
+});

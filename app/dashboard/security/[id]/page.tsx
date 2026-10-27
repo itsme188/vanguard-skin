@@ -21,7 +21,7 @@ import { Section } from "../../components/Section";
 import { SecurityEarningsEmails } from "../../components/SecurityEarningsEmails";
 import { getSentEarningsEmails } from "@/lib/queries/earnings-emails";
 import { Chip, type ChipTone } from "../../components/Chip";
-import { PENDING_STATEMENT_CHIP_LABEL, PENDING_STATEMENT_TITLE } from "../../components/pending-statement-copy";
+import { lotsWithoutPositionNote, pendingChipLabel, pendingChipTitle } from "../../components/pending-statement-copy";
 import { HoldingPeriodBadge } from "../../components/HoldingPeriodBadge";
 import { TranscriptsRefreshButton } from "./TranscriptsRefreshButton";
 import { FactorProfileSection } from "./FactorProfileSection";
@@ -629,7 +629,7 @@ export default async function SecurityDetailPage(props: {
                   <Count value={orphan.lotCount} /> (<Shares value={orphan.quantity} />{" "}
                   <QuantityUnit securityType={security.security_type} quantity={orphan.quantity} />).{" "}
                   {orphan.allPendingStatement
-                    ? "The broker's live data shows the position closed; the lots stay open until the statement with the closing trade is imported."
+                    ? lotsWithoutPositionNote(orphan.pendingReason ?? "awaiting_statement")
                     : "Either the closing trade is missing from the ledger, or Recompute (Tax Lots page) has not run since it was imported."}
                 </p>
               ))}
@@ -740,8 +740,8 @@ export default async function SecurityDetailPage(props: {
                             width, so the first column repeats it there. */}
                         {lot.pending_statement && (
                           <span className="block md:hidden mt-1 font-sans">
-                            <Chip tone="neutral" size="xs" title={PENDING_STATEMENT_TITLE}>
-                              {PENDING_STATEMENT_CHIP_LABEL}
+                            <Chip tone="neutral" size="xs" wrap title={pendingChipTitle(lot.pending_statement_reason ?? "awaiting_statement")}>
+                              {pendingChipLabel(lot.pending_statement_reason ?? "awaiting_statement")}
                             </Chip>
                           </span>
                         )}
@@ -754,13 +754,14 @@ export default async function SecurityDetailPage(props: {
                         <Money value={lot.adjusted_cost_basis} />
                       </td>
                       <td className={`${TD_MONO} text-right ${gainClass(lot.unrealized_gain)}`}>
-                        {/* Pending statement: closed per live data, the
-                            closing trade not imported yet. The shared read
-                            model nulls its unrealized (not held), so the chip
-                            stands in for the figure rather than a bare dash. */}
+                        {/* Pending (awaiting a statement, closing entry
+                            missing, or re-symbol repair pending): the shared
+                            read model nulls its unrealized, so the chip for
+                            its reason stands in for the figure rather than a
+                            bare dash. */}
                         {lot.pending_statement ? (
-                          <Chip tone="neutral" size="xs" title={PENDING_STATEMENT_TITLE}>
-                            {PENDING_STATEMENT_CHIP_LABEL}
+                          <Chip tone="neutral" size="xs" title={pendingChipTitle(lot.pending_statement_reason ?? "awaiting_statement")}>
+                            {pendingChipLabel(lot.pending_statement_reason ?? "awaiting_statement")}
                           </Chip>
                         ) : (
                           <Money value={lot.unrealized_gain} fallback="–" />

@@ -1,11 +1,16 @@
 import type Database from "better-sqlite3";
 import { adjustedMarketValueSQL } from "@/lib/valuation";
 import { liveOptionExpirationSql } from "@/lib/compute/option-expiry";
+import { getPendingStatementIndex } from "@/lib/queries/pending-statement";
 import {
-  isPendingStatementLot,
-  pendingStatementKey,
-  pendingStatementKeySet,
-} from "@/lib/queries/pending-statement";
+  figureKindForSide,
+  reducePendingDisclosure,
+  sideOf,
+  type PendingDisclosureInput,
+  type PendingDisclosureRow,
+  type PendingFigureKind,
+  type PendingReason,
+} from "@/lib/queries/pending-statement-types";
 
 export interface TaxLotWithSecurity {
   is_short: number;
@@ -34,13 +39,22 @@ export interface TaxLotWithSecurity {
   unrealized_gain: number | null;
   is_from_opening_snapshot: number;
   /**
-   * The lot belongs to a position closed per LIVE data whose broker
-   * statement has not arrived (lib/queries/pending-statement.ts). The
-   * position is no longer held, so `current_value` / `unrealized_gain` are
-   * null and every unrealized total excludes the lot; it stays listed (with
-   * a "pending statement" chip) because it is still open in the ledger.
+   * The lot's (account, security, side) is pending in the shared read model
+   * (lib/queries/pending-statement.ts): the holdings evidence shows the
+   * position flat while the ledger still carries the lot. The position is
+   * not held as recorded, so `current_value` / `unrealized_gain` are null and
+   * every unrealized total excludes the lot; it stays listed (with a chip
+   * naming the reason) because it is still open in the ledger.
    */
   pending_statement: boolean;
+  /** Why the lot is pending; null unless `pending_statement`. */
+  pending_statement_reason: PendingReason | null;
+  /**
+   * What the lot's remaining figure (`adjusted_cost_basis`) means while it is
+   * pending: a long lot's cost basis, or a short lot's short-sale proceeds.
+   * Null unless `pending_statement`.
+   */
+  pending_figure_kind: PendingFigureKind | null;
   currency_conversion: boolean;
   expired_option: boolean;
 }
@@ -118,17 +132,14 @@ export interface EngineEstimatedDisclosure {
 }
 
 /**
- * Positions closed per live data, awaiting the broker statement
- * (lib/queries/pending-statement.ts). Their lots are excluded from
- * `totalUnrealizedGain` and disclosed separately with these figures.
+ * Pending sides (lib/queries/pending-statement.ts). Their lots are excluded
+ * from `totalUnrealizedGain` and disclosed separately: one row per
+ * (reason, side) present, shaped by the one reducer
+ * (`reducePendingDisclosure`), so a long cost basis is never summed with a
+ * short's proceeds. Each row's lots are counted in `totalOpenLots` too.
  */
 export interface PendingStatementDisclosure {
-  /** Distinct (account, security) pairs pending a statement. */
-  pendingStatementPositions: number;
-  /** Open lots belonging to those pairs (counted in totalOpenLots too). */
-  pendingStatementLots: number;
-  /** Still-open USD basis of those lots. */
-  pendingStatementBasis: number;
+  pendingStatement: PendingDisclosureRow[];
 }
 
 export interface TaxLotSummary extends EngineEstimatedDisclosure, PendingStatementDisclosure {
@@ -224,12 +235,20 @@ export interface TaxLotReadOptions {
   today?: string;
 }
 
+type DecoratedField =
+  | "pending_statement"
+  | "pending_statement_reason"
+  | "pending_figure_kind"
+  | "currency_conversion"
+  | "expired_option";
+type RawOpenLotRow = Omit<TaxLotWithSecurity, DecoratedField>;
+
 function openLotRows(
   db: Database.Database,
   securityId: number | undefined,
   opts: TaxLotReadOptions | undefined,
   extraWhere: string
-): Omit<TaxLotWithSecurity, "pending_statement" | "currency_conversion" | "expired_option">[] {
+): RawOpenLotRow[] {
   const rows = db
     .prepare(
       `SELECT
@@ -258,36 +277,63 @@ function openLotRows(
         ${extraWhere}
       ORDER BY a.name, s.symbol, tl.acquisition_date`
     )
-    .all(securityId ?? null, securityId ?? null) as Omit<
-    TaxLotWithSecurity,
-    "pending_statement" | "currency_conversion" | "expired_option"
-  >[];
+    .all(securityId ?? null, securityId ?? null) as RawOpenLotRow[];
   return rows;
 }
 
+/**
+ * Ruling R1 (plan 2026-10-26): a lot that is not ordinary-open carries no
+ * value IN THE READ MODEL, not merely on screen. Two kinds:
+ *  - an expired option awaiting its closing entry (`expiredOption`): never
+ *    pending (expired beats pending; the read model already drops expired
+ *    options, and this reader does not even consult it: a second lock), and
+ *    unvalued, because a contract past its expiration has no market value
+ *    to hold against its basis until the closing row is imported;
+ *  - a pending lot (any reason): its side's position is flat per the
+ *    holdings evidence, so it is unvalued and carries its reason and the
+ *    meaning of its figure (cost basis, or short-sale proceeds).
+ */
 function decorateOpenLots(
   db: Database.Database,
-  rows: Omit<TaxLotWithSecurity, "pending_statement" | "currency_conversion" | "expired_option">[],
-  expiredOption: boolean
+  rows: RawOpenLotRow[],
+  expiredOption: boolean,
+  opts: TaxLotReadOptions | undefined
 ): TaxLotWithSecurity[] {
-  const pendingKeys = pendingStatementKeySet(db);
-  return rows.map((lot) =>
-    isPendingStatementLot(pendingKeys, lot)
+  if (expiredOption) {
+    return rows.map((lot) => ({
+      ...lot,
+      current_value: null,
+      unrealized_gain: null,
+      pending_statement: false,
+      pending_statement_reason: null,
+      pending_figure_kind: null,
+      currency_conversion: isCurrencyConversionSecurityType(lot.security_type),
+      expired_option: true,
+    }));
+  }
+  const index = getPendingStatementIndex(db, undefined, { today: opts?.today });
+  return rows.map((lot) => {
+    const reason = index.reasonFor(lot);
+    return reason != null
       ? {
           ...lot,
           current_value: null,
           unrealized_gain: null,
           pending_statement: true,
+          pending_statement_reason: reason,
+          pending_figure_kind: figureKindForSide(sideOf(lot.is_short)),
           currency_conversion: isCurrencyConversionSecurityType(lot.security_type),
-          expired_option: expiredOption,
+          expired_option: false,
         }
       : {
           ...lot,
           pending_statement: false,
+          pending_statement_reason: null,
+          pending_figure_kind: null,
           currency_conversion: isCurrencyConversionSecurityType(lot.security_type),
-          expired_option: expiredOption,
-        }
-  );
+          expired_option: false,
+        };
+  });
 }
 
 export function getOpenTaxLots(
@@ -301,7 +347,7 @@ export function getOpenTaxLots(
     opts,
     `AND ${liveOptionExpirationSql("s", opts?.today)}`
   );
-  return decorateOpenLots(db, rows, false);
+  return decorateOpenLots(db, rows, false, opts);
 }
 
 export function getExpiredOptionLotsAwaitingClose(
@@ -314,7 +360,7 @@ export function getExpiredOptionLotsAwaitingClose(
     opts,
     `AND NOT (${liveOptionExpirationSql("s", opts?.today)})`
   );
-  return decorateOpenLots(db, rows, true);
+  return decorateOpenLots(db, rows, true, opts);
 }
 
 export function getClosedTaxLotSales(
@@ -389,9 +435,10 @@ export function getTaxLotSummary(
   year?: number,
   opts?: TaxLotReadOptions
 ): TaxLotSummary {
-  // Per (account, security, side) so pending-statement pairs can be split
-  // out of the unrealized total by the shared read model — never re-derived
-  // here. Short lots are their own row: a pending pair is long-only.
+  // Per (account, security, side) so pending sides can be split out of the
+  // unrealized total by the shared read model — never re-derived here. A
+  // short side is its own group: it is pending (or not) on its own, and its
+  // figure is short-sale proceeds, never added to a long cost basis.
   const openGroups = db
     .prepare(
       `SELECT
@@ -422,26 +469,25 @@ export function getTaxLotSummary(
     basis: number;
     unrealized: number;
   }>;
-  const pendingKeys = pendingStatementKeySet(db);
-  const openLots = {
-    totalOpenLots: 0,
-    totalUnrealizedGain: 0,
-    pendingStatementPositions: 0,
-    pendingStatementLots: 0,
-    pendingStatementBasis: 0,
-  };
-  const pendingPairs = new Set<string>();
+  const index = getPendingStatementIndex(db, undefined, { today: opts?.today });
+  const openLots = { totalOpenLots: 0, totalUnrealizedGain: 0 };
+  const pendingInputs: PendingDisclosureInput[] = [];
   for (const g of openGroups) {
     openLots.totalOpenLots += g.lots;
-    if (isPendingStatementLot(pendingKeys, g)) {
-      pendingPairs.add(pendingStatementKey(g));
-      openLots.pendingStatementLots += g.lots;
-      openLots.pendingStatementBasis += g.basis;
+    const reason = index.reasonFor(g);
+    if (reason != null) {
+      pendingInputs.push({
+        account_id: g.account_id,
+        security_id: g.security_id,
+        is_short: g.is_short,
+        reason,
+        lotCount: g.lots,
+        figure: g.basis,
+      });
     } else {
       openLots.totalUnrealizedGain += g.unrealized;
     }
   }
-  openLots.pendingStatementPositions = pendingPairs.size;
 
   const currencyConversionOpenLots = (
     db.prepare(
@@ -491,9 +537,7 @@ export function getTaxLotSummary(
     totalOpenLots: openLots.totalOpenLots,
     totalClosedSales: closedSales.totalClosedSales,
     totalUnrealizedGain: openLots.totalUnrealizedGain,
-    pendingStatementPositions: openLots.pendingStatementPositions,
-    pendingStatementLots: openLots.pendingStatementLots,
-    pendingStatementBasis: openLots.pendingStatementBasis,
+    pendingStatement: reducePendingDisclosure(pendingInputs),
     totalRealizedGain: closedSales.totalRealizedGain,
     longTermGain: closedSales.longTermGain,
     shortTermGain: closedSales.shortTermGain,

@@ -1286,7 +1286,9 @@ export function getDataConfidence(db: Database.Database, now: Date = new Date())
   // Monotonic only: the cap can lower overallLevel but never promote it, so
   // a "stale" result (already below the cap) stays "stale", not bumped up
   // to "low". Warnings never cap — informational only.
-  const integrity = runIntegrityChecks(db);
+  // The Eastern day of `now`, so the pending read model's option-expiry
+  // precedence agrees with every other dimension of this read.
+  const integrity = runIntegrityChecks(db, { today: todayET(now) });
   let capReason: string | null = null;
   if (integrity.critical.length > 0) {
     capReason = integrity.critical[0].reason;

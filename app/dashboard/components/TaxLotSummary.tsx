@@ -2,11 +2,17 @@ import type { ReactNode } from "react";
 import Link from "next/link";
 import type { TaxLotSummary, AccountTaxSummary } from "@/lib/queries/tax-lots";
 import type { TaxLotStalenessMarker } from "@/lib/compute/tax-convention";
+import {
+  PENDING_REASON_ORDER,
+  type PendingDisclosureRow,
+} from "@/lib/queries/pending-statement-types";
 import { Count, Money } from "@/lib/privacy/components";
 import {
-  PENDING_STATEMENT_EXPLANATION,
   PENDING_STATEMENT_FILTER_OFF_LABEL,
   PENDING_STATEMENT_FILTER_ON_LABEL,
+  pendingFigureWords,
+  pendingLineAction,
+  pendingLineLead,
 } from "./pending-statement-copy";
 
 /**
@@ -158,15 +164,24 @@ function GainCard({
 }
 
 /**
- * "N positions closed per live data — awaiting statement" (spec 2026-10-02
- * statement-only synthetic closes §2.2). Those positions are no longer held,
- * so their paper gain is not unrealized; their realized figure is unknown
- * until the statement. The Unrealized tile above excludes them, and this line
- * says so. Renders nothing when no position is pending.
+ * The pending disclosure under the tiles (plan 2026-10-26 Task 9; spec
+ * 2026-10-08 live-closed options and shorts). Pending lots are not held as
+ * recorded, so their paper gain is not unrealized and their realized figure
+ * is unknown until the missing entry arrives. The Unrealized tile excludes
+ * them, and these lines say so.
+ *
+ * One paragraph per REASON present (awaiting statement, closing entry
+ * missing, re-symbol repair pending), in the shared reason order. Inside a
+ * paragraph, one figure per SIDE present, each named by what it is: a long
+ * side's cost basis, a short side's short-sale proceeds. The two are never
+ * added together (money paid and money received are not one number). The
+ * rows come from `reducePendingDisclosure`, the one reducer every surface
+ * shares. Renders nothing when no position is pending.
  *
  * The explanation is visible text, never a `title` (hover does not exist on a
- * phone). `filter` adds the "show pending only" link that narrows the Open
- * Lots table to these lots; the page owns the URL (`?pending=1`).
+ * phone). `filter` adds the one "show pending only" link that narrows the
+ * Open Lots table to every pending lot, whatever its reason; the page owns
+ * the URL (`?pending=1`).
  */
 export interface PendingStatementFilter {
   /** Where the link goes: the same page with the filter flipped. */
@@ -175,23 +190,38 @@ export interface PendingStatementFilter {
   active: boolean;
 }
 
-export function PendingStatementLine({
-  positions,
-  basis,
+export function PendingStatementLines({
+  rows,
   filter,
 }: {
-  positions: number;
-  basis: number;
+  rows: readonly PendingDisclosureRow[];
   filter?: PendingStatementFilter;
 }) {
-  if (!positions || positions <= 0) return null;
+  const present = rows.filter((r) => r.positions > 0);
+  if (present.length === 0) return null;
   return (
-    <div className="text-xs text-ink-faint mt-2">
-      <p>
-        Positions closed per live data: <Count value={positions} /> —
-        awaiting statement (<Money value={basis} /> cost basis, excluded from Unrealized).{" "}
-        {PENDING_STATEMENT_EXPLANATION}
-      </p>
+    <div className="text-xs text-ink-faint mt-2 space-y-1">
+      {PENDING_REASON_ORDER.map((reason) => {
+        const sides = present.filter((r) => r.reason === reason);
+        if (sides.length === 0) return null;
+        // Distinct positions: the reducer keys a position by account,
+        // security AND side, so its per-side counts never overlap and add up.
+        const positions = sides.reduce((n, r) => n + r.positions, 0);
+        return (
+          <p key={reason} data-pending-reason={reason}>
+            {/* Noun first and always plural: under Hide amounts a noun that
+                switched with the count would say whether it is one. */}
+            {pendingLineLead(reason)}: <Count value={positions} /> (
+            {sides.map((r, i) => (
+              <span key={r.side}>
+                {i > 0 ? "; " : ""}
+                <Money value={r.figure} /> {pendingFigureWords(r.figureKind)}
+              </span>
+            ))}
+            , excluded from Unrealized). {pendingLineAction(reason)}
+          </p>
+        );
+      })}
       {filter && (
         <Link
           href={filter.href}
@@ -256,11 +286,7 @@ export function TaxLotSummaryCards({
           engineEstimatedGain={summary.engineEstimatedShortTermGain}
         />
       </div>
-      <PendingStatementLine
-        positions={summary.pendingStatementPositions}
-        basis={summary.pendingStatementBasis}
-        filter={pendingFilter}
-      />
+      <PendingStatementLines rows={summary.pendingStatement} filter={pendingFilter} />
       {summary.excludedNonUsdSales > 0 && (
         <p className="text-xs text-ink-faint mt-2">
           USD totals exclude non-USD sales: <Count value={summary.excludedNonUsdSales} />{" "}

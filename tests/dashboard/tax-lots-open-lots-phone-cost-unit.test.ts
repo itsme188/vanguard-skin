@@ -35,7 +35,7 @@ describe("Open Lots table at phone width", () => {
   });
 
   it("the pending-statement chip stays in the Symbol cell, which a phone shows", () => {
-    const chip = anchorIndex(table, '<Chip tone="neutral" size="xs" title={PENDING_STATEMENT_TITLE}>');
+    const chip = anchorIndex(table, '<Chip tone="neutral" size="xs" wrap title={pendingChipTitle(lot.pending_statement_reason)}>');
     const opening = table.slice(table.lastIndexOf("<td", chip), chip);
     expect(opening).toContain("<SymbolLink");
     expect(opening.slice(0, opening.indexOf(">"))).not.toContain("hidden");

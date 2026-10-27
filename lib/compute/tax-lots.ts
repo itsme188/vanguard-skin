@@ -1171,7 +1171,7 @@ export function computeTaxLots(db: Database.Database): TaxLotComputeResult {
  * - Short call assigned → stock sale proceeds += option premium
  * - Short put assigned → stock cost basis -= option premium
  */
-function computeExerciseLinks(db: Database.Database): {
+export function computeExerciseLinks(db: Database.Database): {
   links: Map<number, ExerciseLink>;
   targetSecuritiesByDate: Map<string, Set<number>>;
 } {

@@ -15,6 +15,7 @@ import { ScrollFade } from "../components/ScrollFade";
 import { SymbolLink } from "../components/SymbolLink";
 import { Count, PrivateText } from "@/lib/privacy/components";
 import { getDataConfidence, type DataConfidence } from "@/lib/queries/data-confidence";
+import { PENDING_INTEGRITY_SUFFIX, type PendingIntegrityKind } from "../components/pending-statement-copy";
 import { groupIntegrityHits, type IntegrityHit } from "@/lib/queries/integrity-checks";
 
 /** One check's hits under the check's plain name. */
@@ -34,6 +35,9 @@ function IntegrityGroups({ hits }: { hits: IntegrityHit[] }) {
                 <PrivateText>{hit.reason}</PrivateText>
                 {hit.kind === "statement-lag" && (
                   <span className="ml-2 text-ink-dim">(expected — clears with the next statement)</span>
+                )}
+                {hit.kind !== undefined && hit.kind !== "statement-lag" && hit.kind in PENDING_INTEGRITY_SUFFIX && (
+                  <span className="ml-2 text-ink-dim">({PENDING_INTEGRITY_SUFFIX[hit.kind as PendingIntegrityKind]})</span>
                 )}
               </li>
             ))}
