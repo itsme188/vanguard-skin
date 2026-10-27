@@ -23,7 +23,7 @@ describe("Security detail open lots (source pin)", () => {
 
   it("the phone-width repeat of the chip reads the same helpers", () => {
     expect(block).toMatch(
-      /\{lot\.pending_statement && \(\s*<span className="block md:hidden[^"]*">\s*<Chip tone="neutral" size="xs" title=\{pendingChipTitle\(lot\.pending_statement_reason \?\? "awaiting_statement"\)\}>\s*\{pendingChipLabel\(lot\.pending_statement_reason \?\? "awaiting_statement"\)\}/
+      /\{lot\.pending_statement && \(\s*<span className="block md:hidden[^"]*">\s*<Chip tone="neutral" size="xs" wrap title=\{pendingChipTitle\(lot\.pending_statement_reason \?\? "awaiting_statement"\)\}>\s*\{pendingChipLabel\(lot\.pending_statement_reason \?\? "awaiting_statement"\)\}/
     );
   });
 

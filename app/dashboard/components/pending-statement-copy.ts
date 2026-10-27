@@ -143,7 +143,7 @@ export const PENDING_INTEGRITY_SUFFIX: Record<PendingIntegrityKind, string> = {
   "closing-entry-account-mismatch": "a closing entry for this position sits in another account",
   "closing-entry-account-undecidable":
     "a closing entry in another account may belong to this position, but the ledger cannot tell",
-  "exercise-price-missing": "the exercise or assignment has no price, so the stock side was not recorded",
+  "exercise-price-missing": "import the exercise or assignment again with its strike price",
   "exercise-leg-missing":
     "import the stock trade from the exercise or assignment, or record the option's underlying and call/put",
 };

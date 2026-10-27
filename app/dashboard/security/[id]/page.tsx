@@ -740,7 +740,7 @@ export default async function SecurityDetailPage(props: {
                             width, so the first column repeats it there. */}
                         {lot.pending_statement && (
                           <span className="block md:hidden mt-1 font-sans">
-                            <Chip tone="neutral" size="xs" title={pendingChipTitle(lot.pending_statement_reason ?? "awaiting_statement")}>
+                            <Chip tone="neutral" size="xs" wrap title={pendingChipTitle(lot.pending_statement_reason ?? "awaiting_statement")}>
                               {pendingChipLabel(lot.pending_statement_reason ?? "awaiting_statement")}
                             </Chip>
                           </span>

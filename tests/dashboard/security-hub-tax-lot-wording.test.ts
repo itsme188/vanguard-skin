@@ -90,7 +90,7 @@ describe("security page wiring (source pins)", () => {
     const firstCell = row.slice(0, anchorIndex(row, "<td className={TD_CLASS}>{lot.account_name}</td>"));
     expect(firstCell).toContain("lot.acquisition_date");
     expect(firstCell).toMatch(
-      /\{lot\.pending_statement && \(\s*<span className="block md:hidden[^"]*">\s*<Chip tone="neutral" size="xs" title=\{pendingChipTitle\(lot\.pending_statement_reason \?\? "awaiting_statement"\)\}>\s*\{pendingChipLabel\(lot\.pending_statement_reason \?\? "awaiting_statement"\)\}/
+      /\{lot\.pending_statement && \(\s*<span className="block md:hidden[^"]*">\s*<Chip tone="neutral" size="xs" wrap title=\{pendingChipTitle\(lot\.pending_statement_reason \?\? "awaiting_statement"\)\}>\s*\{pendingChipLabel\(lot\.pending_statement_reason \?\? "awaiting_statement"\)\}/
     );
     // The Unrealized column keeps its own copy in place of the figure
     // (pinned in tests/dashboard/tax-lots-pending-statement.test.tsx).
