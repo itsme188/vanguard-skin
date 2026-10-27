@@ -329,6 +329,7 @@ function Filters({
     <div className="flex flex-wrap items-center gap-2">
       <input
         type="text"
+        aria-label="Search documents"
         placeholder="Search documents…"
         value={search}
         onChange={(e) => onSearchChange(e.target.value)}
@@ -336,12 +337,14 @@ function Filters({
       />
       <input
         type="text"
+        aria-label="Symbol"
         placeholder="Symbol"
         value={symbol}
         onChange={(e) => onSymbolChange(e.target.value.toUpperCase())}
         className="w-24 px-3 py-2 rounded-lg bg-raised border border-edge text-sm font-mono text-ink placeholder:text-ink-faint"
       />
       <select
+        aria-label="Document type"
         value={documentType}
         onChange={(e) => onDocumentTypeChange(e.target.value as ResearchDocumentType | "")}
         className="px-3 py-2 rounded-lg bg-raised border border-edge text-sm text-ink"
