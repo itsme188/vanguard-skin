@@ -1487,3 +1487,12 @@ Built on the owner's delegation (2026-10-26 item 2) from `docs/superpowers/plans
 Rehearsal on a copy of the live database (figures in gitignored `docs/private/pending-lots-options-shorts-rehearsal-2026-10.md`): eight option lots move from open and valued to pending (awaiting statement), long stock and ETF lots unchanged, no new critical hit, the Unrealized change equals those lots' former paper result exactly, nothing written. The one short put that becomes pending was confirmed closed at the broker (read-only position check). Four exercise rows in the ledger have no price, so their premiums never moved into the stock basis: now shown as warnings.
 
 Known limits, accepted: a same-side round trip after a statement zero revives older orphan lots on that side until the next flat row (OPEN-10, pinned by a test, fixed by Part 2's per-lot rule); one unmatched row can name both pending sides of a contract (OPEN-11); the Open Lots column is still headed Cost Basis over short lots (OPEN-7).
+
+## 2026-10-27 — An AI account outage never spends an earnings prep retry; the hub says so
+
+Owner request after the credit outage that morning ("we also need a more permanent solution", then "yes i want the visible error in the earnings hub").
+
+- **Ruling (owner):** in the armed-print prepare pipeline, an account-level AI failure (billing, key, rate limit, outage, network, config) books the step `pending` and costs no attempt; the work reruns on its own once the account answers. An article-level or unknown failure counts as before. Same classifier as the research feed (`classifyEnrichmentError`), never a second one.
+- **Calls made by Claude:** the rescan stops at the FIRST account failure (simpler than the research feed's two-in-a-row rule; one wasted call per tick per print during an outage, which also detects recovery). A step cut off by the runner's own deadline still counts. The marker clears only when an AI step finishes or fails, never on a plain `pending`. The notice ends "once it's fixed" for billing, key and config, and "once the AI service recovers" for rate limit, outage and network. The notice shows on every week the hub displays.
+- **Live repair the same day (owner ran it):** the spent article scans and failed steps from the outage were reset to zero attempts with a backed-up one-off script; the next passes completed them.
+- Detail: `docs/reference/earnings-pipeline.md` §An AI account outage waits.

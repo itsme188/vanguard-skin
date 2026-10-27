@@ -1242,6 +1242,16 @@ each bogey row. `lib/earnings/armed-events-projection.ts` owns the projection so
 and the mutations build the identical shape; `ARMED_EVENT_PROJECTION_KEYS` is parity-pinned
 against the Worker's `ARMED_EVENT_ENTRY_KEYS`.
 
+### An AI account outage waits; it never spends an attempt (2026-10-27)
+
+Incident: the Anthropic account ran out of credit on 2026-10-27. Every armed print's `newsletter_rescan` burned all `SCAN_MAX_ATTEMPTS` (3) per article on the billing error, so those pairs were spent for good, and `newsletter_synthesis` climbed toward `PREPARE_MAX_ATTEMPTS`. The owner ruled that an account-level failure never consumes an attempt.
+
+- **Who is at fault** is decided by the research feed's classifier, `classifyEnrichmentError` (`lib/gmail/enrichment-failure.ts`), read through `accountFailureOf` (`lib/earnings/ai-unavailable.ts`, which reads the error's `cause` first). Account-level means billing, auth, rate limit, outage, network or config. Anything else, unknown included, counts as before.
+- **The two AI steps** return `pending` with `accountFailure` set, and their reason starts with `AI unavailable (`. `newsletter_rescan` releases the article's claim with no attempt and stops the pass at the first account failure. The runner applies the same rule to a step that THROWS one, except when its own deadline fired: the abort reads as "network" to the classifier, and a timed-out step must still count.
+- **The newsletter extractor** keeps the provider error on `cause` (`extractBogeysFromArticleForEvent`). The image-refused text-only resend is skipped for an account-level 400, because out of credit arrives as a 400 too.
+- **The hub notice.** The settings key `earnings_ai_unavailable` (`{kind, since}`) is set on the first account failure and keeps its first `since`. It clears when a step marked `usesAi` finishes or fails; a plain `pending` proves no model call and leaves it. `getAiPrepPause` counts the waiting rows on armed, unsuperseded events from today on, and the Earnings Hub shows `aiPrepPauseNotice` while any exist. The rows decide whether the notice shows; the marker only supplies the time.
+- **Not covered yet:** price-level extraction and the earnings-date verification also failed on credit that day; whether they spend retries the same way is open (TODO).
+
 ## Extra metric lines and recompilation (v2 slice F)
 
 `earnings_bogeys.extra_metrics_json` holds the desk's own metric definitions:
