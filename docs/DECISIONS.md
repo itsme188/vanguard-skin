@@ -1496,3 +1496,12 @@ Owner request after the credit outage that morning ("we also need a more permane
 - **Calls made by Claude:** the rescan stops at the FIRST account failure (simpler than the research feed's two-in-a-row rule; one wasted call per tick per print during an outage, which also detects recovery). A step cut off by the runner's own deadline still counts. The marker clears only when an AI step finishes or fails, never on a plain `pending`. The notice ends "once it's fixed" for billing, key and config, and "once the AI service recovers" for rate limit, outage and network. The notice shows on every week the hub displays.
 - **Live repair the same day (owner ran it):** the spent article scans and failed steps from the outage were reset to zero attempts with a backed-up one-off script; the next passes completed them.
 - Detail: `docs/reference/earnings-pipeline.md` §An AI account outage waits.
+
+## 2026-10-28 — A late arm gets its preview; the date check retries an AI outage
+
+- **Ruling (owner, option A of three):** a print armed after its regular preview window closed (105 to 135 minutes before the release) still gets its preview, started at arm time, so the worksheet auto-print has the full sheet. Rejected: B (auto-print falls back to the plain sheet; paper without the email's prose) and C (A plus that fallback; Claude's recommendation).
+- **Ruling (owner):** the daily earnings-date check gives a day another try after an account-level AI failure, the same rule as the earnings prepare steps (2026-10-27).
+- **Calls made by Claude:** the late window closes 15 minutes before the EARLIER of the recorded release instant and the slot floor; only armed rows get it; the kick runs after the arm's prepare pass and through the sweep's own per-candidate path (extracted as `processSweepCandidate`, no second copy of its guards); auto-print passes now take turns in the process; print-watch Go is not wired; the Worker is unchanged. The date-check retry runs once per 15-minute tick while the outage lasts (one fast-failing call each); a non-account failure keeps one attempt per day. `accountFailureOf` now also reads raw `@anthropic-ai/sdk` errors through `classifyAnthropicError`, since the date check uses that client and the research feed's classifier did not recognise its credit error.
+- **Checked, no change:** price-level extraction has no attempt cap (a failed call retries at the next research sync).
+- Detail: `docs/reference/earnings-pipeline.md` §Late-arm preview and §An AI account outage waits.
+

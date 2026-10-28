@@ -455,6 +455,15 @@ send (each send holds a 60 to 180 second AI call).
 - **Known limitation:** the Worker fallback does not re-check at send time. See
   `docs/reference/cron-and-workers.md` §11.
 
+### Late-arm preview (2026-10-28)
+
+The regular preview window is 105 to 135 minutes before the recorded release instant. A print armed after that window closed (HOOD and TER on 2026-10-27, armed the afternoon of the release) used to get no preview, so the worksheet auto-print logged "armed but no local preview yet" until release+30m and printed nothing. Owner ruling (option A): a late arm triggers its preview.
+
+- **Candidate rule** (`findEmailCandidates`, `isLateArmPreviewInWindow`, `lib/calendar/enrichment-runner.ts`): an ARMED row (`earnings_worksheet_flags`) with no preview sent, claimed or skipped is a preview candidate while the print is at least `LATE_ARM_PREVIEW_CUTOFF_MS` (15 minutes) away and nearer than the regular window. "The print" is the EARLIER of the recorded release instant and the BMO/AMC slot floor (`checkPrePrintFloor` with `useSlotFloor`), because an AMC `release_time` is often the call time. Unarmed rows keep the regular window exactly.
+- **The kick** (`runLateArmPreviewKick`, `lib/calendar/email-sweep.ts`): the arm route (`POST /api/earnings/worksheet`, action `arm`) chains it after its own prepare pass, so the preview is written with the deep read and rescanned bogeys in it; the pass is budgeted at 5 minutes, inside the cutoff. The kick runs the sweep's own per-candidate path (`processSweepCandidate`: wrap suppression, the already-reported guard below, then the send service), then the auto-print pass. A sweep tick at the same moment is stopped by the send claim. Print-watch Go is not wired: it is pressed at print time, inside the cutoff; the sweep's candidate rule covers it anyway.
+- **Auto-print passes take turns** (`printArmedWorksheets`, `lib/earnings/worksheet.ts`): the sweep and the kick can both reach the pass, so passes run one at a time in the process and a queued pass re-reads the printed stamps.
+- **Known limit:** a sweep tick that lands while a late arm's prepare pass is still running composes the preview without that pass's results. The Worker keeps the regular window only: with the Mac asleep nobody collects the paper.
+
 ### Already-reported preview guard (2026-07-23, IMAX case)
 
 Before the marker dance, every PREVIEW candidate passes a two-layer check — row `actual_value`
@@ -1250,7 +1259,8 @@ Incident: the Anthropic account ran out of credit on 2026-10-27. Every armed pri
 - **The two AI steps** return `pending` with `accountFailure` set, and their reason starts with `AI unavailable (`. `newsletter_rescan` releases the article's claim with no attempt and stops the pass at the first account failure. The runner applies the same rule to a step that THROWS one, except when its own deadline fired: the abort reads as "network" to the classifier, and a timed-out step must still count.
 - **The newsletter extractor** keeps the provider error on `cause` (`extractBogeysFromArticleForEvent`). The image-refused text-only resend is skipped for an account-level 400, because out of credit arrives as a 400 too.
 - **The hub notice.** The settings key `earnings_ai_unavailable` (`{kind, since}`) is set on the first account failure and keeps its first `since`. It clears when a step marked `usesAi` finishes or fails; a plain `pending` proves no model call and leaves it. `getAiPrepPause` counts the waiting rows on armed, unsuperseded events from today on, and the Earnings Hub shows `aiPrepPauseNotice` while any exist. The rows decide whether the notice shows; the marker only supplies the time.
-- **Not covered yet:** price-level extraction and the earnings-date verification also failed on credit that day; whether they spend retries the same way is open (TODO).
+- **The other AI jobs that failed that day (checked 2026-10-28).** Price-level extraction (`lib/alerts/extract-newsletter-levels.ts`) has no attempt cap: a failed call leaves the article unmarked and the next research sync tries it again, so nothing is spent. The 5 am earnings-date check (`maybeRunDailyDateVerification`, `lib/calendar/verify-earnings-dates.ts`) stamps the day before it runs, so one failure used to cost the whole day (2026-10-27 has no checked dates). Now the runner returns `accountFailure` when its one AI call failed on an account-level error, and the gate puts the previous stamp back so the next 15-minute tick runs again; any other failure keeps one attempt per day.
+- **Raw SDK errors.** The date check calls the raw `@anthropic-ai/sdk` client, whose `APIError` the research feed's classifier does not read. `accountFailureOf` falls back to the raw-SDK classifier (`classifyAnthropicError`, `lib/ai/classify-anthropic-error.ts`) and reads a dropped connection (`APIConnectionError`) as network and a 408 or 5xx as outage.
 
 ## Extra metric lines and recompilation (v2 slice F)
 
