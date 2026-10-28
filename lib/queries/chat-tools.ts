@@ -107,6 +107,8 @@ export interface HoldingResult {
   quantity: number;
   cost_basis: number | null;
   latest_price: number | null;
+  /** Date of the `prices` row behind latest_price / market_value (YYYY-MM-DD). */
+  price_date: string | null;
   market_value: number | null;
   unrealized_gain: number | null;
   unrealized_gain_pct: number | null;
@@ -150,6 +152,8 @@ export interface TaxLotResult {
    */
   original_lot_cost_basis?: number;
   current_price: number | null;
+  /** Date of the `prices` row behind current_price / current_value (null on closed sales). */
+  price_date: string | null;
   current_value: number | null;
   unrealized_gain: number | null;
   days_held: number;
@@ -355,7 +359,7 @@ export function getHoldingsForChat(
 
   const sql = `
     WITH latest_prices AS (
-      SELECT p.security_id, p.close_price
+      SELECT p.security_id, p.close_price, lp.max_date
       FROM prices p
       INNER JOIN (SELECT security_id, MAX(date) AS max_date FROM prices GROUP BY security_id) lp
       ON p.security_id = lp.security_id AND p.date = lp.max_date
@@ -370,6 +374,7 @@ export function getHoldingsForChat(
       h.quantity,
       ${costBasisExpr} * COALESCE(fx.usd_per_unit, 1) AS cost_basis,
       lp.close_price AS latest_price,
+      lp.max_date AS price_date,
       CASE WHEN lp.close_price IS NOT NULL
         THEN ${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}
         ELSE NULL END AS market_value,
@@ -754,6 +759,7 @@ export function getTaxLotsForChat(
         tls.quantity_sold AS quantity_remaining,
         tls.cost_basis_allocated AS cost_basis,
         NULL AS current_price,
+        NULL AS price_date,
         NULL AS current_value,
         NULL AS unrealized_gain,
         tls.holding_period_days AS days_held,
@@ -805,7 +811,7 @@ export function getTaxLotsForChat(
 
   const openSql = `
     WITH latest_prices AS (
-      SELECT p.security_id, p.close_price
+      SELECT p.security_id, p.close_price, lp.max_date
       FROM prices p
       INNER JOIN (SELECT security_id, MAX(date) AS max_date FROM prices GROUP BY security_id) lp
       ON p.security_id = lp.security_id AND p.date = lp.max_date
@@ -827,6 +833,7 @@ export function getTaxLotsForChat(
       ${remainingLotBasisSql()} AS cost_basis,
       tl.cost_basis * COALESCE(fx.usd_per_unit, 1) AS original_lot_cost_basis,
       lp.close_price AS current_price,
+      lp.max_date AS price_date,
       CASE WHEN lp.close_price IS NOT NULL
         THEN ${adjustedMarketValueSQL("tl.quantity_remaining", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}
         ELSE NULL END AS current_value,
