@@ -997,6 +997,107 @@ describe("maybeRunDailyDateVerification", () => {
   });
 });
 
+// ── An AI account outage gives the day another try (2026-10-28) ────────────
+// Same rule as the earnings prepare steps (lib/earnings/ai-unavailable.ts):
+// the 05:12 ET run on 2026-10-27 failed on an empty credit balance and the
+// whole day went unchecked. An account-level failure now puts the day's
+// stamp back; any other failure keeps one attempt per day.
+
+/** The raw SDK error the date check really sees: HTTP 400, credit message. */
+async function rawSdkBillingError(): Promise<unknown> {
+  const { default: Anthropic } = await import("@anthropic-ai/sdk");
+  const client = new Anthropic({
+    apiKey: "test-key",
+    maxRetries: 0,
+    fetch: async () =>
+      new Response(
+        JSON.stringify({
+          type: "error",
+          error: {
+            type: "invalid_request_error",
+            message:
+              "Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.",
+          },
+        }),
+        { status: 400, headers: { "content-type": "application/json" } },
+      ),
+  });
+  try {
+    await client.messages.create({ model: "test-model", max_tokens: 1, messages: [{ role: "user", content: "x" }] });
+  } catch (err) {
+    return err;
+  }
+  throw new Error("expected the SDK call to fail");
+}
+
+describe("date check on an AI account outage (2026-10-28)", () => {
+  const stamp = () =>
+    (db.prepare(`SELECT value FROM settings WHERE key = ?`).get("earnings_date_verify_last_run") as
+      | { value: string }
+      | undefined)?.value;
+
+  it("runEarningsDateVerification reports an account-level failure", async () => {
+    const acct = getAccount("Vanguard Taxable");
+    seedHolding(acct, seedSecurity("ACME"), 5);
+    seedEvent({ symbol: "ACME", event_date: "2026-08-05", event_time: "BMO" });
+    const err = await rawSdkBillingError();
+
+    const result = await runEarningsDateVerification(db, {
+      now: NOW,
+      apply: true,
+      fetchVerdicts: async () => {
+        throw err;
+      },
+    });
+    expect(result).toEqual({ outcomes: [], corrections: 0, accountFailure: "billing" });
+  });
+
+  it("an article-level or unknown failure carries no accountFailure", async () => {
+    const acct = getAccount("Vanguard Taxable");
+    seedHolding(acct, seedSecurity("ACME"), 5);
+    seedEvent({ symbol: "ACME", event_date: "2026-08-05", event_time: "BMO" });
+    const result = await runEarningsDateVerification(db, {
+      now: NOW,
+      apply: true,
+      fetchVerdicts: async () => {
+        throw new Error("unexpected token in JSON");
+      },
+    });
+    expect(result).toEqual({ outcomes: [], corrections: 0 });
+  });
+
+  it("the gate puts the stamp back after an account failure, so the next tick runs again", async () => {
+    const now = new Date("2026-08-02T10:00:00Z"); // 06:00 ET
+    const runner = vi
+      .fn()
+      .mockResolvedValueOnce({ outcomes: [], corrections: 0, accountFailure: "billing" })
+      .mockResolvedValueOnce({ outcomes: [], corrections: 0 });
+
+    expect(await maybeRunDailyDateVerification(db, { now, runner })).toEqual({ ran: true });
+    expect(stamp()).toBeUndefined();
+
+    expect(await maybeRunDailyDateVerification(db, { now, runner })).toEqual({ ran: true });
+    expect(stamp()).toBe(todayET(now));
+    expect(await maybeRunDailyDateVerification(db, { now, runner })).toEqual({ ran: false });
+    expect(runner).toHaveBeenCalledTimes(2);
+  });
+
+  it("restores the previous day's stamp rather than deleting it", async () => {
+    db.prepare(`INSERT INTO settings (key, value) VALUES ('earnings_date_verify_last_run', '2026-08-01')`).run();
+    const runner = vi.fn(async () => ({ outcomes: [], corrections: 0, accountFailure: "rate_limit" as const }));
+    await maybeRunDailyDateVerification(db, { now: new Date("2026-08-02T10:00:00Z"), runner });
+    expect(stamp()).toBe("2026-08-01");
+  });
+
+  it("any other failure keeps the stamp: one attempt per day", async () => {
+    const now = new Date("2026-08-02T10:00:00Z");
+    const runner = vi.fn(async () => ({ outcomes: [], corrections: 0 }));
+    await maybeRunDailyDateVerification(db, { now, runner });
+    expect(stamp()).toBe(todayET(now));
+    expect(await maybeRunDailyDateVerification(db, { now, runner })).toEqual({ ran: false });
+  });
+});
+
 // ── Exact-time jump-start (wire-time spec 2026-08-04, Task 4) ──────────────
 
 describe("exact-time jump-start (wire-time spec 2026-08-04)", () => {

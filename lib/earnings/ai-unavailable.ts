@@ -18,6 +18,8 @@
  */
 import type Database from "better-sqlite3";
 import { classifyEnrichmentError, type EnrichmentFailureKind } from "@/lib/gmail/enrichment-failure";
+import { APIConnectionError, APIError } from "@anthropic-ai/sdk";
+import { classifyAnthropicError } from "@/lib/ai/classify-anthropic-error";
 
 export type AccountFailureKind = Extract<
   EnrichmentFailureKind,
@@ -48,15 +50,48 @@ export function aiUnavailableReason(kind: AccountFailureKind): string {
  * The account-level kind of a caught error, or null when the fault is the
  * article's (or unknown). An error that wraps the provider's error on `cause`
  * (extractBogeysFromArticleForEvent) is read through it first.
+ *
+ * Two error families reach here: the AI SDK's (generateObjectForFeature and
+ * friends, read by classifyEnrichmentError) and the raw `@anthropic-ai/sdk`
+ * client's `APIError` (the earnings-date check, 2026-10-28, read by
+ * rawSdkAccountFailure). Each reader returns null for the other's errors.
  */
 export function accountFailureOf(err: unknown): AccountFailureKind | null {
   const cause = err instanceof Error ? (err as { cause?: unknown }).cause : undefined;
   if (cause !== undefined) {
-    const fromCause = classifyEnrichmentError(cause);
-    if (fromCause.scope === "account" && isAccountFailureKind(fromCause.kind)) return fromCause.kind;
+    const fromCause = classifyOne(cause);
+    if (fromCause) return fromCause;
   }
+  return classifyOne(err);
+}
+
+function classifyOne(err: unknown): AccountFailureKind | null {
   const c = classifyEnrichmentError(err);
-  return c.scope === "account" && isAccountFailureKind(c.kind) ? c.kind : null;
+  if (c.scope === "account" && isAccountFailureKind(c.kind)) return c.kind;
+  return rawSdkAccountFailure(err);
+}
+
+/**
+ * A raw `@anthropic-ai/sdk` error. The kind comes from the shared raw-SDK
+ * classifier (lib/ai/classify-anthropic-error.ts), which knows the credit
+ * message; the two shapes it leaves as "unknown" are read here: no connection
+ * (`APIConnectionError`, which also covers a timeout) and a 408 or 5xx.
+ */
+function rawSdkAccountFailure(err: unknown): AccountFailureKind | null {
+  if (err instanceof APIConnectionError) return "network";
+  if (!(err instanceof APIError)) return null;
+  switch (classifyAnthropicError(err)?.kind) {
+    case "billing":
+      return "billing";
+    case "auth":
+      return "auth";
+    case "rate_limit":
+      return "rate_limit";
+    case "overloaded":
+      return "outage";
+  }
+  const status = err.status ?? 0;
+  return status === 408 || status >= 500 ? "outage" : null;
 }
 
 // ── The outage marker ────────────────────────────────────────────────

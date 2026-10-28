@@ -989,6 +989,12 @@ async function runTwsReactionUpgrade(
 //            no preview audit row AND
 //            symbol in held|watchlist set
 //
+//   Late-arm preview (2026-10-28, owner ruling): an ARMED print that missed
+//   that window (armed after it closed) is still a preview candidate while
+//   the print is at least 15 min away, measured against the EARLIER of the
+//   recorded release instant and the BMO/AMC slot floor (an AMC
+//   release_time is often the call time). Unarmed rows keep the window.
+//
 //   Recap:   enriched_at IS NOT NULL AND
 //            now ≤ enriched_at + 4h AND
 //            no recap audit row AND
@@ -1001,6 +1007,8 @@ async function runTwsReactionUpgrade(
 
 const PREVIEW_WINDOW_MIN_MS = 105 * 60 * 1000;
 const PREVIEW_WINDOW_MAX_MS = 135 * 60 * 1000;
+/** A late-arm preview is never started closer than this to the print. */
+export const LATE_ARM_PREVIEW_CUTOFF_MS = 15 * 60 * 1000;
 const RECAP_WINDOW_MAX_MS   = 4 * 60 * 60 * 1000;
 
 export interface EmailCandidate {
@@ -1023,6 +1031,39 @@ interface PreviewCandidateRow {
   event_date: string;
   release_time: string;
   source: string;
+  event_time: string | null;
+  raw_json: string | null;
+  /** 1 when the event carries an earnings_worksheet_flags row. */
+  armed: number;
+}
+
+/**
+ * Late-arm preview test (2026-10-28): an armed row whose regular window has
+ * passed qualifies while the print is at least LATE_ARM_PREVIEW_CUTOFF_MS
+ * away. The print instant is the earlier of the recorded release instant and
+ * the slot floor, so a call-time release_time never stretches the window
+ * past the real print. No instant at all → not a candidate.
+ */
+export function isLateArmPreviewInWindow(
+  row: Pick<PreviewCandidateRow, "event_date" | "release_time" | "event_time" | "raw_json">,
+  now: Date,
+): boolean {
+  const floor = checkPrePrintFloor(
+    {
+      event_date: row.event_date,
+      release_time: row.release_time,
+      event_time: row.event_time,
+      raw_json: row.raw_json,
+    },
+    now,
+    { useSlotFloor: true },
+  );
+  const instants = [floor.release, floor.floor]
+    .filter((d): d is Date => d !== null)
+    .map((d) => d.getTime());
+  if (instants.length === 0) return false;
+  const msUntilPrint = Math.min(...instants) - now.getTime();
+  return msUntilPrint >= LATE_ARM_PREVIEW_CUTOFF_MS && msUntilPrint < PREVIEW_WINDOW_MIN_MS;
 }
 
 interface RecapCandidateRow {
@@ -1142,8 +1183,11 @@ export function findEmailCandidates(
 
   const previewRows = db
     .prepare(
-      `SELECT ce.id, ce.symbol, ce.event_date, ce.release_time, ce.source
+      `SELECT ce.id, ce.symbol, ce.event_date, ce.release_time, ce.source,
+              ce.event_time, ce.raw_json,
+              CASE WHEN wf.event_id IS NULL THEN 0 ELSE 1 END AS armed
          FROM calendar_events ce
+         LEFT JOIN earnings_worksheet_flags wf ON wf.event_id = ce.id
          LEFT JOIN earnings_emails ee
            ON ee.event_id = ce.id AND ee.phase = 'preview'
          LEFT JOIN earnings_email_skips es
@@ -1164,6 +1208,8 @@ export function findEmailCandidates(
     if (!releaseInstant) continue;
     const msUntilRelease = releaseInstant.getTime() - nowMs;
     if (msUntilRelease >= PREVIEW_WINDOW_MIN_MS && msUntilRelease <= PREVIEW_WINDOW_MAX_MS) {
+      inWindowPreviews.push(row);
+    } else if (row.armed === 1 && isLateArmPreviewInWindow(row, now)) {
       inWindowPreviews.push(row);
     }
   }

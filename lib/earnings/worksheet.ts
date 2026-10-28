@@ -566,13 +566,30 @@ export async function printWorksheetNow(
  * print logs and retries next tick (no stamp); rows with no computable
  * release instant are left to "Print now". Never throws.
  */
-export async function printArmedWorksheets(
+export function printArmedWorksheets(
   db: Database.Database,
-  opts: {
-    now?: Date;
-    /** DI seam for tests — defaults to printWorksheetNow (real lp). */
-    print?: (db: Database.Database, eventId: number) => Promise<unknown>;
-  } = {},
+  opts: PrintArmedOpts = {},
+): Promise<{ printed: number }> {
+  // Passes run one at a time in this process (2026-10-28): the sweep and the
+  // late-arm preview kick (lib/calendar/email-sweep.ts) can both reach here
+  // at once, and two overlapping passes would each print a sheet before
+  // either stamped it. A queued pass re-reads the flags, so it sees the stamp.
+  const run = printPassQueue.then(() => printArmedWorksheetsPass(db, opts));
+  printPassQueue = run.catch(() => undefined);
+  return run;
+}
+
+interface PrintArmedOpts {
+  now?: Date;
+  /** DI seam for tests — defaults to printWorksheetNow (real lp). */
+  print?: (db: Database.Database, eventId: number) => Promise<unknown>;
+}
+
+let printPassQueue: Promise<unknown> = Promise.resolve();
+
+async function printArmedWorksheetsPass(
+  db: Database.Database,
+  opts: PrintArmedOpts,
 ): Promise<{ printed: number }> {
   let printed = 0;
   const doPrint = opts.print ?? printWorksheetNow;

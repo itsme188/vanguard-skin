@@ -7,7 +7,9 @@ import { describe, it, expect, beforeEach } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import { armWorksheet } from "@/lib/mutations/earnings-worksheet-flags";
+import Anthropic from "@anthropic-ai/sdk";
 import {
+  accountFailureOf,
   AI_UNAVAILABLE_KEY,
   aiPrepPauseNotice,
   aiUnavailableReason,
@@ -136,5 +138,55 @@ describe("aiPrepPauseNotice", () => {
     expect(words("outage")).toBe("Anthropic's service is unavailable");
     expect(words("network")).toBe("no connection to the AI service");
     expect(words("config")).toBe("the AI key is not configured");
+  });
+});
+
+// The earnings-date check calls the raw @anthropic-ai/sdk client, whose errors
+// are not the AI SDK's (2026-10-28). Errors are produced by the real SDK with
+// a stubbed fetch, so the test reads the shape production sees.
+async function rawSdkError(respond: () => Response | Promise<Response>): Promise<unknown> {
+  const client = new Anthropic({ apiKey: "test-key", maxRetries: 0, fetch: async () => respond() });
+  try {
+    await client.messages.create({ model: "test-model", max_tokens: 1, messages: [{ role: "user", content: "x" }] });
+  } catch (err) {
+    return err;
+  }
+  throw new Error("expected the SDK call to fail");
+}
+const envelope = (status: number, type: string, message: string) =>
+  new Response(JSON.stringify({ type: "error", error: { type, message } }), {
+    status,
+    headers: { "content-type": "application/json" },
+  });
+
+describe("accountFailureOf — raw Anthropic SDK errors", () => {
+  it("reads the out-of-credit 400 as billing", async () => {
+    const err = await rawSdkError(() =>
+      envelope(400, "invalid_request_error", "Your credit balance is too low to access the Anthropic API."),
+    );
+    expect(accountFailureOf(err)).toBe("billing");
+  });
+
+  it("a genuinely bad request is not account-level (it still counts)", async () => {
+    const err = await rawSdkError(() => envelope(400, "invalid_request_error", "prompt is too long: 250000 tokens"));
+    expect(accountFailureOf(err)).toBeNull();
+  });
+
+  it("maps auth, rate limit, overload and a plain 5xx", async () => {
+    expect(accountFailureOf(await rawSdkError(() => envelope(401, "authentication_error", "invalid x-api-key")))).toBe("auth");
+    expect(accountFailureOf(await rawSdkError(() => envelope(429, "rate_limit_error", "slow down")))).toBe("rate_limit");
+    expect(accountFailureOf(await rawSdkError(() => envelope(529, "overloaded_error", "Overloaded")))).toBe("outage");
+    expect(accountFailureOf(await rawSdkError(() => new Response("bad gateway", { status: 502 })))).toBe("outage");
+  });
+
+  it("no connection reads as network", async () => {
+    const err = await rawSdkError(() => {
+      throw new TypeError("fetch failed");
+    });
+    expect(accountFailureOf(err)).toBe("network");
+  });
+
+  it("a plain Error is not account-level", () => {
+    expect(accountFailureOf(new Error("unexpected token in JSON"))).toBeNull();
   });
 });

@@ -19,6 +19,7 @@ import {
   isSuspectAmcCallTime,
 } from "@/lib/earnings/wire-times";
 import { deriveEarningsSlot } from "@/lib/earnings/earnings-slot";
+import { accountFailureOf, type AccountFailureKind } from "@/lib/earnings/ai-unavailable";
 
 /**
  * Earnings date/slot verification — candidate selection, prompt building,
@@ -575,7 +576,14 @@ export async function runEarningsDateVerification(
     limit?: number;
     fetchVerdicts?: (prompt: string) => Promise<string>;
   },
-): Promise<{ outcomes: VerificationOutcome[]; corrections: number }> {
+): Promise<{
+  outcomes: VerificationOutcome[];
+  corrections: number;
+  /** Set when the run failed on an account-level AI error (no credit, key
+   *  rejected, service down): nothing was checked, through no fault of the
+   *  run. The daily gate gives such a day another try (2026-10-28). */
+  accountFailure?: AccountFailureKind;
+}> {
   const outcomes: VerificationOutcome[] = [];
   const countCorrections = () =>
     outcomes.filter((o) => o.action === "date-corrected" || o.action === "slot-corrected").length;
@@ -647,7 +655,10 @@ export async function runEarningsDateVerification(
     return { outcomes, corrections };
   } catch (err) {
     console.error("[verify-earnings-dates] runEarningsDateVerification failed:", err);
-    return { outcomes, corrections: countCorrections() };
+    const accountFailure = accountFailureOf(err);
+    return accountFailure
+      ? { outcomes, corrections: countCorrections(), accountFailure }
+      : { outcomes, corrections: countCorrections() };
   }
 }
 
@@ -661,6 +672,15 @@ function getDailyGateLastRunDay(db: Database.Database): string | null {
     return row?.value ?? null;
   } catch {
     return null; // settings table absent (minimal test DBs)
+  }
+}
+
+function restoreDailyGateLastRunDay(db: Database.Database, day: string | null): void {
+  if (day !== null) return setDailyGateLastRunDay(db, day);
+  try {
+    db.prepare(`DELETE FROM settings WHERE key = ?`).run(DAILY_GATE_SETTINGS_KEY);
+  } catch {
+    // settings table absent (minimal test DBs) — best-effort, never throw
   }
 }
 
@@ -687,7 +707,9 @@ function setDailyGateLastRunDay(db: Database.Database, day: string): void {
  * Stamps the settings key BEFORE calling the runner — same stamp-before-push
  * discipline as the coverage guard (lib/calendar/coverage-guard.ts): a run
  * that throws or hangs still only gets one attempt per ET day, never a retry
- * storm from the next 15-min cron tick. Table-existence-tolerant (minimal
+ * storm from the next 15-min cron tick. One exception (2026-10-28): a run
+ * that failed on an account-level AI error checked nothing, and the stamp is
+ * put back so the next tick tries again. Table-existence-tolerant (minimal
  * test DBs lacking a `settings` table): the gate degrades to "always eligible
  * to run" rather than throwing.
  */
@@ -708,12 +730,25 @@ export async function maybeRunDailyDateVerification(
   if (etHour < DAILY_GATE_OPEN_HOUR_ET) return { ran: false };
 
   const today = todayET(now);
-  if (getDailyGateLastRunDay(db) === today) return { ran: false };
+  const previousDay = getDailyGateLastRunDay(db);
+  if (previousDay === today) return { ran: false };
 
   setDailyGateLastRunDay(db, today);
 
   const runner = opts?.runner ?? runEarningsDateVerification;
-  await runner(db, { now, apply: true });
+  const result = await runner(db, { now, apply: true });
+
+  // An account-level AI failure (2026-10-28, same rule as the earnings prepare
+  // steps, lib/earnings/ai-unavailable.ts): the run checked nothing, so put
+  // the day's stamp back and let the next 15-minute tick try again. One AI
+  // call per tick while the outage lasts, each failing fast. Any other
+  // failure keeps the stamp: one attempt per day, as before.
+  if (result?.accountFailure) {
+    restoreDailyGateLastRunDay(db, previousDay);
+    console.warn(
+      `[verify-earnings-dates] AI unavailable (${result.accountFailure}); the daily check retries next tick`,
+    );
+  }
 
   return { ran: true };
 }

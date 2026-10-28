@@ -6,6 +6,7 @@ import {
 import { getWorksheetFlagsForEvents } from "@/lib/queries/earnings-worksheet-flags";
 import { printWorksheetNow } from "@/lib/earnings/worksheet";
 import { attemptPostCommitDrain } from "@/lib/earnings/cloud-outbox";
+import { runLateArmPreviewKick } from "@/lib/calendar/email-sweep";
 import {
   enqueuePrepareSteps,
   runPrepareSteps,
@@ -57,9 +58,17 @@ export async function POST(request: Request) {
       const enqueued = enqueuePrepareSteps(db, body.eventId);
       // D6: kick the pass, never await it — model calls take tens of seconds;
       // the sweep tick is the durable retry.
-      void runPrepareSteps(db, { eventId: body.eventId }).catch((err) =>
-        console.warn("[worksheet] prepare pass failed:", err),
-      );
+      //
+      // Late-arm preview (2026-10-28): a print armed after its preview window
+      // closed still gets its preview, started after this prepare pass (so
+      // the deep read and the rescanned bogeys are in it; the pass is budgeted
+      // at 5 minutes, inside the 15-minute late-arm cutoff) rather than at the
+      // next sweep tick. A no-op when the event is not a preview candidate;
+      // the kick never throws.
+      const eventId = body.eventId;
+      void runPrepareSteps(db, { eventId })
+        .catch((err) => console.warn("[worksheet] prepare pass failed:", err))
+        .then(() => runLateArmPreviewKick(db, eventId));
       // v2 slice A: hand the new armed-events generation to the Worker. The
       // whole wait is capped (2s), after which the push continues in the
       // background and the 15-minute sweep is the backstop.

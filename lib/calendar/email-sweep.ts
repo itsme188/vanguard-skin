@@ -23,6 +23,7 @@
 import type Database from "better-sqlite3";
 import {
   findEmailCandidates,
+  type EmailCandidate,
   type EmailSweepOpts,
 } from "./enrichment-runner";
 import { reapStaleEarningsEmailClaims, type EmailRowRefusal } from "@/lib/digest/send-earnings-email";
@@ -162,6 +163,193 @@ async function reconcileCloudSentAudits(db: Database.Database): Promise<number> 
   return reconciled;
 }
 
+/**
+ * One sweep candidate, start to finish: wrap suppression, the already-
+ * reported guard, then the send service. Shared by the sweep loop and the
+ * late-arm preview kick (runLateArmPreviewKick) so the two can never apply
+ * different checks.
+ */
+async function processSweepCandidate(
+  db: Database.Database,
+  cand: EmailCandidate,
+  opts: EmailSweepOpts,
+): Promise<SweepCandidateResult> {
+  const t0 = Date.now();
+
+  // ── Wrap-mode suppression (#17 T3) ──────────────────────────────────
+  // A recap candidate whose (date, slot) cluster has reached WRAP_THRESHOLD
+  // gets stapled into ONE wrap email (below) instead of an individual
+  // send. Previews are untouched. This MUST use the same raw
+  // getExpectedRecapCluster(...).length >= WRAP_THRESHOLD determination
+  // that runWrapPass uses internally — never a post-exclusion count, or
+  // individuals get suppressed while the wrap sends nothing (Task 2
+  // reviewer's coordination rule).
+  //
+  // Gated to TODAY's ET date (#17 final-review fix): runWrapPass only
+  // evaluates today's (date, slot) clusters (`date = todayET(now)` in the
+  // stapled-wrap sender, retired 2026-10-08), so a candidate whose
+  // event_date is NOT today can never
+  // be matched by any wrap pass — suppressing it here strands it in
+  // wrap-pending limbo forever (candidates vanish from the recap window
+  // at enriched_at+4h with no email ever sent). A same-day Finnhub outage
+  // where the user backfills actuals the next morning reopens recap
+  // candidates dated yesterday; those must fall through to individual
+  // sends, the correct degraded behavior.
+  // Reporter recaps (feedback #3) are EXEMPT from wrap suppression: the
+  // cluster counts held/watchlist expected recaps, the debrief's candidate
+  // gate never covers a non-held reporter, and the read-through signal is
+  // only valuable while it's timely.
+  // BMO clusters are EXEMPT too (2026-08-04 decision): the defer-to-
+  // next-morning-debrief rationale is AMC-specific — a BMO cluster's
+  // individual recaps land the SAME morning the user is following the
+  // prints, so suppression buys nothing and costs a full day (the 8/04
+  // DOCN/XMTR/WIX cluster had to be recapped manually). Only AMC
+  // clusters suppress. Worker mirror: fallback-earnings.ts.
+  if (cand.phase === "recap" && !cand.reporterRecap) {
+    const eventRow = db
+      .prepare(
+        `SELECT event_date, event_time, title, release_time FROM calendar_events WHERE id = ?`,
+      )
+      .get(cand.eventId) as WrapClassifyRow | undefined;
+    const slot = eventRow ? wrapSlotFor(eventRow) : null;
+    if (
+      eventRow &&
+      eventRow.event_date === todayET(opts.now) &&
+      slot === "AMC" &&
+      getExpectedRecapCluster(db, eventRow.event_date, slot).length >= WRAP_THRESHOLD
+    ) {
+      return ({
+        eventId: cand.eventId,
+        symbol: cand.symbol,
+        phase: cand.phase,
+        ok: true,
+        skipped: "wrap-pending",
+        durationMs: Date.now() - t0,
+      });
+    }
+  }
+
+  // Already-reported guard (2026-07-23, IMAX): a wrong AMC/BMO slot from
+  // the calendar source can put a preview candidate in-window AFTER the
+  // real print — the window is measured against the RECORDED release
+  // instant only. A post-print "preview" prices the actuals as estimates,
+  // which is worse than no preview. Two layers: the row's own
+  // actual_value (manual overrides / early enrichment), then a live
+  // Finnhub probe. On detection, record a permanent per-event preview
+  // skip (the recap path is untouched — enrichment still delivers it).
+  // Best-effort: any guard error falls through to the normal send.
+  if (cand.phase === "preview") {
+    let alreadyReported = false;
+    try {
+      const evRow = db
+        .prepare(`SELECT actual_value, event_date FROM calendar_events WHERE id = ?`)
+        .get(cand.eventId) as { actual_value: string | null; event_date: string } | undefined;
+      if (evRow?.actual_value) {
+        alreadyReported = true;
+      } else if (evRow) {
+        alreadyReported = await probeFinnhubActualExists(cand.symbol, evRow.event_date);
+      }
+    } catch (err) {
+      console.warn(`[email-sweep] already-reported guard errored for ${cand.symbol}:`, err);
+    }
+    if (alreadyReported) {
+      console.warn(
+        `[email-sweep] ${cand.symbol} preview skipped — already reported (recorded release slot looks wrong for event ${cand.eventId})`
+      );
+      recordEarningsEmailSkip(db, cand.eventId, "preview");
+      // Claim the (phase,event) in KV too: the Worker's preview fallback
+      // can't see earnings_email_skips — without this marker its later
+      // tick would ship the same wrong-slot preview from the cloud.
+      void writeMacSentEarningsMarker(cand.phase, cand.eventId);
+      return ({
+        eventId: cand.eventId,
+        symbol: cand.symbol,
+        phase: cand.phase,
+        ok: true,
+        skipped: "already-reported",
+        durationMs: Date.now() - t0,
+      });
+    }
+  }
+
+  // The service is handed the candidate and gives back ONE outcome; every
+  // branch below is bookkeeping. Nothing in THIS block composes, claims,
+  // sends or touches a marker any more — the per-candidate cloud pre-check
+  // moved into the service too (R-E6), so the Today nudge gets it as well.
+  // (The already-reported guard above keeps its own marker write: no send is
+  // attempted there, so the service never sees that candidate.)
+  let outcome: SendOutcome;
+  try {
+    outcome = await sendEarningsCandidate(
+      db,
+      {
+        eventId: cand.eventId,
+        symbol: cand.symbol,
+        phase: cand.phase,
+        reporterRecap: cand.reporterRecap,
+      },
+      { mode: "sweep" },
+    );
+  } catch (err) {
+    // BACKSTOP ONLY. The service classifies every ending itself and is not
+    // meant to throw; if it ever does (a bug, or a failure outside its own
+    // try), one candidate must not take the whole tick down with it — the
+    // blocked-recap alerts, the print-watch ensure, the aliveness marker and
+    // the prepare pass all still have to run. This replaces the per-candidate
+    // try/catch the old inline send path carried.
+    console.error(`[email-sweep] ${cand.symbol} ${cand.phase}: the send service threw:`, err);
+    return ({
+      eventId: cand.eventId,
+      symbol: cand.symbol,
+      phase: cand.phase,
+      ok: false,
+      status: 500,
+      message: err instanceof Error ? err.message : String(err),
+      durationMs: Date.now() - t0,
+    });
+  }
+  const base = {
+    eventId: cand.eventId,
+    symbol: cand.symbol,
+    phase: cand.phase,
+    durationMs: Date.now() - t0,
+  };
+  switch (outcome.outcome) {
+    case "sent":
+      return ({ ...base, ok: true });
+    case IN_PROGRESS:
+      // Benign cross-process coordination, not a failure — season launchd
+      // logs must read clean (2026-07-04 review minor).
+      return ({ ...base, ok: true, skipped: "claim-held", status: 409 });
+    case "already_sent":
+      return ({
+        ...base,
+        ok: true,
+        skipped: outcome.sentBy === "cloud" ? "cloud-already-sent" : "already-sent",
+      });
+    case DELIVERY_UNKNOWN:
+      // Terminal and NOT resendable automatically (spec §7). The reaper has
+      // already pushed; this line is the sweep's own breadcrumb.
+      console.warn(
+        `[email-sweep] ${cand.symbol} ${cand.phase}: delivery unknown since ${outcome.since} (message ${outcome.providerMessageId ?? "unrecorded"}) — reconcile by hand`,
+      );
+      return ({ ...base, ok: true, skipped: "delivery-unknown" });
+    case "refused":
+      // A refusal about the CALENDAR ROW (outcome.code) is booked under its
+      // own cause. Only a refusal with no code is "not-ready": the compose
+      // is waiting on something a later tick may bring.
+      return ({
+        ...base,
+        ok: true,
+        skipped: outcome.code ? ROW_REFUSAL_SKIP[outcome.code] : "not-ready",
+        status: outcome.status,
+        message: outcome.reason,
+      });
+    case "failed":
+      return ({ ...base, ok: false, status: outcome.status, message: outcome.reason });
+  }
+}
+
 export async function runEarningsEmailSweep(
   db: Database.Database,
   opts: EmailSweepOpts & {
@@ -260,189 +448,7 @@ export async function runEarningsEmailSweep(
   }
 
   for (const cand of candidates) {
-    const t0 = Date.now();
-
-    // ── Wrap-mode suppression (#17 T3) ──────────────────────────────────
-    // A recap candidate whose (date, slot) cluster has reached WRAP_THRESHOLD
-    // gets stapled into ONE wrap email (below) instead of an individual
-    // send. Previews are untouched. This MUST use the same raw
-    // getExpectedRecapCluster(...).length >= WRAP_THRESHOLD determination
-    // that runWrapPass uses internally — never a post-exclusion count, or
-    // individuals get suppressed while the wrap sends nothing (Task 2
-    // reviewer's coordination rule).
-    //
-    // Gated to TODAY's ET date (#17 final-review fix): runWrapPass only
-    // evaluates today's (date, slot) clusters (`date = todayET(now)` in the
-    // stapled-wrap sender, retired 2026-10-08), so a candidate whose
-    // event_date is NOT today can never
-    // be matched by any wrap pass — suppressing it here strands it in
-    // wrap-pending limbo forever (candidates vanish from the recap window
-    // at enriched_at+4h with no email ever sent). A same-day Finnhub outage
-    // where the user backfills actuals the next morning reopens recap
-    // candidates dated yesterday; those must fall through to individual
-    // sends, the correct degraded behavior.
-    // Reporter recaps (feedback #3) are EXEMPT from wrap suppression: the
-    // cluster counts held/watchlist expected recaps, the debrief's candidate
-    // gate never covers a non-held reporter, and the read-through signal is
-    // only valuable while it's timely.
-    // BMO clusters are EXEMPT too (2026-08-04 decision): the defer-to-
-    // next-morning-debrief rationale is AMC-specific — a BMO cluster's
-    // individual recaps land the SAME morning the user is following the
-    // prints, so suppression buys nothing and costs a full day (the 8/04
-    // DOCN/XMTR/WIX cluster had to be recapped manually). Only AMC
-    // clusters suppress. Worker mirror: fallback-earnings.ts.
-    if (cand.phase === "recap" && !cand.reporterRecap) {
-      const eventRow = db
-        .prepare(
-          `SELECT event_date, event_time, title, release_time FROM calendar_events WHERE id = ?`,
-        )
-        .get(cand.eventId) as WrapClassifyRow | undefined;
-      const slot = eventRow ? wrapSlotFor(eventRow) : null;
-      if (
-        eventRow &&
-        eventRow.event_date === todayET(opts.now) &&
-        slot === "AMC" &&
-        getExpectedRecapCluster(db, eventRow.event_date, slot).length >= WRAP_THRESHOLD
-      ) {
-        results.push({
-          eventId: cand.eventId,
-          symbol: cand.symbol,
-          phase: cand.phase,
-          ok: true,
-          skipped: "wrap-pending",
-          durationMs: Date.now() - t0,
-        });
-        continue;
-      }
-    }
-
-    // Already-reported guard (2026-07-23, IMAX): a wrong AMC/BMO slot from
-    // the calendar source can put a preview candidate in-window AFTER the
-    // real print — the window is measured against the RECORDED release
-    // instant only. A post-print "preview" prices the actuals as estimates,
-    // which is worse than no preview. Two layers: the row's own
-    // actual_value (manual overrides / early enrichment), then a live
-    // Finnhub probe. On detection, record a permanent per-event preview
-    // skip (the recap path is untouched — enrichment still delivers it).
-    // Best-effort: any guard error falls through to the normal send.
-    if (cand.phase === "preview") {
-      let alreadyReported = false;
-      try {
-        const evRow = db
-          .prepare(`SELECT actual_value, event_date FROM calendar_events WHERE id = ?`)
-          .get(cand.eventId) as { actual_value: string | null; event_date: string } | undefined;
-        if (evRow?.actual_value) {
-          alreadyReported = true;
-        } else if (evRow) {
-          alreadyReported = await probeFinnhubActualExists(cand.symbol, evRow.event_date);
-        }
-      } catch (err) {
-        console.warn(`[email-sweep] already-reported guard errored for ${cand.symbol}:`, err);
-      }
-      if (alreadyReported) {
-        console.warn(
-          `[email-sweep] ${cand.symbol} preview skipped — already reported (recorded release slot looks wrong for event ${cand.eventId})`
-        );
-        recordEarningsEmailSkip(db, cand.eventId, "preview");
-        // Claim the (phase,event) in KV too: the Worker's preview fallback
-        // can't see earnings_email_skips — without this marker its later
-        // tick would ship the same wrong-slot preview from the cloud.
-        void writeMacSentEarningsMarker(cand.phase, cand.eventId);
-        results.push({
-          eventId: cand.eventId,
-          symbol: cand.symbol,
-          phase: cand.phase,
-          ok: true,
-          skipped: "already-reported",
-          durationMs: Date.now() - t0,
-        });
-        continue;
-      }
-    }
-
-    // The service is handed the candidate and gives back ONE outcome; every
-    // branch below is bookkeeping. Nothing in THIS block composes, claims,
-    // sends or touches a marker any more — the per-candidate cloud pre-check
-    // moved into the service too (R-E6), so the Today nudge gets it as well.
-    // (The already-reported guard above keeps its own marker write: no send is
-    // attempted there, so the service never sees that candidate.)
-    let outcome: SendOutcome;
-    try {
-      outcome = await sendEarningsCandidate(
-        db,
-        {
-          eventId: cand.eventId,
-          symbol: cand.symbol,
-          phase: cand.phase,
-          reporterRecap: cand.reporterRecap,
-        },
-        { mode: "sweep" },
-      );
-    } catch (err) {
-      // BACKSTOP ONLY. The service classifies every ending itself and is not
-      // meant to throw; if it ever does (a bug, or a failure outside its own
-      // try), one candidate must not take the whole tick down with it — the
-      // blocked-recap alerts, the print-watch ensure, the aliveness marker and
-      // the prepare pass all still have to run. This replaces the per-candidate
-      // try/catch the old inline send path carried.
-      console.error(`[email-sweep] ${cand.symbol} ${cand.phase}: the send service threw:`, err);
-      results.push({
-        eventId: cand.eventId,
-        symbol: cand.symbol,
-        phase: cand.phase,
-        ok: false,
-        status: 500,
-        message: err instanceof Error ? err.message : String(err),
-        durationMs: Date.now() - t0,
-      });
-      continue;
-    }
-    const base = {
-      eventId: cand.eventId,
-      symbol: cand.symbol,
-      phase: cand.phase,
-      durationMs: Date.now() - t0,
-    };
-    switch (outcome.outcome) {
-      case "sent":
-        results.push({ ...base, ok: true });
-        break;
-      case IN_PROGRESS:
-        // Benign cross-process coordination, not a failure — season launchd
-        // logs must read clean (2026-07-04 review minor).
-        results.push({ ...base, ok: true, skipped: "claim-held", status: 409 });
-        break;
-      case "already_sent":
-        results.push({
-          ...base,
-          ok: true,
-          skipped: outcome.sentBy === "cloud" ? "cloud-already-sent" : "already-sent",
-        });
-        break;
-      case DELIVERY_UNKNOWN:
-        // Terminal and NOT resendable automatically (spec §7). The reaper has
-        // already pushed; this line is the sweep's own breadcrumb.
-        console.warn(
-          `[email-sweep] ${cand.symbol} ${cand.phase}: delivery unknown since ${outcome.since} (message ${outcome.providerMessageId ?? "unrecorded"}) — reconcile by hand`,
-        );
-        results.push({ ...base, ok: true, skipped: "delivery-unknown" });
-        break;
-      case "refused":
-        // A refusal about the CALENDAR ROW (outcome.code) is booked under its
-        // own cause. Only a refusal with no code is "not-ready": the compose
-        // is waiting on something a later tick may bring.
-        results.push({
-          ...base,
-          ok: true,
-          skipped: outcome.code ? ROW_REFUSAL_SKIP[outcome.code] : "not-ready",
-          status: outcome.status,
-          message: outcome.reason,
-        });
-        break;
-      case "failed":
-        results.push({ ...base, ok: false, status: outcome.status, message: outcome.reason });
-        break;
-    }
+    results.push(await processSweepCandidate(db, cand, opts));
   }
 
   let recapAlerts = 0;
@@ -634,4 +640,37 @@ export async function alertBlockedRecaps(
     alerted += 1;
   }
   return alerted;
+}
+
+/**
+ * Late-arm preview kick (2026-10-28, owner ruling): arming a print starts its
+ * preview at once when the event is a preview candidate right now, instead of
+ * waiting up to 15 minutes for the next sweep tick. It matters for a print
+ * armed after its regular window closed (findEmailCandidates' late-arm
+ * branch): armed at 15:50 for a 16:00 print, the next tick is too late.
+ *
+ * The candidate goes through processSweepCandidate, the sweep's own per-
+ * candidate path, so every guard is the sweep's (already-reported, claim,
+ * cloud pre-check, row refusals). A sweep tick running at the same moment is
+ * stopped by the send claim. The auto-print pass runs after the send, as it
+ * does in the sweep, so the sheet prints as soon as the preview exists.
+ * Returns null when the event is not a preview candidate now. Never throws.
+ */
+export async function runLateArmPreviewKick(
+  db: Database.Database,
+  eventId: number,
+  opts: EmailSweepOpts = {},
+): Promise<SweepCandidateResult | null> {
+  try {
+    const cand = findEmailCandidates(db, { ...opts, limit: Number.MAX_SAFE_INTEGER }).find(
+      (c) => c.eventId === eventId && c.phase === "preview",
+    );
+    if (!cand) return null;
+    const result = await processSweepCandidate(db, cand, opts);
+    await printArmedWorksheets(db, { now: opts.now });
+    return result;
+  } catch (err) {
+    console.warn(`[earnings-sweep] late-arm preview kick failed for event ${eventId}:`, err);
+    return null;
+  }
 }

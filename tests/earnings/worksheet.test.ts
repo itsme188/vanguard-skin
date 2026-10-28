@@ -436,6 +436,39 @@ describe("worksheet flags + auto-print pass", () => {
     expect(print).toHaveBeenCalledTimes(1);
   });
 
+  it("two overlapping passes print once: the second waits for the first's stamp (2026-10-28)", async () => {
+    // The sweep and the late-arm preview kick can both reach the pass at once.
+    const eventId = seedEvent("AAPL", "2026-08-06");
+    armWorksheet(db, eventId);
+    seedPreviewEmail(eventId, PREVIEW_AI_MD);
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const print = vi.fn(async () => {
+      await gate; // the first print is still on its way to the printer
+      return {};
+    });
+
+    const first = printArmedWorksheets(db, { now: NOW, print });
+    const second = printArmedWorksheets(db, { now: NOW, print });
+    await new Promise<void>((r) => setImmediate(r));
+    release();
+
+    expect((await first).printed + (await second).printed).toBe(1);
+    expect(print).toHaveBeenCalledTimes(1);
+  });
+
+  it("a pass that throws does not stall the next one", async () => {
+    const eventId = seedEvent("AAPL", "2026-08-06");
+    armWorksheet(db, eventId);
+    seedPreviewEmail(eventId, PREVIEW_AI_MD);
+    const failing = vi.fn(async () => {
+      throw new Error("printer offline");
+    });
+    expect((await printArmedWorksheets(db, { now: NOW, print: failing })).printed).toBe(0);
+    const ok = vi.fn(async () => ({}));
+    expect((await printArmedWorksheets(db, { now: NOW, print: ok })).printed).toBe(1);
+  });
+
   it("holds outside the window: too early stays armed, prints when the window opens", async () => {
     const eventId = seedEvent("AAPL", "2026-08-06");
     armWorksheet(db, eventId);
