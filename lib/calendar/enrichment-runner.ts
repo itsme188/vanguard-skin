@@ -1022,6 +1022,9 @@ export interface EmailCandidate {
    * suppression must NOT defer it (the debrief never covers non-held names).
    */
   reporterRecap?: boolean;
+  /** A late-arm preview (2026-10-28): its window is re-checked just before
+   *  the send, since it may close while earlier candidates are sending. */
+  lateArm?: boolean;
   reason?: string;
 }
 
@@ -1040,9 +1043,16 @@ interface PreviewCandidateRow {
 /**
  * Late-arm preview test (2026-10-28): an armed row whose regular window has
  * passed qualifies while the print is at least LATE_ARM_PREVIEW_CUTOFF_MS
- * away. The print instant is the earlier of the recorded release instant and
- * the slot floor, so a call-time release_time never stretches the window
- * past the real print. No instant at all → not a candidate.
+ * away. Two clocks, on purpose:
+ *   - "the regular window has passed" is measured on the recorded release
+ *     instant, the same clock the regular window uses, so an armed row never
+ *     gets its preview EARLIER than it would have (a BMO row stored 08:30
+ *     keeps its 06:15-06:45 slot instead of qualifying at 05:15);
+ *   - "the print is at least 15 minutes away" is measured on the earlier of
+ *     the release instant and the slot floor, so a call-time release_time
+ *     never stretches the window past the real print.
+ * No instant at all → not a candidate. The sweep re-asks this just before a
+ * late-arm send (processSweepCandidate), because sends are 1-3 minutes each.
  */
 export function isLateArmPreviewInWindow(
   row: Pick<PreviewCandidateRow, "event_date" | "release_time" | "event_time" | "raw_json">,
@@ -1062,6 +1072,7 @@ export function isLateArmPreviewInWindow(
     .filter((d): d is Date => d !== null)
     .map((d) => d.getTime());
   if (instants.length === 0) return false;
+  if (floor.release && floor.release.getTime() - now.getTime() >= PREVIEW_WINDOW_MIN_MS) return false;
   const msUntilPrint = Math.min(...instants) - now.getTime();
   return msUntilPrint >= LATE_ARM_PREVIEW_CUTOFF_MS && msUntilPrint < PREVIEW_WINDOW_MIN_MS;
 }
@@ -1203,6 +1214,7 @@ export function findEmailCandidates(
     .all(todayStr, tomorrowStr) as PreviewCandidateRow[];
 
   const inWindowPreviews: PreviewCandidateRow[] = [];
+  const lateArmIds = new Set<number>();
   for (const row of previewRows) {
     const releaseInstant = composeReleaseInstant(row.event_date, row.release_time);
     if (!releaseInstant) continue;
@@ -1211,6 +1223,7 @@ export function findEmailCandidates(
       inWindowPreviews.push(row);
     } else if (row.armed === 1 && isLateArmPreviewInWindow(row, now)) {
       inWindowPreviews.push(row);
+      lateArmIds.add(row.id);
     }
   }
   // Two live hand-entered rows for one company: email follows the EARLIER
@@ -1309,7 +1322,11 @@ export function findEmailCandidates(
   const out: EmailCandidate[] = [];
   for (const row of previewCandidates) {
     if (!row.symbol || !isCovered(row) || !isAllowed(row.symbol)) continue;
-    out.push({ eventId: row.id, symbol: row.symbol, phase: "preview" });
+    out.push(
+      lateArmIds.has(row.id)
+        ? { eventId: row.id, symbol: row.symbol, phase: "preview", lateArm: true }
+        : { eventId: row.id, symbol: row.symbol, phase: "preview" },
+    );
     if (out.length >= limit) return out;
   }
   for (const row of recapCandidates) {

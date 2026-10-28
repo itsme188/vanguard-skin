@@ -55,7 +55,7 @@ import {
   isLateArmPreviewInWindow,
   LATE_ARM_PREVIEW_CUTOFF_MS,
 } from "@/lib/calendar/enrichment-runner";
-import { runLateArmPreviewKick } from "@/lib/calendar/email-sweep";
+import { processSweepCandidate, runLateArmPreviewKick } from "@/lib/calendar/email-sweep";
 import { armWorksheet } from "@/lib/mutations/earnings-worksheet-flags";
 import { recordEarningsEmailSkip } from "@/lib/mutations/earnings-skips";
 
@@ -137,6 +137,42 @@ describe("findEmailCandidates — late-arm preview window", () => {
     expect(previewIds(at("19:50:00"))).toEqual([]);
   });
 
+  it("never earlier than the regular window: a release time after the slot floor keeps its slot", () => {
+    // BMO row stored 08:30 ET: regular window 06:15-06:45 ET. The floor
+    // (07:00) must not pull the preview to 05:15.
+    const bmo = seedEvent("BMOLT", { eventTime: "BMO", releaseTime: "08:30" });
+    expect(previewIds(at("09:20:00"))).not.toContain(bmo); // 05:20 ET
+    expect(previewIds(at("10:30:00"))).toContain(bmo); // 06:30 ET, the regular window
+    // Once that window closes (06:45) the 07:00 floor is already inside the
+    // 15-minute cutoff, so there is no late window for this row.
+    expect(previewIds(at("10:46:00"))).not.toContain(bmo); // 06:46 ET
+    expect(previewIds(at("10:50:00"))).not.toContain(bmo); // 06:50 ET
+  });
+
+  it("an armed BMO row stored at its 07:00 floor gets a late window to 06:45 ET", () => {
+    const id = seedEvent("BMOFL", { eventTime: "BMO", releaseTime: "07:00" });
+    expect(previewIds(at("09:30:00"))).toContain(id); // 05:30 ET, past the 04:45-05:15 window
+    expect(previewIds(at("10:45:00"))).toContain(id); // 06:45 ET, exactly 15 minutes out
+    expect(previewIds(at("10:46:00"))).not.toContain(id);
+  });
+
+  it("an AMC row stored at the 17:00 call time is not pulled earlier than 15:15 ET", () => {
+    const id = seedEvent("AMCLT", { releaseTime: "17:00" });
+    expect(previewIds(at("18:20:00"))).not.toContain(id); // 14:20 ET
+    expect(previewIds(at("19:00:00"))).toContain(id); // 15:00 ET, regular window
+  });
+
+  it("marks late-arm candidates, and only those", () => {
+    const late = seedEvent("MARKA");
+    expect(findEmailCandidates(db, { now: at("19:00:00") }).find((c) => c.eventId === late)).toMatchObject({
+      lateArm: true,
+    });
+    const regular = seedEvent("MARKB", { releaseTime: "17:00" });
+    const cand = findEmailCandidates(db, { now: at("19:00:00") }).find((c) => c.eventId === regular);
+    expect(cand).toBeDefined();
+    expect(cand?.lateArm).toBeUndefined();
+  });
+
   it("a slot-less row is measured against its stored release time alone", () => {
     const id = seedEvent("NOSLT", { eventTime: null, releaseTime: "16:30" });
     expect(previewIds(at("19:30:00"))).toEqual([id]); // 60 minutes before 16:30 ET
@@ -210,6 +246,30 @@ describe("runLateArmPreviewKick", () => {
       .prepare(`SELECT 1 FROM earnings_email_skips WHERE event_id = ? AND phase = 'preview'`)
       .get(id);
     expect(skip).toBeDefined();
+  });
+
+  it("re-checks a late-arm window just before the send: a window that closed sends nothing", async () => {
+    // Chosen at 15:00 ET; by the time its turn comes it is 15:50 ET.
+    const id = seedEvent("RECHK");
+    const r = await processSweepCandidate(
+      db,
+      { eventId: id, symbol: "RECHK", phase: "preview", lateArm: true },
+      { now: at("19:50:00") },
+    );
+    expect(r).toMatchObject({ eventId: id, ok: true, skipped: "late-arm-window-closed" });
+    expect(sendCandidate).not.toHaveBeenCalled();
+    expect(db.prepare(`SELECT 1 FROM earnings_email_skips WHERE event_id = ?`).get(id)).toBeUndefined();
+  });
+
+  it("the re-check lets a still-open late-arm window send", async () => {
+    const id = seedEvent("RECHO");
+    const r = await processSweepCandidate(
+      db,
+      { eventId: id, symbol: "RECHO", phase: "preview", lateArm: true },
+      { now: at("19:30:00") },
+    );
+    expect(r).toMatchObject({ eventId: id, ok: true });
+    expect(sendCandidate).toHaveBeenCalledTimes(1);
   });
 
   it("never throws: a throwing send service is booked as a failed result", async () => {

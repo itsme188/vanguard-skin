@@ -25,6 +25,7 @@ import {
   findEmailCandidates,
   type EmailCandidate,
   type EmailSweepOpts,
+  isLateArmPreviewInWindow,
 } from "./enrichment-runner";
 import { reapStaleEarningsEmailClaims, type EmailRowRefusal } from "@/lib/digest/send-earnings-email";
 // ONE send path (slice E): the service owns the claim, the awaited markers, the
@@ -85,6 +86,10 @@ export interface SweepCandidateResult {
     | "entry-not-found"
     | "wrap-pending"
     | "already-reported"
+    /** A late-arm preview whose window closed while earlier candidates in
+     *  the same tick were sending (2026-10-28). Nothing recorded: the
+     *  window will not reopen, and the regular rules take over. */
+    | "late-arm-window-closed"
     /** A completed row already exists for this (event, phase) — the Mac sent it
      *  (or the desk confirmed it) and the service refused to refire. */
     | "already-sent"
@@ -169,7 +174,7 @@ async function reconcileCloudSentAudits(db: Database.Database): Promise<number> 
  * late-arm preview kick (runLateArmPreviewKick) so the two can never apply
  * different checks.
  */
-async function processSweepCandidate(
+export async function processSweepCandidate(
   db: Database.Database,
   cand: EmailCandidate,
   opts: EmailSweepOpts,
@@ -226,6 +231,30 @@ async function processSweepCandidate(
         skipped: "wrap-pending",
         durationMs: Date.now() - t0,
       });
+    }
+  }
+
+  // Late-arm re-check (2026-10-28): candidates are chosen once per tick and
+  // each send takes 1-3 minutes, so a late-arm preview chosen near its
+  // 15-minute cutoff could otherwise go out after the print.
+  if (cand.lateArm) {
+    const row = db
+      .prepare(`SELECT event_date, release_time, event_time, raw_json FROM calendar_events WHERE id = ?`)
+      .get(cand.eventId) as
+      | { event_date: string; release_time: string | null; event_time: string | null; raw_json: string | null }
+      | undefined;
+    if (
+      !row?.release_time ||
+      !isLateArmPreviewInWindow({ ...row, release_time: row.release_time }, opts.now ?? new Date())
+    ) {
+      return {
+        eventId: cand.eventId,
+        symbol: cand.symbol,
+        phase: cand.phase,
+        ok: true,
+        skipped: "late-arm-window-closed",
+        durationMs: Date.now() - t0,
+      };
     }
   }
 

@@ -186,6 +186,24 @@ describe("accountFailureOf — raw Anthropic SDK errors", () => {
     expect(accountFailureOf(err)).toBe("network");
   });
 
+  it("a client-side timeout is NOT account-level (the date check would retry it all day)", async () => {
+    // A server that never answers; the stub honours the SDK's abort signal the
+    // way the real fetch does, so the SDK's own timeout fires.
+    const hang = (_url: unknown, init?: { signal?: AbortSignal | null }) =>
+      new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
+      });
+    const client = new Anthropic({ apiKey: "test-key", maxRetries: 0, timeout: 20, fetch: hang as typeof fetch });
+    let err: unknown;
+    try {
+      await client.messages.create({ model: "m", max_tokens: 1, messages: [{ role: "user", content: "x" }] });
+    } catch (e) {
+      err = e;
+    }
+    expect((err as Error).constructor.name).toBe("APIConnectionTimeoutError");
+    expect(accountFailureOf(err)).toBeNull();
+  });
+
   it("a plain Error is not account-level", () => {
     expect(accountFailureOf(new Error("unexpected token in JSON"))).toBeNull();
   });

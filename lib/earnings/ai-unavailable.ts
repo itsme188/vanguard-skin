@@ -18,7 +18,7 @@
  */
 import type Database from "better-sqlite3";
 import { classifyEnrichmentError, type EnrichmentFailureKind } from "@/lib/gmail/enrichment-failure";
-import { APIConnectionError, APIError } from "@anthropic-ai/sdk";
+import { APIConnectionError, APIConnectionTimeoutError, APIError } from "@anthropic-ai/sdk";
 import { classifyAnthropicError } from "@/lib/ai/classify-anthropic-error";
 
 export type AccountFailureKind = Extract<
@@ -75,9 +75,14 @@ function classifyOne(err: unknown): AccountFailureKind | null {
  * A raw `@anthropic-ai/sdk` error. The kind comes from the shared raw-SDK
  * classifier (lib/ai/classify-anthropic-error.ts), which knows the credit
  * message; the two shapes it leaves as "unknown" are read here: no connection
- * (`APIConnectionError`, which also covers a timeout) and a 408 or 5xx.
+ * (`APIConnectionError`, but not its timeout subclass) and a 408 or 5xx.
  */
 function rawSdkAccountFailure(err: unknown): AccountFailureKind | null {
+  // A request that ran out OUR clock is not evidence the account is down,
+  // and the date check would retry it every tick all day (its stamp-first
+  // gate exists to stop exactly that). Checked first: it is a subclass of
+  // APIConnectionError.
+  if (err instanceof APIConnectionTimeoutError) return null;
   if (err instanceof APIConnectionError) return "network";
   if (!(err instanceof APIError)) return null;
   switch (classifyAnthropicError(err)?.kind) {
