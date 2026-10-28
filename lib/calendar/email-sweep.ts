@@ -696,6 +696,15 @@ export async function runLateArmPreviewKick(
     );
     if (!cand) return null;
     const result = await processSweepCandidate(db, cand, opts);
+    // One line per kick, so server.log shows what a late arm did.
+    const verdict = !result.ok
+      ? `failed (${result.message ?? "no message"})`
+      : result.skipped
+        ? `${result.skipped}${result.message ? ` (${result.message})` : ""}`
+        : "sent";
+    console.info(
+      `[earnings-sweep] ${cand.lateArm ? "late-arm " : ""}preview kick ${cand.symbol} (event ${eventId}): ${verdict}`,
+    );
     await printArmedWorksheets(db, { now: opts.now });
     return result;
   } catch (err) {
