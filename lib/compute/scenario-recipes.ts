@@ -567,7 +567,13 @@ export function computeRecipeScenario(
         s.security_type,
         COALESCE(s.sector, s_u.sector) AS sector,
         COALESCE(s.industry, s_u.industry) AS industry,
-        COALESCE(s.fund_category, s_u.fund_category) AS fund_category,
+        -- An option's subject membership follows its UNDERLYING: Auto-Classify
+        -- stamps option rows with their own 'Options' category, which hid the
+        -- underlying's (e.g. semiconductor) category and sent every put on
+        -- the semis ETF to the non-subject floor (QA 2026-10-28). Non-option
+        -- rows read their own category first, as before.
+        CASE WHEN ${OPTION_ROW_SQL} THEN COALESCE(s_u.fund_category, s.fund_category)
+             ELSE COALESCE(s.fund_category, s_u.fund_category) END AS fund_category,
         COALESCE(s.geography, s_u.geography) AS geography,
         COALESCE(s.currency, s_u.currency) AS currency,
         s.duration_years,
