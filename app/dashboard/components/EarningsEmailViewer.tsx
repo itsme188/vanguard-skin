@@ -110,8 +110,11 @@ export function EmailViewerHeader({ data }: { data: EmailContentResponse | null 
       : null;
   // The route rebuilds the scoreboard from the current row for both phases, so a
   // sent preview needs the disclosure too (vendor consensus may have moved).
+  // A cloud-sent row has no local copy of the prose, so the frame holds only
+  // the rebuilt scoreboard: promising "the text below is what was sent" there
+  // contradicted the cloud caveat one line above (QA 2026-10-28).
   const isSentWithRebuiltScoreboard =
-    !!data && (data.phase === "preview" || data.phase === "recap") && !!data.sentAt;
+    !!data && (data.phase === "preview" || data.phase === "recap") && !!data.sentAt && data.sentBy !== "cloud";
   return (
     <div className="flex flex-col min-w-0">
       <h2 className="text-sm font-medium text-ink truncate whitespace-nowrap!">
@@ -120,7 +123,9 @@ export function EmailViewerHeader({ data }: { data: EmailContentResponse | null 
       {data && data.sentAt && data.sentTo && (
         <p className="text-[11px] text-ink-faint font-mono mt-0.5 truncate">
           {data.deliveryState === "delivery-unknown" ? "Delivery unknown" : "Sent"}{" "}
-          {formatSentAt(data.sentAt)} ET to {data.sentTo}
+          {formatSentAt(data.sentAt)} ET{" "}
+          {/* A cloud row's recipient column holds the audit token, not a mailbox. */}
+          {data.sentBy === "cloud" ? "by the cloud fallback" : `to ${data.sentTo}`}
         </p>
       )}
       {data && !data.sentAt && (

@@ -52,7 +52,9 @@ describe("EmailViewerHeader — deliveryState caveat (email-content route additi
 
   it("a sent-by-cloud email keeps the existing cloud caveat verbatim; header word stays 'Sent'", () => {
     const html = render(response({ sentBy: "cloud", deliveryState: "sent-by-cloud" }));
-    expect(html).toMatch(/>Sent [^<]*ET to isaac@example\.com/);
+    // A cloud row's recipient is the audit token, not a mailbox: the Sent
+    // line names the cloud fallback (QA finding 2026-10-28).
+    expect(html).toMatch(/>Sent [^<]*ET by the cloud fallback</);
     expect(html).toContain(
       "Delivered by cloud fallback — no local copy of the prose (scoreboard below is still live-rebuilt)",
     );
