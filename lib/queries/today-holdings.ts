@@ -445,9 +445,14 @@ export interface IbkrDayMoveSummary {
   todayGain: number | null;
   priorGross: number;
   todayPct: number | null;
-  /** Rows opened today, measured or not. */
+  /**
+   * Rows opened today AND measured from their cost (the Today line titles
+   * this count "Measured from what they cost"). An opened row with no usable
+   * cost is NOT in it: it is counted once, under `excludedCount` (QA
+   * 2026-10-28: one put read as two names, "1 opened" and "1 left out").
+   */
   openedTodayCount: number;
-  /** Of those, rows with no usable cost: left out of the move. */
+  /** Rows opened today with no usable cost: left out of the move. */
   excludedCount: number;
   /** Rows added to today, measured or not. */
   addedTodayCount: number;
@@ -497,7 +502,7 @@ export function summarizeIbkrDayMove(
   rows: TodayHolding[],
 ): IbkrDayMoveSummary {
   const notes = {
-    openedTodayCount: rows.filter((h) => h.opened_today).length,
+    openedTodayCount: rows.filter((h) => h.opened_today && h.day_move_basis !== "excluded").length,
     excludedCount: rows.filter((h) => h.opened_today && h.day_move_basis === "excluded").length,
     addedTodayCount: rows.filter((h) => !h.opened_today && h.added_today_qty !== 0).length,
     addedCostUnknownCount: rows.filter((h) => h.added_cost_unknown).length,

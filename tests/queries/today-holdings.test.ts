@@ -549,7 +549,8 @@ describe("getIbkrTodayHoldings: quantity opened today is measured from cost", ()
     const summary = summarizeIbkrDayMove(rows);
     expect(summary.count).toBe(1); // SPY only
     expect(summary.todayGain).toBeCloseTo(1, 6); // SPY 1 x (631 - 630)
-    expect(summary.openedTodayCount).toBe(1);
+    // Counted once: under "left out", not also under "opened (from cost)".
+    expect(summary.openedTodayCount).toBe(0);
     expect(summary.excludedCount).toBe(1);
     expect(summary.unpricedCount).toBe(0);
   });
