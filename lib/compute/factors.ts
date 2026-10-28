@@ -401,9 +401,11 @@ function computeTilts(
  *   No=0, Low=0.25, Moderate=0.5, High=0.75, Very High=1.0
  *
  * Non-standard scales (data sampled from live DB 2026-05-11):
- *   growth_vs_value: only "Growth" / "Value" — both classified, direction is
+ *   growth_vs_value: "Growth" / "Value" — both classified, direction is
  *                    carried by `theme.direction` in macro-themes consumer.
  *                    Both map to 1.0 ("classified into the growth/value axis").
+ *                    "Blend" (a fund with no style tilt, 2026-10-28) maps to 0:
+ *                    it sits on neither side of the axis.
  *   crypto_adjacent: "Yes" → 1.0; "No" → 0; otherwise standard scale.
  *   international_exposure: "International" → 1.0; otherwise standard scale.
  *
@@ -416,6 +418,7 @@ function exposureMultiplier(value: string | null): number {
   switch (value) {
     case "No":
     case "Unknown":
+    case "Blend":
       return 0;
     case "Low":
       return 0.25;

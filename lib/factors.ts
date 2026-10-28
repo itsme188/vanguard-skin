@@ -57,6 +57,7 @@ export const LEVEL_COLORS: Record<string, string> = {
   // Growth vs Value
   Growth: "#60A5FA",       // blue-400
   Value: "#C9A44E",        // gold
+  Blend: "#64748B",        // slate-500: a fund with no style tilt (same as the heatmap's BLEND_COLOR)
 
   // Crypto binary
   Yes: "#F87171",          // rose-400
@@ -76,6 +77,7 @@ export const FACTOR_SORT_RANK: Record<string, number> = {
   "Moderate": 3,
   "Growth": 3,          // neutral tier for growth_vs_value
   "Value": 2,
+  "Blend": 2.5,         // between Value and Growth (matches the heatmap's sort)
   "Low": 2,
   "Yes": 5,             // crypto binary = Very High equivalent
   "No": 1,

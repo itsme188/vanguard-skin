@@ -51,7 +51,7 @@ ${FACTOR_COLUMNS.map((col) => `- ${FACTOR_LABELS[col]} (${col})`).join("\n")}
 
 Factor value scales:
 - interest_rate_sensitive: Low / Moderate / High
-- growth_vs_value: Growth / Value
+- growth_vs_value: Growth / Value / Blend (use "Blend" only for a diversified fund with no style tilt, e.g. a total-market or S&P 500 index fund; a single company is always Growth or Value)
 - cyclical: Low / Moderate / High
 - international_exposure: Low / Moderate / High / International (use "International" only for companies primarily based/operating outside the US)
 - geopolitical_onshoring: Low / Moderate / High / Very High
@@ -70,10 +70,33 @@ ${TRAINING_EXAMPLES.map((ex) =>
   `${ex.symbol} (${ex.sector}/${ex.industry}): interest_rate_sensitive=${ex.interest_rate_sensitive}, growth_vs_value=${ex.growth_vs_value}, cyclical=${ex.cyclical}, international_exposure=${ex.international_exposure}, geopolitical_onshoring=${ex.geopolitical_onshoring}, tariff_exposure=${ex.tariff_exposure}, ai_exposure=${ex.ai_exposure}, crypto_adjacent=${ex.crypto_adjacent}, regulatory_risk=${ex.regulatory_risk}`
 ).join("\n")}
 
-For ETFs, classify based on the fund's overall exposure profile (e.g., QQQ has Very High AI exposure, SPY has Moderate across most factors).
+For ETFs, classify based on the fund's overall exposure profile (e.g., QQQ has Very High AI exposure, SPY has Moderate across most factors and is Blend).
 
 Return ONLY a JSON array. No markdown fences. Each element:
 {"symbol":"...","sector":"...","industry":"...","interest_rate_sensitive":"...","growth_vs_value":"...","cyclical":"...","international_exposure":"...","geopolitical_onshoring":"...","tariff_exposure":"...","ai_exposure":"...","crypto_adjacent":"...","regulatory_risk":"..."}`;
+
+/** Fund types whose stored classification style answers growth_vs_value. */
+const FUND_TYPES = new Set(["etf", "mutual fund"]);
+const STYLE_VALUES = new Set(["Growth", "Value", "Blend"]);
+
+/**
+ * A fund's growth_vs_value comes from its classification style (static lookup
+ * or the fund classifier, the field the Breakdown and the heatmap already
+ * read), never from a second AI guess. Before this, the axis had no middle,
+ * so two broad index funds landed on opposite sides (SPY Value, VTI Growth)
+ * and fed the rate-shock scenarios and the tilts that way. Stocks keep the
+ * AI answer: a company-level style is itself only a guess.
+ */
+export function fundStyleGrowthValue(sec: {
+  security_type: string | null;
+  style: string | null;
+}): string | null {
+  if (!sec.security_type || !FUND_TYPES.has(sec.security_type.trim().toLowerCase())) return null;
+  const style = sec.style?.trim();
+  if (!style) return null;
+  const canonical = style.charAt(0).toUpperCase() + style.slice(1).toLowerCase();
+  return STYLE_VALUES.has(canonical) ? canonical : null;
+}
 
 // Security types to skip (they don't need factor classification)
 const SKIP_TYPES = new Set([
@@ -99,7 +122,7 @@ export async function classifyFactors(
   // - Not an option (options inherit from underlying at query time)
   const unclassified = db
     .prepare(
-      `SELECT DISTINCT s.id, s.symbol, s.name, s.security_type, s.fund_category
+      `SELECT DISTINCT s.id, s.symbol, s.name, s.security_type, s.fund_category, s.style
        FROM securities s
        JOIN holdings h ON h.security_id = s.id AND h.quantity != 0
        LEFT JOIN security_factors sf ON sf.security_id = s.id
@@ -114,6 +137,7 @@ export async function classifyFactors(
       name: string | null;
       security_type: string | null;
       fund_category: string | null;
+      style: string | null;
     }>;
 
   // Underlyings of currently-held, unexpired options. Options never get their
@@ -126,7 +150,7 @@ export async function classifyFactors(
   const optionUnderlyings = db
     .prepare(
       `SELECT DISTINCT s.underlying_symbol AS symbol,
-              u.id AS existing_id, u.name, u.security_type
+              u.id AS existing_id, u.name, u.security_type, u.style
        FROM holdings h
        JOIN securities s ON s.id = h.security_id
        LEFT JOIN securities u ON u.symbol = s.underlying_symbol
@@ -142,6 +166,7 @@ export async function classifyFactors(
       existing_id: number | null;
       name: string | null;
       security_type: string | null;
+      style: string | null;
     }>;
 
   let underlyingsCreated = 0;
@@ -157,7 +182,7 @@ export async function classifyFactors(
     }
     if (seenIds.has(id)) continue; // already a direct candidate (held stock that's also an underlying)
     seenIds.add(id);
-    unclassified.push({ id, symbol: u.symbol, name: u.name, security_type: u.security_type, fund_category: null });
+    unclassified.push({ id, symbol: u.symbol, name: u.name, security_type: u.security_type, fund_category: null, style: u.style });
   }
 
   // Set simple defaults for bonds, money market, etc.
@@ -247,8 +272,8 @@ export async function classifyFactors(
     // has only one item (common one-item-prompt model behavior).
     const results = parseBatchReply(text, "classifications");
 
-    // Build symbol → security_id map for this batch
-    const idMap = new Map(batch.map((s) => [s.symbol, s.id]));
+    // Build symbol → security map for this batch
+    const secMap = new Map(batch.map((s) => [s.symbol, s]));
 
     let usableInBatch = 0;
     for (const raw of results) {
@@ -268,13 +293,14 @@ export async function classifyFactors(
       // with no security_factors row at all, so the security was never retried.
       if (!FACTOR_COLUMNS.some((col) => typeof result[col] === "string")) continue;
 
-      const secId = idMap.get(result.symbol as string);
-      if (!secId) continue;
+      const sec = secMap.get(result.symbol as string);
+      if (!sec) continue;
+      const secId = sec.id;
 
       upsertFactor.run(
         secId,
         factorValue(result, "interest_rate_sensitive"),
-        factorValue(result, "growth_vs_value"),
+        fundStyleGrowthValue(sec) ?? factorValue(result, "growth_vs_value"),
         factorValue(result, "cyclical"),
         factorValue(result, "international_exposure"),
         factorValue(result, "geopolitical_onshoring"),
