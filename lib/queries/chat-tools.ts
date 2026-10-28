@@ -872,7 +872,10 @@ export function getTaxLotsForChat(
   // (one index, the same Eastern day as the expiry note). A lot that is not
   // ordinary-open carries NO value and NO gain (ruling R1): a pending lot
   // (any reason), and an expired option awaiting its closing entry, which
-  // the index never lists as pending (expired beats pending).
+  // the index never lists as pending (expired beats pending). The last MARK
+  // is withheld with them: a shipped current_price was multiplied back into
+  // a "value at last mark" for a put that finished out of the money (QA
+  // 2026-10-28), so no figure the model could turn into a value reaches it.
   const pendingIndex = getPendingStatementIndex(db, undefined, { today });
   return rows.map(({ account_id, security_id, is_short, ...r }) => {
     const reason = pendingIndex.reasonFor({ account_id, security_id, is_short });
@@ -893,6 +896,7 @@ export function getTaxLotsForChat(
       return {
         ...r,
         ...common,
+        current_price: null,
         current_value: null,
         unrealized_gain: null,
         pending_statement: true,
@@ -903,7 +907,7 @@ export function getTaxLotsForChat(
     return {
       ...r,
       ...common,
-      ...(expiredOption ? { current_value: null, unrealized_gain: null } : {}),
+      ...(expiredOption ? { current_price: null, current_value: null, unrealized_gain: null } : {}),
       pending_statement: false,
       pending_statement_reason: null,
       status_note: statusNote,
