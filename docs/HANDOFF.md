@@ -1,44 +1,49 @@
 # Session Handoff — for Codex review
 
-**Waiting on:** USER: sign the updated Apple Developer agreement at App Store Connect (Agreements, Tax, and Banking), then run `npm run deploy` — `main` `18747e42` is landed but not installed (decision record `apple-agreement-redeploy`). The decision records `broker-realized-gain-reports` and `tax-preparer-short-term-gift` were not touched. CODEX: a review of the account-failure rule in section 3 is welcome. CLAUDE: nothing.
+**Waiting on:** USER: on the next print armed under two hours before its release, confirm the preview email arrived and the sheet then auto-printed (decision record `late-arm-preview-confirm`). The decision records `broker-realized-gain-reports` and `tax-preparer-short-term-gift` were not touched. CODEX: a review of `isLateArmPreviewInWindow` and the send-time re-check (section 3) is welcome. CLAUDE: nothing.
 
 > Rolling file, overwritten at each session close. Past handoffs: `git log -p docs/HANDOFF.md`.
 
 ## 1. Goal and files changed
 
-Goal: after the Anthropic account ran out of credit (2026-10-27, from 05:12 ET), rerun the armed-print prepare work that failed, and make an AI account outage stop spending earnings prep retries, with a visible notice in the Earnings Hub.
+Goal: install the 2026-10-27 outage fix (blocked on the Apple agreement), then close the two TODO items it left: (A) a print armed after its 105-135 minute preview window still gets its preview, so the auto-print can fire; (B) the daily earnings-date check retries after an AI account outage instead of losing the day.
 
 Commits on `main`:
-- `a0dc64b8` fix(earnings): an AI account outage never spends a prep retry; the Earnings Hub says AI prep is paused
-  - `lib/earnings/ai-unavailable.ts` (new): `accountFailureOf` (reads `cause` first, over `classifyEnrichmentError`), the pending reason prefix, the `earnings_ai_unavailable` settings marker, `getAiPrepPause` (hub read model), `aiPrepPauseNotice` (wording).
-  - `lib/earnings/prepare-armed-event.ts`: pending outcome gains `accountFailure`; step definitions gain `usesAi`; a thrown account-level failure books pending with no attempt unless the runner's deadline fired; marker set and cleared.
-  - `lib/earnings/prepare-steps/newsletter-rescan.ts`: account failure releases the claim with no attempt and stops the pass.
-  - `lib/earnings/prepare-steps/newsletter-synthesis.ts`: account failure returns pending.
-  - `lib/earnings/extract-newsletter-bogeys.ts`: provider error kept on `cause`; no text-only resend on an account-level 400.
-  - `app/dashboard/today/EarningsHub.tsx`: `role="status"` "AI paused" line.
-  - `tests/earnings/ai-unavailable.test.ts`, `tests/earnings/prepare-ai-account-failure.test.ts` (new).
-- `18747e42` chore(claude): `CLAUDE.md`, `docs/DECISIONS.md` (2026-10-27 entry), `docs/reference/earnings-pipeline.md` (§An AI account outage waits), `docs/plans/TODO.md`.
+- `2fef7020` fix(earnings): a late arm gets its preview; the date check retries an AI outage
+  - `lib/calendar/enrichment-runner.ts`: `LATE_ARM_PREVIEW_CUTOFF_MS`, `isLateArmPreviewInWindow`, armed flag in the preview query (LEFT JOIN `earnings_worksheet_flags`), `EmailCandidate.lateArm`.
+  - `lib/calendar/email-sweep.ts`: per-candidate body extracted verbatim into `processSweepCandidate`; `runLateArmPreviewKick`; skip `late-arm-window-closed`.
+  - `lib/earnings/worksheet.ts`: `printArmedWorksheets` passes serialized in-process (promise queue).
+  - `app/api/earnings/worksheet/route.ts`: arm chains the kick after the prepare pass.
+  - `lib/calendar/verify-earnings-dates.ts`: `accountFailure` on the result; the day stamp is restored on one.
+  - `lib/earnings/ai-unavailable.ts`: `accountFailureOf` also reads raw `@anthropic-ai/sdk` errors.
+  - Tests: `tests/calendar/late-arm-preview.test.ts`, `tests/api/earnings-worksheet-late-arm-kick.test.ts` (new); `tests/earnings/worksheet.test.ts`, `tests/calendar/verify-earnings-dates.test.ts`, `tests/earnings/ai-unavailable.test.ts` (extended).
+- `31f61c7f` chore(claude): `CLAUDE.md`, `docs/DECISIONS.md` (2026-10-28 entry), `docs/reference/earnings-pipeline.md` (§Late-arm preview, outage section), `docs/plans/TODO.md`.
+- `7621dfd9` fix(earnings): review fixes (never earlier than the regular window; re-check at send; client timeout is not an account failure).
+- `b160461f` chore(earnings): one log line per kick.
+- `46b20581` docs: TODO reconciled with hashes.
 
 ## 2. Checks
 
-- `bash scripts/verify.sh full --base main`: passed at `a0dc64b8` (worktree) and at `18747e42` (main checkout): 1,510 files, 18,958 tests passed, 4 skipped, 9 todo.
+- `bash scripts/verify.sh full --base main` at `46b20581` (main checkout): 18,999 tests passed.
 - `npx tsc --noEmit`: clean.
-- Browser check on a task sandbox (own DB copy, outage state seeded into the copy): the notice renders in light and dark themes and at phone width, no horizontal scroll, no console errors.
-- Deploy (`npm run deploy --commit 18747e42`): FAILED at notarization, HTTP 403 "A required agreement is missing or has expired" (same as the nightly fixer that morning). Build, signing and bundle gate passed. Not retried, per the project note on this error.
+- Sandbox end to end (own DB copy, :3090, dummy AI key, no email recipient): a hand-entered event armed through the Hub button inside the late window; the log showed the rescan pending with no attempt, the kick running (refused `not-ready`: no recipient in the sandbox), and the worksheet waiting for a local preview. Hub showed the "AI paused" notice; no console errors.
+- Opus review of the branch: three real defects found and fixed in `7621dfd9`.
+- Deploys: `2c8edf33` (the outage fix plus three nightly-fixer commits) and then `46b20581` via `npm run deploy`, both notarized, installed and relaunched; post-deploy checks passed.
 
 ## 3. Concerns, rejected approaches, decisions
 
-- Owner ruling: an account-level AI failure in the prepare pipeline costs no attempt; article-level and unknown failures count as before. Same classifier as the research feed, no second one.
-- Claude's calls: the rescan stops at the first account failure (not the research feed's two-in-a-row rule). A step cut off by the runner's own deadline still counts (its AbortError would otherwise read as "network"). The marker clears only when an AI step finishes or fails, never on a plain pending. The notice shows on every week the hub displays.
-- Live repair: the owner ran a one-off backed-up script resetting the outage's spent scan rows and failed steps to zero attempts; Claude's own live write was blocked by the permission classifier. The next passes completed every scan and deep read.
-- Open (TODO top): whether price-level extraction and the earnings-date check also spend retries on an outage; same-day arms still get no local preview email, so the worksheet auto-print waits.
+- Owner chose option A (late arm triggers its preview) over leaving the auto-print without a preview.
+- Claude's calls: a late-arm preview never sends earlier than the regular window would have (only after it has closed on the recorded release instant); the cut-off is 15 minutes before the earlier of the release instant and the slot floor; the window is re-checked at send, so a queued kick cannot mail after the print. A client timeout is not an account failure (it would otherwise retry the date check all day).
+- Print-watch Go is deliberately not wired to the kick.
+- Known limit: a sweep tick landing mid-prepare composes without the deep read. The Worker is unchanged (Mac only).
+- Not seen live: a real late-arm email (the sandbox has no recipient).
 
 ## 4. State after closeout
 
-- The installed app is the PREVIOUS build (deploy failed before install); :3099 is up.
-- `main` = `origin/main` = this handoff commit. The push also carried three nightly-fixer commits that were already on local `main` (`25353486`, `22d86b1d`, `eff9995e`); they are likewise not installed.
-- Worktree `/Users/Yitzi/code/vanguard-skin-ai-outage` (branch `ai-account-failure-no-retry-burn`, merged) is left for the owner to remove; `/Users/Yitzi/code/vanguard-skin-qa-fix` belongs to the nightly fixer. Task sandbox stopped (evidence kept).
-- Open PRs #124 to #127 are nightly QA branches, not from this session.
+- Installed app: `46b20581`, :3099 up.
+- `main` = `origin/main` = this handoff commit. Worktree `vanguard-skin-late-arm` and its branch removed.
+- Other worktrees: `/Users/Yitzi/code/vanguard-skin-fund-style` (branch `fund-style-growth-value`, not this session) and `/Users/Yitzi/code/vanguard-skin-qa-fix` (nightly fixer). Open PRs #124 to #128 are nightly QA branches.
+- No dev servers or sandboxes running.
 
 ## 5. Agent
 
