@@ -33,6 +33,13 @@ import {
   type NewFiling,
 } from "@/lib/filing-summary/store";
 import type { CheckedSection, CoverageEntry } from "@/lib/filing-summary/types";
+import { AI_UNAVAILABLE_REASON_PREFIX } from "@/lib/earnings/ai-unavailable";
+import {
+  ANTHROPIC_FAILURES,
+  errorFromRealSdk,
+  fetchFailed,
+  type AnthropicFailureName,
+} from "../helpers/ai-sdk-real-errors";
 import { SCHEMA_VERSION } from "@/lib/filing-summary/schema";
 import { PROMPT_VERSION } from "@/lib/filing-summary/prompt";
 import { EXTRACTOR_VERSION } from "@/lib/filing-summary/doc-text";
@@ -834,5 +841,135 @@ describe("companions (R13)", () => {
     expect(listRuns(db, eventId)[0].status).toBe("done");
     expect(retryRunWithReason(db, r.runId, "retry-2")).toEqual({ ok: false, reason: "nothing_to_retry" });
     expect(db.prepare("SELECT COUNT(*) AS n FROM settings WHERE key LIKE 'filing_summary%'").get()).toEqual({ n: 0 });
+  });
+});
+
+/**
+ * Owner ruling (2026-10-27 precedent, 2026-10-29 incident): an AI ACCOUNT
+ * failure (out of credit, spend cap, bad key, rate limit, provider outage,
+ * no connection) never spends a section's attempt. The section waits as
+ * pending and the next tick tries again; any other failure counts as before.
+ * The errors come from the real AI SDK with only the network stubbed, with
+ * the gateway's own `maxRetries: 0`.
+ */
+describe("an AI account failure never spends an attempt (2026-10-29)", () => {
+  function start(): number {
+    const r = startRun(db, eventId, "auto", { catalogIds: CATALOG });
+    if (!r.ok) throw new Error(r.reason);
+    return r.runId;
+  }
+  async function sdkError(name: AnthropicFailureName): Promise<unknown> {
+    return (await errorFromRealSdk(ANTHROPIC_FAILURES[name], { maxRetries: 0 })).error;
+  }
+
+  it("the spend cap: five failed ticks leave the section pending with no attempt spent; it then runs", async () => {
+    seedEarnings();
+    const runId = start();
+    const capped = await sdkError("spendLimit400");
+    let n = 0;
+    const { s, gen } = seams(async () => {
+      if (++n <= 5) throw capped;
+      return ok(EARNINGS_OUT)();
+    });
+    for (let i = 0; i < 5; i++) {
+      expect(await runNextSection(db, eventId, s)).toBe("ran");
+      const sec = sectionsOf(runId)[0];
+      expect(sec).toMatchObject({ status: "pending", attempts: 0, errorClass: "model_error" });
+      expect(sec.errorText?.startsWith(AI_UNAVAILABLE_REASON_PREFIX)).toBe(true);
+    }
+    expect(listRuns(db, eventId)[0].status).toBe("running");
+    expect(await runNextSection(db, eventId, s)).toBe("ran");
+    expect(gen).toHaveBeenCalledTimes(6);
+    expect(sectionsOf(runId)[0]).toMatchObject({ status: "done", attempts: 1, errorClass: null, errorText: null });
+  });
+
+  it.each<AnthropicFailureName>(["billing400", "billing402", "rateLimit429", "overloaded529", "apiError500", "auth401"])(
+    "%s is free: never attempt_cap",
+    async (name) => {
+      seedEarnings();
+      const runId = start();
+      const err = await sdkError(name);
+      const { s } = seams(async () => {
+        throw err;
+      });
+      for (let i = 0; i < 3; i++) await runNextSection(db, eventId, s);
+      expect(sectionsOf(runId)[0]).toMatchObject({ status: "pending", attempts: 0 });
+    },
+  );
+
+  it("no connection is free", async () => {
+    seedEarnings();
+    const runId = start();
+    const err = (await errorFromRealSdk(() => { throw fetchFailed(); }, { maxRetries: 0 })).error;
+    const { s } = seams(async () => {
+      throw err;
+    });
+    for (let i = 0; i < 3; i++) await runNextSection(db, eventId, s);
+    expect(sectionsOf(runId)[0]).toMatchObject({ status: "pending", attempts: 0 });
+  });
+
+  it("a request-level failure still counts; an outage between two counts does not", async () => {
+    seedEarnings();
+    const runId = start();
+    const tooLong = await sdkError("promptTooLong400");
+    const capped = await sdkError("spendLimit400");
+    let n = 0;
+    const { s, gen } = seams(async () => {
+      n += 1;
+      throw n === 2 ? capped : tooLong;
+    });
+    await runNextSection(db, eventId, s);
+    expect(sectionsOf(runId)[0]).toMatchObject({ status: "pending", attempts: 1, errorClass: "model_error", errorText: null });
+    await runNextSection(db, eventId, s);
+    expect(sectionsOf(runId)[0]).toMatchObject({ status: "pending", attempts: 1 });
+    await runNextSection(db, eventId, s);
+    expect(gen).toHaveBeenCalledTimes(3);
+    expect(sectionsOf(runId)[0]).toMatchObject({ status: "failed", errorClass: "attempt_cap", errorText: "model_error", attempts: 2 });
+  });
+
+  it("an outage on the last attempt does not finalize attempt_cap", async () => {
+    seedEarnings();
+    const runId = start();
+    const capped = await sdkError("spendLimit400");
+    let n = 0;
+    const { s } = seams(async () => {
+      n += 1;
+      if (n === 1) throw new Error("upstream hiccup");
+      if (n === 2) throw capped;
+      return ok(EARNINGS_OUT)();
+    });
+    await runNextSection(db, eventId, s);
+    await runNextSection(db, eventId, s);
+    expect(sectionsOf(runId)[0]).toMatchObject({ status: "pending", attempts: 1 });
+    await runNextSection(db, eventId, s);
+    expect(sectionsOf(runId)[0]).toMatchObject({ status: "done", attempts: 2 });
+  });
+
+  it("a timeout still counts (our clock, not the account)", async () => {
+    seedEarnings();
+    const runId = start();
+    const { s } = seams(async () => {
+      const e = new Error("timed out");
+      e.name = "TimeoutError";
+      throw e;
+    });
+    await runNextSection(db, eventId, s);
+    await runNextSection(db, eventId, s);
+    expect(sectionsOf(runId)[0]).toMatchObject({ status: "failed", errorClass: "attempt_cap", errorText: "timeout" });
+  });
+
+  it("a takeover still counts: a dead worker's claim is never given back", async () => {
+    seedEarnings();
+    const runId = start();
+    // Two claims by workers that died mid-call (no requeue, no refund).
+    claimNextSection(db, eventId, "dead1", T0);
+    claimNextSection(db, eventId, "dead2", T0 + 6 * MIN);
+    const capped = await sdkError("spendLimit400");
+    const { s, gen } = seams(async () => {
+      throw capped;
+    }, { now: () => T0 + 12 * MIN });
+    await runNextSection(db, eventId, s);
+    expect(gen).not.toHaveBeenCalled();
+    expect(sectionsOf(runId)[0]).toMatchObject({ status: "failed", errorClass: "attempt_cap", errorText: "takeover" });
   });
 });

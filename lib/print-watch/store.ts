@@ -547,16 +547,23 @@ export function finalizeDocumentParse(
   token: string,
   state: "parsed" | "queued" | "failed",
   error: string | null = null,
+  opts: { refundAttempt?: boolean } = {},
 ): boolean {
+  // `refundAttempt` gives back the attempt THIS claim took, in the same
+  // token-guarded statement: an AI account outage never spends one (owner
+  // ruling 2026-10-27, extended to print-watch 2026-10-29). A dead worker's
+  // earlier claim is a different statement and still counts.
+  const refund = opts.refundAttempt === true ? 1 : 0;
   const r = db
     .prepare(
       `UPDATE print_watch_documents
           SET parse_state = ?, parse_claim_token = NULL, parse_claimed_at = NULL,
               parse_last_error = ?,
+              parse_attempts = MAX(0, parse_attempts - ?),
               parsed_at = CASE WHEN ? = 'parsed' THEN datetime('now') ELSE parsed_at END
         WHERE id = ? AND parse_claim_token = ?`,
     )
-    .run(state, state === "parsed" ? null : error, state, docId, token);
+    .run(state, state === "parsed" ? null : error, refund, state, docId, token);
   return r.changes > 0;
 }
 

@@ -103,7 +103,7 @@ describe("aiPrepPauseNotice", () => {
 
   it("states the Eastern time, the reason and the counts", () => {
     expect(aiPrepPauseNotice(pause(), TODAY)).toBe(
-      "AI prep paused since 5:12 am ET — Anthropic credit balance is empty. " +
+      "AI prep paused since 5:12 am ET — Anthropic credit or monthly spend limit is used up. " +
         "12 prep steps for 6 armed prints are waiting and will run on their own once it's fixed.",
     );
   });
@@ -117,7 +117,7 @@ describe("aiPrepPauseNotice", () => {
 
   it("omits the time when no marker is recorded, and uses the singular for one step", () => {
     expect(aiPrepPauseNotice(pause({ since: null, waitingSteps: 1, waitingPrints: 1 }), TODAY)).toBe(
-      "AI prep paused — Anthropic credit balance is empty. " +
+      "AI prep paused — Anthropic credit or monthly spend limit is used up. " +
         "1 prep step for 1 armed print is waiting and will run on its own once it's fixed.",
     );
   });
@@ -132,7 +132,7 @@ describe("aiPrepPauseNotice", () => {
   it("maps every account-level kind to plain words", () => {
     const words = (kind: AiPrepPause["kind"]) =>
       aiPrepPauseNotice(pause({ kind, since: null }), TODAY).split(" — ")[1].split(". ")[0];
-    expect(words("billing")).toBe("Anthropic credit balance is empty");
+    expect(words("billing")).toBe("Anthropic credit or monthly spend limit is used up");
     expect(words("auth")).toBe("the Anthropic API key was rejected");
     expect(words("rate_limit")).toBe("Anthropic is rate-limiting requests");
     expect(words("outage")).toBe("Anthropic's service is unavailable");
@@ -163,6 +163,17 @@ describe("accountFailureOf — raw Anthropic SDK errors", () => {
   it("reads the out-of-credit 400 as billing", async () => {
     const err = await rawSdkError(() =>
       envelope(400, "invalid_request_error", "Your credit balance is too low to access the Anthropic API."),
+    );
+    expect(accountFailureOf(err)).toBe("billing");
+  });
+
+  it("reads the monthly spend-cap 400 as billing (2026-10-29 outage)", async () => {
+    const err = await rawSdkError(() =>
+      envelope(
+        400,
+        "invalid_request_error",
+        "You have reached your specified API usage limits. You will regain access on 2026-11-01 at 00:00 UTC.",
+      ),
     );
     expect(accountFailureOf(err)).toBe("billing");
   });

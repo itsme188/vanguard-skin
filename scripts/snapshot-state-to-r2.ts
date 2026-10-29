@@ -45,6 +45,7 @@ import {
   type ArmedEventProjection,
 } from "@/lib/earnings/armed-events-projection";
 import { todayET, addDays } from "@/lib/calendar/date-utils";
+import { EARNINGS_NOTES_WINDOW_DAYS } from "@/lib/queries/notes";
 
 const DEEP_READ_SOURCE_IDS = [1, 18, 19, 28]; // VK, Eliant, Purple Drink, Meisler
 const DEEP_READ_HOURS = 72;
@@ -388,7 +389,7 @@ export function getManualEarningsRowsForSnapshot(
 const NOTE_CONTENT_CAP = 2_000;
 
 /**
- * Security-linked user notes from the last 90 days. The Worker matches these
+ * Security-linked user notes from the last EARNINGS_NOTES_WINDOW_DAYS days. The Worker matches these
  * to an earnings event's issuer family via symbol / underlying_symbol. Notes
  * with no security_id (pure journal/macro) are excluded — they don't belong to
  * any one earnings family. Content capped to keep the snapshot small.
@@ -401,11 +402,11 @@ function getNotesForSnapshot(db: Database.Database): Snapshot["notes"] {
          FROM notes n
          JOIN securities s ON s.id = n.security_id
         WHERE n.security_id IS NOT NULL
-          AND date(n.event_date) > date(?, '-90 days')
+          AND date(n.event_date) > date(?, ?)
         ORDER BY n.event_date DESC, n.created_at DESC`,
     )
     // Days back from the Eastern day, bound (twin of getNotesForFamily).
-    .all(todayET()) as Snapshot["notes"];
+    .all(todayET(), `-${EARNINGS_NOTES_WINDOW_DAYS} days`) as Snapshot["notes"];
   return rows.map((n) => ({
     ...n,
     content:

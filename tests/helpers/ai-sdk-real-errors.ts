@@ -26,6 +26,14 @@ import { createAnthropic } from "@ai-sdk/anthropic";
 export const CREDIT_BALANCE_MESSAGE =
   "Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.";
 
+/**
+ * The monthly spend cap set in the Anthropic console, verbatim from the
+ * 2026-10-29 outage (HTTP 400 `invalid_request_error`, same status and type
+ * as a bad request).
+ */
+export const SPEND_LIMIT_MESSAGE =
+  "You have reached your specified API usage limits. You will regain access on 2026-11-01 at 00:00 UTC.";
+
 function json(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -56,6 +64,8 @@ export const ANTHROPIC_FAILURES = {
   /** Out of credit as observed: HTTP 400, request-shaped error type. */
   billing400: () => json(400, envelope("invalid_request_error", CREDIT_BALANCE_MESSAGE)),
   /** Out of credit as documented: HTTP 402 `billing_error`. */
+  /** Monthly spend cap reached, as observed 2026-10-29: HTTP 400, request-shaped type. */
+  spendLimit400: () => json(400, envelope("invalid_request_error", SPEND_LIMIT_MESSAGE)),
   billing402: () => json(402, envelope("billing_error", "Billing error.")),
   rateLimit429: () =>
     json(429, envelope("rate_limit_error", "This request would exceed your organization's rate limit.")),

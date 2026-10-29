@@ -246,6 +246,19 @@ describe("claimNextSection", () => {
     expect(row.claimToken).toBeNull();
     expect(claimNextSection(db, eventId, "tok2", T0)!.attempts).toBe(2);
   });
+
+  it("a refunding requeue gives the attempt back, only under the claim token (2026-10-29)", () => {
+    const a = insertFiling(db, filing("A")).id;
+    const { runId } = newRun([a]);
+    const s = claimNextSection(db, eventId, "tok1", T0)!;
+    expect(s.attempts).toBe(1);
+    expect(requeueSection(db, s.id, "bad", "model_error", "x", { refundAttempt: true })).toBe(false);
+    expect(listSections(db, runId)[0]).toMatchObject({ status: "running", attempts: 1 });
+    expect(requeueSection(db, s.id, "tok1", "model_error", "waiting", { refundAttempt: true })).toBe(true);
+    expect(listSections(db, runId)[0]).toMatchObject({ status: "pending", attempts: 0, claimToken: null });
+    // The next claim is attempt 1 again, not 2.
+    expect(claimNextSection(db, eventId, "tok2", T0)!.attempts).toBe(1);
+  });
 });
 
 describe("run status", () => {

@@ -12,6 +12,7 @@ import { generateObjectForFeature } from "@/lib/ai/generate";
 import { getBogeysForEvent } from "@/lib/queries/earnings-bogeys";
 import { compileContracts } from "./contracts";
 import { redactUrl } from "./hardened-fetch";
+import { accountFailureOf, aiUnavailableReason } from "@/lib/earnings/ai-unavailable";
 import {
   buildFirstPassPrompt,
   buildDtoSync,
@@ -204,9 +205,14 @@ export async function runFirstPassRead(
   // #19: the ONE place a failure reaches a column, so the redaction lives here
   // and no call site can forget it. The log line never carries the message —
   // ids and the error CODE only.
-  const fail = (errorCode: ReadErrorCode, rawError: string, retryable: boolean): ReadRunOutcome => {
+  const fail = (
+    errorCode: ReadErrorCode,
+    rawError: string,
+    retryable: boolean,
+    refundAttempt = false,
+  ): ReadRunOutcome => {
     const error = redactUrl(rawError);
-    finalizeReadFailed(db, { readId, token, error, errorCode, nowMs: seams.now(), retryable });
+    finalizeReadFailed(db, { readId, token, error, errorCode, nowMs: seams.now(), retryable, refundAttempt });
     console.warn(`[print-watch] first-pass read ${readId} for print ${printId} failed (${errorCode})`);
     return { kind: "failed", readId, errorCode, error };
   };
@@ -222,9 +228,15 @@ export async function runFirstPassRead(
         abortSignal: abort.signal,
       }));
     } catch (e) {
-      return timedOut
-        ? fail("timeout", "model call exceeded the deadline", true)
-        : fail("model_error", `model call failed: ${errText(e)}`, true);
+      if (timedOut) return fail("timeout", "model call exceeded the deadline", true);
+      // 2026-10-29: an ACCOUNT-level failure (spend cap, credit, key, rate
+      // limit, outage, network) is not this read's fault. It keeps the normal
+      // 60 s backoff but gives its attempt back, so the read reruns on its own
+      // once the account answers. Our own deadline above still counts; an
+      // article-level or unknown error counts exactly as before.
+      const account = accountFailureOf(e);
+      if (account) return fail("model_error", `${aiUnavailableReason(account)}: ${errText(e)}`, true, true);
+      return fail("model_error", `model call failed: ${errText(e)}`, true);
     }
     // Record who actually answered BEFORE judging the drift, so the row always
     // names the model whose output we are about to accept or refuse.

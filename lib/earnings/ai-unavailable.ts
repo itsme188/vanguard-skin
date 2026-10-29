@@ -183,7 +183,7 @@ export function getAiPrepPause(db: Database.Database, today: string): AiPrepPaus
 }
 
 const KIND_WORDS: Record<AccountFailureKind, string> = {
-  billing: "Anthropic credit balance is empty",
+  billing: "Anthropic credit or monthly spend limit is used up",
   auth: "the Anthropic API key was rejected",
   rate_limit: "Anthropic is rate-limiting requests",
   outage: "Anthropic's service is unavailable",

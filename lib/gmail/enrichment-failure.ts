@@ -121,13 +121,21 @@ const ERROR_TYPE_KIND: Record<string, EnrichmentFailureKind> = {
 };
 
 /**
- * The one phrase matched in Anthropic's out-of-credit message ("Your credit
- * balance is too low to access the Anthropic API. Please go to Plans & Billing
- * to upgrade or purchase credits."). Deliberately a single specific phrase:
- * "Plans & Billing" and "purchase credits" on their own are not matched, nor
- * a bare "billing" or "credit".
+ * The phrases matched in Anthropic's two account-spend messages, each sent as
+ * HTTP 400 `invalid_request_error` (the same status and type as a bad request):
+ *   - out of credit: "Your credit balance is too low to access the Anthropic
+ *     API. Please go to Plans & Billing to upgrade or purchase credits."
+ *   - the monthly spend cap set in the console (2026-10-29 outage): "You have
+ *     reached your specified API usage limits. You will regain access on
+ *     <date> at 00:00 UTC."
+ * Deliberately specific phrases: "Plans & Billing", "purchase credits" and
+ * "usage limits" on their own are not matched, nor a bare "billing" or
+ * "credit".
  */
-const BILLING_PROSE: RegExp[] = [/credit balance is too low/i];
+const BILLING_PROSE: RegExp[] = [
+  /credit balance is too low/i,
+  /reached your specified API usage limits/i,
+];
 
 function isBillingProse(text: string): boolean {
   return BILLING_PROSE.some((p) => p.test(text));

@@ -61,6 +61,7 @@ describe("the fixtures are the SDK's own errors", () => {
 describe("classifyEnrichmentError: account-level", () => {
   const cases: Array<[AnthropicFailureName, string, number, string | null]> = [
     ["billing400", "billing", 400, "invalid_request_error"],
+    ["spendLimit400", "billing", 400, "invalid_request_error"],
     ["billing402", "billing", 402, "billing_error"],
     ["rateLimit429", "rate_limit", 429, "rate_limit_error"],
     ["bare429", "rate_limit", 429, null],
@@ -310,6 +311,7 @@ describe("classifyStoredFailureReason: what an excluded row remembers", () => {
 
   it.each([
     ["billing400", "billing"],
+    ["spendLimit400", "billing"],
     ["rateLimit429", "retried_transient"],
     ["overloaded529", "retried_transient"],
     ["apiError500", "retried_transient"],

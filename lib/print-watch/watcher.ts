@@ -63,6 +63,7 @@ import { addDays, todayET } from "@/lib/calendar/date-utils";
 import { normalizeEarningsHour } from "@/lib/calendar/release-times";
 import { resolveDbDir } from "@/lib/db/db-path";
 import { resolveEarningsReleaseTime } from "@/lib/earnings/wire-times";
+import { accountFailureOf, aiUnavailableReason, type AccountFailureKind } from "@/lib/earnings/ai-unavailable";
 import {
   getArmedWorksheetEvents,
   type ArmedWorksheetEventRow,
@@ -2428,18 +2429,28 @@ async function drainQueue(db: Database.Database, printId: number): Promise<Drain
     parseAttempts.set(doc.id, { attempts, lastAtMs: nowMs });
 
     let pass: ParsePassResult;
+    // An AI ACCOUNT failure (out of credit, the monthly spend cap, a bad key,
+    // a rate limit, a provider outage) is not this document's fault: the
+    // attempt is given back and the document waits, re-tried at the usual
+    // spacing, so it parses on its own once the account answers (2026-10-29:
+    // the spend cap burned every armed print's budget before 8 am).
+    let accountKind: AccountFailureKind | null = null;
     try {
       pass = await processDocument(db, printId, doc);
     } catch (err) {
-      const message = errText(err);
+      accountKind = accountFailureOf(err);
+      const message = accountKind
+        ? `${aiUnavailableReason(accountKind)}: ${errText(err)}`
+        : errText(err);
       statusFor(printId).sources.pipeline = `doc ${doc.id}: ${message}`;
       pass = { state: "queued", error: message };
     }
     // A pass that did not parse and has spent the budget is booked `failed`
     // (M15) — NOT left `queued` at five attempts, which no retry would ever
     // pick up again and which `recordDelivery` would refuse to re-queue on a
-    // person's re-delivery. `failed` is the state a human can clear.
-    const terminal = pass.state !== "parsed" && attempts >= MAX_PARSE_ATTEMPTS;
+    // person's re-delivery. `failed` is the state a human can clear. A refunded
+    // (account-level) failure is never the terminal one.
+    const terminal = pass.state !== "parsed" && accountKind === null && attempts >= MAX_PARSE_ATTEMPTS;
     recordFinalize(
       db,
       printId,
@@ -2447,6 +2458,7 @@ async function drainQueue(db: Database.Database, printId: number): Promise<Drain
       token,
       pass.state === "parsed" ? "parsed" : terminal ? "failed" : "queued",
       pass.error,
+      accountKind !== null,
     );
   }
 }
@@ -2465,8 +2477,9 @@ function recordFinalize(
   token: string,
   state: "parsed" | "queued" | "failed",
   error: string | null,
+  refundAttempt = false,
 ): void {
-  if (finalizeDocumentParse(db, docId, token, state, error)) return;
+  if (finalizeDocumentParse(db, docId, token, state, error, { refundAttempt })) return;
   statusFor(printId).sources.pipeline =
     `doc ${docId}: claim was taken over mid-parse — this result was discarded`;
 }

@@ -13,7 +13,12 @@
  * Bounds: at most two attempts per section (the store counts claims; the cap
  * is checked here after each claim); refusal, truncation and a lost model are
  * never retried; the SDK's own retries are off in `generateObjectWithModel`,
- * so every request counts. A worker whose claim was taken over writes
+ * so every request counts. Exception (owner ruling 2026-10-29, after the
+ * 2026-10-27 precedent): an AI ACCOUNT failure (out of credit, spend cap,
+ * bad key, rate limit, provider outage, no connection; `accountFailureOf`)
+ * gives its attempt back and requeues; the next tick (one claim per event a
+ * minute) tries again, so the section runs on its own once the account
+ * answers. A failing account call is not billed. A worker whose claim was taken over writes
  * nothing (`lost_claim`).
  *
  * Logging carries ids, error classes and counts only: never document text,
@@ -31,6 +36,7 @@ import {
   generateObjectWithModel,
 } from "@/lib/ai/generate";
 import { modelLabel, resolveFamilyModel } from "@/lib/ai/model-families";
+import { accountFailureOf, aiUnavailableReason, type AccountFailureKind } from "@/lib/earnings/ai-unavailable";
 import { buildBogeySnapshot } from "./bogey-snapshot";
 import { blockText, extractDocText, EXTRACTOR_VERSION } from "./doc-text";
 import { CHECKER_VERSION, evaluateSection } from "./evaluate";
@@ -692,6 +698,7 @@ export async function runNextSection(
   let object: unknown;
   let usage: unknown;
   let callError: SectionErrorClass | null = null;
+  let accountDown: AccountFailureKind | null = null;
   try {
     const res = await seams.generate(
       "printFilingSummary",
@@ -708,6 +715,9 @@ export async function runNextSection(
     usage = res.usage;
   } catch (err) {
     callError = errorClassOf(err);
+    // Only a plain call failure can be the account's: a refusal, truncation,
+    // lost model or OUR timeout is decided above and keeps its own rule.
+    if (callError === "model_error") accountDown = accountFailureOf(err);
     // A truncated or refused call was still billed: keep its usage for the cost line.
     if (err instanceof AITruncatedError || err instanceof AIRefusalError) usage = err.usage;
   } finally {
@@ -730,6 +740,16 @@ export async function runNextSection(
     const errorText = cls === "model_unavailable" ? MODEL_GONE_TEXT : null;
     if (NEVER_RETRIED.has(cls)) {
       return finalizeFailed(failedResult(run, cls, errorText, { coverageJson, incomplete, usageJson }));
+    }
+    if (accountDown !== null) {
+      // The account, not this filing, failed: requeue and give the attempt
+      // back, whatever attempt this was, so it never reaches attempt_cap.
+      if (!requeueSection(db, section.id, token, cls, aiUnavailableReason(accountDown), { refundAttempt: true })) {
+        warn(`section ${section.id} lost its claim; nothing written`);
+        return "lost_claim";
+      }
+      warn(`section ${section.id} waiting: AI unavailable (${accountDown}); no attempt counted`);
+      return "ran";
     }
     if (section.attempts < MAX_SECTION_ATTEMPTS) {
       if (!requeueSection(db, section.id, token, cls, errorText)) {

@@ -418,14 +418,14 @@ describe("day-count windows start from the Eastern day", () => {
     expect(hits.map((h) => h.title)).toEqual(["In window"]);
   });
 
-  it("notes for an issuer family: the 90-day window counts from the Eastern day", () => {
+  it("notes for an issuer family: the 190-day window counts from the Eastern day", () => {
     const sec = seedSec("ZZN");
     const insert = db.prepare(
       `INSERT INTO notes (note_type, content, security_id, event_date) VALUES ('journal', ?, ?, ?)`,
     );
     insert.run("newest", sec, ET_TODAY);
-    insert.run("edge", sec, addDays(ET_TODAY, -89));
-    insert.run("out", sec, addDays(ET_TODAY, -90));
+    insert.run("edge", sec, addDays(ET_TODAY, -189));
+    insert.run("out", sec, addDays(ET_TODAY, -190));
     expect(getNotesForFamily(db, ["ZZN"]).map((n) => n.content)).toEqual(["newest", "edge"]);
   });
 
@@ -435,20 +435,20 @@ describe("day-count windows start from the Eastern day", () => {
       `INSERT INTO notes (note_type, content, security_id, event_date) VALUES ('journal', ?, ?, ?)`,
     );
     insert.run("newest", sec, `${ET_TODAY} 23:30:00`);
-    insert.run("edge", sec, `${addDays(ET_TODAY, -89)}T00:00:01`);
-    insert.run("out", sec, `${addDays(ET_TODAY, -90)} 23:59:59`);
-    insert.run("out-iso", sec, `${addDays(ET_TODAY, -90)}T23:59:59.000Z`);
+    insert.run("edge", sec, `${addDays(ET_TODAY, -189)}T00:00:01`);
+    insert.run("out", sec, `${addDays(ET_TODAY, -190)} 23:59:59`);
+    insert.run("out-iso", sec, `${addDays(ET_TODAY, -190)}T23:59:59.000Z`);
     expect(getNotesForFamily(db, ["ZZN"]).map((n) => n.content)).toEqual(["newest", "edge"]);
   });
 
-  it("the Worker snapshot carries the same 90-day note window", () => {
+  it("the Worker snapshot carries the same 190-day note window", () => {
     const sec = seedSec("ZZN");
     const insert = db.prepare(
       `INSERT INTO notes (note_type, content, security_id, event_date) VALUES ('journal', ?, ?, ?)`,
     );
     insert.run("newest", sec, ET_TODAY);
-    insert.run("edge", sec, addDays(ET_TODAY, -89));
-    insert.run("out", sec, addDays(ET_TODAY, -90));
+    insert.run("edge", sec, addDays(ET_TODAY, -189));
+    insert.run("out", sec, addDays(ET_TODAY, -190));
     const snap = buildSnapshot(db) as unknown as { notes: Array<{ content: string }> };
     expect(snap.notes.map((n) => n.content)).toEqual(["newest", "edge"]);
   });

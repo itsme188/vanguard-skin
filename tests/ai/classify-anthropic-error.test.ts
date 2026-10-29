@@ -36,6 +36,21 @@ function contentPayload() {
 }
 
 describe("classifyAnthropicError", () => {
+  it("classifies the monthly spend-cap 400 as 'billing' (2026-10-29 outage)", () => {
+    const payload = {
+      type: "error",
+      error: {
+        type: "invalid_request_error",
+        message:
+          "You have reached your specified API usage limits. You will regain access on 2026-11-01 at 00:00 UTC.",
+      },
+      request_id: "req_spendCapTEST",
+    };
+    const err = new APIError(400, payload, `400 ${JSON.stringify(payload)}`, new Headers());
+    expect(classifyAnthropicError(err)?.kind).toBe("billing");
+    expect(classifyAnthropicErrorMessage(`400 ${JSON.stringify(payload)}`)?.kind).toBe("billing");
+  });
+
   it("classifies a billing 400 as 'billing', not 'content'", () => {
     const payload = billingPayload();
     const err = new APIError(400, payload, `400 ${JSON.stringify(payload)}`, new Headers());

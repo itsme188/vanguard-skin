@@ -1579,8 +1579,8 @@ function resolveIntelCtx(
 
 // ── v5 context: notes + bogeys from snapshot ────────────────────────
 
-/** PARITY: the default `daysBack` of lib/queries/notes.ts::getNotesForFamily. */
-const NOTES_WINDOW_DAYS = 90;
+/** PARITY: EARNINGS_NOTES_WINDOW_DAYS in lib/queries/notes.ts (190 days, owner ruling 2026-10-29). */
+const NOTES_WINDOW_DAYS = 190;
 
 /**
  * The family's notes, cut to the last 90 days AS OF THE SEND.

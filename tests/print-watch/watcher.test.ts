@@ -25,6 +25,7 @@ import {
   upsertPrintWatchSource,
 } from "@/lib/print-watch/store";
 import { addDays } from "@/lib/calendar/date-utils";
+import { ANTHROPIC_FAILURES, errorFromRealSdk } from "../helpers/ai-sdk-real-errors";
 import { irBaselineFingerprint } from "@/lib/print-watch/ir-baseline-step";
 import { recordDelivery } from "@/lib/print-watch/delivery";
 import type { LineContract, ParseCandidate, RoadReport, TaggedCandidate } from "@/lib/print-watch/types";
@@ -2383,6 +2384,69 @@ describe("pipeline", () => {
       Buffer.from("ACME reports Q2 2026 results.", "utf8"),
     );
     expect(again).toMatchObject({ docId: r.docId, outcome: "parsed" });
+  });
+
+  // 2026-10-29: the Anthropic account hit its monthly spend cap and every
+  // armed print's parse spent its five attempts on it, so nothing resumed when
+  // the cap was raised. Owner ruling (as for the prepare steps, 2026-10-27):
+  // an ACCOUNT-level failure never spends an attempt.
+  it("an account-level failure (the spend cap) spends no attempt and leaves the document queued", async () => {
+    const { printId } = seedAcmePrint();
+    const { error: spendCap } = await errorFromRealSdk(ANTHROPIC_FAILURES.spendLimit400);
+    fake.extract = async () => {
+      throw spendCap;
+    };
+
+    const r = await ingestDocument(
+      db,
+      printId,
+      "user-drop",
+      "u",
+      null,
+      Buffer.from("ACME reports Q2 2026 results.", "utf8"),
+    );
+
+    expect(r.outcome).toBe("parse_failed");
+    expect(getDocument(db, r.docId)).toMatchObject({
+      parse_state: "queued",
+      parse_attempts: 0,
+      parse_last_error: expect.stringMatching(/^AI unavailable \(billing\)/),
+    });
+    expect(fake.extractCalls).toHaveLength(1);
+  });
+
+  it("an account-level failure on the LAST attempt is not terminal, and the parse completes once the account answers", async () => {
+    const { printId } = seedAcmePrint();
+    fake.extract = async () => {
+      throw new Error("model 529");
+    };
+    const r = await ingestDocument(
+      db,
+      printId,
+      "user-drop",
+      "u",
+      null,
+      Buffer.from("ACME reports Q2 2026 results.", "utf8"),
+    );
+    db.prepare(`UPDATE print_watch_documents SET parse_attempts = 4 WHERE id = ?`).run(r.docId);
+
+    const { error: spendCap } = await errorFromRealSdk(ANTHROPIC_FAILURES.spendLimit400);
+    fake.extract = async () => {
+      throw spendCap;
+    };
+    fake.nowMs += 60_000;
+    const callsBefore = fake.extractCalls.length;
+    ensurePrintWatch(db);
+    await waitUntil(() => fake.extractCalls.length > callsBefore);
+    await waitUntil(() => getDocument(db, r.docId)?.parse_state === "queued");
+    expect(getDocument(db, r.docId)?.parse_attempts).toBe(4);
+
+    // The cap is raised: the next pass parses on the attempt it still has.
+    fake.extract = async () => [candidate("revenue_q", 1)];
+    fake.nowMs += 60_000;
+    ensurePrintWatch(db);
+    await waitUntil(() => getDocument(db, r.docId)?.parse_state === "parsed");
+    expect(getDocument(db, r.docId)?.parse_attempts).toBe(5);
   });
 
   it("reaps a claim abandoned at the attempt cap: it books failed with no model call, and a person can revive it", async () => {

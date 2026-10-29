@@ -1,11 +1,11 @@
 /**
- * The 90-day notes window is re-cut at SEND time.
+ * The 190-day notes window is re-cut at SEND time.
  *
- * The snapshot ships security-linked notes from the 90 days before the day it
+ * The snapshot ships security-linked notes from the 190 days before the day it
  * was written. A snapshot a day or more old therefore still carried a note
- * that is now older than 90 days. The Worker cuts again with its own Eastern
+ * that is now older than 190 days. The Worker cuts again with its own Eastern
  * today, by the Mac's rule (lib/queries/notes.ts::getNotesForFamily):
- * `date(event_date) > today - 90 days`. Prompt context only: this can remove
+ * `date(event_date) > today - 190 days`. Prompt context only: this can remove
  * a note from the email, never add one, and decides no send.
  */
 import { describe, it, expect, beforeEach, vi } from "vitest";
@@ -66,7 +66,7 @@ const note = (id: number, event_date: string, content: string, symbol = "ZZA") =
 function snapshotWith(notes: unknown[]): Snapshot {
   return {
     schemaVersion: 5,
-    // Written two days before the send: its own 90-day cut is two days stale.
+    // Written two days before the send: its own 190-day cut is two days stale.
     snapshotDate: "2026-06-09",
     generatedAt: "2026-06-09T06:00:00.000Z",
     heldSymbols: ["ZZA"],
@@ -110,29 +110,29 @@ async function previewHtml(notes: unknown[], now = SEND_AT): Promise<string> {
   return calls[calls.length - 1][1].html as string;
 }
 
-describe("earnings fallback: notes older than 90 days at send time are left out", () => {
+describe("earnings fallback: notes older than 190 days at send time are left out", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     (sendEmail as ReturnType<typeof vi.fn>).mockResolvedValue({ id: "mock-email-id" });
   });
 
-  // 2026-06-11 minus 90 days is 2026-03-13. The rule is strictly after it.
-  it("keeps a note 89 days old and drops notes 90 and 91 days old", async () => {
+  // 2026-06-11 minus 190 days is 2025-12-03. The rule is strictly after it.
+  it("keeps a note 189 days old and drops notes 190 and 191 days old", async () => {
     const html = await previewHtml([
-      note(1, "2026-03-14", "NOTEKEPT eighty-nine days"),
-      note(2, "2026-03-13", "NOTEDROPPED ninety days"),
-      note(3, "2026-03-12", "NOTEDROPPED ninety-one days"),
+      note(1, "2025-12-04", "NOTEKEPT one-eighty-nine days"),
+      note(2, "2025-12-03", "NOTEDROPPED one-ninety days"),
+      note(3, "2025-12-02", "NOTEDROPPED one-ninety-one days"),
       note(4, "2026-06-10", "NOTEKEPT yesterday"),
     ]);
-    expect(html).toContain("NOTEKEPT eighty-nine days");
+    expect(html).toContain("NOTEKEPT one-eighty-nine days");
     expect(html).toContain("NOTEKEPT yesterday");
     expect(html).not.toContain("NOTEDROPPED");
   });
 
   it("a stored timestamp form of the day is cut by its date", async () => {
     const html = await previewHtml([
-      note(1, "2026-03-14 09:30:00", "NOTEKEPT with a time"),
-      note(2, "2026-03-13T23:59:00", "NOTEDROPPED with a time"),
+      note(1, "2025-12-04 09:30:00", "NOTEKEPT with a time"),
+      note(2, "2025-12-03T23:59:00", "NOTEDROPPED with a time"),
     ]);
     expect(html).toContain("NOTEKEPT with a time");
     expect(html).not.toContain("NOTEDROPPED");
@@ -140,11 +140,11 @@ describe("earnings fallback: notes older than 90 days at send time are left out"
 
   it("uses the Eastern day: at 23:30 Eastern the UTC date is already tomorrow", () => {
     // 03:30 UTC on 12 June is 23:30 Eastern on 11 June. Counted from the
-    // Eastern day the cut is 13 March and the 14 March note stays; counted
-    // from the UTC date it would be 14 March and the note would be dropped.
+    // Eastern day the cut is 3 December and the 4 December note stays; counted
+    // from the UTC date it would be 4 December and the note would be dropped.
     const snap = snapshotWith([
-      note(1, "2026-03-14", "eighty-nine days on the Eastern day"),
-      note(2, "2026-03-13", "ninety days"),
+      note(1, "2025-12-04", "one-eighty-nine days on the Eastern day"),
+      note(2, "2025-12-03", "one-ninety days"),
     ]);
     const ids = (now: string) =>
       resolveNotesForFamily(snap, ["ZZA"], new Date(now)).map((n) => n.id);

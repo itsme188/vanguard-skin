@@ -197,6 +197,7 @@ describe("an outage (every article fails account-level) never uses an attempt", 
   const accountLevel: Array<[AnthropicFailureName, number]> = [
     // [failure, HTTP calls the SDK makes for one enrichment call]
     ["billing400", 1],
+    ["spendLimit400", 1],
     ["billing402", 1],
     ["auth401", 1],
     ["permission403", 1],

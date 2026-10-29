@@ -249,14 +249,32 @@ export function finalizeReadDone(
  *  (`cappedAttempt` reads it back). */
 export function finalizeReadFailed(
   db: Database.Database,
-  args: { readId: number; token: string; error: string; errorCode: ReadErrorCode; nowMs: number; retryable: boolean },
+  args: {
+    readId: number;
+    token: string;
+    error: string;
+    errorCode: ReadErrorCode;
+    nowMs: number;
+    retryable: boolean;
+    /** 2026-10-29 (owner ruling, precedent 2026-10-27 in
+     *  lib/earnings/ai-unavailable.ts): the caller caught an ACCOUNT-level AI
+     *  failure (spend cap, credit, key, rate limit, outage, network). The one
+     *  attempt THIS claim added (the insert's 1, or a takeover's +1) is given
+     *  back in the same transaction and under the same token guard, so the
+     *  read never reaches the cap while the account is down. A dead worker's
+     *  earlier attempt on a taken-over row still counts. */
+    refundAttempt?: boolean;
+  },
 ): boolean {
   return db
     .transaction((): boolean => {
       const row = liveClaim(db, args.readId, args.token);
       if (!row) return false;
-      const attempts = totalAttempts(db, row.print_id, row.fingerprint);
-      const capped = attempts >= READ_MAX_ATTEMPTS;
+      const refund = args.refundAttempt === true && row.attempts > 0 ? 1 : 0;
+      const attempts = totalAttempts(db, row.print_id, row.fingerprint) - refund;
+      // A refunded failure is never the capping attempt: it waits for the
+      // account, not for a better answer.
+      const capped = refund === 0 && attempts >= READ_MAX_ATTEMPTS;
       const retry = args.retryable && !capped ? iso(args.nowMs + READ_RETRY_BACKOFF_MS) : null;
       // The prefix marks "this attempt was the last one the cap allows", whether
       // or not the failure itself was retryable — a non-retryable failure on the
@@ -265,7 +283,8 @@ export function finalizeReadFailed(
       return (
         db
           .prepare(
-            `UPDATE print_watch_reads SET status = 'failed', error = ?, error_code = ?, next_retry_at = ?, heartbeat_at = ?
+            `UPDATE print_watch_reads SET status = 'failed', error = ?, error_code = ?, next_retry_at = ?, heartbeat_at = ?,
+                    attempts = attempts - ?
               WHERE id = ? AND claim_token = ? AND status = 'generating'`,
           )
           .run(
@@ -273,6 +292,7 @@ export function finalizeReadFailed(
             args.errorCode,
             retry,
             iso(args.nowMs),
+            refund,
             args.readId,
             args.token,
           ).changes === 1

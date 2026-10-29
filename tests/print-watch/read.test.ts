@@ -5,7 +5,9 @@ import os from "node:os";
 import path from "node:path";
 import { runMigrations } from "@/lib/db/migrate";
 import { upsertPrint, upsertLines } from "@/lib/print-watch/store";
-import { listReads, listCallouts, claimRead } from "@/lib/print-watch/read-store";
+import { listReads, listCallouts, claimRead, finalizeReadFailed, cappedAttempt, getLastFailedAttempt, READ_MAX_ATTEMPTS } from "@/lib/print-watch/read-store";
+import { ANTHROPIC_FAILURES, errorFromRealSdk } from "../helpers/ai-sdk-real-errors";
+import { AI_UNAVAILABLE_REASON_PREFIX } from "@/lib/earnings/ai-unavailable";
 import { runFirstPassRead, _setReadSeams, READ_MODEL_DEADLINE_MS, NO_CALL_WATCH_CAVEAT } from "@/lib/print-watch/read";
 import { generateObjectForFeature } from "@/lib/ai/generate";
 import type { PrintWatchLine } from "@/lib/print-watch/types";
@@ -238,5 +240,84 @@ describe("runFirstPassRead", () => {
     for (const c of warn.mock.calls) expect(JSON.stringify(c)).not.toMatch(/898\.2|ARR reached|model down/);
     expect(calls).toHaveLength(0);
     warn.mockRestore();
+  });
+});
+
+// 2026-10-29: the account hit its monthly spend cap mid-print and every read
+// burned its three attempts, so raising the cap resumed nothing. Owner ruling
+// (precedent 2026-10-27, lib/earnings/ai-unavailable.ts): an ACCOUNT-level
+// failure never spends an attempt; an article-level or unknown one still does.
+describe("runFirstPassRead: an AI account outage never spends an attempt", () => {
+  let spendCap: unknown;
+  let promptTooLong: unknown;
+  beforeEach(async () => {
+    spendCap ??= (await errorFromRealSdk(ANTHROPIC_FAILURES.spendLimit400, { maxRetries: 0 })).error;
+    promptTooLong ??= (await errorFromRealSdk(ANTHROPIC_FAILURES.promptTooLong400, { maxRetries: 0 })).error;
+  });
+
+  it("a spend-cap failure books a retryable failure that says AI unavailable and gives the attempt back", async () => {
+    _setReadSeams({ generate: async () => { throw spendCap; } });
+    const out = await runFirstPassRead(db, printId);
+    expect(out).toMatchObject({ kind: "failed", errorCode: "model_error" });
+    const [row] = listReads(db, printId);
+    expect(row.status).toBe("failed");
+    expect(row.attempts).toBe(0);
+    expect(row.error).toMatch(new RegExp(`^${AI_UNAVAILABLE_REASON_PREFIX.replace("(", "\\(")}billing\\)`));
+    expect(row.next_retry_at).toBe(new Date(T0 + 60_000).toISOString()); // the backoff still spaces the retries
+    expect(cappedAttempt(row)).toBe(false);
+  });
+
+  it("more spend-cap failures than the cap allows never cap the read; it completes once the account answers", async () => {
+    _setReadSeams({ generate: async () => { throw spendCap; } });
+    for (let i = 0; i < READ_MAX_ATTEMPTS + 2; i++) {
+      now = T0 + i * 61_000;
+      expect((await runFirstPassRead(db, printId)).kind).toBe("failed");
+    }
+    const last = getLastFailedAttempt(db, printId)!;
+    expect(last.capped).toBe(false);
+    expect(last.totalAttempts).toBe(0);
+    _setReadSeams({ generate: okGenerate });
+    now += 61_000;
+    expect((await runFirstPassRead(db, printId)).kind).toBe("done");
+  });
+
+  it("an article-level 400 (prompt too long) still counts, and reaches the cap as before", async () => {
+    _setReadSeams({ generate: async () => { throw promptTooLong; } });
+    for (let i = 0; i < READ_MAX_ATTEMPTS; i++) {
+      now = T0 + i * 61_000;
+      expect((await runFirstPassRead(db, printId)).kind).toBe("failed");
+    }
+    const last = getLastFailedAttempt(db, printId)!;
+    expect(last.totalAttempts).toBe(READ_MAX_ATTEMPTS);
+    expect(last.capped).toBe(true);
+    expect(last.row.error).not.toContain(AI_UNAVAILABLE_REASON_PREFIX);
+    now += 61_000;
+    expect(await runFirstPassRead(db, printId)).toMatchObject({ kind: "skipped", reason: "failed_cap" });
+  });
+
+  it("an unknown error still counts its attempt", async () => {
+    _setReadSeams({ generate: async () => { throw new Error("something odd"); } });
+    await runFirstPassRead(db, printId);
+    expect(listReads(db, printId)[0].attempts).toBe(1);
+  });
+
+  it("a takeover refunds only its own attempt: the dead worker's claim still counts", async () => {
+    const built = await (await import("@/lib/print-watch/first-pass-prompt")).buildFirstPassPrompt(db, printId);
+    const dead = claimRead(db, printId, { fingerprint: built!.fingerprint, recompute: () => built!.fingerprint, nowMs: T0 - 10 * 60_000, modelId: "test-model-1" });
+    if (dead.kind !== "claimed") throw new Error();
+    _setReadSeams({ generate: async () => { throw spendCap; } });
+    expect((await runFirstPassRead(db, printId)).kind).toBe("failed");
+    const rows = listReads(db, printId);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ id: dead.row.id, status: "failed", attempts: 1 });
+  });
+
+  it("a refund under a token that no longer owns the claim changes nothing", async () => {
+    const built = await (await import("@/lib/print-watch/first-pass-prompt")).buildFirstPassPrompt(db, printId);
+    const c = claimRead(db, printId, { fingerprint: built!.fingerprint, recompute: () => built!.fingerprint, nowMs: T0, modelId: "test-model-1" });
+    if (c.kind !== "claimed") throw new Error();
+    const ok = finalizeReadFailed(db, { readId: c.row.id, token: "not-the-token", error: "x", errorCode: "model_error", nowMs: T0, retryable: true, refundAttempt: true });
+    expect(ok).toBe(false);
+    expect(listReads(db, printId)[0]).toMatchObject({ status: "generating", attempts: 1 });
   });
 });

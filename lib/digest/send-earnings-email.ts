@@ -1076,7 +1076,7 @@ function buildPreviewContext(
     }
   }
 
-  const userNotes = getNotesForFamily(db, family, 90);
+  const userNotes = getNotesForFamily(db, family);
   const recentArticles = getNewsletterContext(db, family);
   const recommendationTrend = formatRecommendationTrend(db, symbol);
   const priceTarget = formatPriceTarget(db, symbol);

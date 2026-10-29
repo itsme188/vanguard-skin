@@ -47,6 +47,9 @@ const BILLING_PATTERNS: RegExp[] = [
   /plans\s*&\s*billing/i,
   /purchase credits/i,
   /\bbilling\b/i,
+  // The monthly spend cap set in the console (2026-10-29 outage): "You have
+  // reached your specified API usage limits. You will regain access on ...".
+  /reached your specified API usage limits/i,
 ];
 
 // The request itself is well-formed; the MODEL the app picked can't do part of

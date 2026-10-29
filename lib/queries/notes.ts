@@ -227,6 +227,17 @@ export function getSecurityIdBySymbol(
 }
 
 /**
+ * How far back the earnings surfaces (preview and recap prompts, the printed
+ * sheets, the cloud fallback) look for the user's notes. Owner ruling
+ * 2026-10-29: 190 days. The old 90 days dropped last quarter's earnings note,
+ * which sits about 91 days before the next print (a 07-30 MSFT note missed
+ * the 10-28 preview by one day). Mirrored by `scripts/snapshot-state-to-r2.ts`
+ * and `NOTES_WINDOW_DAYS` in `workers/cron/src/fallback-earnings.ts`; pinned
+ * by tests/queries/earnings-notes-window.test.ts.
+ */
+export const EARNINGS_NOTES_WINDOW_DAYS = 190;
+
+/**
  * Notes attached to any security whose symbol or underlying_symbol is in the
  * given family. Used by the earnings-email composer to feed the user's prior
  * thesis (journal / earnings / trade_thesis notes) into the briefing prompt.
@@ -239,7 +250,7 @@ export function getSecurityIdBySymbol(
 export function getNotesForFamily(
   db: Database.Database,
   family: readonly string[],
-  daysBack: number = 90
+  daysBack: number = EARNINGS_NOTES_WINDOW_DAYS
 ): NoteWithContext[] {
   if (family.length === 0) return [];
   const upperFamily = family.map((s) => s.toUpperCase());

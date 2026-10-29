@@ -695,23 +695,34 @@ export function finalizeSection(
   }).immediate();
 }
 
-/** Returns a claimed section to pending with the attempt's error; false = claim lost. */
+/**
+ * Returns a claimed section to pending with the attempt's error; false = claim lost.
+ *
+ * `refundAttempt` gives back the attempt this claim counted (2026-10-29 owner
+ * ruling: an AI ACCOUNT failure never spends an attempt). It is applied in the
+ * same compare-and-set as the requeue, so only the worker that still holds the
+ * claim can refund it; a worker that died never requeues, so a takeover keeps
+ * counting.
+ */
 export function requeueSection(
   db: Database.Database,
   sectionId: number,
   token: string,
   errorClass: SectionErrorClass,
   errorText: string | null,
+  opts: { refundAttempt?: boolean } = {},
 ): boolean {
+  const refund = opts.refundAttempt ? 1 : 0;
   return (
     db
       .prepare(
         `UPDATE filing_summary_sections
          SET status = 'pending', claim_token = NULL, claimed_at = NULL, heartbeat_at = NULL,
-             error_class = ?, error_text = ?
+             error_class = ?, error_text = ?,
+             attempts = MAX(attempts - ?, 0)
          WHERE id = ? AND claim_token = ? AND status = 'running'`,
       )
-      .run(errorClass, errorText, sectionId, token).changes > 0
+      .run(errorClass, errorText, refund, sectionId, token).changes > 0
   );
 }
 
