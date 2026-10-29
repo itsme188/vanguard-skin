@@ -7,10 +7,17 @@ import {
 import { buildTaxReportFilename } from "@/lib/compute/tax-report";
 
 describe("tax report filing warning", () => {
-  it("names both defect classes and the audit date", () => {
-    expect(FILING_WARNING_COPY).toContain("100\u00d7");
-    expect(FILING_WARNING_COPY).toContain("short-sale");
-    expect(FILING_WARNING_COPY).toContain("2026-08-21");
+  it("states the current gate (convention not accepted against broker figures), not the fixed 2026-08-21 defects", () => {
+    // QA: dashboard-tax-lots-tax-report-card-filing-banner-taxreportcard-tsx-filing-warning-copy-not-read
+    // The 100x Treasury / reversed short-sale defects were fixed in the engine;
+    // the CSV beside the card shows true dollar figures, so the banner must not
+    // claim otherwise.
+    expect(FILING_WARNING_COPY).toContain("Not ready for filing");
+    expect(FILING_WARNING_COPY).toMatch(/not yet been accepted against the broker/);
+    expect(FILING_WARNING_COPY).toContain("broker records");
+    expect(FILING_WARNING_COPY).not.toContain("100\u00d7");
+    expect(FILING_WARNING_COPY).not.toContain("2026-08-21");
+    expect(FILING_WARNING_COPY).not.toMatch(/stored at/);
   });
 
   it("the not-ready banner heading says the export is not ready, and names a partial account", () => {

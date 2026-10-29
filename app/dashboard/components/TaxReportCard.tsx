@@ -60,11 +60,18 @@ export const SHORT_TERM_LABEL = "Taxable ST (After Wash-Sale Add-Back)";
 // treatment as Short-Term, not a plain "Long-Term" label.
 export const LONG_TERM_LABEL = "Taxable LT (After Wash-Sale Add-Back)";
 
+// The banner states the reason the export is not filing-ready TODAY. The
+// 2026-08-21 engine defects (Treasury figures at 100x, reversed short-sale
+// columns) were fixed in lib/compute/tax-lots.ts; what still gates filing is
+// the tax-convention acceptance per (account, year) — getTaxConventionState /
+// filingReady in lib/compute/tax-convention.ts, cleared only by the recompute
+// and the broker reconciliation stamp. Never describe a defect the export no
+// longer has.
 export const FILING_WARNING_COPY =
-  "Not ready for filing — a 2026-08-21 audit found Treasury sale proceeds/basis " +
-  "stored at 100× economic value and short-sale rows with reversed proceeds/basis " +
-  "columns in these exports. Stock gain/loss figures are unaffected, but reconcile " +
-  "against broker records before using the CSV/TXF for any filing.";
+  "Not ready for filing — the tax-lot convention for this account and year has " +
+  "not yet been accepted against the broker's own realized gain/loss figures. " +
+  "Reconcile the CSV/TXF against broker records (1099-B) before using it for any " +
+  "filing; wash-sale codes are advisory until that reconciliation.";
 
 // Retirement accounts (QA:
 // tax-lots--form-8949-export-and-taxable-totals-include-roth-ira-sales,
