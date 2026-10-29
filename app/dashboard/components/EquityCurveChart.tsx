@@ -173,8 +173,10 @@ export interface PerformanceCurveData {
   benchmark: number; // normalized to 100 at period start
 }
 
-function shortDate(iso: string): string {
-  return formatEquityCurveDate(isoDateToEpochMs(iso), "day");
+// The Performance curve spans years (1Y / 3Y / 5Y), so its tooltip names the
+// year: "Jan 6" alone could be either of two Januaries on the same chart.
+function performanceTooltipDate(iso: string): string {
+  return formatEquityCurveDate(isoDateToEpochMs(iso), "full");
 }
 
 export function PerformanceCurveChart({
@@ -190,6 +192,9 @@ export function PerformanceCurveChart({
   // Time axis: each row is placed at its date, in date order.
   const series = toTimeSeries(data);
   const xAxisTime = equityCurveTimeTicks(series[0]?.t, series[series.length - 1]?.t);
+  // The value axis frames both indexed series (a zero-based axis put a
+  // 100-to-125 index in the top fifth of the chart), as the Accounts curve does.
+  const yAxis = equityCurveYAxis(data.flatMap((d) => [d.portfolio, d.benchmark]));
 
   if (data.length === 0) {
     return (
@@ -218,6 +223,8 @@ export function PerformanceCurveChart({
             tick={{ fontSize: 11, fill: "var(--ink-faint)" }}
           />
           <YAxis
+            domain={yAxis?.domain}
+            ticks={yAxis?.ticks}
             tickFormatter={fmt}
             tick={{ fontSize: 11, fill: "var(--ink-faint)" }}
             width={42}
@@ -227,7 +234,7 @@ export function PerformanceCurveChart({
               fmt(Number(value)),
               String(name ?? ""),
             ]}
-            labelFormatter={(label, payload) => shortDate(equityCurveTooltipDate(label, payload) ?? "")}
+            labelFormatter={(label, payload) => performanceTooltipDate(equityCurveTooltipDate(label, payload) ?? "")}
             contentStyle={{
               background: "var(--panel)",
               border: "1px solid var(--edge)",

@@ -97,9 +97,9 @@ describe("tooltip labels keep the point's date key", () => {
     expect(account).toContain('const dateFormatter = granularity === "monthly" ? formatDate : formatDateFull;');
   });
 
-  it("the benchmark overlay tooltip does the same with the short date", () => {
+  it("the benchmark overlay tooltip does the same with the full date (the chart spans years)", () => {
     expect(perf).toContain(
-      'labelFormatter={(label, payload) => shortDate(equityCurveTooltipDate(label, payload) ?? "")}',
+      'labelFormatter={(label, payload) => performanceTooltipDate(equityCurveTooltipDate(label, payload) ?? "")}',
     );
   });
 
