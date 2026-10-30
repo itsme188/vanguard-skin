@@ -405,10 +405,12 @@ function coerceTags(raw: unknown): string[] {
 
 function TagEditor({
   docId,
+  docTitle,
   initialTags,
   onTagsChanged,
 }: {
   docId: number;
+  docTitle: string;
   initialTags: unknown;
   onTagsChanged: (tags: string[]) => void;
 }) {
@@ -504,6 +506,7 @@ function TagEditor({
             value={input}
             onChange={(e) => setInput(e.target.value)}
             placeholder="add tag…"
+            aria-label={`Add tag to ${docTitle}`}
             disabled={saving}
             className="px-2 py-0.5 rounded-full border border-dashed border-edge text-[11px] bg-transparent text-ink placeholder:text-ink-faint w-28 focus:outline-none focus:border-gold"
           />
@@ -745,6 +748,7 @@ function DocumentRow({
             <div className="space-y-3">
               <TagEditor
                 docId={detail.id}
+                docTitle={doc.title}
                 initialTags={detail.tags}
                 onTagsChanged={handleTagsChanged}
               />
