@@ -120,6 +120,11 @@ export interface SectionState {
   acceptedAtEt: string | null;
   status: SectionViewStatus;
   errorClass: string | null;
+  /**
+   * The stored error text (short). Never printed as is: the labels read it only
+   * as a class token naming an attempt_cap section's last failure.
+   */
+  errorText?: string | null;
 }
 
 export interface RunSummary {
@@ -723,6 +728,7 @@ function buildRun(db: Database.Database, run: RunRow, filingsById: Map<number, F
       acceptedAtEt: s.acceptedAtEt,
       status: s.status,
       errorClass: s.errorClass,
+      errorText: s.errorText,
     })),
     excludesAfterEt: null,
   };

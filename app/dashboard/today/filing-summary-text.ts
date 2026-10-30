@@ -120,7 +120,7 @@ export function pollStateText(view: PanelView, reading: ReadingDocs | null = vie
   if (shown?.status === "waiting_retry") return "Summary paused — a later filing waits for Retry";
   if (shown?.status === "failed") {
     const failed = shown.sectionStates.find((s) => s.status === "failed");
-    return `Summary failed — ${errorWords(failed?.errorClass ?? null)}`;
+    return `Summary failed — ${errorWords(failed?.errorClass ?? null, failed?.errorText)}`;
   }
 
   const form = filerForm(view);
@@ -175,7 +175,7 @@ export function sectionNotes(run: RunSummary): string[] {
             ? "not read yet"
             : s.status === "waiting_retry"
               ? "waits for Retry"
-              : `failed — ${errorWords(s.errorClass)}`;
+              : `failed — ${errorWords(s.errorClass, s.errorText)}`;
       return `${s.form}${s.acceptedAtEt ? ` · ${s.acceptedAtEt}` : ""}: ${what}`;
     });
 }
