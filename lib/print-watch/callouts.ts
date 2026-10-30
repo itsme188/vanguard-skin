@@ -357,9 +357,13 @@ function deltaLabel(expected: number, actual: number): string {
 export function vsBogeyText(labelNormKey: string, parsed: ParsedValue, guidanceMetrics: GuidanceMetric[]): string {
   const matches = guidanceMetrics.filter((m) => m.key === labelNormKey && m.value !== null);
   if (matches.length !== 1) return "no bogey on file";
-  const b = matches[0];
+  let b = matches[0];
   if (b.unit !== parsed.unit) return "no bogey on file";
   const fmt = (v: number) => formatValue(v, parsed.unit);
+  // A high equal to the low is a one-point figure: treat it as a point on
+  // either side, so it prints once and is scored with a delta.
+  if (parsed.value_high !== null && parsed.value_high === parsed.value) parsed = { ...parsed, value_high: null };
+  if (b.value_high !== null && b.value_high === b.value) b = { ...b, value_high: null };
   if (b.value_high !== null) {
     const shown = `${fmt(b.value!)}–${fmt(b.value_high)}`;
     if (parsed.value_high !== null) return `vs guide ${shown} (range ${fmt(parsed.value)}–${fmt(parsed.value_high)})`;

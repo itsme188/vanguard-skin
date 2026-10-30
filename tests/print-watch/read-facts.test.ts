@@ -81,6 +81,29 @@ describe("factsFromLines — validated rows only", () => {
     expect(extra).toMatchObject({ expected_consensus: 3.1e9, expected_whisper: 3.15e9, delta_pct: 3.23, verdict: "beat" });
   });
 
+  it("a one-point guide (low equals high) is scored as a point, not a range", () => {
+    const [pct] = factsFromLines(
+      [line("margin_guide_next", { value: 30.0, value_high: 30.0, expected: { value: 35.0, value_high: null, whisper: null, source_label: "VK" } }, { period: "NQ_guide", kind: "range", unit: "percent" })],
+      null,
+    );
+    expect(pct).toMatchObject({ actual: 30.0, actual_high: null, expected_consensus: 35.0, delta_pct: -14.29, verdict: "miss", kind: "range" });
+    const [eps] = factsFromLines(
+      [line("eps_adj_guide_next", { value: 1.5, value_high: 1.5, expected: { value: 1.4, value_high: null, whisper: null, source_label: "VK" } }, { period: "NQ_guide", kind: "range", unit: "per_share" })],
+      null,
+    );
+    expect(eps).toMatchObject({ actual: 1.5, actual_high: null, delta_pct: 7.14, verdict: "beat" });
+    const [noHigh] = factsFromLines(
+      [line("margin_guide_next", { value: 30.0, value_high: null, expected: { value: 35.0, value_high: null, whisper: null, source_label: "VK" } }, { period: "NQ_guide", kind: "range", unit: "percent" })],
+      null,
+    );
+    expect(noHigh).toMatchObject({ actual_high: null, verdict: "miss" });
+    const [genuine] = factsFromLines(
+      [line("margin_guide_next", { value: 30.0, value_high: 32.0, expected: { value: 35.0, value_high: null, whisper: null, source_label: "VK" } }, { period: "NQ_guide", kind: "range", unit: "percent" })],
+      null,
+    );
+    expect(genuine).toMatchObject({ actual: 30.0, actual_high: 32.0, delta_pct: null, verdict: "range" });
+  });
+
   it("directionSafeFacts strips every number", () => {
     const facts = factsFromLines([line("revenue_q", { value: 10, expected: { value: 9, value_high: null, whisper: null, source_label: "s" } })], null);
     expect(directionSafeFacts(facts)).toEqual([{ metric_id: "revenue_q", label: "revenue_q", verdict: "beat" }]);

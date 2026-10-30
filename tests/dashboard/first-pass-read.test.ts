@@ -53,6 +53,18 @@ describe("helpers", () => {
   });
 });
 
+describe("one-point guide (low equals high)", () => {
+  it("factRow prints a single value and the scored delta; a genuine range still prints low–high", () => {
+    expect(factRow(fact({ kind: "range", unit: "percent", actual: 30, actual_high: 30, expected_consensus: 35, expected_source: null, delta_pct: -14.29, verdict: "miss" }))).toMatchObject({ actual: "30.0%", delta: "-14.3%", verdict: "miss" });
+    expect(factRow(fact({ kind: "range", unit: "percent", actual: 30, actual_high: 32, expected_consensus: 35, expected_source: null, delta_pct: null, verdict: "range" }))).toMatchObject({ actual: "30.0%–32.0%", delta: "range" });
+  });
+  it("a one-point callout renders a single value", () => {
+    const html = renderWithPrivacy({ read: done, activeRead: null, callouts: [callout({ unit: "percent", value: 30, value_high: 30, value_text: "30%" })], onChanged: async () => {} });
+    expect(html).toContain("30.0%");
+    expect(html).not.toContain("30.0%–30.0%");
+  });
+});
+
 describe("render (react-dom/server; #28)", () => {
   it("renders the done read with prose lines inside per-line PrivateText spans, public figures in clear, and the active line", () => {
     const html = renderWithPrivacy({ eventId: 5, read: done, activeRead: generating, callouts: [callout()], onChanged: async () => undefined });

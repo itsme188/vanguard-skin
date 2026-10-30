@@ -20,6 +20,7 @@ import {
   windowText,
   printHeadlineText,
   stateAndWindowSegments,
+  formatContractRange,
 } from "@/app/dashboard/today/live-print/helpers";
 import type { LineContract, PrintWatchLine, TaggedCandidate } from "@/lib/print-watch/types";
 
@@ -105,6 +106,17 @@ describe("deltaPct", () => {
     expect(d).not.toBeNull();
     expect(d?.sign).toBe(0);
     expect(d?.label).toBe("in-line");
+  });
+});
+
+describe("formatContractRange — one-point guide", () => {
+  it("prints a single value when the high equals the low, and a genuine range as low–high", () => {
+    const pct = makeContract({ unit: "percent", kind: "range", period: "NQ_guide" });
+    expect(formatContractRange(pct, 30, 30)).toBe("30.0%");
+    expect(formatContractRange(pct, 30, null)).toBe("30.0%");
+    expect(formatContractRange(pct, 30, 32)).toBe("30.0%–32.0%");
+    const eps = makeContract({ kind: "range", period: "NQ_guide" });
+    expect(formatContractRange(eps, 1.5, 1.5)).not.toContain("–");
   });
 });
 

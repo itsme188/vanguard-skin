@@ -70,13 +70,16 @@ function figure(line: PrintWatchLine, value: number | null): string {
 
 function toSheetLine(line: PrintWatchLine): PostPrintSheetLine {
   const expected = line.expected?.value ?? null;
-  const reported =
-    line.contract.kind === "range" && line.value !== null && line.value_high !== null
-      ? `${figure(line, line.value)}${NDASH}${figure(line, line.value_high)}`
-      : figure(line, line.value);
+  // A range whose high is missing or equals its low is a one-point guide: it
+  // prints once and is scored like any point.
+  const isGenuineRange =
+    line.contract.kind === "range" && line.value !== null && line.value_high !== null && line.value_high !== line.value;
+  const reported = isGenuineRange
+    ? `${figure(line, line.value)}${NDASH}${figure(line, line.value_high)}`
+    : figure(line, line.value);
   // A guide RANGE has no single number to compare against a single bogey, so it
   // carries no delta — a made-up midpoint would be a number the desk never said.
-  const delta = line.contract.kind === "range" ? null : deltaPctNumber(expected, line.value);
+  const delta = isGenuineRange ? null : deltaPctNumber(expected, line.value);
   return {
     metricId: line.metric_id,
     label: line.contract.label,

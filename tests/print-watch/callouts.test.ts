@@ -270,12 +270,32 @@ describe("vsBogeyText — typed association only", () => {
   it("a range CALLOUT against a point bogey reports the range, no delta", () => {
     expect(vsBogeyText("arr growth", { value: 23, value_high: 25, unit: "percent" }, guidance)).toBe("vs guide 24.0% (range 23.0%–25.0%)");
   });
+  it("a one-point guide or callout (low equals high) is a point: single value, scored delta", () => {
+    const pointGuide = [{ key: "gross margin", unit: "percent" as const, value: 35, value_high: 35, source_index: 0 }];
+    expect(vsBogeyText("gross margin", { value: 30, value_high: null, unit: "percent" }, pointGuide)).toBe("vs guide 35.0% (-14.3%)");
+    expect(vsBogeyText("gross margin", { value: 30, value_high: 30, unit: "percent" }, pointGuide)).toBe("vs guide 35.0% (-14.3%)");
+    expect(vsBogeyText("arr growth", { value: 23, value_high: 23, unit: "percent" }, guidance)).toBe("vs guide 24.0% (-4.2%)");
+    const rangeGuide = [{ key: "gross margin", unit: "percent" as const, value: 34, value_high: 36, source_index: 0 }];
+    expect(vsBogeyText("gross margin", { value: 30, value_high: 30, unit: "percent" }, rangeGuide)).toBe("vs guide 34.0%–36.0% (below range)");
+    expect(vsBogeyText("gross margin", { value: 30, value_high: 32, unit: "percent" }, rangeGuide)).toBe("vs guide 34.0%–36.0% (range 30.0%–32.0%)");
+  });
   it("formatValue renders each unit the way the panel does", () => {
     expect(formatValue(3.74e9, "usd")).toBe("$3.74B");
     expect(formatValue(207.2e6, "usd")).toBe("$207.2M");
     expect(formatValue(23.1, "percent")).toBe("23.1%");
     expect(formatValue(1.12, "per_share")).toBe("$1.12");
     expect(formatValue(712, "count")).toBe("712");
+  });
+  it("formatValue puts the sign before the dollar sign for negative money", () => {
+    expect(formatValue(-1234567890, "usd")).toBe("-$1.23B");
+    expect(formatValue(-8200000, "usd")).toBe("-$8.2M");
+    expect(formatValue(-1500, "usd")).toBe("-$1.5K");
+    expect(formatValue(-12.5, "usd")).toBe("-$12.50");
+    expect(formatValue(-0.25, "per_share")).toBe("-$0.25");
+    expect(formatValue(0, "usd")).toBe("$0.00");
+    expect(formatValue(-0.001, "per_share")).toBe("$0.00");
+    expect(formatValue(-4.5, "percent")).toBe("-4.5%");
+    expect(formatValue(-3, "count")).toBe("-3");
   });
 });
 

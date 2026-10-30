@@ -73,7 +73,11 @@ export function factsFromLines(lines: PrintWatchLine[], vendorEps: number | null
   for (const l of lines) {
     if (l.state !== "accepted" || l.value === null) continue;
     if (isContradictedAccepted(l)) continue;
-    const isRange = l.contract.kind === "range";
+    // A range contract whose high is missing or equals its low is a one-point
+    // guide ("about 38%"): score it against the bogey like any point. Only a
+    // genuine low < high range goes unscored.
+    const high = l.value_high !== null && l.value_high !== l.value ? l.value_high : null;
+    const isRange = l.contract.kind === "range" && high !== null;
     const consensus = l.expected?.value ?? null;
     const isAdjEps = l.metric_id === "eps_adj_q";
     const vendor = isAdjEps ? vendorEps : null;
@@ -88,7 +92,7 @@ export function factsFromLines(lines: PrintWatchLine[], vendorEps: number | null
       period: l.contract.period,
       kind: l.contract.kind,
       actual: l.value,
-      actual_high: l.value_high,
+      actual_high: high,
       expected_consensus: consensus,
       expected_whisper: l.expected?.whisper ?? null,
       expected_source: source,

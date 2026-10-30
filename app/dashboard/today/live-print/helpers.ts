@@ -711,7 +711,8 @@ export function formatContractRange(
 ): string {
   if (value === null) return "—";
   const lo = formatContractValue(contract, value);
-  if (valueHigh === null) return lo;
+  // A high equal to the low is a one-point guide: print it once.
+  if (valueHigh === null || valueHigh === value) return lo;
   return `${lo}–${formatContractValue(contract, valueHigh)}`;
 }
 

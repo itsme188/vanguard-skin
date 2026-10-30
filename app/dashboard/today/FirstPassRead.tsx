@@ -82,7 +82,8 @@ export function calloutStateLabel(c: CalloutView): string {
 }
 
 function fmtRange(low: number, high: number | null, unit: ReadFact["unit"] | CalloutView["unit"]): string {
-  return high !== null ? `${formatValue(low, unit)}–${formatValue(high, unit)}` : formatValue(low, unit);
+  // A high equal to the low is a one-point figure, never "X–X".
+  return high !== null && high !== low ? `${formatValue(low, unit)}–${formatValue(high, unit)}` : formatValue(low, unit);
 }
 
 export function factRow(f: ReadFact): { label: string; actual: string; bogey: string; delta: string; verdict: ReadVerdict } {

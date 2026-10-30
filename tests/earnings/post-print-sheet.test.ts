@@ -244,6 +244,24 @@ describe("loadPostPrintSheetInputs", () => {
     expect(l.bogeyText).toBe("—");
   });
 
+  it("renders a one-point guide (low equals high) as a single value with a delta", () => {
+    upsertLines(db, printId, [
+      line({
+        metric_id: "fy_rev_guide",
+        label: "FY revenue guide",
+        state: "agreed",
+        value: 3.6e9,
+        value_high: 3.6e9,
+        expected: 3.8e9,
+        kind: "range",
+      }),
+    ]);
+    const l = loadPostPrintSheetInputs(db, printId)!.lines.find((x) => x.metricId === "fy_rev_guide")!;
+    expect(l.reportedText).toBe("$3.60B");
+    expect(l.deltaText).toBe("-5.3%");
+    expect(l.reportedText).not.toContain("–");
+  });
+
   it("takes ACCEPTED callouts only", () => {
     const i = loadPostPrintSheetInputs(db, printId)!;
     expect(i.callouts.map((c) => c.label)).toEqual(["RPO"]);
