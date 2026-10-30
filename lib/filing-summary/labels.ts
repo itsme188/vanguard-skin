@@ -186,20 +186,41 @@ const ERROR_WORDS: Record<string, string> = {
   awaiting_retry: "waits for Retry",
 };
 
-/** The clause for an error class; null reads "no reason recorded", an unknown class is named as stored. */
-export function errorWords(errorClass: string | null): string {
+/** Stored-text tokens that name the LAST failure of an attempt_cap section (never the cap itself or a wait). */
+function lastFailureWords(errorText: string | null | undefined): string | null {
+  if (!errorText || errorText === "attempt_cap" || errorText === "awaiting_retry") return null;
+  return Object.prototype.hasOwnProperty.call(ERROR_WORDS, errorText) ? ERROR_WORDS[errorText] : null;
+}
+
+/**
+ * The clause for an error class; null reads "no reason recorded", an unknown class is named as stored.
+ * For `attempt_cap` the runner stores the last failure's class token as the error text; when that
+ * token is a known class its clause is added ("both attempts failed — the model call failed").
+ * Any other stored text is never printed.
+ */
+export function errorWords(errorClass: string | null, errorText?: string | null): string {
   if (!errorClass) return "no reason recorded";
-  return Object.prototype.hasOwnProperty.call(ERROR_WORDS, errorClass) ? ERROR_WORDS[errorClass] : errorClass;
+  if (!Object.prototype.hasOwnProperty.call(ERROR_WORDS, errorClass)) return errorClass;
+  return withLastFailure(errorClass, errorText);
+}
+
+function withLastFailure(errorClass: string, errorText: string | null | undefined): string {
+  const base = ERROR_WORDS[errorClass];
+  if (errorClass !== "attempt_cap") return base;
+  const last = lastFailureWords(errorText);
+  return last ? `${base} — ${last}` : base;
 }
 
 /**
  * The sentence for a section that is not summarised. The stored error text
  * is never printed: it is internal wording and the shareable page leaves the app.
+ * Only for `attempt_cap`, a stored text that is a known class token is turned
+ * into its clause (the last failure's reason).
  */
-export function sectionErrorSentence(errorClass: string | null): string {
+export function sectionErrorSentence(errorClass: string | null, errorText?: string | null): string {
   if (errorClass === "awaiting_retry") return "Waiting for Retry: this filing arrived after the run failed.";
   if (errorClass && Object.prototype.hasOwnProperty.call(ERROR_WORDS, errorClass)) {
-    return `Not summarised: ${ERROR_WORDS[errorClass]}.`;
+    return `Not summarised: ${withLastFailure(errorClass, errorText)}.`;
   }
   return "Not summarised.";
 }

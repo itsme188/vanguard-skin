@@ -140,7 +140,7 @@ function sectionBlock(section: FullSection): string {
       section.status === "waiting_retry"
         ? "Waiting for Retry: this filing arrived after the run failed."
         : section.status === "failed"
-          ? sectionErrorSentence(section.errorClass)
+          ? sectionErrorSentence(section.errorClass, section.errorText)
           : "Still being read.";
     return `${head}<p class="banner">${escapeHtml(state)}</p>`;
   }
