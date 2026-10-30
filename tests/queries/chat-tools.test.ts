@@ -169,12 +169,21 @@ function seedSnapshot(
   accountId: number,
   monthEnd: string,
   totalValue: number,
-  opts?: { dividends?: number; interest?: number; fees?: number }
+  opts?: { dividends?: number; interest?: number; fees?: number; twr?: number; source?: string }
 ): void {
   db.prepare(
-    `INSERT OR REPLACE INTO monthly_snapshots (account_id, month_end_date, total_value, dividends, interest, fees)
-     VALUES (?, ?, ?, ?, ?, ?)`
-  ).run(accountId, monthEnd, totalValue, opts?.dividends ?? null, opts?.interest ?? null, opts?.fees ?? null);
+    `INSERT OR REPLACE INTO monthly_snapshots (account_id, month_end_date, total_value, dividends, interest, fees, twr, source)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(
+    accountId,
+    monthEnd,
+    totalValue,
+    opts?.dividends ?? null,
+    opts?.interest ?? null,
+    opts?.fees ?? null,
+    opts?.twr ?? null,
+    opts?.source ?? "manual"
+  );
 }
 
 // ─── Tests ────────────────────────────────────────────────────────
@@ -784,6 +793,18 @@ describe("getPerformanceForChat", () => {
     expect(result).toHaveLength(1);
     expect(result[0].account_name).toBe("Vanguard Roth IRA");
     expect(result[0].total_value).toBe(50000);
+  });
+
+  // [qa:accounts-ibkr--monthly-snapshot-twr-corrupt-triple-digit-rows-regression-1]
+  it("hands the model a FRACTION for every source, ibkr-activity percent rows included", () => {
+    seedSnapshot(db, 3, "2025-01-31", 100000, { twr: 5.21, source: "ibkr-activity" });
+    seedSnapshot(db, 1, "2025-01-31", 100000, { twr: 0.0321, source: "canonical" });
+
+    const result = getPerformanceForChat(db);
+    const ibkr = result.find((r) => r.account_name === "IBKR")!;
+    const taxable = result.find((r) => r.account_name === "Vanguard Taxable")!;
+    expect(ibkr.twr).toBeCloseTo(0.0521, 10);
+    expect(taxable.twr).toBeCloseTo(0.0321, 10);
   });
 });
 
