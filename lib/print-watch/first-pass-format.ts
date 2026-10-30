@@ -18,15 +18,23 @@
 // existing server caller and test import keeps working unchanged.
 import type { CalloutUnit } from "./first-pass-types";
 
+// Money keeps its sign OUTSIDE the symbol ("-$42.36B", never "$-42.36B"),
+// matching `formatUSD` in lib/format.ts. A value that rounds to zero loses it.
+function signedMoney(value: number, scaled: number, digits: number, suffix: string): string {
+  const body = Math.abs(scaled).toFixed(digits);
+  const negative = value < 0 && Number(body) !== 0;
+  return `${negative ? "-" : ""}$${body}${suffix}`;
+}
+
 export function formatValue(value: number, unit: CalloutUnit): string {
   if (unit === "percent") return `${value.toFixed(1)}%`;
-  if (unit === "per_share") return `$${value.toFixed(2)}`;
+  if (unit === "per_share") return signedMoney(value, value, 2, "");
   if (unit === "count") return Number.isInteger(value) ? String(value) : value.toFixed(1);
   const abs = Math.abs(value);
-  if (abs >= 1e9) return `$${(value / 1e9).toFixed(2)}B`;
-  if (abs >= 1e6) return `$${(value / 1e6).toFixed(1)}M`;
-  if (abs >= 1e3) return `$${(value / 1e3).toFixed(1)}K`;
-  return `$${value.toFixed(2)}`;
+  if (abs >= 1e9) return signedMoney(value, value / 1e9, 2, "B");
+  if (abs >= 1e6) return signedMoney(value, value / 1e6, 1, "M");
+  if (abs >= 1e3) return signedMoney(value, value / 1e3, 1, "K");
+  return signedMoney(value, value, 2, "");
 }
 
 // Control characters are stripped with a class built from char codes: never
