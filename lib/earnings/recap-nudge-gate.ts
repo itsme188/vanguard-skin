@@ -75,6 +75,20 @@ export const GATE_NO_ACTUAL =
 export const GATE_PAIR_CHANGED =
   "The accepted pair changed since the last promote — promote the headline pair again before sending.";
 
+export const GATE_WINDOW_CLOSED_NO_ACTUAL =
+  "The watch window has closed and nothing was promoted — enter the reported EPS and revenue by hand through the bogeys editor's Save actuals, then send the recap.";
+
+/**
+ * Print states whose watch window has closed. The UI treats such a print as the
+ * read-only record (Promote permanently disabled): see `isPrintFinished` in
+ * app/dashboard/today/LivePrintRow.tsx, whose `expired` / `disarmed` branch this
+ * mirrors. (Its `parsed`-after-window branch needs the live clock, which this
+ * pure read does not have, so a parsed print keeps the sheet-first copy.)
+ */
+export function isPrintWindowClosed(state: string): boolean {
+  return state === "expired" || state === "disarmed";
+}
+
 export type RecapNudgeGate =
   | { ok: true; eventId: number; symbol: string }
   | { ok: false; reason: string };
@@ -138,16 +152,22 @@ export function evaluateRecapNudge(db: Database.Database, printId: number): Reca
   const print = getPrintById(db, printId);
   if (!print) return { ok: false, reason: GATE_NO_PRINT };
 
+  const closed = isPrintWindowClosed(print.state);
   const pair = acceptedHeadlinePair(getSheet(db, printId));
-  if (!pair) return { ok: false, reason: GATE_NOT_ACCEPTED };
+  if (!pair && !closed) return { ok: false, reason: GATE_NOT_ACCEPTED };
 
   // Cluster-scoped: a promote's stamp can sit on a superseded twin of this same
   // print (lib/queries/manual-actuals-cluster.ts), exactly as the recap
   // composer's own getEventByIdRow reads it.
   const event = getEventById(db, print.event_id);
   if (!event) return { ok: false, reason: GATE_NO_PRINT };
-  if (!event.manual_actuals_at) return { ok: false, reason: GATE_NOT_PROMOTED };
+  if (!event.manual_actuals_at) {
+    return { ok: false, reason: closed ? GATE_WINDOW_CLOSED_NO_ACTUAL : GATE_NOT_PROMOTED };
+  }
   if (!event.actual_value) return { ok: false, reason: GATE_NO_ACTUAL };
+  // Closed record with hand-saved actuals but no accepted pair: the stored
+  // actuals are all there is to read, so there is no pair to compare against.
+  if (!pair) return { ok: true, eventId: print.event_id, symbol: print.symbol.toUpperCase() };
 
   // R-E3: `manual_actuals_at` + `actual_value` prove that A promote happened —
   // not that THIS pair produced it. A "Save actuals" entry in BogeysEditModal
