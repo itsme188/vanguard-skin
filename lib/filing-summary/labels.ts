@@ -211,15 +211,21 @@ export function bogeyValueText(b: { value: number; unit: string }): string {
   const v = b.value;
   const n = (x: number, d: number) =>
     x.toLocaleString("en-US", { minimumFractionDigits: d, maximumFractionDigits: d });
+  // Sign outside the symbol; no sign when the rounded body is zero.
+  const money = (abs: number, d: number, suffix: string) => {
+    const body = n(abs, d);
+    const negative = v < 0 && Number(body.replace(/,/g, "")) !== 0;
+    return `${negative ? "-" : ""}$${body}${suffix}`;
+  };
   switch (b.unit) {
     case "usd": {
       const a = Math.abs(v);
-      if (a >= 1e9) return `$${n(v / 1e9, 2)}B`;
-      if (a >= 1e6) return `$${n(v / 1e6, 1)}M`;
-      return `$${n(v, 0)}`;
+      if (a >= 1e9) return money(a / 1e9, 2, "B");
+      if (a >= 1e6) return money(a / 1e6, 1, "M");
+      return money(a, 0, "");
     }
     case "usd_per_share":
-      return `$${n(v, 2)}`;
+      return money(Math.abs(v), 2, "");
     case "percent":
       return `${n(v, 1)}%`;
     default:

@@ -182,6 +182,16 @@ describe("comparison line (ruling A)", () => {
     expect(bogeyValueText({ value: 1.85, unit: "usd_per_share" })).toBe("$1.85");
     expect(bogeyValueText({ value: 26, unit: "percent" })).toBe("26.0%");
   });
+
+  it("bogey value text puts a negative sign outside the dollar sign", () => {
+    expect(bogeyValueText({ value: -0.04, unit: "usd_per_share" })).toBe("-$0.04");
+    expect(bogeyValueText({ value: -8.2e9, unit: "usd" })).toBe("-$8.20B");
+    expect(bogeyValueText({ value: -3.5e6, unit: "usd" })).toBe("-$3.5M");
+    expect(bogeyValueText({ value: -12, unit: "usd" })).toBe("-$12");
+    expect(bogeyValueText({ value: -0.001, unit: "usd_per_share" })).toBe("$0.00");
+    expect(bogeyValueText({ value: -0.2, unit: "usd" })).toBe("$0");
+    expect(bogeyValueText({ value: 3.5e6, unit: "usd" })).toBe("$3.5M");
+  });
 });
 
 describe("newRequestKey (5)", () => {
