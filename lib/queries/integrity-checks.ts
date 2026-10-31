@@ -693,8 +693,19 @@ function scanLotDriftHits(
         );
       } else if (drift.shape === "lots-no-position") {
         // A fallback disclosure: for a pending pair the index explains it.
+        // An expired contract is "expired, awaiting its closing entry" here
+        // as on Tax Lots and in the statement-lag branch below; expired
+        // beats the plain no-position wording.
         emit(
-          { key: hitKey, severity: "warning", reason: `${label}: open tax lots with no matching position` },
+          expiredOptionIds.has(securityId)
+            ? {
+                // No `kind`: expired is not a pending kind (the purge
+                // integration test pins "expired beats pending").
+                key: hitKey,
+                severity: "warning",
+                reason: `${label}: expired — awaiting its closing entry`,
+              }
+            : { key: hitKey, severity: "warning", reason: `${label}: open tax lots with no matching position` },
           0,
           "fallback"
         );
