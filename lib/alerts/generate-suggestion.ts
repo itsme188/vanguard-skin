@@ -2,6 +2,9 @@ import type Database from "better-sqlite3";
 import { generateText } from "ai";
 import { getModelForFeature } from "@/lib/ai/provider";
 import { setAlertSuggestion } from "@/lib/mutations/security-levels";
+import { accountFailureOf } from "@/lib/earnings/ai-unavailable";
+import { isFinalSuggestionFailure } from "@/lib/alerts/suggestion-failure";
+export { isFinalSuggestionFailure };
 import { resolveLevelPrice } from "@/lib/alerts/resolve-level-price";
 import type { LevelPriceSource } from "@/lib/types";
 
@@ -279,17 +282,36 @@ export function buildSuggestionContext(
   };
 }
 
+export type SuggestionFailureReason =
+  | "not_found"
+  | "no_context"
+  | "ai_account"
+  | "ai_not_configured"
+  | "generation_failed";
+
+export type DetailedSuggestionResult =
+  | { ok: true; suggestion: string }
+  | { ok: false; reason: SuggestionFailureReason; message: string };
+
 /**
- * Generate a suggestion for a single alert and persist it.
- * Returns the generated suggestion text, or null on any failure (Claude error, missing data).
- * Non-throwing — callers can run this against many alerts and ignore individual failures.
+ * Generate a suggestion for a single alert and persist it, saying WHY when it
+ * cannot. Non-throwing. A missing AI setup ("config") and an account problem
+ * (credit, key, rate limit, outage) are told apart by `accountFailureOf`.
  */
-export async function generateSuggestionForAlert(
+export async function generateSuggestionForAlertDetailed(
   db: Database.Database,
   alertId: number
-): Promise<string | null> {
+): Promise<DetailedSuggestionResult> {
+  const row = db.prepare("SELECT id FROM level_alerts WHERE id = ?").get(alertId);
+  if (!row) return { ok: false, reason: "not_found", message: "Alert not found" };
   const ctx = buildSuggestionContext(db, alertId);
-  if (!ctx) return null;
+  if (!ctx) {
+    return {
+      ok: false,
+      reason: "no_context",
+      message: "This alert has no level or security details to base a suggestion on.",
+    };
+  }
 
   try {
     const { text } = await generateText({
@@ -299,15 +321,49 @@ export async function generateSuggestionForAlert(
     });
 
     const suggestion = text.trim();
-    if (!suggestion) return null;
+    if (!suggestion) {
+      return { ok: false, reason: "generation_failed", message: "The AI returned an empty suggestion." };
+    }
 
     setAlertSuggestion(db, alertId, suggestion);
-    return suggestion;
+    return { ok: true, suggestion };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.warn(`[alerts/suggest] Failed for alert ${alertId}: ${msg}`);
-    return null;
+    const kind = accountFailureOf(err);
+    if (kind === "config") {
+      return {
+        ok: false,
+        reason: "ai_not_configured",
+        message: "AI suggestions are not configured on this machine.",
+      };
+    }
+    if (kind) {
+      return {
+        ok: false,
+        reason: "ai_account",
+        message: `The AI account cannot answer right now (${kind}). Check the account in Settings, then try again later.`,
+      };
+    }
+    return {
+      ok: false,
+      reason: "generation_failed",
+      message: "The AI request failed. Try again in a moment.",
+    };
   }
+}
+
+/**
+ * Generate a suggestion for a single alert and persist it.
+ * Returns the generated suggestion text, or null on any failure (Claude error, missing data).
+ * Non-throwing — callers can run this against many alerts and ignore individual failures.
+ */
+export async function generateSuggestionForAlert(
+  db: Database.Database,
+  alertId: number
+): Promise<string | null> {
+  const r = await generateSuggestionForAlertDetailed(db, alertId);
+  return r.ok ? r.suggestion : null;
 }
 
 export type RegenerateResult =

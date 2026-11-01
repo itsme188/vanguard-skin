@@ -23,6 +23,7 @@ import {
   formatUSDPrecise,
 } from "@/lib/format";
 import { suggestOutcomeMessage } from "@/lib/alerts/suggest-message";
+import { isFinalSuggestionFailure } from "@/lib/alerts/suggestion-failure";
 import {
   BEYOND_SCAN_RANGE_EXPLANATION,
   BEYOND_SCAN_RANGE_LABEL,
@@ -156,7 +157,9 @@ interface EnrichedAlert extends LevelAlert {
  */
 /** Ask for one alert's advice. `regenerate` replaces advice already stored
  *  (one AI call). Resolves to null on success, or the reason it failed. */
-type SuggestHandler = (id: number, opts?: { regenerate?: boolean }) => Promise<string | null>;
+/** Null = stored. Otherwise why not; `retryable` is false for an AI account or setup problem. */
+type SuggestFailure = { message: string; retryable: boolean };
+type SuggestHandler = (id: number, opts?: { regenerate?: boolean }) => Promise<SuggestFailure | null>;
 
 function alertThresholdView(alert: EnrichedAlert): {
   value: number;
@@ -894,7 +897,7 @@ function AlertsPageInner() {
   async function suggestOne(
     alertId: number,
     opts: { regenerate?: boolean } = {},
-  ): Promise<string | null> {
+  ): Promise<SuggestFailure | null> {
     let res: Response;
     try {
       res = opts.regenerate
@@ -905,10 +908,16 @@ function AlertsPageInner() {
             body: JSON.stringify({ alertId }),
           });
     } catch {
-      return networkFailureMessage(opts.regenerate ? "regenerate the advice" : "get a suggestion");
+      return {
+        message: networkFailureMessage(opts.regenerate ? "regenerate the advice" : "get a suggestion"),
+        retryable: true,
+      };
     }
+    const reasonBody = (await res.clone().json().catch(() => null)) as { reason?: unknown } | null;
     const result = await readMutationResult(res);
-    if (!result.ok) return result.message;
+    if (!result.ok) {
+      return { message: result.message, retryable: !isFinalSuggestionFailure(reasonBody?.reason) };
+    }
     await refresh();
     return null;
   }
@@ -1872,7 +1881,8 @@ function AlertRow({
   const [noteOpen, setNoteOpen] = useState(false);
   const [note, setNote] = useState(keptNote);
   const [suggestBusy, setSuggestBusy] = useState(false);
-  const [suggestError, setSuggestError] = useState<string | null>(null);
+  const [suggestFailure, setSuggestFailure] = useState<SuggestFailure | null>(null);
+  const suggestError = suggestFailure?.message ?? null;
 
   function submitNote() {
     onRespond(alert.id, "acted", note || undefined);
@@ -1887,9 +1897,9 @@ function AlertRow({
 
   async function regenerateAdvice() {
     setSuggestBusy(true);
-    setSuggestError(null);
+    setSuggestFailure(null);
     try {
-      setSuggestError(await onSuggest(alert.id, { regenerate: true }));
+      setSuggestFailure(await onSuggest(alert.id, { regenerate: true }));
     } finally {
       setSuggestBusy(false);
     }
@@ -1897,9 +1907,9 @@ function AlertRow({
 
   async function askSuggestion() {
     setSuggestBusy(true);
-    setSuggestError(null);
+    setSuggestFailure(null);
     try {
-      setSuggestError(await onSuggest(alert.id));
+      setSuggestFailure(await onSuggest(alert.id));
     } finally {
       setSuggestBusy(false);
     }
@@ -2049,6 +2059,7 @@ function AlertRow({
                   ? `Suggestion unavailable. ${suggestError}`
                   : "No suggestion stored for this alert."}
               </span>
+              {(suggestFailure?.retryable ?? true) && (
               <button
                 onClick={askSuggestion}
                 disabled={suggestBusy}
@@ -2057,6 +2068,7 @@ function AlertRow({
               >
                 {suggestBusy ? "Thinking..." : suggestError ? "Retry" : "Get suggestion"}
               </button>
+              )}
             </div>
           )}
 

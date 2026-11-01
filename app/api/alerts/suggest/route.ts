@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import {
   claimRegenerateSlot,
-  generateSuggestionForAlert,
+  generateSuggestionForAlertDetailed,
   regenerateSuggestionForAlert,
   releaseRegenerateSlot,
   generateSuggestionsForPendingAlerts,
@@ -59,13 +59,13 @@ export async function POST(request: NextRequest) {
     const { alertId, limit } = body as { alertId?: number; limit?: number };
 
     if (alertId) {
-      const suggestion = await generateSuggestionForAlert(db, Number(alertId));
-      if (suggestion === null) {
-        return NextResponse.json(
-          { success: false, error: "Suggestion generation failed or alert not found" },
-          { status: 502 }
-        );
+      const r = await generateSuggestionForAlertDetailed(db, Number(alertId));
+      if (!r.ok) {
+        const status =
+          r.reason === "not_found" ? 404 : r.reason === "ai_account" || r.reason === "ai_not_configured" ? 503 : 502;
+        return NextResponse.json({ success: false, error: r.message, reason: r.reason }, { status });
       }
+      const suggestion = r.suggestion;
       return NextResponse.json({ success: true, suggestion });
     }
 
