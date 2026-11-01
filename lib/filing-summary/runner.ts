@@ -43,7 +43,7 @@ import { CHECKER_VERSION, evaluateSection } from "./evaluate";
 import { readFilingDocument } from "./files";
 import { shouldSkipDocument } from "./edgar";
 import { easternClock } from "./poller";
-import { buildSectionPrompt, PROMPT_VERSION } from "./prompt";
+import { buildSectionPrompt, LATE_PROMPT_VERSION, PROMPT_VERSION } from "./prompt";
 import { parseSectionOutput, SCHEMA_VERSION, SECTION_JSON_SCHEMA } from "./schema";
 import {
   appendSection,
@@ -52,9 +52,13 @@ import {
   finalizeSection,
   getChoice,
   getEventState,
+  getFilingById,
+  getRunById,
   heartbeatSection,
   listDocuments,
   listFilings,
+  listLateFilings,
+  listLateRuns,
   listRuns,
   listSections,
   requeueSection,
@@ -455,6 +459,95 @@ export function retryRun(db: Database.Database, runId: number, requestKey: strin
   return retryRunWithReason(db, runId, requestKey).ok;
 }
 
+// ---------------------------------------------------------------- the late periodic report
+
+/**
+ * The evening run the late follow-up is read against: the newest evening run
+ * with a done earnings section (the view's shown run), else the newest.
+ */
+function eveningShownRun(db: Database.Database, eventId: number): RunRow | null {
+  const runs = listRuns(db, eventId);
+  const earningsIds = new Set(listFilings(db, eventId).filter((f) => f.role === "earnings").map((f) => f.id));
+  for (const r of [...runs].reverse()) {
+    if (listSections(db, r.id).some((s) => s.status === "done" && earningsIds.has(s.filingId))) return r;
+  }
+  return runs[runs.length - 1] ?? null;
+}
+
+/** The evening summary's done sections, in order: the late section's context. Read only. */
+function eveningContextSections(db: Database.Database, eventId: number): SectionRow[] {
+  const run = eveningShownRun(db, eventId);
+  return run ? listSections(db, run.id).filter((s) => s.status === "done") : [];
+}
+
+/** The late follow-up run's deterministic key: one run per late filing, ever. */
+export function lateRunKey(eventId: number, filingId: number): string {
+  return `late:${eventId}:${filingId}`;
+}
+
+/**
+ * Starts the follow-up run over one late filing (the 10-Q / 10-K the late
+ * watch found): the per-print choice (same family and effort as the evening
+ * run), the evening run's frozen bogey snapshot (built fresh only when there
+ * is no evening run), one section. Idempotent on `lateRunKey`. Refused for a
+ * disarmed print, a filing that is not this event's late filing, or no
+ * callable model (the tick's `ensureLateRun` tries again).
+ */
+export function startLateRun(
+  db: Database.Database,
+  eventId: number,
+  filingId: number,
+  opts: { catalogIds?: string[] } = {},
+): StartRunResult {
+  return db
+    .transaction((): StartRunResult => {
+      if (!eventRow(db, eventId)) return { ok: false, reason: "not_found" };
+      if (getEventState(db, eventId)?.pollState === "cancelled") return { ok: false, reason: "no_filings" };
+      const filing = listLateFilings(db, eventId).find((f) => f.id === filingId);
+      if (!filing || filing.identityVerdict !== "accepted") return { ok: false, reason: "no_filings" };
+      const requestKey = lateRunKey(eventId, filingId);
+      const existing = db
+        .prepare("SELECT id FROM filing_summary_runs WHERE request_key = ?")
+        .get(requestKey) as { id: number } | undefined;
+      if (existing) return { ok: true, runId: existing.id, created: false };
+      const choice = getChoice(db, eventId).choice;
+      const resolved = resolveFamilyModel(choice.family, opts.catalogIds ?? getCachedModelCatalog());
+      if (!resolved) return { ok: false, reason: "no_model" };
+      const fallbackNote = resolved.fellBackFrom
+        ? `${capitalise(resolved.fellBackFrom)} unavailable — ${modelLabel(resolved.modelId)} ran instead`
+        : null;
+      const evening = eveningShownRun(db, eventId);
+      const res = createRun(db, {
+        eventId,
+        trigger: "auto",
+        choice,
+        modelId: resolved.modelId,
+        fallbackNote,
+        requestKey,
+        bogeySnapshotJson: evening?.bogeySnapshotJson ?? JSON.stringify(buildBogeySnapshot(db, eventId)),
+        filingIds: [filingId],
+      });
+      return { ok: true, runId: res.runId, created: res.created };
+    })
+    .immediate();
+}
+
+/**
+ * Tick callback: a late filing with no follow-up run yet (no callable model
+ * when it was found) gets `startLateRun` again; a repeat is a no-op.
+ */
+export function ensureLateRun(db: Database.Database, eventId: number): void {
+  if (getEventState(db, eventId)?.pollState === "cancelled") return;
+  const withRun = new Set(
+    listLateRuns(db, eventId).flatMap((r) => listSections(db, r.id).map((s) => s.filingId)),
+  );
+  for (const f of listLateFilings(db, eventId)) {
+    if (f.identityVerdict !== "accepted" || withRun.has(f.id)) continue;
+    const res = startLateRun(db, eventId, f.id);
+    if (!res.ok) warn(`late run for event ${eventId} not started: ${res.reason}`);
+  }
+}
+
 // ---------------------------------------------------------------- running a section
 
 interface Coverage {
@@ -555,8 +648,13 @@ export async function runNextSection(
   const section = claimNextSection(db, eventId, token, seams.now());
   if (!section) return "idle";
 
-  const run = listRuns(db, eventId).find((r) => r.id === section.runId) ?? null;
-  const filing = listFilings(db, eventId).find((f) => f.id === section.filingId) ?? null;
+  // By id, whatever the arrival: this runner reads evening sections and the
+  // late periodic report's follow-up section alike.
+  const runById = getRunById(db, section.runId);
+  const run = runById && runById.eventId === eventId ? runById : null;
+  const filingById = getFilingById(db, section.filingId);
+  const filing = filingById && filingById.eventId === eventId ? filingById : null;
+  const late = filing?.arrival === "late";
   /**
    * Compare-and-set finalize, in one transaction with two re-checks:
    *  - a done result whose filing was rejected while the call ran becomes
@@ -644,10 +742,14 @@ export async function runNextSection(
     );
   }
 
-  // Earlier sections of this run that are done, in order: the companion's context.
+  // Earlier sections of this run that are done, in order: the companion's
+  // context. A late periodic report reads the EVENING summary's sections
+  // instead (it is asked what it adds); the evening rows are only read.
   const formOf = new Map(listFilings(db, eventId).map((f) => [f.id, f.form]));
-  const prior = listSections(db, run.id)
-    .filter((s) => s.seq < section.seq && s.status === "done")
+  const contextRows = late
+    ? eveningContextSections(db, eventId)
+    : listSections(db, run.id).filter((s) => s.seq < section.seq && s.status === "done");
+  const prior = contextRows
     .map((s) => ({ s, checked: parseChecked(s.checkedJson) }))
     .filter((x): x is { s: SectionRow; checked: CheckedSection } => x.checked !== null);
   const priorClaims: CheckedClaim[] = prior.flatMap((x) => x.checked.claims);
@@ -673,6 +775,7 @@ export async function runNextSection(
     documents: coverage.docs.map((d) => ({ fileName: d.fileName, docType: d.docType, text: d.text })),
     bogeys,
     priorSections,
+    ...(late ? { arrival: "late" as const } : {}),
   });
 
   if (!heartbeatSection(db, section.id, token, seams.now())) {
@@ -788,6 +891,7 @@ export async function runNextSection(
     versionsJson: JSON.stringify({
       schema: SCHEMA_VERSION,
       prompt: PROMPT_VERSION,
+      ...(late ? { latePrompt: LATE_PROMPT_VERSION } : {}),
       extractor: EXTRACTOR_VERSION,
       checker: CHECKER_VERSION,
     }),
@@ -796,6 +900,8 @@ export async function runNextSection(
   });
   if (outcome === "ran_failed") return "ran"; // rejected mid-call: no hook
   if (outcome !== "ran") return outcome;
+  // The late periodic report is in-app only (owner ruling 2026-10-29): no push.
+  if (late) return "ran";
   try {
     await seams.onSectionDone(db, section.id);
   } catch {

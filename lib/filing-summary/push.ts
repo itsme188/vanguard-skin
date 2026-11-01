@@ -8,7 +8,7 @@
 import type Database from "better-sqlite3";
 import { sendPushover, type PushoverResult } from "@/lib/alerts/notify-pushover";
 import { DELIVERY_UNKNOWN } from "@/lib/earnings/email-states";
-import { beginPush, claimPushForSending, markPush } from "./store";
+import { beginPush, claimPushForSending, eveningFilingSql, markPush } from "./store";
 import type { StatusCounts } from "./types";
 
 export interface SummaryPushInput {
@@ -96,7 +96,7 @@ export async function sendSummaryPushIfDue(
          JOIN filing_summary_runs r ON r.id = s.run_id
          JOIN filing_summary_filings f ON f.id = s.filing_id
          JOIN calendar_events e ON e.id = r.event_id
-        WHERE s.id = ?`,
+        WHERE s.id = ? AND ${eveningFilingSql("f")}`,
     )
     .get(sectionId) as PushSectionRow | undefined;
   // An automatic run and the owner's Run summary click both push (the late-arm

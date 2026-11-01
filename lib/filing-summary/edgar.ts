@@ -62,6 +62,12 @@ export interface FilingHeader {
   /** Every `<ITEMS>` line, in header order, once each (e.g. `2.02`, `9.01`). */
   items: string[];
   documents: FilingDocument[];
+  /**
+   * The header's period of report (`<PERIOD>` / "CONFORMED PERIOD OF REPORT"),
+   * `YYYY-MM-DD`; null when absent. For a 10-Q / 10-K it is the fiscal
+   * period's end date (the late watch matches it to the print's quarter).
+   */
+  periodOfReport?: string | null;
 }
 
 export interface DayFiling {
@@ -140,7 +146,19 @@ export function parseFilingHeader(html: string): FilingHeader {
     });
   }
 
-  return { acceptanceMs, items, documents };
+  return { acceptanceMs, items, documents, periodOfReport: periodFrom(text) };
+}
+
+const PERIOD_RE = /<PERIOD>[ \t]*(\d{8})\b/;
+const CONFORMED_PERIOD_RE = /CONFORMED PERIOD OF REPORT:\s*(\d{8})\b/;
+
+/** The header's period of report as `YYYY-MM-DD` (angle brackets already unescaped). */
+function periodFrom(text: string): string | null {
+  const m = PERIOD_RE.exec(text) ?? CONFORMED_PERIOD_RE.exec(text);
+  if (!m) return null;
+  const d = m[1];
+  const out = `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)}`;
+  return Number.isNaN(Date.parse(`${out}T00:00:00Z`)) ? null : out;
 }
 
 /** Companion allow list (Global Constraints). `424B*` is matched by prefix. */

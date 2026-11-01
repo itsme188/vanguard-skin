@@ -1,6 +1,6 @@
 import { db } from "@/lib/db";
 import { getCachedModelCatalog } from "@/lib/ai/catalog-source";
-import { applyFilingSummaryAction } from "@/lib/filing-summary/actions";
+import { applyFilingSummaryActionAsync } from "@/lib/filing-summary/actions";
 import { getPanelViews } from "@/lib/filing-summary/view";
 
 export const dynamic = "force-dynamic";
@@ -10,7 +10,7 @@ export const dynamic = "force-dynamic";
  * CSRF through proxy.ts); the logic lives in lib/filing-summary.
  *
  * GET ?eventIds=1,2 → { success, data: { [eventId]: PanelView } }. Read-only.
- * POST { eventId, action: "set_choice" | "run" | "rerun" | "retry",
+ * POST { eventId, action: "set_choice" | "run" | "rerun" | "retry" | "look_again_late",
  *        family?, effort?, runId?, requestKey } → { success, data } or
  *        { success: false, error } with 400 / 404 / 409 / 503
  *        (see lib/filing-summary/actions.ts).
@@ -27,7 +27,7 @@ export async function GET(request: Request) {
 
 export async function POST(request: Request) {
   const body: unknown = await request.json().catch(() => ({}));
-  const res = applyFilingSummaryAction(db, body);
+  const res = await applyFilingSummaryActionAsync(db, body);
   if (!res.ok) return Response.json({ success: false, error: res.error }, { status: res.status });
   return Response.json({ success: true, data: res.data });
 }

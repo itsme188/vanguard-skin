@@ -33,10 +33,14 @@ import { easternClock } from "./poller";
 import {
   getChoice,
   getEventState,
+  getLateWatch,
   listDocuments,
   listFilings,
+  listLateFilings,
+  listLateRuns,
   listRuns,
   listSections,
+  type LateWatchState,
   type FetchState,
   type FilingRole,
   type FilingRow,
@@ -186,6 +190,11 @@ export interface PanelView {
   earningsTimeUnconfirmed: boolean;
   /** "8-K" or "6-K": the base form of the live earnings filing; null when there is none. */
   earningsForm: "8-K" | "6-K" | null;
+  /**
+   * The late report's form ("10-Q") when its follow-up section is done: the
+   * Hub chip's "10-Q added" marker. Null otherwise (migration 100).
+   */
+  lateAdded?: string | null;
 }
 
 /** The filing being read and how many fetched exhibits it has: "8-K + 3 exhibits". */
@@ -287,6 +296,21 @@ export interface FullRun {
   sections: FullSection[];
 }
 
+/** The late periodic report block (migration 100); the evening runs never include it. */
+export interface LateView {
+  /** Null when no watch row exists yet. */
+  watchState: LateWatchState | null;
+  /** "4:00 pm on 2026-10-29": the automatic watch's end. */
+  windowEndText: string | null;
+  lastPolledAtEt: string | null;
+  /** The late filing, when one is on file. */
+  filing: FullFiling | null;
+  /** Its follow-up run (one section), when started. */
+  run: FullRun | null;
+  /** Look again may be clicked: past the evening cutoff, not disarmed, no report on file yet. */
+  lookAgainAvailable: boolean;
+}
+
 export interface FullView {
   event: {
     eventId: number;
@@ -309,9 +333,12 @@ export interface FullView {
   runSummaryAvailable: boolean;
   shownRunId: number | null;
   inProgressRunId: number | null;
-  /** Oldest first (run_no ascending). */
+  /** Oldest first (run_no ascending). Evening runs only. */
   runs: FullRun[];
+  /** Evening filings only. */
   filings: FullFiling[];
+  /** The late periodic report; null before the evening cutoff and for a print with no late watch basis. */
+  late: LateView | null;
 }
 
 // ---------------------------------------------------------------- time
@@ -864,6 +891,7 @@ function panelFor(db: Database.Database, ev: EventRow, catalogIds: string[], tod
     runSummaryAvailable: runSummaryAvailableFrom(state?.pollState ?? null, built.length, filings),
     earningsTimeUnconfirmed: earningsTimeUnconfirmedFrom(filings),
     earningsForm: earningsFormFrom(filings),
+    lateAdded: lateAddedForm(db, eventId),
   };
 }
 
@@ -953,26 +981,66 @@ export function getFullView(
     shownRunId: shown?.full.runId ?? null,
     inProgressRunId: inProgress?.full.runId ?? null,
     runs: built.map((b) => b.full),
-    filings: filings.map((f) => ({
-      filingId: f.id,
-      accession: f.accession,
-      cik: f.cik,
-      form: f.form,
-      role: f.role,
-      acceptedAtEt: etTime(f.acceptedAt),
-      acceptedOnEt: etDate(f.acceptedAt),
-      discoveredAtEt: etTime(f.discoveredAt),
-      identityVerdict: f.identityVerdict,
-      identityReason: f.identityReason,
-      fetchState: f.fetchState,
-      indexUrl: filingIndexUrl(f.cik, f.accession),
-      documents: listDocuments(db, f.id).map((d) => ({
-        fileName: d.fileName,
-        docType: d.docType,
-        status: d.status,
-        skipReason: d.skipReason,
-        url: safeArchiveUrl(f.cik, f.accession, d.fileName),
-      })),
+    filings: filings.map((f) => fullFiling(db, f)),
+    late: lateView(db, eventId, state?.pollState ?? null),
+  };
+}
+
+function fullFiling(db: Database.Database, f: FilingRow): FullFiling {
+  return {
+    filingId: f.id,
+    accession: f.accession,
+    cik: f.cik,
+    form: f.form,
+    role: f.role,
+    acceptedAtEt: etTime(f.acceptedAt),
+    acceptedOnEt: etDate(f.acceptedAt),
+    discoveredAtEt: etTime(f.discoveredAt),
+    identityVerdict: f.identityVerdict,
+    identityReason: f.identityReason,
+    fetchState: f.fetchState,
+    indexUrl: filingIndexUrl(f.cik, f.accession),
+    documents: listDocuments(db, f.id).map((d) => ({
+      fileName: d.fileName,
+      docType: d.docType,
+      status: d.status,
+      skipReason: d.skipReason,
+      url: safeArchiveUrl(f.cik, f.accession, d.fileName),
     })),
+  };
+}
+
+// ---------------------------------------------------------------- late periodic report
+
+/** The late filing on file (accepted) and its newest follow-up run, built like any run. */
+function lateParts(db: Database.Database, eventId: number): { filing: FilingRow | null; run: BuiltRun | null } {
+  const filing = listLateFilings(db, eventId).find((f) => f.identityVerdict === "accepted") ?? null;
+  if (!filing) return { filing: null, run: null };
+  const runs = listLateRuns(db, eventId);
+  const newest = runs[runs.length - 1];
+  return { filing, run: newest ? buildRun(db, newest, new Map([[filing.id, filing]])) : null };
+}
+
+/** The late form when its follow-up section is done (the Hub chip), else null. */
+function lateAddedForm(db: Database.Database, eventId: number): string | null {
+  const { filing, run } = lateParts(db, eventId);
+  if (!filing || !run) return null;
+  return run.full.sections.some((s) => s.status === "done") ? filing.form : null;
+}
+
+function lateView(db: Database.Database, eventId: number, pollState: PollState | null): LateView | null {
+  const watch = getLateWatch(db, eventId);
+  const { filing, run } = lateParts(db, eventId);
+  // Only a print with an accepted earnings filing has a late report to look for.
+  const basis = pollState === "past_cutoff" && hasAcceptedEarnings(listFilings(db, eventId));
+  if (!watch && !filing && !basis) return null;
+  const end = watch ? etParts(watch.windowEndsAt) : null;
+  return {
+    watchState: watch?.state ?? null,
+    windowEndText: end ? `${clock12(end.time)} on ${end.date}` : null,
+    lastPolledAtEt: etTime(watch?.lastPolledAt ?? null),
+    filing: filing ? fullFiling(db, filing) : null,
+    run: run?.full ?? null,
+    lookAgainAvailable: basis && filing === null,
   };
 }

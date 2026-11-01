@@ -26,6 +26,14 @@ export type PollState =
   | "manual_only"
   | "ambiguous";
 export type FilingRole = "earnings" | "companion";
+/**
+ * When a filing was found (migration 100): `evening` = by the evening poll
+ * (every filing the evening summary may read); `late` = by the late watch,
+ * a 10-Q / 10-K accepted after the 21:00 cutoff. Evening readers never see a
+ * late filing: they read through `listFilings` / `eveningFilingSql`.
+ */
+export type FilingArrival = "evening" | "late";
+export type LateWatchState = "watching" | "found" | "ended" | "cancelled";
 export type IdentityVerdict = "accepted" | "ambiguous" | "rejected" | "time_unconfirmed";
 export type FetchState = "pending" | "fetched" | "failed";
 export type DocumentStatus = "fetched" | "skipped" | "failed";
@@ -80,6 +88,8 @@ export interface NewFiling {
   fetchState?: FetchState;
   /** The document gate passed (issuer and quarter); default false. */
   gatePassed?: boolean;
+  /** Default `evening`; only the late watch (`lib/filing-summary/late.ts`) stores `late`. */
+  arrival?: FilingArrival;
 }
 
 export interface FilingRow {
@@ -98,6 +108,7 @@ export interface FilingRow {
   fetchState: FetchState;
   /** The document gate (issuer and quarter) passed for this filing. */
   gatePassed: boolean;
+  arrival: FilingArrival;
 }
 
 export interface NewDocument {
@@ -213,6 +224,7 @@ function toFiling(r: Raw): FilingRow {
     identityReason: str(r.identity_reason),
     fetchState: String(r.fetch_state) as FetchState,
     gatePassed: Number(r.gate_passed) === 1,
+    arrival: r.arrival === "late" ? "late" : "evening",
   };
 }
 
@@ -375,8 +387,8 @@ export function insertFiling(
       .prepare(
         `INSERT INTO filing_summary_filings
            (event_id, accession, cik, form, role, items, accepted_at, discovered_at,
-            discovery_seq, identity_verdict, identity_reason, fetch_state, gate_passed)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            discovery_seq, identity_verdict, identity_reason, fetch_state, gate_passed, arrival)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         f.eventId,
@@ -392,17 +404,51 @@ export function insertFiling(
         f.identityReason,
         f.fetchState ?? "pending",
         f.gatePassed ? 1 : 0,
+        f.arrival ?? "evening",
       );
     return { id: Number(info.lastInsertRowid), inserted: true };
   }).immediate();
 }
 
+/**
+ * THE evening-summary predicate on `filing_summary_filings` (migration 100):
+ * every reader that serves the evening run, the evening view, the share page
+ * or the push filters through it, so a late 10-Q / 10-K never enters them.
+ * `alias` is the table's alias in the caller's SQL (none = the bare column).
+ * `tests/repo/filing-summary-evening-reader.test.ts` fails on a reader of the
+ * table under lib/filing-summary or app/ that does not use it (store and
+ * late-path files are allow-listed there with their reasons).
+ */
+export function eveningFilingSql(alias?: string): string {
+  return `${alias ? `${alias}.` : ""}arrival = 'evening'`;
+}
+
+/** The event's EVENING filings by discovery order (late filings never appear). */
 export function listFilings(db: Database.Database, eventId: number): FilingRow[] {
   return (
     db
-      .prepare("SELECT * FROM filing_summary_filings WHERE event_id = ? ORDER BY discovery_seq")
+      .prepare(
+        `SELECT * FROM filing_summary_filings WHERE event_id = ? AND ${eveningFilingSql()} ORDER BY discovery_seq`,
+      )
       .all(eventId) as Raw[]
   ).map(toFiling);
+}
+
+/** The event's LATE filings (the late watch's 10-Q / 10-K), by discovery order. */
+export function listLateFilings(db: Database.Database, eventId: number): FilingRow[] {
+  return (
+    db
+      .prepare(
+        "SELECT * FROM filing_summary_filings WHERE event_id = ? AND arrival = 'late' ORDER BY discovery_seq",
+      )
+      .all(eventId) as Raw[]
+  ).map(toFiling);
+}
+
+/** One filing by id, whatever its arrival (the section runner reads both kinds). */
+export function getFilingById(db: Database.Database, filingId: number): FilingRow | null {
+  const r = db.prepare("SELECT * FROM filing_summary_filings WHERE id = ?").get(filingId) as Raw | undefined;
+  return r ? toFiling(r) : null;
 }
 
 /** Inserts or replaces the document's fields keyed on (filing, file name); returns its id. */
@@ -726,12 +772,33 @@ export function requeueSection(
   );
 }
 
+/** A run that reads a late filing: the late follow-up run, never an evening run. */
+const LATE_RUN_SQL = `EXISTS (SELECT 1 FROM filing_summary_sections ls
+                       JOIN filing_summary_filings lf ON lf.id = ls.filing_id
+                      WHERE ls.run_id = filing_summary_runs.id AND lf.arrival = 'late')`;
+
+/** The event's EVENING runs by run number (a late follow-up run never appears). */
 export function listRuns(db: Database.Database, eventId: number): RunRow[] {
   return (
     db
-      .prepare("SELECT * FROM filing_summary_runs WHERE event_id = ? ORDER BY run_no")
+      .prepare(`SELECT * FROM filing_summary_runs WHERE event_id = ? AND NOT ${LATE_RUN_SQL} ORDER BY run_no`)
       .all(eventId) as Raw[]
   ).map(toRun);
+}
+
+/** The event's LATE follow-up runs (each reads one late filing), by run number. */
+export function listLateRuns(db: Database.Database, eventId: number): RunRow[] {
+  return (
+    db
+      .prepare(`SELECT * FROM filing_summary_runs WHERE event_id = ? AND ${LATE_RUN_SQL} ORDER BY run_no`)
+      .all(eventId) as Raw[]
+  ).map(toRun);
+}
+
+/** One run by id, evening or late. */
+export function getRunById(db: Database.Database, runId: number): RunRow | null {
+  const r = db.prepare("SELECT * FROM filing_summary_runs WHERE id = ?").get(runId) as Raw | undefined;
+  return r ? toRun(r) : null;
 }
 
 export function listSections(db: Database.Database, runId: number): SectionRow[] {
@@ -810,4 +877,67 @@ export function markSendingAsUnknown(db: Database.Database): number {
        WHERE state = ?`,
     )
     .run(DELIVERY_UNKNOWN, SENDING).changes;
+}
+
+// ---------------------------------------------------------------- late watch (migration 100)
+
+export interface LateWatchRow {
+  eventId: number;
+  state: LateWatchState;
+  /** ISO instant: 16:00 Eastern on the next trading day after the print. */
+  windowEndsAt: string;
+  lastPolledAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+function toLateWatch(r: Raw): LateWatchRow {
+  return {
+    eventId: Number(r.event_id),
+    state: String(r.state) as LateWatchState,
+    windowEndsAt: String(r.window_ends_at),
+    lastPolledAt: str(r.last_polled_at),
+    createdAt: String(r.created_at),
+    updatedAt: String(r.updated_at),
+  };
+}
+
+export function getLateWatch(db: Database.Database, eventId: number): LateWatchRow | null {
+  const r = db.prepare("SELECT * FROM filing_summary_late_watch WHERE event_id = ?").get(eventId) as Raw | undefined;
+  return r ? toLateWatch(r) : null;
+}
+
+/** Opens the watch (INSERT OR IGNORE); an existing row is never changed. True when created. */
+export function openLateWatch(
+  db: Database.Database,
+  eventId: number,
+  windowEndsAt: string,
+  state: LateWatchState = "watching",
+): boolean {
+  return (
+    db
+      .prepare(
+        `INSERT OR IGNORE INTO filing_summary_late_watch (event_id, state, window_ends_at) VALUES (?, ?, ?)`,
+      )
+      .run(eventId, state, windowEndsAt).changes > 0
+  );
+}
+
+export function setLateWatchState(db: Database.Database, eventId: number, state: LateWatchState): void {
+  db.prepare(
+    `UPDATE filing_summary_late_watch SET state = ?, updated_at = datetime('now') WHERE event_id = ?`,
+  ).run(state, eventId);
+}
+
+export function markLateWatchPolled(db: Database.Database, eventId: number, nowMs: number): void {
+  db.prepare(
+    `UPDATE filing_summary_late_watch SET last_polled_at = ?, updated_at = datetime('now') WHERE event_id = ?`,
+  ).run(iso(nowMs), eventId);
+}
+
+export function listLateWatches(db: Database.Database, state?: LateWatchState): LateWatchRow[] {
+  const rows = state
+    ? db.prepare("SELECT * FROM filing_summary_late_watch WHERE state = ? ORDER BY event_id").all(state)
+    : db.prepare("SELECT * FROM filing_summary_late_watch ORDER BY event_id").all();
+  return (rows as Raw[]).map(toLateWatch);
 }

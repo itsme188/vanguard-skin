@@ -25,7 +25,7 @@ import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import apiFetch from "@/lib/http/apiFetch";
 import { networkFailureMessage, readMutationResult } from "@/lib/ui/mutation-result";
-import { newRequestKey } from "@/lib/filing-summary/labels";
+import { lateAddedChipText, newRequestKey } from "@/lib/filing-summary/labels";
 import type { PanelView, ViewClaim } from "@/lib/filing-summary/view";
 import { CHIP_TONE_CLASSES, Chip } from "../components/Chip";
 import { CHIP_TONE_TEXT } from "../components/chip-tone-text";
@@ -276,6 +276,11 @@ export function FilingSummaryPanelBody({
     <section className="mt-3 border-t border-edge pt-2 min-w-0">
       <div className="flex items-baseline gap-2 flex-wrap">
         <h4 className="text-[11px] font-mono uppercase tracking-wider text-ink-faint whitespace-nowrap!">Filing summary</h4>
+        {view.lateAdded && (
+          <Chip tone="neutral" size="xs">
+            {lateAddedChipText(view.lateAdded)}
+          </Chip>
+        )}
         <p className="text-[12px] text-ink [overflow-wrap:anywhere]">{pollStateText(view)}</p>
       </div>
 

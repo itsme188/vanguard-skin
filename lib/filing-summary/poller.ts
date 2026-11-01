@@ -77,6 +77,7 @@ import { readFilingDocument, writeFilingDocument } from "./files";
 import { failPendingSections } from "./run-status";
 import { secArchiveUrl } from "./locate";
 import {
+  eveningFilingSql,
   getEventState,
   insertFiling,
   listDocuments,
@@ -211,8 +212,11 @@ function isAbort(err: unknown): boolean {
   return err instanceof Error && err.name === "AbortError";
 }
 
-/** The parsed header, from memory or EDGAR; null when the fetch failed (not cached). */
-async function headerFor(
+/**
+ * The parsed header, from memory or EDGAR; null when the fetch failed (not
+ * cached). Shared with the late watch (`late.ts`), so both reads use one cache.
+ */
+export async function headerFor(
   cik: string,
   accession: string,
   fetchFn: FetchLike,
@@ -286,7 +290,7 @@ interface PreparedDocument {
   storedPath: string | null;
 }
 
-interface FetchedFiling {
+export interface FetchedFiling {
   documents: PreparedDocument[];
   fetchState: FetchState;
   /** Text the identity gate reads: every EX-99*, else the main document. */
@@ -319,7 +323,8 @@ export function gateTextFromStored(
   return texts.length > 0 ? texts.join("\n") : null;
 }
 
-async function fetchDocuments(
+/** Fetches and stores every document of a filing; shared with the late watch. */
+export async function fetchDocuments(
   cik: string,
   accession: string,
   form: string,
@@ -678,7 +683,7 @@ export async function pollEvent(
       // whether its gate passed (time_unconfirmed) or failed (ambiguous, untimed).
       db.prepare(
         `UPDATE filing_summary_filings SET role = 'companion'
-          WHERE event_id = ? AND id <> ? AND role = 'earnings'
+          WHERE event_id = ? AND id <> ? AND role = 'earnings' AND ${eveningFilingSql()}
             AND (identity_verdict = 'time_unconfirmed'
                  OR (identity_verdict = 'ambiguous' AND accepted_at IS NULL))`,
       ).run(eventId, row.id);
@@ -815,6 +820,7 @@ export function eventsWithLiveFilings(db: Database.Database, today: string): num
            JOIN filing_summary_filings f ON f.event_id = e.event_id
            JOIN calendar_events ce ON ce.id = e.event_id
           WHERE f.identity_verdict <> 'rejected'
+            AND ${eveningFilingSql("f")}
             AND ce.event_date >= ?
           ORDER BY e.event_id`,
       )
@@ -936,7 +942,8 @@ export function revalidateStoredFilings(
     earningsRow && decisions.has(earningsRow.id) ? (decisions.get(earningsRow.id) as string) : null;
   db.transaction(() => {
     const reject = db.prepare(
-      `UPDATE filing_summary_filings SET identity_verdict = 'rejected', identity_reason = ? WHERE id = ?`,
+      `UPDATE filing_summary_filings SET identity_verdict = 'rejected', identity_reason = ?
+        WHERE id = ? AND ${eveningFilingSql()}`,
     );
     for (const [filingId, reason] of decisions) {
       reject.run(reason, filingId);

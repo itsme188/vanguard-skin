@@ -27,6 +27,51 @@ export const STALE_WAITING_DETAIL = "polling stopped before 9 pm (the app was no
 /** SEC was unreachable and the print has left the tick's window (today and yesterday). */
 export const SEC_GAVE_UP_TEXT = "SEC was not reachable; nothing more will run on its own";
 
+// ---------------------------------------------------------------- late periodic report (migration 100)
+
+/** Look again's answers (the route's error and success sentences). */
+export const LOOK_AGAIN_TEXT = {
+  notYet: "Look again is offered once the evening's filings are done (after 9 pm on the print day).",
+  noBasis: "There is no accepted earnings filing for this print to compare a later report with.",
+  foreignFiler:
+    "This company files 6-K reports, and an interim report cannot be told reliably from other 6-Ks, so it is not looked for.",
+  secUnreachable: "SEC could not be reached. Try again in a minute.",
+  none: "No 10-Q or 10-K for this quarter has been filed after the print yet.",
+  found: (form: string) => `The ${form} is on file. Its follow-up section reads now; this page updates while it reads.`,
+} as const;
+
+/** The Hub chip's marker when a finished late section exists: "10-Q added". */
+export function lateAddedChipText(form: string): string {
+  return `${form} added`;
+}
+
+/** The late block's heading: "10-Q filed after the print · accepted 2026-10-29 7:30 am". */
+export function lateHeading(form: string, acceptedOnEt: string | null, acceptedAtEt: string | null): string {
+  const when = [acceptedOnEt, acceptedAtEt].filter(Boolean).join(" ");
+  return `${form} filed after the print${when ? ` · accepted ${when}` : ""}`;
+}
+
+/** What the late block says about the watch when no report is on file. */
+export function lateWatchText(state: "watching" | "found" | "ended" | "cancelled" | null, windowEnd: string | null): string {
+  switch (state) {
+    case "watching":
+      return `Watching EDGAR for the 10-Q or 10-K every 10 minutes${windowEnd ? ` until ${windowEnd}` : ""}.`;
+    case "ended":
+      return `No 10-Q or 10-K was filed by ${windowEnd ?? "the end of the watch"}. Look again checks once more.`;
+    case "cancelled":
+      return "This print was disarmed; the watch for the 10-Q stopped.";
+    case "found":
+      return "The report was found.";
+    default:
+      return "The watch for the 10-Q or 10-K has not started. Look again checks EDGAR now.";
+  }
+}
+
+/** The late section's one-line reading note while it has not finished. */
+export const LATE_SECTION_PENDING_TEXT = "The report is waiting to be read against the evening summary.";
+export const LATE_SECTION_INTRO =
+  "What this report adds to or changes from the evening summary. The evening summary above is unchanged.";
+
 // ---------------------------------------------------------------- statuses
 
 const STATUS_LABELS: Record<ClaimStatus, string> = {

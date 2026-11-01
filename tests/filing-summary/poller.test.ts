@@ -1131,7 +1131,7 @@ describe("final review fixes", () => {
     } finally {
       errors.mockRestore();
     }
-    const fake = { onEarningsAccepted() {}, onCompanionAccepted() {}, ensureAutoRun() {}, runNextSection: async () => "idle" };
+    const fake = { onEarningsAccepted() {}, onCompanionAccepted() {}, ensureAutoRun() {}, startLateRun() {}, ensureLateRun() {}, runNextSection: async () => "idle" };
     const ok = await loadRunnerOrReport(db, et("15:02"), async () => fake);
     expect(ok).toBe(fake);
     expect(getPanelViews(db, [eventId], [], new Date(et("15:02")))[eventId].pollDetail).toBeNull();
@@ -1153,7 +1153,7 @@ describe("final review fixes", () => {
         });
         expect(getEventState(db, eventId)!.pollDetail).toBe(detail); // stored value untouched
         expect(getPanelViews(db, [eventId], [], new Date(et("15:01")))[eventId].pollDetail).toBe(RUNNER_LOAD_FAILED_DETAIL);
-        const fake = { onEarningsAccepted() {}, onCompanionAccepted() {}, ensureAutoRun() {}, runNextSection: async () => "idle" };
+        const fake = { onEarningsAccepted() {}, onCompanionAccepted() {}, ensureAutoRun() {}, startLateRun() {}, ensureLateRun() {}, runNextSection: async () => "idle" };
         await loadRunnerOrReport(db, et("15:02"), async () => fake);
         expect(getPanelViews(db, [eventId], [], new Date(et("15:02")))[eventId].pollDetail).toBe(detail);
       }

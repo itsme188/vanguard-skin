@@ -10,7 +10,12 @@
  *   rerun      → a new run with the given choice; its filing list is rebuilt
  *                from the event's current filings (a companion found since
  *                the last run is included, a filing rejected since is not).
- *   retry      → every failed section of one run goes back to pending.
+ *   retry      → every failed section of one run goes back to pending (an
+ *                evening run or the late follow-up run).
+ *   look_again_late → one on-demand look at EDGAR for the late 10-Q / 10-K
+ *                (`late.ts`), any time after the evening cutoff. Async, so it
+ *                is answered by `applyFilingSummaryActionAsync`; a found
+ *                report starts its follow-up run (idempotent per filing).
  *
  * Every paid action (run, rerun, retry) needs a request key and is
  * idempotent on it: the same key never creates a second run. After a paid
@@ -25,15 +30,29 @@ import type Database from "better-sqlite3";
 import { getCachedModelCatalog } from "@/lib/ai/catalog-source";
 import { isSummaryChoice } from "./choice";
 import { retryRunWithReason, runNextSection, startRun, type StartRunResult } from "./runner";
-import { getEventState, listRuns, setChoice } from "./store";
+import { getEventState, listLateRuns, listRuns, setChoice } from "./store";
+import { lookAgainLate, type LatePollSeams } from "./late";
+import { LOOK_AGAIN_TEXT } from "./labels";
 import { startFilingSummaryTick } from "./tick";
 import { runSummaryAvailable } from "./view";
 import type { SummaryChoice } from "./types";
 
-export type FilingSummaryAction = "set_choice" | "run" | "rerun" | "retry";
+export type FilingSummaryAction = "set_choice" | "run" | "rerun" | "retry" | "look_again_late";
 
 export type ActionResult =
-  | { ok: true; data: { eventId: number; runId?: number; created?: boolean; choice?: SummaryChoice } }
+  | {
+      ok: true;
+      data: {
+        eventId: number;
+        runId?: number;
+        created?: boolean;
+        choice?: SummaryChoice;
+        /** look_again_late: whether the late report is on file now. */
+        found?: boolean;
+        form?: string | null;
+        message?: string;
+      };
+    }
   | { ok: false; status: 400 | 404 | 409 | 503; error: string };
 
 export const NO_FILINGS_TEXT = "No earnings filing has been found for this print yet.";
@@ -140,11 +159,14 @@ export function applyFilingSummaryAction(
     return { ok: true, data: { eventId, choice } };
   }
 
+  if (action === "look_again_late") {
+    return { ok: false, status: 400, error: "look_again_late is answered by applyFilingSummaryActionAsync" };
+  }
   if (action !== "run" && action !== "rerun" && action !== "retry") {
     return {
       ok: false,
       status: 400,
-      error: 'action must be "set_choice", "run", "rerun" or "retry"',
+      error: 'action must be "set_choice", "run", "rerun", "retry" or "look_again_late"',
     };
   }
   if (!validKey(b.requestKey)) {
@@ -160,7 +182,7 @@ export function applyFilingSummaryAction(
       return { ok: false, status: 400, error: "runId must be an integer" };
     }
     const runId = b.runId;
-    if (!listRuns(db, eventId).some((r) => r.id === runId)) {
+    if (![...listRuns(db, eventId), ...listLateRuns(db, eventId)].some((r) => r.id === runId)) {
       return { ok: false, status: 404, error: RUN_NOT_FOUND_TEXT };
     }
     const res = retryRunWithReason(db, runId, requestKey);
@@ -222,4 +244,99 @@ function startRunReplay(db: Database.Database, eventId: number, requestKey: stri
   if (!row) return null;
   if (row.event_id !== eventId) return { ok: false, status: 409, error: KEY_CONFLICT_TEXT };
   return { ok: true, data: { eventId, runId: row.id, created: false } };
+}
+
+// ---------------------------------------------------------------- Look again (late periodic report)
+
+/** What Look again needs: the SEC fetch and the follow-up start. Replaced in tests. */
+export interface LookAgainSeams {
+  pollSeams(): Promise<{ seams: LatePollSeams; done(): void }>;
+  now(): number;
+}
+
+/** Production: the scheduler's low-priority SEC lane under a deadline, and the runner's `startLateRun`. */
+async function productionLookAgainSeams(): Promise<{ seams: LatePollSeams; done(): void }> {
+  const [{ acquisitionScheduler }, runner] = await Promise.all([
+    import("@/lib/print-watch/scheduler"),
+    import("./runner"),
+  ]);
+  const controller = new AbortController();
+  const deadline = setTimeout(() => controller.abort(), 60_000);
+  (deadline as { unref?: () => void }).unref?.();
+  return {
+    seams: {
+      fetchFn: acquisitionScheduler.fetchFor(controller.signal, undefined, { priority: "low" }),
+      now: () => Date.now(),
+      onLateFilingAccepted: (d, eventId, filingId) => {
+        runner.startLateRun(d, eventId, filingId);
+      },
+    },
+    done: () => {
+      clearTimeout(deadline);
+      controller.abort();
+    },
+  };
+}
+
+export const defaultLookAgainSeams: LookAgainSeams = {
+  pollSeams: productionLookAgainSeams,
+  now: () => Date.now(),
+};
+
+/**
+ * Every action, the async Look again included: `look_again_late` runs one
+ * EDGAR look for the late report; any other action is
+ * `applyFilingSummaryAction`.
+ */
+export async function applyFilingSummaryActionAsync(
+  db: Database.Database,
+  body: unknown,
+  seams: ActionSeams = defaultActionSeams,
+  lookSeams: LookAgainSeams = defaultLookAgainSeams,
+): Promise<ActionResult> {
+  const b = (body && typeof body === "object" ? body : {}) as Record<string, unknown>;
+  if (b.action !== "look_again_late") return applyFilingSummaryAction(db, body, seams);
+  const bad = checkEvent(db, b.eventId);
+  if (bad) return bad;
+  const eventId = b.eventId as number;
+  const { seams: pollSeams, done } = await lookSeams.pollSeams();
+  let res;
+  try {
+    res = await lookAgainLate(db, eventId, lookSeams.now(), pollSeams);
+  } catch {
+    return { ok: false, status: 503, error: LOOK_AGAIN_TEXT.secUnreachable };
+  } finally {
+    done();
+  }
+  if (!res.ok) {
+    switch (res.reason) {
+      case "disarmed":
+        return { ok: false, status: 409, error: DISARMED_TEXT };
+      case "not_past_cutoff":
+        return { ok: false, status: 409, error: LOOK_AGAIN_TEXT.notYet };
+      case "no_basis":
+        return { ok: false, status: 409, error: LOOK_AGAIN_TEXT.noBasis };
+      case "foreign_filer":
+        return { ok: false, status: 409, error: LOOK_AGAIN_TEXT.foreignFiler };
+      case "sec_unreachable":
+        return { ok: false, status: 503, error: LOOK_AGAIN_TEXT.secUnreachable };
+    }
+  }
+  const { found, form } = res.data;
+  if (found) {
+    try {
+      seams.kick(db, eventId);
+    } catch {
+      console.warn(`[filing-summary] kick for event ${eventId} failed`);
+    }
+  }
+  return {
+    ok: true,
+    data: {
+      eventId,
+      found,
+      form,
+      message: found ? LOOK_AGAIN_TEXT.found(form ?? "report") : LOOK_AGAIN_TEXT.none,
+    },
+  };
 }

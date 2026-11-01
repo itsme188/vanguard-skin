@@ -18,6 +18,10 @@
  *    claim) so the next tick retakes it under the target; the old worker's
  *    finalize then fails its claim check and writes nothing.
  *  - pushes: move (the key is the primary key and does not change).
+ *  - late watch (migration 100): the donor's row is deleted first (it hangs
+ *    off the donor's event row, whose key changes or goes). The next tick
+ *    re-opens a watch for the target when it is past its cutoff and inside
+ *    its window; a late FILING moves with the other filings (arrival kept).
  *
  * Revalidating filings when a move changes the date or issuer is NOT done
  * here (the gate needs document text and the handler must stay SQL-only).
@@ -45,6 +49,10 @@ export function mergeFilingSummaryState(ctx: EventMergeContext): EventMergeTable
   const pushes = tableResult("filing_summary_pushes");
   const out = [events, filings, runs, sections, pushes];
   if (donorEventId === targetEventId) return out;
+
+  // ---- late watch: dropped before the donor's event row moves or goes
+  const droppedWatch = db.prepare(`DELETE FROM filing_summary_late_watch WHERE event_id = ?`).run(donorEventId).changes;
+  if (droppedWatch > 0) events.notes.push("the donor's late-report watch was dropped; the next tick re-opens one");
 
   // ---- event row
   const donorEvent = db

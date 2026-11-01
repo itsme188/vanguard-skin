@@ -7,12 +7,16 @@ import { networkFailureMessage, readMutationResult } from "@/lib/ui/mutation-res
 import { Chip, CHIP_TONE_CLASSES } from "@/app/dashboard/components/Chip";
 import { CHIP_TONE_TEXT } from "@/app/dashboard/components/chip-tone-text";
 import { useConfirmPrompt } from "@/app/dashboard/components/useConfirmPrompt";
-import type { FullRun, FullSection, FullView, PublicBogey, ViewClaim } from "@/lib/filing-summary/view";
+import type { FullRun, FullSection, FullView, LateView, PublicBogey, ViewClaim } from "@/lib/filing-summary/view";
 import {
   bogeyValueText,
   choiceValue,
   comparisonLine,
   countsText,
+  LATE_SECTION_INTRO,
+  LATE_SECTION_PENDING_TEXT,
+  lateHeading,
+  lateWatchText,
   modelQuoteLine,
   newRequestKey,
   optionText,
@@ -52,7 +56,7 @@ export function FilingSummaryView({ view }: { view: FullView }) {
 
   const selectedId = defaultRunId(view, picked);
   const run = view.runs.find((r) => r.runId === selectedId) ?? null;
-  const anyRunning = view.runs.some((r) => r.status === "running");
+  const anyRunning = view.runs.some((r) => r.status === "running") || view.late?.run?.status === "running";
 
   // A run that is still reading fills in on the server; refresh until it settles.
   useEffect(() => {
@@ -131,6 +135,33 @@ export function FilingSummaryView({ view }: { view: FullView }) {
         return;
       }
       setMessage(`Run ${target.runNo} is retrying. This page updates while it reads.`);
+      router.refresh();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function lookAgain() {
+    setBusy(true);
+    setMessage(null);
+    try {
+      let res: Response;
+      try {
+        res = await apiFetch("/api/filing-summary", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ eventId: view.event.eventId, action: "look_again_late" }),
+        });
+      } catch {
+        setMessage(networkFailureMessage("look for the 10-Q"));
+        return;
+      }
+      const r = await readMutationResult<{ data?: { message?: string } }>(res);
+      if (!r.ok) {
+        setMessage(r.message);
+        return;
+      }
+      setMessage(r.data.data?.message ?? null);
       router.refresh();
     } finally {
       setBusy(false);
@@ -221,8 +252,81 @@ export function FilingSummaryView({ view }: { view: FullView }) {
         />
       )}
 
+      {view.late && (
+        <LateBlock
+          late={view.late}
+          busy={busy}
+          disarmed={disarmed}
+          onLookAgain={lookAgain}
+          onRetry={(target) => retry(target)}
+        />
+      )}
+
       <FilingsList view={view} run={run} />
     </div>
+  );
+}
+
+/**
+ * The late periodic report (migration 100): the 10-Q / 10-K filed after the
+ * print night, read as a follow-up to the evening summary, which it never
+ * changes. Look again runs one EDGAR look on demand.
+ */
+function LateBlock({
+  late,
+  busy,
+  disarmed,
+  onLookAgain,
+  onRetry,
+}: {
+  late: LateView;
+  busy: boolean;
+  disarmed: boolean;
+  onLookAgain: () => void;
+  onRetry: (run: FullRun) => void;
+}) {
+  const filing = late.filing;
+  const run = late.run;
+  const section = run?.sections[0] ?? null;
+  return (
+    <section aria-label="Filed after the print" className="space-y-3">
+      <h2 className="text-lg font-semibold text-ink whitespace-nowrap!">
+        {filing ? lateHeading(filing.form, filing.acceptedOnEt, filing.acceptedAtEt) : "10-Q or 10-K filed after the print"}
+      </h2>
+      {filing ? (
+        <p className="text-sm text-ink-dim">{LATE_SECTION_INTRO}</p>
+      ) : (
+        <p className="text-sm text-ink-dim [overflow-wrap:anywhere]">
+          {lateWatchText(late.watchState, late.windowEndText)}
+          {late.lastPolledAtEt ? ` Last looked at ${late.lastPolledAtEt}.` : ""}
+        </p>
+      )}
+      {late.lookAgainAvailable && !disarmed && (
+        <button type="button" onClick={onLookAgain} disabled={busy} className={BUTTON}>
+          Look again
+        </button>
+      )}
+      {filing && !run && <p className="text-sm text-ink">{LATE_SECTION_PENDING_TEXT}</p>}
+      {run && (
+        <>
+          {run.status === "running" && (
+            <p className="text-sm text-ink-dim">
+              Reading with {run.modelLabel} {run.effort}. The section appears when it finishes.
+            </p>
+          )}
+          {run.fallbackNote && <Banner>{run.fallbackNote}</Banner>}
+          {run.status === "failed" && !disarmed && (
+            <div className="flex flex-wrap items-center gap-2">
+              <p className="text-sm text-ink">The report was not read to the end.</p>
+              <button type="button" onClick={() => onRetry(run)} disabled={busy} className={BUTTON}>
+                Retry
+              </button>
+            </div>
+          )}
+          {section && <SectionBlock section={section} />}
+        </>
+      )}
+    </section>
   );
 }
 

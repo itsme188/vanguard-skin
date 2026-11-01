@@ -15,6 +15,11 @@
  *     on a later day) whose one discovery pass has not completed, whatever
  *     its date (late-arm ruling, C1);
  *  5. retries an automatic start that found no model (`ensureAutoRun`);
+ *  5b. the late periodic report watch (`late.ts`, migration 100): opens a
+ *     watch for a recent `past_cutoff` print, polls due watches every 10
+ *     minutes inside their window, ends expired ones, and retries a late
+ *     follow-up start that found no model. Runs only when the seams carry
+ *     `onLateFilingAccepted` (production always does);
  *  6. starts the next section of every event that has work and none in
  *     flight in this process (`runNextSection`, Task 10's runner). A
  *     cancelled event starts nothing new.
@@ -53,8 +58,10 @@ import {
   revalidateStoredFilings,
   type PollSeams,
 } from "./poller";
+import { runLateTick } from "./late";
 import { failPendingSections } from "./run-status";
 import {
+  eveningFilingSql,
   getEventState,
   listEventsWithPendingSections,
   markSendingAsUnknown,
@@ -80,6 +87,13 @@ export interface TickSeams extends PollSeams {
    * production wires the runner's `ensureAutoRun`.
    */
   ensureAutoRun?(db: Database.Database, eventId: number): void;
+  /**
+   * The late watch stored an accepted 10-Q / 10-K: start its follow-up run
+   * (the runner's `startLateRun`). The late watch runs only when this is set.
+   */
+  onLateFilingAccepted?(db: Database.Database, eventId: number, filingId: number): void;
+  /** Retries a late follow-up start that found no model (the runner's `ensureLateRun`). */
+  ensureLateRun?(db: Database.Database, eventId: number): void;
 }
 
 export interface TickOutcome {
@@ -94,6 +108,8 @@ export interface TickOutcome {
   inFlight: number[];
   /** Events where revalidation rejected at least one stored filing. */
   revalidated: number[];
+  /** Late watches polled this tick (migration 100). */
+  latePolled: number[];
 }
 
 // ---------------------------------------------------------------- cancel / re-arm
@@ -139,7 +155,7 @@ function rearm(db: Database.Database, eventId: number, eventDate: string, nowMs:
   const armedAtMs = flag ? (parseDbTimestamp(flag.created_at)?.getTime() ?? nowMs) : nowMs;
   if (pollPhase(eventDate, armedAtMs) === "after_cutoff") {
     const hasFilings = !!db
-      .prepare(`SELECT 1 FROM filing_summary_filings WHERE event_id = ? LIMIT 1`)
+      .prepare(`SELECT 1 FROM filing_summary_filings WHERE event_id = ? AND ${eveningFilingSql()} LIMIT 1`)
       .get(eventId);
     upsertEventState(db, eventId, {
       pollState: "manual_only",
@@ -296,6 +312,7 @@ export async function runTick(
     ran: [],
     inFlight: [],
     revalidated: [],
+    latePolled: [],
   };
   const st = tickState();
   if (st.ticking) {
@@ -381,6 +398,27 @@ async function pollPart(
       }
     }
   }
+
+  const onLate = seams.onLateFilingAccepted;
+  if (onLate) {
+    try {
+      const late = await runLateTick(
+        db,
+        nowMs,
+        {
+          fetchFn: seams.fetchFn,
+          now: seams.now,
+          storageRoot: seams.storageRoot,
+          onLateFilingAccepted: onLate,
+          ensureLateRun: seams.ensureLateRun,
+        },
+        today,
+      );
+      out.latePolled = late.polled;
+    } catch (err) {
+      console.warn(`[filing-summary] late watch ${isAbort(err) ? "was aborted" : "failed"}`);
+    }
+  }
 }
 
 /**
@@ -427,6 +465,8 @@ interface RunnerModule {
   onCompanionAccepted(db: Database.Database, eventId: number, filingId: number): void;
   runNextSection(db: Database.Database, eventId: number, seams?: unknown): Promise<unknown>;
   ensureAutoRun(db: Database.Database, eventId: number): void;
+  startLateRun(db: Database.Database, eventId: number, filingId: number): unknown;
+  ensureLateRun(db: Database.Database, eventId: number): void;
 }
 
 /** Lazy, so loading the tick never drags the model call chain into memory. */
@@ -504,6 +544,10 @@ async function productionTick(db: Database.Database): Promise<void> {
       onCompanionAccepted: (d, eventId, filingId) => runner.onCompanionAccepted(d, eventId, filingId),
       runNextSection: (d, eventId) => runner.runNextSection(d, eventId),
       ensureAutoRun: (d, eventId) => runner.ensureAutoRun(d, eventId),
+      onLateFilingAccepted: (d, eventId, filingId) => {
+        runner.startLateRun(d, eventId, filingId);
+      },
+      ensureLateRun: (d, eventId) => runner.ensureLateRun(d, eventId),
     });
   } finally {
     clearTimeout(deadline);
