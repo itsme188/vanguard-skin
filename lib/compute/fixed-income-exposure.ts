@@ -23,6 +23,7 @@
  */
 import type Database from "better-sqlite3";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
+import { liveOptionExpirationSql } from "@/lib/compute/option-expiry";
 import {
   estimateBondRateLeg,
   type BondUnmodelledReason,
@@ -155,7 +156,8 @@ export function computeFixedIncomeExposure(
          JOIN securities s ON s.id = lh.security_id
          LEFT JOIN latest_prices lp ON lp.security_id = lh.security_id
          LEFT JOIN fx_rates fx ON fx.currency = s.currency
-         WHERE COALESCE(lp.close_price, 0) > 0`,
+         WHERE COALESCE(lp.close_price, 0) > 0
+           AND ${liveOptionExpirationSql("s", today)}`,
     )
     .get() as { total_value: number | null } | undefined;
 
