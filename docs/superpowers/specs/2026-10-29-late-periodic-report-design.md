@@ -11,6 +11,13 @@ filers' 6-K interim reports are left out (not reliably identifiable). The
 built behaviour is documented in `docs/reference/earnings-pipeline.md`
 §Filing summary, "Late periodic report".
 
+Correction after a live check (2026-11-01): item 2's "after 21:00 on the
+event date" is dropped. A report counts when its header acceptance is after
+the earnings filing's and the event does not already hold it as a
+non-rejected evening filing: SEC's submissions list can lag acceptance, and
+Alphabet's 10-Q (accepted 20:29 on 2026-10-28) was not listed at the 21:00
+catch-up.
+
 ## Problem
 
 The armed-print filing summary (`lib/filing-summary/`, 2026-10-22) reads the

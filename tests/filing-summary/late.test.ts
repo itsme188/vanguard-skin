@@ -470,9 +470,31 @@ describe("what counts", () => {
     });
   });
 
-  it("decides on the header time, not the JSON: a JSON stamp that reads after 9 pm but a header at 20:45 is an evening filing", async () => {
-    edgar.filings.push(tenQ("0000123456-26-000064", "20:45", EVENT_DATE, { json: `${EVENT_DATE}T21:45:00.000Z` }));
+  it("decides on the header time, not the JSON: a JSON stamp after the 8-K but a header before it is ignored", async () => {
+    // (c) accepted before the earnings filing (16:05): never the late report.
+    edgar.filings.push(tenQ("0000123456-26-000064", "15:30", EVENT_DATE, { json: `${EVENT_DATE}T16:30:00.000Z` }));
     expect(await pollLateFiling(db, eventId, et("22:10"), seams(() => et("22:10")))).toEqual({ status: "none" });
+    expect(listLateFilings(db, eventId)).toEqual([]);
+  });
+
+  it("SEC listing lag: a 10-Q accepted 20:29 that the evening catch-up never saw is picked up by the automatic watch", async () => {
+    // (a) The submissions list did not show it at the 21:00 catch-up; it is listed by the first late poll.
+    edgar.filings.push(tenQ("0000123456-26-000068", "20:29"));
+    const t = await tickAt(et("21:10"));
+    expect(t.polled).toEqual([eventId]);
+    const late = listLateFilings(db, eventId);
+    expect(late.map((f) => [f.accession, f.arrival, f.identityVerdict])).toEqual([["0000123456-26-000068", "late", "accepted"]]);
+    expect(late[0].acceptedAt).toBe(new Date(et("20:29")).toISOString());
+    expect(started).toEqual([[eventId, late[0].id]]);
+    expect(listFilings(db, eventId).map((f) => f.accession)).toEqual(["0000123456-26-000001"]);
+  });
+
+  it("SEC listing lag: the same 20:29 10-Q is found by Look again the next day, after the window", async () => {
+    edgar.filings.push(tenQ("0000123456-26-000069", "20:29"));
+    const now = et("18:00", NEXT_DAY);
+    const res = await lookAgainLate(db, eventId, now, seams(() => now));
+    expect(res).toMatchObject({ ok: true, data: { found: true, form: "10-Q" } });
+    expect(listLateFilings(db, eventId).map((f) => f.accession)).toEqual(["0000123456-26-000069"]);
   });
 
   it("a 10-K at fiscal year end counts like a 10-Q", async () => {
@@ -488,7 +510,10 @@ describe("what counts", () => {
     }));
     edgar.filings.push(tenQ("0000123456-26-000066", "18:00"));
     expect(await pollLateFiling(db, eventId, et("22:10"), seams(() => et("22:10")))).toEqual({ status: "none" });
+    const now = et("18:00", NEXT_DAY);
+    expect(await lookAgainLate(db, eventId, now, seams(() => now))).toMatchObject({ ok: true, data: { found: false } });
     expect(listLateFilings(db, eventId)).toEqual([]);
+    expect(started).toEqual([]);
   });
 
   it("a 10-Q the evening catch-up stored as 'accepted after 9 pm' moves to late, with its id", async () => {

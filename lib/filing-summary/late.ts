@@ -16,13 +16,18 @@
  *  - WHAT COUNTS: a `10-Q` or `10-K` (exact form: an amended 10-Q/A or 10-K/A
  *    is ignored) from the earnings filing's CIK, whose header
  *    `<ACCEPTANCE-DATETIME>` (Eastern, never the submissions JSON alone) is
- *    after 21:00:00 on the event date and after the earnings filing's, and
- *    whose header period of report is a period end before the print and
- *    within `PERIOD_MAX_AGE_DAYS` of it (the print's quarter or fiscal year).
- *    The submissions JSON is only the cheap prefilter (both readings, as the
- *    poller does). A 10-Q accepted by 21:00 on the event date is an evening
- *    companion already and is never stored twice; one the evening catch-up
- *    stored as rejected "accepted after 9 pm" is moved to `late` instead.
+ *    after the earnings filing's, and whose header period of report is a
+ *    period end before the print and within `PERIOD_MAX_AGE_DAYS` of it (the
+ *    print's quarter or fiscal year), and whose accession the event does not
+ *    already hold as a non-rejected evening filing. There is NO "after 21:00"
+ *    rule: SEC's submissions list can lag the acceptance time, so a 10-Q
+ *    accepted before 21:00 may be missing from the list at the evening
+ *    catch-up and appear only later (Alphabet, 2026-10-28: accepted 20:29,
+ *    not listed at the 21:00 catch-up). The submissions JSON is only the
+ *    cheap prefilter (both readings, as the poller does). A 10-Q the evening
+ *    summary already holds as an accepted companion is never stored twice;
+ *    one the evening poll stored as rejected (e.g. "accepted after 9 pm") is
+ *    moved to `late` in place instead.
  *  - FOREIGN FILERS: a 6-K carrying the interim report cannot be told
  *    reliably from any other 6-K from the header alone (no item codes, free
  *    exhibit descriptions), so 6-K filers are left out of the late watch.
@@ -41,7 +46,6 @@ import {
 } from "@/lib/print-watch/edgar-adapter";
 import { inferFilerKind } from "./edgar";
 import {
-  AFTER_CUTOFF_REASON,
   CUTOFF_ET,
   easternClock,
   fetchDocuments,
@@ -177,12 +181,6 @@ export function periodMatchesPrint(periodOfReport: string | null | undefined, ev
   return Number.isFinite(days) && days <= PERIOD_MAX_AGE_DAYS;
 }
 
-/** After 21:00:00 Eastern on the event date (strictly): not an evening companion. */
-function afterEveningCutoff(ms: number, eventDate: string): boolean {
-  const { date, time } = easternClock(ms);
-  return date > eventDate || (date === eventDate && time > CUTOFF_ET);
-}
-
 function isAbort(err: unknown): boolean {
   return err instanceof Error && err.name === "AbortError";
 }
@@ -219,9 +217,9 @@ export async function pollLateFiling(
   if (getLateWatch(db, eventId)) markLateWatchPolled(db, eventId, nowMs);
   if (inferFilerKind(recent.form) === "foreign") return { status: "not_eligible", reason: "foreign_filer" };
 
-  // Prefilter on the JSON (either reading after the evening cutoff and the
-  // earnings filing, minus a day of slack); the header decides.
-  const floorMs = Math.max(basis.earningsMs, Date.parse(easternInstantIso(basis.eventDate, CUTOFF_ET))) - 24 * 3_600_000;
+  // Prefilter on the JSON (either reading after the earnings filing, minus a
+  // day of slack); the header decides.
+  const floorMs = basis.earningsMs - 24 * 3_600_000;
   const evening = new Map(listFilings(db, eventId).map((f) => [f.accession, f]));
   const candidates: Array<{ accession: string; form: string; acceptanceMs: number }> = [];
   let headerFailures = 0;
@@ -235,9 +233,10 @@ export async function pollLateFiling(
     if (!near(a) && !near(b)) continue;
     const accession = recent.accessionNumber[i];
     const prior = evening.get(accession);
-    // An evening companion (accepted by 21:00) is already read by the evening
-    // summary: never stored twice. Only an after-cutoff rejected row moves.
-    if (prior && !(prior.identityVerdict === "rejected" && prior.identityReason === AFTER_CUTOFF_REASON)) continue;
+    // A filing the evening summary holds (not rejected) is already read there:
+    // never stored twice. A rejected evening row (e.g. "accepted after 9 pm")
+    // moves to late in place below.
+    if (prior && prior.identityVerdict !== "rejected") continue;
     const header = await headerFor(basis.cik, accession, seams.fetchFn);
     if (!header) {
       headerFailures += 1;
@@ -245,7 +244,7 @@ export async function pollLateFiling(
     }
     if (header.acceptanceMs === null) continue;
     const ms = header.acceptanceMs;
-    if (ms <= basis.earningsMs || !afterEveningCutoff(ms, basis.eventDate) || ms > upperMs) continue;
+    if (ms <= basis.earningsMs || ms > upperMs) continue;
     if (!periodMatchesPrint(header.periodOfReport, basis.eventDate)) continue;
     candidates.push({ accession, form, acceptanceMs: ms });
   }
@@ -257,8 +256,8 @@ export async function pollLateFiling(
   let filingId: number;
   const prior = evening.get(c.accession);
   if (prior) {
-    // The evening catch-up stored it as "accepted after 9 pm" (never run): it
-    // becomes the late filing, documents and all. No evening section reads it.
+    // The evening poll stored it rejected (never run): it becomes the late
+    // filing, documents and all. No evening section reads it.
     db.prepare(
       `UPDATE filing_summary_filings
           SET arrival = 'late', role = 'companion', identity_verdict = 'accepted', identity_reason = NULL
