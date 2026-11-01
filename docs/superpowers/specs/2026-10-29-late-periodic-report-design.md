@@ -1,6 +1,15 @@
 # Late periodic report (10-Q / 10-K filed after the print night) — design
 
-Status: DRAFT for owner review, 2026-10-29. Not built.
+Status: BUILT (branch `late-periodic-10q`, 2026-11-01). Owner rulings of
+2026-10-29 applied. As built, the late filing is NOT a new role: the owner
+approved schema (migration 100) adds `filing_summary_filings.arrival`
+(`evening` default, `late`) and stores the late report as role `companion`,
+arrival `late`, plus a `filing_summary_late_watch` table (one row per print:
+watching / found / ended / cancelled, `window_ends_at`, `last_polled_at`).
+Item 3 below ("new role `late_periodic`") is superseded by that shape. Foreign
+filers' 6-K interim reports are left out (not reliably identifiable). The
+built behaviour is documented in `docs/reference/earnings-pipeline.md`
+§Filing summary, "Late periodic report".
 
 ## Problem
 
