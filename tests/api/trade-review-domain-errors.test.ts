@@ -166,7 +166,9 @@ describe("POST /api/trade-review — vendor failures are classified, never echoe
     );
 
     const failure = await errorEvent();
-    expect(failure.error).toMatch(/billing needs attention/i);
+    // An account outage is named by the shared account sentence since the
+    // 2026-11-01 QA fix (tests/api/trade-review-ai-account.test.ts).
+    expect(failure.error).toMatch(/^AI unavailable \(billing\)/);
     expect(failure.error).not.toMatch(/credit balance|request_id|req_test/i);
   });
 

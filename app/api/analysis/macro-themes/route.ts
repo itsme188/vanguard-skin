@@ -9,6 +9,7 @@ import {
 import { getCachedMacroThemes } from "@/lib/queries/analysis-macro-themes";
 import { mondayOf } from "@/lib/calendar/date-utils";
 import { currentThemeWeek, getCachedMacroThemesForNow } from "@/lib/compute/theme-week";
+import { accountFailureOf, aiUnavailableReason } from "@/lib/earnings/ai-unavailable";
 
 export const dynamic = "force-dynamic";
 
@@ -153,6 +154,17 @@ export async function POST(req: NextRequest) {
     // throw (a provider error string, a refusal) is raw vendor text and goes to
     // the server log only.
     const raw = e instanceof Error ? e.message : String(e);
+    // An AI ACCOUNT outage (out of credit, rejected key...) is named as such
+    // so the card says when a retry can work instead of "try again in a few
+    // minutes". The provider text stays in the server log.
+    const accountKind = accountFailureOf(e);
+    if (accountKind) {
+      console.error(`[macro-themes] AI account unavailable (${accountKind}) for scope=${scope}: ${raw}`);
+      return NextResponse.json(
+        { success: false, error: aiUnavailableReason(accountKind), reason: "ai_account" },
+        { status: 503 },
+      );
+    }
     const message =
       e instanceof MacroThemesParseError
         ? e.message

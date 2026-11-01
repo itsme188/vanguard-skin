@@ -6,6 +6,7 @@ import apiFetch from "@/lib/http/apiFetch";
 import { Pct, PrivateText } from "@/lib/privacy/components";
 import {
   describeRefreshFailure,
+  isAiAccountFailure,
   isExpectedRefreshState,
   MACRO_THEMES_SUBJECT,
 } from "./refresh-failure-message";
@@ -48,8 +49,11 @@ interface ApiResponse {
   unavailable?: boolean;
   /** ms left on the POST route's window — only present on a 429. */
   retryAfter?: number;
-  /** Which of the POST route's two limits fired — only present on a 429. */
-  reason?: "daily" | "last_attempt_failed" | "none_verified";
+  /**
+   * Which of the POST route's two limits fired (429), the citation-check
+   * failure (422), or an AI account outage (503, "ai_account").
+   */
+  reason?: "daily" | "last_attempt_failed" | "none_verified" | "ai_account";
   /**
    * Client-side only: this failure is an EXPECTED state (a rate limit), not a
    * breakage, so it renders neutrally rather than in the loss colour.
@@ -202,16 +206,21 @@ export function MacroOverlayCard({ scope }: { scope: string }) {
       // cooldown after a failed attempt, and any other status — into the same
       // domain language NarrativeBlock uses.
       const fallback = describeRefreshFailure(MACRO_THEMES_SUBJECT, res.status, json);
+      // An AI account outage (out of credit, rejected key) is named by the
+      // shared translator, never by the card's fixed "unavailable" line, and
+      // is a known state rather than a breakage (no loss colour, no "Try
+      // again": a retry cannot succeed until the account answers).
+      const accountFailure = isAiAccountFailure(res.status, json);
       const routeMessage =
-        res.status !== 429 && typeof json.error === "string" && json.error.trim() !== ""
+        res.status !== 429 && !accountFailure && typeof json.error === "string" && json.error.trim() !== ""
           ? json.error
           : null;
       return {
         ...json,
         success: false,
         generateFailed: true,
-        expected: isExpectedRefreshState(res.status),
-        unavailable: res.status >= 500,
+        expected: isExpectedRefreshState(res.status, json),
+        unavailable: res.status >= 500 && !accountFailure,
         // A non-429 route message is written for a reader (the themes-parse
         // failures); anything missing falls back to the shared sentence.
         error: routeMessage ?? fallback,
