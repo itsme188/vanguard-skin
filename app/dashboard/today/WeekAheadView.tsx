@@ -614,6 +614,35 @@ export function showsNoActualRecorded(
   return key.startsWith(FRED_SOURCE_KEY_PREFIX) || key.startsWith("nonfred:");
 }
 
+/** What a past earnings card says when its stored actual is withheld as implausible. */
+export const WITHHELD_ACTUAL_LABEL =
+  "actual withheld \u2014 flagged implausible vs consensus; check the release";
+
+/**
+ * Whether a past earnings card carries the muted "actual withheld" line: a
+ * figure IS stored (so `showsNoActualRecorded` is false) but the same
+ * plausibility gate the actual chip uses (`eventFigureDisplays`) refuses it,
+ * so neither the chip nor a tag would otherwise appear. Never today's or a
+ * future row.
+ */
+export function showsWithheldActual(
+  event: Pick<
+    CalendarEvent,
+    "event_type" | "event_date" | "actual_value" | "manual_actuals_at" | "consensus_estimate"
+  > &
+    Partial<Pick<CalendarEvent, "consensus_value">>,
+  todayIso: string,
+): boolean {
+  if (event.event_type !== "earnings") return false;
+  if (!event.event_date || event.event_date >= todayIso) return false;
+  if (event.actual_value == null || event.actual_value.trim() === "") return false;
+  return actualsAreImplausible(
+    effectiveConsensus(event),
+    event.actual_value,
+    event.manual_actuals_at,
+  );
+}
+
 /** Layout classes of the "actual …" chip — the JSX literal in EventRow must match. */
 const ACTUAL_CHIP_LAYOUT = "text-[11px] font-mono rounded px-1.5 py-0.5 ml-auto max-w-full break-words";
 
@@ -769,6 +798,9 @@ function EventRow({ event: storedEvent, todayIso }: { event: DisplayedEvent; tod
       )}
       {!refusedNote && showsNoActualRecorded(event, todayIso) && (
         <p className="text-[11px] text-ink-faint italic mt-1.5">{NO_ACTUAL_RECORDED_LABEL}</p>
+      )}
+      {!refusedNote && showsWithheldActual(event, todayIso) && (
+        <p className="text-[11px] text-ink-faint italic mt-1.5">{WITHHELD_ACTUAL_LABEL}</p>
       )}
       {/* Captured market reaction (public data, unmasked) — the week view is
           the Calendar Living Record's only week-level browse path, so enriched
