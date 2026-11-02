@@ -206,20 +206,25 @@ export async function fetchFinnhubEarningsForSymbols(
     const history = historyMap.get(symbol) ?? [];
     const securityId = getSecurityIdForSymbol(db, symbol);
 
-    const hourLabel = formatHour(entry.hour);
-    // Foreign-listing echo ⇒ figures untrusted. Finnhub resolves ADR
+    // Foreign-listing echo ⇒ figures AND hour untrusted. Finnhub resolves ADR
     // queries to the LOCAL listing — querying "TSM" returns "2330.TW" with
     // TWD-scale figures (epsEstimate 24.57, revenue 1.28 trillion; verified
-    // live 2026-07-16). The schedule (date/hour) is reliable either way,
-    // but a mismatched echo's estimates are local-currency and rendering
-    // them with "$" produced the "$1275.55B consensus" TSM bug. Consensus
-    // for these names comes from the Nasdaq scan or user bogeys instead.
+    // live 2026-07-16). A mismatched echo's estimates are local-currency and
+    // rendering them with "$" produced the "$1275.55B consensus" TSM bug.
+    // Consensus for these names comes from the Nasdaq scan or user bogeys
+    // instead. The `hour` is read against the HOME exchange's session too
+    // (2330.TW reports after the Taiwan close, before the US open), so an
+    // echoed row contributes the DATE only: no hour label and no vendor hour
+    // in raw_json, or the row would carry the wrong slot and the chip would
+    // read "confirmed by both" on a slot only Nasdaq gave (2026-10-24 QA).
     const foreignEcho = entry.symbol !== queried;
     if (foreignEcho) {
       console.warn(
-        `[finnhub] ${queried} echoed as ${entry.symbol} — local-currency figures dropped, schedule kept`
+        `[finnhub] ${queried} echoed as ${entry.symbol} — local-currency figures and home-exchange hour dropped, date kept`
       );
     }
+    const hourLabel = foreignEcho ? null : formatHour(entry.hour);
+    const storedEntry = foreignEcho ? { ...entry, hour: undefined } : entry;
     const consensusParts: string[] = [];
     if (!foreignEcho && entry.epsEstimate != null) {
       consensusParts.push(`EPS ${entry.epsEstimate.toFixed(2)}`);
@@ -265,7 +270,12 @@ export async function fetchFinnhubEarningsForSymbols(
       previous_value: null,
       // raw_json keeps the original Finnhub-returned symbol for debugging
       // (useful when a foreign-suffix divergence ever surfaces again).
-      raw_json: JSON.stringify({ entry, history, finnhub_symbol: entry.symbol }),
+      raw_json: JSON.stringify({
+        entry: storedEntry,
+        history,
+        finnhub_symbol: entry.symbol,
+        ...(foreignEcho ? { foreign_echo: true, dropped_hour: entry.hour ?? null } : {}),
+      }),
       source_key: `finnhub:${symbol}:${entry.date}`,
       week_of: weekOf,
     };

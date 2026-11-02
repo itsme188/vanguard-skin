@@ -9,8 +9,9 @@
  * calendar surface and leaked into the TSM preview email scoreboard
  * (reconcileEarningsDates COALESCEd the junk onto the canonical manual row).
  *
- * Rule: when entry.symbol !== the queried symbol, the SCHEDULE (date/hour)
- * stays trusted but the FIGURES are local-currency and must be dropped.
+ * Rule: when entry.symbol !== the queried symbol, the DATE stays trusted but
+ * the FIGURES are local-currency and must be dropped; since 2026-10-24 the
+ * HOUR is dropped as well (it is the home exchange's session).
  * The Worker mirror already enforces this via its strict symbol match —
  * see workers/cron/test/enrich-actuals.test.ts.
  */
@@ -80,7 +81,9 @@ describe("fetchFinnhubEarningsForSymbols — foreign-listing echo", () => {
     // Schedule info is trusted: event exists under the queried symbol.
     expect(events[0].symbol).toBe("TSM");
     expect(events[0].event_date).toBe("2026-07-16");
-    expect(events[0].title).toContain("Before Market Open");
+    // The hour is the home exchange's and is dropped too (2026-10-24; see
+    // finnhub-foreign-echo-hour.test.ts): the date is the only schedule kept.
+    expect(events[0].title).toBe("TSM earnings");
     // Figures are NOT: local-currency estimates must never be stored.
     expect(events[0].consensus_estimate).toBeNull();
     // Raw echo preserved for debugging.

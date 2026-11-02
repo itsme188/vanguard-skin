@@ -272,21 +272,33 @@ describe("import-undo recovery — restore", () => {
     undoImportWithRecovery(db, res.batchId, { manifestDir: dir });
 
     // Between undo and restore, a live TWS sync writes an intra-day row for the
-    // same (account, security, as_of_date) slot the statement row owned.
+    // same (account, security, as_of_date) slot the statement row owned. The
+    // undo removed AAA (nothing pointed at it any more, 2026-10-24), so the
+    // sync re-creates the name under a fresh id, as upsertSecurity would.
+    expect(db.prepare("SELECT id FROM securities WHERE id = ?").get(aaaId)).toBeUndefined();
+    const liveAaaId = Number(
+      db.prepare("INSERT INTO securities (symbol, security_type) VALUES ('AAA', 'Stock')").run().lastInsertRowid,
+    );
+    expect(liveAaaId).not.toBe(aaaId);
     db.prepare(
       "INSERT INTO holdings (account_id, security_id, quantity, cost_basis, as_of_date, source_key) VALUES (?, ?, ?, ?, ?, ?)"
-    ).run(ibkrId, aaaId, 999, 12345, "2025-01-31", "tws-live-AAA-2025-01-31");
+    ).run(ibkrId, liveAaaId, 999, 12345, "2025-01-31", "tws-live-AAA-2025-01-31");
 
     restoreImportBatch(db, manifest);
+
+    // The restored rows are re-pointed at the name's current id.
+    const aaaId2 = liveAaaId;
+    expect(db.prepare("SELECT COUNT(*) AS n FROM securities WHERE symbol = 'AAA'").get()).toEqual({ n: 1 });
 
     // The statement row must WIN: exactly one row for the slot, carrying the
     // statement quantity + statement source_key, not the live values.
     const rows = db
       .prepare("SELECT quantity, source_key FROM holdings WHERE account_id = ? AND security_id = ? AND as_of_date = '2025-01-31'")
-      .all(ibkrId, aaaId) as { quantity: number; source_key: string }[];
+      .all(ibkrId, aaaId2) as { quantity: number; source_key: string }[];
     expect(rows.length).toBe(1);
     expect(rows[0].quantity).toBe(10);
     expect(rows[0].source_key).toBe("ibkr:pos:AAA:2025-01-31");
+    expect(db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
   });
 
   it("refuses to restore a manifest whose checksum does not validate", () => {
@@ -544,18 +556,23 @@ describe("import-undo recovery — tombstone-aware restore (T7)", () => {
 
     // Between undo and restore, a recon tombstone (e.g. minted by an
     // intervening sync's reconcile pass) occupies the exact slot the
-    // manifested statement row will restore into.
+    // manifested statement row will restore into. The undo removed AAA
+    // (2026-10-24 ghost removal), so the sync first re-creates the name.
+    const liveAaaId = Number(
+      db.prepare("INSERT INTO securities (symbol, security_type) VALUES ('AAA', 'Stock')").run().lastInsertRowid,
+    );
     db.prepare(
       "INSERT INTO holdings (account_id, security_id, quantity, cost_basis, as_of_date, source_key) VALUES (?, ?, 0, 0, ?, ?)"
-    ).run(ibkrId, aaaId, "2025-01-31", `${RECON_HOLDING_SOURCE_PREFIX}${ibkrId}:${aaaId}:2025-01-31:live`);
+    ).run(ibkrId, liveAaaId, "2025-01-31", `${RECON_HOLDING_SOURCE_PREFIX}${ibkrId}:${liveAaaId}:2025-01-31:live`);
 
     restoreImportBatch(db, manifest);
+    void aaaId;
 
     // The statement row must WIN over the tombstone: exactly one row for the
     // slot, carrying the statement quantity + statement source_key.
     const rows = db
       .prepare("SELECT quantity, source_key FROM holdings WHERE account_id = ? AND security_id = ? AND as_of_date = '2025-01-31'")
-      .all(ibkrId, aaaId) as { quantity: number; source_key: string }[];
+      .all(ibkrId, liveAaaId) as { quantity: number; source_key: string }[];
     expect(rows.length).toBe(1);
     expect(rows[0].quantity).toBe(10);
     expect(rows[0].source_key).toBe("ibkr:pos:AAA:2025-01-31");
