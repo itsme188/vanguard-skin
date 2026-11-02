@@ -15,7 +15,7 @@ import {
 } from "@/lib/queries/chat-tools";
 import { getNotesFiltered, getSecurityIdBySymbol } from "@/lib/queries/notes";
 import { createNote } from "@/lib/mutations/notes";
-import { addDays, todayET, nowET } from "@/lib/calendar/date-utils";
+import { addDays, todayET, nowET, parseDbTimestamp } from "@/lib/calendar/date-utils";
 import { NOTE_TYPES, NOTE_SENTIMENTS } from "@/lib/types";
 import { coerceNoteType, coerceNoteSentiment } from "@/lib/notes/coerce";
 import { computeTwr } from "@/lib/compute/twr";
@@ -1722,7 +1722,7 @@ export async function executeTool(
         const rows = db
           .prepare(
             `SELECT event_type, event_date, event_time, title, description, symbol,
-             expected_impact, consensus_estimate, previous_value, actual_value,
+             expected_impact, consensus_estimate, consensus_value, previous_value, actual_value,
              release_time, raw_json, manual_actuals_at
              FROM calendar_events WHERE ${evtWhere}
              ORDER BY event_date ASC, event_time ASC LIMIT 50`
@@ -1733,6 +1733,7 @@ export async function executeTool(
             event_time: string | null;
             symbol: string | null;
             consensus_estimate: string | null;
+            consensus_value: string | null;
             actual_value: string | null;
             release_time: string | null;
             raw_json: string | null;
@@ -1742,6 +1743,14 @@ export async function executeTool(
         // A hand-accepted figure is stamped on one twin of the print; read
         // the stamp across the cluster, as every other actuals reader does.
         applyClusterManualActuals(db, rows);
+        // One consensus figure per print, on the Earnings Hub's basis:
+        // consensus_value, else the vendor estimate. Returned under the
+        // existing consensus_estimate key; consensus_value itself is dropped.
+        for (const r of rows) {
+          const cv = r.consensus_value;
+          if (cv != null && String(cv).trim() !== "") r.consensus_estimate = cv;
+          delete (r as { consensus_value?: unknown }).consensus_value;
+        }
         // Whether a result is on file, said in words: the model read a dated
         // pre-open row at 04:20 ET as "already reported" (QA 2026-10-13).
         // Only a stored actual means reported; a slot is a scheduled time.
@@ -1816,7 +1825,33 @@ export async function executeTool(
             .all(weeksBack);
         }
 
-        rawResult = { briefings, count: briefings.length };
+        // generated_at is SQLite UTC; the model read it as Eastern (QA
+        // 2026-10-18). Return a labelled Eastern time and the UTC instant.
+        const etFormat = new Intl.DateTimeFormat("en-CA", {
+          timeZone: "America/New_York",
+          year: "numeric",
+          month: "2-digit",
+          day: "2-digit",
+          hour: "2-digit",
+          minute: "2-digit",
+          hourCycle: "h23",
+        });
+        const briefingsEt = (briefings as Array<{ generated_at: string; [k: string]: unknown }>).map(
+          ({ generated_at, ...rest }) => {
+            const d = parseDbTimestamp(generated_at);
+            let generated_at_et: string | null = null;
+            if (d) {
+              const p = Object.fromEntries(etFormat.formatToParts(d).map((x) => [x.type, x.value]));
+              generated_at_et = `${p.year}-${p.month}-${p.day} ${p.hour}:${p.minute} ET`;
+            }
+            return { ...rest, generated_at_et, generated_at_utc: generated_at };
+          },
+        );
+        rawResult = {
+          briefings: briefingsEt,
+          count: briefingsEt.length,
+          now_et: `${todayET()} ${nowET()} ET`,
+        };
         break;
       }
 

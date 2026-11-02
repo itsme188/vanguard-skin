@@ -1,7 +1,7 @@
 "use client";
 
 import { GOLD_FILL_CLASSES } from "@/app/dashboard/components/chip-tone-text";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { OpenLotForDonation } from "@/lib/queries/giving-view";
 import { Money, PrivateNumberInput, Shares } from "@/lib/privacy/components";
@@ -10,6 +10,7 @@ import { useToast } from "../Toast";
 import apiFetch from "@/lib/http/apiFetch";
 import { LedgerRecomputeDialog, useLedgerRecomputeFlow } from "./LedgerRecomputeDialog";
 import { withLedgerAck } from "./ledger-recompute-flow";
+import { useModalFocus } from "../useModalFocus";
 
 /**
  * Lot-assignment drawer (Task 13) — skeleton copied from
@@ -154,6 +155,11 @@ export function LotAssignmentDrawer({
   const [selections, setSelections] = useState<Record<number, number>>({});
   const flow = useLedgerRecomputeFlow();
   const flowActive = flow.active;
+  // The drawer is mounted only while open (GivingYearSection renders it on
+  // `drawerDonation`), so focus moves in on mount and goes back to the
+  // "Edit lots" button on unmount; Tab stays inside the panel meanwhile.
+  const asideRef = useRef<HTMLElement>(null);
+  useModalFocus(true, asideRef);
 
   // Close on Escape — same idiom as MacroThemeReceiptDrawer/TrustStripDrawer.
   // Not while the recompute dialog is up: closing the drawer would unmount
@@ -290,12 +296,15 @@ export function LotAssignmentDrawer({
       onClick={() => {
         if (!flowActive) onClose();
       }}
-      role="dialog"
-      aria-label={`Assign lots for ${symbol}`}
     >
       <div className="flex-1 bg-black/30" aria-hidden="true" />
       <aside
-        className="w-full max-w-md bg-panel border-l border-edge p-5 overflow-y-auto"
+        ref={asideRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label={`Assign lots for ${symbol}`}
+        tabIndex={-1}
+        className="w-full max-w-md bg-panel border-l border-edge p-5 overflow-y-auto outline-none"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Inside the aside (which stops click propagation) so a click in the
