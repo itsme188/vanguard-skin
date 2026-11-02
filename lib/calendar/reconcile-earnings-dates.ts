@@ -43,7 +43,7 @@ import { getSuppressedEventTuples, suppressionKey } from "@/lib/calendar/event-s
 
 const GATHER_BACK_DAYS = 21;
 const GATHER_FWD_DAYS = 30;
-const CLUSTER_PROXIMITY_DAYS = 14;
+export const CLUSTER_PROXIMITY_DAYS = 14;
 
 /**
  * One earnings row a reconcile pass newly hid (`superseded` 0 → 1), with a

@@ -4,6 +4,7 @@ import Link from "next/link";
 import { db } from "@/lib/db";
 import { getCachedModelCatalog } from "@/lib/ai/catalog-source";
 import { getFullView } from "@/lib/filing-summary/view";
+import { resolveKeptEarningsEventId } from "@/lib/calendar/kept-twin";
 import { EmptySection } from "@/app/dashboard/components/EmptySection";
 import { FilingSummaryView } from "./FilingSummaryView";
 
@@ -28,7 +29,11 @@ function BackLink() {
 export default async function FilingSummaryPage(props: { params: Promise<{ eventId: string }> }) {
   const { eventId } = await props.params;
   const id = Number(eventId);
-  const view = Number.isInteger(id) && id > 0 ? getFullView(db, id, getCachedModelCatalog()) : null;
+  // A pushed link names the row id at send time. When a calendar Refresh later
+  // picks the print's other twin as the kept row, the summary (its runs,
+  // filings and pushes) moves with the print; the page follows it there.
+  const kept = Number.isInteger(id) && id > 0 ? resolveKeptEarningsEventId(db, id) : null;
+  const view = kept ? getFullView(db, kept.id, getCachedModelCatalog()) : null;
 
   if (!view) {
     return (
