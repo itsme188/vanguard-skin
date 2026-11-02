@@ -6,6 +6,7 @@ import { formatGeneratedAt, parseDbTimestamp } from "@/lib/calendar/date-utils";
 import apiFetch from "@/lib/http/apiFetch";
 import {
   describeRefreshFailure,
+  isAiAccountFailure,
   NARRATIVE_SUBJECT,
 } from "./refresh-failure-message";
 
@@ -132,6 +133,11 @@ export function NarrativeBlock({ scope, surfaceKey }: Props) {
   // (5xx, or the request never completed) — the cold-failure state then says
   // so in plain words instead of echoing the request-failed sentence.
   const [aiUnavailable, setAiUnavailable] = useState(false);
+  // The generate call failed on an AI ACCOUNT outage (503 "ai_account": out
+  // of credit, rejected key...). The shared sentence names it and says when to
+  // retry, so the cold-failure state shows that sentence and drops "Try
+  // again": a retry cannot succeed until the account answers.
+  const [accountFailure, setAccountFailure] = useState(false);
   // Which control started the refresh, so the outcome renders under the
   // button the user actually pressed. The drift banner's button is ~128px
   // above the footer line where the status used to be its ONLY home, with
@@ -158,6 +164,7 @@ export function NarrativeBlock({ scope, surfaceKey }: Props) {
     setRefreshing(true);
     setRefreshError(null);
     setAiUnavailable(false);
+    setAccountFailure(false);
     setRefreshOrigin(origin);
     try {
       const res = await apiFetch("/api/analysis/narrative", {
@@ -179,8 +186,10 @@ export function NarrativeBlock({ scope, surfaceKey }: Props) {
         // simply stays visible alongside this). One helper covers the
         // rate limit and every other non-OK status, so no response can
         // reach the card as a bare token or as nothing at all.
+        const accountFailure = isAiAccountFailure(res.status, data);
         setRefreshError(describeRefreshFailure(NARRATIVE_SUBJECT, res.status, data));
-        setAiUnavailable(res.status >= 500);
+        setAiUnavailable(res.status >= 500 && !accountFailure);
+        setAccountFailure(accountFailure);
       }
     } catch {
       // Network-level failure (offline, server restarting mid-click). The
@@ -257,16 +266,18 @@ export function NarrativeBlock({ scope, surfaceKey }: Props) {
         className="not-italic text-xs text-warn mt-2 flex flex-wrap items-center gap-x-2 gap-y-1"
       >
         <span>{aiUnavailable ? "AI narrative unavailable right now." : refreshError}</span>
-        <button
-          type="button"
-          onClick={() => handleRefresh("footer")}
-          disabled={refreshing}
-          aria-label="Try generating the narrative again"
-          title={REGENERATE_TITLE}
-          className={`${TOUCH_HIT_AREA} font-medium underline decoration-dotted underline-offset-2 hover:brightness-110 disabled:opacity-60 disabled:cursor-not-allowed`}
-        >
-          {refreshing ? "Refreshing…" : "Try again"}
-        </button>
+        {!accountFailure && (
+          <button
+            type="button"
+            onClick={() => handleRefresh("footer")}
+            disabled={refreshing}
+            aria-label="Try generating the narrative again"
+            title={REGENERATE_TITLE}
+            className={`${TOUCH_HIT_AREA} font-medium underline decoration-dotted underline-offset-2 hover:brightness-110 disabled:opacity-60 disabled:cursor-not-allowed`}
+          >
+            {refreshing ? "Refreshing…" : "Try again"}
+          </button>
+        )}
       </div>
     );
   }

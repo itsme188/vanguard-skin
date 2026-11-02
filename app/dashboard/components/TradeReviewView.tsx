@@ -14,6 +14,7 @@ import { usePrivacy } from "@/lib/privacy/context";
 import { isNarrativeStale } from "@/lib/trade-review/stale-narrative";
 import { formatEnrichedAtET, formatProfitFactor } from "@/lib/format";
 import apiFetch from "@/lib/http/apiFetch";
+import { aiAccountRetryClause, readAiAccountFailure } from "@/lib/ui/ai-account-failure";
 
 // ─── Types ──────────────────────────────────────────────────────
 
@@ -98,12 +99,25 @@ export type TradeReviewSaveState = "nothing-saved" | "unknown";
  * say what state the data is in, say what to do next — in domain language.
  * `reason` is whatever the server classified (never raw vendor prose); the
  * lead-in isn't repeated when the server already sent the generic fallback.
+ *
+ * `aiAccount` is the server's flag for an AI ACCOUNT outage (out of credit,
+ * rejected key...): the copy names it and says when a retry can work, never
+ * "Try again" (a retry cannot succeed until the account answers).
  */
 export function tradeReviewFailureMessage(
   reason?: string | null,
-  saveState: TradeReviewSaveState = "nothing-saved"
+  saveState: TradeReviewSaveState = "nothing-saved",
+  opts: { aiAccount?: boolean } = {}
 ): string {
   const lead = "Couldn't generate the review";
+  const account = opts.aiAccount ? readAiAccountFailure({ error: reason, aiAccount: true }) : null;
+  if (account) {
+    const accountTail =
+      saveState === "unknown"
+        ? "Whether a review was saved is unknown — the list below is refreshed automatically."
+        : "Nothing was saved and the period is unchanged.";
+    return `${lead} — ${account.head}. ${accountTail} ${aiAccountRetryClause(account)}`;
+  }
   const detail = (reason ?? "").trim();
   // A domain sentence rarely ends in a period ("No closed trades found for
   // this account in … to …"); terminate it so the save-state sentence that
@@ -379,7 +393,8 @@ export function TradeReviewView({
           setGenerateMsg(
             tradeReviewFailureMessage(
               data.error,
-              saveStateUnknown ? "unknown" : "nothing-saved"
+              saveStateUnknown ? "unknown" : "nothing-saved",
+              { aiAccount: data.aiAccount === true }
             )
           );
           setGenerateFailed(true);

@@ -11,6 +11,7 @@ import {
   isNarrativeDrifted,
 } from "@/lib/queries/analysis-narratives";
 import { mondayOf, todayET } from "@/lib/calendar/date-utils";
+import { accountFailureOf, aiUnavailableReason } from "@/lib/earnings/ai-unavailable";
 
 export const dynamic = "force-dynamic";
 
@@ -189,6 +190,20 @@ export async function POST(req: NextRequest) {
       lastRegenAt.set(key, previousStamp!);
     } else {
       lastRegenAt.delete(key);
+    }
+    // An AI ACCOUNT outage (out of credit, rejected key...) is named as such
+    // so the card says when a retry can work instead of inviting one in a few
+    // minutes. The provider text stays in the server log.
+    const accountKind = accountFailureOf(e);
+    if (accountKind) {
+      console.error(
+        `[narrative] AI account unavailable (${accountKind}) for ${scope}/${surface}:`,
+        e instanceof Error ? e.message : e
+      );
+      return NextResponse.json(
+        { success: false, error: aiUnavailableReason(accountKind), reason: "ai_account" },
+        { status: 503 }
+      );
     }
     return NextResponse.json(
       { success: false, error: e instanceof Error ? e.message : "Failed" },

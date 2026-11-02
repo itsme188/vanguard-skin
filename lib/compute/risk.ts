@@ -16,6 +16,11 @@ import { buildFlowAdjustedIndex, fetchNetFlowsByDate, fetchAnchorSourceSeamDates
 import { addDays, calendarDaysBetween, todayET } from "@/lib/calendar/date-utils";
 import { isCashEquivalentSecurity } from "@/lib/compute/cash-equivalents";
 import { liveOptionExpirationSql } from "@/lib/compute/option-expiry";
+import {
+  importSplitsFor,
+  splitAdjustedClose,
+  splitsNotYetAbsorbed,
+} from "@/lib/compute/import-splits";
 
 // Drop per-position return pairs whose dates straddle a multi-week hole. The
 // prices table mixes sparse month-end statement anchors with dense daily TWS
@@ -731,21 +736,6 @@ export function computePositionRisk(
   }[];
 
   // 3. Build per-security price series and compute daily returns
-  const priceMap = new Map<number, Map<string, number>>(); // security_id -> date -> price
-  const allDates = new Set<string>();
-
-  for (const row of priceRows) {
-    if (!priceMap.has(row.security_id)) {
-      priceMap.set(row.security_id, new Map());
-    }
-    priceMap.get(row.security_id)!.set(row.date, row.close_price);
-    allDates.add(row.date);
-  }
-
-  const sortedDates = [...allDates].sort();
-
-  // Compute daily log returns per security
-  const returnsBySecId = new Map<number, { dates: string[]; returns: number[] }>();
 
   // Options are EXEMPT from the split guard: premiums legitimately double or
   // halve day-over-day (live data has 10+ real pairs inside the guard's 2x
@@ -756,6 +746,44 @@ export function computePositionRisk(
       .filter((p) => p.security_type?.toLowerCase() === "option")
       .map((p) => p.security_id)
   );
+
+  // Put every non-option close on today's share basis using the recorded
+  // import-mode splits, the same rule the security page's regression uses
+  // (lib/compute/import-splits.ts). The split-signature guard below only
+  // catches a straddling pair within 2% of an integer ratio; a split whose
+  // two closes also carry a real move slipped past it and planted one huge
+  // fake return. Splits the stored series has already absorbed (a
+  // back-adjusted TWS series) are skipped so nothing is adjusted twice. The
+  // guard stays as the fallback for a split with no corporate_actions row.
+  const rowsBySecId = new Map<number, { date: string; close_price: number }[]>();
+  for (const row of priceRows) {
+    let rows = rowsBySecId.get(row.security_id);
+    if (!rows) rowsBySecId.set(row.security_id, (rows = []));
+    rows.push(row);
+  }
+
+  const priceMap = new Map<number, Map<string, number>>(); // security_id -> date -> price
+  const allDates = new Set<string>();
+
+  for (const [secId, rows] of rowsBySecId) {
+    const splits = optionSecIds.has(secId)
+      ? []
+      : splitsNotYetAbsorbed(rows, importSplitsFor(db, secId));
+    const byDate = new Map<string, number>();
+    for (const r of rows) {
+      byDate.set(
+        r.date,
+        splits.length > 0 ? splitAdjustedClose(r.date, r.close_price, splits) : r.close_price
+      );
+      allDates.add(r.date);
+    }
+    priceMap.set(secId, byDate);
+  }
+
+  const sortedDates = [...allDates].sort();
+
+  // Compute daily log returns per security
+  const returnsBySecId = new Map<number, { dates: string[]; returns: number[] }>();
 
   for (const secId of securityIds) {
     const prices = priceMap.get(secId);

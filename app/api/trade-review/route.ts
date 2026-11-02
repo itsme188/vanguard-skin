@@ -17,6 +17,7 @@ import {
 } from "@/lib/ai/classify-anthropic-error";
 import { AISDKError } from "ai";
 import { AIRefusalError } from "@/lib/ai/generate";
+import { accountFailureOf, aiUnavailableReason } from "@/lib/earnings/ai-unavailable";
 
 interface GroupedTradeResponse {
   saleTransactionId: number | null;
@@ -375,6 +376,20 @@ export async function POST(request: Request) {
         // server-side; our OWN domain errors are already plain language and go
         // through untouched (see vendorFailureMessage).
         console.error("[trade-review] generation failed:", message);
+        // An AI ACCOUNT outage (out of credit, rejected key...) is named as
+        // such and flagged, so the client says when a retry can work instead
+        // of "try again in a minute". Checked first: the AI SDK carries the
+        // provider's bare credit prose, which the message classifier below
+        // does not recognise.
+        const accountKind = accountFailureOf(error);
+        if (accountKind) {
+          send({
+            error: aiUnavailableReason(accountKind),
+            aiAccount: true,
+            savedUnknown: saveStepStarted,
+          });
+          return;
+        }
         send({
           error: vendorFailureMessage(error, message) ?? message,
           savedUnknown: saveStepStarted,

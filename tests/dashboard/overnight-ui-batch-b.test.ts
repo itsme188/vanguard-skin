@@ -64,7 +64,8 @@ describe("AI cards: unavailable state with manual retry", () => {
   const macro = read("app/dashboard/components/analysis/MacroOverlayCard.tsx");
   it("narrative shows the plain copy on 5xx / unreachable", () => {
     expect(nb).toContain("AI narrative unavailable right now.");
-    expect(nb).toContain("setAiUnavailable(res.status >= 500)");
+    // An AI account outage (503 "ai_account") shows the translated sentence instead.
+    expect(nb).toContain("setAiUnavailable(res.status >= 500 && !accountFailure)");
   });
   it("macro card shows the plain copy and a manual Try again, no auto-retry", () => {
     expect(macro).toContain("AI narrative unavailable right now.");

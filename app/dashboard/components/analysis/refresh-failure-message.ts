@@ -16,9 +16,12 @@
  * cards cannot drift apart again.
  *
  * Statuses: 429 is the rate limit (with a `reason` distinguishing the routes'
- * two different limits), 0 means "the request never completed" (the network
- * catch), anything else is a generic failure.
+ * two different limits), 503 with `reason: "ai_account"` is an AI ACCOUNT
+ * outage (out of credit, rejected key...; read by lib/ui/ai-account-failure.ts),
+ * 0 means "the request never completed" (the network catch), anything else is
+ * a generic failure.
  */
+import { aiAccountRetryClause, readAiAccountFailure } from "@/lib/ui/ai-account-failure";
 
 const MS_PER_HOUR = 60 * 60 * 1000;
 const MS_PER_MINUTE = 60 * 1000;
@@ -116,17 +119,38 @@ export function describeRefreshFailure(
     const limit = `Can't regenerate yet — ${subject.limitClause} once a day.`;
     return phrase ? `${limit} Try again in ${phrase}.` : `${limit} Try again later.`;
   }
+  const account = accountFailureFor(status, data);
+  if (account) {
+    // A retry cannot succeed until the account answers again, so the sentence
+    // says when to retry instead of inviting one in a few minutes.
+    return `Couldn't ${subject.actionClause} — ${account.head}. ${aiAccountRetryClause(account)}`;
+  }
   if (status === 0) {
     return `Couldn't ${subject.actionClause} — could not reach the server. Try again.`;
   }
   return `Couldn't ${subject.actionClause} — the request failed. Try again in a few minutes.`;
 }
 
+/** The AI account failure a 503 reported, or null (only a 503 carries one). */
+function accountFailureFor(status: number, data: FailureBody | null | undefined) {
+  return status === 503 ? readAiAccountFailure(data) : null;
+}
+
+/**
+ * Is this response an AI ACCOUNT outage (503 + `reason: "ai_account"`)? The
+ * cards use it to show the translated sentence instead of their fixed
+ * "unavailable" line and to drop the "Try again" control.
+ */
+export function isAiAccountFailure(status: number, data?: FailureBody | null): boolean {
+  return accountFailureFor(status, data) !== null;
+}
+
 /**
  * Is this failure an EXPECTED state rather than a breakage? A rate limit is the
- * product working as designed, so the cards render it neutrally instead of in
- * the loss colour reserved for things that actually went wrong.
+ * product working as designed, and an AI account outage is a known state the
+ * card cannot fix by retrying, so the cards render both neutrally instead of
+ * in the loss colour reserved for things that actually went wrong.
  */
-export function isExpectedRefreshState(status: number): boolean {
-  return status === 429;
+export function isExpectedRefreshState(status: number, data?: FailureBody | null): boolean {
+  return status === 429 || isAiAccountFailure(status, data);
 }
