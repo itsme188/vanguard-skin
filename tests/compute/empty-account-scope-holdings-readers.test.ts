@@ -343,8 +343,12 @@ describe("every account and a non-empty list answer as before", () => {
     // Re-captured 2026-10-23 when every allocation row gained long_value and
     // short_value (the long-only donut split): with those two keys removed
     // the output still hashed to the 2026-10-14 digest (fb5730b5...).
+    // Re-captured 2026-11-02 when every scenario result gained
+    // leveragedFundsUnmodelled and the What-if gained leveragedFundsNotModelled:
+    // with those two keys removed the output still hashed to the 2026-10-23
+    // digest (a5182e0b...).
     expect(createHash("sha256").update(json).digest("hex")).toBe(
-      "a5182e0bd2ea67e595553f8999443b262a8eaaebbd6d8e9eaf2c55507b3c864b",
+      "17d2fe2fb0983b1b6a6df2e1f56ec798a875d2ccf98084f914342e1167a9bfe0",
     );
   });
 
