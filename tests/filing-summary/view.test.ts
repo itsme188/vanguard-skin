@@ -144,6 +144,18 @@ describe("panel view", () => {
     expect(full.inProgressRunId).toBe(r2);
   });
 
+  it("marks a pending section held by an AI account outage as paused, and only that one", () => {
+    const { id: f1 } = insertFiling(db, filing("0000000001-26-000001"));
+    const r1 = run([f1]);
+    db.prepare(
+      `UPDATE filing_summary_sections SET status='pending', error_class='model_error',
+              error_text='AI unavailable (billing): waiting; no attempt counted' WHERE run_id=?`,
+    ).run(r1);
+    expect(getFullView(db, eventId, CATALOG)!.runs.flatMap((r) => r.sections.map((s) => s.aiPaused))).toEqual([true]);
+    db.prepare(`UPDATE filing_summary_sections SET error_text='timeout', error_class='timeout' WHERE run_id=?`).run(r1);
+    expect(getFullView(db, eventId, CATALOG)!.runs.flatMap((r) => r.sections.map((s) => s.aiPaused))).toEqual([false]);
+  });
+
   it("sets excludesAfterEt on an older run when a newer run has more filings", () => {
     const { id: f1 } = insertFiling(db, filing("0000000001-26-000001"));
     const r1 = run([f1]);

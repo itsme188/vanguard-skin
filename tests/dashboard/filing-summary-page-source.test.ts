@@ -44,7 +44,7 @@ function claim(p: Partial<ViewClaim> = {}): ViewClaim {
 function section(p: Partial<FullSection> = {}): FullSection {
   return {
     sectionId: 1, seq: 1, filingId: 1, form: "8-K", accession: "0000000000-26-000001", cik: "1",
-    acceptedAtEt: "4:05 pm", acceptedOnEt: "2026-10-22", status: "done", errorClass: null, errorText: null,
+    acceptedAtEt: "4:05 pm", acceptedOnEt: "2026-10-22", status: "done", errorClass: null, errorText: null, aiPaused: false,
     attempts: 1, modelLabel: "Opus 5.5", effort: "high", headline: "Q3", claims: [], counts: counts(),
     coverage: [], incomplete: false, usage: null, ...p,
   };

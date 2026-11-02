@@ -29,6 +29,7 @@ import { familyNowLabel, modelLabel } from "@/lib/ai/model-families";
 import { choiceLabel, SUMMARY_CHOICES } from "./choice";
 import { countStatuses } from "./evaluate";
 import { secArchiveUrl, textFragmentUrl } from "./locate";
+import { AI_UNAVAILABLE_REASON_PREFIX } from "@/lib/earnings/ai-unavailable";
 import { easternClock } from "./poller";
 import {
   getChoice,
@@ -260,6 +261,8 @@ export interface FullSection {
   errorClass: string | null;
   /** Short (at most 200 characters). */
   errorText: string | null;
+  /** Waiting on an AI account outage (no attempt counted), not on its turn. */
+  aiPaused: boolean;
   attempts: number;
   modelLabel: string | null;
   effort: string | null;
@@ -675,6 +678,7 @@ function buildSections(rows: SectionRow[], filingsById: Map<number, FilingRow>, 
       status: sectionViewStatus(s),
       errorClass: s.errorClass,
       errorText: shortText(s.errorText),
+      aiPaused: s.status === "pending" && (s.errorText ?? "").startsWith(AI_UNAVAILABLE_REASON_PREFIX),
       attempts: s.attempts,
       modelLabel: s.modelId ? modelLabel(s.modelId) : null,
       effort: s.effort,

@@ -22,6 +22,7 @@ import {
   optionText,
   reasonText,
   sectionErrorSentence,
+  SECTION_AI_PAUSED_TEXT,
   statusLabel,
   statusTone,
 } from "@/lib/filing-summary/labels";
@@ -454,7 +455,9 @@ function SectionBlock({ section }: { section: FullSection }) {
               ? sectionErrorSentence(section.errorClass)
               : section.status === "running"
                 ? "Reading now."
-                : "Waiting its turn."}
+                : section.aiPaused
+                  ? SECTION_AI_PAUSED_TEXT
+                  : "Waiting its turn."}
         </p>
       )}
 

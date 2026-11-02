@@ -237,6 +237,9 @@ export function errorWords(errorClass: string | null): string {
   return Object.prototype.hasOwnProperty.call(ERROR_WORDS, errorClass) ? ERROR_WORDS[errorClass] : errorClass;
 }
 
+/** A section held back by an AI account outage; it reads once the account answers. */
+export const SECTION_AI_PAUSED_TEXT = "AI paused: the AI account is not answering. This reads on its own once it does; no attempt is used.";
+
 /**
  * The sentence for a section that is not summarised. The stored error text
  * is never printed: it is internal wording and the shareable page leaves the app.
