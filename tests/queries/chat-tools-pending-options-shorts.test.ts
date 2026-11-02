@@ -94,7 +94,9 @@ describe("each pending reason has its own note", () => {
     expect(lot("ZQAW  270115C00010000")).toMatchObject({
       quantity_remaining: 2,
       cost_basis: 600,
-      current_price: 4,
+      // No mark for a lot that carries no value (R1); the chat multiplied a
+      // shipped mark back into a value (QA finding, 2026-10-28).
+      current_price: null,
       current_value: null,
       unrealized_gain: null,
       position_side: "long",
