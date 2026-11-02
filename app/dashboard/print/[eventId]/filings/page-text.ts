@@ -151,6 +151,20 @@ export function correctedByText(c: NonNullable<ViewClaim["correctedBy"]>): strin
  * "8-K · 4:05 pm · earnings · read", "8-K · 9:14 pm · accepted after 9 pm · not read",
  * "8-K · time unconfirmed · not read on its own".
  */
+/**
+ * The filings a run actually read: a done section, or a section whose
+ * coverage lists a document as read (a failed run that read the filing and
+ * then failed at the model call still read it). A filing the run never
+ * fetched is not in the set.
+ */
+export function filingsReadInRun(run: FullRun | null): Set<number> {
+  const read = new Set<number>();
+  for (const s of run?.sections ?? []) {
+    if (s.status === "done" || s.coverage.some((c) => c.status === "read")) read.add(s.filingId);
+  }
+  return read;
+}
+
 export function filingLine(f: FullFiling, inSummary = false): string {
   const head = `${f.form} · ${f.acceptedAtEt ?? "time unconfirmed"}`;
   const reason = f.identityReason && f.identityReason !== "time unconfirmed" ? f.identityReason : null;

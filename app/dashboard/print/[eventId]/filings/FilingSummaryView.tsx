@@ -31,6 +31,7 @@ import {
   correctedByText,
   defaultRunId,
   filingLine,
+  filingsReadInRun,
   footnoteWhere,
   numberFootnotes,
   rerunPrompt,
@@ -452,7 +453,7 @@ function SectionBlock({ section }: { section: FullSection }) {
           {section.status === "waiting_retry"
             ? sectionErrorSentence("awaiting_retry")
             : section.status === "failed"
-              ? sectionErrorSentence(section.errorClass)
+              ? sectionErrorSentence(section.errorClass, section.errorText)
               : section.status === "running"
                 ? "Reading now."
                 : section.aiPaused
@@ -578,7 +579,7 @@ function ClaimRow({
 
 function FilingsList({ view, run }: { view: FullView; run: FullRun | null }) {
   if (view.filings.length === 0) return null;
-  const inRun = new Set(run ? run.sections.filter((s) => s.status === "done").map((s) => s.filingId) : []);
+  const inRun = filingsReadInRun(run);
   return (
     <section className="space-y-2 rounded-xl bg-panel p-4 card-elev">
       <h2 className="text-base font-semibold text-ink whitespace-nowrap!">Filings found</h2>
