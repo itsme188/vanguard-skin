@@ -22,6 +22,7 @@
  */
 import { generateObject, jsonSchema } from "ai";
 import { createAnthropic } from "@ai-sdk/anthropic";
+import { createOpenAI } from "@ai-sdk/openai";
 
 export const CREDIT_BALANCE_MESSAGE =
   "Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.";
@@ -141,4 +142,95 @@ export async function errorFromRealSdk(
     return { error, calls };
   }
   throw new Error("errorFromRealSdk: the call unexpectedly succeeded");
+}
+
+/**
+ * OpenAI failures, same discipline as the Anthropic fixtures above: the
+ * response bodies are OpenAI's documented error envelope
+ * (`{ error: { message, type, code, param } }`; codes per
+ * platform.openai.com/docs/guides/error-codes, verified 2026-11-02) and the
+ * errors are built by the real `@ai-sdk/openai` provider + `generateObject`.
+ * Added for the provider-failover classifier extension
+ * (docs/superpowers/specs/2026-11-02-provider-failover-design.md).
+ */
+function openAiEnvelope(code: string | null, type: string, message: string) {
+  return { error: { message, type, code, param: null } };
+}
+
+export const OPENAI_FAILURES = {
+  /** No prepaid credits remaining: HTTP 429, code `credit_balance_exhausted`. */
+  creditBalanceExhausted429: () =>
+    json(
+      429,
+      openAiEnvelope(
+        "credit_balance_exhausted",
+        "insufficient_quota",
+        "Your organization has no prepaid credits remaining.",
+      ),
+    ),
+  /** Organization spend limit reached: HTTP 429, code `organization_spend_limit_exceeded`. */
+  orgSpendLimit429: () =>
+    json(
+      429,
+      openAiEnvelope(
+        "organization_spend_limit_exceeded",
+        "insufficient_quota",
+        "Your organization reached its enforced spend limit.",
+      ),
+    ),
+  /** Legacy quota shape: `insufficient_quota` as the type, no code. */
+  insufficientQuotaType429: () =>
+    json(
+      429,
+      openAiEnvelope(
+        null,
+        "insufficient_quota",
+        "You exceeded your current quota, please check your plan and billing details.",
+      ),
+    ),
+  /** Bad key: HTTP 401; the type is request-shaped, the code carries the meaning. */
+  invalidApiKey401: () =>
+    json(401, openAiEnvelope("invalid_api_key", "invalid_request_error", "Incorrect API key provided.")),
+  /** A plain rate limit: HTTP 429, code `rate_limit_exceeded`. */
+  rateLimitExceeded429: () =>
+    json(429, openAiEnvelope("rate_limit_exceeded", "rate_limit_error", "Rate limit reached for requests.")),
+  /** Model temporarily overloaded: HTTP 503, code `server_is_overloaded`. */
+  serverOverloaded503: () =>
+    json(
+      503,
+      openAiEnvelope(
+        "server_is_overloaded",
+        "service_unavailable_error",
+        "The requested model is temporarily overloaded.",
+      ),
+    ),
+} satisfies Record<string, () => Response>;
+
+export type OpenAiFailureName = keyof typeof OPENAI_FAILURES;
+
+/** errorFromRealSdk's OpenAI twin: real provider, real generateObject, stubbed network. */
+export async function errorFromRealOpenAiSdk(
+  respond: () => Response | Promise<Response>,
+  opts: { maxRetries?: number } = {},
+): Promise<{ error: unknown; calls: number }> {
+  let calls = 0;
+  const openai = createOpenAI({
+    apiKey: "test-key",
+    fetch: async () => {
+      calls += 1;
+      return respond();
+    },
+  });
+  try {
+    await generateObject({
+      model: openai("test-model"),
+      schema: PROBE_SCHEMA,
+      prompt: "probe",
+      maxOutputTokens: 64,
+      ...(opts.maxRetries === undefined ? {} : { maxRetries: opts.maxRetries }),
+    });
+  } catch (error) {
+    return { error, calls };
+  }
+  throw new Error("errorFromRealOpenAiSdk: the call unexpectedly succeeded");
 }
