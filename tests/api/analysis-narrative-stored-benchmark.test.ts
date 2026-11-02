@@ -53,9 +53,9 @@ import {
 import { upsertNarrative } from "@/lib/queries/analysis-narratives";
 import { computeFactorAnalysis } from "@/lib/compute/factors";
 import { generateTextForFeature } from "@/lib/ai/generate";
-import { mondayOf } from "@/lib/calendar/date-utils";
+import { mondayOf, todayET } from "@/lib/calendar/date-utils";
 
-const WEEK = mondayOf(new Date().toISOString().slice(0, 10));
+const WEEK = mondayOf(todayET());
 
 function seed(scope: string, surfaceKey: string, inputFingerprint: string | null) {
   upsertNarrative(db, {
