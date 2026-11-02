@@ -19,6 +19,32 @@ export interface MonthSnapshotRow {
 }
 
 /**
+ * The source whose parser stores `monthly_snapshots.twr` as a PERCENT
+ * (5.21 means 5.21%). Every other source stores a FRACTION (0.0521).
+ * lib/import/parsers/ibkr-activity.ts writes it that way by documented
+ * design; the owner ruled (2026-10-06) that the read side is normalised
+ * here until the storage convention is unified by a user-run repair.
+ */
+export const PERCENT_SCALE_TWR_SOURCE = "ibkr-activity";
+
+/**
+ * The ONE reader that turns a stored monthly TWR into a fraction.
+ *
+ * The column is mixed-unit (see PERCENT_SCALE_TWR_SOURCE), so a reader that
+ * takes `twr` as stored hands an IBKR month to a caller 100x too large
+ * (a 5.21% month reads as +521%). Every reader of `monthly_snapshots.twr`
+ * goes through this function: the TWR chain, the Dietz reconciler, the
+ * account summaries and the chat performance tool. Null stays null.
+ * [qa:accounts-ibkr--monthly-snapshot-twr-corrupt-triple-digit-rows-regression-1]
+ */
+export function snapshotTwrFraction(
+  row: { twr: number | null; source: string | null } | null | undefined
+): number | null {
+  if (!row || row.twr === null || row.twr === undefined) return null;
+  return row.source === PERCENT_SCALE_TWR_SOURCE ? row.twr / 100 : row.twr;
+}
+
+/**
  * Detects a December "annual summary" monthly_snapshots row: some sources
  * (statement-derived) report December with `starting_value` set to the
  * YEAR-start value (not the prior month's total) and `twr`/

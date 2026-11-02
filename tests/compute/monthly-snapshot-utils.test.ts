@@ -6,6 +6,7 @@ import {
   isAnnualSummaryRow,
   fetchMonthSnapshot,
   fetchPriorMonthTotal,
+  snapshotTwrFraction,
 } from "@/lib/compute/monthly-snapshot-utils";
 
 // Shared Dietz primitives (Task 11) — extracted from twr.ts so the
@@ -287,6 +288,31 @@ describe("monthly-snapshot-utils / flow-adjusted Dietz primitives", () => {
       seedSnapshot(db, ACCT, "2026-01-31", 310000);
 
       expect(fetchPriorMonthTotal(db, ACCT, "2026-01-31")).toBe(300000);
+    });
+  });
+
+  // ─── snapshotTwrFraction ──────────────────────────────────────────
+  // [qa:accounts-ibkr--monthly-snapshot-twr-corrupt-triple-digit-rows-regression-1]
+  // The stored column is mixed-unit: the IBKR activity parser writes a
+  // PERCENT, every other source a FRACTION. One reader turns a row into a
+  // fraction so no caller repeats the raw read.
+  describe("snapshotTwrFraction", () => {
+    it("divides an ibkr-activity percent by 100", () => {
+      expect(snapshotTwrFraction({ twr: 5.21, source: "ibkr-activity" })).toBeCloseTo(0.0521, 10);
+      expect(snapshotTwrFraction({ twr: -85.5, source: "ibkr-activity" })).toBeCloseTo(-0.855, 10);
+    });
+
+    it("passes a fraction through for every other source", () => {
+      expect(snapshotTwrFraction({ twr: 0.0521, source: "canonical" })).toBe(0.0521);
+      expect(snapshotTwrFraction({ twr: -0.1097, source: "vanguard-pdf" })).toBe(-0.1097);
+      expect(snapshotTwrFraction({ twr: 0.02, source: "manual" })).toBe(0.02);
+    });
+
+    it("returns null for a missing figure", () => {
+      expect(snapshotTwrFraction({ twr: null, source: "ibkr-activity" })).toBeNull();
+      expect(snapshotTwrFraction({ twr: null, source: "canonical" })).toBeNull();
+      expect(snapshotTwrFraction(null)).toBeNull();
+      expect(snapshotTwrFraction(undefined)).toBeNull();
     });
   });
 });

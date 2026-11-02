@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { snapshotTwrFraction } from "@/lib/compute/monthly-snapshot-utils";
 import { easternDaySql, unmaturedSecuritySql } from "@/lib/db/eastern-day-sql";
 import { adjustedMarketValueSQL, scaledCostBasisFallbackSQL } from "@/lib/valuation";
 import { todayET, addDays } from "@/lib/calendar/date-utils";
@@ -219,6 +220,7 @@ export interface PerformanceResult {
   dividends: number | null;
   interest: number | null;
   fees: number | null;
+  /** Time-weighted return for the month as a FRACTION (0.0521 = 5.21%). */
   twr: number | null;
 }
 
@@ -1192,7 +1194,7 @@ export function getPerformanceForChat(
 
   const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
 
-  return db
+  const rows = db
     .prepare(
       `SELECT
         ms.month_end_date,
@@ -1208,13 +1210,22 @@ export function getPerformanceForChat(
         ms.dividends,
         ms.interest,
         ms.fees,
-        ms.twr
+        ms.twr,
+        ms.source AS twr_source
       FROM monthly_snapshots ms
       JOIN accounts a ON a.id = ms.account_id
       ${whereClause}
       ORDER BY ms.month_end_date ASC, a.name`
     )
-    .all(...params) as PerformanceResult[];
+    .all(...params) as Array<PerformanceResult & { twr_source: string | null }>;
+
+  // The stored twr column is mixed-unit (a percent on ibkr-activity rows, a
+  // fraction elsewhere); the model always gets a fraction, through the one
+  // reader, so an IBKR month can never read 100x too large.
+  return rows.map(({ twr_source, ...row }) => ({
+    ...row,
+    twr: snapshotTwrFraction({ twr: row.twr, source: twr_source }),
+  }));
 }
 
 /**

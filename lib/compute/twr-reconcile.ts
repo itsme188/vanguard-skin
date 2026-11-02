@@ -11,6 +11,7 @@
  */
 
 import type Database from "better-sqlite3";
+import { snapshotTwrFraction } from "@/lib/compute/monthly-snapshot-utils";
 import {
   computeMonthlyDietz,
   DIETZ_CONSISTENT_BP,
@@ -80,17 +81,11 @@ export function reconcileTwrAgainstStatements(
   // it cannot circularly agree with the statement figure it's checking.
   const dietz = computeMonthlyDietz(db, accountId, monthEndDate);
 
-  // ibkr-activity stores TWR as percentage (e.g. 5.21 means 5.21%);
-  // canonical and vanguard-pdf store as decimal (e.g. 0.0521).
-  // See CLAUDE.md: "ibkr-activity source stores TWR as percentage"
-  // Computed before the null check below (and kept null-safe) so both
-  // early-return branches can carry a normalized figure when one exists.
-  const statementTwr =
-    stmt.twr === null
-      ? null
-      : stmt.source === "ibkr-activity"
-        ? stmt.twr / 100
-        : stmt.twr;
+  // The stored column is mixed-unit (ibkr-activity writes a percent,
+  // canonical and vanguard-pdf a fraction); snapshotTwrFraction is the one
+  // reader. Computed before the null check below (and kept null-safe) so
+  // both early-return branches can carry a normalized figure when one exists.
+  const statementTwr = snapshotTwrFraction(stmt);
 
   // Precedence fix (finding 2): the spec's edge-precedence list puts
   // "December annual-summary row" FIRST — a chain-preserving verdict

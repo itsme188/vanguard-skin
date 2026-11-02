@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { snapshotTwrFraction } from "@/lib/compute/monthly-snapshot-utils";
 import { easternDaySql } from "@/lib/db/eastern-day-sql";
 import {
   excludeLiveSnapshotsSql,
@@ -34,6 +35,8 @@ interface AccountSummaryRow {
   latestValue: number | null;
   latestDate: string | null;
   twr: number | null;
+  /** Source of the row `twr` came from; the column is mixed-unit. */
+  twrSource: string | null;
   previousValue: number | null;
   dataQuality: string | null;
   holdingsAsOf: string | null;
@@ -52,6 +55,7 @@ export function getAccountSummaries(db: Database.Database): AccountSummary[] {
           ms.month_end_date,
           ms.total_value,
           ms.twr,
+          ms.source,
           ROW_NUMBER() OVER (PARTITION BY ms.account_id ORDER BY ms.month_end_date DESC) AS rn
         FROM monthly_snapshots ms
         WHERE ${excludeLiveSnapshotsSql("ms.source")}
@@ -95,6 +99,7 @@ export function getAccountSummaries(db: Database.Database): AccountSummary[] {
           ELSE curr.month_end_date
         END AS latestDate,
         curr.twr,
+        curr.source AS twrSource,
         -- Previous: most recent non-TWS monthly snapshot strictly before the latest date
         (SELECT ms2.total_value FROM monthly_snapshots ms2
          WHERE ms2.account_id = a.id
@@ -139,7 +144,9 @@ export function getAccountSummaries(db: Database.Database): AccountSummary[] {
       latestDate: row.latestDate,
       monthlyChange,
       monthlyChangePercent,
-      twr: row.twr ?? null,
+      // Stored twr is a percent on ibkr-activity rows and a fraction
+      // elsewhere; the summary always carries a fraction.
+      twr: snapshotTwrFraction({ twr: row.twr ?? null, source: row.twrSource }),
       dataQuality: row.dataQuality ?? null,
       holdingsAsOf: row.holdingsAsOf ?? null,
       dataSource: row.dataSource ?? null,

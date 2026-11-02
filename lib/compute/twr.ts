@@ -5,7 +5,7 @@ import {
   IN_KIND_LEG_SQL,
   fetchInKindFlowsByDate,
 } from "@/lib/compute/flow-adjusted";
-import { isAnnualSummaryRow } from "@/lib/compute/monthly-snapshot-utils";
+import { isAnnualSummaryRow, snapshotTwrFraction } from "@/lib/compute/monthly-snapshot-utils";
 import {
   SNAPSHOT_FIRSTS_CTE,
   EXPECTED_ACCOUNTS_SQL,
@@ -339,13 +339,9 @@ export function computeTwr(
         // A stored monthly TWR covers its whole calendar month, so this
         // sub-period opens on that month's first day.
         measurementStart ??= monthStartDate(snap.month_end_date);
-        if (snap.source === 'ibkr-activity') {
-          // IBKR stores TWR as percentage (e.g. 14.545 = 14.545%)
-          subPeriodReturns.push(snap.twr / 100);
-        } else {
-          // Canonical and other sources store TWR as decimal (e.g. -0.109699 = -10.97%)
-          subPeriodReturns.push(snap.twr);
-        }
+        // The stored column is mixed-unit (ibkr-activity writes a percent,
+        // every other source a fraction); the one reader normalises it.
+        subPeriodReturns.push(snapshotTwrFraction(snap) as number);
         continue;
       }
 
