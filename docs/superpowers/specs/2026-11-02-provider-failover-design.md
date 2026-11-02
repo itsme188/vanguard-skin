@@ -3,6 +3,10 @@
 - Date: 2026-11-02
 - Branch: `pm/provider-failover` · Worktree: `~/code/vanguard-skin-provider-failover`
 - Status: design approved for slice 1 (this branch); slices 2–5 scoped, not built
+- Owner framing (2026-11-02): Cloudflare AI Gateway is the router
+  centerpiece; the third leg is "a different model reached through
+  Cloudflare" — Workers AI via the compat endpoint is its concrete form
+  today, not a permanent model commitment.
 - Trigger: 2026-11-01/02 incident — Anthropic Console credit exhaustion parked 23
   print-prep steps as `pending` (`AI unavailable (billing)`), hub showed "AI prep is
   paused", no prints armed and no emails until credits were bought by hand.
@@ -15,12 +19,28 @@ pausing it. Provider order for every failover-eligible feature:
 
 1. **anthropic** (primary — unchanged defaults everywhere)
 2. **openai** (first fallback)
-3. **workers-ai** (second fallback, text features only — see §5)
+3. **a different model reached through Cloudflare** (second fallback, text
+   features only — see §5). The model behind this leg is deliberately
+   unnamed: the leg is defined by the *route*, not by a model picked today.
+   Its concrete form today is Workers AI, served through the Gateway's
+   OpenAI-compatible endpoint; pointing the leg at another Gateway-reachable
+   model later is a table/settings change, not a design change.
 
 Non-goals: changing any feature's primary provider; chasing transient errors
 across providers (rate limits/outages keep today's wait-and-retry semantics on
-the same provider — they are minutes-scale and self-healing); making Workers AI
-a PDF or native-tool provider.
+the same provider — they are minutes-scale and self-healing); making the
+Cloudflare leg a PDF or native-tool provider.
+
+**The router centerpiece is the Cloudflare AI Gateway.** The app already
+sends its AI traffic through the Gateway where configured
+(`lib/ai/provider.ts`: Anthropic and OpenAI calls pass through it carrying
+per-feature `cf-aig-metadata` tags, and the Cloudflare leg *is* the
+Gateway's compat endpoint). So model choice should be exercisable through
+the Gateway wherever the code supports it: the per-feature specs and tier
+tables in this design are the app-side expression of that choice, the
+Gateway's own configuration is the operations surface, and every leg above
+is a provider route through the Gateway — only the concrete model IDs are
+expected to change over time.
 
 ## 2. The catalog finding — why the lever is tier mappings, not catalog rows
 
@@ -52,7 +72,7 @@ parity pin.
 
 Verified 2026-11-02 against the providers' own docs (never from memory):
 
-| Tier | Anthropic (live catalog; static fallback) | OpenAI | Workers AI |
+| Tier | Anthropic (live catalog; static fallback) | OpenAI | Cloudflare leg (today: Workers AI via the Gateway compat endpoint) |
 |---|---|---|---|
 | frontier | ladder: fable → opus → sonnet (fallback `claude-opus-4-8`) | `gpt-6-astra` — "flagship model for complex reasoning and coding" | `@cf/openai/gpt-oss-120b` — production, high-reasoning open-weight |
 | workhorse | ladder: sonnet → haiku (fallback `claude-sonnet-4-6`) | `gpt-6.1-sol` — near-flagship at lower cost | `@cf/meta/llama-3.3-70b-instruct-fp8-fast` |
@@ -62,6 +82,9 @@ Sources: OpenAI model list, `platform.openai.com/docs/models` (gpt-6-astra,
 gpt-6.1-sol, gpt-6.1-terra, gpt-6-luna); Workers AI model list,
 `developers.cloudflare.com/workers-ai/models` (gpt-oss-120b/20b,
 llama-3.3-70b-instruct-fp8-fast, llama-4-scout-17b-16e-instruct).
+The Cloudflare column names the concrete models in place today; per §1 the
+leg itself is model-agnostic, and these IDs are expected to be revisited
+without touching the design.
 `gpt-6.1-terra` is the recorded alternate for the OpenAI workhorse slot if
 Sol's latency disappoints. These tables are *defaults for resolution*, exactly
 like `TIER_STATIC_FALLBACK` — operators can still pin any explicit
@@ -99,8 +122,9 @@ list above is the *ceiling*, not the rollout.
   (Vanguard statements), `researchDocumentExtraction`, `armedBogeyDeepRead` —
   until the §5 PDF seam is built and parity-gated. These keep today's
   behaviour exactly: parked as `pending`, hub banner, self-heal on recovery.
-- `alertSuggestion` already runs on Workers AI; on a Workers-AI account
-  failure it parks (it is the last resort, there is nowhere further to fall).
+- `alertSuggestion` already runs on the Cloudflare leg (Workers AI); on a
+  Cloudflare-leg account failure it parks (it is the last resort, there is
+  nowhere further to fall).
 
 The `earnings_ai_unavailable` marker and hub banner gain a `provider` field:
 the banner names the failing provider and, once failover is live, which
@@ -129,12 +153,12 @@ the OpenAI implementation sends a file part at the feature's tier. First
 consumer: bogey extraction (`extract-bogeys.ts`), the print-prep heart.
 Vanguard statement parsing (streaming, format-sensitive) ports last, if ever.
 
-**Workers AI — cannot, on the current route.** The Gateway
-OpenAI-compatible chat endpoint exposes text (and, for multimodal models,
-image) inputs; there is no PDF document input. A Workers-AI PDF path would
-need local PDF→text/raster pre-processing, changing extraction fidelity —
-out of scope. PDF features therefore fail over **anthropic → openai only**
-and park if both are down.
+**The Cloudflare leg — cannot, on the current route.** The Gateway
+OpenAI-compatible chat endpoint (Workers AI today) exposes text (and, for
+multimodal models, image) inputs; there is no PDF document input. A PDF
+path on this leg would need local PDF→text/raster pre-processing, changing
+extraction fidelity — out of scope. PDF features therefore fail over
+**anthropic → openai only** and park if both are down.
 
 ## 6. Classifier extension (shared `lib/gmail/enrichment-failure.ts`)
 
@@ -164,13 +188,13 @@ carry no `code`, so no collision) and **before** the status-code fallbacks.
 Everything else — status fallbacks, billing-prose patterns, network
 detection, the deliberate unknown→article-level default — is unchanged.
 
-**Workers AI / Gateway shapes** (slice 2 verification item, not slice 1):
-through the Gateway compat endpoint, model errors surface in
+**Cloudflare-leg / Gateway shapes** (slice 2 verification item, not
+slice 1): through the Gateway compat endpoint, model errors surface in
 OpenAI-compatible shape and the table above applies; Cloudflare-native
 errors use `{ success: false, errors: [{ code, message }] }` with HTTP
-status. Until a documented Workers-AI billing code exists, an unexplained
-Workers-AI 429 classifies as `rate_limit` (waits, retries) — the safe
-direction for the last-resort provider.
+status. Until a documented Cloudflare-leg billing code exists, an
+unexplained Cloudflare-leg 429 classifies as `rate_limit` (waits,
+retries) — the safe direction for the last-resort provider.
 
 ## 7. Settings / override UX for swapping
 
@@ -186,7 +210,7 @@ etc. and the desk runs on OpenAI — no deploy.
 
 Slice 4 adds the failover-native UX: a per-feature ordered fallback list
 (new settings key `feature_provider_fallbacks`, defaulting to
-`openai → workers-ai` for eligible features), a hub banner state naming the
+`openai`, then the Cloudflare leg (`workers-ai`), for eligible features), a hub banner state naming the
 active provider, and a one-click "run prep on the fallback" group toggle for
 the earnings features. No new env plumbing: keys stay in the app env /
 Electron settings store exactly as today.
@@ -222,7 +246,7 @@ A feature becomes failover-eligible only after passing, per fallback provider:
   on any live path.
 - **Slice 2**: failover executor — on an account-level classification for an
   eligible feature, retry once on the next provider (§4), marker/banner
-  provider field, Workers-AI envelope verification.
+  provider field, Cloudflare-leg envelope verification.
 - **Slice 3**: PDF seam (§5) for bogey extraction, parity-gated.
 - **Slice 4**: settings UX for fallback lists + group toggle.
 - **Slice 5**: the cron Worker's own posture during an Anthropic outage
@@ -237,8 +261,8 @@ Keys are the only missing piece; nothing in slice 1 needs them to merge.
    (`.env.local` locally / Electron settings in the packaged app). Ensure the
    OpenAI org has prepaid credits — the failure mode this design defends
    against is per-provider, so an unfunded fallback is no fallback.
-2. **Workers AI (third option)**: the app's Workers-AI route runs through
-   the Cloudflare AI Gateway compat endpoint and needs
+2. **The Cloudflare leg (third option)**: the app's Cloudflare route runs
+   through the AI Gateway compat endpoint (Workers AI today) and needs
    `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_GATEWAY_ID`,
    `CLOUDFLARE_GATEWAY_TOKEN`, and `CLOUDFLARE_WORKERS_AI_TOKEN` —
    env names per `lib/env.ts`. If the gateway values are already set for
