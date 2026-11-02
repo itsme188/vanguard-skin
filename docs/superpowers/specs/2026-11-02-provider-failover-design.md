@@ -175,11 +175,14 @@ direction for the last-resort provider.
 ## 7. Settings / override UX for swapping
 
 Already shipped and reused: Settings → AI Models stores per-feature
-provider-qualified specs (`feature_model_overrides`), validated by
-`validateModelSpec`. Slice 1 makes tier specs meaningful for every provider
-(`openai/$workhorse`, `workers-ai/$frontier` validate and resolve), so a
-**manual swap is possible the moment the keys exist**: set the print-prep
-features to `openai/$frontier` etc. and the desk runs on OpenAI — no deploy.
+provider-qualified specs (`feature_model_overrides`), validated on write by
+`MODEL_OVERRIDE_PATTERN` (`lib/queries/ai-model-overrides.ts`) plus
+`parseModelSpec`'s provider whitelist. Slice 1 makes tier specs meaningful
+for every provider: `expandSpec` expands them per-provider, and the override
+pattern now admits `$` (tier-token overrides were previously rejected for
+every provider, Anthropic included). So a **manual swap is possible the
+moment the keys exist**: set the print-prep features to `openai/$frontier`
+etc. and the desk runs on OpenAI — no deploy.
 
 Slice 4 adds the failover-native UX: a per-feature ordered fallback list
 (new settings key `feature_provider_fallbacks`, defaulting to
@@ -213,9 +216,10 @@ A feature becomes failover-eligible only after passing, per fallback provider:
 ## 9. Slice plan
 
 - **Slice 1 (this branch)**: per-provider tier tables in `model-tiers.ts`
-  (+ Worker mirror), provider-aware tier expansion + spec validation in
-  `models.ts`, OpenAI code map in the shared classifier, unit tests.
-  Feature defaults unchanged; no behaviour change on any live path.
+  (+ Worker mirror), provider-aware tier expansion in `models.ts`, `$`
+  admitted in the override pattern, OpenAI code map in the shared
+  classifier, unit tests. Feature defaults unchanged; no behaviour change
+  on any live path.
 - **Slice 2**: failover executor — on an account-level classification for an
   eligible feature, retry once on the next provider (§4), marker/banner
   provider field, Workers-AI envelope verification.
@@ -235,7 +239,7 @@ Keys are the only missing piece; nothing in slice 1 needs them to merge.
    against is per-provider, so an unfunded fallback is no fallback.
 2. **Workers AI (third option)**: the app's Workers-AI route runs through
    the Cloudflare AI Gateway compat endpoint and needs
-   `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_GATEWAY_ID`, a gateway token
-   (`CF_AIG_TOKEN`), and the Workers AI token (`CLOUDFLARE_API_TOKEN`) —
+   `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_GATEWAY_ID`,
+   `CLOUDFLARE_GATEWAY_TOKEN`, and `CLOUDFLARE_WORKERS_AI_TOKEN` —
    env names per `lib/env.ts`. If the gateway values are already set for
    the existing gateway routing, only the Workers AI token may be missing.
