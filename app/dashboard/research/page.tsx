@@ -152,8 +152,11 @@ export default async function ResearchPage({ searchParams }: PageProps) {
         feedTotal = 0;
       } else {
         // List and count read ONE filter object, so "N of M" cannot drift.
+        // includeNeverSummarized: an article the summarising policy skips
+        // (processed_at NULL forever) still lists and counts here.
         const feedFilter = {
           processedOnly: true,
+          includeNeverSummarized: true,
           securityId: feedSymbolFilter?.securityId ?? undefined,
         };
         feedArticles = getRecentArticles(db, { ...feedFilter, limit: 50 });

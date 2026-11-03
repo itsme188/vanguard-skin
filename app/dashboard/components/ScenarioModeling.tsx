@@ -381,7 +381,7 @@ export function ScenarioModelingCard({ scope }: { scope?: string }) {
               {!isExpanded && result.leveragedFundsUnmodelled.count > 0 && (
                 <div className="mt-1 text-[10px] text-ink-faint">
                   <Count value={result.leveragedFundsUnmodelled.count} /> leveraged/inverse{" "}
-                  {result.leveragedFundsUnmodelled.count === 1 ? "fund" : "funds"} not modelled
+                  {result.leveragedFundsUnmodelled.count === 1 ? "position" : "positions"} not modelled
                 </div>
               )}
 
@@ -586,14 +586,15 @@ export function ScenarioModelingCard({ scope }: { scope?: string }) {
                   {result.leveragedFundsUnmodelled.count > 0 && (
                     <div>
                       <h4 className="text-[10px] text-ink-faint uppercase tracking-wider mb-1.5">
-                        Leveraged / Inverse Funds Not Modelled
+                        Leveraged / Inverse Positions Not Modelled
                       </h4>
                       <p className="text-xs text-ink-dim">
                         <Count value={result.leveragedFundsUnmodelled.count} /> leveraged or inverse{" "}
-                        {result.leveragedFundsUnmodelled.count === 1 ? "fund" : "funds"} not modelled:{" "}
+                        {result.leveragedFundsUnmodelled.count === 1 ? "position" : "positions"} not modelled:{" "}
                         <span className="font-mono">{result.leveragedFundsUnmodelled.symbols.join(", ")}</span>{" "}
-                        — a daily-reset leveraged or inverse fund does not move as a linear multiple over a
-                        multi-day shock, so no figure is shown; it is held out of the scenario total.
+                        — a daily-reset leveraged or inverse fund, or an option on one, does not move as a
+                        linear multiple over a multi-day shock, so no figure is shown; it is held out of the
+                        scenario total.
                       </p>
                     </div>
                   )}

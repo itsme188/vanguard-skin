@@ -77,7 +77,7 @@ beforeEach(() => {
 describe("main feed: count equals list", () => {
   it("each source's feed count is the number of rows the list returns for it", () => {
     for (const s of getResearchSources(db)) {
-      const filter = { sourceId: s.id, processedOnly: true };
+      const filter = { sourceId: s.id, processedOnly: true, includeNeverSummarized: true };
       const list = getRecentArticles(db, { ...filter, limit: ALL });
       expect(s.processed_article_count).toBe(list.length);
       expect(countRecentArticles(db, filter)).toBe(list.length);
@@ -86,9 +86,9 @@ describe("main feed: count equals list", () => {
 
   it("the all-sources total is the unscoped list length, inactive sources included", () => {
     const sources = getResearchSources(db);
-    const list = getRecentArticles(db, { processedOnly: true, limit: ALL });
+    const list = getRecentArticles(db, { processedOnly: true, includeNeverSummarized: true, limit: ALL });
     expect(feedTotalForSource(sources, null)).toBe(list.length);
-    expect(countRecentArticles(db, { processedOnly: true })).toBe(list.length);
+    expect(countRecentArticles(db, { processedOnly: true, includeNeverSummarized: true })).toBe(list.length);
     expect(list.length).toBe(5);
     expect(feedTotalForSource(sources, inactive)).toBe(2);
     expect(feedTotalForSource(sources, empty)).toBe(0);
@@ -101,11 +101,11 @@ describe("main feed: count equals list", () => {
   });
 
   it("count equals list under a search and under a paged limit's full window", () => {
-    const filter = { processedOnly: true, search: "alpha" };
+    const filter = { processedOnly: true, includeNeverSummarized: true, search: "alpha" };
     expect(countRecentArticles(db, filter)).toBe(getRecentArticles(db, { ...filter, limit: ALL }).length);
     // A longer limit re-reads the same window: the shorter page is its prefix.
-    const two = getRecentArticles(db, { processedOnly: true, limit: 2 }).map((r) => r.id);
-    const four = getRecentArticles(db, { processedOnly: true, limit: 4 }).map((r) => r.id);
+    const two = getRecentArticles(db, { processedOnly: true, includeNeverSummarized: true, limit: 2 }).map((r) => r.id);
+    const four = getRecentArticles(db, { processedOnly: true, includeNeverSummarized: true, limit: 4 }).map((r) => r.id);
     expect(four.slice(0, 2)).toEqual(two);
   });
 });
@@ -129,7 +129,7 @@ describe("main feed under the symbol filter (?symbol= resolves to securityId)", 
     }
     link.run(idOf("alpha two"), zzz);
 
-    const bySecurity = { processedOnly: true, securityId: aaa };
+    const bySecurity = { processedOnly: true, includeNeverSummarized: true, securityId: aaa };
     const list = getRecentArticles(db, { ...bySecurity, limit: ALL });
     // The unprocessed row is not in the feed; the filtered processed row is.
     expect(list.map((r) => r.subject).sort()).toEqual(["alpha off topic", "alpha one", "beta one"]);
@@ -141,13 +141,13 @@ describe("main feed under the symbol filter (?symbol= resolves to securityId)", 
         getRecentArticles(db, { ...filter, limit: ALL }).length,
       );
     }
-    expect(countRecentArticles(db, { processedOnly: true, securityId: zzz })).toBe(1);
+    expect(countRecentArticles(db, { processedOnly: true, includeNeverSummarized: true, securityId: zzz })).toBe(1);
   });
 });
 
 describe("main feed carries the filtered marker's data", () => {
   it("a filtered processed article stays in the list and carries is_relevant + excluded_category", () => {
-    const list = getRecentArticles(db, { processedOnly: true, limit: ALL });
+    const list = getRecentArticles(db, { processedOnly: true, includeNeverSummarized: true, limit: ALL });
     const off = list.find((r) => r.subject === "alpha off topic")!;
     expect(off.is_relevant).toBe(0);
     expect(off.excluded_category).toBe("off_topic");
@@ -157,7 +157,7 @@ describe("main feed carries the filtered marker's data", () => {
   });
 
   it("a pre-AI filtered row is in the Filtered list and NOT in the main list", () => {
-    const main = getRecentArticles(db, { processedOnly: true, limit: ALL }).map((r) => r.subject);
+    const main = getRecentArticles(db, { processedOnly: true, includeNeverSummarized: true, limit: ALL }).map((r) => r.subject);
     const filtered = getFilteredArticles(db, { limit: ALL }).map((r) => r.subject);
     expect(main).not.toContain("alpha receipt");
     expect(filtered).toContain("alpha receipt");

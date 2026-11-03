@@ -8,7 +8,10 @@ describe("ResearchFeedsView empty enrichment", () => {
     expect(src).toMatch(/emptyEnrichmentLabel[\s\S]*?from\s+"@\/lib\/research\/empty-enrichment"/);
   });
   it("shows no sentiment chip and no fake neutral border for an empty card", () => {
-    expect(src).toMatch(/const emptyLabel = emptyEnrichmentLabel\(article\)/);
+    // feedCardEmptyLabel wraps the shared helper and only swaps its words for
+    // an article never summarised by design (owner ruling 2026-11-02).
+    expect(src).toMatch(/const emptyLabel = feedCardEmptyLabel\(article\)/);
+    expect(src).toMatch(/function feedCardEmptyLabel[\s\S]*?const label = emptyEnrichmentLabel\(article\)/);
     expect(src).toMatch(/\{!emptyLabel && <SentimentBadge sentiment=\{article\.sentiment\} \/>\}/);
     expect(src).toMatch(/emptyLabel \|\| !article\.sentiment/);
   });

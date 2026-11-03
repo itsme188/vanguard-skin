@@ -32,7 +32,7 @@ import {
 } from "./bond-duration";
 import { todayET } from "@/lib/calendar/date-utils";
 import { isInterestRateHedgeFund, scenarioMovesRates, summarizeUnmodelledRateHedges } from "./rate-hedge";
-import { isLeveragedOrInverseFund, summarizeUnmodelledLeveragedFunds } from "./leveraged-fund";
+import { isLeveragedOrInverseExposure, summarizeUnmodelledLeveragedFunds } from "./leveraged-fund";
 import {
   SCENARIO_RECIPES,
   findRecipe,
@@ -126,8 +126,8 @@ export interface ScenarioResult {
    */
   rateHedgesUnmodelled: { count: number; valueShare: number; symbols: string[] };
   /**
-   * Leveraged and inverse funds left out of every scenario
-   * (`isLeveragedOrInverseFund`, owner ruling 2026-11-01): count, share of the
+   * Leveraged and inverse funds, and options on them, left out of every
+   * scenario (`isLeveragedOrInverseExposure`, owner ruling 2026-11-01): count, share of the
    * book's gross value, and symbols (sorted). Reporting only; no figure reads it.
    */
   leveragedFundsUnmodelled: { count: number; valueShare: number; symbols: string[] };
@@ -213,6 +213,8 @@ export function computeScenario(
          lp.close_price AS bond_price,
          s.credit_rating,
          s_u.security_type AS underlying_security_type,
+         s_u.fund_category AS underlying_fund_category,
+         s_u.name AS underlying_name,
 ${OPTION_PRICING_COLUMNS_SQL},
          ${adjustedMarketValueSQL("lh.total_qty", "COALESCE(lp.close_price, 0)", "s.security_type", "s.multiplier", "fx.usd_per_unit")} AS market_value
        FROM latest_holdings lh
@@ -241,6 +243,9 @@ ${OPTION_PRICING_JOINS_SQL}
     credit_rating: string | null;
     /** Security type of the option's underlying; null for non-options. */
     underlying_security_type: string | null;
+    /** The underlying's fund category and name (null for non-options); read by the leveraged-fund rule. */
+    underlying_fund_category: string | null;
+    underlying_name: string | null;
     // Option pricing inputs (null for non-options) — see OPTION_PRICING_COLUMNS_SQL.
     strike_price: number | null;
     expiration_date: string | null;
@@ -273,8 +278,16 @@ ${OPTION_PRICING_JOINS_SQL}
     // A daily-reset leveraged or inverse fund has no linear leg over a
     // multi-day shock, and no stored sign or multiple yet: it takes no figure
     // in any scenario and is named and counted under leveragedFundsUnmodelled
-    // (owner ruling 2026-11-01, stopgap). Its value stays in the book.
-    if (isLeveragedOrInverseFund({ security_type: pos.security_type, fund_category: pos.fund_category, name: pos.security_name })) {
+    // (owner ruling 2026-11-01, stopgap). Its value stays in the book. An
+    // option on such a fund is treated exactly like the fund (QA 2026-11-03).
+    if (
+      isLeveragedOrInverseExposure(
+        { security_type: pos.security_type, fund_category: pos.fund_category, name: pos.security_name },
+        pos.underlying_security_type === null
+          ? null
+          : { security_type: pos.underlying_security_type, fund_category: pos.underlying_fund_category, name: pos.underlying_name },
+      )
+    ) {
       return {
         securityId: pos.security_id,
         symbol: pos.symbol,

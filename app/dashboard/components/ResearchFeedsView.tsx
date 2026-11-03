@@ -2,6 +2,7 @@
 
 import { CHIP_TONE_TEXT, GOLD_FILL_CLASSES } from "@/app/dashboard/components/chip-tone-text";
 import { emptyEnrichmentLabel } from "@/lib/research/empty-enrichment";
+import { shouldSummarizeArticle } from "@/lib/gmail/enrichment-policy";
 import { readMutationResult, networkFailureMessage } from "@/lib/ui/mutation-result";
 import { joinSentences } from "@/lib/ui/join-sentences";
 import { useState, useCallback, useEffect, useMemo, useRef } from "react";
@@ -293,14 +294,49 @@ export type LinkedArticleRequest =
   /** The article cannot be shown in the feed; say why. */
   | { kind: "notice"; text: string };
 
+/** Marker for an article the summarising policy never sends to the model. */
+export const NEVER_SUMMARIZED_MARKER = "not summarised by design";
+
+/**
+ * True for an article the summarising policy (owner ruling 2026-11-02,
+ * lib/gmail/enrichment-policy.ts) never sends to the model: it keeps
+ * processed_at NULL forever, yet lists in All articles like an analysed one.
+ */
+export function isNeverSummarizedArticle(article: {
+  source_name?: string | null;
+  subject?: string | null;
+  processed_at: string | null | undefined;
+}): boolean {
+  if (article.processed_at != null || article.source_name == null) return false;
+  return !shouldSummarizeArticle(article.source_name, article.subject ?? "");
+}
+
+/** The All-articles card's no-enrichment label, by-design articles included. */
+export function feedCardEmptyLabel(article: {
+  source_name?: string | null;
+  subject?: string | null;
+  summary: string | null | undefined;
+  key_themes: string | null | undefined;
+  processed_at: string | null | undefined;
+}): string | null {
+  const label = emptyEnrichmentLabel(article);
+  if (label && isNeverSummarizedArticle(article)) return "Not summarised by design";
+  return label;
+}
+
 /**
  * Decide what a deep link to one article does. The feed's own rule applies:
- * it lists analysed articles only (processed_at set), filtered ones included
- * (those carry the Filtered marker on their card).
+ * it lists analysed articles (processed_at set) and articles never summarised
+ * by design, filtered ones included (those carry the Filtered marker on their
+ * card).
  */
 export function resolveLinkedArticle(
   param: string | null | undefined,
-  article: Pick<ResearchArticle, "id" | "processed_at" | "is_relevant"> | null | undefined,
+  article:
+    | (Pick<ResearchArticle, "id" | "processed_at" | "is_relevant"> &
+        Partial<Pick<ResearchArticle, "source_name" | "subject">>)
+    | null
+    | undefined,
 ): LinkedArticleRequest {
   const raw = (param ?? "").trim();
   if (!raw) return { kind: "none" };
@@ -313,7 +349,7 @@ export function resolveLinkedArticle(
       text: `Article ${raw} was not found. It may have been deleted.`,
     };
   }
-  if (article.processed_at == null) {
+  if (article.processed_at == null && !isNeverSummarizedArticle(article)) {
     return {
       kind: "notice",
       text:
@@ -488,7 +524,8 @@ export function ResearchFeedsView({
     // Unfiltered as it is. Say where the article is now: a row the AI never
     // analysed is in neither list until a sync processes it, and without
     // this message it simply vanishes.
-    const outcome = describeUnfilterOutcome(removed?.processed_at ?? null);
+    const neverSummarized = removed ? isNeverSummarizedArticle(removed) : false;
+    const outcome = describeUnfilterOutcome(removed?.processed_at ?? null, neverSummarized);
     toast(outcome.text, outcome.tone);
     // Its card in All articles (if loaded) drops the Filtered marker now.
     setArticles((prev) =>
@@ -1292,7 +1329,7 @@ function ArticleCard({
   });
   // An article with no summary and no themes was never really enriched: no
   // sentiment chip and no made-up "neutral" border, just a plain label.
-  const emptyLabel = emptyEnrichmentLabel(article);
+  const emptyLabel = feedCardEmptyLabel(article);
   const border =
     emptyLabel || !article.sentiment
       ? "border-l-edge-strong"
@@ -1517,10 +1554,21 @@ export function filteredMarkerText(article: {
  * NEITHER list afterwards: the main feed lists processed articles only. An
  * analysed article is already in All articles and just loses its marker.
  */
-export function describeUnfilterOutcome(processedAt: string | null): {
+export function describeUnfilterOutcome(
+  processedAt: string | null,
+  neverSummarized = false,
+): {
   text: string;
   tone: "success" | "info";
 } {
+  if (processedAt == null && neverSummarized) {
+    // A by-design article lists in All articles without a summary; it never
+    // reaches the digest stream, which reads summaries.
+    return {
+      text: `Unfiltered. The article is back in All articles. Its source is ${NEVER_SUMMARIZED_MARKER}, so it stays out of the digest.`,
+      tone: "success",
+    };
+  }
   if (processedAt == null) {
     return {
       text:
@@ -1697,7 +1745,7 @@ function FilteredArticleRow({
           <span className="text-xs text-ink-faint">{dateStr}</span>
           {article.processed_at == null && (
             <span className="text-[10px] uppercase tracking-wider text-ink-faint border border-edge rounded px-1.5 py-0.5">
-              pre-AI
+              {isNeverSummarizedArticle(article) ? NEVER_SUMMARIZED_MARKER : "pre-AI"}
             </span>
           )}
         </div>

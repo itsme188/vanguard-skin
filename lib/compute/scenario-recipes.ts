@@ -51,7 +51,7 @@ import { liveOptionExpirationSql } from "@/lib/compute/option-expiry";
 import { normalizeSector } from "@/lib/securities/normalize-sector";
 import { isCashEquivalentSecurity } from "@/lib/compute/cash-equivalents";
 import { isInterestRateHedgeFund, scenarioMovesRates, summarizeUnmodelledRateHedges } from "./rate-hedge";
-import { isLeveragedOrInverseFund, summarizeUnmodelledLeveragedFunds } from "./leveraged-fund";
+import { isLeveragedOrInverseExposure, summarizeUnmodelledLeveragedFunds } from "./leveraged-fund";
 
 // ─── Per-factor bucket sensitivities ─────────────────────────────────────
 //
@@ -428,6 +428,10 @@ interface RecipePositionRow {
   own_price: number | null;
   underlying_price: number | null;
   underlying_iv: number | null;
+  /** The underlying's own type, fund category and name (null for non-options); read by the leveraged-fund rule. */
+  underlying_security_type: string | null;
+  underlying_fund_category: string | null;
+  underlying_name: string | null;
 }
 
 function bucketMultiplier(factor: FactorColumn, bucket: string | null): number {
@@ -582,6 +586,9 @@ export function computeRecipeScenario(
         s.coupon_rate,
         lp.close_price AS bond_price,
 ${OPTION_PRICING_COLUMNS_SQL},
+        s_u.security_type AS underlying_security_type,
+        s_u.fund_category AS underlying_fund_category,
+        s_u.name AS underlying_name,
         COALESCE(sf.interest_rate_sensitive, sf_u.interest_rate_sensitive) AS interest_rate_sensitive,
         COALESCE(sf.growth_vs_value, sf_u.growth_vs_value) AS growth_vs_value,
         COALESCE(sf.cyclical, sf_u.cyclical) AS cyclical,
@@ -632,7 +639,15 @@ ${OPTION_PRICING_JOINS_SQL}
     // A daily-reset leveraged or inverse fund has no linear leg and no stored
     // sign or multiple yet: it takes no figure, sits on no subject path, and
     // is disclosed (owner ruling 2026-11-01, stopgap; lib/compute/leveraged-fund.ts).
-    if (isLeveragedOrInverseFund({ security_type: pos.security_type, fund_category: pos.fund_category, name: pos.security_name })) {
+    // An option on such a fund is treated exactly like the fund (QA 2026-11-03).
+    if (
+      isLeveragedOrInverseExposure(
+        { security_type: pos.security_type, fund_category: pos.fund_category, name: pos.security_name },
+        pos.underlying_security_type === null
+          ? null
+          : { security_type: pos.underlying_security_type, fund_category: pos.underlying_fund_category, name: pos.underlying_name },
+      )
+    ) {
       return {
         securityId: pos.security_id,
         symbol: pos.symbol,

@@ -105,7 +105,7 @@ describe("Unfilter says where the article went", () => {
       "const handleLoadMoreFiltered = useCallback(",
     );
     const success = handler.slice(anchorIndex(handler, "if (result.data.data?.requeued) {"));
-    expect(success).toContain("const outcome = describeUnfilterOutcome(removed?.processed_at ?? null);");
+    expect(success).toContain("const outcome = describeUnfilterOutcome(removed?.processed_at ?? null, neverSummarized);");
     expect(success).toContain("toast(outcome.text, outcome.tone);");
     expect(success).toContain("{ ...a, is_relevant: 1, excluded_category: null }");
     // A re-queued article is unprocessed again: its card leaves the main list.
