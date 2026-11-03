@@ -58,6 +58,7 @@ import { getSentPhasesForEvents } from "@/lib/queries/earnings-emails";
 import { bogeyHasContentSql } from "@/lib/mutations/earnings-bogeys";
 import { statusChipClass, statusChipLabel } from "./status-chip";
 import { Chip } from "../components/Chip";
+import { getRecapHold, recapHoldChipView, type RecapHoldChipView } from "@/lib/earnings/figure-conflict";
 import { aiPrepPauseNotice, getAiPrepPause } from "@/lib/earnings/ai-unavailable";
 import { activeFailoverProviderName } from "@/lib/mutations/ai-failover-log";
 import { preReleaseClearsAtMs } from "./pre-release-clear";
@@ -77,6 +78,12 @@ type EnrichedRow = CalendarEvent & {
   worksheetPrinted: boolean;
   recapSkipped: boolean;
   hasBogeys: boolean;
+  /**
+   * T1 chip-and-hold: set while the auto-recap is held because the accepted
+   * filing figure and the vendor feed disagree (or the check could not run).
+   * Null on a row with no actual, a sent recap, or figures that agree.
+   */
+  recapHold: RecapHoldChipView | null;
   /**
    * Set on the LATER of two live hand-entered rows for one company: the date
    * of the earlier row, which email follows instead (owner ruling
@@ -279,6 +286,10 @@ export function EarningsHub() {
     worksheetArmed: worksheetMap.has(e.id),
     worksheetPrinted: worksheetMap.get(e.id)?.printedAt != null,
     hasBogeys: bogeysSet.has(e.id),
+    recapHold:
+      e.event_type === "earnings" && e.actual_value && !(sentPhases[e.id]?.recap ?? false)
+        ? recapHoldChipView(getRecapHold(db, e.id))
+        : null,
     emailFollowsDate: ignoredManualTwins.get(e.id)?.emailRowDate ?? null,
     emailFollowsCount: emailGroupSize(ignoredManualTwins, e.id),
   }));
@@ -560,6 +571,11 @@ function DesktopRow({ event }: { event: EnrichedRow }) {
             <PreReleaseChip manualActualsAt={event.manual_actuals_at ?? null} />
           </span>
         )}
+        {event.recapHold && (
+          <span className="block mt-0.5">
+            <FigureConflictChip hold={event.recapHold} />
+          </span>
+        )}
         {/* The chip decides whether it renders (a hand-entered row with no
             date status still gets one) and brings its own wrapper. */}
         <EarningsDateChip
@@ -700,6 +716,14 @@ function SlotTimeFlag({ event }: { event: EnrichedRow }) {
 
 /** The "pre-release" warn chip for an actual saved before its print window
  *  opened. Top-level (never nested in a row body — the remount trap). */
+function FigureConflictChip({ hold }: { hold: RecapHoldChipView }) {
+  return (
+    <Chip tone="warn" size="xs" wrap title={hold.title}>
+      {hold.label}
+    </Chip>
+  );
+}
+
 function PreReleaseChip({ manualActualsAt }: { manualActualsAt: string | null }) {
   return (
     <Chip tone="warn" size="xs" title={PRE_RELEASE_ACTUAL_TITLE}>
@@ -746,6 +770,7 @@ function MobileCard({ event }: { event: EnrichedRow }) {
           {statusChipLabel(event.status)}
         </span>
         {preRelease && <PreReleaseChip manualActualsAt={event.manual_actuals_at ?? null} />}
+        {event.recapHold && <FigureConflictChip hold={event.recapHold} />}
         <EarningsDateChip
           symbol={event.symbol ?? ""}
           eventDate={event.event_date}

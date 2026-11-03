@@ -13,6 +13,7 @@ import { getPrintById, getSheet } from "@/lib/print-watch/store";
 import { getSendRow } from "@/lib/digest/send-earnings-email";
 import { sendStateFor, type DeliveryStateWord } from "@/lib/earnings/email-states";
 import { evaluateRecapNudge } from "@/lib/earnings/recap-nudge-gate";
+import { getRecapHold } from "@/lib/earnings/figure-conflict";
 
 /**
  * The contract (§2) spells this union out literally:
@@ -54,6 +55,13 @@ export interface PrintOutputs {
     state: RecapSendState;
     /** Set when state is "delivery-unknown" or "sent" (local). */
     providerMessageId: string | null;
+    /**
+     * Set while the AUTO-recap is held by the figure check (T1 chip-and-hold).
+     * Informational: `enabled` is not touched, because "Send recap now" is the
+     * human release. Null when nothing is held, and always null once a recap
+     * row exists (a sent recap has nothing left to hold).
+     */
+    hold: { kind: "conflict" | "unchecked"; reason: string } | null;
   };
 }
 
@@ -75,6 +83,8 @@ export function evaluatePrintOutputs(db: Database.Database, printId: number): Pr
   const providerMessageId =
     state === "delivery-unknown" || state === "sent" ? (row?.provider_message_id ?? null) : null;
 
+  const hold = print && state === "unsent" ? getRecapHold(db, print.event_id) : { held: false as const };
+
   return {
     printSheet: { enabled: hasValue, reason: hasValue ? null : PRINT_SHEET_DISABLED },
     sendRecap: {
@@ -84,6 +94,7 @@ export function evaluatePrintOutputs(db: Database.Database, printId: number): Pr
       reason: state !== "unsent" ? state : gate.ok ? null : gate.reason,
       state,
       providerMessageId,
+      hold: hold.held ? { kind: hold.kind, reason: hold.reason } : null,
     },
   };
 }
