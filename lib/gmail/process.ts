@@ -5,6 +5,7 @@ import { resolveFeatureModel } from "@/lib/ai/models";
 import { getHeldSymbolSet, heldSymbolsMentioned } from "@/lib/research/held-symbol-relevance";
 import { verifyMentions } from "@/lib/research/verify-mentions";
 import { truncateForPrompt } from "./prompt-caps";
+import { summarizableArticleSql } from "@/lib/gmail/enrichment-policy";
 import { sanitizeModelSummary, sanitizeThemeList } from "@/lib/gmail/theme-sanitize";
 import { subjectSymbolBackstop } from "@/lib/gmail/subject-symbol-backstop";
 import { getHeldStockSymbols } from "@/lib/queries/briefing-symbols";
@@ -145,6 +146,10 @@ export async function processUnprocessedArticles(
        WHERE a.processed_at IS NULL
          AND COALESCE(a.is_relevant, 1) = 1
          AND COALESCE(a.enrich_attempts, 0) < ${MAX_ENRICH_ATTEMPTS}
+         -- Owner ruling 2026-11-02: some sources are never summarized (see
+         -- enrichment-policy.ts). In the query, not after LIMIT, so they cannot
+         -- crowd out the window; queued rows lapse, none are deleted.
+         AND ${summarizableArticleSql("s.name", "a.subject")}
        ORDER BY a.received_at DESC
        LIMIT 20`
     )

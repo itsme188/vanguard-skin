@@ -51,6 +51,7 @@ import { liveOptionExpirationSql } from "@/lib/compute/option-expiry";
 import { normalizeSector } from "@/lib/securities/normalize-sector";
 import { isCashEquivalentSecurity } from "@/lib/compute/cash-equivalents";
 import { isInterestRateHedgeFund, scenarioMovesRates, summarizeUnmodelledRateHedges } from "./rate-hedge";
+import { isLeveragedOrInverseFund, summarizeUnmodelledLeveragedFunds } from "./leveraged-fund";
 
 // ─── Per-factor bucket sensitivities ─────────────────────────────────────
 //
@@ -627,7 +628,26 @@ ${OPTION_PRICING_JOINS_SQL}
   const rateBps = recipe.category === "rate" ? -recipe.shockMagnitude * 1000 : null;
   const movesRates = scenarioMovesRates({ rateMove: rateBps, primaryFactor: recipe.primaryFactor });
 
-  const impacts: PositionImpact[] = positions.map((pos) => {
+  const impacts: PositionImpact[] = positions.map((pos): PositionImpact => {
+    // A daily-reset leveraged or inverse fund has no linear leg and no stored
+    // sign or multiple yet: it takes no figure, sits on no subject path, and
+    // is disclosed (owner ruling 2026-11-01, stopgap; lib/compute/leveraged-fund.ts).
+    if (isLeveragedOrInverseFund({ security_type: pos.security_type, fund_category: pos.fund_category, name: pos.security_name })) {
+      return {
+        securityId: pos.security_id,
+        symbol: pos.symbol,
+        securityName: pos.security_name,
+        securityType: pos.security_type,
+        sector: pos.sector,
+        currentValue: pos.market_value,
+        estimatedChange: 0,
+        estimatedNewValue: pos.market_value,
+        changePercent: 0,
+        beta: 1.0,
+        subjectShare: 0,
+        leveragedFundUnmodelled: true,
+      };
+    }
     const blend = factorBlend(recipe, pos);
     const positionFloor = positionSubjectFloor(recipe.subject, pos);
 
@@ -789,6 +809,7 @@ ${OPTION_PRICING_JOINS_SQL}
     optionsUnmodelled: summarizeUnmodelledOptions(impacts),
     bondsUnmodelled: summarizeUnmodelledBonds(impacts),
     rateHedgesUnmodelled: summarizeUnmodelledRateHedges(impacts),
+    leveragedFundsUnmodelled: summarizeUnmodelledLeveragedFunds(impacts),
   };
 }
 

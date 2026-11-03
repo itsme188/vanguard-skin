@@ -20,6 +20,7 @@ function createTestDb(): Database.Database {
       security_type TEXT DEFAULT 'stock', expiration_date TEXT,
       multiplier REAL DEFAULT 1,
       sector TEXT,
+      fund_category TEXT,
       market_cap_category TEXT,
       style TEXT,
       geography TEXT,

@@ -35,6 +35,7 @@ describe("WhatIfCalculator input and privacy behavior", () => {
       after: { totalValue: 125, beta: 1, factorTilts: emptyFactors, sectorWeights: {}, topConcentrations: [] },
       flags: [],
       droppedLegs: [],
+      leveragedFundsNotModelled: [],
     } as ExposureDelta);
 
     expect(typeof rows[0].diff).not.toBe("string");
@@ -46,6 +47,7 @@ describe("WhatIfCalculator input and privacy behavior", () => {
       after: { totalValue: 100, beta: 1.1359, factorTilts: emptyFactors, sectorWeights: {}, topConcentrations: [] },
       flags: [],
       droppedLegs: [],
+      leveragedFundsNotModelled: [],
     } as ExposureDelta);
 
     expect(rows[1]).toMatchObject({ before: "1.13", after: "1.14", diff: "+0.01" });

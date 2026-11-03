@@ -5,6 +5,7 @@ import { getRawAnthropicClient } from "@/lib/ai/provider";
 import { generateTextForFeature, AIRefusalError } from "@/lib/ai/generate";
 import { FRED_SOURCE_KEY_PREFIX } from "@/lib/calendar/release-times";
 import { RELEASE_ID_TO_SERIES, fredBasisDescription } from "@/lib/calendar/enrich-actuals";
+import { addDays } from "@/lib/calendar/date-utils";
 
 // ── FRED Release IDs → Calendar Event Types ──────────────────────
 //
@@ -25,6 +26,12 @@ interface FredReleaseConfig {
   // this ID. Guards against silent ID drift — if FRED returns a different name
   // than expected, we skip + warn instead of mislabeling the event.
   expectedNameKeywords: string[];
+  // The release lists a second, later date for the same reporting period that
+  // is a revision slot, not a print (owner ruling 2026-11-01, item 4). The sync
+  // keeps only the EARLIEST date per reporting period for such a release (see
+  // `dropRevisionSecondDates`). Set it only on a release checked against FRED;
+  // a release with genuine catch-up double prints (JOLTS, 192) stays off.
+  revisionSecondDate?: true;
 }
 
 // IMPORTANT: IDs below are verified against FRED /releases on 2026-04-18.
@@ -54,7 +61,13 @@ const TRACKED_RELEASES: FredReleaseConfig[] = [
   { releaseId: 180, eventType: "jobs",         defaultImpact: "medium", shortName: "Initial Jobless Claims",          reportingLag: "weekly",    expectedNameKeywords: ["Unemployment Insurance"] },
   { releaseId: 9,   eventType: "retail_sales", defaultImpact: "medium", shortName: "Retail Sales",                    reportingLag: 1,           expectedNameKeywords: ["Retail"] },
   { releaseId: 46,  eventType: "cpi",          defaultImpact: "medium", shortName: "Producer Price Index",            reportingLag: 1,           expectedNameKeywords: ["Producer Price"] },
-  { releaseId: 27,  eventType: "housing",      defaultImpact: "medium", shortName: "Housing Starts",                  reportingLag: 1,           expectedNameKeywords: ["New Residential Construction"] },
+  // Housing Starts: FRED lists TWO dates a month for release 27, the print and
+  // a Census revision slot about a week later (live FRED check 2026-10-25:
+  // 10-20/10-27, 11-18/11-25, 12-17/12-23; the HOUST 2026-09-01 observation
+  // was published 2026-10-21 and the later date carries no new observation).
+  // The later date is skipped, so one month shows one row, not a second one
+  // that stays "Pending release" or borrows the earlier print's actual.
+  { releaseId: 27,  eventType: "housing",      defaultImpact: "medium", shortName: "Housing Starts",                  reportingLag: 1,           expectedNameKeywords: ["New Residential Construction"], revisionSecondDate: true },
   { releaseId: 97,  eventType: "housing",      defaultImpact: "medium", shortName: "New Home Sales",                  reportingLag: 1,           expectedNameKeywords: ["New Residential Sales"] },
   { releaseId: 13,  eventType: "other_macro",  defaultImpact: "medium", shortName: "Industrial Production",           reportingLag: 1,           expectedNameKeywords: ["Industrial Production"] },
   { releaseId: 95,  eventType: "other_macro",  defaultImpact: "medium", shortName: "Durable Goods Orders",            reportingLag: 1,           expectedNameKeywords: ["Manufacturer", "M3"] },
@@ -113,6 +126,76 @@ function getReportingPeriod(
   d.setMonth(d.getMonth() - lag);
   return d.toLocaleString("en-US", { month: "long" });
 }
+
+/**
+ * The reporting period of a release date WITH its year, as a grouping key:
+ * `YYYY-MM` for a monthly release (the month the data covers, `lag` months
+ * before the release month, the same derivation as `getReportingPeriod`),
+ * `YYYY-Qn` for a quarterly one, null for weekly data (no period to group
+ * on). The year keeps December data reported in January apart from the next
+ * December. Pure: reads nothing but its arguments.
+ */
+export function reportingPeriodKey(
+  releaseDate: string,
+  lag: number | "weekly" | "quarterly",
+): string | null {
+  if (lag === "weekly") return null;
+  const year = Number(releaseDate.slice(0, 4));
+  const month = Number(releaseDate.slice(5, 7)); // 1-12
+  if (!Number.isFinite(year) || !Number.isFinite(month) || month < 1 || month > 12) return null;
+  if (lag === "quarterly") {
+    const currentQ = Math.floor((month - 1) / 3) + 1;
+    return currentQ === 1 ? `${year - 1}-Q4` : `${year}-Q${currentQ - 1}`;
+  }
+  const index = year * 12 + (month - 1) - lag;
+  const y = Math.floor(index / 12);
+  const m = (index % 12) + 1;
+  return `${y}-${String(m).padStart(2, "0")}`;
+}
+
+/**
+ * Drop the revision second date of a release flagged `revisionSecondDate`
+ * (owner ruling 2026-11-01, item 4): per (release, reporting period with year)
+ * only the EARLIEST date is kept, because that one is the print. Rows of every
+ * other release pass through untouched (JOLTS-style catch-up prints stay), as
+ * do rows with no period (weekly). Order of the kept rows is preserved. Pure.
+ */
+export function dropRevisionSecondDates<
+  T extends {
+    date: string;
+    config: {
+      releaseId: number;
+      reportingLag: number | "weekly" | "quarterly";
+      revisionSecondDate?: true;
+    };
+  },
+>(rows: readonly T[]): T[] {
+  const earliest = new Map<string, string>();
+  const groupOf = (r: T): string | null => {
+    if (r.config.revisionSecondDate !== true) return null;
+    const period = reportingPeriodKey(r.date, r.config.reportingLag);
+    return period === null ? null : `${r.config.releaseId}|${period}`;
+  };
+  for (const r of rows) {
+    const g = groupOf(r);
+    if (g === null) continue;
+    const seen = earliest.get(g);
+    if (seen === undefined || r.date < seen) earliest.set(g, r.date);
+  }
+  return rows.filter((r) => {
+    const g = groupOf(r);
+    return g === null || earliest.get(g) === r.date;
+  });
+}
+
+/**
+ * How far back the FRED request reaches before the requested week, so a
+ * release flagged `revisionSecondDate` can see its earlier same-period date.
+ * The print and its revision slot are about a week apart (6-8 days in the
+ * 2026 schedule), and the sync asks for one week at a time, so the print
+ * usually sits in the PREVIOUS week's answer. 21 days covers that with room.
+ */
+const REVISION_LOOKBACK_DAYS = 21;
 
 // ── FOMC Meeting Dates ──────────────────────────────────────────
 //
@@ -241,7 +324,11 @@ async function fetchFredReleaseDates(
   url.searchParams.set("api_key", apiKey);
   url.searchParams.set("file_type", "json");
   url.searchParams.set("include_release_dates_with_no_data", "true");
-  url.searchParams.set("realtime_start", startDate);
+  // Widened backwards (REVISION_LOOKBACK_DAYS) ONLY so a release flagged
+  // `revisionSecondDate` can see an earlier date of the same reporting period
+  // and drop the later revision slot. The answer is cut back to
+  // startDate..endDate below, so every other release returns what it did.
+  url.searchParams.set("realtime_start", addDays(startDate, -REVISION_LOOKBACK_DAYS));
   url.searchParams.set("realtime_end", endDate);
   url.searchParams.set("limit", "500");
   url.searchParams.set("sort_order", "asc");
@@ -282,7 +369,11 @@ async function fetchFredReleaseDates(
     results.push({ date: rd.date, config, fredName: rd.release_name });
   }
 
-  return results;
+  // Revision second dates go first (over the widened window), then the answer
+  // is cut back to the week that was asked for.
+  return dropRevisionSecondDates(results).filter(
+    (r) => r.date >= startDate && r.date <= endDate,
+  );
 }
 
 /**
