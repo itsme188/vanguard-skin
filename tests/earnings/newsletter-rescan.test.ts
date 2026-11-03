@@ -90,7 +90,7 @@ function seedArticle(
   scanned: string | null = daysAgo(7),
 ): number {
   // runMigrations seeds the real newsletter registry at low ids — take one of our own.
-  db.prepare(`INSERT OR IGNORE INTO research_sources (id, name) VALUES (9001, 'Desk Notes')`).run();
+  db.prepare(`INSERT OR IGNORE INTO research_sources (id, name) VALUES (9001, 'TMT Breakout')`).run();
   return Number(
     db
       .prepare(
@@ -116,19 +116,19 @@ const RESPONSE = JSON.stringify([
 
 describe("newsletterIssueLabel ([C-3] issue-dated newsletter labels)", () => {
   it("dates the label from received_at in ET, unpadded, so two issues never collide on UNIQUE(event_id, source, source_label)", () => {
-    expect(newsletterIssueLabel({ source_name: "Desk Notes", received_at: "2026-08-25 13:00:00" })).toBe(
-      "Desk Notes 8/25",
+    expect(newsletterIssueLabel({ source_name: "TMT Breakout", received_at: "2026-08-25 13:00:00" })).toBe(
+      "TMT Breakout 8/25",
     );
     // 02:00 UTC is the PREVIOUS ET day — the issue's own date, not the UTC one.
-    expect(newsletterIssueLabel({ source_name: "Desk Notes", received_at: "2026-08-26 02:00:00" })).toBe(
-      "Desk Notes 8/25",
+    expect(newsletterIssueLabel({ source_name: "TMT Breakout", received_at: "2026-08-26 02:00:00" })).toBe(
+      "TMT Breakout 8/25",
     );
-    expect(newsletterIssueLabel({ source_name: "Desk Notes", received_at: "2026-09-05 13:00:00" })).toBe(
-      "Desk Notes 9/5",
+    expect(newsletterIssueLabel({ source_name: "TMT Breakout", received_at: "2026-09-05 13:00:00" })).toBe(
+      "TMT Breakout 9/5",
     );
   });
   it("falls back to the bare publication name when received_at is unparseable", () => {
-    expect(newsletterIssueLabel({ source_name: "Desk Notes", received_at: "not a date" })).toBe("Desk Notes");
+    expect(newsletterIssueLabel({ source_name: "TMT Breakout", received_at: "not a date" })).toBe("TMT Breakout");
   });
 });
 
@@ -154,7 +154,7 @@ describe("extractBogeysFromArticleForEvent (spec §4.1 step 1)", () => {
         .get(ev),
     ).toEqual({
       source: "newsletter",
-      source_label: "Desk Notes 8/25",
+      source_label: "TMT Breakout 8/25",
       eps_consensus: 0.6,
       guidance_notes: "product rev ~1.49B",
     });
@@ -216,8 +216,8 @@ describe("extractBogeysFromArticleForEvent (spec §4.1 step 1)", () => {
         .prepare(`SELECT source_label, eps_consensus FROM earnings_bogeys WHERE event_id = ? ORDER BY source_label`)
         .all(ev),
     ).toEqual([
-      { source_label: "Desk Notes 8/21", eps_consensus: 0.6 },
-      { source_label: "Desk Notes 8/25", eps_consensus: 0.62 },
+      { source_label: "TMT Breakout 8/21", eps_consensus: 0.6 },
+      { source_label: "TMT Breakout 8/25", eps_consensus: 0.62 },
     ]);
   });
 });
@@ -273,6 +273,30 @@ describe("newsletter_rescan step + earnings_bogey_scans ledger", () => {
 
     await step.run(db, ev, ctx);
     expect(extract).toHaveBeenCalledTimes(2); // ledger is the guard
+  });
+
+  it("only TMT Breakout is rescanned: a Vital Knowledge article naming the reporter is never offered to the model and leaves no ledger row", async () => {
+    const ev = seedEvent();
+    const tmt = seedArticle("ACME: EPS 0.60 / rev 1.51B", daysAgo(3), null);
+    db.prepare(`INSERT OR IGNORE INTO research_sources (id, name) VALUES (9002, 'Vital Knowledge')`).run();
+    const vk = Number(
+      db
+        .prepare(
+          `INSERT INTO research_articles (source_id, subject, sender, received_at, raw_text)
+           VALUES (9002, 'Morning Wrap', 'updates@example.test', ?, ?)`,
+        )
+        .run(daysAgo(2), "ACME: EPS 0.61 / rev 1.52B" + FILLER).lastInsertRowid,
+    );
+    const extract = vi.fn(async () => ({ bogeysStored: 1, modelId: "m", called: true }));
+
+    expect(await makeNewsletterRescanStep({ extract }).run(db, ev, ctx)).toEqual({
+      status: "done",
+      note: "1 scanned, 1 hit",
+    });
+    expect(extract).toHaveBeenCalledTimes(1);
+    expect((extract.mock.calls[0] as unknown[])[1]).toMatchObject({ id: tmt, source_name: "TMT Breakout" });
+    expect(ledger(ev).map((r) => (r as { article_id: number }).article_id)).toEqual([tmt]);
+    expect(ledger(ev).map((r) => (r as { article_id: number }).article_id)).not.toContain(vk);
   });
 
   it("an article that mentions nothing releases its claim row instead of banking a scan", async () => {
@@ -452,7 +476,7 @@ describe("newsletter_rescan step + earnings_bogey_scans ledger", () => {
     // Version 1's global scan stored the numbers and banked no ledger row.
     db.prepare(
       `INSERT INTO earnings_bogeys (event_id, source, source_label, research_article_id, eps_consensus)
-       VALUES (?, 'newsletter', 'Desk Notes 8/30', ?, 0.6)`,
+       VALUES (?, 'newsletter', 'TMT Breakout 8/30', ?, 0.6)`,
     ).run(ev, a1);
     db.prepare(
       `INSERT INTO earnings_bogey_scans (event_id, article_id, extractor_version, status, attempts, scanned_at)
@@ -473,7 +497,7 @@ describe("newsletter_rescan step + earnings_bogey_scans ledger", () => {
     // The shape the pre-ruling global scan left behind: a row, no content.
     db.prepare(
       `INSERT INTO earnings_bogeys (event_id, source, source_label, research_article_id, notes)
-       VALUES (?, 'newsletter', 'Desk Notes 8/30', ?, '')`,
+       VALUES (?, 'newsletter', 'TMT Breakout 8/30', ?, '')`,
     ).run(ev, a1);
 
     const extract = vi.fn(async () => ({ bogeysStored: 1, modelId: "m", called: true }));
@@ -503,7 +527,7 @@ describe("newsletter_rescan step + earnings_bogey_scans ledger", () => {
     expect(missArticle).toBeGreaterThan(0);
     expect(
       db.prepare(`SELECT source_label, eps_consensus FROM earnings_bogeys WHERE event_id = ?`).all(ev),
-    ).toEqual([{ source_label: `Desk Notes ${etMonthDay(daysAgo(2))}`, eps_consensus: 0.6 }]);
+    ).toEqual([{ source_label: `TMT Breakout ${etMonthDay(daysAgo(2))}`, eps_consensus: 0.6 }]);
     // The per-event path still never stamps the global marker.
     expect(
       db.prepare(`SELECT COUNT(*) AS n FROM research_articles WHERE bogeys_scanned_at IS NOT NULL`).get(),

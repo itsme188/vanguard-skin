@@ -429,6 +429,35 @@ describe("isSymbolMentioned (gates on the ambiguous-word stoplist, not symbol le
 });
 
 describe("extractBogeysFromNewArticles", () => {
+  it("0. only TMT Breakout is scanned: a Vital Knowledge article naming a reporter is never selected, never sent to the model, never marked scanned", async () => {
+    const db = makeDb();
+    db.prepare(`INSERT INTO research_sources (id, name) VALUES (2, 'Vital Knowledge')`).run();
+    addSecurity(db, 1, "TSM");
+    holdSecurity(db, 1);
+    addEvent(db, { id: 1, symbol: "TSM", daysFromToday: 5 });
+    const body = "TSM reports next week — street watching foundry ASP trends. " + "filler ".repeat(50);
+    const vk = addArticle(db, { sourceId: 2, subject: "Morning Wrap", rawText: body });
+    const tmt = addArticle(db, { sourceId: 1, subject: "Buyside Bogeys", rawText: body });
+    generateTextMock.mockResolvedValue({
+      text: JSON.stringify([
+        { symbol: "TSM", eps_consensus: 3.8, eps_whisper: 4.0, revenue_consensus: null, revenue_whisper: null, notes: "" },
+      ]),
+    });
+
+    const result = await extractBogeysFromNewArticles(db);
+
+    // Exactly one article reached the scan, and it is the TMT one.
+    expect(result.articlesScanned).toBe(1);
+    expect(generateTextMock).toHaveBeenCalledTimes(1);
+    expect(result.bogeysStored).toBe(1);
+    const scannedAt = (id: number) =>
+      (db.prepare("SELECT bogeys_scanned_at FROM research_articles WHERE id = ?").get(id) as {
+        bogeys_scanned_at: string | null;
+      }).bogeys_scanned_at;
+    expect(scannedAt(tmt)).not.toBeNull();
+    expect(scannedAt(vk)).toBeNull();
+  });
+
   it("1. article mentioning no upcoming reporter is marked scanned with zero AI calls", async () => {
     const db = makeDb();
     addSecurity(db, 1, "TSM");
