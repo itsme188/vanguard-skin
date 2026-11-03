@@ -17,7 +17,7 @@ import { liveOptionExpirationSql } from "@/lib/compute/option-expiry";
 import { accountScopeAndSql } from "@/lib/queries/account-scope-sql";
 import { BETA_LOOKBACK_DAYS } from "@/lib/queries/security-betas";
 import { getUsdPerUnit } from "@/lib/queries/fx-rates";
-import { isLeveragedOrInverseFund } from "@/lib/compute/leveraged-fund";
+import { isLeveragedOrInverseExposure } from "@/lib/compute/leveraged-fund";
 
 export interface HypotheticalLeg {
   symbol: string;
@@ -56,8 +56,8 @@ export interface ExposureDelta {
   // instead of rendering a misleading Δ $0 — "explain no-ops" convention.
   droppedLegs: DroppedLeg[];
   /**
-   * Leveraged or inverse funds (`isLeveragedOrInverseFund`, owner ruling
-   * 2026-11-01, stopgap) held in scope or named by a leg: left out of every
+   * Leveraged or inverse funds, and options on them
+   * (`isLeveragedOrInverseExposure`, owner ruling 2026-11-01, stopgap) held in scope or named by a leg: left out of every
    * bucket in both snapshots, so the weights are over the modelled book.
    * Symbols, sorted.
    */
@@ -131,12 +131,17 @@ function loadCurrentHoldings(
         s.fund_category,
         s.currency,
         COALESCE(s.multiplier, 1) AS multiplier,
+        s_u.security_type AS underlying_security_type,
+        s_u.fund_category AS underlying_fund_category,
+        s_u.name AS underlying_name,
         SUM(lh.quantity) AS quantity,
         lp.close_price AS price,
         ${FACTOR_COLUMNS.map((f) => `sf.${f} AS ${f}`).join(",\n        ")},
         sb.beta AS cached_beta
       FROM latest_holdings lh
       JOIN securities s ON s.id = lh.security_id
+      -- An option's underlying, read only by the leveraged-fund rule.
+      LEFT JOIN securities s_u ON s_u.symbol = s.underlying_symbol
       LEFT JOIN latest_prices lp ON lp.security_id = s.id
       LEFT JOIN security_factors sf ON sf.security_id = s.id
       LEFT JOIN security_betas sb ON sb.security_id = s.id AND sb.lookback_days = ${BETA_LOOKBACK_DAYS}
@@ -153,6 +158,9 @@ function loadCurrentHoldings(
       fund_category: string | null;
       currency: string | null;
       multiplier: number;
+      underlying_security_type: string | null;
+      underlying_fund_category: string | null;
+      underlying_name: string | null;
       quantity: number;
       price: number | null;
       cached_beta: number | null;
@@ -177,13 +185,29 @@ function loadCurrentHoldings(
         marketValue: marketValue(r.quantity, r.price!, r.security_type, r.multiplier, getUsdPerUnit(db, r.currency)),
         beta: r.cached_beta ?? 1.0,
         factors,
-        leveragedOrInverse: isLeveragedOrInverseFund({
-          security_type: r.security_type,
-          fund_category: r.fund_category,
-          name: r.name,
-        }),
+        leveragedOrInverse: leveragedExposureOf(r),
       };
     });
+}
+
+/**
+ * The leveraged-fund rule for a What-if row: the row itself, or an option
+ * whose underlying is such a fund (QA 2026-11-03; lib/compute/leveraged-fund.ts).
+ */
+function leveragedExposureOf(r: {
+  security_type: string | null;
+  fund_category: string | null;
+  name: string | null;
+  underlying_security_type: string | null;
+  underlying_fund_category: string | null;
+  underlying_name: string | null;
+}): boolean {
+  return isLeveragedOrInverseExposure(
+    { security_type: r.security_type, fund_category: r.fund_category, name: r.name },
+    r.underlying_security_type === null
+      ? null
+      : { security_type: r.underlying_security_type, fund_category: r.underlying_fund_category, name: r.underlying_name },
+  );
 }
 
 /**
@@ -220,11 +244,16 @@ function lookupSymbol(
         s.fund_category,
         s.currency,
         COALESCE(s.multiplier, 1) AS multiplier,
+        s_u.security_type AS underlying_security_type,
+        s_u.fund_category AS underlying_fund_category,
+        s_u.name AS underlying_name,
         (SELECT p.close_price FROM prices p
           WHERE p.security_id = s.id ORDER BY p.date DESC LIMIT 1) AS price,
         ${FACTOR_COLUMNS.map((f) => `sf.${f} AS ${f}`).join(",\n        ")},
         sb.beta AS cached_beta
       FROM securities s
+      -- An option's underlying, read only by the leveraged-fund rule.
+      LEFT JOIN securities s_u ON s_u.symbol = s.underlying_symbol
       LEFT JOIN security_factors sf ON sf.security_id = s.id
       LEFT JOIN security_betas sb ON sb.security_id = s.id AND sb.lookback_days = ${BETA_LOOKBACK_DAYS}
       WHERE REPLACE(UPPER(s.symbol), ' ', '') = ?
@@ -240,6 +269,9 @@ function lookupSymbol(
       fund_category: string | null;
       currency: string | null;
       multiplier: number;
+      underlying_security_type: string | null;
+      underlying_fund_category: string | null;
+      underlying_name: string | null;
       price: number | null;
       cached_beta: number | null;
     } & Record<FactorColumn, string | null>) | undefined;
@@ -260,11 +292,7 @@ function lookupSymbol(
     price: row.price,
     beta: row.cached_beta ?? 1.0,
     factors,
-    leveragedOrInverse: isLeveragedOrInverseFund({
-      security_type: row.security_type,
-      fund_category: row.fund_category,
-      name: row.name,
-    }),
+    leveragedOrInverse: leveragedExposureOf(row),
   };
 }
 

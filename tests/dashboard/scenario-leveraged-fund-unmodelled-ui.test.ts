@@ -16,15 +16,16 @@ describe("scenario card: leveraged / inverse funds no scenario models", () => {
     const at = anchorIndex(card, "{!isExpanded && result.leveragedFundsUnmodelled.count > 0 && (");
     const line = card.slice(at, anchorIndex(card, "</div>", at));
     anchorIndex(line, "<Count value={result.leveragedFundsUnmodelled.count} /> leveraged/inverse");
-    anchorIndex(line, "not modelled");
+    anchorIndex(line, '"position" : "positions"} not modelled');
   });
 
   it("names the funds in the expanded section", () => {
     const s = section();
-    anchorIndex(s, "Leveraged / Inverse Funds Not Modelled");
+    anchorIndex(s, "Leveraged / Inverse Positions Not Modelled");
     anchorIndex(s, "result.leveragedFundsUnmodelled.symbols.join");
-    anchorIndex(s, "a daily-reset leveraged or inverse fund does not move as a linear multiple over a");
-    anchorIndex(s, "multi-day shock, so no figure is shown; it is held out of the scenario total.");
+    // An option on such a fund is left out too (QA 2026-11-03), and the words say so.
+    anchorIndex(s, "a daily-reset leveraged or inverse fund, or an option on one, does not move as a");
+    anchorIndex(s, "linear multiple over a multi-day shock, so no figure is shown; it is held out of the");
   });
 
   it("prints the count through the privacy component", () => {

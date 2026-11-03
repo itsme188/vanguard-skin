@@ -9,10 +9,14 @@
  * a fund takes no figure in either scenario engine and is named and counted,
  * and the What-if leaves it out of its beta, sector and factor buckets.
  *
- * THE RULE (`isLeveragedOrInverseFund`, the ONE reader):
- *   1. Only a stock, ETF or mutual fund row can match. An option or a bond
- *      never does. A stock type is accepted because IBKR labels every STK
- *      contract 'Stock', ETFs included.
+ * THE RULE (`isLeveragedOrInverseFund` for a security on its own, and
+ * `isLeveragedOrInverseExposure` for a held row, which every engine calls):
+ *   1. Only a stock, ETF or mutual fund row can match on its own fields. An
+ *      option matches through its UNDERLYING: an option whose underlying is
+ *      such a fund is treated exactly like the fund (QA 2026-11-03: a call on
+ *      a 2x crude fund was repriced off a 1x move). A bond never matches. A
+ *      stock type is accepted because IBKR labels every STK contract
+ *      'Stock', ETFs included.
  *   2. A fund category containing the word "leveraged" or "inverse"
  *      (case-insensitive) matches: "Leveraged/Inverse", "Leveraged Equity",
  *      "Leveraged ETF", "Leveraged/Inverse (Commodities)".
@@ -25,12 +29,14 @@
  *      BU / BE". A plain 'Stock' row with no category never matches on them,
  *      so an operating company named "Ultra ..." or "... Bear ..." is safe.
  *
- * Import-free on purpose (pure helpers, shared by both scenario engines and
- * the What-if engine).
+ * Pure helpers, shared by both scenario engines and the What-if engine. The
+ * one import (`isOptionSecurityType`) comes from an import-free module.
  */
 
+import { isOptionSecurityType } from "./option-elasticity";
+
 export const LEVERAGED_FUND_UNMODELLED_LABEL =
-  "leveraged or inverse fund: not modelled (daily-reset leverage is not a linear leg)";
+  "leveraged or inverse fund, or an option on one: not modelled (daily-reset leverage is not a linear leg)";
 
 function normalizedType(securityType: string | null | undefined): string {
   return (securityType ?? "").trim().toLowerCase();
@@ -64,6 +70,26 @@ export function isLeveragedOrInverseFund(sec: {
   if (LEVERAGE_TOKEN.test(name) || STRONG_WORDS.test(name)) return true;
   const weakApplies = FUND_FAMILY_TYPES.has(type) || category.length > 0;
   return weakApplies && (WEAK_ULTRA.test(name) || DIREXION_DAILY.test(name));
+}
+
+type SecurityIdentity = {
+  security_type: string | null;
+  fund_category: string | null;
+  name: string | null;
+};
+
+/**
+ * The reader every engine calls for a held or hypothetical row: true when
+ * the row is itself a leveraged or inverse fund, or when it is an option and
+ * its underlying (null when unknown or not an option) is one. Only an option
+ * looks through to an underlying; a stock or bond row never does.
+ */
+export function isLeveragedOrInverseExposure(
+  sec: SecurityIdentity,
+  underlying: SecurityIdentity | null,
+): boolean {
+  if (isLeveragedOrInverseFund(sec)) return true;
+  return isOptionSecurityType(sec.security_type) && underlying !== null && isLeveragedOrInverseFund(underlying);
 }
 
 /**

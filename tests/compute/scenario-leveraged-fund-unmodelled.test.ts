@@ -71,7 +71,7 @@ describe("summarizeUnmodelledLeveragedFunds", () => {
     ).toEqual({ count: 2, valueShare: 0.4, symbols: ["ZZA", "ZZB"] });
     expect(summarizeUnmodelledLeveragedFunds([])).toEqual({ count: 0, valueShare: 0, symbols: [] });
     expect(LEVERAGED_FUND_UNMODELLED_LABEL).toBe(
-      "leveraged or inverse fund: not modelled (daily-reset leverage is not a linear leg)",
+      "leveraged or inverse fund, or an option on one: not modelled (daily-reset leverage is not a linear leg)",
     );
   });
 });
