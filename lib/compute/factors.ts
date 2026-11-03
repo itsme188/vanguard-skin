@@ -3,7 +3,8 @@ import { getDailyValuationsCombined, getDailyValuationsForAccounts } from "@/lib
 import { adjustedMarketValueSQL } from "@/lib/valuation";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 import { FACTOR_COLUMNS, type FactorColumn } from "@/lib/factors";
-import { getFactorHeatmap, type FactorHeatmapRow } from "@/lib/queries/analysis";
+import { getFactorHeatmap, explodeHoldingByNormalizedSector, type FactorHeatmapRow } from "@/lib/queries/analysis";
+import { getEtfSectorWeights } from "@/lib/queries/etf-weights";
 import {
   buildFlowAdjustedIndex,
   fetchNetFlowsByDate,
@@ -317,6 +318,9 @@ function computeTilts(
          s.market_cap_category,
          s.style,
          s.sector,
+         s.symbol,
+         s.security_type,
+         s.fund_category,
          s.geography,
          ${adjustedMarketValueSQL("lh.total_qty", "COALESCE(lp.close_price, 0)", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")} AS market_value
        FROM latest_holdings lh
@@ -330,6 +334,9 @@ function computeTilts(
     market_cap_category: string | null;
     style: string | null;
     sector: string | null;
+    symbol: string;
+    security_type: string | null;
+    fund_category: string | null;
     geography: string | null;
     market_value: number;
   }[];
@@ -367,6 +374,36 @@ function computeTilts(
     return { dimension, buckets };
   }
 
+  // Sector tilt: same look-through + normalisation as the Sector Breakdown
+  // (getSectorAllocationWithLookThrough), so the row, its drill-down and the
+  // tilt bar agree (owner ruling 2026-11-01, item 10). The own-sector
+  // decision is `sector ?? fund_category`, character for character what the
+  // Breakdown and its drill-down SQL twin (SECTOR_OWN_BUCKET_SQL) feed the
+  // helper; narrowing it to funds only must change all three together.
+  function buildSectorTilt(): FactorTilt | null {
+    const weights = getEtfSectorWeights(db);
+    const bucketMap = new Map<string, number>();
+    let classified = 0;
+    for (const row of rows) {
+      const ownSector = row.sector ?? row.fund_category;
+      for (const part of explodeHoldingByNormalizedSector(
+        row.symbol,
+        row.security_type,
+        row.market_value,
+        weights,
+        ownSector
+      )) {
+        bucketMap.set(part.sector, (bucketMap.get(part.sector) ?? 0) + part.value);
+        if (part.sector !== "Unknown" && part.sector !== "Unclassified") classified += part.value;
+      }
+    }
+    if (classified / totalValue < 0.3) return null;
+    const buckets = [...bucketMap.entries()]
+      .map(([label, value]) => ({ label, weight: value / totalValue }))
+      .sort((a, b) => b.weight - a.weight);
+    return { dimension: "Sector", buckets };
+  }
+
   return {
     // Legacy rows can still carry the bare "Large"/"Mid"/"Small" the Claude
     // classification fallback wrote before normalizeMarketCapCategory
@@ -387,7 +424,7 @@ function computeTilts(
       return normalized && normalized.trim().toLowerCase() === "null" ? null : normalized;
     }),
     styleTilt: buildTilt("Style", (r) => r.style),
-    sectorTilt: buildTilt("Sector", (r) => r.sector),
+    sectorTilt: buildSectorTilt(),
     geographyTilt: buildTilt("Geography", (r) => r.geography),
   };
 }

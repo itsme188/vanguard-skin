@@ -17,6 +17,7 @@ import { liveOptionExpirationSql } from "@/lib/compute/option-expiry";
 import { accountScopeAndSql } from "@/lib/queries/account-scope-sql";
 import { BETA_LOOKBACK_DAYS } from "@/lib/queries/security-betas";
 import { getUsdPerUnit } from "@/lib/queries/fx-rates";
+import { isLeveragedOrInverseFund } from "@/lib/compute/leveraged-fund";
 
 export interface HypotheticalLeg {
   symbol: string;
@@ -41,7 +42,7 @@ export interface ExposureFlag {
 
 export interface DroppedLeg {
   symbol: string;
-  reason: "unknown_symbol" | "not_held" | "invalid_amount" | "clamped_sell";
+  reason: "unknown_symbol" | "not_held" | "invalid_amount" | "clamped_sell" | "leveraged_or_inverse_fund";
   requestedDollars?: number;
   appliedDollars?: number;
 }
@@ -54,6 +55,13 @@ export interface ExposureDelta {
   // of a symbol not held in scope). Surfaced so the UI can explain the no-op
   // instead of rendering a misleading Δ $0 — "explain no-ops" convention.
   droppedLegs: DroppedLeg[];
+  /**
+   * Leveraged or inverse funds (`isLeveragedOrInverseFund`, owner ruling
+   * 2026-11-01, stopgap) held in scope or named by a leg: left out of every
+   * bucket in both snapshots, so the weights are over the modelled book.
+   * Symbols, sorted.
+   */
+  leveragedFundsNotModelled: string[];
 }
 
 export interface ConstructionCaps {
@@ -81,6 +89,8 @@ interface HoldingRow {
   marketValue: number;
   beta: number;
   factors: Partial<Record<FactorColumn, string>>;
+  /** A leveraged or inverse fund: kept out of every bucket in snapshot(). */
+  leveragedOrInverse: boolean;
 }
 
 /**
@@ -115,8 +125,10 @@ function loadCurrentHoldings(
       SELECT
         s.id AS security_id,
         s.symbol,
+        s.name,
         s.security_type,
         s.sector,
+        s.fund_category,
         s.currency,
         COALESCE(s.multiplier, 1) AS multiplier,
         SUM(lh.quantity) AS quantity,
@@ -135,8 +147,10 @@ function loadCurrentHoldings(
     .all(...params) as Array<{
       security_id: number;
       symbol: string;
+      name: string | null;
       security_type: string | null;
       sector: string | null;
+      fund_category: string | null;
       currency: string | null;
       multiplier: number;
       quantity: number;
@@ -163,6 +177,11 @@ function loadCurrentHoldings(
         marketValue: marketValue(r.quantity, r.price!, r.security_type, r.multiplier, getUsdPerUnit(db, r.currency)),
         beta: r.cached_beta ?? 1.0,
         factors,
+        leveragedOrInverse: isLeveragedOrInverseFund({
+          security_type: r.security_type,
+          fund_category: r.fund_category,
+          name: r.name,
+        }),
       };
     });
 }
@@ -185,15 +204,20 @@ function symbolKey(symbol: string): string {
 function lookupSymbol(
   db: Database.Database,
   symbol: string
-): Pick<HoldingRow, "symbol" | "securityType" | "sector" | "currency" | "multiplier" | "price" | "beta" | "factors"> | null {
+): Pick<
+  HoldingRow,
+  "symbol" | "securityType" | "sector" | "currency" | "multiplier" | "price" | "beta" | "factors" | "leveragedOrInverse"
+> | null {
   const row = db
     .prepare(
       `
       SELECT
         s.id AS security_id,
         s.symbol,
+        s.name,
         s.security_type,
         s.sector,
+        s.fund_category,
         s.currency,
         COALESCE(s.multiplier, 1) AS multiplier,
         (SELECT p.close_price FROM prices p
@@ -210,8 +234,10 @@ function lookupSymbol(
     .get(symbolKey(symbol)) as ({
       security_id: number;
       symbol: string;
+      name: string | null;
       security_type: string | null;
       sector: string | null;
+      fund_category: string | null;
       currency: string | null;
       multiplier: number;
       price: number | null;
@@ -234,10 +260,19 @@ function lookupSymbol(
     price: row.price,
     beta: row.cached_beta ?? 1.0,
     factors,
+    leveragedOrInverse: isLeveragedOrInverseFund({
+      security_type: row.security_type,
+      fund_category: row.fund_category,
+      name: row.name,
+    }),
   };
 }
 
-function snapshot(holdings: HoldingRow[]): ExposureSnapshot {
+function snapshot(allHoldings: HoldingRow[]): ExposureSnapshot {
+  // A leveraged or inverse fund has no linear beta, sector or factor exposure
+  // to add (owner ruling 2026-11-01, stopgap): it is left out of every bucket
+  // AND of the total, so the weights are over the modelled book.
+  const holdings = allHoldings.filter((h) => !h.leveragedOrInverse);
   const totalValue = holdings.reduce((s, h) => s + h.marketValue, 0);
   const sectorWeights: Record<string, number> = {};
   const factorTilts: Record<FactorColumn, Record<string, number>> = Object.fromEntries(
@@ -314,6 +349,10 @@ function applyLegs(
 
     if (idx !== undefined) {
       const h = next[idx];
+      if (h.leveragedOrInverse) {
+        dropped.push({ symbol: upper, reason: "leveraged_or_inverse_fund" });
+        continue;
+      }
       // leg.dollarAmount is a USD figure — convert to native-currency
       // notional BEFORE dividing by the native price so the resulting
       // marketValue() delta (which multiplies back by usdPerUnit) equals
@@ -345,6 +384,10 @@ function applyLegs(
       const synth = resolve(leg.symbol);
       if (!synth) {
         dropped.push({ symbol: upper, reason: "unknown_symbol" });
+        continue;
+      }
+      if (synth.leveragedOrInverse) {
+        dropped.push({ symbol: upper, reason: "leveraged_or_inverse_fund" });
         continue;
       }
       // Same USD-notional conversion as above — see comment there. Options
@@ -465,11 +508,19 @@ export function computeExposureDelta(
       marketValue: 0,
       beta: sym.beta,
       factors: sym.factors,
+      leveragedOrInverse: sym.leveragedOrInverse,
     };
   });
   const after = snapshot(resolved.rows);
   const caps = getCaps(db, scope);
   const flags = computeFlags(after, caps);
 
-  return { before, after, flags, droppedLegs: resolved.dropped };
+  const leveragedFundsNotModelled = [
+    ...new Set([
+      ...current.filter((h) => h.leveragedOrInverse).map((h) => h.symbol),
+      ...resolved.dropped.filter((d) => d.reason === "leveraged_or_inverse_fund").map((d) => d.symbol),
+    ]),
+  ].sort();
+
+  return { before, after, flags, droppedLegs: resolved.dropped, leveragedFundsNotModelled };
 }
