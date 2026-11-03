@@ -158,7 +158,7 @@ export function parseModelSpec(spec: string): ResolvedModel {
 }
 
 /** Expand a "<provider>/<spec>" where spec may be a $tier token or a concrete id. */
-function expandSpec(spec: string): ResolvedModel {
+export function expandSpec(spec: string): ResolvedModel {
   const slash = spec.indexOf("/");
   const maybeToken = slash === -1 ? "" : spec.slice(slash + 1);
   const tier = TIER_TOKENS[maybeToken];
