@@ -84,6 +84,15 @@ export function modelLabel(modelId: string): string {
 }
 
 /**
+ * A model named for a reader: "claude-sonnet-5-5" → "Sonnet 5.5". Unlike
+ * `modelLabel`, an id that does not parse is NEVER echoed (CLAUDE.md: user
+ * copy names no model id); it reads "the AI model" instead.
+ */
+export function userFacingModelLabel(modelId: string): string {
+  return parseModelId(modelId) ? modelLabel(modelId) : "the AI model";
+}
+
+/**
  * "Fable · now 5.1": the version the family itself resolves to today, or
  * "Fable · not available" when the family has no id (no ladder fallback here:
  * the label describes the family, not what a run would fall back to).
