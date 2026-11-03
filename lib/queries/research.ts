@@ -1,5 +1,6 @@
 import type Database from "better-sqlite3";
 import { escapeLikeTerm } from "./like-escape";
+import { summarizableArticleSql } from "@/lib/gmail/enrichment-policy";
 
 export interface ResearchArticle {
   id: number;
@@ -48,9 +49,11 @@ export interface ResearchSource {
   created_at: string;
   article_count?: number;
   /**
-   * Articles of this source the Feeds list can show (processed_at set). Same
-   * predicate as `countRecentArticles(db, { sourceId, processedOnly: true })`,
-   * so the source filter's count and the list it opens agree.
+   * Articles of this source the Feeds list can show: processed_at set, or an
+   * article the summarising policy never sends to the model (its processed_at
+   * stays NULL forever). Same predicate as `countRecentArticles(db, { sourceId,
+   * processedOnly: true, includeNeverSummarized: true })`, so the source
+   * filter's count and the list it opens agree.
    */
   processed_article_count?: number;
 }
@@ -79,6 +82,15 @@ export interface RecentArticlesFilter {
   search?: string;
   processedOnly?: boolean;
   /**
+   * With `processedOnly`: also show an article the summarising policy never
+   * sends to the model (`lib/gmail/enrichment-policy.ts`, owner ruling
+   * 2026-11-02). Its processed_at stays NULL forever, yet it must still list,
+   * count and search in Research -> Feeds. Only the Feeds page and the
+   * articles route set it; readers that need a summary (digest, briefing,
+   * chat, trade review) leave it unset and keep plain processed-only rows.
+   */
+  includeNeverSummarized?: boolean;
+  /**
    * D4: when true, only return articles with is_relevant=1 (D2 short-circuit
    * + D3 portfolio-relevance gate both flip this to 0). Default false so
    * the Research → Feeds main listing and the chat tool still see filtered
@@ -97,6 +109,12 @@ export interface RecentArticlesFilter {
 export interface RecentArticlesOptions extends RecentArticlesFilter {
   limit?: number;
 }
+
+/**
+ * An article Research -> Feeds can show: summarised, or never summarised by
+ * policy (so it will never get a processed_at). Over `s.name` / `a.subject`.
+ */
+const FEED_SHOWABLE_SQL = `(a.processed_at IS NOT NULL OR NOT (${summarizableArticleSql("s.name", "a.subject")}))`;
 
 /**
  * Single predicate builder for the recent-articles window — the list and the
@@ -150,7 +168,9 @@ function buildRecentArticlesWhere(
     params.push(term, term, term, term);
   }
   if (options?.processedOnly) {
-    conditions.push("a.processed_at IS NOT NULL");
+    conditions.push(
+      options.includeNeverSummarized ? FEED_SHOWABLE_SQL : "a.processed_at IS NOT NULL",
+    );
   }
 
   return {
@@ -276,8 +296,8 @@ export function getResearchSources(
     .prepare(
       `SELECT s.*,
               (SELECT COUNT(*) FROM research_articles WHERE source_id = s.id) as article_count,
-              (SELECT COUNT(*) FROM research_articles
-                WHERE source_id = s.id AND processed_at IS NOT NULL) as processed_article_count
+              (SELECT COUNT(*) FROM research_articles a
+                WHERE a.source_id = s.id AND ${FEED_SHOWABLE_SQL}) as processed_article_count
        FROM research_sources s
        ORDER BY s.name`
     )

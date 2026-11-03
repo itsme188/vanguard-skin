@@ -86,7 +86,7 @@ describe("GET /api/research/articles limit cap and total", () => {
 
   it("returns total under the identical filter, independent of limit", async () => {
     const all = await get("?limit=5");
-    expect(all.total).toBe(countRecentArticles(hoisted.db, { processedOnly: true }));
+    expect(all.total).toBe(countRecentArticles(hoisted.db, { processedOnly: true, includeNeverSummarized: true }));
     expect(all.total).toBe(
       (
         hoisted.db
@@ -98,13 +98,13 @@ describe("GET /api/research/articles limit cap and total", () => {
     const bySource = await get(`?sourceId=${srcB}&limit=1`);
     expect(bySource.data).toHaveLength(1);
     expect(bySource.total).toBe(
-      countRecentArticles(hoisted.db, { sourceId: srcB, processedOnly: true }),
+      countRecentArticles(hoisted.db, { sourceId: srcB, processedOnly: true, includeNeverSummarized: true }),
     );
     expect(bySource.total).toBe(3);
 
     const bySearch = await get(`?sourceId=${srcB}&search=zebra`);
     expect(bySearch.total).toBe(
-      countRecentArticles(hoisted.db, { sourceId: srcB, search: "zebra", processedOnly: true }),
+      countRecentArticles(hoisted.db, { sourceId: srcB, search: "zebra", processedOnly: true, includeNeverSummarized: true }),
     );
     expect(bySearch.total).toBe(bySearch.data.length);
 
@@ -114,6 +114,7 @@ describe("GET /api/research/articles limit cap and total", () => {
         startDate: "2026-01-12",
         endDate: "2026-01-13",
         processedOnly: true,
+        includeNeverSummarized: true,
       }),
     );
     expect(byDate.total).toBe(byDate.data.length);

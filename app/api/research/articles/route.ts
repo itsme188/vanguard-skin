@@ -75,6 +75,9 @@ export async function GET(request: Request) {
     endDate: endDate || undefined,
     search: search || undefined,
     processedOnly: true,
+    // An article the summarising policy never sends to the model keeps
+    // processed_at NULL forever; it must still list, count and search here.
+    includeNeverSummarized: true,
   };
   const articles = getRecentArticles(db, { ...filter, limit: clampLimit(limit, 50) });
   const total = countRecentArticles(db, filter);
