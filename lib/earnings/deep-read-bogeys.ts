@@ -47,6 +47,7 @@ import {
 } from "@/lib/earnings/watch-metrics";
 import { saveBogeyWithRecompile } from "@/lib/mutations/earnings-bogeys";
 import { issuerSiblings } from "@/lib/securities/issuer-family";
+import { BOGEY_SCAN_SOURCE_SQL } from "@/lib/earnings/bogey-scan-eligibility";
 import type { ExtraMetricSpec } from "@/lib/print-watch/extra-metrics";
 import {
   fetchNewsletterImages,
@@ -231,6 +232,8 @@ export function gatherDeepReadInputs(db: Database.Database, eventId: number): De
   const companyName = nameRow?.name ?? null;
   const aliases = companyNameAliases(companyName);
 
+  // TMT Breakout only (owner ruling 2026-11-02): the shared bogey-scan gate,
+  // so a non-TMT article is never selected, excerpted or sent to the model.
   // Two instants, datetime() on both sides (stored received_at is
   // space-separated UTC); the exact bounds are checked again in JS below.
   const fromMs = cutoffMs - DEEP_READ_WINDOW_DAYS * 86_400_000;
@@ -241,6 +244,7 @@ export function gatherDeepReadInputs(db: Database.Database, eventId: number): De
               CASE WHEN instr(COALESCE(a.raw_html, ''), '<img') > 0 THEN 1 ELSE 0 END AS has_img
          FROM research_articles a JOIN research_sources rs ON rs.id = a.source_id
         WHERE a.raw_text IS NOT NULL AND length(a.raw_text) > 200
+          AND ${BOGEY_SCAN_SOURCE_SQL}
           AND datetime(a.received_at) >= datetime(?) AND datetime(a.received_at) < datetime(?)
         ORDER BY a.received_at DESC, a.id DESC`,
     )

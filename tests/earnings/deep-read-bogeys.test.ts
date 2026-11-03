@@ -33,7 +33,7 @@ beforeEach(() => {
   db = new Database(":memory:");
   db.pragma("foreign_keys = ON");
   runMigrations(db);
-  db.prepare(`INSERT OR IGNORE INTO research_sources (id, name) VALUES (9001, 'Desk Notes'), (9002, 'Tape Letter')`).run();
+  db.prepare(`INSERT OR IGNORE INTO research_sources (id, name) VALUES (9001, 'TMT Breakout'), (9002, 'TMT Breakouts'), (9003, 'Tape Letter')`).run();
 });
 afterEach(() => generateTextMock.mockReset());
 
@@ -85,7 +85,27 @@ describe("gatherDeepReadInputs", () => {
     expect(inputs.companyName).toBe("Exemplar Devices, Inc.");
     expect(inputs.articles.map((a) => a.id)).toEqual([byTicker, byName]);
     expect(inputs.articles[1].excerpt).toContain("gross margin is the debate");
-    expect(inputs.articles[0].label).toBe("Tape Letter 10/21");
+    expect(inputs.articles[0].label).toBe("TMT Breakouts 10/21");
+  });
+});
+
+describe("gatherDeepReadInputs source gate", () => {
+  it("never selects a non-TMT article that names the company; a TMT one beside it is still read", () => {
+    const ev = seedEvent();
+    seedArticle(9003, "2026-10-21 12:00:00", "XMPL whisper above the Street."); // Tape Letter: out
+    const tmt = seedArticle(9001, "2026-10-21 11:00:00", "XMPL buyside bogey 1.25.");
+    expect(gatherDeepReadInputs(db, ev)!.articles.map((a) => a.id)).toEqual([tmt]);
+  });
+
+  it("only non-TMT mentions: same outcome and fingerprint as no articles at all", async () => {
+    const ev = seedEvent();
+    const step = makeNewsletterSynthesisStep({ run: vi.fn() });
+    const fpEmpty = step.fingerprint(db, ev);
+    seedArticle(9003, "2026-10-21 12:00:00", "XMPL whisper above the Street.");
+    expect(gatherDeepReadInputs(db, ev)!.articles).toEqual([]);
+    expect(step.fingerprint(db, ev)).toBe(fpEmpty);
+    expect(await runDeepRead(db, ev)).toEqual({ articlesRead: 0, stored: false, modelId: null });
+    expect(generateTextMock).not.toHaveBeenCalled();
   });
 });
 
@@ -144,7 +164,7 @@ describe("runDeepRead", () => {
     expect(out).toMatchObject({ articlesRead: 2, stored: true });
     const [feature, opts] = generateTextMock.mock.calls[0] as [string, { prompt: string }];
     expect(feature).toBe("armedBogeyDeepRead");
-    expect(opts.prompt).toContain(`=== ARTICLE ${a2} · Tape Letter 10/21`);
+    expect(opts.prompt).toContain(`=== ARTICLE ${a2} · TMT Breakouts 10/21`);
     expect(opts.prompt).toContain("most recent issue");
 
     const row = db
@@ -152,7 +172,7 @@ describe("runDeepRead", () => {
       .get(DEEP_READ_BOGEY_LABEL) as { source: string; research_article_id: number; eps_consensus: number; notes: string };
     expect(row).toMatchObject({ source: "newsletter", research_article_id: a2, eps_consensus: 1.15 });
     expect(row.notes).toContain("Disagreements:");
-    expect(row.notes).toContain("From: Tape Letter 10/21");
+    expect(row.notes).toContain("From: TMT Breakouts 10/21");
 
     const { expected, contracts } = compileContracts(db, ev, "XMPL");
     expect(expected.eps_adj_q).toMatchObject({ value: 1.15, whisper: 1.3, source_label: DEEP_READ_BOGEY_LABEL });
