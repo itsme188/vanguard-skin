@@ -1,7 +1,7 @@
 import type { FeatureKey } from "@/lib/ai/feature-keys";
 import { getCachedFeatureModelOverrides } from "@/lib/ai/override-source";
 import { getCachedModelCatalog } from "@/lib/ai/catalog-source";
-import { resolveTier, type Tier } from "@/lib/ai/model-tiers";
+import { resolveProviderTierModel, resolveTier, type Tier } from "@/lib/ai/model-tiers";
 
 const TIER_TOKENS: Record<string, Tier> = {
   "$frontier": "frontier",
@@ -164,6 +164,19 @@ function expandSpec(spec: string): ResolvedModel {
   const tier = TIER_TOKENS[maybeToken];
   if (tier) {
     const provider = spec.slice(0, slash);
+    // Non-Anthropic providers have no live catalog to expand against: their
+    // tier tokens resolve through the static PROVIDER_TIER_MODELS table.
+    // Expanding them via resolveTier (the Anthropic catalog) would hand a
+    // Claude model id to OpenAI / Workers AI. An unmapped provider throws,
+    // so a bad override falls back to the feature default like any other
+    // malformed spec. (Provider-failover design, 2026-11-02.)
+    if (provider !== "anthropic") {
+      const tableId = resolveProviderTierModel(provider, tier);
+      if (!tableId) {
+        throw new Error(`No tier mapping for provider "${provider}" in model spec "${spec}"`);
+      }
+      return parseModelSpec(`${provider}/${tableId}`);
+    }
     const resolvedId = resolveTier(tier, getCachedModelCatalog());
     const prev = lastResolvedByTier.get(tier);
     if (prev !== resolvedId) {

@@ -92,3 +92,37 @@ export function resolveTier(
   }
   return TIER_STATIC_FALLBACK[tier];
 }
+
+/**
+ * Per-provider tier tables for the non-Anthropic providers (provider-failover
+ * design, 2026-11-02:
+ * docs/superpowers/specs/2026-11-02-provider-failover-design.md).
+ *
+ * Anthropic tiers resolve through the live catalog + FAMILY_LADDERS above.
+ * The other providers have no equivalent live catalog in this app, so their
+ * tier mappings are static tables — verified against the providers' public
+ * docs on 2026-11-02 (OpenAI: platform.openai.com/docs/models; Workers AI:
+ * developers.cloudflare.com/workers-ai/models). Review an edit here like a
+ * new FAMILY_LADDERS entry: deliberately, before spend routes to it.
+ */
+export const PROVIDER_TIER_MODELS: Record<string, Record<Tier, string>> = {
+  openai: {
+    frontier: "gpt-6-astra",
+    workhorse: "gpt-6.1-sol",
+    cheap: "gpt-6-luna",
+  },
+  "workers-ai": {
+    frontier: "@cf/openai/gpt-oss-120b",
+    workhorse: "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+    cheap: "@cf/meta/llama-4-scout-17b-16e-instruct",
+  },
+};
+
+/**
+ * The concrete model id for a non-Anthropic provider's tier, or null when the
+ * provider has no table. Anthropic always returns null here — its tiers
+ * resolve via resolveTier against the live catalog.
+ */
+export function resolveProviderTierModel(provider: string, tier: Tier): string | null {
+  return PROVIDER_TIER_MODELS[provider]?.[tier] ?? null;
+}

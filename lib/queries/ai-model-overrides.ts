@@ -19,9 +19,10 @@ export const FEATURE_MODEL_OVERRIDES_KEY = "feature_model_overrides";
  * Valid "<provider>/<model-id>" spec. The model-id portion allows further
  * slashes and "@" because Workers AI ids look like
  * "@cf/meta/llama-3.3-70b-instruct" (parseModelSpec splits on the FIRST
- * slash only). No whitespace anywhere.
+ * slash only), and "$" because a spec may name a tier token
+ * ("openai/$frontier") instead of a concrete id. No whitespace anywhere.
  */
-export const MODEL_OVERRIDE_PATTERN = /^[\w-]+\/[\w.:@/-]+$/;
+export const MODEL_OVERRIDE_PATTERN = /^[\w-]+\/[\w.:@/$\-]+$/;
 
 interface SettingRow {
   value: string;

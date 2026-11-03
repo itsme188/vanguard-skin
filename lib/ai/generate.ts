@@ -35,6 +35,7 @@ import type { SummaryEffort, SummaryFamily } from "@/lib/filing-summary/types";
 import { resolveFeatureModel } from "@/lib/ai/models";
 import { dropModelFromCatalog } from "@/lib/ai/catalog-source";
 import { FORCED_TOOL_UNSUPPORTED_RE } from "@/lib/ai/classify-anthropic-error";
+import { failOverOnAccountFailure } from "@/lib/ai/failover";
 
 export class AIRefusalError extends Error {
   /** The SDK usage of the refused call when the SDK reported one (it was still billed). */
@@ -106,7 +107,26 @@ type GenTextOpts = Omit<Parameters<typeof generateText<any, any>>[0], "model">;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type GenObjOpts = Omit<Parameters<typeof generateObject<any>>[0], "model">;
 
+/**
+ * Provider failover (design slice 2): an account-level failure (billing / auth /
+ * config) of the primary provider on a failover-enabled feature is retried on
+ * the next provider; anything else — including every parked feature — rethrows
+ * the primary's error unchanged. See lib/ai/failover.ts.
+ */
 export async function generateTextForFeature(feature: FeatureKey, opts: GenTextOpts) {
+  try {
+    return await generateTextOnPrimary(feature, opts);
+  } catch (err) {
+    return failOverOnAccountFailure(feature, err, async (model, target) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const res = await generateText({ ...opts, model } as any);
+      if (REFUSAL_FINISH.has(res.finishReason)) throw new AIRefusalError(feature, target.modelId);
+      return res;
+    });
+  }
+}
+
+async function generateTextOnPrimary(feature: FeatureKey, opts: GenTextOpts) {
   let { modelId } = resolveFeatureModel(feature);
   try {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -166,6 +186,17 @@ function withAnthropicStructuredOutput(
 }
 
 export async function generateObjectForFeature(feature: FeatureKey, opts: GenObjOpts) {
+  try {
+    return await generateObjectOnPrimary(feature, opts);
+  } catch (err) {
+    return failOverOnAccountFailure(feature, err, (model) =>
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      generateObject({ ...opts, model } as any),
+    );
+  }
+}
+
+async function generateObjectOnPrimary(feature: FeatureKey, opts: GenObjOpts) {
   const { modelId, provider } = resolveFeatureModel(feature);
   // The mode the FIRST request actually carries (caller's, else our default).
   const firstMode =

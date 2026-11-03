@@ -121,6 +121,32 @@ const ERROR_TYPE_KIND: Record<string, EnrichmentFailureKind> = {
 };
 
 /**
+ * OpenAI `error.code` values that describe the account or the service
+ * (platform.openai.com/docs/guides/error-codes, verified 2026-11-02; the
+ * docs' own guidance: "for billing-related errors, inspect error.code").
+ * The billing family matters most: OpenAI sends quota exhaustion and spend
+ * limits as HTTP 429, which the status fallback below would otherwise
+ * misread as a transient rate_limit — an exhausted OpenAI account would
+ * never register as account-level, and provider failover would never trip.
+ * Anthropic envelopes carry no `code` field, so this map cannot collide
+ * with the type map above. The legacy quota signal `insufficient_quota`
+ * arrives as the error TYPE (or, in newer envelopes, as the code with
+ * type still `insufficient_quota`), so it is in this map AND checked
+ * against the type in classifyApiCallError.
+ */
+const OPENAI_ERROR_CODE_KIND: Record<string, EnrichmentFailureKind> = {
+  credit_balance_exhausted: "billing",
+  organization_spend_limit_exceeded: "billing",
+  project_spend_limit_exceeded: "billing",
+  organization_usage_limit_exceeded: "billing",
+  insufficient_quota: "billing",
+  invalid_api_key: "auth",
+  rate_limit_exceeded: "rate_limit",
+  slow_down: "rate_limit",
+  server_is_overloaded: "outage",
+};
+
+/**
  * The phrases matched in Anthropic's two account-spend messages, each sent as
  * HTTP 400 `invalid_request_error` (the same status and type as a bad request):
  *   - out of credit: "Your credit balance is too low to access the Anthropic
@@ -199,21 +225,24 @@ function hasNetworkCode(err: unknown): boolean {
   return false;
 }
 
-function readAnthropicEnvelope(err: Record<string | symbol, unknown>): {
+function readProviderEnvelope(err: Record<string | symbol, unknown>): {
   errorType: string | null;
+  errorCode: string | null;
   message: string | null;
 } {
   const pick = (body: unknown) => {
-    const inner = (body as { error?: { type?: unknown; message?: unknown } } | null)?.error;
+    const inner = (body as { error?: { type?: unknown; message?: unknown; code?: unknown } } | null)
+      ?.error;
     return {
       errorType: typeof inner?.type === "string" ? inner.type : null,
+      errorCode: typeof inner?.code === "string" ? inner.code : null,
       message: typeof inner?.message === "string" ? inner.message : null,
     };
   };
   // `data` is the parsed envelope; it is absent when the body failed the
   // SDK's schema, so fall back to parsing the raw body ourselves.
   const fromData = pick(err.data);
-  if (fromData.errorType || fromData.message) return fromData;
+  if (fromData.errorType || fromData.errorCode || fromData.message) return fromData;
   if (typeof err.responseBody === "string" && err.responseBody.trim().startsWith("{")) {
     try {
       return pick(JSON.parse(err.responseBody));
@@ -221,16 +250,24 @@ function readAnthropicEnvelope(err: Record<string | symbol, unknown>): {
       // not JSON: nothing structured to read
     }
   }
-  return { errorType: null, message: null };
+  return { errorType: null, errorCode: null, message: null };
 }
 
 function classifyApiCallError(err: Record<string | symbol, unknown>): EnrichmentFailureClass {
   const status = typeof err.statusCode === "number" ? err.statusCode : null;
-  const { errorType, message } = readAnthropicEnvelope(err);
+  const { errorType, errorCode, message } = readProviderEnvelope(err);
 
   // 1. The provider's own error type, when the body carried one.
   const byType = errorType ? ERROR_TYPE_KIND[errorType] : undefined;
   if (byType) return result(byType, status, errorType);
+
+  // 1b. OpenAI's error code, when the body carried one — checked before the
+  //     status fallback because OpenAI's billing failures arrive as 429
+  //     (see OPENAI_ERROR_CODE_KIND). `insufficient_quota` as a bare type is
+  //     OpenAI's legacy quota signal and is billing for the same reason.
+  const byCode = errorCode ? OPENAI_ERROR_CODE_KIND[errorCode] : undefined;
+  if (byCode) return result(byCode, status, errorType);
+  if (errorType === "insufficient_quota") return result("billing", status, errorType);
 
   // 2. The HTTP status. Covers bodies that are not Anthropic's envelope (a
   //    gateway or proxy answering in its own format).

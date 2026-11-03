@@ -215,14 +215,16 @@ function sinceText(since: string | null, today: string): string {
 const TRANSIENT_KINDS: ReadonlySet<AccountFailureKind> = new Set<AccountFailureKind>(["rate_limit", "outage", "network"]);
 
 /** The hub's one-line notice. `today` is the Eastern day (todayET()). */
-export function aiPrepPauseNotice(pause: AiPrepPause, today: string): string {
+export function aiPrepPauseNotice(pause: AiPrepPause, today: string, runningOn?: string | null): string {
   const steps = pause.waitingSteps === 1 ? "1 prep step" : `${pause.waitingSteps} prep steps`;
   const prints = pause.waitingPrints === 1 ? "1 armed print" : `${pause.waitingPrints} armed prints`;
   const verb = pause.waitingSteps === 1 ? "is waiting and will run on its own" : "are waiting and will run on their own";
   // Billing, a rejected key and a missing key need the owner; the rest pass by themselves.
   const until = TRANSIENT_KINDS.has(pause.kind) ? "once the AI service recovers" : "once it's fixed";
+  // Provider failover (design slice 2): other features may be running on a fallback.
+  const fallback = runningOn ? ` Eligible features are running on ${runningOn}.` : "";
   return (
     `AI prep paused${sinceText(pause.since, today)} — ${KIND_WORDS[pause.kind]}. ` +
-    `${steps} for ${prints} ${verb} ${until}.`
+    `${steps} for ${prints} ${verb} ${until}.${fallback}`
   );
 }

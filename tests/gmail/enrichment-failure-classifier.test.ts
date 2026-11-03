@@ -18,9 +18,12 @@ import {
 import {
   ANTHROPIC_FAILURES,
   CREDIT_BALANCE_MESSAGE,
+  OPENAI_FAILURES,
   errorFromRealSdk,
+  errorFromRealOpenAiSdk,
   fetchFailed,
   type AnthropicFailureName,
+  type OpenAiFailureName,
 } from "../helpers/ai-sdk-real-errors";
 
 describe("the fixtures are the SDK's own errors", () => {
@@ -377,5 +380,25 @@ describe("classifyStoredFailureReason: what an excluded row remembers", () => {
     [null],
   ])("%s is not account-level", (reason) => {
     expect(classifyStoredFailureReason(reason)).toBeNull();
+  });
+});
+
+describe("classifyEnrichmentError: OpenAI error codes", () => {
+  // The billing rows are the point of the extension: OpenAI sends quota
+  // exhaustion and spend limits as HTTP 429, which the status fallback alone
+  // would classify as a transient rate_limit (article waits, no failover).
+  // The error.code map must win over the status.
+  const cases: Array<[OpenAiFailureName, string, number, string | null]> = [
+    ["creditBalanceExhausted429", "billing", 429, "insufficient_quota"],
+    ["orgSpendLimit429", "billing", 429, "insufficient_quota"],
+    ["insufficientQuotaType429", "billing", 429, "insufficient_quota"],
+    ["invalidApiKey401", "auth", 401, "invalid_request_error"],
+    ["rateLimitExceeded429", "rate_limit", 429, "rate_limit_error"],
+    ["serverOverloaded503", "outage", 503, "service_unavailable_error"],
+  ];
+
+  it.each(cases)("%s -> %s", async (name, kind, status, errorType) => {
+    const { error } = await errorFromRealOpenAiSdk(OPENAI_FAILURES[name]);
+    expect(classifyEnrichmentError(error)).toEqual({ scope: "account", kind, status, errorType });
   });
 });

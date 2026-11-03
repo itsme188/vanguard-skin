@@ -7,6 +7,8 @@ import { setFeatureModelOverrideSource } from "./ai/override-source";
 import { getFeatureModelOverrides } from "./queries/ai-model-overrides";
 import { setModelCatalogSource } from "./ai/catalog-source";
 import { getModelCatalog } from "./ai/model-catalog";
+import { setFailoverRecorder } from "./ai/failover";
+import { recordFailoverEvent } from "./mutations/ai-failover-log";
 
 // DATABASE_PATH wins (full path to a .db file). Falls back to
 // VANGUARD_DB_DIR/vanguard.db for back-compat. Lets a worktree point at the
@@ -31,3 +33,5 @@ runMigrations(db);
 // (in-memory test DBs / Workers fall back to FEATURE_MODELS silently).
 setFeatureModelOverrideSource(() => getFeatureModelOverrides(db));
 setModelCatalogSource(() => getModelCatalog(db));
+// Provider failover (design slice 2): note each switch durably, same seam shape.
+setFailoverRecorder((event) => recordFailoverEvent(db, event));
