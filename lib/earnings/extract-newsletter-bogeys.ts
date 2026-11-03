@@ -23,6 +23,7 @@ import { coercePercent, parseLargeUSD } from "@/lib/format";
 import { coveredForEvents } from "@/lib/queries/briefing-symbols";
 import { issuerSiblings } from "@/lib/securities/issuer-family";
 import { todayET, addDays } from "@/lib/calendar/date-utils";
+import { BOGEY_SCAN_SOURCE_SQL } from "@/lib/earnings/bogey-scan-eligibility";
 import { classifyEnrichmentError } from "@/lib/gmail/enrichment-failure";
 import type { ExtraMetricSpec } from "@/lib/print-watch/extra-metrics";
 import {
@@ -374,6 +375,7 @@ function getUnscannedArticles(
        FROM research_articles a
        JOIN research_sources rs ON rs.id = a.source_id
        WHERE a.bogeys_scanned_at IS NULL
+         AND ${BOGEY_SCAN_SOURCE_SQL}
          AND datetime(a.received_at) >= datetime('now', '-${sinceDays} days')
          AND a.raw_text IS NOT NULL AND length(a.raw_text) > 200
        ORDER BY a.received_at DESC

@@ -32,6 +32,7 @@ import {
 } from "./bond-duration";
 import { todayET } from "@/lib/calendar/date-utils";
 import { isInterestRateHedgeFund, scenarioMovesRates, summarizeUnmodelledRateHedges } from "./rate-hedge";
+import { isLeveragedOrInverseFund, summarizeUnmodelledLeveragedFunds } from "./leveraged-fund";
 import {
   SCENARIO_RECIPES,
   findRecipe,
@@ -94,6 +95,11 @@ export interface PositionImpact {
    * 2026-10-12): set when the fund was left out; its change is then zero.
    */
   rateHedgeUnmodelled?: boolean;
+  /**
+   * Leveraged and inverse funds (owner ruling 2026-11-01, stopgap): set when
+   * the fund was left out of the scenario; its change is then zero.
+   */
+  leveragedFundUnmodelled?: boolean;
 }
 
 export interface ScenarioResult {
@@ -119,6 +125,12 @@ export interface ScenarioResult {
    * symbols (sorted). Reporting only; no figure reads it.
    */
   rateHedgesUnmodelled: { count: number; valueShare: number; symbols: string[] };
+  /**
+   * Leveraged and inverse funds left out of every scenario
+   * (`isLeveragedOrInverseFund`, owner ruling 2026-11-01): count, share of the
+   * book's gross value, and symbols (sorted). Reporting only; no figure reads it.
+   */
+  leveragedFundsUnmodelled: { count: number; valueShare: number; symbols: string[] };
   /**
    * Custom scenarios only. Held equity funds a sector shock could not look
    * through because no sector weights are cached for them: they took the
@@ -258,6 +270,25 @@ ${OPTION_PRICING_JOINS_SQL}
   // 2. Estimate beta for each position
   const positionImpacts: PositionImpact[] = positions.map((pos): PositionImpact => {
     const isOption = isOptionSecurityType(pos.security_type);
+    // A daily-reset leveraged or inverse fund has no linear leg over a
+    // multi-day shock, and no stored sign or multiple yet: it takes no figure
+    // in any scenario and is named and counted under leveragedFundsUnmodelled
+    // (owner ruling 2026-11-01, stopgap). Its value stays in the book.
+    if (isLeveragedOrInverseFund({ security_type: pos.security_type, fund_category: pos.fund_category, name: pos.security_name })) {
+      return {
+        securityId: pos.security_id,
+        symbol: pos.symbol,
+        securityName: pos.security_name,
+        securityType: pos.security_type,
+        sector: pos.sector,
+        currentValue: pos.market_value,
+        estimatedChange: 0,
+        estimatedNewValue: pos.market_value,
+        changePercent: 0,
+        beta: 1.0,
+        leveragedFundUnmodelled: true,
+      };
+    }
     // A fund built to gain when rates rise takes no figure under a rate move:
     // neither the loss nor an inverted sign is right (owner ruling 2026-10-12).
     // It is named and counted under rateHedgesUnmodelled instead.
@@ -453,6 +484,7 @@ ${OPTION_PRICING_JOINS_SQL}
     optionsUnmodelled: summarizeUnmodelledOptions(positionImpacts),
     bondsUnmodelled: summarizeUnmodelledBonds(positionImpacts),
     rateHedgesUnmodelled: summarizeUnmodelledRateHedges(positionImpacts),
+    leveragedFundsUnmodelled: summarizeUnmodelledLeveragedFunds(positionImpacts),
     fundsWithoutSectorWeights,
   };
 }

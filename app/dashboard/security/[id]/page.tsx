@@ -282,6 +282,7 @@ export default async function SecurityDetailPage(props: {
   // and a line under the table names what they leave out.
   const totalIsPartial = positionsWithoutBasis.length > 0 && detail.totalCostBasis !== null;
   const partialMark = totalIsPartial ? "~" : "";
+  const positionSides = detail.positionSides;
   const totalGainHasShort = positions.some((p) => p.unrealized_gain !== null && (p.cost_basis ?? 0) < 0);
 
   // Option hubs: notes are filed under the UNDERLYING (the composer has no
@@ -533,6 +534,55 @@ export default async function SecurityDetailPage(props: {
               </tbody>
               {positions.length > 1 && (
                 <tfoot>
+                  {positionSides.mixed ? (
+                    (
+                      [
+                        { label: "Long", side: positionSides.long, isShort: false },
+                        { label: "Short", side: positionSides.short, isShort: true },
+                      ] as const
+                    ).map(({ label, side, isShort }) => {
+                      if (!side) return null;
+                      const sidePartial = side.positionsWithoutBasis.length > 0 && side.totalCostBasis !== null;
+                      const mark = sidePartial ? "~" : "";
+                      const sideQty = positions
+                        .filter((p) => (p.quantity < 0) === isShort)
+                        .reduce((sum, p) => sum + p.quantity, 0);
+                      return (
+                        <tr key={label} className="bg-raised">
+                          <td className={TD_CLASS}>
+                            <span className="font-mono uppercase font-semibold text-xs tracking-wider">{label}</span>
+                          </td>
+                          <td className={`${TD_MONO} text-right font-semibold`}>
+                            <Shares value={sideQty} />
+                          </td>
+                          <td
+                            className={`${TD_MONO} text-right text-ink-dim`}
+                            title={isShort ? "short-sale proceeds" : undefined}
+                          >
+                            {mark}
+                            <Money value={side.totalCostBasis} fallback="–" />
+                          </td>
+                          <td className={`${TD_MONO} text-right font-semibold`}>
+                            <Money value={side.totalValue} />
+                          </td>
+                          <td className={`${TD_MONO} text-right font-semibold ${gainClass(side.totalUnrealizedGain)}`}>
+                            {side.totalUnrealizedGain !== null && mark}
+                            <Money value={side.totalUnrealizedGain} fallback="–" />
+                          </td>
+                          <td className={`${TD_MONO} text-right font-semibold ${gainClass(side.totalUnrealizedGain)}`}>
+                            {side.totalGainRatio !== null ? (
+                              <>
+                                {mark}
+                                <Pct value={side.totalGainRatio * 100} digits={2} signed />
+                              </>
+                            ) : (
+                              "–"
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })
+                  ) : (
                   <tr className="bg-raised">
                     <td className={TD_CLASS}>
                       <span className="font-mono uppercase font-semibold text-xs tracking-wider">Total</span>
@@ -540,7 +590,10 @@ export default async function SecurityDetailPage(props: {
                     <td className={`${TD_MONO} text-right font-semibold`}>
                       <Shares value={positions.reduce((sum, p) => sum + p.quantity, 0)} />
                     </td>
-                    <td className={`${TD_MONO} text-right text-ink-dim`}>
+                    <td
+                      className={`${TD_MONO} text-right text-ink-dim`}
+                      title={positionSides.short && !positionSides.long ? "short-sale proceeds" : undefined}
+                    >
                       {partialMark}
                       <Money value={detail.totalCostBasis} fallback="–" />
                     </td>
@@ -568,6 +621,7 @@ export default async function SecurityDetailPage(props: {
                       )}
                     </td>
                   </tr>
+                  )}
                 </tfoot>
               )}
             </table>
@@ -584,7 +638,7 @@ export default async function SecurityDetailPage(props: {
                 </span>
               ))}
               : cost basis unknown.
-              {detail.gainCoveredValue !== null && (
+              {!positionSides.mixed && detail.gainCoveredValue !== null && (
                 <>
                   {" "}They cover <Money value={detail.gainCoveredValue} /> of the{" "}
                   <Money value={detail.totalValue} /> total value.

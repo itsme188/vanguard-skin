@@ -169,6 +169,14 @@ export function WhatIfCalculator({ scope }: Props) {
               ))}
             </div>
           )}
+          {/* Leveraged / inverse funds are left out of every bucket (owner
+              ruling 2026-11-01, stopgap). Symbols are public data. */}
+          {(delta.leveragedFundsNotModelled?.length ?? 0) > 0 && (
+            <p className="text-[10px] text-ink-faint">
+              Leveraged or inverse funds not modelled, left out of beta, sector and factor weights:{" "}
+              <span className="font-mono">{delta.leveragedFundsNotModelled.join(", ")}</span>
+            </p>
+          )}
           <DeltaTable delta={delta} />
           {delta.flags.length > 0 && (
             <div className="space-y-1">
@@ -207,6 +215,9 @@ export function droppedLegMessage(d: NonNullable<ExposureDelta["droppedLegs"]>[n
     return `${d.symbol} needs a positive dollar amount — leg ignored (use Buy/Sell for direction)`;
   }
   if (d.reason === "clamped_sell") return `${d.symbol} sell leg capped at the held position.`;
+  if (d.reason === "leveraged_or_inverse_fund") {
+    return `${d.symbol}: leveraged or inverse fund: not modelled — leg ignored`;
+  }
   return `${d.symbol} isn't held in this scope — sell leg ignored`;
 }
 

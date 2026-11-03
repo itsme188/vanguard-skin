@@ -118,6 +118,8 @@ export interface SecurityDetailData {
   gainCoveredValue: number | null;
   /** Positions left out of total cost basis, gain and %: basis unknown. */
   positionsWithoutBasis: PositionWithoutBasis[];
+  /** Totals split by side; the Positions table shows Long and Short rows when mixed. */
+  positionSides: PositionSideTotals;
   /** Accounts with open lots and no current position — see computeLotsWithoutPosition. */
   lotsWithoutPosition: LotsWithoutPosition[];
   /** What the open lots carry for each unknown-basis position — see computeUnknownBasisLotNotes. */
@@ -1007,6 +1009,30 @@ export function computePositionTotals(positions: SecurityPosition[]): PositionTo
   };
 }
 
+export interface PositionSideTotals {
+  long: PositionTotals | null;
+  short: PositionTotals | null;
+  /** True when the name is held long in one account and short in another. */
+  mixed: boolean;
+}
+
+/**
+ * Positions totals split by side (2026-11-01 ruling, item 12). A short
+ * (quantity < 0) stores its sale proceeds as a negative basis; summing it
+ * into a long's cost basis describes no real position. Each side is
+ * computePositionTotals over that side's rows alone, so the gross-basis
+ * percent reduces to gain over that side's own |basis|. Pure.
+ */
+export function computePositionSideTotals(positions: SecurityPosition[]): PositionSideTotals {
+  const longRows = positions.filter((p) => p.quantity >= 0);
+  const shortRows = positions.filter((p) => p.quantity < 0);
+  return {
+    long: longRows.length > 0 ? computePositionTotals(longRows) : null,
+    short: shortRows.length > 0 ? computePositionTotals(shortRows) : null,
+    mixed: longRows.length > 0 && shortRows.length > 0,
+  };
+}
+
 export interface LotsWithoutPosition {
   accountId: number;
   accountName: string;
@@ -1246,6 +1272,7 @@ export function getSecurityDetail(
     totalGainRatio: totals.totalGainRatio,
     gainCoveredValue: totals.gainCoveredValue,
     positionsWithoutBasis: totals.positionsWithoutBasis,
+    positionSides: computePositionSideTotals(positions),
     lotsWithoutPosition,
     unknownBasisLotNotes: computeUnknownBasisLotNotes(totals.positionsWithoutBasis, openTaxLots),
     expiredOptionSnapshotRows: getExpiredOptionSnapshotRows(db, securityId),

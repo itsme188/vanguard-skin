@@ -223,7 +223,7 @@ describe("research_articles.received_at (stored in SQLite's space form)", () => 
   }
 
   it("getFullTextForSources (weekly briefing deep read): hours window", () => {
-    const src = seedSource(9001, "Desk Notes");
+    const src = seedSource(9001, "TMT Breakout");
     const ids = seedBothForms(src, 72 * HOUR_MS);
     const got = getFullTextForSources(db, [src], 72).map((r) => r.article_id).sort((a, b) => a - b);
     // Real (space-form) rows: only the inside one, before and after the fix.
@@ -232,14 +232,14 @@ describe("research_articles.received_at (stored in SQLite's space form)", () => 
   });
 
   it("getRecentArticleSummaries (digest source window): hours window", () => {
-    const src = seedSource(9001, "Desk Notes");
+    const src = seedSource(9001, "TMT Breakout");
     const ids = seedBothForms(src, 24 * HOUR_MS);
     const got = getRecentArticleSummaries(db, 24, 50).map((r) => r.id).sort((a, b) => a - b);
     expect(got).toEqual([ids.spaceInside, ids.isoInside].sort((a, b) => a - b));
   });
 
   it("newsletter level scan: days window", async () => {
-    const src = seedSource(9001, "Desk Notes");
+    const src = seedSource(9001, "TMT Breakout");
     const securityId = seedEquity("ZZA", 50);
     db.prepare("INSERT INTO watchlist (security_id) VALUES (?)").run(securityId);
     const ids = seedBothForms(src, 30 * DAY_MS, false);
@@ -256,7 +256,7 @@ describe("research_articles.received_at (stored in SQLite's space form)", () => 
   });
 
   it("newsletter bogey scan: days window", async () => {
-    const src = seedSource(9001, "Desk Notes");
+    const src = seedSource(9001, "TMT Breakout");
     // An armed event inside the look-ahead makes one covered reporter.
     const soon = new Date(Date.parse(`${todayET()}T12:00:00Z`) + 3 * DAY_MS).toISOString().slice(0, 10);
     const eventId = Number(
@@ -284,7 +284,7 @@ describe("research_articles.received_at (stored in SQLite's space form)", () => 
   });
 
   it("newsletter rescan step: days window", async () => {
-    const src = seedSource(9001, "Desk Notes");
+    const src = seedSource(9001, "TMT Breakout");
     const eventId = Number(
       db
         .prepare(
