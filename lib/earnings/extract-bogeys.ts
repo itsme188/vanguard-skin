@@ -62,7 +62,7 @@ export interface ExtractBogeysResult {
   rawResponse: string;
 }
 
-const EXTRACTION_PROMPT = `You are looking at a multi-symbol earnings preview / bogeys page (e.g., TMT Breakout, Vital Knowledge, or a sell-side weekly).
+export const EXTRACTION_PROMPT = `You are looking at a multi-symbol earnings preview / bogeys page (e.g., TMT Breakout, Vital Knowledge, or a sell-side weekly).
 
 Extract one entry per company mentioned. For each, capture the bogeys analysts and traders are watching for the upcoming print:
 - EPS consensus (Street average) and EPS whisper (above-consensus number traders are positioning for)

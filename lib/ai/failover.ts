@@ -167,7 +167,8 @@ export function setFailoverRecorder(fn: ((event: FailoverEvent) => void) | null)
   recorder = fn;
 }
 
-function record(event: FailoverEvent): void {
+/** Log + durably note a served switch (also used by the PDF seam, lib/ai/pdf-extraction.ts). */
+export function noteFailover(event: FailoverEvent): void {
   console.warn(
     `[ai] ${event.feature}: ${event.from.provider} account failure (${event.kind}) → served by ` +
       `${event.to.provider} (${event.to.modelId})`,
@@ -210,7 +211,7 @@ export async function failOverOnAccountFailure<T>(
     }
     try {
       const result = await run(model, target);
-      record({ feature, from, to: target, kind, at: new Date().toISOString() });
+      noteFailover({ feature, from, to: target, kind, at: new Date().toISOString() });
       return result;
     } catch (legErr) {
       const legKind = failoverTriggerKind(legErr);

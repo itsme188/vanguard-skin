@@ -1,0 +1,26 @@
+[
+  {
+    "symbol": "ACME",
+    "eps_consensus": 1.25,
+    "eps_whisper": 1.32,
+    "revenue_consensus_usd": 4200000000,
+    "revenue_whisper_usd": 4260000000,
+    "expected_move_pct": 6,
+    "segment_breakdown": { "Widgets": { "consensus": 2500000000, "whisper": 2540000000 } },
+    "guidance_notes": "FY guide $17.0-17.4B",
+    "notes": "Invented company for tests",
+    "watch_metrics": []
+  },
+  {
+    "symbol": "ZETA",
+    "eps_consensus": -0.08,
+    "eps_whisper": null,
+    "revenue_consensus_usd": 310000000,
+    "revenue_whisper_usd": null,
+    "expected_move_pct": null,
+    "segment_breakdown": null,
+    "guidance_notes": null,
+    "notes": null,
+    "watch_metrics": []
+  }
+]
