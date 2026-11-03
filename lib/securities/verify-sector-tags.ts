@@ -14,6 +14,7 @@ import { issuerSiblings } from "@/lib/securities/issuer-family";
 import { extractJsonArray } from "@/lib/ai/extract-json";
 import { isGarbageSymbol } from "@/lib/import/validate";
 import { getRawAnthropicClient } from "@/lib/ai/provider";
+import { failOverRawSearchCall } from "@/lib/ai/raw-search-failover";
 import { resolveFeatureModel } from "@/lib/ai/models";
 
 export const SWEEP_BATCH_SIZE = 10;
@@ -227,19 +228,26 @@ export async function defaultFetchVerdicts(batch: SweepCandidate[]): Promise<str
       `Sector verification requires the Anthropic provider for native web_search; FEATURE_MODELS["${featureKey}"] resolves to ${provider}/${modelId}. Update lib/ai/models.ts.`,
     );
   }
-  const client = getRawAnthropicClient(featureKey);
   const lines = batch.map(
     (c) =>
       `${c.symbol} | ${c.name ?? "unknown name"} | industry: ${c.industry ?? "unknown"} | fund_category: ${c.fund_category ?? "unknown"} | current sector: ${c.sector ?? "unknown"}`,
   );
   const prompt = `${VERIFICATION_PROMPT_HEADER}\n\n${lines.join("\n")}`;
 
-  const response = await client.messages.create({
-    model: modelId,
-    max_tokens: 4096,
-    tools: [{ type: "web_search_20250305", name: "web_search", max_uses: 8 }],
-    messages: [{ role: "user", content: prompt }],
-  });
+  let response: Anthropic.Message;
+  try {
+    const client = getRawAnthropicClient(featureKey);
+    response = await client.messages.create({
+      model: modelId,
+      max_tokens: 4096,
+      tools: [{ type: "web_search_20250305", name: "web_search", max_uses: 8 }],
+      messages: [{ role: "user", content: prompt }],
+    });
+  } catch (err) {
+    // Provider failover (see lib/ai/raw-search-failover.ts): switch only on an
+    // account-level failure of an enabled feature, else rethrow the original.
+    return stripCodeFences(await failOverRawSearchCall(featureKey, err, { prompt, maxOutputTokens: 4096 }));
+  }
   const textBlocks = response.content.filter(
     (b): b is Anthropic.TextBlock => b.type === "text",
   );

@@ -34,12 +34,14 @@
  * (lib/db.ts registers the SQLite-backed one), the same seam shape as
  * override-source.ts.
  */
+import { APIError } from "@anthropic-ai/sdk";
 import type { LanguageModel } from "ai";
 import type { FeatureKey } from "@/lib/ai/feature-keys";
 import { FEATURE_MODELS, expandSpec, resolveFeatureModel, type ResolvedModel } from "@/lib/ai/models";
 import { resolveProviderTierModel, type Tier } from "@/lib/ai/model-tiers";
 import { getModelForResolved } from "@/lib/ai/provider";
 import { classifyEnrichmentError } from "@/lib/gmail/enrichment-failure";
+import { classifyAnthropicError } from "@/lib/ai/classify-anthropic-error";
 
 export type FailoverProvider = ResolvedModel["provider"];
 
@@ -144,6 +146,13 @@ const TRIGGER_KINDS: ReadonlySet<string> = new Set<FailoverTriggerKind>(["billin
 
 /** The switch-triggering kind of a caught error, or null (rate limit, outage, article-level, unknown...). */
 export function failoverTriggerKind(err: unknown): FailoverTriggerKind | null {
+  // A raw `@anthropic-ai/sdk` APIError (the raw-client call sites): the shared raw
+  // classifier decides, and only billing / auth switch. Rate limits, overloads and
+  // content errors stay with the primary, exactly as for the AI SDK errors below.
+  if (err instanceof APIError) {
+    const kind = classifyAnthropicError(err)?.kind;
+    return kind === "billing" || kind === "auth" ? kind : null;
+  }
   const c = classifyEnrichmentError(err);
   return c.scope === "account" && TRIGGER_KINDS.has(c.kind) ? (c.kind as FailoverTriggerKind) : null;
 }
@@ -248,12 +257,20 @@ export async function failOverOnAccountFailure<T>(
   feature: FeatureKey,
   primaryErr: unknown,
   run: (model: LanguageModel, target: ResolvedModel) => Promise<T>,
+  opts: {
+    /**
+     * Skip legs that cannot honour the call (e.g. a web-search call can only run on a
+     * provider that has a search tool). A skipped leg is never built or called.
+     */
+    accepts?: (target: ResolvedModel) => boolean;
+  } = {},
 ): Promise<T> {
   if (!isFailoverEnabled(feature)) throw primaryErr;
   const kind = failoverTriggerKind(primaryErr);
   if (!kind) throw primaryErr;
   const from = resolveFeatureModel(feature);
   for (const target of failoverTargets(feature)) {
+    if (opts.accepts && !opts.accepts(target)) continue;
     let model: LanguageModel;
     try {
       model = getModelForResolved(feature, target);
