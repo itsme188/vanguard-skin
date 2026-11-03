@@ -782,8 +782,10 @@ export async function generateMacroThemes(
     if (err instanceof AIRefusalError) {
       throw new Error(`macro-themes generation refused`);
     }
+    // `cause` carries the provider's error so the route's accountFailureOf
+    // can still tell an out-of-credit account from any other failure.
     const msg = err instanceof Error ? err.message : String(err);
-    throw new Error(`macro-themes generation failed: ${msg}`);
+    throw new Error(`macro-themes generation failed: ${msg}`, { cause: err });
   }
 
   const replied = parseThemesJson(rawText);

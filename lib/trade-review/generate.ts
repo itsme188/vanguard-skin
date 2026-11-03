@@ -2,6 +2,7 @@ import type Database from "better-sqlite3";
 import { jsonSchema } from "ai";
 import { generateObjectForFeature } from "@/lib/ai/generate";
 import { resolveFeatureModel } from "@/lib/ai/models";
+import { userFacingModelLabel } from "@/lib/ai/model-families";
 import type { FeatureKey } from "@/lib/ai/feature-keys";
 import {
   getRoundTrips,
@@ -409,7 +410,7 @@ export async function generateTradeReview(
   );
 
   options?.onProgress?.(
-    `Analyzing ${tradeCount} trade(s) with ${modelSpec}...`,
+    `Analyzing ${tradeCount} trade(s) with ${userFacingModelLabel(modelSpec)}...`,
     4,
     totalSteps
   );
@@ -533,7 +534,7 @@ export async function generateTradeReview(
         : "tradeReviewMain";
     const fallbackSpec = resolveFeatureModel(fallbackKey).modelId;
     options?.onProgress?.(
-      `Primary model (${modelSpec}) returned empty markdown twice — falling back to ${fallbackSpec}...`,
+      `Primary model (${userFacingModelLabel(modelSpec)}) returned empty markdown twice — falling back to ${userFacingModelLabel(fallbackSpec)}...`,
       4,
       totalSteps
     );
