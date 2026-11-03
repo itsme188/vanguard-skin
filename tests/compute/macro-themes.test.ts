@@ -278,7 +278,7 @@ describe("macro-themes generation errors carry no model family name", () => {
 
   it("throws generic generation-failed / refused messages", () => {
     expect(src).toContain("throw new Error(`macro-themes generation refused`)");
-    expect(src).toContain("throw new Error(`macro-themes generation failed: ${msg}`)");
+    expect(src).toContain("throw new Error(`macro-themes generation failed: ${msg}`, { cause: err })");
   });
 
   it("names no model family in any thrown or returned string", () => {

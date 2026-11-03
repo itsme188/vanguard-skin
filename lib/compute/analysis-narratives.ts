@@ -511,14 +511,20 @@ export async function generateNarrative(
     });
     rawText = result.text;
   } catch (err) {
+    // No model family in the text (CLAUDE.md: never name a model in user
+    // copy), and `cause` carries the provider's error so the route's
+    // accountFailureOf can still tell an out-of-credit account from any
+    // other failure.
     if (err instanceof AIRefusalError) {
       throw new Error(
-        `Sonnet narrative generation refused for ${opts.scope}/${opts.surfaceKey}`
+        `narrative generation refused for ${opts.scope}/${opts.surfaceKey}`,
+        { cause: err }
       );
     }
     const msg = err instanceof Error ? err.message : String(err);
     throw new Error(
-      `Sonnet narrative generation failed for ${opts.scope}/${opts.surfaceKey}: ${msg}`
+      `narrative generation failed for ${opts.scope}/${opts.surfaceKey}: ${msg}`,
+      { cause: err }
     );
   }
 

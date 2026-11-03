@@ -205,8 +205,14 @@ export async function POST(req: NextRequest) {
         { status: 503 }
       );
     }
+    // Any other failure: the thrown text can carry raw provider prose, so it
+    // goes to the server log only and the body says what a reader can act on.
+    console.error(
+      `[narrative] generation failed for ${scope}/${surface}:`,
+      e instanceof Error ? e.message : e
+    );
     return NextResponse.json(
-      { success: false, error: e instanceof Error ? e.message : "Failed" },
+      { success: false, error: "Couldn't generate the narrative — try again in a few minutes." },
       { status: 500 }
     );
   }
