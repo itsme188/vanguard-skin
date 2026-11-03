@@ -7,7 +7,9 @@ import { setFeatureModelOverrideSource } from "./ai/override-source";
 import { getFeatureModelOverrides } from "./queries/ai-model-overrides";
 import { setModelCatalogSource } from "./ai/catalog-source";
 import { getModelCatalog } from "./ai/model-catalog";
-import { setFailoverRecorder } from "./ai/failover";
+import { setFailoverRecorder, setFailoverEnabledSource, setFailoverFallbackSource } from "./ai/failover";
+import { getFailoverEnabledFeatures, getFailoverFallbacks } from "./queries/ai-failover-settings";
+import type { FeatureKey } from "./ai/feature-keys";
 import { recordFailoverEvent } from "./mutations/ai-failover-log";
 
 // DATABASE_PATH wins (full path to a .db file). Falls back to
@@ -35,3 +37,7 @@ setFeatureModelOverrideSource(() => getFeatureModelOverrides(db));
 setModelCatalogSource(() => getModelCatalog(db));
 // Provider failover (design slice 2): note each switch durably, same seam shape.
 setFailoverRecorder((event) => recordFailoverEvent(db, event));
+// Provider failover settings (slice 4): rollout set + ordered fallback lists. Both
+// default to empty; the executor still intersects the set with its section 4 ceiling.
+setFailoverEnabledSource(() => new Set(getFailoverEnabledFeatures(db) as FeatureKey[]));
+setFailoverFallbackSource(() => getFailoverFallbacks(db));

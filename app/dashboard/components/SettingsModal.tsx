@@ -6,6 +6,7 @@ import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { createPortal } from "react-dom";
 import { useElectron } from "@/lib/hooks/useElectron";
 import { AiModelsSection } from "./AiModelsSection";
+import { AiFailoverSection } from "./AiFailoverSection";
 import { EarningsEmailsSection } from "./EarningsEmailsSection";
 import { EmailRecipientsSection } from "./EmailRecipientsSection";
 import { PlaidSection } from "./PlaidSection";
@@ -432,6 +433,14 @@ export function SettingsModal() {
               {!unavailableReason && (
                 <div className="pt-2 border-t border-edge">
                   <AiModelsSection />
+                </div>
+              )}
+
+              {/* AI provider failover — DB-backed (settings keys ai_failover_enabled /
+                  ai_failover_fallbacks). Off until switched on; parked features have no controls. */}
+              {!unavailableReason && (
+                <div className="pt-2 border-t border-edge">
+                  <AiFailoverSection />
                 </div>
               )}
 

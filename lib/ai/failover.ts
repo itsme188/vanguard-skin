@@ -36,7 +36,7 @@
  */
 import type { LanguageModel } from "ai";
 import type { FeatureKey } from "@/lib/ai/feature-keys";
-import { FEATURE_MODELS, resolveFeatureModel, type ResolvedModel } from "@/lib/ai/models";
+import { FEATURE_MODELS, expandSpec, resolveFeatureModel, type ResolvedModel } from "@/lib/ai/models";
 import { resolveProviderTierModel, type Tier } from "@/lib/ai/model-tiers";
 import { getModelForResolved } from "@/lib/ai/provider";
 import { classifyEnrichmentError } from "@/lib/gmail/enrichment-failure";
@@ -111,6 +111,33 @@ export function isFailoverEnabled(feature: FeatureKey): boolean {
   return (enabledSource ? enabledSource() : FAILOVER_ENABLED_DEFAULT).has(feature);
 }
 
+/**
+ * The earnings print-prep features the settings UX can switch as ONE group
+ * (design §7 "one-click group toggle"). Every member is inside the ceiling;
+ * the preview/recap web_search features are deliberately absent (parked).
+ */
+export const EARNINGS_PREP_FAILOVER_GROUP: readonly FeatureKey[] = [
+  "newsletterBogeyExtraction",
+  "printWatchFirstPass",
+  "printFilingSummary",
+  "transcriptSummary",
+  "earningsDebrief",
+  "earningsDateVerification",
+];
+
+let fallbackSource: (() => Readonly<Record<string, readonly string[]>>) | null = null;
+
+/**
+ * Inject the per-feature ordered fallback lists (feature -> provider-qualified
+ * specs, e.g. ["openai/$workhorse"]). lib/db.ts registers the settings-backed
+ * reader; null (and an absent feature) means the default order.
+ */
+export function setFailoverFallbackSource(
+  fn: (() => Readonly<Record<string, readonly string[]>>) | null,
+): void {
+  fallbackSource = fn;
+}
+
 /** The failure kinds that switch providers (design §4). */
 export type FailoverTriggerKind = "billing" | "auth" | "config";
 const TRIGGER_KINDS: ReadonlySet<string> = new Set<FailoverTriggerKind>(["billing", "auth", "config"]);
@@ -136,6 +163,8 @@ function tierOf(feature: FeatureKey): Tier | null {
 
 /** The fallback legs for a feature, in order: later providers than its primary, at the same tier. */
 export function failoverTargets(feature: FeatureKey): ResolvedModel[] {
+  const listed = configuredTargets(feature);
+  if (listed) return listed;
   const tier = tierOf(feature);
   if (!tier) return [];
   const primaryIndex = PROVIDER_ORDER.indexOf(resolveFeatureModel(feature).provider);
@@ -145,6 +174,30 @@ export function failoverTargets(feature: FeatureKey): ResolvedModel[] {
     if (modelId) targets.push({ provider, modelId });
   }
   return targets;
+}
+
+/**
+ * The operator's ordered list for a feature (Settings → AI failover), expanded
+ * per provider exactly like a model override. An entry that no longer parses,
+ * or names the feature's own primary provider, is dropped; an empty result
+ * falls back to the default order (null).
+ */
+function configuredTargets(feature: FeatureKey): ResolvedModel[] | null {
+  const specs = fallbackSource?.()[feature];
+  if (!specs || specs.length === 0) return null;
+  const primary = resolveFeatureModel(feature).provider;
+  const out: ResolvedModel[] = [];
+  for (const spec of specs) {
+    let target: ResolvedModel;
+    try {
+      target = expandSpec(spec);
+    } catch {
+      continue;
+    }
+    if (target.provider === primary || out.some((t) => t.provider === target.provider)) continue;
+    out.push(target);
+  }
+  return out.length > 0 ? out : null;
 }
 
 // ── The record of a switch ───────────────────────────────────────────
