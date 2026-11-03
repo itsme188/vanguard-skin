@@ -26,6 +26,7 @@ import type Database from "better-sqlite3";
 import { parseStoredTimestamp } from "@/lib/format";
 import { addDays, todayET } from "@/lib/calendar/date-utils";
 import { familyNowLabel, modelLabel } from "@/lib/ai/model-families";
+import { failoverBanner, failoverLabel, readSectionFailover } from "./ran-on";
 import { choiceLabel, SUMMARY_CHOICES } from "./choice";
 import { countStatuses } from "./evaluate";
 import { secArchiveUrl, textFragmentUrl } from "./locate";
@@ -141,6 +142,8 @@ export interface RunSummary {
   modelLabel: string;
   effort: SummaryEffort;
   fallbackNote: string | null;
+  /** Set when sections were written by a fallback model after an Anthropic account failure: "OpenAI gpt-6-astra". */
+  ranOn?: string | null;
   /** Over every done section's claims (`countStatuses`). */
   counts: StatusCounts;
   /** Any section's coverage skipped or failed a document (Hardening 6). */
@@ -271,6 +274,10 @@ export interface FullSection {
   attempts: number;
   modelLabel: string | null;
   effort: string | null;
+  /** Set when a fallback model wrote this section: "OpenAI gpt-6-astra". */
+  ranOn?: string | null;
+  /** The primary's failure kind behind ranOn (billing | auth | config). */
+  ranOnKind?: string | null;
   /** Null until the section is done. */
   headline: string | null;
   claims: ViewClaim[];
@@ -290,6 +297,8 @@ export interface FullRun {
   effort: SummaryEffort;
   modelLabel: string;
   fallbackNote: string | null;
+  /** See RunSummary.ranOn. */
+  ranOn?: string | null;
   createdAtEt: string | null;
   createdOnEt: string | null;
   finishedAtEt: string | null;
@@ -671,6 +680,7 @@ function buildSections(rows: SectionRow[], filingsById: Map<number, FilingRow>, 
       };
     });
     const coverage = parseJson<CoverageEntry[]>(s.coverageJson);
+    const ranOn = s.status === "done" ? readSectionFailover(s.versionsJson) : null;
     return {
       sectionId: s.id,
       seq: s.seq,
@@ -687,6 +697,7 @@ function buildSections(rows: SectionRow[], filingsById: Map<number, FilingRow>, 
       attempts: s.attempts,
       modelLabel: s.modelId ? modelLabel(s.modelId) : null,
       effort: s.effort,
+      ...(ranOn ? { ranOn: failoverLabel(ranOn), ranOnKind: ranOn.kind } : {}),
       headline: checked ? checked.headline : null,
       claims,
       counts: checked ? countStatuses(claims) : null,
@@ -723,6 +734,15 @@ function buildRun(db: Database.Database, run: RunRow, filingsById: Map<number, F
     for (const [k, v] of Object.entries(s.usage ?? {})) usage[k] = (usage[k] ?? 0) + v;
   }
   const label = run.modelId ? modelLabel(run.modelId) : capitalise(run.family);
+  // Sections a fallback model wrote after an Anthropic account failure: name them, never
+  // leave the run's pinned model standing for work it did not do.
+  const fallbackWritten = sections.filter((x) => x.status === "done" && x.ranOn);
+  const ranOnLabels = fallbackWritten.map((x) => x.ranOn as string);
+  const allOnFallback = fallbackWritten.length > 0 && fallbackWritten.length === sections.filter((x) => x.status === "done").length;
+  const ranOn = ranOnLabels.length === 0 ? null : allOnFallback ? [...new Set(ranOnLabels)].join(" and ") : null;
+  const failoverNote =
+    ranOnLabels.length > 0 ? failoverBanner(ranOnLabels, fallbackWritten[0].ranOnKind ?? "billing") : null;
+  const fallbackNote = [run.fallbackNote, failoverNote].filter((x): x is string => !!x).join(" ") || null;
   const full: FullRun = {
     runId: run.id,
     runNo: run.runNo,
@@ -731,7 +751,8 @@ function buildRun(db: Database.Database, run: RunRow, filingsById: Map<number, F
     family: run.family,
     effort: run.effort,
     modelLabel: label,
-    fallbackNote: run.fallbackNote,
+    fallbackNote,
+    ranOn,
     createdAtEt: etTime(run.createdAt),
     createdOnEt: etDate(run.createdAt),
     finishedAtEt: etTime(run.finishedAt),
@@ -750,7 +771,8 @@ function buildRun(db: Database.Database, run: RunRow, filingsById: Map<number, F
     trigger: run.trigger,
     modelLabel: label,
     effort: run.effort,
-    fallbackNote: run.fallbackNote,
+    fallbackNote,
+    ranOn,
     counts,
     incomplete,
     top: doneClaims.filter((c) => c.top).slice(0, 3),
