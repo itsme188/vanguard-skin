@@ -35,6 +35,7 @@ import {
 } from "./dst";
 import { runFallbackDigest, type FallbackResult } from "./fallback-digest";
 import { runFallbackBriefing } from "./fallback-briefing";
+import { getAiOutage } from "./ai-outage";
 import { runFallbackEvening } from "./fallback-evening";
 import { isMarketHoliday, shouldSendBriefingToday } from "./market-holidays";
 import {
@@ -181,7 +182,10 @@ interface RunJobResult {
     | "mac_still_running"
     | "cloud_attempt_in_flight"
     | "market_holiday"
-    | "not_briefing_day";
+    | "not_briefing_day"
+    | "ai_unavailable";
+  /** The account-failure kind behind skipped: "ai_unavailable". */
+  kind?: string;
   fallback?: FallbackResult;
   sentBy?: SentBy;
 }
@@ -229,6 +233,18 @@ export async function runJob(type: JobType, env: Env, opts: RunJobOpts = {}): Pr
     // 4 emails before the first one finishes its 5-min run.
     if (markers.cloudAttempting) return { skipped: "cloud_attempt_in_flight" };
     if (markers.macRunning) return { skipped: "mac_still_running" };
+  }
+
+  // The briefing has no degraded layout: while the AI account is known to be down
+  // (marker written by a real account-level failure, expires by itself) it waits
+  // instead of re-fetching Gmail and re-calling a dead account every 15 minutes.
+  // The digest and evening still run: they send their snapshot-based layouts.
+  if (type === "briefing" && !opts.dryRun && !opts.force) {
+    const outage = await getAiOutage(env.CRON_KV);
+    if (outage) {
+      console.log(`[runJob briefing] AI unavailable (${outage.kind} since ${outage.since}) — parked until the marker lapses.`);
+      return { skipped: "ai_unavailable", kind: outage.kind };
+    }
   }
 
   // Claim the fallback BEFORE the heavy Gmail+Claude+Resend work. The 10-min

@@ -34,6 +34,7 @@ import {
 import { loadLatestSnapshot, type Snapshot } from "./state";
 import { shouldSummarizeArticle, UNSUMMARIZED_SOURCES } from "./enrichment-policy";
 import { generateWithFailover, structuredOutputProviderOptions } from "./ai";
+import { accountFailureOf, aiUnavailableReason, getAiOutage, recordAiOutage } from "./ai-outage";
 import { normalizeThemes, sanitizeModelSummary } from "./fallback-digest";
 import { getCurrentETHour, getCurrentETMinute } from "./dst";
 
@@ -53,7 +54,7 @@ export interface NewsletterFetchEnv {
 }
 
 export interface NewsletterFetchResult {
-  kind: "success" | "no_snapshot" | "no_articles" | "skipped" | "error";
+  kind: "success" | "no_snapshot" | "no_articles" | "skipped" | "error" | "ai_unavailable";
   fetched?: number;
   reason?: string;
   error?: string;
@@ -180,6 +181,12 @@ export async function runNewsletterFetch(
     return { kind: "skipped", reason: "mac-recent-newsletter-sync marker present" };
   }
 
+  // Parked while the AI account is known to be down: this fetch has no
+  // degraded alternative, so it waits for the marker to lapse (then one tick
+  // probes again) instead of listing Gmail and calling a dead account.
+  const outage = await getAiOutage(env.CRON_KV);
+  if (outage) return { kind: "ai_unavailable", reason: aiUnavailableReason(outage.kind) };
+
   const snapshot = await loadSnapshot(env.ARCHIVE);
   if (!snapshot) return { kind: "no_snapshot" };
 
@@ -305,6 +312,17 @@ export async function runNewsletterFetch(
         totalFetched++;
       } catch (err) {
         console.warn(`[newsletter-fetch] article ${m.id} failed:`, err);
+        // An account-level failure would fail every remaining article the same
+        // way. Stop here; what was already fetched stays stored.
+        const accountKind = accountFailureOf(err);
+        if (accountKind) {
+          await recordAiOutage(env.CRON_KV, accountKind);
+          return {
+            kind: "ai_unavailable",
+            fetched: totalFetched,
+            reason: aiUnavailableReason(accountKind),
+          };
+        }
       }
     }
   }

@@ -22,6 +22,7 @@ import { generateText } from "ai";
 import { loadLatestSnapshot, type Snapshot } from "./state";
 import { sendEmail } from "./resend";
 import { generateWithFailover } from "./ai";
+import { accountFailureOf, aiUnavailableReason, recordAiOutage } from "./ai-outage";
 import { briefingToHtml } from "./html";
 import { todayET, getCurrentETDayOfWeek, etDateOfStoredUtc } from "./dst";
 import type { FallbackEnv, FallbackResult } from "./fallback-digest";
@@ -103,6 +104,14 @@ export async function runFallbackBriefing(
       );
     }
   } catch (err) {
+    // An ACCOUNT-level failure (credit, key, service) is parked, not reported as
+    // a generic failure: note the outage so the next ticks do not re-fetch Gmail
+    // and re-call a dead account, and return the distinct kind.
+    const accountKind = accountFailureOf(err);
+    if (accountKind) {
+      await recordAiOutage(env.CRON_KV, accountKind);
+      return { kind: "ai_unavailable", reason: aiUnavailableReason(accountKind) };
+    }
     // The credit-exhaustion / rate-limit analog. Surface loudly as kind:"error"
     // instead of letting it throw raw through runJob's catch-all (which loses
     // the stage context). This is the branch that hid the 5/20 outage.

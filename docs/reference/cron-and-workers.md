@@ -713,3 +713,17 @@ aws4fetch S3 GET (`Last-Modified`). See `memory/reference_r2_snapshot_debugging.
 ## 13. Manual-twin email rule mirror (2026-10-07)
 
 `workers/cron/src/manual-twin-email.ts` is a byte-for-byte copy of `lib/earnings/manual-twin-email.ts` (parity test in `workers/cron/test`). The Worker's fallback scan and wrap cluster apply it exactly as the Mac's finders do: among live hand-entered earnings rows of one issuer family within a chained 14-day window, only the earliest-dated row is an email candidate. Deploy the Worker together with the Mac whenever this rule changes.
+
+## AI account outage posture (provider-failover slice 5, 2026-11-02)
+
+When the Anthropic ACCOUNT fails (billing, auth, config, or a transient rate limit / outage / network
+kind), the Worker parks instead of hammering the account and mislabelling the result. It uses the same
+classifier vocabulary as the Mac: `workers/cron/src/enrichment-failure.ts` is a byte-identical copy of
+`lib/gmail/enrichment-failure.ts` (parity-pinned by `tests/gmail/enrichment-failure-worker-parity.test.ts`).
+`workers/cron/src/ai-outage.ts` holds `accountFailureOf`, a KV marker `ai-unavailable` (30 min for persistent
+kinds, 5 min for transient; first `since` kept; self-expiring) and the distinct result kind `ai_unavailable`.
+
+- The shared article loop (`fetchAndProcessNewArticles`, digest + evening) and the hourly newsletter fetch stop at the FIRST account-level failure.
+- Newsletter fetch and the briefing (no degraded layout) wait while the marker is live; the digest and evening still send their snapshot-based layouts. A manual `force` trigger bypasses the wait.
+- An article-level failure, or a Gmail failure, is never read as an outage. Happy path unchanged.
+- Worker provider routing (a fallback model) is separate work and not part of this.
