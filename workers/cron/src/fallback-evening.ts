@@ -25,6 +25,7 @@ import { generateText, generateObject, jsonSchema } from "ai";
 import { loadLatestSnapshot, type Snapshot, type RecentArticleMeta } from "./state";
 import { sendEmail } from "./resend";
 import { generateWithFailover } from "./ai";
+import { accountFailureOf, recordAiOutage } from "./ai-outage";
 import { briefingToHtml } from "./html";
 import { todayET } from "./dst";
 import {
@@ -574,6 +575,10 @@ async function synthesizeViaAI(
     return notice ? `${out}\n\n${notice}` : out;
   } catch (err) {
     console.warn("[fallback-evening] synthesis failed:", err);
+    // The per-source layout still ships (unchanged); the outage is only NOTED so
+    // the hourly newsletter fetch and the briefing stop calling a dead account.
+    const accountKind = accountFailureOf(err);
+    if (accountKind) await recordAiOutage(env.CRON_KV, accountKind);
     return null;
   }
 }

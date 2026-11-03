@@ -28,6 +28,7 @@ import {
 import { sendEmail } from "./resend";
 import { loadLatestSnapshot, type Snapshot, type RecentArticleMeta } from "./state";
 import { generateWithFailover, structuredOutputProviderOptions } from "./ai";
+import { accountFailureOf, aiUnavailableReason, recordAiOutage, type AccountFailureKind } from "./ai-outage";
 import { briefingToHtml } from "./html";
 import { todayET } from "./dst";
 import { sourceKind, editionLabel } from "./editions";
@@ -72,7 +73,7 @@ export interface FallbackEnv {
 }
 
 export interface FallbackResult {
-  kind: "success" | "no_snapshot" | "no_articles" | "skipped" | "error";
+  kind: "success" | "no_snapshot" | "no_articles" | "skipped" | "error" | "ai_unavailable";
   sentMessageId?: string;
   processedCount?: number;
   reason?: string;
@@ -99,6 +100,8 @@ export interface FetchAndProcessResult {
   listErrors: number;
   articleErrors: number;
   lastError: string | null;
+  /** Set when an AI call failed at the ACCOUNT level; the loop stopped there (no more doomed calls). */
+  aiUnavailable?: AccountFailureKind;
 }
 
 /**
@@ -138,6 +141,7 @@ export async function fetchAndProcessNewArticles(
   let listErrors = 0;
   let articleErrors = 0;
   let lastError: string | null = null;
+  let aiUnavailable: AccountFailureKind | undefined;
 
   for (const source of activeSources) {
     if (processed.length >= maxArticles) break;
@@ -157,9 +161,17 @@ export async function fetchAndProcessNewArticles(
       if (processed.length >= maxArticles) break;
       if (alreadyProcessedIds.has(m.id)) continue;
 
+      let detail: ExtractedMessage | null;
       try {
-        const detail = extractMessage(await getMessage(accessToken, m.id));
-        if (!detail) continue;
+        detail = extractMessage(await getMessage(accessToken, m.id));
+      } catch (err) {
+        articleErrors++;
+        lastError = err instanceof Error ? err.message : String(err);
+        console.warn(`[fallback-fetch] article ${m.id} failed:`, err);
+        continue;
+      }
+      if (!detail) continue;
+      try {
         const article = await processArticle(env, source, detail, heldSymbolsContext, catalog);
         if (article) {
           article.gmail_message_id = m.id;
@@ -169,6 +181,14 @@ export async function fetchAndProcessNewArticles(
         articleErrors++;
         lastError = err instanceof Error ? err.message : String(err);
         console.warn(`[fallback-fetch] article ${m.id} failed:`, err);
+        // An ACCOUNT-level AI failure (credit, key, service) hits every remaining
+        // article the same way: stop calling, note the outage, report it honestly.
+        const accountKind = accountFailureOf(err);
+        if (accountKind) {
+          aiUnavailable = accountKind;
+          await recordAiOutage(env.CRON_KV, accountKind);
+          return { processed, listErrors, articleErrors, lastError, aiUnavailable };
+        }
       }
     }
   }
@@ -208,7 +228,7 @@ export async function runFallbackDigest(
 
   // Live-fetch today's newsletters (the snapshot froze at 2am; intraday mail
   // isn't in recentArticlesMeta). Shared with the evening fallback.
-  const { processed: newProcessed, listErrors, articleErrors, lastError } =
+  const { processed: newProcessed, listErrors, articleErrors, lastError, aiUnavailable } =
     await fetchAndProcessNewArticles(env, snapshot);
 
   // Overnight scoreboard (numbers-only mirror of the Mac block) — ONE spark
@@ -228,6 +248,11 @@ export async function runFallbackDigest(
   const snapshotRecent = filterTodayArticles(snapshot.recentArticlesMeta);
   const digest = composeDigestMarkdown(newProcessed, snapshotRecent, overnightBlock, reportersBlock);
   if (!digest) {
+    // The account is down and there is nothing from the snapshot to send either:
+    // say so (parked, retried after the marker lapses) instead of a generic error.
+    if (aiUnavailable) {
+      return { kind: "ai_unavailable", reason: aiUnavailableReason(aiUnavailable), processedCount: 0 };
+    }
     if (articleErrors > 0 || listErrors > 0) {
       return {
         kind: "error",
