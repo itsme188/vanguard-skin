@@ -378,6 +378,12 @@ export function ScenarioModelingCard({ scope }: { scope?: string }) {
                   {result.rateHedgesUnmodelled.count === 1 ? "fund" : "funds"} not modelled
                 </div>
               )}
+              {!isExpanded && result.leveragedFundsUnmodelled.count > 0 && (
+                <div className="mt-1 text-[10px] text-ink-faint">
+                  <Count value={result.leveragedFundsUnmodelled.count} /> leveraged/inverse{" "}
+                  {result.leveragedFundsUnmodelled.count === 1 ? "fund" : "funds"} not modelled
+                </div>
+              )}
 
               {/* ── Expanded detail ── */}
               {isExpanded && (
@@ -569,6 +575,25 @@ export function ScenarioModelingCard({ scope }: { scope?: string }) {
                         {result.rateHedgesUnmodelled.count === 1 ? "fund" : "funds"} not modelled:{" "}
                         <span className="font-mono">{result.rateHedgesUnmodelled.symbols.join(", ")}</span>{" "}
                         — a rate hedge’s move is not a linear rate leg, so no figure is shown.
+                      </p>
+                    </div>
+                  )}
+
+                  {/* Leveraged / inverse funds no scenario models: a daily-reset
+                      fund has no linear leg and no stored sign or multiple yet
+                      (owner ruling 2026-11-01, stopgap), so it is named here,
+                      not hidden. Symbols are public data. */}
+                  {result.leveragedFundsUnmodelled.count > 0 && (
+                    <div>
+                      <h4 className="text-[10px] text-ink-faint uppercase tracking-wider mb-1.5">
+                        Leveraged / Inverse Funds Not Modelled
+                      </h4>
+                      <p className="text-xs text-ink-dim">
+                        <Count value={result.leveragedFundsUnmodelled.count} /> leveraged or inverse{" "}
+                        {result.leveragedFundsUnmodelled.count === 1 ? "fund" : "funds"} not modelled:{" "}
+                        <span className="font-mono">{result.leveragedFundsUnmodelled.symbols.join(", ")}</span>{" "}
+                        — a daily-reset leveraged or inverse fund does not move as a linear multiple over a
+                        multi-day shock, so no figure is shown; it is held out of the scenario total.
                       </p>
                     </div>
                   )}

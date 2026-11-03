@@ -32,6 +32,7 @@ import {
   type ExtractedMessage,
 } from "./gmail";
 import { loadLatestSnapshot, type Snapshot } from "./state";
+import { shouldSummarizeArticle, UNSUMMARIZED_SOURCES } from "./enrichment-policy";
 import { generateWithFailover, structuredOutputProviderOptions } from "./ai";
 import { normalizeThemes, sanitizeModelSummary } from "./fallback-digest";
 import { getCurrentETHour, getCurrentETMinute } from "./dst";
@@ -212,8 +213,15 @@ export async function runNewsletterFetch(
     if (m) alreadyProcessedIds.add(m[1]);
   }
 
+  // Owner ruling 2026-11-02 (AI-spend cut): never-summarized sources are not
+  // fetched here at all; the Mac ingests them raw later. Mirror of the Mac
+  // queue gate (lib/gmail/enrichment-policy.ts, byte-identical copy).
+  const neverSummarized = new Set(UNSUMMARIZED_SOURCES.map((n) => n.toLowerCase()));
   const activeSources = snapshot.researchSources.filter(
-    (s) => s.is_active === 1 && s.sender_email,
+    (s) =>
+      s.is_active === 1 &&
+      s.sender_email &&
+      !neverSummarized.has(s.name.trim().toLowerCase()),
   );
 
   console.log(
@@ -252,6 +260,13 @@ export async function runNewsletterFetch(
         const detail = d.extractMessage(await d.getMessage(accessToken, m.id));
         if (!detail) {
           console.log(`[newsletter-fetch] ${source.name} msg=${m.id} extractMessage returned null`);
+          continue;
+        }
+
+        // Subject-gated sources (Vital Knowledge: only Vital Dawn) skip the
+        // model for every other issue; nothing is stored, the Mac ingests it.
+        if (!shouldSummarizeArticle(source.name, detail.subject)) {
+          console.log(`[newsletter-fetch] ${source.name} msg=${m.id} not summarized (policy)`);
           continue;
         }
 
