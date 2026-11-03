@@ -69,6 +69,8 @@ export interface PrintOutputsWire {
     reason: string | null;
     state: "unsent" | "in-flight" | "sent" | "sent-by-cloud" | "delivery-unknown";
     providerMessageId: string | null;
+    /** T1 chip-and-hold: the auto-recap is held (figure conflict, or the check could not run). Absent on an older server. */
+    hold?: { kind: "conflict" | "unchecked"; reason: string } | null;
   };
 }
 

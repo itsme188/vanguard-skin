@@ -84,6 +84,10 @@ export interface SweepCandidateResult {
     | "entry-replaced"
     | "later-manual-entry"
     | "entry-not-found"
+    /** The auto-recap is held by the figure check (accepted filing figure vs
+     *  vendor feed, or the check could not run). Nothing claimed or recorded;
+     *  a human send or agreeing figures release it. */
+    | "recap-held"
     | "wrap-pending"
     | "already-reported"
     /** A late-arm preview whose window closed while earlier candidates in
@@ -370,7 +374,11 @@ export async function processSweepCandidate(
       return ({
         ...base,
         ok: true,
-        skipped: outcome.code ? ROW_REFUSAL_SKIP[outcome.code] : "not-ready",
+        skipped: outcome.hold
+          ? "recap-held"
+          : outcome.code
+            ? ROW_REFUSAL_SKIP[outcome.code]
+            : "not-ready",
         status: outcome.status,
         message: outcome.reason,
       });

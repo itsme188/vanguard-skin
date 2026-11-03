@@ -69,6 +69,7 @@ import {
   type SendServiceSeams,
 } from "@/lib/earnings/send-service";
 import { DELIVERY_UNKNOWN } from "@/lib/earnings/email-states";
+import { getRecapHold } from "@/lib/earnings/figure-conflict";
 import { recordCloudSentAudit } from "@/lib/mutations/earnings-emails";
 import { sendPushover, type PushoverMessage } from "@/lib/alerts/notify-pushover";
 import { generateTextForFeature } from "@/lib/ai/generate";
@@ -160,6 +161,16 @@ export async function runMorningDebrief(
   // the batch (see file header).
   const claims: FreshClaim[] = [];
   for (const candidate of unsent) {
+    // The morning debrief is an automatic recap too: a print whose accepted
+    // filing figure disagrees with the vendor (or whose check could not run)
+    // is not narrated until a human sends its recap (T1 chip-and-hold).
+    const hold = getRecapHold(db, candidate.eventId);
+    if (hold.held) {
+      console.warn(
+        `[debrief] ${candidate.symbol} (event ${candidate.eventId}) held out of the debrief: ${hold.kind}`,
+      );
+      continue;
+    }
     const claim = claimEarningsEmailSlot(db, candidate.eventId, "recap", recipient);
     if (!claim.claimed && isEmailRowRefusal(claim.reason)) {
       // The claim re-reads the calendar row in its own transaction: an entry

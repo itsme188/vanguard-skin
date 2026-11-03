@@ -50,6 +50,7 @@
  * names into a single message and must run the identical choreography.
  */
 import { randomUUID } from "node:crypto";
+import { getRecapHold } from "@/lib/earnings/figure-conflict";
 import type Database from "better-sqlite3";
 import { sendEmail, type SendEmailResult } from "@/lib/email";
 import {
@@ -139,7 +140,16 @@ export type SendOutcome =
   /** `code` is set when the refusal is about the CALENDAR ROW (it is not the
    *  print's email row), as opposed to a not-ready compose. `reason` is the
    *  sentence for the desk either way. */
-  | { outcome: "refused"; reason: string; status: number; code?: EmailRowRefusal }
+  | {
+      outcome: "refused";
+      reason: string;
+      status: number;
+      code?: EmailRowRefusal;
+      /** Set when the AUTO-recap was held by the figure check (lib/earnings/figure-conflict.ts):
+       *  `conflict` = the accepted and vendor figures disagree past the threshold,
+       *  `unchecked` = the check could not run. Never set for a nudge or manual send. */
+      hold?: "conflict" | "unchecked";
+    }
   | { outcome: "failed"; reason: string; status: number };
 
 /**
@@ -607,6 +617,21 @@ export async function sendEarningsCandidate(
       reason: "No recipient. Set BRIEFING_EMAIL_TO env var or pass 'recipient'.",
       status: 400,
     };
+  }
+
+  // (1a) figure-conflict hold — the SWEEP's recap only (T1 chip-and-hold,
+  // 2026-11-01 ruling). The nudge and the manual route are a human pressing a
+  // button, so they are never held: sending by hand is how the hold is
+  // released. Nothing is claimed or written here, so the hold costs no retry
+  // and lifts the moment the figures agree or a human sends.
+  if (opts.mode === "sweep" && phase === "recap" && !candidate.reporterRecap) {
+    const hold = getRecapHold(db, eventId);
+    if (hold.held) {
+      console.warn(
+        `[send-service] recap ${eventId} (${candidate.symbol}, sweep): held, ${hold.kind}`,
+      );
+      return { outcome: "refused", reason: hold.reason, status: 409, hold: hold.kind };
+    }
   }
 
   // (1b) cloud pre-check — automatic modes only (R-E6)

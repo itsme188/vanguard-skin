@@ -19,6 +19,7 @@
 
 import { CHIP_TONE_TEXT } from "@/app/dashboard/components/chip-tone-text";
 import { useState } from "react";
+import { Chip } from "@/app/dashboard/components/Chip";
 import apiFetch from "@/lib/http/apiFetch";
 import { networkFailureMessage } from "@/lib/ui/mutation-result";
 import type { PrintOutputsWire } from "../hub-live/types";
@@ -175,6 +176,14 @@ export default function PrintOutputs({
           reader that never hovers. */}
       {sheetReason && <p className="text-[11px] text-ink-faint mt-1">Print sheet: {sheetReason}</p>}
       {recapReason && <p className="text-[11px] text-ink-faint mt-1">Send recap: {recapReason}</p>}
+      {recap.hold && (
+        <p className="mt-1 flex items-start gap-1.5 flex-wrap text-[12px] text-ink-dim">
+          <Chip tone="warn" size="xs" wrap>
+            {recap.hold.kind === "conflict" ? "Figure conflict" : "Figures not compared"} · auto-recap held
+          </Chip>
+          <span>{recap.hold.reason}</span>
+        </p>
+      )}
       <p className="text-[11px] text-ink-faint mt-1">
         recap · {recap.state}
         {recap.providerMessageId ? ` · message ${recap.providerMessageId}` : ""}

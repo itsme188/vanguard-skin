@@ -173,6 +173,7 @@ describe("sendRecap", () => {
       reason: GATE_NOT_ACCEPTED,
       state: "unsent",
       providerMessageId: null,
+      hold: null,
     });
   });
 
@@ -189,6 +190,7 @@ describe("sendRecap", () => {
       reason: null,
       state: "unsent",
       providerMessageId: null,
+      hold: null,
     });
   });
 
@@ -211,6 +213,7 @@ describe("sendRecap", () => {
       reason: GATE_PAIR_CHANGED,
       state: "unsent",
       providerMessageId: null,
+      hold: null,
     });
   });
 
@@ -262,6 +265,7 @@ describe("sendRecap", () => {
       reason: GATE_NO_PRINT,
       state: "unsent",
       providerMessageId: null,
+      hold: null,
     });
   });
 });

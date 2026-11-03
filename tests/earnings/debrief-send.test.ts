@@ -147,6 +147,25 @@ const stubGenerate = (text = "# What changed overnight\n- bullet one") =>
   vi.fn().mockResolvedValue(text);
 
 describe("runMorningDebrief", () => {
+  it("T1 chip-and-hold: a print whose accepted figure disagrees with the vendor is left out of the debrief", async () => {
+    const heldId = seedCandidate("AAA");
+    seedCandidate("BBB");
+    db.prepare(
+      `UPDATE calendar_events SET actual_value = 'EPS 1.50', vendor_actual_value = 'EPS 1.00',
+              manual_actuals_at = datetime('now') WHERE id = ?`,
+    ).run(heldId);
+
+    const res = await runMorningDebrief(db, {
+      now: NOW_IN_WINDOW,
+      recipient: RECIPIENT,
+      generate: stubGenerate(),
+    });
+
+    expect(res.sent).toBe(true);
+    expect(res.covered).toEqual(["BBB"]);
+    expect(auditRows().map((r) => r.event_id)).not.toContain(heldId);
+  });
+
   it("outside 07:45–08:20 ET → skippedReason outside-window (no writes)", async () => {
     seedCandidate("AAA");
 

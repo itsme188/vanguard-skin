@@ -101,6 +101,7 @@ describe("GET /api/print-watch/status carries outputs per print", () => {
         reason: GATE_NOT_ACCEPTED,
         state: "unsent",
         providerMessageId: null,
+        hold: null,
       },
     });
     // D's and C's fields survive untouched.
