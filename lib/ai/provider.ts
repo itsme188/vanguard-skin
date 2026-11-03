@@ -10,7 +10,7 @@ import {
   getCloudflareWorkersAIToken,
   type CloudflareGatewayConfig,
 } from "@/lib/env";
-import { resolveFeatureModel } from "@/lib/ai/models";
+import { resolveFeatureModel, type ResolvedModel } from "@/lib/ai/models";
 import type { FeatureKey } from "@/lib/ai/feature-keys";
 
 /**
@@ -70,7 +70,20 @@ function gatewayHeaders(
  *   const { text } = await generateText({ model, prompt, maxOutputTokens });
  */
 export function getModelForFeature(feature: FeatureKey): LanguageModel {
-  const { provider, modelId } = resolveFeatureModel(feature);
+  return getModelForResolved(feature, resolveFeatureModel(feature));
+}
+
+/**
+ * Build the LanguageModel for an already-resolved (provider, modelId) pair.
+ * getModelForFeature is this over the feature's own resolution; the failover
+ * executor (lib/ai/failover.ts) calls it with a FALLBACK provider's pair.
+ * Throws when that provider is not configured (missing key / gateway), which
+ * is how the executor knows a leg is inert.
+ */
+export function getModelForResolved(
+  feature: FeatureKey,
+  { provider, modelId }: ResolvedModel,
+): LanguageModel {
   const gw = getCloudflareGateway();
   const headers = gatewayHeaders(gw, feature);
 

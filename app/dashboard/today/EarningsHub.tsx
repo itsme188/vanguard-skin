@@ -59,6 +59,7 @@ import { bogeyHasContentSql } from "@/lib/mutations/earnings-bogeys";
 import { statusChipClass, statusChipLabel } from "./status-chip";
 import { Chip } from "../components/Chip";
 import { aiPrepPauseNotice, getAiPrepPause } from "@/lib/earnings/ai-unavailable";
+import { activeFailoverProviderName } from "@/lib/mutations/ai-failover-log";
 import { preReleaseClearsAtMs } from "./pre-release-clear";
 import {
   isPreReleaseActual,
@@ -342,7 +343,7 @@ export function EarningsHub() {
       {aiPause && (
         <div role="status" className="flex items-baseline gap-2 px-5 py-2 border-b border-edge text-[13px] text-ink">
           <Chip tone="warn" size="xs">AI paused</Chip>
-          <span>{aiPrepPauseNotice(aiPause, today)}</span>
+          <span>{aiPrepPauseNotice(aiPause, today, activeFailoverProviderName(db))}</span>
         </div>
       )}
 
