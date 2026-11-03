@@ -197,6 +197,11 @@ export function dropRevisionSecondDates<
  */
 const REVISION_LOOKBACK_DAYS = 21;
 
+/** Rows per FRED `releases/dates` page (FRED's own maximum is 1000). */
+const FRED_PAGE_LIMIT = 500;
+/** Upper bound on pages per request window, so a misbehaving answer cannot loop. */
+const FRED_MAX_PAGES = 20;
+
 // ── FOMC Meeting Dates ──────────────────────────────────────────
 //
 // Published annually by the Federal Reserve. These are the conclusion
@@ -330,21 +335,45 @@ async function fetchFredReleaseDates(
   // startDate..endDate below, so every other release returns what it did.
   url.searchParams.set("realtime_start", addDays(startDate, -REVISION_LOOKBACK_DAYS));
   url.searchParams.set("realtime_end", endDate);
-  url.searchParams.set("limit", "500");
+  url.searchParams.set("limit", String(FRED_PAGE_LIMIT));
   url.searchParams.set("sort_order", "asc");
 
-  const response = await fetch(url.toString());
-  if (!response.ok) {
-    throw new Error(`FRED release schedule request failed (HTTP ${response.status})`);
+  // FRED lists every release of every series, so the widened window can hold
+  // more rows than one page; sorted ascending, a first page can end BEFORE
+  // the asked week. That truncated answer is a SUCCESS, and read as "the
+  // source no longer publishes these dates" it deleted the week's rows. Page
+  // with `offset` until `count` is exhausted or a page passes endDate, and
+  // throw (the outage road) if the answer is still short of the week.
+  const releaseDates: FredReleaseDate[] = [];
+  let total: number | null = null;
+  for (let pageNo = 0; pageNo < FRED_MAX_PAGES; pageNo++) {
+    url.searchParams.set("offset", String(releaseDates.length));
+    const response = await fetch(url.toString());
+    if (!response.ok) {
+      throw new Error(`FRED release schedule request failed (HTTP ${response.status})`);
+    }
+    const data = (await response.json()) as { release_dates?: FredReleaseDate[]; count?: number };
+    const page = Array.isArray(data.release_dates) ? data.release_dates : [];
+    if (typeof data.count === "number" && Number.isFinite(data.count)) total = data.count;
+    releaseDates.push(...page);
+    if (page.length === 0) break;
+    if (total === null || releaseDates.length >= total) break;
+    if (page[page.length - 1].date > endDate) break;
   }
 
-  const data = (await response.json()) as { release_dates: FredReleaseDate[] };
+  const lastDate = releaseDates.length > 0 ? releaseDates[releaseDates.length - 1].date : null;
+  if (total !== null && total > releaseDates.length && (lastDate === null || lastDate < endDate)) {
+    throw new Error(
+      `FRED release schedule answer is truncated (${releaseDates.length} of ${total} rows, ` +
+        `last ${lastDate ?? "none"} before ${endDate}), so the week's schedule is incomplete`,
+    );
+  }
 
   // Filter to tracked releases only, dedup by release_id + date
   const seen = new Set<string>();
   const results: { date: string; config: FredReleaseConfig; fredName: string }[] = [];
 
-  for (const rd of data.release_dates) {
+  for (const rd of releaseDates) {
     const config = RELEASE_MAP.get(rd.release_id);
     if (!config) continue;
 
