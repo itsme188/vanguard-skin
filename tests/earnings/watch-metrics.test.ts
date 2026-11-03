@@ -196,7 +196,7 @@ function seedEvent(symbol = "XMPL"): number {
 }
 
 function seedArticle(text: string, receivedAt: string): number {
-  db.prepare(`INSERT OR IGNORE INTO research_sources (id, name) VALUES (9001, 'Desk Notes')`).run();
+  db.prepare(`INSERT OR IGNORE INTO research_sources (id, name) VALUES (9001, 'TMT Breakout')`).run();
   return Number(
     db
       .prepare(

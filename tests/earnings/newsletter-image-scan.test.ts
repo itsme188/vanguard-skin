@@ -51,7 +51,7 @@ beforeEach(() => {
   db = new Database(":memory:");
   db.pragma("foreign_keys = ON");
   runMigrations(db);
-  db.prepare(`INSERT OR IGNORE INTO research_sources (id, name) VALUES (9001, 'Desk Letter')`).run();
+  db.prepare(`INSERT OR IGNORE INTO research_sources (id, name) VALUES (9001, 'TMT Breakout')`).run();
 });
 afterEach(() => generateTextMock.mockReset());
 
