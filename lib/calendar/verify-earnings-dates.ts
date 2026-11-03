@@ -7,6 +7,7 @@ import { issuerSiblings } from "@/lib/securities/issuer-family";
 import { extractJsonArray } from "@/lib/ai/extract-json";
 import { correctEarningsEventDate } from "@/lib/mutations/calendar";
 import { getRawAnthropicClient } from "@/lib/ai/provider";
+import { failOverRawSearchCall } from "@/lib/ai/raw-search-failover";
 import { resolveFeatureModel } from "@/lib/ai/models";
 import { sendPushover } from "@/lib/alerts/notify-pushover";
 import {
@@ -527,14 +528,21 @@ export async function defaultFetchDateVerdicts(prompt: string): Promise<string> 
       `Earnings date verification requires the Anthropic provider for native web_search; FEATURE_MODELS["${featureKey}"] resolves to ${provider}/${modelId}. Update lib/ai/models.ts.`,
     );
   }
-  const client = getRawAnthropicClient(featureKey);
-
-  const response = await client.messages.create({
-    model: modelId,
-    max_tokens: 4000,
-    tools: [{ type: "web_search_20250305", name: "web_search", max_uses: 8 }],
-    messages: [{ role: "user", content: prompt }],
-  });
+  let response: Anthropic.Message;
+  try {
+    const client = getRawAnthropicClient(featureKey);
+    response = await client.messages.create({
+      model: modelId,
+      max_tokens: 4000,
+      tools: [{ type: "web_search_20250305", name: "web_search", max_uses: 8 }],
+      messages: [{ role: "user", content: prompt }],
+    });
+  } catch (err) {
+    // Provider failover: an account-level failure (credit, key) on a feature the
+    // owner switched on is retried on the fallback leg; otherwise (or if every leg
+    // is down) the ORIGINAL error is rethrown, so the daily check parks as before.
+    return failOverRawSearchCall(featureKey, err, { prompt, maxOutputTokens: 4000 });
+  }
   const textBlocks = response.content.filter(
     (b): b is Anthropic.TextBlock => b.type === "text",
   );

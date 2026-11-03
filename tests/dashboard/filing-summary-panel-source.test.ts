@@ -105,7 +105,7 @@ describe("UI rules in the new files", () => {
       const imports = src.match(/^import[^;]*from "@\/lib\/filing-summary\/[^"]+";/gm) ?? [];
       for (const line of imports) {
         if (/^import type /.test(line)) continue;
-        expect(line).toMatch(/"@\/lib\/filing-summary\/(choice|labels|types)"/);
+        expect(line).toMatch(/"@\/lib\/filing-summary\/(choice|labels|ran-on|types)"/);
       }
     }
   });

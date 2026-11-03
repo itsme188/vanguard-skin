@@ -15,6 +15,7 @@
  *     checked claims, the bogey snapshot's public fields and dates. No
  *     portfolio field exists on that input.
  */
+import { modelEffortText, writtenByText } from "./ran-on";
 import type { Footnote } from "./types";
 import { bogeyValueText, comparisonLine, countsText, modelQuoteLine, reasonText, sectionErrorSentence, statusLabel, statusSeverity } from "./labels";
 import { secArchiveUrl, textFragmentUrl } from "./locate";
@@ -43,7 +44,7 @@ export function escapeHtml(value: unknown): string {
 export function shareHeaderLine(view: FullView, run: FullRun): string {
   const who = view.event.symbol ?? "Filing";
   const title = run.quarterLabel ? `${run.quarterLabel} filing summary` : "filing summary";
-  return `${who} · ${title} · ${run.modelLabel} ${run.effort} · ${countsText(run.counts)}`;
+  return `${who} · ${title} · ${modelEffortText(run)} · ${countsText(run.counts)}`;
 }
 
 
@@ -265,7 +266,7 @@ ${run.sections.map(sectionBlock).join("\n")}
 ${bogeyBlock(run.bogeys)}
 ${filingsBlock(view, run)}
 <footer>${escapeHtml(
-    `Summary written by ${run.modelLabel} at ${run.effort} effort. Every figure was checked by the app against the filing text; statuses say what could and could not be confirmed. Bogeys are pre-print estimates with their sources.`,
+    `Summary written by ${writtenByText(run)}. Every figure was checked by the app against the filing text; statuses say what could and could not be confirmed. Bogeys are pre-print estimates with their sources.`,
   )}</footer>
 </main>
 </body>

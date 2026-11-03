@@ -6,6 +6,7 @@
  * Every word the panel shows about a status, a count, a cost or a failure
  * comes from here, so the tests can pin the copy without a DOM.
  */
+import { modelEffortText } from "@/lib/filing-summary/ran-on";
 import { choiceLabel } from "@/lib/filing-summary/choice";
 import {
   comparisonLine,
@@ -116,7 +117,7 @@ export function pollStateText(view: PanelView, reading: ReadingDocs | null = vie
   }
 
   const shown = view.shown;
-  if (shown?.status === "done") return `Summary ready · ${shown.modelLabel} ${shown.effort}`;
+  if (shown?.status === "done") return `Summary ready · ${modelEffortText(shown)}`;
   if (shown?.status === "waiting_retry") return "Summary paused — a later filing waits for Retry";
   if (shown?.status === "failed") {
     const failed = shown.sectionStates.find((s) => s.status === "failed");

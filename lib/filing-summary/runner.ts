@@ -27,7 +27,7 @@
 import { randomUUID } from "node:crypto";
 import { sendSummaryPushIfDue } from "./push";
 import type Database from "better-sqlite3";
-import { jsonSchema } from "ai";
+import { generateObject, jsonSchema, type LanguageModel } from "ai";
 import { getCachedModelCatalog } from "@/lib/ai/catalog-source";
 import {
   AIModelUnavailableError,
@@ -35,6 +35,7 @@ import {
   AITruncatedError,
   generateObjectWithModel,
 } from "@/lib/ai/generate";
+import { failOverOnAccountFailure, failoverTriggerKind } from "@/lib/ai/failover";
 import { modelLabel, resolveFamilyModel } from "@/lib/ai/model-families";
 import { accountFailureOf, aiUnavailableReason, type AccountFailureKind } from "@/lib/earnings/ai-unavailable";
 import { buildBogeySnapshot } from "./bogey-snapshot";
@@ -106,8 +107,45 @@ const NOTHING_READ_TEXT = "no document of the filing could be read";
 
 // ---------------------------------------------------------------- seams
 
+/** One structured call on an ALREADY-BUILT fallback model (provider failover). */
+export type GenerateOnModel = (
+  model: LanguageModel,
+  modelId: string,
+  opts: {
+    schema: ReturnType<typeof jsonSchema>;
+    system: string;
+    prompt: string;
+    maxOutputTokens: number;
+    abortSignal: AbortSignal;
+  },
+) => Promise<{ object: unknown; usage: unknown }>;
+
+/**
+ * The fallback call. No SDK retries (every request counts), strict schema mode
+ * off (the section schema carries free-keyed parts strict mode cannot express).
+ * A truncated or refused answer throws its named error: it is not an account
+ * failure, so the executor rethrows the PRIMARY's error and the section waits
+ * exactly as before.
+ */
+export const defaultGenerateOnModel: GenerateOnModel = async (model, modelId, opts) => {
+  const res = await generateObject({
+    model,
+    schema: opts.schema,
+    system: opts.system,
+    prompt: opts.prompt,
+    maxOutputTokens: opts.maxOutputTokens,
+    abortSignal: opts.abortSignal,
+    maxRetries: 0,
+    providerOptions: { openai: { strictJsonSchema: false } },
+  });
+  if (res.finishReason === "content-filter") throw new AIRefusalError("printFilingSummary", modelId, res.usage);
+  if (res.finishReason === "length") throw new AITruncatedError("printFilingSummary", modelId, res.usage);
+  return { object: res.object, usage: res.usage };
+};
+
 export interface RunnerSeams {
   generate: typeof generateObjectWithModel;
+  generateOn: GenerateOnModel;
   readDocument(path: string): string | null;
   now(): number;
   token(): string;
@@ -131,6 +169,7 @@ async function defaultOnSectionDone(db: Database.Database, sectionId: number): P
 export function defaultRunnerSeams(): RunnerSeams {
   return {
     generate: generateObjectWithModel,
+    generateOn: defaultGenerateOnModel,
     readDocument: readFilingDocument,
     now: () => Date.now(),
     token: () => randomUUID(),
@@ -802,27 +841,53 @@ export async function runNextSection(
   let usage: unknown;
   let callError: SectionErrorClass | null = null;
   let accountDown: AccountFailureKind | null = null;
+  /** Set when the fallback leg (not the run's pinned model) wrote this section. */
+  let ranOn: { provider: string; modelId: string; kind: string } | null = null;
+  const callOpts = {
+    schema: jsonSchema(SECTION_JSON_SCHEMA),
+    system: prompt.system,
+    prompt: prompt.user,
+    maxOutputTokens: SECTION_MAX_OUTPUT_TOKENS,
+    abortSignal: AbortSignal.any([lost.signal, AbortSignal.timeout(SECTION_CALL_TIMEOUT_MS)]),
+  };
   try {
     const res = await seams.generate(
       "printFilingSummary",
       { modelId: run.modelId, effort: run.effort, family: run.family },
-      {
-        schema: jsonSchema(SECTION_JSON_SCHEMA),
-        system: prompt.system,
-        prompt: prompt.user,
-        maxOutputTokens: SECTION_MAX_OUTPUT_TOKENS,
-        abortSignal: AbortSignal.any([lost.signal, AbortSignal.timeout(SECTION_CALL_TIMEOUT_MS)]),
-      },
+      callOpts,
     );
     object = res.object;
     usage = res.usage;
   } catch (err) {
-    callError = errorClassOf(err);
-    // Only a plain call failure can be the account's: a refusal, truncation,
-    // lost model or OUR timeout is decided above and keeps its own rule.
-    if (callError === "model_error") accountDown = accountFailureOf(err);
-    // A truncated or refused call was still billed: keep its usage for the cost line.
-    if (err instanceof AITruncatedError || err instanceof AIRefusalError) usage = err.usage;
+    // Provider failover (owner ruling 2026-11-03, option a): ONLY a classified
+    // account-level failure of the pinned model (credit, key), and only when the
+    // owner switched this feature on in Settings -> AI failover, is retried on the
+    // feature's fallback leg at its tier. The executor owns the gates, the leg
+    // order, the ai_failover_log entry and "all legs down rethrows THIS error",
+    // so every other path below sees exactly what it saw before.
+    const kind = errorClassOf(err) === "model_error" ? failoverTriggerKind(err) : null;
+    if (kind) {
+      try {
+        const served = await failOverOnAccountFailure("printFilingSummary", err, async (model, target) => {
+          const r = await seams.generateOn(model, target.modelId, callOpts);
+          return { r, target };
+        });
+        object = served.r.object;
+        usage = served.r.usage;
+        ranOn = { provider: served.target.provider, modelId: served.target.modelId, kind };
+      } catch {
+        // Not enabled / no leg / every leg down / a non-account fallback failure:
+        // fall through to the original error's handling below.
+      }
+    }
+    if (ranOn === null) {
+      callError = errorClassOf(err);
+      // Only a plain call failure can be the account's: a refusal, truncation,
+      // lost model or OUR timeout is decided above and keeps its own rule.
+      if (callError === "model_error") accountDown = accountFailureOf(err);
+      // A truncated or refused call was still billed: keep its usage for the cost line.
+      if (err instanceof AITruncatedError || err instanceof AIRefusalError) usage = err.usage;
+    }
   } finally {
     clearInterval(beat);
   }
@@ -879,8 +944,10 @@ export async function runNextSection(
   );
   const outcome = finalize({
     status: "done",
-    modelId: run.modelId,
-    effort: run.effort,
+    // The model that actually ran: the fallback's id (and no effort setting) when
+    // the pinned model's account failed and the fallback leg wrote this section.
+    modelId: ranOn ? ranOn.modelId : run.modelId,
+    effort: ranOn ? null : run.effort,
     inputFingerprint: prompt.fingerprint,
     outputJson: JSON.stringify(parsed.value),
     checkedJson: JSON.stringify(checked),
@@ -894,6 +961,7 @@ export async function runNextSection(
       ...(late ? { latePrompt: LATE_PROMPT_VERSION } : {}),
       extractor: EXTRACTOR_VERSION,
       checker: CHECKER_VERSION,
+      ...(ranOn ? { failover: ranOn } : {}),
     }),
     errorClass: null,
     errorText: null,

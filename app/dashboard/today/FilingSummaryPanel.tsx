@@ -23,6 +23,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
+import { writtenByText } from "@/lib/filing-summary/ran-on";
 import apiFetch from "@/lib/http/apiFetch";
 import { networkFailureMessage, readMutationResult } from "@/lib/ui/mutation-result";
 import { lateAddedChipText, newRequestKey } from "@/lib/filing-summary/labels";
@@ -292,7 +293,7 @@ export function FilingSummaryPanelBody({
 
       {shown && hasDone && (
         <p className="mt-1 text-[11px] text-ink-dim [overflow-wrap:anywhere]">
-          Written by {shown.modelLabel} at {shown.effort} effort
+          Written by {writtenByText(shown)}
           {shown.counts.claims > 0 ? ` · ${countsText(shown.counts)}` : ""}
         </p>
       )}

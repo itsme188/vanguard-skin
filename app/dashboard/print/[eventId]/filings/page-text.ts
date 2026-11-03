@@ -8,6 +8,7 @@
  * counts, costs, reasons, failure sentences, comparison lines) live once in
  * `lib/filing-summary/labels.ts`; only page-specific rules live here.
  */
+import { modelEffortText } from "@/lib/filing-summary/ran-on";
 import { nowPart, roughCostText } from "@/lib/filing-summary/labels";
 import type { CheckedClaim, Footnote } from "@/lib/filing-summary/types";
 import type { ChoiceOption, FullFiling, FullRun, FullSection, FullView, ViewClaim } from "@/lib/filing-summary/view";
@@ -44,7 +45,7 @@ const RUN_STATUS_SUFFIX: Record<FullRun["status"], string> = {
 
 /** "Run 2 · Fable 5.1 high · 7:41 pm", plus "· running" while it runs. */
 export function runPillLabel(run: FullRun): string {
-  return `Run ${run.runNo} · ${run.modelLabel} ${run.effort} · ${run.createdAtEt ?? "time unknown"}${RUN_STATUS_SUFFIX[run.status] ?? ""}`;
+  return `Run ${run.runNo} · ${modelEffortText(run)} · ${run.createdAtEt ?? "time unknown"}${RUN_STATUS_SUFFIX[run.status] ?? ""}`;
 }
 
 /** The first three Top claims of done sections (the panel's rule) that are contradicted. */
