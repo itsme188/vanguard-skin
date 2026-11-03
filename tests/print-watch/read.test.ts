@@ -263,21 +263,24 @@ describe("runFirstPassRead: an AI account outage never spends an attempt", () =>
     expect(row.status).toBe("failed");
     expect(row.attempts).toBe(0);
     expect(row.error).toMatch(new RegExp(`^${AI_UNAVAILABLE_REASON_PREFIX.replace("(", "\\(")}billing\\)`));
-    expect(row.next_retry_at).toBe(new Date(T0 + 60_000).toISOString()); // the backoff still spaces the retries
+    expect(row.next_retry_at).toBe(new Date(T0 + 15 * 60_000).toISOString()); // the long outage backoff spaces the retries
     expect(cappedAttempt(row)).toBe(false);
+    // the outage marker the Earnings Hub reads is written from this path too
+    const marker = db.prepare(`SELECT value FROM settings WHERE key = 'earnings_ai_unavailable'`).get() as { value: string } | undefined;
+    expect(JSON.parse(marker!.value).kind).toBe("billing");
   });
 
   it("more spend-cap failures than the cap allows never cap the read; it completes once the account answers", async () => {
     _setReadSeams({ generate: async () => { throw spendCap; } });
     for (let i = 0; i < READ_MAX_ATTEMPTS + 2; i++) {
-      now = T0 + i * 61_000;
+      now = T0 + i * 16 * 60_000;
       expect((await runFirstPassRead(db, printId)).kind).toBe("failed");
     }
     const last = getLastFailedAttempt(db, printId)!;
     expect(last.capped).toBe(false);
     expect(last.totalAttempts).toBe(0);
     _setReadSeams({ generate: okGenerate });
-    now += 61_000;
+    now += 16 * 60_000;
     expect((await runFirstPassRead(db, printId)).kind).toBe("done");
   });
 

@@ -12,7 +12,7 @@ import { generateObjectForFeature } from "@/lib/ai/generate";
 import { getBogeysForEvent } from "@/lib/queries/earnings-bogeys";
 import { compileContracts } from "./contracts";
 import { redactUrl } from "./hardened-fetch";
-import { accountFailureOf, aiUnavailableReason } from "@/lib/earnings/ai-unavailable";
+import { accountFailureOf, aiUnavailableReason, recordAiUnavailable } from "@/lib/earnings/ai-unavailable";
 import {
   buildFirstPassPrompt,
   buildDtoSync,
@@ -230,12 +230,15 @@ export async function runFirstPassRead(
     } catch (e) {
       if (timedOut) return fail("timeout", "model call exceeded the deadline", true);
       // 2026-10-29: an ACCOUNT-level failure (spend cap, credit, key, rate
-      // limit, outage, network) is not this read's fault. It keeps the normal
-      // 60 s backoff but gives its attempt back, so the read reruns on its own
+      // limit, outage, network) is not this read's fault. It waits the long
+      // outage backoff and gives its attempt back, so the read reruns on its own
       // once the account answers. Our own deadline above still counts; an
       // article-level or unknown error counts exactly as before.
       const account = accountFailureOf(e);
-      if (account) return fail("model_error", `${aiUnavailableReason(account)}: ${errText(e)}`, true, true);
+      if (account) {
+        recordAiUnavailable(db, account);
+        return fail("model_error", `${aiUnavailableReason(account)}: ${errText(e)}`, true, true);
+      }
       return fail("model_error", `model call failed: ${errText(e)}`, true);
     }
     // Record who actually answered BEFORE judging the drift, so the row always

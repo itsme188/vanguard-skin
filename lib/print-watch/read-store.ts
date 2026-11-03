@@ -11,6 +11,10 @@ import type { ReadRow, ReadFact, ReadProse, ReadErrorCode, CalloutRow, CalloutVi
 export const READ_HEARTBEAT_STALE_MS = 3 * 60_000;
 export const READ_MAX_ATTEMPTS = 3;
 export const READ_RETRY_BACKOFF_MS = 60_000;
+/** An account-level AI failure (credit, key, rate limit, outage) is refunded,
+ *  so the attempt cap can never stop the read loop while the account is down.
+ *  The long backoff is what bounds it: at most 4 model calls an hour. */
+export const READ_ACCOUNT_OUTAGE_BACKOFF_MS = 15 * 60_000;
 
 const iso = (ms: number) => new Date(ms).toISOString();
 
@@ -240,7 +244,8 @@ export function finalizeReadDone(
     .immediate();
 }
 
-/** #17: a retryable failure books a 60 s backoff; the attempt that reaches the
+/** #17: a retryable failure books a 60 s backoff (15 min when the attempt is
+ *  refunded for an account outage); the attempt that reaches the
  *  cap simply gets no retry time, which is what stops the gate asking.
  *
  *  F2: `error_code` ALWAYS names the cause. The cap used to overwrite it, so a
@@ -262,7 +267,8 @@ export function finalizeReadFailed(
      *  attempt THIS claim added (the insert's 1, or a takeover's +1) is given
      *  back in the same transaction and under the same token guard, so the
      *  read never reaches the cap while the account is down. A dead worker's
-     *  earlier attempt on a taken-over row still counts. */
+     *  earlier attempt on a taken-over row still counts. A refunded failure
+     *  also waits READ_ACCOUNT_OUTAGE_BACKOFF_MS, not the 60 s backoff. */
     refundAttempt?: boolean;
   },
 ): boolean {
@@ -275,7 +281,8 @@ export function finalizeReadFailed(
       // A refunded failure is never the capping attempt: it waits for the
       // account, not for a better answer.
       const capped = refund === 0 && attempts >= READ_MAX_ATTEMPTS;
-      const retry = args.retryable && !capped ? iso(args.nowMs + READ_RETRY_BACKOFF_MS) : null;
+      const backoffMs = refund === 1 ? READ_ACCOUNT_OUTAGE_BACKOFF_MS : READ_RETRY_BACKOFF_MS;
+      const retry = args.retryable && !capped ? iso(args.nowMs + backoffMs) : null;
       // The prefix marks "this attempt was the last one the cap allows", whether
       // or not the failure itself was retryable — a non-retryable failure on the
       // capping attempt has given up just the same, and the label must say so.
