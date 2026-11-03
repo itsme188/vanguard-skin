@@ -320,3 +320,47 @@ describe("extraction prompt cap parity", () => {
     expect(out.length).toBeLessThan(long.length);
   });
 });
+
+describe("runNewsletterFetch — owner no-summary ruling (2026-11-02)", () => {
+  function run(sources: Snapshot["researchSources"], subject: string) {
+    const { env, kv } = makeEnv();
+    const analyzed: string[] = [];
+    const listed: string[] = [];
+    return runNewsletterFetch(env, {
+      loadSnapshot: async () => makeSnapshot({ sources }),
+      getAccessToken: async () => "token",
+      listMessages: async (_t: string, q: string) => {
+        listed.push(q);
+        return [{ id: "m1" }];
+      },
+      getMessage: async () => ({}),
+      extractMessage: () => ({ ...detail("m1"), subject }),
+      analyzeArticle: async (_e: unknown, source: { name: string }) => {
+        analyzed.push(source.name);
+        return RELEVANT;
+      },
+    }).then((result) => ({ result, analyzed, listed, kv }));
+  }
+
+  it.each(["Semi Doped", "Bloomberg Odd Lots", "TBPN"])("never lists or analyzes %s", async (name) => {
+    const { result, analyzed, listed, kv } = await run([makeSource({ name })], "Any episode");
+    expect(analyzed).toEqual([]);
+    expect(listed).toEqual([]);
+    expect(result.kind).toBe("no_articles");
+    expect(Array.from(kv.store.keys())).toEqual([]);
+  });
+
+  it("summarizes Vital Dawn only; other Vital Knowledge issues are not analyzed", async () => {
+    const vk = makeSource({ name: "Vital Knowledge" });
+    const dawn = await run([vk], "Vital Knowledge: Vital Dawn for Monday November 2, 2026");
+    expect(dawn.analyzed).toEqual(["Vital Knowledge"]);
+    const recap = await run([vk], "Vital Knowledge: Vital Market Recap for Monday November 2, 2026");
+    expect(recap.analyzed).toEqual([]);
+    expect(recap.result.kind).toBe("no_articles");
+  });
+
+  it("still analyzes a control source", async () => {
+    const { analyzed } = await run([makeSource({ name: "The Diff" })], "Any piece");
+    expect(analyzed).toEqual(["The Diff"]);
+  });
+});
