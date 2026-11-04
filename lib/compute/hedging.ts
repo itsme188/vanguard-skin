@@ -10,6 +10,7 @@ import { getEtfSectorWeights } from "@/lib/queries/etf-weights";
 import { explodeHoldingBySector } from "@/lib/compute/explode-sector";
 import { liveOptionExpirationSql } from "@/lib/compute/option-expiry";
 import { isCashEquivalentSecurity } from "@/lib/compute/cash-equivalents";
+import { isLeveragedOrInverseExposure, summarizeUnmodelledLeveragedFunds } from "@/lib/compute/leveraged-fund";
 
 /**
  * Defense/Hedging engine — classifies the book into hedged pairs (Tier 1),
@@ -755,6 +756,7 @@ export function scoreHedges(
 interface DefenseHoldingRow {
   security_id: number;
   symbol: string;
+  name: string | null;
   security_type: string | null;
   fund_category: string | null;
   option_type: string | null;
@@ -890,6 +892,12 @@ export interface DefenseAnalysis {
    * theta rest on a substitute price, so the view states the count.
    */
   siblingPricedPositions: number;
+  /**
+   * Leveraged and inverse funds, and options on them, held out of the hedge
+   * book (`isLeveragedOrInverseExposure`, owner ruling 2026-11-01): count,
+   * share of the loaded universe's gross value, and symbols (sorted).
+   */
+  leveragedFundsUnmodelled: { count: number; valueShare: number; symbols: string[] };
 }
 
 /**
@@ -919,7 +927,7 @@ export function computeDefenseAnalysis(db: Database.Database, accountIds?: numbe
       ON p.security_id = lp.security_id AND p.date = lp.max_date
     )
     SELECT
-      s.id AS security_id, s.symbol, s.security_type, s.fund_category, s.option_type, s.underlying_symbol,
+      s.id AS security_id, s.symbol, s.name, s.security_type, s.fund_category, s.option_type, s.underlying_symbol,
       s.sector, s.geography, s.currency, h.quantity,
       CASE
         WHEN lp.close_price IS NOT NULL
@@ -955,7 +963,58 @@ export function computeDefenseAnalysis(db: Database.Database, accountIds?: numbe
       aggregated.set(r.security_id, { ...r });
     }
   }
-  const rows = [...aggregated.values()];
+  const loadedRows = [...aggregated.values()];
+
+  // ─── Leveraged and inverse funds (owner ruling 2026-11-01, item 2) ────
+  // A daily-reset leveraged or inverse fund, or an option on one, does not
+  // move as a linear multiple of its index, so it is no hedge for anything
+  // in this book. Hold it out of the instrument universe BEFORE
+  // classification (no pair, proxy, standalone bet, ranked exposure, hedge
+  // score or summary count) and disclose it (`leveragedFundsUnmodelled`).
+  const optionUnderlyingSymbols = [
+    ...new Set(
+      loadedRows
+        .filter((r) => (r.security_type ?? "").toLowerCase() === "option")
+        .map((r) => rawUnderlyingOf(r))
+    ),
+  ];
+  const underlyingIdentityBySymbol = new Map<
+    string,
+    { security_type: string | null; fund_category: string | null; name: string | null }
+  >();
+  if (optionUnderlyingSymbols.length > 0) {
+    const identityRows = db
+      .prepare(
+        `SELECT symbol, security_type, fund_category, name FROM securities
+         WHERE symbol IN (${optionUnderlyingSymbols.map(() => "?").join(",")})
+           AND LOWER(COALESCE(security_type, '')) != 'option'
+         ORDER BY id`
+      )
+      .all(...optionUnderlyingSymbols) as Array<{
+        symbol: string;
+        security_type: string | null;
+        fund_category: string | null;
+        name: string | null;
+      }>;
+    for (const r of identityRows) {
+      if (!underlyingIdentityBySymbol.has(r.symbol)) underlyingIdentityBySymbol.set(r.symbol, r);
+    }
+  }
+  const leveragedFlags = loadedRows.map((r) => {
+    const underlying =
+      (r.security_type ?? "").toLowerCase() === "option"
+        ? underlyingIdentityBySymbol.get(rawUnderlyingOf(r)) ?? null
+        : null;
+    return isLeveragedOrInverseExposure(r, underlying);
+  });
+  const leveragedFundsUnmodelled = summarizeUnmodelledLeveragedFunds(
+    loadedRows.map((r, idx) => ({
+      symbol: r.symbol,
+      currentValue: Math.abs(r.mv),
+      leveragedFundUnmodelled: leveragedFlags[idx],
+    }))
+  );
+  const rows = loadedRows.filter((_, idx) => !leveragedFlags[idx]);
   const securityTypeById = new Map<number, string | null>();
   for (const row of rows) securityTypeById.set(row.security_id, row.security_type);
 
@@ -1422,6 +1481,7 @@ export function computeDefenseAnalysis(db: Database.Database, accountIds?: numbe
       protects: relabel(h.protects),
     })),
     diagnostics,
+    leveragedFundsUnmodelled,
     // Counted over the option rows this analysis actually loaded, so a
     // contract outside the view's universe never inflates it.
     siblingPricedPositions: rows.filter(

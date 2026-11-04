@@ -16,6 +16,24 @@ import { DefenseTables } from "./DefenseTables";
  * client-side fetch for the initial render).
  */
 
+/**
+ * Leveraged / inverse funds held out of the hedge book (owner ruling
+ * 2026-11-01, stopgap; lib/compute/leveraged-fund.ts): a daily-reset fund,
+ * or an option on one, is no linear hedge for anything, so it is named here,
+ * not hidden. Symbols are public data. Renders nothing when count is 0.
+ */
+function LeveragedFundsNotModelled({ info }: { info: { count: number; symbols: string[] } }) {
+  if (info.count <= 0) return null;
+  return (
+    <p className="text-xs text-ink-dim">
+      <Count value={info.count} /> leveraged or inverse {info.count === 1 ? "position" : "positions"} not
+      modelled: <span className="font-mono">{info.symbols.join(", ")}</span> — a daily-reset leveraged or
+      inverse fund, or an option on one, does not move as a linear multiple of its index, so it is held out
+      of the hedge book.
+    </p>
+  );
+}
+
 interface DefenseViewProps {
   scope?: string;
 }
@@ -31,12 +49,19 @@ export async function DefenseView({ scope = "all" }: DefenseViewProps) {
     summary.optionPositionCount === 0 &&
     summary.shortPositionCount === 0
   ) {
-    return (
+    const empty = (
       <EmptySection
         title="Defense"
         reason="No options or short positions in this scope — there is nothing to analyze."
         hint="Hedges (long puts, protective calls on shorts) and index-put protection will appear here once opened."
       />
+    );
+    if (analysis.leveragedFundsUnmodelled.count === 0) return empty;
+    return (
+      <div className="space-y-3">
+        {empty}
+        <LeveragedFundsNotModelled info={analysis.leveragedFundsUnmodelled} />
+      </div>
     );
   }
 
@@ -119,6 +144,8 @@ export async function DefenseView({ scope = "all" }: DefenseViewProps) {
         standaloneBets={analysis.standaloneBets}
         standaloneBetKinds={standaloneBetKinds}
       />
+
+      <LeveragedFundsNotModelled info={analysis.leveragedFundsUnmodelled} />
 
       {/* Sibling-priced Greeks: a caveat on the figures above, so it is
           stated in the open, not inside the collapsed diagnostics. */}
