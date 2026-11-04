@@ -8,7 +8,9 @@
  *    every expired row carries no value and no gain.
  *  - T-PURGE-PLAID / T-PURGE-WIDE: neither purge path ever turns a pending
  *    or expired lot back into an open, valued one; the wide path's first
- *    deleting moment is already past the Eastern expiry.
+ *    deleting moment is already past the Eastern expiry. Neither path deletes
+ *    a statement-sourced row either: that row is the contract's audit trail
+ *    and records a date on which the position really was open.
  * Synthetic symbols and small round numbers only.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
@@ -193,10 +195,15 @@ describe("T-PURGE: no purge path returns an expired lot to open and valued", () 
     expectExpiredAwaitingClose(today);
   });
 
-  it("T-PURGE-WIDE: the no-options purge removes every row (statement rows too) and the lots still read expired", () => {
+  it("T-PURGE-WIDE: the no-options purge removes the live rows, keeps the statement row, and the lots still read expired", () => {
     vi.setSystemTime(new Date("2026-10-18T16:00:00Z"));
-    expect(purgeExpiredOptionHoldings(db)).toBe(3);
-    expect(holdingsRows()).toEqual([]);
+    // Both live rows go; the statement row is this contract's audit trail and
+    // records a date on which the position really was open (09/30, before the
+    // 10/16 expiry), so no purge path may delete it.
+    expect(purgeExpiredOptionHoldings(db)).toBe(2);
+    expect(holdingsRows()).toEqual([{ account_id: 1, as_of_date: "2026-09-30", quantity: 1 }]);
+    // The ruled invariant (Task 12, D3): the lot still reads expired and
+    // unvalued — never returned to open and valued — with that row present.
     expectExpiredAwaitingClose();
   });
 
@@ -206,9 +213,9 @@ describe("T-PURGE: no purge path returns an expired lot to open and valued", () 
     expect(purgeExpiredOptionHoldings(db)).toBe(0);
     // Already expired on that Eastern day (the expired bucket is expiration < today).
     expectExpiredAwaitingClose();
-    // 00:00:30 Eastern on 10-18: the purge deletes, and the lots read expired.
+    // 00:00:30 Eastern on 10-18: the purge deletes the live rows, and the lots read expired.
     vi.setSystemTime(new Date("2026-10-18T04:00:30Z"));
-    expect(purgeExpiredOptionHoldings(db)).toBe(3);
+    expect(purgeExpiredOptionHoldings(db)).toBe(2);
     expectExpiredAwaitingClose();
   });
 });
