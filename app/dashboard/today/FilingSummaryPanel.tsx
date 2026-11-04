@@ -26,7 +26,7 @@ import Link from "next/link";
 import { writtenByText } from "@/lib/filing-summary/ran-on";
 import apiFetch from "@/lib/http/apiFetch";
 import { networkFailureMessage, readMutationResult } from "@/lib/ui/mutation-result";
-import { lateAddedChipText, newRequestKey } from "@/lib/filing-summary/labels";
+import { RUN_SUMMARY_LABEL, lateAddedChipText, newRequestKey, runSummaryPrompt } from "@/lib/filing-summary/labels";
 import type { PanelView, ViewClaim } from "@/lib/filing-summary/view";
 import { CHIP_TONE_CLASSES, Chip } from "../components/Chip";
 import { CHIP_TONE_TEXT } from "../components/chip-tone-text";
@@ -40,7 +40,6 @@ import {
   needsPolling,
   pollStateText,
   retryConfirmMessage,
-  runConfirmMessage,
   sectionNotes,
   statusLabel,
   statusTone,
@@ -150,13 +149,8 @@ export default function FilingSummaryPanel({
 
   async function onRun(): Promise<void> {
     if (!view) return;
-    const ok = await prompt.ask({
-      title: "Run the filing summary?",
-      message: runConfirmMessage(view.choice, view.nowLabel),
-      confirmLabel: "Run summary",
-      // It spends money: Enter must not answer yes.
-      initialFocus: "cancel",
-    });
+    // It spends money: the prompt puts the focus on Cancel, so Enter does not answer yes.
+    const ok = await prompt.ask(runSummaryPrompt(view.choiceLabel, view.choice, view.nowLabel));
     if (!ok) {
       setNote("Not run — nothing was spent.");
       setError(null);
@@ -362,7 +356,7 @@ export function FilingSummaryPanelBody({
         )}
         {canRun && (
           <button type="button" onClick={onRun} disabled={busy !== null} className={BUTTON_CLASS}>
-            {busy === "run" ? "Starting…" : "Run summary"}
+            {busy === "run" ? "Starting…" : RUN_SUMMARY_LABEL}
           </button>
         )}
         {canRetry && (

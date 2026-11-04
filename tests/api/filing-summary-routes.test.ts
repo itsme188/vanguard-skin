@@ -112,7 +112,7 @@ describe("POST paid actions", () => {
       identityVerdict: "time_unconfirmed", identityReason: "header has no acceptance time", fetchState: "fetched",
       gatePassed: true,
     }).id;
-    upsertEventState(hoisted.db, eventId, { pollState: "past_cutoff", pollDetail: "earnings 8-K time unconfirmed — Run summary to spend" });
+    upsertEventState(hoisted.db, eventId, { pollState: "past_cutoff", pollDetail: "earnings 8-K time unconfirmed — press Run summary to read the filings now" });
 
     const panel = await (await listGET(new Request(`http://localhost/api/filing-summary?eventIds=${eventId}`))).json();
     expect(panel.data[eventId]).toMatchObject({ earningsTimeUnconfirmed: true, earningsForm: "8-K", runSummaryAvailable: true });

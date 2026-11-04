@@ -92,6 +92,7 @@ import {
   type IdentityVerdict,
   type PollState,
 } from "./store";
+import { RUN_SUMMARY_DETAIL_ACTION } from "./labels";
 
 export type { FetchLike };
 
@@ -108,7 +109,7 @@ export const LATE_ARM_PREFIX = "armed after 9 pm";
  * print day and the day after): handled like a late arm, but said truthfully.
  */
 export const NOT_POLLED_PREFIX = "not polled on the print day";
-export const MANUAL_ONLY_DETAIL = "armed after 9 pm — Run summary to spend";
+export const MANUAL_ONLY_DETAIL = `armed after 9 pm — ${RUN_SUMMARY_DETAIL_ACTION}`;
 export const NOT_POLLED_PENDING_DETAIL = `${NOT_POLLED_PREFIX} — looking up the day's filings once`;
 /** A late arm whose one discovery pass has not completed yet. */
 export const MANUAL_DISCOVERY_PENDING_DETAIL = "armed after 9 pm — looking up the day's filings once";
@@ -737,7 +738,7 @@ export async function pollEvent(
       pollState === "ambiguous"
         ? `${prefix} — ${pollDetail ?? "earnings filing does not name this quarter"}`
         : ref?.identityVerdict === "accepted" || unconfirmed
-          ? `${prefix} — Run summary to spend`
+          ? `${prefix} — ${RUN_SUMMARY_DETAIL_ACTION}`
           : manualNoFilingDetail(formName, prefix);
     pollState = "manual_only";
     pollDetail = complete ? what : current.pollDetail ?? MANUAL_DISCOVERY_PENDING_DETAIL;
@@ -749,7 +750,7 @@ export async function pollEvent(
           pollState === "found"
             ? "polling ended at 9 pm"
             : unconfirmed
-              ? `earnings ${formName} time unconfirmed — Run summary to spend`
+              ? `earnings ${formName} time unconfirmed — ${RUN_SUMMARY_DETAIL_ACTION}`
               : `no earnings ${formName} filed by 9 pm`;
         pollState = "past_cutoff";
       }

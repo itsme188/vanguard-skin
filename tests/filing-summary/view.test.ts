@@ -199,7 +199,7 @@ describe("panel view", () => {
         gatePassed: true,
       }),
     );
-    upsertEventState(db, eventId, { pollState: "past_cutoff", pollDetail: "earnings 6-K time unconfirmed — Run summary to spend" });
+    upsertEventState(db, eventId, { pollState: "past_cutoff", pollDetail: "earnings 6-K time unconfirmed — press Run summary to read the filings now" });
     const v = getPanelViews(db, [eventId], CATALOG)[eventId];
     expect(v.earningsTimeUnconfirmed).toBe(true);
     expect(v.earningsForm).toBe("6-K");

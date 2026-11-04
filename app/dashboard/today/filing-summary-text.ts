@@ -13,6 +13,7 @@ import {
   errorWords,
   reasonText,
   roughCostText,
+  runSummaryPrompt,
   DISCOVERY_GAVE_UP_DETAIL,
   RUNNER_LOAD_FAILED_DETAIL,
   SEC_GAVE_UP_TEXT,
@@ -45,10 +46,7 @@ export const FILING_SUMMARY_POLL_MS = 30_000;
 
 /** The Run summary question: the choice, the model it now means, the cost. */
 export function runConfirmMessage(choice: SummaryChoice, nowLabel: string): string {
-  return [
-    `${choiceLabel(choice)} (${nowLabel}) reads the earnings filing and any later filings of the day, and writes the summary.`,
-    `Rough cost: ${roughCostText(choice)}.`,
-  ].join("\n\n");
+  return runSummaryPrompt(choiceLabel(choice), choice, nowLabel).message;
 }
 
 /** The family behind a run's model label ("Opus 5.5" → opus), or null. */
