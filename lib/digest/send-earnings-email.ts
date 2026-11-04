@@ -46,6 +46,8 @@ import { readReactionLegs, type ReactionEvidence } from "@/lib/calendar/reaction
 import type { CalendarEvent, EarningsTranscript } from "@/lib/types";
 import { actualsAreImplausible } from "@/lib/earnings/actuals-display";
 import { renderActualsBasisLine } from "@/lib/earnings/actuals-basis";
+import { archiveEmailBody } from "@/lib/mutations/earnings-emails";
+import { hasMeasuredStockReaction, recapBodyProblem } from "@/lib/earnings/recap-readiness";
 import { applyClusterManualActuals } from "@/lib/queries/manual-actuals-cluster";
 import { getEventById } from "@/lib/queries/calendar";
 import { getEmailIgnoredManualTwins } from "@/lib/queries/manual-twin-email";
@@ -267,6 +269,23 @@ export async function composeEarningsEmail(
 
   const headlineTable = renderHeadlineTable(ctx.event, ctx.symbol, phase, intelView);
   const aiMarkdown = await callClaude(prompt, phase, opts.signal);
+  // A recap body holds ONE recap (recap-quality review 2026-11-03): a body with two
+  // line-by-line tables, or the overnight digest, is stitched or foreign. It is never
+  // stored or sent; the compose fails and the caller's retry cadence tries again.
+  if (phase === "recap") {
+    const problem = recapBodyProblem(aiMarkdown);
+    if (problem) {
+      throw new EarningsEmailError(`Recap for event ${eventId} (${symbol}) rejected: ${problem}.`, 502);
+    }
+  }
+  // A recap that goes out before the T+2h snapshot exists says so, in its subject and
+  // its first line. The automatic sweep holds for the snapshot (recap-readiness.ts), so
+  // this only shows on a human's send or at the end of the window.
+  const reactionMissing =
+    phase === "recap" && !hasMeasuredStockReaction(event.reaction_snapshot, event.enriched_at);
+  const reactionDisclosure = reactionMissing
+    ? "*Sent before the market reaction was captured: the reaction rows are blank, and no move is quoted from any source.*"
+    : null;
   // Headline scoreboard is rendered deterministically from structured
   // fields (consensus_estimate, actual_value, reaction_snapshot) — printable
   // + same shape across preview + recap. AI takes over after for line-by-line
@@ -286,6 +305,7 @@ export async function composeEarningsEmail(
   const printWatchBlock =
     phase === "recap" ? ((ctx as RecapContext).printWatchReadBlock ?? "") : "";
   const markdown = assembleEmailMarkdown([
+    reactionDisclosure,
     headlineTable,
     pastPrintsBlock || null,
     sheetBogeysBlock || null,
@@ -295,7 +315,7 @@ export async function composeEarningsEmail(
   const dateStr = formatDateLong(event.event_date);
   const releaseTimeStr = event.release_time ? ` ${event.release_time} ET` : "";
   const phaseLabel = phase === "preview" ? "Earnings Preview" : "Earnings Recap";
-  const title = `${symbol} ${phaseLabel} — ${dateStr}${releaseTimeStr}`;
+  const title = `${symbol} ${phaseLabel} — ${dateStr}${releaseTimeStr}${reactionMissing ? " (reaction not yet captured)" : ""}`;
   const html = briefingToHtml(markdown, title, opts.footerNote);
 
   return {
@@ -684,6 +704,8 @@ export function markEmailSent(
     providerResponse: string | null;
   },
 ): boolean {
+  // A refire (or any later compose) REPLACES the current body; the superseded one is kept.
+  archiveEmailBody(db, eventId, phase, "replaced by a later send", input.aiOutputMd);
   return (
     db
       .prepare(
@@ -924,6 +946,7 @@ export function recordEarningsEmailAudit(
   // previous row's sent_at + ai_output_md. The Phase-3 cron sweep checks
   // `WHERE NOT EXISTS (SELECT 1 FROM earnings_emails ...)` to skip events
   // already audited, so a successful row here is the dedup floor.
+  archiveEmailBody(db, input.eventId, input.phase, "replaced by a later audit write", input.aiOutputMd);
   db
     .prepare(
       `INSERT INTO earnings_emails (event_id, phase, recipient, sent_at, ai_input_hash, ai_output_md, error)

@@ -143,3 +143,54 @@ export async function writePrintPushMarker(
     expirationTtl: PRINT_PUSH_TTL_SECONDS,
   });
 }
+
+// ── Cloud bodies come home (recap storage review, 2026-11-03) ──────────────
+//
+// A cloud-sent email used to leave the Mac's audit row with NO body, so the
+// recap was unauditable once it was sent. The composed markdown now rides
+// along in its own KV key (NOT inside the sent marker, whose value is read as
+// a bare ISO timestamp by older readers), with the same 30h life. The Mac
+// sweep reads it back through GET /internal/cloud-earnings-body and fills the
+// audit row (earnings_emails.ai_output_md).
+
+export function earningsBodyKey(phase: EarningsPhase, eventId: number): string {
+  return `cloud-body-earnings-${phase}-${eventId}`;
+}
+
+export interface CloudEarningsBody {
+  subject: string;
+  markdown: string;
+}
+
+/** Best effort by contract: a failed body write must never fail (or repeat) a send that already went out. */
+export async function writeEarningsBody(
+  kv: KVNamespace,
+  phase: EarningsPhase,
+  eventId: number,
+  body: CloudEarningsBody,
+): Promise<void> {
+  try {
+    await kv.put(earningsBodyKey(phase, eventId), JSON.stringify(body), {
+      expirationTtl: SENT_TTL_SECONDS,
+    });
+  } catch (err) {
+    console.warn(`[earnings-body] could not store the cloud body for ${phase} ${eventId}:`, err);
+  }
+}
+
+export async function readEarningsBody(
+  kv: KVNamespace,
+  phase: EarningsPhase,
+  eventId: number,
+): Promise<CloudEarningsBody | null> {
+  const raw = await kv.get(earningsBodyKey(phase, eventId));
+  if (!raw) return null;
+  try {
+    const p = JSON.parse(raw) as Partial<CloudEarningsBody>;
+    return typeof p.markdown === "string" && p.markdown.trim() !== ""
+      ? { subject: typeof p.subject === "string" ? p.subject : "", markdown: p.markdown }
+      : null;
+  } catch {
+    return null;
+  }
+}

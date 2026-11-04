@@ -111,7 +111,10 @@ export function composeReporterRecap(
     | "consensus_value"
     | "actual_value"
     | "reaction_snapshot"
-  >,
+  > &
+    // The accepted-figure stamp and the kept vendor figure: without them in the type
+    // the scoreboard could not tell an accepted filing figure from a vendor one.
+    Partial<Pick<CalendarEvent, "manual_actuals_at" | "vendor_actual_value">>,
   pairs: ReporterRecapPair[],
 ): ReporterRecapContent {
   const symbol = (event.symbol ?? "").toUpperCase();

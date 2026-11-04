@@ -195,3 +195,33 @@ export function writePrintPushMarker(eventId: number): Promise<Response | null> 
   const params = new URLSearchParams({ eventId: String(eventId) });
   return workerFetch("/internal/print-push-marker", params, "POST");
 }
+
+export interface CloudEarningsBody {
+  subject: string;
+  markdown: string;
+}
+
+/**
+ * The composed body of a cloud-sent earnings email (recap storage review,
+ * 2026-11-03), or null when the Worker has none (older sends, an expired key,
+ * the Worker unreachable). Read-only.
+ */
+export async function fetchCloudEarningsBody(
+  phase: EarningsPhase,
+  eventId: number,
+): Promise<CloudEarningsBody | null> {
+  const res = await workerFetch(
+    "/internal/cloud-earnings-body",
+    new URLSearchParams({ phase, eventId: String(eventId) }),
+    "GET",
+  );
+  if (!res || !res.ok) return null;
+  try {
+    const b = (await res.json()) as { body?: Partial<CloudEarningsBody> | null };
+    return b.body && typeof b.body.markdown === "string" && b.body.markdown.trim() !== ""
+      ? { subject: typeof b.body.subject === "string" ? b.body.subject : "", markdown: b.body.markdown }
+      : null;
+  } catch {
+    return null;
+  }
+}

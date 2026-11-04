@@ -128,13 +128,15 @@ const composed: ComposeEarningsResult = {
   promptHash: "h",
 };
 
+// enriched_at is 5 hours back: the reaction-snapshot hold (recap-readiness.ts) has let go, so these
+// tests exercise the figure-conflict hold alone.
 function seed(actual: string, vendor: string | null, stamped: boolean): number {
   return Number(
     db
       .prepare(
         `INSERT INTO calendar_events (source, event_type, event_date, title, symbol, source_key,
                                       actual_value, vendor_actual_value, manual_actuals_at, enriched_at)
-         VALUES ('manual','earnings','2026-09-10','XMPL earnings','XMPL','k1',?,?,?, datetime('now'))`,
+         VALUES ('manual','earnings','2026-09-10','XMPL earnings','XMPL','k1',?,?,?, datetime('now', '-5 hours'))`,
       )
       .run(actual, vendor, stamped ? STAMP : null).lastInsertRowid,
   );

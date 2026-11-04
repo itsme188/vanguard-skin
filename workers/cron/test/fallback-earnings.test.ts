@@ -1606,9 +1606,13 @@ describe("B13: per-run candidate cap", () => {
     const putKeys = (env.CRON_KV.put as ReturnType<typeof vi.fn>).mock.calls.map(
       (c) => c[0] as string,
     );
-    expect(putKeys).toHaveLength(5);
+    // Five sent markers, plus each send's composed body under its own key (fix 4).
+    const markers = putKeys.filter((k) => k.startsWith("cloud-sent-earnings-"));
+    expect(markers).toHaveLength(5);
+    expect(putKeys.filter((k) => k.startsWith("cloud-body-earnings-"))).toHaveLength(5);
     for (const d of deferred) {
       expect(putKeys).not.toContain(`cloud-sent-earnings-${d.phase}-${d.eventId}`);
+      expect(putKeys).not.toContain(`cloud-body-earnings-${d.phase}-${d.eventId}`);
     }
   });
 
@@ -2486,7 +2490,7 @@ describe("recap scoreboard basis line (parity with the Mac)", () => {
     const md = renderScoreboard(event({ actual_value: "EPS 1.10 · Rev 510,000,000" }), "recap", null, false);
     expect(md.split("\n")).toContain("| **EPS** | 1.00 | 1.10 | +10.0% |");
     expect(md.split("\n")).toContain("| **Revenue** | $500.0M | $510.0M | +2.0% |");
-    expect(basisLines(md)).toEqual(["*Actuals basis: vendor.*"]);
+    expect(basisLines(md)).toEqual(["*Actuals basis: vendor feed only (no accepted filing figure on file).*"]);
   });
 
   // Replaces the earlier pin "never a vendor footnote, even if the row

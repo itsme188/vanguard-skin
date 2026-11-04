@@ -57,6 +57,7 @@ import {
   setEarningsRunningMarker,
   clearEarningsRunningMarker,
   writeEarningsMarker,
+  readEarningsBody,
   readPrintPushMarker,
   writePrintPushMarker,
   type EarningsPhase,
@@ -541,6 +542,21 @@ export default {
         }),
       );
       return Response.json({ sends });
+    }
+
+    // Cloud bodies come home (recap storage review, 2026-11-03): the composed
+    // markdown of a cloud-sent earnings email, so the Mac's audit row can hold it.
+    // Read-only; the 30h TTL cleans up. { body: null } when none is stored.
+    if (request.method === "GET" && url.pathname === "/internal/cloud-earnings-body") {
+      const phase = url.searchParams.get("phase");
+      const eventId = parseInt(url.searchParams.get("eventId") ?? "", 10);
+      if (phase !== "preview" && phase !== "recap") {
+        return Response.json({ error: "phase must be preview or recap" }, { status: 400 });
+      }
+      if (!Number.isInteger(eventId) || eventId <= 0) {
+        return Response.json({ error: "eventId must be a positive integer" }, { status: 400 });
+      }
+      return Response.json({ body: await readEarningsBody(env.CRON_KV, phase as EarningsPhase, eventId) });
     }
 
     if (request.method === "GET" && url.pathname === "/internal/cloud-fired-levels") {

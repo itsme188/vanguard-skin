@@ -27,7 +27,7 @@ import { actualsAreImplausible } from "@/lib/earnings/actuals-display";
 
 // ── mirrored below this line ──
 
-const VENDOR_BASIS = "Actuals basis: vendor.";
+const VENDOR_BASIS = "Actuals basis: vendor feed only (no accepted filing figure on file).";
 const ADJUSTED_BASIS = "Actuals basis: adjusted (worksheet or hand-entered figure).";
 
 export const ACTUALS_BASIS_VENDOR_LINE = `*${VENDOR_BASIS}*`;
