@@ -738,10 +738,11 @@ function buildRun(db: Database.Database, run: RunRow, filingsById: Map<number, F
   // leave the run's pinned model standing for work it did not do.
   const fallbackWritten = sections.filter((x) => x.status === "done" && x.ranOn);
   const ranOnLabels = fallbackWritten.map((x) => x.ranOn as string);
-  const allOnFallback = fallbackWritten.length > 0 && fallbackWritten.length === sections.filter((x) => x.status === "done").length;
+  const doneCount = sections.filter((x) => x.status === "done").length;
+  const allOnFallback = fallbackWritten.length > 0 && fallbackWritten.length === doneCount;
   const ranOn = ranOnLabels.length === 0 ? null : allOnFallback ? [...new Set(ranOnLabels)].join(" and ") : null;
   const failoverNote =
-    ranOnLabels.length > 0 ? failoverBanner(ranOnLabels, fallbackWritten[0].ranOnKind ?? "billing") : null;
+    ranOnLabels.length > 0 ? failoverBanner(ranOnLabels, fallbackWritten[0].ranOnKind ?? "billing", doneCount) : null;
   const fallbackNote = [run.fallbackNote, failoverNote].filter((x): x is string => !!x).join(" ") || null;
   const full: FullRun = {
     runId: run.id,

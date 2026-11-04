@@ -47,11 +47,23 @@ const KIND_WORDS: Record<string, string> = {
   config: "key missing",
 };
 
-/** The banner line for a run with fallback-written sections. */
-export function failoverBanner(labels: string[], kind: string): string {
+/**
+ * The banner line for a run with fallback-written sections. `labels` is one
+ * entry per fallback-written section; `doneSections` is the run's count of
+ * finished sections, so the sentence says whether the fallback wrote the
+ * whole run ("every section"), its only section, or a part ("1 of 3").
+ */
+export function failoverBanner(labels: string[], kind: string, doneSections: number): string {
   const who = [...new Set(labels)].join(" and ");
   const why = KIND_WORDS[kind] ?? "account problem";
-  return `Anthropic was unavailable (${why}) — ${labels.length === 1 ? "one section was" : "some sections were"} written by ${who} instead, with no effort setting. Every figure was still checked against the filing.`;
+  const total = Math.max(doneSections, labels.length);
+  const which =
+    total === 1
+      ? "the section was"
+      : labels.length >= total
+        ? "every section was"
+        : `${labels.length} of ${total} sections were`;
+  return `Anthropic was unavailable (${why}) — ${which} written by ${who} instead, with no effort setting. Every figure was still checked against the filing.`;
 }
 
 /** The "model effort" phrase every header uses; a fallback-written run names that model and no effort. */
