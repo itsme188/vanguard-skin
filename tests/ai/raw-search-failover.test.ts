@@ -177,7 +177,6 @@ describe("scope pin: the parked raw sites are not wired", () => {
     "lib/calendar/enrich-actuals.ts",
     "lib/calendar/macro-events.ts",
     "lib/etf/sector-weights.ts",
-    "lib/digest/send-earnings-email.ts",
     "lib/earnings/extract-bogeys.ts",
     "lib/research-documents/extract.ts",
     "lib/import/parsers/vanguard-pdf.ts",

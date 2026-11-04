@@ -14,7 +14,10 @@ export interface FailoverFeatureRow {
   eligible: boolean;
   /** Plain-English reason a parked feature stays parked; null when eligible. */
   parkedReason: string | null;
+  /** Effective: failing over on an account failure. On by default inside the ceiling. */
   enabled: boolean;
+  /** "off" = the owner switched it off; "on" = the owner saved it on; null = nobody chose, so the default (on). */
+  explicit: "on" | "off" | null;
   /** The operator's ordered list, or null for the default order. */
   fallbacks: string[] | null;
   /** What the default order is for this feature's tier ("openai/$workhorse", ...). */
@@ -28,8 +31,6 @@ export interface FailoverView {
 
 const PARKED_REASON: Partial<Record<FeatureKey, string>> = {
   scheduleVerification: "Uses Claude's built-in web search; stays on Anthropic",
-  earningsPreview: "Uses Claude's built-in web search; stays on Anthropic",
-  earningsRecap: "Uses Claude's built-in web search; stays on Anthropic",
   etfSectorWeights: "Uses Claude's built-in web search; stays on Anthropic",
   earningsBogeysExtraction: "Reads a PDF directly; stays on Anthropic until the PDF path is proven",
   pdfParsing: "Reads a PDF directly; stays on Anthropic until the PDF path is proven",
@@ -48,16 +49,20 @@ function defaultFallbacksFor(key: FeatureKey): string[] {
 export function buildFailoverView(
   enabled: readonly string[],
   fallbacks: Readonly<Record<string, readonly string[]>>,
+  disabled: readonly string[] = [],
 ): FailoverView {
   const on = new Set(enabled);
+  const off = new Set(disabled);
   const features = (Object.keys(FEATURE_MODELS) as FeatureKey[]).map((key): FailoverFeatureRow => {
     const eligible = FAILOVER_ELIGIBLE_CEILING.has(key);
     return {
       key,
       eligible,
       parkedReason: eligible ? null : (PARKED_REASON[key] ?? "Stays on its own provider"),
+      // On by default inside the ceiling; an explicit opt-out wins (also over a stale opt-in).
       // A parked feature reads as OFF whatever a stored row says.
-      enabled: eligible && on.has(key),
+      enabled: eligible && !off.has(key),
+      explicit: eligible ? (off.has(key) ? "off" : on.has(key) ? "on" : null) : null,
       fallbacks: eligible && fallbacks[key] ? [...fallbacks[key]] : null,
       defaultFallbacks: eligible ? defaultFallbacksFor(key) : [],
     };
@@ -68,7 +73,7 @@ export function buildFailoverView(
       key: "earningsPrep",
       label: "Earnings print prep",
       features: [...EARNINGS_PREP_FAILOVER_GROUP],
-      allEnabled: EARNINGS_PREP_FAILOVER_GROUP.every((k) => on.has(k)),
+      allEnabled: EARNINGS_PREP_FAILOVER_GROUP.every((k) => !off.has(k)),
     },
   };
 }

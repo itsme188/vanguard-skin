@@ -1,7 +1,8 @@
 /**
  * Read side of the provider-failover settings (provider-failover design §7,
- * slice 4). Two `settings` keys, both ABSENT by default, so shipping the UX
- * enables nothing:
+ * slice 4). `settings` keys, all absent by default. Failover is ON by default
+ * for every ceiling feature (owner directive 2026-11-03); these keys record the
+ * owner's explicit choices:
  *
  *   ai_failover_enabled      JSON array of FeatureKey  — the rollout set
  *   ai_failover_fallbacks    JSON object FeatureKey -> ["<provider>/<model-id>", ...]
@@ -20,6 +21,8 @@ import type Database from "better-sqlite3";
 import { MODEL_OVERRIDE_PATTERN } from "@/lib/queries/ai-model-overrides";
 
 export const FAILOVER_ENABLED_KEY = "ai_failover_enabled";
+/** The owner's explicit opt-outs (2026-11-03: failover is on by default inside the ceiling). */
+export const FAILOVER_DISABLED_KEY = "ai_failover_disabled";
 export const FAILOVER_FALLBACKS_KEY = "ai_failover_fallbacks";
 
 function readJson(db: Database.Database, key: string): unknown {
@@ -36,6 +39,19 @@ function readJson(db: Database.Database, key: string): unknown {
 /** Feature keys switched ON. [] when unset, malformed, or the table is missing. */
 export function getFailoverEnabledFeatures(db: Database.Database): string[] {
   const parsed = readJson(db, FAILOVER_ENABLED_KEY);
+  if (!Array.isArray(parsed)) return [];
+  return [...new Set(parsed.filter((v): v is string => typeof v === "string"))];
+}
+
+/**
+ * Feature keys the owner explicitly switched OFF. [] when unset or malformed.
+ * Since 2026-11-03 failover is on by default inside the ceiling, so "never
+ * configured" and "switched off" needed distinct storage: this key is the opt-out.
+ * `ai_failover_enabled` above is kept as the explicit opt-in record (what the
+ * owner had saved before default-on keeps its meaning: still on).
+ */
+export function getFailoverDisabledFeatures(db: Database.Database): string[] {
+  const parsed = readJson(db, FAILOVER_DISABLED_KEY);
   if (!Array.isArray(parsed)) return [];
   return [...new Set(parsed.filter((v): v is string => typeof v === "string"))];
 }
