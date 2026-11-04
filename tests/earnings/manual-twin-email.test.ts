@@ -11,6 +11,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
+import { installDebriefQualifier } from "@/tests/helpers/debrief-qualify";
 import { issuerSiblings } from "@/lib/securities/issuer-family";
 import {
   emailIgnoredManualTwins,
@@ -102,6 +103,7 @@ beforeEach(() => {
   db = new Database(":memory:");
   db.pragma("foreign_keys = ON");
   runMigrations(db);
+  installDebriefQualifier(db); // fixtures predate the debrief quality bar (2026-11-04)
 });
 
 function seedHeld(symbol: string): number {
