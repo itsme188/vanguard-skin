@@ -326,12 +326,12 @@ export function FactorProfileSection({
                       "short position · "
                     ) : (
                       <>
-                        short position offsets ~
+                        offsets ~
                         <Pct value={Math.abs(entry.sharePct)} digits={0} /> of
                         portfolio {FACTOR_LABELS[entry.factor]} ·{" "}
                       </>
                     )}
-                    covering adds ~
+                    closing adds ~
                     <Pct value={Math.abs(entry.deltaPp)} digits={1} /> to the
                     bucket
                   </span>
@@ -343,7 +343,7 @@ export function FactorProfileSection({
                         portfolio {FACTOR_LABELS[entry.factor]} ·{" "}
                       </>
                     )}
-                    selling cuts the bucket ~
+                    closing cuts the bucket ~
                     <Pct value={Math.abs(entry.deltaPp)} digits={1} />
                   </span>
                 )}
