@@ -3,6 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import { briefingToHtml } from "@/lib/calendar/briefing-html";
 import { getRawAnthropicClient } from "@/lib/ai/provider";
+import { failOverRawSearchCall } from "@/lib/ai/raw-search-failover";
 import { resolveFeatureModel } from "@/lib/ai/models";
 import { stripModelPreamble } from "@/lib/ai/strip-preamble";
 import {
@@ -2688,26 +2689,47 @@ async function callClaude(
       500,
     );
   }
-  const client = getRawAnthropicClient(featureKey);
-  const response = await createWithTokenLadder(
-    (maxTokens) => {
-      const body = {
-        model: modelId,
-        max_tokens: maxTokens,
-        system: SYSTEM_PROMPT,
-        tools: [{ type: "web_search_20250305" as const, name: "web_search" as const, max_uses: 5 }],
-        messages: [{ role: "user" as const, content: prompt }],
-      };
-      // With a signal (the in-app "gen recap" run only) the SDK tears the
-      // request down on abort, and its own automatic retries are switched
-      // off so they cannot stack under that run's two-attempt cap. Without
-      // one the call is the same single-argument request it has always been.
-      return signal
-        ? client.messages.create(body, { signal, maxRetries: 0 })
-        : client.messages.create(body);
-    },
-    phase,
-  );
+  let response: Awaited<ReturnType<typeof createWithTokenLadder<Anthropic.Message>>>;
+  try {
+    const client = getRawAnthropicClient(featureKey);
+    response = await createWithTokenLadder(
+      (maxTokens) => {
+        const body = {
+          model: modelId,
+          max_tokens: maxTokens,
+          system: SYSTEM_PROMPT,
+          tools: [{ type: "web_search_20250305" as const, name: "web_search" as const, max_uses: 5 }],
+          messages: [{ role: "user" as const, content: prompt }],
+        };
+        // With a signal (the in-app "gen recap" run only) the SDK tears the
+        // request down on abort, and its own automatic retries are switched
+        // off so they cannot stack under that run's two-attempt cap. Without
+        // one the call is the same single-argument request it has always been.
+        return signal
+          ? client.messages.create(body, { signal, maxRetries: 0 })
+          : client.messages.create(body);
+      },
+      phase,
+    );
+  } catch (err) {
+    // Provider failover (owner directive 2026-11-03: automatic). An account-level
+    // failure (credit, key) hands the same prompt to the fallback leg WITH a web
+    // search tool (a leg without one is skipped). Not served, not enabled, or any
+    // other error: the ORIGINAL error is rethrown, so today's refusal wording and
+    // park behaviour are unchanged. This function backs the preview/recap EMAIL
+    // and the in-app recap MODAL alike (both call composeEarningsEmail).
+    const fallbackText = await failOverRawSearchCall(featureKey, err, {
+      prompt,
+      system: SYSTEM_PROMPT,
+      maxOutputTokens: OUTPUT_TOKEN_LADDER[OUTPUT_TOKEN_LADDER.length - 1],
+      ...(signal ? { abortSignal: signal } : {}),
+    });
+    const trimmed = fallbackText.trim();
+    if (!trimmed) {
+      throw new EarningsEmailError(`Claude returned empty content for ${phase}.`, 500);
+    }
+    return stripModelPreamble(trimmed);
+  }
   // Guard against Fable-style refusals (stop_reason === "refusal" means the
   // content array is empty — reading content[0] blindly would throw).
   if (response.stop_reason === "refusal") {

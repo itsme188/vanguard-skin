@@ -21,9 +21,10 @@ import { setModelCatalogSource } from "@/lib/ai/catalog-source";
 import { setFeatureModelOverrideSource } from "@/lib/ai/override-source";
 import {
   FAILOVER_ELIGIBLE_CEILING,
-  FAILOVER_ENABLED_DEFAULT,
   FAILOVER_PARKED,
   setFailoverEnabledSource,
+  setFailoverDisabledSource,
+  isFailoverEnabled,
   setFailoverRecorder,
   failoverTargets,
   type FailoverEvent,
@@ -87,8 +88,18 @@ const openAiError = (respond: () => Response) =>
 const creditError = () => anthropicError(ANTHROPIC_FAILURES.billing400);
 
 describe("failover policy tables", () => {
-  it("the rollout ships empty: no live path changes until a feature is flipped", () => {
-    expect(FAILOVER_ENABLED_DEFAULT.size).toBe(0);
+  it("failover is on by default for every ceiling feature and never for a parked one", () => {
+    setFailoverEnabledSource(null);
+    for (const f of FAILOVER_ELIGIBLE_CEILING) expect(isFailoverEnabled(f)).toBe(true);
+    for (const f of FAILOVER_PARKED) expect(isFailoverEnabled(f)).toBe(false);
+  });
+
+  it("the recap/preview compose features are inside the ceiling; the other web-search features stay parked", () => {
+    expect(FAILOVER_ELIGIBLE_CEILING.has("earningsPreview")).toBe(true);
+    expect(FAILOVER_ELIGIBLE_CEILING.has("earningsRecap")).toBe(true);
+    for (const f of ["scheduleVerification", "etfSectorWeights", "armedBogeyDeepRead", "earningsBogeysExtraction", "pdfParsing", "researchDocumentExtraction"] as const) {
+      expect(FAILOVER_PARKED.has(f)).toBe(true);
+    }
   });
 
   it("no parked feature is in the eligible ceiling", () => {
@@ -210,12 +221,26 @@ describe("(c) parked and non-enabled features never switch", () => {
     expect(generateTextMock).toHaveBeenCalledTimes(1);
   });
 
-  it("with the shipped default rollout nothing switches", async () => {
+  it("with no owner settings at all the default is ON: the call is served by the fallback", async () => {
     setFailoverEnabledSource(null);
-    const err = await creditError();
-    generateTextMock.mockRejectedValueOnce(err);
-    await expect(generateTextForFeature("newsletterProcessing", { prompt: "x" })).rejects.toBe(err);
-    expect(generateTextMock).toHaveBeenCalledTimes(1);
+    generateTextMock
+      .mockRejectedValueOnce(await creditError())
+      .mockResolvedValueOnce({ text: "from openai", finishReason: "stop" });
+    const r = await generateTextForFeature("newsletterProcessing", { prompt: "x" });
+    expect(r.text).toBe("from openai");
+  });
+
+  it("an explicit owner opt-out is honoured: the identical error is rethrown", async () => {
+    setFailoverEnabledSource(null);
+    setFailoverDisabledSource(() => new Set<FeatureKey>(["newsletterProcessing"]));
+    try {
+      const err = await creditError();
+      generateTextMock.mockRejectedValueOnce(err);
+      await expect(generateTextForFeature("newsletterProcessing", { prompt: "x" })).rejects.toBe(err);
+      expect(generateTextMock).toHaveBeenCalledTimes(1);
+    } finally {
+      setFailoverDisabledSource(null);
+    }
   });
 });
 

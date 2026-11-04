@@ -21,7 +21,7 @@ import {
   setFailoverGroupEnabled,
   setFailoverFallbacks,
 } from "@/lib/mutations/ai-failover-settings";
-import { getFailoverEnabledFeatures, getFailoverFallbacks } from "@/lib/queries/ai-failover-settings";
+import { getFailoverDisabledFeatures, getFailoverEnabledFeatures, getFailoverFallbacks } from "@/lib/queries/ai-failover-settings";
 import { setFeatureModelOverride } from "@/lib/mutations/ai-model-overrides";
 import { getFeatureModelOverrides } from "@/lib/queries/ai-model-overrides";
 import {
@@ -30,7 +30,7 @@ import {
   FAILOVER_PARKED,
   failoverTargets,
   isFailoverEnabled,
-  setFailoverEnabledSource,
+  setFailoverDisabledSource,
   setFailoverFallbackSource,
 } from "@/lib/ai/failover";
 import { FEATURE_MODELS } from "@/lib/ai/models";
@@ -42,7 +42,7 @@ let db: Database.Database;
 
 /** Wire the executor's sources to the db exactly as lib/db.ts does. */
 function wire() {
-  setFailoverEnabledSource(() => new Set(getFailoverEnabledFeatures(db) as FeatureKey[]));
+  setFailoverDisabledSource(() => new Set(getFailoverDisabledFeatures(db) as FeatureKey[]));
   setFailoverFallbackSource(() => getFailoverFallbacks(db));
 }
 
@@ -55,22 +55,66 @@ beforeEach(() => {
   wire();
 });
 afterEach(() => {
-  setFailoverEnabledSource(null);
+  setFailoverDisabledSource(null);
   setFailoverFallbackSource(null);
 });
 
 const patch = (body: unknown) =>
   PATCH(new NextRequest("http://localhost/api/settings/ai-failover", { method: "PATCH", body: JSON.stringify(body) }));
 
-describe("shipping the UX enables nothing", () => {
-  it("a fresh database has nothing on and no custom lists", async () => {
+describe("failover is on by default (owner directive 2026-11-03)", () => {
+  it("a fresh database: every ceiling feature is on, no parked feature is, nothing is explicitly configured", async () => {
     expect(getFailoverEnabledFeatures(db)).toEqual([]);
+    expect(getFailoverDisabledFeatures(db)).toEqual([]);
     expect(getFailoverFallbacks(db)).toEqual({});
-    for (const key of Object.keys(FEATURE_MODELS) as FeatureKey[]) expect(isFailoverEnabled(key)).toBe(false);
+    for (const key of Object.keys(FEATURE_MODELS) as FeatureKey[]) {
+      expect(isFailoverEnabled(key)).toBe(FAILOVER_ELIGIBLE_CEILING.has(key));
+    }
     const body = await (await GET()).json();
-    expect(body.success).toBe(true);
-    expect(body.features.every((f: { enabled: boolean }) => !f.enabled)).toBe(true);
-    expect(body.group.allEnabled).toBe(false);
+    const rows = body.features as { key: string; eligible: boolean; enabled: boolean; explicit: string | null }[];
+    for (const r of rows) {
+      expect(r.enabled).toBe(r.eligible);
+      expect(r.explicit).toBeNull();
+    }
+    expect(body.group.allEnabled).toBe(true);
+  });
+
+  it("an explicit opt-out is authoritative and survives a restart (re-reading the store through fresh sources)", async () => {
+    expect((await patch({ key: "chat", enabled: false })).status).toBe(200);
+    expect(isFailoverEnabled("chat")).toBe(false);
+    expect(getFailoverDisabledFeatures(db)).toEqual(["chat"]);
+    // "Restart": drop and re-register the executor sources from the database alone.
+    setFailoverDisabledSource(null);
+    setFailoverFallbackSource(null);
+    expect(isFailoverEnabled("chat")).toBe(true); // no sources registered = the default
+    wire();
+    expect(isFailoverEnabled("chat")).toBe(false); // the saved opt-out is read back
+    const row = (await (await GET()).json()).features.find((f: { key: string }) => f.key === "chat");
+    expect(row).toMatchObject({ enabled: false, explicit: "off" });
+    // Opting back in lifts it.
+    expect((await patch({ key: "chat", enabled: true })).status).toBe(200);
+    expect(isFailoverEnabled("chat")).toBe(true);
+    expect(getFailoverDisabledFeatures(db)).toEqual([]);
+  });
+
+  it("the owner's saved set (6 print-prep features + newsletterProcessing) behaves identically before and after: still on, shown as an explicit opt-in", async () => {
+    const saved = [...EARNINGS_PREP_FAILOVER_GROUP, "newsletterProcessing"];
+    db.prepare(`INSERT INTO settings (key, value) VALUES ('ai_failover_enabled', ?)`).run(JSON.stringify(saved));
+    for (const k of saved) expect(isFailoverEnabled(k as FeatureKey)).toBe(true); // as before
+    const rows = (await (await GET()).json()).features as { key: string; enabled: boolean; explicit: string | null }[];
+    for (const k of saved) expect(rows.find((r) => r.key === k)).toMatchObject({ enabled: true, explicit: "on" });
+    // Newly covered by the default, never stored by the owner:
+    expect(rows.find((r) => r.key === "chat")).toMatchObject({ enabled: true, explicit: null });
+  });
+
+  it("an opt-out beats a stale opt-in for the same feature", () => {
+    db.prepare(`INSERT INTO settings (key, value) VALUES ('ai_failover_enabled', ?)`).run(JSON.stringify(["chat"]));
+    db.prepare(`INSERT INTO settings (key, value) VALUES ('ai_failover_disabled', ?)`).run(JSON.stringify(["chat"]));
+    expect(isFailoverEnabled("chat")).toBe(false);
+  });
+
+  it("the ordered fallback lists are unchanged by the default", () => {
+    expect(failoverTargets("chat").map((t) => t.provider)).toEqual(["openai", "workers-ai"]);
   });
 });
 
@@ -82,6 +126,7 @@ describe("the section 4 ceiling is enforced on every write", () => {
     expect(res.status).toBe(400);
     expect((await res.json()).success).toBe(false);
     expect(getFailoverEnabledFeatures(db)).toEqual([]);
+    expect(getFailoverDisabledFeatures(db)).toEqual([]);
     expect(getFailoverFallbacks(db)).toEqual({});
   });
 
@@ -100,33 +145,34 @@ describe("the section 4 ceiling is enforced on every write", () => {
 
   it("a hand-edited store row still cannot enable a parked feature (the executor intersects the ceiling)", async () => {
     db.prepare(`INSERT INTO settings (key, value) VALUES ('ai_failover_enabled', ?)`).run(
-      JSON.stringify(["earningsPreview", "pdfParsing", "newsletterProcessing"]),
+      JSON.stringify(["scheduleVerification", "pdfParsing", "newsletterProcessing"]),
     );
-    expect(isFailoverEnabled("earningsPreview")).toBe(false);
+    expect(isFailoverEnabled("scheduleVerification")).toBe(false);
     expect(isFailoverEnabled("pdfParsing")).toBe(false);
     expect(isFailoverEnabled("newsletterProcessing")).toBe(true);
     const view = await (await GET()).json();
-    expect(view.features.find((f: { key: string }) => f.key === "earningsPreview").enabled).toBe(false);
+    expect(view.features.find((f: { key: string }) => f.key === "scheduleVerification").enabled).toBe(false);
   });
 
   it("the group toggle touches exactly the print-prep features, all inside the ceiling", () => {
     for (const k of EARNINGS_PREP_FAILOVER_GROUP) expect(FAILOVER_ELIGIBLE_CEILING.has(k)).toBe(true);
     for (const k of FAILOVER_PARKED) expect(EARNINGS_PREP_FAILOVER_GROUP).not.toContain(k);
-    setFailoverEnabled(db, "chat", true);
-    const on = setFailoverGroupEnabled(db, true);
-    expect(on.sort()).toEqual(["chat", ...EARNINGS_PREP_FAILOVER_GROUP].sort());
-    const off = setFailoverGroupEnabled(db, false);
-    expect(off).toEqual(["chat"]); // only the group's members were switched off
+    setFailoverEnabled(db, "chat", false);
+    setFailoverGroupEnabled(db, false);
+    expect(getFailoverDisabledFeatures(db).sort()).toEqual(["chat", ...EARNINGS_PREP_FAILOVER_GROUP].sort());
+    setFailoverGroupEnabled(db, true);
+    expect(getFailoverDisabledFeatures(db)).toEqual(["chat"]); // only the group's members were switched back on
+    for (const k of EARNINGS_PREP_FAILOVER_GROUP) expect(isFailoverEnabled(k)).toBe(true);
   });
 });
 
 describe("round trip through the settings store into the executor", () => {
-  it("enabling in the store turns the executor's gate on; disabling turns it off", async () => {
-    expect(isFailoverEnabled("newsletterProcessing")).toBe(false);
-    expect((await patch({ key: "newsletterProcessing", enabled: true })).status).toBe(200);
+  it("switching off in the store turns the executor's gate off; switching back on restores it", async () => {
     expect(isFailoverEnabled("newsletterProcessing")).toBe(true);
     expect((await patch({ key: "newsletterProcessing", enabled: false })).status).toBe(200);
     expect(isFailoverEnabled("newsletterProcessing")).toBe(false);
+    expect((await patch({ key: "newsletterProcessing", enabled: true })).status).toBe(200);
+    expect(isFailoverEnabled("newsletterProcessing")).toBe(true);
   });
 
   it("an ordered list is honoured in the operator's order, and clearing restores the default", async () => {
@@ -143,8 +189,9 @@ describe("round trip through the settings store into the executor", () => {
   });
 
   it("enabled + list are saved together or not at all", async () => {
-    const res = await patch({ key: "chat", enabled: true, fallbacks: ["bogus/model"] });
+    const res = await patch({ key: "chat", enabled: false, fallbacks: ["bogus/model"] });
     expect(res.status).toBe(400);
+    expect(getFailoverDisabledFeatures(db)).toEqual([]);
     expect(getFailoverEnabledFeatures(db)).toEqual([]);
     expect(getFailoverFallbacks(db)).toEqual({});
   });
@@ -152,7 +199,7 @@ describe("round trip through the settings store into the executor", () => {
   it("does not touch the model-override store, and the two stay independent", () => {
     setFeatureModelOverride(db, "chat", "openai/$frontier");
     setFailoverFallbacks(db, "chat", ["workers-ai/$frontier"]);
-    setFailoverEnabled(db, "chat", true);
+    setFailoverEnabled(db, "chat", false);
     expect(getFeatureModelOverrides(db)).toEqual({ chat: "openai/$frontier" });
     setFeatureModelOverride(db, "chat", null);
     expect(getFailoverFallbacks(db)).toEqual({ chat: ["workers-ai/$frontier"] });

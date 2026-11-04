@@ -7,10 +7,12 @@
  *
  * Per eligible feature: an on/off switch and an ordered fallback list (provider
  * qualified specs, comma separated, blank = the default order). A feature the
- * design keeps parked (native web search, PDF input, the Cloudflare-only
- * route) shows its reason and NO controls. A group switch turns the earnings
- * print-prep features on or off together. Everything is OFF until switched on,
- * and the server refuses a parked feature whatever this page sends.
+ * design keeps parked (native web search without a fallback search path, PDF
+ * input, the Cloudflare-only route) shows its reason and NO controls. A group
+ * switch turns the earnings print-prep features on or off together. Failover is
+ * ON BY DEFAULT for every eligible feature (owner directive 2026-11-03): a
+ * switch here is an explicit choice, and an explicit "off" stays off. The
+ * server refuses a parked feature whatever this page sends.
  */
 
 import { useEffect, useState } from "react";
@@ -24,6 +26,7 @@ interface FailoverFeatureRow {
   eligible: boolean;
   parkedReason: string | null;
   enabled: boolean;
+  explicit: "on" | "off" | null;
   fallbacks: string[] | null;
   defaultFallbacks: string[];
 }
@@ -133,9 +136,10 @@ export function AiFailoverSection() {
       {view && (
         <>
           <p className="text-[10px] text-ink-faint italic">
-            When Anthropic fails at the account level (credit used up, key rejected, key missing), a
-            switched-on feature retries on the next provider in its list. Everything is off until you
-            turn it on. The fallback list is{" "}
+            When Anthropic fails at the account level (credit used up, key rejected, key missing), an
+            eligible feature retries on the next provider in its list automatically. Every eligible
+            feature is on by default; switch one off to keep it on Anthropic only (that choice is
+            kept). The fallback list is{" "}
             <span className="font-mono">provider/model-id</span> or{" "}
             <span className="font-mono">provider/$tier</span>, comma separated, in order (providers:
             openai, workers-ai). Blank uses the default order.
@@ -145,7 +149,7 @@ export function AiFailoverSection() {
             <span className="text-[11px] text-ink">
               {view.group.label} ({view.group.features.length} features)
               <span className="ml-1.5 text-[10px] text-ink-faint">
-                {view.group.allEnabled ? "all on" : "not all on"}
+                {view.group.allEnabled ? "all on" : "some switched off"}
               </span>
             </span>
             <button
@@ -182,12 +186,14 @@ export function AiFailoverSection() {
                           patch(
                             row.key,
                             { key: row.key, enabled: e.target.checked },
-                            e.target.checked ? "Failover on — applies to the next AI call" : "Failover off",
+                            e.target.checked ? "Failover on — applies to the next AI call" : "Failover off — stays on Anthropic only",
                           )
                         }
                       />
                       {row.key}
-                      {row.enabled && <span className="text-[10px] text-gold-ink">on</span>}
+                      <span className="text-[10px] text-gold-ink">
+                        {row.enabled ? (row.explicit === "on" ? "on" : "on by default") : "off (your choice)"}
+                      </span>
                     </label>
                   </div>
                   <div className="flex items-center gap-1.5">

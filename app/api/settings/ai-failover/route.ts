@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { buildFailoverView } from "@/lib/ai/failover-view";
-import { getFailoverEnabledFeatures, getFailoverFallbacks } from "@/lib/queries/ai-failover-settings";
+import { getFailoverDisabledFeatures, getFailoverEnabledFeatures, getFailoverFallbacks } from "@/lib/queries/ai-failover-settings";
 import {
   setFailoverEnabled,
   setFailoverFallbacks,
@@ -14,11 +14,11 @@ export const dynamic = "force-dynamic";
  * Settings → AI failover (provider-failover design §7, slice 4). In-app route,
  * same shape as /api/settings/ai-models. Everything is bounded by the section 4
  * ceiling inside the mutations: a parked feature answers 400 and nothing is saved.
- * Nothing is on until the owner turns it on.
+ * Failover is ON by default inside the ceiling; a toggle here is an explicit choice.
  */
 
 function view() {
-  return buildFailoverView(getFailoverEnabledFeatures(db), getFailoverFallbacks(db));
+  return buildFailoverView(getFailoverEnabledFeatures(db), getFailoverFallbacks(db), getFailoverDisabledFeatures(db));
 }
 
 /** GET → { success: true, ...view } */

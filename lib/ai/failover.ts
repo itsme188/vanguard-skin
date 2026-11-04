@@ -24,11 +24,14 @@
  * A leg whose provider is not configured (no key, no gateway) is skipped:
  * it is inert, never an error.
  *
- * ROLLOUT. Design §8: "the list is the ceiling, not the rollout" — a feature
- * becomes enabled only after parity validation and a shadow cycle. The
- * executor ships with an EMPTY rollout set, so no live path changes until a
- * feature is deliberately added to FAILOVER_ENABLED_DEFAULT (first candidate
- * per §8.5: newsletterProcessing). The ceiling bounds it either way.
+ * ROLLOUT (owner directive 2026-11-03: "make it automatic"). Every feature
+ * inside the ceiling is failover-ENABLED BY DEFAULT; the owner can switch one
+ * off (an explicit opt-out, Settings -> AI failover) and that stays off. The
+ * ceiling bounds it either way: a parked feature never fails over whatever the
+ * defaults or the saved settings say. Earlier slices shipped with an empty
+ * rollout pending the section 8 parity runs; this supersedes that for the
+ * ceiling features, by the owner's decision. The PDF seam keeps its own gate
+ * (lib/ai/pdf-extraction.ts), unchanged.
  *
  * lib/ai imports no db: the switch is reported through an injected recorder
  * (lib/db.ts registers the SQLite-backed one), the same seam shape as
@@ -74,6 +77,11 @@ export const FAILOVER_ELIGIBLE_CEILING: ReadonlySet<FeatureKey> = new Set<Featur
   "printWatchFirstPass",
   "printFilingSummary",
   "newsletterBogeyExtraction",
+  // Un-parked 2026-11-03 (owner directive): the earnings preview/recap compose
+  // (email AND the in-app recap modal) carries Claude's native web search, so it
+  // fails over through the raw-search hand-off, to a leg with a search tool only.
+  "earningsPreview",
+  "earningsRecap",
 ]);
 
 /**
@@ -83,8 +91,6 @@ export const FAILOVER_ELIGIBLE_CEILING: ReadonlySet<FeatureKey> = new Set<Featur
  */
 export const FAILOVER_PARKED: ReadonlySet<FeatureKey> = new Set<FeatureKey>([
   "scheduleVerification",
-  "earningsPreview",
-  "earningsRecap",
   "etfSectorWeights",
   "earningsBogeysExtraction",
   "pdfParsing",
@@ -93,24 +99,31 @@ export const FAILOVER_PARKED: ReadonlySet<FeatureKey> = new Set<FeatureKey>([
   "alertSuggestion",
 ]);
 
-/**
- * The rollout: features whose failover is switched ON. Empty until a feature
- * passes the design §8 parity gate (golden inputs, figure parity, shadow
- * cycle). Adding a name here is the whole "flip"; names outside the ceiling
- * are ignored.
- */
-export const FAILOVER_ENABLED_DEFAULT: ReadonlySet<FeatureKey> = new Set<FeatureKey>();
-
 let enabledSource: (() => ReadonlySet<FeatureKey>) | null = null;
+let disabledSource: (() => ReadonlySet<FeatureKey>) | null = null;
 
-/** Inject the rollout set (tests; the slice-4 settings reader). null restores the default. */
+/**
+ * Inject the COMPLETE effective set (tests, or a context that wants a fixed
+ * rollout). When registered it decides alone: a feature is on only if it is in
+ * the set. null restores the default-on rule below.
+ */
 export function setFailoverEnabledSource(fn: (() => ReadonlySet<FeatureKey>) | null): void {
   enabledSource = fn;
 }
 
+/**
+ * Inject the owner's explicit opt-outs (lib/db.ts registers the settings-backed
+ * reader). A feature in this set stays off whatever the default says.
+ */
+export function setFailoverDisabledSource(fn: (() => ReadonlySet<FeatureKey>) | null): void {
+  disabledSource = fn;
+}
+
+/** On by default inside the ceiling; off when outside it or explicitly disabled. */
 export function isFailoverEnabled(feature: FeatureKey): boolean {
   if (!FAILOVER_ELIGIBLE_CEILING.has(feature)) return false;
-  return (enabledSource ? enabledSource() : FAILOVER_ENABLED_DEFAULT).has(feature);
+  if (enabledSource) return enabledSource().has(feature);
+  return !(disabledSource?.().has(feature) ?? false);
 }
 
 /**

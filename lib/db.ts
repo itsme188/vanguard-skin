@@ -7,8 +7,8 @@ import { setFeatureModelOverrideSource } from "./ai/override-source";
 import { getFeatureModelOverrides } from "./queries/ai-model-overrides";
 import { setModelCatalogSource } from "./ai/catalog-source";
 import { getModelCatalog } from "./ai/model-catalog";
-import { setFailoverRecorder, setFailoverEnabledSource, setFailoverFallbackSource } from "./ai/failover";
-import { getFailoverEnabledFeatures, getFailoverFallbacks } from "./queries/ai-failover-settings";
+import { setFailoverRecorder, setFailoverDisabledSource, setFailoverFallbackSource } from "./ai/failover";
+import { getFailoverDisabledFeatures, getFailoverFallbacks } from "./queries/ai-failover-settings";
 import type { FeatureKey } from "./ai/feature-keys";
 import { recordFailoverEvent } from "./mutations/ai-failover-log";
 
@@ -37,7 +37,8 @@ setFeatureModelOverrideSource(() => getFeatureModelOverrides(db));
 setModelCatalogSource(() => getModelCatalog(db));
 // Provider failover (design slice 2): note each switch durably, same seam shape.
 setFailoverRecorder((event) => recordFailoverEvent(db, event));
-// Provider failover settings (slice 4): rollout set + ordered fallback lists. Both
-// default to empty; the executor still intersects the set with its section 4 ceiling.
-setFailoverEnabledSource(() => new Set(getFailoverEnabledFeatures(db) as FeatureKey[]));
+// Provider failover settings: failover is ON by default inside the section 4 ceiling
+// (owner directive 2026-11-03); this wires the owner's explicit opt-outs and the ordered
+// fallback lists. The executor still intersects with the ceiling.
+setFailoverDisabledSource(() => new Set(getFailoverDisabledFeatures(db) as FeatureKey[]));
 setFailoverFallbackSource(() => getFailoverFallbacks(db));

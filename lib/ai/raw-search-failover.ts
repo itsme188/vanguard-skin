@@ -2,7 +2,7 @@
  * Failover for the RAW-client web-search call sites (provider-failover, raw-SDK
  * wiring 2026-11-03).
  *
- * Two eligible features call Anthropic through the raw `@anthropic-ai/sdk`
+ * Eligible features call Anthropic through the raw `@anthropic-ai/sdk`
  * client with the native `web_search` tool, not through lib/ai/generate.ts:
  * earningsDateVerification (lib/calendar/verify-earnings-dates.ts) and
  * sectorVerification (lib/securities/verify-sector-tags.ts). The generate
@@ -32,7 +32,7 @@ import { failOverOnAccountFailure } from "@/lib/ai/failover";
 export async function failOverRawSearchCall(
   feature: FeatureKey,
   primaryErr: unknown,
-  req: { prompt: string; maxOutputTokens: number },
+  req: { prompt: string; maxOutputTokens: number; system?: string; abortSignal?: AbortSignal },
 ): Promise<string> {
   return failOverOnAccountFailure(
     feature,
@@ -41,6 +41,10 @@ export async function failOverRawSearchCall(
       const res = await generateText({
         model,
         prompt: req.prompt,
+        ...(req.system ? { system: req.system } : {}),
+        // The in-app recap run's cancel reaches the fallback request too; its SDK
+        // retries are off there so they cannot stack under that run's attempt cap.
+        ...(req.abortSignal ? { abortSignal: req.abortSignal, maxRetries: 0 } : {}),
         maxOutputTokens: req.maxOutputTokens,
         // The provider-executed tool's generic parameter does not unify with generateText's
         // ToolSet inference (a typing quirk of @ai-sdk/openai 3.x); the tool object is the

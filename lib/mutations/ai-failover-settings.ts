@@ -18,7 +18,9 @@ import { FEATURE_MODELS, expandSpec, parseModelSpec } from "@/lib/ai/models";
 import { EARNINGS_PREP_FAILOVER_GROUP, FAILOVER_ELIGIBLE_CEILING } from "@/lib/ai/failover";
 import { MODEL_OVERRIDE_PATTERN } from "@/lib/queries/ai-model-overrides";
 import {
+  FAILOVER_DISABLED_KEY,
   FAILOVER_ENABLED_KEY,
+  getFailoverDisabledFeatures,
   FAILOVER_FALLBACKS_KEY,
   getFailoverEnabledFeatures,
   getFailoverFallbacks,
@@ -46,28 +48,40 @@ export function assertFailoverEligible(key: string): asserts key is FeatureKey {
   }
 }
 
-/** Switch failover on/off for one feature. Returns the enabled list. */
-export function setFailoverEnabled(db: Database.Database, key: string, enabled: boolean): string[] {
+/**
+ * Record an explicit choice for one feature. Failover is ON by default inside
+ * the ceiling, so "off" is an explicit opt-out that stays off; "on" records an
+ * explicit opt-in (and lifts any opt-out). Both lists are rewritten in one
+ * transaction. Returns the effective-on list is NOT returned: callers re-read the view.
+ */
+function applyChoice(db: Database.Database, keys: readonly string[], enabled: boolean): void {
+  db.transaction(() => {
+    const on = new Set(getFailoverEnabledFeatures(db));
+    const off = new Set(getFailoverDisabledFeatures(db));
+    for (const key of keys) {
+      if (enabled) {
+        on.add(key);
+        off.delete(key);
+      } else {
+        off.add(key);
+        on.delete(key);
+      }
+    }
+    upsert(db, FAILOVER_ENABLED_KEY, [...on].sort());
+    upsert(db, FAILOVER_DISABLED_KEY, [...off].sort());
+  })();
+}
+
+/** Switch failover on/off for one feature (explicit choice). */
+export function setFailoverEnabled(db: Database.Database, key: string, enabled: boolean): void {
   assertFailoverEligible(key);
-  const set = new Set(getFailoverEnabledFeatures(db));
-  if (enabled) set.add(key);
-  else set.delete(key);
-  const next = [...set].sort();
-  upsert(db, FAILOVER_ENABLED_KEY, next);
-  return next;
+  applyChoice(db, [key], enabled);
 }
 
 /** Switch the whole earnings print-prep group on/off in ONE write. */
-export function setFailoverGroupEnabled(db: Database.Database, enabled: boolean): string[] {
-  const set = new Set(getFailoverEnabledFeatures(db));
-  for (const key of EARNINGS_PREP_FAILOVER_GROUP) {
-    assertFailoverEligible(key);
-    if (enabled) set.add(key);
-    else set.delete(key);
-  }
-  const next = [...set].sort();
-  upsert(db, FAILOVER_ENABLED_KEY, next);
-  return next;
+export function setFailoverGroupEnabled(db: Database.Database, enabled: boolean): void {
+  for (const key of EARNINGS_PREP_FAILOVER_GROUP) assertFailoverEligible(key);
+  applyChoice(db, EARNINGS_PREP_FAILOVER_GROUP, enabled);
 }
 
 /**
