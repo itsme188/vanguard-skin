@@ -56,6 +56,7 @@ import {
   buildDebriefPrompt,
   assembleDebriefMarkdown,
   type DebriefCandidate,
+  type DebriefExclusion,
 } from "@/lib/earnings/debrief";
 import {
   claimEarningsEmailSlot,
@@ -85,10 +86,15 @@ export interface DebriefResult {
   sent: boolean;
   /** Symbols that got a full section in the sent email. Empty when nothing sent. */
   covered: string[];
+  /** Names that were candidates but did not make it, each with the missing piece. */
+  excluded?: DebriefExclusion[];
   skippedReason?:
     | "outside-window"
     | "already-ran-today"
     | "no-candidates"
+    /** Candidates existed but none cleared the print window, the readiness gate and the
+     *  content bar. Nothing is composed or sent (debrief-quality review, 2026-11-04). */
+    | "no-qualifying-names"
     | "no-recipient"
     | "claims-conflict"
     /** A claimed member's calendar entry was replaced while the email was
@@ -127,7 +133,16 @@ export async function runMorningDebrief(
     return { sent: false, covered: [], skippedReason: "already-ran-today" };
   }
 
-  const { unsent, alreadyRecapped } = findDebriefCandidates(db, { now });
+  const { unsent, excluded: found, alreadyRecapped } = findDebriefCandidates(db, { now });
+  const excluded: DebriefExclusion[] = [...found];
+  if (unsent.length === 0 && excluded.length > 0) {
+    // No-send is a valid outcome: an email whose honest content is "nothing to report" is
+    // never composed. Logged on the existing audit path (the sweep summary's `debrief`
+    // field and the `last_debrief_outcome` setting), BEFORE the day-key stamp so a later
+    // tick in the window can still send if a reaction or an actual lands.
+    logDebriefOutcome(db, today, "no-qualifying-names", [], excluded);
+    return { sent: false, covered: [], excluded, skippedReason: "no-qualifying-names" };
+  }
   if (unsent.length === 0) {
     // Deliberately BEFORE the day-key stamp: a candidate-less tick must not
     // burn the day. The sweep ticks every 15 min, so the window holds two or
@@ -169,6 +184,13 @@ export async function runMorningDebrief(
       console.warn(
         `[debrief] ${candidate.symbol} (event ${candidate.eventId}) held out of the debrief: ${hold.kind}`,
       );
+      excluded.push({
+        eventId: candidate.eventId,
+        symbol: candidate.symbol,
+        event_date: candidate.event_date,
+        reason: "figure_conflict",
+        detail: hold.reason,
+      });
       continue;
     }
     const claim = claimEarningsEmailSlot(db, candidate.eventId, "recap", recipient);
@@ -207,7 +229,8 @@ export async function runMorningDebrief(
   // Also the "every member was cloud-delivered" outcome — nothing left to
   // narrate either way, and the day key above is already stamped.
   if (claims.length === 0) {
-    return { sent: false, covered: [], skippedReason: "claims-conflict" };
+    logDebriefOutcome(db, today, "claims-conflict", [], excluded);
+    return { sent: false, covered: [], excluded, skippedReason: "claims-conflict" };
   }
 
   try {
@@ -329,11 +352,13 @@ export async function runMorningDebrief(
         // A push failure must never change the outcome — the rows are terminal.
         console.warn("[debrief] delivery-unknown push failed:", err);
       }
-      return { sent: true, covered };
+      logDebriefOutcome(db, today, "sent (delivery unknown)", covered, excluded);
+      return { sent: true, covered, excluded };
     }
 
     console.log(`[debrief] sent — covered ${covered.length} name(s): ${covered.join(", ")}`);
-    return { sent: true, covered };
+    logDebriefOutcome(db, today, "sent", covered, excluded);
+    return { sent: true, covered, excluded };
   } catch (err) {
     // COMPOSE-side failures only now: deliverClaimedBatch never throws, it
     // returns an outcome. Release every fresh claim so the members return to
@@ -408,6 +433,34 @@ function restoreDebriefLastRunDay(db: Database.Database, prior: string | null): 
     db.prepare(`DELETE FROM settings WHERE key = ?`).run(DEBRIEF_LAST_RUN_SETTINGS_KEY);
   } catch {
     // settings table absent (minimal test DBs) — best-effort, never throw
+  }
+}
+
+/**
+ * The debrief's outcome for the morning, on the audit path that already exists: a console
+ * line (the sweep's log) plus the `last_debrief_outcome` settings key beside
+ * `last_debrief_date`. Names every excluded name with the missing piece, so a miss is
+ * visible somewhere. Best effort: never throws into the send path.
+ */
+function logDebriefOutcome(
+  db: Database.Database,
+  day: string,
+  outcome: string,
+  covered: string[],
+  excluded: DebriefExclusion[],
+): void {
+  const named = excluded.map((e) => `${e.symbol} (${e.event_date}): ${e.reason} - ${e.detail}`);
+  console.warn(
+    `[debrief] ${day}: ${outcome}; covered [${covered.join(", ")}]` +
+      (named.length > 0 ? `; excluded ${named.length}: ${named.join(" | ")}` : ""),
+  );
+  try {
+    db.prepare(
+      `INSERT INTO settings (key, value, updated_at) VALUES ('last_debrief_outcome', ?, datetime('now'))
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
+    ).run(JSON.stringify({ day, outcome, covered, excluded }));
+  } catch {
+    // settings table absent (minimal test DBs): best effort
   }
 }
 

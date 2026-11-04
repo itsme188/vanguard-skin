@@ -212,6 +212,19 @@ describe("spec §4.1 consumer matrix — armed event is selected; an in-window u
       tag: "armed",
     });
     armWorksheet(db, armed);
+    // The debrief's quality bar (2026-11-04): a measured reaction and one piece of context.
+    db.prepare("UPDATE calendar_events SET reaction_snapshot = ? WHERE id = ?").run(
+      JSON.stringify({
+        t0_utc: "2026-09-02T20:15:00.000Z",
+        window_min: 120,
+        captured_at: "2026-09-02T23:00:00.000Z",
+        symbol: { t_pre: 100, t_post: 102, delta_pct: 2 },
+      }),
+      armed,
+    );
+    db.prepare(
+      "INSERT INTO earnings_bogeys (event_id, source, source_label, eps_consensus, uploaded_at) VALUES (?, 'manual', 'Desk sheet', 1.02, '2026-09-01 12:00:00')",
+    ).run(armed);
     // findDebriefCandidates family-dedupes by SYMBOL alone (no date in the
     // key), so a same-symbol control on any other date would collapse into
     // the armed row's family and never reach the coverage filter at all —

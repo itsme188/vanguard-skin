@@ -105,13 +105,13 @@ let eventCounter = 0;
 function seedEvent(opts: { symbol: string; date?: string; releaseTime?: string | null }): number {
   eventCounter += 1;
   const date = opts.date ?? TODAY;
-  return Number(
+  const id = Number(
     db
       .prepare(
         `INSERT INTO calendar_events
           (source, event_type, event_date, release_time, title, symbol,
-           actual_value, source_key, week_of, superseded, enriched_at)
-         VALUES ('finnhub', 'earnings', ?, ?, ?, ?, 'EPS 1.00 · Rev 500M', ?, '2026-07-27', 0, ?)`,
+           actual_value, source_key, week_of, superseded, enriched_at, reaction_snapshot)
+         VALUES ('finnhub', 'earnings', ?, ?, ?, ?, 'EPS 1.00 · Rev 500M', ?, '2026-07-27', 0, ?, ?)`,
       )
       .run(
         date,
@@ -120,8 +120,20 @@ function seedEvent(opts: { symbol: string; date?: string; releaseTime?: string |
         opts.symbol,
         `finnhub:${opts.symbol}:${date}:${eventCounter}`,
         `${date} 07:00:00`,
+        // Debrief-quality bar (2026-11-04): every candidate has a measured reaction and a bogey sheet.
+        JSON.stringify({
+          t0_utc: `${date}T00:00:00.000Z`,
+          window_min: 120,
+          captured_at: `${date}T06:00:00.000Z`,
+          symbol: { t_pre: 100, t_post: 102, delta_pct: 2 },
+        }),
       ).lastInsertRowid,
   );
+  db.prepare(
+    `INSERT INTO earnings_bogeys (event_id, source, source_label, eps_consensus, uploaded_at)
+     VALUES (?, 'manual', 'Desk sheet', 1.02, '2026-07-20 12:00:00')`,
+  ).run(id);
+  return id;
 }
 
 /** Held + ready candidate in one call; returns the calendar_events id. */
@@ -388,6 +400,7 @@ describe("runMorningDebrief", () => {
         { eventId: a, symbol: "AAA", event_date: TODAY, event_time: null, release_time: null },
         { eventId: b, symbol: "BBB", event_date: TODAY, event_time: null, release_time: null },
       ],
+      excluded: [],
       alreadyRecapped: [],
     });
     db.prepare(

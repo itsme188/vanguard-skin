@@ -158,7 +158,7 @@ describe("recap scoreboard: which figure is shown, and on what basis", () => {
     const all = lines(md);
     const basisAt = all.indexOf(ACTUALS_BASIS_VENDOR_LINE);
     const lastRowAt = all.findIndex((l) => l.startsWith("| **QQQ @ T+2h** |"));
-    const footnoteAt = all.findIndex((l) => l.startsWith("*Empty cells in a preview"));
+    const footnoteAt = all.findIndex((l) => l.startsWith("*A dash means"));
     expect(all[basisAt - 1]).toBe("");
     expect(all[basisAt + 1]).toBe("");
     expect(lastRowAt).toBeLessThan(basisAt);

@@ -1607,3 +1607,11 @@ The GitHub Support history purge is closed. The owner sent the request through G
 - **Cloud bodies come home.** The Worker stores the composed markdown under `cloud-body-earnings-{phase}-{eventId}` (30h) before the sent marker; the Mac sweep fills `sent-by-cloud` rows that have no body via `GET /internal/cloud-earnings-body`. Forward only. Deploy the Worker first.
 - **The debrief is not a recap.** Each name's recap row stores a pointer plus its own scoreboard section (`debriefMemberBody`), never the stapled digest.
 - **Scoreboard basis.** A vendor-only figure is labelled "vendor feed only (no accepted filing figure on file)" (Mac and Worker mirrors). The reporter recap's type now carries the accepted stamp and the kept vendor figure.
+
+## 2026-11-04 - Morning debrief quality bar (owner-approved; closes the PR #153 deferral)
+
+- **Print window, not leftovers.** The debrief covers last night's after-close prints (the previous TRADING day, so Monday covers Friday) and this morning's before-open prints. A name that missed its own recap ages out (it was a three-day self-heal lookback before; a two-day-old, never-prepped PLTR was narrated on 2026-11-04 with nothing to say). The lookback now only finds stale names so they are NAMED in the log.
+- **Content bar per name:** confirmed actuals and a measured reaction (the ONE readiness gate, `getRecapReadinessHold` in strict form: the debrief's reaction hold never lapses by age) plus at least one of captured guidance (a call note whose guidance is not "not given"), a call transcript or a real desk note (an 8-K alone does not count), or a bogey sheet with content. The figure-conflict hold stays (T1).
+- **No-send is a valid outcome:** no qualifying name means nothing is composed or sent (`no-qualifying-names`), logged on the existing path (the sweep's `debrief` result and the `last_debrief_outcome` setting, with every excluded name and its missing piece). The day key is not burned.
+- **Rendering:** the narration now carries the bogey sheet; the "fill them in live during the call" note is preview-only (a post-print scoreboard gets one plain sentence about dashes).
+
