@@ -102,3 +102,73 @@ export function markEmailDeliveredByHand(
       .run(stamp, stamp, eventId, phase).changes === 1
   );
 }
+
+/**
+ * Keep a body that is about to be REPLACED (recap storage review, 2026-11-03).
+ * `earnings_emails` holds one current body per (event, phase); a later
+ * successful compose overwrites it, and the superseded body moves to
+ * `earnings_email_versions` first, so history survives without polluting the
+ * current body. A row with no body (a cloud row, a live claim) archives nothing.
+ * Call it BEFORE the UPDATE/upsert that overwrites; returns 1 when archived.
+ */
+export function archiveEmailBody(
+  db: Database.Database,
+  eventId: number,
+  phase: "preview" | "recap",
+  reason: string,
+  nextBody?: string,
+): number {
+  const row = db
+    .prepare(
+      `SELECT ai_output_md, ai_input_hash, sent_at FROM earnings_emails
+        WHERE event_id = ? AND phase = ?`,
+    )
+    .get(eventId, phase) as
+    | { ai_output_md: string | null; ai_input_hash: string | null; sent_at: string | null }
+    | undefined;
+  if (!row || !row.ai_output_md || row.ai_output_md.trim() === "") return 0;
+  if (nextBody !== undefined && nextBody === row.ai_output_md) return 0; // nothing is being lost
+  return db
+    .prepare(
+      `INSERT INTO earnings_email_versions (event_id, phase, ai_output_md, ai_input_hash, sent_at, reason)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    )
+    .run(eventId, phase, row.ai_output_md, row.ai_input_hash, row.sent_at, reason).changes;
+}
+
+/**
+ * Cloud bodies come home (recap storage review, fix 4): the Worker fallback's
+ * composed markdown fills a `sent-by-cloud` row that has none. Only that exact
+ * state is written (the row is cloud-sent AND has no body yet), so a Mac body
+ * is never replaced and the call is idempotent across ticks. Returns 1 when written.
+ */
+export function storeCloudBody(
+  db: Database.Database,
+  eventId: number,
+  phase: "preview" | "recap",
+  markdown: string,
+): number {
+  if (!markdown || markdown.trim() === "") return 0;
+  return db
+    .prepare(
+      `UPDATE earnings_emails SET ai_output_md = ?
+        WHERE event_id = ? AND phase = ? AND error = '${SENT_BY_CLOUD}'
+          AND (ai_output_md IS NULL OR ai_output_md = '')`,
+    )
+    .run(markdown, eventId, phase).changes;
+}
+
+/** Sent-by-cloud rows still without a body, newest first (the sweep fetches bodies for these). */
+export function cloudRowsMissingBody(
+  db: Database.Database,
+): Array<{ eventId: number; phase: "preview" | "recap" }> {
+  return (
+    db
+      .prepare(
+        `SELECT event_id AS eventId, phase FROM earnings_emails
+          WHERE error = '${SENT_BY_CLOUD}' AND (ai_output_md IS NULL OR ai_output_md = '')
+          ORDER BY sent_at DESC LIMIT 50`,
+      )
+      .all() as Array<{ eventId: number; phase: "preview" | "recap" }>
+  );
+}

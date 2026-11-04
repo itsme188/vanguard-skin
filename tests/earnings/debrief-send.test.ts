@@ -293,9 +293,10 @@ describe("runMorningDebrief", () => {
     expect(rows.map((r) => r.event_id).sort()).toEqual([aaa, bbb].sort());
     for (const r of rows) {
       expect(r.error).toBeNull();
-      expect(r.ai_output_md).toContain("What changed overnight");
-      // All members share the ONE debrief email's markdown.
-      expect(r.ai_output_md).toBe(rows[0].ai_output_md);
+      // Recap storage review (fix 5): a per-event row never holds the stapled overnight
+      // digest; each stores a pointer plus its OWN scoreboard section.
+      expect(r.ai_output_md).not.toContain("What changed overnight");
+      expect(r.ai_output_md).toContain("covered in the morning debrief");
     }
   });
 
@@ -469,7 +470,9 @@ describe("runMorningDebrief", () => {
 
     const rows = auditRows();
     expect(rows[0].ai_output_md).not.toContain("Sure, here is the debrief");
-    expect(rows[0].ai_output_md).toContain("AAA beat estimates");
+    // The digest is the email only; the per-event row keeps just its own section (fix 5).
+    expect(rows[0].ai_output_md).not.toContain("AAA beat estimates");
+    expect(rows[0].ai_output_md).toContain("covered in the morning debrief");
   });
 
   it("missing recipient (no opts.recipient, no BRIEFING_EMAIL_TO) → no-recipient skip, day key NOT stamped, later tick still sends", async () => {
@@ -580,7 +583,7 @@ describe("the debrief goes out through the one lifecycle primitive (slice E, R-E
     expect(after.map((r) => r.event_id)).toEqual([...ids].sort((a, b) => a - b));
     for (const r of after) {
       expect(r.error).toBeNull();
-      expect(r.ai_output_md).toContain("body"); // every member shares the stapled email
+      expect(r.ai_output_md).toContain("covered in the morning debrief"); // each row: its own pointer + section (fix 5)
       expect(r.provider_response).toBe("250 OK");
     }
   });

@@ -6,7 +6,7 @@ import {
   loadIntelView,
 } from "@/lib/digest/send-earnings-email";
 import { getEmailAudit } from "@/lib/queries/earnings-emails";
-import { sendStateFor, sentByFor } from "@/lib/earnings/email-states";
+import { SENT_BY_CLOUD, sendStateFor, sentByFor } from "@/lib/earnings/email-states";
 import { getEventById } from "@/lib/queries/calendar";
 import { parseDbTimestamp } from "@/lib/calendar/date-utils";
 import { repairCitationLineBreaks } from "@/lib/earnings/repair-citation-linebreaks";
@@ -155,7 +155,10 @@ export async function GET(request: Request) {
   // whose stored prose has citation-split bare-newline fragments — see
   // lib/earnings/repair-citation-linebreaks.ts.
   const aiMarkdown = repairCitationLineBreaks(audit.ai_output_md ?? "");
-  const fullMarkdown = `${scoreboardMd}\n\n${aiMarkdown}`;
+  // A cloud-composed body (Worker fallback) already opens with the Worker's own
+  // scoreboard, so the Mac's is not stacked on top of it.
+  const fullMarkdown =
+    audit.error === SENT_BY_CLOUD && aiMarkdown.trim() !== "" ? aiMarkdown : `${scoreboardMd}\n\n${aiMarkdown}`;
   // Stamp the footer with when the email was actually sent, not when this
   // archive re-render happens (falls back to render time if unparseable).
   const sentDate = audit.sent_at ? parseDbTimestamp(audit.sent_at) : null;

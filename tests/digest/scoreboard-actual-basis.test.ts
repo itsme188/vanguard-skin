@@ -43,7 +43,7 @@ const basisLines = (md: string) => lines(md).filter((l) => l.includes("Actuals b
 
 describe("recap scoreboard: which figure is shown, and on what basis", () => {
   it("label strings (pinned; the Worker mirrors them)", () => {
-    expect(ACTUALS_BASIS_VENDOR_LINE).toBe("*Actuals basis: vendor.*");
+    expect(ACTUALS_BASIS_VENDOR_LINE).toBe("*Actuals basis: vendor feed only (no accepted filing figure on file).*");
     expect(ACTUALS_BASIS_ADJUSTED_LINE).toBe(
       "*Actuals basis: adjusted (worksheet or hand-entered figure).*",
     );

@@ -36,6 +36,7 @@ import { DELIVERY_UNKNOWN, IN_PROGRESS, notLiveClaimSql } from "@/lib/earnings/e
 import {
   writeMacSentEarningsMarker,
   fetchCloudSentEarnings,
+  fetchCloudEarningsBody,
   postMacRecentEarningsSweepMarker,
 } from "@/lib/cron/earnings-marker-check";
 import { composeReleaseInstant } from "./reaction-snapshot";
@@ -54,7 +55,7 @@ import { runPrepareSteps, type PrepareRunReport } from "@/lib/earnings/prepare-a
 // Shared with lib/earnings/debrief-send.ts (which also drops cloud-delivered
 // members) — moved out of this file 2026-08-02 so both can use it without an
 // email-sweep ↔ debrief-send import cycle.
-import { recordCloudSentAudit } from "@/lib/mutations/earnings-emails";
+import { cloudRowsMissingBody, recordCloudSentAudit, storeCloudBody } from "@/lib/mutations/earnings-emails";
 
 /**
  * How the sweep books each calendar-row refusal. Keyed by the refusal type,
@@ -169,7 +170,41 @@ async function reconcileCloudSentAudits(db: Database.Database): Promise<number> 
       `[earnings-sweep] backfilled ${reconciled} sent-by-cloud audit row(s) from Worker markers`,
     );
   }
+  try {
+    await backfillCloudBodies(db);
+  } catch (err) {
+    // Best effort: filling bodies never fails the sweep.
+    console.warn("[earnings-sweep] cloud body backfill failed:", err instanceof Error ? err.message : err);
+  }
   return reconciled;
+}
+
+/**
+ * Cloud bodies come home (recap storage review, 2026-11-03): a sent-by-cloud row
+ * with no body asks the Worker for the markdown it composed and stores it. Only
+ * rows still missing a body are asked (a bounded list), and only that exact state
+ * is written, so a Mac body is never replaced and every tick is idempotent. A
+ * Worker with no body (older sends, expired key, unreachable) leaves the row as
+ * it was and the next tick asks again until the 30-hour key lapses.
+ */
+export async function backfillCloudBodies(
+  db: Database.Database,
+  fetchBody: typeof fetchCloudEarningsBody = fetchCloudEarningsBody,
+): Promise<number> {
+  let stored = 0;
+  for (const row of cloudRowsMissingBody(db)) {
+    try {
+      const body = await fetchBody(row.phase, row.eventId);
+      if (body) stored += storeCloudBody(db, row.eventId, row.phase, body.markdown);
+    } catch (err) {
+      console.warn(
+        `[earnings-sweep] cloud body backfill skipped event ${row.eventId} (${row.phase}):`,
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
+  if (stored > 0) console.log(`[earnings-sweep] stored ${stored} cloud-composed body(ies) on sent-by-cloud rows`);
+  return stored;
 }
 
 /**

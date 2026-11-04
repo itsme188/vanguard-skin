@@ -261,10 +261,8 @@ export async function runMorningDebrief(
     // wire, makes ONE provider call raced against SEND_TIMEOUT_MS, and
     // afterwards moves every member together: delivered (with a mac-sent
     // marker each), terminal-unknown (also with a mac-sent marker each, so the
-    // Worker fallback never sends a second copy), or released. Every name
-    // shares the same ai_output_md, exactly as this module's own audit loop
-    // used to write it, so the in-app viewer still shows the whole debrief for
-    // whichever name is opened.
+    // Worker fallback never sends a second copy), or released. Each name's
+    // row stores its own scoreboard section (debriefMemberBody), not the shared digest.
     const res = await deliverClaimedBatch(
       db,
       {
@@ -273,6 +271,11 @@ export async function runMorningDebrief(
           phase: "recap" as const,
           token: c.token,
           mode: "fresh" as const,
+          // Each name's row stores ITS OWN scoreboard, never the stapled overnight
+          // digest (recap storage review, 2026-11-03: six events held one identical
+          // 8,096-character digest as their "recap"). The digest itself is the email
+          // and is not written into any per-event row.
+          aiOutputMd: debriefMemberBody(c.candidate.symbol, sections),
         })),
         recipient,
         subject,
@@ -417,4 +420,15 @@ function setDebriefLastRunDay(db: Database.Database, day: string): void {
   } catch {
     // settings table absent (minimal test DBs) — best-effort, never throw
   }
+}
+
+
+/**
+ * What one name's recap row stores when the morning debrief covered it: its own
+ * scoreboard section under a one-line pointer, never the whole stapled digest.
+ */
+export function debriefMemberBody(symbol: string, sections: ReadonlyArray<{ symbol: string; markdown: string }>): string {
+  const own = sections.find((s) => s.symbol.toUpperCase() === symbol.toUpperCase());
+  const lead = `*${symbol.toUpperCase()} was covered in the morning debrief, which narrates every overnight print in one email. Its scoreboard:*`;
+  return own ? `${lead}\n\n${own.markdown}` : lead;
 }

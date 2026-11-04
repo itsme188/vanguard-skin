@@ -51,6 +51,7 @@
  */
 import { randomUUID } from "node:crypto";
 import { getRecapHold } from "@/lib/earnings/figure-conflict";
+import { getRecapReadinessHold, isPlaceholderRecap, ACTUALS_UNCONFIRMED_REASON } from "@/lib/earnings/recap-readiness";
 import type Database from "better-sqlite3";
 import { sendEmail, type SendEmailResult } from "@/lib/email";
 import {
@@ -148,7 +149,7 @@ export type SendOutcome =
       /** Set when the AUTO-recap was held by the figure check (lib/earnings/figure-conflict.ts):
        *  `conflict` = the accepted and vendor figures disagree past the threshold,
        *  `unchecked` = the check could not run. Never set for a nudge or manual send. */
-      hold?: "conflict" | "unchecked";
+      hold?: "conflict" | "unchecked" | "actuals_unconfirmed" | "reaction_pending";
     }
   | { outcome: "failed"; reason: string; status: number };
 
@@ -227,6 +228,12 @@ export interface SendServiceSeams {
 
 /** One claimed (event, phase) that a single outbound email covers. */
 export interface BatchMember {
+  /**
+   * The body this member's row stores. Defaults to the batch's `aiOutputMd`. The
+   * morning debrief sets it per name so a per-event recap row never holds the
+   * whole overnight digest (recap storage review, 2026-11-03).
+   */
+  aiOutputMd?: string;
   eventId: number;
   phase: "preview" | "recap";
   token: string;
@@ -480,7 +487,7 @@ export async function deliverClaimedBatch(
       mode: m.mode,
       recipient: input.recipient,
       aiInputHash: input.aiInputHash,
-      aiOutputMd: input.aiOutputMd,
+      aiOutputMd: m.aiOutputMd ?? input.aiOutputMd,
       providerMessageId,
       priorError: m.priorError,
       priorSentAt: m.priorSentAt,
@@ -550,7 +557,7 @@ export async function deliverClaimedBatch(
       const ok = markEmailSent(db, m.eventId, m.phase, m.token, {
         recipient: input.recipient,
         aiInputHash: input.aiInputHash,
-        aiOutputMd: input.aiOutputMd,
+        aiOutputMd: m.aiOutputMd ?? input.aiOutputMd,
         providerResponse: info.response,
       });
       (ok ? delivered : lost).push(m);
@@ -631,6 +638,20 @@ export async function sendEarningsCandidate(
         `[send-service] recap ${eventId} (${candidate.symbol}, sweep): held, ${hold.kind}`,
       );
       return { outcome: "refused", reason: hold.reason, status: 409, hold: hold.kind };
+    }
+  }
+
+  // (1a-2) data-readiness hold — the SWEEP's recap only (recap-quality review,
+  // 2026-11-03). Same shape as the figure-conflict hold above: nothing is
+  // claimed or written, so the hold costs no retry and lifts the moment the
+  // data arrives. Unconfirmed actuals would email a placeholder table; a missing
+  // reaction snapshot would email "Reaction not yet captured". A human press
+  // (nudge, manual) is never held.
+  if (opts.mode === "sweep" && phase === "recap" && !candidate.reporterRecap) {
+    const ready = getRecapReadinessHold(db, eventId, seams.now?.() ?? new Date());
+    if (ready.held) {
+      console.info(`[send-service] recap ${eventId} (${candidate.symbol}, sweep): held, ${ready.kind}`);
+      return { outcome: "refused", reason: ready.reason, status: 409, hold: ready.kind };
     }
   }
 
@@ -782,6 +803,25 @@ export async function sendEarningsCandidate(
           : { outcome: "failed", reason: err.message, status: err.status };
       }
       return { outcome: "failed", reason: errText(err), status: 500 };
+    }
+
+    // (4a) A recap that reports a data gap instead of the print (the model's
+    // "Data Gap Notice" / "Not yet confirmed" table) is never sent AUTOMATICALLY:
+    // undo the claim exactly as a failed compose does and hold, so the next tick
+    // tries again once the actuals have propagated. A human's send is theirs.
+    if (opts.mode === "sweep" && phase === "recap" && !candidate.reporterRecap && isPlaceholderRecap(composed.aiMarkdown)) {
+      undoMember(db, {
+        eventId,
+        phase,
+        token,
+        mode: claimMode,
+        priorError: claim.priorError,
+        priorSentAt: claim.priorSentAt,
+        priorProviderMessageId: claim.priorProviderMessageId,
+        priorProviderResponse: claim.priorProviderResponse,
+      });
+      console.warn(`[send-service] recap ${eventId} (${candidate.symbol}, sweep): composed body is a data-gap placeholder; held`);
+      return { outcome: "refused", reason: ACTUALS_UNCONFIRMED_REASON, status: 409, hold: "actuals_unconfirmed" };
     }
 
     // (4b) Composing is a 60 to 180 second AI call, and a calendar sync in

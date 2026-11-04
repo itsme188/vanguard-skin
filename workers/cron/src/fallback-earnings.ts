@@ -77,6 +77,7 @@ import {
   earningsRunningKey,
   readEarningsMarkers,
   writeEarningsMarker,
+  writeEarningsBody,
   type EarningsPhase,
 } from "./earnings-markers";
 import {
@@ -744,7 +745,9 @@ export async function runEarningsFallback(
 
     try {
       const liveIbkr = await getLiveIbkr();
-      await composeAndSend(env, snapshot, cand, liveIbkr, ibkrAccountName, implausible, now);
+      const sentBody = await composeAndSend(env, snapshot, cand, liveIbkr, ibkrAccountName, implausible, now);
+      // Body first, then the marker: a reader that sees the marker can find the body.
+      await writeEarningsBody(env.CRON_KV, cand.phase, cand.eventId, sentBody);
       await writeEarningsMarker(env.CRON_KV, "cloud", cand.phase, cand.eventId);
       result.sent++;
       result.details.push({
@@ -943,7 +946,7 @@ async function composeAndSend(
   ibkrAccountName: string,
   implausible: boolean,
   now: Date,
-): Promise<void> {
+): Promise<{ subject: string; markdown: string }> {
   if (!env.BRIEFING_EMAIL_TO) {
     throw new Error("BRIEFING_EMAIL_TO missing");
   }
@@ -997,12 +1000,15 @@ async function composeAndSend(
   const footer = `Cloud fallback delivery (state snapshot ${snapshot.snapshotDate}) — the Mac didn't complete this send in time (asleep, unreachable, or its compose failed).${includedNote} Analyst recs, transcripts, and sell-side web-search are only in the Mac primary version.`;
   const html = briefingToHtml(body, title, footer);
 
+  const subject = `${phaseEmoji} ${title}`;
   await sendEmail(env, {
     to: env.BRIEFING_EMAIL_TO,
-    subject: `${phaseEmoji} ${title}`,
+    subject,
     html,
     fromLocalPart: "earnings",
   });
+  // The composed body, so the Mac's audit row can hold it (recap storage review).
+  return { subject, markdown: body };
 }
 
 /**
