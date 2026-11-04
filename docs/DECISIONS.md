@@ -1615,3 +1615,44 @@ The GitHub Support history purge is closed. The owner sent the request through G
 - **No-send is a valid outcome:** no qualifying name means nothing is composed or sent (`no-qualifying-names`), logged on the existing path (the sweep's `debrief` result and the `last_debrief_outcome` setting, with every excluded name and its missing piece). The day key is not burned.
 - **Rendering:** the narration now carries the bogey sheet; the "fill them in live during the call" note is preview-only (a post-print scoreboard gets one plain sentence about dashes).
 
+## 2026-11-04 — A statement's month-end option position is never purged (October 2026 statement import)
+
+**What broke.** `purgeExpiredOptionHoldings` (`lib/mutations/expired-options.ts`) deleted the IBKR month-end option
+position out of the just-imported 2026-10-31 snapshot. The October statement was imported on 2026-11-04 and the
+contract had expired on 11/02, so the post-commit purge — which filtered only on
+`securities.expiration_date < todayET() - graceDays` and **ignored each holdings row's `as_of_date`** — removed the
+historical snapshot row along with the stale live rows. The commit reported `newHoldings: 6` and five rows survived.
+The month-end total was unaffected (it is anchored to the statement snapshot), but the cash/holdings split absorbed
+the position's value and the 10/31 snapshot no longer recorded it. This was latent for every month: any statement
+imported after one of its month-end options had expired lost that position.
+
+**The rule.** A holdings row is a claim "on `as_of_date`, this account held Q of X". For a contract that expired
+AFTER the snapshot date that claim is TRUE HISTORY, so no purge path may delete it when the row is
+statement-sourced. `NOT statementSourcedHoldingSql(...)` is now AND-ed into both branches of the purge. Statement
+PREFIXES only, so tombstone cleanup is unchanged (a recon row is quantity 0 and carries no history). The column is
+COALESCE'd: `statementSourcedHoldingSql` interpolates bare `LIKE`s, and on a NULL `source_key` every `LIKE` is NULL,
+so an un-COALESCE'd `NOT (...)` is NULL and matches nothing — caught by the existing tests.
+
+**Why this is safe, and why the delete was never load-bearing.** Every held-universe reader already filters an
+expired contract at read time through the shared `liveOptionExpirationSql` (`lib/queries/holdings.ts`,
+`lib/queries/today-holdings.ts`, `lib/compute/hedging.ts`, `lib/compute/scenarios.ts`), added precisely because the
+app supports a no-TWS import path where nothing purges; those readers already distinguish the two cases in prose
+("the explicit asOfDate branch is a point-in-time snapshot and legitimately shows a contract that had not yet
+expired as of that date"). The principle is also already written down in
+`scripts/retire-expired-option-holdings.ts`: "statement rows stay as the audit trail — unlike
+`purgeExpiredOptionHoldings`, an unscoped delete". And the preserved row does not linger as a current position: on
+re-import `reconcileClosedEquityHoldings` minted a live-origin quantity-0 tombstone dated today, so per-pair
+"latest" reads the tombstone.
+
+**Ruling checked, not overridden.** `T-PURGE-WIDE` (plan `2026-10-26-pending-lots-options-shorts-plan.md` Task 12,
+ruling D3) pins the Eastern-day boundary and the invariant "neither purge path ever turns a pending or expired lot
+back into an open, valued one". That invariant still holds with the statement row present; the test's
+"(statement rows too)" was a description of the old behaviour, not the ruled requirement, and its two count
+assertions were updated with the reason recorded in the test.
+
+**Recovery.** The row was restored by re-running the statement through the route's own lib sequence from a
+repo-root script (the packaged app still ran the pre-fix bundled purge): `newHoldings: 1`,
+`skippedDuplicates: 194`, no new transaction, security or snapshot. Batch 238's undo was deliberately NOT run — it
+would have deleted and re-created 188 transactions under new ids plus a tax-lot recompute to recover one row — so
+the restored row is owned by the later batch. After the restore the IBKR 10/31 cash/holdings split matches the
+statement's own asset-class breakdown exactly (Stock + Options; Cash + Interest Accruals), which it did not before.

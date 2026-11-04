@@ -30,6 +30,7 @@ function createTestDb(): Database.Database {
       security_type TEXT DEFAULT 'stock',
       multiplier REAL DEFAULT 1,
       underlying_symbol TEXT,
+      option_type TEXT,
       expiration_date TEXT,
       maturity_date TEXT,
       currency TEXT NOT NULL DEFAULT 'USD',
@@ -236,6 +237,42 @@ describe("computeSecurityFactorShare — a short is held, and described as a sho
   });
 });
 
+describe("computeSecurityFactorShare — an option's side follows its right and quantity", () => {
+  function setup(symbol: string, optionType: string | null, qty: number) {
+    const db = createTestDb();
+    addStock(db, 1, "ZZZ");
+    hold(db, 1, 50);
+    addOption(db, 2, symbol, "ZZZ", FAR_EXPIRY);
+    if (optionType !== null) {
+      db.prepare("UPDATE securities SET option_type = ? WHERE id = 2").run(optionType);
+    }
+    hold(db, 2, qty, { price: 5 });
+    const view = computeSecurityFactorShareView(db, 2);
+    return view.entries.find((e) => e.factor === "ai_exposure")!.positionSide;
+  }
+
+  it("a long put is short exposure", () => {
+    expect(setup("ZZZ   990115P00010000", "PUT", 2)).toBe("short");
+  });
+  it("a written put is long exposure", () => {
+    expect(setup("ZZZ   990115P00010000", "PUT", -2)).toBe("long");
+  });
+  it("a long call is long exposure", () => {
+    expect(setup("ZZZ   990115C00010000", "CALL", 2)).toBe("long");
+  });
+  it("a short call is short exposure", () => {
+    expect(setup("ZZZ   990115C00010000", "C", -2)).toBe("short");
+  });
+  it("reads the right from the OCC symbol when option_type is empty", () => {
+    expect(setup("ZZZ   990115P00010000", null, 2)).toBe("short");
+    expect(setup("ZZZ   990115P00010000", null, -2)).toBe("long");
+  });
+  it("keeps the quantity rule when the right cannot be determined", () => {
+    expect(setup("ZZZ-ODD", null, 2)).toBe("long");
+    expect(setup("ZZZ-ODD", null, -2)).toBe("short");
+  });
+});
+
 describe("computeSecurityFactorShare — an unpriced held position is unknown, not zero", () => {
   it("returns null figures when the held security has no price and no cost basis", () => {
     const db = createTestDb();
@@ -301,10 +338,11 @@ describe("FactorProfileSection — Block 3 copy (source pin)", () => {
     expect(block3).toContain("entry.deltaPp === null");
   });
 
-  it("describes a short as covering/adds and never renders a signed figure", () => {
+  it("describes a short as offsetting/closing adds and never renders a signed figure", () => {
     expect(block3).toContain('entry.positionSide === "short"');
-    expect(block3).toContain("covering adds");
-    expect(block3).toContain("selling cuts the bucket");
+    expect(block3).toContain("offsets ~");
+    expect(block3).toContain("closing adds ~");
+    expect(block3).toContain("closing cuts the bucket");
     // Every portfolio-derived figure is an absolute value inside <Pct>.
     const pcts = block3.match(/<Pct value=[^>]*>/g) ?? [];
     expect(pcts.length).toBeGreaterThan(0);

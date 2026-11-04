@@ -85,6 +85,55 @@ describe("purgeExpiredOptionHoldings", () => {
     expect(purgeExpiredOptionHoldings(db, 5)).toBe(1); // 5-day grace, purged
   });
 
+  // A holdings row is a claim "on as_of_date, this account held Q of X". For a
+  // contract that expired AFTER the snapshot date that claim is true history,
+  // and the statement is its audit trail — the same principle
+  // scripts/retire-expired-option-holdings.ts states ("statement rows stay as
+  // the audit trail — unlike purgeExpiredOptionHoldings, an unscoped delete").
+  // Live views do not need the delete to hide an expired contract: every
+  // held-universe reader filters it at read time via liveOptionExpirationSql.
+  // Regression: a monthly statement import run after one of its month-end
+  // option positions had expired lost that position out of the month-end
+  // snapshot (October 2026 IBKR import, run four days after month-end).
+  it("never deletes a statement-sourced row for a contract that expired after that snapshot date", () => {
+    seedHolding(db, "IWM   261102C00283000", "option", "2026-11-02", {
+      accountName: "IBKR",
+      sourceKey: "ibkr:pos:2026-10-31:IWM   261102C00283000",
+      asOfDate: "2026-10-31",
+    });
+
+    const purged = purgeExpiredOptionHoldings(db, 1, { today: "2026-11-04" });
+
+    expect(purged).toBe(0);
+    const remaining = db
+      .prepare(`SELECT as_of_date FROM holdings`)
+      .all() as { as_of_date: string }[];
+    expect(remaining.map((r) => r.as_of_date)).toEqual(["2026-10-31"]);
+  });
+
+  it("still deletes a live-sync row for an expired contract, statement row kept", () => {
+    const securityId = seedHolding(db, "IWM   261102C00283001", "option", "2026-11-02", {
+      accountName: "IBKR2",
+      sourceKey: "ibkr:pos:2026-10-31:IWM   261102C00283001",
+      asOfDate: "2026-10-31",
+    });
+    const acct = accountId(db, "IBKR2");
+    db.prepare(
+      `INSERT INTO holdings (account_id, security_id, quantity, as_of_date, source_key)
+       VALUES (?, ?, ?, ?, ?)`,
+    ).run(acct, securityId, 5, "2026-11-03", "tws-IBKR2-2026-11-03");
+
+    const purged = purgeExpiredOptionHoldings(db, 1, { today: "2026-11-04" });
+
+    expect(purged).toBe(1);
+    const remaining = db
+      .prepare(`SELECT as_of_date, source_key FROM holdings ORDER BY as_of_date`)
+      .all() as { as_of_date: string; source_key: string }[];
+    expect(remaining).toEqual([
+      { as_of_date: "2026-10-31", source_key: "ibkr:pos:2026-10-31:IWM   261102C00283001" },
+    ]);
+  });
+
   it("scoped Plaid mode deletes only live-origin rows in the synced account, using explicit ET today", () => {
     seedHolding(db, "ZZA   260703P00010000", "option", "2026-07-03", {
       accountName: "Taxable",

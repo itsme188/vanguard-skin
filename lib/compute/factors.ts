@@ -14,6 +14,7 @@ import { normalizeMarketCapCategory } from "@/lib/securities/normalize-market-ca
 import { issuerSiblings } from "@/lib/securities/issuer-family";
 import { liveOptionExpirationSql } from "@/lib/compute/option-expiry";
 import { todayET } from "@/lib/calendar/date-utils";
+import { isOptionSecurityType } from "@/lib/compute/option-elasticity";
 
 // ─── Types ─────────────��────────────────────────────────────────
 
@@ -530,11 +531,34 @@ export function computeMacroFactorTilts(
 // ─── Per-security factor share (Security Detail · Block 3) ───────────
 
 /**
+ * The right ("C" / "P") of an option row: the option_type column first
+ * (PUT/CALL/P/C, any case), then a legacy 'call'/'put' security_type, then the
+ * OCC symbol's right letter after the 6-digit date. Null when unreadable.
+ */
+function optionRight(
+  optionType: string | null,
+  symbol: string,
+  securityType: string | null
+): "C" | "P" | null {
+  for (const v of [optionType, securityType]) {
+    const t = (v ?? "").trim().toUpperCase();
+    if (t === "P" || t === "PUT") return "P";
+    if (t === "C" || t === "CALL") return "C";
+  }
+  const m = /\d{6}([CP])\d{8}\s*$/i.exec(symbol.trim());
+  return m ? (m[1].toUpperCase() as "C" | "P") : null;
+}
+
+/**
  * How much of the WHOLE portfolio's exposure to a factor one security accounts
  * for. Powers Block 3 of the Security Detail Factor Profile.
  *
- *   positionSide          "short" when the net held quantity is negative. The
- *                         card words a short as a short ("covering adds"),
+ *   positionSide          "short" when the position is short EXPOSURE to the
+ *                         factor buckets: negative quantity for shares and
+ *                         calls; for a put the sign flips (a long put is
+ *                         short, a written put is long). An option whose
+ *                         right is unreadable keeps the quantity rule. The
+ *                         card words a short as a short ("closing adds"),
  *                         never as a negative cut.
  *   securityContribution  this security's weighted exposure (weight_pct × mult), in pp.
  *                         Negative for a short.
@@ -629,9 +653,16 @@ export function computeSecurityFactorShareView(
   const notHeld: SecurityFactorShareView = { held: false, siblingHeldSymbols: [], entries: [] };
 
   const sec = db
-    .prepare(`SELECT symbol, underlying_symbol FROM securities WHERE id = ?`)
+    .prepare(
+      `SELECT symbol, underlying_symbol, security_type, option_type FROM securities WHERE id = ?`
+    )
     .get(securityId) as
-    | { symbol: string; underlying_symbol: string | null }
+    | {
+        symbol: string;
+        underlying_symbol: string | null;
+        security_type: string | null;
+        option_type: string | null;
+      }
     | undefined;
   if (!sec) return notHeld;
 
@@ -670,7 +701,16 @@ export function computeSecurityFactorShareView(
     db.prepare(`SELECT 1 FROM prices WHERE security_id = ? LIMIT 1`).get(securityId) !== undefined;
   const valueKnown = hasPrice || row.market_value !== 0;
 
-  const positionSide: "long" | "short" = netQty < 0 ? "short" : "long";
+  // Exposure direction on the underlying's factor buckets: sign(quantity) for
+  // shares and calls; a put flips it (a long put is short exposure, a written
+  // put is long exposure). If an option's right cannot be read, the quantity
+  // rule stands.
+  let exposureSign = netQty < 0 ? -1 : 1;
+  if (isOptionSecurityType(sec.security_type)) {
+    const right = optionRight(sec.option_type, sec.symbol, sec.security_type);
+    if (right === "P") exposureSign = -exposureSign;
+  }
+  const positionSide: "long" | "short" = exposureSign < 0 ? "short" : "long";
 
   const entries: FactorShareEntry[] = [];
   for (const factor of FACTOR_COLUMNS) {
