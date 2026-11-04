@@ -1,5 +1,5 @@
 /**
- * Morning-debrief candidate selection (Task 1 of the 2026-08-02
+ * Morning-debrief candidate selection (Task 1 of the 2026-08-04
  * morning-debrief plan). Pure candidate-finding only — no prompt building,
  * no sending. Later tasks (2 = sections/prompt, 3 = sender) import
  * `DebriefCandidate` / `DebriefRosterEntry` / `DebriefCandidates` and
@@ -30,14 +30,14 @@ import {
 import { anchorIndex } from "@/tests/helpers/source-anchor";
 
 // "Today" for every test — ET. Chosen so composeReleaseInstant's DST branch
-// resolves to EDT (August). NOW is 2026-08-02T11:45 UTC = 07:45 ET.
-const TODAY = "2026-08-02";
-const YESTERDAY = "2026-08-01";
+// resolves to EDT (August). NOW is 2026-08-04T11:45 UTC = 07:45 ET.
+const TODAY = "2026-08-04";
+const YESTERDAY = "2026-08-03";
 // The self-healing lookback edge (F1a): three days back is still in-window,
 // four days back is not.
-const THREE_DAYS_AGO = "2026-07-30";
-const FOUR_DAYS_AGO = "2026-07-29";
-const NOW = new Date("2026-08-02T11:45:00Z");
+const THREE_DAYS_AGO = "2026-08-01";
+const FOUR_DAYS_AGO = "2026-07-31";
+const NOW = new Date("2026-08-04T11:45:00Z");
 
 let db: Database.Database;
 
@@ -58,7 +58,7 @@ function seedHeld(symbol: string): number {
   );
   db.prepare(
     `INSERT INTO holdings (account_id, security_id, quantity, as_of_date, source_key)
-     VALUES (?, ?, 100, '2026-08-01', ?)`,
+     VALUES (?, ?, 100, '2026-08-03', ?)`,
   ).run(acct, sec, `t:${symbol}`);
   return sec;
 }
@@ -78,16 +78,19 @@ function seedEvent(opts: {
    * Pass `null` explicitly to model an in-flight enrichment.
    */
   enrichedAt?: string | null;
+  /** Debrief-quality bar (2026-11-04): a measured reaction and one piece of context by default. */
+  noReaction?: boolean;
+  noContext?: boolean;
 }): number {
   eventCounter += 1;
   const date = opts.date ?? TODAY;
-  return Number(
+  const id = Number(
     db
       .prepare(
         `INSERT INTO calendar_events
           (source, event_type, event_date, event_time, release_time, title, symbol,
-           actual_value, source_key, week_of, superseded, enriched_at)
-         VALUES ('finnhub', 'earnings', ?, ?, ?, ?, ?, ?, ?, '2026-07-27', ?, ?)`,
+           actual_value, source_key, week_of, superseded, enriched_at, reaction_snapshot)
+         VALUES ('finnhub', 'earnings', ?, ?, ?, ?, ?, ?, ?, '2026-07-27', ?, ?, ?)`,
       )
       .run(
         date,
@@ -99,8 +102,23 @@ function seedEvent(opts: {
         `finnhub:${opts.symbol}:${date}:${eventCounter}`,
         opts.superseded ?? 0,
         opts.enrichedAt === undefined ? `${date} 12:00:00` : opts.enrichedAt,
+        opts.noReaction
+          ? null
+          : JSON.stringify({
+              t0_utc: `${date}T00:00:00.000Z`,
+              window_min: 120,
+              captured_at: `${date}T06:00:00.000Z`,
+              symbol: { t_pre: 100, t_post: 102, delta_pct: 2 },
+            }),
       ).lastInsertRowid,
   );
+  if (!opts.noContext) {
+    db.prepare(
+      `INSERT INTO earnings_bogeys (event_id, source, source_label, eps_consensus, uploaded_at)
+       VALUES (?, 'manual', 'Desk sheet', 1.02, '2026-07-20 12:00:00')`,
+    ).run(id);
+  }
+  return id;
 }
 
 function seedRecapEmail(eventId: number, error: string | null, sentAt: string): void {
@@ -174,7 +192,7 @@ describe("findDebriefCandidates", () => {
   });
 
   /**
-   * Integration case for the 2026-08-02 rewire (Task 4): the EOD wrap was
+   * Integration case for the 2026-08-04 rewire (Task 4): the EOD wrap was
    * retired from the sweep, so a recap candidate whose (date, slot) cluster
    * reached WRAP_THRESHOLD "yesterday" and got suppressed by the sweep's
    * still-live wrap-pending branch (lib/calendar/email-sweep.ts) — the
@@ -216,18 +234,18 @@ describe("findDebriefCandidates", () => {
    * already-sent names are excluded by the audit-row join, so the widened
    * window can never re-narrate anything.
    */
-  it("self-heals a missed morning: an unsent candidate from 3 days ago is still selected, 4 days ago is not", () => {
+  it("a missed name AGES OUT of the debrief instead of being swept into a later morning (debrief-quality review, 2026-11-04)", () => {
     seedHeld("MISSED3");
-    const missedId = seedEvent({ symbol: "MISSED3", date: THREE_DAYS_AGO });
+    seedEvent({ symbol: "MISSED3", date: THREE_DAYS_AGO });
     seedHeld("MISSED4");
     seedEvent({ symbol: "MISSED4", date: FOUR_DAYS_AGO });
 
     const result = findDebriefCandidates(db, { now: NOW });
-    const symbols = result.unsent.map((c) => c.symbol);
-
-    expect(symbols).toContain("MISSED3");
-    expect(symbols).not.toContain("MISSED4");
-    expect(result.unsent.find((c) => c.symbol === "MISSED3")!.eventId).toBe(missedId);
+    expect(result.unsent.map((c) => c.symbol)).toEqual([]);
+    // The 3-day-old name is NAMED as excluded so the miss is visible; the 4-day-old is beyond the query.
+    expect(result.excluded).toEqual([
+      expect.objectContaining({ symbol: "MISSED3", reason: "outside_print_window" }),
+    ]);
   });
 
   /**
@@ -275,11 +293,11 @@ describe("findDebriefCandidates", () => {
 
     seedHeld("SENTLOCAL");
     const sentLocalId = seedEvent({ symbol: "SENTLOCAL" });
-    seedRecapEmail(sentLocalId, null, "2026-08-02 07:00:00");
+    seedRecapEmail(sentLocalId, null, "2026-08-04 07:00:00");
 
     seedHeld("SENTCLOUD");
     const sentCloudId = seedEvent({ symbol: "SENTCLOUD" });
-    seedRecapEmail(sentCloudId, "sent-by-cloud", "2026-08-02 07:10:00");
+    seedRecapEmail(sentCloudId, "sent-by-cloud", "2026-08-04 07:10:00");
 
     seedHeld("SKIPPED");
     const skippedId = seedEvent({ symbol: "SKIPPED" });
@@ -311,7 +329,7 @@ describe("findDebriefCandidates", () => {
   it("a live in_progress recap claim excludes the event (another process is sending it)", () => {
     seedHeld("CLAIM");
     const claimId = seedEvent({ symbol: "CLAIM" });
-    seedRecapEmail(claimId, "in_progress", "2026-08-02 07:00:00");
+    seedRecapEmail(claimId, "in_progress", "2026-08-04 07:00:00");
 
     const result = findDebriefCandidates(db, { now: NOW });
     expect(result.unsent).toEqual([]);
@@ -351,26 +369,26 @@ describe("findDebriefCandidates", () => {
   it("alreadyRecapped lists yesterday+today's completed recaps (NULL error and sent-by-cloud both count, in_progress does not)", () => {
     seedHeld("DONE1");
     const done1Id = seedEvent({ symbol: "DONE1", date: YESTERDAY });
-    seedRecapEmail(done1Id, null, "2026-08-01 20:05:00");
+    seedRecapEmail(done1Id, null, "2026-08-03 20:05:00");
 
     seedHeld("DONE2");
     const done2Id = seedEvent({ symbol: "DONE2", date: TODAY });
-    seedRecapEmail(done2Id, "sent-by-cloud", "2026-08-02 06:00:00");
+    seedRecapEmail(done2Id, "sent-by-cloud", "2026-08-04 06:00:00");
 
     seedHeld("PENDING");
     const pendingId = seedEvent({ symbol: "PENDING", date: TODAY });
-    seedRecapEmail(pendingId, "in_progress", "2026-08-02 07:30:00");
+    seedRecapEmail(pendingId, "in_progress", "2026-08-04 07:30:00");
 
     // Outside the [yesterday, today] window — must not appear.
     seedHeld("OLDNEWS");
-    const oldNewsId = seedEvent({ symbol: "OLDNEWS", date: "2026-07-30" });
-    seedRecapEmail(oldNewsId, null, "2026-07-30 20:00:00");
+    const oldNewsId = seedEvent({ symbol: "OLDNEWS", date: "2026-08-01" });
+    seedRecapEmail(oldNewsId, null, "2026-08-01 20:00:00");
 
     const result = findDebriefCandidates(db, { now: NOW });
     expect(result.alreadyRecapped.map((r) => r.symbol)).toEqual(["DONE1", "DONE2"]);
     expect(result.alreadyRecapped[0]).toMatchObject({
       symbol: "DONE1",
-      sentAt: "2026-08-01 20:05:00",
+      sentAt: "2026-08-03 20:05:00",
     });
   });
 });
@@ -395,7 +413,7 @@ describe("renderDebriefSections", () => {
     expect(sections).toHaveLength(1);
     const section = sections[0];
     expect(section.symbol).toBe("ZZZ");
-    expect(section.markdown).toContain("### ZZZ — 2026-08-02 BMO");
+    expect(section.markdown).toContain("### ZZZ — 2026-08-04 BMO");
     expect(section.markdown).toContain("ZZZ scoreboard");
     expect(section.markdown).toContain("| **EPS** |");
     expect(section.markdown).toContain("**From the call** (desk note):");
@@ -498,7 +516,7 @@ describe("renderDebriefSections", () => {
     expect(section.markdown).not.toContain("desk note");
     expect(section.markdown).not.toContain("Item 2.02");
     // The rest of the section (heading + scoreboard) still renders.
-    expect(section.markdown).toContain("### COVER — 2026-08-02");
+    expect(section.markdown).toContain("### COVER — 2026-08-04");
     expect(section.markdown).toContain("scoreboard");
   });
 
@@ -650,10 +668,10 @@ describe("buildDebriefPrompt", () => {
       { symbol: "BBB", markdown: "BBB section data goes here" },
     ];
 
-    const prompt = buildDebriefPrompt(sections, "2026-08-02");
+    const prompt = buildDebriefPrompt(sections, "2026-08-04");
 
     expect(prompt).toContain(
-      "You are writing the morning earnings debrief for 2026-08-02.",
+      "You are writing the morning earnings debrief for 2026-08-04.",
     );
     expect(prompt).toContain("first character of your reply must be '#'");
     expect(prompt).toContain("# What changed overnight");
@@ -672,8 +690,8 @@ describe("assembleDebriefMarkdown", () => {
   it("AI synthesis first, then sections, then a roster line with ET send times; roster omitted when empty", () => {
     const roster: DebriefRosterEntry[] = [
       // sent_at is UTC (SQLite datetime('now')) — 20:00Z is 4:00 PM EDT.
-      { symbol: "XXX", sentAt: "2026-08-01 20:00:00" },
-      { symbol: "YYY", sentAt: "2026-08-02 06:00:00" },
+      { symbol: "XXX", sentAt: "2026-08-03 20:00:00" },
+      { symbol: "YYY", sentAt: "2026-08-04 06:00:00" },
     ];
 
     const result = assembleDebriefMarkdown(

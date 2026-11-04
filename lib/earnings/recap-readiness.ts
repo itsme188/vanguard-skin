@@ -68,6 +68,15 @@ export function getRecapReadinessHold(
   db: Database.Database,
   eventId: number,
   now: Date = new Date(),
+  opts: {
+    /**
+     * Never let the reaction hold lapse by age. The sweep's recap lets go near the end of
+     * its window so a recap is not silently lost (and then says so); the morning debrief
+     * has a content bar that REQUIRES a measured reaction, so it asks for the strict form.
+     * One gate, one implementation: the debrief admission calls this same function.
+     */
+    strictReaction?: boolean;
+  } = {},
 ): RecapReadinessHold {
   const event = getEventById(db, eventId);
   if (!event) return { held: false };
@@ -85,6 +94,9 @@ export function getRecapReadinessHold(
 
   if (!hasMeasuredStockReaction(event.reaction_snapshot, event.enriched_at)) {
     const enrichedMs = parseDbInstantMs(event.enriched_at);
+    if (opts.strictReaction) {
+      return { held: true, kind: "reaction_pending", reason: REACTION_PENDING_REASON };
+    }
     // No enrichment stamp: the finder would not have offered it; nothing to wait on.
     if (enrichedMs !== null) {
       const releaseAt = enrichedMs + RECAP_WINDOW_MS - REACTION_HOLD_RELEASE_BEFORE_END_MS;

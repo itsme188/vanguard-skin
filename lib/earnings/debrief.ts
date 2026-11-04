@@ -36,14 +36,22 @@ import { getEarningsSettings, shouldSendEarningsEmail } from "@/lib/queries/earn
 import { issuerSiblings } from "@/lib/securities/issuer-family";
 import { getEmailIgnoredManualTwins } from "@/lib/queries/manual-twin-email";
 import { todayET, addDays } from "@/lib/calendar/date-utils";
+import { isMarketClosed } from "@/lib/calendar/market-holidays";
+import { getBogeysWithContentForEvent } from "@/lib/queries/earnings-bogeys";
+import { getRecapReadinessHold, hasMeasuredStockReaction } from "@/lib/earnings/recap-readiness";
 import { composeReleaseInstant } from "@/lib/calendar/reaction-snapshot";
-import { loadIntelView, renderHeadlineTable } from "@/lib/digest/send-earnings-email";
+import {
+  loadIntelView,
+  renderHeadlineTable,
+  renderSheetBogeysBlock,
+  sheetBogeysWithCells,
+} from "@/lib/digest/send-earnings-email";
 import { getCallNoteNearDateForFamily } from "@/lib/queries/earnings-call-notes";
 import { getEventById } from "@/lib/queries/calendar";
 import { wrapSlotFor } from "@/lib/earnings/wrap";
 import { deliveredSql } from "@/lib/earnings/email-states";
 import { demoteEmbeddedHeadings, truncateAtWordBoundary } from "@/lib/digest/call-transcripts";
-import { hasDeskNote, kindHeadingLabel } from "@/lib/transcripts/presentation";
+import { hasDeskNote, isFilingRow, kindHeadingLabel } from "@/lib/transcripts/presentation";
 
 export interface DebriefCandidate {
   eventId: number;
@@ -51,6 +59,7 @@ export interface DebriefCandidate {
   event_date: string;
   event_time: string | null;
   release_time: string | null;
+  title?: string | null;
 }
 
 export interface DebriefRosterEntry {
@@ -58,9 +67,29 @@ export interface DebriefRosterEntry {
   sentAt: string;
 }
 
+/**
+ * Why a name did NOT make the debrief (debrief-quality review, 2026-11-04). Named in the
+ * send log so a miss is visible somewhere instead of vanishing.
+ */
+export interface DebriefExclusion {
+  eventId: number;
+  symbol: string;
+  event_date: string;
+  reason:
+    | "outside_print_window"
+    | "actuals_unconfirmed"
+    | "reaction_pending"
+    | "no_context"
+    | "figure_conflict";
+  /** One plain sentence: what is missing or why it aged out. */
+  detail: string;
+}
+
 export interface DebriefCandidates {
-  /** Full sections in the email — recap not yet sent, ready to compose. */
+  /** Full sections in the email — recap not yet sent, QUALIFYING (window, readiness, content bar). */
   unsent: DebriefCandidate[];
+  /** Names that otherwise would have been candidates but did not clear the window or the bar. */
+  excluded: DebriefExclusion[];
   /** One roster line each — recap already delivered (local or cloud). */
   alreadyRecapped: DebriefRosterEntry[];
 }
@@ -73,17 +102,26 @@ export interface DebriefCandidates {
 const MIN_MINUTES_SINCE_RELEASE = 60;
 
 /**
- * How far back the unsent lookback reaches. The send window is a narrow 35
- * minutes (07:45–08:20 ET) and the Mac's `pmset repeat wakeorpoweron` fires
- * WEEKDAYS at 08:40 — after it — with no weekend wake at all, so a morning
- * with the Mac asleep is routine (a Friday-AMC cluster would be orphaned
- * every Saturday). With the EOD wrap retired there is no other path that
- * ever recaps a wrap-suppressed name, so a [yesterday, today] window would
- * lose those emails permanently. Three days back makes a missed morning
- * self-heal on the next one; already-sent names are excluded by the
- * earnings_emails join, so a wider window can never re-narrate anything.
+ * How far back the candidate QUERY reaches. It no longer decides who is covered (debrief
+ * quality review, 2026-11-04): the debrief serves ONE print window, last night's
+ * after-close prints and this morning's before-open prints. A name that missed its own recap
+ * and is older than that ages OUT of the debrief instead of being swept into a later
+ * morning's email (a two-day-old PLTR was narrated 2026-11-04 with nothing to say). The
+ * lookback only finds those stale names so they can be NAMED in the send log
+ * (`excluded`, reason `outside_print_window`).
  */
 const UNSENT_LOOKBACK_DAYS = 3;
+
+/**
+ * The previous trading day: the one whose after-close prints are this morning's "last night".
+ * Skips weekends and full market holidays, so a Monday debrief covers Friday's AMC prints.
+ */
+export function previousTradingDay(date: string): string {
+  let d = addDays(date, -1);
+  let guard = 0;
+  while (isMarketClosed(d) && guard++ < 14) d = addDays(d, -1);
+  return d;
+}
 
 /**
  * Find candidates for the 7:45 ET morning debrief: held/watchlist earnings
@@ -117,7 +155,7 @@ export function findDebriefCandidates(
   // is exactly that rule.
   const rawRows = db
     .prepare(
-      `SELECT ce.id AS eventId, ce.symbol, ce.event_date, ce.event_time, ce.release_time
+      `SELECT ce.id AS eventId, ce.symbol, ce.event_date, ce.event_time, ce.release_time, ce.title
          FROM calendar_events ce
          LEFT JOIN earnings_emails ee ON ee.event_id = ce.id AND ee.phase = 'recap'
          LEFT JOIN earnings_email_skips es ON es.event_id = ce.id AND es.phase = 'recap'
@@ -162,7 +200,7 @@ export function findDebriefCandidates(
   // same tie-break convention as dedupeCrossSourceRows / dedupeByFamily.
   candidates = [...candidates].sort((a, b) => a.eventId - b.eventId);
   const seenFamilies = new Set<string>();
-  const unsent: DebriefCandidate[] = [];
+  const deduped: DebriefCandidate[] = [];
   for (const c of candidates) {
     const familyKey = issuerSiblings(c.symbol.toUpperCase())
       .map((s) => s.toUpperCase())
@@ -170,6 +208,39 @@ export function findDebriefCandidates(
       .join(",");
     if (seenFamilies.has(familyKey)) continue;
     seenFamilies.add(familyKey);
+    deduped.push(c);
+  }
+
+  // Print window, then the shared readiness gate, then the content bar.
+  const prevDay = previousTradingDay(today);
+  const excluded: DebriefExclusion[] = [];
+  const unsent: DebriefCandidate[] = [];
+  for (const c of deduped) {
+    const slot = wrapSlotFor({ event_time: c.event_time, title: c.title ?? "", release_time: c.release_time });
+    const inWindow =
+      (c.event_date === today && slot !== "AMC") || (c.event_date === prevDay && slot !== "BMO");
+    if (!inWindow) {
+      excluded.push({
+        eventId: c.eventId,
+        symbol: c.symbol,
+        event_date: c.event_date,
+        reason: "outside_print_window",
+        detail: `printed ${c.event_date}, outside this morning's window (${prevDay} after the close, ${today} before the open); it never got its own recap and no longer qualifies`,
+      });
+      continue;
+    }
+    // ONE readiness gate (lib/earnings/recap-readiness.ts), the strict form: the debrief's bar
+    // requires a MEASURED reaction, so the hold never lapses by age here.
+    const gate = getRecapReadinessHold(db, c.eventId, now, { strictReaction: true });
+    if (gate.held) {
+      excluded.push({ eventId: c.eventId, symbol: c.symbol, event_date: c.event_date, reason: gate.kind, detail: gate.reason });
+      continue;
+    }
+    const gap = debriefContextGap(db, c);
+    if (gap) {
+      excluded.push({ eventId: c.eventId, symbol: c.symbol, event_date: c.event_date, reason: "no_context", detail: gap });
+      continue;
+    }
     unsent.push(c);
   }
 
@@ -194,7 +265,53 @@ export function findDebriefCandidates(
     )
     .all(yesterday, today) as DebriefRosterEntry[];
 
-  return { unsent, alreadyRecapped };
+  return { unsent, excluded, alreadyRecapped };
+}
+
+// ── Content bar (debrief-quality review, 2026-11-04) ──────────────────────
+
+interface DebriefTranscriptRow {
+  summary: string | null;
+  source: string | null;
+  fetched_at: string;
+}
+
+/** The freshest transcript row for the family near the print (any summary state). */
+function loadDebriefTranscript(
+  db: Database.Database,
+  symbol: string,
+  eventDate: string,
+): DebriefTranscriptRow | undefined {
+  const family = issuerSiblings(symbol.toUpperCase()).map((s) => s.toUpperCase());
+  const placeholders = family.map(() => "?").join(",");
+  return db
+    .prepare(
+      `SELECT summary, source, fetched_at FROM earnings_transcripts
+        WHERE UPPER(ticker) IN (${placeholders})
+          AND datetime(fetched_at) >= datetime(?, '-5 days')
+        ORDER BY datetime(fetched_at) DESC LIMIT 1`,
+    )
+    .get(...family, `${eventDate} 00:00:00`) as DebriefTranscriptRow | undefined;
+}
+
+/**
+ * A name enters the debrief only with something to say beyond its scoreboard: captured
+ * guidance (the desk's call note, or a desk-note Guidance section), a call transcript or a
+ * real desk note, or a scored bogey sheet. Returns the plain sentence naming what is
+ * missing, or null when the bar is met. (Confirmed actuals and a measured reaction are the
+ * shared readiness gate's job; this is the third leg.)
+ */
+export function debriefContextGap(db: Database.Database, c: DebriefCandidate): string | null {
+  const callNote = getCallNoteNearDateForFamily(db, c.symbol, c.event_date);
+  // 'not_given' is a call note recording that no guidance was captured.
+  if (callNote?.guidance && callNote.guidance !== "not_given") return null;
+  const tx = loadDebriefTranscript(db, c.symbol, c.event_date);
+  if (tx) {
+    // An 8-K press release is a filing, not a call: it counts only when it carries a real desk note.
+    if (hasDeskNote({ summary: tx.summary }) || !isFilingRow({ source: tx.source ?? "" })) return null;
+  }
+  if (getBogeysWithContentForEvent(db, c.eventId).length > 0) return null;
+  return "nothing to narrate: no captured guidance, no call transcript or desk note, and no bogey sheet";
 }
 
 // ── Task 2: deterministic per-name sections + prompt assembly ─────────────
@@ -288,6 +405,14 @@ export function renderDebriefSections(
     const scoreboard = renderHeadlineTable(event, candidate.symbol, "recap", intel);
 
     const parts = [`### ${candidate.symbol} — ${candidate.event_date}${slotLabel}`, "", scoreboard];
+
+    // The bogey sheet the recap compose carries (same rows, same renderer): what the
+    // desk was scoring this print against. Without it the narration saw a bare scoreboard
+    // (debrief-quality review, 2026-11-04). Empty -> "" -> nothing added.
+    const sheetBogeys = renderSheetBogeysBlock(
+      sheetBogeysWithCells(getBogeysWithContentForEvent(db, candidate.eventId)),
+    );
+    if (sheetBogeys) parts.push("", sheetBogeys);
 
     const family = issuerSiblings(candidate.symbol.toUpperCase()).map((s) => s.toUpperCase());
     const famPlaceholders = family.map(() => "?").join(",");

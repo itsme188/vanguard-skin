@@ -2047,13 +2047,21 @@ export function renderHeadlineTable(
   });
   const basisBlock = basisLine ? `\n\n${basisLine}` : "";
 
+  // The "fill them in live during the call" note is PREVIEW-only: it is instructions for
+  // printing a sheet before the print. A post-print scoreboard (recap, debrief) must not
+  // carry it (debrief-quality review, 2026-11-04).
+  const footnote =
+    phase === "preview"
+      ? `*Empty cells in a preview are intentional — print this, fill them in live during the call. Recap fills them automatically.*`
+      : `*A dash means the figure was not available when this was sent.*`;
+
   return `## ${symbol} scoreboard — ${phaseLabel}
 
 | Metric | Consensus | Actual | Δ |
 |---|---|---|---|
 ${rows}${basisBlock}
 
-*Empty cells in a preview are intentional — print this, fill them in live during the call. Recap fills them automatically. \`—\` in the actual column on a recap means data wasn't available at send time (e.g. TWS disconnected, transcript not posted).*${flaggedNote}`;
+${footnote}${flaggedNote}`;
 }
 
 // ── Prompt rendering (pure for testability) ────────────────────────
