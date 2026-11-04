@@ -122,6 +122,8 @@ async function main(): Promise<void> {
   for (const e of events) {
     if (aiDown) break;
     const token = randomUUID();
+    // Stale-claim cutoff bound from JS (an instant, not a UTC calendar day).
+    const staleBefore = new Date(Date.now() - 5 * 60_000).toISOString().slice(0, 19).replace("T", " ");
     const claimed = db
       .prepare(
         `INSERT INTO earnings_bogey_scans (event_id, article_id, extractor_version, status, claim_token, updated_at)
@@ -131,9 +133,9 @@ async function main(): Promise<void> {
            attempts = earnings_bogey_scans.attempts + CASE WHEN earnings_bogey_scans.status = 'claimed' THEN 1 ELSE 0 END
          WHERE earnings_bogey_scans.attempts < ?
            AND (earnings_bogey_scans.status = 'error'
-                OR (earnings_bogey_scans.status = 'claimed' AND datetime(earnings_bogey_scans.updated_at) < datetime('now', '-5 minutes')))`,
+                OR (earnings_bogey_scans.status = 'claimed' AND datetime(earnings_bogey_scans.updated_at) < datetime(?)))`,
       )
-      .run(e.id, art.id, version, token, SCAN_MAX_ATTEMPTS).changes;
+      .run(e.id, art.id, version, token, SCAN_MAX_ATTEMPTS, staleBefore).changes;
     if (claimed === 0) {
       console.log(`[oneoff-funda] event ${e.id}: ledger row already final or claimed; skipping extraction`);
       continue;
