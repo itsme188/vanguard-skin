@@ -6,6 +6,11 @@ import { join } from "path";
  * shadows it with an empty string (e.g. ANTHROPIC_API_KEY="" from shell profile).
  */
 function readEnvLocal(key: string): string | undefined {
+  // The test run sets this (tests/setup/env-guard.ts): a developer's .env.local holds REAL
+  // provider keys, and falling back to it would make a test that stubs a key to "" (the
+  // unconfigured case) silently configured, so failover would call live legs. Never set
+  // outside tests.
+  if (process.env.VANGUARD_NO_ENV_LOCAL === "1") return undefined;
   try {
     const content = readFileSync(join(process.cwd(), ".env.local"), "utf8");
     for (const line of content.split("\n")) {

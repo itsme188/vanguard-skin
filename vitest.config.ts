@@ -8,7 +8,7 @@ export default defineConfig({
     // loads, so importing the db singleton (which migrates at module load)
     // can never reach the real data/vanguard.db. See
     // tests/repo/tests-never-touch-live-db.test.ts.
-    setupFiles: ["./tests/setup/db-guard.ts"],
+    setupFiles: ["./tests/setup/db-guard.ts", "./tests/setup/env-guard.ts"],
     // Only the repo's own tests/ tree. Build artifacts embed stale COPIES of
     // these files (.next/standalone, dist/mac-arm64 .app bundle) and sibling
     // worktree checkouts under .claude/ carry their own — running those
