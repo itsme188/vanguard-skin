@@ -16,6 +16,7 @@ import FilingSummaryChoice from "./FilingSummaryChoice";
 import { StageChipStrip, RowIntelLine, fmtCountdown } from "./hub-live/send-state-chips";
 import { useHubLive } from "./EarningsHubLive";
 import apiFetch from "@/lib/http/apiFetch";
+import { networkFailureMessage, readMutationResult } from "@/lib/ui/mutation-result";
 import { formatEnrichedAtET } from "@/lib/format";
 
 interface EarningsRowChipsProps {
@@ -664,6 +665,10 @@ function PhaseChip({ eventId, phase, sent, skipped, missed = false, onView }: Ph
   const router = useRouter();
   const { toast } = useToast();
   const [pending, startTransition] = useTransition();
+  // "Send preview now": the ref is the double-fire guard (state alone would
+  // let two clicks in the same tick both pass); the state drives the label.
+  const sendingRef = useRef(false);
+  const [sending, setSending] = useState(false);
   // Full-word labels (2026-08-04): "pre"/"rec" read as noise in a four-chip
   // cluster — the label IS the affordance in a 10px chip, so spell it out.
   const label = phase;
@@ -705,6 +710,38 @@ function PhaseChip({ eventId, phase, sent, skipped, missed = false, onView }: Ph
       startTransition(() => router.refresh());
     } catch {
       toast(`Couldn't ${skipped ? "un-skip" : "skip"} the ${phase} email: could not reach the server.`, "error");
+    }
+  }
+
+  // Manual send (owner override): POST /api/earnings/email, phase "preview" —
+  // the endpoint composes with whatever prep is ready and refuses with a reason
+  // when a send is not possible; that reason is shown as-is, never swallowed.
+  // No candidate-window check here by design.
+  async function sendPreviewNow() {
+    if (sendingRef.current) return;
+    sendingRef.current = true;
+    setSending(true);
+    try {
+      const res = await apiFetch("/api/earnings/email", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ eventId, phase: "preview" }),
+      });
+      const r = await readMutationResult<{ sentTo?: string }>(res);
+      if (!r.ok) {
+        toast(r.message, "error");
+        return;
+      }
+      toast(r.data.sentTo ? `Preview sent to ${r.data.sentTo}.` : "Preview sent.", "success");
+      // The chip is server-rendered and the cockpit is a client poller:
+      // refresh both so the sent preview shows without a reload.
+      window.dispatchEvent(new Event("earnings-data-changed"));
+      startTransition(() => router.refresh());
+    } catch {
+      toast(networkFailureMessage("send the preview"), "error");
+    } finally {
+      sendingRef.current = false;
+      setSending(false);
     }
   }
 
@@ -773,6 +810,18 @@ function PhaseChip({ eventId, phase, sent, skipped, missed = false, onView }: Ph
       >
         ✕
       </button>
+      {phase === "preview" && (
+        <button
+          type="button"
+          onClick={sendPreviewNow}
+          disabled={sending}
+          className={`relative text-[10px] font-mono px-1.5 py-0.5 rounded whitespace-nowrap ${CHIP_TONE_TEXT.gold} bg-gold/15 hover:bg-gold/25 disabled:opacity-50 cursor-pointer active:scale-[0.96] transition-transform pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-0.5`}
+          title="Send this preview email right now instead of waiting for the sweep (composes with whatever prep is ready)"
+          aria-label="Send preview email now"
+        >
+          {sending ? "sending…" : "send now"}
+        </button>
+      )}
     </span>
   );
 }
