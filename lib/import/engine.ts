@@ -291,37 +291,42 @@ function referencedAccountNames(parsed: ParsedImportResult): Set<string> {
 }
 
 /**
- * Drop parsed securities that only rows excluded for an unknown account
- * referenced, so an excluded row leaves no orphan `securities` row behind.
- * Conservative: a security referenced by ANY kept row (transactions,
- * holdings, prices, corporate actions, factors, donations) or that is the
- * underlying of a kept security stays; a security no row referenced at all
- * stays too (it was never tied to an excluded row).
+ * Drop parsed securities that only EXCLUDED rows referenced, so a row the
+ * preview left out (unknown account, invalid date, bad quantity, ...) mints
+ * no `securities` row at commit. Such a row would be referenced by nothing
+ * and, because undo removes only what the batch wrote rows for, survive as a
+ * searchable ghost (QA import-undo--ghost-securities-survive-searchable-
+ * regression-1). A symbol counts as excluded when some row of the original
+ * parse referenced it and no kept row does. Conservative: a security
+ * referenced by ANY kept row (transactions, holdings, prices, corporate
+ * actions, factors, donations) or that is the underlying of a kept security
+ * stays; a security no row referenced at all stays too (it was never tied to
+ * an excluded row).
  */
-function pruneSecuritiesOfExcludedAccounts(
+function pruneSecuritiesOfExcludedRows(
   original: ParsedImportResult,
   kept: ParsedImportResult,
-  known: Set<string>,
 ): ParsedImportResult {
-  const excludedSymbols = new Set<string>();
   const add = (set: Set<string>, sym: string | null | undefined) => {
     if (sym) set.add(sym);
   };
-  for (const t of original.transactions)
-    if (!known.has(t.accountName)) add(excludedSymbols, t.symbol);
-  for (const h of original.holdings)
-    if (!known.has(h.accountName)) add(excludedSymbols, h.symbol);
-  for (const ca of original.corporateActions)
-    if (!known.has(ca.accountName)) add(excludedSymbols, ca.symbol);
+  const rowSymbols = (p: ParsedImportResult): Set<string> => {
+    const set = new Set<string>();
+    for (const t of p.transactions) add(set, t.symbol);
+    for (const h of p.holdings) add(set, h.symbol);
+    for (const pr of p.prices) add(set, pr.symbol);
+    for (const ca of p.corporateActions) add(set, ca.symbol);
+    for (const f of p.factors ?? []) add(set, f.symbol);
+    for (const d of p.donations ?? []) add(set, d.symbolRaw);
+    return set;
+  };
+
+  const keptSymbols = rowSymbols(kept);
+  const excludedSymbols = new Set(
+    [...rowSymbols(original)].filter((sym) => !keptSymbols.has(sym)),
+  );
   if (excludedSymbols.size === 0) return kept;
 
-  const keptSymbols = new Set<string>();
-  for (const t of kept.transactions) add(keptSymbols, t.symbol);
-  for (const h of kept.holdings) add(keptSymbols, h.symbol);
-  for (const p of kept.prices) add(keptSymbols, p.symbol);
-  for (const ca of kept.corporateActions) add(keptSymbols, ca.symbol);
-  for (const f of kept.factors ?? []) add(keptSymbols, f.symbol);
-  for (const d of kept.donations ?? []) add(keptSymbols, d.symbolRaw);
   for (const sec of kept.securities)
     if (keptSymbols.has(sec.symbol)) add(keptSymbols, sec.underlyingSymbol);
 
@@ -381,10 +386,9 @@ export function commitImport(
     // rolling back the file's valid rows with it (QA 2026-09-24, regression
     // of 19341671).
     const report = validateParsedResult(parsed, { knownAccountNames });
-    validatedResult = pruneSecuritiesOfExcludedAccounts(
+    validatedResult = pruneSecuritiesOfExcludedRows(
       parsed,
       report.validatedResult,
-      knownAccountSet,
     );
     skippedRows = report.skippedRows;
   } else {
@@ -400,7 +404,10 @@ export function commitImport(
         `Unknown account(s): ${unknown.join(", ")} — valid accounts: ${[...knownAccountSet].sort().join(", ")}. Nothing was imported.`,
       );
     }
-    validatedResult = report.validatedResult;
+    validatedResult = pruneSecuritiesOfExcludedRows(
+      parsed,
+      report.validatedResult,
+    );
     skippedRows = report.skippedRows;
   }
   if (skippedRows.length > 0) {
