@@ -2,6 +2,7 @@ import type Database from "better-sqlite3";
 import { onlyLiveSnapshotsSql } from "@/lib/db/live-sources";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 import { isCashEquivalentSecurity } from "@/lib/compute/cash-equivalents";
+import { liveOptionExpirationSql } from "@/lib/compute/option-expiry";
 
 /**
  * The single-account Holdings footer: a positions total, a Cash line and
@@ -241,7 +242,11 @@ export function getAccountCashLine(
 
   // Each held security with its newest close on or before the valuation
   // date. The valuation date is bound as a parameter: never SQLite
-  // date('now'), which is the UTC day.
+  // date('now'), which is the UTC day. An option that had expired before
+  // the valuation date is not held that day, so it neither dates the
+  // positions nor counts as held; the cutoff goes through the one expiry
+  // reader (liveOptionExpirationSql), as the Holdings table's does, here
+  // anchored to the footer's own date rather than today.
   const held = db
     .prepare(
       `SELECT s.symbol, s.security_type, s.fund_category,
@@ -251,6 +256,7 @@ export function getAccountCashLine(
        JOIN securities s ON s.id = h.security_id
        WHERE h.account_id = ?
          AND ${latestHoldingsPredicate({ accountFilter: "" })}
+         AND ${liveOptionExpirationSql("s", valuation.valuation_date)}
        ORDER BY s.symbol`,
     )
     .all(valuation.valuation_date, accountId) as HeldSecurityRow[];
