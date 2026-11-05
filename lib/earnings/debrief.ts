@@ -48,6 +48,7 @@ import {
 } from "@/lib/digest/send-earnings-email";
 import { getCallNoteNearDateForFamily } from "@/lib/queries/earnings-call-notes";
 import { getEventById } from "@/lib/queries/calendar";
+import { resolveEpsActualBasis } from "@/lib/earnings/headline-basis";
 import { wrapSlotFor } from "@/lib/earnings/wrap";
 import { deliveredSql } from "@/lib/earnings/email-states";
 import { demoteEmbeddedHeadings, truncateAtWordBoundary } from "@/lib/digest/call-transcripts";
@@ -402,7 +403,9 @@ export function renderDebriefSections(
     const slotLabel = slot ? ` ${slot}` : "";
 
     const intel = loadIntelView(db, candidate.eventId, candidate.symbol);
-    const scoreboard = renderHeadlineTable(event, candidate.symbol, "recap", intel);
+    const scoreboard = renderHeadlineTable(event, candidate.symbol, "recap", intel, {
+      epsActualBasis: resolveEpsActualBasis(db, event),
+    });
 
     const parts = [`### ${candidate.symbol} — ${candidate.event_date}${slotLabel}`, "", scoreboard];
 

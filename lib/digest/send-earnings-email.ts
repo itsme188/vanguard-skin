@@ -52,6 +52,8 @@ import { applyClusterManualActuals } from "@/lib/queries/manual-actuals-cluster"
 import { getEventById } from "@/lib/queries/calendar";
 import { getEmailIgnoredManualTwins } from "@/lib/queries/manual-twin-email";
 import { zeroConsensusEpsDeltaLabel } from "@/lib/earnings/eps-delta";
+import { scoreEligibility, type FigureBasis } from "@/lib/earnings/basis-scoring";
+import { resolveEpsActualBasis } from "@/lib/earnings/headline-basis";
 import { sendPushover, type PushoverMessage } from "@/lib/alerts/notify-pushover";
 import {
   DELIVERY_UNKNOWN,
@@ -267,7 +269,9 @@ export async function composeEarningsEmail(
       ? renderPreviewPrompt(ctx)
       : renderRecapPrompt(ctx as RecapContext);
 
-  const headlineTable = renderHeadlineTable(ctx.event, ctx.symbol, phase, intelView);
+  const headlineTable = renderHeadlineTable(ctx.event, ctx.symbol, phase, intelView, {
+    epsActualBasis: resolveEpsActualBasis(db, ctx.event),
+  });
   const aiMarkdown = await callClaude(prompt, phase, opts.signal);
   // A recap body holds ONE recap (recap-quality review 2026-11-03): a body with two
   // line-by-line tables, or the overnight digest, is stitched or foreign. It is never
@@ -1830,6 +1834,14 @@ export interface HeadlineTableOptions {
    * outbound composer leaves this off, so a sent email shows a dash.
    */
   pendingReactionLabel?: boolean;
+  /**
+   * Basis of the stored EPS actual (T1 slice 2, lib/earnings/headline-basis.ts).
+   * Callers with a database pass `resolveEpsActualBasis`. Left out, the basis
+   * follows the row alone: an unstamped row is the vendor feed's figure, a
+   * stamped one is labelled adjusted (2026-10-08 ruling). The EPS delta prints
+   * only when this basis is known to match the consensus's (the vendor feed).
+   */
+  epsActualBasis?: FigureBasis;
 }
 
 // ── Earnings-intelligence scoreboard rows (Task 7) ─────────────────
@@ -1958,8 +1970,18 @@ export function renderHeadlineTable(
 
   const epsConsensus = cons.eps != null ? cons.eps.toFixed(2) : "—";
   const epsActual = actual.eps != null ? actual.eps.toFixed(2) : "—";
+  // Basis gate (T1 slice 2): the consensus here is always the vendor feed's.
+  const epsActualBasis: FigureBasis =
+    options.epsActualBasis ?? (event.manual_actuals_at ? "non_gaap" : "vendor");
+  const epsScoring = scoreEligibility("EPS", epsActualBasis, "vendor");
   const epsDelta =
-    cons.eps != null && actual.eps != null ? formatPctDelta(actual.eps, cons.eps, "eps") : "—";
+    cons.eps != null && actual.eps != null && epsScoring.scored
+      ? formatPctDelta(actual.eps, cons.eps, "eps")
+      : "—";
+  const unscoredEpsNote =
+    cons.eps != null && actual.eps != null && !epsScoring.scored
+      ? `\n\n*${epsScoring.note}*`
+      : "";
 
   const revConsensus = formatRevenueDisplay(cons.revenue);
   const revActual = formatRevenueDisplay(actual.revenue);
@@ -2045,7 +2067,12 @@ export function renderHeadlineTable(
     vendorActualValue: event.vendor_actual_value,
     consensus: consSource,
   });
-  const basisBlock = basisLine ? `\n\n${basisLine}` : "";
+  // A GAAP EPS must not sit under a line that calls the column "adjusted".
+  const basisBlock = basisLine
+    ? epsActualBasis === "gaap"
+      ? "\n\n*Actuals basis: EPS is GAAP (the adjusted figure was not disclosed).*"
+      : `\n\n${basisLine}`
+    : "";
 
   // The "fill them in live during the call" note is PREVIEW-only: it is instructions for
   // printing a sheet before the print. A post-print scoreboard (recap, debrief) must not
@@ -2059,7 +2086,7 @@ export function renderHeadlineTable(
 
 | Metric | Consensus | Actual | Δ |
 |---|---|---|---|
-${rows}${basisBlock}
+${rows}${basisBlock}${unscoredEpsNote}
 
 ${footnote}${flaggedNote}`;
 }

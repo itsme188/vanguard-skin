@@ -37,6 +37,8 @@ import { effectiveConsensus } from "@/lib/calendar/consensus";
 import { deriveEarningsSlot } from "@/lib/earnings/earnings-slot";
 import { actualsAreImplausible } from "@/lib/earnings/actuals-display";
 import { epsDelta, deltaToneClass } from "@/lib/earnings/eps-delta";
+import { epsRowScoring, type FigureBasis } from "@/lib/earnings/basis-scoring";
+import { resolveEpsActualBasis } from "@/lib/earnings/headline-basis";
 import type { CalendarEvent } from "@/lib/types";
 import { SymbolLink } from "../components/SymbolLink";
 import { EarningsHubAddForm } from "./EarningsHubAddForm";
@@ -286,6 +288,8 @@ export function EarningsHub() {
     worksheetArmed: worksheetMap.has(e.id),
     worksheetPrinted: worksheetMap.get(e.id)?.printedAt != null,
     hasBogeys: bogeysSet.has(e.id),
+    eps_actual_basis:
+      e.event_type === "earnings" && e.actual_value ? resolveEpsActualBasis(db, e) : undefined,
     recapHold:
       e.event_type === "earnings" && e.actual_value && !(sentPhases[e.id]?.recap ?? false)
         ? recapHoldChipView(getRecapHold(db, e.id))
@@ -527,8 +531,9 @@ function DesktopRow({ event }: { event: EnrichedRow }) {
     ? formatFinnhubFigure(event.actual_value)
     : { eps: null, revenue: null, fallback: null };
   const act = implausible ? { eps: null, revenue: null, fallback: null } : actRaw;
+  const scoring = epsRowScoring(event);
   const delta =
-    isPostRelease && !implausible
+    isPostRelease && !implausible && scoring.scored
       ? epsDelta(consensus, event.actual_value)
       : null;
   // Owner ruling 2026-10-06 (display-only): an actual saved before the
@@ -616,7 +621,7 @@ function DesktopRow({ event }: { event: EnrichedRow }) {
           className={`font-mono tabular-nums ${preRelease ? "text-ink-faint" : deltaToneClass(delta)}`}
           style={{ fontSize: "12px", textAlign: "right" }}
         >
-          {delta?.label ?? "—"}
+          {delta?.label ?? (isPostRelease && !scoring.scored ? <UnscoredBasis note={scoring.note} basis={scoring.basis} /> : "—")}
         </span>
       )}
       <span style={{ textAlign: "center" }}>
@@ -716,6 +721,14 @@ function SlotTimeFlag({ event }: { event: EnrichedRow }) {
 
 /** The "pre-release" warn chip for an actual saved before its print window
  *  opened. Top-level (never nested in a row body — the remount trap). */
+function UnscoredBasis({ note, basis }: { note: string; basis: FigureBasis }) {
+  return (
+    <span className="cursor-help text-ink-dim" title={note}>
+      {basis === "gaap" ? "GAAP · not scored" : "not scored"}
+    </span>
+  );
+}
+
 function FigureConflictChip({ hold }: { hold: RecapHoldChipView }) {
   return (
     <Chip tone="warn" size="xs" wrap title={hold.title}>
@@ -743,8 +756,9 @@ function MobileCard({ event }: { event: EnrichedRow }) {
     ? formatFinnhubFigure(event.actual_value)
     : { eps: null, revenue: null, fallback: null };
   const act = implausible ? { eps: null, revenue: null, fallback: null } : actRaw;
+  const scoring = epsRowScoring(event);
   const delta =
-    isPostRelease && !implausible
+    isPostRelease && !implausible && scoring.scored
       ? epsDelta(consensus, event.actual_value)
       : null;
   // Owner ruling 2026-10-06 (display-only): an actual saved before the
@@ -831,6 +845,9 @@ function MobileCard({ event }: { event: EnrichedRow }) {
                 <span className={`font-semibold ${preRelease ? "text-ink-faint" : deltaToneClass(delta)}`}>
                   {delta.label}
                 </span>
+              )}
+              {!delta && !scoring.scored && !implausible && (
+                <UnscoredBasis note={scoring.note} basis={scoring.basis} />
               )}
             </>
           )

@@ -1,3 +1,4 @@
+import { resolveEpsActualBasis } from "@/lib/earnings/headline-basis";
 import { db } from "@/lib/db";
 import { briefingToHtml } from "@/lib/calendar/briefing-html";
 import {
@@ -150,6 +151,7 @@ export async function GET(request: Request) {
   // "pending" here (the sent email showed a dash for it).
   const scoreboardMd = renderHeadlineTable(event, symbol, phase, intelView, {
     pendingReactionLabel: true,
+    epsActualBasis: resolveEpsActualBasis(db, event),
   });
   // Display-time repair only (never at send/compose time) for pre-fix rows
   // whose stored prose has citation-split bare-newline fragments — see
