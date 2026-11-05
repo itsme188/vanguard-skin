@@ -26,6 +26,42 @@ export const DISCOVERY_GAVE_UP_DETAIL = "SEC discovery kept failing — Run summ
 export const STALE_WAITING_DETAIL = "polling stopped before 9 pm (the app was not running) — nothing more will run on its own";
 /** SEC was unreachable and the print has left the tick's window (today and yesterday). */
 export const SEC_GAVE_UP_TEXT = "SEC was not reachable; nothing more will run on its own";
+/**
+ * The end of a poll detail for a print that waits on a click (a late arm, a
+ * print never polled, an earnings time unconfirmed): "<why> — press Run summary
+ * to read the filings now". The full filing page shows the button.
+ */
+export const RUN_SUMMARY_DETAIL_ACTION = "press Run summary to read the filings now";
+
+// ---------------------------------------------------------------- Run summary (first run)
+
+/** The button that starts the first, paid summary of a print (Today panel and full page). */
+export const RUN_SUMMARY_LABEL = "Run summary";
+/** The full page before any run. */
+export const NO_SUMMARY_YET_TEXT = "No summary has run for this print yet.";
+/** The full page after a confirmed Run summary click. */
+export const RUN_SUMMARY_STARTED_PAGE_TEXT = "Summary started. This page updates while it reads.";
+
+/**
+ * The question Run summary asks first (it spends money, so Enter must not
+ * answer yes). `choiceLabelText` is `choiceLabel(choice)`, passed in so this
+ * module keeps its value imports to `types.ts`.
+ */
+export function runSummaryPrompt(
+  choiceLabelText: string,
+  choice: SummaryChoice,
+  nowLabel: string,
+): { title: string; message: string; confirmLabel: string; initialFocus: "cancel" } {
+  return {
+    title: "Run the filing summary?",
+    message: [
+      `${choiceLabelText} (${nowLabel}) reads the earnings filing and any later filings of the day, and writes the summary.`,
+      `Rough cost: ${roughCostText(choice)}.`,
+    ].join("\n\n"),
+    confirmLabel: RUN_SUMMARY_LABEL,
+    initialFocus: "cancel",
+  };
+}
 
 // ---------------------------------------------------------------- late periodic report (migration 100)
 

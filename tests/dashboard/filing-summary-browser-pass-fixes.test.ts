@@ -7,6 +7,7 @@ import { readFileSync } from "node:fs";
 import { rerunPrompt, retryPrompt } from "@/app/dashboard/print/[eventId]/filings/page-text";
 import type { ChoiceOption, FullRun } from "@/lib/filing-summary/view";
 import { anchorIndex } from "@/tests/helpers/source-anchor";
+import { runSummaryPrompt } from "@/lib/filing-summary/labels";
 
 const dialog = readFileSync("app/dashboard/components/ConfirmDialog.tsx", "utf8");
 const promptHook = readFileSync("app/dashboard/components/useConfirmPrompt.tsx", "utf8");
@@ -23,7 +24,11 @@ describe("paid confirmations focus Cancel (Run summary, Retry, Re-run)", () => {
   });
 
   it("the panel's Run summary and Retry questions ask with Cancel focused", () => {
-    for (const label of ['confirmLabel: "Run summary"', 'confirmLabel: "Retry"']) {
+    // Run summary asks the one copy in labels.ts (the full page asks it too).
+    expect(runSummaryPrompt("Opus · high", { family: "opus", effort: "high" }, "Opus · now 5.5").initialFocus).toBe("cancel");
+    expect(panel).toContain("prompt.ask(runSummaryPrompt(");
+    expect(fullView).toContain("prompt.ask(runSummaryPrompt(");
+    for (const label of ['confirmLabel: "Retry"']) {
       const at = anchorIndex(panel, label);
       const call = panel.slice(panel.lastIndexOf("prompt.ask(", at), panel.indexOf("});", at));
       expect(call, label).toContain('initialFocus: "cancel"');

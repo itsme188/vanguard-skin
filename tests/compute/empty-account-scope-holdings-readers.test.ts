@@ -347,8 +347,11 @@ describe("every account and a non-empty list answer as before", () => {
     // leveragedFundsUnmodelled and the What-if gained leveragedFundsNotModelled:
     // with those two keys removed the output still hashed to the 2026-10-23
     // digest (a5182e0b...).
+    // Re-captured 2026-11-04 when the Defense analysis gained the
+    // leveragedFundsUnmodelled disclosure: with that one key removed the
+    // output still hashed to the 2026-11-02 digest (17d2fe2f...).
     expect(createHash("sha256").update(json).digest("hex")).toBe(
-      "17d2fe2fb0983b1b6a6df2e1f56ec798a875d2ccf98084f914342e1167a9bfe0",
+      "af4ed74a3810a3312fda39ee528bf1ad394a11f2027f2b137ce5bf4648a18ab8",
     );
   });
 

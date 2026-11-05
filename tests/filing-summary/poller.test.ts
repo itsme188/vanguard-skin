@@ -570,7 +570,7 @@ describe("pollEvent lifecycle", () => {
       const s = getEventState(db, eventId)!;
       expect(s.pollState).toBe("manual_only");
       expect(s.catchupDone).toBe(true);
-      expect(s.pollDetail).toBe("not polled on the print day — Run summary to spend");
+      expect(s.pollDetail).toBe("not polled on the print day — press Run summary to read the filings now");
       expect(listFilings(db, eventId).map((f) => f.identityVerdict)).toEqual(["accepted"]);
       expect(listRuns(db, eventId)).toEqual([]); // no paid run without a click
       const panel = getPanelViews(db, [eventId], ["claude-opus-5-5"], new Date(clock))[eventId];

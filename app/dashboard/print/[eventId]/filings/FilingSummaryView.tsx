@@ -19,8 +19,12 @@ import {
   lateWatchText,
   modelQuoteLine,
   newRequestKey,
+  NO_SUMMARY_YET_TEXT,
   optionText,
   reasonText,
+  RUN_SUMMARY_LABEL,
+  RUN_SUMMARY_STARTED_PAGE_TEXT,
+  runSummaryPrompt,
   sectionErrorSentence,
   SECTION_AI_PAUSED_TEXT,
   statusLabel,
@@ -104,6 +108,47 @@ export function FilingSummaryView({ view }: { view: FullView }) {
       const runId = r.data.data?.runId;
       if (typeof runId === "number") setPicked(runId);
       setMessage(`Re-run with ${option.label} started. This page updates while it reads.`);
+      router.refresh();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // The first, paid summary of a print never read (owner ruling 2026-11-01):
+  // the same question and the same action as Run summary on Today, with the
+  // model choice picked on this page.
+  async function runSummary() {
+    const option = view.choice.options.find((o) => choiceValue(o.choice) === choice);
+    if (!option) return;
+    if (!(await prompt.ask(runSummaryPrompt(option.label, option.choice, option.nowLabel)))) return;
+    setBusy(true);
+    setMessage(null);
+    try {
+      let res: Response;
+      try {
+        res = await apiFetch("/api/filing-summary", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            eventId: view.event.eventId,
+            action: "run",
+            family: option.choice.family,
+            effort: option.choice.effort,
+            requestKey: newRequestKey(),
+          }),
+        });
+      } catch {
+        setMessage(networkFailureMessage("start the summary"));
+        return;
+      }
+      const r = await readMutationResult<{ data?: { runId?: number } }>(res);
+      if (!r.ok) {
+        setMessage(r.message);
+        return;
+      }
+      const runId = r.data.data?.runId;
+      if (typeof runId === "number") setPicked(runId);
+      setMessage(RUN_SUMMARY_STARTED_PAGE_TEXT);
       router.refresh();
     } finally {
       setBusy(false);
@@ -209,9 +254,31 @@ export function FilingSummaryView({ view }: { view: FullView }) {
           })}
         </nav>
       ) : (
-        <p className="text-sm text-ink-dim">
-          No summary has run for this print yet. {view.runSummaryAvailable ? "Use Run summary on Today to start one." : ""}
-        </p>
+        <p className="text-sm text-ink-dim">{NO_SUMMARY_YET_TEXT}</p>
+      )}
+
+      {view.runs.length === 0 && view.runSummaryAvailable && (
+        <section aria-label="Run summary" className="flex flex-wrap items-center gap-2">
+          <label htmlFor="run-choice" className="text-sm text-ink-dim">
+            Run with
+          </label>
+          <select
+            id="run-choice"
+            value={choice}
+            onChange={(e) => setChoice(e.target.value)}
+            disabled={busy}
+            className="max-w-full rounded-md border border-edge bg-panel px-2 py-1.5 text-sm text-ink"
+          >
+            {view.choice.options.map((o) => (
+              <option key={choiceValue(o.choice)} value={choiceValue(o.choice)}>
+                {optionText(o)}
+              </option>
+            ))}
+          </select>
+          <button type="button" onClick={runSummary} disabled={busy} className={BUTTON}>
+            {RUN_SUMMARY_LABEL}
+          </button>
+        </section>
       )}
 
       {view.runs.length > 0 && (

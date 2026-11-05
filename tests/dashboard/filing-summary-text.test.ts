@@ -99,7 +99,7 @@ describe("pollStateText: the brief's exact copy", () => {
 
   it("past the cutoff with no filing, 8-K and 6-K", () => {
     // Decided from the view (no run, Run summary not offered), not the detail text.
-    expect(pollStateText(view({ pollState: "past_cutoff", pollDetail: "earnings 8-K time unconfirmed — Run summary to spend" }))).toBe(
+    expect(pollStateText(view({ pollState: "past_cutoff", pollDetail: "earnings 8-K time unconfirmed — press Run summary to read the filings now" }))).toBe(
       "No earnings 8-K filed by 9 pm",
     );
     // The view's own form wins over any detail text.
@@ -124,7 +124,7 @@ describe("pollStateText: the brief's exact copy", () => {
   });
 
   it("manual only, ambiguous, cancelled", () => {
-    expect(pollStateText(view({ pollState: "manual_only", pollDetail: "armed after 9 pm — Run summary to spend" }))).toBe(
+    expect(pollStateText(view({ pollState: "manual_only", pollDetail: "armed after 9 pm — press Run summary to read the filings now" }))).toBe(
       "Armed after 9 pm — nothing runs on its own",
     );
     expect(pollStateText(view({ pollState: "ambiguous", pollDetail: "names Q2, not Q3" }))).toBe(
