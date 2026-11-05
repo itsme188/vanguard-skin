@@ -19,7 +19,7 @@ describe("gate module", () => {
     expect(gateFingerprint({ ...CTX, issuerName: null })).not.toBe(a);
     expect(gateFingerprint({ ...CTX, eventDate: "2026-11-18" })).not.toBe(a);
     expect(a).toMatch(/^[0-9a-f]{64}$/);
-    expect(GATE_VERSION).toBe(2);
+    expect(GATE_VERSION).toBe(3);
   });
 
   it("contentVerdict uses the loose branch regardless of the road", () => {

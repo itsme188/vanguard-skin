@@ -262,8 +262,9 @@ export default async function SecurityDetailPage(props: {
   // position row. They get a line inside the Positions frame, so the lots
   // table below never stands alone and unexplained.
   const { lotsWithoutPosition, positionsWithoutBasis, unknownBasisLotNotes, expiredOptionSnapshotRows } = detail;
-  // A short position over long open lots: the coverage check skips shorts, so
-  // the contradiction is named on its own line above the lots table.
+  // A short position over long open lots: the coverage check reports the
+  // short as uncovered (long lots never cover a short), and the contradiction
+  // itself is named on its own line above the lots table.
   const lotSignMismatches = computeLotSignMismatches(positions, openTaxLots);
   // Lots fully cover the position yet their basis differs from the holding's
   // (broker) basis: disclosed in Positions, nothing recomputed.
@@ -715,21 +716,26 @@ export default async function SecurityDetailPage(props: {
           {lotCoverageGaps.length > 0 && (
             <div className="px-5 py-3 border-b border-edge flex flex-col gap-1">
               {lotCoverageGaps.map((gap) => (
+                // A short gap is measured against short lots on absolute
+                // quantity (computeLotCoverageGaps), so the wording names the
+                // side and prints the short's size, not its signed quantity.
                 <p key={gap.accountId} className="text-xs text-ink-faint">
-                  <span className="text-ink-dim">{gap.accountName}</span>: lots cover{" "}
-                  <Shares value={gap.coveredQty} /> of <Shares value={gap.positionQty} />{" "}
-                  <QuantityUnit securityType={security.security_type} quantity={gap.positionQty} />
+                  <span className="text-ink-dim">{gap.accountName}</span>:{" "}
+                  {gap.side === "short" ? "short lots" : "lots"} cover{" "}
+                  <Shares value={gap.coveredQty} /> of <Shares value={Math.abs(gap.positionQty)} />{" "}
+                  <QuantityUnit securityType={security.security_type} quantity={Math.abs(gap.positionQty)} />
                   {" — "}
                   {gap.missingQty > 0 ? (
                     <>
-                      no cost-basis history for <Shares value={gap.missingQty} />{" "}
+                      {gap.side === "short" ? "no short-sale history for " : "no cost-basis history for "}
+                      <Shares value={gap.missingQty} />{" "}
                       <QuantityUnit securityType={security.security_type} quantity={gap.missingQty} />
                     </>
                   ) : (
                     <>
                       <Shares value={Math.abs(gap.missingQty)} /> more{" "}
-                      <QuantityUnit securityType={security.security_type} quantity={gap.missingQty} />{" "}
-                      in lots than the position shows
+                      <QuantityUnit securityType={security.security_type} quantity={Math.abs(gap.missingQty)} />{" "}
+                      {gap.side === "short" ? "in short lots" : "in lots"} than the position shows
                     </>
                   )}
                 </p>
@@ -768,7 +774,7 @@ export default async function SecurityDetailPage(props: {
                   {" "}— the position&apos;s{" "}
                   <QuantityUnit
                     securityType={security.security_type}
-                    quantity={lotCoverageGaps.reduce((sum, gap) => sum + gap.positionQty, 0)}
+                    quantity={lotCoverageGaps.reduce((sum, gap) => sum + Math.abs(gap.positionQty), 0)}
                   />{" "}
                   above came from a holdings snapshot with no matching purchase in the ledger
                 </>

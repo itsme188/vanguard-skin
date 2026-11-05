@@ -28,17 +28,22 @@ export interface LotCoverageLotInput {
 export interface LotCoverageGap {
   accountId: number;
   accountName: string;
-  /** Position quantity reported for this account. */
+  /** Which side the position is on: a negative quantity is a short. */
+  side: "long" | "short";
+  /** Position quantity reported for this account, signed (negative = short). */
   positionQty: number;
   /**
-   * Sum of quantity_remaining across this account's LONG, non-pending open
-   * lots (0 if none).
+   * Sum of quantity_remaining across this account's SAME-SIDE, non-pending
+   * open lots (0 if none). Always a positive share count: a short lot stores
+   * a positive quantity with is_short=1.
    */
   coveredQty: number;
   /**
-   * positionQty - coveredQty. Positive means shares are missing lot/cost-basis
-   * history; negative means lots over-cover the position (still a
-   * disclosable mismatch — the two sources disagree either way).
+   * |positionQty| - coveredQty, on absolute quantities for both sides.
+   * Positive means shares are missing lot history (cost basis for a long,
+   * short-sale proceeds for a short); negative means lots over-cover the
+   * position (still a disclosable mismatch: the two sources disagree either
+   * way).
    */
   missingQty: number;
 }
@@ -51,40 +56,39 @@ export interface LotCoverageGap {
  * considered — an account with lots but no position row is a different
  * (orphaned-lot) situation and out of scope here.
  *
- * Only LONG lots that are not pending a statement or a closing entry count
- * (ruling R9, 2026-10-26). A short lot stores a positive quantity, so counting
- * it would let a pending short lot of 10 "cover" a long position of 10. A
- * pending lot is closed per the broker, so it covers nothing either.
+ * Coverage is SIDE-MATCHED (ruling R9 and the pending-lots ruling of
+ * 2026-10-26). A short lot stores a positive quantity with is_short=1, so a
+ * long position is covered only by long lots and a short position (negative
+ * quantity) only by short lots, compared on absolute quantity. Counting the
+ * other side would let a short lot of 10 "cover" a long position of 10. A lot
+ * pending a statement or a closing entry is closed per the broker, so it
+ * covers nothing on either side. A short over LONG lots therefore reads as
+ * uncovered here; computeLotSignMismatches names that contradiction on its
+ * own line.
  */
 export function computeLotCoverageGaps(
   positions: LotCoveragePositionInput[],
   openLots: LotCoverageLotInput[]
 ): LotCoverageGap[] {
-  const coveredByAccount = new Map<number, number>();
+  const longByAccount = new Map<number, number>();
+  const shortByAccount = new Map<number, number>();
   for (const lot of openLots) {
-    if (lot.is_short) continue;
     if (lot.pending_statement) continue;
-    coveredByAccount.set(
-      lot.account_id,
-      (coveredByAccount.get(lot.account_id) ?? 0) + lot.quantity_remaining
-    );
+    const bucket = lot.is_short ? shortByAccount : longByAccount;
+    bucket.set(lot.account_id, (bucket.get(lot.account_id) ?? 0) + lot.quantity_remaining);
   }
 
   const gaps: LotCoverageGap[] = [];
   for (const position of positions) {
-    // Short legs: the position query includes shorts (negative quantity),
-    // but tax_lots stores short lots with a POSITIVE quantity_remaining and
-    // is_short=1 — comparing a negative position against a positive covered
-    // sum produces nonsense (e.g. -3 vs +3 reads as "6 more shares in lots
-    // than the position shows"). Signed coverage reconciliation for shorts
-    // is out of scope here; skip and disclose nothing for these accounts.
-    if (position.quantity < 0) continue;
-    const coveredQty = coveredByAccount.get(position.account_id) ?? 0;
-    const missingQty = position.quantity - coveredQty;
+    const side: "long" | "short" = position.quantity < 0 ? "short" : "long";
+    const covered = side === "short" ? shortByAccount : longByAccount;
+    const coveredQty = covered.get(position.account_id) ?? 0;
+    const missingQty = Math.abs(position.quantity) - coveredQty;
     if (Math.abs(missingQty) > EPSILON) {
       gaps.push({
         accountId: position.account_id,
         accountName: position.account_name,
+        side,
         positionQty: position.quantity,
         coveredQty,
         missingQty,
@@ -106,8 +110,9 @@ export interface LotSignMismatch {
 
 /**
  * A SHORT position sitting over LONG open lots in the same account. The
- * coverage check above skips shorts, so this pair used to print with no note:
- * a short position with a loss, and directly below it long lots with a gain.
+ * coverage check above only says the short has no short lots; this pair used
+ * to print with no note naming the contradiction: a short position with a
+ * loss, and directly below it long lots with a gain.
  * The two sources contradict each other (a sign error in a live holdings feed
  * is the usual cause); this does not say which one is right. Per account,
  * like computeLotCoverageGaps. Short lots are the expected lots under a short

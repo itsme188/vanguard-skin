@@ -10,6 +10,8 @@ import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 import { getTaxConventionState } from "@/lib/compute/tax-convention";
 import { cashEquivalentSecuritySql } from "@/lib/compute/cash-equivalents";
 import { lotSideSignSql, remainingLotBasisSql } from "@/lib/queries/tax-lots";
+import { liveOptionExpirationSql } from "@/lib/compute/option-expiry";
+import { todayET } from "@/lib/calendar/date-utils";
 
 // ─── Types ──────────────────────────────────────────────────────
 
@@ -103,6 +105,12 @@ export function reconcileCostBasis(
        WHERE ${latestHoldingsPredicate({ includeShorts: true, accountFilter })}
          AND LOWER(COALESCE(s.security_type, '')) NOT IN ('mutual fund', 'fund')
          AND NOT ${cashEquivalentSecuritySql("s")}
+         -- An option that expired before today (Eastern) is not a position:
+         -- the single-account Holdings table (getValuedHoldingsByAccount)
+         -- and the Today IBKR snapshot leave it out through this same one
+         -- reader, so the check must not report one more position than
+         -- the table does.
+         AND ${liveOptionExpirationSql("s", todayET())}
        ORDER BY a.name, s.symbol`
     )
     .all(...params) as Array<{
