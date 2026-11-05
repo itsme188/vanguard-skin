@@ -6,7 +6,7 @@ import type { PrintWatchDocKind } from "./types";
 
 /** Bump when the gate's rules change: a stored `gate_fingerprint` built under
  *  an older version differs and the next delivery re-evaluates the verdict. */
-export const GATE_VERSION = 2;
+export const GATE_VERSION = 3;
 
 export interface DocGateContext {
   symbol: string;
@@ -33,6 +33,11 @@ export type DocGateVerdict = { ok: true } | { ok: false; reason: string };
 const CORPORATE_SUFFIXES =
   /\b(incorporated|inc|corporation|corp|company|co|holdings|holding|group|plc|ltd|limited|sa|nv|ag|technologies|systems)\b\.?/gi;
 
+/** Vendor share-class phrases ("Ordinary Shares", "Class A", "ADR"...) that
+ *  trail a company name and never appear in the issuer's own documents. */
+const SHARE_CLASS_PHRASES =
+  /\b(ordinary\s+shares?|common\s+stock|common\s+shares?|depositary\s+(shares?|receipts?)|class\s+[a-c]|adr|ads)\b/gi;
+
 const QUARTER_WORD_RE = /\b(first|second|third|fourth)\s+quarter\b|\bq[1-4]\b/i;
 const FISCAL_YEAR_RE = /\bfiscal(\s+year)?\s+20\d\d\b|\bfy\s?20\d\d\b/i;
 const ORDINALS = ["", "first", "second", "third", "fourth"];
@@ -42,8 +47,12 @@ const ORDINALS = ["", "first", "second", "third", "fourth"];
  *  "Holdings Inc" can never match every document on earth. */
 function issuerNeedle(issuerName: string | null): string | null {
   if (!issuerName) return null;
-  const stripped = issuerName
+  // The vendor suffix ("<Name> Corp - Ordinary Shares - Class A") starts at the
+  // first spaced hyphen; a hyphen inside a name ("Coca-Cola") is kept.
+  const head = issuerName.split(" - ")[0];
+  const stripped = head
     .replace(/[,.]/g, " ")
+    .replace(SHARE_CLASS_PHRASES, " ")
     .replace(CORPORATE_SUFFIXES, " ")
     .replace(/\s+/g, " ")
     .trim()
