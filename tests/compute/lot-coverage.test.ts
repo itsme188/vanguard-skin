@@ -18,6 +18,7 @@ describe("computeLotCoverageGaps", () => {
       {
         accountId: 1,
         accountName: "Taxable",
+        side: "long",
         positionQty: 150,
         coveredQty: 125,
         missingQty: 25,
@@ -32,6 +33,7 @@ describe("computeLotCoverageGaps", () => {
       {
         accountId: 2,
         accountName: "IBKR",
+        side: "long",
         positionQty: 50,
         coveredQty: 0,
         missingQty: 50,
@@ -52,6 +54,7 @@ describe("computeLotCoverageGaps", () => {
       {
         accountId: 2,
         accountName: "IBKR",
+        side: "long",
         positionQty: 50,
         coveredQty: 0,
         missingQty: 50,
@@ -83,8 +86,8 @@ describe("computeLotCoverageGaps", () => {
     expect(gaps).toHaveLength(2);
     expect(gaps).toEqual(
       expect.arrayContaining([
-        { accountId: 1, accountName: "Taxable", positionQty: 100, coveredQty: 90, missingQty: 10 },
-        { accountId: 2, accountName: "Roth", positionQty: 40, coveredQty: 50, missingQty: -10 },
+        { accountId: 1, accountName: "Taxable", side: "long", positionQty: 100, coveredQty: 90, missingQty: 10 },
+        { accountId: 2, accountName: "Roth", side: "long", positionQty: 40, coveredQty: 50, missingQty: -10 },
       ])
     );
   });
@@ -93,14 +96,14 @@ describe("computeLotCoverageGaps", () => {
     expect(computeLotCoverageGaps([], [])).toEqual([]);
   });
 
-  it("skips short positions (negative quantity) even with matching positive short lots", () => {
+  it("a short position (negative quantity) reconciles against matching positive short lots", () => {
     // Short lots are stored with POSITIVE quantity_remaining and is_short=1,
     // while the position query (includeShorts) reports a NEGATIVE quantity
     // for the same short. A naive comparison of -3 vs +3 would produce a
     // nonsense gap ("6 more shares in lots than the position shows"); shorts
-    // must be skipped entirely rather than reconciled.
+    // are compared on absolute quantity against short lots only.
     const positions = [{ account_id: 1, account_name: "IBKR", quantity: -3 }];
-    const openLots = [{ account_id: 1, quantity_remaining: 3 }];
+    const openLots = [{ account_id: 1, quantity_remaining: 3, is_short: 1 }];
     expect(computeLotCoverageGaps(positions, openLots)).toEqual([]);
   });
 });

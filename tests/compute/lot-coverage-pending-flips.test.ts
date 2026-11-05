@@ -14,7 +14,7 @@ describe("computeLotCoverageGaps: long position vs short or pending lots (R9)", 
   it("long position 10 over only a pending short lot of 10 → a coverage gap of 10 (no long lots), not a match", () => {
     const lots = [{ account_id: 1, quantity_remaining: 10, is_short: 1, pending_statement: true }];
     expect(computeLotCoverageGaps(longPos, lots)).toEqual([
-      { accountId: 1, accountName: "Taxable", positionQty: 10, coveredQty: 0, missingQty: 10 },
+      { accountId: 1, accountName: "Taxable", side: "long", positionQty: 10, coveredQty: 0, missingQty: 10 },
     ]);
   });
 
@@ -29,7 +29,7 @@ describe("computeLotCoverageGaps: long position vs short or pending lots (R9)", 
   it("a non-pending short lot does not cover a long position either", () => {
     const lots = [{ account_id: 1, quantity_remaining: 10, is_short: true, pending_statement: false }];
     expect(computeLotCoverageGaps(longPos, lots)).toEqual([
-      { accountId: 1, accountName: "Taxable", positionQty: 10, coveredQty: 0, missingQty: 10 },
+      { accountId: 1, accountName: "Taxable", side: "long", positionQty: 10, coveredQty: 0, missingQty: 10 },
     ]);
   });
 
@@ -39,7 +39,7 @@ describe("computeLotCoverageGaps: long position vs short or pending lots (R9)", 
       { account_id: 1, quantity_remaining: 4, is_short: 0, pending_statement: true },
     ];
     expect(computeLotCoverageGaps(longPos, lots)).toEqual([
-      { accountId: 1, accountName: "Taxable", positionQty: 10, coveredQty: 6, missingQty: 4 },
+      { accountId: 1, accountName: "Taxable", side: "long", positionQty: 10, coveredQty: 6, missingQty: 4 },
     ]);
   });
 
@@ -47,9 +47,11 @@ describe("computeLotCoverageGaps: long position vs short or pending lots (R9)", 
     expect(computeLotCoverageGaps(longPos, [{ account_id: 1, quantity_remaining: 10 }])).toEqual([]);
   });
 
-  it("short positions stay skipped", () => {
+  it("a short position is compared against its non-pending short lots", () => {
     const lots = [{ account_id: 1, quantity_remaining: 3, is_short: 1, pending_statement: false }];
-    expect(computeLotCoverageGaps(shortPos, lots)).toEqual([]);
+    expect(computeLotCoverageGaps(shortPos, lots)).toEqual([
+      { accountId: 1, accountName: "Taxable", side: "short", positionQty: -10, coveredQty: 3, missingQty: 7 },
+    ]);
   });
 });
 

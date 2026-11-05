@@ -17,9 +17,11 @@ describe("computeLotSignMismatches", () => {
     expect(computeLotSignMismatches(short, lots)).toEqual([
       { accountId: 1, accountName: "Taxable", positionQty: -175, longLotQty: 250, longLotCount: 2 },
     ]);
-    // The coverage check still says nothing about a short: the disclosure
-    // above is the only line for this account.
-    expect(computeLotCoverageGaps(short, lots)).toEqual([]);
+    // Long lots never cover a short: the coverage check reports the short as
+    // uncovered, and the mismatch above names the contradiction.
+    expect(computeLotCoverageGaps(short, lots)).toEqual([
+      { accountId: 1, accountName: "Taxable", side: "short", positionQty: -175, coveredQty: 0, missingQty: 175 },
+    ]);
   });
 
   it("a short over its own short-sale lots is not a mismatch", () => {
