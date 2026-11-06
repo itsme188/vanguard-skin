@@ -272,6 +272,7 @@ export function TodayReleases({
                     actual={event.actual_value}
                     snapshot={snapshot}
                     enrichedAt={event.enriched_at}
+                    eventDate={event.event_date}
                   />
                 ) : (
                   <span className="text-ink-faint">

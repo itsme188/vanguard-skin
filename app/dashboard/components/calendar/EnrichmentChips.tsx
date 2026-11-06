@@ -64,8 +64,9 @@ function summaryPair(
   label: string,
   leg: BenchmarkReaction | undefined,
   enrichedAt: string | null | undefined,
+  eventDate: string | null | undefined,
 ): ReactionPair {
-  if (reactionLegState(snapshot, leg, { rowEnrichedAt: enrichedAt }) === "pending") {
+  if (reactionLegState(snapshot, leg, { rowEnrichedAt: enrichedAt, eventDate }) === "pending") {
     return { label, pct: null, pending: true };
   }
   return { label, pct: leg?.delta_pct ?? null };
@@ -90,11 +91,13 @@ export function reactionSummaryPairs(
     eventSymbol?: string | null;
     /** The row's enriched_at — evidence for an older snapshot with no capture stamp. */
     enrichedAt?: string | null;
+    /** The row's event_date — a snapshot whose t0 is on another day is not this row's. */
+    eventDate?: string | null;
   } = {},
 ): ReactionPair[] {
   if (!snapshot) return [];
   const pair = (label: string, leg: BenchmarkReaction | undefined) =>
-    summaryPair(snapshot, label, leg, opts.enrichedAt);
+    summaryPair(snapshot, label, leg, opts.enrichedAt, opts.eventDate);
   if (opts.preferEventSymbol && snapshot.symbol) {
     return [pair(snapshot.symbol.symbol, snapshot.symbol), pair("SPY", snapshot.spy)];
   }
@@ -116,6 +119,7 @@ export function EnrichmentRowSummary({
   preferEventSymbol = false,
   eventSymbol = null,
   enrichedAt = null,
+  eventDate = null,
 }: {
   actual: string | null;
   /** Already-parsed snapshot (client callers). */
@@ -131,6 +135,8 @@ export function EnrichmentRowSummary({
   eventSymbol?: string | null;
   /** The row's enriched_at — see reactionSummaryPairs. */
   enrichedAt?: string | null;
+  /** The row's event_date — see reactionSummaryPairs. */
+  eventDate?: string | null;
 }) {
   const snap = snapshot ?? parseReactionSnapshot(snapshotRaw);
   // `actual` can be a Finnhub-shaped string whose only recognizable token
@@ -141,7 +147,7 @@ export function EnrichmentRowSummary({
   // nothing (never an empty chip) and never leaves a stray "·" separator
   // dangling with no figure in front of it.
   const formatted = actual ? formatFinnhubFigureCompact(actual) : null;
-  const pairs = reactionSummaryPairs(snap, { preferEventSymbol, eventSymbol, enrichedAt });
+  const pairs = reactionSummaryPairs(snap, { preferEventSymbol, eventSymbol, enrichedAt, eventDate });
   if (!formatted && pairs.length === 0) return null;
   return (
     // Wraps (never one fixed line): week-ahead day columns get as narrow as
@@ -197,7 +203,7 @@ export interface ReactionDetailRow {
  */
 export function reactionDetailRows(
   snapshot: ReactionSnapshot | null,
-  opts: { enrichedAt?: string | null } = {},
+  opts: { enrichedAt?: string | null; eventDate?: string | null } = {},
 ): ReactionDetailRow[] {
   if (!snapshot) return [];
   const legs: Array<{ label: string; data: BenchmarkReaction | undefined }> = [
@@ -211,7 +217,8 @@ export function reactionDetailRows(
   for (const leg of legs) {
     if (!leg.label || !isUsableReactionLeg(leg.data)) continue;
     const pending =
-      reactionLegState(snapshot, leg.data, { rowEnrichedAt: opts.enrichedAt }) === "pending";
+      reactionLegState(snapshot, leg.data, { rowEnrichedAt: opts.enrichedAt, eventDate: opts.eventDate }) ===
+      "pending";
     rows.push(pending ? { label: leg.label, data: leg.data, pending: true } : { label: leg.label, data: leg.data });
   }
   return rows;
@@ -225,14 +232,17 @@ export function EnrichmentDetail({
   actual,
   snapshot,
   enrichedAt,
+  eventDate = null,
 }: {
   actual: string | null;
   snapshot: ReactionSnapshot | null;
   enrichedAt: string | null;
+  /** The row's event_date — a snapshot whose t0 is on another day is not this row's. */
+  eventDate?: string | null;
 }) {
   if (!actual && !snapshot) return null;
 
-  const rows = reactionDetailRows(snapshot, { enrichedAt });
+  const rows = reactionDetailRows(snapshot, { enrichedAt, eventDate });
 
   return (
     <div className="bg-canvas/50 rounded px-2.5 py-2 border border-edge/30">
@@ -313,6 +323,7 @@ export function EnrichmentDisclosure({
   actual,
   snapshotRaw,
   enrichedAt,
+  eventDate = null,
   children,
 }: {
   /** Classes for the card itself (the clickable surface). */
@@ -320,6 +331,8 @@ export function EnrichmentDisclosure({
   actual: string | null;
   snapshotRaw: string | null;
   enrichedAt: string | null;
+  /** The row's event_date — see EnrichmentDetail. */
+  eventDate?: string | null;
   children: ReactNode;
 }) {
   const [open, setOpen] = useState(false);
@@ -351,6 +364,7 @@ export function EnrichmentDisclosure({
           actual={actual}
           snapshot={parseReactionSnapshot(snapshotRaw)}
           enrichedAt={enrichedAt}
+          eventDate={eventDate}
         />
       </div>
     </>

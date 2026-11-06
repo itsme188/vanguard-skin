@@ -122,9 +122,9 @@ function seedEvent(opts: { symbol: string; date?: string; releaseTime?: string |
         `${date} 07:00:00`,
         // Debrief-quality bar (2026-11-04): every candidate has a measured reaction and a bogey sheet.
         JSON.stringify({
-          t0_utc: `${date}T00:00:00.000Z`,
+          t0_utc: `${date}T05:00:00.000Z`,
           window_min: 120,
-          captured_at: `${date}T06:00:00.000Z`,
+          captured_at: `${date}T08:00:00.000Z`,
           symbol: { t_pre: 100, t_post: 102, delta_pct: 2 },
         }),
       ).lastInsertRowid,

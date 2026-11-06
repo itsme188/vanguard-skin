@@ -118,6 +118,42 @@ export function parseUtcInstantMs(raw: string | null | undefined): number | null
 export interface ReactionEvidence {
   /** The row's `enriched_at` (SQLite UTC or ISO). Weak evidence; see file header. */
   rowEnrichedAt?: string | null;
+  /**
+   * The row's `event_date` (YYYY-MM-DD). A snapshot whose release instant
+   * (t0) falls on a different Eastern day is not THIS print's measurement:
+   * the sync never clears enrichment, so a feed row moved to a new date keeps
+   * the reaction captured for the old one (2026-11-06 QA finding). Strongest
+   * evidence after the absent check; an unreadable date or t0 is ignored.
+   */
+  eventDate?: string | null;
+}
+
+const EASTERN_DAY = new Intl.DateTimeFormat("en-CA", {
+  timeZone: "America/New_York",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+});
+
+/** YYYY-MM-DD in New York for a UTC instant. */
+export function easternDayOfMs(ms: number): string {
+  return EASTERN_DAY.format(new Date(ms));
+}
+
+/**
+ * True when the snapshot's t0 is readable, the event date is a plain
+ * YYYY-MM-DD, and the two name different Eastern days. The Worker keeps a
+ * copy of this rule in workers/cron/src/fallback-earnings.ts
+ * (workerReactionLegState); change both together.
+ */
+export function reactionT0OnAnotherDay(
+  snapshot: Pick<ReactionSnapshot, "t0_utc"> | null | undefined,
+  eventDate: string | null | undefined,
+): boolean {
+  if (typeof eventDate !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(eventDate)) return false;
+  const t0 = parseUtcInstantMs(snapshot?.t0_utc as string | null | undefined);
+  if (t0 == null) return false;
+  return easternDayOfMs(t0) !== eventDate;
 }
 
 /**
@@ -128,6 +164,7 @@ export interface ReactionEvidence {
 export type ReactionLegState = "measured" | "pending" | "absent";
 
 export type ReactionLegReason =
+  | "t0_on_another_day"
   | "captured_before_window_end"
   | "identical_pre_post"
   | "zero_move_enriched_before_window_end";
@@ -138,6 +175,12 @@ export function reactionLegVerdict(
   evidence: ReactionEvidence = {},
 ): { state: ReactionLegState; reason?: ReactionLegReason } {
   if (!snapshot || !isUsableReactionLeg(leg)) return { state: "absent" };
+
+  // A measurement taken for another day's release says nothing about this
+  // print, however cleanly it was captured.
+  if (reactionT0OnAnotherDay(snapshot, evidence.eventDate)) {
+    return { state: "pending", reason: "t0_on_another_day" };
+  }
 
   const windowEnd = snapshotWindowEndMs(snapshot);
   const capturedAt = parseUtcInstantMs(snapshot.captured_at);

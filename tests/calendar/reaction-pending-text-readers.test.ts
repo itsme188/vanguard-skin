@@ -383,8 +383,27 @@ describe("readers that load rows from the database", () => {
     type Leg = { t_pre?: number; t_post?: number; delta_pct?: number; state?: string; symbol?: string };
     type Reaction = { spy?: Leg; qqq?: Leg; tlt?: Leg; sector?: Leg; symbol?: Leg; state?: string; t0_utc?: string } | null;
 
+    /**
+     * The seeded row is dated three days ago, so its snapshot's release
+     * instant and capture stamp are moved onto that day (same clock, 20:15
+     * UTC = an afternoon in New York either side of the clock change): a
+     * snapshot whose t0 is on another day than the row is not the row's
+     * measurement (reaction-validity, 2026-11-06), which is not what these
+     * cases test.
+     */
+    function onSeededDay(snapshot: unknown, day: string): unknown {
+      if (snapshot == null || typeof snapshot !== "object") return snapshot;
+      const out = { ...(snapshot as Record<string, unknown>) };
+      for (const key of ["t0_utc", "captured_at"] as const) {
+        const v = out[key];
+        if (typeof v === "string" && v.length >= 10) out[key] = day + v.slice(10);
+      }
+      return out;
+    }
+
     async function reactionFor(snapshot: unknown): Promise<Reaction> {
-      seedEvent({ symbol: "ZZA", date: addDays(todayET(), -3), snapshot });
+      const day = addDays(todayET(), -3);
+      seedEvent({ symbol: "ZZA", date: day, snapshot: onSeededDay(snapshot, day) });
       const result = (await executeTool(db, "query_release_reactions", {})) as {
         error?: string;
         data: { releases: Array<{ reaction: Reaction }> };
@@ -397,7 +416,7 @@ describe("readers that load rows from the database", () => {
       const r = await reactionFor(MEASURED);
       expect(r).toEqual({
         spy: LEGS.spy, qqq: LEGS.qqq, tlt: LEGS.tlt, sector: LEGS.sector, symbol: LEGS.symbol,
-        t0_utc: T0, window_min: 120, source: "tws", pre_anchor: "prior_close",
+        t0_utc: addDays(todayET(), -3) + T0.slice(10), window_min: 120, source: "tws", pre_anchor: "prior_close",
       });
     });
     it("one pending leg: marked pending with no price and no percent", async () => {

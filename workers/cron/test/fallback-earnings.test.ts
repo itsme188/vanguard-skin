@@ -2818,23 +2818,29 @@ describe("pending reaction legs in the cloud recap (parity with the Mac)", () =>
       "2026-06-15 20:05:00", "2026-06-15 21:49:59", "2026-06-15 21:50:00",
       "2026-06-15T21:55:00.000Z", "2026-06-15 22:10:00", "2026-06-15 20:35:00",
     ];
+    // The event date: absent, the t0's own Eastern day, another day, and an
+    // unreadable value (2026-11-06: a snapshot captured for another day's
+    // release is not this print's measurement).
+    const eventDates = [undefined, null, "2026-06-15", "2026-06-16", "2026-06-14", "not a date"];
     let checked = 0;
     for (const snap of snaps) {
       for (const l of [leg, zero, same, dead, null, undefined]) {
         for (const stamp of stamps) {
-          const mac = macReactionLegState(
-            snap as Parameters<typeof macReactionLegState>[0],
-            l as Parameters<typeof macReactionLegState>[1],
-            { rowEnrichedAt: stamp },
-          );
-          expect(
-            workerReactionLegState(snap, l, stamp),
-            `${JSON.stringify(snap)} ${JSON.stringify(l)} ${String(stamp)}`,
-          ).toBe(mac);
-          checked++;
+          for (const eventDate of eventDates) {
+            const mac = macReactionLegState(
+              snap as Parameters<typeof macReactionLegState>[0],
+              l as Parameters<typeof macReactionLegState>[1],
+              { rowEnrichedAt: stamp, eventDate },
+            );
+            expect(
+              workerReactionLegState(snap, l, stamp, eventDate),
+              `${JSON.stringify(snap)} ${JSON.stringify(l)} ${String(stamp)} ${String(eventDate)}`,
+            ).toBe(mac);
+            checked++;
+          }
         }
       }
     }
-    expect(checked).toBe(snaps.length * 6 * stamps.length);
+    expect(checked).toBe(snaps.length * 6 * stamps.length * eventDates.length);
   });
 });

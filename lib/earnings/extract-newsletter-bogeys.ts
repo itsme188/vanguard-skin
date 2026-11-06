@@ -39,6 +39,7 @@ import {
   type FetchNewsletterImagesFn,
   type NewsletterImage,
 } from "@/lib/earnings/newsletter-images";
+import { articleReceivedMs, bogeyCutoffInstant } from "@/lib/earnings/pre-print-floor";
 
 // Max chars per article sent to Claude. Bogey mentions are almost always in
 // prose context near the top of a preview newsletter, not buried deep in a
@@ -75,6 +76,9 @@ export interface UpcomingReporter {
   symbol: string;
   event_id: number;
   event_date: string;
+  /** The instant (ms) from which an article can no longer hold a pre-print
+   *  bogey for this row (bogeyCutoffInstant); null = no cutoff known. */
+  cutoff_ms?: number | null;
   /** Extra metric lines already on this event's sheet (prompt text from
    *  `existingWatchLinesForEvent`), so a later issue reuses their labels. */
   existing_lines?: string[];
@@ -323,14 +327,21 @@ function getUpcomingReporters(
 
   const rows = db
     .prepare(
-      `SELECT id AS event_id, symbol, event_date
+      `SELECT id AS event_id, symbol, event_date, event_time, release_time, raw_json
        FROM calendar_events
        WHERE event_type = 'earnings'
          AND symbol IS NOT NULL
          AND event_date >= ? AND event_date <= ?
          AND COALESCE(superseded, 0) = 0`
     )
-    .all(today, endDate) as { event_id: number; symbol: string; event_date: string }[];
+    .all(today, endDate) as {
+    event_id: number;
+    symbol: string;
+    event_date: string;
+    event_time: string | null;
+    release_time: string | null;
+    raw_json: string | null;
+  }[];
 
   if (rows.length === 0) return [];
 
@@ -342,6 +353,7 @@ function getUpcomingReporters(
       symbol: r.symbol.toUpperCase(),
       event_id: r.event_id,
       event_date: r.event_date,
+      cutoff_ms: bogeyCutoffInstant(r)?.getTime() ?? null,
     }));
 }
 
@@ -353,15 +365,25 @@ export const __getUpcomingReportersForTests = getUpcomingReporters;
  * this article's text (issuer-family aware, so a GOOGL mention matches a
  * GOOG reporter row) get passed to the prompt. An article that mentions
  * none of the tracked reporters skips the AI call entirely.
+ *
+ * A bogey is a pre-print figure: a reporter whose print had already started
+ * when the article arrived (`cutoff_ms`, the slot floor) is dropped for that
+ * article, per reporter, so a post-print wrap can still feed a later name.
  */
 function filterReportersMentionedInArticle(
   article: ArticleInput,
   reporters: UpcomingReporter[]
 ): UpcomingReporter[] {
-  return reporters.filter((r) =>
-    issuerSiblings(r.symbol).some((sym) => isSymbolMentioned(article.raw_text, sym))
+  const received = articleReceivedMs(article.received_at);
+  return reporters.filter(
+    (r) =>
+      (r.cutoff_ms == null || received == null || received < r.cutoff_ms) &&
+      issuerSiblings(r.symbol).some((sym) => isSymbolMentioned(article.raw_text, sym)),
   );
 }
+
+/** Test seam — the function stays private to the module's callers. */
+export const __filterReportersMentionedInArticleForTests = filterReportersMentionedInArticle;
 
 function getUnscannedArticles(
   db: Database.Database,

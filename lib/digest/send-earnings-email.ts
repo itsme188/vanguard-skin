@@ -286,7 +286,8 @@ export async function composeEarningsEmail(
   // its first line. The automatic sweep holds for the snapshot (recap-readiness.ts), so
   // this only shows on a human's send or at the end of the window.
   const reactionMissing =
-    phase === "recap" && !hasMeasuredStockReaction(event.reaction_snapshot, event.enriched_at);
+    phase === "recap" &&
+    !hasMeasuredStockReaction(event.reaction_snapshot, event.enriched_at, event.event_date);
   const reactionDisclosure = reactionMissing
     ? "*Sent before the market reaction was captured: the reaction rows are blank, and no move is quoted from any source.*"
     : null;
@@ -1257,7 +1258,10 @@ export function buildReadThroughEntries(
     // dead/zero quote (2026-09-10 qa fix) and a pending leg — captured before
     // its window elapsed, or an identical pre/post pair (2026-10-08) — are
     // both null here, so the bullet omits them. Malformed JSON reads as null.
-    const reporterLegs = readReactionLegs(ev.reaction_snapshot, { rowEnrichedAt: ev.enriched_at });
+    const reporterLegs = readReactionLegs(ev.reaction_snapshot, {
+      rowEnrichedAt: ev.enriched_at,
+      eventDate: ev.event_date,
+    });
     if (reporterLegs) {
       stockPct = reporterLegs.measured.symbol?.delta_pct ?? null;
       spyPct = reporterLegs.measured.spy?.delta_pct ?? null;
@@ -1292,6 +1296,7 @@ function buildRecapContext(
 
   const reactionSnapshotMarkdown = formatReactionSnapshot(event.reaction_snapshot, {
     rowEnrichedAt: event.enriched_at,
+    eventDate: event.event_date,
   });
   // For the recap we want every PR since the release time, not just last 30d.
   // 2 days back from now is plenty for both BMO + AMC.
@@ -1933,7 +1938,7 @@ ${rows.join("\n")}
 // snapshot at email-send time.
 export function renderHeadlineTable(
   event: Pick<CalendarEvent, "consensus_estimate" | "actual_value" | "consensus_value" | "reaction_snapshot"> &
-    Partial<Pick<CalendarEvent, "manual_actuals_at" | "vendor_actual_value" | "enriched_at">>,
+    Partial<Pick<CalendarEvent, "manual_actuals_at" | "vendor_actual_value" | "enriched_at" | "event_date">>,
   symbol: string,
   phase: "preview" | "recap",
   intel?: EarningsIntelView | null,
@@ -1995,7 +2000,10 @@ export function renderHeadlineTable(
   // Each leg goes through the validity rule; the row's enriched_at feeds the
   // legacy zero-move check. A pending leg is a dash in an email and the word
   // "pending" only in the in-app viewer.
-  const reactionEvidence: ReactionEvidence = { rowEnrichedAt: event.enriched_at };
+  const reactionEvidence: ReactionEvidence = {
+    rowEnrichedAt: event.enriched_at,
+    eventDate: event.event_date ?? null,
+  };
   const pendingLabel = options.pendingReactionLabel === true;
   const stockLeg = readScoreboardLeg(event.reaction_snapshot, "symbol", reactionEvidence);
   const reactionCell = (key: ScoreboardLegKey): string =>
