@@ -1976,6 +1976,7 @@ export async function executeTool(
           // The row's enriched_at is evidence only; it is not returned.
           const reaction = sanitizeReactionSnapshotForChat(r.reaction_snapshot, {
             rowEnrichedAt: r.enriched_at,
+            eventDate: r.event_date,
           });
           return {
             event_id: r.event_id,

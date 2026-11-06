@@ -818,6 +818,7 @@ function EventRow({ event: storedEvent, todayIso }: { event: DisplayedEvent; tod
             preferEventSymbol
             eventSymbol={event.event_type === "earnings" ? symbol : null}
             enrichedAt={event.enriched_at}
+            eventDate={event.event_date}
           />
         </div>
       )}
@@ -855,6 +856,7 @@ function EventRow({ event: storedEvent, todayIso }: { event: DisplayedEvent; tod
           actual={actualDisplay}
           snapshotRaw={event.reaction_snapshot}
           enrichedAt={event.enriched_at}
+          eventDate={event.event_date}
         >
           {body}
         </EnrichmentDisclosure>

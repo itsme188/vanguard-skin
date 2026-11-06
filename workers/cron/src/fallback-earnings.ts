@@ -1162,11 +1162,11 @@ export function evaluateRecapContent(
   // uses, so "has a data point" and "renders a data point" can't diverge.
   // A leg that is not a measurement yet (pending) renders a dash too, so it
   // is not a data point either (2026-10-08).
-  const { reactionJson, rowEnrichedAt } = reactionSourceFor(event, payload);
+  const { reactionJson, rowEnrichedAt, eventDate } = reactionSourceFor(event, payload);
   const hasReaction =
-    readReactionDelta(reactionJson, "symbol", rowEnrichedAt) !== "—" ||
-    readReactionDelta(reactionJson, "spy", rowEnrichedAt) !== "—" ||
-    readReactionDelta(reactionJson, "qqq", rowEnrichedAt) !== "—";
+    readReactionDelta(reactionJson, "symbol", rowEnrichedAt, eventDate) !== "—" ||
+    readReactionDelta(reactionJson, "spy", rowEnrichedAt, eventDate) !== "—" ||
+    readReactionDelta(reactionJson, "qqq", rowEnrichedAt, eventDate) !== "—";
   if (!plausible && !hasReaction) return { send: false, reason: "implausible-no-data-point" };
   return { send: true, implausible: !plausible };
 }
@@ -1276,8 +1276,9 @@ function readReactionPct(
   json: string | null,
   key: "spy" | "qqq" | "tlt" | "symbol",
   rowEnrichedAt: string | null | undefined,
+  eventDate: string | null | undefined,
 ): number | null {
-  return readMeasuredReactionPct(json, key, rowEnrichedAt);
+  return readMeasuredReactionPct(json, key, rowEnrichedAt, eventDate);
 }
 
 /**
@@ -1371,10 +1372,10 @@ export function renderScoreboard(
   const isRecap = phase === "recap";
   // PARITY (Mac: renderHeadlineTable -> readScoreboardLeg): a leg that is not
   // a measurement yet is a dash in an outbound email, never a percent.
-  const { reactionJson, rowEnrichedAt } = reactionSourceFor(event, payload);
-  const stockR = isRecap ? readReactionDelta(reactionJson, "symbol", rowEnrichedAt) : "—";
-  const spyR = isRecap ? readReactionDelta(reactionJson, "spy", rowEnrichedAt) : "—";
-  const qqqR = isRecap ? readReactionDelta(reactionJson, "qqq", rowEnrichedAt) : "—";
+  const { reactionJson, rowEnrichedAt, eventDate } = reactionSourceFor(event, payload);
+  const stockR = isRecap ? readReactionDelta(reactionJson, "symbol", rowEnrichedAt, eventDate) : "—";
+  const spyR = isRecap ? readReactionDelta(reactionJson, "spy", rowEnrichedAt, eventDate) : "—";
+  const qqqR = isRecap ? readReactionDelta(reactionJson, "qqq", rowEnrichedAt, eventDate) : "—";
 
   const phaseLabel = phase === "preview" ? "into the print" : "post-print";
   const sym = event.symbol ?? "";
@@ -1396,7 +1397,7 @@ export function renderScoreboard(
     let impliedActual = "—";
     let impliedVerdict = "—";
     if (isRecap && intelCtx?.intel?.impliedMovePct != null) {
-      const realized = readReactionPct(reactionJson, "symbol", rowEnrichedAt);
+      const realized = readReactionPct(reactionJson, "symbol", rowEnrichedAt, eventDate);
       if (realized != null) {
         impliedActual = signedPct(realized, 1);
         impliedVerdict = Math.abs(realized) <= intelCtx.intel.impliedMovePct ? "inside" : "outside";
@@ -1761,12 +1762,38 @@ function parseUtcInstantMs(raw: unknown): number | null {
 
 export type WorkerReactionLegState = "measured" | "pending" | "absent";
 
+const EASTERN_DAY = new Intl.DateTimeFormat("en-CA", {
+  timeZone: "America/New_York",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+});
+
+/**
+ * PARITY (Mac: reactionT0OnAnotherDay, lib/calendar/reaction-validity.ts): a
+ * snapshot whose release instant falls on a different Eastern day than the
+ * event's date is not this print's measurement (a feed row moved to a new
+ * date keeps the reaction captured for the old one; 2026-11-06). An
+ * unreadable date or t0 is ignored.
+ */
+function reactionT0OnAnotherDay(
+  snapshot: Record<string, unknown>,
+  eventDate: string | null | undefined,
+): boolean {
+  if (typeof eventDate !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(eventDate)) return false;
+  const t0 = parseUtcInstantMs(snapshot.t0_utc);
+  if (t0 == null) return false;
+  return EASTERN_DAY.format(new Date(t0)) !== eventDate;
+}
+
 export function workerReactionLegState(
   snapshot: Record<string, unknown> | null | undefined,
   leg: { t_pre?: number; t_post?: number; delta_pct?: number } | null | undefined,
   rowEnrichedAt?: string | null,
+  eventDate?: string | null,
 ): WorkerReactionLegState {
   if (!snapshot || !isUsableReactionLeg(leg)) return "absent";
+  if (reactionT0OnAnotherDay(snapshot, eventDate)) return "pending";
 
   let windowEnd: number | null = null;
   const t0Raw = snapshot.t0_utc;
@@ -1803,15 +1830,17 @@ export function workerReactionLegState(
 function reactionSourceFor(
   event: CalendarEventRow,
   payload: CloudEnrichedPayload | null,
-): { reactionJson: string | null; rowEnrichedAt: string | null } {
+): { reactionJson: string | null; rowEnrichedAt: string | null; eventDate: string | null } {
+  const eventDate = typeof event.event_date === "string" ? event.event_date : null;
   const rowJson = (event.reaction_snapshot as string | null) ?? null;
   if (rowJson != null) {
     const stamp = (event as Record<string, unknown>).enriched_at;
-    return { reactionJson: rowJson, rowEnrichedAt: typeof stamp === "string" ? stamp : null };
+    return { reactionJson: rowJson, rowEnrichedAt: typeof stamp === "string" ? stamp : null, eventDate };
   }
   return {
     reactionJson: payload?.reaction != null ? JSON.stringify(payload.reaction) : null,
     rowEnrichedAt: null,
+    eventDate,
   };
 }
 
@@ -1820,6 +1849,7 @@ function readMeasuredReactionPct(
   json: string | null,
   key: "spy" | "qqq" | "tlt" | "symbol",
   rowEnrichedAt: string | null | undefined,
+  eventDate: string | null | undefined,
 ): number | null {
   if (!json) return null;
   try {
@@ -1827,7 +1857,7 @@ function readMeasuredReactionPct(
     if (snap == null || typeof snap !== "object" || Array.isArray(snap)) return null;
     const record = snap as Record<string, unknown>;
     const node = record[key] as { t_pre?: number; t_post?: number; delta_pct?: number } | undefined;
-    if (workerReactionLegState(record, node, rowEnrichedAt) !== "measured") return null;
+    if (workerReactionLegState(record, node, rowEnrichedAt, eventDate) !== "measured") return null;
     return (node as { delta_pct: number }).delta_pct;
   } catch {
     return null;
@@ -1838,8 +1868,9 @@ function readReactionDelta(
   json: string | null,
   key: "spy" | "qqq" | "tlt" | "symbol",
   rowEnrichedAt: string | null | undefined,
+  eventDate: string | null | undefined,
 ): string {
-  const v = readMeasuredReactionPct(json, key, rowEnrichedAt);
+  const v = readMeasuredReactionPct(json, key, rowEnrichedAt, eventDate);
   if (v == null) return "—";
   return signedPct(v, 2);
 }

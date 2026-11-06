@@ -611,10 +611,11 @@ export async function runEnrichment(
  * is a measurement and no later capture may replace it.
  */
 function measuredReactionLegs(
-  event: Pick<EnrichmentCandidate, "reaction_snapshot" | "enriched_at">,
+  event: Pick<EnrichmentCandidate, "reaction_snapshot" | "enriched_at" | "event_date">,
 ): Partial<Record<ReactionLegKey, unknown>> | null {
   const read = readReactionLegs(event.reaction_snapshot, {
     rowEnrichedAt: event.enriched_at ?? null,
+    eventDate: event.event_date,
   });
   return read != null && Object.keys(read.measured).length > 0 ? read.measured : null;
 }

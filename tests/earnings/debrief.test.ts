@@ -105,9 +105,9 @@ function seedEvent(opts: {
         opts.noReaction
           ? null
           : JSON.stringify({
-              t0_utc: `${date}T00:00:00.000Z`,
+              t0_utc: `${date}T05:00:00.000Z`,
               window_min: 120,
-              captured_at: `${date}T06:00:00.000Z`,
+              captured_at: `${date}T08:00:00.000Z`,
               symbol: { t_pre: 100, t_post: 102, delta_pct: 2 },
             }),
       ).lastInsertRowid,

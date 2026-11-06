@@ -64,8 +64,20 @@ function seedReporterEvent(args: {
     args.symbol,
     args.consensus ?? null,
     args.actual ?? null,
-    args.reactionSnapshot ? JSON.stringify(args.reactionSnapshot) : null,
+    args.reactionSnapshot ? JSON.stringify(onRowDay(args.reactionSnapshot, args.date)) : null,
   );
+}
+
+/**
+ * The snapshot's release instant sits on the seeded row's own day: a t0 on
+ * another Eastern day is not the row's measurement (reaction-validity,
+ * 2026-11-06), which is not what these cases test.
+ */
+function onRowDay(snapshot: object, date: string): object {
+  const out = { ...(snapshot as Record<string, unknown>) };
+  const t0 = out.t0_utc;
+  if (typeof t0 === "string" && t0.length >= 10) out.t0_utc = date + t0.slice(10);
+  return out;
 }
 
 const fullReaction = (stockPct: number, spyPct = 0.5, qqqPct = 0.8) => ({
