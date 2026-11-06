@@ -268,6 +268,10 @@ export interface CalendarEvent {
   // actual_value; public market data. NULL = no vendor figure was kept. Read
   // only by the recap scoreboard footnote (owner ruling 2026-10-08).
   vendor_actual_value?: string | null;
+  // NOT a column. Attached by a server page before it hands the row to a
+  // display component (T1 slice 2, lib/earnings/headline-basis.ts): the basis
+  // of the stored EPS actual. Absent = follow the row's own stamp.
+  eps_actual_basis?: "gaap" | "non_gaap" | "na" | "vendor";
   // Migration 097 — macro rows only (owner rulings 2026-10-08). Both NULL on
   // earnings rows and on rows not yet enriched; the weekly sync never writes
   // either. actual_refused_reason: why a fetched actual was refused by the

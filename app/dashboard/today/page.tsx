@@ -1,5 +1,6 @@
 export const dynamic = "force-dynamic";
 
+import { resolveEpsActualBasis } from "@/lib/earnings/headline-basis";
 import { CHIP_TONE_CLASSES } from "@/app/dashboard/components/Chip";
 import { CHIP_TONE_TEXT } from "@/app/dashboard/components/chip-tone-text";
 import { db } from "@/lib/db";
@@ -80,6 +81,10 @@ export default async function TodayPage({ searchParams }: TodayPageProps) {
       db,
       weekOf,
       withDisplayTimes(db, getEventsByWeek(db, weekOf)),
+    ).map((e) =>
+      e.event_type === "earnings" && e.actual_value
+        ? { ...e, eps_actual_basis: resolveEpsActualBasis(db, e) }
+        : e,
     );
     return <WeekAheadView events={events} weekOf={weekOf} />;
   }

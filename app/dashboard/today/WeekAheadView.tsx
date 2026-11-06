@@ -16,6 +16,7 @@ import type { EarningsDisplayTime } from "@/lib/calendar/display-earnings-time";
 import { HAND_ENTERED_LABEL, slotAwareTitle } from "@/lib/calendar/manual-row-display";
 import { actualsAreImplausible } from "@/lib/earnings/actuals-display";
 import { epsDelta } from "@/lib/earnings/eps-delta";
+import { epsRowScoring } from "@/lib/earnings/basis-scoring";
 import {
   EnrichmentDisclosure,
   EnrichmentRowSummary,
@@ -562,6 +563,9 @@ export function settledActualChipClass(
   if (actualsAreImplausible(consensus, event.actual_value, event.manual_actuals_at)) {
     return CHIP_TONE_NEUTRAL;
   }
+  // Basis gate (T1 slice 2): a GAAP actual never colours a beat or miss
+  // against the vendor's adjusted consensus.
+  if (!epsRowScoring(event).scored) return CHIP_TONE_NEUTRAL;
   const delta = epsDelta(consensus, event.actual_value);
   if (delta == null || delta.sign === 0) return CHIP_TONE_NEUTRAL;
   return delta.sign === 1 ? CHIP_TONE_UP : CHIP_TONE_DOWN;
