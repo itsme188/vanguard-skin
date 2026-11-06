@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { splitAdjustCloses } from "./split-adjust-series";
 
 export type MomentumStatus = "leading" | "neutral" | "weakening" | "sell_off" | "insufficient_data";
 
@@ -44,12 +45,15 @@ interface PriceRow {
 }
 
 function loadBenchmark(db: Database.Database, symbol: string): PriceRow[] {
-  return db
+  const rows = db
     .prepare(
       `SELECT date, close_price FROM benchmark_prices
        WHERE symbol = ? ORDER BY date ASC`,
     )
     .all(symbol) as PriceRow[];
+  // Stored rows before a split keep the old share basis (the fetch is
+  // incremental); a window spanning the split day read a 4:1 split as -75%.
+  return splitAdjustCloses(rows);
 }
 
 function priceMap(rows: PriceRow[]): Map<string, number> {
