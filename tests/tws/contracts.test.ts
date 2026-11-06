@@ -194,6 +194,36 @@ describe("enrichSecurities", () => {
     expect(sec.security_type).toBe("ETF");
   });
 
+  it("never writes the contract longName onto an Option row (TWS names the option after its underlying)", async () => {
+    // QA finding 2026-11-06: a call minted by the sync was named "<ETF long name>"
+    // because contractDetails.longName for an option contract is the underlying's.
+    const optId = db
+      .prepare("INSERT INTO securities (symbol, name, security_type, underlying_symbol) VALUES (?, NULL, 'Option', 'ZZZ')")
+      .run("ZZZ   261106C00135000").lastInsertRowid as number;
+    const stockId = seedSecurity(db, "ZZZ", "ETF");
+    db.prepare("UPDATE securities SET name = NULL WHERE id = ?").run(stockId);
+
+    const mockApi = {
+      getContractDetails: vi.fn().mockResolvedValue([
+        {
+          longName: "ZZZ SEMICONDUCTOR ETF",
+          contract: { conId: 333333, primaryExch: "NASDAQ" },
+          stockType: "ETF",
+        },
+      ]),
+    };
+    mockedGetIbApi.mockReturnValue(mockApi as unknown as ReturnType<typeof getIbApi>);
+
+    const results = await enrichSecurities(db, [optId, stockId]);
+    expect(results.every((r) => r.enriched)).toBe(true);
+
+    const names = db
+      .prepare("SELECT id, name FROM securities WHERE id IN (?, ?) ORDER BY id")
+      .all(optId, stockId) as { id: number; name: string | null }[];
+    expect(names.find((n) => n.id === optId)?.name).toBeNull();
+    expect(names.find((n) => n.id === stockId)?.name).toBe("ZZZ SEMICONDUCTOR ETF");
+  });
+
   it("does NOT retype a 'Mutual Fund' row even when contract details report an ETF stockType", async () => {
     const secId = seedSecurity(db, "VTSAX", "Mutual Fund");
 

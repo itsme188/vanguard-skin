@@ -195,7 +195,12 @@ export async function enrichSecurities(
         exchange = COALESCE(?, exchange),
         ib_con_id = COALESCE(?, ib_con_id),
         name = CASE
-                 WHEN ? IS NOT NULL AND (name IS NULL OR name = symbol) THEN ?
+                 WHEN ? IS NOT NULL AND (name IS NULL OR name = symbol)
+                      -- An option contract's longName is its UNDERLYING's
+                      -- company name (2026-11-06 QA finding); the option
+                      -- keeps the name the sync seeded, or none.
+                      AND LOWER(COALESCE(security_type, '')) != 'option'
+                 THEN ?
                  ELSE name
                END,
         security_type = CASE WHEN ? = 1 THEN 'ETF' ELSE security_type END
