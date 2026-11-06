@@ -45,6 +45,7 @@ import {
 import { stableHash, type PrepareStepDefinition } from "../prepare-armed-event";
 import { accountFailureOf, aiUnavailableReason } from "../ai-unavailable";
 import { BOGEY_SCAN_SOURCE_SQL } from "../bogey-scan-eligibility";
+import { articleBeforePrint } from "@/lib/earnings/pre-print-floor";
 
 /** How far back the rescan reaches. Bogeys age out fast; two weeks covers the
  *  weekly + preview newsletters that carry a name into its print. */
@@ -80,6 +81,9 @@ interface EventRow {
   id: number;
   symbol: string | null;
   event_date: string;
+  event_time: string | null;
+  release_time: string | null;
+  raw_json: string | null;
 }
 
 export function makeNewsletterRescanStep(
@@ -117,14 +121,14 @@ export function makeNewsletterRescanStep(
 
     async run(db, eventId, ctx) {
       const e = db
-        .prepare(`SELECT id, symbol, event_date FROM calendar_events WHERE id = ?`)
+        .prepare(`SELECT id, symbol, event_date, event_time, release_time, raw_json FROM calendar_events WHERE id = ?`)
         .get(eventId) as EventRow | undefined;
       if (!e?.symbol) return { status: "failed", error: `event ${eventId} has no symbol` };
 
       // Same article floor as the global scan (raw_text present, > 200 chars):
       // the two paths must consider the same corpus or the rescan would "find"
       // articles the sweep never offered the model.
-      const candidates = db
+      const candidates = (db
         .prepare(
           `SELECT a.id, rs.name AS source_name, a.subject, a.received_at, a.raw_text,
                   CASE WHEN instr(COALESCE(a.raw_html, ''), '<img') > 0 THEN 1 ELSE 0 END AS has_img
@@ -133,7 +137,11 @@ export function makeNewsletterRescanStep(
               AND ${BOGEY_SCAN_SOURCE_SQL}
             ORDER BY a.received_at DESC, a.id DESC`,
         )
-        .all(`-${RESCAN_WINDOW_DAYS} days`) as ArticleRow[];
+        .all(`-${RESCAN_WINDOW_DAYS} days`) as ArticleRow[])
+        // A bogey is a pre-print figure: an article received at or after this
+        // print's slot floor (lib/earnings/pre-print-floor.ts, the global scan's
+        // per-reporter rule) is not offered for this event.
+        .filter((a) => articleBeforePrint(e, a.received_at));
 
       let scanned = 0;
       let hits = 0;

@@ -121,6 +121,53 @@ export function checkPrePrintFloor(
   };
 }
 
+// ── Bogey cutoff ───────────────────────────────────────────────────────
+//
+// A bogey is a PRE-print figure. The newsletter scan (global sweep and the
+// armed rescan) offers an article to the extractor for a reporter only when
+// the article arrived before that reporter's print could have started: the
+// slot floor when the slot is known, else the recorded release instant, else
+// no cutoff at all (the date-windowed row is trusted, as above). The deep read
+// (lib/earnings/deep-read-bogeys.ts) applies the same slot floor. QA finding
+// 2026-11-03: a post-release recap note became the first bogey card, its notes
+// were the reported results, and the filing page listed its figures under
+// "Bogeys before the print".
+
+/** The instant from which an article can no longer hold a pre-print bogey for this row. */
+export function bogeyCutoffInstant(event: PrePrintFloorEvent): Date | null {
+  const slot = deriveEarningsSlot({
+    event_time: event.event_time ?? null,
+    raw_json: event.raw_json ?? null,
+  });
+  if (slot) {
+    const floor = composeReleaseInstant(event.event_date, slot === "amc" ? AMC_FLOOR_ET : BMO_FLOOR_ET);
+    if (floor) return floor;
+  }
+  return event.release_time ? composeReleaseInstant(event.event_date, event.release_time) : null;
+}
+
+/** Stored `received_at` is space-separated UTC (or ISO); null when unreadable. */
+export function articleReceivedMs(receivedAt: string | null | undefined): number | null {
+  if (typeof receivedAt !== "string" || !receivedAt.trim()) return null;
+  const raw = receivedAt.trim();
+  const hasZone = /([zZ]|[+-]\d{2}:?\d{2})$/.test(raw);
+  const ms = Date.parse(raw.replace(" ", "T") + (hasZone ? "" : "Z"));
+  return Number.isFinite(ms) ? ms : null;
+}
+
+/**
+ * True when the article may hold a pre-print bogey for this row: received
+ * before the cutoff, or no cutoff / unreadable stamp (trusted, never dropped
+ * on a parse failure).
+ */
+export function articleBeforePrint(event: PrePrintFloorEvent, receivedAt: string | null | undefined): boolean {
+  const cutoff = bogeyCutoffInstant(event);
+  if (!cutoff) return true;
+  const received = articleReceivedMs(receivedAt);
+  if (received == null) return true;
+  return received < cutoff.getTime();
+}
+
 // ── Refusal copy ───────────────────────────────────────────────────────
 //
 // The floor SENTENCE lives with the floor: a slot floor and a release-time
