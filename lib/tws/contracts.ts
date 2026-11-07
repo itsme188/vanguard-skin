@@ -138,13 +138,15 @@ export async function enrichSecurities(
     //
     // Selection criteria reaches both unenriched (ib_con_id IS NULL) AND rows
     // whose `name` is missing/=symbol so we can backfill company names from
-    // contractDetails.longName for IBKR-imported holdings.
+    // contractDetails.longName for IBKR-imported holdings. An empty-string
+    // name counts as missing (2026-11-07 QA: a short minted with name ''
+    // kept a contract id and no company name, so nothing re-enriched it).
     securities = db
       .prepare(
         `SELECT DISTINCT s.id, s.symbol, s.security_type, s.name, s.currency
          FROM securities s
          JOIN holdings h ON h.security_id = s.id
-         WHERE (s.ib_con_id IS NULL OR s.name IS NULL OR s.name = s.symbol)
+         WHERE (s.ib_con_id IS NULL OR NULLIF(s.name, '') IS NULL OR s.name = s.symbol)
            AND s.symbol NOT LIKE 'CUSIP:%'
            AND LOWER(COALESCE(s.security_type, '')) != 'cash'
            AND NOT ${cashEquivalentSecurityTypeSql("s")}
@@ -177,8 +179,9 @@ export async function enrichSecurities(
     }
   }
 
-  // `name` is set when the existing value is missing or just echoes the
-  // symbol (i.e. was never enriched). Existing real names take precedence.
+  // `name` is set when the existing value is missing (NULL or ''), or just
+  // echoes the symbol (i.e. was never enriched). Existing real names take
+  // precedence.
   //
   // security_type: IBKR reports ETFs as plain stocks (SecType.STK) in both
   // TWS positions and IBKR activity-statement imports — nothing upstream
@@ -195,7 +198,7 @@ export async function enrichSecurities(
         exchange = COALESCE(?, exchange),
         ib_con_id = COALESCE(?, ib_con_id),
         name = CASE
-                 WHEN ? IS NOT NULL AND (name IS NULL OR name = symbol)
+                 WHEN ? IS NOT NULL AND (NULLIF(name, '') IS NULL OR name = symbol)
                       -- An option contract's longName is its UNDERLYING's
                       -- company name (2026-11-06 QA finding); the option
                       -- keeps the name the sync seeded, or none.

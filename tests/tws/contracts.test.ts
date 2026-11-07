@@ -300,3 +300,60 @@ describe("enrichSecurities", () => {
     );
   });
 });
+
+describe("enrichSecurities — an empty-string name reads as unnamed", () => {
+  // QA finding 2026-11-07: a short minted by the sync carried name '' (not
+  // NULL), so neither the held-row selection nor the name backfill treated it
+  // as unnamed and the hub showed the ticker with no company name forever.
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = new Database(":memory:");
+    db.pragma("journal_mode = WAL");
+    db.pragma("foreign_keys = ON");
+    runMigrations(db);
+    vi.clearAllMocks();
+  });
+
+  function seedHeldNamelessStock(): number {
+    const id = db
+      .prepare(
+        "INSERT INTO securities (symbol, name, security_type, ib_con_id) VALUES ('ZZZ', '', 'Stock', 424242)",
+      )
+      .run().lastInsertRowid as number;
+    db.prepare("INSERT INTO accounts (name) VALUES ('Test')").run();
+    const acctId = (db.prepare("SELECT id FROM accounts WHERE name = 'Test'").get() as { id: number }).id;
+    db.prepare(
+      "INSERT INTO holdings (account_id, security_id, quantity, as_of_date) VALUES (?, ?, ?, ?)",
+    ).run(acctId, id, -100, "2026-11-05");
+    return id;
+  }
+
+  function mockLongName() {
+    const mockApi = {
+      getContractDetails: vi.fn().mockResolvedValue([
+        { longName: "ZZZ TECHNOLOGIES INC", contract: { conId: 424242, primaryExch: "NASDAQ" }, stockType: "COMMON" },
+      ]),
+    };
+    mockedGetIbApi.mockReturnValue(mockApi as unknown as ReturnType<typeof getIbApi>);
+    return mockApi;
+  }
+
+  it("fills the contract longName onto a row whose name is ''", async () => {
+    const id = seedHeldNamelessStock();
+    mockLongName();
+    const results = await enrichSecurities(db, [id]);
+    expect(results[0].enriched).toBe(true);
+    const row = db.prepare("SELECT name FROM securities WHERE id = ?").get(id) as { name: string | null };
+    expect(row.name).toBe("ZZZ TECHNOLOGIES INC");
+  });
+
+  it("selects a held row with name '' even when it already has a contract id", async () => {
+    const id = seedHeldNamelessStock();
+    const mockApi = mockLongName();
+    await enrichSecurities(db);
+    expect(mockApi.getContractDetails).toHaveBeenCalledTimes(1);
+    const row = db.prepare("SELECT name FROM securities WHERE id = ?").get(id) as { name: string | null };
+    expect(row.name).toBe("ZZZ TECHNOLOGIES INC");
+  });
+});
