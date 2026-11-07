@@ -21,6 +21,7 @@ import {
   formatCompactOptionSymbol,
   formatPercent,
   formatUSDPrecise,
+  parseStoredTimestamp,
 } from "@/lib/format";
 import { suggestOutcomeMessage } from "@/lib/alerts/suggest-message";
 import { isFinalSuggestionFailure } from "@/lib/alerts/suggestion-failure";
@@ -226,7 +227,9 @@ type ForceConfirmMap = Record<
 >;
 
 function isToday(iso: string): boolean {
-  const t = new Date(iso);
+  // Review levels pass a bare SQLite UTC stamp, alerts an ISO instant;
+  // parseStoredTimestamp reads both at the correct instant.
+  const t = parseStoredTimestamp(iso);
   if (isNaN(t.getTime())) return false;
   const now = new Date();
   return t.toDateString() === now.toDateString();
@@ -2207,7 +2210,9 @@ function ReviewRow({
   const beyondScanRange =
     level.price_source === "static" &&
     isLevelBeyondScanRange(level.price, level.current_price, level.security_type);
-  const when = new Date(level.created_at).toLocaleString("en-US", {
+  // created_at is a bare SQLite UTC stamp; a bare Date parse reads it as
+  // local time and prints the card 4-5 hours late (2026-11-07 QA).
+  const when = parseStoredTimestamp(level.created_at).toLocaleString("en-US", {
     month: "short",
     day: "numeric",
     hour: "numeric",
