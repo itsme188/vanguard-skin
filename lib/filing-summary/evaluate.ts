@@ -96,6 +96,7 @@ const REASON_STATUS: Record<string, ClaimStatus | "info"> = {
   unit_mismatch: "unconfirmed",
   range_operand_unsupported: "unconfirmed",
   non_finite_operand: "unconfirmed",
+  no_filing_figure: "unconfirmed", // every figure is a pre-print bogey: nothing was read from the filing (QA 2026-11-07)
   // information only
   computed: "info",
   correction_unresolved: "info",
@@ -196,6 +197,29 @@ function deriveStatus(claim: ModelClaim, reasons: CheckReason[]): ClaimStatus {
   return claim.figures.length === 0 && claim.comparisons.length === 0 ? "qualitative" : "checked";
 }
 
+/**
+ * True when at least one figure of the claim is read from the filing: a quote
+ * figure, or a computed figure with such a figure among its inputs, followed
+ * transitively. Bogey figures restate the pre-print snapshot and never count.
+ * "Checked" means number, period and label found in the cited line, so a claim
+ * whose figures are all bogeys can never be Checked.
+ */
+function hasFilingFigure(claim: ModelClaim): boolean {
+  const byId = new Map(claim.figures.map((f) => [f.id, f]));
+  const visiting = new Set<string>();
+  const readsFiling = (id: string): boolean => {
+    const f = byId.get(id);
+    if (!f || visiting.has(id)) return false;
+    if (f.sourceKind === "quote") return true;
+    if (f.sourceKind !== "computed") return false;
+    visiting.add(id);
+    const hit = f.inputs.some(readsFiling);
+    visiting.delete(id);
+    return hit;
+  };
+  return claim.figures.some((f) => readsFiling(f.id));
+}
+
 function evaluateClaim(claim: ModelClaim, top: boolean, routine: boolean, ctx: ClaimContext): CheckedClaim {
   const claimReasons: CheckReason[] = [];
   const rendered = renderClaimText(claim);
@@ -246,6 +270,10 @@ function evaluateClaim(claim: ModelClaim, top: boolean, routine: boolean, ctx: C
   const shownIds = new Set(placeholderIds(claim.text));
   for (const f of claim.figures) {
     if (f.sourceKind === "computed") byId.set(f.id, evalComputed(f, byId, shownIds));
+  }
+
+  if (claim.figures.length > 0 && !hasFilingFigure(claim)) {
+    claimReasons.push(reason("no_filing_figure", null, "no figure in this claim is read from the filing; only pre-print bogeys"));
   }
 
   const figureChecks: FigureCheck[] = claim.figures.map((f) => {
