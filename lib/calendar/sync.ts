@@ -221,11 +221,13 @@ function writeAndCountNewKeys(
  * the same source_key is correctly NOT a removal. Rows already hidden
  * (`superseded`) are left out: the desk was not looking at them.
  */
+type RemovedRow = { source_key: string; title: string; event_date: string };
+
 function writeAndCollectRemoved(
   db: Database.Database,
   weekOf: string,
   source: "claude_macro" | "finnhub" | "nasdaq",
-  reason: string,
+  reason: string | ((row: RemovedRow) => string),
   write: () => void,
 ): CalendarRowChange[] {
   const showing = db
@@ -234,13 +236,95 @@ function writeAndCollectRemoved(
         WHERE week_of = ? AND source = ? AND COALESCE(superseded, 0) = 0
         ORDER BY event_date ASC, id ASC`,
     )
-    .all(weekOf, source) as { source_key: string; title: string; event_date: string }[];
+    .all(weekOf, source) as RemovedRow[];
   write();
   if (showing.length === 0) return [];
   const stillStored = db.prepare("SELECT 1 FROM calendar_events WHERE source_key = ?");
   return showing
     .filter((r) => stillStored.get(r.source_key) === undefined)
-    .map((r) => ({ title: r.title, eventDate: r.event_date, source, reason }));
+    .map((r) => ({
+      title: r.title,
+      eventDate: r.event_date,
+      source,
+      reason: typeof reason === "function" ? reason(r) : reason,
+    }));
+}
+
+/** The `raw_json` fields a verified non-FRED macro row carries (see nonFredEventInput). */
+function readRescheduleStamp(
+  rawJson: string | null | undefined,
+): { originalDate: string } | null {
+  if (!rawJson) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(rawJson);
+  } catch {
+    return null;
+  }
+  if (typeof parsed !== "object" || parsed === null) return null;
+  const { verify_status, original_date } = parsed as Record<string, unknown>;
+  if (verify_status !== "rescheduled" || typeof original_date !== "string") return null;
+  return { originalDate: original_date };
+}
+
+const ISO_DATE_SUFFIX = /\d{4}-\d{2}-\d{2}$/;
+
+/**
+ * The claude_macro rows of `weekOf` that were CARRIED IN from another week's
+ * schedule: a non-FRED release the publisher moved here from an original date
+ * outside [startDate, endDate]. The original week's sync wrote the row; this
+ * week's own fetch filters the hardcoded schedule by the ORIGINAL date, so it
+ * never lists the row, and without this keep list this week's macro cleanup
+ * deleted it (QA 2026-11-07: a UMich preliminary moved a Friday earlier
+ * vanished from both weeks). A row rescheduled inside its own week is not
+ * listed: this week's fetch lists it itself.
+ *
+ * Exported for tests.
+ */
+export function rescheduledInKeepKeys(
+  db: Database.Database,
+  weekOf: string,
+  startDate: string,
+  endDate: string,
+): string[] {
+  const rows = db
+    .prepare(
+      `SELECT source_key, raw_json FROM calendar_events
+        WHERE week_of = ? AND source = 'claude_macro' AND raw_json IS NOT NULL
+        ORDER BY source_key`,
+    )
+    .all(weekOf) as { source_key: string; raw_json: string }[];
+  return rows
+    .filter((r) => {
+      const stamp = readRescheduleStamp(r.raw_json);
+      return stamp !== null && (stamp.originalDate < startDate || stamp.originalDate > endDate);
+    })
+    .map((r) => r.source_key);
+}
+
+/**
+ * The removal reason for the macro phase. A row on the OLD date of a release
+ * this fetch moved (same non-FRED key prefix, the fetch's input carrying that
+ * date as `original_date`) was rescheduled by the publisher, not dropped from
+ * its schedule.
+ */
+function macroRemovalReason(
+  inputs: readonly CalendarEventInput[],
+): (row: RemovedRow) => string {
+  const movedTo = new Map<string, string>();
+  for (const e of inputs) {
+    if (!e.source_key.startsWith("nonfred:") || !ISO_DATE_SUFFIX.test(e.source_key)) continue;
+    const stamp = readRescheduleStamp(e.raw_json);
+    if (!stamp || stamp.originalDate === e.event_date) continue;
+    const prefix = e.source_key.slice(0, -10);
+    movedTo.set(`${prefix}${stamp.originalDate}`, e.event_date);
+  }
+  return (row) => {
+    const to = movedTo.get(row.source_key);
+    return to
+      ? `rescheduled to ${to} by the publisher`
+      : "no longer on the release schedule the source publishes";
+  };
 }
 
 /**
@@ -311,7 +395,7 @@ export function replaceWeekRowsPublishingRemovals(
  * A non-FRED indicator that the normal road already wrote for this week is
  * skipped: that road may have moved it to a publisher-rescheduled date, and
  * re-adding the unverified hardcoded date beside it would show the release
- * twice. Never throws — a fallback failure must not mask the original error.
+ * twice. The same holds when that road moved it into ANOTHER week. Never throws — a fallback failure must not mask the original error.
  */
 function writeHardcodedMacroFallback(
   db: Database.Database,
@@ -321,14 +405,21 @@ function writeHardcodedMacroFallback(
 ): { written: number; fresh: number } {
   try {
     const { events, nonFredKeyPrefixes } = buildHardcodedMacroEvents(startDate, endDate, weekOf);
+    // Two places the verified road can have put the indicator: this week
+    // (any date), or ANOTHER week, when the publisher moved it out of this
+    // week — that row carries this hardcoded date as `original_date`.
     const hasPrefix = db.prepare(
       `SELECT 1 FROM calendar_events
-        WHERE week_of = ? AND substr(source_key, 1, ?) = ? LIMIT 1`,
+        WHERE substr(source_key, 1, ?) = ?
+          AND (week_of = ?
+               OR CASE WHEN json_valid(raw_json)
+                       THEN json_extract(raw_json, '$.original_date') END = ?)
+        LIMIT 1`,
     );
     const toWrite = events.filter((e) => {
       const prefix = nonFredKeyPrefixes.get(e.source_key);
       if (!prefix) return true; // FOMC — keyed on the meeting date itself
-      return hasPrefix.get(weekOf, prefix.length, prefix) === undefined;
+      return hasPrefix.get(prefix.length, prefix, weekOf, e.event_date) === undefined;
     });
     if (toWrite.length === 0) return { written: 0, fresh: 0 };
     const fresh = writeAndCountNewKeys(db, toWrite, () => {
@@ -466,13 +557,20 @@ export async function syncCalendarForWeek(
               db,
               weekOf,
               "claude_macro",
-              "no longer on the release schedule the source publishes",
+              macroRemovalReason(macroInputs),
               () => {
+                // Keep list: every key this fetch lists, plus rows another
+                // week's sync carried into this week on a publisher
+                // reschedule (this fetch never lists those).
+                const macroKeepKeys = [
+                  ...macroInputs.map((e) => e.source_key),
+                  ...rescheduledInKeepKeys(db, weekOf, startDate, endDate),
+                ];
                 deleteUnenrichedEventsForWeek(
                   db,
                   weekOf,
                   "claude_macro",
-                  macroInputs.map((e) => e.source_key),
+                  macroKeepKeys,
                 );
                 upsertCalendarEvents(db, macroInputs);
               },

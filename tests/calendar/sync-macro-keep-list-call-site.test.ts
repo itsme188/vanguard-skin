@@ -11,7 +11,7 @@ import { anchorIndex } from "../helpers/source-anchor";
 describe("syncCalendarForWeek macro delete passes the keep list", () => {
   const src = readFileSync("lib/calendar/sync.ts", "utf8");
 
-  it("passes the freshly built macro source_keys as the fourth argument", () => {
+  it("passes the freshly built macro source_keys (plus carried-in reschedules) as the fourth argument", () => {
     // First call whose arguments name claude_macro (an earlier "claude_macro"
     // belongs to writeAndCollectRemoved, so anchor on the delete call itself).
     const callStart = anchorIndex(
@@ -23,8 +23,17 @@ describe("syncCalendarForWeek macro delete passes the keep list", () => {
     const callEnd = anchorIndex(src, ");", callStart, "end of delete call");
     const call = src.slice(callStart, callEnd + 2).replace(/\s+/g, " ");
     expect(call).toBe(
-      'deleteUnenrichedEventsForWeek( db, weekOf, "claude_macro", macroInputs.map((e) => e.source_key), );',
+      'deleteUnenrichedEventsForWeek( db, weekOf, "claude_macro", macroKeepKeys, );',
     );
+    // The keep list is the fetch's own keys plus rows another week's sync
+    // carried into this week on a publisher reschedule (QA 2026-11-07).
+    const keepStart = anchorIndex(src, "const macroKeepKeys = [", 0, "macro keep list");
+    const keepEnd = anchorIndex(src, "];", keepStart, "end of macro keep list");
+    const keep = src.slice(keepStart, keepEnd + 2).replace(/\s+/g, " ");
+    expect(keep).toBe(
+      "const macroKeepKeys = [ ...macroInputs.map((e) => e.source_key), ...rescheduledInKeepKeys(db, weekOf, startDate, endDate), ];",
+    );
+    expect(keepEnd).toBeLessThan(callStart);
   });
 
   it("deletes before it upserts, inside the same write callback", () => {
