@@ -5,7 +5,7 @@ import { getRawAnthropicClient } from "@/lib/ai/provider";
 import { generateTextForFeature, AIRefusalError } from "@/lib/ai/generate";
 import { FRED_SOURCE_KEY_PREFIX } from "@/lib/calendar/release-times";
 import { RELEASE_ID_TO_SERIES, fredBasisDescription } from "@/lib/calendar/enrich-actuals";
-import { addDays } from "@/lib/calendar/date-utils";
+import { addDays, mondayOf } from "@/lib/calendar/date-utils";
 
 // ── FRED Release IDs → Calendar Event Types ──────────────────────
 //
@@ -815,9 +815,13 @@ export async function fetchMacroEvents(
       const verifyKey = `${src.date}:${src.shortName}`;
       const verify = verifyResults.get(verifyKey);
 
-      // Apply reschedule if Claude found one AND the new date is still in
-      // this week's window. Reschedules outside the window are logged but
-      // not applied here — next week's sync will pick them up.
+      // Apply reschedule if Claude found one. A new date inside this week's
+      // window stays in this week. A new date OUTSIDE it is written here too,
+      // filed under its own week's Monday: the other week's sync filters the
+      // schedule by the ORIGINAL date, so it never lists this release, and
+      // skipping it here lost the release from both weeks (QA 2026-11-07).
+      // That week's cleanup keeps the carried-in row (rescheduledInKeepKeys,
+      // lib/calendar/sync.ts).
       let finalDate = src.date;
       if (
         verify?.status === "rescheduled" &&
@@ -830,9 +834,11 @@ export async function fetchMacroEvents(
             `[fetchMacroEvents] ${src.shortName} rescheduled from ${src.date} to ${verify.newDate} (${verify.sourceUrl ?? "no source"})`
           );
         } else {
+          const newWeekOf = mondayOf(verify.newDate);
           console.info(
-            `[fetchMacroEvents] ${src.shortName} rescheduled out of week (${src.date} → ${verify.newDate}); skipping for this week`
+            `[fetchMacroEvents] ${src.shortName} rescheduled out of week (${src.date} → ${verify.newDate}); filed under week of ${newWeekOf} (${verify.sourceUrl ?? "no source"})`
           );
+          events.push(nonFredEventInput(src, verify.newDate, newWeekOf, verify));
           continue;
         }
       }
