@@ -69,6 +69,7 @@
 // guard doesn't catch). Dropped candidates never appear in candidates_json.
 
 import type { LineContract, ExpectedValue, TaggedCandidate, PrintWatchLine } from "./types";
+import { snippetMeasureMismatch } from "./snippet-measure-gate";
 
 const RELATIVE_TOLERANCE = 1e-6;
 const TABLE_HINT = /table\s*(\d+)/i;
@@ -240,6 +241,31 @@ function reconcileMetric(
   // candidates are excluded entirely — the state is decided purely by the
   // value-candidate pool (rules 2-3).
   const outcome = reconcileValueCandidates(valueCandidates);
+
+  // Snippet gate (QA finding …-sheet-accepts-company-revenue-g, owner ruling
+  // 2026-11-01): readers agreeing on a figure is not agreement on THIS line
+  // when a cited snippet names another measure (the company total for a
+  // segment line). ANY such candidate in a unanimous pool keeps the line off
+  // 'agreed' — it stays 'single_source' (unconfirmed: never in "Accept all
+  // agreed", so never in the first-pass read) with the reason, and reports
+  // the off-measure snippet so the desk sees why. A conflict stays a conflict.
+  if (outcome.state !== "conflict") {
+    const offMeasure = valueCandidates.filter((c) => snippetMeasureMismatch(contract, c.snippet) !== null);
+    if (offMeasure.length > 0) {
+      const shown = byLowestDocId(offMeasure);
+      return {
+        ...base,
+        state: "single_source",
+        value: outcome.value,
+        value_high: outcome.value_high,
+        snippet: shown.snippet,
+        source_doc_id: shown.doc_id,
+        candidates_json,
+        state_reason: snippetMeasureMismatch(contract, shown.snippet) ?? undefined,
+      };
+    }
+  }
+
   return {
     ...base,
     state: outcome.state,
