@@ -49,7 +49,7 @@ describe("isLeveragedOrInverseExposure", () => {
 
   it("the disclosure label names an option on one", () => {
     expect(LEVERAGED_FUND_UNMODELLED_LABEL).toBe(
-      "leveraged or inverse fund, or an option on one: not modelled (daily-reset leverage is not a linear leg)",
+      "leveraged or inverse fund, or an option on one, with no stored leverage factor: not modelled (no sign and no multiple to apply)",
     );
   });
 });

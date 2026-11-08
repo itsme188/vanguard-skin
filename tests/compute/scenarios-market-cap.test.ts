@@ -45,7 +45,11 @@ function createTestDb(): Database.Database {
       expiration_date TEXT,
       option_type TEXT,
       fund_category TEXT,
-      currency TEXT NOT NULL DEFAULT 'USD'
+      currency TEXT NOT NULL DEFAULT 'USD',
+      -- Migration 102: the scenario engines read it, so a hand-cut schema
+      -- that omits it fails only here (house rule: a hand-built test schema
+      -- must carry the real columns).
+      leverage_factor REAL
     );
 
     CREATE TABLE fx_rates (

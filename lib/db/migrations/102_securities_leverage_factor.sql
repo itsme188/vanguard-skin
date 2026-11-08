@@ -1,0 +1,26 @@
+-- 102: the signed leverage factor of a leveraged or inverse fund.
+--
+-- The stopgap (PR #132, lib/compute/leveraged-fund.ts) could only NAME a
+-- leveraged or inverse fund: the scenario engines had no sign and no multiple
+-- for it, so such a fund took no figure at all and the What-if left it out of
+-- every bucket. A 3x inverse semiconductor fund was modelled as a plain long
+-- before that, and printed as the biggest loser in the very shock it hedges
+-- (QA finding #1). This column stores the fund's own stated multiple, SIGNED:
+--
+--   leverage_factor -- the signed multiple of its tracked index the fund is
+--                      built to deliver: +3 for a 3x bull fund, -3 for a 3x
+--                      bear/inverse fund, +2 for a 2x long fund, -2 for a 2x
+--                      inverse fund. NULL means "not known", never "1x".
+--
+-- A reader multiplies the move of the thing the fund tracks by this factor.
+-- NULL keeps the stopgap behaviour for that row exactly: not modelled, named
+-- and counted, out of the What-if buckets and out of the hedge book.
+--
+-- Written by the enrichment rule in lib/securities/leverage-factor.ts, which
+-- derives it from the fund's own stored fields (its stated multiple and its
+-- direction). Only a row the flag rule already matches ever gets one.
+--
+-- NULLABLE and ADDITIVE: one ALTER TABLE ADD COLUMN, no DEFAULT, no backfill.
+-- A DEFAULT of 1 would forge a multiple for every plain stock in the table,
+-- and a backfill here would write a figure no rule had checked.
+ALTER TABLE securities ADD COLUMN leverage_factor REAL;

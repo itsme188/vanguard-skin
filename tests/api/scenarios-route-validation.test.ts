@@ -74,7 +74,10 @@ function createTestDb(): Database.Database {
       strike_price REAL,
       option_type TEXT,
       fund_category TEXT,
-      currency TEXT NOT NULL DEFAULT 'USD'
+      currency TEXT NOT NULL DEFAULT 'USD',
+      -- Migration 102: the scenario engines read it (house rule: a hand-built
+      -- test schema must carry the real columns).
+      leverage_factor REAL
     );
     CREATE TABLE security_quotes (
       security_id INTEGER PRIMARY KEY,

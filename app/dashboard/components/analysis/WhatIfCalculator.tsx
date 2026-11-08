@@ -169,11 +169,13 @@ export function WhatIfCalculator({ scope }: Props) {
               ))}
             </div>
           )}
-          {/* Leveraged / inverse funds are left out of every bucket (owner
-              ruling 2026-11-01, stopgap). Symbols are public data. */}
+          {/* A leveraged or inverse fund with a stored signed factor is
+              counted at its factored exposure; one with NO factor is left
+              out of every bucket (owner ruling 2026-11-01, stopgap; theme T2
+              2026-11-07). Symbols are public data. */}
           {(delta.leveragedFundsNotModelled?.length ?? 0) > 0 && (
             <p className="text-[10px] text-ink-faint">
-              Leveraged or inverse funds not modelled, left out of beta, sector and factor weights:{" "}
+              No leverage factor stored, so left out of beta, sector and factor weights:{" "}
               <span className="font-mono">{delta.leveragedFundsNotModelled.join(", ")}</span>
             </p>
           )}

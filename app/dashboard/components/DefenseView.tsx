@@ -18,18 +18,20 @@ import { DefenseTables } from "./DefenseTables";
 
 /**
  * Leveraged / inverse funds held out of the hedge book (owner ruling
- * 2026-11-01, stopgap; lib/compute/leveraged-fund.ts): a daily-reset fund,
- * or an option on one, is no linear hedge for anything, so it is named here,
- * not hidden. Symbols are public data. Renders nothing when count is 0.
+ * 2026-11-01, stopgap; lib/compute/leveraged-fund.ts): a fund with a stored
+ * signed leverage factor now enters the book at its factored exposure, so
+ * only one with NO factor is listed here — nothing can say which way it
+ * moves. Named, not hidden. Symbols are public data. Renders nothing when
+ * count is 0.
  */
 function LeveragedFundsNotModelled({ info }: { info: { count: number; symbols: string[] } }) {
   if (info.count <= 0) return null;
   return (
     <p className="text-xs text-ink-dim">
       <Count value={info.count} /> leveraged or inverse {info.count === 1 ? "position" : "positions"} not
-      modelled: <span className="font-mono">{info.symbols.join(", ")}</span> — a daily-reset leveraged or
-      inverse fund, or an option on one, does not move as a linear multiple of its index, so it is held out
-      of the hedge book.
+      modelled: <span className="font-mono">{info.symbols.join(", ")}</span> — no leverage factor is stored
+      for {info.count === 1 ? "it" : "them"}, so there is no sign or multiple to apply and
+      {info.count === 1 ? " it is" : " they are"} held out of the hedge book.
     </p>
   );
 }
