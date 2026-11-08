@@ -11,7 +11,7 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
-import { todayET } from "@/lib/calendar/date-utils";
+import { todayET, addDays } from "@/lib/calendar/date-utils";
 import {
   findDateVerificationCandidates,
   buildDateVerificationPrompt,
@@ -1101,6 +1101,15 @@ describe("date check on an AI account outage (2026-10-28)", () => {
 // ── Exact-time jump-start (wire-time spec 2026-08-04, Task 4) ──────────────
 
 describe("exact-time jump-start (wire-time spec 2026-08-04)", () => {
+  // The two re-resolve tests below need an event date AHEAD of todayET():
+  // applyExactTimeVerdict's re-resolve (applyResolvedReleaseTimeToUpcomingEvents,
+  // lib/earnings/wire-times.ts) only rewrites calendar rows dated today or later,
+  // so a hardcoded date stops exercising it the day it goes past. The "2026-11-05"
+  // they used to pin went past on 2026-11-06 and both assertions failed from then
+  // on. Only those fixtures are derived; the prompt and verdict-parsing tests take
+  // an explicit "today" and stay on fixed dates on purpose.
+  const UPCOMING = addDays(todayET(), 7);
+  const UPCOMING_WEEK = addDays(UPCOMING, -3);
   it("needsExactTime: true when no override, no bounded obs, no fresh web row", () => {
     expect(needsExactTime(db, "XMTR", "2026-11-05")).toBe(true);
   });
@@ -1147,21 +1156,21 @@ describe("exact-time jump-start (wire-time spec 2026-08-04)", () => {
   });
 
   it("applyExactTimeVerdict upserts web_verified and re-resolves upcoming rows; rejects out-of-range; never touches a user row", () => {
-    const candidate = { id: 1, symbol: "XMTR", event_date: "2026-11-05", event_time: "BMO", release_time: "08:00", source: "finnhub" };
+    const candidate = { id: 1, symbol: "XMTR", event_date: UPCOMING, event_time: "BMO", release_time: "08:00", source: "finnhub" };
     // seed the upcoming event row so the apply pass has something to update
     db.prepare(
       `INSERT INTO calendar_events (source, event_type, event_date, event_time, release_time, symbol, title, source_key, week_of)
-       VALUES ('finnhub','earnings','2026-11-05','BMO','08:00','XMTR','XMTR earnings','finnhub:XMTR:2026-11-05','2026-11-02')`,
+       VALUES ('finnhub','earnings','${UPCOMING}','BMO','08:00','XMTR','XMTR earnings','finnhub:XMTR:${UPCOMING}','${UPCOMING_WEEK}')`,
     ).run();
 
     const ok = applyExactTimeVerdict(
       db,
-      { symbol: "XMTR", confirmed_date: "2026-11-05", slot: "bmo", confidence: "confirmed", source: "EarningsWhispers", exact_time: "07:05" },
+      { symbol: "XMTR", confirmed_date: UPCOMING, slot: "bmo", confidence: "confirmed", source: "EarningsWhispers", exact_time: "07:05" },
       candidate,
     );
     expect(ok).toBe(true);
     expect(getSymbolReleaseTimeRow(db, "XMTR")).toMatchObject({
-      release_time: "07:05", source: "web_verified", verified_for_date: "2026-11-05",
+      release_time: "07:05", source: "web_verified", verified_for_date: UPCOMING,
     });
     expect(
       (db.prepare("SELECT release_time FROM calendar_events WHERE symbol='XMTR'").get() as { release_time: string }).release_time,
@@ -1191,19 +1200,19 @@ describe("exact-time jump-start (wire-time spec 2026-08-04)", () => {
   it("refuses to store a 17:00 AMC verified time (call time, not print) but still re-resolves upcoming rows", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const candidate = {
-      id: 2, symbol: "CRWD", event_date: "2026-11-05", event_time: "AMC",
+      id: 2, symbol: "CRWD", event_date: UPCOMING, event_time: "AMC",
       release_time: "09:00", source: "finnhub",
     };
     // release_time deliberately wrong (09:00 on an AMC row) so a successful
     // re-resolve is observable.
     db.prepare(
       `INSERT INTO calendar_events (source, event_type, event_date, event_time, release_time, symbol, title, source_key, week_of)
-       VALUES ('finnhub','earnings','2026-11-05','AMC','09:00','CRWD','CRWD earnings','finnhub:CRWD:2026-11-05','2026-11-02')`,
+       VALUES ('finnhub','earnings','${UPCOMING}','AMC','09:00','CRWD','CRWD earnings','finnhub:CRWD:${UPCOMING}','${UPCOMING_WEEK}')`,
     ).run();
 
     const ok = applyExactTimeVerdict(
       db,
-      { symbol: "CRWD", confirmed_date: "2026-11-05", slot: "amc", confidence: "confirmed", source: "EarningsWhispers", exact_time: "17:00" },
+      { symbol: "CRWD", confirmed_date: UPCOMING, slot: "amc", confidence: "confirmed", source: "EarningsWhispers", exact_time: "17:00" },
       candidate,
     );
 
