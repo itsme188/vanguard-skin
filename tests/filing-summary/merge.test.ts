@@ -150,17 +150,17 @@ describe("mergeFilingSummaryState", () => {
   });
 
   it("event row: the donor's moves when the target has none", () => {
-    setChoice(db, donor, { family: "fable", effort: "medium" });
+    setChoice(db, donor, { family: "opus", effort: "medium" });
     upsertEventState(db, donor, { pollState: "found", cik: "0000123456" });
     merge();
     expect(getEventState(db, donor)).toBeNull();
-    expect(getEventState(db, target)).toMatchObject({ pollState: "found", family: "fable", effort: "medium" });
+    expect(getEventState(db, target)).toMatchObject({ pollState: "found", family: "opus", effort: "medium" });
   });
 
   it("event row: a locked donor choice wins over an unlocked target; the target keeps its poll state", () => {
     setChoice(db, donor, { family: "sonnet", effort: "medium" });
     addRun(donor, [addFiling(donor, "0000123456-26-000101")]); // locks the donor
-    setChoice(db, target, { family: "fable", effort: "high" });
+    setChoice(db, target, { family: "opus", effort: "high" });
     upsertEventState(db, target, { pollState: "waiting" });
     merge();
     const c = getChoice(db, target);
@@ -173,10 +173,10 @@ describe("mergeFilingSummaryState", () => {
   it("event row: both locked → the target's choice stands", () => {
     setChoice(db, donor, { family: "sonnet", effort: "medium" });
     addRun(donor, [addFiling(donor, "0000123456-26-000101")]);
-    setChoice(db, target, { family: "fable", effort: "high" });
+    setChoice(db, target, { family: "opus", effort: "high" });
     addRun(target, [addFiling(target, "0000123456-26-000201")]);
     merge();
-    expect(getChoice(db, target).choice).toEqual({ family: "fable", effort: "high" });
+    expect(getChoice(db, target).choice).toEqual({ family: "opus", effort: "high" });
   });
 
   it("pushes move to the target", () => {

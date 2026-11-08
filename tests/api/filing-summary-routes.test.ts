@@ -91,9 +91,10 @@ describe("route policy", () => {
 
 describe("POST set_choice", () => {
   it("stores a picker choice, rejects a non-picker choice, and refuses after the lock", async () => {
-    let res = await post({ eventId, action: "set_choice", family: "fable", effort: "high" });
+    // Sonnet · high is a picker choice since 2026-11-07; Fable is not.
+    let res = await post({ eventId, action: "set_choice", family: "sonnet", effort: "high" });
     expect(res.status).toBe(200);
-    res = await post({ eventId, action: "set_choice", family: "sonnet", effort: "high" });
+    res = await post({ eventId, action: "set_choice", family: "fable", effort: "high" });
     expect(res.status).toBe(400);
     seedEarningsFiling();
     res = await post({ eventId, action: "run", requestKey: "k-run" });

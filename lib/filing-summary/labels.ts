@@ -8,7 +8,7 @@
  * `types.ts` only; everything else is type-only), so client components may
  * import it.
  */
-import { STATUS_SEVERITY, type ClaimStatus, type Relation, type StatusCounts, type SummaryChoice } from "./types";
+import { STATUS_SEVERITY, type ClaimStatus, type Relation, type StatusCounts, type StoredSummaryChoice, type SummaryChoice } from "./types";
 import type { ChoiceOption, OperandDescriptor, ViewComparisonCheck } from "./view";
 
 // ---------------------------------------------------------------- poll faults
@@ -161,7 +161,7 @@ export function countsText(c: StatusCounts): string {
 // ---------------------------------------------------------------- choices and cost
 
 /** A stable `<option>` value for a choice: "opus·high". */
-export function choiceValue(c: SummaryChoice): string {
+export function choiceValue(c: StoredSummaryChoice): string {
   return `${c.family}·${c.effort}`;
 }
 
@@ -169,26 +169,31 @@ export function choiceValue(c: SummaryChoice): string {
  * Rough cost by choice, keyed by `choiceValue`. Only Opus · high was measured
  * with the current prompt: about $0.80 for one 8-K section (Meta replay,
  * 2026-10-22). The other choices say how they compare, by list price per token.
+ * One entry per SUMMARY_CHOICES pair — pinned by tests/filing-summary/labels.test.ts.
  */
 export const ROUGH_COST_BY_CHOICE: Record<string, string> = {
-  "sonnet·medium": "Sonnet costs half as much per token as Opus",
+  "sonnet·medium": "Sonnet costs half as much per token as Opus; less than Sonnet · high",
+  "sonnet·high": "Sonnet costs half as much per token as Opus",
   "opus·medium": "less than Opus · high",
   "opus·high": "about $0.80 per 8-K (measured); long filings cost more",
-  "fable·medium": "Fable costs 2.5 times as much per token as Opus",
-  "fable·high": "Fable costs 2.5 times as much per token as Opus",
 };
 
-export function roughCostText(c: SummaryChoice): string {
+/**
+ * Takes a STORED choice: a finished run pinned to a retired family (Fable,
+ * before 2026-11-07) has no cost line any more and reads "cost not known"
+ * rather than quoting a price for a model the picker cannot choose.
+ */
+export function roughCostText(c: StoredSummaryChoice): string {
   return ROUGH_COST_BY_CHOICE[choiceValue(c)] ?? "cost not known";
 }
 
-/** "Fable · now 5.1" → "now 5.1"; "Fable · not available" → "not available". */
+/** "Opus · now 5.5" → "now 5.5"; "Opus · not available" → "not available". */
 export function nowPart(nowLabel: string): string {
   const at = nowLabel.indexOf(" · ");
   return at === -1 ? nowLabel : nowLabel.slice(at + 3);
 }
 
-/** "Fable · high — now 5.1" (or "— not available"). */
+/** "Opus · high — now 5.5" (or "— not available"). */
 export function optionText(o: Pick<ChoiceOption, "label" | "nowLabel"> & Partial<ChoiceOption>): string {
   return `${o.label} — ${nowPart(o.nowLabel)}`;
 }

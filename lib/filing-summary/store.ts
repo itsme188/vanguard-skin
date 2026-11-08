@@ -11,8 +11,8 @@
  */
 import type Database from "better-sqlite3";
 import { DELIVERY_UNKNOWN, SENDING } from "@/lib/earnings/email-states";
-import { DEFAULT_SUMMARY_CHOICE } from "./choice";
-import type { SummaryChoice, SummaryEffort, SummaryFamily } from "./types";
+import { DEFAULT_SUMMARY_CHOICE, normalizeStoredChoice } from "./choice";
+import type { SummaryChoice, SummaryEffort, StoredSummaryFamily } from "./types";
 
 // ---------------------------------------------------------------- row types
 
@@ -62,7 +62,8 @@ export type PushState = "pending" | typeof SENDING | "sent" | typeof DELIVERY_UN
 
 export interface EventStateRow {
   eventId: number;
-  family: SummaryFamily | null;
+  /** As stored: a row saved before 2026-11-07 may name a retired family. */
+  family: StoredSummaryFamily | null;
   effort: SummaryEffort | null;
   pollState: PollState;
   pollDetail: string | null;
@@ -132,7 +133,8 @@ export interface RunRow {
   eventId: number;
   runNo: number;
   trigger: RunTrigger;
-  family: SummaryFamily;
+  /** The family this run is PINNED to; a finished run may name a retired one. */
+  family: StoredSummaryFamily;
   effort: SummaryEffort;
   modelId: string | null;
   fallbackNote: string | null;
@@ -195,7 +197,7 @@ const num = (v: unknown): number | null => (v == null ? null : Number(v));
 function toEventState(r: Raw): EventStateRow {
   return {
     eventId: Number(r.event_id),
-    family: str(r.family) as SummaryFamily | null,
+    family: str(r.family) as StoredSummaryFamily | null,
     effort: str(r.effort) as SummaryEffort | null,
     pollState: String(r.poll_state) as PollState,
     pollDetail: str(r.poll_detail),
@@ -249,7 +251,7 @@ function toRun(r: Raw): RunRow {
     eventId: Number(r.event_id),
     runNo: Number(r.run_no),
     trigger: String(r.trigger) as RunTrigger,
-    family: String(r.family) as SummaryFamily,
+    family: String(r.family) as StoredSummaryFamily,
     effort: String(r.effort) as SummaryEffort,
     modelId: str(r.model_id),
     fallbackNote: str(r.fallback_note),
@@ -344,7 +346,11 @@ export function getChoice(
   const s = getEventState(db, eventId);
   const locked = s?.lockedAt != null;
   if (s?.family && s.effort) {
-    return { choice: { family: s.family, effort: s.effort }, isDefault: false, locked };
+    // A stored choice naming a retired family (Fable, before 2026-11-07) is
+    // left in the database untouched and resolves to the default here, so no
+    // run can start on a family the ladder cannot reach.
+    const { choice, retired } = normalizeStoredChoice({ family: s.family, effort: s.effort });
+    return { choice, isDefault: retired, locked };
   }
   return { choice: { ...DEFAULT_SUMMARY_CHOICE }, isDefault: true, locked };
 }

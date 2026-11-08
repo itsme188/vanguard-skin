@@ -589,7 +589,7 @@ describe("the late follow-up run", () => {
 
     // Its own run, at the print's pinned choice, with the evening bogey snapshot.
     const run = getRunById(db, runId)!;
-    expect(run).toMatchObject({ trigger: "auto", family: "opus", effort: "high", requestKey: `late:${eventId}:${listLateFilings(db, eventId)[0].id}` });
+    expect(run).toMatchObject({ trigger: "auto", family: "sonnet", effort: "high", requestKey: `late:${eventId}:${listLateFilings(db, eventId)[0].id}` });
     expect(run.bogeySnapshotJson).toBe(getRunById(db, eveningRunId)!.bogeySnapshotJson);
     expect(listRuns(db, eventId).map((r) => r.id)).toEqual([eveningRunId]);
     expect(listLateRuns(db, eventId).map((r) => r.id)).toEqual([runId]);

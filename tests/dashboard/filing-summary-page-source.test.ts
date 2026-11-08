@@ -131,11 +131,11 @@ describe("page-text helpers", () => {
   });
 
   it("the re-run question names the model and the rough cost", () => {
-    const opt: ChoiceOption = { choice: { family: "fable", effort: "high" }, value: "fable·high", label: "Fable · high", nowLabel: "Fable · now 5.1" };
+    const opt: ChoiceOption = { choice: { family: "opus", effort: "high" }, value: "opus·high", label: "Opus · high", nowLabel: "Opus · now 5.5" };
     const p = rerunPrompt(opt, 2);
-    expect(p.title).toMatch(/Fable · high/);
-    expect(p.message).toMatch(/Fable 5\.1/);
-    expect(p.message).toContain("Rough cost: Fable costs 2.5 times as much per token as Opus.");
+    expect(p.title).toMatch(/Opus · high/);
+    expect(p.message).toMatch(/Opus 5\.5/);
+    expect(p.message).toContain("Rough cost: about $0.80 per 8-K (measured); long filings cost more.");
     expect(p.message.match(/Rough cost/g)).toHaveLength(1);
     expect(p.message).toMatch(/2 filings/);
     expect(p.message).toMatch(/Cancel spends nothing/);

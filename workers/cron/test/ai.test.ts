@@ -7,7 +7,7 @@ describe("worker reactive failover", () => {
     const call = vi.fn()
       .mockRejectedValueOnce(Object.assign(new Error("not_found"), { statusCode: 404 }))
       .mockResolvedValueOnce("ok");
-    const out = await generateWithFailover(env as never, "fallbackBriefing", ["claude-fable-5", "claude-opus-4-8"], call);
+    const out = await generateWithFailover(env as never, "fallbackBriefing", ["claude-sonnet-4-6", "claude-haiku-4-5"], call);
     expect(out).toBe("ok");
     expect(call).toHaveBeenCalledTimes(2);
   });
@@ -16,7 +16,7 @@ describe("worker reactive failover", () => {
     const env = { ANTHROPIC_API_KEY: "k" };
     const call = vi.fn().mockRejectedValueOnce(Object.assign(new Error("rate_limited"), { statusCode: 429 }));
     await expect(
-      generateWithFailover(env as never, "fallbackBriefing", ["claude-opus-4-8"], call),
+      generateWithFailover(env as never, "fallbackBriefing", ["claude-sonnet-4-6"], call),
     ).rejects.toThrow("rate_limited");
     expect(call).toHaveBeenCalledTimes(1);
   });
@@ -34,7 +34,7 @@ describe("worker reactive failover", () => {
     const call = vi.fn()
       .mockRejectedValueOnce(Object.assign(new Error("output_config.format: json_schema is not supported"), { statusCode: 400 }))
       .mockResolvedValueOnce("ok");
-    const out = await generateWithFailover(env as never, "fallbackBriefing", ["claude-fable-5"], call, { structured: true });
+    const out = await generateWithFailover(env as never, "fallbackBriefing", ["claude-sonnet-4-6"], call, { structured: true });
     expect(out).toBe("ok");
     expect(call).toHaveBeenCalledTimes(2);
     expect(call.mock.calls[0][1]).toBe("outputFormat");
@@ -50,7 +50,7 @@ describe("worker reactive failover", () => {
     const call = vi.fn()
       .mockRejectedValueOnce(Object.assign(new Error("Bad Request"), { statusCode: 400, responseBody: '{"error":{"message":"output_config.format not supported"}}' }))
       .mockResolvedValueOnce("ok");
-    await generateWithFailover(env as never, "fallbackBriefing", ["claude-fable-5"], call, { structured: true });
+    await generateWithFailover(env as never, "fallbackBriefing", ["claude-sonnet-4-6"], call, { structured: true });
     expect(call).toHaveBeenCalledTimes(2);
   });
 
@@ -71,7 +71,7 @@ describe("worker reactive failover", () => {
       Object.assign(new Error("output_config.format: json_schema is not supported"), { statusCode: 400 }),
     );
     await expect(
-      generateWithFailover(env as never, "fallbackBriefing", ["claude-fable-5"], call, { structured: true }),
+      generateWithFailover(env as never, "fallbackBriefing", ["claude-sonnet-4-6"], call, { structured: true }),
     ).rejects.toThrow("output_config");
     expect(call).toHaveBeenCalledTimes(2);
   });
@@ -82,7 +82,7 @@ describe("worker reactive failover", () => {
       Object.assign(new Error('tool_choice: type "tool" and "any" are not supported for this model.'), { statusCode: 400 }),
     );
     await expect(
-      generateWithFailover(env as never, "fallbackBriefing", ["claude-fable-5"], call, { structured: true }),
+      generateWithFailover(env as never, "fallbackBriefing", ["claude-sonnet-4-6"], call, { structured: true }),
     ).rejects.toThrow("tool_choice");
     expect(call).toHaveBeenCalledTimes(1);
   });

@@ -121,7 +121,9 @@ describe("panel view", () => {
     expect(v.shown?.top).toHaveLength(2);
     expect(v.shown?.modelLabel).toBe("Opus 5.5");
     expect(v.locked).toBe(true);
-    expect(v.nowLabel).toBe("Opus · now 5.5");
+    // The now-label follows the event's CHOICE (the default, Sonnet), not the
+    // model the shown run was pinned to.
+    expect(v.nowLabel).toBe("Sonnet · now 5.5");
     expect(v.runSummaryAvailable).toBe(false);
   });
 
@@ -249,12 +251,12 @@ describe("panel view", () => {
   });
 
   it("leaves out unknown event ids and reports the stored choice", () => {
-    setChoice(db, eventId, { family: "fable", effort: "medium" });
+    setChoice(db, eventId, { family: "opus", effort: "medium" });
     const views = getPanelViews(db, [eventId, 999], CATALOG);
     expect(Object.keys(views)).toEqual([String(eventId)]);
-    expect(views[eventId].choiceLabel).toBe("Fable · medium");
+    expect(views[eventId].choiceLabel).toBe("Opus · medium");
     expect(views[eventId].isDefault).toBe(false);
-    expect(views[eventId].nowLabel).toBe("Fable · not available");
+    expect(views[eventId].nowLabel).toBe("Opus · now 5.5");
   });
 });
 
@@ -377,7 +379,7 @@ describe("full view", () => {
     expect(full.runs[0].sections[1].acceptedAtEt).toBe("5:40 pm");
     expect(full.filings.map((f) => f.acceptedAtEt)).toEqual(["4:05 pm", "5:40 pm"]);
     expect(full.choice.options.map((o) => o.label)).toEqual([
-      "Sonnet · medium", "Opus · medium", "Opus · high", "Fable · medium", "Fable · high",
+      "Sonnet · medium", "Sonnet · high", "Opus · medium", "Opus · high",
     ]);
     expect(full.event.symbol).toBe("SYNW");
     expect(listSections(db, r1)).toHaveLength(2);

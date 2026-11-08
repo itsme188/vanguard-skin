@@ -20,7 +20,7 @@
  *      usage, wall time and cost; writes the share page and a JSON dump of the
  *      FullView to `--out`.
  *
- * Flags: --dir <folder> (required) · --family sonnet|opus|fable (opus) ·
+ * Flags: --dir <folder> (required) · --family sonnet|opus (sonnet) ·
  *   --effort medium|high (high) · --only-earnings (drop companions) ·
  *   --bogeys <file> · --env <file> (reads ONLY ANTHROPIC_API_KEY from it; never
  *   printed) · --out <folder> (default: the OS temp folder) · --db <path> ·
@@ -40,12 +40,21 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import type { SummaryFamily } from "@/lib/filing-summary/types";
 
 // ---------------------------------------------------------------- args
 
+/**
+ * The families `--family` accepts. The `satisfies Record<SummaryFamily, 0>`
+ * is the point: adding or retiring a selectable family fails to type-check
+ * here until this list follows, so the script can never offer a family the
+ * picker does not have (Fable was retired 2026-11-07).
+ */
+const SUMMARY_FAMILIES = Object.keys({ sonnet: 0, opus: 0 } satisfies Record<SummaryFamily, 0>) as SummaryFamily[];
+
 interface Args {
   dir: string;
-  family: "sonnet" | "opus" | "fable";
+  family: SummaryFamily;
   effort: "medium" | "high";
   onlyEarnings: boolean;
   bogeys: string | null;
@@ -76,8 +85,9 @@ function parseArgs(argv: string[]): Args {
   };
   const dir = get("--dir");
   if (!dir) throw new Error("--dir <folder of saved filings> is required");
-  const family = (get("--family") ?? "opus") as Args["family"];
-  if (!["sonnet", "opus", "fable"].includes(family)) throw new Error("--family: sonnet | opus | fable");
+  // Defaults track DEFAULT_SUMMARY_CHOICE (Sonnet · high, 2026-11-07).
+  const family = (get("--family") ?? "sonnet") as Args["family"];
+  if (!SUMMARY_FAMILIES.includes(family)) throw new Error(`--family: ${SUMMARY_FAMILIES.join(" | ")}`);
   const effort = (get("--effort") ?? "high") as Args["effort"];
   if (!["medium", "high"].includes(effort)) throw new Error("--effort: medium | high");
   const slot = (get("--slot") ?? "AMC").toUpperCase() as Args["slot"];
@@ -168,7 +178,6 @@ export function parseBogeyDump(text: string, eventDate: string): DumpedBogeyRow[
 const PRICES: Record<string, { label: string; input: number; output: number }> = {
   sonnet: { label: "Sonnet 5.5", input: 2, output: 10 },
   opus: { label: "Opus 5.5", input: 4, output: 20 },
-  fable: { label: "Fable 5.1", input: 10, output: 50 },
 };
 
 function costOf(u: Record<string, number>, p: { input: number; output: number }): number {

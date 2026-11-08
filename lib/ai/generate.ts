@@ -31,7 +31,7 @@
 import { generateText, generateObject, APICallError, NoObjectGeneratedError } from "ai";
 import type { FeatureKey } from "@/lib/ai/feature-keys";
 import { getModelForFeature, getModelForId } from "@/lib/ai/provider";
-import type { SummaryEffort, SummaryFamily } from "@/lib/filing-summary/types";
+import type { StoredSummaryFamily, SummaryEffort } from "@/lib/filing-summary/types";
 import { resolveFeatureModel } from "@/lib/ai/models";
 import { dropModelFromCatalog } from "@/lib/ai/catalog-source";
 import { FORCED_TOOL_UNSUPPORTED_RE } from "@/lib/ai/classify-anthropic-error";
@@ -275,7 +275,12 @@ export class AITruncatedError extends Error {
 export interface ExplicitModelTarget {
   modelId: string;
   effort: SummaryEffort;
-  family: SummaryFamily;
+  /**
+   * A run is PINNED to the family and model id it started on, so a resumed or
+   * retried run from before 2026-11-07 can still arrive here naming a retired
+   * family. The thinking carve-out below is why this stays wide.
+   */
+  family: StoredSummaryFamily;
 }
 
 /**
@@ -288,7 +293,9 @@ export interface ExplicitModelTarget {
  *   - finish "content-filter" (refusal) → AIRefusalError
  *   - finish "length" (truncated)       → AITruncatedError
  * Native structured output is always requested; adaptive thinking is sent for
- * every family except Fable (thinking is always on there and the parameter 400s).
+ * every family except Fable (thinking is always on there and the parameter
+ * 400s). Fable is no longer selectable (2026-11-07) but a run pinned to it
+ * before then still resumes on it, so the carve-out stays.
  */
 export async function generateObjectWithModel(
   feature: FeatureKey,

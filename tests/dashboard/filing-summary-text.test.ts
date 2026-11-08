@@ -214,11 +214,10 @@ describe("statusLabel and statusTone", () => {
 describe("rough cost copy (controller ruling 2)", () => {
   it("covers every picker choice with the measured or relative figure", () => {
     const expected: Record<string, string> = {
-      "Sonnet · medium": "Sonnet costs half as much per token as Opus",
+      "Sonnet · medium": "Sonnet costs half as much per token as Opus; less than Sonnet · high",
+      "Sonnet · high": "Sonnet costs half as much per token as Opus",
       "Opus · medium": "less than Opus · high",
       "Opus · high": "about $0.80 per 8-K (measured); long filings cost more",
-      "Fable · medium": "Fable costs 2.5 times as much per token as Opus",
-      "Fable · high": "Fable costs 2.5 times as much per token as Opus",
     };
     for (const c of SUMMARY_CHOICES) {
       expect(roughCostText(c), choiceLabel(c)).toBe(expected[choiceLabel(c)]);
@@ -236,8 +235,8 @@ describe("rough cost copy (controller ruling 2)", () => {
 
 describe("optionText", () => {
   it("suffixes the family's now-label", () => {
-    expect(optionText({ choice: { family: "fable", effort: "high" }, label: "Fable · high", nowLabel: "Fable · now 5.1" })).toBe(
-      "Fable · high — now 5.1",
+    expect(optionText({ choice: { family: "opus", effort: "high" }, label: "Opus · high", nowLabel: "Opus · now 5.5" })).toBe(
+      "Opus · high — now 5.5",
     );
     expect(
       optionText({ choice: { family: "sonnet", effort: "medium" }, label: "Sonnet · medium", nowLabel: "Sonnet · not available" }),

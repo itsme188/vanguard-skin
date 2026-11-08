@@ -20,9 +20,15 @@ export function __resetTierLog(): void { lastResolvedByTier.clear(); }
  *   "<provider>/<model-id>"  — explicit concrete id, or
  *   "<provider>/$<tier>"     — tier token expanded via the live catalog
  *
- * Tier tokens: $frontier (best available), $workhorse (Sonnet-class),
- * $cheap (Haiku-class). Expansion is handled by resolveFeatureModel via
+ * Tier tokens: $frontier (Opus-class — the top of the ladder since the
+ * 2026-11-07 ruling retired Fable), $workhorse (Sonnet-class), $cheap
+ * (Haiku-class). Expansion is handled by resolveFeatureModel via
  * lib/ai/model-tiers.ts + the live catalog in lib/ai/catalog-source.ts.
+ *
+ * DEFAULT TIER POLICY (owner ruling 2026-11-07): $workhorse is the default
+ * for a feature. $frontier is reserved for the three features whose own code
+ * asks for the top tier by name and says why; adding a fourth is a policy
+ * decision, not a tuning knob.
  *
  * Supported providers (resolved by lib/ai/provider.ts):
  *   - "anthropic"   — Claude via @ai-sdk/anthropic, routes through Gateway if configured
@@ -37,20 +43,26 @@ export function __resetTierLog(): void { lastResolvedByTier.clear(); }
  *   4. Roll back by reverting the string if quality drops.
  */
 export const FEATURE_MODELS: Record<FeatureKey, string> = {
-  // frontier (was Opus)
-  chat: "anthropic/$frontier",
-  briefing: "anthropic/$frontier",
-  tradeReviewMain: "anthropic/$frontier",
-  pdfParsing: "anthropic/$frontier",
+  // frontier (Opus) — ONLY where the feature's own code asks for the top tier
+  // by name. Every other feature sits on the workhorse tier below.
+  //
   // Live print v2 slice D — the on-screen first-pass read of a print (spec §4.4
   // "Model": frontier; extraction stays on the workhorse tier).
   printWatchFirstPass: "anthropic/$frontier",
+
+  // workhorse (Sonnet) — the default tier.
+  // Moved off frontier by the 2026-11-07 ruling: none of these four states a
+  // frontier requirement of its own, and Sonnet is the app default.
+  chat: "anthropic/$workhorse",
+  briefing: "anthropic/$workhorse",
+  tradeReviewMain: "anthropic/$workhorse",
+  pdfParsing: "anthropic/$workhorse",
   // Armed-print filing summary. The per-print choice (family + effort,
   // lib/filing-summary/choice.ts) resolves the model through
-  // lib/ai/model-families.ts; this entry is only the Settings fallback.
-  printFilingSummary: "anthropic/$frontier",
+  // lib/ai/model-families.ts; this entry is only the Settings fallback, and it
+  // sits on the tier that choice now defaults to (Sonnet).
+  printFilingSummary: "anthropic/$workhorse",
 
-  // workhorse (was Sonnet)
   dailyDigestSynthesis: "anthropic/$workhorse",
   tradeReviewMainLarge: "anthropic/$workhorse",
   tradeReviewQA: "anthropic/$workhorse",
@@ -95,19 +107,23 @@ export const FEATURE_MODELS: Record<FeatureKey, string> = {
   // earnings numbers instead of price levels.
   newsletterBogeyExtraction: "anthropic/$workhorse",
 
-  // The armed-event deep read (lib/earnings/deep-read-bogeys.ts): one call
-  // that reads every preview of the week before an ARMED print together and
-  // reconciles the bogeys. Frontier by owner request (2026-10-20): it runs at
-  // most a few times per armed name, and its figures rank above the
-  // per-article workhorse rows on the live sheet.
+  // frontier (Opus) — the armed-event deep read
+  // (lib/earnings/deep-read-bogeys.ts): one call that reads every preview of
+  // the week before an ARMED print together and reconciles the bogeys.
+  // Frontier by owner request (2026-10-20), re-confirmed by the 2026-11-07
+  // ruling: that file's own contract says it runs on the frontier tier, not
+  // the workhorse. It runs at most a few times per armed name, and its
+  // figures rank above the per-article workhorse rows on the live sheet.
   armedBogeyDeepRead: "anthropic/$frontier",
 
   // Per-ETF GICS sector-weight look-through. Must stay on Anthropic — uses
   // Claude-native web_search (Finnhub ETF data is premium-gated).
   etfSectorWeights: "anthropic/$workhorse",
 
-  // One-time web-search-verified GICS sector sweep (Bloomberg-taxonomy
-  // repair). Frontier tier — accuracy over cost, this isn't a recurring call.
+  // frontier (Opus) — one-time web-search-verified GICS sector sweep
+  // (Bloomberg-taxonomy repair). Frontier tier by its own code's reasoning
+  // (lib/securities/verify-sector-tags.ts): accuracy over cost, and this is
+  // not a recurring call.
   sectorVerification: "anthropic/$frontier",
 
   // AI desk-note summary (guidance / tone / surprises / key quotes) for a
