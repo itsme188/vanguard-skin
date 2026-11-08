@@ -210,7 +210,9 @@ describe("round trip through the settings store into the executor", () => {
     const body = await (await GET()).json();
     const row = body.features.find((f: { key: string }) => f.key === "briefing");
     expect(row.fallbacks).toEqual(["openai/$frontier"]);
-    expect(row.defaultFallbacks).toEqual(["openai/$frontier", "workers-ai/$frontier"]);
+    // `briefing` sits on the workhorse tier since the 2026-11-07 model-policy
+    // ruling, and the default fallback order follows the feature's own tier.
+    expect(row.defaultFallbacks).toEqual(["openai/$workhorse", "workers-ai/$workhorse"]);
   });
 });
 

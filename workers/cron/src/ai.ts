@@ -5,9 +5,9 @@
  * `cf-aig-metadata: {"feature":"<key>"}` header so the Gateway dashboard can
  * attribute cost/latency per Worker feature.
  *
- * Unlike the Mac, the Worker only needs Anthropic — digest article processing
- * uses Sonnet, briefing synthesis uses Opus. No Workers AI, no OpenAI (we'd
- * add them the same way if needed later).
+ * Unlike the Mac, the Worker only needs Anthropic — every Worker feature runs
+ * on the workhorse (Sonnet) tier since the 2026-11-07 model-policy ruling. No
+ * Workers AI, no OpenAI (we'd add them the same way if needed later).
  */
 
 import { createAnthropic } from "@ai-sdk/anthropic";
@@ -27,8 +27,11 @@ export interface AIEnv {
 
 /** Tier assignment per Worker feature — mirrors FEATURE_MODELS on the Mac. */
 export const FEATURE_TIER: Record<WorkerFeature, Tier> = {
-  // Opus-class (frontier) — same as Mac's briefing feature.
-  fallbackBriefing: "frontier",
+  // Sonnet-class (workhorse) — same as Mac's briefing feature, which moved off
+  // the frontier tier with the 2026-11-07 ruling. This entry mirrors that one:
+  // change them together, or the cloud fallback briefing costs Opus money the
+  // Mac's own briefing no longer spends.
+  fallbackBriefing: "workhorse",
   // Sonnet-class (workhorse) — same as Mac's newsletterProcessing.
   fallbackNewsletterProcessing: "workhorse",
   // Sonnet-class (workhorse) — evening email synthesis. Sonnet is sufficient;
@@ -69,8 +72,8 @@ export type StructuredMode = "outputFormat" | "jsonTool";
  * Provider options asking @ai-sdk/anthropic for native structured output
  * (`output_config.format`, no tool_choice) — mirror of the Mac side's
  * `lib/ai/generate.ts::withAnthropicStructuredOutput`. Spread into a Worker
- * `generateObject` call's `providerOptions` (needed for frontier-tier features,
- * whose model family rejects the forced-tool fallback).
+ * `generateObject` call's `providerOptions` (needed for the 5-generation model
+ * families, which reject the forced-tool fallback).
  */
 export function structuredOutputProviderOptions(mode: StructuredMode = "outputFormat") {
   return { anthropic: { structuredOutputMode: mode } };

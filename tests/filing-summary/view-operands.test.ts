@@ -195,13 +195,14 @@ describe("panel readingDocs and choiceOptions (2c)", () => {
     expect(panel.readingDocs).toEqual({ form: "8-K", exhibits: 4 - 1 });
   });
 
-  it("is null when nothing runs, and lists all five choices with their now-labels", () => {
+  it("is null when nothing runs, and lists all four choices with their now-labels", () => {
     seedDoneRun();
     const panel = getPanelViews(db, [eventId], CATALOG)[eventId];
     expect(panel.readingDocs).toBeNull();
     expect(panel.choiceOptions.map((o) => o.value)).toEqual(SUMMARY_CHOICES.map(choiceValue));
     expect(panel.choiceOptions.map((o) => o.label)).toEqual(SUMMARY_CHOICES.map(choiceLabel));
-    expect(panel.choiceOptions.find((o) => o.value === "fable·high")?.nowLabel).toBe("Fable · now 5.1");
+    expect(panel.choiceOptions.map((o) => o.value)).not.toContain("fable·high");
+    expect(panel.choiceOptions.find((o) => o.value === "opus·high")?.nowLabel).toBe("Opus · now 5.5");
     expect(getFullView(db, eventId, CATALOG)!.choice.options).toEqual(panel.choiceOptions);
   });
 });

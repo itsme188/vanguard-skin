@@ -484,7 +484,8 @@ describe("pollEvent lifecycle", () => {
   });
 
   it("C1: with the real runner callbacks the discovery creates no run, Run summary is offered, and the run action starts it", async () => {
-    setModelCatalogSource(() => ["claude-opus-5-5"]);
+    // Sonnet is in the catalog because the default choice is Sonnet (2026-11-07).
+    setModelCatalogSource(() => ["claude-opus-5-5", "claude-sonnet-5-5"]);
     try {
       arm(et("21:30"));
       edgar.filings.push(earnings8k("0000123456-26-000101", "160500"));
@@ -497,7 +498,7 @@ describe("pollEvent lifecycle", () => {
       });
       expect(getEventState(db, eventId)!.pollState).toBe("manual_only");
       expect(listRuns(db, eventId)).toEqual([]);
-      const panel = getPanelViews(db, [eventId], ["claude-opus-5-5"], new Date(clock))[eventId];
+      const panel = getPanelViews(db, [eventId], ["claude-opus-5-5", "claude-sonnet-5-5"], new Date(clock))[eventId];
       expect(panel.runSummaryAvailable).toBe(true);
       expect(panel.pollState).toBe("manual_only");
 
@@ -505,7 +506,7 @@ describe("pollEvent lifecycle", () => {
       const res = applyFilingSummaryAction(
         db,
         { eventId, action: "run", requestKey: "rk-late-arm" },
-        { kick: (_d, id) => kicked.push(id), catalogIds: () => ["claude-opus-5-5"] },
+        { kick: (_d, id) => kicked.push(id), catalogIds: () => ["claude-opus-5-5", "claude-sonnet-5-5"] },
       );
       expect(res.ok).toBe(true);
       const runs = listRuns(db, eventId);
@@ -555,7 +556,8 @@ describe("pollEvent lifecycle", () => {
   });
 
   it("follow-up 1: armed Monday for a Wednesday print, app first ticks Friday → discovered as manual, no run, Run summary offered", async () => {
-    setModelCatalogSource(() => ["claude-opus-5-5"]);
+    // Sonnet is in the catalog because the default choice is Sonnet (2026-11-07).
+    setModelCatalogSource(() => ["claude-opus-5-5", "claude-sonnet-5-5"]);
     try {
       arm(et("10:00", "2026-10-19")); // Monday, before the print
       edgar.filings.push(earnings8k("0000123456-26-000101", "160500"));
@@ -573,7 +575,7 @@ describe("pollEvent lifecycle", () => {
       expect(s.pollDetail).toBe("not polled on the print day — press Run summary to read the filings now");
       expect(listFilings(db, eventId).map((f) => f.identityVerdict)).toEqual(["accepted"]);
       expect(listRuns(db, eventId)).toEqual([]); // no paid run without a click
-      const panel = getPanelViews(db, [eventId], ["claude-opus-5-5"], new Date(clock))[eventId];
+      const panel = getPanelViews(db, [eventId], ["claude-opus-5-5", "claude-sonnet-5-5"], new Date(clock))[eventId];
       expect(panel.runSummaryAvailable).toBe(true);
       expect(panel.pastWithoutSummary).toBe(false);
       // A later tick neither looks again nor starts anything.

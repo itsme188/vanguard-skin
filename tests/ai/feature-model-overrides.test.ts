@@ -12,8 +12,8 @@ import { TIER_STATIC_FALLBACK } from "@/lib/ai/model-tiers";
 // function (the production wiring in lib/db.ts registers the SQLite-backed
 // reader; tests never import lib/db).
 //
-// FEATURE_MODELS now holds tier tokens (e.g. "anthropic/$frontier") so
-// `parseModelSpec(FEATURE_MODELS.chat)` would yield a literal "$frontier"
+// FEATURE_MODELS now holds tier tokens (e.g. "anthropic/$workhorse") so
+// `parseModelSpec(FEATURE_MODELS.chat)` would yield a literal "$workhorse"
 // modelId — not the tier-expanded value. These tests use TIER_STATIC_FALLBACK
 // as the expected resolved model when the catalog is empty (no source set).
 
@@ -24,11 +24,12 @@ afterEach(() => {
 });
 
 describe("resolveFeatureModel with overrides", () => {
+  // `chat` is a $workhorse feature since the 2026-11-07 model-policy ruling.
   it("falls back to FEATURE_MODELS when no source is registered", () => {
-    // With no catalog source, $frontier resolves to TIER_STATIC_FALLBACK.frontier.
+    // With no catalog source, $workhorse resolves to TIER_STATIC_FALLBACK.workhorse.
     expect(resolveFeatureModel("chat")).toEqual({
       provider: "anthropic",
-      modelId: TIER_STATIC_FALLBACK.frontier,
+      modelId: TIER_STATIC_FALLBACK.workhorse,
     });
   });
 
@@ -38,10 +39,10 @@ describe("resolveFeatureModel with overrides", () => {
       provider: "openai",
       modelId: "gpt-5-test",
     });
-    // Sibling features stay on their defaults ($frontier → static fallback when no catalog).
+    // Sibling features stay on their defaults ($workhorse → static fallback when no catalog).
     expect(resolveFeatureModel("briefing")).toEqual({
       provider: "anthropic",
-      modelId: TIER_STATIC_FALLBACK.frontier,
+      modelId: TIER_STATIC_FALLBACK.workhorse,
     });
   });
 
@@ -57,10 +58,10 @@ describe("resolveFeatureModel with overrides", () => {
 
   it("falls back to the default when the override spec is malformed", () => {
     setFeatureModelOverrideSource(() => ({ chat: "gibberish-no-provider" }));
-    // Malformed override falls through to tier expansion ($frontier → static fallback).
+    // Malformed override falls through to tier expansion ($workhorse → static fallback).
     expect(resolveFeatureModel("chat")).toEqual({
       provider: "anthropic",
-      modelId: TIER_STATIC_FALLBACK.frontier,
+      modelId: TIER_STATIC_FALLBACK.workhorse,
     });
   });
 
@@ -68,7 +69,7 @@ describe("resolveFeatureModel with overrides", () => {
     setFeatureModelOverrideSource(() => ({ chat: "gemini/gemini-pro" }));
     expect(resolveFeatureModel("chat")).toEqual({
       provider: "anthropic",
-      modelId: TIER_STATIC_FALLBACK.frontier,
+      modelId: TIER_STATIC_FALLBACK.workhorse,
     });
   });
 
@@ -78,13 +79,14 @@ describe("resolveFeatureModel with overrides", () => {
     });
     expect(resolveFeatureModel("chat")).toEqual({
       provider: "anthropic",
-      modelId: TIER_STATIC_FALLBACK.frontier,
+      modelId: TIER_STATIC_FALLBACK.workhorse,
     });
   });
 
   // Verify FEATURE_MODELS still exports valid tier-token specs (not concrete ids).
   it("FEATURE_MODELS still contains valid tier-token specs", () => {
-    expect(FEATURE_MODELS.chat).toBe("anthropic/$frontier");
+    expect(FEATURE_MODELS.chat).toBe("anthropic/$workhorse");
+    expect(FEATURE_MODELS.printWatchFirstPass).toBe("anthropic/$frontier");
     expect(FEATURE_MODELS.newsletterProcessing).toBe("anthropic/$workhorse");
     expect(FEATURE_MODELS.researchMentionVerification).toBe("anthropic/$cheap");
     expect(FEATURE_MODELS.alertSuggestion).toBe("workers-ai/@cf/meta/llama-4-scout-17b-16e-instruct");

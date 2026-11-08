@@ -45,15 +45,17 @@ describe("model-catalog", () => {
 describe("pruneToCallable", () => {
   const listed = ["claude-fable-5", "claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5"];
 
-  it("prunes a listed-but-uncallable model (fable 404s) so frontier falls to the next callable rung", async () => {
+  it("prunes a listed-but-uncallable model (opus 404s) so frontier falls to the next callable rung", async () => {
     const probed: string[] = [];
-    const probe = async (id: string) => { probed.push(id); return id !== "claude-fable-5"; };
+    const probe = async (id: string) => { probed.push(id); return id !== "claude-opus-4-8"; };
     const callable = await pruneToCallable(listed, probe);
-    expect(callable).not.toContain("claude-fable-5");
-    expect(callable).toContain("claude-opus-4-8");
-    // probed the frontier selection (fable), then re-selected opus and probed it
-    expect(probed).toContain("claude-fable-5");
+    expect(callable).not.toContain("claude-opus-4-8");
+    expect(callable).toContain("claude-sonnet-4-6");
+    // probed the frontier selection (opus), then re-selected sonnet and probed it
     expect(probed).toContain("claude-opus-4-8");
+    expect(probed).toContain("claude-sonnet-4-6");
+    // Fable is listed but no ladder selects it, so it is never probed (2026-11-07).
+    expect(probed).not.toContain("claude-fable-5");
   });
 
   it("keeps everything when all probes pass", async () => {
@@ -69,9 +71,9 @@ describe("pruneToCallable", () => {
 
   it("probes each tier's selection at most once and is bounded", async () => {
     let calls = 0;
-    const probe = async (id: string) => { calls++; return id !== "claude-fable-5"; };
+    const probe = async (id: string) => { calls++; return id !== "claude-opus-4-8"; };
     await pruneToCallable(listed, probe);
-    // frontier: fable(fail)->opus(ok); workhorse: sonnet(ok); cheap: haiku(ok) = 4 distinct probes max
+    // frontier: opus(fail)->sonnet(ok); workhorse: sonnet(ok); cheap: haiku(ok) = 4 distinct probes max
     expect(calls).toBeLessThanOrEqual(4);
   });
 });

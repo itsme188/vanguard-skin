@@ -20,7 +20,7 @@ import {
   STALE_WAITING_DETAIL,
   statusSeverity,
 } from "@/lib/filing-summary/labels";
-import type { Footnote, SummaryChoice } from "@/lib/filing-summary/types";
+import type { Footnote, StoredSummaryFamily, SummaryChoice } from "@/lib/filing-summary/types";
 import type { PanelView, ReadingDocs, RunSummary, SectionState, ViewClaim } from "@/lib/filing-summary/view";
 
 // The single copy of the status, count, cost, choice, failure and request-key
@@ -49,8 +49,12 @@ export function runConfirmMessage(choice: SummaryChoice, nowLabel: string): stri
   return runSummaryPrompt(choiceLabel(choice), choice, nowLabel).message;
 }
 
-/** The family behind a run's model label ("Opus 5.5" → opus), or null. */
-export function familyFromModelLabel(label: string): SummaryChoice["family"] | null {
+/**
+ * The family behind a run's model label ("Opus 5.5" → opus), or null. Reads a
+ * STORED run's label, so it still recognises a retired family (Fable, runs
+ * before 2026-11-07) — the cost line then reads "cost not known".
+ */
+export function familyFromModelLabel(label: string): StoredSummaryFamily | null {
   const first = label.trim().split(/\s+/)[0]?.toLowerCase();
   return first === "sonnet" || first === "opus" || first === "fable" ? first : null;
 }

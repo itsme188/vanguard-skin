@@ -186,7 +186,8 @@ describe("startRun", () => {
     const r = startRun(db, eventId, "auto", { catalogIds: CATALOG });
     expect(r).toMatchObject({ ok: true, created: true });
     const run = listRuns(db, eventId)[0];
-    expect(run.modelId).toBe("claude-opus-5-5");
+    // No stored choice → DEFAULT_SUMMARY_CHOICE, Sonnet · high since 2026-11-07.
+    expect(run.modelId).toBe("claude-sonnet-5-5");
     expect(run.effort).toBe("high");
     expect(run.fallbackNote).toBeNull();
     const secs = sectionsOf(run.id);
@@ -214,8 +215,10 @@ describe("startRun", () => {
     seedEarnings();
     expect(startRun(db, eventId, "auto", { catalogIds: [] })).toEqual({ ok: false, reason: "no_model" });
     expect(listRuns(db, eventId)).toHaveLength(0);
-    startRun(db, eventId, "manual_run", { choice: { family: "fable", effort: "high" }, catalogIds: CATALOG });
-    expect(listRuns(db, eventId)[0].fallbackNote).toBe("Fable unavailable — Opus 5.5 ran instead");
+    // Opus is the top rung now, so the down-ladder case is Opus -> Sonnet.
+    const noOpus = CATALOG.filter((id) => !id.startsWith("claude-opus"));
+    startRun(db, eventId, "manual_run", { choice: { family: "opus", effort: "high" }, catalogIds: noOpus });
+    expect(listRuns(db, eventId)[0].fallbackNote).toBe("Opus unavailable — Sonnet 5.5 ran instead");
     expect(startRun(db, 99_999, "auto", { catalogIds: CATALOG })).toEqual({ ok: false, reason: "not_found" });
   });
 
@@ -350,7 +353,7 @@ describe("runNextSection", () => {
     expect(gen).toHaveBeenCalledTimes(1);
     const [feature, target, opts] = gen.mock.calls[0];
     expect(feature).toBe("printFilingSummary");
-    expect(target).toEqual({ modelId: "claude-opus-5-5", effort: "high", family: "opus" });
+    expect(target).toEqual({ modelId: "claude-sonnet-5-5", effort: "high", family: "sonnet" });
     expect(opts.maxOutputTokens).toBe(64000);
 
     const sec = sectionsOf(runId)[0];
@@ -370,7 +373,7 @@ describe("runNextSection", () => {
     expect(JSON.parse(sec.versionsJson!)).toEqual({
       schema: SCHEMA_VERSION, prompt: PROMPT_VERSION, extractor: EXTRACTOR_VERSION, checker: CHECKER_VERSION,
     });
-    expect(sec.modelId).toBe("claude-opus-5-5");
+    expect(sec.modelId).toBe("claude-sonnet-5-5");
     expect(sec.inputFingerprint).toMatch(/^[0-9a-f]{64}$/);
     expect(listRuns(db, eventId)[0].status).toBe("done");
     expect(onSectionDone).toHaveBeenCalledTimes(1);

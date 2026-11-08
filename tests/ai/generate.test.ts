@@ -30,7 +30,7 @@ describe("generateTextForFeature", () => {
   beforeEach(() => {
     generateTextMock.mockReset();
     setFeatureModelOverrideSource(null);
-    setModelCatalogSource(() => ["claude-fable-5", "claude-opus-4-8", "claude-sonnet-4-6"]);
+    setModelCatalogSource(() => ["claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5"]);
   });
 
   it("returns text on success", async () => {
@@ -41,14 +41,15 @@ describe("generateTextForFeature", () => {
 
   it("on not_found, drops the dead model and retries once with the next rung", async () => {
     generateTextMock
-      .mockRejectedValueOnce(new FakeNotFound())                  // fable 404s
-      .mockResolvedValueOnce({ text: "ok2", finishReason: "stop" }); // opus succeeds
+      .mockRejectedValueOnce(new FakeNotFound())                  // sonnet 404s
+      .mockResolvedValueOnce({ text: "ok2", finishReason: "stop" }); // haiku succeeds
     const r = await generateTextForFeature("chat", { prompt: "hi" });
     expect(r.text).toBe("ok2");
     expect(generateTextMock).toHaveBeenCalledTimes(2);
-    // Prove the first call used Fable and the retry used the NEXT rung (Opus), not Fable again.
-    expect(generateTextMock.mock.calls[0][0].model.modelId).toBe("claude-fable-5");
-    expect(generateTextMock.mock.calls[1][0].model.modelId).toBe("claude-opus-4-8");
+    // `chat` is workhorse (sonnet -> haiku) since the 2026-11-07 ruling: prove
+    // the first call used Sonnet and the retry used the NEXT rung, not Sonnet again.
+    expect(generateTextMock.mock.calls[0][0].model.modelId).toBe("claude-sonnet-4-6");
+    expect(generateTextMock.mock.calls[1][0].model.modelId).toBe("claude-haiku-4-5");
   });
 
   it("on refusal finishReason, throws AIRefusalError (graceful, named)", async () => {
@@ -95,7 +96,7 @@ describe("generateObjectForFeature", () => {
   beforeEach(() => {
     generateObjectMock.mockReset();
     setFeatureModelOverrideSource(null);
-    setModelCatalogSource(() => ["claude-fable-5", "claude-opus-4-8", "claude-sonnet-4-6"]);
+    setModelCatalogSource(() => ["claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5"]);
   });
 
   it("asks the Anthropic provider for native structured output, not the json-tool fallback", async () => {
@@ -217,8 +218,9 @@ describe("generateObjectForFeature", () => {
     expect(generateObjectMock).toHaveBeenCalledTimes(2);
     const first = generateObjectMock.mock.calls[0][0] as { model: { modelId: string } };
     const second = generateObjectMock.mock.calls[1][0] as { model: { modelId: string } };
-    expect(first.model.modelId).toBe("claude-fable-5");
-    expect(second.model.modelId).toBe("claude-opus-4-8");
+    // `tradeReviewMain` is workhorse since the 2026-11-07 ruling.
+    expect(first.model.modelId).toBe("claude-sonnet-4-6");
+    expect(second.model.modelId).toBe("claude-haiku-4-5");
     // The failover request still carries the native-structured-output ask.
     expect(anthropicOptionsOf(1)?.structuredOutputMode).toBe("outputFormat");
   });
