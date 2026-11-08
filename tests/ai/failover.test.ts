@@ -111,7 +111,8 @@ describe("failover policy tables", () => {
       { provider: "openai", modelId: "gpt-6.1-sol" },
       { provider: "workers-ai", modelId: "@cf/meta/llama-3.3-70b-instruct-fp8-fast" },
     ]);
-    expect(failoverTargets("chat")[0]).toEqual({ provider: "openai", modelId: "gpt-6-astra" });
+    // `chat` sits on the workhorse tier since the 2026-11-07 model-policy ruling.
+    expect(failoverTargets("chat")[0]).toEqual({ provider: "openai", modelId: "gpt-6.1-sol" });
   });
 });
 
@@ -140,7 +141,7 @@ describe("(a) account-level Anthropic failure on an eligible feature is served b
       .mockResolvedValueOnce({ object: { summary: "ok" } });
     const r = await generateObjectForFeature("chat", { prompt: "hi", schema: {} as never });
     expect(r.object).toEqual({ summary: "ok" });
-    expect(generateObjectMock.mock.calls[1][0].model.modelId).toBe("gpt-6-astra");
+    expect(generateObjectMock.mock.calls[1][0].model.modelId).toBe("gpt-6.1-sol");
     expect(events[0].kind).toBe("auth");
   });
 

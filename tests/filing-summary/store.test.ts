@@ -105,7 +105,7 @@ describe("event state and choice", () => {
   it("defaults the choice and lets it change until a run locks it", () => {
     expect(getEventState(db, eventId)).toBeNull();
     expect(getChoice(db, eventId)).toEqual({
-      choice: { family: "opus", effort: "high" },
+      choice: { family: "sonnet", effort: "high" },
       isDefault: true,
       locked: false,
     });
@@ -147,11 +147,26 @@ describe("createRun", () => {
       [2, a, "pending"],
     ]);
     expect(getChoice(db, eventId).locked).toBe(true);
-    expect(setChoice(db, eventId, { family: "fable", effort: "high" })).toEqual({
+    expect(setChoice(db, eventId, { family: "sonnet", effort: "medium" })).toEqual({
       ok: false,
       reason: "locked",
     });
-    expect(getChoice(db, eventId).choice).toEqual({ family: "opus", effort: "high" });
+    expect(getChoice(db, eventId).choice).toEqual({ family: "sonnet", effort: "high" });
+  });
+
+  it("a stored retired family reads as the default without rewriting the row", () => {
+    // Fable left the picker on 2026-11-07. The owner's saved row stays as it
+    // is; getChoice resolves it so no run can start on a retired family.
+    db.prepare(
+      "INSERT INTO filing_summary_events (event_id, family, effort) VALUES (?, 'fable', 'medium')",
+    ).run(eventId);
+    expect(getChoice(db, eventId)).toEqual({
+      choice: { family: "sonnet", effort: "high" },
+      isDefault: true,
+      locked: false,
+    });
+    // The row itself is untouched.
+    expect(getEventState(db, eventId)).toMatchObject({ family: "fable", effort: "medium" });
   });
 
   it("final review: a request_key race (the UNIQUE index refuses the second insert) answers with the existing run", () => {

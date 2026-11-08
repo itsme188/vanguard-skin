@@ -19,12 +19,14 @@ describe("parseModelId", () => {
 describe("resolveTier", () => {
   const catalog = ["claude-fable-5", "claude-opus-4-7", "claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5"];
 
-  it("frontier picks Fable when available", () => {
-    expect(resolveTier("frontier", catalog)).toBe("claude-fable-5");
+  it("frontier picks newest Opus, never Fable (2026-11-07 ruling)", () => {
+    // Fable is in the catalog on purpose: the LADDER, not the catalog, is what
+    // keeps spend off it.
+    expect(resolveTier("frontier", catalog)).toBe("claude-opus-4-8");
   });
-  it("frontier falls to newest Opus when Fable is pulled", () => {
-    const pulled = catalog.filter((m) => m !== "claude-fable-5");
-    expect(resolveTier("frontier", pulled)).toBe("claude-opus-4-8");
+  it("frontier falls to Sonnet when Opus is pulled (last rung, not the static id)", () => {
+    const pulled = catalog.filter((m) => !m.startsWith("claude-opus"));
+    expect(resolveTier("frontier", pulled)).toBe("claude-sonnet-4-6");
   });
   it("picks the newest version within the top available family", () => {
     expect(resolveTier("frontier", ["claude-opus-4-7", "claude-opus-4-8"])).toBe("claude-opus-4-8");
@@ -41,10 +43,10 @@ describe("resolveTier", () => {
     expect(resolveTier("workhorse", [])).toBe(TIER_STATIC_FALLBACK.workhorse);
     expect(resolveTier("cheap", [])).toBe(TIER_STATIC_FALLBACK.cheap);
   });
-  it("frontier static fallback is Opus, not Fable (availability-safe)", () => {
+  it("frontier static fallback is Opus — the top of the frontier ladder", () => {
     expect(TIER_STATIC_FALLBACK.frontier).toBe("claude-opus-4-8");
   });
   it("honours the excluded set (reactive failover)", () => {
-    expect(resolveTier("frontier", catalog, new Set(["claude-fable-5"]))).toBe("claude-opus-4-8");
+    expect(resolveTier("frontier", catalog, new Set(["claude-opus-4-8"]))).toBe("claude-opus-4-7");
   });
 });

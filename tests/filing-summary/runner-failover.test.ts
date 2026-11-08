@@ -134,10 +134,10 @@ describe("account failure on the pinned model, failover enabled", () => {
     expect(await runNextSection(db, eventId, s)).toBe("ran");
     expect(gen).toHaveBeenCalledTimes(1);
     expect(on).toHaveBeenCalledTimes(1);
-    expect(on.mock.calls[0][1]).toBe("gpt-6-astra"); // frontier tier, OpenAI first
+    expect(on.mock.calls[0][1]).toBe("gpt-6.1-sol"); // workhorse tier (2026-11-07), OpenAI first
     const sec = listSections(db, runId)[0];
-    expect(sec).toMatchObject({ status: "done", attempts: 1, modelId: "gpt-6-astra", effort: null });
-    expect(JSON.parse(sec.versionsJson ?? "{}").failover).toEqual({ provider: "openai", modelId: "gpt-6-astra", kind: "billing" });
+    expect(sec).toMatchObject({ status: "done", attempts: 1, modelId: "gpt-6.1-sol", effort: null });
+    expect(JSON.parse(sec.versionsJson ?? "{}").failover).toEqual({ provider: "openai", modelId: "gpt-6.1-sol", kind: "billing" });
     // The figure-binding checks still ran over the fallback's output.
     expect(sec.checkedJson).toBeTruthy();
     // ai_failover_log, via the same noteFailover path.
@@ -153,11 +153,11 @@ describe("account failure on the pinned model, failover enabled", () => {
     await runNextSection(db, eventId, s);
     const view = getFullView(db, eventId, CATALOG);
     const run = view!.runs[0];
-    expect(run.ranOn).toBe("OpenAI gpt-6-astra");
-    expect(run.fallbackNote).toMatch(/Anthropic was unavailable \(credit or spend limit\).*OpenAI gpt-6-astra/);
-    expect(run.sections[0].ranOn).toBe("OpenAI gpt-6-astra");
-    expect(shareHeaderLine(view!, run)).toContain("OpenAI gpt-6-astra");
-    expect(shareHeaderLine(view!, run)).not.toMatch(/Opus 5\.5 high/);
+    expect(run.ranOn).toBe("OpenAI gpt-6.1-sol");
+    expect(run.fallbackNote).toMatch(/Anthropic was unavailable \(credit or spend limit\).*OpenAI gpt-6\.1-sol/);
+    expect(run.sections[0].ranOn).toBe("OpenAI gpt-6.1-sol");
+    expect(shareHeaderLine(view!, run)).toContain("OpenAI gpt-6.1-sol");
+    expect(shareHeaderLine(view!, run)).not.toMatch(/Sonnet 5\.5 high/);
   });
 });
 
@@ -229,7 +229,7 @@ describe("everything else behaves as before", () => {
     await runNextSection(db, eventId, s);
     expect(on).not.toHaveBeenCalled();
     const sec = listSections(db, runId)[0];
-    expect(sec).toMatchObject({ status: "done", modelId: "claude-opus-5-5", effort: "high" });
+    expect(sec).toMatchObject({ status: "done", modelId: "claude-sonnet-5-5", effort: "high" });
     expect(JSON.parse(sec.versionsJson ?? "{}").failover).toBeUndefined();
     expect(getFullView(db, eventId, CATALOG)!.runs[0].ranOn).toBeNull();
   });

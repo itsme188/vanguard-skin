@@ -7,9 +7,23 @@
  * output; the bogey snapshot a run is judged against; and the mechanical
  * check results with their display severity.
  */
-export type SummaryFamily = "sonnet" | "opus" | "fable";
+/**
+ * The model families the picker can CHOOSE (owner ruling 2026-11-07: Sonnet is
+ * the default, Opus is the deliberate frontier escalation, Fable is gone).
+ */
+export type SummaryFamily = "sonnet" | "opus";
+/**
+ * A family that is no longer selectable but may still sit in stored rows — a
+ * saved per-print choice or a finished run. Stored owner data is never
+ * rewritten; `normalizeStoredChoice` (./choice) resolves it at read time.
+ */
+export type RetiredSummaryFamily = "fable";
+/** A family as it may appear in the database: selectable OR retired. */
+export type StoredSummaryFamily = SummaryFamily | RetiredSummaryFamily;
 export type SummaryEffort = "medium" | "high";
 export interface SummaryChoice { family: SummaryFamily; effort: SummaryEffort }
+/** A choice as READ FROM STORAGE, before normalization. */
+export interface StoredSummaryChoice { family: StoredSummaryFamily; effort: SummaryEffort }
 
 // ---- extracted document text (Task 3) ----
 export interface TextBlock {

@@ -1,14 +1,15 @@
 /**
  * Family resolver for calls whose model is chosen per run by FAMILY
- * (sonnet / opus / fable) rather than by capability tier — the armed-print
- * filing summary picker. Pure: (family, live catalog ids, excluded?) → id.
+ * (sonnet / opus) rather than by capability tier — the armed-print filing
+ * summary picker. Pure: (family, live catalog ids, excluded?) → id.
  *
  * Rules:
  *   - The newest catalog id of the chosen family wins, so a version bump
  *     inside the family is followed automatically.
  *   - When the family has no callable id, walk DOWN the ladder from it
- *     (fable → opus → sonnet), never up: a cheaper choice never silently
- *     turns into a more expensive one.
+ *     (opus → sonnet), never up: a cheaper choice never silently turns into
+ *     a more expensive one. Fable was removed from the ladder on 2026-11-07
+ *     (owner ruling): Opus is the top family the picker can reach.
  *   - Nothing callable → null (the caller reports it; there is no static
  *     fallback id here, so no model id is ever written in this file).
  */
@@ -31,8 +32,13 @@ export function compareFamilyVersions(a: readonly number[], b: readonly number[]
   return 0;
 }
 
-/** Capability order, highest first. */
-export const SUMMARY_FAMILY_LADDER = ["fable", "opus", "sonnet"] as const;
+/**
+ * Capability order, highest first. The resolver walks DOWN from the requested
+ * rung, so this order must stay most-capable-first even though Sonnet is now
+ * the DEFAULT choice (lib/filing-summary/choice.ts) — the default says where a
+ * run starts, this ladder says where an unavailable family falls to.
+ */
+export const SUMMARY_FAMILY_LADDER = ["opus", "sonnet"] as const;
 
 export interface ResolvedFamilyModel {
   modelId: string;
@@ -93,8 +99,8 @@ export function userFacingModelLabel(modelId: string): string {
 }
 
 /**
- * "Fable · now 5.1": the version the family itself resolves to today, or
- * "Fable · not available" when the family has no id (no ladder fallback here:
+ * "Opus · now 5.5": the version the family itself resolves to today, or
+ * "Opus · not available" when the family has no id (no ladder fallback here:
  * the label describes the family, not what a run would fall back to).
  */
 export function familyNowLabel(family: SummaryFamily, catalogIds: string[]): string {

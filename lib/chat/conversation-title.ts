@@ -43,13 +43,47 @@ export function conversationTitleFromMessages(messages: ReadonlyArray<TitleMessa
   return titleFromUserText(text);
 }
 
-// Privacy-first: mask every standalone number. A digit run is left alone only
-// when glued to letters inside one token (450C, Q3, FY26, 10-K) or when it
-// is an ISO date. Over-masking is acceptable; leaking a figure is not.
+// Privacy-first: mask every standalone number, with two exemptions.
+//
+// Owner ruling 2026-11-07 (decision #52, Option 2, amending 2026-10-26):
+// dates and percentages may show in a chat title; dollar amounts and share
+// counts stay hidden. So DATE shapes (full and partial) and PERCENT /
+// BASIS-POINT tokens render as written, and everything else a digit run can
+// be — currency, share counts, bare numbers, k/M/bn magnitudes — is masked.
+// A digit run is also left alone when glued to letters inside one token
+// (450C, Q3, FY26, 10-K). Over-masking is acceptable; leaking a figure is not.
+// Deliberately NOT exempt: a bare 4-digit year, which is indistinguishable
+// from a 4-digit amount.
+
+const MONTH =
+  "(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?" +
+  "|Aug(?:ust)?|Sep(?:t|tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)(?![A-Za-z])";
+const ORDINAL = "(?:st|nd|rd|th)?";
+const YEAR_TAIL = "(?:,?\\s\\d{4})?";
+
+// Shapes that render as written. Order matters only in that each must be
+// anchored; the alternation as a whole is tried before the figure pattern.
+const KEEP_SHAPES = [
+  // Percent / basis points: 3.2%, -1.75%, +25bp, 40 bps, 12 percent, 8 pct
+  "[+-]?\\d+(?:[.,]\\d+)?\\s?(?:%|percent|pct|bps?)(?![A-Za-z0-9])",
+  // ISO date: 2026-11-05
+  "\\d{4}-\\d{2}-\\d{2}",
+  // Numeric date, year first or last: 2026/11/05, 11/05/2026, 11/5
+  "\\d{4}/\\d{1,2}/\\d{1,2}",
+  "\\d{1,2}/\\d{1,2}(?:/\\d{2,4})?",
+  // Month-name date, either order: Nov 5, November 5th, Nov 5 2026, 5 Nov 2026
+  `${MONTH}\\.?\\s\\d{1,2}${ORDINAL}${YEAR_TAIL}`,
+  `\\d{1,2}${ORDINAL}\\s${MONTH}\\.?${YEAR_TAIL}`,
+].join("|");
+
 const FIGURE_RE = new RegExp(
   [
-    "(\\d{4}-\\d{2}-\\d{2})|", // 1: ISO date, kept
-    "(?<![A-Za-z0-9])[+-]?(?:[$\u20ac\u00a3\u00a5]\\s?)?", // sign, currency sign
+    // Alternation precedence: this lookbehind binds to the keep branch only,
+    // so a kept shape is never read mid-token nor straight after a currency
+    // sign. The figure branch keeps its own lookbehind below.
+    "(?<![A-Za-z0-9$€£¥])",
+    `(${KEEP_SHAPES})|`, // 1: kept as written
+    "(?<![A-Za-z0-9])[+-]?(?:[$€£¥]\\s?)?", // sign, currency sign
     "(\\d(?:[\\d,]*\\d)?)(\\.\\d+)?", // 2: integer part, 3: decimals
     "(?:\\s?(?:thousand|million|billion|bn|mm|k|b|m|percent|shares?|sh|contracts?)|%)?",
     "(?:\\s?(?:USD|EUR))?",
@@ -58,12 +92,12 @@ const FIGURE_RE = new RegExp(
   "gi",
 );
 
-/** Mask currency amounts, percentages, share counts and bare numbers; keep ticker-like tokens. */
+/**
+ * Mask currency amounts, share counts and bare numbers; render date shapes,
+ * percent / basis-point tokens and ticker-like tokens as written.
+ */
 export function maskTitleFigures(title: string): string {
-  return title.replace(FIGURE_RE, (match, isoDate: string | undefined, _int: string) => {
-    if (isoDate) return match;
-    return MASK;
-  });
+  return title.replace(FIGURE_RE, (match, keep: string | undefined) => (keep ? match : MASK));
 }
 
 /** Title as shown on screen: figures masked only while privacy mode is on. */

@@ -65,7 +65,7 @@ import type {
   StatusCounts,
   SummaryChoice,
   SummaryEffort,
-  SummaryFamily,
+  StoredSummaryFamily,
 } from "./types";
 
 // ---------------------------------------------------------------- types
@@ -293,7 +293,8 @@ export interface FullRun {
   runNo: number;
   status: RunViewStatus;
   trigger: RunTrigger;
-  family: SummaryFamily;
+  /** The family the run is pinned to; a run before 2026-11-07 may be retired. */
+  family: StoredSummaryFamily;
   effort: SummaryEffort;
   modelLabel: string;
   fallbackNote: string | null;

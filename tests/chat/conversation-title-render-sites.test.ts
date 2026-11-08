@@ -8,10 +8,13 @@ describe("displayConversationTitle", () => {
   it("leaves the title as stored when privacy is off", () => {
     expect(displayConversationTitle(t, false)).toBe(t);
   });
-  it("masks figures but keeps the words when privacy is on", () => {
+  it("masks the amount and the share count but keeps words and the percent when privacy is on", () => {
+    // Owner ruling 2026-11-07 (decision #52): percentages show, dollars and
+    // share counts do not.
     const m = displayConversationTitle(t, true) as string;
     expect(m).toContain("ZZA");
-    expect(m).not.toMatch(/150|1,200|3\.5/);
+    expect(m).toContain("3.5%");
+    expect(m).not.toMatch(/150|1,200/);
   });
   it("passes null through", () => {
     expect(displayConversationTitle(null, true)).toBeNull();

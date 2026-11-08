@@ -1666,3 +1666,47 @@ statement's own asset-class breakdown exactly (Stock + Options; Cash + Interest 
   - **Sector (QA #44).** A leveraged or inverse fund names the index it tracks, so for a FLAGGED row that index decides the sector: SOXS moves from Financials (an AI guess off the issuer) to Technology, `sector_source = 'leveraged_index'`. `TRACKED_INDEX_SECTORS` holds ONE SECTOR INDEX PER ENTRY and today holds one entry (SEMI → Technology); a fund on a broad index (DOW30, QQQ) gets no entry and no sector claim. Only a sector the AI wrote with no `sector_verified_at` stamp is overwritten — the same protection `classify-option-sectors.ts` applies.
   - **Where the pass runs.** `applyLeverageFactors` (`lib/securities/apply-leverage-factors.ts`) is deterministic, idempotent, no AI call and no network: TWS sync Step 2.4 and `POST /api/compute/classify`, plus `scripts/apply-leverage-factors.ts` for a rehearsal (dry run default, `REPAIR_DB_PATH` / `--db`, prints the path first). It also clears a factor off a row that is no longer a flagged fund.
   - **Rehearsal (2026-11-07, on a VACUUM copy; the live database was never opened).** 386 candidate rows, 20 flagged, 9 factors written, all nine equal to the approved table, 1 sector corrected (SOXS), row counts unchanged, `integrity_check` ok, `foreign_key_check` empty, a second apply writes nothing. The 11 remaining flagged rows have blank names and no stated multiple, so they stay NULL — and none of them has ever been held, so no held flagged row is left unsigned.
+---
+
+## 2026-11-07 — Privacy-mode chat titles: dates and percentages show, dollars and share counts do not
+
+**Owner ruling, Option 2 of QA finding `chat-overlay-…-privacy-mode-masks-date` (held since 2026-11-01).** This amends
+item 4 of the 2026-10-26 entry above ("chat titles in privacy mode mask their figures", which kept only complete ISO
+dates). In privacy mode `maskTitleFigures` (`lib/chat/conversation-title.ts`) now renders **date shapes** and
+**percent / basis-point tokens** as written; **currency amounts, share counts and every other standalone number stay
+masked**, unchanged.
+
+| Token in a title | 2026-10-26 | 2026-11-07 |
+|---|---|---|
+| `2026-11-05` (ISO date) | shown | shown |
+| `11/5`, `11/05/2026`, `2026/11/05` | masked | **shown** |
+| `Nov 5`, `November 5th`, `5 Nov 2026` | masked | **shown** |
+| `3.2%`, `-1.75%`, `12 percent`, `8 pct` | masked | **shown** |
+| `+25bp`, `40 bps` | masked | **shown** |
+| `$12,500.50`, `€5,000`, `$412k`, `3.5M USD` | masked | masked |
+| `150 shares`, `1,200 sh`, `10 contracts` | masked | masked |
+| `412,000`, `1.2M`, bare `500` | masked | masked |
+| `2026` alone (bare year) | masked | masked |
+| `450C`, `Q3`, `FY26`, `10-K`, `BRK.B` | shown | shown |
+
+**Why the owner could loosen this.** A chat title is the user's own question text, not a portfolio-derived figure, and
+it renders only on the user's own screen. A date carries no figure at all, and a percent is public market data far
+more often than it is a return — which puts the old rule against the standing convention that privacy masks the
+portfolio, not market data (`memory/feedback_privacy_market_data.md`). The classes the 2026-10-26 ruling was actually
+made for — currency, counts and bare numbers — are untouched. Accepted cost, named in the finding: a return the user
+typed themselves ("my +12% year") now shows in their own rail.
+
+**Two shapes deliberately left masked.** A **bare four-digit year** is indistinguishable from a four-digit amount, so
+`2026` alone stays masked; only a year inside a date shape is shown. A **bare fraction** (`1/2`) is indistinguishable
+from a numeric date and is therefore shown — the ambiguity is unavoidable and neither reading is a dollar amount or a
+share count, so it falls on the safe side of what this ruling protects.
+
+**Implementation.** One regex, one pass: a leading "keep shapes" alternation (dates, percent/bp) is tried at each scan
+position before the figure pattern, and a match there returns the text verbatim. Two passes could disagree about token
+boundaries; one cannot. The fail-safe direction is preserved — anything the keep branch does not claim falls through to
+the mask, so a shape nobody anticipated is hidden, not shown. Nothing outside title masking changed: no other privacy
+surface, no `useChat` transport, no `streamText` route.
+
+**Where this is recorded.** Here. `qa/findings/DECISIONS-PENDING.md` is a generated, gitignored view of
+`qa/findings/ledger.json` and has no convention for decided items (a finding leaves `known` only by becoming `fixed`
+with a `fix_commit`), so the ledger row keeps `known` plus a dated note pointing at this entry until the PR lands.

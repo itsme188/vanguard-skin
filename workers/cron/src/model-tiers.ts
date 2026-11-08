@@ -8,23 +8,29 @@
  * UPDATE BOTH FILES together whenever the tier policy changes.
  */
 
-// Org data retention: Fable 5 requires the Anthropic org to be on >=30-day
-// retention (ZDR/under-30d → every Fable request 400s). Confirm in the
-// Anthropic Console before frontier routes to Fable. (Operational, not enforced here.)
+// Model policy (owner ruling 2026-11-07): Sonnet is the app default and the
+// FRONTIER TIER MEANS OPUS. Fable is not a rung on any ladder — not for cost
+// (it lists at 2.5x Opus per token) and not for availability (it needs the
+// Anthropic org on >=30-day retention, so a ZDR/under-30d org 400s every
+// request). Only a feature whose own code asks for the top tier by name uses
+// $frontier; everything else is $workhorse. See lib/ai/models.ts.
 
 export type Tier = "frontier" | "workhorse" | "cheap";
 
-/** Capability order, highest first, per tier. Values are model *families*. */
+/**
+ * Capability order, highest first, per tier. Values are model *families*.
+ * Frontier tops out at Opus (2026-11-07); Sonnet stays its last rung so an
+ * Opus outage degrades to a live model instead of TIER_STATIC_FALLBACK.
+ */
 export const FAMILY_LADDERS: Record<Tier, string[]> = {
-  frontier: ["fable", "opus", "sonnet"],
+  frontier: ["opus", "sonnet"],
   workhorse: ["sonnet", "haiku"],
   cheap: ["haiku"],
 };
 
 /**
  * Used only when the live catalog is empty/unknown. Must be a reliably-available
- * model: frontier is OPUS (not Fable) because Fable's availability is exactly
- * what's uncertain.
+ * model: frontier is OPUS, which is also the top of the frontier ladder.
  */
 export const TIER_STATIC_FALLBACK: Record<Tier, string> = {
   frontier: "claude-opus-4-8",
@@ -39,7 +45,7 @@ export interface ParsedModel {
 
 /**
  * "claude-opus-4-8" → { family: "opus", version: [4, 8] }
- * "claude-fable-5"  → { family: "fable", version: [5] }
+ * "claude-sonnet-5-5" → { family: "sonnet", version: [5, 5] }
  * "claude-haiku-4-5-20251001" → { family: "haiku", version: [4, 5] } (date dropped)
  * Returns null for any non-"claude-<family>-<ver>" id (e.g. Workers-AI models).
  */

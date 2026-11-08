@@ -81,7 +81,8 @@ describe("resolveFeatureModel with non-Anthropic tier tokens", () => {
 
   it("anthropic tier tokens still expand via the live catalog", () => {
     setFeatureModelOverrideSource(() => ({ chat: "anthropic/$frontier" }));
-    expect(resolveFeatureModel("chat")).toEqual({ provider: "anthropic", modelId: "claude-fable-5" });
+    // Opus, not the Fable the catalog lists: $frontier tops out at Opus (2026-11-07).
+    expect(resolveFeatureModel("chat")).toEqual({ provider: "anthropic", modelId: "claude-opus-4-8" });
   });
 
   it("feature defaults are unchanged: Anthropic everywhere except the alertSuggestion experiment", () => {

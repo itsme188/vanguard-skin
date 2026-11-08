@@ -18,36 +18,44 @@ const CATALOG = [
 ];
 
 describe("resolveFamilyModel", () => {
-  it("ladder is fable, opus, sonnet", () => {
-    expect([...SUMMARY_FAMILY_LADDER]).toEqual(["fable", "opus", "sonnet"]);
+  it("ladder is opus, sonnet — Fable is not a rung (2026-11-07 ruling)", () => {
+    expect([...SUMMARY_FAMILY_LADDER]).toEqual(["opus", "sonnet"]);
   });
 
   it("returns the newest id of the chosen family, no fallback", () => {
-    expect(resolveFamilyModel("fable", CATALOG)).toEqual({
-      modelId: "claude-fable-5-1",
-      family: "fable",
-      fellBackFrom: null,
-    });
     expect(resolveFamilyModel("opus", CATALOG)).toEqual({
       modelId: "claude-opus-5-5",
       family: "opus",
       fellBackFrom: null,
     });
+    expect(resolveFamilyModel("sonnet", CATALOG)).toEqual({
+      modelId: "claude-sonnet-5-5",
+      family: "sonnet",
+      fellBackFrom: null,
+    });
   });
 
   it("auto-follows a newer version in the family", () => {
-    expect(resolveFamilyModel("fable", [...CATALOG, "claude-fable-5-5"])?.modelId).toBe(
-      "claude-fable-5-5",
+    expect(resolveFamilyModel("opus", [...CATALOG, "claude-opus-5-9"])?.modelId).toBe(
+      "claude-opus-5-9",
     );
   });
 
   it("walks DOWN the ladder when the family has no id", () => {
-    const noFable = CATALOG.filter((id) => !id.startsWith("claude-fable"));
-    expect(resolveFamilyModel("fable", noFable)).toEqual({
-      modelId: "claude-opus-5-5",
-      family: "opus",
-      fellBackFrom: "fable",
+    const noOpus = CATALOG.filter((id) => !id.startsWith("claude-opus"));
+    expect(resolveFamilyModel("opus", noOpus)).toEqual({
+      modelId: "claude-sonnet-5-5",
+      family: "sonnet",
+      fellBackFrom: "opus",
     });
+  });
+
+  it("never reaches Fable, even when the catalog lists it", () => {
+    // Fable is still in CATALOG on purpose: the ladder, not the catalog, is
+    // what keeps a run off it. Opus is the top rung, so nothing resolves above.
+    for (const family of SUMMARY_FAMILY_LADDER) {
+      expect(resolveFamilyModel(family, CATALOG)?.modelId).not.toContain("fable");
+    }
   });
 
   it("never walks UP: sonnet with no sonnet id is null", () => {
@@ -65,22 +73,22 @@ describe("resolveFamilyModel", () => {
   });
 
   it("returns null on an empty catalog", () => {
-    expect(resolveFamilyModel("fable", [])).toBeNull();
+    expect(resolveFamilyModel("opus", [])).toBeNull();
   });
 });
 
 describe("labels", () => {
   it("familyNowLabel names the version the family resolves to now", () => {
-    expect(familyNowLabel("fable", CATALOG)).toBe("Fable · now 5.1");
+    expect(familyNowLabel("sonnet", CATALOG)).toBe("Sonnet · now 5.5");
     expect(familyNowLabel("opus", CATALOG)).toBe("Opus · now 5.5");
   });
 
   it("familyNowLabel says not available when the family has no id (no fallback)", () => {
-    const noFable = CATALOG.filter((id) => !id.startsWith("claude-fable"));
-    expect(familyNowLabel("fable", noFable)).toBe("Fable · not available");
+    const noOpus = CATALOG.filter((id) => !id.startsWith("claude-opus"));
+    expect(familyNowLabel("opus", noOpus)).toBe("Opus · not available");
   });
 
-  it("modelLabel", () => {
+  it("modelLabel still reads a stored Fable id (past runs keep their label)", () => {
     expect(modelLabel("claude-opus-5-5")).toBe("Opus 5.5");
     expect(modelLabel("claude-fable-5")).toBe("Fable 5");
     expect(modelLabel("claude-haiku-4-5-20251001")).toBe("Haiku 4.5");
@@ -88,9 +96,10 @@ describe("labels", () => {
 });
 
 describe("isSummaryChoice", () => {
-  it("rejects a pair outside the five", () => {
-    expect(isSummaryChoice({ family: "sonnet", effort: "high" })).toBe(false);
+  it("accepts the four offered pairs and rejects a retired family", () => {
+    expect(isSummaryChoice({ family: "sonnet", effort: "high" })).toBe(true);
     expect(isSummaryChoice({ family: "opus", effort: "high" })).toBe(true);
+    expect(isSummaryChoice({ family: "fable", effort: "high" })).toBe(false);
   });
 });
 
