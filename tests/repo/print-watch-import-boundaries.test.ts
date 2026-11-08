@@ -32,7 +32,9 @@ const REPO = process.cwd();
 const PRINT_WATCH_DIR = path.join(REPO, "lib", "print-watch");
 
 /** The ONLY `lib/print-watch` modules a `"use client"` file may import. */
-const CLIENT_SAFE = ["types", "first-pass-types", "reconcile", "first-pass-format", "extra-metrics"] as const;
+// snippet-measure-gate (2026-11-08) is a pure lexical check with no imports
+// beyond ./types; the reconciler reads it, so the client bundle does too.
+const CLIENT_SAFE = ["types", "first-pass-types", "reconcile", "first-pass-format", "extra-metrics", "snippet-measure-gate"] as const;
 
 /** What a client-safe module may never reach for. */
 const SERVER_ONLY_PREFIXES = [
