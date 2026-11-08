@@ -31,7 +31,16 @@ export function getLedgerCensus(db: Database.Database): LedgerCensus {
   return {
     closedSales: count("SELECT COUNT(*) AS n FROM tax_lot_sales"),
     openLots: count("SELECT COUNT(*) AS n FROM tax_lots WHERE quantity_remaining > 0"),
-    engineCloses: count("SELECT COUNT(*) AS n FROM transactions WHERE type = 'RECONCILE_CLOSE'"),
+    // Sale rows closed by an engine RECONCILE_CLOSE, the unit the Tax Lots
+    // page's "engine-estimated closes" uses (lib/queries/tax-lots.ts
+    // ENGINE_ESTIMATED). Counting the RECONCILE_CLOSE transactions instead
+    // put a smaller figure under the same label on the recompute dialog
+    // (QA 2026-11-08).
+    engineCloses: count(
+      `SELECT COUNT(*) AS n FROM tax_lot_sales tls
+       JOIN transactions t ON t.id = tls.sale_transaction_id
+       WHERE t.type = 'RECONCILE_CLOSE'`,
+    ),
   };
 }
 
