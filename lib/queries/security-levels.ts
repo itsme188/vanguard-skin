@@ -838,6 +838,9 @@ export interface PendingReviewLevel extends SecurityLevel {
   symbol: string;
   security_name: string | null;
   current_price: number | null;
+  /** The stored close's date behind `current_price`, so the card can date a
+   *  figure that is not today's instead of calling it "now" (QA 2026-11-08). */
+  price_date: string | null;
   /** Carried so the review inbox can judge the plausibility band BEFORE the
    *  user approves — options are exempt from it (isLevelBeyondScanRange). */
   security_type: string | null;
@@ -847,11 +850,11 @@ export function getPendingReviewLevels(db: Database.Database): PendingReviewLeve
   return db
     .prepare(
       `SELECT sl.*, s.symbol, s.name AS security_name, s.security_type,
-         p.close_price AS current_price
+         p.close_price AS current_price, p.date AS price_date
        FROM security_levels sl
        JOIN securities s ON s.id = sl.security_id
        LEFT JOIN (
-         SELECT security_id, close_price
+         SELECT security_id, close_price, date
          FROM prices p1
          WHERE date = (SELECT MAX(date) FROM prices p2 WHERE p2.security_id = p1.security_id)
        ) p ON p.security_id = sl.security_id

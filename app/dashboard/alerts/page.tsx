@@ -24,6 +24,12 @@ import {
   parseStoredTimestamp,
 } from "@/lib/format";
 import { suggestOutcomeMessage } from "@/lib/alerts/suggest-message";
+import {
+  DATED_PRICE_EXPLANATION,
+  priceAsOfLabel,
+  priceIsFromEarlierDay,
+} from "@/lib/alerts/price-as-of-label";
+import { todayET } from "@/lib/calendar/date-utils";
 import { isFinalSuggestionFailure } from "@/lib/alerts/suggestion-failure";
 import {
   BEYOND_SCAN_RANGE_EXPLANATION,
@@ -197,6 +203,9 @@ interface PendingLevel {
   timeframe: string | null;
   source_article_id: number | null;
   current_price: number | null;
+  /** Date of the stored close behind current_price (getPendingReviewLevels);
+   *  a close from an earlier day is dated on the card, never called "now". */
+  price_date?: string | null;
   /** Needed to judge the plausibility band before approving — options are
    *  exempt from it. Supplied by getPendingReviewLevels. */
   security_type?: string | null;
@@ -1665,13 +1674,20 @@ function ArmedLevelRow({ level: l }: { level: ArmedLevelView }) {
       </div>
       {l.current_price !== null && (
         <div className="text-right shrink-0">
-          {/* "Now" is a claim. When the close behind it is outside the scan
-              window, date it instead of implying it's live. */}
+          {/* "Now" is a claim. A close from an earlier Eastern day is dated
+              (the hub for the same symbol says "AS OF <date>"); the scanner's
+              own stale flag adds its explanation on top. */}
           <div
             className="text-[10px] text-ink-faint uppercase tracking-wide"
-            title={stalePrice ? STALE_PRICE_EXPLANATION : undefined}
+            title={
+              stalePrice
+                ? STALE_PRICE_EXPLANATION
+                : priceIsFromEarlierDay(l.price_date, todayET())
+                  ? DATED_PRICE_EXPLANATION
+                  : undefined
+            }
           >
-            {stalePrice && l.price_date ? l.price_date : "Now"}
+            {priceAsOfLabel(l.price_date, todayET())}
           </div>
           <div className="text-sm font-mono text-ink-dim">
             {formatUSDPrecise(l.current_price)}
@@ -2273,7 +2289,9 @@ function ReviewRow({
               >
                 ({formatPercent(Math.abs(distVal), 1)} vs level
                 {level.current_price != null
-                  ? ` · now ${formatUSDPrecise(level.current_price)}`
+                  ? priceIsFromEarlierDay(level.price_date, todayET())
+                    ? ` · ${formatUSDPrecise(level.current_price)} at the ${level.price_date} close`
+                    : ` · now ${formatUSDPrecise(level.current_price)}`
                   : ""}
                 )
               </span>
