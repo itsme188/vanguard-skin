@@ -17,7 +17,7 @@ import { liveOptionExpirationSql } from "@/lib/compute/option-expiry";
 import { accountScopeAndSql } from "@/lib/queries/account-scope-sql";
 import { BETA_LOOKBACK_DAYS } from "@/lib/queries/security-betas";
 import { getUsdPerUnit } from "@/lib/queries/fx-rates";
-import { isLeveragedOrInverseExposure } from "@/lib/compute/leveraged-fund";
+import { resolveLeveragedExposure } from "@/lib/compute/leveraged-fund";
 
 export interface HypotheticalLeg {
   symbol: string;
@@ -56,10 +56,12 @@ export interface ExposureDelta {
   // instead of rendering a misleading Δ $0 — "explain no-ops" convention.
   droppedLegs: DroppedLeg[];
   /**
-   * Leveraged or inverse funds, and options on them
-   * (`isLeveragedOrInverseExposure`, owner ruling 2026-11-01, stopgap) held in scope or named by a leg: left out of every
-   * bucket in both snapshots, so the weights are over the modelled book.
-   * Symbols, sorted.
+   * Leveraged or inverse funds, and options on them, that carry NO signed
+   * leverage factor (`resolveLeveragedExposure`; owner ruling 2026-11-01,
+   * stopgap) held in scope or named by a leg: left out of every bucket in
+   * both snapshots, so the weights are over the modelled book. Symbols,
+   * sorted. A flagged fund WITH a factor is modelled and is not listed here
+   * (theme T2, 2026-11-07).
    */
   leveragedFundsNotModelled: string[];
 }
@@ -89,8 +91,19 @@ interface HoldingRow {
   marketValue: number;
   beta: number;
   factors: Partial<Record<FactorColumn, string>>;
-  /** A leveraged or inverse fund: kept out of every bucket in snapshot(). */
+  /**
+   * A leveraged or inverse fund (or an option on one) with no signed factor:
+   * kept out of every bucket in snapshot(), and refused as a leg.
+   */
   leveragedOrInverse: boolean;
+  /**
+   * The signed multiple of its index a flagged fund delivers (+3 / -3 / +2 /
+   * -2), or null for every ordinary row. snapshot() counts a factored row's
+   * EXPOSURE — market value times this factor — in the beta, sector and
+   * factor buckets, so a long inverse fund subtracts from the sector it
+   * shorts instead of adding to it.
+   */
+  leverageFactor: number | null;
 }
 
 /**
@@ -134,6 +147,8 @@ function loadCurrentHoldings(
         s_u.security_type AS underlying_security_type,
         s_u.fund_category AS underlying_fund_category,
         s_u.name AS underlying_name,
+        s.leverage_factor,
+        s_u.leverage_factor AS underlying_leverage_factor,
         SUM(lh.quantity) AS quantity,
         lp.close_price AS price,
         ${FACTOR_COLUMNS.map((f) => `sf.${f} AS ${f}`).join(",\n        ")},
@@ -161,6 +176,8 @@ function loadCurrentHoldings(
       underlying_security_type: string | null;
       underlying_fund_category: string | null;
       underlying_name: string | null;
+      leverage_factor: number | null;
+      underlying_leverage_factor: number | null;
       quantity: number;
       price: number | null;
       cached_beta: number | null;
@@ -185,7 +202,7 @@ function loadCurrentHoldings(
         marketValue: marketValue(r.quantity, r.price!, r.security_type, r.multiplier, getUsdPerUnit(db, r.currency)),
         beta: r.cached_beta ?? 1.0,
         factors,
-        leveragedOrInverse: leveragedExposureOf(r),
+        ...leveragedExposureOf(r),
       };
     });
 }
@@ -193,21 +210,40 @@ function loadCurrentHoldings(
 /**
  * The leveraged-fund rule for a What-if row: the row itself, or an option
  * whose underlying is such a fund (QA 2026-11-03; lib/compute/leveraged-fund.ts).
+ * Returns both fields the snapshot reads — `leveragedOrInverse` is true only
+ * for a flagged row with NO factor, which is the row the stopgap still leaves
+ * out of every bucket.
  */
 function leveragedExposureOf(r: {
   security_type: string | null;
   fund_category: string | null;
   name: string | null;
+  leverage_factor: number | null;
   underlying_security_type: string | null;
   underlying_fund_category: string | null;
   underlying_name: string | null;
-}): boolean {
-  return isLeveragedOrInverseExposure(
-    { security_type: r.security_type, fund_category: r.fund_category, name: r.name },
+  underlying_leverage_factor: number | null;
+}): { leveragedOrInverse: boolean; leverageFactor: number | null } {
+  const resolved = resolveLeveragedExposure(
+    {
+      security_type: r.security_type,
+      fund_category: r.fund_category,
+      name: r.name,
+      leverage_factor: r.leverage_factor,
+    },
     r.underlying_security_type === null
       ? null
-      : { security_type: r.underlying_security_type, fund_category: r.underlying_fund_category, name: r.underlying_name },
+      : {
+          security_type: r.underlying_security_type,
+          fund_category: r.underlying_fund_category,
+          name: r.underlying_name,
+          leverage_factor: r.underlying_leverage_factor,
+        },
   );
+  return {
+    leveragedOrInverse: resolved.flagged && resolved.factor === null,
+    leverageFactor: resolved.factor,
+  };
 }
 
 /**
@@ -230,7 +266,16 @@ function lookupSymbol(
   symbol: string
 ): Pick<
   HoldingRow,
-  "symbol" | "securityType" | "sector" | "currency" | "multiplier" | "price" | "beta" | "factors" | "leveragedOrInverse"
+  | "symbol"
+  | "securityType"
+  | "sector"
+  | "currency"
+  | "multiplier"
+  | "price"
+  | "beta"
+  | "factors"
+  | "leveragedOrInverse"
+  | "leverageFactor"
 > | null {
   const row = db
     .prepare(
@@ -247,6 +292,8 @@ function lookupSymbol(
         s_u.security_type AS underlying_security_type,
         s_u.fund_category AS underlying_fund_category,
         s_u.name AS underlying_name,
+        s.leverage_factor,
+        s_u.leverage_factor AS underlying_leverage_factor,
         (SELECT p.close_price FROM prices p
           WHERE p.security_id = s.id ORDER BY p.date DESC LIMIT 1) AS price,
         ${FACTOR_COLUMNS.map((f) => `sf.${f} AS ${f}`).join(",\n        ")},
@@ -272,6 +319,8 @@ function lookupSymbol(
       underlying_security_type: string | null;
       underlying_fund_category: string | null;
       underlying_name: string | null;
+      leverage_factor: number | null;
+      underlying_leverage_factor: number | null;
       price: number | null;
       cached_beta: number | null;
     } & Record<FactorColumn, string | null>) | undefined;
@@ -292,14 +341,20 @@ function lookupSymbol(
     price: row.price,
     beta: row.cached_beta ?? 1.0,
     factors,
-    leveragedOrInverse: leveragedExposureOf(row),
+    ...leveragedExposureOf(row),
   };
 }
 
 function snapshot(allHoldings: HoldingRow[]): ExposureSnapshot {
-  // A leveraged or inverse fund has no linear beta, sector or factor exposure
-  // to add (owner ruling 2026-11-01, stopgap): it is left out of every bucket
-  // AND of the total, so the weights are over the modelled book.
+  // A leveraged or inverse fund with NO signed factor has no beta, sector or
+  // factor exposure anyone can state (owner ruling 2026-11-01, stopgap): it
+  // is left out of every bucket AND of the total, so the weights are over the
+  // modelled book. One WITH a factor is modelled at its exposure — market
+  // value times the factor (theme T2, 2026-11-07) — so a long 3x inverse
+  // semiconductor fund subtracts three times its money from Technology
+  // instead of adding one times it. Its own money still counts once in
+  // `totalValue` and in the concentration list: leverage changes the exposure
+  // a position carries, not how many dollars sit in it.
   const holdings = allHoldings.filter((h) => !h.leveragedOrInverse);
   const totalValue = holdings.reduce((s, h) => s + h.marketValue, 0);
   const sectorWeights: Record<string, number> = {};
@@ -309,13 +364,16 @@ function snapshot(allHoldings: HoldingRow[]): ExposureSnapshot {
 
   let betaWeighted = 0;
   for (const h of holdings) {
-    const w = totalValue > 0 ? h.marketValue / totalValue : 0;
+    // The exposure a position carries: its money, times its signed leverage
+    // factor where it has one.
+    const exposureValue = h.marketValue * (h.leverageFactor ?? 1);
+    const w = totalValue > 0 ? exposureValue / totalValue : 0;
     betaWeighted += w * h.beta;
     const sector = h.sector ?? "Unknown";
-    sectorWeights[sector] = (sectorWeights[sector] ?? 0) + h.marketValue;
+    sectorWeights[sector] = (sectorWeights[sector] ?? 0) + exposureValue;
     for (const col of FACTOR_COLUMNS) {
       const bucket = h.factors[col] ?? "Unknown";
-      factorTilts[col][bucket] = (factorTilts[col][bucket] ?? 0) + h.marketValue;
+      factorTilts[col][bucket] = (factorTilts[col][bucket] ?? 0) + exposureValue;
     }
   }
 
@@ -537,6 +595,7 @@ export function computeExposureDelta(
       beta: sym.beta,
       factors: sym.factors,
       leveragedOrInverse: sym.leveragedOrInverse,
+      leverageFactor: sym.leverageFactor,
     };
   });
   const after = snapshot(resolved.rows);

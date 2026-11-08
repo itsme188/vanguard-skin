@@ -10,7 +10,7 @@ import { getEtfSectorWeights } from "@/lib/queries/etf-weights";
 import { explodeHoldingBySector } from "@/lib/compute/explode-sector";
 import { liveOptionExpirationSql } from "@/lib/compute/option-expiry";
 import { isCashEquivalentSecurity } from "@/lib/compute/cash-equivalents";
-import { isLeveragedOrInverseExposure, summarizeUnmodelledLeveragedFunds } from "@/lib/compute/leveraged-fund";
+import { resolveLeveragedExposure, summarizeUnmodelledLeveragedFunds } from "@/lib/compute/leveraged-fund";
 
 /**
  * Defense/Hedging engine — classifies the book into hedged pairs (Tier 1),
@@ -764,6 +764,8 @@ interface DefenseHoldingRow {
   sector: string | null;
   geography: string | null;
   currency: string | null;
+  /** Signed leverage factor (migration 102); null for an ordinary row. */
+  leverage_factor: number | null;
   quantity: number;
   mv: number;
 }
@@ -928,7 +930,7 @@ export function computeDefenseAnalysis(db: Database.Database, accountIds?: numbe
     )
     SELECT
       s.id AS security_id, s.symbol, s.name, s.security_type, s.fund_category, s.option_type, s.underlying_symbol,
-      s.sector, s.geography, s.currency, h.quantity,
+      s.sector, s.geography, s.currency, s.leverage_factor, h.quantity,
       CASE
         WHEN lp.close_price IS NOT NULL
           THEN ${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}
@@ -965,12 +967,16 @@ export function computeDefenseAnalysis(db: Database.Database, accountIds?: numbe
   }
   const loadedRows = [...aggregated.values()];
 
-  // ─── Leveraged and inverse funds (owner ruling 2026-11-01, item 2) ────
-  // A daily-reset leveraged or inverse fund, or an option on one, does not
-  // move as a linear multiple of its index, so it is no hedge for anything
-  // in this book. Hold it out of the instrument universe BEFORE
-  // classification (no pair, proxy, standalone bet, ranked exposure, hedge
-  // score or summary count) and disclose it (`leveragedFundsUnmodelled`).
+  // ─── Leveraged and inverse funds (owner ruling 2026-11-01, item 2;
+  // signed factors added under theme T2, 2026-11-07) ───────────────────
+  // With a STORED signed factor the fund IS modelled here: it enters the
+  // instrument universe and its exposure is its market value times the
+  // factor, so a long 3x inverse fund carries NEGATIVE (short) exposure to
+  // its index instead of counting as long exposure (TODO finding (h)).
+  // WITHOUT a factor nothing can say which way it moves or by how much, so
+  // it is held out of the universe BEFORE classification (no pair, proxy,
+  // standalone bet, ranked exposure, hedge score or summary count) and
+  // disclosed (`leveragedFundsUnmodelled`) — the stopgap, unchanged.
   const optionUnderlyingSymbols = [
     ...new Set(
       loadedRows
@@ -980,12 +986,12 @@ export function computeDefenseAnalysis(db: Database.Database, accountIds?: numbe
   ];
   const underlyingIdentityBySymbol = new Map<
     string,
-    { security_type: string | null; fund_category: string | null; name: string | null }
+    { security_type: string | null; fund_category: string | null; name: string | null; leverage_factor: number | null }
   >();
   if (optionUnderlyingSymbols.length > 0) {
     const identityRows = db
       .prepare(
-        `SELECT symbol, security_type, fund_category, name FROM securities
+        `SELECT symbol, security_type, fund_category, name, leverage_factor FROM securities
          WHERE symbol IN (${optionUnderlyingSymbols.map(() => "?").join(",")})
            AND LOWER(COALESCE(security_type, '')) != 'option'
          ORDER BY id`
@@ -995,17 +1001,24 @@ export function computeDefenseAnalysis(db: Database.Database, accountIds?: numbe
         security_type: string | null;
         fund_category: string | null;
         name: string | null;
+        leverage_factor: number | null;
       }>;
     for (const r of identityRows) {
       if (!underlyingIdentityBySymbol.has(r.symbol)) underlyingIdentityBySymbol.set(r.symbol, r);
     }
   }
+  const leveragedBySecurityId = new Map<number, number>();
   const leveragedFlags = loadedRows.map((r) => {
     const underlying =
       (r.security_type ?? "").toLowerCase() === "option"
         ? underlyingIdentityBySymbol.get(rawUnderlyingOf(r)) ?? null
         : null;
-    return isLeveragedOrInverseExposure(r, underlying);
+    const resolved = resolveLeveragedExposure(r, underlying);
+    if (resolved.flagged && resolved.factor !== null) {
+      leveragedBySecurityId.set(r.security_id, resolved.factor);
+    }
+    // Only an unsigned flagged row is held out and disclosed.
+    return resolved.flagged && resolved.factor === null;
   });
   const leveragedFundsUnmodelled = summarizeUnmodelledLeveragedFunds(
     loadedRows.map((r, idx) => ({
@@ -1194,6 +1207,14 @@ export function computeDefenseAnalysis(db: Database.Database, accountIds?: numbe
     } else {
       exposure = row.mv;
     }
+
+    // A leveraged or inverse fund's exposure to the thing it tracks is its
+    // money times its signed factor (theme T2): a long 3x inverse fund is
+    // SHORT three times its market value. For an option on such a fund the
+    // same factor converts delta-notional in the fund into notional in the
+    // index. `marketValue` below stays the real money, unscaled.
+    const leverageFactor = leveragedBySecurityId.get(row.security_id);
+    if (leverageFactor !== undefined) exposure *= leverageFactor;
 
     instruments.push({
       securityId: row.security_id,

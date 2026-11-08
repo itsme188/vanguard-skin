@@ -32,7 +32,7 @@ import {
 } from "./bond-duration";
 import { todayET } from "@/lib/calendar/date-utils";
 import { isInterestRateHedgeFund, scenarioMovesRates, summarizeUnmodelledRateHedges } from "./rate-hedge";
-import { isLeveragedOrInverseExposure, summarizeUnmodelledLeveragedFunds } from "./leveraged-fund";
+import { resolveLeveragedExposure, summarizeUnmodelledLeveragedFunds } from "./leveraged-fund";
 import {
   SCENARIO_RECIPES,
   findRecipe,
@@ -215,6 +215,8 @@ export function computeScenario(
          s_u.security_type AS underlying_security_type,
          s_u.fund_category AS underlying_fund_category,
          s_u.name AS underlying_name,
+         s.leverage_factor,
+         s_u.leverage_factor AS underlying_leverage_factor,
 ${OPTION_PRICING_COLUMNS_SQL},
          ${adjustedMarketValueSQL("lh.total_qty", "COALESCE(lp.close_price, 0)", "s.security_type", "s.multiplier", "fx.usd_per_unit")} AS market_value
        FROM latest_holdings lh
@@ -246,6 +248,9 @@ ${OPTION_PRICING_JOINS_SQL}
     /** The underlying's fund category and name (null for non-options); read by the leveraged-fund rule. */
     underlying_fund_category: string | null;
     underlying_name: string | null;
+    /** Signed leverage factor of the row and of its underlying (migration 102). */
+    leverage_factor: number | null;
+    underlying_leverage_factor: number | null;
     // Option pricing inputs (null for non-options) — see OPTION_PRICING_COLUMNS_SQL.
     strike_price: number | null;
     expiration_date: string | null;
@@ -275,19 +280,30 @@ ${OPTION_PRICING_JOINS_SQL}
   // 2. Estimate beta for each position
   const positionImpacts: PositionImpact[] = positions.map((pos): PositionImpact => {
     const isOption = isOptionSecurityType(pos.security_type);
-    // A daily-reset leveraged or inverse fund has no linear leg over a
-    // multi-day shock, and no stored sign or multiple yet: it takes no figure
-    // in any scenario and is named and counted under leveragedFundsUnmodelled
-    // (owner ruling 2026-11-01, stopgap). Its value stays in the book. An
-    // option on such a fund is treated exactly like the fund (QA 2026-11-03).
-    if (
-      isLeveragedOrInverseExposure(
-        { security_type: pos.security_type, fund_category: pos.fund_category, name: pos.security_name },
-        pos.underlying_security_type === null
-          ? null
-          : { security_type: pos.underlying_security_type, fund_category: pos.underlying_fund_category, name: pos.underlying_name },
-      )
-    ) {
+    // A leveraged or inverse fund (or an option on one) with a STORED signed
+    // factor is modelled: the move of the index it tracks, times the factor
+    // (theme T2, 2026-11-07). One with no factor has no sign and no multiple,
+    // so it takes no figure in any scenario and is named and counted under
+    // leveragedFundsUnmodelled (owner ruling 2026-11-01, stopgap). Its value
+    // stays in the book either way. An option on such a fund inherits the
+    // fund's factor through the shared reader (QA 2026-11-03).
+    const leveraged = resolveLeveragedExposure(
+      {
+        security_type: pos.security_type,
+        fund_category: pos.fund_category,
+        name: pos.security_name,
+        leverage_factor: pos.leverage_factor,
+      },
+      pos.underlying_security_type === null
+        ? null
+        : {
+            security_type: pos.underlying_security_type,
+            fund_category: pos.underlying_fund_category,
+            name: pos.underlying_name,
+            leverage_factor: pos.underlying_leverage_factor,
+          },
+    );
+    if (leveraged.flagged && leveraged.factor === null) {
       return {
         securityId: pos.security_id,
         symbol: pos.symbol,
@@ -389,7 +405,17 @@ ${OPTION_PRICING_JOINS_SQL}
 
     // Both legs describe the move of the thing the position tracks — for an
     // option, that is its UNDERLYING.
-    const underlyingMove = marketLeg + rateLeg;
+    //
+    // A leveraged or inverse fund's own move is its INDEX's move times its
+    // signed factor: beta carries index-versus-market, the factor carries
+    // fund-versus-index, and the two compose without overlapping. A 3x bear
+    // semiconductor fund in a -15% semis shock therefore GAINS (QA finding
+    // #1, where it printed as the biggest loser). The fund cannot fall more
+    // than its whole NAV, so the factored move floors at -100%: for an
+    // option, that floor applies to the underlying fund before repricing.
+    const trackedMove = marketLeg + rateLeg;
+    const underlyingMove =
+      leveraged.factor !== null ? Math.max(trackedMove * leveraged.factor, -1) : trackedMove;
 
     let changePercent: number;
     let ivSource: OptionIvSource | undefined;

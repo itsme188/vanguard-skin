@@ -31,6 +31,7 @@ import {
   markOptionSectorsChecked,
 } from "../securities/classify-option-sectors";
 import { classifyFactors } from "../compute/classify-factors";
+import { applyLeverageFactors } from "../securities/apply-leverage-factors";
 import { purgeExpiredOptionHoldings } from "../mutations/expired-options";
 import { purgeClosedOptionHoldings } from "../mutations/closed-positions";
 import { purgeMaturedBondHoldings } from "../mutations/matured-bonds";
@@ -227,6 +228,30 @@ export async function runAutoRefresh(
         }
       } else {
         console.log("[auto-refresh] All securities already enriched, skipping");
+      }
+
+      // ── Step 2.4: Leverage factors (full only) ────────────────────
+      // Deterministic, no AI call, no network: derive each leveraged or
+      // inverse fund's signed multiple from its own stored fields so the
+      // scenario engines, the What-if and Defense can model it instead of
+      // naming it as not modelled (theme T2; lib/securities/leverage-factor.ts).
+      // Runs BEFORE the sector steps because it also corrects a flagged
+      // fund's sector from the index its name states (QA finding #44).
+      try {
+        const leverage = applyLeverageFactors(db);
+        if (leverage.factorsWritten > 0 || leverage.factorsCleared > 0 || leverage.sectorsRewritten > 0) {
+          console.log(
+            `[auto-refresh] Leverage factors: ${leverage.factorsWritten} written, ` +
+              `${leverage.factorsCleared} cleared, ${leverage.sectorsRewritten} sectors corrected` +
+              (leverage.unsigned.length > 0
+                ? `, ${leverage.unsigned.length} flagged without a factor`
+                : ""),
+          );
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : "Leverage-factor pass failed";
+        errors.push(msg);
+        console.error("[auto-refresh] Leverage-factor error:", msg);
       }
 
       // ── Step 2.5: Sector-classify new option underlyings (full only) ──
