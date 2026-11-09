@@ -171,3 +171,11 @@ export function resolveLeveragedExposure(
   }
   return NOT_FLAGGED;
 }
+
+/**
+ * The signed multiple as the card prints it: 3 -> "3x", -3 -> "-3x". Read by
+ * the scenario card beside the beta chip (QA 2026-11-09).
+ */
+export function leverageFactorLabel(factor: number): string {
+  return `${factor}x`;
+}

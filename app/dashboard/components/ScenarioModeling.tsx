@@ -5,6 +5,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import type { ScenarioResult } from "@/lib/compute/scenarios";
 import { findRecipe } from "@/lib/compute/scenario-recipes";
 import { isOptionSecurityType } from "@/lib/compute/option-elasticity";
+import { leverageFactorLabel } from "@/lib/compute/leveraged-fund";
 import { VOL_MOVE_MIN, VOL_MOVE_MAX, type OptionIvSource, type OptionUnmodelledReason } from "@/lib/compute/option-reprice";
 import { FUND_DEFAULT_DURATION_YEARS, type BondUnmodelledReason } from "@/lib/compute/bond-duration";
 import { Count, Pct, PrivateText } from "@/lib/privacy/components";
@@ -52,6 +53,11 @@ const BOND_UNMODELLED_REASON_LABEL: Record<BondUnmodelledReason, string> = {
   "fund-category-unconfirmed": "no recognised bond category, and no stored duration",
 };
 const BETA_TITLE = "Beta vs the market: 1.0 moves with the index.";
+// A leveraged or inverse fund's move is its index's move times this signed
+// factor (theme T2); the chip says so beside the beta, or a -30% on a -10%
+// market move reads as unexplained (QA 2026-11-09).
+const LEVERAGE_FACTOR_TITLE =
+  "Leveraged / inverse fund: its move is this many times the move of the index it tracks.";
 
 // ─── Formatters ──────────────────────────────────────────────────
 
@@ -437,8 +443,12 @@ export function ScenarioModelingCard({ scope }: { scope?: string }) {
                               ) : (
                                 !findRecipe(result.scenario.id) &&
                                 !isOptionSecurityType(pos.securityType) && (
-                                  <span className="text-ink-faint text-[10px] shrink-0" title={BETA_TITLE}>
+                                  <span
+                                    className="text-ink-faint text-[10px] shrink-0 whitespace-nowrap"
+                                    title={pos.leverageFactor !== undefined ? `${BETA_TITLE} ${LEVERAGE_FACTOR_TITLE}` : BETA_TITLE}
+                                  >
                                     {"β"}{pos.beta.toFixed(1)}
+                                    {pos.leverageFactor !== undefined && ` · ${leverageFactorLabel(pos.leverageFactor)}`}
                                   </span>
                                 )
                               )}
@@ -491,8 +501,12 @@ export function ScenarioModelingCard({ scope }: { scope?: string }) {
                               ) : (
                                 !findRecipe(result.scenario.id) &&
                                 !isOptionSecurityType(pos.securityType) && (
-                                  <span className="text-ink-faint text-[10px] shrink-0" title={BETA_TITLE}>
+                                  <span
+                                    className="text-ink-faint text-[10px] shrink-0 whitespace-nowrap"
+                                    title={pos.leverageFactor !== undefined ? `${BETA_TITLE} ${LEVERAGE_FACTOR_TITLE}` : BETA_TITLE}
+                                  >
                                     {"β"}{pos.beta.toFixed(1)}
+                                    {pos.leverageFactor !== undefined && ` · ${leverageFactorLabel(pos.leverageFactor)}`}
                                   </span>
                                 )
                               )}
