@@ -115,15 +115,29 @@ export function symbolWideNote(symbol: string): string {
  * keeps one row per ticker and a Save overwrites the note and the verified
  * date with it, so the line says so.
  */
+/**
+ * The resolver's source token in words. ONE table for the "Reports at" line
+ * and the Standing line, so the two never disagree (QA 2026-11-09: the first
+ * printed the stored token "web_verified" while the second said
+ * "web-verified"). A token this table does not know is still never printed
+ * with its underscores.
+ */
+export function releaseTimeSourceWord(source: string): string {
+  switch (source) {
+    case "user":
+      return "set by you";
+    case "web_verified":
+      return "web-verified";
+    case "observed":
+      return "observed from past prints";
+    default:
+      return source.replace(/_/g, " ");
+  }
+}
+
 export function standingOverrideLine(override: StandingOverride | null | undefined): string | null {
   if (!override) return null;
-  const who =
-    override.source === "user"
-      ? "set by you"
-      : override.source === "web_verified"
-        ? "web-verified"
-        : override.source;
-  const parts = [override.release_time, who];
+  const parts = [override.release_time, releaseTimeSourceWord(override.source)];
   if (override.verified_for_date) parts.push(`verified for ${override.verified_for_date}`);
   const note = override.note?.trim();
   if (note) parts.push(`“${note}”`);
@@ -282,11 +296,11 @@ function ReleaseTimeEditor({
       <p className="text-[11px] text-ink mb-1">
         Reports at{" "}
         <span className="font-mono">{reportsAtTime(rt, releaseTime) ?? "—"}</span>
-        {source && <span className="text-ink-dim"> · {source}</span>}
+        {source && <span className="text-ink-dim"> · {releaseTimeSourceWord(source)}</span>}
       </p>
       <p className="text-[10px] text-ink-dim mb-1">{symbolWideNote(symbol)}</p>
       {standingOverrideLine(rt?.override) && (
-        <p className="text-[10px] text-ink-dim mb-1">{standingOverrideLine(rt?.override)}</p>
+        <p className="text-[10px] text-ink-dim mb-1 [overflow-wrap:anywhere]">{standingOverrideLine(rt?.override)}</p>
       )}
       {notUsed && <p className="text-[10px] text-ink-dim mb-1">{notUsed}</p>}
       {notApplied && <p className="text-[10px] text-ink-dim mb-1">{notApplied}</p>}
