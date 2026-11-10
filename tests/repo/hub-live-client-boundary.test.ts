@@ -61,7 +61,7 @@ const CLIENT_ONLY_SUBTREES = [path.join(ROOT, "hub-live"), path.join(ROOT, "live
 
 /** Kept in step with tests/repo/print-watch-import-boundaries.test.ts — the
  *  assertion below fails if the two lists drift apart, in EITHER direction. */
-const CLIENT_SAFE = ["types", "first-pass-types", "reconcile", "first-pass-format", "extra-metrics"];
+const CLIENT_SAFE = ["types", "first-pass-types", "reconcile", "first-pass-format", "extra-metrics", "snippet-measure-gate"];
 
 const TYPE_ONLY_TREES = ["@/lib/earnings/", "@/lib/queries/", "@/lib/digest/", "@/lib/calendar/"];
 
