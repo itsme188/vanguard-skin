@@ -3,6 +3,7 @@
 
 import type Database from "better-sqlite3";
 import { reconcile } from "./reconcile";
+import { snippetMeasureMismatch } from "./snippet-measure-gate";
 import type {
   PrintWatchState,
   PrintWatchLine,
@@ -172,18 +173,32 @@ export function getSheet(db: Database.Database, printId: number): PrintWatchLine
     audit_json: string | null;
   }>;
 
-  return rows.map((r) => ({
-    metric_id: r.metric_id,
-    contract: JSON.parse(r.contract_json),
-    expected: r.expected_json ? JSON.parse(r.expected_json) : null,
-    state: r.state as LineStateKind,
-    value: r.value,
-    value_high: r.value_high,
-    snippet: r.snippet,
-    source_doc_id: r.source_doc_id,
-    candidates_json: r.candidates_json,
-    audit_json: r.audit_json,
-  }));
+  return rows.map((r) => {
+    const line: PrintWatchLine = {
+      metric_id: r.metric_id,
+      contract: JSON.parse(r.contract_json),
+      expected: r.expected_json ? JSON.parse(r.expected_json) : null,
+      state: r.state as LineStateKind,
+      value: r.value,
+      value_high: r.value_high,
+      snippet: r.snippet,
+      source_doc_id: r.source_doc_id,
+      candidates_json: r.candidates_json,
+      audit_json: r.audit_json,
+    };
+    // Snippet gate on READ (owner ruling 2026-11-01): a row stored 'agreed' by
+    // an older build, or a 'single_source' row the reconciler gated, is shown
+    // unconfirmed with its reason, so "Accept all agreed" never sweeps it up.
+    // Derived from the stored contract + snippet; nothing is written here.
+    if (line.state === "agreed" || line.state === "single_source") {
+      const reason = snippetMeasureMismatch(line.contract, line.snippet);
+      if (reason !== null) {
+        line.state = "single_source";
+        line.state_reason = reason;
+      }
+    }
+    return line;
+  });
 }
 
 export function markLineAccepted(db: Database.Database, printId: number, metricId: string): void {
