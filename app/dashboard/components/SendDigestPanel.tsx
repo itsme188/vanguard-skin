@@ -6,6 +6,8 @@ import { useState, useEffect, useCallback } from "react";
 import { getCurrentMonday, addDays } from "@/lib/calendar/date-utils";
 import apiFetch from "@/lib/http/apiFetch";
 import {
+  DIGEST_WINDOW_DATE_LABEL,
+  DIGEST_WINDOW_LABEL,
   DIGEST_WINDOW_OPTIONS,
   digestSendBody,
   digestWindowNeedsDate,
@@ -202,6 +204,7 @@ export function SendDigestPanel({ onClose, digestWindow, onDigestWindowChange }:
         type="text"
         value={recipient}
         onChange={(e) => setRecipient(e.target.value)}
+        aria-label="Recipient email"
         placeholder="recipient@email.com"
         className="w-full px-3 py-1.5 rounded-md bg-raised border border-edge text-sm text-ink placeholder:text-ink-faint focus:outline-none focus:border-gold"
       />
@@ -210,6 +213,7 @@ export function SendDigestPanel({ onClose, digestWindow, onDigestWindowChange }:
       {emailType === "digest" ? (
         <div className="flex flex-col gap-2">
           <select
+            aria-label={DIGEST_WINDOW_LABEL}
             value={digestMode}
             onChange={(e) => { clearResult(); setDigestMode(e.target.value as DigestMode); }}
             className="px-3 py-1.5 rounded-md bg-raised border border-edge text-sm text-ink"
@@ -224,6 +228,7 @@ export function SendDigestPanel({ onClose, digestWindow, onDigestWindowChange }:
           {digestMode === "since_date" && (
             <input
               type="date"
+              aria-label={DIGEST_WINDOW_DATE_LABEL}
               value={sinceDate}
               onChange={(e) => { clearResult(); setSinceDate(e.target.value); }}
               className="px-3 py-1.5 rounded-md bg-raised border border-edge text-sm text-ink"
@@ -233,6 +238,7 @@ export function SendDigestPanel({ onClose, digestWindow, onDigestWindowChange }:
       ) : (
         <div className="flex flex-col gap-2">
           <select
+            aria-label="Briefing week"
             value={briefingMode}
             onChange={(e) => { clearResult(); setBriefingMode(e.target.value as BriefingMode); }}
             className="px-3 py-1.5 rounded-md bg-raised border border-edge text-sm text-ink"
@@ -244,6 +250,7 @@ export function SendDigestPanel({ onClose, digestWindow, onDigestWindowChange }:
           {briefingMode === "week_of" && (
             <input
               type="date"
+              aria-label="Briefing week start date"
               value={weekOfDate}
               onChange={(e) => { clearResult(); setWeekOfDate(e.target.value); }}
               className="px-3 py-1.5 rounded-md bg-raised border border-edge text-sm text-ink"
