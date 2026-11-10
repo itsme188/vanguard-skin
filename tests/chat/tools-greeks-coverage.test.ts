@@ -149,6 +149,9 @@ describe("query_options_greeks — coverage disclosure on the tool payload", () 
 
 // ─── query_release_reactions ─────────────────────────────────────
 
+/** The seeded release's day; its snapshot's release instant sits on the same day. */
+const RELEASE_DAY = addDays(todayET(), -3);
+
 function seedRelease(symbol: string, snapshot: string | null): void {
   db.prepare(
     `INSERT INTO calendar_events
@@ -158,7 +161,7 @@ function seedRelease(symbol: string, snapshot: string | null): void {
              datetime('now'), ?)`,
   ).run(
     `test:${symbol}`,
-    addDays(todayET(), -3),
+    RELEASE_DAY,
     `${symbol} Q3 earnings`,
     symbol,
     snapshot,
@@ -190,7 +193,7 @@ describe("query_release_reactions — zero-filled legs never reach the model", (
     seedRelease(
       "QAAA",
       JSON.stringify({
-        t0_utc: "2026-09-03T20:00:00Z",
+        t0_utc: `${RELEASE_DAY}T20:00:00Z`,
         window_min: 120,
         source: "tws",
         spy: { t_pre: 100, t_post: 101.5, delta_pct: 1.5 },
@@ -205,14 +208,14 @@ describe("query_release_reactions — zero-filled legs never reach the model", (
     // The fabricated flat move is absent, not reported as +0.00%.
     expect(release.reaction?.qqq).toBeUndefined();
     // Context for the surviving leg rides along.
-    expect(release.reaction?.t0_utc).toBe("2026-09-03T20:00:00Z");
+    expect(release.reaction?.t0_utc).toBe(`${RELEASE_DAY}T20:00:00Z`);
   });
 
   it("collapses a snapshot whose every leg is a sentinel to null", async () => {
     seedRelease(
       "QBBB",
       JSON.stringify({
-        t0_utc: "2026-09-03T20:00:00Z",
+        t0_utc: `${RELEASE_DAY}T20:00:00Z`,
         window_min: 120,
         source: "tws",
         spy: { t_pre: 0, t_post: 0, delta_pct: 0 },
@@ -231,7 +234,7 @@ describe("query_release_reactions — zero-filled legs never reach the model", (
     seedRelease(
       "QCCC",
       JSON.stringify({
-        t0_utc: "2026-09-03T20:00:00Z",
+        t0_utc: `${RELEASE_DAY}T20:00:00Z`,
         window_min: 120,
         source: "tws",
         spy: { t_pre: -1, t_post: 101.5, delta_pct: 2 },

@@ -59,8 +59,9 @@ export const dynamic = "force-dynamic";
 function reactionLegInstant(
   reactionSnapshot: string | null,
   rowEnrichedAt: string | null | undefined,
+  eventDate: string | null | undefined,
 ): string | null {
-  const read = readReactionLegs(reactionSnapshot, { rowEnrichedAt });
+  const read = readReactionLegs(reactionSnapshot, { rowEnrichedAt, eventDate });
   if (!read) return null;
   const { snapshot: snap, measured } = read;
   if (!measured.symbol && !measured.spy && !measured.qqq) return null;
@@ -185,7 +186,7 @@ export async function GET(request: Request) {
     // delivered copy. That is correct and intended; `deliveryState` is what
     // tells the reader which body they are looking at.
     deliveryState: sendStateFor(audit.error),
-    reactionLegAt: phase === "recap" ? reactionLegInstant(event.reaction_snapshot, event.enriched_at) : null,
+    reactionLegAt: phase === "recap" ? reactionLegInstant(event.reaction_snapshot, event.enriched_at, event.event_date) : null,
     actualsChangedAt:
       phase === "recap" ? actualsChangedInstant(event.manual_actuals_at, audit.sent_at) : null,
     fullHtml,

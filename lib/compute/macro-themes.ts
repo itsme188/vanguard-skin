@@ -342,8 +342,12 @@ function squash(text: string): string {
   return text.replace(/\s+/g, " ").trim();
 }
 
-function formatReaction(raw: string | null, rowEnrichedAt: string | null | undefined): string | undefined {
-  const read = readReactionLegs(raw, { rowEnrichedAt });
+function formatReaction(
+  raw: string | null,
+  rowEnrichedAt: string | null | undefined,
+  eventDate: string | null | undefined,
+): string | undefined {
+  const read = readReactionLegs(raw, { rowEnrichedAt, eventDate });
   if (!read) return undefined;
   const { measured } = read;
   const parts: string[] = [];
@@ -362,7 +366,7 @@ function formatReaction(raw: string | null, rowEnrichedAt: string | null | undef
 }
 
 function toPromptEvent(e: EventSignal): PromptEvent {
-  const reaction = formatReaction(e.reaction_snapshot, e.enriched_at);
+  const reaction = formatReaction(e.reaction_snapshot, e.enriched_at, e.event_date);
   return {
     id: e.id,
     date: e.event_date,

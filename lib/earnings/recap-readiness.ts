@@ -48,8 +48,12 @@ export type RecapReadinessHold =
 export function hasMeasuredStockReaction(
   reactionSnapshot: string | null | undefined,
   enrichedAt: string | null | undefined,
+  eventDate?: string | null,
 ): boolean {
-  const read = readReactionLegs(reactionSnapshot ?? null, { rowEnrichedAt: enrichedAt ?? null });
+  const read = readReactionLegs(reactionSnapshot ?? null, {
+    rowEnrichedAt: enrichedAt ?? null,
+    eventDate: eventDate ?? null,
+  });
   return !!read && read.measured.symbol !== undefined;
 }
 
@@ -92,7 +96,7 @@ export function getRecapReadinessHold(
     return { held: true, kind: "actuals_unconfirmed", reason: ACTUALS_UNCONFIRMED_REASON };
   }
 
-  if (!hasMeasuredStockReaction(event.reaction_snapshot, event.enriched_at)) {
+  if (!hasMeasuredStockReaction(event.reaction_snapshot, event.enriched_at, event.event_date)) {
     const enrichedMs = parseDbInstantMs(event.enriched_at);
     if (opts.strictReaction) {
       return { held: true, kind: "reaction_pending", reason: REACTION_PENDING_REASON };

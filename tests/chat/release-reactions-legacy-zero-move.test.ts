@@ -15,9 +15,12 @@ import { executeTool, CHAT_TOOLS } from "@/lib/chat/tools";
 import { getRecentReleaseReactions } from "@/lib/queries/level-performance";
 import { todayET, addDays } from "@/lib/calendar/date-utils";
 
-const T0 = "2026-09-10T20:15:00.000Z";
-const EARLY_ENRICHED_AT = "2026-09-10 20:20:00";
-const LATE_ENRICHED_AT = "2026-09-10 22:30:00";
+// The seeded row is dated three days ago; its snapshot's release instant sits on
+// that day (a t0 on another day is not the row's measurement, 2026-11-06).
+const ROW_DATE = addDays(todayET(), -3);
+const T0 = `${ROW_DATE}T20:15:00.000Z`;
+const EARLY_ENRICHED_AT = `${ROW_DATE} 20:20:00`;
+const LATE_ENRICHED_AT = `${ROW_DATE} 22:30:00`;
 
 const QQQ = { t_pre: 500, t_post: 496, delta_pct: -0.8 };
 const ZERO_SPY = { t_pre: 600, t_post: 600.001, delta_pct: 0 };
@@ -39,7 +42,7 @@ describe("chat tool query_release_reactions: legacy zero move and enriched_at", 
   });
 
   function seedEvent(snapshot: unknown, enrichedAt: string): void {
-    const date = addDays(todayET(), -3);
+    const date = ROW_DATE;
     db.prepare(
       `INSERT INTO calendar_events
          (source, source_key, event_type, event_date, week_of, title, symbol, actual_value,
