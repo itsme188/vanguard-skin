@@ -273,7 +273,7 @@ describe("short positions roll back with their sign", () => {
     buildLots();
 
     const { critical } = driftHits();
-    expect(critical.map((h) => h.reason)).toEqual(["ZZA (IBKR): position/lot drift 50.0%"]);
+    expect(critical.map((h) => h.reason)).toEqual(["ZZA (IBKR, short): position/lot drift 50.0%"]);
   });
 });
 
