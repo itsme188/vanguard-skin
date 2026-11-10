@@ -35,7 +35,9 @@ describe("C22 mobile nav", () => {
     anchorIndex(a, 'diagnostics: "Analysis · Diagnostics"');
   });
   it("settings gear reaches 44px on touch", () => {
-    const src = read("app/dashboard/components/SettingsModal.tsx");
+    // The gear is a link to /dashboard/settings since the Settings page
+    // replaced the modal; the touch-target rule is unchanged.
+    const src = read("app/dashboard/components/SettingsLink.tsx");
     const i = anchorIndex(src, 'aria-label="Settings"');
     expect(src.slice(i - 300, i)).toContain("pointer-coarse:after:-inset-3.5");
   });

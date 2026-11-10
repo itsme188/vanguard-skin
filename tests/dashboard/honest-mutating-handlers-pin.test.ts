@@ -18,7 +18,7 @@ const HELPER_USERS = [
   "SendDigestPanel.tsx",
   "ResearchFeedsView.tsx",
   "ResearchDocumentsView.tsx",
-  "SettingsModal.tsx",
+  "settings/SettingsStoreProvider.tsx",
   "TranscriptCard.tsx",
 ];
 // NotesAmbient already routes through describeNoteSaveFailure (the notes copy).

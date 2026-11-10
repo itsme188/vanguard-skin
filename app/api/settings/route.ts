@@ -1,7 +1,7 @@
 /**
  * Settings API for the plain-browser dev fallback. The packaged Electron app
  * uses IPC (via window.electronAPI) and never hits this route. This exists
- * so `npm run dev` on :3000 can surface the SettingsModal without Electron.
+ * so `npm run dev` on :3000 can surface the Settings page without Electron.
  *
  * Gated on NODE_ENV=development — in production the route 404s so a
  * packaged app can never inadvertently expose settings over HTTP (even if
@@ -41,7 +41,7 @@ export async function POST(req: NextRequest) {
     return Response.json({ error: "Body must be an object" }, { status: 400 });
   }
 
-  // Coerce field types the way SettingsModal expects Electron IPC to handle
+  // Coerce field types the way the Settings page expects Electron IPC to handle
   // them — numbers for the port + refresh, booleans for toggles, strings for
   // everything else. Unknown keys are dropped to avoid accidental schema
   // creep from the client.
@@ -53,6 +53,8 @@ export async function POST(req: NextRequest) {
     "autoConnectTws",
     "gmailAddress",
     "gmailAppPassword",
+    "resendApiKey",
+    "resendFromDomain",
     "briefingEmailTo",
     "fredApiKey",
     "edgarContactEmail",
@@ -65,6 +67,19 @@ export async function POST(req: NextRequest) {
     "cloudflareGatewayToken",
     "cloudflareWorkersAIToken",
     "openaiApiKey",
+    "pushoverLinkBase",
+    "finnhubApiKey",
+    "googleClientId",
+    "googleClientSecret",
+    "googleRefreshToken",
+    "r2AccessKeyId",
+    "r2BucketName",
+    "r2SecretAccessKey",
+    "workerMarkerUrl",
+    "plaidClientId",
+    "plaidSecret",
+    "plaidEnv",
+    "plaidRedirectUri",
     "refreshIntervalMinutes",
     "firstRunComplete",
   ];

@@ -118,7 +118,7 @@ const BARE_SITE_ALLOWLIST: Record<string, { count: number; reason: string }> = {
     reason:
       "own reader: checks res.ok and the body's success, names the failure and the network case itself; also words the 401 case",
   },
-  "app/dashboard/components/SettingsModal.tsx": {
+  "app/dashboard/components/settings/SettingsStoreProvider.tsx": {
     count: 1,
     reason:
       "no envelope: the settings route answers with the settings object (said in the code); res.ok is the gate",
@@ -246,7 +246,7 @@ const RAW_EXCEPTION_ALLOWLIST: Record<string, { count: number; reason: string }>
     reason:
       "load path: the catch prints what the loader threw (a status line it built, or the browser's text on a lost connection); wording needs a pass (the chart POST is a load)",
   },
-  "app/dashboard/components/SettingsModal.tsx": {
+  "app/dashboard/components/settings/SettingsStoreProvider.tsx": {
     count: 1,
     reason:
       "prints sentences the settings source throws itself (dev-mode notice, HTTP status); a lost connection would print the browser's text",

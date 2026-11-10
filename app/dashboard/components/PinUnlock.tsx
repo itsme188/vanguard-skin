@@ -6,8 +6,8 @@
  * A "lock" is a CLIENT-side UX state: the browser still holds the (non-expired)
  * session cookie, so re-unlocking is just a PIN check against that live
  * session — it never signs back in from cold. Other code puts the app into the
- * locked state by dispatching a `window` `"lock-app"` event (mirroring the
- * `"open-settings"` pattern SettingsModal already uses); this component owns
+ * locked state by dispatching a `window` `"lock-app"` event (the same
+ * custom-DOM-event idiom as `"earnings-data-changed"`); this component owns
  * the overlay + the verify call.
  *
  * Outcomes (POST /api/auth/pin/verify):

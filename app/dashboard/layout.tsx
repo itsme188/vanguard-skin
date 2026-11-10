@@ -5,7 +5,7 @@ import { DataConfidenceIndicator } from "./components/DataConfidenceIndicator";
 import { ChatDrawer } from "./components/ChatDrawer";
 import { ChatToggleButton } from "./components/ChatToggleButton";
 import { CommandPalette, SearchButton } from "./components/CommandPalette";
-import { SettingsModal } from "./components/SettingsModal";
+import { SettingsLink } from "./components/SettingsLink";
 import { AppVersion } from "./components/AppVersion";
 import { WelcomeOverlay } from "./components/WelcomeOverlay";
 import { MobileBottomNav } from "./components/MobileBottomNav";
@@ -61,7 +61,7 @@ export default function DashboardLayout({
               <ChatToggleButton />
               <div className="hidden md:inline-flex"><ThemeToggle /></div>
               <PrivacyToggle />
-              <SettingsModal />
+              <SettingsLink />
               <span className="hidden md:inline"><AppVersion /></span>
             </div>
           </div>
