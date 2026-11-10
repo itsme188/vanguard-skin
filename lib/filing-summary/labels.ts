@@ -238,6 +238,7 @@ const REASON_SENTENCES: Record<string, string> = {
   unit_mismatch: "The figures compared are in different units.",
   range_operand_unsupported: "A range cannot be used in this kind of comparison.",
   non_finite_operand: "A figure in the comparison is not a usable number.",
+  no_filing_figure: "No figure in this claim is read from the filing; it only restates a pre-print bogey.",
   within_rounding: "The printed figures' rounding is too coarse to decide this either way.",
   range_bound: "The number is one end of a range the filing states, not a reported figure.",
   loss_sign_double: "The figure names a loss and is also written as a negative number; a loss is already negative.",
