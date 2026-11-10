@@ -1,8 +1,8 @@
 "use client";
 
 /**
- * Settings panel for per-feature AI model overrides. Lives inside
- * SettingsModal as a self-contained section (EmailRecipientsSection /
+ * Settings panel for per-feature AI model overrides. Mounted on the
+ * Settings page as a self-contained section (EmailRecipientsSection /
  * EarningsEmailsSection precedent) because overrides are stored in the
  * SQLite `settings` table via /api/settings/ai-models — changes apply to
  * the very next AI call (the resolver cache is invalidated on write), no

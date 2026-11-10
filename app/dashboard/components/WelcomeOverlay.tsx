@@ -56,8 +56,14 @@ export function WelcomeOverlay() {
             title="Configure your API key"
             description="Required for AI chat and PDF import. Open Settings to enter your Anthropic API key."
             action={
+              // Settings is a page now, not a modal: navigate there. The
+              // first run is marked complete on the way so the overlay does
+              // not come back over the page the owner just opened.
               <button
-                onClick={() => window.dispatchEvent(new Event("open-settings"))}
+                onClick={() => {
+                  handleGetStarted();
+                  router.push("/dashboard/settings");
+                }}
                 className={`px-3 py-1 text-xs font-medium rounded-lg ${CHIP_TONE_CLASSES.gold} hover:bg-gold/30 transition-colors`}
               >
                 Open Settings

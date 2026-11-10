@@ -43,6 +43,7 @@ export function getPageContext(
     "/dashboard/charts": "User is on the Charts page.",
     "/dashboard/import": "User is on the Import page.",
     "/dashboard/data-health": "User is on the Data Health page.",
+    "/dashboard/settings": "User is on the Settings page.",
   };
 
   return simplePages[pathname] ?? "User is browsing the dashboard.";

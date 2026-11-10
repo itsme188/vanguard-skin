@@ -215,6 +215,17 @@ export function MobileNavDrawer() {
           >
             {dataHealthRowLabel(confidence)}
           </Link>
+          <Link
+            href="/dashboard/settings"
+            onClick={close}
+            className={`flex items-center px-4 py-3 text-sm font-medium transition-colors border-l-2 ${
+              pathname.startsWith("/dashboard/settings")
+                ? "text-gold-ink bg-gold/5 border-gold"
+                : "text-ink-dim hover:text-ink hover:bg-raised/50 border-transparent"
+            }`}
+          >
+            Settings
+          </Link>
           <div className="flex items-center justify-between px-4 text-sm font-medium text-ink-dim">
             <span>Dark theme</span>
             <ThemeToggle />
