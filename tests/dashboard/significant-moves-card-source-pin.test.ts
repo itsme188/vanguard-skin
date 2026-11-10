@@ -7,9 +7,11 @@ const src = readFileSync("app/dashboard/components/SignificantMovesCard.tsx", "u
 describe("SignificantMovesCard empty states and labels", () => {
   it("checks the trading-day pair before saying nothing moved", () => {
     expect(src).toMatch(/import\s*\{[^}]*computeAnomalies[^}]*resolveTradingDayPair[^}]*\}/);
-    const pairUnavailable = anchorIndex(src, "Could not evaluate significant moves");
+    const pairUnavailable = anchorIndex(src, "reason={formatMissingPairReason(");
     const nothingMoved = anchorIndex(src, "No ${scope.plural} moved significantly");
     expect(pairUnavailable).toBeLessThan(nothingMoved);
+    // The empty state names why, from the same rows and filter as the pair.
+    expect(src).toMatch(/explainMissingTradingDayPair\(db, \{ completedOnly: true, now \}\)/);
   });
 
   // The quiet-day sentence moved from a hand-rolled <p> into quietState()
