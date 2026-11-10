@@ -35,6 +35,11 @@ import {
   equityCurveOvershootClause,
   performanceCaptionMeasuredFrom,
 } from "@/lib/compute/performance-window-caption";
+import {
+  computeMonthlyPerformance,
+  listStatementMonths,
+} from "@/lib/compute/monthly-performance";
+import { MonthlyPerformanceSection } from "./MonthlyPerformanceSection";
 
 // Same four band labels as TrustStripDrawer's chips — duplicated locally
 // rather than imported (TrustStripDrawer is a "use client" module; this
@@ -84,11 +89,13 @@ function fmtMonthYear(iso: string | undefined): string {
 interface PerformanceViewProps {
   scope?: string;
   period?: string;
+  /** Month-end date (YYYY-MM-DD) selected in the month view. */
+  month?: string;
 }
 
 const BENCHMARK_SYMBOL = "SPY";
 
-export async function PerformanceView({ scope = "all", period }: PerformanceViewProps) {
+export async function PerformanceView({ scope = "all", period, month }: PerformanceViewProps) {
   const activePeriod: Period = (PERIODS.find((p) => p.key === period)?.key ?? "ytd") as Period;
   const activeScope = SCOPES.find((s) => s.key === scope)?.key ?? "all";
   // Full scope, not a first-id collapse: taking only the first id would
@@ -299,12 +306,31 @@ export async function PerformanceView({ scope = "all", period }: PerformanceView
     // Non-blocking
   }
 
-  const buildHref = (next: { period?: Period; scope?: string }) => {
+  // ── Month view ──────────────────────────────────────────────────
+  // The month view answers a different question from the tiles above it
+  // ("what did this month do?" rather than "what has this period done?"),
+  // so it has its own selection and reads none of the window above. It takes
+  // the SAME scope as the rest of the page: the blend covers exactly the
+  // accounts the scope pills select, and "which account is missing" is
+  // therefore scope-relative too.
+  const statementMonths = listStatementMonths(db, scopeAccountIds);
+  const activeMonth =
+    month && statementMonths.includes(month) ? month : (statementMonths[0] ?? null);
+  const monthly =
+    activeMonth === null ? null : computeMonthlyPerformance(db, scopeAccountIds, activeMonth);
+
+  const buildHref = (next: { period?: Period; scope?: string; month?: string }) => {
     const params = new URLSearchParams({
       view: "performance",
       scope: next.scope ?? activeScope,
       period: next.period ?? activePeriod,
     });
+    // The month rides along on a PERIOD switch (the reader stays on the month
+    // they were reading) and is DROPPED on a SCOPE switch, because the new
+    // scope may not have that month — it then opens on its own newest one.
+    // Nothing above reads it, so no existing figure moves either way.
+    const nextMonth = next.month ?? (next.scope ? undefined : activeMonth ?? undefined);
+    if (nextMonth) params.set("month", nextMonth);
     return `/dashboard/analysis?${params.toString()}`;
   };
 
@@ -530,6 +556,18 @@ export async function PerformanceView({ scope = "all", period }: PerformanceView
               </p>
             )}
           </section>
+
+          {/* Month view — the blended month and one row per account, in
+              addition to everything above it. Its own selection; it reads
+              none of the period window. */}
+          <MonthlyPerformanceSection
+              months={statementMonths}
+              selectedMonth={activeMonth}
+              accounts={monthly?.accounts ?? []}
+              blended={monthly?.blended ?? null}
+              scopeLabel={SCOPES.find((s) => s.key === activeScope)?.label ?? "All accounts"}
+              hrefForMonth={(m) => buildHref({ month: m })}
+            />
 
           {/* Per-account breakdown */}
           {twrResult && twrResult.perAccount.length > 1 && (

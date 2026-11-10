@@ -94,8 +94,13 @@ export function fetchMonthSnapshot(
 }
 
 /** The last calendar day of the month BEFORE monthEndDate's month, e.g.
- *  "2026-02-28" → "2026-01-31", "2026-01-31" → "2025-12-31". */
-function priorMonthEndDate(monthEndDate: string): string {
+ *  "2026-02-28" → "2026-01-31", "2026-01-31" → "2025-12-31".
+ *
+ *  Exported since 2026-11-09 so lib/compute/monthly-performance.ts shares
+ *  this copy instead of adding a fourth (lib/compute/dietz.ts still carries
+ *  its own, from before this was exported). Pure date arithmetic on a date
+ *  string at UTC midnight — it never asks what day it is now. */
+export function priorMonthEndDate(monthEndDate: string): string {
   const d = new Date(monthEndDate + "T00:00:00Z");
   // Day 0 of the current month = the last day of the previous month.
   const prior = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 0));
