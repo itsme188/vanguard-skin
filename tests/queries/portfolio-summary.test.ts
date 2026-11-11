@@ -360,6 +360,32 @@ describe("recent transactions and holdings basis (QA-11, QA-12)", () => {
     expect(summary).not.toMatch(/ZZQ 270115C00050000 2 shares/);
   });
 
+  it("recent transactions leave out engine-made closes and keep 20 real rows", () => {
+    // 22 real buys on 2025-04-01 .. 2025-04-22, and one engine-made close on
+    // 2025-04-15 (the middle of the newest 20). The engine row is not user
+    // activity: it must not print, nor use up one of the 20 slots.
+    const sec = seedSecurity(db, "ZZRC", "ZZ recon", "stock");
+    const insert = db.prepare(
+      `INSERT INTO transactions (account_id, security_id, trade_date, type, quantity, amount, source_key)
+       VALUES (?, ?, ?, ?, 1, ?, ?)`
+    );
+    for (let d = 1; d <= 22; d++) {
+      insert.run(ACCOUNT_ID, sec, `2025-04-${String(d).padStart(2, "0")}`, "BUY", -10, `rc-real-${d}`);
+    }
+    insert.run(ACCOUNT_ID, sec, "2025-04-15", "RECONCILE_CLOSE", 10, "rc-engine");
+
+    const summary = getPortfolioSummaryForChat(db);
+    const body = summary.split("### Recent Transactions")[1]?.split("\n###")[0] ?? "";
+    const rows = body.split("\n").filter((l) => l.startsWith("- "));
+    expect(rows).toHaveLength(20);
+    expect(body).not.toContain("RECONCILE_CLOSE");
+    expect(rows.every((l) => l.includes("| BUY ZZRC"))).toBe(true);
+    // The 20 newest real days: 2025-04-03 .. 2025-04-22.
+    expect(rows.map((l) => l.slice(2, 12)).sort()).toEqual(
+      Array.from({ length: 20 }, (_, i) => `2025-04-${String(i + 3).padStart(2, "0")}`)
+    );
+  });
+
   it("holdings and short lines use the same unit nouns as recent transactions", () => {
     // One share long, one contract short, a bond: "1 share", "short 1 contract", "face value".
     const stock = seedSecurity(db, "ZZONE", "ZZ one", "stock");

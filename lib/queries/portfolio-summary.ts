@@ -770,6 +770,9 @@ export function getPortfolioSummaryForChat(db: Database.Database, scope?: Portfo
   }
 
   // ─── Recent Transactions ───────────────────────────────────────
+  // Engine-made closes are not user activity (the transactions list and the
+  // chat transactions tool leave them out the same way), so none prints here
+  // or uses up one of the 20 slots.
   const recentTxns = db
     .prepare(
       `SELECT a.name AS account_name, t.trade_date, t.type,
@@ -777,7 +780,7 @@ export function getPortfolioSummaryForChat(db: Database.Database, scope?: Portfo
        FROM transactions t
        JOIN accounts a ON a.id = t.account_id
        LEFT JOIN securities s ON s.id = t.security_id
-       WHERE 1=1 ${txnScope.sql}
+       WHERE t.type != 'RECONCILE_CLOSE' ${txnScope.sql}
        ORDER BY t.trade_date DESC
        LIMIT 20`
     )

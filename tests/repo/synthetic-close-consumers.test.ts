@@ -67,6 +67,10 @@ const CONSUMERS: Record<string, { role: Role; why: string }> = {
     why: "the transactions tool never lists engine-owned closes as user activity; getReconcileGapNotesForChat reads them only to disclose a ledger gap (statement date, symbol, account, share count; no price or proceeds), capped at 50",
   },
   "lib/queries/transactions.ts": { role: "exclude", why: "engine-owned rows never list as user transactions" },
+  "lib/queries/portfolio-summary.ts": {
+    role: "exclude",
+    why: "the chat summary's Recent Transactions list is user activity; engine-owned closes never print there or take a slot",
+  },
   "app/api/trade-review/route.ts": { role: "include-with-disclosure", why: "passes isSyntheticClose to the view" },
   "app/dashboard/components/TaxLotTables.tsx": { role: "include-with-disclosure", why: "renders the Estimated chip" },
   "app/dashboard/components/TradeReviewView.tsx": {
