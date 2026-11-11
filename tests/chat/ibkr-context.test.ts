@@ -1,7 +1,7 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
-import { computeBullishness, computeIbkrTradingContext } from "@/lib/chat/ibkr-context";
+import { computeBullishness, computeIbkrTradingContext, statementCashFallback } from "@/lib/chat/ibkr-context";
 import { getHoldingsForChat } from "@/lib/queries/chat-tools";
 
 describe("computeBullishness", () => {
@@ -237,7 +237,14 @@ describe("computeIbkrTradingContext — cash line", () => {
   let db: Database.Database;
   const IBKR_ACCOUNT_ID = 3; // seeded by migration 002_seed_accounts.sql
 
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   beforeEach(() => {
+    // 2026-11-11 17:00Z = 12:00 Eastern on 2026-11-11.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-11-11T17:00:00Z"));
     db = new Database(":memory:");
     db.pragma("foreign_keys = ON");
     runMigrations(db);
@@ -321,13 +328,17 @@ describe("computeIbkrTradingContext — cash line", () => {
     expect(live.stanceWithheld).toBe(true);
 
     // Carried: the newest row is 'estimated' with no holdings of its own day,
-    // so it carries the 2026-11-10 measurement; dated by the measurement.
+    // so it carries the measurement of its anchor day. The only statement is
+    // over 45 days old, so the statement fallback (R2-3) does not apply.
     db.prepare("DELETE FROM monthly_snapshots WHERE account_id = ?").run(IBKR_ACCOUNT_ID);
-    anchor("2026-11-10", "statement", -300);
+    db.prepare("DELETE FROM daily_valuations WHERE account_id = ?").run(IBKR_ACCOUNT_ID);
+    db.prepare("UPDATE holdings SET as_of_date = '2026-09-01' WHERE account_id = ?").run(IBKR_ACCOUNT_ID);
+    anchor("2026-09-01", "statement", -300);
+    valuation(-300, 10300, "2026-09-01", "recent");
     valuation(-300, 10300, "2026-11-11", "estimated");
     const carried = computeIbkrTradingContext(db, IBKR_ACCOUNT_ID, "IBKR");
     expect(carried.cashCarried).toBe(true);
-    expect(carried.cashAsOf).toBe("2026-11-10");
+    expect(carried.cashAsOf).toBe("2026-09-01");
     expect(carried.stanceWithheld).toBe(true);
   });
 
@@ -369,5 +380,132 @@ describe("computeIbkrTradingContext — cash line", () => {
     // 128 new + the long + the short (the expired option is not a position).
     const ctx = computeIbkrTradingContext(db, IBKR_ACCOUNT_ID, "IBKR");
     expect(ctx.activePositionCount).toBe(130);
+  });
+});
+
+// ─── Statement fallback for a live-residual cash line (R2-3 ruling) ───────
+
+describe("computeIbkrTradingContext — statement cash fallback (R2-3)", () => {
+  let db: Database.Database;
+  const IBKR = 3;
+  const TODAY = "2026-11-30"; // Eastern
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-11-30T17:00:00Z")); // 12:00 Eastern
+    db = new Database(":memory:");
+    db.pragma("foreign_keys = ON");
+    runMigrations(db);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  function snapshot(account: number, date: string, source: string, total: number, cash: number | null) {
+    db.prepare(
+      "INSERT INTO monthly_snapshots (account_id, month_end_date, total_value, source, cash_value) VALUES (?, ?, ?, ?, ?)"
+    ).run(account, date, total, source, cash);
+  }
+
+  /** A live (TWS) anchor today: the latest cash line is a timing residual. */
+  function liveResidualLine(account: number, cash: number, holdings: number) {
+    snapshot(account, TODAY, "tws", cash + holdings, null);
+    db.prepare(
+      "INSERT INTO daily_valuations (account_id, valuation_date, cash_balance, holdings_value, total_value, data_quality) VALUES (?, ?, ?, ?, ?, 'live')"
+    ).run(account, TODAY, cash, holdings, cash + holdings);
+  }
+
+  function daysBefore(n: number): string {
+    const d = new Date(`${TODAY}T12:00:00Z`);
+    d.setUTCDate(d.getUTCDate() - n);
+    return d.toISOString().slice(0, 10);
+  }
+
+  it("a residual live line falls back to the statement: cash 1400 of 10000, 20 days old -> 14%", () => {
+    const stmt = daysBefore(20); // 2026-11-10
+    snapshot(IBKR, stmt, "statement", 10000, 1400);
+    // The live line says -250 of 12000: never mixed with the statement.
+    liveResidualLine(IBKR, -250, 12250);
+    const ctx = computeIbkrTradingContext(db, IBKR, "IBKR");
+    expect(ctx.cashSource).toBe("statement");
+    expect(ctx.cashAsOf).toBe("2026-11-10");
+    expect(ctx.accountTotalAsOf).toBe("2026-11-10");
+    expect(ctx.estimatedCash).toBe(1400);
+    // Conservation: cash and total from ONE row (1400 / 10000), never the
+    // statement cash over the live total (1400 / 12000 = 11.7%).
+    expect(ctx.accountTotal).toBe(10000);
+    expect(ctx.cashPct).toBeCloseTo(14, 6);
+    expect(ctx.stanceWithheld).toBe(false);
+    expect(ctx.stanceWithheldReason).toBeNull();
+    expect(ctx.bullishnessScore).toBe(5); // 14% cash, no beta
+  });
+
+  it("a live snapshot is never the fallback, and a newer statement wins", () => {
+    snapshot(IBKR, daysBefore(30), "statement", 10000, 3000);
+    snapshot(IBKR, daysBefore(10), "statement", 10000, 2500);
+    snapshot(IBKR, daysBefore(5), "plaid", 9000, 100); // live: ignored
+    liveResidualLine(IBKR, -250, 12250);
+    const ctx = computeIbkrTradingContext(db, IBKR, "IBKR");
+    expect(ctx.cashAsOf).toBe(daysBefore(10));
+    expect(ctx.cashPct).toBeCloseTo(25, 6);
+  });
+
+  for (const [age, withheld] of [
+    [44, false],
+    [45, false],
+    [46, true],
+  ] as const) {
+    it(`a statement ${age} days old ${withheld ? "is too old" : "is used"}`, () => {
+      snapshot(IBKR, daysBefore(age), "statement", 10000, 1400);
+      liveResidualLine(IBKR, -250, 12250);
+      const ctx = computeIbkrTradingContext(db, IBKR, "IBKR");
+      expect(ctx.stanceWithheld).toBe(withheld);
+      if (withheld) {
+        expect(ctx.cashSource).toBe("daily_valuation");
+        expect(ctx.stanceWithheldReason).toMatch(/statement.*too old/i);
+      } else {
+        expect(ctx.cashSource).toBe("statement");
+      }
+    });
+  }
+
+  it("a statement total at or below zero withholds the stance", () => {
+    snapshot(IBKR, daysBefore(20), "statement", 0, 0);
+    liveResidualLine(IBKR, -250, 12250);
+    const ctx = computeIbkrTradingContext(db, IBKR, "IBKR");
+    expect(ctx.stanceWithheld).toBe(true);
+    expect(ctx.cashSource).toBe("daily_valuation");
+  });
+
+  it("no statement with a cash figure keeps the stance withheld", () => {
+    snapshot(IBKR, daysBefore(20), "statement", 10000, null);
+    liveResidualLine(IBKR, -250, 12250);
+    const ctx = computeIbkrTradingContext(db, IBKR, "IBKR");
+    expect(ctx.stanceWithheld).toBe(true);
+    expect(ctx.stanceWithheldReason).not.toBeNull();
+  });
+
+  it("several accounts: same-date statements are summed; different dates withhold", () => {
+    db.prepare("INSERT INTO accounts (name) VALUES ('IBKR Two')").run();
+    const two = (db.prepare("SELECT id FROM accounts WHERE name = 'IBKR Two'").get() as { id: number }).id;
+    snapshot(IBKR, daysBefore(20), "statement", 10000, 1400);
+    snapshot(two, daysBefore(20), "statement", 5000, 600);
+    // (1400 + 600) / (10000 + 5000) = 13.33%
+    const same = statementCashFallback(db, [IBKR, two], TODAY);
+    expect(same.ok).toBe(true);
+    if (same.ok) {
+      expect(same.cash).toBe(2000);
+      expect(same.total).toBe(15000);
+      expect(same.asOf).toBe(daysBefore(20));
+    }
+    snapshot(two, daysBefore(15), "statement", 5000, 700);
+    const differ = statementCashFallback(db, [IBKR, two], TODAY);
+    expect(differ.ok).toBe(false);
+    // An account in scope with no statement at all also withholds.
+    db.prepare("INSERT INTO accounts (name) VALUES ('IBKR Three')").run();
+    const three = (db.prepare("SELECT id FROM accounts WHERE name = 'IBKR Three'").get() as { id: number }).id;
+    expect(statementCashFallback(db, [IBKR, three], TODAY).ok).toBe(false);
+    expect(statementCashFallback(db, [], TODAY).ok).toBe(false);
   });
 });

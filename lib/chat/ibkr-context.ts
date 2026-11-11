@@ -1,5 +1,6 @@
 import type Database from "better-sqlite3";
-import { todayET, addDays } from "@/lib/calendar/date-utils";
+import { todayET, addDays, calendarDaysBetween } from "@/lib/calendar/date-utils";
+import { excludeLiveSnapshotsSql } from "@/lib/db/live-sources";
 import { getHoldingsForChat, getTransactionsForChat } from "@/lib/queries/chat-tools";
 import { getAccountCashLine } from "@/lib/queries/account-cash-line";
 import { computeFactorAnalysis } from "@/lib/compute/factors";
@@ -24,12 +25,12 @@ export interface IbkrTradingContext {
   /** The day the cash figure was measured (the measured day when carried). */
   cashAsOf: string | null;
   /**
-   * "statement" is reserved by the 2026-11-11 R2-3 ruling (fall back to the
-   * newest statement-grade cash line when the latest line is a live
-   * residual, carried or mismatched). Not produced yet: getAccountCashLine
-   * reads only the account's LATEST valuation row, so it cannot return an
-   * earlier statement-grade line; the stance stays withheld until a reader
-   * that can is ruled on.
+   * "daily_valuation": the latest cash line (getAccountCashLine).
+   * "statement": that line was a live timing residual, carried or
+   * price-date mismatched, so cash and total come from the newest
+   * statement snapshot instead (ruling R2-3, `statementCashFallback`); the
+   * three provenance flags below are then false, because they describe the
+   * figure shown.
    */
   cashSource: "daily_valuation" | "statement" | "none";
   cashCarried: boolean;
@@ -37,8 +38,69 @@ export interface IbkrTradingContext {
   cashTimingResidual: boolean;
   cashPriceDateMismatch: boolean;
   accountTotalAsOf: string | null;
-  /** True when the cash figure cannot carry a stance: none, a total at or below zero, carried, a timing residual or a price-date mismatch. */
+  /**
+   * True when the cash figure cannot carry a stance: none, a total at or
+   * below zero, or a carried / timing-residual / mismatched line with no
+   * usable statement (none, too old, total at or below zero, or accounts on
+   * different dates).
+   */
   stanceWithheld: boolean;
+  /** Why the stance is withheld, in words; null when it is not. */
+  stanceWithheldReason?: string | null;
+}
+
+/** A statement older than this many days before today does not carry a stance (R2-3 ruling). */
+export const STATEMENT_CASH_MAX_AGE_DAYS = 45;
+
+export type StatementCashFallback =
+  | { ok: true; cash: number; total: number; asOf: string }
+  | { ok: false; reason: string };
+
+/**
+ * The newest statement-grade cash for a set of accounts (ruling R2-3): per
+ * account, its newest monthly snapshot that is NOT a live broker snapshot
+ * (`excludeLiveSnapshotsSql`) and carries a cash figure. Cash and total
+ * come from that ONE row, so the share is never a statement cash over a
+ * live total. Several accounts must all have one on the SAME date (summed);
+ * otherwise, or when the total is zero or below, or the date is more than
+ * STATEMENT_CASH_MAX_AGE_DAYS before `today`, there is no fallback.
+ */
+export function statementCashFallback(
+  db: Database.Database,
+  accountIds: readonly number[],
+  today: string
+): StatementCashFallback {
+  if (accountIds.length === 0) return { ok: false, reason: "no account in scope" };
+  const newest = db.prepare(
+    `SELECT month_end_date, cash_value, total_value
+     FROM monthly_snapshots
+     WHERE account_id = ?
+       AND ${excludeLiveSnapshotsSql("source")}
+       AND cash_value IS NOT NULL
+     ORDER BY month_end_date DESC
+     LIMIT 1`
+  );
+  const rows = accountIds.map(
+    (id) => newest.get(id) as { month_end_date: string; cash_value: number; total_value: number } | undefined
+  );
+  if (rows.some((r) => r === undefined)) {
+    return { ok: false, reason: "no statement with a cash figure for every account in scope" };
+  }
+  const found = rows as { month_end_date: string; cash_value: number; total_value: number }[];
+  const asOf = found[0].month_end_date;
+  if (found.some((r) => r.month_end_date !== asOf)) {
+    return { ok: false, reason: "the accounts' latest statements are on different dates" };
+  }
+  const cash = found.reduce((sum, r) => sum + r.cash_value, 0);
+  const total = found.reduce((sum, r) => sum + r.total_value, 0);
+  if (total <= 0) return { ok: false, reason: `the statement dated ${asOf} has a total at or below zero` };
+  if (asOf < today && calendarDaysBetween(asOf, today) > STATEMENT_CASH_MAX_AGE_DAYS) {
+    return {
+      ok: false,
+      reason: `the latest statement (${asOf}) is too old, more than ${STATEMENT_CASH_MAX_AGE_DAYS} days before today`,
+    };
+  }
+  return { ok: true, cash, total, asOf };
 }
 
 // ─── Bullishness Scoring ────────────────────────────────────────
@@ -74,18 +136,46 @@ export function computeIbkrTradingContext(
   // figure can carry a stance (ruling P12).
   const cashLine = getAccountCashLine(db, accountId);
   const cashAvailable = cashLine != null && cashLine.cashBalance != null && cashLine.totalValue != null;
-  const cashSource: IbkrTradingContext["cashSource"] = cashAvailable ? "daily_valuation" : "none";
-  const estimatedCash = cashAvailable ? (cashLine.cashBalance as number) : 0;
-  const accountTotal = cashAvailable ? (cashLine.totalValue as number) : 0;
-  const cashPct = accountTotal > 0 ? (estimatedCash / accountTotal) * 100 : 0;
-  const cashCarried = cashAvailable && cashLine.carried;
-  const cashPriceDateMismatch = cashAvailable && cashLine.priceDateMismatch;
-  const cashTimingResidual = cashAvailable && cashLine.isLiveSource && !cashLine.priceDateMismatch;
-  const cashAsOf = cashAvailable ? (cashLine.carried ? cashLine.measuredDate : cashLine.valuationDate) : null;
+  let cashSource: IbkrTradingContext["cashSource"] = cashAvailable ? "daily_valuation" : "none";
+  let estimatedCash = cashAvailable ? (cashLine.cashBalance as number) : 0;
+  let accountTotal = cashAvailable ? (cashLine.totalValue as number) : 0;
+  let cashCarried = cashAvailable && cashLine.carried;
+  let cashPriceDateMismatch = cashAvailable && cashLine.priceDateMismatch;
+  let cashTimingResidual = cashAvailable && cashLine.isLiveSource && !cashLine.priceDateMismatch;
+  let cashAsOf = cashAvailable ? (cashLine.carried ? cashLine.measuredDate : cashLine.valuationDate) : null;
+  let stanceWithheldReason: string | null = !cashAvailable
+    ? "no cash figure is available for this account"
+    : null;
+
+  // Ruling R2-3: a live timing residual, a carried line or a price-date
+  // mismatch cannot carry a stance; the newest statement (cash and total
+  // from one row) can, when it is recent enough.
+  if (cashAvailable && (cashCarried || cashTimingResidual || cashPriceDateMismatch)) {
+    const fallback = statementCashFallback(db, [accountId], todayET());
+    if (fallback.ok) {
+      cashSource = "statement";
+      estimatedCash = fallback.cash;
+      accountTotal = fallback.total;
+      cashAsOf = fallback.asOf;
+      cashCarried = false;
+      cashTimingResidual = false;
+      cashPriceDateMismatch = false;
+    } else {
+      const what = cashCarried
+        ? "the latest cash figure is carried from an earlier day"
+        : cashPriceDateMismatch
+          ? "the latest cash figure is a price-date mismatch"
+          : "the latest cash figure is a live timing residual";
+      stanceWithheldReason = `${what}, and ${fallback.reason}`;
+    }
+  }
   // A zero or negative total has no meaningful cash share (R2-4): 0% would
   // read as "fully deployed".
-  const stanceWithheld =
-    !cashAvailable || accountTotal <= 0 || cashCarried || cashTimingResidual || cashPriceDateMismatch;
+  if (stanceWithheldReason === null && accountTotal <= 0) {
+    stanceWithheldReason = "the account total is zero or below";
+  }
+  const stanceWithheld = stanceWithheldReason !== null;
+  const cashPct = accountTotal > 0 ? (estimatedCash / accountTotal) * 100 : 0;
 
   // 2. Portfolio beta
   const factors = computeFactorAnalysis(db, { accountId });
@@ -203,6 +293,7 @@ export function computeIbkrTradingContext(
     cashPriceDateMismatch,
     accountTotalAsOf: cashAsOf,
     stanceWithheld,
+    stanceWithheldReason,
   };
 }
 
