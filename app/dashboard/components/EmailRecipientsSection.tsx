@@ -1,8 +1,8 @@
 "use client";
 
 /**
- * Settings panel for per-email-type recipient overrides. Lives inside
- * SettingsModal as a self-contained section because it stores values in
+ * Settings panel for per-email-type recipient overrides. Mounted on the
+ * Settings page as a self-contained section because it stores values in
  * the SQLite `settings` table (via /api/settings/email-recipients) rather
  * than the Electron AppSettings JSON file — changes apply immediately to
  * the next cron sweep without an app restart.

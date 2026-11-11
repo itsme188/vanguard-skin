@@ -7,8 +7,8 @@ const read = (p: string) => readFileSync(join(process.cwd(), p), "utf8");
 describe("AI failover settings page (source pin)", () => {
   const section = read("app/dashboard/components/AiFailoverSection.tsx");
 
-  it("is mounted in the settings modal", () => {
-    expect(read("app/dashboard/components/SettingsModal.tsx")).toMatch(/<AiFailoverSection \/>/);
+  it("is mounted on the settings page", () => {
+    expect(read("app/dashboard/settings/page.tsx")).toMatch(/<AiFailoverSection \/>/);
   });
 
   it("writes only through the failover route, reading the result the app's way", () => {

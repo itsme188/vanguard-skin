@@ -8,7 +8,7 @@ import type { CSSProperties, ReactNode } from "react";
  * recap viewer the "rec ✓" chip does. The row's single viewer instance
  * lives in EarningsRowChips — this dispatches the scoped
  * `open-earnings-email` custom event instead of mounting a second viewer
- * (same custom-DOM-event idiom as earnings-data-changed / open-settings).
+ * (same custom-DOM-event idiom as earnings-data-changed / lock-app).
  *
  * Dense-table touch rule: ±6px vertical hit extension only (SymbolLink
  * precedent) so adjacent rows can't steal each other's taps.

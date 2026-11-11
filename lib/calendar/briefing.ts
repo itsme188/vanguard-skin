@@ -1093,7 +1093,10 @@ export function formatReleasedEventForPrompt(event: CalendarEvent, index: number
   // (captured before its window elapsed, or an identical pre/post pair;
   // 2026-10-08) are both left out, so the briefing never states a flat move
   // that was never measured. A malformed snapshot reads as null: no line.
-  const reaction = readReactionLegs(event.reaction_snapshot, { rowEnrichedAt: event.enriched_at });
+  const reaction = readReactionLegs(event.reaction_snapshot, {
+    rowEnrichedAt: event.enriched_at,
+    eventDate: event.event_date,
+  });
   if (reaction) {
     const { measured } = reaction;
     const reacts: string[] = [];

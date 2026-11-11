@@ -1,8 +1,8 @@
 "use client";
 
 /**
- * Settings panel for earnings preview/recap emails. Lives inside
- * SettingsModal as a self-contained section because it stores prefs in
+ * Settings panel for earnings preview/recap emails. Mounted on the
+ * Settings page as a self-contained section because it stores prefs in
  * the SQLite settings table (via /api/settings/earnings) rather than the
  * Electron AppSettings JSON file — that way mute/disable changes apply
  * immediately to the next 15-min cron sweep without an app restart.

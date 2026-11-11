@@ -87,6 +87,13 @@ export interface PrintWatchLine {
    *  supersessions). `undefined` from a caller means "not supplied" and
    *  PRESERVES whatever is stored — `upsertLines` never nulls it by omission. */
   audit_json?: string | null;
+  /** Why a line holding a figure is not agreed, when that is not plain from
+   *  its state. Only set today to `SNIPPET_NAMES_ANOTHER_MEASURE`
+   *  (`snippet-measure-gate.ts`): readers agreed on a number but the cited
+   *  snippet names a different measure, so the line stays 'single_source'
+   *  (unconfirmed, never in "Accept all agreed"). Derived, never stored:
+   *  absent when there is no reason. */
+  state_reason?: string;
 }
 
 export type PrintWatchDocKind = "dj-release" | "edgar-ex99" | "ir-page" | "user-drop" | "user-url";

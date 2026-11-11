@@ -94,23 +94,30 @@ describe("POST /api/research/discover", () => {
   });
 });
 
-describe("SettingsModal offers the three Google OAuth fields", () => {
-  const src = readFileSync("app/dashboard/components/SettingsModal.tsx", "utf8");
-  const start = anchorIndex(src, "const SECTIONS = [");
-  const sections = src.slice(start, anchorIndex(src, "] as const;", start));
+describe("the Settings page offers the three Google OAuth fields", () => {
+  const src = readFileSync("app/dashboard/components/settings/settings-fields.ts", "utf8");
+  const start = anchorIndex(src, "export const FILE_STORE_FIELDS");
+  const fields = src.slice(start, anchorIndex(src, "] as const;", start));
 
   it("client id is plain; client secret and refresh token are masked inputs", () => {
-    expect(sections).toMatch(/key: "googleClientId",[^}]*sensitive: false/);
-    expect(sections).toMatch(/key: "googleClientSecret",[^}]*sensitive: true/);
-    expect(sections).toMatch(/key: "googleRefreshToken",[^}]*sensitive: true/);
+    // `kind: "secret"` is the masked text box; `sensitive` marks the stored
+    // value a credential. The client id is neither.
+    expect(fields).toMatch(/key: "googleClientId",[\s\S]{0,600}?kind: "text",\s*sensitive: false/);
+    expect(fields).toMatch(/key: "googleClientSecret",[\s\S]{0,600}?kind: "secret",\s*sensitive: true/);
+    expect(fields).toMatch(/key: "googleRefreshToken",[\s\S]{0,600}?kind: "secret",\s*sensitive: true/);
   });
 
-  it("the section says these are for inbound newsletters, apart from outbound Resend", () => {
-    const at = anchorIndex(sections, 'key: "googleClientId"');
-    const title = sections.slice(sections.lastIndexOf("title:", at), at);
-    expect(title).toMatch(/inbound/i);
-    // Outbound stays Resend: the Resend fields are still there, unchanged.
-    expect(sections).toContain('{ key: "resendApiKey", label: "Resend API Key (outbound)", sensitive: true }');
+  it("the copy says these are for inbound newsletters, apart from outbound Resend", () => {
+    for (const key of ["googleClientId", "googleClientSecret", "googleRefreshToken"]) {
+      const at = anchorIndex(fields, `key: "${key}"`);
+      const help = fields.slice(at, anchorIndex(fields, "kind:", at));
+      expect(help).toMatch(/inbound/i);
+    }
+    // Outbound stays Resend: the Resend fields are still there, and the key's
+    // own explanation says it is the outbound account.
+    const resendAt = anchorIndex(fields, 'key: "resendApiKey"');
+    expect(fields.slice(resendAt, anchorIndex(fields, "kind:", resendAt))).toMatch(/outbound/i);
+    expect(fields).toContain('key: "resendFromDomain"');
   });
 
   it("the desktop settings store carries and threads the same three keys", () => {

@@ -745,3 +745,48 @@ describe("fix round 5: repeated labels pair forward only, a trailing clause deni
     });
   });
 });
+
+describe("QA: a claim with no figure read from the filing is never Checked", () => {
+  const noNumber = docs(extractDocText("<p>The company reported its quarterly results today.</p>"));
+  const consensus = () => bogeyFig("f2", "bg", { valueText: "$60.0B", value: 60, scale: "billions" });
+
+  it("a bogey-only claim with a found citation is unconfirmed with no_filing_figure", () => {
+    const c = one(
+      claim("The consensus was {f2}.", [cite("q1", "The company reported its quarterly results today.", false)], [consensus()]),
+      { docs: noNumber, bogeys: [bogey("bg", 60e9)] },
+    );
+    expect(c.footnotes[0].status).toBe("found");
+    expect(c.figureChecks[0].established).toBe(true);
+    expect(codes(c)).toContain("no_filing_figure");
+    expect(c.reasons.find((r) => r.code === "no_filing_figure")?.figureId).toBeNull();
+    expect(c.status).toBe("unconfirmed");
+  });
+
+  it("a computed figure built only from bogeys does not count as read from the filing", () => {
+    const c = one(
+      claim("The gap was {f3}.", [cite("q1", "The company reported its quarterly results today.", false)], [
+        consensus(),
+        bogeyFig("f4", "bh", { valueText: "$58.0B", value: 58, scale: "billions" }),
+        computedFig("f3", { valueText: "$2.0B", value: 2, unit: "usd", scale: "billions", operation: "difference", inputs: ["f2", "f4"] }),
+      ]),
+      { docs: noNumber, bogeys: [bogey("bg", 60e9), bogey("bh", 58e9)] },
+    );
+    expect(codes(c)).toContain("no_filing_figure");
+    expect(c.status).not.toBe("checked");
+  });
+
+  it("a quote figure compared with a bogey stays checked", () => {
+    const c = one(
+      claim("Revenue of {f1} was above the {f2} consensus.", [cite("q1", "Revenue | 64,601")], [revenueQ3(), consensus()], [cmp("f1", "f2", "above")]),
+      { bogeys: [bogey("bg", 60e9)] },
+    );
+    expect(codes(c)).not.toContain("no_filing_figure");
+    expect(c.status).toBe("checked");
+  });
+
+  it("a claim with no figures stays qualitative", () => {
+    const c = one(claim("The company reported its results.", [cite("q1", "The company reported its quarterly results today.", false)]), { docs: noNumber });
+    expect(codes(c)).not.toContain("no_filing_figure");
+    expect(c.status).toBe("qualitative");
+  });
+});

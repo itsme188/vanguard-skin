@@ -2,7 +2,7 @@
 
 /**
  * Settings panel for AI provider failover (provider-failover design §7, slice 4).
- * Lives inside SettingsModal beside AiModelsSection and is stored the same way
+ * Mounted on the Settings page beside AiModelsSection and stored the same way
  * (SQLite `settings` via /api/settings/ai-failover, applies to the next AI call).
  *
  * Per eligible feature: an on/off switch and an ordered fallback list (provider
