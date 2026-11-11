@@ -42,7 +42,13 @@ export interface CompositeTool {
   acceptsScopeList: boolean;
 }
 
-/** Every composite result stays under this many characters of JSON (plan Task 6). */
+/**
+ * A size TARGET (plan Task 6), not a run-time limit: nothing enforces it.
+ * The composite tests assert their full output stays under it on their own
+ * fixtures only; on a large book the full output can exceed it (query_scenarios
+ * reaches about 10,600 characters). The bound that holds at run time is the
+ * compact model-facing form's limit in tests/chat/tools-output-size-guard.test.ts.
+ */
 export const COMPOSITE_MAX_JSON_CHARS = 6000;
 
 export const NO_ACCOUNT_IN_SCOPE = { error: "No account is in this chat's scope." } as const;
