@@ -344,6 +344,32 @@ describe("IBKR dynamic dashboard", () => {
     };
     expect(cashLine(ctx)).toContain("Stance: withheld (the account total is zero or below)");
   });
+
+  // RF-9: a figure whose source is unknown prints "not available", never 0.
+  it("with no cash line the account total is not available, not $0", () => {
+    const ctx = {
+      ...mockCtx,
+      cashSource: "none" as const,
+      estimatedCash: 0,
+      cashPct: 0,
+      accountTotal: 0,
+      accountTotalAsOf: null,
+      stanceWithheld: true,
+    };
+    expect(totalLine(ctx)).toBe("- **Account Total**: not available");
+    expect(cashLine(ctx)).not.toContain("0.0%");
+  });
+
+  it("a zero or unusable account total prints no cash share", () => {
+    const ctx = { ...mockCtx, accountTotal: 0, cashPct: 0, estimatedCash: 50, stanceWithheld: true };
+    const line = cashLine(ctx);
+    expect(line).toContain("$50");
+    expect(line).not.toMatch(/% of account/);
+    expect(line).toContain("share of account not available");
+    const nan = { ...mockCtx, accountTotal: Number.NaN, cashPct: Number.NaN };
+    expect(totalLine(nan)).toBe("- **Account Total**: not available");
+    expect(cashLine(nan)).not.toContain("NaN");
+  });
 });
 
 // ─── Prompt standards (Portfolio Assistant plan, Task 7) ───────

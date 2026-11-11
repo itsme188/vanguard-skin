@@ -162,8 +162,15 @@ function formatIbkrDashboard(ctx: IbkrTradingContext): string {
     ? `Stance: withheld (${withheldReason})`
     : `Stance: ${ctx.bullishnessScore}/5 (${bullLabel})`;
 
+  // RF-9: a figure whose source is unknown prints "not available", never 0.
+  const totalKnown = ctx.cashSource !== "none" && Number.isFinite(ctx.accountTotal);
+  const share =
+    totalKnown && ctx.accountTotal > 0 && Number.isFinite(ctx.cashPct)
+      ? `(${ctx.cashPct.toFixed(1)}% of account)`
+      : "(share of account not available)";
+
   let cashLine: string;
-  if (ctx.cashSource === "none") {
+  if (ctx.cashSource === "none" || !Number.isFinite(ctx.estimatedCash)) {
     cashLine = `- **Cash**: not available → ${stance}\n`;
   } else {
     const uncertain = ctx.cashCarried || ctx.cashTimingResidual || ctx.cashPriceDateMismatch;
@@ -180,15 +187,17 @@ function formatIbkrDashboard(ctx: IbkrTradingContext): string {
       const dated = ctx.cashAsOf ? `, as of ${ctx.cashAsOf}` : "";
       const basis = ctx.cashAsOf ? `the statement dated ${ctx.cashAsOf}` : "the latest statement";
       const statementStance = withheldReason ? stance : `${stance}, based on ${basis}`;
-      cashLine = `- **Cash (statement${dated})**: ${figure} (${ctx.cashPct.toFixed(1)}% of account) → ${statementStance}\n`;
+      cashLine = `- **Cash (statement${dated})**: ${figure} ${share} → ${statementStance}\n`;
     } else {
-      cashLine = `- **Cash**: ${figure}${asOfSuffix(ctx.cashAsOf)} (${ctx.cashPct.toFixed(1)}% of account) → ${stance}\n`;
+      cashLine = `- **Cash**: ${figure}${asOfSuffix(ctx.cashAsOf)} ${share} → ${stance}\n`;
     }
   }
 
   let dashboard = `## Current IBKR Trading Dashboard\n\n`;
   dashboard += cashLine;
-  dashboard += `- **Account Total**: $${ctx.accountTotal.toLocaleString()}${asOfSuffix(ctx.accountTotalAsOf)}\n`;
+  dashboard += totalKnown
+    ? `- **Account Total**: $${ctx.accountTotal.toLocaleString()}${asOfSuffix(ctx.accountTotalAsOf)}\n`
+    : `- **Account Total**: not available\n`;
   dashboard += `- **Portfolio Beta**: ${betaStr} (vs SPY)\n`;
   dashboard += `- **Active Positions**: ${ctx.activePositionCount}\n`;
 
