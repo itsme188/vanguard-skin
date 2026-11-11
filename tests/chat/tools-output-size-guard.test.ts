@@ -111,6 +111,15 @@ function expand(v: unknown): unknown {
  * keep its order. Returns "tool.path: problem" lines.
  */
 function numericDrift(tool: string, full: unknown, compact: unknown, path = "", key = ""): string[] {
+  // Text and flags must survive as they are (a hoisted column that was not
+  // uniform, or a lost row, shows up here); a cut text must be a prefix of
+  // the full one followed by the marker.
+  if (typeof full === "string") {
+    if (compact === full) return [];
+    if (typeof compact === "string" && compact.includes("…[cut: ") && full.startsWith(compact.split("…[cut: ")[0])) return [];
+    return [`${tool}${path}: text changed (${JSON.stringify(full).slice(0, 40)} -> ${JSON.stringify(compact).slice(0, 40)})`];
+  }
+  if (typeof full === "boolean") return compact === full ? [] : [`${tool}${path}: ${full} -> ${JSON.stringify(compact)}`];
   if (typeof full === "number") {
     if (typeof compact !== "number") return [`${tool}${path}: number became ${JSON.stringify(compact)}`];
     const rule = compactRoundingFor(tool, key);
@@ -139,7 +148,61 @@ function numericDrift(tool: string, full: unknown, compact: unknown, path = "", 
   return [];
 }
 
+/**
+ * The fields the compact form may round, pinned HERE independently of the
+ * map in lib/chat/tools.ts: a new rounded field must be added to both, on
+ * purpose. Money to cents, percents to 2, prices to 4. Never a return,
+ * contribution, share, fraction, rate, Greek or macro value.
+ */
+const ALLOWED_ROUNDING: Record<string, Record<string, number>> = {
+  query_holdings: { cost_basis: 2, market_value: 2, unrealized_gain: 2, latest_price: 4, unrealized_gain_pct: 2, position_weight_pct: 2 },
+  query_tax_lots: {
+    cost_basis: 2, original_lot_cost_basis: 2, current_value: 2, unrealized_gain: 2, proceeds: 2, realized_gain_loss: 2,
+    proceeds_native: 2, cost_basis_native: 2, realized_gain_native: 2, proceeds_usd_at_current_fx: 2,
+    cost_basis_usd_at_current_fx: 2, realized_gain_usd_at_current_fx: 2, acquisition_price: 4, current_price: 4, sale_price: 4,
+  },
+  query_transactions: { amount: 2, fees: 2, price_per_share: 4 },
+  query_allocation: { total_market_value: 2, percentage: 2 },
+  query_price_history: { close_price: 4 },
+  query_market_snapshot: { market_value: 2, day_effect: 2, day_effect_total: 2, pct: 2 },
+  query_income_summary: { total_dividends: 2, total_interest: 2, interest_paid: 2, total_fees: 2, net_income: 2 },
+  query_levels: { price: 4, effective_price: 4, last_fired_price: 4 },
+  query_alerts: { level_price: 4, triggered_price: 4 },
+};
+
+/** Field names that must never be rounded, probed on every tool whether or not the book produces them. */
+const NEVER_ROUNDED_PROBES = [
+  "contribution", "value", "share_of_option_value", "share_of_bond_value", "share_of_book", "net_market_value_usd",
+  "estimated_change_fraction", "change_fraction", "delta", "gamma", "theta", "vega", "iv", "twr", "beta", "alpha",
+  "weight", "gross_weight", "volatility", "sharpe", "herfindahl", "top5_share", "risk_free_rate", "quantity", "id",
+];
+
+function allKeys(v: unknown, out = new Set<string>()): Set<string> {
+  if (Array.isArray(v)) v.forEach((x) => allKeys(x, out));
+  else if (v && typeof v === "object") for (const [k, x] of Object.entries(v)) (out.add(k), allKeys(x, out));
+  return out;
+}
+
 describe("compact output keeps every number (review RF-1/RF-2 guard)", () => {
+  it("rounds only the fields pinned in this test, at the pinned precision", async () => {
+    const db = new Database(":memory:");
+    db.pragma("foreign_keys = ON");
+    runMigrations(db);
+    seedSizeBook(db);
+    const problems: string[] = [];
+    for (const [tool, input] of WORST_CASE_CALLS) {
+      const keys = allKeys(await executeTool(db, tool, input));
+      for (const k of NEVER_ROUNDED_PROBES) keys.add(k);
+      for (const k of keys) {
+        const rule = compactRoundingFor(tool, k);
+        const allowed = ALLOWED_ROUNDING[tool]?.[k];
+        if (rule && rule.dp !== allowed) problems.push(`${tool}.${k}: rounded to ${rule.dp} places, not allowed by this test`);
+        if (!rule && allowed !== undefined) problems.push(`${tool}.${k}: pinned as rounded but the map leaves it exact`);
+      }
+    }
+    expect(problems).toEqual([]);
+  }, 120000);
+
   it("every numeric leaf of all 33 tools: within its declared precision, exact if unmapped, sign and order kept", async () => {
     const db = new Database(":memory:");
     db.pragma("foreign_keys = ON");
