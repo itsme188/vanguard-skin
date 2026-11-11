@@ -80,10 +80,7 @@ export function assistantRowText(
   steps: readonly TurnOutcomeStep[],
   finishReason: string | undefined,
 ): string | null {
-  const joined = steps
-    .map((s) => (typeof s.text === "string" ? s.text.trim() : ""))
-    .filter((t) => t !== "")
-    .join("\n\n");
+  const joined = joinStepTexts(steps.map((s) => s.text));
   if (joined) return joined;
 
   const last = steps[steps.length - 1];
@@ -99,4 +96,16 @@ export function assistantRowText(
     default:
       return null;
   }
+}
+
+/**
+ * The non-empty step texts joined with a blank line ("" when there are none).
+ * An errored or aborted turn saves exactly this, never a finish-reason
+ * sentence (review R3-2, R3-4).
+ */
+export function joinStepTexts(texts: readonly (string | undefined | null)[]): string {
+  return texts
+    .map((t) => (typeof t === "string" ? t.trim() : ""))
+    .filter((t) => t !== "")
+    .join("\n\n");
 }

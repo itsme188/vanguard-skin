@@ -12,9 +12,13 @@ import type { ModelMessage, UIMessage } from "ai";
  *    once a later message follows it.
  *
  * One state is valid with no result and must survive: a tool part in
- * `approval-responded` in the LAST assistant message. `convertToModelMessages`
- * turns it into a call, an approval request and an approval response, and
- * `streamText`'s `collectToolApprovals` then executes the approved call.
+ * `approval-responded` in the FINAL message of the request (the approval
+ * continuation). `convertToModelMessages` turns it into a call, an approval
+ * request and an approval response, and `streamText`'s `collectToolApprovals`
+ * then executes the approved call. The same part in any EARLIER message
+ * (review R3-1: the continuation request failed, then the owner typed again)
+ * will never be executed, so it becomes a denial with a result; left as is it
+ * reached the provider as a tool_use with no tool_result (HTTP 400).
  *
  * Checked against ai@6.0.138 (`node_modules/ai/dist/index.mjs`,
  * `convertToModelMessages`): a part in `output-denied` with
@@ -25,6 +29,9 @@ import type { ModelMessage, UIMessage } from "ai";
  */
 
 export const STALE_APPROVAL_REASON = "Not confirmed";
+
+/** Reason given to the model for an approval whose run never happened. */
+export const UNRUN_APPROVAL_REASON = "Not run: the request that would have run it did not finish.";
 
 type UIPart = UIMessage["parts"][number];
 
@@ -68,6 +75,19 @@ export function sanitizeUiHistory(messages: UIMessage[]): UIMessage[] {
         // No approval id: nothing can pair the call, so it is dropped.
         continue;
       }
+      if (tp.state === "approval-responded" && index !== lastIndex) {
+        changed = true;
+        if (tp.approval?.id) {
+          const reason =
+            tp.approval.approved === false ? tp.approval.reason ?? STALE_APPROVAL_REASON : UNRUN_APPROVAL_REASON;
+          parts.push({
+            ...(part as object),
+            state: "output-denied",
+            approval: { id: tp.approval.id, approved: false, reason },
+          } as unknown as UIPart);
+        }
+        continue;
+      }
       parts.push(part);
     }
     if (!changed) return message;
@@ -86,14 +106,16 @@ function contentParts(message: ModelMessage): ContentPart[] {
 /**
  * Every `tool-call` id in an assistant message that has no `tool-result` in
  * the tool message right after it (or in the same message, for a provider-run
- * tool). Exempt: a call in the LAST assistant message that carries an
- * approval request (pending, or answered by the tool message that follows).
+ * tool). Exempt: a call that carries an approval request in an assistant
+ * message that is the FINAL message, or is followed only by the final (tool)
+ * message holding the approval response: the continuation the SDK executes.
+ * An approval anywhere earlier is never executed, so it counts as an orphan
+ * (review R3-1).
  */
 export function findOrphanToolCalls(messages: ModelMessage[]): string[] {
-  let lastAssistant = -1;
-  messages.forEach((m, i) => {
-    if (m.role === "assistant") lastAssistant = i;
-  });
+  const last = messages.length - 1;
+  const isContinuationTail = (i: number) =>
+    i === last || (i === last - 1 && messages[last]?.role === "tool");
 
   const orphans: string[] = [];
   messages.forEach((message, i) => {
@@ -111,7 +133,7 @@ export function findOrphanToolCalls(messages: ModelMessage[]): string[] {
     for (const p of parts) {
       if (p.type !== "tool-call" || !p.toolCallId) continue;
       if (resultIds.has(p.toolCallId)) continue;
-      if (i === lastAssistant && approvalIds.has(p.toolCallId)) continue;
+      if (isContinuationTail(i) && approvalIds.has(p.toolCallId)) continue;
       orphans.push(p.toolCallId);
     }
   });

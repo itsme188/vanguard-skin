@@ -42,7 +42,7 @@ export function getConversationMessages(
     .prepare(
       `SELECT * FROM chat_messages
        WHERE conversation_id = ?
-       ORDER BY created_at ASC`,
+       ORDER BY created_at ASC, id ASC`,
     )
     .all(conversationId) as ChatMessage[];
 }

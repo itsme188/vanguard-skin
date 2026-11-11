@@ -158,4 +158,23 @@ describe("chat queries + mutations", () => {
       expect(last?.content).toBe("third");
     });
   });
+
+  describe("getConversationMessages ordering (R3-8)", () => {
+    it("rows saved in the same second come back in insertion order", () => {
+      const id = createConversation(db, "all");
+      const insert = db.prepare(
+        "INSERT INTO chat_messages (conversation_id, role, content, created_at) VALUES (?, ?, ?, '2026-11-11 10:00:00')",
+      );
+      insert.run(id, "user", "first");
+      insert.run(id, "assistant", "second");
+      insert.run(id, "user", "third");
+      // A later row with an EARLIER timestamp still sorts by time first.
+      db.prepare(
+        "INSERT INTO chat_messages (conversation_id, role, content, created_at) VALUES (?, 'assistant', 'zeroth', '2026-11-11 09:59:59')",
+      ).run(id);
+      expect(getConversationMessages(db, id).map((m) => m.content)).toEqual(["zeroth", "first", "second", "third"]);
+      const sql = getConversationMessages.toString();
+      expect(sql).toMatch(/ORDER BY created_at ASC, id ASC/);
+    });
+  });
 });

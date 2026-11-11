@@ -37,7 +37,7 @@ import {
   LAST_STEP_NOTE,
   MAX_CHAT_STEPS,
 } from "@/lib/chat/history";
-import { assistantRowText } from "@/lib/chat/turn-outcome";
+import { assistantRowText, joinStepTexts } from "@/lib/chat/turn-outcome";
 import {
   logChatError,
   logChatWarning,
@@ -350,6 +350,28 @@ export async function POST(request: NextRequest) {
     };
 
     let loggedSteps = 0;
+    // What the finished steps produced, collected as they finish, so an
+    // errored or aborted turn can still charge and save them (R3-2, R3-4).
+    const finishedStepTexts: string[] = [];
+    let finishedStepOutput = 0;
+    let errored = false;
+    // The turn is charged and its row saved exactly once: onAbort and
+    // onFinish can both run for one aborted turn.
+    let settled = false;
+    const saveAssistantRow = (text: string | null) => {
+      try {
+        if (!text) return;
+        saveMessage(db, convId, "assistant", text, null);
+        // Auto-title from first exchange
+        const msgCount = messages.filter((m) => m.role === "user").length;
+        if (msgCount <= 1) {
+          const title = conversationTitleFromMessages(messages);
+          if (title) updateConversationTitle(db, convId, title);
+        }
+      } catch (error) {
+        logChatError("save assistant message", error);
+      }
+    };
     let streamedSteps = 0;
 
     // Stream with automatic agentic tool loop (up to MAX_CHAT_STEPS model calls)
@@ -373,6 +395,8 @@ export async function POST(request: NextRequest) {
         },
       },
       onStepFinish: (step) => {
+        finishedStepTexts.push(step.text ?? "");
+        finishedStepOutput += step.usage?.outputTokens ?? 0;
         logUsageStep({
           conversationId: convId,
           scope,
@@ -383,12 +407,8 @@ export async function POST(request: NextRequest) {
         });
       },
       onFinish: async ({ steps, finishReason, totalUsage }) => {
-        // Best-effort daily ceiling accounting (#35, task 22): the AI SDK's
-        // actual post-call usage figure, not an estimate — accumulated here
-        // because this is the one place streamText hands back real token
-        // counts. Release the concurrency slot in the same breath so the
-        // next request for this session sees capacity immediately.
-        recordDailyUsage(sessionKey, budgetDay, totalUsage?.outputTokens ?? 0);
+        // Release the concurrency slot first so the next request for this
+        // session sees capacity immediately.
         releaseSlot();
 
         const allSteps = steps ?? [];
@@ -404,37 +424,44 @@ export async function POST(request: NextRequest) {
           logChatWarning("model refused the request");
         }
 
-        // B11: every step's text, or the sentence for an empty turn (Contract B).
-        try {
-          const text = assistantRowText(allSteps, finishReason);
-          if (text) {
-            saveMessage(db, convId, "assistant", text, null);
-            // Auto-title from first exchange
-            const msgCount = messages.filter((m) => m.role === "user").length;
-            if (msgCount <= 1) {
-              const title = conversationTitleFromMessages(messages);
-              if (title) updateConversationTitle(db, convId, title);
-            }
-          }
-        } catch (error) {
-          logChatError("save assistant message", error);
+        if (settled) return; // an abort already charged and saved this turn
+        settled = true;
+
+        if (errored) {
+          // R3-2: a later step failed. Charge what the finished steps
+          // produced (the SDK's total reads 0 here) and save their text, never
+          // the step-limit sentence.
+          recordDailyUsage(sessionKey, budgetDay, finishedStepOutput);
+          saveAssistantRow(joinStepTexts(finishedStepTexts) || null);
+          return;
         }
+
+        // Best-effort daily ceiling accounting (#35, task 22): the AI SDK's
+        // actual post-call usage figure, not an estimate.
+        recordDailyUsage(sessionKey, budgetDay, totalUsage?.outputTokens ?? finishedStepOutput);
+        // B11: every step's text, or the sentence for an empty turn (Contract B).
+        saveAssistantRow(assistantRowText(allSteps, finishReason));
       },
       onError: ({ error }) => {
         // Additive (#35, task 22): streamText's own error hook, independent
-        // of toUIMessageStreamResponse's onError below — this only logs +
-        // releases the concurrency slot so an in-flight-generation error
-        // never leaves the session permanently stuck at the concurrency cap.
+        // of toUIMessageStreamResponse's onError below — this logs, marks the
+        // turn errored for onFinish, and releases the concurrency slot so an
+        // in-flight-generation error never leaves the session stuck at the cap.
+        errored = true;
         logChatError("streamText", error);
         releaseSlot();
       },
-      onAbort: ({ steps }) => {
+      onAbort: () => {
         // Fires on client disconnect (abortSignal above) — same release, so
-        // an abandoned request can't leak a slot. Finished steps still count
-        // toward the daily ceiling.
-        const output = (steps ?? []).reduce((sum, s) => sum + (s.usage?.outputTokens ?? 0), 0);
-        recordDailyUsage(sessionKey, budgetDay, output);
+        // an abandoned request can't leak a slot. R3-4 / R4-7: the finished
+        // steps' output counts toward the daily ceiling, and their text (which
+        // the owner saw, and which the client re-sends as history) is stored;
+        // an empty abort saves nothing.
         releaseSlot();
+        if (settled) return;
+        settled = true;
+        recordDailyUsage(sessionKey, budgetDay, finishedStepOutput);
+        saveAssistantRow(joinStepTexts(finishedStepTexts) || null);
       },
     });
 

@@ -163,6 +163,9 @@ function asOfSuffix(date: string | null): string {
 /** Why the stance score is left out (Contract E / P12), or null when it is shown. */
 function stanceWithheldReason(ctx: IbkrTradingContext): string | null {
   if (!ctx.stanceWithheld) return null;
+  if (typeof ctx.stanceWithheldReason === "string" && ctx.stanceWithheldReason.trim() !== "") {
+    return ctx.stanceWithheldReason.trim();
+  }
   if (ctx.cashSource === "none") return "no cash figure is available";
   if (ctx.cashCarried) return "the cash figure is carried from an earlier date";
   if (ctx.cashTimingResidual) return "the cash figure is a live timing residual, not a measured balance";
@@ -192,7 +195,16 @@ function formatIbkrDashboard(ctx: IbkrTradingContext): string {
           ? `-${amount}, negative cash; this may be a timing difference, not borrowing`
           : `-${amount}, negative cash (margin debit)`
         : amount;
-    cashLine = `- **Cash**: ${figure}${asOfSuffix(ctx.cashAsOf)} (${ctx.cashPct.toFixed(1)}% of account) → ${stance}\n`;
+    if (ctx.cashSource === "statement") {
+      // Contract E addition (R2-3): the live line was not usable, so the
+      // figure (and the stance built on it) comes from the newest statement.
+      const dated = ctx.cashAsOf ? `, as of ${ctx.cashAsOf}` : "";
+      const basis = ctx.cashAsOf ? `the statement dated ${ctx.cashAsOf}` : "the latest statement";
+      const statementStance = withheldReason ? stance : `${stance}, based on ${basis}`;
+      cashLine = `- **Cash (statement${dated})**: ${figure} (${ctx.cashPct.toFixed(1)}% of account) → ${statementStance}\n`;
+    } else {
+      cashLine = `- **Cash**: ${figure}${asOfSuffix(ctx.cashAsOf)} (${ctx.cashPct.toFixed(1)}% of account) → ${stance}\n`;
+    }
   }
 
   let dashboard = `## Current IBKR Trading Dashboard\n\n`;

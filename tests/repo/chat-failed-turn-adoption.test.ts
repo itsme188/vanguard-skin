@@ -15,19 +15,37 @@ const root = join(__dirname, "../..");
 const src = readFileSync(join(root, "app/dashboard/components/ChatInterface.tsx"), "utf8");
 const route = readFileSync(join(root, "app/api/chat/route.ts"), "utf8");
 
+/** The text from the "(" at `open` through its matching ")". */
+function balancedCall(text: string, open: number): string {
+  expect(text[open]).toBe("(");
+  let depth = 0;
+  for (let i = open; i < text.length; i++) {
+    if (text[i] === "(") depth++;
+    else if (text[i] === ")") {
+      depth--;
+      if (depth === 0) return text.slice(open, i + 1);
+    }
+  }
+  throw new Error("unbalanced call");
+}
+
 describe("chat failed-turn conversation adoption", () => {
   it("every chat-route response after the conversation exists names it", () => {
     const created = anchorIndex(
       route,
-      'conversationHeaders = { "X-Conversation-Id": String(conversationId) };',
+      'conversationHeaders = { "X-Conversation-Id": String(convId) };',
     );
     expect(created).toBeGreaterThan(anchorIndex(route, "createConversation(db, scope)"));
     // Exits after that point: missing key, slot busy, the stream, the catch.
+    // Each one is checked on its OWN call text (balanced parentheses), so an
+    // exit that loses the header fails here even if another exit names it.
     const after = route.slice(created);
-    const exits = after.match(/Response\.json\(|toUIMessageStreamResponse\(/g) ?? [];
-    const named = after.match(/headers: conversationHeaders/g) ?? [];
+    const exits = [...after.matchAll(/Response\.json\(|toUIMessageStreamResponse\(/g)];
     expect(exits.length).toBe(4);
-    expect(named.length).toBe(exits.length);
+    for (const exit of exits) {
+      const call = balancedCall(after, exit.index! + exit[0].length - 1);
+      expect(call, `exit at offset ${exit.index}: ${call.slice(0, 80)}`).toMatch(/\bheaders: conversationHeaders\b/);
+    }
   });
 
   it("the transport fetch clears the turn id, then records the response header", () => {
@@ -39,7 +57,7 @@ describe("chat failed-turn conversation adoption", () => {
     expect(call).toBeLessThan(read);
     anchorIndex(src, 'new DefaultChatTransport({ api: "/api/chat", fetch: chatFetch })');
     // The box and the transport come out of ONE memo, so they cannot drift.
-    anchorIndex(src, "const { transport, turn } = useMemo(");
+    anchorIndex(src, "const { transport, turn, sendAutomaticallyWhen } = useMemo(");
   });
 
   it("adoption reads only the turn id — never the list head, never a clock", () => {
@@ -49,7 +67,12 @@ describe("chat failed-turn conversation adoption", () => {
       "// Auto-scroll on new content",
     );
     anchorIndex(effect, "turnConversationId: turn.conversationId,");
-    anchorIndex(effect, "setConversationId(adopt)");
+    anchorIndex(effect, "openConversation(adopt)");
+    // openConversation is the one writer of the open id: state and the ref
+    // the request body reads, set together.
+    const writer = sliceBetween(src, "const openConversation = useCallback(", "}, []);");
+    anchorIndex(writer, "conversationIdRef.current = id;");
+    anchorIndex(writer, "setConversationId(id);");
     expect(effect).not.toContain("convs[0]");
     expect(src).not.toContain("setConversationId(convs[0].id)");
     expect(src).not.toContain("sendStartedAtRef");
@@ -63,7 +86,7 @@ describe("chat failed-turn conversation adoption", () => {
       "// Auto-scroll on new content",
     );
     const decide = anchorIndex(effect, "decideTurnAdoption({");
-    const adopt = anchorIndex(effect, "setConversationId(adopt)");
+    const adopt = anchorIndex(effect, "openConversation(adopt)");
     const refresh = anchorIndex(effect, "void fetchConversations()");
     expect(decide).toBeLessThan(adopt);
     expect(adopt).toBeLessThan(refresh);
@@ -89,7 +112,13 @@ describe("chat failed-turn conversation adoption", () => {
   });
 
   it("the request body reads state only, never the turn box", () => {
-    const memo = sliceBetween(src, "const requestBody = useMemo(", ");");
-    expect(memo).not.toContain("turn.");
+    // Since f5538ee5 the body is built per call and reads the open id from
+    // conversationIdRef (written only by openConversation, in step with the
+    // state), not from React state directly. What this protects is unchanged:
+    // the body never reads the turn box, whose id belongs to the in-flight
+    // request.
+    const body = sliceBetween(src, "const currentRequestBody = useCallback(", "[scope, pathname]");
+    anchorIndex(body, "conversationId: conversationIdRef.current");
+    expect(body).not.toContain("turn.");
   });
 });

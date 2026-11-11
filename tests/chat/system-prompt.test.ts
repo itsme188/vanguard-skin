@@ -247,7 +247,7 @@ describe("IBKR dynamic dashboard", () => {
   const cashLine = (ctx: IbkrTradingContext) =>
     buildSystemPrompt(fakeContext, today, "ibkr", ctx)
       .split("\n")
-      .find((l) => l.startsWith("- **Cash**")) ?? "";
+      .find((l) => l.startsWith("- **Cash")) ?? "";
   const totalLine = (ctx: IbkrTradingContext) =>
     buildSystemPrompt(fakeContext, today, "ibkr", ctx)
       .split("\n")
@@ -298,5 +298,34 @@ describe("IBKR dynamic dashboard", () => {
     expect(line).not.toContain("$");
     expect(line).not.toMatch(/Stance: \d\/5/);
     expect(line).toContain("Stance: withheld (no cash figure is available)");
+  });
+
+  // Contract E addition (R2-3): a cash figure taken from the newest statement.
+  it("a statement cash figure says so and the stance names the statement date", () => {
+    const ctx = {
+      ...mockCtx,
+      cashSource: "statement" as const,
+      cashAsOf: "2026-10-31",
+      estimatedCash: 900,
+      cashPct: 30,
+      bullishnessScore: 3,
+      stanceWithheld: false,
+    };
+    const line = cashLine(ctx);
+    expect(line).toContain("**Cash (statement, as of 2026-10-31)**: $900");
+    expect(line).toContain("(30.0% of account)");
+    expect(line).toContain("Stance: 3/5 (neutral), based on the statement dated 2026-10-31");
+    // the date is not printed twice as a generic "(as of …)" suffix
+    expect(line.match(/2026-10-31/g)).toHaveLength(2);
+  });
+
+  it("the engine's own withheld reason is printed when it gives one", () => {
+    const ctx = {
+      ...mockCtx,
+      cashTimingResidual: true,
+      stanceWithheld: true,
+      stanceWithheldReason: "the account total is zero or below",
+    };
+    expect(cashLine(ctx)).toContain("Stance: withheld (the account total is zero or below)");
   });
 });

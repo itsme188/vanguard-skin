@@ -3,7 +3,7 @@ import Database from "better-sqlite3";
 import { NextRequest } from "next/server";
 import { MockLanguageModelV3, convertArrayToReadableStream } from "ai/test";
 import { runMigrations } from "@/lib/db/migrate";
-import { resetChatBudgetStateForTests } from "@/lib/chat/budget";
+import { resetChatBudgetStateForTests, getDailyUsage, budgetDayFor, NO_SESSION_KEY, activeStreamCount } from "@/lib/chat/budget";
 import { CUT_OFF_SENTENCE } from "@/lib/chat/turn-outcome";
 
 // Portfolio Assistant plan, Task 3 item E (B11, Contract B): the saved
@@ -165,6 +165,41 @@ describe("POST /api/chat — assistant row persistence (B11)", () => {
     const all = lines.join("\n");
     expect(all).not.toContain("SECRET");
     expect(all).not.toContain("what do my notes say");
+  });
+
+  // Review R3-2: a later step that errors must not save the step-limit
+  // sentence, and the finished steps' output still counts toward the budget.
+  function failingSecondCall(firstText?: string): MockLanguageModelV3 {
+    let call = 0;
+    return new MockLanguageModelV3({
+      doStream: async () => {
+        if (call++ === 0) {
+          return {
+            stream: convertArrayToReadableStream(
+              stepParts({ text: firstText, toolCall: { id: "c1", name: "query_notes", input: {} } }),
+            ),
+          };
+        }
+        throw new Error("upstream failed");
+      },
+    });
+  }
+
+  it("an errored turn saves the finished steps' text and no cut-off sentence", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    hoisted.model = failingSecondCall("Let me check.");
+    await post({ messages: ask, scope: "all" });
+    expect(rows("assistant")).toEqual(["Let me check."]);
+    expect(activeStreamCount(NO_SESSION_KEY, Date.now())).toBe(0);
+  });
+
+  it("an errored turn with no text saves nothing and charges the finished steps' output", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    hoisted.model = failingSecondCall();
+    await post({ messages: ask, scope: "all" });
+    expect(rows("assistant")).toEqual([]);
+    expect(getDailyUsage(NO_SESSION_KEY, budgetDayFor(Date.now()))?.outputTokens).toBe(2);
+    expect(activeStreamCount(NO_SESSION_KEY, Date.now())).toBe(0);
   });
 
   it("a failed save is logged without content and does not break the stream", async () => {

@@ -158,6 +158,45 @@ describe("findOrphanToolCalls / dropOrphanToolCalls", () => {
     expect(assistant.content.map((p) => p.toolCallId ?? p.type)).toEqual(["text", "paired"]);
   });
 
+  it("an approval followed by a later user message is an orphan, not exempt (R3-1)", () => {
+    const approved: ModelMessage[] = [
+      { role: "user", content: "save a note" },
+      {
+        role: "assistant",
+        content: [
+          { type: "tool-call", toolCallId: "n1", toolName: "create_note", input: {} },
+          { type: "tool-approval-request", approvalId: "ap1", toolCallId: "n1" },
+        ],
+      },
+      { role: "tool", content: [{ type: "tool-approval-response", approvalId: "ap1", approved: true }] },
+    ];
+    // As the continuation (final messages): exempt, the SDK executes it.
+    expect(findOrphanToolCalls(approved)).toEqual([]);
+    // With a new user message after it: it will never run, so it is an orphan.
+    expect(findOrphanToolCalls([...approved, { role: "user", content: "hello again" }])).toEqual(["n1"]);
+  });
+
+  it("an approval-responded card before the final message becomes a paired denial (R3-1)", async () => {
+    const card = {
+      id: "a1",
+      role: "assistant",
+      parts: [
+        {
+          type: "tool-create_note",
+          toolCallId: "n1",
+          state: "approval-responded",
+          input: {},
+          approval: { id: "ap1", approved: true },
+        },
+      ],
+    } as UIMessage;
+    const out = sanitizeUiHistory([user("u1", "save"), card, user("u2", "hello again")]);
+    const part = out[1].parts[0] as { state: string; approval: { approved: boolean } };
+    expect(part.state).toBe("output-denied");
+    expect(part.approval.approved).toBe(false);
+    expect(findOrphanToolCalls(await convertToModelMessages(out))).toEqual([]);
+  });
+
   it("an assistant message left empty by the drop is removed", () => {
     const messages: ModelMessage[] = [
       { role: "user", content: "hi" },
