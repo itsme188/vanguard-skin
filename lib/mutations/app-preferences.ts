@@ -15,6 +15,7 @@ import {
   type CapScope,
   type Caps,
 } from "@/lib/queries/app-preferences";
+import { TICKER_RE, invalidTickerMessage, normalizeTicker } from "@/lib/settings-ticker-rule";
 
 export type PatchResult =
   | { ok: true; data: AppPreferences }
@@ -22,7 +23,6 @@ export type PatchResult =
 
 type Write = { key: string; value: string | null }; // null = delete
 
-const TICKER_RE = /^[A-Z0-9.-]{1,10}$/;
 
 function inRange01(n: unknown): n is number {
   return typeof n === "number" && Number.isFinite(n) && n > 0 && n <= 1;
@@ -81,9 +81,9 @@ export function applyPreferencesPatch(db: Database.Database, body: unknown): Pat
     const out: string[] = [];
     for (const item of v) {
       if (typeof item !== "string") return { ok: false, error: "Each ignored symbol must be text." };
-      const s = item.trim().toUpperCase();
+      const s = normalizeTicker(item);
       if (!TICKER_RE.test(s)) {
-        return { ok: false, error: `"${item}" is not a valid ticker (letters, digits, dot or dash, up to 10 characters).` };
+        return { ok: false, error: invalidTickerMessage(item) };
       }
       if (!out.includes(s)) out.push(s);
     }
