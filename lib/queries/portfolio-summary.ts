@@ -71,6 +71,8 @@ interface EnrichedHolding {
   latest_price: number | null;
   market_value: number | null;
   unrealized_gain: number | null;
+  /** Gain as a percent of cost: query_holdings' unrealized_gain_pct, same formula. */
+  unrealized_gain_pct: number | null;
   position_weight_pct: number | null;
   option_type?: string | null;
   strike_price?: number | null;
@@ -221,6 +223,9 @@ function describeOptionLeg(
  */
 export type PortfolioSummaryScope = string | { accountIds: number[]; label: string };
 
+export /** The base both allocation sections state once in their header (RF-10). */
+const ALLOCATION_SHARE_BASE = "share = of the priced long market value in this scope";
+
 export const NO_ACCOUNT_IN_SCOPE = "No account matches this chat's scope.";
 const TAX_ADVANTAGED_NOT_APPLICABLE = "Not applicable: this account is tax-advantaged.";
 const ALL_TAX_ADVANTAGED_NOT_APPLICABLE = "Not applicable: every account in this scope is tax-advantaged.";
@@ -358,6 +363,10 @@ export function getPortfolioSummaryForChat(db: Database.Database, scope?: Portfo
                 THEN ${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")} - (${HOLDING_BASIS} * COALESCE(fx.usd_per_unit, 1))
                 ELSE NULL
               END AS unrealized_gain,
+              CASE WHEN lp.close_price IS NOT NULL AND ${HOLDING_BASIS} IS NOT NULL AND ${HOLDING_BASIS} > 0
+                THEN (${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")} - (${HOLDING_BASIS} * COALESCE(fx.usd_per_unit, 1))) * 100.0 / (${HOLDING_BASIS} * COALESCE(fx.usd_per_unit, 1))
+                ELSE NULL
+              END AS unrealized_gain_pct,
               CASE WHEN lp.close_price IS NOT NULL
                 THEN ${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")} * 100.0 / (SELECT total FROM portfolio_total)
                 ELSE NULL
@@ -376,22 +385,30 @@ export function getPortfolioSummaryForChat(db: Database.Database, scope?: Portfo
     .all(...holdingsParams, ...holdingsParams) as EnrichedHolding[];
 
   if (holdings.length > 0) {
+    // RF-10: every figure is named. The weight's base is stated once here:
+    // the priced long market value of the scope, the same base as
+    // query_holdings' position_weight_pct (getHoldingsForChat).
     lines.push(
-      "\n### Current Holdings — long positions (verified, quantity > 0; short positions are listed in the next section)"
+      "\n### Current Holdings — long positions (verified, quantity > 0; weight = share of the priced long market value in this scope; short positions are listed in the next section)"
     );
+    const signed = (n: number) => `${n >= 0 ? "+" : ""}${formatUSD(n)}`;
     for (const h of holdings) {
       const unit = quantityUnitLabel(h.security_type, h.quantity);
-      const value = h.market_value != null ? ` MV:${formatUSD(h.market_value)}` : "";
-      const gain = h.unrealized_gain != null
-        ? ` G/L:${h.unrealized_gain >= 0 ? "+" : ""}${formatUSD(h.unrealized_gain)}`
-        : "";
-      const weight = h.position_weight_pct != null
-        ? ` (${h.position_weight_pct.toFixed(1)}%)`
-        : "";
-      const sector = h.sector ? ` [${h.sector}]` : "";
+      const parts: string[] = [];
+      if (h.market_value != null) parts.push(`value ${formatUSD(h.market_value)}`);
+      if (h.cost_basis != null && h.cost_basis > 0) parts.push(`cost basis ${formatUSD(h.cost_basis)}`);
+      if (h.unrealized_gain != null) {
+        const pct =
+          h.unrealized_gain_pct != null
+            ? ` (${h.unrealized_gain_pct >= 0 ? "+" : ""}${h.unrealized_gain_pct.toFixed(1)}% of cost)`
+            : "";
+        parts.push(`gain/loss ${signed(h.unrealized_gain)}${pct}`);
+      }
+      if (h.position_weight_pct != null) parts.push(`weight ${h.position_weight_pct.toFixed(1)}%`);
+      if (h.sector) parts.push(`sector ${h.sector}`);
       const leg = describeOptionLeg(h);
       lines.push(
-        `- ${h.symbol} (${h.account_name}): ${formatNumber(h.quantity)} ${unit}${leg}${value}${gain}${weight}${sector}`
+        `- ${h.symbol} (${h.account_name}): ${formatNumber(h.quantity)} ${unit}${leg}${parts.map((p) => `; ${p}`).join("")}`
       );
     }
   }
@@ -447,8 +464,8 @@ export function getPortfolioSummaryForChat(db: Database.Database, scope?: Portfo
     lines.push("\n### Current Short Positions (verified, quantity < 0; market value is the liability)");
     for (const h of shorts) {
       const unit = quantityUnitLabel(h.security_type, h.quantity);
-      const value = h.market_value != null ? ` MV:${formatUSD(h.market_value)}` : "";
-      const sector = h.sector ? ` [${h.sector}]` : "";
+      const value = h.market_value != null ? `; value ${formatUSD(h.market_value)} (liability)` : "";
+      const sector = h.sector ? `; sector ${h.sector}` : "";
       const leg = describeOptionLeg(h, "short");
       lines.push(`- ${h.symbol} (${h.account_name}): short ${formatNumber(Math.abs(h.quantity))} ${unit}${leg}${value}${sector}`);
     }
@@ -491,10 +508,10 @@ export function getPortfolioSummaryForChat(db: Database.Database, scope?: Portfo
   );
 
   if (assetAllocation.length > 0) {
-    lines.push("\n### Asset Allocation");
+    lines.push(`\n### Asset Allocation (${ALLOCATION_SHARE_BASE})`);
     for (const a of assetAllocation) {
       lines.push(
-        `- ${a.group_name}: ${formatUSD(a.total_market_value)} (${a.percentage.toFixed(1)}%, ${a.count} positions)`
+        `- ${a.group_name}: ${formatUSD(a.total_market_value)} (${a.percentage.toFixed(1)}% share, ${a.count} positions)`
       );
     }
   }
@@ -509,15 +526,15 @@ export function getPortfolioSummaryForChat(db: Database.Database, scope?: Portfo
   if (hasSectorData) {
     const withSector = sectorAllocation.filter((s) => s.group_name !== "Unknown");
     const unknown = sectorAllocation.find((s) => s.group_name === "Unknown");
-    lines.push("\n### Sector Allocation");
+    lines.push(`\n### Sector Allocation (${ALLOCATION_SHARE_BASE})`);
     for (const s of withSector) {
       lines.push(
-        `- ${s.group_name}: ${formatUSD(s.total_market_value)} (${s.percentage.toFixed(1)}%)`
+        `- ${s.group_name}: ${formatUSD(s.total_market_value)} (${s.percentage.toFixed(1)}% share)`
       );
     }
     if (unknown) {
       lines.push(
-        `- Unclassified: ${formatUSD(unknown.total_market_value)} (${unknown.percentage.toFixed(1)}%, ${unknown.count} positions without sector data)`
+        `- Unclassified: ${formatUSD(unknown.total_market_value)} (${unknown.percentage.toFixed(1)}% share, ${unknown.count} positions without sector data)`
       );
     }
   }
@@ -834,7 +851,7 @@ export function getPortfolioSummaryForChat(db: Database.Database, scope?: Portfo
     lines.push("These transactions show what has happened. A security listed here may have been bought AND subsequently sold.");
     for (const t of recentTxns) {
       const sym = t.symbol ?? "CASH";
-      const amt = t.amount !== null ? ` ${formatUSD(Math.abs(t.amount))}` : "";
+      const amt = t.amount !== null ? ` amount ${formatUSD(Math.abs(t.amount))}` : "";
       // QA-11: contracts for an option, face value for a bond, never "shares" for all.
       const qty = t.quantity !== null ? ` ${t.quantity} ${quantityUnitLabel(t.security_type, t.quantity)}` : "";
       lines.push(`- ${t.trade_date} | ${t.account_name} | ${t.type} ${sym}${qty}${amt}`);

@@ -64,18 +64,18 @@ describe("B2: allocation reads the live book only", () => {
   it("an expired option row is left out of both allocation sections", () => {
     const s = getPortfolioSummaryForChat(db);
     const assets = section(s, "### Asset Allocation");
-    expect(assets).toEqual(["- Stock: $5,000 (100.0%, 1 positions)"]);
+    expect(assets).toEqual(["- Stock: $5,000 (100.0% share, 1 positions)"]);
     expect(assets.some((l) => /option/i.test(l))).toBe(false);
 
     const sectors = section(s, "### Sector Allocation");
-    expect(sectors).toEqual(["- Technology: $5,000 (100.0%)"]);
+    expect(sectors).toEqual(["- Technology: $5,000 (100.0% share)"]);
   });
 
   it("asset allocation sums to the long holdings' market values within $1", () => {
     const s = getPortfolioSummaryForChat(db);
     const allocTotal = section(s, "### Asset Allocation").reduce((sum, l) => sum + dollars(l), 0);
     const holdingsTotal = section(s, "### Current Holdings")
-      .map((l) => l.match(/MV:\$([\d,]+)/))
+      .map((l) => l.match(/; value \$([\d,]+)/))
       .filter((m): m is RegExpMatchArray => m !== null)
       .reduce((sum, m) => sum + Number(m[1].replace(/,/g, "")), 0);
     expect(holdingsTotal).toBe(5000);

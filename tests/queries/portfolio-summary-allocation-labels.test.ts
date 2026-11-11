@@ -29,7 +29,7 @@ function section(summary: string, heading: string): string[] {
   return body.split("\n").filter((l) => l.startsWith("- "));
 }
 
-/** "- Option: $600 (66.7%, 3 positions)" -> ["Option", 600] */
+/** "- Option: $600 (66.7% share, 3 positions)" -> ["Option", 600] */
 function parse(line: string): [string, number] {
   const m = line.match(/^- (.+?): \$([\d,]+)/);
   if (!m) throw new Error(`unparsed: ${line}`);
@@ -73,16 +73,16 @@ describe("allocation sections group label variants once", () => {
   it("gives one line per real category in both allocation sections", () => {
     const s = getPortfolioSummaryForChat(db);
     expect(section(s, "### Asset Allocation")).toEqual([
-      "- Option: $600 (66.7%, 3 positions)",
-      "- Stock: $300 (33.3%, 2 positions)",
+      "- Option: $600 (66.7% share, 3 positions)",
+      "- Stock: $300 (33.3% share, 2 positions)",
     ]);
-    expect(section(s, "### Sector Allocation")).toEqual(["- Energy: $600 (66.7%)", "- Technology: $300 (33.3%)"]);
+    expect(section(s, "### Sector Allocation")).toEqual(["- Energy: $600 (66.7% share)", "- Technology: $300 (33.3% share)"]);
   });
 
   it("section totals still equal the long holdings value", () => {
     const s = getPortfolioSummaryForChat(db);
     const holdings = section(s, "### Current Holdings")
-      .map((l) => l.match(/MV:\$([\d,]+)/))
+      .map((l) => l.match(/; value \$([\d,]+)/))
       .filter((m): m is RegExpMatchArray => m !== null)
       .reduce((sum, m) => sum + Number(m[1].replace(/,/g, "")), 0);
     expect(holdings).toBe(900);

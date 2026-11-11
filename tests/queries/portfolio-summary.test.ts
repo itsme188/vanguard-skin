@@ -165,8 +165,8 @@ describe("getPortfolioSummaryForChat", () => {
     const summary = getPortfolioSummaryForChat(db);
     expect(summary).toContain("VTI");
     expect(summary).toContain("100");
-    // New format: MV:$25,000 instead of "@ $250"
-    expect(summary).toContain("MV:$25,000");
+    // Labelled: "value $25,000" instead of "@ $250"
+    expect(summary).toContain("value $25,000");
   });
 
   it("shows holdings without prices (no MV)", () => {
@@ -191,9 +191,9 @@ describe("getPortfolioSummaryForChat", () => {
     const summary = getPortfolioSummaryForChat(db);
     // Should NOT contain "$0" for the unpriced holding
     // The PRICED holding should show $1,000 market value
-    expect(summary).toContain("MV:$1,000");
+    expect(summary).toContain("value $1,000");
     // NOPRICE should not have any market value shown
-    expect(summary).not.toContain("MV:$0");
+    expect(summary).not.toContain("value $0");
   });
 
   it("includes data quality warning when holdings lack prices", () => {
@@ -249,7 +249,7 @@ describe("getPortfolioSummaryForChat", () => {
 
     // Holdings block: the Treasury survives.
     expect(summary).toContain("TBOND");
-    expect(summary).toContain("MV:$9,850"); // 10000 * 98.5 / 100
+    expect(summary).toContain("value $9,850"); // 10000 * 98.5 / 100
 
     // Allocation denominator: the bond's $9,850 is folded into the
     // portfolio total and the asset-allocation bucket sum, not excluded.
@@ -257,8 +257,8 @@ describe("getPortfolioSummaryForChat", () => {
     // Weight denominator: AAPL's position weight is diluted by the bond
     // ($25,000 / $34,850 = 71.7%), not 100% as it would be if the bond
     // were silently dropped from portfolio_total.
-    expect(summary).toContain("(71.7%)");
-    expect(summary).toContain("(28.3%)"); // TBOND's own weight: $9,850 / $34,850
+    expect(summary).toContain("weight 71.7%");
+    expect(summary).toContain("weight 28.3%"); // TBOND's own weight: $9,850 / $34,850
   });
 
   it("keeps a closed-position tombstone (latest row quantity=0) hidden from holdings", () => {
@@ -354,9 +354,9 @@ describe("recent transactions and holdings basis (QA-11, QA-12)", () => {
     insert.run(ACCOUNT_ID, stock, "2025-03-05", 1, -100, "qa11-stock");
 
     const summary = getPortfolioSummaryForChat(db);
-    expect(summary).toContain("BUY ZZQ 270115C00050000 2 contracts $500");
-    expect(summary).toContain("BUY ZZBND 5000 face value $4,900");
-    expect(summary).toContain("BUY ZZSTK 1 share $100");
+    expect(summary).toContain("BUY ZZQ 270115C00050000 2 contracts amount $500");
+    expect(summary).toContain("BUY ZZBND 5000 face value amount $4,900");
+    expect(summary).toContain("BUY ZZSTK 1 share amount $100");
     expect(summary).not.toMatch(/ZZQ 270115C00050000 2 shares/);
   });
 
@@ -416,7 +416,7 @@ describe("recent transactions and holdings basis (QA-11, QA-12)", () => {
     seedPrice(db, sec, "2025-02-28", 80);
 
     const summary = getPortfolioSummaryForChat(db);
-    expect(summary).toContain("- ZZCB (Vanguard Taxable): 20 shares MV:$1,600 G/L:-$400");
+    expect(summary).toContain("- ZZCB (Vanguard Taxable): 20 shares; value $1,600; cost basis $2,000; gain/loss -$400 (-20.0% of cost)");
 
     const tool = getHoldingsForChat(db, { symbol: "ZZCB" });
     expect(tool).toHaveLength(1);

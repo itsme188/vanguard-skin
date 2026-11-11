@@ -101,9 +101,9 @@ describe("B1: the summary reads exactly the scope's accounts", () => {
     expect(s).toContain("- AAA (IBKR Main): 10 shares");
     expect(s).toContain("- BBB (IBKR Two): 5 shares");
     // Each is half the scoped book: weights are over the scope, not the whole portfolio.
-    expect(s).toMatch(/- AAA \(IBKR Main\):.*\(50\.0%\)/);
+    expect(s).toMatch(/- AAA \(IBKR Main\):.*; weight 50\.0%/);
     const alloc = section(s, "### Asset Allocation");
-    expect(alloc).toEqual(["- Stock: $200 (100.0%, 2 positions)"]);
+    expect(alloc).toEqual(["- Stock: $200 (100.0% share, 2 positions)"]);
 
     // Open lots: 300 + 250 = $550 long basis (VVV's 6,000 left out).
     expect(s).toContain("- Open lots: 2 (long cost basis: $550)");
@@ -115,7 +115,7 @@ describe("B1: the summary reads exactly the scope's accounts", () => {
     expect(lt.map((l) => l.slice(2, 5)).sort()).toEqual(["AAA", "BBB"]);
 
     // Sector allocation: only the scope's Technology $200; VVV's Energy $5,000 left out.
-    expect(section(s, "### Sector Allocation")).toEqual(["- Technology: $200 (100.0%)"]);
+    expect(section(s, "### Sector Allocation")).toEqual(["- Technology: $200 (100.0% share)"]);
     expect(s).not.toContain("Energy");
     // Short positions: VSH is held short outside the scope, so no short section at all.
     expect(s).not.toContain("VSH");

@@ -48,7 +48,7 @@ describe("chat portfolio context lists short positions", () => {
     const shorts = section(summary, "### Current Short Positions");
     expect(shorts).toHaveLength(1);
     expect(shorts[0]).toMatch(/^- ZZB \(IBKR\): short 5 shares/);
-    expect(shorts[0]).toMatch(/MV:-\$250/);
+    expect(shorts[0]).toMatch(/; value -\$250 \(liability\)/);
   });
 
   it("prints no short section when nothing is held short", () => {

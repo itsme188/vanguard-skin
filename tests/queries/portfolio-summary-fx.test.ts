@@ -100,16 +100,16 @@ describe("getPortfolioSummaryForChat FX conversion", () => {
     const expectedGain = expectedKrwUsdMv - expectedKrwUsdCost; // ~734.00
 
     expect(summary).toContain("000000");
-    expect(summary).toContain(`MV:${formatUSD(expectedKrwUsdMv)}`);
-    expect(summary).toContain(`G/L:+${formatUSD(expectedGain)}`);
+    expect(summary).toContain(`value ${formatUSD(expectedKrwUsdMv)}`);
+    expect(summary).toContain(`gain/loss +${formatUSD(expectedGain)}`);
 
     // Must NOT show the won-notional phantom ($15,000,000) anywhere.
     expect(summary).not.toContain("$15,000,000");
     expect(summary).not.toContain("15,000,000");
 
     // USD control unaffected.
-    expect(summary).toContain("MV:$25,000");
-    expect(summary).toContain("G/L:+$5,000");
+    expect(summary).toContain("value $25,000");
+    expect(summary).toContain("gain/loss +$5,000");
   });
 
   it("asset allocation totals use USD, not the won phantom", () => {
