@@ -205,12 +205,17 @@ export function stoppedNotice(
   ) {
     return null;
   }
-  for (const part of message.parts) {
-    if (part.type === "text" && typeof part.text === "string" && part.text.trim() !== "") return null;
-    if (part.type === CREATE_NOTE_PART_TYPE) return null;
-    if (part.type.startsWith("tool-") && part.state === "output-error") return null;
-  }
-  return STOPPED_SENTENCE;
+  return hasVisibleContent(message.parts) ? null : STOPPED_SENTENCE;
+}
+
+/** A text with content, a tool error, or a note card is something to show. */
+function hasVisibleContent(parts: readonly StoppedPart[]): boolean {
+  return parts.some(
+    (part) =>
+      (part.type === "text" && typeof part.text === "string" && part.text.trim() !== "") ||
+      part.type === CREATE_NOTE_PART_TYPE ||
+      (part.type.startsWith("tool-") && part.state === "output-error"),
+  );
 }
 
 // ─── Stop guard (R4-4) ───────────────────────────────────────────
@@ -239,22 +244,49 @@ export function shouldAutoContinue(sdkSaysComplete: boolean, continuationsThisTu
 
 export type SettledAssistantView =
   | { kind: "notice"; text: string }
-  | { kind: "parts" }
+  /** The parts; `trailingNotice` is a quieter line under the text (RF-7). */
+  | { kind: "parts"; trailingNotice?: string }
   | { kind: "hidden" };
+
+function writtenText(parts: readonly StoppedPart[]): string {
+  return parts
+    .filter((p) => p.type === "text" && typeof p.text === "string")
+    .map((p) => p.text as string)
+    .join("\n\n")
+    .trim();
+}
 
 /**
  * How a settled (not live) assistant message renders. `outcomeNotice` is
  * `turnOutcomeNotice(message)` (Contract B), passed in so this file stays
- * import-free. A turn that ended in an error with nothing to show renders no
- * bubble at all: the error line and Retry below it say what happened.
+ * import-free. It may be non-null even when text exists (a turn that wrote
+ * a line, then hit the step cap): the text shows, then the notice under it.
+ * The notice is never shown on an errored turn or while an approval is
+ * pending, and never twice (a reloaded row already ends with it). A turn
+ * that ended in an error with nothing to show renders no bubble at all: the
+ * error line and Retry below it say what happened.
  */
 export function settledAssistantView(
   message: { parts: readonly StoppedPart[]; metadata?: unknown },
   opts: { endedInError: boolean; outcomeNotice: string | null },
 ): SettledAssistantView {
-  if (opts.outcomeNotice) return { kind: "notice", text: opts.outcomeNotice };
-  const empty = stoppedNotice(message) !== null;
+  const pendingApproval = message.parts.some(
+    (p) => p.type.startsWith("tool-") && p.state === "approval-requested",
+  );
+  const notice = opts.endedInError || pendingApproval ? null : opts.outcomeNotice;
+  const text = writtenText(message.parts);
+  if (notice && text === "") return { kind: "notice", text: notice };
+  const empty = !hasVisibleContent(message.parts);
   if (empty && opts.endedInError) return { kind: "hidden" };
-  if (empty) return { kind: "notice", text: STOPPED_SENTENCE };
+  if (empty && !hasFinishReason(message.metadata)) return { kind: "notice", text: STOPPED_SENTENCE };
+  if (notice && !text.endsWith(notice)) return { kind: "parts", trailingNotice: notice };
   return { kind: "parts" };
+}
+
+function hasFinishReason(metadata: unknown): boolean {
+  return (
+    metadata !== null &&
+    typeof metadata === "object" &&
+    typeof (metadata as { finishReason?: unknown }).finishReason === "string"
+  );
 }

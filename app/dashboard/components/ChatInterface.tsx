@@ -910,6 +910,9 @@ export function ChatInterface({ pathname }: ChatInterfaceProps) {
               : null;
           if (settled?.kind === "hidden") return null;
           const notice = settled?.kind === "notice" ? settled.text : null;
+          // RF-7: a cut-off turn that wrote some text keeps the text and
+          // says, on a quieter line under it, that it stopped early.
+          const trailingNotice = settled?.kind === "parts" ? (settled.trailingNotice ?? null) : null;
           return (
           <div
             key={msg.id}
@@ -938,7 +941,9 @@ export function ChatInterface({ pathname }: ChatInterfaceProps) {
                       inLastMessage: index === messages.length - 1,
                     })
                   )}
-                  {/* Copy button — only show if there's actual text content */}
+                  {trailingNotice && <p className="mt-2 text-ink-dim">{trailingNotice}</p>}
+                  {/* Copy button — only show if there's actual text content;
+                      it copies the text parts only, never the notice. */}
                   {!notice && msg.parts.some(
                     (p) => p.type === "text" && (p as { text: string }).text
                   ) && <CopyButton message={msg} />}

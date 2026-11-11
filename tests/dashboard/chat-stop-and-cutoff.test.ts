@@ -86,3 +86,21 @@ describe("Stop ignores the second click of a double-click on Send (R4-4)", () =>
     expect(stopButton).not.toContain("disabled");
   });
 });
+
+describe("a cut-off notice under written text (RF-7)", () => {
+  const list = sliceBetween(src, "{/* Message list */}", "{/* Error display */}");
+  it("the notice renders after the parts, in the same quiet style", () => {
+    anchorIndex(list, 'const trailingNotice = settled?.kind === "parts" ? (settled.trailingNotice ?? null) : null;');
+    const partsAt = anchorIndex(list, "renderAssistantParts(msg.parts");
+    const lineAt = anchorIndex(list, '{trailingNotice && <p className="mt-2 text-ink-dim">{trailingNotice}</p>}');
+    expect(partsAt).toBeLessThan(lineAt);
+  });
+  it("Copy stays available beside it and copies text parts only", () => {
+    const lineAt = anchorIndex(list, "{trailingNotice && ");
+    const copyAt = anchorIndex(list, "<CopyButton message={msg} />", lineAt);
+    expect(copyAt).toBeGreaterThan(lineAt);
+    const copy = sliceBetween(src, "function CopyButton(", "// ─── create_note approval card");
+    anchorIndex(copy, '.filter((p): p is Extract<typeof p, { type: "text" }> => p.type === "text")');
+    expect(copy).not.toContain("Notice");
+  });
+});

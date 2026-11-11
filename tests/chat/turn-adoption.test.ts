@@ -371,3 +371,60 @@ describe("settledAssistantView: a stopped turn versus an errored one", () => {
     });
   });
 });
+
+describe("settledAssistantView: a cut-off notice under written text (RF-7)", () => {
+  // The notice is stubbed per the contract: turnOutcomeNotice returns the
+  // sentence for a cap finish reason whether or not text exists.
+  const cap = { finishReason: "tool-calls" };
+  const half = { type: "text", text: "Let me check your lots." };
+
+  it("text + cap: the text, then the notice below it", () => {
+    expect(
+      settledAssistantView({ parts: [half], metadata: cap }, { endedInError: false, outcomeNotice: CUT_OFF_SENTENCE }),
+    ).toEqual({ kind: "parts", trailingNotice: CUT_OFF_SENTENCE });
+  });
+  it("no text + cap: the notice alone, as before", () => {
+    expect(
+      settledAssistantView({ parts: [], metadata: cap }, { endedInError: false, outcomeNotice: CUT_OFF_SENTENCE }),
+    ).toEqual({ kind: "notice", text: CUT_OFF_SENTENCE });
+  });
+  it("text + normal finish: parts only", () => {
+    expect(
+      settledAssistantView({ parts: [half], metadata: { finishReason: "stop" } }, { endedInError: false, outcomeNotice: null }),
+    ).toEqual({ kind: "parts" });
+  });
+  it("text + pending approval: no notice even if one is passed", () => {
+    expect(
+      settledAssistantView(
+        { parts: [half, { type: "tool-create_note", state: "approval-requested" }], metadata: cap },
+        { endedInError: false, outcomeNotice: CUT_OFF_SENTENCE },
+      ),
+    ).toEqual({ kind: "parts" });
+  });
+  it("a reloaded row whose text already ends with the sentence gets no second line", () => {
+    const saved = { type: "text", text: `Let me check your lots.\n\n${CUT_OFF_SENTENCE}` };
+    expect(
+      settledAssistantView({ parts: [saved] }, { endedInError: false, outcomeNotice: CUT_OFF_SENTENCE }),
+    ).toEqual({ kind: "parts" });
+    expect(settledAssistantView({ parts: [saved] }, { endedInError: false, outcomeNotice: null })).toEqual({
+      kind: "parts",
+    });
+  });
+  it("an errored turn never shows the notice", () => {
+    expect(
+      settledAssistantView({ parts: [half], metadata: cap }, { endedInError: true, outcomeNotice: CUT_OFF_SENTENCE }),
+    ).toEqual({ kind: "parts" });
+    expect(
+      settledAssistantView({ parts: [], metadata: cap }, { endedInError: true, outcomeNotice: CUT_OFF_SENTENCE }),
+    ).toEqual({ kind: "hidden" });
+  });
+  it("an owner-stopped turn keeps the Stopped. rules", () => {
+    expect(settledAssistantView({ parts: [] }, { endedInError: false, outcomeNotice: null })).toEqual({
+      kind: "notice",
+      text: "Stopped.",
+    });
+    expect(settledAssistantView({ parts: [half] }, { endedInError: false, outcomeNotice: null })).toEqual({
+      kind: "parts",
+    });
+  });
+});
