@@ -229,6 +229,13 @@ describe("tools that take account_name", () => {
     ["query_trade_reviews", {}],
     ["query_options_greeks", {}],
     ["query_market_snapshot", {}],
+    // The six composite read tools (plan Task 8).
+    ["query_risk", {}],
+    ["query_scenarios", {}],
+    ["query_performance_vs_benchmark", {}],
+    ["query_realized_gains", {}],
+    ["query_options_book", {}],
+    ["query_data_confidence", {}],
   ];
 
   it("the list above is every tool that declares account_name", () => {
@@ -255,6 +262,9 @@ describe("tools that take account_name", () => {
 
   it("every parameter description tells the model it may pass an exact name or a scope word", () => {
     for (const [tool] of ACCOUNT_TOOLS) {
+      // query_data_confidence is whole-portfolio only (P3): its account_name
+      // exists for the scope clamp and says any name is an error.
+      if (tool === "query_data_confidence") continue;
       const schema = CHAT_TOOLS.find((t) => t.name === tool)!.input_schema.properties as Record<
         string,
         { description: string }
@@ -268,7 +278,15 @@ describe("tools that take account_name", () => {
   it("a one-account tool given a scope of two accounts names them and picks neither", async () => {
     addAccount("IBKR Two");
     const oneAccountTools = ACCOUNT_TOOLS.filter(
-      ([tool]) => tool !== "query_twr" && tool !== "query_options_greeks",
+      ([tool]) =>
+        ![
+          "query_twr",
+          "query_options_greeks",
+          "query_risk",
+          "query_scenarios",
+          "query_performance_vs_benchmark",
+          "query_options_book",
+        ].includes(tool),
     );
     for (const [tool, base] of oneAccountTools) {
       const result = (await executeTool(db, tool, { ...base, account_name: "ibkr" })) as {

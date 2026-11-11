@@ -3,8 +3,8 @@
  * whatever the model asks for, and stated in each tool's description.
  *
  * Protects: no single tool result exceeds its cap. Bounds: limit <= 200 for
- * holdings, tax lots, transactions, levels, alerts; <= 100 notes, press
- * releases; <= 20 insider trades; <= 25 research documents; price history <=
+ * holdings, tax lots, transactions; <= 100 levels and press releases; <= 50
+ * alerts; <= 30 notes (lowered in Task 8); <= 20 insider trades; <= 25 research documents; price history <=
  * 260 rows (weekly, then monthly sampling); calendar briefings <= 4 weeks.
  */
 import { describe, it, expect, beforeEach, vi } from "vitest";
@@ -46,9 +46,9 @@ describe("limit maxima", () => {
   const cases: Array<[string, number, Record<string, unknown>]> = [
     ["query_holdings", 200, {}],
     ["query_transactions", 200, {}],
-    ["query_levels", 200, {}],
-    ["query_alerts", 200, {}],
-    ["query_notes", 100, {}],
+    ["query_levels", 100, {}],
+    ["query_alerts", 50, {}],
+    ["query_notes", 30, {}],
     ["query_research_documents", 25, {}],
     ["query_press_releases", 100, { ticker: "ZQZ" }],
   ];

@@ -14,9 +14,15 @@ import {
   getPerformanceForChat,
   getIncomeSummaryForChat,
 } from "@/lib/queries/chat-tools";
-import { getNotesFiltered, getSecurityIdBySymbol, type NoteWithContext } from "@/lib/queries/notes";
+import { getNoteById, getNotesFiltered, getSecurityIdBySymbol, type NoteWithContext } from "@/lib/queries/notes";
 import { createNote } from "@/lib/mutations/notes";
 import { VALID_TRANSACTION_TYPES } from "@/lib/import/validate";
+import {
+  COMPOSITE_CHAT_TOOLS,
+  COMPOSITE_SCOPE_LIST_TOOLS,
+  isCompositeTool,
+  runCompositeTool,
+} from "./composite";
 import { addDays, todayET, nowET, parseDbTimestamp } from "@/lib/calendar/date-utils";
 import { NOTE_TYPES, NOTE_SENTIMENTS } from "@/lib/types";
 import { coerceNoteType, coerceNoteSentiment } from "@/lib/notes/coerce";
@@ -157,7 +163,7 @@ export type ChatTool = Anthropic.Tool & {
   toModelOutput?: Tool["toModelOutput"];
 };
 
-export const CHAT_TOOLS: ChatTool[] = [
+const BASE_CHAT_TOOLS: ChatTool[] = [
   {
     name: "query_holdings",
     description:
@@ -243,6 +249,11 @@ export const CHAT_TOOLS: ChatTool[] = [
           type: "string",
           description:
             "Optional. An exact account name, or a scope word: 'vanguard' (the Vanguard accounts EXCLUDING the Roth), 'roth', 'ibkr', or 'all'. This tool reads one account at a time: a scope word that names more than one account returns an error listing them. Omit for all accounts.",
+        },
+        limit: {
+          type: "integer",
+          description:
+            "Maximum groups to return, largest first: an integer, default 50, max 200. list_info says whether more groups matched (percentages are always of the whole total).",
         },
       },
       required: ["group_by"],
@@ -510,7 +521,12 @@ export const CHAT_TOOLS: ChatTool[] = [
         },
         limit: {
           type: "integer",
-          description: "Maximum notes to return: an integer, default 20, max 100. list_info says whether more matched.",
+          description: "Maximum notes to return: an integer, default 10, max 30. list_info says whether more matched.",
+        },
+        id: {
+          type: "integer",
+          description:
+            "Read ONE note by its id (from an earlier result), in full. The other filters are then ignored.",
         },
       },
     },
@@ -886,7 +902,12 @@ export const CHAT_TOOLS: ChatTool[] = [
         },
         limit: {
           type: "integer",
-          description: "Maximum levels to return: an integer, default 50, max 200. list_info says whether more matched.",
+          description: "Maximum levels to return: an integer, default 30, max 100. list_info says whether more matched.",
+        },
+        id: {
+          type: "integer",
+          description:
+            "Read ONE level by its id (from an earlier result), in full, active or not. The other filters are then ignored.",
         },
       },
     },
@@ -914,7 +935,12 @@ export const CHAT_TOOLS: ChatTool[] = [
         },
         limit: {
           type: "integer",
-          description: "Max alerts to return: an integer, default 50, max 200. list_info says whether more matched.",
+          description: "Max alerts to return: an integer, default 20, max 50. list_info says whether more matched.",
+        },
+        id: {
+          type: "integer",
+          description:
+            "Read ONE alert by its id (from an earlier result), in full, whatever its age. The other filters are then ignored.",
         },
       },
     },
@@ -964,6 +990,18 @@ export const CHAT_TOOLS: ChatTool[] = [
   },
 ];
 
+/**
+ * Every chat tool, in a FIXED order: the base tools, then the six composite
+ * read tools (plan Task 8). The route puts the prompt-cache mark on the LAST
+ * tool by position, so this order is built once at module load and never
+ * changes between requests. Every tool carries the compact model-facing
+ * output (Contract H): the client still receives the full result.
+ */
+export const CHAT_TOOLS: ChatTool[] = [
+  ...BASE_CHAT_TOOLS,
+  ...(COMPOSITE_CHAT_TOOLS as ChatTool[]),
+].map((t) => ({ ...t, toModelOutput: compactToolModelOutput(t.name) }));
+
 // ─── Account Name Resolution ─────────────────────────────────────
 
 /**
@@ -1002,7 +1040,11 @@ const ACCOUNT_TOOL_NAMES: ReadonlySet<string> = new Set(
  * several accounts is answered whole. Every other account-taking tool reads
  * one account by name and refuses a wider scope rather than pick one.
  */
-const SCOPE_LIST_TOOLS: ReadonlySet<string> = new Set(["query_twr", "query_options_greeks"]);
+const SCOPE_LIST_TOOLS: ReadonlySet<string> = new Set([
+  "query_twr",
+  "query_options_greeks",
+  ...COMPOSITE_SCOPE_LIST_TOOLS,
+]);
 
 // ─── Tool Dispatcher ──────────────────────────────────────────────
 
@@ -1026,9 +1068,12 @@ const LIST_LIMITS = {
   query_transactions: { def: 50, max: 200 },
   query_calendar_events: { def: 50, max: 200 },
   query_research_feeds: { def: 15, max: 50 },
-  query_levels: { def: 50, max: 200 },
-  query_alerts: { def: 50, max: 200 },
-  query_notes: { def: 20, max: 100 },
+  // Lowered in Task 8 (R4): each row carries long text, and no question
+  // needs more rows than this; list_info says when more matched.
+  query_levels: { def: 30, max: 100 },
+  query_alerts: { def: 20, max: 50 },
+  query_notes: { def: 10, max: 30 },
+  query_allocation: { def: 50, max: 200 },
   query_research_documents: { def: 10, max: 25 },
   query_press_releases: { def: 15, max: 100 },
 } as const;
@@ -1258,6 +1303,11 @@ function samplePriceRows<T extends { date: string }>(
 
 const CANCELLED = { error: "Cancelled." } as const;
 
+/** A tool's own refusal: an object whose only meaning is its `error`. */
+function isErrorResult(v: unknown): v is { error: string } {
+  return v != null && typeof v === "object" && !Array.isArray(v) && typeof (v as { error?: unknown }).error === "string";
+}
+
 export interface ExecuteToolOptions {
   /** The tool call's abort signal (Stop or a disconnect). */
   abortSignal?: AbortSignal;
@@ -1301,7 +1351,24 @@ export async function executeTool(
       ? resolveChatAccounts(db, requestedAccount)
       : { kind: "all" };
     if (accountScope.kind === "error") return { error: accountScope.error };
-    const scopeAccounts = accountScope.kind === "accounts" ? accountScope.accounts : undefined;
+    let scopeAccounts: Array<{ id: number; name: string }> | undefined =
+      accountScope.kind === "accounts" ? accountScope.accounts : undefined;
+    // Second line of the hard scope boundary (the route's clamp is the
+    // first): in a single-account chat an account tool never reads past the
+    // chat's own accounts, whatever account_name says.
+    if (takesAccount && scopeAccountIds !== undefined) {
+      if (scopeAccountIds.length === 0) return { error: "No account is in this chat's scope." };
+      const inScope = new Set(scopeAccountIds);
+      if (scopeAccounts === undefined) {
+        scopeAccounts = getAllAccounts(db)
+          .filter((a) => inScope.has(a.id))
+          .map((a) => ({ id: a.id, name: a.name }));
+      } else if (scopeAccounts.some((a) => !inScope.has(a.id))) {
+        return {
+          error: `"${requestedAccount}" is outside this chat's scope. Ask in the All Accounts scope to read another account.`,
+        };
+      }
+    }
     if (scopeAccounts && scopeAccounts.length > 1 && !SCOPE_LIST_TOOLS.has(toolName)) {
       const names = scopeAccounts.map((a) => `"${a.name}"`).join(", ");
       // What leaving the name out does. For every tool but one it reads every
@@ -1393,13 +1460,16 @@ export async function executeTool(
         break;
       }
 
-      case "query_allocation":
-        rawResult = getAllocationBreakdown(
-          db,
-          input.group_by as string,
-          accountName
-        );
+      case "query_allocation": {
+        // Groups come largest first; percentages are of the whole total, so
+        // a cut list never re-bases them.
+        const { def, max } = LIST_LIMITS.query_allocation;
+        const allocLimit = readCount(input.limit, def, max);
+        const allocCut = takeList(getAllocationBreakdown(db, input.group_by as string, accountName), allocLimit, max);
+        listInfo = allocCut.info;
+        rawResult = allocCut.rows;
         break;
+      }
 
       case "query_tax_lots": {
         // Open lots and closed sales are two lists, each with its own limit
@@ -1599,6 +1669,14 @@ export async function executeTool(
       }
 
       case "query_notes": {
+        if (typeof input.id === "number") {
+          // One note in full. The scope rule still applies (P9).
+          const one = getNoteById(db, input.id);
+          const kept = one ? notesInScope(db, [one], scopeAccountIds) : [];
+          if (kept.length === 0) return { error: `No note with id ${input.id} in this chat's scope.` };
+          rawResult = kept;
+          break;
+        }
         let securityId: number | undefined;
         const noteSymbol = asString(input.symbol);
         if (noteSymbol) {
@@ -2334,7 +2412,12 @@ export async function executeTool(
         // include_inactive returns every level. getLevelsForSecurity is that
         // view for one security; the all-securities read mirrors it.
         const levelToday = todayET();
-        const rawLevels = (
+        const levelById =
+          typeof input.id === "number"
+            ? (db.prepare("SELECT * FROM security_levels WHERE id = ?").all(input.id) as ReturnType<typeof getActiveLevels>)
+            : null;
+        if (levelById && levelById.length === 0) return { error: `No level with id ${input.id}.` };
+        const rawLevels = levelById ?? (
           securityId
             ? getLevelsForSecurity(db, securityId, { activeOnly })
             : (db
@@ -2349,6 +2432,7 @@ export async function executeTool(
         const levelType = input.level_type ? String(input.level_type) : undefined;
 
         const filtered = rawLevels.filter((l) => {
+          if (levelById) return true;
           if (sourceAuthor && l.source_author?.toLowerCase() !== sourceAuthor.toLowerCase()) return false;
           if (levelType && l.level_type !== levelType) return false;
           return true;
@@ -2419,12 +2503,17 @@ export async function executeTool(
         // space form sorts below "T" on the same day (B24). Window first, then
         // the limit.
         const cutoff = Date.now() - sinceDays * 86400000;
-        const rawAlerts = getAlerts(db, { securityId, response, limit: ALERT_WINDOW_FETCH });
+        const alertById =
+          typeof input.id === "number"
+            ? (db.prepare("SELECT * FROM level_alerts WHERE id = ?").all(input.id) as ReturnType<typeof getAlerts>)
+            : null;
+        if (alertById && alertById.length === 0) return { error: `No alert with id ${input.id}.` };
+        const rawAlerts = alertById ?? getAlerts(db, { securityId, response, limit: ALERT_WINDOW_FETCH });
         // Newest first by INSTANT (the stored strings do not sort across the
         // two forms), then the limit.
         const inWindow = rawAlerts
           .map((a) => ({ a, at: parseDbTimestamp(a.triggered_at)?.getTime() ?? null }))
-          .filter((x): x is { a: (typeof rawAlerts)[number]; at: number } => x.at != null && x.at >= cutoff)
+          .filter((x): x is { a: (typeof rawAlerts)[number]; at: number } => x.at != null && (alertById != null || x.at >= cutoff))
           .sort((x, y) => y.at - x.at || y.a.id - x.a.id)
           .map((x) => x.a);
         const alertCut = takeList(inWindow, alertLimit, alertMax);
@@ -2519,8 +2608,15 @@ export async function executeTool(
         break;
       }
 
-      default:
-        return { error: `Unknown tool: ${toolName}` };
+      default: {
+        // The six composite read tools share this whole path: input check,
+        // account resolution and scope guard above, annotations below.
+        if (!isCompositeTool(toolName)) return { error: `Unknown tool: ${toolName}` };
+        const composite = runCompositeTool(toolName, db, input, { accountIds, accountName, today: todayET() });
+        if (isErrorResult(composite)) return composite;
+        rawResult = composite;
+        break;
+      }
     }
 
     // Wrap result with data quality annotations. A holdings result that
@@ -2553,3 +2649,148 @@ export async function executeTool(
 
 // One map, in the client-safe lib/chat/tool-labels.ts (plan Contract F).
 export { CHAT_TOOL_LABELS as TOOL_LABELS } from "./tool-labels";
+
+// ─── Compact model-facing output (plan Task 8, Contract H) ────────
+
+/**
+ * Text fields shortened in a list of two or more rows, and how to read one
+ * in full. A single-row result (one note, one alert, one level, one week's
+ * briefing) is never shortened, so the "read it in full" call always works.
+ */
+const COMPACT_TEXT_LIMITS: Record<string, { chars: number; fetch: (row: Record<string, unknown>) => string }> = {
+  "query_notes.content": { chars: 400, fetch: (r) => `query_notes with id=${r.id}` },
+  "query_earnings_transcript.content": { chars: 400, fetch: (r) => `query_notes with id=${r.id}` },
+  "query_calendar_briefings.content": {
+    chars: 1500,
+    fetch: (r) => `query_calendar_briefings with week_of=${r.week_of}`,
+  },
+  "query_alerts.suggested_action": { chars: 200, fetch: (r) => `query_alerts with id=${r.id}` },
+  "query_alerts.thesis": { chars: 160, fetch: (r) => `query_alerts with id=${r.id}` },
+  "query_alerts.user_response_note": { chars: 200, fetch: (r) => `query_alerts with id=${r.id}` },
+  "query_levels.thesis": { chars: 200, fetch: (r) => `query_levels with id=${r.id}` },
+};
+
+/** The one line that tells the model how to read a compact result. */
+export const COMPACT_FORMAT_LEGEND =
+  "Compact form. A list of 2+ records is {_cols, _rows}: each row is an array in _cols order; _same holds columns whose value is identical on every row; a column in neither is null or empty on every row; a null cell is null. In an object, a missing key is null or empty. Money is rounded to cents, percents to 2 decimals, prices to 4 decimals, weights and other fractions to 6 decimals; dates, identifiers, counts and quantities are exact. Text ending '…[cut' was shortened here; the marker says how to read it in full.";
+
+const NOT_ROUNDED_KEY = /(pct|percent|percentage|price|close|date|days|count|_id$|^id$|quantity|shares|multiplier|strike|rate|ratio|delta|gamma|theta|vega|beta|alpha|iv$|fraction|weight|year|positions)/;
+const MONEY_KEY = /(cost|basis|value|gain|loss|proceeds|amount|income|dividend|interest|fee|pnl|effect|cash|invested|withdrawn|contribution)/;
+const PCT_KEY = /(pct|percent|percentage)/;
+const PRICE_KEY = /(price|close)/;
+const FRACTION_KEY = /(weight|fraction|share$|herfindahl|volatility|drawdown)/;
+
+function roundTo(n: number, dp: number): number {
+  const f = 10 ** dp;
+  const r = Math.round(n * f) / f;
+  return Object.is(r, -0) ? 0 : r;
+}
+
+/** Round a number by what its key says it is; anything unrecognised is exact. */
+function roundForKey(key: string, n: number): number {
+  if (!Number.isFinite(n) || Number.isInteger(n)) return n;
+  const k = key.toLowerCase();
+  if (PCT_KEY.test(k)) return roundTo(n, 2);
+  if (FRACTION_KEY.test(k)) return roundTo(n, 6);
+  if (PRICE_KEY.test(k) && !/date/.test(k)) return roundTo(n, 4);
+  if (MONEY_KEY.test(k) && !NOT_ROUNDED_KEY.test(k)) return roundTo(n, 2);
+  return n;
+}
+
+function isEmptyValue(v: unknown): boolean {
+  return v === null || v === undefined || v === "";
+}
+
+interface CompactState {
+  tool: string;
+  changed: boolean;
+}
+
+function compactValue(v: unknown, key: string, st: CompactState): unknown {
+  if (typeof v === "number") {
+    const r = roundForKey(key, v);
+    if (r !== v) st.changed = true;
+    return r;
+  }
+  if (Array.isArray(v)) return compactArray(v, key, st);
+  if (v && typeof v === "object") return compactObject(v as Record<string, unknown>, st);
+  return v;
+}
+
+function compactObject(o: Record<string, unknown>, st: CompactState): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(o)) {
+    if (isEmptyValue(v)) {
+      st.changed = true;
+      continue;
+    }
+    out[k] = compactValue(v, k, st);
+  }
+  return out;
+}
+
+function isPlainRecord(v: unknown): v is Record<string, unknown> {
+  return v != null && typeof v === "object" && !Array.isArray(v);
+}
+
+function shortenText(text: string, limit: { chars: number; fetch: (r: Record<string, unknown>) => string }, row: Record<string, unknown>): string {
+  if (text.length <= limit.chars) return text;
+  return `${text.slice(0, limit.chars)}…[cut: ${text.length - limit.chars} more chars; call ${limit.fetch(row)} to read it in full]`;
+}
+
+function compactArray(arr: unknown[], key: string, st: CompactState): unknown {
+  if (arr.length < 2 || !arr.every(isPlainRecord)) {
+    return arr.map((x) => compactValue(x, key, st));
+  }
+  const rows = arr as Record<string, unknown>[];
+  const cols: string[] = [];
+  const seen = new Set<string>();
+  for (const r of rows) for (const k of Object.keys(r)) if (!seen.has(k)) (seen.add(k), cols.push(k));
+  const kept: string[] = [];
+  const same: Record<string, unknown> = {};
+  const cells: unknown[][] = rows.map(() => []);
+  for (const c of cols) {
+    const limit = COMPACT_TEXT_LIMITS[`${st.tool}.${c}`];
+    const values = rows.map((r) => {
+      const v = r[c];
+      if (isEmptyValue(v)) return null;
+      if (limit && typeof v === "string") return shortenText(v, limit, r);
+      return compactValue(v, c, st);
+    });
+    if (values.every((v) => v === null)) continue;
+    const first = JSON.stringify(values[0]);
+    if (values.every((v) => JSON.stringify(v) === first)) {
+      same[c] = values[0];
+      continue;
+    }
+    kept.push(c);
+    values.forEach((v, i) => cells[i].push(v));
+  }
+  st.changed = true;
+  return {
+    _cols: kept,
+    _rows: cells,
+    ...(Object.keys(same).length > 0 ? { _same: same } : {}),
+  };
+}
+
+/**
+ * The compact form of a tool result, for the model only. An error result is
+ * returned as it is. A result with nothing to compact is returned as it is,
+ * with no legend.
+ */
+export function compactToolOutput(toolName: string, output: unknown): unknown {
+  if (!isPlainRecord(output) || typeof output.error === "string") return output;
+  const st: CompactState = { tool: toolName, changed: false };
+  const compact = compactObject(output, st);
+  return st.changed ? { _format: COMPACT_FORMAT_LEGEND, ...compact } : output;
+}
+
+/** The `toModelOutput` every chat tool carries (Contract H). */
+function compactToolModelOutput(toolName: string): NonNullable<ChatTool["toModelOutput"]> {
+  return ({ output }: { output: unknown }) => ({
+    type: "json" as const,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    value: compactToolOutput(toolName, output) as any,
+  });
+}
