@@ -446,6 +446,42 @@ describe("fix round 2", () => {
   });
 });
 
+describe("R1: a list of SEC item numbers after Item (QA 2026-11-11)", () => {
+  const unbound = (text: string) => renderClaimText(claim(text, [])).unbound;
+
+  it("the routine 8-K claim that lists items is not a stray figure", () => {
+    const text =
+      "Routine: results are furnished under Item 2.02 with EX-99.1 and are not deemed filed; no Item 1.01, 5.02 or 8.01 events appear.";
+    expect(unbound(text)).toBe(false);
+    const c = one(claim(text, [cite("q1", "Item 2.02 Results of Operations and Financial Condition", false)]));
+    expect(codes(c)).not.toContain("unbound_digit");
+  });
+
+  it.each([
+    "Items 2.02 and 9.01 were filed.",
+    "Items 1.01, 2.03 and 9.01 were filed.",
+    "Items 1.01, 2.03, and 9.01 were filed.",
+    "Item 5.02 or 8.01 may apply.",
+    "Items 1.01, 2.03, or 9.01 may apply.",
+    "No events under Items 1.01 and 8.01.",
+  ])("%j is allowed", (text) => {
+    expect(unbound(text)).toBe(false);
+  });
+
+  it.each([
+    "Item 2.02 and 350 employees",
+    "Item 2.02, revenue 12.50",
+    "No 5.02 or 8.01 events appear.",
+    "Item 2.02 or 8.015",
+    "Item 2.02 and 3.5%",
+    "Item 2.02 and 3.50%",
+    "Items 2.02 and 8.01,500 shares",
+    "Item 2.02 and 12 segments",
+  ])("%j stays stray", (text) => {
+    expect(unbound(text)).toBe(true);
+  });
+});
+
 // Prose sentence helpers shared by the fix round 3 and 4 blocks.
 const P = " for the three months ended September 30, 2026";
 const prose = (sentence: string) => [

@@ -130,7 +130,11 @@ const ALLOWED_DIGITS: RegExp[] = [
   // "Q3 26.5" leave their numbers stray; a plain comma or full stop after the label is fine).
   /\b(?:Q[1-4]|[1-4]Q|H[12])(?:'?\d{2}(?:\d{2})?|\s?FY'?\d{2}(?:\d{2})?|\s(?:19|20)\d\d)?\b(?![\d%])(?![.,]\d)/g,
   /\bFY'?\d{2}(?:\d{2})?\b(?![\d%])(?![.,]\d)/g,
-  /\bItem \d{1,2}(?:\.\d{2})?(?!\d)(?!\.\d)/g, // a sentence period may follow ("Item 7.")
+  // An Item number; a sentence period may follow ("Item 7."). A list may continue after it
+  // ("Items 2.02 and 9.01", "Item 1.01, 5.02 or 8.01"), joined only by a comma, "and", "or",
+  // ", and" or ", or". Only SEC item shape (N.NN or NN.NN) may continue a list, and it may not
+  // run on into a number, a percent or a word ("Item 2.02 and 3.5%", "or 8.015" stay stray).
+  /\bItems? \d{1,2}(?:\.\d{2})?(?!\d)(?!\.\d)(?:(?:, ?(?:(?:and|or) )?| (?:and|or) )\d{1,2}\.\d{2}(?![\w%])(?![.,]\d))*/g,
   /\bEX-\d+(?:\.\d+)*/gi,
   /\bExhibits?\s+\d+(?:\.\d+)*/gi,
   /\b(?:8-K|10-K|10-Q|6-K|20-F|40-F|S-[1348](?:ASR)?|F-[13]|424B\d)(?:\/A)?(?![\w])/gi,
