@@ -50,6 +50,7 @@ import { resolveLevelPrice } from "@/lib/alerts/resolve-level-price";
 import { getFilingSection } from "@/lib/apis/filing-extract";
 import { sanitizeThemeList } from "@/lib/gmail/theme-sanitize";
 import {
+  getResearchDocument,
   searchResearchDocuments,
   type ResearchDocumentType,
 } from "@/lib/queries/research-documents";
@@ -369,7 +370,7 @@ const BASE_CHAT_TOOLS: ChatTool[] = [
   {
     name: "query_income_summary",
     description:
-      "Summarize investment income (dividends, interest) and fees over a period. Returns per-symbol, per-account, per-month or per-type breakdowns. Dividends are counted once per payout: a REINVESTMENT that is the purchase leg of a DIVIDEND (same account, security and trade date, equal amount to the cent) is not added again; each DIVIDEND pairs with at most one REINVESTMENT. An unpaired positive REINVESTMENT counts as dividend income; an unpaired negative one is not income and is counted in unpaired_reinvestment_count. total_interest is interest EARNED (positive INTEREST rows); interest_paid is interest CHARGED (for example on a margin debit), a cost, never income. Fees include FEE and COMMISSION rows. net_income = dividends + interest earned - interest paid - fees. Use for income analysis, yield calculations, fee drag assessment, dividend tracking by quarter/month, or identifying which securities generate the most income.",
+      "Summarize investment income (dividends, interest) and fees over a period. Returns per-symbol, per-account, per-month or per-type breakdowns. A reinvested dividend counts once, including when it was reinvested net of tax withheld: the REINVESTMENT that is the purchase leg of a DIVIDEND (same account, security and trade date) is not added again, and each DIVIDEND pairs with at most one REINVESTMENT. An unpaired positive REINVESTMENT counts as dividend income; an unpaired negative one is not income and is counted in unpaired_reinvestment_count. total_interest is interest EARNED (positive INTEREST rows); interest_paid is interest CHARGED (for example on a margin debit), a cost, never income. Fees include FEE and COMMISSION rows. net_income = dividends + interest earned - interest paid - fees. Use for income analysis, yield calculations, fee drag assessment, dividend tracking by quarter/month, or identifying which securities generate the most income.",
     input_schema: {
       type: "object" as const,
       properties: {
@@ -631,6 +632,11 @@ const BASE_CHAT_TOOLS: ChatTool[] = [
           type: "integer",
           description: "Max results to return: an integer, default 15, max 40. list_info says whether more matched.",
         },
+        id: {
+          type: "integer",
+          description:
+            "Read ONE press release of this ticker by its id (from an earlier result, or a '…[cut' marker), in full. No sync is run. The other filters are then ignored.",
+        },
       },
       required: ["ticker"],
     },
@@ -712,6 +718,11 @@ const BASE_CHAT_TOOLS: ChatTool[] = [
         limit: {
           type: "integer",
           description: "Max documents to return: an integer, default 10, max 25. list_info says whether more matched.",
+        },
+        id: {
+          type: "integer",
+          description:
+            "Read ONE document by its id (from an earlier result, or a '…[cut' marker), in full. The other filters are then ignored.",
         },
       },
     },
@@ -823,6 +834,11 @@ const BASE_CHAT_TOOLS: ChatTool[] = [
           type: "integer",
           description: "Maximum articles to return: an integer, default 15, max 25. list_info says whether more matched.",
         },
+        id: {
+          type: "integer",
+          description:
+            "Read ONE article by its id (from an earlier result, or a '…[cut' marker), in full. The same scope rules apply. The other filters are then ignored.",
+        },
       },
     },
   },
@@ -856,6 +872,11 @@ const BASE_CHAT_TOOLS: ChatTool[] = [
         limit: {
           type: "integer",
           description: "Maximum events to return: an integer, default 50, max 100. list_info says whether more matched.",
+        },
+        id: {
+          type: "integer",
+          description:
+            "Read ONE event by its id (from an earlier result, or a '…[cut' marker), in full. Any date: the day window does not apply. The other filters are then ignored.",
         },
       },
     },
@@ -1824,8 +1845,14 @@ export async function executeTool(
       case "query_research_documents": {
         const { def, max } = LIST_LIMITS.query_research_documents;
         const docLimit = readCount(input.limit, def, max);
+        let docById: ReturnType<typeof searchResearchDocuments> | null = null;
+        if (typeof input.id === "number") {
+          const one = getResearchDocument(db, input.id);
+          if (!one) return { error: `No research document with id ${input.id}.` };
+          docById = [{ ...one, snippet: null } as unknown as ReturnType<typeof searchResearchDocuments>[number]];
+        }
         const docCut = takeList(
-          searchResearchDocuments(db, {
+          docById ?? searchResearchDocuments(db, {
             query: input.query as string | undefined,
             symbol: input.symbol as string | undefined,
             document_type: input.document_type as ResearchDocumentType | undefined,
@@ -1920,15 +1947,23 @@ export async function executeTool(
         // Sync + query pattern. Sync errors are surfaced as a warning
         // alongside any locally-cached rows so the user still gets
         // something actionable when Finnhub is down.
+        const prById =
+          typeof input.id === "number"
+            ? (db
+                .prepare("SELECT * FROM press_releases WHERE id = ? AND UPPER(symbol) = ?")
+                .all(input.id, ticker) as ReturnType<typeof listPressReleases>)
+            : null;
+        if (prById && prById.length === 0) return { error: `No press release with id ${input.id} for ${ticker}.` };
         if (cancelled()) return CANCELLED;
-        const sync = await fetchAndCachePressReleases(db, ticker, daysBack);
+        const sync = prById ? { upserted: 0, error: undefined } : await fetchAndCachePressReleases(db, ticker, daysBack);
         const prCut = takeList(
-          listPressReleases(db, {
-            symbol: ticker,
-            keyword,
-            days_back: daysBack,
-            limit: limit + 1,
-          }),
+          prById ??
+            listPressReleases(db, {
+              symbol: ticker,
+              keyword,
+              days_back: daysBack,
+              limit: limit + 1,
+            }),
           limit,
           prMax
         );
@@ -1943,6 +1978,8 @@ export async function executeTool(
           warning: sync.error ?? undefined,
           count: rows.length,
           press_releases: rows.map((r) => ({
+            id: r.id,
+            symbol: r.symbol,
             headline: r.headline,
             summary: r.summary,
             source: r.source,
@@ -2217,7 +2254,16 @@ export async function executeTool(
           const { getRecentArticles } = await import("@/lib/queries/research");
           const daysBack = readCount(input.days_back, 7, 365);
 
-          researchArticles = getRecentArticles(db, {
+          researchArticles =
+            typeof input.id === "number"
+              ? (db
+                  .prepare(
+                    `SELECT a.*, s.name AS source_name FROM research_articles a
+                     JOIN research_sources s ON a.source_id = s.id
+                     WHERE a.id = ? AND a.processed_at IS NOT NULL`
+                  )
+                  .all(input.id) as typeof researchArticles)
+              : getRecentArticles(db, {
             sourceId,
             securityId,
             // N days before the Eastern day (a UTC slice is tomorrow after
@@ -2230,11 +2276,15 @@ export async function executeTool(
         } catch {
           // Table may not exist yet
         }
+        if (typeof input.id === "number" && researchArticles.length === 0) {
+          return { error: `No research article with id ${input.id}.` };
+        }
         const feedCut = takeList(researchArticles, feedLimit, feedMax);
         listInfo = feedCut.info;
 
         rawResult = {
           articles: feedCut.rows.map((a) => ({
+            id: a.id,
             source: a.source_name,
             date: a.received_at.slice(0, 10),
             subject: a.subject,
@@ -2267,18 +2317,24 @@ export async function executeTool(
         const { def: evtDef, max: evtMax } = LIST_LIMITS.query_calendar_events;
         const evtLimit = readCount(input.limit, evtDef, evtMax);
         let evtWhere = "event_date BETWEEN ? AND ? AND COALESCE(superseded, 0) = 0";
-        if (input.event_type) {
+        if (typeof input.id === "number") {
+          // One event by id, any date (a '…[cut' marker points here).
+          evtWhere = "id = ? AND COALESCE(superseded, 0) = 0";
+          evtParams.length = 0;
+          evtParams.push(input.id);
+        }
+        if (input.event_type && typeof input.id !== "number") {
           evtWhere += " AND LOWER(event_type) LIKE '%' || LOWER(?) || '%'";
           evtParams.push(String(input.event_type));
         }
-        if (input.symbol) {
+        if (input.symbol && typeof input.id !== "number") {
           evtWhere += " AND UPPER(symbol) = ?";
           evtParams.push(String(input.symbol).toUpperCase());
         }
 
         const fetchedEvents = db
           .prepare(
-            `SELECT event_type, event_date, event_time, title, description, symbol,
+            `SELECT id, event_type, event_date, event_time, title, description, symbol,
              expected_impact, consensus_estimate, consensus_value, previous_value, actual_value,
              release_time, raw_json, manual_actuals_at
              FROM calendar_events WHERE ${evtWhere}
@@ -2297,6 +2353,9 @@ export async function executeTool(
             manual_actuals_at: string | null;
             [k: string]: unknown;
           }>;
+        if (typeof input.id === "number" && fetchedEvents.length === 0) {
+          return { error: `No calendar event with id ${input.id}.` };
+        }
         const evtCut = takeList(fetchedEvents, evtLimit, evtMax);
         listInfo = evtCut.info;
         const rows = evtCut.rows;
@@ -2707,55 +2766,97 @@ export { CHAT_TOOL_LABELS as TOOL_LABELS } from "./tool-labels";
 // ─── Compact model-facing output (plan Task 8, Contract H) ────────
 
 /**
- * Text fields shortened in a list of two or more rows, and how to read one
- * in full. A single-row result (one note, one alert, one level, one week's
- * briefing) is never shortened, so the "read it in full" call always works.
+ * Text fields shortened in a list of two or more rows, and the call that
+ * reads one in full (its arguments as JSON, by the row's stable id, so the
+ * call returns exactly that item). A single-row result is never shortened,
+ * so following the pointer always gives the whole text.
  */
-const COMPACT_TEXT_LIMITS: Record<string, { chars: number; fetch: (row: Record<string, unknown>) => string }> = {
-  "query_notes.content": { chars: 400, fetch: (r) => `query_notes with id=${r.id}` },
-  "query_earnings_transcript.content": { chars: 400, fetch: (r) => `query_notes with id=${r.id}` },
+type TextCut = { chars: number; fetch: (row: Record<string, unknown>) => { tool: string; args: Record<string, unknown> } };
+const byId = (tool: string): TextCut["fetch"] => (r) => ({ tool, args: { id: r.id } });
+const COMPACT_TEXT_LIMITS: Record<string, TextCut> = {
+  "query_notes.content": { chars: 400, fetch: byId("query_notes") },
+  "query_earnings_transcript.content": { chars: 400, fetch: byId("query_notes") },
   "query_calendar_briefings.content": {
     chars: 1500,
-    fetch: (r) => `query_calendar_briefings with week_of=${r.week_of}`,
+    fetch: (r) => ({ tool: "query_calendar_briefings", args: { week_of: r.week_of } }),
   },
-  "query_alerts.suggested_action": { chars: 160, fetch: (r) => `query_alerts with id=${r.id}` },
-  "query_alerts.thesis": { chars: 120, fetch: (r) => `query_alerts with id=${r.id}` },
-  "query_alerts.user_response_note": { chars: 200, fetch: (r) => `query_alerts with id=${r.id}` },
-  "query_levels.thesis": { chars: 160, fetch: (r) => `query_levels with id=${r.id}` },
-  "query_calendar_events.description": {
-    chars: 60,
-    fetch: (r) => (r.symbol ? `query_calendar_events with symbol=${r.symbol}` : `query_calendar_events with event_type=${r.event_type}`),
+  "query_alerts.suggested_action": { chars: 160, fetch: byId("query_alerts") },
+  "query_alerts.thesis": { chars: 120, fetch: byId("query_alerts") },
+  "query_alerts.user_response_note": { chars: 200, fetch: byId("query_alerts") },
+  "query_levels.thesis": { chars: 160, fetch: byId("query_levels") },
+  "query_calendar_events.description": { chars: 60, fetch: byId("query_calendar_events") },
+  "query_press_releases.summary": {
+    chars: 200,
+    fetch: (r) => ({ tool: "query_press_releases", args: { ticker: r.symbol, id: r.id } }),
   },
-  "query_press_releases.summary": { chars: 200, fetch: () => "the story at its url" },
-  "query_research_feeds.summary": { chars: 300, fetch: (r) => `query_research_feeds with search="${r.subject}"` },
-  "query_research_documents.summary": { chars: 400, fetch: (r) => `query_research_documents with query="${r.title}"` },
+  "query_research_feeds.summary": { chars: 300, fetch: byId("query_research_feeds") },
+  "query_research_documents.summary": { chars: 400, fetch: byId("query_research_documents") },
 };
+
+/**
+ * Which numbers are rounded, per tool, by EXACT field name (review RF-1/RF-2:
+ * a substring match on the key rounded return contributions and an FX value
+ * to zero). A field not listed here is returned exactly as the engine gave
+ * it. Each result names its rounded fields in `_rounded`, so the legend is
+ * true for every tool.
+ */
+type Rounding = "cents" | "pct2" | "price4";
+const ROUND_DP: Record<Rounding, number> = { cents: 2, pct2: 2, price4: 4 };
+const COMPACT_ROUNDING: Record<string, Record<string, Rounding>> = {
+  query_holdings: {
+    cost_basis: "cents",
+    market_value: "cents",
+    unrealized_gain: "cents",
+    latest_price: "price4",
+    unrealized_gain_pct: "pct2",
+    position_weight_pct: "pct2",
+  },
+  query_tax_lots: {
+    cost_basis: "cents",
+    original_lot_cost_basis: "cents",
+    current_value: "cents",
+    unrealized_gain: "cents",
+    proceeds: "cents",
+    realized_gain_loss: "cents",
+    proceeds_native: "cents",
+    cost_basis_native: "cents",
+    realized_gain_native: "cents",
+    proceeds_usd_at_current_fx: "cents",
+    cost_basis_usd_at_current_fx: "cents",
+    realized_gain_usd_at_current_fx: "cents",
+    acquisition_price: "price4",
+    current_price: "price4",
+    sale_price: "price4",
+  },
+  query_transactions: { amount: "cents", fees: "cents", price_per_share: "price4" },
+  query_allocation: { total_market_value: "cents", percentage: "pct2" },
+  query_price_history: { close_price: "price4" },
+  query_market_snapshot: { market_value: "cents", day_effect: "cents", day_effect_total: "cents", pct: "pct2" },
+  query_income_summary: {
+    total_dividends: "cents",
+    total_interest: "cents",
+    interest_paid: "cents",
+    total_fees: "cents",
+    net_income: "cents",
+  },
+  query_levels: { price: "price4", effective_price: "price4", last_fired_price: "price4" },
+  query_alerts: { level_price: "price4", triggered_price: "price4" },
+};
+
+/** The rounding the compact form applies to one tool's field, or none. */
+export function compactRoundingFor(toolName: string, field: string): { dp: number } | null {
+  const r = COMPACT_ROUNDING[toolName]?.[field];
+  return r ? { dp: ROUND_DP[r] } : null;
+}
 
 /** The one line that tells the model how to read a compact result. */
 export const COMPACT_FORMAT_LEGEND =
-  "Compact form. A list of 2+ records is {_cols, _rows}: each row is an array in _cols order; _same holds columns whose value is identical on every row; a column in neither is null or empty on every row; a null cell is null. In an object, a missing key is null or empty. Money is rounded to cents, percents to 2 decimals, prices to 4 decimals, weights and other fractions to 6 decimals; dates, identifiers, counts and quantities are exact. Text ending '…[cut' was shortened here; the marker says how to read it in full.";
-
-const NOT_ROUNDED_KEY = /(pct|percent|percentage|price|close|date|days|count|_id$|^id$|quantity|shares|multiplier|strike|rate|ratio|delta|gamma|theta|vega|beta|alpha|iv$|fraction|weight|year|positions)/;
-const MONEY_KEY = /(cost|basis|value|gain|loss|proceeds|amount|income|dividend|interest|fee|pnl|effect|cash|invested|withdrawn|contribution)/;
-const PCT_KEY = /(pct|percent|percentage)/;
-const PRICE_KEY = /(price|close)/;
-const FRACTION_KEY = /(weight|fraction|share$|herfindahl|volatility|drawdown)/;
+  "Compact form. A list of 2+ records is {_cols, _rows}: each row is an array in _cols order; _same_in_rows_shown holds columns whose value is identical on every row SHOWN (when list_info says truncated, rows not shown may differ); a column in neither is null or empty on every row shown; a null cell is null. In an object, a missing key is null or empty. Only the fields named in _rounded are rounded (cents, percents to 2 decimals, prices to 4); every other number is exactly as computed. Text ending '…[cut' was shortened here; the marker names the call that reads it in full.";
 
 function roundTo(n: number, dp: number): number {
   const f = 10 ** dp;
   const r = Math.round(n * f) / f;
   return Object.is(r, -0) ? 0 : r;
-}
-
-/** Round a number by what its key says it is; anything unrecognised is exact. */
-function roundForKey(key: string, n: number): number {
-  if (!Number.isFinite(n) || Number.isInteger(n)) return n;
-  const k = key.toLowerCase();
-  if (PCT_KEY.test(k)) return roundTo(n, 2);
-  if (FRACTION_KEY.test(k)) return roundTo(n, 6);
-  if (PRICE_KEY.test(k) && !/date/.test(k)) return roundTo(n, 4);
-  if (MONEY_KEY.test(k) && !NOT_ROUNDED_KEY.test(k)) return roundTo(n, 2);
-  return n;
 }
 
 function isEmptyValue(v: unknown): boolean {
@@ -2769,7 +2870,9 @@ interface CompactState {
 
 function compactValue(v: unknown, key: string, st: CompactState): unknown {
   if (typeof v === "number") {
-    const r = roundForKey(key, v);
+    const rule = compactRoundingFor(st.tool, key);
+    if (!rule || !Number.isFinite(v) || Number.isInteger(v)) return v;
+    const r = roundTo(v, rule.dp);
     if (r !== v) st.changed = true;
     return r;
   }
@@ -2794,11 +2897,10 @@ function isPlainRecord(v: unknown): v is Record<string, unknown> {
   return v != null && typeof v === "object" && !Array.isArray(v);
 }
 
-function shortenText(text: string, limit: { chars: number; fetch: (r: Record<string, unknown>) => string }, row: Record<string, unknown>): string {
+function shortenText(text: string, limit: TextCut, row: Record<string, unknown>): string {
   if (text.length <= limit.chars) return text;
-  const how = limit.fetch(row);
-  const verb = how.startsWith("query_") ? `call ${how}` : `see ${how}`;
-  return `${text.slice(0, limit.chars)}…[cut: ${text.length - limit.chars} more chars; ${verb} to read it in full]`;
+  const { tool, args } = limit.fetch(row);
+  return `${text.slice(0, limit.chars)}…[cut: ${text.length - limit.chars} more chars; call ${tool} with ${JSON.stringify(args)} to read it in full]`;
 }
 
 function compactArray(arr: unknown[], key: string, st: CompactState): unknown {
@@ -2833,7 +2935,7 @@ function compactArray(arr: unknown[], key: string, st: CompactState): unknown {
   return {
     _cols: kept,
     _rows: cells,
-    ...(Object.keys(same).length > 0 ? { _same: same } : {}),
+    ...(Object.keys(same).length > 0 ? { _same_in_rows_shown: same } : {}),
   };
 }
 
@@ -2847,7 +2949,17 @@ export function compactToolOutput(toolName: string, output: unknown): unknown {
   const st: CompactState = { tool: toolName, changed: false };
   const compact = compactObject(output, st);
   if (!st.changed) return output;
-  const result = { _format: COMPACT_FORMAT_LEGEND, ...compact };
+  const rounded = COMPACT_ROUNDING[toolName];
+  const roundedBlock = rounded
+    ? {
+        _rounded: Object.fromEntries(
+          (["cents", "pct2", "price4"] as const)
+            .map((kind) => [kind, Object.keys(rounded).filter((f) => rounded[f] === kind)] as const)
+            .filter(([, fields]) => fields.length > 0),
+        ),
+      }
+    : {};
+  const result = { _format: COMPACT_FORMAT_LEGEND, ...roundedBlock, ...compact };
   // A small result gains nothing from the legend: keep the full form.
   return JSON.stringify(result).length < JSON.stringify(output).length ? result : output;
 }

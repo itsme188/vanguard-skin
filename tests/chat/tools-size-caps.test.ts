@@ -164,11 +164,11 @@ describe("per-row text cuts point at the full item", () => {
       ).run(`Doc ${i}`, `d${i}.pdf`, "m".repeat(1500));
     }
     const ev = JSON.stringify(compactToolOutput("query_calendar_events", await executeTool(db, "query_calendar_events", {})));
-    expect(ev).toMatch(/…\[cut: \d+ more chars; call query_calendar_events with symbol=ZD\d to read it in full\]/);
+    expect(ev).toMatch(/…\[cut: \d+ more chars; call query_calendar_events with \{\\"id\\":\d+\} to read it in full\]/);
     const feeds = JSON.stringify(compactToolOutput("query_research_feeds", await executeTool(db, "query_research_feeds", {})));
-    expect(feeds).toMatch(/call query_research_feeds with search=\\"Note \d\\" to read it in full/);
+    expect(feeds).toMatch(/call query_research_feeds with \{\\"id\\":\d+\} to read it in full/);
     const docs = JSON.stringify(compactToolOutput("query_research_documents", await executeTool(db, "query_research_documents", {})));
-    expect(docs).toMatch(/call query_research_documents with query=\\"Doc \d\\" to read it in full/);
+    expect(docs).toMatch(/call query_research_documents with \{\\"id\\":\d+\} to read it in full/);
   });
 
   it("a compact form never comes out longer than the full result", async () => {

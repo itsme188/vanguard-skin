@@ -184,7 +184,7 @@ describe("R5-14 / R5-15 descriptions", () => {
 
   it("query_income_summary names the pairing rule, commissions and unpaired_reinvestment_count", () => {
     const d = CHAT_TOOLS.find((t) => t.name === "query_income_summary")!.description!;
-    expect(d).toMatch(/to the cent/);
+    expect(d).toMatch(/A reinvested dividend counts once, including when it was reinvested net of tax withheld/);
     expect(d).toMatch(/COMMISSION/);
     expect(d).toMatch(/unpaired_reinvestment_count/);
   });

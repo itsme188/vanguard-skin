@@ -53,7 +53,7 @@ describe("chat tool schemas", () => {
   it("query_income_summary describes the income rules (Contract J)", () => {
     const d = CHAT_TOOLS.find((t) => t.name === "query_income_summary")!.description!;
     expect(d).not.toMatch(/REINVESTMENT transactions are counted as dividend income/);
-    expect(d).toMatch(/counted once/);
+    expect(d).toMatch(/counts once/);
     expect(d).toMatch(/interest_paid/);
     expect(d).toMatch(/net_income/);
   });

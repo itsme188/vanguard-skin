@@ -11,7 +11,7 @@
  *
  * Protects:
  *  - no information loss: every non-empty field path of the full result is
- *    present in the compact one (columns, _same, or keys), per tool family;
+ *    present in the compact one (columns, _same_in_rows_shown, or keys), per tool family;
  *    list_info, units, currency, as-of dates, warnings, scope notes and
  *    withheld reasons included;
  *  - every row survives, and money columns sum to the raw sum within
@@ -107,7 +107,7 @@ function compactPaths(v: unknown, path = "", out = new Set<string>()): Set<strin
         out.add(`${path}.${c}`);
         (o._rows as unknown[][]).forEach((r) => compactPaths(r[i], `${path}.${c}`, out));
       });
-      for (const [k, x] of Object.entries((o._same as Record<string, unknown>) ?? {})) {
+      for (const [k, x] of Object.entries((o._same_in_rows_shown as Record<string, unknown>) ?? {})) {
         out.add(`${path}.${k}`);
         compactPaths(x, `${path}.${k}`, out);
       }
@@ -128,10 +128,12 @@ function expectNoFieldLost(tool: string, full: unknown): unknown {
   return compact;
 }
 
-type Cols = { _cols: string[]; _rows: unknown[][]; _same?: Record<string, unknown> };
-const col = (c: Cols, name: string): unknown[] => {
+type Cols = { _cols: string[]; _rows: unknown[][]; _same_in_rows_shown?: Record<string, unknown> };
+const col = (c: Cols | Array<Record<string, unknown>>, name: string): unknown[] => {
+  // A result the compact form would only lengthen is returned whole.
+  if (Array.isArray(c)) return c.map((r) => r[name]);
   const i = c._cols.indexOf(name);
-  return i >= 0 ? c._rows.map((r) => r[i]) : c._rows.map(() => c._same?.[name]);
+  return i >= 0 ? c._rows.map((r) => r[i]) : c._rows.map(() => c._same_in_rows_shown?.[name]);
 };
 
 describe("toModelOutput wiring", () => {
@@ -196,8 +198,8 @@ describe("size and conservation", () => {
     const cSum = (col(compact.data, "market_value") as number[]).reduce((a, v) => a + v, 0);
     expect(Math.abs(rawSum - cSum)).toBeLessThanOrEqual(0.01 * 50);
     // A uniform per-row constant is hoisted, not repeated.
-    expect(compact.data._same?.account_name).toBe("IBKR");
-    expect(compact.data._same?.currency).toBe("USD");
+    expect(compact.data._same_in_rows_shown?.account_name).toBe("IBKR");
+    expect(compact.data._same_in_rows_shown?.currency).toBe("USD");
   });
 
   it("identifiers, dates and quantities are never rounded", async () => {
@@ -216,7 +218,7 @@ describe("long text is cut per row with a working way to read it in full", () =>
     const compact = compactToolOutput("query_notes", full) as { data: Cols };
     const bodies = col(compact.data, "content") as string[];
     const ids = col(compact.data, "id") as number[];
-    expect(bodies[0]).toMatch(/…\[cut: \d+ more chars; call query_notes with id=\d+ to read it in full\]$/);
+    expect(bodies[0]).toMatch(/…\[cut: \d+ more chars; call query_notes with \{"id":\d+\} to read it in full\]$/);
     const one = (await executeTool(db, "query_notes", { id: ids[0] })) as { data: Array<{ content: string }> };
     expect(one.data).toHaveLength(1);
     expect(one.data[0].content).toHaveLength(1500);
@@ -228,14 +230,14 @@ describe("long text is cut per row with a working way to read it in full", () =>
   it("alerts and levels: id fetch returns the full text", async () => {
     seedBig(4);
     const alerts = compactToolOutput("query_alerts", await executeTool(db, "query_alerts", {})) as { data: { alerts: Cols } };
-    expect((col(alerts.data.alerts, "suggested_action") as string[])[0]).toMatch(/call query_alerts with id=\d+/);
+    expect((col(alerts.data.alerts, "suggested_action") as string[])[0]).toMatch(/call query_alerts with \{"id":\d+\}/);
     const alertId = (col(alerts.data.alerts, "id") as number[])[0];
     const oneAlert = (await executeTool(db, "query_alerts", { id: alertId })) as { data: { alerts: Array<{ suggested_action: string }> } };
     expect(oneAlert.data.alerts).toHaveLength(1);
     expect(oneAlert.data.alerts[0].suggested_action).toHaveLength(600);
 
     const levels = compactToolOutput("query_levels", await executeTool(db, "query_levels", {})) as { data: { levels: Cols } };
-    expect((col(levels.data.levels, "thesis") as string[])[0]).toMatch(/call query_levels with id=\d+/);
+    expect((col(levels.data.levels, "thesis") as string[])[0]).toMatch(/call query_levels with \{"id":\d+\}/);
     const levelId = (col(levels.data.levels, "id") as number[])[0];
     const oneLevel = (await executeTool(db, "query_levels", { id: levelId })) as { data: { levels: Array<{ thesis: string }> } };
     expect(oneLevel.data.levels).toHaveLength(1);
@@ -248,7 +250,7 @@ describe("long text is cut per row with a working way to read it in full", () =>
       "query_calendar_briefings",
       await executeTool(db, "query_calendar_briefings", { weeks_back: 4 }),
     ) as { data: { briefings: Cols } };
-    expect((col(c.data.briefings, "content") as string[])[0]).toMatch(/call query_calendar_briefings with week_of=\d{4}-\d{2}-\d{2}/);
+    expect((col(c.data.briefings, "content") as string[])[0]).toMatch(/call query_calendar_briefings with \{"week_of":"\d{4}-\d{2}-\d{2}"\}/);
     const one = (await executeTool(db, "query_calendar_briefings", { week_of: "2026-10-05" })) as {
       data: { briefings: Array<{ content: string }> };
     };
@@ -332,4 +334,77 @@ describe("size report (set COMPACT_REPORT=1 to print)", () => {
     }
     if (process.env.COMPACT_REPORT) console.log(lines.join("\n"));
   }, 60000);
+});
+
+// Review RF-1 / RF-2: rounding is decided by an explicit per-tool field map,
+// never by a substring of the key. Hand-checked cases from the review.
+describe("only mapped fields are rounded", () => {
+  // Long, repeated keys so the compact form really applies (it is skipped
+  // when it would not shorten the result); both forms are checked by col().
+  const five = <T extends Record<string, unknown>>(f: (i: number) => T) =>
+    Array.from({ length: 30 }, (_, i) => ({ ...f(i), sector_classification_label: "Technology hardware and equipment" }));
+
+  it("return contributions keep every digit, sign and order", () => {
+    const full = {
+      data: {
+        attribution: {
+          top_contributors: five((i) => ({ symbol: `ZA${i}`, contribution: 0.00321 - i * 0.0005 })),
+          top_detractors: five((i) => ({ symbol: `ZB${i}`, contribution: -0.00178 - i * 0.0001 })),
+        },
+      },
+    };
+    const c = compactToolOutput("query_performance_vs_benchmark", full) as {
+      data: { attribution: { top_contributors: Cols; top_detractors: Cols } };
+    };
+    expect((c as unknown as Record<string, unknown>)._format).toBeDefined();
+    expect((col(c.data.attribution.top_contributors, "contribution") as number[])[0]).toBe(0.00321);
+    expect((col(c.data.attribution.top_detractors, "contribution") as number[])[0]).toBe(-0.00178);
+    expect(col(c.data.attribution.top_contributors, "contribution")).toEqual(
+      full.data.attribution.top_contributors.map((r) => r.contribution),
+    );
+    expect(col(c.data.attribution.top_detractors, "contribution")).toEqual(
+      full.data.attribution.top_detractors.map((r) => r.contribution),
+    );
+  });
+
+  it("a FRED value of 4.001 or 1.0823 is exact", () => {
+    const full = { data: five((i) => ({ date: `2026-01-0${i + 1}`, value: i % 2 ? 1.0823 : 4.001 })) };
+    const c = compactToolOutput("query_fred", full) as { data: Cols };
+    expect(col(c.data, "value")).toEqual(full.data.map((r) => r.value));
+    expect((col(c.data, "value") as number[]).slice(0, 2)).toEqual([4.001, 1.0823]);
+    expect((c as unknown as Record<string, unknown>)._format).toBeDefined();
+  });
+
+  it("a scenario share_of_option_value is exact", () => {
+    const full = { data: { presets: five((i) => ({ name: `P${i}`, share_of_option_value: 0.48459052573500433 + i })) } };
+    const c = compactToolOutput("query_scenarios", full) as { data: { presets: Cols } };
+    expect((col(c.data.presets, "share_of_option_value") as number[])[0]).toBe(0.48459052573500433);
+    expect((c as unknown as Record<string, unknown>)._format).toBeDefined();
+  });
+
+  it("a mapped field is rounded and named in _rounded", async () => {
+    seedBig(3);
+    const c = compactToolOutput("query_holdings", await executeTool(db, "query_holdings", {})) as {
+      _rounded: Record<string, string[]>;
+    };
+    expect(c._rounded.cents).toContain("market_value");
+    expect(c._rounded.price4).toContain("latest_price");
+    expect(c._rounded.pct2).toContain("position_weight_pct");
+    expect(compactToolOutput("query_fred", { data: five((i) => ({ value: i + 0.5, date: `d${i}` })) })).not.toHaveProperty("_rounded");
+  });
+});
+
+// Review RF-5: a uniform column of a truncated list is named for the rows
+// shown, and the legend says so.
+describe("uniform columns name the rows shown", () => {
+  it("a truncated list hoists into _same_in_rows_shown, never _same", async () => {
+    seedBig(60);
+    const full = (await executeTool(db, "query_holdings", { limit: 10 })) as { list_info: { truncated: boolean } };
+    expect(full.list_info.truncated).toBe(true);
+    const c = compactToolOutput("query_holdings", full) as { data: Cols & { _same?: unknown } };
+    expect(c.data._same).toBeUndefined();
+    expect(c.data._same_in_rows_shown?.currency).toBe("USD");
+    expect(COMPACT_FORMAT_LEGEND).toMatch(/_same_in_rows_shown holds columns whose value is identical on every row SHOWN/);
+    expect(COMPACT_FORMAT_LEGEND).toMatch(/Only the fields named in _rounded are rounded/);
+  });
 });

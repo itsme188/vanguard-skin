@@ -53,7 +53,7 @@ vi.mock("@/lib/queries/market-snapshot", async (orig) => ({
 }));
 
 import { runMigrations } from "@/lib/db/migrate";
-import { executeTool, CHAT_TOOLS, compactToolOutput } from "@/lib/chat/tools";
+import { executeTool, CHAT_TOOLS, compactToolOutput, compactRoundingFor } from "@/lib/chat/tools";
 import { seedSizeBook, WORST_CASE_CALLS, SIZE_GUARD_EXEMPT } from "./tools-size-book";
 
 const LIMIT = 30000;
@@ -81,5 +81,126 @@ describe("tool output size on a large book", () => {
     }
     if (process.env.SIZE_REPORT) writeFileSync(process.env.SIZE_REPORT, rows.join("\n") + "\n");
     expect(over).toEqual([]);
+  }, 120000);
+});
+
+/** Rebuild the full shape from a compact result (columns back to records). */
+function expand(v: unknown): unknown {
+  if (Array.isArray(v)) return v.map(expand);
+  if (!v || typeof v !== "object") return v;
+  const o = v as Record<string, unknown>;
+  if (Array.isArray(o._cols) && Array.isArray(o._rows)) {
+    const same = (o._same_in_rows_shown as Record<string, unknown>) ?? {};
+    return (o._rows as unknown[][]).map((r) => {
+      const rec: Record<string, unknown> = {};
+      (o._cols as string[]).forEach((c, i) => (rec[c] = expand(r[i])));
+      for (const [k, x] of Object.entries(same)) rec[k] = expand(x);
+      return rec;
+    });
+  }
+  const out: Record<string, unknown> = {};
+  for (const [k, x] of Object.entries(o)) if (k !== "_format" && k !== "_rounded") out[k] = expand(x);
+  return out;
+}
+
+/**
+ * Every numeric leaf of the full result against the compact one. Mapped
+ * fields may move by at most half a unit of their declared precision;
+ * unmapped fields must be identical; a non-zero value keeps its sign and never
+ * becomes 0; arrays are compared position by position, so a ranked list must
+ * keep its order. Returns "tool.path: problem" lines.
+ */
+function numericDrift(tool: string, full: unknown, compact: unknown, path = "", key = ""): string[] {
+  if (typeof full === "number") {
+    if (typeof compact !== "number") return [`${tool}${path}: number became ${JSON.stringify(compact)}`];
+    const rule = compactRoundingFor(tool, key);
+    const tol = rule ? 0.5 * 10 ** -rule.dp + 1e-9 : 0;
+    const out: string[] = [];
+    if (Math.abs(compact - full) > tol) out.push(`${tool}${path}: ${full} -> ${compact}`);
+    if (full !== 0 && (compact === 0 || Math.sign(compact) !== Math.sign(full)) && rule === null) {
+      out.push(`${tool}${path}: sign or zero lost (${full} -> ${compact})`);
+    }
+    return out;
+  }
+  if (Array.isArray(full)) {
+    if (!Array.isArray(compact) || compact.length !== full.length) {
+      return full.some((x) => typeof x === "number" || (x && typeof x === "object"))
+        ? [`${tool}${path}: list of ${full.length} became ${Array.isArray(compact) ? compact.length : typeof compact}`]
+        : [];
+    }
+    return full.flatMap((x, i) => numericDrift(tool, x, compact[i], `${path}[${i}]`, key));
+  }
+  if (full && typeof full === "object") {
+    const c = (compact ?? {}) as Record<string, unknown>;
+    return Object.entries(full as Record<string, unknown>).flatMap(([k, x]) =>
+      x === null || x === undefined || x === "" ? [] : numericDrift(tool, x, c[k], `${path}.${k}`, k),
+    );
+  }
+  return [];
+}
+
+describe("compact output keeps every number (review RF-1/RF-2 guard)", () => {
+  it("every numeric leaf of all 33 tools: within its declared precision, exact if unmapped, sign and order kept", async () => {
+    const db = new Database(":memory:");
+    db.pragma("foreign_keys = ON");
+    runMigrations(db);
+    seedSizeBook(db);
+    const problems: string[] = [];
+    for (const [tool, input] of WORST_CASE_CALLS) {
+      const full = await executeTool(db, tool, input);
+      problems.push(...numericDrift(tool, full, expand(compactToolOutput(tool, full))));
+    }
+    expect(problems.slice(0, 20)).toEqual([]);
+  }, 120000);
+});
+
+describe("every '…[cut' pointer the compaction emits works (review RF-3)", () => {
+  it("following each pointer returns the full, uncut text", async () => {
+    const db = new Database(":memory:");
+    db.pragma("foreign_keys = ON");
+    runMigrations(db);
+    seedSizeBook(db);
+    const MARK = /^([\s\S]*)…\[cut: (\d+) more chars; call (query_\w+) with (\{.*\}) to read it in full\]$/;
+    const strings = (v: unknown, out: string[] = []): string[] => {
+      if (typeof v === "string") out.push(v);
+      else if (Array.isArray(v)) v.forEach((x) => strings(x, out));
+      else if (v && typeof v === "object") Object.values(v).forEach((x) => strings(x, out));
+      return out;
+    };
+    const followedTools = new Set<string>();
+    const failures: string[] = [];
+    for (const [tool, input] of WORST_CASE_CALLS) {
+      const full = await executeTool(db, tool, input);
+      const fullStrings = strings(full);
+      const cuts = strings(compactToolOutput(tool, full)).filter((x) => MARK.test(x)).slice(0, 3);
+      for (const cut of cuts) {
+        const [, prefix, more, target, argsJson] = cut.match(MARK)!;
+        const original = fullStrings.find((x) => x.startsWith(prefix) && x.length === prefix.length + Number(more));
+        if (!original) {
+          failures.push(`${tool}: no original text for a cut`);
+          continue;
+        }
+        const followed = await executeTool(db, target, JSON.parse(argsJson));
+        followedTools.add(`${tool}->${target}`);
+        if (!strings(followed).includes(original)) failures.push(`${tool} -> ${target} ${argsJson}: full text not returned`);
+        if (strings(compactToolOutput(target, followed)).some((x) => MARK.test(x))) {
+          failures.push(`${tool} -> ${target} ${argsJson}: still cut`);
+        }
+      }
+    }
+    expect(failures).toEqual([]);
+    // Every family that cuts text on this book was followed.
+    expect([...followedTools].sort()).toEqual(
+      [
+        "query_alerts->query_alerts",
+        "query_calendar_briefings->query_calendar_briefings",
+        "query_calendar_events->query_calendar_events",
+        "query_levels->query_levels",
+        "query_notes->query_notes",
+        "query_press_releases->query_press_releases",
+        "query_research_documents->query_research_documents",
+        "query_research_feeds->query_research_feeds",
+      ],
+    );
   }, 120000);
 });
