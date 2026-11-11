@@ -18,10 +18,13 @@ describe("create_note approval card (Contract C)", () => {
     expect(src).toMatch(
       /import \{[^}]*\blastAssistantMessageIsCompleteWithApprovalResponses\b[^}]*\} from "ai"/,
     );
+    anchorIndex(src, "useChat({\n    transport,\n    sendAutomaticallyWhen,\n  });");
+    const when = sliceBetween(src, "const sendAutomaticallyWhen = (", "return {");
     anchorIndex(
-      src,
-      "useChat({\n    transport,\n    sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithApprovalResponses,\n  });",
+      when,
+      "shouldAutoContinue(\n        lastAssistantMessageIsCompleteWithApprovalResponses({ messages }),\n        turn.autoContinuations,\n      );",
     );
+    anchorIndex(when, "if (go) turn.autoContinuations += 1;");
     expect(src.match(/useChat\(/g)).toHaveLength(1);
   });
 
@@ -31,15 +34,14 @@ describe("create_note approval card (Contract C)", () => {
     anchorIndex(handler, "id: approvalId,");
     anchorIndex(handler, "approved,");
     anchorIndex(handler, 'reason: approved ? undefined : "Owner chose not to save",');
-    anchorIndex(handler, "options: { body: requestBody },");
-    const deps = sliceBetween(src, "const answerNoteApproval = useCallback(", "]);");
-    expect(deps.slice(deps.lastIndexOf("}, ["))).toContain("requestBody");
+    anchorIndex(handler, "options: { body: currentRequestBody() },");
+    anchorIndex(handler, "turn.autoContinuations = 0;");
   });
 
   it("the card is a module-level component reading noteApprovalView", () => {
     const cardAt = anchorIndex(src, "function NoteApprovalCard(");
     expect(cardAt).toBeLessThan(anchorIndex(src, "export function ChatInterface("));
-    anchorIndex(src, "noteApprovalView(part as NoteToolPartView)");
+    anchorIndex(src, "noteApprovalView(part as NoteToolPartView, { inLastMessage: opts.inLastMessage })");
   });
 
   it("shows the draft with its content through PrivateText, and two buttons", () => {
@@ -50,12 +52,17 @@ describe("create_note approval card (Contract C)", () => {
     anchorIndex(card, "onClick={() => onAnswer(view.approvalId, true)}");
     anchorIndex(card, "onClick={() => onAnswer(view.approvalId, false)}");
     expect(card.match(/disabled=\{disabled\}/g)).toHaveLength(2);
+    // R4-6: at least 36 px targets (44 px on touch).
+    expect(card.match(/min-h-9 pointer-coarse:min-h-11/g)).toHaveLength(2);
+    anchorIndex(card, "Not saved: ${view.reason}");
+    anchorIndex(card, "Save not confirmed");
     anchorIndex(card, "Saving…");
     anchorIndex(card, "Saved");
     anchorIndex(card, "Not saved");
   });
 
   it("the buttons are disabled while a reply is pending", () => {
-    anchorIndex(src, "renderAssistantParts(msg.parts, { onNoteAnswer: answerNoteApproval, busy: isStreaming })");
+    anchorIndex(src, "onNoteAnswer: answerNoteApproval,\n");
+    anchorIndex(src, "busy: isStreaming,\n");
   });
 });

@@ -23,3 +23,9 @@ describe("chat client tool labels (Contract F)", () => {
     expect(toolLabel("no_such_tool")).toBe("Using no_such_tool");
   });
 });
+
+describe("create_note label (R4-11)", () => {
+  it("says drafting, because the note is saved only after the owner's click", () => {
+    expect(toolLabel("create_note")).toBe("Drafting a note...");
+  });
+});

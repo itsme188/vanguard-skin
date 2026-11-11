@@ -33,25 +33,46 @@ const drawer = readFileSync(
 // Re-pinned 2026-11-11 (Portfolio Assistant plan, Task 4): the turn box gains
 // the B17 generation fields, the destructure gains addToolApprovalResponse,
 // and useChat gains the one additive option sendAutomaticallyWhen (O2).
-const USE_CHAT_BLOCK_AT_HEAD = `const { transport, turn } = useMemo(() => {
+// Re-pinned again in the barrier-1 fix round (R4-10 cap wrapper, R4-12 ref).
+const USE_CHAT_BLOCK_AT_HEAD = `const { transport, turn, sendAutomaticallyWhen } = useMemo(() => {
     // Plain mutable box, written only inside the fetch call and the switch
     // handlers (never in render).
     const turn: {
       conversationId: number | null;
       generation: number;
       sentGeneration: number | null;
-    } = { conversationId: null, generation: 0, sentGeneration: null };
+      autoContinuations: number;
+    } = { conversationId: null, generation: 0, sentGeneration: null, autoContinuations: 0 };
     const chatFetch: ApiFetch = async (input, init) => {
       turn.sentGeneration = turn.generation;
       turn.conversationId = null;
       const res = await apiFetch(input, init);
       const id = Number(res.headers.get("X-Conversation-Id"));
       turn.conversationId = Number.isInteger(id) && id > 0 ? id : null;
+      const adopt = decideTurnAdoption({
+        openConversationId: conversationIdRef.current,
+        turnConversationId: turn.conversationId,
+        turnGeneration: turn.sentGeneration,
+        currentGeneration: turn.generation,
+      });
+      if (adopt !== null) conversationIdRef.current = adopt;
       return res;
+    };
+    // R4-10: the SDK's completeness check, capped per owner action (send,
+    // retry, approval click), so a continuation that never carries the tool
+    // result cannot resend forever. Stable: useChat keeps the first one.
+    const sendAutomaticallyWhen = ({ messages }: { messages: UIMessage[] }) => {
+      const go = shouldAutoContinue(
+        lastAssistantMessageIsCompleteWithApprovalResponses({ messages }),
+        turn.autoContinuations,
+      );
+      if (go) turn.autoContinuations += 1;
+      return go;
     };
     return {
       transport: new DefaultChatTransport({ api: "/api/chat", fetch: chatFetch }),
       turn,
+      sendAutomaticallyWhen,
     };
   }, []);
 
@@ -67,7 +88,7 @@ const USE_CHAT_BLOCK_AT_HEAD = `const { transport, turn } = useMemo(() => {
     addToolApprovalResponse,
   } = useChat({
     transport,
-    sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithApprovalResponses,
+    sendAutomaticallyWhen,
   });`;
 
 // Re-pinned 2026-11-11 for the Portfolio Assistant plan, Task 4 (B16, B17,
@@ -80,15 +101,15 @@ const USE_CHAT_BLOCK_AT_HEAD = `const { transport, turn } = useMemo(() => {
 // component's `return (` at that same commit: every hook, effect, handler and
 // state declaration of the component that owns useChat.
 const COMPONENT_LOGIC_SHA256_AT_HEAD =
-  "d40d19f8533c8f87ccf377a1191d0fa3102ad8f0a368afd11de2a45dcba707cb";
+  "b62a4103865ea8d8672375195f1fd8083babee98a4faf37b66dec4b989eb08a4";
 
 const RETURN_ANCHOR = '\n  return (\n    <div className="flex flex-col';
 
 describe("chat wiring is untouched by the header move", () => {
   it("the transport memo and the useChat call are byte-identical to HEAD", () => {
-    const start = anchorIndex(src, "const { transport, turn } = useMemo(() => {");
+    const start = anchorIndex(src, "const { transport, turn, sendAutomaticallyWhen } = useMemo(() => {");
     const endNeedle =
-      "} = useChat({\n    transport,\n    sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithApprovalResponses,\n  });";
+      "} = useChat({\n    transport,\n    sendAutomaticallyWhen,\n  });";
     const end = anchorIndex(src, endNeedle, start) + endNeedle.length;
     expect(src.slice(start, end)).toBe(USE_CHAT_BLOCK_AT_HEAD);
   });
@@ -106,8 +127,8 @@ describe("chat wiring is untouched by the header move", () => {
   });
 
   it("send and retry still pass the per-call body, and submit still goes through handleSubmit", () => {
-    expect(src.match(/sendMessage\(\{ text \}, \{ body: requestBody \}\)/g)).toHaveLength(1);
-    expect(src.match(/regenerate\(\{ body: requestBody \}\)/g)).toHaveLength(1);
+    expect(src.match(/sendMessage\(\{ text \}, \{ body: currentRequestBody\(\) \}\)/g)).toHaveLength(1);
+    expect(src.match(/regenerate\(\{ body: currentRequestBody\(\) \}\)/g)).toHaveLength(1);
     expect(src.match(/onSubmit=\{handleSubmit\}/g)).toHaveLength(1);
   });
 

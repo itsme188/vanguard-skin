@@ -5,6 +5,15 @@ import {
   isNearBottom,
   nextFollowBottom,
   AUTO_SCROLL_THRESHOLD_PX,
+  stoppedNotice,
+  STOPPED_SENTENCE,
+  toolIndicatorState,
+  showThinking,
+  shouldIgnoreStopClick,
+  STOP_CLICK_GUARD_MS,
+  shouldAutoContinue,
+  MAX_AUTO_CONTINUATIONS,
+  SUPERSEDED_NOTE_REASON,
 } from "@/lib/chat/turn-adoption";
 
 describe("decideTurnAdoption (B17)", () => {
@@ -233,5 +242,102 @@ describe("nextFollowBottom (B21)", () => {
   });
   it("moving down while not following keeps not following until near the bottom", () => {
     expect(nextFollowBottom(false, { scrollHeight: 4000, scrollTop: 1200, clientHeight: 400 }, 1000)).toBe(false);
+  });
+});
+
+describe("noteApprovalView in an older message (R4-2)", () => {
+  const input = { note_type: "journal", content: "Synthetic" };
+  it("a pending draft that is not in the last message shows no buttons", () => {
+    expect(
+      noteApprovalView(
+        { type: "tool-create_note", state: "approval-requested", input, approval: { id: "a" } },
+        { inLastMessage: false },
+      ),
+    ).toEqual({ kind: "not-saved", reason: SUPERSEDED_NOTE_REASON });
+    expect(SUPERSEDED_NOTE_REASON).toBe("superseded by a later message");
+  });
+  it("an approved answer whose continuation never landed is not left Saving forever", () => {
+    expect(
+      noteApprovalView(
+        { type: "tool-create_note", state: "approval-responded", input, approval: { id: "a", approved: true } },
+        { inLastMessage: false },
+      ),
+    ).toEqual({ kind: "unconfirmed" });
+  });
+  it("finished states read the same in any message", () => {
+    expect(
+      noteApprovalView(
+        { type: "tool-create_note", state: "output-available", input, output: { data: { saved: true } } },
+        { inLastMessage: false },
+      ),
+    ).toEqual({ kind: "saved" });
+  });
+  it("the last message still asks", () => {
+    expect(
+      noteApprovalView(
+        { type: "tool-create_note", state: "approval-requested", input, approval: { id: "a" } },
+        { inLastMessage: true },
+      )?.kind,
+    ).toBe("ask");
+  });
+});
+
+describe("a stopped reply settles (R4-3)", () => {
+  it("reasoning shows Thinking only while its message is live and streaming", () => {
+    expect(showThinking("streaming", true)).toBe(true);
+    expect(showThinking("streaming", false)).toBe(false);
+    expect(showThinking("done", true)).toBe(false);
+  });
+  it("a tool stopped mid-call stops pulsing once the message is not live", () => {
+    expect(toolIndicatorState("input-streaming", true)).toBe("active");
+    expect(toolIndicatorState("input-available", true)).toBe("active");
+    expect(toolIndicatorState("input-streaming", false)).toBeNull();
+    expect(toolIndicatorState("input-available", false)).toBeNull();
+    expect(toolIndicatorState("output-available", true)).toBeNull();
+    expect(toolIndicatorState("output-error", false)).toBe("error");
+    expect(toolIndicatorState("output-error", true)).toBe("error");
+  });
+  it("an empty stopped message reads Stopped.", () => {
+    expect(STOPPED_SENTENCE).toBe("Stopped.");
+    expect(stoppedNotice({ parts: [] })).toBe("Stopped.");
+    expect(stoppedNotice({ parts: [{ type: "step-start" }] })).toBe("Stopped.");
+    expect(
+      stoppedNotice({ parts: [{ type: "step-start" }, { type: "reasoning", text: "hmm", state: "streaming" }] }),
+    ).toBe("Stopped.");
+    expect(
+      stoppedNotice({ parts: [{ type: "tool-query_holdings", state: "input-available" }] }),
+    ).toBe("Stopped.");
+  });
+  it("a message with something to show is not called stopped", () => {
+    expect(stoppedNotice({ parts: [{ type: "text", text: "partial answer" }] })).toBeNull();
+    expect(stoppedNotice({ parts: [{ type: "tool-query_holdings", state: "output-error" }] })).toBeNull();
+    expect(stoppedNotice({ parts: [{ type: "tool-create_note", state: "approval-requested" }] })).toBeNull();
+  });
+  it("a turn that finished (the server sent a finish reason) is never called stopped", () => {
+    expect(stoppedNotice({ parts: [], metadata: { finishReason: "stop" } })).toBeNull();
+  });
+});
+
+describe("Stop guard after a send (R4-4)", () => {
+  it("ignores a Stop click within 400 ms of the send starting", () => {
+    expect(STOP_CLICK_GUARD_MS).toBe(400);
+    expect(shouldIgnoreStopClick(1000, 1000)).toBe(true);
+    expect(shouldIgnoreStopClick(1000, 1399)).toBe(true);
+    expect(shouldIgnoreStopClick(1000, 1400)).toBe(false);
+  });
+  it("never ignores when no send time is recorded", () => {
+    expect(shouldIgnoreStopClick(null, 5)).toBe(false);
+  });
+});
+
+describe("automatic continuation cap (R4-10)", () => {
+  it("continues while the SDK says complete and the cap is not reached", () => {
+    expect(MAX_AUTO_CONTINUATIONS).toBe(3);
+    expect(shouldAutoContinue(true, 0)).toBe(true);
+    expect(shouldAutoContinue(true, 2)).toBe(true);
+  });
+  it("stops at the cap, and never continues when the SDK says not complete", () => {
+    expect(shouldAutoContinue(true, 3)).toBe(false);
+    expect(shouldAutoContinue(false, 0)).toBe(false);
   });
 });

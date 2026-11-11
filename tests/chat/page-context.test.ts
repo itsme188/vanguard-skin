@@ -45,7 +45,8 @@ describe("getPageContext", () => {
 
   it("names the Tax Lots, Levels, Alerts and Notes pages", () => {
     expect(getPageContext("/dashboard/tax-lots")).toBe("User is on the Tax Lots page.");
-    expect(getPageContext("/dashboard/levels")).toBe("User is on the Levels page.");
+    expect(getPageContext("/dashboard/levels/review")).toBe("User is on the Levels review page.");
+    expect(getPageContext("/dashboard/levels/performance")).toBe("User is on the Levels performance page.");
     expect(getPageContext("/dashboard/alerts")).toBe("User is on the Alerts page.");
     expect(getPageContext("/dashboard/notes")).toBe("User is on the Notes page.");
   });
@@ -64,7 +65,33 @@ describe("getPageContext", () => {
     expect(getPageContext("/dashboard/security/42")).toBe("User is viewing a Security Detail page.");
   });
 
-  it("drops the Charts route, which has no page under app/dashboard", () => {
-    expect(getPageContext("/dashboard/charts")).toBe("User is browsing the dashboard.");
+  it("names the Charts, Chat, Reconciliation and account-linking pages", () => {
+    expect(getPageContext("/dashboard/charts")).toBe("User is on the Charts page.");
+    expect(getPageContext("/dashboard/chat")).toBe("User is on the full-page Chat.");
+    expect(getPageContext("/dashboard/reconciliation")).toBe("User is on the Reconciliation page.");
+    expect(getPageContext("/dashboard/plaid-link")).toBe("User is on the account-linking page.");
+  });
+
+  it("every page under app/dashboard has its own sentence (R4-5)", async () => {
+    const { readdirSync, statSync } = await import("node:fs");
+    const { join, relative } = await import("node:path");
+    const root = join(process.cwd(), "app/dashboard");
+    const pages: string[] = [];
+    const walk = (dir: string) => {
+      for (const name of readdirSync(dir)) {
+        const p = join(dir, name);
+        if (statSync(p).isDirectory()) {
+          if (name !== "components") walk(p);
+        } else if (name === "page.tsx") {
+          pages.push(relative(root, dir));
+        }
+      }
+    };
+    walk(root);
+    expect(pages.length).toBeGreaterThan(15);
+    const generic = pages
+      .map((rel) => "/dashboard" + (rel ? "/" + rel.replace(/\[[^\]]+\]/g, "42") : ""))
+      .filter((path) => getPageContext(path) === "User is browsing the dashboard.");
+    expect(generic).toEqual([]);
   });
 });

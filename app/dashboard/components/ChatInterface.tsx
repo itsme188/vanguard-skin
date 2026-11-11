@@ -19,6 +19,11 @@ import {
   decideTurnAdoption,
   nextFollowBottom,
   noteApprovalView,
+  shouldAutoContinue,
+  shouldIgnoreStopClick,
+  showThinking,
+  stoppedNotice,
+  toolIndicatorState,
   type NoteApprovalView,
   type NoteToolPartView,
 } from "@/lib/chat/turn-adoption";
@@ -56,16 +61,11 @@ function ThinkingIndicator() {
   );
 }
 
-function ToolIndicator({ name, state }: { name: string; state: string }) {
-  // Hide completed tools — they served their purpose
-  if (state === "output-available") return null;
-
+function ToolIndicator({ name, kind }: { name: string; kind: "active" | "error" }) {
   const label = toolLabel(name);
-  const isError = state === "output-error";
-
   return (
     <div className="flex items-center gap-2 text-xs text-ink-dim my-1">
-      {isError ? (
+      {kind === "error" ? (
         <span className="text-down">Tool error</span>
       ) : (
         <>
@@ -130,7 +130,7 @@ function NoteApprovalCard({
             type="button"
             disabled={disabled}
             onClick={() => onAnswer(view.approvalId, true)}
-            className={`px-3 py-1.5 rounded-lg text-xs font-medium ${GOLD_FILL_CLASSES} hover:brightness-110 transition-[filter] disabled:opacity-40 disabled:cursor-not-allowed focus-ring`}
+            className={`min-h-9 pointer-coarse:min-h-11 px-3 py-1.5 rounded-lg text-xs font-medium ${GOLD_FILL_CLASSES} hover:brightness-110 transition-[filter] disabled:opacity-40 disabled:cursor-not-allowed focus-ring`}
           >
             Save note
           </button>
@@ -138,7 +138,7 @@ function NoteApprovalCard({
             type="button"
             disabled={disabled}
             onClick={() => onAnswer(view.approvalId, false)}
-            className="px-3 py-1.5 rounded-lg text-xs text-ink-dim border border-edge hover:text-ink hover:border-edge-strong transition-[color,border-color] disabled:opacity-40 disabled:cursor-not-allowed focus-ring"
+            className="min-h-9 pointer-coarse:min-h-11 px-3 py-1.5 rounded-lg text-xs text-ink-dim border border-edge hover:text-ink hover:border-edge-strong transition-[color,border-color] disabled:opacity-40 disabled:cursor-not-allowed focus-ring"
           >
             {"Don't save"}
           </button>
@@ -151,7 +151,9 @@ function NoteApprovalCard({
       ? "Saving…"
       : view.kind === "saved"
         ? "Saved"
-        : view.reason
+        : view.kind === "unconfirmed"
+          ? "Save not confirmed; check Notes"
+          : view.reason
           ? `Not saved: ${view.reason}`
           : "Not saved";
   return <div className="text-xs text-ink-dim my-1">Note: {text}</div>;
@@ -174,10 +176,14 @@ interface AssistantPartOptions {
   onNoteAnswer: (approvalId: string, approved: boolean) => void;
   /** A reply is pending: approval buttons are disabled. */
   busy: boolean;
+  /** This message is the one streaming now (R4-3: otherwise it is settled). */
+  live: boolean;
+  /** This message is the last one (R4-2: only it can answer an approval). */
+  inLastMessage: boolean;
 }
 
 function renderAssistantParts(parts: UIMessage["parts"], opts: AssistantPartOptions) {
-  if (parts.length === 0) {
+  if (parts.length === 0 && opts.live) {
     return <span className="text-ink-faint animate-pulse">Thinking...</span>;
   }
 
@@ -189,8 +195,8 @@ function renderAssistantParts(parts: UIMessage["parts"], opts: AssistantPartOpti
     }
 
     if (part.type === "reasoning") {
-      // Show indicator only while actively reasoning — hide completed
-      return (part as { state?: string }).state === "streaming" ? (
+      // Show indicator only while actively reasoning in the live message
+      return showThinking((part as { state?: string }).state, opts.live) ? (
         <ThinkingIndicator key={i} />
       ) : null;
     }
@@ -201,15 +207,14 @@ function renderAssistantParts(parts: UIMessage["parts"], opts: AssistantPartOpti
 
     // Tool parts: type is 'tool-${toolName}'
     if (part.type.startsWith("tool-")) {
-      const noteView = noteApprovalView(part as NoteToolPartView);
+      const noteView = noteApprovalView(part as NoteToolPartView, { inLastMessage: opts.inLastMessage });
       if (noteView) {
         return (
           <NoteApprovalCard key={i} view={noteView} disabled={opts.busy} onAnswer={opts.onNoteAnswer} />
         );
       }
-      const toolName = part.type.slice(5);
-      const state = (part as { state: string }).state;
-      return <ToolIndicator key={i} name={toolName} state={state} />;
+      const kind = toolIndicatorState((part as { state?: string }).state, opts.live);
+      return kind ? <ToolIndicator key={i} name={part.type.slice(5)} kind={kind} /> : null;
     }
 
     return null;
@@ -434,6 +439,14 @@ export function ChatInterface({ pathname }: ChatInterfaceProps) {
   const followBottomRef = useRef(true);
   const lastScrollTopRef = useRef(0);
 
+  // R4-12: the open conversation's id, written synchronously wherever it
+  // changes (openConversation) and where a response header names it
+  // (chatFetch). The per-call body reads it, so a follow-up sent in the frame
+  // between a turn's finish and the adoption effect still carries it.
+  const conversationIdRef = useRef<number | null>(null);
+  // R4-4: when the last send began (Stop ignores clicks just after it).
+  const stopGuardFromRef = useRef<number | null>(null);
+
   // Quick actions from the pathname. The page itself is described by the
   // SERVER from the path sent in the request body (Contract A).
   const quickActions = useMemo(() => getQuickActions(pathname), [pathname]);
@@ -444,7 +457,7 @@ export function ChatInterface({ pathname }: ChatInterfaceProps) {
   // mount-time values (scope "all") — the scope selector then silently never
   // reaches /api/chat (the 2026-06-15 leak: a "Vanguard Taxable" chat ran
   // unscoped). The live scope is passed per-call via sendMessage/regenerate's
-  // `body` instead (see requestBody below), which reads current state at send time.
+  // `body` instead (see currentRequestBody below), built at send time.
   //
   // `fetch: apiFetch` is what carries the `X-CSRF-Token` header the #35 trust
   // boundary requires on POST (lib/auth/verify-request.ts) — the SDK's own
@@ -464,25 +477,45 @@ export function ChatInterface({ pathname }: ChatInterfaceProps) {
   // loading a conversation and deleting the open one bump it. A request
   // records the generation it was sent in (`sentGeneration`), and the
   // adoption effect ignores a header from an older generation.
-  const { transport, turn } = useMemo(() => {
+  const { transport, turn, sendAutomaticallyWhen } = useMemo(() => {
     // Plain mutable box, written only inside the fetch call and the switch
     // handlers (never in render).
     const turn: {
       conversationId: number | null;
       generation: number;
       sentGeneration: number | null;
-    } = { conversationId: null, generation: 0, sentGeneration: null };
+      autoContinuations: number;
+    } = { conversationId: null, generation: 0, sentGeneration: null, autoContinuations: 0 };
     const chatFetch: ApiFetch = async (input, init) => {
       turn.sentGeneration = turn.generation;
       turn.conversationId = null;
       const res = await apiFetch(input, init);
       const id = Number(res.headers.get("X-Conversation-Id"));
       turn.conversationId = Number.isInteger(id) && id > 0 ? id : null;
+      const adopt = decideTurnAdoption({
+        openConversationId: conversationIdRef.current,
+        turnConversationId: turn.conversationId,
+        turnGeneration: turn.sentGeneration,
+        currentGeneration: turn.generation,
+      });
+      if (adopt !== null) conversationIdRef.current = adopt;
       return res;
+    };
+    // R4-10: the SDK's completeness check, capped per owner action (send,
+    // retry, approval click), so a continuation that never carries the tool
+    // result cannot resend forever. Stable: useChat keeps the first one.
+    const sendAutomaticallyWhen = ({ messages }: { messages: UIMessage[] }) => {
+      const go = shouldAutoContinue(
+        lastAssistantMessageIsCompleteWithApprovalResponses({ messages }),
+        turn.autoContinuations,
+      );
+      if (go) turn.autoContinuations += 1;
+      return go;
     };
     return {
       transport: new DefaultChatTransport({ api: "/api/chat", fetch: chatFetch }),
       turn,
+      sendAutomaticallyWhen,
     };
   }, []);
 
@@ -498,17 +531,24 @@ export function ChatInterface({ pathname }: ChatInterfaceProps) {
     addToolApprovalResponse,
   } = useChat({
     transport,
-    sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithApprovalResponses,
+    sendAutomaticallyWhen,
   });
 
-  // Per-call request body — re-read on every send so the CURRENT scope,
-  // conversation, and page path reach the server (see transport note above).
-  // Reads state only, never the turn box. The server resolves the path
-  // itself (Contract A); no client-written page text is sent.
-  const requestBody = useMemo(
-    () => ({ scope, conversationId, page: { path: pathname } }),
-    [scope, conversationId, pathname]
+  // Per-call request body — built at the moment of each send so the CURRENT
+  // scope, conversation, and page path reach the server (see transport note
+  // above). Never reads the turn box. The server resolves the path itself
+  // (Contract A); no client-written page text is sent.
+  const currentRequestBody = useCallback(
+    () => ({ scope, conversationId: conversationIdRef.current, page: { path: pathname } }),
+    [scope, pathname]
   );
+
+  // The one writer of the open conversation (state for the UI, ref for the
+  // body; R4-12).
+  const openConversation = useCallback((id: number | null) => {
+    conversationIdRef.current = id;
+    setConversationId(id);
+  }, []);
 
   const isStreaming = status === "streaming" || status === "submitted";
 
@@ -541,26 +581,31 @@ export function ChatInterface({ pathname }: ChatInterfaceProps) {
 
   // Load a conversation's messages by ID
   const loadConversation = useCallback(async (conv: ChatConversation) => {
-    // B16: stop a streaming reply first, or the SDK keeps appending it to
-    // the conversation being opened (the server saves it to the old one).
-    if (isStreaming) void stop();
-    beginNewGeneration();
     try {
       const res = await fetch(`/api/chat/conversations/${conv.id}/messages`);
-      const body = await res.json().catch(() => null);
-      if (res.ok && body?.success === true) {
-        const dbMessages: ChatMessage[] = body.data?.messages ?? [];
+      const payload = await res.json().catch(() => null);
+      if (res.ok && payload?.success === true) {
+        const dbMessages: ChatMessage[] = payload.data?.messages ?? [];
         const uiMessages = dbMessages.map(dbMessageToUIMessage);
+        // B16: stop a streaming reply before showing the other conversation,
+        // or the SDK keeps appending it there. Only now (R4-8): a failed
+        // load leaves the current reply running.
+        if (isStreaming) await stop();
+        beginNewGeneration();
         clearError();
         followBottomRef.current = true;
         setMessages(uiMessages);
-        setConversationId(conv.id);
+        openConversation(conv.id);
         setScope((conv.scope as ChatScope) || "all");
+        return;
       }
+      const reason =
+        typeof payload?.error === "string" ? payload.error : `the server returned HTTP ${res.status}`;
+      toast(`Couldn't open that conversation: ${reason}`, "error");
     } catch {
-      // Silently fail
+      toast(networkFailureMessage("open that conversation"), "error");
     }
-  }, [setMessages, clearError, isStreaming, stop, beginNewGeneration]);
+  }, [setMessages, clearError, isStreaming, stop, beginNewGeneration, openConversation, toast]);
 
   // On mount: default to a FRESH conversation (U2a). We populate the history
   // list so past chats stay reachable (Recent Conversations in the empty state),
@@ -592,11 +637,11 @@ export function ChatInterface({ pathname }: ChatInterfaceProps) {
         turnGeneration: turn.sentGeneration,
         currentGeneration: turn.generation,
       });
-      if (adopt !== null) setConversationId(adopt);
+      if (adopt !== null) openConversation(adopt);
       void fetchConversations();
     }
     prevStatusRef.current = status;
-  }, [status, conversationId, fetchConversations, turn]);
+  }, [status, conversationId, fetchConversations, turn, openConversation]);
 
   // B21: a scroll event decides whether the stream keeps following.
   const handleMessagesScroll = useCallback(() => {
@@ -636,7 +681,9 @@ export function ChatInterface({ pathname }: ChatInterfaceProps) {
     const text = inputText.trim();
     setInputText("");
     followBottomRef.current = true;
-    await sendMessage({ text }, { body: requestBody });
+    turn.autoContinuations = 0;
+    stopGuardFromRef.current = Date.now();
+    await sendMessage({ text }, { body: currentRequestBody() });
   }
 
   function handleKeyDown(e: React.KeyboardEvent) {
@@ -646,13 +693,25 @@ export function ChatInterface({ pathname }: ChatInterfaceProps) {
     }
   }
 
+  // R4-4: the second click of a double-click on Send lands on Stop, which
+  // takes Send's place; ignore clicks just after a send began.
+  const handleStopClick = useCallback(() => {
+    if (shouldIgnoreStopClick(stopGuardFromRef.current, Date.now())) return;
+    void stop();
+  }, [stop]);
+
+  function handleRetry() {
+    turn.autoContinuations = 0;
+    void regenerate({ body: currentRequestBody() });
+  }
+
   function handleNewConversation() {
     if (isStreaming) stop();
     beginNewGeneration();
     followBottomRef.current = true;
     clearError();
     setMessages([]);
-    setConversationId(null);
+    openConversation(null);
     setScope("all");
     setInputText("");
   }
@@ -671,12 +730,17 @@ export function ChatInterface({ pathname }: ChatInterfaceProps) {
         method: "DELETE",
       });
       const result = await readMutationResult(res);
-      if (!result.ok) {
+      // R4-9: a 404 means it is already gone (another device, an earlier
+      // click); drop the stale row instead of reporting a failure.
+      const alreadyGone = !result.ok && result.status === 404;
+      if (!result.ok && !alreadyGone) {
         // The dialog already closed — without this the conversation just
         // stays in the list and the delete looks like it never happened.
         toast(`Couldn't delete the conversation: ${result.message}`, "error");
         return;
       }
+      if (alreadyGone) toast("That conversation no longer exists.", "info");
+      setConversations((list) => list.filter((c) => c.id !== conv.id));
 
       // If the deleted conversation is currently loaded, reset to empty state
       if (conv.id === conversationId) {
@@ -684,26 +748,27 @@ export function ChatInterface({ pathname }: ChatInterfaceProps) {
         beginNewGeneration();
         clearError();
         setMessages([]);
-        setConversationId(null);
+        openConversation(null);
       }
       await fetchConversations();
     } catch {
       toast(networkFailureMessage("delete the conversation"), "error");
     }
-  }, [deletePending, conversationId, fetchConversations, isStreaming, setMessages, clearError, stop, toast, beginNewGeneration]);
+  }, [deletePending, conversationId, fetchConversations, isStreaming, setMessages, clearError, stop, toast, beginNewGeneration, openConversation]);
 
   // Contract C: the owner's answer on a drafted note. The SDK resends on its
   // own once every approval has an answer (sendAutomaticallyWhen), with these
   // options, so the CURRENT per-call body travels with the continuation.
   const answerNoteApproval = useCallback((approvalId: string, approved: boolean) => {
     followBottomRef.current = true;
+    turn.autoContinuations = 0;
     void addToolApprovalResponse({
       id: approvalId,
       approved,
       reason: approved ? undefined : "Owner chose not to save",
-      options: { body: requestBody },
+      options: { body: currentRequestBody() },
     });
-  }, [addToolApprovalResponse, requestBody]);
+  }, [addToolApprovalResponse, currentRequestBody, turn]);
 
   function handleQuickAction(prompt: string) {
     setInputText(prompt);
@@ -838,7 +903,7 @@ export function ChatInterface({ pathname }: ChatInterfaceProps) {
         {/* Message list */}
         {messages.map((msg, index) => {
           const isLive = isStreaming && index === messages.length - 1;
-          const notice = msg.role === "assistant" && !isLive ? turnOutcomeNotice(msg) : null;
+          const notice = msg.role === "assistant" && !isLive ? (turnOutcomeNotice(msg) ?? stoppedNotice(msg)) : null;
           return (
           <div
             key={msg.id}
@@ -860,7 +925,12 @@ export function ChatInterface({ pathname }: ChatInterfaceProps) {
                   {notice ? (
                     <p className="text-ink-dim">{notice}</p>
                   ) : (
-                    renderAssistantParts(msg.parts, { onNoteAnswer: answerNoteApproval, busy: isStreaming })
+                    renderAssistantParts(msg.parts, {
+                      onNoteAnswer: answerNoteApproval,
+                      busy: isStreaming,
+                      live: isLive,
+                      inLastMessage: index === messages.length - 1,
+                    })
                   )}
                   {/* Copy button — only show if there's actual text content */}
                   {!notice && msg.parts.some(
@@ -886,7 +956,7 @@ export function ChatInterface({ pathname }: ChatInterfaceProps) {
         {status === "error" && messages.length > 0 && (
           <div className="flex justify-start">
             <button
-              onClick={() => regenerate({ body: requestBody })}
+              onClick={handleRetry}
               className="px-3 py-1.5 text-xs text-ink-dim border border-edge rounded-lg hover:text-ink hover:border-edge-strong transition-[color,border-color] focus-ring"
             >
               Retry
@@ -920,7 +990,7 @@ export function ChatInterface({ pathname }: ChatInterfaceProps) {
           {isStreaming ? (
             <button
               type="button"
-              onClick={() => void stop()}
+              onClick={handleStopClick}
               aria-label="Stop the answer"
               className="px-5 py-3 rounded-xl border border-edge text-ink font-medium text-sm hover:border-edge-strong transition-[border-color,scale] active:scale-[0.96] focus-ring"
             >

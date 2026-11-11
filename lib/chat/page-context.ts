@@ -48,11 +48,17 @@ export function getPageContext(
 
   const simplePages: Record<string, string> = {
     "/dashboard": "User is on the Overview page.",
+    "/dashboard/overview": "User is on the Overview page.",
     "/dashboard/today": "User is on the Today page.",
     "/dashboard/accounts": "User is on the Accounts page.",
     "/dashboard/holdings": "User is on the Holdings page.",
     "/dashboard/tax-lots": "User is on the Tax Lots page.",
-    "/dashboard/levels": "User is on the Levels page.",
+    "/dashboard/levels/review": "User is on the Levels review page.",
+    "/dashboard/levels/performance": "User is on the Levels performance page.",
+    "/dashboard/charts": "User is on the Charts page.",
+    "/dashboard/chat": "User is on the full-page Chat.",
+    "/dashboard/reconciliation": "User is on the Reconciliation page.",
+    "/dashboard/plaid-link": "User is on the account-linking page.",
     "/dashboard/alerts": "User is on the Alerts page.",
     "/dashboard/notes": "User is on the Notes page.",
     "/dashboard/import": "User is on the Import page.",

@@ -11,9 +11,16 @@ const src = readFileSync("app/dashboard/components/ChatInterface.tsx", "utf8");
 
 describe("chat request body carries the page path (Contract A)", () => {
   it("the per-call body is scope, conversation id and page path", () => {
-    const memo = sliceBetween(src, "const requestBody = useMemo(", ");");
-    anchorIndex(memo, "({ scope, conversationId, page: { path: pathname } })");
-    expect(memo).not.toContain("pageContext");
+    const builder = sliceBetween(src, "const currentRequestBody = useCallback(", "[scope, pathname]");
+    anchorIndex(builder, "({ scope, conversationId: conversationIdRef.current, page: { path: pathname } })");
+    expect(builder).not.toContain("pageContext");
+    expect(builder).not.toContain("turn.");
+  });
+
+  it("every send, retry and approval answer builds the body at that moment", () => {
+    anchorIndex(src, "await sendMessage({ text }, { body: currentRequestBody() });");
+    anchorIndex(src, "regenerate({ body: currentRequestBody() })");
+    anchorIndex(src, "options: { body: currentRequestBody() },");
   });
 
   it("the client no longer builds the page sentence", () => {

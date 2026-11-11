@@ -18,7 +18,7 @@ export const CHAT_TOOL_LABELS: Record<string, string> = {
   query_company_fundamentals: "Looking up company financials...",
   query_insider_trades: "Fetching insider trading data...",
   query_notes: "Searching notes...",
-  create_note: "Saving note...",
+  create_note: "Drafting a note...",
   query_earnings_transcript: "Fetching earnings transcript...",
   query_press_releases: "Fetching press releases...",
   query_analyst_coverage: "Fetching analyst coverage...",

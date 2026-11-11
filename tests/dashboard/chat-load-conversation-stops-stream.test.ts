@@ -15,16 +15,23 @@ const src = readFileSync("app/dashboard/components/ChatInterface.tsx", "utf8");
 describe("loadConversation stops a streaming reply first (B16)", () => {
   const body = sliceBetween(src, "const loadConversation = useCallback(", "[setMessages");
 
-  it("calls stop() when a reply is streaming, before fetching the other conversation", () => {
-    const stopAt = anchorIndex(body, "if (isStreaming) void stop();");
+  it("stops a streaming reply only after the load succeeded, before showing it (R4-8)", () => {
     const fetchAt = anchorIndex(body, "fetch(`/api/chat/conversations/${conv.id}/messages`)");
-    expect(stopAt).toBeLessThan(fetchAt);
+    const okAt = anchorIndex(body, "if (res.ok && payload?.success === true) {");
+    const stopAt = anchorIndex(body, "if (isStreaming) await stop();");
+    const showAt = anchorIndex(body, "setMessages(uiMessages);");
+    expect(fetchAt).toBeLessThan(okAt);
+    expect(okAt).toBeLessThan(stopAt);
+    expect(stopAt).toBeLessThan(showAt);
   });
 
-  it("starts a new turn generation before fetching, so a late header is not adopted", () => {
-    const bumpAt = anchorIndex(body, "beginNewGeneration();");
-    const fetchAt = anchorIndex(body, "fetch(`/api/chat/conversations/${conv.id}/messages`)");
-    expect(bumpAt).toBeLessThan(fetchAt);
+  it("starts a new turn generation before showing the loaded conversation", () => {
+    expect(anchorIndex(body, "beginNewGeneration();")).toBeLessThan(anchorIndex(body, "setMessages(uiMessages);"));
+  });
+
+  it("a failed load says why (R4-8)", () => {
+    anchorIndex(body, "toast(`Couldn't open that conversation: ");
+    anchorIndex(body, 'toast(networkFailureMessage("open that conversation"), "error");');
   });
 
   it("the callback is rebuilt when the streaming flag changes (no stale closure)", () => {
