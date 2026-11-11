@@ -26,6 +26,7 @@ import { humanizeChatError } from "@/lib/chat/error-message";
 import type { ChatScope } from "@/lib/types";
 import type { ChatConversation, ChatMessage } from "@/lib/queries/chat";
 import apiFetch, { type ApiFetch } from "@/lib/http/apiFetch";
+import { readMutationResult, networkFailureMessage } from "@/lib/ui/mutation-result";
 
 // Scope configuration
 const SCOPE_OPTIONS: { value: ChatScope; label: string }[] = [
@@ -669,10 +670,11 @@ export function ChatInterface({ pathname }: ChatInterfaceProps) {
       const res = await apiFetch(`/api/chat/conversations/${conv.id}`, {
         method: "DELETE",
       });
-      if (!res.ok) {
+      const result = await readMutationResult(res);
+      if (!result.ok) {
         // The dialog already closed — without this the conversation just
         // stays in the list and the delete looks like it never happened.
-        toast(`Couldn't delete the conversation (server returned ${res.status}).`, "error");
+        toast(`Couldn't delete the conversation: ${result.message}`, "error");
         return;
       }
 
@@ -686,7 +688,7 @@ export function ChatInterface({ pathname }: ChatInterfaceProps) {
       }
       await fetchConversations();
     } catch {
-      toast("Couldn't delete the conversation: could not reach the server.", "error");
+      toast(networkFailureMessage("delete the conversation"), "error");
     }
   }, [deletePending, conversationId, fetchConversations, isStreaming, setMessages, clearError, stop, toast, beginNewGeneration]);
 

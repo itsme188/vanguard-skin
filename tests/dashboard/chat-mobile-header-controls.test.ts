@@ -80,7 +80,7 @@ const USE_CHAT_BLOCK_AT_HEAD = `const { transport, turn } = useMemo(() => {
 // component's `return (` at that same commit: every hook, effect, handler and
 // state declaration of the component that owns useChat.
 const COMPONENT_LOGIC_SHA256_AT_HEAD =
-  "7204298b0d28b3ebad789e053eb45d0583b437eb92a5f0282cd5d0d50f519a1f";
+  "d40d19f8533c8f87ccf377a1191d0fa3102ad8f0a368afd11de2a45dcba707cb";
 
 const RETURN_ANCHOR = '\n  return (\n    <div className="flex flex-col';
 

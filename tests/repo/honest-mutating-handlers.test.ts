@@ -38,11 +38,6 @@ const BARE_SITE_ALLOWLIST: Record<string, { count: number; reason: string }> = {
     reason:
       "own reader: checks res.ok and the body's success, names the failure and the network case itself; restore, approve and re-arm also put the list back and branch on a 409",
   },
-  "app/dashboard/components/ChatInterface.tsx": {
-    count: 1,
-    reason:
-      "protected file (chat integration is not to be edited); its delete checks res.ok and has a catch",
-  },
   "app/dashboard/components/DataConfidenceIndicator.tsx": {
     count: 1,
     reason:
