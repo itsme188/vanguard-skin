@@ -418,7 +418,20 @@ interface OptionHoldingRow {
  */
 export function computePortfolioGreeks(
   db: Database.Database,
-  options?: { accountId?: number; accountIds?: number[]; riskFreeRate?: number; today?: string; now?: Date }
+  options?: {
+    accountId?: number;
+    accountIds?: number[];
+    riskFreeRate?: number;
+    today?: string;
+    now?: Date;
+    /**
+     * Only contracts on this underlying (case-insensitive). Applied before the
+     * aggregation and the coverage counts below, so the totals and counts are
+     * those of that underlying's contracts. Omitted: every contract (output
+     * unchanged).
+     */
+    underlying?: string;
+  }
 ): PortfolioGreeks {
   // Risk-free rate flows from FRED's DGS3MO via the settings cache; falls
   // back to 0.045 if never fetched. See lib/queries/risk-free-rate.ts.
@@ -445,7 +458,7 @@ export function computePortfolioGreeks(
   // asOfDate=today scopes "latest" to today-or-earlier (vs picking up a stray
   // future-dated row) — literal-substituted, no positional bind. See
   // lib/queries/latest-holdings.ts for the safety contract.
-  const rows = db
+  const scopedRows = db
     .prepare(
       `SELECT
         s.id AS security_id,
@@ -477,6 +490,10 @@ export function computePortfolioGreeks(
          AND ${latestHoldingsPredicate({ asOfDate: today, accountFilter })}`
     )
     .all(...params) as OptionHoldingRow[];
+  const underlyingFilter = options?.underlying?.trim().toUpperCase();
+  const rows = underlyingFilter
+    ? scopedRows.filter((row) => row.underlying_symbol.toUpperCase() === underlyingFilter)
+    : scopedRows;
 
   // Row order was whatever SQLite's scan returned. Nearest expiry first, then
   // underlying / strike / type / symbol, so the order is deterministic and a

@@ -149,3 +149,47 @@ describe("note tools: enums come from NOTE_TYPES / NOTE_SENTIMENTS", () => {
     expect(wrapped.data).toHaveLength(1);
   });
 });
+
+// Contract C / P11 (Portfolio Assistant plan, Task 5). The human gate is the
+// SDK's tool approval (`needsApproval` on the create_note definition); the
+// dispatcher still saves when called directly. What the SDK does not give is
+// idempotence, so a continuation re-sent after a lost response must not save
+// a second identical note.
+//
+// Protects: one note per approval. Bound: an identical note (type, security,
+// event date, content) within 10 minutes is returned, not saved again.
+describe("create_note tool — approval gate and replay guard", () => {
+  it("the definition asks for the owner's approval and no longer tells the model to confirm in prose", async () => {
+    const { CHAT_TOOLS } = await import("@/lib/chat/tools");
+    const tool = CHAT_TOOLS.find((t) => t.name === "create_note")!;
+    expect(tool.needsApproval).toBe(true);
+    expect(tool.description).not.toMatch(/Always confirm/i);
+    expect(tool.description).toMatch(/saves or discards/);
+    // No other tool asks for approval.
+    expect(CHAT_TOOLS.filter((t) => t.needsApproval).map((t) => t.name)).toEqual(["create_note"]);
+  });
+
+  it("a replayed approval does not create a second note", async () => {
+    const input = { note_type: "earnings", content: "Guide raised", symbol: "AAA", event_date: "2026-11-01" };
+    const first = await run(input);
+    const second = (await run(input)) as NoteToolResult & { duplicate_of_existing?: boolean; note?: { id?: number } };
+    expect(first.saved).toBe(true);
+    expect(second.saved).toBe(true);
+    expect(second.duplicate_of_existing).toBe(true);
+    expect(second.note?.id).toBe((first.note as { id?: number }).id);
+    expect(noteCount()).toBe(1);
+  });
+
+  it("a different content, date or older identical note saves a new one", async () => {
+    const input = { note_type: "journal", content: "Same words", event_date: "2026-11-01" };
+    await run(input);
+    await run({ ...input, content: "Other words" });
+    await run({ ...input, event_date: "2026-11-02" });
+    expect(noteCount()).toBe(3);
+    // Age the first note past the 10-minute window: a repeat is a new note.
+    db.prepare("UPDATE notes SET created_at = datetime('now', '-11 minutes') WHERE content = 'Same words' AND event_date = '2026-11-01'").run();
+    const again = (await run(input)) as NoteToolResult & { duplicate_of_existing?: boolean };
+    expect(again.duplicate_of_existing).toBeUndefined();
+    expect(noteCount()).toBe(4);
+  });
+});
