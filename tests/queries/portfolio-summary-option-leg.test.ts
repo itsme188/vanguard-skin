@@ -48,7 +48,7 @@ describe("option holdings in the chat portfolio context", () => {
     const ctx = getPortfolioSummaryForChat(db);
     const line = ctx.split("\n").find((l) => l.includes("AAA   270618P00050000"));
     expect(line).toBeDefined();
-    expect(line).toContain("1 contracts");
+    expect(line).toContain("1 contract —");
     expect(line).toContain("long put on AAA, $50 strike, expires 2027-06-18");
   });
 

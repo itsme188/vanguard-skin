@@ -360,6 +360,24 @@ describe("recent transactions and holdings basis (QA-11, QA-12)", () => {
     expect(summary).not.toMatch(/ZZQ 270115C00050000 2 shares/);
   });
 
+  it("holdings and short lines use the same unit nouns as recent transactions", () => {
+    // One share long, one contract short, a bond: "1 share", "short 1 contract", "face value".
+    const stock = seedSecurity(db, "ZZONE", "ZZ one", "stock");
+    const opt = seedSecurity(db, "ZZW 270115P00040000", "ZZW put", "option");
+    db.prepare("UPDATE securities SET multiplier = 100, expiration_date = '2099-01-15' WHERE id = ?").run(opt);
+    const bond = seedSecurity(db, "ZZNOTE", "ZZ note", "bond");
+    seedHolding(db, ACCOUNT_ID, stock, 1, "2025-02-28");
+    seedHolding(db, ACCOUNT_ID, opt, -1, "2025-02-28");
+    seedHolding(db, ACCOUNT_ID, bond, 2000, "2025-02-28");
+
+    const summary = getPortfolioSummaryForChat(db);
+    expect(summary).toContain("- ZZONE (Vanguard Taxable): 1 share");
+    expect(summary).not.toContain("1 shares");
+    expect(summary).toMatch(/- ZZW 270115P00040000 \(Vanguard Taxable\): short 1 contract\b/);
+    expect(summary).not.toContain("1 contracts");
+    expect(summary).toContain("- ZZNOTE (Vanguard Taxable): 2,000 face value");
+  });
+
   it("holdings cost basis matches query_holdings for a row with no own basis", () => {
     // Earlier row: 10 shares, basis 1,000. Latest row: 20 shares, basis NULL.
     // The Accounts page scales the earlier basis: 1,000 x 20 / 10 = 2,000.

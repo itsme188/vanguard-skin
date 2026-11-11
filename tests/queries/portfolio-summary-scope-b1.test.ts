@@ -80,6 +80,13 @@ beforeEach(() => {
   seedLot(db, 3, vvv, { date: lotDate, qty: 100, price: 60 });
   seedTxn(3, vvv, daysAgo(5), "BUY", 100, -6000);
   seedSnapshot(3, daysAgo(40).slice(0, 8) + "28", 400);
+  db.prepare("UPDATE securities SET sector = 'Technology' WHERE symbol IN ('AAA', 'BBB')").run();
+  db.prepare("UPDATE securities SET sector = 'Energy' WHERE symbol = 'VVV'").run();
+
+  // VSH (outside the IBKR scope): a short of 7 shares at 40 in Vanguard Taxable.
+  const vsh = seedSec(db, "VSH");
+  seedHold(db, 3, vsh, px, "tws", -7);
+  seedPx(db, vsh, px, 40);
 });
 
 describe("B1: the summary reads exactly the scope's accounts", () => {
@@ -107,6 +114,13 @@ describe("B1: the summary reads exactly the scope's accounts", () => {
     const lt = section(s, "### Lots Approaching Long-Term Status");
     expect(lt.map((l) => l.slice(2, 5)).sort()).toEqual(["AAA", "BBB"]);
 
+    // Sector allocation: only the scope's Technology $200; VVV's Energy $5,000 left out.
+    expect(section(s, "### Sector Allocation")).toEqual(["- Technology: $200 (100.0%)"]);
+    expect(s).not.toContain("Energy");
+    // Short positions: VSH is held short outside the scope, so no short section at all.
+    expect(s).not.toContain("VSH");
+    expect(s).not.toContain("### Current Short Positions");
+
     // Income: 10 + 20 = $30 (the 400 in Vanguard Taxable left out).
     expect(s).toContain("- Dividends: $30");
 
@@ -126,6 +140,19 @@ describe("B1: the summary reads exactly the scope's accounts", () => {
       for (const sym of SYMBOLS) expect(s).not.toContain(sym);
       for (const name of ["IBKR Main", "IBKR Two", "Vanguard Taxable"]) expect(s).not.toContain(name);
     }
+  });
+
+  it("ids that match no account are the empty scope", () => {
+    const s = getPortfolioSummaryForChat(db, { accountIds: [999], label: "IBKR" });
+    expect(s).toContain("No account matches this chat's scope.");
+    for (const sym of SYMBOLS) expect(s).not.toContain(sym);
+  });
+
+  it("the total sentence counts accounts that exist, not ids", () => {
+    // 999 is no account: the scope is one account, so the sentence is singular.
+    const s = getPortfolioSummaryForChat(db, { accountIds: [999, 3], label: "Vanguard" });
+    expect(s).toContain("This total covers the Vanguard account only");
+    expect(s).not.toContain("Vanguard accounts only");
   });
 
   it("the legacy string form reads the one account with that exact name", () => {

@@ -169,7 +169,10 @@ function resolveSummaryScope(
     const row = db.prepare("SELECT id FROM accounts WHERE name = ?").get(scope) as { id: number } | undefined;
     return { accountIds: row ? [row.id] : [], label: scope };
   }
-  return { accountIds: [...new Set(scope.accountIds)], label: scope.label };
+  // Only ids that name a real account count: [999] is the empty scope, and
+  // [999, 3] is one account (so the total sentence counts accounts, not ids).
+  const known = new Set(getAllAccounts(db).map((a) => a.id));
+  return { accountIds: [...new Set(scope.accountIds)].filter((id) => known.has(id)), label: scope.label };
 }
 
 export function getPortfolioSummaryForChat(db: Database.Database, scope?: PortfolioSummaryScope): string {
@@ -312,7 +315,7 @@ export function getPortfolioSummaryForChat(db: Database.Database, scope?: Portfo
       "\n### Current Holdings — long positions (verified, quantity > 0; short positions are listed in the next section)"
     );
     for (const h of holdings) {
-      const unit = h.security_type?.toLowerCase() === "bond" ? "face" : h.security_type?.toLowerCase() === "option" ? "contracts" : "shares";
+      const unit = quantityUnitLabel(h.security_type, h.quantity);
       const value = h.market_value != null ? ` MV:${formatUSD(h.market_value)}` : "";
       const gain = h.unrealized_gain != null
         ? ` G/L:${h.unrealized_gain >= 0 ? "+" : ""}${formatUSD(h.unrealized_gain)}`
@@ -378,7 +381,7 @@ export function getPortfolioSummaryForChat(db: Database.Database, scope?: Portfo
   if (shorts.length > 0) {
     lines.push("\n### Current Short Positions (verified, quantity < 0; market value is the liability)");
     for (const h of shorts) {
-      const unit = h.security_type?.toLowerCase() === "option" ? "contracts" : "shares";
+      const unit = quantityUnitLabel(h.security_type, h.quantity);
       const value = h.market_value != null ? ` MV:${formatUSD(h.market_value)}` : "";
       const sector = h.sector ? ` [${h.sector}]` : "";
       const leg = describeOptionLeg(h, "short");
