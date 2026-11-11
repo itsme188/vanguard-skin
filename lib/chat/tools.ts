@@ -16,6 +16,7 @@ import {
 } from "@/lib/queries/chat-tools";
 import { getNotesFiltered, getSecurityIdBySymbol, type NoteWithContext } from "@/lib/queries/notes";
 import { createNote } from "@/lib/mutations/notes";
+import { VALID_TRANSACTION_TYPES } from "@/lib/import/validate";
 import { addDays, todayET, nowET, parseDbTimestamp } from "@/lib/calendar/date-utils";
 import { NOTE_TYPES, NOTE_SENTIMENTS } from "@/lib/types";
 import { coerceNoteType, coerceNoteSentiment } from "@/lib/notes/coerce";
@@ -303,12 +304,11 @@ export const CHAT_TOOLS: ChatTool[] = [
         },
         type: {
           type: "string",
-          enum: [
-            "BUY", "SELL", "DIVIDEND", "INTEREST", "FEE", "TRANSFER",
-            "REINVESTMENT", "BUY_TO_OPEN", "SELL_TO_CLOSE", "EXPIRED",
-            "EXERCISED", "ASSIGNED",
-          ],
-          description: "Filter by transaction type",
+          // The import validator's list, so the two cannot drift. It never
+          // holds the lot engine's own close type (pinned by
+          // tests/chat/tools-review-fixes.test.ts).
+          enum: [...VALID_TRANSACTION_TYPES],
+          description: "Filter by transaction type (upper case).",
         },
         start_date: {
           type: "string",
@@ -352,7 +352,7 @@ export const CHAT_TOOLS: ChatTool[] = [
   {
     name: "query_income_summary",
     description:
-      "Summarize investment income (dividends, interest) and fees over a period. Returns per-symbol, per-account, per-month or per-type breakdowns. Dividends are counted once per payout: a REINVESTMENT that is the purchase leg of a DIVIDEND (same account, security and trade date, same amount within $0.01) is not added again, and an unpaired positive REINVESTMENT counts as dividend income. total_interest is interest EARNED (positive INTEREST rows); interest_paid is interest CHARGED (for example on a margin debit), a cost, never income. net_income = dividends + interest earned - interest paid - fees. Use for income analysis, yield calculations, fee drag assessment, dividend tracking by quarter/month, or identifying which securities generate the most income.",
+      "Summarize investment income (dividends, interest) and fees over a period. Returns per-symbol, per-account, per-month or per-type breakdowns. Dividends are counted once per payout: a REINVESTMENT that is the purchase leg of a DIVIDEND (same account, security and trade date, equal amount to the cent) is not added again; each DIVIDEND pairs with at most one REINVESTMENT. An unpaired positive REINVESTMENT counts as dividend income; an unpaired negative one is not income and is counted in unpaired_reinvestment_count. total_interest is interest EARNED (positive INTEREST rows); interest_paid is interest CHARGED (for example on a margin debit), a cost, never income. Fees include FEE and COMMISSION rows. net_income = dividends + interest earned - interest paid - fees. Use for income analysis, yield calculations, fee drag assessment, dividend tracking by quarter/month, or identifying which securities generate the most income.",
     input_schema: {
       type: "object" as const,
       properties: {
@@ -573,12 +573,12 @@ export const CHAT_TOOLS: ChatTool[] = [
         months_history: {
           type: "integer",
           description:
-            "How many months of recommendation trend history to return. Default 6, cap 24. Finnhub provides monthly snapshots.",
+            "How many months of recommendation trend history to return: an integer, default 6, max 24. Finnhub provides monthly snapshots.",
         },
         rating_changes_limit: {
           type: "integer",
           description:
-            "Max rating changes (upgrades/downgrades/inits) to return. Default 10, cap 50.",
+            "Max rating changes (upgrades/downgrades/inits) to return: an integer, default 10, max 50.",
         },
       },
       required: ["ticker"],
@@ -598,7 +598,7 @@ export const CHAT_TOOLS: ChatTool[] = [
         days_back: {
           type: "integer",
           description:
-            "Sliding window in days. Default 7. Max 365. Wider windows cost no more API calls but return more rows.",
+            "Sliding window in days: an integer, default 7, max 365. Wider windows cost no more API calls but return more rows.",
         },
         keyword: {
           type: "string",
@@ -685,7 +685,7 @@ export const CHAT_TOOLS: ChatTool[] = [
         days_back: {
           type: "integer",
           description:
-            "Only return docs published or uploaded within the last N days. Omit for no time filter.",
+            "Only return docs published or uploaded within the last N days: an integer, max 3650. Omit (or pass anything but a positive integer) for no time filter.",
         },
         limit: {
           type: "integer",
@@ -788,9 +788,9 @@ export const CHAT_TOOLS: ChatTool[] = [
             "Filter by newsletter source name (e.g., 'Vital Knowledge', 'Stratechery'): a case-insensitive part of the name that matches exactly one source. Omit for all sources.",
         },
         days_back: {
-          type: "number",
+          type: "integer",
           description:
-            "How many days back to search. Default 7. Use 1 for today's articles, 30 for monthly overview.",
+            "How many days back to search: an integer, default 7, max 365. Use 1 for today's articles, 30 for monthly overview.",
         },
         search: {
           type: "string",
@@ -812,14 +812,14 @@ export const CHAT_TOOLS: ChatTool[] = [
       type: "object" as const,
       properties: {
         days_ahead: {
-          type: "number",
+          type: "integer",
           description:
-            "Number of days forward to look. Default 14. Use 7 for this week, 30 for this month.",
+            "Number of days forward to look: an integer, default 14, max 365. Use 7 for this week, 30 for this month.",
         },
         days_back: {
-          type: "number",
+          type: "integer",
           description:
-            "Number of days backward to look. Default 0. Use 7 for last week, 30 for last month.",
+            "Number of days backward to look: an integer, default 0, max 365. Use 7 for last week, 30 for last month.",
         },
         event_type: {
           type: "string",
@@ -851,7 +851,7 @@ export const CHAT_TOOLS: ChatTool[] = [
             "Monday date (YYYY-MM-DD) of the week to retrieve. Omit for most recent briefing.",
         },
         weeks_back: {
-          type: "number",
+          type: "integer",
           description:
             "Number of recent weekly briefings to retrieve: an integer, default 1, max 4 (use 4 for the last month).",
         },
@@ -894,7 +894,7 @@ export const CHAT_TOOLS: ChatTool[] = [
   {
     name: "query_alerts",
     description:
-      "Query level alerts — events where a price has crossed an armed level. Each alert includes the level's author, thesis, triggered price, current position context (held/watchlist), Claude's suggested action, and the user's response state. Prices (level_price, triggered_price) are in the security's own currency, named in each row's `currency`, never converted. A symbol with no security on file returns an error. In a single-account chat suggested_action is withheld (it was written against the whole portfolio). Use when the user asks 'what alerts have fired recently?', 'show me pending alerts', 'which Eliant levels have hit?', or 'alerts I ignored last month'.",
+      "Query level alerts — events where a price has crossed an armed level. Each alert includes the level's author, thesis, triggered price, Claude's suggested action, and the user's response state. Prices (level_price, triggered_price) are in the security's own currency, named in each row's `currency`, never converted. A symbol with no security on file returns an error. In a single-account chat suggested_action is withheld (it was written against the whole portfolio). Use when the user asks 'what alerts have fired recently?', 'show me pending alerts', 'which Eliant levels have hit?', or 'alerts I ignored last month'.",
     input_schema: {
       type: "object" as const,
       properties: {
@@ -908,9 +908,9 @@ export const CHAT_TOOLS: ChatTool[] = [
           description: "Filter by the user's response state. Omit for all states.",
         },
         since_days: {
-          type: "number",
+          type: "integer",
           description:
-            "Only alerts that fired within the last N days (N x 24 hours before now). Default 30. Use 7 for this week, 90 for this quarter.",
+            "Only alerts that fired within the last N days (N x 24 hours before now): an integer, default 30, max 365. Use 7 for this week, 90 for this quarter.",
         },
         limit: {
           type: "integer",
@@ -1044,9 +1044,86 @@ const SCOPED_NOTES_FETCH = 500;
  * A model-supplied count: an integer from 1 up. Anything else (missing, zero,
  * negative, fractional, a string) is the default; above `max` is `max`.
  */
-function readCount(raw: unknown, def: number, max: number): number {
-  if (typeof raw !== "number" || !Number.isInteger(raw) || raw < 1) return def;
+function readCount(raw: unknown, def: number, max: number, min = 1): number {
+  if (typeof raw !== "number" || !Number.isInteger(raw) || raw < min) return def;
   return Math.min(raw, max);
+}
+
+/**
+ * Counts and day windows: a bad value takes the default (readCount), never an
+ * error, so the model's answer is not blocked on a count (Contract G).
+ */
+const LENIENT_COUNT_PARAMS: ReadonlySet<string> = new Set([
+  "limit",
+  "days_back",
+  "days_ahead",
+  "weeks_back",
+  "since_days",
+  "months_history",
+  "rating_changes_limit",
+]);
+
+type SchemaProp = { type?: string; items?: { type?: string } };
+
+/**
+ * Check the model's input against the tool's declared types before any
+ * engine sees it (review R5-8): a wrong type is an error that names the
+ * parameter and what it must be, never a raw JavaScript or SQLite message.
+ * A null is read as omitted. Enum values are left to each tool (several
+ * coerce an unknown value to "no filter" on purpose).
+ */
+function validateToolInput(
+  tool: ChatTool,
+  input: Record<string, unknown>,
+): { input: Record<string, unknown> } | { error: string } {
+  const props = (tool.input_schema.properties ?? {}) as Record<string, SchemaProp>;
+  const required = (tool.input_schema.required ?? []) as string[];
+  const clean: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(input ?? {})) {
+    if (v !== null && v !== undefined) clean[k] = v;
+  }
+  for (const name of required) {
+    const v = clean[name];
+    if (v === undefined || (typeof v === "string" && v.trim() === "")) {
+      const type = props[name]?.type === "string" ? "a string" : `a ${props[name]?.type ?? "value"}`;
+      return { error: `Parameter "${name}" is required (${type}). Nothing was run.` };
+    }
+  }
+  for (const [name, v] of Object.entries(clean)) {
+    const prop = props[name];
+    if (!prop) continue;
+    const bad = (expected: string) => ({
+      error: `Parameter "${name}" must be ${expected}; got ${Array.isArray(v) ? "a list" : typeof v}. Nothing was run.`,
+    });
+    switch (prop.type) {
+      case "string":
+        if (typeof v !== "string") return bad("a string");
+        break;
+      case "boolean":
+        if (typeof v !== "boolean") return bad("true or false");
+        break;
+      case "integer":
+      case "number":
+        if (LENIENT_COUNT_PARAMS.has(name)) break;
+        if (typeof v !== "number" || !Number.isInteger(v)) return bad("an integer");
+        break;
+      case "array":
+        if (!Array.isArray(v) || (prop.items?.type === "string" && v.some((x) => typeof x !== "string"))) {
+          return bad("a list of strings");
+        }
+        break;
+    }
+  }
+  return { input: clean };
+}
+
+const TOOLS_BY_NAME: ReadonlyMap<string, ChatTool> = new Map(CHAT_TOOLS.map((t) => [t.name, t]));
+
+/** A real calendar date in YYYY-MM-DD. */
+function isRealDate(d: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return false;
+  const t = new Date(`${d}T12:00:00Z`);
+  return !isNaN(t.getTime()) && addDays(d, 0) === d && t.getUTCDate() === Number(d.slice(8, 10));
 }
 
 export interface ListInfo {
@@ -1142,32 +1219,39 @@ function weekStart(date: string): string {
 
 /**
  * Keep a price series at or under PRICE_HISTORY_MAX_ROWS: daily if it fits,
- * else the last close of each week, else the last close of each month; a
- * monthly series still too long keeps its newest months. Each kept row is a
- * real stored close, never an average.
+ * else the range's FIRST stored close followed by the last close of each
+ * week, else the first close followed by the last close of each month; a
+ * monthly series still too long keeps the first close and the newest months.
+ * The last stored close is always kept (it ends the last bucket). Every kept
+ * row is a real stored close, never an average.
  */
 function samplePriceRows<T extends { date: string }>(
   rows: T[],
 ): { rows: T[]; sampled: "daily" | "weekly" | "monthly"; note?: string } {
   if (rows.length <= PRICE_HISTORY_MAX_ROWS) return { rows, sampled: "daily" };
-  const lastPer = (key: (d: string) => string): T[] => {
+  const first = rows[0];
+  const firstPlusLastPer = (key: (d: string) => string): T[] => {
     const byKey = new Map<string, T>();
     for (const r of rows) byKey.set(key(r.date), r);
-    return [...byKey.values()];
+    const lasts = [...byKey.values()];
+    return lasts[0] === first ? lasts : [first, ...lasts];
   };
-  const weekly = lastPer(weekStart);
+  const warning =
+    "Rows are sampled, not daily: do not compute daily statistics (volatility, drawdown, daily returns) from them; narrow the dates for daily closes.";
+  const weekly = firstPlusLastPer(weekStart);
   if (weekly.length <= PRICE_HISTORY_MAX_ROWS) {
     return {
       rows: weekly,
       sampled: "weekly",
-      note: `${rows.length} daily closes in range; returned the last close of each week (${weekly.length} rows). Narrow the dates for daily closes.`,
+      note: `${rows.length} daily closes in range; returned the first close (${first.date}) and then the last close of each week (${weekly.length} rows). ${warning}`,
     };
   }
-  let monthly = lastPer((d) => d.slice(0, 7));
-  let note = `${rows.length} daily closes in range; returned the last close of each month (${monthly.length} rows).`;
+  let monthly = firstPlusLastPer((d) => d.slice(0, 7));
+  let note = `${rows.length} daily closes in range; returned the first close (${first.date}) and then the last close of each month (${monthly.length} rows). ${warning}`;
   if (monthly.length > PRICE_HISTORY_MAX_ROWS) {
-    monthly = monthly.slice(-PRICE_HISTORY_MAX_ROWS);
-    note = `${rows.length} daily closes in range; returned the last close of each of the newest ${PRICE_HISTORY_MAX_ROWS} months, from ${monthly[0].date}. Narrow the dates for earlier data.`;
+    const newest = monthly.slice(-(PRICE_HISTORY_MAX_ROWS - 1));
+    monthly = [first, ...newest];
+    note = `${rows.length} daily closes in range; returned the first close (${first.date}) and then the last close of each of the newest ${newest.length} months, from ${newest[0].date}; months between are left out. ${warning}`;
   }
   return { rows: monthly, sampled: "monthly", note };
 }
@@ -1198,6 +1282,12 @@ export async function executeTool(
   if (cancelled()) return CANCELLED;
   const scopeAccountIds = opts?.scopeAccountIds;
   const singleAccountChat = scopeAccountIds !== undefined;
+  const toolDef = TOOLS_BY_NAME.get(toolName);
+  if (toolDef) {
+    const checked = validateToolInput(toolDef, input);
+    if ("error" in checked) return checked;
+    input = checked.input;
+  }
   try {
     // The model-supplied account_name, resolved ONCE for every tool that
     // declares one: an exact name, a scope word, or a fragment naming exactly
@@ -1542,48 +1632,58 @@ export async function executeTool(
 
       case "create_note": {
         const today = todayET();
+        // Every refusal is a top-level error: no `data`, and so no "Note
+        // saved" annotation beside it (review R5-3).
         const noteType = coerceNoteType(asString(input.note_type));
         if (!noteType) {
-          rawResult = {
-            error: `Unknown note type. Nothing was saved. Use one of: ${NOTE_TYPES.join(", ")}.`,
-          };
-          break;
+          return { error: `Unknown note type. Nothing was saved. Use one of: ${NOTE_TYPES.join(", ")}.` };
         }
         const rawSentiment = asString(input.sentiment);
         const sentiment = coerceNoteSentiment(rawSentiment);
         if (rawSentiment && !sentiment) {
-          rawResult = {
+          return {
             error: `Unknown sentiment. Nothing was saved. Use one of: ${NOTE_SENTIMENTS.join(", ")}, or leave it out.`,
           };
-          break;
         }
+        const content = asString(input.content)?.trim() ?? "";
+        if (!content) return { error: 'Parameter "content" must be non-empty text. Nothing was saved.' };
+        const eventDate = asString(input.event_date) ?? today;
+        if (!isRealDate(eventDate)) {
+          return { error: `Parameter "event_date" must be a real date in YYYY-MM-DD form; got "${eventDate}". Nothing was saved.` };
+        }
+        const tags = Array.isArray(input.tags) && input.tags.length > 0 ? (input.tags as string[]) : null;
+        // The symbol resolves like every other tool's (any case); a symbol
+        // with no security on file is refused, never saved unlinked (R5-2).
         let securityId: number | null = null;
-        if (input.symbol) {
-          securityId = getSecurityIdBySymbol(db, input.symbol as string);
+        const noteSymbol = asString(input.symbol);
+        if (noteSymbol) {
+          const sec = findSecurity(db, noteSymbol);
+          if (!sec) return { error: `No security '${noteSymbol}' on file. Nothing was saved.` };
+          securityId = sec.id;
         }
         // Same refusal as POST /api/notes: the Earnings tab files notes under
         // per-security headers, so one with no security would be shown nowhere.
         if (noteType === "earnings" && !securityId) {
-          rawResult = {
+          return {
             error:
               "An earnings note needs a security. Nothing was saved. Pass the symbol of a security on file, then save.",
           };
-          break;
         }
-        const content = input.content as string;
-        const eventDate = (input.event_date as string) || today;
+        const tagsJson = tags ? JSON.stringify(tags) : null;
         // Replay guard (plan P11): an approval continuation re-sent after a
         // lost response would run this again. An identical note (type,
-        // security, event date, content) created in the last 10 minutes is
+        // security, event date, content, tags, sentiment) created in the last
+        // 10 minutes is
         // returned instead of saved twice. Elapsed time is read on the UTC
         // clock from the stored instant, in JS (both stored forms parse).
         const recent = db
           .prepare(
             `SELECT id, created_at FROM notes
              WHERE note_type = ? AND security_id IS ? AND event_date = ? AND content = ?
+               AND tags IS ? AND sentiment IS ?
              ORDER BY id DESC LIMIT 5`
           )
-          .all(noteType, securityId, eventDate, content) as Array<{ id: number; created_at: string }>;
+          .all(noteType, securityId, eventDate, content, tagsJson, sentiment ?? null) as Array<{ id: number; created_at: string }>;
         const replayCutoff = Date.now() - 10 * 60 * 1000;
         const replay = recent.find((r) => {
           const at = parseDbTimestamp(r.created_at);
@@ -1600,7 +1700,7 @@ export async function executeTool(
           security_id: securityId,
           event_date: eventDate,
           sentiment: sentiment ?? null,
-          tags: (input.tags as string[]) || null,
+          tags,
         });
         rawResult = { saved: true, note };
         break;
@@ -1628,7 +1728,10 @@ export async function executeTool(
             symbol: input.symbol as string | undefined,
             document_type: input.document_type as ResearchDocumentType | undefined,
             tag: input.tag as string | undefined,
-            days_back: input.days_back as number | undefined,
+            days_back:
+              typeof input.days_back === "number" && Number.isInteger(input.days_back) && input.days_back >= 1
+                ? Math.min(input.days_back, 3650)
+                : undefined,
             limit: docLimit + 1,
           }),
           docLimit,
@@ -1663,8 +1766,8 @@ export async function executeTool(
 
       case "query_analyst_coverage": {
         const ticker = (input.ticker as string).toUpperCase();
-        const monthsHistory = Math.min((input.months_history as number) || 6, 24);
-        const rcLimit = Math.min((input.rating_changes_limit as number) || 10, 50);
+        const monthsHistory = readCount(input.months_history, 6, 24);
+        const rcLimit = readCount(input.rating_changes_limit, 10, 50);
 
         if (cancelled()) return CANCELLED;
         const sync = await syncAnalystCoverage(db, ticker);
@@ -1707,7 +1810,7 @@ export async function executeTool(
 
       case "query_press_releases": {
         const ticker = (input.ticker as string).toUpperCase();
-        const daysBack = (input.days_back as number) || 7;
+        const daysBack = readCount(input.days_back, 7, 365);
         const keyword = input.keyword as string | undefined;
         const { def: prDef, max: prMax } = LIST_LIMITS.query_press_releases;
         const limit = readCount(input.limit, prDef, prMax);
@@ -1902,6 +2005,13 @@ export async function executeTool(
             `greeks solved for ${greeks.computedPositions} of ${greeks.totalPositions} positions`
           );
         }
+        // An underlying with no contract in scope: the zeros are untouched
+        // initializers, not a flat exposure on that name (review R5-11).
+        const noneOnUnderlying =
+          underlyingFilter !== undefined && greeks.totalPositions === 0 && greeks.expiredPositions === 0;
+        if (noneOnUnderlying) {
+          greeksNoteParts.push(`no option position on ${underlyingFilter} in this scope, so there are no Greeks to report`);
+        }
         const greeksNote =
           greeksNoteParts.length > 0 ? greeksNoteParts.join("; ") : null;
         // Kept apart from `note` (which is about COVERAGE): a fallback-vol
@@ -1911,7 +2021,7 @@ export async function executeTool(
           greeks.fallbackVolPositions > 0
             ? `${greeks.fallbackVolPositions} of the ${greeks.computedPositions} priced position${greeks.computedPositions === 1 ? "" : "s"} used a fallback volatility, not one solved from the contract's own price`
             : null;
-        const withholdTotals = noGreeksCoverage || expiredOnly;
+        const withholdTotals = noGreeksCoverage || expiredOnly || noneOnUnderlying;
 
         rawResult = {
           portfolio: {
@@ -1982,7 +2092,10 @@ export async function executeTool(
             name: string;
           }>;
           const needle = feedSource.trim().toLowerCase();
-          const matches = sources.filter((src) => src.name.toLowerCase().includes(needle));
+          // A case-insensitive exact name wins first (a name that is part of
+          // another could otherwise never be chosen), then a unique part.
+          const exact = sources.filter((src) => src.name.toLowerCase() === needle);
+          const matches = exact.length > 0 ? exact : sources.filter((src) => src.name.toLowerCase().includes(needle));
           if (matches.length !== 1) {
             const all = sources.map((src) => `"${src.name}"`).join(", ");
             return {
@@ -2000,7 +2113,7 @@ export async function executeTool(
         let researchArticles: import("@/lib/queries/research").ResearchArticle[] = [];
         try {
           const { getRecentArticles } = await import("@/lib/queries/research");
-          const daysBack = (input.days_back as number) || 7;
+          const daysBack = readCount(input.days_back, 7, 365);
 
           researchArticles = getRecentArticles(db, {
             sourceId,
@@ -2038,8 +2151,8 @@ export async function executeTool(
       }
 
       case "query_calendar_events": {
-        const daysAhead = (input.days_ahead as number) ?? 14;
-        const daysBack = (input.days_back as number) ?? 0;
+        const daysAhead = readCount(input.days_ahead, 14, 365, 0);
+        const daysBack = readCount(input.days_back, 0, 365, 0);
         // Event dates are Eastern calendar days, so the window is anchored on
         // the Eastern day: a UTC slice dropped tonight's events after 20:00.
         const today = todayET();
@@ -2215,9 +2328,23 @@ export async function executeTool(
         const { def: lvlDef, max: lvlMax } = LIST_LIMITS.query_levels;
         const lvlLimit = readCount(input.limit, lvlDef, lvlMax);
         const activeOnly = !input.include_inactive;
-        const rawLevels = securityId
-          ? getLevelsForSecurity(db, securityId, { activeOnly })
-          : getActiveLevels(db);
+        // One rule with or without a symbol (review R5-7): the armed view is
+        // is_active = 1 AND review_status 'auto_approved' (a rejected level
+        // is never presented as live) and not expired on the Eastern day;
+        // include_inactive returns every level. getLevelsForSecurity is that
+        // view for one security; the all-securities read mirrors it.
+        const levelToday = todayET();
+        const rawLevels = (
+          securityId
+            ? getLevelsForSecurity(db, securityId, { activeOnly })
+            : (db
+                .prepare(
+                  `SELECT * FROM security_levels
+                   ${activeOnly ? "WHERE is_active = 1 AND review_status = 'auto_approved'" : ""}
+                   ORDER BY set_date DESC, id DESC`
+                )
+                .all() as ReturnType<typeof getActiveLevels>)
+        ).filter((l) => !activeOnly || l.expires_at == null || l.expires_at >= levelToday);
         const sourceAuthor = input.source_author ? String(input.source_author) : undefined;
         const levelType = input.level_type ? String(input.level_type) : undefined;
 
@@ -2278,10 +2405,7 @@ export async function executeTool(
           if (!sec) return noSecurityError(alertSymbol);
           securityId = sec.id;
         }
-        const sinceDays =
-          typeof input.since_days === "number" && Number.isFinite(input.since_days) && input.since_days > 0
-            ? input.since_days
-            : 30;
+        const sinceDays = readCount(input.since_days, 30, 365);
         const response = input.response as
           | "pending"
           | "acted"
@@ -2296,10 +2420,13 @@ export async function executeTool(
         // the limit.
         const cutoff = Date.now() - sinceDays * 86400000;
         const rawAlerts = getAlerts(db, { securityId, response, limit: ALERT_WINDOW_FETCH });
-        const inWindow = rawAlerts.filter((a) => {
-          const at = parseDbTimestamp(a.triggered_at);
-          return at != null && at.getTime() >= cutoff;
-        });
+        // Newest first by INSTANT (the stored strings do not sort across the
+        // two forms), then the limit.
+        const inWindow = rawAlerts
+          .map((a) => ({ a, at: parseDbTimestamp(a.triggered_at)?.getTime() ?? null }))
+          .filter((x): x is { a: (typeof rawAlerts)[number]; at: number } => x.at != null && x.at >= cutoff)
+          .sort((x, y) => y.at - x.at || y.a.id - x.a.id)
+          .map((x) => x.a);
         const alertCut = takeList(inWindow, alertLimit, alertMax);
         listInfo = alertCut.info;
         const recent = alertCut.rows;

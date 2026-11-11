@@ -133,3 +133,53 @@ describe("query_calendar_briefings weeks_back cap", () => {
     expect(JSON.stringify(t.input_schema)).toContain("max 4");
   });
 });
+
+// R5-4 (barrier-1 review): sampling keeps the FIRST and the LAST stored close
+// of the range, and the note says the rows are sampled and must not feed
+// daily statistics. Worked by hand:
+//  - weekly: daily closes 2025-01-01 (a Wednesday) to 2025-12-31, 365 rows.
+//    Monday weeks run from 2024-12-30 to 2025-12-29: 53 buckets. Rows are the
+//    first close 2025-01-01, then each week's last close (2025-01-05, ...,
+//    2025-12-31): 54 rows.
+//  - monthly: 2019-01-01 to 2025-12-31, 2557 rows, 366 week buckets (> 259),
+//    84 months. Rows: 2019-01-01, then each month's last close (2019-01-31,
+//    ..., 2025-12-31): 85 rows.
+describe("query_price_history sampling keeps the range's first and last close", () => {
+  function seedRange(start: string, end: string): void {
+    const id = db
+      .prepare("INSERT INTO securities (symbol, name, security_type, currency) VALUES ('ZQS', 'ZQS Corp', 'stock', 'USD')")
+      .run().lastInsertRowid as number;
+    const ins = db.prepare("INSERT INTO prices (security_id, date, close_price) VALUES (?, ?, ?)");
+    let i = 0;
+    for (let d = start; d <= end; d = addDays(d, 1)) ins.run(id, d, 50 + i++ / 100);
+  }
+  type Hist = { rows: Array<{ date: string }>; sampled: string; note?: string };
+  const call = async (start: string, end: string) =>
+    ((await executeTool(db, "query_price_history", { symbol: "ZQS", start_date: start, end_date: end })) as {
+      data: Hist;
+    }).data;
+
+  it("weekly", async () => {
+    seedRange("2025-01-01", "2025-12-31");
+    const d = await call("2025-01-01", "2025-12-31");
+    expect(d.sampled).toBe("weekly");
+    expect(d.rows.length).toBe(54);
+    expect(d.rows[0].date).toBe("2025-01-01");
+    expect(d.rows[1].date).toBe("2025-01-05");
+    expect(d.rows[d.rows.length - 1].date).toBe("2025-12-31");
+    expect(d.note).toMatch(/sampled/);
+    expect(d.note).toMatch(/volatility/);
+  });
+
+  it("monthly", async () => {
+    seedRange("2019-01-01", "2025-12-31");
+    const d = await call("2019-01-01", "2025-12-31");
+    expect(d.sampled).toBe("monthly");
+    expect(d.rows.length).toBe(85);
+    expect(d.rows[0].date).toBe("2019-01-01");
+    expect(d.rows[1].date).toBe("2019-01-31");
+    expect(d.rows[d.rows.length - 1].date).toBe("2025-12-31");
+    expect(d.note).toMatch(/last close of each month/);
+    expect(d.note).toMatch(/drawdown/);
+  });
+});

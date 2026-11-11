@@ -21,10 +21,14 @@ interface NoteToolResult {
   note?: { security_id: number | null; event_date: string };
 }
 
-// executeTool wraps a tool's own result as { data, ...annotations }.
+// executeTool wraps a tool's own result as { data, ...annotations }; a
+// refusal is a top-level { error } with nothing else (review R5-3).
 async function run(input: Record<string, unknown>): Promise<NoteToolResult> {
-  const wrapped = (await executeTool(db, "create_note", input)) as { data: NoteToolResult };
-  return wrapped.data;
+  const wrapped = (await executeTool(db, "create_note", input)) as {
+    data?: NoteToolResult;
+    error?: string;
+  };
+  return wrapped.error !== undefined ? { error: wrapped.error } : (wrapped.data as NoteToolResult);
 }
 
 beforeEach(() => {
@@ -59,7 +63,7 @@ describe("create_note tool — earnings note needs a security", () => {
       symbol: "NOSUCH",
     });
 
-    expect(result.error).toContain("An earnings note needs a security.");
+    expect(result.error).toBe("No security 'NOSUCH' on file. Nothing was saved.");
     expect(noteCount()).toBe(0);
   });
 
@@ -191,5 +195,43 @@ describe("create_note tool — approval gate and replay guard", () => {
     const again = (await run(input)) as NoteToolResult & { duplicate_of_existing?: boolean };
     expect(again.duplicate_of_existing).toBeUndefined();
     expect(noteCount()).toBe(4);
+  });
+});
+
+// Barrier-1 review fixes R5-2, R5-3, R5-9, R5-10.
+describe("create_note tool — review fixes", () => {
+  it("R5-2: a lower-case symbol links the security; an unknown symbol saves nothing", async () => {
+    const ok = await run({ note_type: "earnings", content: "Beat", symbol: "aaa" });
+    expect(ok.saved).toBe(true);
+    expect(ok.note?.security_id).not.toBeNull();
+    const bad = await run({ note_type: "journal", content: "Thought", symbol: "NOSUCH" });
+    expect(bad.error).toBe("No security 'NOSUCH' on file. Nothing was saved.");
+    expect(noteCount()).toBe(1);
+  });
+
+  it("R5-3: a refusal is a top-level error with no 'Note saved' warning", async () => {
+    const wrapped = (await executeTool(db, "create_note", { note_type: "diary", content: "x" })) as Record<string, unknown>;
+    expect(typeof wrapped.error).toBe("string");
+    expect(wrapped.data).toBeUndefined();
+    expect(JSON.stringify(wrapped)).not.toContain("Note saved");
+  });
+
+  it("R5-9: a bad date, empty content or non-string tags save nothing", async () => {
+    expect((await run({ note_type: "journal", content: "x", event_date: "2026-13-45" })).error).toMatch(/event_date/);
+    expect((await run({ note_type: "journal", content: "x", event_date: "2026-02-30" })).error).toMatch(/event_date/);
+    expect((await run({ note_type: "journal", content: "   " })).error).toMatch(/content/);
+    expect((await run({ note_type: "journal", content: "x", tags: ["ok", 5] })).error).toMatch(/tags/);
+    expect(noteCount()).toBe(0);
+  });
+
+  it("R5-10: a note that differs only in tags or sentiment is a new note", async () => {
+    const base = { note_type: "journal", content: "Same", event_date: "2026-11-01" };
+    await run(base);
+    await run({ ...base, tags: ["x"] });
+    await run({ ...base, sentiment: "bullish" });
+    expect(noteCount()).toBe(3);
+    const again = (await run({ ...base, tags: ["x"] })) as NoteToolResult & { duplicate_of_existing?: boolean };
+    expect(again.duplicate_of_existing).toBe(true);
+    expect(noteCount()).toBe(3);
   });
 });
