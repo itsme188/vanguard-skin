@@ -5,6 +5,7 @@ import { adjustedMarketValueSQL, scaledCostBasisFallbackSQL } from "@/lib/valuat
 import { todayET, addDays, calendarDaysBetween } from "@/lib/calendar/date-utils";
 import { SECTOR_OWN_BUCKET_SQL } from "@/lib/queries/analysis";
 import { normalizeSector } from "@/lib/securities/normalize-sector";
+import { normalizeFundCategory } from "@/lib/securities/normalize-fund-category";
 import { isCashEquivalentSecurity, cashEquivalentSecuritySql } from "@/lib/compute/cash-equivalents";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 import { marketCapCategoryBucketSql } from "@/lib/securities/normalize-market-cap";
@@ -753,43 +754,103 @@ export function getAllocationBreakdown(
     params.push(accountName);
   }
 
-  return db
+  // One row per position with its RAW label; the grouping happens below so
+  // every spelling of one category lands in one group.
+  const positions = db
     .prepare(
       `WITH latest_prices AS (
         SELECT p.security_id, p.close_price
         FROM prices p
         INNER JOIN (SELECT security_id, MAX(date) AS max_date FROM prices GROUP BY security_id) lp
         ON p.security_id = lp.security_id AND p.date = lp.max_date
-      ),
-      allocation AS (
-        SELECT
-          ${groupExpr} AS group_name,
-          CASE
-            WHEN lp.close_price IS NOT NULL
-              THEN ${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}
-            WHEN h.cost_basis IS NOT NULL AND h.cost_basis > 0
-              THEN h.cost_basis * COALESCE(fx.usd_per_unit, 1)
-            ELSE 0
-          END AS mv,
-          1 AS cnt
-        FROM holdings h
-        JOIN accounts a ON a.id = h.account_id
-        JOIN securities s ON s.id = h.security_id
-        LEFT JOIN fx_rates fx ON fx.currency = s.currency
-        LEFT JOIN latest_prices lp ON lp.security_id = h.security_id
-        ${factorJoins}
-        WHERE ${conditions.join(" AND ")}
       )
       SELECT
-        group_name,
-        SUM(mv) AS total_market_value,
-        SUM(mv) * 100.0 / NULLIF(SUM(SUM(mv)) OVER (), 0) AS percentage,
-        SUM(cnt) AS position_count
-      FROM allocation
-      GROUP BY group_name
-      ORDER BY total_market_value DESC`
+        ${groupExpr} AS group_name,
+        CASE
+          WHEN lp.close_price IS NOT NULL
+            THEN ${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}
+          WHEN h.cost_basis IS NOT NULL AND h.cost_basis > 0
+            THEN h.cost_basis * COALESCE(fx.usd_per_unit, 1)
+          ELSE 0
+        END AS mv
+      FROM holdings h
+      JOIN accounts a ON a.id = h.account_id
+      JOIN securities s ON s.id = h.security_id
+      LEFT JOIN fx_rates fx ON fx.currency = s.currency
+      LEFT JOIN latest_prices lp ON lp.security_id = h.security_id
+      ${factorJoins}
+      WHERE ${conditions.join(" AND ")}`
     )
-    .all(...params) as AllocationResult[];
+    .all(...params) as { group_name: string; mv: number }[];
+
+  return groupAllocation(positions, (raw) => allocationLabel(groupBy, raw));
+}
+
+/** Stored security_type spellings, by normalized token (the DB's canonical labels). */
+const SECURITY_TYPE_LABELS: Record<string, string> = {
+  stock: "Stock",
+  etf: "ETF",
+  bond: "Bond",
+  option: "Option",
+  "mutual fund": "Mutual Fund",
+  "money market": "Money Market",
+};
+
+/**
+ * The display label a raw group value belongs to. Security types compare
+ * case-insensitively (underscores as spaces); sectors go through
+ * normalizeSector (GICS-11) and, for a fund-category fallback,
+ * normalizeFundCategory; fund categories through normalizeFundCategory.
+ * Account names are exact. Every other label is folded on case later.
+ */
+function allocationLabel(groupBy: string, raw: string): string {
+  const value = (raw ?? "").trim() || raw;
+  switch (groupBy) {
+    case "account":
+    case "symbol":
+      return raw;
+    case "security_type": {
+      const token = normalizeSecurityTypeToken(value);
+      return SECURITY_TYPE_LABELS[token] ?? value;
+    }
+    case "sector":
+      return normalizeSector(value) ?? normalizeFundCategory(value) ?? value;
+    case "fund_category":
+      return normalizeFundCategory(value) ?? value;
+    default:
+      return value;
+  }
+}
+
+/**
+ * Sum positions into groups keyed case-insensitively on their label (the
+ * label shown is the first spelling in code-point order, so it is stable).
+ * Totals are kept whole, so the groups sum to the allocation total.
+ */
+function groupAllocation(
+  positions: { group_name: string; mv: number }[],
+  label: (raw: string) => string
+): AllocationResult[] {
+  const groups = new Map<string, { names: string[]; total: number; count: number }>();
+  for (const p of positions) {
+    const name = label(p.group_name);
+    const key = name.trim().toLowerCase();
+    const g = groups.get(key) ?? { names: [], total: 0, count: 0 };
+    g.names.push(name);
+    g.total += p.mv ?? 0;
+    g.count += 1;
+    groups.set(key, g);
+  }
+  const grand = [...groups.values()].reduce((sum, g) => sum + g.total, 0);
+  return [...groups.values()]
+    .map((g) => ({
+      group_name: [...g.names].sort()[0],
+      total_market_value: g.total,
+      // A book worth nothing has no shares: 0, never a division by zero.
+      percentage: grand !== 0 ? (g.total * 100) / grand : 0,
+      position_count: g.count,
+    }))
+    .sort((a, b) => b.total_market_value - a.total_market_value);
 }
 
 /**

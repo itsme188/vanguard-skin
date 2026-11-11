@@ -88,6 +88,21 @@ export interface ListResearchDocumentsOptions {
   limit?: number;
   symbol?: string;
   tag?: string;
+  /** Only documents published (or uploaded) within this many days of the Eastern day. */
+  days_back?: number;
+}
+
+/**
+ * The days_back window, one copy for the list and the search paths. The
+ * window counts back from the Eastern day, bound as a parameter: SQLite's
+ * date('now') is the UTC day, already tomorrow after 20:00 Eastern.
+ */
+function daysBackWindow(alias: string, daysBack: number | undefined): { sql: string; params: unknown[] } | null {
+  if (!daysBack || daysBack <= 0) return null;
+  return {
+    sql: `COALESCE(${alias}publication_date, ${alias}uploaded_at) >= date(?, ?)`,
+    params: [todayET(), `-${Math.floor(daysBack)} days`],
+  };
 }
 
 export function listResearchDocuments(
@@ -109,6 +124,11 @@ export function listResearchDocuments(
   if (opts.tag) {
     where.push("tags LIKE ?");
     params.push(`%"${opts.tag.toLowerCase()}"%`);
+  }
+  const window = daysBackWindow("", opts.days_back);
+  if (window) {
+    where.push(window.sql);
+    params.push(...window.params);
   }
 
   const limit = Math.max(1, Math.min(opts.limit ?? 50, 200));
@@ -175,6 +195,7 @@ export function searchResearchDocuments(
       document_type: opts.document_type,
       symbol: opts.symbol,
       tag: opts.tag,
+      days_back: opts.days_back,
       limit,
     }).map((d) => ({ ...d, snippet: null, key_points: null }));
   }
@@ -196,13 +217,10 @@ export function searchResearchDocuments(
     where.push("rd.tags LIKE ?");
     params.push(`%"${opts.tag.toLowerCase()}"%`);
   }
-  if (opts.days_back && opts.days_back > 0) {
-    where.push(
-      "COALESCE(rd.publication_date, rd.uploaded_at) >= date(?, ?)",
-    );
-    // The window counts back from the Eastern day, bound: SQLite's
-    // date('now') is the UTC day, already tomorrow after 20:00 Eastern.
-    params.push(todayET(), `-${Math.floor(opts.days_back)} days`);
+  const window = daysBackWindow("rd.", opts.days_back);
+  if (window) {
+    where.push(window.sql);
+    params.push(...window.params);
   }
 
   return db

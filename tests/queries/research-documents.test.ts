@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import {
@@ -238,6 +238,27 @@ describe("searchResearchDocuments (FTS5)", () => {
       days_back: 365,
     });
     expect(results.map((r) => r.title)).toEqual(["New"]);
+  });
+
+  it("days_back applies with and without a text query, on the Eastern day", () => {
+    // 2026-11-11 02:00Z is 2026-11-10 21:00 Eastern. A 30-day window counts
+    // back from the Eastern day: 2026-10-11 is inside, 2026-10-10 is not
+    // (the UTC day would have moved the edge to 2026-10-12).
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-11-11T02:00:00Z"));
+    try {
+      seedDoc(db, { title: "Edge in", publication_date: "2026-10-11", raw_text: "window body" });
+      seedDoc(db, { title: "Edge out", publication_date: "2026-10-10", raw_text: "window body" });
+      seedDoc(db, { title: "Old", publication_date: "2025-01-01", raw_text: "window body" });
+      const withQuery = searchResearchDocuments(db, { query: "window", days_back: 30 });
+      expect(withQuery.map((r) => r.title)).toEqual(["Edge in"]);
+      const withoutQuery = searchResearchDocuments(db, { days_back: 30 });
+      expect(withoutQuery.map((r) => r.title)).toEqual(["Edge in"]);
+      // No days_back: no window.
+      expect(searchResearchDocuments(db, {}).map((r) => r.title).sort()).toEqual(["Edge in", "Edge out", "Old"]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("update via delete+recreate keeps FTS index consistent", () => {
