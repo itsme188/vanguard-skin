@@ -33,6 +33,12 @@ export const CHAT_TOOL_LABELS: Record<string, string> = {
   query_alerts: "Reviewing alert history...",
   query_release_reactions: "Looking up release reactions...",
   query_market_snapshot: "Checking today's market moves...",
+  query_risk: "Measuring portfolio risk...",
+  query_scenarios: "Running stress scenarios...",
+  query_performance_vs_benchmark: "Comparing performance with SPY...",
+  query_realized_gains: "Totalling realized gains...",
+  query_options_book: "Checking option expirations...",
+  query_data_confidence: "Checking data confidence...",
 };
 
 /** The label for a tool name, or "Using <name>" for an unknown tool. */

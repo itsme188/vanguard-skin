@@ -1,0 +1,108 @@
+/**
+ * query_data_confidence (Portfolio Assistant plan, Task 6; P3).
+ *
+ * Protects: the trust verdict the chat gives is the header indicator's own
+ * (getDataConfidence), whole-portfolio only, with no dollar amount. Bound: a
+ * book of two held names, one priced today and one 30 days stale, scores
+ * price freshness 50 with "1/2 securities have recent prices"; any account
+ * scope is refused before the engine runs.
+ */
+import { describe, it, expect, beforeEach, vi } from "vitest";
+import Database from "better-sqlite3";
+import { runMigrations } from "@/lib/db/migrate";
+
+vi.mock("@/lib/queries/data-confidence", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/queries/data-confidence")>();
+  return { ...actual, getDataConfidence: vi.fn(actual.getDataConfidence) };
+});
+
+import { getDataConfidence } from "@/lib/queries/data-confidence";
+import {
+  queryDataConfidenceTool,
+  omitAmounts,
+  DATA_CONFIDENCE_SCOPE_ERROR,
+} from "@/lib/chat/composite/data-confidence";
+import { COMPOSITE_MAX_JSON_CHARS } from "@/lib/chat/composite/shared";
+
+const NOW = new Date("2026-03-02T15:00:00Z");
+const TODAY = "2026-03-02";
+let db: Database.Database;
+
+function held(symbol: string, accountId: number, priceDate: string): void {
+  const id = db
+    .prepare("INSERT INTO securities (symbol, name, security_type, currency) VALUES (?, ?, 'Stock', 'USD')")
+    .run(symbol, `${symbol} Co`).lastInsertRowid as number;
+  db.prepare(
+    "INSERT INTO holdings (account_id, security_id, quantity, cost_basis, as_of_date, source_key) VALUES (?, ?, 10, 100, ?, ?)",
+  ).run(accountId, id, TODAY, `h-${symbol}`);
+  db.prepare("INSERT INTO prices (security_id, date, close_price) VALUES (?, ?, 10)").run(id, priceDate);
+}
+
+type Out = {
+  error?: string;
+  overall: { score: number; level: string };
+  cap_reason: string | null;
+  dimensions: Record<string, { score: number; reason: string; action_needed: boolean }>;
+  actions: { severity: string; action: string }[];
+  actions_total: number;
+  integrity: { critical: number; warnings: number; lot_drift_checked: boolean };
+  scope: { all_accounts: boolean };
+};
+
+beforeEach(() => {
+  db = new Database(":memory:");
+  db.pragma("foreign_keys = ON");
+  runMigrations(db);
+  vi.mocked(getDataConfidence).mockClear();
+  held("FRSH", 1, TODAY);
+  held("OLDP", 3, "2026-01-31");
+});
+
+describe("query_data_confidence", () => {
+  it("returns the engine's scores (parity)", () => {
+    const out = queryDataConfidenceTool.run(db, {}, { accountIds: undefined, today: TODAY, now: NOW }) as Out;
+    const engine = getDataConfidence(db, NOW);
+    expect(out.overall).toEqual({ score: engine.overallScore, level: engine.overallLevel });
+    expect(out.dimensions.price_freshness.score).toBe(engine.priceFreshness.score);
+    expect(out.dimensions.holdings_recency.score).toBe(engine.holdingsRecency.score);
+    expect(out.dimensions.cash_accuracy.score).toBe(engine.cashAccuracy.score);
+    expect(out.dimensions.enrichment.score).toBe(engine.enrichmentCompleteness.score);
+    expect(out.dimensions.valuation_coverage.score).toBe(engine.valuationCoverage.score);
+    expect(out.actions_total).toBe(engine.actions.length);
+    expect(out.integrity.critical).toBe(engine.integrity.critical.length);
+    expect(out.integrity.warnings).toBe(engine.integrity.warnings.length);
+    expect(out.integrity.lot_drift_checked).toBe(engine.integrity.lotDriftChecked);
+  });
+
+  it("matches the hand-worked price freshness", () => {
+    const out = queryDataConfidenceTool.run(db, {}, { accountIds: undefined, today: TODAY, now: NOW }) as Out;
+    expect(out.dimensions.price_freshness.score).toBe(50);
+    expect(out.dimensions.price_freshness.reason).toBe("1/2 securities have recent prices");
+    expect(out.scope.all_accounts).toBe(true);
+  });
+
+  it("refuses any account scope before calling the engine", () => {
+    const one = queryDataConfidenceTool.run(db, {}, { accountIds: [3], accountName: "IBKR", today: TODAY, now: NOW }) as Out;
+    expect(one).toEqual({ error: DATA_CONFIDENCE_SCOPE_ERROR });
+    expect(JSON.stringify(one)).not.toContain("FRSH");
+    const empty = queryDataConfidenceTool.run(db, {}, { accountIds: [], today: TODAY, now: NOW });
+    expect(empty).toEqual({ error: "No account is in this chat's scope." });
+    expect(getDataConfidence).not.toHaveBeenCalled();
+  });
+
+  it("omits dollar amounts from engine text", () => {
+    expect(omitAmounts("Cash moved $1,234.56 on 2026-02-03 and -$12k later; 3 of 40 names")).toBe(
+      "Cash moved (amount omitted) on 2026-02-03 and (amount omitted) later; 3 of 40 names",
+    );
+  });
+
+  it("writes nothing and stays under the size cap with 60 positions", () => {
+    for (let i = 0; i < 60; i++) held(`Z${i}`, 1 + (i % 3), i % 2 ? TODAY : "2025-12-01");
+    const before = (db.prepare("SELECT total_changes() AS n").get() as { n: number }).n;
+    const out = queryDataConfidenceTool.run(db, {}, { accountIds: undefined, today: TODAY, now: NOW });
+    const after = (db.prepare("SELECT total_changes() AS n").get() as { n: number }).n;
+    expect(after).toBe(before);
+    expect(JSON.stringify(out).length).toBeLessThan(COMPOSITE_MAX_JSON_CHARS);
+    expect(JSON.stringify(out)).not.toMatch(/\$\d/);
+  });
+});
