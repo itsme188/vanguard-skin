@@ -1,3 +1,5 @@
+import type Database from "better-sqlite3";
+
 /**
  * Income semantics, as SQL fragments: the ONE copy (plan 2026-11-11,
  * Contract J and ruling P13). Read by the chat income tool
@@ -9,10 +11,9 @@
  * - A REINVESTMENT is the purchase leg of a DIVIDEND, not a second payout.
  *   It pairs one-to-one with a DIVIDEND on the same account, the same
  *   security and the same trade date for the same absolute amount to the
- *   cent, or, failing that, for the dividend minus that day's TAX_WITHHELD
- *   (see `incomePairingCtes`); each DIVIDEND pairs with at most one
- *   REINVESTMENT (ranked by row id within that key). A paired
- *   REINVESTMENT adds nothing.
+ *   cent, or, failing that, for the dividend minus ONE of that day's
+ *   withholding rows (see `pairIncomeLegs`); every row is used at most
+ *   once. A paired REINVESTMENT adds nothing.
  * - A negative unpaired REINVESTMENT is not income; it is counted
  *   (`UNPAIRED_NEGATIVE_REINVESTMENT_SQL`) so the reader can say so.
  * - Interest earned = positive INTEREST amounts; interest paid = the
@@ -20,85 +21,120 @@
  * - Fees keep their current rule (ruling P6): ABS of FEE and COMMISSION.
  * - Net income = dividends + interest earned - interest paid - fees.
  *
- * Usage: put `incomePairingCtes()` inside a WITH clause, select from
+ * Usage: put `incomePairingCtes(db)` inside a WITH clause, select from
  * `transactions t` with `INCOME_PAIRED_JOIN`, filter rows with
  * `INCOME_TYPES_SQL`, and sum the per-row expressions below. The pairing
- * CTEs read every row (pairing is within one trade date, so a date window
- * on the outer query never splits a pair).
+ * reads every row (pairing is within one trade date, so a date window on
+ * the outer query never splits a pair).
  */
 
-/** Same account, security and day, same amount to the cent; ranked by id. */
-function rankedLegs(name: string, type: string): string {
-  return `${name} AS (
-    SELECT t.id, t.account_id, t.security_id, t.trade_date,
-           CAST(ROUND(ABS(t.amount) * 100) AS INTEGER) AS cents,
-           ROW_NUMBER() OVER (
-             PARTITION BY t.account_id, t.security_id, t.trade_date, CAST(ROUND(ABS(t.amount) * 100) AS INTEGER)
-             ORDER BY t.id
-           ) AS leg_rank
-    FROM transactions t
-    WHERE UPPER(t.type) = '${type}' AND t.amount IS NOT NULL
-  )`;
+/** One DIVIDEND, REINVESTMENT or TAX_WITHHELD row, as the pairing reads it. */
+export interface IncomeLeg {
+  id: number;
+  type: "DIVIDEND" | "REINVESTMENT" | "TAX_WITHHELD";
+  account_id: number;
+  security_id: number | null;
+  trade_date: string;
+  amount: number;
 }
 
-/** The pair key: same account, security (NULL matches NULL), day, cents and rank. */
-const PAIR_ON = `d.account_id = r.account_id
-     AND d.security_id IS r.security_id
-     AND d.trade_date = r.trade_date
-     AND d.cents = r.cents
-     AND d.leg_rank = r.leg_rank`;
+/** One reinvestment and the dividend it is the purchase leg of. */
+export interface IncomePair {
+  reinvestmentId: number;
+  dividendId: number;
+  /** The withholding row the net match used; null for a gross match. */
+  withholdingId: number | null;
+}
+
+/** Every row the pairing reads (all dates: a pair never spans two days). */
+export function loadIncomeLegs(db: Database.Database): IncomeLeg[] {
+  return db
+    .prepare(
+      `SELECT id, UPPER(type) AS type, account_id, security_id, trade_date, amount
+       FROM transactions
+       WHERE UPPER(type) IN ('DIVIDEND', 'REINVESTMENT', 'TAX_WITHHELD') AND amount IS NOT NULL`
+    )
+    .all() as IncomeLeg[];
+}
+
+const cents = (amount: number) => Math.round(Math.abs(amount) * 100);
+const byCentsThenId = (a: IncomeLeg, b: IncomeLeg) => cents(a.amount) - cents(b.amount) || a.id - b.id;
 
 /**
- * The CTEs that define `paired_reinvestments(id)`. No leading WITH.
- *
- * Two passes, each one-to-one:
- *  1. gross: a REINVESTMENT equal to its DIVIDEND;
- *  2. net of withholding (review R2-2): among the legs pass 1 left, a
- *     REINVESTMENT equal to its DIVIDEND minus the same-day TAX_WITHHELD on
- *     the same account and security (dividend 100, 15 withheld, 85
- *     reinvested). Only dividends with withholding that day take part.
- * The withheld tax itself is not an income row (unchanged): dividend
- * income stays the gross payout.
+ * Pair reinvestments with their dividends, one-to-one all the way down
+ * (review RF-6). Within one account, security and trade date:
+ *  1. gross: a REINVESTMENT pairs with a DIVIDEND of the same absolute
+ *     amount to the cent;
+ *  2. net: a REINVESTMENT still unpaired pairs with a DIVIDEND (positive,
+ *     still unpaired) and ONE TAX_WITHHELD row (still unused) when
+ *     dividend - |withholding| = reinvestment to the cent (dividend 100,
+ *     15 withheld, 85 reinvested). The withholding is read by magnitude:
+ *     the ledger stores it with either sign (both are present in real
+ *     data, the positive form more often).
+ * Each row is used at most once. Tie-break (deterministic, greedy):
+ * reinvestments are taken in order of amount then row id, and each takes
+ * the first fitting dividend (then withholding) in order of amount then
+ * row id.
  */
-export function incomePairingCtes(): string {
-  return `${rankedLegs("income_dividend_legs", "DIVIDEND")},
-  ${rankedLegs("income_reinvestment_legs", "REINVESTMENT")},
-  income_gross_pairs AS (
-    SELECT r.id AS reinvestment_id, d.id AS dividend_id
-    FROM income_reinvestment_legs r
-    JOIN income_dividend_legs d ON ${PAIR_ON}
-  ),
-  income_withheld AS (
-    SELECT t.account_id, t.security_id, t.trade_date, SUM(ABS(t.amount)) AS withheld
-    FROM transactions t
-    WHERE UPPER(t.type) = 'TAX_WITHHELD' AND t.amount IS NOT NULL
-    GROUP BY t.account_id, t.security_id, t.trade_date
-  ),
-  income_net_dividend_legs AS (
-    SELECT x.id, x.account_id, x.security_id, x.trade_date, x.cents,
-           ROW_NUMBER() OVER (PARTITION BY x.account_id, x.security_id, x.trade_date, x.cents ORDER BY x.id) AS leg_rank
-    FROM (
-      SELECT t.id, t.account_id, t.security_id, t.trade_date,
-             CAST(ROUND((ABS(t.amount) - w.withheld) * 100) AS INTEGER) AS cents
-      FROM transactions t
-      JOIN income_withheld w
-        ON w.account_id = t.account_id AND w.security_id IS t.security_id AND w.trade_date = t.trade_date
-      WHERE UPPER(t.type) = 'DIVIDEND' AND t.amount IS NOT NULL
-        AND t.id NOT IN (SELECT dividend_id FROM income_gross_pairs)
-    ) x
-  ),
-  income_net_reinvestment_legs AS (
-    SELECT x.id, x.account_id, x.security_id, x.trade_date, x.cents,
-           ROW_NUMBER() OVER (PARTITION BY x.account_id, x.security_id, x.trade_date, x.cents ORDER BY x.id) AS leg_rank
-    FROM income_reinvestment_legs x
-    WHERE x.id NOT IN (SELECT reinvestment_id FROM income_gross_pairs)
-  ),
-  paired_reinvestments AS (
-    SELECT reinvestment_id AS id FROM income_gross_pairs
-    UNION ALL
-    SELECT r.id
-    FROM income_net_reinvestment_legs r
-    JOIN income_net_dividend_legs d ON ${PAIR_ON}
+export function pairIncomeLegs(legs: readonly IncomeLeg[]): IncomePair[] {
+  const groups = new Map<string, { d: IncomeLeg[]; r: IncomeLeg[]; w: IncomeLeg[] }>();
+  for (const leg of legs) {
+    const key = `${leg.account_id}|${leg.security_id ?? "null"}|${leg.trade_date}`;
+    const g = groups.get(key) ?? { d: [], r: [], w: [] };
+    if (leg.type === "DIVIDEND") g.d.push(leg);
+    else if (leg.type === "REINVESTMENT") g.r.push(leg);
+    else if (leg.amount !== 0) g.w.push(leg);
+    groups.set(key, g);
+  }
+  const pairs: IncomePair[] = [];
+  for (const g of groups.values()) {
+    if (g.d.length === 0 || g.r.length === 0) continue;
+    g.d.sort(byCentsThenId);
+    g.r.sort(byCentsThenId);
+    g.w.sort(byCentsThenId);
+    const usedD = new Set<number>();
+    const usedW = new Set<number>();
+    const unpairedR: IncomeLeg[] = [];
+    for (const r of g.r) {
+      const d = g.d.find((x) => !usedD.has(x.id) && cents(x.amount) === cents(r.amount));
+      if (d) {
+        usedD.add(d.id);
+        pairs.push({ reinvestmentId: r.id, dividendId: d.id, withholdingId: null });
+      } else {
+        unpairedR.push(r);
+      }
+    }
+    if (g.w.length === 0) continue;
+    for (const r of unpairedR) {
+      let found: { d: IncomeLeg; w: IncomeLeg } | null = null;
+      for (const d of g.d) {
+        if (usedD.has(d.id) || d.amount <= 0) continue;
+        const w = g.w.find((x) => !usedW.has(x.id) && cents(d.amount) - cents(x.amount) === cents(r.amount));
+        if (w) {
+          found = { d, w };
+          break;
+        }
+      }
+      if (found) {
+        usedD.add(found.d.id);
+        usedW.add(found.w.id);
+        pairs.push({ reinvestmentId: r.id, dividendId: found.d.id, withholdingId: found.w.id });
+      }
+    }
+  }
+  return pairs;
+}
+
+/**
+ * The CTE that defines `paired_reinvestments(id)`, no leading WITH. The
+ * pairing runs in `pairIncomeLegs` (one-to-one matching is not a SQL
+ * join); the ids are integers read from this database, spliced as a JSON
+ * array.
+ */
+export function incomePairingCtes(db: Database.Database): string {
+  const ids = pairIncomeLegs(loadIncomeLegs(db)).map((p) => Math.trunc(p.reinvestmentId));
+  return `paired_reinvestments AS MATERIALIZED (
+    SELECT CAST(value AS INTEGER) AS id FROM json_each('${JSON.stringify(ids)}')
   )`;
 }
 

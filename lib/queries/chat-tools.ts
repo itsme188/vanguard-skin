@@ -1475,7 +1475,7 @@ export function getIncomeSummaryForChat(
   // once, a reversal nets, margin interest charged is a cost.
   return db
     .prepare(
-      `WITH ${incomePairingCtes()}
+      `WITH ${incomePairingCtes(db)}
       SELECT
         ${expr} AS group_name,
         COALESCE(SUM(${DIVIDEND_INCOME_SQL}), 0) AS total_dividends,

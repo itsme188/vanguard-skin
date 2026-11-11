@@ -86,10 +86,12 @@ export function getIncomeSummary(
   // `undefined` is every account; a defined empty list is NO accounts,
   // never the whole book.
   const scope = accountScopeAndSql(accountIds, "t.account_id");
+  // Paired once, read by all three queries.
+  const pairing = incomePairingCtes(db);
 
   const totals = db
     .prepare(
-      `WITH ${incomePairingCtes()}
+      `WITH ${pairing}
        SELECT
          COUNT(*) AS row_count,
          COALESCE(SUM(${DIVIDEND_INCOME_SQL}), 0) AS total_dividends,
@@ -106,7 +108,7 @@ export function getIncomeSummary(
 
   const byAccount = db
     .prepare(
-      `WITH ${incomePairingCtes()}
+      `WITH ${pairing}
        SELECT
          a.id AS account_id,
          a.name AS account_name,
@@ -127,7 +129,7 @@ export function getIncomeSummary(
 
   const topPayers = db
     .prepare(
-      `WITH ${incomePairingCtes()}
+      `WITH ${pairing}
        SELECT
          COALESCE(s.symbol, 'CASH') AS symbol,
          s.name AS security_name,
