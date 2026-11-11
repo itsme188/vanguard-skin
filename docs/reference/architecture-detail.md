@@ -37,7 +37,11 @@ bottom-nav "Notes" entry (the Notes page). localStorage drafts persist either wa
 
 ### Chat drawer
 
-Slide-out right panel (Cmd+J), accessible from any tab, persists conversation.
+Slide-out right panel (Cmd+J), accessible from any tab, persists conversation. Since 2026-11-11 the
+assistant has 33 tools (27 base, six composite tools over dashboard engines), a cached static prompt
+block plus a volatile block (date, IBKR dashboard, Portfolio Context, page), a hard scope boundary
+checked twice (the route's clamp and `executeTool`), and an approval card for `create_note`. Working
+reference: `lib/chat/CLAUDE.md`.
 
 An account name the model passes to a chat tool is resolved by `resolveChatAccounts`
 (`lib/chat/account-scope.ts`, 2026-10-08): an exact name, a scope word read the way the dashboard

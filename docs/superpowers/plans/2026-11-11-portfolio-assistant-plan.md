@@ -1,5 +1,7 @@
 # Portfolio Assistant (in-app chat): implementation plan (2026-11-11, revision 2)
 
+> **Status (2026-11-11, written by T10):** waves 1 and 2 built and reviewed on branch `claude/portfolio-assistant-review-7148e7` (Task 0 `c910900f` through the T6 review round `4406593c`). Wave 3 (W3-1 to W3-5) not yet run. Decisions: `docs/DECISIONS.md` 2026-11-11; working reference: `lib/chat/CLAUDE.md`.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: use superpowers:subagent-driven-development. Each task below is one subagent (Opus). Tasks in the same wave edit no common file and are dispatched together in one message. Verification is a barrier AFTER each wave (section 5), not inside it. Steps use checkbox (`- [ ]`) syntax.
 
 **Inputs.** Four read-only research reports written 2026-11-11 (architecture map, cost audit R1-R8, answer-quality audit, bug list B1-B26 + B4b). They live in the orchestrator's session scratchpad and are NOT committed (they quote line numbers, not figures, but stay local). Every fact a worker needs is restated in this plan; a worker never needs the reports. Where a report and the code disagree, section 1 says which is right; the plan follows the code.
@@ -451,3 +453,11 @@ Codex, one round, 2026-11-11, on revision 1. Verdict: **REVISE**, 18 findings. (
 | 16 | med | Ownership names and parallel compile dependencies | Folded: Task 0 stubs, ownership table |
 | 17 | med | Cache check cannot tell prefix from tail | Folded: W3-4 measurements |
 | 18 | med | Source pins do not prove races or approval | Partly: SDK-backed approval tests (T3 H, N), pure adoption test (T4), reload policy (OPEN-8). Rejected part: DOM render tests; the repo has no DOM test harness and its convention is source pins plus browser proof (W3-3, W3-4) |
+
+### Barrier 1 (wave 1 review, 2026-11-11)
+
+One read-only review per task. T1: summary scope edge cases, unit nouns and engine-made closes (R1-1..R1-7; `dbd9efbe`, `a6eeef64`). T2: Interest paid on the Income card, a second net-of-withholding pairing pass, stance guards; the statement cash fallback was ruled separately (R2-1..R2-4; `023bef7c`, `d79852b7`). T3: one blocker (R3-1, an approval answered in an earlier message reached the API unpaired) plus errored and aborted turns, the header pin and page-name cleaning (`cc8c7751`). T4: settled-message rendering, Stop guard, continuation cap and the open-conversation ref (R4-2..R4-12; `f5538ee5`, `284c281b`). T5: input type checks, `create_note` refusals, alert ordering, sampling, the transaction-type enum (R5-1..R5-15; `041cc202`).
+
+### Barrier 2 (wave 2 review, 2026-11-11)
+
+T6: ten findings (R6-1..R6-10; `4406593c`): scenario shares named by base, the `query_risk` window rule, strict inputs, engine throws as plain errors; R6-7 kept the 25-row caps because 50 rows do not fit the 6,000-character cap. T7: the last-step wording made true and the benchmark tool's description corrected (`ac8da2a2`). T8: the byte-identical tool-result replay pinned through the real route (`7ede8506`). T9: no fix commit on the branch when this was written.

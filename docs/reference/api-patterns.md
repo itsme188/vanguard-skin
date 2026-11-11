@@ -71,8 +71,10 @@ sweep should not file them as console errors.
 ## Chat
 
 - `POST /api/chat` — AI SDK v6 `streamText` with the `@ai-sdk/anthropic` provider.
-  - Model/config: Opus 4.7, adaptive thinking, ephemeral cache control, `stopWhen: stepCountIs(8)`.
-  - Client uses `useChat` from `@ai-sdk/react`.
+  - Model/config (2026-11-11): the `chat` feature on the workhorse tier (`getModelForFeature("chat")`, no model id), adaptive thinking, 16,000 output tokens, `stopWhen: stepCountIs(8)`, the request's abort signal, three cache marks (last tool, static system block, top-level automatic). Detail: `lib/chat/CLAUDE.md`.
+  - Body: `messages`, `scope` (`VALID_SCOPES`; invalid is 400), `conversationId`, `page: { path }` (the free-text `pageContext` field is ignored). Every response after the conversation exists carries `X-Conversation-Id`. A conversation stored under another scope answers 409; an unknown id starts a new one. Size, rate and daily-ceiling refusals answer 400 / 429 before anything is saved.
+  - Client uses `useChat` from `@ai-sdk/react`; `create_note` stops for the owner's approval (`needsApproval`).
+- `GET /api/chat/conversations`, `POST /api/chat/conversations` (`scope` must be in `VALID_SCOPES`, else 400), `DELETE /api/chat/conversations/[id]` (404 when gone), `GET /api/chat/conversations/[id]/messages`: the `{ success, data }` / `{ success: false, error }` envelope (2026-11-11).
 
 ---
 
