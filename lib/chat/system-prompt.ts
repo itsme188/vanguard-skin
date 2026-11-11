@@ -5,10 +5,45 @@ import type { IbkrTradingContext } from "./ibkr-context";
  * Builds the system prompt for the portfolio chat analyst.
  * Separated from the route for testability and maintainability.
  *
- * The prompt is composed of three layers:
- * 1. Persona + Frameworks — per-scope (IBKR trading desk, Roth strategist, Taxable tax-aware, All cross-account)
- * 2. Shared Core — tools, conventions, ground truth rules (identical for all portfolio scopes)
- * 3. Portfolio Context — static holdings/allocation data injected by the route
+ * The prompt is two blocks (Portfolio Assistant plan, Contract D):
+ *
+ * 1. STATIC block: scope preamble + per-scope persona + shared core (or the
+ *    macro prompt). It varies by scope ONLY, so it is byte-identical across
+ *    dates, portfolio changes and pages, and the route puts the cache mark on
+ *    it. Nothing read from the database or the request (beyond `scope`) may
+ *    go in here.
+ * 2. VOLATILE block, in this order: today's date, the IBKR trading dashboard
+ *    (IBKR scope only), the Portfolio Context (not for macro), the current
+ *    page. No cache mark. It follows the static block, so the static text's
+ *    "the Portfolio Context below" / "the dashboard below" stay true.
+ */
+export interface SystemPromptInput {
+  scope?: ChatScope;
+  currentDate: string;
+  portfolioContext: string;
+  ibkrContext?: IbkrTradingContext;
+  /** Printed in place of the dashboard (IBKR scope only) when it is left out. */
+  ibkrNote?: string;
+  /** The page sentence; printed last under [Current Page]. */
+  pageNote?: string;
+}
+
+export interface SystemPromptBlocks {
+  staticBlock: string;
+  volatileBlock: string;
+}
+
+export function buildSystemPromptBlocks(input: SystemPromptInput): SystemPromptBlocks {
+  const scope: ChatScope = input.scope ?? "all";
+  return {
+    staticBlock: buildStaticBlock(scope),
+    volatileBlock: buildVolatileBlock(scope, input),
+  };
+}
+
+/**
+ * The whole prompt as one string: the static block, a blank line, the
+ * volatile block. Kept for tests and any caller that wants a single string.
  */
 export function buildSystemPrompt(
   staticContext: string,
@@ -16,25 +51,55 @@ export function buildSystemPrompt(
   scope?: ChatScope,
   ibkrContext?: IbkrTradingContext
 ): string {
-  const resolvedScope: ChatScope = scope ?? "all";
+  const { staticBlock, volatileBlock } = buildSystemPromptBlocks({
+    scope,
+    currentDate,
+    portfolioContext: staticContext,
+    ibkrContext,
+  });
+  return `${staticBlock}\n\n${volatileBlock}`;
+}
 
-  if (resolvedScope === "macro") {
-    return buildMacroPrompt(currentDate);
+function buildStaticBlock(scope: ChatScope): string {
+  if (scope === "macro") {
+    return buildMacroPrompt();
   }
 
-  const scopePreamble = `[SCOPE] You are analyzing ${SCOPE_LABELS[resolvedScope]}. This is a HARD boundary: every portfolio tool is locked to this account, and the Portfolio Context below is filtered to this scope — it contains ONLY this account's data. You CANNOT see, query, compare against, or estimate any other account's holdings, positions, transactions, or performance — a tool call naming another account silently returns THIS account's data. Do not reference, infer, or speculate about what is held in the user's other accounts. If a question requires another account or a cross-account view (e.g. asset-location optimization, total single-name exposure across accounts), tell the user to switch to the "All Accounts" scope or start a new conversation scoped to that account — do not guess.`;
-  const persona = getPersonaSection(resolvedScope, ibkrContext);
-  const sharedCore = getSharedCore(currentDate);
+  const scopePreamble = `[SCOPE] You are analyzing ${SCOPE_LABELS[scope]}. This is a HARD boundary: every portfolio tool is locked to this account, and the Portfolio Context below is filtered to this scope — it contains ONLY this account's data. You CANNOT see, query, compare against, or estimate any other account's holdings, positions, transactions, or performance — a tool call naming another account silently returns THIS account's data. Do not reference, infer, or speculate about what is held in the user's other accounts. If a question requires another account or a cross-account view (e.g. asset-location optimization, total single-name exposure across accounts), tell the user to switch to the "All Accounts" scope or start a new conversation scoped to that account — do not guess.`;
+  const persona = getPersonaSection(scope);
+  const sharedCore = getSharedCore();
 
-  return `${scopePreamble}\n\n${persona}\n\n${sharedCore}\n\n## Portfolio Context\n\n${staticContext}`;
+  return `${scopePreamble}\n\n${persona}\n\n${sharedCore}`;
+}
+
+function buildVolatileBlock(scope: ChatScope, input: SystemPromptInput): string {
+  const sections: string[] = [`## Today\n\nToday's date is ${input.currentDate} (Eastern).`];
+
+  if (scope === "ibkr") {
+    if (input.ibkrContext) {
+      sections.push(formatIbkrDashboard(input.ibkrContext));
+    } else if (input.ibkrNote) {
+      sections.push(`## Current IBKR Trading Dashboard\n\n${input.ibkrNote}`);
+    }
+  }
+
+  if (scope !== "macro") {
+    sections.push(`## Portfolio Context\n\n${input.portfolioContext}`);
+  }
+
+  if (input.pageNote) {
+    sections.push(`[Current Page]\n${input.pageNote}`);
+  }
+
+  return sections.join("\n\n");
 }
 
 // ─── Per-Scope Persona Dispatch ─────────────────────────────────
 
-function getPersonaSection(scope: ChatScope, ibkrContext?: IbkrTradingContext): string {
+function getPersonaSection(scope: ChatScope): string {
   switch (scope) {
     case "ibkr":
-      return buildIbkrPersona(ibkrContext);
+      return IBKR_PERSONA;
     case "vanguard-roth-ira":
       return ROTH_PERSONA;
     case "vanguard-taxable":
@@ -46,10 +111,7 @@ function getPersonaSection(scope: ChatScope, ibkrContext?: IbkrTradingContext): 
 
 // ─── IBKR Trading Desk Persona ──────────────────────────────────
 
-function buildIbkrPersona(ctx?: IbkrTradingContext): string {
-  const dashboard = ctx ? formatIbkrDashboard(ctx) : "";
-
-  return `You are a trading desk analyst for an active trading account at Interactive Brokers. You specialize in tactical, short-term equity trading — holding periods of days to weeks, not months. You understand position sizing as a market stance signal, track repeat-name trading patterns, and interpret the portfolio as a set of sector/factor bets.
+const IBKR_PERSONA = `You are a trading desk analyst for an active trading account at Interactive Brokers. You specialize in tactical, short-term equity trading — holding periods of days to weeks, not months. You understand position sizing as a market stance signal, track repeat-name trading patterns, and interpret the portfolio as a set of sector/factor bets.
 
 ## Your Role
 
@@ -60,7 +122,7 @@ function buildIbkrPersona(ctx?: IbkrTradingContext): string {
 - Surface tactical observations: relative strength vs sector ETFs and SPY, trend direction, concentration in correlated bets
 - Flag when a new, unfamiliar name enters the portfolio — it may warrant tighter risk management
 - Present analysis as a peer, not a coach — analytical observations, not life lessons
-${dashboard}
+
 ## Analytical Frameworks
 
 **Market Stance Dashboard**
@@ -93,6 +155,19 @@ ${dashboard}
 - Large positions = high conviction. Small positions = testing or hedging
 - Options positions: are they directional bets or hedges? Check if they offset equity exposure
 - When discussing a position, note its weight relative to the account — a 1% position is noise, a 10% position is a statement`;
+
+function asOfSuffix(date: string | null): string {
+  return date ? ` (as of ${date})` : "";
+}
+
+/** Why the stance score is left out (Contract E / P12), or null when it is shown. */
+function stanceWithheldReason(ctx: IbkrTradingContext): string | null {
+  if (!ctx.stanceWithheld) return null;
+  if (ctx.cashSource === "none") return "no cash figure is available";
+  if (ctx.cashCarried) return "the cash figure is carried from an earlier date";
+  if (ctx.cashTimingResidual) return "the cash figure is a live timing residual, not a measured balance";
+  if (ctx.cashPriceDateMismatch) return "the cash figure and the prices are from different dates";
+  return "the cash figure cannot be trusted as a stance signal";
 }
 
 function formatIbkrDashboard(ctx: IbkrTradingContext): string {
@@ -100,9 +175,29 @@ function formatIbkrDashboard(ctx: IbkrTradingContext): string {
   const bullLabel = bullLabels[ctx.bullishnessScore] ?? "unknown";
   const betaStr = ctx.portfolioBeta != null ? ctx.portfolioBeta.toFixed(2) : "N/A";
 
-  let dashboard = `\n\n## Current IBKR Trading Dashboard\n\n`;
-  dashboard += `- **Cash**: $${ctx.estimatedCash.toLocaleString()} (${ctx.cashPct.toFixed(1)}% of account) → Stance: ${ctx.bullishnessScore}/5 (${bullLabel})\n`;
-  dashboard += `- **Account Total**: $${ctx.accountTotal.toLocaleString()}\n`;
+  const withheldReason = stanceWithheldReason(ctx);
+  const stance = withheldReason
+    ? `Stance: withheld (${withheldReason})`
+    : `Stance: ${ctx.bullishnessScore}/5 (${bullLabel})`;
+
+  let cashLine: string;
+  if (ctx.cashSource === "none") {
+    cashLine = `- **Cash**: not available → ${stance}\n`;
+  } else {
+    const uncertain = ctx.cashCarried || ctx.cashTimingResidual || ctx.cashPriceDateMismatch;
+    const amount = `$${Math.abs(ctx.estimatedCash).toLocaleString()}`;
+    const figure =
+      ctx.estimatedCash < 0
+        ? uncertain
+          ? `-${amount}, negative cash; this may be a timing difference, not borrowing`
+          : `-${amount}, negative cash (margin debit)`
+        : amount;
+    cashLine = `- **Cash**: ${figure}${asOfSuffix(ctx.cashAsOf)} (${ctx.cashPct.toFixed(1)}% of account) → ${stance}\n`;
+  }
+
+  let dashboard = `## Current IBKR Trading Dashboard\n\n`;
+  dashboard += cashLine;
+  dashboard += `- **Account Total**: $${ctx.accountTotal.toLocaleString()}${asOfSuffix(ctx.accountTotalAsOf)}\n`;
   dashboard += `- **Portfolio Beta**: ${betaStr} (vs SPY)\n`;
   dashboard += `- **Active Positions**: ${ctx.activePositionCount}\n`;
 
@@ -132,7 +227,7 @@ function formatIbkrDashboard(ctx: IbkrTradingContext): string {
     dashboard += `${trades}\n`;
   }
 
-  return dashboard;
+  return dashboard.trimEnd();
 }
 
 // ─── Vanguard Roth IRA Persona ──────────────────────────────────
@@ -315,7 +410,7 @@ const LIVE_MARKET_RULE = `## Live Market Data
 - ALWAYS relay the \`asOf\` date so the user knows how current the numbers are. The local book's latest value is an end-of-day close, not an intraday quote — say so.
 - Every holdings and tax-lot row carries its own \`price_date\`, the date of the price behind its mark. A mark, market value or liability is dated by that row's \`price_date\`, never by the day you were asked about. When rows in one table carry different dates, say so per row (a date column or a per-row note), never one table-wide date; a row whose \`price_date\` is older than the others is called stale as of its own date.`;
 
-function getSharedCore(currentDate: string): string {
+function getSharedCore(): string {
   return `## Communication Style
 
 - Lead with the most important finding — don't bury the lede
@@ -362,7 +457,6 @@ When a tool answers with an error saying a name covers several accounts and the 
 - Dates use YYYY-MM-DD format
 - "Long-term" means held more than 1 year (from the day after the one-year anniversary of purchase)
 - Cost basis uses FIFO (First In, First Out) method
-- Today's date is ${currentDate}
 
 ## Fixed Income Intelligence
 
@@ -445,7 +539,7 @@ ${LIVE_MARKET_RULE}
 - If data appears stale, mention the data freshness dates`;
 }
 
-function buildMacroPrompt(currentDate: string): string {
+function buildMacroPrompt(): string {
   const scopePreamble = `[SCOPE] You are in Macro mode — a market and economic analyst. You have no portfolio data loaded by default. Focus on market trends, economic indicators, sector analysis, and macro themes. If the user explicitly asks you to look at their portfolio, you may use the portfolio tools, but don't do so proactively.`;
 
   return `${scopePreamble}
@@ -488,7 +582,6 @@ Available tools:
 
 - All amounts are in USD
 - Dates use YYYY-MM-DD format
-- Today's date is ${currentDate}
 
 ${LIVE_MARKET_RULE}
 

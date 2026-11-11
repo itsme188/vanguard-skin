@@ -4,6 +4,8 @@ import { runMigrations } from "@/lib/db/migrate";
 import {
   getRecentConversations,
   getConversationMessages,
+  getConversationById,
+  getLastConversationMessage,
 } from "@/lib/queries/chat";
 import {
   createConversation,
@@ -125,6 +127,35 @@ describe("chat queries + mutations", () => {
 
       expect(getConversationMessages(db, keep)).toHaveLength(1);
       expect(getConversationMessages(db, drop)).toHaveLength(0);
+    });
+  });
+
+  describe("getConversationById", () => {
+    it("returns the stored row with its scope", () => {
+      const id = createConversation(db, "ibkr");
+      const row = getConversationById(db, id);
+      expect(row?.id).toBe(id);
+      expect(row?.scope).toBe("ibkr");
+    });
+
+    it("returns null for an unknown or deleted id", () => {
+      expect(getConversationById(db, 999)).toBeNull();
+      const id = createConversation(db, "all");
+      deleteConversation(db, id);
+      expect(getConversationById(db, id)).toBeNull();
+    });
+  });
+
+  describe("getLastConversationMessage", () => {
+    it("returns the newest row by insertion order, or null", () => {
+      const id = createConversation(db, "all");
+      expect(getLastConversationMessage(db, id)).toBeNull();
+      saveMessage(db, id, "user", "first", null);
+      saveMessage(db, id, "assistant", "second", null);
+      saveMessage(db, id, "user", "third", null);
+      const last = getLastConversationMessage(db, id);
+      expect(last?.role).toBe("user");
+      expect(last?.content).toBe("third");
     });
   });
 });

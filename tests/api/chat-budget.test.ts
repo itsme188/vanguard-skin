@@ -429,26 +429,33 @@ describe("POST /api/chat — budget gate", () => {
     expect(activeStreamCount(NO_SESSION_KEY, Date.now())).toBe(0);
   });
 
-  it("the concurrency slot is released when the stream aborts (onAbort fires)", async () => {
-    let capturedOnAbort: (() => Promise<void> | void) | undefined;
-    hoisted.streamTextMock.mockImplementation(
-      (opts: { onAbort?: () => Promise<void> | void }) => {
-        capturedOnAbort = opts.onAbort;
-        return fakeStreamTextResult();
-      }
-    );
+  // The old test here called the captured onAbort hook by hand, which could
+  // not catch B13: streamText runs onAbort only when it was given an
+  // abortSignal, and the route passed none. The real abort path (real
+  // streamText, an aborted Request) is tested in tests/api/chat-abort.test.ts;
+  // this one pins that the route hands streamText the request's own signal.
+  it("the route passes the request's abort signal to streamText (real path: chat-abort.test.ts)", async () => {
+    let capturedSignal: AbortSignal | undefined;
+    hoisted.streamTextMock.mockImplementation((opts: { abortSignal?: AbortSignal }) => {
+      capturedSignal = opts.abortSignal;
+      return fakeStreamTextResult();
+    });
 
-    const req = makeChatRequest({
-      messages: [{ role: "user", parts: [{ type: "text", text: "hello" }] }],
-      scope: "macro",
+    const controller = new AbortController();
+    const req = new NextRequest("http://localhost:3099/api/chat", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        messages: [{ role: "user", parts: [{ type: "text", text: "hello" }] }],
+        scope: "macro",
+      }),
+      signal: controller.signal,
     });
     await POST(req);
-    expect(capturedOnAbort).toBeTypeOf("function");
-
-    const { NO_SESSION_KEY, activeStreamCount } = await import("@/lib/chat/budget");
-    expect(activeStreamCount(NO_SESSION_KEY, Date.now())).toBeGreaterThan(0);
-    await capturedOnAbort!();
-    expect(activeStreamCount(NO_SESSION_KEY, Date.now())).toBe(0);
+    expect(capturedSignal).toBeInstanceOf(AbortSignal);
+    expect(capturedSignal!.aborted).toBe(false);
+    controller.abort();
+    expect(capturedSignal!.aborted).toBe(true);
   });
 
   it("rate limit: bursting past the window returns 429", async () => {

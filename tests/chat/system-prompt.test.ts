@@ -242,4 +242,61 @@ describe("IBKR dynamic dashboard", () => {
     expect(prompt).not.toContain("Current IBKR Trading Dashboard");
     expect(prompt).toContain("long-term portfolio strategist");
   });
+
+  // Contract E / P12 rendering: cash provenance reaches the model.
+  const cashLine = (ctx: IbkrTradingContext) =>
+    buildSystemPrompt(fakeContext, today, "ibkr", ctx)
+      .split("\n")
+      .find((l) => l.startsWith("- **Cash**")) ?? "";
+  const totalLine = (ctx: IbkrTradingContext) =>
+    buildSystemPrompt(fakeContext, today, "ibkr", ctx)
+      .split("\n")
+      .find((l) => l.startsWith("- **Account Total**")) ?? "";
+
+  it("prints the as-of date on the cash and total lines", () => {
+    const ctx = { ...mockCtx, cashAsOf: "2026-11-10", accountTotalAsOf: "2026-11-09" };
+    expect(cashLine(ctx)).toContain("(as of 2026-11-10)");
+    expect(totalLine(ctx)).toContain("(as of 2026-11-09)");
+  });
+
+  it("a measured negative cash figure is a margin debit, and the stance is shown", () => {
+    const ctx = { ...mockCtx, estimatedCash: -300, cashPct: -1.5, cashAsOf: "2026-11-10", bullishnessScore: 5 };
+    const line = cashLine(ctx);
+    expect(line).toContain("-$300");
+    expect(line).toContain("negative cash (margin debit)");
+    expect(line).toContain("Stance: 5/5");
+  });
+
+  it("a carried negative figure may be a timing difference and withholds the stance", () => {
+    const ctx = {
+      ...mockCtx,
+      estimatedCash: -300,
+      cashPct: -1.5,
+      cashCarried: true,
+      stanceWithheld: true,
+    };
+    const line = cashLine(ctx);
+    expect(line).toContain("negative cash; this may be a timing difference, not borrowing");
+    expect(line).not.toContain("margin debit");
+    expect(line).not.toMatch(/Stance: \d\/5/);
+    expect(line).toContain("Stance: withheld (the cash figure is carried from an earlier date)");
+  });
+
+  it("a timing-residual or price-date-mismatch negative figure is not called borrowing", () => {
+    for (const flag of ["cashTimingResidual", "cashPriceDateMismatch"] as const) {
+      const ctx = { ...mockCtx, estimatedCash: -50, cashPct: -0.2, [flag]: true, stanceWithheld: true };
+      const line = cashLine(ctx);
+      expect(line, flag).toContain("this may be a timing difference, not borrowing");
+      expect(line, flag).toContain("Stance: withheld");
+    }
+  });
+
+  it("no cash source prints 'not available' with no figure and no stance score", () => {
+    const ctx = { ...mockCtx, cashSource: "none" as const, estimatedCash: 0, cashPct: 0, stanceWithheld: true };
+    const line = cashLine(ctx);
+    expect(line).toContain("**Cash**: not available");
+    expect(line).not.toContain("$");
+    expect(line).not.toMatch(/Stance: \d\/5/);
+    expect(line).toContain("Stance: withheld (no cash figure is available)");
+  });
 });

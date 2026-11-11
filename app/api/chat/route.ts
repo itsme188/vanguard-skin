@@ -5,22 +5,46 @@ import {
   jsonSchema,
   convertToModelMessages,
   stepCountIs,
+  type SystemModelMessage,
+  type Tool,
+  type UIMessage,
 } from "ai";
 import { db } from "@/lib/db";
 import { getPortfolioSummaryForChat } from "@/lib/queries/portfolio-summary";
-import { CHAT_TOOLS, executeTool, resolveAccountName } from "@/lib/chat/tools";
-import { scopeToAccountName, clampToolInputToScope } from "@/lib/chat/scope";
-import { buildSystemPrompt } from "@/lib/chat/system-prompt";
-import { computeIbkrTradingContext } from "@/lib/chat/ibkr-context";
-import { getAccountByName } from "@/lib/queries/accounts";
+import { CHAT_TOOLS, executeTool } from "@/lib/chat/tools";
+import {
+  resolveChatScope,
+  chatScopeAccountIds,
+  scopeClampName,
+  clampToolInputToScope,
+} from "@/lib/chat/scope";
+import { buildSystemPromptBlocks } from "@/lib/chat/system-prompt";
+import { computeIbkrTradingContext, type IbkrTradingContext } from "@/lib/chat/ibkr-context";
 import { getAnthropicApiKey } from "@/lib/env";
 import { getModelForFeature } from "@/lib/ai/provider";
-import { VALID_SCOPES, type ChatScope } from "@/lib/types";
+import { SCOPE_LABELS, VALID_SCOPES, type ChatScope } from "@/lib/types";
 import { createConversation, saveMessage, updateConversationTitle } from "@/lib/mutations/chat";
+import { getConversationById, getLastConversationMessage } from "@/lib/queries/chat";
 import { todayET } from "@/lib/calendar/date-utils";
 import { conversationTitleFromMessages } from "@/lib/chat/conversation-title";
 import { verifySession } from "@/lib/queries/sessions";
 import { SESSION_COOKIE } from "@/lib/auth/cookies";
+import { readPageField, pageNoteFor } from "@/lib/chat/page-context-server";
+import {
+  sanitizeUiHistory,
+  findOrphanToolCalls,
+  dropOrphanToolCalls,
+  LAST_STEP_NOTE,
+  MAX_CHAT_STEPS,
+} from "@/lib/chat/history";
+import { assistantRowText } from "@/lib/chat/turn-outcome";
+import {
+  logChatError,
+  logChatWarning,
+  logUsageStep,
+  logUsageTurn,
+  usageTokenFields,
+} from "@/lib/chat/usage-log";
 import {
   checkRequestSize,
   checkAndConsumeRateLimit,
@@ -31,6 +55,26 @@ import {
   budgetDayFor,
   NO_SESSION_KEY,
 } from "@/lib/chat/budget";
+
+/** One cache breakpoint (Contract D). Three are used: last tool, static system block, automatic tail. */
+const EPHEMERAL = { anthropic: { cacheControl: { type: "ephemeral" as const } } };
+
+/** The text of a UI message's text parts, joined. */
+function messageText(message: unknown): string {
+  const parts = (message as { parts?: unknown })?.parts;
+  if (!Array.isArray(parts)) return "";
+  return parts
+    .filter((p): p is { type: "text"; text: string } => p?.type === "text" && typeof p.text === "string")
+    .map((p) => p.text)
+    .join("");
+}
+
+/** A positive integer id from the request, or null (unknown text starts a new conversation). */
+function requestedConversationId(raw: unknown): number | null {
+  if (raw === undefined || raw === null || raw === "") return null;
+  const id = Number(raw);
+  return Number.isSafeInteger(id) && id > 0 ? id : null;
+}
 
 export async function POST(request: NextRequest) {
   // Defense-in-depth budget/rate-limit gate (#35, task 22, spec §G) — purely
@@ -49,7 +93,13 @@ export async function POST(request: NextRequest) {
   // without it would leave Retry opening a second conversation.
   let conversationHeaders: Record<string, string> | undefined;
   try {
-    const { messages, scope: rawScope, conversationId: rawConvId, pageContext } = await request.json();
+    const body = (await request.json()) as Record<string, unknown> | null;
+    const messages = body?.messages as UIMessage[] | undefined;
+    const rawScope = body?.scope;
+    const rawConvId = body?.conversationId;
+    // Contract A: only the page PATH is read from the client. The legacy
+    // free-text `pageContext` field is ignored entirely.
+    const page = readPageField(body);
 
     if (!messages || !Array.isArray(messages) || messages.length === 0) {
       return Response.json(
@@ -73,7 +123,7 @@ export async function POST(request: NextRequest) {
     const sessionKey = verifiedSession ? `session:${verifiedSession.id}` : NO_SESSION_KEY;
     const budgetDay = budgetDayFor(nowMs);
 
-    const sizeCheck = checkRequestSize(messages, pageContext);
+    const sizeCheck = checkRequestSize(messages, page);
     if (!sizeCheck.ok) {
       return Response.json({ success: false, error: sizeCheck.reason }, { status: 400 });
     }
@@ -110,31 +160,58 @@ export async function POST(request: NextRequest) {
     // Validate scope — missing defaults to "all", invalid returns 400
     let scope: ChatScope = "all";
     if (rawScope !== undefined && rawScope !== null) {
-      if (!VALID_SCOPES.includes(rawScope)) {
+      if (!VALID_SCOPES.includes(rawScope as ChatScope)) {
         return Response.json(
           {
-            error: `Invalid scope: ${rawScope}. Valid: ${VALID_SCOPES.join(", ")}`,
+            error: `Invalid scope: ${String(rawScope)}. Valid: ${VALID_SCOPES.join(", ")}`,
           },
           { status: 400 }
         );
       }
-      scope = rawScope;
+      scope = rawScope as ChatScope;
     }
 
-    let conversationId = rawConvId ? Number(rawConvId) : null;
-    if (!conversationId) {
+    // Conversation id (B14). An unknown or deleted id starts a new
+    // conversation in this scope (the header names it); a known id stored
+    // under another scope is refused, so a scoped conversation never carries
+    // on under a wider scope (OPEN-3 default).
+    let conversationId: number | null = null;
+    const requestedId = requestedConversationId(rawConvId);
+    if (requestedId !== null) {
+      const existing = getConversationById(db, requestedId);
+      if (existing) {
+        if (existing.scope !== scope) {
+          const label = SCOPE_LABELS[existing.scope as ChatScope] ?? existing.scope;
+          return Response.json(
+            {
+              success: false,
+              error: `This conversation was started in the ${label} scope. Start a new conversation to change scope.`,
+            },
+            { status: 409 }
+          );
+        }
+        conversationId = existing.id;
+      }
+    }
+    if (conversationId === null) {
       conversationId = createConversation(db, scope);
     }
-    conversationHeaders = { "X-Conversation-Id": String(conversationId) };
+    const convId: number = conversationId;
+    conversationHeaders = { "X-Conversation-Id": String(convId) };
 
-    // Save latest user message
-    const lastUserMsg = [...messages].reverse().find((m: any) => m.role === "user");
-    if (lastUserMsg) {
-      const textContent = lastUserMsg.parts
-        ?.filter((p: any) => p.type === "text")
-        .map((p: any) => p.text)
-        .join("") ?? "";
-      if (textContent) saveMessage(db, conversationId, "user", textContent, null);
+    // Save the latest user message (B12) only when the request ends with one
+    // (an approval continuation ends with the assistant message), and not
+    // again when a retry re-sends the message already stored last. A request
+    // rejected before this point (rate limit, daily ceiling) saved nothing,
+    // so its retry saves the message once.
+    const lastMessage = messages[messages.length - 1];
+    if (lastMessage?.role === "user") {
+      const textContent = messageText(lastMessage);
+      if (textContent) {
+        const stored = getLastConversationMessage(db, convId);
+        const isRetry = stored?.role === "user" && stored.content === textContent;
+        if (!isRetry) saveMessage(db, convId, "user", textContent, null);
+      }
     }
 
     const apiKey = getAnthropicApiKey();
@@ -148,66 +225,109 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Build portfolio context filtered to scope
+    // Scope (Contract I, P1, P10): a single-account scope is its scope word's
+    // whole id list; one that matches no account reads nothing.
+    const scopeResolution = resolveChatScope(db, scope);
+    const scopeAccountIds = chatScopeAccountIds(scopeResolution);
+
     let portfolioContext = "";
     if (scope !== "macro") {
-      const scopeToAccountHint: Record<string, string> = {
-        ibkr: "IBKR",
-        "vanguard-taxable": "Vanguard Taxable",
-        "vanguard-roth-ira": "Vanguard Roth IRA",
-      };
-      const accountHint = scopeToAccountHint[scope];
-      const accountName = accountHint
-        ? resolveAccountName(db, accountHint)
-        : undefined;
-      portfolioContext = getPortfolioSummaryForChat(db, accountName);
+      portfolioContext = getPortfolioSummaryForChat(
+        db,
+        scopeAccountIds === undefined
+          ? undefined
+          : { accountIds: scopeAccountIds, label: SCOPE_LABELS[scope] },
+      );
     }
     // ET-anchored (repo rule): UTC toISOString() rolls to tomorrow after ~8pm ET.
     const currentDate = todayET();
 
-    // Compute IBKR dynamic trading context when scoped to IBKR
-    const ibkrContext = scope === "ibkr"
-      ? (() => {
-          const ibkrAccountName = resolveAccountName(db, "IBKR");
-          if (!ibkrAccountName) return undefined;
-          const ibkrAccount = getAccountByName(db, ibkrAccountName);
-          if (!ibkrAccount) return undefined;
-          return computeIbkrTradingContext(db, ibkrAccount.id, ibkrAccount.name);
-        })()
-      : undefined;
-
-    let systemPromptText = buildSystemPrompt(portfolioContext, currentDate, scope, ibkrContext);
-    if (pageContext) {
-      systemPromptText += `\n\n[Current Page Context]\n${pageContext}`;
+    // IBKR trading dashboard: it describes one account, so it is built only
+    // when the IBKR scope is exactly one account.
+    let ibkrContext: IbkrTradingContext | undefined;
+    let ibkrNote: string | undefined;
+    if (scope === "ibkr" && scopeResolution.kind === "accounts") {
+      const accounts = scopeResolution.accounts;
+      if (accounts.length === 1) {
+        ibkrContext = computeIbkrTradingContext(db, accounts[0].id, accounts[0].name);
+      } else {
+        ibkrNote = `The IBKR scope covers ${accounts.length} accounts; the trading dashboard covers one account and is left out.`;
+      }
     }
+
+    // Contract D: the static block is the same for every request in this
+    // scope and carries the cache mark; everything that changes per request
+    // (date, dashboard, summary, page) is in the volatile block after it.
+    const { staticBlock, volatileBlock } = buildSystemPromptBlocks({
+      scope,
+      currentDate,
+      portfolioContext,
+      ibkrContext,
+      ibkrNote,
+      pageNote: pageNoteFor(db, page),
+    });
+    const staticSystem: SystemModelMessage = {
+      role: "system",
+      content: staticBlock,
+      providerOptions: EPHEMERAL,
+    };
+    const systemBlocks: SystemModelMessage[] = [staticSystem, { role: "system", content: volatileBlock }];
+    // Item G (P4): the last allowed step is told so in the volatile block
+    // only; the static block and its mark are untouched.
+    const lastStepSystem: SystemModelMessage[] = [
+      staticSystem,
+      { role: "system", content: `${volatileBlock}\n\n${LAST_STEP_NOTE}` },
+    ];
 
     // Convert existing Anthropic tool definitions to AI SDK tool format.
     // Each tool wraps the existing executeTool() dispatcher, preserving all
     // tool logic and data quality annotations without any rewrite.
-    // HARD scope boundary: when scope is a single account, clampToolInputToScope
-    // FORCES account_name to that account for every account-bearing tool —
-    // overriding any model-supplied value — so a scoped chat can never reach
-    // another account's portfolio data (U2c leak fix). undefined for all/macro.
-    const scopeAccountName = scopeToAccountName(db, scope);
+    // HARD scope boundary: in a single-account scope clampToolInputToScope
+    // FORCES account_name to the scope for every account-bearing tool
+    // (overriding any model-supplied value; a narrower account inside a
+    // several-account scope is kept, P2), so a scoped chat can never reach
+    // another account's portfolio data (U2c leak fix). Undefined for all/macro.
+    const scopeAccountName = scopeClampName(scope, scopeResolution);
+    const clampIds =
+      scopeAccountIds && scopeAccountIds.length > 1 ? { db, accountIds: scopeAccountIds } : undefined;
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const aiTools: Record<string, any> = {};
-    for (const t of CHAT_TOOLS) {
+    const aiTools: Record<string, Tool> = {};
+    CHAT_TOOLS.forEach((t, index) => {
       const name = t.name;
+      const isLast = index === CHAT_TOOLS.length - 1;
       aiTools[name] = tool({
         description: t.description,
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         inputSchema: jsonSchema<Record<string, unknown>>(t.input_schema as any),
-        execute: async (rawInput) => {
+        // Contract C: the SDK withholds execute until the owner approves.
+        ...(t.needsApproval ? { needsApproval: t.needsApproval } : {}),
+        // Contract H: compact model-facing output, when a tool defines one.
+        ...(t.toModelOutput ? { toModelOutput: t.toModelOutput } : {}),
+        // Contract D item 5: the cache mark on the LAST tool by position.
+        ...(isLast ? { providerOptions: EPHEMERAL } : {}),
+        execute: async (rawInput, { abortSignal }) => {
           const input = clampToolInputToScope(
             rawInput as Record<string, unknown>,
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             t.input_schema as any,
             scopeAccountName,
+            clampIds,
           );
-          return executeTool(db, name, input);
+          return executeTool(db, name, input, { abortSignal, scopeAccountIds });
         },
-      });
+      }) as Tool;
+    });
+
+    // Item H: never send a tool call without its result (an aborted turn, a
+    // stale approval card); an approved continuation passes intact.
+    let modelMessages = await convertToModelMessages(sanitizeUiHistory(messages), {
+      tools: aiTools,
+      ignoreIncompleteToolCalls: true,
+    });
+    const orphans = findOrphanToolCalls(modelMessages);
+    if (orphans.length > 0) {
+      logChatWarning(`orphan tool call dropped (${orphans.length})`);
+      modelMessages = dropOrphanToolCalls(modelMessages, orphans);
     }
 
     // Acquire the concurrency slot HERE — immediately before streamText —
@@ -229,26 +349,40 @@ export async function POST(request: NextRequest) {
       releaseStreamSlot(sessionKey, slot.slotId);
     };
 
-    // Stream with automatic agentic tool loop (up to 8 model calls)
+    let loggedSteps = 0;
+    let streamedSteps = 0;
+
+    // Stream with automatic agentic tool loop (up to MAX_CHAT_STEPS model calls)
     const result = streamText({
       model: getModelForFeature("chat"),
       maxOutputTokens: 16000,
-      system: {
-        role: "system",
-        content: systemPromptText,
-        providerOptions: {
-          anthropic: { cacheControl: { type: "ephemeral" } },
-        },
-      },
+      system: systemBlocks,
       tools: aiTools,
-      messages: await convertToModelMessages(messages),
-      stopWhen: stepCountIs(8),
+      messages: modelMessages,
+      stopWhen: stepCountIs(MAX_CHAT_STEPS),
+      // B13: without a signal streamText never runs onAbort, so a closed tab
+      // held its concurrency slot until the stale prune.
+      abortSignal: request.signal,
+      prepareStep: ({ stepNumber }) =>
+        stepNumber === MAX_CHAT_STEPS - 1 ? { system: lastStepSystem } : undefined,
       providerOptions: {
         anthropic: {
           thinking: { type: "adaptive" },
+          // Contract D item 6: automatic caching of the conversation tail.
+          cacheControl: { type: "ephemeral" },
         },
       },
-      onFinish: async ({ text, finishReason, totalUsage }) => {
+      onStepFinish: (step) => {
+        logUsageStep({
+          conversationId: convId,
+          scope,
+          model: step.response?.modelId,
+          step: loggedSteps++,
+          ...usageTokenFields(step.usage),
+          finishReason: step.finishReason,
+        });
+      },
+      onFinish: async ({ steps, finishReason, totalUsage }) => {
         // Best-effort daily ceiling accounting (#35, task 22): the AI SDK's
         // actual post-call usage figure, not an estimate — accumulated here
         // because this is the one place streamText hands back real token
@@ -257,17 +391,33 @@ export async function POST(request: NextRequest) {
         recordDailyUsage(sessionKey, budgetDay, totalUsage?.outputTokens ?? 0);
         releaseSlot();
 
+        const allSteps = steps ?? [];
+        logUsageTurn({
+          conversationId: convId,
+          scope,
+          model: allSteps[allSteps.length - 1]?.response?.modelId,
+          steps: allSteps.length,
+          ...usageTokenFields(totalUsage),
+          finishReason,
+        });
         if (finishReason === "content-filter") {
-          console.warn("[chat] model refused the request");
+          logChatWarning("model refused the request");
         }
-        if (text && conversationId) {
-          saveMessage(db, conversationId, "assistant", text, null);
-          // Auto-title from first exchange
-          const msgCount = messages.filter((m: any) => m.role === "user").length;
-          if (msgCount <= 1) {
-            const title = conversationTitleFromMessages(messages);
-            if (title) updateConversationTitle(db, conversationId, title);
+
+        // B11: every step's text, or the sentence for an empty turn (Contract B).
+        try {
+          const text = assistantRowText(allSteps, finishReason);
+          if (text) {
+            saveMessage(db, convId, "assistant", text, null);
+            // Auto-title from first exchange
+            const msgCount = messages.filter((m) => m.role === "user").length;
+            if (msgCount <= 1) {
+              const title = conversationTitleFromMessages(messages);
+              if (title) updateConversationTitle(db, convId, title);
+            }
           }
+        } catch (error) {
+          logChatError("save assistant message", error);
         }
       },
       onError: ({ error }) => {
@@ -275,12 +425,15 @@ export async function POST(request: NextRequest) {
         // of toUIMessageStreamResponse's onError below — this only logs +
         // releases the concurrency slot so an in-flight-generation error
         // never leaves the session permanently stuck at the concurrency cap.
-        console.error("[chat] streamText error:", error);
+        logChatError("streamText", error);
         releaseSlot();
       },
-      onAbort: () => {
-        // Additive (#35, task 22): fires on client disconnect / stream
-        // abort — same release, so an abandoned request can't leak a slot.
+      onAbort: ({ steps }) => {
+        // Fires on client disconnect (abortSignal above) — same release, so
+        // an abandoned request can't leak a slot. Finished steps still count
+        // toward the daily ceiling.
+        const output = (steps ?? []).reduce((sum, s) => sum + (s.usage?.outputTokens ?? 0), 0);
+        recordDailyUsage(sessionKey, budgetDay, output);
         releaseSlot();
       },
     });
@@ -288,6 +441,14 @@ export async function POST(request: NextRequest) {
     return result.toUIMessageStreamResponse({
       sendReasoning: true,
       headers: conversationHeaders,
+      // Contract B: the finish part tells the client why an empty turn ended.
+      messageMetadata: ({ part }) => {
+        if (part.type === "finish-step") streamedSteps++;
+        if (part.type === "finish") {
+          return { finishReason: part.finishReason, stepCount: streamedSteps };
+        }
+        return undefined;
+      },
       onError: (error) =>
         error instanceof Error ? error.message : "Stream error",
     });
@@ -297,6 +458,7 @@ export async function POST(request: NextRequest) {
     // model-resolution error in getModelForFeature) — releaseSlot is a
     // no-op if the slot was already released or never acquired.
     releaseSlot();
+    logChatError("route", error);
     const message =
       error instanceof Error ? error.message : "Unknown error";
     return Response.json({ error: message }, { status: 500, headers: conversationHeaders });

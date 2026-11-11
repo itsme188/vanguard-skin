@@ -61,3 +61,42 @@ export function turnOutcomeNotice(message: TurnOutcomeMessage): string | null {
       return null;
   }
 }
+
+/** Structural view of a finished step that `assistantRowText` reads. */
+export interface TurnOutcomeStep {
+  text: string;
+  content: readonly { type: string }[];
+}
+
+/**
+ * The text to save as the assistant row for a finished turn (B11), or null
+ * to save nothing. `onFinish.text` is the LAST step's text only, so the row
+ * is built from every step: the non-empty step texts joined with a blank
+ * line. A turn with no written text saves the sentence for its finish reason,
+ * or nothing while an approval is pending (the continuation saves its own
+ * row) or for a plain stop.
+ */
+export function assistantRowText(
+  steps: readonly TurnOutcomeStep[],
+  finishReason: string | undefined,
+): string | null {
+  const joined = steps
+    .map((s) => (typeof s.text === "string" ? s.text.trim() : ""))
+    .filter((t) => t !== "")
+    .join("\n\n");
+  if (joined) return joined;
+
+  const last = steps[steps.length - 1];
+  if (last?.content.some((p) => p.type === "tool-approval-request")) return null;
+
+  switch (finishReason) {
+    case "tool-calls":
+      return CUT_OFF_SENTENCE;
+    case "length":
+      return OUTPUT_LIMIT_SENTENCE;
+    case "content-filter":
+      return CONTENT_FILTER_SENTENCE;
+    default:
+      return null;
+  }
+}
