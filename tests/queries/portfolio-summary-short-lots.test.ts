@@ -17,7 +17,7 @@ import { getPortfolioSummaryForChat } from "@/lib/queries/portfolio-summary";
 import { upsertFxRate } from "@/lib/mutations/fx-rates";
 import { ibkrTradeDirectionNote } from "@/lib/import/ibkr-trade-direction";
 import { todayET } from "@/lib/calendar/date-utils";
-import { createPendingTestDb, seedSec, seedHold, seedPx } from "../setup/pending-statement-fixtures";
+import { createPendingTestDb, seedSec, seedHold, seedPx, seedLot } from "../setup/pending-statement-fixtures";
 
 const IBKR = 3; // seeded by migration 002
 const HELD_DAYS = 340; // inside the 60-day approaching-long-term window
@@ -205,5 +205,22 @@ describe("lots approaching long-term status", () => {
       )
       .get(sec) as { is_long_term: number; realized_gain_loss: number };
     expect(sale).toEqual({ is_long_term: 0, realized_gain_loss: 400 });
+  });
+});
+
+describe("open-lot totals (B4)", () => {
+  it("open-lot totals keep long basis and short proceeds apart", () => {
+    // A fresh book: one long lot (10 at 100, basis 1,000) and one short lot
+    // (10 sold short at 50, opening proceeds 500). Adding them would print a
+    // meaningless 1,500 "cost basis".
+    db = createPendingTestDb();
+    const longSec = seedSec(db, "ZYL");
+    const shortSec = seedSec(db, "ZYS");
+    seedLot(db, IBKR, longSec, { date: daysAgo(30), qty: 10, price: 100 });
+    seedLot(db, IBKR, shortSec, { date: daysAgo(30), qty: 10, price: 50, isShort: 1 });
+
+    const summary = getPortfolioSummaryForChat(db);
+    expect(summary).toContain("- Open lots: 2 (long cost basis: $1,000; short-sale proceeds: $500)");
+    expect(summary).not.toContain("$1,500");
   });
 });

@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import { getPortfolioSummaryForChat } from "@/lib/queries/portfolio-summary";
+import { getHoldingsForChat } from "@/lib/queries/chat-tools";
 import { computeTaxLots } from "@/lib/compute/tax-lots";
 import { bumpTaxInputGeneration } from "@/lib/compute/tax-convention";
 
@@ -323,9 +324,59 @@ describe("getPortfolioSummaryForChat", () => {
     const summary = getPortfolioSummaryForChat(db);
     expect(summary).toContain("Open lots: 1");
     expect(summary).toContain("cost basis: $1,000");
-    expect(summary).toContain("Realized gains: $0");
+    // The conversion's 20 gain never reaches a realized-gains line.
+    expect(summary).not.toMatch(/Realized gains[^\n]*\$20\b/);
     expect(summary).not.toContain("ZZOPT");
     expect(summary).not.toContain("$1,200");
+  });
+});
+
+describe("recent transactions and holdings basis (QA-11, QA-12)", () => {
+  let db: Database.Database;
+  const ACCOUNT_ID = 1; // Vanguard Taxable
+
+  beforeEach(() => {
+    db = new Database(":memory:");
+    db.pragma("foreign_keys = ON");
+    runMigrations(db);
+  });
+
+  it("recent transactions name contracts and face value by type", () => {
+    const opt = seedSecurity(db, "ZZQ 270115C00050000", "ZZQ call", "option");
+    const bond = seedSecurity(db, "ZZBND", "ZZ note", "bond");
+    const stock = seedSecurity(db, "ZZSTK", "ZZ stock", "stock");
+    const insert = db.prepare(
+      `INSERT INTO transactions (account_id, security_id, trade_date, type, quantity, amount, source_key)
+       VALUES (?, ?, ?, 'BUY', ?, ?, ?)`
+    );
+    insert.run(ACCOUNT_ID, opt, "2025-03-03", 2, -500, "qa11-opt");
+    insert.run(ACCOUNT_ID, bond, "2025-03-04", 5000, -4900, "qa11-bond");
+    insert.run(ACCOUNT_ID, stock, "2025-03-05", 1, -100, "qa11-stock");
+
+    const summary = getPortfolioSummaryForChat(db);
+    expect(summary).toContain("BUY ZZQ 270115C00050000 2 contracts $500");
+    expect(summary).toContain("BUY ZZBND 5000 face value $4,900");
+    expect(summary).toContain("BUY ZZSTK 1 share $100");
+    expect(summary).not.toMatch(/ZZQ 270115C00050000 2 shares/);
+  });
+
+  it("holdings cost basis matches query_holdings for a row with no own basis", () => {
+    // Earlier row: 10 shares, basis 1,000. Latest row: 20 shares, basis NULL.
+    // The Accounts page scales the earlier basis: 1,000 x 20 / 10 = 2,000.
+    // Value 20 x 80 = 1,600, so the gain is 1,600 - 2,000 = -400.
+    const sec = seedSecurity(db, "ZZCB", "ZZ basis", "stock");
+    db.prepare(
+      `INSERT INTO holdings (account_id, security_id, quantity, cost_basis, as_of_date, source_key)
+       VALUES (?, ?, 10, 1000, '2025-01-31', 'qa12-a'), (?, ?, 20, NULL, '2025-02-28', 'qa12-b')`
+    ).run(ACCOUNT_ID, sec, ACCOUNT_ID, sec);
+    seedPrice(db, sec, "2025-02-28", 80);
+
+    const summary = getPortfolioSummaryForChat(db);
+    expect(summary).toContain("- ZZCB (Vanguard Taxable): 20 shares MV:$1,600 G/L:-$400");
+
+    const tool = getHoldingsForChat(db, { symbol: "ZZCB" });
+    expect(tool).toHaveLength(1);
+    expect(tool[0].unrealized_gain).toBeCloseTo(-400, 6);
   });
 });
 

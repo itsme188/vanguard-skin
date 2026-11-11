@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import { getPortfolioSummaryForChat } from "@/lib/queries/portfolio-summary";
+import { todayET } from "@/lib/calendar/date-utils";
 
 /**
  * Two figures the chat summary states:
@@ -14,6 +15,10 @@ import { getPortfolioSummaryForChat } from "@/lib/queries/portfolio-summary";
  */
 
 const ACCOUNT_ID = 1; // seeded by migration 002
+// Every sale is dated Jan 1 of the current Eastern year, so the summary's
+// current-year line holds it whatever day the suite runs.
+const YEAR = todayET().slice(0, 4);
+const SALE_DATE = `${YEAR}-01-01`;
 
 let db: Database.Database;
 
@@ -43,19 +48,19 @@ function seedClosedLot(securityId: number, realizedGainLoss: number, isLongTerm:
   const txnId = db
     .prepare(
       `INSERT INTO transactions (account_id, security_id, trade_date, type, source_key)
-       VALUES (?, ?, '2026-02-10', 'SELL', ?)`
+       VALUES (?, ?, ?, 'SELL', ?)`
     )
-    .run(ACCOUNT_ID, securityId, `usd-only-sale-${lotId}`).lastInsertRowid as number;
+    .run(ACCOUNT_ID, securityId, SALE_DATE, `usd-only-sale-${lotId}`).lastInsertRowid as number;
   db.prepare(
     `INSERT INTO tax_lot_sales
        (tax_lot_id, sale_transaction_id, sale_date, sale_price, quantity_sold, proceeds,
         cost_basis_allocated, realized_gain_loss, is_long_term, holding_period_days)
-     VALUES (?, ?, '2026-02-10', 10, 10, ?, 100, ?, ?, 762)`
-  ).run(lotId, txnId, 100 + realizedGainLoss, realizedGainLoss, isLongTerm ? 1 : 0);
+     VALUES (?, ?, ?, 10, 10, ?, 100, ?, ?, 762)`
+  ).run(lotId, txnId, SALE_DATE, 100 + realizedGainLoss, realizedGainLoss, isLongTerm ? 1 : 0);
 }
 
 function realizedLine(summary: string): string {
-  return summary.split("\n").find((l) => l.startsWith("- Realized gains:")) ?? "";
+  return summary.split("\n").find((l) => l.startsWith(`- Realized gains ${YEAR} `)) ?? "";
 }
 
 describe("chat summary realized gains are USD-only", () => {
@@ -66,7 +71,7 @@ describe("chat summary realized gains are USD-only", () => {
 
     const line = realizedLine(getPortfolioSummaryForChat(db));
     expect(line).toBe(
-      "- Realized gains: $300 (LT: $300, ST: $0) — USD totals exclude 1 non-USD sale (native-currency figures)"
+      `- Realized gains ${YEAR} (taxable accounts): short-term $0, long-term $300 (not for filing) — USD totals exclude 1 non-USD sale (native-currency figures)`
     );
   });
 
@@ -77,19 +82,21 @@ describe("chat summary realized gains are USD-only", () => {
     seedClosedLot(seedSecurity("ZZZ", "JPY"), 70000, false);
 
     const line = realizedLine(getPortfolioSummaryForChat(db));
-    expect(line).toContain("Realized gains: $200 (LT: $300, ST: -$100)");
+    expect(line).toContain("short-term -$100, long-term $300");
     expect(line).toContain("USD totals exclude 2 non-USD sales (native-currency figures)");
   });
 
   it("says nothing extra when every sale is USD", () => {
     seedClosedLot(seedSecurity("AAA", "USD"), 300, true);
-    expect(realizedLine(getPortfolioSummaryForChat(db))).toBe("- Realized gains: $300 (LT: $300, ST: $0)");
+    expect(realizedLine(getPortfolioSummaryForChat(db))).toBe(
+      `- Realized gains ${YEAR} (taxable accounts): short-term $0, long-term $300 (not for filing)`
+    );
   });
 
   it("still shows the tax summary, with the disclosure, when the only sale is non-USD", () => {
     seedClosedLot(seedSecurity("ZZZ", "JPY"), 70000, true);
     const line = realizedLine(getPortfolioSummaryForChat(db));
-    expect(line).toContain("Realized gains: $0 (LT: $0, ST: $0)");
+    expect(line).toContain("short-term $0, long-term $0");
     expect(line).toContain("USD totals exclude 1 non-USD sale (native-currency figures)");
   });
 

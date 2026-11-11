@@ -1,17 +1,22 @@
 import type Database from "better-sqlite3";
 import { unmaturedSecuritySql } from "@/lib/db/eastern-day-sql";
-import { adjustedMarketValueSQL } from "@/lib/valuation";
+import { adjustedMarketValueSQL, scaledCostBasisFallbackSQL } from "@/lib/valuation";
 import { formatUSD, formatNumber, resolveOptionFields } from "@/lib/format";
 import { parseOCCSymbol } from "@/lib/import/occ-symbol";
 import { getTaxConventionState } from "@/lib/compute/tax-convention";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 import { todayET } from "@/lib/calendar/date-utils";
+import { accountScopeAndSql } from "@/lib/queries/account-scope-sql";
+import { getAllAccounts } from "@/lib/queries/accounts";
+import { isTaxableAccount } from "@/lib/compute/tax-treatment";
+import { generateTaxReport, washSaleReplacementPhrase, type TaxReportResult } from "@/lib/compute/tax-report";
+import { quantityUnitLabel } from "@/lib/format/quantity-unit";
 import {
   getPortfolioCurrentValues,
   type AccountValueSourceKind,
 } from "@/lib/queries/dashboard";
 import { liveOptionExpirationSql, normalizeOptionExpiration } from "@/lib/compute/option-expiry";
-import { CURRENCY_CONVERSION_SECURITY_SQL, USD_ONLY, lotSideSignSql, remainingLotBasisSql } from "@/lib/queries/tax-lots";
+import { CURRENCY_CONVERSION_SECURITY_SQL, lotSideSignSql, remainingLotBasisSql } from "@/lib/queries/tax-lots";
 import { longTermDateSql } from "@/lib/queries/long-term-sql";
 import { getPendingStatementIndex, isPendingStatementLot } from "@/lib/queries/pending-statement";
 import {
@@ -75,6 +80,7 @@ interface RecentTransaction {
   trade_date: string;
   type: string;
   symbol: string | null;
+  security_type: string | null;
   quantity: number | null;
   amount: number | null;
 }
@@ -139,27 +145,67 @@ function describeOptionLeg(
   return ` — ${side} ${kind}${underlying ? ` on ${underlying}` : ""}${parts.length ? `, ${parts.join(", ")}` : ""}`;
 }
 
-export function getPortfolioSummaryForChat(db: Database.Database, accountName?: string): string {
+/**
+ * The chat summary's scope (Contract I of the Portfolio Assistant plan,
+ * 2026-11-11):
+ *  - `undefined`: every account;
+ *  - `{ accountIds, label }`: exactly those ids (`[]` = no accounts), with
+ *    `label` naming the scope in the "This total covers ..." sentence;
+ *  - a string (legacy): the one account with that exact name; no exact match
+ *    is the empty scope, never the whole book.
+ */
+export type PortfolioSummaryScope = string | { accountIds: number[]; label: string };
+
+export const NO_ACCOUNT_IN_SCOPE = "No account matches this chat's scope.";
+const TAX_ADVANTAGED_NOT_APPLICABLE = "Not applicable: this account is tax-advantaged.";
+const ALL_TAX_ADVANTAGED_NOT_APPLICABLE = "Not applicable: every account in this scope is tax-advantaged.";
+
+function resolveSummaryScope(
+  db: Database.Database,
+  scope: PortfolioSummaryScope | undefined,
+): { accountIds: number[] | undefined; label: string | null } {
+  if (scope === undefined) return { accountIds: undefined, label: null };
+  if (typeof scope === "string") {
+    const row = db.prepare("SELECT id FROM accounts WHERE name = ?").get(scope) as { id: number } | undefined;
+    return { accountIds: row ? [row.id] : [], label: scope };
+  }
+  return { accountIds: [...new Set(scope.accountIds)], label: scope.label };
+}
+
+export function getPortfolioSummaryForChat(db: Database.Database, scope?: PortfolioSummaryScope): string {
   // ET day — a UTC slice reads tomorrow from 20:00 ET and shifts every
   // days-to-long-term count and trailing window below by one.
   const today = todayET();
   const lines: string[] = [];
   lines.push("## Portfolio Summary\n");
+
+  // ─── Resolve the scope to an account id list ───────────────────
+  // `undefined` = every account; a defined empty list = no accounts. Every
+  // filter below is built from this one list (accountScopeAndSql), so no
+  // section can read an account outside the scope.
+  const { accountIds, label: scopeLabel } = resolveSummaryScope(db, scope);
+  if (accountIds !== undefined && accountIds.length === 0) {
+    lines.push(NO_ACCOUNT_IN_SCOPE);
+    return lines.join("\n");
+  }
   const conventionPending = !getTaxConventionState(db).recomputeCurrent;
 
-  // ─── Resolve accountName to accountId ──────────────────────────
-  let accountId: number | undefined;
-  if (accountName) {
-    const row = db.prepare("SELECT id FROM accounts WHERE name = ?").get(accountName) as { id: number } | undefined;
-    accountId = row?.id;
-  }
+  const holdingsScope = accountScopeAndSql(accountIds, "h.account_id");
+  const holdingsFilter = holdingsScope.sql;
+  const holdingsParams = holdingsScope.params;
+  const txnScope = accountScopeAndSql(accountIds, "t.account_id");
 
-  const holdingsFilter = accountId != null ? `AND h.account_id = ?` : "";
-  const holdingsParams = accountId != null ? [accountId] : [];
-  const taxLotsFilter = accountId != null ? `AND tl.account_id = ?` : "";
-  const taxLotsParams = accountId != null ? [accountId] : [];
-  const txnFilter = accountId != null ? `AND t.account_id = ?` : "";
-  const txnParams = accountId != null ? [accountId] : [];
+  // Tax treatment (QA-1): harvesting and long-term timing matter only in a
+  // taxable account. `isTaxableAccount` is the one reader of the column.
+  const accountsInScope = getAllAccounts(db).filter(
+    (a) => accountIds === undefined || accountIds.includes(a.id),
+  );
+  const taxableAccountsInScope = accountsInScope.filter((a) => isTaxableAccount(a.tax_treatment));
+  const taxableIds = taxableAccountsInScope.map((a) => a.id);
+  const noTaxableAccount = accountsInScope.length > 0 && taxableAccountsInScope.length === 0;
+  const taxAdvantagedSentence =
+    accountsInScope.length === 1 ? TAX_ADVANTAGED_NOT_APPLICABLE : ALL_TAX_ADVANTAGED_NOT_APPLICABLE;
+  const taxableTlScope = accountScopeAndSql(taxableIds, "tl.account_id");
 
   // ─── Account Values ────────────────────────────────────────────
   // Owner ruling 2026-10-08: the chat reads the Portfolio strip's total. The
@@ -167,8 +213,7 @@ export function getPortfolioSummaryForChat(db: Database.Database, accountName?: 
   // latest statement) is the strip's own, from one shared helper, so the two
   // surfaces cannot state different totals. A named account that matches
   // nothing is an empty scope, never the whole portfolio.
-  const valueScope = accountName ? (accountId != null ? [accountId] : []) : undefined;
-  const portfolioValues = getPortfolioCurrentValues(db, valueScope);
+  const portfolioValues = getPortfolioCurrentValues(db, accountIds);
 
   lines.push("### Account Values");
   for (const av of portfolioValues.accounts) {
@@ -193,14 +238,20 @@ export function getPortfolioSummaryForChat(db: Database.Database, accountName?: 
     lines.push(`- **Total Portfolio**: ${formatUSD(portfolioValues.totalValue)}${asOf}`);
     // The strip on Today adds EVERY account. A summary scoped to one account
     // totals that account alone, so it must not claim the strip's figure.
+    const several = accountIds !== undefined && accountIds.length > 1;
     lines.push(
-      accountName
-        ? `- This total covers the ${accountName} account only. It is not the whole-portfolio figure on the Portfolio strip on Today, which adds every account. The account line above states its own date and source.`
+      scopeLabel !== null
+        ? several
+          ? `- This total covers the ${scopeLabel} accounts only. It is not the whole-portfolio figure on the Portfolio strip on Today, which adds every account. Each account line above states its own date and source.`
+          : `- This total covers the ${scopeLabel} account only. It is not the whole-portfolio figure on the Portfolio strip on Today, which adds every account. The account line above states its own date and source.`
         : "- This total is the same figure as the Portfolio strip on Today. Each account line above states its own date and source.",
     );
   }
 
   // ─── All Holdings with enrichment ──────────────────────────────
+  // QA-12: the basis the Accounts page shows and query_holdings reads: the
+  // row's own, else the latest earlier row of the pair scaled by quantity.
+  const HOLDING_BASIS = scaledCostBasisFallbackSQL("h", "hb");
   const holdings = db
     .prepare(
       `WITH latest_prices AS (
@@ -229,14 +280,14 @@ export function getPortfolioSummaryForChat(db: Database.Database, accountName?: 
       SELECT a.name AS account_name, s.symbol, s.name AS security_name,
               s.security_type, s.asset_class, s.sector,
               s.option_type, s.strike_price, s.expiration_date, s.underlying_symbol,
-              h.quantity, h.cost_basis * COALESCE(fx.usd_per_unit, 1) AS cost_basis, h.as_of_date,
+              h.quantity, ${HOLDING_BASIS} * COALESCE(fx.usd_per_unit, 1) AS cost_basis, h.as_of_date,
               lp.close_price AS latest_price,
               CASE WHEN lp.close_price IS NOT NULL
                 THEN ${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}
                 ELSE NULL
               END AS market_value,
-              CASE WHEN lp.close_price IS NOT NULL AND h.cost_basis IS NOT NULL AND h.cost_basis > 0
-                THEN ${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")} - (h.cost_basis * COALESCE(fx.usd_per_unit, 1))
+              CASE WHEN lp.close_price IS NOT NULL AND ${HOLDING_BASIS} IS NOT NULL AND ${HOLDING_BASIS} > 0
+                THEN ${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")} - (${HOLDING_BASIS} * COALESCE(fx.usd_per_unit, 1))
                 ELSE NULL
               END AS unrealized_gain,
               CASE WHEN lp.close_price IS NOT NULL
@@ -355,6 +406,7 @@ export function getPortfolioSummaryForChat(db: Database.Database, accountName?: 
         WHERE lp.close_price IS NOT NULL
           AND ${latestHoldingsPredicate({ includeShorts: false, accountFilter: "" })}
           AND ${unmaturedSecuritySql("s")}
+          AND ${liveOptionExpirationSql("s", today)}
           ${holdingsFilter}
       )
       SELECT group_name, SUM(mv) AS total_market_value,
@@ -395,6 +447,7 @@ export function getPortfolioSummaryForChat(db: Database.Database, accountName?: 
         WHERE lp.close_price IS NOT NULL
           AND ${latestHoldingsPredicate({ includeShorts: false, accountFilter: "" })}
           AND ${unmaturedSecuritySql("s")}
+          AND ${liveOptionExpirationSql("s", today)}
           ${holdingsFilter}
       )
       SELECT group_name, SUM(mv) AS total_market_value,
@@ -424,17 +477,17 @@ export function getPortfolioSummaryForChat(db: Database.Database, accountName?: 
   }
 
   // ─── Tax Summary + Harvesting Candidates ───────────────────────
-  const taxLotsAccountFilter = accountId != null ? `AND tax_lots.account_id = ?` : "";
-  const taxLotsAccountParams = accountId != null ? [accountId] : [];
+  const taxLotsScope = accountScopeAndSql(accountIds, "tax_lots.account_id");
   // tax_lots.cost_basis is the v2 TRUE-DOLLAR total for the lot's original
   // quantity_acquired (bond ÷100, option ×multiplier, fees included); the
   // still-open share is dollar-proportional (see cost-basis-reconciliation.ts).
+  // For a short lot the same column holds the opening short-sale proceeds.
   //
   // Pending-statement lots (positions closed per live data, awaiting the
   // broker statement — lib/queries/pending-statement.ts) are NOT open
   // holdings: grouped per pair so the shared read model can split them out
   // into their own disclosed line, never re-derived here.
-  const pendingIndex = getPendingStatementIndex(db, accountId != null ? [accountId] : undefined, { today });
+  const pendingIndex = getPendingStatementIndex(db, accountIds, { today });
   const taxLotGroups = db
     .prepare(
       `SELECT
@@ -448,17 +501,19 @@ export function getPortfolioSummaryForChat(db: Database.Database, accountName?: 
          AND quantity_acquired != 0
          AND NOT (${CURRENCY_CONVERSION_SECURITY_SQL})
          AND ${liveOptionExpirationSql("s", today)}
-         ${taxLotsAccountFilter}
+         ${taxLotsScope.sql}
        GROUP BY tax_lots.account_id, tax_lots.security_id, tax_lots.is_short`
     )
-    .all(...taxLotsAccountParams) as Array<{
+    .all(...taxLotsScope.params) as Array<{
     account_id: number;
     security_id: number;
     is_short: number;
     open_lots: number;
     total_cost_basis: number;
   }>;
-  const taxSummary = { open_lots: 0, total_cost_basis: 0 };
+  // B4: a short lot's figure is short-sale proceeds, never summed with a
+  // long cost basis (the pending-lots rule, docs/DECISIONS.md 2026-10-26).
+  const taxSummary = { open_lots: 0, long_cost_basis: 0, short_lots: 0, short_proceeds: 0 };
   const pendingInputs: PendingDisclosureInput[] = [];
   for (const g of taxLotGroups) {
     const reason = pendingIndex.reasonFor(g);
@@ -473,48 +528,92 @@ export function getPortfolioSummaryForChat(db: Database.Database, accountName?: 
       });
     } else {
       taxSummary.open_lots += g.open_lots;
-      taxSummary.total_cost_basis += g.total_cost_basis;
+      if (g.is_short) {
+        taxSummary.short_lots += g.open_lots;
+        taxSummary.short_proceeds += g.total_cost_basis;
+      } else {
+        taxSummary.long_cost_basis += g.total_cost_basis;
+      }
     }
   }
 
-  const realizedGainsJoin = `JOIN tax_lots ON tax_lots.id = tax_lot_sales.tax_lot_id
-       JOIN securities s ON s.id = tax_lots.security_id
-       WHERE NOT (${CURRENCY_CONVERSION_SECURITY_SQL})
-       ${accountId != null ? "AND tax_lots.account_id = ?" : ""}`;
-  const realizedGainsParams = accountId != null ? [accountId] : [];
-  const realizedGains = db
-    .prepare(
-      `SELECT
-        COALESCE(SUM(CASE WHEN ${USD_ONLY} THEN realized_gain_loss ELSE 0 END), 0) AS total,
-        COALESCE(SUM(CASE WHEN ${USD_ONLY} AND is_long_term = 1 THEN realized_gain_loss ELSE 0 END), 0) AS long_term,
-        COALESCE(SUM(CASE WHEN ${USD_ONLY} AND is_long_term = 0 THEN realized_gain_loss ELSE 0 END), 0) AS short_term,
-        COALESCE(SUM(CASE WHEN NOT (${USD_ONLY}) THEN 1 ELSE 0 END), 0) AS excludedNonUsdSales
-       FROM tax_lot_sales ${realizedGainsJoin}`
-    )
-    .get(...realizedGainsParams) as {
-    total: number;
-    long_term: number;
-    short_term: number;
-    excludedNonUsdSales: number;
-  };
+  // QA-2: realized gains per tax year (the current Eastern year and the
+  // prior one) from the tax report engine, the figures the Tax Lots card
+  // shows: taxable accounts only, USD rows only, wash-sale losses disallowed.
+  // One report for every account; otherwise one per account in scope,
+  // summed (the accounts are disjoint).
+  const currentYear = Number(today.slice(0, 4));
+  const realizedYears = noTaxableAccount
+    ? []
+    : [currentYear, currentYear - 1].map((year) => {
+        const reports: TaxReportResult[] =
+          accountIds === undefined
+            ? [generateTaxReport(db, year)]
+            : taxableAccountsInScope.map((a) => generateTaxReport(db, year, { accountName: a.name }));
+        const relevant = reports.filter(
+          (r) => r.shortTermRows.length + r.longTermRows.length > 0 || r.excludedEngineCloses > 0,
+        );
+        return {
+          year,
+          shortTerm: reports.reduce((sum, r) => sum + r.shortTermTotal.gainLoss, 0),
+          longTerm: reports.reduce((sum, r) => sum + r.longTermTotal.gainLoss, 0),
+          excludedNonUsdSales: reports.reduce((sum, r) => sum + r.excludedNonUsdSales, 0),
+          rowCount: reports.reduce((sum, r) => sum + r.shortTermRows.length + r.longTermRows.length, 0),
+          // Fail-closed, like the report itself: ready only when every report
+          // with activity is ready, and never on an empty year.
+          filingReady: relevant.length > 0 && relevant.every((r) => r.filingReady),
+          washSaleWarnings: reports.flatMap((r) => r.washSaleWarnings),
+        };
+      });
 
   const pendingRows = reducePendingDisclosure(pendingInputs);
   if (
     taxSummary.open_lots > 0 ||
-    realizedGains.total !== 0 ||
-    realizedGains.excludedNonUsdSales > 0 ||
-    pendingRows.length > 0
+    pendingRows.length > 0 ||
+    noTaxableAccount ||
+    realizedYears.some((y) => y.rowCount > 0 || y.excludedNonUsdSales > 0)
   ) {
     lines.push("\n### Tax Summary");
-    lines.push(`- Open lots: ${taxSummary.open_lots} (cost basis: ${formatUSD(taxSummary.total_cost_basis)})`);
+    const shortPart =
+      taxSummary.short_lots > 0 ? `; short-sale proceeds: ${formatUSD(taxSummary.short_proceeds)}` : "";
+    lines.push(
+      `- Open lots: ${taxSummary.open_lots} (long cost basis: ${formatUSD(taxSummary.long_cost_basis)}${shortPart})`
+    );
     for (const row of pendingRows) lines.push(pendingDisclosureLine(row));
-    // Realized G/L is stored native per security, so only USD rows sum into
-    // the dollar figures — same predicate and disclosure as the Tax Lots tiles.
-    const nonUsdNote =
-      realizedGains.excludedNonUsdSales > 0
-        ? ` — USD totals exclude ${realizedGains.excludedNonUsdSales} non-USD sale${realizedGains.excludedNonUsdSales !== 1 ? "s" : ""} (native-currency figures)`
-        : "";
-    lines.push(`- Realized gains: ${formatUSD(realizedGains.total)} (LT: ${formatUSD(realizedGains.long_term)}, ST: ${formatUSD(realizedGains.short_term)})${nonUsdNote}`);
+    if (noTaxableAccount) {
+      lines.push(`- Realized gains: ${taxAdvantagedSentence}`);
+    }
+    for (const y of realizedYears) {
+      // Realized G/L is stored native per security, so only USD rows sum into
+      // the dollar figures — same rule and disclosure as the Tax Lots card.
+      const nonUsdNote =
+        y.excludedNonUsdSales > 0
+          ? ` — USD totals exclude ${y.excludedNonUsdSales} non-USD sale${y.excludedNonUsdSales !== 1 ? "s" : ""} (native-currency figures)`
+          : "";
+      const filing = y.filingReady ? "" : " (not for filing)";
+      lines.push(
+        `- Realized gains ${y.year} (taxable accounts): short-term ${formatUSD(y.shortTerm)}, long-term ${formatUSD(y.longTerm)}${filing}${nonUsdNote}`
+      );
+      const washCount = y.washSaleWarnings.length;
+      if (washCount === 0) continue;
+      if (accountIds !== undefined) {
+        // P8: the wash-sale scan reads replacement purchases in EVERY
+        // account, so a scoped chat gets the count only, never another
+        // account's purchase facts.
+        lines.push(
+          `- Wash sales ${y.year}: ${washCount} possible wash sale${washCount === 1 ? "" : "s"}; the replacement purchases may sit in other accounts; see the All Accounts scope.`
+        );
+      } else {
+        lines.push(
+          `- Wash sales ${y.year}: ${washCount} possible wash sale${washCount === 1 ? "" : "s"} (heuristic 30-day same-security scan; verify before filing):`
+        );
+        for (const w of y.washSaleWarnings) {
+          lines.push(
+            `  - ${w.symbol} sold ${w.saleDate} at a ${formatUSD(Math.abs(w.lossAmount))} loss; ${washSaleReplacementPhrase(w)}`
+          );
+        }
+      }
+    }
     if (conventionPending) {
       lines.push(CONVENTION_PENDING_NOTE);
     }
@@ -558,17 +657,20 @@ export function getPortfolioSummaryForChat(db: Database.Database, accountName?: 
         AND lp.close_price IS NOT NULL
         AND ${LOT_SIDE_SIGN} * (${adjustedMarketValueSQL("tl.quantity_remaining", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}
              - ${REMAINING_BASIS}) < -100
-        ${taxLotsFilter}
+        ${taxableTlScope.sql}
       ORDER BY unrealized_loss ASC`
     )
-    .all(today, ...taxLotsParams) as Array<HarvestCandidate & PairKeyed>)
+    .all(today, ...taxableTlScope.params) as Array<HarvestCandidate & PairKeyed>)
     // A pending-statement lot is not held — nothing to harvest. LIMIT after
     // the exclusion so a pending lot never crowds out a real candidate.
     .filter((c) => !isPendingStatementLot(pendingIndex, c))
     .slice(0, 5);
 
-  if (harvestCandidates.length > 0) {
-    lines.push("\n### Tax-Loss Harvesting Candidates (from CURRENT open tax lots only)");
+  if (noTaxableAccount) {
+    lines.push("\n### Tax-Loss Harvesting Candidates (taxable accounts only)");
+    lines.push(taxAdvantagedSentence);
+  } else if (harvestCandidates.length > 0) {
+    lines.push("\n### Tax-Loss Harvesting Candidates (from CURRENT open tax lots in taxable accounts only)");
     for (const c of harvestCandidates) {
       // A short is labelled so the chat model never suggests "selling" it:
       // a short loss is realized by buying to cover.
@@ -617,15 +719,18 @@ export function getPortfolioSummaryForChat(db: Database.Database, accountName?: 
         AND ${liveOptionExpirationSql("s", today)}
         AND julianday(${LONG_TERM_DATE}) > julianday(?)
         AND julianday(${LONG_TERM_DATE}) - julianday(?) <= 60
-        ${taxLotsFilter}
+        ${taxableTlScope.sql}
       ORDER BY days_remaining ASC`
     )
-    .all(today, today, today, ...taxLotsParams) as Array<ApproachingLongTerm & PairKeyed>)
+    .all(today, today, today, ...taxableTlScope.params) as Array<ApproachingLongTerm & PairKeyed>)
     .filter((lot) => !isPendingStatementLot(pendingIndex, lot))
     .slice(0, 10);
 
-  if (approachingLT.length > 0) {
-    lines.push("\n### Lots Approaching Long-Term Status (within 60 days)");
+  if (noTaxableAccount) {
+    lines.push("\n### Lots Approaching Long-Term Status (taxable accounts only)");
+    lines.push(taxAdvantagedSentence);
+  } else if (approachingLT.length > 0) {
+    lines.push("\n### Lots Approaching Long-Term Status (within 60 days, taxable accounts only)");
     for (const lot of approachingLT) {
       const gain = lot.unrealized_gain != null
         ? ` (unrealized: ${lot.unrealized_gain >= 0 ? "+" : ""}${formatUSD(lot.unrealized_gain)})`
@@ -637,6 +742,7 @@ export function getPortfolioSummaryForChat(db: Database.Database, accountName?: 
   }
 
   // ─── Income Summary (trailing 12 months from snapshots) ────────
+  const snapshotScope = accountScopeAndSql(accountIds, "monthly_snapshots.account_id");
   const incomeSummary = db
     .prepare(
       `SELECT
@@ -645,9 +751,9 @@ export function getPortfolioSummaryForChat(db: Database.Database, accountName?: 
         COALESCE(SUM(COALESCE(fees, 0) + COALESCE(commissions, 0)), 0) AS total_fees
       FROM monthly_snapshots
       WHERE month_end_date >= date(?, '-12 months')
-      ${accountId != null ? `AND monthly_snapshots.account_id = ?` : ""}`
+      ${snapshotScope.sql}`
     )
-    .get(today, ...holdingsParams) as { total_dividends: number; total_interest: number; total_fees: number };
+    .get(today, ...snapshotScope.params) as { total_dividends: number; total_interest: number; total_fees: number };
 
   if (incomeSummary.total_dividends > 0 || incomeSummary.total_interest > 0) {
     lines.push("\n### Income (Trailing 12 Months)");
@@ -664,15 +770,15 @@ export function getPortfolioSummaryForChat(db: Database.Database, accountName?: 
   const recentTxns = db
     .prepare(
       `SELECT a.name AS account_name, t.trade_date, t.type,
-              s.symbol, t.quantity, t.amount
+              s.symbol, s.security_type, t.quantity, t.amount
        FROM transactions t
        JOIN accounts a ON a.id = t.account_id
        LEFT JOIN securities s ON s.id = t.security_id
-       WHERE 1=1 ${txnFilter}
+       WHERE 1=1 ${txnScope.sql}
        ORDER BY t.trade_date DESC
        LIMIT 20`
     )
-    .all(...txnParams) as RecentTransaction[];
+    .all(...txnScope.params) as RecentTransaction[];
 
   if (recentTxns.length > 0) {
     lines.push("\n### Recent Transactions (historical activity — NOT current positions)");
@@ -680,7 +786,8 @@ export function getPortfolioSummaryForChat(db: Database.Database, accountName?: 
     for (const t of recentTxns) {
       const sym = t.symbol ?? "CASH";
       const amt = t.amount !== null ? ` ${formatUSD(Math.abs(t.amount))}` : "";
-      const qty = t.quantity !== null ? ` ${t.quantity} shares` : "";
+      // QA-11: contracts for an option, face value for a bond, never "shares" for all.
+      const qty = t.quantity !== null ? ` ${t.quantity} ${quantityUnitLabel(t.security_type, t.quantity)}` : "";
       lines.push(`- ${t.trade_date} | ${t.account_name} | ${t.type} ${sym}${qty}${amt}`);
     }
   }
@@ -696,9 +803,23 @@ export function getPortfolioSummaryForChat(db: Database.Database, accountName?: 
     );
   }
 
-  const latestPriceDate = db
-    .prepare("SELECT MAX(date) AS max_date FROM prices")
-    .get() as { max_date: string | null };
+  // B4b: each freshness date is the scope's own. With every account in
+  // scope the price date stays the newest price on file; in a scoped
+  // summary it is the newest price among the securities the scope holds.
+  const latestPriceDate = (
+    accountIds === undefined
+      ? db.prepare("SELECT MAX(date) AS max_date FROM prices").get()
+      : db
+          .prepare(
+            `SELECT MAX(p.date) AS max_date FROM prices p
+             WHERE p.security_id IN (
+               SELECT h.security_id FROM holdings h
+               WHERE ${latestHoldingsPredicate({ includeShorts: true, accountFilter: "" })}
+               ${holdingsFilter}
+             )`
+          )
+          .get(...holdingsParams)
+  ) as { max_date: string | null } | undefined;
   if (latestPriceDate?.max_date) {
     lines.push(`\n### Data Freshness`);
     lines.push(`- Latest price date: ${latestPriceDate.max_date}`);
@@ -713,16 +834,17 @@ export function getPortfolioSummaryForChat(db: Database.Database, accountName?: 
     }
   }
 
+  const snapshotDateScope = accountScopeAndSql(accountIds, "account_id");
   const latestSnapshotDate = db
-    .prepare("SELECT MAX(month_end_date) AS max_date FROM monthly_snapshots")
-    .get() as { max_date: string | null };
+    .prepare(`SELECT MAX(month_end_date) AS max_date FROM monthly_snapshots WHERE 1=1 ${snapshotDateScope.sql}`)
+    .get(...snapshotDateScope.params) as { max_date: string | null };
   if (latestSnapshotDate?.max_date) {
     lines.push(`- Latest snapshot: ${latestSnapshotDate.max_date}`);
   }
 
   const latestHoldingsDate = db
-    .prepare("SELECT MAX(as_of_date) AS max_date FROM holdings")
-    .get() as { max_date: string | null };
+    .prepare(`SELECT MAX(as_of_date) AS max_date FROM holdings WHERE 1=1 ${snapshotDateScope.sql}`)
+    .get(...snapshotDateScope.params) as { max_date: string | null };
   if (latestHoldingsDate?.max_date) {
     lines.push(`- Latest holdings: ${latestHoldingsDate.max_date}`);
   }
