@@ -22,10 +22,14 @@ describe("turn-outcome notice (Contract B)", () => {
   it("reads the notice only for a finished message, never the one streaming", () => {
     const list = sliceBetween(src, "{/* Message list */}", "{/* Error display */}");
     anchorIndex(list, "const isLive = isStreaming && index === messages.length - 1;");
+    anchorIndex(list, "const endedInError = status === \"error\" && index === messages.length - 1;");
     anchorIndex(
       list,
-      "const notice = msg.role === \"assistant\" && !isLive ? (turnOutcomeNotice(msg) ?? stoppedNotice(msg)) : null;",
+      "settledAssistantView(msg, { endedInError, outcomeNotice: turnOutcomeNotice(msg) })",
     );
+    // An errored turn with nothing to show renders no bubble (no "Stopped.").
+    anchorIndex(list, 'if (settled?.kind === "hidden") return null;');
+    anchorIndex(list, 'const notice = settled?.kind === "notice" ? settled.text : null;');
   });
 
   it("renders the notice in place of the parts, and hides Copy when it shows", () => {

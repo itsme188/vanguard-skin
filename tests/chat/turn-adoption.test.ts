@@ -14,7 +14,9 @@ import {
   shouldAutoContinue,
   MAX_AUTO_CONTINUATIONS,
   SUPERSEDED_NOTE_REASON,
+  settledAssistantView,
 } from "@/lib/chat/turn-adoption";
+import { turnOutcomeNotice, CUT_OFF_SENTENCE } from "@/lib/chat/turn-outcome";
 
 describe("decideTurnAdoption (B17)", () => {
   it("adopts the server's id for a first turn in the same generation", () => {
@@ -339,5 +341,33 @@ describe("automatic continuation cap (R4-10)", () => {
   it("stops at the cap, and never continues when the SDK says not complete", () => {
     expect(shouldAutoContinue(true, 3)).toBe(false);
     expect(shouldAutoContinue(false, 0)).toBe(false);
+  });
+});
+
+describe("settledAssistantView: a stopped turn versus an errored one", () => {
+  const view = (message: { parts: { type: string; text?: string; state?: string }[]; metadata?: unknown }, endedInError: boolean) =>
+    settledAssistantView(message, { endedInError, outcomeNotice: turnOutcomeNotice(message) });
+
+  it("owner stop with no content reads Stopped.", () => {
+    expect(view({ parts: [{ type: "step-start" }] }, false)).toEqual({ kind: "notice", text: "Stopped." });
+  });
+  it("an error with no content shows no Stopped. line and no bubble", () => {
+    expect(view({ parts: [{ type: "step-start" }] }, true)).toEqual({ kind: "hidden" });
+    expect(view({ parts: [] }, true)).toEqual({ kind: "hidden" });
+    expect(stoppedNotice({ parts: [] }, { endedInError: true })).toBeNull();
+  });
+  it("an error after some content shows the content (the error bubble follows it)", () => {
+    expect(view({ parts: [{ type: "text", text: "partial" }] }, true)).toEqual({ kind: "parts" });
+  });
+  it("a cut-off turn shows the cut-off sentence as before", () => {
+    expect(view({ parts: [], metadata: { finishReason: "tool-calls" } }, false)).toEqual({
+      kind: "notice",
+      text: CUT_OFF_SENTENCE,
+    });
+  });
+  it("a turn with content and no error shows its parts", () => {
+    expect(view({ parts: [{ type: "text", text: "answer" }], metadata: { finishReason: "stop" } }, false)).toEqual({
+      kind: "parts",
+    });
   });
 });

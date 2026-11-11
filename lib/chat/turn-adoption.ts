@@ -191,7 +191,12 @@ interface StoppedPart {
  * show. Call it only for a message that is not live, and after the
  * turn-outcome sentence (which covers a finished turn).
  */
-export function stoppedNotice(message: { parts: readonly StoppedPart[]; metadata?: unknown }): string | null {
+export function stoppedNotice(
+  message: { parts: readonly StoppedPart[]; metadata?: unknown },
+  opts: { endedInError?: boolean } = {},
+): string | null {
+  // An errored turn is not a stopped one: it shows the error and Retry only.
+  if (opts.endedInError) return null;
   const metadata = message.metadata;
   if (
     metadata !== null &&
@@ -230,4 +235,26 @@ export const MAX_AUTO_CONTINUATIONS = 3;
  */
 export function shouldAutoContinue(sdkSaysComplete: boolean, continuationsThisTurn: number): boolean {
   return sdkSaysComplete && continuationsThisTurn < MAX_AUTO_CONTINUATIONS;
+}
+
+export type SettledAssistantView =
+  | { kind: "notice"; text: string }
+  | { kind: "parts" }
+  | { kind: "hidden" };
+
+/**
+ * How a settled (not live) assistant message renders. `outcomeNotice` is
+ * `turnOutcomeNotice(message)` (Contract B), passed in so this file stays
+ * import-free. A turn that ended in an error with nothing to show renders no
+ * bubble at all: the error line and Retry below it say what happened.
+ */
+export function settledAssistantView(
+  message: { parts: readonly StoppedPart[]; metadata?: unknown },
+  opts: { endedInError: boolean; outcomeNotice: string | null },
+): SettledAssistantView {
+  if (opts.outcomeNotice) return { kind: "notice", text: opts.outcomeNotice };
+  const empty = stoppedNotice(message) !== null;
+  if (empty && opts.endedInError) return { kind: "hidden" };
+  if (empty) return { kind: "notice", text: STOPPED_SENTENCE };
+  return { kind: "parts" };
 }

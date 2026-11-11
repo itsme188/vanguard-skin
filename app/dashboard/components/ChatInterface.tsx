@@ -22,7 +22,7 @@ import {
   shouldAutoContinue,
   shouldIgnoreStopClick,
   showThinking,
-  stoppedNotice,
+  settledAssistantView,
   toolIndicatorState,
   type NoteApprovalView,
   type NoteToolPartView,
@@ -903,7 +903,13 @@ export function ChatInterface({ pathname }: ChatInterfaceProps) {
         {/* Message list */}
         {messages.map((msg, index) => {
           const isLive = isStreaming && index === messages.length - 1;
-          const notice = msg.role === "assistant" && !isLive ? (turnOutcomeNotice(msg) ?? stoppedNotice(msg)) : null;
+          const endedInError = status === "error" && index === messages.length - 1;
+          const settled =
+            msg.role === "assistant" && !isLive
+              ? settledAssistantView(msg, { endedInError, outcomeNotice: turnOutcomeNotice(msg) })
+              : null;
+          if (settled?.kind === "hidden") return null;
+          const notice = settled?.kind === "notice" ? settled.text : null;
           return (
           <div
             key={msg.id}
