@@ -102,6 +102,11 @@ describe("POST /api/chat — last-step guard (P4)", () => {
     }
     for (let i = 0; i < 7; i++) expect(String(systems[i][1].content)).not.toContain(LAST_STEP_NOTE);
     expect(String(systems[7][1].content)).toBe(`${systems[0][1].content}\n\n${LAST_STEP_NOTE}`);
+    // The note tells the truth at HEAD: tools are still offered on the last
+    // step, and a call there ends the turn with no written answer.
+    expect(LAST_STEP_NOTE).toBe(
+      "This is your last step. A tool call now would end the turn with no written answer, so write the answer from what you have, and say what you could not check.",
+    );
 
     // Tools are still offered on the last call (the cached prefix holds).
     expect(calls[7].tools?.length).toBe(calls[0].tools?.length);

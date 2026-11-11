@@ -194,4 +194,4 @@ export const MAX_CHAT_STEPS = 8;
  * them, which the API rejects with tool history and which breaks the cache).
  */
 export const LAST_STEP_NOTE =
-  "This is your last step: tools will not run again in this answer. Write the answer now from what you have, and say what you could not check.";
+  "This is your last step. A tool call now would end the turn with no written answer, so write the answer from what you have, and say what you could not check.";
