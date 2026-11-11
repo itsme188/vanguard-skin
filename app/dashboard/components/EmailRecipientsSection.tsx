@@ -19,7 +19,7 @@
 import { CHIP_TONE_CLASSES } from "@/app/dashboard/components/Chip";
 import { useEffect, useRef, useState } from "react";
 import apiFetch from "@/lib/http/apiFetch";
-import { networkFailureMessage } from "@/lib/ui/mutation-result";
+import { networkFailureMessage, readMutationResult } from "@/lib/ui/mutation-result";
 
 interface RecipientsState {
   briefing_email_recipients: string;
@@ -62,6 +62,8 @@ export function EmailRecipientsSection() {
   const [saveStatus, setSaveStatus] = useState<
     Partial<Record<FieldKey, "saved" | "error">>
   >({});
+  // The server's sentence for a refused save, shown beside the box.
+  const [saveError, setSaveError] = useState<Partial<Record<FieldKey, string>>>({});
   const saveTimers = useRef<Partial<Record<FieldKey, ReturnType<typeof setTimeout>>>>({});
 
   useEffect(() => {
@@ -103,6 +105,11 @@ export function EmailRecipientsSection() {
       delete next[key];
       return next;
     });
+    setSaveError((prev) => {
+      const next = { ...prev };
+      delete next[key];
+      return next;
+    });
   }
 
   async function saveField(key: FieldKey) {
@@ -114,7 +121,17 @@ export function EmailRecipientsSection() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ [key]: value }),
       });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const result = await readMutationResult(res);
+      if (!result.ok) {
+        setSaveStatus((prev) => ({ ...prev, [key]: "error" }));
+        setSaveError((prev) => ({ ...prev, [key]: result.message }));
+        return;
+      }
+      setSaveError((prev) => {
+        const next = { ...prev };
+        delete next[key];
+        return next;
+      });
 
       // Commit to state and clear dirty bit
       setState((prev) => (prev ? { ...prev, [key]: value } : prev));
@@ -136,6 +153,7 @@ export function EmailRecipientsSection() {
       }, 2000);
     } catch {
       setSaveStatus((prev) => ({ ...prev, [key]: "error" }));
+      setSaveError((prev) => ({ ...prev, [key]: networkFailureMessage("save the recipients") }));
     }
   }
 
@@ -148,7 +166,19 @@ export function EmailRecipientsSection() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify(dirty),
       });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const result = await readMutationResult(res);
+      if (!result.ok) {
+        const errStatus: Partial<Record<FieldKey, "saved" | "error">> = {};
+        const errText: Partial<Record<FieldKey, string>> = {};
+        for (const k of keys) {
+          errStatus[k] = "error";
+          errText[k] = result.message;
+        }
+        setSaveStatus(errStatus);
+        setSaveError(errText);
+        return;
+      }
+      setSaveError({});
 
       const newState = { ...(state ?? EMPTY_STATE), ...dirty };
       setState(newState);
@@ -168,8 +198,13 @@ export function EmailRecipientsSection() {
       }
     } catch {
       const errStatus: Partial<Record<FieldKey, "saved" | "error">> = {};
-      for (const k of keys) errStatus[k] = "error";
+      const errText: Partial<Record<FieldKey, string>> = {};
+      for (const k of keys) {
+        errStatus[k] = "error";
+        errText[k] = networkFailureMessage("save the recipients");
+      }
       setSaveStatus(errStatus);
+      setSaveError(errText);
     }
   }
 
@@ -231,6 +266,11 @@ export function EmailRecipientsSection() {
                     </span>
                   )}
                 </div>
+                {status === "error" && saveError[key] && (
+                  <p role="alert" className="text-[11px] text-down mt-0.5">
+                    {saveError[key]}
+                  </p>
+                )}
               </div>
             );
           })}

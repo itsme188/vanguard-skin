@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
+import { firstBadRecipient } from "@/lib/queries/email-recipients";
 
 export const dynamic = "force-dynamic";
 
@@ -57,6 +58,7 @@ export async function GET(): Promise<Response> {
  *   evening_email_recipients?: string,
  * }
  *
+ * Every value is checked first; a bad entry answers 400 and nothing is saved.
  * Values are stored as-is (comma-separated email strings). Parsing into an
  * array happens in `getRecipientsFor` at read time. Pass an empty string to
  * clear a key and fall back to the env var.
@@ -69,9 +71,38 @@ export async function PATCH(req: NextRequest): Promise<Response> {
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
   }
 
+  // Check every key first; write nothing unless all of them pass.
+  const values: [RecipientKey, string][] = [];
   for (const key of ALLOWED_KEYS) {
-    if (key in body) {
-      const value = String(body[key] ?? "");
+    if (!(key in body)) continue;
+    const raw = body[key];
+    if (raw !== null && raw !== undefined && typeof raw !== "string") {
+      return NextResponse.json(
+        {
+          ok: false,
+          success: false,
+          error: "Recipients must be text, a comma-separated list. Nothing was saved.",
+        },
+        { status: 400 },
+      );
+    }
+    const value = typeof raw === "string" ? raw : "";
+    const bad = firstBadRecipient(value);
+    if (bad !== null) {
+      return NextResponse.json(
+        {
+          ok: false,
+          success: false,
+          error: `"${bad}" is not an email address. Nothing was saved.`,
+        },
+        { status: 400 },
+      );
+    }
+    values.push([key, value]);
+  }
+
+  db.transaction(() => {
+    for (const [key, value] of values) {
       db.prepare(
         `INSERT INTO settings (key, value, updated_at)
          VALUES (?, ?, datetime('now'))
@@ -80,7 +111,7 @@ export async function PATCH(req: NextRequest): Promise<Response> {
                updated_at = excluded.updated_at`,
       ).run(key, value);
     }
-  }
+  })();
 
-  return NextResponse.json({ ok: true });
+  return NextResponse.json({ ok: true, success: true });
 }
