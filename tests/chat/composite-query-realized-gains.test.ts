@@ -149,6 +149,26 @@ describe("query_realized_gains", () => {
     expect(Math.abs(lt - all.long_term.gain_loss)).toBeLessThan(0.01);
   });
 
+  it("says when no account is marked tax-advantaged (R6-3)", () => {
+    const marked = queryRealizedGainsTool.run(db, {}, { accountIds: undefined, today: TODAY }) as Out & {
+      retirement_accounts_marked: boolean;
+      retirement_note?: string;
+    };
+    expect(marked.retirement_accounts_marked).toBe(true);
+    expect(marked.retirement_note).toBeUndefined();
+    db.prepare("UPDATE accounts SET tax_treatment = 'taxable'").run();
+    const unmarked = queryRealizedGainsTool.run(db, {}, { accountIds: undefined, today: TODAY }) as Out & {
+      retirement_accounts_marked: boolean;
+      retirement_note?: string;
+    };
+    expect(unmarked.retirement_accounts_marked).toBe(false);
+    expect(unmarked.retirement_note).toBe(
+      "No account is marked as a retirement account yet, so the sales of an IRA, if any, are still inside these totals.",
+    );
+    // The Roth's 50 gain is now inside the short-term total: 200 + 50.
+    expect(unmarked.short_term.gain_loss).toBe(250);
+  });
+
   it("a Roth-scoped answer is flagged as a retirement account with zero totals", () => {
     const out = queryRealizedGainsTool.run(db, {}, { accountIds: [2], today: TODAY }) as Out;
     expect(out.retirement_account).toBe(true);

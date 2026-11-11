@@ -165,6 +165,25 @@ describe("query_performance_vs_benchmark", () => {
     expect(out.month.note).toBe("No statement in scope for 2025-06-30; showing 2026-02-28.");
   });
 
+  it("strict inputs: an unknown period or an impossible month is an error (R6-9)", () => {
+    const p = queryPerformanceVsBenchmarkTool.run(db, { period: "2y" }, ctx3) as Out;
+    expect(p.error).toBe("period must be one of: ytd, 1y, 3y, 5y, all (default ytd).");
+    const m = queryPerformanceVsBenchmarkTool.run(db, { month: "2026-13-45" }, ctx3) as Out;
+    expect(m.error).toMatch(/^month must be a real calendar date/);
+    expect(computePeriodAttribution).not.toHaveBeenCalled();
+  });
+
+  it("says why a multi-account fixed period ends early (R6-10)", () => {
+    snapshot(1, "2025-10-31", 900);
+    snapshot(3, "2025-10-31", 950);
+    const out = queryPerformanceVsBenchmarkTool.run(db, { period: "1y" }, { accountIds: [1, 3], today: TODAY }) as Out & {
+      window: { newest_statement_in_scope: string | null; caption: string | null; ends_at_last_statement: boolean };
+    };
+    expect(out.window.end).toBe("2025-10-31");
+    expect(out.window.newest_statement_in_scope).toBe("2026-02-28");
+    expect(out.window.caption).toMatch(/Not every account in this scope has a statement after Oct 31, 2025, so the period ends there\./);
+  });
+
   it("an empty scope answers without calling an engine", () => {
     const out = queryPerformanceVsBenchmarkTool.run(db, {}, { accountIds: [], today: TODAY });
     expect(out).toEqual({ error: "No account is in this chat's scope." });

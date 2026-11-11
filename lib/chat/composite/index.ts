@@ -44,7 +44,11 @@ export function isCompositeTool(name: string): boolean {
   return BY_NAME.has(name);
 }
 
-/** Run a composite tool. An unknown name is an error result, never a throw. */
+/**
+ * Run a composite tool. An unknown name, or an engine that throws, is an
+ * error result, never a throw: the caller need not wrap this call. Only the
+ * error's own message is kept (cut to 200 characters), never its stack.
+ */
 export function runCompositeTool(
   name: string,
   db: Database.Database,
@@ -53,5 +57,10 @@ export function runCompositeTool(
 ): unknown {
   const tool = BY_NAME.get(name);
   if (!tool) return { error: `Unknown composite tool: ${name}` };
-  return tool.run(db, input, ctx);
+  try {
+    return tool.run(db, input, ctx);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { error: `${name} could not run: ${message.slice(0, 200)}` };
+  }
 }

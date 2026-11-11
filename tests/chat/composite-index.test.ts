@@ -73,4 +73,15 @@ describe("composite tool registry", () => {
       error: "Unknown composite tool: query_nope",
     });
   });
+
+  it("an engine that throws comes back as a plain error result, never a throw (R6-9)", () => {
+    const db = new Database(":memory:");
+    runMigrations(db);
+    db.close();
+    for (const name of NAMES) {
+      const out = runCompositeTool(name, db, {}, { accountIds: undefined, today: "2026-03-02" }) as { error?: string };
+      expect(out.error, name).toMatch(new RegExp(`^${name} could not run: `));
+      expect((out.error ?? "").length, name).toBeLessThanOrEqual(260);
+    }
+  });
 });

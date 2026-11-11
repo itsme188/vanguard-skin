@@ -40,14 +40,14 @@ function addStock(symbol: string, accountId: number, qty: number, price: number)
   db.prepare("INSERT INTO prices (security_id, date, close_price) VALUES (?, ?, ?)").run(id, day(39), price);
 }
 
-/** 40 daily values for one account: 1000, then alternately x1.01 and x0.99. */
-function seedSeries(accountId: number): void {
+/** 40 daily values for one account from day `from`: 1000, then alternately x1.01 and x0.99. */
+function seedSeries(accountId: number, from = 0): void {
   let v = 1000;
   for (let i = 0; i < 40; i++) {
     if (i > 0) v = v * (i % 2 === 1 ? 1.01 : 0.99);
     db.prepare(
       "INSERT INTO daily_valuations (account_id, valuation_date, cash_balance, holdings_value, total_value) VALUES (?, ?, 0, ?, ?)",
-    ).run(accountId, day(i), v, v);
+    ).run(accountId, day(from + i), v, v);
   }
 }
 
@@ -57,7 +57,8 @@ beforeEach(() => {
   runMigrations(db);
   vi.mocked(computeRiskMetrics).mockClear();
   seedSeries(3);
-  seedSeries(1);
+  // Account 1 starts ten days later: the all-accounts (common) floor is day 10.
+  seedSeries(1, 10);
   addStock("AAA", 3, 30, 10);
   addStock("BBB", 3, 10, 10);
   addStock("CCC", 1, 50, 10);
@@ -77,9 +78,12 @@ type RiskOut = {
 };
 
 describe("query_risk", () => {
-  it("returns the engine's figures for the same scope (parity)", () => {
+  it("a one-scope answer is the Performance tiles' call: the scope's own history (parity, R6-2)", () => {
     const out = queryRiskTool.run(db, {}, { accountIds: [3], today: TODAY }) as RiskOut;
-    const engine = computeRiskMetrics(db, { accountIds: [3] });
+    const engine = computeRiskMetrics(db, { accountIds: [3], coverageFloor: "scope" });
+    expect(out.window.series_start).toBe(day(0));
+    expect(out.window.data_points).toBe(40);
+    expect((out.window as unknown as { rule: string }).rule).toMatch(/^scope's own history \(Performance view risk tiles\)/);
     expect(out.volatility).toBe(engine.volatility);
     expect(out.sharpe_ratio).toBe(engine.sharpeRatio);
     expect(out.risk_free_rate).toBe(engine.riskFreeRate);
@@ -92,6 +96,39 @@ describe("query_risk", () => {
     expect(out.window.series_start).toBe(engine.seriesStart);
     expect(out.window.series_end).toBe(engine.seriesEnd);
     expect(out.seam_days_bridged).toBe(engine.seamDaysBridged);
+  });
+
+  it("the All Accounts answer is the Diagnostics card's call: the common floor (parity, R6-2)", () => {
+    const out = queryRiskTool.run(db, {}, { accountIds: undefined, today: TODAY }) as RiskOut;
+    const engine = computeRiskMetrics(db, { accountIds: undefined });
+    expect(out.window.series_start).toBe(day(10));
+    expect(out.window.series_start).toBe(engine.seriesStart);
+    expect(out.window.data_points).toBe(engine.dataPoints);
+    expect(out.volatility).toBe(engine.volatility);
+    expect(out.max_drawdown?.fraction).toBe(engine.maxDrawdown?.percent);
+    expect((out.window as unknown as { rule: string }).rule).toMatch(/^common floor \(Analysis Diagnostics risk card\)/);
+  });
+
+  it("says whether the risk-free rate is stored or the built-in default (R6-8)", () => {
+    const dflt = queryRiskTool.run(db, {}, { accountIds: [3], today: TODAY }) as RiskOut & { risk_free_rate_source: { kind: string } };
+    expect(dflt.risk_free_rate_source.kind).toBe("default");
+    db.prepare("INSERT INTO settings (key, value) VALUES ('risk_free_rate', '0.03210')").run();
+    db.prepare("INSERT INTO settings (key, value) VALUES ('risk_free_rate_updated_at', ?)").run(new Date().toISOString());
+    const stored = queryRiskTool.run(db, {}, { accountIds: [3], today: TODAY }) as RiskOut & {
+      risk_free_rate_source: { kind: string; stale: boolean };
+    };
+    expect(stored.risk_free_rate).toBeCloseTo(0.0321, 10);
+    expect(stored.risk_free_rate_source).toMatchObject({ kind: "stored", stale: false });
+  });
+
+  it("strict dates: an impossible date or a start after the end is an error naming the parameter (R6-9)", () => {
+    const bad = queryRiskTool.run(db, { start_date: "2026-13-45" }, { accountIds: [3], today: TODAY }) as RiskOut;
+    expect(bad.error).toMatch(/^start_date must be a real calendar date/);
+    const badEnd = queryRiskTool.run(db, { end_date: 20260101 }, { accountIds: [3], today: TODAY }) as RiskOut;
+    expect(badEnd.error).toMatch(/^end_date must be a real calendar date/);
+    const order = queryRiskTool.run(db, { start_date: day(20), end_date: day(5) }, { accountIds: [3], today: TODAY }) as RiskOut;
+    expect(order.error).toBe(`start_date ${day(20)} is after end_date ${day(5)}.`);
+    expect(computeRiskMetrics).not.toHaveBeenCalled();
   });
 
   it("matches the hand-worked figures for the scoped book", () => {

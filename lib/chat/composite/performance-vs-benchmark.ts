@@ -23,6 +23,8 @@ import type Database from "better-sqlite3";
 import {
   resolvePerformanceWindow,
   latestStatementAnchor,
+  newestStatementInScope,
+  performanceWindowCaption,
   type PerformancePeriod,
 } from "@/lib/compute/performance-window";
 import { buildEquityCurveData } from "@/lib/compute/equity-curve";
@@ -34,7 +36,7 @@ import { computeMonthlyPerformance, listStatementMonths } from "@/lib/compute/mo
 import {
   ACCOUNT_NAME_FIELD,
   NO_ACCOUNT_IN_SCOPE,
-  readIsoDate,
+  readDateParam,
   scopeBlock,
   type CompositeContext,
   type CompositeTool,
@@ -74,14 +76,21 @@ function run(db: Database.Database, input: Record<string, unknown>, ctx: Composi
   const accountIds = ctx.accountIds;
   if (accountIds !== undefined && accountIds.length === 0) return NO_ACCOUNT_IN_SCOPE;
   const today = ctx.today;
-  const period: PerformancePeriod = PERIODS.includes(input.period as PerformancePeriod)
-    ? (input.period as PerformancePeriod)
-    : "ytd";
+  const rawPeriod = input.period;
+  if (rawPeriod !== undefined && rawPeriod !== null && !PERIODS.includes(rawPeriod as PerformancePeriod)) {
+    return { error: `period must be one of: ${PERIODS.join(", ")} (default ytd).` };
+  }
+  const period: PerformancePeriod = (rawPeriod as PerformancePeriod | undefined) ?? "ytd";
+  const monthParam = readDateParam(input.month, "month");
+  if (monthParam.error) return { error: monthParam.error };
 
   // ── Window (PerformanceView: one window for the whole page) ──
   const perfWindow = resolvePerformanceWindow(period, {
     today,
     lastStatementAnchor: latestStatementAnchor(db, accountIds, today),
+    // As the page passes it: lets the caption say why a multi-account period
+    // ends early (an account in the scope has no later statement).
+    newestScopeStatement: newestStatementInScope(db, accountIds, today),
   });
   const dailyEnd = perfWindow.endDate;
   const effectiveStart = perfWindow.startDate ?? "2000-01-01";
@@ -114,7 +123,7 @@ function run(db: Database.Database, input: Record<string, unknown>, ctx: Composi
 
   // ── Month view ──
   const statementMonths = listStatementMonths(db, accountIds);
-  const requestedMonth = readIsoDate(input.month);
+  const requestedMonth = monthParam.value;
   const activeMonth =
     requestedMonth && statementMonths.includes(requestedMonth) ? requestedMonth : (statementMonths[0] ?? null);
   const monthly = activeMonth === null ? null : computeMonthlyPerformance(db, accountIds, activeMonth);
@@ -127,6 +136,8 @@ function run(db: Database.Database, input: Record<string, unknown>, ctx: Composi
       start: perfWindow.startDate ?? null,
       end: perfWindow.endDate,
       ends_at_last_statement: perfWindow.endsAtStatement,
+      newest_statement_in_scope: perfWindow.newestScopeStatement ?? null,
+      caption: performanceWindowCaption(period, perfWindow),
     },
     vs_benchmark: first && last
       ? {

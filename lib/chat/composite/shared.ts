@@ -92,9 +92,23 @@ export function oneAccountOnlyError(
   };
 }
 
-/** A YYYY-MM-DD string, or undefined. */
-export function readIsoDate(raw: unknown): string | undefined {
-  return typeof raw === "string" && /^\d{4}-\d{2}-\d{2}$/.test(raw) ? raw : undefined;
+/** True for a YYYY-MM-DD string naming a real calendar day (2026-13-45 is not one). */
+export function isRealIsoDate(raw: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(raw)) return false;
+  const [y, m, d] = raw.split("-").map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  return dt.getUTCFullYear() === y && dt.getUTCMonth() === m - 1 && dt.getUTCDate() === d;
+}
+
+/**
+ * An optional date parameter. Absent (undefined, null or "") is no value;
+ * anything else must be a real YYYY-MM-DD day, or it is an error naming the
+ * parameter, so the model can correct the call.
+ */
+export function readDateParam(raw: unknown, name: string): { value?: string; error?: string } {
+  if (raw === undefined || raw === null || raw === "") return {};
+  if (typeof raw === "string" && isRealIsoDate(raw)) return { value: raw };
+  return { error: `${name} must be a real calendar date written YYYY-MM-DD (for example 2026-09-30).` };
 }
 
 /** A model-supplied count: an integer from 1 up, else the default; above `max` is `max`. */

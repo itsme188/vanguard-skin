@@ -124,6 +124,20 @@ describe("query_options_book", () => {
     expect(out.totals_in_window.positions).toBe(2);
   });
 
+  it("strict days: zero, negative, fractional, too large or non-numeric is an error (R6-9)", () => {
+    for (const days of [0, -5, 2.5, 121, "30"]) {
+      const out = queryOptionsBookTool.run(db, { days }, { accountIds: undefined, today: TODAY }) as Out;
+      expect(out.error, String(days)).toBe("days must be a whole number of days from 1 to 120 (default 30).");
+    }
+    expect(getExpiringOptions).not.toHaveBeenCalled();
+  });
+
+  it("does not claim the card's window: the description states the 30-day default and the card's 90 (R6-6)", () => {
+    const d = queryOptionsBookTool.definition.description ?? "";
+    expect(d).not.toMatch(/as the Expirations card lists them/);
+    expect(d).toMatch(/default the next 30 days, at most 120; the Expirations card's own default is 90/);
+  });
+
   it("an empty scope answers without calling either engine", () => {
     const out = queryOptionsBookTool.run(db, {}, { accountIds: [], today: TODAY });
     expect(out).toEqual({ error: "No account is in this chat's scope." });

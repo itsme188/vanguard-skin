@@ -33,6 +33,15 @@ const ROWS_DEFAULT = 20;
 const ROWS_MAX = 25;
 const WASH_SALES_SHOWN = 10;
 
+/**
+ * Said when no account carries a tax-advantaged treatment yet: the report
+ * then cannot leave an IRA's sales out. The Tax Report card has its own
+ * sentence (NO_RETIREMENT_STAMP_COPY), but it lives in a "use client" file
+ * that lib must not import, so this is the chat's own neutral wording.
+ */
+export const NO_RETIREMENT_MARK_NOTE =
+  "No account is marked as a retirement account yet, so the sales of an IRA, if any, are still inside these totals.";
+
 const definition: CompositeTool["definition"] = {
   name: QUERY_REALIZED_GAINS_NAME,
   description:
@@ -146,6 +155,8 @@ function run(db: Database.Database, input: Record<string, unknown>, ctx: Composi
     ...(report.filingReady ? {} : { not_for_filing: true }),
     tax_lot_recompute_pending: isTaxConventionPending(db),
     retirement_account: report.retirementAccount,
+    retirement_accounts_marked: report.hasTaxAdvantagedAccounts,
+    ...(report.hasTaxAdvantagedAccounts ? {} : { retirement_note: NO_RETIREMENT_MARK_NOTE }),
     short_term: total(report.shortTermTotal, report.shortTermRows.length),
     long_term: total(report.longTermTotal, report.longTermRows.length),
     wash_sales: washSales,

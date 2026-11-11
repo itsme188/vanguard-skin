@@ -1,7 +1,8 @@
 /**
  * query_options_book: option contracts expiring soon from `getExpiringOptions`
- * (as `app/api/compute/options-expirations/route.ts`, the Expirations card,
- * calls it: `{ accountIds, daysWindow }`, plus the Eastern `today`), and the
+ * (the engine behind the Expirations card, `app/api/compute/options-expirations/route.ts`:
+ * `{ accountIds, daysWindow }` plus the Eastern `today`; the chat's default
+ * window is 30 days, the card's 90), and the
  * book's delta-adjusted exposure from `getPortfolioExposureSummary(db,
  * accountIds, today)` (as the Analysis page calls it). Both read live
  * contracts only; expired contracts are counted, never listed or valued.
@@ -32,14 +33,14 @@ const ROWS_MAX = 25;
 const definition: CompositeTool["definition"] = {
   name: QUERY_OPTIONS_BOOK_NAME,
   description:
-    `Option contracts expiring within a window, as the Expirations card lists them: per contract the symbol, underlying, call or put, strike, expiration, days to expiry, signed quantity (negative = short, the side that can be assigned) and account, soonest first; plus the scope's delta-adjusted exposure (net and gross, in USD and as a ratio of market value, stocks and options together). Live contracts only: options past expiration are counted in excluded, never listed. Moneyness and greeks are not in this engine: use query_options_greeks for delta, gamma, theta, vega and whether a contract is in the money. Use for 'what expires in the next N days', 'which short options could be assigned'. Do NOT use for option P&L or tax lots (use query_tax_lots) or for every holding (use query_holdings).`,
+    `Option contracts expiring within a window (default the next ${DAYS_DEFAULT} days, at most ${DAYS_MAX}; the Expirations card's own default is 90): per contract the symbol, underlying, call or put, strike, expiration, days to expiry, signed quantity (negative = short, the side that can be assigned) and account, soonest first; plus the scope's delta-adjusted exposure (net and gross, in USD and as a ratio of market value, stocks and options together). Live contracts only: options past expiration are counted in excluded, never listed. Moneyness and greeks are not in this engine: use query_options_greeks for delta, gamma, theta, vega and whether a contract is in the money. Use for 'what expires in the next N days', 'which short options could be assigned'. Do NOT use for option P&L or tax lots (use query_tax_lots) or for every holding (use query_holdings).`,
   input_schema: {
     type: "object" as const,
     properties: {
       account_name: ACCOUNT_NAME_FIELD,
       days: {
         type: "integer",
-        description: `Expiry window in calendar days from today (Eastern), inclusive: an integer, default ${DAYS_DEFAULT}, max ${DAYS_MAX}.`,
+        description: `Expiry window in calendar days from today (Eastern), inclusive: a whole number from 1 to ${DAYS_MAX}, default ${DAYS_DEFAULT}. Anything else is an error.`,
       },
       limit: {
         type: "integer",
@@ -69,7 +70,11 @@ function countExpiredOptionRows(db: Database.Database, accountIds: number[] | un
 function run(db: Database.Database, input: Record<string, unknown>, ctx: CompositeContext): unknown {
   const accountIds = ctx.accountIds;
   if (accountIds !== undefined && accountIds.length === 0) return NO_ACCOUNT_IN_SCOPE;
-  const daysWindow = readCount(input.days, DAYS_DEFAULT, DAYS_MAX);
+  const rawDays = input.days;
+  if (rawDays !== undefined && rawDays !== null && !(typeof rawDays === "number" && Number.isInteger(rawDays) && rawDays >= 1 && rawDays <= DAYS_MAX)) {
+    return { error: `days must be a whole number of days from 1 to ${DAYS_MAX} (default ${DAYS_DEFAULT}).` };
+  }
+  const daysWindow = typeof rawDays === "number" ? rawDays : DAYS_DEFAULT;
   const limit = readCount(input.limit, ROWS_DEFAULT, ROWS_MAX);
   const today = ctx.today;
 
