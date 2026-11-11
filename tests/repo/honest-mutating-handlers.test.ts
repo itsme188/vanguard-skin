@@ -63,11 +63,6 @@ const BARE_SITE_ALLOWLIST: Record<string, { count: number; reason: string }> = {
     reason:
       "own reader: checks res.ok and the body's success, names the failure and the network case itself (listed in the 2026-10-05 pin as a user of networkFailureMessage)",
   },
-  "app/dashboard/components/EmailRecipientsSection.tsx": {
-    count: 2,
-    reason:
-      "no envelope: the route answers { ok: true }; res.ok is the gate. Each field shows only 'Save failed', with no reason: needs a design decision",
-  },
   "app/dashboard/components/ImportHistory.tsx": {
     count: 1,
     reason:
