@@ -105,41 +105,81 @@ export const QUESTION_RESERVE_USD = 0.4;
 export const NESTED_AI_TOOLS: readonly string[] = ["query_filing_section"];
 
 /**
- * A conservative estimate of what the next question can cost: the plan's
- * fixed reserve, or 1.5x the dearest question measured so far, whichever is
- * larger. Pure.
+ * The limits a chat request runs under. The step cap is the route's own
+ * (`MAX_CHAT_STEPS`, lib/chat/history.ts); the per-step output cap is the
+ * route's `maxOutputTokens` (pinned by a source test). Tool results have no
+ * cap in the app, so the eval sets an allowance and ABORTS a request whose
+ * streamed tool output exceeds it (run-golden.ts).
  */
-export function nextQuestionEstimate(measuredCosts: readonly number[], reserve = QUESTION_RESERVE_USD): number {
-  const worst = measuredCosts.length > 0 ? Math.max(...measuredCosts) : 0;
-  return Math.max(reserve, worst * 1.5);
+export interface RequestLimits {
+  maxSteps: number;
+  maxOutputTokensPerStep: number;
+  toolResultTokensPerStep: number;
+}
+
+/**
+ * The worst a question can cost (HARD cap rule). Every step up to the cap
+ * reads its whole input at the dearer of the uncached and cache-write rates
+ * (a cache write costs 1.25x, so the uncached price alone is not the worst)
+ * and writes the maximum output. Step k's input is the first request's
+ * input plus, for every earlier step, its maximum output and the tool-result
+ * allowance. Plus one nested-AI reserve, because a tool such as
+ * query_filing_section makes a model call the chat log does not see. Pure.
+ */
+export function worstCaseQuestionCost(baseInputTokens: number, limits: RequestLimits, price: ModelPrice): number {
+  const inRate = Math.max(price.input, price.cacheWrite);
+  let dollars = 0;
+  for (let k = 0; k < limits.maxSteps; k++) {
+    const input = baseInputTokens + k * (limits.maxOutputTokensPerStep + limits.toolResultTokensPerStep);
+    dollars += (input * inRate + limits.maxOutputTokensPerStep * price.output) / 1_000_000;
+  }
+  return dollars + QUESTION_RESERVE_USD;
 }
 
 export interface BudgetDecision {
   run: boolean;
   spent: number;
-  estimate: number;
+  worstCase: number;
   max: number;
   reason: string;
 }
 
 /**
- * The guard checked BEFORE each question: run only when the running total
- * plus the estimate of the next question stays at or under the cap.
+ * The guard checked BEFORE each question: run only when the money already
+ * spent plus the question's WORST case stays at or under the cap. The worst
+ * case bounds the question (a request that breaks a bound is aborted), so
+ * the total cannot pass the cap. Pure.
  */
-export function budgetAllows(spent: number, estimate: number, max: number): BudgetDecision {
-  const ok = Number.isFinite(spent) && Number.isFinite(estimate) && spent + estimate <= max;
+export function budgetAllows(spent: number, worstCase: number, max: number): BudgetDecision {
+  const ok = Number.isFinite(spent) && Number.isFinite(worstCase) && spent + worstCase <= max;
+  const sum = `spent $${spent.toFixed(4)} + worst case $${worstCase.toFixed(2)}`;
   return {
     run: ok,
     spent,
-    estimate,
+    worstCase,
     max,
-    reason: ok
-      ? `spent $${spent.toFixed(4)} + next estimate $${estimate.toFixed(2)} <= cap $${max.toFixed(2)}`
-      : `spent $${spent.toFixed(4)} + next estimate $${estimate.toFixed(2)} would exceed cap $${max.toFixed(2)}`,
+    reason: ok ? `${sum} <= cap $${max.toFixed(2)}` : `${sum} would exceed cap $${max.toFixed(2)}`,
   };
 }
 
-/** Rough token count for a dry-run estimate: characters / 3 (deliberately high). */
+/** How many questions, in order, fit under the cap if each spent its whole worst case. Pure. */
+export function questionsThatFit(worstCases: readonly number[], max: number, spent = 0): number {
+  let total = spent;
+  let n = 0;
+  for (const w of worstCases) {
+    if (!budgetAllows(total, w, max).run) break;
+    total += w;
+    n++;
+  }
+  return n;
+}
+
+/** Rough token count: characters / 3 (deliberately high for prose). */
 export function roughTokens(text: string): number {
   return Math.ceil(text.length / 3);
+}
+
+/** A request's input size for the worst-case rule: characters / 3 plus a 20% margin. */
+export function worstCaseInputTokens(chars: number): number {
+  return Math.ceil((chars / 3) * 1.2);
 }

@@ -27,6 +27,8 @@ export interface RequestPreview {
   volatileChars: number;
   toolsChars: number;
   toolCount: number;
+  /** Tools + static + volatile, in characters (the base of the worst-case rule). */
+  totalChars: number;
   /** Tools + static block: the cached prefix (Contract D marks 1 and 2). */
   prefixTokensEstimate: number;
   /** The volatile block. */
@@ -66,6 +68,7 @@ export function previewRequest(db: Database.Database, scope: ChatScope, today: s
     volatileChars: volatileBlock.length,
     toolsChars: toolsJson.length,
     toolCount: CHAT_TOOLS.length,
+    totalChars: toolsJson.length + staticBlock.length + volatileBlock.length,
     prefixTokensEstimate: roughTokens(toolsJson) + roughTokens(staticBlock),
     volatileTokensEstimate: roughTokens(volatileBlock),
   };

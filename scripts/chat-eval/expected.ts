@@ -8,16 +8,10 @@
  */
 
 import type Database from "better-sqlite3";
-import { getHoldingsForChat, type HoldingResult } from "../../lib/queries/chat-tools";
+import { getHoldingsForChat, getIncomeSummaryForChat, type HoldingResult } from "../../lib/queries/chat-tools";
 import { getClosedTaxLotSales } from "../../lib/queries/tax-lots";
-import {
-  DIVIDEND_INCOME_SQL,
-  INCOME_PAIRED_JOIN,
-  INTEREST_PAID_SQL,
-  incomePairingCtes,
-} from "../../lib/queries/income-sql";
 import { isTaxableAccount } from "../../lib/compute/tax-treatment";
-import { addDays, calendarDaysBetween } from "../../lib/calendar/date-utils";
+import { addDays, calendarDaysBetween, todayET } from "../../lib/calendar/date-utils";
 import { CHAT_TOOLS } from "../../lib/chat/tools";
 import type { EvalManifest } from "./manifest";
 
@@ -29,7 +23,7 @@ export interface ExpectedContext {
   /** The IBKR account's largest position by |weight| on the account base. */
   ibkrTopWeight: { symbol: string; name: string | null; accountWeightPct: number; wholeBookWeightPct: number | null } | null;
   /** Dividend income over the last 365 days, counted once (Contract J). */
-  dividends12m: { single: number; reinvestedPaired: number; marginInterestPaid: number } | null;
+  dividends12m: { single: number; naiveDoubleCount: number; marginInterestPaid: number } | null;
   /** Realized gains in the current calendar year, taxable accounts, filing rows. */
   realized: { year: number; shortTerm: number; longTerm: number; lifetimeAllAccounts: number } | null;
   /** The foreign holding as the readers report it. */
@@ -38,6 +32,31 @@ export interface ExpectedContext {
   longTermWait: { symbol: string; daysToLongTerm: number; unrealizedGain: number | null } | null;
   /** The month before today's, by name (e.g. "October"). */
   previousMonthName: string;
+  /** The oldest price date behind a current holding (what "stale" must name). */
+  stalePriceDate: string | null;
+  /** The short's dollar day effect: quantity x (last close - previous close); negative when it rose. */
+  shortDayEffect: number | null;
+}
+
+function deriveStalePriceDate(db: Database.Database): string | null {
+  const dates = holdingsFor(db)
+    .filter((r) => r.quantity !== 0 && r.price_date)
+    .map((r) => r.price_date as string)
+    .sort();
+  return dates[0] ?? null;
+}
+
+function deriveShortDayEffect(db: Database.Database, m: EvalManifest): number | null {
+  const row = holdingsFor(db, m.accounts.ibkr).find((r) => r.symbol === m.short);
+  if (!row) return null;
+  const closes = db
+    .prepare(
+      `SELECT p.close_price FROM prices p JOIN securities s ON s.id = p.security_id
+        WHERE s.symbol = ? ORDER BY p.date DESC LIMIT 2`,
+    )
+    .all(m.short) as { close_price: number }[];
+  if (closes.length < 2) return null;
+  return round2(row.quantity * (closes[0].close_price - closes[1].close_price));
 }
 
 const MONTHS = [
@@ -71,21 +90,31 @@ function deriveIbkrTopWeight(db: Database.Database, m: EvalManifest): ExpectedCo
   };
 }
 
-function deriveDividends(db: Database.Database, today: string): ExpectedContext["dividends12m"] {
-  const from = addDays(today, -365);
-  const row = db
+/**
+ * Dividend income as the APP computes it: the chat tool's own reader
+ * (`getIncomeSummaryForChat`, the one the dashboard's income SQL shares),
+ * trailing twelve months, summed over accounts. The wrong figure the
+ * question exists to catch is a separately named NAIVE sum: every DIVIDEND
+ * plus the magnitude of every REINVESTMENT in the same window (the old
+ * double count), read straight from the ledger.
+ */
+function deriveDividends(db: Database.Database): ExpectedContext["dividends12m"] {
+  const rows = getIncomeSummaryForChat(db, { period: "trailing_12m", group_by: "account" });
+  if (rows.length === 0) return null;
+  const single = round2(rows.reduce((s, r) => s + (r.total_dividends ?? 0), 0));
+  const marginInterestPaid = round2(rows.reduce((s, r) => s + (r.interest_paid ?? 0), 0));
+  // The same window the reader uses (same month/day one year back, Eastern).
+  const today = todayET();
+  const md = today.slice(5);
+  const from = `${Number(today.slice(0, 4)) - 1}-${md === "02-29" ? "02-28" : md}`;
+  const naive = db
     .prepare(
-      `WITH ${incomePairingCtes()}
-       SELECT COALESCE(SUM(${DIVIDEND_INCOME_SQL}), 0) AS single,
-              COALESCE(SUM(CASE WHEN UPPER(t.type) = 'REINVESTMENT' AND pr.id IS NOT NULL THEN ABS(t.amount) ELSE 0 END), 0) AS paired,
-              COALESCE(SUM(${INTEREST_PAID_SQL}), 0) AS paid
-         FROM transactions t
-         ${INCOME_PAIRED_JOIN}
-        WHERE t.trade_date >= ? AND t.trade_date <= ?`,
+      `SELECT COALESCE(SUM(CASE WHEN UPPER(type) = 'DIVIDEND' THEN amount
+                                WHEN UPPER(type) = 'REINVESTMENT' THEN ABS(amount) ELSE 0 END), 0) AS naive
+         FROM transactions WHERE trade_date >= ? AND trade_date <= ?`,
     )
-    .get(from, today) as { single: number; paired: number; paid: number } | undefined;
-  if (!row) return null;
-  return { single: round2(row.single), reinvestedPaired: round2(row.paired), marginInterestPaid: round2(row.paid) };
+    .get(from, today) as { naive: number };
+  return { single, naiveDoubleCount: round2(naive.naive), marginInterestPaid };
 }
 
 function deriveRealized(db: Database.Database, today: string): ExpectedContext["realized"] {
@@ -130,10 +159,12 @@ export function deriveExpected(db: Database.Database, manifest: EvalManifest, to
     manifest,
     registeredTools: CHAT_TOOLS.map((t) => t.name),
     ibkrTopWeight: deriveIbkrTopWeight(db, manifest),
-    dividends12m: deriveDividends(db, today),
+    dividends12m: deriveDividends(db),
     realized: deriveRealized(db, today),
     foreign: deriveForeign(db, manifest),
     longTermWait: deriveLongTermWait(db, manifest, today),
     previousMonthName: MONTHS[(month + 10) % 12],
+    stalePriceDate: deriveStalePriceDate(db),
+    shortDayEffect: deriveShortDayEffect(db, manifest),
   };
 }

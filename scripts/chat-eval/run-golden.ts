@@ -12,23 +12,35 @@
  * never names a model. Token usage comes from the route's `[chat-usage]`
  * server-log lines (--log), priced by the model id each line reports.
  *
- * Recipe (from the repo root; the eval DB first, then the server, then this):
+ * Recipe (from the repo root; the demo DB, the eval DB, the server, then this):
+ *   npm run seed:demo        (in a worktree where tsx is not on the npm script path:
+ *                             npx tsx scripts/seed-demo.ts)
  *   npx tsx scripts/chat-eval/build-eval-db.ts --force
- *   source ~/.zshrc && DATABASE_PATH=$PWD/data/chat-eval/eval.db PORT=3095 TWS_HOST=192.0.2.1 \
- *     APP_EXTRA_HOSTS=localhost:3095 APP_EXTRA_ORIGINS=http://localhost:3095 \
- *     npx next dev -p 3095 > data/chat-eval/server.log 2>&1
- *   npx tsx scripts/chat-eval/run-golden.ts --db data/chat-eval/eval.db --dry-run
+ *   # the server needs ANTHROPIC_API_KEY in its own environment
+ *   DATABASE_PATH=$PWD/data/chat-eval/eval.db TWS_HOST=192.0.2.1 \
+ *     APP_EXTRA_HOSTS=127.0.0.1:3095 APP_EXTRA_ORIGINS=http://127.0.0.1:3095 \
+ *     npx next dev -H 127.0.0.1 -p 3095 > data/chat-eval/server.log 2>&1
+ *   npx tsx scripts/chat-eval/run-golden.ts --db data/chat-eval/eval.db --dry-run [--mode cache-proof]
  *   npx tsx scripts/chat-eval/run-golden.ts --db data/chat-eval/eval.db --log data/chat-eval/server.log \
- *     --base-url http://localhost:3095 --mode cache-proof --max-usd 1
+ *     --mode cache-proof --max-usd N
  *   npx tsx scripts/chat-eval/run-golden.ts --db data/chat-eval/eval.db --log data/chat-eval/server.log \
- *     --base-url http://localhost:3095 --max-usd 3.5 [--only Q1,Q5] [--show-answers]
+ *     --max-usd N [--only Q1,Q5] [--show-answers]
+ *
+ * The cap is HARD: a question runs only when the money spent so far plus
+ * that question's worst case (its real input size, every step up to the
+ * route's step cap at the dearer input rate, the route's maximum output per
+ * step, a per-step tool-result allowance, one nested-AI reserve) fits under
+ * --max-usd. A request whose streamed tool result is bigger than the
+ * allowance is aborted; a step with no usage line books the worst case and
+ * stops the run. Questions that do not fit are skipped and listed.
  *
  * Flags:
  *   --db <path>          required; refused when named vanguard.db or not built by build-eval-db.ts
  *   --log <path>         the dev server's log file (required unless --dry-run)
- *   --base-url <url>     default http://localhost:3095
+ *   --base-url <url>     default http://127.0.0.1:3095
  *   --mode golden|cache-proof   default golden
- *   --max-usd <n>        budget cap (alias --budget-usd; default 4, the plan's default)
+ *   --max-usd <n>        hard budget cap (alias --budget-usd; default 4, the plan's default)
+ *   --tool-result-tokens <n>    per-step tool-result allowance in the worst case (default 8000)
  *   --only Q1,Q5         run a subset (golden mode)
  *   --page <path>        a /dashboard path sent as the page context (golden mode; default none)
  *   --out <path>         JSON result (default data/chat-eval/results-<timestamp>.json; must be git-ignored)
@@ -57,19 +69,33 @@ import { deriveExpected, type ExpectedContext } from "./expected";
 import { buildGolden, toolsReferenced, type GoldenQuestion } from "./golden";
 import { scoreAnswer, serializeCheck, type ScoreResult } from "./scorer";
 import {
+  NESTED_AI_TOOLS,
   PRICE_SOURCE,
-  QUESTION_RESERVE_USD,
   ZERO_USAGE,
   addUsage,
   budgetAllows,
   costOf,
-  nextQuestionEstimate,
   priceFor,
+  questionsThatFit,
+  roughTokens,
+  worstCaseInputTokens,
+  worstCaseQuestionCost,
+  type RequestLimits,
   type TokenUsage,
 } from "./pricing";
+import { MAX_CHAT_STEPS } from "../../lib/chat/history";
 import { previewRequest } from "./request-preview";
-import { fileLogDeps, sendChat, userMessage, waitForUsage, type Session, type TransportDeps } from "./transport";
-import { cacheVerdicts, priceTurn, type CacheStepRow, type CacheVerdict } from "./accounting";
+import {
+  fileLogDeps,
+  sendChat,
+  userMessage,
+  waitForUsage,
+  type ChatExchange,
+  type ChatRequest,
+  type Session,
+  type TransportDeps,
+} from "./transport";
+import { cacheVerdicts, priceTurn, type CacheStepRow, type CacheVerdict, type PricedTurn } from "./accounting";
 
 export const SESSION_LABEL = "chat-eval";
 export const DEFAULT_MAX_USD = 4;
@@ -86,6 +112,7 @@ export interface EvalOptions {
   showAnswers: boolean;
   dryRun: boolean;
   timeoutMs: number;
+  toolResultTokens: number;
 }
 
 type Print = (line: string) => void;
@@ -105,6 +132,8 @@ export function parseArgs(argv: string[]): EvalOptions | { error: string } {
   const maxUsd = maxRaw === undefined ? DEFAULT_MAX_USD : Number(maxRaw);
   if (!Number.isFinite(maxUsd) || maxUsd <= 0) return { error: "--max-usd must be a positive number" };
   const timeoutMs = Number(get("--timeout-ms") ?? 240000);
+  const toolResultTokens = Number(get("--tool-result-tokens") ?? DEFAULT_TOOL_RESULT_TOKENS);
+  if (!Number.isFinite(toolResultTokens) || toolResultTokens < 0) return { error: "--tool-result-tokens must be a non-negative number" };
   const dryRun = argv.includes("--dry-run");
   const log = get("--log");
   if (!dryRun && !log) return { error: "--log <dev server log> is required unless --dry-run" };
@@ -113,7 +142,8 @@ export function parseArgs(argv: string[]): EvalOptions | { error: string } {
   return {
     db,
     log,
-    baseUrl: get("--base-url") ?? "http://localhost:3095",
+    baseUrl: get("--base-url") ?? "http://127.0.0.1:3095",
+    toolResultTokens: toolResultTokens,
     mode,
     maxUsd,
     only: get("--only")?.split(",").map((s) => s.trim().toUpperCase()).filter(Boolean),
@@ -186,6 +216,96 @@ function conversationExists(db: Database.Database, id: number): boolean {
 
 const usd = (n: number) => `$${n.toFixed(4)}`;
 
+// ─── The hard budget ─────────────────────────────────────────────
+
+/**
+ * The route's per-step output cap (`maxOutputTokens` in app/api/chat/route.ts,
+ * an inline literal there; pinned to the route by a source test).
+ */
+export const ROUTE_MAX_OUTPUT_TOKENS = 16000;
+/** Default tool-result allowance per step; a bigger streamed result aborts the request. */
+export const DEFAULT_TOOL_RESULT_TOKENS = 8000;
+
+export function requestLimits(toolResultTokens: number): RequestLimits {
+  return { maxSteps: MAX_CHAT_STEPS, maxOutputTokensPerStep: ROUTE_MAX_OUTPUT_TOKENS, toolResultTokensPerStep: toolResultTokens };
+}
+
+/** The worst case of one request: its real input size (tools + system + messages) under the route's limits. */
+export function requestWorstCase(
+  setup: EvalSetup,
+  scope: ChatScope,
+  messages: readonly UIMessage[],
+  pagePath: string | undefined,
+  limits: RequestLimits,
+): number {
+  const price = priceFor(setup.predictedModel);
+  if (!price) return Number.POSITIVE_INFINITY;
+  const chars = previewRequest(setup.db, scope, setup.expected.today, pagePath).totalChars + JSON.stringify(messages).length;
+  return worstCaseQuestionCost(worstCaseInputTokens(chars), limits, price);
+}
+
+interface AskResult {
+  ex: ChatExchange;
+  priced: PricedTurn;
+  /** Why the whole run must stop after this request, or null. */
+  stop: string | null;
+}
+
+/**
+ * Send one request under the hard budget (the caller has already checked
+ * spent + worstCase <= cap). While it streams, a tool result bigger than
+ * the allowance, or a second nested-AI tool call, aborts it (the worst case
+ * would no longer bound it). Afterwards every streamed step must have its
+ * usage line; if not, the worst case is booked and the run stops.
+ */
+async function guardedAsk(
+  opts: EvalOptions,
+  setup: EvalSetup,
+  deps: TransportDeps,
+  req: Omit<ChatRequest, "baseUrl" | "timeoutMs" | "onChunk">,
+  worstCase: number,
+  limits: RequestLimits,
+): Promise<AskResult> {
+  let nestedCalls = 0;
+  const onChunk = (chunk: Record<string, unknown>): string | null => {
+    if (chunk.type === "tool-output-available") {
+      const tokens = roughTokens(JSON.stringify(chunk.output ?? ""));
+      if (tokens > limits.toolResultTokensPerStep) {
+        return `a tool result of ~${tokens} tokens exceeds the ${limits.toolResultTokensPerStep}-token allowance the worst case assumes`;
+      }
+    }
+    if (chunk.type === "tool-input-start" && typeof chunk.toolName === "string" && NESTED_AI_TOOLS.includes(chunk.toolName)) {
+      nestedCalls++;
+      if (nestedCalls > 1) return `a second nested-AI tool call (${chunk.toolName}); the worst case reserves one`;
+    }
+    return null;
+  };
+  const logStart = deps.logSize();
+  const ex = await sendChat({ ...req, baseUrl: opts.baseUrl, timeoutMs: opts.timeoutMs, onChunk }, deps);
+  let stop: string | null = ex.stoppedByRunner ? `request stopped: ${ex.stoppedByRunner}` : null;
+  if (ex.status === 401 || ex.status === 403) {
+    stop = `the app refused the minted session (HTTP ${ex.status}); is the dev server running with DATABASE_PATH=${setup.dbPath} and APP_EXTRA_HOSTS/APP_EXTRA_ORIGINS for this host and port?`;
+  }
+  if (ex.conversationId !== null && !conversationExists(setup.db, ex.conversationId)) {
+    stop = `conversation ${ex.conversationId} is not in ${setup.dbPath}: the server is using another database`;
+  }
+  // A refused request (non-200) returned before the model was called: no usage line will come.
+  const turns = ex.conversationId !== null && ex.status === 200 ? await waitForUsage(deps, logStart, ex.conversationId, 1) : [];
+  const aborted = Boolean(ex.stoppedByRunner) || (ex.status === 200 && !ex.summary.done && ex.httpError !== null);
+  const priced = priceTurn({
+    turn: turns[turns.length - 1],
+    toolCalls: ex.summary.toolCalls,
+    httpStatus: ex.status,
+    streamedSteps: ex.status === 200 ? ex.summary.finishSteps : null,
+    aborted,
+    worstCase,
+    expectedModel: setup.predictedModel,
+  });
+  if (priced.unknownModel) stop = `the server used model ${priced.unknownModel}, which has no price in scripts/chat-eval/pricing.ts`;
+  else if (priced.usageMissing) stop = stop ?? `usage not fully accounted (${priced.usageMissing})`;
+  return { ex, priced, stop };
+}
+
 // ─── Golden mode ─────────────────────────────────────────────────
 
 export interface QuestionRecord {
@@ -202,6 +322,8 @@ export interface QuestionRecord {
   model: string | null;
   costUsd: number;
   reserveReason: string | null;
+  /** The hard-cap worst case this question was checked with. */
+  worstCaseUsd?: number;
   conversationId: number | null;
   elapsedMs: number | null;
   notes: string[];
@@ -250,7 +372,7 @@ export async function runGolden(
   }
 
   const session = mintSession(setup.db);
-  const measured: number[] = [];
+  const limits = requestLimits(opts.toolResultTokens);
   let stop: string | null = null;
   try {
     for (const q of questions) {
@@ -277,39 +399,25 @@ export async function runGolden(
         report.questions.push({ ...base, status: "aborted" });
         continue;
       }
-      const decision = budgetAllows(report.spentUsd, nextQuestionEstimate(measured), opts.maxUsd);
+      const messages = [userMessage(randomUUID(), q.question)];
+      const worst = requestWorstCase(setup, q.scope, messages, opts.page, limits);
+      const decision = budgetAllows(report.spentUsd, worst, opts.maxUsd);
       if (!decision.run) {
-        stop = `budget: ${decision.reason}`;
-        report.questions.push(base);
+        // Hard cap: skip it and try the next (a smaller one may still fit).
+        report.questions.push({ ...base, worstCaseUsd: worst, reserveReason: `skipped: ${decision.reason}` });
         continue;
       }
-      const logStart = deps.logSize();
-      const ex = await sendChat(
-        {
-          baseUrl: opts.baseUrl,
-          session,
-          chatId: randomUUID(),
-          scope: q.scope,
-          conversationId: null,
-          messages: [userMessage(randomUUID(), q.question)],
-          pagePath: opts.page,
-          timeoutMs: opts.timeoutMs,
-        },
+      const { ex, priced, stop: askStop } = await guardedAsk(
+        opts,
+        setup,
         deps,
+        { session, chatId: randomUUID(), scope: q.scope, conversationId: null, messages, pagePath: opts.page },
+        worst,
+        limits,
       );
-      if (ex.status === 401 || ex.status === 403) {
-        stop = `the app refused the minted session (HTTP ${ex.status}); is the dev server running with DATABASE_PATH=${setup.dbPath} and APP_EXTRA_HOSTS/APP_EXTRA_ORIGINS for this port?`;
-      }
-      if (ex.conversationId !== null && !conversationExists(setup.db, ex.conversationId)) {
-        stop = `conversation ${ex.conversationId} is not in ${setup.dbPath}: the server is using another database`;
-      }
-      // A refused request (non-2xx) returned before the model was called: no usage line will come.
-      const usageTurns = ex.conversationId !== null && ex.status === 200 ? await waitForUsage(deps, logStart, ex.conversationId, 1) : [];
-      const errorText = ex.httpError ?? ex.summary.errorText;
-      const priced = priceTurn(usageTurns[0], ex.summary.toolCalls, Boolean(errorText));
-      if (priced.unknownModel) stop = `the server used model ${priced.unknownModel}, which has no price in scripts/chat-eval/pricing.ts`;
-      if (!priced.reserveReason) measured.push(priced.costUsd);
+      if (askStop) stop = askStop;
       report.spentUsd += priced.costUsd;
+      const errorText = ex.httpError ?? ex.summary.errorText ?? (ex.stoppedByRunner ? `stopped by the runner: ${ex.stoppedByRunner}` : null);
 
       const score = scoreAnswer(
         {
@@ -332,6 +440,7 @@ export async function runGolden(
         model: priced.model,
         costUsd: priced.costUsd,
         reserveReason: priced.reserveReason,
+        worstCaseUsd: worst,
         conversationId: ex.conversationId,
         elapsedMs: ex.elapsedMs,
         ...(opts.showAnswers ? { answer: ex.summary.text } : {}),
@@ -448,51 +557,35 @@ export async function runCacheProof(
     A: { id: null, messages: [], chatId: randomUUID() },
     B: { id: null, messages: [], chatId: randomUUID() },
   };
-  const measured: number[] = [];
+  const limits = requestLimits(opts.toolResultTokens);
   try {
     for (const turn of CACHE_SEQUENCE) {
-      const decision = budgetAllows(report.spentUsd, nextQuestionEstimate(measured), opts.maxUsd);
-      if (!decision.run) {
-        report.stoppedReason = `budget: ${decision.reason}`;
-        break;
-      }
       const c = conv[turn.conversation];
       const messages = [...c.messages, userMessage(randomUUID(), turn.text)];
-      const logStart = deps.logSize();
-      const ex = await sendChat(
-        {
-          baseUrl: opts.baseUrl,
-          session,
-          chatId: c.chatId,
-          scope,
-          conversationId: c.id,
-          messages,
-          pagePath: pages[turn.page],
-          timeoutMs: opts.timeoutMs,
-        },
+      const worst = requestWorstCase(setup, scope, messages, pages[turn.page], limits);
+      const decision = budgetAllows(report.spentUsd, worst, opts.maxUsd);
+      if (!decision.run) {
+        report.stoppedReason = `budget (hard cap): ${decision.reason}`;
+        break;
+      }
+      const { ex, priced, stop } = await guardedAsk(
+        opts,
+        setup,
         deps,
+        { session, chatId: c.chatId, scope, conversationId: c.id, messages, pagePath: pages[turn.page] },
+        worst,
+        limits,
       );
-      if (ex.status === 401 || ex.status === 403) {
-        report.stoppedReason = `the app refused the minted session (HTTP ${ex.status}); check DATABASE_PATH and APP_EXTRA_HOSTS/ORIGINS`;
-        break;
-      }
-      if (ex.conversationId !== null && !conversationExists(setup.db, ex.conversationId)) {
-        report.stoppedReason = `conversation ${ex.conversationId} is not in ${setup.dbPath}: the server is using another database`;
-        break;
-      }
-      const turns = ex.conversationId !== null && ex.status === 200 ? await waitForUsage(deps, logStart, ex.conversationId, 1) : [];
-      const errorText = ex.httpError ?? ex.summary.errorText;
-      const priced = priceTurn(turns[turns.length - 1], ex.summary.toolCalls, Boolean(errorText));
       report.spentUsd += priced.costUsd;
-      if (!priced.reserveReason) measured.push(priced.costUsd);
       report.turns.push({ label: turn.label, conversationId: ex.conversationId, page: pages[turn.page], steps: priced.steps, costUsd: priced.costUsd });
       for (const s of priced.steps) {
         print(
           `${turn.label} step ${s.step + 1}: uncached ${s.usage.noCache}, cache write ${s.usage.cacheWrite}, cache read ${s.usage.cacheRead}, output ${s.usage.output}`,
         );
       }
-      if (priced.unknownModel) {
-        report.stoppedReason = `the server used model ${priced.unknownModel}, which has no price`;
+      const errorText = ex.httpError ?? ex.summary.errorText;
+      if (stop) {
+        report.stoppedReason = stop;
         break;
       }
       if (errorText) {
@@ -531,40 +624,46 @@ export function printCacheReport(report: CacheReport, print: Print): void {
 
 export function dryRun(opts: EvalOptions, setup: EvalSetup, print: Print): void {
   const price = priceFor(setup.predictedModel);
+  const limits = requestLimits(opts.toolResultTokens);
   print(`predicted chat model (resolveFeatureModel("chat") on this database): ${setup.predictedModel}`);
   print(`price source: ${PRICE_SOURCE}`);
+  print(
+    `hard-cap rule: spent + worst case <= $${opts.maxUsd.toFixed(2)}; worst case = ${limits.maxSteps} steps x (input at the dearer of ` +
+      `uncached/cache-write, +${limits.maxOutputTokensPerStep} output and +${limits.toolResultTokensPerStep} tool-result tokens per earlier step) ` +
+      `+ ${limits.maxOutputTokensPerStep} output per step + one nested-AI reserve`,
+  );
+  if (!price) print(`NOTE: no price for ${setup.predictedModel}; a live run will refuse to start`);
   if (opts.mode === "cache-proof") {
     const p = previewRequest(setup.db, "all", setup.expected.today);
+    const worst = requestWorstCase(setup, "all", [userMessage("dry", "x")], undefined, limits);
     print(`cache-proof plan: B1 (fresh conversation), A1 tool question, A2 same page, A3 page changed; scope all`);
     print(`request size estimate: prefix ${p.prefixTokensEstimate} tokens (${p.toolCount} tools), volatile ${p.volatileTokensEstimate} tokens`);
-    print(`budget: 4 requests x reserve $${QUESTION_RESERVE_USD.toFixed(2)} = $${(4 * QUESTION_RESERVE_USD).toFixed(2)} worst case booked; cap $${opts.maxUsd.toFixed(2)}`);
+    print(`worst case per request (first turn size): $${worst.toFixed(2)}; requests that fit under the cap: ${questionsThatFit([worst, worst, worst, worst], opts.maxUsd)} of 4 (later turns are larger)`);
     return;
   }
   const qs = buildGolden(setup.expected).filter((q) => !opts.only || opts.only.includes(q.id));
   const unregistered = toolsReferenced(qs).filter((t) => !setup.expected.registeredTools.includes(t));
   const sizes = new Map<ChatScope, ReturnType<typeof previewRequest>>();
-  let estimate = 0;
+  let typical = 0;
+  const worsts: number[] = [];
   for (const q of qs) {
     if (!sizes.has(q.scope)) sizes.set(q.scope, previewRequest(setup.db, q.scope, setup.expected.today, opts.page));
     const s = sizes.get(q.scope)!;
-    // A cold first request: the whole prompt written once, then (worst case)
-    // 4 more steps reading it, plus 3k output; never below the reserve.
+    // A typical cold question: the whole prompt written once, 4 more steps reading it, 3k output.
     const tokens = s.prefixTokensEstimate + s.volatileTokensEstimate;
-    const est = price
-      ? costOf({ noCache: 2000, cacheWrite: tokens, cacheRead: tokens * 4, output: 3000 }, price)
-      : QUESTION_RESERVE_USD;
-    estimate += est;
+    const est = price ? costOf({ noCache: 2000, cacheWrite: tokens, cacheRead: tokens * 4, output: 3000 }, price) : 0;
+    const worst = requestWorstCase(setup, q.scope, [userMessage("dry", q.question)], opts.page, limits);
+    typical += est;
+    worsts.push(worst);
     print(`${q.id} [${q.scope}] ${q.question}`);
     for (const c of q.checks) print(`     ${c.kind}: ${c.label}`);
     for (const n of q.notes) print(`     note: ${n}`);
-    print(`     request: prefix ~${s.prefixTokensEstimate} + volatile ~${s.volatileTokensEstimate} tokens; estimate $${est.toFixed(2)}`);
+    print(`     request: prefix ~${s.prefixTokensEstimate} + volatile ~${s.volatileTokensEstimate} tokens; typical $${est.toFixed(2)}; worst case $${worst.toFixed(2)}`);
   }
   if (unregistered.length > 0) print(`tools named in checks but not registered today: ${unregistered.join(", ")}`);
-  print(
-    `${qs.length} questions; estimated total $${estimate.toFixed(2)} (a cold 5-step question each). ` +
-      `Cap $${opts.maxUsd.toFixed(2)}: before each question the guard requires spent + max($${QUESTION_RESERVE_USD.toFixed(2)}, 1.5 x dearest so far) <= cap.`,
-  );
-  if (!price) print(`NOTE: no price for ${setup.predictedModel}; a live run will refuse to start`);
+  const fit = questionsThatFit(worsts, opts.maxUsd);
+  print(`${qs.length} questions; typical total $${typical.toFixed(2)}; worst-case total $${worsts.reduce((a, b) => a + b, 0).toFixed(2)}`);
+  print(`under the hard cap of $${opts.maxUsd.toFixed(2)}, ${fit} of ${qs.length} questions fit in order if each spent its worst case; the rest would be skipped`);
 }
 
 // ─── Main ────────────────────────────────────────────────────────

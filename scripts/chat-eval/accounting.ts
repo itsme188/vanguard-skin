@@ -11,43 +11,76 @@ export interface PricedTurn {
   steps: { step: number; usage: TokenUsage }[];
   usage: TokenUsage;
   costUsd: number;
-  /** Why the cost is a reserve booking rather than a measurement, or null. */
+  /** Why the cost is a booking rather than a pure measurement, or null. */
   reserveReason: string | null;
   /** A model id with no price: the run must stop. */
   unknownModel: string | null;
+  /** Usage the run cannot account for (a step with no line): the run must stop. */
+  usageMissing: string | null;
 }
 
-/** Price one request's usage lines; falls back to the reserve when they are missing. */
-export function priceTurn(turn: TurnUsage | undefined, toolCalls: readonly string[], errored: boolean): PricedTurn {
+export interface PriceTurnInput {
+  turn: TurnUsage | undefined;
+  toolCalls: readonly string[];
+  /** HTTP status of the request (a non-200 answer returned before any model call). */
+  httpStatus: number;
+  /** Steps the stream finished (`finish-step` chunks), or null when unknown. */
+  streamedSteps: number | null;
+  /** The request was aborted mid-stream (by the runner or a timeout). */
+  aborted: boolean;
+  /** The question's worst case, booked whenever usage cannot be measured in full. */
+  worstCase: number;
+  /** The model the guard priced the worst case with. */
+  expectedModel: string;
+}
+
+/**
+ * Price one request from its per-step usage lines. Never assumes zero: a
+ * missing step line, a missing turn line, an aborted request or a model
+ * other than the one the worst case was priced with books the WHOLE worst
+ * case and flags the run to stop. A request refused before the model call
+ * (non-200) costs nothing. Nested AI tools add the reserve per call. Pure.
+ */
+export function priceTurn(input: PriceTurnInput): PricedTurn {
+  const { turn, toolCalls, httpStatus, streamedSteps, aborted, worstCase, expectedModel } = input;
   const steps = (turn?.steps ?? []).map((s) => ({ step: s.step ?? 0, usage: s.usage }));
   const stepSum = steps.reduce((acc, s) => addUsage(acc, s.usage), ZERO_USAGE);
   const usage = turn?.turn ? turn.turn.usage : stepSum;
   const model = turn?.turn?.model ?? turn?.steps[turn.steps.length - 1]?.model ?? null;
-  const out: PricedTurn = { model, steps, usage, costUsd: 0, reserveReason: null, unknownModel: null };
+  const out: PricedTurn = { model, steps, usage, costUsd: 0, reserveReason: null, unknownModel: null, usageMissing: null };
 
-  if (!turn || (turn.steps.length === 0 && !turn.turn)) {
-    out.costUsd = QUESTION_RESERVE_USD;
-    out.reserveReason = errored ? "request errored; reserve booked" : "no usage line in the log; reserve booked";
+  if (httpStatus !== 200) {
+    out.reserveReason = `HTTP ${httpStatus || "error"}: refused before the model call, nothing booked`;
     return out;
   }
+  const book = (why: string) => {
+    out.costUsd = Math.max(out.costUsd, worstCase);
+    out.reserveReason = `${why}; the question's worst case $${worstCase.toFixed(2)} booked`;
+  };
   const price = priceFor(model);
-  if (!price) {
-    out.unknownModel = model ?? "(none)";
-    out.costUsd = QUESTION_RESERVE_USD;
-    out.reserveReason = `model ${model ?? "(none)"} has no price; reserve booked`;
+  if (model !== null && !price) {
+    out.unknownModel = model;
+    book(`model ${model} has no price`);
     return out;
   }
-  out.costUsd = costOf(usage, price);
-  if (turn.turn === null) {
-    out.costUsd = Math.max(out.costUsd, QUESTION_RESERVE_USD);
-    out.reserveReason = "turn line missing (steps only); at least the reserve booked";
+  if (price) out.costUsd = costOf(usage, price);
+  if (model !== null && model !== expectedModel) {
+    out.usageMissing = `the server used ${model}, the guard priced ${expectedModel}`;
+    book(out.usageMissing);
   }
-  if (errored) {
-    out.costUsd = Math.max(out.costUsd, QUESTION_RESERVE_USD);
-    out.reserveReason = "request errored; at least the reserve booked";
+  if (!turn || turn.turn === null) {
+    out.usageMissing = out.usageMissing ?? "no turn usage line in the log";
+    book(out.usageMissing);
+  } else if (streamedSteps !== null && turn.steps.length < streamedSteps) {
+    out.usageMissing = `${streamedSteps - turn.steps.length} step(s) streamed with no usage line`;
+    book(out.usageMissing);
+  }
+  if (aborted) {
+    out.usageMissing = out.usageMissing ?? "request aborted mid-step";
+    book(out.usageMissing);
   }
   const nested = toolCalls.filter((t) => NESTED_AI_TOOLS.includes(t));
-  if (nested.length > 0) {
+  if (nested.length > 0 && out.costUsd < worstCase) {
     out.costUsd += QUESTION_RESERVE_USD * nested.length;
     out.reserveReason = `${out.reserveReason ? out.reserveReason + "; " : ""}reserve added for nested AI tool(s) ${nested.join(", ")} (not in the chat log)`;
   }

@@ -17,8 +17,13 @@
  *   minus or a Unicode minus, parentheses for a negative) and compared with
  *   the expected value within a tolerance. ISO dates and clock times are
  *   removed first so their digits never count as figures. By default the
- *   comparison is on absolute values, because prose writes "a loss of $500"
- *   as often as "-$500"; `signed: true` compares signs too.
+ *   comparison is on absolute values (right for prices, weights, counts,
+ *   income). `signed: true` compares signs too, and then a loss word just
+ *   before or after the figure ("a loss of $500", "$500 lower") makes it
+ *   negative, as a minus or parentheses do. A figure can be bound to its
+ *   context: `unitAfter` must match the text right after it ("66 days",
+ *   not "66 shares"), and `near` must match on the same line within
+ *   `window` characters (a label, a symbol, "dividend").
  * - `calledTool` / `notCalledTool`: the tool names recorded from the stream.
  *   `calledTool` with a list passes when any one of them was called.
  * - `minLength`: the trimmed text has at least that many characters.
@@ -33,10 +38,16 @@ export interface NumberTolerance {
   absTol?: number;
   /** Relative tolerance as a fraction of |value| (0.01 = 1%). */
   relTol?: number;
-  /** Compare signs too (default false: absolute values). */
+  /** Compare signs too (default false: absolute values); loss words count as a minus. */
   signed?: boolean;
   /** Only count numbers written with a percent sign. */
   percentOnly?: boolean;
+  /** Must match the text right after the figure (anchored; leading spaces allowed). */
+  unitAfter?: RegExp;
+  /** Must match on the figure's own line within `window` characters either side. */
+  near?: TextPattern;
+  /** Characters either side of the figure that `near` may use (default 60). */
+  window?: number;
 }
 
 export type Check =
@@ -83,9 +94,13 @@ export const EMPTY_TURN_SENTENCES: readonly string[] = [CUT_OFF_SENTENCE, OUTPUT
 // ─── Numbers ─────────────────────────────────────────────────────
 
 export interface ParsedNumber {
+  /** Signed by a minus sign or parentheses only (not by words). */
   value: number;
   percent: boolean;
   raw: string;
+  /** Offsets of the matched figure in the original text. */
+  start: number;
+  end: number;
 }
 
 const MINUS_CHARS = new Set(["-", "−"]);
@@ -122,7 +137,14 @@ export function parseNumbers(text: string): ParsedNumber[] {
     if (suffix) value *= SUFFIX[suffix] ?? 1;
     const negative = MINUS_CHARS.has(sign) || (open === "(" && close === ")");
     if (negative) value = -value;
-    out.push({ value, percent: pct === "%", raw: whole.trim() });
+    const lead = whole.length - whole.trimStart().length;
+    out.push({
+      value,
+      percent: pct === "%",
+      raw: whole.trim(),
+      start: m.index + lead,
+      end: m.index + whole.trimEnd().length,
+    });
   }
   return out;
 }
@@ -133,12 +155,42 @@ function tolerance(value: number, t: NumberTolerance): number {
   return Math.max(abs, rel * Math.abs(value), 1e-9);
 }
 
-/** The first parsed number that matches `value` within tolerance, or null. */
+const LOSS_BEFORE = /\b(loss(es)?|lost|losing|down|fell|fall(en)?|drop(ped)?|declin(e|ed)|negative|cost you)\b[^.\n\d]{0,24}$/i;
+const LOSS_AFTER = /^\)?\s*(of\s+)?(loss|lower|down|decline|drop)\b/i;
+
+/** The figure's sign once loss words are read (signed mode). */
+export function wordSignedValue(text: string, n: ParsedNumber): number {
+  if (n.value < 0) return n.value;
+  const before = text.slice(Math.max(0, n.start - 40), n.start);
+  const after = text.slice(n.end, n.end + 16);
+  return LOSS_BEFORE.test(before) || LOSS_AFTER.test(after) ? -n.value : n.value;
+}
+
+function lineAround(text: string, n: ParsedNumber, window: number): string {
+  const lineStart = text.lastIndexOf("\n", n.start - 1) + 1;
+  const nl = text.indexOf("\n", n.end);
+  const lineEnd = nl === -1 ? text.length : nl;
+  return text.slice(Math.max(lineStart, n.start - window), Math.min(lineEnd, n.end + window));
+}
+
+/** Does a parsed figure satisfy the check's unit and context bindings? */
+function bindingHolds(text: string, n: ParsedNumber, t: NumberTolerance): boolean {
+  if (t.percentOnly && !n.percent) return false;
+  if (t.unitAfter) {
+    const after = text.slice(n.end, n.end + 32);
+    const anchored = new RegExp(`^\\s*(?:${t.unitAfter.source})`, t.unitAfter.flags.includes("i") ? t.unitAfter.flags : t.unitAfter.flags + "i");
+    if (!anchored.test(after)) return false;
+  }
+  if (t.near !== undefined && matchesPattern(lineAround(text, n, t.window ?? 60), t.near) === null) return false;
+  return true;
+}
+
+/** The first parsed number that matches `value` within tolerance and its bindings, or null. */
 export function findNumber(text: string, value: number, t: NumberTolerance = {}): ParsedNumber | null {
   const tol = tolerance(value, t);
   for (const n of parseNumbers(text)) {
-    if (t.percentOnly && !n.percent) continue;
-    const a = t.signed ? n.value : Math.abs(n.value);
+    if (!bindingHolds(text, n, t)) continue;
+    const a = t.signed ? wordSignedValue(text, n) : Math.abs(n.value);
     const b = t.signed ? value : Math.abs(value);
     if (Math.abs(a - b) <= tol) return n;
   }
@@ -241,5 +293,7 @@ export function scoreAnswer(answer: EvalAnswer, checks: readonly Check[]): Score
 export function serializeCheck(check: Check): Record<string, unknown> {
   const out: Record<string, unknown> = { ...check };
   if ("pattern" in check) out.pattern = patternText(check.pattern);
+  if ("unitAfter" in check && check.unitAfter) out.unitAfter = check.unitAfter.toString();
+  if ("near" in check && check.near !== undefined) out.near = patternText(check.near);
   return out;
 }
