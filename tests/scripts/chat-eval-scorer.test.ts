@@ -1,11 +1,12 @@
 /**
  * The chat evaluation's pure parts (plan 2026-11-11, Task 9): the scorer,
  * the price table and budget guard, the usage-line and stream readers, the
- * cache verdicts and the database guard. Network-free and model-free; the
- * evaluation itself (scripts/chat-eval/run-golden.ts) never runs here.
+ * cache verdicts and the database guard, plus one end-to-end check of the
+ * in-question cost ceiling against the real route with a STUBBED model
+ * (no network, no live AI). The evaluation itself never runs here.
  */
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import os from "node:os";
 import path from "node:path";
 import {
@@ -19,12 +20,15 @@ import {
 import fs from "node:fs";
 import {
   budgetAllows,
+  ceilingAllowsNextStep,
   costOf,
+  inFlightStepWorstCase,
   priceFor,
-  questionsThatFit,
   QUESTION_RESERVE_USD,
+  runGuarantee,
+  STEP_INPUT_MARGIN_TOKENS,
+  stepWorstCase,
   worstCaseInputTokens,
-  worstCaseQuestionCost,
 } from "@/scripts/chat-eval/pricing";
 import { buildGolden, NOT_FOR_FILING, STALE_WORDS } from "@/scripts/chat-eval/golden";
 import type { ExpectedContext } from "@/scripts/chat-eval/expected";
@@ -141,28 +145,37 @@ describe("prices and the budget guard", () => {
     expect(costOf({ noCache: 1e6, cacheWrite: 1e6, cacheRead: 1e6, output: 1e6 }, p)).toBeCloseTo(22.05, 10);
   });
 
-  it("the worst case: every step at the dearer input rate, growing by max output + tool allowance, max output per step, one nested reserve", () => {
+  it("one step's worst case: whole input at the dearer input rate plus the maximum output", () => {
     const price = { input: 2, cacheWrite: 2.5, cacheRead: 0.1, output: 10 };
-    const limits = { maxSteps: 3, maxOutputTokensPerStep: 1000, toolResultTokensPerStep: 500 };
-    // inputs 10000, 11500, 13000 at $2.50/M; outputs 3 x 1000 at $10/M
-    const expected = ((10000 + 11500 + 13000) * 2.5 + 3 * 1000 * 10) / 1e6 + QUESTION_RESERVE_USD;
-    expect(worstCaseQuestionCost(10000, limits, price)).toBeCloseTo(expected, 12);
-    // cache write dearer than uncached input is the rate used
-    expect(worstCaseQuestionCost(10000, { ...limits, maxSteps: 1 }, price)).toBeCloseTo((10000 * 2.5 + 1000 * 10) / 1e6 + QUESTION_RESERVE_USD, 12);
+    expect(stepWorstCase(10000, 1000, price)).toBeCloseTo((10000 * 2.5 + 1000 * 10) / 1e6, 12);
     expect(worstCaseInputTokens(3000)).toBe(1200);
   });
 
-  it("is a hard cap: spent + worst case must fit, and only the questions that fit run", () => {
-    expect(budgetAllows(3.5, 0.5, 4).run).toBe(true);
-    expect(budgetAllows(3.5, 0.51, 4).run).toBe(false);
-    expect(budgetAllows(Number.NaN, 0.4, 4).run).toBe(false);
-    expect(budgetAllows(0, Number.POSITIVE_INFINITY, 4).run).toBe(false);
-    expect(questionsThatFit([1, 1, 1, 1, 1], 4)).toBe(4);
-    expect(questionsThatFit([5, 1], 4)).toBe(0);
-    expect(questionsThatFit([1.5, 1.5], 4, 1.1)).toBe(1);
+  it("the in-flight step: base + earlier tool results + earlier output (at most ceiling / output price) + margin", () => {
+    const price = { input: 2, cacheWrite: 2.5, cacheRead: 0.1, output: 10 };
+    const limits = { maxSteps: 4, maxOutputTokensPerStep: 1000, toolResultTokensPerStep: 500 };
+    // earlier output: min(3 x 1000, 0.02 / $10 per M = 2000) = 2000 tokens
+    const input = 10000 + 3 * 500 + 2000 + STEP_INPUT_MARGIN_TOKENS;
+    expect(inFlightStepWorstCase(10000, limits, 0.02, price)).toBeCloseTo(stepWorstCase(input, 1000, price), 12);
+    // a large ceiling is capped by the step limit's own output
+    const input2 = 10000 + 3 * 500 + 3000 + STEP_INPUT_MARGIN_TOKENS;
+    expect(inFlightStepWorstCase(10000, limits, 100, price)).toBeCloseTo(stepWorstCase(input2, 1000, price), 12);
   });
 
-  it("the worst case uses the route's own limits (pinned to the route source)", () => {
+  it("the run and in-question rules", () => {
+    // start rule: spent + per-question ceiling must fit the run cap
+    expect(budgetAllows(2.8, 0.6, 3.4).run).toBe(true);
+    expect(budgetAllows(2.81, 0.6, 3.4).run).toBe(false);
+    expect(budgetAllows(Number.NaN, 0.6, 3.4).run).toBe(false);
+    // in-question: stop when running + next step worst would pass the ceiling
+    expect(ceilingAllowsNextStep(0.2, 0.4, 0.6)).toBe(true);
+    expect(ceilingAllowsNextStep(0.21, 0.4, 0.6)).toBe(false);
+    // guarantee: cap + one step in flight (+ any first-step excess over the ceiling)
+    expect(runGuarantee(3.4, 0.6, 0.5, 0.4).guaranteedMax).toBeCloseTo(3.9, 12);
+    expect(runGuarantee(3.4, 0.6, 0.5, 0.8).guaranteedMax).toBeCloseTo(4.1, 12);
+  });
+
+  it("the budget uses the route's own limits (pinned to the route source)", () => {
     const route = fs.readFileSync(path.resolve("app/api/chat/route.ts"), "utf8");
     const runner = fs.readFileSync(path.resolve("scripts/chat-eval/run-golden.ts"), "utf8");
     const routeMax = /maxOutputTokens:\s*(\d+)/.exec(route)?.[1];
@@ -198,31 +211,47 @@ describe("usage lines", () => {
     expect(groups[1].turn).toBeNull();
   });
 
-  it("prices a turn from its lines and never assumes zero for missing usage", () => {
-    const base = { toolCalls: [] as string[], httpStatus: 200, aborted: false, worstCase: 2, expectedModel: "claude-sonnet-4-6" };
+  it("prices a request from its step lines and never assumes zero for missing usage", () => {
+    const base = {
+      toolCalls: [] as string[],
+      httpStatus: 200,
+      ceilingAbort: false,
+      abnormalEnd: false,
+      inFlightBooking: null,
+      stepWorst: 0.5,
+      expectedModel: "claude-sonnet-4-6",
+    };
+    const sonnet = priceFor("claude-sonnet-4-6")!;
     const [g] = splitTurns(parseUsageLines([step(1, 0, 0), turn(1, 1)].join("\n")), 1);
+    const one = costOf(g.steps[0].usage, sonnet);
     const priced = priceTurn({ ...base, turn: g, streamedSteps: 1 });
     expect(priced.reserveReason).toBeNull();
     expect(priced.usageMissing).toBeNull();
-    expect(priced.costUsd).toBeCloseTo(costOf(g.turn!.usage, priceFor("claude-sonnet-4-6")!), 12);
-    // two steps streamed, one usage line: the worst case is booked and the run stops
+    expect(priced.costUsd).toBeCloseTo(one, 12);
+    // two steps streamed, one usage line: one step worst case booked, run stops
     const short = priceTurn({ ...base, turn: g, streamedSteps: 2 });
     expect(short.usageMissing).toMatch(/1 step/);
-    expect(short.costUsd).toBe(2);
+    expect(short.costUsd).toBeCloseTo(one + 0.5, 12);
+    // a ceiling abort books the in-flight step at the runner's figure and does not stop the run
+    const ceil = priceTurn({ ...base, turn: g, streamedSteps: 1, ceilingAbort: true, inFlightBooking: 0.3 });
+    expect(ceil.costUsd).toBeCloseTo(one + 0.3, 12);
+    expect(ceil.usageMissing).toBeNull();
+    // any other abnormal end books one step worst case and stops the run
+    const odd = priceTurn({ ...base, turn: g, streamedSteps: 1, abnormalEnd: true });
+    expect(odd.costUsd).toBeCloseTo(one + 0.5, 12);
+    expect(odd.usageMissing).not.toBeNull();
     // no lines at all on a 200
-    expect(priceTurn({ ...base, turn: undefined, streamedSteps: 1 }).costUsd).toBe(2);
-    // aborted mid-step
-    expect(priceTurn({ ...base, turn: g, streamedSteps: 1, aborted: true }).costUsd).toBe(2);
+    expect(priceTurn({ ...base, turn: undefined, streamedSteps: 0 }).costUsd).toBe(0.5);
     // refused before the model call
     expect(priceTurn({ ...base, turn: undefined, streamedSteps: null, httpStatus: 429 }).costUsd).toBe(0);
-    // a different model than the guard priced
-    expect(priceTurn({ ...base, turn: g, streamedSteps: 1, expectedModel: "claude-opus-5-5" }).usageMissing).toMatch(/guard priced/);
+    // a model other than the guarantee's
+    expect(priceTurn({ ...base, turn: g, streamedSteps: 1, expectedModel: "claude-opus-5-5" }).usageMissing).toMatch(/priced for/);
     // nested AI tool adds the reserve
-    expect(priceTurn({ ...base, turn: g, streamedSteps: 1, toolCalls: ["query_filing_section"] }).costUsd).toBeCloseTo(priced.costUsd + QUESTION_RESERVE_USD, 12);
+    expect(priceTurn({ ...base, turn: g, streamedSteps: 1, toolCalls: ["query_filing_section"] }).costUsd).toBeCloseTo(one + QUESTION_RESERVE_USD, 12);
     const unknown = splitTurns(parseUsageLines(formatUsageLine("turn", { conversationId: 2, scope: "all", model: "claude-x", steps: 1, noCache: 1, cacheWrite: 1, cacheRead: 1, output: 1, finishReason: "stop" })), 2);
     const u = priceTurn({ ...base, turn: unknown[0], streamedSteps: 0 });
     expect(u.unknownModel).toBe("claude-x");
-    expect(u.costUsd).toBe(2);
+    expect(u.costUsd).toBe(0.5);
   });
 });
 
@@ -476,4 +505,121 @@ describe("golden questions: one right and one plausible wrong answer each", () =
       expect(r.pass).toBe(false);
     });
   }
+});
+
+// ─── The abort path, end to end with a stubbed model (no network, no live AI) ──
+//
+// The REAL chat route runs in process with a MockLanguageModelV3 behind
+// getModelForFeature; the runner talks to it through a fetch that streams
+// the route's own Response and passes the abort signal through. The
+// fixture database is built here (migrated temp file + buildEvalFixture).
+
+const stub = vi.hoisted(() => ({ db: null as unknown, model: null as unknown }));
+vi.mock("@/lib/db", () => ({
+  get db() {
+    return stub.db;
+  },
+}));
+vi.mock("@/lib/ai/provider", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/ai/provider")>("@/lib/ai/provider");
+  return { ...actual, getModelForFeature: () => stub.model };
+});
+vi.mock("@/lib/env", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/env")>("@/lib/env");
+  return { ...actual, getAnthropicApiKey: () => "sk-test-stub" };
+});
+
+describe("the in-question cost ceiling, with a stubbed model", () => {
+  it("three expensive steps: aborts after the step that would let the next pass the ceiling, never runs a fourth, books exactly what it saw", async () => {
+    const [{ default: Database }, { NextRequest }, { MockLanguageModelV3 }, { runMigrations }, { upsertSecurity }, { buildEvalFixture }, { todayET }, { main }] =
+      await Promise.all([
+        import("better-sqlite3"),
+        import("next/server"),
+        import("ai/test"),
+        import("@/lib/db/migrate"),
+        import("@/lib/mutations/securities"),
+        import("@/scripts/chat-eval/build-eval-db"),
+        import("@/lib/calendar/date-utils"),
+        import("@/scripts/chat-eval/run-golden"),
+      ]);
+    const { POST } = await import("@/app/api/chat/route");
+
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "chat-eval-abort-"));
+    const dbPath = path.join(dir, "eval.db");
+    const db = new Database(dbPath);
+    db.pragma("journal_mode = WAL");
+    runMigrations(db);
+    upsertSecurity(db, { symbol: "VTI", name: "Total Market ETF", securityType: "etf", assetClass: "equity" });
+    db.transaction(() => buildEvalFixture(db, todayET()))();
+    stub.db = db;
+
+    // Every step: a tool call, 40k tokens written to cache and 1k output.
+    let calls = 0;
+    stub.model = new MockLanguageModelV3({
+      modelId: "claude-sonnet-4-6",
+      doStream: async () => {
+        calls++;
+        const usage = {
+          inputTokens: { total: 40010, noCache: 10, cacheRead: 0, cacheWrite: 40000 },
+          outputTokens: { total: 1000, text: 1000, reasoning: 0 },
+        };
+        const parts = [
+          { type: "stream-start", warnings: [] },
+          { type: "tool-call", toolCallId: `x${calls}`, toolName: "query_holdings", input: JSON.stringify({ limit: 1 }) },
+          { type: "finish", finishReason: { unified: "tool-calls", raw: "tool_use" }, usage },
+        ];
+        return {
+          stream: new ReadableStream({
+            async start(controller) {
+              await new Promise((r) => setTimeout(r, 200));
+              for (const p of parts) controller.enqueue(p);
+              controller.close();
+            },
+          }),
+        } as unknown as Awaited<ReturnType<InstanceType<typeof MockLanguageModelV3>["doStream"]>>;
+      },
+    });
+
+    let log = "";
+    const spy = vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      const line = args.map(String).join(" ");
+      if (line.startsWith("[chat-usage]")) log += line + "\n";
+    });
+    const deps = {
+      fetch: (async (url: string | URL, init?: RequestInit) =>
+        POST(new NextRequest(String(url), init as ConstructorParameters<typeof NextRequest>[1]))) as typeof fetch,
+      readLogSince: (from: number) => log.slice(from),
+      logSize: () => log.length,
+      sleep: (ms: number) => new Promise<void>((r) => setTimeout(r, ms)),
+    };
+    const out = path.join(dir, "e.json");
+    try {
+      await main(["--db", dbPath, "--log", path.join(dir, "server.log"), "--only", "Q9", "--out", out, "--max-usd", "1.3"], deps, () => {});
+    } finally {
+      spy.mockRestore();
+    }
+    const report = JSON.parse(fs.readFileSync(out, "utf8"));
+    const q = report.questions[0];
+    expect(q.status).toBe("aborted-cost-ceiling");
+    expect(q.score.pass).toBe(false);
+    // Step 1: $0.165 spent + next-step worst $0.40 = $0.565 <= $0.60, go on.
+    // Step 2: $0.33 + $0.40 > $0.60, abort while step 3 is in flight.
+    expect(q.perStep).toHaveLength(2);
+    expect(calls).toBeLessThanOrEqual(3);
+    await new Promise((r) => setTimeout(r, 600));
+    expect(calls).toBeLessThanOrEqual(3); // no fourth step after the abort
+    // Booked = the two usage lines seen + the in-flight step at the runner's next-step worst case.
+    const sonnet = priceFor("claude-sonnet-4-6")!;
+    const linesSum = q.perStep.reduce((s: number, st: { usage: Parameters<typeof costOf>[0] }) => s + costOf(st.usage, sonnet), 0);
+    expect(linesSum).toBeCloseTo(2 * costOf({ noCache: 10, cacheWrite: 40000, cacheRead: 0, output: 1000 }, sonnet), 12);
+    // the in-flight booking is the next-step worst case from the real sizes (the step-2 tool result adds a little)
+    const floor = stepWorstCase(40010 + 1000 + STEP_INPUT_MARGIN_TOKENS, 16000, sonnet);
+    expect(q.inFlightBookedUsd).toBeGreaterThanOrEqual(floor);
+    expect(q.inFlightBookedUsd).toBeLessThan(floor + 0.05);
+    expect(q.costUsd).toBeCloseTo(linesSum + q.inFlightBookedUsd, 9);
+    expect(report.spentUsd).toBeCloseTo(q.costUsd, 9);
+    // The run guarantee holds: total <= run cap + one step in flight.
+    expect(report.spentUsd).toBeLessThanOrEqual(report.guaranteedMaxUsd);
+    db.close();
+  }, 30000);
 });

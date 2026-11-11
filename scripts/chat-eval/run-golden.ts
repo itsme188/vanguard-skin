@@ -26,13 +26,17 @@
  *   npx tsx scripts/chat-eval/run-golden.ts --db data/chat-eval/eval.db --log data/chat-eval/server.log \
  *     --max-usd N [--only Q1,Q5] [--show-answers]
  *
- * The cap is HARD: a question runs only when the money spent so far plus
- * that question's worst case (its real input size, every step up to the
- * route's step cap at the dearer input rate, the route's maximum output per
- * step, a per-step tool-result allowance, one nested-AI reserve) fits under
- * --max-usd. A request whose streamed tool result is bigger than the
- * allowance is aborted; a step with no usage line books the worst case and
- * stops the run. Questions that do not fit are skipped and listed.
+ * Budget (orchestrator ruling): a question starts only if the money spent
+ * so far plus the per-question ceiling fits under --max-usd (else it is
+ * skipped and listed). While it runs, the runner tails the server's
+ * per-step usage lines and aborts the HTTP request (which stops the route's
+ * model call) as soon as the running cost plus the worst the step already
+ * in flight can cost would pass the ceiling; the question is then reported
+ * "aborted-cost-ceiling" and scored as failed. Guaranteed maximum spend =
+ * run cap + one step in flight (its input at the cache-write rate plus the
+ * route's maximum output), printed at the start; --hard-ceiling-usd refuses
+ * to start above it. A tool result over the character bound aborts and stops
+ * the run; a step with no usage line books one step worst case and stops it.
  *
  * Flags:
  *   --db <path>          required; refused when named vanguard.db or not built by build-eval-db.ts
@@ -40,7 +44,9 @@
  *   --base-url <url>     default http://127.0.0.1:3095
  *   --mode golden|cache-proof   default golden
  *   --max-usd <n>        hard budget cap (alias --budget-usd; default 4, the plan's default)
- *   --tool-result-tokens <n>    per-step tool-result allowance in the worst case (default 8000)
+ *   --max-usd-per-question <n>  ceiling enforced while a question runs (default 0.60)
+ *   --hard-ceiling-usd <n>      refuse to start when cap + one step in flight exceeds it
+ *   --tool-result-chars <n>     per-step tool-result bound the guarantee assumes (default 22000)
  *   --only Q1,Q5         run a subset (golden mode)
  *   --page <path>        a /dashboard path sent as the page context (golden mode; default none)
  *   --out <path>         JSON result (default data/chat-eval/results-<timestamp>.json; must be git-ignored)
@@ -73,13 +79,16 @@ import {
   PRICE_SOURCE,
   ZERO_USAGE,
   addUsage,
+  QUESTION_RESERVE_USD,
+  STEP_INPUT_MARGIN_TOKENS,
   budgetAllows,
+  ceilingAllowsNextStep,
   costOf,
+  inFlightStepWorstCase,
   priceFor,
-  questionsThatFit,
-  roughTokens,
+  runGuarantee,
+  stepWorstCase,
   worstCaseInputTokens,
-  worstCaseQuestionCost,
   type RequestLimits,
   type TokenUsage,
 } from "./pricing";
@@ -95,6 +104,7 @@ import {
   type Session,
   type TransportDeps,
 } from "./transport";
+import { parseUsageLines, splitTurns, type TurnUsage } from "./usage-lines";
 import { cacheVerdicts, priceTurn, type CacheStepRow, type CacheVerdict, type PricedTurn } from "./accounting";
 
 export const SESSION_LABEL = "chat-eval";
@@ -112,7 +122,12 @@ export interface EvalOptions {
   showAnswers: boolean;
   dryRun: boolean;
   timeoutMs: number;
-  toolResultTokens: number;
+  /** Per-step bound on one tool result, in characters (a bigger one aborts the request). */
+  toolResultChars: number;
+  /** The per-question cost ceiling enforced while a question runs. */
+  maxUsdPerQuestion: number;
+  /** Refuse to start (or to start a request) when cap + one step in flight would exceed it. */
+  hardCeilingUsd?: number;
 }
 
 type Print = (line: string) => void;
@@ -132,8 +147,13 @@ export function parseArgs(argv: string[]): EvalOptions | { error: string } {
   const maxUsd = maxRaw === undefined ? DEFAULT_MAX_USD : Number(maxRaw);
   if (!Number.isFinite(maxUsd) || maxUsd <= 0) return { error: "--max-usd must be a positive number" };
   const timeoutMs = Number(get("--timeout-ms") ?? 240000);
-  const toolResultTokens = Number(get("--tool-result-tokens") ?? DEFAULT_TOOL_RESULT_TOKENS);
-  if (!Number.isFinite(toolResultTokens) || toolResultTokens < 0) return { error: "--tool-result-tokens must be a non-negative number" };
+  const toolResultChars = Number(get("--tool-result-chars") ?? DEFAULT_TOOL_RESULT_CHARS);
+  if (!Number.isFinite(toolResultChars) || toolResultChars < 0) return { error: "--tool-result-chars must be a non-negative number" };
+  const perQ = Number(get("--max-usd-per-question") ?? DEFAULT_MAX_USD_PER_QUESTION);
+  if (!Number.isFinite(perQ) || perQ <= 0) return { error: "--max-usd-per-question must be a positive number" };
+  const hardRaw = get("--hard-ceiling-usd");
+  const hardCeilingUsd = hardRaw === undefined ? undefined : Number(hardRaw);
+  if (hardCeilingUsd !== undefined && (!Number.isFinite(hardCeilingUsd) || hardCeilingUsd <= 0)) return { error: "--hard-ceiling-usd must be a positive number" };
   const dryRun = argv.includes("--dry-run");
   const log = get("--log");
   if (!dryRun && !log) return { error: "--log <dev server log> is required unless --dry-run" };
@@ -143,7 +163,9 @@ export function parseArgs(argv: string[]): EvalOptions | { error: string } {
     db,
     log,
     baseUrl: get("--base-url") ?? "http://127.0.0.1:3095",
-    toolResultTokens: toolResultTokens,
+    toolResultChars,
+    maxUsdPerQuestion: perQ,
+    ...(hardCeilingUsd !== undefined ? { hardCeilingUsd } : {}),
     mode,
     maxUsd,
     only: get("--only")?.split(",").map((s) => s.trim().toUpperCase()).filter(Boolean),
@@ -216,95 +238,202 @@ function conversationExists(db: Database.Database, id: number): boolean {
 
 const usd = (n: number) => `$${n.toFixed(4)}`;
 
-// ─── The hard budget ─────────────────────────────────────────────
+// ─── The budget: run cap, per-question ceiling, one step in flight ─────
 
 /**
  * The route's per-step output cap (`maxOutputTokens` in app/api/chat/route.ts,
  * an inline literal there; pinned to the route by a source test).
  */
 export const ROUTE_MAX_OUTPUT_TOKENS = 16000;
-/** Default tool-result allowance per step; a bigger streamed result aborts the request. */
-export const DEFAULT_TOOL_RESULT_TOKENS = 8000;
+/**
+ * The tools' owner bounds every tool's model-facing output under about
+ * 22,000 characters (tests/chat/tools-output-size-guard.test.ts), the full
+ * transcript excepted. A streamed tool result over this aborts the request.
+ */
+export const DEFAULT_TOOL_RESULT_CHARS = 22000;
+/** Tokens per character assumed for a tool result in the worst case (conservative for JSON). */
+export const TOOL_RESULT_TOKENS_PER_CHAR = 0.5;
+export const DEFAULT_MAX_USD_PER_QUESTION = 0.6;
+/** Pause after an aborted request so the route's last step lines are flushed. */
+const ABORT_SETTLE_MS = 500;
 
-export function requestLimits(toolResultTokens: number): RequestLimits {
-  return { maxSteps: MAX_CHAT_STEPS, maxOutputTokensPerStep: ROUTE_MAX_OUTPUT_TOKENS, toolResultTokensPerStep: toolResultTokens };
+export function requestLimits(toolResultChars: number): RequestLimits {
+  return {
+    maxSteps: MAX_CHAT_STEPS,
+    maxOutputTokensPerStep: ROUTE_MAX_OUTPUT_TOKENS,
+    toolResultTokensPerStep: Math.ceil(toolResultChars * TOOL_RESULT_TOKENS_PER_CHAR),
+  };
 }
 
-/** The worst case of one request: its real input size (tools + system + messages) under the route's limits. */
-export function requestWorstCase(
+export interface RequestBudget {
+  /** The request's own input (tools + system + messages), rough tokens with a margin. */
+  baseInputTokens: number;
+  /** The first step's worst case (it starts before any check can run). */
+  firstStepWorst: number;
+  /** The largest step that can be in flight when the ceiling trips. */
+  oneStepWorst: number;
+}
+
+/** The budget figures for one request, from its real size. */
+export function requestBudget(
   setup: EvalSetup,
   scope: ChatScope,
   messages: readonly UIMessage[],
   pagePath: string | undefined,
   limits: RequestLimits,
-): number {
+  ceiling: number,
+): RequestBudget {
   const price = priceFor(setup.predictedModel);
-  if (!price) return Number.POSITIVE_INFINITY;
   const chars = previewRequest(setup.db, scope, setup.expected.today, pagePath).totalChars + JSON.stringify(messages).length;
-  return worstCaseQuestionCost(worstCaseInputTokens(chars), limits, price);
+  const baseInputTokens = worstCaseInputTokens(chars);
+  if (!price) return { baseInputTokens, firstStepWorst: Number.POSITIVE_INFINITY, oneStepWorst: Number.POSITIVE_INFINITY };
+  return {
+    baseInputTokens,
+    firstStepWorst: stepWorstCase(baseInputTokens + STEP_INPUT_MARGIN_TOKENS, limits.maxOutputTokensPerStep, price),
+    oneStepWorst: inFlightStepWorstCase(baseInputTokens, limits, ceiling, price),
+  };
+}
+
+/** Why a request may not start under the run rules, or null. Pure. */
+export function startRefusal(
+  spent: number,
+  opts: Pick<EvalOptions, "maxUsd" | "maxUsdPerQuestion" | "hardCeilingUsd">,
+  budget: Pick<RequestBudget, "oneStepWorst" | "firstStepWorst">,
+): string | null {
+  const start = budgetAllows(spent, opts.maxUsdPerQuestion, opts.maxUsd);
+  if (!start.run) return `per-question ceiling does not fit: ${start.reason}`;
+  if (opts.hardCeilingUsd !== undefined) {
+    const g = runGuarantee(opts.maxUsd, opts.maxUsdPerQuestion, budget.oneStepWorst, budget.firstStepWorst);
+    if (g.guaranteedMax > opts.hardCeilingUsd) {
+      return `guaranteed maximum $${g.guaranteedMax.toFixed(2)} (cap + one step in flight) exceeds --hard-ceiling-usd $${opts.hardCeilingUsd.toFixed(2)}`;
+    }
+  }
+  return null;
 }
 
 interface AskResult {
   ex: ChatExchange;
   priced: PricedTurn;
+  /** The runner stopped this request at the per-question cost ceiling. */
+  ceilingAborted: boolean;
   /** Why the whole run must stop after this request, or null. */
   stop: string | null;
 }
 
+export const COST_CEILING_REASON = "cost ceiling";
+
 /**
- * Send one request under the hard budget (the caller has already checked
- * spent + worstCase <= cap). While it streams, a tool result bigger than
- * the allowance, or a second nested-AI tool call, aborts it (the worst case
- * would no longer bound it). Afterwards every streamed step must have its
- * usage line; if not, the worst case is booked and the run stops.
+ * Send one request under the per-question ceiling. While it streams, the
+ * runner tails the server's per-step usage lines and keeps a running cost;
+ * after each finished step it asks whether the running cost plus the worst
+ * the NEXT step (already in flight: its input is the last step's input,
+ * output and tool results) can cost still fits under the ceiling, and
+ * aborts the request when it does not. Closing the connection aborts the
+ * route's model call. A tool result over the character bound also aborts
+ * (and stops the run: the bound the guarantee assumes no longer holds). A
+ * step that streamed with no usage line books the one-step worst case and
+ * stops the run.
  */
-async function guardedAsk(
+export async function guardedAsk(
   opts: EvalOptions,
   setup: EvalSetup,
   deps: TransportDeps,
   req: Omit<ChatRequest, "baseUrl" | "timeoutMs" | "onChunk">,
-  worstCase: number,
+  budget: RequestBudget,
   limits: RequestLimits,
 ): Promise<AskResult> {
-  let nestedCalls = 0;
-  const onChunk = (chunk: Record<string, unknown>): string | null => {
-    if (chunk.type === "tool-output-available") {
-      const tokens = roughTokens(JSON.stringify(chunk.output ?? ""));
-      if (tokens > limits.toolResultTokensPerStep) {
-        return `a tool result of ~${tokens} tokens exceeds the ${limits.toolResultTokensPerStep}-token allowance the worst case assumes`;
+  const price = priceFor(setup.predictedModel);
+  const ceiling = opts.maxUsdPerQuestion;
+  const logStart = deps.logSize();
+  let running = 0;
+  let seenLines = 0;
+  let finishSteps = 0;
+  let nested = 0;
+  const toolTokensByStep: number[] = [];
+  let inFlightBooking: number | null = null;
+  let lagBreach: string | null = null;
+  let lastPoll = 0;
+
+  const follow = (conversationId: number | null): string | null => {
+    if (conversationId === null || !price) return null;
+    lastPoll = Date.now();
+    const lines = splitTurns(parseUsageLines(deps.readLogSince(logStart)), conversationId).flatMap((t) => t.steps);
+    for (let i = seenLines; i < lines.length; i++) {
+      const l = lines[i];
+      const p = priceFor(l.model);
+      if (!p) return `the server used model ${l.model ?? "(none)"}, which has no price`;
+      running += costOf(l.usage, p);
+      seenLines = i + 1;
+      const input = l.usage.noCache + l.usage.cacheRead + l.usage.cacheWrite;
+      const next = stepWorstCase(
+        input + l.usage.output + (toolTokensByStep[i] ?? 0) + STEP_INPUT_MARGIN_TOKENS,
+        limits.maxOutputTokensPerStep,
+        price,
+      );
+      if (!ceilingAllowsNextStep(running + nested * QUESTION_RESERVE_USD, next, ceiling)) {
+        if (i < lines.length - 1) {
+          lagBreach = `the log was read late: step ${i + 2} had already finished when step ${i + 1} tripped the ceiling`;
+        }
+        inFlightBooking = next;
+        return COST_CEILING_REASON;
       }
-    }
-    if (chunk.type === "tool-input-start" && typeof chunk.toolName === "string" && NESTED_AI_TOOLS.includes(chunk.toolName)) {
-      nestedCalls++;
-      if (nestedCalls > 1) return `a second nested-AI tool call (${chunk.toolName}); the worst case reserves one`;
     }
     return null;
   };
-  const logStart = deps.logSize();
+
+  const onChunk = (chunk: Record<string, unknown>, conversationId: number | null): string | null => {
+    if (chunk.type === "tool-output-available") {
+      const chars = JSON.stringify(chunk.output ?? "").length;
+      toolTokensByStep[finishSteps] = (toolTokensByStep[finishSteps] ?? 0) + Math.ceil(chars * TOOL_RESULT_TOKENS_PER_CHAR);
+      if (chars > opts.toolResultChars) {
+        return `a tool result of ${chars} characters exceeds the ${opts.toolResultChars}-character bound the guarantee assumes`;
+      }
+    }
+    if (chunk.type === "tool-input-start" && typeof chunk.toolName === "string" && NESTED_AI_TOOLS.includes(chunk.toolName)) nested++;
+    if (chunk.type === "finish-step") finishSteps++;
+    const milestone = chunk.type === "finish-step" || chunk.type === "start-step" || chunk.type === "tool-input-start";
+    if (milestone || Date.now() - lastPoll > 250) return follow(conversationId);
+    return null;
+  };
+
   const ex = await sendChat({ ...req, baseUrl: opts.baseUrl, timeoutMs: opts.timeoutMs, onChunk }, deps);
-  let stop: string | null = ex.stoppedByRunner ? `request stopped: ${ex.stoppedByRunner}` : null;
+  const ceilingAborted = ex.stoppedByRunner === COST_CEILING_REASON;
+  let stop: string | null = ex.stoppedByRunner && !ceilingAborted ? `request stopped: ${ex.stoppedByRunner}` : null;
   if (ex.status === 401 || ex.status === 403) {
     stop = `the app refused the minted session (HTTP ${ex.status}); is the dev server running with DATABASE_PATH=${setup.dbPath} and APP_EXTRA_HOSTS/APP_EXTRA_ORIGINS for this host and port?`;
   }
   if (ex.conversationId !== null && !conversationExists(setup.db, ex.conversationId)) {
     stop = `conversation ${ex.conversationId} is not in ${setup.dbPath}: the server is using another database`;
   }
-  // A refused request (non-200) returned before the model was called: no usage line will come.
-  const turns = ex.conversationId !== null && ex.status === 200 ? await waitForUsage(deps, logStart, ex.conversationId, 1) : [];
-  const aborted = Boolean(ex.stoppedByRunner) || (ex.status === 200 && !ex.summary.done && ex.httpError !== null);
+  const ended200 = ex.status === 200;
+  const abnormalEnd = ended200 && !ceilingAborted && (Boolean(ex.stoppedByRunner) || !ex.summary.done);
+  let turns: TurnUsage[] = [];
+  if (ex.conversationId !== null && ended200) {
+    if (ceilingAborted || abnormalEnd) {
+      // No turn line comes for an aborted request; the finished steps' lines are already written.
+      await deps.sleep(ABORT_SETTLE_MS);
+      turns = splitTurns(parseUsageLines(deps.readLogSince(logStart)), ex.conversationId);
+    } else {
+      turns = await waitForUsage(deps, logStart, ex.conversationId, 1);
+    }
+  }
   const priced = priceTurn({
     turn: turns[turns.length - 1],
     toolCalls: ex.summary.toolCalls,
     httpStatus: ex.status,
-    streamedSteps: ex.status === 200 ? ex.summary.finishSteps : null,
-    aborted,
-    worstCase,
+    streamedSteps: ended200 ? ex.summary.finishSteps : null,
+    ceilingAbort: ceilingAborted,
+    abnormalEnd,
+    inFlightBooking,
+    stepWorst: budget.oneStepWorst,
     expectedModel: setup.predictedModel,
   });
   if (priced.unknownModel) stop = `the server used model ${priced.unknownModel}, which has no price in scripts/chat-eval/pricing.ts`;
   else if (priced.usageMissing) stop = stop ?? `usage not fully accounted (${priced.usageMissing})`;
-  return { ex, priced, stop };
+  if (lagBreach) stop = stop ?? lagBreach;
+  return { ex, priced, ceilingAborted, stop };
 }
+
 
 // ─── Golden mode ─────────────────────────────────────────────────
 
@@ -312,7 +441,8 @@ export interface QuestionRecord {
   id: string;
   scope: ChatScope;
   question: string;
-  status: "scored" | "skipped-budget" | "aborted";
+  /** scored; skipped-budget (did not fit); aborted-cost-ceiling (stopped mid-question, scored as failed); aborted (the run had stopped). */
+  status: "scored" | "skipped-budget" | "aborted-cost-ceiling" | "aborted";
   score: ScoreResult | null;
   toolCalls: string[];
   steps: number | null;
@@ -322,8 +452,10 @@ export interface QuestionRecord {
   model: string | null;
   costUsd: number;
   reserveReason: string | null;
-  /** The hard-cap worst case this question was checked with. */
-  worstCaseUsd?: number;
+  /** The one-step worst case for this request (what a step in flight can cost). */
+  oneStepWorstUsd?: number;
+  /** What was booked for the step in flight when the request was stopped. */
+  inFlightBookedUsd?: number | null;
   conversationId: number | null;
   elapsedMs: number | null;
   notes: string[];
@@ -339,6 +471,9 @@ export interface GoldenReport {
   predictedModel: string;
   priceSource: string;
   maxUsd: number;
+  maxUsdPerQuestion: number;
+  /** Run cap + the largest one-step worst case of any request that ran. */
+  guaranteedMaxUsd: number;
   spentUsd: number;
   stoppedReason: string | null;
   unregisteredTools: string[];
@@ -362,6 +497,8 @@ export async function runGolden(
     predictedModel: setup.predictedModel,
     priceSource: PRICE_SOURCE,
     maxUsd: opts.maxUsd,
+    maxUsdPerQuestion: opts.maxUsdPerQuestion,
+    guaranteedMaxUsd: opts.maxUsd,
     spentUsd: 0,
     stoppedReason: null,
     unregisteredTools: unregistered,
@@ -372,7 +509,7 @@ export async function runGolden(
   }
 
   const session = mintSession(setup.db);
-  const limits = requestLimits(opts.toolResultTokens);
+  const limits = requestLimits(opts.toolResultChars);
   let stop: string | null = null;
   try {
     for (const q of questions) {
@@ -400,24 +537,29 @@ export async function runGolden(
         continue;
       }
       const messages = [userMessage(randomUUID(), q.question)];
-      const worst = requestWorstCase(setup, q.scope, messages, opts.page, limits);
-      const decision = budgetAllows(report.spentUsd, worst, opts.maxUsd);
-      if (!decision.run) {
-        // Hard cap: skip it and try the next (a smaller one may still fit).
-        report.questions.push({ ...base, worstCaseUsd: worst, reserveReason: `skipped: ${decision.reason}` });
+      const budget = requestBudget(setup, q.scope, messages, opts.page, limits, opts.maxUsdPerQuestion);
+      const refusal = startRefusal(report.spentUsd, opts, budget);
+      if (refusal) {
+        report.questions.push({ ...base, oneStepWorstUsd: budget.oneStepWorst, reserveReason: `skipped: ${refusal}` });
         continue;
       }
-      const { ex, priced, stop: askStop } = await guardedAsk(
+      report.guaranteedMaxUsd = Math.max(
+        report.guaranteedMaxUsd,
+        runGuarantee(opts.maxUsd, opts.maxUsdPerQuestion, budget.oneStepWorst, budget.firstStepWorst).guaranteedMax,
+      );
+      const { ex, priced, ceilingAborted, stop: askStop } = await guardedAsk(
         opts,
         setup,
         deps,
         { session, chatId: randomUUID(), scope: q.scope, conversationId: null, messages, pagePath: opts.page },
-        worst,
+        budget,
         limits,
       );
       if (askStop) stop = askStop;
       report.spentUsd += priced.costUsd;
-      const errorText = ex.httpError ?? ex.summary.errorText ?? (ex.stoppedByRunner ? `stopped by the runner: ${ex.stoppedByRunner}` : null);
+      const errorText = ceilingAborted
+        ? "aborted: cost ceiling"
+        : ex.httpError ?? ex.summary.errorText ?? (ex.stoppedByRunner ? `stopped by the runner: ${ex.stoppedByRunner}` : null);
 
       const score = scoreAnswer(
         {
@@ -430,7 +572,7 @@ export async function runGolden(
       );
       report.questions.push({
         ...base,
-        status: "scored",
+        status: ceilingAborted ? "aborted-cost-ceiling" : "scored",
         score,
         toolCalls: ex.summary.toolCalls,
         steps: ex.summary.stepCount ?? (ex.summary.finishSteps || null),
@@ -440,7 +582,8 @@ export async function runGolden(
         model: priced.model,
         costUsd: priced.costUsd,
         reserveReason: priced.reserveReason,
-        worstCaseUsd: worst,
+        oneStepWorstUsd: budget.oneStepWorst,
+        inFlightBookedUsd: priced.inFlightBookedUsd,
         conversationId: ex.conversationId,
         elapsedMs: ex.elapsedMs,
         ...(opts.showAnswers ? { answer: ex.summary.text } : {}),
@@ -493,7 +636,10 @@ export function printGoldenTable(report: GoldenReport, print: Print): void {
   print("");
   print(`passed ${passed}/${scored.length} scored (${report.questions.length} planned)`);
   print(`tokens: uncached input ${total.noCache}, cache write ${total.cacheWrite}, cache read ${total.cacheRead}, output ${total.output}`);
-  print(`cost: ${usd(report.spentUsd)} of cap $${report.maxUsd.toFixed(2)}  (prices: ${report.priceSource})`);
+  print(
+    `cost: ${usd(report.spentUsd)} of cap $${report.maxUsd.toFixed(2)} (per-question ceiling $${report.maxUsdPerQuestion.toFixed(2)}; ` +
+      `guaranteed maximum $${report.guaranteedMaxUsd.toFixed(2)})  (prices: ${report.priceSource})`,
+  );
   const skipped = report.questions.filter((q) => q.status !== "scored").map((q) => q.id);
   if (skipped.length > 0) print(`not run: ${skipped.join(", ")}`);
   if (report.stoppedReason) print(`stopped: ${report.stoppedReason}`);
@@ -509,6 +655,9 @@ export interface CacheReport {
   predictedModel: string;
   priceSource: string;
   maxUsd: number;
+  maxUsdPerQuestion: number;
+  /** Run cap + the largest one-step worst case of any request that ran. */
+  guaranteedMaxUsd: number;
   spentUsd: number;
   prefixTokensEstimate: number;
   prefixTokensMeasured: number | null;
@@ -541,6 +690,8 @@ export async function runCacheProof(
     predictedModel: setup.predictedModel,
     priceSource: PRICE_SOURCE,
     maxUsd: opts.maxUsd,
+    maxUsdPerQuestion: opts.maxUsdPerQuestion,
+    guaranteedMaxUsd: opts.maxUsd,
     spentUsd: 0,
     prefixTokensEstimate: preview.prefixTokensEstimate,
     prefixTokensMeasured: null,
@@ -557,25 +708,35 @@ export async function runCacheProof(
     A: { id: null, messages: [], chatId: randomUUID() },
     B: { id: null, messages: [], chatId: randomUUID() },
   };
-  const limits = requestLimits(opts.toolResultTokens);
+  const limits = requestLimits(opts.toolResultChars);
   try {
     for (const turn of CACHE_SEQUENCE) {
       const c = conv[turn.conversation];
       const messages = [...c.messages, userMessage(randomUUID(), turn.text)];
-      const worst = requestWorstCase(setup, scope, messages, pages[turn.page], limits);
-      const decision = budgetAllows(report.spentUsd, worst, opts.maxUsd);
-      if (!decision.run) {
-        report.stoppedReason = `budget (hard cap): ${decision.reason}`;
+      const budget = requestBudget(setup, scope, messages, pages[turn.page], limits, opts.maxUsdPerQuestion);
+      const refusal = startRefusal(report.spentUsd, opts, budget);
+      if (refusal) {
+        report.stoppedReason = `${turn.label} not run: ${refusal}`;
         break;
       }
-      const { ex, priced, stop } = await guardedAsk(
+      report.guaranteedMaxUsd = Math.max(
+        report.guaranteedMaxUsd,
+        runGuarantee(opts.maxUsd, opts.maxUsdPerQuestion, budget.oneStepWorst, budget.firstStepWorst).guaranteedMax,
+      );
+      const { ex, priced, ceilingAborted, stop } = await guardedAsk(
         opts,
         setup,
         deps,
         { session, chatId: c.chatId, scope, conversationId: c.id, messages, pagePath: pages[turn.page] },
-        worst,
+        budget,
         limits,
       );
+      if (ceilingAborted && !stop) {
+        report.spentUsd += priced.costUsd;
+        report.turns.push({ label: turn.label, conversationId: ex.conversationId, page: pages[turn.page], steps: priced.steps, costUsd: priced.costUsd });
+        report.stoppedReason = `${turn.label} aborted: cost ceiling (the conversation cannot continue)`;
+        break;
+      }
       report.spentUsd += priced.costUsd;
       report.turns.push({ label: turn.label, conversationId: ex.conversationId, page: pages[turn.page], steps: priced.steps, costUsd: priced.costUsd });
       for (const s of priced.steps) {
@@ -616,54 +777,83 @@ export function printCacheReport(report: CacheReport, print: Print): void {
   print("");
   print(`prefix estimate (tools + static block, chars/3): ${report.prefixTokensEstimate} tokens; measured P: ${report.prefixTokensMeasured ?? "none"}`);
   for (const v of report.verdicts) print(`verdict ${v.id.padEnd(3)} ${v.result.padEnd(9)} ${v.check}: ${v.detail}`);
-  print(`cost: ${usd(report.spentUsd)} of cap $${report.maxUsd.toFixed(2)}  (prices: ${report.priceSource})`);
+  print(
+    `cost: ${usd(report.spentUsd)} of cap $${report.maxUsd.toFixed(2)} (per-question ceiling $${report.maxUsdPerQuestion.toFixed(2)}; ` +
+      `guaranteed maximum $${report.guaranteedMaxUsd.toFixed(2)})  (prices: ${report.priceSource})`,
+  );
   if (report.stoppedReason) print(`stopped: ${report.stoppedReason}`);
 }
 
 // ─── Dry run ─────────────────────────────────────────────────────
 
-export function dryRun(opts: EvalOptions, setup: EvalSetup, print: Print): void {
+/** Questions guaranteed to start if every question spent its whole ceiling. Pure. */
+export function questionsGuaranteedToStart(count: number, cap: number, ceiling: number): number {
+  let spent = 0;
+  let n = 0;
+  while (n < count && budgetAllows(spent, ceiling, cap).run) {
+    spent += ceiling;
+    n++;
+  }
+  return n;
+}
+
+export function dryRun(opts: EvalOptions, setup: EvalSetup, print: Print, summaryOnly = false): { guaranteedMax: number } {
   const price = priceFor(setup.predictedModel);
-  const limits = requestLimits(opts.toolResultTokens);
+  const limits = requestLimits(opts.toolResultChars);
   print(`predicted chat model (resolveFeatureModel("chat") on this database): ${setup.predictedModel}`);
   print(`price source: ${PRICE_SOURCE}`);
   print(
-    `hard-cap rule: spent + worst case <= $${opts.maxUsd.toFixed(2)}; worst case = ${limits.maxSteps} steps x (input at the dearer of ` +
-      `uncached/cache-write, +${limits.maxOutputTokensPerStep} output and +${limits.toolResultTokensPerStep} tool-result tokens per earlier step) ` +
-      `+ ${limits.maxOutputTokensPerStep} output per step + one nested-AI reserve`,
+    `rules: a request starts only if spent + per-question ceiling $${opts.maxUsdPerQuestion.toFixed(2)} <= run cap $${opts.maxUsd.toFixed(2)}; ` +
+      `while it runs, it is aborted when its running cost + the worst the in-flight step can cost would pass the ceiling. ` +
+      `One step in flight: input at the dearer of uncached/cache-write + ${limits.maxOutputTokensPerStep} output tokens; ` +
+      `tool results bounded at ${opts.toolResultChars} characters (${limits.toolResultTokensPerStep} tokens) per step.`,
   );
   if (!price) print(`NOTE: no price for ${setup.predictedModel}; a live run will refuse to start`);
+  type Planned = { label: string; scope: ChatScope; text: string; page?: string };
+  let planned: Planned[];
+  let typical = 0;
   if (opts.mode === "cache-proof") {
-    const p = previewRequest(setup.db, "all", setup.expected.today);
-    const worst = requestWorstCase(setup, "all", [userMessage("dry", "x")], undefined, limits);
+    const aapl = setup.db.prepare("SELECT id FROM securities WHERE symbol = 'AAPL'").get() as { id: number } | undefined;
+    const first = aapl ? `/dashboard/security/${aapl.id}` : "/dashboard/today";
+    planned = CACHE_SEQUENCE.map((t) => ({ label: t.label, scope: "all" as ChatScope, text: t.text, page: t.page === "first" ? first : "/dashboard/accounts" }));
+    const p = previewRequest(setup.db, "all", setup.expected.today, first);
     print(`cache-proof plan: B1 (fresh conversation), A1 tool question, A2 same page, A3 page changed; scope all`);
     print(`request size estimate: prefix ${p.prefixTokensEstimate} tokens (${p.toolCount} tools), volatile ${p.volatileTokensEstimate} tokens`);
-    print(`worst case per request (first turn size): $${worst.toFixed(2)}; requests that fit under the cap: ${questionsThatFit([worst, worst, worst, worst], opts.maxUsd)} of 4 (later turns are larger)`);
-    return;
+    print(`note: A2 and A3 carry the earlier turns, so their one-step worst case is re-computed from their real size before each starts`);
+  } else {
+    const qs = buildGolden(setup.expected).filter((q) => !opts.only || opts.only.includes(q.id));
+    planned = qs.map((q) => ({ label: q.id, scope: q.scope, text: q.question, page: opts.page }));
+    const unregistered = toolsReferenced(qs).filter((t) => !setup.expected.registeredTools.includes(t));
+    for (const q of summaryOnly ? [] : qs) {
+      print(`${q.id} [${q.scope}] ${q.question}`);
+      for (const c of q.checks) print(`     ${c.kind}: ${c.label}`);
+      for (const n of q.notes) print(`     note: ${n}`);
+    }
+    if (unregistered.length > 0) print(`tools named in checks but not registered today: ${unregistered.join(", ")}`);
   }
-  const qs = buildGolden(setup.expected).filter((q) => !opts.only || opts.only.includes(q.id));
-  const unregistered = toolsReferenced(qs).filter((t) => !setup.expected.registeredTools.includes(t));
-  const sizes = new Map<ChatScope, ReturnType<typeof previewRequest>>();
-  let typical = 0;
-  const worsts: number[] = [];
-  for (const q of qs) {
-    if (!sizes.has(q.scope)) sizes.set(q.scope, previewRequest(setup.db, q.scope, setup.expected.today, opts.page));
-    const s = sizes.get(q.scope)!;
-    // A typical cold question: the whole prompt written once, 4 more steps reading it, 3k output.
-    const tokens = s.prefixTokensEstimate + s.volatileTokensEstimate;
-    const est = price ? costOf({ noCache: 2000, cacheWrite: tokens, cacheRead: tokens * 4, output: 3000 }, price) : 0;
-    const worst = requestWorstCase(setup, q.scope, [userMessage("dry", q.question)], opts.page, limits);
-    typical += est;
-    worsts.push(worst);
-    print(`${q.id} [${q.scope}] ${q.question}`);
-    for (const c of q.checks) print(`     ${c.kind}: ${c.label}`);
-    for (const n of q.notes) print(`     note: ${n}`);
-    print(`     request: prefix ~${s.prefixTokensEstimate} + volatile ~${s.volatileTokensEstimate} tokens; typical $${est.toFixed(2)}; worst case $${worst.toFixed(2)}`);
+  let oneStepWorst = 0;
+  let firstStepWorst = 0;
+  for (const r of planned) {
+    const b = requestBudget(setup, r.scope, [userMessage("dry", r.text)], r.page, limits, opts.maxUsdPerQuestion);
+    oneStepWorst = Math.max(oneStepWorst, b.oneStepWorst);
+    firstStepWorst = Math.max(firstStepWorst, b.firstStepWorst);
+    if (price) {
+      const s = previewRequest(setup.db, r.scope, setup.expected.today, r.page);
+      const tokens = s.prefixTokensEstimate + s.volatileTokensEstimate;
+      typical += costOf({ noCache: 2000, cacheWrite: tokens, cacheRead: tokens * 4, output: 3000 }, price);
+    }
   }
-  if (unregistered.length > 0) print(`tools named in checks but not registered today: ${unregistered.join(", ")}`);
-  const fit = questionsThatFit(worsts, opts.maxUsd);
-  print(`${qs.length} questions; typical total $${typical.toFixed(2)}; worst-case total $${worsts.reduce((a, b) => a + b, 0).toFixed(2)}`);
-  print(`under the hard cap of $${opts.maxUsd.toFixed(2)}, ${fit} of ${qs.length} questions fit in order if each spent its worst case; the rest would be skipped`);
+  const g = runGuarantee(opts.maxUsd, opts.maxUsdPerQuestion, oneStepWorst, firstStepWorst);
+  const fit = questionsGuaranteedToStart(planned.length, opts.maxUsd, opts.maxUsdPerQuestion);
+  print(`SUMMARY mode=${opts.mode} requests=${planned.length}`);
+  print(`  per-question ceiling: $${opts.maxUsdPerQuestion.toFixed(2)}`);
+  print(`  requests guaranteed to start (each spending its whole ceiling): ${fit} of ${planned.length}; typical total if none hits the ceiling: $${typical.toFixed(2)}`);
+  print(`  one-step worst case (largest request, first-turn size): $${oneStepWorst.toFixed(2)}; first step: $${firstStepWorst.toFixed(2)}`);
+  print(`  guaranteed maximum spend: $${g.guaranteedMax.toFixed(2)} (run cap $${opts.maxUsd.toFixed(2)} + one step in flight${g.guaranteedMax > opts.maxUsd + oneStepWorst + 1e-9 ? " + first-step excess" : ""})`);
+  if (opts.hardCeilingUsd !== undefined) {
+    print(`  --hard-ceiling-usd ${opts.hardCeilingUsd.toFixed(2)}: ${g.guaranteedMax <= opts.hardCeilingUsd ? "OK" : "WOULD REFUSE"}`);
+  }
+  return { guaranteedMax: g.guaranteedMax };
 }
 
 // ─── Main ────────────────────────────────────────────────────────
@@ -689,6 +879,11 @@ export async function main(argv: string[], deps?: Partial<TransportDeps>, print:
       return 2;
     }
     const out = opts.out ?? defaultOut();
+    const plan = dryRun(opts, setup, print, true);
+    if (opts.hardCeilingUsd !== undefined && plan.guaranteedMax > opts.hardCeilingUsd) {
+      print(`run-golden: refusing to start: guaranteed maximum ${plan.guaranteedMax.toFixed(2)} exceeds --hard-ceiling-usd ${opts.hardCeilingUsd.toFixed(2)}`);
+      return 2;
+    }
     const outRefusal = outputPathRefusal(out);
     if (outRefusal) {
       print(`run-golden: ${outRefusal}`);

@@ -107,33 +107,15 @@ export const NESTED_AI_TOOLS: readonly string[] = ["query_filing_section"];
 /**
  * The limits a chat request runs under. The step cap is the route's own
  * (`MAX_CHAT_STEPS`, lib/chat/history.ts); the per-step output cap is the
- * route's `maxOutputTokens` (pinned by a source test). Tool results have no
- * cap in the app, so the eval sets an allowance and ABORTS a request whose
- * streamed tool output exceeds it (run-golden.ts).
+ * route's `maxOutputTokens` (pinned by a source test). Tool results are
+ * bounded by the tools' owner (about 22,000 characters each, the full
+ * transcript excepted); the eval ABORTS a request whose streamed tool output
+ * exceeds the bound it assumes (run-golden.ts).
  */
 export interface RequestLimits {
   maxSteps: number;
   maxOutputTokensPerStep: number;
   toolResultTokensPerStep: number;
-}
-
-/**
- * The worst a question can cost (HARD cap rule). Every step up to the cap
- * reads its whole input at the dearer of the uncached and cache-write rates
- * (a cache write costs 1.25x, so the uncached price alone is not the worst)
- * and writes the maximum output. Step k's input is the first request's
- * input plus, for every earlier step, its maximum output and the tool-result
- * allowance. Plus one nested-AI reserve, because a tool such as
- * query_filing_section makes a model call the chat log does not see. Pure.
- */
-export function worstCaseQuestionCost(baseInputTokens: number, limits: RequestLimits, price: ModelPrice): number {
-  const inRate = Math.max(price.input, price.cacheWrite);
-  let dollars = 0;
-  for (let k = 0; k < limits.maxSteps; k++) {
-    const input = baseInputTokens + k * (limits.maxOutputTokensPerStep + limits.toolResultTokensPerStep);
-    dollars += (input * inRate + limits.maxOutputTokensPerStep * price.output) / 1_000_000;
-  }
-  return dollars + QUESTION_RESERVE_USD;
 }
 
 export interface BudgetDecision {
@@ -144,14 +126,9 @@ export interface BudgetDecision {
   reason: string;
 }
 
-/**
- * The guard checked BEFORE each question: run only when the money already
- * spent plus the question's WORST case stays at or under the cap. The worst
- * case bounds the question (a request that breaks a bound is aborted), so
- * the total cannot pass the cap. Pure.
- */
+/** Does an amount still fit under a cap once added to what is spent? (The per-question start rule passes the ceiling as `worstCase`.) Pure. */
 export function budgetAllows(spent: number, worstCase: number, max: number): BudgetDecision {
-  const ok = Number.isFinite(spent) && Number.isFinite(worstCase) && spent + worstCase <= max;
+  const ok = Number.isFinite(spent) && Number.isFinite(worstCase) && spent + worstCase <= max + 1e-9;
   const sum = `spent $${spent.toFixed(4)} + worst case $${worstCase.toFixed(2)}`;
   return {
     run: ok,
@@ -162,16 +139,60 @@ export function budgetAllows(spent: number, worstCase: number, max: number): Bud
   };
 }
 
-/** How many questions, in order, fit under the cap if each spent its whole worst case. Pure. */
-export function questionsThatFit(worstCases: readonly number[], max: number, spent = 0): number {
-  let total = spent;
-  let n = 0;
-  for (const w of worstCases) {
-    if (!budgetAllows(total, w, max).run) break;
-    total += w;
-    n++;
-  }
-  return n;
+// ─── The in-question ceiling (orchestrator ruling, review round 3) ──
+
+/** The worst one model step can cost: its whole input at the dearer input rate plus the maximum output. Pure. */
+export function stepWorstCase(inputTokens: number, maxOutputTokens: number, price: ModelPrice): number {
+  return (inputTokens * Math.max(price.input, price.cacheWrite) + maxOutputTokens * price.output) / 1_000_000;
+}
+
+/** Margin for what the route adds to a step's input beyond history and tool results (the last-step note). */
+export const STEP_INPUT_MARGIN_TOKENS = 500;
+
+/**
+ * The largest step that can be in flight when the ceiling trips (static, for
+ * the printed guarantee). While a question runs, every check holds the
+ * running cost at or under the ceiling before the next step, so all earlier
+ * output together is at most ceiling / output price; earlier tool results
+ * are at most (steps - 1) x the tool bound. The in-flight step's input is
+ * the request's own input plus those, plus a margin. Pure.
+ */
+export function inFlightStepWorstCase(
+  baseInputTokens: number,
+  limits: RequestLimits,
+  ceilingUsd: number,
+  price: ModelPrice,
+): number {
+  const earlierOutput = Math.min(
+    (limits.maxSteps - 1) * limits.maxOutputTokensPerStep,
+    Math.ceil((ceilingUsd * 1_000_000) / price.output),
+  );
+  const input = baseInputTokens + (limits.maxSteps - 1) * limits.toolResultTokensPerStep + earlierOutput + STEP_INPUT_MARGIN_TOKENS;
+  return stepWorstCase(input, limits.maxOutputTokensPerStep, price);
+}
+
+/**
+ * The check after every finished step: may the request go on? It stops
+ * when the cost so far plus the worst the NEXT step (already in flight) can
+ * cost would pass the ceiling. Holding this before every step keeps a
+ * question at or under ceiling + one step. Pure.
+ */
+export function ceilingAllowsNextStep(runningUsd: number, nextStepWorstUsd: number, ceilingUsd: number): boolean {
+  return Number.isFinite(runningUsd) && Number.isFinite(nextStepWorstUsd) && runningUsd + nextStepWorstUsd <= ceilingUsd + 1e-9;
+}
+
+export interface RunGuarantee {
+  /** The worst one step in flight can cost (static bound). */
+  oneStepWorst: number;
+  /** The first step of a question, which starts before any check. */
+  firstStepWorst: number;
+  /** Run cap + the in-flight step (+ any excess of a first step over the ceiling). */
+  guaranteedMax: number;
+}
+
+/** The printed guarantee for a run. Pure. */
+export function runGuarantee(runCap: number, ceiling: number, oneStepWorst: number, firstStepWorst: number): RunGuarantee {
+  return { oneStepWorst, firstStepWorst, guaranteedMax: runCap + oneStepWorst + Math.max(0, firstStepWorst - ceiling) };
 }
 
 /** Rough token count: characters / 3 (deliberately high for prose). */

@@ -69,7 +69,7 @@ export interface ChatRequest {
   pagePath?: string;
   timeoutMs: number;
   /** Called for every stream chunk; a returned reason stops (aborts) the request. */
-  onChunk?: (chunk: Record<string, unknown>) => string | null;
+  onChunk?: (chunk: Record<string, unknown>, conversationId: number | null) => string | null;
 }
 
 export interface ChatExchange {
@@ -157,7 +157,7 @@ export async function sendChat(req: ChatRequest, deps: TransportDeps): Promise<C
           } catch {
             continue;
           }
-          const stop = req.onChunk(chunk);
+          const stop = req.onChunk(chunk, conversationId);
           if (stop) {
             stoppedByRunner = stop;
             ctrl.abort();

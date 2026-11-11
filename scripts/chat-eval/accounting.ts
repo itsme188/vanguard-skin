@@ -17,6 +17,8 @@ export interface PricedTurn {
   unknownModel: string | null;
   /** Usage the run cannot account for (a step with no line): the run must stop. */
   usageMissing: string | null;
+  /** What was booked for a step in flight when the request was stopped, or null. */
+  inFlightBookedUsd: number | null;
 }
 
 export interface PriceTurnInput {
@@ -26,64 +28,87 @@ export interface PriceTurnInput {
   httpStatus: number;
   /** Steps the stream finished (`finish-step` chunks), or null when unknown. */
   streamedSteps: number | null;
-  /** The request was aborted mid-stream (by the runner or a timeout). */
-  aborted: boolean;
-  /** The question's worst case, booked whenever usage cannot be measured in full. */
-  worstCase: number;
-  /** The model the guard priced the worst case with. */
+  /** The runner stopped the request at the cost ceiling: a step was in flight. */
+  ceilingAbort: boolean;
+  /** The request ended abnormally otherwise (timeout, tool-result abort, transport error mid-stream). */
+  abnormalEnd: boolean;
+  /** What to book for the in-flight step of a ceiling abort (the runner's next-step worst case). */
+  inFlightBooking: number | null;
+  /** The static one-step worst case, booked for each step whose usage is unknown. */
+  stepWorst: number;
+  /** The model the guarantee was priced with. */
   expectedModel: string;
 }
 
 /**
- * Price one request from its per-step usage lines. Never assumes zero: a
- * missing step line, a missing turn line, an aborted request or a model
- * other than the one the worst case was priced with books the WHOLE worst
- * case and flags the run to stop. A request refused before the model call
- * (non-200) costs nothing. Nested AI tools add the reserve per call. Pure.
+ * Price one request from its per-step usage lines. Never assumes zero:
+ *  - a step that streamed with no usage line books one step worst case and
+ *    flags the run to stop;
+ *  - a ceiling abort books the in-flight step at the runner's next-step
+ *    worst case (the log never sees that step) and does not stop the run;
+ *  - any other abnormal end books one step worst case and stops the run;
+ *  - an unpriceable model, or a model other than the one the guarantee was
+ *    priced with, stops the run;
+ *  - a request refused before the model call (non-200) costs nothing;
+ *  - each nested-AI tool call adds the reserve (that call is not in the log).
+ * Pure.
  */
 export function priceTurn(input: PriceTurnInput): PricedTurn {
-  const { turn, toolCalls, httpStatus, streamedSteps, aborted, worstCase, expectedModel } = input;
+  const { turn, toolCalls, httpStatus, streamedSteps, ceilingAbort, abnormalEnd, inFlightBooking, stepWorst, expectedModel } = input;
   const steps = (turn?.steps ?? []).map((s) => ({ step: s.step ?? 0, usage: s.usage }));
-  const stepSum = steps.reduce((acc, s) => addUsage(acc, s.usage), ZERO_USAGE);
-  const usage = turn?.turn ? turn.turn.usage : stepSum;
+  const usage = steps.reduce((acc, s) => addUsage(acc, s.usage), ZERO_USAGE);
   const model = turn?.turn?.model ?? turn?.steps[turn.steps.length - 1]?.model ?? null;
-  const out: PricedTurn = { model, steps, usage, costUsd: 0, reserveReason: null, unknownModel: null, usageMissing: null };
+  const out: PricedTurn = { model, steps, usage, costUsd: 0, reserveReason: null, unknownModel: null, usageMissing: null, inFlightBookedUsd: null };
+  const notes: string[] = [];
 
   if (httpStatus !== 200) {
     out.reserveReason = `HTTP ${httpStatus || "error"}: refused before the model call, nothing booked`;
     return out;
   }
-  const book = (why: string) => {
-    out.costUsd = Math.max(out.costUsd, worstCase);
-    out.reserveReason = `${why}; the question's worst case $${worstCase.toFixed(2)} booked`;
-  };
   const price = priceFor(model);
   if (model !== null && !price) {
     out.unknownModel = model;
-    book(`model ${model} has no price`);
+    out.costUsd = stepWorst * Math.max(1, streamedSteps ?? steps.length);
+    out.reserveReason = `model ${model} has no price; one step worst case booked per step`;
     return out;
   }
-  if (price) out.costUsd = costOf(usage, price);
+  // Step lines are the measurement (the turn line is their sum, and it is
+  // missing on an aborted request).
+  for (const s of turn?.steps ?? []) {
+    const p = priceFor(s.model) ?? price;
+    if (p) out.costUsd += costOf(s.usage, p);
+  }
   if (model !== null && model !== expectedModel) {
-    out.usageMissing = `the server used ${model}, the guard priced ${expectedModel}`;
-    book(out.usageMissing);
+    out.usageMissing = `the server used ${model}, the guarantee was priced for ${expectedModel}`;
   }
-  if (!turn || turn.turn === null) {
-    out.usageMissing = out.usageMissing ?? "no turn usage line in the log";
-    book(out.usageMissing);
-  } else if (streamedSteps !== null && turn.steps.length < streamedSteps) {
-    out.usageMissing = `${streamedSteps - turn.steps.length} step(s) streamed with no usage line`;
-    book(out.usageMissing);
+  const lines = turn?.steps.length ?? 0;
+  if (streamedSteps !== null && lines < streamedSteps) {
+    const missing = streamedSteps - lines;
+    out.costUsd += missing * stepWorst;
+    out.usageMissing = `${missing} step(s) streamed with no usage line`;
+    notes.push(`${missing} x one-step worst case $${stepWorst.toFixed(2)} booked`);
   }
-  if (aborted) {
-    out.usageMissing = out.usageMissing ?? "request aborted mid-step";
-    book(out.usageMissing);
+  if (ceilingAbort) {
+    const b = inFlightBooking ?? stepWorst;
+    out.costUsd += b;
+    out.inFlightBookedUsd = b;
+    notes.push(`stopped at the cost ceiling; the in-flight step booked at $${b.toFixed(2)}`);
+  } else if (abnormalEnd) {
+    out.costUsd += stepWorst;
+    out.inFlightBookedUsd = stepWorst;
+    out.usageMissing = out.usageMissing ?? "the request ended abnormally mid-step";
+    notes.push(`in-flight step booked at the one-step worst case $${stepWorst.toFixed(2)}`);
+  } else if (lines === 0) {
+    out.usageMissing = out.usageMissing ?? "no usage line at all";
+    out.costUsd += stepWorst;
+    notes.push(`one-step worst case $${stepWorst.toFixed(2)} booked`);
   }
   const nested = toolCalls.filter((t) => NESTED_AI_TOOLS.includes(t));
-  if (nested.length > 0 && out.costUsd < worstCase) {
+  if (nested.length > 0) {
     out.costUsd += QUESTION_RESERVE_USD * nested.length;
-    out.reserveReason = `${out.reserveReason ? out.reserveReason + "; " : ""}reserve added for nested AI tool(s) ${nested.join(", ")} (not in the chat log)`;
+    notes.push(`reserve added for nested AI tool(s) ${nested.join(", ")} (not in the chat log)`);
   }
+  out.reserveReason = notes.length > 0 ? notes.join("; ") : null;
   return out;
 }
 
