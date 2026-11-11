@@ -459,7 +459,7 @@ describe("prompt standards (Task 7)", () => {
       // Tools stay defined on the last step (plan P4 / OPEN-1): a call there
       // runs and ends the turn with no text, so the prompt must not say tools
       // "will not run".
-      expect(rule, scope).toContain("a tool call on that step ends the turn with no written answer");
+      expect(rule, scope).toContain("a tool call on that step ends the turn before the answer is written");
       expect(rule, scope).not.toContain("tools will not run");
     }
   });
