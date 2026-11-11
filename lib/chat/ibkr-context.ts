@@ -1,16 +1,15 @@
 import type Database from "better-sqlite3";
 import { todayET, addDays } from "@/lib/calendar/date-utils";
-import {
-  getCashEstimates,
-  getHoldingsForChat,
-  getTransactionsForChat,
-} from "@/lib/queries/chat-tools";
+import { getHoldingsForChat, getTransactionsForChat } from "@/lib/queries/chat-tools";
+import { getAccountCashLine } from "@/lib/queries/account-cash-line";
 import { computeFactorAnalysis } from "@/lib/compute/factors";
 
 // ─── Types ──────────────────────────────────────────────────────
 
 export interface IbkrTradingContext {
+  /** Signed: negative when the account borrows (cash below zero). */
   cashPct: number;
+  /** The account's own cash line (US dollars); may be negative. 0 when `cashSource` is "none". */
   estimatedCash: number;
   accountTotal: number;
   portfolioBeta: number | null;
@@ -21,7 +20,8 @@ export interface IbkrTradingContext {
   avgHoldingDays: number | null;
   recentTrades: { date: string; symbol: string; type: string; amount: number }[];
   longShortSummary: string;
-  // Cash provenance (plan Contract E / P12). Task 0 stubs: neutral values.
+  // Cash provenance (plan Contract E / P12), from getAccountCashLine.
+  /** The day the cash figure was measured (the measured day when carried). */
   cashAsOf: string | null;
   cashSource: "daily_valuation" | "none";
   cashCarried: boolean;
@@ -29,6 +29,7 @@ export interface IbkrTradingContext {
   cashTimingResidual: boolean;
   cashPriceDateMismatch: boolean;
   accountTotalAsOf: string | null;
+  /** True when the cash figure cannot carry a stance: none, carried, a timing residual or a price-date mismatch. */
   stanceWithheld: boolean;
 }
 
@@ -57,14 +58,23 @@ export function computeIbkrTradingContext(
   accountId: number,
   accountName: string
 ): IbkrTradingContext {
-  // 1. Cash estimates
-  const cashEstimates = getCashEstimates(db);
-  const ibkrCash = cashEstimates.find(
-    (c) => c.account_name.toLowerCase().includes("ibkr") || c.account_name.toLowerCase().includes("interactive")
-  );
-  const estimatedCash = Math.max(0, ibkrCash?.estimated_cash ?? 0);
-  const accountTotal = ibkrCash?.snapshot_total ?? 0;
+  // 1. Cash: the account's OWN cash line (B7), read by id, never by name.
+  // Cash, positions and total come from one daily_valuations row, so they
+  // tie and share one date; a month-end total is never netted against
+  // today's holdings. A negative figure is kept (a margin debit is not
+  // clamped to zero), and the line's provenance flags decide whether the
+  // figure can carry a stance (ruling P12).
+  const cashLine = getAccountCashLine(db, accountId);
+  const cashAvailable = cashLine != null && cashLine.cashBalance != null && cashLine.totalValue != null;
+  const cashSource: IbkrTradingContext["cashSource"] = cashAvailable ? "daily_valuation" : "none";
+  const estimatedCash = cashAvailable ? (cashLine.cashBalance as number) : 0;
+  const accountTotal = cashAvailable ? (cashLine.totalValue as number) : 0;
   const cashPct = accountTotal > 0 ? (estimatedCash / accountTotal) * 100 : 0;
+  const cashCarried = cashAvailable && cashLine.carried;
+  const cashPriceDateMismatch = cashAvailable && cashLine.priceDateMismatch;
+  const cashTimingResidual = cashAvailable && cashLine.isLiveSource && !cashLine.priceDateMismatch;
+  const cashAsOf = cashAvailable ? (cashLine.carried ? cashLine.measuredDate : cashLine.valuationDate) : null;
+  const stanceWithheld = !cashAvailable || cashCarried || cashTimingResidual || cashPriceDateMismatch;
 
   // 2. Portfolio beta
   const factors = computeFactorAnalysis(db, { accountId });
@@ -77,7 +87,8 @@ export function computeIbkrTradingContext(
   // into includeShorts: the shortPositions/longShortSummary section below
   // can only ever populate from a `!= 0` row set (getHoldingsForChat's
   // default excludes shorts entirely for every other consumer).
-  const holdings = getHoldingsForChat(db, { account_name: accountName, limit: 100, includeShorts: true });
+  // Every active position (B10): no row limit, read by account id.
+  const holdings = getHoldingsForChat(db, { account_ids: [accountId], noLimit: true, includeShorts: true });
   const activePositionCount = holdings.length;
 
   // Sector tilts: aggregate market value by sector
@@ -174,13 +185,13 @@ export function computeIbkrTradingContext(
     avgHoldingDays,
     recentTrades,
     longShortSummary,
-    cashAsOf: null,
-    cashSource: "daily_valuation",
-    cashCarried: false,
-    cashTimingResidual: false,
-    cashPriceDateMismatch: false,
-    accountTotalAsOf: null,
-    stanceWithheld: false,
+    cashAsOf,
+    cashSource,
+    cashCarried,
+    cashTimingResidual,
+    cashPriceDateMismatch,
+    accountTotalAsOf: cashAsOf,
+    stanceWithheld,
   };
 }
 

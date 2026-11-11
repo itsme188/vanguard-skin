@@ -2,7 +2,7 @@ import type Database from "better-sqlite3";
 import { snapshotTwrFraction } from "@/lib/compute/monthly-snapshot-utils";
 import { easternDaySql, unmaturedSecuritySql } from "@/lib/db/eastern-day-sql";
 import { adjustedMarketValueSQL, scaledCostBasisFallbackSQL } from "@/lib/valuation";
-import { todayET, addDays } from "@/lib/calendar/date-utils";
+import { todayET, addDays, calendarDaysBetween } from "@/lib/calendar/date-utils";
 import { SECTOR_OWN_BUCKET_SQL } from "@/lib/queries/analysis";
 import { normalizeSector } from "@/lib/securities/normalize-sector";
 import { isCashEquivalentSecurity, cashEquivalentSecuritySql } from "@/lib/compute/cash-equivalents";
@@ -11,9 +11,26 @@ import { marketCapCategoryBucketSql } from "@/lib/securities/normalize-market-ca
 import { getPendingStatementIndex, type PendingStatementIndex } from "@/lib/queries/pending-statement";
 import { figureKindForSide, sideOf, type PendingFigureKind, type PendingReason } from "@/lib/queries/pending-statement-types";
 import { liveOriginHoldingSql } from "@/lib/db/holding-sources";
-import { accountScopeAndSql } from "@/lib/queries/account-scope-sql";
+import { accountScopeAndSql, accountScopeCondition } from "@/lib/queries/account-scope-sql";
+import {
+  DIVIDEND_INCOME_SQL,
+  FEES_SQL,
+  INCOME_PAIRED_JOIN,
+  INCOME_TYPES_SQL,
+  INTEREST_EARNED_SQL,
+  INTEREST_PAID_SQL,
+  NET_INCOME_SQL,
+  UNPAIRED_NEGATIVE_REINVESTMENT_SQL,
+  incomePairingCtes,
+} from "@/lib/queries/income-sql";
 import { isOptionLive, liveOptionExpirationSql } from "@/lib/compute/option-expiry";
-import { isCurrencyConversionSecurityType, lotSideSignSql, remainingLotBasisSql } from "@/lib/queries/tax-lots";
+import {
+  getClosedTaxLotSales,
+  isCurrencyConversionSecurityType,
+  isCurrencyConversionTaxLot,
+  lotSideSignSql,
+  remainingLotBasisSql,
+} from "@/lib/queries/tax-lots";
 import { isLongTermSql, longTermDateSql } from "@/lib/queries/long-term-sql";
 
 /**
@@ -49,6 +66,14 @@ function normalizeSectorFilter(raw: string): string {
 
 export interface HoldingsFilters {
   account_name?: string;
+  /**
+   * Resolved scope ids; wins over account_name. `[]` reads no account.
+   * Either one narrows the position_weight_pct denominator to the same
+   * accounts (B5); symbol, type and sector filters never do.
+   */
+  account_ids?: number[];
+  /** Return every matching row (no LIMIT); for engines that count positions. */
+  noLimit?: boolean;
   symbol?: string;
   security_type?: string;
   sector?: string;
@@ -94,6 +119,8 @@ export interface IncomeSummaryFilters {
   period?: "ytd" | "trailing_12m" | "last_year" | "all_time";
   group_by?: "symbol" | "account" | "month" | "type";
   account_name?: string;
+  /** Resolved scope ids; wins over account_name. `[]` reads no account. */
+  account_ids?: number[];
 }
 
 // ─── Result types ─────────────────────────────────────────────────
@@ -107,13 +134,18 @@ export interface HoldingResult {
   sector: string | null;
   quantity: number;
   cost_basis: number | null;
+  /** NATIVE close in `currency`; never converted. market_value and cost_basis are USD. */
   latest_price: number | null;
+  /** The security's currency (the unit of latest_price). */
+  currency: string;
   /** Date of the `prices` row behind latest_price / market_value (YYYY-MM-DD). */
   price_date: string | null;
   market_value: number | null;
   unrealized_gain: number | null;
   unrealized_gain_pct: number | null;
   position_weight_pct: number | null;
+  /** What position_weight_pct is a share of: the filtered accounts' book, or every account's. */
+  weight_basis: "account" | "all accounts";
   maturity_date: string | null;
   maturity_note: string | null;
 }
@@ -133,7 +165,11 @@ export interface AllocationResult {
 
 export interface TaxLotResult {
   account_name: string;
+  /** The account's tax treatment (`accounts.tax_treatment`). */
+  account_tax_treatment?: string | null;
   symbol: string;
+  /** The security's currency: the unit of acquisition_price, current_price and every *_native figure. */
+  currency?: string;
   security_name: string | null;
   security_type?: string | null;
   expiration_date?: string | null;
@@ -194,12 +230,24 @@ export interface TaxLotResult {
    */
   figure_kind?: PendingFigureKind;
   status_note?: string;
-  // Only for closed lots:
+  // Only for closed lots (built on getClosedTaxLotSales). `cost_basis`,
+  // `proceeds` and `realized_gain_loss` are NATIVE, as stored.
   sale_date?: string;
   sale_price?: number;
   proceeds?: number;
   realized_gain_loss?: number;
   holding_period_days?: number;
+  proceeds_native?: number;
+  cost_basis_native?: number;
+  realized_gain_native?: number;
+  /** Converted at TODAY's rate (not the sale date's); null when no rate is on file. */
+  proceeds_usd_at_current_fx?: number | null;
+  cost_basis_usd_at_current_fx?: number | null;
+  realized_gain_usd_at_current_fx?: number | null;
+  /** How a non-USD sale was converted, or why it was not. */
+  fx_note?: string;
+  /** An engine-made RECONCILE_CLOSE, not a recorded broker sale. */
+  is_synthetic_close?: boolean;
 }
 
 export interface TransactionResult {
@@ -228,12 +276,20 @@ export interface PerformanceResult {
   twr: number | null;
 }
 
+/** Income semantics: lib/queries/income-sql.ts (plan Contract J). */
 export interface IncomeResult {
   group_name: string;
+  /** Each payout once: signed DIVIDEND amounts plus positive unpaired reinvestments. */
   total_dividends: number;
+  /** Interest EARNED (positive INTEREST rows only). */
   total_interest: number;
+  /** Interest CHARGED (e.g. on a margin debit), as a positive magnitude; a cost. */
+  interest_paid: number;
   total_fees: number;
+  /** total_dividends + total_interest - interest_paid - total_fees. */
   net_income: number;
+  /** Negative REINVESTMENT rows with no matching dividend, left out of income. */
+  unpaired_reinvestment_count: number;
 }
 
 /** 'mutual_fund' / 'Mutual Fund' / ' MUTUAL FUND ' all read as 'mutual fund'. */
@@ -253,13 +309,29 @@ export function getHoldingsForChat(
 ): HoldingResult[] {
   const {
     account_name,
+    account_ids,
     symbol,
     security_type,
     sector,
     sort_by = "market_value",
     limit = 50,
     includeShorts = false,
+    noLimit = false,
   } = filters;
+
+  // The account filter, shared by the rows and the weight denominator (B5):
+  // an account-filtered call's weights are shares of THAT book.
+  const accountConditions: string[] = [];
+  const accountParams: (string | number)[] = [];
+  if (account_ids) {
+    const scope = accountScopeCondition(account_ids, "h.account_id");
+    if (scope.condition) accountConditions.push(scope.condition);
+    accountParams.push(...scope.params);
+  } else if (account_name) {
+    accountConditions.push("h.account_id IN (SELECT id FROM accounts WHERE name = ?)");
+    accountParams.push(account_name);
+  }
+  const weightBasis: HoldingResult["weight_basis"] = accountConditions.length > 0 ? "account" : "all accounts";
 
   // The denominator for position_weight_pct. Long-only (default): a plain
   // signed SUM is correct because every included row's market value is
@@ -299,11 +371,9 @@ export function getHoldingsForChat(
       JOIN securities s ON s.id = h.security_id
       LEFT JOIN fx_rates fx ON fx.currency = s.currency
       LEFT JOIN latest_prices lp ON lp.security_id = h.security_id
-      WHERE ${latestHoldingsPredicate({ includeShorts })}
-      AND ${unmaturedSecuritySql("s")}
-      AND ${liveOptionSql}`
+      WHERE ${[latestHoldingsPredicate({ includeShorts }), unmaturedSecuritySql("s"), liveOptionSql, ...accountConditions].join("\n      AND ")}`
     )
-    .get() as { total: number };
+    .get(...accountParams) as { total: number };
 
   const totalPortfolioValue = totalRow.total || 1; // avoid division by zero
 
@@ -312,15 +382,12 @@ export function getHoldingsForChat(
     latestHoldingsPredicate({ includeShorts }),
     unmaturedSecuritySql("s"),
     liveOptionSql,
+    ...accountConditions,
   ];
-  const params: (string | number)[] = [];
+  const params: (string | number)[] = [...accountParams];
 
-  if (account_name) {
-    conditions.push("a.name = ?");
-    params.push(account_name);
-  }
   if (symbol) {
-    conditions.push("s.symbol = ?");
+    conditions.push("UPPER(s.symbol) = UPPER(?)");
     params.push(symbol);
   }
   if (security_type) {
@@ -376,6 +443,7 @@ export function getHoldingsForChat(
       h.quantity,
       ${costBasisExpr} * COALESCE(fx.usd_per_unit, 1) AS cost_basis,
       lp.close_price AS latest_price,
+      COALESCE(s.currency, 'USD') AS currency,
       lp.max_date AS price_date,
       CASE WHEN lp.close_price IS NOT NULL
         THEN ${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}
@@ -394,6 +462,7 @@ export function getHoldingsForChat(
       CASE WHEN lp.close_price IS NOT NULL
         THEN ${grossDenominatorMvExpr} * 100.0 / ${totalPortfolioValue}
         ELSE NULL END AS position_weight_pct,
+      '${weightBasis}' AS weight_basis,
       s.maturity_date,
       -- Whole calendar days from the Eastern day to the maturity day (0 on
       -- the maturity day itself). Never julianday('now'): that is a UTC
@@ -416,7 +485,8 @@ export function getHoldingsForChat(
     ORDER BY ${sortMap[sort_by] ?? "market_value DESC"}
     LIMIT ?`;
 
-  params.push(limit);
+  // LIMIT -1 is SQLite's "no limit".
+  params.push(noLimit ? -1 : limit);
 
   return db.prepare(sql).all(...params) as HoldingResult[];
 }
@@ -491,7 +561,7 @@ export function getClosedPerLiveDataForChat(
       `SELECT h.account_id, h.security_id, h.as_of_date AS closed_as_of_date
          FROM holdings h
          JOIN securities s ON s.id = h.security_id
-        WHERE s.symbol = ?
+        WHERE UPPER(s.symbol) = UPPER(?)
           AND h.as_of_date = (
             SELECT MAX(h2.as_of_date) FROM holdings h2
              WHERE h2.account_id = h.account_id AND h2.security_id = h.security_id
@@ -595,7 +665,7 @@ export function getPriceHistory(
   startDate?: string,
   endDate?: string
 ): PriceHistoryResult[] {
-  const conditions: string[] = ["s.symbol = ?"];
+  const conditions: string[] = ["UPPER(s.symbol) = UPPER(?)"];
   const params: (string | number)[] = [symbol];
 
   // Default to last 90 days if no start date specified
@@ -666,6 +736,9 @@ export function getAllocationBreakdown(
   const conditions: string[] = [
     latestHoldingsPredicate({ includeShorts: false }),
     unmaturedSecuritySql("s"),
+    // B8: an option past its expiration day (ET) is not a holding, as in
+    // getHoldingsForChat, so the two tools size the same book.
+    liveOptionExpirationSql("s", todayET()),
   ];
   const params: (string | number)[] = [];
 
@@ -729,65 +802,78 @@ export function getTaxLotsForChat(
 
   const today = todayET();
 
+  // Account tax treatment, for open and closed rows (quality audit §2).
+  const taxTreatmentById = new Map<number, string | null>(
+    (db.prepare("SELECT id, tax_treatment FROM accounts").all() as { id: number; tax_treatment: string | null }[]).map(
+      (a) => [a.id, a.tax_treatment]
+    )
+  );
+
   const queryClosedSales = (): TaxLotResult[] => {
-    // Closed sales
-    const conditions: string[] = [];
-    const params: (string | number)[] = [];
+    // B6: built on the one closed-sales reader. Its *_usd fields multiply by
+    // today's fx_rates row and read a MISSING rate as 1 (parity), so a
+    // converted figure is offered only for USD or a currency with a rate on
+    // file, and is labelled as a current-rate conversion (ruling P14).
+    const fxCurrencies = new Set(
+      (db.prepare("SELECT currency FROM fx_rates").all() as { currency: string }[]).map((r) => r.currency)
+    );
+    const wantSymbol = symbol?.trim().toUpperCase();
+    const sales = getClosedTaxLotSales(db, year, account_name ? { accountName: account_name } : undefined).filter(
+      (r) => !wantSymbol || r.symbol.toUpperCase() === wantSymbol
+    );
 
-    if (symbol) {
-      conditions.push("s.symbol = ?");
-      params.push(symbol);
-    }
-    if (account_name) {
-      conditions.push("a.name = ?");
-      params.push(account_name);
-    }
-    if (year) {
-      conditions.push("tls.sale_date >= ? AND tls.sale_date <= ?");
-      params.push(`${year}-01-01`, `${year}-12-31`);
-    }
+    const rows: TaxLotResult[] = sales.map((r) => {
+      const convertible = r.currency === "USD" || fxCurrencies.has(r.currency);
+      const notes: string[] = [];
+      if (r.is_synthetic_close) notes.push(SYNTHETIC_CLOSE_CHAT_NOTE);
+      if (isCurrencyConversionTaxLot(r)) notes.push(CURRENCY_CONVERSION_CHAT_NOTE);
+      return {
+        account_name: r.account_name,
+        account_tax_treatment: taxTreatmentById.get(r.account_id) ?? null,
+        symbol: r.symbol,
+        security_name: r.security_name,
+        security_type: r.security_type,
+        currency: r.currency,
+        acquisition_date: r.acquisition_date,
+        acquisition_price: r.acquisition_price,
+        quantity_remaining: r.quantity_sold,
+        // Native, as stored (the same figures as the *_native fields).
+        cost_basis: r.cost_basis_allocated,
+        current_price: null,
+        price_date: null,
+        current_value: null,
+        unrealized_gain: null,
+        days_held: r.holding_period_days,
+        is_long_term: Boolean(r.is_long_term),
+        long_term_date: null,
+        sale_date: r.sale_date,
+        sale_price: r.sale_price,
+        proceeds: r.proceeds,
+        realized_gain_loss: r.realized_gain_loss,
+        holding_period_days: r.holding_period_days,
+        proceeds_native: r.proceeds,
+        cost_basis_native: r.cost_basis_allocated,
+        realized_gain_native: r.realized_gain_loss,
+        proceeds_usd_at_current_fx: convertible ? r.proceeds_usd : null,
+        cost_basis_usd_at_current_fx: convertible ? r.cost_basis_allocated_usd : null,
+        realized_gain_usd_at_current_fx: convertible ? r.realized_gain_loss_usd : null,
+        fx_note: r.currency === "USD" ? undefined : convertible ? CURRENT_FX_CHAT_NOTE : NO_FX_RATE_CHAT_NOTE,
+        is_synthetic_close: r.is_synthetic_close,
+        status_note: notes.length > 0 ? notes.join(" ") : undefined,
+      };
+    });
 
-    const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
-
-    const closedSql = `
-      SELECT
-        a.name AS account_name,
-        s.symbol,
-        s.name AS security_name,
-        s.security_type,
-        s.expiration_date,
-        tl.acquisition_date,
-        tl.acquisition_price,
-        tls.quantity_sold AS quantity_remaining,
-        tls.cost_basis_allocated AS cost_basis,
-        NULL AS current_price,
-        NULL AS price_date,
-        NULL AS current_value,
-        NULL AS unrealized_gain,
-        tls.holding_period_days AS days_held,
-        tls.is_long_term,
-        NULL AS long_term_date,
-        tls.sale_date,
-        tls.sale_price,
-        tls.proceeds,
-        tls.realized_gain_loss,
-        tls.holding_period_days
-      FROM tax_lot_sales tls
-      JOIN tax_lots tl ON tl.id = tls.tax_lot_id
-      JOIN accounts a ON a.id = tl.account_id
-      JOIN securities s ON s.id = tl.security_id
-      ${whereClause}
-      ORDER BY tls.realized_gain_loss ASC
-      LIMIT ?`;
-
-    params.push(limit);
-    const rows = db.prepare(closedSql).all(...params) as Array<Record<string, unknown>>;
-
-    return rows.map((r) => ({
-      ...r,
-      is_long_term: Boolean(r.is_long_term),
-      status_note: taxLotStatusNote(r, today),
-    })) as TaxLotResult[];
+    // sort_by applies to closed sales too (B6's second half). The gain sort
+    // reads the USD figure when there is one, else the native figure.
+    const gainKey = (r: TaxLotResult) => r.realized_gain_usd_at_current_fx ?? r.realized_gain_native ?? 0;
+    const compare: Record<NonNullable<TaxLotFilters["sort_by"]>, (a: TaxLotResult, b: TaxLotResult) => number> = {
+      unrealized_gain: (a, b) => gainKey(a) - gainKey(b), // losses first
+      acquisition_date: (a, b) => a.acquisition_date.localeCompare(b.acquisition_date),
+      holding_period_days: (a, b) => Math.abs(b.holding_period_days ?? 0) - Math.abs(a.holding_period_days ?? 0),
+      cost_basis: (a, b) =>
+        (b.cost_basis_usd_at_current_fx ?? b.cost_basis) - (a.cost_basis_usd_at_current_fx ?? a.cost_basis),
+    };
+    return rows.sort(compare[sort_by] ?? compare.unrealized_gain).slice(0, limit);
   };
 
   const queryOpenLots = (): TaxLotResult[] => {
@@ -796,7 +882,7 @@ export function getTaxLotsForChat(
   const params: (string | number)[] = [];
 
   if (symbol) {
-    conditions.push("s.symbol = ?");
+    conditions.push("UPPER(s.symbol) = UPPER(?)");
     params.push(symbol);
   }
   if (account_name) {
@@ -825,6 +911,7 @@ export function getTaxLotsForChat(
       s.name AS security_name,
       s.security_type,
       s.expiration_date,
+      COALESCE(s.currency, 'USD') AS currency,
       tl.acquisition_date,
       tl.acquisition_price,
       tl.quantity_remaining,
@@ -896,6 +983,7 @@ export function getTaxLotsForChat(
     const side = sideOf(is_short);
     const statusNote = short ? (baseNote ? `${SHORT_LOT_CHAT_NOTE} ${baseNote}` : SHORT_LOT_CHAT_NOTE) : baseNote;
     const common = {
+      account_tax_treatment: taxTreatmentById.get(account_id) ?? null,
       is_long_term: Boolean(r.is_long_term),
       position_side: side,
       figure_kind: figureKindForSide(side),
@@ -936,6 +1024,17 @@ export const SHORT_LOT_CHAT_NOTE =
 /** How chat describes a pending-statement lot (pinned by tests). */
 export const PENDING_STATEMENT_CHAT_NOTE =
   "Pending statement: this position was closed per live broker data, awaiting the broker statement for the closing trade. It is not an unrealized holding, and its realized gain is unknown until the statement is imported.";
+
+/** A closed sale the lot engine made (RECONCILE_CLOSE); pinned by tests. */
+export const SYNTHETIC_CLOSE_CHAT_NOTE =
+  "Estimated by the lot engine from a missing broker trade; not a recorded sale.";
+
+/** Ruling P14: how a converted closed-sale figure was converted. */
+export const CURRENT_FX_CHAT_NOTE =
+  "USD figures use the current FX rate, not the rate on the sale date; native figures are primary.";
+
+/** Ruling P14: a non-USD sale with no rate on file. */
+export const NO_FX_RATE_CHAT_NOTE = "no FX rate on file; native figures only";
 
 const CURRENCY_CONVERSION_CHAT_NOTE =
   "Currency conversion: this is a Section 988 ordinary-income cash-management lot, not a capital tax lot.";
@@ -1003,7 +1102,7 @@ export function getTransactionsForChat(
     params.push(account_name);
   }
   if (symbol) {
-    conditions.push("s.symbol = ?");
+    conditions.push("UPPER(s.symbol) = UPPER(?)");
     params.push(symbol);
   }
   if (type) {
@@ -1063,7 +1162,7 @@ export function getReconcileGapNotesForChat(
     params.push(filters.account_name);
   }
   if (filters.symbol) {
-    conditions.push("s.symbol = ?");
+    conditions.push("UPPER(s.symbol) = UPPER(?)");
     params.push(filters.symbol);
   }
   if (filters.start_date) {
@@ -1119,7 +1218,7 @@ export function getLedgerLastDateForChat(
     params.push(filters.account_name);
   }
   if (filters.symbol) {
-    conditions.push("s.symbol = ?");
+    conditions.push("UPPER(s.symbol) = UPPER(?)");
     params.push(filters.symbol);
   }
   const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
@@ -1161,9 +1260,9 @@ export function getLedgerEndByAccountForChat(
   const involvedSql = filters.symbol
     ? `AND (
          EXISTS (SELECT 1 FROM transactions t JOIN securities s ON s.id = t.security_id
-                  WHERE t.account_id = a.id AND s.symbol = ?)
+                  WHERE t.account_id = a.id AND UPPER(s.symbol) = UPPER(?))
          OR EXISTS (SELECT 1 FROM holdings h JOIN securities s ON s.id = h.security_id
-                     WHERE h.account_id = a.id AND s.symbol = ?)
+                     WHERE h.account_id = a.id AND UPPER(s.symbol) = UPPER(?))
        )`
     : "AND EXISTS (SELECT 1 FROM transactions t WHERE t.account_id = a.id)";
   const involvedParams = filters.symbol ? [filters.symbol, filters.symbol] : [];
@@ -1246,7 +1345,7 @@ export function getIncomeSummaryForChat(
   db: Database.Database,
   filters: IncomeSummaryFilters = {}
 ): IncomeResult[] {
-  const { period = "trailing_12m", group_by = "symbol", account_name } = filters;
+  const { period = "trailing_12m", group_by = "symbol", account_name, account_ids } = filters;
 
   // Compute date range from period
   const today = todayET();
@@ -1282,30 +1381,37 @@ export function getIncomeSummaryForChat(
 
   const expr = groupExpr[group_by] ?? "COALESCE(s.symbol, 'CASH')";
 
-  const incomeConditions = [
-    "t.trade_date >= ?",
-    "t.trade_date <= ?",
-    "UPPER(t.type) IN ('DIVIDEND', 'REINVESTMENT', 'INTEREST', 'FEE', 'COMMISSION')",
-  ];
+  const incomeConditions = ["t.trade_date >= ?", "t.trade_date <= ?", INCOME_TYPES_SQL];
   const incomeParams: (string | number)[] = [startDate, endDate];
 
-  if (account_name) {
+  // Ids (the dispatcher's resolved scope) win; `[]` reads no account. The
+  // exact account name still works for existing callers.
+  if (account_ids) {
+    const scope = accountScopeCondition(account_ids, "t.account_id");
+    if (scope.condition) incomeConditions.push(scope.condition);
+    incomeParams.push(...scope.params);
+  } else if (account_name) {
     incomeConditions.push("a.name = ?");
     incomeParams.push(account_name);
   }
 
+  // Contract J (lib/queries/income-sql.ts): a reinvested dividend counts
+  // once, a reversal nets, margin interest charged is a cost.
   return db
     .prepare(
-      `SELECT
+      `WITH ${incomePairingCtes()}
+      SELECT
         ${expr} AS group_name,
-        COALESCE(SUM(CASE WHEN UPPER(t.type) IN ('DIVIDEND', 'REINVESTMENT') THEN ABS(t.amount) ELSE 0 END), 0) AS total_dividends,
-        COALESCE(SUM(CASE WHEN UPPER(t.type) = 'INTEREST' THEN ABS(t.amount) ELSE 0 END), 0) AS total_interest,
-        COALESCE(SUM(CASE WHEN UPPER(t.type) IN ('FEE', 'COMMISSION') THEN ABS(t.amount) ELSE 0 END), 0) AS total_fees,
-        COALESCE(SUM(CASE WHEN UPPER(t.type) IN ('DIVIDEND', 'REINVESTMENT', 'INTEREST') THEN ABS(t.amount) ELSE 0 END), 0)
-          - COALESCE(SUM(CASE WHEN UPPER(t.type) IN ('FEE', 'COMMISSION') THEN ABS(t.amount) ELSE 0 END), 0) AS net_income
+        COALESCE(SUM(${DIVIDEND_INCOME_SQL}), 0) AS total_dividends,
+        COALESCE(SUM(${INTEREST_EARNED_SQL}), 0) AS total_interest,
+        COALESCE(SUM(${INTEREST_PAID_SQL}), 0) AS interest_paid,
+        COALESCE(SUM(${FEES_SQL}), 0) AS total_fees,
+        COALESCE(SUM(${NET_INCOME_SQL}), 0) AS net_income,
+        COALESCE(SUM(${UNPAIRED_NEGATIVE_REINVESTMENT_SQL}), 0) AS unpaired_reinvestment_count
       FROM transactions t
       JOIN accounts a ON a.id = t.account_id
       LEFT JOIN securities s ON s.id = t.security_id
+      ${INCOME_PAIRED_JOIN}
       WHERE ${incomeConditions.join(" AND ")}
       GROUP BY ${expr}
       ORDER BY net_income DESC`
@@ -1397,31 +1503,48 @@ export interface DataFreshness {
   holdings_age_days: number | null;
 }
 
+/**
+ * How old the data behind a tool result is, in whole Eastern calendar days
+ * (B25: never the UTC clock, which already reads tomorrow from 20:00
+ * Eastern).
+ *
+ * Reads the scope's latest holdings (`latestHoldingsPredicate`; undefined
+ * = every account, `[]` = none; Codex 12): the holdings date is the newest
+ * of those rows, the price date the newest price among the securities they
+ * hold. So a stale account is never reported fresh because an unrelated
+ * account (or an unheld watchlist price) is.
+ */
 export function getDataFreshness(
   db: Database.Database,
-  // Accepted for the scoped-freshness contract (plan Contract H); not read yet.
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   opts?: { accountIds?: number[] },
 ): DataFreshness {
-  const priceRow = db
-    .prepare("SELECT MAX(date) AS latest FROM prices")
-    .get() as { latest: string | null };
-  const holdingsRow = db
-    .prepare("SELECT MAX(as_of_date) AS latest FROM holdings")
-    .get() as { latest: string | null };
+  const accountIds = opts?.accountIds;
+  // One read for every scope (undefined = every account): the scope's
+  // latest holdings rows, through the shared predicate.
+  const scope = accountScopeAndSql(accountIds, "h.account_id");
+  const scopedHoldings = `FROM holdings h WHERE ${latestHoldingsPredicate({ includeShorts: true, accountFilter: scope.sql })}`;
+  // Newest date among rows the predicate already chose (a freshness read
+  // over a correct row set, not a row filter).
+  const latestHoldings =
+    (
+      db.prepare(`SELECT h.as_of_date AS latest ${scopedHoldings} ORDER BY h.as_of_date DESC LIMIT 1`).get(
+        ...scope.params
+      ) as { latest: string } | undefined
+    )?.latest ?? null;
+  const latestPrice = (
+    db
+      .prepare(
+        `SELECT MAX(p.date) AS latest FROM prices p
+         WHERE p.security_id IN (SELECT h.security_id ${scopedHoldings})`
+      )
+      .get(...scope.params) as { latest: string | null }
+  ).latest;
 
-  const now = Date.now();
-  const priceAge = priceRow.latest
-    ? Math.floor((now - new Date(priceRow.latest + "T00:00:00Z").getTime()) / 86400000)
-    : null;
-  const holdingsAge = holdingsRow.latest
-    ? Math.floor((now - new Date(holdingsRow.latest + "T00:00:00Z").getTime()) / 86400000)
-    : null;
-
+  const today = todayET();
   return {
-    latest_price_date: priceRow.latest,
-    price_age_days: priceAge,
-    latest_holdings_date: holdingsRow.latest,
-    holdings_age_days: holdingsAge,
+    latest_price_date: latestPrice,
+    price_age_days: latestPrice ? calendarDaysBetween(latestPrice, today) : null,
+    latest_holdings_date: latestHoldings,
+    holdings_age_days: latestHoldings ? calendarDaysBetween(latestHoldings, today) : null,
   };
 }

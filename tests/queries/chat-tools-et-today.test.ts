@@ -7,6 +7,7 @@ import {
   getPriceHistory,
   getTaxLotsForChat,
   getIncomeSummaryForChat,
+  getDataFreshness,
 } from "@/lib/queries/chat-tools";
 
 let db: Database.Database;
@@ -56,5 +57,53 @@ describe("chat tools use the ET calendar date", () => {
     ).run(acct, sec);
     const rows = getIncomeSummaryForChat(db, { period: "trailing_12m" });
     expect(rows.reduce((s, r) => s + r.total_dividends, 0)).toBeCloseTo(7, 6);
+  });
+});
+
+describe("getDataFreshness: Eastern day and the scope's own dates (B25 / QA-9)", () => {
+  function hold(account: number, security: number, date: string) {
+    db.prepare(
+      "INSERT INTO holdings (account_id, security_id, quantity, cost_basis, as_of_date, source_key) VALUES (?, ?, 5, 50, ?, ?)"
+    ).run(account, security, date, `fresh-${account}-${security}-${date}`);
+  }
+
+  it("a price dated today is 0 days old at 21:00 Eastern", () => {
+    // 2026-11-11 02:00Z is 2026-11-10 21:00 Eastern: the UTC clock already
+    // reads the 11th, and the old code aged a price dated the 10th 1 day.
+    vi.setSystemTime(new Date("2026-11-11T02:00:00Z"));
+    db.prepare("INSERT INTO prices (security_id, date, close_price, source) VALUES (?, '2026-11-10', 10, 't')").run(sec);
+    hold(acct, sec, "2026-11-10");
+    const f = getDataFreshness(db);
+    expect(f.latest_price_date).toBe("2026-11-10");
+    expect(f.price_age_days).toBe(0);
+    expect(f.holdings_age_days).toBe(0);
+  });
+
+  it("an old scoped account beside a fresh unrelated account reads old", () => {
+    vi.setSystemTime(new Date("2026-11-11T17:00:00Z")); // 12:00 Eastern on the 11th
+    const fresh = db
+      .prepare("INSERT INTO securities (symbol, name, security_type) VALUES ('NEW', 'NEW', 'Stock')")
+      .run().lastInsertRowid as number;
+    // The scoped account (acct) last saw holdings and a price on 2026-10-30;
+    // account 1 has both from 2026-11-10.
+    hold(acct, sec, "2026-10-30");
+    db.prepare("INSERT INTO prices (security_id, date, close_price, source) VALUES (?, '2026-10-30', 10, 't')").run(sec);
+    hold(1, fresh, "2026-11-10");
+    db.prepare("INSERT INTO prices (security_id, date, close_price, source) VALUES (?, '2026-11-10', 10, 't')").run(fresh);
+
+    const scoped = getDataFreshness(db, { accountIds: [acct] });
+    expect(scoped.latest_holdings_date).toBe("2026-10-30");
+    expect(scoped.holdings_age_days).toBe(12);
+    expect(scoped.latest_price_date).toBe("2026-10-30");
+    expect(scoped.price_age_days).toBe(12);
+
+    const whole = getDataFreshness(db);
+    expect(whole.latest_holdings_date).toBe("2026-11-10");
+    expect(whole.price_age_days).toBe(1);
+
+    const none = getDataFreshness(db, { accountIds: [] });
+    expect(none.latest_holdings_date).toBeNull();
+    expect(none.latest_price_date).toBeNull();
+    expect(none.price_age_days).toBeNull();
   });
 });

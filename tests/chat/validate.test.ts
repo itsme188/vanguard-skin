@@ -68,6 +68,9 @@ describe("annotateToolResult", () => {
     // Price from 30 days ago
     const oldDate = new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
     seedPrice(db, sec, oldDate, 200);
+    // Freshness reads the prices of HELD securities (B25 / Codex 12), so the
+    // stale-priced security is held.
+    seedHolding(db, 1, sec, 10, oldDate, 1000);
 
     const annotation = annotateToolResult(db, "query_holdings", []);
     expect(annotation.data_freshness.price_age_days).toBeGreaterThan(7);
@@ -133,9 +136,13 @@ describe("annotateToolResult", () => {
     expect(annotation.quality_warnings.some((w) => w.includes("cost basis") || w.includes("Cash balances"))).toBe(true);
   });
 
-  it("adds income reinvestment caveat", () => {
+  it("adds the income caveat: each payout once, interest paid shown separately (B3)", () => {
     const annotation = annotateToolResult(db, "query_income_summary", []);
-    expect(annotation.quality_warnings.some((w) => w.includes("REINVESTMENT"))).toBe(true);
+    expect(annotation.quality_warnings).toContain(
+      "Dividends count each payout once (a reinvestment is the purchase leg). Interest paid on a margin debit is shown separately."
+    );
+    // The old caveat told the model reinvestments were extra dividend income.
+    expect(annotation.quality_warnings.some((w) => w.includes("counted as dividend income"))).toBe(false);
   });
 
   it("adds ownership warning for transactions tool", () => {

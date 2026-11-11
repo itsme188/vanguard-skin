@@ -6,7 +6,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
-import { getHoldingsForChat, getTaxLotsForChat } from "@/lib/queries/chat-tools";
+import { getAllocationBreakdown, getHoldingsForChat, getTaxLotsForChat } from "@/lib/queries/chat-tools";
 import { isLongTermHolding } from "@/lib/compute/tax-lots";
 
 let db: Database.Database;
@@ -75,6 +75,23 @@ describe("getHoldingsForChat — expired options", () => {
     const total = rows.reduce((sum, h) => sum + (h.position_weight_pct ?? 0), 0);
     expect(rows).toHaveLength(3);
     expect(total).toBeCloseTo(100, 5);
+  });
+
+  it("query_allocation leaves out an expired option", () => {
+    // B8. Live long book: stock 10 x 10 = 100 plus the two options expiring
+    // today, 1 x 10 x 100 = 1000 each -> 2100. The two contracts that expired
+    // yesterday (1000 each) must not appear. The short is not in the long book.
+    const rows = getAllocationBreakdown(db, "security_type");
+    const total = rows.reduce((sum, r) => sum + r.total_market_value, 0);
+    expect(total).toBeCloseTo(2100, 6);
+    const options = rows.filter((r) => r.group_name.toLowerCase() === "option");
+    expect(options.reduce((sum, r) => sum + r.position_count, 0)).toBe(2);
+    expect(options.reduce((sum, r) => sum + r.total_market_value, 0)).toBeCloseTo(2000, 6);
+    // Conservation: the allocation total equals the holdings tool's long
+    // market value for the same scope (every row here is priced), within $1.
+    const longMv = getHoldingsForChat(db, { limit: 500 }).reduce((sum, h) => sum + (h.market_value ?? 0), 0);
+    expect(Math.abs(total - longMv)).toBeLessThan(1);
+    expect(rows.reduce((sum, r) => sum + r.percentage, 0)).toBeCloseTo(100, 6);
   });
 
   it("uses the ET calendar day, not the UTC day", () => {

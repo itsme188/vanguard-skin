@@ -230,3 +230,127 @@ describe("computeIbkrTradingContext — shorts visibility", () => {
     expect(defaultHoldings.map((h) => h.symbol)).toEqual(["LONGCO"]);
   });
 });
+
+// ─── Cash from the account's own cash line (B7 / QA-7, Contract E, P12) ───
+
+describe("computeIbkrTradingContext — cash line", () => {
+  let db: Database.Database;
+  const IBKR_ACCOUNT_ID = 3; // seeded by migration 002_seed_accounts.sql
+
+  beforeEach(() => {
+    db = new Database(":memory:");
+    db.pragma("foreign_keys = ON");
+    runMigrations(db);
+    // A second account whose name also says IBKR: the old reader picked the
+    // first "ibkr"-named account's month-end total by NAME.
+    db.prepare("INSERT INTO accounts (name) VALUES ('IBKR Old')").run();
+    const oldId = (db.prepare("SELECT id FROM accounts WHERE name = 'IBKR Old'").get() as { id: number }).id;
+    db.prepare(
+      "INSERT INTO monthly_snapshots (account_id, month_end_date, total_value, source, cash_value) VALUES (?, '2026-10-31', 900, 'statement', 900)"
+    ).run(oldId);
+    db.prepare(
+      "INSERT INTO daily_valuations (account_id, valuation_date, cash_balance, holdings_value, total_value, data_quality) VALUES (?, '2026-11-10', 900, 0, 900, 'live')"
+    ).run(oldId);
+
+    // The IBKR book: a long, a short and an option that expired.
+    const stock = db.prepare("INSERT INTO securities (symbol, name, security_type) VALUES ('LLL', 'LLL', 'Stock')").run()
+      .lastInsertRowid as number;
+    const short = db.prepare("INSERT INTO securities (symbol, name, security_type) VALUES ('SSS', 'SSS', 'Stock')").run()
+      .lastInsertRowid as number;
+    const expired = db
+      .prepare(
+        "INSERT INTO securities (symbol, name, security_type, multiplier, expiration_date) VALUES ('LLL 201016C00010000', 'opt', 'Option', 100, '2020-10-16')"
+      )
+      .run().lastInsertRowid as number;
+    for (const [sec, qty] of [[stock, 100], [short, -10], [expired, 1]] as const) {
+      db.prepare(
+        "INSERT INTO holdings (account_id, security_id, quantity, cost_basis, as_of_date, source_key) VALUES (?, ?, ?, 100, '2026-11-10', ?)"
+      ).run(IBKR_ACCOUNT_ID, sec, qty, `cash-${sec}`);
+      db.prepare("INSERT INTO prices (security_id, date, close_price, source) VALUES (?, '2026-11-10', 50, 't')").run(sec);
+    }
+  });
+
+  function valuation(cash: number, holdings: number, date = "2026-11-10", quality = "recent") {
+    db.prepare(
+      "INSERT INTO daily_valuations (account_id, valuation_date, cash_balance, holdings_value, total_value, data_quality) VALUES (?, ?, ?, ?, ?, ?)"
+    ).run(IBKR_ACCOUNT_ID, date, cash, holdings, cash + holdings, quality);
+  }
+
+  function anchor(date: string, source: string, cash: number | null) {
+    db.prepare(
+      "INSERT INTO monthly_snapshots (account_id, month_end_date, total_value, source, cash_value) VALUES (?, ?, 10000, ?, ?)"
+    ).run(IBKR_ACCOUNT_ID, date, source, cash);
+  }
+
+  it("cash comes from the account's own cash line", () => {
+    // Statement anchor on the valuation day; cash 1400 of a 10000 total = 14%.
+    anchor("2026-11-10", "statement", 1400);
+    valuation(1400, 8600);
+    const ctx = computeIbkrTradingContext(db, IBKR_ACCOUNT_ID, "IBKR");
+    expect(ctx.estimatedCash).toBe(1400);
+    expect(ctx.accountTotal).toBe(10000);
+    expect(ctx.cashPct).toBeCloseTo(14, 6);
+    expect(ctx.cashAsOf).toBe("2026-11-10");
+    expect(ctx.accountTotalAsOf).toBe("2026-11-10");
+    expect(ctx.cashSource).toBe("daily_valuation");
+    expect(ctx.cashCarried).toBe(false);
+    expect(ctx.cashTimingResidual).toBe(false);
+    expect(ctx.cashPriceDateMismatch).toBe(false);
+    expect(ctx.stanceWithheld).toBe(false);
+    // 14% cash, no beta -> score 5 (fully invested end of the scale).
+    expect(ctx.bullishnessScore).toBe(5);
+  });
+
+  it("a margin debit is not clamped to zero", () => {
+    anchor("2026-11-10", "statement", -300);
+    valuation(-300, 10300); // total 10000
+    const ctx = computeIbkrTradingContext(db, IBKR_ACCOUNT_ID, "IBKR");
+    expect(ctx.estimatedCash).toBe(-300);
+    expect(ctx.cashPct).toBeCloseTo(-3, 6);
+    expect(ctx.bullishnessScore).toBe(5); // borrowing reads as fully invested
+    expect(ctx.stanceWithheld).toBe(false);
+  });
+
+  it("a carried or timing-residual negative figure withholds the stance", () => {
+    // Live (TWS) anchor: the cash figure is a timing residual.
+    anchor("2026-11-10", "tws", null);
+    valuation(-300, 10300);
+    const live = computeIbkrTradingContext(db, IBKR_ACCOUNT_ID, "IBKR");
+    expect(live.estimatedCash).toBe(-300);
+    expect(live.cashTimingResidual).toBe(true);
+    expect(live.stanceWithheld).toBe(true);
+
+    // Carried: the newest row is 'estimated' with no holdings of its own day,
+    // so it carries the 2026-11-10 measurement; dated by the measurement.
+    db.prepare("DELETE FROM monthly_snapshots WHERE account_id = ?").run(IBKR_ACCOUNT_ID);
+    anchor("2026-11-10", "statement", -300);
+    valuation(-300, 10300, "2026-11-11", "estimated");
+    const carried = computeIbkrTradingContext(db, IBKR_ACCOUNT_ID, "IBKR");
+    expect(carried.cashCarried).toBe(true);
+    expect(carried.cashAsOf).toBe("2026-11-10");
+    expect(carried.stanceWithheld).toBe(true);
+  });
+
+  it("no cash line means cash is not available and the stance is withheld", () => {
+    const ctx = computeIbkrTradingContext(db, IBKR_ACCOUNT_ID, "IBKR");
+    expect(ctx.cashSource).toBe("none");
+    expect(ctx.cashAsOf).toBeNull();
+    expect(ctx.estimatedCash).toBe(0);
+    expect(ctx.stanceWithheld).toBe(true);
+  });
+
+  it("130 positions count as 130", () => {
+    // B10, engine half: the count is not capped by a row limit.
+    for (let i = 0; i < 128; i++) {
+      const sec = db
+        .prepare("INSERT INTO securities (symbol, name, security_type) VALUES (?, ?, 'Stock')")
+        .run(`P${i}`, `P${i}`).lastInsertRowid as number;
+      db.prepare(
+        "INSERT INTO holdings (account_id, security_id, quantity, cost_basis, as_of_date, source_key) VALUES (?, ?, 1, 10, '2026-11-10', ?)"
+      ).run(IBKR_ACCOUNT_ID, sec, `many-${i}`);
+    }
+    // 128 new + the long + the short (the expired option is not a position).
+    const ctx = computeIbkrTradingContext(db, IBKR_ACCOUNT_ID, "IBKR");
+    expect(ctx.activePositionCount).toBe(130);
+  });
+});

@@ -215,6 +215,21 @@ describe("getHoldingsForChat", () => {
     expect(holdings[0].position_weight_pct).toBeCloseTo(52.6, 0);
   });
 
+  it("a lower-case symbol finds the position", () => {
+    // B9: the model may type "aapl"; every symbol filter in the chat
+    // engines compares upper-cased.
+    const aapl = seedSecurity(db, "AAPL");
+    seedHolding(db, 1, aapl, 50, "2025-01-31", 7500);
+    seedPrice(db, aapl, "2025-01-31", 200);
+    seedTaxLot(db, 1, aapl, { acquisition_date: "2024-01-15", acquisition_price: 150, quantity_acquired: 50, quantity_remaining: 50, cost_basis: 7500 });
+    seedTransaction(db, 1, aapl, { trade_date: "2024-01-15", type: "BUY", quantity: 50, amount: -7500 });
+
+    expect(getHoldingsForChat(db, { symbol: "aapl" }).map((h) => h.symbol)).toEqual(["AAPL"]);
+    expect(getPriceHistory(db, "aapl", "2025-01-01").map((p) => p.close_price)).toEqual([200]);
+    expect(getTaxLotsForChat(db, { symbol: "aapl" })).toHaveLength(1);
+    expect(getTransactionsForChat(db, { symbol: "aapl" })).toHaveLength(1);
+  });
+
   it("filters by account name", () => {
     const aapl = seedSecurity(db, "AAPL");
     seedHolding(db, 1, aapl, 50, "2025-01-31");

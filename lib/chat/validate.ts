@@ -74,7 +74,7 @@ export function annotateToolResult(
 
   if (toolName === "query_income_summary") {
     warnings.push(
-      "REINVESTMENT transactions are counted as dividend income. Return of capital (if any) is not distinguished."
+      "Dividends count each payout once (a reinvestment is the purchase leg). Interest paid on a margin debit is shown separately."
     );
   }
 
