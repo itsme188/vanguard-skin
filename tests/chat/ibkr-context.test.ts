@@ -339,6 +339,23 @@ describe("computeIbkrTradingContext — cash line", () => {
     expect(ctx.stanceWithheld).toBe(true);
   });
 
+  it("a zero or negative account total withholds the stance (R2-4)", () => {
+    // Statement anchor, cash 0, positions 0: total 0. The old rule read 0%
+    // cash as "fully deployed" (score 5).
+    anchor("2026-11-10", "statement", 0);
+    valuation(0, 0);
+    const zero = computeIbkrTradingContext(db, IBKR_ACCOUNT_ID, "IBKR");
+    expect(zero.accountTotal).toBe(0);
+    expect(zero.stanceWithheld).toBe(true);
+
+    // A debit larger than the positions: total -100.
+    db.prepare("DELETE FROM daily_valuations WHERE account_id = ?").run(IBKR_ACCOUNT_ID);
+    valuation(-600, 500);
+    const negative = computeIbkrTradingContext(db, IBKR_ACCOUNT_ID, "IBKR");
+    expect(negative.accountTotal).toBe(-100);
+    expect(negative.stanceWithheld).toBe(true);
+  });
+
   it("130 positions count as 130", () => {
     // B10, engine half: the count is not capped by a row limit.
     for (let i = 0; i < 128; i++) {

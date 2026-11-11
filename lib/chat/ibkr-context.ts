@@ -23,13 +23,21 @@ export interface IbkrTradingContext {
   // Cash provenance (plan Contract E / P12), from getAccountCashLine.
   /** The day the cash figure was measured (the measured day when carried). */
   cashAsOf: string | null;
-  cashSource: "daily_valuation" | "none";
+  /**
+   * "statement" is reserved by the 2026-11-11 R2-3 ruling (fall back to the
+   * newest statement-grade cash line when the latest line is a live
+   * residual, carried or mismatched). Not produced yet: getAccountCashLine
+   * reads only the account's LATEST valuation row, so it cannot return an
+   * earlier statement-grade line; the stance stays withheld until a reader
+   * that can is ruled on.
+   */
+  cashSource: "daily_valuation" | "statement" | "none";
   cashCarried: boolean;
   /** Live anchor on the valuation day. */
   cashTimingResidual: boolean;
   cashPriceDateMismatch: boolean;
   accountTotalAsOf: string | null;
-  /** True when the cash figure cannot carry a stance: none, carried, a timing residual or a price-date mismatch. */
+  /** True when the cash figure cannot carry a stance: none, a total at or below zero, carried, a timing residual or a price-date mismatch. */
   stanceWithheld: boolean;
 }
 
@@ -74,7 +82,10 @@ export function computeIbkrTradingContext(
   const cashPriceDateMismatch = cashAvailable && cashLine.priceDateMismatch;
   const cashTimingResidual = cashAvailable && cashLine.isLiveSource && !cashLine.priceDateMismatch;
   const cashAsOf = cashAvailable ? (cashLine.carried ? cashLine.measuredDate : cashLine.valuationDate) : null;
-  const stanceWithheld = !cashAvailable || cashCarried || cashTimingResidual || cashPriceDateMismatch;
+  // A zero or negative total has no meaningful cash share (R2-4): 0% would
+  // read as "fully deployed".
+  const stanceWithheld =
+    !cashAvailable || accountTotal <= 0 || cashCarried || cashTimingResidual || cashPriceDateMismatch;
 
   // 2. Portfolio beta
   const factors = computeFactorAnalysis(db, { accountId });

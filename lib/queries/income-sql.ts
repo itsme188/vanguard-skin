@@ -9,8 +9,10 @@
  * - A REINVESTMENT is the purchase leg of a DIVIDEND, not a second payout.
  *   It pairs one-to-one with a DIVIDEND on the same account, the same
  *   security and the same trade date for the same absolute amount to the
- *   cent; each DIVIDEND pairs with at most one REINVESTMENT (ranked by row
- *   id within that key). A paired REINVESTMENT adds nothing.
+ *   cent, or, failing that, for the dividend minus that day's TAX_WITHHELD
+ *   (see `incomePairingCtes`); each DIVIDEND pairs with at most one
+ *   REINVESTMENT (ranked by row id within that key). A paired
+ *   REINVESTMENT adds nothing.
  * - A negative unpaired REINVESTMENT is not income; it is counted
  *   (`UNPAIRED_NEGATIVE_REINVESTMENT_SQL`) so the reader can say so.
  * - Interest earned = positive INTEREST amounts; interest paid = the
@@ -39,19 +41,64 @@ function rankedLegs(name: string, type: string): string {
   )`;
 }
 
-/** The CTEs that define `paired_reinvestments(id)`. No leading WITH. */
-export function incomePairingCtes(): string {
-  return `${rankedLegs("income_dividend_legs", "DIVIDEND")},
-  ${rankedLegs("income_reinvestment_legs", "REINVESTMENT")},
-  paired_reinvestments AS (
-    SELECT r.id
-    FROM income_reinvestment_legs r
-    JOIN income_dividend_legs d
-      ON d.account_id = r.account_id
+/** The pair key: same account, security (NULL matches NULL), day, cents and rank. */
+const PAIR_ON = `d.account_id = r.account_id
      AND d.security_id IS r.security_id
      AND d.trade_date = r.trade_date
      AND d.cents = r.cents
-     AND d.leg_rank = r.leg_rank
+     AND d.leg_rank = r.leg_rank`;
+
+/**
+ * The CTEs that define `paired_reinvestments(id)`. No leading WITH.
+ *
+ * Two passes, each one-to-one:
+ *  1. gross: a REINVESTMENT equal to its DIVIDEND;
+ *  2. net of withholding (review R2-2): among the legs pass 1 left, a
+ *     REINVESTMENT equal to its DIVIDEND minus the same-day TAX_WITHHELD on
+ *     the same account and security (dividend 100, 15 withheld, 85
+ *     reinvested). Only dividends with withholding that day take part.
+ * The withheld tax itself is not an income row (unchanged): dividend
+ * income stays the gross payout.
+ */
+export function incomePairingCtes(): string {
+  return `${rankedLegs("income_dividend_legs", "DIVIDEND")},
+  ${rankedLegs("income_reinvestment_legs", "REINVESTMENT")},
+  income_gross_pairs AS (
+    SELECT r.id AS reinvestment_id, d.id AS dividend_id
+    FROM income_reinvestment_legs r
+    JOIN income_dividend_legs d ON ${PAIR_ON}
+  ),
+  income_withheld AS (
+    SELECT t.account_id, t.security_id, t.trade_date, SUM(ABS(t.amount)) AS withheld
+    FROM transactions t
+    WHERE UPPER(t.type) = 'TAX_WITHHELD' AND t.amount IS NOT NULL
+    GROUP BY t.account_id, t.security_id, t.trade_date
+  ),
+  income_net_dividend_legs AS (
+    SELECT x.id, x.account_id, x.security_id, x.trade_date, x.cents,
+           ROW_NUMBER() OVER (PARTITION BY x.account_id, x.security_id, x.trade_date, x.cents ORDER BY x.id) AS leg_rank
+    FROM (
+      SELECT t.id, t.account_id, t.security_id, t.trade_date,
+             CAST(ROUND((ABS(t.amount) - w.withheld) * 100) AS INTEGER) AS cents
+      FROM transactions t
+      JOIN income_withheld w
+        ON w.account_id = t.account_id AND w.security_id IS t.security_id AND w.trade_date = t.trade_date
+      WHERE UPPER(t.type) = 'DIVIDEND' AND t.amount IS NOT NULL
+        AND t.id NOT IN (SELECT dividend_id FROM income_gross_pairs)
+    ) x
+  ),
+  income_net_reinvestment_legs AS (
+    SELECT x.id, x.account_id, x.security_id, x.trade_date, x.cents,
+           ROW_NUMBER() OVER (PARTITION BY x.account_id, x.security_id, x.trade_date, x.cents ORDER BY x.id) AS leg_rank
+    FROM income_reinvestment_legs x
+    WHERE x.id NOT IN (SELECT reinvestment_id FROM income_gross_pairs)
+  ),
+  paired_reinvestments AS (
+    SELECT reinvestment_id AS id FROM income_gross_pairs
+    UNION ALL
+    SELECT r.id
+    FROM income_net_reinvestment_legs r
+    JOIN income_net_dividend_legs d ON ${PAIR_ON}
   )`;
 }
 

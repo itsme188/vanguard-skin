@@ -20,6 +20,8 @@ export interface IncomeSummary {
   totalFees: number;
   /** totalDividends + totalInterest - totalInterestPaid - totalFees. */
   netIncome: number;
+  /** Income rows (dividend, reinvestment, interest, fee, commission) in the window and scope. */
+  incomeRowCount: number;
   startDate: string;
   endDate: string;
   byAccount: AccountIncome[];
@@ -61,6 +63,7 @@ interface SymbolRow {
 }
 
 interface TotalRow {
+  row_count: number;
   total_dividends: number;
   total_interest: number;
   total_interest_paid: number;
@@ -88,6 +91,7 @@ export function getIncomeSummary(
     .prepare(
       `WITH ${incomePairingCtes()}
        SELECT
+         COUNT(*) AS row_count,
          COALESCE(SUM(${DIVIDEND_INCOME_SQL}), 0) AS total_dividends,
          COALESCE(SUM(${INTEREST_EARNED_SQL}), 0) AS total_interest,
          COALESCE(SUM(${INTEREST_PAID_SQL}), 0) AS total_interest_paid,
@@ -149,6 +153,7 @@ export function getIncomeSummary(
     totalFees: totals.total_fees,
     netIncome:
       totals.total_dividends + totals.total_interest - totals.total_interest_paid - totals.total_fees,
+    incomeRowCount: totals.row_count,
     startDate,
     endDate,
     byAccount: byAccount.map((r) => ({
@@ -166,4 +171,22 @@ export function getIncomeSummary(
       interest: r.interest,
     })),
   };
+}
+
+/**
+ * One account's net income: dividends + interest earned - interest paid -
+ * fees. The by-account rows of the Income card sum to `netIncome` through
+ * this (tests/dashboard/income-yield-section-r2-1.test.ts).
+ */
+export function accountIncomeTotal(a: Pick<AccountIncome, "dividends" | "interest" | "interestPaid" | "fees">): number {
+  return a.dividends + a.interest - a.interestPaid - a.fees;
+}
+
+/**
+ * Whether the window holds any income row. The card's empty state keys on
+ * this, never on a zero net: income exactly offset by margin interest is
+ * still activity to show.
+ */
+export function hasIncomeActivity(summary: Pick<IncomeSummary, "incomeRowCount">): boolean {
+  return summary.incomeRowCount > 0;
 }

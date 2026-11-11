@@ -99,6 +99,36 @@ describe("getIncomeSummaryForChat income semantics (B3)", () => {
     expect(sum(rows, "total_dividends")).toBeCloseTo(15, 6);
   });
 
+  it("a reinvestment net of same-day foreign tax withheld pairs with its dividend (R2-2)", () => {
+    // Dividend 100, 15 withheld, 85 reinvested: one payout of 100 (gross).
+    // Before this rule the 85 never paired and the payout read 185.
+    txn(IBKR, sec, "2026-07-01", "DIVIDEND", 100);
+    txn(IBKR, sec, "2026-07-01", "TAX_WITHHELD", -15);
+    txn(IBKR, sec, "2026-07-01", "REINVESTMENT", 85);
+    const [row] = getIncomeSummaryForChat(db, { period: "all_time", group_by: "account" });
+    expect(row.total_dividends).toBeCloseTo(100, 6);
+  });
+
+  it("a gross match wins over a net match, and each dividend pairs once (R2-2)", () => {
+    // Dividend 100 with 15 withheld, reinvested gross (100): pairs gross.
+    // A second reinvestment of 85 the same day finds no dividend left -> +85.
+    txn(IBKR, sec, "2026-07-01", "DIVIDEND", 100);
+    txn(IBKR, sec, "2026-07-01", "TAX_WITHHELD", -15);
+    txn(IBKR, sec, "2026-07-01", "REINVESTMENT", 100);
+    txn(IBKR, sec, "2026-07-01", "REINVESTMENT", 85);
+    const [row] = getIncomeSummaryForChat(db, { period: "all_time", group_by: "account" });
+    expect(row.total_dividends).toBeCloseTo(185, 6);
+  });
+
+  it("withholding on another day or security does not create a net match (R2-2)", () => {
+    txn(IBKR, sec, "2026-07-01", "DIVIDEND", 100);
+    txn(IBKR, sec, "2026-07-02", "TAX_WITHHELD", -15); // another day
+    txn(IBKR, other, "2026-07-01", "TAX_WITHHELD", -15); // another security
+    txn(IBKR, sec, "2026-07-01", "REINVESTMENT", 85);
+    const [row] = getIncomeSummaryForChat(db, { period: "all_time", group_by: "account" });
+    expect(row.total_dividends).toBeCloseTo(185, 6);
+  });
+
   it("a reversed (negative) dividend is netted", () => {
     // Paid 8, reversed -8, re-paid 7: income 7 (old code ABS: 23).
     txn(IBKR, sec, "2026-06-01", "DIVIDEND", 8);

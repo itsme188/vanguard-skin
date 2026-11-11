@@ -331,7 +331,13 @@ export function getHoldingsForChat(
     accountConditions.push("h.account_id IN (SELECT id FROM accounts WHERE name = ?)");
     accountParams.push(account_name);
   }
-  const weightBasis: HoldingResult["weight_basis"] = accountConditions.length > 0 ? "account" : "all accounts";
+  // An id list that names every account is the whole book (nit, review R2).
+  const coversEveryAccount =
+    account_ids !== undefined &&
+    account_ids.length > 0 &&
+    (db.prepare("SELECT id FROM accounts").all() as { id: number }[]).every((a) => account_ids.includes(a.id));
+  const weightBasis: HoldingResult["weight_basis"] =
+    accountConditions.length > 0 && !coversEveryAccount ? "account" : "all accounts";
 
   // The denominator for position_weight_pct. Long-only (default): a plain
   // signed SUM is correct because every included row's market value is
@@ -863,15 +869,24 @@ export function getTaxLotsForChat(
       };
     });
 
-    // sort_by applies to closed sales too (B6's second half). The gain sort
-    // reads the USD figure when there is one, else the native figure.
-    const gainKey = (r: TaxLotResult) => r.realized_gain_usd_at_current_fx ?? r.realized_gain_native ?? 0;
+    // sort_by applies to closed sales too (B6's second half). Money sorts
+    // compare USD figures only; a non-USD sale with no rate on file has no
+    // comparable figure and sorts last (never its native figure among dollars).
+    const byMoney =
+      (key: (r: TaxLotResult) => number | null | undefined, direction: 1 | -1) =>
+      (a: TaxLotResult, b: TaxLotResult) => {
+        const x = key(a);
+        const y = key(b);
+        if (x == null && y == null) return 0;
+        if (x == null) return 1;
+        if (y == null) return -1;
+        return direction * (x - y);
+      };
     const compare: Record<NonNullable<TaxLotFilters["sort_by"]>, (a: TaxLotResult, b: TaxLotResult) => number> = {
-      unrealized_gain: (a, b) => gainKey(a) - gainKey(b), // losses first
+      unrealized_gain: byMoney((r) => r.realized_gain_usd_at_current_fx, 1), // losses first
       acquisition_date: (a, b) => a.acquisition_date.localeCompare(b.acquisition_date),
       holding_period_days: (a, b) => Math.abs(b.holding_period_days ?? 0) - Math.abs(a.holding_period_days ?? 0),
-      cost_basis: (a, b) =>
-        (b.cost_basis_usd_at_current_fx ?? b.cost_basis) - (a.cost_basis_usd_at_current_fx ?? a.cost_basis),
+      cost_basis: byMoney((r) => r.cost_basis_usd_at_current_fx, -1),
     };
     return rows.sort(compare[sort_by] ?? compare.unrealized_gain).slice(0, limit);
   };

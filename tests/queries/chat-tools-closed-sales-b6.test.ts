@@ -148,6 +148,20 @@ describe("query_tax_lots closed sales (B6)", () => {
     expect(limited[0].realized_gain_loss).toBe(-10);
   });
 
+  it("a non-USD sale with no rate sorts after every comparable figure (nit)", () => {
+    // EUR gain -100 native with no rate: its native figure is not dollars,
+    // so it must not sort among USD losses; it goes last.
+    closedSale({ sec: security("EEE", "EUR"), buyDate: "2026-01-05", saleDate: "2026-06-02", qty: 10, basis: 200, proceeds: 100 });
+    closedSale({ sec: security("UUU"), buyDate: "2026-01-05", saleDate: "2026-06-03", qty: 10, basis: 100, proceeds: 150 });
+    closedSale({ sec: security("VVV"), buyDate: "2026-01-05", saleDate: "2026-06-04", qty: 10, basis: 90, proceeds: 80 });
+    expect(getTaxLotsForChat(db, { status: "closed" }).map((r) => r.symbol)).toEqual(["VVV", "UUU", "EEE"]);
+    expect(getTaxLotsForChat(db, { status: "closed", sort_by: "cost_basis" }).map((r) => r.symbol)).toEqual([
+      "UUU",
+      "VVV",
+      "EEE",
+    ]);
+  });
+
   it("open lots carry currency and the account's tax treatment", () => {
     const sec = security("OOO", "JPY");
     db.prepare(

@@ -1,5 +1,5 @@
 import { db } from "@/lib/db";
-import { getIncomeSummary } from "@/lib/queries/income";
+import { accountIncomeTotal, getIncomeSummary, hasIncomeActivity } from "@/lib/queries/income";
 import { resolveScope } from "@/lib/queries/accounts";
 import { Money } from "@/lib/privacy/components";
 import { todayET } from "@/lib/calendar/date-utils";
@@ -29,7 +29,7 @@ export async function IncomeYieldSection({ scope }: IncomeYieldSectionProps) {
 
   const summary = getIncomeSummary(db, startDate, today, accountIds);
 
-  if (summary.netIncome === 0) {
+  if (!hasIncomeActivity(summary)) {
     return (
       <section className="bg-panel rounded-xl p-4 sm:p-5 card-elev">
         <h3 className="text-sm font-medium text-ink mb-2">Income · trailing 12 months</h3>
@@ -49,9 +49,10 @@ export async function IncomeYieldSection({ scope }: IncomeYieldSectionProps) {
         </p>
       </div>
 
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
         <KpiCell label="Dividends" value={summary.totalDividends} />
         <KpiCell label="Interest" value={summary.totalInterest} />
+        <KpiCell label="Interest paid" value={-summary.totalInterestPaid} />
         <KpiCell label="Fees" value={-summary.totalFees} />
         <KpiCell label="Net income" value={summary.netIncome} bold />
       </div>
@@ -101,6 +102,7 @@ export async function IncomeYieldSection({ scope }: IncomeYieldSectionProps) {
                 <th className="text-left font-medium pb-2">Account</th>
                 <th className="text-right font-medium pb-2">Dividends</th>
                 <th className="text-right font-medium pb-2">Interest</th>
+                <th className="text-right font-medium pb-2">Interest paid</th>
                 <th className="text-right font-medium pb-2">Fees</th>
                 <th className="text-right font-medium pb-2">Total</th>
               </tr>
@@ -115,8 +117,16 @@ export async function IncomeYieldSection({ scope }: IncomeYieldSectionProps) {
                   <td className="py-2 text-right font-mono tabular-nums text-ink-dim">
                     <Money value={a.interest} />
                   </td>
-                  {/* Total nets fees out — the column makes that arithmetic visible
-                      (Total = Dividends + Interest − Fees), matching the KPI row. */}
+                  <td
+                    className={`py-2 text-right font-mono tabular-nums ${
+                      a.interestPaid > 0 ? "text-down" : "text-ink-dim"
+                    }`}
+                  >
+                    <Money value={-a.interestPaid} />
+                  </td>
+                  {/* Total nets interest paid and fees out — the columns make that
+                      arithmetic visible (Total = Dividends + Interest − Interest
+                      paid − Fees), and the rows sum to the Net income tile. */}
                   <td
                     className={`py-2 text-right font-mono tabular-nums ${
                       a.fees > 0 ? "text-down" : "text-ink-dim"
@@ -125,7 +135,7 @@ export async function IncomeYieldSection({ scope }: IncomeYieldSectionProps) {
                     <Money value={-a.fees} />
                   </td>
                   <td className="py-2 text-right font-mono tabular-nums text-ink">
-                    <Money value={a.dividends + a.interest - a.fees} />
+                    <Money value={accountIncomeTotal(a)} />
                   </td>
                 </tr>
               ))}

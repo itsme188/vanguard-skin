@@ -69,6 +69,13 @@ describe("getHoldingsForChat weights (B5)", () => {
     expect(energy.position_weight_pct).toBeCloseTo(90, 6);
   });
 
+  it("an id list covering every account is the whole book (nit)", () => {
+    const allIds = (db.prepare("SELECT id FROM accounts").all() as { id: number }[]).map((a) => a.id);
+    const rows = getHoldingsForChat(db, { account_ids: allIds });
+    expect(rows.every((r) => r.weight_basis === "all accounts")).toBe(true);
+    expect(Math.abs(sumWeights(rows) - 100)).toBeLessThan(0.1);
+  });
+
   it("an empty id list reads no account", () => {
     expect(getHoldingsForChat(db, { account_ids: [] })).toEqual([]);
   });
