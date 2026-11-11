@@ -30,10 +30,19 @@ const drawer = readFileSync(
 
 // Copied verbatim from `git show HEAD:app/dashboard/components/ChatInterface.tsx`
 // (commit 91f9a646) — the transport memo, the destructure and the useChat call.
+// Re-pinned 2026-11-11 (Portfolio Assistant plan, Task 4): the turn box gains
+// the B17 generation fields, the destructure gains addToolApprovalResponse,
+// and useChat gains the one additive option sendAutomaticallyWhen (O2).
 const USE_CHAT_BLOCK_AT_HEAD = `const { transport, turn } = useMemo(() => {
-    // Plain mutable box, written only inside the fetch call (never in render).
-    const turn: { conversationId: number | null } = { conversationId: null };
+    // Plain mutable box, written only inside the fetch call and the switch
+    // handlers (never in render).
+    const turn: {
+      conversationId: number | null;
+      generation: number;
+      sentGeneration: number | null;
+    } = { conversationId: null, generation: 0, sentGeneration: null };
     const chatFetch: ApiFetch = async (input, init) => {
+      turn.sentGeneration = turn.generation;
       turn.conversationId = null;
       const res = await apiFetch(input, init);
       const id = Number(res.headers.get("X-Conversation-Id"));
@@ -55,23 +64,31 @@ const USE_CHAT_BLOCK_AT_HEAD = `const { transport, turn } = useMemo(() => {
     setMessages,
     clearError,
     stop,
-  } = useChat({ transport });`;
+    addToolApprovalResponse,
+  } = useChat({
+    transport,
+    sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithApprovalResponses,
+  });`;
 
-// Re-pinned 2026-10-09 for the owner-approved skip-link fix: the only lines inside
+// Re-pinned 2026-11-11 for the Portfolio Assistant plan, Task 4 (B16, B17,
+// B18, B19, B20, B21: stop on load, generation adoption, page path, note
+// approval, envelope readers, follow-bottom scroll). Earlier:
+// re-pinned 2026-10-09 for the owner-approved skip-link fix: the only lines inside
 // this region that moved are the new `messagesScrollRef` declaration and the
 // body of the auto-scroll effect (container scrollTo instead of scrollIntoView).
 // sha256 of everything from `export function ChatInterface(` up to the
 // component's `return (` at that same commit: every hook, effect, handler and
 // state declaration of the component that owns useChat.
 const COMPONENT_LOGIC_SHA256_AT_HEAD =
-  "082a23d976b76f449e968f0107d68daadaf526da44a61cd881ba3ebe5e80c81b";
+  "7204298b0d28b3ebad789e053eb45d0583b437eb92a5f0282cd5d0d50f519a1f";
 
 const RETURN_ANCHOR = '\n  return (\n    <div className="flex flex-col';
 
 describe("chat wiring is untouched by the header move", () => {
   it("the transport memo and the useChat call are byte-identical to HEAD", () => {
     const start = anchorIndex(src, "const { transport, turn } = useMemo(() => {");
-    const endNeedle = "} = useChat({ transport });";
+    const endNeedle =
+      "} = useChat({\n    transport,\n    sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithApprovalResponses,\n  });";
     const end = anchorIndex(src, endNeedle, start) + endNeedle.length;
     expect(src.slice(start, end)).toBe(USE_CHAT_BLOCK_AT_HEAD);
   });

@@ -6,6 +6,10 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> },
 ) {
   const { id } = await params;
-  const messages = getConversationMessages(db, Number(id));
-  return Response.json({ messages });
+  const conversationId = Number(id);
+  if (!Number.isInteger(conversationId) || conversationId <= 0) {
+    return Response.json({ success: false, error: "Invalid conversation id." }, { status: 400 });
+  }
+  const messages = getConversationMessages(db, conversationId);
+  return Response.json({ success: true, data: { messages } });
 }

@@ -8,20 +8,23 @@ export interface QuickAction {
 const GLOBAL_ACTIONS: QuickAction[] = [
   { label: "Portfolio today", prompt: "How's my portfolio doing today?" },
   { label: "This week's events", prompt: "What's happening this week?" },
-  { label: "Biggest movers", prompt: "Show my biggest movers recently." },
+  { label: "Biggest movers", prompt: "What moved my portfolio today, in dollars?" },
 ];
 
 export function getQuickActions(
   pathname: string,
-  data?: PageContextData,
+  _data?: PageContextData,
 ): QuickAction[] {
   const pageActions: QuickAction[] = [];
 
-  if (pathname.match(/^\/dashboard\/security\/\d+/) && data?.symbol) {
+  // The security page's symbol is resolved on the SERVER from the page path
+  // (Contract A), so the chips name "the security on this page" and need no
+  // symbol from the client.
+  if (pathname.match(/^\/dashboard\/security\/\d+/)) {
     pageActions.push(
-      { label: `${data.symbol} outlook`, prompt: `What's the outlook for ${data.symbol}?` },
-      { label: `${data.symbol} positions`, prompt: `Show my positions in ${data.symbol}.` },
-      { label: `${data.symbol} news`, prompt: `Any recent news or earnings for ${data.symbol}?` },
+      { label: "Outlook", prompt: "What's the outlook for the security on this page?" },
+      { label: "My position", prompt: "Show my position in the security on this page." },
+      { label: "News and earnings", prompt: "Any recent news or earnings for the security on this page?" },
     );
   }
 

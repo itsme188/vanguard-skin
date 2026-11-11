@@ -5,6 +5,8 @@ export interface PageContextData {
   weekOf?: string;
   accountScope?: string;
   sourceFilter?: string;
+  /** Print page: the event's date, resolved on the server (Contract A). */
+  eventDate?: string;
 }
 
 export function getPageContext(
@@ -19,6 +21,14 @@ export function getPageContext(
       return parts.join(". ") + ".";
     }
     return "User is viewing a Security Detail page.";
+  }
+
+  if (pathname.match(/^\/dashboard\/print\/\d+/)) {
+    if (data?.symbol) {
+      const date = data.eventDate ? ` (event date ${data.eventDate})` : "";
+      return `User is on the earnings print page for ${data.symbol}${date}.`;
+    }
+    return "User is on an earnings print page.";
   }
 
   if (pathname.startsWith("/dashboard/calendar")) {
@@ -38,9 +48,13 @@ export function getPageContext(
 
   const simplePages: Record<string, string> = {
     "/dashboard": "User is on the Overview page.",
+    "/dashboard/today": "User is on the Today page.",
     "/dashboard/accounts": "User is on the Accounts page.",
     "/dashboard/holdings": "User is on the Holdings page.",
-    "/dashboard/charts": "User is on the Charts page.",
+    "/dashboard/tax-lots": "User is on the Tax Lots page.",
+    "/dashboard/levels": "User is on the Levels page.",
+    "/dashboard/alerts": "User is on the Alerts page.",
+    "/dashboard/notes": "User is on the Notes page.",
     "/dashboard/import": "User is on the Import page.",
     "/dashboard/data-health": "User is on the Data Health page.",
     "/dashboard/settings": "User is on the Settings page.",

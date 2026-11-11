@@ -48,10 +48,48 @@ describe("chat failed-turn conversation adoption", () => {
       "const prevStatusRef = useRef(status)",
       "// Auto-scroll on new content",
     );
-    anchorIndex(effect, "setConversationId(turn.conversationId)");
+    anchorIndex(effect, "turnConversationId: turn.conversationId,");
+    anchorIndex(effect, "setConversationId(adopt)");
     expect(effect).not.toContain("convs[0]");
     expect(src).not.toContain("setConversationId(convs[0].id)");
     expect(src).not.toContain("sendStartedAtRef");
     expect(effect).not.toContain("Date.now()");
+  });
+
+  it("adoption is not behind an await (B17): the id is set before the list refresh", () => {
+    const effect = sliceBetween(
+      src,
+      "const prevStatusRef = useRef(status)",
+      "// Auto-scroll on new content",
+    );
+    const decide = anchorIndex(effect, "decideTurnAdoption({");
+    const adopt = anchorIndex(effect, "setConversationId(adopt)");
+    const refresh = anchorIndex(effect, "void fetchConversations()");
+    expect(decide).toBeLessThan(adopt);
+    expect(adopt).toBeLessThan(refresh);
+    expect(effect.slice(0, adopt)).not.toMatch(/\bawait\b/);
+    anchorIndex(effect, "turnGeneration: turn.sentGeneration,");
+    anchorIndex(effect, "currentGeneration: turn.generation,");
+  });
+
+  it("the transport fetch records the generation its request was sent in", () => {
+    const wrapper = sliceBetween(src, "const chatFetch", "new DefaultChatTransport(");
+    expect(anchorIndex(wrapper, "turn.sentGeneration = turn.generation;")).toBeLessThan(
+      anchorIndex(wrapper, "await apiFetch(input, init)"),
+    );
+  });
+
+  it("New Conversation, loading one and deleting the open one start a new generation", () => {
+    const bump = sliceBetween(src, "const beginNewGeneration = useCallback(", "}, [turn]);");
+    anchorIndex(bump, "turn.generation += 1;");
+    anchorIndex(bump, "turn.conversationId = null;");
+    anchorIndex(sliceBetween(src, "function handleNewConversation()", "const handleDeleteConversation"), "beginNewGeneration();");
+    anchorIndex(sliceBetween(src, "const loadConversation = useCallback(", "[setMessages"), "beginNewGeneration();");
+    anchorIndex(sliceBetween(src, "if (conv.id === conversationId) {", "await fetchConversations();"), "beginNewGeneration();");
+  });
+
+  it("the request body reads state only, never the turn box", () => {
+    const memo = sliceBetween(src, "const requestBody = useMemo(", ");");
+    expect(memo).not.toContain("turn.");
   });
 });

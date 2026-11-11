@@ -16,7 +16,7 @@ import { anchorIndex, sliceBetween } from "@/tests/helpers/source-anchor";
 const src = readFileSync("app/dashboard/components/ChatInterface.tsx", "utf8");
 
 describe("chat Send button", () => {
-  const button = sliceBetween(src, "title={!inputText.trim()", '{isStreaming ? "..."');
+  const button = sliceBetween(src, 'type="submit"', "Send\n");
   it("takes the checked solid-gold pair, not a hand-written one", () => {
     expect(button).toContain("${GOLD_FILL_CLASSES}");
     expect(button).not.toMatch(/bg-gold\s+text-canvas/);

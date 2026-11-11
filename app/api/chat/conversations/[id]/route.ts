@@ -7,12 +7,15 @@ export async function DELETE(
 ) {
   const { id } = await params;
   const conversationId = Number(id);
-  if (!Number.isFinite(conversationId) || conversationId <= 0) {
-    return Response.json({ error: "Invalid id" }, { status: 400 });
+  if (!Number.isInteger(conversationId) || conversationId <= 0) {
+    return Response.json({ success: false, error: "Invalid conversation id." }, { status: 400 });
   }
   const deleted = deleteConversation(db, conversationId);
   if (!deleted) {
-    return Response.json({ error: "Not found" }, { status: 404 });
+    return Response.json(
+      { success: false, error: "That conversation no longer exists." },
+      { status: 404 },
+    );
   }
-  return Response.json({ ok: true });
+  return Response.json({ success: true, data: { deleted: true } });
 }

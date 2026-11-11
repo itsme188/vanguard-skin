@@ -2,7 +2,7 @@
 
 import { useState, useRef, useEffect, useMemo, useCallback } from "react";
 import { useChat } from "@ai-sdk/react";
-import { DefaultChatTransport } from "ai";
+import { DefaultChatTransport, lastAssistantMessageIsCompleteWithApprovalResponses } from "ai";
 import type { UIMessage } from "ai";
 import { MarkdownMessage } from "./MarkdownMessage";
 import { QuickActionChips } from "./QuickActionChips";
@@ -13,33 +13,19 @@ import { PrivateText } from "@/lib/privacy/components";
 import { usePrivacy } from "@/lib/privacy/context";
 import { displayConversationTitle } from "@/lib/chat/conversation-title";
 import { getQuickActions } from "@/lib/chat/quick-actions";
-import { getPageContext } from "@/lib/chat/page-context";
+import { toolLabel } from "@/lib/chat/tool-labels";
+import { turnOutcomeNotice } from "@/lib/chat/turn-outcome";
+import {
+  decideTurnAdoption,
+  nextFollowBottom,
+  noteApprovalView,
+  type NoteApprovalView,
+  type NoteToolPartView,
+} from "@/lib/chat/turn-adoption";
 import { humanizeChatError } from "@/lib/chat/error-message";
 import type { ChatScope } from "@/lib/types";
 import type { ChatConversation, ChatMessage } from "@/lib/queries/chat";
 import apiFetch, { type ApiFetch } from "@/lib/http/apiFetch";
-
-// Friendly labels for tool call indicators
-const TOOL_LABELS: Record<string, string> = {
-  query_holdings: "Querying holdings",
-  query_price_history: "Fetching price history",
-  query_allocation: "Computing allocation",
-  query_tax_lots: "Analyzing tax lots",
-  query_transactions: "Searching transactions",
-  query_performance: "Loading performance data",
-  query_income_summary: "Summarizing income",
-  query_twr: "Computing time-weighted return",
-  query_fred: "Fetching economic data",
-  query_company_fundamentals: "Looking up company financials",
-  query_insider_trades: "Fetching insider trading data",
-  query_notes: "Searching notes",
-  create_note: "Saving note",
-  query_earnings_transcript: "Fetching earnings transcript",
-  query_press_releases: "Fetching press releases",
-  query_analyst_coverage: "Fetching analyst coverage",
-  query_filing_section: "Summarizing SEC filing",
-  query_research_documents: "Searching research documents",
-};
 
 // Scope configuration
 const SCOPE_OPTIONS: { value: ChatScope; label: string }[] = [
@@ -73,7 +59,7 @@ function ToolIndicator({ name, state }: { name: string; state: string }) {
   // Hide completed tools — they served their purpose
   if (state === "output-available") return null;
 
-  const label = TOOL_LABELS[name] ?? `Using ${name}`;
+  const label = toolLabel(name);
   const isError = state === "output-error";
 
   return (
@@ -114,6 +100,62 @@ function CopyButton({ message }: { message: UIMessage }) {
   );
 }
 
+// ─── create_note approval card (Contract C) ─────────────────────
+//
+// Module-level on purpose (a component defined inside ChatInterface would
+// remount on each of its renders). A drafted note is saved only by a click
+// here: the SDK holds the tool's execute until the owner answers, so text
+// inside a tool result can draft a note but never save one.
+function NoteApprovalCard({
+  view,
+  disabled,
+  onAnswer,
+}: {
+  view: NoteApprovalView;
+  disabled: boolean;
+  onAnswer: (approvalId: string, approved: boolean) => void;
+}) {
+  if (view.kind === "ask") {
+    const meta = [view.noteType ?? "note", view.symbol, view.eventDate].filter(Boolean).join(" · ");
+    return (
+      <div className="my-2 rounded-lg border border-edge bg-raised px-3 py-3" role="group" aria-label="Drafted note">
+        <div className="text-xs text-ink-dim mb-1">Save this note to your journal?</div>
+        <div className="text-xs text-ink-dim mb-2">{meta}</div>
+        <div className="whitespace-pre-wrap text-sm text-ink mb-3">
+          <PrivateText>{view.content}</PrivateText>
+        </div>
+        <div className="flex gap-2">
+          <button
+            type="button"
+            disabled={disabled}
+            onClick={() => onAnswer(view.approvalId, true)}
+            className={`px-3 py-1.5 rounded-lg text-xs font-medium ${GOLD_FILL_CLASSES} hover:brightness-110 transition-[filter] disabled:opacity-40 disabled:cursor-not-allowed focus-ring`}
+          >
+            Save note
+          </button>
+          <button
+            type="button"
+            disabled={disabled}
+            onClick={() => onAnswer(view.approvalId, false)}
+            className="px-3 py-1.5 rounded-lg text-xs text-ink-dim border border-edge hover:text-ink hover:border-edge-strong transition-[color,border-color] disabled:opacity-40 disabled:cursor-not-allowed focus-ring"
+          >
+            {"Don't save"}
+          </button>
+        </div>
+      </div>
+    );
+  }
+  const text =
+    view.kind === "saving"
+      ? "Saving…"
+      : view.kind === "saved"
+        ? "Saved"
+        : view.reason
+          ? `Not saved: ${view.reason}`
+          : "Not saved";
+  return <div className="text-xs text-ink-dim my-1">Note: {text}</div>;
+}
+
 // ─── Message rendering ───────────────────────────────────────────
 
 // Wraps MarkdownMessage with privacy masking. Direct PrivateText wrap is
@@ -127,7 +169,13 @@ function PrivateMarkdown({ content }: { content: string }) {
   return <MarkdownMessage content={content} />;
 }
 
-function renderAssistantParts(parts: UIMessage["parts"]) {
+interface AssistantPartOptions {
+  onNoteAnswer: (approvalId: string, approved: boolean) => void;
+  /** A reply is pending: approval buttons are disabled. */
+  busy: boolean;
+}
+
+function renderAssistantParts(parts: UIMessage["parts"], opts: AssistantPartOptions) {
   if (parts.length === 0) {
     return <span className="text-ink-faint animate-pulse">Thinking...</span>;
   }
@@ -152,6 +200,12 @@ function renderAssistantParts(parts: UIMessage["parts"]) {
 
     // Tool parts: type is 'tool-${toolName}'
     if (part.type.startsWith("tool-")) {
+      const noteView = noteApprovalView(part as NoteToolPartView);
+      if (noteView) {
+        return (
+          <NoteApprovalCard key={i} view={noteView} disabled={opts.busy} onAnswer={opts.onNoteAnswer} />
+        );
+      }
       const toolName = part.type.slice(5);
       const state = (part as { state: string }).state;
       return <ToolIndicator key={i} name={toolName} state={state} />;
@@ -375,13 +429,16 @@ export function ChatInterface({ pathname }: ChatInterfaceProps) {
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesScrollRef = useRef<HTMLDivElement>(null);
+  // B21: follow the stream only while the reader is near the bottom.
+  const followBottomRef = useRef(true);
+  const lastScrollTopRef = useRef(0);
 
-  // Compute page context and quick actions from pathname
-  const pageContext = useMemo(() => getPageContext(pathname), [pathname]);
+  // Quick actions from the pathname. The page itself is described by the
+  // SERVER from the path sent in the request body (Contract A).
   const quickActions = useMemo(() => getQuickActions(pathname), [pathname]);
 
   // Stable, api-only transport. Do NOT put request body (scope / conversationId
-  // / pageContext) here: `useChat` captures the transport from the FIRST render
+  // / page) here: `useChat` captures the transport from the FIRST render
   // and ignores later transport objects, so a body baked in here freezes at the
   // mount-time values (scope "all") — the scope selector then silently never
   // reaches /api/chat (the 2026-06-15 leak: a "Vanguard Taxable" chat ran
@@ -401,10 +458,21 @@ export function ChatInterface({ pathname }: ChatInterfaceProps) {
   // 5xx) carries no header, so the id stays null and nothing is adopted. The
   // box lives in the same memo as the transport, so the frozen transport and
   // the effect below always share it.
+  //
+  // `generation` (B17) counts conversation switches: New Conversation,
+  // loading a conversation and deleting the open one bump it. A request
+  // records the generation it was sent in (`sentGeneration`), and the
+  // adoption effect ignores a header from an older generation.
   const { transport, turn } = useMemo(() => {
-    // Plain mutable box, written only inside the fetch call (never in render).
-    const turn: { conversationId: number | null } = { conversationId: null };
+    // Plain mutable box, written only inside the fetch call and the switch
+    // handlers (never in render).
+    const turn: {
+      conversationId: number | null;
+      generation: number;
+      sentGeneration: number | null;
+    } = { conversationId: null, generation: 0, sentGeneration: null };
     const chatFetch: ApiFetch = async (input, init) => {
+      turn.sentGeneration = turn.generation;
       turn.conversationId = null;
       const res = await apiFetch(input, init);
       const id = Number(res.headers.get("X-Conversation-Id"));
@@ -426,16 +494,30 @@ export function ChatInterface({ pathname }: ChatInterfaceProps) {
     setMessages,
     clearError,
     stop,
-  } = useChat({ transport });
+    addToolApprovalResponse,
+  } = useChat({
+    transport,
+    sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithApprovalResponses,
+  });
 
   // Per-call request body — re-read on every send so the CURRENT scope,
-  // conversation, and page context reach the server (see transport note above).
+  // conversation, and page path reach the server (see transport note above).
+  // Reads state only, never the turn box. The server resolves the path
+  // itself (Contract A); no client-written page text is sent.
   const requestBody = useMemo(
-    () => ({ scope, conversationId, pageContext }),
-    [scope, conversationId, pageContext]
+    () => ({ scope, conversationId, page: { path: pathname } }),
+    [scope, conversationId, pathname]
   );
 
   const isStreaming = status === "streaming" || status === "submitted";
+
+  // Start a new turn generation (B17): a header that arrives later for a
+  // request sent before this point is never adopted.
+  const beginNewGeneration = useCallback(() => {
+    turn.generation += 1;
+    turn.conversationId = null;
+    turn.sentGeneration = null;
+  }, [turn]);
   const isLocked = messages.length > 0;
   const scopeLabel =
     SCOPE_OPTIONS.find((s) => s.value === scope)?.label ?? "All Accounts";
@@ -444,10 +526,11 @@ export function ChatInterface({ pathname }: ChatInterfaceProps) {
   const fetchConversations = useCallback(async () => {
     try {
       const res = await fetch("/api/chat/conversations");
-      if (res.ok) {
-        const data = await res.json();
-        setConversations(data.conversations ?? []);
-        return data.conversations ?? [];
+      const body = await res.json().catch(() => null);
+      if (res.ok && body?.success === true) {
+        const list: ChatConversation[] = body.data?.conversations ?? [];
+        setConversations(list);
+        return list;
       }
     } catch {
       // Silently fail — conversations are non-critical
@@ -457,13 +540,18 @@ export function ChatInterface({ pathname }: ChatInterfaceProps) {
 
   // Load a conversation's messages by ID
   const loadConversation = useCallback(async (conv: ChatConversation) => {
+    // B16: stop a streaming reply first, or the SDK keeps appending it to
+    // the conversation being opened (the server saves it to the old one).
+    if (isStreaming) void stop();
+    beginNewGeneration();
     try {
       const res = await fetch(`/api/chat/conversations/${conv.id}/messages`);
-      if (res.ok) {
-        const data = await res.json();
-        const dbMessages: ChatMessage[] = data.messages ?? [];
+      const body = await res.json().catch(() => null);
+      if (res.ok && body?.success === true) {
+        const dbMessages: ChatMessage[] = body.data?.messages ?? [];
         const uiMessages = dbMessages.map(dbMessageToUIMessage);
         clearError();
+        followBottomRef.current = true;
         setMessages(uiMessages);
         setConversationId(conv.id);
         setScope((conv.scope as ChatScope) || "all");
@@ -471,7 +559,7 @@ export function ChatInterface({ pathname }: ChatInterfaceProps) {
     } catch {
       // Silently fail
     }
-  }, [setMessages, clearError]);
+  }, [setMessages, clearError, isStreaming, stop, beginNewGeneration]);
 
   // On mount: default to a FRESH conversation (U2a). We populate the history
   // list so past chats stay reachable (Recent Conversations in the empty state),
@@ -493,18 +581,35 @@ export function ChatInterface({ pathname }: ChatInterfaceProps) {
       // chatFetch). Never the head of the list: it is sorted by last update
       // and shared across devices, so after a first-turn failure it is an
       // unrelated old thread and Retry would save into it.
-      (async () => {
-        await fetchConversations();
-        if (!conversationId && turn.conversationId !== null) {
-          setConversationId(turn.conversationId);
-        }
-      })();
+      //
+      // B17: adopt synchronously, BEFORE the list refresh, so a follow-up
+      // sent while the list loads already carries the id; and only for a
+      // turn sent in the current generation (decideTurnAdoption).
+      const adopt = decideTurnAdoption({
+        openConversationId: conversationId,
+        turnConversationId: turn.conversationId,
+        turnGeneration: turn.sentGeneration,
+        currentGeneration: turn.generation,
+      });
+      if (adopt !== null) setConversationId(adopt);
+      void fetchConversations();
     }
     prevStatusRef.current = status;
   }, [status, conversationId, fetchConversations, turn]);
 
+  // B21: a scroll event decides whether the stream keeps following.
+  const handleMessagesScroll = useCallback(() => {
+    const list = messagesScrollRef.current;
+    if (!list) return;
+    followBottomRef.current = nextFollowBottom(followBottomRef.current, list, lastScrollTopRef.current);
+    lastScrollTopRef.current = list.scrollTop;
+  }, []);
+
   // Auto-scroll on new content
   useEffect(() => {
+    // Only while the reader is near the bottom (B21): scrolling up to reread
+    // a table must not snap back on every streamed token.
+    if (!followBottomRef.current) return;
     // Scroll the container itself, never an element into view: that moves the
     // browser's sequential-focus starting point into the chat, so the first
     // Tab skipped the "Skip to main content" link.
@@ -529,6 +634,7 @@ export function ChatInterface({ pathname }: ChatInterfaceProps) {
 
     const text = inputText.trim();
     setInputText("");
+    followBottomRef.current = true;
     await sendMessage({ text }, { body: requestBody });
   }
 
@@ -541,6 +647,8 @@ export function ChatInterface({ pathname }: ChatInterfaceProps) {
 
   function handleNewConversation() {
     if (isStreaming) stop();
+    beginNewGeneration();
+    followBottomRef.current = true;
     clearError();
     setMessages([]);
     setConversationId(null);
@@ -571,6 +679,7 @@ export function ChatInterface({ pathname }: ChatInterfaceProps) {
       // If the deleted conversation is currently loaded, reset to empty state
       if (conv.id === conversationId) {
         if (isStreaming) stop();
+        beginNewGeneration();
         clearError();
         setMessages([]);
         setConversationId(null);
@@ -579,7 +688,20 @@ export function ChatInterface({ pathname }: ChatInterfaceProps) {
     } catch {
       toast("Couldn't delete the conversation: could not reach the server.", "error");
     }
-  }, [deletePending, conversationId, fetchConversations, isStreaming, setMessages, clearError, stop, toast]);
+  }, [deletePending, conversationId, fetchConversations, isStreaming, setMessages, clearError, stop, toast, beginNewGeneration]);
+
+  // Contract C: the owner's answer on a drafted note. The SDK resends on its
+  // own once every approval has an answer (sendAutomaticallyWhen), with these
+  // options, so the CURRENT per-call body travels with the continuation.
+  const answerNoteApproval = useCallback((approvalId: string, approved: boolean) => {
+    followBottomRef.current = true;
+    void addToolApprovalResponse({
+      id: approvalId,
+      approved,
+      reason: approved ? undefined : "Owner chose not to save",
+      options: { body: requestBody },
+    });
+  }, [addToolApprovalResponse, requestBody]);
 
   function handleQuickAction(prompt: string) {
     setInputText(prompt);
@@ -614,6 +736,7 @@ export function ChatInterface({ pathname }: ChatInterfaceProps) {
       {/* Messages area */}
       <div
         ref={messagesScrollRef}
+        onScroll={handleMessagesScroll}
         className="flex-1 overflow-y-auto space-y-4 pb-4"
         aria-live="polite"
         aria-label="Chat messages"
@@ -711,7 +834,10 @@ export function ChatInterface({ pathname }: ChatInterfaceProps) {
         )}
 
         {/* Message list */}
-        {messages.map((msg) => (
+        {messages.map((msg, index) => {
+          const isLive = isStreaming && index === messages.length - 1;
+          const notice = msg.role === "assistant" && !isLive ? turnOutcomeNotice(msg) : null;
+          return (
           <div
             key={msg.id}
             className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}
@@ -727,16 +853,23 @@ export function ChatInterface({ pathname }: ChatInterfaceProps) {
                 renderUserParts(msg.parts)
               ) : (
                 <>
-                  {renderAssistantParts(msg.parts)}
+                  {/* Contract B: a finished turn with no written reply shows
+                      why, in place of an empty bubble. */}
+                  {notice ? (
+                    <p className="text-ink-dim">{notice}</p>
+                  ) : (
+                    renderAssistantParts(msg.parts, { onNoteAnswer: answerNoteApproval, busy: isStreaming })
+                  )}
                   {/* Copy button — only show if there's actual text content */}
-                  {msg.parts.some(
+                  {!notice && msg.parts.some(
                     (p) => p.type === "text" && (p as { text: string }).text
                   ) && <CopyButton message={msg} />}
                 </>
               )}
             </div>
           </div>
-        ))}
+          );
+        })}
 
         {/* Error display */}
         {error && (
@@ -781,15 +914,27 @@ export function ChatInterface({ pathname }: ChatInterfaceProps) {
             rows={1}
             className="flex-1 rounded-xl bg-raised border border-edge px-4 py-3 text-sm text-ink placeholder:text-ink-faint resize-none transition-colors"
           />
-          <button
-            type="submit"
-            disabled={isStreaming || !inputText.trim()}
-            aria-label={isStreaming ? "Streaming response" : "Send message"}
-            title={!inputText.trim() ? "Type a message first" : undefined}
-            className={`px-5 py-3 rounded-xl ${GOLD_FILL_CLASSES} font-medium text-sm hover:brightness-110 transition-[filter,scale] active:scale-[0.96] disabled:opacity-40 disabled:hover:brightness-100 disabled:cursor-not-allowed focus-ring`}
-          >
-            {isStreaming ? "..." : "Send"}
-          </button>
+          {/* Contract B: Stop replaces Send while a reply is pending. */}
+          {isStreaming ? (
+            <button
+              type="button"
+              onClick={() => void stop()}
+              aria-label="Stop the answer"
+              className="px-5 py-3 rounded-xl border border-edge text-ink font-medium text-sm hover:border-edge-strong transition-[border-color,scale] active:scale-[0.96] focus-ring"
+            >
+              Stop
+            </button>
+          ) : (
+            <button
+              type="submit"
+              disabled={!inputText.trim()}
+              aria-label="Send message"
+              title={!inputText.trim() ? "Type a message first" : undefined}
+              className={`px-5 py-3 rounded-xl ${GOLD_FILL_CLASSES} font-medium text-sm hover:brightness-110 transition-[filter,scale] active:scale-[0.96] disabled:opacity-40 disabled:hover:brightness-100 disabled:cursor-not-allowed focus-ring`}
+            >
+              Send
+            </button>
+          )}
         </form>
         <p className="text-[11px] text-ink-faint mt-2 text-center">
           Powered by Claude. Analyzes portfolio data — does not provide
