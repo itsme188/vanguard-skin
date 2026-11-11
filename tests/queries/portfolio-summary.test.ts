@@ -253,7 +253,7 @@ describe("getPortfolioSummaryForChat", () => {
 
     // Allocation denominator: the bond's $9,850 is folded into the
     // portfolio total and the asset-allocation bucket sum, not excluded.
-    expect(summary).toContain("bond: $9,850");
+    expect(summary).toContain("Bond: $9,850");
     // Weight denominator: AAPL's position weight is diluted by the bond
     // ($25,000 / $34,850 = 71.7%), not 100% as it would be if the bond
     // were silently dropped from portfolio_total.

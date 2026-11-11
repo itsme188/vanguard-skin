@@ -5,6 +5,9 @@ import { formatUSD, formatNumber, resolveOptionFields } from "@/lib/format";
 import { parseOCCSymbol } from "@/lib/import/occ-symbol";
 import { getTaxConventionState } from "@/lib/compute/tax-convention";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
+import { SECTOR_OWN_BUCKET_SQL } from "@/lib/queries/analysis";
+import { normalizeSector } from "@/lib/securities/normalize-sector";
+import { normalizeFundCategory } from "@/lib/securities/normalize-fund-category";
 import { todayET } from "@/lib/calendar/date-utils";
 import { accountScopeAndSql } from "@/lib/queries/account-scope-sql";
 import { getAllAccounts } from "@/lib/queries/accounts";
@@ -116,6 +119,68 @@ interface PairKeyed {
   account_id: number;
   security_id: number;
   is_short: number;
+}
+
+/**
+ * Allocation grouping, by the rules of query_allocation's grouping in
+ * lib/queries/chat-tools.ts (getAllocationBreakdown). Those helpers are
+ * private to that file, so the same rules are restated here over the
+ * repo's exported normalisers, and a parity test
+ * (tests/queries/portfolio-summary-allocation-labels.test.ts) pins the two
+ * to one answer. Security types fold on case (underscores as spaces) onto the
+ * stored canonical spellings; `mapSecurityType` is NOT used: it is an IBKR
+ * SecType map that would merge Stock and ETF.
+ */
+const SECURITY_TYPE_LABELS: Record<string, string> = {
+  stock: "Stock",
+  etf: "ETF",
+  bond: "Bond",
+  option: "Option",
+  "mutual fund": "Mutual Fund",
+  "money market": "Money Market",
+};
+
+function assetAllocationLabel(raw: string): string {
+  const value = (raw ?? "").trim() || raw;
+  const token = value.toLowerCase().replace(/_/g, " ").replace(/\s+/g, " ");
+  return SECURITY_TYPE_LABELS[token] ?? value;
+}
+
+/** Sectors through normalizeSector (GICS-11), else normalizeFundCategory. "Unknown" stays the unclassified bucket. */
+function sectorAllocationLabel(raw: string): string {
+  const value = (raw ?? "").trim() || raw;
+  if (value === "Unknown") return value;
+  return normalizeSector(value) ?? normalizeFundCategory(value) ?? value;
+}
+
+/**
+ * Sum positions into groups keyed case-insensitively on their label (the
+ * label shown is the first spelling in code-point order, so it is stable).
+ * Totals are kept whole, so the groups sum to the section total.
+ */
+function groupAllocationRows(
+  positions: Array<{ raw: string; mv: number }>,
+  label: (raw: string) => string,
+): AllocationRow[] {
+  const groups = new Map<string, { names: string[]; total: number; count: number }>();
+  for (const p of positions) {
+    const name = label(p.raw);
+    const key = name.trim().toLowerCase();
+    const g = groups.get(key) ?? { names: [], total: 0, count: 0 };
+    g.names.push(name);
+    g.total += p.mv ?? 0;
+    g.count += 1;
+    groups.set(key, g);
+  }
+  const grand = [...groups.values()].reduce((sum, g) => sum + g.total, 0);
+  return [...groups.values()]
+    .map((g) => ({
+      group_name: [...g.names].sort()[0],
+      total_market_value: g.total,
+      percentage: grand !== 0 ? (g.total * 100) / grand : 0,
+      count: g.count,
+    }))
+    .sort((a, b) => b.total_market_value - a.total_market_value);
 }
 
 /**
@@ -390,36 +455,40 @@ export function getPortfolioSummaryForChat(db: Database.Database, scope?: Portfo
   }
 
   // ─── Asset Allocation ──────────────────────────────────────────
-  const assetAllocation = db
+  // One row per priced long position with its RAW labels; the grouping is
+  // done in JS by the same rules as query_allocation (getAllocationBreakdown,
+  // lib/queries/chat-tools.ts), so "Option"/"option"/"OPTION" or
+  // "Information Technology"/"technology" are one line, and the summary and
+  // the tool never disagree. The sector label is the tool's own SQL bucket
+  // (SECTOR_OWN_BUCKET_SQL: sector, else fund category, bond = Fixed Income).
+  const allocationPositions = db
     .prepare(
       `WITH latest_prices AS (
         SELECT p.security_id, p.close_price
         FROM prices p
         INNER JOIN (SELECT security_id, MAX(date) AS max_date FROM prices GROUP BY security_id) lp
         ON p.security_id = lp.security_id AND p.date = lp.max_date
-      ),
-      alloc AS (
-        SELECT
-          COALESCE(s.asset_class, s.security_type, 'Unknown') AS group_name,
-          ${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")} AS mv
-        FROM holdings h
-        JOIN securities s ON s.id = h.security_id
-        LEFT JOIN latest_prices lp ON lp.security_id = h.security_id
-        LEFT JOIN fx_rates fx ON fx.currency = s.currency
-        WHERE lp.close_price IS NOT NULL
-          AND ${latestHoldingsPredicate({ includeShorts: false, accountFilter: "" })}
-          AND ${unmaturedSecuritySql("s")}
-          AND ${liveOptionExpirationSql("s", today)}
-          ${holdingsFilter}
       )
-      SELECT group_name, SUM(mv) AS total_market_value,
-             SUM(mv) * 100.0 / NULLIF(SUM(SUM(mv)) OVER (), 0) AS percentage,
-             COUNT(*) AS count
-      FROM alloc
-      GROUP BY group_name
-      ORDER BY total_market_value DESC`
+      SELECT
+        COALESCE(s.asset_class, s.security_type, 'Unknown') AS asset_label,
+        ${SECTOR_OWN_BUCKET_SQL} AS sector_label,
+        ${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")} AS mv
+      FROM holdings h
+      JOIN securities s ON s.id = h.security_id
+      LEFT JOIN latest_prices lp ON lp.security_id = h.security_id
+      LEFT JOIN fx_rates fx ON fx.currency = s.currency
+      WHERE lp.close_price IS NOT NULL
+        AND ${latestHoldingsPredicate({ includeShorts: false, accountFilter: "" })}
+        AND ${unmaturedSecuritySql("s")}
+        AND ${liveOptionExpirationSql("s", today)}
+        ${holdingsFilter}`
     )
-    .all(...holdingsParams) as AllocationRow[];
+    .all(...holdingsParams) as Array<{ asset_label: string; sector_label: string; mv: number }>;
+
+  const assetAllocation = groupAllocationRows(
+    allocationPositions.map((p) => ({ raw: p.asset_label, mv: p.mv })),
+    assetAllocationLabel,
+  );
 
   if (assetAllocation.length > 0) {
     lines.push("\n### Asset Allocation");
@@ -431,36 +500,10 @@ export function getPortfolioSummaryForChat(db: Database.Database, scope?: Portfo
   }
 
   // Sector allocation (if any sector data exists)
-  const sectorAllocation = db
-    .prepare(
-      `WITH latest_prices AS (
-        SELECT p.security_id, p.close_price
-        FROM prices p
-        INNER JOIN (SELECT security_id, MAX(date) AS max_date FROM prices GROUP BY security_id) lp
-        ON p.security_id = lp.security_id AND p.date = lp.max_date
-      ),
-      alloc AS (
-        SELECT
-          COALESCE(s.sector, 'Unknown') AS group_name,
-          ${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")} AS mv
-        FROM holdings h
-        JOIN securities s ON s.id = h.security_id
-        LEFT JOIN latest_prices lp ON lp.security_id = h.security_id
-        LEFT JOIN fx_rates fx ON fx.currency = s.currency
-        WHERE lp.close_price IS NOT NULL
-          AND ${latestHoldingsPredicate({ includeShorts: false, accountFilter: "" })}
-          AND ${unmaturedSecuritySql("s")}
-          AND ${liveOptionExpirationSql("s", today)}
-          ${holdingsFilter}
-      )
-      SELECT group_name, SUM(mv) AS total_market_value,
-             SUM(mv) * 100.0 / NULLIF(SUM(SUM(mv)) OVER (), 0) AS percentage,
-             COUNT(*) AS count
-      FROM alloc
-      GROUP BY group_name
-      ORDER BY total_market_value DESC`
-    )
-    .all(...holdingsParams) as AllocationRow[];
+  const sectorAllocation = groupAllocationRows(
+    allocationPositions.map((p) => ({ raw: p.sector_label, mv: p.mv })),
+    sectorAllocationLabel,
+  );
 
   const hasSectorData = sectorAllocation.some((s) => s.group_name !== "Unknown");
   if (hasSectorData) {
