@@ -1,5 +1,6 @@
 import type Database from "better-sqlite3";
 import type Anthropic from "@anthropic-ai/sdk";
+import type { Tool } from "ai";
 import {
   getHoldingsForChat,
   getPriceHistory,
@@ -146,7 +147,16 @@ function sanitizeReactionSnapshotForChat(
 
 // ─── Tool Definitions ─────────────────────────────────────────────
 
-export const CHAT_TOOLS: Anthropic.Tool[] = [
+/**
+ * A chat tool definition: the Anthropic-format tool plus the optional AI SDK
+ * options the route passes through to `tool()` (plan Contracts C and H).
+ */
+export type ChatTool = Anthropic.Tool & {
+  needsApproval?: true;
+  toModelOutput?: Tool["toModelOutput"];
+};
+
+export const CHAT_TOOLS: ChatTool[] = [
   {
     name: "query_holdings",
     description:

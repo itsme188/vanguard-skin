@@ -1397,7 +1397,12 @@ export interface DataFreshness {
   holdings_age_days: number | null;
 }
 
-export function getDataFreshness(db: Database.Database): DataFreshness {
+export function getDataFreshness(
+  db: Database.Database,
+  // Accepted for the scoped-freshness contract (plan Contract H); not read yet.
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  opts?: { accountIds?: number[] },
+): DataFreshness {
   const priceRow = db
     .prepare("SELECT MAX(date) AS latest FROM prices")
     .get() as { latest: string | null };

@@ -185,6 +185,13 @@ describe("IBKR dynamic dashboard", () => {
       { date: "2026-04-14", symbol: "CRWD", type: "BUY", amount: 8000 },
     ],
     longShortSummary: "Long: 6 positions (Technology, Healthcare). Short: 2 positions (SOXS, CRWD put)",
+    cashAsOf: null,
+    cashSource: "daily_valuation",
+    cashCarried: false,
+    cashTimingResidual: false,
+    cashPriceDateMismatch: false,
+    accountTotalAsOf: null,
+    stanceWithheld: false,
   };
 
   it("includes dynamic dashboard when ibkrContext provided", () => {

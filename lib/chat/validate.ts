@@ -21,10 +21,11 @@ export interface QualityAnnotation {
 export function annotateToolResult(
   db: Database.Database,
   toolName: string,
-  rawResult: unknown
+  rawResult: unknown,
+  opts?: { accountIds?: number[] }
 ): QualityAnnotation {
   const warnings: string[] = [];
-  const freshness = getDataFreshness(db);
+  const freshness = getDataFreshness(db, opts);
 
   // ─── Price staleness (applies to most tools) ────────────────────
   if (

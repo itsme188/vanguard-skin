@@ -21,6 +21,15 @@ export interface IbkrTradingContext {
   avgHoldingDays: number | null;
   recentTrades: { date: string; symbol: string; type: string; amount: number }[];
   longShortSummary: string;
+  // Cash provenance (plan Contract E / P12). Task 0 stubs: neutral values.
+  cashAsOf: string | null;
+  cashSource: "daily_valuation" | "none";
+  cashCarried: boolean;
+  /** Live anchor on the valuation day. */
+  cashTimingResidual: boolean;
+  cashPriceDateMismatch: boolean;
+  accountTotalAsOf: string | null;
+  stanceWithheld: boolean;
 }
 
 // ─── Bullishness Scoring ────────────────────────────────────────
@@ -165,6 +174,13 @@ export function computeIbkrTradingContext(
     avgHoldingDays,
     recentTrades,
     longShortSummary,
+    cashAsOf: null,
+    cashSource: "daily_valuation",
+    cashCarried: false,
+    cashTimingResidual: false,
+    cashPriceDateMismatch: false,
+    accountTotalAsOf: null,
+    stanceWithheld: false,
   };
 }
 
