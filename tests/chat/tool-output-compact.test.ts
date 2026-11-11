@@ -277,8 +277,8 @@ describe("long text is cut per row with a working way to read it in full", () =>
 
 describe("row limits a model can use", () => {
   const cases: Array<[string, Record<string, unknown>, number, number, (d: unknown) => number]> = [
-    ["query_alerts", {}, 20, 50, (d) => (d as { alerts: unknown[] }).alerts.length],
-    ["query_levels", {}, 30, 100, (d) => (d as { levels: unknown[] }).levels.length],
+    ["query_alerts", {}, 20, 40, (d) => (d as { alerts: unknown[] }).alerts.length],
+    ["query_levels", {}, 30, 60, (d) => (d as { levels: unknown[] }).levels.length],
     ["query_notes", {}, 10, 30, (d) => (d as unknown[]).length],
     ["query_allocation", { group_by: "symbol" }, 50, 200, (d) => (d as unknown[]).length],
   ];

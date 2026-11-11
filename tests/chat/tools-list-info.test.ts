@@ -50,7 +50,7 @@ describe("query_holdings list_info", () => {
       returned: 50,
       limit: 50,
       truncated: true,
-      note: "More rows match. Narrow the filter or raise limit (max 200).",
+      note: "More rows match. Narrow the filter or raise limit (max 150).",
     });
   });
 

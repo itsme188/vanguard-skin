@@ -198,7 +198,7 @@ const BASE_CHAT_TOOLS: ChatTool[] = [
         limit: {
           type: "integer",
           description:
-            "Maximum number of positions to return: an integer, default 50, max 200. The result's list_info says whether more positions matched (truncated).",
+            "Maximum number of positions to return: an integer, default 50, max 150. The result's list_info says whether more positions matched (truncated).",
         },
       },
     },
@@ -292,7 +292,7 @@ const BASE_CHAT_TOOLS: ChatTool[] = [
         limit: {
           type: "integer",
           description:
-            "Maximum results per list: an integer, default 50, max 200. With status 'all' the limit applies to open lots and to closed sales separately; list_info.open and list_info.closed say whether each was truncated.",
+            "Maximum results per list: an integer, default 50, max 150. With status 'all' the limit applies to open lots and to closed sales separately; list_info.open and list_info.closed say whether each was truncated.",
         },
       },
     },
@@ -351,11 +351,17 @@ const BASE_CHAT_TOOLS: ChatTool[] = [
         },
         start_date: {
           type: "string",
-          description: "Start date (YYYY-MM-DD). Defaults to all available data.",
+          description:
+            "Start date (YYYY-MM-DD). When given it wins over months. Defaults to the start of the month `months` months ago.",
         },
         end_date: {
           type: "string",
           description: "End date (YYYY-MM-DD). Defaults to today.",
+        },
+        months: {
+          type: "integer",
+          description:
+            "How many trailing months to return when start_date is omitted: an integer, default 24, max 120.",
         },
       },
     },
@@ -623,7 +629,7 @@ const BASE_CHAT_TOOLS: ChatTool[] = [
         },
         limit: {
           type: "integer",
-          description: "Max results to return: an integer, default 15, max 100. list_info says whether more matched.",
+          description: "Max results to return: an integer, default 15, max 40. list_info says whether more matched.",
         },
       },
       required: ["ticker"],
@@ -815,7 +821,7 @@ const BASE_CHAT_TOOLS: ChatTool[] = [
         },
         limit: {
           type: "integer",
-          description: "Maximum articles to return: an integer, default 15, max 50. list_info says whether more matched.",
+          description: "Maximum articles to return: an integer, default 15, max 25. list_info says whether more matched.",
         },
       },
     },
@@ -849,7 +855,7 @@ const BASE_CHAT_TOOLS: ChatTool[] = [
         },
         limit: {
           type: "integer",
-          description: "Maximum events to return: an integer, default 50, max 200. list_info says whether more matched.",
+          description: "Maximum events to return: an integer, default 50, max 100. list_info says whether more matched.",
         },
       },
     },
@@ -902,7 +908,7 @@ const BASE_CHAT_TOOLS: ChatTool[] = [
         },
         limit: {
           type: "integer",
-          description: "Maximum levels to return: an integer, default 30, max 100. list_info says whether more matched.",
+          description: "Maximum levels to return: an integer, default 30, max 60. list_info says whether more matched.",
         },
         id: {
           type: "integer",
@@ -935,7 +941,7 @@ const BASE_CHAT_TOOLS: ChatTool[] = [
         },
         limit: {
           type: "integer",
-          description: "Max alerts to return: an integer, default 20, max 50. list_info says whether more matched.",
+          description: "Max alerts to return: an integer, default 20, max 40. list_info says whether more matched.",
         },
         id: {
           type: "integer",
@@ -983,6 +989,11 @@ const BASE_CHAT_TOOLS: ChatTool[] = [
           type: "string",
           description:
             "Optional. An exact account name, or a scope word: 'vanguard' (the Vanguard accounts EXCLUDING the Roth), 'roth', 'ibkr', or 'all'. This tool reads one account at a time: a scope word that names more than one account returns an error listing them. Shows held names for that account only. Omit for every account. Benchmarks are always included.",
+        },
+        limit: {
+          type: "integer",
+          description:
+            "Maximum held rows to return, largest absolute day_effect first: an integer, default 40, max 100. Benchmarks are always returned, and held_totals (the day_effect total and row counts) always covers EVERY held row, not only the rows returned. list_info says whether held rows were left out.",
         },
       },
       additionalProperties: false,
@@ -1063,19 +1074,20 @@ function asString(v: unknown): string | undefined {
  * each tool's description states both figures.
  */
 const LIST_LIMITS = {
-  query_holdings: { def: 50, max: 200 },
-  query_tax_lots: { def: 50, max: 200 },
+  query_holdings: { def: 50, max: 150 },
+  query_tax_lots: { def: 50, max: 150 },
   query_transactions: { def: 50, max: 200 },
-  query_calendar_events: { def: 50, max: 200 },
-  query_research_feeds: { def: 15, max: 50 },
+  query_calendar_events: { def: 50, max: 100 },
+  query_research_feeds: { def: 15, max: 25 },
   // Lowered in Task 8 (R4): each row carries long text, and no question
   // needs more rows than this; list_info says when more matched.
-  query_levels: { def: 30, max: 100 },
-  query_alerts: { def: 20, max: 50 },
+  query_levels: { def: 30, max: 60 },
+  query_alerts: { def: 20, max: 40 },
   query_notes: { def: 10, max: 30 },
   query_allocation: { def: 50, max: 200 },
   query_research_documents: { def: 10, max: 25 },
-  query_press_releases: { def: 15, max: 100 },
+  query_press_releases: { def: 15, max: 40 },
+  query_market_snapshot: { def: 40, max: 100 },
 } as const;
 
 /** query_price_history's row cap (sampling keeps it, see samplePriceRows). */
@@ -1544,13 +1556,25 @@ export async function executeTool(
         break;
       }
 
-      case "query_performance":
+      case "query_performance": {
+        // Trailing 24 months unless the model asks for more (max 120) or
+        // names a start date: ten years of monthly rows per account is more
+        // than any question needs at once.
+        let perfStart = asString(input.start_date);
+        if (!perfStart) {
+          const months = readCount(input.months, 24, 120);
+          const [y, m] = todayET().split("-").map(Number);
+          // The first of the month `months` months before this Eastern month.
+          const first = new Date(Date.UTC(y, m - 1 - months, 1));
+          perfStart = `${first.getUTCFullYear()}-${String(first.getUTCMonth() + 1).padStart(2, "0")}-01`;
+        }
         rawResult = getPerformanceForChat(db, {
           account_name: accountName,
-          start_date: input.start_date as string | undefined,
+          start_date: perfStart,
           end_date: input.end_date as string | undefined,
         });
         break;
+      }
 
       case "query_income_summary":
         rawResult = getIncomeSummaryForChat(db, {
@@ -2604,7 +2628,37 @@ export async function executeTool(
         // `accountName` is set by the scope clamp in a single-account chat, so
         // such a chat sees only its own account's positions.
         if (cancelled()) return CANCELLED;
-        rawResult = await getMarketSnapshot(db, { fetchQuotes: fetchYahooQuotes, accountName });
+        const snap = await getMarketSnapshot(db, { fetchQuotes: fetchYahooQuotes, accountName });
+        // Held rows are capped, ranked by |day_effect| (unmeasured last);
+        // benchmarks and the totals are always whole: held_totals sums the
+        // engine's own day_effect over EVERY held row, never the rows kept.
+        const { def: snapDef, max: snapMax } = LIST_LIMITS.query_market_snapshot;
+        const snapLimit = readCount(input.limit, snapDef, snapMax);
+        const benchmarks = snap.moves.filter((m) => m.kind !== "holding");
+        const held = snap.moves.filter((m) => m.kind === "holding");
+        const measured = held.filter((m) => typeof m.day_effect === "number");
+        const ranked = [...held].sort((a, b) => {
+          const av = typeof a.day_effect === "number" ? Math.abs(a.day_effect) : -1;
+          const bv = typeof b.day_effect === "number" ? Math.abs(b.day_effect) : -1;
+          return bv - av;
+        });
+        const heldCut = takeList(ranked, snapLimit, snapMax);
+        if (held.length > 0) listInfo = heldCut.info;
+        rawResult = {
+          ...snap,
+          moves: [...benchmarks, ...heldCut.rows],
+          ...(held.length > 0
+            ? {
+                held_totals: {
+                  day_effect_total: measured.reduce((a, m) => a + (m.day_effect as number), 0),
+                  held_rows: held.length,
+                  measured_rows: measured.length,
+                  unmeasured_rows: held.length - measured.length,
+                  note: "day_effect_total is the sum of day_effect over every held row (USD), including rows not returned; rows with no measured day_effect are counted in unmeasured_rows and not in the total.",
+                },
+              }
+            : {}),
+        };
         break;
       }
 
@@ -2664,10 +2718,17 @@ const COMPACT_TEXT_LIMITS: Record<string, { chars: number; fetch: (row: Record<s
     chars: 1500,
     fetch: (r) => `query_calendar_briefings with week_of=${r.week_of}`,
   },
-  "query_alerts.suggested_action": { chars: 200, fetch: (r) => `query_alerts with id=${r.id}` },
-  "query_alerts.thesis": { chars: 160, fetch: (r) => `query_alerts with id=${r.id}` },
+  "query_alerts.suggested_action": { chars: 160, fetch: (r) => `query_alerts with id=${r.id}` },
+  "query_alerts.thesis": { chars: 120, fetch: (r) => `query_alerts with id=${r.id}` },
   "query_alerts.user_response_note": { chars: 200, fetch: (r) => `query_alerts with id=${r.id}` },
-  "query_levels.thesis": { chars: 200, fetch: (r) => `query_levels with id=${r.id}` },
+  "query_levels.thesis": { chars: 160, fetch: (r) => `query_levels with id=${r.id}` },
+  "query_calendar_events.description": {
+    chars: 60,
+    fetch: (r) => (r.symbol ? `query_calendar_events with symbol=${r.symbol}` : `query_calendar_events with event_type=${r.event_type}`),
+  },
+  "query_press_releases.summary": { chars: 200, fetch: () => "the story at its url" },
+  "query_research_feeds.summary": { chars: 300, fetch: (r) => `query_research_feeds with search="${r.subject}"` },
+  "query_research_documents.summary": { chars: 400, fetch: (r) => `query_research_documents with query="${r.title}"` },
 };
 
 /** The one line that tells the model how to read a compact result. */
@@ -2735,7 +2796,9 @@ function isPlainRecord(v: unknown): v is Record<string, unknown> {
 
 function shortenText(text: string, limit: { chars: number; fetch: (r: Record<string, unknown>) => string }, row: Record<string, unknown>): string {
   if (text.length <= limit.chars) return text;
-  return `${text.slice(0, limit.chars)}…[cut: ${text.length - limit.chars} more chars; call ${limit.fetch(row)} to read it in full]`;
+  const how = limit.fetch(row);
+  const verb = how.startsWith("query_") ? `call ${how}` : `see ${how}`;
+  return `${text.slice(0, limit.chars)}…[cut: ${text.length - limit.chars} more chars; ${verb} to read it in full]`;
 }
 
 function compactArray(arr: unknown[], key: string, st: CompactState): unknown {
@@ -2783,7 +2846,10 @@ export function compactToolOutput(toolName: string, output: unknown): unknown {
   if (!isPlainRecord(output) || typeof output.error === "string") return output;
   const st: CompactState = { tool: toolName, changed: false };
   const compact = compactObject(output, st);
-  return st.changed ? { _format: COMPACT_FORMAT_LEGEND, ...compact } : output;
+  if (!st.changed) return output;
+  const result = { _format: COMPACT_FORMAT_LEGEND, ...compact };
+  // A small result gains nothing from the legend: keep the full form.
+  return JSON.stringify(result).length < JSON.stringify(output).length ? result : output;
 }
 
 /** The `toModelOutput` every chat tool carries (Contract H). */

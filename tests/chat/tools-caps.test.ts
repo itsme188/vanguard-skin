@@ -2,9 +2,9 @@
  * R4 caps (Portfolio Assistant plan, Task 5): server maxima enforced in code,
  * whatever the model asks for, and stated in each tool's description.
  *
- * Protects: no single tool result exceeds its cap. Bounds: limit <= 200 for
- * holdings, tax lots, transactions; <= 100 levels and press releases; <= 50
- * alerts; <= 30 notes (lowered in Task 8); <= 20 insider trades; <= 25 research documents; price history <=
+ * Protects: no single tool result exceeds its cap. Bounds (lowered in Task 8):
+ * limit <= 150 holdings and tax lots, <= 200 transactions, <= 60 levels,
+ * <= 40 alerts and press releases, <= 30 notes; <= 20 insider trades; <= 25 research documents; price history <=
  * 260 rows (weekly, then monthly sampling); calendar briefings <= 4 weeks.
  */
 import { describe, it, expect, beforeEach, vi } from "vitest";
@@ -44,13 +44,13 @@ function descriptionOf(tool: string): string {
 
 describe("limit maxima", () => {
   const cases: Array<[string, number, Record<string, unknown>]> = [
-    ["query_holdings", 200, {}],
+    ["query_holdings", 150, {}],
     ["query_transactions", 200, {}],
-    ["query_levels", 100, {}],
-    ["query_alerts", 50, {}],
+    ["query_levels", 60, {}],
+    ["query_alerts", 40, {}],
     ["query_notes", 30, {}],
     ["query_research_documents", 25, {}],
-    ["query_press_releases", 100, { ticker: "ZQZ" }],
+    ["query_press_releases", 40, { ticker: "ZQZ" }],
   ];
   for (const [tool, max, input] of cases) {
     it(`${tool} caps limit at ${max} and says so`, async () => {
@@ -61,10 +61,10 @@ describe("limit maxima", () => {
     });
   }
 
-  it("query_tax_lots caps each list at 200", async () => {
+  it("query_tax_lots caps each list at 150", async () => {
     const r = (await executeTool(db, "query_tax_lots", { limit: 5000 })) as Wrapped;
-    expect(r.list_info?.open?.limit).toBe(200);
-    expect(descriptionOf("query_tax_lots")).toContain("max 200");
+    expect(r.list_info?.open?.limit).toBe(150);
+    expect(descriptionOf("query_tax_lots")).toContain("max 150");
   });
 
   it("query_insider_trades asks EDGAR for at most 20 filings", async () => {
