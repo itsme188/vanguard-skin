@@ -25,10 +25,39 @@ describe("turnOutcomeNotice", () => {
     );
   });
 
-  it("any written text means no notice", () => {
+  // RF-7: interim narration before a tool call is the usual shape of a
+  // cut-off turn; the notice is shown below the text, not instead of it.
+  it("text then a tool call at the step limit still yields the notice (live message)", () => {
     expect(
       turnOutcomeNotice({
-        parts: [toolDone, { type: "text", text: "Here is the answer." }],
+        parts: [{ type: "text", text: "Let me check your lots." }, toolDone],
+        metadata: { finishReason: "tool-calls", stepCount: 8 },
+      }),
+    ).toBe(CUT_OFF_SENTENCE);
+    expect(
+      turnOutcomeNotice({ parts: [{ type: "text", text: "Partial." }], metadata: { finishReason: "length" } }),
+    ).toBe(OUTPUT_LIMIT_SENTENCE);
+  });
+
+  it("a reloaded text-only message has no metadata, so no second notice", () => {
+    expect(
+      turnOutcomeNotice({ parts: [{ type: "text", text: `Let me check your lots.\n\n${CUT_OFF_SENTENCE}` }] }),
+    ).toBeNull();
+  });
+
+  it("a normal multi-step answer yields no notice", () => {
+    expect(
+      turnOutcomeNotice({
+        parts: [{ type: "text", text: "Checking." }, toolDone, { type: "text", text: "Here is the answer." }],
+        metadata: { finishReason: "stop", stepCount: 2 },
+      }),
+    ).toBeNull();
+  });
+
+  it("a pending approval card with text yields no notice", () => {
+    expect(
+      turnOutcomeNotice({
+        parts: [{ type: "text", text: "Here is the draft." }, { type: "tool-create_note", state: "approval-requested" }],
         metadata: { finishReason: "tool-calls" },
       }),
     ).toBeNull();
@@ -67,6 +96,18 @@ describe("turnOutcomeNotice", () => {
 
 describe("assistantRowText (the saved assistant row, B11)", () => {
   const step = (text: string, content: { type: string }[] = []) => ({ text, content });
+
+  it("text then a tool call at the step limit saves the text and the cut-off sentence (RF-7)", () => {
+    expect(
+      assistantRowText([step("Let me check your lots.", [{ type: "tool-call" }]), step("", [{ type: "tool-call" }])], "tool-calls"),
+    ).toBe(`Let me check your lots.\n\n${CUT_OFF_SENTENCE}`);
+    expect(assistantRowText([step("Partial answer")], "length")).toBe(`Partial answer\n\n${OUTPUT_LIMIT_SENTENCE}`);
+    expect(assistantRowText([step("Partial")], "content-filter")).toBe(`Partial\n\n${CONTENT_FILTER_SENTENCE}`);
+  });
+
+  it("a normal multi-step answer gets no appended sentence", () => {
+    expect(assistantRowText([step("Checking.", [{ type: "tool-call" }]), step("Done.")], "stop")).toBe("Checking.\n\nDone.");
+  });
 
   it("joins every step's non-empty text with a blank line", () => {
     expect(assistantRowText([step("Before."), step(""), step("After.")], "stop")).toBe("Before.\n\nAfter.");

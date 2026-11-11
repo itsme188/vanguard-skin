@@ -129,6 +129,18 @@ describe("POST /api/chat — assistant row persistence (B11)", () => {
     expect(text).toContain('"stepCount":8');
   });
 
+  it("narration then tool calls to the step limit saves the text and the cut-off sentence (RF-7)", async () => {
+    hoisted.model = modelFrom((call) =>
+      stepParts({
+        text: call === 0 ? "Let me check your lots." : undefined,
+        toolCall: { id: `c${call}`, name: "query_notes", input: {} },
+      }),
+    );
+    const { text } = await post({ messages: ask, scope: "all" });
+    expect(rows("assistant")).toEqual([`Let me check your lots.\n\n${CUT_OFF_SENTENCE}`]);
+    expect(text).toContain('"finishReason":"tool-calls"');
+  });
+
   it("a turn waiting for approval saves nothing", async () => {
     hoisted.model = modelFrom(() =>
       stepParts({ toolCall: { id: "n1", name: "create_note", input: { note_type: "journal", content: "draft" } } }),

@@ -31,25 +31,7 @@ function isToolPart(part: TurnOutcomePart): boolean {
   return part.type.startsWith("tool-") || part.type === "dynamic-tool";
 }
 
-/**
- * The sentence to show for a finished assistant message with no written
- * reply, or null. Null while any text part has content or any tool part is
- * waiting for the owner's approval.
- */
-export function turnOutcomeNotice(message: TurnOutcomeMessage): string | null {
-  for (const part of message.parts) {
-    if (part.type === "text" && typeof part.text === "string" && part.text.trim() !== "") {
-      return null;
-    }
-    if (isToolPart(part) && part.state === "approval-requested") {
-      return null;
-    }
-  }
-  const metadata = message.metadata;
-  const finishReason =
-    metadata !== null && typeof metadata === "object"
-      ? (metadata as { finishReason?: unknown }).finishReason
-      : undefined;
+function finishSentence(finishReason: unknown): string | null {
   switch (finishReason) {
     case "tool-calls":
       return CUT_OFF_SENTENCE;
@@ -60,6 +42,33 @@ export function turnOutcomeNotice(message: TurnOutcomeMessage): string | null {
     default:
       return null;
   }
+}
+
+/**
+ * The sentence to show BELOW a finished assistant message that stopped early
+ * (step limit, output limit, refusal), or null (review RF-7). It is returned
+ * whether or not the message has text: interim narration before a tool call
+ * ("Let me check your lots.") is the usual shape of a cut-off turn, and must
+ * not hide the notice. Null while any tool part is waiting for the owner's
+ * approval, and null for a normal finish.
+ *
+ * The reason comes from `metadata.finishReason`, which only a live stream
+ * carries. A message reloaded from history is text-only and has no metadata,
+ * so it returns null: its saved text already ends with the sentence (see
+ * `assistantRowText`), and the notice is never shown twice.
+ */
+export function turnOutcomeNotice(message: TurnOutcomeMessage): string | null {
+  for (const part of message.parts) {
+    if (isToolPart(part) && part.state === "approval-requested") {
+      return null;
+    }
+  }
+  const metadata = message.metadata;
+  const finishReason =
+    metadata !== null && typeof metadata === "object"
+      ? (metadata as { finishReason?: unknown }).finishReason
+      : undefined;
+  return finishSentence(finishReason);
 }
 
 /** Structural view of a finished step that `assistantRowText` reads. */
@@ -72,30 +81,25 @@ export interface TurnOutcomeStep {
  * The text to save as the assistant row for a finished turn (B11), or null
  * to save nothing. `onFinish.text` is the LAST step's text only, so the row
  * is built from every step: the non-empty step texts joined with a blank
- * line. A turn with no written text saves the sentence for its finish reason,
- * or nothing while an approval is pending (the continuation saves its own
- * row) or for a plain stop.
+ * line. A turn that stopped early (step limit, output limit, refusal) ends
+ * with the sentence for its finish reason after a blank line, or is that
+ * sentence alone when no text was written (RF-7). While an approval is
+ * pending the row is the text only, or nothing (the continuation saves its
+ * own row); a plain stop saves the text only. Errored and aborted turns do
+ * not come here (they save `joinStepTexts` alone).
  */
 export function assistantRowText(
   steps: readonly TurnOutcomeStep[],
   finishReason: string | undefined,
 ): string | null {
   const joined = joinStepTexts(steps.map((s) => s.text));
-  if (joined) return joined;
 
   const last = steps[steps.length - 1];
-  if (last?.content.some((p) => p.type === "tool-approval-request")) return null;
+  if (last?.content.some((p) => p.type === "tool-approval-request")) return joined || null;
 
-  switch (finishReason) {
-    case "tool-calls":
-      return CUT_OFF_SENTENCE;
-    case "length":
-      return OUTPUT_LIMIT_SENTENCE;
-    case "content-filter":
-      return CONTENT_FILTER_SENTENCE;
-    default:
-      return null;
-  }
+  const sentence = finishSentence(finishReason);
+  if (!sentence) return joined || null;
+  return joined ? `${joined}\n\n${sentence}` : sentence;
 }
 
 /**
