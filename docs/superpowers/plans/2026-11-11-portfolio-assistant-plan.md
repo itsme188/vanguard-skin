@@ -1,6 +1,6 @@
 # Portfolio Assistant (in-app chat): implementation plan (2026-11-11, revision 2)
 
-> **Status (2026-11-11, written by T10):** waves 1 and 2 built and reviewed on branch `claude/portfolio-assistant-review-7148e7` (Task 0 `c910900f` through the T6 review round `4406593c`). Wave 3 (W3-1 to W3-5) not yet run. Decisions: `docs/DECISIONS.md` 2026-11-11; working reference: `lib/chat/CLAUDE.md`.
+> **Status (2026-11-11, updated by T10):** waves 1 and 2 built and reviewed on branch `claude/portfolio-assistant-review-7148e7` (Task 0 `c910900f` through the final-review fix round, last build commit `475040f0`). Wave 3: full verify, production build and the whole-branch review are done. The browser pass (W3-3) and the capped live check (W3-4) have not run; they wait on an owner decision about the API key. PR (W3-5) not opened. Decisions: `docs/DECISIONS.md` 2026-11-11. Working reference: `lib/chat/CLAUDE.md`.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: use superpowers:subagent-driven-development. Each task below is one subagent (Opus). Tasks in the same wave edit no common file and are dispatched together in one message. Verification is a barrier AFTER each wave (section 5), not inside it. Steps use checkbox (`- [ ]`) syntax.
 
@@ -461,3 +461,13 @@ One read-only review per task. T1: summary scope edge cases, unit nouns and engi
 ### Barrier 2 (wave 2 review, 2026-11-11)
 
 T6: ten findings (R6-1..R6-10; `4406593c`): scenario shares named by base, the `query_risk` window rule, strict inputs, engine throws as plain errors; R6-7 kept the 25-row caps because 50 rows do not fit the 6,000-character cap. T7: the last-step wording made true and the benchmark tool's description corrected (`ac8da2a2`). T8: the byte-identical tool-result replay pinned through the real route (`7ede8506`). T9: no fix commit on the branch when this was written.
+
+### Final whole-branch review and fix round (2026-11-11)
+
+Two wrong-figure blockers were found in compaction rounding chosen by key-name matching. They were fixed by the explicit `COMPACT_ROUNDING` map, `_rounded`, pointers by id and `_same_in_rows_shown` (RF-1..RF-5; `c475e0cd`). The guard now holds its own rounding list and compares text; it was proven by mutation testing (`d5482e5b`). Tool output was capped on a large book (`eaee9678`). Other fixes in the round:
+- one-to-one withholding pairing (RF-6, `80199929`);
+- the cut-off notice under partial text (RF-7, `d79472c4`, `da9ac61b`);
+- "not available" instead of 0 in the IBKR dashboard (RF-9, `8e13e6f8`);
+- labelled summary figures (RF-10, `4e38e072`);
+- six prompt claims corrected (`77d11460`);
+- for the eval: bounded figure checks and a hard spend cap, then a per-question ceiling enforced mid-flight (RF-11, RF-12; `88fbc502`, `475040f0`).
