@@ -73,6 +73,6 @@ describe("chat prompt: a transcript not confirmed as the latest", () => {
     expect(line).toMatch(/before quoting/);
     const section = text.indexOf("## Earnings Intelligence");
     expect(text.indexOf("latest_confirmed")).toBeGreaterThan(section);
-    expect(text.indexOf("latest_confirmed")).toBeLessThan(text.indexOf("## Wash Sale Awareness"));
+    expect(text.indexOf("latest_confirmed")).toBeLessThan(text.indexOf("## Live Market Data"));
   });
 });
