@@ -11,7 +11,7 @@ import { REASON_CODES, renderClaimText } from "@/lib/filing-summary/evaluate";
 import type { DocText, PeriodSpec } from "@/lib/filing-summary/types";
 import {
   EVENT_DATE, EX991, Q3_26, NM_26, THIS_QUARTER, FY_OUTLOOK,
-  bogey, bogeyFig, cite, claim, cmp, codes, computedFig, exhibit, one, period, quoteFig, revenueQ3,
+  bogey, bogeyFig, cite, claim, cmp, codes, computedFig, exhibit, one, period, quoteFig, revenueQ3, run,
 } from "./evaluate-helpers";
 
 const docs = (text: DocText, fileName = EX991) => [{ fileName, text }];
@@ -479,6 +479,69 @@ describe("R1: a list of SEC item numbers after Item (QA 2026-11-11)", () => {
     "Item 2.02 and 12 segments",
   ])("%j stays stray", (text) => {
     expect(unbound(text)).toBe(true);
+  });
+});
+
+describe("R1: a bogey source label the app supplied for this run (QA 2026-11-11)", () => {
+  const ALPHA = "Newsletter Alpha 10/27";
+  const sourced = (text: string, provenance: string | string[], valueText = "$64.57B") => {
+    const provs = Array.isArray(provenance) ? provenance : [provenance];
+    return one(
+      claim(text, [cite("q1", "Revenue | 64,601")], [
+        revenueQ3(),
+        bogeyFig("f2", "b7.revenue_consensus_usd", { valueText, value: 64.57, scale: "billions" }),
+      ], [cmp("f1", "f2", "above")]),
+      { bogeys: provs.map((p, i) => bogey(i === 0 ? "b7.revenue_consensus_usd" : `b${8 + i}.revenue_consensus_usd`, 64.57e9, { provenance: p })) },
+    );
+  };
+
+  it("an exact supplied label with a date is not a stray figure", () => {
+    const c = sourced(`Revenue of {f1} beat the ${ALPHA} consensus of {f2}.`, ALPHA);
+    expect(codes(c)).not.toContain("unbound_digit");
+    expect(c.status).toBe("checked");
+  });
+
+  it("the label is exempted in the one-line form the prompt shows (spaces collapsed, pipes as slashes)", () => {
+    const c = sourced("Revenue of {f1} beat the Newsletter Alpha 10/27 consensus of {f2}.", "Newsletter  Alpha\n10|27");
+    expect(codes(c)).not.toContain("unbound_digit");
+  });
+
+  it("a label not supplied for this run stays stray", () => {
+    expect(codes(sourced(`Revenue of {f1} beat the ${ALPHA} consensus of {f2}.`, "Newsletter Alpha"))).toContain("unbound_digit");
+    expect(codes(sourced(`Revenue of {f1} beat the ${ALPHA} consensus of {f2}.`, "Newsletter Beta 10/27"))).toContain("unbound_digit");
+    expect(codes(sourced("Revenue of {f1} beat the Newsletter Gamma 10/28 consensus of {f2}.", ALPHA))).toContain("unbound_digit");
+  });
+
+  it("a bare date-like token outside a supplied label stays stray", () => {
+    expect(codes(sourced(`Revenue of {f1} beat the ${ALPHA} consensus of {f2}, set on 10/27.`, ALPHA))).toContain("unbound_digit");
+    expect(codes(sourced("Revenue of {f1} beat the Alpha 10/27 consensus of {f2}.", ALPHA))).toContain("unbound_digit");
+  });
+
+  it("any other digit in the same claim stays stray", () => {
+    expect(codes(sourced(`Revenue of {f1} beat the ${ALPHA} consensus of 37.7%.`, ALPHA))).toContain("unbound_digit");
+    expect(codes(sourced(`Revenue of {f1} beat the ${ALPHA} consensus of {f2}.`, ALPHA, "37.7%"))).not.toContain("unbound_digit");
+  });
+
+  it("a label cannot swallow a neighbouring number", () => {
+    for (const text of [
+      `Revenue of {f1} beat the ${ALPHA}5 consensus of {f2}.`,
+      `Revenue of {f1} beat the ${ALPHA}.5 consensus of {f2}.`,
+      `Revenue of {f1} beat the ${ALPHA}% consensus of {f2}.`,
+      `Revenue of {f1} beat the ${ALPHA}/26 consensus of {f2}.`,
+    ]) {
+      expect(codes(sourced(text, ALPHA))).toContain("unbound_digit");
+    }
+    expect(codes(sourced(`Revenue of {f1} beat the 3${ALPHA.replace("Newsletter ", "")} consensus of {f2}.`, "Alpha 10/27"))).toContain("unbound_digit");
+  });
+
+  it("the headline may name a supplied label; an unsupplied one still blanks it", () => {
+    const c = claim(`Revenue of {f1} beat the ${ALPHA} consensus of {f2}.`, [cite("q1", "Revenue | 64,601")], [
+      revenueQ3(),
+      bogeyFig("f2", "b7.revenue_consensus_usd", { valueText: "$64.57B", value: 64.57, scale: "billions" }),
+    ]);
+    const bogeys = [bogey("b7.revenue_consensus_usd", 64.57e9, { provenance: ALPHA })];
+    expect(run([c], { bogeys, headline: `Beat the ${ALPHA} consensus` }).headline).toBe(`Beat the ${ALPHA} consensus`);
+    expect(run([c], { bogeys, headline: "Beat the Newsletter Beta 10/27 consensus" }).headline).toBe("");
   });
 });
 

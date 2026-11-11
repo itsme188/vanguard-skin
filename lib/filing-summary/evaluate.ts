@@ -28,6 +28,7 @@ import {
 } from "./evaluate-figures";
 import { evalComparison, evalComputed } from "./evaluate-arith";
 import { sectionAnchors, type SectionAnchors } from "./evaluate-periods";
+import { promptSourceLabel } from "./prompt";
 import type {
   BogeySnapshotFigure,
   CheckReason,
@@ -143,8 +144,31 @@ const ALLOWED_DIGITS: RegExp[] = [
   /\bForms?\s+(?:144|[345])\b/gi,
 ];
 
-function hasStrayDigit(text: string): boolean {
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * The bogey source names the prompt showed the model for this run, in the exact
+ * form it showed them. Only names that hold a digit matter here ("Newsletter
+ * Alpha 10/27"). Longest first, so a name that contains another is taken whole.
+ */
+function suppliedSourceLabels(bogeys: BogeySnapshotFigure[]): string[] {
+  const labels = new Set(bogeys.map(promptSourceLabel).filter((l) => /\d/.test(l)));
+  return [...labels].sort((a, b) => b.length - a.length);
+}
+
+/**
+ * Digits left after the allowed identifiers are removed. A source name the app
+ * supplied for this run is removed first, but only an exact occurrence that does
+ * not touch a neighbouring letter, digit, percent or slash, so a name can never
+ * swallow a real number next to it. Any other date-like token stays stray.
+ */
+function hasStrayDigit(text: string, sourceLabels: readonly string[] = []): boolean {
   let t = text;
+  for (const label of sourceLabels) {
+    t = t.replace(new RegExp(`(?<![\\w.,/%$])${escapeRegExp(label)}(?![\\w%/])(?![.,]\\d)`, "g"), " ");
+  }
   for (const re of ALLOWED_DIGITS) t = t.replace(re, " ");
   return /\d/.test(t);
 }
@@ -161,7 +185,7 @@ function placeholderIds(text: string): string[] {
  * a year, an Item / exhibit number or a form name (R1). An unknown placeholder
  * is left as written.
  */
-export function renderClaimText(claim: ModelClaim): { text: string; unbound: boolean } {
+export function renderClaimText(claim: ModelClaim, sourceLabels: readonly string[] = []): { text: string; unbound: boolean } {
   const byId = new Map(claim.figures.map((f) => [f.id, f]));
   let unbound = false;
   const text = claim.text.replace(PLACEHOLDER, (whole: string, id: string) => {
@@ -173,7 +197,7 @@ export function renderClaimText(claim: ModelClaim): { text: string; unbound: boo
     if (valueTextHasExtraDigit(f.valueText)) unbound = true;
     return f.valueText;
   });
-  if (hasStrayDigit(claim.text.replace(PLACEHOLDER, " "))) unbound = true;
+  if (hasStrayDigit(claim.text.replace(PLACEHOLDER, " "), sourceLabels)) unbound = true;
   return { text, unbound };
 }
 
@@ -187,6 +211,8 @@ interface ClaimContext {
   accession: string;
   eventDate: string;
   bogeys: BogeySnapshotFigure[];
+  /** Bogey source names as this run's prompt showed them; see `suppliedSourceLabels`. */
+  sourceLabels: string[];
   priorIds: Set<string>;
   anchors: SectionAnchors;
 }
@@ -226,12 +252,12 @@ function hasFilingFigure(claim: ModelClaim): boolean {
 
 function evaluateClaim(claim: ModelClaim, top: boolean, routine: boolean, ctx: ClaimContext): CheckedClaim {
   const claimReasons: CheckReason[] = [];
-  const rendered = renderClaimText(claim);
+  const rendered = renderClaimText(claim, ctx.sourceLabels);
   const figureIds = new Set(claim.figures.map((f) => f.id));
   for (const id of placeholderIds(claim.text)) {
     if (!figureIds.has(id)) claimReasons.push(reason("dangling_placeholder", null, `placeholder {${id}} names no figure`));
   }
-  if (hasStrayDigit(claim.text.replace(PLACEHOLDER, " "))) {
+  if (hasStrayDigit(claim.text.replace(PLACEHOLDER, " "), ctx.sourceLabels)) {
     claimReasons.push(reason("unbound_digit", null, "the claim text has a number outside a typed figure"));
   }
   for (const id of new Set(placeholderIds(claim.text))) {
@@ -336,6 +362,7 @@ export function evaluateSection(input: EvaluateSectionInput): CheckedSection {
     accession: input.accession,
     eventDate: input.eventDate,
     bogeys: input.bogeys,
+    sourceLabels: suppliedSourceLabels(input.bogeys),
     priorIds: new Set(input.priorClaims.map((c) => c.claimId)),
     anchors: sectionAnchors(input.docs, input.eventDate),
   };
@@ -343,7 +370,7 @@ export function evaluateSection(input: EvaluateSectionInput): CheckedSection {
   for (const b of input.output.bullets) {
     for (const c of b.claims) claims.push(evaluateClaim(c, b.top, b.routine, ctx));
   }
-  const headline = hasStrayDigit(input.output.headline) ? "" : input.output.headline;
+  const headline = hasStrayDigit(input.output.headline, ctx.sourceLabels) ? "" : input.output.headline;
   return { headline, claims, counts: countStatuses(claims) };
 }
 

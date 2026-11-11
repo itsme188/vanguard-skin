@@ -50,6 +50,14 @@ function oneLine(s: string): string {
   return s.replace(/\s+/g, " ").replace(/\|/g, "/").trim();
 }
 
+/**
+ * A bogey's source exactly as the prompt shows it in the "source" column. The
+ * checker reads this to know which source names the model was given (R1).
+ */
+export function promptSourceLabel(b: Pick<BogeySnapshotFigure, "provenance">): string {
+  return oneLine(b.provenance);
+}
+
 /** The late periodic report rules, appended to the system text for a late section only. */
 const LATE_SYSTEM_BLOCK = `
 
@@ -127,7 +135,7 @@ function bogeyLines(bogeys: BogeySnapshotFigure[]): string {
   const lines = bogeys.map((b) => {
     const p = b.period;
     const period = `${oneLine(p.label)} (${p.kind}, ${p.role}${p.anchor ? `, ${p.anchor}` : ""})`;
-    return [b.key, oneLine(b.label), String(b.value), b.unit, period, b.basis, oneLine(b.provenance), b.asOf].join(" | ");
+    return [b.key, oneLine(b.label), String(b.value), b.unit, period, b.basis, promptSourceLabel(b), b.asOf].join(" | ");
   });
   return `${head}\n${lines.join("\n")}`;
 }
