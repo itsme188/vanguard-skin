@@ -456,6 +456,11 @@ describe("prompt standards (Task 7)", () => {
       const rule = section(staticBlock(scope), "## Working Within the Step Limit");
       expect(rule, scope).toContain("Request independent tools together in one step");
       expect(rule, scope).toContain("A turn always ends with a written answer");
+      // Tools stay defined on the last step (plan P4 / OPEN-1): a call there
+      // runs and ends the turn with no text, so the prompt must not say tools
+      // "will not run".
+      expect(rule, scope).toContain("a tool call on that step ends the turn with no written answer");
+      expect(rule, scope).not.toContain("tools will not run");
     }
   });
 
