@@ -1767,6 +1767,22 @@ Plan: `docs/superpowers/plans/2026-11-11-portfolio-assistant-plan.md`. Working r
   - The fixture and harness defects the run found were fixed (`e7f7ce73`, `a203c643`).
 - **Lesson from run 2 (over-correction).** Rules written only as prohibitions after run 1 made answers shorter by dropping evidence; one realized-gains answer named no sale at all. A rule now states what is wanted (name the rows a tool returned) before what is forbidden, and brevity cuts restatement, not evidence.
 
+**Live run 3 (13 questions, same synthetic database).** The cost line, quoted from its roll-up file: "steps 25 turns 13 models {'claude-sonnet-4-6'} cost $0.7901 avg $0.0608 steps/q 1.92", with a cache share of 85.7% and a no-cache what-if of $2.2655. The scorer passed 10 of 13. The reviewer judged it against run 2 as 5 better, 7 the same and 1 worse, with answers 22% longer. The reviewer's verdict:
+- better than the starting point;
+- run 2 to run 3 is sideways;
+- the remaining weakness is figures the model produces itself, mostly a tool problem and partly the model tier;
+- another prompt round would move errors around rather than remove them.
+
+Run 2, recounted from its comparison file, is 9 better, 6 the same and 3 worse, as recorded above; the reviewer's prose figure of 10 better does not match the file. Total live spend across the three runs and the browser pass was about US$3.60 of a US$6.50 limit (the roll-up files plus an estimate for the browser pass).
+
+**Changes after run 3, NOT measured by a live run.** These came after run 3 (`query_twr`'s `units` block came before and was measured in it):
+- `query_realized_gains` returns its sale rows by default;
+- `query_data_confidence` gains an `items` block;
+- `query_scenarios` gains an `unmodelled_positions` list and a `left_out` sentence per preset;
+- the eval's behaviour counters now scan the whole answer.
+
+**Stop race (`bb2075f7`).** Nothing referenced the `Request` after `POST` returned, so a garbage collection mid-stream could drop the controller that forwards the caller's abort, and a stopped reply then hung with its slot held and nothing saved or charged. The route now holds each `Request` from taking the slot until release. The bug was found because `tests/api/chat-abort.test.ts` failed 8 of 20 runs; its guard "an abort still reaches the route after a garbage collection" failed 5 of 5 without the fix.
+
 **Rulings made during the live check (all reversible).**
 - A pending lot's rows keep their cost basis as a record of the opening. The tool's `totals` give pending lots only a count by reason, and no gain.
 - Conversation-title percents stay visible in privacy mode, under the existing 2026-11-07 ruling.

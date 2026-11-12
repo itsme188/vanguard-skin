@@ -1,6 +1,6 @@
 # Portfolio Assistant (in-app chat): implementation plan (2026-11-11, revision 2)
 
-> **Status (2026-11-11, updated by T10):** waves 1 and 2 are built and reviewed on branch `claude/portfolio-assistant-review-7148e7`, from Task 0 `c910900f` to the last build commit `6dcd3126`. Wave 3 has done the full verify, the production build, the whole-branch review and fix round, the browser pass (W3-3) and two live runs (W3-4). A third, subset live run was in progress at the time of writing. The `toolChoice: "none"` probe was not run: it needs owner approval. The PR (W3-5) is not opened. Decisions: `docs/DECISIONS.md` 2026-11-11. Working reference: `lib/chat/CLAUDE.md`.
+> **Status (2026-11-11, updated by T10):** waves 1 and 2 are built and reviewed on branch `claude/portfolio-assistant-review-7148e7`, from Task 0 `c910900f` to the last build commit `bb2075f7`. Wave 3 is complete: full verify, the production build, the whole-branch review and fix round, the browser pass (W3-3), and three live runs (W3-4). The `toolChoice: "none"` probe was not run: it needs owner approval. The pull request (W3-5) is about to be opened. Decisions: `docs/DECISIONS.md` 2026-11-11. Working reference: `lib/chat/CLAUDE.md`.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: use superpowers:subagent-driven-development. Each task below is one subagent (Opus). Tasks in the same wave edit no common file and are dispatched together in one message. Verification is a barrier AFTER each wave (section 5), not inside it. Steps use checkbox (`- [ ]`) syntax.
 
@@ -484,3 +484,5 @@ Two wrong-figure blockers were found in compaction rounding chosen by key-name m
   - prompt rebalance: `2135c782`;
   - `query_twr` units: `6dcd3126`;
   - scorer touch-ups and behaviour counts: `a203c643`.
+- **Live run 3** (13 questions): the scorer passed 10 of 13; against run 2 the reviewer judged 5 better, 7 the same and 1 worse, with answers 22% longer. The reviewer's verdict: run 2 to run 3 is sideways, and what remains is mostly a tool problem. The changes after it (`c3365d9e`, `527a5adc`, `e65896f7`) were not measured live.
+- **Stop race** (`bb2075f7`): an intermittent abort test (8 of 20 failures) turned out to be a real production race. The `Request` could be garbage-collected mid-stream, losing the abort. The route now holds it until the slot is released.

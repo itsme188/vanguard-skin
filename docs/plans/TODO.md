@@ -12,7 +12,7 @@
 ## User roadmap (added 2026-07-03)
 
 - [ ] **Portfolio Assistant (in-app chat) follow-ups (2026-11-11)** (`docs/DECISIONS.md` 2026-11-11; plan `docs/superpowers/plans/2026-11-11-portfolio-assistant-plan.md` §7-8; working reference `lib/chat/CLAUDE.md`). Waves 1 and 2 are built on branch `claude/portfolio-assistant-review-7148e7`:
-    - (w3) **Wave 3 status:** full verify, the production build, the whole-branch review (plus its fix round), the browser pass and two live runs are DONE (results in `docs/DECISIONS.md` 2026-11-11). A third, subset live run was in progress at the time of writing. Then the PR.
+    - (w3) **Wave 3 is complete:** full verify, the production build, the whole-branch review and fix round, the browser pass and three live runs (results in `docs/DECISIONS.md` 2026-11-11). The PR is next.
     - (F1) **Freeze the portfolio summary per conversation**, so a sync between turns stops invalidating the cached conversation tail. Needs a stored column on `chat_conversations`: show the owner the migration first.
     - (F2) **Measure thinking effort medium against high** with the golden evaluation set (`scripts/chat-eval/run-golden.ts`); today the chat sends adaptive thinking with no effort.
     - (F3) **Chat failover** belongs to the open `provider-failover` task; the chat route calls `getModelForFeature("chat")` directly.
@@ -40,7 +40,9 @@
       It then requests SPY, QQQ, DIA and the plain ticker of every held position except options and bonds: tickers only, no account data. Options: keep it, restrict it to the three index funds, or remove it. Unchanged on this branch.
     - (o2) **A weight on account value including cash in `query_holdings`**, if the owner rules that base. Today `position_weight_pct` is of gross exposure. The eval accepts either base when it is stated, pending the ruling.
     - (o3) **One shared freshness field for a security** across `query_holdings` and `query_data_confidence`, so the two tools cannot give one security two different "as of" readings.
-    - (o4) **Delta-dollar exposure and account-share figures as tool fields**, so the model never multiplies them by hand. Seen live on the across-accounts exposure question.
+    - (o4) **More figures as tool fields, so the model never multiplies by hand** (run 3's remaining weakness): delta-dollar exposure and portfolio share in `query_options_greeks`; combined exposure in `query_holdings`; tax-saving and break-even figures as tool fields.
+    - (o9) **Measure a stronger chat model tier on the same 18 questions.** This is the owner's cost-versus-quality call. The chat moved to the workhorse tier by the 2026-11-07 ruling (`lib/ai/models.ts` comment; landed 2026-11-08, PR #167), and all three live runs measured that tier's static fallback.
+    - (o10) **Re-run the evaluation after the post-run-3 tool changes.** Realized-gains sale rows by default, the data-confidence `items` block, and the scenarios `unmodelled_positions` / `left_out` were never measured live.
     - (o5) **The demo seed (`scripts/seed-demo.ts`) stores SELL quantities as negative.** The eval builder flips them to positive; fix the seed instead.
     - (o6) **Panel side padding and the clipped conversation dropdown** (pre-existing; screenshots were taken during the browser pass). Not changed on this branch.
     - (o7) **The cut-off notice and the empty "Stopped." view were never seen live.** They are covered by tests only; check them in the app the first time one occurs.
