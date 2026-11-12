@@ -193,11 +193,16 @@ export async function getFilingSection(
   let modelOutput: string;
   try {
     // AIRefusalError flows into this catch block and surfaces as { error }
-    const { text } = await generateTextForFeature("filingSectionExtraction", {
+    const { text, finishReason } = await generateTextForFeature("filingSectionExtraction", {
       prompt,
       // Room for default-on thinking on the 5.5 generation (2026-11-12, was 2000).
       maxOutputTokens: 16_000,
     });
+    // Plain-text output: a reply cut off at the cap would parse and be cached
+    // as if complete, so it is an error instead (2026-11-12).
+    if (finishReason === "length") {
+      return { error: "LLM extraction failed: the summary was cut off at the output cap" };
+    }
     modelOutput = text;
   } catch (err) {
     return {
