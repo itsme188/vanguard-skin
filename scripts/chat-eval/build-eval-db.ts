@@ -13,7 +13,9 @@
  *   - a live AAPL call expiring in 20 days and an NVDA call that expired 10
  *     days ago (the demo's June 2026 options are expired as well);
  *   - a non-USD holding (KAIZN, priced in JPY, with a JPY rate on file);
- *   - a reinvested dividend pair (VTI, DIVIDEND + REINVESTMENT, same day);
+ *   - two reinvested dividend pairs, one per importer convention: VTI under
+ *     the canonical convention (reinvestment positive) and BND keyed like
+ *     the Vanguard PDF importer (reinvestment negative cash);
  *   - margin interest paid in IBKR (a negative INTEREST row);
  *   - a Treasury bill maturing in 45 days;
  *   - a taxable gaining lot short of long-term (LTWT) for the wait question;
@@ -57,7 +59,7 @@ import { getMarketSnapshot, type QuoteFetcher } from "../../lib/queries/market-s
 import { reconcileClosedEquityHoldings } from "../../lib/mutations/closed-equity";
 import { upsertCalendarEvents } from "../../lib/mutations/calendar";
 import { runCompositeTool } from "../../lib/chat/composite";
-import { getHoldingsForChat, getTaxLotsForChat } from "../../lib/queries/chat-tools";
+import { getHoldingsForChat, getIncomeSummaryForChat, getTaxLotsForChat } from "../../lib/queries/chat-tools";
 import { EVAL_FIXTURE_VERSION, EVAL_MARKER_KEY, liveDbRefusal, resolvedDbPath } from "./db-guard";
 import { outputPathRefusal } from "./output-guard";
 import { EVAL_MANIFEST_KEY, type EvalManifest } from "./manifest";
@@ -230,6 +232,23 @@ function version3Checks(db: Database.Database, today: string): string[] {
     if (holdGain === null || lotGain === null || want === null || Math.abs(holdGain - lotGain) > 0.01 || Math.abs(lotGain - want) > 0.01) {
       out.push(`the short ${manifest.short}: holdings gain ${holdGain}, tax-lot gain ${lotGain}, expected ${want} (proceeds less the cost to cover)`);
     }
+  }
+  // Every reinvested pair is paired (562b3c57): no reinvestment is left
+  // unpaired, so no reversal is counted (unpaired_reinvestment_count 0) and
+  // no purchase is added as income (dividend income equals the DIVIDEND rows).
+  const income = getIncomeSummaryForChat(db, { period: "trailing_12m", group_by: "account" });
+  const unpaired = income.reduce((s, r) => s + (r.unpaired_reinvestment_count ?? 0), 0);
+  const counted = Math.round(income.reduce((s, r) => s + (r.total_dividends ?? 0), 0) * 100) / 100;
+  const md = today.slice(5);
+  const from = `${Number(today.slice(0, 4)) - 1}-${md === "02-29" ? "02-28" : md}`;
+  const dividendRows = (
+    db
+      .prepare("SELECT COALESCE(SUM(amount), 0) AS s FROM transactions WHERE UPPER(type) = 'DIVIDEND' AND trade_date >= ? AND trade_date <= ?")
+      .get(from, today) as { s: number }
+  ).s;
+  if (unpaired !== 0) out.push(`${unpaired} reinvestment(s) unpaired; every fixture reinvestment should pair with its dividend`);
+  if (Math.abs(counted - Math.round(dividendRows * 100) / 100) > 0.005) {
+    out.push(`dividend income ${counted} is not the dividend rows' ${dividendRows}: a reinvestment purchase was counted as income`);
   }
   const scen = runCompositeTool("query_scenarios", db, {}, { accountIds: undefined, today }) as { unmodelled_positions?: unknown[] };
   if (!Array.isArray(scen?.unmodelled_positions) || scen.unmodelled_positions.length === 0) {
@@ -416,8 +435,21 @@ export function buildEvalFixture(db: Database.Database, today: string): EvalMani
   t(ibkr, ids.DEADOPT, preD0, "BUY_TO_OPEN", 1, -300, 3);
   t(ibkr, ids.MSFTOPT, addDays(today, -20), "BUY_TO_OPEN", 2, -1500, 7.5);
   const reinvestDate = addDays(today, -45);
+  // Reinvested dividends, one per importer convention (562b3c57: a
+  // reinvestment is read as a purchase or a reversal by its importer's
+  // convention). An eval:-keyed row follows the canonical convention: the
+  // reinvestment purchase is stored POSITIVE, as all real canonical data is.
   t(taxable, vti, reinvestDate, "DIVIDEND", null, 120, null);
-  t(taxable, vti, reinvestDate, "REINVESTMENT", 0.4, -120, 300);
+  t(taxable, vti, reinvestDate, "REINVESTMENT", 0.4, 120, 300);
+  // A Vanguard PDF-keyed pair stores the purchase as negative cash, as the
+  // PDF importer writes it (tests/fixtures/vanguard-pdf-claude-response.json).
+  const bnd = idOf("BND");
+  if (bnd) {
+    const pdfDate = addDays(today, -75);
+    const pdfKey = (type: string, amount: number) => `vanguard-pdf:txn:Vanguard Taxable:${pdfDate}:BND:${type}:${amount}`;
+    tx.run(taxable, bnd, pdfDate, "DIVIDEND", null, 60, null, 0, pdfKey("dividend", 60), batch, null);
+    tx.run(taxable, bnd, pdfDate, "REINVESTMENT", 0.8, -60, 75, 0, pdfKey("reinvestment", -60), batch, null);
+  }
   t(ibkr, null, addDays(today, -20), "INTEREST", null, -35, null, "Margin interest (synthetic)");
 
   // ── Prices ─────────────────────────────────────────────────────
