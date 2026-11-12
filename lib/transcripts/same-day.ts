@@ -130,18 +130,20 @@ const SUMMARY_MAX_OUTPUT_TOKENS = 900;
 
 /**
  * A desk note the prompt actually asked for carries at least one of the
- * mandated bold section labels. A soft refusal (model asking for its inputs
+ * mandated section labels (bold, bold with a colon, or a markdown heading). A soft refusal (model asking for its inputs
  * — the 2026-07-22 CSX leak) carries none, and typically asks the operator
  * to "please provide" content. stripModelPreamble can't catch this: the
  * refusal opened with a `- ` list marker (valid markdown), and the refusal
  * finish-reason guard can't either (finishReason was "stop").
  */
-const DESK_NOTE_SECTION_RE = /\*\*(Guidance|Tone|Surprises|Key quotes)\*\*/i;
-const DESK_NOTE_REFUSAL_RE =
-  /please provide|provide the transcript|i(?:'|’)ll produce the|as specified[.,]?\s*$/im;
+const DESK_NOTE_SECTION_RE =
+  /^[ \t]*(?:[-*][ \t]+)?(?:#{1,4}[ \t]+(?:\*\*)?(?:Guidance|Tone|Surprises|Key quotes)\b|\*\*[ \t]*(?:Guidance|Tone|Surprises|Key quotes)[ \t]*:?[ \t]*\*\*)/im;
+const DESK_NOTE_REFUSAL_RE = /please provide|provide the transcript|i(?:'|’)ll produce the/i;
+/** A refusal announces itself in the opening of the answer; a real note can mention these words later. */
+const DESK_NOTE_REFUSAL_WINDOW = 400;
 
 export function looksLikeDeskNoteRefusal(text: string): boolean {
-  return DESK_NOTE_REFUSAL_RE.test(text);
+  return DESK_NOTE_REFUSAL_RE.test(text.slice(0, DESK_NOTE_REFUSAL_WINDOW));
 }
 
 export function isValidDeskNote(text: string): boolean {
@@ -159,12 +161,12 @@ function buildSummaryPrompt(transcriptText: string): string {
   const text = transcriptText.slice(0, SUMMARY_PROMPT_CHAR_CAP);
   return `You are writing a structured desk note from an earnings call transcript, for a portfolio manager who already knows the company and just needs the highlights. Cover, in this order:
 
-- **Guidance**: what management said about forward guidance (raised / inline / lowered / not given — and the specifics if any were given)
-- **Tone**: management's overall tone on the call (confident, cautious, defensive, evasive, etc.)
-- **Surprises**: anything that surprised relative to expectations, positive or negative
-- **Key quotes**: 2-3 short direct quotes from the call that best support the above
+- Guidance: what management said about forward guidance (raised / inline / lowered / not given — and the specifics if any were given)
+- Tone: management's overall tone on the call (confident, cautious, defensive, evasive, etc.)
+- Surprises: anything that surprised relative to expectations, positive or negative
+- Key quotes: 2-3 short direct quotes from the call that best support the above
 
-Plain markdown (short headers + bullets), no preamble, no closing commentary, nothing about the transcript itself — just the desk note. Keep the entire note to 300 words or fewer.
+Plain markdown: label each section with exactly those names (Guidance, Tone, Surprises, Key quotes) as a bold label or a short header, each followed by bullets. No preamble, no closing commentary, nothing about the transcript itself — just the desk note. Keep the entire note to 300 words or fewer.
 
 Transcript:
 ${text}`;
@@ -199,8 +201,11 @@ export async function summarizeTranscript(
     // stripModelPreamble post-processor in lib/digest/send-earnings-email.ts.
     const summary = stripModelPreamble(res.text.trim());
     if (!summary || !isValidDeskNote(summary)) {
+      const reason = summary ? "not desk-note shaped" : "empty answer";
+      const finish = res.finishReason ?? "unknown";
+      const head = summary.replace(/\s+/g, " ").slice(0, 150);
       console.warn(
-        `[transcripts] AI desk note for ${transcript.ticker} Q${transcript.quarter} rejected (not desk-note shaped) — extractive summary kept`,
+        `[transcripts] AI desk note for ${transcript.ticker} Q${transcript.quarter} rejected (${reason}; finish=${finish}; ${summary.length} chars; starts: "${head}") — extractive summary kept`,
       );
       return;
     }

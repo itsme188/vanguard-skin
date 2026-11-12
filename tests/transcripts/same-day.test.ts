@@ -844,6 +844,60 @@ describe("fetchSameDayTranscripts — AI desk-note summary (#12 B2)", () => {
     expect(row?.transcript).toBe(LONG_TRANSCRIPT);
   });
 
+  describe("desk-note shapes the model really writes", () => {
+    async function runWith(ticker: string, text: string) {
+      seedHeld(ticker);
+      const rel = hoursAgoEt(3);
+      seedEvent({ symbol: ticker, date: rel.date, releaseTime: rel.time });
+      mockedFetch.mockResolvedValue({
+        transcript: fakeTranscript({
+          ticker,
+          transcript: LONG_TRANSCRIPT,
+          source_key: `alpha_vantage:${ticker}:2026:2`,
+        }),
+        fromCache: false,
+      });
+      mockedGenerate.mockResolvedValue({ text, finishReason: "stop" } as never);
+      await fetchSameDayTranscripts(db, { now: NOW });
+      return getTranscriptRow(`alpha_vantage:${ticker}:2026:2`);
+    }
+
+    it("stores a note written with ## headings", async () => {
+      const note = "## Guidance\n- Raised outlook\n\n## Tone\n- Confident";
+      expect((await runWith("AAA", note))?.summary).toBe(note);
+    });
+
+    it("stores a note written with a colon inside the bold label", async () => {
+      const note = "**Guidance:** Raised outlook\n\n**Tone:** Confident";
+      expect((await runWith("ZZZ", note))?.summary).toBe(note);
+    });
+
+    it("stores a real note with a line ending 'as specified.'", async () => {
+      const note = "**Guidance**\n- Margin target reached as specified.\n\n**Tone**\n- Calm";
+      expect((await runWith("AAB", note))?.summary).toBe(note);
+    });
+
+    it("still rejects a refusal and says what it saw", async () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const row = await runWith("AAC", "Please provide the transcript text and I'll produce the desk note as specified.");
+      expect(row?.summary ?? "").not.toMatch(/Please provide/);
+      expect(warn.mock.calls.flat().join(" ")).toMatch(/not desk-note shaped; finish=stop; \d+ chars; starts: "Please provide/);
+      warn.mockRestore();
+    });
+
+    it("rejects text with no section label", async () => {
+      const row = await runWith("AAD", "Management sounded upbeat about the quarter overall.");
+      expect(row?.summary ?? "").not.toMatch(/upbeat/);
+    });
+
+    it("rejects an empty answer with the empty wording", async () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      await runWith("AAE", "   ");
+      expect(warn.mock.calls.flat().join(" ")).toMatch(/empty answer/);
+      warn.mockRestore();
+    });
+  });
+
   it("strips a chatty AI preamble before storing the desk-note summary (carry-over fix, B3)", async () => {
     seedHeld("PPP");
     const rel = hoursAgoEt(3);
@@ -1023,6 +1077,17 @@ describe("isValidDeskNote / looksLikeDeskNoteRefusal (pure)", () => {
 
     expect(isValidDeskNote(good)).toBe(true);
     expect(looksLikeDeskNoteRefusal(good)).toBe(false);
+  });
+
+  it("accepts heading, bold-colon and list-marker label shapes; rejects mid-line bold and refusals", () => {
+    expect(isValidDeskNote("## Guidance\n- up")).toBe(true);
+    expect(isValidDeskNote("#### key quotes\n- q")).toBe(true);
+    expect(isValidDeskNote("**Guidance:** up")).toBe(true);
+    expect(isValidDeskNote("**Tone**: calm")).toBe(true);
+    expect(isValidDeskNote("- **Surprises**: none")).toBe(true);
+    expect(isValidDeskNote("We saw **Tone** shift")).toBe(false);
+    expect(isValidDeskNote("**Guidance**\n- hit target as specified.")).toBe(true);
+    expect(isValidDeskNote("")).toBe(false);
   });
 
   it("plain extractive prose (no bold labels): NOT valid, NOT refusal", () => {
