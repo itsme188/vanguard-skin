@@ -195,3 +195,49 @@ export const MAX_CHAT_STEPS = 8;
  */
 export const LAST_STEP_NOTE =
   "This is your last step. A tool call now would end the turn with no written answer, so write the answer from what you have, and say what you could not check.";
+
+/**
+ * Told to the model, in the VOLATILE block of that one request, when the
+ * history ends with two user messages in a row: the earlier one got no
+ * written answer (the owner pressed Stop before any text, or the turn failed
+ * before saving anything). Live, without it, the model answered the OLD
+ * question first.
+ */
+export const UNANSWERED_PRIOR_NOTE =
+  "The owner's previous message got no answer: that reply was stopped or failed before any text. Answer the latest message. Take up the earlier one only if the latest message asks for it.";
+
+/** An assistant message with nothing the model could read back: no text, tool or file part. */
+function isEmptyAssistant(message: UIMessage): boolean {
+  if (message.role !== "assistant") return false;
+  const parts = Array.isArray(message.parts) ? message.parts : [];
+  return !parts.some(
+    (p) =>
+      (p.type === "text" && typeof (p as { text?: unknown }).text === "string" && (p as { text: string }).text.trim() !== "") ||
+      p.type === "file" ||
+      isToolPart(p),
+  );
+}
+
+/**
+ * Drop assistant messages that hold nothing but step markers or reasoning
+ * (a reply stopped before any text). The client keeps them, showing
+ * "Stopped."; sent on, they convert to an empty assistant turn or to a
+ * reasoning block with no signature. Dropping them leaves two user messages
+ * in a row, which the provider sends as one user turn; the note above says
+ * which one to answer.
+ */
+export function dropEmptyAssistantMessages(messages: UIMessage[]): UIMessage[] {
+  return messages.some(isEmptyAssistant) ? messages.filter((m) => !isEmptyAssistant(m)) : messages;
+}
+
+/**
+ * The note for this request, or undefined: the final message is the owner's
+ * and the message before it (empty replies already dropped) is also the
+ * owner's.
+ */
+export function unansweredPriorNote(messages: UIMessage[]): string | undefined {
+  const kept = dropEmptyAssistantMessages(messages);
+  const last = kept[kept.length - 1];
+  const prev = kept[kept.length - 2];
+  return last?.role === "user" && prev?.role === "user" ? UNANSWERED_PRIOR_NOTE : undefined;
+}

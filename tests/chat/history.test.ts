@@ -13,6 +13,9 @@ import {
   findOrphanToolCalls,
   dropOrphanToolCalls,
   markLastMessageForCache,
+  dropEmptyAssistantMessages,
+  unansweredPriorNote,
+  UNANSWERED_PRIOR_NOTE,
 } from "@/lib/chat/history";
 
 // Portfolio Assistant plan, Task 3 item H: the history the route sends the
@@ -267,5 +270,25 @@ describe("markLastMessageForCache (unused fallback, Contract D item 6)", () => {
     });
     expect(messages[2].providerOptions).toEqual({ other: { keep: true } });
     expect(markLastMessageForCache([])).toEqual([]);
+  });
+});
+
+
+describe("stopped replies with no text (browser pass item 2)", () => {
+  const empty = { id: "a1", role: "assistant", parts: [{ type: "step-start" }, { type: "reasoning", text: "x" }] } as UIMessage;
+  const answered = { id: "a2", role: "assistant", parts: [{ type: "text", text: "Answer." }] } as UIMessage;
+
+  it("an empty assistant message is dropped; a real one is kept", () => {
+    const out = dropEmptyAssistantMessages([user("u1", "q1"), empty, user("u2", "q2")]);
+    expect(out.map((m) => m.id)).toEqual(["u1", "u2"]);
+    const history = [user("u1", "q1"), answered, user("u2", "q2")];
+    expect(dropEmptyAssistantMessages(history)).toBe(history);
+  });
+
+  it("two questions in a row get the note; an answered one does not", () => {
+    expect(unansweredPriorNote([user("u1", "q1"), empty, user("u2", "q2")])).toBe(UNANSWERED_PRIOR_NOTE);
+    expect(unansweredPriorNote([user("u1", "q1"), user("u2", "q2")])).toBe(UNANSWERED_PRIOR_NOTE);
+    expect(unansweredPriorNote([user("u1", "q1"), answered, user("u2", "q2")])).toBeUndefined();
+    expect(unansweredPriorNote([user("u1", "q1")])).toBeUndefined();
   });
 });

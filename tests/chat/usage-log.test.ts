@@ -79,6 +79,31 @@ describe("formatUsageLine", () => {
     expect(Object.keys(obj).sort()).toEqual([...USAGE_LINE_KEYS_TURN].sort());
     expect(obj.steps).toBe(3);
     expect("step" in obj).toBe(false);
+    // A turn that was not aborted says so explicitly.
+    expect(obj.abortedSteps).toBe(0);
+    expect(obj.abortedOutputEstimate).toBeNull();
+  });
+
+  it("an aborted turn line names the aborted step and its output estimate, and nothing else", () => {
+    const obj = parse(
+      formatUsageLine("turn", {
+        conversationId: 1,
+        scope: "all",
+        model: "m",
+        steps: 1,
+        noCache: 1,
+        cacheWrite: 2,
+        cacheRead: 3,
+        output: 4,
+        finishReason: "abort",
+        abortedSteps: 1,
+        abortedOutputEstimate: 7,
+        abortedText: MARKER,
+      } as unknown as Parameters<typeof formatUsageLine>[1] & { steps: number }),
+    );
+    expect(Object.keys(obj).sort()).toEqual([...USAGE_LINE_KEYS_TURN].sort());
+    expect(obj).toMatchObject({ abortedSteps: 1, abortedOutputEstimate: 7, finishReason: "abort" });
+    expect(JSON.stringify(obj)).not.toContain(MARKER);
   });
 
   it("a string smuggled into a numeric field is dropped to null", () => {

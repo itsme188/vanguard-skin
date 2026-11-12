@@ -32,6 +32,8 @@ import { SESSION_COOKIE } from "@/lib/auth/cookies";
 import { readPageField, pageNoteFor } from "@/lib/chat/page-context-server";
 import {
   sanitizeUiHistory,
+  dropEmptyAssistantMessages,
+  unansweredPriorNote,
   findOrphanToolCalls,
   dropOrphanToolCalls,
   LAST_STEP_NOTE,
@@ -44,6 +46,7 @@ import {
   logUsageStep,
   logUsageTurn,
   usageTokenFields,
+  estimateAbortedOutputTokens,
 } from "@/lib/chat/usage-log";
 import {
   checkRequestSize,
@@ -176,6 +179,7 @@ export async function POST(request: NextRequest) {
     // under another scope is refused, so a scoped conversation never carries
     // on under a wider scope (OPEN-3 default).
     let conversationId: number | null = null;
+    let untitled = true;
     const requestedId = requestedConversationId(rawConvId);
     if (requestedId !== null) {
       const existing = getConversationById(db, requestedId);
@@ -191,6 +195,7 @@ export async function POST(request: NextRequest) {
           );
         }
         conversationId = existing.id;
+        untitled = existing.title === null;
       }
     }
     if (conversationId === null) {
@@ -198,6 +203,18 @@ export async function POST(request: NextRequest) {
     }
     const convId: number = conversationId;
     conversationHeaders = { "X-Conversation-Id": String(convId) };
+
+    // Title from the first user message, set as soon as the row exists, so a
+    // first turn that is stopped or fails still titles the conversation
+    // (browser pass item 3). Figures are masked by conversationTitleFromMessages.
+    if (untitled) {
+      try {
+        const title = conversationTitleFromMessages(messages);
+        if (title) updateConversationTitle(db, convId, title);
+      } catch (error) {
+        logChatError("set conversation title", error);
+      }
+    }
 
     // Save the latest user message (B12) only when the request ends with one
     // (an approval continuation ends with the assistant message), and not
@@ -258,7 +275,7 @@ export async function POST(request: NextRequest) {
     // Contract D: the static block is the same for every request in this
     // scope and carries the cache mark; everything that changes per request
     // (date, dashboard, summary, page) is in the volatile block after it.
-    const { staticBlock, volatileBlock } = buildSystemPromptBlocks({
+    const blocks = buildSystemPromptBlocks({
       scope,
       currentDate,
       portfolioContext,
@@ -266,6 +283,16 @@ export async function POST(request: NextRequest) {
       ibkrNote,
       pageNote: pageNoteFor(db, page),
     });
+    const staticBlock = blocks.staticBlock;
+
+    // Item H: never send a tool call without its result (an aborted turn, a
+    // stale approval card); an approved continuation passes intact. A reply
+    // stopped before any text is dropped (browser pass item 2); when that, or
+    // a reload with nothing saved, leaves two owner messages in a row, this
+    // request's volatile block says to answer the latest one.
+    const history = dropEmptyAssistantMessages(sanitizeUiHistory(messages));
+    const priorNote = unansweredPriorNote(history);
+    const volatileBlock = priorNote ? `${blocks.volatileBlock}\n\n${priorNote}` : blocks.volatileBlock;
     const staticSystem: SystemModelMessage = {
       role: "system",
       content: staticBlock,
@@ -318,9 +345,7 @@ export async function POST(request: NextRequest) {
       }) as Tool;
     });
 
-    // Item H: never send a tool call without its result (an aborted turn, a
-    // stale approval card); an approved continuation passes intact.
-    let modelMessages = await convertToModelMessages(sanitizeUiHistory(messages), {
+    let modelMessages = await convertToModelMessages(history, {
       tools: aiTools,
       ignoreIncompleteToolCalls: true,
     });
@@ -354,7 +379,16 @@ export async function POST(request: NextRequest) {
     // errored or aborted turn can still charge and save them (R3-2, R3-4).
     const finishedStepTexts: string[] = [];
     let finishedStepOutput = 0;
+    // Token counts of the finished steps, summed, for an aborted turn's line.
+    const finishedTokens = { noCache: 0, cacheWrite: 0, cacheRead: 0, output: 0 };
+    let lastModelId: string | undefined;
+    // The step being streamed (browser pass item 1): its text so far, saved
+    // if the owner presses Stop mid-step, and its characters (text and
+    // reasoning) for the output estimate. Reset when the step finishes.
+    let inFlightText = "";
+    let inFlightChars = 0;
     let errored = false;
+    let aborted = false;
     // The turn is charged and its row saved exactly once: onAbort and
     // onFinish can both run for one aborted turn.
     let settled = false;
@@ -362,12 +396,6 @@ export async function POST(request: NextRequest) {
       try {
         if (!text) return;
         saveMessage(db, convId, "assistant", text, null);
-        // Auto-title from first exchange
-        const msgCount = messages.filter((m) => m.role === "user").length;
-        if (msgCount <= 1) {
-          const title = conversationTitleFromMessages(messages);
-          if (title) updateConversationTitle(db, convId, title);
-        }
       } catch (error) {
         logChatError("save assistant message", error);
       }
@@ -394,9 +422,31 @@ export async function POST(request: NextRequest) {
           cacheControl: { type: "ephemeral" },
         },
       },
+      // Installed SDK (ai 6.0.138): onChunk receives `{ chunk }` for each
+      // text-delta (`chunk.text`), reasoning-delta, tool and raw part, as the
+      // stream is read. Only the text is kept for saving; reasoning and tool
+      // input only count toward the estimate.
+      onChunk: ({ chunk }) => {
+        if (chunk.type === "text-delta") {
+          inFlightText += chunk.text;
+          inFlightChars += chunk.text.length;
+        } else if (chunk.type === "reasoning-delta") {
+          inFlightChars += chunk.text.length;
+        } else if (chunk.type === "tool-input-delta") {
+          inFlightChars += chunk.delta.length;
+        }
+      },
       onStepFinish: (step) => {
         finishedStepTexts.push(step.text ?? "");
         finishedStepOutput += step.usage?.outputTokens ?? 0;
+        const tokens = usageTokenFields(step.usage);
+        finishedTokens.noCache += tokens.noCache ?? 0;
+        finishedTokens.cacheWrite += tokens.cacheWrite ?? 0;
+        finishedTokens.cacheRead += tokens.cacheRead ?? 0;
+        finishedTokens.output += tokens.output ?? 0;
+        lastModelId = step.response?.modelId ?? lastModelId;
+        inFlightText = "";
+        inFlightChars = 0;
         logUsageStep({
           conversationId: convId,
           scope,
@@ -410,6 +460,9 @@ export async function POST(request: NextRequest) {
         // Release the concurrency slot first so the next request for this
         // session sees capacity immediately.
         releaseSlot();
+        // An abort already logged, charged and saved this turn (the SDK runs
+        // onAbort and then onFinish for one aborted turn).
+        if (aborted) return;
 
         const allSteps = steps ?? [];
         logUsageTurn({
@@ -453,15 +506,30 @@ export async function POST(request: NextRequest) {
       },
       onAbort: () => {
         // Fires on client disconnect (abortSignal above) — same release, so
-        // an abandoned request can't leak a slot. R3-4 / R4-7: the finished
-        // steps' output counts toward the daily ceiling, and their text (which
-        // the owner saw, and which the client re-sends as history) is stored;
-        // an empty abort saves nothing.
+        // an abandoned request can't leak a slot. Browser pass items 1 and 4,
+        // R3-4 / R4-7: save the finished steps' text plus the text of the step
+        // that was streaming (what the owner saw; nothing when both are
+        // empty); charge the finished steps' real output plus an ESTIMATE for
+        // the aborted step, whose usage the provider never reports; log one
+        // turn line that says so.
         releaseSlot();
+        aborted = true;
         if (settled) return;
         settled = true;
-        recordDailyUsage(sessionKey, budgetDay, finishedStepOutput);
-        saveAssistantRow(joinStepTexts(finishedStepTexts) || null);
+        const abortedSteps = inFlightChars > 0 || inFlightText !== "" ? 1 : 0;
+        const estimate = abortedSteps ? estimateAbortedOutputTokens(inFlightChars) : null;
+        logUsageTurn({
+          conversationId: convId,
+          scope,
+          model: lastModelId,
+          steps: finishedStepTexts.length,
+          ...finishedTokens,
+          finishReason: "abort",
+          abortedSteps,
+          abortedOutputEstimate: estimate,
+        });
+        recordDailyUsage(sessionKey, budgetDay, finishedStepOutput + (estimate ?? 0));
+        saveAssistantRow(joinStepTexts([...finishedStepTexts, inFlightText]) || null);
       },
     });
 

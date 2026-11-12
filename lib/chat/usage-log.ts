@@ -38,6 +38,8 @@ export const USAGE_LINE_KEYS_TURN = [
   "cacheRead",
   "output",
   "finishReason",
+  "abortedSteps",
+  "abortedOutputEstimate",
 ] as const;
 
 export interface UsageTokenFields {
@@ -60,8 +62,26 @@ export interface UsageStepFields extends UsageCommonFields {
 }
 
 export interface UsageTurnFields extends UsageCommonFields {
-  /** Number of steps in the turn. */
+  /** Number of finished steps in the turn (their counts are the provider's). */
   steps: number;
+  /**
+   * Steps cut off by an abort (Stop or a closed tab): 0 or 1. The provider
+   * reports no usage for such a step, so the token fields above leave it out.
+   */
+  abortedSteps?: number;
+  /**
+   * An ESTIMATE of the aborted step's output tokens (characters streamed
+   * divided by `ABORTED_CHARS_PER_TOKEN`), or null when no step was aborted.
+   */
+  abortedOutputEstimate?: number | null;
+}
+
+/** The stated ratio behind `abortedOutputEstimate`: characters per output token. */
+export const ABORTED_CHARS_PER_TOKEN = 4;
+
+/** Estimated output tokens for `chars` characters streamed by an aborted step. */
+export function estimateAbortedOutputTokens(chars: number): number {
+  return chars > 0 ? Math.ceil(chars / ABORTED_CHARS_PER_TOKEN) : 0;
 }
 
 /** Structural view of the SDK's `LanguageModelUsage` that this file reads. */
@@ -119,6 +139,10 @@ export function formatUsageLine(kind: "step" | "turn", fields: UsageStepFields |
   line.cacheRead = num(f.cacheRead);
   line.output = num(f.output);
   line.finishReason = token(f.finishReason);
+  if (kind === "turn") {
+    line.abortedSteps = num(f.abortedSteps) ?? 0;
+    line.abortedOutputEstimate = num(f.abortedOutputEstimate);
+  }
   return USAGE_LINE_PREFIX + JSON.stringify(line);
 }
 
