@@ -41,6 +41,7 @@ import { liveOptionExpirationSql } from "@/lib/compute/option-expiry";
 import { hasKnownBasis as hasKnownPositionBasis } from "@/lib/compute/known-basis";
 import { computeAggregateGainRatio } from "@/lib/compute/gain-ratio";
 import type { PendingFigureKind, PendingReason } from "@/lib/queries/pending-statement-types";
+import { transactionUsdFactorSql } from "@/lib/queries/transaction-amount-currency";
 
 // ─── Result types ──────────────────────────────────────────────
 
@@ -415,9 +416,11 @@ const OPTION_TRANSACTION_ROW_SQL = `(
 /**
  * Get recent transactions for a specific security across all accounts.
  *
- * price_per_share / amount are stored in the security's NATIVE currency
- * (FX convention) — the fx_rates join converts them to USD for this
- * pure-display path, matching the tax-lot + hero queries on the same page.
+ * price_per_share / amount are stored in the security's NATIVE currency for
+ * a trade leg and in USD for the IBKR cash sections (one rule:
+ * lib/queries/transaction-amount-currency.ts) — the fx_rates join converts a
+ * native row to USD for this pure-display path, matching the tax-lot + hero
+ * queries on the same page.
  * The converted aliases after t.* deliberately shadow the native columns
  * (better-sqlite3 row objects are built in column order, so the last
  * same-named column wins — pinned by the FX test).
@@ -430,8 +433,8 @@ export function getTransactionsBySecurity(
   return db
     .prepare(
       `SELECT t.*,
-              t.price_per_share * COALESCE(fx.usd_per_unit, 1) AS price_per_share,
-              t.amount * COALESCE(fx.usd_per_unit, 1) AS amount,
+              t.price_per_share * ${transactionUsdFactorSql()} AS price_per_share,
+              t.amount * ${transactionUsdFactorSql()} AS amount,
               s.symbol, s.name AS security_name, a.name AS account_name,
               s.security_type, s.option_type, s.underlying_symbol,
               s.strike_price, s.expiration_date

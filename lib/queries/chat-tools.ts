@@ -13,6 +13,7 @@ import { getPendingStatementIndex, type PendingStatementIndex } from "@/lib/quer
 import { figureKindForSide, sideOf, type PendingFigureKind, type PendingReason } from "@/lib/queries/pending-statement-types";
 import { liveOriginHoldingSql } from "@/lib/db/holding-sources";
 import { accountScopeAndSql, accountScopeCondition } from "@/lib/queries/account-scope-sql";
+import { transactionAmountCurrencySql, transactionAmountUsdSql } from "@/lib/queries/transaction-amount-currency";
 import {
   DIVIDEND_INCOME_SQL,
   FEES_SQL,
@@ -273,7 +274,7 @@ export interface TransactionResult {
   amount: number | null;
   /** In `amount_currency`. */
   fees: number;
-  /** The currency `amount`, `price_per_share` and `fees` are stored in (transactionAmountCurrencySql). */
+  /** The currency `amount`, `price_per_share` and `fees` are stored in (lib/queries/transaction-amount-currency.ts). */
   amount_currency: string;
   /** `amount` in USD at the current rate; equal to `amount` for USD; null when no rate is on file. */
   amount_usd: number | null;
@@ -1451,43 +1452,6 @@ function taxLotStatusNote(row: { security_type?: string | null; expiration_date?
 /**
  * Search transaction history with filters.
  */
-/**
- * Transaction types whose `amount` is stored in USD whatever the security's
- * currency. The IBKR activity parser converts its per-currency CASH
- * sections (Dividends, Interest, Fees, Deposits & Withdrawals) to USD at
- * import through IBKR's own "Total in USD" line, keeping the native figure
- * in the note (`emitCurrencyBlocks`, lib/import/parsers/ibkr-activity.ts);
- * the income readers sum these amounts as dollars (lib/queries/income-sql.ts).
- * Withholding is Vanguard-only (USD). Every other row (a trade leg: the
- * Trades section's Proceeds, a transfer's market value) is stored in the
- * security's NATIVE currency: the lot engine reads it native and converts
- * at read time (lib/compute/tax-lots.ts).
- */
-export const USD_STORED_TRANSACTION_TYPES = ["DIVIDEND", "INTEREST", "FEE", "DEPOSIT", "WITHDRAWAL", "TAX_WITHHELD"] as const;
-
-/**
- * The currency a transaction row's `amount` (and `price_per_share`, `fees`)
- * is stored in. Aliases: `t` transactions, `s` securities (LEFT JOIN).
- */
-export function transactionAmountCurrencySql(t = "t", s = "s"): string {
-  const usdTypes = USD_STORED_TRANSACTION_TYPES.map((x) => `'${x}'`).join(", ");
-  return `(CASE WHEN ${s}.id IS NULL OR UPPER(${t}.type) IN (${usdTypes}) THEN 'USD'
-            ELSE UPPER(COALESCE(${s}.currency, 'USD')) END)`;
-}
-
-/**
- * `amount` in USD at the current rate: the amount itself for USD, null when
- * no rate is on file (never the native number read as dollars). Expects
- * `fx` joined as `LEFT JOIN fx_rates fx ON fx.currency = s.currency`.
- */
-export function transactionAmountUsdSql(t = "t", s = "s", fx = "fx"): string {
-  const cur = transactionAmountCurrencySql(t, s);
-  return `(CASE WHEN ${t}.amount IS NULL THEN NULL
-            WHEN ${cur} = 'USD' THEN ${t}.amount
-            WHEN ${fx}.usd_per_unit IS NOT NULL THEN ${t}.amount * ${fx}.usd_per_unit
-            ELSE NULL END)`;
-}
-
 export function getTransactionsForChat(
   db: Database.Database,
   filters: TransactionFilters = {}

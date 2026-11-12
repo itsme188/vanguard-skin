@@ -172,7 +172,9 @@ describe("getTransactionsByAccount sorts before the cap", () => {
   it("converts a foreign-currency amount before ordering it", () => {
     upsertFxRate(db, { currency: "JPY", usdPerUnit: 0.01, asOf: "2024-01-01", source: "test" });
     const jpy = seedSecurity(db, "ZZZ", "JPY");
-    const yen = seedTxn(db, { securityId: jpy, type: "DIVIDEND", amount: 5000, tradeDate: "2024-01-01" });
+    // A trade leg is stored native (a dividend is stored in USD at import, so
+    // it is not converted: tests/queries/transactions-usd-stored-types.test.ts).
+    const yen = seedTxn(db, { securityId: jpy, type: "SELL", amount: 5000, quantity: 5, tradeDate: "2024-01-01" });
     const usd = seedTxn(db, { securityId: aaa, type: "DIVIDEND", amount: 80, tradeDate: "2024-01-02" });
     const rows = getTransactionsByAccount(db, ACCOUNT_ID, {
       sort: { field: "amount", dir: "desc" },

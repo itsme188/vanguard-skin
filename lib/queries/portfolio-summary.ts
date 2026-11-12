@@ -21,7 +21,7 @@ import {
 } from "@/lib/queries/dashboard";
 import { liveOptionExpirationSql, normalizeOptionExpiration } from "@/lib/compute/option-expiry";
 import { CURRENCY_CONVERSION_SECURITY_SQL, lotSideSignSql, remainingLotBasisSql } from "@/lib/queries/tax-lots";
-import { transactionAmountCurrencySql, transactionAmountUsdSql } from "@/lib/queries/chat-tools";
+import { transactionAmountCurrencySql, transactionAmountUsdSql } from "@/lib/queries/transaction-amount-currency";
 import { longTermDateSql } from "@/lib/queries/long-term-sql";
 import { getPendingStatementIndex, isPendingStatementLot } from "@/lib/queries/pending-statement";
 import {

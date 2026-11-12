@@ -1,5 +1,6 @@
 import type Database from "better-sqlite3";
 import type { Transaction } from "@/lib/types";
+import { transactionUsdFactorSql } from "@/lib/queries/transaction-amount-currency";
 
 export interface TransactionWithSecurity extends Transaction {
   symbol: string | null;
@@ -39,7 +40,7 @@ const DISPLAYED_AMOUNT_SQL = `(
     WHEN t.type IN ('SELL', 'SELL_TO_CLOSE', 'SELL_TO_OPEN')
       THEN ABS(t.amount)
     ELSE t.amount
-  END * COALESCE(fx.usd_per_unit, 1)
+  END * ${transactionUsdFactorSql()}
 )`;
 
 // Whitelist: the sort field reaches SQL only through this map, never as a
@@ -75,8 +76,10 @@ export function parseTransactionSort(
 const USER_ACTIVITY_WHERE = "t.account_id = ? AND t.type != 'RECONCILE_CLOSE'";
 
 /**
- * price_per_share / amount are stored in the security's NATIVE currency
- * (FX convention) — the fx_rates join converts them to USD for this
+ * price_per_share / amount are stored in the security's NATIVE currency for
+ * a trade leg and in USD for the IBKR cash sections (one rule:
+ * lib/queries/transaction-amount-currency.ts) — the fx_rates join converts a
+ * native row to USD for this
  * pure-display path, mirroring getTransactionsBySecurity on Security
  * Detail (a703773). The converted aliases after t.* deliberately shadow
  * the native columns (better-sqlite3 row objects are built in column
@@ -104,8 +107,8 @@ export function getTransactionsByAccount(
 ): TransactionWithSecurity[] {
   let sql = `
     SELECT t.*,
-           t.price_per_share * COALESCE(fx.usd_per_unit, 1) as price_per_share,
-           t.amount * COALESCE(fx.usd_per_unit, 1) as amount,
+           t.price_per_share * ${transactionUsdFactorSql()} as price_per_share,
+           t.amount * ${transactionUsdFactorSql()} as amount,
            s.symbol, s.name as security_name, a.name as account_name
     FROM transactions t
     LEFT JOIN securities s ON s.id = t.security_id
