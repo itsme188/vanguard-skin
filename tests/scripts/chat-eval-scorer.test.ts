@@ -370,6 +370,8 @@ const MANIFEST: EvalManifest = {
   multiAccountOption: { symbol: "MSFT  261226C00480000", expiry: "2026-12-26" },
   staleName: "JNJ",
   unknownTicker: "ZZZZ",
+  washSale: { symbol: "WASH", lossAccount: "Vanguard Taxable", replacementAccount: "Vanguard Roth IRA", saleDate: "2026-10-18" },
+  calendarEvent: { symbol: "AAPL", date: "2026-11-12" },
 };
 
 const X: ExpectedContext = {
@@ -383,6 +385,7 @@ const X: ExpectedContext = {
     shortTerm: -420.5,
     longTerm: 310.25,
     lifetimeAllAccounts: 900,
+    shortTermRowsUnadjusted: -420.5,
     closedThisYear: ["AAPL", "TSLA"],
     closedOtherYearsOnly: ["GOOGL"],
   },
@@ -395,6 +398,7 @@ const X: ExpectedContext = {
   excludedLosses: { roth: -500, pending: -150 },
   unmodelledPositions: 2,
   taxableAccounts: ["IBKR", "Vanguard Taxable"],
+  washedLoss: { symbol: "WASH", saleAccount: "Vanguard Taxable", loss: -400, replacementAccount: "Vanguard Roth IRA" },
 };
 
 const LONG_REVIEW =
@@ -501,11 +505,23 @@ const CASES: Record<string, Case> = {
     right: LONG_REVIEW,
     wrong: "Performance is fine, risk is moderate, tax is in order and earnings are upcoming.",
   },
+  Q19: {
+    tools: ["query_realized_gains"],
+    right:
+      "Yes: the WASH shares bought here on 2026-10-28 washed the $400 loss taken in Vanguard Taxable on 2026-10-18. Because the replacement sits in the Roth, that loss is disallowed for good.",
+    wrong: "Yes: WASH washed a $400 loss in Vanguard Taxable; the loss moves into the Roth shares' basis and comes back when you sell.",
+  },
+  Q20: {
+    tools: ["query_data_confidence"],
+    right:
+      "Mostly. This check covers every account, not only IBKR. JNJ is stale, last priced 2026-11-05, and the NVDA $150 call that expired on 2026-11-02 is awaiting its closing entry.",
+    wrong: "Everything checks out for IBKR: prices are current.",
+  },
 };
 
 describe("golden questions: one right and one plausible wrong answer each", () => {
   const golden = buildGolden(X);
-  it("covers all 18 questions", () => {
+  it("covers every golden question", () => {
     expect(golden.map((q) => q.id)).toEqual(Object.keys(CASES));
   });
   for (const q of golden) {
@@ -722,8 +738,15 @@ describe("scorer regressions from the live run", () => {
   });
 
   it("Q14: an explicit empty calendar in other words passes (was a false fail)", () => {
-    const r = score("Q14", "The calendar returned nothing for the next two weeks: zero events across all types.", ["query_calendar_events"]);
+    // A fixture with no event this week (versions 1 and 2).
+    const q = buildGolden({ ...X, manifest: { ...MANIFEST, calendarEvent: undefined } }).find((g) => g.id === "Q14")!;
+    const r = scoreAnswer(answer("The calendar returned nothing for the next two weeks: zero events across all types.", { toolCalls: ["query_calendar_events"] }), q.checks);
     expect(r.checks.filter((c) => !c.pass)).toEqual([]);
+  });
+
+  it("Q14: with a held name reporting this week, an empty-calendar answer fails (fixture version 3)", () => {
+    const r = score("Q14", "The calendar returned nothing for the next two weeks: zero events across all types.", ["query_calendar_events"]);
+    expect(r.pass).toBe(false);
   });
 
   it("Q16: an answer of no live options now fails, because the fixture holds a live MSFT call", () => {
@@ -832,6 +855,13 @@ describe("run-4 regressions", () => {
     expect(failed(r)).toEqual([]);
     const wrong = score("Q16", "MSFT: IBKR 100 shares and Vanguard Taxable 80 shares, delta about 73, plus $1,600 of premium in total exposure.", ["query_holdings"]);
     expect(failed(wrong)).toContain("no premium sum as exposure");
+  });
+
+  it("Q6: the short-term total with a washed loss still deducted fails (fixture version 3)", () => {
+    const x = { ...X, realized: { ...X.realized!, shortTerm: -20.5, shortTermRowsUnadjusted: -420.5 } };
+    const base = "from the AAPL calls and the TSLA sale. Long-term: a gain of $310.25. These are not for filing.";
+    expect(failed(score("Q6", `Short-term: a loss of $20.50, ${base}`, ["query_realized_gains"], x))).toEqual([]);
+    expect(failed(score("Q6", `Short-term: a loss of $420.50, ${base}`, ["query_realized_gains"], x))).toContain("the washed loss is not deducted");
   });
 
   it("a taxable account called non-taxable fails the tax questions", () => {

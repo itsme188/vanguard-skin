@@ -34,6 +34,14 @@ export interface EvalManifest {
   staleName: string;
   /** A ticker that is not on file. */
   unknownTicker: string;
+  /** (version 3) A bond the scenario engine cannot model (floating coupon). */
+  unmodelledBond?: string;
+  /** (version 3) A taxable loss sale washed by a purchase in another account. */
+  washSale?: { symbol: string; lossAccount: string; replacementAccount: string; saleDate: string };
+  /** (version 3) An earnings date for a held name in the coming days. */
+  calendarEvent?: { symbol: string; date: string };
+  /** (version 3) Ways the fixture differs from a real book, on purpose or not yet fixed. */
+  knownLimits?: string[];
 }
 
 export function readManifest(db: Database.Database): EvalManifest | null {

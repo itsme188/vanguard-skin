@@ -1,5 +1,6 @@
 /**
- * The 18 golden questions (plan 2026-11-11, Task 9 table), as data.
+ * The golden questions (plan 2026-11-11, Task 9 table: Q1-Q18; Q19-Q20 added
+ * after run 4 for fixture version 3), as data.
  *
  * Each question is a function of the expected context (expected.ts), so
  * figures and symbols come from the eval database at run time, never from a
@@ -274,6 +275,11 @@ export const GOLDEN: readonly Builder[] = [
         });
       }
       checks.push(...taxabilityChecks(x));
+      // Fact: a washed loss is disallowed, so the short-term total is not the
+      // plain sum of the sale rows (fixture version 3 has a washed loss).
+      if (Math.abs(x.realized.shortTermRowsUnadjusted - x.realized.shortTerm) > 1) {
+        checks.push({ kind: "notNumber", label: "the washed loss is not deducted", value: x.realized.shortTermRowsUnadjusted, absTol: 0.5, signed: true });
+      }
       const yearTotal = x.realized.shortTerm + x.realized.longTerm;
       if (Math.abs(x.realized.lifetimeAllAccounts - yearTotal) > 5) {
         checks.push({ kind: "notNumber", label: "not the lifetime total", value: x.realized.lifetimeAllAccounts, absTol: 1 });
@@ -424,17 +430,25 @@ export const GOLDEN: readonly Builder[] = [
       notes,
     };
   },
-  () => ({
-    id: "Q14",
-    scope: "all",
-    question: "What's on deck this week for names I hold?",
-    checks: [
+  (x) => {
+    const checks: Check[] = [
       { kind: "calledTool", label: "reads the calendar", tool: "query_calendar_events" },
-      { kind: "contains", label: "times in Eastern, or an explicit empty answer", pattern: EMPTY_OR_EASTERN },
       { kind: "notContains", label: "no 'already reported' for a print still ahead", pattern: /already reported[^.\n]{0,40}(tomorrow|later this week|before the open)/ },
-    ],
-    notes: ["report_state is otherwise checked by review of the answer"],
-  }),
+    ];
+    const notes = ["report_state is otherwise checked by review of the answer"];
+    const ev = x.manifest.calendarEvent;
+    if (ev) {
+      // Fact (fixture version 3): a held name reports in the coming days, after the close.
+      const sym = `\\b${escapeRegExp(ev.symbol)}\\b`;
+      const day = `(?:${datePattern(ev.date)}|\\b(Mon|Tues|Wednes|Thurs|Fri)day\\b|\\btomorrow\\b)`;
+      checks.push({ kind: "contains", label: `the held name's earnings and its day (${ev.symbol}, ${ev.date})`, pattern: new RegExp(`${sym}[^\\n]{0,160}${day}|${day}[^\\n]{0,160}${sym}`) });
+      checks.push({ kind: "contains", label: "the timing (after the close, or an Eastern time)", pattern: /after (the )?(close|bell|market)|\bAMC\b|\bET\b|Eastern/ });
+      checks.push({ kind: "notContains", label: "not called an empty calendar", pattern: /calendar (is|was) empty|returned nothing|nothing (is )?(on|scheduled) (the calendar|this week)|no (events|earnings) (this|next) week/ });
+    } else {
+      checks.splice(1, 0, { kind: "contains", label: "times in Eastern, or an explicit empty answer", pattern: EMPTY_OR_EASTERN });
+    }
+    return { id: "Q14", scope: "all", question: "What's on deck this week for names I hold?", checks, notes };
+  },
   (x) => {
     const checks: Check[] = [];
     const notes: string[] = [];
@@ -508,6 +522,62 @@ export const GOLDEN: readonly Builder[] = [
     ],
     notes: [],
   }),
+  // ── Added after run 4 (fixture version 3). Ids above stay stable. ──
+  (x) => {
+    // A Roth-scoped chat: the Roth purchase that washed a taxable loss.
+    const checks: Check[] = [];
+    const notes: string[] = [];
+    const w = x.washedLoss;
+    if (w) {
+      checks.push({ kind: "calledTool", label: "uses the realized-gains tool", tool: "query_realized_gains" });
+      checks.push({ kind: "contains", label: `names the washed security (${w.symbol})`, pattern: new RegExp(`\\b${escapeRegExp(w.symbol)}\\b`) });
+      checks.push({ kind: "contains", label: "names the account the loss was taken in", pattern: new RegExp(`${escapeRegExp(w.saleAccount)}|\\btaxable\\b`) });
+      // Fact: a loss washed by a purchase in a Roth is disallowed for good,
+      // not deferred into the replacement's basis.
+      checks.push({
+        kind: "contains",
+        label: "the loss is lost for good, not deferred",
+        pattern: /permanent|for good|forever|never (be )?(recover|deduct|claim|us)|not (be )?deferred|can(no|')t be (recovered|deducted|claimed|added)/,
+      });
+      checks.push({ kind: "number", label: "the washed loss, signed", value: w.loss, absTol: 1, signed: true, near: new RegExp(`\\b${escapeRegExp(w.symbol)}\\b|loss|disallow`), window: 160 });
+      checks.push(...taxabilityChecks(x));
+    } else notes.push("the fixture has no cross-account wash sale (fixture version 3 adds one)");
+    return {
+      id: "Q19",
+      scope: "vanguard-roth-ira",
+      question: "Did anything I bought in this account wash out a loss I took somewhere else?",
+      checks,
+      notes,
+    };
+  },
+  (x) => {
+    // An IBKR-scoped chat asking about data quality: the tool covers every
+    // account, and the answer must say so.
+    const checks: Check[] = [
+      { kind: "calledTool", label: "uses the data-confidence tool", tool: "query_data_confidence" },
+      {
+        kind: "contains",
+        label: "says the check covers every account, not only IBKR",
+        pattern: /every account|all (of )?(your |the )?(three )?accounts|whole (portfolio|book)|entire (portfolio|book)|not (only|just) (this account|IBKR|the IBKR)|across (the |your )?(whole|entire|all)/,
+      },
+      { kind: "notContains", label: "not 'everything is fresh'", pattern: /everything (is|looks|checks out)|all (data|figures|numbers|prices) (are|is|look) (fresh|current|up to date|good)|nothing (is )?stale/ },
+    ];
+    const notes: string[] = [];
+    if (x.stalePriceDate) {
+      checks.push({
+        kind: "contains",
+        label: `the stale name or its price date (${x.manifest.staleName}, ${x.stalePriceDate})`,
+        pattern: new RegExp(`${datePattern(x.stalePriceDate)}|\\b${escapeRegExp(x.manifest.staleName)}\\b`),
+      });
+    } else notes.push("no stale price date in the fixture");
+    const u = escapeRegExp(x.manifest.expiredOption.underlying);
+    checks.push({
+      kind: "contains",
+      label: `the expired ${x.manifest.expiredOption.underlying} option awaiting its closing entry`,
+      pattern: new RegExp(`\\b${u}\\b[^\\n]{0,160}expir|expir[^\\n]{0,160}\\b${u}\\b`),
+    });
+    return { id: "Q20", scope: "ibkr", question: "Can I trust the numbers for this account right now?", checks, notes };
+  },
 ];
 
 export function buildGolden(x: ExpectedContext): GoldenQuestion[] {

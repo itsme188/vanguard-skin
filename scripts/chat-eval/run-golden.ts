@@ -21,13 +21,13 @@
  *   # /v1, @ai-sdk/anthropic then posts to /messages and every call is a 404
  *   # (the runner stops on a provider 404 with this explanation)
  *   unset ANTHROPIC_BASE_URL
- *   DATABASE_PATH=$PWD/data/chat-eval/eval-v2.db TWS_HOST=192.0.2.1 \
+ *   DATABASE_PATH=$PWD/data/chat-eval/eval-v3.db TWS_HOST=192.0.2.1 \
  *     APP_EXTRA_HOSTS=127.0.0.1:3095 APP_EXTRA_ORIGINS=http://127.0.0.1:3095 \
  *     npx next dev -H 127.0.0.1 -p 3095 > data/chat-eval/server.log 2>&1
- *   npx tsx scripts/chat-eval/run-golden.ts --db data/chat-eval/eval-v2.db --dry-run [--mode cache-proof]
- *   npx tsx scripts/chat-eval/run-golden.ts --db data/chat-eval/eval-v2.db --log data/chat-eval/server.log \
+ *   npx tsx scripts/chat-eval/run-golden.ts --db data/chat-eval/eval-v3.db --dry-run [--mode cache-proof]
+ *   npx tsx scripts/chat-eval/run-golden.ts --db data/chat-eval/eval-v3.db --log data/chat-eval/server.log \
  *     --mode cache-proof --max-usd N
- *   npx tsx scripts/chat-eval/run-golden.ts --db data/chat-eval/eval-v2.db --log data/chat-eval/server.log \
+ *   npx tsx scripts/chat-eval/run-golden.ts --db data/chat-eval/eval-v3.db --log data/chat-eval/server.log \
  *     --max-usd N [--only Q1,Q5] [--show-answers]
  *
  * Budget (orchestrator ruling): a question starts only if the money spent

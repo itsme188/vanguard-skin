@@ -39,6 +39,8 @@ export interface ExpectedContext {
     shortTerm: number;
     longTerm: number;
     lifetimeAllAccounts: number;
+    /** The short-term sale rows summed with no wash-sale adjustment (a washed loss still deducted). */
+    shortTermRowsUnadjusted: number;
     /** Underlying symbols of the instruments that closed this year (stocks and options alike). */
     closedThisYear: string[];
     /** Symbols with a sale on file only in OTHER years (the wrong source of this year's gain). */
@@ -62,6 +64,12 @@ export interface ExpectedContext {
   unmodelledPositions: number | null;
   /** Names of the accounts whose tax treatment is taxable (`isTaxableAccount`). */
   taxableAccounts: string[];
+  /**
+   * The loss sale a purchase in the replacement account washed, as the
+   * realized-gains tool reports it in that account's scope
+   * (washed_by_purchases_in_this_scope), or null (no wash sale in the fixture).
+   */
+  washedLoss: { symbol: string; saleAccount: string; loss: number; replacementAccount: string } | null;
 }
 
 function deriveStalePriceDate(db: Database.Database): string | null {
@@ -166,11 +174,21 @@ function deriveRealized(db: Database.Database, today: string): ExpectedContext["
   const otherYears = [...new Set(lifetime.filter((r) => !r.sale_date.startsWith(String(year))).map((r) => root(r.symbol)))]
     .filter((s) => !thisYear.includes(s))
     .sort();
+  // The year's totals as the realized-gains tool states them: the tax
+  // report's own figures, wash-sale adjustments applied (a disallowed loss is
+  // added back). A plain sum of the sale rows would count a washed loss.
+  const report = runCompositeTool("query_realized_gains", db, { include_rows: false, year }, { accountIds: undefined, today }) as {
+    short_term?: { gain_loss?: number };
+    long_term?: { gain_loss?: number };
+  };
+  const st = report?.short_term?.gain_loss;
+  const lt = report?.long_term?.gain_loss;
   return {
     year,
-    shortTerm: sum(rows.filter((r) => !r.is_long_term)),
-    longTerm: sum(rows.filter((r) => r.is_long_term)),
+    shortTerm: typeof st === "number" ? round2(st) : sum(rows.filter((r) => !r.is_long_term)),
+    longTerm: typeof lt === "number" ? round2(lt) : sum(rows.filter((r) => r.is_long_term)),
     lifetimeAllAccounts: sum(lifetime),
+    shortTermRowsUnadjusted: sum(rows.filter((r) => !r.is_long_term)),
     closedThisYear: thisYear,
     closedOtherYearsOnly: otherYears,
   };
@@ -218,6 +236,20 @@ function deriveUnmodelled(db: Database.Database, today: string): number | null {
   return Array.isArray(r?.unmodelled_positions) ? r.unmodelled_positions.length : null;
 }
 
+function deriveWashedLoss(db: Database.Database, m: EvalManifest, today: string): ExpectedContext["washedLoss"] {
+  const w = m.washSale;
+  if (!w) return null;
+  const acct = db.prepare("SELECT id FROM accounts WHERE name = ?").get(w.replacementAccount) as { id: number } | undefined;
+  if (!acct) return null;
+  const r = runCompositeTool("query_realized_gains", db, { include_rows: false, year: Number(w.saleDate.slice(0, 4)) }, {
+    accountIds: [acct.id],
+    accountName: w.replacementAccount,
+    today,
+  }) as { washed_by_purchases_in_this_scope?: { shown?: { symbol: string; sale_account: string; loss: number }[] } };
+  const row = r?.washed_by_purchases_in_this_scope?.shown?.find((s) => s.symbol === w.symbol);
+  return row ? { symbol: row.symbol, saleAccount: row.sale_account, loss: row.loss, replacementAccount: w.replacementAccount } : null;
+}
+
 function deriveTaxableAccounts(db: Database.Database): string[] {
   return (db.prepare("SELECT name, tax_treatment FROM accounts ORDER BY name").all() as { name: string; tax_treatment: string | null }[])
     .filter((a) => isTaxableAccount(a.tax_treatment))
@@ -245,5 +277,6 @@ export function deriveExpected(db: Database.Database, manifest: EvalManifest, to
     },
     unmodelledPositions: deriveUnmodelled(db, today),
     taxableAccounts: deriveTaxableAccounts(db),
+    washedLoss: deriveWashedLoss(db, manifest, today),
   };
 }

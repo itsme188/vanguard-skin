@@ -16,13 +16,27 @@
  *   - a reinvested dividend pair (VTI, DIVIDEND + REINVESTMENT, same day);
  *   - margin interest paid in IBKR (a negative INTEREST row);
  *   - a Treasury bill maturing in 45 days;
- *   - a taxable gaining lot short of long-term (LTWT) for the wait question.
+ *   - a taxable gaining lot short of long-term (LTWT) for the wait question;
+ * and, since fixture version 3 (run-4 reading, 2026-11-12):
+ *   - a floating-rate Treasury note the scenario engine cannot model;
+ *   - a cross-account wash sale: a taxable loss sale (WASH) bought back in
+ *     the Roth within the window, so the loss is disallowed for good;
+ *   - an earnings date for a held name (MSFT) on the next trading day;
+ *   - closes that move between the last two sessions for every carried
+ *     stock and ETF (a deterministic move of at most about two percent);
+ *   - the stale JNJ close moved down, so JNJ's account weight is not the
+ *     Treasury note's whole-book weight;
+ *   - the Roth loser bought at a cost that makes the harvest-plus-Roth hand
+ *     sum a figure no lot carries;
+ *   - IBKR's closed positions reconciled to quantity-0 rows as a real
+ *     import does, so the expired NVDA 180 call is not "awaiting its
+ *     closing entry".
  * Then it recomputes tax lots and daily valuations with the repo's engines
  * and writes the eval marker and a manifest (symbols and dates only) into
  * `settings`, which run-golden.ts requires before it will run.
  *
  * Every figure is invented. Run from the repo root:
- *   npx tsx scripts/chat-eval/build-eval-db.ts [--from data/demo.db] [--out data/chat-eval/eval-v2.db] [--force]
+ *   npx tsx scripts/chat-eval/build-eval-db.ts [--from data/demo.db] [--out data/chat-eval/eval-v3.db] [--force]
  * The output path may not be named vanguard.db, and inside the repo it must
  * be git-ignored. The resolved paths are printed first.
  */
@@ -40,6 +54,10 @@ import { isMarketClosed } from "../../lib/calendar/market-holidays";
 import { isOptionLive } from "../../lib/compute/option-expiry";
 import { isCashEquivalentSecurity } from "../../lib/compute/cash-equivalents";
 import { getMarketSnapshot, type QuoteFetcher } from "../../lib/queries/market-snapshot";
+import { reconcileClosedEquityHoldings } from "../../lib/mutations/closed-equity";
+import { upsertCalendarEvents } from "../../lib/mutations/calendar";
+import { runCompositeTool } from "../../lib/chat/composite";
+import { getTaxLotsForChat } from "../../lib/queries/chat-tools";
 import { EVAL_FIXTURE_VERSION, EVAL_MARKER_KEY, liveDbRefusal, resolvedDbPath } from "./db-guard";
 import { outputPathRefusal } from "./output-guard";
 import { EVAL_MANIFEST_KEY, type EvalManifest } from "./manifest";
@@ -90,6 +108,11 @@ export interface FixtureAssertion {
  *     tax_lot_sales rows. Opening legs (SELL_TO_OPEN, SHORT_SELL) are not
  *     closes and are excluded by design.
  *  4. The market snapshot reads the local book (no outside quote source).
+ *  5. (version 3) The data-confidence integrity findings do not list the
+ *     demo's NVDA 180 call (closed by its EXPIRED entry) and do list the
+ *     fixture's expired NVDA 150 call as awaiting its closing entry; PNDG
+ *     is still a pending lot; the scenario tool lists at least one
+ *     unmodelled position.
  */
 export async function assertFixture(db: Database.Database, today: string): Promise<FixtureAssertion> {
   const failures: string[] = [];
@@ -161,7 +184,68 @@ export async function assertFixture(db: Database.Database, today: string): Promi
 
   const snap = await localSnapshotCheck(db, today);
   if (snap) failures.push(snap);
+  failures.push(...version3Checks(db, today));
   return { ok: failures.length === 0, failures };
+}
+
+/** The demo seed's NVDA call that expired and has its EXPIRED entry (a closed position). */
+export const DEMO_CLOSED_NVDA_CALL = "NVDA  260221C00180000";
+
+/** Check 5 of assertFixture (fixture version 3). */
+function version3Checks(db: Database.Database, today: string): string[] {
+  const out: string[] = [];
+  const conf = runCompositeTool("query_data_confidence", db, {}, { accountIds: undefined, today }) as {
+    items?: { integrity_findings?: unknown };
+    error?: string;
+  };
+  if (conf?.error) return [`query_data_confidence failed: ${conf.error}`];
+  const findings = JSON.stringify(conf?.items?.integrity_findings ?? null);
+  const loose = (symbol: string) => new RegExp(escapeRe(symbol).replace(/\s+/g, "\\s*"));
+  const hasClosed = db.prepare("SELECT 1 FROM securities WHERE symbol = ?").get(DEMO_CLOSED_NVDA_CALL);
+  if (hasClosed && loose(DEMO_CLOSED_NVDA_CALL).test(findings)) {
+    out.push(`the integrity findings list ${DEMO_CLOSED_NVDA_CALL}, which is closed by its EXPIRED entry`);
+  }
+  const manifestRow = db.prepare("SELECT value FROM settings WHERE key = ?").get(EVAL_MANIFEST_KEY) as { value: string } | undefined;
+  const manifest = manifestRow ? (JSON.parse(manifestRow.value) as EvalManifest) : null;
+  if (manifest) {
+    const expired = manifest.expiredOption.symbol;
+    const m = new RegExp(`${escapeRe(expired).replace(/\s+/g, "\\s*")}[^"]*expired[^"]*awaiting its closing entry`);
+    if (!m.test(findings)) out.push(`the integrity findings do not list ${expired} as expired and awaiting its closing entry`);
+    const pending = getTaxLotsForChat(db, { symbol: manifest.pendingLot, status: "open" });
+    if (!pending.some((r) => r.pending_statement)) out.push(`${manifest.pendingLot} is no longer a pending lot`);
+  }
+  const scen = runCompositeTool("query_scenarios", db, {}, { accountIds: undefined, today }) as { unmodelled_positions?: unknown[] };
+  if (!Array.isArray(scen?.unmodelled_positions) || scen.unmodelled_positions.length === 0) {
+    out.push("the scenario tool lists no unmodelled position (the floating-rate note should be one)");
+  }
+  return out;
+}
+
+function escapeRe(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/** A deterministic close-to-close move in [-1%, +1%] per security (no randomness, so a rebuild is identical). */
+function sessionMove(securityId: number, salt: number): number {
+  return ((((securityId * salt) % 21) + 21) % 21 - 10) / 1000;
+}
+
+const round2 = (n: number) => Math.round(n * 100) / 100;
+
+/** A synthetic CUSIP-shaped symbol for the floating-rate note. */
+export const FRN_SYMBOL = "91282CZF1";
+
+/** The next weekday after `date` (holidays are handled by tradingDayOnOrBefore's caller). */
+function nextWeekday(date: string): string {
+  let d = addDays(date, 1);
+  while (isMarketClosed(d)) d = addDays(d, 1);
+  return d;
+}
+
+/** The Monday of the week holding `date` (ISO week, Monday first). */
+function mondayOf(date: string): string {
+  const dow = new Date(`${date}T12:00:00Z`).getUTCDay();
+  return addDays(date, -((dow + 6) % 7));
 }
 
 /**
@@ -227,6 +311,7 @@ export function buildEvalFixture(db: Database.Database, today: string): EvalMani
   const expiredExpiry = addDays(today, -10);
   const msftExpiry = addDays(today, 45);
   const billMaturity = addDays(today, 45);
+  const frnMaturity = addDays(today, 700);
   const ltwtAcquired = addDays(today, -300);
   const preD0 = addDays(d0, -20);
 
@@ -264,6 +349,10 @@ export function buildEvalFixture(db: Database.Database, today: string): EvalMani
       { geography: "International Developed", exchange: "TSE" },
     ),
     LTWT: sec({ symbol: "LTWT", name: "Longwait Partners", securityType: "stock", assetClass: "equity" }),
+    WASH: sec({ symbol: "WASH", name: "Washburn Foods", securityType: "stock", assetClass: "equity" }),
+    // The engine never derives a duration for a floating coupon
+    // (isNotFixedCouponName, lib/bonds.ts): an unmodelled position.
+    FRN: sec({ symbol: FRN_SYMBOL, name: `US Treasury Floating Rate Note ${frnMaturity}`, securityType: "bond", assetClass: "fixed_income", maturityDate: frnMaturity }),
     BILL: sec({ symbol: "912797ZZ9", name: `US Treasury Bill ${billMaturity}`, securityType: "bond", assetClass: "fixed_income", maturityDate: billMaturity }),
     LIVEOPT: optSec("AAPL", liveExpiry, 260),
     DEADOPT: optSec("NVDA", expiredExpiry, 150),
@@ -290,7 +379,8 @@ export function buildEvalFixture(db: Database.Database, today: string): EvalMani
   const t = (acct: number, secId: number | null, date: string, type: string, qty: number | null, amount: number, pps: number | null, notes: string | null = null) =>
     tx.run(acct, secId, date, type, qty, amount, pps, 0, `eval:${type}:${acct}:${secId ?? "cash"}:${date}:${n++}`, batch, notes);
 
-  t(roth, ids.ROTHL, addDays(today, -200), "BUY", 50, -5000, 100);
+  // Cost 5,100: the harvest loss plus the Roth loss is then a figure no lot carries.
+  t(roth, ids.ROTHL, addDays(today, -200), "BUY", 50, -5100, 102);
   t(taxable, ids.HRVST, addDays(today, -150), "BUY", 40, -3200, 80);
   t(taxable, ids.PNDG, preD0, "BUY", 30, -2700, 90);
   t(ibkr, ids.SHRT, addDays(today, -40), "SHORT_SELL", 30, 1200, 40);
@@ -298,6 +388,13 @@ export function buildEvalFixture(db: Database.Database, today: string): EvalMani
   t(ibkr, ids.KAIZN, addDays(today, -90), "BUY", 100, -230000, 2300);
   t(taxable, ids.LTWT, ltwtAcquired, "BUY", 60, -3000, 50);
   t(taxable, ids.BILL, addDays(today, -130), "BUY", 10000, -9890, 98.9);
+  t(taxable, ids.FRN, addDays(today, -100), "BUY", 5000, -4995, 99.9);
+  // Cross-account wash sale: a taxable loss sale bought back in the Roth
+  // ten days later. The Roth purchase disallows the loss for good.
+  const washSaleDate = addDays(today, -25);
+  t(taxable, ids.WASH, addDays(today, -120), "BUY", 20, -2000, 100);
+  t(taxable, ids.WASH, washSaleDate, "SELL", 20, 1600, 80);
+  t(roth, ids.WASH, addDays(today, -15), "BUY", 20, -1640, 82);
   t(ibkr, ids.LIVEOPT, addDays(today, -30), "BUY_TO_OPEN", 2, -1000, 5);
   t(ibkr, ids.DEADOPT, preD0, "BUY_TO_OPEN", 1, -300, 3);
   t(ibkr, ids.MSFTOPT, addDays(today, -20), "BUY_TO_OPEN", 2, -1500, 7.5);
@@ -317,6 +414,8 @@ export function buildEvalFixture(db: Database.Database, today: string): EvalMani
     [ids.KAIZN, 2480, 2500],
     [ids.LTWT, 69, 70],
     [ids.BILL, 99.55, 99.6],
+    [ids.FRN, 100.02, 100.05],
+    [ids.WASH, 83, 84],
     [ids.LIVEOPT, 5.8, 6.1],
     [ids.MSFTOPT, 7.6, 8],
     [ids.SPY, 600, 606],
@@ -363,10 +462,12 @@ export function buildEvalFixture(db: Database.Database, today: string): EvalMani
   const fixtureIds = new Set(fixturePrices.map(([id]) => id));
   const newPositions: [number, number, number, number][] = [
     // [account, security, quantity, cost basis]
-    [roth, ids.ROTHL, 50, 5000],
+    [roth, ids.ROTHL, 50, 5100],
+    [roth, ids.WASH, 20, 1640],
     [taxable, ids.HRVST, 40, 3200],
     [taxable, ids.LTWT, 60, 3000],
     [taxable, ids.BILL, 10000, 9890],
+    [taxable, ids.FRN, 5000, 4995],
     [ibkr, ids.SHRT, -30, 1200],
     [ibkr, ids.KAIZN, 100, 230000],
     [ibkr, ids.LIVEOPT, 2, 1000],
@@ -382,9 +483,25 @@ export function buildEvalFixture(db: Database.Database, today: string): EvalMani
         if (fixtureIds.has(r.security_id)) continue;
         const close = (lastClose.get(r.security_id, d0) as { close_price: number } | undefined)?.close_price;
         if (close === undefined) continue;
-        // JNJ keeps only its stale-day close: a real stale price, still inside the valuation window.
-        if (r.security_id === jnj && date !== staleDay) continue;
-        price.run(r.security_id, date, close);
+        // JNJ keeps only its stale-day close: a real stale price, still inside
+        // the valuation window. It is moved down so JNJ's account weight is
+        // not the Treasury note's whole-book weight (run 4: 8.75% vs 8.68%).
+        if (r.security_id === jnj) {
+          if (date === staleDay) price.run(r.security_id, date, round2(close * 0.8));
+          continue;
+        }
+        // Stocks and ETFs move between the last sessions so the day's moves
+        // are not all zero; bonds, funds (money market included) and
+        // options keep their close.
+        const type = (r.security_type ?? "").toLowerCase();
+        const moves = type === "stock" || type === "etf";
+        const px =
+          !moves || date === staleDay
+            ? close
+            : date === prevDay
+              ? round2(close * (1 + sessionMove(r.security_id, 37)))
+              : round2(close * (1 + sessionMove(r.security_id, 37) + sessionMove(r.security_id, 53)));
+        price.run(r.security_id, date, px);
       }
     }
     for (const [acct, id, qty, basis] of newPositions) h(acct, id, qty, basis, date);
@@ -393,6 +510,33 @@ export function buildEvalFixture(db: Database.Database, today: string): EvalMani
   // row is a LIVE flat row with no statement behind it
   // (lib/queries/pending-statement.ts, awaiting_statement).
   h(taxable, ids.PNDG, 0, 0, priceDay, "plaid:eval:");
+
+  // A real import runs the closed-position reconciler, which writes a
+  // quantity-0 row for a position that left the book. Without it the demo's
+  // NVDA 180 call (closed by its EXPIRED entry, absent from every later
+  // snapshot) kept a non-zero latest row and data confidence called it
+  // "awaiting its closing entry". IBKR only: the Vanguard daily snapshots
+  // here carry the statement prefix, so the statement pass would turn PNDG's
+  // live zero row into a tombstone and close a lot meant to stay pending
+  // (manifest knownLimits).
+  reconcileClosedEquityHoldings(db, { accountId: ibkr });
+
+  // An earnings date for a held name on the next trading day, after the close.
+  const msftId = idOf("MSFT");
+  const earningsDay = tradingDayOnOrBefore(nextWeekday(today));
+  upsertCalendarEvents(db, [
+    {
+      source: "finnhub",
+      event_type: "earnings",
+      event_date: earningsDay,
+      event_time: "AMC",
+      title: "MSFT earnings",
+      security_id: msftId ?? null,
+      symbol: "MSFT",
+      source_key: `finnhub:MSFT:earnings:${earningsDay}`,
+      week_of: mondayOf(earningsDay),
+    },
+  ]);
 
   computeTaxLots(db);
   computeDailyValuations(db);
@@ -416,6 +560,14 @@ export function buildEvalFixture(db: Database.Database, today: string): EvalMani
     multiAccountOption: { symbol: occ("MSFT", msftExpiry, "C", 480), expiry: msftExpiry },
     staleName: "JNJ",
     unknownTicker: "ZZZZ",
+    unmodelledBond: FRN_SYMBOL,
+    washSale: { symbol: "WASH", lossAccount: "Vanguard Taxable", replacementAccount: "Vanguard Roth IRA", saleDate: washSaleDate },
+    calendarEvent: { symbol: "MSFT", date: earningsDay },
+    knownLimits: [
+      "Every new snapshot (daily and month-end alike) carries the statement prefix canonical:hold:; a real sync stamps daily rows tws- or plaid:. So the closed-position reconciler runs for IBKR only.",
+      "The demo seed's holdings rows carry demo-hold-, which is neither statement nor live.",
+      "Carried bonds, funds and options keep one close across the last sessions; only stocks and ETFs move.",
+    ],
   };
 
   const setting = db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)");
@@ -427,7 +579,7 @@ export function buildEvalFixture(db: Database.Database, today: string): EvalMani
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   const from = arg(argv, "--from") ?? path.join("data", "demo.db");
-  const out = arg(argv, "--out") ?? path.join("data", "chat-eval", "eval-v2.db");
+  const out = arg(argv, "--out") ?? path.join("data", "chat-eval", "eval-v3.db");
   const force = argv.includes("--force");
 
   const fromRefusal = liveDbRefusal(from);

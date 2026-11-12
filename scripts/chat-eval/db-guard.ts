@@ -23,7 +23,7 @@ import type Database from "better-sqlite3";
 
 /** settings key written by build-eval-db.ts; its value is the fixture version. */
 export const EVAL_MARKER_KEY = "chat_eval_fixture";
-export const EVAL_FIXTURE_VERSION = "2";
+export const EVAL_FIXTURE_VERSION = "3";
 
 const LIVE_BASENAME = "vanguard.db";
 
