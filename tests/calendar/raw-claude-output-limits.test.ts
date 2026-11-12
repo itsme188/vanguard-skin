@@ -27,7 +27,7 @@ const ISM = {
   shortName: "ISM Manufacturing",
   eventType: "pmi" as const,
   defaultImpact: "high" as const,
-  reportingLag: 1,
+  reportingLag: 1 as const,
   releaseTime: "10:00",
 };
 
