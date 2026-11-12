@@ -297,7 +297,7 @@ export interface PerformanceResult {
 /** Income semantics: lib/queries/income-sql.ts (plan Contract J). */
 export interface IncomeResult {
   group_name: string;
-  /** Each payout once: signed DIVIDEND amounts plus positive unpaired reinvestments. */
+  /** Each payout once: signed DIVIDEND amounts plus unpaired reinvestment purchases. */
   total_dividends: number;
   /** Interest EARNED (positive INTEREST rows only). */
   total_interest: number;
@@ -306,7 +306,7 @@ export interface IncomeResult {
   total_fees: number;
   /** total_dividends + total_interest - interest_paid - total_fees. */
   net_income: number;
-  /** Negative REINVESTMENT rows with no matching dividend, left out of income. */
+  /** Unpaired REINVESTMENT rows that reverse a purchase (`reinvestmentIsPurchase`), left out of income. */
   unpaired_reinvestment_count: number;
 }
 

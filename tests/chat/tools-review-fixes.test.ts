@@ -187,6 +187,10 @@ describe("R5-14 / R5-15 descriptions", () => {
     expect(d).toMatch(/A reinvested dividend counts once, including when it was reinvested net of tax withheld/);
     expect(d).toMatch(/COMMISSION/);
     expect(d).toMatch(/unpaired_reinvestment_count/);
+    // 562b3c57: a reinvestment is read by meaning (purchase or reversal, by
+    // its importer's convention), never by its raw sign.
+    expect(d).toMatch(/unpaired REINVESTMENT that is a purchase counts as dividend income; one that reverses a purchase is not income/);
+    expect(d).not.toMatch(/unpaired (positive|negative)/i);
   });
 
   it("the research source is spelled Eliant Capital", () => {
