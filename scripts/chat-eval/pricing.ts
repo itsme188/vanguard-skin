@@ -195,12 +195,20 @@ export function runGuarantee(runCap: number, ceiling: number, oneStepWorst: numb
   return { oneStepWorst, firstStepWorst, guaranteedMax: runCap + oneStepWorst + Math.max(0, firstStepWorst - ceiling) };
 }
 
-/** Rough token count: characters / 3 (deliberately high for prose). */
+/**
+ * Characters per token for this content, MEASURED in the 2026-11-11 live
+ * run: the cached prefix (tools + static block) read back as 21,619 tokens,
+ * and its characters / 3 estimate was 27,182, so the prefix is about 81,500
+ * characters, 3.77 per token. 3.7 is used (slightly conservative).
+ */
+export const CHARS_PER_TOKEN = 3.7;
+
+/** Token estimate for request text. */
 export function roughTokens(text: string): number {
-  return Math.ceil(text.length / 3);
+  return Math.ceil(text.length / CHARS_PER_TOKEN);
 }
 
-/** A request's input size for the worst-case rule: characters / 3 plus a 20% margin. */
+/** A request's input size for the worst-case rule: the measured ratio plus a 5% margin. */
 export function worstCaseInputTokens(chars: number): number {
-  return Math.ceil((chars / 3) * 1.2);
+  return Math.ceil((chars / CHARS_PER_TOKEN) * 1.05);
 }

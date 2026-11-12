@@ -38,6 +38,12 @@ export interface PriceTurnInput {
   stepWorst: number;
   /** The model the guarantee was priced with. */
   expectedModel: string;
+  /**
+   * The stream carried a provider error before any output (no text,
+   * reasoning, tool input or finished step): the provider refused the call,
+   * e.g. a 4xx, which is not billed.
+   */
+  providerErrorBeforeOutput?: boolean;
 }
 
 /**
@@ -63,6 +69,10 @@ export function priceTurn(input: PriceTurnInput): PricedTurn {
 
   if (httpStatus !== 200) {
     out.reserveReason = `HTTP ${httpStatus || "error"}: refused before the model call, nothing booked`;
+    return out;
+  }
+  if (input.providerErrorBeforeOutput && (turn?.steps.length ?? 0) === 0 && !ceilingAbort) {
+    out.reserveReason = "the provider refused the call before any output; nothing booked";
     return out;
   }
   const price = priceFor(model);

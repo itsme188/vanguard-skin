@@ -8,6 +8,14 @@
  * no tool definitions. If it is accepted with a written reply, `toolChoice:
  * "none"` on the last step is a stronger last-step guard than the note.
  *
+ * NEEDS SEPARATE OWNER APPROVAL. This probe calls the provider from its
+ * OWN process, so it needs ANTHROPIC_API_KEY outside the app's server, which
+ * the 2026-11-11 run rules do not allow. It refuses a live call unless
+ * --owner-approved is passed (only the owner may pass it); --dry-run is
+ * always allowed. The in-app alternative is a normal chat request that
+ * reaches the route's last step, which cannot set toolChoice from outside
+ * without a route change.
+ *
  * ONE small live call (a few thousand tokens), on the chat feature's own
  * model: `getModelForFeature("chat")`, resolved against the eval database
  * the same way the server resolves it. Never a hardcoded model id. The tool
@@ -91,6 +99,10 @@ async function main(argv: string[]): Promise<number> {
     console.log(`budget: ${decision.reason}`);
     console.log(`request: toolChoice "none", 1 tool defined in the call (dropped by the provider), history = user, assistant tool-call, tool result; thinking adaptive; maxOutputTokens ${PROBE_MAX_OUTPUT}`);
     if (argv.includes("--dry-run")) return 0;
+    if (!argv.includes("--owner-approved")) {
+      console.error("probe: refusing the live call: it needs the API key outside the app server and separate owner approval (--owner-approved). Use --dry-run to print the request.");
+      return 2;
+    }
     if (!decision.run) return 2;
 
     const tools = {

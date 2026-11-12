@@ -57,6 +57,55 @@ export const NOT_FOR_FILING = /not (for|to be used for|suitable for|meant for) (
 /** Staleness named in words (a date alone is not enough). */
 export const STALE_WORDS = /\bstale\b|out of date|outdated|not (been )?(updated|refreshed)|older than|\blag(s|ging)?\b|behind\b|last (updated|priced|refreshed)/;
 
+/** Rates labelled as assumed, illustrative or bracket-dependent. */
+export const ASSUMED_RATES =
+  /assum(e|ed|es|ing|ption)|illustrat|hypothetical|for example|e\.g\.|depends on (your|the) (rate|bracket|marginal|tax)|if (your|you are in|you're in) (the )?\d+%|at (a|your) \d+% (rate|bracket)|bracket[^.\n]{0,30}(table|scenario)/;
+
+/** Eastern times, or an explicit empty calendar in any wording. */
+export const EMPTY_OR_EASTERN =
+  /\bET\b|Eastern|\bEST\b|\bEDT\b|nothing (on|scheduled|loaded|on file|returned|coming)|returned nothing|\bzero (events|results|items)\b|no (events|earnings|releases|scheduled)|calendar is empty|(is|was) empty/;
+
+/** The harvest figure bound to the engine, and the plausible wrong hand sums. */
+function harvestFigureChecks(x: ExpectedContext): Check[] {
+  const out: Check[] = [];
+  if (x.harvestLoss === null) return out;
+  out.push({
+    kind: "number",
+    label: "the candidate's loss, as the engine states it",
+    value: x.harvestLoss,
+    absTol: 1,
+    signed: true,
+    near: new RegExp(`\\b${escapeRegExp(x.manifest.harvestCandidate)}\\b`),
+    window: 120,
+  });
+  if (x.excludedLosses.roth !== null) {
+    out.push({ kind: "notNumber", label: "not summed with the Roth loss", value: Math.abs(x.harvestLoss) + Math.abs(x.excludedLosses.roth), absTol: 1 });
+  }
+  if (x.excludedLosses.pending !== null) {
+    out.push({ kind: "notNumber", label: "not summed with the pending loss", value: Math.abs(x.harvestLoss) + Math.abs(x.excludedLosses.pending), absTol: 1 });
+  }
+  return out;
+}
+
+/** The instruments that really closed this year must be named; one sold only in another year must not. */
+function closedSourceChecks(x: ExpectedContext, mode: "all" | "any"): Check[] {
+  const r = x.realized;
+  if (!r || r.closedThisYear.length === 0) return [];
+  const word = (s: string) => new RegExp(`\\b${escapeRegExp(s)}\\b`);
+  const out: Check[] =
+    mode === "all"
+      ? r.closedThisYear.map((s) => ({ kind: "contains" as const, label: `names ${s}, which closed this year`, pattern: word(s) }))
+      : [{ kind: "contains", label: "names an instrument that closed this year", pattern: new RegExp(r.closedThisYear.map((s) => `\\b${escapeRegExp(s)}\\b`).join("|")) }];
+  for (const s of r.closedOtherYearsOnly) {
+    out.push({
+      kind: "notContains",
+      label: `does not credit ${s}, sold only in another year`,
+      pattern: new RegExp(`\\b${escapeRegExp(s)}\\b[^.\\n]{0,60}(sale|sold|closed|realiz|gain|loss)|(sale|sold|closed)[^.\\n]{0,30}\\b${escapeRegExp(s)}\\b`),
+    });
+  }
+  return out;
+}
+
 export const GOLDEN: readonly Builder[] = [
   () => ({
     id: "Q1",
@@ -113,7 +162,13 @@ export const GOLDEN: readonly Builder[] = [
     checks: [
       { kind: "calledTool", label: "uses the attribution tool", tool: "query_performance_vs_benchmark" },
       { kind: "contains", label: "the month is named", pattern: new RegExp(`\\b${x.previousMonthName}\\b`) },
-      { kind: "contains", label: "contributors named", pattern: /contribut|drove|driver|added|detract/ },
+      {
+        kind: "contains",
+        label: "contributors named, or an explicit no-data answer for that month",
+        pattern: new RegExp(
+          `contribut|drove|driver|detract|\\bno ${x.previousMonthName}\\b[^.\\n]{0,40}(statement|data)|\\b${x.previousMonthName}\\b[^.\\n]{0,60}(not|n't) (been )?(imported|available|on file)|no data for ${x.previousMonthName}`,
+        ),
+      },
     ],
     notes: [],
   }),
@@ -127,6 +182,7 @@ export const GOLDEN: readonly Builder[] = [
       { kind: "contains", label: "wash-sale caveat", pattern: /wash[- ]sale/ },
       { kind: "notContains", label: "the Roth lot is not offered", pattern: new RegExp(`\\b${escapeRegExp(x.manifest.rothLoser)}\\b(?![^\\n.]{0,60}(not eligible|tax-advantaged|Roth|excluded|not a candidate))`) },
       { kind: "notContains", label: "the pending lot is not offered", pattern: new RegExp(`\\b${escapeRegExp(x.manifest.pendingLot)}\\b(?![^\\n.]{0,60}(pending|awaiting|excluded|not a candidate))`) },
+      ...harvestFigureChecks(x),
     ],
     notes: [],
   }),
@@ -134,6 +190,7 @@ export const GOLDEN: readonly Builder[] = [
     const checks: Check[] = [
       { kind: "calledTool", label: "uses the realized-gains tool", tool: "query_realized_gains" },
       { kind: "contains", label: "not-for-filing caveat", pattern: NOT_FOR_FILING },
+      ...closedSourceChecks(x, "all"),
     ];
     const notes: string[] = [];
     if (x.realized) {
@@ -192,7 +249,9 @@ export const GOLDEN: readonly Builder[] = [
     notes: [],
   }),
   (x) => {
-    const checks: Check[] = [{ kind: "calledTool", label: "reads holdings", tool: "query_holdings" }];
+    // No tool requirement: the IBKR dashboard in the system prompt labels the
+    // account weights, and a figure correctly taken from it is a right answer.
+    const checks: Check[] = [];
     const notes: string[] = [];
     const w = x.ibkrTopWeight;
     if (w) {
@@ -241,7 +300,13 @@ export const GOLDEN: readonly Builder[] = [
       { kind: "notContains", label: "not 'everything is fresh'", pattern: /everything (is|looks|checks out)|all (data|figures|numbers|prices) (are|is|look) (fresh|current|up to date|good)|nothing (is )?stale/ },
     ];
     const notes: string[] = [];
-    if (x.stalePriceDate) checks.push({ kind: "contains", label: `the stale price date (${x.stalePriceDate})`, pattern: new RegExp(datePattern(x.stalePriceDate)) });
+    if (x.stalePriceDate) {
+      checks.push({
+        kind: "contains",
+        label: `the stale name or its price date (${x.manifest.staleName}, ${x.stalePriceDate})`,
+        pattern: new RegExp(`${datePattern(x.stalePriceDate)}|\\b${escapeRegExp(x.manifest.staleName)}\\b`),
+      });
+    }
     else notes.push("no stale price date in the fixture");
     return { id: "Q12", scope: "all", question: "Can I trust today's numbers?", checks, notes };
   },
@@ -249,7 +314,7 @@ export const GOLDEN: readonly Builder[] = [
     const w = x.longTermWait;
     const checks: Check[] = [
       { kind: "contains", label: "a view labelled as a view", pattern: /\bmy (read|view|take)\b|\bin my view\b|\bI('d| would) (wait|sell|hold)\b/ },
-      { kind: "contains", label: "an assumed rate gap labelled as such", pattern: /assum(e|ed|ing|ption)[^.\n]{0,60}(rate|bracket|%)|(rate|bracket)[^.\n]{0,60}assum/ },
+      { kind: "contains", label: "rates labelled as assumed or illustrative", pattern: ASSUMED_RATES },
       { kind: "notContains", label: "no advice deflection", pattern: ADVICE_DEFLECTION },
     ];
     const notes: string[] = [];
@@ -273,7 +338,7 @@ export const GOLDEN: readonly Builder[] = [
     question: "What's on deck this week for names I hold?",
     checks: [
       { kind: "calledTool", label: "reads the calendar", tool: "query_calendar_events" },
-      { kind: "contains", label: "times in Eastern, or nothing scheduled", pattern: /\bET\b|Eastern|\bEST\b|\bEDT\b|nothing (on|scheduled)|no (events|earnings|releases)/ },
+      { kind: "contains", label: "times in Eastern, or an explicit empty answer", pattern: EMPTY_OR_EASTERN },
       { kind: "notContains", label: "no 'already reported' for a print still ahead", pattern: /already reported[^.\n]{0,40}(tomorrow|later this week|before the open)/ },
     ],
     notes: ["report_state is otherwise checked by review of the answer"],
@@ -327,7 +392,7 @@ export const GOLDEN: readonly Builder[] = [
       notes: [],
     };
   },
-  () => ({
+  (x) => ({
     id: "Q18",
     scope: "all",
     question: "Full review: performance, risk, tax, upcoming events.",
@@ -337,6 +402,7 @@ export const GOLDEN: readonly Builder[] = [
       { kind: "contains", label: "covers risk", pattern: /\brisk|volatil|drawdown/ },
       { kind: "contains", label: "covers tax", pattern: /\btax/ },
       { kind: "contains", label: "covers upcoming events", pattern: /upcoming|earnings|calendar|this week|next week/ },
+      ...closedSourceChecks(x, "any"),
     ],
     notes: [],
   }),

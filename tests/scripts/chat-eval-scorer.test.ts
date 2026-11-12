@@ -20,6 +20,7 @@ import {
 import fs from "node:fs";
 import {
   budgetAllows,
+  CHARS_PER_TOKEN,
   ceilingAllowsNextStep,
   costOf,
   inFlightStepWorstCase,
@@ -148,7 +149,7 @@ describe("prices and the budget guard", () => {
   it("one step's worst case: whole input at the dearer input rate plus the maximum output", () => {
     const price = { input: 2, cacheWrite: 2.5, cacheRead: 0.1, output: 10 };
     expect(stepWorstCase(10000, 1000, price)).toBeCloseTo((10000 * 2.5 + 1000 * 10) / 1e6, 12);
-    expect(worstCaseInputTokens(3000)).toBe(1200);
+    expect(worstCaseInputTokens(3700)).toBe(1050);
   });
 
   it("the in-flight step: base + earlier tool results + earlier output (at most ceiling / output price) + margin", () => {
@@ -365,6 +366,8 @@ const MANIFEST: EvalManifest = {
   expiredOption: { symbol: "NVDA  261101C00150000", underlying: "NVDA", expiry: "2026-11-01" },
   reinvestedDividend: { symbol: "VTI", date: "2026-09-27" },
   multiAccountName: "MSFT",
+  multiAccountOption: { symbol: "MSFT  261226C00480000", expiry: "2026-12-26" },
+  staleName: "JNJ",
   unknownTicker: "ZZZZ",
 };
 
@@ -374,12 +377,21 @@ const X: ExpectedContext = {
   registeredTools: [],
   ibkrTopWeight: { symbol: "912828ZQ7", name: "US Treasury Note 2.875% 2032", accountWeightPct: 35.35, wholeBookWeightPct: 8.7 },
   dividends12m: { single: 851.2, naiveDoubleCount: 971.2, marginInterestPaid: 35 },
-  realized: { year: 2026, shortTerm: -420.5, longTerm: 310.25, lifetimeAllAccounts: 900 },
+  realized: {
+    year: 2026,
+    shortTerm: -420.5,
+    longTerm: 310.25,
+    lifetimeAllAccounts: 900,
+    closedThisYear: ["AAPL", "TSLA"],
+    closedOtherYearsOnly: ["GOOGL"],
+  },
   foreign: { symbol: "KAIZN", currency: "JPY", nativePrice: 950, usdValue: 627 },
   longTermWait: { symbol: "LTWT", daysToLongTerm: 66, unrealizedGain: 600 },
   previousMonthName: "October",
-  stalePriceDate: "2026-03-27",
+  stalePriceDate: "2026-11-05",
   shortDayEffect: -60,
+  harvestLoss: -300,
+  excludedLosses: { roth: -500, pending: -150 },
 };
 
 const LONG_REVIEW =
@@ -416,13 +428,13 @@ const CASES: Record<string, Case> = {
   },
   Q5: {
     tools: ["query_tax_lots"],
-    right: "HRVST is the one candidate, a loss in Vanguard Taxable. Mind the wash-sale rule.",
+    right: "HRVST is the one candidate, a loss of $300 in Vanguard Taxable. Mind the wash-sale rule.",
     wrong: "Candidates: HRVST, ROTHL and PNDG. Mind the wash-sale rule.",
   },
   Q6: {
     tools: ["query_realized_gains"],
-    right: "Short-term: a loss of $420.50. Long-term: a gain of $310.25. These are not for filing.",
-    wrong: "Short-term: a gain of $420.50. Long-term: a gain of $310.25. These are not for filing.",
+    right: "Short-term: a loss of $420.50, from the AAPL calls and the TSLA sale. Long-term: a gain of $310.25. These are not for filing.",
+    wrong: "Short-term: a gain of $420.50, from the AAPL calls and the TSLA sale. Long-term: a gain of $310.25. These are not for filing.",
   },
   Q7: {
     tools: ["query_options_book"],
@@ -436,7 +448,7 @@ const CASES: Record<string, Case> = {
     wrongTools: [],
   },
   Q9: {
-    tools: ["query_holdings"],
+    tools: [],
     right: "The US Treasury Note is your biggest IBKR position at 35.4% of the account.",
     wrong: "The US Treasury Note is your biggest position at 8.7% of the book.",
   },
@@ -452,7 +464,7 @@ const CASES: Record<string, Case> = {
   },
   Q12: {
     tools: ["query_data_confidence"],
-    right: "Mostly, but several prices are stale: last priced 2026-03-27.",
+    right: "Mostly, but JNJ is stale: last priced 2026-11-05.",
     wrong: "Everything checks out as of 2026-11-11 and looks good.",
   },
   Q13: {
@@ -549,7 +561,15 @@ describe("the in-question cost ceiling, with a stubbed model", () => {
     const db = new Database(dbPath);
     db.pragma("journal_mode = WAL");
     runMigrations(db);
-    upsertSecurity(db, { symbol: "VTI", name: "Total Market ETF", securityType: "etf", assetClass: "equity" });
+    // A minimal stand-in for the demo seed: two securities and one snapshot per account.
+    const vtiId = upsertSecurity(db, { symbol: "VTI", name: "Total Market ETF", securityType: "etf", assetClass: "equity" });
+    const jnjId = upsertSecurity(db, { symbol: "JNJ", name: "Johnson & Johnson", securityType: "stock", assetClass: "equity" });
+    db.prepare("INSERT INTO prices (security_id, date, close_price, source) VALUES (?, '2026-03-27', 300, 'demo'), (?, '2026-03-27', 150, 'demo')").run(vtiId, jnjId);
+    for (const acct of [1, 2, 3]) {
+      db.prepare(
+        "INSERT INTO holdings (account_id, security_id, quantity, cost_basis, as_of_date, source_key) VALUES (?, ?, 10, 1000, '2026-03-27', ?)",
+      ).run(acct, acct === 3 ? jnjId : vtiId, `demo-hold-${acct}`);
+    }
     db.transaction(() => buildEvalFixture(db, todayET()))();
     stub.db = db;
 
@@ -622,4 +642,85 @@ describe("the in-question cost ceiling, with a stubbed model", () => {
     expect(report.spentUsd).toBeLessThanOrEqual(report.guaranteedMaxUsd);
     db.close();
   }, 30000);
+});
+
+// Live answers the 2026-11-11 run mis-scored, shortened and made synthetic.
+describe("scorer regressions from the live run", () => {
+  const golden = Object.fromEntries(buildGolden(X).map((q) => [q.id, q]));
+  const score = (id: string, text: string, tools: string[]) => scoreAnswer(answer(text, { toolCalls: tools }), golden[id].checks);
+
+  it("Q4: an explicit no-data answer for the month passes (was a false fail)", () => {
+    const r = score("Q4", "No October 2026 statement has been imported into the ledger, so last month cannot be attributed.", ["query_performance_vs_benchmark"]);
+    expect(r.checks.filter((c) => !c.pass)).toEqual([]);
+  });
+
+  it("Q5: a hand-summed total that adds the Roth loss fails (was a false pass)", () => {
+    const r = score("Q5", "HRVST is the candidate, a loss of $300 in Vanguard Taxable. Total harvestable: $800. Mind the wash-sale rule.", ["query_tax_lots"]);
+    expect(r.pass).toBe(false);
+    expect(r.checks.find((c) => c.label.includes("Roth loss"))?.pass).toBe(false);
+  });
+
+  it("Q5: a wrong figure for the candidate fails", () => {
+    const r = score("Q5", "HRVST is the candidate, a loss of $1,000 in Vanguard Taxable. Mind the wash-sale rule.", ["query_tax_lots"]);
+    expect(r.pass).toBe(false);
+  });
+
+  it("Q6: naming a sale from another year as the source fails (was a false pass)", () => {
+    const r = score("Q6", "Short-term: a loss of $420.50, all from the GOOGL sale. Long-term: a gain of $310.25. Not for filing.", ["query_realized_gains"]);
+    expect(r.pass).toBe(false);
+  });
+
+  it("Q9: the figure taken from the labelled context, with no tool call, passes (was a false fail)", () => {
+    const r = score("Q9", "| 912828ZQ7 (US Treasury Note) | 35.7% of the account |", []);
+    expect(r.checks.filter((c) => !c.pass)).toEqual([]);
+  });
+
+  it("Q13: a rate-gap table that depends on the bracket counts as labelled (was a false fail)", () => {
+    const r = score(
+      "Q13",
+      "My read: wait. 66 days to go, a gain of $600. The tax saving depends on your rate gap: | 37% | 20% | about $100 |",
+      [],
+    );
+    expect(r.checks.filter((c) => !c.pass)).toEqual([]);
+  });
+
+  it("Q14: an explicit empty calendar in other words passes (was a false fail)", () => {
+    const r = score("Q14", "The calendar returned nothing for the next two weeks: zero events across all types.", ["query_calendar_events"]);
+    expect(r.checks.filter((c) => !c.pass)).toEqual([]);
+  });
+
+  it("Q16: an answer of no live options now fails, because the fixture holds a live MSFT call", () => {
+    const r = score("Q16", "MSFT: IBKR 100 shares, Vanguard Taxable 80 shares. No live options on file.", ["query_holdings"]);
+    expect(r.pass).toBe(false);
+  });
+
+  it("Q18: crediting a sale from another year fails (was a false pass)", () => {
+    const text = LONG_REVIEW.replace("realized short-term results are a small loss", "the realized gain came from the GOOGL sale");
+    const r = score("Q18", text, ["query_twr"]);
+    expect(r.pass).toBe(false);
+  });
+});
+
+describe("harness fixes from the live run", () => {
+  it("a provider error before any output (the 404 run) costs nothing", () => {
+    const r = priceTurn({
+      turn: undefined,
+      toolCalls: [],
+      httpStatus: 200,
+      streamedSteps: 0,
+      ceilingAbort: false,
+      abnormalEnd: false,
+      inFlightBooking: null,
+      stepWorst: 0.81,
+      expectedModel: "claude-sonnet-4-6",
+      providerErrorBeforeOutput: true,
+    });
+    expect(r.costUsd).toBe(0);
+    expect(r.usageMissing).toBeNull();
+  });
+
+  it("the token estimate uses the measured ratio (about 3.7 characters per token)", () => {
+    // The live prefix: about 81,500 characters read back as 21,619 tokens.
+    expect(Math.abs(81500 / CHARS_PER_TOKEN - 21619) / 21619).toBeLessThan(0.03);
+  });
 });

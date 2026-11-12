@@ -25,7 +25,16 @@ export interface ExpectedContext {
   /** Dividend income over the last 365 days, counted once (Contract J). */
   dividends12m: { single: number; naiveDoubleCount: number; marginInterestPaid: number } | null;
   /** Realized gains in the current calendar year, taxable accounts, filing rows. */
-  realized: { year: number; shortTerm: number; longTerm: number; lifetimeAllAccounts: number } | null;
+  realized: {
+    year: number;
+    shortTerm: number;
+    longTerm: number;
+    lifetimeAllAccounts: number;
+    /** Underlying symbols of the instruments that closed this year (stocks and options alike). */
+    closedThisYear: string[];
+    /** Symbols with a sale on file only in OTHER years (the wrong source of this year's gain). */
+    closedOtherYearsOnly: string[];
+  } | null;
   /** The foreign holding as the readers report it. */
   foreign: { symbol: string; currency: string; nativePrice: number; usdValue: number } | null;
   /** The lot waiting for long-term treatment. */
@@ -36,6 +45,10 @@ export interface ExpectedContext {
   stalePriceDate: string | null;
   /** The short's dollar day effect: quantity x (last close - previous close); negative when it rose. */
   shortDayEffect: number | null;
+  /** The harvest candidate's unrealized result (negative: a loss), from the holdings reader. */
+  harvestLoss: number | null;
+  /** The Roth loser's and the pending lot's unrealized results (they must not be summed in). */
+  excludedLosses: { roth: number | null; pending: number | null };
 }
 
 function deriveStalePriceDate(db: Database.Database): string | null {
@@ -127,12 +140,38 @@ function deriveRealized(db: Database.Database, today: string): ExpectedContext["
   const rows = getClosedTaxLotSales(db, year, { filingOnly: true }).filter((r) => isTaxableAccount(treatment.get(r.account_id)));
   const lifetime = getClosedTaxLotSales(db, undefined, { filingOnly: true });
   const sum = (xs: { realized_gain_loss_usd: number }[]) => round2(xs.reduce((s, r) => s + (r.realized_gain_loss_usd ?? 0), 0));
+  const root = (symbol: string) => symbol.trim().split(/\s+/)[0];
+  const thisYear = [...new Set(rows.map((r) => root(r.symbol)))].sort();
+  const otherYears = [...new Set(lifetime.filter((r) => !r.sale_date.startsWith(String(year))).map((r) => root(r.symbol)))]
+    .filter((s) => !thisYear.includes(s))
+    .sort();
   return {
     year,
     shortTerm: sum(rows.filter((r) => !r.is_long_term)),
     longTerm: sum(rows.filter((r) => r.is_long_term)),
     lifetimeAllAccounts: sum(lifetime),
+    closedThisYear: thisYear,
+    closedOtherYearsOnly: otherYears,
   };
+}
+
+function unrealizedOf(db: Database.Database, account: string, symbol: string): number | null {
+  const row = holdingsFor(db, account).find((r) => r.symbol === symbol);
+  return row?.unrealized_gain ?? null;
+}
+
+/** The pending lot's would-be result at its last price (its holdings row is flat, so it is read from the lot). */
+function pendingLossOf(db: Database.Database, m: EvalManifest): number | null {
+  const row = db
+    .prepare(
+      `SELECT SUM(tl.cost_basis * tl.quantity_remaining / tl.quantity_acquired) AS basis, SUM(tl.quantity_remaining) AS qty,
+              (SELECT p.close_price FROM prices p WHERE p.security_id = s.id ORDER BY p.date DESC LIMIT 1) AS px
+         FROM tax_lots tl JOIN securities s ON s.id = tl.security_id
+        WHERE s.symbol = ? AND tl.quantity_remaining > 0`,
+    )
+    .get(m.pendingLot) as { basis: number | null; qty: number | null; px: number | null } | undefined;
+  if (!row || row.basis === null || row.qty === null || row.px === null) return null;
+  return round2(row.qty * row.px - row.basis);
 }
 
 function deriveForeign(db: Database.Database, m: EvalManifest): ExpectedContext["foreign"] {
@@ -166,5 +205,10 @@ export function deriveExpected(db: Database.Database, manifest: EvalManifest, to
     previousMonthName: MONTHS[(month + 10) % 12],
     stalePriceDate: deriveStalePriceDate(db),
     shortDayEffect: deriveShortDayEffect(db, manifest),
+    harvestLoss: unrealizedOf(db, manifest.accounts.taxable, manifest.harvestCandidate),
+    excludedLosses: {
+      roth: unrealizedOf(db, manifest.accounts.roth, manifest.rothLoser),
+      pending: pendingLossOf(db, manifest),
+    },
   };
 }

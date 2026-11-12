@@ -16,14 +16,18 @@
  *   npm run seed:demo        (in a worktree where tsx is not on the npm script path:
  *                             npx tsx scripts/seed-demo.ts)
  *   npx tsx scripts/chat-eval/build-eval-db.ts --force
- *   # the server needs ANTHROPIC_API_KEY in its own environment
- *   DATABASE_PATH=$PWD/data/chat-eval/eval.db TWS_HOST=192.0.2.1 \
+ *   # the server needs ANTHROPIC_API_KEY in its own environment, and must be
+ *   # started with ANTHROPIC_BASE_URL UNSET: an agent shell exports it without
+ *   # /v1, @ai-sdk/anthropic then posts to /messages and every call is a 404
+ *   # (the runner stops on a provider 404 with this explanation)
+ *   unset ANTHROPIC_BASE_URL
+ *   DATABASE_PATH=$PWD/data/chat-eval/eval-v2.db TWS_HOST=192.0.2.1 \
  *     APP_EXTRA_HOSTS=127.0.0.1:3095 APP_EXTRA_ORIGINS=http://127.0.0.1:3095 \
  *     npx next dev -H 127.0.0.1 -p 3095 > data/chat-eval/server.log 2>&1
- *   npx tsx scripts/chat-eval/run-golden.ts --db data/chat-eval/eval.db --dry-run [--mode cache-proof]
- *   npx tsx scripts/chat-eval/run-golden.ts --db data/chat-eval/eval.db --log data/chat-eval/server.log \
+ *   npx tsx scripts/chat-eval/run-golden.ts --db data/chat-eval/eval-v2.db --dry-run [--mode cache-proof]
+ *   npx tsx scripts/chat-eval/run-golden.ts --db data/chat-eval/eval-v2.db --log data/chat-eval/server.log \
  *     --mode cache-proof --max-usd N
- *   npx tsx scripts/chat-eval/run-golden.ts --db data/chat-eval/eval.db --log data/chat-eval/server.log \
+ *   npx tsx scripts/chat-eval/run-golden.ts --db data/chat-eval/eval-v2.db --log data/chat-eval/server.log \
  *     --max-usd N [--only Q1,Q5] [--show-answers]
  *
  * Budget (orchestrator ruling): a question starts only if the money spent
@@ -78,6 +82,7 @@ import {
   NESTED_AI_TOOLS,
   PRICE_SOURCE,
   ZERO_USAGE,
+  CHARS_PER_TOKEN,
   addUsage,
   QUESTION_RESERVE_USD,
   STEP_INPUT_MARGIN_TOKENS,
@@ -105,6 +110,7 @@ import {
   type TransportDeps,
 } from "./transport";
 import { parseUsageLines, splitTurns, type TurnUsage } from "./usage-lines";
+import { localSnapshotCheck } from "./build-eval-db";
 import { cacheVerdicts, priceTurn, type CacheStepRow, type CacheVerdict, type PricedTurn } from "./accounting";
 
 export const SESSION_LABEL = "chat-eval";
@@ -126,6 +132,10 @@ export interface EvalOptions {
   toolResultChars: number;
   /** The per-question cost ceiling enforced while a question runs. */
   maxUsdPerQuestion: number;
+  /** --max-usd-per-question was given (cache-proof derives its own default otherwise). */
+  maxUsdPerQuestionExplicit: boolean;
+  /** Appended to the cache-proof messages so each run's tail is new while the prefix is shared. */
+  nonce: string;
   /** Refuse to start (or to start a request) when cap + one step in flight would exceed it. */
   hardCeilingUsd?: number;
 }
@@ -165,6 +175,8 @@ export function parseArgs(argv: string[]): EvalOptions | { error: string } {
     baseUrl: get("--base-url") ?? "http://127.0.0.1:3095",
     toolResultChars,
     maxUsdPerQuestion: perQ,
+    maxUsdPerQuestionExplicit: get("--max-usd-per-question") !== undefined,
+    nonce: get("--nonce") ?? randomUUID().slice(0, 8),
     ...(hardCeilingUsd !== undefined ? { hardCeilingUsd } : {}),
     mode,
     maxUsd,
@@ -252,7 +264,7 @@ export const ROUTE_MAX_OUTPUT_TOKENS = 16000;
  */
 export const DEFAULT_TOOL_RESULT_CHARS = 22000;
 /** Tokens per character assumed for a tool result in the worst case (conservative for JSON). */
-export const TOOL_RESULT_TOKENS_PER_CHAR = 0.5;
+export const TOOL_RESULT_TOKENS_PER_CHAR = 1 / 3;
 export const DEFAULT_MAX_USD_PER_QUESTION = 0.6;
 /** Pause after an aborted request so the route's last step lines are flushed. */
 const ABORT_SETTLE_MS = 500;
@@ -406,7 +418,16 @@ export async function guardedAsk(
     stop = `conversation ${ex.conversationId} is not in ${setup.dbPath}: the server is using another database`;
   }
   const ended200 = ex.status === 200;
-  const abnormalEnd = ended200 && !ceilingAborted && (Boolean(ex.stoppedByRunner) || !ex.summary.done);
+  // A provider error with no output at all: the call was refused (a 4xx is
+  // not billed). Zero cost, and the run stops: nothing after it can work.
+  const providerErrorBeforeOutput =
+    ended200 && !ceilingAborted && ex.summary.errorText !== null && ex.summary.contentChunks === 0 && ex.summary.finishSteps === 0;
+  if (providerErrorBeforeOutput) {
+    stop = /not found|\b404\b/i.test(ex.summary.errorText ?? "")
+      ? `the provider answered "${ex.summary.errorText}" before any output: the dev server is posting to a wrong URL. Start it with ANTHROPIC_BASE_URL unset (an agent shell exports it without /v1, so @ai-sdk/anthropic posts to /messages)`
+      : `the provider refused the request before any output: ${ex.summary.errorText}`;
+  }
+  const abnormalEnd = ended200 && !ceilingAborted && !providerErrorBeforeOutput && (Boolean(ex.stoppedByRunner) || !ex.summary.done);
   let turns: TurnUsage[] = [];
   if (ex.conversationId !== null && ended200) {
     if (ceilingAborted || abnormalEnd) {
@@ -427,6 +448,7 @@ export async function guardedAsk(
     inFlightBooking,
     stepWorst: budget.oneStepWorst,
     expectedModel: setup.predictedModel,
+    providerErrorBeforeOutput,
   });
   if (priced.unknownModel) stop = `the server used model ${priced.unknownModel}, which has no price in scripts/chat-eval/pricing.ts`;
   else if (priced.usageMissing) stop = stop ?? `usage not fully accounted (${priced.usageMissing})`;
@@ -673,6 +695,32 @@ const CACHE_SEQUENCE = [
   { label: "A3", conversation: "A", text: "Thanks. In one sentence: which account holds the most cash?", page: "second" },
 ] as const;
 
+/**
+ * A run marker appended to every cache-proof message: re-running the
+ * sequence within the five-minute cache life would otherwise read the WHOLE
+ * earlier request back from the cache (same text), which looks like prefix
+ * reuse and is not. The prefix (tools + static block) does not contain it.
+ */
+export function nonceText(text: string, nonce: string): string {
+  return `${text} (run ${nonce})`;
+}
+
+/**
+ * The cache-proof per-question ceiling when none is given: what one cold
+ * first step typically costs (the request written to the cache, about 1,500
+ * output tokens, the ratio measured live) plus the worst the step after it
+ * can cost. It covers the one tool question (A1) in the sequence. Pure apart
+ * from reading the request size.
+ */
+export function cacheProofCeiling(setup: EvalSetup, limits: RequestLimits, pagePath: string | undefined): number {
+  const price = priceFor(setup.predictedModel);
+  if (!price) return DEFAULT_MAX_USD_PER_QUESTION;
+  const base = worstCaseInputTokens(previewRequest(setup.db, "all", setup.expected.today, pagePath).totalChars);
+  const firstTypical = costOf({ noCache: 0, cacheWrite: base, cacheRead: 0, output: 1500 }, price);
+  const next = stepWorstCase(base + 1500 + limits.toolResultTokensPerStep + STEP_INPUT_MARGIN_TOKENS, limits.maxOutputTokensPerStep, price);
+  return Math.ceil((firstTypical + next) * 100) / 100;
+}
+
 export async function runCacheProof(
   opts: EvalOptions,
   setup: EvalSetup,
@@ -712,7 +760,7 @@ export async function runCacheProof(
   try {
     for (const turn of CACHE_SEQUENCE) {
       const c = conv[turn.conversation];
-      const messages = [...c.messages, userMessage(randomUUID(), turn.text)];
+      const messages = [...c.messages, userMessage(randomUUID(), nonceText(turn.text, opts.nonce))];
       const budget = requestBudget(setup, scope, messages, pages[turn.page], limits, opts.maxUsdPerQuestion);
       const refusal = startRefusal(report.spentUsd, opts, budget);
       if (refusal) {
@@ -775,7 +823,7 @@ export async function runCacheProof(
 
 export function printCacheReport(report: CacheReport, print: Print): void {
   print("");
-  print(`prefix estimate (tools + static block, chars/3): ${report.prefixTokensEstimate} tokens; measured P: ${report.prefixTokensMeasured ?? "none"}`);
+  print(`prefix estimate (tools + static block, chars/${CHARS_PER_TOKEN}): ${report.prefixTokensEstimate} tokens; measured P: ${report.prefixTokensMeasured ?? "none"}`);
   for (const v of report.verdicts) print(`verdict ${v.id.padEnd(3)} ${v.result.padEnd(9)} ${v.check}: ${v.detail}`);
   print(
     `cost: ${usd(report.spentUsd)} of cap $${report.maxUsd.toFixed(2)} (per-question ceiling $${report.maxUsdPerQuestion.toFixed(2)}; ` +
@@ -845,13 +893,35 @@ export function dryRun(opts: EvalOptions, setup: EvalSetup, print: Print, summar
   }
   const g = runGuarantee(opts.maxUsd, opts.maxUsdPerQuestion, oneStepWorst, firstStepWorst);
   const fit = questionsGuaranteedToStart(planned.length, opts.maxUsd, opts.maxUsdPerQuestion);
+  if (opts.mode === "cache-proof" && price) {
+    // Typical spend per request: the first writes the whole request; the
+    // rest read the cached prefix and write their own tail. Each request
+    // must pass the start rule (spent + ceiling <= cap).
+    const base = worstCaseInputTokens(previewRequest(setup.db, "all", setup.expected.today, planned[0]?.page).totalChars);
+    let spent = 0;
+    let allFit = true;
+    let capNeeded = 0;
+    planned.forEach((r, i) => {
+      capNeeded = Math.max(capNeeded, spent + opts.maxUsdPerQuestion);
+      const starts = budgetAllows(spent, opts.maxUsdPerQuestion, opts.maxUsd).run;
+      if (!starts) allFit = false;
+      const steps = r.label === "A1" ? 2 : 1;
+      const one = i === 0
+        ? costOf({ noCache: 0, cacheWrite: base, cacheRead: 0, output: 1500 }, price)
+        : costOf({ noCache: 0, cacheWrite: 3000, cacheRead: base, output: 1500 }, price);
+      const cost = one + (steps - 1) * costOf({ noCache: 0, cacheWrite: 3000, cacheRead: base, output: 1500 }, price);
+      print(`  ${r.label}: typical $${cost.toFixed(3)}; starts: ${starts ? "yes" : "NO"} (spent $${spent.toFixed(3)} + ceiling $${opts.maxUsdPerQuestion.toFixed(2)} vs cap $${opts.maxUsd.toFixed(2)})`);
+      spent += cost;
+    });
+    print(`  ALL ${planned.length} requests fit under the run cap: ${allFit ? "YES" : "NO"}; run cap needed for all to start: $${capNeeded.toFixed(2)}`);
+  }
   print(`SUMMARY mode=${opts.mode} requests=${planned.length}`);
   print(`  per-question ceiling: $${opts.maxUsdPerQuestion.toFixed(2)}`);
   print(`  requests guaranteed to start (each spending its whole ceiling): ${fit} of ${planned.length}; typical total if none hits the ceiling: $${typical.toFixed(2)}`);
   print(`  one-step worst case (largest request, first-turn size): $${oneStepWorst.toFixed(2)}; first step: $${firstStepWorst.toFixed(2)}`);
   print(`  guaranteed maximum spend: $${g.guaranteedMax.toFixed(2)} (run cap $${opts.maxUsd.toFixed(2)} + one step in flight${g.guaranteedMax > opts.maxUsd + oneStepWorst + 1e-9 ? " + first-step excess" : ""})`);
   if (opts.hardCeilingUsd !== undefined) {
-    print(`  --hard-ceiling-usd ${opts.hardCeilingUsd.toFixed(2)}: ${g.guaranteedMax <= opts.hardCeilingUsd ? "OK" : "WOULD REFUSE"}`);
+    print(`  --hard-ceiling-usd $${opts.hardCeilingUsd.toFixed(2)}: ${g.guaranteedMax <= opts.hardCeilingUsd ? "OK" : "WOULD REFUSE"}`);
   }
   return { guaranteedMax: g.guaranteedMax };
 }
@@ -870,9 +940,23 @@ export async function main(argv: string[], deps?: Partial<TransportDeps>, print:
     return 2;
   }
   try {
+    if (opts.mode === "cache-proof" && !opts.maxUsdPerQuestionExplicit) {
+      const aapl = setup.db.prepare("SELECT id FROM securities WHERE symbol = 'AAPL'").get() as { id: number } | undefined;
+      opts.maxUsdPerQuestion = cacheProofCeiling(setup, requestLimits(opts.toolResultChars), aapl ? `/dashboard/security/${aapl.id}` : undefined);
+      print(`cache-proof per-question ceiling (derived): $${opts.maxUsdPerQuestion.toFixed(2)}`);
+    }
+    // The app's market snapshot must read this database locally: a fallback
+    // to the outside quote source sends the fixture's symbols out and makes
+    // the "what moved today" question untestable.
+    const snapshotProblem = await localSnapshotCheck(setup.db, setup.expected.today);
     if (opts.dryRun) {
+      print(`market snapshot source check: ${snapshotProblem ?? "local (no outside quote request)"}`);
       dryRun(opts, setup, print);
       return 0;
+    }
+    if (snapshotProblem) {
+      print(`run-golden: refusing to run: ${snapshotProblem}. Rebuild the fixture for today (build-eval-db.ts).`);
+      return 2;
     }
     if (!priceFor(setup.predictedModel)) {
       print(`run-golden: refusing to run: model ${setup.predictedModel} has no price in scripts/chat-eval/pricing.ts (add it with its source and date)`);
@@ -881,7 +965,7 @@ export async function main(argv: string[], deps?: Partial<TransportDeps>, print:
     const out = opts.out ?? defaultOut();
     const plan = dryRun(opts, setup, print, true);
     if (opts.hardCeilingUsd !== undefined && plan.guaranteedMax > opts.hardCeilingUsd) {
-      print(`run-golden: refusing to start: guaranteed maximum ${plan.guaranteedMax.toFixed(2)} exceeds --hard-ceiling-usd ${opts.hardCeilingUsd.toFixed(2)}`);
+      print(`run-golden: refusing to start: guaranteed maximum $${plan.guaranteedMax.toFixed(2)} exceeds --hard-ceiling-usd $${opts.hardCeilingUsd.toFixed(2)}`);
       return 2;
     }
     const outRefusal = outputPathRefusal(out);

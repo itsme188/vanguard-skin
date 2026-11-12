@@ -34,6 +34,8 @@ export interface StreamSummary {
   aborted: boolean;
   /** `[DONE]` arrived. */
   done: boolean;
+  /** Chunks that mean the model produced output (text, reasoning or tool-input). */
+  contentChunks: number;
   /** Every parsed chunk, in order (kept for the UIMessage rebuild). */
   chunks: Record<string, unknown>[];
 }
@@ -79,6 +81,7 @@ export function summarizeChunks(chunks: readonly Record<string, unknown>[], done
   let finishSteps = 0;
   let errorText: string | null = null;
   let aborted = false;
+  let contentChunks = 0;
 
   const readMeta = (meta: unknown) => {
     if (!meta || typeof meta !== "object") return;
@@ -88,6 +91,7 @@ export function summarizeChunks(chunks: readonly Record<string, unknown>[], done
   };
 
   for (const c of chunks) {
+    if (c.type === "text-delta" || c.type === "reasoning-delta" || c.type === "tool-input-start" || c.type === "tool-input-available") contentChunks++;
     switch (c.type) {
       case "text-start": {
         const id = str(c.id) ?? `t${order.length}`;
@@ -160,6 +164,7 @@ export function summarizeChunks(chunks: readonly Record<string, unknown>[], done
     errorText,
     aborted,
     done,
+    contentChunks,
     chunks: [...chunks],
   };
 }

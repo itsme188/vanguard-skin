@@ -28,6 +28,10 @@ export interface EvalManifest {
   reinvestedDividend: { symbol: string; date: string };
   /** A name held in more than one account, with an option on it. */
   multiAccountName: string;
+  /** The live option on the multi-account name (delta-adjusted exposure). */
+  multiAccountOption: { symbol: string; expiry: string };
+  /** The held name whose price is deliberately stale. */
+  staleName: string;
   /** A ticker that is not on file. */
   unknownTicker: string;
 }
