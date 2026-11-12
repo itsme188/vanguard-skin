@@ -1,12 +1,20 @@
 import type Database from "better-sqlite3";
+import type { ChatModelFamily } from "@/lib/chat/model-choice";
 
+/**
+ * A new conversation. `modelFamily` is the model CLASS it runs on (haiku,
+ * sonnet or opus; the caller validates it with isChatModelFamily), or null
+ * for the chat's default. It is written here, once: no function changes it
+ * later (owner ruling 2026-11-13: one thread never mixes models).
+ */
 export function createConversation(
   db: Database.Database,
   scope: string,
+  modelFamily: ChatModelFamily | null = null,
 ): number {
   const result = db
-    .prepare(`INSERT INTO chat_conversations (scope) VALUES (?)`)
-    .run(scope);
+    .prepare(`INSERT INTO chat_conversations (scope, model_family) VALUES (?, ?)`)
+    .run(scope, modelFamily);
   return result.lastInsertRowid as number;
 }
 

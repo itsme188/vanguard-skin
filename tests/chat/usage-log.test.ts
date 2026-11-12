@@ -25,6 +25,26 @@ function parse(line: string): Record<string, unknown> {
 }
 
 describe("formatUsageLine", () => {
+  it("names the model class keys exactly (2026-11-13) and accepts only the three classes", () => {
+    expect([...USAGE_LINE_KEYS_STEP]).toEqual([
+      "kind", "conversationId", "scope", "model", "modelFamily", "modelFellBackFrom",
+      "step", "noCache", "cacheWrite", "cacheRead", "output", "finishReason",
+    ]);
+    expect(USAGE_LINE_KEYS_TURN.slice(0, 7)).toEqual([
+      "kind", "conversationId", "scope", "model", "modelFamily", "modelFellBackFrom", "steps",
+    ]);
+    const base = { conversationId: 1, scope: "all", model: "m", step: 0, noCache: 0, cacheWrite: 0, cacheRead: 0, output: 0, finishReason: "stop" };
+    const good = parse(formatUsageLine("step", { ...base, modelFamily: "opus", modelFellBackFrom: "haiku" }));
+    expect(good.modelFamily).toBe("opus");
+    expect(good.modelFellBackFrom).toBe("haiku");
+    const bad = parse(formatUsageLine("step", { ...base, modelFamily: MARKER, modelFellBackFrom: "fable" }));
+    expect(bad.modelFamily).toBeNull();
+    expect(bad.modelFellBackFrom).toBeNull();
+    const turn = parse(formatUsageLine("turn", { ...base, steps: 1, modelFamily: "sonnet" }));
+    expect(turn.modelFamily).toBe("sonnet");
+    expect(turn.modelFellBackFrom).toBeNull();
+  });
+
   it("the line carries only the allowed keys", () => {
     const fields = {
       conversationId: 7,
@@ -51,6 +71,8 @@ describe("formatUsageLine", () => {
       conversationId: 7,
       scope: "ibkr",
       model: "model-under-test",
+      modelFamily: null,
+      modelFellBackFrom: null,
       step: 2,
       noCache: 10,
       cacheWrite: 20,

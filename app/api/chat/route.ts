@@ -21,7 +21,14 @@ import {
 import { buildSystemPromptBlocks } from "@/lib/chat/system-prompt";
 import { computeIbkrTradingContext, type IbkrTradingContext } from "@/lib/chat/ibkr-context";
 import { getAnthropicApiKey } from "@/lib/env";
-import { getModelForFeature } from "@/lib/ai/provider";
+import { getModelForFeature, getModelForResolved } from "@/lib/ai/provider";
+import {
+  invalidModelFamilyMessage,
+  isChatModelFamily,
+  readStoredChatFamily,
+  type ChatModelFamily,
+} from "@/lib/chat/model-choice";
+import { resolveChatModel } from "@/lib/chat/model-resolve";
 import { SCOPE_LABELS, VALID_SCOPES, type ChatScope } from "@/lib/types";
 import { createConversation, saveMessage, updateConversationTitle } from "@/lib/mutations/chat";
 import { getConversationById, getLastConversationMessage } from "@/lib/queries/chat";
@@ -113,6 +120,7 @@ export async function POST(request: NextRequest) {
     const messages = body?.messages as UIMessage[] | undefined;
     const rawScope = body?.scope;
     const rawConvId = body?.conversationId;
+    const rawModelFamily = body?.modelFamily;
     // Contract A: only the page PATH is read from the client. The legacy
     // free-text `pageContext` field is ignored entirely.
     const page = readPageField(body);
@@ -187,11 +195,28 @@ export async function POST(request: NextRequest) {
       scope = rawScope as ChatScope;
     }
 
+    // Model class (owner-approved 2026-11-13): missing or null is "the chat
+    // default"; anything else must be one of the three classes, or 400
+    // before anything is saved. It is USED only when this request creates
+    // the conversation; a later turn reads the class from the row and never
+    // from the body, so no request can change it.
+    let requestedFamily: ChatModelFamily | null = null;
+    if (rawModelFamily !== undefined && rawModelFamily !== null) {
+      if (!isChatModelFamily(rawModelFamily)) {
+        return Response.json(
+          { success: false, error: invalidModelFamilyMessage(rawModelFamily) },
+          { status: 400 },
+        );
+      }
+      requestedFamily = rawModelFamily;
+    }
+
     // Conversation id (B14). An unknown or deleted id starts a new
     // conversation in this scope (the header names it); a known id stored
     // under another scope is refused, so a scoped conversation never carries
     // on under a wider scope (OPEN-3 default).
     let conversationId: number | null = null;
+    let conversationFamily: ChatModelFamily | null = null;
     let untitled = true;
     const requestedId = requestedConversationId(rawConvId);
     if (requestedId !== null) {
@@ -208,11 +233,13 @@ export async function POST(request: NextRequest) {
           );
         }
         conversationId = existing.id;
+        conversationFamily = readStoredChatFamily(existing.model_family);
         untitled = existing.title === null;
       }
     }
     if (conversationId === null) {
-      conversationId = createConversation(db, scope);
+      conversationId = createConversation(db, scope, requestedFamily);
+      conversationFamily = requestedFamily;
     }
     const convId: number = conversationId;
     conversationHeaders = { "X-Conversation-Id": String(convId) };
@@ -428,9 +455,20 @@ export async function POST(request: NextRequest) {
     };
     let streamedSteps = 0;
 
+    // The conversation's model class resolves HERE, per request, to the
+    // newest current id of that class (lib/chat/model-resolve.ts). A stored
+    // class beats a Settings override for the chat feature (the filing-
+    // summary precedent); no class, or a class with nothing callable from it
+    // down, is the unchanged default path, getModelForFeature("chat").
+    const chatModel = resolveChatModel(conversationFamily);
+    const modelLogFields = { modelFamily: conversationFamily, modelFellBackFrom: chatModel.fellBackFrom };
+
     // Stream with automatic agentic tool loop (up to MAX_CHAT_STEPS model calls)
     const result = streamText({
-      model: getModelForFeature("chat"),
+      model:
+        chatModel.source === "family"
+          ? getModelForResolved("chat", chatModel.resolved)
+          : getModelForFeature("chat"),
       maxOutputTokens: 16000,
       system: systemBlocks,
       tools: aiTools,
@@ -487,6 +525,7 @@ export async function POST(request: NextRequest) {
           conversationId: convId,
           scope,
           model: step.response?.modelId,
+          ...modelLogFields,
           step: loggedSteps++,
           ...usageTokenFields(step.usage),
           finishReason: step.finishReason,
@@ -505,6 +544,7 @@ export async function POST(request: NextRequest) {
           conversationId: convId,
           scope,
           model: allSteps[allSteps.length - 1]?.response?.modelId,
+          ...modelLogFields,
           steps: allSteps.length,
           ...usageTokenFields(totalUsage),
           finishReason,
@@ -558,6 +598,7 @@ export async function POST(request: NextRequest) {
           conversationId: convId,
           scope,
           model: lastModelId,
+          ...modelLogFields,
           steps: finishedStepTexts.length,
           ...finishedTokens,
           finishReason: "abort",

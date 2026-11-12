@@ -19,6 +19,8 @@ export const USAGE_LINE_KEYS_STEP = [
   "conversationId",
   "scope",
   "model",
+  "modelFamily",
+  "modelFellBackFrom",
   "step",
   "noCache",
   "cacheWrite",
@@ -32,6 +34,8 @@ export const USAGE_LINE_KEYS_TURN = [
   "conversationId",
   "scope",
   "model",
+  "modelFamily",
+  "modelFellBackFrom",
   "steps",
   "noCache",
   "cacheWrite",
@@ -56,6 +60,14 @@ interface UsageCommonFields extends UsageTokenFields {
   conversationId: number | null | undefined;
   scope: string | null | undefined;
   model: string | null | undefined;
+  /**
+   * The model class stored on the conversation (haiku / sonnet / opus), or
+   * null for the chat default (migration 103). `model` above is the id the
+   * step actually used.
+   */
+  modelFamily?: string | null;
+  /** The stored class when a lower class (or the default) answered instead; else null. */
+  modelFellBackFrom?: string | null;
   finishReason: string | null | undefined;
 }
 
@@ -107,6 +119,9 @@ export const ABORTED_INPUT_CHARS_PER_TOKEN = 3.7;
 export function estimateAbortedInputTokens(chars: number): number {
   return chars > 0 ? Math.ceil(chars / ABORTED_INPUT_CHARS_PER_TOKEN) : 0;
 }
+
+/** The values the two class keys accept (lib/chat/model-choice.ts; this file imports nothing). */
+const MODEL_FAMILY_VALUES = ["haiku", "sonnet", "opus"] as const;
 
 function oneOf<T extends string>(v: unknown, allowed: readonly T[]): T | null {
   return typeof v === "string" && (allowed as readonly string[]).includes(v) ? (v as T) : null;
@@ -167,6 +182,8 @@ export function formatUsageLine(kind: "step" | "turn", fields: UsageStepFields |
     conversationId: num(f.conversationId),
     scope: token(f.scope),
     model: token(f.model),
+    modelFamily: oneOf(f.modelFamily, MODEL_FAMILY_VALUES),
+    modelFellBackFrom: oneOf(f.modelFellBackFrom, MODEL_FAMILY_VALUES),
   };
   if (kind === "step") line.step = num(f.step);
   else line.steps = num(f.steps);

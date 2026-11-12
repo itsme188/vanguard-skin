@@ -35,7 +35,8 @@ describe("chat failed-turn conversation adoption", () => {
       route,
       'conversationHeaders = { "X-Conversation-Id": String(convId) };',
     );
-    expect(created).toBeGreaterThan(anchorIndex(route, "createConversation(db, scope)"));
+    // Re-pinned 2026-11-13: the create call now also passes the model class.
+    expect(created).toBeGreaterThan(anchorIndex(route, "createConversation(db, scope, requestedFamily)"));
     // Exits after that point: missing key, slot busy, the stream, the catch.
     // Each one is checked on its OWN call text (balanced parentheses), so an
     // exit that loses the header fails here even if another exit names it.

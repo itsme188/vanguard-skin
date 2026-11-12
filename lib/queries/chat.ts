@@ -4,9 +4,17 @@ export interface ChatConversation {
   id: number;
   title: string | null;
   scope: string;
+  /** The model class (haiku / sonnet / opus) or null for the chat default (migration 103). */
+  model_family: string | null;
   created_at: string;
   updated_at: string;
   message_count: number;
+  /**
+   * The quiet label the open conversation shows ("Opus 5.5", or "Sonnet 5.5
+   * (Opus not available)"), resolved by GET /api/chat/conversations; null for
+   * a conversation with no class. Not a column.
+   */
+  model_label?: string | null;
 }
 
 export interface ChatMessage {
@@ -51,6 +59,7 @@ export interface ChatConversationRow {
   id: number;
   title: string | null;
   scope: string;
+  model_family: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -61,7 +70,7 @@ export function getConversationById(
   conversationId: number,
 ): ChatConversationRow | null {
   const row = db
-    .prepare(`SELECT id, title, scope, created_at, updated_at FROM chat_conversations WHERE id = ?`)
+    .prepare(`SELECT id, title, scope, model_family, created_at, updated_at FROM chat_conversations WHERE id = ?`)
     .get(conversationId) as ChatConversationRow | undefined;
   return row ?? null;
 }
