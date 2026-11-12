@@ -130,6 +130,19 @@ describe("the newest model is missing: next class inside Anthropic, never an old
     expect(events).toHaveLength(0);
   });
 
+  it("cheap tier (one class): not_found on Haiku 5.5 retries the listed Haiku 4.5, never Haiku 5.5 again", async () => {
+    generateTextMock
+      .mockRejectedValueOnce(await realError(ANTHROPIC_FAILURES.notFound404))
+      .mockResolvedValueOnce({ text: "from haiku 4.5", finishReason: "stop" });
+
+    const r = await generateTextForFeature("overnightCommentary", { prompt: "hi" });
+
+    expect(r.text).toBe("from haiku 4.5");
+    expect(modelOf(0).modelId).toBe("claude-haiku-5-5");
+    expect(modelOf(1).modelId).toBe("claude-haiku-4-5-20251001");
+    expect(events).toHaveLength(0);
+  });
+
   it("credits run out on that retry: the account failure still reaches OpenAI", async () => {
     generateTextMock
       .mockRejectedValueOnce(await realError(ANTHROPIC_FAILURES.notFound404))

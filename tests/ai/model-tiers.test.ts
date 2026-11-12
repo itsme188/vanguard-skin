@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
   resolveTier,
   parseModelId,
@@ -7,6 +7,7 @@ import {
   CURRENT_CLASS_MODELS,
   FAMILY_LADDERS,
   TIER_STATIC_FALLBACK,
+  TierUnavailableError,
   type Tier,
 } from "@/lib/ai/model-tiers";
 
@@ -106,23 +107,70 @@ describe("resolveTier", () => {
     expect(resolveTier("frontier", ["claude-opus-5-5", "claude-opus-5-10"])).toBe("claude-opus-5-10");
     expect(resolveTier("workhorse", [...catalog, "claude-sonnet-6"])).toBe("claude-sonnet-6");
   });
-  it("never selects an older generation, even when the catalog lists only older ones", () => {
-    // A stale catalog cached before the current generation was listed.
+  it("a catalog that lists only older ids: degrades to the newest of them, with a warning (2026-11-12 ruling, step 3)", () => {
+    // A non-empty catalog is the account's own list; an id it does not list
+    // is not assumed callable. Running one version behind beats being down.
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const stale = ["claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5-20251001"];
-    expect(resolveTier("frontier", stale)).toBe("claude-opus-5-5");
-    expect(resolveTier("workhorse", stale)).toBe("claude-sonnet-5-5");
-    expect(resolveTier("cheap", stale)).toBe("claude-haiku-5-5");
+    expect(resolveTier("frontier", stale)).toBe("claude-opus-4-8");
+    expect(resolveTier("workhorse", stale)).toBe("claude-sonnet-4-6");
+    expect(resolveTier("cheap", stale)).toBe("claude-haiku-4-5-20251001");
+    expect(warn.mock.calls.flat().join(" ")).toMatch(/below its current generation/);
+    warn.mockRestore();
   });
-  it("reactive failover moves to the next class, never to an older version of the same class", () => {
+  it("reactive failover moves to the next class's current id before any older version", () => {
     expect(resolveTier("frontier", catalog, new Set(["claude-opus-5-5"]))).toBe("claude-sonnet-5-5");
     expect(resolveTier("workhorse", catalog, new Set(["claude-sonnet-5-5"]))).toBe("claude-haiku-5-5");
   });
-  it("no tier, with any single id excluded, resolves to an older generation", () => {
+  it("while any current-generation id on the ladder is left, a single exclusion never lands on an older one", () => {
     for (const tier of TIERS) {
       for (const dropped of [undefined, ...catalog]) {
         const id = resolveTier(tier, catalog, new Set(dropped ? [dropped] : []));
-        expect(isCurrentGeneration(id), `${tier} minus ${dropped}`).toBe(true);
+        const currentLeft = catalog.some(
+          (c) => c !== dropped && isCurrentGeneration(c) && FAMILY_LADDERS[tier].includes(parseModelId(c)!.family),
+        );
+        if (currentLeft) expect(isCurrentGeneration(id), `${tier} minus ${dropped}`).toBe(true);
       }
+    }
+  });
+});
+
+describe("a dead current id is never retried (review of 1d8d8517)", () => {
+  const catalog = [
+    "claude-opus-5-5",
+    "claude-opus-4-8",
+    "claude-sonnet-5-5",
+    "claude-sonnet-5",
+    "claude-sonnet-4-6",
+    "claude-haiku-5-5",
+    "claude-haiku-4-5-20251001",
+  ];
+  let warn: ReturnType<typeof vi.spyOn>;
+  beforeEach(() => {
+    warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+  });
+  afterEach(() => warn.mockRestore());
+
+  it("cheap, full catalog, Haiku 5.5 excluded: degrades to Haiku 4.5 (one-class ladder)", () => {
+    expect(resolveTier("cheap", catalog, new Set(["claude-haiku-5-5"]))).toBe("claude-haiku-4-5-20251001");
+  });
+  it("workhorse, only older ids listed, Sonnet 5.5 excluded: an older listed id, never Sonnet 5.5 again", () => {
+    const olderOnly = ["claude-sonnet-5", "claude-sonnet-4-6", "claude-haiku-4-5-20251001"];
+    expect(resolveTier("workhorse", olderOnly, new Set(["claude-sonnet-5-5"]))).toBe("claude-sonnet-5");
+  });
+  it("frontier, the next class has no current id, Opus 5.5 excluded: the newest older Opus, not Opus 5.5 again", () => {
+    const cat = ["claude-opus-5-5", "claude-opus-4-8", "claude-sonnet-4-6"];
+    expect(resolveTier("frontier", cat, new Set(["claude-opus-5-5"]))).toBe("claude-opus-4-8");
+  });
+  it("the static fallback is used only when it is not excluded", () => {
+    expect(resolveTier("cheap", [], new Set())).toBe("claude-haiku-5-5");
+    expect(() => resolveTier("cheap", [], new Set(["claude-haiku-5-5"]))).toThrow(TierUnavailableError);
+  });
+  it("everything excluded: a clear tier-unavailable error, never an excluded id", () => {
+    for (const tier of TIERS) {
+      expect(() => resolveTier(tier, catalog, new Set([...catalog, ...Object.values(TIER_STATIC_FALLBACK)])), tier).toThrow(
+        /tier "\w+" unavailable/,
+      );
     }
   });
 });

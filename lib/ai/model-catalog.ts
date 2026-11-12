@@ -83,12 +83,18 @@ export async function pruneToCallable(
   const knownCallable = new Set<string>();
   for (const tier of TIERS) {
     for (let guard = 0; guard < 8; guard++) {
-      const sel = resolveTier(tier, listed, dead);
+      let sel: string;
+      try {
+        sel = resolveTier(tier, listed, dead);
+      } catch {
+        break;                                 // every id the tier could use is dead
+      }
       if (!listed.includes(sel)) break;       // static fallback not in the listing — nothing to probe
       if (knownCallable.has(sel)) break;       // already verified callable for another tier
+      if (dead.has(sel)) break;                // never probe (bill) a known-dead id twice
       const ok = await probe(sel);
       if (ok) { knownCallable.add(sel); break; }
-      dead.add(sel);                           // drop & re-select next rung
+      dead.add(sel);                           // drop & re-select: next class, then an older listed id
     }
   }
   return listed.filter((id) => !dead.has(id));

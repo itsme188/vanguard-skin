@@ -124,14 +124,31 @@ export function upgradeToCurrentGeneration(id: string): string {
   return (parsed && currentIdOfClass(parsed.family)) ?? id;
 }
 
+/** Every id a tier could use is excluded (each answered 404/403 for this account). */
+export class TierUnavailableError extends Error {
+  constructor(public readonly tier: Tier) {
+    super(`AI tier "${tier}" unavailable: every model it could use is excluded`);
+    this.name = "TierUnavailableError";
+  }
+}
+
+const warnedBelowCurrent = new Set<string>();
+
 /**
- * Resolve a tier to a concrete model id, given the available-model catalog.
- * Walks the family ladder; for the first family with ≥1 available (non-excluded)
- * CURRENT-generation model, returns the newest version. Older generations are
- * never candidates (CURRENT_CLASS_MODELS). Empty result → TIER_STATIC_FALLBACK[tier].
- *
- * `excluded` lets reactive failover drop a model that just 404'd so the retry
- * skips it even before the catalog cache refreshes.
+ * Resolve a tier to a concrete model id, given the available-model catalog
+ * (owner rule 2026-11-12: the latest model of each class; conductor ruling on
+ * the order, same day). `excluded` holds ids that just answered 404/403, so
+ * a retry never goes back to one of them.
+ *   1. The newest CURRENT-generation catalog id of the first ladder class
+ *      that has one (not excluded).
+ *   2. Then the next class on the ladder, current generation.
+ *   3. Only when no current-generation id on the ladder is left: the newest
+ *      OLDER catalog id of the ladder's classes, earliest class first, with a
+ *      warning that the tier is running below its current generation
+ *      (degrade rather than be down). A non-empty catalog is the account's
+ *      own list, so an id it does not list is never assumed callable.
+ *   4. The static fallback (an empty catalog: a fresh database, a Worker
+ *      snapshot without one), unless it is excluded; then TierUnavailableError.
  */
 export function resolveTier(
   tier: Tier,
@@ -141,16 +158,27 @@ export function resolveTier(
   const available = catalogIds
     .filter((id) => !excluded.has(id))
     .map((id) => ({ id, parsed: parseModelId(id) }))
-    .filter((x): x is { id: string; parsed: ParsedModel } => x.parsed !== null)
-    .filter((x) => isCurrentGeneration(x.id));
+    .filter((x): x is { id: string; parsed: ParsedModel } => x.parsed !== null);
+  const newest = (hits: { id: string; parsed: ParsedModel }[]) =>
+    [...hits].sort((a, b) => compareVersions(b.parsed.version, a.parsed.version))[0].id;
 
+  for (const family of FAMILY_LADDERS[tier]) {
+    const hits = available.filter((x) => x.parsed.family === family && isCurrentGeneration(x.id));
+    if (hits.length > 0) return newest(hits);
+  }
   for (const family of FAMILY_LADDERS[tier]) {
     const hits = available.filter((x) => x.parsed.family === family);
     if (hits.length === 0) continue;
-    hits.sort((a, b) => compareVersions(b.parsed.version, a.parsed.version));
-    return hits[0].id;
+    const id = newest(hits);
+    if (!warnedBelowCurrent.has(`${tier}:${id}`)) {
+      warnedBelowCurrent.add(`${tier}:${id}`);
+      console.warn(`[ai] tier "${tier}" is running below its current generation on ${id}`);
+    }
+    return id;
   }
-  return TIER_STATIC_FALLBACK[tier];
+  const fallback = TIER_STATIC_FALLBACK[tier];
+  if (!excluded.has(fallback)) return fallback;
+  throw new TierUnavailableError(tier);
 }
 
 /**

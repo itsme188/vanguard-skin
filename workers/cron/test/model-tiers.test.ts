@@ -1,6 +1,6 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { readFileSync } from "node:fs";
-import { resolveTier, TIER_STATIC_FALLBACK, isCurrentGeneration } from "../src/model-tiers";
+import { resolveTier, TIER_STATIC_FALLBACK, isCurrentGeneration, TierUnavailableError } from "../src/model-tiers";
 
 describe("worker model-tiers parity", () => {
   it("is byte-identical to the Mac resolver below the header", () => {
@@ -25,5 +25,15 @@ describe("worker model-tiers parity", () => {
     const id = resolveTier("workhorse", catalog, new Set(["claude-sonnet-5-5"]));
     expect(id).toBe("claude-haiku-5-5");
     expect(isCurrentGeneration(id)).toBe(true);
+  });
+});
+
+describe("worker: a dead current id is never retried (review of 1d8d8517)", () => {
+  it("cheap degrades to the listed older Haiku; everything excluded throws", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const catalog = ["claude-haiku-5-5", "claude-haiku-4-5-20251001"];
+    expect(resolveTier("cheap", catalog, new Set(["claude-haiku-5-5"]))).toBe("claude-haiku-4-5-20251001");
+    expect(() => resolveTier("cheap", catalog, new Set(catalog))).toThrow(TierUnavailableError);
+    warn.mockRestore();
   });
 });

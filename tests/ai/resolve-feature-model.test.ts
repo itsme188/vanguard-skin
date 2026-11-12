@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import { resolveFeatureModel } from "@/lib/ai/models";
 import { setModelCatalogSource } from "@/lib/ai/catalog-source";
 import { setFeatureModelOverrideSource } from "@/lib/ai/override-source";
@@ -45,10 +45,12 @@ describe("resolveFeatureModel tier expansion", () => {
     expect(resolveFeatureModel("chat").modelId).toBe("claude-sonnet-5-5");
     expect(resolveFeatureModel("researchMentionVerification").modelId).toBe("claude-haiku-5-5");
   });
-  it("a stale catalog listing only older generations still resolves to the current ids", () => {
+  it("a catalog listing only older generations degrades to them rather than to an id the account did not list", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     setModelCatalogSource(() => ["claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5"]);
-    expect(resolveFeatureModel("printWatchFirstPass").modelId).toBe("claude-opus-5-5");
-    expect(resolveFeatureModel("chat").modelId).toBe("claude-sonnet-5-5");
+    expect(resolveFeatureModel("printWatchFirstPass").modelId).toBe("claude-opus-4-8");
+    expect(resolveFeatureModel("chat").modelId).toBe("claude-sonnet-4-6");
+    warn.mockRestore();
   });
   it("explicit non-tier spec passes through untouched", () => {
     expect(resolveFeatureModel("alertSuggestion").provider).toBe("workers-ai");

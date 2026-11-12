@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import Database from "better-sqlite3";
 import {
   getModelCatalog,
@@ -6,6 +6,7 @@ import {
   isModelCatalogStale,
   pruneToCallable,
 } from "@/lib/ai/model-catalog";
+import { resolveTier } from "@/lib/ai/model-tiers";
 
 function freshDb(): Database.Database {
   const db = new Database(":memory:");
@@ -67,6 +68,25 @@ describe("pruneToCallable", () => {
     // probe returns true for transient/unknown; here everything 'callable' → kept
     const callable = await pruneToCallable(["claude-opus-5-5", "claude-sonnet-5-5"], async () => true);
     expect(callable).toEqual(["claude-opus-5-5", "claude-sonnet-5-5"]);
+  });
+
+  it("a dead current Haiku is probed once, and the catalog then resolves cheap to a callable Haiku (review of 1d8d8517)", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const full = [...listed, "claude-haiku-4-5-20251001"];
+    const probed: string[] = [];
+    const probe = async (id: string) => { probed.push(id); return id !== "claude-haiku-5-5"; };
+    const callable = await pruneToCallable(full, probe);
+    expect(probed.filter((id) => id === "claude-haiku-5-5")).toHaveLength(1);
+    expect(callable).not.toContain("claude-haiku-5-5");
+    expect(resolveTier("cheap", callable)).toBe("claude-haiku-4-5-20251001");
+    warn.mockRestore();
+  });
+
+  it("every id dead: each probed at most once, no throw", async () => {
+    const probed: string[] = [];
+    const callable = await pruneToCallable(listed, async (id) => { probed.push(id); return false; });
+    expect(new Set(probed).size).toBe(probed.length);
+    expect(callable).toEqual(["claude-fable-5"]);
   });
 
   it("probes each tier's selection at most once and is bounded", async () => {
