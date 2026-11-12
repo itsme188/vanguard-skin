@@ -65,9 +65,9 @@ describe("chat summary total is the Portfolio strip's total", () => {
   it("keeps a per-account freshness footnote: each account's own date and kind of source", () => {
     const { live } = seedMixedBook();
     const summary = getPortfolioSummaryForChat(db);
-    expect(summary).toContain(`- Vanguard Taxable: ${formatUSD(100000)} (as of 2025-01-31, statement)`);
-    expect(summary).toContain(`- Vanguard Roth IRA: ${formatUSD(42000)} (as of 2025-02-10, daily valuation)`);
-    expect(summary).toContain(`- IBKR: ${formatUSD(230000)} (as of ${live}, live broker value)`);
+    expect(summary).toContain(`- Vanguard Taxable: ${formatUSD(100000)} (as of 2025-01-31, statement;`);
+    expect(summary).toContain(`- Vanguard Roth IRA: ${formatUSD(42000)} (as of 2025-02-10, daily valuation;`);
+    expect(summary).toContain(`- IBKR: ${formatUSD(230000)} (as of ${live}, live broker value;`);
     // The total is labelled with the newest date, and the summary says the
     // accounts are not all valued on it.
     expect(summary).toMatch(/oldest account value is dated 2025-01-31/);
@@ -77,7 +77,7 @@ describe("chat summary total is the Portfolio strip's total", () => {
     seedSnapshot(3, "2025-01-31", 200000);
     seedSnapshot(3, "2025-02-14", 230000, "tws");
     const summary = getPortfolioSummaryForChat(db);
-    expect(summary).toContain(`- IBKR: ${formatUSD(200000)} (as of 2025-01-31, statement)`);
+    expect(summary).toContain(`- IBKR: ${formatUSD(200000)} (as of 2025-01-31, statement;`);
     expect(getPortfolioTotals(db).totalValue).toBe(200000);
   });
 

@@ -323,13 +323,17 @@ export function getPortfolioSummaryForChat(db: Database.Database, scope?: Portfo
   // nothing is an empty scope, never the whole portfolio.
   const portfolioValues = getPortfolioCurrentValues(db, accountIds);
 
+  // Run 4 (2026-11-12): each line names the account's tax treatment, so a
+  // second taxable account is never read as tax-advantaged by its name.
+  const taxTreatmentById = new Map(getAllAccounts(db).map((a) => [a.id, a.tax_treatment]));
+  const treatment = (id: number) => `tax treatment: ${isTaxableAccount(taxTreatmentById.get(id)) ? "taxable" : "tax-advantaged"}`;
   lines.push("### Account Values");
   for (const av of portfolioValues.accounts) {
     if (av.currentValue !== null) {
       const kind = av.sourceKind ? `, ${ACCOUNT_VALUE_SOURCE_LABEL[av.sourceKind]}` : "";
-      lines.push(`- ${av.accountName}: ${formatUSD(av.currentValue)} (as of ${av.asOfDate}${kind})`);
+      lines.push(`- ${av.accountName}: ${formatUSD(av.currentValue)} (as of ${av.asOfDate}${kind}; ${treatment(av.accountId)})`);
     } else {
-      lines.push(`- ${av.accountName}: No data yet`);
+      lines.push(`- ${av.accountName}: No data yet (${treatment(av.accountId)})`);
     }
   }
 
