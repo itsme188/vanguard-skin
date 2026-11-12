@@ -21,6 +21,7 @@ import {
 } from "@/lib/queries/dashboard";
 import { liveOptionExpirationSql, normalizeOptionExpiration } from "@/lib/compute/option-expiry";
 import { CURRENCY_CONVERSION_SECURITY_SQL, lotSideSignSql, remainingLotBasisSql } from "@/lib/queries/tax-lots";
+import { transactionAmountCurrencySql, transactionAmountUsdSql } from "@/lib/queries/chat-tools";
 import { longTermDateSql } from "@/lib/queries/long-term-sql";
 import { getPendingStatementIndex, isPendingStatementLot } from "@/lib/queries/pending-statement";
 import {
@@ -89,6 +90,37 @@ interface RecentTransaction {
   security_type: string | null;
   quantity: number | null;
   amount: number | null;
+  /** The currency `amount` is stored in (transactionAmountCurrencySql). */
+  amount_currency: string;
+  /** USD at the current rate; null when no rate is on file. */
+  amount_usd: number | null;
+}
+
+/**
+ * The amount on a recent-transaction line. A buy or sell's direction is in
+ * its type, so its magnitude is shown. Interest keeps its direction in
+ * words, by the income source's sign rule (lib/queries/income-sql.ts): a
+ * positive row is interest earned, a negative one interest paid (margin
+ * interest is a cost); a negative dividend is a charge or reversal. A
+ * non-USD amount is shown in its own currency, never with a dollar sign,
+ * with its USD figure at the current rate when one is on file.
+ */
+function recentTransactionAmountText(t: RecentTransaction): string {
+  const amount = t.amount as number;
+  const type = t.type.toUpperCase();
+  const label =
+    type === "INTEREST"
+      ? amount < 0 ? "interest paid" : "interest earned"
+      : type === "DIVIDEND" && amount < 0
+        ? "dividend charged or reversed"
+        : "amount";
+  if (t.amount_currency === "USD") return `${label} ${formatUSD(Math.abs(amount))}`;
+  const native = `${t.amount_currency} ${formatNumber(Math.abs(amount))}`;
+  const usd =
+    t.amount_usd != null
+      ? ` (about ${formatUSD(Math.abs(t.amount_usd))} at the current rate)`
+      : ` (no USD rate on file for ${t.amount_currency})`;
+  return `${label} ${native}${usd}`;
 }
 
 interface AllocationRow {
@@ -839,10 +871,13 @@ export function getPortfolioSummaryForChat(db: Database.Database, scope?: Portfo
   const recentTxns = db
     .prepare(
       `SELECT a.name AS account_name, t.trade_date, t.type,
-              s.symbol, s.security_type, t.quantity, t.amount
+              s.symbol, s.security_type, t.quantity, t.amount,
+              ${transactionAmountCurrencySql()} AS amount_currency,
+              ${transactionAmountUsdSql()} AS amount_usd
        FROM transactions t
        JOIN accounts a ON a.id = t.account_id
        LEFT JOIN securities s ON s.id = t.security_id
+       LEFT JOIN fx_rates fx ON fx.currency = s.currency
        WHERE t.type != 'RECONCILE_CLOSE' ${txnScope.sql}
        ORDER BY t.trade_date DESC
        LIMIT 20`
@@ -854,7 +889,7 @@ export function getPortfolioSummaryForChat(db: Database.Database, scope?: Portfo
     lines.push("These transactions show what has happened. A security listed here may have been bought AND subsequently sold.");
     for (const t of recentTxns) {
       const sym = t.symbol ?? "CASH";
-      const amt = t.amount !== null ? ` amount ${formatUSD(Math.abs(t.amount))}` : "";
+      const amt = t.amount !== null ? ` ${recentTransactionAmountText(t)}` : "";
       // QA-11: contracts for an option, face value for a bond, never "shares" for all.
       const qty = t.quantity !== null ? ` ${t.quantity} ${quantityUnitLabel(t.security_type, t.quantity)}` : "";
       lines.push(`- ${t.trade_date} | ${t.account_name} | ${t.type} ${sym}${qty}${amt}`);

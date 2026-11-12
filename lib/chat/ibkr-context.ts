@@ -7,6 +7,18 @@ import { computeFactorAnalysis } from "@/lib/compute/factors";
 
 // ─── Types ──────────────────────────────────────────────────────
 
+export interface RecentIbkrTrade {
+  date: string;
+  symbol: string;
+  type: string;
+  /** USD magnitude at the current rate. */
+  amount: number;
+  /** The currency the trade's amount is stored in. Always set by computeIbkrTradingContext (optional for hand-built test contexts). */
+  currency?: string;
+  /** The stored amount's magnitude, in `currency`. Always set by computeIbkrTradingContext. */
+  amountNative?: number;
+}
+
 export interface IbkrTradingContext {
   /** Signed: negative when the account borrows (cash below zero). */
   cashPct: number;
@@ -19,7 +31,16 @@ export interface IbkrTradingContext {
   sectorTilts: { sector: string; weight: number }[];
   repeatNames: { symbol: string; tradeCount: number; lastTraded: string }[];
   avgHoldingDays: number | null;
-  recentTrades: { date: string; symbol: string; type: string; amount: number }[];
+  /**
+   * Recent buys and sells. `amount` is US DOLLARS (magnitude; the type gives
+   * the direction): a non-USD trade's stored amount is native and is
+   * converted at the current rate. `currency` and `amountNative` carry the
+   * stored figure. A non-USD trade with no rate on file is never given a
+   * dollar amount: it is listed in `recentTradesWithoutUsd` instead.
+   */
+  recentTrades: RecentIbkrTrade[];
+  /** Non-USD recent trades with no USD rate on file: native amount and currency only. */
+  recentTradesWithoutUsd?: Omit<RecentIbkrTrade, "amount">[];
   longShortSummary: string;
   // Cash provenance (plan Contract E / P12), from getAccountCashLine.
   /** The day the cash figure was measured (the measured day when carried). */
@@ -260,15 +281,21 @@ export function computeIbkrTradingContext(
 
   // 7. Recent trades (last 10 BUY/SELL)
   const allRecent = getTransactionsForChat(db, { account_name: accountName, limit: 20 });
-  const recentTrades = allRecent
-    .filter((t) => ["BUY", "SELL"].includes(t.type.toUpperCase()))
-    .slice(0, 10)
-    .map((t) => ({
+  // A stored amount is native for a trade leg (getTransactionsForChat's
+  // amount_currency); `amount` is the USD figure, never the native number.
+  const recentTrades: RecentIbkrTrade[] = [];
+  const recentTradesWithoutUsd: Omit<RecentIbkrTrade, "amount">[] = [];
+  for (const t of allRecent.filter((t) => ["BUY", "SELL"].includes(t.type.toUpperCase())).slice(0, 10)) {
+    const base = {
       date: t.trade_date,
       symbol: t.symbol ?? "?",
       type: t.type,
-      amount: Math.abs(t.amount ?? 0),
-    }));
+      currency: t.amount_currency,
+      amountNative: Math.abs(t.amount ?? 0),
+    };
+    if (t.amount != null && t.amount_usd == null) recentTradesWithoutUsd.push(base);
+    else recentTrades.push({ ...base, amount: Math.abs(t.amount_usd ?? 0) });
+  }
 
   return {
     cashPct: Math.round(cashPct * 10) / 10,
@@ -285,6 +312,7 @@ export function computeIbkrTradingContext(
     })),
     avgHoldingDays,
     recentTrades,
+    recentTradesWithoutUsd,
     longShortSummary,
     cashAsOf,
     cashSource,

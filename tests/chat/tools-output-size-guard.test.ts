@@ -166,7 +166,7 @@ const ALLOWED_ROUNDING: Record<string, Record<string, number>> = {
     cost_basis_usd_at_current_fx: 2, realized_gain_usd_at_current_fx: 2, acquisition_price: 4, current_price: 4, sale_price: 4,
     cost_basis_usd: 2, unrealized_gain_usd: 2, short_sale_proceeds_usd: 2, // totals block
   },
-  query_transactions: { amount: 2, fees: 2, price_per_share: 4 },
+  query_transactions: { amount: 2, amount_usd: 2, fees: 2, price_per_share: 4 },
   query_allocation: { total_market_value: 2, percentage: 2 },
   query_price_history: { close_price: 4 },
   query_market_snapshot: { market_value: 2, day_effect: 2, day_effect_total: 2, pct: 2 },

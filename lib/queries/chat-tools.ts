@@ -140,6 +140,7 @@ export interface HoldingResult {
   asset_class: string | null;
   sector: string | null;
   quantity: number;
+  /** USD. A short's is its sale proceeds, signed negative like quantity and market_value. */
   cost_basis: number | null;
   /** NATIVE close in `currency`; never converted. market_value and cost_basis are USD. */
   latest_price: number | null;
@@ -148,7 +149,9 @@ export interface HoldingResult {
   /** Date of the `prices` row behind latest_price / market_value (YYYY-MM-DD). */
   price_date: string | null;
   market_value: number | null;
+  /** market_value - cost_basis; for a short, the proceeds less the cost to cover (query_tax_lots' figure). */
   unrealized_gain: number | null;
+  /** unrealized_gain as a percent of |cost_basis|, signed by the gain. */
   unrealized_gain_pct: number | null;
   position_weight_pct: number | null;
   /** What position_weight_pct is a share of: the filtered accounts' book, or every account's. */
@@ -264,9 +267,16 @@ export interface TransactionResult {
   security_name: string | null;
   account_name: string;
   quantity: number | null;
+  /** In `amount_currency`, as stored. */
   price_per_share: number | null;
+  /** As stored, in `amount_currency` (signed: negative is cash out). */
   amount: number | null;
+  /** In `amount_currency`. */
   fees: number;
+  /** The currency `amount`, `price_per_share` and `fees` are stored in (transactionAmountCurrencySql). */
+  amount_currency: string;
+  /** `amount` in USD at the current rate; equal to `amount` for USD; null when no rate is on file. */
+  amount_usd: number | null;
 }
 
 export interface PerformanceResult {
@@ -446,7 +456,20 @@ export function getHoldingsForChat(
   };
 
   // Same basis the Accounts page shows: the row's own, else the latest earlier row of the pair, scaled by quantity.
-  const costBasisExpr = scaledCostBasisFallbackSQL("h", "h3");
+  const storedBasisExpr = scaledCostBasisFallbackSQL("h", "h3");
+  // A short's basis is its sale proceeds, stored NEGATIVE by every IBKR
+  // source (position x avgCost). A short stored positive is still a short,
+  // so its basis is read as minus its magnitude: the rule the cost-basis
+  // reconciliation applies (lib/compute/cost-basis-reconciliation.ts). The
+  // gain is then market value minus the signed basis, the Accounts page's
+  // formula (lib/queries/holdings.ts), which for a short is the proceeds
+  // less the cost to cover: the figure query_tax_lots gives the open lot
+  // (lotSideSignSql x (value - remainingLotBasisSql)). The percent is over
+  // the basis magnitude (unrealizedGainRatio, lib/format.ts). Before this a
+  // real short (negative basis) had no gain at all, and one stored positive
+  // read market value minus proceeds.
+  const costBasisExpr = `(CASE WHEN h.quantity < 0 THEN -ABS(${storedBasisExpr}) ELSE ${storedBasisExpr} END)`;
+  const hasGainBasis = `(${storedBasisExpr} IS NOT NULL AND (${storedBasisExpr} > 0 OR (h.quantity < 0 AND ${storedBasisExpr} <> 0)))`;
 
   const sql = `
     WITH latest_prices AS (
@@ -470,11 +493,11 @@ export function getHoldingsForChat(
       CASE WHEN lp.close_price IS NOT NULL
         THEN ${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}
         ELSE NULL END AS market_value,
-      CASE WHEN lp.close_price IS NOT NULL AND ${costBasisExpr} IS NOT NULL AND ${costBasisExpr} > 0
+      CASE WHEN lp.close_price IS NOT NULL AND ${hasGainBasis}
         THEN ${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")} - (${costBasisExpr} * COALESCE(fx.usd_per_unit, 1))
         ELSE NULL END AS unrealized_gain,
-      CASE WHEN lp.close_price IS NOT NULL AND ${costBasisExpr} IS NOT NULL AND ${costBasisExpr} > 0
-        THEN (${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")} - (${costBasisExpr} * COALESCE(fx.usd_per_unit, 1))) * 100.0 / (${costBasisExpr} * COALESCE(fx.usd_per_unit, 1))
+      CASE WHEN lp.close_price IS NOT NULL AND ${hasGainBasis}
+        THEN (${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")} - (${costBasisExpr} * COALESCE(fx.usd_per_unit, 1))) * 100.0 / ABS(${costBasisExpr} * COALESCE(fx.usd_per_unit, 1))
         ELSE NULL END AS unrealized_gain_pct,
       -- Gross-exposure convention: when includeShorts is true, both this
       -- numerator and the denominator above (totalPortfolioValue) are ABS(mv)
@@ -1428,6 +1451,43 @@ function taxLotStatusNote(row: { security_type?: string | null; expiration_date?
 /**
  * Search transaction history with filters.
  */
+/**
+ * Transaction types whose `amount` is stored in USD whatever the security's
+ * currency. The IBKR activity parser converts its per-currency CASH
+ * sections (Dividends, Interest, Fees, Deposits & Withdrawals) to USD at
+ * import through IBKR's own "Total in USD" line, keeping the native figure
+ * in the note (`emitCurrencyBlocks`, lib/import/parsers/ibkr-activity.ts);
+ * the income readers sum these amounts as dollars (lib/queries/income-sql.ts).
+ * Withholding is Vanguard-only (USD). Every other row (a trade leg: the
+ * Trades section's Proceeds, a transfer's market value) is stored in the
+ * security's NATIVE currency: the lot engine reads it native and converts
+ * at read time (lib/compute/tax-lots.ts).
+ */
+export const USD_STORED_TRANSACTION_TYPES = ["DIVIDEND", "INTEREST", "FEE", "DEPOSIT", "WITHDRAWAL", "TAX_WITHHELD"] as const;
+
+/**
+ * The currency a transaction row's `amount` (and `price_per_share`, `fees`)
+ * is stored in. Aliases: `t` transactions, `s` securities (LEFT JOIN).
+ */
+export function transactionAmountCurrencySql(t = "t", s = "s"): string {
+  const usdTypes = USD_STORED_TRANSACTION_TYPES.map((x) => `'${x}'`).join(", ");
+  return `(CASE WHEN ${s}.id IS NULL OR UPPER(${t}.type) IN (${usdTypes}) THEN 'USD'
+            ELSE UPPER(COALESCE(${s}.currency, 'USD')) END)`;
+}
+
+/**
+ * `amount` in USD at the current rate: the amount itself for USD, null when
+ * no rate is on file (never the native number read as dollars). Expects
+ * `fx` joined as `LEFT JOIN fx_rates fx ON fx.currency = s.currency`.
+ */
+export function transactionAmountUsdSql(t = "t", s = "s", fx = "fx"): string {
+  const cur = transactionAmountCurrencySql(t, s);
+  return `(CASE WHEN ${t}.amount IS NULL THEN NULL
+            WHEN ${cur} = 'USD' THEN ${t}.amount
+            WHEN ${fx}.usd_per_unit IS NOT NULL THEN ${t}.amount * ${fx}.usd_per_unit
+            ELSE NULL END)`;
+}
+
 export function getTransactionsForChat(
   db: Database.Database,
   filters: TransactionFilters = {}
@@ -1472,10 +1532,13 @@ export function getTransactionsForChat(
         t.quantity,
         t.price_per_share,
         t.amount,
-        t.fees
+        t.fees,
+        ${transactionAmountCurrencySql()} AS amount_currency,
+        ${transactionAmountUsdSql()} AS amount_usd
       FROM transactions t
       JOIN accounts a ON a.id = t.account_id
       LEFT JOIN securities s ON s.id = t.security_id
+      LEFT JOIN fx_rates fx ON fx.currency = s.currency
       ${whereClause}
       ORDER BY t.trade_date DESC
       LIMIT ?`
