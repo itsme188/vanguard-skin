@@ -142,12 +142,20 @@ async function main() {
         ];
       }
 
-      const response = await client.messages.create({
-        model: SONNET_MODEL,
-        max_tokens: 16384,
-        system: SYSTEM_PROMPT,
-        messages: [{ role: "user", content }],
-      });
+      // Streamed: on the 5.5 generation thinking is on by default and counts
+      // against max_tokens, so the cap leaves room for it plus a long CSV,
+      // and a cap this large is refused on a non-streaming request.
+      const response = await client.messages
+        .stream({
+          model: SONNET_MODEL,
+          max_tokens: 64_000,
+          system: SYSTEM_PROMPT,
+          messages: [{ role: "user", content }],
+        })
+        .finalMessage();
+      if (response.stop_reason === "max_tokens") {
+        throw new Error("reply hit max_tokens; the CSV would be cut off, nothing written");
+      }
 
       const outputText = response.content
         .filter((b): b is Anthropic.TextBlock => b.type === "text")
