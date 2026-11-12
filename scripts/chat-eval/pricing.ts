@@ -4,8 +4,11 @@
  * PRICE SOURCE: the Claude API reference bundled with Claude Code (model
  * table "cached: 2026-11-03"; cache multipliers from its prompt-caching
  * page), copied here on 2026-11-11. US dollars per million tokens, first-party
- * Anthropic API rates. Not checked against the live pricing page: confirm
- * there before trusting a total to the cent.
+ * Anthropic API rates. On 2026-11-12 the Fable 5.2, Opus 5.5, Sonnet 5.5 and
+ * Haiku 5.5 rows (input, 5-minute cache write, cache read, output) were
+ * checked against the live pricing page
+ * (platform.claude.com/docs/en/about-claude/pricing) and match it; the older
+ * rows were not re-checked.
  *
  * The table is keyed by the model id the SERVER reports in its usage log
  * (the `model` field of a `[chat-usage]` line). The script never chooses a
@@ -32,7 +35,8 @@ export interface ModelPrice {
 
 export const PRICE_SOURCE =
   "Claude API reference bundled with Claude Code (model table cached 2026-11-03), copied 2026-11-11; " +
-  "first-party API rates; 5-minute cache write = 1.25x input. Not re-checked against the live pricing page.";
+  "first-party API rates; 5-minute cache write = 1.25x input. Current-generation rows (Fable 5.2, Opus 5.5, " +
+  "Sonnet 5.5, Haiku 5.5) checked against the live pricing page 2026-11-12; older rows not re-checked.";
 
 function p(input: number, output: number, cacheRead: number): ModelPrice {
   return { input, output, cacheRead, cacheWrite: Math.round(input * 1.25 * 1000) / 1000 };
@@ -40,6 +44,7 @@ function p(input: number, output: number, cacheRead: number): ModelPrice {
 
 /** Exact model ids (date suffix allowed, see `normalizeModelId`). */
 export const PRICE_TABLE: Readonly<Record<string, ModelPrice>> = {
+  "claude-fable-5-2": p(8, 40, 0.2),
   "claude-opus-5-5": p(4, 20, 0.2),
   "claude-opus-5": p(5, 25, 0.5),
   "claude-opus-4-8": p(5, 25, 0.5),
