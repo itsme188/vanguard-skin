@@ -41,7 +41,9 @@ Slide-out right panel (Cmd+J), accessible from any tab, persists conversation. S
 assistant has 33 tools (27 base, six composite tools over dashboard engines), a cached static prompt
 block plus a volatile block (date, IBKR dashboard, Portfolio Context, page), a scope boundary on
 what the tools read, checked twice (the route's clamp and `executeTool`), and an approval card for
-`create_note`. Since 2026-11-12 the scope limits reads only: a whole-portfolio result (data
+`create_note`. Since 2026-11-13 each conversation stores the model class it was started on
+(`chat_conversations.model_family`, migration 103: Haiku, Sonnet or Opus; Sonnet preselected;
+NULL for older conversations, which use the chat default). Since 2026-11-12 the scope limits reads only: a whole-portfolio result (data
 confidence, wash-sale detail, notes, briefing text) is returned in a scoped chat with a label. Working
 reference: `lib/chat/CLAUDE.md`.
 
