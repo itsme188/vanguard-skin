@@ -1,22 +1,22 @@
 /**
- * P9 / OPEN-7 (Portfolio Assistant plan, Task 5): the account scope applies to
- * private text, not only to tools that take `account_name`.
+ * Notes and whole-book text in a scoped chat (owner ruling 2026-11-12,
+ * replacing plan P9 / OPEN-7: inside the chat the owner is the only reader).
  *
- * In a single-account chat the route passes the scope's id list as
+ * In a chat scoped to some accounts the route passes the scope's id list as
  * `opts.scopeAccountIds` (Contract H). Then:
- *  - query_notes withholds a note linked to ANOTHER account's transaction
- *    (and so never shows that transaction's type or date); unlinked notes
- *    (the owner's journal, not account data) and notes on an in-scope
- *    transaction are returned;
+ *  - query_notes returns every note, and a note linked to a transaction
+ *    carries that transaction's `account`, inside the scope or not;
  *  - query_earnings_transcript's user_notes follow the same rule;
- *  - fields that are built from the whole book and cannot be scoped to one
- *    account are withheld with a note (OPEN-7 default): a research article's
+ *  - fields written against the whole book (a research article's
  *    portfolio_relevance, an alert's suggested_action, a weekly briefing's
- *    content.
- * With no scope list (the All Accounts chat) everything is shown.
+ *    content) are returned, with a scope_note saying they cover the whole
+ *    portfolio.
+ * The All Accounts chat returns the same notes with the same account names,
+ * and no scope_note.
  *
- * Protects: no other account's transaction or whole-book text reaches a
- * single-account chat. Bound: zero such rows or fields.
+ * Protects: no note or whole-book field is hidden from the owner by the
+ * chat's scope, and a whole-book field is never presented as this scope's
+ * own. Bound: every seeded note and field returned, each labelled.
  */
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import Database from "better-sqlite3";
@@ -31,7 +31,7 @@ import { executeTool } from "@/lib/chat/tools";
 let db: Database.Database;
 let secId: number;
 
-type Note = { content: string; transaction_type: string | null; transaction_date: string | null };
+type Note = { content: string; transaction_type: string | null; transaction_date: string | null; account?: string };
 
 beforeEach(() => {
   db = new Database(":memory:");
@@ -57,26 +57,40 @@ beforeEach(() => {
   note.run("earnings", "on the taxable trade", secId, taxableTx);
 });
 
-describe("query_notes in a single-account chat", () => {
-  it("withholds a note linked to another account's transaction", async () => {
+describe("query_notes in a scoped chat", () => {
+  it("returns every note, each linked note naming its account", async () => {
     const r = (await executeTool(db, "query_notes", {}, { scopeAccountIds: [3] })) as { data: Note[] };
-    const contents = r.data.map((n) => n.content).sort();
-    expect(contents).toEqual(["on the IBKR trade", "unlinked journal"]);
-    expect(JSON.stringify(r.data)).not.toContain("taxable");
+    const byContent = Object.fromEntries(r.data.map((n) => [n.content, n.account ?? null]));
+    expect(byContent).toEqual({
+      "unlinked journal": null,
+      "on the IBKR trade": "IBKR",
+      "on the taxable trade": "Vanguard Taxable",
+    });
   });
 
-  it("returns every note in the All Accounts chat", async () => {
-    const r = (await executeTool(db, "query_notes", {})) as { data: Note[] };
-    expect(r.data).toHaveLength(3);
+  it("returns the same notes in the All Accounts chat", async () => {
+    const scoped = (await executeTool(db, "query_notes", {}, { scopeAccountIds: [3] })) as { data: Note[] };
+    const all = (await executeTool(db, "query_notes", {})) as { data: Note[] };
+    expect(all.data).toEqual(scoped.data);
+  });
+
+  it("returns one note by id even when it sits on another account's trade", async () => {
+    const id = (db.prepare("SELECT id FROM notes WHERE content = 'on the taxable trade'").get() as { id: number }).id;
+    const r = (await executeTool(db, "query_notes", { id }, { scopeAccountIds: [3] })) as { data: Note[] };
+    expect(r.data).toHaveLength(1);
+    expect(r.data[0].account).toBe("Vanguard Taxable");
   });
 });
 
-describe("query_earnings_transcript user_notes in a single-account chat", () => {
-  it("follows the same rule", async () => {
+describe("query_earnings_transcript user_notes in a scoped chat", () => {
+  it("returns both notes, each naming its account", async () => {
     const r = (await executeTool(db, "query_earnings_transcript", { ticker: "ZQN" }, { scopeAccountIds: [3] })) as {
       data: { user_notes: Note[] };
     };
-    expect(r.data.user_notes.map((n) => n.content)).toEqual(["on the IBKR trade"]);
+    expect(r.data.user_notes.map((n) => [n.content, n.account]).sort()).toEqual([
+      ["on the IBKR trade", "IBKR"],
+      ["on the taxable trade", "Vanguard Taxable"],
+    ]);
   });
 
   it("shows both in the All Accounts chat", async () => {
@@ -87,7 +101,7 @@ describe("query_earnings_transcript user_notes in a single-account chat", () => 
   });
 });
 
-describe("whole-book fields that cannot be scoped are withheld in a single-account chat", () => {
+describe("whole-book fields in a scoped chat are returned, labelled", () => {
   beforeEach(() => {
     db.prepare(
       `INSERT INTO research_articles (source_id, received_at, subject, sender, raw_text, portfolio_relevance, processed_at)
@@ -109,27 +123,34 @@ describe("whole-book fields that cannot be scoped are withheld in a single-accou
     const feeds = (await executeTool(db, "query_research_feeds", {}, opts)) as {
       data: { articles: Array<{ portfolio_relevance: unknown }>; scope_note?: string };
     };
-    expect(feeds.data.articles[0].portfolio_relevance).toBeNull();
-    expect(feeds.data.scope_note).toMatch(/All Accounts/);
+    expect(feeds.data.articles[0].portfolio_relevance).toBe("Relevant to the held ZQN position");
+    expect(feeds.data.scope_note).toBe(
+      "portfolio_relevance was written against the whole portfolio, not only this chat's accounts.",
+    );
 
     const alerts = (await executeTool(db, "query_alerts", {}, opts)) as {
       data: { alerts: Array<{ suggested_action: unknown }>; scope_note?: string };
     };
-    expect(alerts.data.alerts[0].suggested_action).toBeNull();
-    expect(alerts.data.scope_note).toMatch(/All Accounts/);
+    expect(alerts.data.alerts[0].suggested_action).toBe("Trim the position held in the taxable account");
+    expect(alerts.data.scope_note).toBe(
+      "suggested_action was written against the whole portfolio, not only this chat's accounts.",
+    );
 
     const briefings = (await executeTool(db, "query_calendar_briefings", {}, opts)) as {
       data: { briefings: Array<{ content: unknown; title: string }>; scope_note?: string };
     };
-    expect(briefings.data.briefings[0].content).toBeNull();
+    expect(briefings.data.briefings[0].content).toBe("Held names this week");
     expect(briefings.data.briefings[0].title).toBe("Week");
-    expect(briefings.data.scope_note).toMatch(/All Accounts/);
+    expect(briefings.data.scope_note).toBe(
+      "The briefing text was written against the whole portfolio, not only this chat's accounts.",
+    );
   });
 
-  it("are shown in the All Accounts chat", async () => {
+  it("are shown in the All Accounts chat, with no scope_note", async () => {
     const feeds = (await executeTool(db, "query_research_feeds", {})) as {
-      data: { articles: Array<{ portfolio_relevance: unknown }> };
+      data: { articles: Array<{ portfolio_relevance: unknown }>; scope_note?: string };
     };
+    expect(feeds.data.scope_note).toBeUndefined();
     expect(feeds.data.articles[0].portfolio_relevance).toBe("Relevant to the held ZQN position");
     const alerts = (await executeTool(db, "query_alerts", {})) as {
       data: { alerts: Array<{ suggested_action: unknown }> };

@@ -264,7 +264,7 @@ describe("long text is cut per row with a working way to read it in full", () =>
     expect(((await executeTool(db, "query_levels", { id: 99999 })) as { error?: string }).error).toMatch(/No level with id 99999/);
   });
 
-  it("a single-account chat cannot read another account's note by id", async () => {
+  it("a scoped chat reads another account's note by id, with its account named (owner ruling 2026-11-12)", async () => {
     seedBig(1);
     const t = db
       .prepare("INSERT INTO transactions (account_id, trade_date, type, amount, source_key) VALUES (1, '2026-10-01', 'FEE', -1, 'x1')")
@@ -272,8 +272,12 @@ describe("long text is cut per row with a working way to read it in full", () =>
     const nid = db
       .prepare("INSERT INTO notes (note_type, content, transaction_id, event_date) VALUES ('journal', 'other account', ?, '2026-10-01')")
       .run(t).lastInsertRowid as number;
-    const r = (await executeTool(db, "query_notes", { id: nid }, { scopeAccountIds: [3] })) as { error?: string };
-    expect(r.error).toMatch(/No note with id/);
+    const r = (await executeTool(db, "query_notes", { id: nid }, { scopeAccountIds: [3] })) as {
+      error?: string;
+      data?: Array<{ content: string; account?: string }>;
+    };
+    expect(r.error).toBeUndefined();
+    expect(r.data?.[0]).toMatchObject({ content: "other account", account: "Vanguard Taxable" });
   });
 });
 

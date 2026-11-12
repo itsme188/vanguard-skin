@@ -513,7 +513,7 @@ const BASE_CHAT_TOOLS: ChatTool[] = [
   {
     name: "query_notes",
     description:
-      "Search the user's investment journal and notes. Returns notes matching the criteria with linked security and transaction context. A symbol with no security on file returns an error, never every note. In a single-account chat, a note linked to another account's transaction is not returned. Three types: 'journal' (general market thoughts), 'earnings' (per-security earnings call notes), 'trade_thesis' (rationale for buy/sell decisions). Use when the user asks about their past thoughts, trade rationale, earnings notes, journal entries, or investment thesis for any security.",
+      "Search the user's investment journal and notes. Returns notes matching the criteria with linked security and transaction context. A symbol with no security on file returns an error, never every note. A note linked to a transaction names that transaction's account in `account`, in every scope. Three types: 'journal' (general market thoughts), 'earnings' (per-security earnings call notes), 'trade_thesis' (rationale for buy/sell decisions). Use when the user asks about their past thoughts, trade rationale, earnings notes, journal entries, or investment thesis for any security.",
     input_schema: {
       type: "object" as const,
       properties: {
@@ -820,7 +820,7 @@ const BASE_CHAT_TOOLS: ChatTool[] = [
   {
     name: "query_research_feeds",
     description:
-      "Search the user's ingested financial newsletter articles from Gmail. Returns AI-processed summaries, sentiment, mentioned tickers, and portfolio relevance. Sources include Vital Knowledge, TMT Breakouts, Stratechery, The Diff, Eliant Capital, and other subscribed newsletters. A symbol with no security on file, or a source that matches no source name or several, returns an error naming the valid values. In a single-account chat portfolio_relevance is withheld (it was written against the whole portfolio). Use when the user asks about recent market research, newsletter insights, what analysts are saying, sentiment on a particular stock or theme, or what their research feeds have covered recently.",
+      "Search the user's ingested financial newsletter articles from Gmail. Returns AI-processed summaries, sentiment, mentioned tickers, and portfolio relevance. Sources include Vital Knowledge, TMT Breakouts, Stratechery, The Diff, Eliant Capital, and other subscribed newsletters. A symbol with no security on file, or a source that matches no source name or several, returns an error naming the valid values. portfolio_relevance was written against the whole portfolio; in a scoped chat scope_note says so. Use when the user asks about recent market research, newsletter insights, what analysts are saying, sentiment on a particular stock or theme, or what their research feeds have covered recently.",
     input_schema: {
       type: "object" as const,
       properties: {
@@ -898,7 +898,7 @@ const BASE_CHAT_TOOLS: ChatTool[] = [
   {
     name: "query_calendar_briefings",
     description:
-      "Retrieve weekly market briefings — AI-generated narrative summaries of each week's key market events, including macro data releases, earnings, and portfolio-relevant developments. Each briefing includes Vital Knowledge market context when available. Use when the user asks 'what happened last week', 'give me a market summary', 'what was the narrative around [date]', or wants historical market context for a specific period. In a single-account chat the briefing text is withheld (it was written against the whole portfolio); titles and dates are returned.",
+      "Retrieve weekly market briefings — AI-generated narrative summaries of each week's key market events, including macro data releases, earnings, and portfolio-relevant developments. Each briefing includes Vital Knowledge market context when available. Use when the user asks 'what happened last week', 'give me a market summary', 'what was the narrative around [date]', or wants historical market context for a specific period. The briefing text was written against the whole portfolio; in a scoped chat scope_note says so.",
     input_schema: {
       type: "object" as const,
       properties: {
@@ -956,7 +956,7 @@ const BASE_CHAT_TOOLS: ChatTool[] = [
   {
     name: "query_alerts",
     description:
-      "Query level alerts — events where a price has crossed an armed level. Each alert includes the level's author, thesis, triggered price, Claude's suggested action, and the user's response state. Prices (level_price, triggered_price) are in the security's own currency, named in each row's `currency`, never converted. A symbol with no security on file returns an error. In a single-account chat suggested_action is withheld (it was written against the whole portfolio). Use when the user asks 'what alerts have fired recently?', 'show me pending alerts', 'which Eliant levels have hit?', or 'alerts I ignored last month'.",
+      "Query level alerts — events where a price has crossed an armed level. Each alert includes the level's author, thesis, triggered price, Claude's suggested action, and the user's response state. Prices (level_price, triggered_price) are in the security's own currency, named in each row's `currency`, never converted. A symbol with no security on file returns an error. suggested_action was written against the whole portfolio; in a scoped chat scope_note says so. Use when the user asks 'what alerts have fired recently?', 'show me pending alerts', 'which Eliant levels have hit?', or 'alerts I ignored last month'.",
     input_schema: {
       type: "object" as const,
       properties: {
@@ -1129,8 +1129,6 @@ const LIST_LIMITS = {
 const PRICE_HISTORY_MAX_ROWS = 260;
 /** query_alerts reads this many newest alerts before its time window. */
 const ALERT_WINDOW_FETCH = 500;
-/** A single-account chat's notes are filtered after the read; read this many. */
-const SCOPED_NOTES_FETCH = 500;
 
 /**
  * A model-supplied count: an integer from 1 up. Anything else (missing, zero,
@@ -1279,27 +1277,31 @@ function noSecurityError(symbol: string): { error: string } {
   return { error: `No security '${symbol}' on file. Nothing was filtered or returned.` };
 }
 
-/** Said beside a whole-book field withheld from a single-account chat (OPEN-7). */
-const WHOLE_BOOK_FIELD_NOTE =
-  "was written against the whole portfolio and cannot be limited to this chat's account, so it is withheld here. Ask in the All Accounts scope to see it.";
+/**
+ * Said beside a field written against the whole portfolio, in a chat scoped
+ * to some accounts (owner ruling 2026-11-12, replacing OPEN-7's withholding):
+ * the field is returned, and this says it is not the scope's own.
+ */
+function wholeBookFieldNote(field: string): string {
+  return `${field} was written against the whole portfolio, not only this chat's accounts.`;
+}
 
 /**
- * In a single-account chat (`scopeAccountIds` set), a note linked to another
- * account's transaction is withheld (plan P9). Unlinked notes are the
- * owner's journal, not account data, and are kept.
+ * Every note, each linked to a transaction carrying that transaction's
+ * `account` (owner ruling 2026-11-12, replacing plan P9's withholding of
+ * another account's notes). Unlinked notes carry no account.
  */
-function notesInScope(
+function withNoteAccounts(
   db: Database.Database,
   notes: NoteWithContext[],
-  scopeAccountIds: number[] | undefined,
-): NoteWithContext[] {
-  if (scopeAccountIds === undefined) return notes;
-  const inScope = new Set(scopeAccountIds);
-  const accountOf = db.prepare("SELECT account_id FROM transactions WHERE id = ?");
-  return notes.filter((n) => {
-    if (n.transaction_id == null) return true;
-    const row = accountOf.get(n.transaction_id) as { account_id: number } | undefined;
-    return row != null && inScope.has(row.account_id);
+): Array<NoteWithContext & { account?: string }> {
+  const accountOf = db.prepare(
+    "SELECT a.name FROM transactions t JOIN accounts a ON a.id = t.account_id WHERE t.id = ?",
+  );
+  return notes.map((n) => {
+    if (n.transaction_id == null) return n;
+    const row = accountOf.get(n.transaction_id) as { name: string } | undefined;
+    return row ? { ...n, account: row.name } : n;
   });
 }
 
@@ -1359,8 +1361,8 @@ export interface ExecuteToolOptions {
   /** The tool call's abort signal (Stop or a disconnect). */
   abortSignal?: AbortSignal;
   /**
-   * In a single-account chat, the scope's account ids. Tools without an
-   * `account_name` use it to withhold other accounts' private data (plan P9).
+   * In a scoped chat, the scope's account ids. Tools without an
+   * `account_name` use it to label whole-portfolio text (scope_note).
    * Undefined: the All Accounts chat.
    */
   scopeAccountIds?: number[];
@@ -1796,11 +1798,10 @@ export async function executeTool(
 
       case "query_notes": {
         if (typeof input.id === "number") {
-          // One note in full. The scope rule still applies (P9).
+          // One note in full, with its account when it is linked to a trade.
           const one = getNoteById(db, input.id);
-          const kept = one ? notesInScope(db, [one], scopeAccountIds) : [];
-          if (kept.length === 0) return { error: `No note with id ${input.id} in this chat's scope.` };
-          rawResult = kept;
+          if (!one) return { error: `No note with id ${input.id}.` };
+          rawResult = withNoteAccounts(db, [one]);
           break;
         }
         let securityId: number | undefined;
@@ -1812,9 +1813,7 @@ export async function executeTool(
         }
         const { def, max } = LIST_LIMITS.query_notes;
         const noteLimit = readCount(input.limit, def, max);
-        // A single-account chat filters after the read (P9), so it reads a
-        // wider window; a read that fills that window counts as truncated.
-        const fetchCount = singleAccountChat ? SCOPED_NOTES_FETCH : noteLimit + 1;
+        const fetchCount = noteLimit + 1;
         const fetchedNotes = getNotesFiltered(db, {
           note_type: coerceNoteType(asString(input.note_type)),
           security_id: securityId,
@@ -1824,10 +1823,9 @@ export async function executeTool(
           limit: fetchCount,
         });
         const noteCut = takeList(
-          notesInScope(db, fetchedNotes, scopeAccountIds),
+          withNoteAccounts(db, fetchedNotes),
           noteLimit,
           max,
-          singleAccountChat && fetchedNotes.length >= SCOPED_NOTES_FETCH
         );
         listInfo = noteCut.info;
         rawResult = noteCut.rows;
@@ -2089,20 +2087,14 @@ export async function executeTool(
           };
         } else {
           // Also fetch user's earnings notes for this security
-          // Same scope rule as query_notes (P9): in a single-account chat a
-          // note on another account's transaction is withheld.
+          // Every earnings note, each naming its trade's account, as query_notes.
           const secId = findSecurity(db, ticker)?.id ?? getSecurityIdBySymbol(db, ticker);
           let userNotes: unknown[] = [];
           if (secId) {
-            userNotes = notesInScope(
+            userNotes = withNoteAccounts(
               db,
-              getNotesFiltered(db, {
-                note_type: "earnings",
-                security_id: secId,
-                limit: singleAccountChat ? SCOPED_NOTES_FETCH : 5,
-              }),
-              scopeAccountIds
-            ).slice(0, 5);
+              getNotesFiltered(db, { note_type: "earnings", security_id: secId, limit: 5 }),
+            );
           }
           rawResult = {
             ...transcriptData,
@@ -2373,12 +2365,11 @@ export async function executeTool(
             sentiment: a.sentiment,
             themes: a.key_themes ? sanitizeThemeList(parseKeyThemesField(a.key_themes)) : [],
             tickers: parseJsonList(a.mentioned_symbols),
-            // Written against the whole held book: withheld from a
-            // single-account chat (OPEN-7 default).
-            portfolio_relevance: singleAccountChat ? null : a.portfolio_relevance,
+            // Written against the whole held book; labelled in a scoped chat.
+            portfolio_relevance: a.portfolio_relevance,
           })),
           count: feedCut.rows.length,
-          ...(singleAccountChat ? { scope_note: `portfolio_relevance ${WHOLE_BOOK_FIELD_NOTE}` } : {}),
+          ...(singleAccountChat ? { scope_note: wholeBookFieldNote("portfolio_relevance") } : {}),
         };
         break;
       }
@@ -2544,17 +2535,16 @@ export async function executeTool(
               const p = Object.fromEntries(etFormat.formatToParts(d).map((x) => [x.type, x.value]));
               generated_at_et = `${p.year}-${p.month}-${p.day} ${p.hour}:${p.minute} ET`;
             }
-            // The narrative is written against the whole held book:
-            // withheld from a single-account chat (OPEN-7 default).
-            const scoped = singleAccountChat ? { content: null } : {};
-            return { ...rest, ...scoped, generated_at_et, generated_at_utc: generated_at };
+            // The narrative is written against the whole held book; labelled
+            // in a scoped chat by the result's scope_note.
+            return { ...rest, generated_at_et, generated_at_utc: generated_at };
           },
         );
         rawResult = {
           briefings: briefingsEt,
           count: briefingsEt.length,
           now_et: `${todayET()} ${nowET()} ET`,
-          ...(singleAccountChat ? { scope_note: `The briefing text ${WHOLE_BOOK_FIELD_NOTE}` } : {}),
+          ...(singleAccountChat ? { scope_note: wholeBookFieldNote("The briefing text") } : {}),
         };
         break;
       }
@@ -2717,9 +2707,8 @@ export async function executeTool(
             timeframe: lvl?.timeframe ?? null,
             triggered_at: a.triggered_at,
             triggered_price: a.triggered_price,
-            // Drafted from a whole-book position snapshot: withheld from a
-            // single-account chat (OPEN-7 default).
-            suggested_action: singleAccountChat ? null : a.suggested_action,
+            // Drafted from a whole-book position snapshot; labelled in a scoped chat.
+            suggested_action: a.suggested_action,
             user_response: a.user_response,
             user_response_at: a.user_response_at,
             user_response_note: a.user_response_note,
@@ -2729,7 +2718,7 @@ export async function executeTool(
         rawResult = {
           alerts: enriched,
           count: enriched.length,
-          ...(singleAccountChat ? { scope_note: `suggested_action ${WHOLE_BOOK_FIELD_NOTE}` } : {}),
+          ...(singleAccountChat ? { scope_note: wholeBookFieldNote("suggested_action") } : {}),
         };
         break;
       }
