@@ -333,7 +333,10 @@ function ConversationHistory({
                 }`}
                 title={displayConversationTitle(conv.title, isPrivate) ?? `Conversation ${conv.id}`}
               >
-                <div className="truncate">
+                {/* Wraps instead of truncating: the menu is a fixed 256px wide,
+                    so a one-line title cut most names short, and a hover
+                    `title` tooltip never shows on touch. */}
+                <div className="[overflow-wrap:anywhere]">
                   {displayConversationTitle(conv.title, isPrivate) ?? `Conversation ${conv.id}`}
                 </div>
                 <div className="text-[10px] text-ink-faint mt-0.5">
