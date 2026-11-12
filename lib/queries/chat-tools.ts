@@ -584,6 +584,41 @@ export function getAccountValueBaseForChat(
   };
 }
 
+/** The base as query_holdings returns it: plus the rows' newest price date and whether the base is older. */
+export interface AccountValueBaseForRows extends AccountValueBase {
+  /** Newest `price_date` among the rows returned; null when none is priced. */
+  newest_price_date: string | null;
+  /**
+   * True when an account's value in the base (`oldest_as_of_date`) is dated
+   * before `newest_price_date`: the base predates the prices, so in an account
+   * with no margin the weights can still sum above or below 100. The two
+   * dates are reported, never reconciled.
+   */
+  base_older_than_prices: boolean;
+  /** Present only when base_older_than_prices is true. */
+  date_note?: string;
+}
+
+/** Compare the base's date with the rows' newest price date (review follow-up, 2026-11-12). */
+export function withPriceDateCheck(
+  base: AccountValueBase,
+  priceDates: readonly (string | null)[],
+): AccountValueBaseForRows {
+  const newest = priceDates.reduce<string | null>((m, d) => (d && (m === null || d > m) ? d : m), null);
+  const baseDate = base.oldest_as_of_date;
+  const older = baseDate !== null && newest !== null && baseDate < newest;
+  return {
+    ...base,
+    newest_price_date: newest,
+    base_older_than_prices: older,
+    ...(older
+      ? {
+          date_note: `The account value is as of ${baseDate} but the positions are priced as of ${newest}, so the weights on account value can sum above or below 100 for that reason alone, not margin.`,
+        }
+      : {}),
+  };
+}
+
 /** A position's signed market value as a percent of the account value base; null when either is unusable. */
 export function accountValueWeightPct(marketValue: number | null, base: AccountValueBase): number | null {
   const v = base.account_value_usd;

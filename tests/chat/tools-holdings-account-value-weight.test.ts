@@ -52,14 +52,25 @@ function seedPosition(accountId: number, symbol: string, quantity: number, price
   ).run(accountId, id, quantity, Math.abs(quantity) * price, asOf, `t:${accountId}:${symbol}`);
 }
 
-function seedValue(accountId: number, cash: number, holdings: number): void {
+function seedValue(accountId: number, cash: number, holdings: number, date = asOf): void {
   db.prepare(
     "INSERT INTO daily_valuations (account_id, valuation_date, cash_balance, holdings_value, total_value) VALUES (?, ?, ?, ?, ?)",
-  ).run(accountId, asOf, cash, holdings, cash + holdings);
+  ).run(accountId, date, cash, holdings, cash + holdings);
 }
 
 type Row = { symbol: string; account_name: string; position_weight_pct: number | null; account_value_weight_pct: number | null };
-type Result = { data: Row[]; account_value_base: { account_value_usd: number | null; as_of_date: string | null; reason: string | null } };
+type Result = {
+  data: Row[];
+  account_value_base: {
+    account_value_usd: number | null;
+    as_of_date: string | null;
+    oldest_as_of_date: string | null;
+    reason: string | null;
+    newest_price_date: string | null;
+    base_older_than_prices: boolean;
+    date_note?: string;
+  };
+};
 
 async function holdings(input: Record<string, unknown> = {}, scopeAccountIds?: number[]): Promise<Result> {
   return (await executeTool(db, "query_holdings", input, scopeAccountIds ? { scopeAccountIds } : undefined)) as Result;
@@ -189,5 +200,38 @@ describe("query_holdings: weight on account value including cash", () => {
     expect(desc).toMatch(/GROSS exposure/);
     expect(desc).toMatch(/including cash/i);
     expect(desc).toMatch(/margin/i);
+  });
+
+  it("a base dated before the rows' prices is flagged with both dates, the weight is still the plain ratio", async () => {
+    // The base is a valuation a month old (100,000), the positions are priced
+    // today: 8,000 + 72,000 = 80,000 of positions against a 100,000 base.
+    const older = addDays(asOf, -30);
+    seedPosition(IBKR, "ZVA", 80, 100);
+    seedPosition(IBKR, "ZVB", 720, 100);
+    seedValue(IBKR, 20000, 80000, older);
+    const r = await holdings({ account_name: "IBKR" });
+    const base = r.account_value_base;
+    expect(base.as_of_date).toBe(older);
+    expect(base.newest_price_date).toBe(asOf);
+    expect(base.base_older_than_prices).toBe(true);
+    expect(base.date_note).toContain(older);
+    expect(base.date_note).toContain(asOf);
+    expect(base.date_note).toMatch(/not margin/i);
+    expect(base.reason).toBeNull();
+    expect(row(r, "ZVA").account_value_weight_pct).toBeCloseTo(8, 9);
+  });
+
+  it("a base on the same day as the prices is not flagged", async () => {
+    seedPosition(IBKR, "ZVA", 80, 100);
+    seedValue(IBKR, 20000, 80000);
+    const r = await holdings({ account_name: "IBKR" });
+    expect(r.account_value_base.newest_price_date).toBe(asOf);
+    expect(r.account_value_base.base_older_than_prices).toBe(false);
+    expect(r.account_value_base.date_note).toBeUndefined();
+  });
+
+  it("the description says a base older than the prices can move the sum away from 100", () => {
+    const desc = CHAT_TOOLS.find((t) => t.name === "query_holdings")!.description;
+    expect(desc).toContain("base_older_than_prices");
   });
 });

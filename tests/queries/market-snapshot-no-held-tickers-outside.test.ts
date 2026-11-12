@@ -114,6 +114,13 @@ describe("the outside quote source sees only the index funds", () => {
     for (const s of rec.asked.flat()) expect(INDEX_FUNDS.has(s)).toBe(true);
   });
 
+  it("a benchmark spelled with spaces or lower case is still recognised, and still only index funds go out", async () => {
+    seedStaleBook();
+    const rec = recordingFetcher();
+    await getMarketSnapshot(db, { today: "2026-06-12", fetchQuotes: rec.fetch, benchmarks: [" dia ", "spy", " zza"] });
+    expect([...rec.asked[0]].sort()).toEqual(["DIA", "SPY"]);
+  });
+
   it("a book with no pair at all still sends only index funds", async () => {
     const spy = seedSecurity("SPY", "ETF");
     seedPrice(spy, "2026-06-05", 606); // one SPY price: no pair forms

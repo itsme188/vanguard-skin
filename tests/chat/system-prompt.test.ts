@@ -563,6 +563,8 @@ describe("prompt standards (Task 7)", () => {
     for (const scope of PORTFOLIO_SCOPES) {
       const text = staticBlock(scope);
       expect(text, scope).toContain("For what share of his account or portfolio a position is, quote `account_value_weight_pct`");
+      // Review follow-up: a base older than the prices is named, never called margin.
+      expect(text, scope).toContain("when `base_older_than_prices` is true, say the base is dated before the prices and never put a sum away from one hundred percent down to margin");
       expect(text, scope).toContain("query_market_snapshot may take a web quote for SPY, QQQ and DIA only");
       expect(text, scope).not.toContain("can fall back to a web quote, for percent moves only");
     }

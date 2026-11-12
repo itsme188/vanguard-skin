@@ -284,8 +284,9 @@ function buildUniverse(
   const seen = new Set<string>();
   const universe: UniverseEntry[] = [];
   for (const symbol of benchmarks) {
-    const up = symbol.toUpperCase();
-    if (seen.has(up)) continue;
+    // Trimmed and upper-cased BEFORE the allow-list check: " dia " is DIA.
+    const up = symbol.trim().toUpperCase();
+    if (!up || seen.has(up)) continue;
     seen.add(up);
     universe.push({ symbol: up, name: null, kind: "benchmark", outsideQuote: OUTSIDE_QUOTE_SYMBOLS.has(up) });
   }
