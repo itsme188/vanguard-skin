@@ -2,7 +2,7 @@
  * Extraction model call — ported from scripts/spike-bakeoff-parse.ts (task-4,
  * 2026-08-20). Sends ONE representation of a print's text to the model with
  * a fixed list of contract lines and gets back one candidate per metric_id
- * via a forced tool call. Pure LLM I/O: no db, no fs, no adapter knowledge —
+ * via native structured output. Pure LLM I/O: no db, no fs, no adapter knowledge —
  * lib/print-watch/contracts.ts builds `contracts`, an adapter builds
  * `representationText` (lib/print-watch/representations.ts or a raw wire
  * text), and this module never sees the bogey-derived `expected` map
@@ -14,9 +14,18 @@
  *     back to TIER_STATIC_FALLBACK.workhorse (== SONNET_MODEL) when no live
  *     catalog is available. This module never touches the db, so it always
  *     resolves against an empty catalog unless `opts.model` is given.
- *   - Output comes back through a FORCED tool call (tool_choice:
- *     {type:"tool"}). Every object node in the tool's JSON schema carries
- *     additionalProperties:false (repo gotcha: Anthropic 400s without it).
+ *   - Output comes back as Anthropic NATIVE structured output
+ *     (`output_config.format`, a JSON schema), not a forced tool call:
+ *     forced `tool_choice` ("tool"/"any") is a 400 on Sonnet 5.5 and
+ *     Opus 5.5 (2026-11-12). Every object node in the schema carries
+ *     additionalProperties:false, and the schema describes SHAPE only — no
+ *     minItems/maxItems/numeric/string constraints, which native structured
+ *     output rejects (root CLAUDE.md, AI / LLM).
+ *   - No reasoning: the thinking setting comes from
+ *     `fastStructuredRequestOptions` (lib/claude-request-options.ts),
+ *     because "thinking off" is spelled differently per generation
+ *     (`disabled` on Sonnet 4.6, a 400 on Sonnet 5.5, which takes
+ *     `between_tools`; Opus 5.5 cannot turn it off and gets effort low).
  *   - No `temperature`: sampling parameters are rejected (400) on the
  *     current Sonnet tier.
  *   - One malformed/empty response gets ONE retry — same C0-control-char
@@ -31,6 +40,7 @@ import Anthropic from "@anthropic-ai/sdk";
 
 import { SONNET_MODEL } from "@/lib/claude-models";
 import { resolveTier } from "@/lib/ai/model-tiers";
+import { fastStructuredRequestOptions } from "@/lib/claude-request-options";
 import { getAnthropicApiKey } from "@/lib/env";
 import type { LineContract, ParseCandidate } from "@/lib/print-watch/types";
 
@@ -52,7 +62,7 @@ export interface AnthropicLike {
 }
 
 // ---------------------------------------------------------------------------
-// prompt + tool (ported from scripts/spike-bakeoff-parse.ts::SYSTEM_PROMPT/TOOL)
+// prompt + output schema (ported from scripts/spike-bakeoff-parse.ts::SYSTEM_PROMPT/TOOL)
 // ---------------------------------------------------------------------------
 
 const SYSTEM_PROMPT = `You are a deterministic figure-extraction engine for an earnings "print watch". You read ONE earnings document and report, for a fixed list of contract lines, exactly what that document states — nothing more.
@@ -80,15 +90,14 @@ NON-NEGOTIABLE RULES
 
 If two places in the document print the same metric and they disagree, report the one from the primary results table for the contract's period and say so in location_hint.`;
 
-const TOOL_NAME = "emit_candidates";
-
-// Every object node carries additionalProperties:false — Anthropic 400s without it.
-const TOOL: Anthropic.Tool = {
-  name: TOOL_NAME,
-  description:
-    "Report one extraction candidate per contract metric_id, in the same order as the contract list.",
-  input_schema: {
+// The response shape, sent as native structured output. Every object node
+// carries additionalProperties:false — Anthropic 400s without it. Shape only:
+// "exactly one entry per metric_id" is enforced by the prompt and by the
+// caller's reconcile, never by a count keyword (native output rejects them).
+const OUTPUT_SCHEMA: { [key: string]: unknown } = {
     type: "object",
+    description:
+      "Report one extraction candidate per contract metric_id, in the same order as the contract list.",
     additionalProperties: false,
     properties: {
       candidates: {
@@ -136,7 +145,6 @@ const TOOL: Anthropic.Tool = {
       },
     },
     required: ["candidates"],
-  },
 };
 
 const MAX_OUTPUT_TOKENS = 16_384;
@@ -244,7 +252,7 @@ function normalizeCandidates(input: unknown): ParseCandidate[] {
   return out;
 }
 
-/** Fallback path when the model answered in prose instead of the forced tool. */
+/** Reads the JSON object native structured output returns (or, defensively, JSON inside prose). */
 function candidatesFromText(text: string): ParseCandidate[] {
   const stripped = text.replace(/```json\s*/g, "").replace(/```\s*/g, "").trim();
   const attempt = (s: string): ParseCandidate[] => {
@@ -304,8 +312,8 @@ function candidatesFromText(text: string): ParseCandidate[] {
  * `representationText` are the entire input surface — the caller (an
  * adapter + lib/print-watch/contracts.ts) resolves everything else.
  *
- * One malformed/empty response (no tool_use candidates AND no parseable
- * text fallback) gets ONE retry against the model. If both attempts fail —
+ * One malformed/empty response (no parseable candidates in its structured
+ * output) gets ONE retry against the model. If both attempts fail —
  * a thrown API error or a response with zero parseable candidates — this
  * throws rather than silently returning an empty array, so a full-contract
  * miss surfaces as an error the caller can record, not a silently-empty
@@ -330,12 +338,12 @@ export async function extractCandidates(
  * The ONE model call, shared by every reading (text or PDF). Takes the user
  * message as either a plain string (a text representation) or a content-block
  * array (a `document` block plus the contract text) — everything else about
- * the call, including the system prompt, the forced tool and the one retry, is
+ * the call, including the system prompt, the output schema, the thinking setting and the one retry, is
  * identical, because the readings must differ only in HOW the document reaches
  * the model, never in what it is asked to do.
  *
- * One malformed/empty response (no tool_use candidates AND no parseable text
- * fallback) gets ONE retry. If both attempts fail this throws rather than
+ * One malformed/empty response (no parseable candidates in its structured
+ * output) gets ONE retry. If both attempts fail this throws rather than
  * returning an empty array, so a full-contract miss surfaces as an error the
  * caller can record instead of looking like "everything not_disclosed".
  */
@@ -351,37 +359,46 @@ async function callExtraction(
   let lastCandidates: ParseCandidate[] = [];
   let lastError: Error | null = null;
 
+  const fast = fastStructuredRequestOptions(modelId);
+  const params: Anthropic.MessageCreateParamsNonStreaming = {
+    model: modelId,
+    max_tokens: MAX_OUTPUT_TOKENS,
+    // No temperature: sampling parameters are rejected on the current
+    // Sonnet tier. No reasoning = the production fast-parse, spelled the
+    // way this model's generation accepts it.
+    ...(fast.thinking
+      ? {
+          // `between_tools` (Sonnet 5.5) postdates the installed SDK's
+          // ThinkingConfigParam union (0.78.0); the SDK sends the body as
+          // given, so only the type needs widening here.
+          thinking: fast.thinking as Anthropic.ThinkingConfigParam,
+        }
+      : {}),
+    output_config: {
+      format: { type: "json_schema", schema: OUTPUT_SCHEMA },
+      ...(fast.effort ? { effort: fast.effort } : {}),
+    },
+    system: SYSTEM_PROMPT,
+    messages: [{ role: "user", content }],
+  };
+
   for (let attempt = 1; attempt <= 2; attempt++) {
     let response: Anthropic.Message;
     try {
-      response = await client.messages.create({
-        model: modelId,
-        max_tokens: MAX_OUTPUT_TOKENS,
-        // No temperature: sampling parameters are rejected on the current
-        // Sonnet tier. Thinking off = the production fast-parse.
-        thinking: { type: "disabled" },
-        system: SYSTEM_PROMPT,
-        tools: [TOOL],
-        tool_choice: { type: "tool", name: TOOL_NAME },
-        messages: [{ role: "user", content }],
-      });
+      response = await client.messages.create(params);
     } catch (err) {
       lastError = err instanceof Error ? err : new Error(String(err));
       if (attempt === 1) continue;
       throw lastError;
     }
 
-    const toolBlock = response.content.find(
-      (b): b is Anthropic.ToolUseBlock => b.type === "tool_use",
-    );
-    let candidates: ParseCandidate[] = toolBlock ? normalizeCandidates(toolBlock.input) : [];
-
-    if (candidates.length === 0) {
-      const textBlock = response.content.find(
-        (b): b is Anthropic.TextBlock => b.type === "text",
-      );
-      if (textBlock) candidates = candidatesFromText(textBlock.text);
-    }
+    // Native structured output answers in text blocks; join them with ""
+    // (a block boundary is not a character of the JSON).
+    const text = response.content
+      .filter((b): b is Anthropic.TextBlock => b.type === "text")
+      .map((b) => b.text)
+      .join("");
+    const candidates: ParseCandidate[] = text ? candidatesFromText(text) : [];
 
     if (candidates.length > 0) return candidates;
 
@@ -413,7 +430,7 @@ function buildPdfUserMessage(contracts: LineContract[]): string {
 /**
  * Reading TWO of a PDF: the bytes themselves as a Claude `document` block
  * (the `lib/research-documents/extract.ts` path), with the SAME system
- * prompt and the SAME forced tool as the text road. Its candidates are
+ * prompt and the SAME output schema as the text road. Its candidates are
  * tagged `pdfNative` and — until the holdout pre-registered in
  * `docs/DECISIONS.md` (2026-09-02) passes — carry `weak_pair`, so agreeing
  * with the poppler reading caps the line at single_source rather than

@@ -12,6 +12,7 @@ import {
   type AnthropicLike,
 } from "@/lib/print-watch/extract";
 import { SONNET_MODEL } from "@/lib/claude-models";
+import { fastStructuredRequestOptions } from "@/lib/claude-request-options";
 import type { LineContract, ExpectedValue } from "@/lib/print-watch/types";
 
 const REVENUE_CONTRACT: LineContract = {
@@ -57,20 +58,14 @@ function mockClient(create: ReturnType<typeof vi.fn>): AnthropicLike {
   return { messages: { create } } as unknown as AnthropicLike;
 }
 
-function toolUseResponse(candidates: unknown[], stopReason = "tool_use") {
+/** What native structured output returns: one text block holding the JSON object. */
+function structuredResponse(candidates: unknown[], stopReason = "end_turn") {
   return {
     id: "msg_test",
     type: "message",
     role: "assistant",
     model: SONNET_MODEL,
-    content: [
-      {
-        type: "tool_use",
-        id: "toolu_test",
-        name: "emit_candidates",
-        input: { candidates },
-      },
-    ],
+    content: [{ type: "text", text: JSON.stringify({ candidates }) }],
     stop_reason: stopReason,
     stop_sequence: null,
     usage: { input_tokens: 100, output_tokens: 50 },
@@ -78,9 +73,9 @@ function toolUseResponse(candidates: unknown[], stopReason = "tool_use") {
 }
 
 describe("extractCandidates", () => {
-  it("parses candidates from a forced tool_use response", async () => {
+  it("parses candidates from a native structured-output response", async () => {
     const create = vi.fn().mockResolvedValue(
-      toolUseResponse([
+      structuredResponse([
         {
           metric_id: "revenue_q",
           not_disclosed: false,
@@ -127,7 +122,7 @@ describe("extractCandidates", () => {
 
   it("normalizes a parenthesized string value to a negative number (defensive numeric parsing)", async () => {
     const create = vi.fn().mockResolvedValue(
-      toolUseResponse([
+      structuredResponse([
         { metric_id: "revenue_q", not_disclosed: false, value: "(7,604)", raw_text: "(7,604)" },
       ]),
     );
@@ -140,7 +135,7 @@ describe("extractCandidates", () => {
   it("caps snippet at 200 characters even if the model over-produces", async () => {
     const longSnippet = "x".repeat(250);
     const create = vi.fn().mockResolvedValue(
-      toolUseResponse([
+      structuredResponse([
         { metric_id: "revenue_q", not_disclosed: false, value: 1, snippet: longSnippet },
       ]),
     );
@@ -155,10 +150,10 @@ describe("extractCandidates", () => {
       .fn()
       // Attempt 1: forced tool call came back with an empty candidates array
       // (malformed for our purposes - nothing usable).
-      .mockResolvedValueOnce(toolUseResponse([]))
+      .mockResolvedValueOnce(structuredResponse([]))
       // Attempt 2: valid.
       .mockResolvedValueOnce(
-        toolUseResponse([{ metric_id: "revenue_q", not_disclosed: false, value: 999 }]),
+        structuredResponse([{ metric_id: "revenue_q", not_disclosed: false, value: 999 }]),
       );
 
     const result = await extractCandidates([REVENUE_CONTRACT], DOC_TEXT, {
@@ -179,7 +174,7 @@ describe("extractCandidates", () => {
     ]);
   });
 
-  it("retries ONCE across the outer loop when the first response has NO tool_use block and unparseable text", async () => {
+  it("retries ONCE across the outer loop when the first response has unparseable text", async () => {
     const garbageResponse = {
       id: "msg_garbage",
       type: "message",
@@ -194,7 +189,7 @@ describe("extractCandidates", () => {
       .fn()
       .mockResolvedValueOnce(garbageResponse)
       .mockResolvedValueOnce(
-        toolUseResponse([{ metric_id: "revenue_q", not_disclosed: false, value: 777 }]),
+        structuredResponse([{ metric_id: "revenue_q", not_disclosed: false, value: 777 }]),
       );
 
     const result = await extractCandidates([REVENUE_CONTRACT], DOC_TEXT, {
@@ -240,28 +235,53 @@ describe("extractCandidates", () => {
   });
 
   it("throws when both attempts return zero parseable candidates", async () => {
-    const create = vi.fn().mockResolvedValue(toolUseResponse([]));
+    const create = vi.fn().mockResolvedValue(structuredResponse([]));
     await expect(
       extractCandidates([REVENUE_CONTRACT], DOC_TEXT, { anthropic: mockClient(create) }),
     ).rejects.toThrow();
     expect(create).toHaveBeenCalledTimes(2);
   });
 
-  it("forces the tool call, sets no temperature, and resolves the workhorse model when opts.model is absent", async () => {
+  it("asks for native structured output (no tool, no forced tool_choice), no temperature, and resolves the workhorse model when opts.model is absent", async () => {
     const create = vi.fn().mockResolvedValue(
-      toolUseResponse([{ metric_id: "revenue_q", not_disclosed: false, value: 1 }]),
+      structuredResponse([{ metric_id: "revenue_q", not_disclosed: false, value: 1 }]),
     );
     await extractCandidates([REVENUE_CONTRACT], DOC_TEXT, { anthropic: mockClient(create) });
 
     const params = create.mock.calls[0][0];
-    expect(params.tool_choice).toEqual({ type: "tool", name: "emit_candidates" });
+    // Forced tool_choice ("tool"/"any") is a 400 on Sonnet 5.5 / Opus 5.5.
+    expect(params).not.toHaveProperty("tool_choice");
+    expect(params).not.toHaveProperty("tools");
+    expect(params.output_config.format.type).toBe("json_schema");
     expect(params.model).toBe(SONNET_MODEL);
     expect(params).not.toHaveProperty("temperature");
+    expect(params.thinking).toEqual(fastStructuredRequestOptions(SONNET_MODEL).thinking);
+  });
+
+  // The fast parse must be a VALID request on both generations a tier can
+  // resolve to: thinking disabled is a 400 on Sonnet 5.5, and Opus 5.5 cannot
+  // turn thinking off at all.
+  it.each([
+    ["claude-sonnet-4-6", { type: "disabled" }, undefined],
+    ["claude-sonnet-5-5", { type: "between_tools" }, undefined],
+    ["claude-opus-4-8", { type: "disabled" }, undefined],
+    ["claude-opus-5-5", undefined, "low"],
+    ["claude-haiku-5-5", { type: "disabled" }, undefined],
+  ])("%s: thinking %j, effort %s", async (model, thinking, effort) => {
+    const create = vi.fn().mockResolvedValue(
+      structuredResponse([{ metric_id: "revenue_q", not_disclosed: false, value: 1 }]),
+    );
+    await extractCandidates([REVENUE_CONTRACT], DOC_TEXT, { anthropic: mockClient(create), model });
+    const params = create.mock.calls[0][0];
+    if (thinking) expect(params.thinking).toEqual(thinking);
+    else expect(params).not.toHaveProperty("thinking");
+    expect(params.output_config.effort).toBe(effort);
+    expect(params.output_config.format.type).toBe("json_schema");
   });
 
   it("honors an explicit opts.model override instead of resolving a tier", async () => {
     const create = vi.fn().mockResolvedValue(
-      toolUseResponse([{ metric_id: "revenue_q", not_disclosed: false, value: 1 }]),
+      structuredResponse([{ metric_id: "revenue_q", not_disclosed: false, value: 1 }]),
     );
     await extractCandidates([REVENUE_CONTRACT], DOC_TEXT, {
       anthropic: mockClient(create),
@@ -270,15 +290,18 @@ describe("extractCandidates", () => {
     expect(create.mock.calls[0][0].model).toBe("claude-custom-test-model");
   });
 
-  it("every object node in the forced tool's JSON schema carries additionalProperties:false", async () => {
+  it("every object node in the output schema carries additionalProperties:false, and no count/range keyword native output rejects", async () => {
     const create = vi.fn().mockResolvedValue(
-      toolUseResponse([{ metric_id: "revenue_q", not_disclosed: false, value: 1 }]),
+      structuredResponse([{ metric_id: "revenue_q", not_disclosed: false, value: 1 }]),
     );
     await extractCandidates([REVENUE_CONTRACT], DOC_TEXT, { anthropic: mockClient(create) });
 
     const params = create.mock.calls[0][0];
-    const tool = params.tools[0];
-    expect(tool.name).toBe("emit_candidates");
+    const schema = params.output_config.format.schema;
+    const schemaText = JSON.stringify(schema);
+    for (const keyword of ["minItems", "maxItems", "minimum", "maximum", "minLength", "maxLength", "pattern"]) {
+      expect(schemaText).not.toContain(`"${keyword}"`);
+    }
 
     let objectNodesWalked = 0;
     function walk(node: unknown): void {
@@ -292,7 +315,7 @@ describe("extractCandidates", () => {
         if (value && typeof value === "object") walk(value);
       }
     }
-    walk(tool.input_schema);
+    walk(schema);
     // Sanity: the schema actually has nested object nodes to check (the
     // top-level input_schema AND the candidates[] item schema) - a walker
     // that silently visited zero nodes would make the assertion above
@@ -302,7 +325,7 @@ describe("extractCandidates", () => {
 
   it("the system prompt states the UPDATED-range guidance-supersession rule (spec section 9 amendment 5, new vs. the spike)", async () => {
     const create = vi.fn().mockResolvedValue(
-      toolUseResponse([{ metric_id: "revenue_guide_next", not_disclosed: false, value: 1, value_high: 2 }]),
+      structuredResponse([{ metric_id: "revenue_guide_next", not_disclosed: false, value: 1, value_high: 2 }]),
     );
     await extractCandidates([GUIDANCE_CONTRACT], DOC_TEXT, { anthropic: mockClient(create) });
 
@@ -323,7 +346,7 @@ describe("extractCandidates", () => {
     void parallelExpected; // proves the value exists in scope but has no path into the call below
 
     const create = vi.fn().mockResolvedValue(
-      toolUseResponse([{ metric_id: "revenue_q", not_disclosed: false, value: 1 }]),
+      structuredResponse([{ metric_id: "revenue_q", not_disclosed: false, value: 1 }]),
     );
 
     // extractCandidates(contracts, representationText, opts) - TypeScript
@@ -341,7 +364,7 @@ describe("extractCandidates", () => {
 
   it("the user message carries the contract lines and the document text, verbatim", async () => {
     const create = vi.fn().mockResolvedValue(
-      toolUseResponse([{ metric_id: "revenue_q", not_disclosed: false, value: 1 }]),
+      structuredResponse([{ metric_id: "revenue_q", not_disclosed: false, value: 1 }]),
     );
     await extractCandidates([REVENUE_CONTRACT], DOC_TEXT, { anthropic: mockClient(create) });
 
@@ -353,9 +376,9 @@ describe("extractCandidates", () => {
 });
 
 describe("extractCandidatesFromPdf", () => {
-  it("sends the PDF as a document block ahead of the contract text, same tool + system prompt", async () => {
+  it("sends the PDF as a document block ahead of the contract text, same output schema + system prompt", async () => {
     const create = vi.fn().mockResolvedValue(
-      toolUseResponse([
+      structuredResponse([
         {
           metric_id: "revenue_q",
           not_disclosed: false,
@@ -386,24 +409,30 @@ describe("extractCandidatesFromPdf", () => {
     expect(content[1].text).toContain("=== CONTRACT LINES");
     expect(content[1].text).not.toMatch(/expected|bogey|consensus/i);
 
-    // Same forced tool and same system prompt as the text road - the PDF
-    // reading differs ONLY in how the document reaches the model.
-    expect(params.tool_choice).toEqual({ type: "tool", name: "emit_candidates" });
-    expect(params.tools[0].name).toBe("emit_candidates");
+    // Same output schema, thinking setting and system prompt as the text
+    // road - the PDF reading differs ONLY in how the document reaches the model.
+    const textCreate = vi.fn().mockResolvedValue(
+      structuredResponse([{ metric_id: "revenue_q", not_disclosed: false, value: 1 }]),
+    );
+    await extractCandidates([REVENUE_CONTRACT], DOC_TEXT, { anthropic: mockClient(textCreate) });
+    const textParams = textCreate.mock.calls[0][0];
+    expect(params.output_config).toEqual(textParams.output_config);
+    expect(params.thinking).toEqual(textParams.thinking);
+    expect(params).not.toHaveProperty("tool_choice");
     expect(params.system).toContain("deterministic figure-extraction engine");
   });
 
   it("names ITSELF in the failure a caller records, not the text reading", async () => {
     // The message lands in parse_last_error and the panel's parse_failed copy,
     // so a PDF's native reading must not report under extractCandidates' name.
-    const create = vi.fn().mockResolvedValue(toolUseResponse([]));
+    const create = vi.fn().mockResolvedValue(structuredResponse([]));
     await expect(
       extractCandidatesFromPdf([REVENUE_CONTRACT], Buffer.from("%PDF-1.7 fake"), {
         anthropic: mockClient(create),
       }),
     ).rejects.toThrow(/^extractCandidatesFromPdf: no candidates parsed/);
 
-    const textCreate = vi.fn().mockResolvedValue(toolUseResponse([]));
+    const textCreate = vi.fn().mockResolvedValue(structuredResponse([]));
     await expect(
       extractCandidates([REVENUE_CONTRACT], DOC_TEXT, { anthropic: mockClient(textCreate) }),
     ).rejects.toThrow(/^extractCandidates: no candidates parsed/);
