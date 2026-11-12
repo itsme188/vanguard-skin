@@ -24,6 +24,8 @@ import {
   invalidModelFamilyMessage,
   isChatModelFamily,
   readStoredChatFamily,
+  liveModelLabel,
+  requestModelFamily,
 } from "@/lib/chat/model-choice";
 import { resolveChatModel, resolveChatModelFor } from "@/lib/chat/model-resolve";
 import { resolveFamilyModel } from "@/lib/ai/model-families";
@@ -195,5 +197,72 @@ describe("the label the conversation shows", () => {
     expect(chatModelLabel({ modelId: "gpt-6.1-sol", fellBackFrom: "haiku" })).toBe(
       "the AI model (Haiku not available)",
     );
+  });
+});
+
+describe("an older generation answering says so (review item 5)", () => {
+  it("the default fallback can land on an older version; the label names it", () => {
+    // Nothing current in the catalog: the class walk finds nothing, and the
+    // chat default degrades rather than being down (the tier resolver's rule).
+    const older = resolveChatModelFor("sonnet", ["claude-sonnet-4-6", "claude-haiku-4-5"], () => ({
+      provider: "anthropic",
+      modelId: "claude-sonnet-4-6",
+    }));
+    expect(older.resolved.modelId).toBe("claude-sonnet-4-6");
+    expect(older.fellBackFrom).toBeNull();
+    expect(chatModelLabel({ modelId: older.resolved.modelId, fellBackFrom: older.fellBackFrom })).toBe(
+      "Sonnet 4.6 (older version in use)",
+    );
+  });
+
+  it("a fallback onto an older version says both", () => {
+    expect(chatModelLabel({ modelId: "claude-sonnet-4-6", fellBackFrom: "opus" })).toBe(
+      "Sonnet 4.6 (Opus not available; older version in use)",
+    );
+  });
+
+  it("a current or newer version carries no note", () => {
+    expect(chatModelLabel({ modelId: "claude-sonnet-5-5", fellBackFrom: null })).toBe("Sonnet 5.5");
+    expect(chatModelLabel({ modelId: "claude-opus-5-7", fellBackFrom: null })).toBe("Opus 5.7");
+  });
+});
+
+describe("what the client sends as the class (review item 2)", () => {
+  const list = [
+    { id: 1, model_family: "opus" },
+    { id: 2, model_family: null },
+  ];
+
+  it("a new chat sends the picker's value", () => {
+    expect(requestModelFamily(list, null, "haiku")).toBe("haiku");
+  });
+
+  it("an open conversation sends its own stored class, never the picker's", () => {
+    expect(requestModelFamily(list, 1, "haiku")).toBe("opus");
+  });
+
+  it("an open conversation with no class sends none", () => {
+    expect(requestModelFamily(list, 2, "haiku")).toBeNull();
+  });
+
+  it("an open conversation not in the list yet (its first turn just adopted) sends the picker's value", () => {
+    expect(requestModelFamily(list, 9, "sonnet")).toBe("sonnet");
+  });
+});
+
+describe("the live label from the stream (review item 4)", () => {
+  it("reads the newest assistant message's modelLabel metadata", () => {
+    expect(
+      liveModelLabel([
+        { role: "user", metadata: undefined },
+        { role: "assistant", metadata: { modelLabel: "Opus 5.5", finishReason: "stop" } },
+        { role: "user" },
+        { role: "assistant", metadata: { modelLabel: "Sonnet 5.5 (Opus not available)" } },
+      ]),
+    ).toBe("Sonnet 5.5 (Opus not available)");
+  });
+
+  it("is null when no message carries one (a reloaded history)", () => {
+    expect(liveModelLabel([{ role: "assistant" }, { role: "assistant", metadata: { modelLabel: 3 } }])).toBeNull();
   });
 });

@@ -10,8 +10,11 @@
  *   1. A stored class resolves to the newest current id of that class, or of
  *      the next class DOWN the chat ladder; a Settings override for the chat
  *      feature is not consulted.
- *   2. With nothing callable from the class down (an unavailable Haiku), the
- *      turn runs on the chat default (step 3) and reports the fallback.
+ *   2. With nothing current from the class down (an unavailable Haiku, or a
+ *      catalog with no current-generation id), the turn runs on the chat
+ *      default (step 3) and reports the fallback. That default may be an
+ *      OLDER version of a class (the tier resolver degrades rather than be
+ *      down); chatModelLabel then says "older version in use".
  *   3. No class (NULL: every conversation older than migration 103, or one
  *      created without a class): exactly today's path,
  *      `resolveFeatureModel("chat")`, Settings override included.

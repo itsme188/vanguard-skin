@@ -14,6 +14,7 @@
  *     tests/ai/no-fable-model-policy.test.ts scans this file).
  */
 import { userFacingModelLabel } from "@/lib/ai/model-families";
+import { isCurrentGeneration } from "@/lib/ai/model-tiers";
 
 /** Picker order, cheapest first. Only these three names are valid. */
 export const CHAT_MODEL_FAMILIES = ["haiku", "sonnet", "opus"] as const;
@@ -23,9 +24,12 @@ export const DEFAULT_CHAT_MODEL_FAMILY: ChatModelFamily = "sonnet";
 
 /**
  * Capability order, highest first. An unavailable class walks DOWN this
- * ladder (never up, never to an older version of the same class). Haiku is
- * the bottom rung: with nothing below it, an unavailable Haiku runs on the
- * chat's default resolution instead (lib/chat/model-resolve.ts).
+ * ladder; the walk itself never picks an older version of a class. When it
+ * finds nothing current from the class down (an unavailable Haiku, or a
+ * catalog with no current-generation id at all), the turn runs on the chat's
+ * default resolution (lib/chat/model-resolve.ts), and THAT may be an older
+ * version: the tier resolver degrades rather than be down. The label then
+ * says so ("Sonnet 4.6 (older version in use)").
  */
 export const CHAT_FAMILY_LADDER = ["opus", "sonnet", "haiku"] as const satisfies readonly ChatModelFamily[];
 
@@ -50,14 +54,18 @@ export function invalidModelFamilyMessage(raw: unknown): string {
 }
 
 /**
- * The quiet label a conversation shows: "Opus 5.5", or, when a lower class
+ * The quiet label a conversation shows: "Opus 5.5"; when a lower class
  * answered because the chosen one is not available, "Sonnet 5.5 (Opus not
- * available)". An id that does not parse is never printed (it reads "the AI
- * model").
+ * available)"; when the model is an older version than its class's current
+ * one, "Sonnet 4.6 (older version in use)"; both notes together when both
+ * hold. An id that does not parse is never printed (it reads "the AI model").
  */
 export function chatModelLabel(r: { modelId: string; fellBackFrom: ChatModelFamily | null }): string {
   const name = userFacingModelLabel(r.modelId);
-  return r.fellBackFrom ? `${name} (${chatFamilyName(r.fellBackFrom)} not available)` : name;
+  const notes: string[] = [];
+  if (r.fellBackFrom) notes.push(`${chatFamilyName(r.fellBackFrom)} not available`);
+  if (!isCurrentGeneration(r.modelId)) notes.push("older version in use");
+  return notes.length > 0 ? `${name} (${notes.join("; ")})` : name;
 }
 
 /**
@@ -71,10 +79,46 @@ export function openConversationModelLabel(
   conversations: readonly { id: number; model_label?: string | null }[],
   currentId: number | null,
   pendingFamily: ChatModelFamily,
+  liveLabel: string | null,
 ): string | null {
   if (currentId !== null) {
     const row = conversations.find((c) => c.id === currentId);
     if (row) return row.model_label ?? null;
   }
-  return chatFamilyName(pendingFamily);
+  // Not listed yet (the first turn, or a list refresh that failed): what the
+  // server said this turn resolved to, else the class that was picked.
+  return liveLabel ?? chatFamilyName(pendingFamily);
+}
+
+/**
+ * The resolved-model label the server put on this turn's stream (the `start`
+ * part's metadata, `modelLabel`), newest assistant message first; null when
+ * none carries one (a history reloaded from the database is text only).
+ */
+export function liveModelLabel(messages: readonly { role: string; metadata?: unknown }[]): string | null {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m.role !== "assistant" || m.metadata === null || typeof m.metadata !== "object") continue;
+    const label = (m.metadata as { modelLabel?: unknown }).modelLabel;
+    if (typeof label === "string" && label.length > 0) return label;
+  }
+  return null;
+}
+
+/**
+ * The class a request carries: the open conversation's own stored class when
+ * the list knows it (so a conversation deleted elsewhere is recreated on its
+ * class, never on the default), none for a listed conversation with no
+ * class, and the picker's value for a new chat or a conversation whose row
+ * is not listed yet (its first turn was just adopted). The server uses it
+ * only when it creates a row and ignores it for an existing one.
+ */
+export function requestModelFamily(
+  conversations: readonly { id: number; model_family: string | null }[],
+  openId: number | null,
+  picked: ChatModelFamily,
+): ChatModelFamily | null {
+  if (openId === null) return picked;
+  const row = conversations.find((c) => c.id === openId);
+  return row ? readStoredChatFamily(row.model_family) : picked;
 }

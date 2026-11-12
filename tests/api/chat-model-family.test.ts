@@ -64,6 +64,8 @@ interface Captured {
   onStepFinish: (step: unknown) => void;
 }
 
+let streamMeta: Array<(arg: { part: { type: string } }) => unknown> = [];
+
 function post(body: Record<string, unknown>): Promise<Response> {
   return POST(
     new NextRequest("http://localhost:3099/api/chat", {
@@ -100,13 +102,22 @@ describe("POST /api/chat — the conversation's model class", () => {
     hoisted.db.pragma("foreign_keys = ON");
     runMigrations(hoisted.db);
     captured = [];
+    streamMeta = [];
     hoisted.failoverSpy.mockReset();
     hoisted.streamTextMock.mockReset();
     hoisted.streamTextMock.mockImplementation((opts: Captured) => {
       captured.push(opts);
       return {
-        toUIMessageStreamResponse: ({ headers }: { headers?: Record<string, string> }) =>
-          new Response("ok", { status: 200, headers }),
+        toUIMessageStreamResponse: ({
+          headers,
+          messageMetadata,
+        }: {
+          headers?: Record<string, string>;
+          messageMetadata: (arg: { part: { type: string } }) => unknown;
+        }) => {
+          streamMeta.push(messageMetadata);
+          return new Response("ok", { status: 200, headers });
+        },
       };
     });
     process.env.ANTHROPIC_API_KEY = "test-key-not-real";
@@ -115,6 +126,30 @@ describe("POST /api/chat — the conversation's model class", () => {
   afterEach(() => {
     if (originalKey === undefined) delete process.env.ANTHROPIC_API_KEY;
     else process.env.ANTHROPIC_API_KEY = originalKey;
+  });
+
+  it("a deleted conversation's next turn recreates it on the class the client sends (review item 2)", async () => {
+    const first = await send({ messages: hello, scope: "all", modelFamily: "opus" });
+    hoisted.db.prepare("DELETE FROM chat_conversations WHERE id = ?").run(first.id);
+    // As the client now sends it: the open conversation's id and its known class.
+    const next = await send({ messages: hello, scope: "all", conversationId: first.id, modelFamily: "opus" });
+    expect(next.id).not.toBe(first.id);
+    expect(storedFamily(next.id)).toBe("opus");
+    expect(next.opts.model.modelId).toBe(CURRENT_CLASS_MODELS.opus);
+  });
+
+  it("the stream's start names the resolved model for the header (review item 4)", async () => {
+    await send({ messages: hello, scope: "all", modelFamily: "opus" });
+    const meta = streamMeta[streamMeta.length - 1];
+    expect(meta({ part: { type: "start" } })).toEqual({ modelLabel: "Opus 5.5" });
+    // The finish part is unchanged apart from the label it already had on start.
+    expect(meta({ part: { type: "text-delta" } })).toBeUndefined();
+  });
+
+  it("a conversation with no class sends no label", async () => {
+    await send({ messages: hello, scope: "all" });
+    const meta = streamMeta[streamMeta.length - 1];
+    expect(meta({ part: { type: "start" } })).toBeUndefined();
   });
 
   it.each(["haiku", "sonnet", "opus"] as const)("creating with %s stores the class and runs on its current id", async (family) => {

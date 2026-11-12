@@ -23,6 +23,7 @@ import { computeIbkrTradingContext, type IbkrTradingContext } from "@/lib/chat/i
 import { getAnthropicApiKey } from "@/lib/env";
 import { getModelForFeature, getModelForResolved } from "@/lib/ai/provider";
 import {
+  chatModelLabel,
   invalidModelFamilyMessage,
   isChatModelFamily,
   readStoredChatFamily,
@@ -462,6 +463,14 @@ export async function POST(request: NextRequest) {
     // down, is the unchanged default path, getModelForFeature("chat").
     const chatModel = resolveChatModel(conversationFamily);
     const modelLogFields = { modelFamily: conversationFamily, modelFellBackFrom: chatModel.fellBackFrom };
+    // The header label for this turn (review item 4): sent on the stream's
+    // start part, so the client shows what this turn resolved to before the
+    // list refresh (and even if it fails). A class name and version, never
+    // content. A conversation with no class shows no label, so none is sent.
+    const startMetadata =
+      conversationFamily !== null
+        ? { modelLabel: chatModelLabel({ modelId: chatModel.resolved.modelId, fellBackFrom: chatModel.fellBackFrom }) }
+        : undefined;
 
     // Stream with automatic agentic tool loop (up to MAX_CHAT_STEPS model calls)
     const result = streamText({
@@ -619,6 +628,7 @@ export async function POST(request: NextRequest) {
       headers: conversationHeaders,
       // Contract B: the finish part tells the client why an empty turn ended.
       messageMetadata: ({ part }) => {
+        if (part.type === "start") return startMetadata;
         if (part.type === "finish-step") streamedSteps++;
         if (part.type === "finish") {
           return { finishReason: part.finishReason, stepCount: streamedSteps };
