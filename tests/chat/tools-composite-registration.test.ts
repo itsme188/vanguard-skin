@@ -74,9 +74,9 @@ describe("each composite tool through executeTool", () => {
     it(`${tool}: clamped single-account chat`, async () => {
       const r = (await executeTool(db, tool, { account_name: "IBKR" }, { scopeAccountIds: [3] })) as Result;
       if (tool === "query_data_confidence") {
-        // Whole-portfolio only (P3): never another account's reasons.
-        expect(r.error).toBeDefined();
-        expect(r.data).toBeUndefined();
+        // Always the whole portfolio, labelled (owner ruling 2026-11-12).
+        expect(r.error).toBeUndefined();
+        expect(r.data).toMatchObject({ covers_every_account: true, scope_note: expect.stringContaining("(IBKR)") });
       } else {
         expect(r.error, tool).toBeUndefined();
         expect(JSON.stringify(r.data)).not.toContain("Vanguard");

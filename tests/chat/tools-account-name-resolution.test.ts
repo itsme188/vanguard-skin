@@ -19,7 +19,7 @@ import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import { executeTool, resolveAccountName, CHAT_TOOLS } from "@/lib/chat/tools";
 import { resolveChatAccounts, CHAT_SCOPE_WORDS } from "@/lib/chat/account-scope";
-import { getHoldingsForChat } from "@/lib/queries/chat-tools";
+import { getHoldingsForChat, getAccountValueBaseForChat, accountValueWeightPct } from "@/lib/queries/chat-tools";
 import { computeTwr } from "@/lib/compute/twr";
 import { computeXirr } from "@/lib/compute/xirr";
 import { resolveScope } from "@/lib/queries/accounts";
@@ -211,9 +211,15 @@ describe("tools that take account_name", () => {
       const result = (await executeTool(db, "query_holdings", { account_name: name })) as {
         data: Array<Record<string, unknown>>;
       };
-      const direct = getHoldingsForChat(db, { account_name: name, includeShorts: true }).map(
-        (h) => ({ ...h, position_side: h.quantity < 0 ? "short" : "long" }),
-      );
+      // Owner ruling B: each row also carries its share of the account's value
+      // including cash, over the same account's base.
+      const id = (db.prepare("SELECT id FROM accounts WHERE name = ?").get(name) as { id: number }).id;
+      const base = getAccountValueBaseForChat(db, [id]);
+      const direct = getHoldingsForChat(db, { account_name: name, includeShorts: true }).map((h) => ({
+        ...h,
+        account_value_weight_pct: accountValueWeightPct(h.market_value, base),
+        position_side: h.quantity < 0 ? "short" : "long",
+      }));
       expect(JSON.stringify(result.data)).toBe(JSON.stringify(direct));
     }
   });
@@ -262,8 +268,8 @@ describe("tools that take account_name", () => {
 
   it("every parameter description tells the model it may pass an exact name or a scope word", () => {
     for (const [tool] of ACCOUNT_TOOLS) {
-      // query_data_confidence is whole-portfolio only (P3): its account_name
-      // exists for the scope clamp and says any name is an error.
+      // query_data_confidence always covers the whole portfolio: its
+      // account_name exists for the scope clamp and says a name does not narrow it.
       if (tool === "query_data_confidence") continue;
       const schema = CHAT_TOOLS.find((t) => t.name === tool)!.input_schema.properties as Record<
         string,
@@ -286,6 +292,7 @@ describe("tools that take account_name", () => {
           "query_scenarios",
           "query_performance_vs_benchmark",
           "query_options_book",
+          "query_data_confidence",
         ].includes(tool),
     );
     for (const [tool, base] of oneAccountTools) {

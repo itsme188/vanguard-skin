@@ -55,9 +55,9 @@ describe("composite tool registry", () => {
     }
   });
 
-  it("marks only the list engines as scope-list tools", () => {
+  it("marks the list engines, and the whole-portfolio data confidence, as scope-list tools", () => {
     expect([...COMPOSITE_SCOPE_LIST_TOOLS].sort()).toEqual(
-      ["query_options_book", "query_performance_vs_benchmark", "query_risk", "query_scenarios"].sort(),
+      ["query_data_confidence", "query_options_book", "query_performance_vs_benchmark", "query_risk", "query_scenarios"].sort(),
     );
   });
 

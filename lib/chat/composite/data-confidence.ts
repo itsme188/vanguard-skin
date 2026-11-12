@@ -3,13 +3,15 @@
  * `getDataConfidence(db)` (as `app/api/data-confidence/route.ts` and the
  * Data Health page call it), summarised.
  *
- * The engine has no account scope (plan P3): its reasons name symbols and
- * accounts across the whole portfolio. Any account scope (a single-account
- * chat, whose clamp always sets account_name, or a model-chosen account) is
- * therefore refused, so nothing crosses an account boundary.
+ * The engine has no account scope: its reasons name symbols and accounts
+ * across the whole portfolio. In a chat scoped to some accounts the tool
+ * still answers with the whole-portfolio result, labelled: covers_every_account
+ * is always true and a scope_note names the chat's accounts (owner ruling
+ * 2026-11-12, replacing plan P3's refusal; the chat is read by the owner
+ * only). acceptsScopeList is true so a scope of several accounts reaches it.
  *
- * No dollar figure leaves this tool: amounts inside the engine's text (a cash
- * residual, for example) are replaced with "(amount omitted)".
+ * The engine's text is passed through unchanged, dollar amounts included
+ * (same ruling; they say how large a residual or a finding is).
  *
  * Named items (which security is stale, which account is old, which finding)
  * come only from what the engine and the Data Health page's own readers
@@ -22,6 +24,7 @@ import { getDataConfidence, PRICE_FRESHNESS_DAYS, type DimensionScore } from "@/
 import { getDataGaps, getPriceFreshness } from "@/lib/queries/data-health";
 import {
   ACCOUNT_NAME_FIELD,
+  accountNamesFor,
   NO_ACCOUNT_IN_SCOPE,
   scopeBlock,
   takeList,
@@ -35,33 +38,28 @@ const ACTIONS_SHOWN = 5;
 /** Named items listed per kind (stale prices, findings, ...); list_info when cut. */
 const ITEMS_SHOWN = 10;
 
-export const DATA_CONFIDENCE_SCOPE_ERROR =
-  "Data confidence covers the whole portfolio and cannot be limited to one account. Ask in the All Accounts scope, without account_name.";
+/** Said beside the result in a chat scoped to some accounts. */
+export function WHOLE_PORTFOLIO_SCOPE_NOTE(chatAccounts: string): string {
+  return `Data confidence covers every account, not only this chat's scope (${chatAccounts}). Items that belong to an account name it.`;
+}
 
 const definition: CompositeTool["definition"] = {
   name: QUERY_DATA_CONFIDENCE_NAME,
   description:
-    "How far today's figures can be trusted, as the header's data-confidence indicator and the Data Health page show it: the overall score (0-100) and level, the score and one-line reason for each of the five dimensions (price freshness, holdings recency, cash accuracy, enrichment, valuation coverage), the reason the score was capped if it was, the first suggested actions, and the integrity scan's counts by severity (and whether the tax-lot comparison ran at all). items names what each problem is about: the held securities with a stale or missing price and their last price dates (oldest first), each account's latest and stalest holdings dates, held securities with no transactions, holdings rows over 90 days old, securities missing contract data, the cash anchor, and the integrity findings. Whole portfolio only: leave account_name out; in a single-account chat this tool returns an error. Use for 'can I trust these numbers', 'is my data stale', 'what needs fixing'. Do NOT use for one result's own freshness (every tool result already carries data_freshness) or for figures (no dollar amount is returned).",
+    "How far today's figures can be trusted, as the header's data-confidence indicator and the Data Health page show it: the overall score (0-100) and level, the score and one-line reason for each of the five dimensions (price freshness, holdings recency, cash accuracy, enrichment, valuation coverage), the reason the score was capped if it was, the first suggested actions, and the integrity scan's counts by severity (and whether the tax-lot comparison ran at all). items names what each problem is about: the held securities with a stale or missing price and their last price dates (oldest first), each account's latest and stalest holdings dates, held securities with no transactions, holdings rows over 90 days old, securities missing contract data, the cash anchor, and the integrity findings. Always the whole portfolio, also in a chat scoped to some accounts: covers_every_account is true and scope_note then names the chat's accounts. Reasons are the engine's own text, dollar amounts included. Use for 'can I trust these numbers', 'is my data stale', 'what needs fixing'. Do NOT use for one result's own freshness (every tool result already carries data_freshness) or for portfolio values and returns (use the holdings and performance tools).",
   input_schema: {
     type: "object" as const,
     properties: {
       account_name: {
         ...ACCOUNT_NAME_FIELD,
-        description: "Leave out. This tool covers the whole portfolio; any account name returns an error.",
+        description: "Leave out. This tool always covers the whole portfolio; an account name does not narrow it.",
       },
     },
   },
 };
 
-/** Dollar amounts inside engine text, e.g. "$1,234.56", "-$12k", "$ 3.4M". */
-const DOLLAR_AMOUNT = /[-−]?\$\s?[-−]?\d[\d,]*(?:\.\d+)?(?:[kKmMbB]\b)?/g;
-
-export function omitAmounts(text: string): string {
-  return text.replace(DOLLAR_AMOUNT, "(amount omitted)");
-}
-
 function dimension(d: DimensionScore) {
-  return { score: d.score, reason: omitAmounts(d.detail), action_needed: d.guidanceActionable };
+  return { score: d.score, reason: d.detail, action_needed: d.guidanceActionable };
 }
 
 type Confidence = ReturnType<typeof getDataConfidence>;
@@ -82,8 +80,8 @@ function buildItems(db: Database.Database, c: Confidence) {
   const gaps = getDataGaps(db);
   const cash = c.cashAccuracy;
   const findings = [
-    ...c.integrity.critical.map((h) => ({ severity: "critical", reason: omitAmounts(h.reason) })),
-    ...c.integrity.warnings.map((h) => ({ severity: "warning", reason: omitAmounts(h.reason) })),
+    ...c.integrity.critical.map((h) => ({ severity: "critical", reason: h.reason })),
+    ...c.integrity.warnings.map((h) => ({ severity: "warning", reason: h.reason })),
   ];
   return {
     stale_prices: { window_days: PRICE_FRESHNESS_DAYS, count: stale.length, ...list(stale) },
@@ -120,15 +118,18 @@ function buildItems(db: Database.Database, c: Confidence) {
 function run(db: Database.Database, _input: Record<string, unknown>, ctx: CompositeContext): unknown {
   const accountIds = ctx.accountIds;
   if (accountIds !== undefined && accountIds.length === 0) return NO_ACCOUNT_IN_SCOPE;
-  if (accountIds !== undefined) return { error: DATA_CONFIDENCE_SCOPE_ERROR };
 
   const c = ctx.now ? getDataConfidence(db, ctx.now) : getDataConfidence(db);
 
   return {
     as_of: ctx.today,
     scope: scopeBlock(db, undefined),
+    covers_every_account: true,
+    ...(accountIds !== undefined
+      ? { scope_note: WHOLE_PORTFOLIO_SCOPE_NOTE(accountNamesFor(db, accountIds).join(", ")) }
+      : {}),
     overall: { score: c.overallScore, level: c.overallLevel },
-    cap_reason: c.capReason === null ? null : omitAmounts(c.capReason),
+    cap_reason: c.capReason === null ? null : c.capReason,
     dimensions: {
       price_freshness: dimension(c.priceFreshness),
       holdings_recency: dimension(c.holdingsRecency),
@@ -136,7 +137,7 @@ function run(db: Database.Database, _input: Record<string, unknown>, ctx: Compos
       enrichment: dimension(c.enrichmentCompleteness),
       valuation_coverage: dimension(c.valuationCoverage),
     },
-    actions: c.actions.slice(0, ACTIONS_SHOWN).map((a) => ({ severity: a.severity, action: omitAmounts(a.message) })),
+    actions: c.actions.slice(0, ACTIONS_SHOWN).map((a) => ({ severity: a.severity, action: a.message })),
     actions_total: c.actions.length,
     integrity: {
       critical: c.integrity.critical.length,
@@ -158,4 +159,4 @@ function run(db: Database.Database, _input: Record<string, unknown>, ctx: Compos
   };
 }
 
-export const queryDataConfidenceTool: CompositeTool = { definition, run, acceptsScopeList: false };
+export const queryDataConfidenceTool: CompositeTool = { definition, run, acceptsScopeList: true };

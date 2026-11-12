@@ -2,10 +2,13 @@
  * query_data_confidence (Portfolio Assistant plan, Task 6; P3).
  *
  * Protects: the trust verdict the chat gives is the header indicator's own
- * (getDataConfidence), whole-portfolio only, with no dollar amount. Bound: a
- * book of two held names, one priced today and one 30 days stale, scores
- * price freshness 50 with "1/2 securities have recent prices"; any account
- * scope is refused before the engine runs.
+ * (getDataConfidence), always for the whole portfolio, with the engine's text
+ * passed through unchanged (dollar amounts included; owner ruling
+ * 2026-11-12: the chat is read by the owner only). Bound: a book of two held
+ * names, one priced today and one 30 days stale, scores price freshness 50
+ * with "1/2 securities have recent prices"; a scoped chat gets the same
+ * whole-portfolio result with covers_every_account true and a scope_note
+ * naming the chat's accounts.
  */
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import Database from "better-sqlite3";
@@ -17,11 +20,7 @@ vi.mock("@/lib/queries/data-confidence", async (importOriginal) => {
 });
 
 import { getDataConfidence } from "@/lib/queries/data-confidence";
-import {
-  queryDataConfidenceTool,
-  omitAmounts,
-  DATA_CONFIDENCE_SCOPE_ERROR,
-} from "@/lib/chat/composite/data-confidence";
+import { queryDataConfidenceTool, WHOLE_PORTFOLIO_SCOPE_NOTE } from "@/lib/chat/composite/data-confidence";
 import { COMPOSITE_MAX_JSON_CHARS } from "@/lib/chat/composite/shared";
 import { addDays, todayET } from "@/lib/calendar/date-utils";
 
@@ -48,6 +47,8 @@ type Out = {
   actions_total: number;
   integrity: { critical: number; warnings: number; lot_drift_checked: boolean };
   scope: { all_accounts: boolean };
+  covers_every_account: boolean;
+  scope_note?: string;
 };
 
 beforeEach(() => {
@@ -82,19 +83,56 @@ describe("query_data_confidence", () => {
     expect(out.scope.all_accounts).toBe(true);
   });
 
-  it("refuses any account scope before calling the engine", () => {
+  it("a scoped chat gets the whole-portfolio result, labelled as covering every account", () => {
+    const all = queryDataConfidenceTool.run(db, {}, { accountIds: undefined, today: TODAY, now: NOW }) as Out;
+    expect(all.covers_every_account).toBe(true);
+    expect(all.scope_note).toBeUndefined();
+
     const one = queryDataConfidenceTool.run(db, {}, { accountIds: [3], accountName: "IBKR", today: TODAY, now: NOW }) as Out;
-    expect(one).toEqual({ error: DATA_CONFIDENCE_SCOPE_ERROR });
-    expect(JSON.stringify(one)).not.toContain("FRSH");
+    expect(one.error).toBeUndefined();
+    expect(one.covers_every_account).toBe(true);
+    expect(one.scope.all_accounts).toBe(true);
+    expect(one.scope_note).toBe(WHOLE_PORTFOLIO_SCOPE_NOTE("IBKR"));
+    expect(one.scope_note).toBe(
+      "Data confidence covers every account, not only this chat's scope (IBKR). Items that belong to an account name it.",
+    );
+    // The same figures as the all-accounts answer: nothing is filtered.
+    const { scope_note: _note, ...rest } = one;
+    expect(rest).toEqual(all);
+    expect(JSON.stringify(one)).toContain("FRSH");
+
+    const two = queryDataConfidenceTool.run(db, {}, { accountIds: [1, 3], today: TODAY, now: NOW }) as Out;
+    expect(two.error).toBeUndefined();
+    expect(two.scope_note).toBe(WHOLE_PORTFOLIO_SCOPE_NOTE("Vanguard Taxable, IBKR"));
+  });
+
+  it("a scope with no account answers without calling the engine", () => {
     const empty = queryDataConfidenceTool.run(db, {}, { accountIds: [], today: TODAY, now: NOW });
     expect(empty).toEqual({ error: "No account is in this chat's scope." });
     expect(getDataConfidence).not.toHaveBeenCalled();
   });
 
-  it("omits dollar amounts from engine text", () => {
-    expect(omitAmounts("Cash moved $1,234.56 on 2026-02-03 and -$12k later; 3 of 40 names")).toBe(
-      "Cash moved (amount omitted) on 2026-02-03 and (amount omitted) later; 3 of 40 names",
-    );
+  it("passes dollar amounts in the engine's text through unchanged", () => {
+    const actual = getDataConfidence(db, NOW);
+    const amountText = "Cash moved $1,234.56 on 2026-02-03 and -$12k later; 3 of 40 names";
+    vi.mocked(getDataConfidence).mockReturnValueOnce({
+      ...actual,
+      capReason: amountText,
+      cashAccuracy: { ...actual.cashAccuracy, detail: amountText },
+      actions: [{ ...(actual.actions[0] ?? { severity: "warning" }), message: amountText } as (typeof actual.actions)[number]],
+      integrity: {
+        ...actual.integrity,
+        warnings: [{ ...(actual.integrity.warnings[0] ?? {}), reason: amountText } as (typeof actual.integrity.warnings)[number]],
+      },
+    });
+    const out = queryDataConfidenceTool.run(db, {}, { accountIds: undefined, today: TODAY, now: NOW }) as Out & {
+      items: { integrity_findings: { shown: { reason: string }[] } };
+    };
+    expect(out.cap_reason).toBe(amountText);
+    expect(out.dimensions.cash_accuracy.reason).toBe(amountText);
+    expect(out.actions[0].action).toBe(amountText);
+    expect(out.items.integrity_findings.shown.map((f) => f.reason)).toContain(amountText);
+    expect(JSON.stringify(out)).not.toContain("amount omitted");
   });
 
   it("writes nothing and stays under the size cap with 60 positions", () => {
@@ -104,7 +142,6 @@ describe("query_data_confidence", () => {
     const after = (db.prepare("SELECT total_changes() AS n").get() as { n: number }).n;
     expect(after).toBe(before);
     expect(JSON.stringify(out).length).toBeLessThan(COMPOSITE_MAX_JSON_CHARS);
-    expect(JSON.stringify(out)).not.toMatch(/\$\d/);
   });
 });
 
@@ -152,13 +189,12 @@ describe("query_data_confidence names the items (Q12)", () => {
     expect(out.items.integrity_findings.count).toBe(engine.integrity.critical.length + engine.integrity.warnings.length);
   });
 
-  it("caps each list with list_info and stays dollar-free", () => {
+  it("caps each list with list_info", () => {
     for (let i = 0; i < 30; i++) heldOn(`ST${i}`, 1, addDays(today, -10 - i));
     const out = queryDataConfidenceTool.run(db, {}, { accountIds: undefined, today }) as { items: Items };
     expect(out.items.stale_prices.shown).toHaveLength(10);
     expect(out.items.stale_prices.count).toBe(32);
     expect(out.items.stale_prices.list_info?.truncated).toBe(true);
     expect(out.items.stale_prices.shown[1].symbol).toBe("ST29");
-    expect(JSON.stringify(out)).not.toMatch(/\$\d/);
   });
 });

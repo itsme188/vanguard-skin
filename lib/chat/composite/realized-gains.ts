@@ -6,14 +6,21 @@
  * accounts is refused with the names to choose from (never summed here and
  * never collapsed to the first account).
  *
- * Wash sales (plan P8): the engine's replacement-purchase scan reads every
- * account, so a report scoped to one account can carry facts about another
- * account. A scoped answer therefore returns the wash-sale COUNT only, and
- * shows adjustments only inside each total's gain; the All Accounts answer
- * shows the detail.
+ * Wash sales: the engine's replacement-purchase scan reads every account
+ * (IRS rule, Rev. Rul. 2008-5). Every answer, one account or all, carries the
+ * detail: each total's adjustments, each wash row's code and adjustment, and
+ * the replacement purchase's date and account(s). When the answer covers one
+ * account, a replacement bought in any other account is named in
+ * `replacement_outside_this_answer` (owner ruling 2026-11-12, replacing plan
+ * P8's count-only rule; the chat is read by the owner only).
+ *
+ * The replacement's account is a read of the lots the engine scanned (same
+ * security, the date the engine named, opening-snapshot lots excluded, as in
+ * `detectWashSales`); no figure is recomputed. Every row and total keeps the
+ * engine's identity gain = proceeds - cost basis + adjustment.
  */
 import type Database from "better-sqlite3";
-import { generateTaxReport, type Form8949Row } from "@/lib/compute/tax-report";
+import { generateTaxReport, type Form8949Row, type WashSaleWarning } from "@/lib/compute/tax-report";
 import { isTaxConventionPending } from "@/lib/compute/tax-convention";
 import {
   ACCOUNT_NAME_FIELD,
@@ -45,7 +52,7 @@ export const NO_RETIREMENT_MARK_NOTE =
 const definition: CompositeTool["definition"] = {
   name: QUERY_REALIZED_GAINS_NAME,
   description:
-    `Realized gains for one tax year, as the Tax Lots page's Tax Report card computes them: short-term and long-term totals (proceeds, cost basis, gain), row counts, possible wash sales, which retirement accounts were left out (sales in a tax-advantaged account are not taxable), how many non-USD sales were left out of the USD totals, and whether the figures are filing-ready. Unless filing_ready is true the figures are NOT FOR FILING. rows lists the sales themselves (symbol, name, account, quantity, dates, proceeds, cost basis, gain, term), largest absolute gain first, so an answer can name what made up the total. Reads one account or every account: a scope word naming several accounts returns an error listing them. With one account named, wash sales are given as a count only (the replacement purchase may sit in another account); omit account_name in the All Accounts scope for the detail. Use for 'realized gains this year', 'short vs long term', 'wash sales'. Do NOT use for unrealized gains, open lots or harvest candidates (use query_tax_lots), or for lifetime totals.`,
+    `Realized gains for one tax year, as the Tax Lots page's Tax Report card computes them: short-term and long-term totals (proceeds, cost basis, gain), row counts, possible wash sales, which retirement accounts were left out (sales in a tax-advantaged account are not taxable), how many non-USD sales were left out of the USD totals, and whether the figures are filing-ready. Unless filing_ready is true the figures are NOT FOR FILING. rows lists the sales themselves (symbol, name, account, quantity, dates, proceeds, cost basis, gain, term), largest absolute gain first, so an answer can name what made up the total. Reads one account or every account: a scope word naming several accounts returns an error listing them. Wash sales come with their detail in every scope: each total's adjustments, and on each wash-sale row and in wash_sales.shown the adjustment, the replacement purchase's date and the account(s) it was bought in (replacement_accounts); replacement_outside_this_answer names any such account this answer does not cover (for example outside this chat's scope). gain = proceeds - cost basis + adjustment. Use for 'realized gains this year', 'short vs long term', 'wash sales'. Do NOT use for unrealized gains, open lots or harvest candidates (use query_tax_lots), or for lifetime totals.`,
   input_schema: {
     type: "object" as const,
     properties: {
@@ -72,14 +79,71 @@ function isoFrom8949(d: string): string {
   return m ? `${m[3]}-${m[1]}-${m[2]}` : d;
 }
 
+/** Where an engine-named replacement purchase was bought. */
+interface Replacement {
+  date: string;
+  accounts: string[];
+  outsideAnswer: string[];
+}
+
+/** Key that ties an engine row to its wash-sale warning. */
+function washKey(symbol: string, saleDate: string, account: string, loss: number): string {
+  return `${symbol}|${saleDate}|${account}|${Math.abs(loss).toFixed(6)}`;
+}
+
+/**
+ * For each warning: the sale's own account and where the replacement was
+ * bought. Read-only lookups over the lots `detectWashSales` scanned.
+ */
+function replacementsFor(
+  db: Database.Database,
+  warnings: WashSaleWarning[],
+  scopeAccountNames: Set<string> | null,
+): { saleAccount: string; replacement: Replacement }[] {
+  const saleAccount = db.prepare(
+    `SELECT a.name FROM tax_lot_sales tls
+       JOIN tax_lots tl ON tl.id = tls.tax_lot_id
+       JOIN accounts a ON a.id = tl.account_id
+      WHERE tls.id = ?`,
+  );
+  const buyers = db.prepare(
+    `SELECT DISTINCT a.name FROM tax_lots tl
+       JOIN securities s ON s.id = tl.security_id
+       JOIN accounts a ON a.id = tl.account_id
+      WHERE s.symbol = ? AND tl.acquisition_date = ? AND tl.is_from_opening_snapshot = 0
+      ORDER BY a.name`,
+  );
+  return warnings.map((w) => {
+    const accounts = (buyers.all(w.symbol, w.purchaseDate) as { name: string }[]).map((r) => r.name);
+    return {
+      saleAccount: (saleAccount.get(w.saleId) as { name: string } | undefined)?.name ?? "",
+      replacement: {
+        date: w.purchaseDate,
+        accounts,
+        outsideAnswer: scopeAccountNames ? accounts.filter((a) => !scopeAccountNames.has(a)) : [],
+      },
+    };
+  });
+}
+
+function replacementFields(r: Replacement | undefined) {
+  if (!r) return {};
+  return {
+    replacement_date: r.date,
+    replacement_accounts: r.accounts,
+    ...(r.outsideAnswer.length > 0 ? { replacement_outside_this_answer: r.outsideAnswer } : {}),
+  };
+}
+
 /**
  * One sale row from the engine's own Form 8949 rows (`generateTaxReport`):
  * `quantity` is the engine's description ("10 sh AAA", "2 contracts ..."),
- * `name` the security's stored name. A wash-sale flag and adjustment only on
- * an all-accounts answer (P8). A non-USD row names its currency and says it
- * is not in the USD totals, as the totals treat it.
+ * `name` the security's stored name. A wash row carries its code, its
+ * adjustment and where the replacement was bought, in every scope. A non-USD
+ * row names its currency and says it is not in the USD totals, as the totals
+ * treat it.
  */
-function shapeRow(r: Form8949Row, allAccounts: boolean, names: Map<string, string | null>) {
+function shapeRow(r: Form8949Row, names: Map<string, string | null>, replacement: Replacement | undefined) {
   return {
     symbol: r.symbol,
     name: names.get(r.symbol) ?? null,
@@ -92,8 +156,13 @@ function shapeRow(r: Form8949Row, allAccounts: boolean, names: Map<string, strin
     cost_basis: r.costBasis,
     gain_loss: r.gainOrLoss,
     ...(r.currency !== "USD" ? { currency: r.currency, in_usd_totals: false } : {}),
-    ...(allAccounts && r.isWashSale
-      ? { wash_sale: true, adjustment_code: r.adjustmentCode, adjustment_amount: r.adjustmentAmount }
+    ...(r.isWashSale
+      ? {
+          wash_sale: true,
+          adjustment_code: r.adjustmentCode,
+          adjustment_amount: r.adjustmentAmount,
+          ...replacementFields(replacement),
+        }
       : {}),
   };
 }
@@ -129,46 +198,57 @@ function run(db: Database.Database, input: Record<string, unknown>, ctx: Composi
   if (year === null) return { error: "year must be an integer from 2000 to 2100." };
 
   const report = generateTaxReport(db, year, { accountName });
-  const scoped = accountName !== null;
+  const scopeNames = accountIds === undefined ? null : new Set(accountNamesFor(db, accountIds));
 
   const total = (t: typeof report.shortTermTotal, rows: number) => ({
     proceeds: t.proceeds,
     cost_basis: t.costBasis,
-    ...(scoped ? {} : { adjustments: t.adjustments }),
+    adjustments: t.adjustments,
     gain_loss: t.gainLoss,
     rows,
   });
 
   const washCount = report.washSaleWarnings.length;
-  const washSales = scoped
-    ? {
-        count: washCount,
-        note:
-          washCount > 0
-            ? `${washCount} possible wash sale${washCount === 1 ? "" : "s"}; the replacement purchases may sit in other accounts; see the All Accounts scope.`
-            : "No possible wash sale found for this account's loss sales.",
-      }
-    : {
-        count: washCount,
-        shown: report.washSaleWarnings.slice(0, WASH_SALES_SHOWN).map((w) => ({
-          symbol: w.symbol,
-          sale_date: w.saleDate,
-          replacement_date: w.purchaseDate,
-          replacement: w.direction,
-          days_from_sale: w.daysFromSale,
-          loss: w.lossAmount,
-        })),
-        ...(washCount > WASH_SALES_SHOWN ? { note: `First ${WASH_SALES_SHOWN} of ${washCount}.` } : {}),
-      };
+  const located = replacementsFor(db, report.washSaleWarnings, scopeNames);
+  const washSales = {
+    count: washCount,
+    shown: report.washSaleWarnings.slice(0, WASH_SALES_SHOWN).map((w, i) => ({
+      symbol: w.symbol,
+      account: located[i].saleAccount,
+      sale_date: w.saleDate,
+      replacement_date: w.purchaseDate,
+      replacement: w.direction,
+      days_from_sale: w.daysFromSale,
+      loss: w.lossAmount,
+      replacement_accounts: located[i].replacement.accounts,
+      ...(located[i].replacement.outsideAnswer.length > 0
+        ? { replacement_outside_this_answer: located[i].replacement.outsideAnswer }
+        : {}),
+    })),
+    ...(washCount > WASH_SALES_SHOWN ? { note: `First ${WASH_SALES_SHOWN} of ${washCount}.` } : {}),
+  };
 
   let rows: { rows: ReturnType<typeof shapeRow>[]; info: ReturnType<typeof takeList>["info"] } | undefined;
   if (input.include_rows !== false) {
     const limit = readCount(input.limit, ROWS_DEFAULT, ROWS_MAX);
     const engineRows = [...report.shortTermRows, ...report.longTermRows];
     const names = securityNames(db, engineRows.map((r) => r.symbol));
+    // Warnings by (symbol, sale date, account, loss), in the engine's order;
+    // each wash row takes the next one with its key.
+    const queues = new Map<string, Replacement[]>();
+    report.washSaleWarnings.forEach((w, i) => {
+      const key = washKey(w.symbol, w.saleDate, located[i].saleAccount, w.lossAmount);
+      queues.set(key, [...(queues.get(key) ?? []), located[i].replacement]);
+    });
+    const shaped = engineRows.map((r) => {
+      const replacement = r.isWashSale
+        ? queues.get(washKey(r.symbol, isoFrom8949(r.dateSold), r.accountName, r.adjustmentAmount))?.shift()
+        : undefined;
+      return { gain: r.gainOrLoss, row: shapeRow(r, names, replacement) };
+    });
     // Largest absolute gain first; ties keep the engine's order (stable sort).
-    const ordered = [...engineRows].sort((a, b) => Math.abs(b.gainOrLoss) - Math.abs(a.gainOrLoss));
-    rows = takeList(ordered.map((r) => shapeRow(r, !scoped, names)), limit, ROWS_MAX);
+    const ordered = [...shaped].sort((a, b) => Math.abs(b.gain) - Math.abs(a.gain)).map((x) => x.row);
+    rows = takeList(ordered, limit, ROWS_MAX);
   }
 
   return {
@@ -194,9 +274,9 @@ function run(db: Database.Database, input: Record<string, unknown>, ctx: Composi
     units: {
       totals: "USD; USD-denominated sales only (non-USD sales are counted in excluded.non_usd_sales, never converted)",
       rows: "largest absolute gain first; USD unless the row names another currency (then that currency, never converted, and not in the totals); dates YYYY-MM-DD; quantity as the tax report writes it",
-      gain_loss: scoped
-        ? "proceeds - cost basis, with any wash-sale adjustment already inside it"
-        : "proceeds - cost basis + adjustments",
+      gain_loss: "proceeds - cost basis + adjustment (a wash-sale adjustment adds back the disallowed loss)",
+      replacement_accounts:
+        "accounts holding a lot of the same security bought on replacement_date; replacement_outside_this_answer lists those this answer does not cover",
       rows_count: "number of sale rows behind each total, non-USD rows included",
     },
     currency: "USD",

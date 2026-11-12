@@ -30,7 +30,6 @@ const ONE_ACCOUNT_TOOLS: Array<[string, Record<string, unknown>]> = [
   ["query_trade_reviews", {}],
   // Composite tools (plan Task 8) whose engines read one account or all.
   ["query_realized_gains", {}],
-  ["query_data_confidence", {}],
 ];
 
 /** These engines take an id list, so they answer a wide scope whole. */
@@ -41,6 +40,8 @@ const SCOPE_LIST_TOOLS = [
   "query_scenarios",
   "query_performance_vs_benchmark",
   "query_options_book",
+  // Whole portfolio whatever the scope (owner ruling 2026-11-12).
+  "query_data_confidence",
 ];
 
 const THE_SENTENCE =
@@ -126,7 +127,6 @@ describe("a one-account chat tool handed a scope of several accounts", () => {
     for (const name of ["IBKR", "IBKR Two"]) {
       for (const [tool, base] of ONE_ACCOUNT_TOOLS) {
         if (tool === "query_market_snapshot") continue; // would fetch live quotes
-        if (tool === "query_data_confidence") continue; // whole portfolio only (P3)
         const result = (await executeTool(db, tool, { ...base, account_name: name })) as {
           error?: string;
         };

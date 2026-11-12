@@ -3,9 +3,11 @@
  *
  * Protects: the realized-gain totals the chat quotes are the Tax Report
  * card's own (generateTaxReport, same year and account), retirement-account
- * sales stay out, a one-account answer carries no wash-sale fact about
- * another account, and the figures say NOT FOR FILING until the year is
- * broker-accepted. Bound: the hand-worked book gives short-term gain 200 with
+ * sales stay out, every answer (one account or all) carries the wash-sale
+ * detail with the replacement purchase's account named (owner ruling
+ * 2026-11-12, replacing P8's count-only rule), every row and total
+ * reconciles as gain = proceeds - cost basis + adjustment, and the figures
+ * say NOT FOR FILING until the year is broker-accepted. Bound: the hand-worked book gives short-term gain 200 with
  * a 300 wash-sale adjustment and long-term gain 300, to the cent; the
  * per-account totals sum to the all-accounts totals within 0.01.
  */
@@ -87,7 +89,11 @@ type Out = {
   retirement_account: boolean;
   short_term: Total;
   long_term: Total;
-  wash_sales: { count: number; shown?: { symbol: string; replacement_date: string }[]; note?: string };
+  wash_sales: {
+    count: number;
+    shown?: { symbol: string; account: string; replacement_date: string; replacement_accounts: string[]; replacement_outside_this_answer?: string[] }[];
+    note?: string;
+  };
   excluded: { retirement_accounts: string[]; non_usd_sales: number };
   rows?: Record<string, unknown>[];
   list_info?: { returned: number; truncated: boolean };
@@ -117,24 +123,110 @@ describe("query_realized_gains", () => {
     expect(out.not_for_filing).toBe(true);
   });
 
-  it("a one-account answer gives the wash-sale count only (P8)", () => {
+  it("a one-account answer carries the wash-sale detail and names the replacement's account outside the answer", () => {
     const out = queryRealizedGainsTool.run(
       db,
       { include_rows: true },
       { accountIds: [1], accountName: "Vanguard Taxable", today: TODAY },
     ) as Out;
-    expect(out.short_term.gain_loss).toBe(200);
-    expect(out.short_term.adjustments).toBeUndefined();
-    expect(out.wash_sales.shown).toBeUndefined();
-    expect(out.wash_sales.note).toBe(
-      "1 possible wash sale; the replacement purchases may sit in other accounts; see the All Accounts scope.",
-    );
-    const text = JSON.stringify(out);
-    expect(text).not.toContain("2025-06-15");
-    expect(text).not.toContain("IBKR");
-    expect(text).not.toContain("Roth");
-    expect(text).not.toContain("adjustment_code");
+    expect(out.short_term).toEqual({ proceeds: 1800, cost_basis: 1900, adjustments: 300, gain_loss: 200, rows: 2 });
+    expect(out.wash_sales.count).toBe(1);
+    expect(out.wash_sales.note).toBeUndefined();
+    expect(out.wash_sales.shown).toEqual([
+      {
+        symbol: "CCC",
+        account: "Vanguard Taxable",
+        sale_date: "2025-06-01",
+        replacement_date: "2025-06-15",
+        replacement: "after",
+        days_from_sale: 14,
+        loss: -300,
+        replacement_accounts: ["IBKR"],
+        replacement_outside_this_answer: ["IBKR"],
+      },
+    ]);
+    const ccc = out.rows?.find((r) => r.symbol === "CCC");
+    expect(ccc).toMatchObject({
+      account: "Vanguard Taxable",
+      proceeds: 600,
+      cost_basis: 900,
+      gain_loss: 0,
+      wash_sale: true,
+      adjustment_code: "W",
+      adjustment_amount: 300,
+      replacement_date: "2025-06-15",
+      replacement_accounts: ["IBKR"],
+      replacement_outside_this_answer: ["IBKR"],
+    });
     expect(out.rows).toHaveLength(3);
+    // A non-wash row carries no wash fields.
+    const aaa = out.rows?.find((r) => r.symbol === "AAA");
+    expect(aaa).not.toHaveProperty("wash_sale");
+    expect(aaa).not.toHaveProperty("replacement_accounts");
+  });
+
+  it("the all-accounts answer names the replacement's account and flags nothing as outside the answer", () => {
+    const out = queryRealizedGainsTool.run(db, {}, { accountIds: undefined, today: TODAY }) as Out;
+    expect(out.wash_sales.shown?.[0]).toMatchObject({ account: "Vanguard Taxable", replacement_accounts: ["IBKR"] });
+    expect(out.wash_sales.shown?.[0]).not.toHaveProperty("replacement_outside_this_answer");
+    const ccc = out.rows?.find((r) => r.symbol === "CCC");
+    expect(ccc).toMatchObject({ wash_sale: true, replacement_accounts: ["IBKR"] });
+    expect(ccc).not.toHaveProperty("replacement_outside_this_answer");
+  });
+
+  it("a replacement inside the chat's own account is named and not flagged as outside", () => {
+    // DDD: a 120 loss in Vanguard Taxable, bought back there 5 days earlier.
+    sale(lot(1, "DDD", "2025-02-01", 4, 520), 1, "DDD", "2025-07-10", 4, 400, 520, false);
+    lot(1, "DDD", "2025-07-05", 4, 410);
+    const out = queryRealizedGainsTool.run(db, {}, { accountIds: [1], accountName: "Vanguard Taxable", today: TODAY }) as Out;
+    const ddd = out.rows?.find((r) => r.symbol === "DDD");
+    expect(ddd).toMatchObject({
+      wash_sale: true,
+      adjustment_amount: 120,
+      replacement_date: "2025-07-05",
+      replacement_accounts: ["Vanguard Taxable"],
+    });
+    expect(ddd).not.toHaveProperty("replacement_outside_this_answer");
+    expect(out.short_term.adjustments).toBe(420);
+  });
+
+  it("every row and every total reconciles: gain = proceeds - cost basis + adjustment", () => {
+    // Two more synthetic wash sales (one in each direction) and a plain loss.
+    sale(lot(1, "EEE", "2025-01-03", 3, 330), 1, "EEE", "2025-08-20", 3, 255, 330, false);
+    lot(3, "EEE", "2025-08-01", 3, 260);
+    sale(lot(1, "FFF", "2022-02-01", 7, 1400), 1, "FFF", "2025-09-02", 7, 1050.5, 1400, true);
+    lot(1, "FFF", "2025-09-20", 7, 1060);
+    sale(lot(1, "GGG", "2025-01-03", 2, 90), 1, "GGG", "2025-10-01", 2, 61.25, 90, false);
+    for (const accountIds of [undefined, [1]]) {
+      const out = queryRealizedGainsTool.run(
+        db,
+        { limit: 25 },
+        { accountIds, accountName: accountIds ? "Vanguard Taxable" : undefined, today: TODAY },
+      ) as Out;
+      const rows = out.rows as { proceeds: number; cost_basis: number; gain_loss: number; adjustment_amount?: number; term: string }[];
+      for (const r of rows) {
+        expect(Math.abs(r.proceeds - r.cost_basis + (r.adjustment_amount ?? 0) - r.gain_loss)).toBeLessThan(0.005);
+      }
+      for (const [t, term] of [[out.short_term, "short"], [out.long_term, "long"]] as const) {
+        expect(Math.abs(t.proceeds - t.cost_basis + (t.adjustments ?? NaN) - t.gain_loss)).toBeLessThan(0.005);
+        const mine = rows.filter((r) => r.term === term);
+        expect(Math.abs(mine.reduce((x, r) => x + (r.adjustment_amount ?? 0), 0) - (t.adjustments ?? NaN))).toBeLessThan(0.005);
+      }
+      // Hand-worked: short-term wash adjustments 300 (CCC) + 75 (EEE); long-term 349.5 (FFF).
+      expect(out.short_term.adjustments).toBe(375);
+      expect(out.long_term.adjustments).toBeCloseTo(349.5, 2);
+      expect(out.wash_sales.count).toBe(3);
+    }
+  });
+
+  it("the result is identical on a second call (replay)", () => {
+    const ctx = { accountIds: [1], accountName: "Vanguard Taxable", today: TODAY };
+    const a = JSON.stringify(queryRealizedGainsTool.run(db, {}, ctx));
+    const b = JSON.stringify(queryRealizedGainsTool.run(db, {}, ctx));
+    expect(a).toBe(b);
+    expect(JSON.stringify(compactToolOutput("query_realized_gains", JSON.parse(a)))).toBe(
+      JSON.stringify(compactToolOutput("query_realized_gains", JSON.parse(b))),
+    );
   });
 
   it("per-account totals sum to the all-accounts totals (conservation)", () => {
