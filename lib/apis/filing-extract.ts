@@ -195,7 +195,8 @@ export async function getFilingSection(
     // AIRefusalError flows into this catch block and surfaces as { error }
     const { text } = await generateTextForFeature("filingSectionExtraction", {
       prompt,
-      maxOutputTokens: 2000,
+      // Room for default-on thinking on the 5.5 generation (2026-11-12, was 2000).
+      maxOutputTokens: 16_000,
     });
     modelOutput = text;
   } catch (err) {

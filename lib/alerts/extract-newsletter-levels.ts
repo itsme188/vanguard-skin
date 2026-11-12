@@ -299,7 +299,8 @@ export async function extractLevelsFromArticle(
   let responseText: string;
   try {
     const { text } = await generateTextForFeature("newsletterLevelExtraction", {
-      maxOutputTokens: 2048,
+      // Room for default-on thinking on the 5.5 generation (2026-11-12, was 2048).
+      maxOutputTokens: 16_000,
       prompt: buildExtractionPrompt(article, relevantSymbols),
     });
     responseText = text;

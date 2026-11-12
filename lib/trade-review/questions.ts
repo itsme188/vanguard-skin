@@ -180,7 +180,8 @@ Use only the facts on each trade's line:
 Keep questions concise and specific. One question per trade maximum.`;
 
   const { object } = await generateObjectForFeature("tradeReviewQA", {
-    maxOutputTokens: 2000,
+    // Room for default-on thinking on the 5.5 generation (2026-11-12, was 2000).
+    maxOutputTokens: 16_000,
     schema: QUESTIONS_SCHEMA,
     prompt,
   }) as unknown as { object: QuestionsResult };

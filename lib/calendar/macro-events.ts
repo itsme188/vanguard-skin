@@ -470,7 +470,8 @@ Return ONLY a JSON array of objects, one per event, in the same order. No markdo
   let text: string;
   try {
     const res = await generateTextForFeature("macroEnrichment", {
-      maxOutputTokens: 4096,
+      // Room for default-on thinking on the 5.5 generation (2026-11-12, was 4096).
+      maxOutputTokens: 16_000,
       prompt,
     });
     text = res.text;

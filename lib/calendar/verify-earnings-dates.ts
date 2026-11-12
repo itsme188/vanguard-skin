@@ -533,7 +533,8 @@ export async function defaultFetchDateVerdicts(prompt: string): Promise<string> 
     const client = getRawAnthropicClient(featureKey);
     response = await client.messages.create({
       model: modelId,
-      max_tokens: 4000,
+      // Room for default-on thinking on the 5.5 generation (2026-11-12, was 4000).
+      max_tokens: 16_000,
       tools: [{ type: "web_search_20250305", name: "web_search", max_uses: 8 }],
       messages: [{ role: "user", content: prompt }],
     });
