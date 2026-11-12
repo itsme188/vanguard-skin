@@ -190,6 +190,72 @@ describe("query_realized_gains", () => {
     expect(out.short_term.adjustments).toBe(420);
   });
 
+  it("a scoped answer lists other accounts' loss sales that a purchase in its own account washed, outside its totals", () => {
+    // HHH: a 200 loss in Vanguard Taxable, bought back in the Roth 3 days later.
+    sale(lot(1, "HHH", "2025-02-01", 4, 600), 1, "HHH", "2025-07-01", 4, 400, 600, false);
+    lot(2, "HHH", "2025-07-04", 4, 410);
+    type Washed = {
+      count: number;
+      note: string;
+      shown: { symbol: string; sale_account: string; sale_date: string; loss: number; replacement_date: string; replacement_accounts: string[] }[];
+    };
+
+    // The Roth chat: its own totals are zero (a retirement account), and the
+    // washed taxable loss is listed in its own block.
+    const roth = queryRealizedGainsTool.run(db, {}, { accountIds: [2], accountName: "Vanguard Roth IRA", today: TODAY }) as Out & {
+      washed_by_purchases_in_this_scope?: Washed;
+    };
+    expect(roth.retirement_account).toBe(true);
+    expect(roth.short_term.gain_loss).toBe(0);
+    expect(roth.short_term.adjustments).toBe(0);
+    expect(roth.washed_by_purchases_in_this_scope).toEqual({
+      count: 1,
+      note: "Loss sales in other accounts that a purchase in this chat's accounts washed. They are not in this answer's totals or rows.",
+      shown: [
+        {
+          symbol: "HHH",
+          sale_account: "Vanguard Taxable",
+          sale_date: "2025-07-01",
+          loss: -200,
+          replacement_date: "2025-07-04",
+          replacement_accounts: ["Vanguard Roth IRA"],
+        },
+      ],
+    });
+
+    // The IBKR chat: CCC's replacement sits there; its totals are the engine's
+    // own for IBKR, unchanged by the block.
+    const ibkr = queryRealizedGainsTool.run(db, {}, { accountIds: [3], accountName: "IBKR", today: TODAY }) as Out & {
+      washed_by_purchases_in_this_scope?: Washed;
+    };
+    const engine = generateTaxReport(db, YEAR, { accountName: "IBKR" });
+    expect(ibkr.short_term).toEqual({
+      proceeds: engine.shortTermTotal.proceeds,
+      cost_basis: engine.shortTermTotal.costBasis,
+      adjustments: engine.shortTermTotal.adjustments,
+      gain_loss: engine.shortTermTotal.gainLoss,
+      rows: engine.shortTermRows.length,
+    });
+    expect(ibkr.short_term.gain_loss).toBe(0);
+    expect(ibkr.wash_sales.count).toBe(0);
+    expect(ibkr.rows).toEqual([]);
+    expect(ibkr.washed_by_purchases_in_this_scope?.shown.map((w) => [w.symbol, w.sale_account])).toEqual([["CCC", "Vanguard Taxable"]]);
+
+    // The taxable chat sees both in its own wash_sales, and has no such block
+    // (its own sales are not "other accounts").
+    const taxable = queryRealizedGainsTool.run(db, {}, { accountIds: [1], accountName: "Vanguard Taxable", today: TODAY }) as Out & {
+      washed_by_purchases_in_this_scope?: Washed;
+    };
+    expect(taxable.wash_sales.count).toBe(2);
+    expect(taxable.washed_by_purchases_in_this_scope).toBeUndefined();
+
+    // The All Accounts answer has no such block.
+    const all = queryRealizedGainsTool.run(db, {}, { accountIds: undefined, today: TODAY }) as Out & {
+      washed_by_purchases_in_this_scope?: Washed;
+    };
+    expect(all.washed_by_purchases_in_this_scope).toBeUndefined();
+  });
+
   it("every row and every total reconciles: gain = proceeds - cost basis + adjustment", () => {
     // Two more synthetic wash sales (one in each direction) and a plain loss.
     sale(lot(1, "EEE", "2025-01-03", 3, 330), 1, "EEE", "2025-08-20", 3, 255, 330, false);

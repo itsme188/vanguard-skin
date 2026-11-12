@@ -14,6 +14,12 @@
  * `replacement_outside_this_answer` (owner ruling 2026-11-12, replacing plan
  * P8's count-only rule; the chat is read by the owner only).
  *
+ * A scoped answer also lists, in `washed_by_purchases_in_this_scope`, loss
+ * sales in OTHER accounts that a purchase in the scope's accounts washed (a
+ * Roth purchase washing a taxable loss disallows that loss for good). They
+ * come from the all-accounts report and are never added into this answer's
+ * totals or rows.
+ *
  * The replacement's account comes from `washSaleReplacementAccounts`
  * (lib/queries/wash-sale-replacements.ts), the one reader shared with the
  * chat Portfolio Context; no figure is recomputed. Every row and total keeps the
@@ -53,7 +59,7 @@ export const NO_RETIREMENT_MARK_NOTE =
 const definition: CompositeTool["definition"] = {
   name: QUERY_REALIZED_GAINS_NAME,
   description:
-    `Realized gains for one tax year, as the Tax Lots page's Tax Report card computes them: short-term and long-term totals (proceeds, cost basis, gain), row counts, possible wash sales, which retirement accounts were left out (sales in a tax-advantaged account are not taxable), how many non-USD sales were left out of the USD totals, and whether the figures are filing-ready. Unless filing_ready is true the figures are NOT FOR FILING. rows lists the sales themselves (symbol, name, account, quantity, dates, proceeds, cost basis, gain, term), largest absolute gain first, so an answer can name what made up the total. Reads one account or every account: a scope word naming several accounts returns an error listing them. Wash sales come with their detail in every scope: each total's adjustments, and on each wash-sale row and in wash_sales.shown the adjustment, the replacement purchase's date and the account(s) it was bought in (replacement_accounts); replacement_outside_this_answer names any such account this answer does not cover (for example outside this chat's scope). gain = proceeds - cost basis + adjustment. Use for 'realized gains this year', 'short vs long term', 'wash sales'. Do NOT use for unrealized gains, open lots or harvest candidates (use query_tax_lots), or for lifetime totals.`,
+    `Realized gains for one tax year, as the Tax Lots page's Tax Report card computes them: short-term and long-term totals (proceeds, cost basis, gain), row counts, possible wash sales, which retirement accounts were left out (sales in a tax-advantaged account are not taxable), how many non-USD sales were left out of the USD totals, and whether the figures are filing-ready. Unless filing_ready is true the figures are NOT FOR FILING. rows lists the sales themselves (symbol, name, account, quantity, dates, proceeds, cost basis, gain, term), largest absolute gain first, so an answer can name what made up the total. Reads one account or every account: a scope word naming several accounts returns an error listing them. Wash sales come with their detail in every scope: each total's adjustments, and on each wash-sale row and in wash_sales.shown the adjustment, the replacement purchase's date and the account(s) it was bought in (replacement_accounts); replacement_outside_this_answer names any such account this answer does not cover (for example outside this chat's scope). With one account named, washed_by_purchases_in_this_scope lists loss sales in OTHER accounts that a purchase in this account washed (for example a Roth purchase washing a taxable loss); they are never in this answer's totals. gain = proceeds - cost basis + adjustment. Use for 'realized gains this year', 'short vs long term', 'wash sales'. Do NOT use for unrealized gains, open lots or harvest candidates (use query_tax_lots), or for lifetime totals.`,
   input_schema: {
     type: "object" as const,
     properties: {
@@ -222,6 +228,36 @@ function run(db: Database.Database, input: Record<string, unknown>, ctx: Composi
     ...(washCount > WASH_SALES_SHOWN ? { note: `First ${WASH_SALES_SHOWN} of ${washCount}.` } : {}),
   };
 
+  // Loss sales elsewhere washed by a purchase in this scope: read from the
+  // whole report, listed apart, never summed into the totals above.
+  let washedHere: Record<string, unknown> | undefined;
+  if (scopeNames !== null) {
+    const whole = generateTaxReport(db, year, { accountName: null });
+    const wholeLocated = replacementsFor(db, whole.washSaleWarnings, scopeNames);
+    const inbound = whole.washSaleWarnings
+      .map((w, i) => ({ w, at: wholeLocated[i] }))
+      .filter(
+        ({ at }) =>
+          !scopeNames.has(at.saleAccount) && at.replacement.accounts.some((a) => scopeNames.has(a)),
+      );
+    if (inbound.length > 0) {
+      washedHere = {
+        count: inbound.length,
+        note:
+          "Loss sales in other accounts that a purchase in this chat's accounts washed. They are not in this answer's totals or rows." +
+          (inbound.length > WASH_SALES_SHOWN ? ` First ${WASH_SALES_SHOWN} of ${inbound.length}.` : ""),
+        shown: inbound.slice(0, WASH_SALES_SHOWN).map(({ w, at }) => ({
+          symbol: w.symbol,
+          sale_account: at.saleAccount,
+          sale_date: w.saleDate,
+          loss: w.lossAmount,
+          replacement_date: w.purchaseDate,
+          replacement_accounts: at.replacement.accounts,
+        })),
+      };
+    }
+  }
+
   let rows: { rows: ReturnType<typeof shapeRow>[]; info: ReturnType<typeof takeList>["info"] } | undefined;
   if (input.include_rows !== false) {
     const limit = readCount(input.limit, ROWS_DEFAULT, ROWS_MAX);
@@ -258,6 +294,7 @@ function run(db: Database.Database, input: Record<string, unknown>, ctx: Composi
     short_term: total(report.shortTermTotal, report.shortTermRows.length),
     long_term: total(report.longTermTotal, report.longTermRows.length),
     wash_sales: washSales,
+    ...(washedHere ? { washed_by_purchases_in_this_scope: washedHere } : {}),
     wash_sale_advisory: report.washSaleAdvisory,
     excluded: {
       retirement_accounts: report.excludedRetirementAccounts,

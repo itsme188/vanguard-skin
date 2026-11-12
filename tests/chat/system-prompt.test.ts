@@ -543,14 +543,30 @@ describe("prompt standards (Task 7)", () => {
     }
   });
 
-  it("a single-account scope keeps the hard boundary; All Accounts does not claim one account", () => {
+  it("a single-account scope keeps the tool limit and the no-guessing rule, and names what reaches past it; All Accounts does not claim one account", () => {
+    // Owner ruling 2026-11-12: the limit and the no-guessing rule stay; the
+    // withholding tone and the withheld-fields sentence are gone.
     for (const scope of ["ibkr", "vanguard-taxable", "vanguard-roth-ira"] as const) {
       const text = staticBlock(scope);
-      expect(text, scope).toContain("the boundary is hard");
-      expect(text, scope).toContain("do not mention, infer or estimate what they hold");
+      expect(text, scope).toContain("the app limits every portfolio tool to it");
+      expect(text, scope).toContain("so do not guess at them");
       expect(text, scope).toContain("All Accounts scope");
+      expect(text, scope).toContain("data confidence always covers every account");
+      expect(text, scope).toContain("carry a scope_note saying they were written against the whole portfolio");
+      expect(text, scope).not.toContain("even when asked");
+      expect(text, scope).not.toContain("are withheld in this scope");
     }
-    expect(staticBlock("all")).not.toContain("the boundary is hard");
+    expect(staticBlock("all")).not.toContain("the app limits every portfolio tool to it");
+  });
+
+  it("states the two weight bases and the stale held price (2026-11-12 tool changes)", () => {
+    for (const scope of PORTFOLIO_SCOPES) {
+      const text = staticBlock(scope);
+      expect(text, scope).toContain("For what share of his account or portfolio a position is, quote `account_value_weight_pct`");
+      expect(text, scope).toContain("query_market_snapshot may take a web quote for SPY, QQQ and DIA only");
+      expect(text, scope).not.toContain("can fall back to a web quote, for percent moves only");
+    }
+    expect(staticBlock("vanguard-roth-ira")).toContain("washed_by_purchases_in_this_scope");
   });
 
   // Behaviours the live evaluation (2026-11-11) showed slipping.
