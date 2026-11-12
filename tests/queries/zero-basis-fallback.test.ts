@@ -69,7 +69,7 @@ describe("zero cost_basis and the statement-row rescue (getAllHoldings)", () => 
     runMigrations(db);
   });
 
-  it("(a) rescues a live row's zero basis to the statement sibling's per-share-scaled basis", () => {
+  it("(a) rescues a live row's zero basis to the statement sibling's basis, covering its own shares", () => {
     const sym = "ZRESQ";
     const security = seedSecurity(db, sym);
     // Statement row: 100 shares cost $1,000 => $10/share.
@@ -83,11 +83,14 @@ describe("zero cost_basis and the statement-row rescue (getAllHoldings)", () => 
     expect(row).toBeTruthy();
     expect(row!.quantity).toBe(105);
     expect(row!.as_of_date).toBe(LIVE_DATE);
-    // Same rescue a NULL basis receives: $10/share x 105 shares.
-    expect(row!.cost_basis).toBeCloseTo(1050, 6);
-    // And the gain is real money again, computed off the rescued basis.
+    // Same rescue a NULL basis receives. The position grew since the
+    // statement, so the basis covers the statement's 100 shares only
+    // (owner decision 2026-11-01): the 5 added shares inherit no cost.
+    expect(row!.cost_basis).toBeCloseTo(1000, 6);
+    expect(row!.basis_covered_quantity).toBe(100);
+    // The gain is on the covered 100 shares: 2100 x 100/105 - 1000.
     expect(row!.current_value).toBe(2100);
-    expect(row!.unrealized_gain).toBeCloseTo(2100 - 1050, 6);
+    expect(row!.unrealized_gain).toBeCloseTo(2000 - 1000, 6);
   });
 
   it("(a2) keeps the short sign convention when rescuing a zero basis", () => {
@@ -145,8 +148,10 @@ describe("zero cost_basis and the statement-row rescue (getAllHoldings)", () => 
 
     const row = getAllHoldings(db).find((r) => r.symbol === sym);
 
-    expect(row!.cost_basis).toBeCloseTo(1050, 6);
-    expect(row!.unrealized_gain).toBeCloseTo(2100 - 1050, 6);
+    // Grown since the statement: the statement basis, unscaled, on its 100 shares.
+    expect(row!.cost_basis).toBeCloseTo(1000, 6);
+    expect(row!.basis_covered_quantity).toBe(100);
+    expect(row!.unrealized_gain).toBeCloseTo(2000 - 1000, 6);
   });
 
   it("(c2) a NULL row whose only sibling basis is zero stays unknown", () => {
@@ -232,5 +237,128 @@ describe("zero cost_basis on the security detail page", () => {
     expect(detail!.totalCostBasis).toBeCloseTo(1000, 6);
     expect(detail!.totalUnrealizedGain).toBeCloseTo(2000 - 1000, 6);
     expect(detail!.totalValue).toBe(3000);
+  });
+});
+
+// ─── Shares added since the statement (owner decision 2026-11-01, option A) ──
+// A live row with no basis borrows the latest same-side statement basis. When
+// the position has GROWN past that row, the basis is served unscaled and
+// covers the statement's shares only; the gain is on those shares alone. A
+// position that SHRANK keeps the per-share scale-down.
+import { getHoldingsByAccount, getValuedHoldingsByAccount } from "@/lib/queries/holdings";
+
+describe("basis coverage: grown, shrunk, own basis, short", () => {
+  let db: Database.Database;
+  const ACCOUNT_ID = 1;
+
+  beforeEach(() => {
+    db = new Database(":memory:");
+    db.pragma("foreign_keys = ON");
+    runMigrations(db);
+  });
+
+  it("grown: the basis covers the statement's shares, the gain leaves the new shares out", () => {
+    const security = seedSecurity(db, "AAA");
+    seedHolding(db, ACCOUNT_ID, security, 100, STATEMENT_DATE, 1000, "canonical:hold:AAA");
+    seedHolding(db, ACCOUNT_ID, security, 110, LIVE_DATE, null, "plaid:hold:AAA");
+    seedPrice(db, security, LIVE_DATE, 20);
+
+    for (const row of [
+      getAllHoldings(db).find((r) => r.symbol === "AAA")!,
+      getValuedHoldingsByAccount(db, ACCOUNT_ID).find((r) => r.symbol === "AAA")!,
+      getHoldingsBySecurity(db, security)[0],
+    ]) {
+      expect(row.quantity).toBe(110);
+      expect(row.cost_basis).toBeCloseTo(1000, 6);
+      expect(row.basis_covered_quantity).toBe(100);
+      expect(row.current_value).toBe(2200);
+      // 2200 x 100/110 - 1000
+      expect(row.unrealized_gain).toBeCloseTo(1000, 6);
+    }
+    const byAccount = getHoldingsByAccount(db, ACCOUNT_ID).find((r) => r.symbol === "AAA")!;
+    expect(byAccount.cost_basis).toBeCloseTo(1000, 6);
+    expect(byAccount.basis_covered_quantity).toBe(100);
+  });
+
+  it("shrunk: the per-share basis is scaled down to today's shares, all of them covered", () => {
+    const security = seedSecurity(db, "BBB");
+    seedHolding(db, ACCOUNT_ID, security, 100, STATEMENT_DATE, 1000, "canonical:hold:BBB");
+    seedHolding(db, ACCOUNT_ID, security, 80, LIVE_DATE, null, "plaid:hold:BBB");
+    seedPrice(db, security, LIVE_DATE, 20);
+
+    const row = getHoldingsBySecurity(db, security)[0];
+    expect(row.cost_basis).toBeCloseTo(800, 6);
+    expect(row.basis_covered_quantity).toBe(80);
+    expect(row.unrealized_gain).toBeCloseTo(1600 - 800, 6);
+  });
+
+  it("own basis: unchanged, and it covers every share", () => {
+    const security = seedSecurity(db, "CCC");
+    seedHolding(db, ACCOUNT_ID, security, 100, STATEMENT_DATE, 1000, "canonical:hold:CCC");
+    seedHolding(db, ACCOUNT_ID, security, 120, LIVE_DATE, 1500, "tws:hold:CCC");
+    seedPrice(db, security, LIVE_DATE, 20);
+
+    const row = getAllHoldings(db).find((r) => r.symbol === "CCC")!;
+    expect(row.cost_basis).toBeCloseTo(1500, 6);
+    expect(row.basis_covered_quantity).toBe(120);
+    expect(row.unrealized_gain).toBeCloseTo(2400 - 1500, 6);
+  });
+
+  it("no known basis anywhere: no covered quantity", () => {
+    const security = seedSecurity(db, "DDD");
+    seedHolding(db, ACCOUNT_ID, security, 10, LIVE_DATE, null, "plaid:hold:DDD");
+    seedPrice(db, security, LIVE_DATE, 20);
+
+    const row = getAllHoldings(db).find((r) => r.symbol === "DDD")!;
+    expect(row.cost_basis).toBeNull();
+    expect(row.basis_covered_quantity).toBeNull();
+    expect(row.unrealized_gain).toBeNull();
+  });
+
+  it("short grown: the statement proceeds, unscaled, cover the statement's shares only", () => {
+    const security = seedSecurity(db, "ZZS");
+    // Short 50 for proceeds of 500 (stored negative), now short 80.
+    seedHolding(db, ACCOUNT_ID, security, -50, STATEMENT_DATE, -500, "canonical:hold:ZZS");
+    seedHolding(db, ACCOUNT_ID, security, -80, LIVE_DATE, null, "tws:hold:ZZS");
+    seedPrice(db, security, LIVE_DATE, 20);
+
+    const row = getHoldingsBySecurity(db, security)[0];
+    expect(row.cost_basis).toBeCloseTo(-500, 6);
+    expect(row.basis_covered_quantity).toBe(-50);
+    expect(row.current_value).toBe(-1600);
+    // -1600 x 50/80 - (-500) = -1000 + 500
+    expect(row.unrealized_gain).toBeCloseTo(-500, 6);
+  });
+
+  it("short shrunk: keeps the scale-down (the existing a2 case)", () => {
+    const security = seedSecurity(db, "ZZT");
+    seedHolding(db, ACCOUNT_ID, security, -80, STATEMENT_DATE, -800, "canonical:hold:ZZT");
+    seedHolding(db, ACCOUNT_ID, security, -50, LIVE_DATE, null, "tws:hold:ZZT");
+    seedPrice(db, security, LIVE_DATE, 20);
+
+    const row = getHoldingsBySecurity(db, security)[0];
+    expect(row.cost_basis).toBeCloseTo(-500, 6);
+    expect(row.basis_covered_quantity).toBe(-50);
+    expect(row.unrealized_gain).toBeCloseTo(-1000 - -500, 6);
+  });
+
+  it("the hub totals use the covered figures and name the partly covered row", () => {
+    const security = seedSecurity(db, "EEE");
+    // Account 1: grown 100 -> 110, no live basis. Account 2: own basis.
+    seedHolding(db, 1, security, 100, STATEMENT_DATE, 1000, "canonical:hold:EEE:1");
+    seedHolding(db, 1, security, 110, LIVE_DATE, null, "plaid:hold:EEE:1");
+    seedHolding(db, 2, security, 50, LIVE_DATE, 600, "canonical:hold:EEE:2");
+    seedPrice(db, security, LIVE_DATE, 20);
+
+    const detail = getSecurityDetail(db, security)!;
+    expect(detail.totalValue).toBe(3200);
+    expect(detail.totalCostBasis).toBeCloseTo(1600, 6);
+    // (2000 - 1000) + (1000 - 600)
+    expect(detail.totalUnrealizedGain).toBeCloseTo(1400, 6);
+    // Value the gain covers: 2200 x 100/110 + 1000.
+    expect(detail.gainCoveredValue).toBeCloseTo(3000, 6);
+    expect(detail.positionsPartlyCovered).toEqual([
+      { account_id: 1, account_name: expect.any(String), quantity: 110, covered_quantity: 100 },
+    ]);
   });
 });

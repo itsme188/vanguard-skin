@@ -29,7 +29,7 @@ describe("HoldingsTable treats a zero cost basis as unknown, matching AllHolding
   it("the Cost Basis cell asks the shared hasKnownBasis helper, not an inline predicate", () => {
     const text = src();
     expect(text).toMatch(
-      /import\s*\{\s*hasKnownBasis\s*\}\s*from\s*"@\/lib\/compute\/known-basis"/
+      /import\s*\{[^}]*\bhasKnownBasis\b[^}]*\}\s*from\s*"@\/lib\/compute\/known-basis"/
     );
     const cellMatch = text.match(
       /<td[^>]*>\s*\{hasKnownBasis\(holding\)[\s\S]*?<\/td>/

@@ -1,7 +1,12 @@
 import type Database from "better-sqlite3";
 import { snapshotTwrFraction } from "@/lib/compute/monthly-snapshot-utils";
 import { easternDaySql, unmaturedSecuritySql } from "@/lib/db/eastern-day-sql";
-import { adjustedMarketValueSQL, scaledCostBasisFallbackSQL } from "@/lib/valuation";
+import {
+  adjustedMarketValueSQL,
+  basisCoveredQuantitySQL,
+  basisCoveredValueSQL,
+  scaledCostBasisFallbackSQL,
+} from "@/lib/valuation";
 import { todayET, addDays } from "@/lib/calendar/date-utils";
 import { SECTOR_OWN_BUCKET_SQL } from "@/lib/queries/analysis";
 import { normalizeSector } from "@/lib/securities/normalize-sector";
@@ -108,6 +113,14 @@ export interface HoldingResult {
   sector: string | null;
   quantity: number;
   cost_basis: number | null;
+  /**
+   * Shares cost_basis covers, signed like quantity (basisCoveredQuantitySQL,
+   * lib/valuation.ts). Below quantity when the position grew since the
+   * statement the basis came from: the gain and gain % are on these shares
+   * only, the same figures the security page shows. Null when the basis is
+   * unknown.
+   */
+  basis_covered_quantity: number | null;
   latest_price: number | null;
   /** Date of the `prices` row behind latest_price / market_value (YYYY-MM-DD). */
   price_date: string | null;
@@ -357,8 +370,15 @@ export function getHoldingsForChat(
     symbol: "s.symbol ASC",
   };
 
-  // Same basis the Accounts page shows: the row's own, else the latest earlier row of the pair, scaled by quantity.
+  // Same basis the Accounts page shows: the row's own, else the latest earlier
+  // row of the pair (scaled down when the position shrank; unscaled, covering
+  // that row's shares only, when it grew). The gain is on the covered shares.
   const costBasisExpr = scaledCostBasisFallbackSQL("h", "h3");
+  const coveredValueExpr = basisCoveredValueSQL(
+    adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)"),
+    "h",
+    "h3",
+  );
 
   const sql = `
     WITH latest_prices AS (
@@ -376,16 +396,19 @@ export function getHoldingsForChat(
       s.sector,
       h.quantity,
       ${costBasisExpr} * COALESCE(fx.usd_per_unit, 1) AS cost_basis,
+      CASE WHEN NULLIF(${costBasisExpr}, 0) IS NOT NULL
+        THEN ${basisCoveredQuantitySQL("h", "h3")}
+        ELSE NULL END AS basis_covered_quantity,
       lp.close_price AS latest_price,
       lp.max_date AS price_date,
       CASE WHEN lp.close_price IS NOT NULL
         THEN ${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}
         ELSE NULL END AS market_value,
       CASE WHEN lp.close_price IS NOT NULL AND ${costBasisExpr} IS NOT NULL AND ${costBasisExpr} > 0
-        THEN ${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")} - (${costBasisExpr} * COALESCE(fx.usd_per_unit, 1))
+        THEN ${coveredValueExpr} - (${costBasisExpr} * COALESCE(fx.usd_per_unit, 1))
         ELSE NULL END AS unrealized_gain,
       CASE WHEN lp.close_price IS NOT NULL AND ${costBasisExpr} IS NOT NULL AND ${costBasisExpr} > 0
-        THEN (${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")} - (${costBasisExpr} * COALESCE(fx.usd_per_unit, 1))) * 100.0 / (${costBasisExpr} * COALESCE(fx.usd_per_unit, 1))
+        THEN (${coveredValueExpr} - (${costBasisExpr} * COALESCE(fx.usd_per_unit, 1))) * 100.0 / (${costBasisExpr} * COALESCE(fx.usd_per_unit, 1))
         ELSE NULL END AS unrealized_gain_pct,
       -- Gross-exposure convention: when includeShorts is true, both this
       -- numerator and the denominator above (totalPortfolioValue) are ABS(mv)

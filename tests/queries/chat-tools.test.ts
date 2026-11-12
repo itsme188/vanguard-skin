@@ -11,6 +11,7 @@ import {
   getIncomeSummaryForChat,
 } from "@/lib/queries/chat-tools";
 import { executeTool } from "@/lib/chat/tools";
+import { getHoldingsBySecurity } from "@/lib/queries/security-detail";
 import { buildSystemPrompt } from "@/lib/chat/system-prompt";
 
 // ─── Seed helpers ─────────────────────────────────────────────────
@@ -213,6 +214,37 @@ describe("getHoldingsForChat", () => {
     expect(holdings[0].unrealized_gain).toBe(2500); // 10000 - 7500
     expect(holdings[0].sector).toBe("Technology");
     expect(holdings[0].position_weight_pct).toBeCloseTo(52.6, 0);
+  });
+
+  it("shares added since the statement carry no basis: same figures as the security page", () => {
+    const aaa = seedSecurity(db, "AAA");
+    // Statement: 100 shares for 1,000. Live row: 110 shares, no basis.
+    seedHolding(db, 1, aaa, 100, "2025-01-31", 1000);
+    seedHolding(db, 1, aaa, 110, "2025-02-10");
+    seedPrice(db, aaa, "2025-02-10", 20);
+
+    const [row] = getHoldingsForChat(db, { symbol: "AAA" });
+    expect(row.quantity).toBe(110);
+    expect(row.cost_basis).toBeCloseTo(1000, 6);
+    expect(row.basis_covered_quantity).toBe(100);
+    expect(row.market_value).toBe(2200);
+    // 2200 x 100/110 - 1000 = 1000, i.e. +100% on the covered shares.
+    expect(row.unrealized_gain).toBeCloseTo(1000, 6);
+    expect(row.unrealized_gain_pct).toBeCloseTo(100, 6);
+
+    const [hub] = getHoldingsBySecurity(db, aaa);
+    expect(hub.cost_basis).toBeCloseTo(row.cost_basis!, 6);
+    expect(hub.unrealized_gain).toBeCloseTo(row.unrealized_gain!, 6);
+    expect(hub.basis_covered_quantity).toBe(row.basis_covered_quantity);
+  });
+
+  it("a position's own basis covers every share", () => {
+    const aaa = seedSecurity(db, "AAA");
+    seedHolding(db, 1, aaa, 50, "2025-01-31", 500);
+    seedPrice(db, aaa, "2025-01-31", 20);
+    const [row] = getHoldingsForChat(db, { symbol: "AAA" });
+    expect(row.basis_covered_quantity).toBe(50);
+    expect(row.unrealized_gain).toBeCloseTo(500, 6);
   });
 
   it("filters by account name", () => {

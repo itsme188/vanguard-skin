@@ -14,7 +14,12 @@ import type {
   CalendarEvent,
   EarningsTranscript,
 } from "@/lib/types";
-import { adjustedMarketValueSQL, scaledCostBasisFallbackSQL } from "@/lib/valuation";
+import {
+  adjustedMarketValueSQL,
+  basisCoveredQuantitySQL,
+  basisCoveredValueSQL,
+  scaledCostBasisFallbackSQL,
+} from "@/lib/valuation";
 import { getNotesForSecurity, type NoteWithContext } from "@/lib/queries/notes";
 import type {
   TaxLotWithSecurity,
@@ -39,7 +44,7 @@ import { todayET } from "@/lib/calendar/date-utils";
 import { liveOptionExpirationSql } from "@/lib/compute/option-expiry";
 // One predicate for the row cells and the TOTAL row: a basis of NULL or
 // exactly 0 is unknown.
-import { hasKnownBasis as hasKnownPositionBasis } from "@/lib/compute/known-basis";
+import { basisCoversPartOnly, hasKnownBasis as hasKnownPositionBasis } from "@/lib/compute/known-basis";
 import { computeAggregateGainRatio } from "@/lib/compute/gain-ratio";
 import type { PendingFigureKind, PendingReason } from "@/lib/queries/pending-statement-types";
 
@@ -50,6 +55,14 @@ export interface SecurityPosition {
   account_name: string;
   quantity: number;
   cost_basis: number | null;
+  /**
+   * Shares the cost basis covers, signed like quantity (basisCoveredQuantitySQL,
+   * lib/valuation.ts). Below quantity when the position grew since the
+   * statement the basis came from: the gain is on these shares only and the
+   * row says "basis covers N of M". Null (or absent) when the basis is
+   * unknown; absent on a hand-built row means every share.
+   */
+  basis_covered_quantity?: number | null;
   as_of_date: string;
   current_price: number | null;
   current_value: number | null;
@@ -119,6 +132,8 @@ export interface SecurityDetailData {
   gainCoveredValue: number | null;
   /** Positions left out of total cost basis, gain and %: basis unknown. */
   positionsWithoutBasis: PositionWithoutBasis[];
+  /** Positions whose basis covers only some shares — see computePositionTotals. */
+  positionsPartlyCovered: PositionPartlyCovered[];
   /** Totals split by side; the Positions table shows Long and Short rows when mixed. */
   positionSides: PositionSideTotals;
   /** Accounts with open lots and no current position — see computeLotsWithoutPosition. */
@@ -252,19 +267,25 @@ export function getHoldingsBySecurity(
   // not "free," lives there and is mirrored by AllHoldingsTable's
   // hasKnownBasis at the render layer.
   const costBasisExpr = scaledCostBasisFallbackSQL("h", "h3");
+  const marketValueExpr = adjustedMarketValueSQL("h.quantity", "p.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)");
 
   return db
     .prepare(
       `SELECT
         h.account_id, a.name AS account_name,
         h.quantity, ${costBasisExpr} * COALESCE(fx.usd_per_unit, 1) AS cost_basis, h.as_of_date,
+        CASE WHEN NULLIF(${costBasisExpr}, 0) IS NOT NULL
+          THEN ${basisCoveredQuantitySQL("h", "h3")}
+          ELSE NULL END AS basis_covered_quantity,
         s.security_type, COALESCE(s.multiplier, 1) AS multiplier,
         p.close_price AS current_price,
         CASE WHEN p.close_price IS NOT NULL
-          THEN ${adjustedMarketValueSQL("h.quantity", "p.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}
+          THEN ${marketValueExpr}
           ELSE NULL END AS current_value,
+        -- Gain on the shares the basis covers only (value x covered / held):
+        -- shares added since the statement carry no known cost.
         CASE WHEN p.close_price IS NOT NULL AND NULLIF(${costBasisExpr}, 0) IS NOT NULL
-          THEN ${adjustedMarketValueSQL("h.quantity", "p.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")} - (${costBasisExpr} * COALESCE(fx.usd_per_unit, 1))
+          THEN ${basisCoveredValueSQL(marketValueExpr, "h", "h3")} - (${costBasisExpr} * COALESCE(fx.usd_per_unit, 1))
           ELSE NULL END AS unrealized_gain
       FROM holdings h
       JOIN accounts a ON a.id = h.account_id
@@ -977,6 +998,30 @@ export interface PositionWithoutBasis {
   quantity: number;
 }
 
+/** A position whose known basis covers only some of its shares. */
+export interface PositionPartlyCovered {
+  account_id: number;
+  account_name: string;
+  /** Shares held (signed). */
+  quantity: number;
+  /** Shares the basis covers (signed like quantity). */
+  covered_quantity: number;
+}
+
+/**
+ * The share of a position's shares its basis covers: covered / held, 1 when
+ * the row carries no covered quantity (every share) or holds none.
+ */
+export function basisCoveredFraction(p: Pick<SecurityPosition, "quantity" | "basis_covered_quantity">): number {
+  if (p.basis_covered_quantity == null || p.quantity === 0) return 1;
+  return p.basis_covered_quantity / p.quantity;
+}
+
+/** True when the row's basis is known and covers fewer shares than it holds. */
+export function isPartlyCovered(p: SecurityPosition): boolean {
+  return basisCoversPartOnly(p);
+}
+
 export interface PositionTotals {
   /** Market value of every position (a short is negative). */
   totalValue: number;
@@ -990,10 +1035,19 @@ export interface PositionTotals {
    * that basis is zero.
    */
   totalGainRatio: number | null;
-  /** Market value of the positions that are in the gain; null when none is. */
+  /**
+   * Market value the gain covers: each in-gain position's value times the
+   * share of it its basis covers (basisCoveredFraction). Null when none is.
+   */
   gainCoveredValue: number | null;
   /** Positions whose basis is unknown — left out of cost basis, gain and %. */
   positionsWithoutBasis: PositionWithoutBasis[];
+  /**
+   * Positions whose basis covers only some shares (grown since the statement
+   * the basis came from): the shares added since are left out of cost basis,
+   * gain and %, like an unknown-basis position.
+   */
+  positionsPartlyCovered: PositionPartlyCovered[];
 }
 
 /**
@@ -1030,11 +1084,20 @@ export function computePositionTotals(positions: SecurityPosition[]): PositionTo
   const totalUnrealizedGain = gain.totalGain;
   const totalGainRatio = gain.ratio;
   const gainCoveredValue =
-    inGain.length > 0 ? inGain.reduce((sum, p) => sum + (p.current_value ?? 0), 0) : null;
+    inGain.length > 0
+      ? inGain.reduce((sum, p) => sum + (p.current_value ?? 0) * basisCoveredFraction(p), 0)
+      : null;
 
   const positionsWithoutBasis = positions
     .filter((p) => !hasKnownPositionBasis(p))
     .map((p) => ({ account_id: p.account_id, account_name: p.account_name, quantity: p.quantity }));
+
+  const positionsPartlyCovered = positions.filter(isPartlyCovered).map((p) => ({
+    account_id: p.account_id,
+    account_name: p.account_name,
+    quantity: p.quantity,
+    covered_quantity: p.basis_covered_quantity!,
+  }));
 
   return {
     totalValue,
@@ -1043,6 +1106,7 @@ export function computePositionTotals(positions: SecurityPosition[]): PositionTo
     totalGainRatio,
     gainCoveredValue,
     positionsWithoutBasis,
+    positionsPartlyCovered,
   };
 }
 
@@ -1309,6 +1373,7 @@ export function getSecurityDetail(
     totalGainRatio: totals.totalGainRatio,
     gainCoveredValue: totals.gainCoveredValue,
     positionsWithoutBasis: totals.positionsWithoutBasis,
+    positionsPartlyCovered: totals.positionsPartlyCovered,
     positionSides: computePositionSideTotals(positions),
     lotsWithoutPosition,
     unknownBasisLotNotes: computeUnknownBasisLotNotes(totals.positionsWithoutBasis, openTaxLots),

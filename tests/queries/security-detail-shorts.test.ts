@@ -148,7 +148,7 @@ describe("getHoldingsBySecurity includes shorts", () => {
     expect(rows[0].unrealized_gain).toBeCloseTo(-10 * 50 - -1500, 6);
   });
 
-  it("long->long rescale is unaffected by the sign-match filter", () => {
+  it("long->long fallback is unaffected by the sign-match filter", () => {
     const symbol = "SLONG";
     const security = seedSecurity(db, symbol);
     seedHolding(db, VANGUARD, security, 100, "2026-06-30", 1000, "canonical:hold:SLONG:2026-06-30");
@@ -157,8 +157,11 @@ describe("getHoldingsBySecurity includes shorts", () => {
 
     const rows = getHoldingsBySecurity(db, security);
     expect(rows).toHaveLength(1);
-    expect(rows[0].cost_basis).toBeCloseTo(1050, 6);
-    expect(rows[0].unrealized_gain).toBeCloseTo(105 * 20 - 1050, 6);
+    // Grown 100 -> 105: the statement basis covers its 100 shares only
+    // (owner decision 2026-11-01); the gain is on those 100.
+    expect(rows[0].cost_basis).toBeCloseTo(1000, 6);
+    expect(rows[0].basis_covered_quantity).toBe(100);
+    expect(rows[0].unrealized_gain).toBeCloseTo(100 * 20 - 1000, 6);
   });
 
   it("still excludes closed (quantity 0) tombstone rows", () => {

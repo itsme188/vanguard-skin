@@ -10,6 +10,7 @@ import {
   GainCell,
   GainPercentCell,
   HoldingsFooterDisclosures,
+  PARTIAL_COST_BASIS_TOOLTIP,
   PricedOnlyMark,
   StaleAsOfChip,
   holdingDisplayName,
@@ -19,7 +20,7 @@ import {
 } from "./AllHoldingsTable";
 import { Count, Money, Shares, QuantityUnit } from "@/lib/privacy/components";
 import { compareValues, useSortParam } from "@/lib/hooks/useSortParam";
-import { hasKnownBasis } from "@/lib/compute/known-basis";
+import { basisCoversPartOnly, hasKnownBasis } from "@/lib/compute/known-basis";
 import type { AccountCashLine } from "@/lib/queries/account-cash-line";
 
 type Field =
@@ -369,7 +370,13 @@ export function HoldingsTable({
                   </td>
                   <td className="px-4 py-3 text-right font-mono tabular-nums text-ink-dim">
                     {hasKnownBasis(holding) ? (
-                      <Money value={holding.cost_basis} precise />
+                      basisCoversPartOnly(holding) ? (
+                        <span title={PARTIAL_COST_BASIS_TOOLTIP} className="cursor-help">
+                          <Money value={holding.cost_basis} precise />
+                        </span>
+                      ) : (
+                        <Money value={holding.cost_basis} precise />
+                      )
                     ) : (
                       <span title="Import a Vanguard cost basis CSV to populate" className="cursor-help">—</span>
                     )}

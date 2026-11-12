@@ -348,3 +348,30 @@ describe("hub page source: the Positions frame", () => {
     expect(notes).toContain("<QuantityUnit");
   });
 });
+
+describe("computePositionTotals — a basis that covers only some shares (2026-11-12)", () => {
+  // Grown since the statement: 110 held, the basis covers 100 (owner
+  // decision 2026-11-01, option A). The query already put the gain on the
+  // covered shares; the totals weight the covered value the same way.
+  it("counts the covered part of the value and names the partly covered row", () => {
+    const totals = computePositionTotals([
+      pos({ account_id: 1, account_name: "Taxable", quantity: 110, basis_covered_quantity: 100, cost_basis: 1000, current_value: 2200, unrealized_gain: 1000 }),
+      pos({ account_id: 2, account_name: "Roth", quantity: 50, basis_covered_quantity: 50, cost_basis: 600, current_value: 1000, unrealized_gain: 400 }),
+    ]);
+    expect(totals.totalCostBasis).toBe(1600);
+    expect(totals.totalUnrealizedGain).toBe(1400);
+    expect(totals.gainCoveredValue).toBeCloseTo(2000 + 1000, 6);
+    expect(totals.positionsPartlyCovered).toEqual([
+      { account_id: 1, account_name: "Taxable", quantity: 110, covered_quantity: 100 },
+    ]);
+    expect(totals.positionsWithoutBasis).toEqual([]);
+  });
+
+  it("a row with no covered quantity counts as fully covered", () => {
+    const totals = computePositionTotals([
+      pos({ account_id: 1, quantity: 10, cost_basis: 100, current_value: 200, unrealized_gain: 100 }),
+    ]);
+    expect(totals.gainCoveredValue).toBe(200);
+    expect(totals.positionsPartlyCovered).toEqual([]);
+  });
+});

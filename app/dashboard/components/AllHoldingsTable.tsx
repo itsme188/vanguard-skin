@@ -8,7 +8,7 @@ import { SortableHeader } from "./SortableHeader";
 import { Chip } from "./Chip";
 import { Count, Money, Pct, QuantityUnit, Shares } from "@/lib/privacy/components";
 import { compareValues, useSortParam } from "@/lib/hooks/useSortParam";
-import { hasKnownBasis } from "@/lib/compute/known-basis";
+import { basisCoversPartOnly, hasKnownBasis } from "@/lib/compute/known-basis";
 import { computeAggregateGainRatio } from "@/lib/compute/gain-ratio";
 import { parseOptionSymbol } from "@/lib/import/occ-symbol";
 import type { AllHoldingsRow } from "@/lib/queries/holdings";
@@ -35,6 +35,9 @@ type Field =
 // cell — this table's stored-zero-is-unknown em-dash needs the same
 // guidance, not a silent dash with no explanation.
 export const NO_COST_BASIS_TOOLTIP = "Import a Vanguard cost basis CSV to populate";
+/** Words only, no figures: a title attribute cannot go through the privacy components. */
+export const PARTIAL_COST_BASIS_TOOLTIP =
+  "Covers the shares on the last statement only; shares added since have no known cost and are left out of the gain";
 export const GROSS_GAIN_PERCENT_TOOLTIP =
   "Gain % uses gross cost basis (absolute long basis plus short proceeds) when a short is present.";
 
@@ -424,7 +427,13 @@ export function AllHoldingsTable({ holdings }: { holdings: AllHoldingsRow[] }) {
                   </td>
                   <td className="px-4 py-3 text-right font-mono tabular-nums text-ink-dim">
                     {hasKnownBasis(h) ? (
-                      <Money value={h.cost_basis} precise />
+                      basisCoversPartOnly(h) ? (
+                        <span title={PARTIAL_COST_BASIS_TOOLTIP} className="cursor-help">
+                          <Money value={h.cost_basis} precise />
+                        </span>
+                      ) : (
+                        <Money value={h.cost_basis} precise />
+                      )
                     ) : (
                       <span
                         title={NO_COST_BASIS_TOOLTIP}
