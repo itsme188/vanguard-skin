@@ -167,7 +167,7 @@ describe("one-to-one reinvestment pairing (RF-6)", () => {
     expect(expectOneToOne()).toHaveLength(1);
   });
 
-  it("pairing never crosses a day, a security or an account", () => {
+  it("a withholding on another day, security or account never makes a net match", () => {
     const other = db.prepare("INSERT INTO securities (symbol, name, security_type) VALUES ('YYF', 'YYF', 'ETF')").run()
       .lastInsertRowid as number;
     txn("DIVIDEND", 100);
