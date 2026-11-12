@@ -397,11 +397,13 @@ function ConversationControls({
         >
           {scopeLabel}
         </span>
-        {/* The model the conversation is locked to (2026-11-13): quiet,
-            one line, and it gives way (truncates) before the title does not. */}
+        {/* The model the conversation is locked to (2026-11-13): quiet and
+            one line. It keeps its width and the title gives way first, so a
+            fallback ("Sonnet 5.5 (Opus not available)") stays readable on a
+            phone; past 70% of the row it is cut, whole text in its tooltip. */}
         {modelLabel && (
           <span
-            className="text-[11px] text-ink-faint whitespace-nowrap truncate min-w-0 max-w-[45%]"
+            className="text-[11px] text-ink-faint whitespace-nowrap truncate shrink-0 max-w-[70%]"
             title={`Model: ${modelLabel}`}
           >
             {modelLabel}
