@@ -1,7 +1,11 @@
+import { parseDbTimestamp } from "@/lib/calendar/date-utils";
+import { networkFailureMessage } from "@/lib/ui/mutation-result";
+import { humanizeChatError } from "@/lib/chat/error-message";
+
 /**
  * Pure decisions of the chat client's turn (Portfolio Assistant plan, Task 4).
  *
- * Client-safe: no imports. `ChatInterface.tsx` calls these; the tests pin
+ * Client-safe: imports only plain, import-free helpers. `ChatInterface.tsx` calls these; the tests pin
  * them without a DOM harness.
  *
  * - `decideTurnAdoption` (B17): which conversation id the client adopts when
@@ -289,4 +293,39 @@ function hasFinishReason(metadata: unknown): boolean {
     typeof metadata === "object" &&
     typeof (metadata as { finishReason?: unknown }).finishReason === "string"
   );
+}
+
+// ─── Conversation list date (browser pass, item 1) ───────────────
+
+/**
+ * The Eastern calendar day of a stored conversation timestamp, as M/D/YYYY.
+ * SQLite stores `datetime('now')` in UTC with a space; `new Date()` would
+ * read that as local time, so an evening row showed tomorrow's date.
+ */
+export function conversationDayLabel(raw: string): string {
+  const d = parseDbTimestamp(raw);
+  if (!d) return "";
+  return d.toLocaleDateString("en-US", { timeZone: "America/New_York" });
+}
+
+// ─── Failed send text (browser pass, item 2) ─────────────────────
+
+const CHAT_FAILED = "The chat request failed. Try again.";
+const NETWORK_TEXT = /^(failed to fetch|load failed|networkerror\b|network request failed)/i;
+const BARE_STATUS_TEXT = /^(internal server error|bad gateway|service unavailable|gateway timeout)\.?$/i;
+
+/**
+ * The sentence shown for a failed chat send. A fetch that never reached the
+ * server throws a TypeError whose text is the browser's own ("Failed to
+ * fetch"), which `humanizeChatError` passes through as a plain message; it
+ * reads as `networkFailureMessage` instead. An HTML or bare status body reads
+ * as a plain failure; an envelope keeps the server's own sentence.
+ */
+export function chatErrorText(error: { name?: string; message?: string } | null | undefined): string {
+  const message = (error?.message ?? "").trim();
+  if ((error?.name === "TypeError" && NETWORK_TEXT.test(message)) || NETWORK_TEXT.test(message)) {
+    return networkFailureMessage("send the message");
+  }
+  if (message === "" || message.startsWith("<") || BARE_STATUS_TEXT.test(message)) return CHAT_FAILED;
+  return humanizeChatError(message);
 }

@@ -37,7 +37,7 @@ describe("turn-outcome notice (Contract B)", () => {
     const noticeAt = anchorIndex(list, "notice ? (");
     const partsAt = anchorIndex(list, "renderAssistantParts(msg.parts");
     expect(noticeAt).toBeLessThan(partsAt);
-    anchorIndex(list, "{!notice && msg.parts.some(");
+    anchorIndex(list, "{!isLive && !notice && msg.parts.some(");
   });
 });
 

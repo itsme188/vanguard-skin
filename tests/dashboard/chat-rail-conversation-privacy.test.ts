@@ -45,7 +45,7 @@ describe("ChatInterface conversation titles mask figures only under privacy mode
   const lines = source.split("\n");
 
   it("imports displayConversationTitle", () => {
-    expect(source).toMatch(/import\s*\{\s*displayConversationTitle\s*\}\s*from\s*["']@\/lib\/chat\/conversation-title["']/);
+    expect(source).toMatch(/import\s*\{[^}]*\bdisplayConversationTitle\b[^}]*\}\s*from\s*["']@\/lib\/chat\/conversation-title["']/);
   });
 
   it("no line renders a raw conv.title ?? text node or fully masks it", () => {

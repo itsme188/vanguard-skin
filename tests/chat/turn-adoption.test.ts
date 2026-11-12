@@ -15,6 +15,8 @@ import {
   MAX_AUTO_CONTINUATIONS,
   SUPERSEDED_NOTE_REASON,
   settledAssistantView,
+  conversationDayLabel,
+  chatErrorText,
 } from "@/lib/chat/turn-adoption";
 import { turnOutcomeNotice, CUT_OFF_SENTENCE } from "@/lib/chat/turn-outcome";
 
@@ -426,5 +428,64 @@ describe("settledAssistantView: a cut-off notice under written text (RF-7)", () 
     expect(settledAssistantView({ parts: [half] }, { endedInError: false, outcomeNotice: null })).toEqual({
       kind: "parts",
     });
+  });
+});
+
+describe("conversationDayLabel: the list date is the Eastern day", () => {
+  it("19:04 Eastern on Nov 11 (00:04 UTC Nov 12) reads 11/11/2026", () => {
+    expect(conversationDayLabel("2026-11-12 00:04:34")).toBe("11/11/2026");
+  });
+  it("23:59 Eastern on Nov 11 (04:59 UTC Nov 12) still reads 11/11/2026", () => {
+    expect(conversationDayLabel("2026-11-12 04:59:00")).toBe("11/11/2026");
+  });
+  it("00:00 Eastern on Nov 12 (05:00 UTC) reads 11/12/2026", () => {
+    expect(conversationDayLabel("2026-11-12 05:00:00")).toBe("11/12/2026");
+  });
+  it("across the DST change the offset moves with it", () => {
+    // Summer (EDT, UTC-4): 2026-07-02 03:30 UTC is 23:30 on Jul 1.
+    expect(conversationDayLabel("2026-07-02 03:30:00")).toBe("7/1/2026");
+    // Winter (EST, UTC-5): 2026-11-02 04:30 UTC is 23:30 on Nov 1, the day DST ended.
+    expect(conversationDayLabel("2026-11-02 04:30:00")).toBe("11/1/2026");
+    // Spring forward 2026-03-08: 06:30 UTC is 01:30 EST (before), 07:30 UTC is 03:30 EDT.
+    expect(conversationDayLabel("2026-03-08 04:59:00")).toBe("3/7/2026");
+    expect(conversationDayLabel("2026-03-08 07:30:00")).toBe("3/8/2026");
+  });
+  it("an ISO string reads the same way; garbage reads as empty", () => {
+    expect(conversationDayLabel("2026-11-12T00:04:34.000Z")).toBe("11/11/2026");
+    expect(conversationDayLabel("not a date")).toBe("");
+  });
+});
+
+describe("chatErrorText: a failed send in plain language", () => {
+  it("a fetch TypeError never shows the browser's text", () => {
+    const text = chatErrorText(new TypeError("Failed to fetch"));
+    expect(text).not.toContain("Failed to fetch");
+    expect(text).toBe("Couldn't send the message: could not reach the server. Try again.");
+    expect(chatErrorText(new TypeError("Load failed"))).toBe(text);
+    expect(chatErrorText(new TypeError("NetworkError when attempting to fetch resource."))).toBe(text);
+  });
+  it("a 500 with an HTML or empty body reads as a plain failure", () => {
+    expect(chatErrorText(new Error("<!DOCTYPE html><html>Internal Server Error</html>"))).toBe(
+      "The chat request failed. Try again.",
+    );
+    expect(chatErrorText(new Error(""))).toBe("The chat request failed. Try again.");
+    expect(chatErrorText(new Error("Internal Server Error"))).toBe("The chat request failed. Try again.");
+  });
+  it("a 500 envelope shows the server's own sentence", () => {
+    expect(chatErrorText(new Error('{"success":false,"error":"The model is not available right now."}'))).toBe(
+      "The model is not available right now.",
+    );
+  });
+  it("a 429 with Retry-After shows the rate-limit sentence from the envelope", () => {
+    expect(
+      chatErrorText(
+        new Error('{"success":false,"error":"Too many chat requests — please wait a moment and try again."}'),
+      ),
+    ).toBe("Too many chat requests — please wait a moment and try again.");
+  });
+  it("an expired session says to sign in again", () => {
+    expect(chatErrorText(new Error('{"success":false,"error":"unauthorized"}'))).toBe(
+      "Your session expired — reload the page to sign in again, then resend.",
+    );
   });
 });

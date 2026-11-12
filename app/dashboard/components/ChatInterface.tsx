@@ -11,11 +11,13 @@ import { useToast } from "./Toast";
 import { CHIP_TONE_TEXT, GOLD_FILL_CLASSES } from "./chip-tone-text";
 import { PrivateText } from "@/lib/privacy/components";
 import { usePrivacy } from "@/lib/privacy/context";
-import { displayConversationTitle } from "@/lib/chat/conversation-title";
+import { conversationTitleFromMessages, displayConversationTitle } from "@/lib/chat/conversation-title";
 import { getQuickActions } from "@/lib/chat/quick-actions";
 import { toolLabel } from "@/lib/chat/tool-labels";
 import { turnOutcomeNotice } from "@/lib/chat/turn-outcome";
 import {
+  chatErrorText,
+  conversationDayLabel,
   decideTurnAdoption,
   nextFollowBottom,
   noteApprovalView,
@@ -27,7 +29,6 @@ import {
   type NoteApprovalView,
   type NoteToolPartView,
 } from "@/lib/chat/turn-adoption";
-import { humanizeChatError } from "@/lib/chat/error-message";
 import type { ChatScope } from "@/lib/types";
 import type { ChatConversation, ChatMessage } from "@/lib/queries/chat";
 import apiFetch, { type ApiFetch } from "@/lib/http/apiFetch";
@@ -253,12 +254,15 @@ function ConversationHistory({
   onSelect,
   onNew,
   onDelete,
+  fallbackTitle,
 }: {
   conversations: ChatConversation[];
   currentId: number | null;
   onSelect: (conv: ChatConversation) => void;
   onNew: () => void;
   onDelete: (conv: ChatConversation) => void;
+  /** The open conversation's first question, for a row with no title yet. */
+  fallbackTitle: string | null;
 }) {
   const [open, setOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
@@ -277,7 +281,8 @@ function ConversationHistory({
   }, [open]);
 
   const currentConv = conversations.find((c) => c.id === currentId);
-  const displayTitle = displayConversationTitle(currentConv?.title, isPrivate) ?? "Current conversation";
+  const displayTitle =
+    displayConversationTitle(currentConv?.title, isPrivate) ?? displayConversationTitle(fallbackTitle, isPrivate) ?? "Current conversation";
 
   return (
     /* md:relative, not relative: at phone width the menu anchors to the fixed
@@ -334,7 +339,7 @@ function ConversationHistory({
                 <div className="text-[10px] text-ink-faint mt-0.5">
                   {SCOPE_OPTIONS.find((s) => s.value === conv.scope)?.label ?? conv.scope}
                   {" \u00b7 "}
-                  {new Date(conv.updated_at).toLocaleDateString()}
+                  {conversationDayLabel(conv.updated_at)}
                 </div>
               </button>
               <button
@@ -372,6 +377,7 @@ function ConversationControls({
   onSelect,
   onNew,
   onDelete,
+  fallbackTitle,
 }: {
   scopeLabel: string;
   conversations: ChatConversation[];
@@ -379,6 +385,7 @@ function ConversationControls({
   onSelect: (conv: ChatConversation) => void;
   onNew: () => void;
   onDelete: (conv: ChatConversation) => void;
+  fallbackTitle: string | null;
 }) {
   return (
     <>
@@ -404,6 +411,7 @@ function ConversationControls({
             onSelect={onSelect}
             onNew={onNew}
             onDelete={onDelete}
+            fallbackTitle={fallbackTitle}
           />
         )}
       </div>
@@ -551,6 +559,11 @@ export function ChatInterface({ pathname }: ChatInterfaceProps) {
   }, []);
 
   const isStreaming = status === "streaming" || status === "submitted";
+
+  // The header's title until the list row carries one (the first turn was
+  // stopped, or the list refresh beat the server's title write). Masked
+  // like any title through displayConversationTitle.
+  const fallbackTitle = useMemo(() => conversationTitleFromMessages(messages) || null, [messages]);
 
   // Start a new turn generation (B17): a header that arrives later for a
   // request sent before this point is never adopted.
@@ -796,6 +809,7 @@ export function ChatInterface({ pathname }: ChatInterfaceProps) {
             onSelect={loadConversation}
             onNew={handleNewConversation}
             onDelete={handleDeleteConversation}
+            fallbackTitle={fallbackTitle}
           />
         </div>
       )}
@@ -819,6 +833,7 @@ export function ChatInterface({ pathname }: ChatInterfaceProps) {
               onSelect={loadConversation}
               onNew={handleNewConversation}
               onDelete={handleDeleteConversation}
+              fallbackTitle={fallbackTitle}
             />
           </div>
         )}
@@ -944,7 +959,7 @@ export function ChatInterface({ pathname }: ChatInterfaceProps) {
                   {trailingNotice && <p className="mt-2 text-ink-dim">{trailingNotice}</p>}
                   {/* Copy button — only show if there's actual text content;
                       it copies the text parts only, never the notice. */}
-                  {!notice && msg.parts.some(
+                  {!isLive && !notice && msg.parts.some(
                     (p) => p.type === "text" && (p as { text: string }).text
                   ) && <CopyButton message={msg} />}
                 </>
@@ -958,7 +973,7 @@ export function ChatInterface({ pathname }: ChatInterfaceProps) {
         {error && (
           <div className="flex justify-start">
             <div className="max-w-[80%] rounded-xl px-4 py-3 text-sm bg-down-tint border border-down/20 text-down">
-              {humanizeChatError(error.message)}
+              {chatErrorText(error)}
             </div>
           </div>
         )}

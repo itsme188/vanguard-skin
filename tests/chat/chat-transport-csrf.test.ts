@@ -56,9 +56,13 @@ describe("ChatInterface transport attaches the CSRF token", () => {
   });
 
   it("renders the humanized error, not the raw response envelope", () => {
+    // chatErrorText (lib/chat/turn-adoption.ts) maps network failures and
+    // bare status bodies, then hands everything else to humanizeChatError.
     expect(source).toMatch(
-      /import\s*\{[^}]*humanizeChatError[^}]*\}\s*from\s*["']@\/lib\/chat\/error-message["']/,
+      /import\s*\{[^}]*\bchatErrorText\b[^}]*\}\s*from\s*["']@\/lib\/chat\/turn-adoption["']/,
     );
-    expect(source).toMatch(/humanizeChatError\(error\.message\)/);
+    expect(source).toMatch(/chatErrorText\(error\)/);
+    const helper = fs.readFileSync(path.join(process.cwd(), "lib/chat/turn-adoption.ts"), "utf8");
+    expect(helper).toMatch(/return humanizeChatError\(message\);/);
   });
 });
