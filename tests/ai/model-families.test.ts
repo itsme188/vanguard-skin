@@ -63,13 +63,22 @@ describe("resolveFamilyModel", () => {
     expect(resolveFamilyModel("sonnet", noSonnet)).toBeNull();
   });
 
-  it("honours the excluded set", () => {
-    expect(resolveFamilyModel("opus", CATALOG, new Set(["claude-opus-5-5"]))?.modelId).toBe(
-      "claude-opus-5",
-    );
-    expect(
-      resolveFamilyModel("opus", CATALOG, new Set(["claude-opus-5-5", "claude-opus-5"])),
-    ).toEqual({ modelId: "claude-sonnet-5-5", family: "sonnet", fellBackFrom: "opus" });
+  it("honours the excluded set, walking DOWN to the next family, never to an older version (2026-11-12)", () => {
+    // Opus 5 is listed but is an older generation of the Opus class: with
+    // Opus 5.5 excluded the run goes to the current Sonnet, not to Opus 5.
+    expect(resolveFamilyModel("opus", CATALOG, new Set(["claude-opus-5-5"]))).toEqual({
+      modelId: "claude-sonnet-5-5",
+      family: "sonnet",
+      fellBackFrom: "opus",
+    });
+  });
+
+  it("never picks an older generation of a class while the list of current ids says otherwise", () => {
+    const old = ["claude-opus-4-8", "claude-opus-5", "claude-sonnet-4-6", "claude-sonnet-5"];
+    expect(resolveFamilyModel("opus", old)).toBeNull();
+    expect(resolveFamilyModel("sonnet", old)).toBeNull();
+    expect(resolveFamilyModel("opus", [...old, "claude-sonnet-5-5"])?.modelId).toBe("claude-sonnet-5-5");
+    expect(familyNowLabel("opus", old)).toBe("Opus · not available");
   });
 
   it("returns null on an empty catalog", () => {

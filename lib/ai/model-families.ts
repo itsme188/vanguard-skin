@@ -5,7 +5,11 @@
  *
  * Rules:
  *   - The newest catalog id of the chosen family wins, so a version bump
- *     inside the family is followed automatically.
+ *     inside the family is followed automatically. An OLDER generation of
+ *     the family (below its entry in CURRENT_CLASS_MODELS) is never chosen
+ *     (owner ruling 2026-11-12: always the latest version of a class): with
+ *     the current id excluded or missing, the walk goes DOWN the ladder,
+ *     not back a version.
  *   - When the family has no callable id, walk DOWN the ladder from it
  *     (opus → sonnet), never up: a cheaper choice never silently turns into
  *     a more expensive one. Fable was removed from the ladder on 2026-11-07
@@ -14,7 +18,7 @@
  *     fallback id here, so no model id is ever written in this file).
  */
 import type { SummaryFamily } from "@/lib/filing-summary/types";
-import { parseModelId, type ParsedModel } from "@/lib/ai/model-tiers";
+import { isCurrentGeneration, parseModelId, type ParsedModel } from "@/lib/ai/model-tiers";
 
 /**
  * Compares two version tuples: [5,10] > [5,9] > [5]; a missing part counts as
@@ -53,7 +57,7 @@ function newestOfFamily(
   excluded: Set<string>,
 ): { id: string; parsed: ParsedModel } | null {
   const hits = catalogIds
-    .filter((id) => !excluded.has(id))
+    .filter((id) => !excluded.has(id) && isCurrentGeneration(id))
     .map((id) => ({ id, parsed: parseModelId(id) }))
     .filter((x): x is { id: string; parsed: ParsedModel } => x.parsed?.family === family);
   if (hits.length === 0) return null;
