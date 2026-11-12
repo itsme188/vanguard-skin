@@ -24,6 +24,8 @@ function input(over: Partial<PendingDecisionInput>): PendingDecisionInput {
     statement: null,
     resymbolReplacementHeld: false,
     longEquityGuards: { laterFill: false, laterSplit: false },
+    statementGuards: { laterFill: false, laterSplit: false },
+    resultsCurrent: true,
     reopenedAfter: () => false,
     ...over,
   };
@@ -68,7 +70,7 @@ describe("T-ONE-STATE: one reason or none, hand table over class x evidence x re
     ["long_equity: live zero", { cls: "long_equity", isOption: false }, { reason: "awaiting_statement", flatDate: LIVE }],
     ["long_equity: live short row (PR #123)", { cls: "long_equity", isOption: false, newest: n(LIVE, -30, "live") }, { reason: "awaiting_statement", flatDate: LIVE }],
     ["long_equity: newest statement-grade zero over an older live zero", { cls: "long_equity", isOption: false, newest: n(LIVE, 0, "live"), statement: { date: STMT, quantity: 0 } }, null],
-    ["long_equity: statement zero newest", { cls: "long_equity", isOption: false, newest: n(STMT, 0, "statement"), statement: { date: STMT, quantity: 0 } }, null],
+    ["long_equity: statement zero newest (results current)", { cls: "long_equity", isOption: false, newest: n(STMT, 0, "statement"), statement: { date: STMT, quantity: 0 } }, null],
     ["long_equity: later fill guard", { cls: "long_equity", isOption: false, longEquityGuards: { laterFill: true, laterSplit: false } }, null],
     ["long_equity: later split guard", { cls: "long_equity", isOption: false, longEquityGuards: { laterFill: false, laterSplit: true } }, null],
     ["long_equity: a reopening is NOT its rule (guards are)", { cls: "long_equity", isOption: false, reopenedAfter: () => true }, { reason: "awaiting_statement", flatDate: LIVE }],
@@ -140,5 +142,59 @@ describe("T-FLATDATE", () => {
       reason: "awaiting_statement",
       flatDate: LIVE,
     });
+  });
+});
+
+describe("long_equity: a statement zero with STALE lot results (the engine has not closed it yet)", () => {
+  const stale = (over: Partial<PendingDecisionInput>) =>
+    input({
+      cls: "long_equity",
+      isOption: false,
+      newest: { date: STMT, quantity: 0, evidence: "statement" },
+      statement: { date: STMT, quantity: 0 },
+      resultsCurrent: false,
+      ...over,
+    });
+
+  it("stale + statement zero newest: closing_entry_missing at the statement date", () => {
+    expect(decidePendingReason(stale({}))).toEqual({ reason: "closing_entry_missing", flatDate: STMT });
+  });
+
+  it("stale + statement zero under a newer live zero: still the statement date", () => {
+    expect(decidePendingReason(stale({ newest: { date: LIVE, quantity: 0, evidence: "live" } }))).toEqual({
+      reason: "closing_entry_missing",
+      flatDate: STMT,
+    });
+  });
+
+  it("current + statement zero: null (the engine's close owns it)", () => {
+    expect(decidePendingReason(stale({ resultsCurrent: true }))).toBeNull();
+  });
+
+  it("stale + statement zero + a position-changing fill after the statement date: null (engine skips)", () => {
+    expect(decidePendingReason(stale({ statementGuards: { laterFill: true, laterSplit: false } }))).toBeNull();
+  });
+
+  it("stale + statement zero + an import split after the statement date: null (engine skips)", () => {
+    expect(decidePendingReason(stale({ statementGuards: { laterFill: false, laterSplit: true } }))).toBeNull();
+  });
+
+  it("the live-row guards do not decide the statement case", () => {
+    expect(
+      decidePendingReason(
+        stale({
+          newest: { date: LIVE, quantity: 0, evidence: "live" },
+          longEquityGuards: { laterFill: true, laterSplit: true },
+        })
+      )
+    ).toEqual({ reason: "closing_entry_missing", flatDate: STMT });
+  });
+
+  it("stale + a non-zero newest statement row: not this rule", () => {
+    expect(
+      decidePendingReason(
+        stale({ newest: { date: STMT, quantity: 5, evidence: "statement" }, statement: { date: STMT, quantity: 5 } })
+      )
+    ).toBeNull();
   });
 });

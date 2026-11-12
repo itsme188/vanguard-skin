@@ -16,6 +16,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import type Database from "better-sqlite3";
 import { computeTaxLots } from "@/lib/compute/tax-lots";
+import { bumpTaxInputGeneration, stampTaxLotsConvention } from "@/lib/compute/tax-convention";
 import { getPendingStatementPairs, pendingStatementKey } from "@/lib/queries/pending-statement";
 import {
   createPendingTestDb,
@@ -118,6 +119,14 @@ describe("getPendingStatementPairs — never pending (spec §3 item 10)", () => 
     // The statement book on that date justifies the legacy tombstone (I2).
     seedHold(db, 3, seedSec(db, "STMBBOOK"), "2026-06-30", "stmt", 5);
     seedHold(db, 3, sec, "2026-07-10", "tws", 0);
+    // Stale lot results (no recompute since): the engine has not closed it
+    // yet, so it is pending at the LEGACY row's date (statement-grade), not
+    // awaiting_statement at the live date.
+    expect(getPendingStatementPairs(db).map((p) => [p.reason, p.flat_date])).toEqual([
+      ["closing_entry_missing", "2026-06-30"],
+    ]);
+    // Current results: the engine's close owns it, never pending.
+    stampTaxLotsConvention(db);
     expect(getPendingStatementPairs(db)).toEqual([]);
   });
 
@@ -205,6 +214,84 @@ describe("getPendingStatementPairs — never pending (spec §3 item 10)", () => 
     seedLot(db, 3, sec);
     seedHold(db, 3, sec, "2026-07-10", "live-zero");
     seedFill(db, 3, sec, "2026-07-15", "BUY", 1, 100);
+    expect(getPendingStatementPairs(db)).toEqual([]);
+  });
+});
+
+describe("getPendingStatementPairs — statement-flat long stock with STALE lot results", () => {
+  /** Inputs changed after the last recompute: the stored lots are stale. */
+  const bumpGeneration = (): void => {
+    bumpTaxInputGeneration(db);
+  };
+
+  it("a statement zero written after the last recompute: the long lots are closing_entry_missing at the statement date", () => {
+    const sec = seedSec(db, "AAA");
+    seedFill(db, 3, sec, "2026-06-01", "BUY", 10, 100);
+    seedHold(db, 3, sec, "2026-05-31", "stmt", 10);
+    computeTaxLots(db);
+    // The next statement shows the position flat; no recompute has run since.
+    seedHold(db, 3, sec, "2026-06-30", "stmt-zero");
+    bumpGeneration();
+
+    expect(getPendingStatementPairs(db)).toEqual([
+      {
+        account_id: 3,
+        security_id: sec,
+        symbol: "AAA",
+        side: "long",
+        reason: "closing_entry_missing",
+        flat_date: "2026-06-30",
+        open_quantity: 10,
+        open_figure: 1000,
+        figure_kind: "cost_basis",
+        lot_count: 1,
+      },
+    ]);
+  });
+
+  it("a newer live row does not cancel it: the later-fill guard is measured from the statement date", () => {
+    const sec = seedSec(db, "AAB");
+    seedFill(db, 3, sec, "2026-06-01", "BUY", 10, 100);
+    computeTaxLots(db);
+    seedHold(db, 3, sec, "2026-06-30", "stmt-zero");
+    // A fill AFTER the statement but BEFORE the newer live row: the engine skips the close.
+    seedFill(db, 3, sec, "2026-07-05", "BUY", 3, 100);
+    seedHold(db, 3, sec, "2026-07-10", "live-zero");
+    bumpGeneration();
+    expect(getPendingStatementPairs(db)).toEqual([]);
+  });
+
+  it("an import split after the statement date: not pending (engine skips the close)", () => {
+    const sec = seedSec(db, "AAC");
+    seedFill(db, 3, sec, "2026-06-01", "BUY", 10, 100);
+    computeTaxLots(db);
+    seedHold(db, 3, sec, "2026-06-30", "stmt-zero");
+    seedImportSplit(db, sec, "2026-07-02");
+    bumpGeneration();
+    expect(getPendingStatementPairs(db)).toEqual([]);
+  });
+
+  it("a fill ON the statement date does not end it (strictly after only)", () => {
+    const sec = seedSec(db, "AAD");
+    seedFill(db, 3, sec, "2026-06-01", "BUY", 10, 100);
+    computeTaxLots(db);
+    seedHold(db, 3, sec, "2026-06-30", "stmt-zero");
+    seedFill(db, 3, sec, "2026-06-30", "BUY", 2, 100);
+    bumpGeneration();
+    expect(getPendingStatementPairs(db).map((p) => [p.symbol, p.reason, p.flat_date])).toEqual([
+      ["AAD", "closing_entry_missing", "2026-06-30"],
+    ]);
+  });
+
+  it("after the recompute the engine closes it and nothing is pending", () => {
+    const sec = seedSec(db, "AAE");
+    seedFill(db, 3, sec, "2026-06-01", "BUY", 10, 100);
+    computeTaxLots(db);
+    seedHold(db, 3, sec, "2026-06-30", "stmt-zero");
+    bumpGeneration();
+    expect(getPendingStatementPairs(db).map((p) => p.symbol)).toEqual(["AAE"]);
+    computeTaxLots(db);
+    expect(syntheticCloses()).toBe(1);
     expect(getPendingStatementPairs(db)).toEqual([]);
   });
 });
