@@ -32,13 +32,34 @@ export const FAMILY_LADDERS: Record<Tier, string[]> = {
 };
 
 /**
- * Used only when the live catalog is empty/unknown. Must be a reliably-available
- * model: frontier is OPUS, which is also the top of the frontier ladder.
+ * The newest model of each class a ladder uses (owner ruling 2026-11-12:
+ * "always use the latest version of a class of model"). Ids verified
+ * 2026-11-12 against Anthropic's model table and pricing page.
+ *
+ * Two jobs:
+ *   1. A FLOOR: a catalog id OLDER than its class's entry here is never
+ *      selected, neither as the first pick nor after reactive failover drops
+ *      the newest one (failover moves to the next class on the ladder, never
+ *      to an older generation of the same class). A NEWER catalog id of the
+ *      class is still followed automatically.
+ *   2. The static fallback below, used when the catalog is empty (a fresh
+ *      database, a Worker snapshot that carries no catalog).
+ * When a class ships a new version, move its entry here AND in the mirror.
+ */
+export const CURRENT_CLASS_MODELS: Record<string, string> = {
+  opus: "claude-opus-5-5",
+  sonnet: "claude-sonnet-5-5",
+  haiku: "claude-haiku-5-5",
+};
+
+/**
+ * Used only when the live catalog has nothing current for a tier: the current
+ * id of the tier's top class. Frontier is OPUS, the top of the frontier ladder.
  */
 export const TIER_STATIC_FALLBACK: Record<Tier, string> = {
-  frontier: "claude-opus-4-8",
-  workhorse: "claude-sonnet-4-6",
-  cheap: "claude-haiku-4-5-20251001",
+  frontier: CURRENT_CLASS_MODELS.opus,
+  workhorse: CURRENT_CLASS_MODELS.sonnet,
+  cheap: CURRENT_CLASS_MODELS.haiku,
 };
 
 export interface ParsedModel {
@@ -75,10 +96,42 @@ function compareVersions(a: number[], b: number[]): number {
   return 0;
 }
 
+function currentIdOfClass(family: string): string | null {
+  return Object.prototype.hasOwnProperty.call(CURRENT_CLASS_MODELS, family)
+    ? CURRENT_CLASS_MODELS[family]
+    : null;
+}
+
+/**
+ * False only for an OLDER version of a class listed in CURRENT_CLASS_MODELS
+ * ("claude-sonnet-4-6" while Sonnet 5.5 is current). A newer version, an id
+ * of an unlisted class, or a non-Claude id is left alone (true).
+ */
+export function isCurrentGeneration(id: string): boolean {
+  const parsed = parseModelId(id);
+  if (!parsed) return true;
+  const current = currentIdOfClass(parsed.family);
+  const floor = current ? parseModelId(current) : null;
+  if (!floor) return true;
+  return compareVersions(parsed.version, floor.version) >= 0;
+}
+
+/**
+ * An older generation of a listed class becomes that class's current id
+ * ("claude-sonnet-4-6" → "claude-sonnet-5-5"); any other id is returned
+ * unchanged. For concrete ids that bypass the tier ladder (a stored override).
+ */
+export function upgradeToCurrentGeneration(id: string): string {
+  if (isCurrentGeneration(id)) return id;
+  const parsed = parseModelId(id);
+  return (parsed && currentIdOfClass(parsed.family)) ?? id;
+}
+
 /**
  * Resolve a tier to a concrete model id, given the available-model catalog.
  * Walks the family ladder; for the first family with ≥1 available (non-excluded)
- * model, returns the newest version. Empty result → TIER_STATIC_FALLBACK[tier].
+ * CURRENT-generation model, returns the newest version. Older generations are
+ * never candidates (CURRENT_CLASS_MODELS). Empty result → TIER_STATIC_FALLBACK[tier].
  *
  * `excluded` lets reactive failover drop a model that just 404'd so the retry
  * skips it even before the catalog cache refreshes.
@@ -91,7 +144,8 @@ export function resolveTier(
   const available = catalogIds
     .filter((id) => !excluded.has(id))
     .map((id) => ({ id, parsed: parseModelId(id) }))
-    .filter((x): x is { id: string; parsed: ParsedModel } => x.parsed !== null);
+    .filter((x): x is { id: string; parsed: ParsedModel } => x.parsed !== null)
+    .filter((x) => isCurrentGeneration(x.id));
 
   for (const family of FAMILY_LADDERS[tier]) {
     const hits = available.filter((x) => x.parsed.family === family);

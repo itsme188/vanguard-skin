@@ -1,7 +1,12 @@
 import type { FeatureKey } from "@/lib/ai/feature-keys";
 import { getCachedFeatureModelOverrides } from "@/lib/ai/override-source";
 import { getCachedModelCatalog } from "@/lib/ai/catalog-source";
-import { resolveProviderTierModel, resolveTier, type Tier } from "@/lib/ai/model-tiers";
+import {
+  resolveProviderTierModel,
+  resolveTier,
+  upgradeToCurrentGeneration,
+  type Tier,
+} from "@/lib/ai/model-tiers";
 
 const TIER_TOKENS: Record<string, Tier> = {
   "$frontier": "frontier",
@@ -203,7 +208,15 @@ export function expandSpec(spec: string): ResolvedModel {
     }
     return parseModelSpec(`${provider}/${resolvedId}`);
   }
-  return parseModelSpec(spec);
+  const concrete = parseModelSpec(spec);
+  // Owner ruling 2026-11-12: always the latest version of a class. A concrete
+  // Anthropic id (a stored Settings override) naming an OLDER generation of a
+  // class runs on that class's current id instead; a newer or unlisted id is
+  // kept as written.
+  if (concrete.provider === "anthropic") {
+    return { ...concrete, modelId: upgradeToCurrentGeneration(concrete.modelId) };
+  }
+  return concrete;
 }
 
 /**

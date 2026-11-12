@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
-import { resolveTier, TIER_STATIC_FALLBACK } from "../src/model-tiers";
+import { resolveTier, TIER_STATIC_FALLBACK, isCurrentGeneration } from "../src/model-tiers";
 
 describe("worker model-tiers parity", () => {
   it("is byte-identical to the Mac resolver below the header", () => {
@@ -9,8 +9,21 @@ describe("worker model-tiers parity", () => {
     const strip = (s: string) => s.slice(s.indexOf("export type Tier"));
     expect(strip(wkr)).toBe(strip(mac));
   });
-  it("resolves frontier to newest available", () => {
-    expect(resolveTier("frontier", ["claude-opus-4-8", "claude-sonnet-4-6"])).toBe("claude-opus-4-8");
+  it("resolves frontier to the current Opus", () => {
+    expect(resolveTier("frontier", ["claude-opus-5-5", "claude-opus-4-8", "claude-sonnet-5-5"])).toBe(
+      "claude-opus-5-5",
+    );
     expect(resolveTier("frontier", [])).toBe(TIER_STATIC_FALLBACK.frontier);
+  });
+  it("an empty snapshot catalog resolves every tier to its class's current id (owner ruling 2026-11-12)", () => {
+    expect(resolveTier("workhorse", [])).toBe("claude-sonnet-5-5");
+    expect(resolveTier("frontier", [])).toBe("claude-opus-5-5");
+    expect(resolveTier("cheap", [])).toBe("claude-haiku-5-5");
+  });
+  it("failover never lands on an older Sonnet", () => {
+    const catalog = ["claude-sonnet-5-5", "claude-sonnet-5", "claude-sonnet-4-6", "claude-haiku-5-5"];
+    const id = resolveTier("workhorse", catalog, new Set(["claude-sonnet-5-5"]));
+    expect(id).toBe("claude-haiku-5-5");
+    expect(isCurrentGeneration(id)).toBe(true);
   });
 });

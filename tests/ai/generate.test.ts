@@ -30,7 +30,7 @@ describe("generateTextForFeature", () => {
   beforeEach(() => {
     generateTextMock.mockReset();
     setFeatureModelOverrideSource(null);
-    setModelCatalogSource(() => ["claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5"]);
+    setModelCatalogSource(() => ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"]);
   });
 
   it("returns text on success", async () => {
@@ -48,8 +48,8 @@ describe("generateTextForFeature", () => {
     expect(generateTextMock).toHaveBeenCalledTimes(2);
     // `chat` is workhorse (sonnet -> haiku) since the 2026-11-07 ruling: prove
     // the first call used Sonnet and the retry used the NEXT rung, not Sonnet again.
-    expect(generateTextMock.mock.calls[0][0].model.modelId).toBe("claude-sonnet-4-6");
-    expect(generateTextMock.mock.calls[1][0].model.modelId).toBe("claude-haiku-4-5");
+    expect(generateTextMock.mock.calls[0][0].model.modelId).toBe("claude-sonnet-5-5");
+    expect(generateTextMock.mock.calls[1][0].model.modelId).toBe("claude-haiku-5-5");
   });
 
   it("on refusal finishReason, throws AIRefusalError (graceful, named)", async () => {
@@ -96,7 +96,7 @@ describe("generateObjectForFeature", () => {
   beforeEach(() => {
     generateObjectMock.mockReset();
     setFeatureModelOverrideSource(null);
-    setModelCatalogSource(() => ["claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5"]);
+    setModelCatalogSource(() => ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"]);
   });
 
   it("asks the Anthropic provider for native structured output, not the json-tool fallback", async () => {
@@ -219,8 +219,8 @@ describe("generateObjectForFeature", () => {
     const first = generateObjectMock.mock.calls[0][0] as { model: { modelId: string } };
     const second = generateObjectMock.mock.calls[1][0] as { model: { modelId: string } };
     // `tradeReviewMain` is workhorse since the 2026-11-07 ruling.
-    expect(first.model.modelId).toBe("claude-sonnet-4-6");
-    expect(second.model.modelId).toBe("claude-haiku-4-5");
+    expect(first.model.modelId).toBe("claude-sonnet-5-5");
+    expect(second.model.modelId).toBe("claude-haiku-5-5");
     // The failover request still carries the native-structured-output ask.
     expect(anthropicOptionsOf(1)?.structuredOutputMode).toBe("outputFormat");
   });

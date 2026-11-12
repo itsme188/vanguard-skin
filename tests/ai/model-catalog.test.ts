@@ -27,15 +27,15 @@ describe("model-catalog", () => {
     expect(getModelCatalog(bare)).toEqual([]);
   });
   it("round-trips a catalog and reports fresh", () => {
-    setModelCatalog(db, ["claude-opus-4-8", "claude-sonnet-4-6"]);
-    expect(getModelCatalog(db)).toEqual(["claude-opus-4-8", "claude-sonnet-4-6"]);
+    setModelCatalog(db, ["claude-opus-5-5", "claude-sonnet-5-5"]);
+    expect(getModelCatalog(db)).toEqual(["claude-opus-5-5", "claude-sonnet-5-5"]);
     expect(isModelCatalogStale(db)).toBe(false);
   });
   it("is stale when never set", () => {
     expect(isModelCatalogStale(db)).toBe(true);
   });
   it("is stale when older than the guard window", () => {
-    setModelCatalog(db, ["claude-opus-4-8"]);
+    setModelCatalog(db, ["claude-opus-5-5"]);
     db.prepare("UPDATE settings SET value = ? WHERE key = 'model_catalog_updated_at'")
       .run(new Date(Date.now() - 20 * 24 * 3600 * 1000).toISOString());
     expect(isModelCatalogStale(db)).toBe(true);
@@ -43,17 +43,17 @@ describe("model-catalog", () => {
 });
 
 describe("pruneToCallable", () => {
-  const listed = ["claude-fable-5", "claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5"];
+  const listed = ["claude-fable-5", "claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"];
 
   it("prunes a listed-but-uncallable model (opus 404s) so frontier falls to the next callable rung", async () => {
     const probed: string[] = [];
-    const probe = async (id: string) => { probed.push(id); return id !== "claude-opus-4-8"; };
+    const probe = async (id: string) => { probed.push(id); return id !== "claude-opus-5-5"; };
     const callable = await pruneToCallable(listed, probe);
-    expect(callable).not.toContain("claude-opus-4-8");
-    expect(callable).toContain("claude-sonnet-4-6");
+    expect(callable).not.toContain("claude-opus-5-5");
+    expect(callable).toContain("claude-sonnet-5-5");
     // probed the frontier selection (opus), then re-selected sonnet and probed it
-    expect(probed).toContain("claude-opus-4-8");
-    expect(probed).toContain("claude-sonnet-4-6");
+    expect(probed).toContain("claude-opus-5-5");
+    expect(probed).toContain("claude-sonnet-5-5");
     // Fable is listed but no ladder selects it, so it is never probed (2026-11-07).
     expect(probed).not.toContain("claude-fable-5");
   });
@@ -65,13 +65,13 @@ describe("pruneToCallable", () => {
 
   it("does NOT prune on a transient (non-404) probe result — only confirmed-uncallable is dropped", async () => {
     // probe returns true for transient/unknown; here everything 'callable' → kept
-    const callable = await pruneToCallable(["claude-opus-4-8", "claude-sonnet-4-6"], async () => true);
-    expect(callable).toEqual(["claude-opus-4-8", "claude-sonnet-4-6"]);
+    const callable = await pruneToCallable(["claude-opus-5-5", "claude-sonnet-5-5"], async () => true);
+    expect(callable).toEqual(["claude-opus-5-5", "claude-sonnet-5-5"]);
   });
 
   it("probes each tier's selection at most once and is bounded", async () => {
     let calls = 0;
-    const probe = async (id: string) => { calls++; return id !== "claude-opus-4-8"; };
+    const probe = async (id: string) => { calls++; return id !== "claude-opus-5-5"; };
     await pruneToCallable(listed, probe);
     // frontier: opus(fail)->sonnet(ok); workhorse: sonnet(ok); cheap: haiku(ok) = 4 distinct probes max
     expect(calls).toBeLessThanOrEqual(4);
