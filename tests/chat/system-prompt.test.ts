@@ -530,7 +530,7 @@ describe("prompt standards (Task 7)", () => {
       // Dates and day counts are copied, never derived (Q18).
       expect(rule).toContain("never worked out");
       // Fields the model must notice (Q8, Q18, Q1).
-      for (const field of ["unmodelled", "risk_free_rate_source", "`twr`", "`xirr`", "by_symbol", "`totals`"]) {
+      for (const field of ["unmodelled_positions", "left_out", "risk_free_rate_source", "`twr`", "`xirr`", "by_symbol", "`totals`"]) {
         expect(rule, `${scope}: ${field}`).toContain(field);
       }
     }
