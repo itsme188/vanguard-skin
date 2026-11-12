@@ -54,6 +54,12 @@ export interface NumberTolerance {
    * such as a cost basis that happens to equal a forbidden sum.
    */
   notNear?: TextPattern;
+  /**
+   * `near` may also match anywhere in the figure's own sentence (split at
+   * ". ", "! ", "? " or a line break; a decimal point never ends one), for a
+   * label that sits further back than `window` in a long sentence.
+   */
+  nearInSentence?: boolean;
 }
 
 export type Check =
@@ -198,6 +204,16 @@ function lineAround(text: string, n: ParsedNumber, window: number): string {
   return near;
 }
 
+/** The sentence holding a figure: back to the last ". ", "! ", "? " or line break, forward to the next. */
+export function sentenceAround(text: string, n: ParsedNumber): string {
+  const before = text.slice(0, n.start);
+  const ends = [...before.matchAll(/[.!?](?=\s)|\n/g)];
+  const start = ends.length > 0 ? (ends[ends.length - 1].index ?? 0) + 1 : 0;
+  const after = text.slice(n.end);
+  const next = after.search(/[.!?](?=\s|$)|\n/);
+  return text.slice(start, next === -1 ? text.length : n.end + next);
+}
+
 /** Does a parsed figure satisfy the check's unit and context bindings? */
 function bindingHolds(text: string, n: ParsedNumber, t: NumberTolerance): boolean {
   if (t.percentOnly && !n.percent) return false;
@@ -206,7 +222,13 @@ function bindingHolds(text: string, n: ParsedNumber, t: NumberTolerance): boolea
     const anchored = new RegExp(`^\\s*(?:${t.unitAfter.source})`, t.unitAfter.flags.includes("i") ? t.unitAfter.flags : t.unitAfter.flags + "i");
     if (!anchored.test(after)) return false;
   }
-  if (t.near !== undefined && matchesPattern(lineAround(text, n, t.window ?? 60), t.near) === null) return false;
+  if (
+    t.near !== undefined &&
+    matchesPattern(lineAround(text, n, t.window ?? 60), t.near) === null &&
+    !(t.nearInSentence && matchesPattern(sentenceAround(text, n), t.near) !== null)
+  ) {
+    return false;
+  }
   if (t.notNear !== undefined && matchesPattern(lineAround(text, n, t.window ?? 60), t.notNear) !== null) return false;
   return true;
 }
@@ -398,6 +420,7 @@ export function serializeCheck(check: Check): Record<string, unknown> {
   if ("unitAfter" in check && check.unitAfter) out.unitAfter = check.unitAfter.toString();
   if ("near" in check && check.near !== undefined) out.near = patternText(check.near);
   if ("notNear" in check && check.notNear !== undefined) out.notNear = patternText(check.notNear);
+  if ("nearInSentence" in check && check.nearInSentence) out.nearInSentence = true;
   if (check.kind === "everyMention") {
     out.qualifier = patternText(check.qualifier);
     if (check.heading) out.heading = patternText(check.heading);

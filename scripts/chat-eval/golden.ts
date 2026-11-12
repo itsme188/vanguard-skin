@@ -79,6 +79,8 @@ const PENDING_QUALIFIER =
   /pending|awaiting|excluded|not a candidate|not counted|closed|statement|unknown|not (yet )?(known|booked|on file)|\buntil\b/;
 /** A heading that sets the lots under it apart from the candidates. */
 const NOT_CANDIDATE_HEADING = /not (a )?candidates?|excluded|not harvestable|incomplete|pending/;
+/** A figure offered as what would have been, not as the stated figure. */
+const COUNTERFACTUAL = /without the|would (be|have been)|instead of|before the (adjustment|wash)|excluding the|had (it|the loss) not/;
 /** A figure labelled as a cost or basis is that figure, not a hand sum. */
 const COST_LABEL = /\bcost\b|basis|\bpaid\b|bought at/;
 
@@ -225,7 +227,18 @@ export const GOLDEN: readonly Builder[] = [
       { kind: "calledTool", label: "reads tax lots", tool: "query_tax_lots" },
       { kind: "contains", label: "the taxable loser is listed", pattern: new RegExp(`\\b${escapeRegExp(x.manifest.harvestCandidate)}\\b`) },
       { kind: "contains", label: "wash-sale caveat (any wording)", pattern: /\bwash/ },
-      { kind: "notContains", label: "the Roth lot is not offered", pattern: new RegExp(`\\b${escapeRegExp(x.manifest.rothLoser)}\\b(?![^\\n.]{0,60}(not eligible|tax-advantaged|Roth|excluded|not a candidate))`) },
+      // Fact: the Roth lot is never offered as a candidate. Every mention says
+      // why (the Roth, tax-advantaged, excluded) on its line, a decimal in a
+      // percent no longer ending the look (run 5: "(−41.2%), but it is in the
+      // Roth"), or sits under a heading that sets it apart.
+      {
+        kind: "everyMention",
+        label: "the Roth lot is not offered",
+        pattern: new RegExp(`\\b${escapeRegExp(x.manifest.rothLoser)}\\b`),
+        qualifier: /not eligible|tax-advantaged|\bRoth\b|\bIRA\b|retirement|excluded|not a candidate/,
+        window: 120,
+        heading: NOT_CANDIDATE_HEADING,
+      },
       // Fact: the pending lot is never offered as a candidate. Every mention
       // says why its result is not known, or sits under a heading that sets it
       // apart from the candidates.
@@ -278,7 +291,19 @@ export const GOLDEN: readonly Builder[] = [
       // Fact: a washed loss is disallowed, so the short-term total is not the
       // plain sum of the sale rows (fixture version 3 has a washed loss).
       if (Math.abs(x.realized.shortTermRowsUnadjusted - x.realized.shortTerm) > 1) {
-        checks.push({ kind: "notNumber", label: "the washed loss is not deducted", value: x.realized.shortTermRowsUnadjusted, absTol: 0.5, signed: true });
+        // Bound to a stated short-term figure; a figure introduced as a
+        // counterfactual ("without the wash ... would be ... instead of") is
+        // an explanation, not the total (run 5).
+        checks.push({
+          kind: "notNumber",
+          label: "the washed loss is not deducted",
+          value: x.realized.shortTermRowsUnadjusted,
+          absTol: 0.5,
+          signed: true,
+          near: /short[- ]term|\bST\b/,
+          notNear: COUNTERFACTUAL,
+          window: 60,
+        });
       }
       const yearTotal = x.realized.shortTerm + x.realized.longTerm;
       if (Math.abs(x.realized.lifetimeAllAccounts - yearTotal) > 5) {
@@ -359,7 +384,9 @@ export const GOLDEN: readonly Builder[] = [
     const notes: string[] = [];
     const d = x.dividends12m;
     if (d) {
-      checks.push({ kind: "number", label: "the single-count dividend figure", value: d.single, absTol: 1, near: /dividend/, window: 80 });
+      // Fact: the trailing-year dividend figure, counted once. "Dividend" may
+      // sit anywhere in the figure's sentence (run 5: 82 characters back).
+      checks.push({ kind: "number", label: "the single-count dividend figure", value: d.single, absTol: 1, near: /dividend/, window: 80, nearInSentence: true });
       if (Math.abs(d.naiveDoubleCount - d.single) > 1) {
         checks.push({ kind: "notNumber", label: "not the naive double count", value: d.naiveDoubleCount, absTol: 0.5 });
       } else notes.push("the fixture's naive sum equals the single count; no double-count trap");
@@ -571,10 +598,16 @@ export const GOLDEN: readonly Builder[] = [
       });
     } else notes.push("no stale price date in the fixture");
     const u = escapeRegExp(x.manifest.expiredOption.underlying);
+    // Fact: the expired contract is named as expired. On one line, or as an
+    // item of the list block whose lead line says "expired" (run 5: the
+    // contract sat on its own bullet under "Four expired options...").
+    const item = `\\n[ \\t]*(?:[-*+]|\\d+[.)])\\s`;
     checks.push({
       kind: "contains",
       label: `the expired ${x.manifest.expiredOption.underlying} option awaiting its closing entry`,
-      pattern: new RegExp(`\\b${u}\\b[^\\n]{0,160}expir|expir[^\\n]{0,160}\\b${u}\\b`),
+      pattern: new RegExp(
+        `\\b${u}\\b[^\\n]{0,160}expir|expir[^\\n]{0,160}\\b${u}\\b|expir[^\\n]*(?:${item}[^\\n]*)*?${item}[^\\n]*\\b${u}\\b`,
+      ),
     });
     return { id: "Q20", scope: "ibkr", question: "Can I trust the numbers for this account right now?", checks, notes };
   },

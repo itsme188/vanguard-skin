@@ -884,6 +884,64 @@ describe("run-4 regressions", () => {
   });
 });
 
+// Run 5 (2026-11-12, claude-sonnet-5-5 on eval-v3): the reader found all ten
+// answers right; four live failures were the scorer's. Short excerpts.
+describe("run-5 regressions", () => {
+  const score = (id: string, text: string, tools: string[], x: ExpectedContext = X) =>
+    scoreAnswer(answer(text, { toolCalls: tools }), Object.fromEntries(buildGolden(x).map((q) => [q.id, q]))[id].checks);
+  const failed = (r: ReturnType<typeof scoreAnswer>) => r.checks.filter((c) => !c.pass).map((c) => c.label);
+  const HRVST_OK = "HRVST is the one candidate, a loss of $300 in Vanguard Taxable. Mind the wash-sale rule.";
+
+  it("Q5: the Roth lot with a decimal percent before 'in the Roth' passes", () => {
+    const r = score("Q5", `${HRVST_OK}\n- **ROTHL** is down $500 (−41.2%), but it is in the Roth, so selling it produces no tax benefit.`, ["query_tax_lots"]);
+    expect(failed(r)).toEqual([]);
+  });
+
+  it("Q5: the Roth lot under a Not candidates heading passes; offered as a candidate it fails", () => {
+    const ok = score("Q5", `${HRVST_OK}\n\n**Not candidates:**\n- **ROTHL** is down $500 (−41.2%); selling it gives nothing.`, ["query_tax_lots"]);
+    expect(failed(ok)).toEqual([]);
+    const bad = score("Q5", `${HRVST_OK}\n\n**Candidates:**\n- **ROTHL** is down $500 (−41.2%); sell it for the loss.`, ["query_tax_lots"]);
+    expect(failed(bad)).toContain("the Roth lot is not offered");
+  });
+
+  it("Q11: 'dividend' earlier in the same sentence than the 80-character window passes", () => {
+    const r = score(
+      "Q11",
+      "Across all accounts, dividend income over the trailing 12 months (to 2026-11-12, from the ledger) is **$851.20**. IBKR also paid $35 of interest, which is a cost.",
+      ["query_income_summary"],
+    );
+    expect(failed(r)).toEqual([]);
+    // The word in another sentence does not bind the figure.
+    const other = score("Q11", "Dividends are below. Over the trailing twelve months the total income from the ledger is $851.20.", ["query_income_summary"]);
+    expect(failed(other)).toContain("the single-count dividend figure");
+  });
+
+  it("Q20: the expired contract on its own bullet under an 'expired' line passes", () => {
+    const r = score(
+      "Q20",
+      "This check covers all three accounts, not just IBKR.\n- **JNJ price is stale:** its last price is 2026-11-05.\n- **Four expired options still await closing entries:**\n  - AAPL 260619C250\n  - TSLA 260619P200\n  - NVDA 261102C150\n  \n  Their results are unknown.",
+      ["query_data_confidence"],
+    );
+    expect(failed(r)).toEqual([]);
+    // An NVDA line in a different list, not under an "expired" line, does not count.
+    const apart = score(
+      "Q20",
+      "This check covers all three accounts, not just IBKR. JNJ is stale, last priced 2026-11-05.\n\nTwo options expired last month.\n\n**Missing contract data:**\n- JPM\n- NVDA",
+      ["query_data_confidence"],
+    );
+    expect(failed(apart)).toContain("the expired NVDA option awaiting its closing entry");
+  });
+
+  it("Q6: a counterfactual 'without the wash' figure is not the stated total", () => {
+    const x = { ...X, realized: { ...X.realized!, shortTerm: 420.5, shortTermRowsUnadjusted: 20.5, longTerm: 310.25 } };
+    const tail = " from the AAPL calls and the TSLA sale. Long-term: a gain of $310.25. These are not for filing.";
+    const ok = score("Q6", `Short-term: a gain of $420.50${tail} Without the wash, short-term gains would be $20.50 instead of $420.50.`, ["query_realized_gains"], x);
+    expect(failed(ok)).toEqual([]);
+    const bad = score("Q6", `Short-term: a gain of $20.50${tail}`, ["query_realized_gains"], x);
+    expect(failed(bad)).toContain("the washed loss is not deducted");
+  });
+});
+
 describe("harness fixes from the live run", () => {
   it("a provider error before any output (the 404 run) costs nothing", () => {
     const r = priceTurn({
