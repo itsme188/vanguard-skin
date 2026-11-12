@@ -28,19 +28,23 @@ describe("buildSystemPrompt", () => {
     expect(prompt).not.toContain("portfolio analyst for a personal investment dashboard");
   });
 
-  // Live browser pass: "Macro mode. These are general knowledge — no tools
-  // needed." The old "name the scope in your first answer" line read as an
-  // instruction to announce; the scope now rides in the answer itself.
-  it("carries the scope in the answer, with no process narration, in every scope", () => {
+  // Live passes: "Macro mode. These are general knowledge — no tools
+  // needed.", "Let me pull the full set of presets…", "`query_twr` would
+  // give you…". Text before a tool call is saved as the answer's opening, and
+  // tool names mean nothing to the owner.
+  it("no process narration, no tool names, no ids, in every scope", () => {
     const all = buildSystemPrompt(fakeContext, today, "all");
-    expect(all).toContain("carry it in the answer's first sentence");
-    expect(all).toContain("Do not narrate the process");
-    expect(all).not.toContain("In the first answer of a conversation");
     const macro = buildSystemPrompt("", today, "macro");
-    expect(macro).toContain("Do not announce the mode");
+    expect(all).toContain("with the scope in it when the scope matters");
+    expect(all).not.toContain("In the first answer of a conversation");
     expect(macro).not.toMatch(/say you are in Macro mode/);
-    expect(all).toContain("Never quote one to him");
-    expect(macro).toContain("never quote one to him");
+    for (const p of [all, macro]) {
+      expect(p).toContain("Write nothing before your first tool call");
+      expect(p).toContain("saved as the opening of the answer");
+      expect(p).toMatch(/never name one in an answer/);
+      expect(p).toContain("never quote");
+      expect(p).toContain("no closing offer in any form");
+    }
   });
 
   it("a saved note is not restated under its card, and its id is never quoted", () => {
@@ -175,7 +179,7 @@ describe("account-specific personas", () => {
         "## Who You Are Working With",
         "## How to Answer",
         "## What Is In Front of You",
-        "## Numbers You Must Not Compute Yourself",
+        "## Where Figures Come From",
         "## Ground Truth Rules",
         "## Data Quality Awareness",
         "## What You Do Not Have",
@@ -508,9 +512,9 @@ describe("prompt standards (Task 7)", () => {
     }
   });
 
-  it("the portfolio scopes name the figures the model must not compute and why", () => {
+  it("the portfolio scopes say where every figure comes from, and why", () => {
     for (const scope of PORTFOLIO_SCOPES) {
-      const rule = section(staticBlock(scope), "## Numbers You Must Not Compute Yourself");
+      const rule = section(staticBlock(scope), "## Where Figures Come From");
       for (const tool of ["query_twr", "query_risk", "query_scenarios", "query_realized_gains", "day_effect"]) {
         expect(rule, `${scope}: ${tool}`).toContain(tool);
       }
@@ -520,6 +524,15 @@ describe("prompt standards (Task 7)", () => {
       // A hand-built shock range is fabricated (live eval Q8).
       expect(rule).toContain("A range you build by hand from weights or beta is a figure no engine produced");
       expect(rule).toContain("name those positions");
+      // One computable exception, so the rule can be followed (live eval Q9, Q13, Q15, Q16).
+      expect(rule).toContain("a difference or a ratio of two returned figures, shown in full with both inputs and their dates");
+      expect(rule).toContain("a product, or a base the tool did not state is not computed");
+      // Dates and day counts are copied, never derived (Q18).
+      expect(rule).toContain("never worked out");
+      // Fields the model must notice (Q8, Q18, Q1).
+      for (const field of ["unmodelled", "risk_free_rate_source", "`twr`", "`xirr`", "by_symbol", "`totals`"]) {
+        expect(rule, `${scope}: ${field}`).toContain(field);
+      }
     }
   });
 
@@ -548,9 +561,14 @@ describe("prompt standards (Task 7)", () => {
       expect(text, scope).toContain("Give both figures it returns, the time-weighted and the money-weighted");
       // Q14, Q4: empty results, no guessing, no closing menu.
       expect(section(text, "## Data Quality Awareness"), scope).toContain("Do not guess at why");
-      expect(section(text, "## How to Answer"), scope).toContain("no menu of other things you could look up");
-      // Q6, Q18: a realized figure is explained from its own rows only.
-      expect(text, scope).toContain("name only the sales in query_realized_gains' own rows");
+      expect(section(text, "## How to Answer"), scope).toContain("no closing offer in any form");
+      // Q6, Q18 (run 1) and Q6, Q12, Q15 (run 2): name the rows the tool
+      // returned, and only those.
+      expect(text, scope).toContain("name the sales in its own rows");
+      expect(text, scope).toContain("Those rows are the only evidence");
+      expect(section(text, "## How to Answer"), scope).toContain("never from cutting evidence");
+      // Q14, Q18 (run 2): memory is not a source.
+      expect(section(text, "## What You Do Not Have"), scope).toContain("a remembered pattern");
       // Q15: two readings of foreign; Unknown is unclassified.
       expect(section(text, "## Choosing Tools"), scope).toContain("Foreign holdings have two readings");
       expect(section(text, "## Choosing Tools"), scope).toContain("never guess what is in it");
