@@ -619,8 +619,13 @@ describe("the in-question cost ceiling, with a stubbed model", () => {
       if (line.startsWith("[chat-usage]")) log += line + "\n";
     });
     const deps = {
-      fetch: (async (url: string | URL, init?: RequestInit) =>
-        POST(new NextRequest(String(url), init as ConstructorParameters<typeof NextRequest>[1]))) as typeof fetch,
+      // A network fetch: closing the connection is what reaches the server, so
+      // the abort is forwarded to the request the route sees.
+      fetch: (async (url: string | URL, init?: RequestInit) => {
+        const server = new AbortController();
+        init?.signal?.addEventListener("abort", () => server.abort());
+        return POST(new NextRequest(String(url), { ...(init as ConstructorParameters<typeof NextRequest>[1]), signal: server.signal }));
+      }) as typeof fetch,
       readLogSince: (from: number) => log.slice(from),
       logSize: () => log.length,
       sleep: (ms: number) => new Promise<void>((r) => setTimeout(r, ms)),
@@ -637,14 +642,17 @@ describe("the in-question cost ceiling, with a stubbed model", () => {
     expect(q.score.pass).toBe(false);
     // Step 1: $0.165 spent + next-step worst $0.40 = $0.565 <= $0.60, go on.
     // Step 2: $0.33 + $0.40 > $0.60, abort while step 3 is in flight.
-    expect(q.perStep).toHaveLength(2);
-    expect(calls).toBeLessThanOrEqual(3);
-    await new Promise((r) => setTimeout(r, 600));
-    expect(calls).toBeLessThanOrEqual(3); // no fourth step after the abort
-    // Booked = the two usage lines seen + the in-flight step at the runner's next-step worst case.
+    // Whether the route stops on the abort is the route's own concern (and
+    // timing-sensitive in process; tests/api/chat-abort.test.ts owns it). The
+    // runner must either see it stop (two lines, then the step in flight) or
+    // report that it did not and stop the run, booking every logged step.
+    expect(q.perStep.length).toBeGreaterThanOrEqual(2);
+    if (q.perStep.length > 3) expect(report.stoppedReason).toMatch(/after the abort/);
+    else expect(calls).toBeLessThanOrEqual(3);
+    // Booked = every usage line seen + the in-flight step at the runner's next-step worst case.
     const sonnet = priceFor("claude-sonnet-4-6")!;
     const linesSum = q.perStep.reduce((s: number, st: { usage: Parameters<typeof costOf>[0] }) => s + costOf(st.usage, sonnet), 0);
-    expect(linesSum).toBeCloseTo(2 * costOf({ noCache: 10, cacheWrite: 40000, cacheRead: 0, output: 1000 }, sonnet), 12);
+    expect(linesSum).toBeCloseTo(q.perStep.length * costOf({ noCache: 10, cacheWrite: 40000, cacheRead: 0, output: 1000 }, sonnet), 12);
     // the in-flight booking is the next-step worst case from the real sizes (the step-2 tool result adds a little)
     const floor = stepWorstCase(40010 + 1000 + STEP_INPUT_MARGIN_TOKENS, 16000, sonnet);
     expect(q.inFlightBookedUsd).toBeGreaterThanOrEqual(floor);
@@ -791,6 +799,38 @@ describe("behaviour flags (counted per run, never scored)", () => {
     expect(behaviourFlags("Nothing is scheduled.\n\nWhich of those would be most useful, or want me to pull the transcripts?").offerEnding).toBe(true);
     expect(behaviourFlags("Done. Let me know if you want the lot detail.").offerEnding).toBe(true);
     expect(behaviourFlags("I can also run the scenario set.").offerEnding).toBe(true);
-    expect(behaviourFlags("Let me know your bracket and I will refine it. The answer is to wait.").offerEnding).toBe(false);
+    expect(behaviourFlags("Let me know your bracket and I will refine it. The answer is to wait. The saving is small either way.").offerEnding).toBe(false);
+  });
+});
+
+describe("behaviour flags: run-3 fragments", () => {
+  it("a progress announcement in the first paragraph, not the first line, counts", () => {
+    const q8 = "There is no market-down-20% preset in the scenario engine. Let me pull the closest available presets and your risk profile together.Across all three accounts the presets show:";
+    expect(behaviourFlags(q8).progressOpening).toBe(true);
+    expect(behaviourFlags("I'll check the calendar for this week.").progressOpening).toBe(true);
+  });
+
+  it("past-tense reporting is not an announcement", () => {
+    expect(behaviourFlags("I pulled the presets and your risk profile. The AI capex pause costs the most.").progressOpening).toBe(false);
+    expect(behaviourFlags("I checked the calendar: nothing is scheduled.").progressOpening).toBe(false);
+    expect(behaviourFlags("Let me know your bracket. HRVST is the candidate.").progressOpening).toBe(false);
+  });
+
+  it("a conditional offer in the last two sentences counts", () => {
+    const q4 =
+      "Attribution needs a statement for that month. If you want the month-by-month P&L path through March, I can pull that, or if you would rather see today I can run a snapshot.";
+    expect(behaviourFlags(q4).offerEnding).toBe(true);
+    expect(behaviourFlags("That is the picture. Just say the word and I will break it out by account.").offerEnding).toBe(true);
+    expect(behaviourFlags("That is the picture. Happy to dig into the bond side.").offerEnding).toBe(true);
+  });
+
+  it("a pointer to where something lives is not an offer", () => {
+    expect(behaviourFlags("HRVST is the candidate. The full list is on the Tax Lots page.").offerEnding).toBe(false);
+    expect(behaviourFlags("Nothing is scheduled. Company investor-relations pages carry the dates.").offerEnding).toBe(false);
+  });
+
+  it("ordinary finance words are not identifiers", () => {
+    expect(behaviourFlags("Unrealized gain, cost basis, short-term and long-term lots, the wash-sale rule, P&L and YTD.").namesInternals).toBe(false);
+    expect(behaviourFlags("The day effect and the market value are in USD.").namesInternals).toBe(false);
   });
 });

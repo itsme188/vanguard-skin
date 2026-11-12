@@ -311,29 +311,32 @@ export function scoreAnswer(answer: EvalAnswer, checks: readonly Check[]): Score
 export interface BehaviourFlags {
   /** Names a tool, field or parameter (a query_ name or a backticked snake_case identifier). */
   namesInternals: boolean;
-  /** Opens with a progress announcement before any content. */
+  /** Announces work about to be done (anywhere in the answer, not past tense). */
   progressOpening: boolean;
-  /** Ends with an offer of more help. */
+  /** Offers more work in its last two sentences (a pointer to where something lives does not count). */
   offerEnding: boolean;
 }
 
 const INTERNAL_NAME = /\bquery_[a-z_]+\b|`[a-z][a-z0-9]*(_[a-z0-9]+)+`/;
-const PROGRESS_OPENING =
-  /^\s*(let me|let's|i'?ll (check|pull|look|grab|start|run|fetch|query|get)|i will (check|pull|look)|pulling|checking|looking (up|at)|fetching|grabbing|first,? i'?ll|one moment|give me a (moment|second))/i;
-const OFFER_ENDING =
-  /(let me know|just say the word|want me to|would you like( me)? to|i can also|happy to|shall i|should i (pull|run|check)|if you('d)? like,? i can)/i;
+/** Work about to be done, at the start of a sentence anywhere in the answer (never past tense: "I pulled" is a report). */
+const WORK_VERBS = "pull|check|look|run|grab|fetch|get|query|start|see|dig|confirm|gather|compute|load|search|review";
+const PROGRESS_ANNOUNCEMENT = new RegExp(
+  `(^|[.!?:]\\s*|\\n\\s*)(let me (${WORK_VERBS})|let's (${WORK_VERBS})|i'?ll (${WORK_VERBS})|i will (${WORK_VERBS})|i'm going to (${WORK_VERBS})|(pulling|checking|fetching|grabbing|loading|querying) (the|your|that|this|those|it|both|all)\\b|looking (up|at|into) (the|your)\\b|first,? (i'?ll|let me)|one moment|give me a (moment|second))`,
+  "i",
+);
+/** An offer of more work: conditional ("if you want ... I can ..."), or a direct one. */
+const OFFER = /let me know|just say the word|want me to|do you want me|would you like( me)? to|i can also|happy to|shall i|should i (pull|run|check)|if you('d)? (want|like|prefer)[^.!?]{0,160}\bi (can|could|'?ll|will)\b|\bi can (pull|run|check|break|dig|add|show|do|look|split)\b[^.!?]{0,60}\b(if you|for you)\b/i;
 
 /** The three behaviour flags for an answer. Pure. */
 export function behaviourFlags(text: string): BehaviourFlags {
   const t = (text ?? "").trim();
-  const tail = t.slice(-300);
-  const lastPara = tail.split(/\n\s*\n/).pop() ?? tail;
-  // The offer must be the closing sentence, not an aside earlier in the paragraph.
-  const lastSentence = lastPara.trim().split(/(?<=[.!?])\s+/).filter(Boolean).pop() ?? lastPara;
+  // The offer counts in the last two sentences only (an aside earlier on is not a closing offer).
+  const sentences = t.slice(-800).split(/(?<=[.!?])\s*(?=[A-Z*\-|])|\n+/).map((x) => x.trim()).filter(Boolean);
+  const closing = sentences.slice(-2).join(" ");
   return {
     namesInternals: INTERNAL_NAME.test(t),
-    progressOpening: PROGRESS_OPENING.test(t),
-    offerEnding: OFFER_ENDING.test(lastSentence),
+    progressOpening: PROGRESS_ANNOUNCEMENT.test(t),
+    offerEnding: OFFER.test(closing),
   };
 }
 

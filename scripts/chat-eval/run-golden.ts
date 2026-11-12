@@ -363,6 +363,8 @@ export async function guardedAsk(
   let nested = 0;
   const toolTokensByStep: number[] = [];
   let inFlightBooking: number | null = null;
+  /** Usage lines seen when the ceiling tripped. */
+  let linesAtTrip: number | null = null;
   let lagBreach: string | null = null;
   let lastPoll = 0;
 
@@ -387,6 +389,7 @@ export async function guardedAsk(
           lagBreach = `the log was read late: step ${i + 2} had already finished when step ${i + 1} tripped the ceiling`;
         }
         inFlightBooking = next;
+        linesAtTrip = seenLines;
         return COST_CEILING_REASON;
       }
     }
@@ -453,6 +456,13 @@ export async function guardedAsk(
   if (priced.unknownModel) stop = `the server used model ${priced.unknownModel}, which has no price in scripts/chat-eval/pricing.ts`;
   else if (priced.usageMissing) stop = stop ?? `usage not fully accounted (${priced.usageMissing})`;
   if (lagBreach) stop = stop ?? lagBreach;
+  // The guarantee assumes the abort stops the route's model calls. If more
+  // steps were logged after the trip than the one in flight, it did not:
+  // every logged step is booked (above), and the run stops.
+  const loggedAfterTrip = ceilingAborted && linesAtTrip !== null ? (turns[turns.length - 1]?.steps.length ?? 0) - linesAtTrip : 0;
+  if (loggedAfterTrip > 1) {
+    stop = stop ?? `the server ran ${loggedAfterTrip} step(s) after the abort (the stop did not reach the model call); every logged step is booked`;
+  }
   return { ex, priced, ceilingAborted, stop };
 }
 
@@ -483,6 +493,8 @@ export interface QuestionRecord {
   notes: string[];
   answer?: string;
   checks: Record<string, unknown>[];
+  /** Characters of the answer text (kept even without --show-answers). */
+  answerChars?: number;
   /** Behaviour flags of the answer (counted per run; never part of pass/fail). */
   behaviour?: BehaviourFlags;
 }
@@ -613,6 +625,7 @@ export async function runGolden(
         conversationId: ex.conversationId,
         elapsedMs: ex.elapsedMs,
         behaviour: behaviourFlags(ex.summary.text),
+        answerChars: ex.summary.text.length,
         ...(opts.showAnswers ? { answer: ex.summary.text } : {}),
       });
       print(
@@ -675,9 +688,13 @@ export function printGoldenTable(report: GoldenReport, print: Print): void {
   print("");
   print(`passed ${passed}/${scored.length} scored (${report.questions.length} planned)`);
   const b = report.behaviourCounts ?? countBehaviour(report.questions);
+  const withAnswer = scored.filter((q) => q.answerChars !== undefined);
+  const avgChars = withAnswer.length ? withAnswer.reduce((s, q) => s + (q.answerChars ?? 0), 0) / withAnswer.length : 0;
+  const avgOutput = scored.length ? scored.reduce((s, q) => s + (q.usage?.output ?? 0), 0) / scored.length : 0;
+  print(`length (the main cost lever): average answer ${Math.round(avgChars)} characters, average output ${Math.round(avgOutput)} tokens per question`);
   print(
     `behaviour (counted, not scored), of ${b.answered} answers: names a tool/field ${b.namesInternals}, ` +
-      `opens with a progress line ${b.progressOpening}, ends with an offer ${b.offerEnding}`,
+      `announces work in progress ${b.progressOpening}, closes with an offer ${b.offerEnding}`,
   );
   print(`tokens: uncached input ${total.noCache}, cache write ${total.cacheWrite}, cache read ${total.cacheRead}, output ${total.output}`);
   print(
