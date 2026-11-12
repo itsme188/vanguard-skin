@@ -556,6 +556,7 @@ describe("the in-question cost ceiling, with a stubbed model", () => {
         import("@/scripts/chat-eval/run-golden"),
       ]);
     const { POST } = await import("@/app/api/chat/route");
+    const { resolveFeatureModel } = await import("@/lib/ai/models");
 
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "chat-eval-abort-"));
     const dbPath = path.join(dir, "eval.db");
@@ -575,9 +576,23 @@ describe("the in-question cost ceiling, with a stubbed model", () => {
     stub.db = db;
 
     // Every step: a tool call, 40k tokens written to cache and 1k output.
+    // The stub answers as the model the runner PREDICTS for chat
+    // (resolveFeatureModel on this database), so the runner's worst case and
+    // the usage lines are priced at the same rate whatever id the tier
+    // resolves to (2026-11-12: Sonnet 5.5 once the fallback moved).
+    const chatModel = resolveFeatureModel("chat").modelId;
+    const price = priceFor(chatModel)!;
+    expect(price).not.toBeNull();
+    const STEP_USAGE = { noCache: 10, cacheWrite: 40000, cacheRead: 0, output: 1000 };
+    const stepCost = costOf(STEP_USAGE, price);
+    const nextStepWorst = stepWorstCase(40010 + 1000 + STEP_INPUT_MARGIN_TOKENS, 16000, price);
+    // A per-question ceiling that lets step 2 start (one step + the next
+    // step's worst case fits) but stops step 3 (two steps + the worst case
+    // do not). Half a step of slack covers the step-2 tool result's growth.
+    const ceiling = stepCost + nextStepWorst + stepCost / 2;
     let calls = 0;
     stub.model = new MockLanguageModelV3({
-      modelId: "claude-sonnet-4-6",
+      modelId: chatModel,
       // Like a real provider fetch, the step honours the abort signal.
       doStream: async ({ abortSignal }) => {
         calls++;
@@ -632,7 +647,7 @@ describe("the in-question cost ceiling, with a stubbed model", () => {
     };
     const out = path.join(dir, "e.json");
     try {
-      await main(["--db", dbPath, "--log", path.join(dir, "server.log"), "--only", "Q9", "--out", out, "--max-usd", "1.3"], deps, () => {});
+      await main(["--db", dbPath, "--log", path.join(dir, "server.log"), "--only", "Q9", "--out", out, "--max-usd", "1.3", "--max-usd-per-question", String(ceiling)], deps, () => {});
     } finally {
       spy.mockRestore();
     }
@@ -640,8 +655,8 @@ describe("the in-question cost ceiling, with a stubbed model", () => {
     const q = report.questions[0];
     expect(q.status).toBe("aborted-cost-ceiling");
     expect(q.score.pass).toBe(false);
-    // Step 1: $0.165 spent + next-step worst $0.40 = $0.565 <= $0.60, go on.
-    // Step 2: $0.33 + $0.40 > $0.60, abort while step 3 is in flight.
+    // Step 1: one step spent + the next step's worst case fits the ceiling, go on.
+    // Step 2: two steps + the worst case pass it, abort while step 3 is in flight.
     // Whether the route stops on the abort is the route's own concern (and
     // timing-sensitive in process; tests/api/chat-abort.test.ts owns it). The
     // runner must either see it stop (two lines, then the step in flight) or
@@ -650,11 +665,10 @@ describe("the in-question cost ceiling, with a stubbed model", () => {
     if (q.perStep.length > 3) expect(report.stoppedReason).toMatch(/after the abort/);
     else expect(calls).toBeLessThanOrEqual(3);
     // Booked = every usage line seen + the in-flight step at the runner's next-step worst case.
-    const sonnet = priceFor("claude-sonnet-4-6")!;
-    const linesSum = q.perStep.reduce((s: number, st: { usage: Parameters<typeof costOf>[0] }) => s + costOf(st.usage, sonnet), 0);
-    expect(linesSum).toBeCloseTo(q.perStep.length * costOf({ noCache: 10, cacheWrite: 40000, cacheRead: 0, output: 1000 }, sonnet), 12);
+    const linesSum = q.perStep.reduce((s: number, st: { usage: Parameters<typeof costOf>[0] }) => s + costOf(st.usage, price), 0);
+    expect(linesSum).toBeCloseTo(q.perStep.length * stepCost, 12);
     // the in-flight booking is the next-step worst case from the real sizes (the step-2 tool result adds a little)
-    const floor = stepWorstCase(40010 + 1000 + STEP_INPUT_MARGIN_TOKENS, 16000, sonnet);
+    const floor = nextStepWorst;
     expect(q.inFlightBookedUsd).toBeGreaterThanOrEqual(floor);
     expect(q.inFlightBookedUsd).toBeLessThan(floor + 0.05);
     expect(q.costUsd).toBeCloseTo(linesSum + q.inFlightBookedUsd, 9);
