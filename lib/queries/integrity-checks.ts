@@ -827,7 +827,10 @@ function scanLotDriftHits(
         key: hitKey,
         severity: "warning",
         kind: "statement-lag",
-        reason: expiredOptionIds.has(securityId)
+        // Expired wording only while a lot is still open: with no open lot
+        // the closing entry is recorded, and a stale holdings row is not a
+        // contract awaiting its close.
+        reason: expiredOptionIds.has(securityId) && hasLot
           ? `${label}: expired — awaiting its closing entry`
           : closedPerLive
             ? `${label}: closed per live data — awaiting statement`
