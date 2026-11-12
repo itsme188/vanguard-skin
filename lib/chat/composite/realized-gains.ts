@@ -14,14 +14,15 @@
  * `replacement_outside_this_answer` (owner ruling 2026-11-12, replacing plan
  * P8's count-only rule; the chat is read by the owner only).
  *
- * The replacement's account is a read of the lots the engine scanned (same
- * security, the date the engine named, opening-snapshot lots excluded, as in
- * `detectWashSales`); no figure is recomputed. Every row and total keeps the
+ * The replacement's account comes from `washSaleReplacementAccounts`
+ * (lib/queries/wash-sale-replacements.ts), the one reader shared with the
+ * chat Portfolio Context; no figure is recomputed. Every row and total keeps the
  * engine's identity gain = proceeds - cost basis + adjustment.
  */
 import type Database from "better-sqlite3";
 import { generateTaxReport, type Form8949Row, type WashSaleWarning } from "@/lib/compute/tax-report";
 import { isTaxConventionPending } from "@/lib/compute/tax-convention";
+import { washSaleReplacementAccounts } from "@/lib/queries/wash-sale-replacements";
 import {
   ACCOUNT_NAME_FIELD,
   NO_ACCOUNT_IN_SCOPE,
@@ -106,15 +107,8 @@ function replacementsFor(
        JOIN accounts a ON a.id = tl.account_id
       WHERE tls.id = ?`,
   );
-  const buyers = db.prepare(
-    `SELECT DISTINCT a.name FROM tax_lots tl
-       JOIN securities s ON s.id = tl.security_id
-       JOIN accounts a ON a.id = tl.account_id
-      WHERE s.symbol = ? AND tl.acquisition_date = ? AND tl.is_from_opening_snapshot = 0
-      ORDER BY a.name`,
-  );
   return warnings.map((w) => {
-    const accounts = (buyers.all(w.symbol, w.purchaseDate) as { name: string }[]).map((r) => r.name);
+    const accounts = washSaleReplacementAccounts(db, w.symbol, w.purchaseDate);
     return {
       saleAccount: (saleAccount.get(w.saleId) as { name: string } | undefined)?.name ?? "",
       replacement: {

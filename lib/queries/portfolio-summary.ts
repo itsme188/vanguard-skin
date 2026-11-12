@@ -11,6 +11,7 @@ import { normalizeFundCategory } from "@/lib/securities/normalize-fund-category"
 import { todayET } from "@/lib/calendar/date-utils";
 import { accountScopeAndSql } from "@/lib/queries/account-scope-sql";
 import { getAllAccounts } from "@/lib/queries/accounts";
+import { washSaleReplacementAccounts } from "@/lib/queries/wash-sale-replacements";
 import { isTaxableAccount } from "@/lib/compute/tax-treatment";
 import { generateTaxReport, washSaleReplacementPhrase, type TaxReportResult } from "@/lib/compute/tax-report";
 import { quantityUnitLabel } from "@/lib/format/quantity-unit";
@@ -273,6 +274,8 @@ export function getPortfolioSummaryForChat(db: Database.Database, scope?: Portfo
   const accountsInScope = getAllAccounts(db).filter(
     (a) => accountIds === undefined || accountIds.includes(a.id),
   );
+  /** Names of the scope's accounts; null for the whole book. */
+  const scopeAccountNames = accountIds === undefined ? null : new Set(accountsInScope.map((a) => a.name));
   const taxableAccountsInScope = accountsInScope.filter((a) => isTaxableAccount(a.tax_treatment));
   const taxableIds = taxableAccountsInScope.map((a) => a.id);
   const noTaxableAccount = accountsInScope.length > 0 && taxableAccountsInScope.length === 0;
@@ -659,22 +662,22 @@ export function getPortfolioSummaryForChat(db: Database.Database, scope?: Portfo
       );
       const washCount = y.washSaleWarnings.length;
       if (washCount === 0) continue;
-      if (accountIds !== undefined) {
-        // P8: the wash-sale scan reads replacement purchases in EVERY
-        // account, so a scoped chat gets the count only, never another
-        // account's purchase facts.
+      // Same detail in every scope (owner ruling 2026-11-12, replacing P8's
+      // count-only line for a scoped chat). The scan reads replacement
+      // purchases in every account, so a scoped line names the account of a
+      // replacement bought outside the scope.
+      lines.push(
+        `- Wash sales ${y.year}: ${washCount} possible wash sale${washCount === 1 ? "" : "s"} (heuristic 30-day same-security scan; verify before filing):`
+      );
+      for (const w of y.washSaleWarnings) {
+        const outside =
+          scopeAccountNames === null
+            ? []
+            : washSaleReplacementAccounts(db, w.symbol, w.purchaseDate).filter((n) => !scopeAccountNames.has(n));
+        const outsideNote = outside.length > 0 ? `; bought in ${outside.join(", ")}, outside this chat's scope` : "";
         lines.push(
-          `- Wash sales ${y.year}: ${washCount} possible wash sale${washCount === 1 ? "" : "s"}; the replacement purchases may sit in other accounts; see the All Accounts scope.`
+          `  - ${w.symbol} sold ${w.saleDate} at a ${formatUSD(Math.abs(w.lossAmount))} loss; ${washSaleReplacementPhrase(w)}${outsideNote}`
         );
-      } else {
-        lines.push(
-          `- Wash sales ${y.year}: ${washCount} possible wash sale${washCount === 1 ? "" : "s"} (heuristic 30-day same-security scan; verify before filing):`
-        );
-        for (const w of y.washSaleWarnings) {
-          lines.push(
-            `  - ${w.symbol} sold ${w.saleDate} at a ${formatUSD(Math.abs(w.lossAmount))} loss; ${washSaleReplacementPhrase(w)}`
-          );
-        }
       }
     }
     if (conventionPending) {

@@ -189,37 +189,53 @@ describe("B1: the summary reads exactly the scope's accounts", () => {
     expect(all).toContain("- Latest snapshot: 2026-10-31");
   });
 
-  it("a scoped summary shows no wash-sale replacement from another account", () => {
-    // P8: a loss sale in IBKR Main; the replacement purchase sits in Vanguard Taxable.
+  it("a scoped summary gives the wash-sale detail and names a replacement account outside the scope", () => {
+    // Owner ruling 2026-11-12 (replaces P8's count-only line): a loss sale in
+    // IBKR Main; one replacement sits in Vanguard Taxable (outside the IBKR
+    // scope), another loss sale on WSY is replaced inside IBKR Two.
     const wsx = seedSec(db, "WSX");
+    const wsy = seedSec(db, "WSY");
     const saleDate = daysAgo(20);
     const replacementDate = daysAgo(10);
-    const lotId = Number(
-      db
-        .prepare(
-          `INSERT INTO tax_lots (account_id, security_id, acquisition_date, acquisition_price,
-                                 quantity_acquired, quantity_remaining, cost_basis)
-           VALUES (1, ?, ?, 100, 10, 0, 1000)`
-        )
-        .run(wsx, daysAgo(200)).lastInsertRowid
-    );
-    const saleTxn = seedTxn(1, wsx, saleDate, "SELL", 10, 800);
-    db.prepare(
-      `INSERT INTO tax_lot_sales (tax_lot_id, sale_transaction_id, sale_date, sale_price, quantity_sold,
-                                  proceeds, cost_basis_allocated, realized_gain_loss, is_long_term, holding_period_days)
-       VALUES (?, ?, ?, 80, 10, 800, 1000, -200, 0, 180)`
-    ).run(lotId, saleTxn, saleDate);
+    const lossSale = (securityId: number, accountId: number) => {
+      const lotId = Number(
+        db
+          .prepare(
+            `INSERT INTO tax_lots (account_id, security_id, acquisition_date, acquisition_price,
+                                   quantity_acquired, quantity_remaining, cost_basis)
+             VALUES (?, ?, ?, 100, 10, 0, 1000)`
+          )
+          .run(accountId, securityId, daysAgo(200)).lastInsertRowid
+      );
+      const saleTxn = seedTxn(accountId, securityId, saleDate, "SELL", 10, 800);
+      db.prepare(
+        `INSERT INTO tax_lot_sales (tax_lot_id, sale_transaction_id, sale_date, sale_price, quantity_sold,
+                                    proceeds, cost_basis_allocated, realized_gain_loss, is_long_term, holding_period_days)
+         VALUES (?, ?, ?, 80, 10, 800, 1000, -200, 0, 180)`
+      ).run(lotId, saleTxn, saleDate);
+    };
+    lossSale(wsx, 1);
+    lossSale(wsy, 1);
     seedLot(db, 3, wsx, { date: replacementDate, qty: 10, price: 85 });
+    seedLot(db, 2, wsy, { date: replacementDate, qty: 10, price: 85 });
 
-    const scoped = getPortfolioSummaryForChat(db, IBKR_SCOPE);
-    expect(scoped).toContain(
-      "1 possible wash sale; the replacement purchases may sit in other accounts; see the All Accounts scope"
-    );
-    expect(scoped).not.toContain(replacementDate);
-    expect(scoped).not.toContain("Vanguard Taxable");
-
-    // The All Accounts scope shows the detail, replacement date included.
     const all = getPortfolioSummaryForChat(db);
-    expect(all).toContain(replacementDate);
+    const scoped = getPortfolioSummaryForChat(db, IBKR_SCOPE);
+    const washLines = (text: string) => text.split("\n").filter((l) => /^- Wash sales |^  - WS[XY] sold /.test(l));
+
+    // The All Accounts lines, unchanged, are the scoped lines' base.
+    const allLines = washLines(all);
+    expect(allLines).toHaveLength(3);
+    expect(allLines[0]).toMatch(/^- Wash sales \d{4}: 2 possible wash sales \(heuristic 30-day same-security scan; verify before filing\):$/);
+    expect(allLines.slice(1).every((l) => l.includes(replacementDate))).toBe(true);
+    expect(all).not.toContain("outside this chat's scope");
+
+    const scopedLines = washLines(scoped);
+    expect(scopedLines).toEqual([
+      allLines[0],
+      allLines.find((l) => l.includes("WSX")) + "; bought in Vanguard Taxable, outside this chat's scope",
+      allLines.find((l) => l.includes("WSY")),
+    ]);
+    expect(scoped).not.toContain("see the All Accounts scope");
   });
 });
