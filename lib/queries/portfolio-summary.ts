@@ -325,7 +325,9 @@ export function getPortfolioSummaryForChat(db: Database.Database, scope?: Portfo
 
   // Run 4 (2026-11-12): each line names the account's tax treatment, so a
   // second taxable account is never read as tax-advantaged by its name.
-  const taxTreatmentById = new Map(getAllAccounts(db).map((a) => [a.id, a.tax_treatment]));
+  const everyAccount = getAllAccounts(db);
+  const taxTreatmentById = new Map(everyAccount.map((a) => [a.id, a.tax_treatment]));
+  const taxTreatmentByName = new Map(everyAccount.map((a) => [a.name, a.tax_treatment]));
   const treatment = (id: number) => `tax treatment: ${isTaxableAccount(taxTreatmentById.get(id)) ? "taxable" : "tax-advantaged"}`;
   lines.push("### Account Values");
   for (const av of portfolioValues.accounts) {
@@ -706,13 +708,18 @@ export function getPortfolioSummaryForChat(db: Database.Database, scope?: Portfo
         `- Wash sales ${y.year}: ${washCount} possible wash sale${washCount === 1 ? "" : "s"} (heuristic 30-day same-security scan; verify before filing):`
       );
       for (const w of y.washSaleWarnings) {
-        const outside =
-          scopeAccountNames === null
-            ? []
-            : washSaleReplacementAccounts(db, w.symbol, w.purchaseDate).filter((n) => !scopeAccountNames.has(n));
+        const replacementAccounts = washSaleReplacementAccounts(db, w.symbol, w.purchaseDate);
+        const outside = scopeAccountNames === null ? [] : replacementAccounts.filter((n) => !scopeAccountNames.has(n));
         const outsideNote = outside.length > 0 ? `; bought in ${outside.join(", ")}, outside this chat's scope` : "";
+        // Run 5: a replacement in a tax-advantaged account is what makes the
+        // loss disallowed for good rather than deferred into the basis.
+        const sheltered = replacementAccounts.filter((n) => !isTaxableAccount(taxTreatmentByName.get(n)));
+        const shelteredNote =
+          sheltered.length > 0
+            ? `; ${sheltered.join(", ")} ${sheltered.length === 1 ? "is" : "are"} tax-advantaged, so the loss is disallowed for good`
+            : "";
         lines.push(
-          `  - ${w.symbol} sold ${w.saleDate} at a ${formatUSD(Math.abs(w.lossAmount))} loss; ${washSaleReplacementPhrase(w)}${outsideNote}`
+          `  - ${w.symbol} sold ${w.saleDate} at a ${formatUSD(Math.abs(w.lossAmount))} loss; ${washSaleReplacementPhrase(w)}${outsideNote}${shelteredNote}`
         );
       }
     }
