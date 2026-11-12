@@ -54,7 +54,8 @@
  *   --only Q1,Q5         run a subset (golden mode)
  *   --page <path>        a /dashboard path sent as the page context (golden mode; default none)
  *   --out <path>         JSON result (default data/chat-eval/results-<timestamp>.json; must be git-ignored)
- *   --show-answers       print answer text (and keep it in the JSON); off by default
+ *   --show-answers       print answer text, and keep it in the JSON with each tool call's input,
+ *                        output and compact (model-facing) form; off by default
  *   --dry-run            build every request, print the plan and the estimate; no request is sent
  *   --timeout-ms <n>     per request (default 240000)
  */
@@ -98,6 +99,7 @@ import {
   type TokenUsage,
 } from "./pricing";
 import { MAX_CHAT_STEPS } from "../../lib/chat/history";
+import { compactToolOutput } from "../../lib/chat/tools";
 import { previewRequest } from "./request-preview";
 import {
   fileLogDeps,
@@ -335,6 +337,59 @@ interface AskResult {
 export const COST_CEILING_REASON = "cost ceiling";
 
 /**
+ * Whether another step can follow a finished step. Only a step that ended
+ * with tool calls, before the last allowed step, is followed by one; an
+ * unknown finish reason is treated as "may continue" (the safe side). Run 5:
+ * the usage log is often read ahead of the stream's finish chunk, and the
+ * last step's line was checked as if a step would follow, so a finished
+ * turn was booked and failed as a ceiling abort.
+ */
+export function stepMayContinue(finishReason: string | null, stepIndex: number, maxSteps: number): boolean {
+  if (stepIndex >= maxSteps - 1) return false;
+  return finishReason === null || finishReason === "tool-calls";
+}
+
+/** One tool call of a turn, as the stream carried it, with the compact form the model received. */
+export interface ToolTraceEntry {
+  toolCallId: string;
+  name: string;
+  input: unknown;
+  output: unknown;
+  /** `compactToolOutput(name, output)`: the function the route's `toModelOutput` runs. */
+  compactOutput: unknown;
+  error: string | null;
+}
+
+/** Every tool call in a turn's chunks, in call order. Pure apart from the app's own compaction. */
+export function toolTraceFromChunks(chunks: readonly Record<string, unknown>[]): ToolTraceEntry[] {
+  const byId = new Map<string, ToolTraceEntry>();
+  const order: string[] = [];
+  for (const c of chunks) {
+    const id = typeof c.toolCallId === "string" ? c.toolCallId : null;
+    if (!id) continue;
+    if (c.type === "tool-input-available" && typeof c.toolName === "string") {
+      const seen = byId.get(id);
+      if (seen) {
+        seen.input = c.input ?? null;
+      } else {
+        order.push(id);
+        byId.set(id, { toolCallId: id, name: c.toolName, input: c.input ?? null, output: null, compactOutput: null, error: null });
+      }
+    } else if (c.type === "tool-output-available") {
+      const e = byId.get(id);
+      if (e) {
+        e.output = c.output ?? null;
+        e.compactOutput = compactToolOutput(e.name, c.output);
+      }
+    } else if (c.type === "tool-output-error" || c.type === "tool-input-error") {
+      const e = byId.get(id);
+      if (e) e.error = typeof c.errorText === "string" ? c.errorText : "tool error";
+    }
+  }
+  return order.map((id) => byId.get(id)!);
+}
+
+/**
  * Send one request under the per-question ceiling. While it streams, the
  * runner tails the server's per-step usage lines and keeps a running cost;
  * after each finished step it asks whether the running cost plus the worst
@@ -367,8 +422,10 @@ export async function guardedAsk(
   let linesAtTrip: number | null = null;
   let lagBreach: string | null = null;
   let lastPoll = 0;
+  /** The stream's `finish` chunk arrived: the turn is over and no step is in flight. */
+  let turnFinished = false;
 
-  const follow = (conversationId: number | null): string | null => {
+  const follow =(conversationId: number | null): string | null => {
     if (conversationId === null || !price) return null;
     lastPoll = Date.now();
     const lines = splitTurns(parseUsageLines(deps.readLogSince(logStart)), conversationId).flatMap((t) => t.steps);
@@ -384,6 +441,9 @@ export async function guardedAsk(
         limits.maxOutputTokensPerStep,
         price,
       );
+      // A step with no step after it, or a turn whose finish chunk already
+      // arrived, has nothing in flight: its cost is measured, never booked.
+      if (turnFinished || !stepMayContinue(l.finishReason, l.step ?? i, limits.maxSteps)) continue;
       if (!ceilingAllowsNextStep(running + nested * QUESTION_RESERVE_USD, next, ceiling)) {
         if (i < lines.length - 1) {
           lagBreach = `the log was read late: step ${i + 2} had already finished when step ${i + 1} tripped the ceiling`;
@@ -406,6 +466,7 @@ export async function guardedAsk(
     }
     if (chunk.type === "tool-input-start" && typeof chunk.toolName === "string" && NESTED_AI_TOOLS.includes(chunk.toolName)) nested++;
     if (chunk.type === "finish-step") finishSteps++;
+    if (chunk.type === "finish") turnFinished = true;
     const milestone = chunk.type === "finish-step" || chunk.type === "start-step" || chunk.type === "tool-input-start";
     if (milestone || Date.now() - lastPoll > 250) return follow(conversationId);
     return null;
@@ -492,6 +553,12 @@ export interface QuestionRecord {
   elapsedMs: number | null;
   notes: string[];
   answer?: string;
+  /**
+   * With --show-answers: each tool call's input, its output and the compact
+   * form the model received (the eval database is synthetic, so this holds
+   * no real figure). Readers had to rebuild these by hand twice.
+   */
+  toolTrace?: ToolTraceEntry[];
   checks: Record<string, unknown>[];
   /** Characters of the answer text (kept even without --show-answers). */
   answerChars?: number;
@@ -626,7 +693,7 @@ export async function runGolden(
         elapsedMs: ex.elapsedMs,
         behaviour: behaviourFlags(ex.summary.text),
         answerChars: ex.summary.text.length,
-        ...(opts.showAnswers ? { answer: ex.summary.text } : {}),
+        ...(opts.showAnswers ? { answer: ex.summary.text, toolTrace: toolTraceFromChunks(ex.summary.chunks) } : {}),
       });
       print(
         `${q.id} ${score.pass ? "PASS" : "FAIL"} ${score.passed}/${score.total}` +
