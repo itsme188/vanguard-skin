@@ -15,7 +15,9 @@ import {
   CHAT_MODEL_FAMILIES,
   DEFAULT_CHAT_MODEL_FAMILY,
   chatFamilyName,
+  liveModelLabel,
   openConversationModelLabel,
+  requestModelFamily,
   type ChatModelFamily,
 } from "@/lib/chat/model-choice";
 import { toolLabel } from "@/lib/chat/tool-labels";
@@ -397,18 +399,6 @@ function ConversationControls({
         >
           {scopeLabel}
         </span>
-        {/* The model the conversation is locked to (2026-11-13): quiet and
-            one line. It keeps its width and the title gives way first, so a
-            fallback ("Sonnet 5.5 (Opus not available)") stays readable on a
-            phone; past 70% of the row it is cut, whole text in its tooltip. */}
-        {modelLabel && (
-          <span
-            className="text-[11px] text-ink-faint whitespace-nowrap truncate shrink-0 max-w-[70%]"
-            title={`Model: ${modelLabel}`}
-          >
-            {modelLabel}
-          </span>
-        )}
         {conversations.length > 0 && (
           <ConversationHistory
             conversations={conversations}
@@ -426,6 +416,20 @@ function ConversationControls({
       >
         New Conversation
       </button>
+      {/* The model the conversation is locked to (2026-11-13): quiet, one
+          line of its own under the controls (the header rows wrap), so the
+          scope pill, the title picker and New Conversation keep the room
+          they had at every width. A long label is cut with the whole text in
+          its tooltip. */}
+      {modelLabel && (
+        <span
+          className="basis-full order-last min-w-0 truncate whitespace-nowrap text-[11px] text-ink-faint -mt-1"
+          title={`Model: ${modelLabel}`}
+        >
+          <span className="sr-only">Model: </span>
+          {modelLabel}
+        </span>
+      )}
     </>
   );
 }
@@ -550,18 +554,19 @@ export function ChatInterface({ pathname }: ChatInterfaceProps) {
   // Per-call request body — built at the moment of each send so the CURRENT
   // scope, conversation, and page path reach the server (see transport note
   // above). Never reads the turn box. The server resolves the path itself
-  // (Contract A); no client-written page text is sent. The model class
-  // travels only while no conversation exists yet: the server stores it on
-  // the row it creates and reads it from there for every later turn.
-  const currentRequestBody = useCallback(
-    () => ({
+  // (Contract A); no client-written page text is sent. The model class is
+  // the open conversation's known class, or the picker's for a new chat
+  // (requestModelFamily): the server uses it only when it creates a row (a
+  // new chat, or one deleted elsewhere) and reads an existing row's own.
+  const currentRequestBody = useCallback(() => {
+    const family = requestModelFamily(conversations, conversationIdRef.current, modelFamily);
+    return {
       scope,
       conversationId: conversationIdRef.current,
       page: { path: pathname },
-      ...(conversationIdRef.current === null ? { modelFamily } : {}),
-    }),
-    [scope, pathname, modelFamily]
-  );
+      ...(family ? { modelFamily: family } : {}),
+    };
+  }, [scope, pathname, modelFamily, conversations]);
 
   // The one writer of the open conversation (state for the UI, ref for the
   // body; R4-12).
@@ -775,6 +780,7 @@ export function ChatInterface({ pathname }: ChatInterfaceProps) {
         clearError();
         setMessages([]);
         openConversation(null);
+        setModelFamily(DEFAULT_CHAT_MODEL_FAMILY);
       }
       await fetchConversations();
     } catch {
@@ -814,10 +820,10 @@ export function ChatInterface({ pathname }: ChatInterfaceProps) {
           `relative` anchors the picker's menu to this row (see
           ConversationHistory). */}
       {isLocked && (
-        <div className="md:hidden relative shrink-0 flex items-center justify-between gap-2 px-4 py-3 mb-3 border-b border-edge">
+        <div className="md:hidden relative shrink-0 flex flex-wrap items-center justify-between gap-2 px-4 py-3 mb-3 border-b border-edge">
           <ConversationControls
             scopeLabel={scopeLabel}
-            modelLabel={openConversationModelLabel(conversations, conversationId, modelFamily)}
+            modelLabel={openConversationModelLabel(conversations, conversationId, modelFamily, liveModelLabel(messages))}
             conversations={conversations}
             currentId={conversationId}
             onSelect={loadConversation}
@@ -839,10 +845,10 @@ export function ChatInterface({ pathname }: ChatInterfaceProps) {
         {/* Conversation header (shown when conversation is active) — from md
             up it stays at the top of the transcript, as before. */}
         {isLocked && (
-          <div className="hidden md:flex items-center justify-between gap-2 pb-3 mb-3 border-b border-edge">
+          <div className="hidden md:flex flex-wrap items-center justify-between gap-2 pb-3 mb-3 border-b border-edge">
             <ConversationControls
               scopeLabel={scopeLabel}
-              modelLabel={openConversationModelLabel(conversations, conversationId, modelFamily)}
+              modelLabel={openConversationModelLabel(conversations, conversationId, modelFamily, liveModelLabel(messages))}
               conversations={conversations}
               currentId={conversationId}
               onSelect={loadConversation}

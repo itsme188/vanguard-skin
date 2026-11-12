@@ -54,12 +54,18 @@ describe("the model pills on the new-chat screen", () => {
   });
 });
 
-describe("the class travels in the per-call body, only before a conversation exists", () => {
-  const body = sliceBetween(src, "const currentRequestBody = useCallback(", "[scope, pathname, modelFamily]");
+describe("the class travels in the per-call body", () => {
+  const body = sliceBetween(src, "const currentRequestBody = useCallback(", "[scope, pathname, modelFamily, conversations]");
 
-  it("is spread in only while conversationIdRef is empty", () => {
-    anchorIndex(body, "...(conversationIdRef.current === null ? { modelFamily } : {}),");
+  it("is the open conversation's known class, or the picker's for a new chat (review item 2)", () => {
+    anchorIndex(body, "const family = requestModelFamily(conversations, conversationIdRef.current, modelFamily);");
+    anchorIndex(body, "...(family ? { modelFamily: family } : {}),");
     expect(body).not.toContain("turn.");
+  });
+
+  it("deleting the open conversation puts the picker back on the default (review item 3)", () => {
+    const reset = sliceBetween(src, "if (conv.id === conversationId) {", "await fetchConversations();");
+    anchorIndex(reset, "setModelFamily(DEFAULT_CHAT_MODEL_FAMILY);");
   });
 
   it("is never baked into the transport", () => {
@@ -69,12 +75,28 @@ describe("the class travels in the per-call body, only before a conversation exi
 });
 
 describe("the label once the conversation has started", () => {
-  it("both header copies receive the same label", () => {
-    const uses = src.match(/modelLabel=\{openConversationModelLabel\(conversations, conversationId, modelFamily\)\}/g);
+  it("both header copies receive the same label, the stream's until the list row arrives", () => {
+    const uses = src.match(
+      /modelLabel=\{openConversationModelLabel\(conversations, conversationId, modelFamily, liveModelLabel\(messages\)\)\}/g,
+    );
     expect(uses).toHaveLength(2);
+  });
+
+  it("sits on its own line under the controls, so the title and New Conversation keep their room (review item 1)", () => {
     const controls = sliceBetween(src, "function ConversationControls(", "// ─── Main component");
-    anchorIndex(controls, "{modelLabel && (");
-    expect(controls).toContain("text-ink-faint");
+    const label = controls.slice(anchorIndex(controls, "{modelLabel && ("));
+    const cls = label.match(/className="([^"]*)"/)![1].split(/\s+/);
+    for (const c of ["basis-full", "order-last", "truncate", "min-w-0", "text-ink-faint"]) expect(cls).toContain(c);
+    expect(cls).not.toContain("shrink-0");
+    anchorIndex(label, "title={`Model: ${modelLabel}`}");
+    anchorIndex(label, '<span className="sr-only">Model: </span>');
+    // The label is outside the left group: it comes after New Conversation.
+    expect(anchorIndex(controls, "{modelLabel && (")).toBeGreaterThan(anchorIndex(controls, "New Conversation"));
+    // Both header rows wrap, so the label's full-width line goes underneath.
+    const phoneRow = sliceBetween(src, "{isLocked && (\n        <div", "<ConversationControls");
+    const mdRow = sliceBetween(src, "{isLocked && (\n          <div", "<ConversationControls");
+    expect(phoneRow).toMatch(/className="[^"]*\bflex-wrap\b/);
+    expect(mdRow).toMatch(/className="[^"]*\bflex-wrap\b/);
   });
 
   it("reads the server's label for a listed conversation, nothing for one with no class", () => {
@@ -83,13 +105,22 @@ describe("the label once the conversation has started", () => {
       { id: 2, model_label: null },
       { id: 3, model_label: "Sonnet 5.5 (Opus not available)" },
     ];
-    expect(openConversationModelLabel(list, 1, "sonnet")).toBe("Opus 5.5");
-    expect(openConversationModelLabel(list, 2, "opus")).toBeNull();
-    expect(openConversationModelLabel(list, 3, "opus")).toBe("Sonnet 5.5 (Opus not available)");
+    expect(openConversationModelLabel(list, 1, "sonnet", null)).toBe("Opus 5.5");
+    expect(openConversationModelLabel(list, 2, "opus", null)).toBeNull();
+    expect(openConversationModelLabel(list, 3, "opus", null)).toBe("Sonnet 5.5 (Opus not available)");
   });
 
   it("names the chosen class while the first turn's row is not listed yet", () => {
-    expect(openConversationModelLabel([], null, "haiku")).toBe("Haiku");
-    expect(openConversationModelLabel([{ id: 1, model_label: "Opus 5.5" }], 9, "opus")).toBe("Opus");
+    expect(openConversationModelLabel([], null, "haiku", null)).toBe("Haiku");
+    expect(openConversationModelLabel([{ id: 1, model_label: "Opus 5.5" }], 9, "opus", null)).toBe("Opus");
+  });
+
+  it("prefers the server's resolved label from the stream until the list row arrives (review item 4)", () => {
+    expect(openConversationModelLabel([], null, "opus", "Sonnet 5.5 (Opus not available)")).toBe(
+      "Sonnet 5.5 (Opus not available)",
+    );
+    // The list is the later source: once the row is there it wins.
+    expect(openConversationModelLabel([{ id: 4, model_label: "Opus 5.5" }], 4, "opus", "Sonnet 5.5")).toBe("Opus 5.5");
+    expect(openConversationModelLabel([{ id: 4, model_label: null }], 4, "opus", "Sonnet 5.5")).toBeNull();
   });
 });

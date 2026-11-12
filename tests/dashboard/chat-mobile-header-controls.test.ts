@@ -91,6 +91,13 @@ const USE_CHAT_BLOCK_AT_HEAD = `const { transport, turn, sendAutomaticallyWhen }
     sendAutomaticallyWhen,
   });`;
 
+// Re-pinned 2026-11-13 again for the picker review fixes: `currentRequestBody`
+// became a block-bodied callback that asks `requestModelFamily(conversations,
+// conversationIdRef.current, modelFamily)` for the class (the open
+// conversation's known class, or the picker's for a new chat) and spreads it
+// when non-null; its deps gained `conversations`; its comment says so; and
+// `confirmDeleteConversation`'s open-conversation branch gained one
+// `setModelFamily(DEFAULT_CHAT_MODEL_FAMILY);` line. Nothing else moved.
 // Re-pinned 2026-11-13 for the per-conversation model class (owner-approved
 // 2026-11-13). Inside the hashed region exactly three things changed: one new
 // `useState` line (`modelFamily`, Sonnet preselected); `currentRequestBody`
@@ -114,7 +121,7 @@ const USE_CHAT_BLOCK_AT_HEAD = `const { transport, turn, sendAutomaticallyWhen }
 // component's `return (` at that same commit: every hook, effect, handler and
 // state declaration of the component that owns useChat.
 const COMPONENT_LOGIC_SHA256_AT_HEAD =
-  "89252ac29fba0a25336febdb7736dd4e4a7cc4981abfe7f667541122513fa926";
+  "eb28ee0037240c2487eac93dbc4d72d8c9087f705e934f121c842755303ccd10";
 
 const RETURN_ANCHOR = '\n  return (\n    <div className="flex flex-col';
 

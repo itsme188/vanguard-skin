@@ -13,7 +13,7 @@ describe("chat request body carries the page path (Contract A)", () => {
   it("the per-call body is scope, conversation id and page path", () => {
     // Re-pinned 2026-11-13: the body also carries the model class, only
     // while no conversation exists yet (tests/dashboard/chat-model-picker.test.ts).
-    const builder = sliceBetween(src, "const currentRequestBody = useCallback(", "[scope, pathname, modelFamily]");
+    const builder = sliceBetween(src, "const currentRequestBody = useCallback(", "[scope, pathname, modelFamily, conversations]");
     anchorIndex(builder, "scope,\n      conversationId: conversationIdRef.current,\n      page: { path: pathname },");
     expect(builder).not.toContain("pageContext");
     expect(builder).not.toContain("turn.");
