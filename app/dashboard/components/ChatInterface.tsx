@@ -9,7 +9,6 @@ import { QuickActionChips } from "./QuickActionChips";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { useToast } from "./Toast";
 import { CHIP_TONE_TEXT, GOLD_FILL_CLASSES } from "./chip-tone-text";
-import { usePrivacy } from "@/lib/privacy/context";
 import { conversationTitleFromMessages } from "@/lib/chat/conversation-title";
 import { getQuickActions } from "@/lib/chat/quick-actions";
 import { toolLabel } from "@/lib/chat/tool-labels";
@@ -159,17 +158,6 @@ function NoteApprovalCard({
 
 // ─── Message rendering ───────────────────────────────────────────
 
-// Wraps MarkdownMessage with privacy masking. Direct PrivateText wrap is
-// invalid HTML because PrivateText renders a <span> and MarkdownMessage
-// outputs block elements (<p>, <h1>, <table>).
-function PrivateMarkdown({ content }: { content: string }) {
-  const { isPrivate } = usePrivacy();
-  if (isPrivate) {
-    return <div className="text-ink-dim">•••</div>;
-  }
-  return <MarkdownMessage content={content} />;
-}
-
 interface AssistantPartOptions {
   onNoteAnswer: (approvalId: string, approved: boolean) => void;
   /** A reply is pending: approval buttons are disabled. */
@@ -188,7 +176,7 @@ function renderAssistantParts(parts: UIMessage["parts"], opts: AssistantPartOpti
   return parts.map((part, i) => {
     if (part.type === "text") {
       return part.text ? (
-        <PrivateMarkdown key={i} content={part.text} />
+        <MarkdownMessage key={i} content={part.text} />
       ) : null;
     }
 
