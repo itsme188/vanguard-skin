@@ -158,6 +158,7 @@ const ALLOWED_ROUNDING: Record<string, Record<string, number>> = {
   query_holdings: {
     cost_basis: 2, market_value: 2, unrealized_gain: 2, latest_price: 4, unrealized_gain_pct: 2, position_weight_pct: 2,
     total_cost_basis_usd: 2, // by_symbol; cost_basis_per_share_usd is a ratio and stays exact
+    account_value_weight_pct: 2, account_value_usd: 2, // owner ruling B: share of account value incl. cash, and its base
   },
   query_tax_lots: {
     cost_basis: 2, original_lot_cost_basis: 2, current_value: 2, unrealized_gain: 2, proceeds: 2, realized_gain_loss: 2,

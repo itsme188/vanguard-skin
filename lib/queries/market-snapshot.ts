@@ -10,6 +10,12 @@
  * past the freshness window) or has no clean pair at all. The caller injects
  * the quote fetcher so the local path stays a pure, deterministic unit.
  *
+ * Owner ruling A (2026-11-12): the fallback asks ONLY for the three index
+ * funds (`OUTSIDE_QUOTE_SYMBOLS`). A held ticker is never sent outside. A held
+ * name without a fresh local price comes back from the local book, stale,
+ * with `price_as_of` (the date of its last local price) and no move the book
+ * does not have. Guard: tests/queries/market-snapshot-no-held-tickers-outside.test.ts.
+ *
  * Every result carries an explicit `asOf` + `stale` + human-readable `note` so
  * the chat system prompt can force the model to be honest about freshness
  * instead of confabulating today's action (the 2026-06-05 failure mode).
@@ -28,6 +34,13 @@ export const MARKET_SNAPSHOT_STALE_DAYS = 4;
 
 /** Major market benchmarks surfaced first, in display order. */
 export const DEFAULT_BENCHMARKS = ["SPY", "QQQ", "DIA"];
+
+/**
+ * The ONLY symbols ever sent to the outside quote source (owner ruling A,
+ * 2026-11-12): the three index funds. A benchmark list naming anything else
+ * still sends only these; a held ticker is never sent.
+ */
+export const OUTSIDE_QUOTE_SYMBOLS: ReadonlySet<string> = new Set(["SPY", "QQQ", "DIA"]);
 
 export interface MarketMove {
   symbol: string;
@@ -73,6 +86,19 @@ export interface MarketMove {
   added_today?: boolean;
   /** Why `day_effect` is null, partial, or leaves quantity out; else null. */
   day_effect_reason?: string | null;
+  /**
+   * Holdings only: the date of the price this row reads (YYYY-MM-DD): the
+   * local book's last price for the name, or the index quote's session for a
+   * held index fund on the live fallback. null when the book has no price.
+   */
+  price_as_of?: string | null;
+  /**
+   * Holdings only: true when this row's price is not the snapshot's session
+   * (`price_as_of` differs from `asOf`, or there is none), or the whole
+   * snapshot is stale. A stale row's `pct` is the book's move on
+   * `price_as_of`, never the current session's.
+   */
+  price_stale?: boolean;
 }
 
 export type MarketPosition = "long" | "short";
@@ -218,17 +244,6 @@ export const fetchYahooQuotes: QuoteFetcher = async (symbols) => {
   return Object.keys(out).length > 0 ? out : null;
 };
 
-/**
- * Security types Yahoo cannot price by the plain stored symbol: an option is
- * stored under its OCC symbol and a bond under its CUSIP. They are never sent
- * to the live fallback (their local-book rows are untouched).
- */
-const YAHOO_UNPRICEABLE_TYPES = new Set(["option", "bond"]);
-
-function isYahooPriceableType(securityType: string | null | undefined): boolean {
-  return !YAHOO_UNPRICEABLE_TYPES.has((securityType ?? "").trim().toLowerCase());
-}
-
 /** One account's position in one security, with its day move already measured. */
 interface HeldLeg {
   account: string;
@@ -240,8 +255,8 @@ interface UniverseEntry {
   name: string | null;
   kind: "benchmark" | "holding";
   position?: MarketPosition;
-  /** False for a held option or bond: never requested from the Yahoo fallback. */
-  yahooPriceable: boolean;
+  /** True only for an index fund in OUTSIDE_QUOTE_SYMBOLS listed as a benchmark. */
+  outsideQuote: boolean;
   /** Holdings only: every account's leg on this side of the symbol. */
   legs?: HeldLeg[];
 }
@@ -272,7 +287,7 @@ function buildUniverse(
     const up = symbol.toUpperCase();
     if (seen.has(up)) continue;
     seen.add(up);
-    universe.push({ symbol: up, name: null, kind: "benchmark", yahooPriceable: true });
+    universe.push({ symbol: up, name: null, kind: "benchmark", outsideQuote: OUTSIDE_QUOTE_SYMBOLS.has(up) });
   }
 
   const accounts = (
@@ -280,7 +295,6 @@ function buildUniverse(
       ? db.prepare("SELECT id, name FROM accounts ORDER BY id").all()
       : db.prepare("SELECT id, name FROM accounts WHERE name = ? ORDER BY id").all(accountName)
   ) as { id: number; name: string }[];
-  const typeOf = db.prepare("SELECT security_type FROM securities WHERE id = ?");
 
   const held = new Map<string, UniverseEntry>();
   for (const account of accounts) {
@@ -288,14 +302,10 @@ function buildUniverse(
       const up = holding.symbol?.toUpperCase();
       if (!up || holding.quantity === 0) continue;
       const side: MarketPosition = holding.quantity < 0 ? "short" : "long";
-      const type = (typeOf.get(holding.security_id) as { security_type: string | null } | undefined)
-        ?.security_type;
-      const yahooPriceable = isYahooPriceableType(type);
       const key = `${up}|${side}`;
       const entry = held.get(key);
       if (entry) {
         entry.legs!.push({ account: account.name, holding });
-        if (yahooPriceable) entry.yahooPriceable = true;
         continue;
       }
       held.set(key, {
@@ -303,7 +313,7 @@ function buildUniverse(
         name: holding.security_name,
         kind: "holding",
         position: side,
-        yahooPriceable,
+        outsideQuote: false,
         legs: [{ account: account.name, holding }],
       });
     }
@@ -343,17 +353,46 @@ function legNote(h: TodayHolding): string | null {
 }
 
 const NO_LOCAL_SESSION_REASON =
-  "The local book is behind, so what was held, opened or added this session is not known; no dollar day effect is given. Report the percent price move only.";
+  "The local book is behind, so what was held, opened or added this session is not known; no dollar day effect is given.";
 
 // The book HAS the latest session; the one before it is missing (a close
 // stored under a closed day, a skipped sync), so the consecutive pair the
 // dollar day effect needs cannot form. Saying "behind" here told the owner
 // the book had not synced a session that was in fact in it (QA 2026-10-13).
 const NO_PRICED_NAMES_REASON =
-  "The local book has recent sessions but no usable prices for this name, so what was held, opened or added this session cannot be measured; no dollar day effect is given. Report the percent price move only.";
+  "The local book has recent sessions but no usable prices for this name, so what was held, opened or added this session cannot be measured; no dollar day effect is given.";
 
 const NO_PRIOR_SESSION_REASON =
-  "The local book has this session, but the previous session's close is missing from it, so what was held, opened or added this session cannot be measured; no dollar day effect is given. Report the percent price move only.";
+  "The local book has this session, but the previous session's close is missing from it, so what was held, opened or added this session cannot be measured; no dollar day effect is given.";
+
+/** Added to a held index fund's reason when its percent move is the index quote. */
+const INDEX_QUOTE_NOTE = "Report the percent price move only.";
+
+/** Added to every other held row's reason on the live fallback (owner ruling A). */
+const HELD_LOCAL_ONLY_NOTE =
+  "Held names are never sent to the outside quote source: this row is the local book's last price (price_as_of), not the current session; pct is the book's move on that date, or null when the book has none.";
+
+/** The newest date the local book prices this symbol on; null when never. */
+function lastLocalPriceDate(db: Database.Database, symbol: string): string | null {
+  const row = db
+    .prepare(
+      `SELECT MAX(p.date) AS date
+         FROM prices p
+         JOIN securities s ON s.id = p.security_id
+        WHERE UPPER(s.symbol) = UPPER(?)`,
+    )
+    .get(symbol) as { date: string | null } | undefined;
+  return row?.date ?? null;
+}
+
+/** Stamp `price_stale` on every held row against the snapshot's own session. */
+function stampHeldFreshness(moves: MarketMove[], asOf: string | null, snapshotStale: boolean): MarketMove[] {
+  return moves.map((m) =>
+    m.kind === "holding"
+      ? { ...m, price_stale: snapshotStale || m.price_as_of == null || m.price_as_of !== asOf }
+      : m,
+  );
+}
 
 /**
  * The latest trading-day date the local book prices SPY on, closed-day rows
@@ -495,7 +534,22 @@ export async function getMarketSnapshot(
       .map((u): MarketMove | null => {
         const latest = closeOn(db, u.symbol, pair.latest);
         const prior = closeOn(db, u.symbol, pair.prior);
-        if (latest == null) return null;
+        if (latest == null) {
+          // A benchmark with no close has nothing to say. A HELD name with no
+          // price on the latest session is still a position (owner ruling A):
+          // listed from the book, stale, dated by its last local price, with
+          // no move. It is never fetched from outside.
+          if (u.kind !== "holding") return null;
+          return {
+            symbol: u.symbol,
+            name: u.name,
+            pct: null,
+            kind: u.kind,
+            ...positionFields(u, null),
+            price_as_of: lastLocalPriceDate(db, u.symbol),
+          };
+        }
+        const held = u.kind === "holding" ? { price_as_of: pair.latest } : {};
         if (prior == null || prior === 0) {
           // A benchmark with no prior close has nothing to say. A HELD name
           // without one (first bought during the session, so nothing was
@@ -503,9 +557,9 @@ export async function getMarketSnapshot(
           // from its cost, and the chat must list the same row with the same
           // day effect rather than drop it and contradict the line's total.
           if (u.kind !== "holding") return null;
-          return { symbol: u.symbol, name: u.name, pct: null, kind: u.kind, ...positionFields(u, null) };
+          return { symbol: u.symbol, name: u.name, pct: null, kind: u.kind, ...positionFields(u, null), ...held };
         }
-        return { symbol: u.symbol, name: u.name, pct: pct(latest, prior), kind: u.kind, ...positionFields(u, null) };
+        return { symbol: u.symbol, name: u.name, pct: pct(latest, prior), kind: u.kind, ...positionFields(u, null), ...held };
       })
       .filter((m): m is MarketMove => m !== null);
     staleDays = calendarDaysBetween(pair.latest, today);
@@ -513,7 +567,10 @@ export async function getMarketSnapshot(
   }
 
   // Fresh local data wins outright (local-first) — no live call.
-  if (pair && localMoves.length > 0 && !localStale) {
+  // The fresh path needs a priced row, not only a held name the book cannot
+  // price (that row alone is no market data).
+  const localPriced = localMoves.some((m) => m.pct !== null || m.price_as_of === pair?.latest);
+  if (pair && localPriced && !localStale) {
     // A price dated today (ET) before the 16:00 ET close is a pre-market /
     // intraday quote, not a close — never call it one.
     const sessionOpen =
@@ -526,7 +583,7 @@ export async function getMarketSnapshot(
       asOf: pair.latest,
       stale: false,
       staleDays,
-      moves: localMoves,
+      moves: stampHeldFreshness(localMoves, pair.latest, false),
       note,
     };
   }
@@ -540,7 +597,7 @@ export async function getMarketSnapshot(
   const latestLocal = pair === null ? latestLocalSession(db) : null;
   // A fresh pair with no priced names: the book is not behind, it has nothing
   // usable for this universe.
-  const pairButNoMoves = pair !== null && !localStale && localMoves.length === 0;
+  const pairButNoMoves = pair !== null && !localStale && !localPriced;
   const bookReasons = (quoteDate: string | null) => {
     const missingPrior =
       latestLocal !== null &&
@@ -567,11 +624,10 @@ export async function getMarketSnapshot(
   if (opts.fetchQuotes) {
     let quotes: Awaited<ReturnType<QuoteFetcher>> = null;
     try {
-      // Each symbol once: a held benchmark, or a name held on both sides, is
-      // several rows but one quote.
-      quotes = await opts.fetchQuotes([
-        ...new Set(universe.filter((u) => u.yahooPriceable).map((u) => u.symbol)),
-      ]);
+      // Owner ruling A: only the index funds listed as benchmarks, each once.
+      // A held ticker is never sent; a held index fund reads its index quote.
+      const outside = [...new Set(universe.filter((u) => u.outsideQuote).map((u) => u.symbol))];
+      quotes = outside.length > 0 ? await opts.fetchQuotes(outside) : null;
     } catch {
       quotes = null;
     }
@@ -581,7 +637,7 @@ export async function getMarketSnapshot(
       // or on a weekend the latest Yahoo session is an earlier day.
       // One vote per symbol, however many rows it has.
       const counts = new Map<string, number>();
-      for (const symbol of new Set(universe.map((u) => u.symbol))) {
+      for (const symbol of OUTSIDE_QUOTE_SYMBOLS) {
         const d = quotes[symbol]?.asOf;
         if (d) counts.set(d, (counts.get(d) ?? 0) + 1);
       }
@@ -595,14 +651,47 @@ export async function getMarketSnapshot(
       }
       const quoteDate = asOf ?? today;
       const reasons = bookReasons(asOf);
+      // An outside quote is read only for an index fund; whatever else the
+      // source returned is ignored.
+      const indexQuote = (symbol: string): LiveQuote | null => {
+        if (!OUTSIDE_QUOTE_SYMBOLS.has(symbol)) return null;
+        const q = quotes![symbol];
+        return q && q.prior !== 0 ? q : null;
+      };
+      const localByKey = new Map(
+        localMoves.filter((m) => m.kind === "holding").map((m) => [`${m.symbol}|${m.position}`, m]),
+      );
       const moves = universe
         .map((u): MarketMove | null => {
-          const q = quotes![u.symbol];
-          if (!q || q.prior === 0) return null;
-          return { symbol: u.symbol, name: u.name, pct: pct(q.price, q.prior), kind: u.kind, ...positionFields(u, reasons.reason) };
+          const q = indexQuote(u.symbol);
+          if (u.kind !== "holding") {
+            if (!q) return null;
+            return { symbol: u.symbol, name: u.name, pct: pct(q.price, q.prior), kind: u.kind };
+          }
+          if (q) {
+            return {
+              symbol: u.symbol,
+              name: u.name,
+              pct: pct(q.price, q.prior),
+              kind: u.kind,
+              ...positionFields(u, `${reasons.reason} ${INDEX_QUOTE_NOTE}`),
+              price_as_of: q.asOf ?? quoteDate,
+            };
+          }
+          // Every other held name: the local book's, stale, never fetched.
+          const local = localByKey.get(`${u.symbol}|${u.position}`);
+          const fromPair = local && local.pct !== null && pair ? local : null;
+          return {
+            symbol: u.symbol,
+            name: u.name,
+            pct: fromPair ? fromPair.pct : null,
+            kind: u.kind,
+            ...positionFields(u, `${reasons.reason} ${HELD_LOCAL_ONLY_NOTE}`),
+            price_as_of: fromPair ? pair!.latest : lastLocalPriceDate(db, u.symbol),
+          };
         })
         .filter((m): m is MarketMove => m !== null);
-      if (moves.length > 0) {
+      if (moves.some((m) => m.kind === "benchmark")) {
         const yahooStaleDays = Math.max(0, calendarDaysBetween(quoteDate, today));
         // A gap of up to 3 calendar days is the normal "latest session" case
         // (pre-open → yesterday, Monday pre-open → Friday). Beyond that the
@@ -617,21 +706,21 @@ export async function getMarketSnapshot(
           asOf: quoteDate,
           stale: yahooStale,
           staleDays: yahooStaleDays,
-          moves,
-          note: `${sessionNote} ${reasons.note}`,
+          moves: stampHeldFreshness(moves, quoteDate, yahooStale),
+          note: `${sessionNote} ${reasons.note} Held names are not sent to the outside source: each held row is the local book's, with price_as_of (its last local price date) and price_stale.`,
         };
       }
     }
   }
 
   // ── Degraded: stale local if we have it, else nothing ─────────────────────────
-  if (pair && localMoves.length > 0) {
+  if (pair && localPriced) {
     return {
       source: "local",
       asOf: pair.latest,
       stale: true,
       staleDays,
-      moves: localMoves,
+      moves: stampHeldFreshness(localMoves, pair.latest, true),
       note: `Local book is ${staleDays} day(s) behind (latest close ${pair.latest}) and live data is unavailable — treat these as STALE and tell the user the data is not current.`,
     };
   }

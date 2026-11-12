@@ -34,6 +34,7 @@ import {
 } from "@/lib/queries/tax-lots";
 import { isLongTermSql, longTermDateSql } from "@/lib/queries/long-term-sql";
 import { computePositionTotals, getHoldingsBySecurity } from "@/lib/queries/security-detail";
+import { getPortfolioCurrentValues } from "@/lib/queries/dashboard";
 
 /**
  * Chat sector-FILTER-only alias, on top of normalizeSector. normalizeSector
@@ -510,6 +511,84 @@ export function getHoldingsForChat(
   params.push(noLimit ? -1 : limit);
 
   return db.prepare(sql).all(...params) as HoldingResult[];
+}
+
+/**
+ * The base for `account_value_weight_pct` in query_holdings (owner ruling B,
+ * 2026-11-12): the scope's total account value INCLUDING cash, read from
+ * `getPortfolioCurrentValues` (lib/queries/dashboard.ts), the one reader the
+ * Portfolio strip and the chat summary use. Never a hand-built total.
+ *
+ * The value is each account's net value (positions plus cash), so a margin
+ * debit (negative cash) lowers it and a short's proceeds sit in its cash.
+ * `account_value_usd` is null when unknown: no account in scope has a value
+ * on record, or an account in scope holds positions but has no value (the
+ * combined figure would leave it out). Zero or negative is returned as is,
+ * with a reason; the weight is then null, never 0.
+ */
+export interface AccountValueBase {
+  /** USD; null when unknown. */
+  account_value_usd: number | null;
+  /** Newest of the accounts' own as-of dates. */
+  as_of_date: string | null;
+  /** Oldest of the accounts' own as-of dates (differs when accounts were valued on different days). */
+  oldest_as_of_date: string | null;
+  /** Why account_value_weight_pct is null on every row; null when it is computed. */
+  reason: string | null;
+}
+
+/** `accountIds`: undefined = every account; `[]` = no account. */
+export function getAccountValueBaseForChat(
+  db: Database.Database,
+  accountIds: number[] | undefined,
+): AccountValueBase {
+  if (accountIds !== undefined && accountIds.length === 0) {
+    return { account_value_usd: null, as_of_date: null, oldest_as_of_date: null, reason: "No account is in scope." };
+  }
+  const values = getPortfolioCurrentValues(db, accountIds);
+  const unvalued = values.accounts.filter((a) => a.currentValue === null);
+  // An account with no value counts only if it holds a current position that
+  // the holdings rows would show; an empty account changes nothing.
+  const holding = new Set(
+    (
+      db
+        .prepare(
+          `SELECT DISTINCT h.account_id AS id
+             FROM holdings h
+             JOIN securities s ON s.id = h.security_id
+            WHERE ${[latestHoldingsPredicate({ includeShorts: true }), unmaturedSecuritySql("s"), liveOptionExpirationSql("s", todayET())].join(" AND ")}`,
+        )
+        .all() as { id: number }[]
+    ).map((r) => r.id),
+  );
+  const missing = unvalued.filter((a) => holding.has(a.accountId));
+  const valued = values.accounts.some((a) => a.currentValue !== null);
+  const dates = { as_of_date: values.latestDate, oldest_as_of_date: values.oldestDate };
+  if (!valued || missing.length > 0) {
+    const names = missing.map((a) => a.accountName).join(", ");
+    return {
+      account_value_usd: null,
+      ...dates,
+      reason: !valued
+        ? "No value on record for any account in scope, so no share of account value is given."
+        : `No value on record for ${names}, which holds positions; the combined account value is unknown, so no share of account value is given.`,
+    };
+  }
+  return {
+    account_value_usd: values.totalValue,
+    ...dates,
+    reason:
+      values.totalValue > 0
+        ? null
+        : "The account value is zero or negative, so a share of it has no meaning; account_value_weight_pct is null.",
+  };
+}
+
+/** A position's signed market value as a percent of the account value base; null when either is unusable. */
+export function accountValueWeightPct(marketValue: number | null, base: AccountValueBase): number | null {
+  const v = base.account_value_usd;
+  if (marketValue === null || v === null || !(v > 0)) return null;
+  return (marketValue * 100) / v;
 }
 
 /** A position closed per LIVE broker data whose closing trade awaits the statement. */

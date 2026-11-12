@@ -106,11 +106,11 @@ describe("getMarketSnapshot", () => {
     expect(dia?.pct).toBeCloseTo(2.0, 1);
   });
 
-  it("falls back to Yahoo when the local book is stale", async () => {
+  it("falls back to Yahoo for the index funds only when the local book is stale", async () => {
     seedFreshPair(); // latest local = 2026-06-05
+    let asked: string[] = [];
     const fetchQuotes: QuoteFetcher = async (symbols) => {
-      expect(symbols).toContain("SPY");
-      expect(symbols).toContain("GS");
+      asked = symbols;
       return {
         SPY: { price: 590, prior: 600 }, // -1.667%
         GS: { price: 1050, prior: 1092 }, // -3.846%
@@ -124,7 +124,14 @@ describe("getMarketSnapshot", () => {
     expect(snap.asOf).toBe("2026-06-12");
     expect(snap.stale).toBe(false);
     expect(snap.moves.find((m) => m.symbol === "SPY")?.pct).toBeCloseTo(-1.67, 1);
-    expect(snap.moves.find((m) => m.symbol === "GS")?.pct).toBeCloseTo(-3.85, 1);
+    // Owner ruling A (2026-11-12): the held name is never sent outside; its
+    // row is the local book's move on its last local price date, flagged stale.
+    expect(asked).toContain("SPY");
+    expect(asked).not.toContain("GS");
+    const gs = snap.moves.find((m) => m.symbol === "GS");
+    expect(gs?.pct).toBeCloseTo(-4.95, 1);
+    expect(gs?.price_as_of).toBe("2026-06-05");
+    expect(gs?.price_stale).toBe(true);
   });
 
   it("returns stale local data (flagged) when local is stale AND Yahoo fails", async () => {
@@ -364,7 +371,7 @@ describe("getMarketSnapshot Yahoo fallback is narrowed and bounded", () => {
       .run(symbol, symbol, type).lastInsertRowid as number;
   }
 
-  it("never asks Yahoo for option or bond symbols, and still asks for every stock, ETF and fund", async () => {
+  it("asks Yahoo for the index funds only: never a held stock, ETF, fund, option or bond", async () => {
     seedFreshPair(); // SPY + GS (stock), latest local 2026-06-05
     const acctId = seedAccount("Vanguard Taxable");
     const typed: [string, string][] = [
@@ -386,7 +393,7 @@ describe("getMarketSnapshot Yahoo fallback is narrowed and bounded", () => {
     const snap = await getMarketSnapshot(db, { today: "2026-06-12", fetchQuotes });
 
     expect(snap.source).toBe("yahoo");
-    expect([...asked].sort()).toEqual(["AAA", "BBB", "CCCXX", "DIA", "GS", "QQQ", "SPY"]);
+    expect([...asked].sort()).toEqual(["DIA", "QQQ", "SPY"]);
     const shown = snap.moves.map((m) => m.symbol);
     for (const s of ["SPY", "GS", "AAA", "BBB", "CCCXX"]) expect(shown).toContain(s);
   });

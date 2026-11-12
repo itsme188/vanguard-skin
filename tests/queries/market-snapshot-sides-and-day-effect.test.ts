@@ -137,7 +137,7 @@ describe("chat movers: one row per (symbol, side)", () => {
     expect(snap.moves.filter((m) => m.kind === "holding")).toHaveLength(0);
   });
 
-  it("asks Yahoo for each symbol once and counts a symbol once in the as-of vote", async () => {
+  it("never asks Yahoo for a held name, and dates the snapshot by the index quotes", async () => {
     const id = seedHeld(TAXABLE, "ZZA", 100, 100, 102);
     seedHolding(IBKR, id, PRIOR, -40);
     seedHolding(IBKR, id, LATEST, -40);
@@ -145,9 +145,8 @@ describe("chat movers: one row per (symbol, side)", () => {
     let asked: string[] = [];
     const fetchQuotes: QuoteFetcher = async (symbols) => {
       asked = symbols;
-      // One benchmark dated the 12th, the two-sided name dated the 11th. Counted
-      // once each the vote ties and the later date wins; counted per row the
-      // two-sided name would win 2 to 1.
+      // The stub answers for the held name too; that quote (dated the 11th)
+      // must neither be read nor vote on the snapshot's date.
       return {
         SPY: { price: 610, prior: 600, asOf: "2026-06-12" },
         ZZA: { price: 105, prior: 100, asOf: "2026-06-11" },
@@ -157,14 +156,19 @@ describe("chat movers: one row per (symbol, side)", () => {
     const snap = await getMarketSnapshot(db, { today: "2026-06-12", fetchQuotes });
 
     expect(snap.source).toBe("yahoo");
-    expect(asked.filter((s) => s === "ZZA")).toHaveLength(1);
+    // Owner ruling A (2026-11-12): a held ticker is never sent outside, and a
+    // quote returned for one anyway is never read.
+    expect(asked).not.toContain("ZZA");
     expect(new Set(asked).size).toBe(asked.length);
     expect(snap.asOf).toBe("2026-06-12");
-    // Both sides still come back, each with the live percent move.
+    // Both sides still come back, each with the LOCAL book's move on its last
+    // local price date (100 -> 102), flagged stale.
     const rows = rowsFor(snap.moves, "ZZA");
     expect(rows.map((r) => r.position).sort()).toEqual(["long", "short"]);
     for (const r of rows) {
-      expect(r.pct).toBeCloseTo(5, 6);
+      expect(r.pct).toBeCloseTo(2, 6);
+      expect(r.price_as_of).toBe(LATEST);
+      expect(r.price_stale).toBe(true);
       // The local book is behind, so what was opened this session is not known:
       // no dollar effect, with the reason.
       expect(r.day_effect).toBeNull();
