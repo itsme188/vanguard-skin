@@ -82,6 +82,9 @@
  *   --max-input-chars N                      cap on document chars sent (default 400000)
  *   --max-tokens N                           output cap (default 16384)
  *   --thinking off|adaptive                  default off (fast-parse simulation)
+ *   --model ID                               model to run; REQUIRED on a live run
+ *                                            once the workhorse tier resolves to a
+ *                                            5.5-generation id (see below)
  *   --concurrency N                          parallel calls within one event (default 3)
  *   --corpus /path/to/bakeoff                corpus root override
  *
@@ -93,6 +96,12 @@
  *   - The model id is NEVER hardcoded. It resolves through the repo registry:
  *     resolveTier("workhorse", <live catalog cached in the settings table>),
  *     falling back to SONNET_MODEL (lib/claude-models.ts) when the DB is absent.
+ *   - FROZEN 2026-08 REQUEST SHAPE (2026-11-12): this spike keeps the original
+ *     bake-off request — a forced tool call plus thinking disabled — so its
+ *     results stay comparable. Both are 400s on Sonnet 5.5 / Opus 5.5, so a
+ *     live run on such an id is refused; pass an older id with --model (for
+ *     example a Sonnet 4.6 id). The production extractor
+ *     (lib/print-watch/extract.ts) uses native structured output instead.
  *   - Output comes back through a FORCED tool call (tool_choice: {type:"tool"}).
  *     Every object node in the tool's JSON schema carries
  *     additionalProperties:false (repo gotcha: Anthropic 400s without it).
@@ -133,6 +142,7 @@ import Anthropic from "@anthropic-ai/sdk";
 
 import { SONNET_MODEL } from "@/lib/claude-models";
 import { resolveTier } from "@/lib/ai/model-tiers";
+import { fastStructuredRequestOptions } from "@/lib/claude-request-options";
 import { htmlToTablesRepresentation, htmlToRawText } from "@/lib/print-watch/representations";
 
 // ---------------------------------------------------------------------------
@@ -167,6 +177,7 @@ interface Cli {
   maxInputChars: number;
   maxTokens: number;
   thinking: "off" | "adaptive";
+  model: string | null;
   concurrency: number;
   corpusRoot: string;
 }
@@ -195,6 +206,7 @@ function parseCli(argv: string[]): Cli {
     maxInputChars: maxInput ? Math.max(1000, parseInt(maxInput, 10)) : 400_000,
     maxTokens: maxTok ? Math.max(1024, parseInt(maxTok, 10)) : 16_384,
     thinking: thinkingRaw === "adaptive" ? "adaptive" : "off",
+    model: get("--model"),
     concurrency: conc ? Math.max(1, parseInt(conc, 10)) : 3,
     corpusRoot: get("--corpus") ?? join(process.cwd(), "tests", "fixtures", "real", "bakeoff"),
   };
@@ -1020,7 +1032,17 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  const modelId = resolveWorkhorseModelId();
+  const modelId = CLI.model ?? resolveWorkhorseModelId();
+  // Frozen request shape (see header): forced tool_choice + thinking disabled.
+  // A model whose "thinking off" is not `disabled` (Sonnet 5.5, Opus 5.5, …)
+  // also rejects forced tool choice; refuse instead of sending a sure 400.
+  if (!CLI.dryRun && fastStructuredRequestOptions(modelId).thinking?.type !== "disabled") {
+    console.error(
+      `${modelId} rejects this spike's frozen request (forced tool_choice + thinking disabled). ` +
+        `Pass an older id with --model, or use lib/print-watch/extract.ts.`,
+    );
+    process.exit(1);
+  }
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!CLI.dryRun && !apiKey) {
     console.error("ANTHROPIC_API_KEY not found in environment or .env.local");
