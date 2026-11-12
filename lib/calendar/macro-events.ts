@@ -567,10 +567,19 @@ Return ONLY a JSON array. No markdown, no preamble.`;
     const client = getRawAnthropicClient("scheduleVerification");
     const response = await client.messages.create({
       model: SONNET_MODEL,
-      max_tokens: 4096,
+      // Room for thinking: on the 5.5 generation it is on by default and
+      // counts against max_tokens. Stays under the SDK's non-streaming
+      // guard (about 21k tokens).
+      max_tokens: 16_000,
       tools: [{ type: "web_search_20250305", name: "web_search", max_uses: 5 }],
       messages: [{ role: "user", content: prompt }],
     });
+    if (response.stop_reason === "max_tokens") {
+      // A cut-off JSON array is not an answer; say so instead of letting a
+      // parse failure hide it. Empty map = keep the hardcoded dates.
+      console.warn("[macro-events] schedule verification hit max_tokens; keeping the hardcoded dates");
+      return new Map();
+    }
 
     // Find the last text block (after web search results)
     const textBlocks = response.content.filter((b) => b.type === "text");

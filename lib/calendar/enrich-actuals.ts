@@ -587,10 +587,18 @@ async function fetchNonFredActualViaClaude(
     const client = getRawAnthropicClient("scheduleVerification");
     const response = await client.messages.create({
       model: SONNET_MODEL,
-      max_tokens: 1024,
+      // Room for thinking: on the 5.5 generation it is on by default and
+      // counts against max_tokens (1024 could end the reply before the
+      // figure). Stays under the SDK's non-streaming guard (about 21k).
+      max_tokens: 16_000,
       tools: [{ type: "web_search_20250305", name: "web_search", max_uses: 3 }],
       messages: [{ role: "user", content: prompt }],
     });
+    if (response.stop_reason === "max_tokens") {
+      // A cut-off reply may end mid-figure; never store it.
+      console.warn(`[enrich-actuals] ${shortName} ${date}: reply hit max_tokens; no actual stored`);
+      return null;
+    }
     const textBlocks = response.content.filter((b) => b.type === "text");
     const lastText = textBlocks[textBlocks.length - 1];
     if (!lastText || lastText.type !== "text") return null;
