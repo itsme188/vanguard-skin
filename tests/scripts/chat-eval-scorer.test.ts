@@ -387,12 +387,14 @@ const X: ExpectedContext = {
     closedOtherYearsOnly: ["GOOGL"],
   },
   foreign: { symbol: "KAIZN", currency: "JPY", nativePrice: 950, usdValue: 627, quantity: 100 },
-  longTermWait: { symbol: "LTWT", daysToLongTerm: 66, unrealizedGain: 600 },
+  longTermWait: { symbol: "LTWT", daysToLongTerm: 66, firstLongTermDay: "2027-01-15", unrealizedGain: 600 },
   previousMonthName: "October",
   stalePriceDate: "2026-11-05",
   shortDayEffect: -60,
   harvestLoss: -300,
   excludedLosses: { roth: -500, pending: -150 },
+  unmodelledPositions: 2,
+  taxableAccounts: ["IBKR", "Vanguard Taxable"],
 };
 
 const LONG_REVIEW =
@@ -733,6 +735,122 @@ describe("scorer regressions from the live run", () => {
     const text = LONG_REVIEW.replace("realized short-term results are a small loss", "the realized gain came from the GOOGL sale");
     const r = score("Q18", text, ["query_twr"]);
     expect(r.pass).toBe(false);
+  });
+});
+
+// Run 4 (2026-11-12, claude-sonnet-5-5 as 4a and claude-opus-5-5 as 4b): the
+// reader found seven false failures and two errors the scorer missed. The
+// texts below are short excerpts of the saved answers (synthetic fixture).
+describe("run-4 regressions", () => {
+  const score = (id: string, text: string, tools: string[], x: ExpectedContext = X) =>
+    scoreAnswer(answer(text, { toolCalls: tools }), Object.fromEntries(buildGolden(x).map((q) => [q.id, q]))[id].checks);
+  const failed = (r: ReturnType<typeof scoreAnswer>) => r.checks.filter((c) => !c.pass).map((c) => c.label);
+  const HRVST_OK = "HRVST is the one candidate, a loss of $300 in Vanguard Taxable. Mind the wash-sale rule.";
+
+  it("Q5: the pending lot described as closed per live data, past the old 60-character lookahead, passes", () => {
+    const r = score("Q5", `${HRVST_OK}\n- **PNDG (Vanguard Taxable, cost $2,700):** your broker's live data shows it closed, but the closing trade isn't on a statement yet.`, ["query_tax_lots"]);
+    expect(failed(r)).toEqual([]);
+  });
+
+  it("Q5: the pending lot listed under a Not candidates heading passes", () => {
+    const r = score("Q5", `${HRVST_OK}\n\n**Not candidates:**\n- **ROTHL (Roth, −$500):** a Roth loss has no tax value.\n- **PNDG (cost $2,700):** this one is a record only, nothing to sell.`, ["query_tax_lots"]);
+    expect(failed(r)).toEqual([]);
+  });
+
+  it("Q5: 'until ... PNDG are booked' is not an offer of the pending lot", () => {
+    const r = score("Q5", `${HRVST_OK} Just don't expect it to change much until the expired options and PNDG are booked.`, ["query_tax_lots"]);
+    expect(failed(r)).toEqual([]);
+  });
+
+  it("Q5: the pending lot offered as a candidate still fails", () => {
+    const r = score("Q5", `${HRVST_OK}\n\n**Candidates:**\n- PNDG, a loss of $150 you could harvest too.`, ["query_tax_lots"]);
+    expect(failed(r)).toContain("the pending lot is not offered");
+  });
+
+  it("Q5: a cost basis equal to the forbidden harvest-plus-Roth sum is not the sum", () => {
+    // X: harvest -300 + Roth -500 = 800; here 800 is the candidate's own cost.
+    const table = "| Lot | Cost | Value | Unrealized |\n|---|---:|---:|---:|\n| HRVST, 40 sh | $800 | $500 | −$300 |";
+    expect(failed(score("Q5", `${HRVST_OK}\n\n${table}`, ["query_tax_lots"]))).toEqual([]);
+    expect(failed(score("Q5", `${HRVST_OK} Basis / proceeds: $800 cost.`, ["query_tax_lots"]))).toEqual([]);
+    // The hand sum itself still fails.
+    expect(failed(score("Q5", `${HRVST_OK} Total harvestable across the book: $800.`, ["query_tax_lots"]))).toContain("not summed with the Roth loss");
+  });
+
+  it("Q6: 'estimates and not ready for filing' and 'nothing long-term' pass", () => {
+    const r = score(
+      "Q6",
+      "You've realized a **$420.50 short-term gain and nothing long-term** from the AAPL calls and the TSLA sale. These figures are estimates and not ready for filing.",
+      ["query_realized_gains"],
+      { ...X, realized: { ...X.realized!, shortTerm: 420.5, longTerm: 0 } },
+    );
+    expect(failed(r)).toEqual([]);
+  });
+
+  it("Q8: with no unmodelled positions, 'none are left out' is not a failure", () => {
+    const x0 = { ...X, unmodelledPositions: 0 };
+    const r = score("Q8", "The AI capex pause preset shows -$45,765. The engine models every position in each of these, so none are left out.", ["query_scenarios"], x0);
+    expect(failed(r)).toEqual([]);
+  });
+
+  it("Q8: with unmodelled positions, an answer that never mentions them still fails", () => {
+    const r = score("Q8", "The AI capex pause preset shows -$45,765 across the book.", ["query_scenarios"]);
+    expect(failed(r)).toContain("unmodelled positions mentioned");
+  });
+
+  it("Q9: another position's correct weight equal to the top holding's whole-book weight passes", () => {
+    const text =
+      "| Position | Value | % of account |\n|---|---:|---:|\n| 912828ZQ7 (US Treasury Note) | $47,400 | 31.2% |\n| JNJ (80 sh) | $12,858 | 8.7% |\n\nWeights are of account value, cash included.";
+    expect(failed(score("Q9", text, []))).toEqual([]);
+  });
+
+  it("Q13: the long-term date instead of a day count passes", () => {
+    const r = score(
+      "Q13",
+      "My read: wait. The lot turns long-term on 2027-01-15, about two months out, with a gain of $600. Assuming a 20-point rate gap, waiting saves about $120.",
+      [],
+    );
+    expect(failed(r)).toEqual([]);
+  });
+
+  it("Q13: advising to pair the gain with the harvest loss to skip the wait fails", () => {
+    const base = "My read: wait. 66 days to go, a gain of $600. Assuming a 20-point rate gap, waiting saves about $120. ";
+    const a = score("Q13", base + "If you'd sell it regardless of the tax, pair it with the HRVST loss in 2026 and skip the wait.", []);
+    expect(failed(a)).toContain("does not advise pairing the harvest loss with the gain to skip the wait");
+    const b = score("Q13", base + "Selling both LTWT and HRVST in 2026 would net to roughly zero tax on the LTWT gain, which beats waiting for the lower rate.", []);
+    expect(failed(b)).toContain("does not advise pairing the harvest loss with the gain to skip the wait");
+    // The right statement of the same point passes.
+    const c = score("Q13", base + "If you harvest HRVST this year, it soaks up the gains either way. It doesn't make selling LTWT short-term any cheaper.", []);
+    expect(failed(c)).toEqual([]);
+  });
+
+  it("Q16: an argument against premium as exposure is not a premium sum", () => {
+    const r = score(
+      "Q16",
+      "Delta-adjusted MSFT exposure: Vanguard Taxable 80 shares; IBKR 100 shares plus about 73 delta from the calls. The $1,600 you paid in premium understates your exposure.",
+      ["query_holdings", "query_options_greeks"],
+    );
+    expect(failed(r)).toEqual([]);
+    const wrong = score("Q16", "MSFT: IBKR 100 shares and Vanguard Taxable 80 shares, delta about 73, plus $1,600 of premium in total exposure.", ["query_holdings"]);
+    expect(failed(wrong)).toContain("no premium sum as exposure");
+  });
+
+  it("a taxable account called non-taxable fails the tax questions", () => {
+    const label = "no taxable account called non-taxable";
+    const q12 = score("Q12", "Mostly, but JNJ is stale: last priced 2026-11-05. IBKR is not a taxable account here, so this doesn't change the tax figures.", ["query_data_confidence"]);
+    expect(failed(q12)).toContain(label);
+    const q11a = score("Q11", "Dividend income over the last 12 months: $851.20. The $545 in the taxable account is the only part that creates a tax liability.", ["query_income_summary"]);
+    expect(failed(q11a)).toContain(label);
+    const q11b = score("Q11", "Dividend income over the last 12 months: $851.20. Only the $545 in Vanguard Taxable is taxable.", ["query_income_summary"]);
+    expect(failed(q11b)).toContain(label);
+    // Saying where tax applies is fine.
+    const ok = score("Q11", "Dividend income over the last 12 months: $851.20. The Roth's share is tax-free; IBKR and Vanguard Taxable are both taxable.", ["query_income_summary"]);
+    expect(failed(ok)).toEqual([]);
+  });
+
+  it("with one taxable account, 'only ... is taxable' is true and passes", () => {
+    const x1 = { ...X, taxableAccounts: ["Vanguard Taxable"] };
+    const r = score("Q11", "Dividend income over the last 12 months: $851.20. Only the $545 in Vanguard Taxable is taxable.", ["query_income_summary"], x1);
+    expect(failed(r)).toEqual([]);
   });
 });
 

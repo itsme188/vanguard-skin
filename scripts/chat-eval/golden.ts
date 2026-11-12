@@ -52,7 +52,8 @@ export function datePattern(iso: string): string {
 }
 
 /** Tighten the not-for-filing caveat (the bare word "estimate" does not count). */
-export const NOT_FOR_FILING = /not (for|to be used for|suitable for|meant for) (tax )?filing|not filing[- ]ready|before (you )?fil(e|ing)|check (it )?against (your|the) 1099|not tax advice/;
+export const NOT_FOR_FILING =
+  /not (for|to be used for|suitable for|meant for) (tax )?filing|not (yet )?(filing[- ]ready|ready for (tax )?filing)|estimates?,? not (for )?filing|before (you )?fil(e|ing)|check (it )?against (your|the) 1099|not tax advice/;
 
 /** Staleness named in words (a date alone is not enough). */
 export const STALE_WORDS = /\bstale\b|out of date|outdated|not (been )?(updated|refreshed)|older than|\blag(s|ging)?\b|behind\b|last (updated|priced|refreshed)/;
@@ -72,6 +73,39 @@ export const ASSUMED_RATES =
 export const EMPTY_OR_EASTERN =
   /\bET\b|Eastern|\bEST\b|\bEDT\b|nothing (on|scheduled|loaded|on file|returned|coming)|returned nothing|\bzero (events|results|items)\b|no (events|earnings|releases|scheduled)|calendar is empty|(is|was) empty/;
 
+/** A pending lot's mention is qualified when it says why it is not a result yet. */
+const PENDING_QUALIFIER =
+  /pending|awaiting|excluded|not a candidate|not counted|closed|statement|unknown|not (yet )?(known|booked|on file)|\buntil\b/;
+/** A heading that sets the lots under it apart from the candidates. */
+const NOT_CANDIDATE_HEADING = /not (a )?candidates?|excluded|not harvestable|incomplete|pending/;
+/** A figure labelled as a cost or basis is that figure, not a hand sum. */
+const COST_LABEL = /\bcost\b|basis|\bpaid\b|bought at/;
+
+/** Words that say the wait for long-term can be skipped (the claim Q13 guards against). */
+const SKIP_WAIT = "(skip(ping)? the wait|beats waiting|better than waiting|no (need|reason) to wait|instead of waiting|rather than waiting|don't need to wait)";
+
+/**
+ * Fact: an account whose tax treatment is taxable is taxable. The answer never
+ * calls one non-taxable or tax-advantaged, and when several accounts are
+ * taxable it never says only one account's figures are taxable (run 4: "IBKR
+ * is not a taxable account here", "only the $1,545 in Vanguard Taxable is
+ * taxable").
+ */
+function taxabilityChecks(x: ExpectedContext): Check[] {
+  if (x.taxableAccounts.length === 0) return [];
+  const alts: string[] = [];
+  for (const name of x.taxableAccounts) {
+    const n = `\\b${escapeRegExp(name)}\\b`;
+    alts.push(`${n}[^.\\n]{0,40}\\b(is not|isn't|not)\\b[^.\\n]{0,12}\\btaxable\\b`);
+    alts.push(`${n}[^.\\n]{0,30}\\b(is|are) (a )?(tax-advantaged|tax-free|tax-exempt|tax-deferred)\\b`);
+  }
+  if (x.taxableAccounts.length >= 2) {
+    alts.push(`\\bonly\\b[^.\\n]{0,60}\\b(is|are) taxable\\b`);
+    alts.push(`\\b(is|are) the only (part|portion|one|account|income)[^.\\n]{0,40}\\btax`);
+  }
+  return [{ kind: "notContains", label: "no taxable account called non-taxable", pattern: new RegExp(alts.join("|")) }];
+}
+
 /** The harvest figure bound to the engine, and the plausible wrong hand sums. */
 function harvestFigureChecks(x: ExpectedContext): Check[] {
   const out: Check[] = [];
@@ -86,10 +120,13 @@ function harvestFigureChecks(x: ExpectedContext): Check[] {
     window: 120,
   });
   if (x.excludedLosses.roth !== null) {
-    out.push({ kind: "notNumber", label: "not summed with the Roth loss", value: Math.abs(x.harvestLoss) + Math.abs(x.excludedLosses.roth), absTol: 1 });
+    // Fact: the Roth loss is never added to the harvestable total. A figure
+    // labelled as a cost or basis is not that total (run 4: the sum equalled
+    // the candidate's own cost basis, printed correctly).
+    out.push({ kind: "notNumber", label: "not summed with the Roth loss", value: Math.abs(x.harvestLoss) + Math.abs(x.excludedLosses.roth), absTol: 1, notNear: COST_LABEL, window: 30 });
   }
   if (x.excludedLosses.pending !== null) {
-    out.push({ kind: "notNumber", label: "not summed with the pending loss", value: Math.abs(x.harvestLoss) + Math.abs(x.excludedLosses.pending), absTol: 1 });
+    out.push({ kind: "notNumber", label: "not summed with the pending loss", value: Math.abs(x.harvestLoss) + Math.abs(x.excludedLosses.pending), absTol: 1, notNear: COST_LABEL, window: 30 });
   }
   return out;
 }
@@ -188,8 +225,19 @@ export const GOLDEN: readonly Builder[] = [
       { kind: "contains", label: "the taxable loser is listed", pattern: new RegExp(`\\b${escapeRegExp(x.manifest.harvestCandidate)}\\b`) },
       { kind: "contains", label: "wash-sale caveat (any wording)", pattern: /\bwash/ },
       { kind: "notContains", label: "the Roth lot is not offered", pattern: new RegExp(`\\b${escapeRegExp(x.manifest.rothLoser)}\\b(?![^\\n.]{0,60}(not eligible|tax-advantaged|Roth|excluded|not a candidate))`) },
-      { kind: "notContains", label: "the pending lot is not offered", pattern: new RegExp(`\\b${escapeRegExp(x.manifest.pendingLot)}\\b(?![^\\n.]{0,60}(pending|awaiting|excluded|not a candidate))`) },
+      // Fact: the pending lot is never offered as a candidate. Every mention
+      // says why its result is not known, or sits under a heading that sets it
+      // apart from the candidates.
+      {
+        kind: "everyMention",
+        label: "the pending lot is not offered",
+        pattern: new RegExp(`\\b${escapeRegExp(x.manifest.pendingLot)}\\b`),
+        qualifier: PENDING_QUALIFIER,
+        window: 120,
+        heading: NOT_CANDIDATE_HEADING,
+      },
       ...harvestFigureChecks(x),
+      ...taxabilityChecks(x),
     ],
     notes: [],
   }),
@@ -222,9 +270,10 @@ export const GOLDEN: readonly Builder[] = [
         checks.push({
           kind: "contains",
           label: "no long-term gains said as such",
-          pattern: /long[- ]term[^.\n]{0,40}(\$\s?0(\.00)?\b|\bnone\b|\bnil\b|\bzero\b|\bno\b)|\bno long[- ]term\b/,
+          pattern: /long[- ]term[^.\n]{0,40}(\$\s?0(\.00)?\b|\bnone\b|\bnil\b|\bzero\b|\bno\b)|\b(no|nothing) long[- ]term\b/,
         });
       }
+      checks.push(...taxabilityChecks(x));
       const yearTotal = x.realized.shortTerm + x.realized.longTerm;
       if (Math.abs(x.realized.lifetimeAllAccounts - yearTotal) > 5) {
         checks.push({ kind: "notNumber", label: "not the lifetime total", value: x.realized.lifetimeAllAccounts, absTol: 1 });
@@ -244,17 +293,20 @@ export const GOLDEN: readonly Builder[] = [
     ],
     notes: [],
   }),
-  () => ({
-    id: "Q8",
-    scope: "all",
-    question: "How exposed am I to a 20% market drop?",
-    checks: [
+  (x) => {
+    const checks: Check[] = [
       { kind: "calledTool", label: "uses the scenario tool", tool: "query_scenarios" },
-      { kind: "contains", label: "unmodelled positions mentioned", pattern: /not modell?ed|unmodell?ed|could not be modell?ed|left out of the (scenario|model)|excluded from the (scenario|model)/ },
       { kind: "notContains", label: "no hand-made beta x value", pattern: /beta\s*(of\s*[\d.]+\s*)?[x×*]\s*(the\s*|your\s*)?(market\s*|portfolio\s*)?value|multiply(ing)? (the |your )?(value|portfolio) by (the |its )?beta/ },
-    ],
-    notes: [],
-  }),
+    ];
+    const notes: string[] = [];
+    // Fact: what the scenario total leaves out is named. Only asked when the
+    // engine reports something left out (run 4: none was, and both answers
+    // said so).
+    if (x.unmodelledPositions === null || x.unmodelledPositions > 0) {
+      checks.splice(1, 0, { kind: "contains", label: "unmodelled positions mentioned", pattern: /not modell?ed|unmodell?ed|could not be modell?ed|cannot be modell?ed|can't (be )?model|left out of the (scenario|model|total|estimate)|excluded from the (scenario|model)|leaves? out/ });
+    } else notes.push("the scenario engine models every position in the fixture; the unmodelled-positions check is left out");
+    return { id: "Q8", scope: "all", question: "How exposed am I to a 20% market drop?", checks, notes };
+  },
   (x) => {
     // No tool requirement: the IBKR dashboard in the system prompt labels the
     // account weights, and a figure correctly taken from it is a right answer.
@@ -278,7 +330,10 @@ export const GOLDEN: readonly Builder[] = [
       }
       checks.push({ kind: "anyOf", label: "the weight with its base stated (long market value or account value)", checks: either });
       if (w.wholeBookWeightPct !== null && Math.abs(w.wholeBookWeightPct - w.accountWeightPct) > 1.5) {
-        checks.push({ kind: "notNumber", label: "not the whole-book weight", value: pct(w.wholeBookWeightPct), absTol: 0.3, percentOnly: true });
+        // Fact: the top holding's weight is not given on the whole-book base.
+        // Bound to the top holding's own text, so another row's weight that
+        // happens to equal it is not counted (run 4: JNJ's account weight).
+        checks.push({ kind: "notNumber", label: "not the whole-book weight", value: pct(w.wholeBookWeightPct), absTol: 0.3, percentOnly: true, near: names, window: 80 });
       }
     } else notes.push("no IBKR holdings to derive a weight from");
     return { id: "Q9", scope: "ibkr", question: "Biggest position as a share of the account?", checks, notes };
@@ -307,6 +362,7 @@ export const GOLDEN: readonly Builder[] = [
         checks.push({ kind: "notContains", label: "margin interest not called income", pattern: /margin interest (as|is|counted as) (income|earned)|interest (income|earned)[^.\n]{0,40}margin/ });
       }
     } else notes.push("dividend figures could not be derived");
+    checks.push(...taxabilityChecks(x));
     return { id: "Q11", scope: "all", question: "Dividend income last 12 months?", checks, notes };
   },
   (x) => {
@@ -324,6 +380,7 @@ export const GOLDEN: readonly Builder[] = [
       });
     }
     else notes.push("no stale price date in the fixture");
+    checks.push(...taxabilityChecks(x));
     return { id: "Q12", scope: "all", question: "Can I trust today's numbers?", checks, notes };
   },
   (x) => {
@@ -335,11 +392,30 @@ export const GOLDEN: readonly Builder[] = [
     ];
     const notes: string[] = [];
     if (w) {
-      checks.push({ kind: "number", label: "days remaining to long-term", value: w.daysToLongTerm, absTol: 1, unitAfter: /(more |calendar )?days?\b/ });
+      // Fact: when the lot turns long-term. A day count or the date itself
+      // both state it (run 4: both answers gave the date, neither a count).
+      checks.push({
+        kind: "anyOf",
+        label: "days remaining to long-term, or the long-term date",
+        checks: [
+          { kind: "number", label: "days remaining to long-term", value: w.daysToLongTerm, absTol: 1, unitAfter: /(more |calendar )?days?\b/ },
+          { kind: "contains", label: "the first long-term day", pattern: new RegExp(datePattern(w.firstLongTermDay)) },
+        ],
+      });
       if (w.unrealizedGain !== null) {
         checks.push({ kind: "number", label: "the lot's gain, signed", value: w.unrealizedGain, absTol: 1, signed: true, near: /gain|loss|up|down/ });
       }
     }
+    // Fact: a harvested loss offsets the year's gains whether or not this
+    // sale is timed with it, so pairing the two never makes selling before
+    // long-term as cheap as waiting (run 4: "pair it with the HRVST loss and
+    // skip the wait").
+    checks.push({
+      kind: "notContains",
+      label: "does not advise pairing the harvest loss with the gain to skip the wait",
+      pattern: new RegExp(`\\b(pair(ed|ing)?|net(s|ted)? (against|to|out)|offset(s|ting)?|both)\\b[^.\\n]{0,100}${SKIP_WAIT}|${SKIP_WAIT}[^.\\n]{0,100}\\b(pair|offset)`),
+    });
+    checks.push(...taxabilityChecks(x));
     return {
       id: "Q13",
       scope: "vanguard-taxable",
@@ -387,7 +463,13 @@ export const GOLDEN: readonly Builder[] = [
       { kind: "calledTool", label: "reads holdings or Greeks", tool: ["query_holdings", "query_options_greeks", "query_options_book"] },
       { kind: "contains", label: "delta-adjusted", pattern: /delta[- ]adjusted|\bdelta\b/ },
       { kind: "contains", label: "broken out by account", pattern: /IBKR[^\n]{0,200}(Taxable|Vanguard)|(Taxable|Vanguard)[^\n]{0,200}IBKR|\n[^\n]*IBKR[\s\S]*\n[^\n]*(Taxable|Vanguard)|\n[^\n]*(Taxable|Vanguard)[\s\S]*\n[^\n]*IBKR/ },
-      { kind: "notContains", label: "no premium sum as exposure", pattern: /premium[^.\n]{0,40}(exposure|total)|(exposure|total)[^.\n]{0,40}premium/ },
+      // Fact: premium is not added as exposure. An argument against using it
+      // ("premium understates your exposure") is not that sum (run 4).
+      {
+        kind: "notContains",
+        label: "no premium sum as exposure",
+        pattern: /premium(?:(?!understat|overstat|misstat|\bnot\b|n't|rather than|instead of)[^.\n]){0,40}(exposure|total)|(exposure|total)(?:(?!\bnot\b|n't|rather than|instead of)[^.\n]){0,40}premium/,
+      },
     ],
     notes: [],
   }),
@@ -422,6 +504,7 @@ export const GOLDEN: readonly Builder[] = [
       { kind: "contains", label: "covers tax", pattern: /\btax/ },
       { kind: "contains", label: "covers upcoming events", pattern: /upcoming|earnings|calendar|this week|next week/ },
       ...closedSourceChecks(x, "any"),
+      ...taxabilityChecks(x),
     ],
     notes: [],
   }),

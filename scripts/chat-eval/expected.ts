@@ -11,8 +11,9 @@ import type Database from "better-sqlite3";
 import { getHoldingsForChat, getIncomeSummaryForChat, type HoldingResult } from "../../lib/queries/chat-tools";
 import { getClosedTaxLotSales } from "../../lib/queries/tax-lots";
 import { isTaxableAccount } from "../../lib/compute/tax-treatment";
-import { addDays, calendarDaysBetween, todayET } from "../../lib/calendar/date-utils";
+import { addDays, calendarDaysBetween } from "../../lib/calendar/date-utils";
 import { CHAT_TOOLS } from "../../lib/chat/tools";
+import { runCompositeTool } from "../../lib/chat/composite";
 import type { EvalManifest } from "./manifest";
 
 export interface ExpectedContext {
@@ -46,7 +47,7 @@ export interface ExpectedContext {
   /** The foreign holding as the readers report it. */
   foreign: { symbol: string; currency: string; nativePrice: number; usdValue: number; quantity: number } | null;
   /** The lot waiting for long-term treatment. */
-  longTermWait: { symbol: string; daysToLongTerm: number; unrealizedGain: number | null } | null;
+  longTermWait: { symbol: string; daysToLongTerm: number; firstLongTermDay: string; unrealizedGain: number | null } | null;
   /** The month before today's, by name (e.g. "October"). */
   previousMonthName: string;
   /** The oldest price date behind a current holding (what "stale" must name). */
@@ -57,6 +58,10 @@ export interface ExpectedContext {
   harvestLoss: number | null;
   /** The Roth loser's and the pending lot's unrealized results (they must not be summed in). */
   excludedLosses: { roth: number | null; pending: number | null };
+  /** How many positions query_scenarios lists in unmodelled_positions (all accounts), or null. */
+  unmodelledPositions: number | null;
+  /** Names of the accounts whose tax treatment is taxable (`isTaxableAccount`). */
+  taxableAccounts: string[];
 }
 
 function deriveStalePriceDate(db: Database.Database): string | null {
@@ -128,13 +133,12 @@ function deriveIbkrTopWeight(db: Database.Database, m: EvalManifest): ExpectedCo
  * plus the magnitude of every REINVESTMENT in the same window (the old
  * double count), read straight from the ledger.
  */
-function deriveDividends(db: Database.Database): ExpectedContext["dividends12m"] {
+function deriveDividends(db: Database.Database, today: string): ExpectedContext["dividends12m"] {
   const rows = getIncomeSummaryForChat(db, { period: "trailing_12m", group_by: "account" });
   if (rows.length === 0) return null;
   const single = round2(rows.reduce((s, r) => s + (r.total_dividends ?? 0), 0));
   const marginInterestPaid = round2(rows.reduce((s, r) => s + (r.interest_paid ?? 0), 0));
   // The same window the reader uses (same month/day one year back, Eastern).
-  const today = todayET();
   const md = today.slice(5);
   const from = `${Number(today.slice(0, 4)) - 1}-${md === "02-29" ? "02-28" : md}`;
   const naive = db
@@ -205,7 +209,19 @@ function deriveLongTermWait(db: Database.Database, m: EvalManifest, today: strin
   const firstLongTermDay = addDays(anniversary, 1);
   const days = firstLongTermDay > today ? calendarDaysBetween(today, firstLongTermDay) : 0;
   const row = holdingsFor(db, m.accounts.taxable).find((r) => r.symbol === m.longTermWait.symbol);
-  return { symbol: m.longTermWait.symbol, daysToLongTerm: days, unrealizedGain: row?.unrealized_gain ?? null };
+  return { symbol: m.longTermWait.symbol, daysToLongTerm: days, firstLongTermDay, unrealizedGain: row?.unrealized_gain ?? null };
+}
+
+/** The scenario tool's own unmodelled list, all accounts (what an answer can be asked to name). */
+function deriveUnmodelled(db: Database.Database, today: string): number | null {
+  const r = runCompositeTool("query_scenarios", db, {}, { accountIds: undefined, today }) as { unmodelled_positions?: unknown[] };
+  return Array.isArray(r?.unmodelled_positions) ? r.unmodelled_positions.length : null;
+}
+
+function deriveTaxableAccounts(db: Database.Database): string[] {
+  return (db.prepare("SELECT name, tax_treatment FROM accounts ORDER BY name").all() as { name: string; tax_treatment: string | null }[])
+    .filter((a) => isTaxableAccount(a.tax_treatment))
+    .map((a) => a.name);
 }
 
 export function deriveExpected(db: Database.Database, manifest: EvalManifest, today: string): ExpectedContext {
@@ -215,7 +231,7 @@ export function deriveExpected(db: Database.Database, manifest: EvalManifest, to
     manifest,
     registeredTools: CHAT_TOOLS.map((t) => t.name),
     ibkrTopWeight: deriveIbkrTopWeight(db, manifest),
-    dividends12m: deriveDividends(db),
+    dividends12m: deriveDividends(db, today),
     realized: deriveRealized(db, today),
     foreign: deriveForeign(db, manifest),
     longTermWait: deriveLongTermWait(db, manifest, today),
@@ -227,5 +243,7 @@ export function deriveExpected(db: Database.Database, manifest: EvalManifest, to
       roth: unrealizedOf(db, manifest.accounts.roth, manifest.rothLoser),
       pending: pendingLossOf(db, manifest),
     },
+    unmodelledPositions: deriveUnmodelled(db, today),
+    taxableAccounts: deriveTaxableAccounts(db),
   };
 }

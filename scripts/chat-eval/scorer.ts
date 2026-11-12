@@ -48,6 +48,12 @@ export interface NumberTolerance {
   near?: TextPattern;
   /** Characters either side of the figure that `near` may use (default 60). */
   window?: number;
+  /**
+   * The figure does not count when this matches within `window` on its line
+   * (a table row also sees its header): a figure labelled as something else,
+   * such as a cost basis that happens to equal a forbidden sum.
+   */
+  notNear?: TextPattern;
 }
 
 export type Check =
@@ -59,7 +65,14 @@ export type Check =
   | { kind: "notCalledTool"; label: string; tool: string }
   | { kind: "minLength"; label: string; chars: number }
   /** Passes when ANY of its checks passes (alternatives that are each right). */
-  | { kind: "anyOf"; label: string; checks: Check[] };
+  | { kind: "anyOf"; label: string; checks: Check[] }
+  /**
+   * Every match of `pattern` must be qualified: `qualifier` matches on the
+   * same line within `window` characters before or after it, or the nearest
+   * heading above it (a markdown heading, or a line that is bold text only)
+   * matches `heading`. No match at all passes.
+   */
+  | { kind: "everyMention"; label: string; pattern: RegExp; qualifier: RegExp; window: number; heading?: RegExp };
 
 export interface EvalAnswer {
   /** The streamed answer text, every step's text joined. */
@@ -194,6 +207,7 @@ function bindingHolds(text: string, n: ParsedNumber, t: NumberTolerance): boolea
     if (!anchored.test(after)) return false;
   }
   if (t.near !== undefined && matchesPattern(lineAround(text, n, t.window ?? 60), t.near) === null) return false;
+  if (t.notNear !== undefined && matchesPattern(lineAround(text, n, t.window ?? 60), t.notNear) !== null) return false;
   return true;
 }
 
@@ -226,6 +240,38 @@ export function patternText(pattern: TextPattern): string {
 export function matchesPattern(text: string, pattern: TextPattern): string | null {
   const m = toRegExp(pattern).exec(text);
   return m ? m[0] : null;
+}
+
+/** The nearest heading line above `offset`: a markdown heading, or a line that is bold text only. */
+export function headingAbove(text: string, offset: number): string | null {
+  const lines = text.slice(0, text.lastIndexOf("\n", offset - 1) + 1).split("\n");
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const l = lines[i].trim();
+    if (/^#{1,6}\s/.test(l) || /^\*\*[^*]+\*\*:?$/.test(l)) return l;
+  }
+  return null;
+}
+
+/** The first unqualified match of an everyMention check, or null when every match is qualified. */
+export function unqualifiedMention(
+  text: string,
+  check: { pattern: RegExp; qualifier: RegExp; window: number; heading?: RegExp },
+): string | null {
+  const re = new RegExp(check.pattern.source, check.pattern.flags.replace("g", "").replace("i", "") + "gi");
+  const q = toRegExp(check.qualifier);
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    const lineStart = text.lastIndexOf("\n", m.index - 1) + 1;
+    const nl = text.indexOf("\n", m.index + m[0].length);
+    const lineEnd = nl === -1 ? text.length : nl;
+    const before = text.slice(Math.max(lineStart, m.index - check.window), m.index);
+    const after = text.slice(m.index + m[0].length, Math.min(lineEnd, m.index + m[0].length + check.window));
+    if (q.test(before) || q.test(after)) continue;
+    const h = check.heading ? headingAbove(text, m.index) : null;
+    if (h !== null && check.heading && toRegExp(check.heading).test(h)) continue;
+    return text.slice(Math.max(lineStart, m.index - 40), Math.min(lineEnd, m.index + m[0].length + 40));
+  }
+  return null;
 }
 
 // ─── Gate and checks ─────────────────────────────────────────────
@@ -284,6 +330,10 @@ export function runCheck(answer: EvalAnswer, check: Check): CheckResult {
       const results = check.checks.map((c) => runCheck(answer, c));
       const hit = results.find((r) => r.pass);
       return { ...base, pass: hit !== undefined, detail: hit ? `${hit.label}: ${hit.detail}` : results.map((r) => `${r.label}: ${r.detail}`).join("; ") };
+    }
+    case "everyMention": {
+      const hit = unqualifiedMention(text, check);
+      return { ...base, pass: hit === null, detail: hit === null ? "every mention qualified" : `unqualified mention ${JSON.stringify(hit)}` };
     }
     case "minLength": {
       const n = text.trim().length;
@@ -347,5 +397,10 @@ export function serializeCheck(check: Check): Record<string, unknown> {
   if ("pattern" in check) out.pattern = patternText(check.pattern);
   if ("unitAfter" in check && check.unitAfter) out.unitAfter = check.unitAfter.toString();
   if ("near" in check && check.near !== undefined) out.near = patternText(check.near);
+  if ("notNear" in check && check.notNear !== undefined) out.notNear = patternText(check.notNear);
+  if (check.kind === "everyMention") {
+    out.qualifier = patternText(check.qualifier);
+    if (check.heading) out.heading = patternText(check.heading);
+  }
   return out;
 }
