@@ -53,6 +53,10 @@
  *   --tool-result-chars <n>     per-step tool-result bound the guarantee assumes (default 22000)
  *   --only Q1,Q5         run a subset (golden mode)
  *   --page <path>        a /dashboard path sent as the page context (golden mode; default none)
+ *   --family haiku|sonnet|opus  the model class each conversation the runner creates is
+ *                        started on (sent only on a conversation's first request, as the
+ *                        browser does); default none, i.e. the chat default. A tier
+ *                        comparison no longer needs a Settings override on a database copy.
  *   --out <path>         JSON result (default data/chat-eval/results-<timestamp>.json; must be git-ignored)
  *   --show-answers       print answer text, and keep it in the JSON with each tool call's input,
  *                        output and compact (model-facing) form; off by default
@@ -71,6 +75,8 @@ import { setModelCatalogSource } from "../../lib/ai/catalog-source";
 import { getFeatureModelOverrides } from "../../lib/queries/ai-model-overrides";
 import { getModelCatalog } from "../../lib/ai/model-catalog";
 import { resolveFeatureModel } from "../../lib/ai/models";
+import { invalidModelFamilyMessage, isChatModelFamily, type ChatModelFamily } from "../../lib/chat/model-choice";
+import { resolveChatModel } from "../../lib/chat/model-resolve";
 import { createSession, revokeSessionsByLabel } from "../../lib/mutations/sessions";
 import { type ChatScope } from "../../lib/types";
 import { liveDbRefusal, readEvalMarker, resolvedDbPath, EVAL_FIXTURE_VERSION } from "./db-guard";
@@ -126,6 +132,8 @@ export interface EvalOptions {
   maxUsd: number;
   only?: string[];
   page?: string;
+  /** The model class the runner's new conversations start on (--family); absent = the chat default. */
+  modelFamily?: ChatModelFamily;
   out?: string;
   showAnswers: boolean;
   dryRun: boolean;
@@ -171,7 +179,10 @@ export function parseArgs(argv: string[]): EvalOptions | { error: string } {
   if (!dryRun && !log) return { error: "--log <dev server log> is required unless --dry-run" };
   const page = get("--page");
   if (page !== undefined && !page.startsWith("/dashboard")) return { error: "--page must start with /dashboard" };
+  const familyRaw = get("--family");
+  if (familyRaw !== undefined && !isChatModelFamily(familyRaw)) return { error: `--family: ${invalidModelFamilyMessage(familyRaw)}` };
   return {
+    ...(familyRaw !== undefined ? { modelFamily: familyRaw as ChatModelFamily } : {}),
     db,
     log,
     baseUrl: get("--base-url") ?? "http://127.0.0.1:3095",
@@ -227,7 +238,12 @@ export function setupEval(opts: EvalOptions, print: Print): EvalSetup | { error:
   // the prediction resolves the way the server does.
   setFeatureModelOverrideSource(() => getFeatureModelOverrides(db));
   setModelCatalogSource(() => getModelCatalog(db));
-  const predictedModel = resolveFeatureModel("chat").modelId;
+  // With --family, the class's resolution (what the route runs for a
+  // conversation stored with that class); else the chat default.
+  const predictedModel = opts.modelFamily
+    ? resolveChatModel(opts.modelFamily).resolved.modelId
+    : resolveFeatureModel("chat").modelId;
+  if (opts.modelFamily) print(`model class for new conversations: ${opts.modelFamily}`);
   const today = todayET();
   if (manifest.builtFor !== today) {
     print(`warning: the fixture was built for ${manifest.builtFor}, today is ${today}; rebuild it so relative dates hold`);
@@ -472,7 +488,10 @@ export async function guardedAsk(
     return null;
   };
 
-  const ex = await sendChat({ ...req, baseUrl: opts.baseUrl, timeoutMs: opts.timeoutMs, onChunk, onTick: follow }, deps);
+  const ex = await sendChat(
+    { ...req, modelFamily: opts.modelFamily, baseUrl: opts.baseUrl, timeoutMs: opts.timeoutMs, onChunk, onTick: follow },
+    deps,
+  );
   const ceilingAborted = ex.stoppedByRunner === COST_CEILING_REASON;
   let stop: string | null = ex.stoppedByRunner && !ceilingAborted ? `request stopped: ${ex.stoppedByRunner}` : null;
   if (ex.status === 401 || ex.status === 403) {
@@ -954,7 +973,11 @@ export function questionsGuaranteedToStart(count: number, cap: number, ceiling: 
 export function dryRun(opts: EvalOptions, setup: EvalSetup, print: Print, summaryOnly = false): { guaranteedMax: number } {
   const price = priceFor(setup.predictedModel);
   const limits = requestLimits(opts.toolResultChars);
-  print(`predicted chat model (resolveFeatureModel("chat") on this database): ${setup.predictedModel}`);
+  print(
+    opts.modelFamily
+      ? `predicted chat model (class ${opts.modelFamily} on this database): ${setup.predictedModel}`
+      : `predicted chat model (resolveFeatureModel("chat") on this database): ${setup.predictedModel}`,
+  );
   print(`price source: ${PRICE_SOURCE}`);
   print(
     `rules: a request starts only if spent + per-question ceiling $${opts.maxUsdPerQuestion.toFixed(2)} <= run cap $${opts.maxUsd.toFixed(2)}; ` +

@@ -37,6 +37,10 @@
  *   preprocess-stream  scripts/preprocess-to-canonical.ts: streamed, 64,000 cap
  *   chat               app/api/chat/route.ts through the AI SDK: adaptive
  *                      thinking, cacheControl ephemeral, one tool, 16,000 cap
+ *   chat-haiku         the same request on a Haiku id: since 2026-11-13 a
+ *                      conversation can be started on the Haiku class. NOT
+ *                      RUN YET; the docs say Haiku 5.5 accepts it (adaptive
+ *                      on by default, effort default medium, 128K output).
  *   frontier-effort    AI SDK providerOptions effort high (deep read,
  *                      first-pass read); the SDK adds the effort beta header
  *   structured         generateObjectForFeature through the AI SDK:
@@ -65,6 +69,7 @@ export const SHAPES = [
   "web-search-newer",
   "preprocess-stream",
   "chat",
+  "chat-haiku",
   "frontier-effort",
   "structured",
   "cheap-short",
@@ -88,6 +93,7 @@ export const SHAPE_SPECS: Record<Shape, ShapeSpec> = {
   "web-search-newer": { maxTokens: 16_000, searches: 1, appliesTo: workhorseOrFrontier },
   "preprocess-stream": { maxTokens: 64_000, searches: 0, appliesTo: (id) => family(id) === "sonnet" },
   chat: { maxTokens: 16_000, searches: 0, appliesTo: workhorseOrFrontier },
+  "chat-haiku": { maxTokens: 16_000, searches: 0, appliesTo: (id) => family(id) === "haiku" },
   "frontier-effort": { maxTokens: 16_000, searches: 0, appliesTo: (id) => workhorseOrFrontier(id) && supportsEffort(id) },
   structured: { maxTokens: 2_048, searches: 0, appliesTo: () => true },
   "cheap-short": { maxTokens: 2_048, searches: 0, appliesTo: (id) => family(id) === "haiku" },
@@ -215,7 +221,8 @@ async function runShape(shape: Shape, modelId: string, apiKey: string, price: Mo
           .finalMessage();
         return rawAccepted(msg, price);
       }
-      case "chat": {
+      case "chat":
+      case "chat-haiku": {
         const result = streamText({
           model: sdk,
           maxOutputTokens: SHAPE_SPECS.chat.maxTokens,

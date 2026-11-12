@@ -3,7 +3,8 @@
  * what came back (the stream, the conversation id, the usage lines).
  *
  * The request body is the shape the browser's `useChat` sends per call
- * (Contract A): `{ id, messages, trigger, scope, conversationId, page }`,
+ * (Contract A): `{ id, messages, trigger, scope, conversationId, page }`, plus
+ * `modelFamily` on the request that creates a conversation (2026-11-13),
  * authenticated the way a browser is (session cookie, double-submit CSRF
  * cookie + header, trusted Origin). Nothing is sent that the app would not
  * receive from the real client.
@@ -67,6 +68,11 @@ export interface ChatRequest {
   conversationId: number | null;
   messages: UIMessage[];
   pagePath?: string;
+  /**
+   * The model class (haiku / sonnet / opus) for a conversation this request
+   * CREATES; sent only when `conversationId` is null, as the browser sends it.
+   */
+  modelFamily?: string;
   timeoutMs: number;
   /** Called for every stream chunk; a returned reason stops (aborts) the request. */
   onChunk?: (chunk: Record<string, unknown>, conversationId: number | null) => string | null;
@@ -136,6 +142,7 @@ export async function sendChat(req: ChatRequest, deps: TransportDeps): Promise<C
         scope: req.scope,
         conversationId: req.conversationId ?? undefined,
         ...(req.pagePath ? { page: { path: req.pagePath } } : {}),
+        ...(req.modelFamily && req.conversationId === null ? { modelFamily: req.modelFamily } : {}),
       }),
     });
     const convHeader = res.headers.get("x-conversation-id");

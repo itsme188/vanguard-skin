@@ -64,4 +64,12 @@ describe("probe-model-requests guards", () => {
       probeWorstCase({ ...SHAPE_SPECS["web-search-basic"], searches: 0 }, price),
     );
   });
+
+  it("probes the chat's request on a Haiku id too (2026-11-13: a chat can start on Haiku)", () => {
+    expect(SHAPES).toContain("chat-haiku");
+    expect(SHAPE_SPECS["chat-haiku"].maxTokens).toBe(SHAPE_SPECS.chat.maxTokens);
+    expect(SHAPE_SPECS["chat-haiku"].appliesTo("claude-haiku-5-5")).toBe(true);
+    expect(SHAPE_SPECS["chat-haiku"].appliesTo("claude-sonnet-5-5")).toBe(false);
+    expect(SHAPE_SPECS.chat.appliesTo("claude-haiku-5-5")).toBe(false);
+  });
 });

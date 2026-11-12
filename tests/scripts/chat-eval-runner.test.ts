@@ -26,13 +26,14 @@ import { compactToolOutput } from "@/lib/chat/tools";
 import { costOf, priceFor, stepWorstCase, STEP_INPUT_MARGIN_TOKENS } from "@/scripts/chat-eval/pricing";
 import {
   guardedAsk,
+  parseArgs,
   requestLimits,
   stepMayContinue,
   toolTraceFromChunks,
   type EvalOptions,
   type EvalSetup,
 } from "@/scripts/chat-eval/run-golden";
-import type { TransportDeps } from "@/scripts/chat-eval/transport";
+import { sendChat, type TransportDeps } from "@/scripts/chat-eval/transport";
 import type { ExpectedContext } from "@/scripts/chat-eval/expected";
 
 const MODEL = "claude-sonnet-5-5";
@@ -136,5 +137,53 @@ describe("toolTraceFromChunks", () => {
       { toolCallId: "a", name: "query_holdings", input: { symbol: "AAA" }, output, compactOutput: compactToolOutput("query_holdings", output), error: null },
       { toolCallId: "b", name: "query_twr", input: {}, output: null, compactOutput: null, error: "boom" },
     ]);
+  });
+});
+
+describe("--family: the model class of the conversations the runner creates (2026-11-13)", () => {
+  it("parses the three classes and refuses anything else", () => {
+    const base = ["--db", "x.db", "--dry-run"];
+    for (const f of ["haiku", "sonnet", "opus"]) {
+      expect(parseArgs([...base, "--family", f])).toMatchObject({ modelFamily: f });
+    }
+    expect(parseArgs(base)).not.toHaveProperty("modelFamily");
+    const bad = parseArgs([...base, "--family", "fable"]);
+    expect(bad).toEqual({ error: "--family: Unknown model class: fable. Valid: haiku, sonnet, opus." });
+  });
+
+  async function bodySent(conversationId: number | null, modelFamily?: string): Promise<Record<string, unknown>> {
+    let sent: Record<string, unknown> = {};
+    const deps: TransportDeps = {
+      fetch: (async (_url: string, init: RequestInit) => {
+        sent = JSON.parse(String(init.body));
+        return new Response(sse([{ type: "start" }, { type: "finish" }]), {
+          status: 200,
+          headers: { "content-type": "text/event-stream", "x-conversation-id": "7" },
+        });
+      }) as unknown as typeof fetch,
+      readLogSince: () => "",
+      logSize: () => 0,
+      sleep: async () => {},
+    };
+    await sendChat(
+      {
+        baseUrl: "http://127.0.0.1:3095",
+        session: { rawToken: "x", csrfToken: "y" },
+        chatId: "c",
+        scope: "all",
+        conversationId,
+        messages: [],
+        timeoutMs: 5000,
+        ...(modelFamily ? { modelFamily } : {}),
+      },
+      deps,
+    );
+    return sent;
+  }
+
+  it("sends the class only on the request that creates the conversation, as the browser does", async () => {
+    expect((await bodySent(null, "opus")).modelFamily).toBe("opus");
+    expect(await bodySent(7, "opus")).not.toHaveProperty("modelFamily");
+    expect(await bodySent(null)).not.toHaveProperty("modelFamily");
   });
 });
