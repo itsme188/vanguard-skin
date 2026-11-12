@@ -95,6 +95,9 @@ describe("the label once the conversation has started", () => {
     // Both header rows wrap, so the label's full-width line goes underneath.
     const phoneRow = sliceBetween(src, "{isLocked && (\n        <div", "<ConversationControls");
     const mdRow = sliceBetween(src, "{isLocked && (\n          <div", "<ConversationControls");
+    // The left group has basis 0, so in a wrapping row it shrinks (the title
+    // truncates) instead of pushing New Conversation onto a second line.
+    expect(controls).toContain('<div className="flex flex-1 items-center gap-2 min-w-0">');
     expect(phoneRow).toMatch(/className="[^"]*\bflex-wrap\b/);
     expect(mdRow).toMatch(/className="[^"]*\bflex-wrap\b/);
   });

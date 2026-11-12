@@ -387,8 +387,11 @@ function ConversationControls({
       {/* min-w-0 on the left group + the picker root: without it the
           flex-child min-width:auto floor keeps the group at its content
           width (scope pill + 200px title) and the long-title case
-          overpaints the New Conversation button at 390px viewports. */}
-      <div className="flex items-center gap-2 min-w-0">
+          overpaints the New Conversation button at 390px viewports.
+          flex-1 (basis 0): the header rows wrap so the model label can take
+          the second line, and a group sized to its content would wrap New
+          Conversation down with it instead of shrinking the title. */}
+      <div className="flex flex-1 items-center gap-2 min-w-0">
         <span
           className="px-3 py-1 rounded-full text-[11px] border shrink-0"
           style={{
