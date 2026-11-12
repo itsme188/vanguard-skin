@@ -219,7 +219,9 @@ export async function POST(request: NextRequest) {
 
     // Title from the first user message, set as soon as the row exists, so a
     // first turn that is stopped or fails still titles the conversation
-    // (browser pass item 3). Figures are masked by conversationTitleFromMessages.
+    // (browser pass item 3). The title is the user's own first line, cut at a
+    // word boundary and stored as written: no figures are masked (owner
+    // ruling 2026-11-12, lib/chat/conversation-title.ts).
     if (untitled) {
       try {
         const title = conversationTitleFromMessages(messages);
