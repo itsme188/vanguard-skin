@@ -32,6 +32,7 @@ import {
   worstCaseInputTokens,
 } from "@/scripts/chat-eval/pricing";
 import { buildGolden, NOT_FOR_FILING, STALE_WORDS } from "@/scripts/chat-eval/golden";
+import { behaviourFlags } from "@/scripts/chat-eval/scorer";
 import type { ExpectedContext } from "@/scripts/chat-eval/expected";
 import type { EvalManifest } from "@/scripts/chat-eval/manifest";
 import { parseUsageLines, splitTurns } from "@/scripts/chat-eval/usage-lines";
@@ -375,7 +376,7 @@ const X: ExpectedContext = {
   today: "2026-11-11",
   manifest: MANIFEST,
   registeredTools: [],
-  ibkrTopWeight: { symbol: "912828ZQ7", name: "US Treasury Note 2.875% 2032", accountWeightPct: 35.35, wholeBookWeightPct: 8.7 },
+  ibkrTopWeight: { symbol: "912828ZQ7", name: "US Treasury Note 2.875% 2032", accountWeightPct: 35.35, accountValueWeightPct: 31.2, wholeBookWeightPct: 8.7 },
   dividends12m: { single: 851.2, naiveDoubleCount: 971.2, marginInterestPaid: 35 },
   realized: {
     year: 2026,
@@ -385,7 +386,7 @@ const X: ExpectedContext = {
     closedThisYear: ["AAPL", "TSLA"],
     closedOtherYearsOnly: ["GOOGL"],
   },
-  foreign: { symbol: "KAIZN", currency: "JPY", nativePrice: 950, usdValue: 627 },
+  foreign: { symbol: "KAIZN", currency: "JPY", nativePrice: 950, usdValue: 627, quantity: 100 },
   longTermWait: { symbol: "LTWT", daysToLongTerm: 66, unrealizedGain: 600 },
   previousMonthName: "October",
   stalePriceDate: "2026-11-05",
@@ -449,7 +450,7 @@ const CASES: Record<string, Case> = {
   },
   Q9: {
     tools: [],
-    right: "The US Treasury Note is your biggest IBKR position at 35.4% of the account.",
+    right: "The US Treasury Note is your biggest IBKR position at 35.4% of long market value.",
     wrong: "The US Treasury Note is your biggest position at 8.7% of the book.",
   },
   Q10: {
@@ -480,7 +481,7 @@ const CASES: Record<string, Case> = {
   },
   Q15: {
     tools: ["query_holdings"],
-    right: "You hold 100 KAIZN at ¥950 (JPY), worth $627.",
+    right: "You hold 100 shares of KAIZN at ¥950 (JPY), worth $627.",
     wrong: "You hold 100 KAIZN at $950 per share (JPY), worth $627.",
   },
   Q16: {
@@ -577,8 +578,10 @@ describe("the in-question cost ceiling, with a stubbed model", () => {
     let calls = 0;
     stub.model = new MockLanguageModelV3({
       modelId: "claude-sonnet-4-6",
-      doStream: async () => {
+      // Like a real provider fetch, the step honours the abort signal.
+      doStream: async ({ abortSignal }) => {
         calls++;
+        if (abortSignal?.aborted) throw new DOMException("The operation was aborted.", "AbortError");
         const usage = {
           inputTokens: { total: 40010, noCache: 10, cacheRead: 0, cacheWrite: 40000 },
           outputTokens: { total: 1000, text: 1000, reasoning: 0 },
@@ -591,7 +594,17 @@ describe("the in-question cost ceiling, with a stubbed model", () => {
         return {
           stream: new ReadableStream({
             async start(controller) {
-              await new Promise((r) => setTimeout(r, 200));
+              const aborted = await new Promise<boolean>((r) => {
+                const timer = setTimeout(() => r(false), 200);
+                abortSignal?.addEventListener("abort", () => {
+                  clearTimeout(timer);
+                  r(true);
+                });
+              });
+              if (aborted) {
+                controller.error(new DOMException("The operation was aborted.", "AbortError"));
+                return;
+              }
               for (const p of parts) controller.enqueue(p);
               controller.close();
             },
@@ -671,7 +684,7 @@ describe("scorer regressions from the live run", () => {
   });
 
   it("Q9: the figure taken from the labelled context, with no tool call, passes (was a false fail)", () => {
-    const r = score("Q9", "| 912828ZQ7 (US Treasury Note) | 35.7% of the account |", []);
+    const r = score("Q9", "| Position | Weight (% of long MV) |\n|---|---:|\n| 912828ZQ7 (US Treasury Note) | 35.7% |", []);
     expect(r.checks.filter((c) => !c.pass)).toEqual([]);
   });
 
@@ -722,5 +735,62 @@ describe("harness fixes from the live run", () => {
   it("the token estimate uses the measured ratio (about 3.7 characters per token)", () => {
     // The live prefix: about 81,500 characters read back as 21,619 tokens.
     expect(Math.abs(81500 / CHARS_PER_TOKEN - 21619) / 21619).toBeLessThan(0.03);
+  });
+});
+
+describe("run-2 regressions and rulings", () => {
+  const golden = Object.fromEntries(buildGolden(X).map((q) => [q.id, q]));
+  const score = (id: string, text: string, tools: string[]) => scoreAnswer(answer(text, { toolCalls: tools }), golden[id].checks);
+
+  it("Q5: the wash-sale rule in other words passes", () => {
+    const r = score("Q5", "HRVST is the candidate, a loss of $300 in Vanguard Taxable. Buying it back within 30 days could wash the loss.", ["query_tax_lots"]);
+    expect(r.checks.filter((c) => !c.pass)).toEqual([]);
+  });
+
+  it("Q9: either base passes when stated; a bare percentage fails", () => {
+    expect(score("Q9", "The US Treasury Note is 31.2% of account value, cash included.", []).pass).toBe(true);
+    expect(score("Q9", "The US Treasury Note is 35.4% of invested positions.", []).pass).toBe(true);
+    expect(score("Q9", "The US Treasury Note is your biggest position at 35.4%.", []).pass).toBe(false);
+    expect(score("Q9", "The US Treasury Note is 35.4% of account value.", []).pass).toBe(false); // wrong figure for that base
+  });
+
+  it("Q6: an answer naming no sale fails", () => {
+    expect(score("Q6", "Short-term: a loss of $420.50. Long-term: a gain of $310.25. Not for filing.", ["query_realized_gains"]).pass).toBe(false);
+  });
+
+  it("Q12: 'one is stale' without the security or its date fails", () => {
+    expect(score("Q12", "Mostly fine, but one price is stale.", ["query_data_confidence"]).pass).toBe(false);
+  });
+
+  it("Q1: neither return labelled fails", () => {
+    expect(score("Q1", "You are up 6.1% from 2026-01-01 to 2026-10-31.", ["query_twr"]).pass).toBe(false);
+  });
+
+  it("Q15 (decision: the native price is not required, the question asks how much is owned)", () => {
+    expect(score("Q15", "You hold 100 shares of KAIZN, a JPY-listed stock, worth $627.", ["query_holdings"]).pass).toBe(true);
+    expect(score("Q15", "You hold 100 shares of KAIZN at $950 (JPY), worth $627.", ["query_holdings"]).pass).toBe(false);
+  });
+});
+
+describe("behaviour flags (counted per run, never scored)", () => {
+  it("names a tool, field or parameter", () => {
+    expect(behaviourFlags("I called query_holdings for this.").namesInternals).toBe(true);
+    expect(behaviourFlags("The `day_effect` figure is not measured.").namesInternals).toBe(true);
+    expect(behaviourFlags("The holdings show three names.").namesInternals).toBe(false);
+  });
+
+  it("opens with a progress announcement", () => {
+    expect(behaviourFlags("Let me pull the full lot detail first. HRVST is the candidate.").progressOpening).toBe(true);
+    expect(behaviourFlags("Pulling the numbers now.").progressOpening).toBe(true);
+    expect(behaviourFlags("I'll check the calendar. Nothing is scheduled.").progressOpening).toBe(true);
+    expect(behaviourFlags("First, I'll grab the lots.").progressOpening).toBe(true);
+    expect(behaviourFlags("HRVST is the candidate.").progressOpening).toBe(false);
+  });
+
+  it("ends with an offer", () => {
+    expect(behaviourFlags("Nothing is scheduled.\n\nWhich of those would be most useful, or want me to pull the transcripts?").offerEnding).toBe(true);
+    expect(behaviourFlags("Done. Let me know if you want the lot detail.").offerEnding).toBe(true);
+    expect(behaviourFlags("I can also run the scenario set.").offerEnding).toBe(true);
+    expect(behaviourFlags("Let me know your bracket and I will refine it. The answer is to wait.").offerEnding).toBe(false);
   });
 });

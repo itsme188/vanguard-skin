@@ -57,7 +57,9 @@ export type Check =
   | ({ kind: "notNumber"; label: string; value: number } & NumberTolerance)
   | { kind: "calledTool"; label: string; tool: string | readonly string[] }
   | { kind: "notCalledTool"; label: string; tool: string }
-  | { kind: "minLength"; label: string; chars: number };
+  | { kind: "minLength"; label: string; chars: number }
+  /** Passes when ANY of its checks passes (alternatives that are each right). */
+  | { kind: "anyOf"; label: string; checks: Check[] };
 
 export interface EvalAnswer {
   /** The streamed answer text, every step's text joined. */
@@ -170,7 +172,17 @@ function lineAround(text: string, n: ParsedNumber, window: number): string {
   const lineStart = text.lastIndexOf("\n", n.start - 1) + 1;
   const nl = text.indexOf("\n", n.end);
   const lineEnd = nl === -1 ? text.length : nl;
-  return text.slice(Math.max(lineStart, n.start - window), Math.min(lineEnd, n.end + window));
+  const near = text.slice(Math.max(lineStart, n.start - window), Math.min(lineEnd, n.end + window));
+  // A figure in a markdown table row also sees the table's header row (the
+  // label often lives only there, e.g. "Weight (% of long MV)").
+  if (text.slice(lineStart, lineEnd).trimStart().startsWith("|")) {
+    const lines = text.slice(0, lineStart).split("\n");
+    let i = lines.length - 2; // the line before this row
+    while (i >= 0 && lines[i].trimStart().startsWith("|")) i--;
+    const header = lines[i + 1];
+    if (header !== undefined && header.trimStart().startsWith("|")) return `${header}\n${near}`;
+  }
+  return near;
 }
 
 /** Does a parsed figure satisfy the check's unit and context bindings? */
@@ -268,6 +280,11 @@ export function runCheck(answer: EvalAnswer, check: Check): CheckResult {
       const called = answer.toolCalls.includes(check.tool);
       return { ...base, pass: !called, detail: called ? `called ${check.tool}` : "not called" };
     }
+    case "anyOf": {
+      const results = check.checks.map((c) => runCheck(answer, c));
+      const hit = results.find((r) => r.pass);
+      return { ...base, pass: hit !== undefined, detail: hit ? `${hit.label}: ${hit.detail}` : results.map((r) => `${r.label}: ${r.detail}`).join("; ") };
+    }
     case "minLength": {
       const n = text.trim().length;
       return { ...base, pass: n >= check.chars, detail: `${n} characters (need ${check.chars})` };
@@ -289,8 +306,40 @@ export function scoreAnswer(answer: EvalAnswer, checks: readonly Check[]): Score
   };
 }
 
+// ─── Behaviour flags (counted per run, never part of pass/fail) ─────
+
+export interface BehaviourFlags {
+  /** Names a tool, field or parameter (a query_ name or a backticked snake_case identifier). */
+  namesInternals: boolean;
+  /** Opens with a progress announcement before any content. */
+  progressOpening: boolean;
+  /** Ends with an offer of more help. */
+  offerEnding: boolean;
+}
+
+const INTERNAL_NAME = /\bquery_[a-z_]+\b|`[a-z][a-z0-9]*(_[a-z0-9]+)+`/;
+const PROGRESS_OPENING =
+  /^\s*(let me|let's|i'?ll (check|pull|look|grab|start|run|fetch|query|get)|i will (check|pull|look)|pulling|checking|looking (up|at)|fetching|grabbing|first,? i'?ll|one moment|give me a (moment|second))/i;
+const OFFER_ENDING =
+  /(let me know|just say the word|want me to|would you like( me)? to|i can also|happy to|shall i|should i (pull|run|check)|if you('d)? like,? i can)/i;
+
+/** The three behaviour flags for an answer. Pure. */
+export function behaviourFlags(text: string): BehaviourFlags {
+  const t = (text ?? "").trim();
+  const tail = t.slice(-300);
+  const lastPara = tail.split(/\n\s*\n/).pop() ?? tail;
+  // The offer must be the closing sentence, not an aside earlier in the paragraph.
+  const lastSentence = lastPara.trim().split(/(?<=[.!?])\s+/).filter(Boolean).pop() ?? lastPara;
+  return {
+    namesInternals: INTERNAL_NAME.test(t),
+    progressOpening: PROGRESS_OPENING.test(t),
+    offerEnding: OFFER_ENDING.test(lastSentence),
+  };
+}
+
 /** A check in JSON-safe form (a RegExp becomes its source text). */
 export function serializeCheck(check: Check): Record<string, unknown> {
+  if (check.kind === "anyOf") return { kind: check.kind, label: check.label, checks: check.checks.map(serializeCheck) };
   const out: Record<string, unknown> = { ...check };
   if ("pattern" in check) out.pattern = patternText(check.pattern);
   if ("unitAfter" in check && check.unitAfter) out.unitAfter = check.unitAfter.toString();

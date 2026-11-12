@@ -21,7 +21,15 @@ export interface ExpectedContext {
   /** Names of the tools the app registers today (CHAT_TOOLS). */
   registeredTools: string[];
   /** The IBKR account's largest position by |weight| on the account base. */
-  ibkrTopWeight: { symbol: string; name: string | null; accountWeightPct: number; wholeBookWeightPct: number | null } | null;
+  ibkrTopWeight: {
+    symbol: string;
+    name: string | null;
+    /** Share of the account's long market value (the holdings reader's own weight). */
+    accountWeightPct: number;
+    /** Share of the account's value INCLUDING cash (latest daily valuation total), or null. */
+    accountValueWeightPct: number | null;
+    wholeBookWeightPct: number | null;
+  } | null;
   /** Dividend income over the last 365 days, counted once (Contract J). */
   dividends12m: { single: number; naiveDoubleCount: number; marginInterestPaid: number } | null;
   /** Realized gains in the current calendar year, taxable accounts, filing rows. */
@@ -36,7 +44,7 @@ export interface ExpectedContext {
     closedOtherYearsOnly: string[];
   } | null;
   /** The foreign holding as the readers report it. */
-  foreign: { symbol: string; currency: string; nativePrice: number; usdValue: number } | null;
+  foreign: { symbol: string; currency: string; nativePrice: number; usdValue: number; quantity: number } | null;
   /** The lot waiting for long-term treatment. */
   longTermWait: { symbol: string; daysToLongTerm: number; unrealizedGain: number | null } | null;
   /** The month before today's, by name (e.g. "October"). */
@@ -95,10 +103,19 @@ function deriveIbkrTopWeight(db: Database.Database, m: EvalManifest): ExpectedCo
   if (rows.length === 0) return null;
   const top = rows.reduce((a, b) => (Math.abs(b.position_weight_pct ?? 0) > Math.abs(a.position_weight_pct ?? 0) ? b : a));
   const whole = holdingsFor(db).find((r) => r.account_name === m.accounts.ibkr && r.symbol === top.symbol);
+  const total = (
+    db
+      .prepare(
+        `SELECT v.total_value FROM daily_valuations v JOIN accounts a ON a.id = v.account_id
+          WHERE a.name = ? ORDER BY v.valuation_date DESC LIMIT 1`,
+      )
+      .get(m.accounts.ibkr) as { total_value: number } | undefined
+  )?.total_value;
   return {
     symbol: top.symbol,
     name: top.security_name,
     accountWeightPct: top.position_weight_pct ?? 0,
+    accountValueWeightPct: total && top.market_value !== null ? (top.market_value / total) * 100 : null,
     wholeBookWeightPct: whole?.position_weight_pct ?? null,
   };
 }
@@ -177,7 +194,7 @@ function pendingLossOf(db: Database.Database, m: EvalManifest): number | null {
 function deriveForeign(db: Database.Database, m: EvalManifest): ExpectedContext["foreign"] {
   const row = holdingsFor(db).find((r) => r.symbol === m.foreign.symbol);
   if (!row || row.latest_price === null || row.market_value === null) return null;
-  return { symbol: row.symbol, currency: row.currency, nativePrice: row.latest_price, usdValue: row.market_value };
+  return { symbol: row.symbol, currency: row.currency, nativePrice: row.latest_price, usdValue: row.market_value, quantity: row.quantity };
 }
 
 function deriveLongTermWait(db: Database.Database, m: EvalManifest, today: string): ExpectedContext["longTermWait"] {

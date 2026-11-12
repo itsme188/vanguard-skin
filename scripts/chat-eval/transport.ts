@@ -70,6 +70,11 @@ export interface ChatRequest {
   timeoutMs: number;
   /** Called for every stream chunk; a returned reason stops (aborts) the request. */
   onChunk?: (chunk: Record<string, unknown>, conversationId: number | null) => string | null;
+  /**
+   * Called every TICK_MS while the reply streams (chunks may pause for the
+   * length of a whole step); a returned reason stops (aborts) the request.
+   */
+  onTick?: (conversationId: number | null) => string | null;
 }
 
 export interface ChatExchange {
@@ -84,6 +89,9 @@ export interface ChatExchange {
   stoppedByRunner: string | null;
   elapsedMs: number;
 }
+
+/** How often the runner re-reads the usage log while a reply streams. */
+export const TICK_MS = 100;
 
 export function userMessage(id: string, text: string): UIMessage {
   return { id, role: "user", parts: [{ type: "text", text }] } as UIMessage;
@@ -139,6 +147,18 @@ export async function sendChat(req: ChatRequest, deps: TransportDeps): Promise<C
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let pending = "";
+      const ticker = req.onTick
+        ? setInterval(() => {
+            if (stoppedByRunner) return;
+            const stop = req.onTick!(conversationId);
+            if (stop) {
+              stoppedByRunner = stop;
+              void reader.cancel().catch(() => {});
+              ctrl.abort();
+            }
+          }, TICK_MS)
+        : null;
+      try {
       for (;;) {
         const { value, done } = await reader.read();
         if (done) break;
@@ -165,6 +185,11 @@ export async function sendChat(req: ChatRequest, deps: TransportDeps): Promise<C
           }
         }
         if (stoppedByRunner) break;
+      }
+      } catch (err) {
+        if (!stoppedByRunner) throw err;
+      } finally {
+        if (ticker) clearInterval(ticker);
       }
     } else {
       body = await res.text();

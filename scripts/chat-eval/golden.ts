@@ -57,6 +57,13 @@ export const NOT_FOR_FILING = /not (for|to be used for|suitable for|meant for) (
 /** Staleness named in words (a date alone is not enough). */
 export const STALE_WORDS = /\bstale\b|out of date|outdated|not (been )?(updated|refreshed)|older than|\blag(s|ging)?\b|behind\b|last (updated|priced|refreshed)/;
 
+/** A weight stated as a share of long market value (or invested positions). */
+export const LONG_MV_BASE =
+  /long (market )?value|long MV|long book|invested (positions|book|capital)|of (the )?(positions|holdings|invested)|holdings value|market value of (the )?(positions|holdings)|deployed|gross long/;
+
+/** A weight stated as a share of account value including cash. */
+export const ACCOUNT_VALUE_BASE = /account (value|total)|total (account )?value|including cash|incl\.? cash|net liquidation|of (the )?account\b(?! long)/;
+
 /** Rates labelled as assumed, illustrative or bracket-dependent. */
 export const ASSUMED_RATES =
   /assum(e|ed|es|ing|ption)|illustrat|hypothetical|for example|e\.g\.|depends on (your|the) (rate|bracket|marginal|tax)|if (your|you are in|you're in) (the )?\d+%|at (a|your) \d+% (rate|bracket)|bracket[^.\n]{0,30}(table|scenario)/;
@@ -179,7 +186,7 @@ export const GOLDEN: readonly Builder[] = [
     checks: [
       { kind: "calledTool", label: "reads tax lots", tool: "query_tax_lots" },
       { kind: "contains", label: "the taxable loser is listed", pattern: new RegExp(`\\b${escapeRegExp(x.manifest.harvestCandidate)}\\b`) },
-      { kind: "contains", label: "wash-sale caveat", pattern: /wash[- ]sale/ },
+      { kind: "contains", label: "wash-sale caveat (any wording)", pattern: /\bwash/ },
       { kind: "notContains", label: "the Roth lot is not offered", pattern: new RegExp(`\\b${escapeRegExp(x.manifest.rothLoser)}\\b(?![^\\n.]{0,60}(not eligible|tax-advantaged|Roth|excluded|not a candidate))`) },
       { kind: "notContains", label: "the pending lot is not offered", pattern: new RegExp(`\\b${escapeRegExp(x.manifest.pendingLot)}\\b(?![^\\n.]{0,60}(pending|awaiting|excluded|not a candidate))`) },
       ...harvestFigureChecks(x),
@@ -260,7 +267,16 @@ export const GOLDEN: readonly Builder[] = [
       const shortName = w.name ? w.name.split(/\s+/).filter((_, i, ws) => !ws.slice(0, i + 1).some((t) => /\d/.test(t))).join(" ") : "";
       const names = new RegExp([w.symbol.trim(), ...(shortName ? [shortName] : [])].map(escapeRegExp).join("|"));
       checks.push({ kind: "contains", label: "the largest position named", pattern: names });
-      checks.push({ kind: "number", label: "weight on the account base", value: pct(w.accountWeightPct), absTol: 0.6, percentOnly: true });
+      // Orchestrator ruling: "share of the account" is ambiguous, so either
+      // base is right PROVIDED the answer states it in words; a bare
+      // percentage with no base fails.
+      const either: Check[] = [
+        { kind: "number", label: "share of long market value, base stated", value: pct(w.accountWeightPct), absTol: 0.6, percentOnly: true, near: LONG_MV_BASE, window: 80 },
+      ];
+      if (w.accountValueWeightPct !== null) {
+        either.push({ kind: "number", label: "share of account value, base stated", value: pct(w.accountValueWeightPct), absTol: 0.6, percentOnly: true, near: ACCOUNT_VALUE_BASE, window: 80 });
+      }
+      checks.push({ kind: "anyOf", label: "the weight with its base stated (long market value or account value)", checks: either });
       if (w.wholeBookWeightPct !== null && Math.abs(w.wholeBookWeightPct - w.accountWeightPct) > 1.5) {
         checks.push({ kind: "notNumber", label: "not the whole-book weight", value: pct(w.wholeBookWeightPct), absTol: 0.3, percentOnly: true });
       }
@@ -350,7 +366,10 @@ export const GOLDEN: readonly Builder[] = [
     if (f) {
       const cur = new RegExp(`\\b${escapeRegExp(f.currency)}\\b|¥`);
       checks.push({ kind: "contains", label: "the currency code", pattern: cur });
-      checks.push({ kind: "number", label: "the native price, in its currency", value: f.nativePrice, absTol: 0.5, near: cur, window: 12 });
+      // Decision (2026-11-11, run 2): the question asks how much is OWNED, so
+      // the native price is not required; the quantity and the USD value are.
+      // If a native price is quoted, it must not carry a dollar sign (below).
+      checks.push({ kind: "number", label: "the quantity held", value: f.quantity, absTol: 0.001, near: /shares?|units?/, window: 20 });
       checks.push({ kind: "number", label: "the USD value", value: f.usdValue, absTol: 1, relTol: 0.01, near: /\$|USD|dollars/, window: 12 });
       checks.push({
         kind: "notContains",

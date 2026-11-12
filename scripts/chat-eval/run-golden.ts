@@ -77,7 +77,7 @@ import { outputPathRefusal } from "./output-guard";
 import { readManifest } from "./manifest";
 import { deriveExpected, type ExpectedContext } from "./expected";
 import { buildGolden, toolsReferenced, type GoldenQuestion } from "./golden";
-import { scoreAnswer, serializeCheck, type ScoreResult } from "./scorer";
+import { behaviourFlags, scoreAnswer, serializeCheck, type BehaviourFlags, type ScoreResult } from "./scorer";
 import {
   NESTED_AI_TOOLS,
   PRICE_SOURCE,
@@ -408,7 +408,7 @@ export async function guardedAsk(
     return null;
   };
 
-  const ex = await sendChat({ ...req, baseUrl: opts.baseUrl, timeoutMs: opts.timeoutMs, onChunk }, deps);
+  const ex = await sendChat({ ...req, baseUrl: opts.baseUrl, timeoutMs: opts.timeoutMs, onChunk, onTick: follow }, deps);
   const ceilingAborted = ex.stoppedByRunner === COST_CEILING_REASON;
   let stop: string | null = ex.stoppedByRunner && !ceilingAborted ? `request stopped: ${ex.stoppedByRunner}` : null;
   if (ex.status === 401 || ex.status === 403) {
@@ -483,6 +483,8 @@ export interface QuestionRecord {
   notes: string[];
   answer?: string;
   checks: Record<string, unknown>[];
+  /** Behaviour flags of the answer (counted per run; never part of pass/fail). */
+  behaviour?: BehaviourFlags;
 }
 
 export interface GoldenReport {
@@ -499,6 +501,8 @@ export interface GoldenReport {
   spentUsd: number;
   stoppedReason: string | null;
   unregisteredTools: string[];
+  /** How many answered questions show each behaviour flag. */
+  behaviourCounts?: { namesInternals: number; progressOpening: number; offerEnding: number; answered: number };
   questions: QuestionRecord[];
 }
 
@@ -608,6 +612,7 @@ export async function runGolden(
         inFlightBookedUsd: priced.inFlightBookedUsd,
         conversationId: ex.conversationId,
         elapsedMs: ex.elapsedMs,
+        behaviour: behaviourFlags(ex.summary.text),
         ...(opts.showAnswers ? { answer: ex.summary.text } : {}),
       });
       print(
@@ -620,7 +625,19 @@ export async function runGolden(
     revokeSessionsByLabel(setup.db, SESSION_LABEL);
   }
   report.stoppedReason = stop;
+  report.behaviourCounts = countBehaviour(report.questions);
   return report;
+}
+
+/** The three behaviour counts over the questions that got an answer. Pure. */
+export function countBehaviour(questions: readonly Pick<QuestionRecord, "behaviour">[]): NonNullable<GoldenReport["behaviourCounts"]> {
+  const answered = questions.filter((q) => q.behaviour);
+  return {
+    answered: answered.length,
+    namesInternals: answered.filter((q) => q.behaviour!.namesInternals).length,
+    progressOpening: answered.filter((q) => q.behaviour!.progressOpening).length,
+    offerEnding: answered.filter((q) => q.behaviour!.offerEnding).length,
+  };
 }
 
 export function printGoldenTable(report: GoldenReport, print: Print): void {
@@ -657,6 +674,11 @@ export function printGoldenTable(report: GoldenReport, print: Print): void {
   const total = scored.reduce((acc, q) => addUsage(acc, q.usage ?? ZERO_USAGE), ZERO_USAGE);
   print("");
   print(`passed ${passed}/${scored.length} scored (${report.questions.length} planned)`);
+  const b = report.behaviourCounts ?? countBehaviour(report.questions);
+  print(
+    `behaviour (counted, not scored), of ${b.answered} answers: names a tool/field ${b.namesInternals}, ` +
+      `opens with a progress line ${b.progressOpening}, ends with an offer ${b.offerEnding}`,
+  );
   print(`tokens: uncached input ${total.noCache}, cache write ${total.cacheWrite}, cache read ${total.cacheRead}, output ${total.output}`);
   print(
     `cost: ${usd(report.spentUsd)} of cap $${report.maxUsd.toFixed(2)} (per-question ceiling $${report.maxUsdPerQuestion.toFixed(2)}; ` +
