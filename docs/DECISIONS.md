@@ -1880,8 +1880,23 @@ Branch `claude/portfolio-assistant-review-7148e7` (commits `8fd9e0e4`..`2a8c1d59
 **Guards:** `tests/api/chat-model-family.test.ts`, `tests/chat/model-choice.test.ts`, `tests/dashboard/chat-model-picker.test.ts`, `tests/ai/no-fable-model-policy.test.ts`, `tests/chat/usage-log.test.ts`, `tests/db/migration-103-chat-conversation-model-family.test.ts`, `tests/scripts/chat-eval-runner.test.ts`.
 
 **Open** (`docs/plans/TODO.md` (o19)):
-- A real send on each class has never run. Haiku 5.5's chat request is confirmed from the documentation only; the `chat-haiku` probe shape exists but was not run.
+- ~~A real send on each class has never run; Haiku 5.5's chat request is confirmed from the documentation only.~~ CLOSED by run 6 (below).
 - The chat has no excluded-id retry: a model the catalog lists but the account cannot call is not dropped and re-resolved within a turn.
 - The chat has no failover to the other provider (existing follow-up F3).
 - The Settings override for the chat feature now only affects conversations with no stored class.
+
+**Live run 6** (owner-approved, $0.50 ceiling; a VACUUM copy of the synthetic `eval-v3.db`, a fresh dev server, the UI driven by a browser CLI):
+- Migration 103 applied cleanly to the copy at the first request.
+- The `chat-haiku` probe shape was accepted on `claude-haiku-5-5`.
+- One real message per class through the UI worked, each with the right model id on every step, the right `modelFamily` in the usage log, the right label and the right stored `model_family`: Haiku ($0.0057, 6.5 s), Sonnet ($0.1058, 6.7 s), Opus ($0.2176, 10.4 s). Sonnet was preselected on every new-chat screen. Each class wrote its own cache prefix on its first turn (the cache is per model).
+- A second turn on Opus read the class from the row (the body carried nothing new) and read 77,094 tokens from cache across its two steps ($0.0371).
+- A conversation with no class ran on the default (`claude-sonnet-5-5`), showed no label, and kept `model_family` NULL ($0.0267).
+- Labels survived a reload (from the list route), also at 390 px.
+- Measured spend: $0.3938 for the run (one accidental extra Haiku turn included); $3.52 of the $5.00 cap in total across runs 4 to 6.
+- **Known limit of live checks through the UI:** the UI path has no up-front cost guard. Only the eval runner books a worst case; run 6 kept its ceiling by measurement, bounded by the route's own limits. This is a limit of the check method, not an app item.
+
+**Follow-ups from run 6.**
+- `b042001a`: a conversation created with a class never shows an empty label (see §The model in `lib/chat/CLAUDE.md`). Run 6 saw the Haiku label blank for about one second after send, once. It was not reproduced with stubbed fast, slow and failed first turns; it is now guarded (`tests/api/chat-model-family.test.ts`, `tests/dashboard/chat-model-picker.test.ts`), and its cause is unconfirmed.
+- Not a defect: at desktop width the DOM holds a second "New Conversation" button. It is the phone copy, hidden with `display:none`, and predates the picker. It is not reachable by keyboard or assistive technology: the accessibility snapshot lists the button once, and 250 Tab presses never focused it. The browser CLI's click by role hit it in run 6, which is how the accidental Haiku turn happened.
+- For the owner (TODO (o20)): at desktop width the rail's controls row, and with it the model label, scrolls away with the messages (pre-existing, by the 2026-09-02 layout ruling).
 
