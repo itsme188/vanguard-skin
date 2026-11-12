@@ -57,7 +57,7 @@ import { getMarketSnapshot, type QuoteFetcher } from "../../lib/queries/market-s
 import { reconcileClosedEquityHoldings } from "../../lib/mutations/closed-equity";
 import { upsertCalendarEvents } from "../../lib/mutations/calendar";
 import { runCompositeTool } from "../../lib/chat/composite";
-import { getTaxLotsForChat } from "../../lib/queries/chat-tools";
+import { getHoldingsForChat, getTaxLotsForChat } from "../../lib/queries/chat-tools";
 import { EVAL_FIXTURE_VERSION, EVAL_MARKER_KEY, liveDbRefusal, resolvedDbPath } from "./db-guard";
 import { outputPathRefusal } from "./output-guard";
 import { EVAL_MANIFEST_KEY, type EvalManifest } from "./manifest";
@@ -213,6 +213,23 @@ function version3Checks(db: Database.Database, today: string): string[] {
     if (!m.test(findings)) out.push(`the integrity findings do not list ${expired} as expired and awaiting its closing entry`);
     const pending = getTaxLotsForChat(db, { symbol: manifest.pendingLot, status: "open" });
     if (!pending.some((r) => r.pending_statement)) out.push(`${manifest.pendingLot} is no longer a pending lot`);
+    // The short's gain must read the same in the holdings tool and the tax
+    // lots (run 4: the holdings row said -2,580 where the lot said -180).
+    // Expected: the proceeds less the cost to cover at the latest close.
+    const hold = getHoldingsForChat(db, { account_name: manifest.accounts.ibkr, symbol: manifest.short, includeShorts: true, noLimit: true })
+      .find((r) => r.symbol === manifest.short);
+    const lots = getTaxLotsForChat(db, { symbol: manifest.short, status: "open", account_name: manifest.accounts.ibkr })
+      .filter((r) => r.position_side === "short");
+    const lotGain = lots.length > 0 && lots.every((r) => r.unrealized_gain != null) ? round2(lots.reduce((s, r) => s + (r.unrealized_gain ?? 0), 0)) : null;
+    const px = db
+      .prepare("SELECT p.close_price AS c FROM prices p JOIN securities s ON s.id = p.security_id WHERE s.symbol = ? ORDER BY p.date DESC LIMIT 1")
+      .get(manifest.short) as { c: number } | undefined;
+    const proceeds = lots.reduce((s, r) => s + r.cost_basis, 0);
+    const want = px ? round2(proceeds - lots.reduce((s, r) => s + r.quantity_remaining, 0) * px.c) : null;
+    const holdGain = hold?.unrealized_gain == null ? null : round2(hold.unrealized_gain);
+    if (holdGain === null || lotGain === null || want === null || Math.abs(holdGain - lotGain) > 0.01 || Math.abs(lotGain - want) > 0.01) {
+      out.push(`the short ${manifest.short}: holdings gain ${holdGain}, tax-lot gain ${lotGain}, expected ${want} (proceeds less the cost to cover)`);
+    }
   }
   const scen = runCompositeTool("query_scenarios", db, {}, { accountIds: undefined, today }) as { unmodelled_positions?: unknown[] };
   if (!Array.isArray(scen?.unmodelled_positions) || scen.unmodelled_positions.length === 0) {
@@ -468,7 +485,9 @@ export function buildEvalFixture(db: Database.Database, today: string): EvalMani
     [taxable, ids.LTWT, 60, 3000],
     [taxable, ids.BILL, 10000, 9890],
     [taxable, ids.FRN, 5000, 4995],
-    [ibkr, ids.SHRT, -30, 1200],
+    // A short's basis is stored negative (position x average cost), as every
+    // real IBKR source writes it: minus the sale proceeds.
+    [ibkr, ids.SHRT, -30, -1200],
     [ibkr, ids.KAIZN, 100, 230000],
     [ibkr, ids.LIVEOPT, 2, 1000],
     [ibkr, ids.MSFTOPT, 2, 1500],
