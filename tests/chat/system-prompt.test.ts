@@ -497,7 +497,11 @@ describe("prompt standards (Task 7)", () => {
         expect(rule, `${scope}: ${tool}`).toContain(tool);
       }
       expect(rule).toContain("flow adjustment");
-      expect(rule).toContain("list_info.truncated");
+      // Sums and blends over rows go wrong by hand (live eval Q5, Q16, Q18).
+      expect(rule).toContain("give the rows and say the total is not provided");
+      // A hand-built shock range is fabricated (live eval Q8).
+      expect(rule).toContain("A range you build by hand from weights or beta is a figure no engine produced");
+      expect(rule).toContain("name those positions");
     }
   });
 
@@ -516,6 +520,28 @@ describe("prompt standards (Task 7)", () => {
       expect(text, scope).toContain("All Accounts scope");
     }
     expect(staticBlock("all")).not.toContain("the boundary is hard");
+  });
+
+  // Behaviours the live evaluation (2026-11-11) showed slipping.
+  it("pins the behaviours the live evaluation showed slipping", () => {
+    for (const scope of PORTFOLIO_SCOPES) {
+      const text = staticBlock(scope);
+      // Q1: both return figures.
+      expect(text, scope).toContain("Give both figures it returns, the time-weighted and the money-weighted");
+      // Q14, Q4: empty results, no guessing, no closing menu.
+      expect(section(text, "## Data Quality Awareness"), scope).toContain("Do not guess at why");
+      expect(section(text, "## How to Answer"), scope).toContain("no menu of other things you could look up");
+      // Q6, Q18: a realized figure is explained from its own rows only.
+      expect(text, scope).toContain("name only the sales in query_realized_gains' own rows");
+      // Q15: two readings of foreign; Unknown is unclassified.
+      expect(section(text, "## Choosing Tools"), scope).toContain("Foreign holdings have two readings");
+      expect(section(text, "## Choosing Tools"), scope).toContain("never guess what is in it");
+      // Q13: assumptions labelled.
+      expect(section(text, "## How to Answer"), scope).toContain("as assumed");
+      // Q18: a review leads with what matters.
+      expect(section(text, "## How to Answer"), scope).toContain("Length is not thoroughness");
+    }
+    expect(staticBlock("macro")).toContain("Label any assumption he has not given you as assumed");
   });
 
   // Contract D: the static block carries the cache mark and must hold nothing
