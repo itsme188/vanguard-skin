@@ -10,7 +10,7 @@ import { ConfirmDialog } from "./ConfirmDialog";
 import { useToast } from "./Toast";
 import { CHIP_TONE_TEXT, GOLD_FILL_CLASSES } from "./chip-tone-text";
 import { usePrivacy } from "@/lib/privacy/context";
-import { conversationTitleFromMessages, displayConversationTitle } from "@/lib/chat/conversation-title";
+import { conversationTitleFromMessages } from "@/lib/chat/conversation-title";
 import { getQuickActions } from "@/lib/chat/quick-actions";
 import { toolLabel } from "@/lib/chat/tool-labels";
 import { turnOutcomeNotice } from "@/lib/chat/turn-outcome";
@@ -259,7 +259,6 @@ function ConversationHistory({
 }) {
   const [open, setOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
-  const { isPrivate } = usePrivacy();
 
   // Close dropdown on click outside
   useEffect(() => {
@@ -275,7 +274,7 @@ function ConversationHistory({
 
   const currentConv = conversations.find((c) => c.id === currentId);
   const displayTitle =
-    displayConversationTitle(currentConv?.title, isPrivate) ?? displayConversationTitle(fallbackTitle, isPrivate) ?? "Current conversation";
+    currentConv?.title ?? fallbackTitle ?? "Current conversation";
 
   return (
     /* md:relative, not relative: at phone width the menu anchors to the fixed
@@ -324,13 +323,13 @@ function ConversationHistory({
                 className={`flex-1 min-w-0 text-left pl-3 pr-2 py-2 text-xs ${
                   conv.id === currentId ? "text-ink" : "text-ink-dim group-hover:text-ink"
                 }`}
-                title={displayConversationTitle(conv.title, isPrivate) ?? `Conversation ${conv.id}`}
+                title={conv.title ?? `Conversation ${conv.id}`}
               >
                 {/* Wraps instead of truncating: the menu is a fixed 256px wide,
                     so a one-line title cut most names short, and a hover
                     `title` tooltip never shows on touch. */}
                 <div className="[overflow-wrap:anywhere]">
-                  {displayConversationTitle(conv.title, isPrivate) ?? `Conversation ${conv.id}`}
+                  {conv.title ?? `Conversation ${conv.id}`}
                 </div>
                 <div className="text-[10px] text-ink-faint mt-0.5">
                   {SCOPE_OPTIONS.find((s) => s.value === conv.scope)?.label ?? conv.scope}
@@ -341,7 +340,7 @@ function ConversationHistory({
               <button
                 onClick={(e) => { e.stopPropagation(); onDelete(conv); }}
                 className="shrink-0 p-2 mr-1 text-ink-faint hover:text-down opacity-0 group-hover:opacity-100 focus:opacity-100 pointer-coarse:opacity-100 transition-opacity relative pointer-coarse:after:absolute pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-0.5 pointer-coarse:after:content-['']"
-                aria-label={`Delete conversation ${displayConversationTitle(conv.title, isPrivate) ?? conv.id}`}
+                aria-label={`Delete conversation ${conv.title ?? conv.id}`}
                 title="Delete"
               >
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
@@ -435,7 +434,6 @@ export function ChatInterface({ pathname }: ChatInterfaceProps) {
   const [loadedInitial, setLoadedInitial] = useState(false);
   const [deletePending, setDeletePending] = useState<ChatConversation | null>(null);
   const { toast } = useToast();
-  const { isPrivate } = usePrivacy();
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesScrollRef = useRef<HTMLDivElement>(null);
@@ -557,8 +555,8 @@ export function ChatInterface({ pathname }: ChatInterfaceProps) {
   const isStreaming = status === "streaming" || status === "submitted";
 
   // The header's title until the list row carries one (the first turn was
-  // stopped, or the list refresh beat the server's title write). Masked
-  // like any title through displayConversationTitle.
+  // stopped, or the list refresh beat the server's title write). Shown as
+  // written, like any title (owner ruling 2026-11-12).
   const fallbackTitle = useMemo(() => conversationTitleFromMessages(messages) || null, [messages]);
 
   // Start a new turn generation (B17): a header that arrives later for a
@@ -893,9 +891,9 @@ export function ChatInterface({ pathname }: ChatInterfaceProps) {
                         key={conv.id}
                         onClick={() => loadConversation(conv)}
                         className="text-left px-3 py-1.5 rounded-lg border border-edge text-xs text-ink-dim hover:text-ink hover:border-edge-strong transition-[color,border-color] focus-ring truncate"
-                        title={displayConversationTitle(conv.title, isPrivate) ?? `Conversation ${conv.id}`}
+                        title={conv.title ?? `Conversation ${conv.id}`}
                       >
-                        {displayConversationTitle(conv.title, isPrivate) ?? `Conversation ${conv.id}`}
+                        {conv.title ?? `Conversation ${conv.id}`}
                       </button>
                     ))}
                   </div>
@@ -1038,7 +1036,7 @@ export function ChatInterface({ pathname }: ChatInterfaceProps) {
       <ConfirmDialog
         open={deletePending !== null}
         title="Delete conversation"
-        message={`Delete "${displayConversationTitle(deletePending?.title, isPrivate) ?? `Conversation ${deletePending?.id}`}"? This cannot be undone.`}
+        message={`Delete "${deletePending?.title ?? `Conversation ${deletePending?.id}`}"? This cannot be undone.`}
         confirmLabel="Delete"
         variant="danger"
         onConfirm={confirmDeleteConversation}

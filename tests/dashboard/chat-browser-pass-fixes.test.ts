@@ -26,10 +26,10 @@ describe("chat browser-pass fixes", () => {
     anchorIndex(list, "{!isLive && !notice && msg.parts.some(");
   });
 
-  it("the header falls back to the first question, masked like any title", () => {
+  it("the header falls back to the first question, shown as written like any title", () => {
     anchorIndex(
       src,
-      'displayConversationTitle(currentConv?.title, isPrivate) ?? displayConversationTitle(fallbackTitle, isPrivate) ?? "Current conversation"',
+      'currentConv?.title ?? fallbackTitle ?? "Current conversation"',
     );
     anchorIndex(src, "const fallbackTitle = useMemo(() => conversationTitleFromMessages(messages) || null, [messages]);");
     expect(src.match(/fallbackTitle=\{fallbackTitle\}/g)!.length).toBeGreaterThanOrEqual(3);

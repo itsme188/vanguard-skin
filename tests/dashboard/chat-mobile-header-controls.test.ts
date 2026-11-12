@@ -91,6 +91,11 @@ const USE_CHAT_BLOCK_AT_HEAD = `const { transport, turn, sendAutomaticallyWhen }
     sendAutomaticallyWhen,
   });`;
 
+// Re-pinned 2026-11-12 for the owner's chat-privacy ruling: inside the
+// hashed region only two things changed, the `const { isPrivate } =
+// usePrivacy();` line (it fed the conversation-title mask only) was removed
+// and the fallbackTitle comment now says titles show as written. No hook,
+// effect, handler or useChat wiring moved.
 // Re-pinned 2026-11-11 for the Portfolio Assistant plan, Task 4 (B16, B17,
 // B18, B19, B20, B21: stop on load, generation adoption, page path, note
 // approval, envelope readers, follow-bottom scroll). Earlier:
@@ -101,7 +106,7 @@ const USE_CHAT_BLOCK_AT_HEAD = `const { transport, turn, sendAutomaticallyWhen }
 // component's `return (` at that same commit: every hook, effect, handler and
 // state declaration of the component that owns useChat.
 const COMPONENT_LOGIC_SHA256_AT_HEAD =
-  "4b02da1b82efc01fcbba0436a323a873543dadc4b79951a1bb19aeecdf7ab63f";
+  "3362c30a4c6867e2da9b2f64c0c4dc2591c95ca41b3c9889661da1d6416abe7d";
 
 const RETURN_ANCHOR = '\n  return (\n    <div className="flex flex-col';
 

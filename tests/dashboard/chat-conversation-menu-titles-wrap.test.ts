@@ -15,8 +15,8 @@ describe("conversation menu rows show the whole title", () => {
   const row = sliceBetween(iface, "{conversations.map((conv) => (", "aria-label={`Delete conversation");
 
   it("the row title wraps and is not truncated", () => {
-    const title = sliceBetween(row, "title={displayConversationTitle(conv.title, isPrivate)", "conversationDayLabel(conv.updated_at)");
-    const titleDiv = title.match(/<div className="([^"]*)">\s*\{displayConversationTitle\(conv\.title, isPrivate\)/);
+    const title = sliceBetween(row, "title={conv.title ?? `Conversation ${conv.id}`}", "conversationDayLabel(conv.updated_at)");
+    const titleDiv = title.match(/<div className="([^"]*)">\s*\{conv\.title \?\? `Conversation/);
     expect(titleDiv).not.toBeNull();
     const cls = titleDiv![1].split(/\s+/);
     expect(cls).toContain("[overflow-wrap:anywhere]");
