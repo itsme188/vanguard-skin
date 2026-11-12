@@ -13,6 +13,7 @@ import { normalizeSector } from "@/lib/securities/normalize-sector";
 import { parseBatchReply, runClassifyBatches, UnusableBatchReplyError } from "@/lib/compute/classify-batch";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 import { isCashEquivalentSecurity } from "@/lib/compute/cash-equivalents";
+import { carriesEquityStyle } from "@/lib/compute/equity-style";
 
 export interface FactorClassifyResult {
   classified: number;
@@ -122,7 +123,7 @@ export async function classifyFactors(
   // - Not an option (options inherit from underlying at query time)
   const unclassified = db
     .prepare(
-      `SELECT DISTINCT s.id, s.symbol, s.name, s.security_type, s.fund_category, s.style
+      `SELECT DISTINCT s.id, s.symbol, s.name, s.security_type, s.fund_category, s.sector, s.style
        FROM securities s
        JOIN holdings h ON h.security_id = s.id AND h.quantity != 0
        LEFT JOIN security_factors sf ON sf.security_id = s.id
@@ -137,6 +138,7 @@ export async function classifyFactors(
       name: string | null;
       security_type: string | null;
       fund_category: string | null;
+      sector: string | null;
       style: string | null;
     }>;
 
@@ -150,7 +152,7 @@ export async function classifyFactors(
   const optionUnderlyings = db
     .prepare(
       `SELECT DISTINCT s.underlying_symbol AS symbol,
-              u.id AS existing_id, u.name, u.security_type, u.style
+              u.id AS existing_id, u.name, u.security_type, u.fund_category, u.sector, u.style
        FROM holdings h
        JOIN securities s ON s.id = h.security_id
        LEFT JOIN securities u ON u.symbol = s.underlying_symbol
@@ -166,6 +168,8 @@ export async function classifyFactors(
       existing_id: number | null;
       name: string | null;
       security_type: string | null;
+      fund_category: string | null;
+      sector: string | null;
       style: string | null;
     }>;
 
@@ -182,7 +186,15 @@ export async function classifyFactors(
     }
     if (seenIds.has(id)) continue; // already a direct candidate (held stock that's also an underlying)
     seenIds.add(id);
-    unclassified.push({ id, symbol: u.symbol, name: u.name, security_type: u.security_type, fund_category: null, style: u.style });
+    unclassified.push({
+      id,
+      symbol: u.symbol,
+      name: u.name,
+      security_type: u.security_type,
+      fund_category: u.fund_category,
+      sector: u.sector,
+      style: u.style,
+    });
   }
 
   // Set simple defaults for bonds, money market, etc.
@@ -220,7 +232,7 @@ export async function classifyFactors(
       upsertFactor.run(
         sec.id,
         isBond ? "High" : "Low",    // interest_rate_sensitive
-        "Value",                      // growth_vs_value
+        null,                         // growth_vs_value: none of these carries an equity style
         "Low",                        // cyclical
         "Low",                        // international_exposure
         "Low",                        // geopolitical_onshoring
@@ -300,7 +312,11 @@ export async function classifyFactors(
       upsertFactor.run(
         secId,
         factorValue(result, "interest_rate_sensitive"),
-        fundStyleGrowthValue(sec) ?? factorValue(result, "growth_vs_value"),
+        // A bond fund (or any security carriesEquityStyle excludes) stores no
+        // growth/value style, whatever the AI or the fund style says.
+        carriesEquityStyle(sec)
+          ? fundStyleGrowthValue(sec) ?? factorValue(result, "growth_vs_value")
+          : null,
         factorValue(result, "cyclical"),
         factorValue(result, "international_exposure"),
         factorValue(result, "geopolitical_onshoring"),

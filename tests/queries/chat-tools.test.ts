@@ -451,6 +451,32 @@ describe("getAllocationBreakdown", () => {
     expect(alloc[1].total_market_value).toBe(10000);
   });
 
+  it("growth_vs_value puts a bond and a cash fund stored as 'Value' in 'Not equity'", () => {
+    const eq = seedSecurity(db, "AAA");
+    const bond = seedSecurity(db, "ZZB", { security_type: "Bond", asset_class: "fixed_income" });
+    const cash = seedSecurity(db, "ZZM", { security_type: "Mutual Fund" });
+    db.prepare("UPDATE securities SET fund_category = 'Cash Equivalent' WHERE id = ?").run(cash);
+    for (const id of [eq, bond, cash]) {
+      db.prepare("INSERT INTO security_factors (security_id, growth_vs_value) VALUES (?, 'Value')").run(id);
+    }
+    seedHolding(db, 1, eq, 100, "2025-01-31");
+    seedHolding(db, 1, bond, 10000, "2025-01-31");
+    seedHolding(db, 1, cash, 10000, "2025-01-31");
+    seedPrice(db, eq, "2025-01-31", 100);
+    seedPrice(db, bond, "2025-01-31", 100);
+    seedPrice(db, cash, "2025-01-31", 1);
+
+    const alloc = getAllocationBreakdown(db, "growth_vs_value");
+    const byName = new Map(alloc.map((a) => [a.group_name, a]));
+    expect(byName.get("Value")!.total_market_value).toBe(10000);
+    expect(byName.get("Value")!.position_count).toBe(1);
+    expect(byName.get("Not equity")!.total_market_value).toBe(20000);
+    expect(byName.get("Not equity")!.position_count).toBe(2);
+    expect(byName.get("Value")!.percentage).toBeCloseTo(100 / 3, 6);
+    // Largest bucket first, as the SQL path orders.
+    expect(alloc[0].group_name).toBe("Not equity");
+  });
+
   it("uses 'Unknown' for missing sector data", () => {
     const sec = seedSecurity(db, "VTI"); // No sector set
     seedHolding(db, 1, sec, 100, "2025-01-31");

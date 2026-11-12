@@ -42,6 +42,14 @@ export const FACTOR_LABELS_SHORT: Record<FactorColumn, string> = {
   regulatory_risk: "Reg",
 };
 
+/**
+ * The Growth vs Value bucket for a bond, a cash fund or a bond fund
+ * (owner decision 2026-11-01): such a security carries no equity style, so
+ * it sits outside the Growth / Value / Blend split. Display label only; the
+ * rule that decides it is `carriesEquityStyle` (lib/compute/equity-style.ts).
+ */
+export const NOT_EQUITY_STYLE_LABEL = "Not equity";
+
 /** Standard factor levels ordered from least to most exposure */
 export const STANDARD_LEVELS = ["No", "Low", "Moderate", "High", "Very High"] as const;
 
@@ -58,6 +66,7 @@ export const LEVEL_COLORS: Record<string, string> = {
   Growth: "#60A5FA",       // blue-400
   Value: "#C9A44E",        // gold
   Blend: "#64748B",        // slate-500: a fund with no style tilt (same as the heatmap's BLEND_COLOR)
+  "Not equity": "#64748B", // slate-500: a bond or cash fund, outside the style axis ("n.a." in the legend)
 
   // Crypto binary
   Yes: "#F87171",          // rose-400
@@ -78,6 +87,7 @@ export const FACTOR_SORT_RANK: Record<string, number> = {
   "Growth": 3,          // neutral tier for growth_vs_value
   "Value": 2,
   "Blend": 2.5,         // between Value and Growth (matches the heatmap's sort)
+  "Not equity": 0.5,    // outside the style axis: below every classified side
   "Low": 2,
   "Yes": 5,             // crypto binary = Very High equivalent
   "No": 1,

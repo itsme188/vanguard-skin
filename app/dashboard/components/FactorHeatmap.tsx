@@ -10,6 +10,7 @@ import {
   FACTOR_LABELS_SHORT,
   FACTOR_SORT_RANK,
   getFactorColor,
+  NOT_EQUITY_STYLE_LABEL,
   type FactorColumn,
 } from "@/lib/factors";
 import { Pct } from "@/lib/privacy/components";
@@ -29,7 +30,11 @@ export const BLEND_COLOR = "#64748B";
 export function growthValueCellValue(row: {
   style: string | null;
   growth_vs_value: string | null;
+  not_equity?: boolean;
 }): string | null {
+  // A bond, a cash fund or a bond fund carries no equity style (decided on
+  // the server by carriesEquityStyle; the row only carries the flag).
+  if (row.not_equity) return NOT_EQUITY_STYLE_LABEL;
   if (row.style && row.style.trim().toLowerCase() === "blend") return "Blend";
   return row.growth_vs_value;
 }

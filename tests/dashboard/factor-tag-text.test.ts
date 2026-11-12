@@ -98,6 +98,8 @@ describe("factorTagTextColor", () => {
       International: ["#6d5aa3 4.68", "#A78BFA 5.83"],
       Unknown: ["#334155 7.56", "#7a8491 4.73"],
       Blend: ["#556376 4.74", "#7b899c 4.72"],
+      // A bond or cash fund in the Growth vs Value column (2026-11-12): the Blend slate.
+      "Not equity": ["#556376 4.74", "#7b899c 4.72"],
     });
   });
 

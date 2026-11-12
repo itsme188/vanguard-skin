@@ -6,6 +6,7 @@ import { todayET, addDays } from "@/lib/calendar/date-utils";
 import { SECTOR_OWN_BUCKET_SQL } from "@/lib/queries/analysis";
 import { normalizeSector } from "@/lib/securities/normalize-sector";
 import { isCashEquivalentSecurity, cashEquivalentSecuritySql } from "@/lib/compute/cash-equivalents";
+import { growthValueBucket } from "@/lib/compute/equity-style";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 import { marketCapCategoryBucketSql } from "@/lib/securities/normalize-market-cap";
 import { getPendingStatementIndex, type PendingStatementIndex } from "@/lib/queries/pending-statement";
@@ -674,7 +675,30 @@ export function getAllocationBreakdown(
     params.push(accountName);
   }
 
-  return db
+  // Growth vs Value: a bond, a cash fund or a bond fund carries no equity
+  // style whatever is stored, so it lands in "Not equity" (growthValueBucket,
+  // lib/compute/equity-style.ts, the same rule as the Analysis breakdown).
+  // The rule reads the normalised sector and fund category, so the rows are
+  // bucketed and summed in JS.
+  const isGrowthValue = groupBy === "growth_vs_value";
+  const styleColumns = isGrowthValue
+    ? `,
+          s.security_type, s.fund_category, s.sector,
+          s_u.id AS u_id, s_u.security_type AS u_security_type,
+          s_u.fund_category AS u_fund_category, s_u.sector AS u_sector`
+    : "";
+  const outerSql = isGrowthValue
+    ? `SELECT * FROM allocation`
+    : `SELECT
+        group_name,
+        SUM(mv) AS total_market_value,
+        SUM(mv) * 100.0 / NULLIF(SUM(SUM(mv)) OVER (), 0) AS percentage,
+        SUM(cnt) AS position_count
+      FROM allocation
+      GROUP BY group_name
+      ORDER BY total_market_value DESC`;
+
+  const result = db
     .prepare(
       `WITH latest_prices AS (
         SELECT p.security_id, p.close_price
@@ -692,7 +716,7 @@ export function getAllocationBreakdown(
               THEN h.cost_basis * COALESCE(fx.usd_per_unit, 1)
             ELSE 0
           END AS mv,
-          1 AS cnt
+          1 AS cnt${styleColumns}
         FROM holdings h
         JOIN accounts a ON a.id = h.account_id
         JOIN securities s ON s.id = h.security_id
@@ -701,16 +725,47 @@ export function getAllocationBreakdown(
         ${factorJoins}
         WHERE ${conditions.join(" AND ")}
       )
-      SELECT
-        group_name,
-        SUM(mv) AS total_market_value,
-        SUM(mv) * 100.0 / NULLIF(SUM(SUM(mv)) OVER (), 0) AS percentage,
-        SUM(cnt) AS position_count
-      FROM allocation
-      GROUP BY group_name
-      ORDER BY total_market_value DESC`
+      ${outerSql}`
     )
-    .all(...params) as AllocationResult[];
+    .all(...params);
+  if (!isGrowthValue) return result as AllocationResult[];
+
+  const rows = result as Array<{
+    group_name: string;
+    mv: number;
+    cnt: number;
+    security_type: string | null;
+    fund_category: string | null;
+    sector: string | null;
+    u_id: number | null;
+    u_security_type: string | null;
+    u_fund_category: string | null;
+    u_sector: string | null;
+  }>;
+  const byGroup = new Map<string, { mv: number; cnt: number }>();
+  let total = 0;
+  for (const r of rows) {
+    const bucket = growthValueBucket(
+      r.group_name === "Unknown" ? null : r.group_name,
+      { security_type: r.security_type, fund_category: r.fund_category, sector: r.sector },
+      r.u_id == null
+        ? null
+        : { security_type: r.u_security_type, fund_category: r.u_fund_category, sector: r.u_sector },
+    );
+    const entry = byGroup.get(bucket) ?? { mv: 0, cnt: 0 };
+    entry.mv += r.mv;
+    entry.cnt += r.cnt;
+    byGroup.set(bucket, entry);
+    total += r.mv;
+  }
+  return [...byGroup.entries()]
+    .map(([group_name, { mv, cnt }]) => ({
+      group_name,
+      total_market_value: mv,
+      percentage: total !== 0 ? (mv * 100) / total : 0,
+      position_count: cnt,
+    }))
+    .sort((a, b) => b.total_market_value - a.total_market_value);
 }
 
 /**

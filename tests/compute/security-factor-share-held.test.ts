@@ -34,7 +34,9 @@ function createTestDb(): Database.Database {
       expiration_date TEXT,
       maturity_date TEXT,
       currency TEXT NOT NULL DEFAULT 'USD',
-      style TEXT
+      style TEXT,
+      sector TEXT,
+      fund_category TEXT
     );
     CREATE TABLE fx_rates (
       currency TEXT PRIMARY KEY,

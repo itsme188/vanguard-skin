@@ -20,6 +20,7 @@ import { liveOptionExpirationSql } from "@/lib/compute/option-expiry";
 import { marketCapCategoryBucketSql } from "@/lib/securities/normalize-market-cap";
 import { normalizeSector } from "@/lib/securities/normalize-sector";
 import { isCashEquivalentSecurity } from "@/lib/compute/cash-equivalents";
+import { carriesEquityStyle, growthValueBucket, styleIdentityOf } from "@/lib/compute/equity-style";
 
 // ─── Types ───────────────────────────────────────────────────────
 
@@ -412,6 +413,14 @@ export function getAllocationByDimension(
         : ""
     }`;
 
+  const isGrowthValue = dimension === "growth_vs_value";
+  const styleColumns = isGrowthValue
+    ? `,
+        s.fund_category, s.sector,
+        s_u.id AS u_id, s_u.security_type AS u_security_type,
+        s_u.fund_category AS u_fund_category, s_u.sector AS u_sector`
+    : "";
+
   const conditions = [
     UNMATURED_SECURITY_SQL(),
     // An option past its ET expiration day is no longer a position.
@@ -437,7 +446,7 @@ export function getAllocationByDimension(
         s.id AS security_id,
         s.security_type,
         s.option_type,
-        ${HOLDING_VALUE_USD_SQL} AS mv
+        ${HOLDING_VALUE_USD_SQL} AS mv${styleColumns}
       FROM latest_holdings h
       JOIN accounts a ON a.id = h.account_id
       JOIN securities s ON s.id = h.security_id
@@ -452,7 +461,30 @@ export function getAllocationByDimension(
       security_type: string | null;
       option_type: string | null;
       mv: number;
+      fund_category?: string | null;
+      sector?: string | null;
+      u_id?: number | null;
+      u_security_type?: string | null;
+      u_fund_category?: string | null;
+      u_sector?: string | null;
     }>;
+
+  // Growth vs Value: a bond, a cash fund or a bond fund carries no equity
+  // style whatever is stored (carriesEquityStyle, lib/compute/equity-style.ts);
+  // it lands in the "Not equity" bucket. Decided in JS because the rule reads
+  // the normalised sector and fund category. The drill-down applies the same
+  // rule (lib/queries/drill-down.ts).
+  if (isGrowthValue) {
+    for (const row of rows) {
+      row.group_name = growthValueBucket(
+        row.group_name === "Unknown" ? null : row.group_name,
+        { security_type: row.security_type, fund_category: row.fund_category ?? null, sector: row.sector ?? null },
+        row.u_id == null
+          ? null
+          : { security_type: row.u_security_type ?? null, fund_category: row.u_fund_category ?? null, sector: row.u_sector ?? null },
+      );
+    }
+  }
 
   const optionExposures = getOptionExposureMap(db, accountIds);
   // position_count is DISTINCT securities per bucket: a name held in two
@@ -907,6 +939,13 @@ export interface FactorHeatmapRow {
   regulatory_risk: string | null;
   factor_source: string | null;
   /**
+   * True for a bond, a cash fund or a bond fund (judged by the underlying for
+   * an option): such a row carries no equity style, so `growth_vs_value` is
+   * null whatever is stored and the heatmap cell reads "Not equity"
+   * (carriesEquityStyle, lib/compute/equity-style.ts).
+   */
+  not_equity: boolean;
+  /**
    * Classification style (Growth / Value / Blend), the same field the
    * classification Breakdown buckets on; options inherit their underlying's.
    * DISPLAY ONLY: the heatmap shows a third "Blend" bucket from it. It never
@@ -955,7 +994,13 @@ export function getFactorHeatmap(
         s.symbol,
         s.name,
         s.security_type,
+        s.fund_category,
+        s.sector,
         s.underlying_symbol,
+        s_u.id AS u_id,
+        s_u.security_type AS u_security_type,
+        s_u.fund_category AS u_fund_category,
+        s_u.sector AS u_sector,
         SUM(CASE
           WHEN lp.close_price IS NOT NULL
             THEN ${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}
@@ -989,7 +1034,13 @@ export function getFactorHeatmap(
       symbol: string;
       name: string | null;
       security_type: string | null;
+      fund_category: string | null;
+      sector: string | null;
       underlying_symbol: string | null;
+      u_id: number | null;
+      u_security_type: string | null;
+      u_fund_category: string | null;
+      u_sector: string | null;
       market_value: number;
       interest_rate_sensitive: string | null;
       growth_vs_value: string | null;
@@ -1006,25 +1057,38 @@ export function getFactorHeatmap(
 
   const totalValue = rows.reduce((sum, r) => sum + r.market_value, 0);
 
-  return rows.map((r) => ({
-    symbol: r.symbol,
-    name: r.name,
-    security_type: r.security_type,
-    market_value: r.market_value,
-    weight_pct: totalValue > 0 ? (r.market_value / totalValue) * 100 : 0,
-    is_option: r.underlying_symbol !== null,
-    interest_rate_sensitive: r.interest_rate_sensitive,
-    growth_vs_value: r.growth_vs_value,
-    cyclical: r.cyclical,
-    international_exposure: r.international_exposure,
-    geopolitical_onshoring: r.geopolitical_onshoring,
-    tariff_exposure: r.tariff_exposure,
-    ai_exposure: r.ai_exposure,
-    crypto_adjacent: r.crypto_adjacent,
-    regulatory_risk: r.regulatory_risk,
-    factor_source: r.factor_source,
-    style: r.style,
-  }));
+  return rows.map((r) => {
+    const notEquity = !carriesEquityStyle(
+      styleIdentityOf(
+        { security_type: r.security_type, fund_category: r.fund_category, sector: r.sector },
+        r.u_id == null
+          ? null
+          : { security_type: r.u_security_type, fund_category: r.u_fund_category, sector: r.u_sector },
+      ),
+    );
+    return {
+      symbol: r.symbol,
+      name: r.name,
+      security_type: r.security_type,
+      market_value: r.market_value,
+      weight_pct: totalValue > 0 ? (r.market_value / totalValue) * 100 : 0,
+      is_option: r.underlying_symbol !== null,
+      interest_rate_sensitive: r.interest_rate_sensitive,
+      // A non-equity reports no growth/value, so the macro growth-to-value
+      // exposure, the per-security share and the narrative never count it.
+      growth_vs_value: notEquity ? null : r.growth_vs_value,
+      cyclical: r.cyclical,
+      international_exposure: r.international_exposure,
+      geopolitical_onshoring: r.geopolitical_onshoring,
+      tariff_exposure: r.tariff_exposure,
+      ai_exposure: r.ai_exposure,
+      crypto_adjacent: r.crypto_adjacent,
+      regulatory_risk: r.regulatory_risk,
+      factor_source: r.factor_source,
+      not_equity: notEquity,
+      style: r.style,
+    };
+  });
 }
 
 /**

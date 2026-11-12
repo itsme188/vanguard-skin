@@ -108,3 +108,48 @@ describe("Blend in the shared factor maps", () => {
     expect(FACTOR_SORT_RANK.Blend).toBeLessThan(FACTOR_SORT_RANK.Growth);
   });
 });
+
+describe("classifyFactors — a bond, cash fund or bond fund gets no growth-or-value style", () => {
+  function heldWith(db: Database.Database, symbol: string, type: string, category: string | null, style: string | null = null): number {
+    const id = held(db, symbol, type, style);
+    db.prepare(`UPDATE securities SET fund_category = ? WHERE id = ?`).run(category, id);
+    return id;
+  }
+
+  it("stores no style for a bond or a cash fund on the default path", async () => {
+    const db = makeDb();
+    const bond = heldWith(db, "ZZB", "Bond", null);
+    const cash = heldWith(db, "ZZM", "Mutual Fund", "Cash Equivalent");
+
+    const r = await classifyFactors(db);
+
+    expect(r.skipped).toBe(2);
+    expect(stored(db, bond)).toBeNull();
+    expect(stored(db, cash)).toBeNull();
+    // The other defaults are unchanged.
+    const rate = db.prepare(`SELECT interest_rate_sensitive, factor_source FROM security_factors WHERE security_id = ?`)
+      .get(bond) as { interest_rate_sensitive: string; factor_source: string };
+    expect(rate).toEqual({ interest_rate_sensitive: "High", factor_source: "auto_default" });
+  });
+
+  it("drops the AI's style (and any fund style) for a bond fund, keeps it for an equity fund", async () => {
+    const db = makeDb();
+    const bondFund = heldWith(db, "ZZF", "Mutual Fund", "US Mortgage-Backed Securities", "Blend");
+    const eqFund = heldWith(db, "AAA", "ETF", "US Large Cap Equity");
+    (generateTextForFeature as ReturnType<typeof vi.fn>).mockResolvedValue({
+      text: JSON.stringify([reply("ZZF", "Value"), reply("AAA", "Value")]),
+    });
+
+    await classifyFactors(db);
+
+    expect(stored(db, bondFund)).toBeNull();
+    expect(stored(db, eqFund)).toBe("Value");
+  });
+});
+
+describe("Not equity in the shared factor maps", () => {
+  it("has a neutral colour and sorts below every classified side", () => {
+    expect(getFactorColor("Not equity")).toBe("#64748B");
+    expect(FACTOR_SORT_RANK["Not equity"]).toBeLessThan(FACTOR_SORT_RANK.Value);
+  });
+});

@@ -1,4 +1,5 @@
 import { getExpiredOptionLotsAwaitingClose, getOpenTaxLots } from "@/lib/queries/tax-lots";
+import { equityGrowthValue } from "@/lib/compute/equity-style";
 import { getStaleTradeReviewIds } from "@/lib/queries/trade-review-pairings";
 /**
  * Consolidated queries for the Security Detail page.
@@ -580,7 +581,14 @@ export function getFactorsForSecurity(
         COALESCE(sf.crypto_adjacent, sf_u.crypto_adjacent) AS crypto_adjacent,
         COALESCE(sf.regulatory_risk, sf_u.regulatory_risk) AS regulatory_risk,
         COALESCE(sf.factor_source, sf_u.factor_source) AS factor_source,
-        COALESCE(sf.updated_at, sf_u.updated_at) AS updated_at
+        COALESCE(sf.updated_at, sf_u.updated_at) AS updated_at,
+        s.security_type AS own_security_type,
+        s.fund_category AS own_fund_category,
+        s.sector AS own_sector,
+        s_u.id AS u_id,
+        s_u.security_type AS u_security_type,
+        s_u.fund_category AS u_fund_category,
+        s_u.sector AS u_sector
       FROM securities s
       LEFT JOIN security_factors sf ON sf.security_id = s.id
       LEFT JOIN securities s_u ON s_u.symbol = s.underlying_symbol
@@ -588,11 +596,40 @@ export function getFactorsForSecurity(
       WHERE s.id = ?
       LIMIT 1`
     )
-    .get(securityId) as SecurityFactor | undefined;
+    .get(securityId) as
+    | (SecurityFactor & {
+        own_security_type: string | null;
+        own_fund_category: string | null;
+        own_sector: string | null;
+        u_id: number | null;
+        u_security_type: string | null;
+        u_fund_category: string | null;
+        u_sector: string | null;
+      })
+    | undefined;
 
   // If no factor data exists at all, return null
   if (!row || !row.security_id) return null;
-  return row;
+  const {
+    own_security_type,
+    own_fund_category,
+    own_sector,
+    u_id,
+    u_security_type,
+    u_fund_category,
+    u_sector,
+    ...factor
+  } = row;
+  // A bond, a cash fund or a bond fund carries no equity style, whatever is
+  // stored (carriesEquityStyle, lib/compute/equity-style.ts).
+  return {
+    ...factor,
+    growth_vs_value: equityGrowthValue(
+      factor.growth_vs_value,
+      { security_type: own_security_type, fund_category: own_fund_category, sector: own_sector },
+      u_id == null ? null : { security_type: u_security_type, fund_category: u_fund_category, sector: u_sector },
+    ),
+  };
 }
 
 /**

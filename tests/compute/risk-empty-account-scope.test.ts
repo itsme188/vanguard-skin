@@ -221,8 +221,11 @@ describe("undefined and a non-empty list answer as before", () => {
     expect(parsed[0].flows).toHaveLength(2);
 
     // Digest of the full output, captured at the commit before this change.
+    // Re-captured 2026-11-12 when heatmap rows gained the `not_equity` flag:
+    // with that one field removed the output still hashes to the earlier
+    // digest 76af410d…ecde4, so no figure moved.
     expect(createHash("sha256").update(json).digest("hex")).toBe(
-      "76af410d8eab6f31e2c1543c5d262203d28398afc19cf474fa91e72aac6ecde4",
+      "eb87b2b3dbb1306d6afc8b3077d0eeab372142647df8c7c2998c87ea7766d9bf",
     );
   });
 
