@@ -6,18 +6,23 @@ import type Database from "better-sqlite3";
  * (`getIncomeSummaryForChat`, lib/queries/chat-tools.ts) and the dashboard
  * income reader (`getIncomeSummary`, lib/queries/income.ts).
  *
- * - Dividend income = signed DIVIDEND amounts (a reversal nets), plus a
- *   REINVESTMENT amount only when it is positive and UNPAIRED.
+ * - Legs are read by MEANING. A DIVIDEND is a payment (positive) or a
+ *   charge / reversal (negative). A REINVESTMENT is a purchase or the
+ *   reversal of one, read through its importer's sign convention
+ *   (`reinvestmentIsPurchase`: the direct Vanguard PDF and export parsers
+ *   store a purchase negative, every other row positive).
+ * - Dividend income = signed DIVIDEND amounts (a reversal nets), plus the
+ *   magnitude of a REINVESTMENT only when it is an UNPAIRED purchase.
  * - A REINVESTMENT is the purchase leg of a DIVIDEND, not a second payout.
- *   It pairs one-to-one with a DIVIDEND of the same sign on the same
- *   account and security, dated up to 3 calendar days either side, for
+ *   It pairs one-to-one with a DIVIDEND (payment with purchase, reversal
+ *   with reversal) on the same account and security, dated up to 3 calendar days either side, for
  *   the same absolute amount to the cent, or for the dividend minus ONE
  *   withholding row dated on the dividend's or the reinvestment's day.
  *   Every row is used at most once; the pairing found has the most pairs,
  *   then the smallest total day gap (see `pairIncomeLegs`). A paired
  *   REINVESTMENT adds nothing, so a pair is counted once, on the
- *   DIVIDEND's date. A negative DIVIDEND only reduces income.
- * - A negative unpaired REINVESTMENT is not income; it is counted
+ *   DIVIDEND's date. A charge never hides a purchase: it reduces income.
+ * - An unpaired REINVESTMENT reversal is not income; it is counted
  *   (`UNPAIRED_NEGATIVE_REINVESTMENT_SQL`) so the reader can say so.
  * - Interest earned = positive INTEREST amounts; interest paid = the
  *   magnitude of negative INTEREST amounts (margin interest is a cost).
@@ -42,7 +47,39 @@ export interface IncomeLeg {
   security_id: number | null;
   trade_date: string;
   amount: number;
+  /** The importer's key; it says which sign convention a REINVESTMENT uses. */
+  source_key?: string | null;
 }
+
+/**
+ * Importers whose REINVESTMENT amount is the broker's signed cash effect (a
+ * purchase is NEGATIVE): the direct Vanguard PDF and Vanguard export parsers
+ * store the statement's figure as printed. Every other row follows the
+ * documented ledger convention (docs/reference/conventions-detail.md; the
+ * canonical CSV flips the statement's sign): a purchase is POSITIVE.
+ */
+export const CASH_EFFECT_REINVESTMENT_SOURCE_PREFIXES = ["vanguard-pdf:", "vanguard-export:"] as const;
+
+/**
+ * Whether a REINVESTMENT row is a purchase (true) or the reversal of one
+ * (false), read through its importer's sign convention. Zero is neither and
+ * reads false. The SQL twin is `REINVESTMENT_IS_PURCHASE_SQL`.
+ */
+export function reinvestmentIsPurchase(amount: number, sourceKey: string | null | undefined): boolean {
+  if (!amount) return false;
+  const cashEffect = CASH_EFFECT_REINVESTMENT_SOURCE_PREFIXES.some((p) => (sourceKey ?? "").startsWith(p));
+  return cashEffect ? amount < 0 : amount > 0;
+}
+
+const CASH_EFFECT_SOURCE_SQL = `(${CASH_EFFECT_REINVESTMENT_SOURCE_PREFIXES.map(
+  (p) => `substr(COALESCE(t.source_key, ''), 1, ${p.length}) = '${p}'`
+).join(" OR ")})`;
+
+/** SQL twin of `reinvestmentIsPurchase` for a REINVESTMENT row `t`. */
+export const REINVESTMENT_IS_PURCHASE_SQL = `(CASE WHEN ${CASH_EFFECT_SOURCE_SQL} THEN t.amount < 0 ELSE t.amount > 0 END)`;
+
+/** SQL: a REINVESTMENT row `t` that reverses a purchase (non-zero, not a purchase). */
+const REINVESTMENT_IS_REVERSAL_SQL = `(CASE WHEN ${CASH_EFFECT_SOURCE_SQL} THEN t.amount > 0 ELSE t.amount < 0 END)`;
 
 /** One reinvestment and the dividend it is the purchase leg of. */
 export interface IncomePair {
@@ -56,7 +93,7 @@ export interface IncomePair {
 export function loadIncomeLegs(db: Database.Database): IncomeLeg[] {
   return db
     .prepare(
-      `SELECT id, UPPER(type) AS type, account_id, security_id, trade_date, amount
+      `SELECT id, UPPER(type) AS type, account_id, security_id, trade_date, amount, source_key
        FROM transactions
        WHERE UPPER(type) IN ('DIVIDEND', 'REINVESTMENT', 'TAX_WITHHELD') AND amount IS NOT NULL`
     )
@@ -78,16 +115,17 @@ const dayNumber = (date: string) => Math.floor(Date.parse(`${String(date).slice(
  * Pair reinvestments with their dividends (review RF-6; date window and
  * maximum matching rulings 2026-11-12). Within one account and security a
  * REINVESTMENT may pair with a DIVIDEND dated up to INCOME_PAIR_MAX_GAP_DAYS
- * calendar days either side, of the same sign, when:
+ * calendar days either side, a payment with a purchase or a reversal with a
+ * reversal (legs read by meaning: see `reinvestmentIsPurchase`), when:
  *  1. gross: their absolute amounts are equal to the cent; or
- *  2. net: both are positive and ONE TAX_WITHHELD row, dated on the
+ *  2. net: a payment and a purchase, and ONE TAX_WITHHELD row, dated on the
  *     DIVIDEND's day or on the REINVESTMENT's day, makes dividend -
  *     |withholding| = reinvestment to the cent (dividend 100, 15 withheld,
  *     85 reinvested). The withholding is read by magnitude: the ledger
  *     stores it with either sign.
  * A negative DIVIDEND (a reversal, or a dividend charged on a short) only
- * ever pairs with a negative REINVESTMENT, so it can never hide a positive
- * reinvestment's income: it reduces income.
+ * ever pairs with a reversed REINVESTMENT, so it can never hide a
+ * purchase's income: it reduces income.
  *
  * Every row is used at most once, withholding rows included. Among all such
  * one-to-one pairings the one chosen has, in order:
@@ -98,7 +136,7 @@ const dayNumber = (date: string) => Math.floor(Date.parse(`${String(date).slice(
  *  4. then the fewest withholdings taken from the reinvestment's day rather
  *     than the dividend's;
  *  5. then the earliest dividends (by date, amount, row id); rows that are
- *     interchangeable (same day, amount and sign) are taken by lowest id.
+ *     interchangeable (same day, amount and direction) are taken by lowest id.
  *
  * Method: interchangeable rows are collapsed into classes; each connected
  * component is solved as a min-cost maximum flow with a lexicographic cost
@@ -126,7 +164,14 @@ export function pairIncomeLegs(
     if (!Number.isFinite(day)) continue;
     const key = `${leg.account_id}|${leg.security_id ?? "null"}`;
     const list = groups.get(key);
-    const dated: DatedLeg = { id: leg.id, type: leg.type, amount: leg.amount, day };
+    // Direction by meaning: a dividend is a payment (+1) or a charge (-1);
+    // a reinvestment is a purchase (+1) or a reversal (-1), through its
+    // importer's convention; a withholding is read by magnitude.
+    const dir: 1 | -1 =
+      leg.type === "REINVESTMENT"
+        ? reinvestmentIsPurchase(leg.amount, leg.source_key) ? 1 : -1
+        : leg.type === "DIVIDEND" && leg.amount < 0 ? -1 : 1;
+    const dated: DatedLeg = { id: leg.id, type: leg.type, amount: leg.amount, day, dir };
     if (list) list.push(dated);
     else groups.set(key, [dated]);
   }
@@ -146,7 +191,7 @@ const cSub = (a: Cost, b: Cost): Cost => [a[0] - b[0], a[1] - b[1], a[2] - b[2],
 const cScale = (a: Cost, k: number): Cost => [a[0] * k, a[1] * k, a[2] * k, a[3] * k];
 const cCmp = (a: Cost, b: Cost) => a[0] - b[0] || a[1] - b[1] || a[2] - b[2] || a[3] - b[3];
 
-/** Interchangeable rows: same day, cents and sign; ids ascending. */
+/** Interchangeable rows: same day, cents and direction; ids ascending. */
 interface LegClass {
   day: number;
   cents: number;
@@ -170,6 +215,8 @@ interface DatedLeg {
   type: IncomeLeg["type"];
   amount: number;
   day: number;
+  /** +1 payment / purchase, -1 charge / reversal (see pairIncomeLegs). */
+  dir: 1 | -1;
 }
 
 function classify(rows: readonly DatedLeg[], withSign: boolean): LegClass[] {
@@ -178,7 +225,7 @@ function classify(rows: readonly DatedLeg[], withSign: boolean): LegClass[] {
     const day = row.day;
     const c = cents(row.amount);
     if (c === 0) continue;
-    const sign: 1 | -1 = withSign && row.amount < 0 ? -1 : 1;
+    const sign: 1 | -1 = withSign ? row.dir : 1;
     const key = `${day}|${c}|${sign}`;
     const cls = map.get(key);
     if (cls) cls.ids.push(row.id);
@@ -607,7 +654,7 @@ export const INCOME_TYPES_SQL =
 /** Per-row dividend income (sum it). Needs `t` and `pr`. */
 export const DIVIDEND_INCOME_SQL = `(CASE
   WHEN UPPER(t.type) = 'DIVIDEND' THEN COALESCE(t.amount, 0)
-  WHEN UPPER(t.type) = 'REINVESTMENT' AND pr.id IS NULL AND t.amount > 0 THEN t.amount
+  WHEN UPPER(t.type) = 'REINVESTMENT' AND pr.id IS NULL AND ${REINVESTMENT_IS_PURCHASE_SQL} THEN ABS(t.amount)
   ELSE 0 END)`;
 
 /** Per-row interest earned (sum it). */
@@ -622,5 +669,10 @@ export const FEES_SQL = `(CASE WHEN UPPER(t.type) IN ('FEE', 'COMMISSION') THEN 
 /** Per-row net income contribution (sum it). */
 export const NET_INCOME_SQL = `(${DIVIDEND_INCOME_SQL} + ${INTEREST_EARNED_SQL} - ${INTEREST_PAID_SQL} - ${FEES_SQL})`;
 
-/** Per-row 1 for a negative unpaired REINVESTMENT left out of income (sum it). */
-export const UNPAIRED_NEGATIVE_REINVESTMENT_SQL = `(CASE WHEN UPPER(t.type) = 'REINVESTMENT' AND pr.id IS NULL AND t.amount < 0 THEN 1 ELSE 0 END)`;
+/**
+ * Per-row 1 for an unpaired REINVESTMENT that reverses a purchase, left out
+ * of income (sum it). The name is historical: under the documented
+ * convention a reversal is the negative row; a cash-effect importer's
+ * reversal is positive.
+ */
+export const UNPAIRED_NEGATIVE_REINVESTMENT_SQL = `(CASE WHEN UPPER(t.type) = 'REINVESTMENT' AND pr.id IS NULL AND ${REINVESTMENT_IS_REVERSAL_SQL} THEN 1 ELSE 0 END)`;

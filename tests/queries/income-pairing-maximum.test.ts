@@ -185,6 +185,19 @@ describe("bounded on pathological one-day books (1,000 rows of each type)", () =
 // (most pairs, smallest total gap, fewest net pairs).
 
 type Score = [number, number, number];
+
+/**
+ * Direction by meaning, written out independently of the code under test:
+ * a dividend +1 payment / -1 charge; a reinvestment +1 purchase / -1
+ * reversal, where the Vanguard PDF and export importers store a purchase
+ * negative and every other row stores it positive.
+ */
+const direction = (l: IncomeLeg) => {
+  const s = Math.sign(l.amount);
+  if (l.type !== "REINVESTMENT") return s;
+  const cashEffect = /^vanguard-(pdf|export):/.test(l.source_key ?? "");
+  return cashEffect ? -s : s;
+};
 const better = (a: Score, b: Score) => a[0] > b[0] || (a[0] === b[0] && (a[1] < b[1] || (a[1] === b[1] && a[2] < b[2])));
 
 function bruteForce(legs: IncomeLeg[]): Score {
@@ -203,11 +216,11 @@ function bruteForce(legs: IncomeLeg[]): Score {
     for (const di of d) {
       if (usedD.has(di.id)) continue;
       const gap = Math.abs(dayOf(di.trade_date) - rDay);
-      if (gap > INCOME_PAIR_MAX_GAP_DAYS || Math.sign(di.amount) !== Math.sign(ri.amount)) continue;
+      if (gap > INCOME_PAIR_MAX_GAP_DAYS || direction(di) !== direction(ri)) continue;
       usedD.add(di.id);
       if (cents(di.amount) === cents(ri.amount)) {
         walk(i + 1, [score[0] + 1, score[1] + gap, score[2]]);
-      } else if (di.amount > 0 && ri.amount > 0) {
+      } else if (direction(di) > 0 && direction(ri) > 0) {
         for (const wi of w) {
           if (usedW.has(wi.id) || cents(wi.amount) === 0) continue;
           if (wi.trade_date !== di.trade_date && wi.trade_date !== ri.trade_date) continue;
@@ -238,7 +251,7 @@ function scoreOf(legs: IncomeLeg[], pairs: IncomePair[]): Score {
     const d = byId.get(p.dividendId)!;
     expect(r.type).toBe("REINVESTMENT");
     expect(d.type).toBe("DIVIDEND");
-    expect(Math.sign(d.amount)).toBe(Math.sign(r.amount));
+    expect(direction(d)).toBe(direction(r));
     const gap = Math.abs(dayOf(d.trade_date) - dayOf(r.trade_date));
     expect(gap).toBeLessThanOrEqual(INCOME_PAIR_MAX_GAP_DAYS);
     if (p.withholdingId == null) {
@@ -246,8 +259,8 @@ function scoreOf(legs: IncomeLeg[], pairs: IncomePair[]): Score {
     } else {
       const w = byId.get(p.withholdingId)!;
       expect(w.type).toBe("TAX_WITHHELD");
-      expect(d.amount).toBeGreaterThan(0);
-      expect(r.amount).toBeGreaterThan(0);
+      expect(direction(d)).toBe(1);
+      expect(direction(r)).toBe(1);
       expect([d.trade_date, r.trade_date]).toContain(w.trade_date);
       expect(cents(d.amount) - cents(w.amount)).toBe(cents(r.amount));
       score[2] += 1;
@@ -264,14 +277,20 @@ function randomBook(seed: number): IncomeLeg[] {
   const pick = <T,>(xs: T[]) => xs[Math.floor(rand() * xs.length)];
   const legs: IncomeLeg[] = [];
   let id = 0;
-  const add = (type: IncomeLeg["type"], amount: number) =>
-    legs.push({ id: ++id, type, amount, account_id: 1, security_id: 1, trade_date: dateOf(Math.floor(rand() * 8)) });
+  const add = (type: IncomeLeg["type"], amount: number, source_key = "canonical:txn") =>
+    legs.push({ id: ++id, type, amount, source_key, account_id: 1, security_id: 1, trade_date: dateOf(Math.floor(rand() * 8)) });
   const nD = Math.floor(rand() * 6);
   const nR = Math.floor(rand() * 6);
   const nW = Math.floor(rand() * 4);
   for (let i = 0; i < nD; i++) add("DIVIDEND", pick([10, 20, 30, 30, -10]));
   for (let i = 0; i < nW; i++) add("TAX_WITHHELD", pick([10, -10, 20, -20]));
-  for (let i = 0; i < nR; i++) add("REINVESTMENT", pick([10, 20, 20, 30, -10]));
+  // Reinvestments from both conventions: a cash-effect importer stores the
+  // same purchase with the opposite sign.
+  for (let i = 0; i < nR; i++) {
+    const amount = pick([10, 20, 20, 30, -10]);
+    if (rand() < 0.4) add("REINVESTMENT", -amount, pick(["vanguard-pdf:txn", "vanguard-export:txn"]));
+    else add("REINVESTMENT", amount);
+  }
   // Shuffle ids so row order carries no hint.
   return legs.sort(() => rand() - 0.5).map((l, i) => ({ ...l, id: i + 1 }));
 }
