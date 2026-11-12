@@ -28,9 +28,27 @@ describe("buildSystemPrompt", () => {
     expect(prompt).not.toContain("portfolio analyst for a personal investment dashboard");
   });
 
-  it("includes first-answer scope instruction", () => {
-    const prompt = buildSystemPrompt(fakeContext, today, "all");
-    expect(prompt).toContain("In the first answer of a conversation, name the scope");
+  // Live browser pass: "Macro mode. These are general knowledge — no tools
+  // needed." The old "name the scope in your first answer" line read as an
+  // instruction to announce; the scope now rides in the answer itself.
+  it("carries the scope in the answer, with no process narration, in every scope", () => {
+    const all = buildSystemPrompt(fakeContext, today, "all");
+    expect(all).toContain("carry it in the answer's first sentence");
+    expect(all).toContain("Do not narrate the process");
+    expect(all).not.toContain("In the first answer of a conversation");
+    const macro = buildSystemPrompt("", today, "macro");
+    expect(macro).toContain("Do not announce the mode");
+    expect(macro).not.toMatch(/say you are in Macro mode/);
+    expect(all).toContain("Never quote one to him");
+    expect(macro).toContain("never quote one to him");
+  });
+
+  it("a saved note is not restated under its card, and its id is never quoted", () => {
+    for (const scope of ["all", "macro"] as const) {
+      const p = buildSystemPrompt(fakeContext, today, scope);
+      expect(p).toContain("Once it is saved, the card already tells him so");
+      expect(p).toContain("never quote the note's id");
+    }
   });
 
   it("includes portfolio context for non-macro scopes", () => {
