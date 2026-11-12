@@ -31,7 +31,7 @@ describe("AllHoldingsTable treats a zero cost basis as unknown everywhere", () =
   it("takes hasKnownBasis from the one shared helper and defines no local copy", () => {
     const text = src();
     expect(text).toMatch(
-      /import\s*\{\s*hasKnownBasis\s*\}\s*from\s*"@\/lib\/compute\/known-basis"/
+      /import\s*\{[^}]*\bhasKnownBasis\b[^}]*\}\s*from\s*"@\/lib\/compute\/known-basis"/
     );
     expect(text).not.toMatch(/(const|function)\s+hasKnownBasis\b/);
     expect(text).not.toMatch(/cost_basis\s*!==\s*0/);

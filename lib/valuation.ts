@@ -85,8 +85,12 @@ export function adjustedMarketValueSQL(
  * impossible gains — a -50-share short inheriting a -80-share row's whole
  * basis showed a loss 2.4x its notional. The fallback therefore serves
  * per-share basis magnitude x current quantity, signed like the current
- * position (long basis positive, short proceeds negative). When either
- * quantity is zero the raw stale value passes through (nothing to scale by).
+ * position (long basis positive, short proceeds negative), when the position
+ * is the same size or SMALLER than the reference row. When it has GROWN past
+ * that row, the reference basis is served unscaled and covers the reference
+ * row's shares only (basisCoveredQuantitySQL): scaling it up spread the old
+ * average onto shares bought since, whose cost the app does not know (QA
+ * 2026-10-29, owner decision 2026-11-01). When either quantity is zero the raw stale value passes through (nothing to scale by).
  *
  * The sign-match requirement (2026-09-23) exists because a live row can flip
  * sign relative to its own history with no short-sale anywhere in the
@@ -122,15 +126,32 @@ export function adjustedMarketValueSQL(
 export function scaledCostBasisFallbackSQL(outer: string, inner: string): string {
   const o = outer;
   const i = inner;
+  // Grown past the reference row (owner decision 2026-11-01, option A): the
+  // reference basis is served UNSCALED and covers the reference row's shares
+  // only (basisCoveredQuantitySQL); shares added since inherit no cost. A
+  // position that shrank keeps the per-share scale-down.
   return `COALESCE(
         NULLIF(${o}.cost_basis, 0),
         (SELECT CASE
             WHEN ${o}.quantity = 0 OR ${i}.quantity = 0 OR ${i}.quantity IS NULL
               THEN ${i}.cost_basis
+            WHEN ABS(${o}.quantity) > ABS(${i}.quantity)
+              THEN (CASE WHEN ${o}.quantity < 0 THEN -1 ELSE 1 END) * ABS(${i}.cost_basis)
             ELSE (CASE WHEN ${o}.quantity < 0 THEN -1 ELSE 1 END)
                  * ABS(${i}.cost_basis) * ABS(${o}.quantity) / ABS(${i}.quantity)
           END
-          FROM holdings ${i}
+          ${referenceRowFromWhereSql(o, i)})
+      )`;
+}
+
+/**
+ * FROM..ORDER BY of the reference-row subquery both fallback fragments read:
+ * the latest known-basis (non-zero) row of the same (account, security) on the
+ * same side as the displayed row. One copy, so the basis and the quantity it
+ * covers always come from the same row.
+ */
+function referenceRowFromWhereSql(o: string, i: string): string {
+  return `FROM holdings ${i}
           WHERE ${i}.account_id = ${o}.account_id
             AND ${i}.security_id = ${o}.security_id
             AND NULLIF(${i}.cost_basis, 0) IS NOT NULL
@@ -139,6 +160,49 @@ export function scaledCostBasisFallbackSQL(outer: string, inner: string): string
               OR (${o}.quantity < 0 AND ${i}.quantity < 0)
               OR (${o}.quantity > 0 AND ${i}.quantity > 0)
             )
-          ORDER BY ${i}.as_of_date DESC LIMIT 1)
-      )`;
+          ORDER BY ${i}.as_of_date DESC LIMIT 1`;
+}
+
+/**
+ * The quantity the basis from scaledCostBasisFallbackSQL covers, signed like
+ * the displayed row (companion fragment; owner decision 2026-11-01, option A).
+ *
+ *   - the row's own known basis: every share (`quantity`);
+ *   - a rescued basis from a reference row the position has GROWN past: the
+ *     reference row's share count, signed like the position. The shares
+ *     added since carry no cost the app knows;
+ *   - a rescued basis that was scaled down (the position shrank or is
+ *     unchanged), or a zero-quantity edge: every share;
+ *   - no known basis anywhere: NULL.
+ *
+ * Every reader computes the gain on the covered shares only, through
+ * basisCoveredValueSQL: value x covered / held - basis.
+ */
+export function basisCoveredQuantitySQL(outer: string, inner: string): string {
+  const o = outer;
+  const i = inner;
+  return `(CASE
+        WHEN NULLIF(${o}.cost_basis, 0) IS NOT NULL THEN ${o}.quantity
+        ELSE (SELECT CASE
+            WHEN ${o}.quantity = 0 OR ${i}.quantity = 0 OR ${i}.quantity IS NULL
+              THEN ${o}.quantity
+            WHEN ABS(${o}.quantity) > ABS(${i}.quantity)
+              THEN (CASE WHEN ${o}.quantity < 0 THEN -1 ELSE 1 END) * ABS(${i}.quantity)
+            ELSE ${o}.quantity
+          END
+          ${referenceRowFromWhereSql(o, i)})
+      END)`;
+}
+
+/**
+ * The part of a position's market value its known basis covers:
+ * value x covered / held (basisCoveredQuantitySQL). A gain is this minus the
+ * basis, so shares with no known cost never carry gain. Equal to the value
+ * when the basis covers every share.
+ *
+ * @param valueExpr  SQL expression for the row's full market value
+ */
+export function basisCoveredValueSQL(valueExpr: string, outer: string, inner: string): string {
+  return `(CASE WHEN ${outer}.quantity = 0 THEN ${valueExpr}
+        ELSE ${valueExpr} * ${basisCoveredQuantitySQL(outer, inner)} / ${outer}.quantity END)`;
 }

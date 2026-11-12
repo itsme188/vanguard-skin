@@ -73,6 +73,11 @@ describe("hasDeskNote", () => {
     ).toBe(false);
   });
 
+  it("accepts heading and bold-colon notes", () => {
+    expect(hasDeskNote({ summary: "## Guidance\n- up" })).toBe(true);
+    expect(hasDeskNote({ summary: "**Tone:** calm" })).toBe(true);
+  });
+
   it("does not care about the source — a fat 8-K carries a real desk note", () => {
     expect(hasDeskNote({ source: "edgar_8k", summary: DESK_NOTE })).toBe(true);
   });
@@ -93,6 +98,11 @@ describe("hasDeskNote", () => {
       "Guidance was raised but nothing is bolded.",
       "- **Guidance**: please provide the transcript.",
       "## Guidance\nHeading-styled note with no bold labels.",
+      "### Tone\n- calm",
+      "**Guidance:** raised",
+      "**Key quotes:**\n- q",
+      "**Guidance**\n- hit target as specified.",
+      "We saw **Tone** shift mid-line",
       "",
     ];
     for (const s of samples) {

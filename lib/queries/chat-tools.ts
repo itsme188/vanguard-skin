@@ -1,11 +1,17 @@
 import type Database from "better-sqlite3";
 import { snapshotTwrFraction } from "@/lib/compute/monthly-snapshot-utils";
 import { easternDaySql, unmaturedSecuritySql } from "@/lib/db/eastern-day-sql";
-import { adjustedMarketValueSQL, scaledCostBasisFallbackSQL } from "@/lib/valuation";
+import {
+  adjustedMarketValueSQL,
+  basisCoveredQuantitySQL,
+  basisCoveredValueSQL,
+  scaledCostBasisFallbackSQL,
+} from "@/lib/valuation";
 import { todayET, addDays } from "@/lib/calendar/date-utils";
 import { SECTOR_OWN_BUCKET_SQL } from "@/lib/queries/analysis";
 import { normalizeSector } from "@/lib/securities/normalize-sector";
 import { isCashEquivalentSecurity, cashEquivalentSecuritySql } from "@/lib/compute/cash-equivalents";
+import { growthValueBucket } from "@/lib/compute/equity-style";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 import { marketCapCategoryBucketSql } from "@/lib/securities/normalize-market-cap";
 import { getPendingStatementIndex, type PendingStatementIndex } from "@/lib/queries/pending-statement";
@@ -107,6 +113,14 @@ export interface HoldingResult {
   sector: string | null;
   quantity: number;
   cost_basis: number | null;
+  /**
+   * Shares cost_basis covers, signed like quantity (basisCoveredQuantitySQL,
+   * lib/valuation.ts). Below quantity when the position grew since the
+   * statement the basis came from: the gain and gain % are on these shares
+   * only, the same figures the security page shows. Null when the basis is
+   * unknown.
+   */
+  basis_covered_quantity: number | null;
   latest_price: number | null;
   /** Date of the `prices` row behind latest_price / market_value (YYYY-MM-DD). */
   price_date: string | null;
@@ -356,8 +370,15 @@ export function getHoldingsForChat(
     symbol: "s.symbol ASC",
   };
 
-  // Same basis the Accounts page shows: the row's own, else the latest earlier row of the pair, scaled by quantity.
+  // Same basis the Accounts page shows: the row's own, else the latest earlier
+  // row of the pair (scaled down when the position shrank; unscaled, covering
+  // that row's shares only, when it grew). The gain is on the covered shares.
   const costBasisExpr = scaledCostBasisFallbackSQL("h", "h3");
+  const coveredValueExpr = basisCoveredValueSQL(
+    adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)"),
+    "h",
+    "h3",
+  );
 
   const sql = `
     WITH latest_prices AS (
@@ -375,16 +396,19 @@ export function getHoldingsForChat(
       s.sector,
       h.quantity,
       ${costBasisExpr} * COALESCE(fx.usd_per_unit, 1) AS cost_basis,
+      CASE WHEN NULLIF(${costBasisExpr}, 0) IS NOT NULL
+        THEN ${basisCoveredQuantitySQL("h", "h3")}
+        ELSE NULL END AS basis_covered_quantity,
       lp.close_price AS latest_price,
       lp.max_date AS price_date,
       CASE WHEN lp.close_price IS NOT NULL
         THEN ${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}
         ELSE NULL END AS market_value,
       CASE WHEN lp.close_price IS NOT NULL AND ${costBasisExpr} IS NOT NULL AND ${costBasisExpr} > 0
-        THEN ${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")} - (${costBasisExpr} * COALESCE(fx.usd_per_unit, 1))
+        THEN ${coveredValueExpr} - (${costBasisExpr} * COALESCE(fx.usd_per_unit, 1))
         ELSE NULL END AS unrealized_gain,
       CASE WHEN lp.close_price IS NOT NULL AND ${costBasisExpr} IS NOT NULL AND ${costBasisExpr} > 0
-        THEN (${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")} - (${costBasisExpr} * COALESCE(fx.usd_per_unit, 1))) * 100.0 / (${costBasisExpr} * COALESCE(fx.usd_per_unit, 1))
+        THEN (${coveredValueExpr} - (${costBasisExpr} * COALESCE(fx.usd_per_unit, 1))) * 100.0 / (${costBasisExpr} * COALESCE(fx.usd_per_unit, 1))
         ELSE NULL END AS unrealized_gain_pct,
       -- Gross-exposure convention: when includeShorts is true, both this
       -- numerator and the denominator above (totalPortfolioValue) are ABS(mv)
@@ -674,7 +698,30 @@ export function getAllocationBreakdown(
     params.push(accountName);
   }
 
-  return db
+  // Growth vs Value: a bond, a cash fund or a bond fund carries no equity
+  // style whatever is stored, so it lands in "Not equity" (growthValueBucket,
+  // lib/compute/equity-style.ts, the same rule as the Analysis breakdown).
+  // The rule reads the normalised sector and fund category, so the rows are
+  // bucketed and summed in JS.
+  const isGrowthValue = groupBy === "growth_vs_value";
+  const styleColumns = isGrowthValue
+    ? `,
+          s.security_type, s.fund_category, s.sector,
+          s_u.id AS u_id, s_u.security_type AS u_security_type,
+          s_u.fund_category AS u_fund_category, s_u.sector AS u_sector`
+    : "";
+  const outerSql = isGrowthValue
+    ? `SELECT * FROM allocation`
+    : `SELECT
+        group_name,
+        SUM(mv) AS total_market_value,
+        SUM(mv) * 100.0 / NULLIF(SUM(SUM(mv)) OVER (), 0) AS percentage,
+        SUM(cnt) AS position_count
+      FROM allocation
+      GROUP BY group_name
+      ORDER BY total_market_value DESC`;
+
+  const result = db
     .prepare(
       `WITH latest_prices AS (
         SELECT p.security_id, p.close_price
@@ -692,7 +739,7 @@ export function getAllocationBreakdown(
               THEN h.cost_basis * COALESCE(fx.usd_per_unit, 1)
             ELSE 0
           END AS mv,
-          1 AS cnt
+          1 AS cnt${styleColumns}
         FROM holdings h
         JOIN accounts a ON a.id = h.account_id
         JOIN securities s ON s.id = h.security_id
@@ -701,16 +748,47 @@ export function getAllocationBreakdown(
         ${factorJoins}
         WHERE ${conditions.join(" AND ")}
       )
-      SELECT
-        group_name,
-        SUM(mv) AS total_market_value,
-        SUM(mv) * 100.0 / NULLIF(SUM(SUM(mv)) OVER (), 0) AS percentage,
-        SUM(cnt) AS position_count
-      FROM allocation
-      GROUP BY group_name
-      ORDER BY total_market_value DESC`
+      ${outerSql}`
     )
-    .all(...params) as AllocationResult[];
+    .all(...params);
+  if (!isGrowthValue) return result as AllocationResult[];
+
+  const rows = result as Array<{
+    group_name: string;
+    mv: number;
+    cnt: number;
+    security_type: string | null;
+    fund_category: string | null;
+    sector: string | null;
+    u_id: number | null;
+    u_security_type: string | null;
+    u_fund_category: string | null;
+    u_sector: string | null;
+  }>;
+  const byGroup = new Map<string, { mv: number; cnt: number }>();
+  let total = 0;
+  for (const r of rows) {
+    const bucket = growthValueBucket(
+      r.group_name === "Unknown" ? null : r.group_name,
+      { security_type: r.security_type, fund_category: r.fund_category, sector: r.sector },
+      r.u_id == null
+        ? null
+        : { security_type: r.u_security_type, fund_category: r.u_fund_category, sector: r.u_sector },
+    );
+    const entry = byGroup.get(bucket) ?? { mv: 0, cnt: 0 };
+    entry.mv += r.mv;
+    entry.cnt += r.cnt;
+    byGroup.set(bucket, entry);
+    total += r.mv;
+  }
+  return [...byGroup.entries()]
+    .map(([group_name, { mv, cnt }]) => ({
+      group_name,
+      total_market_value: mv,
+      percentage: total !== 0 ? (mv * 100) / total : 0,
+      position_count: cnt,
+    }))
+    .sort((a, b) => b.total_market_value - a.total_market_value);
 }
 
 /**

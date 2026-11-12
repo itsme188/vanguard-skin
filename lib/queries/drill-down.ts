@@ -31,6 +31,7 @@ import { FACTOR_COLUMNS, type FactorColumn } from "@/lib/factors";
 import { BETA_LOOKBACK_DAYS } from "@/lib/queries/security-betas";
 import { computePositionRisk, type PositionRisk } from "@/lib/compute/risk";
 import { isCashEquivalentSecurity } from "@/lib/compute/cash-equivalents";
+import { equityGrowthValue, growthValueBucket, type StyleIdentity } from "@/lib/compute/equity-style";
 import { liveOptionExpirationSql } from "@/lib/compute/option-expiry";
 import { getEtfSectorWeights } from "@/lib/queries/etf-weights";
 import { normalizeSector } from "@/lib/securities/normalize-sector";
@@ -94,7 +95,21 @@ type Row = {
   sector: string | null;
   market_value: number;
   beta: number | null;
+  u_id: number | null;
+  u_security_type: string | null;
+  u_fund_category: string | null;
+  u_sector: string | null;
 } & { [K in FactorAliasKey]: string | null };
+
+function ownStyleIdentity(r: Row): StyleIdentity {
+  return { security_type: r.security_type, fund_category: r.fund_category, sector: r.sector };
+}
+
+function underlyingStyleIdentity(r: Row): StyleIdentity | null {
+  return r.u_id == null
+    ? null
+    : { security_type: r.u_security_type, fund_category: r.u_fund_category, sector: r.u_sector };
+}
 
 /**
  * Get all holdings in a bucket.
@@ -120,6 +135,9 @@ export function getHoldingsInBucket(
   const orderBy = "market_value DESC";
   const filterParams: (string | number)[] = [];
   let sectorLookThroughBucket: string | null = null;
+  // Growth vs Value bucket, decided in JS by the same rule the breakdown uses
+  // (growthValueBucket): a bond, a cash fund or a bond fund is "Not equity".
+  let growthValueFilterBucket: string | null = null;
   // kind:"risk" only — the ranked positions this call is a projection of.
   // Left null by every other kind.
   let rankedPositions: PositionRisk[] | null = null;
@@ -167,8 +185,12 @@ export function getHoldingsInBucket(
     // Same expression the breakdown groups by, 'Unknown' fallback included:
     // without it the 'Unknown' row (no factor on the security or its
     // underlying) could never match a NULL and opened an empty panel.
-    extraWhere = `AND COALESCE(sf.${filter.factor}, sf_u.${filter.factor}, 'Unknown') = ?`;
-    filterParams.push(filter.bucket);
+    if (filter.factor === "growth_vs_value") {
+      growthValueFilterBucket = filter.bucket;
+    } else {
+      extraWhere = `AND COALESCE(sf.${filter.factor}, sf_u.${filter.factor}, 'Unknown') = ?`;
+      filterParams.push(filter.bucket);
+    }
   } else if (filter.kind === "risk") {
     // The universe is decided by computePositionRisk — the SAME call the
     // Position-Level Risk card makes — not by SQL here, so the card, its
@@ -213,6 +235,10 @@ export function getHoldingsInBucket(
         s.sector,
         SUM(${HOLDING_VALUE_USD_SQL}) AS market_value,
         sb.beta AS beta,
+        s_u.id AS u_id,
+        s_u.security_type AS u_security_type,
+        s_u.fund_category AS u_fund_category,
+        s_u.sector AS u_sector,
         ${factorSelect}
       FROM holdings h
       JOIN securities s ON s.id = h.security_id
@@ -257,7 +283,15 @@ export function getHoldingsInBucket(
     ORDER BY ${orderBy}
   `;
 
-  const rows = db.prepare(sql).all(...accountParams, ...filterParams) as Row[];
+  const allRows = db.prepare(sql).all(...accountParams, ...filterParams) as Row[];
+  const rows =
+    growthValueFilterBucket === null
+      ? allRows
+      : allRows.filter(
+          (r) =>
+            growthValueBucket(r.f_growth_vs_value, ownStyleIdentity(r), underlyingStyleIdentity(r)) ===
+            growthValueFilterBucket
+        );
 
   // Compute the SCOPE total separately so weights add to 1 across the
   // visible scope, not just the filtered subset.
@@ -318,7 +352,12 @@ export function getHoldingsInBucket(
 function factorsOf(r: Row): Partial<Record<FactorColumn, string>> {
   const factors: Partial<Record<FactorColumn, string>> = {};
   for (const f of FACTOR_COLUMNS) {
-    const v = r[`f_${f}` as FactorAliasKey];
+    const stored = r[`f_${f}` as FactorAliasKey];
+    // A non-equity reports no growth/value (carriesEquityStyle).
+    const v =
+      f === "growth_vs_value"
+        ? equityGrowthValue(stored, ownStyleIdentity(r), underlyingStyleIdentity(r))
+        : stored;
     if (typeof v === "string" && v) factors[f] = v;
   }
   return factors;

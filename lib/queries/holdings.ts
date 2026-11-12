@@ -1,7 +1,12 @@
 import type Database from "better-sqlite3";
 import { unmaturedSecuritySql } from "@/lib/db/eastern-day-sql";
 import type { Holding } from "@/lib/types";
-import { adjustedMarketValueSQL, scaledCostBasisFallbackSQL } from "@/lib/valuation";
+import {
+  adjustedMarketValueSQL,
+  basisCoveredQuantitySQL,
+  basisCoveredValueSQL,
+  scaledCostBasisFallbackSQL,
+} from "@/lib/valuation";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 import { liveOptionExpirationSql } from "@/lib/compute/option-expiry";
 import { todayET } from "@/lib/calendar/date-utils";
@@ -15,6 +20,13 @@ export interface HoldingWithSecurity extends Holding {
   strike_price: number | null;
   expiration_date: string | null;
   option_type: "CALL" | "PUT" | null;
+  /**
+   * Shares the cost basis covers, signed like quantity (basisCoveredQuantitySQL,
+   * lib/valuation.ts). Below quantity when the position grew since the
+   * statement the basis came from. Null when the basis is unknown; absent on
+   * a hand-built row means every share.
+   */
+  basis_covered_quantity?: number | null;
   multiplier: number;
 }
 
@@ -28,6 +40,12 @@ export interface AllHoldingsRow {
   multiplier: number;
   quantity: number;
   cost_basis: number | null;
+  /**
+   * Shares the cost basis covers, signed like quantity (basisCoveredQuantitySQL).
+   * Less than quantity when the position grew since the statement the basis
+   * came from; the gain is on these shares only. Null when the basis is unknown.
+   */
+  basis_covered_quantity?: number | null;
   as_of_date: string;
   current_price: number | null;
   current_value: number | null;
@@ -77,14 +95,20 @@ function valuedHoldingColumnsSql(): string {
   // Mirrors the identical pattern in getCrossAccountPositions
   // (lib/digest/send-earnings-email.ts).
   const costBasisExpr = scaledCostBasisFallbackSQL("h", "h3");
+  // The gain is on the shares the basis covers (value x covered / held):
+  // shares added since the statement the basis came from carry no cost.
+  const coveredValueExpr = basisCoveredValueSQL(marketValueExpr, "h", "h3");
   return `
       ${costBasisExpr} * COALESCE(fx.usd_per_unit, 1) AS cost_basis,
+      CASE WHEN NULLIF(${costBasisExpr}, 0) IS NOT NULL
+        THEN ${basisCoveredQuantitySQL("h", "h3")}
+        ELSE NULL END AS basis_covered_quantity,
       p.close_price AS current_price,
       CASE WHEN p.close_price IS NOT NULL
         THEN ${marketValueExpr}
         ELSE NULL END AS current_value,
       CASE WHEN p.close_price IS NOT NULL AND NULLIF(${costBasisExpr}, 0) IS NOT NULL
-        THEN ${marketValueExpr} - (${costBasisExpr} * COALESCE(fx.usd_per_unit, 1))
+        THEN ${coveredValueExpr} - (${costBasisExpr} * COALESCE(fx.usd_per_unit, 1))
         ELSE NULL END AS unrealized_gain`;
 }
 
@@ -157,7 +181,10 @@ export function getHoldingsByAccount(
     SELECT h.*, s.symbol, s.name as security_name, s.security_type, a.name as account_name,
            s.underlying_symbol, s.strike_price, s.expiration_date, s.option_type,
            COALESCE(s.multiplier, 1) as multiplier,
-           ${costBasisExpr} * COALESCE(fx.usd_per_unit, 1) as cost_basis
+           ${costBasisExpr} * COALESCE(fx.usd_per_unit, 1) as cost_basis,
+           CASE WHEN NULLIF(${costBasisExpr}, 0) IS NOT NULL
+             THEN ${basisCoveredQuantitySQL("h", "h3")}
+             ELSE NULL END as basis_covered_quantity
     FROM holdings h
     JOIN securities s ON s.id = h.security_id
     JOIN accounts a ON a.id = h.account_id

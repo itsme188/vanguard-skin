@@ -11,6 +11,7 @@ import {
   getIncomeSummaryForChat,
 } from "@/lib/queries/chat-tools";
 import { executeTool } from "@/lib/chat/tools";
+import { getHoldingsBySecurity } from "@/lib/queries/security-detail";
 import { buildSystemPrompt } from "@/lib/chat/system-prompt";
 
 // ─── Seed helpers ─────────────────────────────────────────────────
@@ -213,6 +214,37 @@ describe("getHoldingsForChat", () => {
     expect(holdings[0].unrealized_gain).toBe(2500); // 10000 - 7500
     expect(holdings[0].sector).toBe("Technology");
     expect(holdings[0].position_weight_pct).toBeCloseTo(52.6, 0);
+  });
+
+  it("shares added since the statement carry no basis: same figures as the security page", () => {
+    const aaa = seedSecurity(db, "AAA");
+    // Statement: 100 shares for 1,000. Live row: 110 shares, no basis.
+    seedHolding(db, 1, aaa, 100, "2025-01-31", 1000);
+    seedHolding(db, 1, aaa, 110, "2025-02-10");
+    seedPrice(db, aaa, "2025-02-10", 20);
+
+    const [row] = getHoldingsForChat(db, { symbol: "AAA" });
+    expect(row.quantity).toBe(110);
+    expect(row.cost_basis).toBeCloseTo(1000, 6);
+    expect(row.basis_covered_quantity).toBe(100);
+    expect(row.market_value).toBe(2200);
+    // 2200 x 100/110 - 1000 = 1000, i.e. +100% on the covered shares.
+    expect(row.unrealized_gain).toBeCloseTo(1000, 6);
+    expect(row.unrealized_gain_pct).toBeCloseTo(100, 6);
+
+    const [hub] = getHoldingsBySecurity(db, aaa);
+    expect(hub.cost_basis).toBeCloseTo(row.cost_basis!, 6);
+    expect(hub.unrealized_gain).toBeCloseTo(row.unrealized_gain!, 6);
+    expect(hub.basis_covered_quantity).toBe(row.basis_covered_quantity);
+  });
+
+  it("a position's own basis covers every share", () => {
+    const aaa = seedSecurity(db, "AAA");
+    seedHolding(db, 1, aaa, 50, "2025-01-31", 500);
+    seedPrice(db, aaa, "2025-01-31", 20);
+    const [row] = getHoldingsForChat(db, { symbol: "AAA" });
+    expect(row.basis_covered_quantity).toBe(50);
+    expect(row.unrealized_gain).toBeCloseTo(500, 6);
   });
 
   it("filters by account name", () => {
@@ -449,6 +481,32 @@ describe("getAllocationBreakdown", () => {
     expect(alloc[0].total_market_value).toBe(20000);
     expect(alloc[1].group_name).toBe("Vanguard Roth IRA");
     expect(alloc[1].total_market_value).toBe(10000);
+  });
+
+  it("growth_vs_value puts a bond and a cash fund stored as 'Value' in 'Not equity'", () => {
+    const eq = seedSecurity(db, "AAA");
+    const bond = seedSecurity(db, "ZZB", { security_type: "Bond", asset_class: "fixed_income" });
+    const cash = seedSecurity(db, "ZZM", { security_type: "Mutual Fund" });
+    db.prepare("UPDATE securities SET fund_category = 'Cash Equivalent' WHERE id = ?").run(cash);
+    for (const id of [eq, bond, cash]) {
+      db.prepare("INSERT INTO security_factors (security_id, growth_vs_value) VALUES (?, 'Value')").run(id);
+    }
+    seedHolding(db, 1, eq, 100, "2025-01-31");
+    seedHolding(db, 1, bond, 10000, "2025-01-31");
+    seedHolding(db, 1, cash, 10000, "2025-01-31");
+    seedPrice(db, eq, "2025-01-31", 100);
+    seedPrice(db, bond, "2025-01-31", 100);
+    seedPrice(db, cash, "2025-01-31", 1);
+
+    const alloc = getAllocationBreakdown(db, "growth_vs_value");
+    const byName = new Map(alloc.map((a) => [a.group_name, a]));
+    expect(byName.get("Value")!.total_market_value).toBe(10000);
+    expect(byName.get("Value")!.position_count).toBe(1);
+    expect(byName.get("Not equity")!.total_market_value).toBe(20000);
+    expect(byName.get("Not equity")!.position_count).toBe(2);
+    expect(byName.get("Value")!.percentage).toBeCloseTo(100 / 3, 6);
+    // Largest bucket first, as the SQL path orders.
+    expect(alloc[0].group_name).toBe("Not equity");
   });
 
   it("uses 'Unknown' for missing sector data", () => {

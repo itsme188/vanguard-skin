@@ -60,11 +60,13 @@ export interface TranscriptSummaryRow {
 const FILING_SOURCES = new Set(["edgar_8k"]);
 
 /** Mirror of `DESK_NOTE_SECTION_RE` in lib/transcripts/same-day.ts. */
-const DESK_NOTE_SECTION_RE = /\*\*(Guidance|Tone|Surprises|Key quotes)\*\*/i;
+const DESK_NOTE_SECTION_RE =
+  /^[ \t]*(?:[-*][ \t]+)?(?:#{1,4}[ \t]+(?:\*\*)?(?:Guidance|Tone|Surprises|Key quotes)\b|\*\*[ \t]*(?:Guidance|Tone|Surprises|Key quotes)[ \t]*:?[ \t]*\*\*)/im;
 
 /** Mirror of `DESK_NOTE_REFUSAL_RE` in lib/transcripts/same-day.ts. */
-const DESK_NOTE_REFUSAL_RE =
-  /please provide|provide the transcript|i(?:'|’)ll produce the|as specified[.,]?\s*$/im;
+const DESK_NOTE_REFUSAL_RE = /please provide|provide the transcript|i(?:'|’)ll produce the/i;
+/** A refusal announces itself in the opening of the answer; a real note can mention these words later. */
+const DESK_NOTE_REFUSAL_WINDOW = 400;
 
 /** Short badge label per known source. */
 const SOURCE_LABELS: Record<string, string> = {

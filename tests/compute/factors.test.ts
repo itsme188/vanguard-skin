@@ -369,6 +369,26 @@ describe("computeMacroFactorTilts", () => {
     expect(intl.exposurePct).toBeCloseTo(60, 1);
   });
 
+  it("does not count a bond or a cash fund stored as 'Value' in the growth-to-value exposure", () => {
+    const today = recentDate(0);
+    db.exec("INSERT INTO accounts (id, name) VALUES (1, 'Test')");
+    // AAA: an equity, Value. ZZB: a bond stored 'Value' by the old classifier
+    // default (per-100-face price). ZZM: a cash fund stored 'Value'. Each is
+    // worth 5,000, a third of the book.
+    db.prepare("INSERT INTO securities (id, symbol, name, security_type) VALUES (1, 'AAA', 'AAA', 'Stock')").run();
+    db.prepare("INSERT INTO securities (id, symbol, name, security_type) VALUES (2, 'ZZB', 'ZZB', 'Bond')").run();
+    db.prepare("INSERT INTO securities (id, symbol, name, security_type, fund_category) VALUES (3, 'ZZM', 'ZZM', 'Mutual Fund', 'Cash Equivalent')").run();
+    for (const [id, qty, px] of [[1, 50, 100], [2, 5000, 100], [3, 5000, 1]] as const) {
+      db.prepare("INSERT INTO security_factors (security_id, growth_vs_value) VALUES (?, 'Value')").run(id);
+      db.prepare("INSERT INTO holdings (account_id, security_id, as_of_date, quantity) VALUES (1, ?, ?, ?)").run(id, today, qty);
+      db.prepare("INSERT INTO prices (security_id, date, close_price) VALUES (?, ?, ?)").run(id, today, px);
+    }
+
+    const growth = computeMacroFactorTilts(db).find((t) => t.factor === "growth_vs_value")!;
+    expect(growth.exposurePct).toBeCloseTo(100 / 3, 1);
+    expect(growth.topContributors.map((c) => c.symbol)).toEqual(["AAA"]);
+  });
+
   it("ignores 'No' and 'Unknown' values (0 multiplier)", () => {
     const today = recentDate(0);
     db.exec("INSERT INTO accounts (id, name) VALUES (1, 'Test')");

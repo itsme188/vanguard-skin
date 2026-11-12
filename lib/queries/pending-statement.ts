@@ -43,6 +43,15 @@ import {
  *    close), and neither shared engine guard (a later imported position-
  *    changing fill, a later import split, both after the live row's date)
  *    skips it → `awaiting_statement`.
+ *    A statement-grade zero as the pair's newest statement-grade row is the
+ *    engine's synthetic close ONLY once a recompute has run after it. While
+ *    the stored lot results are STALE (`recomputeCurrent` false) the long
+ *    lots are still open in storage, so the side is `closing_entry_missing`
+ *    at the statement date (R1: no value, no gain) unless the engine's own
+ *    guards, measured from the STATEMENT date exactly as its broker-close
+ *    pass measures them (lib/compute/tax-lots.ts), would skip the close.
+ *    A newer live row cancels nothing; a fill ON the statement date is not
+ *    later. When results are current the engine owns it → not pending.
  *  - new: any option lot (long or short) and short stock/ETF lots. The
  *    engine never mints a synthetic close for these, so a statement zero
  *    alone never returns them to "open and valued" (Option A). An option
@@ -113,6 +122,10 @@ export interface PendingDecisionInput {
   resymbolReplacementHeld: boolean;
   /** long_equity only: the engine's shared guards, measured from the newest row's date. */
   longEquityGuards: { laterFill: boolean; laterSplit: boolean };
+  /** long_equity only: the same guards measured from the newest STATEMENT-GRADE row's date (the engine's broker-close anchor). */
+  statementGuards: { laterFill: boolean; laterSplit: boolean };
+  /** The stored tax-lot results are current (`getTaxConventionState().recomputeCurrent`). */
+  resultsCurrent: boolean;
   /** new class only: does a same-side reopening exist strictly after `date`? */
   reopenedAfter: (date: string) => boolean;
 }
@@ -135,8 +148,14 @@ export function decidePendingReason(input: PendingDecisionInput): PendingDecisio
 
   if (cls === "long_equity") {
     if (side !== "long") return null;
+    if (statement && statement.quantity === 0) {
+      // Current results: the engine's synthetic close owns the pair. Stale
+      // results: the close has not run yet, so the lots are still stored open.
+      if (input.resultsCurrent) return null;
+      if (input.statementGuards.laterFill || input.statementGuards.laterSplit) return null;
+      return { reason: "closing_entry_missing", flatDate: statement.date };
+    }
     if (newest.evidence !== "live" || newest.quantity > 0) return null;
-    if (statement && statement.quantity === 0) return null;
     if (input.longEquityGuards.laterFill || input.longEquityGuards.laterSplit) return null;
     return { reason: "awaiting_statement", flatDate: newest.date };
   }
@@ -175,6 +194,7 @@ interface SideRow {
   s_date: string | null;
   s_qty: number | null;
   later_fill: number;
+  s_later_fill: number;
 }
 
 const sideSortRank = (side: PendingSide): number => (side === "long" ? 0 : 1);
@@ -226,7 +246,17 @@ export function getPendingStatementPairs(
                  WHERE t2.account_id = tl.account_id AND t2.security_id = tl.security_id
                    AND t2.trade_date > h.as_of_date
                    AND LOWER(t2.type) IN (${positionChangingTxnTypesSql()})
-              ) AS later_fill
+              ) AS later_fill,
+              EXISTS (
+                SELECT 1 FROM transactions t3
+                 WHERE t3.account_id = tl.account_id AND t3.security_id = tl.security_id
+                   AND t3.trade_date > (
+                     SELECT z.as_of_date FROM holdings z
+                      WHERE z.account_id = h.account_id AND z.security_id = h.security_id
+                        AND ${statementGradeHoldingSql("z")}
+                      ORDER BY z.as_of_date DESC LIMIT 1)
+                   AND LOWER(t3.type) IN (${positionChangingTxnTypesSql()})
+              ) AS s_later_fill
          FROM tax_lots tl
          JOIN securities s ON s.id = tl.security_id
          LEFT JOIN fx_rates fx ON fx.currency = s.currency
@@ -324,6 +354,14 @@ export function getPendingStatementPairs(
             ? findLaterImportSplit(splits, r.security_id, r.n_date) != null
             : false,
       },
+      statementGuards: {
+        laterFill: r.s_later_fill === 1,
+        laterSplit:
+          cls === "long_equity" && r.s_date != null
+            ? findLaterImportSplit(splits, r.security_id, r.s_date) != null
+            : false,
+      },
+      resultsCurrent,
       reopenedAfter,
     });
     if (!decision) continue;

@@ -3,7 +3,7 @@ export const dynamic = "force-dynamic";
 import { GOLD_FILL_CLASSES } from "@/app/dashboard/components/chip-tone-text";
 import { db } from "@/lib/db";
 import { unrealizedGainRatio } from "@/lib/format";
-import { assetClassLabel, getSecurityDetail, transcriptPreviewText } from "@/lib/queries/security-detail";
+import { assetClassLabel, getSecurityDetail, isPartlyCovered, transcriptPreviewText } from "@/lib/queries/security-detail";
 import { MarkdownMessage } from "../../components/MarkdownMessage";
 import { isOnWatchlist, getWatchlistItem } from "@/lib/queries/watchlist";
 import { getResearchDocumentsForSymbol } from "@/lib/queries/research-documents";
@@ -261,7 +261,13 @@ export default async function SecurityDetailPage(props: {
   // The other half of that reconciliation: accounts with open lots and NO
   // position row. They get a line inside the Positions frame, so the lots
   // table below never stands alone and unexplained.
-  const { lotsWithoutPosition, positionsWithoutBasis, unknownBasisLotNotes, expiredOptionSnapshotRows } = detail;
+  const {
+    lotsWithoutPosition,
+    positionsWithoutBasis,
+    positionsPartlyCovered,
+    unknownBasisLotNotes,
+    expiredOptionSnapshotRows,
+  } = detail;
   // A short position over long open lots: the coverage check reports the
   // short as uncovered (long lots never cover a short), and the contradiction
   // itself is named on its own line above the lots table.
@@ -281,7 +287,11 @@ export default async function SecurityDetailPage(props: {
   // Value sums every position; cost basis, gain and % sum only the ones with
   // a known basis. When some are left out the three figures are marked "~"
   // and a line under the table names what they leave out.
-  const totalIsPartial = positionsWithoutBasis.length > 0 && detail.totalCostBasis !== null;
+  // A position whose basis covers only some shares (grown since the statement
+  // the basis came from) leaves the shares added since out of the same three
+  // figures, so it marks the total too.
+  const totalIsPartial =
+    (positionsWithoutBasis.length > 0 || positionsPartlyCovered.length > 0) && detail.totalCostBasis !== null;
   const partialMark = totalIsPartial ? "~" : "";
   const positionSides = detail.positionSides;
   const totalGainHasShort = positions.some((p) => p.unrealized_gain !== null && (p.cost_basis ?? 0) < 0);
@@ -513,7 +523,19 @@ export default async function SecurityDetailPage(props: {
                   const pct = ratio !== null ? ratio * 100 : null;
                   return (
                     <tr key={p.account_id}>
-                      <td className={TD_CLASS}>{p.account_name}</td>
+                      <td className={TD_CLASS}>
+                        {p.account_name}
+                        {/* Grown since the statement the basis came from: the
+                            basis, gain and % cover those shares only (owner
+                            decision 2026-11-01). */}
+                        {isPartlyCovered(p) && (
+                          <span className="block text-xs text-ink-faint whitespace-nowrap">
+                            basis covers <Shares value={Math.abs(p.basis_covered_quantity!)} /> of{" "}
+                            <Shares value={Math.abs(p.quantity)} />{" "}
+                            <QuantityUnit securityType={security.security_type} quantity={Math.abs(p.quantity)} />
+                          </span>
+                        )}
+                      </td>
                       <td className={`${TD_MONO} text-right`}>
                         <Shares value={p.quantity} />
                       </td>
@@ -543,7 +565,9 @@ export default async function SecurityDetailPage(props: {
                       ] as const
                     ).map(({ label, side, isShort }) => {
                       if (!side) return null;
-                      const sidePartial = side.positionsWithoutBasis.length > 0 && side.totalCostBasis !== null;
+                      const sidePartial =
+                        (side.positionsWithoutBasis.length > 0 || side.positionsPartlyCovered.length > 0) &&
+                        side.totalCostBasis !== null;
                       const mark = sidePartial ? "~" : "";
                       const sideQty = positions
                         .filter((p) => (p.quantity < 0) === isShort)
@@ -631,14 +655,35 @@ export default async function SecurityDetailPage(props: {
           {positions.length > 1 && totalIsPartial && (
             <p className="px-5 py-3 border-t border-edge text-xs text-ink-faint">
               ~ Total cost basis, gain and % leave out{" "}
-              {positionsWithoutBasis.map((p, i) => (
-                <span key={p.account_id}>
-                  {i > 0 && ", "}
-                  <span className="text-ink-dim">{p.account_name}</span> (<Shares value={p.quantity} />{" "}
-                  <QuantityUnit securityType={security.security_type} quantity={p.quantity} />)
-                </span>
-              ))}
-              : cost basis unknown.
+              {positionsWithoutBasis.length > 0 && (
+                <>
+                  {positionsWithoutBasis.map((p, i) => (
+                    <span key={p.account_id}>
+                      {i > 0 && ", "}
+                      <span className="text-ink-dim">{p.account_name}</span> (<Shares value={p.quantity} />{" "}
+                      <QuantityUnit securityType={security.security_type} quantity={p.quantity} />)
+                    </span>
+                  ))}
+                  : cost basis unknown
+                  {positionsPartlyCovered.length > 0 ? "; and " : "."}
+                </>
+              )}
+              {positionsPartlyCovered.length > 0 && (
+                <>
+                  {positionsPartlyCovered.map((p, i) => {
+                    const uncovered = Math.abs(p.quantity) - Math.abs(p.covered_quantity);
+                    return (
+                      <span key={p.account_id}>
+                        {i > 0 && ", "}
+                        <Shares value={uncovered} />{" "}
+                        <QuantityUnit securityType={security.security_type} quantity={uncovered} /> in{" "}
+                        <span className="text-ink-dim">{p.account_name}</span>
+                      </span>
+                    );
+                  })}
+                  : added since the statement the cost basis comes from, so their cost is unknown.
+                </>
+              )}
               {!positionSides.mixed && detail.gainCoveredValue !== null && (
                 <>
                   {" "}They cover <Money value={detail.gainCoveredValue} /> of the{" "}

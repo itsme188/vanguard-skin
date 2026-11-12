@@ -15,3 +15,22 @@
 export function hasKnownBasis(row: { cost_basis: number | null | undefined }): boolean {
   return row.cost_basis != null && row.cost_basis !== 0;
 }
+
+/**
+ * True when the basis is known but covers fewer shares than the row holds:
+ * the position grew since the statement the basis came from, so the shares
+ * added since carry no known cost and are left out of the gain
+ * (basisCoveredQuantitySQL in lib/valuation.ts; owner decision 2026-11-01).
+ * A row with no covered quantity (absent or null) counts as fully covered.
+ */
+export function basisCoversPartOnly(row: {
+  cost_basis: number | null | undefined;
+  quantity: number;
+  basis_covered_quantity?: number | null;
+}): boolean {
+  return (
+    hasKnownBasis(row) &&
+    row.basis_covered_quantity != null &&
+    Math.abs(row.basis_covered_quantity) < Math.abs(row.quantity)
+  );
+}

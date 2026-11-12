@@ -36,11 +36,23 @@ describe("getHoldingsForChat cost basis fallback", () => {
     expect(row!.unrealized_gain_pct).toBeCloseTo(50, 2);
   });
 
-  it("scales the fallback basis by quantity when the position changed", () => {
+  it("a grown position: the earlier basis covers the earlier shares only (2026-11-01 decision)", () => {
     seed(db, 20);
     const row = getHoldingsForChat(db).find((h) => h.symbol === "AAA");
     expect(row).toBeDefined();
-    expect(row!.cost_basis).toBeCloseTo(2000, 2);
-    expect(row!.unrealized_gain).toBeCloseTo(1000, 2);
+    // Unscaled: the 10 added shares carry no known cost.
+    expect(row!.cost_basis).toBeCloseTo(1000, 2);
+    expect(row!.basis_covered_quantity).toBe(10);
+    // 3000 x 10/20 - 1000
+    expect(row!.unrealized_gain).toBeCloseTo(500, 2);
+    expect(row!.unrealized_gain_pct).toBeCloseTo(50, 2);
+  });
+
+  it("a shrunk position: the per-share basis scales down to today's shares", () => {
+    seed(db, 5);
+    const row = getHoldingsForChat(db).find((h) => h.symbol === "AAA");
+    expect(row!.cost_basis).toBeCloseTo(500, 2);
+    expect(row!.basis_covered_quantity).toBe(5);
+    expect(row!.unrealized_gain).toBeCloseTo(750 - 500, 2);
   });
 });
