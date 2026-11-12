@@ -42,10 +42,36 @@ function atLeast(version: number[], floor: number[]): boolean {
  * (the print-time extractor). Merge `thinking` into the request and `effort`
  * into `output_config`.
  */
+/**
+ * The newest version of each family whose "no reasoning" spelling is
+ * documented (checked 2026-11-12). A newer version gets the safest shape
+ * instead of a guess that could 400.
+ */
+const DOCUMENTED_UP_TO: Record<string, number[]> = {
+  opus: [5, 5],
+  sonnet: [5, 5],
+  haiku: [5, 5],
+  fable: [5, 2],
+  mythos: [5, 2],
+};
+
+const warnedUndocumented = new Set<string>();
+
 export function fastStructuredRequestOptions(modelId: string): FastRequestOptions {
   const parsed = parseModelId(modelId);
   if (!parsed) return { thinking: { type: "disabled" } };
   const { family, version } = parsed;
+  const documented = DOCUMENTED_UP_TO[family];
+  if (documented && !atLeast(documented, version)) {
+    // Newer than anything documented: no thinking field and no effort, the
+    // one shape every documented generation accepts. The model then runs at
+    // its own default, which is slower but never a 400.
+    if (!warnedUndocumented.has(modelId)) {
+      warnedUndocumented.add(modelId);
+      console.warn(`[ai] ${modelId}: no documented fast-request setting; sending the default request`);
+    }
+    return {};
+  }
   if (family === "fable" || family === "mythos") return { effort: "low" };
   if (family === "opus" && atLeast(version, [5, 5])) return { effort: "low" };
   if (family === "sonnet" && atLeast(version, [5, 5])) return { thinking: { type: "between_tools" } };

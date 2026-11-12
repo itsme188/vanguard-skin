@@ -5,7 +5,7 @@
  * every rule are pinned here. Rules from the Claude API reference (thinking
  * & effort table, checked 2026-11-12).
  */
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import {
   fastStructuredRequestOptions,
   supportsEffort,
@@ -14,9 +14,18 @@ import {
 } from "@/lib/claude-request-options";
 
 describe("fastStructuredRequestOptions — no thinking, lowest latency, valid per generation", () => {
-  it("Sonnet 5.5 and later: between_tools (disabled is a 400 there), no effort", () => {
+  it("Sonnet 5.5: between_tools (disabled is a 400 there), no effort", () => {
     expect(fastStructuredRequestOptions("claude-sonnet-5-5")).toEqual({ thinking: { type: "between_tools" } });
-    expect(fastStructuredRequestOptions("claude-sonnet-6")).toEqual({ thinking: { type: "between_tools" } });
+  });
+  it("a model newer than the documented ones gets the safest shape (no thinking field, no effort), logged once", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    for (const id of ["claude-sonnet-6", "claude-opus-5-6", "claude-haiku-6", "claude-fable-5-3", "claude-mythos-6"]) {
+      expect(fastStructuredRequestOptions(id), id).toEqual({});
+    }
+    fastStructuredRequestOptions("claude-sonnet-6");
+    const lines = warn.mock.calls.flat().join("\n");
+    expect(lines.match(/claude-sonnet-6/g)).toHaveLength(1);
+    warn.mockRestore();
   });
   it("Sonnet 4.6 and Sonnet 5: disabled, as before", () => {
     expect(fastStructuredRequestOptions("claude-sonnet-4-6")).toEqual({ thinking: { type: "disabled" } });
