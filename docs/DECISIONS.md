@@ -1794,7 +1794,7 @@ Run 2, recounted from its comparison file, is 9 better, 6 the same and 3 worse, 
 
 ## 2026-11-12 — Portfolio Assistant: privacy means data leaving the app; scope limits reads, not what the owner may see
 
-Branch `claude/portfolio-assistant-review-7148e7` (commits `e95bdcce`..`6c11eec7`), on top of the 2026-11-11 entry. Working reference: `lib/chat/CLAUDE.md`.
+Branch `claude/portfolio-assistant-review-7148e7` (commits `e95bdcce`..`5c5ed10e`), on top of the 2026-11-11 entry. Working reference: `lib/chat/CLAUDE.md`.
 
 **Owner rulings and statements.**
 1. **Privacy is about data that leaves the app**: email, push, the cloud snapshot, requests to third parties. Inside the chat the owner is the only reader, and the chat had been too private. Built:
@@ -1820,7 +1820,7 @@ Branch `claude/portfolio-assistant-review-7148e7` (commits `e95bdcce`..`6c11eec7
    - Output caps were raised to leave room for default-on thinking, and a reply cut off at the cap is treated as a failure. Guard: `tests/repo/ai-output-caps-thinking-room.test.ts`.
    - Failover to the other provider is unchanged (`tests/ai/failover-latest-class.test.ts`).
    - **Still OPEN:**
-     - No new request shape has run against the live API. `scripts/chat-eval/probe-model-requests.ts` must be run (owner spend approval) BEFORE deploy, the print extractor on Sonnet 5.5 first.
+     - ~~Run `scripts/chat-eval/probe-model-requests.ts` before deploy.~~ DONE 2026-11-12 under the owner's 5-dollar cap (item 8): every request shape was accepted on Sonnet 5.5, Opus 5.5 and Haiku 5.5, the print extractor on Sonnet 5.5 first. The before-deploy hold is lifted.
      - Six web-search call sites still use the older search tool version.
      - Two callers in another task's files keep small caps (`lib/gmail/process.ts`, `lib/research/verify-mentions.ts`).
      - A Settings override naming an older Fable or Mythos id is not upgraded (those classes are not in `CURRENT_CLASS_MODELS`).
@@ -1830,3 +1830,27 @@ Branch `claude/portfolio-assistant-review-7148e7` (commits `e95bdcce`..`6c11eec7
      - Deploy the Mac and the Worker together.
    - The chat evaluation's price table gained the current generation, checked against the live pricing page (`72b6852b`).
 7. **Liqn factor data.** Researched (notes kept outside the repo). Recommendation: a small trial before any build. Privacy: public data calls only; never the portfolio x-ray, position sync or basket calls, which would send holdings out. Recorded as a TODO idea.
+8. **Live run 4 and what it led to** (owner approved a 5-dollar cap on 2026-11-12; SYNTHETIC evaluation database `eval-v2.db` only; token counts and costs, no real data).
+   - **Probe:** `probe-model-requests.ts` accepted every request shape on the 5.5 models; none was rejected. Probe spend $0.40. The newer web-search tool version read about twice the input tokens of the older one on the same prompt.
+   - **The 18 golden questions on two tiers** (the chat's normal workhorse tier on `claude-sonnet-5-5`, and a Settings override to `claude-opus-5-5`):
+
+     | | Sonnet 5.5 (4a) | Opus 5.5 (4b) | run 3, Sonnet 4.6 (13 questions) |
+     |---|---|---|---|
+     | cost per question | $0.0384 | $0.0827 | $0.0608 |
+     | average latency | 9.0 s | 15.2 s | 28.5 s |
+     | input served from cache | 89.5% | 88.9% | 85.7% |
+     | scorer, first count | 14/18 | 11/18 | 10/13 |
+     | scorer after the fixes below (`rescore.ts`) | 15/18 | 17/18 | |
+     | independent reader | 17/18 (fails Q13) | 17/18 (fails Q11) | |
+
+     Every answer on both tiers finished normally with text; none was cut off or empty. Total run-4 spend $2.68 of the $5.00 cap.
+   - **Reader's verdict:** a tie on figures. Opus was somewhat better on tax reasoning (two questions). Sonnet was better on three: it caught the most serious app bug of the run, gave the total that Opus would not, and warned that an empty calendar may be a missing feed. Opus costs 2.2 times as much and takes 1.7 times as long. Both tiers misread taxability the same way, which a prompt fix addresses better than a model change.
+   - **Recommendation (the conductor's, pending the owner): keep the chat on the workhorse tier.**
+   - **App fixes the run led to:**
+     - `query_holdings` short positions (`3187f976`): every broker source stores a short's basis negative, and the tool only computed a gain for a positive basis, so on real data a short showed no gain (and on the fixture, whose short was stored positive, a wrong one). A short's basis is now read as minus its magnitude, and the gain is market value minus the signed basis, the Accounts page formula. It equals `query_tax_lots`' figure for the open lot. A short's `cost_basis` is negative. Guard: `tests/queries/chat-short-gain-and-native-amounts.test.ts`.
+     - Transaction amounts (`3187f976`, `b8598b9d`, `7888727f`): `lib/queries/transaction-amount-currency.ts` is the one rule for which rows are stored in USD (the IBKR cash sections, converted at import, and any row with no security); a trade leg is stored native. The chat returns `amount_currency` and `amount_usd`; the Portfolio Context and the IBKR block print a native amount with its currency and its USD figure, or say no rate is on file. The dashboard's Accounts and Security transaction lists no longer convert a USD-stored row a second time. The live ledger held no cash-type row on a non-USD security when checked, so no stored row is relabelled. Guard: `tests/queries/transactions-usd-stored-types.test.ts`.
+     - The Portfolio Context prints interest as earned or paid, and a negative dividend as charged or reversed (`3187f976`). Each account line names its tax treatment (`051c3faa`), and the prompt ties taxability to each account's tax treatment, never to its name (`bf3959f6`, `7888727f`).
+     - `lib/queries/integrity-checks.ts` uses the "expired, awaiting its closing entry" wording only while a lot is open (`219c244d`; guard `tests/queries/integrity-checks-expired-option-closed-lot.test.ts`). Run 4's "wrong expired option" finding was a fixture defect: the fixture builder skipped the closed-position reconciler that real imports and syncs run, so a stale holdings row stayed.
+   - **Evaluation fixes:** the scorer had seven false failures and missed two errors (a taxable account called non-taxable; a harvest pairing that skips the long-term wait). Each check now states the fact it protects; new check kinds `everyMention` and a `notNear` binding; `rescore.ts` re-scores saved answers offline (`702d8ff3`). Fixture version 3 (`eval-v3.db`) and 20 questions (`d822d909`, `5c5ed10e`); its `knownLimits` names the daily snapshots under the statement prefix and the demo seed's own rows.
+   - **Open:** `getRelatedOptionTransactions` (`lib/queries/security-detail.ts`) does no currency conversion. Interest rows with no security imported before 2026-09-03 carry no currency and read as USD.
+   - **Run 5 on fixture version 3:** [PLACEHOLDER: run 5 result, from `live-check/run5`.]
