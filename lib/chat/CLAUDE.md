@@ -1,6 +1,6 @@
 # Portfolio Assistant (in-app chat): working reference
 
-Rules for the chat drawer and right rail. Root `CLAUDE.md` holds the project-wide rules; this file is what the next person touching the chat needs. Rewritten 2026-11-11 after the Portfolio Assistant build (plan `docs/superpowers/plans/2026-11-11-portfolio-assistant-plan.md`, decisions in `docs/DECISIONS.md` 2026-11-11). Every name below was checked against the code on that date.
+Rules for the chat drawer and right rail. Root `CLAUDE.md` holds the project-wide rules; this file is what the next person touching the chat needs. Rewritten 2026-11-11 after the Portfolio Assistant build (plan `docs/superpowers/plans/2026-11-11-portfolio-assistant-plan.md`, decisions in `docs/DECISIONS.md` 2026-11-11). Every name below was checked against the code on that date. Scope, Privacy, Note approval and the tools' scope notes were brought up to date on 2026-11-12 (owner rulings, `docs/DECISIONS.md` 2026-11-12).
 
 ## The pieces
 
@@ -44,6 +44,7 @@ Rules for the chat drawer and right rail. Root `CLAUDE.md` holds the project-wid
 ## The model
 
 - `getModelForFeature("chat")`: the `chat` feature on the `$workhorse` tier (`lib/ai/models.ts`). Never write a model id here; the usage log reports the id the step actually used.
+- OPEN (owner ruling 2026-11-12, "always the latest version of each model class"): moving the tiers' static fallback is held because `lib/ai/model-tiers.ts` and `lib/ai/models.ts` belong to the `provider-failover` task. [PLACEHOLDER: update with the commit and the fallback ids once the move lands.]
 - `providerOptions.anthropic.thinking = { type: "adaptive" }`, no `effort` (ruling D5; measuring medium against high is a TODO follow-up).
 - `maxOutputTokens: 16000`, explicit (pinned in `tests/api/chat-cache-marks.test.ts`).
 - `stopWhen: stepCountIs(MAX_CHAT_STEPS)` with `MAX_CHAT_STEPS = 8`. On the last step (`stepNumber === 7`) `prepareStep` returns the same static block and the volatile block plus `LAST_STEP_NOTE`. Tools stay defined: `toolChoice: "none"` deletes the tools array in `@ai-sdk/anthropic`, which the API rejects when the history holds tool calls and which changes the cached prefix (P4, OPEN-1). A tool call on the last step therefore ends the turn with no text, and the cut-off sentence is shown and saved. Guard: `tests/api/chat-last-step.test.ts`.
@@ -66,9 +67,14 @@ The request is, in order: tools (mark on the LAST tool by position) → static s
 - `resolveChatScope` returns `{kind:"all"}` (all, macro), `{kind:"accounts", accounts}` or `{kind:"none"}`. `chatScopeAccountIds` maps these to `undefined` (every account), the id list, or `[]` (no account). `[]` reads nothing anywhere; never let it fall back to the whole book.
 - The summary receives `{ accountIds, label }`; an empty list prints "No account matches this chat's scope." Guards: `tests/api/chat-scope.test.ts`, `tests/queries/portfolio-summary-scope-b1.test.ts`.
 - **Clamp (first line).** `clampToolInputToScope` forces `account_name` to `scopeClampName(...)` on every tool whose schema declares `account_name`: the one account's exact name, or the scope word when the scope holds several. With several accounts, a model-supplied name that resolves to a non-empty subset of the scope is kept (P2). Guard: `tests/chat/scope.test.ts`.
-- **Second guard (in `executeTool`).** With `scopeAccountIds` set, an account tool answers "No account is in this chat's scope." for `[]`, and refuses any resolved account outside the scope. A one-account tool handed several accounts answers with a sentence listing them; only `SCOPE_LIST_TOOLS` (`query_twr`, `query_options_greeks` and the list-taking composites) read a list. Guards: `tests/chat/tools-composite-registration.test.ts`, `tests/chat/tools-one-account-scope-error.test.ts`.
-- Private text with no `account_name` (P9): `query_notes` and transcript `user_notes` withhold notes linked to another account's transaction (`notesInScope`); whole-book fields (`portfolio_relevance` on research feeds, `suggested_action` on alerts, briefing content) are withheld with a `scope_note`. Calendar events and newsletter tickers stay visible. Guard: `tests/chat/tools-notes-scope.test.ts`.
-- `query_data_confidence` is whole-portfolio only and errors in any account-scoped chat (P3).
+- **Second guard (in `executeTool`).** With `scopeAccountIds` set, an account tool answers "No account is in this chat's scope." for `[]`, and refuses any resolved account outside the scope. A one-account tool handed several accounts answers with a sentence listing them; only `SCOPE_LIST_TOOLS` (`query_twr`, `query_options_greeks` and the list-taking composites, `query_data_confidence` among them since 2026-11-12) read a list. Guards: `tests/chat/tools-composite-registration.test.ts`, `tests/chat/tools-one-account-scope-error.test.ts`.
+- **What the scope is for (owner ruling 2026-11-12).** The scope decides what the tools READ: holdings, performance and other account figures come only from the chosen accounts, and the model must not guess at the others. It is not a privacy wall: the chat is read by the owner only. So a result that is about the whole portfolio, or that names another account, is returned in full and labelled. This replaced plan rulings P3, P8, P9 and OPEN-7, which withheld such data in a scoped chat.
+- **Whole-portfolio results in a scoped chat:**
+  - `query_data_confidence` answers in every scope with the engine's own text, dollar amounts included. It always carries `covers_every_account: true`; in a scoped chat a `scope_note` names the chat's accounts. Guard: `tests/chat/composite-query-data-confidence.test.ts`.
+  - `query_notes` and transcript `user_notes` return every note; a note linked to a transaction names that transaction's account in `account` (`withNoteAccounts`). Guard: `tests/chat/tools-notes-scope.test.ts`.
+  - Research `portfolio_relevance`, alert `suggested_action` and briefing text are returned; in a scoped chat the result's `scope_note` says the field was written against the whole portfolio (`wholeBookFieldNote`).
+  - Calendar events and newsletter tickers were always visible.
+- **Wash sales cross accounts by law** (the replacement-purchase scan reads every account). `query_realized_gains` gives the full detail in every scope: each total's `adjustments`, each wash row's code and adjustment, and the replacement's date and `replacement_accounts`; `replacement_outside_this_answer` names any such account the answer does not cover. With one account named, `washed_by_purchases_in_this_scope` lists loss sales in OTHER accounts that a purchase in the scope washed (a Roth purchase washing a taxable loss disallows it for good); they are never added into the answer's totals or rows. The Portfolio Context's wash-sale lines name an outside replacement account the same way. The one reader of the replacement's account is `washSaleReplacementAccounts` (`lib/queries/wash-sale-replacements.ts`). Guards: `tests/chat/composite-query-realized-gains.test.ts`, `tests/queries/portfolio-summary-scope-b1.test.ts`.
 
 ## Page context (Contract A)
 
@@ -99,20 +105,21 @@ The client sends only `page: { path }` (its `usePathname()`), per call. The serv
 11. **A figure the model would otherwise compute belongs in a tool field.** The live runs showed the model adding rows, blending per-share costs and multiplying by hand when no tool returned the figure. The fix each time was a field, not a prompt rule:
     - `query_tax_lots` returns a `totals` block over EVERY matching lot (`getTaxLotTotalsForChat`): long and short open lots apart, pending lots as a count `by_reason` with no figure, closed sales with a gain at current FX.
     - `query_holdings` returns `by_symbol` for a security held in two or more positions (`getHoldingsBySecurity` + `computePositionTotals`, the security page's totals; `cost_basis_per_share_usd` or a reason), plus the `currency` / `non_usd` filters.
+    - `query_holdings` carries two weights (owner ruling 2026-11-12): `position_weight_pct`, a share of gross exposure (cash not in it), and `account_value_weight_pct`, the signed market value as a percent of the scope's total account value INCLUDING cash. The base is returned once as `account_value_base` (value, newest and oldest as-of dates, reason) from `getAccountValueBaseForChat` (`lib/queries/chat-tools.ts`), which reads `getPortfolioCurrentValues`, the Portfolio strip's reader; never a hand-built total. The weight is negative for a short, can sum past 100 with a margin debit, and is null (never 0) when the value is zero, negative or unknown, including when an account in scope holds positions but has no value. Guard: `tests/chat/tools-holdings-account-value-weight.test.ts`.
     - `query_twr` returns a `units` block naming which return is time-weighted or money-weighted, and which is annualised, with `twr_reason` / `xirr_reason` when one is not computed.
 
 The defaults and maxima live in `LIST_LIMITS` and in each schema description, and they are still being tuned to the output size; read them there, never copy them into docs or the prompt.
 
 **Allocation labels fold once.** `query_allocation` (`getAllocationBreakdown`) and the summary's allocation sections group raw labels the same way: security types fold on case onto the stored spelling (not `mapSecurityType`, which merges Stock and ETF), sectors through `normalizeSector` with a `normalizeFundCategory` fallback. The summary restates the rules (the tool's helpers are private); `tests/queries/portfolio-summary-allocation-labels.test.ts` pins the two together, `tests/queries/chat-tools-allocation-labels.test.ts` the tool.
 
-**Composite outputs name what their totals are made of** (not yet measured by a live run). `query_realized_gains` returns the tax report's own sale rows by default (`include_rows: false` turns them off). `query_data_confidence` returns an `items` block (stale prices, data gaps, missing contract data, integrity findings; amounts omitted). `query_scenarios` names each unmodelled position once in `unmodelled_positions`, with a `left_out` sentence on each preset.
+**Composite outputs name what their totals are made of** (not yet measured by a live run). `query_realized_gains` returns the tax report's own sale rows by default (`include_rows: false` turns them off). `query_data_confidence` returns an `items` block (stale prices, data gaps, missing contract data, integrity findings, with the engine's dollar amounts since 2026-11-12). `query_scenarios` names each unmodelled position once in `unmodelled_positions`, with a `left_out` sentence on each preset.
 
 **Composite tools never recompute.** Each calls the engine the dashboard surface calls, with the same arguments, and returns its figures unchanged; an empty scope is answered before any engine runs (some engines read `[]` as the whole book). The contract and sale lists cap at 25 rows. `COMPOSITE_MAX_JSON_CHARS` (6,000) is checked on the tests' own fixture only; the full form is NOT bounded by it in general (`query_scenarios` reaches about 10,600 characters on the size guard's large book). The bound that holds is the size guard's limit on the compact form (item 8). One test file per tool, `tests/chat/composite-query-*.test.ts`, pins parity with the engine. `query_risk` uses the Diagnostics card's common floor for All Accounts and the scope's own history for a narrower scope. `query_performance_vs_benchmark` does not use `computeBenchmarkComparison` (raw daily values, so a deposit reads as a return).
 
 ## Note approval (`create_note`, Contract C)
 
 1. The definition carries `needsApproval: true`; the route passes it to `tool()`. The SDK stops the turn at an approval request and does not run `execute`. Text written before the pending approval is saved, because the owner saw it. A turn with no text saves nothing, and no finish sentence is added (`assistantRowText`).
-2. The client renders a card (type, symbol, date, content through `<PrivateText>`) with "Save note" and "Don't save", calling `addToolApprovalResponse` with the current per-call body.
+2. The client renders a card (type, symbol, date, content shown as drafted, privacy toggle on or off since 2026-11-12) with "Save note" and "Don't save", calling `addToolApprovalResponse` with the current per-call body. The click itself stays: a saved note can later reach an earnings email and the cloud snapshot, which is data leaving the app. Guard: `tests/dashboard/chat-privacy-owner-text.test.ts`.
 3. `sendAutomaticallyWhen` (`lastAssistantMessageIsCompleteWithApprovalResponses`, capped at 3 automatic continuations per owner action) resends; the request ends with the assistant message, so no user row is saved; the SDK runs the approved call; the continuation's text is saved as its own assistant row (OPEN-4).
 4. `create_note` refuses an identical note (type, security, event date, content, tags, sentiment) created in the last 10 minutes and returns it with `duplicate_of_existing: true` (P11 replay guard).
 5. What this protects: text inside a tool result can make the model DRAFT a note but never SAVE one. Guards: `tests/api/chat-create-note-approval.test.ts`, `tests/api/chat-approval-history.test.ts`, `tests/chat/create-note-tool.test.ts`.
@@ -142,7 +149,8 @@ Every line is built key by key from an allowlist; the status keys accept only th
 ## Client
 
 - Error text (`chatErrorText`, `lib/chat/turn-adoption.ts`): the browser's own text is never shown. A fetch `TypeError` reads as `networkFailureMessage`, an HTML or bare-status body as a plain failure, and an envelope as the server's sentence; anything else goes to `humanizeChatError`.
-- Conversation dates are the Eastern day: `conversationDayLabel` parses the stored UTC timestamp with `parseDbTimestamp` and formats it in America/New_York. Copy shows only on a settled reply. While the list row has no title yet, the header falls back to the first question, masked like any title.
+- Conversation dates are the Eastern day: `conversationDayLabel` parses the stored UTC timestamp with `parseDbTimestamp` and formats it in America/New_York. Copy shows only on a settled reply. While the list row has no title yet, the header falls back to the first question, shown as written like any title.
+- The conversation menu wraps each title instead of cutting it to one line (`[overflow-wrap:anywhere]`; the menu is a fixed 256px wide and a hover tooltip never shows on touch). Guard: `tests/dashboard/chat-conversation-menu-titles-wrap.test.ts`. The picker's open title, the Recent conversations chips and the rail's side padding were left as they were (owner-decision items in `docs/plans/TODO.md`).
 
 ## The prompt's outline
 
@@ -174,7 +182,17 @@ A rule states what is wanted before what is forbidden. In run 2, prohibitions wr
 
 ## Privacy
 
-Assistant answers render through `PrivateMarkdown`: in privacy mode the whole answer is hidden, not masked figure by figure (masking inside answers is a TODO follow-up). The approval card's content goes through `<PrivateText>`. Chat titles mask figures per `lib/chat/conversation-title.ts`. The panel footer's "does not provide investment advice" line is the app's legal line and stays, although the prompt now states views (ruling O1).
+**Privacy is about data leaving the app** (owner ruling 2026-11-12): email, push, the cloud snapshot and requests to third parties. Inside the chat the owner is the only reader, so the chat takes no part in the on-screen privacy toggle:
+- assistant answers render through `MarkdownMessage` directly (`PrivateMarkdown` is gone; guard `tests/dashboard/chat-privacy-assistant-answer.test.ts`);
+- the owner's own messages and the note draft on the approval card show as written (`tests/dashboard/chat-privacy-owner-text.test.ts`);
+- conversation titles show as stored in the menu, the header, the Recent conversations chips and the delete dialog. `maskTitleFigures` and `displayConversationTitle` were removed; `lib/chat/conversation-title.ts` only builds the title. Guards: `tests/dashboard/chat-rail-conversation-privacy.test.ts`, `tests/chat/conversation-title-render-sites.test.ts`. This supersedes the 2026-11-07 title ruling.
+
+What still guards data that leaves the app, kept on purpose:
+- **The note approval click** (above): a saved note can reach an earnings email and the cloud snapshot.
+- **Content-free logs** (Usage log, below).
+- **The outside quote source never receives a held ticker.** `query_market_snapshot`'s live fallback asks only for `OUTSIDE_QUOTE_SYMBOLS` (SPY, QQQ, DIA; `lib/queries/market-snapshot.ts`). A held name always reads the local book; every held row carries `price_as_of` and `price_stale`, and a stale row's `pct` is the book's move on that date or null, never today's. Guard: `tests/queries/market-snapshot-no-held-tickers-outside.test.ts`.
+
+The panel footer's "does not provide investment advice" line is the app's legal line and stays, although the prompt now states views (ruling O1).
 
 ## The evaluation script (`scripts/chat-eval/`)
 
@@ -195,7 +213,7 @@ On demand only. It spends real money through the running app's chat route and is
 - **Scorer.** Number checks can require a unit or a label next to the figure. Each of the 18 questions has a right and a wrong answer in `tests/scripts/chat-eval-scorer.test.ts`, so every check is shown to fail a wrong answer; live mis-scores were added as regression tests. Behaviour flags per answer (names a tool or field, opens with a progress line, ends with an offer) are counted per run (`behaviourCounts`) and never scored.
 - A provider error before any output costs nothing and stops the run. A 404 names `ANTHROPIC_BASE_URL`.
 - Refusals: a missing `--db`, any file named `vanguard.db` (after symlinks), a database without the eval marker, an output path inside the repo that is not git-ignored, a model id not in the price table.
-- Prices are per model id, read from the usage log (`pricing.ts`); the table is not yet checked against the live pricing page.
+- Prices are per model id, read from the usage log (`pricing.ts`). The current-generation rows (Fable 5.2, Opus 5.5, Sonnet 5.5, Haiku 5.5) were checked against the live pricing page on 2026-11-12 (`tests/scripts/chat-eval-pricing-current.test.ts`); older rows were not re-checked.
 - `request-preview.ts` repeats the route's prompt assembly for the dry-run estimate only (follow-up: a shared `buildChatRequestParts`).
 - `probe-tool-choice-none.ts` is the one-off check behind OPEN-1. It needs the key outside the app's server, and it refuses a live call without `--owner-approved`.
 

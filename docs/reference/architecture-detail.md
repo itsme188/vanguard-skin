@@ -39,8 +39,10 @@ bottom-nav "Notes" entry (the Notes page). localStorage drafts persist either wa
 
 Slide-out right panel (Cmd+J), accessible from any tab, persists conversation. Since 2026-11-11 the
 assistant has 33 tools (27 base, six composite tools over dashboard engines), a cached static prompt
-block plus a volatile block (date, IBKR dashboard, Portfolio Context, page), a hard scope boundary
-checked twice (the route's clamp and `executeTool`), and an approval card for `create_note`. Working
+block plus a volatile block (date, IBKR dashboard, Portfolio Context, page), a scope boundary on
+what the tools read, checked twice (the route's clamp and `executeTool`), and an approval card for
+`create_note`. Since 2026-11-12 the scope limits reads only: a whole-portfolio result (data
+confidence, wash-sale detail, notes, briefing text) is returned in a scoped chat with a label. Working
 reference: `lib/chat/CLAUDE.md`.
 
 An account name the model passes to a chat tool is resolved by `resolveChatAccounts`
@@ -55,6 +57,9 @@ valid names. It never takes the first match. Detail: `conventions-detail.md` §E
 `<Count>` / `<PrivateText>` and `usePrivateFormatter` (wraps Recharts tick/tooltip formatters).
 Header eye-icon `PrivacyToggle` flips between ink-faint and gold. When on, every user-facing dollar
 / percent / share-count masks to `•••`; symbols, dates, account names, and UI chrome stay visible.
+The chat is the exception (owner ruling 2026-11-12): answers, the owner's messages, the note draft and
+conversation titles are never masked, because privacy is about data leaving the app (detail:
+`lib/chat/CLAUDE.md` §Privacy).
 The LightweightCharts security chart re-reads `localization.priceFormatter` + the volume formatter
 + marker text on toggle via an explicit `useEffect([isPrivate])`.
 
