@@ -82,6 +82,9 @@ describe("formatUsageLine", () => {
     // A turn that was not aborted says so explicitly.
     expect(obj.abortedSteps).toBe(0);
     expect(obj.abortedOutputEstimate).toBeNull();
+    expect(obj.abortedInputEstimate).toBeNull();
+    expect(obj.abortedInputCache).toBeNull();
+    expect(obj.abortedStepProcessed).toBeNull();
   });
 
   it("an aborted turn line names the aborted step and its output estimate, and nothing else", () => {
@@ -98,11 +101,43 @@ describe("formatUsageLine", () => {
         finishReason: "abort",
         abortedSteps: 1,
         abortedOutputEstimate: 7,
+        abortedInputEstimate: 5000,
+        abortedInputCache: "unknown",
+        abortedStepProcessed: "maybe-not",
         abortedText: MARKER,
       } as unknown as Parameters<typeof formatUsageLine>[1] & { steps: number }),
     );
     expect(Object.keys(obj).sort()).toEqual([...USAGE_LINE_KEYS_TURN].sort());
-    expect(obj).toMatchObject({ abortedSteps: 1, abortedOutputEstimate: 7, finishReason: "abort" });
+    expect(obj).toMatchObject({
+      abortedSteps: 1,
+      abortedOutputEstimate: 7,
+      abortedInputEstimate: 5000,
+      abortedInputCache: "unknown",
+      abortedStepProcessed: "maybe-not",
+      finishReason: "abort",
+    });
+    expect(JSON.stringify(obj)).not.toContain(MARKER);
+  });
+
+  it("the two status keys accept only their fixed values", () => {
+    const obj = parse(
+      formatUsageLine("turn", {
+        conversationId: 1,
+        scope: "all",
+        model: "m",
+        steps: 0,
+        noCache: 0,
+        cacheWrite: 0,
+        cacheRead: 0,
+        output: 0,
+        finishReason: "abort",
+        abortedSteps: 1,
+        abortedInputCache: MARKER,
+        abortedStepProcessed: MARKER,
+      } as unknown as Parameters<typeof formatUsageLine>[1] & { steps: number }),
+    );
+    expect(obj.abortedInputCache).toBeNull();
+    expect(obj.abortedStepProcessed).toBeNull();
     expect(JSON.stringify(obj)).not.toContain(MARKER);
   });
 

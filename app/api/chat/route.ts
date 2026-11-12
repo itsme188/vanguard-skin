@@ -47,6 +47,7 @@ import {
   logUsageTurn,
   usageTokenFields,
   estimateAbortedOutputTokens,
+  estimateAbortedInputTokens,
 } from "@/lib/chat/usage-log";
 import {
   checkRequestSize,
@@ -387,6 +388,15 @@ export async function POST(request: NextRequest) {
     // reasoning) for the output estimate. Reset when the step finishes.
     let inFlightText = "";
     let inFlightChars = 0;
+    // The step that was sent and has not finished: whether any chunk of its
+    // reply arrived, and the size of what was sent for it (tool definitions,
+    // system blocks, messages), for the aborted step's input estimate.
+    let stepInFlight = false;
+    let inFlightChunks = 0;
+    let inFlightInputChars = 0;
+    const toolDefinitionChars = JSON.stringify(
+      CHAT_TOOLS.map((t) => ({ name: t.name, description: t.description, input_schema: t.input_schema })),
+    ).length;
     let errored = false;
     let aborted = false;
     // The turn is charged and its row saved exactly once: onAbort and
@@ -413,8 +423,16 @@ export async function POST(request: NextRequest) {
       // B13: without a signal streamText never runs onAbort, so a closed tab
       // held its concurrency slot until the stale prune.
       abortSignal: request.signal,
-      prepareStep: ({ stepNumber }) =>
-        stepNumber === MAX_CHAT_STEPS - 1 ? { system: lastStepSystem } : undefined,
+      prepareStep: ({ stepNumber, messages: stepMessages }) => {
+        const isLastStep = stepNumber === MAX_CHAT_STEPS - 1;
+        stepInFlight = true;
+        inFlightChunks = 0;
+        inFlightInputChars =
+          toolDefinitionChars +
+          JSON.stringify(isLastStep ? lastStepSystem : systemBlocks).length +
+          JSON.stringify(stepMessages).length;
+        return isLastStep ? { system: lastStepSystem } : undefined;
+      },
       providerOptions: {
         anthropic: {
           thinking: { type: "adaptive" },
@@ -427,6 +445,7 @@ export async function POST(request: NextRequest) {
       // stream is read. Only the text is kept for saving; reasoning and tool
       // input only count toward the estimate.
       onChunk: ({ chunk }) => {
+        inFlightChunks++;
         if (chunk.type === "text-delta") {
           inFlightText += chunk.text;
           inFlightChars += chunk.text.length;
@@ -447,6 +466,7 @@ export async function POST(request: NextRequest) {
         lastModelId = step.response?.modelId ?? lastModelId;
         inFlightText = "";
         inFlightChars = 0;
+        stepInFlight = false;
         logUsageStep({
           conversationId: convId,
           scope,
@@ -516,7 +536,7 @@ export async function POST(request: NextRequest) {
         aborted = true;
         if (settled) return;
         settled = true;
-        const abortedSteps = inFlightChars > 0 || inFlightText !== "" ? 1 : 0;
+        const abortedSteps = stepInFlight ? 1 : 0;
         const estimate = abortedSteps ? estimateAbortedOutputTokens(inFlightChars) : null;
         logUsageTurn({
           conversationId: convId,
@@ -527,6 +547,10 @@ export async function POST(request: NextRequest) {
           finishReason: "abort",
           abortedSteps,
           abortedOutputEstimate: estimate,
+          // Input spend is logged, not charged: the daily budget counts output.
+          abortedInputEstimate: abortedSteps ? estimateAbortedInputTokens(inFlightInputChars) : null,
+          abortedInputCache: abortedSteps ? "unknown" : null,
+          abortedStepProcessed: abortedSteps ? (inFlightChunks > 0 ? "chunks-received" : "maybe-not") : null,
         });
         recordDailyUsage(sessionKey, budgetDay, finishedStepOutput + (estimate ?? 0));
         saveAssistantRow(joinStepTexts([...finishedStepTexts, inFlightText]) || null);

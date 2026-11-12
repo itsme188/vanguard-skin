@@ -167,7 +167,7 @@ describe("POST /api/chat — abort (B13)", () => {
       .join("");
   }
 
-  async function postAndAbort(opts: WaitingOptions = {}): Promise<{ seen: string }> {
+  async function postAndAbort(opts: WaitingOptions = {}): Promise<{ seen: string; model: MockLanguageModelV3 }> {
     const { model, started } = waitingModel(opts);
     hoisted.model = model;
     const controller = new AbortController();
@@ -218,7 +218,7 @@ describe("POST /api/chat — abort (B13)", () => {
     );
     expect(released).toBe(true);
     await new Promise((r) => setTimeout(r, 20));
-    return { seen: clientText(raw) };
+    return { seen: clientText(raw), model };
   }
 
   const assistantRows = () =>
@@ -283,6 +283,39 @@ describe("POST /api/chat — abort (B13)", () => {
     expect(all).not.toContain("Working on it");
     expect(all).not.toContain("Thinking hard");
     expect(all).not.toContain("Step one done");
+  });
+
+  // The aborted call was accepted by the provider and wrote its prefix to the
+  // cache (seen live): its INPUT is spend too. The line carries an estimate,
+  // with the cache status unknown; the output budget is not charged for it.
+  it("an aborted step's input is estimated on the turn line, cache status unknown", async () => {
+    const { model } = await postAndAbort({ firstStepText: "Step one done.", inFlight: ["Working on it"] });
+    const turn = usageLines().find((l) => l.kind === "turn")!;
+    // The size of what the model was actually handed for the aborted (second) call.
+    const sent = model.doStreamCalls[model.doStreamCalls.length - 1];
+    const realChars = JSON.stringify(sent.prompt).length + JSON.stringify(sent.tools ?? []).length;
+    const realTokens = realChars / 3.7;
+    expect(typeof turn.abortedInputEstimate).toBe("number");
+    expect(turn.abortedInputEstimate as number).toBeGreaterThan(realTokens * 0.5);
+    expect(turn.abortedInputEstimate as number).toBeLessThan(realTokens * 2);
+    expect(turn.abortedInputCache).toBe("unknown");
+    expect(turn.abortedStepProcessed).toBe("chunks-received");
+    // The output budget counts output only.
+    expect(daily()).toBe(2 + 4);
+  });
+
+  it("an abort before the step's first chunk is marked as possibly unprocessed", async () => {
+    await postAndAbort({ inFlight: [] });
+    const turn = usageLines().find((l) => l.kind === "turn")!;
+    expect(turn).toMatchObject({
+      steps: 0,
+      abortedSteps: 1,
+      abortedOutputEstimate: 0,
+      abortedInputCache: "unknown",
+      abortedStepProcessed: "maybe-not",
+    });
+    expect(turn.abortedInputEstimate as number).toBeGreaterThan(0);
+    expect(daily()).toBe(0);
   });
 
   it("the budget is charged the finished steps' real output plus the aborted step's estimate, once", async () => {

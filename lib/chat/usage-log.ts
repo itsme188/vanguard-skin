@@ -40,6 +40,9 @@ export const USAGE_LINE_KEYS_TURN = [
   "finishReason",
   "abortedSteps",
   "abortedOutputEstimate",
+  "abortedInputEstimate",
+  "abortedInputCache",
+  "abortedStepProcessed",
 ] as const;
 
 export interface UsageTokenFields {
@@ -74,6 +77,39 @@ export interface UsageTurnFields extends UsageCommonFields {
    * divided by `ABORTED_CHARS_PER_TOKEN`), or null when no step was aborted.
    */
   abortedOutputEstimate?: number | null;
+  /**
+   * An ESTIMATE of the aborted step's input tokens: characters of what the
+   * route sent for that step (tool definitions, system blocks, messages)
+   * divided by `ABORTED_INPUT_CHARS_PER_TOKEN`; null when no step was aborted.
+   */
+  abortedInputEstimate?: number | null;
+  /**
+   * Always "unknown" for an aborted step: its input may have been a cache
+   * write, a cache read, or not processed at all.
+   */
+  abortedInputCache?: "unknown" | null;
+  /**
+   * "chunks-received" when any part of the step's reply arrived (the
+   * provider accepted the request); "maybe-not" when the abort came before
+   * the first chunk (the step may not have been processed).
+   */
+  abortedStepProcessed?: "chunks-received" | "maybe-not" | null;
+}
+
+/**
+ * The stated ratio behind `abortedInputEstimate`: characters of serialised
+ * request content per input token (the eval script measured about 3.7 for
+ * this content).
+ */
+export const ABORTED_INPUT_CHARS_PER_TOKEN = 3.7;
+
+/** Estimated input tokens for `chars` characters sent for an aborted step. */
+export function estimateAbortedInputTokens(chars: number): number {
+  return chars > 0 ? Math.ceil(chars / ABORTED_INPUT_CHARS_PER_TOKEN) : 0;
+}
+
+function oneOf<T extends string>(v: unknown, allowed: readonly T[]): T | null {
+  return typeof v === "string" && (allowed as readonly string[]).includes(v) ? (v as T) : null;
 }
 
 /** The stated ratio behind `abortedOutputEstimate`: characters per output token. */
@@ -142,6 +178,9 @@ export function formatUsageLine(kind: "step" | "turn", fields: UsageStepFields |
   if (kind === "turn") {
     line.abortedSteps = num(f.abortedSteps) ?? 0;
     line.abortedOutputEstimate = num(f.abortedOutputEstimate);
+    line.abortedInputEstimate = num(f.abortedInputEstimate);
+    line.abortedInputCache = oneOf(f.abortedInputCache, ["unknown"] as const);
+    line.abortedStepProcessed = oneOf(f.abortedStepProcessed, ["chunks-received", "maybe-not"] as const);
   }
   return USAGE_LINE_PREFIX + JSON.stringify(line);
 }
