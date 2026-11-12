@@ -358,10 +358,16 @@ See `memory/project_ai_gateway.md`.
 
 The app picks Claude models by capability **tier**, never a hardcoded id. `lib/ai/model-tiers.ts`
 is the ONE human-editable policy file — ordered family ladders
-(`frontier: [fable, opus, sonnet]`, `workhorse: [sonnet, haiku]`, `cheap: [haiku]`) +
-`TIER_STATIC_FALLBACK`; `resolveTier` (pure) picks the newest available version of the
-top-priority family. A version bump and a model pull are both automatic; only a brand-new FAMILY
-NAME needs a ladder edit (plus its parity-pinned Worker mirror — see `cron-and-workers.md`).
+(`frontier: [opus, sonnet]`, `workhorse: [sonnet, haiku]`, `cheap: [haiku]`; Fable left the
+ladders 2026-11-07) + `CURRENT_CLASS_MODELS` + `TIER_STATIC_FALLBACK`. Since 2026-11-12 (owner
+ruling: always the latest version of each class) `CURRENT_CLASS_MODELS` is a floor and the
+empty-catalog fallback: `resolveTier` (pure) picks the newest current-generation id of the first
+ladder class, then the next class, and only when none is left the newest OLDER id with a warning;
+then the static fallback unless excluded, else `TierUnavailableError`. A stored override naming an
+older Anthropic id is upgraded to its class's current id. A version bump and a model pull are both
+automatic; a new class version means moving its `CURRENT_CLASS_MODELS` entry, and a brand-new
+FAMILY NAME needs a ladder edit (both with the parity-pinned Worker mirror — see
+`cron-and-workers.md`). Request settings per generation: `lib/claude-request-options.ts`.
 
 The "available" set is the live **catalog** (`lib/ai/model-catalog.ts`, settings key
 `model_catalog`, refreshed weekly by the Sunday briefing pipeline, read synchronously via the
@@ -371,8 +377,8 @@ The "available" set is the live **catalog** (`lib/ai/model-catalog.ts`, settings
 (e.g. `claude-fable-5` under the gov cyber hold — listed but uncallable; `claude-opus-4-8`
 callable), so discovery alone does NOT avoid it. `refreshModelCatalog` therefore **probes
 callability** (`pruneToCallable` — a 1-token test call per tier selection, drops only on a
-definitive 404/403, never on 429/500) and stores **callable-only** models → `frontier` resolves to
-`claude-opus-4-8` today, and auto-returns to Fable when its probe passes.
+definitive 404/403, never on 429/500, and never probes a known-dead id twice) and stores
+**callable-only** models → `frontier` resolves to the current Opus when it is callable.
 
 **Reactive failover** (`generate.ts` wrappers: 404/not_found → drop dead model → retry next rung) is
 the mid-week safety net for wrapped calls; chat (`streamText`) has refusal-logging only and relies
