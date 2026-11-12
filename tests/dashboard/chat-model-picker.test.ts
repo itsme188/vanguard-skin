@@ -104,18 +104,36 @@ describe("the label once the conversation has started", () => {
 
   it("reads the server's label for a listed conversation, nothing for one with no class", () => {
     const list = [
-      { id: 1, model_label: "Opus 5.5" },
-      { id: 2, model_label: null },
-      { id: 3, model_label: "Sonnet 5.5 (Opus not available)" },
+      { id: 1, model_family: "opus", model_label: "Opus 5.5" },
+      { id: 2, model_family: null, model_label: null },
+      { id: 3, model_family: "opus", model_label: "Sonnet 5.5 (Opus not available)" },
     ];
     expect(openConversationModelLabel(list, 1, "sonnet", null)).toBe("Opus 5.5");
     expect(openConversationModelLabel(list, 2, "opus", null)).toBeNull();
     expect(openConversationModelLabel(list, 3, "opus", null)).toBe("Sonnet 5.5 (Opus not available)");
   });
 
+  it("is never empty for a conversation created with a class (live-run follow-up)", () => {
+    // Every state between send and the list refresh: not adopted yet, adopted
+    // but not listed, listed without a resolved label, listed with one.
+    const states: Array<[Parameters<typeof openConversationModelLabel>, string]> = [
+      [[[], null, "haiku", null], "Haiku"],
+      [[[], null, "haiku", "Haiku 5.5"], "Haiku 5.5"],
+      [[[], 7, "haiku", null], "Haiku"],
+      [[[], 7, "haiku", "Haiku 5.5"], "Haiku 5.5"],
+      // A listed row whose label the server could not resolve still names its class.
+      [[[{ id: 7, model_family: "haiku", model_label: null }], 7, "sonnet", null], "Haiku"],
+      [[[{ id: 7, model_family: "haiku", model_label: null }], 7, "sonnet", "Haiku 5.5"], "Haiku 5.5"],
+      [[[{ id: 7, model_family: "haiku", model_label: "Haiku 5.5" }], 7, "sonnet", null], "Haiku 5.5"],
+    ];
+    for (const [args, want] of states) expect(openConversationModelLabel(...args), JSON.stringify(args)).toBe(want);
+    // Only a listed conversation with NO class shows nothing.
+    expect(openConversationModelLabel([{ id: 8, model_family: null, model_label: null }], 8, "opus", "x")).toBeNull();
+  });
+
   it("names the chosen class while the first turn's row is not listed yet", () => {
     expect(openConversationModelLabel([], null, "haiku", null)).toBe("Haiku");
-    expect(openConversationModelLabel([{ id: 1, model_label: "Opus 5.5" }], 9, "opus", null)).toBe("Opus");
+    expect(openConversationModelLabel([{ id: 1, model_family: "opus", model_label: "Opus 5.5" }], 9, "opus", null)).toBe("Opus");
   });
 
   it("prefers the server's resolved label from the stream until the list row arrives (review item 4)", () => {
@@ -123,7 +141,7 @@ describe("the label once the conversation has started", () => {
       "Sonnet 5.5 (Opus not available)",
     );
     // The list is the later source: once the row is there it wins.
-    expect(openConversationModelLabel([{ id: 4, model_label: "Opus 5.5" }], 4, "opus", "Sonnet 5.5")).toBe("Opus 5.5");
-    expect(openConversationModelLabel([{ id: 4, model_label: null }], 4, "opus", "Sonnet 5.5")).toBeNull();
+    expect(openConversationModelLabel([{ id: 4, model_family: "opus", model_label: "Opus 5.5" }], 4, "opus", "Sonnet 5.5")).toBe("Opus 5.5");
+    expect(openConversationModelLabel([{ id: 4, model_family: null, model_label: null }], 4, "opus", "Sonnet 5.5")).toBeNull();
   });
 });

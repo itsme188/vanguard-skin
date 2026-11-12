@@ -2,13 +2,20 @@ import { db } from "@/lib/db";
 import { getRecentConversations } from "@/lib/queries/chat";
 import { createConversation } from "@/lib/mutations/chat";
 import { VALID_SCOPES, type ChatScope } from "@/lib/types";
-import { chatModelLabel, invalidModelFamilyMessage, isChatModelFamily, readStoredChatFamily } from "@/lib/chat/model-choice";
+import {
+  chatFamilyName,
+  chatModelLabel,
+  invalidModelFamilyMessage,
+  isChatModelFamily,
+  readStoredChatFamily,
+} from "@/lib/chat/model-choice";
 import { resolveChatModel } from "@/lib/chat/model-resolve";
 
 /**
  * The label each conversation shows: what its stored class resolves to NOW
  * (the same resolution the next turn uses), with the fallback said in plain
- * words. A conversation with no class shows none (null).
+ * words. A conversation with no class shows none (null); one with a class
+ * always shows something (its class name if resolution fails).
  */
 function modelLabelFor(stored: string | null): string | null {
   const family = readStoredChatFamily(stored);
@@ -17,7 +24,8 @@ function modelLabelFor(stored: string | null): string | null {
     const r = resolveChatModel(family);
     return chatModelLabel({ modelId: r.resolved.modelId, fellBackFrom: r.fellBackFrom });
   } catch {
-    return null;
+    // Never an empty label for a conversation with a class: name the class.
+    return chatFamilyName(family);
   }
 }
 

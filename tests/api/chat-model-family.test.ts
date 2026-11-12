@@ -300,6 +300,19 @@ describe("the conversation routes and the model class", () => {
     expect(conversationCount()).toBe(2);
   });
 
+  it("GET never lists a class row without a label, even when the resolver throws (live-run follow-up)", async () => {
+    hoisted.db.prepare("INSERT INTO chat_conversations (scope, model_family) VALUES ('all', 'haiku')").run();
+    const spy = vi.spyOn(await import("@/lib/chat/model-resolve"), "resolveChatModel").mockImplementation(() => {
+      throw new Error("catalog read failed");
+    });
+    try {
+      const body = await (await listGET()).json();
+      expect(body.data.conversations[0].model_label).toBe("Haiku");
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it("GET lists each conversation's class and its label; no class, no label", async () => {
     hoisted.db.prepare("INSERT INTO chat_conversations (scope, model_family) VALUES ('all', 'opus')").run();
     hoisted.db.prepare("INSERT INTO chat_conversations (scope) VALUES ('all')").run();

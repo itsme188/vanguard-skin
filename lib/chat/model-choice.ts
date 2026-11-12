@@ -76,14 +76,21 @@ export function chatModelLabel(r: { modelId: string; fellBackFrom: ChatModelFami
  * name it was started on, until the list refresh brings its version.
  */
 export function openConversationModelLabel(
-  conversations: readonly { id: number; model_label?: string | null }[],
+  conversations: readonly { id: number; model_family?: string | null; model_label?: string | null }[],
   currentId: number | null,
   pendingFamily: ChatModelFamily,
   liveLabel: string | null,
 ): string | null {
   if (currentId !== null) {
     const row = conversations.find((c) => c.id === currentId);
-    if (row) return row.model_label ?? null;
+    if (row) {
+      if (row.model_label) return row.model_label;
+      // A listed row with a class but no resolved label (the server could
+      // not resolve it this time): the stream's label, else the class name,
+      // so a conversation created with a class never shows an empty label.
+      const family = readStoredChatFamily(row.model_family);
+      return family === null ? null : (liveLabel ?? chatFamilyName(family));
+    }
   }
   // Not listed yet (the first turn, or a list refresh that failed): what the
   // server said this turn resolved to, else the class that was picked.
