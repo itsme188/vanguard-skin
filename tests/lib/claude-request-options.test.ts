@@ -10,6 +10,7 @@ import {
   fastStructuredRequestOptions,
   supportsEffort,
   effortOption,
+  frontierEffortProviderOptions,
 } from "@/lib/claude-request-options";
 
 describe("fastStructuredRequestOptions — no thinking, lowest latency, valid per generation", () => {
@@ -63,5 +64,17 @@ describe("supportsEffort / effortOption", () => {
     expect(effortOption("claude-opus-5-5", "high")).toEqual({ effort: "high" });
     expect(effortOption("claude-opus-4-8", "high")).toEqual({ effort: "high" });
     expect(effortOption("claude-haiku-4-5", "high")).toEqual({});
+  });
+});
+
+describe("frontierEffortProviderOptions — keep frontier features at high effort", () => {
+  it("Opus 5.5 defaults to medium, so high is asked for explicitly; Opus 4.8 and the Sonnet rung take it too", () => {
+    for (const id of ["claude-opus-5-5", "claude-opus-4-8", "claude-sonnet-4-6", "claude-sonnet-5-5"]) {
+      expect(frontierEffortProviderOptions(id), id).toEqual({ anthropic: { effort: "high" } });
+    }
+  });
+  it("sends nothing to a model that rejects effort or is not Claude", () => {
+    expect(frontierEffortProviderOptions("claude-haiku-4-5")).toEqual({});
+    expect(frontierEffortProviderOptions("gpt-6-astra")).toEqual({});
   });
 });

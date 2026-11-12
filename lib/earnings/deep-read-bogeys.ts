@@ -29,6 +29,7 @@
 import type Database from "better-sqlite3";
 import { generateTextForFeature } from "@/lib/ai/generate";
 import { resolveFeatureModel } from "@/lib/ai/models";
+import { frontierEffortProviderOptions } from "@/lib/claude-request-options";
 import { extractJsonArray } from "@/lib/ai/extract-json";
 import { composeReleaseInstant } from "@/lib/calendar/reaction-snapshot";
 import { coercePercent, parseLargeUSD } from "@/lib/format";
@@ -480,7 +481,12 @@ export async function runDeepRead(
 
   const prompt = buildDeepReadPrompt(inputs, existingWatchLinesForEvent(db, eventId), attached);
   const { text: responseText } = await generateTextForFeature("armedBogeyDeepRead", {
-    maxOutputTokens: 8_192,
+    // Room for thinking: on the 5.5 generation it is on by default and
+    // counts against this cap (was 8,192).
+    maxOutputTokens: 16_000,
+    // A frontier feature keeps its depth: Opus 5.5 defaults to medium effort
+    // where Opus 4.8 defaulted to high (2026-11-12).
+    providerOptions: frontierEffortProviderOptions(resolveFeatureModel("armedBogeyDeepRead").modelId),
     ...(attached.length > 0
       ? {
           messages: [

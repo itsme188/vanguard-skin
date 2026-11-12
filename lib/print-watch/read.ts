@@ -9,6 +9,8 @@
 // text.
 import type Database from "better-sqlite3";
 import { generateObjectForFeature } from "@/lib/ai/generate";
+import { resolveFeatureModel } from "@/lib/ai/models";
+import { frontierEffortProviderOptions } from "@/lib/claude-request-options";
 import { getBogeysForEvent } from "@/lib/queries/earnings-bogeys";
 import { compileContracts } from "./contracts";
 import { redactUrl } from "./hardened-fetch";
@@ -82,22 +84,31 @@ export interface ReadSeams {
  */
 export const FIRST_PASS_MAX_OUTPUT_TOKENS = 16_000;
 
+/**
+ * The default generate seam. The app's existing AI transport is the ONLY path
+ * to a model. The wrapper resolves the model itself (with one reactive
+ * failover), so the id that actually answered is read back off the SDK result
+ * and checked against the id the fingerprint was built from (#9). A frontier
+ * feature keeps its depth: Opus 5.5 defaults to medium effort where Opus 4.8
+ * defaulted to high, so high is asked for explicitly (2026-11-12).
+ */
+export async function generateFirstPassViaApp(
+  args: Parameters<ReadSeams["generate"]>[0],
+): ReturnType<ReadSeams["generate"]> {
+  const res = await generateObjectForFeature("printWatchFirstPass", {
+    system: args.system,
+    prompt: args.prompt,
+    schema: args.schema,
+    abortSignal: args.abortSignal,
+    maxOutputTokens: FIRST_PASS_MAX_OUTPUT_TOKENS,
+    providerOptions: frontierEffortProviderOptions(resolveFeatureModel("printWatchFirstPass").modelId),
+  } as never);
+  const r = res as { object: unknown; response?: { modelId?: string } };
+  return { object: r.object, modelId: r.response?.modelId ?? null };
+}
+
 const DEFAULT_SEAMS: ReadSeams = {
-  // The app's existing AI transport is the ONLY path to a model. The wrapper
-  // resolves the model itself (with one reactive failover), so the id that
-  // actually answered is read back off the SDK result and checked against the
-  // id the fingerprint was built from (#9).
-  generate: async (args) => {
-    const res = await generateObjectForFeature("printWatchFirstPass", {
-      system: args.system,
-      prompt: args.prompt,
-      schema: args.schema,
-      abortSignal: args.abortSignal,
-      maxOutputTokens: FIRST_PASS_MAX_OUTPUT_TOKENS,
-    } as never);
-    const r = res as { object: unknown; response?: { modelId?: string } };
-    return { object: r.object, modelId: r.response?.modelId ?? null };
-  },
+  generate: generateFirstPassViaApp,
   now: () => Date.now(),
   setInterval,
   clearInterval,

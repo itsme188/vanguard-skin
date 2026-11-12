@@ -16,6 +16,7 @@ import { isGarbageSymbol } from "@/lib/import/validate";
 import { getRawAnthropicClient } from "@/lib/ai/provider";
 import { failOverRawSearchCall } from "@/lib/ai/raw-search-failover";
 import { resolveFeatureModel } from "@/lib/ai/models";
+import { effortOption } from "@/lib/claude-request-options";
 
 export const SWEEP_BATCH_SIZE = 10;
 
@@ -237,9 +238,16 @@ export async function defaultFetchVerdicts(batch: SweepCandidate[]): Promise<str
   let response: Anthropic.Message;
   try {
     const client = getRawAnthropicClient(featureKey);
+    const effort = effortOption(modelId, "high");
     response = await client.messages.create({
       model: modelId,
-      max_tokens: 4096,
+      // Room for thinking: on the 5.5 generation it is on by default and
+      // counts against max_tokens (was 4096). Under the SDK's ~21k
+      // non-streaming guard.
+      max_tokens: 16_000,
+      // A frontier feature keeps its depth: Opus 5.5 defaults to medium
+      // effort where Opus 4.8 defaulted to high (2026-11-12).
+      ...(effort.effort ? { output_config: { effort: effort.effort } } : {}),
       tools: [{ type: "web_search_20250305", name: "web_search", max_uses: 8 }],
       messages: [{ role: "user", content: prompt }],
     });
@@ -247,6 +255,11 @@ export async function defaultFetchVerdicts(batch: SweepCandidate[]): Promise<str
     // Provider failover (see lib/ai/raw-search-failover.ts): switch only on an
     // account-level failure of an enabled feature, else rethrow the original.
     return stripCodeFences(await failOverRawSearchCall(featureKey, err, { prompt, maxOutputTokens: 4096 }));
+  }
+  if (response.stop_reason === "max_tokens") {
+    // A cut-off verdict array is not an answer: fail the batch (its symbols
+    // land in `unresolved` with this reason) instead of parsing a fragment.
+    throw new Error("sector verification reply hit max_tokens");
   }
   const textBlocks = response.content.filter(
     (b): b is Anthropic.TextBlock => b.type === "text",

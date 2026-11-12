@@ -120,6 +120,20 @@ describe("deep read with images", () => {
     ]);
   });
 
+  it("a frontier feature: asks for high effort explicitly and leaves room for thinking (2026-11-12)", async () => {
+    // Opus 5.5 defaults to medium effort where Opus 4.8 defaulted to high.
+    const ev = seedEvent();
+    const txt = seedArticle("2026-10-20 12:00:00", "XMPL whisper above the Street.", "<p>XMPL words</p>");
+    generateTextMock.mockResolvedValueOnce({ text: SHEET(txt) });
+
+    await runDeepRead(db, ev, { fetchImages: fetchNone });
+
+    const [feature, opts] = generateTextMock.mock.calls[0];
+    expect(feature).toBe("armedBogeyDeepRead");
+    expect(opts.providerOptions).toEqual({ anthropic: { effort: "high" } });
+    expect(opts.maxOutputTokens).toBeGreaterThanOrEqual(16_000);
+  });
+
   it("unreadable images are left out and counted; the read still runs on the text", async () => {
     const ev = seedEvent();
     const img = seedArticle("2026-10-21 12:00:00", "Tuesday: XMPL, ZETA", IMAGE_HTML);

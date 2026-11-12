@@ -68,3 +68,17 @@ export function supportsEffort(modelId: string): boolean {
 export function effortOption(modelId: string, level: EffortLevel): { effort?: EffortLevel } {
   return supportsEffort(modelId) ? { effort: level } : {};
 }
+
+/**
+ * AI SDK `providerOptions` that keep a FRONTIER-tier feature at high effort.
+ * Opus 5.5 defaults to medium where Opus 4.8 defaulted to high, so a feature
+ * that asks for the top tier by name asks for its depth explicitly. `{}` for
+ * a model that would reject the field (a Settings override onto Haiku 4.5,
+ * a non-Claude provider) — spread or pass it as is.
+ */
+export function frontierEffortProviderOptions(
+  modelId: string,
+): { anthropic?: { effort: EffortLevel } } {
+  const opt = effortOption(modelId, "high");
+  return opt.effort ? { anthropic: { effort: opt.effort } } : {};
+}
