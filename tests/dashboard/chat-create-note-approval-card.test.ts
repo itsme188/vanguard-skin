@@ -44,9 +44,9 @@ describe("create_note approval card (Contract C)", () => {
     anchorIndex(src, "noteApprovalView(part as NoteToolPartView, { inLastMessage: opts.inLastMessage })");
   });
 
-  it("shows the draft with its content through PrivateText, and two buttons", () => {
+  it("shows the draft with its content as written (ruling 2026-11-12), and two buttons", () => {
     const card = sliceBetween(src, "function NoteApprovalCard(", "// ─── Message rendering");
-    anchorIndex(card, "<PrivateText>{view.content}</PrivateText>");
+    anchorIndex(card, "{view.content}");
     anchorIndex(card, "Save note");
     anchorIndex(card, "Don't save");
     anchorIndex(card, "onClick={() => onAnswer(view.approvalId, true)}");

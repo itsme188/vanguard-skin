@@ -9,7 +9,6 @@ import { QuickActionChips } from "./QuickActionChips";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { useToast } from "./Toast";
 import { CHIP_TONE_TEXT, GOLD_FILL_CLASSES } from "./chip-tone-text";
-import { PrivateText } from "@/lib/privacy/components";
 import { usePrivacy } from "@/lib/privacy/context";
 import { conversationTitleFromMessages, displayConversationTitle } from "@/lib/chat/conversation-title";
 import { getQuickActions } from "@/lib/chat/quick-actions";
@@ -123,9 +122,7 @@ function NoteApprovalCard({
       <div className="my-2 rounded-lg border border-edge bg-raised px-3 py-3" role="group" aria-label="Drafted note">
         <div className="text-xs text-ink-dim mb-1">Save this note to your journal?</div>
         <div className="text-xs text-ink-dim mb-2">{meta}</div>
-        <div className="whitespace-pre-wrap text-sm text-ink mb-3">
-          <PrivateText>{view.content}</PrivateText>
-        </div>
+        <div className="whitespace-pre-wrap text-sm text-ink mb-3">{view.content}</div>
         <div className="flex gap-2">
           <button
             type="button"
@@ -227,11 +224,7 @@ function renderUserParts(parts: UIMessage["parts"]) {
     .filter((p): p is Extract<typeof p, { type: "text" }> => p.type === "text")
     .map((p) => p.text)
     .join("");
-  return (
-    <div className="whitespace-pre-wrap">
-      <PrivateText>{text}</PrivateText>
-    </div>
-  );
+  return <div className="whitespace-pre-wrap">{text}</div>;
 }
 
 // ─── Helper: convert DB messages to UIMessage format ────────────
