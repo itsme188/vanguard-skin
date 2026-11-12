@@ -63,6 +63,18 @@ import {
 /** One cache breakpoint (Contract D). Three are used: last tool, static system block, automatic tail. */
 const EPHEMERAL = { anthropic: { cacheControl: { type: "ephemeral" as const } } };
 
+/**
+ * Requests whose stream is still running. `request.signal` is fed by an
+ * abort controller that the Request object owns, and the platform forwards
+ * the caller's abort to it only while that controller is reachable: nothing
+ * else references the Request once POST returns, so a garbage collection
+ * mid-stream could drop it and the abort never reached `streamText` (no
+ * onAbort, slot held; 8 of 20 test runs). Holding the Request here until its
+ * slot is released keeps the abort path alive. Entries leave when the turn
+ * settles (finish, error, abort) or the route throws.
+ */
+const STREAMING_REQUESTS = new Set<Request>();
+
 /** The text of a UI message's text parts, joined. */
 function messageText(message: unknown): string {
   const parts = (message as { parts?: unknown })?.parts;
@@ -369,9 +381,11 @@ export async function POST(request: NextRequest) {
       );
     }
     let slotReleased = false;
+    STREAMING_REQUESTS.add(request);
     releaseSlot = () => {
       if (slotReleased) return;
       slotReleased = true;
+      STREAMING_REQUESTS.delete(request);
       releaseStreamSlot(sessionKey, slot.slotId);
     };
 
