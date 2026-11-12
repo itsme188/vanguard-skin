@@ -118,7 +118,7 @@ describe("chat failed-turn conversation adoption", () => {
     // state), not from React state directly. What this protects is unchanged:
     // the body never reads the turn box, whose id belongs to the in-flight
     // request.
-    const body = sliceBetween(src, "const currentRequestBody = useCallback(", "[scope, pathname]");
+    const body = sliceBetween(src, "const currentRequestBody = useCallback(", "[scope, pathname, modelFamily]");
     anchorIndex(body, "conversationId: conversationIdRef.current");
     expect(body).not.toContain("turn.");
   });

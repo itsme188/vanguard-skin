@@ -91,6 +91,14 @@ const USE_CHAT_BLOCK_AT_HEAD = `const { transport, turn, sendAutomaticallyWhen }
     sendAutomaticallyWhen,
   });`;
 
+// Re-pinned 2026-11-13 for the per-conversation model class (owner-approved
+// 2026-11-13). Inside the hashed region exactly three things changed: one new
+// `useState` line (`modelFamily`, Sonnet preselected); `currentRequestBody`
+// now spreads `{ modelFamily }` into the per-call body while
+// `conversationIdRef.current === null`, adds `modelFamily` to its deps, and
+// its comment says so; and `handleNewConversation` resets the class to the
+// default with one `setModelFamily(...)` line. No hook moved, no effect
+// changed, and the `useChat` block below is byte-identical.
 // Re-pinned 2026-11-12 for the owner's chat-privacy ruling: inside the
 // hashed region only two things changed, the `const { isPrivate } =
 // usePrivacy();` line (it fed the conversation-title mask only) was removed
@@ -106,7 +114,7 @@ const USE_CHAT_BLOCK_AT_HEAD = `const { transport, turn, sendAutomaticallyWhen }
 // component's `return (` at that same commit: every hook, effect, handler and
 // state declaration of the component that owns useChat.
 const COMPONENT_LOGIC_SHA256_AT_HEAD =
-  "3362c30a4c6867e2da9b2f64c0c4dc2591c95ca41b3c9889661da1d6416abe7d";
+  "89252ac29fba0a25336febdb7736dd4e4a7cc4981abfe7f667541122513fa926";
 
 const RETURN_ANCHOR = '\n  return (\n    <div className="flex flex-col';
 

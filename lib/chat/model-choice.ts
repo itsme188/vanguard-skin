@@ -59,3 +59,22 @@ export function chatModelLabel(r: { modelId: string; fellBackFrom: ChatModelFami
   const name = userFacingModelLabel(r.modelId);
   return r.fellBackFrom ? `${name} (${chatFamilyName(r.fellBackFrom)} not available)` : name;
 }
+
+/**
+ * The label the OPEN conversation shows in its header. A conversation in the
+ * list shows the label the server resolved for it (null for a conversation
+ * with no class: it shows nothing extra). A brand-new conversation whose
+ * first turn is still on its way (no row in the list yet) shows the class
+ * name it was started on, until the list refresh brings its version.
+ */
+export function openConversationModelLabel(
+  conversations: readonly { id: number; model_label?: string | null }[],
+  currentId: number | null,
+  pendingFamily: ChatModelFamily,
+): string | null {
+  if (currentId !== null) {
+    const row = conversations.find((c) => c.id === currentId);
+    if (row) return row.model_label ?? null;
+  }
+  return chatFamilyName(pendingFamily);
+}

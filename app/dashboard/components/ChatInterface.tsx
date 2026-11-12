@@ -11,6 +11,13 @@ import { useToast } from "./Toast";
 import { CHIP_TONE_TEXT, GOLD_FILL_CLASSES } from "./chip-tone-text";
 import { conversationTitleFromMessages } from "@/lib/chat/conversation-title";
 import { getQuickActions } from "@/lib/chat/quick-actions";
+import {
+  CHAT_MODEL_FAMILIES,
+  DEFAULT_CHAT_MODEL_FAMILY,
+  chatFamilyName,
+  openConversationModelLabel,
+  type ChatModelFamily,
+} from "@/lib/chat/model-choice";
 import { toolLabel } from "@/lib/chat/tool-labels";
 import { turnOutcomeNotice } from "@/lib/chat/turn-outcome";
 import {
@@ -355,6 +362,7 @@ function ConversationHistory({
 // defined inside ChatInterface would remount on each of its renders.
 function ConversationControls({
   scopeLabel,
+  modelLabel,
   conversations,
   currentId,
   onSelect,
@@ -363,6 +371,8 @@ function ConversationControls({
   fallbackTitle,
 }: {
   scopeLabel: string;
+  /** The model the conversation runs on ("Opus 5.5"), or null to show nothing. */
+  modelLabel: string | null;
   conversations: ChatConversation[];
   currentId: number | null;
   onSelect: (conv: ChatConversation) => void;
@@ -387,6 +397,16 @@ function ConversationControls({
         >
           {scopeLabel}
         </span>
+        {/* The model the conversation is locked to (2026-11-13): quiet,
+            one line, and it gives way (truncates) before the title does not. */}
+        {modelLabel && (
+          <span
+            className="text-[11px] text-ink-faint whitespace-nowrap truncate min-w-0 max-w-[45%]"
+            title={`Model: ${modelLabel}`}
+          >
+            {modelLabel}
+          </span>
+        )}
         {conversations.length > 0 && (
           <ConversationHistory
             conversations={conversations}
@@ -416,6 +436,7 @@ interface ChatInterfaceProps {
 
 export function ChatInterface({ pathname }: ChatInterfaceProps) {
   const [scope, setScope] = useState<ChatScope>("all");
+  const [modelFamily, setModelFamily] = useState<ChatModelFamily>(DEFAULT_CHAT_MODEL_FAMILY);
   const [inputText, setInputText] = useState("");
   const [conversationId, setConversationId] = useState<number | null>(null);
   const [conversations, setConversations] = useState<ChatConversation[]>([]);
@@ -527,10 +548,17 @@ export function ChatInterface({ pathname }: ChatInterfaceProps) {
   // Per-call request body — built at the moment of each send so the CURRENT
   // scope, conversation, and page path reach the server (see transport note
   // above). Never reads the turn box. The server resolves the path itself
-  // (Contract A); no client-written page text is sent.
+  // (Contract A); no client-written page text is sent. The model class
+  // travels only while no conversation exists yet: the server stores it on
+  // the row it creates and reads it from there for every later turn.
   const currentRequestBody = useCallback(
-    () => ({ scope, conversationId: conversationIdRef.current, page: { path: pathname } }),
-    [scope, pathname]
+    () => ({
+      scope,
+      conversationId: conversationIdRef.current,
+      page: { path: pathname },
+      ...(conversationIdRef.current === null ? { modelFamily } : {}),
+    }),
+    [scope, pathname, modelFamily]
   );
 
   // The one writer of the open conversation (state for the UI, ref for the
@@ -708,6 +736,7 @@ export function ChatInterface({ pathname }: ChatInterfaceProps) {
     setMessages([]);
     openConversation(null);
     setScope("all");
+    setModelFamily(DEFAULT_CHAT_MODEL_FAMILY);
     setInputText("");
   }
 
@@ -786,6 +815,7 @@ export function ChatInterface({ pathname }: ChatInterfaceProps) {
         <div className="md:hidden relative shrink-0 flex items-center justify-between gap-2 px-4 py-3 mb-3 border-b border-edge">
           <ConversationControls
             scopeLabel={scopeLabel}
+            modelLabel={openConversationModelLabel(conversations, conversationId, modelFamily)}
             conversations={conversations}
             currentId={conversationId}
             onSelect={loadConversation}
@@ -810,6 +840,7 @@ export function ChatInterface({ pathname }: ChatInterfaceProps) {
           <div className="hidden md:flex items-center justify-between gap-2 pb-3 mb-3 border-b border-edge">
             <ConversationControls
               scopeLabel={scopeLabel}
+              modelLabel={openConversationModelLabel(conversations, conversationId, modelFamily)}
               conversations={conversations}
               currentId={conversationId}
               onSelect={loadConversation}
@@ -868,6 +899,45 @@ export function ChatInterface({ pathname }: ChatInterfaceProps) {
                   </button>
                 ))}
               </div>
+
+              {/* Model class for this conversation (2026-11-13): Sonnet is
+                  preselected each time; the choice locks at the first
+                  message, so the row shows only before a conversation
+                  exists. Same pill as the scope bar above. */}
+              {conversationId === null && (
+                <div
+                  className="flex flex-nowrap justify-center items-center gap-2 mb-6"
+                  role="group"
+                  aria-label="Model for this conversation"
+                >
+                  <span className="text-[11px] text-ink-faint">Model</span>
+                  {CHAT_MODEL_FAMILIES.map((family) => (
+                    <button
+                      key={family}
+                      type="button"
+                      onClick={() => setModelFamily(family)}
+                      aria-pressed={modelFamily === family}
+                      className={`px-4 py-1.5 rounded-full text-xs border whitespace-nowrap transition-[color,border-color] focus-ring ${
+                        modelFamily === family
+                          ? `border-gold ${CHIP_TONE_TEXT.gold}`
+                          : "border-edge text-ink-dim hover:text-ink hover:border-edge-strong"
+                      }`}
+                      style={
+                        modelFamily === family
+                          ? {
+                              // color deliberately NOT set inline — it would
+                              // override the checked gold text token.
+                              background: "rgba(201,164,78,0.2)",
+                              borderColor: "#c9a44e",
+                            }
+                          : undefined
+                      }
+                    >
+                      {chatFamilyName(family)}
+                    </button>
+                  ))}
+                </div>
+              )}
 
               {/* Conversation history in empty state */}
               {conversations.length > 0 && (

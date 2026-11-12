@@ -11,8 +11,10 @@ const src = readFileSync("app/dashboard/components/ChatInterface.tsx", "utf8");
 
 describe("chat request body carries the page path (Contract A)", () => {
   it("the per-call body is scope, conversation id and page path", () => {
-    const builder = sliceBetween(src, "const currentRequestBody = useCallback(", "[scope, pathname]");
-    anchorIndex(builder, "({ scope, conversationId: conversationIdRef.current, page: { path: pathname } })");
+    // Re-pinned 2026-11-13: the body also carries the model class, only
+    // while no conversation exists yet (tests/dashboard/chat-model-picker.test.ts).
+    const builder = sliceBetween(src, "const currentRequestBody = useCallback(", "[scope, pathname, modelFamily]");
+    anchorIndex(builder, "scope,\n      conversationId: conversationIdRef.current,\n      page: { path: pathname },");
     expect(builder).not.toContain("pageContext");
     expect(builder).not.toContain("turn.");
   });
