@@ -91,7 +91,9 @@ describe("narrate-levels asks for the rationale only", () => {
     await run();
     expect(generateObjectForFeature).toHaveBeenCalledTimes(1);
     expect(lastCall()[0]).toBe("suggestedLevelNarrative");
-    expect(lastCall()[1].maxOutputTokens).toBeGreaterThan(0);
+    // Room for default-on thinking on Haiku 5.5 (2026-11-12): 256 could end
+    // the reply before the one-sentence narrative.
+    expect(lastCall()[1].maxOutputTokens).toBeGreaterThanOrEqual(2048);
   });
 
   it("a reply that states a different price cannot change the displayed fact", async () => {

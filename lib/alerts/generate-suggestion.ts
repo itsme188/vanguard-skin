@@ -316,7 +316,10 @@ export async function generateSuggestionForAlertDetailed(
   try {
     const { text } = await generateText({
       model: getModelForFeature("alertSuggestion"),
-      maxOutputTokens: 256,
+      // Room for thinking if this feature is routed to a Claude model that
+      // thinks by default (Haiku 5.5); the reply length is set by the prompt
+      // (was 256, 2026-11-12).
+      maxOutputTokens: 2048,
       prompt: buildSuggestionPrompt(ctx),
     });
 

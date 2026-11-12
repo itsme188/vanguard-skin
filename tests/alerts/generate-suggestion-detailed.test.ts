@@ -79,4 +79,13 @@ describe("generateSuggestionForAlertDetailed", () => {
     generateTextMock.mockResolvedValue({ text: " Hold. " });
     expect(await generateSuggestionForAlertDetailed(db, id)).toEqual({ ok: true, suggestion: "Hold." });
   });
+
+  it("leaves room for default-on thinking if the feature is routed to a 5.5 Haiku (2026-11-12)", async () => {
+    // Haiku 5.5 thinks by default and the thinking counts against this cap;
+    // a 256-token cap could end the reply before the sentence.
+    const id = seedMaAlert(null);
+    generateTextMock.mockResolvedValue({ text: "Hold." });
+    await generateSuggestionForAlertDetailed(db, id);
+    expect(generateTextMock.mock.calls[0][0].maxOutputTokens).toBeGreaterThanOrEqual(2048);
+  });
 });

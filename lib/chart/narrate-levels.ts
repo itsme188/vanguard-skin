@@ -133,7 +133,10 @@ export async function getOrGenerateNarrative(
 
   try {
     const { object: _rawObject } = await generateObjectForFeature("suggestedLevelNarrative", {
-      maxOutputTokens: 256,
+      // Room for thinking: Haiku 5.5 thinks by default (medium effort) and
+      // the thinking counts against this cap. The one-sentence length is set
+      // by the prompt and schema, not by the cap (was 256, 2026-11-12).
+      maxOutputTokens: 2048,
       schema: NARRATIVE_SCHEMA,
       prompt: buildPrompt(input),
     });
