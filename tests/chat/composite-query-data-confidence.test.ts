@@ -23,6 +23,7 @@ import {
   DATA_CONFIDENCE_SCOPE_ERROR,
 } from "@/lib/chat/composite/data-confidence";
 import { COMPOSITE_MAX_JSON_CHARS } from "@/lib/chat/composite/shared";
+import { addDays, todayET } from "@/lib/calendar/date-utils";
 
 const NOW = new Date("2026-03-02T15:00:00Z");
 const TODAY = "2026-03-02";
@@ -103,6 +104,61 @@ describe("query_data_confidence", () => {
     const after = (db.prepare("SELECT total_changes() AS n").get() as { n: number }).n;
     expect(after).toBe(before);
     expect(JSON.stringify(out).length).toBeLessThan(COMPOSITE_MAX_JSON_CHARS);
+    expect(JSON.stringify(out)).not.toMatch(/\$\d/);
+  });
+});
+
+describe("query_data_confidence names the items (Q12)", () => {
+  const today = todayET();
+  type Items = {
+    stale_prices: { window_days: number; count: number; shown: { symbol: string; last_price_date: string | null; days_since: number | null }[]; list_info?: { truncated: boolean } };
+    holdings_by_account: { account: string; latest_date: string | null; positions: number }[];
+    held_without_transactions: { count: number; shown: string[] };
+    missing_contract_data: { count: number; shown: string[] };
+    integrity_findings: { count: number };
+  };
+
+  function heldOn(symbol: string, accountId: number, priceDate: string | null): void {
+    const id = db
+      .prepare("INSERT INTO securities (symbol, name, security_type, currency) VALUES (?, ?, 'Stock', 'USD')")
+      .run(symbol, `${symbol} Co`).lastInsertRowid as number;
+    db.prepare(
+      "INSERT INTO holdings (account_id, security_id, quantity, cost_basis, as_of_date, source_key) VALUES (?, ?, 10, 100, ?, ?)",
+    ).run(accountId, id, today, `hq-${symbol}`);
+    if (priceDate) db.prepare("INSERT INTO prices (security_id, date, close_price) VALUES (?, ?, 10)").run(id, priceDate);
+  }
+
+  beforeEach(() => {
+    db = new Database(":memory:");
+    db.pragma("foreign_keys = ON");
+    runMigrations(db);
+    heldOn("FRSH", 1, today);
+    heldOn("OLDP", 3, addDays(today, -30));
+    heldOn("NOPR", 3, null);
+  });
+
+  it("lists the stale and unpriced held securities, never-priced then oldest first, matching the score's count", () => {
+    const out = queryDataConfidenceTool.run(db, {}, { accountIds: undefined, today }) as { items: Items };
+    const engine = getDataConfidence(db);
+    expect(out.items.stale_prices.shown).toEqual([
+      { symbol: "NOPR", last_price_date: null, days_since: null },
+      { symbol: "OLDP", last_price_date: addDays(today, -30), days_since: 30 },
+    ]);
+    expect(out.items.stale_prices.count).toBe(engine.priceFreshness.totalHeld - engine.priceFreshness.pricedRecent);
+    expect(out.items.stale_prices.window_days).toBe(3);
+    expect(out.items.holdings_by_account.map((a) => a.account).sort()).toEqual(engine.holdingsRecency.perAccount.map((a) => a.name).sort());
+    expect(out.items.held_without_transactions.shown).toEqual(["FRSH", "NOPR", "OLDP"]);
+    expect(out.items.missing_contract_data.count).toBe(engine.enrichmentCompleteness.missing.length);
+    expect(out.items.integrity_findings.count).toBe(engine.integrity.critical.length + engine.integrity.warnings.length);
+  });
+
+  it("caps each list with list_info and stays dollar-free", () => {
+    for (let i = 0; i < 30; i++) heldOn(`ST${i}`, 1, addDays(today, -10 - i));
+    const out = queryDataConfidenceTool.run(db, {}, { accountIds: undefined, today }) as { items: Items };
+    expect(out.items.stale_prices.shown).toHaveLength(10);
+    expect(out.items.stale_prices.count).toBe(32);
+    expect(out.items.stale_prices.list_info?.truncated).toBe(true);
+    expect(out.items.stale_prices.shown[1].symbol).toBe("ST29");
     expect(JSON.stringify(out)).not.toMatch(/\$\d/);
   });
 });

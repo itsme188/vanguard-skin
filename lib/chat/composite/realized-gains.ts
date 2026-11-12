@@ -29,7 +29,7 @@ import {
 
 export const QUERY_REALIZED_GAINS_NAME = "query_realized_gains";
 
-const ROWS_DEFAULT = 20;
+const ROWS_DEFAULT = 15;
 const ROWS_MAX = 25;
 const WASH_SALES_SHOWN = 10;
 
@@ -45,7 +45,7 @@ export const NO_RETIREMENT_MARK_NOTE =
 const definition: CompositeTool["definition"] = {
   name: QUERY_REALIZED_GAINS_NAME,
   description:
-    `Realized gains for one tax year, as the Tax Lots page's Tax Report card computes them: short-term and long-term totals (proceeds, cost basis, gain), row counts, possible wash sales, which retirement accounts were left out (sales in a tax-advantaged account are not taxable), how many non-USD sales were left out of the USD totals, and whether the figures are filing-ready. Unless filing_ready is true the figures are NOT FOR FILING. Reads one account or every account: a scope word naming several accounts returns an error listing them. With one account named, wash sales are given as a count only (the replacement purchase may sit in another account); omit account_name in the All Accounts scope for the detail. Use for 'realized gains this year', 'short vs long term', 'wash sales'. Do NOT use for unrealized gains, open lots or harvest candidates (use query_tax_lots), or for lifetime totals.`,
+    `Realized gains for one tax year, as the Tax Lots page's Tax Report card computes them: short-term and long-term totals (proceeds, cost basis, gain), row counts, possible wash sales, which retirement accounts were left out (sales in a tax-advantaged account are not taxable), how many non-USD sales were left out of the USD totals, and whether the figures are filing-ready. Unless filing_ready is true the figures are NOT FOR FILING. rows lists the sales themselves (symbol, name, account, quantity, dates, proceeds, cost basis, gain, term), largest absolute gain first, so an answer can name what made up the total. Reads one account or every account: a scope word naming several accounts returns an error listing them. With one account named, wash sales are given as a count only (the replacement purchase may sit in another account); omit account_name in the All Accounts scope for the detail. Use for 'realized gains this year', 'short vs long term', 'wash sales'. Do NOT use for unrealized gains, open lots or harvest candidates (use query_tax_lots), or for lifetime totals.`,
   input_schema: {
     type: "object" as const,
     properties: {
@@ -56,35 +56,56 @@ const definition: CompositeTool["definition"] = {
       },
       include_rows: {
         type: "boolean",
-        description: `Optional. true adds the Form 8949-style sale rows (short-term first, then long-term). Default false.`,
+        description: `Optional. The sale rows come back by default (largest absolute gain first); false leaves them out.`,
       },
       limit: {
         type: "integer",
-        description: `Rows to return when include_rows is true: an integer, default ${ROWS_DEFAULT}, max ${ROWS_MAX}. list_info says whether more rows exist.`,
+        description: `Sale rows to return: an integer, default ${ROWS_DEFAULT}, max ${ROWS_MAX}. list_info says whether more rows exist; the totals always cover every sale.`,
       },
     },
   },
 };
 
+/** MM/DD/YYYY (the engine's Form 8949 form) as YYYY-MM-DD. */
+function isoFrom8949(d: string): string {
+  const m = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(d);
+  return m ? `${m[3]}-${m[1]}-${m[2]}` : d;
+}
+
 /**
- * One sale row, compact: `description` already names quantity, unit and
- * symbol; the account is named only on an all-accounts answer; a row's
- * currency is stated only when it is not USD; a wash-sale adjustment only
- * on an all-accounts answer and only where the row carries one.
+ * One sale row from the engine's own Form 8949 rows (`generateTaxReport`):
+ * `quantity` is the engine's description ("10 sh AAA", "2 contracts ..."),
+ * `name` the security's stored name. A wash-sale flag and adjustment only on
+ * an all-accounts answer (P8). A non-USD row names its currency and says it
+ * is not in the USD totals, as the totals treat it.
  */
-function shapeRow(r: Form8949Row, allAccounts: boolean) {
+function shapeRow(r: Form8949Row, allAccounts: boolean, names: Map<string, string | null>) {
   return {
-    description: r.description,
-    ...(allAccounts ? { account: r.accountName } : {}),
-    acquired: r.dateAcquired,
-    sold: r.dateSold,
+    symbol: r.symbol,
+    name: names.get(r.symbol) ?? null,
+    account: r.accountName,
+    quantity: r.description,
+    acquired: isoFrom8949(r.dateAcquired),
+    sold: isoFrom8949(r.dateSold),
     term: r.isLongTerm ? "long" : "short",
     proceeds: r.proceeds,
     cost_basis: r.costBasis,
     gain_loss: r.gainOrLoss,
-    ...(r.currency !== "USD" ? { currency: r.currency } : {}),
-    ...(allAccounts && r.adjustmentCode ? { adjustment_code: r.adjustmentCode, adjustment_amount: r.adjustmentAmount } : {}),
+    ...(r.currency !== "USD" ? { currency: r.currency, in_usd_totals: false } : {}),
+    ...(allAccounts && r.isWashSale
+      ? { wash_sale: true, adjustment_code: r.adjustmentCode, adjustment_amount: r.adjustmentAmount }
+      : {}),
   };
+}
+
+/** Stored names of these symbols (securities.symbol is unique). */
+function securityNames(db: Database.Database, symbols: string[]): Map<string, string | null> {
+  const unique = [...new Set(symbols)];
+  if (unique.length === 0) return new Map();
+  const rows = db
+    .prepare(`SELECT symbol, name FROM securities WHERE symbol IN (${unique.map(() => "?").join(",")})`)
+    .all(...unique) as { symbol: string; name: string | null }[];
+  return new Map(rows.map((r) => [r.symbol, r.name]));
 }
 
 function run(db: Database.Database, input: Record<string, unknown>, ctx: CompositeContext): unknown {
@@ -141,10 +162,13 @@ function run(db: Database.Database, input: Record<string, unknown>, ctx: Composi
       };
 
   let rows: { rows: ReturnType<typeof shapeRow>[]; info: ReturnType<typeof takeList>["info"] } | undefined;
-  if (input.include_rows === true) {
+  if (input.include_rows !== false) {
     const limit = readCount(input.limit, ROWS_DEFAULT, ROWS_MAX);
-    const all = [...report.shortTermRows, ...report.longTermRows].map((r) => shapeRow(r, !scoped));
-    rows = takeList(all, limit, ROWS_MAX);
+    const engineRows = [...report.shortTermRows, ...report.longTermRows];
+    const names = securityNames(db, engineRows.map((r) => r.symbol));
+    // Largest absolute gain first; ties keep the engine's order (stable sort).
+    const ordered = [...engineRows].sort((a, b) => Math.abs(b.gainOrLoss) - Math.abs(a.gainOrLoss));
+    rows = takeList(ordered.map((r) => shapeRow(r, !scoped, names)), limit, ROWS_MAX);
   }
 
   return {
@@ -169,7 +193,7 @@ function run(db: Database.Database, input: Record<string, unknown>, ctx: Composi
     ...(rows ? { rows: rows.rows, list_info: rows.info } : {}),
     units: {
       totals: "USD; USD-denominated sales only (non-USD sales are counted in excluded.non_usd_sales, never converted)",
-      rows: "USD unless the row names another currency (then that currency, never converted); dates MM/DD/YYYY as on Form 8949",
+      rows: "largest absolute gain first; USD unless the row names another currency (then that currency, never converted, and not in the totals); dates YYYY-MM-DD; quantity as the tax report writes it",
       gain_loss: scoped
         ? "proceeds - cost basis, with any wash-sale adjustment already inside it"
         : "proceeds - cost basis + adjustments",

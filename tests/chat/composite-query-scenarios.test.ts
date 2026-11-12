@@ -19,6 +19,7 @@ vi.mock("@/lib/compute/scenarios", async (importOriginal) => {
 import { computeAllScenarios } from "@/lib/compute/scenarios";
 import { queryScenariosTool } from "@/lib/chat/composite/scenarios";
 import { COMPOSITE_MAX_JSON_CHARS } from "@/lib/chat/composite/shared";
+import { compactToolOutput } from "@/lib/chat/tools";
 import { todayET } from "@/lib/calendar/date-utils";
 
 let db: Database.Database;
@@ -54,12 +55,17 @@ type Shaped = {
     options: { count: number; share_of_option_value: number };
     bonds: { count: number; share_of_bond_value: number };
     rate_hedges: { share_of_book: number };
-    positions: { symbol: string; kind: string; reason: string }[];
-    positions_list_info?: { truncated: boolean };
   };
+  left_out: string;
   biggest_winners: { symbol: string }[];
 };
-type Out = { error?: string; scenarios: Shaped[]; scope: { account_names: string[] } };
+type Out = {
+  error?: string;
+  scenarios: Shaped[];
+  scope: { account_names: string[] };
+  unmodelled_positions: { symbol: string; kind: string; reason: string; left_out_of: string }[];
+  unmodelled_positions_list_info?: { truncated: boolean };
+};
 
 beforeEach(() => {
   db = new Database(":memory:");
@@ -133,7 +139,15 @@ describe("query_scenarios", () => {
     expect(s.net_market_value_usd).toBeCloseTo(10000, 6);
     expect(s.unmodelled.bonds.count).toBe(1);
     expect(s.unmodelled.bonds.share_of_bond_value).toBe(1);
-    expect(s.unmodelled.positions).toContainEqual({ symbol: "FRNX", kind: "bond", reason: "not-fixed-coupon" });
+    expect(out.unmodelled_positions).toContainEqual({
+      symbol: "FRNX",
+      kind: "bond",
+      reason: "not-fixed-coupon",
+      left_out_of: "every preset shown",
+    });
+    expect(s.left_out).toBe(
+      "Rate shock +25bp: this total leaves out 1 bond (100.0% of bond value); their change is not in it. Each is named in unmodelled_positions.",
+    );
     const text = JSON.stringify(out);
     expect(text).not.toContain("value_share");
     expect(text).not.toContain("current_value_usd");
@@ -151,20 +165,34 @@ describe("query_scenarios", () => {
     expect(engine.biggestLosers.map((l) => l.symbol)).toEqual(losers.slice(0, 5).map((l) => l.symbol));
   });
 
-  it("caps the unmodelled list with list_info (R6-5)", () => {
+  it("names unmodelled positions once, beside the totals, capped with list_info (R6-5, Q8)", () => {
     db.prepare("INSERT INTO accounts (id, name) VALUES (4, 'Book Four')").run();
     for (let i = 0; i < 30; i++) {
       addSecurity(`FRN${i}`, "Bond", 4, 1000, 100);
       db.prepare("UPDATE securities SET name = ? WHERE symbol = ?").run(`ISSUER ${i} FLTG RATE NT`, `FRN${i}`);
     }
-    const one = queryScenariosTool.run(db, { scenario_id: "rate_shock_up_25bp" }, { accountIds: [4], today: TODAY }) as Out;
-    expect(one.scenarios[0].unmodelled.positions).toHaveLength(20);
-    expect(one.scenarios[0].unmodelled.positions_list_info?.truncated).toBe(true);
     const all = queryScenariosTool.run(db, {}, { accountIds: [4], today: TODAY }) as Out;
+    expect(all.unmodelled_positions).toHaveLength(20);
+    expect(all.unmodelled_positions_list_info?.truncated).toBe(true);
+    // Only the rate preset reprices bonds, so only it leaves them out.
+    expect(all.unmodelled_positions[0].left_out_of).toBe("rate_shock_up_25bp");
     const rate = all.scenarios.find((s) => s.id === "rate_shock_up_25bp")!;
-    expect(rate.unmodelled.positions).toHaveLength(5);
-    expect(JSON.stringify(all).length).toBeLessThan(COMPOSITE_MAX_JSON_CHARS);
-    expect(JSON.stringify(one).length).toBeLessThan(COMPOSITE_MAX_JSON_CHARS);
+    expect(rate.left_out).toMatch(/^Rate shock \+25bp: this total leaves out 30 bonds \(100\.0% of bond value\)/);
+    const oil = all.scenarios.find((s) => s.id === "oil_shock_10dollar")!;
+    expect(oil.left_out).toBe("Oil shock +$10/bbl: this total leaves out no position.");
+
+    // In the model-facing compact form each preset keeps its own left_out
+    // sentence in its row, and the list sits beside the scenarios.
+    const compact = compactToolOutput("query_scenarios", all) as {
+      unmodelled_positions: { _cols: string[]; _rows: unknown[][] };
+      scenarios: { _cols: string[]; _rows: unknown[][] };
+    };
+    expect(compact.unmodelled_positions._cols).toContain("symbol");
+    expect(compact.unmodelled_positions._rows).toHaveLength(20);
+    const col = compact.scenarios._cols.indexOf("left_out");
+    expect(col).toBeGreaterThan(-1);
+    expect(compact.scenarios._rows.map((r) => r[col])).toContain(rate.left_out);
+    expect(JSON.stringify(compact).length).toBeLessThan(COMPOSITE_MAX_JSON_CHARS);
   });
 
   it("an empty scope answers without calling the engine", () => {

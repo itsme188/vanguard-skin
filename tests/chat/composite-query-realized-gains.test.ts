@@ -21,6 +21,7 @@ vi.mock("@/lib/compute/tax-report", async (importOriginal) => {
 import { generateTaxReport } from "@/lib/compute/tax-report";
 import { queryRealizedGainsTool } from "@/lib/chat/composite/realized-gains";
 import { COMPOSITE_MAX_JSON_CHARS } from "@/lib/chat/composite/shared";
+import { compactToolOutput } from "@/lib/chat/tools";
 
 const TODAY = "2025-11-20";
 const YEAR = 2025;
@@ -189,6 +190,42 @@ describe("query_realized_gains", () => {
     expect(generateTaxReport).not.toHaveBeenCalled();
   });
 
+  it("returns the engine's sale rows by default, largest absolute gain first, named (Q6)", () => {
+    const out = queryRealizedGainsTool.run(db, {}, { accountIds: undefined, today: TODAY }) as Out;
+    const rows = out.rows as { symbol: string; name: string; account: string; quantity: string; sold: string; term: string; gain_loss: number; wash_sale?: boolean }[];
+    expect(rows.map((r) => [r.symbol, r.gain_loss])).toEqual([
+      ["BBB", 300],
+      ["AAA", 200],
+      ["CCC", 0],
+    ]);
+    expect(rows[0]).toMatchObject({ name: "BBB Co", account: "Vanguard Taxable", quantity: "5 sh BBB", sold: "2025-04-01", term: "long" });
+    expect(rows[2]).toMatchObject({ symbol: "CCC", wash_sale: true });
+    expect(out.list_info).toEqual({ returned: 3, limit: 15, truncated: false });
+    const none = queryRealizedGainsTool.run(db, { include_rows: false }, { accountIds: undefined, today: TODAY }) as Out;
+    expect(none.rows).toBeUndefined();
+  });
+
+  it("120 sales, limit 25: the 25 largest by |gain|, and the full row set sums to the totals to the cent", () => {
+    for (let i = 0; i < 120; i++) {
+      const gain = i % 3 === 0 ? -(i + 1) * 1.37 : (i + 1) * 2.11;
+      const cost = 100 + i;
+      sale(lot(1, `R${i}`, "2025-01-02", 1, cost), 1, `R${i}`, "2025-08-01", 1, cost + gain, cost, false);
+    }
+    const out = queryRealizedGainsTool.run(db, { limit: 25 }, { accountIds: undefined, today: TODAY }) as Out;
+    const engine = generateTaxReport(db, YEAR, { accountName: null });
+    const all = [...engine.shortTermRows, ...engine.longTermRows];
+    const expected = [...all].sort((a, b) => Math.abs(b.gainOrLoss) - Math.abs(a.gainOrLoss)).slice(0, 25);
+    const rows = out.rows as { symbol: string; gain_loss: number }[];
+    expect(rows.map((r) => r.symbol)).toEqual(expected.map((r) => r.symbol));
+    expect(out.list_info).toMatchObject({ returned: 25, limit: 25, truncated: true });
+    const st = all.filter((r) => !r.isLongTerm).reduce((t, r) => t + r.gainOrLoss, 0);
+    const lt = all.filter((r) => r.isLongTerm).reduce((t, r) => t + r.gainOrLoss, 0);
+    expect(Math.abs(st - out.short_term.gain_loss)).toBeLessThan(0.005);
+    expect(Math.abs(lt - out.long_term.gain_loss)).toBeLessThan(0.005);
+    expect(out.short_term.rows + out.long_term.rows).toBe(all.length);
+    expect(all.length).toBe(123);
+  });
+
   it("rejects a bad year", () => {
     const out = queryRealizedGainsTool.run(db, { year: "last" }, { accountIds: undefined, today: TODAY }) as Out;
     expect(out.error).toBe("year must be an integer from 2000 to 2100.");
@@ -204,6 +241,10 @@ describe("query_realized_gains", () => {
     expect(after).toBe(before);
     expect(out.rows).toHaveLength(25);
     expect(out.list_info?.truncated).toBe(true);
-    expect(JSON.stringify(out).length).toBeLessThan(COMPOSITE_MAX_JSON_CHARS);
+    // At the most rows allowed, the model-facing compact form stays under the target.
+    expect(JSON.stringify(compactToolOutput("query_realized_gains", out)).length).toBeLessThan(COMPOSITE_MAX_JSON_CHARS);
+    // At the default (15 rows), the full form does too.
+    const dflt = queryRealizedGainsTool.run(db, {}, { accountIds: undefined, today: TODAY });
+    expect(JSON.stringify(dflt).length).toBeLessThan(COMPOSITE_MAX_JSON_CHARS);
   });
 });

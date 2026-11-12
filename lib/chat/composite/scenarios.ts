@@ -23,16 +23,15 @@ export const QUERY_SCENARIOS_NAME = "query_scenarios";
 /** Movers per scenario in the all-presets answer, and with one scenario asked for. */
 const MOVERS_ALL = 3;
 const MOVERS_ONE = 10;
-/** Unmodelled positions listed per scenario (all presets / one preset). */
-const UNMODELLED_LIST_ALL = 5;
-const UNMODELLED_LIST_ONE = 20;
+/** Unmodelled positions listed once, beside the scenarios they qualify. */
+const UNMODELLED_LISTED = 20;
 
 const presetList = PRESET_SCENARIOS.map((s) => `'${s.id}' (${s.name})`).join(", ");
 
 const definition: CompositeTool["definition"] = {
   name: QUERY_SCENARIOS_NAME,
   description:
-    `Preset stress scenarios run against current holdings, as the Analysis scenarios card shows them: for each preset, the scope's net market value (shorts negative), the estimated change in dollars and as a fraction, the biggest losers and winners, and what the engine could not model (options it could not reprice, bonds with no derivable duration, rate hedges, leveraged and inverse funds), with counts, each share stated against its own base (option value, bond value, or the whole book), and each such position listed with the engine's reason. The presets are factor recipes: ${presetList}. There is no plain 'market down N%' preset and no custom scenario here; say so rather than estimating one from beta. Use for 'how exposed am I to X', 'what happens if rates rise'. Do NOT use for historical drawdown or volatility (use query_risk) or for option greeks (use query_options_greeks). Fractions are decimals (-0.05 = -5%).`,
+    `Preset stress scenarios run against current holdings, as the Analysis scenarios card shows them: for each preset, the scope's net market value (shorts negative), the estimated change in dollars and as a fraction, the biggest losers and winners, and what the engine could not model (options it could not reprice, bonds with no derivable duration, rate hedges, leveraged and inverse funds), with counts, each share stated against its own base (option value, bond value, or the whole book), and each such position named once in unmodelled_positions with the engine's reason and the presets it is left out of; each preset's left_out sentence says what its total omits. The presets are factor recipes: ${presetList}. There is no plain 'market down N%' preset and no custom scenario here; say so rather than estimating one from beta. Use for 'how exposed am I to X', 'what happens if rates rise'. Do NOT use for historical drawdown or volatility (use query_risk) or for option greeks (use query_options_greeks). Fractions are decimals (-0.05 = -5%).`,
   input_schema: {
     type: "object" as const,
     properties: {
@@ -80,17 +79,63 @@ function unmodelledPositions(r: ScenarioResult): { symbol: string; kind: string;
   return out;
 }
 
+function pct(share: number): string {
+  return `${(share * 100).toFixed(1)}%`;
+}
+
+/**
+ * One sentence beside a preset's total saying what that total leaves out,
+ * from the engine's own counts and shares (each share against its own base).
+ * It names the preset, so it stays with that preset's row in any compact form.
+ */
+function leftOutNote(r: ScenarioResult): string {
+  const parts: string[] = [];
+  const o = r.optionsUnmodelled;
+  const b = r.bondsUnmodelled;
+  const h = r.rateHedgesUnmodelled;
+  const l = r.leveragedFundsUnmodelled;
+  if (o.count > 0) parts.push(`${o.count} option${o.count === 1 ? "" : "s"} (${pct(o.valueShare)} of option value)`);
+  if (b.count > 0) parts.push(`${b.count} bond${b.count === 1 ? "" : "s"} (${pct(b.valueShare)} of bond value)`);
+  if (b.fundCount > 0) parts.push(`${b.fundCount} bond fund${b.fundCount === 1 ? "" : "s"} refused the default duration`);
+  if (h.count > 0) parts.push(`${h.count} rate hedge${h.count === 1 ? "" : "s"} (${pct(h.valueShare)} of the book)`);
+  if (l.count > 0) parts.push(`${l.count} leveraged or inverse fund${l.count === 1 ? "" : "s"} (${pct(l.valueShare)} of the book)`);
+  if (parts.length === 0) return `${r.scenario.name}: this total leaves out no position.`;
+  return `${r.scenario.name}: this total leaves out ${parts.join(", ")}; their change is not in it. Each is named in unmodelled_positions.`;
+}
+
+/**
+ * Every unmodelled position across the presets shown, once, with the presets
+ * whose total leaves it out ("all" when every preset shown does).
+ */
+function unmodelledAcross(results: ScenarioResult[]) {
+  const byKey = new Map<string, { symbol: string; kind: string; reason: string; scenarios: string[] }>();
+  for (const r of results) {
+    for (const u of unmodelledPositions(r)) {
+      const key = `${u.symbol}|${u.kind}|${u.reason}`;
+      const entry = byKey.get(key) ?? { ...u, scenarios: [] };
+      entry.scenarios.push(r.scenario.id);
+      byKey.set(key, entry);
+    }
+  }
+  const rows = [...byKey.values()].map((e) => ({
+    symbol: e.symbol,
+    kind: e.kind,
+    reason: e.reason,
+    left_out_of: e.scenarios.length === results.length ? "every preset shown" : e.scenarios.join(", "),
+  }));
+  return takeList(rows, UNMODELLED_LISTED, UNMODELLED_LISTED);
+}
+
 function shapeScenario(r: ScenarioResult, one: boolean) {
   const movers = topMovers(r, one ? MOVERS_ONE : MOVERS_ALL);
-  const listMax = one ? UNMODELLED_LIST_ONE : UNMODELLED_LIST_ALL;
-  const listed = takeList(unmodelledPositions(r), listMax, listMax);
   return {
     id: r.scenario.id,
     name: r.scenario.name,
     ...(one ? { description: r.scenario.description } : {}),
-    net_market_value_usd: r.currentPortfolioValue,
     estimated_change_usd: r.estimatedChange,
     estimated_change_fraction: r.estimatedChangePercent,
+    left_out: leftOutNote(r),
+    net_market_value_usd: r.currentPortfolioValue,
     biggest_losers: movers.losers,
     biggest_winners: movers.winners,
     unmodelled: {
@@ -106,8 +151,6 @@ function shapeScenario(r: ScenarioResult, one: boolean) {
       },
       rate_hedges: { count: r.rateHedgesUnmodelled.count, share_of_book: r.rateHedgesUnmodelled.valueShare },
       leveraged_or_inverse: { count: r.leveragedFundsUnmodelled.count, share_of_book: r.leveragedFundsUnmodelled.valueShare },
-      positions: listed.rows,
-      ...(listed.info.truncated ? { positions_list_info: listed.info } : {}),
     },
   };
 }
@@ -128,11 +171,14 @@ function run(db: Database.Database, input: Record<string, unknown>, ctx: Composi
 
   const results = computeAllScenarios(db, { accountIds });
   const chosen = requested ? results.filter((r) => r.scenario.id === requested) : results;
+  const unmodelled = unmodelledAcross(chosen);
 
   return {
     as_of: ctx.today,
     scope: scopeBlock(db, accountIds),
     basis: "Current holdings (shorts included) at each security's latest stored price. Options past their expiration are left out; a non-option position with no price is not in the book the scenario runs on.",
+    unmodelled_positions: unmodelled.rows,
+    ...(unmodelled.info.truncated ? { unmodelled_positions_list_info: unmodelled.info } : {}),
     scenarios: chosen.map((r) => shapeScenario(r, requested !== undefined)),
     units: {
       net_market_value_usd: "USD, signed net market value the scenario runs on (a short counts negative)",
@@ -142,7 +188,7 @@ function run(db: Database.Database, input: Record<string, unknown>, ctx: Composi
       share_of_option_value: "unmodelled options' |value| over all options' |value|, 0-1",
       share_of_bond_value: "unmodelled individual bonds' |value| over all individual bonds' |value|, 0-1",
       share_of_book: "those funds' |value| over the book's gross |value|, 0-1",
-      unmodelled: "an unmodelled position's change is not in the estimate; positions lists each with the engine's reason",
+      unmodelled: "an unmodelled position's change is not in its preset's estimate; left_out says so per preset and unmodelled_positions names each with the engine's reason",
     },
     currency: "USD",
   };
