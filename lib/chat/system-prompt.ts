@@ -219,12 +219,26 @@ function formatIbkrDashboard(ctx: IbkrTradingContext): string {
 
   dashboard += `- **Positioning**: ${ctx.longShortSummary}\n`;
 
+  // `amount` is US dollars; a non-USD trade also shows its stored amount in
+  // its own currency (run 4: a JPY buy was read as $230,000).
+  const native = (currency: string | undefined, amount: number | undefined) =>
+    currency && amount !== undefined ? `${currency} ${amount.toLocaleString()}` : null;
   if (ctx.recentTrades.length > 0) {
     dashboard += `- **Recent Trades**: `;
     const trades = ctx.recentTrades
-      .map((t) => `${t.type} ${t.symbol} $${t.amount.toLocaleString()} (${t.date})`)
+      .map((t) => {
+        const own = t.currency && t.currency !== "USD" ? native(t.currency, t.amountNative) : null;
+        return `${t.type} ${t.symbol} $${t.amount.toLocaleString()}${own ? ` (${own} at today's rate)` : ""} (${t.date})`;
+      })
       .join("; ");
     dashboard += `${trades}\n`;
+  }
+  const noRate = ctx.recentTradesWithoutUsd ?? [];
+  if (noRate.length > 0) {
+    const trades = noRate
+      .map((t) => `${t.type} ${t.symbol} ${native(t.currency, t.amountNative) ?? "amount not available"} (${t.date})`)
+      .join("; ");
+    dashboard += `- **Recent Trades with no USD rate** (native amounts, not converted): ${trades}\n`;
   }
 
   return dashboard.trimEnd();
@@ -420,9 +434,9 @@ Every figure has a date, and the dates differ by source. Give the date whenever 
 
 - **Currency.** Prices (holdings' latest price, a lot's acquisition and current price, price-history closes, level and alert prices) are in the security's own currency, named by the row's \`currency\`, and are never converted; never put a dollar sign on a non-USD price. Market values, cost basis and gains are converted to US dollars. A closed non-USD lot is reported in its own currency, with \`*_usd_at_current_fx\` figures at today's rate (not the sale-date rate) when a rate is on file; \`fx_note\` says which.
 - **Weights** have different bases: query_holdings' \`account_value_weight_pct\` is a signed share of the scope's total account value including cash (base in \`account_value_base\`; negative for a short, able to pass one hundred percent with a margin debit, null when the account value is unknown); its \`position_weight_pct\` a share of gross exposure (longs and shorts together, cash not in it); the Portfolio Context's holdings weight a share of the scope's priced long market value; query_allocation's percentages a share of long holdings, sweep funds included, shorts and uninvested cash not. For what share of his account or portfolio a position is, quote \`account_value_weight_pct\`; name the base and its date whenever you quote any weight; when \`base_older_than_prices\` is true, say the base is dated before the prices and never put a sum away from one hundred percent down to margin.
-- **Shorts.** Quantity and market value are negative; a short gains when the price falls, and the tools already sign its gains that way. Closing a short is buying to cover.
+- **Shorts.** Quantity, market value and query_holdings' cost_basis (the sale proceeds) are negative; a short gains when the price falls, and the tools already sign its gains that way. Closing a short is buying to cover.
 - **Options.** Market value includes the contract multiplier. Premium is not exposure: for how much of a name he effectively owns, use the delta-adjusted exposure from query_options_book or the deltas from query_options_greeks. Expired contracts are left out of holdings and exposure. A short option is the side that can be assigned.
-- **Tax treatment belongs to the account, not to its name or role.** Harvesting, holding periods, realized gains and the tax on income matter in every account whose tax treatment is taxable, and only there (tax-lot rows carry \`account_tax_treatment\`). Several accounts can be taxable at once; a figure labelled for taxable accounts covers all of them. A Roth or other retirement-account lot is never a harvest candidate, and its sales are not taxable events.
+- **Tax treatment belongs to the account, not to its name or role.** Harvesting, holding periods, realized gains and the tax on income matter in every account whose tax treatment is taxable, and only there (each account line in the Portfolio Context states it; tax-lot rows carry \`account_tax_treatment\`). Several accounts can be taxable at once; a figure labelled for taxable accounts covers all of them. A Roth or other retirement-account lot is never a harvest candidate, and its sales are not taxable events.
 - **Long-term** means held more than one year: a lot turns long-term the day after the one-year anniversary of its purchase. Lots are matched first in, first out; his broker may match differently.
 - **Realized gains** are by tax year, from taxable accounts only, in US dollars with non-USD sales counted separately; there is no lifetime figure.
 - **Income.** A reinvested dividend is counted once: the reinvestment is the purchase leg, not more income. Interest earned and interest paid (for example on a margin debit) are separate, and interest paid is a cost. The Portfolio Context's income is statement totals over the trailing twelve months; query_income_summary reads the ledger over the period you choose. They can differ, so name the source and period of an income figure.

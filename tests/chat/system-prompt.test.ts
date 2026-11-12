@@ -232,6 +232,28 @@ describe("IBKR dynamic dashboard", () => {
     stanceWithheld: false,
   };
 
+  // Run 4: a JPY buy read as "$230,000". The dashboard's amount is USD; a
+  // non-USD trade also shows its stored amount in its own currency, and a
+  // trade with no rate on file shows the native amount only.
+  it("a non-USD trade shows its native amount and currency beside the dollar figure", () => {
+    const ctx: IbkrTradingContext = {
+      ...mockCtx,
+      recentTrades: [
+        { date: "2026-08-14", symbol: "KAIZN", type: "BUY", amount: 1518, currency: "JPY", amountNative: 230000 },
+        { date: "2026-04-14", symbol: "CRWD", type: "BUY", amount: 8000, currency: "USD", amountNative: 8000 },
+      ],
+      recentTradesWithoutUsd: [{ date: "2026-08-20", symbol: "SAPX", type: "SELL", currency: "EUR", amountNative: 4200 }],
+    };
+    const prompt = buildSystemPrompt(fakeContext, today, "ibkr", ctx);
+    const trades = prompt.split("\n").find((l) => l.startsWith("- **Recent Trades**")) ?? "";
+    expect(trades).toContain("BUY KAIZN $1,518 (JPY 230,000 at today's rate) (2026-08-14)");
+    expect(trades).toContain("BUY CRWD $8,000 (2026-04-14)");
+    expect(trades).not.toContain("$230,000");
+    const noRate = prompt.split("\n").find((l) => l.startsWith("- **Recent Trades with no USD rate**")) ?? "";
+    expect(noRate).toContain("SELL SAPX EUR 4,200 (2026-08-20)");
+    expect(noRate).not.toMatch(/\$/);
+  });
+
   it("includes dynamic dashboard when ibkrContext provided", () => {
     const prompt = buildSystemPrompt(fakeContext, today, "ibkr", mockCtx);
     expect(prompt).toContain("Current IBKR Trading Dashboard");
@@ -633,6 +655,16 @@ describe("prompt standards (Task 7)", () => {
     }
     const persona = section(staticBlock("all"), "## Your Focus: the Whole Book");
     expect(persona).toMatch(/every account whose tax treatment is taxable/);
+  });
+
+  // The conventions point at the Portfolio Context's account line for each
+  // account's tax treatment, and say a holdings short's cost basis is negative.
+  it("tax treatment is read from the account line; a holdings short's cost basis is negative", () => {
+    for (const scope of PORTFOLIO_SCOPES) {
+      const conventions = section(staticBlock(scope), "## Financial Conventions");
+      expect(conventions, scope).toMatch(/account line/);
+      expect(conventions, scope).toMatch(/Quantity, market value and query_holdings' cost_basis \(the sale proceeds\) are negative/);
+    }
   });
 
   // Run 4 Q13: an answer advised selling a lot short of long-term now
