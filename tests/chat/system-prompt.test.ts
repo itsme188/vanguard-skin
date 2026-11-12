@@ -615,4 +615,42 @@ describe("prompt standards (Task 7)", () => {
       expect(unexpected, scope).toEqual([]);
     }
   });
+
+  // Run 4 (2026-11-12): "apply to the taxable account only" in the All
+  // Accounts persona led four answers to call a taxable trading account
+  // non-taxable ("IBKR is not a taxable account here", "only the Vanguard
+  // Taxable dividends create tax"). Taxability is each account's tax
+  // treatment; the prompt never speaks of one taxable account.
+  it("taxability follows each account's tax treatment, never a single taxable account or a name", () => {
+    for (const scope of PORTFOLIO_SCOPES) {
+      const text = staticBlock(scope);
+      expect(text, scope).not.toMatch(/\bthe taxable account\b/i);
+      expect(text, scope).not.toMatch(/apply to the taxable/i);
+      const conventions = section(text, "## Financial Conventions");
+      expect(conventions, scope).toContain("Tax treatment belongs to the account, not to its name");
+      // Income is covered too: dividends in every taxable account are taxed.
+      expect(conventions, scope).toMatch(/income[^.]*every account whose tax treatment is taxable/i);
+    }
+    const persona = section(staticBlock("all"), "## Your Focus: the Whole Book");
+    expect(persona).toMatch(/every account whose tax treatment is taxable/);
+  });
+
+  // Run 4 Q13: an answer advised selling a lot short of long-term now
+  // because a harvested loss could be "paired" with it. The loss offsets the
+  // year's gains either way; pairing does not make the sale cheaper.
+  it("a paired loss does not change a sale's own tax cost", () => {
+    for (const scope of PORTFOLIO_SCOPES) {
+      const tax = section(staticBlock(scope), "## Tax Figures and Wash Sales");
+      expect(tax, scope).toMatch(/does not make (that|the) sale cheaper/);
+    }
+  });
+
+  // Run 4 Q5: expired options awaiting their closing entry can change the
+  // year's realized total, which decides how much harvesting is needed.
+  it("pending expired options may leave the year's realized figures incomplete", () => {
+    for (const scope of PORTFOLIO_SCOPES) {
+      const ground = section(staticBlock(scope), "## Ground Truth Rules");
+      expect(ground, scope).toMatch(/expired options[^.]*year they expired/);
+    }
+  });
 });
