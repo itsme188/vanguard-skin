@@ -1,6 +1,6 @@
 # Portfolio Assistant (in-app chat): implementation plan (2026-11-11, revision 2)
 
-> **Status (2026-11-11, updated by T10):** waves 1 and 2 built and reviewed on branch `claude/portfolio-assistant-review-7148e7` (Task 0 `c910900f` through the final-review fix round, last build commit `475040f0`). Wave 3: full verify, production build and the whole-branch review are done. The browser pass (W3-3) and the capped live check (W3-4) have not run; they wait on an owner decision about the API key. PR (W3-5) not opened. Decisions: `docs/DECISIONS.md` 2026-11-11. Working reference: `lib/chat/CLAUDE.md`.
+> **Status (2026-11-11, updated by T10):** waves 1 and 2 are built and reviewed on branch `claude/portfolio-assistant-review-7148e7`, from Task 0 `c910900f` to the last build commit `6dcd3126`. Wave 3 has done the full verify, the production build, the whole-branch review and fix round, the browser pass (W3-3) and two live runs (W3-4). A third, subset live run was in progress at the time of writing. The `toolChoice: "none"` probe was not run: it needs owner approval. The PR (W3-5) is not opened. Decisions: `docs/DECISIONS.md` 2026-11-11. Working reference: `lib/chat/CLAUDE.md`.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: use superpowers:subagent-driven-development. Each task below is one subagent (Opus). Tasks in the same wave edit no common file and are dispatched together in one message. Verification is a barrier AFTER each wave (section 5), not inside it. Steps use checkbox (`- [ ]`) syntax.
 
@@ -471,3 +471,16 @@ Two wrong-figure blockers were found in compaction rounding chosen by key-name m
 - labelled summary figures (RF-10, `4e38e072`);
 - six prompt claims corrected (`77d11460`);
 - for the eval: bounded figure checks and a hard spend cap, then a per-question ceiling enforced mid-flight (RF-11, RF-12; `88fbc502`, `475040f0`).
+
+### Browser pass, live runs and the two fix rounds after them (2026-11-11)
+
+- **Browser pass** (non-AI sandbox): 12 of 15 checks passed, 1 failed, 2 could not be tested. The failure was a reply stopped in its first step not being saved. It was fixed by keeping the in-flight text through `onChunk` and saving it on abort (`7ec87983`); the client fixes are in `da4eecf9`. The fix was confirmed on the live server.
+- **Live run 1** (synthetic eval database): caching held on the prefix; 9 of 18 questions scored a pass. Fix round 1:
+  - tool totals and roll-ups: `074591be`;
+  - prompt fixes: `fb2bfff2`, `092befa2`, `ec5cbf5d`;
+  - the aborted-step input estimate: `f2035866`;
+  - fixture and harness fixes: `e7f7ce73`.
+- **Live run 2:** tail caching was proven and 11 of 18 passed; the reviewer judged 9 answers better, 6 the same and 3 worse (over-correction). Fix round 2:
+  - prompt rebalance: `2135c782`;
+  - `query_twr` units: `6dcd3126`;
+  - scorer touch-ups and behaviour counts: `a203c643`.

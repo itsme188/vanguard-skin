@@ -1744,4 +1744,32 @@ Plan: `docs/superpowers/plans/2026-11-11-portfolio-assistant-plan.md`. Working r
 
 **OPEN items and the defaults built.** OPEN-1 forcing a written last step: note plus cut-off sentence; needs the wave-3 `toolChoice: "none"` probe. OPEN-2 automatic tail caching: top-level mark; `markLastMessageForCache` is tested and unwired. OPEN-3 resuming a conversation under another scope: 409. OPEN-4 the approval continuation is a second assistant row. OPEN-5 a tax-advantaged account's harvest and long-term sections read "Not applicable: this account is tax-advantaged." OPEN-6 decided by the probe: the dashboard income reader changed. OPEN-7 private fields that cannot be scoped are withheld in a single-account chat with a `scope_note`. OPEN-8 a pending note card is lost on reload.
 
-**Final whole-branch review and its fix round (2026-11-11).** Two blockers gave wrong figures. Both came from compaction rounding chosen by key-name matching, which rounded return contributions, an FX value and a scenario share to two places. They are fixed by an explicit per-tool map (`COMPACT_ROUNDING`, `lib/chat/tools.ts`) and a guard that keeps its own list of fields allowed to be rounded and compares text as well as numbers (`tests/chat/tools-output-size-guard.test.ts`). The guard was proven by mutation testing: six planted faults now fail it. Withholding pairing was made one-to-one (`pairIncomeLegs`). A cut-off turn keeps its notice under partial text, both saved and shown. Every summary figure now carries its own label, and the IBKR dashboard prints "not available" instead of 0. Six prompt claims were corrected against the code. Wave 3 so far: full verify, production build and the whole-branch review are done. The browser pass and the capped live check have not run; they wait on an owner decision about the API key.
+**Final whole-branch review and its fix round (2026-11-11).** Two blockers gave wrong figures. Both came from compaction rounding chosen by key-name matching, which rounded return contributions, an FX value and a scenario share to two places. They are fixed by an explicit per-tool map (`COMPACT_ROUNDING`, `lib/chat/tools.ts`) and a guard that keeps its own list of fields allowed to be rounded and compares text as well as numbers (`tests/chat/tools-output-size-guard.test.ts`). The guard was proven by mutation testing: six planted faults now fail it. Withholding pairing was made one-to-one (`pairIncomeLegs`). A cut-off turn keeps its notice under partial text, both saved and shown. Every summary figure now carries its own label, and the IBKR dashboard prints "not available" instead of 0. Six prompt claims were corrected against the code. 
+
+**Browser pass (2026-11-11, non-AI sandbox).** 12 of 15 checks passed, 1 failed and 2 could not be tested. The failure: a reply stopped during its first step was not saved. It is fixed: the route keeps the in-flight text through `onChunk` and saves it on abort (`7ec87983`). It was confirmed against the live server: the saved row matched the streamed text exactly, and the turn line marked one aborted step with its estimate. The same round fixed client items: Eastern-day conversation dates, error text that never shows the browser's own message, Copy only on a settled reply, and the title set at conversation creation (`da4eecf9`).
+
+**Live check (2026-11-11, on the SYNTHETIC evaluation database; token counts and API costs only).**
+- **Model.** On a fresh database the `chat` feature resolves to the workhorse tier's static fallback, so every result below is for that model.
+- **Caching.** It works on the fixed prefix and on the conversation tail. The measured prefix (tools plus static block) was 24,564 cache-read tokens in run 1 and 22,938 in run 2, after the prompt changes.
+  - Tail reuse was not shown in run 1's cache proof. It passed in run 2, once each run carried its own nonce: turn 2 step 1 read 26,810 against a prefix of 22,938.
+  - So the automatic top-level tail mark works, and `markLastMessageForCache` stays unused (OPEN-2 closed on the default).
+  - Share of input tokens read from cache in the golden runs: 90.1% in run 1, 90.0% in run 2.
+- **Cost of the 18-question run.** Quoted from the two cost-rollup files:
+  - run 1: "cost=$1.0618 no-cache-what-if=$3.2660 saving=$2.2042 (67.5%)";
+  - run 2: "cost=$0.9013 nocache=$3.0934 saving=$2.1921 (70.9%)".
+- **Per question, run 1 against run 2.** Average cost $0.0590 against $0.0501. Average answer length 1,695 against 1,218 characters.
+- **Scoring.** The scorer passed 9 of 18, then 11 of 18. The reviewer judged run 2 better on 9 questions, the same on 6 and worse on 3.
+- **Prices.** They come from the script's own table, which is not checked against the live pricing page.
+- **Not run.** The `toolChoice: "none"` probe (OPEN-1) needs the key outside the app's server and its own owner approval; OPEN-1 stays on its default.
+- **What the live answers changed.**
+  - Tools gained the figures the model had computed by hand: `query_tax_lots` `totals`, `query_holdings` `by_symbol` and the `currency` / `non_usd` filters, and the `query_twr` `units` block (`074591be`, `6dcd3126`).
+  - Each prompt slip was fixed in the passage that should have prevented it (`fb2bfff2`, `092befa2`, `ec5cbf5d`, `2135c782`): scenarios with no matching preset, row arithmetic, the two return figures labelled, empty results, foreign holdings, process narration, internal ids, and closing offers.
+  - The fixture and harness defects the run found were fixed (`e7f7ce73`, `a203c643`).
+- **Lesson from run 2 (over-correction).** Rules written only as prohibitions after run 1 made answers shorter by dropping evidence; one realized-gains answer named no sale at all. A rule now states what is wanted (name the rows a tool returned) before what is forbidden, and brevity cuts restatement, not evidence.
+
+**Rulings made during the live check (all reversible).**
+- A pending lot's rows keep their cost basis as a record of the opening. The tool's `totals` give pending lots only a count by reason, and no gain.
+- Conversation-title percents stay visible in privacy mode, under the existing 2026-11-07 ruling.
+- The panel's missing side padding and the clipped conversation dropdown predate the branch and were left alone.
+- A "share of the account" answer is accepted on either base (long market value, or account value including cash) if the base is stated in words, pending an owner ruling.
+- The market snapshot's outside quote source was not changed. It is an owner decision in `docs/plans/TODO.md`.

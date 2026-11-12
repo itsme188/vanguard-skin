@@ -12,7 +12,7 @@
 ## User roadmap (added 2026-07-03)
 
 - [ ] **Portfolio Assistant (in-app chat) follow-ups (2026-11-11)** (`docs/DECISIONS.md` 2026-11-11; plan `docs/superpowers/plans/2026-11-11-portfolio-assistant-plan.md` §7-8; working reference `lib/chat/CLAUDE.md`). Waves 1 and 2 are built on branch `claude/portfolio-assistant-review-7148e7`:
-    - (w3) **Wave 3, part still to run:** full verify, the production build and the whole-branch review (plus its fix round) are DONE. The non-AI browser pass in a sandbox and the capped live check (about US$5: cache proof, the `toolChoice: "none"` probe for OPEN-1, one note save and one "Don't save", the 18 golden questions) are NOT yet run, pending an owner decision on the API key; then the PR.
+    - (w3) **Wave 3 status:** full verify, the production build, the whole-branch review (plus its fix round), the browser pass and two live runs are DONE (results in `docs/DECISIONS.md` 2026-11-11). A third, subset live run was in progress at the time of writing. Then the PR.
     - (F1) **Freeze the portfolio summary per conversation**, so a sync between turns stops invalidating the cached conversation tail. Needs a stored column on `chat_conversations`: show the owner the migration first.
     - (F2) **Measure thinking effort medium against high** with the golden evaluation set (`scripts/chat-eval/run-golden.ts`); today the chat sends adaptive thinking with no effort.
     - (F3) **Chat failover** belongs to the open `provider-failover` task; the chat route calls `getModelForFeature("chat")` directly.
@@ -20,7 +20,7 @@
     - (F13) **Bind note approvals on the server.** Today the SDK gate plus a 10-minute identical-note replay guard in `create_note`; recording the tool-call id and the execution atomically needs storage.
     - (F8) **Thread the chat abort signal into `lib/apis/*` fetches.** `executeTool` only checks it before each external call starts.
     - (F7) **Fee-credit sign rule.** The probe found 96 fee credit rows; `FEES_SQL` (`lib/queries/income-sql.ts`) still takes `ABS()`, so a credit is counted as a fee. Count by sign on a copy, then rule.
-    - (F10) **A custom "market down N percent" scenario** for `query_scenarios`; the presets are factor recipes and the tool says there is none.
+    - (F10) **A custom broad-market shock ("market down N percent") in `query_scenarios`.** The presets are factor recipes; the tool says there is none, and the model must not build one from beta.
     - (b1) **`computeBenchmarkComparison` (`lib/compute/benchmark.ts`)** has no dashboard caller (only `GET /api/benchmark/prices?mode=stats`, which no page requests) and lacks flow adjustment and the full-coverage guard. Remove it or fix it.
     - (d1) **Dead code:** `app/dashboard/components/IncomeCard.tsx` (no importer) and `getCashEstimates` (`lib/queries/chat-tools.ts`, tests only). Remove with their tests.
     - (i1) **A chat-level IBKR dashboard for more than one IBKR account.** Checked 2026-11-11: the route builds the trading dashboard only when the IBKR scope is exactly one account (`computeIbkrTradingContext(db, accounts[0].id, …)`); with two or more it is left out with a note naming the count, so it never covers a subset. A combined dashboard needs a several-account `computeIbkrTradingContext` (`statementCashFallback` already sums same-date statements).
@@ -32,6 +32,19 @@
     - (e3) **`npm run seed:demo` fails in a worktree** when the npm script path cannot find `tsx`; the fallback is `npx tsx scripts/seed-demo.ts` (named in the `run-golden.ts` header). Make the script work from a worktree.
     - (u1) **Unused chat code:** `scopeToAccountName` (`lib/chat/scope.ts`, called only by `tests/chat/scope.test.ts`) and the chat `buildSystemPrompt` wrapper (`lib/chat/system-prompt.ts`, tests only; the route uses `buildSystemPromptBlocks`). Remove, or keep as the tests' entry point on purpose.
     - (t1) **The full earnings transcript is outside the output size bound** (`tests/chat/tools-output-size-guard.test.ts` exempts it): one `query_earnings_transcript` call with the full text can be far larger than any other tool result. Decide on a cap or a section read.
+    - (o1) **OWNER DECISION: the chat market snapshot's outside quote source.** `getMarketSnapshot` (`lib/queries/market-snapshot.ts`) falls back to the Yahoo chart endpoint (`fetchYahooQuotes`) in three cases:
+        - no SPY-anchored pair of consecutive trading days in local prices (`resolveTradingDayPair`);
+        - the latest local session is more than `MARKET_SNAPSHOT_STALE_DAYS` (4) calendar days old;
+        - no benchmark or held name has a local close on the latest session.
+
+      It then requests SPY, QQQ, DIA and the plain ticker of every held position except options and bonds: tickers only, no account data. Options: keep it, restrict it to the three index funds, or remove it. Unchanged on this branch.
+    - (o2) **A weight on account value including cash in `query_holdings`**, if the owner rules that base. Today `position_weight_pct` is of gross exposure. The eval accepts either base when it is stated, pending the ruling.
+    - (o3) **One shared freshness field for a security** across `query_holdings` and `query_data_confidence`, so the two tools cannot give one security two different "as of" readings.
+    - (o4) **Delta-dollar exposure and account-share figures as tool fields**, so the model never multiplies them by hand. Seen live on the across-accounts exposure question.
+    - (o5) **The demo seed (`scripts/seed-demo.ts`) stores SELL quantities as negative.** The eval builder flips them to positive; fix the seed instead.
+    - (o6) **Panel side padding and the clipped conversation dropdown** (pre-existing; screenshots were taken during the browser pass). Not changed on this branch.
+    - (o7) **The cut-off notice and the empty "Stopped." view were never seen live.** They are covered by tests only; check them in the app the first time one occurs.
+    - (o8) **The `toolChoice: "none"` probe** (`scripts/chat-eval/probe-tool-choice-none.ts`, OPEN-1) needs separate owner approval and the key outside the app's server; not run.
 
 - [x] ✅ **Codex reliability fixes — LANDED 2026-09-05 (`689534f6` research background-sync cooldown requires the terminal SSE `complete` event; `90c13d42` Security Detail upcoming-events window + regression-cache day anchored to ET):** implemented by Codex in `/private/tmp/portfolio-desk-astra-2026-09-04` (branch `codex/shabbos-reliability-2026-09-04`), landed by Claude after Codex's usage limit ended its session mid-landing — the combined tree (main `ee33415e` + the seven-file patch) passed the full suite (720 files, 8,788 tests) with only the 20 baseline type errors; browser acceptance on Codex's secret-free :3093 server (the `/reliability-qa` harness 5/5 with the real hook, Security Detail's ET window verified at 22:01 ET with UTC already the next day, Research page clean). Evidence in gitignored `docs/private/reliability-landing-progress.md` + `docs/private/reliability-landing-2026-09-05/`. The broader UTC sweep (the remaining `toISOString().slice(0,10)` sites) stays open below.
 

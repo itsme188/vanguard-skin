@@ -32,12 +32,12 @@ Rules for the chat drawer and right rail. Root `CLAUDE.md` holds the project-wid
 1. Parse the body: `messages`, `scope`, `conversationId`, `page`. Only `page.path` is read (`readPageField`); the legacy free-text `pageContext` field is ignored.
 2. Session key from the verified session cookie (shared bucket when none). Size check, then rate limit, then the daily ceiling. Each rejection returns before anything is saved.
 3. Scope: missing is `all`; a value outside `VALID_SCOPES` is 400.
-4. Conversation: an unknown or deleted id starts a new conversation in this scope; a known id stored under another scope is 409 (OPEN-3 default). From here on every response carries `X-Conversation-Id`, failures included; the client adopts a conversation only from that header.
+4. Conversation: an unknown or deleted id starts a new conversation in this scope; a known id stored under another scope is 409 (OPEN-3 default). From here on every response carries `X-Conversation-Id`, failures included; the client adopts a conversation only from that header. The title is set from the first user message as soon as the row exists (or on the first request to an untitled row), so a first turn that is stopped or fails is still titled.
 5. Save the user message only when the request ends with a user message, and not when the conversation's last stored row is a user row with identical text (a retry).
 6. API key check (500 if missing).
 7. Resolve the scope (`resolveChatScope`), build the Portfolio Context (not for macro), the IBKR dashboard (IBKR scope with exactly one account), the page note, then the two system blocks.
 8. Build the AI SDK tools from `CHAT_TOOLS`; each `execute` clamps the input to the scope and calls `executeTool` with the tool's abort signal and the scope's ids.
-9. History check: `convertToModelMessages(sanitizeUiHistory(messages), { tools, ignoreIncompleteToolCalls: true })`, then `findOrphanToolCalls` / `dropOrphanToolCalls` (logged as `orphan tool call dropped (N)`).
+9. History check: `dropEmptyAssistantMessages(sanitizeUiHistory(messages))` (a reply stopped before any text leaves an empty assistant message; it is dropped). When that, or a reload with nothing saved, leaves two owner messages in a row, `unansweredPriorNote` appends `UNANSWERED_PRIOR_NOTE` to this request's volatile block: the earlier message got no answer, answer the latest. Then `convertToModelMessages(history, { tools, ignoreIncompleteToolCalls: true })`, then `findOrphanToolCalls` / `dropOrphanToolCalls` (logged as `orphan tool call dropped (N)`).
 10. Acquire the concurrency slot immediately before `streamText`, so no early `return` can leak it.
 11. `streamText`, then `toUIMessageStreamResponse({ sendReasoning: true, messageMetadata })`. The `finish` part carries `{ finishReason, stepCount }`.
 
@@ -96,6 +96,10 @@ The client sends only `page: { path }` (its `usePathname()`), per call. The serv
 8. **Size bound.** On a large synthetic book the compact form of every tool's worst call stays at or under 30,000 characters, except the full earnings transcript, which stays whole on purpose (`tests/chat/tools-output-size-guard.test.ts`). The FULL form is not bounded this way.
 9. A label in `lib/chat/tool-labels.ts` (`tests/chat/tool-labels-parity.test.ts`) and a routing line in the static prompt's "Choosing Tools" section (`tests/chat/system-prompt.test.ts` › "the portfolio routing section names every chat tool and every composite tool").
 10. Native prices carry `currency` and are never converted; USD values say so.
+11. **A figure the model would otherwise compute belongs in a tool field.** The live runs showed the model adding rows, blending per-share costs and multiplying by hand when no tool returned the figure. The fix each time was a field, not a prompt rule:
+    - `query_tax_lots` returns a `totals` block over EVERY matching lot (`getTaxLotTotalsForChat`): long and short open lots apart, pending lots as a count `by_reason` with no figure, closed sales with a gain at current FX.
+    - `query_holdings` returns `by_symbol` for a security held in two or more positions (`getHoldingsBySecurity` + `computePositionTotals`, the security page's totals; `cost_basis_per_share_usd` or a reason), plus the `currency` / `non_usd` filters.
+    - `query_twr` returns a `units` block naming which return is time-weighted or money-weighted, and which is annualised, with `twr_reason` / `xirr_reason` when one is not computed.
 
 The defaults and maxima live in `LIST_LIMITS` and in each schema description, and they are still being tuned to the output size; read them there, never copy them into docs or the prompt.
 
@@ -117,14 +121,54 @@ The defaults and maxima live in `LIST_LIMITS` and in each schema description, an
 - `onFinish`: the saved assistant row is every step's non-empty text joined with a blank line (`onFinish.text` is the last step only). A turn that stopped early adds the sentence for its finish reason after a blank line (`tool-calls` → `CUT_OFF_SENTENCE`, `length`, `content-filter`); with no text the row is the sentence alone. With an approval pending, the row is the text only, or nothing. The first exchange sets the title.
 - Client side, `turnOutcomeNotice` returns the finish sentence whether or not text exists (null only while an approval is pending, and for a normal finish). The client shows it on a quieter line below the text, or alone; Copy copies the text only. A reloaded row is text only and carries no metadata, so the sentence shows once, from the saved text. The notice is never shown on the live message, an errored turn or a pending approval.
 - `onError`: marks the turn errored; `onFinish` then saves the finished steps' text (never the cut-off sentence) and charges their output tokens.
-- `onAbort`: releases the slot, saves the finished steps' text (nothing if empty) and charges their output. The SDK can run `onAbort` and then `onFinish` for one turn; the `settled` flag makes the charge and save happen once.
+- `onAbort` (Stop or a closed tab): releases the slot and saves the finished steps' text plus the text of the step in flight, which `onChunk` collects from `text-delta` chunks (what the owner saw; reasoning is never saved; nothing when both are empty). It charges the finished output plus an estimate for the aborted step, and logs one turn line (below). The SDK can run `onAbort` and then `onFinish` for one turn; the `settled` flag makes the charge, the save and the turn line happen once. Guard: `tests/api/chat-abort.test.ts`, which aborts MID-step.
 - Every save is wrapped and logged through `logChatError`.
 - Guards: `tests/api/chat-persist-steps.test.ts`, `tests/api/chat-abort.test.ts`, `tests/api/chat-retry-dedupe.test.ts`, `tests/api/chat-conversation-id.test.ts`.
 - History check (`lib/chat/history.ts`): tool parts in `input-streaming` / `input-available` are dropped; an unanswered or answered approval card in any message but the last becomes a paired denial; any `tool-call` left without a `tool-result` is removed, except an approval in the final message (the continuation). A `tool_use` without its `tool_result` is an HTTP 400. Guard: `tests/chat/history.test.ts`.
 
 ## Usage log
 
-`[chat-usage] ` + JSON, one line per step and one per turn, from `lib/chat/usage-log.ts`. Fields: `kind`, `conversationId`, `scope`, `model`, `step` (zero-based) or `steps`, `noCache`, `cacheWrite`, `cacheRead`, `output`, `finishReason`. Built key by key from an allowlist. Read it in the dev server's output, or `~/Library/Logs/Vanguard Dashboard/server.log` in the packaged app. It must never hold message text, prompt text, tool input or output, or a portfolio figure. Errors go through `logChatError`: name, status code, provider error type, message cut to 200 characters; never `requestBodyValues`, `responseBody` or `cause` (an `APICallError` carries the whole prompt there). Guard: `tests/chat/usage-log.test.ts`.
+`[chat-usage] ` + JSON, one line per step and one per turn, from `lib/chat/usage-log.ts`. Fields: `kind`, `conversationId`, `scope`, `model`, `step` (zero-based) or `steps`, `noCache`, `cacheWrite`, `cacheRead`, `output`, `finishReason`. Turn lines also carry the aborted-step keys. The provider never reports usage for an aborted step, so these are estimates:
+  - `abortedSteps`: 1 when a step was sent and did not finish, even with no chunk; otherwise 0.
+  - `abortedOutputEstimate`: characters streamed (text, reasoning and tool input) divided by 4; this is charged to the daily output budget.
+  - `abortedInputEstimate`: characters sent for that step (tool definitions, system blocks, step messages, sized in `prepareStep`) divided by `ABORTED_INPUT_CHARS_PER_TOKEN` (3.7); logged, never charged.
+  - `abortedInputCache`: always `"unknown"`, since the input may have been a cache write, a cache read, or not processed.
+  - `abortedStepProcessed`: `"chunks-received"`, or `"maybe-not"` when the abort came before the first chunk.
+
+Every line is built key by key from an allowlist; the status keys accept only their fixed values. Read it in the dev server's output, or `~/Library/Logs/Vanguard Dashboard/server.log` in the packaged app. It must never hold message text, prompt text, tool input or output, or a portfolio figure. Errors go through `logChatError`: name, status code, provider error type, message cut to 200 characters; never `requestBodyValues`, `responseBody` or `cause` (an `APICallError` carries the whole prompt there). Guard: `tests/chat/usage-log.test.ts`.
+
+## Client
+
+- Error text (`chatErrorText`, `lib/chat/turn-adoption.ts`): the browser's own text is never shown. A fetch `TypeError` reads as `networkFailureMessage`, an HTML or bare-status body as a plain failure, and an envelope as the server's sentence; anything else goes to `humanizeChatError`.
+- Conversation dates are the Eastern day: `conversationDayLabel` parses the stored UTC timestamp with `parseDbTimestamp` and formats it in America/New_York. Copy shows only on a settled reply. While the list row has no title yet, the header falls back to the first question, masked like any title.
+
+## The prompt's outline
+
+Static block, portfolio scopes (`lib/chat/system-prompt.ts`), in order:
+1. Scope preamble.
+2. Persona: "Your Focus: …" per scope.
+3. Who You Are Working With.
+4. How to Answer.
+5. What Is In Front of You.
+6. Where Figures Come From.
+7. Ground Truth Rules.
+8. Position Lifecycle.
+9. Data Quality Awareness.
+10. What You Do Not Have.
+11. Financial Conventions.
+12. Fixed Income Intelligence.
+13. Tax Figures and Wash Sales.
+14. Choosing Tools, which ends with the step limit and the latest-transcript rule.
+15. Earnings Intelligence.
+16. Live Market Data.
+17. Text From Outside Sources.
+18. Notes.
+19. Earlier Turns.
+20. Your Stance.
+
+The macro prompt has Who You Are Working With, How to Answer, Data and Its Dates, What You Do Not Have, Choosing Tools, the step limit, then the same five closing rules.
+
+A rule states what is wanted before what is forbidden. In run 2, prohibitions written alone (no hand sums, be brief) made answers drop the evidence too. One example: a realized-gains answer named no sale at all. The fix was to say what to give: each sale in the tool's rows, and the rows that support an answer. Fix a slip in the passage that should have prevented it.
 
 ## Privacy
 
@@ -134,17 +178,24 @@ Assistant answers render through `PrivateMarkdown`: in privacy mode the whole an
 
 On demand only. It spends real money through the running app's chat route and is never part of the suite (only the pure scorer is, `tests/scripts/chat-eval-scorer.test.ts`). Run from the repo root with the node pin (`PATH=/opt/homebrew/opt/node@24/bin:$PATH`).
 
-1. `npm run seed:demo` (in a worktree where the npm script cannot find tsx: `npx tsx scripts/seed-demo.ts`), then `npx tsx scripts/chat-eval/build-eval-db.ts --force`. This makes a VACUUM copy of `data/demo.db` plus synthetic rows (Roth loser, harvest candidate, pending lot, short, live and expired option, JPY holding, reinvested dividend pair, margin interest, bill maturing soon, lot short of long-term), recomputes lots and valuations, and writes an eval marker and a symbols-only manifest. Default output: `data/chat-eval/eval.db` (git-ignored).
-2. Start a dev server on that copy bound to 127.0.0.1. The recipe is in the header of `run-golden.ts`: `DATABASE_PATH`, `TWS_HOST=192.0.2.1`, `APP_EXTRA_HOSTS`/`APP_EXTRA_ORIGINS` for `127.0.0.1:<port>`, `next dev -H 127.0.0.1`, log to a file. The server needs `ANTHROPIC_API_KEY` in its own environment. `npm run sandbox` cannot do this: it sets a dummy key. On a fresh database the `chat` feature resolves to the tier's static fallback model (no stored catalog or override), so results are for that model; the usage log names it.
-3. `run-golden.ts --db <eval db> --dry-run` builds every request and prints the plan, the estimate and the guaranteed maximum; nothing is sent.
-4. `--mode cache-proof --max-usd N` measures prefix reuse and tail reuse separately.
+1. `npm run seed:demo` (in a worktree where the npm script cannot find tsx: `npx tsx scripts/seed-demo.ts`), then `npx tsx scripts/chat-eval/build-eval-db.ts --force`. This makes a VACUUM copy of `data/demo.db`, normalises the demo seed's negative SELL quantities to positive (the lot engine matches on positive quantities), and adds synthetic rows (Roth loser, harvest candidate, pending lot, short, live and expired option, JPY holding, reinvested dividend pair, margin interest, bill maturing soon, lot short of long-term, a live MSFT call, a deliberately stale JNJ price, SPY/QQQ/DIA and every held name priced on the last two trading days). It recomputes lots and valuations and writes an eval marker and a symbols-only manifest. Default output: `data/chat-eval/eval-v2.db` (git-ignored; fixture version 2).
+   - **Build-time assertions** (`assertFixture`). The build fails and removes its marker unless:
+     - every account's latest valuation prices every holding of its latest snapshot;
+     - no day-over-day cliff appears;
+     - every closing transaction has its lot-sale rows;
+     - the market snapshot reads the local book.
+   - Why: the valuation engine values a date only from holdings rows dated exactly that day. Partial rows for today shrank each book to a few positions and showed a fake 90% drawdown, so the fixture writes a full holdings snapshot on every new date.
+2. Start a dev server on that copy bound to 127.0.0.1, with `ANTHROPIC_BASE_URL` UNSET. The recipe is in the header of `run-golden.ts`: `DATABASE_PATH`, `TWS_HOST=192.0.2.1`, `APP_EXTRA_HOSTS`/`APP_EXTRA_ORIGINS` for `127.0.0.1:<port>`, `next dev -H 127.0.0.1`, log to a file. The server needs `ANTHROPIC_API_KEY` in its own environment. `npm run sandbox` cannot do this: it sets a dummy key. On a fresh database the `chat` feature resolves to the tier's static fallback model (no stored catalog or override), so results are for that model; the usage log names it.
+3. `run-golden.ts --db <eval db> --dry-run` builds every request and prints the plan, the estimate and the guaranteed maximum, and says whether every request fits; nothing is sent. Before a live run the runner checks that the app's market snapshot would read this database locally. If it would call the outside quote source, the runner refuses: that would send the fixture's tickers out.
+4. `--mode cache-proof --max-usd N` measures prefix reuse and tail reuse separately. A per-run nonce (`--nonce`, random by default) is appended to each cache-proof question, so a run never reads an earlier run's cached conversation.
 5. The golden run: 18 questions, `--only Q1,Q5` for a subset.
 - **Spend rule.** `--max-usd` (default 4) is the run cap. A question starts only if the money spent so far plus `--max-usd-per-question` (default 0.60) fits under the cap; otherwise it is skipped and listed. While a question runs, the runner tails the server's per-step `[chat-usage]` lines and aborts the HTTP request (which stops the route's model call) once the running cost plus the worst the in-flight step can cost would pass the ceiling. That question is reported `aborted-cost-ceiling` and scored as failed. The guaranteed maximum is the run cap plus one step in flight; it is printed up front, and `--hard-ceiling-usd` refuses to start above it. A tool result over the character bound (`--tool-result-chars`, default 22,000), or a step with no usage line, stops the run.
-- **Scorer.** Number checks can require a unit or a label next to the figure. Each of the 18 questions has a right and a wrong answer in `tests/scripts/chat-eval-scorer.test.ts`, so every check is shown to fail a wrong answer.
+- **Scorer.** Number checks can require a unit or a label next to the figure. Each of the 18 questions has a right and a wrong answer in `tests/scripts/chat-eval-scorer.test.ts`, so every check is shown to fail a wrong answer; live mis-scores were added as regression tests. Behaviour flags per answer (names a tool or field, opens with a progress line, ends with an offer) are counted per run (`behaviourCounts`) and never scored.
+- A provider error before any output costs nothing and stops the run. A 404 names `ANTHROPIC_BASE_URL`.
 - Refusals: a missing `--db`, any file named `vanguard.db` (after symlinks), a database without the eval marker, an output path inside the repo that is not git-ignored, a model id not in the price table.
 - Prices are per model id, read from the usage log (`pricing.ts`); the table is not yet checked against the live pricing page.
 - `request-preview.ts` repeats the route's prompt assembly for the dry-run estimate only (follow-up: a shared `buildChatRequestParts`).
-- `probe-tool-choice-none.ts` is the one-off check behind OPEN-1.
+- `probe-tool-choice-none.ts` is the one-off check behind OPEN-1. It needs the key outside the app's server, and it refuses a live call without `--owner-approved`.
 
 ## Traps (each one cost time)
 
@@ -160,3 +211,6 @@ On demand only. It spends real money through the running app's chat route and is
 - **Source-pin tests break when their anchor moves.** They locate code with `anchorIndex` (`tests/helpers/source-anchor.ts`); re-pin them in the same change (`tests/repo/chat-failed-turn-adoption.test.ts` pins every route response that sets `X-Conversation-Id`).
 - **`ChatInterface` logic is hash-pinned.** `tests/dashboard/chat-mobile-header-controls.test.ts` pins the `useChat` block byte for byte and a sha256 of everything from `export function ChatInterface(` to its `return (`. Any edit to a hook, effect or handler there fails it; update the pin deliberately, with the reason.
 - **A dollar figure or a date in the static prompt** breaks both the cache and a test; put it in the volatile block.
+- **An agent shell may export `ANTHROPIC_BASE_URL`** (without `/v1`); a dev server started from it posts to the wrong URL and every call 404s. Unset it before starting the eval server.
+- **A test of abort must abort MID-step**, while chunks are streaming. Aborting after the steps finish never exercised the in-flight path, and a reply stopped during its first step was saved as nothing until the browser pass caught it.
+- **A guard test keeps its own list.** It must never read the map it checks (`COMPACT_ROUNDING`): a guard that trusts the map cannot catch a wrong entry.
