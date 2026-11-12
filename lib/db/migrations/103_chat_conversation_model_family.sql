@@ -1,0 +1,15 @@
+-- 103: the model CLASS a chat conversation was started on (owner-approved
+-- 2026-11-13). The owner picks Haiku, Sonnet or Opus on the new-chat screen;
+-- the choice locks at the first message.
+--
+--   model_family -- 'haiku', 'sonnet' or 'opus', validated in code
+--                   (lib/chat/model-choice.ts), never a model id: the class
+--                   resolves to its newest current id at request time.
+--                   NULL means "the chat's default" (resolveFeatureModel
+--                   for the chat feature, Settings override included), which
+--                   is how every conversation written before this column
+--                   keeps resolving.
+--
+-- NULLABLE and ADDITIVE: one ALTER TABLE ADD COLUMN, no DEFAULT, no
+-- constraint, no backfill.
+ALTER TABLE chat_conversations ADD COLUMN model_family TEXT;
