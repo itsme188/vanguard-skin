@@ -65,21 +65,38 @@ function newestOfFamily(
   return hits[0];
 }
 
-export function resolveFamilyModel(
-  family: SummaryFamily,
+/**
+ * The walk itself, over any most-capable-first ladder: the newest current id
+ * of `family`, else of each rung BELOW it in turn; null when nothing on the
+ * ladder from `family` down is callable (or `family` is not on it). The
+ * filing summary walks SUMMARY_FAMILY_LADDER; the chat walks its own, which
+ * adds Haiku at the bottom (lib/chat/model-choice.ts). One walk, so the two
+ * pickers can never disagree on what "the newest id of a class" means.
+ */
+export function resolveFamilyOnLadder<F extends string>(
+  family: F,
+  ladder: readonly F[],
   catalogIds: string[],
   excluded: Set<string> = new Set(),
-): ResolvedFamilyModel | null {
-  const start = SUMMARY_FAMILY_LADDER.indexOf(family);
+): { modelId: string; family: F; fellBackFrom: F | null } | null {
+  const start = ladder.indexOf(family);
   if (start === -1) return null;
-  for (let i = start; i < SUMMARY_FAMILY_LADDER.length; i++) {
-    const rung = SUMMARY_FAMILY_LADDER[i];
+  for (let i = start; i < ladder.length; i++) {
+    const rung = ladder[i];
     const hit = newestOfFamily(rung, catalogIds, excluded);
     if (hit) {
       return { modelId: hit.id, family: rung, fellBackFrom: rung === family ? null : family };
     }
   }
   return null;
+}
+
+export function resolveFamilyModel(
+  family: SummaryFamily,
+  catalogIds: string[],
+  excluded: Set<string> = new Set(),
+): ResolvedFamilyModel | null {
+  return resolveFamilyOnLadder<SummaryFamily>(family, SUMMARY_FAMILY_LADDER, catalogIds, excluded);
 }
 
 function capitalise(s: string): string {

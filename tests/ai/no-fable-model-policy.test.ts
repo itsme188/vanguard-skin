@@ -36,6 +36,13 @@ import {
   isSummaryChoice,
 } from "@/lib/filing-summary/choice";
 import { FEATURE_MODELS, expandSpec } from "@/lib/ai/models";
+import {
+  CHAT_FAMILY_LADDER,
+  CHAT_MODEL_FAMILIES,
+  DEFAULT_CHAT_MODEL_FAMILY,
+  isChatModelFamily,
+} from "@/lib/chat/model-choice";
+import { resolveChatModelFor } from "@/lib/chat/model-resolve";
 import { setModelCatalogSource } from "@/lib/ai/catalog-source";
 import { setFeatureModelOverrideSource } from "@/lib/ai/override-source";
 import { FAMILY_LADDERS as WORKER_FAMILY_LADDERS } from "../../workers/cron/src/model-tiers";
@@ -86,6 +93,30 @@ describe("no selectable path resolves to a retired model family", () => {
     }
   });
 
+  it("every chat model class, and every rung it falls to, resolves off it (2026-11-13)", () => {
+    const viaDefault = () => expandSpec(FEATURE_MODELS.chat);
+    setFeatureModelOverrideSource(null);
+    setModelCatalogSource(() => CATALOG_WITH_FABLE);
+    try {
+      for (const family of CHAT_MODEL_FAMILIES) {
+        for (const catalog of [CATALOG_WITH_FABLE, [], ["claude-fable-5-2", "claude-fable-5-1"]]) {
+          const r = resolveChatModelFor(family, catalog, viaDefault);
+          expect(isRetired(r.resolved.modelId), `${family} / ${catalog.join(",")}`).toBe(false);
+          // And with each answer excluded in turn, the next rung is still not Fable.
+          const next = resolveChatModelFor(
+            family,
+            catalog.filter((id) => id !== r.resolved.modelId),
+            viaDefault,
+          );
+          expect(isRetired(next.resolved.modelId), `${family} next`).toBe(false);
+        }
+      }
+      expect(isRetired(resolveChatModelFor(null, CATALOG_WITH_FABLE, viaDefault).resolved.modelId)).toBe(false);
+    } finally {
+      setModelCatalogSource(null);
+    }
+  });
+
   it("every feature default resolves off it", () => {
     setFeatureModelOverrideSource(null);
     setModelCatalogSource(() => CATALOG_WITH_FABLE);
@@ -129,6 +160,14 @@ describe("no ladder, default or choice list names the retired family", () => {
     }
   });
 
+  it("the chat's model-class list, its ladder and its default", () => {
+    expect([...CHAT_MODEL_FAMILIES]).not.toContain(RETIRED);
+    expect([...CHAT_FAMILY_LADDER]).not.toContain(RETIRED);
+    expect(DEFAULT_CHAT_MODEL_FAMILY).not.toBe(RETIRED);
+    // The route validates with this, so no request can store the retired family.
+    expect(isChatModelFamily(RETIRED)).toBe(false);
+  });
+
   it("the non-Anthropic provider tier tables name no Claude family at all", () => {
     for (const [provider, table] of Object.entries(PROVIDER_TIER_MODELS)) {
       for (const tier of TIERS) {
@@ -150,6 +189,8 @@ describe("no ladder, default or choice list names the retired family", () => {
     "lib/ai/model-families.ts",
     "lib/ai/models.ts",
     "lib/filing-summary/choice.ts",
+    "lib/chat/model-choice.ts",
+    "lib/chat/model-resolve.ts",
     "workers/cron/src/model-tiers.ts",
     "workers/cron/src/ai.ts",
   ];
