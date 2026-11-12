@@ -13,6 +13,8 @@ import {
   getLedgerEndByAccountForChat,
   getPerformanceForChat,
   getIncomeSummaryForChat,
+  getTaxLotTotalsForChat,
+  getHoldingsBySymbolForChat,
 } from "@/lib/queries/chat-tools";
 import { getNoteById, getNotesFiltered, getSecurityIdBySymbol, type NoteWithContext } from "@/lib/queries/notes";
 import { createNote } from "@/lib/mutations/notes";
@@ -168,7 +170,7 @@ const BASE_CHAT_TOOLS: ChatTool[] = [
   {
     name: "query_holdings",
     description:
-      "Query current holdings with optional filters. Returns detailed position data including cost basis, market value, unrealized gain/loss, position weight, sector, asset class, and maturity info for bonds. Includes SHORT positions: quantity and market_value are signed (negative = short), each row carries position_side ('long' or 'short'), and position_weight_pct is each position's share of GROSS exposure (always positive; longs and shorts together sum to 100%). Automatically excludes matured bonds, expired options and zero-quantity positions. When a symbol filter matches a position closed per LIVE broker data in some account (awaiting the broker statement for the closing trade), the result is an object instead of a list: holdings carries any current rows (another account may still hold it) and closed_per_live_data lists, per closed account, the last date and quantity the position was seen held, closed_as_of_date, and account_ledger_last_date (where that account's imported ledger ends, any symbol) (pending_statement: true, with a status_note). Such a position is not a current holding, but it WAS held until about that date: never describe it as flat since an earlier ledger sale. closed_per_live_data never lists a position the statement already shows closed with its closing trade missing, a position now held on the opposite side, an option past its expiration (an expired option awaits its closing entry, not the statement), or an option renamed to a new contract after a split (a re-symbolled option is still held under its new contract; never call it closed): query_tax_lots says why such lots are pending. Use when the user asks about specific positions, accounts, asset classes, sectors, or portfolio composition.",
+      "Query current holdings with optional filters. Returns detailed position data including cost basis, market value, unrealized gain/loss, position weight, sector, asset class, and maturity info for bonds. Includes SHORT positions: quantity and market_value are signed (negative = short), each row carries position_side ('long' or 'short'), and position_weight_pct is each position's share of GROSS exposure (always positive; longs and shorts together sum to 100%). Automatically excludes matured bonds, expired options and zero-quantity positions. When a symbol filter matches a position closed per LIVE broker data in some account (awaiting the broker statement for the closing trade), the result is an object instead of a list: holdings carries any current rows (another account may still hold it) and closed_per_live_data lists, per closed account, the last date and quantity the position was seen held, closed_as_of_date, and account_ledger_last_date (where that account's imported ledger ends, any symbol) (pending_statement: true, with a status_note). Such a position is not a current holding, but it WAS held until about that date: never describe it as flat since an earlier ledger sale. closed_per_live_data never lists a position the statement already shows closed with its closing trade missing, a position now held on the opposite side, an option past its expiration (an expired option awaits its closing entry, not the statement), or an option renamed to a new contract after a split (a re-symbolled option is still held under its new contract; never call it closed): query_tax_lots says why such lots are pending. When the result covers a security held in two or more positions in scope (two accounts, or long and short), a top-level by_symbol list sums it per security: total_quantity, total_cost_basis_usd, market_value and unrealized_gain (USD, the security page's POSITIONS totals) and cost_basis_per_share_usd (total cost basis / total quantity, USD a share, for a long stock, ETF or fund position with every basis known; otherwise null with cost_basis_per_share_reason). Quote these instead of adding rows or averaging per-share prices by hand. Use when the user asks about specific positions, accounts, asset classes, sectors, foreign or non-USD holdings (currency, non_usd), or portfolio composition.",
     input_schema: {
       type: "object" as const,
       properties: {
@@ -190,6 +192,16 @@ const BASE_CHAT_TOOLS: ChatTool[] = [
           type: "string",
           description:
             "Filter by sector (GICS-11 canonical spelling, e.g., 'Technology', 'Financials', 'Healthcare'). Omit for all sectors.",
+        },
+        currency: {
+          type: "string",
+          description:
+            "Optional. Only holdings PRICED in this currency: a three-letter ISO code such as 'JPY' or 'EUR', case-insensitive. A code not held in scope returns an error listing the currencies held. Do not combine with non_usd.",
+        },
+        non_usd: {
+          type: "boolean",
+          description:
+            "Optional. true: only holdings priced in a currency other than USD (foreign-listed stocks and funds). A USD-listed fund of foreign stocks is priced in USD and is not included.",
         },
         sort_by: {
           type: "string",
@@ -263,7 +275,7 @@ const BASE_CHAT_TOOLS: ChatTool[] = [
   {
     name: "query_tax_lots",
     description:
-      "Query tax lot details for open or closed positions. Returns acquisition date, cost basis, current value, unrealized/realized gain/loss, holding period, long-term/short-term status, and projected long-term date. For an open lot cost_basis is the basis of the quantity still open (fees included, the figure unrealized_gain is measured against, so it pairs with current_value); original_lot_cost_basis is the whole lot as acquired and differs only when part of the lot has been closed. Uses FIFO (First-In, First-Out) lot matching — the user's broker may use a different method. Use for tax-loss harvesting analysis, capital gains questions, wash sale evaluation, lot-level drill-down, or identifying lots approaching the 1-year long-term threshold. An open lot with pending_statement=true (stocks, options, long or short) is pending and carries no current_value or unrealized_gain: describe it as pending (see its status_note), never as an unrealized holding or a harvesting candidate. pending_statement_reason says why: 'awaiting_statement' = closed per live broker data, the closing trade awaits the broker statement; 'closing_entry_missing' = the broker statement shows the position closed but the closing trade is not in the ledger, so its realized result is unknown until that entry is imported; 'resymbol_repair_pending' = the option was renamed to a new contract after a split and is still held under the new contract, so never call it closed. An expired option lot (its status_note says so) also carries no current_value or unrealized_gain: it is awaiting its closing entry. figure_kind says what cost_basis is: 'cost_basis' for a long lot, 'short_sale_proceeds' for a short lot (money received when it was sold short, never a cost). Open lots carry position_side ('long' or 'short'): for a short lot quantity_remaining, cost_basis (the opening proceeds) and current_value (the cost to cover) are positive and unrealized_gain is already signed for the short side (a gain when the price has fallen); a short lot is never long-term, closing it means buying to cover, and it must never be described as approaching long-term.",
+      "Query tax lot details for open or closed positions. Returns acquisition date, cost basis, current value, unrealized/realized gain/loss, holding period, long-term/short-term status, and projected long-term date. For an open lot cost_basis is the basis of the quantity still open (fees included, the figure unrealized_gain is measured against, so it pairs with current_value); original_lot_cost_basis is the whole lot as acquired and differs only when part of the lot has been closed. Uses FIFO (First-In, First-Out) lot matching — the user's broker may use a different method. Use for tax-loss harvesting analysis, capital gains questions, wash sale evaluation, lot-level drill-down, or identifying lots approaching the 1-year long-term threshold. An open lot with pending_statement=true (stocks, options, long or short) is pending and carries no current_value or unrealized_gain: describe it as pending (see its status_note), never as an unrealized holding or a harvesting candidate. pending_statement_reason says why: 'awaiting_statement' = closed per live broker data, the closing trade awaits the broker statement; 'closing_entry_missing' = the broker statement shows the position closed but the closing trade is not in the ledger, so its realized result is unknown until that entry is imported; 'resymbol_repair_pending' = the option was renamed to a new contract after a split and is still held under the new contract, so never call it closed. An expired option lot (its status_note says so) also carries no current_value or unrealized_gain: it is awaiting its closing entry. figure_kind says what cost_basis is: 'cost_basis' for a long lot, 'short_sale_proceeds' for a short lot (money received when it was sold short, never a cost). Open lots carry position_side ('long' or 'short'): for a short lot quantity_remaining, cost_basis (the opening proceeds) and current_value (the cost to cover) are positive and unrealized_gain is already signed for the short side (a gain when the price has fallen); a short lot is never long-term, closing it means buying to cover, and it must never be described as approaching long-term. A top-level totals block covers EVERY lot matching the filter (not only the rows returned): open_lots.long (count, cost_basis_usd, unrealized_gain_usd, unpriced_count), open_lots.short (count, short_sale_proceeds_usd, unrealized_gain_usd, unpriced_count), pending_lots (count and by_reason only: pending lots carry no value or gain, so never total a figure for them) and, for closed sales, closed_sales (count, realized_gain_usd_at_current_fx, left_out_no_fx_rate). Quote these totals; never add rows by hand, and never add long basis and short proceeds together.",
     input_schema: {
       type: "object" as const,
       properties: {
@@ -1428,6 +1440,8 @@ export async function executeTool(
     let rawResult: unknown;
     /** Contract G: set by the list tools, returned beside `data`. */
     let listInfo: ListInfo | { open?: ListInfo; closed?: ListInfo } | undefined;
+    /** Top-level blocks beside `data` (tax lot totals, holdings by_symbol). */
+    const extras: Record<string, unknown> = {};
 
     switch (toolName) {
       case "query_holdings": {
@@ -1436,7 +1450,31 @@ export async function executeTool(
         // and market_value is never left to inference.
         const { def, max } = LIST_LIMITS.query_holdings;
         const holdingsLimit = readCount(input.limit, def, max);
+        // Currency filter: a validated ISO code, or every non-USD holding.
+        const currencyAsked = asString(input.currency)?.trim();
+        if (currencyAsked !== undefined && input.non_usd === true) {
+          return { error: 'Pass currency or non_usd, not both. Nothing was run.' };
+        }
+        if (currencyAsked !== undefined) {
+          if (!/^[A-Za-z]{3}$/.test(currencyAsked)) {
+            return { error: `Parameter "currency" must be a three-letter ISO code such as JPY; got "${currencyAsked}". Nothing was run.` };
+          }
+          const held = [
+            ...new Set(
+              getHoldingsForChat(db, { account_name: accountName, includeShorts: true, noLimit: true }).map((h) =>
+                (h.currency ?? "USD").toUpperCase()
+              )
+            ),
+          ].sort();
+          if (!held.includes(currencyAsked.toUpperCase())) {
+            return {
+              error: `No holdings priced in ${currencyAsked.toUpperCase()} in this scope. Currencies held: ${held.join(", ") || "none"}.`,
+            };
+          }
+        }
         const fetched = getHoldingsForChat(db, {
+          currency: currencyAsked,
+          non_usd: input.non_usd === true,
           account_name: accountName,
           symbol: input.symbol as string | undefined,
           security_type: input.security_type as string | undefined,
@@ -1456,6 +1494,14 @@ export async function executeTool(
           position_side: h.quantity < 0 ? ("short" as const) : ("long" as const),
         }));
         rawResult = holdingRows;
+        // Per-security sums from the security page's own reader and totals,
+        // for every security on the returned rows held in 2+ positions.
+        const bySymbol = getHoldingsBySymbolForChat(
+          db,
+          holdingRows.map((h) => h.symbol),
+          accountIds,
+        );
+        if (bySymbol.length > 0) extras.by_symbol = bySymbol;
         // A symbol may also have been held until recently in an account
         // where it is now closed per live broker data, awaiting the
         // statement, whether or not another account still holds it. Only
@@ -1530,6 +1576,13 @@ export async function executeTool(
           ...(open ? { open: open.info } : {}),
           ...(closed ? { closed: closed.info } : {}),
         };
+        // Totals over every matching lot, from the same reader with no limit.
+        extras.totals = getTaxLotTotalsForChat(db, {
+          status,
+          symbol: input.symbol as string | undefined,
+          account_name: accountName,
+          year: input.year as number | undefined,
+        });
         break;
       }
 
@@ -2750,6 +2803,7 @@ export async function executeTool(
     return {
       data: rawResult,
       ...(listInfo ? { list_info: listInfo } : {}),
+      ...extras,
       ...annotations,
     };
   } catch (err) {
@@ -2810,6 +2864,9 @@ const COMPACT_ROUNDING: Record<string, Record<string, Rounding>> = {
     latest_price: "price4",
     unrealized_gain_pct: "pct2",
     position_weight_pct: "pct2",
+    // by_symbol (market_value and unrealized_gain above; the per-share basis
+    // is a ratio and stays exact)
+    total_cost_basis_usd: "cents",
   },
   query_tax_lots: {
     cost_basis: "cents",
@@ -2827,6 +2884,10 @@ const COMPACT_ROUNDING: Record<string, Record<string, Rounding>> = {
     acquisition_price: "price4",
     current_price: "price4",
     sale_price: "price4",
+    // totals block
+    cost_basis_usd: "cents",
+    unrealized_gain_usd: "cents",
+    short_sale_proceeds_usd: "cents",
   },
   query_transactions: { amount: "cents", fees: "cents", price_per_share: "price4" },
   query_allocation: { total_market_value: "cents", percentage: "pct2" },

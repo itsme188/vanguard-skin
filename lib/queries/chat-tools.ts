@@ -33,6 +33,7 @@ import {
   remainingLotBasisSql,
 } from "@/lib/queries/tax-lots";
 import { isLongTermSql, longTermDateSql } from "@/lib/queries/long-term-sql";
+import { computePositionTotals, getHoldingsBySecurity } from "@/lib/queries/security-detail";
 
 /**
  * Chat sector-FILTER-only alias, on top of normalizeSector. normalizeSector
@@ -75,6 +76,10 @@ export interface HoldingsFilters {
   account_ids?: number[];
   /** Return every matching row (no LIMIT); for engines that count positions. */
   noLimit?: boolean;
+  /** Only holdings whose price currency is this ISO code (case-insensitive). */
+  currency?: string;
+  /** Only holdings whose price currency is not USD. */
+  non_usd?: boolean;
   symbol?: string;
   security_type?: string;
   sector?: string;
@@ -318,6 +323,8 @@ export function getHoldingsForChat(
     limit = 50,
     includeShorts = false,
     noLimit = false,
+    currency,
+    non_usd,
   } = filters;
 
   // The account filter, shared by the rows and the weight denominator (B5):
@@ -415,6 +422,13 @@ export function getHoldingsForChat(
     conditions.push("s.sector = ?");
     params.push(normalizeSectorFilter(sector));
   }
+  // The PRICE currency (the security's own); like the other filters it never
+  // narrows the weight denominator.
+  if (currency) {
+    conditions.push("UPPER(COALESCE(s.currency, 'USD')) = UPPER(?)");
+    params.push(currency);
+  }
+  if (non_usd) conditions.push("UPPER(COALESCE(s.currency, 'USD')) <> 'USD'");
 
   // Ranked by the expression itself: selecting it as a column leaked an
   // internal sort key into every returned row and the tool JSON. The account
@@ -949,7 +963,9 @@ export function getTaxLotsForChat(
       holding_period_days: (a, b) => Math.abs(b.holding_period_days ?? 0) - Math.abs(a.holding_period_days ?? 0),
       cost_basis: byMoney((r) => r.cost_basis_usd_at_current_fx, -1),
     };
-    return rows.sort(compare[sort_by] ?? compare.unrealized_gain).slice(0, limit);
+    const sorted = rows.sort(compare[sort_by] ?? compare.unrealized_gain);
+    // A negative limit is "every row" (the totals read), as LIMIT -1 is in SQL.
+    return limit < 0 ? sorted : sorted.slice(0, limit);
   };
 
   const queryOpenLots = (): TaxLotResult[] => {
@@ -1091,6 +1107,141 @@ export function getTaxLotsForChat(
   if (status === "closed") return queryClosedSales();
   if (status === "all") return [...queryOpenLots(), ...queryClosedSales()];
   return queryOpenLots();
+}
+
+/** Totals over EVERY lot matching a query_tax_lots filter (not the rows returned). */
+export interface TaxLotTotals {
+  open_lots?: {
+    long: { count: number; cost_basis_usd: number; unrealized_gain_usd: number; unpriced_count: number };
+    short: { count: number; short_sale_proceeds_usd: number; unrealized_gain_usd: number; unpriced_count: number };
+  };
+  pending_lots?: { count: number; by_reason: Record<string, number> };
+  closed_sales?: { count: number; realized_gain_usd_at_current_fx: number; left_out_no_fx_rate: number };
+  note: string;
+}
+
+export const TAX_LOT_TOTALS_NOTE =
+  "Totals cover every lot matching the filter, not only the rows returned. Long cost basis and short-sale proceeds are separate figures and never added together; so are long and short unrealized gains (USD). Pending lots (awaiting a statement or a closing entry, or an expired option awaiting its close) are counted only: they carry no value and no gain. Closed sales are totalled in USD at today's FX rate; a sale whose currency has no rate on file is counted in left_out_no_fx_rate and not in the total.";
+
+/**
+ * The totals block for query_tax_lots: the SAME reader as the rows
+ * (getTaxLotsForChat, so the same filter, pending index and FX rule), read
+ * with no limit and summed by side. Pending and expired rows already carry
+ * null value and gain there; they are counted here, never totalled.
+ */
+export function getTaxLotTotalsForChat(
+  db: Database.Database,
+  filters: Pick<TaxLotFilters, "status" | "symbol" | "account_name" | "year">,
+): TaxLotTotals {
+  const status = filters.status ?? "open";
+  const today = todayET();
+  const out: TaxLotTotals = { note: TAX_LOT_TOTALS_NOTE };
+  if (status !== "closed") {
+    const rows = getTaxLotsForChat(db, { ...filters, status: "open", limit: -1 });
+    const long = { count: 0, cost_basis_usd: 0, unrealized_gain_usd: 0, unpriced_count: 0 };
+    const short = { count: 0, short_sale_proceeds_usd: 0, unrealized_gain_usd: 0, unpriced_count: 0 };
+    const byReason: Record<string, number> = {};
+    let pending = 0;
+    for (const r of rows) {
+      const reason = r.pending_statement
+        ? (r.pending_statement_reason ?? "pending")
+        : isExpiredOptionRow(r, today)
+          ? "expired_option_awaiting_close"
+          : null;
+      if (reason) {
+        pending++;
+        byReason[reason] = (byReason[reason] ?? 0) + 1;
+        continue;
+      }
+      const side = r.position_side === "short" ? short : long;
+      side.count++;
+      if (side === short) short.short_sale_proceeds_usd += r.cost_basis;
+      else long.cost_basis_usd += r.cost_basis;
+      if (r.unrealized_gain == null) side.unpriced_count++;
+      else side.unrealized_gain_usd += r.unrealized_gain;
+    }
+    out.open_lots = { long, short };
+    out.pending_lots = { count: pending, by_reason: byReason };
+  }
+  if (status !== "open") {
+    const sales = getTaxLotsForChat(db, { ...filters, status: "closed", limit: -1 });
+    let total = 0;
+    let leftOut = 0;
+    for (const r of sales) {
+      if (r.realized_gain_usd_at_current_fx == null) leftOut++;
+      else total += r.realized_gain_usd_at_current_fx;
+    }
+    out.closed_sales = { count: sales.length, realized_gain_usd_at_current_fx: total, left_out_no_fx_rate: leftOut };
+  }
+  return out;
+}
+
+/** One security held in two or more positions in scope, summed. */
+export interface HoldingSymbolRollup {
+  symbol: string;
+  security_name: string | null;
+  security_type: string | null;
+  accounts: string[];
+  positions: number;
+  total_quantity: number;
+  total_cost_basis_usd: number | null;
+  cost_basis_per_share_usd: number | null;
+  cost_basis_per_share_reason?: string;
+  market_value: number;
+  unrealized_gain: number | null;
+  positions_without_basis: number;
+}
+
+const PER_SHARE_TYPES = new Set(["stock", "etf", "mutual fund"]);
+
+/**
+ * Per-security roll-up for query_holdings: the security page's POSITIONS
+ * reader and totals (getHoldingsBySecurity + computePositionTotals), limited
+ * to the scope's accounts, for every security of `symbols` held in two or
+ * more positions. Keyed by security, never blended across securities that
+ * share a symbol. The per-share basis is total basis / total quantity for a
+ * long stock, ETF or fund position with every basis known; otherwise null
+ * with the reason.
+ */
+export function getHoldingsBySymbolForChat(
+  db: Database.Database,
+  symbols: string[],
+  accountIds: number[] | undefined,
+): HoldingSymbolRollup[] {
+  const inScope = accountIds ? new Set(accountIds) : null;
+  const secStmt = db.prepare("SELECT id, symbol, name, security_type FROM securities WHERE symbol = ? ORDER BY id");
+  const out: HoldingSymbolRollup[] = [];
+  for (const symbol of [...new Set(symbols)]) {
+    for (const sec of secStmt.all(symbol) as Array<{ id: number; symbol: string; name: string | null; security_type: string | null }>) {
+      const positions = getHoldingsBySecurity(db, sec.id).filter((p) => !inScope || inScope.has(p.account_id));
+      if (positions.length < 2) continue;
+      const totals = computePositionTotals(positions);
+      const qty = positions.reduce((a, p) => a + p.quantity, 0);
+      const type = (sec.security_type ?? "").trim().toLowerCase().replace(/_/g, " ");
+      const anyLong = positions.some((p) => p.quantity > 0);
+      const anyShort = positions.some((p) => p.quantity < 0);
+      let reason: string | undefined;
+      if (!PER_SHARE_TYPES.has(type)) reason = `a per-share basis is given for stocks, ETFs and funds only; this is ${sec.security_type ?? "an unknown type"}`;
+      else if (anyLong && anyShort) reason = "held long and short: the positions do not share one per-share basis";
+      else if (anyShort) reason = "a short position: its basis is the sale proceeds, not a cost per share";
+      else if (totals.positionsWithoutBasis.length > 0 || totals.totalCostBasis == null) reason = `${totals.positionsWithoutBasis.length} position(s) have no cost basis on file`;
+      out.push({
+        symbol: sec.symbol,
+        security_name: sec.name,
+        security_type: sec.security_type,
+        accounts: [...new Set(positions.map((p) => p.account_name))].sort(),
+        positions: positions.length,
+        total_quantity: qty,
+        total_cost_basis_usd: totals.totalCostBasis,
+        cost_basis_per_share_usd: reason || qty === 0 ? null : (totals.totalCostBasis as number) / qty,
+        ...(reason ? { cost_basis_per_share_reason: reason } : {}),
+        market_value: totals.totalValue,
+        unrealized_gain: totals.totalUnrealizedGain,
+        positions_without_basis: totals.positionsWithoutBasis.length,
+      });
+    }
+  }
+  return out;
 }
 
 /** How chat describes an open short lot (pinned by tests). */

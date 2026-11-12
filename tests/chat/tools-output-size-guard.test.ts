@@ -155,11 +155,15 @@ function numericDrift(tool: string, full: unknown, compact: unknown, path = "", 
  * contribution, share, fraction, rate, Greek or macro value.
  */
 const ALLOWED_ROUNDING: Record<string, Record<string, number>> = {
-  query_holdings: { cost_basis: 2, market_value: 2, unrealized_gain: 2, latest_price: 4, unrealized_gain_pct: 2, position_weight_pct: 2 },
+  query_holdings: {
+    cost_basis: 2, market_value: 2, unrealized_gain: 2, latest_price: 4, unrealized_gain_pct: 2, position_weight_pct: 2,
+    total_cost_basis_usd: 2, // by_symbol; cost_basis_per_share_usd is a ratio and stays exact
+  },
   query_tax_lots: {
     cost_basis: 2, original_lot_cost_basis: 2, current_value: 2, unrealized_gain: 2, proceeds: 2, realized_gain_loss: 2,
     proceeds_native: 2, cost_basis_native: 2, realized_gain_native: 2, proceeds_usd_at_current_fx: 2,
     cost_basis_usd_at_current_fx: 2, realized_gain_usd_at_current_fx: 2, acquisition_price: 4, current_price: 4, sale_price: 4,
+    cost_basis_usd: 2, unrealized_gain_usd: 2, short_sale_proceeds_usd: 2, // totals block
   },
   query_transactions: { amount: 2, fees: 2, price_per_share: 4 },
   query_allocation: { total_market_value: 2, percentage: 2 },
@@ -175,6 +179,7 @@ const NEVER_ROUNDED_PROBES = [
   "contribution", "value", "share_of_option_value", "share_of_bond_value", "share_of_book", "net_market_value_usd",
   "estimated_change_fraction", "change_fraction", "delta", "gamma", "theta", "vega", "iv", "twr", "beta", "alpha",
   "weight", "gross_weight", "volatility", "sharpe", "herfindahl", "top5_share", "risk_free_rate", "quantity", "id",
+  "cost_basis_per_share_usd", "total_quantity", "count", "unpriced_count", "left_out_no_fx_rate",
 ];
 
 function allKeys(v: unknown, out = new Set<string>()): Set<string> {
