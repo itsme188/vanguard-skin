@@ -407,7 +407,7 @@ const BASE_CHAT_TOOLS: ChatTool[] = [
   {
     name: "query_twr",
     description:
-      "Compute Time-Weighted Return (TWR) and XIRR for the portfolio or individual accounts over a specified period. A fixed period (1y / 3y / 5y) is the FULL span ending at the last statement, not at today; ytd and inception run to today. The result's `window` gives the exact `start_date` and `end_date` measured: always state them with the figure (for example 'the year to Sep 30'), and never describe a fixed-period figure as running through today when `ends_at_last_statement` is true. TWR uses chain-linked Modified Dietz (measures portfolio manager skill). XIRR uses Newton-Raphson (measures investor's actual experience, accounting for timing of deposits/withdrawals). Returns both metrics, cumulative return, annualized return, and per-account breakdown. In the XIRR result, `totalInvested` is the sum of money the investor put IN during the window (cash deposits and in-kind transfers in); it does not include the opening portfolio value and is not net of withdrawals (those are `totalWithdrawn`). Never present it as the portfolio's cost basis or as a total amount invested over time; the result's `field_notes` repeats this. Account names are matched case-insensitively (e.g., 'roth' matches 'Vanguard Roth IRA'). Use when asked about portfolio performance, returns, how the portfolio has done, YTD/annual returns, investment performance comparison between accounts, or whether the portfolio is beating expectations.",
+      "Compute Time-Weighted Return (TWR) and XIRR for the portfolio or individual accounts over a specified period. A fixed period (1y / 3y / 5y) is the FULL span ending at the last statement, not at today; ytd and inception run to today. The result's `window` gives the exact `start_date` and `end_date` measured: always state them with the figure (for example 'the year to Sep 30'), and never describe a fixed-period figure as running through today when `ends_at_last_statement` is true. TWR uses chain-linked Modified Dietz (measures portfolio manager skill). XIRR uses Newton-Raphson (measures investor's actual experience, accounting for timing of deposits/withdrawals). Returns both metrics, cumulative return, annualized return, and per-account breakdown. In the XIRR result, `totalInvested` is the sum of money the investor put IN during the window (cash deposits and in-kind transfers in); it does not include the opening portfolio value and is not net of withdrawals (those are `totalWithdrawn`). Never present it as the portfolio's cost basis or as a total amount invested over time; the result's `field_notes` repeats this. Account names are matched case-insensitively (e.g., 'roth' matches 'Vanguard Roth IRA'). The result's units block names each figure: twr.totalReturn is the time-weighted return over the window (not annualised), twr.annualizedReturn the same annualised, and xirr.xirr the money-weighted return, annualised; always label them so. Use when asked about portfolio performance, returns, how the portfolio has done, YTD/annual returns, investment performance comparison between accounts, or whether the portfolio is beating expectations.",
     input_schema: {
       type: "object" as const,
       properties: {
@@ -1703,6 +1703,27 @@ export async function executeTool(
           },
           twr: twrResult,
           xirr: xirrResult,
+          // Said in words, so the two returns are never left unlabelled.
+          units: {
+            "twr.totalReturn": "time-weighted return over the whole window, NOT annualised; decimal fraction (0.05 = 5%)",
+            "twr.annualizedReturn":
+              "time-weighted return, annualised; decimal fraction; null when the window is shorter than 30 days",
+            "xirr.xirr": "money-weighted return (XIRR), annualised; decimal fraction",
+            window:
+              "every figure covers window.start_date to window.end_date; twr.perAccount and xirr.perAccount give the same measures per account",
+          },
+          ...(twrResult
+            ? {}
+            : {
+                twr_reason:
+                  "Time-weighted return not computed: the scope has no monthly statement values in this window to chain.",
+              }),
+          ...(xirrResult
+            ? {}
+            : {
+                xirr_reason:
+                  "Money-weighted return (XIRR) not computed: the scope has no start and end values with cash flows in this window to solve it from.",
+              }),
           field_notes: {
             totalInvested:
               "Total deposits: the money the investor added during this window (cash deposits and in-kind transfers in). It is not the portfolio's opening value, not its cost basis, and not net of withdrawals (see totalWithdrawn).",
