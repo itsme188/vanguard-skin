@@ -237,7 +237,7 @@ export async function runMorningDebrief(
     const claimedCandidates = claims.map((c) => c.candidate);
     const sections = renderDebriefSections(db, claimedCandidates);
     const prompt = buildDebriefPrompt(sections, today);
-    const generate = opts.generate ?? defaultGenerate;
+    const generate = opts.generate ?? generateDebriefText;
     const rawAiText = await generate(prompt);
     const aiMarkdown = stripModelPreamble(rawAiText);
 
@@ -373,8 +373,18 @@ export async function runMorningDebrief(
   }
 }
 
-async function defaultGenerate(prompt: string): Promise<string> {
-  const res = await generateTextForFeature("earningsDebrief", { prompt, maxOutputTokens: 4096 });
+/**
+ * The default debrief generator. The cap leaves room for default-on thinking
+ * (Sonnet 5.5 thinks by default at high effort and the thinking counts
+ * against it; was 4096). A reply cut off at the cap throws: the caller's
+ * compose catch releases the fresh claims and nothing is sent, so a
+ * truncated debrief can never go out as an email (2026-11-12).
+ */
+export async function generateDebriefText(prompt: string): Promise<string> {
+  const res = await generateTextForFeature("earningsDebrief", { prompt, maxOutputTokens: 16_000 });
+  if (res.finishReason === "length") {
+    throw new Error("debrief reply was cut off at the output cap; not sent");
+  }
   return res.text;
 }
 

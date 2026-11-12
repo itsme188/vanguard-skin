@@ -142,6 +142,39 @@ describe("buildContextForSurface multi-account fidelity (via generateNarrative)"
   });
 });
 
+describe("output cap and a cut-off reply (2026-11-12)", () => {
+  let db: Database.Database;
+  beforeEach(() => {
+    db = new Database(":memory:");
+    runMigrations(db);
+    db.exec("INSERT INTO securities (id, symbol, name) VALUES (1, 'AAPL', 'Apple')");
+    db.exec("INSERT INTO security_factors (security_id, ai_exposure) VALUES (1, 'High')");
+    const today = new Date().toISOString().slice(0, 10);
+    db.prepare("INSERT INTO holdings (account_id, security_id, as_of_date, quantity) VALUES (1, 1, ?, 100)").run(today);
+    db.prepare("INSERT INTO prices (security_id, date, close_price, source) VALUES (1, ?, 100, 'test')").run(today);
+  });
+  const run = () =>
+    generateNarrative(db, { scope: "vanguard", surfaceKey: "factor-analysis", weekOf: "2026-05-04", forceRegen: true });
+
+  it("passes an explicit cap with room for default-on thinking (the provider defaults a 5.5 id to 4,096)", async () => {
+    let cap: number | undefined;
+    vi.mocked(generateTextForFeature).mockImplementationOnce(async (_feature, args) => {
+      cap = (args as { maxOutputTokens?: number }).maxOutputTokens;
+      return { text: "The portfolio carries meaningful AI exposure across names.", finishReason: "stop" } as never;
+    });
+    await run();
+    expect(cap).toBeGreaterThanOrEqual(16_000);
+  });
+
+  it("a reply cut off at the cap is refused and nothing is cached", async () => {
+    vi.mocked(generateTextForFeature).mockImplementationOnce(
+      async () => ({ text: "The portfolio carries meaningful AI exposure across names and", finishReason: "length" }) as never,
+    );
+    await expect(run()).rejects.toThrow(/cut off/);
+    expect(db.prepare("SELECT COUNT(*) AS n FROM analysis_narratives").get()).toEqual({ n: 0 });
+  });
+});
+
 describe("buildContextForSurface position-risk ranks by risk contribution (via generateNarrative)", () => {
   let db: Database.Database;
 

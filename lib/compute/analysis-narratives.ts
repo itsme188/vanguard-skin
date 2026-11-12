@@ -508,7 +508,14 @@ export async function generateNarrative(
     const result = await generateTextForFeature("analysisFactorNarrative", {
       system: SYSTEM_PROMPT,
       prompt,
+      // Explicit cap (2026-11-12): the provider defaults a 5-generation id to
+      // 4,096 output tokens, and default-on thinking counts against it.
+      maxOutputTokens: 16_000,
     });
+    if (result.finishReason === "length") {
+      // A reply cut off at the cap is not a narrative; never cache it.
+      throw new Error("narrative reply was cut off at the output cap");
+    }
     rawText = result.text;
   } catch (err) {
     // No model family in the text (CLAUDE.md: never name a model in user
