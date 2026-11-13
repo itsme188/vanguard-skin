@@ -13,7 +13,7 @@ import { computeDailyValuations } from "../compute/daily-valuation";
 import { todayET } from "../calendar/date-utils";
 import { isMarketClosed } from "../calendar/market-holidays";
 import { upsertFxRate } from "../mutations/fx-rates";
-import { countStatementGradeRowsOnDate } from "../mutations/closed-equity";
+import { countStatementGradeRowsOnDate, reconcileClosedEquityHoldings } from "../mutations/closed-equity";
 import { bumpTaxGenerationIfPresent, bumpIfPricesAffectSyntheticCloses } from "../compute/tax-convention";
 import { loadIbkrConfig } from "./config";
 import {
@@ -218,6 +218,27 @@ export function writeIbkrHoldings(
          total_value = excluded.total_value, cash_value = excluded.cash_value, source = excluded.source
        WHERE monthly_snapshots.source IN ('tws','manual')`,
     ).run(accountId, today, snapshot.netLiq, snapshot.cash);
+  }
+
+  // Closed-position reconcile (mirrors auto-refresh Step 1.8 on the TWS path):
+  // this writer records ACTIVE positions only, so a stock closed while TWS is
+  // disconnected has no row on the new date and its older non-zero row would
+  // stay the latest holding. Runs after a real write only, and before the
+  // valuations below so they count the flat. The reconciler keeps its own
+  // shrink guards and its own tax-generation rule (a `:live` tombstone never
+  // bumps). A failure here never fails the refresh.
+  if (!marketClosed && positionsWritten > 0) {
+    try {
+      const reconciled = reconcileClosedEquityHoldings(db, { accountId });
+      if (reconciled > 0) {
+        console.log(`[ibkr] Reconciled ${reconciled} closed holdings`);
+      }
+    } catch (err) {
+      console.error(
+        "[ibkr] Closed-position reconcile error (non-fatal):",
+        err instanceof Error ? err.message : err,
+      );
+    }
   }
 
   try {
