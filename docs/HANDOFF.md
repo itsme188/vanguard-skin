@@ -1,53 +1,58 @@
-# Session Handoff — for Codex review
+**Waiting on:** USER: (1) decide who raises the two small AI output caps in another task's files (`lib/research/verify-mentions.ts`, `lib/gmail/process.ts`; registered to `pm-stop-summarizing`, PR #133), the likely cause of repeated verify-mentions parse failures in the live log; (2) answer the data question on eleven reinvestment rows still counted twice in income (two data groups, TODO (o13)). Decision records: `small-ai-output-caps-owner`, `income-unpaired-reinvestments`. CLAUDE: nothing outstanding. CODEX: nothing requested.
 
-**Waiting on:** USER: confirm the five landings look right in the live app, and review the PR opened from `qa-local-unpushed-2026-11-09b` (three parked nightly-fixer commits, listed in §4). Two register rows are stale and only the owner can clear them — `settings-page` and `monthly-performance` still read "review PR and decide merge" although #172 and #173 merged and are deployed. The four standing decision records are unchanged and still open: `broker-realized-gain-reports`, `late-arm-preview-confirm`, `tax-preparer-short-term-gift`, plus `provider-failover` (who repairs the eight failover files). CLAUDE: nothing outstanding. CODEX: nothing requested.
+# Session Handoff — for Codex review
 
 > Rolling file, overwritten at each session close. Past handoffs: `git log -p docs/HANDOFF.md`.
 
 ## 1. Goal and files changed
 
-Goal: report merge-readiness on three QA pull requests, then — after the owner merged five PRs from outside — preserve the checkout, reconcile the TODO, and deploy the result to the Mac app and the Worker. This session authored no feature code; it reviewed, reconciled, verified and shipped other agents' work.
+**Session:** 2026-11-11 to 2026-11-13. **Goal:** map, cheapen, improve and debug the in-app Portfolio Assistant chat; then build the owner's rulings on chat privacy, the latest model of each class, a per-chat model picker, and a pinned desktop controls row.
 
-Files this session changed, both in PR #174 (`ad0af758`, merged as `1ed3c3dd`):
+**Landed:** PR #178 (branch `claude/portfolio-assistant-review-7148e7`), fast-forwarded onto `main` under the integration lock; `main` at `5db9fea0` plus this handoff commit. Detail: `docs/DECISIONS.md` 2026-11-11, 2026-11-12, 2026-11-13; plan `docs/superpowers/plans/2026-11-11-portfolio-assistant-plan.md` (review log); working reference `lib/chat/CLAUDE.md`.
 
-- `docs/plans/TODO.md` — marked the #165 / #166 / #170 nightly-QA lines landed with their merge commits, and appended a `Closed this session (2026-11-09)` block recording all five landings, the guard desync below, and the parked-commits situation.
-- `tests/repo/hub-live-client-boundary.test.ts` — one entry added to `CLIENT_SAFE`.
+**Files changed** (`git diff --stat 0eaf8703..5db9fea0`: 237 files, about 31,400 lines added, 1,900 removed), by area:
+- `lib/chat/` (25 files): `tools.ts`, `system-prompt.ts`, `scope.ts`, `history.ts`, `usage-log.ts`, `ibkr-context.ts`, `conversation-title.ts`, `model-choice.ts` and `model-resolve.ts` (new), `composite/` (six composite tools), `CLAUDE.md`.
+- `lib/queries/` (12): `income-sql.ts` (one income rule, 3-day pairing, maximum matching, importer sign conventions, work budget), `income.ts`, `chat-tools.ts`, `portfolio-summary.ts`, `market-snapshot.ts`, `transaction-amount-currency.ts` (new), `transactions.ts`, `security-detail.ts`, `wash-sale-replacements.ts` (new), `integrity-checks.ts`, `chat.ts`.
+- `lib/ai/` (4: `model-tiers.ts`, `models.ts`, `model-catalog.ts`, `model-families.ts`), `lib/claude-request-options.ts`, `workers/cron/src/model-tiers.ts` (mirror) and its test; output-cap call sites in `lib/print-watch/`, `lib/calendar/`, `lib/earnings/`, `lib/securities/`, `lib/alerts/`, `lib/compute/`, `lib/apis/`, `lib/etf/`, `lib/trade-review/`, `lib/chart/`.
+- `lib/db/migrations/103_chat_conversation_model_family.sql` (one nullable column) and `lib/mutations/chat.ts`.
+- `app/api/chat/route.ts`, `app/api/chat/conversations/` routes, `app/dashboard/components/ChatInterface.tsx`, `IncomeYieldSection.tsx`.
+- `scripts/chat-eval/` (17 files: golden set, scorer, runner, fixture builder v3, probe, rescore), `scripts/preprocess-to-canonical.ts`, `scripts/spike-bakeoff-parse.ts`.
+- Tests: about 150 files under `tests/chat`, `tests/queries`, `tests/dashboard`, `tests/api`, `tests/ai`, `tests/scripts`, `tests/repo` and others.
+- Docs: `CLAUDE.md`, `docs/DECISIONS.md`, `docs/plans/TODO.md`, `docs/reference/api-patterns.md`, `docs/reference/architecture-detail.md`, the plan.
 
-Plus this file.
+## 2. Tests, checks and deploy
 
-## 2. Tests and E2E checks
-
-- **Pre-merge, per PR, on simulated merge commits:** #165 — its own 10 suites 200 passed, `workers/cron` 143 passed, `tests/repo` 53 files / 359 passed. #166 — affected calendar tests plus all of `tests/filing-summary`, 27 files / 627 passed, 1 skipped. #170 — 98 files, **1 failed**, 1,147 passed, 3 skipped (the guard below).
-- **`bash scripts/verify.sh full --base main` on `519c0f02`** (after the owner merged all five): `result=failed` — 1,607 of 1,608 files green, **1 failed / 19,911 passed**, the single failure being the guard below. That bounded the blast radius: five landings together introduced no other interaction.
-- **`bash scripts/verify.sh full --base main` on `1ed3c3dd`** (the deployed tip): **`result=passed` — 1,608 files, 19,912 passed, 9 todo, 0 failed.** Evidence `1794328190760-4fa0968a-cdcd-4bd7-997f-294fa79956e1`.
-- **Deploy: completed and verified.** `bash scripts/coord/deploy.sh` at `1ed3c3dd` → build **`70qFikSuW5va544Ob5Mqn`**. Notarization successful; `verify-bundle: OK (no leaks, runtime pieces present)`; pre-quit freed :3099; post-verify confirmed the BUILD_ID matches on both sides, codesign verified, a new `next-server (v16.1.6)` listener, and `/login` answering "Portfolio Desk". Log `.git/portfolio-desk-coord/logs/deploy-20261110T163314Z.log`.
-- **Worker deployed**, first attempt, no `.wrangler` retry needed: version **`8c83d074-5dfd-48ba-a205-4c1054345790`**, schedule `*/15 * * * *` intact, all bindings present. Required because #165 changes `workers/cron/src/fallback-earnings.ts`.
-- No browser E2E this session: nothing here authored UI.
+- Full suite on the merged commit: 1,702 files, 20,867 tests passed. Typecheck clean. Production build passed. Worker suite: 55 files passed. Re-run at the handoff commit: see the commit that follows or the register.
+- Six live runs on the SYNTHETIC evaluation database only, under owner-approved caps (about 3.60 of 6.50 dollars on day one; 3.52 of 5.00 on days two and three). The model-request probe accepted every request shape the app sends on the 5.5 models, the chat on Haiku included; one real chat message per model class went through the UI.
+- Independent reviews: per task, whole-branch, and a final pre-merge review (no blockers; two should-fix items fixed, `eb5b8190`, `62130659`).
+- **Deploys (2026-11-12 evening Eastern, 2026-11-13 UTC):**
+  - The Cloudflare Worker `vanguard-skin-cron` was deployed from `a7fa7b10` with the owner's explicit go-ahead.
+  - The Mac app was deployed through `npm run deploy` at `5db9fea0`: notarization successful, bundle gate ok, installed BUILD_ID matches, codesign verified, the new listener on :3099 answers `/login`.
+  - Migration 103 is applied on the live database (schema check only).
 
 ## 3. Open concerns, rejected approaches, decisions
 
-**The twin client-safe guard desynced, and `main` landed red.** #170 added `snippet-measure-gate` to `CLIENT_SAFE` in `tests/repo/print-watch-import-boundaries.test.ts` but not to the twin list in `tests/repo/hub-live-client-boundary.test.ts`, whose set-equality assertion runs in both directions precisely so a one-sided widening cannot pass quietly. GitHub reported the PR `MERGEABLE / CLEAN` and `git merge-tree` agreed, because the defect is a consistency invariant between two files rather than a textual overlap, and the PR edited only one of the pair. The pre-merge review reported #170 **BLOCKED** on it; the merge went ahead anyway, so `main` arrived red. That also makes the Stop verification gate unsatisfiable, since `currentEvidence` accepts only `result=passed` and cannot distinguish "unverified" from "verified and red".
+1. **NEW, act on it first: verify-mentions parse failures.** The installed app's server log holds `[verify-mentions] Haiku verification failed: No object generated: could not parse the response` 232 times in the current log file; it predates this deploy. `lib/research/verify-mentions.ts` asks for a 1,024-token cap on the cheap tier. The branch's model sweep flagged exactly that caller, and `lib/gmail/process.ts` (2,048), as too small now that the current Haiku thinks by default. Both were left alone because their files are registered to `pm-stop-summarizing` (PR #133). This is the likely cause, not proven. Decision record `small-ai-output-caps-owner`; TODO top item.
+2. **Eleven reinvestment rows still counted twice in income**, in two data groups: a foreign security whose reinvestment is below its dividend with no withholding row, and a cash fund with dividend rows missing. Needs the broker statements. Decision record `income-unpaired-reinvestments`; TODO (o13).
+3. **Chat model tier: decided.** The default stays the workhorse tier (Sonnet 5.5), with a per-chat Haiku / Sonnet / Opus choice. A full 20-question evaluation on the final fixture and a golden run on Haiku have not been done (TODO (o10), (o18)).
+4. **Liqn factor data:** a two-week trial through the owner's existing connector before any build; public data calls only (TODO (o15)).
+5. **The chat has no failover to the other provider and no excluded-id retry** (TODO (F3), (o19)).
+6. **Smaller open items:** the chat layout points left alone (o14); a Plaid short with no cost basis (o22); the chat income tool does not surface `pairingApproximate` (o21); the Mac app and Worker deploy together (o23).
+7. **Rejected or corrected approaches a reviewer should know:**
+   - The raw same-sign income rule was wrong for two importers (the Vanguard PDF and export parsers store a purchase negative); it was replaced by reading each leg through its importer's convention (`562b3c57`).
+   - Greedy day-by-day pairing double counted in a rare pattern; it was replaced by maximum matching (`88b70207`), then bounded by a work budget (`eb5b8190`).
+   - A check on real data cannot see shapes the data lacks: the sign-rule defect was invisible there because no real row came from those importers.
+   - The regex scorer was wrong in both directions (false failures and missed errors); an independent reader is needed beside it for any evaluation run.
+   - Chat privacy now means data leaving the app; the scope limits reads, not what the owner sees (owner ruling 2026-11-12, superseding the 2026-11-07 title rule and plan rulings P3, P8, P9, OPEN-7).
 
-The fix was one line, folded into the TODO PR (#174) rather than a separate PR, because nothing could deploy past it and the owner had designated #174 the preflight tip. Flagged explicitly in the PR body for objection before merge. The module earns its place rather than merely silencing the check: `lib/print-watch/snippet-measure-gate.ts` imports only `import type { LineContract } from "./types"` — no db, no node builtins, no server trees — and its consumers are `reconcile.ts` (already client-safe) and `store.ts`.
+## 4. Uncommitted changes and live-process state (after the deploy)
 
-**Drift reviewed before merge, no conflicts found.** All three QA PRs merged clean onto `origin/main` by `merge-tree` and by sequential `commit-tree` simulation in landing order, so the docs-conflict resolution step was a no-op and nothing was pushed to any PR branch. One real overlap surface existed — #166 and `main` both touched `lib/filing-summary/labels.ts`, the single source of owner-facing words — but the regions are independent (the PR adds a `REASON_SENTENCES` entry; `main` reworked the choice and cost helpers for the model-policy landing) and the whole `tests/filing-summary` suite passed on the merged tree.
+- The installed app runs on :3099 at `5db9fea0`.
+- No dev or test server left by this session (ports 3090 and 3095 free).
+- This session's worktree `.claude/worktrees/portfolio-assistant-review-7148e7` and branch `claude/portfolio-assistant-review-7148e7` still exist; merged, safe to remove.
+- Other sessions' worktrees untouched (`vanguard-skin-menu`, `-perf`, `-qa-fix`, `-todo-reconcile`); their open PRs #175, #176, #177, #179 untouched.
+- No uncommitted changes from this session.
 
-**The unpushed-local-`main` divergence recurred, as predicted.** The nightly fixer auto-merges onto the main checkout's `main` and never pushes, so `main` silently diverges and the next `git pull --ff-only` aborts. This was handled twice in two sessions. A standing fix is still open and is the one thing most likely to cost another session's first hour.
+## 5. Agent identity and session link
 
-**Deploy order.** Mac first, Worker second, leaving a few minutes where the new Mac build talked to the old Worker. Safe here because the Worker is fallback-only and reconciles through KV, and #165 carried no snapshot version bump. A snapshot schema change would have required the reverse order.
-
-**Not done, deliberately:** no code conflict was resolved unilaterally (none existed); no PR was merged or deployed without the owner's explicit go; migration 102 from an earlier session remains un-rehearsed on a VACUUM copy, flagged previously and deployed on owner direction.
-
-## 4. Uncommitted changes and live state
-
-- Working tree clean at `1ed3c3dd`; local `main` equals `origin/main`.
-- **Live app:** build `70qFikSuW5va544Ob5Mqn` at `/Applications/Vanguard Dashboard.app`, serving :3099. **Live Worker:** `8c83d074-5dfd-48ba-a205-4c1054345790`.
-- The empty `workers/cron/.wrangler/` the Worker deploy leaves behind was removed; left in place it makes the next Mac deploy's pre-flight refuse to build.
-- **Branch `qa-local-unpushed-2026-11-09b`** holds three unlanded nightly-fixer fixes plus a TODO reconcile: `01aa3759` (release-time popover says its source in words), `57080b5c` (stale-prices drawer leaves out an expired contract), `c0316107` (custom scenario names the leverage factor beside the beta), `c2b78e4c`. A PR is open against `main` for them.
-- **`qa-local-unpushed-2026-11-08` is now fully contained in `main`** and can be deleted.
-- Other open PRs untouched by this session: #133 (`pm-stop-summarizing`), and the `bogey-scan-tmt-only` branch in review. Worktrees `-menu` (`pm/settings-page-2026-11-09`), `-perf` (`pm/monthly-performance-2026-11-09`) and `-todo-reconcile` exist; the first two are now merged work and are cleanup candidates.
-- No locks held. No dev servers started by this session; scratch worktrees used for PR testing were removed.
-
-## 5. Agent identity
-
-Claude Opus 5 (Claude Code), session `https://claude.ai/code/session_019QYEpYHrCJDAsyEhTxM7Ng`.
+Claude: Fable 5.2 as conductor, Opus 5.5 workers for all code, review and docs; run in the Claude desktop app's Code tab. No `claude.ai/code` session URL is available in this environment.
