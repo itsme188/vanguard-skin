@@ -1,4 +1,4 @@
-**Waiting on:** USER: sign the updated Apple Developer agreement in App Store Connect, then say so, so the Mac deploy of PR #180 (merged at `fdaf8273`, not deployed) can be re-run (decision record `apple-developer-agreement-2026-11`). CLAUDE or CODEX: retry the Worker deploy when Cloudflare recovers (`cd workers/cron && npx wrangler deploy`, then remove the empty `workers/cron/.wrangler` folder before any Mac deploy). USER: answer the data question on eleven reinvestment rows still counted twice in income (two data groups, TODO (o13); decision record `income-unpaired-reinvestments`).
+**Waiting on:** USER: answer the data question on eleven reinvestment rows still counted twice in income (two data groups, TODO (o13); decision record `income-unpaired-reinvestments`). CLAUDE or CODEX: watch `~/Library/Logs/Vanguard Dashboard/server.log` over the next days for the `[verify-mentions] Haiku verification failed: No object generated` lines (none expected now; any failure states its finish reason). Nothing else outstanding.
 
 # Session Handoff — for Codex review
 
@@ -8,7 +8,7 @@
 
 **Session:** 2026-11-11 to 2026-11-13. **Goal:** map, cheapen, improve and debug the in-app Portfolio Assistant chat; then build the owner's rulings on chat privacy, the latest model of each class, a per-chat model picker, and a pinned desktop controls row; on 2026-11-13, the small AI output caps behind the verify-mentions log failures (PR #180).
 
-**Landed:** PR #178 (branch `claude/portfolio-assistant-review-7148e7`), fast-forwarded onto `main` under the integration lock at `5db9fea0`, then the first handoff `61b1c3c0`. On 2026-11-13, PR #180 (branch `claude/small-ai-output-caps`, small AI output caps, owner's go-ahead) was fast-forwarded onto `main` under the integration lock at `fdaf8273`; this handoff commit follows it. Detail: `docs/DECISIONS.md` 2026-11-11, 2026-11-12, 2026-11-13; plan `docs/superpowers/plans/2026-11-11-portfolio-assistant-plan.md` (review log); working reference `lib/chat/CLAUDE.md`.
+**Landed:** PR #178 (branch `claude/portfolio-assistant-review-7148e7`), fast-forwarded onto `main` under the integration lock at `5db9fea0`, then the first handoff `61b1c3c0`. On 2026-11-13, PR #180 (branch `claude/small-ai-output-caps`, small AI output caps, owner's go-ahead) was fast-forwarded onto `main` under the integration lock at `fdaf8273`, followed by the handoff `c7ad7b03`; both PRs are deployed (item 2), and this handoff commit follows. Detail: `docs/DECISIONS.md` 2026-11-11, 2026-11-12, 2026-11-13; plan `docs/superpowers/plans/2026-11-11-portfolio-assistant-plan.md` (review log); working reference `lib/chat/CLAUDE.md`.
 
 **Files changed** (`git diff --stat 0eaf8703..5db9fea0`: 237 files, about 31,400 lines added, 1,900 removed), by area:
 - `lib/chat/` (25 files): `tools.ts`, `system-prompt.ts`, `scope.ts`, `history.ts`, `usage-log.ts`, `ibkr-context.ts`, `conversation-title.ts`, `model-choice.ts` and `model-resolve.ts` (new), `composite/` (six composite tools), `CLAUDE.md`.
@@ -34,10 +34,11 @@
 - **PR #178:** full suite on the merged commit: 1,702 files, 20,867 tests passed. Typecheck clean. Production build passed. Worker suite: 55 files passed. Re-run at the handoff commit: see the commit that follows or the register.
 - Six live runs on the SYNTHETIC evaluation database only, under owner-approved caps (about 3.60 of 6.50 dollars on day one; 3.52 of 5.00 on days two and three). The model-request probe accepted every request shape the app sends on the 5.5 models, the chat on Haiku included; one real chat message per model class went through the UI.
 - Independent reviews: per task, whole-branch, and a final pre-merge review (no blockers; two should-fix items fixed, `eb5b8190`, `62130659`).
-- **PR #180 is NOT deployed (2026-11-13); both deploys are blocked outside the repo:**
-  - Mac: `npm run deploy` failed at notarization with HTTP 403 "A required agreement is missing or has expired" (the known Apple Developer agreement case; the owner signs the updated agreement in App Store Connect, then the deploy is re-run; do not rotate credentials). The build never reached install. An earlier attempt the same day stopped at pre-flight because a failed Worker deploy had left an empty `workers/cron/.wrangler` folder; it was removed.
-  - Worker: `npx wrangler deploy` failed twice at the versions upload with Cloudflare API error 10013 ("unknown error") while Cloudflare's status page listed Workers as degraded. Not retried further.
-  - Until both are deployed, mention verification on the Mac keeps failing as before, and the Worker's two newsletter paths keep the old 2,048 cap. Nothing is worse than before the merge. Re-run commands and what to watch: TODO (d2).
+- **PR #180 deploys (2026-11-13):**
+  - The first attempts were blocked outside the repo. The Mac deploy failed at notarization with HTTP 403 "A required agreement is missing or has expired" (Apple Developer agreement). The Worker deploy failed twice at the versions upload with Cloudflare API error 10013 while Cloudflare listed Workers as degraded. An earlier Mac attempt stopped at pre-flight on an empty `workers/cron/.wrangler` folder left by a failed Worker deploy; it was removed.
+  - The owner signed the updated agreement. The Mac app was then deployed through `npm run deploy` at `c7ad7b03`: notarization successful, bundle gate ok, installed BUILD_ID matches, codesign verified, the new listener on :3099 answers `/login`. The installed app now includes PR #180.
+  - The Cloudflare Worker `vanguard-skin-cron` was deployed from `c7ad7b03` on the next attempt (Cloudflare was still listed as degraded). The empty `workers/cron/.wrangler` folder was removed afterwards.
+  - The fix is UNPROVEN until mention verification has run on real articles: the log has too few lines since the relaunch to show anything (no failure lines yet). What to watch: TODO (v1).
 - **PR #178 deploys (2026-11-12 evening Eastern, 2026-11-13 UTC):**
   - The Cloudflare Worker `vanguard-skin-cron` was deployed from `a7fa7b10` with the owner's explicit go-ahead.
   - The Mac app was deployed through `npm run deploy` at `5db9fea0`: notarization successful, bundle gate ok, installed BUILD_ID matches, codesign verified, the new listener on :3099 answers `/login`.
@@ -45,7 +46,7 @@
 
 ## 3. Open concerns, rejected approaches, decisions
 
-1. **verify-mentions parse failures: fixed and merged in PR #180, not deployed.** The live log showed `No object generated` failures from its first day (2026-08-05); the 1,024 cap was too small for long candidate lists even before thinking, and the rate rose once a thinking-by-default model reached the cheap tier. The owner said to fix the caps (PR #133, which had the files registered, was already merged), so the decision record `small-ai-output-caps-owner` is closed. Still unproven until the live log is watched after both deploys (TODO (d2)).
+1. **verify-mentions parse failures: fixed in PR #180, deployed on the Mac and the Worker on 2026-11-13.** The live log showed `No object generated` failures from its first day (2026-08-05); the 1,024 cap was too small for long candidate lists even before thinking, and the rate rose once a thinking-by-default model reached the cheap tier. The owner said to fix the caps (PR #133, which had the files registered, was already merged), so the decision record `small-ai-output-caps-owner` is closed. Unproven until mention verification has run on real articles; watch the log over the next days (TODO (v1)).
 2. **Eleven reinvestment rows still counted twice in income**, in two data groups: a foreign security whose reinvestment is below its dividend with no withholding row, and a cash fund with dividend rows missing. Needs the broker statements. Decision record `income-unpaired-reinvestments`; TODO (o13).
 3. **Chat model tier: decided.** The default stays the workhorse tier (Sonnet 5.5), with a per-chat Haiku / Sonnet / Opus choice. A full 20-question evaluation on the final fixture and a golden run on Haiku have not been done (TODO (o10), (o18)).
 4. **Liqn factor data:** a two-week trial through the owner's existing connector before any build; public data calls only (TODO (o15)).
@@ -58,13 +59,13 @@
    - The regex scorer was wrong in both directions (false failures and missed errors); an independent reader is needed beside it for any evaluation run.
    - Chat privacy now means data leaving the app; the scope limits reads, not what the owner sees (owner ruling 2026-11-12, superseding the 2026-11-07 title rule and plan rulings P3, P8, P9, OPEN-7).
 
-## 4. Uncommitted changes and live-process state (after the deploy attempts)
+## 4. Uncommitted changes and live-process state (after the deploys)
 
-- The installed app runs on :3099 at `5db9fea0` (PR #178), WITHOUT the cap fix: the PR #180 Mac deploy failed at notarization and never reached install.
-- The live Worker is the 2026-11-12 version deployed from `a7fa7b10` (it has the model changes, not the cap fix).
-- `main` is at `fdaf8273` (PR #180 merged); this handoff commit follows it.
-- The worktree `.claude/worktrees/portfolio-assistant-review-7148e7` is on branch `claude/small-ai-output-caps` at `main`. It and the merged branch `claude/portfolio-assistant-review-7148e7` are safe to remove once both deploys are done.
-- No dev or test server left by this session. The empty `workers/cron/.wrangler` folder left by a failed Worker deploy was removed.
+- The installed app runs on :3099 at `c7ad7b03` (PR #178 and PR #180).
+- The live Worker `vanguard-skin-cron` is deployed from `c7ad7b03`.
+- `main` is at `c7ad7b03`; this handoff commit follows it.
+- No dev or test server left by this session. The empty `workers/cron/.wrangler` folder was removed.
+- This session's worktree `.claude/worktrees/portfolio-assistant-review-7148e7` is on branch `claude/small-ai-output-caps`. Both of this session's branches (`claude/portfolio-assistant-review-7148e7`, `claude/small-ai-output-caps`) are merged and safe to remove, with the worktree.
 - Other sessions' worktrees untouched (`vanguard-skin-menu`, `-perf`, `-qa-fix`, `-todo-reconcile`); their open PRs #175, #176, #177, #179 untouched.
 - No uncommitted changes from this session.
 
