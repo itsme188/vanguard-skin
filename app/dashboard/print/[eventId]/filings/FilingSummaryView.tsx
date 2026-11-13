@@ -366,7 +366,7 @@ function LateBlock({
         <p className="text-sm text-ink-dim">{LATE_SECTION_INTRO}</p>
       ) : (
         <p className="text-sm text-ink-dim [overflow-wrap:anywhere]">
-          {lateWatchText(late.watchState, late.windowEndText)}
+          {lateWatchText(late.watchState, late.windowEndText, late.endedEarly)}
           {late.lastPolledAtEt ? ` Last looked at ${late.lastPolledAtEt}.` : ""}
         </p>
       )}

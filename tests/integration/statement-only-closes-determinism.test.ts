@@ -149,14 +149,15 @@ describe("statement-only synthetic closes: live syncs are not tax inputs", () =>
     expect(getTaxConventionState(db).recomputeCurrent).toBe(true);
 
     // ── Live day 1 (IBKR Web API): ZZB gone from the live book, ZZA re-bought
-    //    live (fills not imported), live prices for everything. Then the
-    //    reconciler's live passes run, as auto-refresh does.
+    //    live (fills not imported), live prices for everything. The writer
+    //    runs the reconciler's live passes itself (ZZB → :live tombstone), so
+    //    a second explicit run finds nothing left to mark.
     writeIbkrHoldings(
       db,
       { accountCode: "U0", netLiq: 1000, cash: 100, positions: [ibkrStock("ZZA", 50, 12), ibkrStock("ZZC", 100, 31)] },
       { asOfDate: "2026-03-05" },
     );
-    expect(reconcileClosedEquityHoldings(db, { accountId })).toBe(1); // ZZB → :live tombstone
+    expect(reconcileClosedEquityHoldings(db, { accountId })).toBe(0);
     const zzbLatest = db
       .prepare(`SELECT quantity, source_key FROM holdings WHERE security_id = ? ORDER BY as_of_date DESC LIMIT 1`)
       .get(secId("ZZB")) as { quantity: number; source_key: string };
