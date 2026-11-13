@@ -7,7 +7,8 @@ import {
   INCOME_TYPES_SQL,
   INTEREST_EARNED_SQL,
   INTEREST_PAID_SQL,
-  incomePairingCtes,
+  loadIncomePairing,
+  type ApproximatePairing,
 } from "@/lib/queries/income-sql";
 
 export interface IncomeSummary {
@@ -26,6 +27,12 @@ export interface IncomeSummary {
   endDate: string;
   byAccount: AccountIncome[];
   topPayers: SymbolIncome[];
+  /**
+   * Accounts and securities whose reinvestment pairing hit the search
+   * budget (a pathological book): the figures there are from a valid but
+   * possibly not maximal pairing. Empty when every pairing is exact.
+   */
+  pairingApproximate: ApproximatePairing[];
 }
 
 export interface AccountIncome {
@@ -87,7 +94,7 @@ export function getIncomeSummary(
   // never the whole book.
   const scope = accountScopeAndSql(accountIds, "t.account_id");
   // Paired once, read by all three queries.
-  const pairing = incomePairingCtes(db);
+  const { cte: pairing, approximate: pairingApproximate } = loadIncomePairing(db);
 
   const totals = db
     .prepare(
@@ -172,6 +179,7 @@ export function getIncomeSummary(
       dividends: r.dividends,
       interest: r.interest,
     })),
+    pairingApproximate,
   };
 }
 

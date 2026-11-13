@@ -150,12 +150,45 @@ const dayNumber = (date: string) => Math.floor(Date.parse(`${String(date).slice(
  * reinvestment adds nothing), so the pair's income falls in the period of
  * the dividend's date wherever the reinvestment is dated.
  */
-export function pairIncomeLegs(
-  legs: readonly IncomeLeg[],
+export function pairIncomeLegs(legs: readonly IncomeLeg[], options: PairingOptions = {}): IncomePair[] {
+  return pairIncomeLegsWithStatus(legs, options).pairs;
+}
+
+/**
+ * Search budget, in arc scans inside the flow solver (deterministic: the
+ * answer never depends on the clock). A component that exhausts its share,
+ * or a call that exhausts its total, returns the best VALID pairing found so
+ * far (see `branchAndBound`) and is reported as approximate. Realistic books
+ * use a tiny fraction of it.
+ */
+export const INCOME_PAIRING_COMPONENT_WORK = 2_000_000;
+export const INCOME_PAIRING_CALL_WORK = 10_000_000;
+
+export interface PairingOptions {
   /** Tests only: "tuple" skips the one-integer cost encoding. */
-  options: { costMode?: "auto" | "tuple" } = {},
-): IncomePair[] {
+  costMode?: "auto" | "tuple";
+  /** Tests only: smaller budgets. */
+  componentWork?: number;
+  callWork?: number;
+}
+
+/** One account and security whose pairing hit the search budget. */
+export interface ApproximatePairing {
+  accountId: number;
+  securityId: number | null;
+}
+
+/** The pairing, plus every account and security where it is approximate. */
+export function pairIncomeLegsWithStatus(
+  legs: readonly IncomeLeg[],
+  options: PairingOptions = {},
+): { pairs: IncomePair[]; approximate: ApproximatePairing[] } {
   const costMode = options.costMode ?? "auto";
+  const budget: Budget = {
+    component: options.componentWork ?? INCOME_PAIRING_COMPONENT_WORK,
+    callLeft: options.callWork ?? INCOME_PAIRING_CALL_WORK,
+  };
+  const groupIds = new Map<string, ApproximatePairing>();
   const groups = new Map<string, DatedLeg[]>();
   const days = new Map<string, number>();
   for (const leg of legs) {
@@ -163,6 +196,7 @@ export function pairIncomeLegs(
     if (day === undefined) days.set(leg.trade_date, (day = dayNumber(leg.trade_date)));
     if (!Number.isFinite(day)) continue;
     const key = `${leg.account_id}|${leg.security_id ?? "null"}`;
+    if (!groupIds.has(key)) groupIds.set(key, { accountId: leg.account_id, securityId: leg.security_id });
     const list = groups.get(key);
     // Direction by meaning: a dividend is a payment (+1) or a charge (-1);
     // a reinvestment is a purchase (+1) or a reversal (-1), through its
@@ -176,8 +210,26 @@ export function pairIncomeLegs(
     else groups.set(key, [dated]);
   }
   const pairs: IncomePair[] = [];
-  for (const group of groups.values()) pairs.push(...pairGroup(group, costMode));
-  return pairs.sort((a, b) => a.reinvestmentId - b.reinvestmentId);
+  const approximate: ApproximatePairing[] = [];
+  for (const [key, group] of groups) {
+    const result = pairGroup(group, costMode, budget);
+    pairs.push(...result.pairs);
+    if (result.approximate) approximate.push(groupIds.get(key)!);
+  }
+  if (approximate.length > 0) {
+    console.warn(
+      `[income] reinvestment pairing hit its search budget; approximate for account/security ${approximate
+        .map((a) => `${a.accountId}/${a.securityId ?? "none"}`)
+        .join(", ")}`,
+    );
+  }
+  return { pairs: pairs.sort((a, b) => a.reinvestmentId - b.reinvestmentId), approximate };
+}
+
+/** Work left for the search: per component, and for the whole call. */
+interface Budget {
+  component: number;
+  callLeft: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -237,12 +289,16 @@ function classify(rows: readonly DatedLeg[], withSign: boolean): LegClass[] {
   return out.sort((a, b) => a.day - b.day || a.cents - b.cents || b.sign - a.sign || a.ids[0] - b.ids[0]);
 }
 
-function pairGroup(group: readonly DatedLeg[], costMode: "auto" | "tuple"): IncomePair[] {
+function pairGroup(
+  group: readonly DatedLeg[],
+  costMode: "auto" | "tuple",
+  budget: Budget,
+): { pairs: IncomePair[]; approximate: boolean } {
   const byType: Record<IncomeLeg["type"], DatedLeg[]> = { REINVESTMENT: [], DIVIDEND: [], TAX_WITHHELD: [] };
   for (const leg of group) byType[leg.type]?.push(leg);
   const rc = classify(byType.REINVESTMENT, true);
   const dc = classify(byType.DIVIDEND, true);
-  if (rc.length === 0 || dc.length === 0) return [];
+  if (rc.length === 0 || dc.length === 0) return { pairs: [], approximate: false };
   const bc = classify(byType.TAX_WITHHELD, false);
 
   const dByDay = new Map<number, number[]>();
@@ -279,7 +335,7 @@ function pairGroup(group: readonly DatedLeg[], costMode: "auto" | "tuple"): Inco
       }
     }
   });
-  if (edges.length === 0) return [];
+  if (edges.length === 0) return { pairs: [], approximate: false };
 
   // Connected components over reinvestment, dividend and bucket classes.
   const parent: number[] = [];
@@ -306,6 +362,7 @@ function pairGroup(group: readonly DatedLeg[], costMode: "auto" | "tuple"): Inco
   });
 
   const flows = new Array<number>(edges.length).fill(0);
+  let approximate = false;
   for (const edgeIds of components.values()) {
     if (uncontested(edgeIds, edges, rc, dc, bc)) {
       // No row class can be asked for more than it holds: every candidate
@@ -313,8 +370,9 @@ function pairGroup(group: readonly DatedLeg[], costMode: "auto" | "tuple"): Inco
       for (const i of edgeIds) flows[i] = edges[i].cap;
       continue;
     }
-    const solved = solveComponent(edgeIds.map((i) => edges[i]), rc, dc, bc, costMode);
-    edgeIds.forEach((i, k) => (flows[i] = solved[k]));
+    const solved = solveComponent(edgeIds.map((i) => edges[i]), rc, dc, bc, costMode, budget);
+    if (solved.approximate) approximate = true;
+    edgeIds.forEach((i, k) => (flows[i] = solved.flows[k]));
   }
 
   // Classes to rows: each edge, in order, takes the lowest unused ids.
@@ -331,7 +389,7 @@ function pairGroup(group: readonly DatedLeg[], costMode: "auto" | "tuple"): Inco
       });
     }
   });
-  return pairs;
+  return { pairs, approximate };
 }
 
 /** True when saturating every edge of the component respects every class. */
@@ -369,7 +427,8 @@ function solveComponent(
   dc: LegClass[],
   bc: LegClass[],
   costMode: "auto" | "tuple",
-): number[] {
+  budget: Budget,
+): { flows: number[]; approximate: boolean } {
   // Dense dividend rank inside the component (same order, smaller numbers).
   const ranks = [...new Set(edges.map((e) => e.cost[3]))].sort((a, b) => a - b);
   const rankOf = new Map(ranks.map((r, i) => [r, i]));
@@ -386,8 +445,8 @@ function solveComponent(
   const units = Math.min([...rCap.values()].reduce((s, x) => s + x, 0), [...dCap.values()].reduce((s, x) => s + x, 0));
   const ops = costMode === "auto" ? scalarOps(rCap.size + dCap.size + 2, units, ranks.length) : null;
   return ops
-    ? branchAndBound(edges, tuples.map(ops.from), ops, rCap, dCap, bCap)
-    : branchAndBound(edges, tuples, TUPLE_OPS, rCap, dCap, bCap);
+    ? branchAndBound(edges, tuples.map(ops.from), ops, rCap, dCap, bCap, budget)
+    : branchAndBound(edges, tuples, TUPLE_OPS, rCap, dCap, bCap, budget);
 }
 
 /** Arithmetic over a cost type that is ordered like the tuple. */
@@ -434,9 +493,13 @@ function branchAndBound<C>(
   rCap: Map<number, number>,
   dCap: Map<number, number>,
   bCap: Map<number, number>,
-): number[] {
+  budget: Budget,
+): { flows: number[]; approximate: boolean } {
   type Best = { count: number; cost: C; flows: number[] };
   let best: Best | null = null;
+  const work = { scans: 0 };
+  let exhausted = false;
+  let root: number[] | null = null;
   const beats = (count: number, cost: C, b: Best | null) =>
     !b || count > b.count || (count === b.count && ops.cmp(cost, b.cost) < 0);
 
@@ -449,8 +512,14 @@ function branchAndBound<C>(
     fixedCount: number,
     fixedCost: C,
   ) => {
+    // The root always runs; any later node needs budget left.
+    if (root !== null && (exhausted || work.scans >= budget.component || budget.callLeft - work.scans <= 0)) {
+      exhausted = true;
+      return;
+    }
     const live = edges.map((e, i) => (e.b >= 0 ? Math.min(caps[i], bLeft.get(e.b) ?? 0) : caps[i]));
-    const relaxed = minCostMaxFlow(edges, costs, ops, live, rLeft, dLeft);
+    const relaxed = minCostMaxFlow(edges, costs, ops, live, rLeft, dLeft, work);
+    if (root === null) root = relaxed.flows;
     const count = fixedCount + relaxed.count;
     const cost = ops.add(fixedCost, relaxed.cost);
     if (!beats(count, cost, best)) return;
@@ -495,7 +564,32 @@ function branchAndBound<C>(
     0,
     ops.zero,
   );
-  return (best as Best | null)?.flows ?? new Array<number>(edges.length).fill(0);
+  budget.callLeft -= work.scans;
+  if (!exhausted) return { flows: (best as Best | null)?.flows ?? new Array<number>(edges.length).fill(0), approximate: false };
+
+  // Budget hit: the better of the best valid pairing found so far and the
+  // root relaxation repaired (net pairs on an over-used withholding bucket
+  // dropped, last edge first, until the bucket's rows suffice). Dropping a
+  // pair never breaks a rule, so both candidates are valid.
+  const repaired = [...(root ?? new Array<number>(edges.length).fill(0))];
+  const used = new Map<number, number>();
+  edges.forEach((e, i) => {
+    if (e.b >= 0) used.set(e.b, (used.get(e.b) ?? 0) + repaired[i]);
+  });
+  for (let i = edges.length - 1; i >= 0; i--) {
+    const b = edges[i].b;
+    if (b < 0) continue;
+    const excess = (used.get(b) ?? 0) - (bCap.get(b) ?? 0);
+    if (excess <= 0) continue;
+    const cut = Math.min(excess, repaired[i]);
+    repaired[i] -= cut;
+    used.set(b, (used.get(b) ?? 0) - cut);
+  }
+  const repairedCount = repaired.reduce((s, f) => s + f, 0);
+  const repairedCost = repaired.reduce((s, f, i) => ops.add(s, ops.scale(costs[i], f)), ops.zero);
+  const found = best as Best | null;
+  const flows = found && !beats(repairedCount, repairedCost, found) ? found.flows : repaired;
+  return { flows, approximate: true };
 }
 
 /**
@@ -513,6 +607,7 @@ function minCostMaxFlow<C>(
   caps: number[],
   rLeft: Map<number, number>,
   dLeft: Map<number, number>,
+  work: { scans: number },
 ): { count: number; cost: C; flows: number[] } {
   const rNode = new Map<number, number>();
   const dNode = new Map<number, number>();
@@ -553,6 +648,7 @@ function minCostMaxFlow<C>(
       if (done[u] || ops.cmp(du, dist[u]!) !== 0) continue;
       done[u] = true;
       if (u === 1) break;
+      work.scans += adj[u].length;
       for (const a of adj[u]) {
         if (cap[a] <= 0) continue;
         const v = to[a];
@@ -638,10 +734,22 @@ class CostHeap<C> {
  * array.
  */
 export function incomePairingCtes(db: Database.Database): string {
-  const ids = pairIncomeLegs(loadIncomeLegs(db)).map((p) => Math.trunc(p.reinvestmentId));
-  return `paired_reinvestments AS MATERIALIZED (
+  return loadIncomePairing(db).cte;
+}
+
+/**
+ * `incomePairingCtes` plus where the pairing is approximate (the search
+ * budget was hit), so a reader can say so. Empty `approximate` = exact.
+ */
+export function loadIncomePairing(db: Database.Database): { cte: string; approximate: ApproximatePairing[] } {
+  const { pairs, approximate } = pairIncomeLegsWithStatus(loadIncomeLegs(db));
+  const ids = pairs.map((p) => Math.trunc(p.reinvestmentId));
+  return {
+    cte: `paired_reinvestments AS MATERIALIZED (
     SELECT CAST(value AS INTEGER) AS id FROM json_each('${JSON.stringify(ids)}')
-  )`;
+  )`,
+    approximate,
+  };
 }
 
 /** Joins the pairing result onto `transactions t` as `pr`. */

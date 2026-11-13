@@ -10,7 +10,7 @@
  *
  * Synthetic figures only.
  */
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import { getIncomeSummaryForChat } from "@/lib/queries/chat-tools";
@@ -18,6 +18,7 @@ import { getIncomeSummary, accountIncomeTotal } from "@/lib/queries/income";
 import {
   INCOME_PAIR_MAX_GAP_DAYS,
   loadIncomeLegs,
+  pairIncomeLegsWithStatus,
   pairIncomeLegs,
   type IncomeLeg,
   type IncomePair,
@@ -52,6 +53,11 @@ function expectDividends(expected: number) {
   expect(dash.totalDividends).toBeCloseTo(expected, 6);
   expect(dash.byAccount.reduce((s, a) => s + accountIncomeTotal(a), 0)).toBeCloseTo(dash.netIncome, 6);
 }
+
+// Every fixture here pairs exactly: the search budget is never hit.
+afterEach(() => {
+  expect(pairIncomeLegsWithStatus(loadIncomeLegs(db)).approximate).toEqual([]);
+});
 
 beforeEach(() => {
   n = 0;
@@ -305,6 +311,7 @@ describe("brute force: the pairing is the true optimum", () => {
       expect({ seed, score: got }).toEqual({ seed, score: bruteForce(legs) });
       // The one-integer cost encoding and the tuple path agree exactly.
       expect(pairIncomeLegs(legs, { costMode: "tuple" })).toEqual(pairs);
+      expect(pairIncomeLegsWithStatus(legs).approximate).toEqual([]);
       paired += pairs.length;
     }
     expect(paired).toBeGreaterThan(2000); // the books are not trivially empty

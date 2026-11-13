@@ -19,12 +19,12 @@
  *
  * Synthetic figures only.
  */
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import { getIncomeSummaryForChat } from "@/lib/queries/chat-tools";
 import { getIncomeSummary, accountIncomeTotal } from "@/lib/queries/income";
-import { loadIncomeLegs, pairIncomeLegs, reinvestmentIsPurchase } from "@/lib/queries/income-sql";
+import { loadIncomeLegs, pairIncomeLegs, pairIncomeLegsWithStatus, reinvestmentIsPurchase } from "@/lib/queries/income-sql";
 
 const TAXABLE = 1;
 let db: Database.Database;
@@ -59,6 +59,11 @@ function summary() {
 }
 
 const pairs = () => pairIncomeLegs(loadIncomeLegs(db));
+
+// Every fixture here pairs exactly: the search budget is never hit.
+afterEach(() => {
+  expect(pairIncomeLegsWithStatus(loadIncomeLegs(db)).approximate).toEqual([]);
+});
 
 beforeEach(() => {
   n = 0;

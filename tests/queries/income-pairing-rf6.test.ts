@@ -10,12 +10,12 @@
  * and the dashboard reader agree, and that the by-type, by-account,
  * by-symbol and by-month rows each sum to the same total.
  */
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import { getIncomeSummaryForChat } from "@/lib/queries/chat-tools";
 import { getIncomeSummary } from "@/lib/queries/income";
-import { loadIncomeLegs, pairIncomeLegs } from "@/lib/queries/income-sql";
+import { loadIncomeLegs, pairIncomeLegs, pairIncomeLegsWithStatus } from "@/lib/queries/income-sql";
 
 const IBKR = 3;
 const DAY = "2026-07-01";
@@ -60,6 +60,11 @@ function expectOneToOne() {
   expect(new Set(used).size).toBe(used.length);
   return pairs;
 }
+
+// Every fixture here pairs exactly: the search budget is never hit.
+afterEach(() => {
+  expect(pairIncomeLegsWithStatus(loadIncomeLegs(db)).approximate).toEqual([]);
+});
 
 beforeEach(() => {
   n = 0;
