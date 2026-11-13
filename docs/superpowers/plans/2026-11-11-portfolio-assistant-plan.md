@@ -501,3 +501,7 @@ The model-request probe accepted every request shape on the 5.5 models, which li
 
 The owner kept Sonnet 5.5 as the chat default and asked to pick the class per new chat. Built with migration 103 (one nullable column, owner-approved): pills on the new-chat screen, the class stored at creation and read from the row on every later turn, a stored class beating the Settings override, a plain label after a step down, Fable unreachable. An independent review found no blockers; its two should-fix items were fixed. Detail: `docs/DECISIONS.md` 2026-11-13.
 
+### Final pre-merge review (2026-11-13)
+
+No blockers. Two should-fix items were fixed: the income pairing search gained a deterministic work budget with an approximate-pairing report (`eb5b8190`), and the chat's `by_symbol` reads a short's basis as its rows do, while the income tool's description states the 3-day window (`62130659`). Detail: `docs/DECISIONS.md` 2026-11-13.
+
