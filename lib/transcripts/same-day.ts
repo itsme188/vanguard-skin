@@ -126,7 +126,10 @@ const DEFAULT_MAX_ATTEMPTS = 2;
 export const VENDOR_RETRY_INTERVAL_MS = 12 * 60 * 60 * 1000;
 
 const SUMMARY_PROMPT_CHAR_CAP = 50_000;
-const SUMMARY_MAX_OUTPUT_TOKENS = 900;
+// Room for default-on thinking (2026-11-13): the workhorse tier's current
+// model thinks by default and the thinking counts against this cap. The
+// 300-word length is set by the prompt, not by the cap.
+const SUMMARY_MAX_OUTPUT_TOKENS = 16_000;
 
 /**
  * A desk note the prompt actually asked for carries at least one of the
@@ -197,6 +200,14 @@ export async function summarizeTranscript(
     // structured markdown — this summary is user-facing (rendered in the
     // morning digest, #12 B3), so strip at STORE time. Mirrors the
     // stripModelPreamble post-processor in lib/digest/send-earnings-email.ts.
+    // A note that stopped at the cap is incomplete even when it already
+    // carries a section label: keep the extractive summary instead.
+    if (res.finishReason === "length") {
+      console.warn(
+        `[transcripts] AI desk note for ${transcript.ticker} Q${transcript.quarter} cut off at the output cap — extractive summary kept`,
+      );
+      return;
+    }
     const summary = stripModelPreamble(res.text.trim());
     if (!summary || !isValidDeskNote(summary)) {
       console.warn(
