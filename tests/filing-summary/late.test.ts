@@ -15,6 +15,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { runMigrations } from "@/lib/db/migrate";
+import { setLateWatchState } from "@/lib/filing-summary/store";
+import { lateWatchText } from "@/lib/filing-summary/labels";
 import { setModelCatalogSource } from "@/lib/ai/catalog-source";
 import type { FetchLike } from "@/lib/print-watch/hardened-fetch";
 import { __resetPollerCacheForTests, AFTER_CUTOFF_REASON, issuerNameForEvent } from "@/lib/filing-summary/poller";
@@ -851,5 +853,51 @@ describe("header period of report", () => {
     expect(parseFilingHeader("<pre>&lt;PERIOD&gt;20261231</pre>").periodOfReport).toBe("2026-12-31");
     expect(parseFilingHeader("CONFORMED PERIOD OF REPORT:\t20260630").periodOfReport).toBe("2026-06-30");
     expect(parseFilingHeader("<html></html>").periodOfReport).toBeNull();
+  });
+});
+
+describe("the ended watch's sentence", () => {
+  const CATALOG = ["claude-opus-5-5", "claude-sonnet-5-5"];
+  const textAt = (ms: number) => {
+    const late = getFullView(db, eventId, CATALOG, new Date(ms))!.late!;
+    return { late, text: lateWatchText(late.watchState, late.windowEndText, late.endedEarly) };
+  };
+
+  it("a foreign filer's watch that ended early shows the foreign-filer sentence, not a deadline", () => {
+    seedPastCutoff();
+    db.prepare("UPDATE filing_summary_filings SET form = '6-K' WHERE id = ?").run(earningsId);
+    ensureLateWatch(db, eventId, et("21:10"));
+    setLateWatchState(db, eventId, "ended");
+    const { late, text } = textAt(et("03:00", NEXT_DAY));
+    expect(text).not.toContain("was filed by");
+    expect(text).toContain("6-K");
+    expect(late.lookAgainAvailable).toBe(false);
+  });
+
+  it("an early end with no accepted earnings filing shows the no-basis sentence", () => {
+    seedPastCutoff();
+    ensureLateWatch(db, eventId, et("21:10"));
+    setLateWatchState(db, eventId, "ended");
+    db.prepare("UPDATE filing_summary_filings SET identity_verdict = 'rejected' WHERE id = ?").run(earningsId);
+    expect(textAt(et("03:00", NEXT_DAY)).text).toContain("no accepted earnings filing");
+  });
+
+  it("an early end whose reason cannot be told is neutral and never quotes the deadline", () => {
+    seedPastCutoff();
+    ensureLateWatch(db, eventId, et("21:10"));
+    setLateWatchState(db, eventId, "ended");
+    const { late, text } = textAt(et("03:00", NEXT_DAY));
+    expect(late.endedEarly).toBe("unknown");
+    expect(text).not.toContain("was filed by");
+    expect(text).toContain("has stopped");
+  });
+
+  it("a watch that ended at or after its window end keeps the unchanged sentence", () => {
+    seedPastCutoff();
+    ensureLateWatch(db, eventId, et("21:10"));
+    setLateWatchState(db, eventId, "ended");
+    const { late, text } = textAt(et("16:05", NEXT_DAY));
+    expect(late.endedEarly).toBeNull();
+    expect(text).toBe(`No 10-Q or 10-K was filed by ${late.windowEndText}. Look again checks once more.`);
   });
 });
