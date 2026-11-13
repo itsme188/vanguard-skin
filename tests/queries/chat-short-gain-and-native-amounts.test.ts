@@ -236,3 +236,33 @@ describe("IBKR dashboard recent trades", () => {
     ]);
   });
 });
+
+describe("query_holdings by_symbol agrees with its own rows for a short", () => {
+  /** Short 10 in IBKR (net proceeds 990, now 60), long 5 in account 1 (basis 400, now 60). */
+  function mixed(shortBasis: number): Database.Database {
+    const db = createPendingTestDb();
+    const id = seedSec(db, "ZZM");
+    seedPx(db, id, daysAgo(1), 60);
+    hold(db, id, -10, shortBasis);
+    db.prepare(
+      `INSERT INTO holdings (account_id, security_id, quantity, cost_basis, as_of_date, source_key)
+       VALUES (1, ?, 5, 400, ?, 'short-native-long-zzm')`
+    ).run(id, daysAgo(1));
+    return db;
+  }
+
+  it.each([
+    ["negative as IBKR stores it", -990],
+    ["positive (a shape no real source writes)", 990],
+  ])("short basis %s", async (_what, basis) => {
+    const out = (await executeTool(mixed(basis), "query_holdings", { symbol: "ZZM" })) as {
+      data: Array<{ unrealized_gain: number }>;
+      by_symbol: Array<{ unrealized_gain: number; total_cost_basis_usd: number }>;
+    };
+    const rowSum = out.data.reduce((s, r) => s + r.unrealized_gain, 0);
+    expect(rowSum).toBeCloseTo(290, 6); // short +390, long -100
+    expect(out.by_symbol).toHaveLength(1);
+    expect(out.by_symbol[0].unrealized_gain).toBeCloseTo(290, 6);
+    expect(out.by_symbol[0].total_cost_basis_usd).toBeCloseTo(-590, 6);
+  });
+});

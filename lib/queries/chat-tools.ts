@@ -1351,7 +1351,21 @@ export function getHoldingsBySymbolForChat(
   const out: HoldingSymbolRollup[] = [];
   for (const symbol of [...new Set(symbols)]) {
     for (const sec of secStmt.all(symbol) as Array<{ id: number; symbol: string; name: string | null; security_type: string | null }>) {
-      const positions = getHoldingsBySecurity(db, sec.id).filter((p) => !inScope || inScope.has(p.account_id));
+      // A short's basis is read as minus its magnitude, the rule the rows use
+      // (getHoldingsForChat). Every real source stores it negative, so this
+      // changes nothing for real data; a short stored positive would
+      // otherwise sum to a different gain than the rows beside it.
+      const positions = getHoldingsBySecurity(db, sec.id)
+        .filter((p) => !inScope || inScope.has(p.account_id))
+        .map((p) =>
+          p.quantity < 0 && p.cost_basis != null && p.cost_basis > 0
+            ? {
+                ...p,
+                cost_basis: -p.cost_basis,
+                unrealized_gain: p.current_value != null ? p.current_value + p.cost_basis : p.unrealized_gain,
+              }
+            : p,
+        );
       if (positions.length < 2) continue;
       const totals = computePositionTotals(positions);
       const qty = positions.reduce((a, p) => a + p.quantity, 0);
