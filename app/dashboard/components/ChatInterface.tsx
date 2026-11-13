@@ -841,14 +841,23 @@ export function ChatInterface({ pathname }: ChatInterfaceProps) {
       <div
         ref={messagesScrollRef}
         onScroll={handleMessagesScroll}
-        className="flex-1 overflow-y-auto space-y-4 pb-4"
+        className="flex-1 overflow-y-auto space-y-4 pb-4 md:scroll-pt-[4.5rem]"
         aria-live="polite"
         aria-label="Chat messages"
       >
         {/* Conversation header (shown when conversation is active) — from md
-            up it stays at the top of the transcript, as before. */}
+            up it sits at the top of the transcript and, since the owner's
+            2026-11-13 ruling, stays pinned there (sticky) while the messages
+            scroll: the panel's own surface (bg-canvas) so nothing shows
+            through, z-10 above the messages and below the dropdown it opens
+            (z-50) and the delete dialog (top layer). The shadow paints the
+            same surface over the mb-3 gap under the border, so a message
+            sliding under the row is not seen as a cut line in that gap; it
+            takes no space, so the spacing is unchanged. The scroller's
+            md:scroll-pt keeps an element the browser scrolls into view (a
+            focused Copy button) below the pinned row, not under it. */}
         {isLocked && (
-          <div className="hidden md:flex flex-wrap items-center justify-between gap-2 pb-3 mb-3 border-b border-edge">
+          <div className="hidden md:flex sticky top-0 z-10 bg-canvas shadow-[0_0.75rem_0_0_var(--color-canvas)] flex-wrap items-center justify-between gap-2 pb-3 mb-3 border-b border-edge">
             <ConversationControls
               scopeLabel={scopeLabel}
               modelLabel={openConversationModelLabel(conversations, conversationId, modelFamily, liveModelLabel(messages))}

@@ -196,6 +196,37 @@ describe("conversation controls sit in the fixed header at phone width", () => {
     expect(inScroller).not.toMatch(/\bmd:hidden\b/);
   });
 
+  // Owner ruling 2026-11-13 (amends the 2026-09-02 "option 1" ruling for
+  // desktop only): the from-md copy is still inside the transcript scroller,
+  // but it is now STICKY at its top, so the scope chip, title, New
+  // Conversation and the model label stay visible while the messages scroll.
+  // It carries the drawer panel's own surface (bg-canvas, the same token as
+  // ChatDrawer's panel) so messages cannot show through, and z-10: above the
+  // messages, which set no z-index, and below the history dropdown it opens
+  // (absolute z-50 inside this row) and the delete dialog (a top-layer
+  // <dialog>). The phone row is unchanged.
+  it("the desktop copy is pinned at the top of the scroller with an opaque surface (2026-11-13)", () => {
+    const inScroller = body.slice(scroller, anchorIndex(body, "{/* Empty state */}"));
+    const cls = inScroller.match(/className="([^"]*\bhidden md:flex\b[^"]*)"/)![1].split(/\s+/);
+    for (const c of ["sticky", "top-0", "z-10", "bg-canvas"]) expect(cls).toContain(c);
+    // The 12px gap under the border (mb-3) is painted with the same surface,
+    // so a message sliding under the row shows no cut line there.
+    expect(cls).toContain("shadow-[0_0.75rem_0_0_var(--color-canvas)]");
+    expect(cls).toContain("mb-3");
+    // Keyboard focus that scrolls a message control into view lands below
+    // the pinned row (row plus its gap, 60 + 12 px), not hidden under it.
+    const opening = body.slice(scroller, anchorIndex(body, ">", scroller) + 1);
+    expect(opening).toContain("md:scroll-pt-[4.5rem]");
+    // Same surface as the drawer / rail panel that holds the scroller.
+    expect(drawer).toMatch(/fixed z-50 bg-canvas/);
+    // The phone row stays as it was: not sticky, its own fixed header.
+    const phone = body.slice(fixedRow, scroller);
+    expect(phone).not.toMatch(/\bsticky\b/);
+    // The dropdown it opens stacks above the row's own z-10.
+    const history = sliceBetween(src, "function ConversationHistory(", "// ─── Conversation controls");
+    expect(history).toMatch(/absolute top-full[^"]*\bz-50\b/);
+  });
+
   it("the shared controls are the scope pill, the picker and New Conversation", () => {
     const controls = sliceBetween(src, "function ConversationControls(", "// ─── Main component");
     expect(controls).toContain("{scopeLabel}");
