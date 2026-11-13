@@ -34,6 +34,7 @@ import {
 import { loadLatestSnapshot, type Snapshot } from "./state";
 import { shouldSummarizeArticle, UNSUMMARIZED_SOURCES } from "./enrichment-policy";
 import { generateWithFailover, structuredOutputProviderOptions } from "./ai";
+import { throwIfCutOffAtCap } from "./cut-off-at-cap";
 import { accountFailureOf, aiUnavailableReason, getAiOutage, recordAiOutage } from "./ai-outage";
 import { normalizeThemes, sanitizeModelSummary } from "./fallback-digest";
 import { getCurrentETHour, getCurrentETMinute } from "./dst";
@@ -375,20 +376,23 @@ uncertain — prefer to under-filter.
 
 ATTRIBUTION (provenance): If this piece is primarily RELAYING a third party's views — a podcast guest, interview subject, or quoted analyst (e.g. the newsletter summarizing someone else's remarks) — the summary MUST name that originator and make the relaying explicit ("TMT Breakout summarizes Gavin Baker's podcast remarks: ..."), and never flatten their view into the newsletter's own first-person voice. When the views are the newsletter author's own, no attribution phrase is needed.`;
 
-  const { object } = await generateWithFailover(
+  const { object, finishReason } = await generateWithFailover(
     env,
     "fallbackNewsletterProcessing",
     catalog,
     (model, mode) =>
       generateObject({
         model,
-        maxOutputTokens: 2048,
+        // Room for default-on thinking (2026-11-13), as on the Mac
+        // (lib/gmail/process.ts); a reply cut off at the cap is not stored.
+        maxOutputTokens: 16_000,
         schema: ARTICLE_SCHEMA,
         prompt,
         providerOptions: structuredOutputProviderOptions(mode),
       }),
     { structured: true },
   );
+  throwIfCutOffAtCap("fallbackNewsletterProcessing", finishReason);
 
   return {
     // sanitizeModelSummary + normalizeThemes: jsonSchema() doesn't runtime-

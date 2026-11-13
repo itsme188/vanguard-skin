@@ -1,6 +1,6 @@
 import type Database from "better-sqlite3";
 import { jsonSchema } from "ai";
-import { generateObjectForFeature } from "@/lib/ai/generate";
+import { AITruncatedError, generateObjectForFeature } from "@/lib/ai/generate";
 import { resolveFeatureModel } from "@/lib/ai/models";
 import { getHeldSymbolSet, heldSymbolsMentioned } from "@/lib/research/held-symbol-relevance";
 import { verifyMentions } from "@/lib/research/verify-mentions";
@@ -535,8 +535,11 @@ async function extractWithClaude(
   // newsletter-fetch.ts::truncateBodyForPrompt (parity-pinned).
   const text = truncateForPrompt(article.raw_text);
 
-  const { object: _rawObject } = await generateObjectForFeature("newsletterProcessing", {
-    maxOutputTokens: 2048,
+  const res = await generateObjectForFeature("newsletterProcessing", {
+    // Room for thinking (2026-11-13): the workhorse tier's current model
+    // thinks by default and the thinking counts against this cap. The reply
+    // length is set by the prompt and schema, not by the cap.
+    maxOutputTokens: 16_000,
     schema: ANALYSIS_SCHEMA,
     prompt: `Analyze this financial newsletter article and extract structured data.
 
@@ -560,8 +563,14 @@ VOICE: the summary and portfolio_relevance fields are read directly by the portf
   // validate — the model can return them as comma-joined STRINGS, which
   // survive `.slice()` and corrupt storage (crashed the Worker digest
   // fallback for 1.5h on 2026-07-15; same model, same schema shape).
+  // A reply that stopped at the cap is never stored as a complete enrichment,
+  // even when its text parses. AITruncatedError is article-level
+  // malformed_output in classifyEnrichmentError: one attempt, article queued.
+  if (res.finishReason === "length") {
+    throw new AITruncatedError("newsletterProcessing", res.response?.modelId ?? "unknown", res.usage);
+  }
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const object = _rawObject as any as ProcessedResult;
+  const object = res.object as any as ProcessedResult;
   const themes = sanitizeThemeList(object.key_themes);
   const symbols = Array.isArray(object.mentioned_symbols)
     ? object.mentioned_symbols.filter((s): s is string => typeof s === "string")

@@ -1,5 +1,5 @@
 import { jsonSchema } from "ai";
-import { generateObjectForFeature } from "@/lib/ai/generate";
+import { AITruncatedError, generateObjectForFeature } from "@/lib/ai/generate";
 
 /**
  * Two-layer verification of ticker symbols extracted from newsletter articles.
@@ -118,8 +118,12 @@ export async function verifyMentionsWithHaiku(
     .join("\n\n---\n\n");
 
   try {
-    const { object: _rawObject } = await generateObjectForFeature("researchMentionVerification", {
-      maxOutputTokens: 1024,
+    const res = await generateObjectForFeature("researchMentionVerification", {
+      // Room for thinking (2026-11-13): the cheap tier's current model thinks
+      // by default and the thinking counts against this cap. At 1,024 the
+      // verdict list (one entry with a reason per candidate) was cut off
+      // before its JSON closed. The reply length is set by the candidates.
+      maxOutputTokens: 16_000,
       schema: VERIFICATION_SCHEMA,
       prompt: `You are verifying that ticker symbols extracted from a financial newsletter actually refer to publicly traded securities being discussed, not homonyms or coincidental substring matches.
 
@@ -135,18 +139,33 @@ ${contextBlock}
 
 Return one verdict per candidate in the same order. For each, set keep=true|false and give a brief reason.`,
     });
+    // A reply that stopped at the cap is incomplete even when its text
+    // parses: a verdict list missing its last entries would read as "no
+    // verdict; kept by default" for them. Fail instead (the catch below).
+    if (res.finishReason === "length") {
+      throw new AITruncatedError("researchMentionVerification", res.response?.modelId ?? "unknown", res.usage);
+    }
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const object = _rawObject as any as { verdicts: HaikuVerdict[] };
+    const object = res.object as any as { verdicts?: unknown };
+    // jsonSchema() does not validate at run time: a non-array is a failure.
+    if (!Array.isArray(object?.verdicts)) {
+      throw new Error("verdicts is not an array");
+    }
 
     const map = new Map<string, HaikuVerdict>();
-    for (const v of object.verdicts) {
+    for (const v of object.verdicts as HaikuVerdict[]) {
       if (v.symbol) map.set(v.symbol.toUpperCase().trim(), v);
     }
     return map;
   } catch (err) {
+    // The finish reason says whether the reply hit the output cap ("length")
+    // or ended some other way; the SDK's message alone does not.
+    const finish =
+      err instanceof AITruncatedError ? "length" : (err as { finishReason?: unknown } | null)?.finishReason;
+    const msg = err instanceof Error ? err.message : String(err);
     console.error(
       "[verify-mentions] Haiku verification failed:",
-      err instanceof Error ? err.message : err,
+      typeof finish === "string" ? `${msg} (finish reason: ${finish})` : msg,
     );
     return null;
   }

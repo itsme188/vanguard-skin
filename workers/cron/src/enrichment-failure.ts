@@ -34,6 +34,9 @@
  *   - A refusal or unparseable output -> `NoObjectGeneratedError` (name
  *     "AI_NoObjectGeneratedError"); a refusal carries
  *     `finishReason: "content-filter"`.
+ *   - A reply that stopped at the output cap but still parsed -> the
+ *     gateway's `AITruncatedError` (thrown by the caller on finishReason
+ *     "length"); article-level malformed output, like an unparseable one.
  *
  * The AI SDK marks its error classes with `Symbol.for("vercel.ai.error.<name>")`
  * and its own `isInstance` checks read that marker. This module reads the same
@@ -347,6 +350,9 @@ export function classifyEnrichmentError(err: unknown): EnrichmentFailureClass {
     // lib/ai/generate.ts's AIRefusalError. Matched by name because importing
     // the class would pull the gateway into every importer of this module.
     if (err.name === "AIRefusalError") return result("refusal");
+    // lib/ai/generate.ts's AITruncatedError: the reply stopped at the output
+    // cap. The provider answered about this article; never an outage.
+    if (err.name === "AITruncatedError") return result("malformed_output");
     if (MISSING_CREDENTIAL.test(err.message)) return result("config");
   }
 

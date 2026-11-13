@@ -19,6 +19,12 @@ const SITES: Array<[file: string, anchor: string]> = [
   ["lib/securities/classify-option-sectors.ts", 'generateTextForFeature("securityClassification"'],
   ["lib/trade-review/questions.ts", 'generateObjectForFeature("tradeReviewQA"'],
   ["lib/calendar/macro-events.ts", 'generateTextForFeature("macroEnrichment"'],
+  // 2026-11-13: the two callers the 2026-11-12 sweep left at 1,024 and 2,048.
+  ["lib/research/verify-mentions.ts", 'generateObjectForFeature("researchMentionVerification"'],
+  ["lib/gmail/process.ts", 'generateObjectForFeature("newsletterProcessing"'],
+  // Their Worker counterparts (fallbackNewsletterProcessing, workhorse tier).
+  ["workers/cron/src/newsletter-fetch.ts", '"fallbackNewsletterProcessing"'],
+  ["workers/cron/src/fallback-digest.ts", '"fallbackNewsletterProcessing"'],
 ];
 
 describe("workhorse/frontier calls leave room for thinking", () => {

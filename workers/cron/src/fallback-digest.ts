@@ -28,6 +28,7 @@ import {
 import { sendEmail } from "./resend";
 import { loadLatestSnapshot, type Snapshot, type RecentArticleMeta } from "./state";
 import { generateWithFailover, structuredOutputProviderOptions } from "./ai";
+import { throwIfCutOffAtCap } from "./cut-off-at-cap";
 import { accountFailureOf, aiUnavailableReason, recordAiOutage, type AccountFailureKind } from "./ai-outage";
 import { briefingToHtml } from "./html";
 import { todayET } from "./dst";
@@ -395,20 +396,23 @@ ${source.processing_prompt ? `\nSource-specific instructions: ${source.processin
 Article text:
 ${text}`;
 
-  const { object } = await generateWithFailover(
+  const { object, finishReason } = await generateWithFailover(
     env,
     "fallbackNewsletterProcessing",
     catalog,
     (model, mode) =>
       generateObject({
         model,
-        maxOutputTokens: 2048,
+        // Room for default-on thinking (2026-11-13), as on the Mac
+        // (lib/gmail/process.ts); a reply cut off at the cap is not stored.
+        maxOutputTokens: 16_000,
         schema: ARTICLE_SCHEMA,
         prompt,
         providerOptions: structuredOutputProviderOptions(mode),
       }),
     { structured: true },
   );
+  throwIfCutOffAtCap("fallbackNewsletterProcessing", finishReason);
 
   return {
     source_name: source.name,
