@@ -100,6 +100,13 @@ export interface PositionImpact {
    * the fund was left out of the scenario; its change is then zero.
    */
   leveragedFundUnmodelled?: boolean;
+  /**
+   * Leveraged and inverse funds that WERE modelled (theme T2): the signed
+   * factor the engine multiplied the tracked move by, so the card can say
+   * what produced a -30% on a -10% market move (QA 2026-11-09). Absent for
+   * every other position and for a flagged fund with no stored factor.
+   */
+  leverageFactor?: number;
 }
 
 export interface ScenarioResult {
@@ -461,6 +468,7 @@ ${OPTION_PRICING_JOINS_SQL}
       estimatedNewValue: pos.market_value + estimatedChange,
       changePercent,
       beta,
+      leverageFactor: leveraged.factor === null ? undefined : leveraged.factor,
       ivSource,
       unmodelledReason,
       underlyingMove: isOption ? underlyingMove : undefined,
