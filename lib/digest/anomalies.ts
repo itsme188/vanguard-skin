@@ -152,6 +152,21 @@ export function resolveTradingDayPair(
   db: Database.Database,
   opts: TradingDayPairOptions = {},
 ): TradingDayPair | null {
+  const days = loadSpyTradingDays(db, opts);
+  if (days.length < 2) return null;
+  const latest = days[0];
+  const prior = days[1];
+
+  // Require the two most-recent SPY trading days to be CONSECUTIVE. A gap (SPY
+  // missed a session) means we can't compute a clean 1-day move, so bail rather
+  // than report a multi-day move as "today".
+  if (nextTradingDay(prior) !== latest) return null;
+
+  return { latest, prior };
+}
+
+/** SPY's stored trading days, newest first: phantoms dropped, completedOnly applied. */
+function loadSpyTradingDays(db: Database.Database, opts: TradingDayPairOptions): string[] {
   const rows = db
     .prepare(
       `SELECT p.date AS date
@@ -176,17 +191,49 @@ export function resolveTradingDayPair(
       tradingDays = tradingDays.filter((d) => d !== today);
     }
   }
-  if (tradingDays.length < 2) return null;
+  return tradingDays;
+}
 
-  const latest = tradingDays[0];
-  const prior = tradingDays[1];
+export type MissingTradingDayPairReason =
+  | { kind: "gap"; latest: string; missing: string }
+  | { kind: "too-few" };
 
-  // Require the two most-recent SPY trading days to be CONSECUTIVE. A gap (SPY
-  // missed a session) means we can't compute a clean 1-day move, so bail rather
-  // than report a multi-day move as "today".
-  if (nextTradingDay(prior) !== latest) return null;
+/**
+ * Why `resolveTradingDayPair` returned null, for an empty state that names the
+ * cause. Null when the pair resolves. Reads the same rows through the same
+ * filter, so the two can never disagree. Explains only; it never supplies a
+ * substitute pair.
+ */
+export function explainMissingTradingDayPair(
+  db: Database.Database,
+  opts: TradingDayPairOptions = {},
+): MissingTradingDayPairReason | null {
+  const days = loadSpyTradingDays(db, opts);
+  if (days.length < 2) return { kind: "too-few" };
+  const latest = days[0];
+  if (nextTradingDay(days[1]) === latest) return null;
+  let missing = addDays(latest, -1);
+  let guard = 0;
+  while (isMarketClosed(missing) && guard++ < 14) missing = addDays(missing, -1);
+  return { kind: "gap", latest, missing };
+}
 
-  return { latest, prior };
+const GENERIC_PAIR_UNAVAILABLE =
+  "Could not evaluate significant moves because the latest SPY trading-day pair is unavailable.";
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/** "2026-05-08" -> "May 8, 2026", from the string parts (no Date, no zone drift). */
+function longDate(ymd: string): string {
+  const [y, m, d] = ymd.split("-").map(Number);
+  return `${MONTHS[m - 1]} ${d}, ${y}`;
+}
+
+/** The empty-state sentence for a missing pair; generic for too-few or unknown. */
+export function formatMissingPairReason(reason: MissingTradingDayPairReason | null): string {
+  if (reason?.kind === "gap") {
+    return `Could not evaluate significant moves: no SPY close is stored for ${longDate(reason.missing)} (the session before ${longDate(reason.latest)}), so there is no one-day move to measure.`;
+  }
+  return GENERIC_PAIR_UNAVAILABLE;
 }
 
 // ─── Universe: which security types can be a mover ───────────────────────────

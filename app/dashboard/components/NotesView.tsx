@@ -953,6 +953,7 @@ function NoteComposerFields({
   viaOption = false,
   textareaRef,
   autoFocus = false,
+  textLabel = "Note text",
   tagsHintId,
   children,
 }: {
@@ -973,6 +974,7 @@ function NoteComposerFields({
   viaOption?: boolean;
   textareaRef?: React.Ref<HTMLTextAreaElement>;
   autoFocus?: boolean;
+  textLabel?: string;
   tagsHintId: string;
   children: React.ReactNode;
 }) {
@@ -1043,7 +1045,7 @@ function NoteComposerFields({
         ref={textareaRef}
         value={content}
         autoFocus={autoFocus}
-        aria-label="Note text"
+        aria-label={textLabel}
         onChange={(e) => onContentChange(e.target.value)}
         placeholder={
           type === "journal"
@@ -1475,6 +1477,7 @@ function NoteCard({
             securities={edit.securities}
             keepSecurity={{ id: note.security_id, symbol: note.symbol }}
             autoFocus
+            textLabel={`Edit note text: ${cardLabel}`}
             tagsHintId={`tags-hint-${note.id}`}
           >
             <button
