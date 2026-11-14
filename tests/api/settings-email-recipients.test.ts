@@ -186,6 +186,67 @@ describe("PATCH /api/settings/email-recipients", () => {
     expect(row?.value).toBe(value);
   });
 
+  function stored(key: string): string | undefined {
+    return (
+      hoisted.db.prepare("SELECT value FROM settings WHERE key = ?").get(key) as
+        | { value: string }
+        | undefined
+    )?.value;
+  }
+
+  it("refuses a single entry that is not an address and stores nothing", async () => {
+    const res = await PATCH(makeRequest({ briefing_email_recipients: "not-an-email" }));
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { ok: boolean; error: string };
+    expect(body.ok).toBe(false);
+    expect(body.error).toBe('"not-an-email" is not an email address. Nothing was saved.');
+    expect(stored("briefing_email_recipients")).toBeUndefined();
+  });
+
+  it("refuses a list with one bad entry among good ones", async () => {
+    const res = await PATCH(
+      makeRequest({ digest_email_recipients: "a@example.com, bad@nodot, b@example.com" }),
+    );
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toContain('"bad@nodot"');
+    expect(stored("digest_email_recipients")).toBeUndefined();
+  });
+
+  it("a bad value for one key blocks a good value for another key", async () => {
+    const res = await PATCH(
+      makeRequest({
+        briefing_email_recipients: "good@example.com",
+        evening_email_recipients: "two words@example.com",
+      }),
+    );
+    expect(res.status).toBe(400);
+    expect(stored("briefing_email_recipients")).toBeUndefined();
+    expect(stored("evening_email_recipients")).toBeUndefined();
+  });
+
+  it("stores a good list with spaces around the commas", async () => {
+    const value = "  a@example.com ,b@example.com  ,  c@example.com";
+    const res = await PATCH(makeRequest({ evening_email_recipients: value }));
+    expect(res.status).toBe(200);
+    expect(stored("evening_email_recipients")).toBe(value);
+  });
+
+  it("still clears a key with an empty or blank string", async () => {
+    hoisted.db
+      .prepare("INSERT INTO settings (key, value) VALUES (?, ?)")
+      .run("briefing_email_recipients", "alice@example.com");
+    const res = await PATCH(makeRequest({ briefing_email_recipients: "   " }));
+    expect(res.status).toBe(200);
+    expect(stored("briefing_email_recipients")).toBe("   ");
+  });
+
+  it("refuses a value that is not a string", async () => {
+    const res = await PATCH(makeRequest({ digest_email_recipients: ["a@example.com"] }));
+    expect(res.status).toBe(400);
+    expect(stored("digest_email_recipients")).toBeUndefined();
+  });
+
   it("returns 400 for malformed JSON body", async () => {
     const req = new NextRequest(
       "http://localhost/api/settings/email-recipients",

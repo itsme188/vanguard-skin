@@ -4,6 +4,7 @@ import {
   setEarningsEmailsEnabled,
   setMutedEarningsSymbols,
 } from "@/lib/queries/earnings-settings";
+import { TICKER_RE, invalidTickerMessage, normalizeTicker } from "@/lib/settings-ticker-rule";
 
 export const dynamic = "force-dynamic";
 
@@ -34,9 +35,7 @@ export async function PATCH(request: Request) {
     mutedSymbols?: string[];
   };
 
-  if (typeof body.enabled === "boolean") {
-    setEarningsEmailsEnabled(db, body.enabled);
-  }
+  // Validate everything first, write after: a refusal changes nothing.
   if (Array.isArray(body.mutedSymbols)) {
     if (body.mutedSymbols.some((s) => typeof s !== "string")) {
       return Response.json(
@@ -44,6 +43,19 @@ export async function PATCH(request: Request) {
         { status: 400 },
       );
     }
+    for (const item of body.mutedSymbols) {
+      const t = normalizeTicker(item);
+      // A blank entry is dropped by the writer, as before.
+      if (t !== "" && !TICKER_RE.test(t)) {
+        return Response.json({ error: invalidTickerMessage(item) }, { status: 400 });
+      }
+    }
+  }
+
+  if (typeof body.enabled === "boolean") {
+    setEarningsEmailsEnabled(db, body.enabled);
+  }
+  if (Array.isArray(body.mutedSymbols)) {
     setMutedEarningsSymbols(db, body.mutedSymbols);
   }
 
