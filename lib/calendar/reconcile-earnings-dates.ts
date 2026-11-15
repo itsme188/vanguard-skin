@@ -1248,6 +1248,37 @@ export function createTwinFolder(db: Database.Database) {
     if (!print) return false;
     return clusterManualActualsAt(db, { ...print, actual_value: r.actual_value }) == null;
   };
+  // The stored implied move (earnings_intel, keyed by event id) follows the
+  // print when a refresh flips which same-date row is kept: without it the
+  // kept row shows no implied move until an option source is back (QA finding
+  // dashboard-today-earnings-hub-after-refresh-flips-...-onto-hidden-twin).
+  // Rules: the donor has an implied move; donor and canonical sit on the SAME
+  // event date (the move is priced off an expiry chosen from that date); the
+  // canonical has no row or a row with no implied move of its own. The whole
+  // measurement is carried as one unit, with the donor's computed_at so the
+  // chip's age is the time it was priced. A COPY: the hidden row keeps its own
+  // record, so a later flip back still finds it there. Dates are read by id
+  // inside the statement, so no caller's donor SELECT widens.
+  // Binds, in order: canonical id, canonical id, donor id.
+  const carryImpliedMove = db.prepare(
+    `INSERT INTO earnings_intel
+       (event_id, implied_move_pct, implied_method, expiry_used, straddle_mid, spot, computed_at)
+     SELECT ?, d.implied_move_pct, d.implied_method, d.expiry_used, d.straddle_mid, d.spot, d.computed_at
+       FROM earnings_intel d
+       JOIN calendar_events de ON de.id = d.event_id
+       JOIN calendar_events ce ON ce.id = ?
+      WHERE d.event_id = ?
+        AND d.implied_method IS NOT NULL
+        AND de.event_date = ce.event_date
+     ON CONFLICT(event_id) DO UPDATE SET
+       implied_move_pct = excluded.implied_move_pct,
+       implied_method   = excluded.implied_method,
+       expiry_used      = excluded.expiry_used,
+       straddle_mid     = excluded.straddle_mid,
+       spot             = excluded.spot,
+       computed_at      = excluded.computed_at
+     WHERE earnings_intel.implied_method IS NULL`,
+  );
   const repointDependents = createDependentRepointer(db);
 
   return function fold(r: TwinDonor, canonicalId: number, canonicalEventDate: string): boolean {
@@ -1276,6 +1307,7 @@ export function createTwinFolder(db: Database.Database) {
       canonicalId,
     );
     repointDependents(r.id, canonicalId, canonicalEventDate);
+    if (r.id !== canonicalId) carryImpliedMove.run(canonicalId, canonicalId, r.id);
     // v2 slice A: the repointer moved what it could; the registry merge handles the
     // (source, source_label) collisions it skipped, flags, steps, scans, and B's tables.
     return mergeEarningsEventState(db, r.id, canonicalId).changed;
