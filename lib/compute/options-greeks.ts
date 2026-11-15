@@ -53,6 +53,8 @@ export interface PositionGreeks {
   expiration: string;
   quantity: number; // signed: positive = long, negative = short
   multiplier: number;
+  // The holding account's name (a contract held in two accounts is two positions).
+  accountName: string;
   underlyingPrice: number;
   // Set ONLY when the underlying's own symbol carries no close and the price
   // above was taken from an issuer sibling (a GOOGL contract priced off the
@@ -408,6 +410,7 @@ interface OptionHoldingRow {
   expiration_date: string;
   multiplier: number;
   quantity: number;
+  account_name: string;
   option_price: number | null;
   underlying_price: number | null;
   underlying_iv: number | null; // cached IBKR snapshot IV for the underlying
@@ -469,6 +472,7 @@ export function computePortfolioGreeks(
         s.expiration_date,
         COALESCE(s.multiplier, 1) AS multiplier,
         h.quantity,
+        a.name AS account_name,
         (SELECT p.close_price FROM prices p
          WHERE p.security_id = s.id
          ORDER BY p.date DESC LIMIT 1) AS option_price,
@@ -482,6 +486,7 @@ export function computePortfolioGreeks(
          LIMIT 1) AS underlying_iv
        FROM holdings h
        JOIN securities s ON s.id = h.security_id
+       JOIN accounts a ON a.id = h.account_id
        WHERE LOWER(s.security_type) = 'option'
          AND s.strike_price IS NOT NULL
          AND s.expiration_date IS NOT NULL
@@ -586,6 +591,7 @@ export function computePortfolioGreeks(
       expiration: row.expiration_date,
       quantity: row.quantity,
       multiplier: row.multiplier,
+      accountName: row.account_name,
       underlyingPrice: S ?? 0,
       ...(underlyingPriceSource ? { underlyingPriceSource } : {}),
       optionPrice: row.option_price,

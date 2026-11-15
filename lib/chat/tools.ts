@@ -69,6 +69,8 @@ import {
 import { syncAnalystCoverage } from "@/lib/apis/analyst-estimates";
 import { getRecentReleaseReactions } from "@/lib/queries/level-performance";
 import type { ReactionSnapshot } from "@/lib/calendar/reaction-snapshot-core";
+import { normalizeOptionExpiration } from "@/lib/compute/option-expiry";
+import { expiredContractsBlock, optionSide } from "@/lib/chat/expired-option-contracts";
 import {
   readReactionLegs,
   type ReactionEvidence,
@@ -801,7 +803,7 @@ const BASE_CHAT_TOOLS: ChatTool[] = [
   {
     name: "query_options_greeks",
     description:
-      "Query portfolio-level and per-position options Greeks (delta, gamma, theta, vega) with implied volatility. Also returns detected option strategies (covered calls, spreads, straddles, iron condors). Use when the user asks about options risk exposure, Greeks, time decay, volatility sensitivity, or option strategies.",
+      "Query portfolio-level and per-position options Greeks (delta, gamma, theta, vega) with implied volatility. Also returns detected option strategies (covered calls, spreads, straddles, iron condors). Contracts past expiration (including an expiry-day contract after the 16:00 ET close) carry no Greeks and are in no total: portfolio.expiredPositions counts them and expired_contracts names them (symbol, underlying, account, expiration, long or short side; most recently expired first, at most 10, total counts all) with no value, because each awaits the broker's closing entry (expired worthless, exercised or assigned is not known yet). Use when the user asks about options risk exposure, Greeks, time decay, volatility sensitivity, or option strategies.",
     input_schema: {
       type: "object" as const,
       properties: {
@@ -2212,7 +2214,7 @@ export async function executeTool(
         const greeksNoteParts: string[] = [];
         if (expiredOnly) {
           greeksNoteParts.push(
-            `no live option positions: ${greeks.expiredPositions} expired contract${greeks.expiredPositions === 1 ? "" : "s"} excluded, so there are no Greeks to report`
+            `no live option positions: ${greeks.expiredPositions} expired contract${greeks.expiredPositions === 1 ? "" : "s"} excluded (named in expired_contracts), so there are no Greeks to report`
           );
         } else if (noGreeksCoverage) {
           greeksNoteParts.push("no position could be priced");
@@ -2238,6 +2240,20 @@ export async function executeTool(
             ? `${greeks.fallbackVolPositions} of the ${greeks.computedPositions} priced position${greeks.computedPositions === 1 ? "" : "s"} used a fallback volatility, not one solved from the contract's own price`
             : null;
         const withholdTotals = noGreeksCoverage || expiredOnly || noneOnUnderlying;
+        // The contracts behind expiredPositions, from the engine's own
+        // positions (same rule, same scope, same underlying filter), so the
+        // list always agrees with the count. Identity only: no value (R1).
+        const expiredContracts = expiredContractsBlock(
+          positions
+            .filter((p) => p.expired)
+            .map((p) => ({
+              symbol: p.symbol,
+              underlying: p.underlying,
+              account: p.accountName,
+              expiration: normalizeOptionExpiration(p.expiration),
+              side: optionSide(p.quantity),
+            })),
+        );
 
         rawResult = {
           portfolio: {
@@ -2252,6 +2268,7 @@ export async function executeTool(
             note: greeksNote,
             volatilityNote,
           },
+          expired_contracts: expiredContracts,
           positions: positions.map((p) => ({
             symbol: p.symbol,
             underlying: p.underlying,
