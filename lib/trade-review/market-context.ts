@@ -1,6 +1,8 @@
 import type Database from "better-sqlite3";
 import type { GroupedTrade } from "@/lib/compute/trade-roundtrips";
 import { PRICED_BAR_SQL } from "@/lib/queries/ohlcv";
+import { readIbkrTradeDirection } from "@/lib/import/ibkr-trade-direction";
+import { IMPORT_SPLIT_ACTION_TYPES_SQL } from "@/lib/compute/synthetic-close-guards";
 
 interface TradeMarketContext {
   symbol: string;
@@ -31,10 +33,24 @@ interface OptionOriginEvent {
   contracts: number;
   strikePrice: number;
   expirationDate: string;
-  // Premium paid/received when the option was opened (per contract, not per share)
+  /**
+   * Premium paid/received per CONTRACT when the option was opened: the
+   * opening fill's per-share price times the contract multiplier. (Before
+   * 2026-11-15 this held the per-share price under the per-contract name.)
+   */
   openPremiumPerContract: number | null;
   openDate: string | null;
   openType: string | null; // BUY_TO_OPEN | SELL_TO_OPEN
+  /** Opening fill's premium per share (the stored `price_per_share`). */
+  openPremiumPerShare?: number | null;
+  /** Shares per contract: the stored `COALESCE(multiplier, 1)`. */
+  multiplier?: number;
+  /**
+   * Which side the position was on. EXERCISED is always long and ASSIGNED
+   * always short; an EXPIRED event reads it from the lot the expiry closed
+   * (`tax_lots.is_short`), then from the opening fill's type. null = unknown.
+   */
+  isShort?: boolean | null;
 }
 
 interface StockPriceContext {
@@ -103,7 +119,12 @@ export function getMarketContext(
       db,
       trade.securityId,
       accountId,
-      trade.totalQuantity
+      trade.totalQuantity,
+      {
+        exitDate: trade.exitDate,
+        saleTransactionId: trade.saleTransactionId,
+        isShort: Boolean(trade.isShort),
+      }
     ),
     concurrentActivity: getConcurrentActivity(
       db,
@@ -233,12 +254,27 @@ export function formatMarketContext(
 
     if (ctx.concurrentActivity && ctx.concurrentActivity.buys.length > 0) {
       const ca = ctx.concurrentActivity;
-      const buyList = ca.buys
-        .map(
-          (b) =>
-            `${formatQty(b.quantity)} ${b.symbol} ($${b.totalCost.toLocaleString("en-US", { maximumFractionDigits: 0 })}) on ${b.date}`
-        )
-        .join(", ");
+      // Only the largest buys are listed (the same ±7-day list repeats for
+      // every sale in a busy week and once made up most of the prompt); the
+      // rest fold into one "+N more" entry with their exact sum, and the
+      // total below always covers every buy.
+      const ranked = ca.buys
+        .map((b, idx) => ({ b, idx }))
+        .sort((x, y) => y.b.totalCost - x.b.totalCost || x.idx - y.idx);
+      const shown = ranked
+        .slice(0, CONCURRENT_BUYS_LISTED)
+        .sort((x, y) => x.idx - y.idx)
+        .map(({ b }) => b);
+      const hidden = ranked.slice(CONCURRENT_BUYS_LISTED).map(({ b }) => b);
+      const entries = shown.map(
+        (b) =>
+          `${formatQty(b.quantity)} ${b.symbol} ($${formatWholeDollars(b.totalCost)}) on ${b.date}`
+      );
+      if (hidden.length > 0) {
+        const hiddenTotal = hidden.reduce((sum, b) => sum + b.totalCost, 0);
+        entries.push(`+${hidden.length} more ($${formatWholeDollars(hiddenTotal)})`);
+      }
+      const buyList = entries.join(", ");
       lines.push(`- Concurrent buys (±7d): ${buyList}`);
       lines.push(
         `- Total deployed nearby: $${ca.totalBuyAmount.toLocaleString("en-US", { maximumFractionDigits: 0 })}`
@@ -251,9 +287,17 @@ export function formatMarketContext(
       // exercise or were called away via assignment.
       lines.push(`- ⚠️ OPTION-DRIVEN ACTIVITY on ${ctx.symbol}:`);
       for (const ev of ctx.optionOrigin) {
-        const sharesPerContract = 100; // standard equity option
+        // The stored contract multiplier (COALESCE(multiplier, 1) in the
+        // reader), never an assumed 100.
+        const sharesPerContract = ev.multiplier ?? 100;
         const sharesAffected = ev.contracts * sharesPerContract;
-        const isLong = ev.eventType === "EXERCISED";
+        const optionWord = ev.optionType.toLowerCase();
+        const expiredWords =
+          ev.isShort === true
+            ? `EXPIRED short ${optionWord} options worthless — premium received was kept (no share movement)`
+            : ev.isShort === false
+              ? `EXPIRED long ${optionWord} options worthless — premium paid was lost (no share movement)`
+              : `EXPIRED ${optionWord} options worthless (side unknown; no share movement)`;
         const directionWord =
           ev.eventType === "EXERCISED"
             ? ev.optionType === "CALL"
@@ -263,10 +307,16 @@ export function formatMarketContext(
               ? ev.optionType === "CALL"
                 ? `ASSIGNED on short calls → ${sharesAffected} shares called away at $${ev.strikePrice.toFixed(2)} strike`
                 : `ASSIGNED on short puts → bought ${sharesAffected} shares at $${ev.strikePrice.toFixed(2)} strike (forced)`
-              : `EXPIRED ${isLong ? "long" : "short"} ${ev.optionType.toLowerCase()} options worthless (no share movement)`;
+              : expiredWords;
+        const perShare =
+          ev.openPremiumPerShare !== undefined
+            ? ev.openPremiumPerShare
+            : ev.openPremiumPerContract != null
+              ? ev.openPremiumPerContract / sharesPerContract
+              : null;
         const premiumStr =
-          ev.openPremiumPerContract != null && ev.openDate
-            ? ` (originally opened ${ev.openDate} via ${ev.openType}, premium $${ev.openPremiumPerContract.toFixed(2)}/contract = $${(ev.openPremiumPerContract * ev.contracts * sharesPerContract).toLocaleString("en-US", { maximumFractionDigits: 0 })} total)`
+          perShare != null && ev.openDate
+            ? ` (originally opened ${ev.openDate} via ${ev.openType}, premium $${perShare.toFixed(2)}/share ($${formatWholeDollars(perShare * sharesPerContract)}/contract) = $${formatWholeDollars(perShare * ev.contracts * sharesPerContract)} total)`
             : "";
         lines.push(
           `  • ${ev.eventDate}: ${ev.contracts} contract(s) of ${ev.optionType} $${ev.strikePrice.toFixed(2)} (exp ${ev.expirationDate}) — ${directionWord}${premiumStr}`
@@ -552,30 +602,144 @@ function getPositionSize(
   return null;
 }
 
+/**
+ * The position left in this account, on this side (long or short), JUST AFTER
+ * this sale, in the share basis of the sale itself.
+ *
+ * Today's open lots are not that figure: shares bought again after the sale
+ * would read as "retained", and every trim of one position would be measured
+ * against the same count. So the remainder is rebuilt backwards from the
+ * engine's own records, per lot of the same side acquired on or before the
+ * sale date:
+ *
+ *   remaining after this sale = the lot's quantity_remaining today
+ *                             + every later disposition of that lot
+ *                               (tax_lot_sales after this sale, and
+ *                               lot-assigned gifts after it)
+ *
+ * "Later" follows the engine's replay order: a later date, or the same date
+ * with a higher sale transaction id (the engine replays same-day sells by
+ * id, and a same-day gift after every sell), so three trims on one day see
+ * shrinking remainders.
+ *
+ * Split basis: the engine's split replay multiplies an OPEN lot's quantities
+ * by the ratio and leaves already-booked sales as booked, and a sale dated on
+ * a split's effective date is replayed before the split (end-of-day rule).
+ * So each quantity is brought back to the sale's own basis by dividing out
+ * the import-split ratios effective on or after the sale date and before the
+ * date that quantity was booked (for today's quantity_remaining: every later
+ * split, which all applied because the lot was still open). `soldShares` is
+ * this sale's own `quantity_sold`, already in that basis.
+ */
 function getRemainingPosition(
   db: Database.Database,
   securityId: number,
   accountId: number,
-  soldQuantity: number
+  soldQuantity: number,
+  asOf?: { exitDate: string; saleTransactionId: number; isShort: boolean }
 ): RemainingPositionContext | null {
-  const row = db
+  if (!asOf) {
+    // No sale identity known: today's open lots (the pre-2026-11-15 reading).
+    const row = db
+      .prepare(
+        `SELECT COALESCE(SUM(quantity_remaining), 0) as remaining
+         FROM tax_lots
+         WHERE security_id = ? AND account_id = ? AND quantity_remaining > 0`
+      )
+      .get(securityId, accountId) as { remaining: number } | undefined;
+    if (!row) return null;
+    return buildRemaining(row.remaining, soldQuantity);
+  }
+
+  const { exitDate, saleTransactionId, isShort } = asOf;
+  const splits = db
     .prepare(
-      `SELECT COALESCE(SUM(quantity_remaining), 0) as remaining
-       FROM tax_lots
-       WHERE security_id = ? AND account_id = ? AND quantity_remaining > 0`
+      `SELECT effective_date,
+              CAST(ratio_numerator AS REAL) / ratio_denominator AS ratio
+       FROM corporate_actions
+       WHERE source = 'import'
+         AND security_id = ?
+         AND UPPER(action_type) IN (${IMPORT_SPLIT_ACTION_TYPES_SQL})
+         AND effective_date >= ?
+         AND ratio_numerator > 0 AND ratio_denominator > 0`
     )
-    .get(securityId, accountId) as { remaining: number } | undefined;
+    .all(securityId, exitDate) as Array<{ effective_date: string; ratio: number }>;
+  // Product of the split ratios replayed after this sale and before a
+  // quantity booked on `bookedOn` (a split on that same date replays after
+  // it); null = today, every later split.
+  const splitFactor = (bookedOn: string | null): number =>
+    splits.reduce(
+      (f, sp) => (bookedOn === null || sp.effective_date < bookedOn ? f * sp.ratio : f),
+      1
+    );
+  const todayFactor = splitFactor(null);
 
-  if (!row) return null;
+  const lots = db
+    .prepare(
+      `SELECT id, quantity_remaining, acquisition_transaction_id
+       FROM tax_lots
+       WHERE account_id = ? AND security_id = ? AND is_short = ?
+         AND acquisition_date <= ?`
+    )
+    .all(accountId, securityId, isShort ? 1 : 0, exitDate) as Array<{
+    id: number;
+    quantity_remaining: number;
+    acquisition_transaction_id: number | null;
+  }>;
+  if (lots.length === 0) return buildRemaining(0, soldQuantity);
 
-  const remaining = row.remaining;
+  const laterSales = db.prepare(
+    `SELECT sale_date, quantity_sold FROM tax_lot_sales
+     WHERE tax_lot_id = ?
+       AND (sale_date > ? OR (sale_date = ? AND sale_transaction_id > ?))`
+  );
+  // Lot-assigned gifts consume lots outside tax_lot_sales (the engine's
+  // donation replay, keyed by the lot's acquisition transaction); one dated
+  // on or after the sale date was replayed after it.
+  const laterGifts = db.prepare(
+    `SELECT t.trade_date AS gift_date, ol.quantity AS quantity
+     FROM donation_leg_links dl
+     JOIN transactions t ON t.id = dl.transaction_id
+     JOIN donation_lots ol ON ol.donation_id = dl.donation_id
+     JOIN donations d ON d.id = dl.donation_id
+     WHERE dl.role = 'out' AND d.reversed_date IS NULL
+       AND t.account_id = ? AND t.security_id = ?
+       AND ol.acquisition_transaction_id = ?
+       AND t.trade_date >= ?`
+  );
+
+  let remaining = 0;
+  for (const lot of lots) {
+    let q = lot.quantity_remaining / todayFactor;
+    const sales = laterSales.all(lot.id, exitDate, exitDate, saleTransactionId) as Array<{
+      sale_date: string;
+      quantity_sold: number;
+    }>;
+    for (const s of sales) q += s.quantity_sold / splitFactor(s.sale_date);
+    if (lot.acquisition_transaction_id != null) {
+      const gifts = laterGifts.all(
+        accountId,
+        securityId,
+        lot.acquisition_transaction_id,
+        exitDate
+      ) as Array<{ gift_date: string; quantity: number }>;
+      for (const g of gifts) q += g.quantity / splitFactor(g.gift_date);
+    }
+    remaining += q;
+  }
+  return buildRemaining(remaining, soldQuantity);
+}
+
+/** Below this, a remainder is float residue from split ratios, not shares. */
+const REMAINING_EPSILON = 1e-6;
+
+function buildRemaining(remainingRaw: number, soldQuantity: number): RemainingPositionContext {
+  const remaining = remainingRaw > REMAINING_EPSILON ? remainingRaw : 0;
   const originalPosition = remaining + soldQuantity;
-
   return {
     remainingShares: remaining,
     soldShares: soldQuantity,
-    retainedPct:
-      originalPosition > 0 ? remaining / originalPosition : 0,
+    retainedPct: originalPosition > 0 ? remaining / originalPosition : 0,
     isTrim: remaining > 0,
   };
 }
@@ -586,9 +750,9 @@ function getConcurrentActivity(
   saleDate: string,
   windowDays: number = 7
 ): ConcurrentActivity | null {
-  const buys = db
+  const rows = db
     .prepare(
-      `SELECT s.symbol, t.quantity, ABS(t.amount) as total_cost, t.trade_date
+      `SELECT s.symbol, t.quantity, ABS(t.amount) as total_cost, t.trade_date, t.notes
        FROM transactions t
        JOIN securities s ON t.security_id = s.id
        WHERE t.account_id = ?
@@ -602,7 +766,16 @@ function getConcurrentActivity(
     quantity: number;
     total_cost: number;
     trade_date: string;
+    notes: string | null;
   }>;
+  // A buy the broker marks as closing only (a short cover, an option bought
+  // to close) puts no new capital to work, so it is not "deployed". A mixed
+  // open-and-close fill stays (its open part is new capital and the amount
+  // cannot be split); a row with no broker evidence stays, as before.
+  const buys = rows.filter((b) => {
+    const direction = readIbkrTradeDirection(b.notes);
+    return !(direction && direction.close && !direction.open);
+  });
 
   if (buys.length === 0) return null;
 
@@ -615,6 +788,13 @@ function getConcurrentActivity(
     })),
     totalBuyAmount: buys.reduce((sum, b) => sum + b.total_cost, 0),
   };
+}
+
+/** How many concurrent buys the prompt lists by name for each trade. */
+const CONCURRENT_BUYS_LISTED = 10;
+
+function formatWholeDollars(value: number): string {
+  return value.toLocaleString("en-US", { maximumFractionDigits: 0 });
 }
 
 function formatQty(qty: number): string {
@@ -648,6 +828,8 @@ function getOptionOriginEvents(
          UPPER(s.option_type) AS option_type,
          s.strike_price,
          s.expiration_date,
+         COALESCE(s.multiplier, 1) AS multiplier,
+         t.id AS event_transaction_id,
          t.security_id AS option_security_id
        FROM transactions t
        JOIN securities s ON s.id = t.security_id
@@ -669,6 +851,8 @@ function getOptionOriginEvents(
     option_type: "CALL" | "PUT";
     strike_price: number;
     expiration_date: string;
+    multiplier: number;
+    event_transaction_id: number;
     option_security_id: number;
   }>;
 
@@ -688,10 +872,33 @@ function getOptionOriginEvents(
      LIMIT 1`
   );
 
+  // An expired position's side is the side of the lot the expiry closed
+  // (the engine books EXPIRED against an open lot of either side).
+  const closedLotSideStmt = db.prepare(
+    `SELECT MAX(tl.is_short) AS max_short, MIN(tl.is_short) AS min_short
+     FROM tax_lot_sales x
+     JOIN tax_lots tl ON tl.id = x.tax_lot_id
+     WHERE x.sale_transaction_id = ?`
+  );
+
   return rows.map((r) => {
     const opener = openStmt.get(accountId, r.option_security_id) as
       | { trade_date: string; open_type: string; price_per_share: number | null }
       | undefined;
+    let isShort: boolean | null;
+    if (r.event_type === "EXERCISED") isShort = false;
+    else if (r.event_type === "ASSIGNED") isShort = true;
+    else {
+      const side = closedLotSideStmt.get(r.event_transaction_id) as
+        | { max_short: number | null; min_short: number | null }
+        | undefined;
+      if (side && side.max_short != null && side.max_short === side.min_short) {
+        isShort = side.max_short === 1;
+      } else if (opener?.open_type === "SELL_TO_OPEN") isShort = true;
+      else if (opener?.open_type === "BUY_TO_OPEN") isShort = false;
+      else isShort = null;
+    }
+    const perShare = opener?.price_per_share != null ? opener.price_per_share : null;
     return {
       eventType: r.event_type,
       eventDate: r.event_date,
@@ -699,10 +906,12 @@ function getOptionOriginEvents(
       contracts: r.contracts,
       strikePrice: r.strike_price,
       expirationDate: r.expiration_date,
-      openPremiumPerContract:
-        opener?.price_per_share != null ? opener.price_per_share : null,
+      openPremiumPerContract: perShare != null ? perShare * r.multiplier : null,
       openDate: opener?.trade_date ?? null,
       openType: opener?.open_type ?? null,
+      openPremiumPerShare: perShare,
+      multiplier: r.multiplier,
+      isShort,
     };
   });
 }
