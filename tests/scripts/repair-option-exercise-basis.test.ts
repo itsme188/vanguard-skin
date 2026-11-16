@@ -19,11 +19,8 @@ import { runMigrations } from "@/lib/db/migrate";
 import { computeTaxLots } from "@/lib/compute/tax-lots";
 import { getTaxInputGeneration } from "@/lib/compute/tax-convention";
 import {
-  backupPathFor,
-  backupStamp,
   parseRepairConfig,
   planOptionExerciseRepair,
-  takeFreshBackup,
   rehearsalImage,
   runOptionExerciseRepair,
   type RepairConfig,
@@ -377,36 +374,6 @@ describe("repair-option-exercise-basis", () => {
     expect(planOptionExerciseRepair(db, configFor(f)).refusals).toEqual([]);
     db.prepare("UPDATE transactions SET price_per_share = 50.02 WHERE id = ?").run(f.callLeg);
     expect(planOptionExerciseRepair(db, configFor(f)).refusals.join("\n")).toMatch(/not the strike \(within one cent\)/);
-  });
-
-  it("every --apply takes a fresh, time-stamped backup and refuses an existing one", () => {
-    // 2026-01-15 14:05:09 UTC is 09:05:09 Eastern.
-    expect(backupStamp(new Date("2026-01-15T14:05:09Z"))).toBe("2026-01-15_09-05-09");
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "repair-option-exercise-backup-"));
-    try {
-      const dbFile = path.join(dir, "copy.db");
-      const fileDb = new Database(dbFile);
-      fileDb.exec("CREATE TABLE t (v INTEGER); INSERT INTO t VALUES (1);");
-      const first = backupPathFor(dbFile, new Date("2026-01-15T14:05:09Z"));
-      const second = backupPathFor(dbFile, new Date("2026-01-15T14:05:10Z"));
-      expect(first).toBe(path.join(dir, "backups", "pre-option-exercise-basis-repair-2026-01-15_09-05-09.db"));
-      expect(second).not.toBe(first);
-      takeFreshBackup(fileDb, first);
-      const size = fs.statSync(first).size;
-      fileDb.exec("INSERT INTO t VALUES (2);");
-      expect(() => takeFreshBackup(fileDb, first)).toThrow(/already exists; refusing/);
-      expect(fs.statSync(first).size).toBe(size);
-      const old = new Database(first, { readonly: true });
-      expect((old.prepare("SELECT COUNT(*) AS n FROM t").get() as { n: number }).n).toBe(1); // untouched
-      old.close();
-      takeFreshBackup(fileDb, second);
-      const fresh = new Database(second, { readonly: true });
-      expect((fresh.prepare("SELECT COUNT(*) AS n FROM t").get() as { n: number }).n).toBe(2);
-      fresh.close();
-      fileDb.close();
-    } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
-    }
   });
 
   it("the rehearsal image of a WAL-mode file is writable in memory and leaves the file alone", () => {

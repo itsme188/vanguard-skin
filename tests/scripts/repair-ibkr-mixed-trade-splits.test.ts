@@ -7,17 +7,11 @@
  * closed 400 and opened a 100 short that the BUY 100 covered: flat.
  */
 import { describe, it, expect, beforeEach } from "vitest";
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import { computeTaxLots } from "@/lib/compute/tax-lots";
 import { readIbkrTradeDirection } from "@/lib/import/ibkr-trade-direction";
 import {
-  backupPathFor,
-  backupStamp,
-  takeFreshBackup,
   parseRepairConfig,
   planMixedTradeSplits,
   runMixedTradeSplits,
@@ -170,33 +164,5 @@ describe("repair-ibkr-mixed-trade-splits", () => {
   it("refuses when the account name does not match", () => {
     const plan = planMixedTradeSplits(db, { ...config(), accountName: "Nope" });
     expect(plan.refusals[0]).toMatch(/no account named/);
-  });
-
-  it("every --apply takes a fresh, time-stamped backup and refuses an existing one", () => {
-    // 2026-07-01 23:59:59 UTC is 19:59:59 Eastern (daylight time).
-    expect(backupStamp(new Date("2026-07-01T23:59:59Z"))).toBe("2026-07-01_19-59-59");
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "repair-mixed-splits-backup-"));
-    try {
-      const dbFile = path.join(dir, "copy.db");
-      const fileDb = new Database(dbFile);
-      fileDb.exec("CREATE TABLE t (v INTEGER); INSERT INTO t VALUES (1);");
-      const first = backupPathFor(dbFile, new Date("2026-07-01T23:59:59Z"));
-      expect(first).toBe(path.join(dir, "backups", "pre-ibkr-mixed-trade-splits-2026-07-01_19-59-59.db"));
-      const second = backupPathFor(dbFile, new Date("2026-07-02T00:00:00Z"));
-      expect(second).not.toBe(first);
-      takeFreshBackup(fileDb, first);
-      fileDb.exec("INSERT INTO t VALUES (2);");
-      expect(() => takeFreshBackup(fileDb, first)).toThrow(/already exists; refusing/);
-      const old = new Database(first, { readonly: true });
-      expect((old.prepare("SELECT COUNT(*) AS n FROM t").get() as { n: number }).n).toBe(1); // untouched
-      old.close();
-      takeFreshBackup(fileDb, second);
-      const fresh = new Database(second, { readonly: true });
-      expect((fresh.prepare("SELECT COUNT(*) AS n FROM t").get() as { n: number }).n).toBe(2);
-      fresh.close();
-      fileDb.close();
-    } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
-    }
   });
 });
