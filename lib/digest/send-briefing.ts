@@ -249,22 +249,19 @@ export async function sendBriefingEmail(
     console.warn(`[send-briefing] narrative pre-generation skipped: ${msg}`);
   }
 
-  // Macro themes pre-generation. 4 scopes × 1/wk = 4 Sonnet calls, run in
-  // parallel. Cached per (scope, week_of). Failures here MUST NOT block the
-  // briefing. Cost: ~$0.85/month at Sunday cadence.
+  // Macro themes pre-generation. The model input is the same for every scope,
+  // so ONE AI call per week writes all four scopes' rows (each with its own
+  // exposure figures). Cached per (scope, week_of). Failures here MUST NOT
+  // block the briefing.
   try {
-    const { generateMacroThemes } = await import("@/lib/compute/macro-themes");
-    const SCOPES_FOR_MACRO = ["all", "vanguard", "ibkr", "roth"] as const;
+    const { pregenerateMacroThemesForWeek } = await import("@/lib/compute/macro-themes");
     const macroWeek = mondayOf(weekOf);
-    const macroResults = await Promise.allSettled(
-      SCOPES_FOR_MACRO.map((scope) =>
-        generateMacroThemes(db, { scope, weekOf: macroWeek })
-      )
-    );
-    const macroFailed = macroResults.filter((r) => r.status === "rejected").length;
-    if (macroFailed > 0) {
+    const macro = await pregenerateMacroThemesForWeek(db, macroWeek);
+    if (macro.first.noneVerified) {
+      console.warn(`[send-briefing] macro-theme pre-generation: no theme could be verified; nothing cached`);
+    } else if (macro.skippedScopes.length > 0) {
       console.warn(
-        `[send-briefing] ${macroFailed} of ${macroResults.length} macro-theme pre-generations failed`
+        `[send-briefing] macro-theme pre-generation skipped ${macro.skippedScopes.join(", ")} (would need a second AI call)`
       );
     }
   } catch (err) {

@@ -3,7 +3,10 @@ import { db } from "@/lib/db";
 import {
   generateMacroThemes,
   MACRO_NONE_VERIFIED_MESSAGE,
+  MACRO_THEME_SCOPES,
   MacroThemesParseError,
+  planMacroThemes,
+  withCurrentExposure,
   type MacroTheme,
 } from "@/lib/compute/macro-themes";
 import { getCachedMacroThemes } from "@/lib/queries/analysis-macro-themes";
@@ -13,7 +16,7 @@ import { accountFailureOf, aiUnavailableReason } from "@/lib/earnings/ai-unavail
 
 export const dynamic = "force-dynamic";
 
-const ALLOWED_SCOPES = new Set(["all", "vanguard", "ibkr", "roth"]);
+const ALLOWED_SCOPES = new Set<string>(MACRO_THEME_SCOPES);
 
 /**
  * GET /api/analysis/macro-themes — SIDE-EFFECT-FREE cache read (#35 task 5).
@@ -24,6 +27,11 @@ const ALLOWED_SCOPES = new Set(["all", "vanguard", "ibkr", "roth"]);
  * bare SameSite=Lax GET carries no CSRF protection. Generation happens ONLY via
  * POST. The client POSTs to fill an empty cache. A cached row with an empty
  * themes array means "computed, under threshold" → surface underThreshold.
+ *
+ * The exposure figures (percentage, this-week marker, top holdings) are
+ * recomputed from the book as it is now (no AI call, nothing written): the
+ * stored ones date from when the themes were generated and go stale as
+ * holdings change. `generatedAt` is when the themes TEXT was generated.
  */
 export async function GET(req: NextRequest) {
   const url = new URL(req.url);
@@ -50,6 +58,8 @@ export async function GET(req: NextRequest) {
   } catch {
     themes = [];
   }
+  if (!Array.isArray(themes)) themes = [];
+  themes = withCurrentExposure(db, scope, themes);
   const sourceSummary = cached.sourceSummary ? JSON.parse(cached.sourceSummary) : null;
   // An empty cached array is the persisted under-threshold verdict.
   const underThreshold = themes.length === 0;
@@ -65,13 +75,20 @@ export async function GET(req: NextRequest) {
 
 // The 24h window is CLAIMED before the generation and RELEASED if it fails
 // (see POST). The claim has to happen before the await — this map is the only
-// mutex the route has, and without a pre-stamp two concurrent POSTs for one
-// scope (two tabs, a StrictMode double-effect, an A→B→A scope toggle) both
-// reach the paid generator. The release is what keeps a reply we could not
-// parse from locking the scope out of its Macro card for a full day
-// (2026-09-10 QA): a failure is not a generation. Failures instead get their
-// own short cooldown, so a persistently broken model is still billed at most
-// once per MACRO_FAIL_COOLDOWN_MS rather than on every page load.
+// mutex the route has, and without a pre-stamp two concurrent POSTs (two tabs,
+// a StrictMode double-effect, an A→B→A scope toggle) both reach the paid
+// generator. The release is what keeps a reply we could not parse from locking
+// the Macro card out for a full day (2026-09-10 QA): a failure is not a
+// generation. Failures instead get their own short cooldown, so a persistently
+// broken model is still billed at most once per MACRO_FAIL_COOLDOWN_MS rather
+// than on every page load.
+//
+// Both limits are keyed by the THEME WEEK, not by scope (2026-11-15): one paid
+// call now writes every scope's row from one shared reply, so a per-scope
+// window would let four paid calls a day through (one per scope, each
+// regenerating all four), and a broken model is broken for every scope alike.
+// A request that only REUSES the week's reply for a scope with no row yet
+// costs no AI call and is not limited at all.
 const lastMacroRegenAt = new Map<string, number>();
 const lastMacroFailAt = new Map<string, number>();
 const MACRO_REGEN_WINDOW_MS = 24 * 60 * 60 * 1000;
@@ -85,39 +102,45 @@ export async function POST(req: NextRequest) {
   if (!scope || !ALLOWED_SCOPES.has(scope)) {
     return NextResponse.json({ success: false, error: "scope required" }, { status: 400 });
   }
-  const now = Date.now();
-  const last = lastMacroRegenAt.get(scope) ?? 0;
-  if (now - last < MACRO_REGEN_WINDOW_MS) {
-    return NextResponse.json(
-      {
-        success: false,
-        error: "rate-limited",
-        // `reason` tells the card WHICH limit fired: the two windows are a day
-        // apart, and answering the failure cooldown with "refreshes once a day"
-        // named the wrong cause and the wrong wait.
-        reason: "daily",
-        retryAfter: MACRO_REGEN_WINDOW_MS - (now - last),
-      },
-      { status: 429 }
-    );
-  }
-  const lastFail = lastMacroFailAt.get(scope) ?? 0;
-  if (now - lastFail < MACRO_FAIL_COOLDOWN_MS) {
-    return NextResponse.json(
-      {
-        success: false,
-        error: "rate-limited",
-        reason: "last_attempt_failed",
-        retryAfter: MACRO_FAIL_COOLDOWN_MS - (now - lastFail),
-      },
-      { status: 429 }
-    );
-  }
-  // Claim the window BEFORE the await — see the note on lastMacroRegenAt. A
-  // second POST that arrives while this one is still in flight now sees the
-  // claim and 429s instead of starting a second paid generation.
-  lastMacroRegenAt.set(scope, now);
   const week = currentThemeWeek();
+  // A scope with no row of its own, in a week another scope already has
+  // generated themes for, is served from that reply: no AI call, no limit.
+  const paid = planMacroThemes(db, scope, week, true) !== "reuse";
+  const limitKey = week;
+  const now = Date.now();
+  if (paid) {
+    const last = lastMacroRegenAt.get(limitKey) ?? 0;
+    if (now - last < MACRO_REGEN_WINDOW_MS) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: "rate-limited",
+          // `reason` tells the card WHICH limit fired: the two windows are a day
+          // apart, and answering the failure cooldown with "refreshes once a day"
+          // named the wrong cause and the wrong wait.
+          reason: "daily",
+          retryAfter: MACRO_REGEN_WINDOW_MS - (now - last),
+        },
+        { status: 429 }
+      );
+    }
+    const lastFail = lastMacroFailAt.get(limitKey) ?? 0;
+    if (now - lastFail < MACRO_FAIL_COOLDOWN_MS) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: "rate-limited",
+          reason: "last_attempt_failed",
+          retryAfter: MACRO_FAIL_COOLDOWN_MS - (now - lastFail),
+        },
+        { status: 429 }
+      );
+    }
+    // Claim the window BEFORE the await — see the note on lastMacroRegenAt. A
+    // second POST that arrives while this one is still in flight now sees the
+    // claim and 429s instead of starting a second paid generation.
+    lastMacroRegenAt.set(limitKey, now);
+  }
   try {
     const r = await generateMacroThemes(db, { scope, weekOf: week, forceRegen: true });
     if (r.noneVerified) {
@@ -126,8 +149,10 @@ export async function POST(req: NextRequest) {
       // verdict (an empty themes array would read as one). The paid call was
       // made, so it gets the short failure cooldown; the 24h claim is released
       // so the next attempt is not a day away.
-      lastMacroRegenAt.delete(scope);
-      lastMacroFailAt.set(scope, now);
+      if (paid) {
+        lastMacroRegenAt.delete(limitKey);
+        lastMacroFailAt.set(limitKey, now);
+      }
       console.warn(
         `[macro-themes] scope=${scope}: all ${r.droppedThemes ?? 0} generated themes failed the citation check; nothing cached`,
       );
@@ -141,18 +166,20 @@ export async function POST(req: NextRequest) {
         { status: 422 },
       );
     }
-    // A success supersedes any earlier failure for this scope.
-    lastMacroFailAt.delete(scope);
+    // A success supersedes any earlier failure for this week.
+    if (paid) lastMacroFailAt.delete(limitKey);
     return NextResponse.json({ success: true, ...r });
   } catch (e) {
     // Release the 24h claim (a failure is not a generation) and fall back to
     // the short failure cooldown.
-    lastMacroRegenAt.delete(scope);
-    lastMacroFailAt.set(scope, now);
+    if (paid) {
+      lastMacroRegenAt.delete(limitKey);
+      lastMacroFailAt.set(limitKey, now);
+    }
     // The client renders `error` verbatim, so it must stay user-facing. Only
-    // MacroThemesParseError carries a message written for a reader; every other
-    // throw (a provider error string, a refusal) is raw vendor text and goes to
-    // the server log only.
+    // MacroThemesParseError (and its cut-off subclass) carries a message
+    // written for a reader; every other throw (a provider error string, a
+    // refusal) is raw vendor text and goes to the server log only.
     const raw = e instanceof Error ? e.message : String(e);
     // An AI ACCOUNT outage (out of credit, rejected key...) is named as such
     // so the card says when a retry can work instead of "try again in a few
