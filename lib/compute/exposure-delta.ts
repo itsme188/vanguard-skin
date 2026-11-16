@@ -18,6 +18,23 @@ import { accountScopeAndSql } from "@/lib/queries/account-scope-sql";
 import { BETA_LOOKBACK_DAYS } from "@/lib/queries/security-betas";
 import { getUsdPerUnit } from "@/lib/queries/fx-rates";
 import { resolveLeveragedExposure } from "@/lib/compute/leveraged-fund";
+import { isCashEquivalentSecurity } from "@/lib/compute/cash-equivalents";
+import { explodeHoldingBySector } from "@/lib/compute/explode-sector";
+import { getEtfSectorWeights } from "@/lib/queries/etf-weights";
+import { getOptionExposureMap } from "@/lib/compute/exposure";
+
+/**
+ * Equity beta assumed for a bond with no stored beta: the scenario engine's
+ * own convention (`estimateBeta` in lib/compute/scenarios.ts, which is not
+ * exported). Parity-pinned by tests/compute/exposure-delta-k2-rulings.test.ts;
+ * change both together (owner ruling 2026-11-15, K2a).
+ */
+export const BOND_EQUITY_BETA_ESTIMATE = 0.1;
+
+/** The sector bucket a cash equivalent lands in, the Cash-deploy name. */
+const CASH_EQUIVALENT_SECTOR = "Cash Equivalent";
+
+type FundSectorWeights = Map<string, Array<{ sector: string; weight_pct: number }>>;
 
 export interface HypotheticalLeg {
   symbol: string;
@@ -31,6 +48,14 @@ export interface ExposureSnapshot {
   factorTilts: Record<FactorColumn, Record<string, number>>;
   sectorWeights: Record<string, number>;
   topConcentrations: Array<{ symbol: string; weightPct: number }>;
+  /**
+   * The share (0-1) of the book's beta-weighted exposure whose beta is a
+   * type-based ESTIMATE rather than a stored measurement: a bond (the
+   * scenario engine's bond figure), an option whose underlying has no stored
+   * beta, or any other holding with no stored beta (1.0). A cash equivalent's
+   * zero is definitional and not counted (owner ruling 2026-11-15, K2a).
+   */
+  betaEstimatedWeight: number;
 }
 
 export interface ExposureFlag {
@@ -49,7 +74,12 @@ export interface ExposureFlag {
 
 export interface DroppedLeg {
   symbol: string;
-  reason: "unknown_symbol" | "not_held" | "invalid_amount" | "clamped_sell" | "leveraged_or_inverse_fund";
+  /**
+   * `no_price`: the security is known but has no positive close on file, so
+   * no quantity can be derived (K2d, 2026-11-15). `unknown_symbol`: no
+   * securities row at all.
+   */
+  reason: "unknown_symbol" | "no_price" | "not_held" | "invalid_amount" | "clamped_sell" | "leveraged_or_inverse_fund";
   requestedDollars?: number;
   appliedDollars?: number;
 }
@@ -95,15 +125,26 @@ const DEFAULT_CAPS: ConstructionCaps = {
 };
 
 interface HoldingRow {
+  securityId: number;
   symbol: string;
   securityType: string | null;
   sector: string | null;
+  fundCategory: string | null;
   currency: string | null;
   multiplier: number;
   quantity: number;
   price: number;
   marketValue: number;
   beta: number;
+  /** True when `beta` is a type-based estimate, not a stored measurement. */
+  betaEstimated: boolean;
+  /**
+   * Beta-weighting exposure per dollar of market value: 1 for every row but
+   * a held option whose Greeks compute, where it is that contract's
+   * delta-adjusted exposure per dollar of its value (lib/compute/exposure.ts
+   * `perValueDollar`). Set after loading; see withOptionDeltaExposure.
+   */
+  betaExposurePerValue: number;
   factors: Partial<Record<FactorColumn, string>>;
   /**
    * A leveraged or inverse fund (or an option on one) with no signed factor:
@@ -166,7 +207,8 @@ function loadCurrentHoldings(
         SUM(lh.quantity) AS quantity,
         lp.close_price AS price,
         ${FACTOR_COLUMNS.map((f) => `sf.${f} AS ${f}`).join(",\n        ")},
-        sb.beta AS cached_beta
+        sb.beta AS cached_beta,
+        sb_u.beta AS underlying_cached_beta
       FROM latest_holdings lh
       JOIN securities s ON s.id = lh.security_id
       -- An option's underlying, read only by the leveraged-fund rule.
@@ -174,6 +216,7 @@ function loadCurrentHoldings(
       LEFT JOIN latest_prices lp ON lp.security_id = s.id
       LEFT JOIN security_factors sf ON sf.security_id = s.id
       LEFT JOIN security_betas sb ON sb.security_id = s.id AND sb.lookback_days = ${BETA_LOOKBACK_DAYS}
+      LEFT JOIN security_betas sb_u ON sb_u.security_id = s_u.id AND sb_u.lookback_days = ${BETA_LOOKBACK_DAYS}
       WHERE ${liveOptionExpirationSql("s")}
       GROUP BY s.id
     `
@@ -195,6 +238,7 @@ function loadCurrentHoldings(
       quantity: number;
       price: number | null;
       cached_beta: number | null;
+      underlying_cached_beta: number | null;
     } & Record<FactorColumn, string | null>>;
 
   return rows
@@ -206,19 +250,61 @@ function loadCurrentHoldings(
         if (v) factors[col] = v;
       }
       return {
+        securityId: r.security_id,
         symbol: r.symbol,
         securityType: r.security_type,
         sector: r.sector,
+        fundCategory: r.fund_category,
         currency: r.currency,
         multiplier: r.multiplier,
         quantity: r.quantity,
         price: r.price!,
         marketValue: marketValue(r.quantity, r.price!, r.security_type, r.multiplier, getUsdPerUnit(db, r.currency)),
-        beta: r.cached_beta ?? 1.0,
+        ...betaOf(r),
+        betaExposurePerValue: 1,
         factors,
         ...leveragedExposureOf(r),
       };
     });
+}
+
+/**
+ * The beta a What-if row is weighted at (owner ruling 2026-11-15, K2a).
+ * A stored beta wins. With none, a type-based estimate replaces the old
+ * blanket 1.0, which over-stated the beta of a book holding much cash, bonds
+ * or options and raised a false beta flag:
+ *   - a cash equivalent (isCashEquivalentSecurity) is 0, not an estimate;
+ *   - a bond takes the scenario engine's bond figure;
+ *   - an option takes its UNDERLYING's stored beta, else the underlying's own
+ *     fallback by these same rules (1.0 when the underlying is not on file);
+ *   - anything else keeps 1.0.
+ */
+function betaOf(r: {
+  security_type: string | null;
+  fund_category: string | null;
+  cached_beta: number | null;
+  underlying_security_type: string | null;
+  underlying_fund_category: string | null;
+  underlying_cached_beta: number | null;
+}): { beta: number; betaEstimated: boolean } {
+  if (r.security_type?.trim().toLowerCase() === "option") {
+    if (r.underlying_cached_beta !== null) return { beta: r.underlying_cached_beta, betaEstimated: false };
+    if (r.underlying_security_type == null) return { beta: 1.0, betaEstimated: true };
+    return typeBetaEstimate(r.underlying_security_type, r.underlying_fund_category);
+  }
+  if (r.cached_beta !== null) return { beta: r.cached_beta, betaEstimated: false };
+  return typeBetaEstimate(r.security_type, r.fund_category);
+}
+
+function typeBetaEstimate(
+  securityType: string | null,
+  fundCategory: string | null,
+): { beta: number; betaEstimated: boolean } {
+  if (isCashEquivalentSecurity({ security_type: securityType, fund_category: fundCategory })) {
+    return { beta: 0, betaEstimated: false };
+  }
+  if (securityType?.trim().toLowerCase() === "bond") return { beta: BOND_EQUITY_BETA_ESTIMATE, betaEstimated: true };
+  return { beta: 1.0, betaEstimated: true };
 }
 
 /**
@@ -280,17 +366,20 @@ function lookupSymbol(
   symbol: string
 ): Pick<
   HoldingRow,
+  | "securityId"
   | "symbol"
   | "securityType"
   | "sector"
+  | "fundCategory"
   | "currency"
   | "multiplier"
   | "price"
   | "beta"
+  | "betaEstimated"
   | "factors"
   | "leveragedOrInverse"
   | "leverageFactor"
-> | null {
+> | "no_price" | null {
   const row = db
     .prepare(
       `
@@ -311,12 +400,14 @@ function lookupSymbol(
         (SELECT p.close_price FROM prices p
           WHERE p.security_id = s.id ORDER BY p.date DESC LIMIT 1) AS price,
         ${FACTOR_COLUMNS.map((f) => `sf.${f} AS ${f}`).join(",\n        ")},
-        sb.beta AS cached_beta
+        sb.beta AS cached_beta,
+        sb_u.beta AS underlying_cached_beta
       FROM securities s
       -- An option's underlying, read only by the leveraged-fund rule.
       LEFT JOIN securities s_u ON s_u.symbol = s.underlying_symbol
       LEFT JOIN security_factors sf ON sf.security_id = s.id
       LEFT JOIN security_betas sb ON sb.security_id = s.id AND sb.lookback_days = ${BETA_LOOKBACK_DAYS}
+      LEFT JOIN security_betas sb_u ON sb_u.security_id = s_u.id AND sb_u.lookback_days = ${BETA_LOOKBACK_DAYS}
       WHERE REPLACE(UPPER(s.symbol), ' ', '') = ?
       LIMIT 1
     `
@@ -337,9 +428,11 @@ function lookupSymbol(
       underlying_leverage_factor: number | null;
       price: number | null;
       cached_beta: number | null;
+      underlying_cached_beta: number | null;
     } & Record<FactorColumn, string | null>) | undefined;
 
-  if (!row || !row.price || row.price <= 0) return null;
+  if (!row) return null;
+  if (!row.price || row.price <= 0) return "no_price";
 
   const factors: Partial<Record<FactorColumn, string>> = {};
   for (const col of FACTOR_COLUMNS) {
@@ -347,13 +440,15 @@ function lookupSymbol(
     if (v) factors[col] = v;
   }
   return {
+    securityId: row.security_id,
     symbol: row.symbol,
     securityType: row.security_type,
     sector: row.sector,
+    fundCategory: row.fund_category,
     currency: row.currency,
     multiplier: row.multiplier,
     price: row.price,
-    beta: row.cached_beta ?? 1.0,
+    ...betaOf(row),
     factors,
     ...leveragedExposureOf(row),
   };
@@ -379,7 +474,58 @@ function symbolWeights(allHoldings: HoldingRow[]): Array<{ symbol: string; weigh
     .sort((a, b) => b.weightPct - a.weightPct);
 }
 
-function snapshot(allHoldings: HoldingRow[]): ExposureSnapshot {
+/**
+ * A row's sector buckets, the same way Cash deploy reads its book (owner
+ * rulings 2026-11-15, K2b/K2c): a cash equivalent is "Cash Equivalent"; a
+ * fund with stored sector weights is looked through (explodeHoldingBySector
+ * with getEtfSectorWeights); a sectorless bond is "Fixed Income"; anything
+ * else is its own sector or "Unknown". A fund whose weights fall short of
+ * 100 puts the rest in its own sector (or "Unknown"); weights over 100 are
+ * scaled down; either way the parts sum to the row's value exactly.
+ * `lookedThrough` is false for a single-bucket row, so the sector-cap flag
+ * can still skip a broad fund with NO weights.
+ */
+function sectorParts(
+  h: HoldingRow,
+  value: number,
+  fundWeights: FundSectorWeights,
+): Array<{ sector: string; value: number; lookedThrough: boolean }> {
+  if (isCashEquivalentSecurity({ security_type: h.securityType, fund_category: h.fundCategory })) {
+    return [{ sector: CASH_EQUIVALENT_SECTOR, value, lookedThrough: false }];
+  }
+  // A blank or whitespace-only sector is unclassified, not its own
+  // unlabelled bucket (A3).
+  const ownSector = h.sector?.trim() ? h.sector : null;
+  const parts = explodeHoldingBySector(h.symbol, h.securityType, value, fundWeights, ownSector);
+  const type = (h.securityType ?? "").trim().toLowerCase();
+  const weighted =
+    (type === "etf" || type === "mutual fund") && (fundWeights.get(h.symbol)?.length ?? 0) > 0;
+  if (!weighted) return parts.map((p) => ({ ...p, lookedThrough: false }));
+  const covered = parts.reduce((s, p) => s + p.value, 0);
+  if (value === 0 || covered === 0) {
+    return [{ sector: ownSector ?? "Unknown", value, lookedThrough: true }];
+  }
+  const ratio = covered / value;
+  if (ratio > 1) {
+    return parts.map((p) => ({ sector: p.sector, value: p.value / ratio, lookedThrough: true }));
+  }
+  const out = parts.map((p) => ({ ...p, lookedThrough: true }));
+  const rest = value - covered;
+  if (rest !== 0) out.push({ sector: ownSector ?? "Unknown", value: rest, lookedThrough: true });
+  return out;
+}
+
+interface SnapshotDetail {
+  snapshot: ExposureSnapshot;
+  /**
+   * Weight of the "Diversified" bucket that came from single-bucket rows (a
+   * broad fund with NO stored weights). The sector-cap flag skips only this
+   * part (A3, narrowed by K2b).
+   */
+  unweightedDiversifiedWeight: number;
+}
+
+function snapshot(allHoldings: HoldingRow[], fundWeights: FundSectorWeights): SnapshotDetail {
   // A leveraged or inverse fund with NO signed factor has no beta, sector or
   // factor exposure anyone can state (owner ruling 2026-11-01, stopgap): it
   // is left out of every bucket AND of the total, so the weights are over the
@@ -397,16 +543,24 @@ function snapshot(allHoldings: HoldingRow[]): ExposureSnapshot {
   ) as Record<FactorColumn, Record<string, number>>;
 
   let betaWeighted = 0;
+  let betaGross = 0;
+  let betaEstimatedGross = 0;
+  let unweightedDiversified = 0;
   for (const h of holdings) {
     // The exposure a position carries: its money, times its signed leverage
     // factor where it has one.
     const exposureValue = h.marketValue * (h.leverageFactor ?? 1);
-    const w = totalValue > 0 ? exposureValue / totalValue : 0;
+    // Beta weighs a held option at its delta-adjusted exposure where the
+    // Greeks compute (betaExposurePerValue); every other row at exposureValue.
+    const betaExposure = exposureValue * h.betaExposurePerValue;
+    const w = totalValue > 0 ? betaExposure / totalValue : 0;
     betaWeighted += w * h.beta;
-    // A blank or whitespace-only sector is unclassified, not its own
-    // unlabelled bucket (A3).
-    const sector = h.sector?.trim() ? h.sector : "Unknown";
-    sectorWeights[sector] = (sectorWeights[sector] ?? 0) + exposureValue;
+    betaGross += Math.abs(betaExposure);
+    if (h.betaEstimated) betaEstimatedGross += Math.abs(betaExposure);
+    for (const part of sectorParts(h, exposureValue, fundWeights)) {
+      sectorWeights[part.sector] = (sectorWeights[part.sector] ?? 0) + part.value;
+      if (part.sector === "Diversified" && !part.lookedThrough) unweightedDiversified += part.value;
+    }
     for (const col of FACTOR_COLUMNS) {
       const bucket = h.factors[col] ?? "Unknown";
       factorTilts[col][bucket] = (factorTilts[col][bucket] ?? 0) + exposureValue;
@@ -426,11 +580,37 @@ function snapshot(allHoldings: HoldingRow[]): ExposureSnapshot {
   const topConcentrations = symbolWeights(allHoldings).slice(0, 10);
 
   return {
-    totalValue,
-    beta: betaWeighted,
-    factorTilts,
-    sectorWeights,
-    topConcentrations,
+    snapshot: {
+      totalValue,
+      beta: betaWeighted,
+      factorTilts,
+      sectorWeights,
+      topConcentrations,
+      betaEstimatedWeight: betaGross > 0 ? betaEstimatedGross / betaGross : 0,
+    },
+    unweightedDiversifiedWeight: totalValue > 0 ? unweightedDiversified / totalValue : 0,
+  };
+}
+
+/**
+ * Give each held option whose Greeks compute its delta-adjusted beta
+ * exposure per dollar of value (lib/compute/exposure.ts, `perValueDollar`:
+ * delta × spot ÷ (option close × FX), the same for every account holding the
+ * contract). An option whose Greeks cannot compute, and a hypothetical leg
+ * on an option not held, keep 1: its market value (K2a). Greeks are only
+ * computed when the scope holds an option.
+ */
+function withOptionDeltaExposure(
+  db: Database.Database,
+  accountIds: number[] | undefined,
+  rows: HoldingRow[],
+): (securityId: number) => number {
+  const hasOption = rows.some((r) => r.securityType?.trim().toLowerCase() === "option");
+  if (!hasOption) return () => 1;
+  const perValue = getOptionExposureMap(db, accountIds).perValueDollar;
+  return (securityId) => {
+    const ratio = perValue.get(securityId);
+    return ratio !== undefined && Number.isFinite(ratio) ? ratio : 1;
   };
 }
 
@@ -463,7 +643,7 @@ function applyLegs(
   db: Database.Database,
   current: HoldingRow[],
   legs: HypotheticalLeg[],
-  resolve: (symbol: string) => HoldingRow | null
+  resolve: (symbol: string) => HoldingRow | "no_price" | null
 ): { rows: HoldingRow[]; dropped: DroppedLeg[] } {
   const dropped: DroppedLeg[] = [];
   const next: HoldingRow[] = current.map((h) => ({ ...h }));
@@ -530,6 +710,11 @@ function applyLegs(
         continue;
       }
       const synth = resolve(leg.symbol);
+      if (synth === "no_price") {
+        // Known, but no positive close on file: no quantity can be derived.
+        dropped.push({ symbol: upper, reason: "no_price" });
+        continue;
+      }
       if (!synth) {
         dropped.push({ symbol: upper, reason: "unknown_symbol" });
         continue;
@@ -584,7 +769,11 @@ function getCaps(db: Database.Database, scope: string): ConstructionCaps {
   }
 }
 
-function computeFlags(after: ExposureSnapshot, caps: ConstructionCaps): ExposureFlag[] {
+function computeFlags(
+  after: ExposureSnapshot,
+  caps: ConstructionCaps,
+  unweightedDiversifiedWeight: number,
+): ExposureFlag[] {
   const flags: ExposureFlag[] = [];
   const top1 = after.topConcentrations[0];
   if (top1 && top1.weightPct > caps.top1_max) {
@@ -606,11 +795,13 @@ function computeFlags(after: ExposureSnapshot, caps: ConstructionCaps): Exposure
       weightPct: top3Sum,
     });
   }
-  for (const [sector, weight] of Object.entries(after.sectorWeights)) {
+  for (const [sector, sectorWeight] of Object.entries(after.sectorWeights)) {
     if (sector === "Unknown") continue; // skip — concentration in unclassified positions is a data-quality issue, not a portfolio-construction risk
-    // Skip "Diversified" too: it is the bucket for broad index funds, which
-    // spread across every sector, so its weight is not a sector bet (A3).
-    if (sector === "Diversified") continue;
+    // Skip the part of "Diversified" that is broad funds with NO stored
+    // sector weights: such a fund spreads across every sector, so its weight
+    // is not a sector bet (A3). A looked-through fund's remainder in its own
+    // "Diversified" sector is read like any other bucket (K2b, 2026-11-15).
+    const weight = sector === "Diversified" ? sectorWeight - unweightedDiversifiedWeight : sectorWeight;
     if (weight > caps.sector_max) {
       flags.push({
         severity: "warn",
@@ -650,29 +841,39 @@ export function computeExposureDelta(
   accountIds: number[] | undefined,
   legs: HypotheticalLeg[]
 ): ExposureDelta {
-  const current = loadCurrentHoldings(db, accountIds);
-  const before = snapshot(current);
+  const loaded = loadCurrentHoldings(db, accountIds);
+  const deltaExposurePerValue = withOptionDeltaExposure(db, accountIds, loaded);
+  const current = loaded.map((h) => ({ ...h, betaExposurePerValue: deltaExposurePerValue(h.securityId) }));
+  const fundWeights = getEtfSectorWeights(db);
+  const before = snapshot(current, fundWeights).snapshot;
   const resolved = applyLegs(db, current, legs, (symbol) => {
     const sym = lookupSymbol(db, symbol);
-    if (!sym) return null;
+    if (sym === null || sym === "no_price") return sym;
     return {
+      securityId: sym.securityId,
       symbol: sym.symbol,
       securityType: sym.securityType,
       sector: sym.sector,
+      fundCategory: sym.fundCategory,
       currency: sym.currency,
       multiplier: sym.multiplier,
       quantity: 0,
       price: sym.price,
       marketValue: 0,
       beta: sym.beta,
+      betaEstimated: sym.betaEstimated,
+      // An option leg on a contract not held: no Greeks were computed for
+      // it, so its beta is weighted at market value.
+      betaExposurePerValue: 1,
       factors: sym.factors,
       leveragedOrInverse: sym.leveragedOrInverse,
       leverageFactor: sym.leverageFactor,
     };
   });
-  const after = snapshot(resolved.rows);
+  const afterDetail = snapshot(resolved.rows, fundWeights);
+  const after = afterDetail.snapshot;
   const caps = getCaps(db, scope);
-  const flags = computeFlags(after, caps);
+  const flags = computeFlags(after, caps, afterDetail.unweightedDiversifiedWeight);
 
   const leveragedFundsNotModelled = [
     ...new Set([

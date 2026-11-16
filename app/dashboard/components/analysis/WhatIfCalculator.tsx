@@ -12,6 +12,13 @@ import { networkFailureMessage, readMutationResult } from "@/lib/ui/mutation-res
 
 const MATERIAL_DELTA_PCT = 0.005; // 0.5pp threshold for sector + factor rows
 
+/**
+ * The Portfolio Beta row says "estimated" once at least this share of the
+ * book's beta-weighted exposure has no stored beta and takes a type estimate
+ * (owner ruling 2026-11-15, K2a; `betaEstimatedWeight` in exposure-delta.ts).
+ */
+export const BETA_ESTIMATED_MATERIAL_SHARE = 0.05;
+
 interface Props {
   scope: string;
 }
@@ -180,6 +187,16 @@ export function WhatIfCalculator({ scope }: Props) {
             </p>
           )}
           <DeltaTable delta={delta} />
+          {/* Sector and factor weights are shares of the modelled book's NET
+              value, with each position at its exposure: a short or an inverse
+              fund counts negative and a leveraged fund at its multiple, so on
+              such a scope a row can read above 100% or below 0% (K2e). */}
+          {weightsLeaveZeroToHundred(delta) && (
+            <p className="text-[10px] text-ink-faint">
+              Weights are shares of the book&apos;s net value: shorts and inverse funds count negative and
+              leveraged funds at their multiple, so a row can read above 100% or below 0%.
+            </p>
+          )}
           {delta.flags.length > 0 && (
             <div className="space-y-1">
               {delta.flags.map((flag) => (
@@ -220,6 +237,8 @@ function FlagMessage({ flag }: { flag: ExposureFlag }) {
 
 interface Row {
   label: string;
+  /** A short qualifier printed under the label. */
+  note?: React.ReactNode;
   before: string | React.ReactNode;
   after: string | React.ReactNode;
   diff?: string | React.ReactNode;
@@ -233,6 +252,9 @@ interface Section {
 
 export function droppedLegMessage(d: NonNullable<ExposureDelta["droppedLegs"]>[number]): string {
   if (d.reason === "unknown_symbol") return `${d.symbol} isn't a known security — leg ignored`;
+  if (d.reason === "no_price") {
+    return `${d.symbol} has no price on file, so the amount can't be turned into shares — leg ignored`;
+  }
   if (d.reason === "invalid_amount") {
     return `${d.symbol} needs a positive dollar amount — leg ignored (use Buy/Sell for direction)`;
   }
@@ -246,6 +268,18 @@ export function droppedLegMessage(d: NonNullable<ExposureDelta["droppedLegs"]>[n
 export function buildHeadlineRows(delta: ExposureDelta): Row[] {
   const beforeBeta = Number(delta.before.beta.toFixed(2));
   const afterBeta = Number(delta.after.beta.toFixed(2));
+  // How much of the beta is a type estimate (no stored beta). Shown when it
+  // is material on either side; the share printed is the larger one.
+  const estimatedShare = Math.max(
+    delta.before.betaEstimatedWeight ?? 0,
+    delta.after.betaEstimatedWeight ?? 0,
+  );
+  const betaNote =
+    estimatedShare >= BETA_ESTIMATED_MATERIAL_SHARE ? (
+      <>
+        estimated: <Pct value={estimatedShare * 100} digits={0} /> of the exposure has no stored beta
+      </>
+    ) : undefined;
   return [
     {
       // exposure-delta.ts's snapshot() sums HOLDINGS market value only
@@ -261,6 +295,7 @@ export function buildHeadlineRows(delta: ExposureDelta): Row[] {
     },
     {
       label: "Portfolio Beta",
+      note: betaNote,
       before: beforeBeta.toFixed(2),
       after: afterBeta.toFixed(2),
       diff: signed(afterBeta - beforeBeta, 2),
@@ -279,7 +314,7 @@ function buildConcentrationRows(delta: ExposureDelta): Row[] {
       label: symbol,
       before: <Pct value={before * 100} digits={1} />,
       after: <Pct value={after * 100} digits={1} />,
-      diff: <PrivateText>{signedPp(after - before)}</PrivateText>,
+      diff: <PrivateText>{signedPp(roundedPpDelta(before, after))}</PrivateText>,
       indent: true,
     };
   });
@@ -298,11 +333,11 @@ function buildSectorRows(delta: ExposureDelta): Row[] {
     })
     .filter((r) => Math.abs(r.diff) >= MATERIAL_DELTA_PCT)
     .sort((a, b) => Math.abs(b.diff) - Math.abs(a.diff))
-    .map(({ sector, before, after, diff }) => ({
+    .map(({ sector, before, after }) => ({
       label: sector,
       before: <Pct value={before * 100} digits={1} />,
       after: <Pct value={after * 100} digits={1} />,
-      diff: <PrivateText>{signedPp(diff)}</PrivateText>,
+      diff: <PrivateText>{signedPp(roundedPpDelta(before, after))}</PrivateText>,
       indent: true,
     }));
 }
@@ -327,7 +362,7 @@ function buildFactorRows(delta: ExposureDelta): Row[] {
         label: `${FACTOR_LABELS[factor as FactorColumn]} · ${m.bucket}`,
         before: <Pct value={m.before * 100} digits={1} />,
         after: <Pct value={m.after * 100} digits={1} />,
-        diff: <PrivateText>{signedPp(m.diff)}</PrivateText>,
+        diff: <PrivateText>{signedPp(roundedPpDelta(m.before, m.after))}</PrivateText>,
         indent: true,
       });
     }
@@ -367,7 +402,10 @@ function DeltaTable({ delta }: { delta: ExposureDelta }) {
                 )}
                 {section.rows.map((r) => (
                   <tr key={r.label} className="border-b border-edge/40">
-                    <td className={`py-2 px-3 text-ink ${r.indent ? "pl-6" : ""}`}>{r.label}</td>
+                    <td className={`py-2 px-3 text-ink ${r.indent ? "pl-6" : ""}`}>
+                      {r.label}
+                      {r.note && <span className="block text-[10px] text-ink-faint">{r.note}</span>}
+                    </td>
                     <td className="text-right py-2 px-3 font-mono text-ink-dim">{r.before}</td>
                     <td className="text-right py-2 px-3 font-mono text-ink">{r.after}</td>
                     <td className="text-right py-2 px-3 font-mono text-ink-faint">{r.diff ?? "—"}</td>
@@ -391,6 +429,32 @@ export function signed(n: number, digits: number): string {
   const v = n.toFixed(digits);
   if (rendersAsZero(v)) return (0).toFixed(digits);
   return n > 0 ? `+${v}` : v;
+}
+
+/**
+ * The change between two weights (fractions) as the table prints them: each
+ * rounded to one decimal of a percent first, so the delta always agrees with
+ * the Before and After beside it (36.8% to 36.9% is +0.1pp, never 0.0pp; K2e).
+ */
+export function roundedPpDelta(before: number, after: number): number {
+  const round1 = (w: number) => Math.round(w * 1000) / 10;
+  return (round1(after) - round1(before)) / 100;
+}
+
+/**
+ * True when any sector or factor weight, before or after, is below 0% or
+ * above 100%: the table then states its basis (net value, positions at their
+ * exposure), so such a row does not read as an error (K2e).
+ */
+export function weightsLeaveZeroToHundred(delta: ExposureDelta): boolean {
+  const outside = (w: number) => w < -1e-9 || w > 1 + 1e-9;
+  for (const s of [delta.before, delta.after]) {
+    if (Object.values(s.sectorWeights).some(outside)) return true;
+    for (const buckets of Object.values(s.factorTilts)) {
+      if (Object.values(buckets ?? {}).some(outside)) return true;
+    }
+  }
+  return false;
 }
 
 // Same negative-zero guard as `signed` above: a pp delta that rounds to

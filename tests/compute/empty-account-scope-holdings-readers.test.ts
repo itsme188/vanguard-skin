@@ -354,8 +354,17 @@ describe("every account and a non-empty list answer as before", () => {
     // (the true before weight of each after-top name) and a weightPct on
     // each flag that prints a weight: with those two keys removed the output
     // still hashed to the 2026-11-04 digest (af4ed74a...).
+    // Re-captured 2026-11-15 (What-if rulings K2): the What-if's beta takes a
+    // type estimate where no beta is stored (cash 0, bond the scenario
+    // figure), each snapshot gained betaEstimatedWeight, its sector buckets
+    // look through funds and name cash "Cash Equivalent" and bonds "Fixed
+    // Income", and the beta flag reads the new beta. Field-by-field diff
+    // against the tree without K2: only exposureDelta (and the copy inside
+    // each cashDeploy pick) moved, in beta, betaEstimatedWeight, those
+    // sector keys and the beta flag; every allocation figure is unchanged.
+    // The digest without K2 on the same tree was a66cf999....
     expect(createHash("sha256").update(json).digest("hex")).toBe(
-      "07131a145a93f695deebfb28630f3f8d6b546ab55ca0dcc3790e8672747cb1b8",
+      "d2202a3ec025cd8510a37486ba3de38d15d6e5c7a53225f257ae19b236d395c2",
     );
   });
 
