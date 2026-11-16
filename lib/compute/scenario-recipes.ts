@@ -195,13 +195,18 @@ export interface ScenarioRecipe {
 }
 
 /**
- * Owner ruling 2026-11-15, appended to every methodology so the string stays
- * true to the math (recipeEquityMove caps a fund's subject multiplier at 1.0).
+ * Owner rulings 2026-11-15 and 2026-11-16 (26 = A, 26b = A), appended to every
+ * methodology so the string stays true to the math in recipeEquityMove: only
+ * a fund that IS the subject (a structural selector: sector slice, industry,
+ * fund category or domicile) is capped at the headline; a fund that is a
+ * subject only through its factor buckets keeps its multiplier.
  */
-const FUND_SUBJECT_NOTE =
-  " A fund on the subject path (and an option on one) is never scaled past the headline: a fund " +
-  "that IS the subject (its fund category, sector or domicile) moves exactly the headline, and an " +
-  "option on it is repriced off that move. Only single names move further on their factor buckets.";
+export const FUND_SUBJECT_NOTE =
+  " A fund that IS the subject (its sector, industry, fund category or domicile matches the " +
+  "subject) moves exactly the headline, and an option on it is repriced off that move. A fund that " +
+  "is a subject only through its factor buckets keeps its factor multiplier, like a single name. " +
+  "A leveraged or inverse fund on the subject path moves its leverage factor times the headline. " +
+  "A single-stock leveraged fund is approximated by that index move, not by its own stock's move.";
 
 export const SCENARIO_RECIPES: ScenarioRecipe[] = [
   {
@@ -482,15 +487,28 @@ function isForeignDomiciled(pos: RecipeEquityInput): boolean {
 }
 
 /**
+ * True when the position IS the subject by a STRUCTURAL selector (industry,
+ * fund category or domicile), as opposed to a factor bucket. Sector
+ * membership is tested in recipeEquityMove (per look-through slice for the
+ * floor, on the fund's own sector for the cap). Owner ruling 2026-11-16
+ * (26 = A): only a structural subject fund is capped at the headline; these
+ * selectors plus the recipe's subject sectors are the recipe's definition of
+ * "the subject index".
+ */
+function isStructuralSubjectPosition(subject: ScenarioSubject, pos: RecipeEquityInput): boolean {
+  if (matchesAnySubstring(pos.industry, subject.industries)) return true;
+  if (matchesAnySubstring(pos.fund_category, subject.fundCategories)) return true;
+  return Boolean(subject.foreignDomiciled && isForeignDomiciled(pos));
+}
+
+/**
  * The multiplier FLOOR this position earns from position-level subject
  * selectors (industry / fund category / domicile / factor buckets), or null
  * when it is not a subject by any of them. Sector membership is decided per
  * look-through slice in computeRecipeScenario, not here.
  */
 function positionSubjectFloor(subject: ScenarioSubject, pos: RecipeEquityInput): number | null {
-  if (matchesAnySubstring(pos.industry, subject.industries)) return STRUCTURAL_SUBJECT_FLOOR;
-  if (matchesAnySubstring(pos.fund_category, subject.fundCategories)) return STRUCTURAL_SUBJECT_FLOOR;
-  if (subject.foreignDomiciled && isForeignDomiciled(pos)) return STRUCTURAL_SUBJECT_FLOOR;
+  if (isStructuralSubjectPosition(subject, pos)) return STRUCTURAL_SUBJECT_FLOOR;
 
   let floor: number | null = null;
   for (const selector of subject.factors ?? []) {
@@ -560,7 +578,7 @@ function sectorFloorFor(
  * bond-fund label. A single-stock leveraged fund is flagged the same way, so
  * it too moves its factor times the headline.
  */
-function isFundExposure(
+function fundExposure(
   pos: Pick<
     RecipeEquityInput,
     | "security_type"
@@ -570,14 +588,15 @@ function isFundExposure(
     | "underlying_fund_category"
     | "underlying_name"
   >,
-): boolean {
+): { isFund: boolean; leveraged: boolean } {
   const option = isOptionSecurityType(pos.security_type);
   const identity = option
     ? { security_type: pos.underlying_security_type ?? null, fund_category: pos.underlying_fund_category ?? null, name: pos.underlying_name ?? null }
     : { security_type: pos.security_type, fund_category: pos.fund_category, name: pos.security_name ?? null };
   const type = (identity.security_type ?? "").trim().toLowerCase();
-  if (type === "etf" || type === "mutual fund") return true;
-  return isLeveragedOrInverseFund(identity) || isBondFundCategory(identity.fund_category);
+  const leveraged = isLeveragedOrInverseFund(identity);
+  const isFund = type === "etf" || type === "mutual fund" || leveraged || isBondFundCategory(identity.fund_category);
+  return { isFund, leveraged };
 }
 
 /**
@@ -607,10 +626,19 @@ export type RecipeEquityInput = Pick<
  * headline; the custom engine passes a scaled one for its rate leg
  * (customRateEquityLeg), so both engines run this one rule.
  *
- * Subject slices take `shock × max(membership floor, factor blend)`, except a
- * fund (or an option on one), whose multiplier is capped at 1.0: a fund that
- * IS the subject (structural floor 1.0) moves exactly the headline, and one
- * that is a subject through a factor bucket never moves more than it.
+ * Subject slices take `shock × max(membership floor, factor blend)`. A fund
+ * (or an option on one) is capped at 1.0 ONLY when the fund itself IS the
+ * subject by a structural selector (its own sector, industry, fund category
+ * or domicile): it moves exactly the headline. The test is on the fund, not
+ * on a look-through slice, so a near-pure REIT fund with a small non-REIT
+ * sleeve still moves exactly the headline, and a broad fund with a REIT
+ * sleeve keeps its own multiplier on every slice, as before the cap. A
+ * fund that is a subject only through a factor bucket keeps its multiplier,
+ * like a single name (owner ruling 2026-11-16, 26 = A: a regional-bank fund
+ * in the rate preset, a broad tech fund in the AI preset). A leveraged or
+ * inverse fund on the subject path stays capped at 1.0, so it moves its
+ * factor times the headline (the existing rule; 26b = A keeps a single-stock
+ * leveraged fund on that index approximation too).
  * Everything else takes `shock × spillover × clamp(blend, ±1)`, then the
  * recipe's sector floors apply worse-of per slice.
  */
@@ -622,7 +650,11 @@ export function recipeEquityMove(
 ): { changePercent: number; subjectShare: number } {
   const blend = factorBlend(recipe, pos);
   const positionFloor = positionSubjectFloor(recipe.subject, pos);
-  const fundCap = isFundExposure(pos) ? STRUCTURAL_SUBJECT_FLOOR : Infinity;
+  const subjectSectors = recipe.subject.sectors ?? [];
+  const fund = fundExposure(pos);
+  const fundIsSubject =
+    isStructuralSubjectPosition(recipe.subject, pos) || subjectSectors.some((s) => sectorEquals(s, pos.sector));
+  const fundCap = fund.isFund && (fundIsSubject || fund.leveraged) ? STRUCTURAL_SUBJECT_FLOOR : Infinity;
   // Per sector slice: a fund with cached weights can be part subject
   // (its healthcare sleeve) and part spillover (everything else).
   const parts = explodeHoldingBySector(pos.symbol, pos.security_type, pos.market_value, etfWeights, pos.sector);
@@ -631,14 +663,14 @@ export function recipeEquityMove(
   let share = 0;
   for (const part of parts) {
     const weight = part.value / mv;
-    const sliceFloor = (recipe.subject.sectors ?? []).some((s) => sectorEquals(s, part.sector))
+    const sliceFloor = subjectSectors.some((s) => sectorEquals(s, part.sector))
       ? STRUCTURAL_SUBJECT_FLOOR
       : positionFloor;
     const raw =
       sliceFloor != null
         ? // SUBJECT path — the headline move, floored at membership and
-          // scaled up by the position's own factor buckets (a fund: never
-          // past the headline).
+          // scaled up by the position's own factor buckets (a fund that IS
+          // the subject, or a leveraged one: never past the headline).
           shockMagnitude * Math.min(fundCap, Math.max(sliceFloor, blend))
         : // SPILLOVER path — an explicit fraction of the same move,
           // scaled by the (capped) blend so unrelated names barely move,
@@ -684,6 +716,15 @@ export function customRateEquityLeg(
   const presetBps = recipeRateBps(recipe)!;
   return recipeEquityMove(recipe, pos, etfWeights, (recipe.shockMagnitude * rateBps) / presetBps).changePercent;
 }
+
+/**
+ * Owner ruling 2026-11-16 (27 = A): the custom rate leg stays linear, and the
+ * custom form says so. Built from the rate recipe so the stated basis-point
+ * anchor cannot drift from the one customRateEquityLeg scales by.
+ */
+export const CUSTOM_RATE_LINEAR_NOTE =
+  `The stock part of the move is scaled linearly from the typical reaction to a ` +
+  `${recipeRateBps(findRecipe(RATE_RECIPE_ID)!)} basis point surprise, so for larger moves it is an extrapolation.`;
 
 /**
  * Scenario option pricing lives in lib/compute/option-reprice.ts and both

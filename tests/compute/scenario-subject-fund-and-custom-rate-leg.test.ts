@@ -134,10 +134,13 @@ describe("K3a — a fund that is the scenario's subject moves exactly the headli
     expect(impact(r, "ZFUND").changePercent).toBeCloseTo(headline, 10);
   });
 
-  it("a fund that is a subject only through a factor bucket never moves more than the headline", () => {
+  // Superseded by owner ruling 2026-11-16 (26 = A): only a fund that IS the
+  // subject is capped; a factor-only subject fund keeps its multiplier
+  // (tests/compute/scenario-subject-fund-cap-structural-only.test.ts).
+  it("a fund that is a subject only through a factor bucket keeps its factor multiplier", () => {
     seed({ symbol: "ZTHEME", type: "ETF", sector: "Technology", factors: { ai_exposure: "Very High" } });
     const r = computeRecipeScenario(db, findRecipe("ai_capex_pause")!);
-    expect(impact(r, "ZTHEME").changePercent).toBeCloseTo(-0.15, 10);
+    expect(impact(r, "ZTHEME").changePercent).toBeCloseTo(-0.15 * 1.4, 10);
   });
 });
 
