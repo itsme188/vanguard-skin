@@ -1,7 +1,7 @@
 /**
  * Restore drill: proves the newest backup can really be opened.
  * Run: npm run backup:restore-test
- * Picks the newest member of the newest archive (or the newest file in
+ * Picks the last `.db` member the manifest lists, in the newest archive (or the newest file in
  * recent/ when there is no archive), checks its checksum, runs an integrity
  * check on the extracted copy, and deletes the copy. Exit 0 = good, 1 = bad.
  */
@@ -92,12 +92,16 @@ export async function runRestoreTest(home: string, zstd: string | null): Promise
   let member: string | null = null;
   let temp: string | null = null;
   try {
+    const manifestPath = archive.replace(/\.tar\.zst$/, ".sha256");
+    if (!fs.existsSync(manifestPath)) throw new Error(`no manifest beside the archive (expected ${manifestPath})`);
+    const manifest = readManifest(manifestPath);
     const members = await listArchiveMembers(archive, zstd);
-    member = members[members.length - 1] ?? null;
-    if (!member) throw new Error("the archive holds no members");
-    const manifest = readManifest(archive.replace(/\.tar\.zst$/, ".sha256"));
-    const expected = manifest.get(member);
-    if (!expected) throw new Error(`the manifest has no checksum for ${member}`);
+    // The newest backup the manifest vouches for: skip folder entries, other files, and anything unlisted.
+    member = members.filter((m) => m.endsWith(".db") && manifest.has(m)).pop() ?? null;
+    const expected = member === null ? undefined : manifest.get(member);
+    if (member === null || expected === undefined) {
+      throw new Error("the archive holds no .db member that its manifest lists");
+    }
 
     temp = fs.mkdtempSync(path.join(os.tmpdir(), "backup-restore-test-"));
     const dest = path.join(temp, path.basename(member));

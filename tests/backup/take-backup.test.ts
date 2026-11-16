@@ -5,6 +5,7 @@ import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { takeBackup } from "@/lib/backup/take-backup";
 import { backupPaths } from "@/lib/backup/backup-home";
+import { RESTORE_NOTES_NAME } from "@/lib/backup/restore-notes";
 
 const NOW = new Date("2026-03-05T15:00:00Z");
 
@@ -29,10 +30,11 @@ function openLive(withMigrations = true): Database.Database {
   return db;
 }
 
-const liveEnv = () => ({ VANGUARD_DB_DIR: liveDir, VANGUARD_BACKUP_DIR: home });
+/** Marks `<liveDir>/vanguard.db` as the owner's real database for this test. */
+const liveEnv = () => ({ VANGUARD_LIVE_DB_PATH: path.join(liveDir, "vanguard.db"), VANGUARD_BACKUP_DIR: home });
 
 beforeEach(() => {
-  tmp = fs.mkdtempSync(path.join(os.tmpdir(), "take-backup-"));
+  tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "take-backup-")));
   liveDir = path.join(tmp, "live");
   home = path.join(tmp, "home");
   fs.mkdirSync(liveDir);
@@ -82,7 +84,7 @@ describe("takeBackup", () => {
     const db = openLive();
     const roll = vi.fn().mockResolvedValue({ rolled: [], kept: [] });
     const res = await takeBackup(db, {
-      purpose: "repair-thing", now: NOW, env: liveEnv(), cwd: tmp, script: "fix.ts", roll, log,
+      purpose: "repair-thing", now: NOW, env: liveEnv(), script: "fix.ts", roll, log,
     });
     const { recent, log: logFile } = backupPaths(home);
     expect(path.dirname(res.path)).toBe(recent);
@@ -97,13 +99,14 @@ describe("takeBackup", () => {
       takenAt: NOW.toISOString(),
       sizeBytes: res.sizeBytes,
       migrations: 2,
+      source: path.join(liveDir, "vanguard.db"),
     });
     db.close();
   });
 
   it("records migrations as null when schema_migrations is absent", async () => {
     const db = openLive(false);
-    await takeBackup(db, { purpose: "unit", now: NOW, env: liveEnv(), cwd: tmp, roll: () => ({ rolled: [], kept: [] }), log });
+    await takeBackup(db, { purpose: "unit", now: NOW, env: liveEnv(), roll: () => ({ rolled: [], kept: [] }), log });
     const entry = JSON.parse(fs.readFileSync(backupPaths(home).log, "utf8").trim());
     expect(entry.migrations).toBeNull();
     db.close();
@@ -115,7 +118,7 @@ describe("takeBackup", () => {
     const db = new Database(path.join(copyDir, "copy.db"));
     seed(db);
     const roll = vi.fn();
-    const res = await takeBackup(db, { purpose: "unit", now: NOW, env: liveEnv(), cwd: tmp, roll, log });
+    const res = await takeBackup(db, { purpose: "unit", now: NOW, env: liveEnv(), roll, log });
     expect(path.dirname(res.path)).toBe(path.join(copyDir, "backups"));
     expect(res.rolled).toBe(false);
     expect(roll).not.toHaveBeenCalled();
@@ -195,16 +198,27 @@ describe("takeBackup", () => {
     db.close();
   });
 
-  it("clears a stale partial file from a crashed run", async () => {
-    const db = new Database(":memory:");
-    seed(db);
+  it("uses its own partial name and never deletes another run's partial", async () => {
+    const db = memDb();
     const dir = path.join(tmp, "out");
     fs.mkdirSync(dir);
-    const stale = path.join(dir, "pre-unit-2026-03-05_10-00-00.db.partial");
-    fs.writeFileSync(stale, "junk");
+    // The name a concurrent run with the same purpose in the same second used to share.
+    const other = path.join(dir, "pre-unit-2026-03-05_10-00-00.db.partial");
+    fs.writeFileSync(other, "another run's copy in progress");
+    const seen: string[] = [];
+    const realFsync = fs.fsyncSync;
+    const spy = vi.spyOn(fs, "fsyncSync").mockImplementation((fd) => {
+      seen.push(...leftovers(dir));
+      realFsync(fd);
+    });
     const res = await takeBackup(db, { purpose: "unit", now: NOW, backupDir: dir, log });
-    expect(fs.existsSync(stale)).toBe(false);
+    spy.mockRestore();
+    expect(fs.readFileSync(other, "utf8")).toBe("another run's copy in progress");
     expect(fs.existsSync(res.path)).toBe(true);
+    const ours = seen.filter((n) => n !== path.basename(other));
+    expect(ours.length).toBeGreaterThan(0);
+    expect(ours.every((n) => n.startsWith(`${path.basename(res.path)}.`) && n.endsWith(".partial"))).toBe(true);
+    expect(leftovers(dir)).toEqual([path.basename(other)]);
     db.close();
   });
 
@@ -212,25 +226,101 @@ describe("takeBackup", () => {
     const db = openLive();
     const blocker = path.join(tmp, "a-file");
     fs.writeFileSync(blocker, "x");
-    const env = { VANGUARD_DB_DIR: liveDir, VANGUARD_BACKUP_DIR: path.join(blocker, "home") };
-    await expect(takeBackup(db, { purpose: "unit", now: NOW, env, cwd: tmp, roll: vi.fn(), log })).rejects.toThrow();
+    const env = { VANGUARD_LIVE_DB_PATH: path.join(liveDir, "vanguard.db"), VANGUARD_BACKUP_DIR: path.join(blocker, "home") };
+    await expect(takeBackup(db, { purpose: "unit", now: NOW, env, roll: vi.fn(), log })).rejects.toThrow();
     db.close();
   });
 
   it("still returns the backup when the roll throws, with rolled false", async () => {
     const db = openLive();
     const roll = vi.fn().mockRejectedValue(new Error("disk on fire"));
-    const res = await takeBackup(db, { purpose: "unit", now: NOW, env: liveEnv(), cwd: tmp, roll, log });
+    const res = await takeBackup(db, { purpose: "unit", now: NOW, env: liveEnv(), roll, log });
     expect(res.rolled).toBe(false);
     expect(fs.existsSync(res.path)).toBe(true);
     expect(lines).toContain("backup taken; roll skipped: disk on fire");
     db.close();
   });
 
+  it("live file opened by an absolute path from an unrelated working folder: recent/, logged, rolled", async () => {
+    const db = openLive();
+    expect(path.relative(process.cwd(), liveDir).startsWith("..")).toBe(true);
+    const roll = vi.fn().mockResolvedValue({ rolled: [], kept: [] });
+    const res = await takeBackup(db, { purpose: "unit", now: NOW, env: liveEnv(), roll, log });
+    expect(path.dirname(res.path)).toBe(backupPaths(home).recent);
+    expect(roll).toHaveBeenCalledWith(home);
+    const entry = JSON.parse(fs.readFileSync(backupPaths(home).log, "utf8").trim());
+    expect(entry.source).toBe(fs.realpathSync(path.join(liveDir, "vanguard.db")));
+    db.close();
+  });
+
+  it("a scratch database pinned through DATABASE_PATH is not live: beside it, no log, no roll", async () => {
+    openLive().close();
+    const scratchDir = path.join(tmp, "scratch");
+    fs.mkdirSync(scratchDir);
+    const scratch = path.join(scratchDir, "vanguard.db");
+    const db = new Database(scratch);
+    seed(db);
+    const roll = vi.fn();
+    const env = { ...liveEnv(), DATABASE_PATH: scratch };
+    const res = await takeBackup(db, { purpose: "unit", now: NOW, env, roll, log });
+    expect(path.dirname(res.path)).toBe(path.join(scratchDir, "backups"));
+    expect(roll).not.toHaveBeenCalled();
+    expect(fs.existsSync(home)).toBe(false);
+    db.close();
+  });
+
+  it("a worktree's seeded copy reached through VANGUARD_DB_DIR never lands in recent/", async () => {
+    openLive().close();
+    const wtData = path.join(tmp, "wt", "data");
+    fs.mkdirSync(wtData, { recursive: true });
+    const db = new Database(path.join(wtData, "vanguard.db"));
+    seed(db);
+    const roll = vi.fn();
+    const env = { ...liveEnv(), VANGUARD_DB_DIR: wtData };
+    const res = await takeBackup(db, { purpose: "unit", now: NOW, env, roll, log });
+    expect(path.dirname(res.path)).toBe(path.join(wtData, "backups"));
+    expect(roll).not.toHaveBeenCalled();
+    expect(fs.existsSync(backupPaths(home).recent)).toBe(false);
+    db.close();
+  });
+
+  it("refuses a second database inside the main data folder and writes nothing", async () => {
+    openLive().close();
+    const db = new Database(path.join(liveDir, "demo.db"));
+    seed(db);
+    const before = fs.readdirSync(liveDir).sort();
+    const roll = vi.fn();
+    await expect(takeBackup(db, { purpose: "unit", now: NOW, env: liveEnv(), roll, log })).rejects.toThrow(
+      /never written under the project's data folder[\s\S]*VANGUARD_BACKUP_DIR/,
+    );
+    expect(fs.readdirSync(liveDir).sort()).toEqual(before);
+    expect(fs.existsSync(home)).toBe(false);
+    expect(roll).not.toHaveBeenCalled();
+    db.close();
+  });
+
+  it("writes the restore notes into the home on a live backup", async () => {
+    const db = openLive();
+    await takeBackup(db, { purpose: "unit", now: NOW, env: liveEnv(), roll: vi.fn().mockResolvedValue({ rolled: [], kept: [] }), log });
+    expect(fs.readFileSync(path.join(home, RESTORE_NOTES_NAME), "utf8")).toMatch(/--long=31/);
+    db.close();
+  });
+
+  it("a restore-notes write failure never fails the backup", async () => {
+    const db = openLive();
+    fs.mkdirSync(path.join(home, RESTORE_NOTES_NAME), { recursive: true }); // a folder where the file goes
+    const roll = vi.fn().mockResolvedValue({ rolled: [], kept: [] });
+    const res = await takeBackup(db, { purpose: "unit", now: NOW, env: liveEnv(), roll, log });
+    expect(fs.existsSync(res.path)).toBe(true);
+    expect(roll).toHaveBeenCalled();
+    expect(lines.some((l) => l.startsWith("backup taken; restore notes not written:"))).toBe(true);
+    db.close();
+  });
+
   it("reports rolled false and logs the reason when the roll is skipped", async () => {
     const db = openLive();
     const roll = vi.fn().mockResolvedValue({ rolled: [], kept: [], skipped: "zstd not found" });
-    const res = await takeBackup(db, { purpose: "unit", now: NOW, env: liveEnv(), cwd: tmp, roll, log });
+    const res = await takeBackup(db, { purpose: "unit", now: NOW, env: liveEnv(), roll, log });
     expect(res.rolled).toBe(false);
     expect(lines).toContain("backup taken; roll skipped: zstd not found");
     db.close();

@@ -8,6 +8,7 @@ import { addToArchive, findZstd, sha256File } from "@/lib/backup/archive";
 import { parseBackupArgs } from "../../scripts/backup-db";
 import { runRestoreTest } from "../../scripts/backup-restore-test";
 import { syncToVolume } from "../../scripts/backup-usb-sync";
+import { USB_MARKER_NAME } from "@/lib/backup/storage-report";
 
 const zstd = findZstd();
 const hasZstd = zstd !== null;
@@ -22,6 +23,15 @@ function makeDb(file: string, tables: number): void {
   db.exec("INSERT INTO schema_migrations (id) VALUES (1), (2)");
   for (let i = 1; i < tables; i++) db.exec(`CREATE TABLE t${i} (x INTEGER)`);
   db.close();
+}
+
+/** A raw tar.zst of `members` (paths relative to `tree`, in this order), as an old tool might write it. */
+function rawArchive(tree: string, members: string[], out: string): void {
+  const tar = path.join(root, `${path.basename(out)}.tar`);
+  execFileSync("/usr/bin/tar", ["-cf", tar, "--no-mac-metadata", "-C", tree, ...members], {
+    env: { ...process.env, COPYFILE_DISABLE: "1" },
+  });
+  execFileSync(zstd as string, ["-q", "-f", "--long=31", tar, "-o", out]);
 }
 
 async function archiveOf(name: string, files: string[]): Promise<{ archive: string; manifest: string }> {
@@ -91,6 +101,38 @@ describe("restore test", () => {
     fs.writeFileSync(path.join(archives, `${name}.sha256`), `${sum}  ${member}\n`);
     const r = await runRestoreTest(home, zstd);
     expect(r).toMatchObject({ ok: true, member, tables: 4, migrations: 2 });
+  });
+
+  it.skipIf(!hasZstd)("restore test skips a trailing non-.db member and a trailing folder entry", async () => {
+    const tree = path.join(root, "tree");
+    fs.mkdirSync(path.join(tree, "a-folder"), { recursive: true });
+    makeDb(path.join(tree, "pre-a-2026-01-02_03-04-05.db"), 3);
+    fs.writeFileSync(path.join(tree, "notes.txt"), "not a database");
+    const archives = path.join(home, "archives");
+    fs.mkdirSync(archives);
+    const dbSum = await sha256File(path.join(tree, "pre-a-2026-01-02_03-04-05.db"));
+    const txtSum = await sha256File(path.join(tree, "notes.txt"));
+
+    rawArchive(tree, ["pre-a-2026-01-02_03-04-05.db", "notes.txt"], path.join(archives, "2026-01.tar.zst"));
+    fs.writeFileSync(
+      path.join(archives, "2026-01.sha256"),
+      `${dbSum}  pre-a-2026-01-02_03-04-05.db\n${txtSum}  notes.txt\n`,
+    );
+    expect(await runRestoreTest(home, zstd)).toMatchObject({ ok: true, member: "pre-a-2026-01-02_03-04-05.db", tables: 3 });
+
+    rawArchive(tree, ["pre-a-2026-01-02_03-04-05.db", "a-folder"], path.join(archives, "2026-01.tar.zst"));
+    fs.writeFileSync(path.join(archives, "2026-01.sha256"), `${dbSum}  pre-a-2026-01-02_03-04-05.db\n`);
+    expect(await runRestoreTest(home, zstd)).toMatchObject({ ok: true, member: "pre-a-2026-01-02_03-04-05.db", tables: 3 });
+  });
+
+  it.skipIf(!hasZstd)("restore test fails clearly when the archive has no manifest", async () => {
+    const src = path.join(root, "pre-a-2026-01-02_03-04-05.db");
+    makeDb(src, 2);
+    const { manifest } = await archiveOf("2026-01", [src]);
+    fs.rmSync(manifest);
+    const r = await runRestoreTest(home, zstd);
+    expect(r.ok).toBe(false);
+    expect(r.reason).toMatch(/no manifest/);
   });
 
   it("falls back to the newest .db in recent/ when there is no archive", async () => {
@@ -165,25 +207,98 @@ describe("usb sync", () => {
     expect(fs.readdirSync(dest()).sort()).toEqual(["2026-01.sha256", "2026-01.tar.zst", "HOW-TO-RESTORE.txt"]);
   });
 
-  it("usb sync replaces a same-size file whose bytes differ, and verifies it", async () => {
-    await twoFiles();
+  /** A real one-member monthly archive in the home; returns its path. */
+  async function realArchive(tables = 2): Promise<string> {
+    const src = path.join(root, "pre-a-2026-01-02_03-04-05.db");
+    fs.rmSync(src, { force: true });
+    makeDb(src, tables);
+    const { archive } = await archiveOf("2026-01", [src]);
+    return archive;
+  }
+
+  it.skipIf(!hasZstd)("usb sync replaces a differing archive once the local one is proven to decode", async () => {
+    const archive = await realArchive();
     fs.mkdirSync(dest());
-    fs.writeFileSync(path.join(dest(), "2026-01.tar.zst"), "archive-ONE"); // same length
-    const r = await syncToVolume(home, volume);
+    fs.writeFileSync(path.join(dest(), "2026-01.tar.zst"), "an older copy");
+    const r = await syncToVolume(home, volume, { zstd });
     expect(r.copied).toContain("2026-01.tar.zst");
-    expect(fs.readFileSync(path.join(dest(), "2026-01.tar.zst"), "utf8")).toBe("archive-one");
+    expect(r.refused).toEqual([]);
+    expect(fs.readFileSync(path.join(dest(), "2026-01.tar.zst")).equals(fs.readFileSync(archive))).toBe(true);
     expect(fs.readdirSync(dest()).some((n) => n.endsWith(".partial"))).toBe(false);
+    expect(fs.existsSync(path.join(home, USB_MARKER_NAME))).toBe(true);
   });
 
-  it("usb sync on a checksum mismatch throws, leaves no partial, keeps the old file, writes no stamp", async () => {
-    await twoFiles();
+  it.skipIf(!hasZstd)("usb sync on a checksum mismatch throws, leaves no partial, keeps the old file, writes no stamp", async () => {
+    await realArchive();
     fs.mkdirSync(dest());
     fs.writeFileSync(path.join(dest(), "2026-01.tar.zst"), "old-good-copy");
     const badCopy = (_src: string, to: string): void => fs.writeFileSync(to, "different-bytes");
-    await expect(syncToVolume(home, volume, { copyFile: badCopy })).rejects.toThrow(/checksum/);
+    await expect(syncToVolume(home, volume, { copyFile: badCopy, zstd })).rejects.toThrow(/checksum/);
     expect(fs.readdirSync(dest()).some((n) => n.endsWith(".partial"))).toBe(false);
     expect(fs.readFileSync(path.join(dest(), "2026-01.tar.zst"), "utf8")).toBe("old-good-copy");
-    expect(fs.existsSync(path.join(home, ".usb-last-sync"))).toBe(false);
+    expect(fs.existsSync(path.join(home, USB_MARKER_NAME))).toBe(false);
+  });
+
+  it.skipIf(!hasZstd)("usb sync never replaces a good archive on the drive with a truncated local one", async () => {
+    const archive = await realArchive(3);
+    await syncToVolume(home, volume, { zstd });
+    const driveArchive = fs.readFileSync(path.join(dest(), "2026-01.tar.zst"));
+    const driveManifest = fs.readFileSync(path.join(dest(), "2026-01.sha256"), "utf8");
+    const marker = path.join(home, USB_MARKER_NAME);
+    fs.writeFileSync(marker, "2026-01-01T00:00:00.000Z\n"); // an earlier, complete sync
+    // Damage the local archive, and change its manifest as a later roll would.
+    const good = fs.readFileSync(archive);
+    fs.writeFileSync(archive, good.subarray(0, Math.floor(good.length / 2)));
+    fs.appendFileSync(path.join(home, "archives", "2026-01.sha256"), `${"1".repeat(64)}  pre-b-2026-01-03_03-04-05.db\n`);
+
+    const r = await syncToVolume(home, volume, { zstd });
+    expect(r.refused.map((x) => x.name)).toEqual(["2026-01.tar.zst", "2026-01.sha256"]);
+    expect(fs.readFileSync(path.join(dest(), "2026-01.tar.zst")).equals(driveArchive)).toBe(true);
+    expect(fs.readFileSync(path.join(dest(), "2026-01.sha256"), "utf8")).toBe(driveManifest);
+    expect(r.stamped).toBe(false);
+    expect(fs.readFileSync(marker, "utf8")).toBe("2026-01-01T00:00:00.000Z\n");
+  });
+
+  it.skipIf(!hasZstd)("usb sync refuses a replace when the local manifest names a member the archive lacks", async () => {
+    await realArchive();
+    fs.mkdirSync(dest());
+    fs.writeFileSync(path.join(dest(), "2026-01.tar.zst"), "an older copy");
+    fs.appendFileSync(path.join(home, "archives", "2026-01.sha256"), `${"1".repeat(64)}  pre-missing-2026-01-09_00-00-00.db\n`);
+    const r = await syncToVolume(home, volume, { zstd });
+    expect(r.refused.map((x) => x.name)).toContain("2026-01.tar.zst");
+    expect(r.refused[0].reason).toMatch(/pre-missing/);
+    expect(fs.readFileSync(path.join(dest(), "2026-01.tar.zst"), "utf8")).toBe("an older copy");
+  });
+
+  it("usb sync refuses a replace when zstd is not available, but still copies a first-time archive", async () => {
+    await twoFiles();
+    fs.mkdirSync(dest());
+    fs.writeFileSync(path.join(dest(), "2026-01.tar.zst"), "an older copy");
+    fs.writeFileSync(path.join(home, "archives", "2026-02.tar.zst"), "archive-two");
+    const r = await syncToVolume(home, volume, { zstd: null });
+    expect(r.refused.map((x) => x.name)).toContain("2026-01.tar.zst");
+    expect(r.refused[0].reason).toMatch(/zstd/);
+    expect(r.copied).toContain("2026-02.tar.zst");
+    expect(fs.readFileSync(path.join(dest(), "2026-01.tar.zst"), "utf8")).toBe("an older copy");
+    // One archive matched, but a refusal means the drive is not current: no marker.
+    expect(r).toMatchObject({ archivesOnDrive: 1, stamped: false });
+    expect(fs.existsSync(path.join(home, USB_MARKER_NAME))).toBe(false);
+  });
+
+  it("usb sync with no archive yet copies nothing and writes no stamp", async () => {
+    fs.writeFileSync(path.join(home, "HOW-TO-RESTORE.txt"), "steps");
+    const r = await syncToVolume(home, volume);
+    expect(r).toMatchObject({ copied: [], skipped: [], refused: [], archivesOnDrive: 0, stamped: false });
+    expect(fs.existsSync(path.join(home, USB_MARKER_NAME))).toBe(false);
+  });
+
+  it("usb sync stamps the marker when an archive on the drive matches its source", async () => {
+    await twoFiles();
+    const r = await syncToVolume(home, volume);
+    expect(r).toMatchObject({ archivesOnDrive: 1, stamped: true });
+    const again = await syncToVolume(home, volume);
+    expect(again).toMatchObject({ copied: [], archivesOnDrive: 1, stamped: true });
+    expect(fs.readFileSync(path.join(home, USB_MARKER_NAME), "utf8").trim()).toMatch(/^\d{4}-\d{2}-\d{2}T/);
   });
 
   it("usb sync refuses a volume folder that does not exist", async () => {

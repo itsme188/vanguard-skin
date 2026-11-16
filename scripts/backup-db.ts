@@ -1,11 +1,13 @@
 /**
  * Take a backup of the live database now.
  * Run: npm run backup -- --purpose <slug> [--db <path>]
- * The database is opened read-only; the copy goes to the backup home.
+ * With no --db, the database is the owner's real one (the main checkout's
+ * data/vanguard.db, wherever this runs from). It is opened read-only; a backup
+ * of it goes to the backup home, any other file's backup goes beside that file.
  */
 import Database from "better-sqlite3";
+import { isLiveDatabase, resolveLiveDbPath } from "../lib/backup/backup-home";
 import { takeBackup } from "../lib/backup/take-backup";
-import { resolveDbPath } from "../lib/db/db-path";
 
 export const USAGE = "Usage: npm run backup -- --purpose <slug> [--db <path>]";
 
@@ -33,7 +35,15 @@ async function main(): Promise<void> {
     console.error(USAGE);
     process.exit(2);
   }
-  const dbPath = args.db ?? resolveDbPath();
+  const dbPath = args.db ?? resolveLiveDbPath();
+  if (dbPath === null) {
+    console.error(
+      "Could not find the live database (no git checkout above this script). Pass --db <path> or set VANGUARD_LIVE_DB_PATH.",
+    );
+    process.exit(2);
+  }
+  const live = isLiveDatabase(dbPath);
+  console.log(`Backing up ${dbPath} (${live ? "the live database" : "not the live database: the backup goes beside it"})`);
   const db = new Database(dbPath, { readonly: true, fileMustExist: true });
   try {
     const result = await takeBackup(db, { purpose: args.purpose });

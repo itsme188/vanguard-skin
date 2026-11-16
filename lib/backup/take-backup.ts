@@ -1,7 +1,9 @@
 import fs from "node:fs";
 import path from "node:path";
 import Database from "better-sqlite3";
-import { backupFileName, backupPaths, isLiveDatabase, resolveBackupHome } from "./backup-home";
+import { uniqueTempPath } from "./archive";
+import { backupFileName, backupPaths, isLiveDatabase, resolveBackupHome, resolveLiveDbPath } from "./backup-home";
+import { ensureRestoreNotes } from "./restore-notes";
 import { rollOldBackups, type RollResult } from "./roll";
 import type { EnvLike } from "../db/db-path";
 
@@ -9,7 +11,6 @@ export interface TakeBackupOptions {
   purpose: string;
   now?: Date;
   env?: EnvLike;
-  cwd?: string;
   /** Required for a `:memory:` database; otherwise derived. */
   backupDir?: string;
   /** Script name for the log line. Defaults to path.basename(process.argv[1] ?? ""). */
@@ -27,6 +28,21 @@ export interface BackupResult {
 
 function errMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+/** Real path when it exists, else the plain resolved path. */
+function realOrResolved(p: string): string {
+  try {
+    return fs.realpathSync(p);
+  } catch {
+    return path.resolve(p);
+  }
+}
+
+/** True when `child` is `parent` or anywhere beneath it. */
+function isInside(parent: string, child: string): boolean {
+  const rel = path.relative(parent, child);
+  return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
 }
 
 /** Opens the finished copy read-only, checks it, and reads its migration count. */
@@ -53,9 +69,12 @@ function verifyCopy(file: string): { migrations: number | null } {
  * integrity check, and only then gives it its final name. It never reports
  * success for a copy that is not valid, and never reuses an existing file.
  *
- * A backup of the live database goes to `<home>/recent`, is logged, and
- * triggers the roll. Any other database keeps its backups beside it, with no
- * log line and no roll. A roll failure never fails the backup.
+ * A backup of the live database (the same file as the main checkout's
+ * `data/vanguard.db`, wherever the script runs from) goes to `<home>/recent`,
+ * is logged, and triggers the roll. Any other database keeps its backups
+ * beside it, with no log line and no roll, except that nothing is ever written
+ * under the main checkout's `data/` folder: that case is refused. A roll
+ * failure never fails the backup.
  */
 export async function takeBackup(
   db: Database.Database,
@@ -63,7 +82,6 @@ export async function takeBackup(
 ): Promise<BackupResult> {
   const now = opts.now ?? new Date();
   const env = opts.env ?? process.env;
-  const cwd = opts.cwd ?? process.cwd();
   const log = opts.log ?? console.log;
   const script = opts.script ?? path.basename(process.argv[1] ?? "");
 
@@ -74,8 +92,23 @@ export async function takeBackup(
   }
 
   const home = resolveBackupHome(env);
-  const live = !inMemory && !opts.backupDir && isLiveDatabase(dbName, env, cwd);
-  const dir = opts.backupDir ?? (live ? backupPaths(home).recent : path.join(path.dirname(dbName), "backups"));
+  const live = !inMemory && !opts.backupDir && isLiveDatabase(dbName, env);
+  let dir: string;
+  if (opts.backupDir) {
+    dir = opts.backupDir;
+  } else if (live) {
+    dir = backupPaths(home).recent;
+  } else {
+    dir = path.join(path.dirname(dbName), "backups");
+    const liveDb = resolveLiveDbPath(env);
+    const beside = path.join(realOrResolved(path.dirname(dbName)), "backups");
+    if (liveDb !== null && isInside(realOrResolved(path.dirname(liveDb)), beside)) {
+      throw new Error(
+        `Refusing to back up ${dbName}: backups are never written under the project's data folder ` +
+          `(${path.dirname(liveDb)}). Choose a place with the backupDir option (VANGUARD_BACKUP_DIR only moves the live database's backup home). Nothing written.`,
+      );
+    }
+  }
 
   const target = path.join(dir, backupFileName(opts.purpose, now));
   if (fs.existsSync(target)) {
@@ -83,11 +116,10 @@ export async function takeBackup(
   }
   fs.mkdirSync(dir, { recursive: true });
 
-  const partial = `${target}.partial`;
-  // A leftover of a crashed run would make VACUUM INTO refuse. A concurrent run with the
-  // same purpose in the same second is the only way this removes a live partial; the
-  // link step below still protects the target.
-  fs.rmSync(partial, { force: true });
+  // Unique to this run, so two runs with the same purpose in the same second never share
+  // (or delete) each other's copy in progress. A crashed run's leftover `.partial` in
+  // recent/ is swept by the roll once it is stale.
+  const partial = uniqueTempPath(target, ".partial");
   let migrations: number | null;
   try {
     db.prepare("VACUUM INTO ?").run(partial);
@@ -117,8 +149,15 @@ export async function takeBackup(
   // safe direction, even though a valid unlogged backup remains in recent/.
   fs.appendFileSync(
     backupPaths(home).log,
-    `${JSON.stringify({ file: target, purpose: opts.purpose, script, takenAt: now.toISOString(), sizeBytes, migrations })}\n`,
+    `${JSON.stringify({ file: target, purpose: opts.purpose, script, takenAt: now.toISOString(), sizeBytes, migrations, source: fs.realpathSync(dbName) })}\n`,
   );
+
+  // Restore steps travel with the backups. Never fails the backup.
+  try {
+    ensureRestoreNotes(home);
+  } catch (err) {
+    log(`backup taken; restore notes not written: ${errMessage(err)}`);
+  }
 
   let rolled = false;
   try {

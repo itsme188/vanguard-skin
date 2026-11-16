@@ -358,8 +358,9 @@ For each group:
 
 This step changes files on the owner's machine, outside the repo. Do it only after the branch has landed on `main` and the owner says to proceed. It needs no deploy: the packaged app takes no backups.
 
-- [ ] **Step 1:** Show the owner the exact list: the three files in `data/backups/` and the three files in `data/backup-archives/`.
-- [ ] **Step 2:** Create `~/portfolio-desk-backups/recent` and `~/portfolio-desk-backups/archives`. Copy the three loose backups into `recent/`, and the archive, its `.sha256`, and `HOW-TO-RESTORE.txt` into `archives/` (the restore notes go at the home's top level). Use `cp -X`.
+- [ ] **Step 0:** Record the starting state before moving anything: run `npm run storage:report` and `npm run backup:restore-test`, and keep both outputs.
+- [ ] **Step 1:** List the REAL current contents of `data/backups/` and `data/backup-archives/` at that moment (`ls -la` on both; more files may have appeared since this plan was written) and show the owner that exact list.
+- [ ] **Step 2:** Create `~/portfolio-desk-backups/recent` and `~/portfolio-desk-backups/archives`. Copy the loose backups into `recent/`, and the legacy archive and its `.sha256` into `archives/`. Use `cp -pX`: the roll and the restore drill rank files by modified time, and without `-p` the copied legacy files would look newest (the loose ones in copy order, and the legacy archive newer than any monthly one). Do not copy the legacy `HOW-TO-RESTORE.txt`: the code now writes the current one at the home's top level on the next live backup (Step 6).
 - [ ] **Step 3:** Verify every copy by checksum against its source.
 - [ ] **Step 4:** Run `npm run backup:restore-test`. Expected: exit 0.
 - [ ] **Step 5:** With the owner's confirmation of the list, remove the originals from `data/backups/` and `data/backup-archives/`, then the two empty folders.

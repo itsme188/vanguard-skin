@@ -551,9 +551,13 @@ UI copy (`PerformanceView.tsx`, `TrustStripDrawer.tsx`, `TrustStrip.tsx`) is pin
 
 ## 20. Backups and restore (2026-11-16)
 
-Every backup of the database comes from `takeBackup` (`lib/backup/`). Never `cp` the live database, and never write a copy under `data/`. A repo test (`tests/repo/no-handrolled-db-backups.test.ts`) fails on a hand-rolled copy.
+Every backup of the database comes from `takeBackup` (`lib/backup/`). Never `cp` the live database, and never write a copy under the main checkout's `data/`. A repo test (`tests/repo/no-handrolled-db-backups.test.ts`) fails on a hand-rolled copy.
 
-**Where backups live.** A backup of the live database goes to `~/portfolio-desk-backups/recent`. The `VANGUARD_BACKUP_DIR` environment variable changes the folder. A backup of any other database file (a rehearsal copy) goes to a `backups` folder beside that file and is never rolled.
+**Which database is "live".** The live database is the main checkout's `data/vanguard.db`, decided by file identity (same device and inode, so a symlinked path counts), wherever the script is run from: the main checkout, a worktree, or a scratch folder. The main checkout is found from where `lib/backup/backup-home.ts` itself lives (a worktree's `.git` file leads back to it), never from the working folder, `DATABASE_PATH` or `VANGUARD_DB_DIR`. So a repair run from a scratch folder with `REPAIR_DB_PATH` pointing at the real file is live, while a worktree's own seeded `data/vanguard.db`, a sandbox reached through `VANGUARD_DB_DIR`, and the test suite's scratch database are not. For an unusual setup (or a test), `VANGUARD_LIVE_DB_PATH` names the live file directly and wins.
+
+**Where backups live.** A backup of the live database goes to `~/portfolio-desk-backups/recent`, is logged in `backup-log.jsonl` (with `source`, the real path of the file copied), and triggers the roll. The `VANGUARD_BACKUP_DIR` environment variable changes the folder. A backup of any other database file (a rehearsal copy, a worktree's database) goes to a `backups` folder beside that file, is not logged, and is never rolled, EXCEPT that nothing is ever written under the main checkout's `data/` folder: a second database file there (for example `data/demo.db`) is refused before anything is written. To back such a file up, pass `backupDir` to choose a place (`VANGUARD_BACKUP_DIR` only moves the live database's backup home). `npm run backup` with no `--db` backs up the live file and prints which file it copied and whether it was classed live.
+
+**Restore notes.** Each live backup makes sure `~/portfolio-desk-backups/HOW-TO-RESTORE.txt` is present and current (it is rewritten when its first, version line changes). A failure to write it never fails the backup. The USB sync copies it.
 
 **Rolling.** Each new live backup triggers a roll. The newest 3 stay loose. Older ones go into `~/portfolio-desk-backups/archives/<YYYY-MM>.tar.zst`, with a `<YYYY-MM>.sha256` list beside it. A loose file is removed only after it is verified inside the archive. If `zstd` is missing, the backup is still taken and the roll is skipped with a warning.
 
@@ -568,10 +572,13 @@ Every backup of the database comes from `takeBackup` (`lib/backup/`). Never `cp`
 
 **Restore.** Never restore straight over the live database.
 
-1. If the backup is inside an archive, unpack that one member into a scratch folder: `zstd -dc --long=31 <archive> | tar -xf - -C <folder> <member>`.
+1. If the backup is inside an archive, unpack that one member into a scratch folder: `zstd -dc --long=31 <archive> | tar -xf - -C <folder> <member>`. `--long=31` is required.
 2. Run `PRAGMA integrity_check` on the extracted file. It must say `ok`.
 3. Quit every writer (the app, any dev server, any script).
-4. Replace the database file, and remove its `-wal` and `-shm` files.
+4. Move the old `vanguard.db`, `vanguard.db-wal` and `vanguard.db-shm` aside (rename them; do not delete them). The `-wal` and `-shm` files must go BEFORE the restored file is put in place, because SQLite would otherwise replay the old side file into the restored copy.
+5. Put the restored file in place as `vanguard.db`.
+6. Run `PRAGMA integrity_check` on it. It must say `ok`.
+7. Start the app.
 
 Run `npm run backup:restore-test` after any month in which backups rolled.
 
