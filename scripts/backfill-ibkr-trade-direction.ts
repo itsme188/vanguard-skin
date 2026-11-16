@@ -9,6 +9,7 @@ import fs from "node:fs";
 import path from "node:path";
 import Database from "better-sqlite3";
 import { parseIbkrActivity } from "../lib/import/parsers/ibkr-activity";
+import { takeBackup } from "../lib/backup/take-backup";
 import { backfillIbkrTradeDirection } from "../lib/mutations/ibkr-trade-direction";
 
 async function main() {
@@ -38,9 +39,8 @@ async function main() {
       return { ...entry, transactions: parseIbkrActivity(fs.readFileSync(entry.path, "utf8"), batch.filename).transactions };
     });
     if (apply) {
-      const backup = `${dbPath}.before-direction-${Date.now()}.bak`;
-      await db.backup(backup);
-      console.error(`Backup: ${backup}`);
+      const backup = await takeBackup(db, { purpose: "pre-ibkr-trade-direction" });
+      console.error(`Backup: ${backup.path}`);
     }
     const reports = db.transaction(() => prepared.map((entry) => ({
       batchId: entry.batchId,

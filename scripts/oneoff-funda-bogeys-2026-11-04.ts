@@ -35,6 +35,7 @@ import {
   newsletterExtractorVersionForArticle,
   type ArticleInput,
 } from "../lib/earnings/extract-newsletter-bogeys";
+import { takeBackup } from "../lib/backup/take-backup";
 import { accountFailureOf } from "../lib/earnings/ai-unavailable";
 import { PREPARE_MAX_ATTEMPTS, runPrepareSteps } from "../lib/earnings/prepare-armed-event";
 
@@ -100,9 +101,8 @@ async function main(): Promise<void> {
   }
 
   // ---- Backup, then writes ---------------------------------------------------
-  const backup = `${abs}.pre-funda-oneoff-${new Date().toISOString().replace(/[:.]/g, "-")}.bak`;
-  db.exec(`VACUUM INTO '${backup.replace(/'/g, "''")}'`);
-  console.log(`[oneoff-funda] backup: ${backup}`);
+  const backup = await takeBackup(db, { purpose: "pre-funda-oneoff" });
+  console.log(`[oneoff-funda] backup: ${backup.path}`);
 
   // 1. Retire the stale syntheses (guarded: only a pending row of those two events).
   for (const id of STALE_SYNTHESIS_EVENTS) {
