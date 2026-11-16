@@ -14,6 +14,7 @@ import {
   listArchiveMembers,
   readManifest,
   sha256File,
+  uniqueTempPath,
 } from "@/lib/backup/archive";
 
 const ZSTD = findZstd();
@@ -251,4 +252,150 @@ describe("archive", () => {
     },
     60_000,
   );
+
+  it("two temp names from two calls differ", () => {
+    const final = path.join(archives, "2026-10.tar.zst");
+    const a = uniqueTempPath(final, ".new");
+    const b = uniqueTempPath(final, ".new");
+    expect(a).not.toBe(b);
+    for (const t of [a, b]) {
+      expect(t.startsWith(`${final}.`)).toBe(true);
+      expect(t.endsWith(".new")).toBe(true);
+    }
+    expect(uniqueTempPath(final, ".partial").endsWith(".partial")).toBe(true);
+  });
+
+  /**
+   * A zstd stand-in that runs the real zstd, except that it fails on purpose
+   * inside the BUILD pipeline (the listing before it runs normally):
+   * - "decompress-partial": the 2nd `-dc` call sends a fragment, then exits 1
+   * - "decompress-complete": the 2nd `-dc` call sends the WHOLE stream, then exits 1
+   *   (so only the exit-status check can catch it)
+   * - "compress": the `-o` call writes a complete file, then exits 1
+   */
+  function failingZstd(mode: "decompress-partial" | "decompress-complete" | "compress"): string {
+    const bin = path.join(dir, `bin-${mode}`);
+    fs.mkdirSync(bin);
+    const count = path.join(bin, "count");
+    const onSecondDecompress =
+      mode === "decompress-partial"
+        ? `"$REAL" "$@" | head -c 4096; exit 1`
+        : mode === "decompress-complete"
+          ? `"$REAL" "$@"; exit 1`
+          : `:`;
+    const onCompress = mode === "compress" ? `"$REAL" "$@"; exit 1` : `:`;
+    const script = [
+      "#!/bin/bash",
+      `REAL='${ZSTD}'`,
+      `COUNT='${count}'`,
+      'case " $* " in',
+      '  *" -dc "*)',
+      '    n=$(( $(cat "$COUNT" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$COUNT"',
+      `    if [ "$n" -eq 2 ]; then ${onSecondDecompress}; fi ;;`,
+      `  *" -o "*) ${onCompress} ;;`,
+      "esac",
+      'exec "$REAL" "$@"',
+      "",
+    ].join("\n");
+    const p = path.join(bin, "zstd");
+    fs.writeFileSync(p, script);
+    fs.chmodSync(p, 0o755);
+    return p;
+  }
+
+  for (const mode of ["decompress-partial", "decompress-complete", "compress"] as const) {
+    it.skipIf(noZstd)(`a ${mode} failure inside the build pipeline rejects and renames nothing`, async () => {
+      const archive = path.join(archives, "2026-10.tar.zst");
+      const manifest = path.join(archives, "2026-10.sha256");
+      await addToArchive(archive, manifest, [makeDb("a-2026-10-01.db")], ZSTD as string);
+      const archiveBefore = sha(archive);
+      const manifestBefore = fs.readFileSync(manifest, "utf8");
+
+      await expect(
+        addToArchive(archive, manifest, [makeDb("b-2026-10-02.db")], failingZstd(mode)),
+      ).rejects.toThrow(/exited with 1/);
+      expect(sha(archive)).toBe(archiveBefore);
+      expect(fs.readFileSync(manifest, "utf8")).toBe(manifestBefore);
+      expect(fs.readdirSync(archives).sort()).toEqual(["2026-10.sha256", "2026-10.tar.zst"]);
+    });
+  }
+
+  it.skipIf(noZstd)("aborts without renaming when the archive changes underneath", async () => {
+    const archive = path.join(archives, "2026-10.tar.zst");
+    const manifest = path.join(archives, "2026-10.sha256");
+    await addToArchive(archive, manifest, [makeDb("a-2026-10-01.db")], ZSTD as string);
+    const manifestBefore = fs.readFileSync(manifest, "utf8");
+    // Another writer's archive, landing by rename just before ours would.
+    const other = path.join(dir, "other.tar.zst");
+    fs.copyFileSync(archive, other);
+    let swapped = "";
+
+    await expect(
+      addToArchive(archive, manifest, [makeDb("b-2026-10-02.db")], ZSTD as string, {
+        beforeRename: () => {
+          if (swapped) return;
+          fs.renameSync(other, archive);
+          swapped = sha(archive);
+        },
+      }),
+    ).rejects.toThrow(/changed/);
+    expect(sha(archive)).toBe(swapped);
+    expect(fs.readFileSync(manifest, "utf8")).toBe(manifestBefore);
+    expect(fs.readdirSync(archives).sort()).toEqual(["2026-10.sha256", "2026-10.tar.zst"]);
+  });
+
+  it.skipIf(noZstd)("extracts a legacy member with folder parts, exactly, only to destPath", async () => {
+    const legacy = path.join(src, "data", "backups");
+    fs.mkdirSync(legacy, { recursive: true });
+    const inner = "data/backups/pre-x-2026-11-16_10-27-47.db";
+    fs.renameSync(makeDb("pre-x-2026-11-16_10-27-47.db", 300, 5), path.join(src, inner));
+    const other = "data/backups/pre-x-2026-11-16_10-27-48.db";
+    fs.renameSync(makeDb("pre-x-2026-11-16_10-27-48.db", 300, 6), path.join(src, other));
+    const tarred = spawnSync("/usr/bin/tar", ["-cf", "-", "--no-mac-metadata", "-C", src, inner, other], {
+      env: { ...process.env, PATH: "/usr/bin:/bin", COPYFILE_DISABLE: "1" },
+    });
+    expect(tarred.status).toBe(0);
+    const archive = path.join(archives, "legacy.tar.zst");
+    const z = spawnSync(ZSTD as string, ["-q", `--long=${ZSTD_LONG}`, "-o", archive], { input: tarred.stdout });
+    expect(z.status).toBe(0);
+
+    const out = path.join(dir, "restored.db");
+    await extractMember(archive, inner, out, ZSTD as string);
+    expect(sha(out)).toBe(sha(path.join(src, inner)));
+    expect(fs.readdirSync(dir).sort()).toEqual(["archives", "restored.db", "src"]);
+    await expect(extractMember(archive, "data/backups/pre-x-2026-11-16_10-27-4.db", out, ZSTD as string)).rejects.toThrow(
+      /not in/,
+    );
+  });
+
+  it("refuses unsafe member names before spawning anything", async () => {
+    const bad = [
+      "",
+      "/abs/x.db",
+      "../x.db",
+      "data/../x.db",
+      "./x.db",
+      "data//x.db",
+      "data/",
+      "-x.db",
+      "data/-x.db",
+      "@x.db",
+      "data/@x.db",
+      "*.db",
+      "data/x?.db",
+      "data/[ab].db",
+      "data/x].db",
+      "data/{a,b}.db",
+      "data\\x.db",
+      "data/x\u0001.db",
+      "data/x\n.db",
+    ];
+    // A zstd that cannot start: reaching spawn would fail with "failed to start", not "Unsafe".
+    for (const name of bad) {
+      await expect(extractMember(path.join(archives, "none.tar.zst"), name, path.join(dir, "o"), "/nonexistent/zstd")).rejects.toThrow(
+        /Unsafe archive member name/,
+      );
+    }
+    expect(fs.existsSync(path.join(dir, "o"))).toBe(false);
+  });
 });

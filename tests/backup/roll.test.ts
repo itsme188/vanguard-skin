@@ -5,7 +5,7 @@ import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { addToArchive, findZstd, listArchiveMembers, readManifest, sha256File } from "@/lib/backup/archive";
 import { backupPaths } from "@/lib/backup/backup-home";
-import { rollOldBackups } from "@/lib/backup/roll";
+import { RollLockLostError, rollOldBackups, type RollStep } from "@/lib/backup/roll";
 
 const ZSTD = findZstd();
 const noZstd = ZSTD === null;
@@ -198,6 +198,78 @@ describe("rollOldBackups", () => {
     expect(r2.skipped).toBeUndefined();
     expect(r2.rolled).toEqual(["pre-a-2026-10-01_09-00-00.db"]);
     expect(fs.existsSync(lock)).toBe(false);
+  });
+
+  /** What another roll does when it takes over: moves the lock aside and makes its own. */
+  function stealLock(): void {
+    const lock = backupPaths(home).rollLock;
+    fs.renameSync(lock, `${lock}.aside-test`);
+    fs.rmSync(`${lock}.aside-test`, { recursive: true, force: true });
+    fs.mkdirSync(lock);
+    fs.writeFileSync(path.join(lock, "owner"), "someone-else");
+  }
+  const stealAt = (when: RollStep) => (step: RollStep) => {
+    if (step === when && fs.readFileSync(path.join(backupPaths(home).rollLock, "owner"), "utf8") !== "someone-else") {
+      stealLock();
+    }
+  };
+
+  it.skipIf(noZstd)("a takeover does not let the original owner's finally remove the new owner's lock", async () => {
+    for (let i = 0; i < 4; i++) backup(`pre-a-2026-10-0${i + 1}_09-00-00.db`, 400 - i * 100);
+    const before = recentNames();
+    const lock = backupPaths(home).rollLock;
+
+    // Lost right before the archive rename: nothing renamed, nothing deleted.
+    await expect(roll({ onStep: stealAt("rename") })).rejects.toThrow(RollLockLostError);
+    expect(fs.readFileSync(path.join(lock, "owner"), "utf8")).toBe("someone-else");
+    expect(recentNames()).toEqual(before);
+    expect(fs.readdirSync(archives)).toEqual([]);
+  });
+
+  it.skipIf(noZstd)("a roll that loses ownership mid-way deletes no loose file and renames nothing more", async () => {
+    for (let i = 0; i < 4; i++) backup(`pre-a-2026-10-0${i + 1}_09-00-00.db`, 400 - i * 100);
+    backup("pre-a-2026-09-30_09-00-00.db", 900);
+    const before = recentNames();
+    const lock = backupPaths(home).rollLock;
+
+    // Lost between September's verified rename and its deletion pass.
+    const seen: string[] = [];
+    const steal = stealAt("delete");
+    await expect(
+      roll({
+        onStep: (step, detail) => {
+          seen.push(`${step}:${detail}`);
+          steal(step);
+        },
+      }),
+    ).rejects.toThrow(/taken over/);
+    expect(recentNames()).toEqual(before); // no loose file deleted
+    expect(fs.readFileSync(path.join(lock, "owner"), "utf8")).toBe("someone-else");
+    // September was archived (safe: loose copy kept); October was never started.
+    expect(fs.readdirSync(archives).sort()).toEqual(["2026-09.sha256", "2026-09.tar.zst"]);
+    expect(seen).not.toContain("archive:2026-10");
+  });
+
+  it.skipIf(noZstd)("ownership lost between two deletions stops before the next one", async () => {
+    const first = backup("pre-a-2026-09-29_09-00-00.db", 950);
+    const second = backup("pre-a-2026-09-30_09-00-00.db", 900);
+    for (let i = 0; i < 3; i++) backup(`pre-b-2026-11-1${i}_09-00-00.db`, 100 - i);
+    const lock = backupPaths(home).rollLock;
+
+    await expect(
+      roll({
+        onStep: (step, detail) => {
+          if (step === "delete" && detail === "pre-a-2026-09-30_09-00-00.db") stealLock();
+        },
+      }),
+    ).rejects.toThrow(RollLockLostError);
+    expect(fs.existsSync(first)).toBe(false); // archived and deleted while still owned
+    expect(fs.existsSync(second)).toBe(true); // ownership gone: kept
+    await expect(listMembers(path.join(archives, "2026-09.tar.zst"))).resolves.toEqual([
+      "pre-a-2026-09-29_09-00-00.db",
+      "pre-a-2026-09-30_09-00-00.db",
+    ]);
+    expect(fs.readFileSync(path.join(lock, "owner"), "utf8")).toBe("someone-else");
   });
 
   it.skipIf(noZstd)("never touches a file outside <home>/recent", async () => {

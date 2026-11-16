@@ -2,7 +2,7 @@ import { spawn, type ChildProcess, type StdioOptions } from "node:child_process"
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import type { EnvLike } from "@/lib/db/db-path";
+import type { EnvLike } from "../db/db-path";
 
 /** zstd compression level for monthly archives. */
 export const ZSTD_LEVEL = 10;
@@ -72,25 +72,51 @@ interface Stage {
   args: string[];
 }
 
+/** A whole pipeline gets this long before every child is killed. Generous:
+ *  a real month is ~13 GiB of tar, which takes well under a minute. */
+const PIPELINE_TIMEOUT_MS = 30 * 60 * 1000;
+/** After a stage exits, a still-running upstream stage gets this long to
+ *  finish on its own (its output is drained meanwhile) before it is killed. */
+const UPSTREAM_GRACE_MS = 5_000;
+
 /**
  * Runs `stages` as a pipeline (each stdout feeds the next stdin). Rejects when
  * ANY process fails to start, exits non-zero, or dies from a signal, so a
  * failed `zstd -d` in the middle can never produce a silently short output.
- * On the first failure the rest are killed. `sink` receives the last stage's
- * output: an open file descriptor, or a function fed each chunk.
+ * On the first failure the rest are killed. The promise always settles: an
+ * upstream stage left running after its reader exits is drained and then
+ * killed, and the whole pipeline is killed after PIPELINE_TIMEOUT_MS.
+ * `sink` receives the last stage's output: an open file descriptor, or a
+ * function fed each chunk.
  */
 function runPipeline(stages: Stage[], sink?: number | ((chunk: Buffer) => void)): Promise<void> {
   return new Promise((resolve, reject) => {
     const procs: ChildProcess[] = [];
+    const running = stages.map(() => true);
+    const timers: NodeJS.Timeout[] = [];
     let pending = stages.length;
-    let failed = false;
+    let done = false;
 
-    const fail = (err: Error) => {
-      if (failed) return;
-      failed = true;
-      for (const p of procs) if (p.exitCode === null && p.signalCode === null) p.kill("SIGTERM");
-      reject(err);
+    const settle = (err?: Error) => {
+      if (done) return;
+      done = true;
+      for (const t of timers) clearTimeout(t);
+      if (err) {
+        procs.forEach((p, j) => {
+          if (running[j]) p.kill("SIGTERM");
+        });
+        reject(err);
+      } else {
+        resolve();
+      }
     };
+
+    timers.push(
+      setTimeout(
+        () => settle(new Error(`pipeline timed out after ${PIPELINE_TIMEOUT_MS / 60000} minutes`)),
+        PIPELINE_TIMEOUT_MS,
+      ),
+    );
 
     stages.forEach((stage, i) => {
       const last = i === stages.length - 1;
@@ -110,21 +136,34 @@ function runPipeline(stages: Stage[], sink?: number | ((chunk: Buffer) => void))
       if (last && typeof sink === "function") proc.stdout?.on("data", sink);
 
       let settled = false;
-      proc.on("error", (err) => {
+      const finished = (err: Error | null) => {
         if (settled) return;
         settled = true;
-        fail(new Error(`${path.basename(stage.cmd)} failed to start: ${err.message}`));
-      });
-      proc.on("close", (code, signal) => {
-        if (settled) return;
-        settled = true;
-        if (code !== 0) {
-          const why = signal ? `was killed by ${signal}` : `exited with ${code}`;
-          fail(new Error(`${path.basename(stage.cmd)} ${stage.args.join(" ")} ${why}: ${stderr.trim()}`));
+        running[i] = false;
+        if (err) {
+          settle(err);
           return;
         }
+        // A reader that exits leaves its upstream writing into a pipe nobody
+        // reads, which would block forever: drain it, then kill it if it lingers.
+        for (let j = 0; j < i; j++) {
+          if (!running[j]) continue;
+          const up = procs[j];
+          up.stdout?.unpipe();
+          up.stdout?.resume();
+          timers.push(setTimeout(() => running[j] && up.kill("SIGTERM"), UPSTREAM_GRACE_MS));
+        }
         pending -= 1;
-        if (pending === 0 && !failed) resolve();
+        if (pending === 0) settle();
+      };
+      proc.on("error", (err) => finished(new Error(`${path.basename(stage.cmd)} failed to start: ${err.message}`)));
+      proc.on("close", (code, signal) => {
+        if (code === 0) {
+          finished(null);
+          return;
+        }
+        const why = signal ? `was killed by ${signal}` : `exited with ${code}`;
+        finished(new Error(`${path.basename(stage.cmd)} ${stage.args.join(" ")} ${why}: ${stderr.trim()}`));
       });
     });
   });
@@ -176,6 +215,14 @@ function parsePax(body: Buffer): { path?: string; size?: number } {
   return out;
 }
 
+/** One archive member as its raw tar header describes it. */
+export interface ArchiveEntry {
+  name: string;
+  size: number;
+}
+
+const USTAR_MAGIC = Buffer.from("ustar\0", "latin1");
+
 /**
  * Walks raw tar headers. Unlike `bsdtar -t`, which silently folds macOS `._`
  * AppleDouble entries into the file before them, this reports EVERY member,
@@ -183,12 +230,12 @@ function parsePax(body: Buffer): { path?: string; size?: number } {
  * the stream ends cleanly.
  */
 class TarHeaderReader {
-  readonly names: string[] = [];
+  readonly entries: ArchiveEntry[] = [];
   private buf: Buffer[] = [];
   private have = 0;
   private want = BLOCK;
   private skip = 0;
-  private meta: { kind: "pax" | "global" | "gnuname"; len: number } | null = null;
+  private meta: { kind: "pax" | "global" | "gnuname" | "gnulink"; len: number } | null = null;
   private next: { path?: string; size?: number } = {};
   private ended = false;
   private error: Error | null = null;
@@ -202,10 +249,10 @@ class TarHeaderReader {
     }
   };
 
-  finish(): string[] {
+  finish(): ArchiveEntry[] {
     if (this.error) throw this.error;
     if (!this.ended || this.skip > 0 || this.meta) throw new Error("tar stream is truncated");
-    return this.names;
+    return this.entries;
   }
 
   private consume(chunk: Buffer): void {
@@ -230,6 +277,7 @@ class TarHeaderReader {
         const body = block.subarray(0, this.meta.len);
         if (this.meta.kind === "pax") this.next = { ...this.next, ...parsePax(body) };
         if (this.meta.kind === "gnuname") this.next.path = cString(body);
+        // "global" and "gnulink" (a long LINK target) never rename the member.
         this.meta = null;
       } else {
         this.header(block);
@@ -248,30 +296,37 @@ class TarHeaderReader {
     if (sum !== tarNumber(h.subarray(148, 156))) throw new Error("tar header checksum mismatch");
     const type = String.fromCharCode(h[156]);
     const ownSize = tarNumber(h.subarray(124, 136));
-    if (type === "x" || type === "g" || type === "L") {
-      const kind = type === "x" ? "pax" : type === "g" ? "global" : "gnuname";
+    const metaKinds = { x: "pax", g: "global", L: "gnuname", K: "gnulink" } as const;
+    if (type === "x" || type === "g" || type === "L" || type === "K") {
       if (ownSize > 0) {
-        this.meta = { kind, len: ownSize };
+        this.meta = { kind: metaKinds[type], len: ownSize };
         this.want = padded(ownSize);
       }
       return;
     }
     const size = this.next.size ?? ownSize;
-    const prefix = h.subarray(257, 263).toString("latin1").startsWith("ustar") ? cString(h.subarray(345, 500)) : "";
+    // Only POSIX ustar ("ustar\0") has the prefix field; old GNU ("ustar  ") uses those bytes otherwise.
+    const prefix = h.subarray(257, 263).equals(USTAR_MAGIC) ? cString(h.subarray(345, 500)) : "";
     const name = cString(h.subarray(0, 100));
-    this.names.push(this.next.path ?? (prefix ? `${prefix}/${name}` : name));
+    this.entries.push({ name: this.next.path ?? (prefix ? `${prefix}/${name}` : name), size });
     this.next = {};
     // Links, devices, directories and FIFOs carry no data whatever their size field says.
     this.skip = "123456".includes(type) ? 0 : padded(size);
   }
 }
 
-/** Every member name of an archive, in order, `._` entries included.
+/** Every member of an archive with its size, in order, `._` entries included.
  *  Decodes (and so proves) the whole stream. */
-export async function listArchiveMembers(archivePath: string, zstd: string): Promise<string[]> {
+async function readArchiveEntries(archivePath: string, zstd: string): Promise<ArchiveEntry[]> {
   const reader = new TarHeaderReader();
   await runPipeline([decompress(zstd, archivePath)], reader.push);
   return reader.finish();
+}
+
+/** Every member name of an archive, in order, `._` entries included.
+ *  Decodes (and so proves) the whole stream. */
+export async function listArchiveMembers(archivePath: string, zstd: string): Promise<string[]> {
+  return (await readArchiveEntries(archivePath, zstd)).map((e) => e.name);
 }
 
 /** Extracts `members` into `dir` in one pass over the archive. */
@@ -282,15 +337,34 @@ async function extractInto(archivePath: string, members: string[], dir: string, 
   ]);
 }
 
-/** Names tar would read as an option, an `@archive`, or a pattern are refused. */
+const unsafe = (name: string) => new Error(`Unsafe archive member name: ${JSON.stringify(name)}`);
+
+/** For members we write: bare file names only. Names tar would read as an
+ *  option, an `@archive`, a pattern, or a path are refused. */
 function assertSafeMemberName(name: string): void {
-  if (!name || name.startsWith("-") || name.startsWith("@") || /[/\\*?[\n\0]/.test(name)) {
-    throw new Error(`Unsafe archive member name: ${JSON.stringify(name)}`);
+  if (!name || name.startsWith("-") || name.startsWith("@") || /[/\\*?[\]{}\n\0]/.test(name)) throw unsafe(name);
+}
+
+/** For members we read back: a relative path is allowed (legacy archives hold
+ *  `data/backups/x.db`), but no absolute path, no `.`/`..` or empty segment,
+ *  no segment tar could read as an option or `@archive`, no glob character,
+ *  no backslash, and no control character. */
+function assertSafeExtractName(name: string): void {
+  if (!name || name.startsWith("/") || /[\\*?[\]{}\x00-\x1f\x7f]/.test(name)) throw unsafe(name);
+  for (const seg of name.split("/")) {
+    if (!seg || seg === "." || seg === ".." || seg.startsWith("-") || seg.startsWith("@")) throw unsafe(name);
   }
 }
 
-function fsyncFile(p: string): void {
-  const fd = fs.openSync(p, "r+");
+/** A temp path beside `finalPath`, unique to this call, so two runs never
+ *  share (or delete) each other's files. The suffix lets a later roll find
+ *  and remove it if this process dies. */
+export function uniqueTempPath(finalPath: string, suffix: ".new" | ".partial"): string {
+  return `${finalPath}.${process.pid}-${crypto.randomBytes(6).toString("hex")}${suffix}`;
+}
+
+function fsyncPath(p: string, flags: "r" | "r+"): void {
+  const fd = fs.openSync(p, flags);
   try {
     fs.fsyncSync(fd);
   } finally {
@@ -301,45 +375,94 @@ function fsyncFile(p: string): void {
 function writeManifestFile(p: string, manifest: Map<string, string>): void {
   const body = [...manifest].map(([name, sum]) => `${sum}  ${name}\n`).join("");
   fs.writeFileSync(p, body);
-  fsyncFile(p);
+  fsyncPath(p, "r+");
 }
 
-/** A temp folder beside the archive. Its `.partial` suffix lets a later roll
- *  clean it up if this process dies. */
-function makeTempDir(archivePath: string): string {
-  const dir = `${archivePath}.${process.pid}-${crypto.randomBytes(4).toString("hex")}.partial`;
-  fs.mkdirSync(dir);
-  return dir;
+/** Identity of a file at a path: changes when anything renames or rewrites it. */
+function fingerprint(p: string): string {
+  try {
+    const s = fs.statSync(p);
+    return `${s.ino}:${s.size}:${s.mtimeMs}:${s.ctimeMs}`;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return "absent";
+    throw err;
+  }
+}
+
+function manifestText(p: string): string | null {
+  try {
+    return fs.readFileSync(p, "utf8");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw err;
+  }
+}
+
+export interface AddToArchiveOptions {
+  /** Called immediately before each rename into a final path. Throw to abort
+   *  (the roll uses it to re-check that it still owns the roll lock). */
+  beforeRename?: () => void;
 }
 
 /**
  * Adds files to the archive (creating it if absent) and rewrites the manifest.
- * Atomic: writes <archive>.new, verifies, renames.
+ * Atomic: writes a uniquely named `<archive>.<pid>-<random>.new`, verifies,
+ * renames.
  *
  * A name whose checksum is already in the manifest is skipped; the same name
  * with a different checksum throws before anything is written. A name already
  * in the archive but missing from the manifest (a run that died between the
  * two renames) is checked against the archived copy and only recorded.
+ *
+ * Lost-update guard: if the archive or manifest at the final path changes
+ * after it was read (another writer renamed over it), nothing is renamed.
  */
 export async function addToArchive(
   archivePath: string,
   manifestPath: string,
   files: string[],
   zstd: string,
+  opts: AddToArchiveOptions = {},
 ): Promise<void> {
-  const archiveNew = `${archivePath}.new`;
-  const manifestNew = `${manifestPath}.new`;
-  const temps: string[] = [];
+  const archiveNew = uniqueTempPath(archivePath, ".new");
+  const manifestNew = uniqueTempPath(manifestPath, ".new");
+  const temps: string[] = [archiveNew, manifestNew];
+  const makeTempDir = () => {
+    const dir = uniqueTempPath(archivePath, ".partial");
+    temps.push(dir);
+    fs.mkdirSync(dir);
+    return dir;
+  };
   try {
+    const archiveSeen = fingerprint(archivePath);
+    const manifestSeen = manifestText(manifestPath);
     const manifest = readManifest(manifestPath);
-    const oldMembers = fs.existsSync(archivePath) ? await listArchiveMembers(archivePath, zstd) : [];
+    const oldEntries = archiveSeen === "absent" ? [] : await readArchiveEntries(archivePath, zstd);
+    const changed = () => new Error(`${archivePath} or its manifest changed while this run was using it; not renaming`);
+    const assertArchiveUnchanged = () => {
+      if (fingerprint(archivePath) !== archiveSeen) throw changed();
+    };
+    const assertManifestUnchanged = () => {
+      if (manifestText(manifestPath) !== manifestSeen) throw changed();
+    };
+    assertArchiveUnchanged();
+    assertManifestUnchanged();
+    // Ownership hook, then the lost-update check, then the rename: the checks
+    // sit as close to the rename as they can.
+    const guardedRename = (from: string, to: string, check: () => void) => {
+      opts.beforeRename?.();
+      check();
+      fs.renameSync(from, to);
+    };
+
+    const oldMembers = oldEntries.map((e) => e.name);
     const oldSet = new Set(oldMembers);
     for (const name of manifest.keys()) {
       if (!oldSet.has(name)) throw new Error(`${manifestPath} lists ${name} but ${archivePath} does not hold it`);
     }
 
     const seen = new Set<string>();
-    const toAdd: { file: string; name: string; sum: string }[] = [];
+    const toAdd: { file: string; name: string; sum: string; size: number }[] = [];
     const unrecorded: { name: string; sum: string }[] = [];
     for (const file of files) {
       const name = path.basename(file);
@@ -353,12 +476,11 @@ export async function addToArchive(
         continue;
       }
       if (oldSet.has(name)) unrecorded.push({ name, sum });
-      else toAdd.push({ file: path.resolve(file), name, sum });
+      else toAdd.push({ file: path.resolve(file), name, sum, size: fs.statSync(file).size });
     }
 
     if (unrecorded.length > 0) {
-      const dir = makeTempDir(archivePath);
-      temps.push(dir);
+      const dir = makeTempDir();
       await extractInto(archivePath, unrecorded.map((u) => u.name), dir, zstd);
       for (const u of unrecorded) {
         if ((await sha256File(path.join(dir, u.name))) !== u.sum) {
@@ -371,7 +493,11 @@ export async function addToArchive(
     if (toAdd.length === 0) {
       if (unrecorded.length > 0) {
         writeManifestFile(manifestNew, manifest);
-        fs.renameSync(manifestNew, manifestPath);
+        guardedRename(manifestNew, manifestPath, () => {
+          assertArchiveUnchanged();
+          assertManifestUnchanged();
+        });
+        fsyncPath(path.dirname(manifestPath), "r");
       }
       return;
     }
@@ -387,20 +513,17 @@ export async function addToArchive(
       cmd: zstd,
       args: ["-q", "-f", `-${ZSTD_LEVEL}`, "-T0", `--long=${ZSTD_LONG}`, "-o", archiveNew],
     });
-    temps.push(archiveNew);
     await runPipeline(stages);
 
-    // Verify: exact member list in order (this also decodes the whole stream),
-    // then every new member byte-for-byte by checksum.
-    const expected = [...oldMembers, ...toAdd.map((a) => a.name)];
-    const actual = await listArchiveMembers(archiveNew, zstd);
-    if (actual.length !== expected.length || actual.some((m, i) => m !== expected[i])) {
-      throw new Error(
-        `Verification failed for ${archiveNew}: expected [${expected.join(", ")}], got [${actual.join(", ")}]`,
-      );
+    // Verify: exact members (name and size) in order, which also decodes the
+    // whole stream; then every new member byte-for-byte by checksum.
+    const expected: ArchiveEntry[] = [...oldEntries, ...toAdd.map((a) => ({ name: a.name, size: a.size }))];
+    const actual = await readArchiveEntries(archiveNew, zstd);
+    const show = (l: ArchiveEntry[]) => l.map((e) => `${e.name}(${e.size})`).join(", ");
+    if (actual.length !== expected.length || actual.some((e, i) => e.name !== expected[i].name || e.size !== expected[i].size)) {
+      throw new Error(`Verification failed for ${archiveNew}: expected [${show(expected)}], got [${show(actual)}]`);
     }
-    const dir = makeTempDir(archivePath);
-    temps.push(dir);
+    const dir = makeTempDir();
     await extractInto(archiveNew, toAdd.map((a) => a.name), dir, zstd);
     for (const a of toAdd) {
       if ((await sha256File(path.join(dir, a.name))) !== a.sum) {
@@ -409,38 +532,68 @@ export async function addToArchive(
       manifest.set(a.name, a.sum);
     }
 
-    fsyncFile(archiveNew);
-    temps.push(manifestNew);
+    fsyncPath(archiveNew, "r+");
     writeManifestFile(manifestNew, manifest);
-    fs.renameSync(archiveNew, archivePath);
-    fs.renameSync(manifestNew, manifestPath);
+    guardedRename(archiveNew, archivePath, () => {
+      assertArchiveUnchanged();
+      assertManifestUnchanged();
+    });
+    guardedRename(manifestNew, manifestPath, assertManifestUnchanged);
+    // Make both renames durable before anyone deletes a loose copy on their word.
+    fsyncPath(path.dirname(archivePath), "r");
+    if (path.dirname(manifestPath) !== path.dirname(archivePath)) fsyncPath(path.dirname(manifestPath), "r");
   } finally {
-    for (const t of temps) fs.rmSync(t, { recursive: true, force: true });
-    fs.rmSync(manifestNew, { force: true });
+    // Only this call's own temp files; a cleanup error must not hide the real one.
+    for (const t of temps) {
+      try {
+        fs.rmSync(t, { recursive: true, force: true });
+      } catch {
+        // A leftover `.new` / `.partial` is removed by a later roll.
+      }
+    }
   }
 }
 
-/** Writes one member to destPath. Throws if the member is not in the archive. */
+/** Writes one member to destPath. Throws if the member is not in the archive.
+ *  `member` may hold folder parts (legacy archives); output only ever goes to
+ *  `destPath`. */
 export async function extractMember(
   archivePath: string,
   member: string,
   destPath: string,
   zstd: string,
 ): Promise<void> {
-  assertSafeMemberName(member);
-  const partial = `${destPath}.partial`;
-  const fd = fs.openSync(partial, "w");
-  try {
-    await runPipeline(
-      [decompress(zstd, archivePath), { cmd: TAR, args: ["-xOf", "-", member] }],
-      fd,
-    );
-    fs.fsyncSync(fd);
-  } catch (err) {
-    fs.closeSync(fd);
-    fs.rmSync(partial, { force: true });
-    throw err;
+  assertSafeExtractName(member);
+  // bsdtar matches names as patterns: `a/b.db` would also match `./a/b.db`
+  // or anything under `a/b.db/`. Require exactly one member that the name
+  // can match, so the output is exactly that member.
+  const entries = await readArchiveEntries(archivePath, zstd);
+  const strip = (n: string) => n.replace(/^(\.\/)+/, "");
+  const exact = entries.filter((e) => e.name === member);
+  const lookalikes = entries.filter((e) => e.name !== member && (strip(e.name) === member || strip(e.name).startsWith(`${member}/`)));
+  if (exact.length !== 1) {
+    throw new Error(`${member} is ${exact.length === 0 ? "not in" : "in more than once in"} ${archivePath}`);
   }
-  fs.closeSync(fd);
-  fs.renameSync(partial, destPath);
+  if (lookalikes.length > 0) throw new Error(`${member} is ambiguous in ${archivePath}`);
+
+  const partial = uniqueTempPath(destPath, ".partial");
+  try {
+    const fd = fs.openSync(partial, "w");
+    try {
+      await runPipeline([decompress(zstd, archivePath), { cmd: TAR, args: ["-xOf", "-", member] }], fd);
+      fs.fsyncSync(fd);
+    } finally {
+      fs.closeSync(fd);
+    }
+    if (fs.statSync(partial).size !== exact[0].size) {
+      throw new Error(`Extracted ${member} has the wrong size`);
+    }
+    fs.renameSync(partial, destPath);
+  } finally {
+    try {
+      fs.rmSync(partial, { force: true });
+    } catch {
+      // Left for a later cleanup; never hide the real error.
+    }
+  }
 }

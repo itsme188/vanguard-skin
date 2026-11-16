@@ -1,8 +1,9 @@
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { addToArchive, findZstd, readManifest, sha256File } from "@/lib/backup/archive";
-import { RECENT_BACKUPS_KEPT, archiveMonth, backupPaths, backupStamp } from "@/lib/backup/backup-home";
-import type { EnvLike } from "@/lib/db/db-path";
+import { addToArchive, findZstd, readManifest, sha256File } from "./archive";
+import { RECENT_BACKUPS_KEPT, archiveMonth, backupPaths, backupStamp } from "./backup-home";
+import type { EnvLike } from "../db/db-path";
 
 export interface RollResult {
   rolled: string[];
@@ -13,6 +14,15 @@ export interface RollResult {
 /** A lock, `.new`, or `.partial` older than this belongs to a dead run. */
 const STALE_MS = 30 * 60 * 1000;
 const LEFTOVER = /\.(new|partial)$/;
+/** File inside the lock folder naming its owner (a random token per roll). */
+const LOCK_TOKEN_FILE = "owner";
+
+/** Points in a roll where ownership of the lock is re-checked. */
+export type RollStep = "archive" | "rename" | "delete";
+
+/** Thrown when another roll took the lock over. The roll stops at once:
+ *  nothing more is renamed or deleted. */
+export class RollLockLostError extends Error {}
 
 interface Candidate {
   name: string;
@@ -45,24 +55,55 @@ function removeStaleLeftovers(dir: string, now: Date, log: (l: string) => void):
   }
 }
 
-/** Takes the roll lock (an atomic mkdir). Returns false while a live roll holds it. */
-function takeLock(lock: string, now: Date, log: (l: string) => void): boolean {
+const isCode = (err: unknown, code: string) => (err as NodeJS.ErrnoException)?.code === code;
+
+function readToken(lock: string): string | null {
   try {
-    fs.mkdirSync(lock);
-    return true;
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+    return fs.readFileSync(path.join(lock, LOCK_TOKEN_FILE), "utf8");
+  } catch {
+    return null;
   }
-  if (now.getTime() - fs.statSync(lock).mtime.getTime() < STALE_MS) return false;
-  log(`taking over stale roll lock ${lock}`);
-  fs.rmSync(lock, { recursive: true, force: true });
-  try {
-    fs.mkdirSync(lock);
-    return true;
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "EEXIST") return false;
-    throw err;
+}
+
+/**
+ * Takes the roll lock: an atomic mkdir plus a random owner token inside it.
+ * Returns the token, or null while a live roll holds the lock. A lock whose
+ * folder was not touched for STALE_MS is taken over by renaming it aside
+ * (atomic: only one contender's rename succeeds).
+ */
+function takeLock(lock: string, now: Date, log: (l: string) => void): string | null {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      fs.mkdirSync(lock);
+      const token = `${process.pid}-${crypto.randomBytes(12).toString("hex")}`;
+      fs.writeFileSync(path.join(lock, LOCK_TOKEN_FILE), token);
+      return token;
+    } catch (err) {
+      if (!isCode(err, "EEXIST")) throw err;
+    }
+    let mtime: number;
+    try {
+      mtime = fs.statSync(lock).mtime.getTime();
+    } catch (err) {
+      if (isCode(err, "ENOENT")) continue; // released between our mkdir and stat: try again
+      throw err;
+    }
+    if (now.getTime() - mtime < STALE_MS) return null;
+    const aside = `${lock}.${process.pid}-${crypto.randomBytes(6).toString("hex")}.stale`;
+    try {
+      fs.renameSync(lock, aside);
+    } catch (err) {
+      if (isCode(err, "ENOENT")) continue; // another contender moved it first
+      throw err;
+    }
+    log(`took over stale roll lock ${lock}`);
+    try {
+      fs.rmSync(aside, { recursive: true, force: true });
+    } catch {
+      // A leftover `.stale` folder is harmless.
+    }
   }
+  return null;
 }
 
 /**
@@ -71,6 +112,12 @@ function takeLock(lock: string, now: Date, log: (l: string) => void): boolean {
  * only once its exact checksum is in its month's manifest, so an interrupted
  * roll loses nothing and the next roll finishes the job. One month failing
  * does not stop the others; the roll then throws naming the failed months.
+ *
+ * The lock is owned by a token. Its folder is touched (heartbeat) before each
+ * month and each deletion pass, and ownership is re-checked right before every
+ * rename into a final path and every deletion. If another roll took the lock
+ * over, this one throws RollLockLostError having renamed and deleted nothing
+ * more, and leaves the new owner's lock alone.
  */
 export async function rollOldBackups(
   home: string,
@@ -81,6 +128,8 @@ export async function rollOldBackups(
     log?: (l: string) => void;
     /** Explicit zstd path, or null for "not found". Overrides the PATH lookup. */
     zstd?: string | null;
+    /** Test seam: called just before each ownership check. */
+    onStep?: (step: RollStep, detail: string) => void;
   } = {},
 ): Promise<RollResult> {
   const keep = opts.keep ?? RECENT_BACKUPS_KEPT;
@@ -97,10 +146,24 @@ export async function rollOldBackups(
   }
   if (all.length === 0) return { rolled: [], kept: [] };
 
-  if (!takeLock(rollLock, now, log)) {
+  const token = takeLock(rollLock, now, log);
+  if (token === null) {
     log("roll skipped: another roll is running");
     return { rolled: [], kept: allNames, skipped: "another roll is running" };
   }
+  const assertOwned = (step: RollStep, detail: string) => {
+    opts.onStep?.(step, detail);
+    if (readToken(rollLock) !== token) {
+      throw new RollLockLostError(`roll lock ${rollLock} was taken over (at ${step} ${detail}); stopping`);
+    }
+  };
+  // Heartbeat with the real clock (not opts.now) so a live roll never looks stale.
+  const heartbeat = (step: RollStep, detail: string) => {
+    assertOwned(step, detail);
+    const t = new Date();
+    fs.utimesSync(rollLock, t, t);
+  };
+
   try {
     removeStaleLeftovers(recent, now, log);
     removeStaleLeftovers(archives, now, log);
@@ -124,14 +187,19 @@ export async function rollOldBackups(
     for (const [month, group] of [...byMonth].sort(([a], [b]) => a.localeCompare(b))) {
       const archivePath = path.join(archives, `${month}.tar.zst`);
       const manifestPath = path.join(archives, `${month}.sha256`);
+      heartbeat("archive", month);
       try {
-        await addToArchive(archivePath, manifestPath, group.map((c) => c.file), zstd);
+        await addToArchive(archivePath, manifestPath, group.map((c) => c.file), zstd, {
+          beforeRename: () => assertOwned("rename", month),
+        });
       } catch (err) {
+        if (err instanceof RollLockLostError) throw err;
         const msg = err instanceof Error ? err.message : String(err);
         failures.push(`${month}: ${msg}`);
         log(`roll of ${month} failed, loose copies kept: ${msg}`);
         continue;
       }
+      heartbeat("delete", month);
       const manifest = readManifest(manifestPath);
       for (const c of group) {
         // Re-hash: delete only the exact bytes the manifest vouches for.
@@ -139,6 +207,7 @@ export async function rollOldBackups(
           log(`${c.name} not in ${month} manifest with a matching checksum; kept`);
           continue;
         }
+        assertOwned("delete", c.name);
         fs.rmSync(c.file);
         fs.rmSync(`${c.file}-wal`, { force: true });
         fs.rmSync(`${c.file}-shm`, { force: true });
@@ -149,6 +218,7 @@ export async function rollOldBackups(
     if (failures.length > 0) throw new Error(`Backup roll failed for ${failures.join("; ")}`);
     return { rolled, kept };
   } finally {
-    fs.rmSync(rollLock, { recursive: true, force: true });
+    // Release only our own lock; a roll that took over keeps theirs.
+    if (readToken(rollLock) === token) fs.rmSync(rollLock, { recursive: true, force: true });
   }
 }
