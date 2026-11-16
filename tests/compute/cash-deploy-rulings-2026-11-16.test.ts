@@ -181,13 +181,15 @@ describe("ruling 25 = A: a gap that comes from short positions is not filled", (
     watch(t);
     const CASH = 10_000;
     const r = suggestAllocation(db, "vanguard", [1], CASH);
-    // Basis 60,000 + 10,000 = 70,000; Technology target 21,700.
-    // Net 20,000 (under target), long-only 40,000 (over): short by choice.
+    // Net basis 60,000 + 10,000 = 70,000; Technology net target 21,700.
+    // Long-only book (FX3 A1): 80,000 long + 10,000 cash = 90,000, target
+    // 27,900. Net 20,000 (under target), long-only 40,000 (over): short by
+    // choice.
     const tech = r.gaps.find((g) => g.sector === "Technology")!;
     expect(tech.gapPp).toBeLessThan(0);
     expect(r.picks.map((p) => p.symbol)).not.toContain("ZZT");
     expect(r.picks.map((p) => p.symbol)).not.toContain("ZZA");
-    expect(r.shortHeldSectors).toEqual([{ sector: "Technology", kind: "not_filled" }]);
+    expect(r.shortHeldSectors).toEqual([{ sector: "Technology", kind: "not_filled", causes: ["short_stock"] }]);
     expect(shortHeldSectorLine(r.shortHeldSectors[0])).toBe(
       "Technology: you hold short positions here; not filled.",
     );
@@ -207,17 +209,20 @@ describe("ruling 25 = A: a gap that comes from short positions is not filled", (
     watch(t);
     const CASH = 20_000;
     const r = suggestAllocation(db, "vanguard", [1], CASH);
-    // Basis 50,000 + 20,000 = 70,000; target 21,700.
-    // Long-only gap 21,700 - 10,000 = 11,700; net gap 16,700.
+    // Net basis 50,000 + 20,000 = 70,000; net target 21,700; net gap 16,700.
+    // Long-only book (FX3 A1): 55,000 long + 20,000 cash = 75,000; target
+    // 23,250; long-only gap 23,250 - 10,000 = 13,250 (under the net gap).
     const zzt = r.picks.find((p) => p.symbol === "ZZT")!;
     expect(zzt).toBeDefined();
-    expect(zzt.allocationDollars).toBeCloseTo(11_700, 2);
-    expect(zzt.allocationDollars).toBeLessThanOrEqual(11_700 + 0.005);
-    // Independent: long-only Technology after the pick sits at target.
-    expect((10_000 + zzt.allocationDollars) / 70_000).toBeLessThanOrEqual(TARGET.Technology + 1e-12);
-    expect(r.picks.reduce((s, p) => s + p.allocationDollars, 0)).toBeCloseTo(11_700, 2);
-    expect(r.shortHeldSectors).toEqual([{ sector: "Technology", kind: "partly_filled" }]);
-    expect(r.unallocatedShortDollars).toBeCloseTo(5_000, 2);
+    expect(zzt.allocationDollars).toBeCloseTo(13_250, 2);
+    expect(zzt.allocationDollars).toBeLessThanOrEqual(13_250 + 0.005);
+    // Independent: long-only Technology after the pick sits at target on the
+    // long-only book, and the net weight stays under target.
+    expect((10_000 + zzt.allocationDollars) / 75_000).toBeLessThanOrEqual(TARGET.Technology + 1e-12);
+    expect((5_000 + zzt.allocationDollars) / 70_000).toBeLessThanOrEqual(TARGET.Technology + 1e-12);
+    expect(r.picks.reduce((s, p) => s + p.allocationDollars, 0)).toBeCloseTo(13_250, 2);
+    expect(r.shortHeldSectors).toEqual([{ sector: "Technology", kind: "partly_filled", causes: ["short_stock"] }]);
+    expect(r.unallocatedShortDollars).toBeCloseTo(3_450, 2);
     expectConserved(r, CASH);
   });
 

@@ -9,6 +9,7 @@ import {
   equitySleeveCaptionLead,
   NET_OF_SHORTS_CAPTION,
   shortHeldSectorLine,
+  SHORT_UNALLOCATED_LABEL,
   smallWeightToleranceLine,
   type CashDeploySuggestion,
 } from "@/lib/compute/cash-deploy";
@@ -201,9 +202,10 @@ export function CashDeployCard({ scope }: Props) {
                 </tbody>
               </table>
               </ScrollFade>
-              {/* Owner ruling 25 = A (2026-11-16): a gap that comes from short
-                  positions the owner holds is not filled (only the gap on
-                  long holdings is). One plain line per such sector. */}
+              {/* Owner ruling 25 = A (2026-11-16): a gap that comes from hedges
+                  or short positions the owner holds is not filled (only the
+                  gap on long holdings is). One plain line per such sector,
+                  worded from its causes (FX3 A2). */}
               {result.shortHeldSectors.length > 0 && (
                 <ul className="mt-2 space-y-0.5">
                   {result.shortHeldSectors.map((s) => (
@@ -277,10 +279,11 @@ export function CashDeployCard({ scope }: Props) {
                 <p className="text-[11px] text-ink-faint mt-1">{result.unallocatedReason}</p>
               )}
               {/* Owner ruling 25 = A: the part left out because it would only
-                  offset short positions, with its own reason. */}
+                  undo hedges (usually long puts) or short sales, with its own
+                  reason (review fix FX3 A2). */}
               {result.unallocatedShortDollars >= 0.01 && (
                 <p className="text-[11px] text-ink-faint mt-1">
-                  Left out for sectors you hold short:{" "}
+                  {SHORT_UNALLOCATED_LABEL}{" "}
                   <Money value={result.unallocatedShortDollars} />.{" "}
                   {result.unallocatedShortReason}
                 </p>

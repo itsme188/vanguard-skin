@@ -406,8 +406,16 @@ describe("every account and a non-empty list answer as before", () => {
     // scopes (its dollars move from totalAllocated into cashRemaining and
     // unallocatedShortDollars); shortHeldSectors, unallocatedShortDollars,
     // unallocatedShortReason and picks[].toleranceSectors are new keys.
+    // Re-captured 2026-11-16 (Cash deploy review fixes FX3; field-by-field
+    // diff against the tree before, 30245207...): in the three scopes that
+    // hold the Technology put, shortHeldSectors[0] gained causes ["puts"]
+    // and unallocatedShortReason is reworded (it no longer says "short
+    // positions"). The long-only book, the fillable room and the placed-based
+    // kind move no figure on this fixture: every gap, pick, totalAllocated,
+    // cashRemaining, unallocatedShortDollars and every other reader's output
+    // is unchanged.
     expect(createHash("sha256").update(json).digest("hex")).toBe(
-      "30245207390c757b5d4ad050879b18bc281fd7becf1cb05344dd2fdc5b86750e",
+      "beb4e9cad477c8b0918c5d4367ccce684f61c2d904e6899990c82b6e3e1bc2d2",
     );
   });
 

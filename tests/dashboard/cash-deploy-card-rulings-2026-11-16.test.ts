@@ -1,8 +1,8 @@
 /**
  * Cash-Deploy card — owner rulings 24 = B and 25 = A (2026-11-16), source pins.
  *  24: a pick allowed under the small-weight tolerance says so in plain words.
- *  25: sectors short by choice are listed ("you hold short positions here;
- *      not filled"), and the cash left out for them is its own line, through
+ *  25: sectors short by choice are listed, worded from their causes ("you
+ *      hold puts here; not filled"), and the cash left out for them is its own line, through
  *      <Money>, with its own reason.
  */
 import { describe, it, expect } from "vitest";
@@ -27,7 +27,8 @@ describe("CashDeployCard ruling 25: short-by-choice sectors", () => {
   });
 
   it("shows the cash left out for shorts through <Money> with its own reason, under Unallocated", () => {
-    const at = anchorIndex(src, "Left out for sectors you hold short:");
+    // Review fix FX3 A2: the label comes from SHORT_UNALLOCATED_LABEL.
+    const at = anchorIndex(src, "{SHORT_UNALLOCATED_LABEL}");
     expect(at).toBeGreaterThan(anchorIndex(src, "Unallocated:"));
     const block = src.slice(at, at + 200);
     expect(block).toContain("<Money value={result.unallocatedShortDollars} />");

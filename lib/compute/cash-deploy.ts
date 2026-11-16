@@ -41,13 +41,24 @@
  *  - Ruling 25 = A, short by choice: only the part of a sector's gap that
  *    exists on a LONG-ONLY basis is filled. Long-only dollars are the sum of
  *    every positive sector contribution (long stock and funds, and positive
- *    delta exposure such as a long call or a short put), before shorts and
- *    long puts are subtracted; they are measured over the same denominator
- *    as the net weights. Gap to fill = max(0, target - long-only weight). A
- *    sector whose net weight is under target but whose long-only weight is
- *    at or above it is "short by choice" and gets no pick. The cash that
- *    would have offset those shorts is reported apart
- *    (`unallocatedShortDollars`, `shortHeldSectors`).
+ *    delta exposure such as a long call or a short put), before shorts, long
+ *    puts and short calls are subtracted.
+ *    Review fix FX3 A1 (2026-11-16, orchestrator decision, reversible): the
+ *    long-only weight is measured on a LONG-ONLY BOOK, never over the net
+ *    basis. Long-only basis = the cash being deployed + every positive sector
+ *    contribution in the sectors the comparison keeps (so a cash equivalent
+ *    is in it exactly when the net basis keeps it: in the "Cash Equivalent"
+ *    bucket of a blended benchmark, out of an equity-only one). Over the net
+ *    basis, puts shrank the denominator while staying out of the numerator
+ *    and long calls entered at full delta, so long-only weights summed to
+ *    1.3-1.6 of the basis and every sector looked fuller than it was. On the
+ *    long-only book the weights sum to at most 1.
+ *    Fillable room of a sector that carries a hedge or short = min(net room,
+ *    long-only room): a pick never takes a sector past target on the net
+ *    basis, and never buys back a hedge. A sector with no negative
+ *    contribution has nothing held short, so its room is its net room.
+ *    The cash that would have offset hedges and shorts is reported apart
+ *    (`unallocatedShortDollars`, `shortHeldSectors`, each with its causes).
  */
 
 import type Database from "better-sqlite3";
@@ -57,6 +68,7 @@ import { accountScopeAndSql } from "@/lib/queries/account-scope-sql";
 import { getDefaultBenchmark } from "@/lib/analysis/benchmarks";
 import { computeExposureDelta, optionDeltaPerValueReader, type ExposureDelta } from "./exposure-delta";
 import { explodeHoldingBySector } from "./explode-sector";
+import { optionExposureFallback } from "@/lib/compute/exposure";
 import { getEtfSectorWeights } from "@/lib/queries/etf-weights";
 import { marketValue } from "@/lib/valuation";
 import { getUsdPerUnit } from "@/lib/queries/fx-rates";
@@ -107,14 +119,26 @@ export interface CashDeployPick {
 }
 
 /**
- * A sector whose gap is (partly) left unfilled because it comes from short
- * positions the owner holds (owner ruling 25 = A, 2026-11-16).
- * `not_filled`: the long-only weight is at or above target, so nothing is
- * proposed. `partly_filled`: filled only up to the long-only gap.
+ * What makes a sector's exposure negative (review fix FX3 A2): short stock or
+ * funds, long puts, short calls. A short put is LONG exposure (positive
+ * delta) and is never a cause.
+ */
+export type ShortHeldCause = "short_stock" | "puts" | "short_calls";
+
+/** Causes in the order the card's line names them. */
+const SHORT_HELD_CAUSE_ORDER: ShortHeldCause[] = ["short_stock", "puts", "short_calls"];
+
+/**
+ * A sector whose gap is (partly) left unfilled because it comes from hedges
+ * or short positions the owner holds (owner ruling 25 = A, 2026-11-16).
+ * The kind is read from what was PLACED in the sector (review fix FX3 A6):
+ * `not_filled` when no pick put a dollar there, `partly_filled` when one did
+ * (only up to the long-only gap). `causes` names what holds the sector down.
  */
 export interface ShortHeldSector {
   sector: string;
   kind: "not_filled" | "partly_filled";
+  causes: ShortHeldCause[];
 }
 
 export interface SectorExposure {
@@ -210,16 +234,31 @@ export function smallWeightToleranceLine(sectors: string[]): string {
   } benchmark weight.`;
 }
 
-/** The card's plain line for a sector short by choice (ruling 25). */
+const SHORT_HELD_CAUSE_WORDS: Record<ShortHeldCause, string> = {
+  short_stock: "short positions",
+  puts: "puts",
+  short_calls: "short calls",
+};
+
+/**
+ * The card's plain line for a sector short by choice (ruling 25), worded
+ * from what holds the sector down (review fix FX3 A2): "short positions"
+ * only when stock or funds are held short.
+ */
 export function shortHeldSectorLine(s: ShortHeldSector): string {
+  const causes = SHORT_HELD_CAUSE_ORDER.filter((c) => s.causes.includes(c));
+  const what = causes.length > 0 ? listWords(causes.map((c) => SHORT_HELD_CAUSE_WORDS[c])) : "hedges";
   return s.kind === "not_filled"
-    ? `${s.sector}: you hold short positions here; not filled.`
-    : `${s.sector}: you hold short positions here; filled only up to the gap your long positions leave.`;
+    ? `${s.sector}: you hold ${what} here; not filled.`
+    : `${s.sector}: you hold ${what} here; filled only up to the gap your long positions leave.`;
 }
+
+/** The card's label for `unallocatedShortDollars` (review fix FX3 A2). */
+export const SHORT_UNALLOCATED_LABEL = "Left out for sectors you have hedged or sold short:";
 
 /** Reason for `unallocatedShortDollars`. */
 export const SHORT_UNALLOCATED_REASON =
-  "This part would only offset short positions you hold, so it is not placed and stays as cash.";
+  "This part would only undo hedges or short sales you hold, so it is not placed and stays as cash.";
 
 /** Security types a held-name fallback pick may be (no options, bonds, forex). */
 const HELD_PICK_TYPES = new Set(["stock", "etf", "mutual fund"]);
@@ -315,9 +354,11 @@ interface CurrentHoldingSummary {
   sectorValue: Map<string, number>;
   /**
    * Long-only dollars by sector (ruling 25): every positive sector
-   * contribution, before shorts and long puts are subtracted.
+   * contribution, before shorts, long puts and short calls are subtracted.
    */
   sectorLongValue: Map<string, number>;
+  /** What makes each sector's exposure negative (FX3 A2); absent = nothing. */
+  sectorNegativeCauses: Map<string, Set<ShortHeldCause>>;
   heldCandidates: WatchlistCandidate[];
   optionsAtMarketValue: number;
 }
@@ -355,6 +396,7 @@ function loadCurrentHoldings(
         s.market_cap_category,
         s.style,
         s.currency,
+        s.option_type,
         COALESCE(s.multiplier, 1) AS multiplier,
         s_u.symbol AS u_symbol,
         s_u.security_type AS u_security_type,
@@ -385,6 +427,7 @@ function loadCurrentHoldings(
       market_cap_category: string | null;
       style: string | null;
       currency: string | null;
+      option_type: string | null;
       multiplier: number;
       u_symbol: string | null;
       u_security_type: string | null;
@@ -405,6 +448,7 @@ function loadCurrentHoldings(
   );
   const sectorValue = new Map<string, number>();
   const sectorLongValue = new Map<string, number>();
+  const sectorNegativeCauses = new Map<string, Set<ShortHeldCause>>();
   const heldCandidatesBySymbol = new Map<string, WatchlistCandidate>();
   let totalValue = 0;
   let optionsAtMarketValue = 0;
@@ -420,11 +464,23 @@ function loadCurrentHoldings(
     // through its underlying; with no Greeks, at market value (counted).
     const isOption = normalized(r.security_type) === "option";
     let sectorDollars = mv;
+    // The row's economic direction: long exposure (+1) or a hedge / short
+    // (-1). For an option with no Greeks the net weights keep its market
+    // value (What-if parity), but its direction comes from
+    // optionExposureFallback (a long put or a short call is negative, a
+    // short put positive), so a long put never counts as long exposure (FX3
+    // A6).
+    let direction = Math.sign(mv);
     let identity: HoldingForSector = r;
     if (isOption) {
       const ratio = deltaPerValue(r.security_id);
-      if (ratio === undefined) optionsAtMarketValue++;
-      else sectorDollars = mv * ratio;
+      if (ratio === undefined) {
+        optionsAtMarketValue++;
+        direction = Math.sign(optionExposureFallback(r.option_type, mv));
+      } else {
+        sectorDollars = mv * ratio;
+        direction = Math.sign(sectorDollars);
+      }
       if (r.u_symbol !== null) {
         identity = {
           symbol: r.u_symbol,
@@ -452,10 +508,25 @@ function loadCurrentHoldings(
       : isOption
         ? explodeHoldingBySector(identity.symbol, identity.security_type, sectorDollars, etfWeights, identity.sector)
         : benchmarkSectorParts(identity, sectorDollars, etfWeights, benchmarkMap);
+    const cause: ShortHeldCause | null =
+      direction >= 0
+        ? null
+        : !isOption
+          ? "short_stock"
+          : normalized(r.option_type) === "put"
+            ? "puts"
+            : "short_calls";
     for (const part of parts) {
       sectorValue.set(part.sector, (sectorValue.get(part.sector) ?? 0) + part.value);
-      if (part.value > 0) {
-        sectorLongValue.set(part.sector, (sectorLongValue.get(part.sector) ?? 0) + part.value);
+      if (part.value === 0) continue;
+      if (cause === null) {
+        // Long exposure: its own dollars (a no-Greeks short put's are signed
+        // negative in the net weights, so take the size).
+        sectorLongValue.set(part.sector, (sectorLongValue.get(part.sector) ?? 0) + Math.abs(part.value));
+      } else {
+        const set = sectorNegativeCauses.get(part.sector) ?? new Set<ShortHeldCause>();
+        set.add(cause);
+        sectorNegativeCauses.set(part.sector, set);
       }
     }
     // A held-name fallback is a stock or fund held LONG: "buying" a name held
@@ -478,6 +549,7 @@ function loadCurrentHoldings(
     totalValue,
     sectorValue,
     sectorLongValue,
+    sectorNegativeCauses,
     heldCandidates: Array.from(heldCandidatesBySymbol.values()),
     optionsAtMarketValue,
   };
@@ -607,6 +679,11 @@ interface SectorGapResult {
   roomBySector: Map<string, number>;
   /** The same room measured on NET dollars (shorts subtracted): never less. */
   netRoomBySector: Map<string, number>;
+  /**
+   * The long-only book (FX3 A1): the cash being deployed plus every positive
+   * sector contribution in the sectors compared. 0 when nothing is compared.
+   */
+  longBasisTotal: number;
 }
 
 function computeSectorGaps(
@@ -652,6 +729,15 @@ function computeSectorGaps(
   const gaps: SectorGap[] = [];
   const roomBySector = new Map<string, number>();
   const netRoomBySector = new Map<string, number>();
+  // Ruling 25 on a LONG-ONLY BOOK (FX3 A1): long-only dollars over the
+  // gross long exposure of the compared sectors plus the cash being
+  // deployed. A cash equivalent is a positive contribution in its own
+  // bucket, so it is in this book exactly when the net basis keeps it.
+  let longBasisTotal = cashAmount;
+  for (const [sector, v] of current.sectorLongValue) {
+    if (equityOnly && isExcludedEquitySleeveBucket(sector)) continue;
+    longBasisTotal += v;
+  }
 
   // Denominator (owner ruling 2026-11-15): the scope's NET market value
   // (longs plus signed shorts, as computeExposureDelta totals its book) plus
@@ -659,7 +745,7 @@ function computeSectorGaps(
   // equity-only. At zero or below there is no sector weight to measure, so
   // nothing is compared and nothing is allocated.
   if (!(gapBasisTotal > 0)) {
-    return { gaps, excludedSleeve, gapBasisTotal, roomBySector, netRoomBySector };
+    return { gaps, excludedSleeve, gapBasisTotal, roomBySector, netRoomBySector, longBasisTotal: 0 };
   }
 
   const allSectors = new Set<string>([
@@ -678,9 +764,14 @@ function computeSectorGaps(
     const currentWeight = currentDollars / gapBasisTotal;
     const targetWeight = benchmarkMap.get(sector) ?? 0;
     const longDollars = current.sectorLongValue.get(sector) ?? 0;
-    netRoomBySector.set(sector, Math.max(0, gapBasisTotal * targetWeight - currentDollars));
-    // Ruling 25: only the gap that exists on a long-only basis is fillable.
-    roomBySector.set(sector, Math.max(0, gapBasisTotal * targetWeight - longDollars));
+    const netRoom = Math.max(0, gapBasisTotal * targetWeight - currentDollars);
+    netRoomBySector.set(sector, netRoom);
+    // Ruling 25: only the gap that exists on the long-only book is fillable,
+    // and never more than the net room, so no pick takes a sector past target
+    // on the net basis. A sector with no hedge or short keeps its net room.
+    const hedged = (current.sectorNegativeCauses.get(sector)?.size ?? 0) > 0;
+    const longRoom = Math.max(0, longBasisTotal * targetWeight - longDollars);
+    roomBySector.set(sector, hedged ? Math.min(netRoom, longRoom) : netRoom);
     const gapPp = (currentWeight - targetWeight) * 100;
     const dollarGap = gapBasisTotal * (targetWeight - currentWeight);
 
@@ -700,7 +791,52 @@ function computeSectorGaps(
 
   // Sort by largest underweight first (most negative gapPp = best target)
   gaps.sort((a, b) => a.gapPp - b.gapPp);
-  return { gaps, excludedSleeve, gapBasisTotal, roomBySector, netRoomBySector };
+  return { gaps, excludedSleeve, gapBasisTotal, roomBySector, netRoomBySector, longBasisTotal };
+}
+
+/** One sector of the long-only book (FX3 A1), for tests and diagnostics. */
+export interface LongOnlySector {
+  sector: string;
+  /** Long-only dollars: positive contributions only. */
+  longDollars: number;
+  /** longDollars over the long-only basis. Sums to at most 1 over sectors. */
+  longWeight: number;
+  /** Net dollars: longs plus signed shorts and hedges. */
+  netDollars: number;
+  targetWeight: number;
+  /** Dollars a pick may put here (min of net and long-only room). */
+  fillableDollars: number;
+  causes: ShortHeldCause[];
+}
+
+/**
+ * The long-only book Cash deploy sizes picks on (ruling 25, FX3 A1). Read
+ * only; the suggestion itself does not carry it.
+ */
+export function measureLongOnlyBook(
+  db: Database.Database,
+  scope: string,
+  accountIds: number[] | undefined,
+  cashAmount: number,
+): { longBasisTotal: number; gapBasisTotal: number; sectors: LongOnlySector[] } {
+  const benchmarkMap = getBenchmarkSectorMap(db, getDefaultBenchmark(scope));
+  const current = loadCurrentHoldings(db, accountIds, benchmarkMap);
+  const g = computeSectorGaps(current, benchmarkMap, cashAmount);
+  const sectors: LongOnlySector[] = Array.from(g.roomBySector.entries())
+    .map(([sector, room]) => {
+      const longDollars = current.sectorLongValue.get(sector) ?? 0;
+      return {
+        sector,
+        longDollars,
+        longWeight: g.longBasisTotal > 0 ? longDollars / g.longBasisTotal : 0,
+        netDollars: current.sectorValue.get(sector) ?? 0,
+        targetWeight: benchmarkMap.get(sector) ?? 0,
+        fillableDollars: room,
+        causes: SHORT_HELD_CAUSE_ORDER.filter((c) => current.sectorNegativeCauses.get(sector)?.has(c)),
+      };
+    })
+    .sort((a, b) => a.sector.localeCompare(b.sector));
+  return { longBasisTotal: g.longBasisTotal, gapBasisTotal: g.gapBasisTotal, sectors };
 }
 
 /**
@@ -718,7 +854,7 @@ export function equitySleeveCaptionLead(benchmarkSymbol: string): string {
  * NET weight, longs plus signed shorts, over the scope's net value.
  */
 export const NET_OF_SHORTS_CAPTION =
-  "Weights are net of short positions, with options counted at their delta-adjusted exposure: a short or a long put counts against its sector, and every position counts at its market value in the total.";
+  "Weights are net of short positions, with options counted at their delta-adjusted exposure: a short or a long put counts against its sector, and every position counts at its market value in the total. Picks are sized on the long-only book (long positions plus the cash being deployed), so a hedge or short you hold is not bought back.";
 
 export interface SuggestAllocationOptions {
   activeThemes?: import("./macro-themes").MacroTheme[];
@@ -789,14 +925,18 @@ export function suggestAllocation(
   // Apply theme-aware boost to gapClosureScore before ranking candidates.
   const gaps = applyThemeAwareBoost(rawGaps, opts.activeThemes ?? []);
 
+  // The rationale quotes the gap a pick may FILL (FX3 A3): the fillable room
+  // in pp of the same basis the table uses. Equal to the table's gap for a
+  // sector with no hedge or short; smaller where ruling 25 holds part back.
+  const fillable: FillableGaps = { room: roomBySector, netRoom: netRoomBySector, basis: gapBasisTotal };
   const rankedWatchlist = watchlist
-    .map((c) => rankCandidate(c, gaps, 1, false))
+    .map((c) => rankCandidate(c, gaps, 1, false, fillable))
     .filter((x): x is RankedCandidate => x !== null)
     .sort((a, b) => b.score - a.score);
   const watchlistSymbols = new Set(watchlist.map((c) => c.symbol));
   const heldFallback = current.heldCandidates
     .filter((c) => !watchlistSymbols.has(c.symbol))
-    .map((c) => rankCandidate(c, gaps, 0.9, true))
+    .map((c) => rankCandidate(c, gaps, 0.9, true, fillable))
     .filter((x): x is RankedCandidate => x !== null)
     .sort((a, b) => b.score - a.score);
   const ranked = [...rankedWatchlist, ...heldFallback];
@@ -824,18 +964,25 @@ export function suggestAllocation(
   const cashAskedCents = Math.round(cashAmount * 100);
   const plan = planPicks(ranked, roomBySector, cashAskedCents, perNameCapCents);
 
-  // Ruling 25: sectors whose net gap is wider than their long-only gap are
-  // (partly) short by choice. Their held-out part is never filled.
+  // Ruling 25: sectors whose net gap is wider than their fillable gap are
+  // (partly) held by a hedge or short. Their held-out part is never filled.
+  // The kind comes from what was actually PLACED there (FX3 A6): a sector no
+  // pick reached is "not filled", whatever room it had.
+  const placedBySector = new Map<string, number>();
+  for (const { candidate, cents } of plan.plans) {
+    for (const e of candidate.exposure) {
+      if (!(e.weight > 0)) continue;
+      placedBySector.set(e.sector, (placedBySector.get(e.sector) ?? 0) + (cents / 100) * e.weight);
+    }
+  }
   const shortHeldSectors: ShortHeldSector[] = Array.from(netRoomBySector.entries())
-    .map(([sector, net]) => {
-      const long = roomBySector.get(sector) ?? 0;
-      return { sector, long, heldOut: net - long };
-    })
+    .map(([sector, net]) => ({ sector, heldOut: net - (roomBySector.get(sector) ?? 0) }))
     .filter((x) => x.heldOut >= MIN_ROOM_DOLLARS)
     .sort((a, b) => b.heldOut - a.heldOut || a.sector.localeCompare(b.sector))
     .map((x): ShortHeldSector => ({
       sector: x.sector,
-      kind: x.long < MIN_ROOM_DOLLARS ? "not_filled" : "partly_filled",
+      kind: (placedBySector.get(x.sector) ?? 0) >= MIN_ROOM_DOLLARS ? "partly_filled" : "not_filled",
+      causes: SHORT_HELD_CAUSE_ORDER.filter((c) => current.sectorNegativeCauses.get(x.sector)?.has(c)),
     }));
   // The cash left out for them: what the same allocation would place on the
   // NET gaps, minus what it places on the long-only gaps.
@@ -944,6 +1091,13 @@ interface PlannedPick {
  * except (ruling 24) a multi-sector fund's weights of
  * `FUND_SMALL_WEIGHT_TOLERANCE` or less, as long as at least one of its
  * sectors is above that line (a fund made only of slivers stays strict).
+ *
+ * Overshoot bound (review note FX3 A5, deliberately no cumulative cap): a
+ * non-binding weight is at most FUND_SMALL_WEIGHT_TOLERANCE of its fund, so
+ * the dollars any one sector receives past its room are at most 2% of the
+ * cash placed through tolerance picks, however many funds stack there
+ * (synthetic worst case about 1.5pp of the book with 20 funds; real data
+ * 0.14pp). Pinned in tests/compute/cash-deploy-fx3-review.test.ts.
  */
 function bindingExposures(c: WatchlistCandidate): SectorExposure[] {
   const positive = c.exposure.filter((e) => e.weight > 0);
@@ -1088,11 +1242,18 @@ type RankedCandidate = WatchlistCandidate & {
  * single-sector name scores its sector's gap; a multi-sector fund scores the
  * weight-averaged gaps it touches and targets the one it closes most.
  */
+interface FillableGaps {
+  room: Map<string, number>;
+  netRoom: Map<string, number>;
+  basis: number;
+}
+
 function rankCandidate(
   c: WatchlistCandidate,
   gaps: SectorGap[],
   scoreFactor: number,
-  heldName: boolean
+  heldName: boolean,
+  fillable: FillableGaps,
 ): RankedCandidate | null {
   const hits = c.exposure
     .filter((e) => e.weight > 0)
@@ -1108,8 +1269,15 @@ function rankCandidate(
     : best.gap.gapClosureScore;
   const sector = best.gap.sector;
   // "Underweight" already carries the direction, so the sentence states
-  // the SIZE of the gap: "underweight by -4.8pp" is a doubled negative.
-  const size = `${Math.abs(best.gap.gapPp).toFixed(1)}pp`;
+  // the SIZE of the gap: "underweight by -4.8pp" is a doubled negative. It is
+  // the gap the pick may fill (FX3 A3): smaller than the table's net gap
+  // where a hedge or short holds part of it back, and then said so.
+  const room = fillable.room.get(sector) ?? 0;
+  const heldBack = (fillable.netRoom.get(sector) ?? 0) - room >= MIN_ROOM_DOLLARS;
+  const fillPp = fillable.basis > 0 ? (room / fillable.basis) * 100 : Math.abs(best.gap.gapPp);
+  const size = `${(heldBack ? fillPp : Math.abs(best.gap.gapPp)).toFixed(1)}pp${
+    heldBack ? " on your long positions" : ""
+  }`;
   let rationale: string;
   if (multiSectorFund) {
     // Name where most of the fund's money goes when that is not the gap
