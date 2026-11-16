@@ -46,6 +46,9 @@ function stockRow(id: number, over: Partial<GivingDonation> = {}): GivingDonatio
     accountName: "Test Taxable",
     basis: null,
     gainAvoided: null,
+    gainAvoidedLongTerm: null,
+    gainAvoidedShortTerm: null,
+    gainAvoidedHoldingUnknown: null,
     basisImplausible: false,
     basisUnestablished: false,
     flaggedLots: [],
@@ -69,6 +72,11 @@ function year(over: Partial<GivingYear>): GivingYear {
     gainAvoidedRowsLeftOut: 0,
     gainAvoidedRowsCounted: 0,
     gainAvoidedRowsUnsupported: 0,
+    gainAvoidedLongTerm: 0,
+    gainAvoidedShortTerm: 0,
+    gainAvoidedHoldingUnknown: 0,
+    gainAvoidedRowsWithShortTerm: 0,
+    gainAvoidedRowsHoldingUnknown: 0,
     donations: [],
     ...over,
   };
@@ -94,6 +102,7 @@ describe("Giving header: non-USD gifts left out", () => {
     const h = header(
       year({
         gainAvoided: 500,
+        gainAvoidedLongTerm: 500,
         gainAvoidedRowsCounted: 1,
         gainAvoidedRowsUnsupported: 1,
         donations: [stockRow(1, { basis: 500, gainAvoided: 500 }), stockRow(2, { status: "unsupported" })],

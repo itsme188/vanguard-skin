@@ -612,6 +612,7 @@ describe("GivingYearSection: implausible basis", () => {
     const total = sliceBetween(src, "{year.gainAvoided == null ? (", "{year.gainAvoidedRowsLeftOut > 0 && (");
     expect(total).toContain("year.gainAvoidedRowsCounted === 0");
     expect(total).toContain("not shown");
-    expect(total).toContain("<Money value={year.gainAvoided}");
+    // Split by holding period since owner ruling 14 (2026-11-16).
+    expect(total).toContain("<Money value={year.gainAvoidedLongTerm}");
   });
 });

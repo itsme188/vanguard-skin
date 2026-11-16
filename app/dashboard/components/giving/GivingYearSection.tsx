@@ -91,6 +91,36 @@ export function DonationIdentityLine({ gd }: { gd: GivingDonation }) {
   );
 }
 
+/**
+ * A row's avoided gain split by holding period (owner ruling 14,
+ * 2026-11-16): the long-term part always, the short-term part only when the
+ * row gave short-term shares, and an unknown part only when there is one.
+ */
+export function GainSplitCell({ gd }: { gd: GivingDonation }) {
+  const hasShortTerm = (gd.shortTermQuantity ?? 0) > 0;
+  const hasUnknown = Math.abs(gd.gainAvoidedHoldingUnknown ?? 0) >= 0.005;
+  return (
+    <span className="flex flex-col items-end gap-0.5 whitespace-nowrap">
+      <span>
+        <span className="font-sans text-xs text-ink-faint">LT </span>
+        <Money value={gd.gainAvoidedLongTerm} />
+      </span>
+      {hasShortTerm && (
+        <span>
+          <span className="font-sans text-xs text-ink-faint">ST </span>
+          <Money value={gd.gainAvoidedShortTerm} />
+        </span>
+      )}
+      {hasUnknown && (
+        <span>
+          <span className="font-sans text-xs text-ink-faint">Holding period unknown </span>
+          <Money value={gd.gainAvoidedHoldingUnknown} />
+        </span>
+      )}
+    </span>
+  );
+}
+
 export function GivingYearSection({ year }: { year: GivingYear }) {
   const router = useRouter();
   const flow = useLedgerRecomputeFlow();
@@ -102,6 +132,8 @@ export function GivingYearSection({ year }: { year: GivingYear }) {
 
   const stockDonations = year.donations.filter((gd) => gd.donation.kind === "stock");
   const cashDonations = year.donations.filter((gd) => gd.donation.kind === "cash");
+  // No short-term figure and no note in a year with no short-term shares.
+  const showShortTerm = year.gainAvoided != null && year.gainAvoidedRowsWithShortTerm > 0;
 
   function openReverseDialog(gd: GivingDonation) {
     setReverseTarget(gd);
@@ -209,16 +241,39 @@ export function GivingYearSection({ year }: { year: GivingYear }) {
             Total given <Money value={year.totalGiven} className="font-mono font-medium text-ink" />
           </span>
           <span className="text-ink-dim">
-            Gain avoided{" "}
             {year.gainAvoided == null ? (
-              <span className="text-ink-faint italic">pending lot assignment</span>
+              <>
+                Gain avoided <span className="text-ink-faint italic">pending lot assignment</span>
+              </>
             ) : year.gainAvoidedRowsCounted === 0 &&
               year.gainAvoidedRowsLeftOut + year.gainAvoidedRowsUnsupported > 0 ? (
               // Every row was left out (an implausible basis or a non-USD
               // gift): there is no believable total to print.
-              <span className="text-ink-faint italic">not shown</span>
+              <>
+                Gain avoided <span className="text-ink-faint italic">not shown</span>
+              </>
             ) : (
-              <Money value={year.gainAvoided} className="font-mono font-medium text-up" />
+              // Split by holding period, per donated lot (owner ruling 14,
+              // 2026-11-16). The three parts add up to the old single figure.
+              <>
+                Gain avoided, held over 1 year{" "}
+                <Money value={year.gainAvoidedLongTerm} className="font-mono font-medium text-up" />
+                {showShortTerm && (
+                  <>
+                    {" "}
+                    · short-term gain, held 1 year or less{" "}
+                    <Money value={year.gainAvoidedShortTerm} className="font-mono font-medium text-ink" />
+                  </>
+                )}
+                {year.gainAvoidedRowsHoldingUnknown > 0 && (
+                  <>
+                    {" "}
+                    · holding period unknown{" "}
+                    <Money value={year.gainAvoidedHoldingUnknown} className="font-mono font-medium text-ink" />{" "}
+                    (gifts: <Count value={year.gainAvoidedRowsHoldingUnknown} className="font-mono" />)
+                  </>
+                )}
+              </>
             )}
             {year.gainAvoidedRowsLeftOut > 0 && (
               <span className="text-warn">
@@ -236,6 +291,12 @@ export function GivingYearSection({ year }: { year: GivingYear }) {
             )}
           </span>
         </div>
+        {showShortTerm && (
+          <p className="basis-full text-xs text-ink-faint">
+            For shares held one year or less, the charitable deduction may be limited to cost basis, so the
+            short-term gain is not necessarily a saving.
+          </p>
+        )}
       </header>
 
       {stockDonations.length > 0 && (
@@ -294,7 +355,12 @@ export function GivingYearSection({ year }: { year: GivingYear }) {
                       <Money value={gd.basis} fallback={gd.basisUnestablished ? "needs review" : "—"} />
                     </td>
                     <td className="px-3 py-2.5 text-right font-mono tabular-nums text-ink-dim hidden md:table-cell">
-                      <Money value={gd.gainAvoided} fallback={gd.basisUnestablished ? "needs review" : "—"} />
+                      {gd.gainAvoided == null ? (
+                        <Money value={gd.gainAvoided} fallback={gd.basisUnestablished ? "needs review" : "—"} />
+                      ) : (
+                        // Split by holding period, per lot (owner ruling 14).
+                        <GainSplitCell gd={gd} />
+                      )}
                     </td>
                     <td className="px-3 py-2.5 text-xs text-ink-faint hidden md:table-cell">
                       {gd.longTermQuantity != null && gd.shortTermQuantity != null ? (

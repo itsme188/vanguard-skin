@@ -35,6 +35,19 @@ export interface GivingYear {
    * included in `gainAvoidedRowsLeftOut`, which counts implausible bases only.
    */
   gainAvoidedRowsUnsupported: number;
+  /**
+   * `gainAvoided` split by holding period (owner ruling 14, 2026-11-16): the
+   * sums of the counted rows' own split figures, so long-term + short-term +
+   * holding-period-unknown equals `gainAvoided` to the cent. All three are
+   * null exactly when `gainAvoided` is.
+   */
+  gainAvoidedLongTerm: number | null;
+  gainAvoidedShortTerm: number | null;
+  gainAvoidedHoldingUnknown: number | null;
+  /** Counted rows that gave short-term shares (some lot held one year or less). */
+  gainAvoidedRowsWithShortTerm: number;
+  /** Counted rows with a part whose holding period is unknown (non-zero to the cent). */
+  gainAvoidedRowsHoldingUnknown: number;
   donations: GivingDonation[];
 }
 
@@ -43,6 +56,19 @@ export interface GivingDonation {
   accountName: string | null;
   basis: number | null;
   gainAvoided: number | null;
+  /**
+   * `gainAvoided` split by holding period, per donated LOT (owner ruling 14,
+   * 2026-11-16): a lot is long-term when `isLongTermHolding(acquisition date,
+   * gift date)`, the engine's own test. Each lot's part is its shares times
+   * (fair market value per share minus its basis per share). What no dated
+   * lot accounts for (a lot with no readable acquisition date, shares given
+   * but not assigned to a lot, or a gift with no share count) is
+   * `gainAvoidedHoldingUnknown`. The three always add up to `gainAvoided` to
+   * the cent; all three are null exactly when it is.
+   */
+  gainAvoidedLongTerm: number | null;
+  gainAvoidedShortTerm: number | null;
+  gainAvoidedHoldingUnknown: number | null;
   /**
    * THE left-out rule for a gift row: true when at least one assigned lot's
    * basis state (`donatedLotBasisState`) is `implausible` or `verified-stale`.
@@ -523,6 +549,48 @@ function computeStatus(
   return "received";
 }
 
+const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+/** Half a cent: a remainder smaller than this is float noise, not a figure. */
+const HALF_CENT = 0.005;
+
+interface HoldingPeriodGains {
+  longTerm: number;
+  shortTerm: number;
+  unknown: number;
+}
+
+/**
+ * Splits a row's avoided gain by holding period. `parts` are the per-lot
+ * figures already priced (shares × (fair value per share − basis per share)),
+ * each tagged long-term, short-term or unknown. Whatever the lots do not
+ * account for (`total` minus their sum) is unknown, so the three always add
+ * up to `total`. A remainder under half a cent is rounding noise and is
+ * folded into the bucket holding the most shares, so a fully assigned gift
+ * never shows a stray "unknown" cent.
+ */
+function splitGainByHoldingPeriod(
+  total: number,
+  parts: { bucket: keyof HoldingPeriodGains; gain: number; shares: number }[]
+): HoldingPeriodGains {
+  const out: HoldingPeriodGains = { longTerm: 0, shortTerm: 0, unknown: 0 };
+  const shares: HoldingPeriodGains = { longTerm: 0, shortTerm: 0, unknown: 0 };
+  for (const p of parts) {
+    out[p.bucket] += p.gain;
+    shares[p.bucket] += p.shares;
+  }
+  const remainder = total - out.longTerm - out.shortTerm - out.unknown;
+  if (Math.abs(remainder) < HALF_CENT && parts.length > 0) {
+    const biggest = (Object.keys(shares) as (keyof HoldingPeriodGains)[]).reduce((a, b) =>
+      shares[b] > shares[a] ? b : a
+    );
+    out[biggest] += remainder;
+  } else {
+    out.unknown += remainder;
+  }
+  return out;
+}
+
 function buildGivingDonation(
   d: DonationRow,
   outLegs: Map<number, OutLegRow>,
@@ -544,6 +612,7 @@ function buildGivingDonation(
 
   let basis: number | null = null;
   let gainAvoided: number | null = null;
+  let holdingGains: HoldingPeriodGains | null = null;
   let longTermQuantity: number | null = null;
   let shortTermQuantity: number | null = null;
   let basisImplausible = false;
@@ -554,11 +623,24 @@ function buildGivingDonation(
     let basisSum = 0;
     let lt = 0;
     let st = 0;
+    const fmvPerShare =
+      typeof d.quantity === "number" && Number.isFinite(d.quantity) && d.quantity > 0
+        ? d.fmv_usd / d.quantity
+        : null;
+    const gainParts: { bucket: keyof HoldingPeriodGains; gain: number; shares: number }[] = [];
     for (const a of assignments) {
       // On the gift date's share basis, the units `a.quantity` is in (G2).
       const acquiredInGiftUnits = quantityAcquiredInGiftUnits(a, splits, outLeg.trade_date);
-      if (isLongTermHolding(a.acquisition_date, outLeg.trade_date)) lt += a.quantity;
-      else st += a.quantity;
+      // Holding period per LOT, by the engine's own test. A lot with no
+      // readable acquisition date is in neither bucket: it is "unknown".
+      const dated = typeof a.acquisition_date === "string" && ISO_DATE_RE.test(a.acquisition_date);
+      const bucket: keyof HoldingPeriodGains = !dated
+        ? "unknown"
+        : isLongTermHolding(a.acquisition_date, outLeg.trade_date)
+          ? "longTerm"
+          : "shortTerm";
+      if (bucket === "longTerm") lt += a.quantity;
+      else if (bucket === "shortTerm") st += a.quantity;
       if (acquiredInGiftUnits == null) {
         // No believable per-share basis: the row shows none and is left out.
         basisUnestablished = true;
@@ -567,6 +649,9 @@ function buildGivingDonation(
       }
       const perShare = acquiredInGiftUnits !== 0 ? a.cost_basis / acquiredInGiftUnits : 0;
       basisSum += a.quantity * perShare;
+      if (fmvPerShare != null) {
+        gainParts.push({ bucket, gain: a.quantity * (fmvPerShare - perShare), shares: a.quantity });
+      }
       // Judged per LOT, not on the blended row: one penny-basis lot among
       // ordinary ones still overstates the avoided gain by its whole value.
       const hasMarker = a.has_verification === 1;
@@ -595,6 +680,7 @@ function buildGivingDonation(
     }
     basis = basisUnestablished ? null : basisSum;
     gainAvoided = basisUnestablished ? null : d.fmv_usd - basisSum;
+    holdingGains = gainAvoided == null ? null : splitGainByHoldingPeriod(gainAvoided, gainParts);
     longTermQuantity = lt;
     shortTermQuantity = st;
   }
@@ -631,6 +717,9 @@ function buildGivingDonation(
     accountName: outLeg?.account_name ?? null,
     basis,
     gainAvoided,
+    gainAvoidedLongTerm: holdingGains?.longTerm ?? null,
+    gainAvoidedShortTerm: holdingGains?.shortTerm ?? null,
+    gainAvoidedHoldingUnknown: holdingGains?.unknown ?? null,
     basisImplausible,
     basisUnestablished,
     flaggedLots,
@@ -739,6 +828,16 @@ export function getGivingView(db: Database.Database): {
       const gainAvoided = anyMissingBasis
         ? null
         : counted.reduce((sum, gd) => sum + (gd.gainAvoided ?? 0), 0);
+      // The holding-period split sums the SAME counted rows' own split
+      // figures, so the three add up to `gainAvoided` (owner ruling 14).
+      const sumSplit = (pick: (gd: GivingDonation) => number | null) =>
+        anyMissingBasis ? null : counted.reduce((sum, gd) => sum + (pick(gd) ?? 0), 0);
+      const gainAvoidedRowsWithShortTerm = counted.filter(
+        (gd) => (gd.shortTermQuantity ?? 0) > QUANTITY_EPS
+      ).length;
+      const gainAvoidedRowsHoldingUnknown = counted.filter(
+        (gd) => Math.abs(gd.gainAvoidedHoldingUnknown ?? 0) >= HALF_CENT
+      ).length;
       return {
         year,
         totalGiven,
@@ -748,6 +847,11 @@ export function getGivingView(db: Database.Database): {
         gainAvoidedRowsLeftOut,
         gainAvoidedRowsCounted: counted.length,
         gainAvoidedRowsUnsupported,
+        gainAvoidedLongTerm: sumSplit((gd) => gd.gainAvoidedLongTerm),
+        gainAvoidedShortTerm: sumSplit((gd) => gd.gainAvoidedShortTerm),
+        gainAvoidedHoldingUnknown: sumSplit((gd) => gd.gainAvoidedHoldingUnknown),
+        gainAvoidedRowsWithShortTerm,
+        gainAvoidedRowsHoldingUnknown,
         donations: yearDonations,
       };
     });
