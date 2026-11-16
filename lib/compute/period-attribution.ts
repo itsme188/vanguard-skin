@@ -6,6 +6,8 @@ import { getUsdPerUnit } from "@/lib/queries/fx-rates";
 import { accountScopeAndSql } from "@/lib/queries/account-scope-sql";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 import { adjustedMarketValueSQL } from "@/lib/valuation";
+import { statementSourcedHoldingSql } from "@/lib/db/holding-sources";
+import { isCashEquivalentSecurity } from "@/lib/compute/cash-equivalents";
 
 /**
  * Scope for attribution: a single account id, an explicit id set, or
@@ -216,13 +218,119 @@ const MAX_PRICE_AGE_DAYS = MAX_RETURN_GAP_DAYS;
 
 /** Why the contributors / detractors / sector lists are empty, when they are. */
 export type PositionsEmptyReason =
-  /** No scoped account has a position snapshot at the start. */
+  /** No scoped account has a position snapshot at the start (or it holds nothing but cash). */
   | "no_positions_at_start"
   /** A scoped account held value at the start but no position snapshot of it is on file then. */
-  | "accounts_missing_at_start";
+  | "accounts_missing_at_start"
+  /**
+   * A position snapshot is on file, but it holds no long stock, ETF or fund:
+   * only options, bonds or shorts, which this card does not weight.
+   */
+  | "no_eligible_positions_at_start"
+  /** Long stocks, ETFs or funds were held, but none has a close within a week before the start. */
+  | "no_start_price"
+  /** Start positions were priced, but none has a close within a week before the end. */
+  | "no_end_price";
+
+/** Security types the card weights (long positions only; see the query below). */
+const ELIGIBLE_TYPE_SQL = "LOWER(s.security_type) IN ('stock', 'etf', 'common stock', 'mutual fund')";
+
+/**
+ * Positions a newer book of the same account no longer holds, as of the
+ * start: the as-of mirror of reconcileClosedEquityHoldings
+ * (lib/mutations/closed-equity.ts), for a position sold with no tombstone
+ * on file. Keys are `account:security`. Per account, reading only rows on or
+ * before the start:
+ *   1. the newest STATEMENT book (statementSourcedHoldingSql) is complete for
+ *      every type: a pair whose latest row predates it is closed;
+ *   2. the newest book of ANY source is complete for stocks and ETFs only (a
+ *      live source omits bonds and funds, so it never closes them);
+ * cash equivalents are never closed; and neither rule applies when its book
+ * holds fewer than half the positions of the book before it (the reconciler's
+ * shrink guard: a partial sync or an under-read statement). Options are not
+ * weighted here, so the reconciler's option pass has no mirror.
+ */
+const BOOK_SHRINK_FLOOR = 0.5;
+
+function retiredPairsAsOf(db: Database.Database, accountIds: number[], startDate: string): string[] {
+  if (accountIds.length === 0) return [];
+  // One pass over each account's books on or before the start: per book
+  // date, how many open positions it lists in all, from a statement, and in
+  // stocks/ETFs. The newest book, the book before it and the statement books
+  // are then read off this list (the reconciler's own counts and dates).
+  const stmtSql = statementSourcedHoldingSql("h.source_key");
+  const equityTypeSql = "LOWER(s.security_type) IN ('stock', 'etf')";
+  const books = db
+    .prepare(
+      `SELECT h.account_id, h.as_of_date AS d,
+              SUM(CASE WHEN h.quantity != 0 THEN 1 ELSE 0 END) AS open_all,
+              SUM(CASE WHEN h.quantity != 0 AND ${stmtSql} THEN 1 ELSE 0 END) AS open_stmt,
+              SUM(CASE WHEN ${stmtSql} THEN 1 ELSE 0 END) AS stmt_rows,
+              SUM(CASE WHEN h.quantity != 0 AND ${equityTypeSql} THEN 1 ELSE 0 END) AS open_equity
+         FROM holdings h
+         JOIN securities s ON s.id = h.security_id
+        WHERE h.as_of_date <= ? AND h.account_id IN (${accountIds.map(() => "?").join(",")})
+        GROUP BY h.account_id, h.as_of_date
+        ORDER BY h.account_id, h.as_of_date DESC`,
+    )
+    .all(startDate, ...accountIds) as Array<{
+    account_id: number;
+    d: string;
+    open_all: number;
+    open_stmt: number;
+    stmt_rows: number;
+    open_equity: number;
+  }>;
+  // Open pairs of one account whose latest row on or before the start is
+  // dated before `?` (per pair: the derived latest row joined back on the
+  // pair's own security).
+  const stalePairs = (typeSql: string) =>
+    db.prepare(
+      `SELECT h.security_id, s.security_type, s.fund_category
+         FROM holdings h
+         JOIN (SELECT security_id, MAX(as_of_date) AS d FROM holdings
+                WHERE account_id = ? AND as_of_date <= ?
+                GROUP BY security_id) l ON l.security_id = h.security_id AND l.d = h.as_of_date
+         JOIN securities s ON s.id = h.security_id
+        WHERE h.account_id = ? AND l.d < ? AND h.quantity != 0 ${typeSql ? `AND ${typeSql}` : ""}`,
+    );
+  const anyStale = stalePairs("");
+  const equityStale = stalePairs(equityTypeSql);
+  const passes = (count: number, prior: number) => prior <= 0 || count >= prior * BOOK_SHRINK_FLOOR;
+  type Stale = { security_id: number; security_type: string | null; fund_category: string | null };
+
+  const retired = new Set<string>();
+  for (const accountId of accountIds) {
+    const retire = (rows: Stale[]) => {
+      for (const r of rows) if (!isCashEquivalentSecurity(r)) retired.add(`${accountId}:${r.security_id}`);
+    };
+    const own = books.filter((b) => b.account_id === accountId); // newest first
+    // 1. Statement book: complete for every type. Its shrink guard compares
+    //    statement with the PRIOR statement, never with a live book.
+    const stmtBooks = own.filter((b) => b.stmt_rows > 0);
+    if (stmtBooks.length > 0) {
+      const [newestStmt, priorStmt] = stmtBooks;
+      if (newestStmt.open_stmt > 0 && passes(newestStmt.open_stmt, priorStmt?.open_stmt ?? 0)) {
+        retire(anyStale.all(accountId, startDate, accountId, newestStmt.d) as Stale[]);
+      }
+    }
+    // 2. Newest book of any source: complete for stocks and ETFs, guarded
+    //    account-wide and for the equity class.
+    const [newest, before] = own;
+    if (!newest || newest.open_all === 0) continue;
+    if (!passes(newest.open_all, before?.open_all ?? 0)) continue;
+    if (!passes(newest.open_equity, before?.open_equity ?? 0)) continue;
+    retire(equityStale.all(accountId, startDate, accountId, newest.d) as Stale[]);
+  }
+  return [...retired];
+}
 
 export interface PositionsBasis {
-  /** Earliest position-snapshot date the start weights were read from, or null when none were. */
+  /**
+   * Earliest position-snapshot date the start weights were read from, or
+   * null when there is no snapshot. Set (with an emptyReason) when a book is
+   * on file but nothing in it could be weighted.
+   */
   asOf: string | null;
   /** Null when contributions were measured. */
   emptyReason: PositionsEmptyReason | null;
@@ -242,10 +350,10 @@ function computePerPositionContributions(
     throw new Error(`computePeriodAttribution: dates must match YYYY-MM-DD, got ${startDate} / ${endDate}`);
   }
   const bookFloor = addDays(startDate, -MAX_START_BOOK_AGE_DAYS);
-  const empty = (emptyReason: PositionsEmptyReason, missingAccounts: string[] = []) => ({
+  const empty = (emptyReason: PositionsEmptyReason, missingAccounts: string[] = [], asOf: string | null = null) => ({
     rows: [] as AttributionRow[],
     sectorMap: new Map<string, number>(),
-    basis: { asOf: null, emptyReason, missingAccounts },
+    basis: { asOf, emptyReason, missingAccounts },
   });
 
   // Per account in scope: the newest position snapshot on or before the start
@@ -276,6 +384,8 @@ function computePerPositionContributions(
   if (missingAccounts.length > 0) return empty("accounts_missing_at_start", missingAccounts);
   const bookAccounts = accounts.filter((a) => a.book_date !== null);
   if (bookAccounts.length === 0) return empty("no_positions_at_start");
+  /** Earliest book date the weights are read from. */
+  const bookAsOf = () => bookAccounts.map((a) => a.book_date as string).sort()[0];
 
   // The latest row per (account, security) on or before the start
   // (latestHoldingsPredicate with asOfDate; a quantity-0 tombstone as that
@@ -291,6 +401,37 @@ function computePerPositionContributions(
     asOfDate: startDate,
     accountFilter: bookScope.sql,
   });
+  // A pair a newer book of its account no longer holds is closed even with
+  // no tombstone on file (see retiredPairsAsOf).
+  const retired = JSON.stringify(retiredPairsAsOf(db, bookAccounts.map((a) => a.id), startDate));
+  const notRetiredSql = `NOT EXISTS (SELECT 1 FROM json_each(?) r WHERE r.value = h.account_id || ':' || h.security_id)`;
+
+  // Why the lists would be empty, measured before any price is read: the
+  // book holds nothing open at all (cash only), or nothing this card weights
+  // (only options, bonds or shorts).
+  const openPredicate = latestHoldingsPredicate({
+    keyBy: "account_security",
+    includeShorts: true,
+    asOfDate: startDate,
+    accountFilter: bookScope.sql,
+  });
+  const openBook = db
+    .prepare(
+      `SELECT COUNT(*) AS open_pairs,
+              (SELECT COUNT(*) FROM (
+                 SELECT h.security_id FROM holdings h JOIN securities s ON s.id = h.security_id
+                 WHERE ${predicate} AND h.as_of_date >= ? AND ${notRetiredSql} AND ${ELIGIBLE_TYPE_SQL}
+                 GROUP BY h.security_id HAVING SUM(h.quantity) > 0
+               )) AS eligible
+       FROM holdings h
+       WHERE ${openPredicate} AND h.as_of_date >= ? AND ${notRetiredSql}`,
+    )
+    .get(...bookScope.params, bookFloor, retired, ...bookScope.params, bookFloor, retired) as {
+    open_pairs: number;
+    eligible: number;
+  };
+  if (openBook.open_pairs === 0) return empty("no_positions_at_start");
+  if (openBook.eligible === 0) return empty("no_eligible_positions_at_start", [], bookAsOf());
   // GROUP BY security: the same symbol held in two scoped accounts is ONE
   // position with the combined quantity, not two duplicate rows. Prices are
   // the latest close on or before each end, never after it, and no older
@@ -300,7 +441,7 @@ function computePerPositionContributions(
       `WITH start_book AS (
          SELECT h.security_id, SUM(h.quantity) AS qty
          FROM holdings h
-         WHERE ${predicate} AND h.as_of_date >= ?
+         WHERE ${predicate} AND h.as_of_date >= ? AND ${notRetiredSql}
          GROUP BY h.security_id
        )
        SELECT
@@ -318,13 +459,14 @@ function computePerPositionContributions(
        LEFT JOIN prices pe ON pe.security_id = b.security_id
          AND pe.date = (SELECT MAX(p.date) FROM prices p
                         WHERE p.security_id = b.security_id AND p.date <= ? AND p.date >= ?)
-       WHERE LOWER(s.security_type) IN ('stock', 'etf', 'common stock', 'mutual fund')
+       WHERE ${ELIGIBLE_TYPE_SQL}
          AND b.qty > 0
          AND ps.close_price > 0`, // Sector contribution analysis is long-only; short positions excluded by design.
     )
     .all(
       ...bookScope.params,
       bookFloor,
+      retired,
       startDate,
       addDays(startDate, -MAX_PRICE_AGE_DAYS),
       endDate,
@@ -338,7 +480,7 @@ function computePerPositionContributions(
     sector: string;
   }>;
 
-  if (rows.length === 0) return empty("no_positions_at_start");
+  if (rows.length === 0) return empty("no_start_price", [], bookAsOf());
 
   // Per-holding $ WEIGHTS must be USD-comparable across securities — a raw
   // native-currency qty×price sum would let a KRW holding's won notional
@@ -365,13 +507,13 @@ function computePerPositionContributions(
     sectorMap.set(r.sector, (sectorMap.get(r.sector) ?? 0) + contribution);
   }
 
-  const asOf = bookAccounts.map((a) => a.book_date as string).sort()[0];
   return {
     rows: contributions,
     sectorMap,
     basis: {
-      asOf,
-      emptyReason: contributions.length === 0 ? "no_positions_at_start" : null,
+      asOf: bookAsOf(),
+      // Every priced start position lacks an end close within a week.
+      emptyReason: contributions.length === 0 ? "no_end_price" : null,
       missingAccounts: [],
     },
   };

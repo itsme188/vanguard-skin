@@ -17,6 +17,15 @@ function positionsEmptyText(attribution: PeriodAttribution, requestedStart: stri
   if (emptyReason === "accounts_missing_at_start") {
     return `No position snapshot is on file for ${missingAccounts.join(", ")} ${at}, so each holding's share of the scope at the start cannot be measured.`;
   }
+  if (emptyReason === "no_eligible_positions_at_start") {
+    return `The positions held ${at} include no long stocks, ETFs or funds. This card weights long positions only; shorts, options and bonds are not included.`;
+  }
+  if (emptyReason === "no_start_price") {
+    return `No closing price within a week before the start is on file for the stocks, ETFs and funds held ${at}, so their price change over the period cannot be measured.`;
+  }
+  if (emptyReason === "no_end_price") {
+    return `No closing price within a week before the end of the period is on file for the stocks, ETFs and funds held ${at}, so their price change over the period cannot be measured.`;
+  }
   return `No position snapshot is on file ${at}, so each holding's share at the start cannot be measured.`;
 }
 
@@ -57,7 +66,7 @@ export function PeriodAttributionSection({
         <EmptySection
           title="Period attribution"
           reason={positionsEmptyText(attribution, requestedStart)}
-          hint="Contributors, detractors and sectors are weighted from the holdings in force at the period start: the latest position snapshot on or before it, at most a month old."
+          hint="Contributors, detractors and sectors are weighted from the long stocks, ETFs and funds in force at the period start: the latest position snapshot on or before it, at most a month old."
         />
       )}
 
@@ -114,6 +123,7 @@ export function PeriodAttributionSection({
             <p className="text-xs text-ink-faint mt-3">
               Each holding is weighted by its share of the stocks, ETFs and funds held on{" "}
               {fmtDay(attribution.positionsBasis.asOf)}, times its price change over the period.
+              Long positions only; shorts, options and bonds are not included.
               Trades during the period are not included.
             </p>
           )}
