@@ -1,6 +1,6 @@
 import type Database from "better-sqlite3";
 import { accountScopeCondition } from "@/lib/queries/account-scope-sql";
-import { fetchAnchorSourceSeamDates } from "@/lib/compute/flow-adjusted";
+import { fetchAnchorSourceTransitionDates } from "@/lib/compute/flow-adjusted";
 import { onlyLiveSnapshotsSql } from "@/lib/db/live-sources";
 
 /**
@@ -481,7 +481,10 @@ export function collectSeamDatesByAccount(
 ): Map<number, string[]> {
   const map = new Map<number, string[]>();
   for (const id of accountIds) {
-    map.set(id, fetchAnchorSourceSeamDates(db, [id], "0000-00-00", "9999-12-31"));
+    // Cash keeps the ANY-source-change rule (2026-11-15): a step between a
+    // live anchor and a statement anchor changes what the cash column means,
+    // even where the return index no longer bridges that day.
+    map.set(id, fetchAnchorSourceTransitionDates(db, [id], "0000-00-00", "9999-12-31"));
   }
   return map;
 }

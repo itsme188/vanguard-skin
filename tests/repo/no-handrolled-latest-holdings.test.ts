@@ -461,7 +461,8 @@ function buildMarkerWindow(text: string, matchIndex: number, matchLength: number
   if (!span) {
     return text.slice(matchIndex, matchIndex + matchLength);
   }
-  let { start, end } = span;
+  const { start } = span;
+  let { end } = span;
   const after = text.slice(end, end + 50);
   if (JOIN_ALIAS_ON_RE.test(after)) {
     end = Math.min(text.length, end + onClauseLength(text.slice(end, end + JOIN_EXTENSION_CHARS)));
@@ -542,6 +543,12 @@ const ALLOWLIST: AllowlistEntry[] = [
     anchor: "SELECT MAX(as_of_date) as latest FROM holdings WHERE account_id = ?",
     justification:
       "getLatestHoldingsDate — returns a bare per-account max date for an 'as of' label. Grep-verified: it currently has no callers outside its own unit test (tests/queries/holdings.test.ts), so nothing today feeds it into a WHERE clause; if a caller is added, it must stay a display-only read, never a holdings row filter.",
+  },
+  {
+    file: "lib/compute/period-attribution.ts",
+    anchor: "SELECT MAX(h.as_of_date) FROM holdings h\n           WHERE h.account_id = a.id AND h.as_of_date <= ? AND h.as_of_date >= ?",
+    justification:
+      "computePeriodAttribution's per-account book_date — a presence check (did this account have any position snapshot in the 31 days up to the period start) and the date printed in the section caption. It never selects which holdings rows count: the start positions themselves come from latestHoldingsPredicate({ asOfDate }).",
   },
   {
     file: "lib/queries/dashboard.ts",
