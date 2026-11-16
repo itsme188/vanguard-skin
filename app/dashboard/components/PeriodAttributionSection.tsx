@@ -2,6 +2,23 @@ import { dataWindowNotice } from "@/lib/compute/data-window";
 import { dataWindowCoveredCaption } from "@/lib/compute/data-window-caption";
 import type { PeriodAttribution } from "@/lib/compute/period-attribution";
 import { Pct } from "@/lib/privacy/components";
+import { EmptySection } from "./EmptySection";
+
+function fmtDay(iso: string): string {
+  const [y, m, d] = iso.split("-");
+  const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  return `${months[parseInt(m, 10) - 1]} ${parseInt(d, 10)}, ${y}`;
+}
+
+/** Why the contributors / detractors / sector lists are empty, in the owner's words. */
+function positionsEmptyText(attribution: PeriodAttribution, requestedStart: string | undefined): string {
+  const at = requestedStart ? `on ${fmtDay(requestedStart)}` : "at the start of this period";
+  const { emptyReason, missingAccounts } = attribution.positionsBasis;
+  if (emptyReason === "accounts_missing_at_start") {
+    return `No position snapshot is on file for ${missingAccounts.join(", ")} ${at}, so each holding's share of the scope at the start cannot be measured.`;
+  }
+  return `No position snapshot is on file ${at}, so each holding's share at the start cannot be measured.`;
+}
 
 export function PeriodAttributionSection({
   attribution,
@@ -36,6 +53,14 @@ export function PeriodAttributionSection({
 
   return (
     <>
+      {!hasContribDetract && (
+        <EmptySection
+          title="Period attribution"
+          reason={positionsEmptyText(attribution, requestedStart)}
+          hint="Contributors, detractors and sectors are weighted from the holdings in force at the period start: the latest position snapshot on or before it, at most a month old."
+        />
+      )}
+
       {hasContribDetract && (
         <section className="rounded-xl bg-panel p-4 sm:p-5 card-elev">
           <h3 className="text-sm font-medium text-ink mb-3">Period attribution</h3>
@@ -85,6 +110,13 @@ export function PeriodAttributionSection({
               )}
             </div>
           </div>
+          {attribution.positionsBasis.asOf && (
+            <p className="text-xs text-ink-faint mt-3">
+              Each holding is weighted by its share of the stocks, ETFs and funds held on{" "}
+              {fmtDay(attribution.positionsBasis.asOf)}, times its price change over the period.
+              Trades during the period are not included.
+            </p>
+          )}
         </section>
       )}
 

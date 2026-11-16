@@ -1,8 +1,11 @@
 import type Database from "better-sqlite3";
-import { calendarDaysBetween } from "@/lib/calendar/date-utils";
+import { addDays, calendarDaysBetween } from "@/lib/calendar/date-utils";
 import { SIGNED_EXTERNAL_FLOW_SQL } from "@/lib/compute/flow-adjusted";
 import { getDailyValuationsForAccounts } from "@/lib/queries/daily-valuations";
 import { getUsdPerUnit } from "@/lib/queries/fx-rates";
+import { accountScopeAndSql } from "@/lib/queries/account-scope-sql";
+import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
+import { adjustedMarketValueSQL } from "@/lib/valuation";
 
 /**
  * Scope for attribution: a single account id, an explicit id set, or
@@ -64,6 +67,13 @@ export interface PeriodAttribution {
    * summed against the TWR tile. Null when no regression ran.
    */
   decomposedReturn: { portfolioReturn: number; observations: number } | null;
+  /**
+   * What the contributors / detractors / sector lists were weighted from:
+   * the position snapshot in force at the start (latest per account and
+   * security on or before it), or why there is none. The card renders the
+   * reason instead of vanishing.
+   */
+  positionsBasis: PositionsBasis;
 }
 
 // ─── Local beta regression ────────────────────────────────────────────────────
@@ -191,43 +201,144 @@ function computeBetaForPeriod(
 
 // ─── Per-position contributions ───────────────────────────────────────────────
 
+/**
+ * How old the start book may be. The start dates this card is handed are a
+ * January 1 or a statement month-end, so the book in force is the statement
+ * on or just before it; one statement cycle of slack covers a month whose
+ * statement is missing. Anything older is not "the positions at the start".
+ */
+const MAX_START_BOOK_AGE_DAYS = 31;
+/**
+ * How old a close may be and still stand for the start or end date: a weekend
+ * or holiday at either end, the same bound as the return-gap guard above.
+ */
+const MAX_PRICE_AGE_DAYS = MAX_RETURN_GAP_DAYS;
+
+/** Why the contributors / detractors / sector lists are empty, when they are. */
+export type PositionsEmptyReason =
+  /** No scoped account has a position snapshot at the start. */
+  | "no_positions_at_start"
+  /** A scoped account held value at the start but no position snapshot of it is on file then. */
+  | "accounts_missing_at_start";
+
+export interface PositionsBasis {
+  /** Earliest position-snapshot date the start weights were read from, or null when none were. */
+  asOf: string | null;
+  /** Null when contributions were measured. */
+  emptyReason: PositionsEmptyReason | null;
+  /** Scoped accounts that held value at the start with no position snapshot then. */
+  missingAccounts: string[];
+}
+
 function computePerPositionContributions(
   db: Database.Database,
   accountIds: number[] | undefined,
   startDate: string,
   endDate: string,
-): { rows: AttributionRow[]; sectorMap: Map<string, number> } {
-  const acctFilter = accountFilter(accountIds, "hs.account_id");
+): { rows: AttributionRow[]; sectorMap: Map<string, number>; basis: PositionsBasis } {
+  // Validated: the as-of dates are inlined as literals by
+  // latestHoldingsPredicate (its own pattern), so they must be plain dates.
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(startDate) || !/^\d{4}-\d{2}-\d{2}$/.test(endDate)) {
+    throw new Error(`computePeriodAttribution: dates must match YYYY-MM-DD, got ${startDate} / ${endDate}`);
+  }
+  const bookFloor = addDays(startDate, -MAX_START_BOOK_AGE_DAYS);
+  const empty = (emptyReason: PositionsEmptyReason, missingAccounts: string[] = []) => ({
+    rows: [] as AttributionRow[],
+    sectorMap: new Map<string, number>(),
+    basis: { asOf: null, emptyReason, missingAccounts },
+  });
+
+  // Per account in scope: the newest position snapshot on or before the start
+  // (no look-ahead), and whether the account held value then (a statement
+  // month-end inside the same window with a positive total). An account that
+  // had money but no book cannot be weighted, and weighting the rest of the
+  // scope without it would present a part of the scope as the whole.
+  const scopeSql = accountScopeAndSql(accountIds, "a.id");
+  const accounts = db
+    .prepare(
+      `SELECT a.id, a.name,
+         (SELECT MAX(h.as_of_date) FROM holdings h
+           WHERE h.account_id = a.id AND h.as_of_date <= ? AND h.as_of_date >= ?) AS book_date,
+         EXISTS (SELECT 1 FROM monthly_snapshots ms
+           WHERE ms.account_id = a.id AND ms.month_end_date <= ? AND ms.month_end_date >= ?
+             AND ms.total_value > 0) AS had_value
+       FROM accounts a
+       WHERE 1 = 1 ${scopeSql.sql}
+       ORDER BY a.id`,
+    )
+    .all(startDate, bookFloor, startDate, bookFloor, ...scopeSql.params) as Array<{
+    id: number;
+    name: string;
+    book_date: string | null;
+    had_value: number;
+  }>;
+  const missingAccounts = accounts.filter((a) => a.book_date === null && a.had_value === 1).map((a) => a.name);
+  if (missingAccounts.length > 0) return empty("accounts_missing_at_start", missingAccounts);
+  const bookAccounts = accounts.filter((a) => a.book_date !== null);
+  if (bookAccounts.length === 0) return empty("no_positions_at_start");
+
+  // The latest row per (account, security) on or before the start
+  // (latestHoldingsPredicate with asOfDate; a quantity-0 tombstone as that
+  // row closes the position), inside the same age window so a sold position
+  // with no tombstone is not carried forward from an old book.
+  const bookScope = accountScopeAndSql(
+    bookAccounts.map((a) => a.id),
+    "h.account_id",
+  );
+  const predicate = latestHoldingsPredicate({
+    keyBy: "account_security",
+    includeShorts: false, // long-only by design (see below)
+    asOfDate: startDate,
+    accountFilter: bookScope.sql,
+  });
   // GROUP BY security: the same symbol held in two scoped accounts is ONE
-  // position with the combined quantity, not two duplicate rows.
+  // position with the combined quantity, not two duplicate rows. Prices are
+  // the latest close on or before each end, never after it, and no older
+  // than a weekend or holiday.
   const rows = db
     .prepare(
-      `SELECT
+      `WITH start_book AS (
+         SELECT h.security_id, SUM(h.quantity) AS qty
+         FROM holdings h
+         WHERE ${predicate} AND h.as_of_date >= ?
+         GROUP BY h.security_id
+       )
+       SELECT
          s.symbol,
-         SUM(hs.quantity) AS qty,
+         ${adjustedMarketValueSQL("b.qty", "ps.close_price", "s.security_type", "s.multiplier")} AS start_value_native,
          ps.close_price AS start_price,
          pe.close_price AS end_price,
          s.currency,
          COALESCE(s.sector, 'Unclassified') AS sector
-       FROM holdings hs
-       JOIN securities s ON s.id = hs.security_id
-       JOIN prices ps ON ps.security_id = hs.security_id AND ps.date = ?
-       LEFT JOIN prices pe ON pe.security_id = hs.security_id AND pe.date = ?
-       WHERE hs.as_of_date = ?${acctFilter.sql}
-         AND LOWER(s.security_type) IN ('stock', 'etf', 'common stock', 'mutual fund')
-         AND hs.quantity > 0
-       GROUP BY s.id`, // Sector contribution analysis is long-only; short positions excluded by design.
+       FROM start_book b
+       JOIN securities s ON s.id = b.security_id
+       JOIN prices ps ON ps.security_id = b.security_id
+         AND ps.date = (SELECT MAX(p.date) FROM prices p
+                        WHERE p.security_id = b.security_id AND p.date <= ? AND p.date >= ?)
+       LEFT JOIN prices pe ON pe.security_id = b.security_id
+         AND pe.date = (SELECT MAX(p.date) FROM prices p
+                        WHERE p.security_id = b.security_id AND p.date <= ? AND p.date >= ?)
+       WHERE LOWER(s.security_type) IN ('stock', 'etf', 'common stock', 'mutual fund')
+         AND b.qty > 0
+         AND ps.close_price > 0`, // Sector contribution analysis is long-only; short positions excluded by design.
     )
-    .all(startDate, endDate, startDate, ...acctFilter.params) as Array<{
+    .all(
+      ...bookScope.params,
+      bookFloor,
+      startDate,
+      addDays(startDate, -MAX_PRICE_AGE_DAYS),
+      endDate,
+      addDays(endDate, -MAX_PRICE_AGE_DAYS),
+    ) as Array<{
     symbol: string;
-    qty: number;
+    start_value_native: number;
     start_price: number;
     end_price: number | null;
     currency: string | null;
     sector: string;
   }>;
 
-  if (rows.length === 0) return { rows: [], sectorMap: new Map() };
+  if (rows.length === 0) return empty("no_positions_at_start");
 
   // Per-holding $ WEIGHTS must be USD-comparable across securities — a raw
   // native-currency qty×price sum would let a KRW holding's won notional
@@ -236,17 +347,17 @@ function computePerPositionContributions(
   // (a ratio of two same-currency prices) and stays unconverted.
   const usdPerUnitFor = (currency: string | null) => getUsdPerUnit(db, currency);
   const totalStartValue = rows.reduce(
-    (s, r) => s + r.qty * r.start_price * usdPerUnitFor(r.currency),
+    (s, r) => s + r.start_value_native * usdPerUnitFor(r.currency),
     0,
   );
-  if (totalStartValue === 0) return { rows: [], sectorMap: new Map() };
+  if (totalStartValue === 0) return empty("no_positions_at_start");
 
   const contributions: AttributionRow[] = [];
   const sectorMap = new Map<string, number>();
 
   for (const r of rows) {
     if (r.end_price == null) continue;
-    const startValueUsd = r.qty * r.start_price * usdPerUnitFor(r.currency);
+    const startValueUsd = r.start_value_native * usdPerUnitFor(r.currency);
     const startWeight = startValueUsd / totalStartValue;
     const positionReturn = (r.end_price - r.start_price) / r.start_price;
     const contribution = startWeight * positionReturn;
@@ -254,7 +365,16 @@ function computePerPositionContributions(
     sectorMap.set(r.sector, (sectorMap.get(r.sector) ?? 0) + contribution);
   }
 
-  return { rows: contributions, sectorMap };
+  const asOf = bookAccounts.map((a) => a.book_date as string).sort()[0];
+  return {
+    rows: contributions,
+    sectorMap,
+    basis: {
+      asOf,
+      emptyReason: contributions.length === 0 ? "no_positions_at_start" : null,
+      missingAccounts: [],
+    },
+  };
 }
 
 // ─── Public API ───────────────────────────────────────────────────────────────
@@ -278,9 +398,10 @@ export function computePeriodAttribution(
       betaVsAlpha: { betaContribution: 0, alphaContribution: 0 },
       betaWindow: null,
       decomposedReturn: null,
+      positionsBasis: { asOf: null, emptyReason: "no_positions_at_start", missingAccounts: [] },
     };
   }
-  const { rows, sectorMap } = computePerPositionContributions(
+  const { rows, sectorMap, basis: positionsBasis } = computePerPositionContributions(
     db,
     accountIds,
     startDate,
@@ -302,8 +423,9 @@ export function computePeriodAttribution(
 
   // Decompose the PORTFOLIO's period return (from the daily-valuation series —
   // the same series the beta regression runs on), never the sum of per-position
-  // contributions: those require holdings + prices at exactly startDate and are
-  // routinely empty, which made alpha ≡ −betaContribution (the 2026-06-10 bug).
+  // contributions: those cover only the long equity and fund book held at the
+  // start and can be empty, which made alpha ≡ −betaContribution (the
+  // 2026-06-10 bug).
   let betaContribution = 0;
   let alphaContribution = 0;
   let betaWindow: PeriodAttribution["betaWindow"] = null;
@@ -323,5 +445,6 @@ export function computePeriodAttribution(
     betaVsAlpha: { betaContribution, alphaContribution },
     betaWindow,
     decomposedReturn,
+    positionsBasis,
   };
 }
