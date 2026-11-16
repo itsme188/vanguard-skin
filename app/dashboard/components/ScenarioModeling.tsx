@@ -736,6 +736,9 @@ export function ScenarioModelingCard({ scope }: { scope?: string }) {
                 placeholder="0"
                 className="bg-raised border border-edge rounded-lg px-3 py-1.5 text-sm text-ink font-mono w-24 focus-ring"
               />
+              <p className="text-[11px] text-ink-faint mt-1">
+                Bonds move by their duration; stocks and stock funds by their rate sensitivity, the same rule as the +25bp preset. Added to the market move.
+              </p>
             </div>
 
             {/* Volatility change */}

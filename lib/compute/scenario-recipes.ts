@@ -193,6 +193,15 @@ export interface ScenarioRecipe {
   liveNowReason?: string;
 }
 
+/**
+ * Owner ruling 2026-11-15, appended to every methodology so the string stays
+ * true to the math (recipeEquityMove caps a fund's subject multiplier at 1.0).
+ */
+const FUND_SUBJECT_NOTE =
+  " A fund on the subject path (and an option on one) is never scaled past the headline: a fund " +
+  "that IS the subject (its fund category, sector or domicile) moves exactly the headline, and an " +
+  "option on it is repriced off that move. Only single names move further on their factor buckets.";
+
 export const SCENARIO_RECIPES: ScenarioRecipe[] = [
   {
     id: "rate_shock_up_25bp",
@@ -225,7 +234,8 @@ export const SCENARIO_RECIPES: ScenarioRecipe[] = [
       "cannot be derived is left out of the rate move and counted. A bond fund with no stored " +
       "duration uses 5 years. Options: inherit the underlying's rate " +
       "exposure, repriced with Black-Scholes at the shocked price of the underlying, volatility held at today's level; an option that cannot be priced is left out and counted. " +
-      "Calibrated to typical 25bp surprise-day historical reaction.",
+      "Calibrated to typical 25bp surprise-day historical reaction." +
+      FUND_SUBJECT_NOTE,
   },
   {
     id: "usd_strength_5pct",
@@ -247,7 +257,8 @@ export const SCENARIO_RECIPES: ScenarioRecipe[] = [
       "higher, OR a non-US geography / non-USD listing — the structural test catches the ADRs the " +
       "factor pass missed. Subject P&L = position_value × -5% × max(1.0, international bucket). " +
       "Domestic names take the spillover leg — 10% of the shock scaled by their own international " +
-      "bucket — so a domestic-only name is close to flat.",
+      "bucket — so a domestic-only name is close to flat." +
+      FUND_SUBJECT_NOTE,
   },
   {
     id: "tariff_escalation_10pt",
@@ -269,7 +280,8 @@ export const SCENARIO_RECIPES: ScenarioRecipe[] = [
       "position_value × -8% × max(0.5, tariff bucket - 0.4 × onshoring bucket), so reshoring " +
       "beneficiaries keep their offset inside the subject cohort. Non-subject names take the " +
       "spillover leg — 25% of the shock scaled by that same capped blend — which leaves a pure " +
-      "onshoring beneficiary with a small lift.",
+      "onshoring beneficiary with a small lift." +
+      FUND_SUBJECT_NOTE,
   },
   {
     id: "ai_capex_pause",
@@ -292,7 +304,8 @@ export const SCENARIO_RECIPES: ScenarioRecipe[] = [
       "fund-category members. Subject P&L = position_value × -15% × max(membership floor, ai bucket) " +
       "— Very-High names take ≈ -21%. Everything else takes the spillover leg: 20% of the shock " +
       "scaled by its own AI bucket, so a book with no AI story barely moves. Calibrated to an " +
-      "NDX-95 analog: AI-pure names dropped ~20% over 2 weeks.",
+      "NDX-95 analog: AI-pure names dropped ~20% over 2 weeks." +
+      FUND_SUBJECT_NOTE,
   },
   {
     id: "oil_shock_10dollar",
@@ -322,7 +335,8 @@ export const SCENARIO_RECIPES: ScenarioRecipe[] = [
       "move, ≈ -4%) scaled by its cyclicality bucket, so defensives drift up slightly while " +
       "Very-High cyclicals take the full drag. Sector floors apply worse-of: Utilities -4%, " +
       "Industrials -5%, Consumer Discretionary -6%. Calibrated to $10 Brent shock historical " +
-      "analogs (2018, 2022).",
+      "analogs (2018, 2022)." +
+      FUND_SUBJECT_NOTE,
   },
   {
     id: "semi_cycle_minus_15pct",
@@ -344,7 +358,8 @@ export const SCENARIO_RECIPES: ScenarioRecipe[] = [
       "the whole Technology sector). Subject P&L = position_value × -15% × max(1.0, tariff bucket + " +
       "0.6 × AI bucket). Non-semi names take the spillover leg (25% of the shock scaled by that " +
       "capped blend); the across-Tech floor of -10% then applies worse-of, deepening a mild result " +
-      "but never capping a semi's. Mid-cycle semi correction analog.",
+      "but never capping a semi's. Mid-cycle semi correction analog." +
+      FUND_SUBJECT_NOTE,
   },
   {
     id: "healthcare_reg_shock",
@@ -368,7 +383,8 @@ export const SCENARIO_RECIPES: ScenarioRecipe[] = [
       "position_value × -12% × max(1.0, regulatory_risk bucket), so a Very-High-regulatory " +
       "healthcare name takes ≈ -16.8% while an unclassified healthcare name still takes the full " +
       "-12%. Everything else takes the spillover leg: 15% of the shock scaled by its own regulatory " +
-      "bucket. Calibrated to a drug-pricing-headline day-of-news analog.",
+      "bucket. Calibrated to a drug-pricing-headline day-of-news analog." +
+      FUND_SUBJECT_NOTE,
   },
   {
     id: "crypto_minus_30pct",
@@ -390,7 +406,8 @@ export const SCENARIO_RECIPES: ScenarioRecipe[] = [
       "(crypto_adjacent Moderate or higher, or a crypto fund category). Subject P&L = " +
       "position_value × -30% × max(0.5, crypto bucket): Very-High names (miners, pure exchanges) " +
       "take ≈ -42%, Moderate exposure ≈ -15%. Everything else takes the spillover leg — 10% of the " +
-      "shock scaled by its own crypto bucket — so a book with no crypto exposure is untouched.",
+      "shock scaled by its own crypto bucket — so a book with no crypto exposure is untouched." +
+      FUND_SUBJECT_NOTE,
   },
 ];
 
@@ -456,7 +473,7 @@ function matchesAnySubstring(value: string | null, needles: string[] | undefined
   return needles.some((needle) => haystack.includes(needle.toLowerCase()));
 }
 
-function isForeignDomiciled(pos: RecipePositionRow): boolean {
+function isForeignDomiciled(pos: RecipeEquityInput): boolean {
   const currency = pos.currency?.trim().toUpperCase();
   if (currency && currency !== "USD") return true;
   const geography = pos.geography?.trim().toLowerCase();
@@ -469,7 +486,7 @@ function isForeignDomiciled(pos: RecipePositionRow): boolean {
  * when it is not a subject by any of them. Sector membership is decided per
  * look-through slice in computeRecipeScenario, not here.
  */
-function positionSubjectFloor(subject: ScenarioSubject, pos: RecipePositionRow): number | null {
+function positionSubjectFloor(subject: ScenarioSubject, pos: RecipeEquityInput): number | null {
   if (matchesAnySubstring(pos.industry, subject.industries)) return STRUCTURAL_SUBJECT_FLOOR;
   if (matchesAnySubstring(pos.fund_category, subject.fundCategories)) return STRUCTURAL_SUBJECT_FLOOR;
   if (subject.foreignDomiciled && isForeignDomiciled(pos)) return STRUCTURAL_SUBJECT_FLOOR;
@@ -490,13 +507,13 @@ function positionSubjectFloor(subject: ScenarioSubject, pos: RecipePositionRow):
  * only silences the second-order leg. Cash identity is single-sourced through
  * isCashEquivalentSecurity (never a hand-rolled money_market list).
  */
-function transmitsEquitySpillover(pos: RecipePositionRow): boolean {
+function transmitsEquitySpillover(pos: RecipeEquityInput): boolean {
   if (pos.security_type.toLowerCase() === "bond") return false;
   return !isCashEquivalentSecurity(pos);
 }
 
 /** Primary bucket + weighted secondary buckets — the position's factor blend. */
-function factorBlend(recipe: ScenarioRecipe, pos: RecipePositionRow): number {
+function factorBlend(recipe: ScenarioRecipe, pos: RecipeEquityInput): number {
   let total = bucketMultiplier(recipe.primaryFactor, pos[recipe.primaryFactor]);
   for (const [factor, weight] of Object.entries(recipe.factorMultipliers ?? {})) {
     if (!weight) continue;
@@ -525,6 +542,119 @@ function sectorFloorFor(
     if (sectorEquals(key, sector)) return value;
   }
   return undefined;
+}
+
+/**
+ * A fund, or an option on one. Owner ruling 2026-11-15: a fund that is the
+ * scenario's subject moves EXACTLY the headline (the fund that tracks the
+ * semis index falls what the index falls); only single names are scaled up
+ * past it by their factor buckets. An option inherits the rule from its
+ * underlying, so a put on the index fund reprices off the headline move.
+ */
+function isFundExposure(pos: Pick<RecipeEquityInput, "security_type" | "underlying_security_type">): boolean {
+  const own = pos.security_type.toLowerCase();
+  const type = isOptionSecurityType(pos.security_type) ? (pos.underlying_security_type ?? "").toLowerCase() : own;
+  return type === "etf" || type === "mutual fund";
+}
+
+/** The fields the equity path of a recipe reads. */
+export type RecipeEquityInput = Pick<
+  RecipePositionRow,
+  | "symbol"
+  | "security_type"
+  | "market_value"
+  | "sector"
+  | "industry"
+  | "fund_category"
+  | "geography"
+  | "currency"
+  | "underlying_security_type"
+  | FactorColumn
+>;
+
+/**
+ * The recipe's EQUITY path for one position (everything that is not cash, a
+ * rate hedge, or a bond priced off duration), before any leveraged-fund
+ * factor or option reprice. `shockMagnitude` defaults to the recipe's own
+ * headline; the custom engine passes a scaled one for its rate leg
+ * (customRateEquityLeg), so both engines run this one rule.
+ *
+ * Subject slices take `shock × max(membership floor, factor blend)`, except a
+ * fund (or an option on one), whose multiplier is capped at 1.0: a fund that
+ * IS the subject (structural floor 1.0) moves exactly the headline, and one
+ * that is a subject through a factor bucket never moves more than it.
+ * Everything else takes `shock × spillover × clamp(blend, ±1)`, then the
+ * recipe's sector floors apply worse-of per slice.
+ */
+export function recipeEquityMove(
+  recipe: ScenarioRecipe,
+  pos: RecipeEquityInput,
+  etfWeights: Map<string, Array<{ sector: string; weight_pct: number }>>,
+  shockMagnitude: number = recipe.shockMagnitude
+): { changePercent: number; subjectShare: number } {
+  const blend = factorBlend(recipe, pos);
+  const positionFloor = positionSubjectFloor(recipe.subject, pos);
+  const fundCap = isFundExposure(pos) ? STRUCTURAL_SUBJECT_FLOOR : Infinity;
+  // Per sector slice: a fund with cached weights can be part subject
+  // (its healthcare sleeve) and part spillover (everything else).
+  const parts = explodeHoldingBySector(pos.symbol, pos.security_type, pos.market_value, etfWeights, pos.sector);
+  const mv = pos.market_value || 1;
+  let weighted = 0;
+  let share = 0;
+  for (const part of parts) {
+    const weight = part.value / mv;
+    const sliceFloor = (recipe.subject.sectors ?? []).some((s) => sectorEquals(s, part.sector))
+      ? STRUCTURAL_SUBJECT_FLOOR
+      : positionFloor;
+    const raw =
+      sliceFloor != null
+        ? // SUBJECT path — the headline move, floored at membership and
+          // scaled up by the position's own factor buckets (a fund: never
+          // past the headline).
+          shockMagnitude * Math.min(fundCap, Math.max(sliceFloor, blend))
+        : // SPILLOVER path — an explicit fraction of the same move,
+          // scaled by the (capped) blend so unrelated names barely move,
+          // and silenced entirely for bonds / cash.
+          (transmitsEquitySpillover(pos)
+            ? shockMagnitude *
+              recipe.spillover *
+              Math.max(-SPILLOVER_INTENSITY_CAP, Math.min(SPILLOVER_INTENSITY_CAP, blend))
+            : 0);
+    // Sector floors belong to the recipe's own headline; a rescaled shock
+    // (the custom rate leg) scales them with it.
+    const floor = sectorFloorFor(recipe.sectorFloors, part.sector);
+    const scaledFloor =
+      floor == null || shockMagnitude === recipe.shockMagnitude || recipe.shockMagnitude === 0
+        ? floor
+        : (floor * shockMagnitude) / recipe.shockMagnitude;
+    weighted += weight * applySectorFloor(raw, scaledFloor);
+    if (sliceFloor != null) share += weight;
+  }
+  return { changePercent: weighted, subjectShare: share };
+}
+
+/** The rate recipe's move in basis points: its equity shock is -0.025 for +25bp, so bps = -shock × 1000. */
+export function recipeRateBps(recipe: ScenarioRecipe): number | null {
+  return recipe.category === "rate" ? -recipe.shockMagnitude * 1000 : null;
+}
+
+const RATE_RECIPE_ID = "rate_shock_up_25bp";
+
+/**
+ * Owner ruling 2026-11-15: a custom rate move gets the SAME equity rate leg
+ * the +25bp preset uses — the rate recipe's equity path, its shock scaled
+ * linearly by the custom move (+100bp = 4× the +25bp leg, -25bp the same leg
+ * with the sign flipped). The custom engine ADDS it to its market leg; bonds
+ * and bond funds priced off duration never take it.
+ */
+export function customRateEquityLeg(
+  pos: RecipeEquityInput,
+  rateBps: number,
+  etfWeights: Map<string, Array<{ sector: string; weight_pct: number }>>
+): number {
+  const recipe = findRecipe(RATE_RECIPE_ID)!;
+  const presetBps = recipeRateBps(recipe)!;
+  return recipeEquityMove(recipe, pos, etfWeights, (recipe.shockMagnitude * rateBps) / presetBps).changePercent;
 }
 
 /**
@@ -637,7 +767,7 @@ ${OPTION_PRICING_JOINS_SQL}
   const runNow = new Date();
   // The rate recipe's shock is the equity-side impact of its rate move
   // (-0.025 for +25bp), so the move in basis points is -shock x 1000.
-  const rateBps = recipe.category === "rate" ? -recipe.shockMagnitude * 1000 : null;
+  const rateBps = recipeRateBps(recipe);
   const movesRates = scenarioMovesRates({ rateMove: rateBps, primaryFactor: recipe.primaryFactor });
 
   const impacts: PositionImpact[] = positions.map((pos): PositionImpact => {
@@ -679,9 +809,6 @@ ${OPTION_PRICING_JOINS_SQL}
         leveragedFundUnmodelled: true,
       };
     }
-    const blend = factorBlend(recipe, pos);
-    const positionFloor = positionSubjectFloor(recipe.subject, pos);
-
     let changePercent: number;
     let subjectShare: number;
     // A fund built to gain when rates rise: its "High" rate bucket would make
@@ -731,41 +858,9 @@ ${OPTION_PRICING_JOINS_SQL}
       changePercent = bondLeg.changePercent;
       subjectShare = bondLeg.unmodelledReason ? 0 : 1;
     } else {
-      // Per sector slice: a fund with cached weights can be part subject
-      // (its healthcare sleeve) and part spillover (everything else).
-      const parts = explodeHoldingBySector(
-        pos.symbol,
-        pos.security_type,
-        pos.market_value,
-        etfWeights,
-        pos.sector
-      );
-      const mv = pos.market_value || 1;
-      let weighted = 0;
-      let share = 0;
-      for (const part of parts) {
-        const weight = part.value / mv;
-        const sliceFloor = (recipe.subject.sectors ?? []).some((s) => sectorEquals(s, part.sector))
-          ? STRUCTURAL_SUBJECT_FLOOR
-          : positionFloor;
-        const raw =
-          sliceFloor != null
-            ? // SUBJECT path — the headline move, floored at membership and
-              // scaled up by the position's own factor buckets.
-              recipe.shockMagnitude * Math.max(sliceFloor, blend)
-            : // SPILLOVER path — an explicit fraction of the same move,
-              // scaled by the (capped) blend so unrelated names barely move,
-              // and silenced entirely for bonds / cash.
-              (transmitsEquitySpillover(pos)
-                ? recipe.shockMagnitude *
-                  recipe.spillover *
-                  Math.max(-SPILLOVER_INTENSITY_CAP, Math.min(SPILLOVER_INTENSITY_CAP, blend))
-                : 0);
-        weighted += weight * applySectorFloor(raw, sectorFloorFor(recipe.sectorFloors, part.sector));
-        if (sliceFloor != null) share += weight;
-      }
-      changePercent = weighted;
-      subjectShare = share;
+      const equity = recipeEquityMove(recipe, pos, etfWeights);
+      changePercent = equity.changePercent;
+      subjectShare = equity.subjectShare;
     }
 
     // A leveraged or inverse fund's own move is its index's move times its

@@ -167,7 +167,12 @@ describe("both scenario engines: a mislabelled fund is never marked down by 5 ye
     ["rate preset", computeScenario(db, PRESET_SCENARIOS.find((p) => p.id === RATE_PRESET)!), 25],
   ];
 
-  it("custom engine: the real bond fund moves on the default; the three others add nothing and carry a reason", () => {
+  // Owner ruling 2026-11-15 (unit K3) gave the custom rate move the preset's
+  // equity rate leg, so the custom engine now treats an equity-evidence fund
+  // the way the preset does (unit N3, below): an equity position on the rate
+  // recipe's equity path, not a fund left out. With no factor rows here that
+  // path adds nothing. The unconfirmed fund stays out and counted.
+  it("custom engine: the real bond fund moves on the default; equity-evidence funds take the equity path; the unconfirmed one stays out", () => {
     const [label, res, bps] = runs()[0];
     const real = rowOf(res, REAL);
     expect(real.rateDurationSource, label).toBe("fund-default");
@@ -175,8 +180,8 @@ describe("both scenario engines: a mislabelled fund is never marked down by 5 ye
     expect(real.bondUnmodelledReason, label).toBeUndefined();
 
     for (const [id, reason] of [
-      [EQUITY_SECTOR, "fund-equity-evidence"],
-      [EQUITY_NAME, "fund-equity-evidence"],
+      [EQUITY_SECTOR, undefined],
+      [EQUITY_NAME, undefined],
       [UNKNOWN_CATEGORY, "fund-category-unconfirmed"],
     ] as const) {
       const row = rowOf(res, id);
@@ -186,8 +191,8 @@ describe("both scenario engines: a mislabelled fund is never marked down by 5 ye
       expect(row.rateDurationYears, `${label} ${id}`).toBeUndefined();
       expect(row.rateDurationSource, `${label} ${id}`).toBeUndefined();
     }
-    expect(res.bondsUnmodelled, label).toEqual({ count: 0, valueShare: 0, fundCount: 3 });
-    // Only the real fund's 10,000 moves (no market move in this run).
+    expect(res.bondsUnmodelled, label).toEqual({ count: 0, valueShare: 0, fundCount: 1 });
+    // Only the real fund's 10,000 moves (no market move, no factor rows).
     expect(res.estimatedChange, label).toBeCloseTo(10_000 * (Math.exp(-5 * (bps / 10000)) - 1), 8);
   });
 

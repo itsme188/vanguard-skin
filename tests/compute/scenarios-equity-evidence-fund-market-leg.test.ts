@@ -98,7 +98,10 @@ describe("custom scenario: an equity-evidence fund takes the market move", () =>
   it("market and rate together: the equity-evidence fund takes the market move and still no duration", () => {
     const res = run(-0.2, 200);
     const f1 = rowOf(res, F1);
-    expect(f1.bondUnmodelledReason).toBe("fund-equity-evidence");
+    // Since the owner ruling of 2026-11-15 a custom rate move gives such a
+    // fund the preset's equity rate leg (as the preset already did), so it is
+    // modelled and no longer reported as a fund left out.
+    expect(f1.bondUnmodelledReason).toBeUndefined();
     expect(f1.rateDurationYears).toBeUndefined();
     expect(f1.changePercent).toBeCloseTo(rowOf(res, PLAIN_SECTOR).changePercent, 12);
     expect(f1.estimatedChange).toBeCloseTo(-2000, 6);

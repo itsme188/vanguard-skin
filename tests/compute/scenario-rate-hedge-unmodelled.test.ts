@@ -137,7 +137,11 @@ describe("scenario engines: a rate hedge fund is not modelled under a rate move"
     expect(hedge.estimatedChange).toBe(0);
     expect(hedge.rateHedgeUnmodelled).toBe(true);
     expect(res.rateHedgesUnmodelled).toEqual({ count: 1, valueShare: 0.5, symbols: ["RHDG"] });
-    // The equity keeps its market leg (Technology 1.15 x -5%).
-    expect(rowOf(res, EQUITY).changePercent).toBeCloseTo(-0.05 * 1.15, 12);
+    // The equity keeps its market leg (Technology 1.15 x -5%) and, since the
+    // owner ruling of 2026-11-15, adds the rate leg the same +100bp gives it
+    // on its own (the preset's equity rate rule, scaled).
+    const rateOnly = computeScenario(db, { id: "custom", name: "c", description: "", category: "custom", marketMove: 0, rateMove: 100 });
+    expect(rowOf(res, EQUITY).changePercent).toBeCloseTo(-0.05 * 1.15 + rowOf(rateOnly, EQUITY).changePercent, 12);
+    expect(rowOf(rateOnly, HEDGE).changePercent).toBe(0);
   });
 });
