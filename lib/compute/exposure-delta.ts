@@ -452,6 +452,13 @@ function quantityForUsd(
   return usd / marketValue(1, price, securityType, multiplier, usdPerUnit);
 }
 
+/**
+ * A sell that leaves a long within this fraction of its starting quantity
+ * (either side of zero) closed it: selling exactly a position's value can
+ * land a hair under zero through float rounding, which is not a cap.
+ */
+const SELL_CLOSE_RELATIVE_TOLERANCE = 1e-9;
+
 function applyLegs(
   db: Database.Database,
   current: HoldingRow[],
@@ -488,9 +495,21 @@ function applyLegs(
       // exactly leg.dollarAmount USD, not leg.dollarAmount * usdPerUnit.
       const usdPerUnit = getUsdPerUnit(db, h.currency) || 1;
       const shares = quantityForUsd(leg.dollarAmount, h.price, h.securityType, h.multiplier, usdPerUnit);
+      // A unit worth nothing (multiplier 0) makes the quantity infinite.
+      if (!Number.isFinite(shares)) {
+        dropped.push({ symbol: upper, reason: "invalid_amount" });
+        continue;
+      }
       const delta = leg.action === "buy" ? shares : -shares;
       const prevQuantity = h.quantity;
       h.quantity += delta;
+      if (
+        leg.action === "sell" &&
+        prevQuantity > 0 &&
+        Math.abs(h.quantity) <= SELL_CLOSE_RELATIVE_TOLERANCE * prevQuantity
+      ) {
+        h.quantity = 0;
+      }
       // A sell on a LONG clamps at zero (no synthetic short). Shorts are
       // untouched: a buy covers (and may cross into long), a sell adds to
       // the short — never zero an existing short via the clamp.
@@ -526,6 +545,10 @@ function applyLegs(
       // option branch is needed here.
       const usdPerUnit = getUsdPerUnit(db, synth.currency) || 1;
       const shares = quantityForUsd(leg.dollarAmount, synth.price, synth.securityType, synth.multiplier, usdPerUnit);
+      if (!Number.isFinite(shares)) {
+        dropped.push({ symbol: upper, reason: "invalid_amount" });
+        continue;
+      }
       const row: HoldingRow = {
         ...synth,
         quantity: shares,
