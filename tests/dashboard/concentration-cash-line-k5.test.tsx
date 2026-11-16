@@ -45,8 +45,10 @@ function concentration(over: Partial<ConcentrationMetrics> = {}): ConcentrationM
   return {
     hhi: 0.05,
     effective_positions: 20,
+    invested_hhi: 0.2,
     top_positions: [{ symbol: "ZZA", security_name: "ZZA Test", market_value: 1_000, weight_pct: 10 }],
     cash: { market_value: 5_000, weight_pct: 50, holding_count: 1 },
+    negative_cash: { market_value: 0, holding_count: 0 },
     warnings: [],
     ...over,
   };
@@ -90,8 +92,10 @@ describe("Concentration Metrics card: cash and equivalents", () => {
       concentration({
         hhi: 0,
         effective_positions: 0,
+        invested_hhi: 0,
         top_positions: [],
         cash: { market_value: 5_000, weight_pct: 100, holding_count: 2 },
+        negative_cash: { market_value: 0, holding_count: 0 },
       }),
     );
     expect(html).toContain("Everything in this scope is held as cash");

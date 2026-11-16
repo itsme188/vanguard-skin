@@ -106,6 +106,10 @@ export interface PortfolioRiskMetrics {
   cashWeight: number;
   cashMarketValue: number;
   cashHoldingCount: number;
+  /** Invested-only Herfindahl, cash left out (see ConcentrationResult). */
+  investedHerfindahl: number | null;
+  /** Borrowed cash (see ConcentrationResult). */
+  negativeCashHoldingCount: number;
   dataPoints: number; // number of daily valuations used
   /** Anchor-source seam days bridged out of the return stream (see
    *  fetchAnchorSourceSeamDates) — 0 on seam-free series. Quantifies
@@ -344,6 +348,8 @@ export function computeRiskMetrics(
     cashWeight,
     cashMarketValue,
     cashHoldingCount,
+    investedHerfindahl,
+    negativeCashHoldingCount,
   } = computeConcentration(db, accountIds, options?.asOfDate);
 
   return {
@@ -359,6 +365,8 @@ export function computeRiskMetrics(
     cashWeight,
     cashMarketValue,
     cashHoldingCount,
+    investedHerfindahl,
+    negativeCashHoldingCount,
     dataPoints: valuations.length,
     seriesStart: points.length > 0 ? points[0].date : null,
     seriesEnd: points.length > 0 ? points[points.length - 1].date : null,
@@ -547,6 +555,13 @@ export interface ConcentrationResult {
   cashMarketValue: number;
   /** How many cash-equivalent securities make up the bucket. */
   cashHoldingCount: number;
+  /** The Herfindahl over INVESTED holdings only: weights over the risky
+   *  positions' own gross value, cash left out (owner ruling 28 = B,
+   *  2026-11-16). null exactly when `herfindahl` is. */
+  investedHerfindahl: number | null;
+  /** Cash-equivalent holdings valued below zero (borrowing): never dilution,
+   *  never in the cash bucket (review 2026-11-15, R4). */
+  negativeCashHoldingCount: number;
 }
 
 /**
@@ -593,9 +608,17 @@ export function computeConcentration(
     cashWeight: split.cash.weight,
     cashMarketValue: split.cash.marketValue,
     cashHoldingCount: split.cash.holdingCount,
+    negativeCashHoldingCount: split.negativeCash.holdingCount,
   };
   if (split.grossValue <= 0 || split.risky.length === 0) {
-    return { herfindahl: null, top5Concentration: 0, top5Positions: [], positionCount: 0, ...cash };
+    return {
+      herfindahl: null,
+      investedHerfindahl: null,
+      top5Concentration: 0,
+      top5Positions: [],
+      positionCount: 0,
+      ...cash,
+    };
   }
 
   // Only the WEIGHT is gross — marketValue keeps its sign so a short still
@@ -613,6 +636,7 @@ export function computeConcentration(
 
   return {
     herfindahl: split.herfindahl,
+    investedHerfindahl: split.investedHerfindahl,
     top5Concentration,
     top5Positions: top5,
     positionCount: positions.length,

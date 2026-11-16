@@ -62,6 +62,14 @@ export interface ConcentrationMetrics {
    */
   hhi: number;
   effective_positions: number;
+  /**
+   * The same index over INVESTED holdings only (owner ruling 28 = B,
+   * 2026-11-16): weights over the risky positions' own Σ |market value|,
+   * cash and cash equivalents left out. `hhi` counts cash as dilution, so
+   * 1/hhi is not a count of names; 1/invested_hhi is. Equal to `hhi` when the
+   * scope holds no cash; 0 when there is no risky position (as `hhi`).
+   */
+  invested_hhi: number;
   top_positions: Array<{
     symbol: string;
     security_name: string | null;
@@ -82,6 +90,16 @@ export interface ConcentrationMetrics {
     /** Share of the whole book (gross), 0-100. */
     weight_pct: number;
     /** How many cash-equivalent securities make it up. */
+    holding_count: number;
+  };
+  /**
+   * Cash-equivalent holdings valued BELOW zero (a debit balance, i.e.
+   * borrowing). Never in `cash` and never dilution (review 2026-11-15, R4);
+   * the card says so in one plain line when `holding_count > 0`.
+   */
+  negative_cash: {
+    /** Summed (negative) USD value. */
+    market_value: number;
     holding_count: number;
   };
   warnings: string[];
@@ -646,6 +664,10 @@ export function getConcentrationMetrics(
     weight_pct: split.cash.weight * 100,
     holding_count: split.cash.holdingCount,
   };
+  const negative_cash = {
+    market_value: split.negativeCash.marketValue,
+    holding_count: split.negativeCash.holdingCount,
+  };
 
   // <= 0, not === 0: the gross book is zero only when there is nothing to
   // measure, and then there is no weight denominator at all.
@@ -656,8 +678,10 @@ export function getConcentrationMetrics(
     return {
       hhi: 0,
       effective_positions: 0,
+      invested_hhi: 0,
       top_positions: [],
       cash,
+      negative_cash,
       warnings: ["No positions with market value found."],
     };
   }
@@ -665,7 +689,15 @@ export function getConcentrationMetrics(
   // All cash: nothing single-name to measure. No warning either: holding
   // only cash is not a concentration problem.
   if (split.risky.length === 0) {
-    return { hhi: 0, effective_positions: 0, top_positions: [], cash, warnings: [] };
+    return {
+      hhi: 0,
+      effective_positions: 0,
+      invested_hhi: 0,
+      top_positions: [],
+      cash,
+      negative_cash,
+      warnings: [],
+    };
   }
 
   const hhi = split.herfindahl ?? 0;
@@ -715,8 +747,10 @@ export function getConcentrationMetrics(
     // significant digits at 4dp).
     hhi,
     effective_positions: Math.round(effective_positions * 10) / 10,
+    invested_hhi: split.investedHerfindahl ?? 0,
     top_positions,
     cash,
+    negative_cash,
     warnings,
   };
 }

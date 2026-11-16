@@ -14,15 +14,18 @@ import {
   Cell,
 } from "recharts";
 import type { PortfolioRiskMetrics, PositionWeight } from "@/lib/compute/risk";
-import { Money, Pct, PrivateText, usePrivateFormatter } from "@/lib/privacy/components";
+import { Count, Money, Pct, PrivateText, usePrivateFormatter } from "@/lib/privacy/components";
 import { NarrativeBlock } from "./analysis/NarrativeBlock";
 import { WeekOverWeekBadge } from "./analysis/WeekOverWeekBadge";
 import {
   CashEquivalentsLine,
   HHI_CASH_NOTE,
   ALL_CASH_SENTENCE,
+  EFFECTIVE_INVESTED_LABEL,
+  NEGATIVE_CASH_SENTENCE,
 } from "./analysis/ClassificationCard";
 import {
+  effectivePositionsFromHHI,
   interpretSharpe,
   interpretMaxDrawdown,
   interpretCurrentDrawdown,
@@ -375,6 +378,19 @@ export function RiskMetrics({ scope }: { scope?: string }) {
             </p>
           )}
           {hasCash && <p className="text-xs text-ink-faint mb-3">{HHI_CASH_NOTE}</p>}
+          {/* Owner ruling 28 = B (2026-11-16): with cash in the book the
+              sentence above counts cash as dilution, so the invested-only
+              count is shown beside it. */}
+          {hasCash && metrics.investedHerfindahl != null && metrics.investedHerfindahl > 0 && (
+            <p className="text-xs text-ink-faint mb-3">
+              {EFFECTIVE_INVESTED_LABEL}: behaves like ~
+              <Count value={Math.round(effectivePositionsFromHHI(metrics.investedHerfindahl))} />{" "}
+              equal positions.
+            </p>
+          )}
+          {(metrics.negativeCashHoldingCount ?? 0) > 0 && (
+            <p className="text-xs text-ink-faint mb-3">{NEGATIVE_CASH_SENTENCE}</p>
+          )}
 
           {hasCash && (
             <CashEquivalentsLine

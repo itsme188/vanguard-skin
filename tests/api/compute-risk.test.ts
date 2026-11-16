@@ -39,6 +39,8 @@ function fakeMetrics(overrides: Partial<PortfolioRiskMetrics> = {}): PortfolioRi
     cashWeight: 0,
     cashMarketValue: 0,
     cashHoldingCount: 0,
+    investedHerfindahl: 0.12,
+    negativeCashHoldingCount: 0,
     dataPoints: 252,
     seriesStart: "2026-01-01",
     seriesEnd: "2026-07-21",

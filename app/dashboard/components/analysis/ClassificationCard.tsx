@@ -157,6 +157,19 @@ export const HHI_CASH_NOTE =
 export const ALL_CASH_SENTENCE =
   "Everything in this scope is held as cash, so there is no single-name risk to measure.";
 
+/** The two effective-position figures' labels (owner ruling 28 = B, 2026-11-16).
+ *  Cash counts as dilution in the whole-portfolio figure, so it is not a count
+ *  of names; the invested-only figure is. */
+export const EFFECTIVE_WHOLE_LABEL = "Whole portfolio, cash counted as dilution";
+export const EFFECTIVE_INVESTED_LABEL = "Invested holdings only, cash left out";
+
+/** The effective-position tile's value when the scope holds only cash. */
+export const ALL_CASH_EFFECTIVE_VALUE = "All cash";
+
+/** Shown when a cash-equivalent holding is negative (a margin debit). */
+export const NEGATIVE_CASH_SENTENCE =
+  "This scope is borrowing; cash is negative and is not counted as dilution.";
+
 /** The "Cash and equivalents" line: share of the whole book, value and fund count. */
 export function CashEquivalentsLine({
   weightPct,
@@ -343,10 +356,37 @@ export function ClassificationCard({ concentration, coverage }: Props) {
                 : "text-up"
             }
           />
+          {/* Two figures (owner ruling 28 = B, 2026-11-16): the whole-portfolio
+              1/HHI counts cash as dilution, so it is not a count of names;
+              the invested-only figure leaves cash out. An all-cash scope has
+              no position to count, so it says so instead of showing 0. */}
           <ConcentrationTile
             label="Effective Positions"
-            value={<Count value={Math.round(effectivePositionsFromHHI(concentration.hhi))} />}
-            description="1/HHI — equivalent equal-weighted positions (same count as the Herfindahl sentence)"
+            value={
+              allCash ? (
+                ALL_CASH_EFFECTIVE_VALUE
+              ) : (
+                <Count value={Math.round(effectivePositionsFromHHI(concentration.hhi))} />
+              )
+            }
+            description={
+              allCash ? (
+                "Everything in this scope is held as cash, so there are no positions to count."
+              ) : (
+                <>
+                  <span className="block">
+                    {EFFECTIVE_WHOLE_LABEL} (1/HHI, the same count as the Herfindahl sentence)
+                  </span>
+                  <span className="block mt-1">
+                    {EFFECTIVE_INVESTED_LABEL}:{" "}
+                    <Count
+                      value={Math.round(effectivePositionsFromHHI(concentration.invested_hhi))}
+                      className="font-mono text-ink"
+                    />
+                  </span>
+                </>
+              )
+            }
             color="text-blue"
           />
           <ConcentrationTile
@@ -367,6 +407,10 @@ export function ClassificationCard({ concentration, coverage }: Props) {
             marketValue={concentration.cash.market_value}
             holdingCount={concentration.cash.holding_count}
           />
+        )}
+
+        {concentration.negative_cash.holding_count > 0 && (
+          <p className="text-xs text-ink-faint mb-4">{NEGATIVE_CASH_SENTENCE}</p>
         )}
 
         {concentration.top_positions.length > 0 && (

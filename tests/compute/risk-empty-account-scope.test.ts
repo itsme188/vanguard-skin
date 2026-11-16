@@ -124,18 +124,22 @@ describe("a defined empty account list is no accounts", () => {
 
     expect(computeConcentration(db, [], AS_OF)).toEqual({
       herfindahl: null,
+      investedHerfindahl: null,
       top5Concentration: 0,
       top5Positions: [],
       positionCount: 0,
       cashWeight: 0,
       cashMarketValue: 0,
       cashHoldingCount: 0,
+      negativeCashHoldingCount: 0,
     });
     expect(getConcentrationMetrics(db, [])).toEqual({
       hhi: 0,
       effective_positions: 0,
+      invested_hhi: 0,
       top_positions: [],
       cash: { market_value: 0, weight_pct: 0, holding_count: 0 },
+      negative_cash: { market_value: 0, holding_count: 0 },
       warnings: ["No positions with market value found."],
     });
   });
@@ -221,8 +225,17 @@ describe("undefined and a non-empty list answer as before", () => {
       "cashWeight",
       "cashMarketValue",
       "cashHoldingCount",
+      // Owner ruling 28 = B (2026-11-16): with no cash in this fixture the
+      // invested-only index equals the whole-book one and nothing is
+      // borrowed (asserted below), so both new fields are left out too.
+      "investedHerfindahl",
+      "negativeCashHoldingCount",
     ]);
     for (const o of out) {
+      expect(o.concentration.investedHerfindahl).toBe(o.concentration.herfindahl);
+      expect(o.risk.investedHerfindahl).toBe(o.risk.herfindahl);
+      expect(o.concentration.negativeCashHoldingCount).toBe(0);
+      expect(o.risk.negativeCashHoldingCount).toBe(0);
       for (const p of o.universe) expect(p.valuedAfterAsOf).toBe(false);
       for (const p of o.universe) expect(p.isCashEquivalent).toBe(false);
       expect(o.concentration.cashWeight).toBe(0);

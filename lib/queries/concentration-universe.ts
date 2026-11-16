@@ -310,6 +310,14 @@ export function concentrationGrossValue(positions: ConcentrationPosition[]): num
  *    more cash lowers the index. It is the single-name risk of an equal,
  *    fully invested book of 1/HHI names. null when there is no risky
  *    position to measure (an empty book, or one that is all cash).
+ *  - `investedHerfindahl` is the same sum over the RISKY positions with the
+ *    risky positions' own Σ |mv| as the denominator: cash and cash
+ *    equivalents left out entirely (owner ruling 28 = B, 2026-11-16). Since
+ *    cash dilutes the whole-book index, 1 / herfindahl is no longer a count
+ *    of names; 1 / investedHerfindahl is. With no cash the two are equal;
+ *    with cash, herfindahl = (risky share)² x investedHerfindahl, so the
+ *    whole-portfolio effective count is the larger one. null exactly when
+ *    `herfindahl` is null.
  *
  * Both concentration surfaces call this, so they cannot disagree.
  */
@@ -321,6 +329,9 @@ export interface ConcentrationSplit {
    *  (negative) value and count. Not in `cash`, not in `grossValue`. */
   negativeCash: { marketValue: number; holdingCount: number };
   herfindahl: number | null;
+  /** Σ (|mv_i| / Σ|risky|)² over the risky positions: the invested-only
+   *  index, cash left out of the denominator too. null when `herfindahl` is. */
+  investedHerfindahl: number | null;
 }
 
 export function splitConcentrationUniverse(positions: ConcentrationPosition[]): ConcentrationSplit {
@@ -338,6 +349,11 @@ export function splitConcentrationUniverse(positions: ConcentrationPosition[]): 
     grossValue > 0 && risky.length > 0
       ? risky.reduce((s, p) => s + (Math.abs(p.marketValue) / grossValue) ** 2, 0)
       : null;
+  const investedGross = concentrationGrossValue(risky);
+  const investedHerfindahl =
+    herfindahl != null && investedGross > 0
+      ? risky.reduce((s, p) => s + (Math.abs(p.marketValue) / investedGross) ** 2, 0)
+      : null;
   return {
     grossValue,
     risky,
@@ -351,5 +367,6 @@ export function splitConcentrationUniverse(positions: ConcentrationPosition[]): 
       holdingCount: borrowedRows.length,
     },
     herfindahl,
+    investedHerfindahl,
   };
 }
