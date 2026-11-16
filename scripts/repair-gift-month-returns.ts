@@ -449,20 +449,31 @@ function printResult(db: Database.Database, result: GiftMonthResult): void {
   );
 }
 
-function resolveDbPath(argv: string[]): string {
+/**
+ * The database to read: `--db <path>`, else REPAIR_DB_PATH. There is NO
+ * default: from the main checkout a cwd-relative default is the live
+ * database (review 2026-11-15, R7). null when neither names one.
+ */
+export function resolveDbPath(argv: string[], env: NodeJS.ProcessEnv = process.env): string | null {
   const i = argv.indexOf("--db");
   if (i >= 0) {
     const p = argv[i + 1];
     if (!p || p.startsWith("--")) throw new Error("--db needs a path");
     return path.resolve(p);
   }
-  return process.env.REPAIR_DB_PATH ?? path.join(process.cwd(), "data", "vanguard.db");
+  const fromEnv = env.REPAIR_DB_PATH;
+  return fromEnv && fromEnv.trim() !== "" ? path.resolve(fromEnv) : null;
 }
 
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   const apply = argv.includes("--apply");
   const dbPath = resolveDbPath(argv);
+  if (dbPath === null) {
+    console.error("No database named. Pass --db <path> or set REPAIR_DB_PATH (there is no default).");
+    process.exitCode = 1;
+    return;
+  }
   // Printed BEFORE the database is opened (rehearsable-repair rule).
   console.log(`[repair-gift-month-returns] mode=${apply ? "APPLY" : "dry-run"}, db: ${dbPath}`);
 

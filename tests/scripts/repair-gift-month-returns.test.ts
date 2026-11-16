@@ -14,6 +14,7 @@ import {
   giftAdjustedReturn,
   parseMarker,
   planGiftMonthRestatement,
+  resolveDbPath,
   runGiftMonthRestatement,
 } from "@/scripts/repair-gift-month-returns";
 
@@ -230,5 +231,22 @@ describe("repair-gift-month-returns: a gift is an outflow, not a loss", () => {
     const plan = planGiftMonthRestatement(db, { runDate: RUN });
     expect(plan.rows[0].state).toBe("blocked");
     expect(plan.rows[0].reason).toMatch(/donation's value/);
+  });
+});
+
+describe("the database is always named, never defaulted (review R7)", () => {
+  it("refuses with no --db and no REPAIR_DB_PATH: there is no default to the live database", () => {
+    expect(resolveDbPath([], {})).toBeNull();
+    expect(resolveDbPath(["--apply"], {})).toBeNull();
+  });
+  it("takes --db first, then REPAIR_DB_PATH", () => {
+    expect(resolveDbPath(["--db", "/tmp/zz-copy.db"], { REPAIR_DB_PATH: "/tmp/zz-other.db" })).toBe("/tmp/zz-copy.db");
+    expect(resolveDbPath([], { REPAIR_DB_PATH: "/tmp/zz-other.db" })).toBe("/tmp/zz-other.db");
+  });
+  it("an empty REPAIR_DB_PATH is not a database", () => {
+    expect(resolveDbPath([], { REPAIR_DB_PATH: "" })).toBeNull();
+  });
+  it("--db with no path is an error", () => {
+    expect(() => resolveDbPath(["--db"], {})).toThrow(/--db needs a path/);
   });
 });
