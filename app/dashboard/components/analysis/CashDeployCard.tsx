@@ -2,7 +2,7 @@
 
 import { CHIP_TONE_TEXT } from "@/app/dashboard/components/chip-tone-text";
 import { useState } from "react";
-import { Money, Pct, PrivateText } from "@/lib/privacy/components";
+import { Count, Money, Pct, PrivateText } from "@/lib/privacy/components";
 import { ScrollFade } from "../ScrollFade";
 import { readMutationResult, networkFailureMessage } from "@/lib/ui/mutation-result";
 import {
@@ -105,6 +105,14 @@ export function CashDeployCard({ scope }: Props) {
               </h4>
               {/* Owner ruling 2026-11-15: weights are NET of short positions. */}
               <p className="text-[11px] text-ink-faint mb-2">{NET_OF_SHORTS_CAPTION}</p>
+              {/* An option whose Greeks cannot compute is weighted at market
+                  value instead (review finding S-B1, 2026-11-15). */}
+              {result.optionsAtMarketValue > 0 && (
+                <p className="text-[11px] text-ink-faint mb-2">
+                  Options without the inputs to compute a delta are counted at market value:{" "}
+                  <Count value={result.optionsAtMarketValue} />.
+                </p>
+              )}
               {/*
                 Equity-only benchmark (QA finding
                 analysis-cash-deploy--fixed-income-gap-vs-equity-benchmark):

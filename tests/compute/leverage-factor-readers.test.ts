@@ -4,6 +4,7 @@ import { runMigrations } from "@/lib/db/migrate";
 import { computeScenario, PRESET_SCENARIOS, type ScenarioResult } from "@/lib/compute/scenarios";
 import { computeRecipeScenario, findRecipe } from "@/lib/compute/scenario-recipes";
 import { computeExposureDelta } from "@/lib/compute/exposure-delta";
+import { getOptionExposureMap } from "@/lib/compute/exposure";
 import { computeDefenseAnalysis } from "@/lib/compute/hedging";
 import { resolveLeveragedExposure, normalizeLeverageFactor } from "@/lib/compute/leveraged-fund";
 import { applyLeverageFactors } from "@/lib/securities/apply-leverage-factors";
@@ -260,12 +261,16 @@ describe("an option on a +2x fund is repriced at the FUND's move, not its index'
   it("What-if: the held call counts at twice its money in the exposure buckets", () => {
     const res = computeExposureDelta(db, "all", undefined, []);
     expect(res.leveragedFundsNotModelled).toEqual([]);
-    // Both calls hold $1,000 of contracts. An option row carries no sector of
-    // its own in this engine, so both sit in "Unknown" — but the 2x call
-    // carries $2,000 of exposure there against the plain call's $1,000:
-    // $3,000 over a $2,000 book.
+    // Both calls hold $1,000 of contracts. An option enters its UNDERLYING's
+    // sector (Energy) at its delta-adjusted exposure (review finding S-B1,
+    // 2026-11-15); the two calls have the same strike, spot and price, so the
+    // same exposure per dollar. The 2x call carries twice it: three times
+    // one call's delta exposure over a $2,000 book.
+    const perValue = getOptionExposureMap(db, undefined).perValueDollar;
+    expect(perValue.get(LEV_CALL)).toBeCloseTo(perValue.get(PLAIN_CALL)!, 10);
     expect(res.before.totalValue).toBeCloseTo(2000, 8);
-    expect(res.before.sectorWeights.Unknown).toBeCloseTo(1.5, 10);
+    expect(res.before.sectorWeights.Energy).toBeCloseTo((3 * 1000 * perValue.get(PLAIN_CALL)!) / 2000, 10);
+    expect(res.before.sectorWeights.Unknown).toBeUndefined();
   });
 });
 
@@ -292,7 +297,10 @@ describe("What-if: a signed fund is counted at its exposure; an unsigned one is 
       `INSERT INTO security_betas (security_id, lookback_days, beta, computed_at) VALUES (?, 60, ?, '2026-10-01')`,
     );
     beta.run(1, 1.0);
-    beta.run(2, 1.0);
+    // A stored beta of a -3x fund is the fund's own regression, so it already
+    // carries the leverage: about -3 (review finding S-3, 2026-11-15; the
+    // factor is no longer applied to a stored beta a second time).
+    beta.run(2, -3.0);
     beta.run(3, 1.0);
     const px = db.prepare(`INSERT INTO prices (security_id, date, close_price, source) VALUES (?, ?, 100, 'test')`);
     const h = db.prepare(

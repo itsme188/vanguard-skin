@@ -51,7 +51,8 @@ import { liveOptionExpirationSql } from "@/lib/compute/option-expiry";
 import { normalizeSector } from "@/lib/securities/normalize-sector";
 import { isCashEquivalentSecurity } from "@/lib/compute/cash-equivalents";
 import { isInterestRateHedgeFund, scenarioMovesRates, summarizeUnmodelledRateHedges } from "./rate-hedge";
-import { resolveLeveragedExposure, summarizeUnmodelledLeveragedFunds } from "./leveraged-fund";
+import { isLeveragedOrInverseFund, resolveLeveragedExposure, summarizeUnmodelledLeveragedFunds } from "./leveraged-fund";
+import { isBondFundCategory } from "@/lib/securities/normalize-fund-category";
 
 // ─── Per-factor bucket sensitivities ─────────────────────────────────────
 //
@@ -550,14 +551,40 @@ function sectorFloorFor(
  * semis index falls what the index falls); only single names are scaled up
  * past it by their factor buckets. An option inherits the rule from its
  * underlying, so a put on the index fund reprices off the headline move.
+ *
+ * The type alone is weak evidence (the broker labels many exchange-traded
+ * funds "Stock"; review finding S-1, 2026-11-15): a 3x semis fund typed Stock
+ * was scaled by its buckets and then by 3, floored at -100%, while its
+ * inverse twin typed ETF was capped. So a row is also a fund when the
+ * leveraged-fund rule flags it (category or name) or its fund category is a
+ * bond-fund label. A single-stock leveraged fund is flagged the same way, so
+ * it too moves its factor times the headline.
  */
-function isFundExposure(pos: Pick<RecipeEquityInput, "security_type" | "underlying_security_type">): boolean {
-  const own = pos.security_type.toLowerCase();
-  const type = isOptionSecurityType(pos.security_type) ? (pos.underlying_security_type ?? "").toLowerCase() : own;
-  return type === "etf" || type === "mutual fund";
+function isFundExposure(
+  pos: Pick<
+    RecipeEquityInput,
+    | "security_type"
+    | "underlying_security_type"
+    | "fund_category"
+    | "security_name"
+    | "underlying_fund_category"
+    | "underlying_name"
+  >,
+): boolean {
+  const option = isOptionSecurityType(pos.security_type);
+  const identity = option
+    ? { security_type: pos.underlying_security_type ?? null, fund_category: pos.underlying_fund_category ?? null, name: pos.underlying_name ?? null }
+    : { security_type: pos.security_type, fund_category: pos.fund_category, name: pos.security_name ?? null };
+  const type = (identity.security_type ?? "").trim().toLowerCase();
+  if (type === "etf" || type === "mutual fund") return true;
+  return isLeveragedOrInverseFund(identity) || isBondFundCategory(identity.fund_category);
 }
 
-/** The fields the equity path of a recipe reads. */
+/**
+ * The fields the equity path of a recipe reads. The identity fields at the
+ * end are optional: a caller that leaves them out is judged a fund by its
+ * type and category alone.
+ */
 export type RecipeEquityInput = Pick<
   RecipePositionRow,
   | "symbol"
@@ -570,7 +597,8 @@ export type RecipeEquityInput = Pick<
   | "currency"
   | "underlying_security_type"
   | FactorColumn
->;
+> &
+  Partial<Pick<RecipePositionRow, "security_name" | "underlying_fund_category" | "underlying_name">>;
 
 /**
  * The recipe's EQUITY path for one position (everything that is not cash, a

@@ -354,14 +354,26 @@ describe("every account and a non-empty list answer as before", () => {
     // (the true before weight of each after-top name) and a weightPct on
     // each flag that prints a weight: with those two keys removed the output
     // still hashed to the 2026-11-04 digest (af4ed74a...).
-    // Re-captured 2026-11-15 (What-if rulings K2): the What-if's beta takes a
-    // type estimate where no beta is stored (cash 0, bond the scenario
-    // figure), each snapshot gained betaEstimatedWeight, its sector buckets
-    // look through funds and name cash "Cash Equivalent" and bonds "Fixed
-    // Income", and the beta flag reads the new beta. Field-by-field diff
-    // against the tree without K2: only exposureDelta (and the copy inside
-    // each cashDeploy pick) moved, in beta, betaEstimatedWeight, those
-    // sector keys and the beta flag; every allocation figure is unchanged.
+    // Re-captured 2026-11-15 (d2202a3e...), absorbing FOUR owner rulings at
+    // once (they were landed together in one shared tree; the field lists
+    // come from a field-by-field diff of each commit's output against the
+    // one before it):
+    //  1. Scenarios (subject fund moves the headline; custom rate leg):
+    //     customScenario estimatedChange, estimatedChangePercent,
+    //     estimatedPortfolioValue, and positionImpacts / biggestLosers /
+    //     biggestWinners changePercent, estimatedChange, estimatedNewValue,
+    //     underlyingMove.
+    //  2. What-if K2: exposureDelta (and the copy inside each cashDeploy
+    //     pick) before/after beta, betaEstimatedWeight (new), the sector keys
+    //     "Cash Equivalent", "Fixed Income" and "Unknown", and the beta flag
+    //     (flags length, message, capValue).
+    //  3. Defense K4: hedgeScores[].betaAssumed and .side, notCreditedHedges,
+    //     summary assumedBetaHedgeCount, notCreditedCount,
+    //     shortSideHedgeCount, shortSideHedgeExposure, shortSideHedgeNotional.
+    //  4. Cash deploy K1: cashRemaining, totalAllocated, unallocatedReason,
+    //     notes, gaps[] residualGapPp / residualDollarGap, picks[]
+    //     allocationDollars, multiSectorFund, sectorExposure, and the pick's
+    //     exposureDelta copy (beta, factor tilts, sector weights, top list).
     // The digest without K2 on the same tree was a66cf999....
     // Re-captured 2026-11-15 (Defense review R1/R2): each sector coverage
     // row gained protectedBeyondExposure, the summary gained
@@ -374,8 +386,19 @@ describe("every account and a non-empty list answer as before", () => {
     // the cash-equivalent sweeps out BEFORE it takes its N, so in two scopes
     // its top 5 now lists the next non-cash names instead of fewer rows. With
     // the previous drill-down.ts the output still hashed to 8984a85c....
+    // Re-captured 2026-11-15 (review wave S, What-if and Cash deploy only;
+    // field-by-field diff against the tree before, 5918c568...): an option
+    // enters the sector weights at its delta-adjusted exposure through its
+    // underlying's sector (the fixture's put moves from "Unknown" into a
+    // smaller, delta-signed "Technology"), so the Cash-deploy gaps, picks,
+    // totalAllocated, cashRemaining and unallocatedReason moved with it; the
+    // money-market fund leaves topConcentrations (and beforeWeightBySymbol)
+    // while staying in the total; each snapshot gained optionsAtMarketValue
+    // and nearMarketNeutral and the suggestion optionsAtMarketValue; the
+    // top3 / sector flags moved with those weights. Every exposureDelta beta
+    // and every other reader's output is unchanged.
     expect(createHash("sha256").update(json).digest("hex")).toBe(
-      "5918c56822a50e69f5d3d3245398ebc976c53571c914c6b40da4a08da44f0550",
+      "2ef256a8cd31eb22730d56820ac1fd909c29a83fcd61234daedd253b5aeb1760",
     );
   });
 

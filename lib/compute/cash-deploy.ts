@@ -19,6 +19,15 @@
  *  - Sector weights are NET of short positions: signed market values, over
  *    the same signed denominator the What-if engine uses
  *    (`computeExposureDelta` keeps shorts in its book and total).
+ *  - An OPTION enters its sector at its delta-adjusted exposure (review
+ *    finding S-B1, 2026-11-15; `optionDeltaPerValueReader`, the reader the
+ *    What-if uses), read through its underlying (a fund underlying with
+ *    stored weights is spread by them). A long put therefore LOWERS its
+ *    sector; at market value it raised it. An option whose Greeks cannot
+ *    compute keeps its market value and is counted (`optionsAtMarketValue`).
+ *    The denominator keeps every option at its MARKET VALUE (the dollars in
+ *    the book), as the What-if does, so the two cards agree on every sector
+ *    weight for a scope.
  *  - A multi-sector fund is credited by its look-through weights
  *    (`etf_sector_weights`) and sized so it pushes no sector past its
  *    benchmark weight.
@@ -29,7 +38,7 @@ import { getBenchmarkSectorMap } from "@/lib/queries/benchmark-compositions";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 import { accountScopeAndSql } from "@/lib/queries/account-scope-sql";
 import { getDefaultBenchmark } from "@/lib/analysis/benchmarks";
-import { computeExposureDelta, type ExposureDelta } from "./exposure-delta";
+import { computeExposureDelta, optionDeltaPerValueReader, type ExposureDelta } from "./exposure-delta";
 import { explodeHoldingBySector } from "./explode-sector";
 import { getEtfSectorWeights } from "@/lib/queries/etf-weights";
 import { marketValue } from "@/lib/valuation";
@@ -104,6 +113,11 @@ export interface CashDeploySuggestion {
   cashRemaining: number;
   /** One sentence, no figure, saying why cash is unallocated; null when none is. */
   unallocatedReason: string | null;
+  /**
+   * Option rows whose Greeks could not compute, so they entered the sector
+   * weights at market value instead of delta-adjusted exposure.
+   */
+  optionsAtMarketValue: number;
   notes: string[];
   /**
    * Non-null only when the benchmark is equity-only AND the portfolio
@@ -217,6 +231,7 @@ interface CurrentHoldingSummary {
   totalValue: number;
   sectorValue: Map<string, number>;
   heldCandidates: WatchlistCandidate[];
+  optionsAtMarketValue: number;
 }
 
 function loadCurrentHoldings(
@@ -253,10 +268,19 @@ function loadCurrentHoldings(
         s.style,
         s.currency,
         COALESCE(s.multiplier, 1) AS multiplier,
+        s_u.symbol AS u_symbol,
+        s_u.security_type AS u_security_type,
+        s_u.sector AS u_sector,
+        s_u.fund_category AS u_fund_category,
+        s_u.geography AS u_geography,
+        s_u.market_cap_category AS u_market_cap_category,
+        s_u.style AS u_style,
         SUM(lh.quantity) AS quantity,
         lp.close_price AS price
       FROM latest_holdings lh
       JOIN securities s ON s.id = lh.security_id
+      -- An option's underlying: its sector identity (S-B1).
+      LEFT JOIN securities s_u ON s_u.symbol = s.underlying_symbol
       LEFT JOIN latest_prices lp ON lp.security_id = s.id
       WHERE lp.close_price IS NOT NULL AND lp.close_price > 0
       GROUP BY s.id
@@ -274,35 +298,78 @@ function loadCurrentHoldings(
       style: string | null;
       currency: string | null;
       multiplier: number;
+      u_symbol: string | null;
+      u_security_type: string | null;
+      u_sector: string | null;
+      u_fund_category: string | null;
+      u_geography: string | null;
+      u_market_cap_category: string | null;
+      u_style: string | null;
       quantity: number;
       price: number;
     }>;
 
   const etfWeights = getEtfSectorWeights(db);
+  const deltaPerValue = optionDeltaPerValueReader(
+    db,
+    accountIds,
+    rows.map((r) => ({ securityType: r.security_type })),
+  );
   const sectorValue = new Map<string, number>();
   const heldCandidatesBySymbol = new Map<string, WatchlistCandidate>();
   let totalValue = 0;
+  let optionsAtMarketValue = 0;
   for (const r of rows) {
     const mv = marketValue(r.quantity, r.price, r.security_type, r.multiplier, getUsdPerUnit(db, r.currency));
     // Shorts are KEPT (owner ruling 2026-11-15): a short's negative market
     // value nets against its sector and the total, as in computeExposureDelta
     // — dropping it showed a nearly flat sector as a large long weight.
     if (!Number.isFinite(mv) || mv === 0) continue;
+    // The denominator takes every row at market value, options included.
     totalValue += mv;
+    // An option lands in its sector at its delta-adjusted exposure, read
+    // through its underlying; with no Greeks, at market value (counted).
+    const isOption = normalized(r.security_type) === "option";
+    let sectorDollars = mv;
+    let identity: HoldingForSector = r;
+    if (isOption) {
+      const ratio = deltaPerValue(r.security_id);
+      if (ratio === undefined) optionsAtMarketValue++;
+      else sectorDollars = mv * ratio;
+      if (r.u_symbol !== null) {
+        identity = {
+          symbol: r.u_symbol,
+          security_type: r.u_security_type,
+          sector: r.u_sector?.trim() ? r.u_sector : r.sector,
+          fund_category: r.u_fund_category,
+          geography: r.u_geography,
+          market_cap_category: r.u_market_cap_category,
+          style: r.u_style,
+        };
+      }
+    }
     const cashEquivalent = isCashEquivalentSecurity({
-      security_type: r.security_type,
-      fund_category: r.fund_category,
+      security_type: identity.security_type,
+      fund_category: identity.fund_category,
     });
+    // An option on a broad index fund with no stored weights stays in the
+    // fund's own bucket ("Diversified"), as the What-if puts it, rather than
+    // being spread by the benchmark the way a HELD broad fund is here: the
+    // two cards then print the same sector weights for the scope. (A held
+    // unweighted broad fund is still spread here and not in the What-if; that
+    // difference predates option look-through.)
     const parts = cashEquivalent
-      ? [{ sector: "Cash Equivalent", value: mv }]
-      : benchmarkSectorParts(r, mv, etfWeights, benchmarkMap);
+      ? [{ sector: "Cash Equivalent", value: sectorDollars }]
+      : isOption
+        ? explodeHoldingBySector(identity.symbol, identity.security_type, sectorDollars, etfWeights, identity.sector)
+        : benchmarkSectorParts(identity, sectorDollars, etfWeights, benchmarkMap);
     for (const part of parts) {
       sectorValue.set(part.sector, (sectorValue.get(part.sector) ?? 0) + part.value);
     }
     // A held-name fallback is a stock or fund held LONG: "buying" a name held
     // short would be covering it, and an option's dollars do not land in its
     // sector one for one (a long put on a sector fund is a SHORT exposure).
-    if (cashEquivalent || mv <= 0 || !HELD_PICK_TYPES.has(normalized(r.security_type))) continue;
+    if (isOption || cashEquivalent || mv <= 0 || !HELD_PICK_TYPES.has(normalized(r.security_type))) continue;
     const exposure = exposureOfParts(parts, mv);
     if (exposure.length === 0) continue;
     if (exposure.length === 1 && isExcludedEquitySleeveBucket(exposure[0].sector)) continue;
@@ -315,7 +382,12 @@ function loadCurrentHoldings(
     });
   }
 
-  return { totalValue, sectorValue, heldCandidates: Array.from(heldCandidatesBySymbol.values()) };
+  return {
+    totalValue,
+    sectorValue,
+    heldCandidates: Array.from(heldCandidatesBySymbol.values()),
+    optionsAtMarketValue,
+  };
 }
 
 interface WatchlistCandidate {
@@ -546,7 +618,7 @@ export function equitySleeveCaptionLead(benchmarkSymbol: string): string {
  * NET weight, longs plus signed shorts, over the scope's net value.
  */
 export const NET_OF_SHORTS_CAPTION =
-  "Weights are net of short positions: a short counts against its sector and against the total.";
+  "Weights are net of short positions, with options counted at their delta-adjusted exposure: a short or a long put counts against its sector, and every position counts at its market value in the total.";
 
 export interface SuggestAllocationOptions {
   activeThemes?: import("./macro-themes").MacroTheme[];
@@ -578,19 +650,24 @@ export function suggestAllocation(
       `No composition data for benchmark ${benchmarkSymbol}. Falling back to gap detection on current sectors only.`
     );
   }
-  if (cashAmount <= 0) {
+  // A zero, negative or non-finite amount places nothing and leaves nothing
+  // "unallocated": there is no cash to deploy (review finding S-6; the route
+  // answers 400 before reaching here). A negative remainder used to be
+  // returned with no reason.
+  if (!Number.isFinite(cashAmount) || cashAmount <= 0) {
     return {
       scope,
-      cashAmount,
+      cashAmount: Number.isFinite(cashAmount) ? cashAmount : 0,
       benchmarkSymbol,
       mode,
       gaps: [],
       picks: [],
       totalAllocated: 0,
-      cashRemaining: cashAmount,
-      unallocatedReason: null,
-      notes: [...notes, "No cash to deploy."],
+      cashRemaining: 0,
+      unallocatedReason: NO_CASH_REASON,
+      notes: [...notes, NO_CASH_REASON],
       excludedSleeve: null,
+      optionsAtMarketValue: current.optionsAtMarketValue,
     };
   }
   if (watchlist.length === 0) {
@@ -714,8 +791,7 @@ export function suggestAllocation(
       unallocatedReason =
         "Every underweight sector is filled to its benchmark weight; the rest stays as cash rather than pushing a sector past it.";
     } else if (picks.length === 0) {
-      unallocatedReason =
-        "No watchlist or held name sits in an underweight sector without pushing another sector past its benchmark weight, so nothing was placed.";
+      unallocatedReason = nothingPlacedReason(gaps, ranked, roomBySector, perNameCapCents);
     } else {
       unallocatedReason =
         "Each pick stops at its sector's gap to the benchmark or at the per-name cap, and no other watchlist or held name can fill the sectors still underweight; the rest stays as cash.";
@@ -734,7 +810,83 @@ export function suggestAllocation(
     unallocatedReason,
     notes,
     excludedSleeve,
+    optionsAtMarketValue: current.optionsAtMarketValue,
   };
+}
+
+/** The reason for an amount that is zero, negative or not a number. */
+export const NO_CASH_REASON = "There is no cash to deploy: enter an amount above zero.";
+
+/** Sectors named before "among others". */
+const REASON_SECTOR_LIMIT = 3;
+
+function listWords(items: string[]): string {
+  if (items.length <= 1) return items.join("");
+  return `${items.slice(0, -1).join(", ")} and ${items[items.length - 1]}`;
+}
+
+/**
+ * Why nothing was placed although a shown sector is underweight with room
+ * (review finding S-5). Names the largest underweight sectors with room and,
+ * for each kind of candidate, what stopped it: no single name on the
+ * watchlist or held sits in them (or the per-name cap leaves no room), and
+ * the broad funds considered also add to sectors already at or past their
+ * benchmark weight (named), or no fund covers them. No figure. The sector
+ * names are the ones the gap table already shows.
+ */
+function nothingPlacedReason(
+  gaps: SectorGap[],
+  ranked: RankedCandidate[],
+  roomBySector: Map<string, number>,
+  perNameCapCents: number,
+): string {
+  const open = gaps
+    .filter((g) => g.gapPp < 0 && (roomBySector.get(g.sector) ?? 0) >= MIN_ROOM_DOLLARS)
+    .sort((a, b) => a.gapPp - b.gapPp);
+  if (open.length === 0) {
+    return "No watchlist or held name sits in an underweight sector without pushing another sector past its benchmark weight, so nothing was placed.";
+  }
+  const openSet = new Set(open.map((g) => g.sector));
+  const named = open.slice(0, REASON_SECTOR_LIMIT).map((g) => g.sector);
+  const subject = `${listWords(named)}${open.length > named.length ? ", among others," : ""} ${
+    open.length === 1 ? "is" : "are"
+  } underweight`;
+  const them = open.length === 1 ? "it" : "them";
+
+  const singles = ranked.filter((c) => c.exposure.length === 1 && openSet.has(c.exposure[0].sector));
+  const singleClause =
+    singles.length === 0
+      ? `no single name on the watchlist or held sits in ${them}`
+      : perNameCapCents < MIN_PICK_CENTS
+        ? `the per-name cap leaves no room for the single names there`
+        : `no single name there could be sized without passing a sector's benchmark weight`;
+
+  const funds = ranked.filter((c) => c.exposure.length > 1 && c.exposure.some((e) => openSet.has(e.sector)));
+  const blocked = new Set<string>();
+  for (const f of funds) {
+    for (const e of f.exposure) {
+      if (e.weight > 0 && (roomBySector.get(e.sector) ?? 0) < MIN_ROOM_DOLLARS) blocked.add(e.sector);
+    }
+  }
+  // Most overweight first (the table's own gaps), then any under the 2pp line.
+  const overBy = new Map(gaps.map((g) => [g.sector, g.gapPp]));
+  const blockedSorted = Array.from(blocked).sort(
+    (x, y) => (overBy.get(y) ?? 0) - (overBy.get(x) ?? 0) || x.localeCompare(y),
+  );
+  const blockedNamed = blockedSorted.slice(0, REASON_SECTOR_LIMIT);
+  const blockedWords =
+    blockedSorted.length > blockedNamed.length
+      ? `${blockedNamed.join(", ")} and other sectors`
+      : listWords(blockedNamed);
+  const fundClause =
+    funds.length === 0
+      ? "no fund on the watchlist or held covers them either"
+      : blockedSorted.length > 0
+        ? `the funds considered also add to ${blockedWords}, already at or past ${
+            blockedSorted.length === 1 ? "its" : "their"
+          } benchmark weight`
+        : "the per-name cap leaves no room for the funds considered";
+  return `${subject}, but ${singleClause}, and ${fundClause}; nothing was placed.`;
 }
 
 type RankedCandidate = WatchlistCandidate & {

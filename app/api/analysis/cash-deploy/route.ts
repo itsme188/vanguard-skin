@@ -9,10 +9,12 @@ export async function GET(request: NextRequest) {
     const { searchParams } = new URL(request.url);
     const scope = searchParams.get("scope") ?? "all";
     const cashParam = searchParams.get("cash");
-    const cashAmount = cashParam ? Number(cashParam) : 0;
-    if (!Number.isFinite(cashAmount) || cashAmount < 0) {
+    const cashAmount = cashParam ? Number(cashParam) : Number.NaN;
+    // Zero, negative, missing or not a number: there is nothing to deploy
+    // (review finding S-6). The card shows this message as it is.
+    if (!Number.isFinite(cashAmount) || cashAmount <= 0) {
       return NextResponse.json(
-        { success: false, error: "cash must be a non-negative number" },
+        { success: false, error: "Enter a cash amount above zero." },
         { status: 400 }
       );
     }

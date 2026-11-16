@@ -25,6 +25,8 @@ function snap(over: Partial<ExposureSnapshot> = {}): ExposureSnapshot {
     sectorWeights: {},
     topConcentrations: [],
     betaEstimatedWeight: 0,
+    optionsAtMarketValue: 0,
+    nearMarketNeutral: false,
     ...over,
   };
 }

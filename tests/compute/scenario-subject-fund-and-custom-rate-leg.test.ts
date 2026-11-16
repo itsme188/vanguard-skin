@@ -17,7 +17,7 @@ import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import { computeRecipeScenario, findRecipe } from "@/lib/compute/scenario-recipes";
 import { computeScenario, type ScenarioResult } from "@/lib/compute/scenarios";
-import { todayET } from "@/lib/calendar/date-utils";
+import { addDays, todayET } from "@/lib/calendar/date-utils";
 import { FACTOR_COLUMNS, type FactorColumn } from "@/lib/factors";
 
 type Buckets = Partial<Record<FactorColumn, string>>;
@@ -71,7 +71,9 @@ function seed(opts: {
 function seedPut(underlying: string, strike: number): string {
   const id = nextId++;
   const symbol = `${underlying.padEnd(6)}270115P${String(strike * 1000).padStart(8, "0")}`;
-  const expiry = new Date(Date.now() + 180 * 24 * 3600 * 1000).toISOString().slice(0, 10);
+  // Eastern-day arithmetic (house rule): a UTC slice of the wall clock is
+  // already tomorrow from 20:00 Eastern.
+  const expiry = addDays(todayET(), 180);
   db.prepare(
     `INSERT INTO securities (id, symbol, security_type, underlying_symbol, strike_price, expiration_date, option_type, multiplier, currency)
      VALUES (?, ?, 'Option', ?, ?, ?, 'PUT', 100, 'USD')`

@@ -19,6 +19,7 @@ import { BETA_LOOKBACK_DAYS } from "@/lib/queries/security-betas";
 import { getUsdPerUnit } from "@/lib/queries/fx-rates";
 import { resolveLeveragedExposure } from "@/lib/compute/leveraged-fund";
 import { isCashEquivalentSecurity } from "@/lib/compute/cash-equivalents";
+import { fundDefaultRefusal, isFixedIncomeFund } from "@/lib/compute/bond-duration";
 import { explodeHoldingBySector } from "@/lib/compute/explode-sector";
 import { getEtfSectorWeights } from "@/lib/queries/etf-weights";
 import { getOptionExposureMap } from "@/lib/compute/exposure";
@@ -30,6 +31,17 @@ import { getOptionExposureMap } from "@/lib/compute/exposure";
  * change both together (owner ruling 2026-11-15, K2a).
  */
 export const BOND_EQUITY_BETA_ESTIMATE = 0.1;
+
+/**
+ * A scope whose net value is under this share of its gross value (the sum of
+ * every position's absolute market value) is close to market-neutral: its
+ * net value is not a meaningful denominator, so shares of it (beta, sector,
+ * factor and concentration weights) are not printed and raise no flag. A
+ * book of 10,000 long and 9,900 short (net 100) otherwise read a beta of 21
+ * and a top weight of 10,000%. Five percent keeps every ordinary long book,
+ * and a hedged book down to 20 times gross over net, on the normal path.
+ */
+export const NEAR_NEUTRAL_NET_SHARE = 0.05;
 
 /** The sector bucket a cash equivalent lands in, the Cash-deploy name. */
 const CASH_EQUIVALENT_SECTOR = "Cash Equivalent";
@@ -56,6 +68,20 @@ export interface ExposureSnapshot {
    * zero is definitional and not counted (owner ruling 2026-11-15, K2a).
    */
   betaEstimatedWeight: number;
+  /**
+   * How many option rows entered the sector weights at their MARKET VALUE
+   * because their Greeks could not compute (no strike, expiry, underlying
+   * price or option price on file). Every other option enters at its
+   * delta-adjusted exposure (review finding S-B1, 2026-11-15).
+   */
+  optionsAtMarketValue: number;
+  /**
+   * True when the net value is not meaningfully positive: at or under
+   * NEAR_NEUTRAL_NET_SHARE of the gross value. Every ratio in this snapshot
+   * is then a share of a near-zero (or negative) number; the card does not
+   * print them and no ratio flag is raised.
+   */
+  nearMarketNeutral: boolean;
 }
 
 export interface ExposureFlag {
@@ -124,12 +150,26 @@ const DEFAULT_CAPS: ConstructionCaps = {
   beta_range: [0.7, 1.2],
 };
 
+/**
+ * The identity a row's SECTOR buckets are read from: the row itself, or, for
+ * an option whose underlying is on file, that underlying (an option is a
+ * claim on it; a call on a fund with stored weights is spread by them).
+ */
+interface SectorIdentity {
+  symbol: string;
+  securityType: string | null;
+  sector: string | null;
+  fundCategory: string | null;
+}
+
 interface HoldingRow {
   securityId: number;
   symbol: string;
   securityType: string | null;
   sector: string | null;
   fundCategory: string | null;
+  /** Where the sector buckets come from (the underlying for an option). */
+  sectorIdentity: SectorIdentity;
   currency: string | null;
   multiplier: number;
   quantity: number;
@@ -139,12 +179,15 @@ interface HoldingRow {
   /** True when `beta` is a type-based estimate, not a stored measurement. */
   betaEstimated: boolean;
   /**
-   * Beta-weighting exposure per dollar of market value: 1 for every row but
-   * a held option whose Greeks compute, where it is that contract's
-   * delta-adjusted exposure per dollar of its value (lib/compute/exposure.ts
-   * `perValueDollar`). Set after loading; see withOptionDeltaExposure.
+   * Exposure per dollar of market value, read by the beta AND the sector
+   * weights: 1 for every row but a held option whose Greeks compute, where
+   * it is that contract's delta-adjusted exposure per dollar of its value
+   * (lib/compute/exposure.ts `perValueDollar`). Set after loading; see
+   * optionDeltaPerValueReader.
    */
   betaExposurePerValue: number;
+  /** An option row that has no delta, so its sector weight is its market value. */
+  optionAtMarketValue: boolean;
   factors: Partial<Record<FactorColumn, string>>;
   /**
    * A leveraged or inverse fund (or an option on one) with no signed factor:
@@ -199,9 +242,14 @@ function loadCurrentHoldings(
         s.fund_category,
         s.currency,
         COALESCE(s.multiplier, 1) AS multiplier,
+        s.underlying_symbol,
+        s_u.symbol AS underlying_resolved_symbol,
         s_u.security_type AS underlying_security_type,
         s_u.fund_category AS underlying_fund_category,
         s_u.name AS underlying_name,
+        s_u.sector AS underlying_sector,
+        s.duration_years,
+        s_u.duration_years AS underlying_duration_years,
         s.leverage_factor,
         s_u.leverage_factor AS underlying_leverage_factor,
         SUM(lh.quantity) AS quantity,
@@ -211,7 +259,7 @@ function loadCurrentHoldings(
         sb_u.beta AS underlying_cached_beta
       FROM latest_holdings lh
       JOIN securities s ON s.id = lh.security_id
-      -- An option's underlying, read only by the leveraged-fund rule.
+      -- An option's underlying: its beta, sector, fund identity and leverage.
       LEFT JOIN securities s_u ON s_u.symbol = s.underlying_symbol
       LEFT JOIN latest_prices lp ON lp.security_id = s.id
       LEFT JOIN security_factors sf ON sf.security_id = s.id
@@ -230,9 +278,14 @@ function loadCurrentHoldings(
       fund_category: string | null;
       currency: string | null;
       multiplier: number;
+      underlying_symbol: string | null;
+      underlying_resolved_symbol: string | null;
       underlying_security_type: string | null;
       underlying_fund_category: string | null;
       underlying_name: string | null;
+      underlying_sector: string | null;
+      duration_years: number | null;
+      underlying_duration_years: number | null;
       leverage_factor: number | null;
       underlying_leverage_factor: number | null;
       quantity: number;
@@ -259,13 +312,34 @@ function loadCurrentHoldings(
         multiplier: r.multiplier,
         quantity: r.quantity,
         price: r.price!,
+        sectorIdentity: sectorIdentityOf(r),
         marketValue: marketValue(r.quantity, r.price!, r.security_type, r.multiplier, getUsdPerUnit(db, r.currency)),
         ...betaOf(r),
         betaExposurePerValue: 1,
+        optionAtMarketValue: isOptionType(r.security_type),
         factors,
         ...leveragedExposureOf(r),
       };
     });
+}
+
+type BetaInputs = {
+  security_type: string | null;
+  name: string | null;
+  sector: string | null;
+  fund_category: string | null;
+  duration_years: number | null;
+  cached_beta: number | null;
+  underlying_security_type: string | null;
+  underlying_name: string | null;
+  underlying_sector: string | null;
+  underlying_fund_category: string | null;
+  underlying_duration_years: number | null;
+  underlying_cached_beta: number | null;
+};
+
+function isOptionType(securityType: string | null): boolean {
+  return securityType?.trim().toLowerCase() === "option";
 }
 
 /**
@@ -274,37 +348,92 @@ function loadCurrentHoldings(
  * blanket 1.0, which over-stated the beta of a book holding much cash, bonds
  * or options and raised a false beta flag:
  *   - a cash equivalent (isCashEquivalentSecurity) is 0, not an estimate;
- *   - a bond takes the scenario engine's bond figure;
+ *   - a bond, and a bond FUND the scenario engine gives no market move
+ *     (isBondFundWithoutMarketMove below; review finding S-2), take the
+ *     scenario engine's bond figure;
  *   - an option takes its UNDERLYING's stored beta, else the underlying's own
  *     fallback by these same rules (1.0 when the underlying is not on file);
  *   - anything else keeps 1.0.
  */
-function betaOf(r: {
-  security_type: string | null;
-  fund_category: string | null;
-  cached_beta: number | null;
-  underlying_security_type: string | null;
-  underlying_fund_category: string | null;
-  underlying_cached_beta: number | null;
-}): { beta: number; betaEstimated: boolean } {
-  if (r.security_type?.trim().toLowerCase() === "option") {
+function betaOf(r: BetaInputs): { beta: number; betaEstimated: boolean } {
+  if (isOptionType(r.security_type)) {
     if (r.underlying_cached_beta !== null) return { beta: r.underlying_cached_beta, betaEstimated: false };
     if (r.underlying_security_type == null) return { beta: 1.0, betaEstimated: true };
-    return typeBetaEstimate(r.underlying_security_type, r.underlying_fund_category);
+    return typeBetaEstimate({
+      security_type: r.underlying_security_type,
+      security_name: r.underlying_name,
+      sector: r.underlying_sector,
+      fund_category: r.underlying_fund_category,
+      duration_years: r.underlying_duration_years,
+    });
   }
   if (r.cached_beta !== null) return { beta: r.cached_beta, betaEstimated: false };
-  return typeBetaEstimate(r.security_type, r.fund_category);
+  return typeBetaEstimate({
+    security_type: r.security_type,
+    security_name: r.name,
+    sector: r.sector,
+    fund_category: r.fund_category,
+    duration_years: r.duration_years,
+  });
 }
 
-function typeBetaEstimate(
-  securityType: string | null,
-  fundCategory: string | null,
-): { beta: number; betaEstimated: boolean } {
-  if (isCashEquivalentSecurity({ security_type: securityType, fund_category: fundCategory })) {
+type FundIdentity = {
+  security_type: string | null;
+  security_name: string | null;
+  sector: string | null;
+  fund_category: string | null;
+  duration_years: number | null;
+};
+
+function typeBetaEstimate(sec: FundIdentity): { beta: number; betaEstimated: boolean } {
+  if (isCashEquivalentSecurity({ security_type: sec.security_type, fund_category: sec.fund_category })) {
     return { beta: 0, betaEstimated: false };
   }
-  if (securityType?.trim().toLowerCase() === "bond") return { beta: BOND_EQUITY_BETA_ESTIMATE, betaEstimated: true };
+  if (sec.security_type?.trim().toLowerCase() === "bond") return { beta: BOND_EQUITY_BETA_ESTIMATE, betaEstimated: true };
+  if (isBondFundWithoutMarketMove(sec)) return { beta: BOND_EQUITY_BETA_ESTIMATE, betaEstimated: true };
   return { beta: 1.0, betaEstimated: true };
+}
+
+/**
+ * A fixed-income fund the scenario engine gives NO equity market move. The
+ * same rule, built on the same house readers (`isFixedIncomeFund`,
+ * `fundDefaultRefusal`, lib/compute/bond-duration.ts), as the unexported
+ * `isBondFundWithoutMarketMove` in lib/compute/scenarios.ts; parity-pinned by
+ * tests/compute/exposure-delta-review-s-wave.test.ts. Change both together.
+ */
+function isBondFundWithoutMarketMove(sec: FundIdentity): boolean {
+  if (!isFixedIncomeFund(sec)) return false;
+  const hasStoredDuration =
+    typeof sec.duration_years === "number" && Number.isFinite(sec.duration_years) && sec.duration_years >= 0;
+  return hasStoredDuration || fundDefaultRefusal(sec) !== "fund-equity-evidence";
+}
+
+/**
+ * Where a row's sector buckets come from: an option whose underlying is on
+ * file reads the UNDERLYING (its sector, or its stored fund weights when it is
+ * a fund); the option's own sector is the fallback when the underlying has
+ * none. Every other row reads itself.
+ */
+function sectorIdentityOf(r: {
+  symbol: string;
+  security_type: string | null;
+  sector: string | null;
+  fund_category: string | null;
+  underlying_resolved_symbol: string | null;
+  underlying_security_type: string | null;
+  underlying_sector: string | null;
+  underlying_fund_category: string | null;
+}): SectorIdentity {
+  if (isOptionType(r.security_type) && r.underlying_resolved_symbol !== null) {
+    const ownSector = r.sector?.trim() ? r.sector : null;
+    return {
+      symbol: r.underlying_resolved_symbol,
+      securityType: r.underlying_security_type,
+      sector: r.underlying_sector?.trim() ? r.underlying_sector : ownSector,
+      fundCategory: r.underlying_fund_category,
+    };
+  }
+  return { symbol: r.symbol, securityType: r.security_type, sector: r.sector, fundCategory: r.fund_category };
 }
 
 /**
@@ -371,6 +500,7 @@ function lookupSymbol(
   | "securityType"
   | "sector"
   | "fundCategory"
+  | "sectorIdentity"
   | "currency"
   | "multiplier"
   | "price"
@@ -392,9 +522,14 @@ function lookupSymbol(
         s.fund_category,
         s.currency,
         COALESCE(s.multiplier, 1) AS multiplier,
+        s.underlying_symbol,
+        s_u.symbol AS underlying_resolved_symbol,
         s_u.security_type AS underlying_security_type,
         s_u.fund_category AS underlying_fund_category,
         s_u.name AS underlying_name,
+        s_u.sector AS underlying_sector,
+        s.duration_years,
+        s_u.duration_years AS underlying_duration_years,
         s.leverage_factor,
         s_u.leverage_factor AS underlying_leverage_factor,
         (SELECT p.close_price FROM prices p
@@ -403,7 +538,7 @@ function lookupSymbol(
         sb.beta AS cached_beta,
         sb_u.beta AS underlying_cached_beta
       FROM securities s
-      -- An option's underlying, read only by the leveraged-fund rule.
+      -- An option's underlying: its beta, sector, fund identity and leverage.
       LEFT JOIN securities s_u ON s_u.symbol = s.underlying_symbol
       LEFT JOIN security_factors sf ON sf.security_id = s.id
       LEFT JOIN security_betas sb ON sb.security_id = s.id AND sb.lookback_days = ${BETA_LOOKBACK_DAYS}
@@ -421,9 +556,14 @@ function lookupSymbol(
       fund_category: string | null;
       currency: string | null;
       multiplier: number;
+      underlying_symbol: string | null;
+      underlying_resolved_symbol: string | null;
       underlying_security_type: string | null;
       underlying_fund_category: string | null;
       underlying_name: string | null;
+      underlying_sector: string | null;
+      duration_years: number | null;
+      underlying_duration_years: number | null;
       leverage_factor: number | null;
       underlying_leverage_factor: number | null;
       price: number | null;
@@ -445,6 +585,7 @@ function lookupSymbol(
     securityType: row.security_type,
     sector: row.sector,
     fundCategory: row.fund_category,
+    sectorIdentity: sectorIdentityOf(row),
     currency: row.currency,
     multiplier: row.multiplier,
     price: row.price,
@@ -458,12 +599,15 @@ function lookupSymbol(
  * Every modelled symbol's weight of the modelled book, largest first
  * (duplicate rows collapsed). snapshot() keeps the top 10 of it; the caller
  * reads the full list for the before weight of each after-top name (A2).
+ * A cash equivalent stays in the total but is never a ranked position (owner
+ * ruling 2026-11-15, as on the Concentration card; review finding S-4).
  */
 function symbolWeights(allHoldings: HoldingRow[]): Array<{ symbol: string; weightPct: number }> {
   const holdings = allHoldings.filter((h) => !h.leveragedOrInverse);
   const totalValue = holdings.reduce((s, h) => s + h.marketValue, 0);
   const bySymbol = new Map<string, number>();
   for (const h of holdings) {
+    if (isCashEquivalentSecurity({ security_type: h.securityType, fund_category: h.fundCategory })) continue;
     bySymbol.set(h.symbol, (bySymbol.get(h.symbol) ?? 0) + h.marketValue);
   }
   return Array.from(bySymbol.entries())
@@ -483,10 +627,12 @@ function symbolWeights(allHoldings: HoldingRow[]): Array<{ symbol: string; weigh
  * 100 puts the rest in its own sector (or "Unknown"); weights over 100 are
  * scaled down; either way the parts sum to the row's value exactly.
  * `lookedThrough` is false for a single-bucket row, so the sector-cap flag
- * can still skip a broad fund with NO weights.
+ * can still skip a broad fund with NO weights. An option is read through its
+ * underlying's identity (`sectorIdentity`), so a call on a fund with weights
+ * is spread by them.
  */
 function sectorParts(
-  h: HoldingRow,
+  h: SectorIdentity,
   value: number,
   fundWeights: FundSectorWeights,
 ): Array<{ sector: string; value: number; lookedThrough: boolean }> {
@@ -535,8 +681,22 @@ function snapshot(allHoldings: HoldingRow[], fundWeights: FundSectorWeights): Sn
   // instead of adding one times it. Its own money still counts once in
   // `totalValue` and in the concentration list: leverage changes the exposure
   // a position carries, not how many dollars sit in it.
+  //
+  // Options (review finding S-B1, 2026-11-15): an option enters its sector
+  // at its DELTA-ADJUSTED exposure (betaExposurePerValue, the per-dollar
+  // ratio the beta reads), so a long put SUBTRACTS from its sector; at its
+  // market value it added. An option whose Greeks cannot compute keeps its
+  // market value and is counted in optionsAtMarketValue.
+  //
+  // Denominator: the book's NET MARKET VALUE, each option at its market
+  // value. It is the dollars in the book, the same total Cash deploy uses
+  // (so both cards print the same sector weight for a scope); a delta in
+  // the denominator would make the book's size move with an option's Greeks
+  // and shrink when a hedge is added. As with leverage, the weights are then
+  // shares of net value and need not sum to 100%.
   const holdings = allHoldings.filter((h) => !h.leveragedOrInverse);
   const totalValue = holdings.reduce((s, h) => s + h.marketValue, 0);
+  const grossValue = holdings.reduce((s, h) => s + Math.abs(h.marketValue), 0);
   const sectorWeights: Record<string, number> = {};
   const factorTilts: Record<FactorColumn, Record<string, number>> = Object.fromEntries(
     FACTOR_COLUMNS.map((f) => [f, {} as Record<string, number>])
@@ -546,18 +706,27 @@ function snapshot(allHoldings: HoldingRow[], fundWeights: FundSectorWeights): Sn
   let betaGross = 0;
   let betaEstimatedGross = 0;
   let unweightedDiversified = 0;
+  let optionsAtMarketValue = 0;
   for (const h of holdings) {
     // The exposure a position carries: its money, times its signed leverage
     // factor where it has one.
     const exposureValue = h.marketValue * (h.leverageFactor ?? 1);
-    // Beta weighs a held option at its delta-adjusted exposure where the
-    // Greeks compute (betaExposurePerValue); every other row at exposureValue.
-    const betaExposure = exposureValue * h.betaExposurePerValue;
+    // A held option at its delta-adjusted exposure where the Greeks compute
+    // (betaExposurePerValue); every other row at exposureValue.
+    const deltaExposure = exposureValue * h.betaExposurePerValue;
+    if (h.optionAtMarketValue) optionsAtMarketValue++;
+    // A STORED beta of a leveraged fund (or of the fund an option is on) is a
+    // regression of the fund itself, so it already carries the leverage:
+    // applying the factor again counted it twice (a book all in a 3x fund
+    // with a stored beta of 3.0 read 9.0; review finding S-3). The factor is
+    // kept for an ESTIMATED beta (1.0 times 3) and for the sector weights.
+    const betaExposure =
+      h.leverageFactor !== null && !h.betaEstimated ? h.marketValue * h.betaExposurePerValue : deltaExposure;
     const w = totalValue > 0 ? betaExposure / totalValue : 0;
     betaWeighted += w * h.beta;
     betaGross += Math.abs(betaExposure);
     if (h.betaEstimated) betaEstimatedGross += Math.abs(betaExposure);
-    for (const part of sectorParts(h, exposureValue, fundWeights)) {
+    for (const part of sectorParts(h.sectorIdentity, deltaExposure, fundWeights)) {
       sectorWeights[part.sector] = (sectorWeights[part.sector] ?? 0) + part.value;
       if (part.sector === "Diversified" && !part.lookedThrough) unweightedDiversified += part.value;
     }
@@ -587,30 +756,44 @@ function snapshot(allHoldings: HoldingRow[], fundWeights: FundSectorWeights): Sn
       sectorWeights,
       topConcentrations,
       betaEstimatedWeight: betaGross > 0 ? betaEstimatedGross / betaGross : 0,
+      optionsAtMarketValue,
+      nearMarketNeutral: isNearMarketNeutral(totalValue, grossValue),
     },
     unweightedDiversifiedWeight: totalValue > 0 ? unweightedDiversified / totalValue : 0,
   };
 }
 
 /**
- * Give each held option whose Greeks compute its delta-adjusted beta
- * exposure per dollar of value (lib/compute/exposure.ts, `perValueDollar`:
- * delta × spot ÷ (option close × FX), the same for every account holding the
- * contract). An option whose Greeks cannot compute, and a hypothetical leg
- * on an option not held, keep 1: its market value (K2a). Greeks are only
- * computed when the scope holds an option.
+ * True when a net value is not meaningfully positive relative to the gross
+ * value (NEAR_NEUTRAL_NET_SHARE). An empty book (gross 0) is not flagged:
+ * there is nothing to measure, and every weight is already 0.
  */
-function withOptionDeltaExposure(
+function isNearMarketNeutral(netValue: number, grossValue: number): boolean {
+  if (!(grossValue > 0)) return false;
+  return netValue <= NEAR_NEUTRAL_NET_SHARE * grossValue;
+}
+
+/**
+ * The delta-adjusted exposure per dollar of a held option's value, by
+ * security id (lib/compute/exposure.ts, `perValueDollar`: delta x spot /
+ * (option close x FX), the same for every account holding the contract), or
+ * undefined when the Greeks cannot compute; such a row is then read at its
+ * market value and counted. A hypothetical leg on an option not held reads
+ * market value too. Greeks are only computed when the rows hold an option.
+ * One reader for the What-if and Cash deploy, so the two cards weigh an
+ * option the same way (review finding S-B1, 2026-11-15).
+ */
+export function optionDeltaPerValueReader(
   db: Database.Database,
   accountIds: number[] | undefined,
-  rows: HoldingRow[],
-): (securityId: number) => number {
-  const hasOption = rows.some((r) => r.securityType?.trim().toLowerCase() === "option");
-  if (!hasOption) return () => 1;
+  rows: Array<{ securityType: string | null }>,
+): (securityId: number) => number | undefined {
+  const hasOption = rows.some((r) => isOptionType(r.securityType));
+  if (!hasOption) return () => undefined;
   const perValue = getOptionExposureMap(db, accountIds).perValueDollar;
   return (securityId) => {
     const ratio = perValue.get(securityId);
-    return ratio !== undefined && Number.isFinite(ratio) ? ratio : 1;
+    return ratio !== undefined && Number.isFinite(ratio) ? ratio : undefined;
   };
 }
 
@@ -775,6 +958,9 @@ function computeFlags(
   unweightedDiversifiedWeight: number,
 ): ExposureFlag[] {
   const flags: ExposureFlag[] = [];
+  // Every flag below is a share of the net value; on a near market-neutral
+  // scope those shares are not meaningful, so none is raised.
+  if (after.nearMarketNeutral) return flags;
   const top1 = after.topConcentrations[0];
   if (top1 && top1.weightPct > caps.top1_max) {
     flags.push({
@@ -842,8 +1028,12 @@ export function computeExposureDelta(
   legs: HypotheticalLeg[]
 ): ExposureDelta {
   const loaded = loadCurrentHoldings(db, accountIds);
-  const deltaExposurePerValue = withOptionDeltaExposure(db, accountIds, loaded);
-  const current = loaded.map((h) => ({ ...h, betaExposurePerValue: deltaExposurePerValue(h.securityId) }));
+  const deltaExposurePerValue = optionDeltaPerValueReader(db, accountIds, loaded);
+  const current = loaded.map((h) => {
+    if (!isOptionType(h.securityType)) return h;
+    const ratio = deltaExposurePerValue(h.securityId);
+    return { ...h, betaExposurePerValue: ratio ?? 1, optionAtMarketValue: ratio === undefined };
+  });
   const fundWeights = getEtfSectorWeights(db);
   const before = snapshot(current, fundWeights).snapshot;
   const resolved = applyLegs(db, current, legs, (symbol) => {
@@ -855,6 +1045,7 @@ export function computeExposureDelta(
       securityType: sym.securityType,
       sector: sym.sector,
       fundCategory: sym.fundCategory,
+      sectorIdentity: sym.sectorIdentity,
       currency: sym.currency,
       multiplier: sym.multiplier,
       quantity: 0,
@@ -863,8 +1054,9 @@ export function computeExposureDelta(
       beta: sym.beta,
       betaEstimated: sym.betaEstimated,
       // An option leg on a contract not held: no Greeks were computed for
-      // it, so its beta is weighted at market value.
+      // it, so its beta and sector weight are at market value (counted).
       betaExposurePerValue: 1,
+      optionAtMarketValue: isOptionType(sym.securityType),
       factors: sym.factors,
       leveragedOrInverse: sym.leveragedOrInverse,
       leverageFactor: sym.leverageFactor,

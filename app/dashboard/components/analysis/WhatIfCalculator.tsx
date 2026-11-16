@@ -2,7 +2,7 @@
 
 import { CHIP_TONE_TEXT } from "@/app/dashboard/components/chip-tone-text";
 import { Fragment, useState } from "react";
-import { Money, Pct, PrivateNumberInput, PrivateText } from "@/lib/privacy/components";
+import { Count, Money, Pct, PrivateNumberInput, PrivateText } from "@/lib/privacy/components";
 import { rendersAsZero } from "@/lib/format";
 import { FACTOR_COLUMNS, FACTOR_LABELS, type FactorColumn } from "@/lib/factors";
 import type { ExposureDelta, ExposureFlag, HypotheticalLeg } from "@/lib/compute/exposure-delta";
@@ -186,12 +186,31 @@ export function WhatIfCalculator({ scope }: Props) {
               <span className="font-mono">{delta.leveragedFundsNotModelled.join(", ")}</span>
             </p>
           )}
+          {/* Net value at or under 5% of gross (NEAR_NEUTRAL_NET_SHARE in
+              exposure-delta.ts): every ratio is a share of a near-zero or
+              negative number, so none is printed and no flag is raised. */}
+          {!ratiosMeaningful(delta) && (
+            <p className="text-xs text-ink-faint">
+              This scope is close to market-neutral: its net value is small next to its long and short
+              positions, so beta, concentrations and weights as shares of net value are not meaningful
+              and are not shown.
+            </p>
+          )}
           <DeltaTable delta={delta} />
+          {/* An option enters the sector weights at its delta-adjusted
+              exposure; one whose Greeks cannot compute is at market value
+              (review finding S-B1, 2026-11-15). */}
+          {ratiosMeaningful(delta) && optionsAtMarketValue(delta) > 0 && (
+            <p className="text-[10px] text-ink-faint">
+              Options are weighted at their delta-adjusted exposure; options without the inputs to compute it
+              are counted at market value: <Count value={optionsAtMarketValue(delta)} />.
+            </p>
+          )}
           {/* Sector and factor weights are shares of the modelled book's NET
               value, with each position at its exposure: a short or an inverse
               fund counts negative and a leveraged fund at its multiple, so on
               such a scope a row can read above 100% or below 0% (K2e). */}
-          {weightsLeaveZeroToHundred(delta) && (
+          {ratiosMeaningful(delta) && weightsLeaveZeroToHundred(delta) && (
             <p className="text-[10px] text-ink-faint">
               Weights are shares of the book&apos;s net value: shorts and inverse funds count negative and
               leveraged funds at their multiple, so a row can read above 100% or below 0%.
@@ -235,7 +254,7 @@ function FlagMessage({ flag }: { flag: ExposureFlag }) {
   );
 }
 
-interface Row {
+export interface Row {
   label: string;
   /** A short qualifier printed under the label. */
   note?: React.ReactNode;
@@ -245,7 +264,7 @@ interface Row {
   indent?: boolean;
 }
 
-interface Section {
+export interface Section {
   title: string;
   rows: Row[];
 }
@@ -370,13 +389,38 @@ function buildFactorRows(delta: ExposureDelta): Row[] {
   return rows;
 }
 
-function DeltaTable({ delta }: { delta: ExposureDelta }) {
-  const sections: Section[] = [
+/** Option rows weighted at market value (no Greeks), the larger side. */
+function optionsAtMarketValue(delta: ExposureDelta): number {
+  return Math.max(delta.before.optionsAtMarketValue ?? 0, delta.after.optionsAtMarketValue ?? 0);
+}
+
+/**
+ * False when either side is close to market-neutral (`nearMarketNeutral`):
+ * shares of a near-zero or negative net value are not meaningful.
+ */
+export function ratiosMeaningful(delta: ExposureDelta): boolean {
+  return !delta.before.nearMarketNeutral && !delta.after.nearMarketNeutral;
+}
+
+/**
+ * The table's sections. On a near market-neutral scope only the Total Value
+ * row is kept: beta, concentrations, sector and factor weights are all
+ * shares of the net value.
+ */
+export function buildSections(delta: ExposureDelta): Section[] {
+  if (!ratiosMeaningful(delta)) {
+    return [{ title: "Headline", rows: buildHeadlineRows(delta).slice(0, 1) }];
+  }
+  return [
     { title: "Headline", rows: buildHeadlineRows(delta) },
     { title: "Top 3 concentrations", rows: buildConcentrationRows(delta) },
     { title: "Sector weights · material moves", rows: buildSectorRows(delta) },
     { title: "Factor tilts · material moves", rows: buildFactorRows(delta) },
   ].filter((s) => s.rows.length > 0);
+}
+
+function DeltaTable({ delta }: { delta: ExposureDelta }) {
+  const sections = buildSections(delta);
 
   return (
     <div className="bg-canvas border border-edge rounded-lg overflow-hidden">
