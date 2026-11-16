@@ -298,7 +298,13 @@ export function concentrationGrossValue(positions: ConcentrationPosition[]): num
  *    share of the whole portfolio and cash dilutes concentration.
  *  - `risky` is every non-cash position, in the universe's own gross order;
  *    only these are ranked, summed into a top-N share or warned about.
- *  - `cash` is ONE bucket: every cash-equivalent holding in scope together.
+ *  - `cash` is ONE bucket: every cash-equivalent holding in scope with a
+ *    POSITIVE value, together.
+ *  - A cash-equivalent position whose value is NEGATIVE is borrowing (a
+ *    debit balance carried as a cash fund), i.e. leverage: it must never
+ *    dilute concentration. It is left out of `cash` AND out of `grossValue`
+ *    and reported in `negativeCash`, so a card can say borrowed cash is not
+ *    counted (review 2026-11-15, R4).
  *  - `herfindahl` is Σ (|mv_i| / grossValue)² over the RISKY positions only
  *    (cash is a riskless bucket and adds nothing to single-name risk), so
  *    more cash lowers the index. It is the single-name risk of an equal,
@@ -311,15 +317,23 @@ export interface ConcentrationSplit {
   grossValue: number;
   risky: ConcentrationPosition[];
   cash: { marketValue: number; weight: number; holdingCount: number };
+  /** Cash-equivalent positions valued below zero (borrowing): their summed
+   *  (negative) value and count. Not in `cash`, not in `grossValue`. */
+  negativeCash: { marketValue: number; holdingCount: number };
   herfindahl: number | null;
 }
 
 export function splitConcentrationUniverse(positions: ConcentrationPosition[]): ConcentrationSplit {
-  const grossValue = concentrationGrossValue(positions);
   const risky = positions.filter((p) => !p.isCashEquivalent);
-  const cashRows = positions.filter((p) => p.isCashEquivalent);
+  const cashRows = positions.filter((p) => p.isCashEquivalent && p.marketValue > 0);
+  const borrowedRows = positions.filter((p) => p.isCashEquivalent && p.marketValue < 0);
   const cashMarketValue = cashRows.reduce((s, p) => s + p.marketValue, 0);
-  const cashGross = cashRows.reduce((s, p) => s + Math.abs(p.marketValue), 0);
+  // The whole book less any borrowed cash: Σ |risky| + Σ positive cash,
+  // summed in the universe's own order (a book with no borrowed cash keeps
+  // the exact figure it had).
+  const grossValue = concentrationGrossValue(
+    positions.filter((p) => !(p.isCashEquivalent && p.marketValue < 0))
+  );
   const herfindahl =
     grossValue > 0 && risky.length > 0
       ? risky.reduce((s, p) => s + (Math.abs(p.marketValue) / grossValue) ** 2, 0)
@@ -329,8 +343,12 @@ export function splitConcentrationUniverse(positions: ConcentrationPosition[]): 
     risky,
     cash: {
       marketValue: cashMarketValue,
-      weight: grossValue > 0 ? cashGross / grossValue : 0,
+      weight: grossValue > 0 ? cashMarketValue / grossValue : 0,
       holdingCount: cashRows.length,
+    },
+    negativeCash: {
+      marketValue: borrowedRows.reduce((s, p) => s + p.marketValue, 0),
+      holdingCount: borrowedRows.length,
     },
     herfindahl,
   };
