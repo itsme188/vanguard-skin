@@ -7,11 +7,21 @@ export interface TradeQuestion {
   tradeNumber: number;
   symbol: string;
   question: string;
+  /**
+   * The stable key of the trade the question is about: its closing
+   * transaction id. The client sends it back with the answer, and phase 2
+   * binds the answer to the trade with this id, never to a row number (the
+   * trade set is computed again in phase 2 and its order can change).
+   */
+  saleTransactionId: number;
 }
 
 export interface TradeAnswer {
+  /** Row number in the phase-1 table. Used to bind only when no key is sent (an older client). */
   tradeNumber: number;
   answer: string;
+  /** The question's `saleTransactionId`, echoed back. Absent from an older client. */
+  saleTransactionId?: number | null;
 }
 
 /**
@@ -186,9 +196,19 @@ Keep questions concise and specific. One question per trade maximum.`;
     prompt,
   }) as unknown as { object: QuestionsResult };
 
-  return (object.questions ?? []).map((q) => ({
-    tradeNumber: q.trade_number,
-    symbol: q.symbol,
-    question: q.question,
-  }));
+  // A question whose row number names no trade in the table cannot be keyed
+  // to a trade, so it is dropped rather than shown against a guess.
+  const asked = Array.isArray(object?.questions) ? object.questions : [];
+  return asked.flatMap((q) => {
+    const trade = groupedTrades[q.trade_number - 1];
+    if (!trade || typeof q.question !== "string") return [];
+    return [
+      {
+        tradeNumber: q.trade_number,
+        symbol: trade.symbol,
+        question: q.question,
+        saleTransactionId: trade.saleTransactionId,
+      },
+    ];
+  });
 }

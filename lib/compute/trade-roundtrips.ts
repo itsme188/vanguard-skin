@@ -306,8 +306,14 @@ export function detectNewTradeReviewPeriods(db: Database.Database): ReviewPeriod
   return reviewPeriods(db, undefined, true);
 }
 
+/**
+ * The months the Trade Reviews picker offers. A month with closes but no
+ * reviewable round trip (every close lacks enough lot history) is left out:
+ * generating it can only fail with "No fully-tracked trades found". A saved
+ * review of such a month still shows; its card reads today's counts itself.
+ */
 export function getAvailableReviewPeriods(db: Database.Database, accountId: number): ReviewPeriod[] {
-  return reviewPeriods(db, accountId, false);
+  return reviewPeriods(db, accountId, false).filter((p) => p.reviewableCount > 0);
 }
 
 /**

@@ -163,22 +163,27 @@ describe("risk drill-down universe == Concentration 'Top 10 Positions' universe"
     );
   });
 
-  it("with sweeps in the book, the drawer is the concentration top 10 minus the sweeps", () => {
+  it("with sweeps in the book, the drawer is the concentration top 10's largest names", () => {
     const drawer = getHoldingsInBucket(db, "all", { kind: "risk", topN: 10 });
     const concentration = getConcentrationMetrics(db).top_positions.map((p) => p.symbol);
 
-    // The chart's own top 10 is value-ranked, so both sweeps sit in it.
-    expect(concentration.slice(0, 2)).toEqual(["SWEEP1", "SWEEP2"]);
-    expect(drawer.map((r) => r.symbol).sort()).toEqual(
-      concentration.filter((s) => !s.startsWith("SWEEP")).sort()
-    );
+    // Owner ruling 2026-11-15: cash equivalents are one "Cash and
+    // equivalents" line, never a ranked position, so the chart's top 10 is
+    // the ten equities. The drawer leaves the sweeps out BEFORE it takes its
+    // top 10 (review 2026-11-15, R5), so it lists the same ten names.
+    expect(concentration).not.toContain("SWEEP1");
+    expect(concentration).not.toContain("SWEEP2");
+    expect(concentration).toHaveLength(10);
+    expect(drawer).toHaveLength(10);
+    expect(drawer.map((r) => r.symbol).sort()).toEqual([...concentration].sort());
   });
 
   it("keeps the 7th and 8th largest positions and rejects smaller high-beta names", () => {
     // Pre-fix regression: ORDER BY market_value * COALESCE(beta, 1) put
     // EQ09/EQ10 (beta 3.0) ahead of EQ07/EQ08 (beta 0.3) even though EQ07 is
-    // twice EQ09's size -- the exact live symptom.
-    const symbols = getHoldingsInBucket(db, "all", { kind: "risk", topN: 10 }).map((r) => r.symbol);
+    // twice EQ09's size -- the exact live symptom. A top 8: the sweeps no
+    // longer take slots (R5), so a top 10 now holds all ten equities.
+    const symbols = getHoldingsInBucket(db, "all", { kind: "risk", topN: 8 }).map((r) => r.symbol);
     expect(symbols).toContain("EQ07");
     expect(symbols).toContain("EQ08");
     expect(symbols).not.toContain("EQ09");
@@ -203,7 +208,7 @@ describe("risk drill-down ranks by risk contribution, not market value", () => {
   });
 
   it("the order is weight x volatility, which is NOT the market-value order", () => {
-    const rows = getHoldingsInBucket(db, "all", { kind: "risk", topN: 10 });
+    const rows = getHoldingsInBucket(db, "all", { kind: "risk", topN: 8 });
     // weight x vol: EQ02 .45, EQ04 .42, EQ06 .35, EQ08 .24, EQ07 .18,
     //               EQ05 .15, EQ03 .12, EQ01 .10
     expect(rows.map((r) => r.symbol)).toEqual([
@@ -217,7 +222,9 @@ describe("risk drill-down ranks by risk contribution, not market value", () => {
 
   it("every row's risk contribution and weight come from computePositionRisk itself", () => {
     const rows = getHoldingsInBucket(db, "all", { kind: "risk", topN: 10 });
-    const card = computePositionRisk(db, { topN: 10 });
+    // The drawer asks computePositionRisk for its top 10 plus the two sweeps
+    // it leaves out (R5), and projects that one computation.
+    const card = computePositionRisk(db, { topN: 12 });
     for (const row of rows) {
       const position = card.positions.find((p) => p.securityId === row.securityId);
       expect(position, `${row.symbol} missing from the Position-Level Risk card`).toBeDefined();
@@ -242,12 +249,15 @@ describe("risk drill-down excludes positions with no measurable volatility", () 
     expect(rows[0].symbol).not.toMatch(/^SWEEP/);
   });
 
-  it("dropping the sweeps shortens the list rather than back-filling smaller names", () => {
-    // The universe is the concentration top 10; excluded rows are removed
-    // from it, never replaced by rank 11/12.
+  it("the sweeps are left out BEFORE the top N is taken, so the next names fill the list (R5)", () => {
+    // The chart's top 10 is cash-free (owner ruling 2026-11-15); the drawer
+    // matches it, so ranks 9 and 10 among the equities are in.
     const rows = getHoldingsInBucket(db, "all", { kind: "risk", topN: 10 });
-    expect(rows).toHaveLength(8);
-    expect(rows.map((r) => r.symbol)).not.toContain("EQ09");
+    expect(rows).toHaveLength(10);
+    expect(rows.map((r) => r.symbol)).toContain("EQ09");
+    expect(rows.map((r) => r.symbol)).toContain("EQ10");
+    // A top 8 stops at the eighth equity: never more than N rows.
+    expect(getHoldingsInBucket(db, "all", { kind: "risk", topN: 8 })).toHaveLength(8);
   });
 
   it("still carries the drill-down display columns (sector, factors, beta)", () => {

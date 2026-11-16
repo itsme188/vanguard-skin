@@ -8,12 +8,13 @@ import { adjustedMarketValueSQL } from "@/lib/valuation";
 import { getRiskFreeRate } from "@/lib/queries/risk-free-rate";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 import {
-  concentrationGrossValue,
   getConcentrationUniverse,
+  splitConcentrationUniverse,
 } from "@/lib/queries/concentration-universe";
 import { accountIdsFilterSql, normalizeAccountIds } from "@/lib/compute/factors";
 import { buildFlowAdjustedIndex, fetchNetFlowsByDate, fetchAnchorSourceSeamDates } from "@/lib/compute/flow-adjusted";
 import { addDays, calendarDaysBetween, todayET } from "@/lib/calendar/date-utils";
+import { isMarketClosed, nextTradingDay } from "@/lib/calendar/market-holidays";
 import { isCashEquivalentSecurity } from "@/lib/compute/cash-equivalents";
 import { liveOptionExpirationSql } from "@/lib/compute/option-expiry";
 import {
@@ -101,6 +102,14 @@ export interface PortfolioRiskMetrics {
   top5Concentration: number; // 0-1
   top5Positions: PositionWeight[];
   positionCount: number;
+  /** Cash and equivalents' share of the whole book, 0-1 (see ConcentrationResult). */
+  cashWeight: number;
+  cashMarketValue: number;
+  cashHoldingCount: number;
+  /** Invested-only Herfindahl, cash left out (see ConcentrationResult). */
+  investedHerfindahl: number | null;
+  /** Borrowed cash (see ConcentrationResult). */
+  negativeCashHoldingCount: number;
   dataPoints: number; // number of daily valuations used
   /** Anchor-source seam days bridged out of the return stream (see
    *  fetchAnchorSourceSeamDates) — 0 on seam-free series. Quantifies
@@ -294,7 +303,7 @@ export function computeRiskMetrics(
       ? fetchAnchorSourceSeamDates(db, accountIds, points[0].date, points[points.length - 1].date)
       : [];
   const { index, returns, bridgedDays } = buildFlowAdjustedIndex(points, flows, seamDates);
-  const logReturns = returns.map((r) => r.logReturn);
+  const logReturns = foldReturnsIntoSessions(returns);
 
   const rawValueByDate = new Map(points.map(p => [p.date, p.value]));
   const maxDrawdownIdx = computeMaxDrawdown(index);
@@ -331,8 +340,17 @@ export function computeRiskMetrics(
   const { volatility, sharpeRatio } = computeVolatility(logReturns, points.length, riskFreeRate);
 
   // 3. Compute concentration from current holdings
-  const { herfindahl, top5Concentration, top5Positions, positionCount } =
-    computeConcentration(db, accountIds, options?.asOfDate);
+  const {
+    herfindahl,
+    top5Concentration,
+    top5Positions,
+    positionCount,
+    cashWeight,
+    cashMarketValue,
+    cashHoldingCount,
+    investedHerfindahl,
+    negativeCashHoldingCount,
+  } = computeConcentration(db, accountIds, options?.asOfDate);
 
   return {
     maxDrawdown,
@@ -344,6 +362,11 @@ export function computeRiskMetrics(
     top5Concentration,
     top5Positions,
     positionCount,
+    cashWeight,
+    cashMarketValue,
+    cashHoldingCount,
+    investedHerfindahl,
+    negativeCashHoldingCount,
     dataPoints: valuations.length,
     seriesStart: points.length > 0 ? points[0].date : null,
     seriesEnd: points.length > 0 ? points[points.length - 1].date : null,
@@ -458,6 +481,33 @@ function computeCurrentDrawdown(
 
 // ─── Volatility & Sharpe ────────────────────────────────────────
 
+/**
+ * One log return per trading SESSION (2026-11-15). Volatility and Sharpe
+ * annualise with sqrt(252) and mean x 252, so each observation must be one
+ * session. daily_valuations also carries weekend and holiday rows (a live
+ * sync or a month-end statement can land on one); left as observations they
+ * added near-zero "returns" and read volatility too low.
+ *
+ * A return that lands on a closed day is added (log returns sum) into the
+ * next trading session's return: no market move and no flow is lost, because
+ * the index, the flow adjustment and the seam bridging all still run on
+ * every row (a flow dated on a weekend is stripped from that weekend's step,
+ * and its residue reaches the session through the sum). When that session's
+ * own step was bridged, the closed-day move stands alone as the session.
+ * Drawdowns keep reading the full index; only the return observations are
+ * grouped.
+ */
+export function foldReturnsIntoSessions(
+  returns: { date: string; logReturn: number }[]
+): number[] {
+  const bySession = new Map<string, number>();
+  for (const r of returns) {
+    const session = isMarketClosed(r.date) ? nextTradingDay(r.date) : r.date;
+    bySession.set(session, (bySession.get(session) ?? 0) + r.logReturn);
+  }
+  return [...bySession.values()];
+}
+
 function computeVolatility(
   returns: number[],
   seriesLength: number,
@@ -489,6 +539,31 @@ function computeVolatility(
 
 // ─── Concentration (Herfindahl & Top-5) ─────────────────────────
 
+export interface ConcentrationResult {
+  /** Σ squared whole-book weights of the RISKY positions; null when there is
+   *  no risky position (empty book, or all cash). */
+  herfindahl: number | null;
+  /** Top-5 risky positions' share of the whole book, 0-1. */
+  top5Concentration: number;
+  top5Positions: PositionWeight[];
+  /** Risky (non-cash) positions only. */
+  positionCount: number;
+  /** "Cash and equivalents": every cash-equivalent holding's share of the
+   *  whole book, 0-1. Never ranked, never a single-position warning. */
+  cashWeight: number;
+  /** Signed USD value of that bucket. */
+  cashMarketValue: number;
+  /** How many cash-equivalent securities make up the bucket. */
+  cashHoldingCount: number;
+  /** The Herfindahl over INVESTED holdings only: weights over the risky
+   *  positions' own gross value, cash left out (owner ruling 28 = B,
+   *  2026-11-16). null exactly when `herfindahl` is. */
+  investedHerfindahl: number | null;
+  /** Cash-equivalent holdings valued below zero (borrowing): never dilution,
+   *  never in the cash bucket (review 2026-11-15, R4). */
+  negativeCashHoldingCount: number;
+}
+
 /**
  * Herfindahl / top-5 concentration for the Risk Decomposition "Position
  * Concentration" block.
@@ -496,6 +571,11 @@ function computeVolatility(
  * Weights are GROSS — |market value| over the book's Σ |market value| (user
  * ruling, decision 2026-09-22) — so the index is bounded in (0, 1] on a book
  * that carries shorts.
+ *
+ * Cash equivalents (owner ruling 2026-11-15) stay in that denominator but are
+ * one "Cash and equivalents" bucket: never ranked, and left out of the sum of
+ * squares, so a book holding a share c in cash has an index of at most
+ * (1 − c)². See splitConcentrationUniverse.
  *
  * The position universe is NOT built here — it comes from
  * `getConcentrationUniverse`, the same helper the Analysis · Diagnostics
@@ -515,51 +595,52 @@ export function computeConcentration(
   db: Database.Database,
   accountIds?: number[],
   asOfDate?: string
-): {
-  herfindahl: number | null;
-  top5Concentration: number;
-  top5Positions: PositionWeight[];
-  positionCount: number;
-} {
+): ConcentrationResult {
   const rows = getConcentrationUniverse(db, accountIds, { asOfDate });
 
-  if (rows.length === 0) {
-    return { herfindahl: null, top5Concentration: 0, top5Positions: [], positionCount: 0 };
-  }
-
-  // GROSS denominator — Σ |market value| — per user ruling, decision
-  // 2026-09-22. A signed denominator let a short both add w² and shrink the
-  // book it was measured against, so the index ran above 1 (long 100 /
-  // short −60 read 8.5). Gross weights keep it in (0, 1]; see
-  // concentrationGrossValue for the derivation. Zero only on an empty
-  // universe, which is the same "nothing to measure" line
-  // getConcentrationMetrics draws.
-  const grossValue = concentrationGrossValue(rows);
-  if (grossValue <= 0) {
-    return { herfindahl: null, top5Concentration: 0, top5Positions: [], positionCount: 0 };
+  // GROSS denominator over the WHOLE book, cash included (decision
+  // 2026-09-22; owner ruling 2026-11-15). Cash equivalents are one bucket:
+  // they dilute every weight but are never ranked, and the Herfindahl sums
+  // the risky positions' squared weights only. splitConcentrationUniverse is
+  // the one copy of that rule; getConcentrationMetrics reads it too.
+  const split = splitConcentrationUniverse(rows);
+  const cash = {
+    cashWeight: split.cash.weight,
+    cashMarketValue: split.cash.marketValue,
+    cashHoldingCount: split.cash.holdingCount,
+    negativeCashHoldingCount: split.negativeCash.holdingCount,
+  };
+  if (split.grossValue <= 0 || split.risky.length === 0) {
+    return {
+      herfindahl: null,
+      investedHerfindahl: null,
+      top5Concentration: 0,
+      top5Positions: [],
+      positionCount: 0,
+      ...cash,
+    };
   }
 
   // Only the WEIGHT is gross — marketValue keeps its sign so a short still
   // renders as negative dollars on the card.
-  const positions: PositionWeight[] = rows.map(r => ({
+  const positions: PositionWeight[] = split.risky.map(r => ({
     symbol: r.symbol,
     securityName: r.securityName,
     marketValue: r.marketValue,
-    weight: Math.abs(r.marketValue) / grossValue,
+    weight: Math.abs(r.marketValue) / split.grossValue,
   }));
 
-  // Herfindahl index: sum of squared weights
-  const herfindahl = positions.reduce((s, p) => s + p.weight ** 2, 0);
-
-  // Top-5 concentration
+  // Top-5 concentration (risky positions, whole-book weights)
   const top5 = positions.slice(0, 5);
   const top5Concentration = top5.reduce((s, p) => s + p.weight, 0);
 
   return {
-    herfindahl,
+    herfindahl: split.herfindahl,
+    investedHerfindahl: split.investedHerfindahl,
     top5Concentration,
     top5Positions: top5,
     positionCount: positions.length,
+    ...cash,
   };
 }
 

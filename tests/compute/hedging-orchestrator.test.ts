@@ -97,6 +97,10 @@ describe("computeDefenseAnalysis", () => {
 
     // ZZM: no shares held, just a price for the option's underlying valuation
     const zzmId = seedSecurity("ZZM", { type: "ETF" });
+    // An equity fund with no sector and no look-through: the book route at
+    // its beta. A fund of unknown type is not credited (owner ruling
+    // 2026-11-15, K4b), so the fixture states its asset class.
+    db.prepare("UPDATE securities SET asset_class = 'equity' WHERE id = ?").run(zzmId);
     seedPrice(zzmId, 220);
 
     // 4 ZZM puts, strike 200, expiry +180d, multiplier 100
@@ -117,7 +121,7 @@ describe("computeDefenseAnalysis", () => {
     seedPrice(zzbId, 200);
   });
 
-  it("builds ZZA hedged_long, ZZM proxy via assumed beta, and ZZB naked_short, with a positive protection ratio", () => {
+  it("builds ZZA hedged_long, ZZM not credited (beta unmeasured, ruling 19 = B), and ZZB naked_short, with a positive protection ratio", () => {
     const result = computeDefenseAnalysis(db);
 
     expect(result.summary.protectionRatio).not.toBeNull();
@@ -129,10 +133,11 @@ describe("computeDefenseAnalysis", () => {
 
     const zzmProxy = result.proxies.find((p) => p.underlying === "ZZM");
     expect(zzmProxy).toBeDefined();
-    expect(zzmProxy!.route).toBe("beta");
-    expect(zzmProxy!.betaSource).toBe("assumed");
+    expect(zzmProxy!.route).toBe("not_credited");
+    expect(zzmProxy!.betaSource).toBe("unmeasured");
+    expect(result.notCreditedHedges.some((h) => h.underlying === "ZZM")).toBe(true);
     expect(
-      result.diagnostics.some((d) => d.kind === "assumed_beta" && d.symbol === "ZZM")
+      result.diagnostics.some((d) => d.kind === "unmeasured_beta" && d.symbol === "ZZM")
     ).toBe(true);
 
     const zzbBet = result.standaloneBets.find((b) => b.underlying === "ZZB");

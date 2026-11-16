@@ -1,12 +1,15 @@
 /**
  * macro-themes.ts — AI composer for weekly macro themes per scope.
  *
- * Cache-first via analysis_macro_themes. On miss, builds a 7d signal blob
- * from research_articles + calendar_events + level_alerts, fills the prompt in
- * priority order under a size cap (whole items only), calls the model,
- * validates with Zod, CHECKS EACH THEME AGAINST THE INPUT IT CITES (dropping
- * any that fail), attaches per-scope exposure + top-3 contributors, UPSERTs,
- * returns.
+ * Cache-first via analysis_macro_themes. The themes TEXT is one reply per
+ * week shared by every scope (the model input is the same for all of them):
+ * on a miss for one scope, another scope's reply for the week is reused with
+ * no AI call; otherwise builds a 7d signal blob from research_articles +
+ * calendar_events + level_alerts, fills the prompt in priority order under a
+ * size cap (whole items only), calls the model ONCE, validates with Zod,
+ * CHECKS EACH THEME AGAINST THE INPUT IT CITES (dropping any that fail),
+ * attaches each scope's exposure + top-3 contributors and writes every
+ * scope's row in one transaction.
  */
 
 import { z } from "zod";
@@ -112,9 +115,18 @@ export function rankThemeExposures(
 // ---------------------------------------------------------------------------
 
 import type Database from "better-sqlite3";
+import { addDays, easternDayStartIso } from "@/lib/calendar/date-utils";
 
 const MIN_SIGNAL_THRESHOLD = 2;
-const ARTICLE_LOAD_LIMIT = 200;
+/**
+ * A safety bound on one week's article read, not a selection: which
+ * articles are SENT is decided by buildMacroPromptInputs (held relevance,
+ * then newest). It sits far above a real week (the busiest measured week
+ * held under 300), so the ranking sees the whole window. At 200 the read
+ * dropped a busy week's OLDEST articles before the ranking ran (review
+ * 2026-11-15, R9).
+ */
+const ARTICLE_LOAD_LIMIT = 2000;
 
 export interface ArticleSignal {
   id: number;
@@ -174,14 +186,26 @@ export function buildMacroSignalBlob(
   // limit is a safety bound on the week, not the selection: which articles are
   // SENT is decided by buildMacroPromptInputs (held-relevance, then newest),
   // so a held name's article is not lost for being older than 60 others.
+  //
+  // Window: weekOf is the Monday that opens the cache week
+  // (currentThemeWeek; the Sunday briefing writes the upcoming Monday, so its
+  // read is exactly the 7 days before weekOf). The read starts 7 days before
+  // weekOf and ENDS where week weekOf ends, so a past week's regeneration
+  // never reads articles dated after that week (review 2026-11-15, R9).
+  // The week ends at EASTERN midnight, not UTC midnight: the theme week is an
+  // Eastern week (currentThemeWeek), and SQLite's datetime('YYYY-MM-DD') is
+  // midnight UTC, which is Sunday 19:00 or 20:00 Eastern. A UTC bound dropped
+  // every article that arrived on the week's last evening.
+  // datetime() on both sides: stored times are space- or T-separated.
   const articleRows = db.prepare(
     `SELECT id, subject, summary, sentiment, mentioned_symbols, substr(raw_text, 1, 2000) AS excerpt
      FROM research_articles
      WHERE datetime(received_at) >= datetime(?, '-7 days')
+       AND datetime(received_at) < datetime(?)
        AND is_relevant = 1
      ORDER BY datetime(received_at) DESC, id DESC
      LIMIT ${ARTICLE_LOAD_LIMIT}`
-  ).all(weekOf) as Array<{
+  ).all(weekOf, easternDayStartIso(addDays(weekOf, 7))) as Array<{
     id: number; subject: string; summary: string | null; sentiment: string | null;
     mentioned_symbols: string | null; excerpt: string | null;
   }>;
@@ -241,7 +265,7 @@ import { generateTextForFeature, AIRefusalError } from "@/lib/ai/generate";
 import { parseJsonArrayLenient } from "@/lib/ai/extract-json";
 import { resolveFeatureModel } from "@/lib/ai/models";
 import { resolveScope } from "@/lib/queries/accounts";
-import { getCachedMacroThemes, upsertMacroThemes } from "@/lib/queries/analysis-macro-themes";
+import { getCachedMacroThemes } from "@/lib/queries/analysis-macro-themes";
 import { computeFactorAnalysis } from "@/lib/compute/factors";
 import { isCashEquivalentSecurity } from "@/lib/compute/cash-equivalents";
 import { getHeldSymbolSet, heldSymbolsMentioned } from "@/lib/research/held-symbol-relevance";
@@ -281,8 +305,12 @@ Inputs:
 // is left (never less than three quarters). An item is added whole or not at
 // all. Articles are ranked by how many HELD names they mention (share-class
 // aware, option underlyings included), then newest first.
+//
+// Owner ruling 2026-11-15: the cap is raised fourfold (16,000 to 64,000
+// characters) now that the week makes ONE AI call instead of four; at 16,000
+// most of a week's articles did not fit.
 
-export const MACRO_PROMPT_INPUT_CAP = 16000;
+export const MACRO_PROMPT_INPUT_CAP = 64000;
 export const MACRO_EVENT_BUDGET_SHARE = 0.2;
 export const MACRO_ALERT_BUDGET_SHARE = 0.05;
 
@@ -739,45 +767,294 @@ export function dropCashEquivalentContributors<T extends { symbol: string }>(
   return contributors.filter((c) => !cash.has(c.symbol));
 }
 
+
+// ---------------------------------------------------------------------------
+// One reply per week, shared by every scope
+// ---------------------------------------------------------------------------
+//
+// The model input is the same for every scope (buildMacroSignalBlob ignores
+// the scope: signals are portfolio-wide), so the themes TEXT is one answer per
+// week. It used to be bought four times (the Sunday briefing ran the four
+// scopes in parallel) and the four rows of one week carried different theme
+// names for the same inputs. Now one reply is generated per week and every
+// scope's row is written from it; only the exposure figures, rank and top
+// holdings (no AI) differ by scope.
+
+/** The scopes that get a row of their own in `analysis_macro_themes`. */
+export const MACRO_THEME_SCOPES = ["all", "vanguard", "ibkr", "roth"] as const;
+
+/** The fields computed per scope from the book, never by the model. */
+type ScopeExposureFields = "exposure_bucket" | "exposure_pct" | "exposure_rank" | "top_contributors";
+export type MacroThemeCore = Omit<MacroTheme, ScopeExposureFields>;
+
+function toCoreTheme(t: MacroTheme): MacroThemeCore {
+  // Destructured out, so a stale figure can never ride along.
+  const { exposure_bucket: _b, exposure_pct: _p, exposure_rank: _r, top_contributors: _c, ...core } = t;
+  void _b; void _p; void _r; void _c;
+  return core;
+}
+
+/**
+ * Attach the scope's exposure to each theme from computeFactorAnalysis().tilts
+ * (per-factor weighted exposure across the 9 FACTOR_COLUMNS): the percentage,
+ * the this-week marker, the (stored-only) bucket and the top three holdings.
+ * No AI call and no write.
+ */
+export function attachScopeExposure(
+  db: Database.Database,
+  scope: string,
+  core: ReadonlyArray<MacroThemeCore>,
+): MacroTheme[] {
+  if (core.length === 0) return [];
+  const accountIds = resolveScope(db, scope);
+  const factorResult = computeFactorAnalysis(db, { accountIds });
+  const tilts = Array.isArray(factorResult?.tilts) ? factorResult.tilts : [];
+
+  const tiltFor = (t: MacroThemeCore) => tilts.find((tilt) => tilt.factor === t.factor_label) ?? null;
+  const ranks = rankThemeExposures(core.map((t) => tiltFor(t)?.exposurePct));
+
+  return core.map((t, i) => {
+    const factorTilt = tiltFor(t);
+    const exposureWeight = factorTilt ? factorTilt.exposurePct / 100 : 0;
+    // Cash equivalents leave BEFORE the cut to three, so the next holding
+    // takes the slot. The tilt carries five names, so a list can run short
+    // when several of them are cash.
+    const top = factorTilt
+      ? dropCashEquivalentContributors(db, factorTilt.topContributors)
+          .slice(0, 3)
+          .map((c) => ({ symbol: c.symbol, weight: c.weight }))
+      : [];
+    return {
+      ...t,
+      exposure_bucket: bucketExposure(exposureWeight),
+      // No tilt for the factor → no figure (unknown is not 0%).
+      ...(factorTilt && Number.isFinite(factorTilt.exposurePct)
+        ? { exposure_pct: factorTilt.exposurePct }
+        : {}),
+      exposure_rank: ranks[i],
+      top_contributors: top,
+    };
+  });
+}
+
+/**
+ * The cached themes with their exposure recomputed from the book as it is
+ * NOW. The stored figures were computed once, when the themes were generated,
+ * and go stale as holdings change. Read-only: the cache read (GET) uses this
+ * and stays side-effect free. On a failure to compute, the stored figures are
+ * returned as they are.
+ */
+export function withCurrentExposure(
+  db: Database.Database,
+  scope: string,
+  themes: ReadonlyArray<MacroTheme>,
+): MacroTheme[] {
+  if (themes.length === 0) return [];
+  try {
+    return attachScopeExposure(db, scope, themes.map(toCoreTheme));
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(`[macro-themes] could not recompute exposure for scope=${scope}; showing the stored figures: ${msg}`);
+    return [...themes];
+  }
+}
+
+/**
+ * What a request for (scope, week) will do:
+ *  - "cached":   the scope has its own row and no regeneration was asked for.
+ *  - "reuse":    the scope has no row, but another scope has generated themes
+ *                for the week: those themes are reused with this scope's own
+ *                exposure. No AI call.
+ *  - "generate": one AI call, then EVERY scope's row is written from the reply
+ *                (so the four never disagree). This is also what an explicit
+ *                regeneration of a week the scope already has a row for does.
+ * Read-only. The route asks this before applying its paid-call limits.
+ */
+export type MacroThemesPlan = "cached" | "reuse" | "generate";
+
+export function planMacroThemes(
+  db: Database.Database,
+  scope: string,
+  weekOf: string,
+  forceRegen = false,
+): MacroThemesPlan {
+  if (getCachedMacroThemes(db, scope, weekOf)) return forceRegen ? "generate" : "cached";
+  return findSharedWeekReply(db, scope, weekOf) ? "reuse" : "generate";
+}
+
+interface SharedWeekReply {
+  scope: string;
+  themes: MacroTheme[];
+  sourceSummary: string | null;
+  generatedAt: string;
+  modelUsed: string;
+}
+
+/**
+ * The newest row of the week, from another scope, that holds generated
+ * themes. An empty row (the under-threshold verdict) is not a reply: a scope
+ * with no row of its own may still find signal now, so it generates.
+ */
+function findSharedWeekReply(
+  db: Database.Database,
+  exceptScope: string,
+  weekOf: string,
+): SharedWeekReply | null {
+  const rows = db.prepare(
+    `SELECT scope, themes_json, source_summary, generated_at, model_used
+     FROM analysis_macro_themes
+     WHERE week_of = ? AND scope != ?
+     ORDER BY datetime(generated_at) DESC, scope`,
+  ).all(weekOf, exceptScope) as Array<{
+    scope: string; themes_json: string; source_summary: string | null; generated_at: string; model_used: string;
+  }>;
+  for (const r of rows) {
+    let themes: unknown;
+    try { themes = JSON.parse(r.themes_json); } catch { continue; }
+    if (!Array.isArray(themes) || themes.length === 0) continue;
+    return {
+      scope: r.scope,
+      themes: themes as MacroTheme[],
+      sourceSummary: r.source_summary,
+      generatedAt: r.generated_at,
+      modelUsed: r.model_used,
+    };
+  }
+  return null;
+}
+
+interface ThemeRowWrite {
+  scope: string;
+  themesJson: string;
+  sourceSummary: string | null;
+  modelUsed: string;
+}
+
+/**
+ * Write rows of one week with ONE generated_at, the time the themes text was
+ * generated (a reused reply keeps its donor's time, so the card's "generated"
+ * date is never the time of a copy). All rows or none.
+ */
+function writeWeekRows(
+  db: Database.Database,
+  weekOf: string,
+  rows: ReadonlyArray<ThemeRowWrite>,
+  generatedAt: string,
+): void {
+  const stmt = db.prepare(
+    `INSERT INTO analysis_macro_themes
+       (scope, week_of, themes_json, source_summary, generated_at, model_used)
+     VALUES (?, ?, ?, ?, ?, ?)
+     ON CONFLICT(week_of, scope) DO UPDATE SET
+       themes_json = excluded.themes_json,
+       source_summary = excluded.source_summary,
+       generated_at = excluded.generated_at,
+       model_used = excluded.model_used`,
+  );
+  db.transaction(() => {
+    for (const r of rows) stmt.run(r.scope, weekOf, r.themesJson, r.sourceSummary, generatedAt, r.modelUsed);
+  })();
+}
+
+function sqlNow(db: Database.Database): string {
+  return (db.prepare(`SELECT datetime('now') AS t`).get() as { t: string }).t;
+}
+
+function scopesToWrite(requested: string): string[] {
+  return [...new Set<string>([requested, ...MACRO_THEME_SCOPES])];
+}
+
+const CUT_OFF_MESSAGE =
+  "The model's reply was cut off before it finished — try again in a moment.";
+// 16,000 like the sibling workhorse/frontier calls: thinking is on by default
+// and counts against the cap, and the input is now fourfold (2026-11-15).
+// Pinned by tests/repo/ai-output-caps-thinking-room.test.ts.
+const MACRO_MAX_OUTPUT_TOKENS = 16_000;
+
+/** A reply cut off at the output cap: never parsed, never cached. */
+export class MacroThemesCutOffError extends MacroThemesParseError {
+  constructor(detail: string) {
+    super(CUT_OFF_MESSAGE, detail);
+    this.name = "MacroThemesCutOffError";
+  }
+}
+
 export async function generateMacroThemes(
   db: Database.Database,
   opts: GenerateMacroThemesOpts
 ): Promise<MacroThemesResult> {
-  if (!opts.forceRegen) {
-    const cached = getCachedMacroThemes(db, opts.scope, opts.weekOf);
-    if (cached) {
-      const themes = JSON.parse(cached.themesJson) as MacroTheme[];
-      const sourceSummary = cached.sourceSummary ? JSON.parse(cached.sourceSummary) : null;
-      return { themes, sourceSummary, fromCache: true, generatedAt: cached.generatedAt, underThreshold: false };
-    }
+  const plan = planMacroThemes(db, opts.scope, opts.weekOf, opts.forceRegen);
+
+  if (plan === "cached") {
+    const cached = getCachedMacroThemes(db, opts.scope, opts.weekOf)!;
+    const themes = JSON.parse(cached.themesJson) as MacroTheme[];
+    const sourceSummary = cached.sourceSummary ? JSON.parse(cached.sourceSummary) : null;
+    return { themes, sourceSummary, fromCache: true, generatedAt: cached.generatedAt, underThreshold: false };
   }
 
-  const blob = buildMacroSignalBlob(db, opts.scope, opts.weekOf);
+  if (plan === "reuse") {
+    const shared = findSharedWeekReply(db, opts.scope, opts.weekOf)!;
+    const themes = attachScopeExposure(db, opts.scope, shared.themes.map(toCoreTheme));
+    writeWeekRows(db, opts.weekOf, [{
+      scope: opts.scope,
+      themesJson: JSON.stringify(themes),
+      sourceSummary: shared.sourceSummary,
+      modelUsed: shared.modelUsed,
+    }], shared.generatedAt);
+    let sourceSummary: MacroThemesResult["sourceSummary"] = null;
+    try { sourceSummary = shared.sourceSummary ? JSON.parse(shared.sourceSummary) : null; } catch { sourceSummary = null; }
+    return { themes, sourceSummary, fromCache: true, generatedAt: shared.generatedAt, underThreshold: false };
+  }
 
-  // Under-threshold → empty array + cache it so we don't re-call Sonnet
-  // on every page view this week.
+  return generateWeekForAllScopes(db, opts.scope, opts.weekOf);
+}
+
+/**
+ * One AI call for the week, then one row per scope. Nothing is written until
+ * every scope's exposure has been computed, and the rows go in one
+ * transaction: a failure anywhere leaves every scope as it was.
+ */
+async function generateWeekForAllScopes(
+  db: Database.Database,
+  requestedScope: string,
+  weekOf: string,
+): Promise<MacroThemesResult> {
+  const scopes = scopesToWrite(requestedScope);
+  const blob = buildMacroSignalBlob(db, requestedScope, weekOf);
+
+  // Under-threshold → empty array + cache it so we don't re-call the model on
+  // every page view this week. The verdict is about the week's signal, which
+  // is the same for every scope.
   if (blob.underThreshold) {
-    upsertMacroThemes(db, {
-      scope: opts.scope, weekOf: opts.weekOf, themesJson: "[]",
-      sourceSummary: JSON.stringify({ articles: [], events: [], alerts: [], note: "insufficient signal" }),
-      modelUsed: "(none — under threshold)",
-    });
-    return { themes: [], sourceSummary: null, fromCache: false, generatedAt: new Date().toISOString(), underThreshold: true };
+    const generatedAt = sqlNow(db);
+    const sourceSummary = JSON.stringify({ articles: [], events: [], alerts: [], note: "insufficient signal" });
+    writeWeekRows(db, weekOf, scopes.map((scope) => ({
+      scope, themesJson: "[]", sourceSummary, modelUsed: "(none — under threshold)",
+    })), generatedAt);
+    return { themes: [], sourceSummary: null, fromCache: false, generatedAt, underThreshold: true };
   }
 
   const { json: inputsJson, sent } = buildMacroPromptInputs(blob, getHeldSymbolSet(db));
   const prompt = USER_PROMPT_TEMPLATE.replace("{INPUTS_JSON}", () => inputsJson);
 
   let rawText: string;
+  let finishReason: string | undefined;
+  // The model that answered (non-enumerable on the helper result, so read it
+  // directly), else the resolved id.
+  let answeredModelId: string | undefined;
   try {
     const result = await generateTextForFeature("analysisMacroThemes", {
       system: SYSTEM_PROMPT,
       prompt,
       // Explicit cap: the provider's default for an unknown model id is
       // small and thinking counts against it, which can truncate the JSON.
-      maxOutputTokens: 8000,
+      maxOutputTokens: MACRO_MAX_OUTPUT_TOKENS,
     });
     rawText = result.text.trim();
+    finishReason = result.finishReason;
+    answeredModelId = typeof result.answeredModelId === "string" && result.answeredModelId.length > 0
+      ? result.answeredModelId
+      : undefined;
   } catch (err) {
     // No model family in the text: this message can reach a log line an
     // operator reads, and the route treats any non-MacroThemesParseError throw
@@ -792,67 +1069,45 @@ export async function generateMacroThemes(
     throw new Error(`macro-themes generation failed: ${msg}`, { cause: err });
   }
 
+  // A reply cut off at the output cap is not a themes list, even when the
+  // lenient parser could salvage the first few entries: name it, never cache it.
+  if (finishReason === "length") {
+    const detail = `reply stopped at the ${MACRO_MAX_OUTPUT_TOKENS}-token output cap — reply began: ${replySnippet(rawText)}`;
+    console.error(`[macro-themes] reply cut off: ${detail}`);
+    throw new MacroThemesCutOffError(detail);
+  }
+
   const replied = parseThemesJson(rawText);
 
-  // The citation check. A theme that names no input, names one that was not
-  // sent, quotes text that input does not contain, or reads the article the
-  // opposite way to its stored sentiment never reaches the cache.
-  const parsed: Array<{ theme: MacroThemeAi; citation: VerifiedCitation }> = [];
+  // The citation check, run once on the shared reply. A theme that names no
+  // input, names one that was not sent, quotes text that input does not
+  // contain, or reads the article the opposite way to its stored sentiment
+  // never reaches the cache.
+  const parsed: MacroThemeCore[] = [];
   for (const t of replied) {
     const verdict = verifyThemeCitation(t, sent);
     if (verdict.ok) {
-      parsed.push({ theme: t, citation: verdict.citation });
+      parsed.push({
+        name: t.name,
+        factor_label: t.factor_label,
+        direction: t.direction,
+        summary: t.summary,
+        // Only the checked citation is stored, never the model's raw fields.
+        ...verdict.citation,
+      });
     } else {
-      console.warn(`[macro-themes] dropped theme "${t.name}" (scope=${opts.scope}): ${verdict.reason}`);
+      console.warn(`[macro-themes] dropped theme "${t.name}" (week=${weekOf}): ${verdict.reason}`);
     }
   }
   const droppedThemes = replied.length - parsed.length;
   if (parsed.length === 0) {
     return {
       themes: [], sourceSummary: null, fromCache: false,
-      generatedAt: new Date().toISOString(), underThreshold: false,
+      // Same `YYYY-MM-DD HH:MM:SS` form as every other branch (sqlNow).
+      generatedAt: sqlNow(db), underThreshold: false,
       droppedThemes, noneVerified: true,
     };
   }
-
-  // Post-process: attach per-scope exposure bucket + top-3 contributors from
-  // computeFactorAnalysis().tilts (per-factor weighted exposure across the 9
-  // FACTOR_COLUMNS). Shipped 2026-05-11 — replaces the prior defensive
-  // `(as any)?.tilts` cast that always degraded to "low" + empty contributors.
-  const accountIds = resolveScope(db, opts.scope);
-  const factorResult = computeFactorAnalysis(db, { accountIds });
-
-  const tiltFor = (t: MacroThemeAi) =>
-    factorResult.tilts.find((tilt) => tilt.factor === t.factor_label) ?? null;
-  const ranks = rankThemeExposures(parsed.map((p) => tiltFor(p.theme)?.exposurePct));
-
-  const themes: MacroTheme[] = parsed.map(({ theme: t, citation }, i) => {
-    const factorTilt = tiltFor(t);
-    const exposureWeight = factorTilt ? factorTilt.exposurePct / 100 : 0;
-    // Cash equivalents leave BEFORE the cut to three, so the next holding
-    // takes the slot. The tilt carries five names, so a list can run short
-    // when several of them are cash.
-    const top = factorTilt
-      ? dropCashEquivalentContributors(db, factorTilt.topContributors)
-          .slice(0, 3)
-          .map((c) => ({ symbol: c.symbol, weight: c.weight }))
-      : [];
-    return {
-      name: t.name,
-      factor_label: t.factor_label,
-      direction: t.direction,
-      summary: t.summary,
-      // Only the checked citation is stored, never the model's raw fields.
-      ...citation,
-      exposure_bucket: bucketExposure(exposureWeight),
-      // No tilt for the factor → no figure (unknown is not 0%).
-      ...(factorTilt && Number.isFinite(factorTilt.exposurePct)
-        ? { exposure_pct: factorTilt.exposurePct }
-        : {}),
-      exposure_rank: ranks[i],
-      top_contributors: top,
-    };
-  });
 
   // What was actually SENT, in the order sent, plus the size of the week it
   // was chosen from. (It used to list the ten most recent of each, whether or
@@ -870,17 +1125,47 @@ export async function generateMacroThemes(
     },
     droppedThemes,
   };
+  const sourceSummaryJson = JSON.stringify(sourceSummary);
 
-  const modelUsed = resolveFeatureModel("analysisMacroThemes").modelId;
-  upsertMacroThemes(db, {
-    scope: opts.scope, weekOf: opts.weekOf,
-    themesJson: JSON.stringify(themes),
-    sourceSummary: JSON.stringify(sourceSummary),
+  // Every scope's exposure BEFORE anything is written.
+  const perScope = scopes.map((scope) => ({ scope, themes: attachScopeExposure(db, scope, parsed) }));
+
+  const modelUsed = answeredModelId ?? resolveFeatureModel("analysisMacroThemes").modelId;
+  const generatedAt = sqlNow(db);
+  writeWeekRows(db, weekOf, perScope.map((p) => ({
+    scope: p.scope,
+    themesJson: JSON.stringify(p.themes),
+    sourceSummary: sourceSummaryJson,
     modelUsed,
-  });
+  })), generatedAt);
 
+  const themes = perScope.find((p) => p.scope === requestedScope)!.themes;
   return {
-    themes, sourceSummary, fromCache: false, generatedAt: new Date().toISOString(),
+    themes, sourceSummary, fromCache: false, generatedAt,
     underThreshold: false, droppedThemes,
   };
+}
+
+/**
+ * The Sunday briefing's pre-generation: one AI call at most for the week, then
+ * every scope has its row. A scope that would need a SECOND paid call in the
+ * same pass (only possible when an old empty row stood in for the first
+ * scope) is skipped and named, never generated.
+ */
+export async function pregenerateMacroThemesForWeek(
+  db: Database.Database,
+  weekOf: string,
+): Promise<{ first: MacroThemesResult; skippedScopes: string[] }> {
+  const [firstScope, ...rest] = MACRO_THEME_SCOPES;
+  const first = await generateMacroThemes(db, { scope: firstScope, weekOf });
+  const skippedScopes: string[] = [];
+  if (first.noneVerified) return { first, skippedScopes: [...rest] };
+  for (const scope of rest) {
+    if (planMacroThemes(db, scope, weekOf) === "generate") {
+      skippedScopes.push(scope);
+      continue;
+    }
+    await generateMacroThemes(db, { scope, weekOf });
+  }
+  return { first, skippedScopes };
 }

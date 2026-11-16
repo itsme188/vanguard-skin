@@ -10,122 +10,17 @@ import {
 } from "@/lib/trade-review/market-context";
 import type { GroupedTrade } from "@/lib/compute/trade-roundtrips";
 
+import { runMigrations } from "@/lib/db/migrate";
+
+// The MIGRATED schema (2026-11-15): the remaining-position reader now also
+// reads corporate_actions and the donation tables, which a hand-built
+// cut-down schema did not carry. Account 1 is seeded by runMigrations.
 function createTestDb(): Database.Database {
   const db = new Database(":memory:");
-  db.pragma("journal_mode = WAL");
   db.pragma("foreign_keys = ON");
+  runMigrations(db);
 
   db.exec(`
-    CREATE TABLE accounts (
-      id INTEGER PRIMARY KEY,
-      name TEXT NOT NULL
-    );
-
-    CREATE TABLE securities (
-      id INTEGER PRIMARY KEY,
-      symbol TEXT NOT NULL UNIQUE,
-      name TEXT,
-      security_type TEXT DEFAULT 'Stock',
-      multiplier REAL DEFAULT 1,
-      underlying_symbol TEXT,
-      strike_price REAL,
-      expiration_date TEXT,
-      option_type TEXT
-    );
-
-    CREATE TABLE transactions (
-      id INTEGER PRIMARY KEY,
-      account_id INTEGER NOT NULL,
-      security_id INTEGER,
-      trade_date TEXT NOT NULL,
-      type TEXT NOT NULL,
-      quantity REAL,
-      price_per_share REAL,
-      amount REAL,
-      fees REAL DEFAULT 0,
-      is_external_flow INTEGER DEFAULT 0,
-      source_key TEXT UNIQUE,
-      notes TEXT,
-      FOREIGN KEY (account_id) REFERENCES accounts(id)
-    );
-
-    CREATE TABLE tax_lots (
-      id INTEGER PRIMARY KEY,
-      account_id INTEGER NOT NULL,
-      security_id INTEGER NOT NULL,
-      acquisition_transaction_id INTEGER,
-      acquisition_date TEXT NOT NULL,
-      acquisition_price REAL NOT NULL,
-      quantity_acquired REAL NOT NULL,
-      quantity_remaining REAL NOT NULL DEFAULT 0,
-      cost_basis REAL NOT NULL,
-      is_from_opening_snapshot INTEGER NOT NULL DEFAULT 0,
-      is_short INTEGER NOT NULL DEFAULT 0,
-      FOREIGN KEY (account_id) REFERENCES accounts(id),
-      FOREIGN KEY (security_id) REFERENCES securities(id)
-    );
-
-    CREATE TABLE tax_lot_sales (
-      id INTEGER PRIMARY KEY,
-      tax_lot_id INTEGER NOT NULL,
-      sale_transaction_id INTEGER NOT NULL,
-      sale_date TEXT NOT NULL,
-      quantity_sold REAL NOT NULL,
-      sale_price REAL NOT NULL,
-      proceeds REAL NOT NULL,
-      cost_basis_allocated REAL NOT NULL,
-      realized_gain_loss REAL NOT NULL,
-      is_long_term INTEGER NOT NULL DEFAULT 0,
-      holding_period_days INTEGER NOT NULL DEFAULT 0,
-      FOREIGN KEY (tax_lot_id) REFERENCES tax_lots(id)
-    );
-
-    CREATE TABLE prices (
-      id INTEGER PRIMARY KEY,
-      security_id INTEGER NOT NULL,
-      date TEXT NOT NULL,
-      close_price REAL NOT NULL,
-      source TEXT DEFAULT 'manual',
-      UNIQUE(security_id, date)
-    );
-
-    CREATE TABLE ohlcv_bars (
-      id INTEGER PRIMARY KEY,
-      security_id INTEGER NOT NULL,
-      bar_date TEXT NOT NULL,
-      bar_size TEXT NOT NULL DEFAULT '1 day',
-      open REAL, high REAL, low REAL, close REAL, volume INTEGER,
-      UNIQUE(security_id, bar_date, bar_size)
-    );
-
-    CREATE TABLE benchmark_prices (
-      id INTEGER PRIMARY KEY,
-      symbol TEXT NOT NULL,
-      date TEXT NOT NULL,
-      close_price REAL NOT NULL,
-      UNIQUE(symbol, date)
-    );
-
-    CREATE TABLE daily_valuations (
-      id INTEGER PRIMARY KEY,
-      account_id INTEGER NOT NULL,
-      valuation_date TEXT NOT NULL,
-      total_value REAL NOT NULL,
-      holdings_value REAL DEFAULT 0,
-      cash_value REAL DEFAULT 0,
-      UNIQUE(account_id, valuation_date)
-    );
-
-    CREATE TABLE monthly_snapshots (
-      id INTEGER PRIMARY KEY,
-      account_id INTEGER NOT NULL,
-      month_end_date TEXT NOT NULL,
-      total_value REAL NOT NULL,
-      source TEXT DEFAULT 'manual',
-      UNIQUE(account_id, month_end_date)
-    );
-
-    INSERT INTO accounts (id, name) VALUES (1, 'Test Account');
     INSERT INTO securities (id, symbol, name) VALUES (1, 'AAPL', 'Apple Inc');
     INSERT INTO securities (id, symbol, name) VALUES (2, 'SPY', 'SPDR S&P 500');
     INSERT INTO securities (id, symbol, name) VALUES (3, 'INTC', 'Intel Corp');
@@ -501,8 +396,8 @@ describe("market-context", () => {
   describe("position sizing fallback", () => {
     it("uses daily_valuations when available", () => {
       db.exec(`
-        INSERT INTO daily_valuations (account_id, valuation_date, total_value)
-        VALUES (1, '2024-01-10', 50000);
+        INSERT INTO daily_valuations (account_id, valuation_date, total_value, holdings_value, cash_balance)
+        VALUES (1, '2024-01-10', 50000, 50000, 0);
       `);
 
       const trade = makeGroupedTrade({ totalCost: 1500 });
@@ -530,8 +425,8 @@ describe("market-context", () => {
 
     it("prefers daily_valuations over monthly_snapshots", () => {
       db.exec(`
-        INSERT INTO daily_valuations (account_id, valuation_date, total_value)
-        VALUES (1, '2024-01-12', 50000);
+        INSERT INTO daily_valuations (account_id, valuation_date, total_value, holdings_value, cash_balance)
+        VALUES (1, '2024-01-12', 50000, 50000, 0);
         INSERT INTO monthly_snapshots (account_id, month_end_date, total_value)
         VALUES (1, '2023-12-31', 40000);
       `);
@@ -604,7 +499,9 @@ describe("market-context", () => {
       expect(ev.contracts).toBe(4);
       expect(ev.strikePrice).toBe(200);
       expect(ev.expirationDate).toBe("2026-04-17");
-      expect(ev.openPremiumPerContract).toBe(3);
+      // per-share 3.00 x multiplier 100 (it held the per-share figure before 2026-11-15)
+      expect(ev.openPremiumPerContract).toBe(300);
+      expect(ev.openPremiumPerShare).toBe(3);
       expect(ev.openDate).toBe("2026-03-23");
       expect(ev.openType).toBe("BUY_TO_OPEN");
     });
@@ -641,7 +538,7 @@ describe("market-context", () => {
       expect(formatted).toContain("EXERCISED long calls");
       expect(formatted).toContain("$200.00 strike");
       expect(formatted).toContain("BUY_TO_OPEN");
-      expect(formatted).toContain("$5.00/contract");
+      expect(formatted).toContain("$5.00/share ($500/contract)");
     });
   });
 

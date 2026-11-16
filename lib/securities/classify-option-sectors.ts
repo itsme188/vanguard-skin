@@ -2,6 +2,7 @@ import type Database from "better-sqlite3";
 import { generateTextForFeature, AIRefusalError } from "@/lib/ai/generate";
 import { normalizeSector, GICS_SECTORS } from "@/lib/securities/normalize-sector";
 import { parseJsonArrayLenient } from "@/lib/ai/extract-json";
+import { CUT_OFF_MESSAGE } from "@/lib/compute/classify-batch";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 import { todayET } from "@/lib/calendar/date-utils";
 import {
@@ -325,7 +326,15 @@ export async function classifyOptionSectors(
     const prompt = `Tickers:\n${batch.map((t) => `- ${t}`).join("\n")}`;
     try {
       // No `temperature` — tier-resolved models can reject it as deprecated (QA 2026-07-07).
-      const { text } = await generateTextForFeature("securityClassification", { maxOutputTokens: 16_000, system: SYSTEM, prompt } /* room for default-on thinking, was 2000 (2026-11-12) */);
+      const { text, finishReason } = await generateTextForFeature("securityClassification", { maxOutputTokens: 16_000, system: SYSTEM, prompt } /* room for default-on thinking, was 2000 (2026-11-12) */);
+      // A reply cut off at the cap is a failure, not an answer: write nothing
+      // and remember no miss (the tickers were not really answered). The
+      // batch is not re-sent at the same cap; the next run asks again.
+      if (finishReason === "length") {
+        console.warn(`[classify-option-sectors] Batch ${i / BATCH + 1}: ${CUT_OFF_MESSAGE} (${batch.length} tickers)`);
+        errors.push(`Batch ${i / BATCH + 1}: ${CUT_OFF_MESSAGE}`);
+        continue;
+      }
       // Lenient parse: tolerates a prose preamble, a single bare object (common
       // for a one-ticker batch), a {results:[...]} wrapper, and raw C0 control
       // characters inside string literals. A reply that is none of those throws

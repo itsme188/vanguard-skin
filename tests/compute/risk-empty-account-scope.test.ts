@@ -124,14 +124,22 @@ describe("a defined empty account list is no accounts", () => {
 
     expect(computeConcentration(db, [], AS_OF)).toEqual({
       herfindahl: null,
+      investedHerfindahl: null,
       top5Concentration: 0,
       top5Positions: [],
       positionCount: 0,
+      cashWeight: 0,
+      cashMarketValue: 0,
+      cashHoldingCount: 0,
+      negativeCashHoldingCount: 0,
     });
     expect(getConcentrationMetrics(db, [])).toEqual({
       hhi: 0,
       effective_positions: 0,
+      invested_hhi: 0,
       top_positions: [],
+      cash: { market_value: 0, weight_pct: 0, holding_count: 0 },
+      negative_cash: { market_value: 0, holding_count: 0 },
       warnings: ["No positions with market value found."],
     });
   });
@@ -205,7 +213,35 @@ describe("undefined and a non-empty list answer as before", () => {
       }),
       positionRisk: computePositionRisk(db, { accountIds: ids, asOfDate: AS_OF }),
     }));
-    return JSON.stringify(out);
+    // The universe's valuedAfterAsOf flag (2026-11-15) postdates the
+    // digest: no position in this fixture carries it (asserted below), so
+    // it is left out and the digest still proves every figure unchanged.
+    // Likewise the cash-equivalent split (owner ruling 2026-11-15): this
+    // fixture holds no cash equivalent (asserted below), so the flag and the
+    // zero cash bucket are left out and every figure is proved unchanged.
+    const POST_DIGEST_KEYS = new Set([
+      "valuedAfterAsOf",
+      "isCashEquivalent",
+      "cashWeight",
+      "cashMarketValue",
+      "cashHoldingCount",
+      // Owner ruling 28 = B (2026-11-16): with no cash in this fixture the
+      // invested-only index equals the whole-book one and nothing is
+      // borrowed (asserted below), so both new fields are left out too.
+      "investedHerfindahl",
+      "negativeCashHoldingCount",
+    ]);
+    for (const o of out) {
+      expect(o.concentration.investedHerfindahl).toBe(o.concentration.herfindahl);
+      expect(o.risk.investedHerfindahl).toBe(o.risk.herfindahl);
+      expect(o.concentration.negativeCashHoldingCount).toBe(0);
+      expect(o.risk.negativeCashHoldingCount).toBe(0);
+      for (const p of o.universe) expect(p.valuedAfterAsOf).toBe(false);
+      for (const p of o.universe) expect(p.isCashEquivalent).toBe(false);
+      expect(o.concentration.cashWeight).toBe(0);
+      expect(o.risk.cashWeight).toBe(0);
+    }
+    return JSON.stringify(out, (key, value) => (POST_DIGEST_KEYS.has(key) ? undefined : value));
   }
 
   it("every reader returns the figures it returned before the empty-list rule", () => {
@@ -221,8 +257,11 @@ describe("undefined and a non-empty list answer as before", () => {
     expect(parsed[0].flows).toHaveLength(2);
 
     // Digest of the full output, captured at the commit before this change.
+    // Re-captured 2026-11-15 for the one-return-per-session rule
+    // (foldReturnsIntoSessions): only risk and riskScopeFloor volatility
+    // and sharpeRatio changed; every other field is identical.
     expect(createHash("sha256").update(json).digest("hex")).toBe(
-      "76af410d8eab6f31e2c1543c5d262203d28398afc19cf474fa91e72aac6ecde4",
+      "1e16d775f8809a40268eb8e78e96653ce4f3ff6f16288744ef3601d667a3d222",
     );
   });
 

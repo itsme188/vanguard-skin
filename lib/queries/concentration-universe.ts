@@ -27,7 +27,10 @@
  *    position any more, whatever row is still sitting in `holdings`.
  *  - An UNPRICED position is carried at its cost basis rather than dropped.
  *    We still own it, and dropping it understates the book (which is what
- *    made the risk card's denominator differ from the card's).
+ *    made the risk card's denominator differ from the card's). As of a past
+ *    date, a position with no close yet on that date and no cost basis is
+ *    carried at its first later close (marked `valuedAfterAsOf`), for the
+ *    same reason: the position count must stay honest.
  *  - Legs of one security held in several accounts are SUMMED into one whole
  *    position before any weight is taken (qa:
  *    analysis-diagnostics--four-different-spy-weights-one-page-regression-2).
@@ -44,6 +47,7 @@ import { adjustedMarketValueSQL } from "@/lib/valuation";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 import { todayET } from "@/lib/calendar/date-utils";
 import { liveOptionExpirationSql } from "@/lib/compute/option-expiry";
+import { cashEquivalentSecuritySql } from "@/lib/compute/cash-equivalents";
 
 /**
  * Half a cent. Below this a position is worth nothing a dollar figure could
@@ -62,9 +66,29 @@ export interface ConcentrationPosition {
   marketValue: number;
   /**
    * true when a stored close price valued every leg of the position; false
-   * when the cost-basis fallback stood in for at least one leg.
+   * when the cost-basis fallback (or, as of a past date, a later close)
+   * stood in for at least one leg.
    */
   priced: boolean;
+  /**
+   * As-of snapshots only: true when at least one leg had no close on or
+   * before the as-of date and no cost basis, so it was valued at its FIRST
+   * close after that date. Such a position was really held then (a position
+   * first held on the as-of date, priced a day later); valuing it at 0 dropped
+   * it from the snapshot and the week-over-week change read it as new. Always
+   * false without an as-of date.
+   */
+  valuedAfterAsOf: boolean;
+  /**
+   * true for a cash-equivalent security (money-market sweep fund and the
+   * like), decided by `cashEquivalentSecuritySql`, the SQL twin of
+   * `isCashEquivalentSecurity`. Owner ruling 2026-11-15: cash STAYS in the
+   * book (it is in the weight denominator, so it dilutes concentration) but
+   * it is one "Cash and equivalents" line, never a ranked single-name
+   * position and never a single-position warning. See
+   * `splitConcentrationUniverse`.
+   */
+  isCashEquivalent: boolean;
 }
 
 export interface ConcentrationUniverseOptions {
@@ -113,8 +137,25 @@ export function getConcentrationUniverse(
   // of the book four hours early (project rule: never resolve a user-facing
   // "today" in SQL).
   const maturityCutoff = options?.asOfDate ?? todayET();
+  // An as-of snapshot values each position at its newest close ON OR BEFORE
+  // that date (as computePositionRisk does): an unbounded latest close put
+  // today's prices on last week's holdings (look-ahead). FX stays the
+  // current rate: fx_rates keeps one rate per currency, no history.
+  const priceBound = options?.asOfDate ? "WHERE date <= ?" : "";
+  // The last fallback, as of a past date only: the first close AFTER the date,
+  // for a leg with no close on or before it and no cost basis (marked
+  // valuedAfterAsOf). Without an as-of date there is no "after": the latest
+  // close is already the newest there is, so this CTE is empty.
+  const laterPriceCte = options?.asOfDate
+    ? `SELECT p.security_id, p.close_price
+         FROM prices p
+         INNER JOIN (
+           SELECT security_id, MIN(date) AS min_date FROM prices WHERE date > ? GROUP BY security_id
+         ) fp ON p.security_id = fp.security_id AND p.date = fp.min_date`
+    : `SELECT NULL AS security_id, NULL AS close_price WHERE 0`;
   const params: (string | number | null)[] = [
     ...(accountIds ?? []),
+    ...(options?.asOfDate ? [options.asOfDate, options.asOfDate] : []),
     maturityCutoff,
   ];
 
@@ -129,25 +170,38 @@ export function getConcentrationUniverse(
          SELECT p.security_id, p.close_price
          FROM prices p
          INNER JOIN (
-           SELECT security_id, MAX(date) AS max_date FROM prices GROUP BY security_id
+           SELECT security_id, MAX(date) AS max_date FROM prices ${priceBound} GROUP BY security_id
          ) lp ON p.security_id = lp.security_id AND p.date = lp.max_date
+       ),
+       later_prices AS (
+         ${laterPriceCte}
        ),
        per_account_positions AS (
          SELECT
            s.id AS security_id,
            s.symbol,
            s.name AS security_name,
+           CASE WHEN ${cashEquivalentSecuritySql("s")} THEN 1 ELSE 0 END AS is_cash,
            CASE
              WHEN lp.close_price IS NOT NULL
                THEN ${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}
              WHEN h.cost_basis IS NOT NULL AND h.cost_basis > 0
                THEN h.cost_basis * COALESCE(fx.usd_per_unit, 1)
+             WHEN fp.close_price IS NOT NULL
+               THEN ${adjustedMarketValueSQL("h.quantity", "fp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}
              ELSE 0
            END AS market_value,
-           CASE WHEN lp.close_price IS NOT NULL THEN 1 ELSE 0 END AS priced
+           CASE WHEN lp.close_price IS NOT NULL THEN 1 ELSE 0 END AS priced,
+           CASE
+             WHEN lp.close_price IS NULL
+              AND NOT (h.cost_basis IS NOT NULL AND h.cost_basis > 0)
+              AND fp.close_price IS NOT NULL
+             THEN 1 ELSE 0
+           END AS valued_after_as_of
          FROM latest_holdings h
          JOIN securities s ON s.id = h.security_id
          LEFT JOIN latest_prices lp ON lp.security_id = h.security_id
+         LEFT JOIN later_prices fp ON fp.security_id = h.security_id
          LEFT JOIN fx_rates fx ON fx.currency = s.currency
          WHERE (s.maturity_date IS NULL OR s.maturity_date >= ?)
            AND ${liveOptionExpirationSql("s", maturityCutoff)}
@@ -157,7 +211,9 @@ export function getConcentrationUniverse(
          symbol,
          security_name,
          SUM(market_value) AS market_value,
-         MIN(priced) AS priced
+         MIN(priced) AS priced,
+         MAX(valued_after_as_of) AS valued_after_as_of,
+         MAX(is_cash) AS is_cash
        FROM per_account_positions
        GROUP BY security_id, symbol, security_name
        HAVING ABS(SUM(market_value)) > ${ZERO_VALUE_EPSILON}
@@ -186,6 +242,8 @@ export function getConcentrationUniverse(
       security_name: string | null;
       market_value: number;
       priced: number;
+      valued_after_as_of: number;
+      is_cash: number;
     }>;
 
   return rows.map((r) => ({
@@ -194,6 +252,8 @@ export function getConcentrationUniverse(
     securityName: r.security_name,
     marketValue: r.market_value,
     priced: r.priced === 1,
+    valuedAfterAsOf: r.valued_after_as_of === 1,
+    isCashEquivalent: r.is_cash === 1,
   }));
 }
 
@@ -227,4 +287,86 @@ export function getConcentrationUniverse(
  */
 export function concentrationGrossValue(positions: ConcentrationPosition[]): number {
   return positions.reduce((sum, p) => sum + Math.abs(p.marketValue), 0);
+}
+
+/**
+ * The universe split the way every concentration figure reads it (owner
+ * ruling 2026-11-15: cash is protection and flexibility, not a position to
+ * leave out or to rank).
+ *
+ *  - `grossValue` is the WHOLE book, cash included, so every weight is a
+ *    share of the whole portfolio and cash dilutes concentration.
+ *  - `risky` is every non-cash position, in the universe's own gross order;
+ *    only these are ranked, summed into a top-N share or warned about.
+ *  - `cash` is ONE bucket: every cash-equivalent holding in scope with a
+ *    POSITIVE value, together.
+ *  - A cash-equivalent position whose value is NEGATIVE is borrowing (a
+ *    debit balance carried as a cash fund), i.e. leverage: it must never
+ *    dilute concentration. It is left out of `cash` AND out of `grossValue`
+ *    and reported in `negativeCash`, so a card can say borrowed cash is not
+ *    counted (review 2026-11-15, R4).
+ *  - `herfindahl` is Σ (|mv_i| / grossValue)² over the RISKY positions only
+ *    (cash is a riskless bucket and adds nothing to single-name risk), so
+ *    more cash lowers the index. It is the single-name risk of an equal,
+ *    fully invested book of 1/HHI names. null when there is no risky
+ *    position to measure (an empty book, or one that is all cash).
+ *  - `investedHerfindahl` is the same sum over the RISKY positions with the
+ *    risky positions' own Σ |mv| as the denominator: cash and cash
+ *    equivalents left out entirely (owner ruling 28 = B, 2026-11-16). Since
+ *    cash dilutes the whole-book index, 1 / herfindahl is no longer a count
+ *    of names; 1 / investedHerfindahl is. With no cash the two are equal;
+ *    with cash, herfindahl = (risky share)² x investedHerfindahl, so the
+ *    whole-portfolio effective count is the larger one. null exactly when
+ *    `herfindahl` is null.
+ *
+ * Both concentration surfaces call this, so they cannot disagree.
+ */
+export interface ConcentrationSplit {
+  grossValue: number;
+  risky: ConcentrationPosition[];
+  cash: { marketValue: number; weight: number; holdingCount: number };
+  /** Cash-equivalent positions valued below zero (borrowing): their summed
+   *  (negative) value and count. Not in `cash`, not in `grossValue`. */
+  negativeCash: { marketValue: number; holdingCount: number };
+  herfindahl: number | null;
+  /** Σ (|mv_i| / Σ|risky|)² over the risky positions: the invested-only
+   *  index, cash left out of the denominator too. null when `herfindahl` is. */
+  investedHerfindahl: number | null;
+}
+
+export function splitConcentrationUniverse(positions: ConcentrationPosition[]): ConcentrationSplit {
+  const risky = positions.filter((p) => !p.isCashEquivalent);
+  const cashRows = positions.filter((p) => p.isCashEquivalent && p.marketValue > 0);
+  const borrowedRows = positions.filter((p) => p.isCashEquivalent && p.marketValue < 0);
+  const cashMarketValue = cashRows.reduce((s, p) => s + p.marketValue, 0);
+  // The whole book less any borrowed cash: Σ |risky| + Σ positive cash,
+  // summed in the universe's own order (a book with no borrowed cash keeps
+  // the exact figure it had).
+  const grossValue = concentrationGrossValue(
+    positions.filter((p) => !(p.isCashEquivalent && p.marketValue < 0))
+  );
+  const herfindahl =
+    grossValue > 0 && risky.length > 0
+      ? risky.reduce((s, p) => s + (Math.abs(p.marketValue) / grossValue) ** 2, 0)
+      : null;
+  const investedGross = concentrationGrossValue(risky);
+  const investedHerfindahl =
+    herfindahl != null && investedGross > 0
+      ? risky.reduce((s, p) => s + (Math.abs(p.marketValue) / investedGross) ** 2, 0)
+      : null;
+  return {
+    grossValue,
+    risky,
+    cash: {
+      marketValue: cashMarketValue,
+      weight: grossValue > 0 ? cashMarketValue / grossValue : 0,
+      holdingCount: cashRows.length,
+    },
+    negativeCash: {
+      marketValue: borrowedRows.reduce((s, p) => s + p.marketValue, 0),
+      holdingCount: borrowedRows.length,
+    },
+    herfindahl,
+    investedHerfindahl,
+  };
 }

@@ -3,6 +3,7 @@ import { getDonations, type DonationRow } from "@/lib/queries/donations";
 import { reconcileDonations, type ReconciliationReport } from "@/lib/compute/donation-reconciliation";
 import { isLongTermHolding } from "@/lib/compute/tax-lots";
 import { getTaxConventionState } from "@/lib/compute/tax-convention";
+import { IMPORT_SPLIT_ACTION_TYPES_SQL } from "@/lib/compute/synthetic-close-guards";
 
 /**
  * Giving view assembly (Task 12) — the single read the Analysis > Giving
@@ -28,6 +29,43 @@ export interface GivingYear {
   gainAvoidedRowsLeftOut: number;
   /** Non-reversed stock donations whose avoided gain IS in `gainAvoided`. */
   gainAvoidedRowsCounted: number;
+  /**
+   * Non-reversed stock donations of a non-USD security (status
+   * "unsupported"), left out of `gainAvoided` and of its pending check. Not
+   * included in `gainAvoidedRowsLeftOut`, which counts implausible bases only.
+   */
+  gainAvoidedRowsUnsupported: number;
+  /**
+   * `gainAvoided` split by holding period (owner ruling 14, 2026-11-16), and
+   * each holding period split into its gain part (the sum of the lots given
+   * above their cost, >= 0) and its loss part (the sum of the lots given
+   * below their cost, <= 0), so a loss is never printed as a gain. These are
+   * the sums of the counted rows' own figures:
+   *   LT gain + LT loss + ST gain + ST loss + unknown - over-assigned
+   * equals `gainAvoided` to the cent. All are null exactly when
+   * `gainAvoided` is.
+   */
+  gainAvoidedLongTermGain: number | null;
+  gainAvoidedLongTermLoss: number | null;
+  gainAvoidedShortTermGain: number | null;
+  gainAvoidedShortTermLoss: number | null;
+  gainAvoidedHoldingUnknown: number | null;
+  /**
+   * The sum of the counted rows' `gainAvoidedOverAssigned` (>= 0): what the
+   * lot parts of gifts with more shares assigned than given add up to beyond
+   * those gifts' own avoided gain. Never folded into "holding period unknown"
+   * as a negative figure.
+   */
+  gainAvoidedOverAssigned: number | null;
+  /**
+   * Counted rows that gave short-term shares (`hasShortTermShares`, the same
+   * threshold the row uses to show its short-term part).
+   */
+  gainAvoidedRowsWithShortTerm: number;
+  /** Counted rows with a part whose holding period is unknown (non-zero to the cent). */
+  gainAvoidedRowsHoldingUnknown: number;
+  /** Counted rows with more shares assigned to lots than the gift gave (`gainAvoidedOverAssigned` > 0). */
+  gainAvoidedRowsOverAssigned: number;
   donations: GivingDonation[];
 }
 
@@ -37,6 +75,31 @@ export interface GivingDonation {
   basis: number | null;
   gainAvoided: number | null;
   /**
+   * `gainAvoided` split by holding period, per donated LOT (owner ruling 14,
+   * 2026-11-16): a lot is long-term when `isLongTermHolding(acquisition date,
+   * gift date)`, the engine's own test. Each lot's part is its shares times
+   * (fair market value per share minus its basis per share). What no dated
+   * lot accounts for (a lot with no readable acquisition date, shares given
+   * but not assigned to a lot, or a gift with no share count) is
+   * `gainAvoidedHoldingUnknown`. Each holding period is split into its gain
+   * part (lots given above cost, >= 0) and its loss part (lots given below
+   * cost, <= 0). When more shares are assigned than the gift gave, the lot
+   * parts add up to more than the gift's avoided gain; that excess is
+   * `gainAvoidedOverAssigned` (>= 0), never a negative "unknown" part. So
+   *   LT gain + LT loss + ST gain + ST loss + unknown - over-assigned
+   * equals `gainAvoided` to the cent; all are null exactly when it is.
+   */
+  gainAvoidedLongTermGain: number | null;
+  gainAvoidedLongTermLoss: number | null;
+  gainAvoidedShortTermGain: number | null;
+  gainAvoidedShortTermLoss: number | null;
+  gainAvoidedHoldingUnknown: number | null;
+  gainAvoidedOverAssigned: number | null;
+  /** Some assigned lot held more than one year (quantity above `QUANTITY_EPS`). */
+  hasLongTermShares: boolean;
+  /** Some assigned lot held one year or less (quantity above `QUANTITY_EPS`). */
+  hasShortTermShares: boolean;
+  /**
    * THE left-out rule for a gift row: true when at least one assigned lot's
    * basis state (`donatedLotBasisState`) is `implausible` or `verified-stale`.
    * Such a row's avoided gain is left out of the year total. A row whose
@@ -44,6 +107,17 @@ export interface GivingDonation {
    * it had never been flagged. Always false with no lots assigned.
    */
   basisImplausible: boolean;
+  /**
+   * True when an assigned lot's quantity on the gift date's share basis
+   * cannot be established (`quantityAcquiredInGiftUnits` answers null: a
+   * closed lot opened by part of a mixed IBKR trade, with a split after the
+   * gift). The row then shows no basis or avoided gain (both null) and
+   * `basisImplausible` is true, so it is left out of the year total and
+   * counted there. A "basis verified" marker cannot fix this (the marker
+   * vouches for the basis, not for the split units), so no flagged lot is
+   * listed for it. Always false with no lots assigned.
+   */
+  basisUnestablished: boolean;
   /**
    * The assigned lots whose basis trips the 1% rule, in assignment order,
    * each with its state. A `plausible` lot is never listed, marker or not.
@@ -110,6 +184,11 @@ interface AssignmentRow {
   quantity: number;
   acquisition_date: string;
   quantity_acquired: number;
+  quantity_remaining: number;
+  /** The acquisition transaction's own quantity (split-unit conversion). */
+  acquisition_quantity: number | null;
+  /** 1 for a short lot: never a gift source (G1, 2026-11-15). */
+  is_short: number;
   cost_basis: number;
   /** 1 when a `lot_basis_verifications` row exists for the acquisition transaction. */
   has_verification: number;
@@ -187,6 +266,13 @@ export interface DonatedLotBasisStateInput extends DonatedLotBasisInput {
    * marker: the lot's cost basis and quantity acquired when it was verified.
    */
   verification: { verifiedAmount: number | null; verifiedQuantity: number | null } | null;
+  /**
+   * The lot's `tax_lots.quantity_acquired` AS STORED, which the marker
+   * snapshot is compared with. Omitted, it is `lotQuantityAcquired`. It
+   * differs only when a split dated after the gift scaled the stored lot:
+   * `lotQuantityAcquired` is then the gift-date figure the 1% rule needs.
+   */
+  ledgerQuantityAcquired?: number | null;
 }
 
 /**
@@ -206,10 +292,156 @@ export function donatedLotBasisState(input: DonatedLotBasisStateInput): DonatedL
   if (!isDonatedLotBasisImplausible(input)) return "plausible";
   const { verification } = input;
   if (verification == null) return "implausible";
+  // The marker snapshots the STORED lot (`readDonatedLotBasisFigures`), so it
+  // is compared with the stored quantity, not the gift-date one.
+  const storedQuantity =
+    input.ledgerQuantityAcquired === undefined ? input.lotQuantityAcquired : input.ledgerQuantityAcquired;
   const unchanged =
     sameCents(verification.verifiedAmount, input.lotCostBasis) &&
-    sameQuantity(verification.verifiedQuantity, input.lotQuantityAcquired);
+    sameQuantity(verification.verifiedQuantity, storedQuantity);
   return unchanged ? "verified" : "verified-stale";
+}
+
+// ── Split units (G2, 2026-11-15) ──────────────────────────────────────────
+//
+// The lot engine replays an import-mode split by multiplying every still-open
+// lot's `quantity_acquired` and `quantity_remaining` (lib/compute/tax-lots.ts,
+// `applySplitEvent`), while `donations.quantity`, `donation_lots.quantity` and
+// `tax_lot_sales.quantity_sold` stay in the units of their own date. Every
+// share count the Giving view compares is therefore put on the GIFT DATE's
+// basis first. Without this a 2:1 split after a gift halved its basis.
+
+interface ReplaySplit {
+  effectiveDate: string;
+  ratio: number;
+}
+
+/**
+ * Import-mode (replay) splits per security, read the way the engine reads
+ * them: `source = 'import'`, SPLIT / REVERSE_SPLIT only, in (date, id) order,
+ * every row applied (no de-duplication). 'manual' rows are legacy rewrite
+ * mode and already rewrote history, so they are not read here either.
+ */
+function fetchReplaySplitsBySecurity(db: Database.Database): Map<number, ReplaySplit[]> {
+  const rows = db
+    .prepare(
+      `SELECT security_id, effective_date,
+              CAST(ratio_numerator AS REAL) / ratio_denominator AS ratio
+         FROM corporate_actions
+        WHERE source = 'import'
+          AND UPPER(action_type) IN (${IMPORT_SPLIT_ACTION_TYPES_SQL})
+        ORDER BY effective_date, id`
+    )
+    .all() as { security_id: number; effective_date: string; ratio: number | null }[];
+  const map = new Map<number, ReplaySplit[]>();
+  for (const r of rows) {
+    if (typeof r.ratio !== "number" || !Number.isFinite(r.ratio) || r.ratio <= 0) continue;
+    const list = map.get(r.security_id);
+    const split = { effectiveDate: r.effective_date, ratio: r.ratio };
+    if (list) list.push(split);
+    else map.set(r.security_id, [split]);
+  }
+  return map;
+}
+
+/**
+ * The share-count factor between an event dated `from` and one dated `to`:
+ * the product of the splits with `from <= effective date < to`. On a split's
+ * own date the engine replays trades and gifts BEFORE the split (end-of-day
+ * rule), so a split dated `from` comes after that event and one dated `to`
+ * comes after the later event too. `to = null` means "up to now".
+ */
+function splitFactorBetween(splits: readonly ReplaySplit[], from: string, to: string | null): number {
+  let factor = 1;
+  for (const s of splits) {
+    if (s.effectiveDate >= from && (to == null || s.effectiveDate < to)) factor *= s.ratio;
+  }
+  return factor;
+}
+
+interface StoredLotQuantities {
+  acquisition_date: string;
+  quantity_acquired: number;
+  quantity_remaining: number;
+  /** The acquisition transaction's own quantity (what the engine opened the lot with). */
+  acquisition_quantity: number | null;
+}
+
+/**
+ * A lot's quantity acquired on the gift date's share basis. Exact when no
+ * split is dated on or after the gift (the stored figure, unchanged) and for
+ * a lot still open (an open lot took every split since it was acquired).
+ *
+ * A lot that has since closed stopped taking splits when it closed, so it
+ * took only the first k of them. Its acquisition transaction's quantity
+ * times those first k ratios must equal the stored figure for some k; when
+ * it does, the gift-date figure is that quantity times the splits before the
+ * gift.
+ *
+ * Null when that figure cannot be established: a closed lot with a split
+ * after the gift whose stored figure matches no k. That is a lot opened by
+ * only part of its transaction (an IBKR mixed open/close trade, see the
+ * mixed branch of `processTrade` in lib/compute/tax-lots.ts), or one whose
+ * acquisition transaction is missing. Keeping the stored figure there was
+ * wrong by the product of the splits the lot took (2026-11-15 review), so
+ * callers show no basis and offer no capacity for such a lot.
+ */
+function quantityAcquiredInGiftUnits(
+  lot: StoredLotQuantities,
+  splits: readonly ReplaySplit[],
+  giftDate: string
+): number | null {
+  const sinceAcquisition = splits.filter((s) => s.effectiveDate >= lot.acquisition_date);
+  const afterGift = sinceAcquisition.filter((s) => s.effectiveDate >= giftDate);
+  if (afterGift.length === 0) return lot.quantity_acquired;
+  // The engine's own condition for taking a split is `quantity_remaining > 0`.
+  if (lot.quantity_remaining > 0) {
+    return lot.quantity_acquired / splitFactorBetween(afterGift, giftDate, null);
+  }
+  const opened = lot.acquisition_quantity;
+  if (typeof opened === "number" && Number.isFinite(opened) && opened !== 0) {
+    let factor = 1;
+    const tolerance = QUANTITY_EPS * Math.max(1, Math.abs(lot.quantity_acquired));
+    for (let k = 0; k <= sinceAcquisition.length; k++) {
+      if (k > 0) factor *= sinceAcquisition[k - 1].ratio;
+      if (Math.abs(opened * factor - lot.quantity_acquired) <= tolerance) {
+        return opened * splitFactorBetween(sinceAcquisition, lot.acquisition_date, giftDate);
+      }
+    }
+  }
+  return null;
+}
+
+/** Splits for one security, or none. */
+function splitsFor(splitsBySecurity: Map<number, ReplaySplit[]>, securityId: number | null): ReplaySplit[] {
+  return securityId == null ? [] : splitsBySecurity.get(securityId) ?? [];
+}
+
+/**
+ * Lot quantities on the gift date's basis, for the write gate in
+ * lib/mutations/donation-links.ts: today's `quantity_remaining` divided by
+ * the splits dated on or after the gift (a lot with shares left took every
+ * one of them). Null when the acquisition transaction has no lot.
+ */
+export function readLotRemainingInGiftUnits(
+  db: Database.Database,
+  acquisitionTransactionId: number,
+  giftDate: string
+): { quantityRemaining: number; isShort: boolean } | null {
+  const lot = db
+    .prepare(
+      `SELECT security_id, acquisition_date, quantity_remaining, is_short
+         FROM tax_lots WHERE acquisition_transaction_id = ?`
+    )
+    .get(acquisitionTransactionId) as
+    | { security_id: number; acquisition_date: string; quantity_remaining: number; is_short: number }
+    | undefined;
+  if (!lot) return null;
+  const splits = splitsFor(fetchReplaySplitsBySecurity(db), lot.security_id).filter(
+    (s) => s.effectiveDate >= lot.acquisition_date
+  );
+  const factor = lot.quantity_remaining > 0 ? splitFactorBetween(splits, giftDate, null) : 1;
+  return { quantityRemaining: lot.quantity_remaining / factor, isShort: lot.is_short === 1 };
 }
 
 /**
@@ -264,11 +496,14 @@ function fetchAssignmentsByDonation(db: Database.Database): Map<number, Assignme
       `SELECT dl.donation_id AS donation_id, dl.acquisition_transaction_id AS acquisition_transaction_id,
               dl.quantity AS quantity, tl.acquisition_date AS acquisition_date,
               tl.quantity_acquired AS quantity_acquired, tl.cost_basis AS cost_basis,
+              tl.quantity_remaining AS quantity_remaining, tl.is_short AS is_short,
+              at.quantity AS acquisition_quantity,
               v.id IS NOT NULL AS has_verification,
               v.verified_amount AS verified_amount, v.verified_quantity AS verified_quantity,
               v.source_note AS source_note, v.verified_at AS verified_at
          FROM donation_lots dl
          JOIN tax_lots tl ON tl.acquisition_transaction_id = dl.acquisition_transaction_id
+         LEFT JOIN transactions at ON at.id = dl.acquisition_transaction_id
          LEFT JOIN lot_basis_verifications v ON v.acquisition_transaction_id = dl.acquisition_transaction_id
         ORDER BY dl.donation_id, dl.id`
     )
@@ -344,39 +579,147 @@ function computeStatus(
   return "received";
 }
 
+const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+/** Half a cent: a remainder smaller than this is float noise, not a figure. */
+const HALF_CENT = 0.005;
+
+type HoldingBucket = "longTerm" | "shortTerm" | "unknown";
+
+interface HoldingPeriodGains {
+  longTermGain: number;
+  longTermLoss: number;
+  shortTermGain: number;
+  shortTermLoss: number;
+  unknown: number;
+  /** >= 0: how far the lot parts exceed `total` when more shares were assigned than given. */
+  overAssigned: number;
+}
+
+/**
+ * Splits a row's avoided gain by holding period, and each holding period
+ * into its gain part (lots given above cost) and loss part (lots given below
+ * cost). `parts` are the per-lot figures already priced (shares x (fair value
+ * per share - basis per share)), each tagged long-term, short-term or
+ * unknown. Whatever the lots do not account for (`total` minus their sum):
+ * - under half a cent: rounding noise, folded into the holding period holding
+ *   the most shares (its larger part), so a fully assigned gift never shows a
+ *   stray "unknown" cent;
+ * - positive: shares given but not assigned (or no share count), "unknown";
+ * - negative with lots priced: more shares assigned than given. The lot
+ *   parts overstate the gift by that much; it is `overAssigned` (>= 0),
+ *   never a negative "unknown" figure.
+ * So LT gain + LT loss + ST gain + ST loss + unknown - overAssigned == total.
+ */
+function splitGainByHoldingPeriod(
+  total: number,
+  parts: { bucket: HoldingBucket; gain: number; shares: number }[]
+): HoldingPeriodGains {
+  const out: HoldingPeriodGains = {
+    longTermGain: 0,
+    longTermLoss: 0,
+    shortTermGain: 0,
+    shortTermLoss: 0,
+    unknown: 0,
+    overAssigned: 0,
+  };
+  const shares: Record<HoldingBucket, number> = { longTerm: 0, shortTerm: 0, unknown: 0 };
+  let partsSum = 0;
+  for (const p of parts) {
+    partsSum += p.gain;
+    shares[p.bucket] += p.shares;
+    if (p.bucket === "unknown") out.unknown += p.gain;
+    else if (p.bucket === "longTerm") {
+      if (p.gain >= 0) out.longTermGain += p.gain;
+      else out.longTermLoss += p.gain;
+    } else if (p.gain >= 0) out.shortTermGain += p.gain;
+    else out.shortTermLoss += p.gain;
+  }
+  const remainder = total - partsSum;
+  if (Math.abs(remainder) < HALF_CENT && parts.length > 0) {
+    const biggest = (Object.keys(shares) as HoldingBucket[]).reduce((a, b) => (shares[b] > shares[a] ? b : a));
+    if (biggest === "unknown") out.unknown += remainder;
+    else if (biggest === "longTerm") {
+      if (out.longTermGain >= -out.longTermLoss) out.longTermGain += remainder;
+      else out.longTermLoss += remainder;
+    } else if (out.shortTermGain >= -out.shortTermLoss) out.shortTermGain += remainder;
+    else out.shortTermLoss += remainder;
+  } else if (remainder < 0 && parts.length > 0) {
+    out.overAssigned = -remainder;
+  } else {
+    out.unknown += remainder;
+  }
+  return out;
+}
+
 function buildGivingDonation(
   d: DonationRow,
   outLegs: Map<number, OutLegRow>,
   assignmentsByDonation: Map<number, AssignmentRow[]>,
   orphanMarkersByDonation: Map<number, OrphanMarkerRow[]>,
-  currencies: Map<number, string>
+  currencies: Map<number, string>,
+  splitsBySecurity: Map<number, ReplaySplit[]>
 ): GivingDonation {
   const outLeg = outLegs.get(d.id) ?? null;
   const linked = outLeg != null;
-  const assignments = assignmentsByDonation.get(d.id) ?? [];
+  // A short position cannot be given (G1, 2026-11-15): a gift drawn on a
+  // short lot (an assignment written before the write gate refused one) has
+  // no believable basis, so the row asks for its lots again, as if it had none.
+  const assigned = assignmentsByDonation.get(d.id) ?? [];
+  const assignments = assigned.some((a) => a.is_short === 1) ? [] : assigned;
   const symbolResolved = d.kind !== "stock" || d.security_id != null;
   const needsLots = d.kind === "stock" && linked && assignments.length === 0;
+  const splits = splitsFor(splitsBySecurity, d.security_id);
 
   let basis: number | null = null;
   let gainAvoided: number | null = null;
+  let holdingGains: HoldingPeriodGains | null = null;
   let longTermQuantity: number | null = null;
   let shortTermQuantity: number | null = null;
   let basisImplausible = false;
+  let basisUnestablished = false;
   const flaggedLots: GivingFlaggedLot[] = [];
 
   if (d.kind === "stock" && outLeg != null && assignments.length > 0) {
     let basisSum = 0;
     let lt = 0;
     let st = 0;
+    const fmvPerShare =
+      typeof d.quantity === "number" && Number.isFinite(d.quantity) && d.quantity > 0
+        ? d.fmv_usd / d.quantity
+        : null;
+    const gainParts: { bucket: HoldingBucket; gain: number; shares: number }[] = [];
     for (const a of assignments) {
-      const perShare = a.quantity_acquired !== 0 ? a.cost_basis / a.quantity_acquired : 0;
+      // On the gift date's share basis, the units `a.quantity` is in (G2).
+      const acquiredInGiftUnits = quantityAcquiredInGiftUnits(a, splits, outLeg.trade_date);
+      // Holding period per LOT, by the engine's own test. A lot with no
+      // readable acquisition date is in neither bucket: it is "unknown".
+      const dated = typeof a.acquisition_date === "string" && ISO_DATE_RE.test(a.acquisition_date);
+      const bucket: HoldingBucket = !dated
+        ? "unknown"
+        : isLongTermHolding(a.acquisition_date, outLeg.trade_date)
+          ? "longTerm"
+          : "shortTerm";
+      if (bucket === "longTerm") lt += a.quantity;
+      else if (bucket === "shortTerm") st += a.quantity;
+      if (acquiredInGiftUnits == null) {
+        // No believable per-share basis: the row shows none and is left out.
+        basisUnestablished = true;
+        basisImplausible = true;
+        continue;
+      }
+      const perShare = acquiredInGiftUnits !== 0 ? a.cost_basis / acquiredInGiftUnits : 0;
       basisSum += a.quantity * perShare;
+      if (fmvPerShare != null) {
+        gainParts.push({ bucket, gain: a.quantity * (fmvPerShare - perShare), shares: a.quantity });
+      }
       // Judged per LOT, not on the blended row: one penny-basis lot among
       // ordinary ones still overstates the avoided gain by its whole value.
       const hasMarker = a.has_verification === 1;
       const state = donatedLotBasisState({
         lotCostBasis: a.cost_basis,
-        lotQuantityAcquired: a.quantity_acquired,
+        lotQuantityAcquired: acquiredInGiftUnits,
+        ledgerQuantityAcquired: a.quantity_acquired,
         donationFmvUsd: d.fmv_usd,
         donationQuantity: d.quantity,
         verification: hasMarker
@@ -395,11 +738,10 @@ function buildGivingDonation(
       }
       // One unverified (or stale) lot leaves the whole row out.
       if (leavesRowOut(state)) basisImplausible = true;
-      if (isLongTermHolding(a.acquisition_date, outLeg.trade_date)) lt += a.quantity;
-      else st += a.quantity;
     }
-    basis = basisSum;
-    gainAvoided = d.fmv_usd - basisSum;
+    basis = basisUnestablished ? null : basisSum;
+    gainAvoided = basisUnestablished ? null : d.fmv_usd - basisSum;
+    holdingGains = gainAvoided == null ? null : splitGainByHoldingPeriod(gainAvoided, gainParts);
     longTermQuantity = lt;
     shortTermQuantity = st;
   }
@@ -436,7 +778,16 @@ function buildGivingDonation(
     accountName: outLeg?.account_name ?? null,
     basis,
     gainAvoided,
+    gainAvoidedLongTermGain: holdingGains?.longTermGain ?? null,
+    gainAvoidedLongTermLoss: holdingGains?.longTermLoss ?? null,
+    gainAvoidedShortTermGain: holdingGains?.shortTermGain ?? null,
+    gainAvoidedShortTermLoss: holdingGains?.shortTermLoss ?? null,
+    gainAvoidedHoldingUnknown: holdingGains?.unknown ?? null,
+    gainAvoidedOverAssigned: holdingGains?.overAssigned ?? null,
+    hasLongTermShares: (longTermQuantity ?? 0) > QUANTITY_EPS,
+    hasShortTermShares: (shortTermQuantity ?? 0) > QUANTITY_EPS,
     basisImplausible,
+    basisUnestablished,
     flaggedLots,
     longTermQuantity,
     shortTermQuantity,
@@ -490,12 +841,20 @@ export function getGivingView(db: Database.Database): {
   const assignmentsByDonation = fetchAssignmentsByDonation(db);
   const orphanMarkersByDonation = fetchOrphanMarkersByDonation(db);
   const currencies = fetchSecurityCurrencies(db);
+  const splitsBySecurity = fetchReplaySplitsBySecurity(db);
 
   const byYear = new Map<string, GivingDonation[]>();
   const built: GivingDonation[] = [];
   for (const d of donations) {
     const year = d.received_date.slice(0, 4);
-    const gd = buildGivingDonation(d, outLegs, assignmentsByDonation, orphanMarkersByDonation, currencies);
+    const gd = buildGivingDonation(
+      d,
+      outLegs,
+      assignmentsByDonation,
+      orphanMarkersByDonation,
+      currencies,
+      splitsBySecurity
+    );
     built.push(gd);
     const list = byYear.get(year);
     if (list) list.push(gd);
@@ -516,8 +875,16 @@ export function getGivingView(db: Database.Database): {
       const cashGiven = active
         .filter((gd) => gd.donation.kind === "cash")
         .reduce((sum, gd) => sum + gd.donation.fmv_usd, 0);
-      const stockDonations = active.filter((gd) => gd.donation.kind === "stock");
-      const anyMissingBasis = stockDonations.some((gd) => gd.basis == null);
+      // A gift of a non-USD security ("unsupported") is left out of "Gain
+      // avoided" and counted (G3, 2026-11-15): its lot basis is in the
+      // security's own currency, and lots can never be assigned to it, so it
+      // must neither add a native-currency figure nor hold the total pending.
+      const allStockDonations = active.filter((gd) => gd.donation.kind === "stock");
+      const gainAvoidedRowsUnsupported = allStockDonations.filter((gd) => gd.status === "unsupported").length;
+      const stockDonations = allStockDonations.filter((gd) => gd.status !== "unsupported");
+      // A row with lots whose basis cannot be established is left out and
+      // counted below, not "pending": its lots are assigned.
+      const anyMissingBasis = stockDonations.some((gd) => gd.basis == null && !gd.basisUnestablished);
       // A row with an implausible basis is left out of the total (owner
       // ruling 2026-10-06); the header says how many were. The row flag is
       // the single source — the total never re-derives it. A row whose
@@ -527,6 +894,16 @@ export function getGivingView(db: Database.Database): {
       const gainAvoided = anyMissingBasis
         ? null
         : counted.reduce((sum, gd) => sum + (gd.gainAvoided ?? 0), 0);
+      // The holding-period split sums the SAME counted rows' own split
+      // figures, so the parts add up to `gainAvoided` (owner ruling 14).
+      const sumSplit = (pick: (gd: GivingDonation) => number | null) =>
+        anyMissingBasis ? null : counted.reduce((sum, gd) => sum + (pick(gd) ?? 0), 0);
+      // The same per-row flag the row uses to show its short-term part.
+      const gainAvoidedRowsWithShortTerm = counted.filter((gd) => gd.hasShortTermShares).length;
+      const gainAvoidedRowsHoldingUnknown = counted.filter(
+        (gd) => Math.abs(gd.gainAvoidedHoldingUnknown ?? 0) >= HALF_CENT
+      ).length;
+      const gainAvoidedRowsOverAssigned = counted.filter((gd) => (gd.gainAvoidedOverAssigned ?? 0) > 0).length;
       return {
         year,
         totalGiven,
@@ -535,6 +912,16 @@ export function getGivingView(db: Database.Database): {
         gainAvoided,
         gainAvoidedRowsLeftOut,
         gainAvoidedRowsCounted: counted.length,
+        gainAvoidedRowsUnsupported,
+        gainAvoidedLongTermGain: sumSplit((gd) => gd.gainAvoidedLongTermGain),
+        gainAvoidedLongTermLoss: sumSplit((gd) => gd.gainAvoidedLongTermLoss),
+        gainAvoidedShortTermGain: sumSplit((gd) => gd.gainAvoidedShortTermGain),
+        gainAvoidedShortTermLoss: sumSplit((gd) => gd.gainAvoidedShortTermLoss),
+        gainAvoidedHoldingUnknown: sumSplit((gd) => gd.gainAvoidedHoldingUnknown),
+        gainAvoidedOverAssigned: sumSplit((gd) => gd.gainAvoidedOverAssigned),
+        gainAvoidedRowsWithShortTerm,
+        gainAvoidedRowsHoldingUnknown,
+        gainAvoidedRowsOverAssigned,
         donations: yearDonations,
       };
     });
@@ -556,7 +943,16 @@ export interface OpenLotForDonation {
   acquisitionTransactionId: number;
   acquisitionDate: string;
   costBasis: number;
+  /** The lot's quantity acquired on the gift date's share basis (a split
+   * dated on or after the gift is taken back out; G2, 2026-11-15). */
   quantityAcquired: number;
+  /**
+   * True when the lot's quantity on the gift date's basis cannot be
+   * established (see `quantityAcquiredInGiftUnits`). `quantityAcquired`,
+   * `remainingAsOfDonationDate` are then 0 and `gainPerShare` null, so the
+   * drawer offers none of it.
+   */
+  quantityUnestablished: boolean;
   /** quantity_acquired minus sales before the donation's OUT-leg date minus
    * OTHER (unreversed) donations' assignments dated before it — NOT today's
    * quantity_remaining, which would price the gift in the wrong basis if a
@@ -584,7 +980,8 @@ export interface OpenLotForDonation {
 
 /**
  * Lists open lots AS OF the donation's OUT-leg date, in that date's units,
- * for the lot-assignment drawer. Also flags a greedy long-term/highest-gain
+ * for the lot-assignment drawer. Long lots only: a short position cannot be
+ * given (G1, 2026-11-15). Also flags a greedy long-term/highest-gain
  * preselection covering the donation's full quantity — the drawer's
  * "Suggest highest-gain long-term" button uses these flags as its default;
  * the user can still override.
@@ -625,12 +1022,15 @@ export function getOpenLotsForDonation(db: Database.Database, donationId: number
     .prepare(
       `SELECT tl.id AS id, tl.acquisition_transaction_id AS acquisition_transaction_id,
               tl.acquisition_date AS acquisition_date, tl.cost_basis AS cost_basis,
-              tl.quantity_acquired AS quantity_acquired,
+              tl.quantity_acquired AS quantity_acquired, tl.quantity_remaining AS quantity_remaining,
+              at.quantity AS acquisition_quantity,
               v.id IS NOT NULL AS has_verification,
               v.verified_amount AS verified_amount, v.verified_quantity AS verified_quantity
          FROM tax_lots tl
+         LEFT JOIN transactions at ON at.id = tl.acquisition_transaction_id
          LEFT JOIN lot_basis_verifications v ON v.acquisition_transaction_id = tl.acquisition_transaction_id
         WHERE tl.account_id = ? AND tl.security_id = ? AND tl.acquisition_date < ?
+          AND tl.is_short = 0
         ORDER BY tl.acquisition_date, tl.id`
     )
     .all(outLeg.account_id, donation.security_id, outLeg.trade_date) as Array<{
@@ -639,17 +1039,38 @@ export function getOpenLotsForDonation(db: Database.Database, donationId: number
     acquisition_date: string;
     cost_basis: number;
     quantity_acquired: number;
+    quantity_remaining: number;
+    acquisition_quantity: number | null;
     has_verification: number;
     verified_amount: number | null;
     verified_quantity: number | null;
   }>;
 
+  // Per date, so each figure can be put on the gift date's share basis: a
+  // sale or an earlier gift is in the units of its own date (G2).
   const salesBeforeStmt = db.prepare(
-    `SELECT COALESCE(SUM(ts.quantity_sold), 0) AS qty
-       FROM tax_lot_sales ts WHERE ts.tax_lot_id = ? AND ts.sale_date < ?`
+    `SELECT ts.sale_date AS date, COALESCE(SUM(ts.quantity_sold), 0) AS qty
+       FROM tax_lot_sales ts WHERE ts.tax_lot_id = ? AND ts.sale_date < ?
+      GROUP BY ts.sale_date`
   );
   const otherDonationsBeforeStmt = db.prepare(
-    `SELECT COALESCE(SUM(dl.quantity), 0) AS qty
+    `SELECT t2.trade_date AS date, COALESCE(SUM(dl.quantity), 0) AS qty
+       FROM donation_lots dl
+       JOIN donations d2 ON d2.id = dl.donation_id
+       JOIN donation_leg_links l2 ON l2.donation_id = d2.id AND l2.role = 'out'
+       JOIN transactions t2 ON t2.id = l2.transaction_id
+      WHERE dl.acquisition_transaction_id = ?
+        AND dl.donation_id != ?
+        AND d2.reversed_date IS NULL
+        AND t2.trade_date < ?
+      GROUP BY t2.trade_date`
+  );
+  const salesTotalBeforeStmt = db.prepare(
+    `SELECT NULL AS date, COALESCE(SUM(ts.quantity_sold), 0) AS qty
+       FROM tax_lot_sales ts WHERE ts.tax_lot_id = ? AND ts.sale_date < ?`
+  );
+  const otherDonationsTotalBeforeStmt = db.prepare(
+    `SELECT NULL AS date, COALESCE(SUM(dl.quantity), 0) AS qty
        FROM donation_lots dl
        JOIN donations d2 ON d2.id = dl.donation_id
        JOIN donation_leg_links l2 ON l2.donation_id = d2.id AND l2.role = 'out'
@@ -659,6 +1080,13 @@ export function getOpenLotsForDonation(db: Database.Database, donationId: number
         AND d2.reversed_date IS NULL
         AND t2.trade_date < ?`
   );
+  const splits = splitsFor(fetchReplaySplitsBySecurity(db), donation.security_id);
+  /** A sum of dated share counts, each put on the gift date's basis. */
+  const inGiftUnits = (rows: { date: string; qty: number }[]) =>
+    rows.reduce((sum, r) => sum + r.qty * splitFactorBetween(splits, r.date, outLeg.trade_date), 0);
+  // With no split on the security, one SQL sum over every date: every unit
+  // is already the gift date's, so nothing is converted.
+  const totalOf = (rows: { date: string; qty: number }[]) => (rows.length === 0 ? 0 : rows[0].qty);
 
   const fmvPerShare =
     donation.quantity != null && donation.quantity > 0 ? donation.fmv_usd / donation.quantity : null;
@@ -669,19 +1097,31 @@ export function getOpenLotsForDonation(db: Database.Database, donationId: number
   const currentAssignments = new Map(currentAssignmentRows.map((r) => [r.acquisition_transaction_id, r.quantity]));
 
   const rows: OpenLotForDonation[] = lotRows.map((lot) => {
-    const salesBefore = (salesBeforeStmt.get(lot.id, outLeg.trade_date) as { qty: number }).qty;
-    const otherAssigned = (
-      otherDonationsBeforeStmt.get(lot.acquisition_transaction_id, donationId, outLeg.trade_date) as {
-        qty: number;
-      }
-    ).qty;
-    const remaining = Math.max(0, lot.quantity_acquired - salesBefore - otherAssigned);
+    const salesRows = (splits.length === 0 ? salesTotalBeforeStmt : salesBeforeStmt).all(
+      lot.id,
+      outLeg.trade_date
+    ) as { date: string; qty: number }[];
+    const otherRows = (splits.length === 0 ? otherDonationsTotalBeforeStmt : otherDonationsBeforeStmt).all(
+      lot.acquisition_transaction_id,
+      donationId,
+      outLeg.trade_date
+    ) as { date: string; qty: number }[];
+    const salesBefore = splits.length === 0 ? totalOf(salesRows) : inGiftUnits(salesRows);
+    const otherAssigned = splits.length === 0 ? totalOf(otherRows) : inGiftUnits(otherRows);
+    const established = quantityAcquiredInGiftUnits(lot, splits, outLeg.trade_date);
+    // A lot whose gift-date quantity cannot be established offers no
+    // capacity and no gain per share (0 acquired, 0 available): the drawer
+    // must not offer shares it cannot count.
+    const quantityUnestablished = established == null;
+    const acquiredInGiftUnits = established ?? 0;
+    const remaining = quantityUnestablished ? 0 : Math.max(0, acquiredInGiftUnits - salesBefore - otherAssigned);
     const isLongTerm = isLongTermHolding(lot.acquisition_date, outLeg.trade_date);
-    const costPerShare = lot.quantity_acquired !== 0 ? lot.cost_basis / lot.quantity_acquired : 0;
-    const gainPerShare = fmvPerShare != null ? fmvPerShare - costPerShare : null;
+    const costPerShare = acquiredInGiftUnits !== 0 ? lot.cost_basis / acquiredInGiftUnits : 0;
+    const gainPerShare = fmvPerShare != null && !quantityUnestablished ? fmvPerShare - costPerShare : null;
     const basisState = donatedLotBasisState({
       lotCostBasis: lot.cost_basis,
-      lotQuantityAcquired: lot.quantity_acquired,
+      lotQuantityAcquired: acquiredInGiftUnits,
+      ledgerQuantityAcquired: lot.quantity_acquired,
       donationFmvUsd: donation.fmv_usd,
       donationQuantity: donation.quantity,
       verification:
@@ -693,7 +1133,8 @@ export function getOpenLotsForDonation(db: Database.Database, donationId: number
       acquisitionTransactionId: lot.acquisition_transaction_id,
       acquisitionDate: lot.acquisition_date,
       costBasis: lot.cost_basis,
-      quantityAcquired: lot.quantity_acquired,
+      quantityAcquired: acquiredInGiftUnits,
+      quantityUnestablished,
       remainingAsOfDonationDate: remaining,
       isLongTerm,
       gainPerShare,

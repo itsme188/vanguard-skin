@@ -39,7 +39,15 @@ import { ToastProvider } from "@/app/dashboard/components/Toast";
 const MASK = "•••";
 
 function concentration(): ConcentrationMetrics {
-  return { hhi: 0.08, effective_positions: 12.5, top_positions: [], warnings: [] };
+  return {
+    hhi: 0.08,
+    effective_positions: 12.5,
+    invested_hhi: 0.08,
+    top_positions: [],
+    cash: { market_value: 0, weight_pct: 0, holding_count: 0 },
+    negative_cash: { market_value: 0, holding_count: 0 },
+    warnings: [],
+  };
 }
 
 // Synthetic counts, chosen so no figure collides with a class name.
@@ -216,10 +224,12 @@ describe("Show Details always renders something", () => {
 });
 
 describe("Auto-Classify completion line names both populations", () => {
-  it("says the tally covers the whole security list and the card counts holdings only", () => {
-    const line = classifyRunSummary({ classified: 55, skipped: 900, unresolvedCount: 0 }, [], 10);
-    expect(line).toContain("Classified 55 securities across the whole security list");
-    expect(line).toContain("not only current holdings");
+  it("says the rule-based tally covers every imported security and the card counts holdings only", () => {
+    // Wording revised by Z6 (tests/dashboard/classification-card-toast-z.test.tsx):
+    // the AI step now asks only about held names, so the line names both.
+    const line = classifyRunSummary({ classified: 55, skipped: 900, heldUnresolvedCount: 0 }, [], 10);
+    expect(line).toContain("Classified 55 securities (the rule-based pass reads every security ever imported");
+    expect(line).toContain("the AI is asked only about current holdings");
     expect(line).toContain("900 already classified");
     expect(line).toContain("this card counts current holdings only and listed 10 unclassified before the run");
     expect(line).not.toContain("already done");
@@ -227,16 +237,16 @@ describe("Auto-Classify completion line names both populations", () => {
 
   it("leaves the card's own count out when it is withheld (privacy mode) or zero", () => {
     for (const held of [null, 0]) {
-      const line = classifyRunSummary({ classified: 3, skipped: 5, unresolvedCount: 0 }, [], held);
+      const line = classifyRunSummary({ classified: 3, skipped: 5, heldUnresolvedCount: 0 }, [], held);
       expect(line).toMatch(/this card counts current holdings only$/);
     }
   });
 
-  it("keeps the unresolved and AI-failure parts, and survives a malformed response", () => {
-    const line = classifyRunSummary({ classified: 1, skipped: "x", unresolvedCount: 2 }, ["bad JSON"], 4);
-    expect(line).toContain("Classified 1 security across");
+  it("keeps the held-unresolved and AI-failure parts, and survives a malformed response", () => {
+    const line = classifyRunSummary({ classified: 1, skipped: "x", heldUnresolvedCount: 2 }, ["bad JSON"], 4);
+    expect(line).toContain("Classified 1 security (");
     expect(line).toContain("0 already classified");
-    expect(line).toContain("2 couldn't be auto-classified");
+    expect(line).toContain("2 held securities are still unclassified");
     expect(line).toContain("AI step failed: bad JSON");
     expect(line).not.toContain("undefined");
     expect(line).not.toContain("NaN");

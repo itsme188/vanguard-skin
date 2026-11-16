@@ -38,7 +38,10 @@ describe("cash-deploy allocator money contract", () => {
     db.prepare("DELETE FROM watchlist").run();
   }
 
-  it("uses held-name fallback picks and allocates an awkward cash amount exactly to the cent", () => {
+  // Owner ruling (docs/DECISIONS.md 2026-10-12, confirmed 2026-11-15): picks
+  // stop at each sector's gap and the remainder is shown as unallocated. This
+  // replaces the 2026-10-07 pin "proposals add up to the cash asked for".
+  it("uses held-name fallback picks; picks plus unallocated equal an awkward cash amount to the cent", () => {
     seedThreeHeldUnderweights();
 
     const result = suggestAllocation(db, "vanguard", [1], 10_000.01);
@@ -52,9 +55,14 @@ describe("cash-deploy allocator money contract", () => {
       (sum, p) => sum + Math.round(p.allocationDollars * 100),
       0
     );
-    expect(allocatedCents).toBe(1_000_001);
-    expect(Math.round(result.totalAllocated * 100)).toBe(1_000_001);
-    expect(Math.round(result.cashRemaining * 100)).toBe(0);
+    expect(Math.round(result.totalAllocated * 100)).toBe(allocatedCents);
+    expect(allocatedCents + Math.round(result.cashRemaining * 100)).toBe(1_000_001);
+    // The three gaps take less than the cash, so the rest is unallocated.
+    expect(result.cashRemaining).toBeGreaterThan(0);
+    expect(result.unallocatedReason).toBeTruthy();
+    for (const g of result.gaps) {
+      if (g.gapPp < 0) expect(g.residualGapPp).toBeLessThanOrEqual(1e-9);
+    }
   });
 
   it("does not propose held fallback names outside the selected scope", () => {

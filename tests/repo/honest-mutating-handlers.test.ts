@@ -251,11 +251,6 @@ const RAW_EXCEPTION_ALLOWLIST: Record<string, { count: number; reason: string }>
     reason:
       "load path: the catch prints what the loader threw (a status line it built, or the browser's text on a lost connection); wording needs a pass",
   },
-  "app/dashboard/components/analysis/CashDeployCard.tsx": {
-    count: 1,
-    reason:
-      "load path: the catch prints what the loader threw (a status line it built, or the browser's text on a lost connection); wording needs a pass",
-  },
   "app/dashboard/components/analysis/DrillDownPanel.tsx": {
     count: 1,
     reason:

@@ -108,9 +108,10 @@ export function exposureRankLabel(rank: MacroTheme["exposure_rank"]): string | n
 }
 
 /**
- * A theme cached before the percentage was stored has no figure to show. The
- * old bucket word is not a fallback (it is the thing the ruling dropped), so
- * such a theme renders no pill until the week's themes are next generated.
+ * A theme with no figure (its factor has no tilt in this scope) shows no pill.
+ * The old bucket word is not a fallback (it is the thing the ruling dropped).
+ * The cache read recomputes the figure from current holdings, so a theme
+ * cached before the percentage was stored gets one too.
  */
 export function hasExposureFigure(t: Pick<MacroTheme, "exposure_pct">): boolean {
   return typeof t.exposure_pct === "number" && Number.isFinite(t.exposure_pct);
@@ -164,6 +165,23 @@ export function droppedThemesNote(dropped: number | undefined): string | null {
 export const MACRO_COLD_CACHE_COPY = "No themes generated yet for this scope this week.";
 export const MACRO_GENERATE_LABEL = "Generate this week's themes";
 export const MACRO_GENERATE_TITLE = "Generates this week's themes with one AI call";
+
+/**
+ * "themes generated YYYY-MM-DD" (Eastern day) for the card header, or null
+ * when there is no readable time. Accepts the stored SQLite form
+ * ("YYYY-MM-DD HH:MM:SS", UTC) and an ISO string.
+ */
+export function themesGeneratedLabel(generatedAt: string | null | undefined): string | null {
+  if (typeof generatedAt !== "string" || generatedAt.trim() === "") return null;
+  const raw = generatedAt.trim();
+  const iso = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(raw) ? `${raw.replace(" ", "T")}Z` : raw;
+  const when = new Date(iso);
+  if (Number.isNaN(when.getTime())) return null;
+  const day = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/New_York", year: "numeric", month: "2-digit", day: "2-digit",
+  }).format(when);
+  return `themes generated ${day}`;
+}
 
 /** True when the cache read came back empty and nothing has been generated. */
 export function isMacroColdCache(
@@ -286,9 +304,14 @@ export function MacroOverlayCard({ scope }: { scope: string }) {
             <span className="ml-2 italic">· {scope}</span>
           </p>
         </div>
-        {data?.generatedAt && (
-          <span className="text-[10px] text-ink-faint uppercase tracking-wider">
-            {data.fromCache ? "cached" : "fresh"}
+        {themesGeneratedLabel(data?.generatedAt) && (
+          // When the themes TEXT was written. The exposure figures under each
+          // theme are recomputed from today's holdings on every read.
+          <span
+            className="text-[10px] text-ink-faint whitespace-nowrap"
+            title="When this week's themes were written. Your exposure figures are computed from current holdings."
+          >
+            {themesGeneratedLabel(data?.generatedAt)}
           </span>
         )}
       </header>

@@ -2,10 +2,16 @@
 
 import { CHIP_TONE_TEXT } from "@/app/dashboard/components/chip-tone-text";
 import { useState } from "react";
-import { Money, Pct, PrivateText } from "@/lib/privacy/components";
+import { Count, Money, Pct, PrivateText } from "@/lib/privacy/components";
 import { ScrollFade } from "../ScrollFade";
+import { readMutationResult, networkFailureMessage } from "@/lib/ui/mutation-result";
 import {
+  CASH_AMOUNT_INVALID_MESSAGE,
   equitySleeveCaptionLead,
+  NET_OF_SHORTS_CAPTION,
+  shortHeldSectorLine,
+  SHORT_UNALLOCATED_LABEL,
+  smallWeightToleranceLine,
   type CashDeploySuggestion,
 } from "@/lib/compute/cash-deploy";
 
@@ -20,8 +26,11 @@ export function CashDeployCard({ scope }: Props) {
   const [error, setError] = useState<string | null>(null);
 
   async function run() {
-    if (cash <= 0) {
-      setError("Enter a positive cash amount");
+    // An invalid amount or a failed request clears the previous result, so
+    // an old allocation never stays on screen under the error (FX4 item 3).
+    if (!Number.isFinite(cash) || cash <= 0) {
+      setResult(null);
+      setError(CASH_AMOUNT_INVALID_MESSAGE);
       return;
     }
     setLoading(true);
@@ -30,11 +39,18 @@ export function CashDeployCard({ scope }: Props) {
       const res = await fetch(
         `/api/analysis/cash-deploy?scope=${encodeURIComponent(scope)}&cash=${cash}`
       );
-      const data = await res.json();
-      if (!data.success) throw new Error(data.error ?? "Request failed");
-      setResult(data.data as CashDeploySuggestion);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to compute");
+      // Status and envelope both checked; a non-JSON body (an HTML 500) reads
+      // as a plain error, never "Unexpected token <".
+      const r = await readMutationResult<{ data: CashDeploySuggestion }>(res);
+      if (!r.ok) {
+        setResult(null);
+        setError(`Couldn't suggest an allocation: ${r.message}`);
+        return;
+      }
+      setResult(r.data.data);
+    } catch {
+      setResult(null);
+      setError(networkFailureMessage("suggest an allocation"));
     } finally {
       setLoading(false);
     }
@@ -96,6 +112,16 @@ export function CashDeployCard({ scope }: Props) {
               <h4 className="text-[10px] text-ink-faint uppercase tracking-wider mb-2">
                 Sector Gaps (|≥ 2pp|)
               </h4>
+              {/* Owner ruling 2026-11-15: weights are NET of short positions. */}
+              <p className="text-[11px] text-ink-faint mb-2">{NET_OF_SHORTS_CAPTION}</p>
+              {/* An option whose Greeks cannot compute is weighted at market
+                  value instead (review finding S-B1, 2026-11-15). */}
+              {result.optionsAtMarketValue > 0 && (
+                <p className="text-[11px] text-ink-faint mb-2">
+                  Options without the inputs to compute a delta are counted at market value:{" "}
+                  <Count value={result.optionsAtMarketValue} />.
+                </p>
+              )}
               {/*
                 Equity-only benchmark (QA finding
                 analysis-cash-deploy--fixed-income-gap-vs-equity-benchmark):
@@ -141,6 +167,7 @@ export function CashDeployCard({ scope }: Props) {
                       <td className="py-1 text-ink">{g.sector}</td>
                       <td className="text-right py-1 font-mono text-ink-dim">
                         <Pct value={g.currentWeight * 100} digits={1} />
+                        {g.currentWeight < 0 && <span className="ml-1 text-ink-faint">net short</span>}
                       </td>
                       <td className="text-right py-1 font-mono text-ink-dim">
                         {(g.targetWeight * 100).toFixed(1)}%
@@ -181,6 +208,19 @@ export function CashDeployCard({ scope }: Props) {
                 </tbody>
               </table>
               </ScrollFade>
+              {/* Owner ruling 25 = A (2026-11-16): a gap that comes from hedges
+                  or short positions the owner holds is not filled (only the
+                  gap on long holdings is). One plain line per such sector,
+                  worded from its causes (FX3 A2). */}
+              {result.shortHeldSectors.length > 0 && (
+                <ul className="mt-2 space-y-0.5">
+                  {result.shortHeldSectors.map((s) => (
+                    <li key={s.sector} className="text-[11px] text-ink-faint">
+                      {shortHeldSectorLine(s)}
+                    </li>
+                  ))}
+                </ul>
+              )}
             </div>
           )}
 
@@ -199,7 +239,16 @@ export function CashDeployCard({ scope }: Props) {
                       </div>
                       <span className="font-mono text-ink"><Money value={p.allocationDollars} /></span>
                     </div>
-                    <p className="text-[11px] text-ink-faint">{p.rationale}</p>
+                    {/* The rationale quotes the sector gap in pp, which the Gap
+                        column masks; mask it the same way. */}
+                    <p className="text-[11px] text-ink-faint"><PrivateText>{p.rationale}</PrivateText></p>
+                    {/* Owner ruling 24 = B (2026-11-16): say when a fund pick
+                        took a small-weight sector past its benchmark weight. */}
+                    {p.toleranceSectors.length > 0 && (
+                      <p className="text-[11px] text-ink-faint mt-1">
+                        {smallWeightToleranceLine(p.toleranceSectors)}
+                      </p>
+                    )}
                   </div>
                 ))}
               </div>
@@ -220,10 +269,31 @@ export function CashDeployCard({ scope }: Props) {
             <span className="text-ink-faint">Allocated:</span>
             <span className="font-mono text-ink"><Money value={result.totalAllocated} /></span>
           </div>
-          {result.cashRemaining > 0.01 && (
-            <div className="flex items-center justify-between text-xs">
-              <span className="text-ink-faint">Remaining:</span>
-              <span className="font-mono text-ink-dim"><Money value={result.cashRemaining} /></span>
+          {/*
+            Owner ruling (docs/DECISIONS.md 2026-10-12, confirmed 2026-11-15):
+            picks stop at each sector's gap, so cash the gaps cannot take is
+            shown as unallocated with its reason, never poured into a name.
+            Allocated + Unallocated = the cash asked for, to the cent.
+          */}
+          {result.cashRemaining >= 0.01 && (
+            <div className="text-xs">
+              <div className="flex items-center justify-between">
+                <span className="text-ink-faint">Unallocated:</span>
+                <span className="font-mono text-ink-dim"><Money value={result.cashRemaining} /></span>
+              </div>
+              {result.unallocatedReason && (
+                <p className="text-[11px] text-ink-faint mt-1">{result.unallocatedReason}</p>
+              )}
+              {/* Owner ruling 25 = A: the part left out because it would only
+                  undo hedges (usually long puts) or short sales, with its own
+                  reason (review fix FX3 A2). */}
+              {result.unallocatedShortDollars >= 0.01 && (
+                <p className="text-[11px] text-ink-faint mt-1">
+                  {SHORT_UNALLOCATED_LABEL}{" "}
+                  <Money value={result.unallocatedShortDollars} />.{" "}
+                  {result.unallocatedShortReason}
+                </p>
+              )}
             </div>
           )}
         </div>

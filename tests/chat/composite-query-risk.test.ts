@@ -8,6 +8,7 @@
  * is exactly 0.625; an empty scope never reaches the engine.
  */
 import { describe, it, expect, beforeEach, vi } from "vitest";
+import { nthTradingDay } from "../helpers/trading-days";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 
@@ -21,13 +22,14 @@ import { queryRiskTool } from "@/lib/chat/composite/risk";
 import { COMPOSITE_MAX_JSON_CHARS } from "@/lib/chat/composite/shared";
 
 const TODAY = "2026-03-01";
-const BASE = "2026-01-01";
+const BASE = "2025-12-01";
 let db: Database.Database;
 
+// The i-th TRADING session from BASE: volatility counts one return per
+// session (2026-11-15), so the hand-worked alternating series seeds one row
+// per session.
 function day(i: number): string {
-  const d = new Date(`${BASE}T12:00:00Z`);
-  d.setUTCDate(d.getUTCDate() + i);
-  return d.toISOString().slice(0, 10);
+  return nthTradingDay(BASE, i);
 }
 
 function addStock(symbol: string, accountId: number, qty: number, price: number): void {
@@ -154,6 +156,37 @@ describe("query_risk", () => {
     expect(out.volatility).toBeNull();
     expect(out.sharpe_ratio).toBeNull();
     expect(out.withheld?.volatility_and_sharpe).toMatch(/20 daily values/);
+  });
+
+  it("returns the cash share and cash holding count, and the glosses say cash is in the total but never ranked (review R6)", () => {
+    // Account 3 holds 300 and 100 in stock; add a 400 money-market sweep.
+    const id = db
+      .prepare("INSERT INTO securities (symbol, name, security_type, fund_category, currency) VALUES ('ZZMM', 'ZZMM Sweep', 'Mutual Fund', 'Cash Equivalent', 'USD')")
+      .run().lastInsertRowid as number;
+    db.prepare(
+      "INSERT INTO holdings (account_id, security_id, quantity, cost_basis, as_of_date, source_key) VALUES (3, ?, 400, 400, ?, 'h-ZZMM-3')",
+    ).run(id, day(39));
+    db.prepare("INSERT INTO prices (security_id, date, close_price) VALUES (?, ?, 1)").run(id, day(39));
+    const out = queryRiskTool.run(db, {}, { accountIds: [3], today: TODAY }) as RiskOut & {
+      concentration: { cash_share: number; cash_holding_count: number; note: string };
+      units: Record<string, string>;
+    };
+    const engine = computeRiskMetrics(db, { accountIds: [3], coverageFloor: "scope" });
+    expect(out.concentration.cash_share).toBe(engine.cashWeight);
+    expect(out.concentration.cash_share).toBeCloseTo(0.5, 12);
+    expect(out.concentration.cash_holding_count).toBe(1);
+    // Weights over the whole 800: 300/800 and 100/800.
+    expect(out.concentration.herfindahl).toBeCloseTo((3 / 8) ** 2 + (1 / 8) ** 2, 12);
+    expect(out.concentration.top5_share).toBeCloseTo(0.5, 12);
+    expect(out.concentration.top5.map((p) => p.symbol)).not.toContain("ZZMM");
+    expect(out.units.herfindahl).toMatch(/cash equivalents/i);
+    expect(out.units.herfindahl).not.toMatch(/^sum of squared gross weights/);
+    expect(out.units.top5_share).toMatch(/cash equivalents/i);
+    expect(out.units.top5_share).toMatch(/not ranked|never ranked/);
+    expect(out.units.cash_share).toBeDefined();
+    expect(out.concentration.note).toMatch(/cash equivalents/i);
+    // No dollar figure for the cash bucket.
+    expect(Object.keys(out.concentration)).not.toContain("cash_market_value_usd");
   });
 
   it("an empty scope answers without calling the engine", () => {

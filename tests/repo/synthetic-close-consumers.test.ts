@@ -71,6 +71,10 @@ const CONSUMERS: Record<string, { role: Role; why: string }> = {
     role: "exclude",
     why: "the chat summary's Recent Transactions list is user activity; engine-owned closes never print there or take a slot",
   },
+  "lib/trade-review/market-context.ts": {
+    role: "include-with-disclosure",
+    why: "an engine close dated after a reviewed sale is reported as laterEngineClose and the prompt line says the remainder is uncertain (engine reconciliation, no imported sale); never presented as the owner selling",
+  },
   "app/api/trade-review/route.ts": { role: "include-with-disclosure", why: "passes isSyntheticClose to the view" },
   "app/dashboard/components/TaxLotTables.tsx": { role: "include-with-disclosure", why: "renders the Estimated chip" },
   "app/dashboard/components/TradeReviewView.tsx": {

@@ -28,6 +28,8 @@ export type DrawerPanel =
 interface Props {
   panel: DrawerPanel;
   state: AnalysisTrustState;
+  /** The strip's scope, carried into every link out of the drawer. */
+  scope: string;
   onClose: () => void;
   onRefresh: () => void;
 }
@@ -370,7 +372,7 @@ export function countNotComparableThrough(
   return months.size;
 }
 
-function PerformanceContent({ state }: { state: AnalysisTrustState }) {
+function PerformanceContent({ state, scope }: { state: AnalysisTrustState; scope: string }) {
   const { crossCheckedThru, perAccountReconciliation } = state;
   const skippedNotComparable = crossCheckedThru
     ? countNotComparableThrough(perAccountReconciliation, crossCheckedThru)
@@ -514,7 +516,7 @@ function PerformanceContent({ state }: { state: AnalysisTrustState }) {
       )}
 
       <a
-        href="/dashboard/analysis?view=performance"
+        href={`/dashboard/analysis?view=performance&scope=${encodeURIComponent(scope)}`}
         className="inline-block text-sm text-warn hover:brightness-110 underline underline-offset-2"
       >
         Open Performance →
@@ -651,7 +653,7 @@ const PANEL_TITLES: Record<DrawerPanel, string> = {
 
 // ── Drawer shell ─────────────────────────────────────────────────────
 
-export function TrustStripDrawer({ panel, state, onClose, onRefresh }: Props) {
+export function TrustStripDrawer({ panel, state, scope, onClose, onRefresh }: Props) {
   const overlayRef = useRef<HTMLDivElement>(null);
 
   // Close on outside click
@@ -708,7 +710,7 @@ export function TrustStripDrawer({ panel, state, onClose, onRefresh }: Props) {
           )}
           {panel === "lastClassify" && <LastClassifyContent state={state} />}
           {panel === "sectorClassify" && <SectorClassifyContent state={state} />}
-          {panel === "performance" && <PerformanceContent state={state} />}
+          {panel === "performance" && <PerformanceContent state={state} scope={scope} />}
           {panel === "stalePrices" && <StalePricesContent state={state} onClose={onClose} />}
           {panel === "bondDuration" && <BondDurationContent state={state} />}
         </div>

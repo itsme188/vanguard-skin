@@ -24,6 +24,9 @@
 import type Database from "better-sqlite3";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 import { liveOptionExpirationSql } from "@/lib/compute/option-expiry";
+import { accountScopeCondition } from "@/lib/queries/account-scope-sql";
+import { unmaturedSecuritySql } from "@/lib/db/eastern-day-sql";
+import { HOLDING_VALUE_USD_SQL } from "@/lib/queries/analysis";
 import {
   estimateBondRateLeg,
   type BondUnmodelledReason,
@@ -140,26 +143,34 @@ export function computeFixedIncomeExposure(
     )
     .all(today) as BondRow[];
 
-  // Total portfolio value, for the allocation percent.
+  // Total portfolio value, for the allocation percent: the SAME total the
+  // Allocation breakdown on this page divides by (getAllocationByDimension),
+  // so "Bond Allocation" equals the breakdown's Bond row. Latest holdings
+  // per (account, security) INCLUDING shorts (signed), each row valued by
+  // the breakdown's own HOLDING_VALUE_USD_SQL (an unpriced row at its cost
+  // basis), matured bonds and expired options left out. The card used to
+  // drop shorts and unpriced positions and keep matured bonds, so its bond
+  // share and its "X of Y" total named a third portfolio figure.
+  // `undefined` is every account; a defined empty list is NO accounts.
+  const scope = accountScopeCondition(accountIds ?? undefined);
   const portfolio = db
     .prepare(
-      `WITH ${latestHoldingsCte},
+      `WITH latest_holdings AS (
+           SELECT h.* FROM holdings h
+           WHERE ${latestHoldingsPredicate({ keyBy: "account_security", includeShorts: true })}
+         ),
          ${LATEST_PRICES_CTE}
-         SELECT SUM(
-           (CASE
-             WHEN LOWER(s.security_type) = 'bond'
-               THEN lh.total_qty * COALESCE(lp.close_price, 0) / 100.0
-             ELSE lh.total_qty * COALESCE(lp.close_price, 0) * COALESCE(s.multiplier, 1)
-           END) * COALESCE(fx.usd_per_unit, 1)
-         ) AS total_value
-         FROM latest_holdings lh
-         JOIN securities s ON s.id = lh.security_id
-         LEFT JOIN latest_prices lp ON lp.security_id = lh.security_id
+         SELECT SUM(${HOLDING_VALUE_USD_SQL}) AS total_value
+         FROM latest_holdings h
+         JOIN accounts a ON a.id = h.account_id
+         JOIN securities s ON s.id = h.security_id
+         LEFT JOIN latest_prices lp ON lp.security_id = h.security_id
          LEFT JOIN fx_rates fx ON fx.currency = s.currency
-         WHERE COALESCE(lp.close_price, 0) > 0
-           AND ${liveOptionExpirationSql("s", today)}`,
+         WHERE ${unmaturedSecuritySql("s", today)}
+           AND ${liveOptionExpirationSql("s", today)}
+           ${scope.condition !== null ? `AND ${scope.condition}` : ""}`,
     )
-    .get() as { total_value: number | null } | undefined;
+    .get(...scope.params) as { total_value: number | null } | undefined;
 
   const bonds: FixedIncomeBond[] = rows.map((row) => {
     // A rate move of zero: only the duration and its source are read. This is

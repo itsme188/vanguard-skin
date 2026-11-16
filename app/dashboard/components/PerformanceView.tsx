@@ -40,6 +40,7 @@ import {
   listStatementMonths,
 } from "@/lib/compute/monthly-performance";
 import { MonthlyPerformanceSection } from "./MonthlyPerformanceSection";
+import { BENCHMARK_RETURN_LABEL, BENCHMARK_SYMBOL } from "@/lib/compute/benchmark-label";
 
 // Same four band labels as TrustStripDrawer's chips — duplicated locally
 // rather than imported (TrustStripDrawer is a "use client" module; this
@@ -93,7 +94,35 @@ interface PerformanceViewProps {
   month?: string;
 }
 
-const BENCHMARK_SYMBOL = "SPY";
+// The benchmark's symbol and its owner-facing name ("SPY price return") come
+// from one plain module, so a later switch to a total-return series is a
+// change in one place.
+
+/**
+ * A time-weighted return over less than a year is shown as the period's own
+ * return, never annualized (GIPS practice: annualizing a part-year return
+ * projects the part year's pace onto a full year). Display only; the compute
+ * layer's annualizedReturn is unchanged. The money-weighted tile stays
+ * labelled annualized: XIRR is a rate by construction.
+ *
+ * Decided by the PERIOD first: YTD is never annualized. 1Y / 3Y / 5Y / All
+ * are, when the measured span is a full year. A chain of stored monthly
+ * returns opens on the first day of its first month, the day after the
+ * opening month-end, so a full one-year window measures 364 days in a
+ * non-leap year (365 in a leap year): 364 is the shortest full year, and a
+ * scope whose history is shorter than that still shows no annualized figure.
+ */
+const MIN_ANNUALIZED_DAYS = 364;
+
+function shownAnnualized(
+  period: Period,
+  annualized: number | null | undefined,
+  totalDays: number | undefined,
+): number | null {
+  if (period === "ytd") return null;
+  if (annualized == null || totalDays === undefined || totalDays < MIN_ANNUALIZED_DAYS) return null;
+  return annualized;
+}
 
 export async function PerformanceView({ scope = "all", period, month }: PerformanceViewProps) {
   const activePeriod: Period = (PERIODS.find((p) => p.key === period)?.key ?? "ytd") as Period;
@@ -189,6 +218,9 @@ export async function PerformanceView({ scope = "all", period, month }: Performa
 
   const totalReturnPct = twrResult?.totalReturn ?? null;
   const annualizedTwr = twrResult?.annualizedReturn ?? null;
+  // What the TWR tile shows under its figure: nothing for a window under a
+  // year (YTD, or a scope whose history is shorter than the period).
+  const shownAnnualizedTwr = shownAnnualized(activePeriod, annualizedTwr, twrResult?.totalDays);
   const xirrAnnualized = xirrResult?.xirr ?? null;
 
   // ── Reconciliation strip ────────────────────────────────────────
@@ -305,6 +337,13 @@ export async function PerformanceView({ scope = "all", period, month }: Performa
   } catch {
     // Non-blocking
   }
+
+  // What the attribution card's empty-state sentences name: the scope the
+  // pills selected, so every reason says whose positions it is about.
+  const attributionScopeName =
+    activeScope === "all"
+      ? "all accounts"
+      : `the ${SCOPES.find((s) => s.key === activeScope)?.label ?? activeScope} scope`;
 
   // ── Month view ──────────────────────────────────────────────────
   // The month view answers a different question from the tiles above it
@@ -436,9 +475,9 @@ export async function PerformanceView({ scope = "all", period, month }: Performa
                 kind="pct"
                 title="Time-weighted return over the selected period — manager-skill measure that strips out cash-flow timing."
                 subNode={
-                  annualizedTwr !== null ? (
+                  shownAnnualizedTwr !== null ? (
                     <>
-                      ≈ <Pct value={annualizedTwr * 100} digits={2} signed /> annualized
+                      ≈ <Pct value={shownAnnualizedTwr * 100} digits={2} signed /> annualized
                     </>
                   ) : null
                 }
@@ -448,7 +487,15 @@ export async function PerformanceView({ scope = "all", period, month }: Performa
                 value={xirrAnnualized}
                 kind="pct"
                 title="Money-weighted return, annualized by construction — investor-experience measure that includes cash-flow timing."
-                sub={interpretTwrVsXirr(annualizedTwr, xirrAnnualized)}
+                // Like with like, and only what the visible figures support.
+                // XIRR is an annual rate by construction; the comparison
+                // sentence speaks "on an annualized basis", so it compares
+                // XIRR with the annualized TWR the TWR tile SHOWS. When that
+                // tile shows none (YTD, or history under a full year: the
+                // tile then shows only the period's own return, which is not
+                // an annual rate), there is no like figure on the page and the
+                // sentence is left out rather than compared with a hidden one.
+                sub={interpretTwrVsXirr(shownAnnualizedTwr, xirrAnnualized)}
               />
               <KpiCell
                 label="Max drawdown"
@@ -535,8 +582,18 @@ export async function PerformanceView({ scope = "all", period, month }: Performa
                 <dd className="text-ink font-mono">{twrResult?.totalDays ?? "—"}</dd>
               </div>
               <div>
-                <dt className="text-[11px] uppercase tracking-widest text-ink-faint">Cash flows</dt>
-                <dd className="text-ink font-mono">{xirrResult?.cashFlowCount ?? "—"}</dd>
+                <dt
+                  className="text-[11px] uppercase tracking-widest text-ink-faint"
+                  title="Number of external flow entries the money-weighted return used: one per statement month that reports a net deposit or withdrawal figure, one per ledger deposit or withdrawal where the statement gives none, and one per in-kind transfer leg. Not a count of individual deposits."
+                >
+                  Cash flows
+                </dt>
+                {/* Real flow entries only: the solver's own list
+                    (cashFlowCount) also carries each account's opening and
+                    terminal values, so one deposit read as three. A statement
+                    month's net figure is ONE entry however many deposits it
+                    nets, hence the tooltip. */}
+                <dd className="text-ink font-mono">{xirrResult?.externalFlowCount ?? "—"}</dd>
               </div>
             </dl>
             {/* Only when the chain really does open before the first
@@ -597,7 +654,10 @@ export async function PerformanceView({ scope = "all", period, month }: Performa
                       </td>
                       <td className="py-2 text-right font-mono tabular-nums">
                         <Pct
-                          value={acc.annualizedReturn !== null ? acc.annualizedReturn * 100 : null}
+                          value={(() => {
+                            const shown = shownAnnualized(activePeriod, acc.annualizedReturn, acc.totalDays);
+                            return shown !== null ? shown * 100 : null;
+                          })()}
                           digits={2}
                           signed
                         />
@@ -615,7 +675,7 @@ export async function PerformanceView({ scope = "all", period, month }: Performa
           {/* Equity curve with benchmark overlay */}
           {equityCurveData.length > 0 && (
             <>
-              <PerformanceCurveChart data={equityCurveData} benchmarkSymbol={BENCHMARK_SYMBOL} />
+              <PerformanceCurveChart data={equityCurveData} benchmarkLabel={BENCHMARK_RETURN_LABEL} />
               {(() => {
                 // Same honesty caption as the KPI strip: the curve plots
                 // daily_valuations, whose coverage starts well after the
@@ -690,6 +750,8 @@ export async function PerformanceView({ scope = "all", period, month }: Performa
             <PeriodAttributionSection
               attribution={attribution}
               benchmarkSymbol={BENCHMARK_SYMBOL}
+              benchmarkLabel={BENCHMARK_RETURN_LABEL}
+              scopeName={attributionScopeName}
               requestedStart={startDate}
             />
           )}

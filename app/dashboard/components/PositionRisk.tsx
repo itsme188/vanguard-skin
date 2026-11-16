@@ -8,7 +8,7 @@ import type {
   CorrelationEntry,
   PositionRiskResult,
 } from "@/lib/compute/risk";
-import { Pct, PrivateText } from "@/lib/privacy/components";
+import { Count, Pct, PrivateText } from "@/lib/privacy/components";
 import { usePrivacy } from "@/lib/privacy/context";
 import { NarrativeBlock } from "./analysis/NarrativeBlock";
 import { ScrollFade } from "./ScrollFade";
@@ -163,8 +163,17 @@ function BlankMarker({
 
 // ─── Component ───────────────────────────────────────────────────
 
+/**
+ * Owner ruling (2026-11-16): cash is never ranked as a position. The route
+ * leaves every cash-equivalent fund out before the top N is taken and says
+ * how many; the card states that count in one line instead of a row.
+ */
+type PositionRiskCardData = PositionRiskResult & { cashEquivalentsLeftOut?: number };
+
+export const CASH_LEFT_OUT_TEXT = "left out: cash is not ranked as a position.";
+
 export function PositionRiskCard({ scope }: { scope?: string }) {
-  const [data, setData] = useState<PositionRiskResult | null>(null);
+  const [data, setData] = useState<PositionRiskCardData | null>(null);
   const [weekAgoPosns, setWeekAgoPosns] = useState<PositionRisk[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -258,6 +267,13 @@ export function PositionRiskCard({ scope }: { scope?: string }) {
       <NarrativeBlock scope={scope ?? "all"} surfaceKey="position-risk" />
 
       <p className="text-xs text-ink-dim mb-2">{PERCENT_BASIS.positionRiskWeightCaption}</p>
+      {(data.cashEquivalentsLeftOut ?? 0) > 0 && (
+        <p className="text-xs text-ink-faint mb-2">
+          <Count value={data.cashEquivalentsLeftOut ?? 0} />{" "}
+          {data.cashEquivalentsLeftOut === 1 ? "cash-equivalent fund" : "cash-equivalent funds"}{" "}
+          would have ranked in this list and {data.cashEquivalentsLeftOut === 1 ? "was" : "were"} {CASH_LEFT_OUT_TEXT}
+        </p>
+      )}
 
       {/* ── Position table ── */}
       <ScrollFade>

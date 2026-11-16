@@ -18,6 +18,11 @@
  *      `output_config.format = {type:"json_schema", schema}` and NO tool /
  *      tool_choice at all — and, belt-and-braces for callers that override the
  *      mode themselves, retry ONCE with it forced when that 400 still fires.
+ *   4. A content-free usage line (2026-11-15) — every completed call writes ONE
+ *      `[ai-usage]` line to the server log (feature, the model that answered,
+ *      token counts, finish reason, duration; never prompt or reply text), and
+ *      the result carries `answeredModelId` so a caller can record the model
+ *      that really answered after a failover. See `formatAiUsageLine`.
  *
  * Call sites swap `generateText({ model: getModelForFeature(x), ...opts })` for
  * `generateTextForFeature(x, opts)` — same options minus `model`.
@@ -100,6 +105,146 @@ export function isOutputFormatRejected(err: unknown): boolean {
   return false;
 }
 
+// ─── Usage line (content-free) ──────────────────────────────────────────────
+//
+// Follows lib/chat/usage-log.ts: an allowlisted JSON line on the server log,
+// built key by key, every value coerced to a number, a short token or null.
+// Never prompt text, reply text, tool input/output or a portfolio figure. No
+// database (lib/ai never imports the db singleton) and no new table.
+
+export const AI_USAGE_LINE_PREFIX = "[ai-usage] ";
+
+export interface AiUsageLineFields {
+  /** Which helper made the call. */
+  kind: "text" | "object";
+  feature: string;
+  /** The model id that answered (the provider's response id when it sent one). */
+  model: string | null | undefined;
+  finishReason: string | null | undefined;
+  durationMs: number | null | undefined;
+  /** The SDK's `LanguageModelUsage` (or anything shaped like it). */
+  usage: unknown;
+}
+
+function usageNum(v: unknown): number | null {
+  return typeof v === "number" && Number.isFinite(v) ? v : null;
+}
+
+function usageToken(v: unknown): string | null {
+  if (typeof v !== "string") return null;
+  return v.length <= 100 ? v : v.slice(0, 100);
+}
+
+function usageField(obj: unknown, key: string): unknown {
+  if (obj === null || typeof obj !== "object") return undefined;
+  try {
+    return (obj as Record<string, unknown>)[key];
+  } catch {
+    return undefined;
+  }
+}
+
+export function formatAiUsageLine(fields: AiUsageLineFields): string {
+  const u = fields.usage;
+  const inDetails = usageField(u, "inputTokenDetails");
+  const outDetails = usageField(u, "outputTokenDetails");
+  const line: Record<string, number | string | null> = {
+    kind: fields.kind === "object" ? "object" : "text",
+    feature: usageToken(fields.feature),
+    model: usageToken(fields.model),
+    input: usageNum(usageField(u, "inputTokens")),
+    noCache: usageNum(usageField(inDetails, "noCacheTokens")),
+    cacheRead: usageNum(usageField(inDetails, "cacheReadTokens")),
+    cacheWrite: usageNum(usageField(inDetails, "cacheWriteTokens")),
+    output: usageNum(usageField(u, "outputTokens")),
+    reasoning: usageNum(usageField(outDetails, "reasoningTokens")),
+    finishReason: usageToken(fields.finishReason),
+    durationMs: usageNum(fields.durationMs),
+  };
+  return AI_USAGE_LINE_PREFIX + JSON.stringify(line);
+}
+
+/** Never throws into the caller: a broken log sink is not a failed AI call. */
+function logAiUsage(fields: AiUsageLineFields): void {
+  try {
+    console.log(formatAiUsageLine(fields));
+  } catch {
+    // The line is observability only.
+  }
+}
+
+/** Added to every helper result: the model id that actually answered. */
+export interface AnsweredModel {
+  answeredModelId?: string;
+}
+
+function responseModelIdOf(res: unknown): string | null {
+  const id = usageField(usageField(res, "response"), "modelId");
+  return typeof id === "string" && id.length > 0 ? id : null;
+}
+
+/**
+ * Run one provider call, then log it and stamp `answeredModelId` on the
+ * result. The field is NON-enumerable so a caller's or a mock's `toEqual` on
+ * the result is unchanged. A NoObjectGeneratedError (the call completed and was
+ * billed, the reply did not parse, e.g. cut off at the cap) is logged too and
+ * rethrown untouched; any other failure did not complete and writes no line.
+ */
+async function observedCall<T>(
+  feature: FeatureKey,
+  kind: "text" | "object",
+  sentModelId: string,
+  run: () => Promise<T>,
+): Promise<T & AnsweredModel> {
+  const started = Date.now();
+  let res: T;
+  try {
+    res = await run();
+  } catch (err) {
+    if (NoObjectGeneratedError.isInstance(err)) {
+      logAiUsage({
+        kind,
+        feature,
+        model: responseModelIdOf(err) ?? sentModelId,
+        finishReason: err.finishReason ?? null,
+        durationMs: Date.now() - started,
+        usage: err.usage,
+      });
+    }
+    throw err;
+  }
+  const answered = responseModelIdOf(res) ?? sentModelId;
+  const total = usageField(res, "totalUsage");
+  logAiUsage({
+    kind,
+    feature,
+    model: answered,
+    finishReason: usageToken(usageField(res, "finishReason")),
+    durationMs: Date.now() - started,
+    usage: total !== null && typeof total === "object" ? total : usageField(res, "usage"),
+  });
+  stampAnsweredModelId(res, answered);
+  return res as T & AnsweredModel;
+}
+
+/**
+ * Put `answeredModelId` on a result as a NON-enumerable field, so a caller's
+ * or a mock's `toEqual` on the result is unchanged. Never throws.
+ */
+function stampAnsweredModelId(res: unknown, answered: string): void {
+  if (res === null || typeof res !== "object") return;
+  try {
+    Object.defineProperty(res, "answeredModelId", {
+      value: answered,
+      enumerable: false,
+      configurable: true,
+      writable: true,
+    });
+  } catch {
+    // A frozen result keeps its shape; the caller falls back to its own id.
+  }
+}
+
 // Omit `model` so callers don't need to supply it — the wrapper resolves it.
 // We use a loose type to avoid fighting AI SDK's internal generics (tools, etc.).
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -118,8 +263,10 @@ export async function generateTextForFeature(feature: FeatureKey, opts: GenTextO
     return await generateTextOnPrimary(feature, opts);
   } catch (err) {
     return failOverOnAccountFailure(feature, err, async (model, target) => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const res = await generateText({ ...opts, model } as any);
+      const res = await observedCall(feature, "text", target.modelId, () =>
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        generateText({ ...opts, model } as any),
+      );
       if (REFUSAL_FINISH.has(res.finishReason)) throw new AIRefusalError(feature, target.modelId);
       return res;
     });
@@ -129,8 +276,10 @@ export async function generateTextForFeature(feature: FeatureKey, opts: GenTextO
 async function generateTextOnPrimary(feature: FeatureKey, opts: GenTextOpts) {
   let { modelId } = resolveFeatureModel(feature);
   try {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const res = await generateText({ ...opts, model: getModelForFeature(feature) } as any);
+    const res = await observedCall(feature, "text", modelId, () =>
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      generateText({ ...opts, model: getModelForFeature(feature) } as any),
+    );
     if (REFUSAL_FINISH.has(res.finishReason)) throw new AIRefusalError(feature, modelId);
     return res;
   } catch (err) {
@@ -141,8 +290,10 @@ async function generateTextOnPrimary(feature: FeatureKey, opts: GenTextOpts) {
     const next = resolveFeatureModel(feature).modelId;
     console.warn(`[ai] ${feature}: ${modelId} unavailable → failing over to ${next}`);
     modelId = next;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const res = await generateText({ ...opts, model: getModelForFeature(feature) } as any);
+    const res = await observedCall(feature, "text", modelId, () =>
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      generateText({ ...opts, model: getModelForFeature(feature) } as any),
+    );
     if (REFUSAL_FINISH.has(res.finishReason)) throw new AIRefusalError(feature, modelId);
     return res;
   }
@@ -189,9 +340,11 @@ export async function generateObjectForFeature(feature: FeatureKey, opts: GenObj
   try {
     return await generateObjectOnPrimary(feature, opts);
   } catch (err) {
-    return failOverOnAccountFailure(feature, err, (model) =>
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      generateObject({ ...opts, model } as any),
+    return failOverOnAccountFailure(feature, err, (model, target) =>
+      observedCall(feature, "object", target.modelId, () =>
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        generateObject({ ...opts, model } as any),
+      ),
     );
   }
 }
@@ -202,12 +355,13 @@ async function generateObjectOnPrimary(feature: FeatureKey, opts: GenObjOpts) {
   const firstMode =
     provider === "anthropic" ? (anthropicModeOf(opts) ?? "outputFormat") : undefined;
   try {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    return await generateObject({
-      ...withAnthropicStructuredOutput(feature, opts, false),
-      model: getModelForFeature(feature),
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    } as any);
+    return await observedCall(feature, "object", modelId, () =>
+      generateObject({
+        ...withAnthropicStructuredOutput(feature, opts, false),
+        model: getModelForFeature(feature),
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any),
+    );
   } catch (err) {
     if (isForcedToolUnsupported(err)) {
       // Retry ONCE with native structured output forced — no tool, no
@@ -218,12 +372,13 @@ async function generateObjectOnPrimary(feature: FeatureKey, opts: GenObjOpts) {
       console.warn(
         `[ai] ${feature}: ${modelId} rejects forced tool use → retrying with native structured output`,
       );
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      return await generateObject({
-        ...withAnthropicStructuredOutput(feature, opts, true, "outputFormat"),
-        model: getModelForFeature(feature),
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      } as any);
+      return await observedCall(feature, "object", modelId, () =>
+        generateObject({
+          ...withAnthropicStructuredOutput(feature, opts, true, "outputFormat"),
+          model: getModelForFeature(feature),
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        } as any),
+      );
     }
     if (isOutputFormatRejected(err)) {
       // The model (e.g. a tier that degraded to one without native structured
@@ -233,23 +388,25 @@ async function generateObjectOnPrimary(feature: FeatureKey, opts: GenObjOpts) {
       console.warn(
         `[ai] ${feature}: ${modelId} rejects native structured output → retrying with JSON-tool path`,
       );
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      return await generateObject({
-        ...withAnthropicStructuredOutput(feature, opts, true, "jsonTool"),
-        model: getModelForFeature(feature),
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      } as any);
+      return await observedCall(feature, "object", modelId, () =>
+        generateObject({
+          ...withAnthropicStructuredOutput(feature, opts, true, "jsonTool"),
+          model: getModelForFeature(feature),
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        } as any),
+      );
     }
     if (!isModelUnavailable(err)) throw err;
     dropModelFromCatalog(modelId);
     const next = resolveFeatureModel(feature).modelId;
     console.warn(`[ai] ${feature}: ${modelId} unavailable → retrying with re-resolved model ${next}`);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    return await generateObject({
-      ...withAnthropicStructuredOutput(feature, opts, false),
-      model: getModelForFeature(feature),
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    } as any);
+    return await observedCall(feature, "object", next, () =>
+      generateObject({
+        ...withAnthropicStructuredOutput(feature, opts, false),
+        model: getModelForFeature(feature),
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any),
+    );
   }
 }
 
@@ -296,12 +453,16 @@ export interface ExplicitModelTarget {
  * every family except Fable (thinking is always on there and the parameter
  * 400s). Fable is no longer selectable (2026-11-07) but a run pinned to it
  * before then still resumes on it, so the carve-out stays.
+ *
+ * Every completed call writes the same content-free `[ai-usage]` line as the
+ * feature helpers (`observedCall`; a billed cut-off or refusal included), and
+ * the result carries the non-enumerable `answeredModelId`.
  */
 export async function generateObjectWithModel(
   feature: FeatureKey,
   target: ExplicitModelTarget,
   opts: GenObjOpts & { maxOutputTokens: number },
-): Promise<{ object: unknown; usage: unknown; finishReason: string }> {
+): Promise<{ object: unknown; usage: unknown; finishReason: string } & AnsweredModel> {
   const { modelId, effort, family } = target;
   const callerProviderOptions = (opts as { providerOptions?: Record<string, Record<string, unknown>> })
     .providerOptions;
@@ -310,16 +471,17 @@ export async function generateObjectWithModel(
     effort,
     ...(family === "fable" ? {} : { thinking: { type: "adaptive" } }),
   };
-  let res: { object: unknown; usage: unknown; finishReason: string };
+  let res: { object: unknown; usage: unknown; finishReason: string } & AnsweredModel;
   try {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    res = await generateObject({
-      ...opts,
-      providerOptions: { ...callerProviderOptions, anthropic },
-      model: getModelForId(feature, modelId),
-      maxRetries: 0,
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    } as any);
+    res = await observedCall(feature, "object", modelId, () =>
+      generateObject({
+        ...opts,
+        providerOptions: { ...callerProviderOptions, anthropic },
+        model: getModelForId(feature, modelId),
+        maxRetries: 0,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any) as Promise<{ object: unknown; usage: unknown; finishReason: string }>,
+    );
   } catch (err) {
     if (isModelUnavailable(err)) throw new AIModelUnavailableError(feature, modelId);
     // A truncated or refused response often fails to parse; the SDK then
@@ -335,5 +497,12 @@ export async function generateObjectWithModel(
   }
   if (REFUSAL_FINISH.has(res.finishReason)) throw new AIRefusalError(feature, modelId, res.usage);
   if (res.finishReason === "length") throw new AITruncatedError(feature, modelId, res.usage);
-  return { object: res.object, usage: res.usage, finishReason: res.finishReason };
+  const out: { object: unknown; usage: unknown; finishReason: string } & AnsweredModel = {
+    object: res.object,
+    usage: res.usage,
+    finishReason: res.finishReason,
+  };
+  // Read directly: the field is non-enumerable and a spread would drop it.
+  stampAnsweredModelId(out, res.answeredModelId ?? modelId);
+  return out;
 }

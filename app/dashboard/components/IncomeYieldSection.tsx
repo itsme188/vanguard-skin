@@ -3,6 +3,7 @@ import { accountIncomeTotal, getIncomeSummary, hasIncomeActivity } from "@/lib/q
 import { resolveScope } from "@/lib/queries/accounts";
 import { Money } from "@/lib/privacy/components";
 import { todayET } from "@/lib/calendar/date-utils";
+import { ScrollFade } from "./ScrollFade";
 
 interface IncomeYieldSectionProps {
   scope?: string;
@@ -41,7 +42,7 @@ export async function IncomeYieldSection({ scope }: IncomeYieldSectionProps) {
   }
 
   return (
-    <section className="bg-panel rounded-xl p-4 sm:p-5 card-elev space-y-4">
+    <section className="bg-panel rounded-xl p-4 sm:p-5 card-elev min-w-0 space-y-4">
       <div>
         <h3 className="text-sm font-medium text-ink">Income · trailing 12 months</h3>
         <p className="text-xs text-ink-faint mt-0.5">
@@ -62,32 +63,34 @@ export async function IncomeYieldSection({ scope }: IncomeYieldSectionProps) {
           <h4 className="text-[11px] uppercase tracking-widest text-ink-faint mb-2">
             Top payers
           </h4>
-          <table className="w-full text-sm">
+          <ScrollFade>
+          <table className="w-full text-sm whitespace-nowrap">
             <thead className="text-[11px] uppercase tracking-widest text-ink-faint">
               <tr className="border-b border-edge">
                 <th className="text-left font-medium pb-2">Symbol</th>
-                <th className="text-right font-medium pb-2">Dividends</th>
-                <th className="text-right font-medium pb-2">Interest</th>
-                <th className="text-right font-medium pb-2">Total</th>
+                <th className="text-right font-medium pb-2 pl-4">Dividends</th>
+                <th className="text-right font-medium pb-2 pl-4">Interest</th>
+                <th className="text-right font-medium pb-2 pl-4">Total</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-edge">
               {summary.topPayers.map((p) => (
-                <tr key={p.symbol}>
-                  <td className="py-2 text-ink font-mono">{p.symbol}</td>
-                  <td className="py-2 text-right font-mono tabular-nums text-ink-dim">
+                <tr key={`${p.symbol}|${p.securityName ?? ""}`}>
+                  <td className="py-2 text-ink font-mono">{payerLabel(p)}</td>
+                  <td className="py-2 pl-4 text-right font-mono tabular-nums text-ink-dim">
                     <Money value={p.dividends} />
                   </td>
-                  <td className="py-2 text-right font-mono tabular-nums text-ink-dim">
+                  <td className="py-2 pl-4 text-right font-mono tabular-nums text-ink-dim">
                     <Money value={p.interest} />
                   </td>
-                  <td className="py-2 text-right font-mono tabular-nums text-ink">
+                  <td className="py-2 pl-4 text-right font-mono tabular-nums text-ink">
                     <Money value={p.dividends + p.interest} />
                   </td>
                 </tr>
               ))}
             </tbody>
           </table>
+          </ScrollFade>
         </div>
       )}
 
@@ -96,29 +99,30 @@ export async function IncomeYieldSection({ scope }: IncomeYieldSectionProps) {
           <h4 className="text-[11px] uppercase tracking-widest text-ink-faint mb-2">
             By account
           </h4>
-          <table className="w-full text-sm">
+          <ScrollFade>
+          <table className="w-full text-sm whitespace-nowrap">
             <thead className="text-[11px] uppercase tracking-widest text-ink-faint">
               <tr className="border-b border-edge">
                 <th className="text-left font-medium pb-2">Account</th>
-                <th className="text-right font-medium pb-2">Dividends</th>
-                <th className="text-right font-medium pb-2">Interest</th>
-                <th className="text-right font-medium pb-2">Interest paid</th>
-                <th className="text-right font-medium pb-2">Fees</th>
-                <th className="text-right font-medium pb-2">Total</th>
+                <th className="text-right font-medium pb-2 pl-4">Dividends</th>
+                <th className="text-right font-medium pb-2 pl-4">Interest</th>
+                <th className="text-right font-medium pb-2 pl-4">Interest paid</th>
+                <th className="text-right font-medium pb-2 pl-4">Fees</th>
+                <th className="text-right font-medium pb-2 pl-4">Total</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-edge">
               {summary.byAccount.map((a) => (
                 <tr key={a.accountId}>
                   <td className="py-2 text-ink">{a.accountName}</td>
-                  <td className="py-2 text-right font-mono tabular-nums text-ink-dim">
+                  <td className="py-2 pl-4 text-right font-mono tabular-nums text-ink-dim">
                     <Money value={a.dividends} />
                   </td>
-                  <td className="py-2 text-right font-mono tabular-nums text-ink-dim">
+                  <td className="py-2 pl-4 text-right font-mono tabular-nums text-ink-dim">
                     <Money value={a.interest} />
                   </td>
                   <td
-                    className={`py-2 text-right font-mono tabular-nums ${
+                    className={`py-2 pl-4 text-right font-mono tabular-nums ${
                       a.interestPaid > 0 ? "text-down" : "text-ink-dim"
                     }`}
                   >
@@ -128,23 +132,34 @@ export async function IncomeYieldSection({ scope }: IncomeYieldSectionProps) {
                       arithmetic visible (Total = Dividends + Interest − Interest
                       paid − Fees), and the rows sum to the Net income tile. */}
                   <td
-                    className={`py-2 text-right font-mono tabular-nums ${
+                    className={`py-2 pl-4 text-right font-mono tabular-nums ${
                       a.fees > 0 ? "text-down" : "text-ink-dim"
                     }`}
                   >
                     <Money value={-a.fees} />
                   </td>
-                  <td className="py-2 text-right font-mono tabular-nums text-ink">
+                  <td className="py-2 pl-4 text-right font-mono tabular-nums text-ink">
                     <Money value={accountIncomeTotal(a)} />
                   </td>
                 </tr>
               ))}
             </tbody>
           </table>
+          </ScrollFade>
         </div>
       )}
     </section>
   );
+}
+
+/**
+ * getIncomeSummary groups income with no security under COALESCE(symbol,
+ * 'CASH') with a NULL security name: broker credit interest on a cash
+ * balance. A real security named CASH carries its own name and keeps its
+ * symbol.
+ */
+function payerLabel(p: { symbol: string; securityName: string | null }): string {
+  return p.symbol === "CASH" && p.securityName === null ? "Cash interest" : p.symbol;
 }
 
 function KpiCell({

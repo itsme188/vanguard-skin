@@ -2,14 +2,57 @@ import { dataWindowNotice } from "@/lib/compute/data-window";
 import { dataWindowCoveredCaption } from "@/lib/compute/data-window-caption";
 import type { PeriodAttribution } from "@/lib/compute/period-attribution";
 import { Pct } from "@/lib/privacy/components";
+import { EmptySection } from "./EmptySection";
+import { ALPHA_PRICE_RETURN_NOTE } from "@/lib/compute/benchmark-label";
+
+function fmtDay(iso: string): string {
+  const [y, m, d] = iso.split("-");
+  const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  return `${months[parseInt(m, 10) - 1]} ${parseInt(d, 10)}, ${y}`;
+}
+
+/**
+ * Why the contributors / detractors / sector lists are empty, in the owner's
+ * words. Every sentence names whose positions it means: the accounts missing a
+ * book, or the selected scope (scopeName, e.g. "all accounts" or "the IBKR
+ * scope"), so no reason reads as if it were about an unnamed account.
+ */
+function positionsEmptyText(
+  attribution: PeriodAttribution,
+  requestedStart: string | undefined,
+  scopeName: string,
+): string {
+  const at = requestedStart ? `on ${fmtDay(requestedStart)}` : "at the start of this period";
+  const { emptyReason, missingAccounts } = attribution.positionsBasis;
+  if (emptyReason === "accounts_missing_at_start") {
+    return `No position snapshot is on file for ${missingAccounts.join(", ")} ${at}, so each holding's share of the scope at the start cannot be measured.`;
+  }
+  if (emptyReason === "no_eligible_positions_at_start") {
+    return `The positions held in ${scopeName} ${at} include no long stocks, ETFs or funds. This card weights long positions only; shorts, options and bonds are not included.`;
+  }
+  if (emptyReason === "no_start_price") {
+    return `No closing price within a week before the start is on file for the stocks, ETFs and funds held in ${scopeName} ${at}, so their price change over the period cannot be measured.`;
+  }
+  if (emptyReason === "no_end_price") {
+    return `No closing price within a week before the end of the period is on file for the stocks, ETFs and funds held in ${scopeName} ${at}, so their price change over the period cannot be measured.`;
+  }
+  return `No position snapshot is on file for ${scopeName} ${at}, so each holding's share at the start cannot be measured.`;
+}
 
 export function PeriodAttributionSection({
   attribution,
   benchmarkSymbol,
+  benchmarkLabel,
+  scopeName,
   requestedStart,
 }: {
   attribution: PeriodAttribution;
+  /** The ticker, for sentences about its closes ("a SPY close"). */
   benchmarkSymbol: string;
+  /** What the benchmark series is ("SPY price return", lib/compute/benchmark-label.ts). */
+  benchmarkLabel: string;
+  /** The selected scope in words, named by every empty-state reason. */
+  scopeName: string;
   /** The selected period's start (undefined for All), as the sibling captions use. */
   requestedStart: string | undefined;
 }) {
@@ -36,6 +79,14 @@ export function PeriodAttributionSection({
 
   return (
     <>
+      {!hasContribDetract && (
+        <EmptySection
+          title="Period attribution"
+          reason={positionsEmptyText(attribution, requestedStart, scopeName)}
+          hint="Contributors, detractors and sectors are weighted from the long stocks, ETFs and funds in force at the period start: the latest position snapshot on or before it, at most a month old."
+        />
+      )}
+
       {hasContribDetract && (
         <section className="rounded-xl bg-panel p-4 sm:p-5 card-elev">
           <h3 className="text-sm font-medium text-ink mb-3">Period attribution</h3>
@@ -85,6 +136,14 @@ export function PeriodAttributionSection({
               )}
             </div>
           </div>
+          {attribution.positionsBasis.asOf && (
+            <p className="text-xs text-ink-faint mt-3">
+              Each holding is weighted by its share of the stocks, ETFs and funds held on{" "}
+              {fmtDay(attribution.positionsBasis.asOf)}, times its price change over the period.
+              Long positions only; shorts, options and bonds are not included.
+              Trades during the period are not included.
+            </p>
+          )}
         </section>
       )}
 
@@ -127,7 +186,7 @@ export function PeriodAttributionSection({
         <section className="rounded-xl bg-panel p-4 sm:p-5 card-elev">
           <h3 className="text-sm font-medium text-ink mb-4">
             Beta vs alpha decomposition{" "}
-            <span className="text-ink-faint font-normal text-xs">vs {benchmarkSymbol}</span>
+            <span className="text-ink-faint font-normal text-xs">vs {benchmarkLabel}</span>
           </h3>
           <div className="grid grid-cols-2 gap-6">
             <div>
@@ -159,10 +218,14 @@ export function PeriodAttributionSection({
                 />
               </p>
               <p className="text-[11px] text-ink-faint mt-0.5">
-                Idiosyncratic return above benchmark
+                Return above the {benchmarkLabel}
               </p>
             </div>
           </div>
+          {/* The stored benchmark is a price return while the portfolio's
+              return includes dividends, so alpha is overstated (owner ruling
+              2026-11-15: say so until a total-return series is stored). */}
+          <p className="text-xs text-ink-faint mt-3">{ALPHA_PRICE_RETURN_NOTE}</p>
           {betaWindowCaption && (
             <p className="text-xs text-ink-faint mt-3">{betaWindowCaption}</p>
           )}

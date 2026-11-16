@@ -14,7 +14,9 @@
 import type Database from "better-sqlite3";
 import { SECURITY_CLASSIFICATIONS } from "@/lib/data/security-classifications";
 import { generateTextForFeature } from "@/lib/ai/generate";
-import { parseBatchReply, runClassifyBatches, UnusableBatchReplyError } from "@/lib/compute/classify-batch";
+import { parseBatchReply, runClassifyBatches, throwIfCutOff, UnusableBatchReplyError } from "@/lib/compute/classify-batch";
+import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
+import { liveOptionExpirationSql } from "@/lib/compute/option-expiry";
 import { normalizeFundCategory } from "@/lib/securities/normalize-fund-category";
 import { normalizeMarketCapCategory } from "@/lib/securities/normalize-market-cap";
 
@@ -26,7 +28,7 @@ export interface ClassificationResult {
   /** Already had classification (skipped) */
   skipped: number;
   /** Could not classify (no lookup, no rule) */
-  unresolved: Array<{ id: number; symbol: string; security_type: string | null }>;
+  unresolved: Array<{ id: number; symbol: string; security_type: string | null; name?: string | null }>;
 }
 
 export function classifySecurities(db: Database.Database): ClassificationResult {
@@ -172,6 +174,7 @@ export function classifySecurities(db: Database.Database): ClassificationResult 
         id: sec.id,
         symbol: sec.symbol,
         security_type: sec.security_type,
+        name: sec.name,
       });
     }
   });
@@ -225,12 +228,52 @@ const CLASSIFICATION_FIELDS = [
   "style",
 ] as const;
 
-type UnresolvedSecurity = { id: number; symbol: string; security_type: string | null };
+type UnresolvedSecurity = { id: number; symbol: string; security_type: string | null; name?: string | null };
+
+/**
+ * Securities held NOW, with their names: the latest holdings row per
+ * (account, security) is non-zero (`latestHoldingsPredicate`; a quantity-0
+ * tombstone is not held, shorts are), plus the underlying of a held, live
+ * option (options inherit the underlying's style and category on read). The
+ * AI fallback asks only about these: a name held once and sold, or never held,
+ * used to be re-sent on every click. No test or decision record says that
+ * classifying non-held names is deliberate (checked 2026-11-15).
+ */
+function heldNowSecurities(db: Database.Database): Map<number, string | null> {
+  const rows = db
+    .prepare(
+      `SELECT s.id, s.name FROM securities s
+       WHERE s.id IN (
+         SELECT h.security_id FROM holdings h WHERE ${latestHoldingsPredicate({})}
+       )
+       OR s.id IN (
+         SELECT u.id FROM holdings h
+         JOIN securities o ON o.id = h.security_id
+         JOIN securities u ON u.symbol = o.underlying_symbol
+         WHERE ${latestHoldingsPredicate({})}
+           AND o.underlying_symbol IS NOT NULL
+           AND ${liveOptionExpirationSql("o")}
+       )`,
+    )
+    .all() as Array<{ id: number; name: string | null }>;
+  return new Map(rows.map((r) => [r.id, r.name]));
+}
+
+/** One prompt line's name: whitespace collapsed (a stored name never breaks the list). */
+function promptName(name: string | null | undefined): string {
+  const n = typeof name === "string" ? name.replace(/\s+/g, " ").trim() : "";
+  return n === "" ? "Unknown" : n;
+}
 
 export async function classifyUnresolvedWithClaude(
   db: Database.Database,
-  unresolved: Array<{ id: number; symbol: string; security_type: string | null }>
+  unresolvedIn: UnresolvedSecurity[]
 ): Promise<AiFallbackResult> {
+  if (unresolvedIn.length === 0) return { classified: 0, errors: [] };
+  const held = heldNowSecurities(db);
+  const unresolved = unresolvedIn
+    .filter((s) => held.has(s.id))
+    .map((s) => ({ ...s, name: s.name ?? held.get(s.id) ?? null }));
   if (unresolved.length === 0) return { classified: 0, errors: [] };
   const update = db.prepare(`
     UPDATE securities SET fund_category = ?, geography = ?, market_cap_category = ?, style = ?, classification_source = 'auto_ai'
@@ -246,7 +289,11 @@ export async function classifyUnresolvedWithClaude(
    * or whatever else the AI call itself raised.
    */
   async function runBatch(batchItems: UnresolvedSecurity[]): Promise<number> {
-    const prompt = `Classify:\n${batchItems.map((s) => `- ${s.symbol} (type: ${s.security_type ?? "stock"})`).join("\n")}`;
+    // The name goes in (as the factor classifier sends it): a bare ticker is
+    // ambiguous for a fund or a renamed listing.
+    const prompt = `Classify:\n${batchItems
+      .map((s) => `- ${s.symbol}: ${promptName(s.name)} (type: ${s.security_type ?? "stock"})`)
+      .join("\n")}`;
     // No `temperature` — tier-resolved models can reject it as deprecated (QA 2026-07-07).
     // maxOutputTokens raised 4000→8000 (2026-08-13, qa:analysis-classification--
     // auto-classify-swallows-ai-json-error): a full BATCH=25 response was
@@ -258,7 +305,10 @@ export async function classifyUnresolvedWithClaude(
     // the same BATCH=25 size — that schema has more fields per item, so
     // this has ample headroom for the longer "US Sector Equity (<Sector>)"
     // values that were pushing 4000 past the edge.
-    const { text } = await generateTextForFeature("securityClassification", { maxOutputTokens: 8000, system: AI_CLASSIFY_SYSTEM, prompt });
+    const { text, finishReason } = await generateTextForFeature("securityClassification", { maxOutputTokens: 8000, system: AI_CLASSIFY_SYSTEM, prompt });
+    // A reply cut off at the cap is a named truncation (it splits; see
+    // classify-batch.ts), never a parse failure or a partial write.
+    throwIfCutOff(finishReason);
     // Lenient parse (lib/ai/extract-json.ts): fence-strip, whole-text parse,
     // then the first-`[` … last-`]` fallback — each with the C0-control-char
     // retry the model needs (it intermittently emits raw newlines INSIDE string

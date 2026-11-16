@@ -33,7 +33,8 @@ export async function GivingView() {
       <div>
         <h2 className="text-lg font-medium text-ink">Analysis · Giving</h2>
         <p className="text-sm text-ink-faint mt-0.5">
-          Charitable giving by year — donated stock cost basis, capital gains avoided, and cash gifts.
+          Charitable giving by year — donated stock cost basis, capital gains avoided by holding period, and
+          cash gifts.
         </p>
       </div>
 

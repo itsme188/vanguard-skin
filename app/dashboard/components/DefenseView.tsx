@@ -1,6 +1,13 @@
 import { db } from "@/lib/db";
 import { resolveScope } from "@/lib/queries/accounts";
-import { computeDefenseAnalysis, type StandaloneBetKind } from "@/lib/compute/hedging";
+import {
+  computeDefenseAnalysis,
+  NOT_CREDITED_UNKNOWN,
+  NOT_CREDITED_BETA_NO_HISTORY,
+  NOT_CREDITED_BETA_LOW_FIT,
+  type DefenseCashLine,
+  type StandaloneBetKind,
+} from "@/lib/compute/hedging";
 import { interpretProtectionRatio, toneClass } from "@/lib/analysis/interpret";
 import { Money, Pct, Count, PrivateText } from "@/lib/privacy/components";
 import { CoverageBar } from "./CoverageBar";
@@ -36,6 +43,58 @@ function LeveragedFundsNotModelled({ info }: { info: { count: number; symbols: s
   );
 }
 
+/** One sentence under the cash line (owner ruling 2026-11-16). */
+export const DEFENSE_CASH_CAPTION =
+  "Cash lowers what can be lost, but it is not a hedge against the long book, so it is not in the protection ratio.";
+
+/**
+ * What the line counts (review 2026-11-16): only cash-equivalent funds held
+ * as positions. A cash balance at the broker is not in the holdings universe.
+ * The same words as the concentration cards' CASH_FUNDS_SCOPE_CAPTION
+ * (ClassificationCard.tsx, a client file this server component must not
+ * import from); a test pins the two equal.
+ */
+export const DEFENSE_CASH_SCOPE_CAPTION =
+  "Money-market and sweep funds held as positions. Cash balances at the broker are not included.";
+
+/** Shown when the scope holds no cash-equivalent fund at all. */
+export const DEFENSE_NO_CASH_FUNDS_NOTE =
+  "No cash-equivalent funds in this scope (broker cash balances are not counted here).";
+
+/**
+ * "Cash-equivalent funds: X% of this scope", the concentration card's own
+ * figure (splitConcentrationUniverse). When the scope holds none, one note
+ * says so (broker cash is not counted); borrowing (a cash fund below zero)
+ * is said instead of a share.
+ */
+function DefenseCashLineView({ cash }: { cash: DefenseCashLine }) {
+  if (cash.holdingCount === 0 && cash.borrowed.holdingCount === 0) {
+    return (
+      <div className="mt-4 border-t border-edge pt-3">
+        <p className="text-xs text-ink-faint">{DEFENSE_NO_CASH_FUNDS_NOTE}</p>
+      </div>
+    );
+  }
+  return (
+    <div className="mt-4 border-t border-edge pt-3">
+      {cash.holdingCount > 0 && (
+        <p className="text-xs text-ink">
+          <span className="font-medium">Cash-equivalent funds:</span>{" "}
+          <Pct value={cash.weight * 100} digits={1} className="font-mono" /> of this scope
+        </p>
+      )}
+      {cash.borrowed.holdingCount > 0 && (
+        <p className="text-xs text-ink">
+          <span className="font-medium">Borrowed cash:</span> a cash balance below zero of{" "}
+          <Money value={cash.borrowed.marketValue} className="font-mono" /> (borrowing, not cash on hand)
+        </p>
+      )}
+      <p className="text-xs text-ink-faint mt-1">{DEFENSE_CASH_SCOPE_CAPTION}</p>
+      <p className="text-xs text-ink-faint mt-1">{DEFENSE_CASH_CAPTION}</p>
+    </div>
+  );
+}
+
 interface DefenseViewProps {
   scope?: string;
 }
@@ -58,16 +117,30 @@ export async function DefenseView({ scope = "all" }: DefenseViewProps) {
         hint="Hedges (long puts, protective calls on shorts) and index-put protection will appear here once opened."
       />
     );
-    if (analysis.leveragedFundsUnmodelled.count === 0) return empty;
+    // The cash-equivalent funds line still shows (browser pass 2026-11-16:
+    // a scope with no options held a cash fund the page never named).
     return (
       <div className="space-y-3">
         {empty}
+        <DefenseCashLineView cash={analysis.cashLine} />
         <LeveragedFundsNotModelled info={analysis.leveragedFundsUnmodelled} />
       </div>
     );
   }
 
   const protectionInterp = interpretProtectionRatio(summary.protectionRatio);
+  // Why each hedge is not credited, counted apart (K4b; ruling 19 = B).
+  const countReason = (reason: string) => analysis.notCreditedHedges.filter((h) => h.reason === reason).length;
+  const notCreditedParts = [
+    { n: countReason(NOT_CREDITED_UNKNOWN), label: "fund type not on file" },
+    { n: countReason(NOT_CREDITED_BETA_NO_HISTORY), label: "too little of its price history collected yet to measure its beta" },
+    { n: countReason(NOT_CREDITED_BETA_LOW_FIT), label: "price history fits the market too loosely to measure its beta" },
+  ];
+  notCreditedParts.unshift({
+    n: summary.notCreditedCount - notCreditedParts.reduce((a, p) => a + p.n, 0),
+    label: "not a stock fund",
+  });
+  const notCreditedShown = notCreditedParts.filter((p) => p.n > 0);
 
   // underlying → standalone-bet kind, so the most-exposed table can tell a
   // genuinely-unhedged long apart from a naked short / single-name bearish
@@ -111,8 +184,29 @@ export async function DefenseView({ scope = "all" }: DefenseViewProps) {
           <div>
             <p className="text-[11px] uppercase tracking-widest text-ink-faint mb-1">Hedges scored</p>
             <p className="font-mono tabular-nums text-xl text-ink"><Count value={summary.hedgeCount} /></p>
+            {summary.shortSideHedgeCount > 0 && (
+              <p className="text-xs mt-1 text-ink-faint">
+                <Count value={summary.longSideHedgeCount} /> long-side (Hedge book),{" "}
+                <Count value={summary.shortSideHedgeCount} /> short-side
+              </p>
+            )}
+            {summary.notCreditedCount > 0 && (
+              <p className="text-xs mt-1 text-ink-faint">
+                <Count value={summary.notCreditedCount} /> not credited (
+                {notCreditedShown.length === 1
+                  ? notCreditedShown[0].label
+                  : notCreditedShown.map((p, i) => (
+                      <span key={p.label}>
+                        {i > 0 && ", "}
+                        <Count value={p.n} /> {p.label}
+                      </span>
+                    ))}
+                )
+              </p>
+            )}
           </div>
         </div>
+        <DefenseCashLineView cash={analysis.cashLine} />
       </section>
 
       {/* Sector coverage bars */}
@@ -134,6 +228,12 @@ export async function DefenseView({ scope = "all" }: DefenseViewProps) {
                   </span>
                 </div>
                 <CoverageBar pct={sc.coveragePct} />
+                {sc.protectedBeyondExposure > 0 && (
+                  <p className="text-[11px] text-ink-dim mt-1">
+                    <Money value={sc.protectedBeyondExposure} /> of fund-hedge credit lands beyond this
+                    sector&apos;s holdings; the bar stops at 100% and the protection ratio keeps it.
+                  </p>
+                )}
               </div>
             ))}
           </div>
@@ -145,6 +245,8 @@ export async function DefenseView({ scope = "all" }: DefenseViewProps) {
         hedgeScores={analysis.hedgeScores}
         standaloneBets={analysis.standaloneBets}
         standaloneBetKinds={standaloneBetKinds}
+        shortSideHedgeNotional={summary.shortSideHedgeNotional}
+        notCreditedHedges={analysis.notCreditedHedges}
       />
 
       <LeveragedFundsNotModelled info={analysis.leveragedFundsUnmodelled} />

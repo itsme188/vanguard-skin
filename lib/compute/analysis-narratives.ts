@@ -1,10 +1,11 @@
 /**
- * analysis-narratives.ts — Sonnet 4.6 narrative composer for Analysis surfaces.
+ * analysis-narratives.ts — narrative composer for Analysis surfaces.
  *
  * Cache-first: if a row exists in `analysis_narratives` for
- * (scope, surfaceKey, weekOf), return it. On miss, build a per-surface JSON
- * context blob from the existing compute fns, call Sonnet via AI Gateway,
- * UPSERT, and return.
+ * (scope, surfaceKey, weekOf), return it. On miss, build a per-surface compact
+ * JSON context blob from the existing compute fns, call the model the
+ * `analysisFactorNarrative` feature resolves to (tier token, lib/ai/models.ts),
+ * UPSERT, and return. The stored `model_used` is the model that answered.
  *
  * The system prompt enforces 2-3 sentences of plain English with no specific
  * dollar amounts — the goal is interpretation ("you're betting on a soft
@@ -22,10 +23,13 @@ import {
 } from "@/lib/queries/analysis-narratives";
 import { computeFactorAnalysis } from "@/lib/compute/factors";
 import { computeRiskMetrics, computePositionRisk } from "@/lib/compute/risk";
+import type { PortfolioRiskMetrics, PositionRiskResult } from "@/lib/compute/risk";
 import { getFactorHeatmap } from "@/lib/queries/analysis";
 import { computeDefenseAnalysis } from "@/lib/compute/hedging";
 import { getDefaultBenchmark } from "@/lib/analysis/benchmarks";
 import type { DefenseAnalysis, HedgeBadge, PairClassification } from "@/lib/compute/hedging";
+import type { FactorHeatmapRow } from "@/lib/queries/analysis";
+import { FACTOR_COLUMNS, FACTOR_LABELS, type FactorColumn } from "@/lib/factors";
 
 // ─── Surface registry ────────────────────────────────────────────────────────
 
@@ -73,13 +77,13 @@ const SURFACE_PROMPTS: Record<NarrativeSurface, string> = {
   "factor-analysis":
     "Summarize the user's portfolio factor exposure in 2-3 sentences. Highlight the dominant tilts (Growth vs Value, AI exposure, Rate sensitivity, Cyclicality, etc.) and what they imply about the user's effective bet on the market regime. Avoid specific dollar amounts. Use plain English, no jargon. The marketRegression figures are measured against the benchmark named in the `benchmark` field: whenever you mention beta, alpha, R-squared, tracking error or correlation, name that benchmark (for example 'beta versus VTI').",
   "risk-metrics":
-    "Summarize the portfolio's risk metrics in 2-3 sentences: drawdown profile, volatility, Sharpe, Herfindahl concentration. Note whether risk is concentrated in a few names or diversified. Avoid specific dollar amounts.",
+    "Summarize the portfolio's risk metrics in 2-3 sentences: drawdown profile, volatility, Sharpe, Herfindahl concentration. Note whether risk is concentrated in a few names or diversified. Drawdown percents, the shares below and netFlowsInWindowPctOfPeak (net deposits or withdrawals in the drawdown window as a share of the peak value) are decimal fractions (0.18 = 18%). Every position share here (weightOfGrossBook, cashWeightOfGrossBook, top5Concentration) is a share of the scope's whole gross book: the sum of every holding's absolute value, shorts and cash included. herfindahl is the concentration index over that whole book, cash counted as dilution (1 / herfindahl is the whole portfolio's effective number of positions); investedHerfindahl is the same index over the invested holdings only, cash left out (1 / investedHerfindahl is the effective number of invested names). Avoid specific dollar amounts.",
   "position-risk":
-    "In 2-3 sentences, identify which positions are driving the portfolio's risk. Mention the top 2-3 risk contributors by name and what makes them risky (size, beta, factor exposure). Avoid specific dollar amounts.",
+    "In 2-3 sentences, identify which positions are driving the portfolio's risk. Mention the top 2-3 risk contributors by name and what makes them risky (size, volatility, correlation). Every share here (weightOfLongBook, cashWeightOfLongBook) is a decimal fraction (0.18 = 18%) of the scope's long book: the long holdings that have a price, cash funds included, shorts left out. Cash-equivalent funds are not risk positions and are not in the list; cashWeightOfLongBook is the share held in cash-equivalent funds among the ten largest holdings. Never present cash as a risk driver. Avoid specific dollar amounts.",
   "factor-heatmap":
-    "Read the heatmap of factor exposures across positions. In 2-3 sentences, call out the most concentrated factor bucket and any surprising holes (e.g., zero crypto exposure, no defensive plays). Avoid specific dollar amounts.",
+    "Read the heatmap of factor exposures across positions. The data summarises it per factor: each bucket's share of the book (weightPct, percent of total market value), how many positions sit in it and its largest names; `unclassified` is the share with no value for that factor, and `coverage` says how much of the book has any factor data. In 2-3 sentences, call out the most concentrated factor bucket and any surprising holes (e.g., zero crypto exposure, no defensive plays). Avoid specific dollar amounts.",
   defense:
-    "You are reviewing the portfolio's defensive posture. In 2-4 sentences: state how much of the long book is protected and through what (same-name hedges vs index/sector puts), name the largest UNPROTECTED exposures, and flag any hedge that looks expensive or nearly decayed (use the badges). Plain prose, no headers, no advice to buy anything new. All ratio/pct fields in the context are decimal fractions (0.18 = 18%) — convert before narrating. A negative monthlyBleedPct means the hedge COLLECTS premium (short-option income), not a cost — never call it expensive.",
+    "You are reviewing the portfolio's defensive posture. In 2-4 sentences: state how much of the long book is protected and through what (same-name hedges vs index/sector puts), name the largest UNPROTECTED exposures, and flag any hedge that looks expensive or nearly decayed (use the badges). Plain prose, no headers, no advice to buy anything new. All ratio/pct fields in the context are decimal fractions (0.18 = 18%) — convert before narrating. Sizes are shares, never dollars: a `...PctOfLong` field and an exposure's pctOfBook are shares of the long exposure; a hedge's protectedPct is its protected notional as a share of the long exposure (side long) or of the short exposure (side short); shortSideHedgeRatio is the short book's protection. A negative monthlyBleedPct means the hedge COLLECTS premium (short-option income), not a cost — never call it expensive. notCreditedHedges are hedges held in the book that earn no protection credit (each with its reason; protectiveNotionalPctOfLong is its notional as a share of the long exposure), and cashLine.weightOfScope is cash and equivalents as a share of the scope's whole gross book (borrowing true means some cash is borrowed): both are NOT inside protectionRatio. Describe a not-credited hedge as held but not credited because of its reason, never as absent; cash lowers what can be lost but is not a hedge.",
 };
 
 // ─── Input fingerprinting (cache-invalidation-on-drift) ──────────────────────
@@ -213,6 +217,62 @@ export interface DefenseFingerprintInputs {
    * (portfolio noise the model is forbidden from quoting anyway).
    */
   topExposures: DefenseFingerprintExposure[];
+  /**
+   * Hedges held but given no protection credit (ruling 19 = B, K4b), with the
+   * reason the page prints and the notional as a share of the long exposure
+   * on the 0.5pp grid. The prompt narrates them, so a hedge entering, leaving
+   * or changing reason must drift the prose.
+   */
+  notCreditedHedges: DefenseNotCreditedShare[];
+  /** The cash line beside the ratio: its weight (0.5pp grid) and whether any
+   *  cash is borrowed. null when the analysis carries no cash line. */
+  cashLine: DefenseCashShare | null;
+}
+
+export interface DefenseNotCreditedShare {
+  underlying: string;
+  reason: string;
+  /** Protective notional / long exposure, decimal fraction. */
+  protectiveNotionalPctOfLong: number | null;
+}
+
+export interface DefenseCashShare {
+  /** Cash and equivalents / the scope's gross book (cash included). */
+  weightOfScope: number | null;
+  borrowing: boolean;
+}
+
+/**
+ * The not-credited hedges as shares. Read defensively: an analysis built
+ * before the field existed (or a fixture) carries none. The reason is passed
+ * through verbatim, never matched, so a reworded reason in hedging.ts needs
+ * no change here.
+ */
+function notCreditedShares(
+  a: DefenseAnalysis,
+  round: (v: number | null) => number | null
+): DefenseNotCreditedShare[] {
+  const list = Array.isArray(a.notCreditedHedges) ? a.notCreditedHedges : [];
+  const long = a.summary.longExposure;
+  return list.map((h) => ({
+    underlying: h.underlying,
+    reason: String(h.reason ?? ""),
+    protectiveNotionalPctOfLong: round(shareOf(h.protectiveNotional, long)),
+  }));
+}
+
+/** The cash line as a share and a borrowing flag; null when absent. */
+function cashShare(
+  a: DefenseAnalysis,
+  round: (v: number | null) => number | null
+): DefenseCashShare | null {
+  const c = a.cashLine as DefenseAnalysis["cashLine"] | undefined;
+  if (!c) return null;
+  const borrowed = c.borrowed;
+  return {
+    weightOfScope: round(typeof c.weight === "number" && Number.isFinite(c.weight) ? c.weight : null),
+    borrowing: !!borrowed && ((borrowed.holdingCount ?? 0) > 0 || (borrowed.marketValue ?? 0) < 0),
+  };
 }
 
 /**
@@ -282,6 +342,8 @@ export function buildDefenseFingerprintInputs(
     sectorCoverage,
     standaloneBetIds,
     topExposures,
+    notCreditedHedges: notCreditedShares(analysis, roundToHalfPp),
+    cashLine: cashShare(analysis, roundToHalfPp),
   };
 }
 
@@ -338,6 +400,332 @@ export function provenNarrativeBenchmark(
   return narrativeBenchmarkForScope(scope);
 }
 
+// ─── Factor-heatmap context (aggregates, not the per-position matrix) ────────
+
+/**
+ * How many names each heatmap bucket lists, largest first. Enough for the
+ * model to name what drives a concentrated bucket; the full per-position
+ * matrix (74k-83k characters on the two largest scopes, 2026-11-15) bought
+ * nothing the prompt asks for.
+ */
+export const HEATMAP_TOP_NAMES_PER_BUCKET = 3;
+
+export interface HeatmapBucketSummary {
+  bucket: string;
+  /** Share of the book in this bucket, percent of total market value (signed: a short reduces it). */
+  weightPct: number;
+  positions: number;
+  /** The largest names by size (absolute weight), largest first. */
+  topNames: Array<{ symbol: string; weightPct: number }>;
+}
+
+export interface HeatmapFactorSummary {
+  factor: FactorColumn;
+  label: string;
+  /** Heaviest bucket first. */
+  buckets: HeatmapBucketSummary[];
+  /** Positions with no value for this factor. */
+  unclassified: { weightPct: number; positions: number };
+}
+
+export interface FactorHeatmapContext {
+  coverage: { positions: number; classified: number; classifiedWeightPct: number };
+  factors: HeatmapFactorSummary[];
+}
+
+/**
+ * The bucket a row shows in a heatmap column. MIRROR of the heatmap's
+ * `growthValueCellValue` (app/dashboard/components/FactorHeatmap.tsx, a
+ * "use client" file a server module must not import): a Blend-style security
+ * reads "Blend" on Growth vs Value. Display only, as there.
+ */
+function heatmapCellValue(row: FactorHeatmapRow, col: FactorColumn): string | null {
+  if (col === "growth_vs_value" && row.style && row.style.trim().toLowerCase() === "blend") {
+    return "Blend";
+  }
+  const v = row[col];
+  return typeof v === "string" && v.trim() !== "" ? v : null;
+}
+
+function roundToStep(v: number, step: number): number {
+  if (!Number.isFinite(v)) return 0;
+  return Number((Math.round(v / step) * step).toFixed(2));
+}
+
+function weightOf(row: FactorHeatmapRow): number {
+  return typeof row.weight_pct === "number" && Number.isFinite(row.weight_pct) ? row.weight_pct : 0;
+}
+
+/**
+ * Per-factor bucket aggregates of the heatmap rows, with weights rounded to
+ * `weightStep` percentage points. No dollar figure: weights are shares of the
+ * book.
+ */
+function summariseHeatmap(rows: FactorHeatmapRow[], weightStep: number): FactorHeatmapContext {
+  const classifiedRows = rows.filter((r) => FACTOR_COLUMNS.some((c) => heatmapCellValue(r, c) !== null));
+  const factors: HeatmapFactorSummary[] = FACTOR_COLUMNS.map((factor) => {
+    const groups = new Map<string, FactorHeatmapRow[]>();
+    let unclassifiedWeight = 0;
+    let unclassifiedPositions = 0;
+    for (const r of rows) {
+      const bucket = heatmapCellValue(r, factor);
+      if (bucket === null) {
+        unclassifiedWeight += weightOf(r);
+        unclassifiedPositions++;
+        continue;
+      }
+      const list = groups.get(bucket) ?? [];
+      list.push(r);
+      groups.set(bucket, list);
+    }
+    const buckets = [...groups.entries()]
+      .map(([bucket, members]) => {
+        const weight = members.reduce((a, r) => a + weightOf(r), 0);
+        const topNames = [...members]
+          .sort((a, b) => Math.abs(weightOf(b)) - Math.abs(weightOf(a)) || a.symbol.localeCompare(b.symbol))
+          .slice(0, HEATMAP_TOP_NAMES_PER_BUCKET)
+          .map((r) => ({ symbol: r.symbol, weightPct: roundToStep(weightOf(r), weightStep) }));
+        return { bucket, weight, members: members.length, topNames };
+      })
+      .sort((a, b) => b.weight - a.weight || a.bucket.localeCompare(b.bucket))
+      .map((b) => ({
+        bucket: b.bucket,
+        weightPct: roundToStep(b.weight, weightStep),
+        positions: b.members,
+        topNames: b.topNames,
+      }));
+    return {
+      factor,
+      label: FACTOR_LABELS[factor],
+      buckets,
+      unclassified: { weightPct: roundToStep(unclassifiedWeight, weightStep), positions: unclassifiedPositions },
+    };
+  });
+  return {
+    coverage: {
+      positions: rows.length,
+      classified: classifiedRows.length,
+      classifiedWeightPct: roundToStep(
+        classifiedRows.reduce((a, r) => a + weightOf(r), 0),
+        weightStep,
+      ),
+    },
+    factors,
+  };
+}
+
+/** What the factor-heatmap prompt sees: weights to 0.1 percentage point. */
+export function buildFactorHeatmapContext(rows: FactorHeatmapRow[]): FactorHeatmapContext {
+  return summariseHeatmap(rows, 0.1);
+}
+
+/**
+ * What the factor-heatmap fingerprint hashes: the SAME aggregates the prompt
+ * sees, narrowed like the Defense surface's (weights on a 0.5pp grid), so price
+ * noise does not read as drift while a material change does: a holding moving
+ * to another bucket (bucket position counts), a name entering or leaving the
+ * book (position counts, coverage), a change in a bucket's largest names, or
+ * a bucket's weight moving half a point. The old fingerprint hashed every
+ * row's dollar market value, so it drifted on every price tick.
+ */
+export function buildFactorHeatmapFingerprintInputs(rows: FactorHeatmapRow[]): FactorHeatmapContext {
+  return summariseHeatmap(rows, 0.5);
+}
+
+// ─── Dollar-free contexts (owner ruling 21 = A, 2026-11-16) ──────────────────
+//
+// No Analysis narrative prompt carries a portfolio dollar amount. The risk,
+// position-risk and defense contexts state every portfolio figure as a share
+// (a decimal fraction: 0.18 = 18%) of a named base instead: a drawdown is
+// already a percent, a position is its weight in the scope, an exposure or a
+// hedge notional is a share of the long exposure. Public market data (a
+// security's own volatility, a hedge's moneyness) stays as it is.
+
+/** Decimal places kept on a derived share: 0.01 percentage point. */
+const SHARE_DECIMALS = 4;
+
+/** part / base as a decimal fraction, or null when the base is not positive. */
+function shareOf(part: number | null | undefined, base: number | null | undefined): number | null {
+  if (typeof part !== "number" || !Number.isFinite(part)) return null;
+  if (typeof base !== "number" || !Number.isFinite(base) || base <= 0) return null;
+  return Number((part / base).toFixed(SHARE_DECIMALS));
+}
+
+function sideOf(signedValue: number): "long" | "short" {
+  return signedValue < 0 ? "short" : "long";
+}
+
+/**
+ * The risk-metrics prompt payload: drawdowns as percents with their dates
+ * (no peak, trough or current portfolio value; the flows in the window as a
+ * share of the peak value), the top five as weights, cash as its weight.
+ */
+export function buildRiskMetricsContext(r: PortfolioRiskMetrics) {
+  return {
+    maxDrawdown: r.maxDrawdown
+      ? {
+          percent: r.maxDrawdown.percent,
+          peakDate: r.maxDrawdown.peakDate,
+          troughDate: r.maxDrawdown.troughDate,
+          netFlowsInWindowPctOfPeak: shareOf(r.maxDrawdown.netFlowsInWindow, r.maxDrawdown.peakValue),
+        }
+      : null,
+    currentDrawdown: r.currentDrawdown
+      ? {
+          percent: r.currentDrawdown.percent,
+          peakDate: r.currentDrawdown.peakDate,
+          netFlowsInWindowPctOfPeak: shareOf(r.currentDrawdown.netFlowsInWindow, r.currentDrawdown.peakValue),
+        }
+      : null,
+    volatility: r.volatility,
+    sharpeRatio: r.sharpeRatio,
+    riskFreeRate: r.riskFreeRate,
+    herfindahl: r.herfindahl,
+    // Invested-only index, cash left out (ruling 28 = B): the card prints both
+    // "effective positions" figures, so the narrative must see both.
+    investedHerfindahl: r.investedHerfindahl ?? null,
+    top5Concentration: r.top5Concentration,
+    // Weights are shares of the whole GROSS book (cash included); named so,
+    // because the position-risk prompt's shares use another base.
+    top5Positions: r.top5Positions.map((p) => ({
+      symbol: p.symbol,
+      securityName: p.securityName,
+      side: sideOf(p.marketValue),
+      weightOfGrossBook: p.weight,
+    })),
+    positionCount: r.positionCount,
+    cashWeightOfGrossBook: r.cashWeight,
+    cashHoldingCount: r.cashHoldingCount,
+    dataPoints: r.dataPoints,
+    seamDaysBridged: r.seamDaysBridged,
+    seriesStart: r.seriesStart,
+    seriesEnd: r.seriesEnd,
+  };
+}
+
+/**
+ * The position-risk prompt payload: each position's weight in the scope and
+ * its risk figures, never its market value. Ranked by risk contribution, the
+ * order the table shows (see buildSurfaceInputs).
+ */
+export function buildPositionRiskContext(r: PositionRiskResult) {
+  // Cash-equivalent funds are not risk positions: they leave the ranked list
+  // and the correlation pairs, and their weight is passed as one figure. The
+  // flag is computePositionRisk's own `isCashEquivalentSecurity` reading
+  // (lib/compute/cash-equivalents.ts), never a list kept here. The figure
+  // covers the cash funds among the topN rows computePositionRisk returns
+  // (the largest holdings by value); a cash fund outside them is smaller
+  // than every listed row.
+  const cash = r.positions.filter((p) => p.cashEquivalent);
+  const risky = r.positions.filter((p) => !p.cashEquivalent);
+  const cashSymbols = new Set(cash.map((p) => p.symbol));
+  const cashWeightOfLongBook = Number(
+    cash.reduce((s, p) => s + (Number.isFinite(p.weight) ? p.weight : 0), 0).toFixed(SHARE_DECIMALS + 2)
+  );
+  return {
+    // Weights are shares of the LONG, priced book (shorts left out, cash
+    // funds included); named so, because the risk-metrics prompt's shares
+    // use the gross whole book.
+    positions: risky.map((p) => ({
+      securityId: p.securityId,
+      symbol: p.symbol,
+      securityName: p.securityName,
+      weightOfLongBook: p.weight,
+      annualizedVol: p.annualizedVol,
+      riskContribution: p.riskContribution,
+      correlationWithPortfolio: p.correlationWithPortfolio,
+      dataPoints: p.dataPoints,
+    })),
+    cashWeightOfLongBook,
+    correlations: r.correlations.filter(
+      (c) => !cashSymbols.has(c.symbolA) && !cashSymbols.has(c.symbolB)
+    ),
+    portfolioVol: r.portfolioVol,
+  };
+}
+
+/**
+ * The defense prompt payload. Every exposure and notional is a share of the
+ * long exposure (`...PctOfLong`); a sector's protection is a share of that
+ * sector's long exposure; a short-side hedge is a share of the short
+ * exposure. Contract counts and dollar theta are left out (the hedge's
+ * monthly bleed and efficiency, both ratios, stay).
+ */
+export function buildDefenseContext(a: DefenseAnalysis) {
+  const s = a.summary;
+  const long = s.longExposure;
+  const shortAbs = Math.abs(s.shortExposure);
+  return {
+    summary: {
+      protectionRatio: s.protectionRatio,
+      shortExposurePctOfLong: shareOf(s.shortExposure, long),
+      netExposurePctOfLong: shareOf(s.netExposure, long),
+      grossExposurePctOfLong: shareOf(s.grossExposure, long),
+      shortSideHedgeRatio: shareOf(s.shortSideHedgeNotional, shortAbs),
+      shortSideHedgeExposurePctOfLong: shareOf(s.shortSideHedgeExposure, long),
+      hedgeCount: s.hedgeCount,
+      longSideHedgeCount: s.longSideHedgeCount,
+      shortSideHedgeCount: s.shortSideHedgeCount,
+      notCreditedCount: s.notCreditedCount,
+      optionPositionCount: s.optionPositionCount,
+      shortPositionCount: s.shortPositionCount,
+    },
+    sectorCoverage: a.sectorCoverage.map((sc) => ({
+      sector: sc.sector,
+      longExposurePctOfLong: shareOf(sc.longExposure, long),
+      coveragePct: sc.coveragePct,
+      protectedBeyondExposurePct: shareOf(sc.protectedBeyondExposure, sc.longExposure),
+    })),
+    topExposures: a.rankedExposures.slice(0, DEFENSE_TOP_EXPOSURES_N).map((r) => ({
+      underlying: r.underlying,
+      securityId: r.securityId,
+      side: sideOf(r.netExposure),
+      pctOfBook: r.pctOfBook,
+      tier1CoveragePct: r.tier1CoveragePct,
+      sectorProxyCoveragePct: r.sectorProxyCoveragePct,
+      classification: r.classification,
+      hasAmplifiers: r.hasAmplifiers,
+      sector: r.sector,
+      ...(r.notes && r.notes.length > 0 ? { notes: r.notes } : {}),
+      ...(r.legs && r.legs.length > 0
+        ? {
+            legs: r.legs.map((l) => ({
+              symbol: l.symbol,
+              optionType: l.optionType,
+              side: sideOf(l.quantity),
+              exposurePctOfLong: shareOf(l.exposure, long),
+            })),
+          }
+        : {}),
+    })),
+    hedgeScores: a.hedgeScores.slice(0, 15).map((h) => ({
+      securityId: h.securityId,
+      symbol: h.symbol,
+      underlying: h.underlying,
+      protects: h.protects,
+      side: h.side,
+      // A long-side hedge as a share of the long exposure; a call held against
+      // a short as a share of the short exposure (its own book, K4a).
+      protectedPct: shareOf(h.protectedNotional, h.side === "short" ? shortAbs : long),
+      monthlyBleedPct: h.monthlyBleedPct,
+      runwayDays: h.runwayDays,
+      moneynessPct: h.moneynessPct,
+      efficiency: h.efficiency,
+      badges: h.badges,
+    })),
+    diagnostics: a.diagnostics,
+    // Ruling 19 = B: the page lists hedges that earn no credit and a cash
+    // line beside the ratio; neither is inside protectionRatio. Shares only.
+    notCreditedHedges: notCreditedShares(a, (v) => v),
+    cashLine: cashShare(a, (v) => v),
+  };
+}
+
+/** The full user prompt for a surface: the surface instruction, then the data. */
+export function buildNarrativePrompt(surface: NarrativeSurface, context: string): string {
+  return `${SURFACE_PROMPTS[surface]}\n\nData (JSON):\n${context}`;
+}
+
 interface SurfaceInputs {
   /** The JSON blob rendered into the prompt. */
   context: string;
@@ -346,9 +734,13 @@ interface SurfaceInputs {
 }
 
 /**
- * Build a small JSON context blob for the surface. Targeted ~500-800 tokens
- * (under ~3000 chars per surface), plus the fingerprint input for that same
- * context so the two can never drift apart.
+ * Build a compact JSON context blob for the surface (no pretty-print
+ * indentation: 20-27% smaller for the same facts, measured 2026-11-15), plus
+ * the fingerprint input for that same context so the two can never drift
+ * apart. Sizes measured on the real book 2026-11-15: factor-heatmap about
+ * 5k-7k characters (was 74k-83k as the per-position matrix; it is now bounded
+ * by factors x buckets x top names, not by the number of positions), the
+ * other surfaces about 1.3k-10k.
  *
  * Multi-account scope handling: every compute fn now takes the FULL resolved
  * account set via `accountIds` (undefined = "all" = whole portfolio), so the
@@ -377,13 +769,15 @@ function buildSurfaceInputs(
     const result = computeFactorAnalysis(db, { accountIds, benchmarkSymbol: benchmark });
     if (!result) return empty;
     const payload = { benchmark, ...result };
-    return { context: JSON.stringify(payload, null, 2), fingerprintInput: payload };
+    return { context: JSON.stringify(payload), fingerprintInput: payload };
   }
 
   if (surface === "risk-metrics") {
     const result = computeRiskMetrics(db, { accountIds });
     if (!result) return empty;
-    return { context: JSON.stringify(result, null, 2), fingerprintInput: result };
+    // Dollar-free (ruling 21 = A); the fingerprint hashes the same payload.
+    const payload = buildRiskMetricsContext(result);
+    return { context: JSON.stringify(payload), fingerprintInput: payload };
   }
 
   if (surface === "position-risk") {
@@ -404,14 +798,19 @@ function buildSurfaceInputs(
       if (b.riskContribution == null) return -1;
       return b.riskContribution - a.riskContribution;
     });
-    const payload = { ...result, positions: rankedPositions };
-    return { context: JSON.stringify(payload, null, 2), fingerprintInput: payload };
+    // Dollar-free (ruling 21 = A); the fingerprint hashes the same payload.
+    const payload = buildPositionRiskContext({ ...result, positions: rankedPositions });
+    return { context: JSON.stringify(payload), fingerprintInput: payload };
   }
 
   if (surface === "factor-heatmap") {
     const result = getFactorHeatmap(db, accountIds);
     if (!result || result.length === 0) return empty;
-    return { context: JSON.stringify(result, null, 2), fingerprintInput: result };
+    // Aggregates, not the per-position matrix (see buildFactorHeatmapContext).
+    return {
+      context: JSON.stringify(buildFactorHeatmapContext(result)),
+      fingerprintInput: buildFactorHeatmapFingerprintInputs(result),
+    };
   }
 
   if (surface === "defense") {
@@ -431,15 +830,11 @@ function buildSurfaceInputs(
     ) {
       return empty;
     }
-    const payload = {
-      summary: result.summary,
-      sectorCoverage: result.sectorCoverage,
-      topExposures: result.rankedExposures.slice(0, DEFENSE_TOP_EXPOSURES_N),
-      hedgeScores: result.hedgeScores.slice(0, 15),
-      diagnostics: result.diagnostics,
-    };
+    // Dollar-free (ruling 21 = A). The fingerprint keeps its own narrowed
+    // input (no dollar figure); it carries the not-credited hedges and the
+    // cash line the prompt narrates, as shares on the 0.5pp grid.
     return {
-      context: JSON.stringify(payload, null, 2),
+      context: JSON.stringify(buildDefenseContext(result)),
       fingerprintInput: buildDefenseFingerprintInputs(result),
     };
   }
@@ -497,13 +892,13 @@ export async function generateNarrative(
   const { context, fingerprintInput } = buildSurfaceInputs(db, opts.scope, surface);
   const inputFingerprint = fingerprintNarrativeInputs(surface, fingerprintInput);
 
-  // 4. Call Sonnet via AI Gateway. Wrap in try/catch so the caller can
+  // 4. Call the feature's model. Wrap in try/catch so the caller can
   // distinguish AI errors (network / rate-limit / auth) from validation
   // errors (unknown surface / truncated output / dollar leak).
-  const surfacePrompt = SURFACE_PROMPTS[surface];
-  const prompt = `${surfacePrompt}\n\nData (JSON):\n${context}`;
+  const prompt = buildNarrativePrompt(surface, context);
 
   let rawText: string;
+  let answeredModelId: string | undefined;
   try {
     const result = await generateTextForFeature("analysisFactorNarrative", {
       system: SYSTEM_PROMPT,
@@ -517,6 +912,7 @@ export async function generateNarrative(
       throw new Error("narrative reply was cut off at the output cap");
     }
     rawText = result.text;
+    answeredModelId = result.answeredModelId;
   } catch (err) {
     // No model family in the text (CLAUDE.md: never name a model in user
     // copy), and `cause` carries the provider's error so the route's
@@ -555,9 +951,13 @@ export async function generateNarrative(
     );
   }
 
-  // 5. UPSERT — modelUsed pulled from resolveFeatureModel(...).modelId so
-  // future model swaps in FEATURE_MODELS stay a one-line change.
-  const modelUsed = resolveFeatureModel("analysisFactorNarrative").modelId;
+  // 5. UPSERT — modelUsed is the model that ANSWERED (the helper reports it,
+  // so a failover run is labelled with the model that wrote the prose); the
+  // resolved model is only the fallback when the helper reports none.
+  const modelUsed =
+    typeof answeredModelId === "string" && answeredModelId.length > 0
+      ? answeredModelId
+      : resolveFeatureModel("analysisFactorNarrative").modelId;
   upsertNarrative(db, {
     scope: opts.scope,
     surfaceKey: opts.surfaceKey,

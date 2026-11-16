@@ -68,9 +68,13 @@ describe("fetchAnchorSourceSeamDates", () => {
     ).toEqual(["2026-07-11"]);
   });
 
+  // 2026-11-15: rewritten. It used canonical -> plaid -> canonical, which the
+  // live-era rule no longer treats as seams (a live row bracketed by
+  // statements is on the statement basis). Two statement-source changes with
+  // no reported opening value keep the bounds check meaningful.
   it("bounds results to (startDate, endDate]", () => {
     insertAnchor(db, 1, "2026-06-30", "canonical");
-    insertAnchor(db, 1, "2026-07-11", "plaid");
+    insertAnchor(db, 1, "2026-07-11", "ibkr-activity");
     insertAnchor(db, 1, "2026-07-31", "canonical");
     // seam ON startDate is excluded (already inside starting value)
     expect(
@@ -223,6 +227,7 @@ function createRiskSchemaDb(): Database.Database {
       symbol TEXT NOT NULL UNIQUE,
       name TEXT,
       security_type TEXT DEFAULT 'stock',
+      fund_category TEXT,
       multiplier REAL DEFAULT 1,
       maturity_date TEXT, expiration_date TEXT,
       currency TEXT NOT NULL DEFAULT 'USD'

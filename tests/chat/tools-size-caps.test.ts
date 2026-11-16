@@ -10,7 +10,7 @@
  * 0.1 x (0 + 1 + ... + 119) = 0.1 x 7140 = 714.00. With limit 50 the rows are
  * the 50 largest by |day effect| (ZC119 first) and the total stays 714.00.
  */
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import Database from "better-sqlite3";
 
 vi.mock("@/lib/queries/market-snapshot", async (orig) => ({
@@ -21,6 +21,7 @@ vi.mock("@/lib/queries/market-snapshot", async (orig) => ({
 import { runMigrations } from "@/lib/db/migrate";
 import { executeTool, CHAT_TOOLS, compactToolOutput } from "@/lib/chat/tools";
 import { todayET, addDays } from "@/lib/calendar/date-utils";
+import { isMarketClosed } from "@/lib/calendar/market-holidays";
 
 let db: Database.Database;
 
@@ -35,6 +36,26 @@ function schemaText(tool: string): string {
 }
 
 describe("query_market_snapshot: rows capped, totals whole", () => {
+  // The snapshot skips closed market days, so a wall-clock "today" made these
+  // tests fail every weekend and holiday. Freeze the clock to a fixed midday
+  // Eastern on Wednesday 2026-11-18, whose prior day (Tuesday 2026-11-17) is
+  // also a trading day: no NYSE holiday falls on either (Thanksgiving is
+  // 2026-11-26). The guard below fails loudly if the holiday table disagrees.
+  const FROZEN_NOW = new Date("2026-11-18T17:00:00Z"); // 12:00 EST
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(FROZEN_NOW);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("the frozen day and the day before are both trading days", () => {
+    expect(todayET()).toBe("2026-11-18");
+    expect(isMarketClosed("2026-11-18")).toBe(false);
+    expect(isMarketClosed("2026-11-17")).toBe(false);
+  });
+
   function seed(): void {
     const today = todayET();
     const yesterday = addDays(today, -1);

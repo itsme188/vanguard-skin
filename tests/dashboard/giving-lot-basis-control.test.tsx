@@ -501,6 +501,13 @@ describe("how the control is written", () => {
     expect(count(view, "donatedLotBasisState({")).toBe(3);
     // The snapshot is compared with the figures the 1% rule reads, not with the transaction row.
     expect(reader).toContain("sameCents(verification.verifiedAmount, input.lotCostBasis)");
-    expect(reader).toContain("sameQuantity(verification.verifiedQuantity, input.lotQuantityAcquired)");
+    // Quantity: the STORED lot figure the marker snapshotted
+    // (`ledgerQuantityAcquired`, defaulting to `lotQuantityAcquired`); the 1%
+    // rule reads the gift-date figure, which differs only after a later split
+    // (G2, 2026-11-15).
+    expect(reader).toContain(
+      "input.ledgerQuantityAcquired === undefined ? input.lotQuantityAcquired : input.ledgerQuantityAcquired"
+    );
+    expect(reader).toContain("sameQuantity(verification.verifiedQuantity, storedQuantity)");
   });
 });

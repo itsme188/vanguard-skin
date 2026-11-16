@@ -5,7 +5,7 @@ import { PERCENT_BASIS } from "@/lib/analysis/percent-bases";
 import { useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 import { useToast } from "../Toast";
-import { Count, PrivateText, usePrivateFormatter } from "@/lib/privacy/components";
+import { Count, Money, Pct, PrivateText, usePrivateFormatter } from "@/lib/privacy/components";
 import { usePrivacy } from "@/lib/privacy/context";
 import {
   ResponsiveContainer,
@@ -68,27 +68,66 @@ function wireCount(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
 
+function securitiesNoun(n: number): string {
+  return n === 1 ? "security" : "securities";
+}
+
+/** The skipped names not held now, as a clause; empty when there are none. */
+function notHeldClause(notHeld: number): string {
+  return notHeld > 0
+    ? `${notHeld} ${securitiesNoun(notHeld)} you do not hold now ${notHeld === 1 ? "was" : "were"} not sent to the AI`
+    : "";
+}
+
 /**
- * The line shown after an Auto-Classify run that did some work. The engine
- * counts every security ever imported, while this card counts current
- * holdings only, so the line names both populations instead of printing the
- * engine's tally as if it were the card's. `heldUnclassifiedBefore` is the
- * card's own list length before the run; pass null to leave that count out
- * (privacy mode).
+ * The line shown after an Auto-Classify run that found nothing to do. Names
+ * not held now are never sent to the AI, so a click cannot clear them; they
+ * are mentioned, not reported as a failure.
+ */
+export function classifyNoOpSummary(notHeldSkippedCount: unknown): string {
+  const base = "Nothing to classify — every held security already has sector/fund classifications.";
+  const clause = notHeldClause(wireCount(notHeldSkippedCount));
+  return clause ? `${base} ${clause}.` : base;
+}
+
+/**
+ * The line shown after an Auto-Classify run that did some work. Two
+ * populations: the rule-based pass reads every security ever imported (its
+ * tally is in "Classified" and "already classified"), while the AI is asked
+ * only about current holdings, as this card counts them. So the line names
+ * the held names still unclassified and why, and the names not held that
+ * were not sent to the AI, never one blended "couldn't be classified" count.
+ * `heldUnclassifiedBefore` is the card's own list length before the run;
+ * pass null in privacy mode, which also withholds the held count.
  */
 export function classifyRunSummary(
-  result: { classified?: unknown; skipped?: unknown; unresolvedCount?: unknown },
+  result: {
+    classified?: unknown;
+    skipped?: unknown;
+    heldUnresolvedCount?: unknown;
+    notHeldSkippedCount?: unknown;
+  },
   aiErrors: string[],
   heldUnclassifiedBefore: number | null,
 ): string {
   const classified = wireCount(result.classified);
   const skipped = wireCount(result.skipped);
-  const unresolved = wireCount(result.unresolvedCount);
+  const heldLeft = wireCount(result.heldUnresolvedCount);
+  const notHeld = wireCount(result.notHeldSkippedCount);
   const parts = [
-    `Classified ${classified} ${classified === 1 ? "security" : "securities"} across the whole security list (every security ever imported, not only current holdings)`,
+    `Classified ${classified} ${securitiesNoun(classified)} (the rule-based pass reads every security ever imported; the AI is asked only about current holdings)`,
     `${skipped} already classified`,
   ];
-  if (unresolved > 0) parts.push(`${unresolved} couldn't be auto-classified`);
+  if (heldLeft > 0) {
+    const why = aiErrors.length > 0 ? "the AI step hit an error" : "the AI gave no usable answer for them";
+    parts.push(
+      heldUnclassifiedBefore == null
+        ? `some held securities are still unclassified: ${why}`
+        : `${heldLeft} held ${securitiesNoun(heldLeft)} ${heldLeft === 1 ? "is" : "are"} still unclassified: ${why}`,
+    );
+  }
+  const clause = notHeldClause(notHeld);
+  if (clause) parts.push(clause);
   parts.push(
     heldUnclassifiedBefore != null && heldUnclassifiedBefore > 0
       ? `this card counts current holdings only and listed ${heldUnclassifiedBefore} unclassified before the run`
@@ -99,6 +138,72 @@ export function classifyRunSummary(
   // no visible signal (qa:analysis-classification--auto-classify-swallows-ai-json-error).
   if (aiErrors.length > 0) parts.push(`AI step failed: ${aiErrors[0]}`);
   return parts.join(" · ");
+}
+
+/**
+ * Owner ruling 2026-11-15: cash and cash-equivalent funds are protection and
+ * flexibility. They stay in the portfolio total (so they dilute every weight)
+ * and show as ONE line, never as a ranked position or a single-name warning.
+ * Shared by this card and the Risk Decomposition card (RiskMetrics.tsx).
+ */
+export const CASH_EQUIVALENTS_SENTENCE =
+  "Held as cash: available to deploy and not exposed to the market. It counts in the portfolio total, so it lowers every weight, but it is not ranked as a position.";
+
+/** How cash enters the Herfindahl (candidate ii, owner ruling 2026-11-15).
+ *  Says what it counts: only cash-equivalent funds held as positions (review
+ *  2026-11-16; broker cash balances are not in the holdings universe). */
+export const HHI_CASH_NOTE =
+  "Cash-equivalent funds count as dilution: they are in the total every weight is measured against, but add nothing to the index.";
+
+/** Shown in place of the Herfindahl sentence when the scope holds only cash. */
+export const ALL_CASH_SENTENCE =
+  "Everything in this scope is held as cash, so there is no single-name risk to measure.";
+
+/** The two effective-position figures' labels (owner ruling 28 = B, 2026-11-16).
+ *  Cash counts as dilution in the whole-portfolio figure, so it is not a count
+ *  of names; the invested-only figure is. */
+export const EFFECTIVE_WHOLE_LABEL = "Whole portfolio, cash-equivalent funds counted as dilution";
+export const EFFECTIVE_INVESTED_LABEL = "Invested holdings only, cash-equivalent funds left out";
+
+/** The effective-position tile's value when the scope holds only cash. */
+export const ALL_CASH_EFFECTIVE_VALUE = "All cash";
+
+/** Shown when a cash-equivalent holding is negative (a margin debit). */
+export const NEGATIVE_CASH_SENTENCE =
+  "This scope is borrowing; cash is negative and is not counted as dilution.";
+
+/** The line's label (review 2026-11-16): it counts funds only. */
+export const CASH_FUNDS_LABEL = "Cash-equivalent funds";
+
+/** What the line counts. DefenseView carries the same words in
+ *  DEFENSE_CASH_SCOPE_CAPTION (a server file cannot import this client one);
+ *  a test pins the two equal. */
+export const CASH_FUNDS_SCOPE_CAPTION =
+  "Money-market and sweep funds held as positions. Cash balances at the broker are not included.";
+
+/** The "Cash-equivalent funds" line: share of the whole book, value and fund count. */
+export function CashEquivalentsLine({
+  weightPct,
+  marketValue,
+  holdingCount,
+}: {
+  weightPct: number;
+  marketValue: number;
+  holdingCount: number;
+}) {
+  return (
+    <div className="bg-raised/50 rounded-lg p-3 mb-4">
+      <p className="text-xs text-ink">
+        <span className="font-medium">{CASH_FUNDS_LABEL}</span>{" "}
+        <Pct value={weightPct} digits={1} className="font-mono text-ink" /> of the portfolio
+        {" · "}
+        <Money value={marketValue} className="font-mono" /> in{" "}
+        <Count value={holdingCount} /> {holdingCount === 1 ? "holding" : "holdings"}
+      </p>
+      <p className="text-xs text-ink-faint mt-1">{CASH_FUNDS_SCOPE_CAPTION}</p>
+      <p className="text-xs text-ink-faint mt-1">{CASH_EQUIVALENTS_SENTENCE}</p>
+    </div>
+  );
 }
 
 /** Same markup as MetricCard, with slots that can hold a privacy component. */
@@ -185,6 +290,10 @@ export function ClassificationCard({ concentration, coverage }: Props) {
     (v: number | string | undefined) => `${Number(v).toFixed(1)}%`,
   );
 
+  // Owner ruling 2026-11-15: cash is one line, never a ranked position.
+  const hasCash = concentration.cash.weight_pct > 0;
+  const allCash = hasCash && concentration.top_positions.length === 0;
+
   async function runAutoClassify() {
     setClassifyLoading(true);
     try {
@@ -192,7 +301,8 @@ export function ClassificationCard({ concentration, coverage }: Props) {
       const result = await readMutationResult<{
         classified: number;
         skipped: number;
-        unresolvedCount: number;
+        heldUnresolvedCount: number;
+        notHeldSkippedCount: number;
         aiErrors?: string[];
       }>(res);
       if (!result.ok) {
@@ -203,12 +313,15 @@ export function ClassificationCard({ concentration, coverage }: Props) {
       // Guard with Array.isArray — aiErrors comes off the wire as JSON, not
       // a typed value.
       const aiErrors: string[] = Array.isArray(data.aiErrors) ? data.aiErrors : [];
-      if (data.classified === 0 && !data.unresolvedCount && aiErrors.length === 0) {
+      const heldLeft = wireCount(data.heldUnresolvedCount);
+      if (data.classified === 0 && heldLeft === 0 && aiErrors.length === 0) {
         // Explain the no-op — "Classified 0" with no why reads as a broken button.
-        // No count: data.skipped is the engine's whole-table skip tally (every
-        // securities row ever seen, ~1.3k), not the held universe — quoting it
-        // as "held securities" contradicted the coverage card's 137.
-        toast("Nothing to classify — every held security already has sector/fund classifications.", "info");
+        // No skipped count: data.skipped is the engine's whole-table skip tally
+        // (every securities row ever seen, ~1.3k), not the held universe —
+        // quoting it as "held securities" contradicted the coverage card's 137.
+        // Names not held now are never sent to the AI, so no click clears
+        // them: they are mentioned, not reported as a failure.
+        toast(classifyNoOpSummary(data.notHeldSkippedCount), "info");
       } else {
         toast(
           classifyRunSummary(
@@ -216,7 +329,7 @@ export function ClassificationCard({ concentration, coverage }: Props) {
             aiErrors,
             isPrivate ? null : coverage.unclassified_securities.length,
           ),
-          aiErrors.length > 0 ? "error" : data.unresolvedCount > 0 ? "info" : "success",
+          aiErrors.length > 0 ? "error" : heldLeft > 0 ? "info" : "success",
         );
       }
       router.refresh();
@@ -239,7 +352,14 @@ export function ClassificationCard({ concentration, coverage }: Props) {
           <ConcentrationTile
             label="Herfindahl Index (HHI)"
             value={<PrivateText>{concentration.hhi.toFixed(4)}</PrivateText>}
-            description={<PrivateText>{interpretHHI(concentration.hhi).text}</PrivateText>}
+            description={
+              <>
+                <PrivateText>
+                  {allCash ? ALL_CASH_SENTENCE : interpretHHI(concentration.hhi).text}
+                </PrivateText>
+                {hasCash && <span className="block mt-1">{HHI_CASH_NOTE}</span>}
+              </>
+            }
             color={
               concentration.hhi > 0.25
                 ? "text-down"
@@ -248,10 +368,37 @@ export function ClassificationCard({ concentration, coverage }: Props) {
                 : "text-up"
             }
           />
+          {/* Two figures (owner ruling 28 = B, 2026-11-16): the whole-portfolio
+              1/HHI counts cash as dilution, so it is not a count of names;
+              the invested-only figure leaves cash out. An all-cash scope has
+              no position to count, so it says so instead of showing 0. */}
           <ConcentrationTile
             label="Effective Positions"
-            value={<Count value={Math.round(effectivePositionsFromHHI(concentration.hhi))} />}
-            description="1/HHI — equivalent equal-weighted positions (same count as the sentence below)"
+            value={
+              allCash ? (
+                ALL_CASH_EFFECTIVE_VALUE
+              ) : (
+                <Count value={Math.round(effectivePositionsFromHHI(concentration.hhi))} />
+              )
+            }
+            description={
+              allCash ? (
+                "Everything in this scope is held as cash, so there are no positions to count."
+              ) : (
+                <>
+                  <span className="block">
+                    {EFFECTIVE_WHOLE_LABEL} (1/HHI, the same count as the Herfindahl sentence)
+                  </span>
+                  <span className="block mt-1">
+                    {EFFECTIVE_INVESTED_LABEL}:{" "}
+                    <Count
+                      value={Math.round(effectivePositionsFromHHI(concentration.invested_hhi))}
+                      className="font-mono text-ink"
+                    />
+                  </span>
+                </>
+              )
+            }
             color="text-blue"
           />
           <ConcentrationTile
@@ -265,6 +412,18 @@ export function ClassificationCard({ concentration, coverage }: Props) {
             color={coverage.coverage_pct > 90 ? "text-up" : coverage.coverage_pct > 70 ? "text-gold" : "text-down"}
           />
         </div>
+
+        {hasCash && (
+          <CashEquivalentsLine
+            weightPct={concentration.cash.weight_pct}
+            marketValue={concentration.cash.market_value}
+            holdingCount={concentration.cash.holding_count}
+          />
+        )}
+
+        {concentration.negative_cash.holding_count > 0 && (
+          <p className="text-xs text-ink-faint mb-4">{NEGATIVE_CASH_SENTENCE}</p>
+        )}
 
         {concentration.top_positions.length > 0 && (
           <div>

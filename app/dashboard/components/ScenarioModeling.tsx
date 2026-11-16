@@ -3,7 +3,7 @@
 import { CHIP_TONE_TEXT, GOLD_FILL_CLASSES } from "@/app/dashboard/components/chip-tone-text";
 import { useState, useEffect, useCallback, useRef } from "react";
 import type { ScenarioResult } from "@/lib/compute/scenarios";
-import { findRecipe } from "@/lib/compute/scenario-recipes";
+import { findRecipe, CUSTOM_RATE_LINEAR_NOTE } from "@/lib/compute/scenario-recipes";
 import { isOptionSecurityType } from "@/lib/compute/option-elasticity";
 import { VOL_MOVE_MIN, VOL_MOVE_MAX, type OptionIvSource, type OptionUnmodelledReason } from "@/lib/compute/option-reprice";
 import { FUND_DEFAULT_DURATION_YEARS, type BondUnmodelledReason } from "@/lib/compute/bond-duration";
@@ -736,6 +736,10 @@ export function ScenarioModelingCard({ scope }: { scope?: string }) {
                 placeholder="0"
                 className="bg-raised border border-edge rounded-lg px-3 py-1.5 text-sm text-ink font-mono w-24 focus-ring"
               />
+              <p className="text-[11px] text-ink-faint mt-1">
+                Bonds move by their duration; stocks and stock funds by their rate sensitivity, the same rule as the +25bp preset. Added to the market move.
+              </p>
+              <p className="text-[11px] text-ink-faint mt-1">{CUSTOM_RATE_LINEAR_NOTE}</p>
             </div>
 
             {/* Volatility change */}

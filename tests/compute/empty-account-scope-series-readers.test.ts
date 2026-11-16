@@ -171,6 +171,7 @@ describe("a defined empty account list is no accounts", () => {
       betaVsAlpha: { betaContribution: 0, alphaContribution: 0 },
       betaWindow: null,
       decomposedReturn: null,
+      positionsBasis: { asOf: null, emptyReason: "no_positions_at_start", missingAccounts: [] },
     });
     // Exactly what an account with no data returns (account 2 holds nothing).
     expect(none).toEqual(computePeriodAttribution(db, [2], START, END, "SPY"));
@@ -278,8 +279,14 @@ describe("every account and a non-empty list answer as before", () => {
     expect(parsed.out[4].series).toHaveLength(0);
 
     // Digest of the full output, captured at the commit before this change.
+    // Re-captured 2026-11-15 when attribution started reading the book in
+    // force at the start (latest on or before it) instead of a book dated
+    // exactly on it: the only figures that moved are attributionLate's
+    // contributor / sector lists (its start, day 7, now finds the START
+    // book), plus the new positionsBasis field. With those two removed the
+    // output still hashes to the old 551deda6… digest.
     expect(createHash("sha256").update(json).digest("hex")).toBe(
-      "551deda654cfba1e07673bdcbce81ff94e5d87c1a3baa7b54599f46dc5cdcdfb",
+      "f457a4ae16ddaff333b7b0df8e614dd0f195d33c20e487ec07244c6e1f5542ff",
     );
   });
 

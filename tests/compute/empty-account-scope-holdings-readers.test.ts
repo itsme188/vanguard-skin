@@ -350,8 +350,72 @@ describe("every account and a non-empty list answer as before", () => {
     // Re-captured 2026-11-04 when the Defense analysis gained the
     // leveragedFundsUnmodelled disclosure: with that one key removed the
     // output still hashed to the 2026-11-02 digest (17d2fe2f...).
+    // Re-captured 2026-11-15 when the What-if gained beforeWeightBySymbol
+    // (the true before weight of each after-top name) and a weightPct on
+    // each flag that prints a weight: with those two keys removed the output
+    // still hashed to the 2026-11-04 digest (af4ed74a...).
+    // Re-captured 2026-11-15 (d2202a3e...), absorbing FOUR owner rulings at
+    // once (they were landed together in one shared tree; the field lists
+    // come from a field-by-field diff of each commit's output against the
+    // one before it):
+    //  1. Scenarios (subject fund moves the headline; custom rate leg):
+    //     customScenario estimatedChange, estimatedChangePercent,
+    //     estimatedPortfolioValue, and positionImpacts / biggestLosers /
+    //     biggestWinners changePercent, estimatedChange, estimatedNewValue,
+    //     underlyingMove.
+    //  2. What-if K2: exposureDelta (and the copy inside each cashDeploy
+    //     pick) before/after beta, betaEstimatedWeight (new), the sector keys
+    //     "Cash Equivalent", "Fixed Income" and "Unknown", and the beta flag
+    //     (flags length, message, capValue).
+    //  3. Defense K4: hedgeScores[].betaAssumed and .side, notCreditedHedges,
+    //     summary assumedBetaHedgeCount, notCreditedCount,
+    //     shortSideHedgeCount, shortSideHedgeExposure, shortSideHedgeNotional.
+    //  4. Cash deploy K1: cashRemaining, totalAllocated, unallocatedReason,
+    //     notes, gaps[] residualGapPp / residualDollarGap, picks[]
+    //     allocationDollars, multiSectorFund, sectorExposure, and the pick's
+    //     exposureDelta copy (beta, factor tilts, sector weights, top list).
+    // The digest without K2 on the same tree was a66cf999....
+    // Re-captured 2026-11-15 (Defense review R1/R2): each sector coverage
+    // row gained protectedBeyondExposure, the summary gained
+    // longSideHedgeCount and assumedBetaLowFitCount, and two sectors with
+    // equal long exposure are now ordered by name (row-order independence).
+    // Field-by-field diff of the Defense output against the tree before:
+    // only those keys and that tie order moved; every figure is unchanged.
+    // The digest before was d2202a3e....
+    // Re-captured 2026-11-15 (review R5): the "top N by risk" drawer leaves
+    // the cash-equivalent sweeps out BEFORE it takes its N, so in two scopes
+    // its top 5 now lists the next non-cash names instead of fewer rows. With
+    // the previous drill-down.ts the output still hashed to 8984a85c....
+    // Re-captured 2026-11-15 (review wave S, What-if and Cash deploy only;
+    // field-by-field diff against the tree before, 5918c568...): an option
+    // enters the sector weights at its delta-adjusted exposure through its
+    // underlying's sector (the fixture's put moves from "Unknown" into a
+    // smaller, delta-signed "Technology"), so the Cash-deploy gaps, picks,
+    // totalAllocated, cashRemaining and unallocatedReason moved with it; the
+    // money-market fund leaves topConcentrations (and beforeWeightBySymbol)
+    // while staying in the total; each snapshot gained optionsAtMarketValue
+    // and nearMarketNeutral and the suggestion optionsAtMarketValue; the
+    // top3 / sector flags moved with those weights. Every exposureDelta beta
+    // and every other reader's output is unchanged.
+    // Re-captured 2026-11-16 (owner rulings 19 and 25; each unit's own
+    // field-by-field diff against the tree before, 2ef256a8...). Defense:
+    // cashLine added in every scope, summary.assumedBetaHedgeCount and
+    // assumedBetaLowFitCount and hedgeScores[].betaAssumed removed, every
+    // figure unchanged. Cash deploy: the fixture holds a Technology put, so
+    // that sector is short by choice and its held pick disappears in three
+    // scopes (its dollars move from totalAllocated into cashRemaining and
+    // unallocatedShortDollars); shortHeldSectors, unallocatedShortDollars,
+    // unallocatedShortReason and picks[].toleranceSectors are new keys.
+    // Re-captured 2026-11-16 (Cash deploy review fixes FX3; field-by-field
+    // diff against the tree before, 30245207...): in the three scopes that
+    // hold the Technology put, shortHeldSectors[0] gained causes ["puts"]
+    // and unallocatedShortReason is reworded (it no longer says "short
+    // positions"). The long-only book, the fillable room and the placed-based
+    // kind move no figure on this fixture: every gap, pick, totalAllocated,
+    // cashRemaining, unallocatedShortDollars and every other reader's output
+    // is unchanged.
     expect(createHash("sha256").update(json).digest("hex")).toBe(
-      "af4ed74a3810a3312fda39ee528bf1ad394a11f2027f2b137ce5bf4648a18ab8",
+      "beb4e9cad477c8b0918c5d4367ccce684f61c2d904e6899990c82b6e3e1bc2d2",
     );
   });
 

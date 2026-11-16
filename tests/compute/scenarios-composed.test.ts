@@ -55,7 +55,11 @@ function createTestDb(): Database.Database {
       -- Migration 102: the scenario engines read it, so a hand-cut schema
       -- that omits it fails only here (house rule: a hand-built test schema
       -- must carry the real columns).
-      leverage_factor REAL
+      leverage_factor REAL,
+      -- The custom rate move's equity leg reads the rate recipe's inputs
+      -- (owner ruling 2026-11-15), so these real columns are carried too.
+      industry TEXT,
+      geography TEXT
     );
 
     CREATE TABLE fx_rates (

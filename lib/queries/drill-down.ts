@@ -21,7 +21,9 @@
  * return series); matured securities are excluded on BOTH sides since the
  * 2026-09-22 decision — so the two lists legitimately differ and neither
  * surface may claim to be the other. This module only hydrates the display columns and drops
- * cash-equivalent sweeps. See `rankByRiskContribution` below.
+ * cash-equivalent sweeps, BEFORE the top N is taken (cashFreeTopPositions),
+ * so the drawer lists N names like the cash-free chart. See
+ * `rankByRiskContribution` below.
  */
 
 import type Database from "better-sqlite3";
@@ -191,7 +193,7 @@ export function getHoldingsInBucket(
     // with the highest risk contribution portfolio-wide"; a small, wildly
     // volatile position outside the top 10 by value never enters either list.
     const topN = Math.max(1, Math.min(filter.topN ?? 10, 100));
-    rankedPositions = computePositionRisk(db, { accountIds, topN }).positions;
+    rankedPositions = cashFreeTopPositions(db, accountIds, topN);
     if (rankedPositions.length === 0) return [];
     // Hydrate exactly those securities with the panel's display columns
     // (sector, factors, cached beta). Ordering and the row set come from
@@ -313,6 +315,36 @@ export function getHoldingsInBucket(
 
   if (!rankedPositions) return mapped;
   return rankByRiskContribution(mapped, rows, rankedPositions);
+}
+
+/**
+ * computePositionRisk's top N positions by market value with the
+ * cash-equivalent sweeps left out BEFORE the N is taken (review 2026-11-15,
+ * R5). The Concentration chart's top 10 is cash-free (owner ruling
+ * 2026-11-15: cash is one diluting line, never a ranked position); taking a
+ * value-ranked top 10 WITH the sweeps and dropping them afterwards listed
+ * only eight names next to a ten-name chart.
+ *
+ * computePositionRisk takes its N in SQL, so the call asks for N plus the
+ * sweeps it has met so far, until N non-cash positions are in hand or the
+ * universe runs out. The rows are one computation's own output (weight,
+ * value, risk contribution), never stitched from two calls.
+ */
+export function cashFreeTopPositions(
+  db: Database.Database,
+  accountIds: number[] | undefined,
+  topN: number
+): PositionRisk[] {
+  const MAX_ASK = 1000;
+  let ask = topN;
+  for (;;) {
+    const positions = computePositionRisk(db, { accountIds, topN: ask }).positions;
+    const nonCash = positions.filter((p) => !p.cashEquivalent);
+    if (nonCash.length >= topN || positions.length < ask || ask >= MAX_ASK) {
+      return nonCash.slice(0, topN);
+    }
+    ask = Math.min(MAX_ASK, ask + (topN - nonCash.length));
+  }
 }
 
 function factorsOf(r: Row): Partial<Record<FactorColumn, string>> {

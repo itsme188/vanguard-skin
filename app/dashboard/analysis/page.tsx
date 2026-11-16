@@ -23,7 +23,12 @@ import { TrustStrip } from "../components/analysis/TrustStrip";
 import { WorkspacePanel } from "../components/analysis/WorkspacePanel";
 import { AnalysisViewToggle } from "../components/AnalysisViewToggle";
 import { GivingView } from "../components/giving/GivingView";
-import { resolveAnalysisView } from "@/lib/analysis/view-param";
+import {
+  ANALYSIS_SCOPES,
+  resolveAnalysisScope,
+  resolveAnalysisView,
+  type AnalysisScope,
+} from "@/lib/analysis/view-param";
 import { SignificantMovesCard } from "../components/SignificantMovesCard";
 import { MomentumPulse } from "../components/MomentumPulse";
 import { computeMomentumPulse } from "@/lib/compute/momentum-spread";
@@ -52,8 +57,8 @@ const FACTOR_DIMENSIONS: AllocationDimension[] = [...FACTOR_COLUMNS];
 // rating (its credit_rating bucket expression). Any other bucket is a rating.
 const UNRATED_BUCKET = "Unrated";
 
-const VALID_SCOPES = ["vanguard", "ibkr", "roth", "all"] as const;
-type AccountScope = (typeof VALID_SCOPES)[number];
+const VALID_SCOPES = ANALYSIS_SCOPES;
+type AccountScope = AnalysisScope;
 
 // Same set + labels as the Performance sub-view's scope pills (PerformanceView.tsx
 // SCOPES) — reused here so the Workspace landing gets the identical control instead
@@ -139,6 +144,14 @@ export default async function AnalysisPage({ searchParams }: PageProps) {
   // single-source normalizer in lib/analysis/view-param.ts.
   const resolved = resolveAnalysisView(params);
 
+  // The one scope every scoped sub-view below reads (owner ruling 2026-11-15,
+  // "vanguard everywhere": no or an unknown ?scope= opens on Vanguard; an
+  // explicit ?scope=all still means every account). Passed down explicitly so
+  // PerformanceView's and DefenseView's own "all" fallback is never reached.
+  // AnalysisViewToggle keeps the RAW param, so a menu hop with no scope still
+  // reaches Trade Reviews scope-less (its IBKR preselect).
+  const scope: AccountScope = resolveAnalysisScope(params.scope);
+
   if (resolved.view === "trade-reviews") {
     const accounts = db
       .prepare("SELECT id, name FROM accounts ORDER BY name")
@@ -187,28 +200,23 @@ export default async function AnalysisPage({ searchParams }: PageProps) {
     return (
       <div className="space-y-6 md:space-y-0">
         <AnalysisViewToggle currentView="performance" scope={params.scope} />
-        <PerformanceView scope={params.scope} period={params.period} month={params.month} />
+        <PerformanceView scope={scope} period={params.period} month={params.month} />
       </div>
     );
   }
 
   if (resolved.view === "defense") {
-    const defenseScope: AccountScope =
-      VALID_SCOPES.includes(params.scope as AccountScope)
-        ? (params.scope as AccountScope)
-        : "all";
     // md:space-y-0 — mirrors the performance branch: the pill toggle is
     // md:hidden, so on desktop the wrapper must not introduce a margin
     // above DefenseView (no layout shift).
     return (
       <div className="space-y-6 md:space-y-0">
         <AnalysisViewToggle currentView="defense" scope={params.scope} />
-        {/* DefenseView falls back to "all" for an absent or unknown scope, so
-            the active pill does too (not the "vanguard" default the other
-            branches below use). md:mb-6 stands in for the space-y gap that
+        {/* The page-resolved scope drives both the active pill and the view,
+            so they never disagree. md:mb-6 stands in for the space-y gap that
             md:space-y-0 removes on desktop. */}
-        <DefenseScopePills active={defenseScope} />
-        <DefenseView scope={params.scope} />
+        <DefenseScopePills active={scope} />
+        <DefenseView scope={scope} />
       </div>
     );
   }
@@ -224,11 +232,6 @@ export default async function AnalysisPage({ searchParams }: PageProps) {
       </div>
     );
   }
-
-  const scope: AccountScope =
-    VALID_SCOPES.includes(params.scope as AccountScope)
-      ? (params.scope as AccountScope)
-      : "vanguard";
 
   if (resolved.view === "workspace") {
     // ── Default landing: Workspace ────────────────────────────────────────

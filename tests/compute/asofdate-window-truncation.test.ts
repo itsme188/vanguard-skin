@@ -31,7 +31,7 @@ function createRiskTestDb(): Database.Database {
     CREATE TABLE securities (
       id INTEGER PRIMARY KEY, symbol TEXT NOT NULL UNIQUE, name TEXT,
       security_type TEXT DEFAULT 'stock', multiplier REAL DEFAULT 1, expiration_date TEXT,
-      maturity_date TEXT,
+      fund_category TEXT, maturity_date TEXT,
       currency TEXT NOT NULL DEFAULT 'USD'
     );
     CREATE TABLE fx_rates (currency TEXT PRIMARY KEY, usd_per_unit REAL NOT NULL, as_of TEXT NOT NULL, source TEXT);

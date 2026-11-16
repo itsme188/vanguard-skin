@@ -2,15 +2,22 @@
 
 import { CHIP_TONE_TEXT } from "@/app/dashboard/components/chip-tone-text";
 import { Fragment, useState } from "react";
-import { Money, Pct, PrivateNumberInput } from "@/lib/privacy/components";
+import { Count, Money, Pct, PrivateNumberInput, PrivateText } from "@/lib/privacy/components";
 import { rendersAsZero } from "@/lib/format";
 import { FACTOR_COLUMNS, FACTOR_LABELS, type FactorColumn } from "@/lib/factors";
-import type { ExposureDelta, HypotheticalLeg } from "@/lib/compute/exposure-delta";
+import type { ExposureDelta, ExposureFlag, HypotheticalLeg } from "@/lib/compute/exposure-delta";
 import { ScrollFade } from "../ScrollFade";
 import apiFetch from "@/lib/http/apiFetch";
 import { networkFailureMessage, readMutationResult } from "@/lib/ui/mutation-result";
 
 const MATERIAL_DELTA_PCT = 0.005; // 0.5pp threshold for sector + factor rows
+
+/**
+ * The Portfolio Beta row says "estimated" once at least this share of the
+ * book's beta-weighted exposure has no stored beta and takes a type estimate
+ * (owner ruling 2026-11-15, K2a; `betaEstimatedWeight` in exposure-delta.ts).
+ */
+export const BETA_ESTIMATED_MATERIAL_SHARE = 0.05;
 
 interface Props {
   scope: string;
@@ -179,7 +186,36 @@ export function WhatIfCalculator({ scope }: Props) {
               <span className="font-mono">{delta.leveragedFundsNotModelled.join(", ")}</span>
             </p>
           )}
+          {/* Net value at or under 5% of gross (NEAR_NEUTRAL_NET_SHARE in
+              exposure-delta.ts): every ratio is a share of a near-zero or
+              negative number, so none is printed and no flag is raised. */}
+          {!ratiosMeaningful(delta) && (
+            <p className="text-xs text-ink-faint">
+              This scope is close to market-neutral: its net value is small next to its long and short
+              positions, so beta, concentrations and weights as shares of net value are not meaningful
+              and are not shown.
+            </p>
+          )}
           <DeltaTable delta={delta} />
+          {/* An option enters the sector weights at its delta-adjusted
+              exposure; one whose Greeks cannot compute is at market value
+              (review finding S-B1, 2026-11-15). */}
+          {ratiosMeaningful(delta) && optionsAtMarketValue(delta) > 0 && (
+            <p className="text-[10px] text-ink-faint">
+              Options are weighted at their delta-adjusted exposure; options without the inputs to compute it
+              are counted at market value: <Count value={optionsAtMarketValue(delta)} />.
+            </p>
+          )}
+          {/* Sector and factor weights are shares of the modelled book's NET
+              value, with each position at its exposure: a short or an inverse
+              fund counts negative and a leveraged fund at its multiple, so on
+              such a scope a row can read above 100% or below 0% (K2e). */}
+          {ratiosMeaningful(delta) && weightsLeaveZeroToHundred(delta) && (
+            <p className="text-[10px] text-ink-faint">
+              Weights are shares of the book&apos;s net value: shorts and inverse funds count negative and
+              leveraged funds at their multiple, so a row can read above 100% or below 0%.
+            </p>
+          )}
           {delta.flags.length > 0 && (
             <div className="space-y-1">
               {delta.flags.map((flag) => (
@@ -187,7 +223,7 @@ export function WhatIfCalculator({ scope }: Props) {
                   key={flag.metric + flag.message}
                   className={`text-xs ${flag.severity === "error" ? "text-down" : "text-gold-ink"}`}
                 >
-                  ⚠ {flag.message}
+                  ⚠ <FlagMessage flag={flag} />
                 </p>
               ))}
             </div>
@@ -198,21 +234,46 @@ export function WhatIfCalculator({ scope }: Props) {
   );
 }
 
-interface Row {
+/**
+ * A flag message with its portfolio weight masked under Hide amounts: with a
+ * known leg amount, the weight reveals the scope total. The cap and the
+ * symbol or sector name stay readable. A weight the message does not print
+ * in the expected form masks the whole message rather than leak it.
+ */
+function FlagMessage({ flag }: { flag: ExposureFlag }) {
+  if (flag.weightPct === undefined) return <>{flag.message}</>;
+  const token = `${(flag.weightPct * 100).toFixed(1)}%`;
+  const at = flag.message.indexOf(token);
+  if (at < 0) return <PrivateText>{flag.message}</PrivateText>;
+  return (
+    <>
+      {flag.message.slice(0, at)}
+      <Pct value={flag.weightPct * 100} digits={1} />
+      {flag.message.slice(at + token.length)}
+    </>
+  );
+}
+
+export interface Row {
   label: string;
+  /** A short qualifier printed under the label. */
+  note?: React.ReactNode;
   before: string | React.ReactNode;
   after: string | React.ReactNode;
   diff?: string | React.ReactNode;
   indent?: boolean;
 }
 
-interface Section {
+export interface Section {
   title: string;
   rows: Row[];
 }
 
 export function droppedLegMessage(d: NonNullable<ExposureDelta["droppedLegs"]>[number]): string {
   if (d.reason === "unknown_symbol") return `${d.symbol} isn't a known security — leg ignored`;
+  if (d.reason === "no_price") {
+    return `${d.symbol} has no price on file, so the amount can't be turned into shares — leg ignored`;
+  }
   if (d.reason === "invalid_amount") {
     return `${d.symbol} needs a positive dollar amount — leg ignored (use Buy/Sell for direction)`;
   }
@@ -226,6 +287,18 @@ export function droppedLegMessage(d: NonNullable<ExposureDelta["droppedLegs"]>[n
 export function buildHeadlineRows(delta: ExposureDelta): Row[] {
   const beforeBeta = Number(delta.before.beta.toFixed(2));
   const afterBeta = Number(delta.after.beta.toFixed(2));
+  // How much of the beta is a type estimate (no stored beta). Shown when it
+  // is material on either side; the share printed is the larger one.
+  const estimatedShare = Math.max(
+    delta.before.betaEstimatedWeight ?? 0,
+    delta.after.betaEstimatedWeight ?? 0,
+  );
+  const betaNote =
+    estimatedShare >= BETA_ESTIMATED_MATERIAL_SHARE ? (
+      <>
+        estimated: <Pct value={estimatedShare * 100} digits={0} /> of the exposure has no stored beta
+      </>
+    ) : undefined;
   return [
     {
       // exposure-delta.ts's snapshot() sums HOLDINGS market value only
@@ -241,6 +314,7 @@ export function buildHeadlineRows(delta: ExposureDelta): Row[] {
     },
     {
       label: "Portfolio Beta",
+      note: betaNote,
       before: beforeBeta.toFixed(2),
       after: afterBeta.toFixed(2),
       diff: signed(afterBeta - beforeBeta, 2),
@@ -252,12 +326,14 @@ function buildConcentrationRows(delta: ExposureDelta): Row[] {
   const topSymbols = delta.after.topConcentrations.slice(0, 3).map((c) => c.symbol);
   return topSymbols.map((symbol) => {
     const after = delta.after.topConcentrations.find((c) => c.symbol === symbol)!.weightPct;
-    const before = delta.before.topConcentrations.find((c) => c.symbol === symbol)?.weightPct ?? 0;
+    // The true before weight: `before.topConcentrations` is cut to 10, so a
+    // name lifted into the after top 3 from outside it would read 0% there.
+    const before = delta.beforeWeightBySymbol?.[symbol] ?? 0;
     return {
       label: symbol,
       before: <Pct value={before * 100} digits={1} />,
       after: <Pct value={after * 100} digits={1} />,
-      diff: signedPp(after - before),
+      diff: <PrivateText>{signedPp(roundedPpDelta(before, after))}</PrivateText>,
       indent: true,
     };
   });
@@ -276,11 +352,11 @@ function buildSectorRows(delta: ExposureDelta): Row[] {
     })
     .filter((r) => Math.abs(r.diff) >= MATERIAL_DELTA_PCT)
     .sort((a, b) => Math.abs(b.diff) - Math.abs(a.diff))
-    .map(({ sector, before, after, diff }) => ({
+    .map(({ sector, before, after }) => ({
       label: sector,
       before: <Pct value={before * 100} digits={1} />,
       after: <Pct value={after * 100} digits={1} />,
-      diff: signedPp(diff),
+      diff: <PrivateText>{signedPp(roundedPpDelta(before, after))}</PrivateText>,
       indent: true,
     }));
 }
@@ -305,7 +381,7 @@ function buildFactorRows(delta: ExposureDelta): Row[] {
         label: `${FACTOR_LABELS[factor as FactorColumn]} · ${m.bucket}`,
         before: <Pct value={m.before * 100} digits={1} />,
         after: <Pct value={m.after * 100} digits={1} />,
-        diff: signedPp(m.diff),
+        diff: <PrivateText>{signedPp(roundedPpDelta(m.before, m.after))}</PrivateText>,
         indent: true,
       });
     }
@@ -313,13 +389,38 @@ function buildFactorRows(delta: ExposureDelta): Row[] {
   return rows;
 }
 
-function DeltaTable({ delta }: { delta: ExposureDelta }) {
-  const sections: Section[] = [
+/** Option rows weighted at market value (no Greeks), the larger side. */
+function optionsAtMarketValue(delta: ExposureDelta): number {
+  return Math.max(delta.before.optionsAtMarketValue ?? 0, delta.after.optionsAtMarketValue ?? 0);
+}
+
+/**
+ * False when either side is close to market-neutral (`nearMarketNeutral`):
+ * shares of a near-zero or negative net value are not meaningful.
+ */
+export function ratiosMeaningful(delta: ExposureDelta): boolean {
+  return !delta.before.nearMarketNeutral && !delta.after.nearMarketNeutral;
+}
+
+/**
+ * The table's sections. On a near market-neutral scope only the Total Value
+ * row is kept: beta, concentrations, sector and factor weights are all
+ * shares of the net value.
+ */
+export function buildSections(delta: ExposureDelta): Section[] {
+  if (!ratiosMeaningful(delta)) {
+    return [{ title: "Headline", rows: buildHeadlineRows(delta).slice(0, 1) }];
+  }
+  return [
     { title: "Headline", rows: buildHeadlineRows(delta) },
     { title: "Top 3 concentrations", rows: buildConcentrationRows(delta) },
     { title: "Sector weights · material moves", rows: buildSectorRows(delta) },
     { title: "Factor tilts · material moves", rows: buildFactorRows(delta) },
   ].filter((s) => s.rows.length > 0);
+}
+
+function DeltaTable({ delta }: { delta: ExposureDelta }) {
+  const sections = buildSections(delta);
 
   return (
     <div className="bg-canvas border border-edge rounded-lg overflow-hidden">
@@ -345,7 +446,10 @@ function DeltaTable({ delta }: { delta: ExposureDelta }) {
                 )}
                 {section.rows.map((r) => (
                   <tr key={r.label} className="border-b border-edge/40">
-                    <td className={`py-2 px-3 text-ink ${r.indent ? "pl-6" : ""}`}>{r.label}</td>
+                    <td className={`py-2 px-3 text-ink ${r.indent ? "pl-6" : ""}`}>
+                      {r.label}
+                      {r.note && <span className="block text-[10px] text-ink-faint">{r.note}</span>}
+                    </td>
                     <td className="text-right py-2 px-3 font-mono text-ink-dim">{r.before}</td>
                     <td className="text-right py-2 px-3 font-mono text-ink">{r.after}</td>
                     <td className="text-right py-2 px-3 font-mono text-ink-faint">{r.diff ?? "—"}</td>
@@ -369,6 +473,32 @@ export function signed(n: number, digits: number): string {
   const v = n.toFixed(digits);
   if (rendersAsZero(v)) return (0).toFixed(digits);
   return n > 0 ? `+${v}` : v;
+}
+
+/**
+ * The change between two weights (fractions) as the table prints them: each
+ * rounded to one decimal of a percent first, so the delta always agrees with
+ * the Before and After beside it (36.8% to 36.9% is +0.1pp, never 0.0pp; K2e).
+ */
+export function roundedPpDelta(before: number, after: number): number {
+  const round1 = (w: number) => Math.round(w * 1000) / 10;
+  return (round1(after) - round1(before)) / 100;
+}
+
+/**
+ * True when any sector or factor weight, before or after, is below 0% or
+ * above 100%: the table then states its basis (net value, positions at their
+ * exposure), so such a row does not read as an error (K2e).
+ */
+export function weightsLeaveZeroToHundred(delta: ExposureDelta): boolean {
+  const outside = (w: number) => w < -1e-9 || w > 1 + 1e-9;
+  for (const s of [delta.before, delta.after]) {
+    if (Object.values(s.sectorWeights).some(outside)) return true;
+    for (const buckets of Object.values(s.factorTilts)) {
+      if (Object.values(buckets ?? {}).some(outside)) return true;
+    }
+  }
+  return false;
 }
 
 // Same negative-zero guard as `signed` above: a pp delta that rounds to

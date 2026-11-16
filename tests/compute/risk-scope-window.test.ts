@@ -41,6 +41,7 @@ function createTestDb(): Database.Database {
       symbol TEXT NOT NULL UNIQUE,
       name TEXT,
       security_type TEXT DEFAULT 'stock',
+      fund_category TEXT,
       multiplier REAL DEFAULT 1,
       maturity_date TEXT,
       expiration_date TEXT,

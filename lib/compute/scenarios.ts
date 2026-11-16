@@ -38,7 +38,10 @@ import {
   findRecipe,
   computeRecipeScenario,
   recipeToScenarioDefinition,
+  customRateEquityLeg,
+  UNDERLYING_IDENTITY_COLUMNS_SQL,
 } from "./scenario-recipes";
+import { FACTOR_COLUMNS } from "@/lib/factors";
 
 // ─── Types ──────────────────────────────────────────────────────
 
@@ -207,6 +210,14 @@ export function computeScenario(
          COALESCE(s.style, s_u.style) AS style,
          COALESCE(s.market_cap_category, s_u.market_cap_category) AS market_cap_category,
          s.fund_category,
+         -- What the rate recipe's equity path reads (customRateEquityLeg),
+         -- with the recipe engine's own option-to-underlying inheritance.
+         COALESCE(s.industry, s_u.industry) AS industry,
+         CASE WHEN ${OPTION_ROW_SQL} THEN COALESCE(s_u.fund_category, s.fund_category)
+              ELSE COALESCE(s.fund_category, s_u.fund_category) END AS subject_fund_category,
+         COALESCE(s.geography, s_u.geography) AS geography,
+         COALESCE(s.currency, s_u.currency) AS currency,
+${FACTOR_COLUMNS.map((c) => `         COALESCE(sf.${c}, sf_u.${c}) AS ${c},`).join("\n")}
          s.duration_years,
          s.maturity_date,
          s.coupon_rate,
@@ -217,18 +228,23 @@ export function computeScenario(
          s_u.name AS underlying_name,
          s.leverage_factor,
          s_u.leverage_factor AS underlying_leverage_factor,
+         -- The underlying's own identity: the rate leg reads an option
+         -- through its fund (look-through, sector, domicile), as the preset does.
+         ${UNDERLYING_IDENTITY_COLUMNS_SQL},
 ${OPTION_PRICING_COLUMNS_SQL},
          ${adjustedMarketValueSQL("lh.total_qty", "COALESCE(lp.close_price, 0)", "s.security_type", "s.multiplier", "fx.usd_per_unit")} AS market_value
        FROM latest_holdings lh
        JOIN securities s ON s.id = lh.security_id
        LEFT JOIN latest_prices lp ON lp.security_id = lh.security_id
        LEFT JOIN fx_rates fx ON fx.currency = s.currency
+       LEFT JOIN security_factors sf ON sf.security_id = s.id
 ${OPTION_PRICING_JOINS_SQL}
+       LEFT JOIN security_factors sf_u ON sf_u.security_id = s_u.id
        WHERE (COALESCE(lp.close_price, 0) > 0 OR ${OPTION_ROW_SQL})
          AND ${liveOptionExpirationSql("s")}
        ORDER BY market_value DESC`
     )
-    .all(...accountParams) as {
+    .all(...accountParams) as ({
     security_id: number;
     symbol: string;
     security_name: string | null;
@@ -237,6 +253,10 @@ ${OPTION_PRICING_JOINS_SQL}
     style: string | null;
     market_cap_category: string | null;
     fund_category: string | null;
+    industry: string | null;
+    subject_fund_category: string | null;
+    geography: string | null;
+    currency: string | null;
     duration_years: number | null;
     maturity_date: string | null;
     coupon_rate: number | null;
@@ -251,6 +271,12 @@ ${OPTION_PRICING_JOINS_SQL}
     /** Signed leverage factor of the row and of its underlying (migration 102). */
     leverage_factor: number | null;
     underlying_leverage_factor: number | null;
+    /** The underlying's own identity (null for non-options); see UNDERLYING_IDENTITY_COLUMNS_SQL. */
+    underlying_symbol: string | null;
+    underlying_sector: string | null;
+    underlying_industry: string | null;
+    underlying_geography: string | null;
+    underlying_currency: string | null;
     // Option pricing inputs (null for non-options) — see OPTION_PRICING_COLUMNS_SQL.
     strike_price: number | null;
     expiration_date: string | null;
@@ -259,22 +285,27 @@ ${OPTION_PRICING_JOINS_SQL}
     underlying_price: number | null;
     underlying_iv: number | null;
     market_value: number;
-  }[];
+  } & Record<FactorColumn, string | null>)[];
 
   const currentPortfolioValue = positions.reduce((s, p) => s + p.market_value, 0);
 
   // ETF look-through weights for sector scenarios (single source — same map
   // cash-deploy and the allocation breakdown use).
-  const etfWeights = scenario.sectorMoves ? getEtfSectorWeights(db) : new Map<string, Array<{ sector: string; weight_pct: number }>>();
+  const rateBps =
+    typeof scenario.rateMove === "number" && Number.isFinite(scenario.rateMove) && scenario.rateMove !== 0
+      ? scenario.rateMove
+      : null;
+  // The equity rate leg reads look-through weights too (the rate recipe's
+  // subject includes the Real Estate and Utilities sectors).
+  const etfWeights =
+    scenario.sectorMoves || rateBps != null
+      ? getEtfSectorWeights(db)
+      : new Map<string, Array<{ sector: string; weight_pct: number }>>();
 
   const riskFreeRate = getRiskFreeRate(db);
   // Read the clock ONCE so every option in a scenario shares one time to expiry.
   const runToday = todayET();
   const runNow = new Date();
-  const rateBps =
-    typeof scenario.rateMove === "number" && Number.isFinite(scenario.rateMove) && scenario.rateMove !== 0
-      ? scenario.rateMove
-      : null;
   const movesRates = scenarioMovesRates(scenario);
 
   // 2. Estimate beta for each position
@@ -386,21 +417,32 @@ ${OPTION_PRICING_JOINS_SQL}
       marketLeg = scenario.marketMove * beta;
     }
 
-    // The rate leg. Equities have none here: style sensitivity already lives
-    // inside estimateBeta via the marketLeg, and adding it again would
-    // double-count it. A bond whose duration cannot be derived adds nothing
-    // and is reported, never given an assumed duration.
+    // The rate leg (owner ruling 2026-11-15): one rule with the +25bp
+    // preset. Bonds and bond funds take the shared duration rule; a bond
+    // whose duration cannot be derived adds nothing and is reported, never
+    // given an assumed duration. Everything else (equities, equity funds,
+    // and an option's underlying) takes the rate recipe's equity path, its
+    // shock scaled by the custom move (customRateEquityLeg). Cash takes none.
+    //
+    // How the legs combine: changePercent = marketLeg + rateLeg. The market
+    // leg is the beta response to the MARKET input alone and the rate leg is
+    // the response to the RATE input alone, holding the market input fixed;
+    // each is zero when its own input is zero, so market 0 / rates +25bp is
+    // exactly the preset's rate effect and market -x / rates 0 is exactly
+    // the market-only result. A bond never takes the equity rate leg, so its
+    // rate move is counted once. As in the preset, a bond-labelled fund
+    // refused the duration default for equity evidence is an equity fund
+    // here: it takes the equity rate leg and is not counted as left out.
     let rateLeg = 0;
     let bondLeg: BondRateLeg | null = null;
-    if (rateBps != null) {
-      if (isCashEquivalent) {
-        // A constant-NAV cash fund's yield changes with rates, not its
-        // instantaneous price P&L.
-        rateLeg = 0;
-      } else if (!isOption) {
-        bondLeg = estimateBondRateLeg(pos, rateBps, runToday);
-        rateLeg = bondLeg?.changePercent ?? 0;
+    if (rateBps != null && !isCashEquivalent) {
+      if (!isOption) {
+        const rawBondLeg = estimateBondRateLeg(pos, rateBps, runToday);
+        bondLeg = rawBondLeg?.unmodelledReason === "fund-equity-evidence" ? null : rawBondLeg;
       }
+      rateLeg = bondLeg
+        ? bondLeg.changePercent
+        : customRateEquityLeg({ ...pos, fund_category: pos.subject_fund_category }, rateBps, etfWeights);
     }
 
     // Both legs describe the move of the thing the position tracks — for an

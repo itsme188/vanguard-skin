@@ -30,26 +30,72 @@ import { liveOptionExpirationSql } from "@/lib/compute/option-expiry";
 import { todayET } from "@/lib/calendar/date-utils";
 
 /**
- * Signed delta-notional per option security_id, summed across the scoped
- * accounts. Options whose Greeks can't compute are ABSENT from the map —
- * callers fall back via optionExposureFallback.
+ * Option delta exposure for the scoped accounts.
+ *
+ * As a Map it is keyed by option security_id and holds the contract's signed
+ * delta-notional SUMMED across the scoped accounts (the contract's whole
+ * exposure). That total is NOT what one holdings row carries: the same
+ * contract held in two accounts is two rows, and giving each row the total
+ * counted the contract once per row (two rows of one contract read four
+ * legs where two are owned). `exposureForHolding` therefore reads a row's
+ * OWN share through the extra lookups below, never the total.
+ *
+ * Options whose Greeks can't compute are ABSENT — callers fall back via
+ * optionExposureFallback.
  */
+export class OptionExposureMap extends Map<number, number> {
+  /** Exposure of one (account, security) holdings row; key `holdingKey`. */
+  readonly byHolding = new Map<string, number>();
+  /**
+   * Exposure per US dollar of the row's priced value, per security: Δ × spot
+   * ÷ (option close × FX). The same for every account holding the contract,
+   * so a row that does not name its account still reads exactly its own
+   * share as `mv × ratio`. Set only when the contract has a positive close
+   * (then every row of it is valued at that close, never at cost).
+   */
+  readonly perValueDollar = new Map<number, number>();
+  /** How many holdings rows of the security the total was summed over. */
+  readonly rowCount = new Map<number, number>();
+}
+
+export function holdingKey(accountId: number, securityId: number): string {
+  return `${accountId}:${securityId}`;
+}
+
 export function getOptionExposureMap(
   db: Database.Database,
   accountIds?: number[]
-): Map<number, number> {
-  const map = new Map<number, number>();
-  // `undefined` is every account (one whole-book pass); a defined empty
-  // list is NO accounts: no pass, an empty map.
-  const scopes: Array<number | undefined> = accountIds === undefined ? [undefined] : accountIds;
+): OptionExposureMap {
+  const map = new OptionExposureMap();
+  // `undefined` is every account; a defined empty list is NO accounts: no
+  // pass, an empty map. Always one pass PER ACCOUNT, so each position is
+  // known by its account (a Greeks position does not carry one).
+  const scopes: number[] =
+    accountIds === undefined
+      ? (db.prepare("SELECT id FROM accounts ORDER BY id").all() as Array<{ id: number }>).map((r) => r.id)
+      : accountIds;
+  const fxFor = db.prepare(
+    `SELECT COALESCE(fx.usd_per_unit, 1) AS fx
+     FROM securities s LEFT JOIN fx_rates fx ON fx.currency = s.currency
+     WHERE s.id = ?`
+  );
 
   for (const accountId of scopes) {
-    const greeks = computePortfolioGreeks(db, accountId ? { accountId } : undefined);
+    const greeks = computePortfolioGreeks(db, { accountIds: [accountId] });
     for (const pos of greeks.positions) {
       if (!pos.greeks || pos.underlyingPrice <= 0) continue;
       const exposure =
         pos.greeks.delta * pos.underlyingPrice * pos.multiplier * pos.quantity;
       map.set(pos.securityId, (map.get(pos.securityId) ?? 0) + exposure);
+      const key = holdingKey(accountId, pos.securityId);
+      map.byHolding.set(key, (map.byHolding.get(key) ?? 0) + exposure);
+      map.rowCount.set(pos.securityId, (map.rowCount.get(pos.securityId) ?? 0) + 1);
+      if (!map.perValueDollar.has(pos.securityId) && pos.optionPrice != null && pos.optionPrice > 0) {
+        const fx = (fxFor.get(pos.securityId) as { fx: number } | undefined)?.fx ?? 1;
+        if (fx > 0) {
+          map.perValueDollar.set(pos.securityId, (pos.greeks.delta * pos.underlyingPrice) / (pos.optionPrice * fx));
+        }
+      }
     }
   }
   return map;
@@ -70,15 +116,52 @@ export function optionExposureFallback(
 }
 
 /**
- * Resolve one holding row's exposure: non-options at market value, options
- * via the greeks map with the ±2.5×MV fallback.
+ * Resolve ONE holdings row's exposure: non-options at market value, options
+ * at that row's own delta exposure, with the ±2.5×MV fallback when the
+ * contract's Greeks can't compute.
+ *
+ * A row is one (account, security) holding. Its own share, in order:
+ *   1. the row names its account → that account's exposure, exactly;
+ *   2. the contract has a close → the row's value × the per-dollar ratio
+ *      (exact: every account's leg is valued at the same close);
+ *   3. otherwise the scoped total split evenly over the contract's rows, so
+ *      the rows still sum to the total (only a split across account buckets
+ *      can be off, for an unpriced contract read without account ids).
+ *      Every caller in the app selects `h.account_id`, so rule 1 applies;
+ *      rule 3 is a last resort for a row that cannot name its account.
  */
 export function exposureForHolding(
-  row: { security_id: number; security_type: string | null; option_type: string | null; mv: number },
-  optionExposures: Map<number, number>
+  row: {
+    security_id: number;
+    security_type: string | null;
+    option_type: string | null;
+    mv: number;
+    account_id?: number | null;
+  },
+  optionExposures: OptionExposureMap
 ): number {
   if (row.security_type?.toLowerCase() !== "option") return row.mv;
-  return optionExposures.get(row.security_id) ?? optionExposureFallback(row.option_type, row.mv);
+  // A plain Map (a copy: `new Map(map)` keeps only the netted totals and
+  // drops the per-row lookups) would hand every row of a contract the
+  // contract's whole total. Refuse it loudly rather than read it.
+  if (!(optionExposures instanceof OptionExposureMap)) {
+    throw new TypeError(
+      "exposureForHolding needs the OptionExposureMap from getOptionExposureMap, not a copy: a plain Map carries only netted per-contract totals"
+    );
+  }
+  const total = optionExposures.get(row.security_id);
+  if (total === undefined) return optionExposureFallback(row.option_type, row.mv);
+
+  if (row.account_id != null) {
+    const own = optionExposures.byHolding.get(holdingKey(row.account_id, row.security_id));
+    if (own !== undefined) return own;
+  }
+  const rows = optionExposures.rowCount.get(row.security_id) ?? 1;
+  // One row of the contract in scope: the total IS that row's exposure.
+  if (rows <= 1) return total;
+  const ratio = optionExposures.perValueDollar.get(row.security_id);
+  if (ratio !== undefined) return row.mv * ratio;
+  return total / rows;
 }
 
 export interface PortfolioExposureSummary {
@@ -132,6 +215,7 @@ export function getPortfolioExposureSummary(
         ON p.security_id = lp.security_id AND p.date = lp.max_date
       )
       SELECT
+        h.account_id,
         s.id AS security_id,
         s.security_type,
         s.option_type,
@@ -149,6 +233,7 @@ export function getPortfolioExposureSummary(
       WHERE ${conditions.join(" AND ")}`
     )
     .all(...params) as Array<{
+      account_id: number;
       security_id: number;
       security_type: string | null;
       option_type: string | null;
@@ -220,6 +305,7 @@ export function getNetExposureForSymbolFamilies(
         ON p.security_id = lp.security_id AND p.date = lp.max_date
       )
       SELECT
+        h.account_id,
         s.id AS security_id,
         s.security_type,
         s.option_type,
@@ -243,6 +329,7 @@ export function getNetExposureForSymbolFamilies(
         AND UPPER(COALESCE(s.underlying_symbol, s.symbol)) IN (${placeholders})`
     )
     .all(today, ...members) as Array<{
+      account_id: number;
       security_id: number;
       security_type: string | null;
       option_type: string | null;

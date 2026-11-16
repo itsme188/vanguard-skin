@@ -47,6 +47,9 @@ import { reverseDateInputId } from "./giving-ids";
 // never sends a shape the server would 400 on.
 const REVERSED_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
+/** Phone-width floor for the Status cell's lot notes; none from md up. */
+const LOT_NOTES_NARROW_WIDTH = "min-w-[18rem] md:min-w-0";
+
 const STATUS_TONE: Record<GivingDonation["status"], ChipTone> = {
   reversed: "down",
   unsupported: "neutral",
@@ -91,6 +94,71 @@ export function DonationIdentityLine({ gd }: { gd: GivingDonation }) {
   );
 }
 
+/** Half a cent: a part smaller than this is float noise, not a figure. */
+const HALF_CENT = 0.005;
+
+/** A part worth printing: present and at least half a cent either way. */
+const isFigure = (n: number | null | undefined) => n != null && Math.abs(n) >= HALF_CENT;
+
+/** A loss part is stored at or below zero; it is printed as a size beside the word "loss". */
+const lossSize = (n: number | null) => (n == null ? null : -n);
+
+/**
+ * One holding period's lines in a row: the gain part, and the loss part
+ * apart when there is one (a lot given below its cost). A negative figure is
+ * never labelled gain; a holding period with only a loss prints no gain line.
+ */
+function HoldingPeriodLines({ label, gain, loss }: { label: string; gain: number | null; loss: number | null }) {
+  const hasLoss = isFigure(loss);
+  return (
+    <>
+      {(!hasLoss || isFigure(gain)) && (
+        <span>
+          <span className="font-sans text-xs text-ink-faint">{label} gain </span>
+          <Money value={gain} />
+        </span>
+      )}
+      {hasLoss && (
+        <span>
+          <span className="font-sans text-xs text-ink-faint">{label} loss </span>
+          <Money value={lossSize(loss)} />
+        </span>
+      )}
+    </>
+  );
+}
+
+/**
+ * A row's avoided gain split by holding period (owner ruling 14,
+ * 2026-11-16): the long-term part only when the row gave long-term shares,
+ * the short-term part only when it gave short-term shares (the same flags,
+ * and so the same threshold, the year uses), each with its loss part apart,
+ * and an unknown part only when there is one.
+ */
+export function GainSplitCell({ gd }: { gd: GivingDonation }) {
+  return (
+    <span className="flex flex-col items-end gap-0.5 whitespace-nowrap">
+      {gd.hasLongTermShares && (
+        <HoldingPeriodLines label="LT" gain={gd.gainAvoidedLongTermGain} loss={gd.gainAvoidedLongTermLoss} />
+      )}
+      {gd.hasShortTermShares && (
+        <HoldingPeriodLines label="ST" gain={gd.gainAvoidedShortTermGain} loss={gd.gainAvoidedShortTermLoss} />
+      )}
+      {isFigure(gd.gainAvoidedHoldingUnknown) && (
+        <span>
+          <span className="font-sans text-xs text-ink-faint">Holding period unknown </span>
+          <Money value={gd.gainAvoidedHoldingUnknown} />
+        </span>
+      )}
+      {(gd.gainAvoidedOverAssigned ?? 0) > 0 && (
+        <span className="font-sans text-xs text-warn">
+          More shares assigned than given; lots overstate by <Money value={gd.gainAvoidedOverAssigned} />
+        </span>
+      )}
+    </span>
+  );
+}
+
 export function GivingYearSection({ year }: { year: GivingYear }) {
   const router = useRouter();
   const flow = useLedgerRecomputeFlow();
@@ -102,6 +170,12 @@ export function GivingYearSection({ year }: { year: GivingYear }) {
 
   const stockDonations = year.donations.filter((gd) => gd.donation.kind === "stock");
   const cashDonations = year.donations.filter((gd) => gd.donation.kind === "cash");
+  // No short-term figure and no note in a year with no short-term shares.
+  // The split prints only when the header prints a figure (not pending, not "not shown").
+  const showSplit =
+    year.gainAvoided != null &&
+    !(year.gainAvoidedRowsCounted === 0 && year.gainAvoidedRowsLeftOut + year.gainAvoidedRowsUnsupported > 0);
+  const showShortTerm = showSplit && year.gainAvoidedRowsWithShortTerm > 0;
 
   function openReverseDialog(gd: GivingDonation) {
     setReverseTarget(gd);
@@ -209,14 +283,46 @@ export function GivingYearSection({ year }: { year: GivingYear }) {
             Total given <Money value={year.totalGiven} className="font-mono font-medium text-ink" />
           </span>
           <span className="text-ink-dim">
-            Gain avoided{" "}
             {year.gainAvoided == null ? (
-              <span className="text-ink-faint italic">pending lot assignment</span>
-            ) : year.gainAvoidedRowsLeftOut > 0 && year.gainAvoidedRowsCounted === 0 ? (
-              // Every row was left out: there is no believable total to print.
-              <span className="text-ink-faint italic">not shown</span>
+              <>
+                Gain avoided <span className="text-ink-faint italic">pending lot assignment</span>
+              </>
+            ) : year.gainAvoidedRowsCounted === 0 &&
+              year.gainAvoidedRowsLeftOut + year.gainAvoidedRowsUnsupported > 0 ? (
+              // Every row was left out (an implausible basis or a non-USD
+              // gift): there is no believable total to print.
+              <>
+                Gain avoided <span className="text-ink-faint italic">not shown</span>
+              </>
             ) : (
-              <Money value={year.gainAvoided} className="font-mono font-medium text-up" />
+              // Split by holding period, per donated lot (owner ruling 14,
+              // 2026-11-16), each period's loss part apart: a lot given below
+              // its cost is never printed as a gain.
+              <>
+                Gain avoided, held over 1 year{" "}
+                <Money value={year.gainAvoidedLongTermGain} className="font-mono font-medium text-up" />
+                {showShortTerm && (
+                  <>
+                    {" "}
+                    · Short-term, held 1 year or less: gain{" "}
+                    <Money value={year.gainAvoidedShortTermGain} className="font-mono font-medium text-ink" />
+                    {isFigure(year.gainAvoidedShortTermLoss) && (
+                      <>
+                        , loss{" "}
+                        <Money value={lossSize(year.gainAvoidedShortTermLoss)} className="font-mono text-ink" />
+                      </>
+                    )}
+                  </>
+                )}
+                {year.gainAvoidedRowsHoldingUnknown > 0 && (
+                  <>
+                    {" "}
+                    · holding period unknown{" "}
+                    <Money value={year.gainAvoidedHoldingUnknown} className="font-mono font-medium text-ink" />{" "}
+                    (gifts: <Count value={year.gainAvoidedRowsHoldingUnknown} className="font-mono" />)
+                  </>
+                )}
+              </>
             )}
             {year.gainAvoidedRowsLeftOut > 0 && (
               <span className="text-warn">
@@ -225,8 +331,37 @@ export function GivingYearSection({ year }: { year: GivingYear }) {
                 <Count value={year.gainAvoidedRowsLeftOut} className="font-mono font-medium" />
               </span>
             )}
+            {year.gainAvoidedRowsUnsupported > 0 && (
+              <span className="text-warn">
+                {" "}
+                · left out (non-USD):{" "}
+                <Count value={year.gainAvoidedRowsUnsupported} className="font-mono font-medium" />
+              </span>
+            )}
+            {showSplit && year.gainAvoidedRowsOverAssigned > 0 && (
+              <span className="text-warn">
+                {" "}
+                · gifts with more shares assigned than given:{" "}
+                <Count value={year.gainAvoidedRowsOverAssigned} className="font-mono font-medium" /> (lot figures
+                overstate by <Money value={year.gainAvoidedOverAssigned} className="font-mono font-medium" />)
+              </span>
+            )}
           </span>
         </div>
+        {showSplit && isFigure(year.gainAvoidedLongTermLoss) && (
+          <p className="basis-full text-xs text-ink-faint">
+            Long-term lots given at a loss:{" "}
+            <Money value={lossSize(year.gainAvoidedLongTermLoss)} className="font-mono" /> (a loss on gifted shares
+            is not deductible)
+          </p>
+        )}
+        {showShortTerm && (
+          <p className="basis-full text-xs text-ink-faint">
+            For shares held one year or less, the deduction is generally the lower of cost basis and fair value: a
+            short-term gain adds nothing to the deduction, and a loss on shares given away is not deductible.
+            Confirm with your tax preparer.
+          </p>
+        )}
       </header>
 
       {stockDonations.length > 0 && (
@@ -280,10 +415,17 @@ export function GivingYearSection({ year }: { year: GivingYear }) {
                       <Money value={d.fmv_usd} />
                     </td>
                     <td className="px-3 py-2.5 text-right font-mono tabular-nums text-ink-dim hidden md:table-cell">
-                      <Money value={gd.basis} />
+                      {/* Lots assigned but their split units cannot be
+                          established: no figure, the row needs review. */}
+                      <Money value={gd.basis} fallback={gd.basisUnestablished ? "needs review" : "—"} />
                     </td>
                     <td className="px-3 py-2.5 text-right font-mono tabular-nums text-ink-dim hidden md:table-cell">
-                      <Money value={gd.gainAvoided} />
+                      {gd.gainAvoided == null ? (
+                        <Money value={gd.gainAvoided} fallback={gd.basisUnestablished ? "needs review" : "—"} />
+                      ) : (
+                        // Split by holding period, per lot (owner ruling 14).
+                        <GainSplitCell gd={gd} />
+                      )}
                     </td>
                     <td className="px-3 py-2.5 text-xs text-ink-faint hidden md:table-cell">
                       {gd.longTermQuantity != null && gd.shortTermQuantity != null ? (
@@ -299,15 +441,23 @@ export function GivingYearSection({ year }: { year: GivingYear }) {
                       <Chip tone={STATUS_TONE[gd.status]}>{STATUS_LABEL[gd.status]}</Chip>
                       {/* One chip and one control per lot whose basis trips the
                           1% rule; the state of each is decided on the server. */}
-                      {!struck &&
-                        gd.flaggedLots.map((lot) => (
-                          <LotBasisControl
-                            key={lot.acquisitionTransactionId}
-                            lot={lot}
-                            donationId={d.id}
-                            symbol={d.symbol_raw ?? "this security"}
-                          />
-                        ))}
+                      {/* Below md the table scrolls sideways, and a long
+                          "basis verified" note squeezed into a ~110px column
+                          made rows 300-560px tall. The wrapper gives the lot
+                          notes a readable width there; from md up it adds
+                          nothing (md:min-w-0). */}
+                      {!struck && gd.flaggedLots.length > 0 && (
+                        <div className={LOT_NOTES_NARROW_WIDTH}>
+                          {gd.flaggedLots.map((lot) => (
+                            <LotBasisControl
+                              key={lot.acquisitionTransactionId}
+                              lot={lot}
+                              donationId={d.id}
+                              symbol={d.symbol_raw ?? "this security"}
+                            />
+                          ))}
+                        </div>
+                      )}
                     </td>
                     <td className="px-3 py-2.5 text-right whitespace-nowrap">
                       {!struck && (
@@ -318,7 +468,7 @@ export function GivingYearSection({ year }: { year: GivingYear }) {
                               onClick={() => setDrawerDonation(gd)}
                               className="text-xs text-gold-ink hover:underline focus-ring"
                             >
-                              {gd.basis != null ? "Edit lots" : "Assign lots"}
+                              {gd.basis != null || gd.basisUnestablished ? "Edit lots" : "Assign lots"}
                             </button>
                           )}
                           {gd.linked && (
