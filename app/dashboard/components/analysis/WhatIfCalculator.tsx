@@ -2,10 +2,10 @@
 
 import { CHIP_TONE_TEXT } from "@/app/dashboard/components/chip-tone-text";
 import { Fragment, useState } from "react";
-import { Money, Pct, PrivateNumberInput } from "@/lib/privacy/components";
+import { Money, Pct, PrivateNumberInput, PrivateText } from "@/lib/privacy/components";
 import { rendersAsZero } from "@/lib/format";
 import { FACTOR_COLUMNS, FACTOR_LABELS, type FactorColumn } from "@/lib/factors";
-import type { ExposureDelta, HypotheticalLeg } from "@/lib/compute/exposure-delta";
+import type { ExposureDelta, ExposureFlag, HypotheticalLeg } from "@/lib/compute/exposure-delta";
 import { ScrollFade } from "../ScrollFade";
 import apiFetch from "@/lib/http/apiFetch";
 import { networkFailureMessage, readMutationResult } from "@/lib/ui/mutation-result";
@@ -187,7 +187,7 @@ export function WhatIfCalculator({ scope }: Props) {
                   key={flag.metric + flag.message}
                   className={`text-xs ${flag.severity === "error" ? "text-down" : "text-gold-ink"}`}
                 >
-                  ⚠ {flag.message}
+                  ⚠ <FlagMessage flag={flag} />
                 </p>
               ))}
             </div>
@@ -195,6 +195,26 @@ export function WhatIfCalculator({ scope }: Props) {
         </div>
       )}
     </section>
+  );
+}
+
+/**
+ * A flag message with its portfolio weight masked under Hide amounts: with a
+ * known leg amount, the weight reveals the scope total. The cap and the
+ * symbol or sector name stay readable. A weight the message does not print
+ * in the expected form masks the whole message rather than leak it.
+ */
+function FlagMessage({ flag }: { flag: ExposureFlag }) {
+  if (flag.weightPct === undefined) return <>{flag.message}</>;
+  const token = `${(flag.weightPct * 100).toFixed(1)}%`;
+  const at = flag.message.indexOf(token);
+  if (at < 0) return <PrivateText>{flag.message}</PrivateText>;
+  return (
+    <>
+      {flag.message.slice(0, at)}
+      <Pct value={flag.weightPct * 100} digits={1} />
+      {flag.message.slice(at + token.length)}
+    </>
   );
 }
 
@@ -252,12 +272,14 @@ function buildConcentrationRows(delta: ExposureDelta): Row[] {
   const topSymbols = delta.after.topConcentrations.slice(0, 3).map((c) => c.symbol);
   return topSymbols.map((symbol) => {
     const after = delta.after.topConcentrations.find((c) => c.symbol === symbol)!.weightPct;
-    const before = delta.before.topConcentrations.find((c) => c.symbol === symbol)?.weightPct ?? 0;
+    // The true before weight: `before.topConcentrations` is cut to 10, so a
+    // name lifted into the after top 3 from outside it would read 0% there.
+    const before = delta.beforeWeightBySymbol?.[symbol] ?? 0;
     return {
       label: symbol,
       before: <Pct value={before * 100} digits={1} />,
       after: <Pct value={after * 100} digits={1} />,
-      diff: signedPp(after - before),
+      diff: <PrivateText>{signedPp(after - before)}</PrivateText>,
       indent: true,
     };
   });
@@ -280,7 +302,7 @@ function buildSectorRows(delta: ExposureDelta): Row[] {
       label: sector,
       before: <Pct value={before * 100} digits={1} />,
       after: <Pct value={after * 100} digits={1} />,
-      diff: signedPp(diff),
+      diff: <PrivateText>{signedPp(diff)}</PrivateText>,
       indent: true,
     }));
 }
@@ -305,7 +327,7 @@ function buildFactorRows(delta: ExposureDelta): Row[] {
         label: `${FACTOR_LABELS[factor as FactorColumn]} · ${m.bucket}`,
         before: <Pct value={m.before * 100} digits={1} />,
         after: <Pct value={m.after * 100} digits={1} />,
-        diff: signedPp(m.diff),
+        diff: <PrivateText>{signedPp(m.diff)}</PrivateText>,
         indent: true,
       });
     }

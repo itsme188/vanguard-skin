@@ -350,8 +350,12 @@ describe("every account and a non-empty list answer as before", () => {
     // Re-captured 2026-11-04 when the Defense analysis gained the
     // leveragedFundsUnmodelled disclosure: with that one key removed the
     // output still hashed to the 2026-11-02 digest (17d2fe2f...).
+    // Re-captured 2026-11-15 when the What-if gained beforeWeightBySymbol
+    // (the true before weight of each after-top name) and a weightPct on
+    // each flag that prints a weight: with those two keys removed the output
+    // still hashed to the 2026-11-04 digest (af4ed74a...).
     expect(createHash("sha256").update(json).digest("hex")).toBe(
-      "af4ed74a3810a3312fda39ee528bf1ad394a11f2027f2b137ce5bf4648a18ab8",
+      "07131a145a93f695deebfb28630f3f8d6b546ab55ca0dcc3790e8672747cb1b8",
     );
   });
 

@@ -33,6 +33,7 @@ describe("WhatIfCalculator input and privacy behavior", () => {
     const rows = buildHeadlineRows({
       before: { totalValue: 100, beta: 1, factorTilts: emptyFactors, sectorWeights: {}, topConcentrations: [] },
       after: { totalValue: 125, beta: 1, factorTilts: emptyFactors, sectorWeights: {}, topConcentrations: [] },
+      beforeWeightBySymbol: {},
       flags: [],
       droppedLegs: [],
       leveragedFundsNotModelled: [],
@@ -45,6 +46,7 @@ describe("WhatIfCalculator input and privacy behavior", () => {
     const rows = buildHeadlineRows({
       before: { totalValue: 100, beta: 1.1335, factorTilts: emptyFactors, sectorWeights: {}, topConcentrations: [] },
       after: { totalValue: 100, beta: 1.1359, factorTilts: emptyFactors, sectorWeights: {}, topConcentrations: [] },
+      beforeWeightBySymbol: {},
       flags: [],
       droppedLegs: [],
       leveragedFundsNotModelled: [],

@@ -38,6 +38,13 @@ export interface ExposureFlag {
   message: string;
   metric: string;
   capValue?: number;
+  /**
+   * The portfolio weight (a fraction) the message prints, for the flags that
+   * carry one (top1, top3, sector). The message prints it as
+   * `(weightPct * 100).toFixed(1)%`; the UI masks that figure under Hide
+   * amounts, since with a known leg amount it reveals the scope total.
+   */
+  weightPct?: number;
 }
 
 export interface DroppedLeg {
@@ -50,6 +57,13 @@ export interface DroppedLeg {
 export interface ExposureDelta {
   before: ExposureSnapshot;
   after: ExposureSnapshot;
+  /**
+   * The BEFORE weight of every symbol in `after.topConcentrations` (0 for a
+   * name not held before). `before.topConcentrations` is cut to 10, so a name
+   * a leg lifts into the after top list from outside the before top 10 has
+   * no before weight there (A2, 2026-11-15).
+   */
+  beforeWeightBySymbol: Record<string, number>;
   flags: ExposureFlag[];
   // Legs that could not be modeled (ticker with no securities row, or a sell
   // of a symbol not held in scope). Surfaced so the UI can explain the no-op
@@ -345,6 +359,26 @@ function lookupSymbol(
   };
 }
 
+/**
+ * Every modelled symbol's weight of the modelled book, largest first
+ * (duplicate rows collapsed). snapshot() keeps the top 10 of it; the caller
+ * reads the full list for the before weight of each after-top name (A2).
+ */
+function symbolWeights(allHoldings: HoldingRow[]): Array<{ symbol: string; weightPct: number }> {
+  const holdings = allHoldings.filter((h) => !h.leveragedOrInverse);
+  const totalValue = holdings.reduce((s, h) => s + h.marketValue, 0);
+  const bySymbol = new Map<string, number>();
+  for (const h of holdings) {
+    bySymbol.set(h.symbol, (bySymbol.get(h.symbol) ?? 0) + h.marketValue);
+  }
+  return Array.from(bySymbol.entries())
+    .map(([symbol, value]) => ({
+      symbol,
+      weightPct: totalValue > 0 ? value / totalValue : 0,
+    }))
+    .sort((a, b) => b.weightPct - a.weightPct);
+}
+
 function snapshot(allHoldings: HoldingRow[]): ExposureSnapshot {
   // A leveraged or inverse fund with NO signed factor has no beta, sector or
   // factor exposure anyone can state (owner ruling 2026-11-01, stopgap): it
@@ -369,7 +403,9 @@ function snapshot(allHoldings: HoldingRow[]): ExposureSnapshot {
     const exposureValue = h.marketValue * (h.leverageFactor ?? 1);
     const w = totalValue > 0 ? exposureValue / totalValue : 0;
     betaWeighted += w * h.beta;
-    const sector = h.sector ?? "Unknown";
+    // A blank or whitespace-only sector is unclassified, not its own
+    // unlabelled bucket (A3).
+    const sector = h.sector?.trim() ? h.sector : "Unknown";
     sectorWeights[sector] = (sectorWeights[sector] ?? 0) + exposureValue;
     for (const col of FACTOR_COLUMNS) {
       const bucket = h.factors[col] ?? "Unknown";
@@ -387,18 +423,7 @@ function snapshot(allHoldings: HoldingRow[]): ExposureSnapshot {
     }
   }
 
-  // Aggregate holdings by symbol for concentrations (collapse duplicates)
-  const bySymbol = new Map<string, number>();
-  for (const h of holdings) {
-    bySymbol.set(h.symbol, (bySymbol.get(h.symbol) ?? 0) + h.marketValue);
-  }
-  const topConcentrations = Array.from(bySymbol.entries())
-    .map(([symbol, value]) => ({
-      symbol,
-      weightPct: totalValue > 0 ? value / totalValue : 0,
-    }))
-    .sort((a, b) => b.weightPct - a.weightPct)
-    .slice(0, 10);
+  const topConcentrations = symbolWeights(allHoldings).slice(0, 10);
 
   return {
     totalValue,
@@ -407,6 +432,24 @@ function snapshot(allHoldings: HoldingRow[]): ExposureSnapshot {
     sectorWeights,
     topConcentrations,
   };
+}
+
+/**
+ * The quantity whose marketValue() is exactly `usd` dollars, for every
+ * security type. marketValue() is linear in quantity, so the inverse is the
+ * leg amount over the value of ONE unit: a bond's per-100-face quote, an
+ * option's multiplier and the FX factor all come from the one valuation rule
+ * instead of a hand-rolled price x multiplier divisor (which applied a bond
+ * leg at 1/100 of its amount; Analysis fix wave 2026-11-15, A1).
+ */
+function quantityForUsd(
+  usd: number,
+  price: number,
+  securityType: string | null,
+  multiplier: number,
+  usdPerUnit: number,
+): number {
+  return usd / marketValue(1, price, securityType, multiplier, usdPerUnit);
 }
 
 function applyLegs(
@@ -444,7 +487,7 @@ function applyLegs(
       // marketValue() delta (which multiplies back by usdPerUnit) equals
       // exactly leg.dollarAmount USD, not leg.dollarAmount * usdPerUnit.
       const usdPerUnit = getUsdPerUnit(db, h.currency) || 1;
-      const shares = leg.dollarAmount / (h.price * h.multiplier * usdPerUnit);
+      const shares = quantityForUsd(leg.dollarAmount, h.price, h.securityType, h.multiplier, usdPerUnit);
       const delta = leg.action === "buy" ? shares : -shares;
       const prevQuantity = h.quantity;
       h.quantity += delta;
@@ -482,7 +525,7 @@ function applyLegs(
       // synth.currency already reflects that, so no special option-vs-non-
       // option branch is needed here.
       const usdPerUnit = getUsdPerUnit(db, synth.currency) || 1;
-      const shares = leg.dollarAmount / (synth.price * synth.multiplier * usdPerUnit);
+      const shares = quantityForUsd(leg.dollarAmount, synth.price, synth.securityType, synth.multiplier, usdPerUnit);
       const row: HoldingRow = {
         ...synth,
         quantity: shares,
@@ -527,6 +570,7 @@ function computeFlags(after: ExposureSnapshot, caps: ConstructionCaps): Exposure
       metric: "top1",
       message: `Top position ${top1.symbol} would be ${(top1.weightPct * 100).toFixed(1)}% (cap ${(caps.top1_max * 100).toFixed(0)}%)`,
       capValue: caps.top1_max,
+      weightPct: top1.weightPct,
     });
   }
   const top3Sum = after.topConcentrations.slice(0, 3).reduce((s, c) => s + c.weightPct, 0);
@@ -536,16 +580,21 @@ function computeFlags(after: ExposureSnapshot, caps: ConstructionCaps): Exposure
       metric: "top3",
       message: `Top 3 positions would be ${(top3Sum * 100).toFixed(1)}% (cap ${(caps.top3_max * 100).toFixed(0)}%)`,
       capValue: caps.top3_max,
+      weightPct: top3Sum,
     });
   }
   for (const [sector, weight] of Object.entries(after.sectorWeights)) {
     if (sector === "Unknown") continue; // skip — concentration in unclassified positions is a data-quality issue, not a portfolio-construction risk
+    // Skip "Diversified" too: it is the bucket for broad index funds, which
+    // spread across every sector, so its weight is not a sector bet (A3).
+    if (sector === "Diversified") continue;
     if (weight > caps.sector_max) {
       flags.push({
         severity: "warn",
         metric: `sector:${sector}`,
         message: `Sector ${sector} would be ${(weight * 100).toFixed(1)}% (cap ${(caps.sector_max * 100).toFixed(0)}%)`,
         capValue: caps.sector_max,
+        weightPct: weight,
       });
     }
   }
@@ -609,5 +658,18 @@ export function computeExposureDelta(
     ]),
   ].sort();
 
-  return { before, after, flags, droppedLegs: resolved.dropped, leveragedFundsNotModelled };
+  const beforeWeights = new Map(symbolWeights(current).map((c) => [c.symbol, c.weightPct]));
+  const beforeWeightBySymbol: Record<string, number> = {};
+  for (const c of after.topConcentrations) {
+    beforeWeightBySymbol[c.symbol] = beforeWeights.get(c.symbol) ?? 0;
+  }
+
+  return {
+    before,
+    after,
+    beforeWeightBySymbol,
+    flags,
+    droppedLegs: resolved.dropped,
+    leveragedFundsNotModelled,
+  };
 }
