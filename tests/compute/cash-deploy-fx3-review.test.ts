@@ -339,7 +339,10 @@ describe("A3: the rationale quotes the fillable gap", () => {
 });
 
 describe("A6: a short-held sector's kind comes from what was placed there", () => {
-  it("room but nothing placed (per-name cap at zero) is not filled", () => {
+  // Review fix FX4 item 2 (2026-11-16): room left on the long positions but
+  // nothing placed is its own kind, "open_not_filled", so the line does not
+  // blame the short for a gap a name could have taken.
+  it("room but nothing placed (per-name cap at zero) is open but not filled", () => {
     add("ZZA", { type: "Stock", sector: "Technology", price: 100, qty: 100 }); // +10,000
     add("ZZS", { type: "Stock", sector: "Technology", price: 100, qty: -50 }); // -5,000
     add("ZZI", { type: "Stock", sector: "Industrials", price: 100, qty: 450 });
@@ -351,7 +354,7 @@ describe("A6: a short-held sector's kind comes from what was placed there", () =
     expect(s.fillableDollars).toBeGreaterThan(1); // the old rule said "partly filled" here
     const r = suggestAllocation(db, "vanguard", [1], 20_000);
     expect(r.picks).toEqual([]);
-    expect(r.shortHeldSectors).toEqual([{ sector: "Technology", kind: "not_filled", causes: ["short_stock"] }]);
+    expect(r.shortHeldSectors).toEqual([{ sector: "Technology", kind: "open_not_filled", causes: ["short_stock"] }]);
     expectConserved(r, 20_000);
   });
 

@@ -6,6 +6,7 @@ import { Count, Money, Pct, PrivateText } from "@/lib/privacy/components";
 import { ScrollFade } from "../ScrollFade";
 import { readMutationResult, networkFailureMessage } from "@/lib/ui/mutation-result";
 import {
+  CASH_AMOUNT_INVALID_MESSAGE,
   equitySleeveCaptionLead,
   NET_OF_SHORTS_CAPTION,
   shortHeldSectorLine,
@@ -25,8 +26,11 @@ export function CashDeployCard({ scope }: Props) {
   const [error, setError] = useState<string | null>(null);
 
   async function run() {
-    if (cash <= 0) {
-      setError("Enter a positive cash amount");
+    // An invalid amount or a failed request clears the previous result, so
+    // an old allocation never stays on screen under the error (FX4 item 3).
+    if (!Number.isFinite(cash) || cash <= 0) {
+      setResult(null);
+      setError(CASH_AMOUNT_INVALID_MESSAGE);
       return;
     }
     setLoading(true);
@@ -39,11 +43,13 @@ export function CashDeployCard({ scope }: Props) {
       // as a plain error, never "Unexpected token <".
       const r = await readMutationResult<{ data: CashDeploySuggestion }>(res);
       if (!r.ok) {
+        setResult(null);
         setError(`Couldn't suggest an allocation: ${r.message}`);
         return;
       }
       setResult(r.data.data);
     } catch {
+      setResult(null);
       setError(networkFailureMessage("suggest an allocation"));
     } finally {
       setLoading(false);

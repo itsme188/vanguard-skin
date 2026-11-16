@@ -134,10 +134,14 @@ const SHORT_HELD_CAUSE_ORDER: ShortHeldCause[] = ["short_stock", "puts", "short_
  * The kind is read from what was PLACED in the sector (review fix FX3 A6):
  * `not_filled` when no pick put a dollar there, `partly_filled` when one did
  * (only up to the long-only gap). `causes` names what holds the sector down.
+ * Review fix FX4 item 2 (2026-11-16): `open_not_filled` when no pick put a
+ * dollar there although the gap left by long positions alone is still open
+ * (no available name could fill it), so the line never blames the hedge for
+ * a gap that a name could have taken.
  */
 export interface ShortHeldSector {
   sector: string;
-  kind: "not_filled" | "partly_filled";
+  kind: "not_filled" | "partly_filled" | "open_not_filled";
   causes: ShortHeldCause[];
 }
 
@@ -248,9 +252,11 @@ const SHORT_HELD_CAUSE_WORDS: Record<ShortHeldCause, string> = {
 export function shortHeldSectorLine(s: ShortHeldSector): string {
   const causes = SHORT_HELD_CAUSE_ORDER.filter((c) => s.causes.includes(c));
   const what = causes.length > 0 ? listWords(causes.map((c) => SHORT_HELD_CAUSE_WORDS[c])) : "hedges";
-  return s.kind === "not_filled"
-    ? `${s.sector}: you hold ${what} here; not filled.`
-    : `${s.sector}: you hold ${what} here; filled only up to the gap your long positions leave.`;
+  if (s.kind === "not_filled") return `${s.sector}: you hold ${what} here; not filled.`;
+  if (s.kind === "open_not_filled") {
+    return `${s.sector}: you hold ${what} here, so only the gap your long positions leave can be filled, and no available name filled it.`;
+  }
+  return `${s.sector}: you hold ${what} here; filled only up to the gap your long positions leave.`;
 }
 
 /** The card's label for `unallocatedShortDollars` (review fix FX3 A2). */
@@ -981,7 +987,12 @@ export function suggestAllocation(
     .sort((a, b) => b.heldOut - a.heldOut || a.sector.localeCompare(b.sector))
     .map((x): ShortHeldSector => ({
       sector: x.sector,
-      kind: (placedBySector.get(x.sector) ?? 0) >= MIN_ROOM_DOLLARS ? "partly_filled" : "not_filled",
+      kind:
+        (placedBySector.get(x.sector) ?? 0) >= MIN_ROOM_DOLLARS
+          ? "partly_filled"
+          : (roomBySector.get(x.sector) ?? 0) >= MIN_ROOM_DOLLARS
+            ? "open_not_filled"
+            : "not_filled",
       causes: SHORT_HELD_CAUSE_ORDER.filter((c) => current.sectorNegativeCauses.get(x.sector)?.has(c)),
     }));
   // The cash left out for them: what the same allocation would place on the
@@ -1054,7 +1065,7 @@ export function suggestAllocation(
           ? "Every underweight sector is filled as far as your long positions leave room; the rest stays as cash rather than pushing a sector past its benchmark weight."
           : "Every underweight sector is filled to its benchmark weight; the rest stays as cash rather than pushing a sector past it.";
     } else if (picks.length === 0) {
-      unallocatedReason = nothingPlacedReason(gaps, ranked, roomLeft, perNameCapCents);
+      unallocatedReason = nothingPlacedReason(gaps, ranked, roomLeft, perNameCapCents, shortHeldSectors);
     } else {
       unallocatedReason =
         "Each pick stops at its sector's gap to the benchmark or at the per-name cap, and no other watchlist or held name can fill the sectors still underweight; the rest stays as cash.";
@@ -1149,6 +1160,13 @@ function planPicks(
   return { plans, remainingCents: remaining, room };
 }
 
+/**
+ * The one message for an amount that is zero, negative or not a number: the
+ * card shows it before asking, and the route answers 400 with it (review fix
+ * FX4 item 3, 2026-11-16).
+ */
+export const CASH_AMOUNT_INVALID_MESSAGE = "Enter a cash amount above zero.";
+
 /** The reason for an amount that is zero, negative or not a number. */
 export const NO_CASH_REASON = "There is no cash to deploy: enter an amount above zero.";
 
@@ -1174,12 +1192,29 @@ function nothingPlacedReason(
   ranked: RankedCandidate[],
   roomBySector: Map<string, number>,
   perNameCapCents: number,
+  shortHeldSectors: ShortHeldSector[] = [],
 ): string {
   const open = gaps
     .filter((g) => g.gapPp < 0 && (roomBySector.get(g.sector) ?? 0) >= MIN_ROOM_DOLLARS)
     .sort((a, b) => a.gapPp - b.gapPp);
+  // Review fix FX4 item 2: a shown underweight sector with NO fillable room
+  // is underweight only because of hedges or shorts the owner holds (ruling
+  // 25). It is said so, and it is never among the sectors "no name sits in".
+  const shownUnder = new Set(gaps.filter((g) => g.gapPp < 0).map((g) => g.sector));
+  const hedgedOnly = shortHeldSectors
+    .filter((s) => s.kind === "not_filled" && shownUnder.has(s.sector))
+    .map((s) => s.sector)
+    .slice(0, REASON_SECTOR_LIMIT);
+  const hedgedClause =
+    hedgedOnly.length === 0
+      ? ""
+      : `${listWords(hedgedOnly)} ${hedgedOnly.length === 1 ? "is" : "are"} underweight only because of the hedges or short positions you hold there, so ${
+          hedgedOnly.length === 1 ? "it is" : "they are"
+        } not filled`;
   if (open.length === 0) {
-    return "No watchlist or held name sits in an underweight sector without pushing another sector past its benchmark weight, so nothing was placed.";
+    return hedgedClause
+      ? `${hedgedClause}; no other underweight sector has room, so nothing was placed.`
+      : "No watchlist or held name sits in an underweight sector without pushing another sector past its benchmark weight, so nothing was placed.";
   }
   const openSet = new Set(open.map((g) => g.sector));
   const named = open.slice(0, REASON_SECTOR_LIMIT).map((g) => g.sector);
@@ -1221,7 +1256,12 @@ function nothingPlacedReason(
             blockedSorted.length === 1 ? "its" : "their"
           } benchmark weight`
         : "the per-name cap leaves no room for the funds considered";
-  return `${subject}, but ${singleClause}, and ${fundClause}; nothing was placed.`;
+  // A shown sector partly held by hedges still has room on the long
+  // positions alone: say that is the gap no name could take.
+  const openHedged = shortHeldSectors.some((s) => s.kind === "open_not_filled" && openSet.has(s.sector));
+  const subjectFull = openHedged ? `${subject} even on your long positions alone` : subject;
+  const tail = hedgedClause ? `; ${hedgedClause}` : "";
+  return `${subjectFull}, but ${singleClause}, and ${fundClause}${tail}; nothing was placed.`;
 }
 
 const FUND_SIZING_PHRASE = "sized so no sector passes its benchmark weight";
@@ -1255,15 +1295,22 @@ function rankCandidate(
   heldName: boolean,
   fillable: FillableGaps,
 ): RankedCandidate | null {
-  const hits = c.exposure
-    .filter((e) => e.weight > 0)
+  // Only the sectors that BIND the name may make it a candidate (review fix
+  // FX4 item 1, 2026-11-16): a multi-sector fund's sliver of
+  // FUND_SMALL_WEIGHT_TOLERANCE or less only rides along under ruling 24, so
+  // a fund is never offered "for" a sector it barely holds (a real-estate
+  // fund with a fraction of a percent in another sector was filed under
+  // that sector and sized by its real-estate room).
+  const hits = bindingExposures(c)
     .map((e) => ({ e, gap: gaps.find((g) => g.sector === e.sector && g.gapPp < 0) }))
     .filter((h): h is { e: SectorExposure; gap: SectorGap } => h.gap !== undefined);
   if (hits.length === 0) return null;
   const multiSectorFund = c.exposure.length > 1;
-  // The gap named is the shown underweight gap that takes the largest share
-  // of the name's dollars.
-  const best = hits.reduce((a, b) => (b.e.weight > a.e.weight ? b : a));
+  // The pick is filed under the binding underweight gap that takes the
+  // largest share of the name's dollars (ties: the wider gap).
+  const best = hits.reduce((a, b) =>
+    b.e.weight > a.e.weight || (b.e.weight === a.e.weight && b.gap.gapPp < a.gap.gapPp) ? b : a,
+  );
   const baseScore = multiSectorFund
     ? hits.reduce((s, h) => s + h.e.weight * h.gap.gapClosureScore, 0)
     : best.gap.gapClosureScore;
@@ -1284,7 +1331,13 @@ function rankCandidate(
     // named (it can be a sector whose gap is under the 2pp display line).
     const dominant = c.exposure.reduce((a, b) => (b.weight > a.weight ? b : a)).sector;
     const mostly = dominant === sector ? "" : ` (mostly ${dominant})`;
-    rationale = `${heldName ? "Held name pick: m" : "M"}ulti-sector fund${mostly}, credited by its look-through sector weights: underweight ${sector} by ${size} vs benchmark; ${FUND_SIZING_PHRASE}`;
+    // Every other binding underweight sector it fills, largest share first.
+    const others = hits
+      .filter((h) => h !== best)
+      .sort((a, b) => b.e.weight - a.e.weight || a.gap.sector.localeCompare(b.gap.sector))
+      .map((h) => h.gap.sector);
+    const also = others.length > 0 ? `; also fills ${listWords(others)}` : "";
+    rationale = `${heldName ? "Held name pick: m" : "M"}ulti-sector fund${mostly}, credited by its look-through sector weights: underweight ${sector} by ${size} vs benchmark${also}; ${FUND_SIZING_PHRASE}`;
   } else if (heldName) {
     rationale = `Held name pick: underweight ${sector} by ${size} vs benchmark`;
   } else {

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
-import { suggestAllocation } from "@/lib/compute/cash-deploy";
+import { CASH_AMOUNT_INVALID_MESSAGE, suggestAllocation } from "@/lib/compute/cash-deploy";
 import { resolveScope } from "@/lib/queries/accounts";
 import { getCachedMacroThemesForNow } from "@/lib/compute/theme-week";
 
@@ -14,7 +14,7 @@ export async function GET(request: NextRequest) {
     // (review finding S-6). The card shows this message as it is.
     if (!Number.isFinite(cashAmount) || cashAmount <= 0) {
       return NextResponse.json(
-        { success: false, error: "Enter a cash amount above zero." },
+        { success: false, error: CASH_AMOUNT_INVALID_MESSAGE },
         { status: 400 }
       );
     }
