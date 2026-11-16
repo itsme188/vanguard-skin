@@ -398,4 +398,90 @@ describe("archive", () => {
     }
     expect(fs.existsSync(path.join(dir, "o"))).toBe(false);
   });
+
+  it.skipIf(noZstd)("calls onProgress between stages, and a throw there renames nothing", async () => {
+    const archive = path.join(archives, "2026-10.tar.zst");
+    const manifest = path.join(archives, "2026-10.sha256");
+    await addToArchive(archive, manifest, [makeDb("a-2026-10-01.db")], ZSTD as string);
+    const stages: string[] = [];
+    await addToArchive(archive, manifest, [makeDb("b-2026-10-02.db")], ZSTD as string, {
+      onProgress: (stage) => stages.push(stage),
+    });
+    expect(stages).toEqual(["listed", "built", "verified"]);
+
+    const archiveBefore = sha(archive);
+    const manifestBefore = fs.readFileSync(manifest, "utf8");
+    await expect(
+      addToArchive(archive, manifest, [makeDb("c-2026-10-03.db")], ZSTD as string, {
+        onProgress: (stage) => {
+          if (stage === "built") throw new Error("lock lost (simulated)");
+        },
+      }),
+    ).rejects.toThrow(/lock lost/);
+    expect(sha(archive)).toBe(archiveBefore);
+    expect(fs.readFileSync(manifest, "utf8")).toBe(manifestBefore);
+    expect(fs.readdirSync(archives).sort()).toEqual(["2026-10.sha256", "2026-10.tar.zst"]);
+  });
+
+  it.skipIf(noZstd)("leaves the manifest alone when the archive is replaced after its own rename", async () => {
+    const archive = path.join(archives, "2026-10.tar.zst");
+    const manifest = path.join(archives, "2026-10.sha256");
+    await addToArchive(archive, manifest, [makeDb("a-2026-10-01.db")], ZSTD as string);
+    const manifestBefore = fs.readFileSync(manifest, "utf8");
+    const other = path.join(dir, "other.tar.zst");
+    fs.copyFileSync(archive, other);
+    let calls = 0;
+    let swapped = "";
+
+    await expect(
+      addToArchive(archive, manifest, [makeDb("b-2026-10-02.db")], ZSTD as string, {
+        beforeRename: () => {
+          calls += 1;
+          if (calls === 2) {
+            fs.renameSync(other, archive); // lands between our archive and manifest renames
+            swapped = sha(archive);
+          }
+        },
+      }),
+    ).rejects.toThrow(/changed/);
+    expect(calls).toBe(2);
+    expect(sha(archive)).toBe(swapped);
+    expect(fs.readFileSync(manifest, "utf8")).toBe(manifestBefore);
+    expect(fs.readdirSync(archives).sort()).toEqual(["2026-10.sha256", "2026-10.tar.zst"]);
+  });
+
+  /** A system-tar archive from paths under src, with optional bsdtar -s renames. */
+  function legacyArchive(name: string, args: string[]): string {
+    const tarred = spawnSync("/usr/bin/tar", ["-cf", "-", "--no-mac-metadata", ...args], {
+      cwd: src,
+      env: { ...process.env, PATH: "/usr/bin:/bin", COPYFILE_DISABLE: "1" },
+    });
+    expect(tarred.status).toBe(0);
+    const out = path.join(archives, name);
+    const z = spawnSync(ZSTD as string, ["-q", `--long=${ZSTD_LONG}`, "-o", out], { input: tarred.stdout });
+    expect(z.status).toBe(0);
+    return out;
+  }
+
+  it.skipIf(noZstd)("refuses a member duplicated only by // and a non-regular entry", async () => {
+    fs.mkdirSync(path.join(src, "data"));
+    fs.mkdirSync(path.join(src, "data2"));
+    fs.writeFileSync(path.join(src, "data", "x.db"), "one");
+    fs.writeFileSync(path.join(src, "data2", "x.db"), "two");
+    fs.symlinkSync("data/x.db", path.join(src, "link.db"));
+    const out = path.join(dir, "out.db");
+
+    const dup = legacyArchive("dup.tar.zst", ["-s", ",^data2/,data//,", "data/x.db", "data2/x.db"]);
+    expect(await listMembers(dup)).toEqual(["data/x.db", "data//x.db"]);
+    await expect(extractMember(dup, "data/x.db", out, ZSTD as string)).rejects.toThrow(/ambiguous/);
+
+    fs.writeFileSync(path.join(src, "plain.db"), "plain");
+    const odd = legacyArchive("odd.tar.zst", ["-n", "data", "link.db", "plain.db"]);
+    expect(await listMembers(odd)).toEqual(["data/", "link.db", "plain.db"]);
+    await expect(extractMember(odd, "data", out, ZSTD as string)).rejects.toThrow(/not a regular file/);
+    await expect(extractMember(odd, "link.db", out, ZSTD as string)).rejects.toThrow(/not a regular file/);
+    // The regular file in the same archive still extracts.
+    await extractMember(odd, "plain.db", out, ZSTD as string);
+    expect(fs.readFileSync(out, "utf8")).toBe("plain");
+  });
 });

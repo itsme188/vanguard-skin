@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import Database from "better-sqlite3";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { addToArchive, findZstd, listArchiveMembers, readManifest, sha256File } from "@/lib/backup/archive";
 import { backupPaths } from "@/lib/backup/backup-home";
 import { RollLockLostError, rollOldBackups, type RollStep } from "@/lib/backup/roll";
@@ -183,6 +183,7 @@ describe("rollOldBackups", () => {
     for (let i = 0; i < 4; i++) backup(`pre-a-2026-10-0${i + 1}_09-00-00.db`, 400 - i * 100);
     const lock = backupPaths(home).rollLock;
     fs.mkdirSync(lock);
+    fs.writeFileSync(path.join(lock, "owner"), "another-roll");
     const held = new Date(NOW.getTime() - 10 * MIN);
     fs.utimesSync(lock, held, held);
 
@@ -270,6 +271,65 @@ describe("rollOldBackups", () => {
       "pre-a-2026-09-30_09-00-00.db",
     ]);
     expect(fs.readFileSync(path.join(lock, "owner"), "utf8")).toBe("someone-else");
+  });
+
+  it.skipIf(noZstd)("heartbeats between stages; a lock lost there renames nothing and leaves no temps", async () => {
+    for (let i = 0; i < 4; i++) backup(`pre-a-2026-10-0${i + 1}_09-00-00.db`, 400 - i * 100);
+    const before = recentNames();
+    const lock = backupPaths(home).rollLock;
+
+    // A clean roll touches the lock between every long stage.
+    const steps: string[] = [];
+    const ok = await roll({ onStep: (step, detail) => steps.push(`${step}:${detail}`) });
+    expect(ok.rolled).toEqual(["pre-a-2026-10-01_09-00-00.db"]);
+    for (const stage of ["listed", "built", "verified"]) expect(steps).toContain(`progress:2026-10:${stage}`);
+
+    // Lost right after the build: stop there.
+    backup("pre-a-2026-10-05_09-00-00.db", 50);
+    const now = recentNames();
+    await expect(
+      roll({ onStep: (step, detail) => step === "progress" && detail === "2026-10:built" && stealLock() }),
+    ).rejects.toThrow(RollLockLostError);
+    expect(recentNames()).toEqual(now);
+    expect(await listMembers(path.join(archives, "2026-10.tar.zst"))).toEqual(["pre-a-2026-10-01_09-00-00.db"]);
+    expect(fs.readdirSync(archives).sort()).toEqual(["2026-10.sha256", "2026-10.tar.zst"]);
+    expect(fs.readFileSync(path.join(lock, "owner"), "utf8")).toBe("someone-else");
+    expect(before).toHaveLength(4);
+  });
+
+  it.skipIf(noZstd)("removes its lock when writing the owner token fails", async () => {
+    for (let i = 0; i < 4; i++) backup(`pre-a-2026-10-0${i + 1}_09-00-00.db`, 400 - i * 100);
+    const lock = backupPaths(home).rollLock;
+    const real = fs.writeFileSync;
+    const spy = vi.spyOn(fs, "writeFileSync").mockImplementation((file, data, options) => {
+      if (typeof file === "string" && file === path.join(lock, "owner")) throw new Error("disk full (simulated)");
+      return real(file, data, options);
+    });
+    try {
+      await expect(roll()).rejects.toThrow(/disk full/);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(fs.existsSync(lock)).toBe(false);
+    expect(recentNames()).toHaveLength(4);
+    // Nothing blocks the next roll.
+    expect((await roll()).rolled).toEqual(["pre-a-2026-10-01_09-00-00.db"]);
+  });
+
+  it.skipIf(noZstd)("takes over an owner-less lock after 60 seconds, not before", async () => {
+    for (let i = 0; i < 4; i++) backup(`pre-a-2026-10-0${i + 1}_09-00-00.db`, 400 - i * 100);
+    const lock = backupPaths(home).rollLock;
+    fs.mkdirSync(lock); // a roll that died between mkdir and writing its token
+    const young = new Date(NOW.getTime() - 30_000);
+    fs.utimesSync(lock, young, young);
+    expect((await roll()).skipped).toBe("another roll is running");
+
+    const old = new Date(NOW.getTime() - 2 * MIN);
+    fs.utimesSync(lock, old, old);
+    const r = await roll();
+    expect(r.skipped).toBeUndefined();
+    expect(r.rolled).toEqual(["pre-a-2026-10-01_09-00-00.db"]);
+    expect(fs.existsSync(lock)).toBe(false);
   });
 
   it.skipIf(noZstd)("never touches a file outside <home>/recent", async () => {

@@ -16,9 +16,12 @@ const STALE_MS = 30 * 60 * 1000;
 const LEFTOVER = /\.(new|partial)$/;
 /** File inside the lock folder naming its owner (a random token per roll). */
 const LOCK_TOKEN_FILE = "owner";
+/** A lock folder with no owner file is a roll that died between mkdir and
+ *  writing its token; after this grace it counts as stale. */
+const OWNERLESS_GRACE_MS = 60 * 1000;
 
 /** Points in a roll where ownership of the lock is re-checked. */
-export type RollStep = "archive" | "rename" | "delete";
+export type RollStep = "archive" | "progress" | "rename" | "delete";
 
 /** Thrown when another roll took the lock over. The roll stops at once:
  *  nothing more is renamed or deleted. */
@@ -73,12 +76,23 @@ function readToken(lock: string): string | null {
  */
 function takeLock(lock: string, now: Date, log: (l: string) => void): string | null {
   for (let attempt = 0; attempt < 3; attempt++) {
+    let made = false;
     try {
       fs.mkdirSync(lock);
+      made = true;
       const token = `${process.pid}-${crypto.randomBytes(12).toString("hex")}`;
       fs.writeFileSync(path.join(lock, LOCK_TOKEN_FILE), token);
       return token;
     } catch (err) {
+      if (made) {
+        // Never leave an owner-less lock behind to block rolls.
+        try {
+          fs.rmSync(lock, { recursive: true, force: true });
+        } catch {
+          // The owner-less grace below still lets a later roll take it over.
+        }
+        throw err;
+      }
       if (!isCode(err, "EEXIST")) throw err;
     }
     let mtime: number;
@@ -88,7 +102,9 @@ function takeLock(lock: string, now: Date, log: (l: string) => void): string | n
       if (isCode(err, "ENOENT")) continue; // released between our mkdir and stat: try again
       throw err;
     }
-    if (now.getTime() - mtime < STALE_MS) return null;
+    const age = now.getTime() - mtime;
+    const ownerless = readToken(lock) === null;
+    if (age < (ownerless ? OWNERLESS_GRACE_MS : STALE_MS)) return null;
     const aside = `${lock}.${process.pid}-${crypto.randomBytes(6).toString("hex")}.stale`;
     try {
       fs.renameSync(lock, aside);
@@ -114,7 +130,7 @@ function takeLock(lock: string, now: Date, log: (l: string) => void): string | n
  * does not stop the others; the roll then throws naming the failed months.
  *
  * The lock is owned by a token. Its folder is touched (heartbeat) before each
- * month and each deletion pass, and ownership is re-checked right before every
+ * month, between the long stages inside each month, and before each deletion pass, and ownership is re-checked right before every
  * rename into a final path and every deletion. If another roll took the lock
  * over, this one throws RollLockLostError having renamed and deleted nothing
  * more, and leaves the new owner's lock alone.
@@ -191,6 +207,7 @@ export async function rollOldBackups(
       try {
         await addToArchive(archivePath, manifestPath, group.map((c) => c.file), zstd, {
           beforeRename: () => assertOwned("rename", month),
+          onProgress: (stage) => heartbeat("progress", `${month}:${stage}`),
         });
       } catch (err) {
         if (err instanceof RollLockLostError) throw err;
@@ -219,6 +236,11 @@ export async function rollOldBackups(
     return { rolled, kept };
   } finally {
     // Release only our own lock; a roll that took over keeps theirs.
-    if (readToken(rollLock) === token) fs.rmSync(rollLock, { recursive: true, force: true });
+    try {
+      if (readToken(rollLock) === token) fs.rmSync(rollLock, { recursive: true, force: true });
+    } catch (err) {
+      // Never hide the roll's own result or error; a stuck lock goes stale.
+      log(`could not remove roll lock ${rollLock}: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 }

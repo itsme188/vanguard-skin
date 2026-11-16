@@ -219,6 +219,8 @@ function parsePax(body: Buffer): { path?: string; size?: number } {
 export interface ArchiveEntry {
   name: string;
   size: number;
+  /** The tar type flag: "0" (or "\0", "7") is a regular file, "5" a folder, "1"/"2" links. */
+  type: string;
 }
 
 const USTAR_MAGIC = Buffer.from("ustar\0", "latin1");
@@ -308,7 +310,7 @@ class TarHeaderReader {
     // Only POSIX ustar ("ustar\0") has the prefix field; old GNU ("ustar  ") uses those bytes otherwise.
     const prefix = h.subarray(257, 263).equals(USTAR_MAGIC) ? cString(h.subarray(345, 500)) : "";
     const name = cString(h.subarray(0, 100));
-    this.entries.push({ name: this.next.path ?? (prefix ? `${prefix}/${name}` : name), size });
+    this.entries.push({ name: this.next.path ?? (prefix ? `${prefix}/${name}` : name), size, type });
     this.next = {};
     // Links, devices, directories and FIFOs carry no data whatever their size field says.
     this.skip = "123456".includes(type) ? 0 : padded(size);
@@ -402,6 +404,10 @@ export interface AddToArchiveOptions {
   /** Called immediately before each rename into a final path. Throw to abort
    *  (the roll uses it to re-check that it still owns the roll lock). */
   beforeRename?: () => void;
+  /** Called between the long stages (after the listing, after the build,
+   *  after verification). Throw to abort early; the roll uses it as a
+   *  heartbeat that also re-checks lock ownership. */
+  onProgress?: (stage: "listed" | "built" | "verified") => void;
 }
 
 /**
@@ -447,6 +453,7 @@ export async function addToArchive(
     };
     assertArchiveUnchanged();
     assertManifestUnchanged();
+    opts.onProgress?.("listed");
     // Ownership hook, then the lost-update check, then the rename: the checks
     // sit as close to the rename as they can.
     const guardedRename = (from: string, to: string, check: () => void) => {
@@ -514,10 +521,11 @@ export async function addToArchive(
       args: ["-q", "-f", `-${ZSTD_LEVEL}`, "-T0", `--long=${ZSTD_LONG}`, "-o", archiveNew],
     });
     await runPipeline(stages);
+    opts.onProgress?.("built");
 
     // Verify: exact members (name and size) in order, which also decodes the
     // whole stream; then every new member byte-for-byte by checksum.
-    const expected: ArchiveEntry[] = [...oldEntries, ...toAdd.map((a) => ({ name: a.name, size: a.size }))];
+    const expected: ArchiveEntry[] = [...oldEntries, ...toAdd.map((a) => ({ name: a.name, size: a.size, type: "0" }))];
     const actual = await readArchiveEntries(archiveNew, zstd);
     const show = (l: ArchiveEntry[]) => l.map((e) => `${e.name}(${e.size})`).join(", ");
     if (actual.length !== expected.length || actual.some((e, i) => e.name !== expected[i].name || e.size !== expected[i].size)) {
@@ -531,6 +539,7 @@ export async function addToArchive(
       }
       manifest.set(a.name, a.sum);
     }
+    opts.onProgress?.("verified");
 
     fsyncPath(archiveNew, "r+");
     writeManifestFile(manifestNew, manifest);
@@ -538,7 +547,14 @@ export async function addToArchive(
       assertArchiveUnchanged();
       assertManifestUnchanged();
     });
-    guardedRename(manifestNew, manifestPath, assertManifestUnchanged);
+    // Ours is now the archive at the final path. If anything replaces it before
+    // the manifest lands, leave the manifest alone: the next run's "unrecorded"
+    // recovery reconciles an archive that is ahead of its manifest.
+    const ours = fingerprint(archivePath);
+    guardedRename(manifestNew, manifestPath, () => {
+      if (fingerprint(archivePath) !== ours) throw changed();
+      assertManifestUnchanged();
+    });
     // Make both renames durable before anyone deletes a loose copy on their word.
     fsyncPath(path.dirname(archivePath), "r");
     if (path.dirname(manifestPath) !== path.dirname(archivePath)) fsyncPath(path.dirname(manifestPath), "r");
@@ -554,6 +570,17 @@ export async function addToArchive(
   }
 }
 
+const REGULAR_FILE_TYPES = ["0", "\0", "7"];
+
+/** For comparing member names: drop leading `./`, collapse `//`, remove `/./`
+ *  segments and a trailing `/`. `..` is not resolved (extract names refuse it). */
+function normaliseMemberName(name: string): string {
+  let n = name.replace(/\/{2,}/g, "/");
+  while (n.includes("/./")) n = n.replace("/./", "/");
+  n = n.replace(/^(\.\/)+/, "").replace(/\/\.$/, "");
+  return n.length > 1 ? n.replace(/\/$/, "") : n;
+}
+
 /** Writes one member to destPath. Throws if the member is not in the archive.
  *  `member` may hold folder parts (legacy archives); output only ever goes to
  *  `destPath`. */
@@ -564,17 +591,19 @@ export async function extractMember(
   zstd: string,
 ): Promise<void> {
   assertSafeExtractName(member);
-  // bsdtar matches names as patterns: `a/b.db` would also match `./a/b.db`
-  // or anything under `a/b.db/`. Require exactly one member that the name
-  // can match, so the output is exactly that member.
+  // bsdtar matches names as patterns and normalises paths: `a/b.db` can also
+  // match `./a/b.db`, `a//b.db`, `a/./b.db`, or anything under `a/b.db/`.
+  // Require exactly one listed member that normalises to the name, spelled
+  // exactly as asked, and nothing beneath it, so the output is that member.
   const entries = await readArchiveEntries(archivePath, zstd);
-  const strip = (n: string) => n.replace(/^(\.\/)+/, "");
-  const exact = entries.filter((e) => e.name === member);
-  const lookalikes = entries.filter((e) => e.name !== member && (strip(e.name) === member || strip(e.name).startsWith(`${member}/`)));
-  if (exact.length !== 1) {
-    throw new Error(`${member} is ${exact.length === 0 ? "not in" : "in more than once in"} ${archivePath}`);
+  const matches = entries.filter((e) => normaliseMemberName(e.name) === member);
+  const beneath = entries.filter((e) => normaliseMemberName(e.name).startsWith(`${member}/`));
+  if (matches.length === 0) throw new Error(`${member} is not in ${archivePath}`);
+  if (matches.length > 1 || beneath.length > 0) throw new Error(`${member} is ambiguous in ${archivePath}`);
+  if (!REGULAR_FILE_TYPES.includes(matches[0].type)) {
+    throw new Error(`${member} in ${archivePath} is not a regular file (tar type ${JSON.stringify(matches[0].type)})`);
   }
-  if (lookalikes.length > 0) throw new Error(`${member} is ambiguous in ${archivePath}`);
+  if (matches[0].name !== member) throw new Error(`${member} is ambiguous in ${archivePath}`);
 
   const partial = uniqueTempPath(destPath, ".partial");
   try {
@@ -585,7 +614,7 @@ export async function extractMember(
     } finally {
       fs.closeSync(fd);
     }
-    if (fs.statSync(partial).size !== exact[0].size) {
+    if (fs.statSync(partial).size !== matches[0].size) {
       throw new Error(`Extracted ${member} has the wrong size`);
     }
     fs.renameSync(partial, destPath);
