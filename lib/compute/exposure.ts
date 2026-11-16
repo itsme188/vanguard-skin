@@ -127,6 +127,8 @@ export function optionExposureFallback(
  *   3. otherwise the scoped total split evenly over the contract's rows, so
  *      the rows still sum to the total (only a split across account buckets
  *      can be off, for an unpriced contract read without account ids).
+ *      Every caller in the app selects `h.account_id`, so rule 1 applies;
+ *      rule 3 is a last resort for a row that cannot name its account.
  */
 export function exposureForHolding(
   row: {
@@ -136,12 +138,19 @@ export function exposureForHolding(
     mv: number;
     account_id?: number | null;
   },
-  optionExposures: Map<number, number>
+  optionExposures: OptionExposureMap
 ): number {
   if (row.security_type?.toLowerCase() !== "option") return row.mv;
+  // A plain Map (a copy: `new Map(map)` keeps only the netted totals and
+  // drops the per-row lookups) would hand every row of a contract the
+  // contract's whole total. Refuse it loudly rather than read it.
+  if (!(optionExposures instanceof OptionExposureMap)) {
+    throw new TypeError(
+      "exposureForHolding needs the OptionExposureMap from getOptionExposureMap, not a copy: a plain Map carries only netted per-contract totals"
+    );
+  }
   const total = optionExposures.get(row.security_id);
   if (total === undefined) return optionExposureFallback(row.option_type, row.mv);
-  if (!(optionExposures instanceof OptionExposureMap)) return total;
 
   if (row.account_id != null) {
     const own = optionExposures.byHolding.get(holdingKey(row.account_id, row.security_id));

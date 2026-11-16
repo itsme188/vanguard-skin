@@ -434,6 +434,7 @@ export function getAllocationByDimension(
       `WITH ${LATEST_HOLDINGS_CTE}
       SELECT
         ${groupExpr} AS group_name,
+        h.account_id,
         s.id AS security_id,
         s.security_type,
         s.option_type,
@@ -448,6 +449,7 @@ export function getAllocationByDimension(
     )
     .all(...params) as Array<{
       group_name: string;
+      account_id: number;
       security_id: number;
       security_type: string | null;
       option_type: string | null;
@@ -524,6 +526,7 @@ function getSectorAllocationWithLookThrough(
     .prepare(
       `WITH ${LATEST_HOLDINGS_CTE}
       SELECT
+        h.account_id,
         s.id AS security_id,
         s.symbol,
         s.security_type,
@@ -539,6 +542,7 @@ function getSectorAllocationWithLookThrough(
       WHERE ${conditions.join(" AND ")}`
     )
     .all(...params) as Array<{
+      account_id: number;
       security_id: number;
       symbol: string;
       security_type: string | null;

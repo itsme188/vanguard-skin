@@ -13,6 +13,8 @@ import { addDays, todayET } from "@/lib/calendar/date-utils";
 import {
   getOptionExposureMap,
   getPortfolioExposureSummary,
+  exposureForHolding,
+  holdingKey,
   getNetExposureForSymbolFamilies,
 } from "@/lib/compute/exposure";
 import { getAllocationByDimension } from "@/lib/queries/analysis";
@@ -112,5 +114,45 @@ describe("E1: an option held in two accounts counts once per row", () => {
     const byType = getAllocationByDimension(db, "security_type");
     expect(byType.reduce((s, e) => s + e.net_exposure, 0)).toBeCloseTo(2 * leg, 6);
     expect(getNetExposureForSymbolFamilies(db, ["ZZA"]).ZZA).toBeCloseTo(2 * leg, 6);
+  });
+});
+
+// Review 2026-11-15 (W3): a contract with NO close whose rows did not name
+// their account got the netted total split evenly over its rows, so long 2
+// in one account and short 1 in another put half the net (half a leg) in
+// each account bucket. Every allocation row now names its account, so the
+// exact per-account share always applies.
+describe("W3: an unpriced contract long in one account and short in another", () => {
+  it("each account bucket keeps its own legs (long 2, short 1)", () => {
+    seedHolding(acctA, call, 1);
+    const leg = oneLeg();
+    db.prepare("DELETE FROM holdings").run();
+    seedHolding(acctA, call, 2);
+    seedHolding(acctB, call, -1);
+
+    const byAccount = getAllocationByDimension(db, "account");
+    expect(byAccount.find((e) => e.group_name === "ZZ Alpha")!.net_exposure).toBeCloseTo(2 * leg, 6);
+    expect(byAccount.find((e) => e.group_name === "ZZ Beta")!.net_exposure).toBeCloseTo(-leg, 6);
+    expect(getPortfolioExposureSummary(db).net_exposure).toBeCloseTo(leg, 6);
+  });
+
+  it("the allocation and look-through row queries both select the row's account", async () => {
+    const { readFileSync } = await import("node:fs");
+    const src = readFileSync("lib/queries/analysis.ts", "utf8");
+    for (const fn of ["export function getAllocationByDimension(", "function getSectorAllocationWithLookThrough("]) {
+      const start = src.indexOf(fn);
+      expect(start).toBeGreaterThan(-1);
+      const body = src.slice(start, src.indexOf("getOptionExposureMap(db, accountIds)", start));
+      expect(body).toMatch(/SELECT\s+[\s\S]*h\.account_id[\s\S]*FROM latest_holdings h/);
+    }
+  });
+
+  it("a copied map is refused, never read as netted totals", () => {
+    seedHolding(acctA, call, 2);
+    seedHolding(acctB, call, -1);
+    const map = getOptionExposureMap(db);
+    const row = { security_id: call, security_type: "Option", option_type: "CALL", mv: 0, account_id: acctA };
+    expect(() => exposureForHolding(row, new Map(map) as never)).toThrow(/OptionExposureMap/);
+    expect(exposureForHolding(row, map)).toBeCloseTo(map.byHolding.get(holdingKey(acctA, call))!, 6);
   });
 });
