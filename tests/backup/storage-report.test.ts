@@ -114,7 +114,8 @@ describe("storage report", () => {
   it("trimScratch refuses a tampered path containing .. and a relative path", () => {
     put(path.join(repo, "qa/tmp/ok.txt"), 1, 90);
     const victim = put(path.join(repo, "outside/x"), 10, 90);
-    const tampered = `${repo}/qa/tmp/../../repo/outside/x`;
+    const tampered = `${repo}/qa/tmp/../../outside/x`;
+    expect(path.resolve(tampered)).toBe(victim);
     expect(trimScratch([{ path: tampered, bytes: 10, ageDays: 90 }], repo)).toEqual({ removed: 0, bytes: 0 });
     expect(fs.existsSync(victim)).toBe(true);
     const rel = path.relative(process.cwd(), path.join(repo, "qa/tmp/ok.txt"));
