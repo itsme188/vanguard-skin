@@ -39,6 +39,7 @@ import {
   computeRecipeScenario,
   recipeToScenarioDefinition,
   customRateEquityLeg,
+  UNDERLYING_IDENTITY_COLUMNS_SQL,
 } from "./scenario-recipes";
 import { FACTOR_COLUMNS } from "@/lib/factors";
 
@@ -227,6 +228,9 @@ ${FACTOR_COLUMNS.map((c) => `         COALESCE(sf.${c}, sf_u.${c}) AS ${c},`).jo
          s_u.name AS underlying_name,
          s.leverage_factor,
          s_u.leverage_factor AS underlying_leverage_factor,
+         -- The underlying's own identity: the rate leg reads an option
+         -- through its fund (look-through, sector, domicile), as the preset does.
+         ${UNDERLYING_IDENTITY_COLUMNS_SQL},
 ${OPTION_PRICING_COLUMNS_SQL},
          ${adjustedMarketValueSQL("lh.total_qty", "COALESCE(lp.close_price, 0)", "s.security_type", "s.multiplier", "fx.usd_per_unit")} AS market_value
        FROM latest_holdings lh
@@ -267,6 +271,12 @@ ${OPTION_PRICING_JOINS_SQL}
     /** Signed leverage factor of the row and of its underlying (migration 102). */
     leverage_factor: number | null;
     underlying_leverage_factor: number | null;
+    /** The underlying's own identity (null for non-options); see UNDERLYING_IDENTITY_COLUMNS_SQL. */
+    underlying_symbol: string | null;
+    underlying_sector: string | null;
+    underlying_industry: string | null;
+    underlying_geography: string | null;
+    underlying_currency: string | null;
     // Option pricing inputs (null for non-options) — see OPTION_PRICING_COLUMNS_SQL.
     strike_price: number | null;
     expiration_date: string | null;

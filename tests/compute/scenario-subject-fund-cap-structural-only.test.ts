@@ -129,11 +129,14 @@ describe("26 = A: only the subject fund is capped at the headline", () => {
     expect(impact(r, "ZREIT").changePercent).toBeCloseTo(-0.025, 12);
   });
 
-  it("look-through: a broad fund with a REIT sleeve is not the subject, so every sleeve keeps the fund's multiplier", () => {
+  // Review fix B2 (2026-11-16) superseded "every sleeve keeps the fund's
+  // multiplier": the REIT sleeve IS the subject, so that slice is capped at
+  // the headline; the other sleeve keeps the fund's multiplier.
+  it("look-through: a broad fund with a REIT sleeve has only that sleeve capped; the rest keeps the fund's multiplier", () => {
     seed({ symbol: "ZBROD", sector: "Diversified", factors: { interest_rate_sensitive: "Very High", growth_vs_value: "Value" } });
     db.prepare(`INSERT INTO etf_sector_weights (etf_symbol, sector, weight_pct, as_of_date, source) VALUES ('ZBROD', 'Real Estate', 10, '2026-04-30', 'manual'), ('ZBROD', 'Industrials', 90, '2026-04-30', 'manual')`).run();
     const r = computeRecipeScenario(db, findRecipe("rate_shock_up_25bp")!);
-    expect(impact(r, "ZBROD").changePercent).toBeCloseTo(-0.025 * 1.5, 12);
+    expect(impact(r, "ZBROD").changePercent).toBeCloseTo(-0.025 * (0.1 * 1 + 0.9 * 1.5), 12);
   });
 
   it("AI pause: a broad tech fund, a subject only by its AI bucket, keeps 1.4x the headline; a put on it reprices off that move", () => {
@@ -189,9 +192,10 @@ describe("the custom +25bp rate move still equals the preset with a thematic fun
 
 describe("method text follows the rule", () => {
   it("every recipe's methodology carries the structural-only fund note, with the single-stock line", () => {
-    expect(FUND_SUBJECT_NOTE).toContain("A fund that IS the subject");
+    // Wording revised by review fixes B4/B5 (2026-11-16): capped AT the headline.
+    expect(FUND_SUBJECT_NOTE).toContain("A fund is capped at the headline where it is the subject");
     expect(FUND_SUBJECT_NOTE).toContain("only through its factor buckets keeps its factor multiplier");
-    expect(FUND_SUBJECT_NOTE).toContain("leverage factor times the headline");
+    expect(FUND_SUBJECT_NOTE).toContain("leverage factor times its capped move");
     expect(FUND_SUBJECT_NOTE).toContain("single-stock leveraged fund is approximated by that index move");
     for (const r of SCENARIO_RECIPES) {
       expect(r.methodology, r.id).toContain(FUND_SUBJECT_NOTE);
