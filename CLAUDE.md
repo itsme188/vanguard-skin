@@ -358,6 +358,7 @@ Detail: `docs/reference/calendar.md`
 - NEVER nest worktrees inside the repo
 - NEVER run two `next dev` processes against the same project directory — Turbopack's persistent cache is single-writer; concurrent writes corrupt SST files
 - Never use broad kill commands (e.g., `pkill node`, `killall`). Only kill processes by specific PID or exact process name to avoid disrupting unrelated running projects.
+- Database backups go through `takeBackup` (`lib/backup/`) or `npm run backup -- --purpose <slug>`. Never `cp` the live database and never write a copy under `data/`. Backups live in `~/portfolio-desk-backups`; the newest 3 stay loose and older ones roll into a monthly archive. Guard: `tests/repo/no-handrolled-db-backups.test.ts`.
 - See global ~/.claude/CLAUDE.md for git commit/push rules
 
 ## Shell Gotchas
