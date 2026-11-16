@@ -29,6 +29,24 @@ export interface ResolvedAnalysisView {
   mode: AnalysisDiagnosticsMode;
 }
 
+export const ANALYSIS_SCOPES = ["vanguard", "ibkr", "roth", "all"] as const;
+export type AnalysisScope = (typeof ANALYSIS_SCOPES)[number];
+
+/**
+ * The scope an Analysis sub-view opens on when the URL carries no (or an
+ * unknown) `?scope=`. Owner ruling 2026-11-15, "vanguard everywhere". The
+ * page resolves it once and passes it down, so a component's own fallback is
+ * never reached. Trade Reviews (one account at a time, IBKR preselect) and
+ * Giving (no scope) do not read it.
+ */
+export const DEFAULT_ANALYSIS_SCOPE: AnalysisScope = "vanguard";
+
+export function resolveAnalysisScope(scope?: string): AnalysisScope {
+  return (ANALYSIS_SCOPES as readonly string[]).includes(scope ?? "")
+    ? (scope as AnalysisScope)
+    : DEFAULT_ANALYSIS_SCOPE;
+}
+
 function normalizeMode(mode?: string): AnalysisDiagnosticsMode {
   return mode === "factors" ? "factors" : "classification";
 }
