@@ -12,7 +12,7 @@ describe("Period attribution says why it is empty", () => {
     const block = sliceBetween(section, "{!hasContribDetract && (", "/>");
     expect(block).toContain("<EmptySection");
     expect(block).toContain('title="Period attribution"');
-    expect(block).toContain("positionsEmptyText(attribution, requestedStart)");
+    expect(block).toContain("positionsEmptyText(attribution, requestedStart, scopeName)");
   });
 
   it("names the accounts missing a start book, from positionsBasis", () => {

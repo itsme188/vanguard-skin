@@ -40,6 +40,7 @@ import {
   listStatementMonths,
 } from "@/lib/compute/monthly-performance";
 import { MonthlyPerformanceSection } from "./MonthlyPerformanceSection";
+import { BENCHMARK_RETURN_LABEL, BENCHMARK_SYMBOL } from "@/lib/compute/benchmark-label";
 
 // Same four band labels as TrustStripDrawer's chips — duplicated locally
 // rather than imported (TrustStripDrawer is a "use client" module; this
@@ -93,7 +94,9 @@ interface PerformanceViewProps {
   month?: string;
 }
 
-const BENCHMARK_SYMBOL = "SPY";
+// The benchmark's symbol and its owner-facing name ("SPY price return") come
+// from one plain module, so a later switch to a total-return series is a
+// change in one place.
 
 /**
  * A time-weighted return over less than a year is shown as the period's own
@@ -335,6 +338,13 @@ export async function PerformanceView({ scope = "all", period, month }: Performa
     // Non-blocking
   }
 
+  // What the attribution card's empty-state sentences name: the scope the
+  // pills selected, so every reason says whose positions it is about.
+  const attributionScopeName =
+    activeScope === "all"
+      ? "all accounts"
+      : `the ${SCOPES.find((s) => s.key === activeScope)?.label ?? activeScope} scope`;
+
   // ── Month view ──────────────────────────────────────────────────
   // The month view answers a different question from the tiles above it
   // ("what did this month do?" rather than "what has this period done?"),
@@ -477,7 +487,15 @@ export async function PerformanceView({ scope = "all", period, month }: Performa
                 value={xirrAnnualized}
                 kind="pct"
                 title="Money-weighted return, annualized by construction — investor-experience measure that includes cash-flow timing."
-                sub={interpretTwrVsXirr(annualizedTwr, xirrAnnualized)}
+                // Like with like, and only what the visible figures support.
+                // XIRR is an annual rate by construction; the comparison
+                // sentence speaks "on an annualized basis", so it compares
+                // XIRR with the annualized TWR the TWR tile SHOWS. When that
+                // tile shows none (YTD, or history under a full year: the
+                // tile then shows only the period's own return, which is not
+                // an annual rate), there is no like figure on the page and the
+                // sentence is left out rather than compared with a hidden one.
+                sub={interpretTwrVsXirr(shownAnnualizedTwr, xirrAnnualized)}
               />
               <KpiCell
                 label="Max drawdown"
@@ -657,7 +675,7 @@ export async function PerformanceView({ scope = "all", period, month }: Performa
           {/* Equity curve with benchmark overlay */}
           {equityCurveData.length > 0 && (
             <>
-              <PerformanceCurveChart data={equityCurveData} benchmarkSymbol={BENCHMARK_SYMBOL} />
+              <PerformanceCurveChart data={equityCurveData} benchmarkLabel={BENCHMARK_RETURN_LABEL} />
               {(() => {
                 // Same honesty caption as the KPI strip: the curve plots
                 // daily_valuations, whose coverage starts well after the
@@ -732,6 +750,8 @@ export async function PerformanceView({ scope = "all", period, month }: Performa
             <PeriodAttributionSection
               attribution={attribution}
               benchmarkSymbol={BENCHMARK_SYMBOL}
+              benchmarkLabel={BENCHMARK_RETURN_LABEL}
+              scopeName={attributionScopeName}
               requestedStart={startDate}
             />
           )}

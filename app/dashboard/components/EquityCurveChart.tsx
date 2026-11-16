@@ -181,10 +181,11 @@ function performanceTooltipDate(iso: string): string {
 
 export function PerformanceCurveChart({
   data,
-  benchmarkSymbol,
+  benchmarkLabel,
 }: {
   data: PerformanceCurveData[];
-  benchmarkSymbol: string;
+  /** What the benchmark line is, e.g. "SPY price return" (lib/compute/benchmark-label.ts). */
+  benchmarkLabel: string;
 }) {
   // Portfolio values are portfolio-derived — mask under privacy mode
   const fmt = usePrivateFormatter((v: number) => `${v.toFixed(1)}`);
@@ -262,7 +263,7 @@ export function PerformanceCurveChart({
             stroke="#60A5FA"
             strokeWidth={2}
             dot={false}
-            name={benchmarkSymbol}
+            name={benchmarkLabel}
           />
         </LineChart>
       </ResponsiveContainer>
