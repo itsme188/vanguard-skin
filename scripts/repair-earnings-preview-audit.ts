@@ -702,10 +702,8 @@ if (isMain) {
     }
 
     // NEVER proceed past this line without a verified backup — same
-    // VACUUM-INTO convention + "fail hard" behavior as
-    // rebuild-ibkr-ledger.ts::ensureBackup / repair-ah-closes.ts /
-    // repair-december-snapshots.ts.
-        const backup = await takeBackup(db, { purpose: "pre-earnings-preview-audit-repair" });
+    // takeBackup (lib/backup/take-backup.ts), which throws on any failure.
+    const backup = await takeBackup(db, { purpose: "pre-earnings-preview-audit-repair" });
     console.log(
       `\nBackup created at ${backup.path} ` +
         `(${backup.sizeBytes.toLocaleString()} bytes).`,

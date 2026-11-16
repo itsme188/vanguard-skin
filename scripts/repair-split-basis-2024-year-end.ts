@@ -292,7 +292,7 @@ if (isMain) {
       return;
     }
 
-        const backup = await takeBackup(db, { purpose: "pre-split-basis-2024-year-end-repair" });
+    const backup = await takeBackup(db, { purpose: "pre-split-basis-2024-year-end-repair" });
     console.log(
       `\nBackup created at ${backup.path}.`,
     );

@@ -35,8 +35,9 @@
  * — a closed-end fund, not an ETF, even though it trades on an exchange
  * like one).
  *
- * Dry-run by default. A timestamped `VACUUM INTO` backup is written to
- * data/backups/ before any --apply write.
+ * Dry-run by default. A timestamped `VACUUM INTO` backup is taken before
+ * any --apply write (live database: ~/portfolio-desk-backups/recent; a
+ * rehearsal copy: beside the copy).
  *
  * Usage:
  *   npx tsx scripts/repair-etf-types.ts ARKK HACK IGV KRE SOXX SPY TLT UCO NCLD

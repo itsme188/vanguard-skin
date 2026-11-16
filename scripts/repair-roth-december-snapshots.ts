@@ -435,7 +435,7 @@ if (isMain) {
         return;
       }
       const { takeBackup } = await import("@/lib/backup/take-backup");
-            const backup = await takeBackup(db, { purpose: "pre-roth-december-snapshot-repair" });
+      const backup = await takeBackup(db, { purpose: "pre-roth-december-snapshot-repair" });
       console.log(`Backup created: ${backup.path}`);
       const result = runRothDecemberRepair(db, config, { apply: true, today });
       console.log(`Repaired ${result.updated} row(s) in one transaction.`);

@@ -891,7 +891,7 @@ async function main(): Promise<void> {
     })();
     console.log("\nApplied — type repairs + rehomes committed in one transaction.");
 
-    // Relative specifiers for the same reason as ensureBackup above — the
+    // Relative specifiers for the same reason as the takeBackup import above — the
     // "@/" alias is not resolved for dynamic imports outside the repo cwd.
     const { computeTaxLots } = await import("../lib/compute/tax-lots");
     const { computeDailyValuations } = await import("../lib/compute/daily-valuation");

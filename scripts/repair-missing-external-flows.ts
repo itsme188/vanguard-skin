@@ -47,8 +47,8 @@
  * external-flow-candidates) the exact proposed transaction row — detailed
  * enough to approve line by line. Writes nothing unless --apply is passed.
  *
- * --apply: backs up data/vanguard.db to data/backups/ (VACUUM INTO — same
- * convention as scripts/repair-etf-types.ts), then inside one transaction
+ * --apply: backs up the database (VACUUM INTO, to ~/portfolio-desk-backups/recent for
+ * the live database, beside a rehearsal copy — same convention as scripts/repair-etf-types.ts), then inside one transaction
  * INSERT OR IGNOREs one DEPOSIT (residual > 0) or WITHDRAWAL (residual < 0)
  * row per external-flow-candidate, is_external_flow=1, with a deterministic
  * `repair-missing-flow:{account_id}:{date}:{rounded-dollar-amount}`

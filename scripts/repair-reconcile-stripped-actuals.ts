@@ -402,9 +402,9 @@ if (isMain) {
     }
 
     // Backup FIRST — before runMigrations, which writes the moment a migration
-    // is pending — and beside the target DB (so a --db rehearsal copy never
-    // writes into the live data directory).
-        const backup = await takeBackup(db, { purpose: "pre-reconcile-stripped-actuals-repair" });
+    // is pending. takeBackup puts a rehearsal copy's backup beside the copy,
+    // so a --db rehearsal never writes into the live backup folder.
+    const backup = await takeBackup(db, { purpose: "pre-reconcile-stripped-actuals-repair" });
     console.log(
       `\nBackup created at ${backup.path} ` +
         `(${backup.sizeBytes.toLocaleString()} bytes).`,

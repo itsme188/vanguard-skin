@@ -67,8 +67,8 @@
  * import can no longer recreate the duplicate).
  *
  * Dry-run by default (writes nothing). --apply wraps every merge in ONE
- * transaction, takes a VACUUM INTO backup first (ensureBackup, same
- * helper scripts/repair-split-basis-2024-year-end.ts uses), and
+ * transaction, takes a VACUUM INTO backup first (takeBackup, the
+ * shared helper in lib/backup/take-backup.ts), and
  * recomputes tax lots afterward (computeTaxLots — the standard rebuild
  * path, same as scripts/repair-option-roundtrip-dollars.ts).
  *

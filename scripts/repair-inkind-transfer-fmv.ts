@@ -84,7 +84,8 @@
  * Dry-run by default: prints every candidate, grouped by class, with the
  * exact proposed change. Writes nothing unless --apply is passed.
  *
- * --apply: backs up data/vanguard.db to data/backups/ (VACUUM INTO,
+ * --apply: backs up the database (VACUUM INTO, to ~/portfolio-desk-backups/recent for
+ * the live database, beside a rehearsal copy;
  * refuse-on-empty — same convention as scripts/repair-etf-types.ts /
  * scripts/repair-missing-external-flows.ts), then inside ONE transaction
  * applies every pair-donation and fmv-stamp candidate. Afterward triggers
