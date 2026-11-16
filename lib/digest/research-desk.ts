@@ -116,7 +116,7 @@ export function insertCrossFilePointers(
       continue;
     }
 
-    const pointer = `📄 *Deep dive today: **${essay.source_name}** — "${essay.subject}" (see Research Desk below)*`;
+    const pointer = `📄 *Deep dive: **${essay.source_name}** — "${essay.subject}" (see Research Desk below)*`;
     lines = [...lines.slice(0, idx + 1), pointer, ...lines.slice(idx + 1)];
   }
   return { markdown: lines.join("\n"), unfiled };
