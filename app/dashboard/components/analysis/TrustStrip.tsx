@@ -274,6 +274,7 @@ export function TrustStrip({ scope }: TrustStripProps) {
         <TrustStripDrawer
           panel={activePanel}
           state={state}
+          scope={scope ?? "all"}
           onClose={() => setActivePanel(null)}
           onRefresh={fetchState}
         />
