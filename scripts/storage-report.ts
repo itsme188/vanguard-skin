@@ -6,7 +6,7 @@
  */
 import fs from "node:fs";
 import path from "node:path";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { resolveBackupHome } from "@/lib/backup/backup-home";
 import {
   LOW_FREE_SPACE_BYTES,
@@ -36,8 +36,14 @@ function listWorktrees(repoRoot: string): string[] {
   }
 }
 
+function findRepoRoot(): string {
+  const r = spawnSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8" });
+  const top = r.status === 0 ? r.stdout.trim() : "";
+  return top || process.cwd();
+}
+
 function main(): void {
-  const repoRoot = process.cwd();
+  const repoRoot = findRepoRoot();
   const backupHome = resolveBackupHome();
   const now = new Date();
   const stat = fs.statfsSync(repoRoot);

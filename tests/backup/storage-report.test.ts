@@ -100,6 +100,37 @@ describe("storage report", () => {
     expect(fs.lstatSync(link).isSymbolicLink()).toBe(true);
   });
 
+  it("a symlinked scratch root yields no candidates and trimScratch refuses files behind it", () => {
+    const outside = put(path.join(tmp, "outside-dir/old.txt"), 10, 90);
+    fs.mkdirSync(path.join(repo, "qa"), { recursive: true });
+    fs.symlinkSync(path.join(tmp, "outside-dir"), path.join(repo, "qa/tmp"));
+    expect(report().trimCandidates).toEqual([]);
+    const viaLink = path.join(repo, "qa/tmp/old.txt");
+    expect(trimScratch([{ path: viaLink, bytes: 10, ageDays: 90 }], repo)).toEqual({ removed: 0, bytes: 0 });
+    expect(trimScratch([{ path: outside, bytes: 10, ageDays: 90 }], repo)).toEqual({ removed: 0, bytes: 0 });
+    expect(fs.existsSync(outside)).toBe(true);
+  });
+
+  it("trimScratch refuses a tampered path containing .. and a relative path", () => {
+    put(path.join(repo, "qa/tmp/ok.txt"), 1, 90);
+    const victim = put(path.join(repo, "outside/x"), 10, 90);
+    const tampered = `${repo}/qa/tmp/../../repo/outside/x`;
+    expect(trimScratch([{ path: tampered, bytes: 10, ageDays: 90 }], repo)).toEqual({ removed: 0, bytes: 0 });
+    expect(fs.existsSync(victim)).toBe(true);
+    const rel = path.relative(process.cwd(), path.join(repo, "qa/tmp/ok.txt"));
+    expect(trimScratch([{ path: rel, bytes: 1, ageDays: 90 }], repo)).toEqual({ removed: 0, bytes: 0 });
+    expect(fs.existsSync(path.join(repo, "qa/tmp/ok.txt"))).toBe(true);
+  });
+
+  it("trimScratch refuses a file whose parent folder inside scratch is a symlink", () => {
+    const target = put(path.join(tmp, "elsewhere2/old.txt"), 10, 90);
+    fs.mkdirSync(path.join(repo, "qa/tmp"), { recursive: true });
+    fs.symlinkSync(path.join(tmp, "elsewhere2"), path.join(repo, "qa/tmp/sub"));
+    const res = trimScratch([{ path: path.join(repo, "qa/tmp/sub/old.txt"), bytes: 10, ageDays: 90 }], repo);
+    expect(res).toEqual({ removed: 0, bytes: 0 });
+    expect(fs.existsSync(target)).toBe(true);
+  });
+
   it("trimScratch never removes a directory", () => {
     const dir = path.join(repo, "qa/tmp/subdir");
     fs.mkdirSync(dir, { recursive: true });

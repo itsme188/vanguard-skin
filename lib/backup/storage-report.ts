@@ -134,7 +134,9 @@ export function buildStorageReport(input: {
   const trimCandidates: TrimCandidate[] = [];
   const cutoff = now.getTime() - SCRATCH_MAX_AGE_DAYS * DAY_MS;
   for (const rel of SCRATCH_DIRS) {
-    walkFiles(path.join(repoRoot, rel), (file, stat) => {
+    const scratchDir = path.join(repoRoot, rel);
+    if (isSymlink(scratchDir)) continue; // never list files behind a link
+    walkFiles(scratchDir, (file, stat) => {
       if (stat.mtimeMs < cutoff) {
         trimCandidates.push({
           path: file,
@@ -165,33 +167,48 @@ function isUnder(child: string, parent: string): boolean {
   return rel !== "" && !rel.startsWith("..") && !path.isAbsolute(rel);
 }
 
+function isSymlink(p: string): boolean {
+  try {
+    return fs.lstatSync(p).isSymbolicLink();
+  } catch {
+    return false;
+  }
+}
+
 /**
- * Deletes the given scratch files. Deletes FILES only. Each path is resolved
- * with realpath and must sit under `<repoRoot>/qa/tmp` or
- * `<repoRoot>/.playwright-mcp`; anything else (including a symlink that points
- * outside, a directory, or a missing file) is skipped and not counted.
+ * Deletes the given scratch files. Deletes FILES only. A candidate is removed
+ * only when all of these hold: the path is absolute and already normalized (no
+ * `..`); it lies lexically under `<repoRoot>/qa/tmp` or `<repoRoot>/.playwright-mcp`;
+ * lstat says it is a regular file (a symlink is refused first); and its parent
+ * directory resolves to itself, so no symlink sits anywhere below the repo root
+ * (this also refuses a scratch root that is itself a symlink). Anything else is
+ * skipped and not counted.
  */
 export function trimScratch(
   candidates: TrimCandidate[],
   repoRoot: string,
 ): { removed: number; bytes: number } {
-  const roots: string[] = [];
-  for (const rel of SCRATCH_DIRS) {
-    try {
-      roots.push(fs.realpathSync(path.join(repoRoot, rel)));
-    } catch {
-      // folder missing: nothing can live under it
-    }
+  const root = path.resolve(repoRoot);
+  let realRoot: string;
+  try {
+    realRoot = fs.realpathSync(root);
+  } catch {
+    return { removed: 0, bytes: 0 };
   }
+  const scratchRoots = SCRATCH_DIRS.map((rel) => path.join(root, rel));
 
   let removed = 0;
   let bytes = 0;
   for (const c of candidates) {
     try {
-      const real = fs.realpathSync(c.path);
-      if (!roots.some((root) => isUnder(real, root))) continue;
+      if (!path.isAbsolute(c.path) || c.path !== path.resolve(c.path)) continue;
+      if (!scratchRoots.some((r) => isUnder(c.path, r))) continue;
       const stat = fs.lstatSync(c.path);
-      if (!stat.isFile()) continue; // never a directory, never a symlink
+      if (!stat.isFile()) continue; // refuses symlinks and directories
+      const parent = path.dirname(c.path);
+      const expectedParent = path.join(realRoot, path.relative(root, parent));
+      if (fs.realpathSync(parent) !== expectedParent) continue;
+      // Safe: unlink removes this directory entry, never a link target.
       fs.unlinkSync(c.path);
       removed += 1;
       bytes += stat.size;
