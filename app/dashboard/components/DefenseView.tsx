@@ -117,10 +117,12 @@ export async function DefenseView({ scope = "all" }: DefenseViewProps) {
         hint="Hedges (long puts, protective calls on shorts) and index-put protection will appear here once opened."
       />
     );
-    if (analysis.leveragedFundsUnmodelled.count === 0) return empty;
+    // The cash-equivalent funds line still shows (browser pass 2026-11-16:
+    // a scope with no options held a cash fund the page never named).
     return (
       <div className="space-y-3">
         {empty}
+        <DefenseCashLineView cash={analysis.cashLine} />
         <LeveragedFundsNotModelled info={analysis.leveragedFundsUnmodelled} />
       </div>
     );

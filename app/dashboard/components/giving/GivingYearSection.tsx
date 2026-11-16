@@ -47,6 +47,9 @@ import { reverseDateInputId } from "./giving-ids";
 // never sends a shape the server would 400 on.
 const REVERSED_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
+/** Phone-width floor for the Status cell's lot notes; none from md up. */
+const LOT_NOTES_NARROW_WIDTH = "min-w-[18rem] md:min-w-0";
+
 const STATUS_TONE: Record<GivingDonation["status"], ChipTone> = {
   reversed: "down",
   unsupported: "neutral",
@@ -438,15 +441,23 @@ export function GivingYearSection({ year }: { year: GivingYear }) {
                       <Chip tone={STATUS_TONE[gd.status]}>{STATUS_LABEL[gd.status]}</Chip>
                       {/* One chip and one control per lot whose basis trips the
                           1% rule; the state of each is decided on the server. */}
-                      {!struck &&
-                        gd.flaggedLots.map((lot) => (
-                          <LotBasisControl
-                            key={lot.acquisitionTransactionId}
-                            lot={lot}
-                            donationId={d.id}
-                            symbol={d.symbol_raw ?? "this security"}
-                          />
-                        ))}
+                      {/* Below md the table scrolls sideways, and a long
+                          "basis verified" note squeezed into a ~110px column
+                          made rows 300-560px tall. The wrapper gives the lot
+                          notes a readable width there; from md up it adds
+                          nothing (md:min-w-0). */}
+                      {!struck && gd.flaggedLots.length > 0 && (
+                        <div className={LOT_NOTES_NARROW_WIDTH}>
+                          {gd.flaggedLots.map((lot) => (
+                            <LotBasisControl
+                              key={lot.acquisitionTransactionId}
+                              lot={lot}
+                              donationId={d.id}
+                              symbol={d.symbol_raw ?? "this security"}
+                            />
+                          ))}
+                        </div>
+                      )}
                     </td>
                     <td className="px-3 py-2.5 text-right whitespace-nowrap">
                       {!struck && (

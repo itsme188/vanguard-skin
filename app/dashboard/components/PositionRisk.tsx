@@ -270,7 +270,8 @@ export function PositionRiskCard({ scope }: { scope?: string }) {
       {(data.cashEquivalentsLeftOut ?? 0) > 0 && (
         <p className="text-xs text-ink-faint mb-2">
           <Count value={data.cashEquivalentsLeftOut ?? 0} />{" "}
-          {data.cashEquivalentsLeftOut === 1 ? "cash-equivalent fund" : "cash-equivalent funds"} {CASH_LEFT_OUT_TEXT}
+          {data.cashEquivalentsLeftOut === 1 ? "cash-equivalent fund" : "cash-equivalent funds"}{" "}
+          would have ranked in this list and {data.cashEquivalentsLeftOut === 1 ? "was" : "were"} {CASH_LEFT_OUT_TEXT}
         </p>
       )}
 

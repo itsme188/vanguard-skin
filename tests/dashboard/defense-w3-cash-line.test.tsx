@@ -12,7 +12,8 @@ const src = readFileSync("app/dashboard/components/DefenseView.tsx", "utf8");
 describe("Defense cash line (owner ruling 2026-11-16)", () => {
   it("is labelled, rendered through Pct, and sits in the headline strip after the protection ratio", () => {
     const ratio = anchorIndex(src, "Protection ratio");
-    const line = anchorIndex(src, "<DefenseCashLineView cash={analysis.cashLine} />");
+    // Searched from the ratio: the empty state renders the line too (FX4).
+    const line = anchorIndex(src, "<DefenseCashLineView cash={analysis.cashLine} />", ratio);
     expect(line).toBeGreaterThan(ratio);
     anchorIndex(src, "Cash-equivalent funds:");
     anchorIndex(src, "<Pct value={cash.weight * 100} digits={1}");

@@ -68,8 +68,12 @@ export function protectsLabel(protects: string): string {
       : `${own[1]} sector, the fund's own (${own[2]})`;
   }
   if (kind === "sector") {
-    return detail
-      .split(" / ")
+    // A sector whose share rounds to 0% is left out (browser pass
+    // 2026-11-16: a broad index put listed "Energy sector (0%)" and the
+    // like). When that would leave nothing, every part stays.
+    const parts = detail.split(" / ");
+    const nonZero = parts.filter((part) => !/\s-?0%$/.test(part.trim()));
+    return (nonZero.length > 0 ? nonZero : parts)
       .map((part) => {
         const share = /^(.*\S)\s+(-?\d+%)$/.exec(part.trim());
         return share ? `${share[1]} sector (${share[2]})` : `${part.trim()} sector`;
