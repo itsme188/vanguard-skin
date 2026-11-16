@@ -101,10 +101,22 @@ const BENCHMARK_SYMBOL = "SPY";
  * projects the part year's pace onto a full year). Display only; the compute
  * layer's annualizedReturn is unchanged. The money-weighted tile stays
  * labelled annualized: XIRR is a rate by construction.
+ *
+ * Decided by the PERIOD first: YTD is never annualized. 1Y / 3Y / 5Y / All
+ * are, when the measured span is a full year. A chain of stored monthly
+ * returns opens on the first day of its first month, the day after the
+ * opening month-end, so a full one-year window measures 364 days in a
+ * non-leap year (365 in a leap year): 364 is the shortest full year, and a
+ * scope whose history is shorter than that still shows no annualized figure.
  */
-const MIN_ANNUALIZED_DAYS = 365;
+const MIN_ANNUALIZED_DAYS = 364;
 
-function shownAnnualized(annualized: number | null | undefined, totalDays: number | undefined): number | null {
+function shownAnnualized(
+  period: Period,
+  annualized: number | null | undefined,
+  totalDays: number | undefined,
+): number | null {
+  if (period === "ytd") return null;
   if (annualized == null || totalDays === undefined || totalDays < MIN_ANNUALIZED_DAYS) return null;
   return annualized;
 }
@@ -205,7 +217,7 @@ export async function PerformanceView({ scope = "all", period, month }: Performa
   const annualizedTwr = twrResult?.annualizedReturn ?? null;
   // What the TWR tile shows under its figure: nothing for a window under a
   // year (YTD, or a scope whose history is shorter than the period).
-  const shownAnnualizedTwr = shownAnnualized(annualizedTwr, twrResult?.totalDays);
+  const shownAnnualizedTwr = shownAnnualized(activePeriod, annualizedTwr, twrResult?.totalDays);
   const xirrAnnualized = xirrResult?.xirr ?? null;
 
   // ── Reconciliation strip ────────────────────────────────────────
@@ -552,10 +564,17 @@ export async function PerformanceView({ scope = "all", period, month }: Performa
                 <dd className="text-ink font-mono">{twrResult?.totalDays ?? "—"}</dd>
               </div>
               <div>
-                <dt className="text-[11px] uppercase tracking-widest text-ink-faint">Cash flows</dt>
-                {/* Real deposits and withdrawals only: the solver's own list
+                <dt
+                  className="text-[11px] uppercase tracking-widest text-ink-faint"
+                  title="Number of external flow entries the money-weighted return used: one per statement month that reports a net deposit or withdrawal figure, one per ledger deposit or withdrawal where the statement gives none, and one per in-kind transfer leg. Not a count of individual deposits."
+                >
+                  Cash flows
+                </dt>
+                {/* Real flow entries only: the solver's own list
                     (cashFlowCount) also carries each account's opening and
-                    terminal values, so one deposit read as three. */}
+                    terminal values, so one deposit read as three. A statement
+                    month's net figure is ONE entry however many deposits it
+                    nets, hence the tooltip. */}
                 <dd className="text-ink font-mono">{xirrResult?.externalFlowCount ?? "—"}</dd>
               </div>
             </dl>
@@ -618,7 +637,7 @@ export async function PerformanceView({ scope = "all", period, month }: Performa
                       <td className="py-2 text-right font-mono tabular-nums">
                         <Pct
                           value={(() => {
-                            const shown = shownAnnualized(acc.annualizedReturn, acc.totalDays);
+                            const shown = shownAnnualized(activePeriod, acc.annualizedReturn, acc.totalDays);
                             return shown !== null ? shown * 100 : null;
                           })()}
                           digits={2}

@@ -28,25 +28,25 @@ describe("Period attribution says why it is empty", () => {
 });
 
 describe("Performance view: a part-year TWR is not annualized", () => {
-  it("the threshold is one year", () => {
-    expect(view).toContain("const MIN_ANNUALIZED_DAYS = 365;");
+  it("the threshold is one full year (364 days, a non-leap 1Y chain)", () => {
+    expect(view).toContain("const MIN_ANNUALIZED_DAYS = 364;");
     const fn = sliceBetween(view, "function shownAnnualized", "\n}\n");
     expect(fn).toContain("totalDays < MIN_ANNUALIZED_DAYS");
   });
 
   it("the TWR tile and the per-account column both go through shownAnnualized", () => {
-    expect(view).toContain("shownAnnualized(annualizedTwr, twrResult?.totalDays)");
+    expect(view).toContain("shownAnnualized(activePeriod, annualizedTwr, twrResult?.totalDays)");
     const tile = sliceBetween(view, "subNode={", "/>");
     expect(tile).toContain("shownAnnualizedTwr !== null");
     expect(tile).not.toMatch(/\bannualizedTwr !== null/);
-    expect(view).toContain("shownAnnualized(acc.annualizedReturn, acc.totalDays)");
+    expect(view).toContain("shownAnnualized(activePeriod, acc.annualizedReturn, acc.totalDays)");
     expect(view).not.toContain("acc.annualizedReturn !== null ? acc.annualizedReturn * 100");
   });
 });
 
 describe("Performance view: the Cash flows cell counts real flows", () => {
   it("shows externalFlowCount, not the solver's list length", () => {
-    const cell = sliceBetween(view, ">Cash flows</dt>", "</div>");
+    const cell = sliceBetween(view, "Cash flows\n                </dt>", "</div>");
     const dd = cell.slice(anchorIndex(cell, "<dd"));
     expect(dd).toContain("xirrResult?.externalFlowCount");
     expect(dd).not.toContain("cashFlowCount");
