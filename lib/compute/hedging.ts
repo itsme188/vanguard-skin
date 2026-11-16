@@ -8,6 +8,7 @@ import { optionExposureFallback } from "@/lib/compute/exposure";
 import { issuerSiblings } from "@/lib/securities/issuer-family";
 import { getEtfSectorWeights } from "@/lib/queries/etf-weights";
 import { explodeHoldingBySector } from "@/lib/compute/explode-sector";
+import { betaConfidenceVerdict } from "@/lib/compute/beta-confidence";
 import { liveOptionExpirationSql } from "@/lib/compute/option-expiry";
 import { isCashEquivalentSecurity } from "@/lib/compute/cash-equivalents";
 import { resolveLeveragedExposure, summarizeUnmodelledLeveragedFunds } from "@/lib/compute/leveraged-fund";
@@ -512,6 +513,17 @@ export function computeGapGuardedBeta(
   series: Array<{ date: string; close: number }>,
   bench: Array<{ date: string; close: number }>
 ): number | null {
+  return computeGapGuardedBetaStats(series, bench)?.beta ?? null;
+}
+
+/**
+ * The same regression as computeGapGuardedBeta, plus what the confidence gate
+ * (betaConfidenceVerdict) needs: the aligned pair count and r².
+ */
+export function computeGapGuardedBetaStats(
+  series: Array<{ date: string; close: number }>,
+  bench: Array<{ date: string; close: number }>
+): { beta: number; pairs: number; rSquared: number } | null {
   const secR = gapGuardedReturns(series);
   const benchR = gapGuardedReturns(bench);
   const xs: number[] = [];
@@ -528,12 +540,16 @@ export function computeGapGuardedBeta(
   const my = sum(ys) / ys.length;
   let cov = 0;
   let varx = 0;
+  let vary = 0;
   for (let i = 0; i < xs.length; i++) {
     cov += (xs[i] - mx) * (ys[i] - my);
     varx += (xs[i] - mx) ** 2;
+    vary += (ys[i] - my) ** 2;
   }
   if (varx === 0) return null;
-  return cov / varx;
+  // vary === 0 gives NaN; betaConfidenceVerdict fails a non-finite r² closed.
+  const rSquared = (cov * cov) / (varx * vary);
+  return { beta: cov / varx, pairs: xs.length, rSquared };
 }
 
 export interface ResolvedBeta {
@@ -580,8 +596,12 @@ export function resolveProxyBeta(db: Database.Database, symbol: string): Resolve
 
   const sec = closesFor(symbol);
   const spy = closesFor("SPY");
-  const computed = computeGapGuardedBeta(sec, spy);
-  if (computed !== null) return { beta: computed, source: "computed" };
+  const computed = computeGapGuardedBetaStats(sec, spy);
+  // House publish gate (r² ≥ 0.10, ≥ 30 pairs): a slope that fails it is
+  // not credited; the hedge falls back to the disclosed assumed 1.0.
+  if (computed !== null && betaConfidenceVerdict({ rSquared: computed.rSquared, pairs: computed.pairs }).ok) {
+    return { beta: computed.beta, source: "computed" };
+  }
   return { beta: 1.0, source: "assumed" };
 }
 
@@ -1283,8 +1303,21 @@ export function computeDefenseAnalysis(db: Database.Database, accountIds?: numbe
   const tier1CreditedBySector = new Map<string, number>();
   for (const pair of classifyResult.pairs) {
     if (pair.offsetCredited > 0) {
-      const key = pair.sector ?? "Unknown";
-      tier1CreditedBySector.set(key, (tier1CreditedBySector.get(key) ?? 0) + pair.offsetCredited);
+      // A hedge on a fund protects the whole fund: spread the credit by the
+      // same look-through weights its long exposure was spread by above
+      // (explodeHoldingBySector), never all of it onto the fund's own single
+      // securities.sector. A single name (or a fund with no weights) keeps
+      // one bucket, as before. The parts sum to offsetCredited.
+      const parts = explodeHoldingBySector(
+        pair.underlying,
+        underlyingInfo.get(pair.underlying)?.isEtf ? "ETF" : null,
+        pair.offsetCredited,
+        sectorWeights,
+        pair.sector
+      );
+      for (const p of parts) {
+        tier1CreditedBySector.set(p.sector, (tier1CreditedBySector.get(p.sector) ?? 0) + p.value);
+      }
     }
   }
 

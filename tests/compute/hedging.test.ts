@@ -439,7 +439,11 @@ describe("resolveProxyBeta", () => {
     expect(resolveProxyBeta(db, "ZZZQ")).toEqual({ beta: 1.0, source: "assumed" });
   });
 
-  const SPY_CLOSES = [100, 101, 99.9, 101.5, 100.8, 102, 101.2, 103, 102.1, 104];
+  // 40 closes (39 return pairs): past the house beta gate's 30-pair floor
+  // (betaConfidenceVerdict), so a clean series reaches the computed tier.
+  const SPY_CLOSES = Array.from({ length: 4 }, (_, k) =>
+    [100, 101, 99.9, 101.5, 100.8, 102, 101.2, 103, 102.1, 104].map((c) => c + k * 4),
+  ).flat();
 
   function seedSpyBenchmark() {
     for (const row of dailySeries("2026-06-01", SPY_CLOSES)) {
