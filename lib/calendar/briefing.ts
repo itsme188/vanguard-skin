@@ -276,15 +276,20 @@ export async function generateBriefingTextWithRegen(args: {
   /** Optional hook so callers can surface "regenerating..." progress. */
   onRegen?: (matches: string[]) => void;
 }): Promise<string> {
-  const maxOutputTokens = args.maxOutputTokens ?? 8192;
+  // Room for default-on thinking (2026-11-13): the current models think by
+  // default and the thinking counts against this cap. Under the raw SDK's
+  // ~21k non-streaming guard (tests/repo/ai-output-caps-thinking-room.test.ts).
+  const maxOutputTokens = args.maxOutputTokens ?? 20_000;
 
   let firstText: string;
+  let firstCutOff: boolean;
   try {
     const firstAttempt = await generateTextForFeature(args.feature, {
       maxOutputTokens,
       prompt: args.prompt,
     });
     firstText = firstAttempt.text;
+    firstCutOff = firstAttempt.finishReason === "length";
   } catch (err) {
     if (err instanceof AIRefusalError) {
       console.warn(`[briefing] model refused the first generation attempt`);
@@ -294,18 +299,34 @@ export async function generateBriefingTextWithRegen(args: {
   }
 
   const matches = findSelfAdmissions(firstText);
-  if (matches.length === 0) return firstText;
+  if (matches.length === 0 && !firstCutOff) return firstText;
 
-  console.warn(
-    `[briefing] self-admission detected on first draft (${matches.join(", ")}) — regenerating once`,
-  );
-  args.onRegen?.(matches);
+  // At most two AI attempts in total: a cut-off first reply and a
+  // self-admission both spend the one retry, they never stack.
+  if (firstCutOff) {
+    console.warn(
+      `[briefing] first draft stopped at the output cap (${firstText.length} chars) — regenerating once`,
+    );
+  } else {
+    console.warn(
+      `[briefing] self-admission detected on first draft (${matches.join(", ")}) — regenerating once`,
+    );
+    args.onRegen?.(matches);
+  }
 
   try {
     const retry = await generateTextForFeature(args.feature, {
       maxOutputTokens,
-      prompt: args.prompt + buildSelfAdmissionAddendum(matches),
+      prompt:
+        matches.length > 0
+          ? args.prompt + buildSelfAdmissionAddendum(matches)
+          : args.prompt,
     });
+    if (retry.finishReason === "length") {
+      throw new Error(
+        "briefing cut off at the output cap: the reply stopped before it was complete, so it was not stored",
+      );
+    }
     return retry.text;
   } catch (err) {
     if (err instanceof AIRefusalError) {
