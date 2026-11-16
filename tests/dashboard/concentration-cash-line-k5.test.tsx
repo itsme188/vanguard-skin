@@ -69,7 +69,7 @@ beforeEach(() => {
 describe("Concentration Metrics card: cash and equivalents", () => {
   it("shows one labelled cash line with its share and the plain sentence", () => {
     const html = render(concentration());
-    expect(html).toContain("Cash and equivalents");
+    expect(html).toContain("Cash-equivalent funds");
     expect(html).toContain("50.0%");
     expect(html).toContain(CASH_EQUIVALENTS_SENTENCE);
   });
@@ -81,7 +81,7 @@ describe("Concentration Metrics card: cash and equivalents", () => {
   it("masks the cash share and value in privacy mode", () => {
     privacy.on = true;
     const html = render(concentration());
-    expect(html).toContain("Cash and equivalents");
+    expect(html).toContain("Cash-equivalent funds");
     expect(html).not.toContain("50.0%");
     expect(html).not.toContain("5,000");
     expect(html).toContain(MASK);
@@ -118,7 +118,7 @@ describe("the shared cash line", () => {
   it("renders the share through the privacy components", () => {
     const html = renderToStaticMarkup(<CashEquivalentsLine weightPct={25} marketValue={2_500} holdingCount={3} />);
     expect(html).toContain("25.0%");
-    expect(html).toContain("Cash and equivalents");
+    expect(html).toContain("Cash-equivalent funds");
     privacy.on = true;
     const masked = renderToStaticMarkup(<CashEquivalentsLine weightPct={25} marketValue={2_500} holdingCount={3} />);
     expect(masked).not.toContain("25.0%");

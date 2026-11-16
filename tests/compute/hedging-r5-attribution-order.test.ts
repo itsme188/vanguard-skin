@@ -148,7 +148,7 @@ describe("R2: an unmeasured beta carries its reason (ruling 19 = B)", () => {
   it("too little history: reason no_history", () => {
     const d = db();
     d.prepare("INSERT INTO securities (symbol, name, security_type, source_key) VALUES ('ZQ', 'ZQ', 'ETF', 't:ZQ')").run();
-    expect(resolveProxyBeta(d, "ZQ")).toEqual({ beta: null, source: "unmeasured", reason: "no_history" });
+    expect(resolveProxyBeta(d, "ZQ")).toMatchObject({ beta: null, source: "unmeasured", reason: "no_history" });
   });
 
   it("a measured beta that fails the fit test: reason low_fit", () => {
@@ -167,7 +167,7 @@ describe("R2: an unmeasured beta carries its reason (ruling 19 = B)", () => {
       d.prepare("INSERT INTO benchmark_prices (symbol, date, close_price, source) VALUES ('SPY', ?, ?, 'tws')").run(date, spy);
       d.prepare("INSERT INTO prices (security_id, date, close_price, source) VALUES (?, ?, ?, 'tws')").run(sid, date, zq);
     });
-    expect(resolveProxyBeta(d, "ZQ")).toEqual({ beta: null, source: "unmeasured", reason: "low_fit" });
+    expect(resolveProxyBeta(d, "ZQ")).toMatchObject({ beta: null, source: "unmeasured", reason: "low_fit" });
   });
 });
 

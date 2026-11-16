@@ -88,7 +88,7 @@ describe("proxy beta confidence gate (F1)", () => {
     const sid = insertSecurity("ZZN");
     // A steep 4x mover: the old path published beta ≈ 4.
     seedPrices(sid, spy.map((c) => 100 * Math.pow(c / 100, 4)));
-    expect(resolveProxyBeta(db, "ZZN")).toEqual({ beta: null, source: "unmeasured", reason: "no_history" });
+    expect(resolveProxyBeta(db, "ZZN")).toMatchObject({ beta: null, source: "unmeasured", reason: "no_history" });
   });
 
   it("a fund with enough pairs but no market fit (r² < 0.10) is UNMEASURED (ruling 19 = B)", () => {
@@ -102,7 +102,7 @@ describe("proxy beta confidence gate (F1)", () => {
     const stats = computeGapGuardedBetaStats(dailySeries("2026-06-01", own), dailySeries("2026-06-01", spy));
     expect(stats!.pairs).toBeGreaterThanOrEqual(MIN_BETA_PAIRS);
     expect(stats!.rSquared).toBeLessThan(0.1);
-    expect(resolveProxyBeta(db, "ZZR")).toEqual({ beta: null, source: "unmeasured", reason: "low_fit" });
+    expect(resolveProxyBeta(db, "ZZR")).toMatchObject({ beta: null, source: "unmeasured", reason: "low_fit" });
   });
 
   it("a fund past both gates keeps its computed beta", () => {

@@ -48,17 +48,38 @@ export const DEFENSE_CASH_CAPTION =
   "Cash lowers what can be lost, but it is not a hedge against the long book, so it is not in the protection ratio.";
 
 /**
- * "Cash and equivalents: X% of this scope", the concentration card's own
- * figure (splitConcentrationUniverse). Hidden when the scope holds none;
- * borrowing (a cash fund below zero) is said instead of a share.
+ * What the line counts (review 2026-11-16): only cash-equivalent funds held
+ * as positions. A cash balance at the broker is not in the holdings universe.
+ * The same words as the concentration cards' CASH_FUNDS_SCOPE_CAPTION
+ * (ClassificationCard.tsx, a client file this server component must not
+ * import from); a test pins the two equal.
+ */
+export const DEFENSE_CASH_SCOPE_CAPTION =
+  "Money-market and sweep funds held as positions. Cash balances at the broker are not included.";
+
+/** Shown when the scope holds no cash-equivalent fund at all. */
+export const DEFENSE_NO_CASH_FUNDS_NOTE =
+  "No cash-equivalent funds in this scope (broker cash balances are not counted here).";
+
+/**
+ * "Cash-equivalent funds: X% of this scope", the concentration card's own
+ * figure (splitConcentrationUniverse). When the scope holds none, one note
+ * says so (broker cash is not counted); borrowing (a cash fund below zero)
+ * is said instead of a share.
  */
 function DefenseCashLineView({ cash }: { cash: DefenseCashLine }) {
-  if (cash.holdingCount === 0 && cash.borrowed.holdingCount === 0) return null;
+  if (cash.holdingCount === 0 && cash.borrowed.holdingCount === 0) {
+    return (
+      <div className="mt-4 border-t border-edge pt-3">
+        <p className="text-xs text-ink-faint">{DEFENSE_NO_CASH_FUNDS_NOTE}</p>
+      </div>
+    );
+  }
   return (
     <div className="mt-4 border-t border-edge pt-3">
       {cash.holdingCount > 0 && (
         <p className="text-xs text-ink">
-          <span className="font-medium">Cash and equivalents:</span>{" "}
+          <span className="font-medium">Cash-equivalent funds:</span>{" "}
           <Pct value={cash.weight * 100} digits={1} className="font-mono" /> of this scope
         </p>
       )}
@@ -68,6 +89,7 @@ function DefenseCashLineView({ cash }: { cash: DefenseCashLine }) {
           <Money value={cash.borrowed.marketValue} className="font-mono" /> (borrowing, not cash on hand)
         </p>
       )}
+      <p className="text-xs text-ink-faint mt-1">{DEFENSE_CASH_SCOPE_CAPTION}</p>
       <p className="text-xs text-ink-faint mt-1">{DEFENSE_CASH_CAPTION}</p>
     </div>
   );
@@ -109,7 +131,7 @@ export async function DefenseView({ scope = "all" }: DefenseViewProps) {
   const countReason = (reason: string) => analysis.notCreditedHedges.filter((h) => h.reason === reason).length;
   const notCreditedParts = [
     { n: countReason(NOT_CREDITED_UNKNOWN), label: "fund type not on file" },
-    { n: countReason(NOT_CREDITED_BETA_NO_HISTORY), label: "not enough price history to measure its beta" },
+    { n: countReason(NOT_CREDITED_BETA_NO_HISTORY), label: "too little of its price history collected yet to measure its beta" },
     { n: countReason(NOT_CREDITED_BETA_LOW_FIT), label: "price history fits the market too loosely to measure its beta" },
   ];
   notCreditedParts.unshift({

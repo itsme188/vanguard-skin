@@ -149,9 +149,11 @@ export function classifyRunSummary(
 export const CASH_EQUIVALENTS_SENTENCE =
   "Held as cash: available to deploy and not exposed to the market. It counts in the portfolio total, so it lowers every weight, but it is not ranked as a position.";
 
-/** How cash enters the Herfindahl (candidate ii, owner ruling 2026-11-15). */
+/** How cash enters the Herfindahl (candidate ii, owner ruling 2026-11-15).
+ *  Says what it counts: only cash-equivalent funds held as positions (review
+ *  2026-11-16; broker cash balances are not in the holdings universe). */
 export const HHI_CASH_NOTE =
-  "Cash counts as dilution: it is in the total every weight is measured against, but adds nothing to the index.";
+  "Cash-equivalent funds count as dilution: they are in the total every weight is measured against, but add nothing to the index.";
 
 /** Shown in place of the Herfindahl sentence when the scope holds only cash. */
 export const ALL_CASH_SENTENCE =
@@ -160,8 +162,8 @@ export const ALL_CASH_SENTENCE =
 /** The two effective-position figures' labels (owner ruling 28 = B, 2026-11-16).
  *  Cash counts as dilution in the whole-portfolio figure, so it is not a count
  *  of names; the invested-only figure is. */
-export const EFFECTIVE_WHOLE_LABEL = "Whole portfolio, cash counted as dilution";
-export const EFFECTIVE_INVESTED_LABEL = "Invested holdings only, cash left out";
+export const EFFECTIVE_WHOLE_LABEL = "Whole portfolio, cash-equivalent funds counted as dilution";
+export const EFFECTIVE_INVESTED_LABEL = "Invested holdings only, cash-equivalent funds left out";
 
 /** The effective-position tile's value when the scope holds only cash. */
 export const ALL_CASH_EFFECTIVE_VALUE = "All cash";
@@ -170,7 +172,16 @@ export const ALL_CASH_EFFECTIVE_VALUE = "All cash";
 export const NEGATIVE_CASH_SENTENCE =
   "This scope is borrowing; cash is negative and is not counted as dilution.";
 
-/** The "Cash and equivalents" line: share of the whole book, value and fund count. */
+/** The line's label (review 2026-11-16): it counts funds only. */
+export const CASH_FUNDS_LABEL = "Cash-equivalent funds";
+
+/** What the line counts. DefenseView carries the same words in
+ *  DEFENSE_CASH_SCOPE_CAPTION (a server file cannot import this client one);
+ *  a test pins the two equal. */
+export const CASH_FUNDS_SCOPE_CAPTION =
+  "Money-market and sweep funds held as positions. Cash balances at the broker are not included.";
+
+/** The "Cash-equivalent funds" line: share of the whole book, value and fund count. */
 export function CashEquivalentsLine({
   weightPct,
   marketValue,
@@ -183,12 +194,13 @@ export function CashEquivalentsLine({
   return (
     <div className="bg-raised/50 rounded-lg p-3 mb-4">
       <p className="text-xs text-ink">
-        <span className="font-medium">Cash and equivalents</span>{" "}
+        <span className="font-medium">{CASH_FUNDS_LABEL}</span>{" "}
         <Pct value={weightPct} digits={1} className="font-mono text-ink" /> of the portfolio
         {" · "}
         <Money value={marketValue} className="font-mono" /> in{" "}
         <Count value={holdingCount} /> {holdingCount === 1 ? "holding" : "holdings"}
       </p>
+      <p className="text-xs text-ink-faint mt-1">{CASH_FUNDS_SCOPE_CAPTION}</p>
       <p className="text-xs text-ink-faint mt-1">{CASH_EQUIVALENTS_SENTENCE}</p>
     </div>
   );

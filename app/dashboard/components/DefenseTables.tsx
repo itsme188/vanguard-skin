@@ -7,6 +7,7 @@ import type {
   StandaloneBet,
   HedgeBadge,
   NotCreditedHedge,
+  BetaHistoryOnFile,
 } from "@/lib/compute/hedging";
 import { Money, Pct } from "@/lib/privacy/components";
 import { Chip, type ChipTone } from "./Chip";
@@ -199,21 +200,38 @@ function ShortSideHedges({ hedgeScores, total }: { hedgeScores: HedgeScore[]; to
  * file; and, by ruling 19 = B (2026-11-16), a fund whose beta cannot be
  * measured. Named with the reason and the notional, never silently dropped.
  */
+/** The Not-credited intro (review 2026-11-16: the gap is in what this app
+ *  has collected, not in the fund's own history). */
+export const NOT_CREDITED_INTRO =
+  "Positions on a fund that is not a stock fund, whose fund type is not on file, or whose beta this app cannot measure yet because it has not collected enough of the fund's price history (or the history it has fits the market too loosely). They are left out of the protection ratio and the sector bars.";
+
+/**
+ * What was on file for an unmeasured beta, from resolveProxyBeta: daily
+ * closes in the app's own price tables, the day-to-day moves usable against
+ * the market, and the moves the house gate needs. Market data, not a
+ * portfolio figure. Exported for unit testing.
+ */
+export function betaHistoryLine(h: BetaHistoryOnFile): string {
+  const closes = `${h.closesOnFile} daily ${h.closesOnFile === 1 ? "close" : "closes"} on file`;
+  const moves = `${h.usablePairs} usable day-to-day ${h.usablePairs === 1 ? "move" : "moves"} against the market`;
+  return `${closes}; ${moves}, ${h.pairsNeeded} needed`;
+}
+
 function NotCreditedList({ hedges }: { hedges: NotCreditedHedge[] }) {
   if (hedges.length === 0) return null;
   return (
     <section className="bg-panel border border-edge rounded-lg p-4">
       <h3 className="text-sm font-medium text-ink mb-1">Not credited</h3>
-      <p className="text-xs text-ink-faint mb-3">
-        Positions on a fund that is not a stock fund, whose fund type is not on file, or whose beta
-        cannot be measured yet. They are left out of the protection ratio and the sector bars.
-      </p>
+      <p className="text-xs text-ink-faint mb-3">{NOT_CREDITED_INTRO}</p>
       <ul className="divide-y divide-edge">
         {hedges.map((h) => (
           <li key={h.underlying} className="flex items-center justify-between py-2 text-xs">
             <span className="text-ink">
               {h.underlying} <span className="text-ink-faint font-mono">{h.symbols.join(", ")}</span>
               <span className="block text-[11px] text-ink-dim">{h.reason}</span>
+              {h.betaHistory && (
+                <span className="block text-[11px] text-ink-dim">{betaHistoryLine(h.betaHistory)}</span>
+              )}
             </span>
             <span className="font-mono tabular-nums text-ink-dim">
               <Money value={h.protectiveNotional} />

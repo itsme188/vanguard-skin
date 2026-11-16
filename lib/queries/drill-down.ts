@@ -330,7 +330,7 @@ export function getHoldingsInBucket(
  * universe runs out. The rows are one computation's own output (weight,
  * value, risk contribution), never stitched from two calls.
  */
-function cashFreeTopPositions(
+export function cashFreeTopPositions(
   db: Database.Database,
   accountIds: number[] | undefined,
   topN: number

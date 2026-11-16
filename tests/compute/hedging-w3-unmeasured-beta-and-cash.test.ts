@@ -59,7 +59,7 @@ describe("ruling 19 = B: the one policy function", () => {
     expect(creditAtResolvedBeta(100, { beta: 1.5, source: "cached" })).toEqual({ credited: 150 });
     expect(creditAtResolvedBeta(100, unmeasured("no_history"))).toEqual({ notCreditedReason: NOT_CREDITED_BETA_NO_HISTORY });
     expect(creditAtResolvedBeta(100, unmeasured("low_fit"))).toEqual({ notCreditedReason: NOT_CREDITED_BETA_LOW_FIT });
-    expect(NOT_CREDITED_BETA_NO_HISTORY).toMatch(/not enough price history to measure/);
+    expect(NOT_CREDITED_BETA_NO_HISTORY).toMatch(/has not collected enough of its price history to measure/);
     expect(NOT_CREDITED_BETA_LOW_FIT).toMatch(/fits the market too loosely to measure/);
   });
 });

@@ -14,13 +14,14 @@ describe("Defense cash line (owner ruling 2026-11-16)", () => {
     const ratio = anchorIndex(src, "Protection ratio");
     const line = anchorIndex(src, "<DefenseCashLineView cash={analysis.cashLine} />");
     expect(line).toBeGreaterThan(ratio);
-    anchorIndex(src, "Cash and equivalents:");
+    anchorIndex(src, "Cash-equivalent funds:");
     anchorIndex(src, "<Pct value={cash.weight * 100} digits={1}");
     anchorIndex(src, "of this scope");
   });
 
-  it("is hidden when the scope holds no cash, and says borrowing when cash is negative", () => {
-    anchorIndex(src, "if (cash.holdingCount === 0 && cash.borrowed.holdingCount === 0) return null;");
+  it("says when the scope holds no cash-equivalent fund, and says borrowing when cash is negative", () => {
+    anchorIndex(src, "if (cash.holdingCount === 0 && cash.borrowed.holdingCount === 0) {");
+    anchorIndex(src, "{DEFENSE_NO_CASH_FUNDS_NOTE}");
     anchorIndex(src, "Borrowed cash:");
     anchorIndex(src, "<Money value={cash.borrowed.marketValue}");
   });

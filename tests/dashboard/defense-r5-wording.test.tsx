@@ -31,12 +31,12 @@ describe("Defense wording (review R2/R3)", () => {
         standaloneBetKinds={{}}
         shortSideHedgeNotional={0}
         notCreditedHedges={[
-          { underlying: "ZZN", symbols: ["ZZN P"], protectiveNotional: 100, reason: "not enough price history to measure its beta" },
+          { underlying: "ZZN", symbols: ["ZZN P"], protectiveNotional: 100, reason: "this app has not collected enough of its price history to measure a beta" },
         ]}
       />
     );
-    expect(html).toMatch(/beta\s+cannot be measured yet/);
-    expect(html).toContain("not enough price history to measure its beta");
+    expect(html).toMatch(/beta this app cannot measure yet/);
+    expect(html).toContain("this app has not collected enough of its price history to measure a beta");
   });
 
   it("a geography row says it is regional exposure with no beta applied", () => {

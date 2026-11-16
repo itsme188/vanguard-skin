@@ -436,7 +436,7 @@ describe("resolveProxyBeta", () => {
   });
 
   it("is unmeasured (no beta assumed) when nothing is available (ruling 19 = B)", () => {
-    expect(resolveProxyBeta(db, "ZZZQ")).toEqual({ beta: null, source: "unmeasured", reason: "no_history" });
+    expect(resolveProxyBeta(db, "ZZZQ")).toMatchObject({ beta: null, source: "unmeasured", reason: "no_history" });
   });
 
   // 40 closes (39 return pairs): past the house beta gate's 30-pair floor

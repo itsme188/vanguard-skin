@@ -9,7 +9,7 @@ import { issuerSiblings } from "@/lib/securities/issuer-family";
 import { getEtfSectorWeights } from "@/lib/queries/etf-weights";
 import { getConcentrationUniverse, splitConcentrationUniverse } from "@/lib/queries/concentration-universe";
 import { explodeHoldingBySector } from "@/lib/compute/explode-sector";
-import { betaConfidenceVerdict } from "@/lib/compute/beta-confidence";
+import { betaConfidenceVerdict, MIN_BETA_PAIRS } from "@/lib/compute/beta-confidence";
 import { liveOptionExpirationSql } from "@/lib/compute/option-expiry";
 import { isCashEquivalentSecurity } from "@/lib/compute/cash-equivalents";
 import { resolveLeveragedExposure, summarizeUnmodelledLeveragedFunds } from "@/lib/compute/leveraged-fund";
@@ -544,6 +544,17 @@ export function computeGapGuardedBeta(
  * The same regression as computeGapGuardedBeta, plus what the confidence gate
  * (betaConfidenceVerdict) needs: the aligned pair count and r².
  */
+/** Aligned, gap-guarded return pairs: the count the beta regression would use. */
+export function countAlignedReturnPairs(
+  series: Array<{ date: string; close: number }>,
+  bench: Array<{ date: string; close: number }>
+): number {
+  const benchR = gapGuardedReturns(bench);
+  let n = 0;
+  for (const date of gapGuardedReturns(series).keys()) if (benchR.has(date)) n++;
+  return n;
+}
+
 export function computeGapGuardedBetaStats(
   series: Array<{ date: string; close: number }>,
   bench: Array<{ date: string; close: number }>
@@ -590,9 +601,27 @@ export type UnmeasuredBetaReason = "no_history" | "low_fit";
  */
 export type ResolvedBeta =
   | { beta: number; source: "cached" | "computed" }
-  | { beta: null; source: "unmeasured"; reason: UnmeasuredBetaReason };
+  | { beta: null; source: "unmeasured"; reason: UnmeasuredBetaReason; history?: BetaHistoryOnFile };
 
-export const NOT_CREDITED_BETA_NO_HISTORY = "not enough price history to measure its beta";
+/**
+ * What resolveProxyBeta found on file for an unmeasured fund (display only;
+ * it never changes a credit). The beta is regressed on the fund's daily
+ * closes in `prices` and `benchmark_prices` against SPY's; a day-to-day move
+ * counts only when both closes are at most a week apart and SPY moved over
+ * the same day. `usablePairs` is that count; the house gate needs
+ * `pairsNeeded` (MIN_BETA_PAIRS).
+ */
+export interface BetaHistoryOnFile {
+  closesOnFile: number;
+  usablePairs: number;
+  pairsNeeded: number;
+}
+
+/**
+ * The fund is usually long-established: the gap is in what this app has
+ * collected, not in the fund's own history (review 2026-11-16).
+ */
+export const NOT_CREDITED_BETA_NO_HISTORY = "this app has not collected enough of its price history to measure a beta";
 export const NOT_CREDITED_BETA_LOW_FIT = "its price history fits the market too loosely to measure its beta";
 
 /**
@@ -653,14 +682,19 @@ export function resolveProxyBeta(db: Database.Database, symbol: string): Resolve
   const sec = closesFor(symbol);
   const spy = closesFor("SPY");
   const computed = computeGapGuardedBetaStats(sec, spy);
+  const history: BetaHistoryOnFile = {
+    closesOnFile: sec.length,
+    usablePairs: computed?.pairs ?? countAlignedReturnPairs(sec, spy),
+    pairsNeeded: MIN_BETA_PAIRS,
+  };
   // House publish gate (r² ≥ 0.10, ≥ 30 pairs): a slope that fails it is
   // not a measurement; the hedge is then not credited (ruling 19 = B).
-  if (computed === null) return { beta: null, source: "unmeasured", reason: "no_history" };
+  if (computed === null) return { beta: null, source: "unmeasured", reason: "no_history", history };
   const verdict = betaConfidenceVerdict({ rSquared: computed.rSquared, pairs: computed.pairs });
   if (verdict.ok) return { beta: computed.beta, source: "computed" };
   // The gate's own reason: too few pairs is "no history"; a slope measured
   // on enough pairs that explains too little is "low fit".
-  return { beta: null, source: "unmeasured", reason: verdict.reason === "low_r2" ? "low_fit" : "no_history" };
+  return { beta: null, source: "unmeasured", reason: verdict.reason === "low_r2" ? "low_fit" : "no_history", history };
 }
 
 // ─── Proxy Attribution (Task 3) ────────────────────────────────────────
@@ -681,6 +715,8 @@ export interface ProxyHedge {
   /** Set when a beta was looked up; "unmeasured" only on a not_credited row. */
   betaSource?: ResolvedBeta["source"];
   notCreditedReason?: string;
+  /** What was on file when the beta could not be measured (display only). */
+  betaHistory?: BetaHistoryOnFile;
   instruments: DefenseInstrument[];
 }
 
@@ -836,6 +872,7 @@ export function attributeProxies(
         creditedTo: [],
         betaSource: resolved.source,
         notCreditedReason: credit.notCreditedReason,
+        ...(resolved.source === "unmeasured" && resolved.history ? { betaHistory: resolved.history } : {}),
       });
       continue;
     }
@@ -1151,6 +1188,9 @@ export interface NotCreditedHedge {
   symbols: string[];
   protectiveNotional: number;
   reason: string;
+  /** Set when the reason is an unmeasured beta: the daily closes on file,
+   *  the usable day-to-day moves, and the moves the gate needs. */
+  betaHistory?: BetaHistoryOnFile;
 }
 
 /**
@@ -1661,7 +1701,11 @@ export function computeDefenseAnalysis(db: Database.Database, accountIds?: numbe
         detail:
           result.reason === "low_fit"
             ? `Measured beta for ${symbol} failed the fit test (r² below the floor) — not credited`
-            : `Too little price history to measure a beta for ${symbol} — not credited`,
+            : `This app has not collected enough price history for ${symbol} to measure a beta` +
+              (result.history
+                ? ` (${result.history.closesOnFile} daily closes on file, ${result.history.usablePairs} usable day-to-day moves, ${result.history.pairsNeeded} needed)`
+                : "") +
+              " — not credited",
       });
     }
     return result;
@@ -1918,6 +1962,7 @@ export function computeDefenseAnalysis(db: Database.Database, accountIds?: numbe
         symbols: proxyHedgeInstruments(classifyResult.proxyCandidates[proxies.indexOf(p)]).map((i) => i.symbol),
         protectiveNotional: p.protectiveNotional,
         reason: p.notCreditedReason ?? NOT_CREDITED_UNKNOWN,
+        ...(p.betaHistory ? { betaHistory: p.betaHistory } : {}),
       })),
     leveragedFundsUnmodelled,
     // Counted over the option rows this analysis actually loaded, so a

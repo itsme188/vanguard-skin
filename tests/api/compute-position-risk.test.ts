@@ -102,4 +102,34 @@ describe("GET /api/compute/position-risk", () => {
     expect(body.weekAgo.positions).toHaveLength(0);
     expect(body.delta).toBeNull();
   });
+  it("drops a cash-equivalent row and every correlation that names it (owner ruling 2026-11-16)", async () => {
+    const cashRow = {
+      securityId: 2,
+      symbol: "ZMMF",
+      securityName: "Synthetic money market",
+      marketValue: 50000,
+      weight: 0.5,
+      annualizedVol: null,
+      riskContribution: null,
+      correlationWithPortfolio: null,
+      dataPoints: 0,
+      cashEquivalent: true,
+    };
+    const withCash = () =>
+      fakeResult({
+        positions: [cashRow, ...fakeResult().positions],
+        correlations: [
+          { symbolA: "AAPL", symbolB: "ZMMF", correlation: 0.1 },
+          { symbolA: "AAPL", symbolB: "MSFT", correlation: 0.7 },
+        ],
+      });
+    computeFn.mockImplementation(withCash);
+
+    const res = await GET(new Request("http://x/api/compute/position-risk?scope=vanguard&topN=10") as never);
+    const body = await res.json();
+    expect(body.data.positions.map((p: { symbol: string }) => p.symbol)).toEqual(["AAPL"]);
+    expect(body.data.correlations).toEqual([{ symbolA: "AAPL", symbolB: "MSFT", correlation: 0.7 }]);
+    expect(body.data.cashEquivalentsLeftOut).toBe(1);
+    expect(body.weekAgo.cashEquivalentsLeftOut).toBe(1);
+  });
 });
