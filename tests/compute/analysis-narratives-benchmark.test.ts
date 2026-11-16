@@ -90,7 +90,7 @@ describe("factor narrative benchmark", () => {
       forceRegen: true,
     });
     const call = vi.mocked(generateTextForFeature).mock.calls[0][1] as { prompt: string };
-    expect(call.prompt).toContain('"benchmark": "VTI"');
+    expect(call.prompt).toContain('"benchmark":"VTI"');
     expect(call.prompt).toContain("name that benchmark");
   });
 });

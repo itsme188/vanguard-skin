@@ -1,10 +1,11 @@
 /**
- * analysis-narratives.ts — Sonnet 4.6 narrative composer for Analysis surfaces.
+ * analysis-narratives.ts — narrative composer for Analysis surfaces.
  *
  * Cache-first: if a row exists in `analysis_narratives` for
- * (scope, surfaceKey, weekOf), return it. On miss, build a per-surface JSON
- * context blob from the existing compute fns, call Sonnet via AI Gateway,
- * UPSERT, and return.
+ * (scope, surfaceKey, weekOf), return it. On miss, build a per-surface compact
+ * JSON context blob from the existing compute fns, call the model the
+ * `analysisFactorNarrative` feature resolves to (tier token, lib/ai/models.ts),
+ * UPSERT, and return. The stored `model_used` is the model that answered.
  *
  * The system prompt enforces 2-3 sentences of plain English with no specific
  * dollar amounts — the goal is interpretation ("you're betting on a soft
@@ -26,6 +27,8 @@ import { getFactorHeatmap } from "@/lib/queries/analysis";
 import { computeDefenseAnalysis } from "@/lib/compute/hedging";
 import { getDefaultBenchmark } from "@/lib/analysis/benchmarks";
 import type { DefenseAnalysis, HedgeBadge, PairClassification } from "@/lib/compute/hedging";
+import type { FactorHeatmapRow } from "@/lib/queries/analysis";
+import { FACTOR_COLUMNS, FACTOR_LABELS, type FactorColumn } from "@/lib/factors";
 
 // ─── Surface registry ────────────────────────────────────────────────────────
 
@@ -77,7 +80,7 @@ const SURFACE_PROMPTS: Record<NarrativeSurface, string> = {
   "position-risk":
     "In 2-3 sentences, identify which positions are driving the portfolio's risk. Mention the top 2-3 risk contributors by name and what makes them risky (size, beta, factor exposure). Avoid specific dollar amounts.",
   "factor-heatmap":
-    "Read the heatmap of factor exposures across positions. In 2-3 sentences, call out the most concentrated factor bucket and any surprising holes (e.g., zero crypto exposure, no defensive plays). Avoid specific dollar amounts.",
+    "Read the heatmap of factor exposures across positions. The data summarises it per factor: each bucket's share of the book (weightPct, percent of total market value), how many positions sit in it and its largest names; `unclassified` is the share with no value for that factor, and `coverage` says how much of the book has any factor data. In 2-3 sentences, call out the most concentrated factor bucket and any surprising holes (e.g., zero crypto exposure, no defensive plays). Avoid specific dollar amounts.",
   defense:
     "You are reviewing the portfolio's defensive posture. In 2-4 sentences: state how much of the long book is protected and through what (same-name hedges vs index/sector puts), name the largest UNPROTECTED exposures, and flag any hedge that looks expensive or nearly decayed (use the badges). Plain prose, no headers, no advice to buy anything new. All ratio/pct fields in the context are decimal fractions (0.18 = 18%) — convert before narrating. A negative monthlyBleedPct means the hedge COLLECTS premium (short-option income), not a cost — never call it expensive.",
 };
@@ -338,6 +341,138 @@ export function provenNarrativeBenchmark(
   return narrativeBenchmarkForScope(scope);
 }
 
+// ─── Factor-heatmap context (aggregates, not the per-position matrix) ────────
+
+/**
+ * How many names each heatmap bucket lists, largest first. Enough for the
+ * model to name what drives a concentrated bucket; the full per-position
+ * matrix (74k-83k characters on the two largest scopes, 2026-11-15) bought
+ * nothing the prompt asks for.
+ */
+export const HEATMAP_TOP_NAMES_PER_BUCKET = 3;
+
+export interface HeatmapBucketSummary {
+  bucket: string;
+  /** Share of the book in this bucket, percent of total market value (signed: a short reduces it). */
+  weightPct: number;
+  positions: number;
+  /** The largest names by size (absolute weight), largest first. */
+  topNames: Array<{ symbol: string; weightPct: number }>;
+}
+
+export interface HeatmapFactorSummary {
+  factor: FactorColumn;
+  label: string;
+  /** Heaviest bucket first. */
+  buckets: HeatmapBucketSummary[];
+  /** Positions with no value for this factor. */
+  unclassified: { weightPct: number; positions: number };
+}
+
+export interface FactorHeatmapContext {
+  coverage: { positions: number; classified: number; classifiedWeightPct: number };
+  factors: HeatmapFactorSummary[];
+}
+
+/**
+ * The bucket a row shows in a heatmap column. MIRROR of the heatmap's
+ * `growthValueCellValue` (app/dashboard/components/FactorHeatmap.tsx, a
+ * "use client" file a server module must not import): a Blend-style security
+ * reads "Blend" on Growth vs Value. Display only, as there.
+ */
+function heatmapCellValue(row: FactorHeatmapRow, col: FactorColumn): string | null {
+  if (col === "growth_vs_value" && row.style && row.style.trim().toLowerCase() === "blend") {
+    return "Blend";
+  }
+  const v = row[col];
+  return typeof v === "string" && v.trim() !== "" ? v : null;
+}
+
+function roundToStep(v: number, step: number): number {
+  if (!Number.isFinite(v)) return 0;
+  return Number((Math.round(v / step) * step).toFixed(2));
+}
+
+function weightOf(row: FactorHeatmapRow): number {
+  return typeof row.weight_pct === "number" && Number.isFinite(row.weight_pct) ? row.weight_pct : 0;
+}
+
+/**
+ * Per-factor bucket aggregates of the heatmap rows, with weights rounded to
+ * `weightStep` percentage points. No dollar figure: weights are shares of the
+ * book.
+ */
+function summariseHeatmap(rows: FactorHeatmapRow[], weightStep: number): FactorHeatmapContext {
+  const classifiedRows = rows.filter((r) => FACTOR_COLUMNS.some((c) => heatmapCellValue(r, c) !== null));
+  const factors: HeatmapFactorSummary[] = FACTOR_COLUMNS.map((factor) => {
+    const groups = new Map<string, FactorHeatmapRow[]>();
+    let unclassifiedWeight = 0;
+    let unclassifiedPositions = 0;
+    for (const r of rows) {
+      const bucket = heatmapCellValue(r, factor);
+      if (bucket === null) {
+        unclassifiedWeight += weightOf(r);
+        unclassifiedPositions++;
+        continue;
+      }
+      const list = groups.get(bucket) ?? [];
+      list.push(r);
+      groups.set(bucket, list);
+    }
+    const buckets = [...groups.entries()]
+      .map(([bucket, members]) => {
+        const weight = members.reduce((a, r) => a + weightOf(r), 0);
+        const topNames = [...members]
+          .sort((a, b) => Math.abs(weightOf(b)) - Math.abs(weightOf(a)) || a.symbol.localeCompare(b.symbol))
+          .slice(0, HEATMAP_TOP_NAMES_PER_BUCKET)
+          .map((r) => ({ symbol: r.symbol, weightPct: roundToStep(weightOf(r), weightStep) }));
+        return { bucket, weight, members: members.length, topNames };
+      })
+      .sort((a, b) => b.weight - a.weight || a.bucket.localeCompare(b.bucket))
+      .map((b) => ({
+        bucket: b.bucket,
+        weightPct: roundToStep(b.weight, weightStep),
+        positions: b.members,
+        topNames: b.topNames,
+      }));
+    return {
+      factor,
+      label: FACTOR_LABELS[factor],
+      buckets,
+      unclassified: { weightPct: roundToStep(unclassifiedWeight, weightStep), positions: unclassifiedPositions },
+    };
+  });
+  return {
+    coverage: {
+      positions: rows.length,
+      classified: classifiedRows.length,
+      classifiedWeightPct: roundToStep(
+        classifiedRows.reduce((a, r) => a + weightOf(r), 0),
+        weightStep,
+      ),
+    },
+    factors,
+  };
+}
+
+/** What the factor-heatmap prompt sees: weights to 0.1 percentage point. */
+export function buildFactorHeatmapContext(rows: FactorHeatmapRow[]): FactorHeatmapContext {
+  return summariseHeatmap(rows, 0.1);
+}
+
+/**
+ * What the factor-heatmap fingerprint hashes: the SAME aggregates the prompt
+ * sees, narrowed like the Defense surface's (weights on a 0.5pp grid), so price
+ * noise does not read as drift while a material change does: a holding moving
+ * to another bucket (bucket position counts), a name entering or leaving the
+ * book (position counts, coverage), a change in a bucket's largest names, or
+ * a bucket's weight moving half a point. The old fingerprint hashed every
+ * row's dollar market value, so it drifted on every price tick.
+ */
+export function buildFactorHeatmapFingerprintInputs(rows: FactorHeatmapRow[]): FactorHeatmapContext {
+  return summariseHeatmap(rows, 0.5);
+}
+
 interface SurfaceInputs {
   /** The JSON blob rendered into the prompt. */
   context: string;
@@ -346,9 +481,13 @@ interface SurfaceInputs {
 }
 
 /**
- * Build a small JSON context blob for the surface. Targeted ~500-800 tokens
- * (under ~3000 chars per surface), plus the fingerprint input for that same
- * context so the two can never drift apart.
+ * Build a compact JSON context blob for the surface (no pretty-print
+ * indentation: 20-27% smaller for the same facts, measured 2026-11-15), plus
+ * the fingerprint input for that same context so the two can never drift
+ * apart. Sizes measured on the real book 2026-11-15: factor-heatmap about
+ * 5k-7k characters (was 74k-83k as the per-position matrix; it is now bounded
+ * by factors x buckets x top names, not by the number of positions), the
+ * other surfaces about 1.3k-10k.
  *
  * Multi-account scope handling: every compute fn now takes the FULL resolved
  * account set via `accountIds` (undefined = "all" = whole portfolio), so the
@@ -377,13 +516,13 @@ function buildSurfaceInputs(
     const result = computeFactorAnalysis(db, { accountIds, benchmarkSymbol: benchmark });
     if (!result) return empty;
     const payload = { benchmark, ...result };
-    return { context: JSON.stringify(payload, null, 2), fingerprintInput: payload };
+    return { context: JSON.stringify(payload), fingerprintInput: payload };
   }
 
   if (surface === "risk-metrics") {
     const result = computeRiskMetrics(db, { accountIds });
     if (!result) return empty;
-    return { context: JSON.stringify(result, null, 2), fingerprintInput: result };
+    return { context: JSON.stringify(result), fingerprintInput: result };
   }
 
   if (surface === "position-risk") {
@@ -405,13 +544,17 @@ function buildSurfaceInputs(
       return b.riskContribution - a.riskContribution;
     });
     const payload = { ...result, positions: rankedPositions };
-    return { context: JSON.stringify(payload, null, 2), fingerprintInput: payload };
+    return { context: JSON.stringify(payload), fingerprintInput: payload };
   }
 
   if (surface === "factor-heatmap") {
     const result = getFactorHeatmap(db, accountIds);
     if (!result || result.length === 0) return empty;
-    return { context: JSON.stringify(result, null, 2), fingerprintInput: result };
+    // Aggregates, not the per-position matrix (see buildFactorHeatmapContext).
+    return {
+      context: JSON.stringify(buildFactorHeatmapContext(result)),
+      fingerprintInput: buildFactorHeatmapFingerprintInputs(result),
+    };
   }
 
   if (surface === "defense") {
@@ -439,7 +582,7 @@ function buildSurfaceInputs(
       diagnostics: result.diagnostics,
     };
     return {
-      context: JSON.stringify(payload, null, 2),
+      context: JSON.stringify(payload),
       fingerprintInput: buildDefenseFingerprintInputs(result),
     };
   }
@@ -497,13 +640,14 @@ export async function generateNarrative(
   const { context, fingerprintInput } = buildSurfaceInputs(db, opts.scope, surface);
   const inputFingerprint = fingerprintNarrativeInputs(surface, fingerprintInput);
 
-  // 4. Call Sonnet via AI Gateway. Wrap in try/catch so the caller can
+  // 4. Call the feature's model. Wrap in try/catch so the caller can
   // distinguish AI errors (network / rate-limit / auth) from validation
   // errors (unknown surface / truncated output / dollar leak).
   const surfacePrompt = SURFACE_PROMPTS[surface];
   const prompt = `${surfacePrompt}\n\nData (JSON):\n${context}`;
 
   let rawText: string;
+  let answeredModelId: string | undefined;
   try {
     const result = await generateTextForFeature("analysisFactorNarrative", {
       system: SYSTEM_PROMPT,
@@ -517,6 +661,7 @@ export async function generateNarrative(
       throw new Error("narrative reply was cut off at the output cap");
     }
     rawText = result.text;
+    answeredModelId = result.answeredModelId;
   } catch (err) {
     // No model family in the text (CLAUDE.md: never name a model in user
     // copy), and `cause` carries the provider's error so the route's
@@ -555,9 +700,13 @@ export async function generateNarrative(
     );
   }
 
-  // 5. UPSERT — modelUsed pulled from resolveFeatureModel(...).modelId so
-  // future model swaps in FEATURE_MODELS stay a one-line change.
-  const modelUsed = resolveFeatureModel("analysisFactorNarrative").modelId;
+  // 5. UPSERT — modelUsed is the model that ANSWERED (the helper reports it,
+  // so a failover run is labelled with the model that wrote the prose); the
+  // resolved model is only the fallback when the helper reports none.
+  const modelUsed =
+    typeof answeredModelId === "string" && answeredModelId.length > 0
+      ? answeredModelId
+      : resolveFeatureModel("analysisFactorNarrative").modelId;
   upsertNarrative(db, {
     scope: opts.scope,
     surfaceKey: opts.surfaceKey,
