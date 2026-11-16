@@ -1969,6 +1969,10 @@ isolated sandbox. Real figures, row ids and held symbols are in gitignored `docs
   waits for the Plaid dating fix (decision 31, open).
 - **The benchmark is labelled "SPY price return"** and alpha says it is overstated by about the benchmark's
   dividend yield (`lib/compute/benchmark-label.ts`). A total-return series is the real fix, later.
+- **Cash deploy: a fund is a candidate only for sectors it holds more than 2% of** (a browser pass found a
+  real-estate fund filed under another sector through its sliver), and is filed under the binding sector that
+  holds the largest share of the fund. Open: one name can take most of the cash, because the only cap is a share
+  of the book (decision 33).
 - **Cash deploy** stops at each sector's gap, measures weights net of shorts with options at delta-adjusted
   exposure, reports what it could not place, and lets a fund's sector weights of 2% or less run past target
   (`FUND_SMALL_WEIGHT_TOLERANCE`; no cumulative cap, bounded at 2% of the cash placed through such picks). It
@@ -2002,14 +2006,25 @@ isolated sandbox. Real figures, row ids and held symbols are in gitignored `docs
 - **Trade Reviews are on hold** pending their own session. The correctness fixes made here stay.
 - **A named scope that matches no account will show nothing** (decision 13b = A), as its own later change.
 
-### Three more data repairs: rehearsed on private copies, NOT applied (as of 2026-11-16)
+### Three more data repairs: applied live 2026-11-16 (owner go-ahead "Yes, apply all three")
+
+Run order, with the app quit: one explicit backup; the mixed-trade split (2 rows split, both names); the option
+exercise repair (12 rows, priced at the strike); `recompute-tax-lots-v2 --apply --live --verify-idempotent`
+(identity ok, second run identical); then the gift's lots through the app's own route handler, acknowledged.
+Every script took its own time-stamped backup and a second pass of each found nothing to do. Realized gain by
+account, year and term after the run equals the combined rehearsal exactly; integrity and foreign-key checks are
+clean; the convention stamp is current. All three had been rehearsed together on a copy and reviewed by an
+independent agent that ran the code. The 2021 transfer below is NOT applied.
+
 
 - **A transfer into the taxable account in 2021 was never imported.** Seven funds and a little cash; the app is
   short the exact share counts for the three still held, and realized gains are wrong for the four later sold.
   The broker kept the original lots. Importing it alone would make realized gains worse, because the engine
   relieves oldest-first while the broker used its minimum-tax method for 2026 sales; it waits for a
   sale-level lot choice in the engine (decisions 29 and 30, open).
-- **Option exercises lose their premium** (`scripts/repair-option-exercise-basis.ts`). `computeExerciseLinks`
+- **Option exercises lose their premium** (`scripts/repair-option-exercise-basis.ts`; the repaired row stores
+  the STRIKE as its price, since the engine only needs a non-zero price and every screen shows that field as a
+  fill price). `computeExerciseLinks`
   links only a row typed EXERCISED or ASSIGNED that carries a price; the importers store an exercise as a
   zero-price close or a corporate action, so the premium is booked as an option loss and the shares sit at the
   strike. Twelve rows are repairable by data; two put exercises delivered as short sales need an engine change.
