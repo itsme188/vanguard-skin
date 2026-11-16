@@ -95,6 +95,20 @@ interface PerformanceViewProps {
 
 const BENCHMARK_SYMBOL = "SPY";
 
+/**
+ * A time-weighted return over less than a year is shown as the period's own
+ * return, never annualized (GIPS practice: annualizing a part-year return
+ * projects the part year's pace onto a full year). Display only; the compute
+ * layer's annualizedReturn is unchanged. The money-weighted tile stays
+ * labelled annualized: XIRR is a rate by construction.
+ */
+const MIN_ANNUALIZED_DAYS = 365;
+
+function shownAnnualized(annualized: number | null | undefined, totalDays: number | undefined): number | null {
+  if (annualized == null || totalDays === undefined || totalDays < MIN_ANNUALIZED_DAYS) return null;
+  return annualized;
+}
+
 export async function PerformanceView({ scope = "all", period, month }: PerformanceViewProps) {
   const activePeriod: Period = (PERIODS.find((p) => p.key === period)?.key ?? "ytd") as Period;
   const activeScope = SCOPES.find((s) => s.key === scope)?.key ?? "all";
@@ -189,6 +203,9 @@ export async function PerformanceView({ scope = "all", period, month }: Performa
 
   const totalReturnPct = twrResult?.totalReturn ?? null;
   const annualizedTwr = twrResult?.annualizedReturn ?? null;
+  // What the TWR tile shows under its figure: nothing for a window under a
+  // year (YTD, or a scope whose history is shorter than the period).
+  const shownAnnualizedTwr = shownAnnualized(annualizedTwr, twrResult?.totalDays);
   const xirrAnnualized = xirrResult?.xirr ?? null;
 
   // ── Reconciliation strip ────────────────────────────────────────
@@ -436,9 +453,9 @@ export async function PerformanceView({ scope = "all", period, month }: Performa
                 kind="pct"
                 title="Time-weighted return over the selected period — manager-skill measure that strips out cash-flow timing."
                 subNode={
-                  annualizedTwr !== null ? (
+                  shownAnnualizedTwr !== null ? (
                     <>
-                      ≈ <Pct value={annualizedTwr * 100} digits={2} signed /> annualized
+                      ≈ <Pct value={shownAnnualizedTwr * 100} digits={2} signed /> annualized
                     </>
                   ) : null
                 }
@@ -536,7 +553,10 @@ export async function PerformanceView({ scope = "all", period, month }: Performa
               </div>
               <div>
                 <dt className="text-[11px] uppercase tracking-widest text-ink-faint">Cash flows</dt>
-                <dd className="text-ink font-mono">{xirrResult?.cashFlowCount ?? "—"}</dd>
+                {/* Real deposits and withdrawals only: the solver's own list
+                    (cashFlowCount) also carries each account's opening and
+                    terminal values, so one deposit read as three. */}
+                <dd className="text-ink font-mono">{xirrResult?.externalFlowCount ?? "—"}</dd>
               </div>
             </dl>
             {/* Only when the chain really does open before the first
@@ -597,7 +617,10 @@ export async function PerformanceView({ scope = "all", period, month }: Performa
                       </td>
                       <td className="py-2 text-right font-mono tabular-nums">
                         <Pct
-                          value={acc.annualizedReturn !== null ? acc.annualizedReturn * 100 : null}
+                          value={(() => {
+                            const shown = shownAnnualized(acc.annualizedReturn, acc.totalDays);
+                            return shown !== null ? shown * 100 : null;
+                          })()}
                           digits={2}
                           signed
                         />

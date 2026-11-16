@@ -33,7 +33,14 @@ export interface XirrResult {
   totalInvested: number; // total deposits
   totalWithdrawn: number; // total withdrawals
   currentValue: number; // ending portfolio value
+  /**
+   * Length of the solver's cash-flow list: the real flows PLUS the opening
+   * value and the terminal value. Not a count of deposits/withdrawals; show
+   * `externalFlowCount` instead.
+   */
   cashFlowCount: number;
+  /** Real external flows only (deposits, withdrawals, in-kind transfer legs). */
+  externalFlowCount: number;
 }
 
 export interface PortfolioXirrResult {
@@ -43,7 +50,10 @@ export interface PortfolioXirrResult {
   totalInvested: number;
   totalWithdrawn: number;
   currentValue: number;
+  /** See XirrResult.cashFlowCount: includes each account's opening and terminal values. */
   cashFlowCount: number;
+  /** Real external flows only, summed over the accounts (unnetted). */
+  externalFlowCount: number;
   perAccount: XirrResult[];
 }
 
@@ -306,11 +316,13 @@ export function computeXirr(
      ORDER BY trade_date ASC`
   );
 
-  // In-kind mirror of externalFlowStmt (spec §6.5). The snapshot-flow branch
-  // below is RANGE-wide, not per-month: once ANY month in [effectiveStart,
+  // In-kind mirror of externalFlowStmt (spec §6.5). The per-account branch
+  // choice below is RANGE-wide: once ANY month in [effectiveStart,
   // effectiveEnd] has a nonzero monthly_snapshots.deposits_withdrawals, the
-  // WHOLE range reads from snapshotFlows and externalFlowStmt (the fallback,
-  // which already includes in-kind rows unfiltered) never runs — so a month
+  // range reads from snapshotFlows (plus the ledger cash flows of statement
+  // months that leave the figure NULL, nullMonthLedgerStmt) and
+  // externalFlowStmt (the fallback, which already includes in-kind rows
+  // unfiltered) never runs — so a month
   // with no cash flow but a real in-kind donation/journal leg would
   // silently vanish. Fetched for the whole range and unioned in wherever
   // the snapshot branch is taken (per-account below, portfolio further
@@ -323,6 +335,40 @@ export function computeXirr(
        AND trade_date >= ? AND trade_date <= ?
        AND ${IN_KIND_LEG_SQL}
      ORDER BY trade_date ASC`
+  );
+
+  // Per-month flow source (the statement where it reports the figure, the
+  // ledger where it does not). A statement month whose row leaves
+  // deposits_withdrawals NULL says nothing about that month's flows, so the
+  // snapshot branches below read that month's ledger cash flows from here.
+  // In-kind legs are excluded: those branches union them for the whole
+  // range already. A month with any statement row that DOES report the
+  // figure (zero included) is never read from the ledger, so a flow is never
+  // counted twice. Months with no statement row at all are unchanged.
+  const nullStatementMonthLedgerSql = (accountCol: string, extraWhere: string) =>
+    `SELECT trade_date, ${SIGNED_EXTERNAL_FLOW_SQL} AS amount, account_id
+     FROM transactions
+     WHERE is_external_flow = 1
+       AND amount IS NOT NULL
+       AND trade_date >= ? AND trade_date <= ?
+       AND NOT (${IN_KIND_LEG_SQL})${extraWhere}
+       AND EXISTS (
+         SELECT 1 FROM monthly_snapshots ms
+         WHERE ms.account_id = ${accountCol}
+           AND SUBSTR(ms.month_end_date, 1, 7) = SUBSTR(trade_date, 1, 7)
+           AND ${excludeLiveSnapshotsSql("ms.source")}
+           AND ms.deposits_withdrawals IS NULL
+       )
+       AND NOT EXISTS (
+         SELECT 1 FROM monthly_snapshots ms
+         WHERE ms.account_id = ${accountCol}
+           AND SUBSTR(ms.month_end_date, 1, 7) = SUBSTR(trade_date, 1, 7)
+           AND ${excludeLiveSnapshotsSql("ms.source")}
+           AND ms.deposits_withdrawals IS NOT NULL
+       )
+     ORDER BY trade_date ASC`;
+  const nullMonthLedgerStmt = db.prepare(
+    nullStatementMonthLedgerSql("transactions.account_id", " AND account_id = ?")
   );
 
   const latestValueStmt = db.prepare(
@@ -395,6 +441,8 @@ export function computeXirr(
 
   for (const account of accounts) {
     const cashFlows: CashFlow[] = [];
+    // Real flows only (the opening and terminal values pushed below are not).
+    let externalFlowCount = 0;
 
     // Starting value as a negative cash flow (initial investment)
     // Pick whichever source (monthly or daily) has the most recent date
@@ -498,6 +546,7 @@ export function computeXirr(
           date: midMonth,
           amount: -depositAmount,
         });
+        externalFlowCount++;
 
         if (depositAmount > 0) {
           totalInvested += depositAmount;
@@ -522,7 +571,25 @@ export function computeXirr(
           date: flow.trade_date,
           amount: -flow.amount,
         });
+        externalFlowCount++;
 
+        if (flow.amount > 0) {
+          totalInvested += flow.amount;
+        } else {
+          totalWithdrawn += Math.abs(flow.amount);
+        }
+      }
+
+      // Ledger cash flows of the statement months that leave the figure NULL
+      // (per-month choice; see nullStatementMonthLedgerSql).
+      const nullMonthFlows = nullMonthLedgerStmt.all(
+        flowStart,
+        effectiveEnd,
+        account.id
+      ) as TransactionRow[];
+      for (const flow of nullMonthFlows) {
+        cashFlows.push({ date: flow.trade_date, amount: -flow.amount });
+        externalFlowCount++;
         if (flow.amount > 0) {
           totalInvested += flow.amount;
         } else {
@@ -543,6 +610,7 @@ export function computeXirr(
           date: flow.trade_date,
           amount: -flow.amount,
         });
+        externalFlowCount++;
 
         if (flow.amount > 0) {
           totalInvested += flow.amount;
@@ -592,6 +660,7 @@ export function computeXirr(
       totalWithdrawn,
       currentValue,
       cashFlowCount: cashFlows.length,
+      externalFlowCount,
     });
   }
 
@@ -612,6 +681,7 @@ export function computeXirr(
       totalWithdrawn: acct.totalWithdrawn,
       currentValue: acct.currentValue,
       cashFlowCount: acct.cashFlowCount,
+      externalFlowCount: acct.externalFlowCount,
       perAccount,
     };
   }
@@ -795,6 +865,12 @@ export function computeXirr(
       amount: number;
     }[];
 
+  // Ledger cash flows of statement months that leave deposits_withdrawals
+  // NULL, per account (same per-month rule as the per-account path).
+  const aggNullMonthFlows = db
+    .prepare(nullStatementMonthLedgerSql("transactions.account_id", scopeAnd("account_id")))
+    .all(aggFlowStart, effectiveEnd, ...scopeParams) as TransactionRow[];
+
   // Pre-compute December annual deposit corrections (same logic as TWR)
   const xirrDecCorrections = new Map<string, number>();
   const xirrDecSnaps = db
@@ -944,6 +1020,16 @@ export function computeXirr(
     }
   }
 
+  for (const flow of aggNullMonthFlows) {
+    if (flow.trade_date > terminalDate) continue;
+    portfolioCashFlows.push({ date: flow.trade_date, amount: -flow.amount });
+    if (flow.amount > 0) {
+      totalInvested += flow.amount;
+    } else {
+      totalWithdrawn += Math.abs(flow.amount);
+    }
+  }
+
   if (currentValue > 0) {
     portfolioCashFlows.push({
       date: terminalDate,
@@ -970,6 +1056,8 @@ export function computeXirr(
     // account's own (unnetted) cashFlowCount, so it can never read as less
     // activity than its largest member.
     cashFlowCount: perAccount.reduce((sum, a) => sum + a.cashFlowCount, 0),
+    // The count the page shows: real flows only, summed the same unnetted way.
+    externalFlowCount: perAccount.reduce((sum, a) => sum + a.externalFlowCount, 0),
     perAccount,
   };
 }
