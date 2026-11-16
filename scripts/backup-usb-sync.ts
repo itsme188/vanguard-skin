@@ -4,7 +4,8 @@
  * Copies every archive file plus HOW-TO-RESTORE.txt into
  * "<volume>/Portfolio Desk Backups/" when missing or different, and verifies
  * each copy by checksum. Never deletes anything on the drive. An archive
- * already on the drive is replaced only after the local one is proven to
+ * whose checksum list is missing, empty or unreadable is not copied at all.
+ * An archive already on the drive is replaced only after the local one is proven to
  * decode; otherwise the drive's copy (and its manifest) is kept and the
  * command exits non-zero.
  */
@@ -36,6 +37,24 @@ export interface SyncResult {
 }
 
 const message = (err: unknown) => (err instanceof Error ? err.message : String(err));
+
+/**
+ * Null when the archive's paired checksum list exists, parses and names at
+ * least one member; else why not. An archive without a usable list is a state a
+ * roll leaves when it dies between its two renames: the restore drill refuses
+ * such an archive, so it must not be copied to the drive or counted as current.
+ */
+function whyManifestUnusable(archive: string): string | null {
+  const manifestPath = manifestOf(archive);
+  const fix = "take another backup so the next roll repairs it, then sync again";
+  if (!fs.existsSync(manifestPath)) return `its checksum list (${path.basename(manifestPath)}) is missing; ${fix}`;
+  try {
+    if (readManifest(manifestPath).size === 0) return `its checksum list (${path.basename(manifestPath)}) is empty; ${fix}`;
+  } catch (err) {
+    return `its checksum list does not parse: ${message(err)}`;
+  }
+  return null;
+}
 
 /** Null when `archive` decodes and holds every member its manifest names; else why not. */
 async function whyNotTrusted(archive: string, zstd: string | null): Promise<string | null> {
@@ -123,6 +142,14 @@ export async function syncToVolume(
   const zstd = opts.zstd !== undefined ? opts.zstd : findZstd();
   const keepOnDrive = new Set<string>();
   for (const src of archiveSources) {
+    // An archive with no usable checksum list is never copied, first time or
+    // not: it cannot be verified or restore-tested from the drive.
+    const noManifest = whyManifestUnusable(src);
+    if (noManifest !== null) {
+      keepOnDrive.add(src).add(manifestOf(src));
+      result.refused.push({ name: path.basename(src), reason: noManifest });
+      continue;
+    }
     const dest = path.join(destDir, path.basename(src));
     if (!fs.existsSync(dest) || (await sameOnDrive(src, dest))) continue;
     const why = await whyNotTrusted(src, zstd);

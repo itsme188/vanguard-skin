@@ -156,11 +156,14 @@ describe("restore test", () => {
 describe("usb sync", () => {
   const dest = () => path.join(volume, "Portfolio Desk Backups");
 
+  /** One well-formed manifest line; `digit` only makes two manifests differ. */
+  const manifestLine = (digit = "a") => `${digit.repeat(64)}  pre-x-2026-01-02_03-04-05.db\n`;
+
   async function twoFiles(): Promise<void> {
     const archives = path.join(home, "archives");
     fs.mkdirSync(archives);
     fs.writeFileSync(path.join(archives, "2026-01.tar.zst"), "archive-one");
-    fs.writeFileSync(path.join(archives, "2026-01.sha256"), "manifest");
+    fs.writeFileSync(path.join(archives, "2026-01.sha256"), manifestLine());
     fs.writeFileSync(path.join(home, "HOW-TO-RESTORE.txt"), "steps");
   }
 
@@ -175,7 +178,7 @@ describe("usb sync", () => {
   it("usb sync skips a file that is already identical", async () => {
     await twoFiles();
     await syncToVolume(home, volume);
-    fs.writeFileSync(path.join(home, "archives", "2026-01.sha256"), "manifest-2");
+    fs.writeFileSync(path.join(home, "archives", "2026-01.sha256"), manifestLine("b"));
     const r = await syncToVolume(home, volume);
     expect(r.copied).toEqual(["2026-01.sha256"]);
     expect(r.skipped.sort()).toEqual(["2026-01.tar.zst", "HOW-TO-RESTORE.txt"]);
@@ -275,6 +278,7 @@ describe("usb sync", () => {
     fs.mkdirSync(dest());
     fs.writeFileSync(path.join(dest(), "2026-01.tar.zst"), "an older copy");
     fs.writeFileSync(path.join(home, "archives", "2026-02.tar.zst"), "archive-two");
+    fs.writeFileSync(path.join(home, "archives", "2026-02.sha256"), manifestLine("c"));
     const r = await syncToVolume(home, volume, { zstd: null });
     expect(r.refused.map((x) => x.name)).toContain("2026-01.tar.zst");
     expect(r.refused[0].reason).toMatch(/zstd/);
@@ -283,6 +287,45 @@ describe("usb sync", () => {
     // One archive matched, but a refusal means the drive is not current: no marker.
     expect(r).toMatchObject({ archivesOnDrive: 1, stamped: false });
     expect(fs.existsSync(path.join(home, USB_MARKER_NAME))).toBe(false);
+  });
+
+  // A roll that dies between its two renames leaves an archive with no checksum
+  // list. The restore drill refuses such an archive, so the drive must not get it.
+  it.each([
+    ["missing", null],
+    ["empty", ""],
+    ["unreadable", "not a manifest line\n"],
+  ])("usb sync refuses an archive whose checksum list is %s: not copied, no stamp", async (_label, content) => {
+    await twoFiles();
+    const archives = path.join(home, "archives");
+    fs.writeFileSync(path.join(archives, "2026-02.tar.zst"), "archive-two");
+    if (content !== null) fs.writeFileSync(path.join(archives, "2026-02.sha256"), content);
+    fs.writeFileSync(path.join(home, USB_MARKER_NAME), "earlier\n");
+
+    const r = await syncToVolume(home, volume);
+
+    expect(r.refused.map((x) => x.name)).toContain("2026-02.tar.zst");
+    expect(r.refused.find((x) => x.name === "2026-02.tar.zst")?.reason).toMatch(/checksum list/);
+    expect(fs.existsSync(path.join(dest(), "2026-02.tar.zst"))).toBe(false);
+    expect(fs.existsSync(path.join(dest(), "2026-02.sha256"))).toBe(false);
+    // The healthy month still syncs, but the drive is not current: marker untouched.
+    expect(r.copied).toContain("2026-01.tar.zst");
+    expect(r).toMatchObject({ archivesOnDrive: 1, stamped: false });
+    expect(fs.readFileSync(path.join(home, USB_MARKER_NAME), "utf8")).toBe("earlier\n");
+  });
+
+  it("usb sync keeps the drive's archive and list when the local list goes missing", async () => {
+    await twoFiles();
+    await syncToVolume(home, volume);
+    fs.rmSync(path.join(home, "archives", "2026-01.sha256"));
+    fs.writeFileSync(path.join(home, "archives", "2026-01.tar.zst"), "archive-one-changed");
+
+    const r = await syncToVolume(home, volume);
+
+    expect(r.refused.map((x) => x.name)).toEqual(["2026-01.tar.zst"]);
+    expect(fs.readFileSync(path.join(dest(), "2026-01.tar.zst"), "utf8")).toBe("archive-one");
+    expect(fs.readFileSync(path.join(dest(), "2026-01.sha256"), "utf8")).toBe(manifestLine());
+    expect(r.stamped).toBe(false);
   });
 
   it("usb sync with no archive yet copies nothing and writes no stamp", async () => {
