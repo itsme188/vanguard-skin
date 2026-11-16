@@ -12,7 +12,7 @@
  */
 import type Database from "better-sqlite3";
 import { saveBogeyWithRecompile } from "@/lib/mutations/earnings-bogeys";
-import { issuerSiblings } from "@/lib/securities/issuer-family";
+import { issuerSiblings, samePerShareBasis } from "@/lib/securities/issuer-family";
 import { findHiddenFinnhubDonor } from "@/lib/calendar/reconcile-earnings-dates";
 import { stableHash, type PrepareStepDefinition } from "../prepare-armed-event";
 
@@ -120,7 +120,16 @@ function hasOwnFinnhubEntry(rawJson: string | null): boolean {
 export function resolveVendorConsensus(db: Database.Database, eventId: number, e: EventRow): VendorConsensus | null | undefined {
   if (e.source === "finnhub") return readVendorConsensus(e.raw_json, e.symbol);
   const donor = findHiddenFinnhubDonor(db, { id: eventId, symbol: e.symbol, event_date: e.event_date });
-  if (donor) return readVendorConsensus(donor.raw_json, e.symbol);
+  if (donor) {
+    const vendor = readVendorConsensus(donor.raw_json, e.symbol);
+    // The hidden row can be another share class. Its EPS is shown for this
+    // event only when both classes are on one per-share basis
+    // (`samePerShareBasis`); its revenue estimate is the company's and stays.
+    // A cross-basis row that states only an EPS states nothing for this
+    // event, which reads as "withdrawn" and removes a bogey that held it.
+    if (!vendor || samePerShareBasis(donor.symbol, e.symbol)) return vendor;
+    return vendor.revenue == null ? null : { eps: null, revenue: vendor.revenue };
+  }
   return hasOwnFinnhubEntry(e.raw_json) ? readVendorConsensus(e.raw_json, e.symbol) : undefined;
 }
 
