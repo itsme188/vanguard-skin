@@ -5,6 +5,7 @@ import type { AnalysisTrustState } from "@/lib/queries/analysis-trust-state";
 import { TrustStripDrawer, stalePricesSummary, type DrawerPanel } from "./TrustStripDrawer";
 import { PrivateText } from "@/lib/privacy/components";
 import { formatEnrichedAtET } from "@/lib/format";
+import { readMutationResult, networkFailureMessage } from "@/lib/ui/mutation-result";
 
 type Tone = "good" | "warn" | "bad" | "neutral";
 
@@ -83,14 +84,24 @@ export function TrustStrip({ scope }: TrustStripProps) {
   const [state, setState] = useState<AnalysisTrustState | null>(null);
   const [activePanel, setActivePanel] = useState<DrawerPanel | null>(null);
 
+  const [loadError, setLoadError] = useState<string | null>(null);
+
+  // A failed load is shown as a plain line with a retry, never left as a
+  // pulsing skeleton. A failed refresh keeps the figures already on screen
+  // and says the refresh failed.
   const fetchState = useCallback(() => {
     const qs = scope && scope !== "all" ? `?scope=${scope}` : "";
     fetch(`/api/analysis/trust-state${qs}`)
-      .then((r) => r.json())
-      .then((json) => {
-        if (json.success) setState(json.data as AnalysisTrustState);
+      .then((r) => readMutationResult<{ data: AnalysisTrustState }>(r))
+      .then((result) => {
+        if (result.ok) {
+          setState(result.data.data);
+          setLoadError(null);
+        } else {
+          setLoadError(`Couldn't load the data checks: ${result.message}`);
+        }
       })
-      .catch(() => {/* graceful no-op */});
+      .catch(() => setLoadError(networkFailureMessage("load the data checks")));
   }, [scope]);
 
   useEffect(() => {
@@ -99,6 +110,23 @@ export function TrustStrip({ scope }: TrustStripProps) {
 
   function togglePanel(panel: DrawerPanel) {
     setActivePanel((prev) => (prev === panel ? null : panel));
+  }
+
+  // Clear the error first so a retry shows the skeleton while it loads.
+  function retry() {
+    setLoadError(null);
+    fetchState();
+  }
+
+  if (!state && loadError) {
+    return (
+      <p className="flex items-center gap-2 mb-2 text-xs text-down">
+        <span>{loadError}</span>
+        <button onClick={retry} className="underline text-ink focus-ring">
+          Retry
+        </button>
+      </p>
+    );
   }
 
   if (!state) {
@@ -231,6 +259,8 @@ export function TrustStrip({ scope }: TrustStripProps) {
           active={activePanel === "bondDuration"}
         />
       </div>
+
+      {loadError && <p className="mb-2 text-xs text-down">{loadError}</p>}
 
       {activePanel && (
         <TrustStripDrawer

@@ -4,6 +4,7 @@ import { CHIP_TONE_TEXT } from "@/app/dashboard/components/chip-tone-text";
 import { useState } from "react";
 import { Money, Pct, PrivateText } from "@/lib/privacy/components";
 import { ScrollFade } from "../ScrollFade";
+import { readMutationResult, networkFailureMessage } from "@/lib/ui/mutation-result";
 import {
   equitySleeveCaptionLead,
   type CashDeploySuggestion,
@@ -30,11 +31,16 @@ export function CashDeployCard({ scope }: Props) {
       const res = await fetch(
         `/api/analysis/cash-deploy?scope=${encodeURIComponent(scope)}&cash=${cash}`
       );
-      const data = await res.json();
-      if (!data.success) throw new Error(data.error ?? "Request failed");
-      setResult(data.data as CashDeploySuggestion);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to compute");
+      // Status and envelope both checked; a non-JSON body (an HTML 500) reads
+      // as a plain error, never "Unexpected token <".
+      const r = await readMutationResult<{ data: CashDeploySuggestion }>(res);
+      if (!r.ok) {
+        setError(`Couldn't suggest an allocation: ${r.message}`);
+        return;
+      }
+      setResult(r.data.data);
+    } catch {
+      setError(networkFailureMessage("suggest an allocation"));
     } finally {
       setLoading(false);
     }
@@ -199,7 +205,9 @@ export function CashDeployCard({ scope }: Props) {
                       </div>
                       <span className="font-mono text-ink"><Money value={p.allocationDollars} /></span>
                     </div>
-                    <p className="text-[11px] text-ink-faint">{p.rationale}</p>
+                    {/* The rationale quotes the sector gap in pp, which the Gap
+                        column masks; mask it the same way. */}
+                    <p className="text-[11px] text-ink-faint"><PrivateText>{p.rationale}</PrivateText></p>
                   </div>
                 ))}
               </div>
