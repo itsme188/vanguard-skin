@@ -39,7 +39,8 @@ vi.mock("@/lib/compute/factors", () => ({
   computeFactorAnalysis: vi.fn(() => FIXED_RESULT),
 }));
 vi.mock("@/lib/compute/risk", () => ({
-  computeRiskMetrics: vi.fn(() => ({ sharpe: 1 })),
+  // The fields the risk-metrics context reads (a real result always has them).
+  computeRiskMetrics: vi.fn(() => ({ sharpeRatio: 1, maxDrawdown: null, currentDrawdown: null, top5Positions: [] })),
   computePositionRisk: vi.fn(() => null),
 }));
 

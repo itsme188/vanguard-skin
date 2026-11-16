@@ -23,6 +23,7 @@ import {
 } from "@/lib/queries/analysis-narratives";
 import { computeFactorAnalysis } from "@/lib/compute/factors";
 import { computeRiskMetrics, computePositionRisk } from "@/lib/compute/risk";
+import type { PortfolioRiskMetrics, PositionRiskResult } from "@/lib/compute/risk";
 import { getFactorHeatmap } from "@/lib/queries/analysis";
 import { computeDefenseAnalysis } from "@/lib/compute/hedging";
 import { getDefaultBenchmark } from "@/lib/analysis/benchmarks";
@@ -76,13 +77,13 @@ const SURFACE_PROMPTS: Record<NarrativeSurface, string> = {
   "factor-analysis":
     "Summarize the user's portfolio factor exposure in 2-3 sentences. Highlight the dominant tilts (Growth vs Value, AI exposure, Rate sensitivity, Cyclicality, etc.) and what they imply about the user's effective bet on the market regime. Avoid specific dollar amounts. Use plain English, no jargon. The marketRegression figures are measured against the benchmark named in the `benchmark` field: whenever you mention beta, alpha, R-squared, tracking error or correlation, name that benchmark (for example 'beta versus VTI').",
   "risk-metrics":
-    "Summarize the portfolio's risk metrics in 2-3 sentences: drawdown profile, volatility, Sharpe, Herfindahl concentration. Note whether risk is concentrated in a few names or diversified. Avoid specific dollar amounts.",
+    "Summarize the portfolio's risk metrics in 2-3 sentences: drawdown profile, volatility, Sharpe, Herfindahl concentration. Note whether risk is concentrated in a few names or diversified. Drawdown percents, weights and netFlowsInWindowPctOfPeak (net deposits or withdrawals in the drawdown window as a share of the peak value) are decimal fractions (0.18 = 18%). Avoid specific dollar amounts.",
   "position-risk":
-    "In 2-3 sentences, identify which positions are driving the portfolio's risk. Mention the top 2-3 risk contributors by name and what makes them risky (size, beta, factor exposure). Avoid specific dollar amounts.",
+    "In 2-3 sentences, identify which positions are driving the portfolio's risk. Mention the top 2-3 risk contributors by name and what makes them risky (size as weight in the portfolio, volatility, correlation). Weights are decimal fractions (0.18 = 18%). Avoid specific dollar amounts.",
   "factor-heatmap":
     "Read the heatmap of factor exposures across positions. The data summarises it per factor: each bucket's share of the book (weightPct, percent of total market value), how many positions sit in it and its largest names; `unclassified` is the share with no value for that factor, and `coverage` says how much of the book has any factor data. In 2-3 sentences, call out the most concentrated factor bucket and any surprising holes (e.g., zero crypto exposure, no defensive plays). Avoid specific dollar amounts.",
   defense:
-    "You are reviewing the portfolio's defensive posture. In 2-4 sentences: state how much of the long book is protected and through what (same-name hedges vs index/sector puts), name the largest UNPROTECTED exposures, and flag any hedge that looks expensive or nearly decayed (use the badges). Plain prose, no headers, no advice to buy anything new. All ratio/pct fields in the context are decimal fractions (0.18 = 18%) — convert before narrating. A negative monthlyBleedPct means the hedge COLLECTS premium (short-option income), not a cost — never call it expensive.",
+    "You are reviewing the portfolio's defensive posture. In 2-4 sentences: state how much of the long book is protected and through what (same-name hedges vs index/sector puts), name the largest UNPROTECTED exposures, and flag any hedge that looks expensive or nearly decayed (use the badges). Plain prose, no headers, no advice to buy anything new. All ratio/pct fields in the context are decimal fractions (0.18 = 18%) — convert before narrating. Sizes are shares, never dollars: a `...PctOfLong` field and an exposure's pctOfBook are shares of the long exposure; a hedge's protectedPct is its protected notional as a share of the long exposure (side long) or of the short exposure (side short); shortSideHedgeRatio is the short book's protection. A negative monthlyBleedPct means the hedge COLLECTS premium (short-option income), not a cost — never call it expensive.",
 };
 
 // ─── Input fingerprinting (cache-invalidation-on-drift) ──────────────────────
@@ -473,6 +474,173 @@ export function buildFactorHeatmapFingerprintInputs(rows: FactorHeatmapRow[]): F
   return summariseHeatmap(rows, 0.5);
 }
 
+// ─── Dollar-free contexts (owner ruling 21 = A, 2026-11-16) ──────────────────
+//
+// No Analysis narrative prompt carries a portfolio dollar amount. The risk,
+// position-risk and defense contexts state every portfolio figure as a share
+// (a decimal fraction: 0.18 = 18%) of a named base instead: a drawdown is
+// already a percent, a position is its weight in the scope, an exposure or a
+// hedge notional is a share of the long exposure. Public market data (a
+// security's own volatility, a hedge's moneyness) stays as it is.
+
+/** Decimal places kept on a derived share: 0.01 percentage point. */
+const SHARE_DECIMALS = 4;
+
+/** part / base as a decimal fraction, or null when the base is not positive. */
+function shareOf(part: number | null | undefined, base: number | null | undefined): number | null {
+  if (typeof part !== "number" || !Number.isFinite(part)) return null;
+  if (typeof base !== "number" || !Number.isFinite(base) || base <= 0) return null;
+  return Number((part / base).toFixed(SHARE_DECIMALS));
+}
+
+function sideOf(signedValue: number): "long" | "short" {
+  return signedValue < 0 ? "short" : "long";
+}
+
+/**
+ * The risk-metrics prompt payload: drawdowns as percents with their dates
+ * (no peak, trough or current portfolio value; the flows in the window as a
+ * share of the peak value), the top five as weights, cash as its weight.
+ */
+export function buildRiskMetricsContext(r: PortfolioRiskMetrics) {
+  return {
+    maxDrawdown: r.maxDrawdown
+      ? {
+          percent: r.maxDrawdown.percent,
+          peakDate: r.maxDrawdown.peakDate,
+          troughDate: r.maxDrawdown.troughDate,
+          netFlowsInWindowPctOfPeak: shareOf(r.maxDrawdown.netFlowsInWindow, r.maxDrawdown.peakValue),
+        }
+      : null,
+    currentDrawdown: r.currentDrawdown
+      ? {
+          percent: r.currentDrawdown.percent,
+          peakDate: r.currentDrawdown.peakDate,
+          netFlowsInWindowPctOfPeak: shareOf(r.currentDrawdown.netFlowsInWindow, r.currentDrawdown.peakValue),
+        }
+      : null,
+    volatility: r.volatility,
+    sharpeRatio: r.sharpeRatio,
+    riskFreeRate: r.riskFreeRate,
+    herfindahl: r.herfindahl,
+    top5Concentration: r.top5Concentration,
+    top5Positions: r.top5Positions.map((p) => ({
+      symbol: p.symbol,
+      securityName: p.securityName,
+      side: sideOf(p.marketValue),
+      weight: p.weight,
+    })),
+    positionCount: r.positionCount,
+    cashWeight: r.cashWeight,
+    cashHoldingCount: r.cashHoldingCount,
+    dataPoints: r.dataPoints,
+    seamDaysBridged: r.seamDaysBridged,
+    seriesStart: r.seriesStart,
+    seriesEnd: r.seriesEnd,
+  };
+}
+
+/**
+ * The position-risk prompt payload: each position's weight in the scope and
+ * its risk figures, never its market value. Ranked by risk contribution, the
+ * order the table shows (see buildSurfaceInputs).
+ */
+export function buildPositionRiskContext(r: PositionRiskResult) {
+  return {
+    positions: r.positions.map((p) => ({
+      securityId: p.securityId,
+      symbol: p.symbol,
+      securityName: p.securityName,
+      weight: p.weight,
+      annualizedVol: p.annualizedVol,
+      riskContribution: p.riskContribution,
+      correlationWithPortfolio: p.correlationWithPortfolio,
+      dataPoints: p.dataPoints,
+      cashEquivalent: p.cashEquivalent,
+    })),
+    correlations: r.correlations,
+    portfolioVol: r.portfolioVol,
+  };
+}
+
+/**
+ * The defense prompt payload. Every exposure and notional is a share of the
+ * long exposure (`...PctOfLong`); a sector's protection is a share of that
+ * sector's long exposure; a short-side hedge is a share of the short
+ * exposure. Contract counts and dollar theta are left out (the hedge's
+ * monthly bleed and efficiency, both ratios, stay).
+ */
+export function buildDefenseContext(a: DefenseAnalysis) {
+  const s = a.summary;
+  const long = s.longExposure;
+  const shortAbs = Math.abs(s.shortExposure);
+  return {
+    summary: {
+      protectionRatio: s.protectionRatio,
+      shortExposurePctOfLong: shareOf(s.shortExposure, long),
+      netExposurePctOfLong: shareOf(s.netExposure, long),
+      grossExposurePctOfLong: shareOf(s.grossExposure, long),
+      shortSideHedgeRatio: shareOf(s.shortSideHedgeNotional, shortAbs),
+      shortSideHedgeExposurePctOfLong: shareOf(s.shortSideHedgeExposure, long),
+      hedgeCount: s.hedgeCount,
+      longSideHedgeCount: s.longSideHedgeCount,
+      shortSideHedgeCount: s.shortSideHedgeCount,
+      notCreditedCount: s.notCreditedCount,
+      optionPositionCount: s.optionPositionCount,
+      shortPositionCount: s.shortPositionCount,
+    },
+    sectorCoverage: a.sectorCoverage.map((sc) => ({
+      sector: sc.sector,
+      longExposurePctOfLong: shareOf(sc.longExposure, long),
+      coveragePct: sc.coveragePct,
+      protectedBeyondExposurePct: shareOf(sc.protectedBeyondExposure, sc.longExposure),
+    })),
+    topExposures: a.rankedExposures.slice(0, DEFENSE_TOP_EXPOSURES_N).map((r) => ({
+      underlying: r.underlying,
+      securityId: r.securityId,
+      side: sideOf(r.netExposure),
+      pctOfBook: r.pctOfBook,
+      tier1CoveragePct: r.tier1CoveragePct,
+      sectorProxyCoveragePct: r.sectorProxyCoveragePct,
+      classification: r.classification,
+      hasAmplifiers: r.hasAmplifiers,
+      sector: r.sector,
+      ...(r.notes && r.notes.length > 0 ? { notes: r.notes } : {}),
+      ...(r.legs && r.legs.length > 0
+        ? {
+            legs: r.legs.map((l) => ({
+              symbol: l.symbol,
+              optionType: l.optionType,
+              side: sideOf(l.quantity),
+              exposurePctOfLong: shareOf(l.exposure, long),
+            })),
+          }
+        : {}),
+    })),
+    hedgeScores: a.hedgeScores.slice(0, 15).map((h) => ({
+      securityId: h.securityId,
+      symbol: h.symbol,
+      underlying: h.underlying,
+      protects: h.protects,
+      side: h.side,
+      // A long-side hedge as a share of the long exposure; a call held against
+      // a short as a share of the short exposure (its own book, K4a).
+      protectedPct: shareOf(h.protectedNotional, h.side === "short" ? shortAbs : long),
+      monthlyBleedPct: h.monthlyBleedPct,
+      runwayDays: h.runwayDays,
+      moneynessPct: h.moneynessPct,
+      efficiency: h.efficiency,
+      badges: h.badges,
+    })),
+    diagnostics: a.diagnostics,
+  };
+}
+
+/** The full user prompt for a surface: the surface instruction, then the data. */
+export function buildNarrativePrompt(surface: NarrativeSurface, context: string): string {
+  return `${SURFACE_PROMPTS[surface]}\n\nData (JSON):\n${context}`;
+}
+
 interface SurfaceInputs {
   /** The JSON blob rendered into the prompt. */
   context: string;
@@ -522,7 +690,9 @@ function buildSurfaceInputs(
   if (surface === "risk-metrics") {
     const result = computeRiskMetrics(db, { accountIds });
     if (!result) return empty;
-    return { context: JSON.stringify(result), fingerprintInput: result };
+    // Dollar-free (ruling 21 = A); the fingerprint hashes the same payload.
+    const payload = buildRiskMetricsContext(result);
+    return { context: JSON.stringify(payload), fingerprintInput: payload };
   }
 
   if (surface === "position-risk") {
@@ -543,7 +713,8 @@ function buildSurfaceInputs(
       if (b.riskContribution == null) return -1;
       return b.riskContribution - a.riskContribution;
     });
-    const payload = { ...result, positions: rankedPositions };
+    // Dollar-free (ruling 21 = A); the fingerprint hashes the same payload.
+    const payload = buildPositionRiskContext({ ...result, positions: rankedPositions });
     return { context: JSON.stringify(payload), fingerprintInput: payload };
   }
 
@@ -574,15 +745,10 @@ function buildSurfaceInputs(
     ) {
       return empty;
     }
-    const payload = {
-      summary: result.summary,
-      sectorCoverage: result.sectorCoverage,
-      topExposures: result.rankedExposures.slice(0, DEFENSE_TOP_EXPOSURES_N),
-      hedgeScores: result.hedgeScores.slice(0, 15),
-      diagnostics: result.diagnostics,
-    };
+    // Dollar-free (ruling 21 = A). The fingerprint keeps its own narrowed
+    // input, which never held a dollar figure, so it does not move here.
     return {
-      context: JSON.stringify(payload),
+      context: JSON.stringify(buildDefenseContext(result)),
       fingerprintInput: buildDefenseFingerprintInputs(result),
     };
   }
@@ -643,8 +809,7 @@ export async function generateNarrative(
   // 4. Call the feature's model. Wrap in try/catch so the caller can
   // distinguish AI errors (network / rate-limit / auth) from validation
   // errors (unknown surface / truncated output / dollar leak).
-  const surfacePrompt = SURFACE_PROMPTS[surface];
-  const prompt = `${surfacePrompt}\n\nData (JSON):\n${context}`;
+  const prompt = buildNarrativePrompt(surface, context);
 
   let rawText: string;
   let answeredModelId: string | undefined;
