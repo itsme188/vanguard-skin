@@ -42,7 +42,12 @@ import { loadLatestSnapshot } from "./state";
 import { composeReleaseInstant, resolveSectorEtf } from "./reaction-matcher";
 import { captureReactionFromYahoo } from "./yahoo";
 import { fetchActualForEventCloud, type WorkerEnrichActualResult } from "./enrich-actuals";
-import { ACTUAL_REFUSED_PREFIX, isReferencePeriod, macroActualProblem } from "./macro-figure";
+import {
+  ACTUAL_REFUSED_PREFIX,
+  isPriorPeriodObservation,
+  isReferencePeriod,
+  macroActualProblem,
+} from "./macro-figure";
 import { issuerSiblings } from "./fallback-earnings";
 import { earningsHeldSet } from "./earnings-held";
 import { effectiveCalendarEvents, readArmedEventsDelta } from "./armed-events";
@@ -416,6 +421,25 @@ export async function runCloudFallback(
             env,
           );
       if (!haveActual && fetchedActual.deferred) deferred += 1;
+
+      // Prior-period check (Mac twin in lib/calendar/enrichment-runner.ts,
+      // same mirrored rule): a FRED observation for an EARLIER period than
+      // this release reports is the previous release's figure (FRED had not
+      // loaded the new print yet). No payload is written, so the next tick in
+      // the window asks again; a macro payload, once written, is never
+      // re-fetched on this road.
+      if (
+        !isEarnings &&
+        !haveActual &&
+        fetchedActual.actual != null &&
+        isPriorPeriodObservation(cand.source_key, cand.event_date, fetchedActual.referencePeriod)
+      ) {
+        console.warn(
+          `[cloud-enrich] candidate ${cand.id}: FRED still shows ${fetchedActual.referencePeriod}, ` +
+            `the period before this release's; no payload written.`,
+        );
+        continue;
+      }
 
       // Macro size check (owner ruling 2026-10-08; Mac twin in
       // lib/calendar/enrichment-runner.ts, same rule from the mirrored

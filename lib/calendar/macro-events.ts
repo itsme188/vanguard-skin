@@ -6,6 +6,7 @@ import { generateTextForFeature, AIRefusalError } from "@/lib/ai/generate";
 import { FRED_SOURCE_KEY_PREFIX } from "@/lib/calendar/release-times";
 import { RELEASE_ID_TO_SERIES, fredBasisDescription } from "@/lib/calendar/enrich-actuals";
 import { addDays, mondayOf } from "@/lib/calendar/date-utils";
+import { reportingPeriodKey } from "@/lib/calendar/macro-figure";
 
 // ── FRED Release IDs → Calendar Event Types ──────────────────────
 //
@@ -127,30 +128,14 @@ function getReportingPeriod(
   return d.toLocaleString("en-US", { month: "long" });
 }
 
-/**
- * The reporting period of a release date WITH its year, as a grouping key:
- * `YYYY-MM` for a monthly release (the month the data covers, `lag` months
- * before the release month, the same derivation as `getReportingPeriod`),
- * `YYYY-Qn` for a quarterly one, null for weekly data (no period to group
- * on). The year keeps December data reported in January apart from the next
- * December. Pure: reads nothing but its arguments.
- */
-export function reportingPeriodKey(
-  releaseDate: string,
-  lag: number | "weekly" | "quarterly",
-): string | null {
-  if (lag === "weekly") return null;
-  const year = Number(releaseDate.slice(0, 4));
-  const month = Number(releaseDate.slice(5, 7)); // 1-12
-  if (!Number.isFinite(year) || !Number.isFinite(month) || month < 1 || month > 12) return null;
-  if (lag === "quarterly") {
-    const currentQ = Math.floor((month - 1) / 3) + 1;
-    return currentQ === 1 ? `${year - 1}-Q4` : `${year}-Q${currentQ - 1}`;
-  }
-  const index = year * 12 + (month - 1) - lag;
-  const y = Math.floor(index / 12);
-  const m = (index % 12) + 1;
-  return `${y}-${String(m).padStart(2, "0")}`;
+// reportingPeriodKey lives in ./macro-figure (mirrored on the Worker) so the
+// enrichment's prior-period check derives a release's period with the SAME
+// rule the title uses. Re-exported here for existing importers.
+export { reportingPeriodKey };
+
+/** The reporting lag a tracked FRED release is titled with, or null. */
+export function trackedReportingLag(releaseId: number): FredReleaseConfig["reportingLag"] | null {
+  return RELEASE_MAP.get(releaseId)?.reportingLag ?? null;
 }
 
 /**

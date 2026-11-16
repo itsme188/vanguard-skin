@@ -7,7 +7,7 @@ import {
   shouldSendEarningsEmail,
 } from "@/lib/queries/earnings-settings";
 import type { ReactionSnapshot } from "./reaction-snapshot-core";
-import { refusedReasonFromPayload } from "./macro-figure";
+import { isPriorPeriodObservation, refusedReasonFromPayload } from "./macro-figure";
 import { gateMacroActual, readMacroYardsticks, recordMacroBasis } from "./macro-actual-gate";
 import {
   admitCapturedReaction,
@@ -169,7 +169,8 @@ export async function reconcileCloudEnrichment(
   const errors: { eventId: string; error: string }[] = [];
 
   const selectRow = db.prepare(
-    `SELECT id, reaction_snapshot, consensus_value, consensus_estimate, enriched_at, actual_value, event_type, symbol
+    `SELECT id, reaction_snapshot, consensus_value, consensus_estimate, enriched_at, actual_value, event_type, symbol,
+            source_key, event_date
      FROM calendar_events
      WHERE id = ?`,
   );
@@ -252,6 +253,8 @@ export async function reconcileCloudEnrichment(
             actual_value: string | null;
             event_type: string;
             symbol: string | null;
+            source_key: string;
+            event_date: string;
           }
         | undefined;
 
@@ -270,6 +273,22 @@ export async function reconcileCloudEnrichment(
       let macroRefusedReason: string | null = null;
       if (isMacroRow) {
         macroRefusedReason = refusedReasonFromPayload(payload.reason);
+        // The prior-period check (Mac twin in enrichment-runner.ts): a cloud
+        // observation for an EARLIER period than this release reports is the
+        // previous release's figure. It fills nothing and brings no period;
+        // the row is not stamped, so the next enrichment pass asks again.
+        if (
+          payload.actual != null &&
+          existing.actual_value == null &&
+          isPriorPeriodObservation(existing.source_key, existing.event_date, payload.referencePeriod)
+        ) {
+          console.warn(
+            `[cloud-reconcile] event ${eventId}: cloud macro actual is for ${payload.referencePeriod}, ` +
+              `the period before this release's; not stored.`,
+          );
+          payload.actual = null;
+          payload.referencePeriod = null;
+        }
         if (payload.actual != null && existing.actual_value == null) {
           const gated = gateMacroActual(payload.actual, readMacroYardsticks(db, eventId));
           if (gated.refusedReason) {

@@ -14,6 +14,7 @@ import type Database from "better-sqlite3";
 import type { IBApiNext } from "@stoqey/ib";
 import { fetchActualForEvent, type EnrichActualResult } from "./enrich-actuals";
 import { gateMacroActual, readMacroYardsticks, recordMacroBasis } from "./macro-actual-gate";
+import { isPriorPeriodObservation } from "./macro-figure";
 import {
   captureReactionFromTws,
   composeReleaseInstant,
@@ -51,6 +52,13 @@ import {
 // minutes of release, and the reaction window is the immediate 2-hour
 // market response. 2h is the right budget.
 const MAX_AGE_MS_MACRO = 2 * 60 * 60 * 1000;
+// A macro observation for the PRIOR period (the source had not loaded the
+// new print yet) is not stored, and the row stays open so the next pass asks
+// again. From this age on, a pass that still sees the prior period closes
+// the row with no actual, the way a fetch that found nothing always closed a
+// macro row, so the reaction-only follow-up (which needs enriched_at) still
+// runs. The 30 minutes left of the window hold at least one 15-minute tick.
+const MACRO_PRIOR_PERIOD_RETRY_UNTIL_MS = MAX_AGE_MS_MACRO - 30 * 60 * 1000;
 // Earnings releases: a Before Market Open earnings call at 08:00 ET can't
 // produce a meaningful reaction snapshot before 09:30 (market open). Pre-fix
 // the 2h window expired 30 min after market opened. Widen to 12h so a
@@ -424,12 +432,31 @@ export async function runEnrichment(
       // A macro actual more than ten times both yardsticks is refused: it is
       // stored empty and the reason is recorded below. The row is still marked
       // done, the way a null macro actual is today (single-shot).
+      //
+      // Before that, the prior-period check: an observation for an EARLIER
+      // period than this release reports is the previous release's figure
+      // (the source had not loaded the new print yet). It is not stored, its
+      // period is not recorded, no refusal reason is written, and the row is
+      // left open for the next pass (see MACRO_PRIOR_PERIOD_RETRY_UNTIL_MS).
+      const priorPeriod =
+        !isEarnings &&
+        fetchedActual.actual != null &&
+        isPriorPeriodObservation(event.source_key, event.event_date, fetchedActual.referencePeriod);
+      if (priorPeriod) {
+        console.warn(
+          `[enrichment] event ${event.id} (${event.source_key}): the source still shows ` +
+            `${fetchedActual.referencePeriod}, the period before this release's; actual not stored.`,
+        );
+      }
+      const macroFetched = priorPeriod
+        ? { ...fetchedActual, actual: null, referencePeriod: null }
+        : fetchedActual;
       const macroGate = macroYardsticks
-        ? gateMacroActual(fetchedActual.actual, macroYardsticks)
+        ? gateMacroActual(macroFetched.actual, macroYardsticks)
         : null;
       const actualResult = macroGate
-        ? { ...fetchedActual, actual: macroGate.actual }
-        : fetchedActual;
+        ? { ...macroFetched, actual: macroGate.actual }
+        : macroFetched;
 
       // Reaction snapshot — never before the window has elapsed (the gate
       // is inside captureReactionForRow), and never over a stored
@@ -475,11 +502,13 @@ export async function runEnrichment(
         : Number.POSITIVE_INFINITY;
       const hasActual = actualResult.actual != null || event.actual_value != null;
       const hasReaction = reaction != null || event.reaction_snapshot != null;
-      // Macro rows keep single-shot semantics (complete on first attempt);
+      // Macro rows keep single-shot semantics (complete on first attempt),
+      // except a prior-period observation early in the window, which leaves
+      // the row open for the next pass;
       // earnings rows complete only when the actual landed AND the reaction
       // either landed or its capture window has settled.
       const complete = !isEarnings
-        ? true
+        ? !priorPeriod || ageMs >= MACRO_PRIOR_PERIOD_RETRY_UNTIL_MS
         : hasActual && (hasReaction || ageMs >= REACTION_SETTLE_MS);
 
       update.run(
@@ -496,7 +525,7 @@ export async function runEnrichment(
       if (macroGate) {
         recordMacroBasis(db, event.id, {
           refusedReason: macroGate.refusedReason,
-          referencePeriod: fetchedActual.referencePeriod,
+          referencePeriod: macroFetched.referencePeriod,
         });
         if (macroGate.refusedReason) {
           console.warn(
