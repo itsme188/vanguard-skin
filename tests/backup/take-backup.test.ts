@@ -123,7 +123,7 @@ describe("takeBackup", () => {
     db.close();
   });
 
-  it("removes the partial file and throws when VACUUM INTO fails", async () => {
+  it("throws when the backup folder cannot be created", async () => {
     const db = new Database(":memory:");
     seed(db);
     const blocker = path.join(tmp, "a-file");
@@ -132,6 +132,66 @@ describe("takeBackup", () => {
     await expect(takeBackup(db, { purpose: "unit", now: NOW, backupDir: dir, log })).rejects.toThrow();
     expect(fs.readFileSync(blocker, "utf8")).toBe("x");
     expect(fs.readdirSync(tmp).filter((f) => f.includes(".partial"))).toEqual([]);
+    db.close();
+  });
+
+  function memDb(): Database.Database {
+    const db = new Database(":memory:");
+    seed(db);
+    return db;
+  }
+  const leftovers = (dir: string) => fs.readdirSync(dir).filter((f) => f.endsWith(".partial"));
+
+  it("removes the partial and writes no target when the finishing step throws", async () => {
+    const db = memDb();
+    const dir = path.join(tmp, "out");
+    const spy = vi.spyOn(fs, "linkSync").mockImplementation(() => {
+      throw new Error("link boom");
+    });
+    await expect(takeBackup(db, { purpose: "unit", now: NOW, backupDir: dir, log })).rejects.toThrow(/link boom/);
+    spy.mockRestore();
+    expect(fs.readdirSync(dir)).toEqual([]);
+    db.close();
+  });
+
+  it("refuses without clobbering when the target appears before the finish", async () => {
+    const db = memDb();
+    const dir = path.join(tmp, "out");
+    const realLink = fs.linkSync;
+    const spy = vi.spyOn(fs, "linkSync").mockImplementation((from, to) => {
+      fs.writeFileSync(to, "precious");
+      realLink(from, to);
+    });
+    await expect(takeBackup(db, { purpose: "unit", now: NOW, backupDir: dir, log })).rejects.toThrow(/already exists/);
+    spy.mockRestore();
+    const files = fs.readdirSync(dir);
+    expect(files).toHaveLength(1);
+    expect(fs.readFileSync(path.join(dir, files[0]), "utf8")).toBe("precious");
+    db.close();
+  });
+
+  it("rejects an invalid copy: no target, no partial", async () => {
+    const db = memDb();
+    const dir = path.join(tmp, "out");
+    const realFsync = fs.fsyncSync;
+    const spy = vi.spyOn(fs, "fsyncSync").mockImplementation((fd) => {
+      realFsync(fd);
+      const part = leftovers(dir)[0];
+      fs.writeFileSync(path.join(dir, part), "this is not a database, just garbage text padding ".repeat(50));
+    });
+    await expect(takeBackup(db, { purpose: "unit", now: NOW, backupDir: dir, log })).rejects.toThrow();
+    spy.mockRestore();
+    expect(fs.readdirSync(dir)).toEqual([]);
+    db.close();
+  });
+
+  it("fails cleanly when VACUUM INTO itself fails", async () => {
+    const db = memDb();
+    const dir = path.join(tmp, "out");
+    db.exec("BEGIN");
+    await expect(takeBackup(db, { purpose: "unit", now: NOW, backupDir: dir, log })).rejects.toThrow();
+    expect(fs.readdirSync(dir)).toEqual([]);
+    db.exec("ROLLBACK");
     db.close();
   });
 

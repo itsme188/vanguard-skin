@@ -84,23 +84,37 @@ export async function takeBackup(
   fs.mkdirSync(dir, { recursive: true });
 
   const partial = `${target}.partial`;
-  fs.rmSync(partial, { force: true }); // leftover of a crashed run would make VACUUM INTO refuse
+  // A leftover of a crashed run would make VACUUM INTO refuse. A concurrent run with the
+  // same purpose in the same second is the only way this removes a live partial; the
+  // link step below still protects the target.
+  fs.rmSync(partial, { force: true });
   let migrations: number | null;
   try {
     db.prepare("VACUUM INTO ?").run(partial);
-    ({ migrations } = verifyCopy(partial));
-    if (fs.existsSync(target)) {
-      throw new Error(`Backup target appeared during the backup, refusing to replace it: ${target}`);
+    // Flush to disk. Opened "r+" because fsync on a read-only handle is not enough on macOS.
+    const fd = fs.openSync(partial, "r+");
+    try {
+      fs.fsyncSync(fd);
+    } finally {
+      fs.closeSync(fd);
     }
-    fs.renameSync(partial, target);
+    ({ migrations } = verifyCopy(partial));
+    // No-clobber finish: link fails with EEXIST if the target exists, unlike rename.
+    fs.linkSync(partial, target);
+    fs.rmSync(partial);
   } catch (err) {
     fs.rmSync(partial, { force: true });
+    if ((err as NodeJS.ErrnoException).code === "EEXIST") {
+      throw new Error(`Backup target already exists; refusing to reuse it. Nothing written: ${target}`);
+    }
     throw err;
   }
 
   const sizeBytes = fs.statSync(target).size;
   if (!live) return { path: target, sizeBytes, rolled: false };
 
+  // A throw here is deliberate: the caller is about to mutate data, so failing loud is the
+  // safe direction, even though a valid unlogged backup remains in recent/.
   fs.appendFileSync(
     backupPaths(home).log,
     `${JSON.stringify({ file: target, purpose: opts.purpose, script, takenAt: now.toISOString(), sizeBytes, migrations })}\n`,
