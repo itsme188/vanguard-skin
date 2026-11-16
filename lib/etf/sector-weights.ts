@@ -14,6 +14,7 @@ import { normalizeSector } from "@/lib/securities/normalize-sector";
 import { getRawAnthropicClient } from "@/lib/ai/provider";
 import { resolveFeatureModel } from "@/lib/ai/models";
 import { todayET } from "@/lib/calendar/date-utils";
+import { parseJsonArrayLenient } from "@/lib/ai/extract-json";
 
 export interface RawWeight { sector: string; weight_pct: number; }
 export interface ValidatedWeights { ok: boolean; weights: RawWeight[]; reason?: string; }
@@ -44,10 +45,6 @@ export function validateSectorWeights(raw: RawWeight[]): ValidatedWeights {
 // same model-id derivation via resolveFeatureModel(featureKey). The model
 // string is never hardcoded.
 
-function stripCodeFences(text: string): string {
-  return text.replace(/```(?:json)?\s*/gi, "").replace(/```/g, "").trim();
-}
-
 /**
  * Fetch an ETF's GICS sector breakdown via Claude + web_search.
  * Returns the raw `{sector, weight_pct}` array (unvalidated). Throws on any
@@ -73,19 +70,24 @@ Return ONLY a JSON array of objects, each {"sector": "<GICS sector name>", "weig
     tools: [{ type: "web_search_20250305", name: "web_search", max_uses: 5 }],
     messages: [{ role: "user", content: prompt }],
   });
+  // A reply that stopped at the cap is not an answer, even when its text
+  // parses: fail this ETF (the caller keeps its last good rows).
+  if (response.stop_reason === "max_tokens") {
+    throw new Error(`reply for ${symbol} was cut off at the output cap`);
+  }
   const textBlocks = response.content.filter(
     (b): b is Anthropic.TextBlock => b.type === "text",
   );
-  const text = stripCodeFences(textBlocks.map((b) => b.text).join("\n"));
-  // Defensive: isolate the JSON array if the model wrapped it in any stray text.
-  const start = text.indexOf("[");
-  const end = text.lastIndexOf("]");
-  const json = start !== -1 && end !== -1 ? text.slice(start, end + 1) : text;
-  const parsed = JSON.parse(json) as RawWeight[];
-  if (!Array.isArray(parsed)) {
-    throw new Error(`Expected a JSON array for ${symbol}, got ${typeof parsed}`);
-  }
-  return parsed;
+  // Joined with "" (house rule for web_search replies): a block boundary can
+  // fall inside a token, and "\n" would split it.
+  const text = textBlocks.map((b) => b.text).join("");
+  // Shared lenient parse (fence-strip, whole text, then the first-[ .. last-]
+  // slice, each with the C0-control-character retry); throws a plain-English
+  // error for anything that is not a list.
+  const items = parseJsonArrayLenient(text, `sector weights for ${symbol}`);
+  return items
+    .filter((w): w is Record<string, unknown> => w !== null && typeof w === "object" && typeof (w as Record<string, unknown>).sector === "string")
+    .map((w) => ({ sector: w.sector as string, weight_pct: w.weight_pct as number }));
 }
 
 /**
