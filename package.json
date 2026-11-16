@@ -26,6 +26,7 @@
     "start": "next start -H 127.0.0.1",
     "lint": "eslint",
     "seed:demo": "tsx scripts/seed-demo.ts",
+    "storage:report": "tsx scripts/storage-report.ts",
     "verify:changed": "bash scripts/verify.sh changed",
     "verify:smoke": "bash scripts/verify-smoke.sh",
     "electron:compile": "tsc -p electron/tsconfig.json",
