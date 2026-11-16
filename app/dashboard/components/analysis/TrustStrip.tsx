@@ -260,7 +260,15 @@ export function TrustStrip({ scope }: TrustStripProps) {
         />
       </div>
 
-      {loadError && <p className="mb-2 text-xs text-down">{loadError}</p>}
+      {/* A failed refresh keeps the figures and offers the same Retry. */}
+      {loadError && (
+        <p className="flex items-center gap-2 mb-2 text-xs text-down">
+          <span>{loadError}</span>
+          <button onClick={retry} className="underline text-ink focus-ring">
+            Retry
+          </button>
+        </p>
+      )}
 
       {activePanel && (
         <TrustStripDrawer
