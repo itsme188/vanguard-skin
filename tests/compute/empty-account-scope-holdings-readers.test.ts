@@ -370,8 +370,12 @@ describe("every account and a non-empty list answer as before", () => {
     // Field-by-field diff of the Defense output against the tree before:
     // only those keys and that tie order moved; every figure is unchanged.
     // The digest before was d2202a3e....
+    // Re-captured 2026-11-15 (review R5): the "top N by risk" drawer leaves
+    // the cash-equivalent sweeps out BEFORE it takes its N, so in two scopes
+    // its top 5 now lists the next non-cash names instead of fewer rows. With
+    // the previous drill-down.ts the output still hashed to 8984a85c....
     expect(createHash("sha256").update(json).digest("hex")).toBe(
-      "8984a85c21248bd5378a129a522109ef879e725290ca566ca801496793cbb918",
+      "5918c56822a50e69f5d3d3245398ebc976c53571c914c6b40da4a08da44f0550",
     );
   });
 
