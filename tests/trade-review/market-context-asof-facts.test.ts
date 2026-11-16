@@ -239,6 +239,13 @@ describe("H1c: expired options carry their own side, multiplier and per-share pr
   }
 
   function stockTrade(): GroupedTrade[] {
+    // A real option leg stores contracts x price x multiplier; seedFill omits
+    // the multiplier, and the premium is now read from the engine's lots,
+    // which book that amount (2026-11-15, Y3).
+    db.prepare(
+      `UPDATE transactions SET amount = amount * (SELECT COALESCE(multiplier, 1) FROM securities s WHERE s.id = security_id)
+       WHERE security_id IN (SELECT id FROM securities WHERE LOWER(security_type) = 'option')`
+    ).run();
     const stock = seedSec(db, "ZZQ");
     fill(stock, "2026-03-02", "BUY", 10, 50);
     fill(stock, "2026-03-25", "SELL", 10, 52);

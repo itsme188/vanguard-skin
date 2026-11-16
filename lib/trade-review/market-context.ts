@@ -3,6 +3,8 @@ import type { GroupedTrade } from "@/lib/compute/trade-roundtrips";
 import { PRICED_BAR_SQL } from "@/lib/queries/ohlcv";
 import { readIbkrTradeDirection } from "@/lib/import/ibkr-trade-direction";
 import { IMPORT_SPLIT_ACTION_TYPES_SQL } from "@/lib/compute/synthetic-close-guards";
+import { computeExerciseLinks } from "@/lib/compute/tax-lots";
+import { transactionAmountCurrencySql } from "@/lib/queries/transaction-amount-currency";
 
 interface TradeMarketContext {
   symbol: string;
@@ -35,13 +37,17 @@ interface OptionOriginEvent {
   expirationDate: string;
   /**
    * Premium paid/received per CONTRACT when the option was opened: the
-   * opening fill's per-share price times the contract multiplier. (Before
+   * per-share figure below times the contract multiplier. (Before
    * 2026-11-15 this held the per-share price under the per-contract name.)
    */
   openPremiumPerContract: number | null;
   openDate: string | null;
   openType: string | null; // BUY_TO_OPEN | SELL_TO_OPEN
-  /** Opening fill's premium per share (the stored `price_per_share`). */
+  /**
+   * Premium per share: the average over the lots this event closed (their
+   * booked dollars over shares), or the first opening fill's stored
+   * `price_per_share` when no lot sale rows exist (`premiumFromLots` false).
+   */
   openPremiumPerShare?: number | null;
   /** Shares per contract: the stored `COALESCE(multiplier, 1)`. */
   multiplier?: number;
@@ -51,6 +57,16 @@ interface OptionOriginEvent {
    * (`tax_lots.is_short`), then from the opening fill's type. null = unknown.
    */
   isShort?: boolean | null;
+  /**
+   * Premium paid (long) or received (short) for what this event closed, in
+   * dollars as the lot engine booked it. From the event's own lot sale rows
+   * when they exist (then `openPremiumPerShare` / `openPremiumPerContract`
+   * are that total's average, not the first fill's price); otherwise the
+   * first opening fill times the event's contracts, an approximation.
+   */
+  premiumTotal?: number | null;
+  /** true = `premiumTotal` is exact from the lot sale rows; false = first-fill approximation. */
+  premiumFromLots?: boolean;
 }
 
 interface StockPriceContext {
@@ -68,16 +84,27 @@ interface RemainingPositionContext {
   soldShares: number;
   retainedPct: number; // percentage of original position retained (0-1)
   isTrim: boolean; // true if shares remain after the sale
+  /**
+   * Set when an engine reconciliation close dated after this sale closed
+   * some of the shares counted as remaining (no imported sale behind it):
+   * the quantity (in this sale's share basis) and the earliest such date.
+   */
+  laterEngineClose?: { quantity: number; date: string };
 }
 
 interface ConcurrentActivity {
   buys: Array<{
     symbol: string;
     quantity: number;
+    /** In USD: a native trade leg converted with the dashboard's FX factor. */
     totalCost: number;
     date: string;
+    /** The row's stored currency (`transactionAmountCurrencySql`). */
+    currency?: string;
+    /** USD per unit used to convert; null when no rate is on file (left as 1). */
+    usdPerUnit?: number | null;
   }>;
-  totalBuyAmount: number;
+  totalBuyAmount: number; // USD
 }
 
 /**
@@ -243,7 +270,11 @@ export function formatMarketContext(
 
     if (ctx.remainingPosition) {
       const rp = ctx.remainingPosition;
-      if (rp.isTrim) {
+      if (rp.isTrim && rp.laterEngineClose) {
+        lines.push(
+          `- Position action: remainder uncertain — sold ${formatQty(rp.soldShares)} shares; the ledger shows ${formatQty(rp.remainingShares)} shares left after this sale, but an engine reconciliation on ${rp.laterEngineClose.date} closed ${formatQty(rp.laterEngineClose.quantity)} of them because a later statement showed the position flat with no sale imported. Do not call this a trim or a full exit, and do not describe the reconciliation as a sale by the owner.`
+        );
+      } else if (rp.isTrim) {
         lines.push(
           `- Position action: TRIM — sold ${formatQty(rp.soldShares)} shares, retained ${formatQty(rp.remainingShares)} shares (${(rp.retainedPct * 100).toFixed(0)}% of position kept)`
         );
@@ -268,11 +299,23 @@ export function formatMarketContext(
       const hidden = ranked.slice(CONCURRENT_BUYS_LISTED).map(({ b }) => b);
       const entries = shown.map(
         (b) =>
-          `${formatQty(b.quantity)} ${b.symbol} ($${formatWholeDollars(b.totalCost)}) on ${b.date}`
+          `${formatQty(b.quantity)} ${b.symbol} ($${formatWholeDollars(b.totalCost)}${currencyNote(b)}) on ${b.date}`
       );
       if (hidden.length > 0) {
         const hiddenTotal = hidden.reduce((sum, b) => sum + b.totalCost, 0);
-        entries.push(`+${hidden.length} more ($${formatWholeDollars(hiddenTotal)})`);
+        const curList = (rated: boolean) => [
+          ...new Set(
+            hidden
+              .filter((b) => b.currency && b.currency !== "USD" && (b.usdPerUnit != null) === rated)
+              .map((b) => b.currency!)
+          ),
+        ];
+        const conv = curList(true);
+        const unconv = curList(false);
+        const hiddenNote =
+          (conv.length > 0 ? `, incl. amounts converted from ${conv.join("/")}` : "") +
+          (unconv.length > 0 ? `, incl. ${unconv.join("/")} amounts with no rate on file, not converted` : "");
+        entries.push(`+${hidden.length} more ($${formatWholeDollars(hiddenTotal)}${hiddenNote})`);
       }
       const buyList = entries.join(", ");
       lines.push(`- Concurrent buys (±7d): ${buyList}`);
@@ -314,9 +357,12 @@ export function formatMarketContext(
             : ev.openPremiumPerContract != null
               ? ev.openPremiumPerContract / sharesPerContract
               : null;
+        const total =
+          ev.premiumTotal != null ? ev.premiumTotal : perShare != null ? perShare * ev.contracts * sharesPerContract : null;
+        const approx = ev.premiumFromLots === false ? "approx. " : "";
         const premiumStr =
-          perShare != null && ev.openDate
-            ? ` (originally opened ${ev.openDate} via ${ev.openType}, premium $${perShare.toFixed(2)}/share ($${formatWholeDollars(perShare * sharesPerContract)}/contract) = $${formatWholeDollars(perShare * ev.contracts * sharesPerContract)} total)`
+          perShare != null && total != null && ev.openDate
+            ? ` (originally opened ${ev.openDate} via ${ev.openType}, ${approx}premium $${perShare.toFixed(2)}/share ($${formatWholeDollars(perShare * sharesPerContract)}/contract) = $${formatWholeDollars(total)} total)`
             : "";
         lines.push(
           `  • ${ev.eventDate}: ${ev.contracts} contract(s) of ${ev.optionType} $${ev.strikePrice.toFixed(2)} (exp ${ev.expirationDate}) — ${directionWord}${premiumStr}`
@@ -617,10 +663,18 @@ function getPositionSize(
  *                               (tax_lot_sales after this sale, and
  *                               lot-assigned gifts after it)
  *
- * "Later" follows the engine's replay order: a later date, or the same date
- * with a higher sale transaction id (the engine replays same-day sells by
- * id, and a same-day gift after every sell), so three trims on one day see
- * shrinking remainders.
+ * "Before" and "later" follow the engine's replay order (`makeReplayOrder`):
+ * a lot opened on the sale date counts only when its opening trade replayed
+ * before the sale (a re-buy later that day is not "retained"), and a
+ * same-date sale is later only when it replays after this one (execution
+ * time, then id; a same-day gift after every sell), so trims on one day see
+ * shrinking remainders in the order they were executed.
+ *
+ * An engine reconciliation close (minted from a flat statement with no
+ * imported sale) dated after this sale is added back like any later
+ * disposition, and reported as `laterEngineClose`: the remainder is then
+ * uncertain (a sale may simply not have been imported), and the prompt line
+ * says so instead of asserting a trim.
  *
  * Split basis: the engine's split replay multiplies an OPEN lot's quantities
  * by the ratio and leaves already-booked sales as booked, and a sale dated on
@@ -652,6 +706,8 @@ function getRemainingPosition(
   }
 
   const { exitDate, saleTransactionId, isShort } = asOf;
+  const order = makeReplayOrder(db);
+  const saleKey = order.keyOf(saleTransactionId);
   const splits = db
     .prepare(
       `SELECT effective_date,
@@ -674,25 +730,48 @@ function getRemainingPosition(
     );
   const todayFactor = splitFactor(null);
 
-  const lots = db
+  const candidateLots = db
     .prepare(
-      `SELECT id, quantity_remaining, acquisition_transaction_id
+      `SELECT id, acquisition_date, quantity_remaining, acquisition_transaction_id
        FROM tax_lots
        WHERE account_id = ? AND security_id = ? AND is_short = ?
          AND acquisition_date <= ?`
     )
     .all(accountId, securityId, isShort ? 1 : 0, exitDate) as Array<{
     id: number;
+    acquisition_date: string;
     quantity_remaining: number;
     acquisition_transaction_id: number | null;
   }>;
+  // A lot opened ON the sale date was held at the sale only when its opening
+  // trade replayed before the sale (the engine's own same-day order). A lot
+  // minted by the sale itself (the opening part of a mixed fill) comes after
+  // its closing part. A lot with no opening transaction keeps the date rule.
+  const lots = candidateLots.filter((lot) => {
+    if (lot.acquisition_date < exitDate || lot.acquisition_transaction_id == null) return true;
+    if (lot.acquisition_transaction_id === saleTransactionId) return false;
+    const lotKey = order.keyOf(lot.acquisition_transaction_id);
+    return lotKey == null || saleKey == null || compareReplayKeys(lotKey, saleKey) < 0;
+  });
   if (lots.length === 0) return buildRemaining(0, soldQuantity);
 
-  const laterSales = db.prepare(
-    `SELECT sale_date, quantity_sold FROM tax_lot_sales
-     WHERE tax_lot_id = ?
-       AND (sale_date > ? OR (sale_date = ? AND sale_transaction_id > ?))`
+  // Every disposition of the lot dated on or after the sale date; the
+  // same-date ones are kept only when they replay after this sale. An
+  // engine reconciliation close is minted after the whole replay, so it is
+  // always later.
+  const dispositions = db.prepare(
+    `SELECT x.sale_date, x.quantity_sold, x.sale_transaction_id, t.type AS sale_type
+     FROM tax_lot_sales x
+     LEFT JOIN transactions t ON t.id = x.sale_transaction_id
+     WHERE x.tax_lot_id = ? AND x.sale_date >= ? AND x.sale_transaction_id != ?`
   );
+  const isLaterThanSale = (s: { sale_date: string; sale_transaction_id: number; sale_type: string | null }) => {
+    if (s.sale_date > exitDate) return true;
+    if (s.sale_type === ENGINE_RECONCILE_CLOSE_TYPE) return true;
+    const k = order.keyOf(s.sale_transaction_id);
+    if (k == null || saleKey == null) return s.sale_transaction_id > saleTransactionId;
+    return compareReplayKeys(k, saleKey) > 0;
+  };
   // Lot-assigned gifts consume lots outside tax_lot_sales (the engine's
   // donation replay, keyed by the lot's acquisition transaction); one dated
   // on or after the sale date was replayed after it.
@@ -709,13 +788,26 @@ function getRemainingPosition(
   );
 
   let remaining = 0;
+  let engineCloseQty = 0;
+  let engineCloseDate: string | null = null;
   for (const lot of lots) {
     let q = lot.quantity_remaining / todayFactor;
-    const sales = laterSales.all(lot.id, exitDate, exitDate, saleTransactionId) as Array<{
-      sale_date: string;
-      quantity_sold: number;
-    }>;
-    for (const s of sales) q += s.quantity_sold / splitFactor(s.sale_date);
+    const sales = (
+      dispositions.all(lot.id, exitDate, saleTransactionId) as Array<{
+        sale_date: string;
+        quantity_sold: number;
+        sale_transaction_id: number;
+        sale_type: string | null;
+      }>
+    ).filter(isLaterThanSale);
+    for (const s of sales) {
+      const back = s.quantity_sold / splitFactor(s.sale_date);
+      q += back;
+      if (s.sale_type === ENGINE_RECONCILE_CLOSE_TYPE) {
+        engineCloseQty += back;
+        if (engineCloseDate == null || s.sale_date < engineCloseDate) engineCloseDate = s.sale_date;
+      }
+    }
     if (lot.acquisition_transaction_id != null) {
       const gifts = laterGifts.all(
         accountId,
@@ -727,7 +819,77 @@ function getRemainingPosition(
     }
     remaining += q;
   }
-  return buildRemaining(remaining, soldQuantity);
+  const result = buildRemaining(remaining, soldQuantity);
+  if (engineCloseQty > REMAINING_EPSILON && engineCloseDate != null) {
+    result.laterEngineClose = { quantity: engineCloseQty, date: engineCloseDate };
+  }
+  return result;
+}
+
+/**
+ * The type the lot engine gives the closes it mints from statement evidence
+ * (computeTaxLots' broker-close pass). Engine-owned: read here only to say a
+ * remainder is uncertain, never presented as the user selling. tax-lots.ts
+ * exports no constant for it; this is the one copy in this file.
+ */
+const ENGINE_RECONCILE_CLOSE_TYPE = "RECONCILE_CLOSE";
+
+/** The engine's same-date sort key for a trade: (rank, time string, id). */
+type ReplayKey = { date: string; rank: number; time: string; id: number };
+
+function compareReplayKeys(a: ReplayKey, b: ReplayKey): number {
+  if (a.date !== b.date) return a.date < b.date ? -1 : 1;
+  return a.rank - b.rank || a.time.localeCompare(b.time) || a.id - b.id;
+}
+
+/** Opening types the engine reads as "buys" (its `buys` query in computeTaxLots). */
+const ENGINE_OPENING_TYPES = new Set(["buy", "reinvestment", "buy_to_open", "sell_to_open", "short_sell", "transfer_in"]);
+
+/**
+ * A minimal copy of the lot engine's same-day replay order
+ * (lib/compute/tax-lots.ts, the `events.sort` with `tradeOrder`; that closure
+ * is not exported). Within one date: rank (0 ordinary, 1 an option exercise
+ * or assignment, 2 a close on a security an exercise links to that day), then
+ * the IBKR execution time when the note carries one dated that day, else
+ * 00:00:00 for an opening trade and 23:59:59 for a close, then id.
+ * Pinned against the engine's observable behaviour in
+ * tests/trade-review/market-context-replay-order-fx-premium.test.ts.
+ */
+function makeReplayOrder(db: Database.Database): { keyOf: (txnId: number) => ReplayKey | null } {
+  const stmt = db.prepare(`SELECT id, trade_date, type, notes, security_id FROM transactions WHERE id = ?`);
+  // The engine's own exercise-link targets (read-only), built only when a
+  // same-day close needs a rank.
+  let linkTargets: Map<string, Set<number>> | null = null;
+  const isLinkTarget = (date: string, securityId: number): boolean => {
+    linkTargets ??= computeExerciseLinks(db).targetSecuritiesByDate;
+    return linkTargets.get(date)?.has(securityId) ?? false;
+  };
+  const cache = new Map<number, ReplayKey | null>();
+  return {
+    keyOf(txnId: number) {
+      if (cache.has(txnId)) return cache.get(txnId)!;
+      const t = stmt.get(txnId) as
+        | { id: number; trade_date: string; type: string; notes: string | null; security_id: number | null }
+        | undefined;
+      let key: ReplayKey | null = null;
+      if (t) {
+        const type = t.type.toLowerCase();
+        const opening = ENGINE_OPENING_TYPES.has(type);
+        const isExercise = type === "exercised" || type === "assigned";
+        let rank = isExercise ? 1 : 0;
+        // The engine gives rank 2 to a close on a link-target security that
+        // day, whatever its type (an exercise row included).
+        if (!opening && t.security_id != null && isLinkTarget(t.trade_date, t.security_id)) rank = 2;
+        const evidence = readIbkrTradeDirection(t.notes);
+        const time = evidence?.time.startsWith(t.trade_date)
+          ? evidence.time
+          : `${t.trade_date} ${opening ? "00:00:00" : "23:59:59"}`;
+        key = { date: t.trade_date, rank, time, id: t.id };
+      }
+      cache.set(txnId, key);
+      return key;
+    },
+  };
 }
 
 /** Below this, a remainder is float residue from split ratios, not shares. */
@@ -752,9 +914,16 @@ function getConcurrentActivity(
 ): ConcurrentActivity | null {
   const rows = db
     .prepare(
-      `SELECT s.symbol, t.quantity, ABS(t.amount) as total_cost, t.trade_date, t.notes
+      // A trade leg is stored in the security's NATIVE currency
+      // (lib/queries/transaction-amount-currency.ts); it is converted below
+      // with the dashboard's factor, COALESCE(fx.usd_per_unit, 1), and only
+      // when the row is not USD-stored, so totals and ranking are in USD.
+      `SELECT s.symbol, t.quantity, ABS(t.amount) AS native_cost, t.trade_date, t.notes,
+              ${transactionAmountCurrencySql("t", "s")} AS currency,
+              fx.usd_per_unit AS rate
        FROM transactions t
        JOIN securities s ON t.security_id = s.id
+       LEFT JOIN fx_rates fx ON fx.currency = s.currency
        WHERE t.account_id = ?
          AND t.type IN ('BUY', 'BUY_TO_OPEN')
          AND t.trade_date >= date(?, '-' || ? || ' days')
@@ -764,9 +933,11 @@ function getConcurrentActivity(
     .all(accountId, saleDate, windowDays, saleDate, windowDays) as Array<{
     symbol: string;
     quantity: number;
-    total_cost: number;
+    native_cost: number | null;
     trade_date: string;
     notes: string | null;
+    currency: string;
+    rate: number | null;
   }>;
   // A buy the broker marks as closing only (a short cover, an option bought
   // to close) puts no new capital to work, so it is not "deployed". A mixed
@@ -779,15 +950,30 @@ function getConcurrentActivity(
 
   if (buys.length === 0) return null;
 
-  return {
-    buys: buys.map((b) => ({
+  const converted = buys.map((b) => {
+    const rate =
+      b.currency === "USD" ? 1 : b.rate != null && Number.isFinite(b.rate) && b.rate > 0 ? b.rate : null;
+    return {
       symbol: b.symbol,
       quantity: b.quantity,
-      totalCost: b.total_cost,
+      totalCost: (b.native_cost ?? 0) * (rate ?? 1),
       date: b.trade_date,
-    })),
-    totalBuyAmount: buys.reduce((sum, b) => sum + b.total_cost, 0),
+      currency: b.currency,
+      usdPerUnit: rate,
+    };
+  });
+  return {
+    buys: converted,
+    totalBuyAmount: converted.reduce((sum, b) => sum + b.totalCost, 0),
   };
+}
+
+/** How a non-USD buy's dollar figure was reached, for the prompt line. */
+function currencyNote(b: ConcurrentActivity["buys"][number]): string {
+  if (!b.currency || b.currency === "USD") return "";
+  return b.usdPerUnit != null
+    ? `, converted from ${b.currency}`
+    : `, ${b.currency} amount, no rate on file, not converted`;
 }
 
 /** How many concurrent buys the prompt lists by name for each trade. */
@@ -881,6 +1067,14 @@ function getOptionOriginEvents(
      WHERE x.sale_transaction_id = ?`
   );
 
+  const lotPremiumStmt = db.prepare(
+    `SELECT SUM(ABS(CASE WHEN tl.is_short = 1 THEN x.proceeds ELSE x.cost_basis_allocated END)) AS premium,
+            SUM(x.quantity_sold) AS qty
+     FROM tax_lot_sales x
+     JOIN tax_lots tl ON tl.id = x.tax_lot_id
+     WHERE x.sale_transaction_id = ?`
+  );
+
   return rows.map((r) => {
     const opener = openStmt.get(accountId, r.option_security_id) as
       | { trade_date: string; open_type: string; price_per_share: number | null }
@@ -898,7 +1092,22 @@ function getOptionOriginEvents(
       else if (opener?.open_type === "BUY_TO_OPEN") isShort = false;
       else isShort = null;
     }
-    const perShare = opener?.price_per_share != null ? opener.price_per_share : null;
+    // The exact premium of what this event closed: each lot sale row's
+    // stored opening dollars (fee-inclusive basis for a long lot, the
+    // premium received, booked as proceeds, for a short lot; a rollover row
+    // carries the same figure in both columns). Magnitudes: the line says
+    // "paid" or "received" from the side, so no sign is applied by hand.
+    // The first opening fill is a fallback only, marked approximate.
+    const fromLots = lotPremiumStmt.get(r.event_transaction_id) as
+      | { premium: number | null; qty: number | null }
+      | undefined;
+    const lotPremium =
+      fromLots && fromLots.premium != null && fromLots.qty != null && fromLots.qty > 0 ? fromLots : null;
+    const perShare = lotPremium
+      ? lotPremium.premium! / (lotPremium.qty! * r.multiplier)
+      : opener?.price_per_share != null
+        ? opener.price_per_share
+        : null;
     return {
       eventType: r.event_type,
       eventDate: r.event_date,
@@ -912,6 +1121,12 @@ function getOptionOriginEvents(
       openPremiumPerShare: perShare,
       multiplier: r.multiplier,
       isShort,
+      premiumTotal: lotPremium
+        ? lotPremium.premium!
+        : perShare != null
+          ? perShare * r.contracts * r.multiplier
+          : null,
+      premiumFromLots: lotPremium != null,
     };
   });
 }
