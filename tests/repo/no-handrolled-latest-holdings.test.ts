@@ -548,7 +548,7 @@ const ALLOWLIST: AllowlistEntry[] = [
     file: "lib/compute/period-attribution.ts",
     anchor: "SELECT MAX(h.as_of_date) FROM holdings h\n           WHERE h.account_id = a.id AND h.as_of_date <= ? AND h.as_of_date >= ?",
     justification:
-      "computePeriodAttribution's per-account book_date — a presence check (did this account have any position snapshot in the 31 days up to the period start) and the date printed in the section caption. It never selects which holdings rows count: the start positions themselves come from latestHoldingsPredicate({ asOfDate }).",
+      "computePeriodAttribution's per-account book_date: whether the account has any position snapshot in the 31 days up to the period start, and the date printed in the section caption. It DOES decide, at the account level, whether an account takes part: an account with no book_date is left out of the weights, or, when it held value at the start, reported as missing (accounts_missing_at_start), which empties the lists. It does not select rows within an account: the start positions of a taking-part account come from latestHoldingsPredicate({ asOfDate }), less the pairs a newer book of the account no longer holds (retiredPairsAsOf).",
   },
   {
     file: "lib/queries/dashboard.ts",
