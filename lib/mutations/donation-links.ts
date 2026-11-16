@@ -1,6 +1,6 @@
 import type Database from "better-sqlite3";
 import type { DonationRow } from "@/lib/queries/donations";
-import { getOpenLotsForDonation } from "@/lib/queries/giving-view";
+import { getOpenLotsForDonation, readLotRemainingInGiftUnits } from "@/lib/queries/giving-view";
 import { bumpTaxGenerationIfPresent } from "@/lib/compute/tax-convention";
 
 /** Every invariant rejection in this file throws DonationLinkError with a
@@ -14,6 +14,11 @@ const EPS = 1e-9;
 /** Transaction types that open a lot (compared lower-cased). Also read by
  *  lib/mutations/lot-basis-verifications.ts, so the two never disagree. */
 export const LOT_CREATING_TYPES = new Set(["buy", "reinvestment", "buy_to_open", "sell_to_open", "transfer_in"]);
+
+/** The lot-creating types a GIFT may draw on: every long opening. A short
+ *  open (`sell_to_open`) opens a short lot, and a short position cannot be
+ *  given (G1, 2026-11-15). The basis verifier keeps the full list above. */
+export const GIFTABLE_LOT_TYPES = new Set([...LOT_CREATING_TYPES].filter((t) => t !== "sell_to_open"));
 
 interface TransactionRow {
   id: number;
@@ -307,7 +312,12 @@ export function assignDonationLots(
       if (!txn) {
         throw new DonationLinkError(`donation ${donationId}: acquisition transaction ${a.acquisitionTransactionId} not found`);
       }
-      if (!LOT_CREATING_TYPES.has(txn.type.toLowerCase())) {
+      if (txn.type.toLowerCase() === "sell_to_open") {
+        throw new DonationLinkError(
+          `donation ${donationId}: acquisition transaction ${a.acquisitionTransactionId} opened a short position, and a short position cannot be given`
+        );
+      }
+      if (!GIFTABLE_LOT_TYPES.has(txn.type.toLowerCase())) {
         throw new DonationLinkError(
           `donation ${donationId}: acquisition transaction ${a.acquisitionTransactionId} type '${txn.type}' is not a lot-creating type`
         );
@@ -328,12 +338,18 @@ export function assignDonationLots(
         );
       }
 
-      const lot = db
-        .prepare("SELECT quantity_remaining FROM tax_lots WHERE acquisition_transaction_id = ?")
-        .get(a.acquisitionTransactionId) as { quantity_remaining: number } | undefined;
+      // Today's remaining, put on the gift date's share basis: a split dated
+      // on or after the gift multiplied the stored figure, while this gift's
+      // quantities are in gift-date units (G2, 2026-11-15).
+      const lot = readLotRemainingInGiftUnits(db, a.acquisitionTransactionId, outLink.trade_date);
       if (!lot) {
         throw new DonationLinkError(
           `donation ${donationId}: no lot found for acquisition transaction ${a.acquisitionTransactionId}`
+        );
+      }
+      if (lot.isShort) {
+        throw new DonationLinkError(
+          `donation ${donationId}: the lot from acquisition transaction ${a.acquisitionTransactionId} is a short position, and a short position cannot be given`
         );
       }
       // Design boundary: this check is best-effort against tax_lots' state as of the LAST
@@ -356,7 +372,7 @@ export function assignDonationLots(
       // request — a pure relaxation: nothing previously legal became illegal, and the
       // chronological replay's clamp-and-warn remains the authority for over-commitment.
       const ownExisting = existingByTxn.get(a.acquisitionTransactionId) ?? 0;
-      const availableCurrent = lot.quantity_remaining + ownExisting;
+      const availableCurrent = lot.quantityRemaining + ownExisting;
       const availableAsOfDate = asOfDateAvailability.get(a.acquisitionTransactionId) ?? 0;
       const available = Math.max(availableCurrent, availableAsOfDate);
       if (a.quantity > available + EPS) {
