@@ -19,6 +19,26 @@ import { parseJsonArrayLenient } from "@/lib/ai/extract-json";
 export class UnusableBatchReplyError extends Error {}
 
 /**
+ * The reply stopped at the output cap (finish reason "length"). A cut-off
+ * reply is a failure even when its text happens to parse. It is an
+ * UnusableBatchReplyError so a multi-item batch still splits (a smaller batch
+ * fits the cap), but it is logged as a truncation, and a one-item batch is
+ * never re-sent at the same cap (it would only be cut off again).
+ */
+export class TruncatedBatchReplyError extends UnusableBatchReplyError {}
+
+export const CUT_OFF_MESSAGE = "reply cut off at the output cap";
+
+/**
+ * Throw TruncatedBatchReplyError when the helper reports the reply hit the
+ * output cap. Call BEFORE parsing: a cut-off reply can still parse (a complete
+ * first object, or a lenient slice), and must not be written.
+ */
+export function throwIfCutOff(finishReason: unknown): void {
+  if (finishReason === "length") throw new TruncatedBatchReplyError(CUT_OFF_MESSAGE);
+}
+
+/**
  * Parse a model reply into an element list (fence-strip, whole-text parse,
  * first-`[`…last-`]` fallback, each with the C0-control-char retry — see
  * lib/ai/extract-json.ts). A failure becomes an UnusableBatchReplyError with
@@ -69,7 +89,19 @@ export async function runClassifyBatches<T>(
       // half-size batches (smaller prompts are less likely to be truncated); a
       // batch already down to one security just retries itself. No retry of a
       // retry — each half records its own failure straight to `errors`.
+      const truncated = err instanceof TruncatedBatchReplyError;
+      if (truncated) {
+        // Content-free: the batch number and size only.
+        console.warn(
+          `[classify] Batch ${batchNumber}: ${CUT_OFF_MESSAGE} (${batch.length} item${batch.length === 1 ? "" : "s"})` +
+            (batch.length > 1 ? "; retrying as two half batches" : "; not re-sent at the same cap"),
+        );
+      }
       if (batch.length === 1) {
+        if (truncated) {
+          errors.push(`Batch ${batchNumber}: ${CUT_OFF_MESSAGE}`);
+          continue;
+        }
         try {
           classified += await runBatch(batch);
         } catch (retryErr) {

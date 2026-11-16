@@ -7,6 +7,7 @@
 // catches the error. Using vi.fn() directly avoids this.
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import Database from "better-sqlite3";
+import { runMigrations } from "@/lib/db/migrate";
 
 vi.mock("@/lib/ai/generate", () => ({
   generateTextForFeature: vi.fn(),
@@ -24,28 +25,38 @@ vi.mock("@/lib/ai/models", () => ({
 import { generateTextForFeature, AIRefusalError } from "@/lib/ai/generate";
 import { classifyUnresolvedWithClaude } from "@/lib/compute/classify-securities";
 
-function makeDb() {
+/**
+ * Migrated schema (2026-11-15: the fallback now asks only about securities
+ * held now, so every seeded security also gets a non-zero holdings row).
+ */
+function migratedDb() {
   const db = new Database(":memory:");
-  db.exec(`CREATE TABLE securities (
-    id INTEGER PRIMARY KEY, symbol TEXT, name TEXT, security_type TEXT,
-    asset_class TEXT, fund_category TEXT, geography TEXT,
-    market_cap_category TEXT, style TEXT, classification_source TEXT
-  );`);
-  db.prepare("INSERT INTO securities (symbol, name, security_type) VALUES ('XLE','Energy Select SPDR','ETF')").run();
+  runMigrations(db);
+  return db;
+}
+
+function holdNow(db: Database.Database, securityId: number) {
+  db.prepare(
+    "INSERT INTO holdings (account_id, security_id, quantity, as_of_date, source_key) VALUES (1, ?, 10, '2026-11-02', ?)",
+  ).run(securityId, `test:${securityId}`);
+}
+
+function makeDb() {
+  const db = migratedDb();
+  const id = Number(
+    db.prepare("INSERT INTO securities (id, symbol, name, security_type) VALUES (1, 'XLE','Energy Select SPDR','ETF')").run()
+      .lastInsertRowid,
+  );
+  holdNow(db, id);
   return db;
 }
 
 /** A DB seeded with several synthetic securities, for batch-retry tests that
  * need more than one row per half-batch. */
 function makeMultiDb(symbols: string[]) {
-  const db = new Database(":memory:");
-  db.exec(`CREATE TABLE securities (
-    id INTEGER PRIMARY KEY, symbol TEXT, name TEXT, security_type TEXT,
-    asset_class TEXT, fund_category TEXT, geography TEXT,
-    market_cap_category TEXT, style TEXT, classification_source TEXT
-  );`);
+  const db = migratedDb();
   const insert = db.prepare("INSERT INTO securities (symbol, name, security_type) VALUES (?, ?, 'ETF')");
-  for (const symbol of symbols) insert.run(symbol, `${symbol} Test Fund`);
+  for (const symbol of symbols) holdNow(db, Number(insert.run(symbol, `${symbol} Test Fund`).lastInsertRowid));
   const rows = db.prepare("SELECT id, symbol FROM securities ORDER BY id").all() as Array<{
     id: number;
     symbol: string;

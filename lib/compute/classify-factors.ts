@@ -10,7 +10,7 @@ import { liveOptionExpirationSql } from "@/lib/compute/option-expiry";
 import { generateTextForFeature } from "@/lib/ai/generate";
 import { FACTOR_COLUMNS, FACTOR_LABELS, type FactorColumn } from "@/lib/factors";
 import { normalizeSector } from "@/lib/securities/normalize-sector";
-import { parseBatchReply, runClassifyBatches, UnusableBatchReplyError } from "@/lib/compute/classify-batch";
+import { parseBatchReply, runClassifyBatches, throwIfCutOff, UnusableBatchReplyError } from "@/lib/compute/classify-batch";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 import { isCashEquivalentSecurity } from "@/lib/compute/cash-equivalents";
 
@@ -260,11 +260,14 @@ export async function classifyFactors(
 
     // No `temperature`: tier-resolved models can reject it as deprecated
     // (live 502 "temperature is deprecated for this model", QA 2026-07-07).
-    const { text } = await generateTextForFeature("factorClassification", {
+    const { text, finishReason } = await generateTextForFeature("factorClassification", {
       maxOutputTokens: 8000,
       system: SYSTEM_PROMPT,
       prompt,
     });
+    // A reply cut off at the cap is a named truncation (it splits; see
+    // classify-batch.ts), never a parse failure or a partial write.
+    throwIfCutOff(finishReason);
 
     // Strip fences + isolate the JSON array (the model sometimes prepends a
     // prose preamble like "I need to ..." before the array), and tolerate a
