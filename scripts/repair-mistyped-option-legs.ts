@@ -35,6 +35,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type Database from "better-sqlite3";
+import { takeBackup } from "../lib/backup/take-backup";
 import { OPTION_RESYMBOL_TARGETS } from "../lib/securities/option-resymbol-targets";
 
 export { OPTION_RESYMBOL_TARGETS };
@@ -409,12 +410,8 @@ if (isMain) {
       process.exit(1);
     }
 
-    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-    const backupDir = path.join(path.dirname(dbPath), "backups");
-    fs.mkdirSync(backupDir, { recursive: true });
-    const backupPath = path.join(backupDir, `pre-mistyped-option-legs-${timestamp}.db`);
-    db.prepare("VACUUM INTO ?").run(backupPath);
-    console.log(`\nBackup: ${backupPath}`);
+    const backup = await takeBackup(db, { purpose: "pre-mistyped-option-legs" });
+    console.log(`\nBackup: ${backup.path}`);
 
     applyMistypedOptionLegPlans(db, { dups, retypes, expFix, optSplits, resymbols });
 

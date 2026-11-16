@@ -20,9 +20,9 @@
  *   npx tsx scripts/repair-confirmed-donation-leg-amounts.ts --apply   # write
  */
 
-import fs from "node:fs";
 import path from "node:path";
 import Database from "better-sqlite3";
+import { takeBackup } from "@/lib/backup/take-backup";
 
 const DB_PATH = path.join(process.cwd(), "data", "vanguard.db");
 const EPS = 1e-9;
@@ -58,16 +58,7 @@ function fetchUnstampedConfirmedOutLegs(db: Database.Database): Row[] {
     .all() as Row[];
 }
 
-function backupDatabase(db: Database.Database): string {
-  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const backupDir = path.join(process.cwd(), "data", "backups");
-  fs.mkdirSync(backupDir, { recursive: true });
-  const backupPath = path.join(backupDir, `pre-confirmed-donation-leg-amounts-${timestamp}.db`);
-  db.prepare(`VACUUM INTO ?`).run(backupPath);
-  return backupPath;
-}
-
-function main() {
+async function main() {
   const apply = process.argv.includes("--apply");
   // 60s lock wait — the live app's background sync can hold the write lock
   // past better-sqlite3's 5s default (SQLITE_BUSY seen 2026-08-17).
@@ -122,8 +113,8 @@ function main() {
     return;
   }
 
-  const backupPath = backupDatabase(db);
-  console.log(`\nBackup: ${backupPath}`);
+  const backup = await takeBackup(db, { purpose: "pre-confirmed-donation-leg-amounts" });
+  console.log(`\nBackup: ${backup.path}`);
 
   const stamp = db.prepare(`UPDATE transactions SET amount = ? WHERE id = ? AND COALESCE(amount, 0) = 0`);
   const run = db.transaction(() => {
@@ -138,4 +129,7 @@ function main() {
   db.close();
 }
 
-main();
+main().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});

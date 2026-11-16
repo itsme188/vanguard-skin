@@ -82,6 +82,7 @@
 
 import type Database from "better-sqlite3";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
+import { takeBackup } from "@/lib/backup/take-backup";
 
 // ─── Config ────────────────────────────────────────────────────────────
 
@@ -945,15 +946,8 @@ if (isMain) {
       return;
     }
 
-    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-    const backupDir = path.default.join(dataDir, "backups");
-    fs.default.mkdirSync(backupDir, { recursive: true });
-    const backupPath = path.default.join(
-      backupDir,
-      `pre-split-basis-audit-${timestamp}.db`
-    );
-    db.prepare(`VACUUM INTO ?`).run(backupPath);
-    console.log(`\nBackup: ${backupPath}`);
+    const backup = await takeBackup(db, { purpose: "pre-split-basis-audit" });
+    console.log(`\nBackup: ${backup.path}`);
 
     const applied = auditAndRepair(db, targets, { apply: true });
     console.log(formatReport(applied));

@@ -67,6 +67,7 @@
 import type Database from "better-sqlite3";
 import { classifyStoredFailureReason, type StoredFailureKind } from "../lib/gmail/enrichment-failure";
 import { requeueArticlesForEnrichment } from "../lib/mutations/research-articles";
+import { takeBackup } from "../lib/backup/take-backup";
 
 /**
  * Class shown for a row selected by --ids whose stored reason is not
@@ -392,12 +393,8 @@ if (isMain) {
           ? findNamedRequeueCandidates(db, opts.ids).matched.length
           : findRequeueCandidates(db, opts).matched.length;
       if (opts.apply && wouldWrite > 0) {
-        const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-        const backupDir = path.default.join(path.default.dirname(dbPath), "backups");
-        fs.default.mkdirSync(backupDir, { recursive: true });
-        const backupPath = path.default.join(backupDir, `pre-requeue-failed-enrichment-${timestamp}.db`);
-        db.prepare(`VACUUM INTO ?`).run(backupPath);
-        console.log(`Backup: ${backupPath}\n`);
+        const backup = await takeBackup(db, { purpose: "pre-requeue-failed-enrichment" });
+        console.log(`Backup: ${backup.path}\n`);
       }
 
       const result = repairRequeueFailedEnrichment(db, opts);

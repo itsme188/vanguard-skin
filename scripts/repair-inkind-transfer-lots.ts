@@ -42,6 +42,7 @@ import path from "node:path";
 import BetterSqlite3 from "better-sqlite3";
 import type Database from "better-sqlite3";
 import { bumpTaxGenerationIfPresent } from "../lib/compute/tax-convention";
+import { takeBackup } from "../lib/backup/take-backup";
 
 export interface InKindLot {
   acquisitionDate: string;
@@ -206,7 +207,7 @@ export function applyInKindLots(db: Database.Database, config: InKindLotConfig, 
   })();
 }
 
-function main(): void {
+async function main(): Promise<void> {
   const apply = process.argv.includes("--apply");
   const dbPath = process.env.REPAIR_DB_PATH ?? path.join(process.cwd(), "data", "vanguard.db");
   const configPath = process.env.REPAIR_CONFIG_PATH;
@@ -232,11 +233,8 @@ function main(): void {
       console.log("\nDry run (default). Re-run with --apply to write (REPAIR_DB_PATH for a rehearsal copy).");
       return;
     }
-    const backupDir = path.join(path.dirname(dbPath), "backups");
-    fs.mkdirSync(backupDir, { recursive: true });
-    const backupPath = path.join(backupDir, `pre-inkind-lots-${new Date().toISOString().replace(/[:.]/g, "-")}.db`);
-    db.prepare("VACUUM INTO ?").run(backupPath);
-    console.log(`  Backup: ${backupPath}`);
+    const backup = await takeBackup(db, { purpose: "pre-inkind-lots" });
+    console.log(`  Backup: ${backup.path}`);
     const result = applyInKindLots(db, config, plan);
     console.log(`  Applied: ${result.updated} updated, ${result.inserted} inserted; tax generation bumped — run the recompute next.`);
   } finally {
@@ -245,4 +243,9 @@ function main(): void {
 }
 
 const isMain = process.argv[1] != null && /repair-inkind-transfer-lots\.(ts|js)$/.test(process.argv[1]);
-if (isMain) main();
+if (isMain) {
+  main().catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
+}

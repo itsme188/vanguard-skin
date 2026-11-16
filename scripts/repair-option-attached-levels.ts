@@ -41,7 +41,6 @@
  * it is ever pointed at the live file.
  */
 
-import fs from "node:fs";
 import path from "node:path";
 import BetterSqlite3 from "better-sqlite3";
 import type Database from "better-sqlite3";
@@ -54,6 +53,7 @@ import {
   type OptionLevelVerdict,
 } from "../lib/alerts/option-level-resolution";
 import { todayET } from "../lib/calendar/date-utils";
+import { takeBackup } from "../lib/backup/take-backup";
 
 // ─── Row + plan shapes ──────────────────────────────────────────────
 
@@ -300,25 +300,7 @@ function printPlan(plan: OptionLevelRepairPlanRow[]): void {
   }
 }
 
-/** Timestamped `VACUUM INTO` backup next to the database being written. */
-function backupDatabase(db: Database.Database): string {
-  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const backupDir = path.join(path.dirname(DB_PATH), "backups");
-  fs.mkdirSync(backupDir, { recursive: true });
-  const backupPath = path.join(
-    backupDir,
-    `pre-option-level-repair-${timestamp}.db`,
-  );
-  db.prepare("VACUUM INTO ?").run(backupPath);
-  if (fs.statSync(backupPath).size === 0) {
-    throw new Error(
-      `backup at ${backupPath} is 0 bytes — aborting, refusing to write without a verified backup`,
-    );
-  }
-  return backupPath;
-}
-
-function main(): void {
+async function main(): Promise<void> {
   const apply = process.argv.includes("--apply");
   const db = new BetterSqlite3(DB_PATH, { readonly: !apply }) as Database.Database;
   db.pragma("foreign_keys = ON");
@@ -359,8 +341,8 @@ function main(): void {
       return;
     }
 
-    const backupPath = backupDatabase(db);
-    console.log(`\nBackup written: ${backupPath}`);
+    const backup = await takeBackup(db, { purpose: "pre-option-level-repair" });
+    console.log(`\nBackup written: ${backup.path}`);
 
     const { moved } = applyOptionLevelRepairs(db);
     console.log(
@@ -380,10 +362,8 @@ const isMain =
     process.argv[1].endsWith("repair-option-attached-levels.js"));
 
 if (isMain) {
-  try {
-    main();
-  } catch (err) {
+  main().catch((err) => {
     console.error(`ERROR: ${err instanceof Error ? err.message : String(err)}`);
     process.exit(1);
-  }
+  });
 }

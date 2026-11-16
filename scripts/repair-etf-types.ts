@@ -45,7 +45,6 @@
  *   npx tsx scripts/repair-etf-types.ts --from-tws --apply
  */
 
-import fs from "node:fs";
 import path from "node:path";
 import Database from "better-sqlite3";
 import { SecType } from "@stoqey/ib";
@@ -53,6 +52,7 @@ import { getIbApi } from "../lib/tws/client";
 import { RateLimiter } from "../lib/tws/rate-limiter";
 import { shouldRetypeAsEtf } from "../lib/tws/security-type-map";
 import { liveOptionExpirationSql } from "../lib/compute/option-expiry";
+import { takeBackup } from "../lib/backup/take-backup";
 
 // REPAIR_DB_PATH points the script at a rehearsal copy. Without it the script
 // opens the LIVE database, so main() prints the path before anything else.
@@ -154,26 +154,6 @@ export function retypeSecuritiesAsEtf(
   }
 
   return outcomes;
-}
-
-// ─── Backup ─────────────────────────────────────────────────────────
-
-/** Timestamped `VACUUM INTO` backup to data/backups/ (mirrors the pattern
- *  in scripts/rebuild-ibkr-ledger.ts's ensureBackup). Throws — and this
- *  script aborts before writing — if the backup comes out empty. */
-function backupDatabase(db: Database.Database): string {
-  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const backupDir = path.join(process.cwd(), "data", "backups");
-  fs.mkdirSync(backupDir, { recursive: true });
-  const backupPath = path.join(backupDir, `pre-etf-type-repair-${timestamp}.db`);
-  db.prepare("VACUUM INTO ?").run(backupPath);
-  const sizeBytes = fs.statSync(backupPath).size;
-  if (sizeBytes === 0) {
-    throw new Error(
-      `backup at ${backupPath} is 0 bytes — aborting, refusing to write without a verified backup`,
-    );
-  }
-  return backupPath;
 }
 
 // ─── Mode 1: offline, explicit symbol list ─────────────────────────
@@ -369,8 +349,8 @@ async function runOfflineMode(db: Database.Database, symbols: string[], apply: b
   }
 
   if (apply) {
-    const backupPath = backupDatabase(db);
-    console.log(`\nBackup written: ${backupPath}`);
+    const backup = await takeBackup(db, { purpose: "pre-etf-type-repair" });
+    console.log(`\nBackup written: ${backup.path}`);
   }
 
   console.log("\nResult:");
@@ -391,8 +371,8 @@ async function runFromTwsMode(db: Database.Database, apply: boolean) {
   if (confirmed.length === 0) return;
 
   if (apply) {
-    const backupPath = backupDatabase(db);
-    console.log(`Backup written: ${backupPath}`);
+    const backup = await takeBackup(db, { purpose: "pre-etf-type-repair" });
+    console.log(`Backup written: ${backup.path}`);
   }
 
   console.log("\nResult:");

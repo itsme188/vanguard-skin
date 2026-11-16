@@ -79,6 +79,7 @@ import type Database from "better-sqlite3";
 import { bumpTaxGenerationIfPresent, isTaxConventionPending } from "../lib/compute/tax-convention";
 import { todayET } from "../lib/calendar/date-utils";
 import { marketValue } from "../lib/valuation";
+import { takeBackup } from "../lib/backup/take-backup";
 
 export interface DonatedLotBasisTarget {
   account: string;
@@ -456,7 +457,7 @@ export function describeChange(lot: DonatedLotPlan): string[] {
   ];
 }
 
-function main(): void {
+async function main(): Promise<void> {
   const apply = process.argv.includes("--apply");
   const dbPath = process.env.REPAIR_DB_PATH ?? path.join(process.cwd(), "data", "vanguard.db");
   const configPath = process.env.REPAIR_CONFIG_PATH;
@@ -501,11 +502,8 @@ function main(): void {
       console.log("\nDry run (default). Re-run with --apply to write (REPAIR_DB_PATH for a rehearsal copy).");
       return;
     }
-    const backupDir = path.join(path.dirname(dbPath), "backups");
-    fs.mkdirSync(backupDir, { recursive: true });
-    const backupPath = path.join(backupDir, `pre-donated-lot-basis-${new Date().toISOString().replace(/[:.]/g, "-")}.db`);
-    db.prepare("VACUUM INTO ?").run(backupPath);
-    console.log(`  Backup: ${backupPath}`);
+    const backup = await takeBackup(db, { purpose: "pre-donated-lot-basis" });
+    console.log(`  Backup: ${backup.path}`);
     const result = applyDonatedLotBasisRepair(db, plan, todayET());
     console.log(`  Applied: ${result.updated} transaction(s) updated; tax generation bumped — run the tax-lot recompute next.`);
   } finally {
@@ -515,10 +513,8 @@ function main(): void {
 
 const isMain = process.argv[1] != null && /repair-donated-lot-basis\.(ts|js)$/.test(process.argv[1]);
 if (isMain) {
-  try {
-    main();
-  } catch (err) {
+  main().catch((err) => {
     console.error(`ERROR: ${err instanceof Error ? err.message : String(err)}`);
     process.exitCode = 1;
-  }
+  });
 }

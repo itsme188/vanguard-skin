@@ -105,9 +105,9 @@
  *   npx tsx scripts/repair-inkind-transfer-fmv.ts --apply     # write every candidate
  */
 
-import fs from "node:fs";
 import path from "node:path";
 import Database from "better-sqlite3";
+import { takeBackup } from "@/lib/backup/take-backup";
 import { marketValue } from "@/lib/valuation";
 import { reconcileDonations } from "@/lib/compute/donation-reconciliation";
 import { linkDonationLegs, DonationLinkError } from "@/lib/mutations/donation-links";
@@ -461,23 +461,6 @@ export function applyInkindRepair(
   return { applied, skipped };
 }
 
-// ─── Backup (mirrors scripts/repair-missing-external-flows.ts::backupDatabase) ─
-
-function backupDatabase(db: Database.Database): string {
-  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const backupDir = path.join(process.cwd(), "data", "backups");
-  fs.mkdirSync(backupDir, { recursive: true });
-  const backupPath = path.join(backupDir, `pre-inkind-fmv-repair-${timestamp}.db`);
-  db.prepare("VACUUM INTO ?").run(backupPath);
-  const sizeBytes = fs.statSync(backupPath).size;
-  if (sizeBytes === 0) {
-    throw new Error(
-      `backup at ${backupPath} is 0 bytes — aborting, refusing to write without a verified backup`
-    );
-  }
-  return backupPath;
-}
-
 // ─── CLI driver ─────────────────────────────────────────────────────
 
 const CLASS_LABELS: Record<InkindCandidateClass, string> = {
@@ -532,8 +515,8 @@ async function main(): Promise<void> {
 
     const flowsBefore = fetchNetFlowsByDate(db, undefined, "0000-00-00", "9999-12-31").length;
 
-    const backupPath = backupDatabase(db);
-    console.log(`\nBackup written: ${backupPath}`);
+    const backup = await takeBackup(db, { purpose: "pre-inkind-fmv-repair" });
+    console.log(`\nBackup written: ${backup.path}`);
 
     const { applied, skipped } = applyInkindRepair(db, candidates);
     console.log(`\nApplied ${applied} candidate(s), skipped ${skipped} (report-only or invalid).`);

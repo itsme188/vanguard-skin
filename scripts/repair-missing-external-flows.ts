@@ -86,9 +86,9 @@
  *   npx tsx scripts/repair-missing-external-flows.ts --apply --only 2026-07-11 --amount 88000
  */
 
-import fs from "node:fs";
 import path from "node:path";
 import Database from "better-sqlite3";
+import { takeBackup } from "@/lib/backup/take-backup";
 import {
   computeCashFlowResiduals,
   isUnexplainedCashFlow,
@@ -331,23 +331,6 @@ export function selectRun(
   };
 }
 
-// ─── Backup (mirrors scripts/repair-etf-types.ts::backupDatabase) ─────
-
-function backupDatabase(db: Database.Database): string {
-  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const backupDir = path.join(process.cwd(), "data", "backups");
-  fs.mkdirSync(backupDir, { recursive: true });
-  const backupPath = path.join(backupDir, `pre-missing-flow-repair-${timestamp}.db`);
-  db.prepare("VACUUM INTO ?").run(backupPath);
-  const sizeBytes = fs.statSync(backupPath).size;
-  if (sizeBytes === 0) {
-    throw new Error(
-      `backup at ${backupPath} is 0 bytes — aborting, refusing to write without a verified backup`
-    );
-  }
-  return backupPath;
-}
-
 // ─── Apply ──────────────────────────────────────────────────────────
 
 /** Inserts one row per candidate inside a single transaction. Returns the
@@ -566,8 +549,8 @@ async function main(): Promise<void> {
       return;
     }
 
-    const backupPath = backupDatabase(db);
-    console.log(`\nBackup written: ${backupPath}`);
+    const backup = await takeBackup(db, { purpose: "pre-missing-flow-repair" });
+    console.log(`\nBackup written: ${backup.path}`);
 
     const inserted = applyProposedTransactions(db, proposals);
     console.log(`\nInserted ${inserted} of ${proposals.length} row(s) (skipped = already applied, same source_key).`);

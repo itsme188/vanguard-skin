@@ -47,6 +47,7 @@
 import type Database from "better-sqlite3";
 import { isEmptyEnrichment } from "@/lib/research/empty-enrichment";
 import { MAX_ENRICH_ATTEMPTS } from "@/lib/gmail/enrichment-failure";
+import { takeBackup } from "@/lib/backup/take-backup";
 
 // ─── Selector (pure, unit-tested) ──────────────────────────────────
 
@@ -167,15 +168,8 @@ if (isMain) {
       );
 
       if (apply && findEmptyEnrichmentRows(db).length > 0) {
-        const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-        const backupDir = path.default.join(process.cwd(), "data", "backups");
-        fs.default.mkdirSync(backupDir, { recursive: true });
-        const backupPath = path.default.join(
-          backupDir,
-          `pre-empty-enrichments-${timestamp}.db`,
-        );
-        db.prepare(`VACUUM INTO ?`).run(backupPath);
-        console.log(`Backup: ${backupPath}\n`);
+        const backup = await takeBackup(db, { purpose: "pre-empty-enrichments" });
+        console.log(`Backup: ${backup.path}\n`);
       }
 
       const { matched, repaired } = repairEmptyEnrichments(db, { apply });
