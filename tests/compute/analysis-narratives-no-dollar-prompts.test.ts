@@ -62,6 +62,9 @@ const D = {
   hedgeShortProtected: 56789.34,
   theta: -1234.56,
   theta2: 2345.69,
+  notCreditedNotional: 234567.81,
+  defenseCashMv: 456123.78,
+  defenseBorrowedMv: -23456.71,
 };
 const SEEDED = Object.values(D);
 
@@ -86,6 +89,7 @@ function riskMetrics() {
     sharpeRatio: 1.3,
     riskFreeRate: 0.04,
     herfindahl: 0.11,
+    investedHerfindahl: 0.1358,
     top5Concentration: 0.47,
     top5Positions: [
       { symbol: "ZZA", securityName: "Zed A", marketValue: D.top1Mv, weight: 0.24 },
@@ -157,7 +161,16 @@ function defense() {
         badges: [], side: "short", betaAssumed: false },
     ],
     diagnostics: [{ kind: "assumed_beta", symbol: "ZZI", detail: "Too little price history to measure a beta for ZZI — assumed β=1.0" }],
-    notCreditedHedges: [],
+    cashLine: {
+      weight: 0.0731,
+      marketValue: D.defenseCashMv,
+      holdingCount: 2,
+      borrowed: { marketValue: D.defenseBorrowedMv, holdingCount: 1 },
+    },
+    notCreditedHedges: [
+      { underlying: "ZZG", symbols: ["ZZG 261218P00030000"], protectiveNotional: D.notCreditedNotional,
+        reason: "not enough price history to measure its beta" },
+    ],
     siblingPricedPositions: 0,
     leveragedFundsUnmodelled: { count: 0, valueShare: 0, symbols: [] },
   };
@@ -225,10 +238,10 @@ describe("Analysis narrative prompts carry no portfolio dollar amount (ruling 21
     expect(ctx.currentDrawdown.percent).toBe(0.1412);
     expect(ctx.currentDrawdown.netFlowsInWindowPctOfPeak).toBe(Number((D.curFlows / D.curPeak).toFixed(4)));
     expect(ctx.top5Positions).toEqual([
-      { symbol: "ZZA", securityName: "Zed A", side: "long", weight: 0.24 },
-      { symbol: "ZZB", securityName: "Zed B", side: "short", weight: 0.17 },
+      { symbol: "ZZA", securityName: "Zed A", side: "long", weightOfGrossBook: 0.24 },
+      { symbol: "ZZB", securityName: "Zed B", side: "short", weightOfGrossBook: 0.17 },
     ]);
-    expect(ctx.cashWeight).toBe(0.06);
+    expect(ctx.cashWeightOfGrossBook).toBe(0.06);
     expect(ctx).not.toHaveProperty("cashMarketValue");
   });
 
@@ -239,14 +252,14 @@ describe("Analysis narrative prompts carry no portfolio dollar amount (ruling 21
     const ctx = contextOf(prompt);
     // Ranked by risk contribution, as the table shows it.
     expect(ctx.positions.map((p: { symbol: string }) => p.symbol)).toEqual(["ZZB", "ZZA"]);
-    expect(ctx.positions[1]).toMatchObject({ symbol: "ZZA", weight: 0.3, riskContribution: 0.4, annualizedVol: 0.35 });
+    expect(ctx.positions[1]).toMatchObject({ symbol: "ZZA", weightOfLongBook: 0.3, riskContribution: 0.4, annualizedVol: 0.35 });
     expect(ctx.portfolioVol).toBe(0.22);
   });
 
   it("defense: exposures and hedge notionals as shares of the long (or short) exposure", async () => {
     const prompt = await promptFor(db, "defense");
     expectNoDollarFigure(prompt);
-    for (const field of ["longExposure\":", "protectiveNotional", "protectedNotional", "thetaPerDay", "netExposure\":", "grossExposure\":", "quantity"]) {
+    for (const field of ["longExposure\":", "protectiveNotional\":", "protectedNotional", "thetaPerDay", "netExposure\":", "grossExposure\":", "quantity"]) {
       expect(prompt, field).not.toContain(field);
     }
     const ctx = contextOf(prompt);
@@ -277,6 +290,16 @@ describe("Analysis narrative prompts carry no portfolio dollar amount (ruling 21
       badges: ["expensive"],
     });
     expect(ctx.hedgeScores[1]).toMatchObject({ side: "short", protectedPct: share(D.hedgeShortProtected, -D.shortExposure) });
+    // Ruling 19 = B: hedges held but not credited, and the cash line, as shares only.
+    expect(ctx.notCreditedHedges).toEqual([
+      {
+        underlying: "ZZG",
+        reason: "not enough price history to measure its beta",
+        protectiveNotionalPctOfLong: share(D.notCreditedNotional, D.longExposure),
+      },
+    ]);
+    expect(ctx.cashLine).toEqual({ weightOfScope: 0.0731, borrowing: true });
+    expect(prompt).not.toContain("marketValue");
   });
 
   it("the defense fingerprint does not move with dollar-only changes (it never held a dollar figure)", () => {

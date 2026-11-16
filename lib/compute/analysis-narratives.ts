@@ -77,13 +77,13 @@ const SURFACE_PROMPTS: Record<NarrativeSurface, string> = {
   "factor-analysis":
     "Summarize the user's portfolio factor exposure in 2-3 sentences. Highlight the dominant tilts (Growth vs Value, AI exposure, Rate sensitivity, Cyclicality, etc.) and what they imply about the user's effective bet on the market regime. Avoid specific dollar amounts. Use plain English, no jargon. The marketRegression figures are measured against the benchmark named in the `benchmark` field: whenever you mention beta, alpha, R-squared, tracking error or correlation, name that benchmark (for example 'beta versus VTI').",
   "risk-metrics":
-    "Summarize the portfolio's risk metrics in 2-3 sentences: drawdown profile, volatility, Sharpe, Herfindahl concentration. Note whether risk is concentrated in a few names or diversified. Drawdown percents, weights and netFlowsInWindowPctOfPeak (net deposits or withdrawals in the drawdown window as a share of the peak value) are decimal fractions (0.18 = 18%). Avoid specific dollar amounts.",
+    "Summarize the portfolio's risk metrics in 2-3 sentences: drawdown profile, volatility, Sharpe, Herfindahl concentration. Note whether risk is concentrated in a few names or diversified. Drawdown percents, the shares below and netFlowsInWindowPctOfPeak (net deposits or withdrawals in the drawdown window as a share of the peak value) are decimal fractions (0.18 = 18%). Every position share here (weightOfGrossBook, cashWeightOfGrossBook, top5Concentration) is a share of the scope's whole gross book: the sum of every holding's absolute value, shorts and cash included. herfindahl is the concentration index over that whole book, cash counted as dilution (1 / herfindahl is the whole portfolio's effective number of positions); investedHerfindahl is the same index over the invested holdings only, cash left out (1 / investedHerfindahl is the effective number of invested names). Avoid specific dollar amounts.",
   "position-risk":
-    "In 2-3 sentences, identify which positions are driving the portfolio's risk. Mention the top 2-3 risk contributors by name and what makes them risky (size as weight in the portfolio, volatility, correlation). Weights are decimal fractions (0.18 = 18%). Avoid specific dollar amounts.",
+    "In 2-3 sentences, identify which positions are driving the portfolio's risk. Mention the top 2-3 risk contributors by name and what makes them risky (size, volatility, correlation). Every share here (weightOfLongBook, cashWeightOfLongBook) is a decimal fraction (0.18 = 18%) of the scope's long book: the long holdings that have a price, cash funds included, shorts left out. Cash-equivalent funds are not risk positions and are not in the list; cashWeightOfLongBook is the share held in cash-equivalent funds among the ten largest holdings. Never present cash as a risk driver. Avoid specific dollar amounts.",
   "factor-heatmap":
     "Read the heatmap of factor exposures across positions. The data summarises it per factor: each bucket's share of the book (weightPct, percent of total market value), how many positions sit in it and its largest names; `unclassified` is the share with no value for that factor, and `coverage` says how much of the book has any factor data. In 2-3 sentences, call out the most concentrated factor bucket and any surprising holes (e.g., zero crypto exposure, no defensive plays). Avoid specific dollar amounts.",
   defense:
-    "You are reviewing the portfolio's defensive posture. In 2-4 sentences: state how much of the long book is protected and through what (same-name hedges vs index/sector puts), name the largest UNPROTECTED exposures, and flag any hedge that looks expensive or nearly decayed (use the badges). Plain prose, no headers, no advice to buy anything new. All ratio/pct fields in the context are decimal fractions (0.18 = 18%) — convert before narrating. Sizes are shares, never dollars: a `...PctOfLong` field and an exposure's pctOfBook are shares of the long exposure; a hedge's protectedPct is its protected notional as a share of the long exposure (side long) or of the short exposure (side short); shortSideHedgeRatio is the short book's protection. A negative monthlyBleedPct means the hedge COLLECTS premium (short-option income), not a cost — never call it expensive.",
+    "You are reviewing the portfolio's defensive posture. In 2-4 sentences: state how much of the long book is protected and through what (same-name hedges vs index/sector puts), name the largest UNPROTECTED exposures, and flag any hedge that looks expensive or nearly decayed (use the badges). Plain prose, no headers, no advice to buy anything new. All ratio/pct fields in the context are decimal fractions (0.18 = 18%) — convert before narrating. Sizes are shares, never dollars: a `...PctOfLong` field and an exposure's pctOfBook are shares of the long exposure; a hedge's protectedPct is its protected notional as a share of the long exposure (side long) or of the short exposure (side short); shortSideHedgeRatio is the short book's protection. A negative monthlyBleedPct means the hedge COLLECTS premium (short-option income), not a cost — never call it expensive. notCreditedHedges are hedges held in the book that earn no protection credit (each with its reason; protectiveNotionalPctOfLong is its notional as a share of the long exposure), and cashLine.weightOfScope is cash and equivalents as a share of the scope's whole gross book (borrowing true means some cash is borrowed): both are NOT inside protectionRatio. Describe a not-credited hedge as held but not credited because of its reason, never as absent; cash lowers what can be lost but is not a hedge.",
 };
 
 // ─── Input fingerprinting (cache-invalidation-on-drift) ──────────────────────
@@ -217,6 +217,62 @@ export interface DefenseFingerprintInputs {
    * (portfolio noise the model is forbidden from quoting anyway).
    */
   topExposures: DefenseFingerprintExposure[];
+  /**
+   * Hedges held but given no protection credit (ruling 19 = B, K4b), with the
+   * reason the page prints and the notional as a share of the long exposure
+   * on the 0.5pp grid. The prompt narrates them, so a hedge entering, leaving
+   * or changing reason must drift the prose.
+   */
+  notCreditedHedges: DefenseNotCreditedShare[];
+  /** The cash line beside the ratio: its weight (0.5pp grid) and whether any
+   *  cash is borrowed. null when the analysis carries no cash line. */
+  cashLine: DefenseCashShare | null;
+}
+
+export interface DefenseNotCreditedShare {
+  underlying: string;
+  reason: string;
+  /** Protective notional / long exposure, decimal fraction. */
+  protectiveNotionalPctOfLong: number | null;
+}
+
+export interface DefenseCashShare {
+  /** Cash and equivalents / the scope's gross book (cash included). */
+  weightOfScope: number | null;
+  borrowing: boolean;
+}
+
+/**
+ * The not-credited hedges as shares. Read defensively: an analysis built
+ * before the field existed (or a fixture) carries none. The reason is passed
+ * through verbatim, never matched, so a reworded reason in hedging.ts needs
+ * no change here.
+ */
+function notCreditedShares(
+  a: DefenseAnalysis,
+  round: (v: number | null) => number | null
+): DefenseNotCreditedShare[] {
+  const list = Array.isArray(a.notCreditedHedges) ? a.notCreditedHedges : [];
+  const long = a.summary.longExposure;
+  return list.map((h) => ({
+    underlying: h.underlying,
+    reason: String(h.reason ?? ""),
+    protectiveNotionalPctOfLong: round(shareOf(h.protectiveNotional, long)),
+  }));
+}
+
+/** The cash line as a share and a borrowing flag; null when absent. */
+function cashShare(
+  a: DefenseAnalysis,
+  round: (v: number | null) => number | null
+): DefenseCashShare | null {
+  const c = a.cashLine as DefenseAnalysis["cashLine"] | undefined;
+  if (!c) return null;
+  const borrowed = c.borrowed;
+  return {
+    weightOfScope: round(typeof c.weight === "number" && Number.isFinite(c.weight) ? c.weight : null),
+    borrowing: !!borrowed && ((borrowed.holdingCount ?? 0) > 0 || (borrowed.marketValue ?? 0) < 0),
+  };
 }
 
 /**
@@ -286,6 +342,8 @@ export function buildDefenseFingerprintInputs(
     sectorCoverage,
     standaloneBetIds,
     topExposures,
+    notCreditedHedges: notCreditedShares(analysis, roundToHalfPp),
+    cashLine: cashShare(analysis, roundToHalfPp),
   };
 }
 
@@ -523,15 +581,20 @@ export function buildRiskMetricsContext(r: PortfolioRiskMetrics) {
     sharpeRatio: r.sharpeRatio,
     riskFreeRate: r.riskFreeRate,
     herfindahl: r.herfindahl,
+    // Invested-only index, cash left out (ruling 28 = B): the card prints both
+    // "effective positions" figures, so the narrative must see both.
+    investedHerfindahl: r.investedHerfindahl ?? null,
     top5Concentration: r.top5Concentration,
+    // Weights are shares of the whole GROSS book (cash included); named so,
+    // because the position-risk prompt's shares use another base.
     top5Positions: r.top5Positions.map((p) => ({
       symbol: p.symbol,
       securityName: p.securityName,
       side: sideOf(p.marketValue),
-      weight: p.weight,
+      weightOfGrossBook: p.weight,
     })),
     positionCount: r.positionCount,
-    cashWeight: r.cashWeight,
+    cashWeightOfGrossBook: r.cashWeight,
     cashHoldingCount: r.cashHoldingCount,
     dataPoints: r.dataPoints,
     seamDaysBridged: r.seamDaysBridged,
@@ -546,19 +609,37 @@ export function buildRiskMetricsContext(r: PortfolioRiskMetrics) {
  * order the table shows (see buildSurfaceInputs).
  */
 export function buildPositionRiskContext(r: PositionRiskResult) {
+  // Cash-equivalent funds are not risk positions: they leave the ranked list
+  // and the correlation pairs, and their weight is passed as one figure. The
+  // flag is computePositionRisk's own `isCashEquivalentSecurity` reading
+  // (lib/compute/cash-equivalents.ts), never a list kept here. The figure
+  // covers the cash funds among the topN rows computePositionRisk returns
+  // (the largest holdings by value); a cash fund outside them is smaller
+  // than every listed row.
+  const cash = r.positions.filter((p) => p.cashEquivalent);
+  const risky = r.positions.filter((p) => !p.cashEquivalent);
+  const cashSymbols = new Set(cash.map((p) => p.symbol));
+  const cashWeightOfLongBook = Number(
+    cash.reduce((s, p) => s + (Number.isFinite(p.weight) ? p.weight : 0), 0).toFixed(SHARE_DECIMALS + 2)
+  );
   return {
-    positions: r.positions.map((p) => ({
+    // Weights are shares of the LONG, priced book (shorts left out, cash
+    // funds included); named so, because the risk-metrics prompt's shares
+    // use the gross whole book.
+    positions: risky.map((p) => ({
       securityId: p.securityId,
       symbol: p.symbol,
       securityName: p.securityName,
-      weight: p.weight,
+      weightOfLongBook: p.weight,
       annualizedVol: p.annualizedVol,
       riskContribution: p.riskContribution,
       correlationWithPortfolio: p.correlationWithPortfolio,
       dataPoints: p.dataPoints,
-      cashEquivalent: p.cashEquivalent,
     })),
-    correlations: r.correlations,
+    cashWeightOfLongBook,
+    correlations: r.correlations.filter(
+      (c) => !cashSymbols.has(c.symbolA) && !cashSymbols.has(c.symbolB)
+    ),
     portfolioVol: r.portfolioVol,
   };
 }
@@ -633,6 +714,10 @@ export function buildDefenseContext(a: DefenseAnalysis) {
       badges: h.badges,
     })),
     diagnostics: a.diagnostics,
+    // Ruling 19 = B: the page lists hedges that earn no credit and a cash
+    // line beside the ratio; neither is inside protectionRatio. Shares only.
+    notCreditedHedges: notCreditedShares(a, (v) => v),
+    cashLine: cashShare(a, (v) => v),
   };
 }
 
@@ -746,7 +831,8 @@ function buildSurfaceInputs(
       return empty;
     }
     // Dollar-free (ruling 21 = A). The fingerprint keeps its own narrowed
-    // input, which never held a dollar figure, so it does not move here.
+    // input (no dollar figure); it carries the not-credited hedges and the
+    // cash line the prompt narrates, as shares on the 0.5pp grid.
     return {
       context: JSON.stringify(buildDefenseContext(result)),
       fingerprintInput: buildDefenseFingerprintInputs(result),
