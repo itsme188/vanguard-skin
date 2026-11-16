@@ -53,7 +53,7 @@ describe("realized P&L drift on a saved review", () => {
     expect(savedReviewPnlDrift(1000, { totalRealizedPnl: 800 })).toEqual({ currentPnl: 800, signFlipped: false });
   });
 
-  it("a change of sign is always reported as such", () => {
+  it("a material change of sign is reported as such (cent-level flips: trade-review-card-sign-flip-z)", () => {
     expect(savedReviewPnlDrift(1000, { totalRealizedPnl: -200 })).toEqual({ currentPnl: -200, signFlipped: true });
     expect(savedReviewPnlDrift(-0.6, { totalRealizedPnl: 0.6 })).toEqual({ currentPnl: 0.6, signFlipped: true });
   });

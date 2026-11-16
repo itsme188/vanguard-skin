@@ -229,9 +229,12 @@ export const PNL_DRIFT_MIN_SHARE = 0.01;
  * Has the period's realized P&L moved since the review was written? Compares
  * the saved total with today's total for the same account and period (same
  * selection and `computeGroupedSummary` path). A move counts when it is at
- * least PNL_DRIFT_MIN_USD and PNL_DRIFT_MIN_SHARE of the saved figure; a
- * change of sign always counts. Null = no material change, or no current
- * figure. The saved review is never rewritten from this.
+ * least PNL_DRIFT_MIN_USD and PNL_DRIFT_MIN_SHARE of the saved figure. A
+ * change of sign is announced only for a move that is material by that same
+ * rule: a flip always moves at least 100% of the saved figure, so the dollar
+ * floor decides, and a cent-level wobble across zero (+0.01 to -0.01) is not
+ * reported. Null = no material change, or no current figure. The saved
+ * review is never rewritten from this.
  */
 export function savedReviewPnlDrift(
   savedPnl: number,
@@ -244,7 +247,7 @@ export function savedReviewPnlDrift(
   const moved = Math.abs(now - savedPnl);
   const material =
     moved >= PNL_DRIFT_MIN_USD && moved >= PNL_DRIFT_MIN_SHARE * Math.abs(savedPnl);
-  return signFlipped || material ? { currentPnl: now, signFlipped } : null;
+  return material ? { currentPnl: now, signFlipped } : null;
 }
 
 /**

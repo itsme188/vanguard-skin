@@ -68,27 +68,66 @@ function wireCount(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
 
+function securitiesNoun(n: number): string {
+  return n === 1 ? "security" : "securities";
+}
+
+/** The skipped names not held now, as a clause; empty when there are none. */
+function notHeldClause(notHeld: number): string {
+  return notHeld > 0
+    ? `${notHeld} ${securitiesNoun(notHeld)} you do not hold now ${notHeld === 1 ? "was" : "were"} not sent to the AI`
+    : "";
+}
+
 /**
- * The line shown after an Auto-Classify run that did some work. The engine
- * counts every security ever imported, while this card counts current
- * holdings only, so the line names both populations instead of printing the
- * engine's tally as if it were the card's. `heldUnclassifiedBefore` is the
- * card's own list length before the run; pass null to leave that count out
- * (privacy mode).
+ * The line shown after an Auto-Classify run that found nothing to do. Names
+ * not held now are never sent to the AI, so a click cannot clear them; they
+ * are mentioned, not reported as a failure.
+ */
+export function classifyNoOpSummary(notHeldSkippedCount: unknown): string {
+  const base = "Nothing to classify — every held security already has sector/fund classifications.";
+  const clause = notHeldClause(wireCount(notHeldSkippedCount));
+  return clause ? `${base} ${clause}.` : base;
+}
+
+/**
+ * The line shown after an Auto-Classify run that did some work. Two
+ * populations: the rule-based pass reads every security ever imported (its
+ * tally is in "Classified" and "already classified"), while the AI is asked
+ * only about current holdings, as this card counts them. So the line names
+ * the held names still unclassified and why, and the names not held that
+ * were not sent to the AI, never one blended "couldn't be classified" count.
+ * `heldUnclassifiedBefore` is the card's own list length before the run;
+ * pass null in privacy mode, which also withholds the held count.
  */
 export function classifyRunSummary(
-  result: { classified?: unknown; skipped?: unknown; unresolvedCount?: unknown },
+  result: {
+    classified?: unknown;
+    skipped?: unknown;
+    heldUnresolvedCount?: unknown;
+    notHeldSkippedCount?: unknown;
+  },
   aiErrors: string[],
   heldUnclassifiedBefore: number | null,
 ): string {
   const classified = wireCount(result.classified);
   const skipped = wireCount(result.skipped);
-  const unresolved = wireCount(result.unresolvedCount);
+  const heldLeft = wireCount(result.heldUnresolvedCount);
+  const notHeld = wireCount(result.notHeldSkippedCount);
   const parts = [
-    `Classified ${classified} ${classified === 1 ? "security" : "securities"} across the whole security list (every security ever imported, not only current holdings)`,
+    `Classified ${classified} ${securitiesNoun(classified)} (the rule-based pass reads every security ever imported; the AI is asked only about current holdings)`,
     `${skipped} already classified`,
   ];
-  if (unresolved > 0) parts.push(`${unresolved} couldn't be auto-classified`);
+  if (heldLeft > 0) {
+    const why = aiErrors.length > 0 ? "the AI step hit an error" : "the AI gave no usable answer for them";
+    parts.push(
+      heldUnclassifiedBefore == null
+        ? `some held securities are still unclassified: ${why}`
+        : `${heldLeft} held ${securitiesNoun(heldLeft)} ${heldLeft === 1 ? "is" : "are"} still unclassified: ${why}`,
+    );
+  }
+  const clause = notHeldClause(notHeld);
+  if (clause) parts.push(clause);
   parts.push(
     heldUnclassifiedBefore != null && heldUnclassifiedBefore > 0
       ? `this card counts current holdings only and listed ${heldUnclassifiedBefore} unclassified before the run`
@@ -192,7 +231,8 @@ export function ClassificationCard({ concentration, coverage }: Props) {
       const result = await readMutationResult<{
         classified: number;
         skipped: number;
-        unresolvedCount: number;
+        heldUnresolvedCount: number;
+        notHeldSkippedCount: number;
         aiErrors?: string[];
       }>(res);
       if (!result.ok) {
@@ -203,12 +243,15 @@ export function ClassificationCard({ concentration, coverage }: Props) {
       // Guard with Array.isArray — aiErrors comes off the wire as JSON, not
       // a typed value.
       const aiErrors: string[] = Array.isArray(data.aiErrors) ? data.aiErrors : [];
-      if (data.classified === 0 && !data.unresolvedCount && aiErrors.length === 0) {
+      const heldLeft = wireCount(data.heldUnresolvedCount);
+      if (data.classified === 0 && heldLeft === 0 && aiErrors.length === 0) {
         // Explain the no-op — "Classified 0" with no why reads as a broken button.
-        // No count: data.skipped is the engine's whole-table skip tally (every
-        // securities row ever seen, ~1.3k), not the held universe — quoting it
-        // as "held securities" contradicted the coverage card's 137.
-        toast("Nothing to classify — every held security already has sector/fund classifications.", "info");
+        // No skipped count: data.skipped is the engine's whole-table skip tally
+        // (every securities row ever seen, ~1.3k), not the held universe —
+        // quoting it as "held securities" contradicted the coverage card's 137.
+        // Names not held now are never sent to the AI, so no click clears
+        // them: they are mentioned, not reported as a failure.
+        toast(classifyNoOpSummary(data.notHeldSkippedCount), "info");
       } else {
         toast(
           classifyRunSummary(
@@ -216,7 +259,7 @@ export function ClassificationCard({ concentration, coverage }: Props) {
             aiErrors,
             isPrivate ? null : coverage.unclassified_securities.length,
           ),
-          aiErrors.length > 0 ? "error" : data.unresolvedCount > 0 ? "info" : "success",
+          aiErrors.length > 0 ? "error" : heldLeft > 0 ? "info" : "success",
         );
       }
       router.refresh();

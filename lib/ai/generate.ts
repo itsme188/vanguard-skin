@@ -223,19 +223,26 @@ async function observedCall<T>(
     durationMs: Date.now() - started,
     usage: total !== null && typeof total === "object" ? total : usageField(res, "usage"),
   });
-  if (res !== null && typeof res === "object") {
-    try {
-      Object.defineProperty(res, "answeredModelId", {
-        value: answered,
-        enumerable: false,
-        configurable: true,
-        writable: true,
-      });
-    } catch {
-      // A frozen result keeps its shape; the caller falls back to its own id.
-    }
-  }
+  stampAnsweredModelId(res, answered);
   return res as T & AnsweredModel;
+}
+
+/**
+ * Put `answeredModelId` on a result as a NON-enumerable field, so a caller's
+ * or a mock's `toEqual` on the result is unchanged. Never throws.
+ */
+function stampAnsweredModelId(res: unknown, answered: string): void {
+  if (res === null || typeof res !== "object") return;
+  try {
+    Object.defineProperty(res, "answeredModelId", {
+      value: answered,
+      enumerable: false,
+      configurable: true,
+      writable: true,
+    });
+  } catch {
+    // A frozen result keeps its shape; the caller falls back to its own id.
+  }
 }
 
 // Omit `model` so callers don't need to supply it — the wrapper resolves it.
@@ -446,12 +453,16 @@ export interface ExplicitModelTarget {
  * every family except Fable (thinking is always on there and the parameter
  * 400s). Fable is no longer selectable (2026-11-07) but a run pinned to it
  * before then still resumes on it, so the carve-out stays.
+ *
+ * Every completed call writes the same content-free `[ai-usage]` line as the
+ * feature helpers (`observedCall`; a billed cut-off or refusal included), and
+ * the result carries the non-enumerable `answeredModelId`.
  */
 export async function generateObjectWithModel(
   feature: FeatureKey,
   target: ExplicitModelTarget,
   opts: GenObjOpts & { maxOutputTokens: number },
-): Promise<{ object: unknown; usage: unknown; finishReason: string }> {
+): Promise<{ object: unknown; usage: unknown; finishReason: string } & AnsweredModel> {
   const { modelId, effort, family } = target;
   const callerProviderOptions = (opts as { providerOptions?: Record<string, Record<string, unknown>> })
     .providerOptions;
@@ -460,16 +471,17 @@ export async function generateObjectWithModel(
     effort,
     ...(family === "fable" ? {} : { thinking: { type: "adaptive" } }),
   };
-  let res: { object: unknown; usage: unknown; finishReason: string };
+  let res: { object: unknown; usage: unknown; finishReason: string } & AnsweredModel;
   try {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    res = await generateObject({
-      ...opts,
-      providerOptions: { ...callerProviderOptions, anthropic },
-      model: getModelForId(feature, modelId),
-      maxRetries: 0,
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    } as any);
+    res = await observedCall(feature, "object", modelId, () =>
+      generateObject({
+        ...opts,
+        providerOptions: { ...callerProviderOptions, anthropic },
+        model: getModelForId(feature, modelId),
+        maxRetries: 0,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any) as Promise<{ object: unknown; usage: unknown; finishReason: string }>,
+    );
   } catch (err) {
     if (isModelUnavailable(err)) throw new AIModelUnavailableError(feature, modelId);
     // A truncated or refused response often fails to parse; the SDK then
@@ -485,5 +497,12 @@ export async function generateObjectWithModel(
   }
   if (REFUSAL_FINISH.has(res.finishReason)) throw new AIRefusalError(feature, modelId, res.usage);
   if (res.finishReason === "length") throw new AITruncatedError(feature, modelId, res.usage);
-  return { object: res.object, usage: res.usage, finishReason: res.finishReason };
+  const out: { object: unknown; usage: unknown; finishReason: string } & AnsweredModel = {
+    object: res.object,
+    usage: res.usage,
+    finishReason: res.finishReason,
+  };
+  // Read directly: the field is non-enumerable and a spread would drop it.
+  stampAnsweredModelId(out, res.answeredModelId ?? modelId);
+  return out;
 }

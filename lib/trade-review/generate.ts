@@ -3,6 +3,7 @@ import { jsonSchema, NoObjectGeneratedError } from "ai";
 import { generateObjectForFeature, AITruncatedError } from "@/lib/ai/generate";
 import { resolveFeatureModel } from "@/lib/ai/models";
 import { userFacingModelLabel } from "@/lib/ai/model-families";
+import { accountFailureOf } from "@/lib/earnings/ai-unavailable";
 import type { FeatureKey } from "@/lib/ai/feature-keys";
 import {
   getRoundTrips,
@@ -50,11 +51,33 @@ const LARGE_MONTH_TRADE_THRESHOLD = 20;
  * The longest reply a review may ask for, in output tokens. The cap rule
  * (CLAUDE.md, AI section): every call passes an explicit cap with room for
  * default-on thinking, and a reply cut off at the cap is a failure. A
- * cut-off reply is retried at most ONCE, and only when the first cap was
- * below this ceiling: the retry asks for this ceiling. A reply cut off at
- * the ceiling is never retried; the same request would be cut off again.
+ * cut-off reply is retried at most ONCE, at this ceiling, and only when the
+ * ceiling is materially larger than the first cap (`retryCapAfterCutOff`).
+ * A reply cut off at the ceiling is never retried; the same request would be
+ * cut off again.
  */
 export const REVIEW_OUTPUT_TOKEN_CEILING = 64000;
+
+/**
+ * A cut-off retry must buy at least this much more room. A cut-off reply is
+ * billed in full, so a retry at the ceiling after a first cap of, say, 61,800
+ * pays for a second near-ceiling reply to gain 3.6% more room, and almost
+ * always gets cut off again.
+ */
+export const REVIEW_CUT_OFF_RETRY_MIN_GROWTH = 1.5;
+
+/**
+ * The cap to retry a cut-off review at, or null for no retry. The rule:
+ * retry once at REVIEW_OUTPUT_TOKEN_CEILING when the ceiling is at least
+ * REVIEW_CUT_OFF_RETRY_MIN_GROWTH times the first cap (a first cap of 42,666
+ * or less); otherwise the month is too large for one review and the caller
+ * raises TradeReviewTooLargeError without a second paid call.
+ */
+export function retryCapAfterCutOff(firstCap: number): number | null {
+  return REVIEW_OUTPUT_TOKEN_CEILING >= REVIEW_CUT_OFF_RETRY_MIN_GROWTH * firstCap
+    ? REVIEW_OUTPUT_TOKEN_CEILING
+    : null;
+}
 
 /**
  * The month's trades did not fit in one review: the AI's reply was cut off
@@ -589,12 +612,14 @@ export async function generateTradeReview(
 
   let result: TradeReviewStructured;
   let usage: { inputTokens?: number; outputTokens?: number } | undefined;
-  let modelUsedSpec = modelSpec;
 
   // The output cap in force. Raised at most once, to the ceiling, after a
-  // reply was cut off below it (REVIEW_OUTPUT_TOKEN_CEILING).
+  // reply was cut off, and only when the ceiling is materially larger than
+  // the first cap (retryCapAfterCutOff); otherwise a cut-off goes straight to
+  // TradeReviewTooLargeError.
   let outputCap = maxTokens;
   let outputCapRaised = false;
+  let usedModelId = modelSpec;
 
   const callModel = async (
     key: FeatureKey,
@@ -602,6 +627,8 @@ export async function generateTradeReview(
   ): Promise<{
     object: TradeReviewStructured;
     usage: { inputTokens?: number; outputTokens?: number } | undefined;
+    /** The model that answered (lib/ai/generate.ts `answeredModelId`), else the resolved id. */
+    answeredModelId: string;
   }> => {
     for (;;) {
       let cutOff = false;
@@ -615,19 +642,26 @@ export async function generateTradeReview(
           object: TradeReviewStructured;
           usage: { inputTokens?: number; outputTokens?: number } | undefined;
           finishReason?: string;
+          answeredModelId?: string;
         };
         // A reply that parsed but still stopped at the cap is cut off too.
         if (response.finishReason !== "length") {
-          return { object: response.object, usage: response.usage };
+          // Read directly: the field is non-enumerable, a spread drops it.
+          const answeredId =
+            typeof response.answeredModelId === "string" && response.answeredModelId.length > 0
+              ? response.answeredModelId
+              : resolveFeatureModel(key).modelId;
+          return { object: response.object, usage: response.usage, answeredModelId: answeredId };
         }
         cutOff = true;
       } catch (err) {
         if (!isOutputCapTruncation(err)) throw err;
         cutOff = true;
       }
-      if (cutOff && !outputCapRaised && outputCap < REVIEW_OUTPUT_TOKEN_CEILING) {
+      const retryCap = outputCapRaised ? null : retryCapAfterCutOff(outputCap);
+      if (cutOff && retryCap !== null && retryCap > outputCap) {
         outputCapRaised = true;
-        outputCap = REVIEW_OUTPUT_TOKEN_CEILING;
+        outputCap = retryCap;
         options?.onProgress?.(
           "The review was longer than the first reply allowed — asking once more with room for a longer reply...",
           4,
@@ -645,6 +679,7 @@ export async function generateTradeReview(
   const firstAttempt = await callModel(featureKey);
   result = firstAttempt.object;
   usage = firstAttempt.usage;
+  usedModelId = firstAttempt.answeredModelId;
 
   // Attempt 2: same model with emphatic addendum
   if (isReviewMarkdownEmpty(result.review_markdown)) {
@@ -674,6 +709,7 @@ export async function generateTradeReview(
     if (!isReviewMarkdownEmpty(retry.object.review_markdown)) {
       result = retry.object;
       usage = retry.usage;
+      usedModelId = retry.answeredModelId;
     } else {
       await debugLog("attempt2-empty", {
         modelSpec,
@@ -706,7 +742,7 @@ export async function generateTradeReview(
       if (!isReviewMarkdownEmpty(fallback.object.review_markdown)) {
         result = fallback.object;
         usage = fallback.usage;
-        modelUsedSpec = fallbackSpec;
+        usedModelId = fallback.answeredModelId;
       } else {
         await debugLog("attempt3-fallback-empty", {
           modelSpec: fallbackSpec,
@@ -718,6 +754,11 @@ export async function generateTradeReview(
     } catch (err) {
       // A cut-off at the cap is the month's size, not this model's quirk.
       if (err instanceof TradeReviewTooLargeError) throw err;
+      // An AI account outage (out of credit, rejected key...) is rethrown as
+      // it is, the same as on attempts 1 and 2 (callModel rethrows anything
+      // but a cut-off): it is not retried, and the route flags it as an
+      // account outage instead of "no written summary on all N attempts".
+      if (accountFailureOf(err)) throw err;
       await debugLog("attempt3-fallback-threw", {
         modelSpec: fallbackSpec,
         error: err instanceof Error ? err.message : String(err),
@@ -773,7 +814,7 @@ export async function generateTradeReview(
       cumulativePatterns: Array.isArray(result.cumulative_patterns)
         ? JSON.stringify(listOf(result.cumulative_patterns))
         : null,
-      model: modelUsedSpec,
+      model: usedModelId,
       promptTokens: usage?.inputTokens ?? null,
       completionTokens: usage?.outputTokens ?? null,
     });

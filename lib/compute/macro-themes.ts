@@ -1011,6 +1011,9 @@ async function generateWeekForAllScopes(
 
   let rawText: string;
   let finishReason: string | undefined;
+  // The model that answered (non-enumerable on the helper result, so read it
+  // directly), else the resolved id.
+  let answeredModelId: string | undefined;
   try {
     const result = await generateTextForFeature("analysisMacroThemes", {
       system: SYSTEM_PROMPT,
@@ -1021,6 +1024,9 @@ async function generateWeekForAllScopes(
     });
     rawText = result.text.trim();
     finishReason = result.finishReason;
+    answeredModelId = typeof result.answeredModelId === "string" && result.answeredModelId.length > 0
+      ? result.answeredModelId
+      : undefined;
   } catch (err) {
     // No model family in the text: this message can reach a log line an
     // operator reads, and the route treats any non-MacroThemesParseError throw
@@ -1069,7 +1075,8 @@ async function generateWeekForAllScopes(
   if (parsed.length === 0) {
     return {
       themes: [], sourceSummary: null, fromCache: false,
-      generatedAt: new Date().toISOString(), underThreshold: false,
+      // Same `YYYY-MM-DD HH:MM:SS` form as every other branch (sqlNow).
+      generatedAt: sqlNow(db), underThreshold: false,
       droppedThemes, noneVerified: true,
     };
   }
@@ -1095,7 +1102,7 @@ async function generateWeekForAllScopes(
   // Every scope's exposure BEFORE anything is written.
   const perScope = scopes.map((scope) => ({ scope, themes: attachScopeExposure(db, scope, parsed) }));
 
-  const modelUsed = resolveFeatureModel("analysisMacroThemes").modelId;
+  const modelUsed = answeredModelId ?? resolveFeatureModel("analysisMacroThemes").modelId;
   const generatedAt = sqlNow(db);
   writeWeekRows(db, weekOf, perScope.map((p) => ({
     scope: p.scope,
