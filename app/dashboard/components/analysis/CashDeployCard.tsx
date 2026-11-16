@@ -8,6 +8,8 @@ import { readMutationResult, networkFailureMessage } from "@/lib/ui/mutation-res
 import {
   equitySleeveCaptionLead,
   NET_OF_SHORTS_CAPTION,
+  shortHeldSectorLine,
+  smallWeightToleranceLine,
   type CashDeploySuggestion,
 } from "@/lib/compute/cash-deploy";
 
@@ -199,6 +201,18 @@ export function CashDeployCard({ scope }: Props) {
                 </tbody>
               </table>
               </ScrollFade>
+              {/* Owner ruling 25 = A (2026-11-16): a gap that comes from short
+                  positions the owner holds is not filled (only the gap on
+                  long holdings is). One plain line per such sector. */}
+              {result.shortHeldSectors.length > 0 && (
+                <ul className="mt-2 space-y-0.5">
+                  {result.shortHeldSectors.map((s) => (
+                    <li key={s.sector} className="text-[11px] text-ink-faint">
+                      {shortHeldSectorLine(s)}
+                    </li>
+                  ))}
+                </ul>
+              )}
             </div>
           )}
 
@@ -220,6 +234,13 @@ export function CashDeployCard({ scope }: Props) {
                     {/* The rationale quotes the sector gap in pp, which the Gap
                         column masks; mask it the same way. */}
                     <p className="text-[11px] text-ink-faint"><PrivateText>{p.rationale}</PrivateText></p>
+                    {/* Owner ruling 24 = B (2026-11-16): say when a fund pick
+                        took a small-weight sector past its benchmark weight. */}
+                    {p.toleranceSectors.length > 0 && (
+                      <p className="text-[11px] text-ink-faint mt-1">
+                        {smallWeightToleranceLine(p.toleranceSectors)}
+                      </p>
+                    )}
                   </div>
                 ))}
               </div>
@@ -254,6 +275,15 @@ export function CashDeployCard({ scope }: Props) {
               </div>
               {result.unallocatedReason && (
                 <p className="text-[11px] text-ink-faint mt-1">{result.unallocatedReason}</p>
+              )}
+              {/* Owner ruling 25 = A: the part left out because it would only
+                  offset short positions, with its own reason. */}
+              {result.unallocatedShortDollars >= 0.01 && (
+                <p className="text-[11px] text-ink-faint mt-1">
+                  Left out for sectors you hold short:{" "}
+                  <Money value={result.unallocatedShortDollars} />.{" "}
+                  {result.unallocatedShortReason}
+                </p>
               )}
             </div>
           )}

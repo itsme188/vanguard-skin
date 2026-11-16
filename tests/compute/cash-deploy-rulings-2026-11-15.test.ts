@@ -168,7 +168,18 @@ describe("no fragment picks", () => {
     const result = suggestAllocation(db, "vanguard", [1], 10_000);
     expect(result.picks.map((p) => p.symbol)).toContain("ZZH");
     for (const p of result.picks) expect(p.allocationDollars).toBeGreaterThanOrEqual(1);
-    expectNoOvershoot(result);
+    // Owner ruling 24 = B (2026-11-16) supersedes the strict fund rule here:
+    // the fund's 1% Healthcare sliver no longer blocks it, so it is bought up
+    // to its Technology gap and takes Healthcare past target by at most 1%
+    // of its own size. The pick says so.
+    const fund = result.picks.find((p) => p.symbol === "ZZF");
+    expect(fund).toBeDefined();
+    expect(fund!.toleranceSectors).toEqual(["Healthcare"]);
+    const hcGap = result.gaps.find((g) => g.sector === "Healthcare")!;
+    const basis = 50_000 + 100 + 0.01 + 10_000;
+    expect(hcGap.residualGapPp).toBeLessThanOrEqual((fund!.allocationDollars * 0.01 / basis) * 100 + 1e-9);
+    const tech = result.gaps.find((g) => g.sector === "Technology")!;
+    expect(tech.residualGapPp).toBeLessThanOrEqual(1e-9);
     expectConserved(result, 10_000);
   });
 });

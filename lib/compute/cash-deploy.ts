@@ -31,6 +31,23 @@
  *  - A multi-sector fund is credited by its look-through weights
  *    (`etf_sector_weights`) and sized so it pushes no sector past its
  *    benchmark weight.
+ *
+ * Owner rulings of 2026-11-16:
+ *  - Ruling 24 = B, small-weight tolerance: a multi-sector fund's sectors
+ *    that hold `FUND_SMALL_WEIGHT_TOLERANCE` (2%) or less of the fund may go
+ *    past their benchmark weight; a sector holding more than that still may
+ *    not. Single stocks and single-sector funds are unchanged. A pick that
+ *    used the tolerance names the sectors in `toleranceSectors`.
+ *  - Ruling 25 = A, short by choice: only the part of a sector's gap that
+ *    exists on a LONG-ONLY basis is filled. Long-only dollars are the sum of
+ *    every positive sector contribution (long stock and funds, and positive
+ *    delta exposure such as a long call or a short put), before shorts and
+ *    long puts are subtracted; they are measured over the same denominator
+ *    as the net weights. Gap to fill = max(0, target - long-only weight). A
+ *    sector whose net weight is under target but whose long-only weight is
+ *    at or above it is "short by choice" and gets no pick. The cash that
+ *    would have offset those shorts is reported apart
+ *    (`unallocatedShortDollars`, `shortHeldSectors`).
  */
 
 import type Database from "better-sqlite3";
@@ -80,6 +97,24 @@ export interface CashDeployPick {
    */
   sectorExposure: SectorExposure[];
   multiSectorFund: boolean;
+  /**
+   * Sectors this pick takes past their benchmark weight under the small-weight
+   * tolerance (owner ruling 24 = B, 2026-11-16): each holds
+   * `FUND_SMALL_WEIGHT_TOLERANCE` or less of the fund. Empty when the pick
+   * stopped at every sector's gap.
+   */
+  toleranceSectors: string[];
+}
+
+/**
+ * A sector whose gap is (partly) left unfilled because it comes from short
+ * positions the owner holds (owner ruling 25 = A, 2026-11-16).
+ * `not_filled`: the long-only weight is at or above target, so nothing is
+ * proposed. `partly_filled`: filled only up to the long-only gap.
+ */
+export interface ShortHeldSector {
+  sector: string;
+  kind: "not_filled" | "partly_filled";
 }
 
 export interface SectorExposure {
@@ -111,8 +146,22 @@ export interface CashDeploySuggestion {
    * totalAllocated + cashRemaining = cashAmount, to the cent.
    */
   cashRemaining: number;
-  /** One sentence, no figure, saying why cash is unallocated; null when none is. */
+  /**
+   * One sentence, no figure, saying why the unallocated cash OTHER than
+   * `unallocatedShortDollars` is unallocated; null when there is none.
+   */
   unallocatedReason: string | null;
+  /**
+   * Part of `cashRemaining` left out because it would only have offset
+   * short positions (owner ruling 25 = A): the cash the same allocation
+   * places when gaps are measured net, minus what it places on the long-only
+   * gaps. Never above `cashRemaining`; 0 when no sector is short by choice.
+   */
+  unallocatedShortDollars: number;
+  /** One sentence, no figure, for `unallocatedShortDollars`; null when it is 0. */
+  unallocatedShortReason: string | null;
+  /** Sectors whose gap comes (partly) from short positions, largest held-out first. */
+  shortHeldSectors: ShortHeldSector[];
   /**
    * Option rows whose Greeks could not compute, so they entered the sector
    * weights at market value instead of delta-adjusted exposure.
@@ -137,6 +186,40 @@ const GAP_THRESHOLD_PP = 2.0; // surface gaps of |2pp| or more
  */
 const MIN_ROOM_DOLLARS = 1;
 const MIN_PICK_CENTS = 100;
+
+/**
+ * Owner ruling 24 = B (2026-11-16): a multi-sector fund's sector weights of
+ * this share of the fund or less may go past their benchmark weight. A
+ * sector where the fund holds more still may not.
+ */
+export const FUND_SMALL_WEIGHT_TOLERANCE = 0.02;
+
+/** True when a fund exposure is small enough to pass its target (ruling 24). */
+function withinSmallWeightTolerance(weight: number): boolean {
+  return weight <= FUND_SMALL_WEIGHT_TOLERANCE + 1e-12;
+}
+
+/** The card's plain line for a pick that used the small-weight tolerance. */
+export function smallWeightToleranceLine(sectors: string[]): string {
+  const pct = `${Math.round(FUND_SMALL_WEIGHT_TOLERANCE * 100)}%`;
+  const one = sectors.length === 1;
+  return `Allowed under the small-weight tolerance: the fund holds ${pct} or less in ${listWords(
+    sectors,
+  )}, so this buy may take ${one ? "that sector" : "those sectors"} a little past ${
+    one ? "its" : "their"
+  } benchmark weight.`;
+}
+
+/** The card's plain line for a sector short by choice (ruling 25). */
+export function shortHeldSectorLine(s: ShortHeldSector): string {
+  return s.kind === "not_filled"
+    ? `${s.sector}: you hold short positions here; not filled.`
+    : `${s.sector}: you hold short positions here; filled only up to the gap your long positions leave.`;
+}
+
+/** Reason for `unallocatedShortDollars`. */
+export const SHORT_UNALLOCATED_REASON =
+  "This part would only offset short positions you hold, so it is not placed and stays as cash.";
 
 /** Security types a held-name fallback pick may be (no options, bonds, forex). */
 const HELD_PICK_TYPES = new Set(["stock", "etf", "mutual fund"]);
@@ -230,6 +313,11 @@ function isEquityOnlyBenchmark(benchmarkMap: Map<string, number>): boolean {
 interface CurrentHoldingSummary {
   totalValue: number;
   sectorValue: Map<string, number>;
+  /**
+   * Long-only dollars by sector (ruling 25): every positive sector
+   * contribution, before shorts and long puts are subtracted.
+   */
+  sectorLongValue: Map<string, number>;
   heldCandidates: WatchlistCandidate[];
   optionsAtMarketValue: number;
 }
@@ -316,6 +404,7 @@ function loadCurrentHoldings(
     rows.map((r) => ({ securityType: r.security_type })),
   );
   const sectorValue = new Map<string, number>();
+  const sectorLongValue = new Map<string, number>();
   const heldCandidatesBySymbol = new Map<string, WatchlistCandidate>();
   let totalValue = 0;
   let optionsAtMarketValue = 0;
@@ -365,6 +454,9 @@ function loadCurrentHoldings(
         : benchmarkSectorParts(identity, sectorDollars, etfWeights, benchmarkMap);
     for (const part of parts) {
       sectorValue.set(part.sector, (sectorValue.get(part.sector) ?? 0) + part.value);
+      if (part.value > 0) {
+        sectorLongValue.set(part.sector, (sectorLongValue.get(part.sector) ?? 0) + part.value);
+      }
     }
     // A held-name fallback is a stock or fund held LONG: "buying" a name held
     // short would be covering it, and an option's dollars do not land in its
@@ -385,6 +477,7 @@ function loadCurrentHoldings(
   return {
     totalValue,
     sectorValue,
+    sectorLongValue,
     heldCandidates: Array.from(heldCandidatesBySymbol.values()),
     optionsAtMarketValue,
   };
@@ -505,12 +598,15 @@ interface SectorGapResult {
    */
   gapBasisTotal: number;
   /**
-   * Dollars each sector can still take before it reaches its benchmark
-   * weight (never negative), for EVERY sector — including gaps under the
-   * 2pp display threshold and sectors already at or past target (0). A pick
-   * may spend at most this in any sector it lands in.
+   * Dollars each sector can still take before its LONG-ONLY dollars reach
+   * its benchmark weight (never negative; ruling 25), for EVERY sector —
+   * including gaps under the 2pp display threshold and sectors already at or
+   * past target (0). A pick may spend at most this in any sector it lands in
+   * (a fund's small weights excepted, ruling 24).
    */
   roomBySector: Map<string, number>;
+  /** The same room measured on NET dollars (shorts subtracted): never less. */
+  netRoomBySector: Map<string, number>;
 }
 
 function computeSectorGaps(
@@ -555,6 +651,7 @@ function computeSectorGaps(
 
   const gaps: SectorGap[] = [];
   const roomBySector = new Map<string, number>();
+  const netRoomBySector = new Map<string, number>();
 
   // Denominator (owner ruling 2026-11-15): the scope's NET market value
   // (longs plus signed shorts, as computeExposureDelta totals its book) plus
@@ -562,7 +659,7 @@ function computeSectorGaps(
   // equity-only. At zero or below there is no sector weight to measure, so
   // nothing is compared and nothing is allocated.
   if (!(gapBasisTotal > 0)) {
-    return { gaps, excludedSleeve, gapBasisTotal, roomBySector };
+    return { gaps, excludedSleeve, gapBasisTotal, roomBySector, netRoomBySector };
   }
 
   const allSectors = new Set<string>([
@@ -580,7 +677,10 @@ function computeSectorGaps(
     const currentDollars = current.sectorValue.get(sector) ?? 0;
     const currentWeight = currentDollars / gapBasisTotal;
     const targetWeight = benchmarkMap.get(sector) ?? 0;
-    roomBySector.set(sector, Math.max(0, gapBasisTotal * targetWeight - currentDollars));
+    const longDollars = current.sectorLongValue.get(sector) ?? 0;
+    netRoomBySector.set(sector, Math.max(0, gapBasisTotal * targetWeight - currentDollars));
+    // Ruling 25: only the gap that exists on a long-only basis is fillable.
+    roomBySector.set(sector, Math.max(0, gapBasisTotal * targetWeight - longDollars));
     const gapPp = (currentWeight - targetWeight) * 100;
     const dollarGap = gapBasisTotal * (targetWeight - currentWeight);
 
@@ -600,7 +700,7 @@ function computeSectorGaps(
 
   // Sort by largest underweight first (most negative gapPp = best target)
   gaps.sort((a, b) => a.gapPp - b.gapPp);
-  return { gaps, excludedSleeve, gapBasisTotal, roomBySector };
+  return { gaps, excludedSleeve, gapBasisTotal, roomBySector, netRoomBySector };
 }
 
 /**
@@ -627,8 +727,8 @@ export interface SuggestAllocationOptions {
 /**
  * Suggest how to deploy cash across watchlist candidates to close benchmark
  * gaps. Greedy: pick the highest-scoring candidate, allocate up to
- * min(remaining_cash, per_name_cap, the room left in EVERY sector the name
- * lands in). Repeat. Cash no gap can take stays unallocated (owner ruling,
+ * min(remaining_cash, per_name_cap, the room left in every sector that binds
+ * the name — all of them, except a fund's small weights, ruling 24). Repeat. Cash no gap can take stays unallocated (owner ruling,
  * docs/DECISIONS.md 2026-10-12, confirmed 2026-11-15).
  */
 export function suggestAllocation(
@@ -665,6 +765,9 @@ export function suggestAllocation(
       totalAllocated: 0,
       cashRemaining: 0,
       unallocatedReason: NO_CASH_REASON,
+      unallocatedShortDollars: 0,
+      unallocatedShortReason: null,
+      shortHeldSectors: [],
       notes: [...notes, NO_CASH_REASON],
       excludedSleeve: null,
       optionsAtMarketValue: current.optionsAtMarketValue,
@@ -681,6 +784,7 @@ export function suggestAllocation(
     excludedSleeve,
     gapBasisTotal,
     roomBySector,
+    netRoomBySector,
   } = computeSectorGaps(current, benchmarkMap, cashAmount);
   // Apply theme-aware boost to gapClosureScore before ranking candidates.
   const gaps = applyThemeAwareBoost(rawGaps, opts.activeThemes ?? []);
@@ -717,55 +821,62 @@ export function suggestAllocation(
   const projectedTotal = current.totalValue + cashAmount;
   const perNameCapCents = Math.max(0, Math.round(projectedTotal * top1Cap * 100));
 
-  const picks: CashDeployPick[] = [];
   const cashAskedCents = Math.round(cashAmount * 100);
-  let cashRemainingCents = cashAskedCents;
+  const plan = planPicks(ranked, roomBySector, cashAskedCents, perNameCapCents);
 
-  for (const candidate of ranked) {
-    if (cashRemainingCents <= 0) break;
-    // A pick stops at the tightest sector it lands in: a single-sector name
-    // at its own sector's gap, a multi-sector fund where its first sector
-    // reaches the benchmark weight. Floor to the cent so a pick can never
-    // land a sector a fraction of a cent past its target.
-    let limitCents = Math.min(cashRemainingCents, perNameCapCents);
-    for (const e of candidate.exposure) {
-      if (!(e.weight > 0)) continue;
-      const room = roomBySector.get(e.sector) ?? 0;
-      if (room < MIN_ROOM_DOLLARS) {
-        limitCents = 0;
-        break;
-      }
-      limitCents = Math.min(limitCents, Math.floor((room * 100) / e.weight + 1e-6));
-    }
-    if (limitCents < MIN_PICK_CENTS) continue;
-    const allocation = limitCents / 100;
+  // Ruling 25: sectors whose net gap is wider than their long-only gap are
+  // (partly) short by choice. Their held-out part is never filled.
+  const shortHeldSectors: ShortHeldSector[] = Array.from(netRoomBySector.entries())
+    .map(([sector, net]) => {
+      const long = roomBySector.get(sector) ?? 0;
+      return { sector, long, heldOut: net - long };
+    })
+    .filter((x) => x.heldOut >= MIN_ROOM_DOLLARS)
+    .sort((a, b) => b.heldOut - a.heldOut || a.sector.localeCompare(b.sector))
+    .map((x): ShortHeldSector => ({
+      sector: x.sector,
+      kind: x.long < MIN_ROOM_DOLLARS ? "not_filled" : "partly_filled",
+    }));
+  // The cash left out for them: what the same allocation would place on the
+  // NET gaps, minus what it places on the long-only gaps.
+  let shortCents = 0;
+  if (shortHeldSectors.length > 0 && plan.remainingCents > 0) {
+    const netPlan = planPicks(ranked, netRoomBySector, cashAskedCents, perNameCapCents);
+    const placedNet = cashAskedCents - netPlan.remainingCents;
+    const placedLong = cashAskedCents - plan.remainingCents;
+    shortCents = Math.min(plan.remainingCents, Math.max(0, placedNet - placedLong));
+  }
 
+  const picks: CashDeployPick[] = [];
+  for (const { candidate, cents, toleranceSectors } of plan.plans) {
+    const allocation = cents / 100;
     const exposureDelta = computeExposureDelta(db, scope, accountIds, [
       { symbol: candidate.symbol, action: "buy", dollarAmount: allocation },
     ]);
-
     picks.push({
       symbol: candidate.symbol,
       securityId: candidate.securityId,
       sectorTarget: candidate.sectorTarget,
       allocationDollars: allocation,
       gapClosureScore: candidate.score,
-      rationale: candidate.rationale,
+      rationale:
+        toleranceSectors.length > 0
+          ? candidate.rationale.replace(FUND_SIZING_PHRASE, FUND_SIZING_PHRASE_TOLERANCE)
+          : candidate.rationale,
       exposureDelta,
       sectorExposure: candidate.exposure,
       multiSectorFund: candidate.multiSectorFund,
+      toleranceSectors,
     });
-
-    cashRemainingCents -= limitCents;
-    // Spend the pick across every sector it lands in. gapPp/dollarGap (what
-    // the table and the rationale show) never change after computeSectorGaps
-    // returns; only the residual fields (the "After picks" column) move.
-    // residualDollarGap is POSITIVE for an underweight sector (dollars still
-    // needed); residualGapPp is NEGATIVE — both move toward 0 as cash lands.
+    // gapPp/dollarGap (what the table and the rationale show) never change
+    // after computeSectorGaps returns; only the residual fields (the "After
+    // picks" column) move. residualDollarGap is POSITIVE for an underweight
+    // sector (dollars still needed); residualGapPp is NEGATIVE — both move
+    // toward 0 as cash lands (a fund's small weight may carry it past 0,
+    // ruling 24).
     for (const e of candidate.exposure) {
       if (!(e.weight > 0)) continue;
       const spent = allocation * e.weight;
-      roomBySector.set(e.sector, Math.max(0, (roomBySector.get(e.sector) ?? 0) - spent));
       const gap = gaps.find((g) => g.sector === e.sector);
       if (!gap) continue;
       gap.residualDollarGap -= spent;
@@ -775,13 +886,16 @@ export function suggestAllocation(
     }
   }
 
+  const cashRemainingCents = plan.remainingCents;
   const allocatedCents = cashAskedCents - cashRemainingCents;
   const totalAllocated = allocatedCents / 100;
   const cashRemaining = cashRemainingCents / 100;
+  const restCents = cashRemainingCents - shortCents;
+  const roomLeft = plan.room;
 
   let unallocatedReason: string | null = null;
-  if (cashRemainingCents > 0) {
-    const openRoom = Array.from(roomBySector.values())
+  if (restCents > 0) {
+    const openRoom = Array.from(roomLeft.values())
       .filter((v) => v >= MIN_ROOM_DOLLARS)
       .reduce((s, v) => s + v, 0);
     if (!(gapBasisTotal > 0)) {
@@ -789,9 +903,11 @@ export function suggestAllocation(
         "The scope's net value after short positions is zero or negative, so there are no sector weights to close and nothing was placed.";
     } else if (openRoom < 0.01) {
       unallocatedReason =
-        "Every underweight sector is filled to its benchmark weight; the rest stays as cash rather than pushing a sector past it.";
+        shortHeldSectors.length > 0
+          ? "Every underweight sector is filled as far as your long positions leave room; the rest stays as cash rather than pushing a sector past its benchmark weight."
+          : "Every underweight sector is filled to its benchmark weight; the rest stays as cash rather than pushing a sector past it.";
     } else if (picks.length === 0) {
-      unallocatedReason = nothingPlacedReason(gaps, ranked, roomBySector, perNameCapCents);
+      unallocatedReason = nothingPlacedReason(gaps, ranked, roomLeft, perNameCapCents);
     } else {
       unallocatedReason =
         "Each pick stops at its sector's gap to the benchmark or at the per-name cap, and no other watchlist or held name can fill the sectors still underweight; the rest stays as cash.";
@@ -808,10 +924,75 @@ export function suggestAllocation(
     totalAllocated,
     cashRemaining,
     unallocatedReason,
+    unallocatedShortDollars: shortCents / 100,
+    unallocatedShortReason: shortCents > 0 ? SHORT_UNALLOCATED_REASON : null,
+    shortHeldSectors,
     notes,
     excludedSleeve,
     optionsAtMarketValue: current.optionsAtMarketValue,
   };
+}
+
+interface PlannedPick {
+  candidate: RankedCandidate;
+  cents: number;
+  toleranceSectors: string[];
+}
+
+/**
+ * The exposures that bound a candidate's size. Every positive weight binds,
+ * except (ruling 24) a multi-sector fund's weights of
+ * `FUND_SMALL_WEIGHT_TOLERANCE` or less, as long as at least one of its
+ * sectors is above that line (a fund made only of slivers stays strict).
+ */
+function bindingExposures(c: WatchlistCandidate): SectorExposure[] {
+  const positive = c.exposure.filter((e) => e.weight > 0);
+  const tolerant =
+    c.exposure.length > 1 && positive.some((e) => !withinSmallWeightTolerance(e.weight));
+  return tolerant ? positive.filter((e) => !withinSmallWeightTolerance(e.weight)) : positive;
+}
+
+/**
+ * Greedy allocation over ranked candidates: each takes min(remaining cash,
+ * per-name cap, the room left in every sector that binds it), floored to the
+ * cent so a binding sector never lands a fraction of a cent past its room.
+ * Pure: works on a copy of the room map, which it returns spent.
+ */
+function planPicks(
+  ranked: RankedCandidate[],
+  roomInit: Map<string, number>,
+  cashCents: number,
+  perNameCapCents: number,
+): { plans: PlannedPick[]; remainingCents: number; room: Map<string, number> } {
+  const room = new Map(roomInit);
+  const plans: PlannedPick[] = [];
+  let remaining = cashCents;
+  for (const candidate of ranked) {
+    if (remaining <= 0) break;
+    let limitCents = Math.min(remaining, perNameCapCents);
+    for (const e of bindingExposures(candidate)) {
+      const r = room.get(e.sector) ?? 0;
+      if (r < MIN_ROOM_DOLLARS) {
+        limitCents = 0;
+        break;
+      }
+      limitCents = Math.min(limitCents, Math.floor((r * 100) / e.weight + 1e-6));
+    }
+    if (limitCents < MIN_PICK_CENTS) continue;
+    const allocation = limitCents / 100;
+    const toleranceSectors: string[] = [];
+    for (const e of candidate.exposure) {
+      if (!(e.weight > 0)) continue;
+      const before = room.get(e.sector) ?? 0;
+      const spent = allocation * e.weight;
+      // Only a non-binding (small) weight can pass its room.
+      if (spent > before + 0.005) toleranceSectors.push(e.sector);
+      room.set(e.sector, Math.max(0, before - spent));
+    }
+    plans.push({ candidate, cents: limitCents, toleranceSectors });
+    remaining -= limitCents;
+  }
+  return { plans, remainingCents: remaining, room };
 }
 
 /** The reason for an amount that is zero, negative or not a number. */
@@ -864,8 +1045,8 @@ function nothingPlacedReason(
   const funds = ranked.filter((c) => c.exposure.length > 1 && c.exposure.some((e) => openSet.has(e.sector)));
   const blocked = new Set<string>();
   for (const f of funds) {
-    for (const e of f.exposure) {
-      if (e.weight > 0 && (roomBySector.get(e.sector) ?? 0) < MIN_ROOM_DOLLARS) blocked.add(e.sector);
+    for (const e of bindingExposures(f)) {
+      if ((roomBySector.get(e.sector) ?? 0) < MIN_ROOM_DOLLARS) blocked.add(e.sector);
     }
   }
   // Most overweight first (the table's own gaps), then any under the 2pp line.
@@ -888,6 +1069,12 @@ function nothingPlacedReason(
         : "the per-name cap leaves no room for the funds considered";
   return `${subject}, but ${singleClause}, and ${fundClause}; nothing was placed.`;
 }
+
+const FUND_SIZING_PHRASE = "sized so no sector passes its benchmark weight";
+/** Ruling 24: the sizing phrase when the small-weight tolerance was used. */
+const FUND_SIZING_PHRASE_TOLERANCE = `sized so no sector where the fund holds more than ${Math.round(
+  FUND_SMALL_WEIGHT_TOLERANCE * 100,
+)}% passes its benchmark weight`;
 
 type RankedCandidate = WatchlistCandidate & {
   score: number;
@@ -929,7 +1116,7 @@ function rankCandidate(
     // named (it can be a sector whose gap is under the 2pp display line).
     const dominant = c.exposure.reduce((a, b) => (b.weight > a.weight ? b : a)).sector;
     const mostly = dominant === sector ? "" : ` (mostly ${dominant})`;
-    rationale = `${heldName ? "Held name pick: m" : "M"}ulti-sector fund${mostly}, credited by its look-through sector weights: underweight ${sector} by ${size} vs benchmark; sized so no sector passes its benchmark weight`;
+    rationale = `${heldName ? "Held name pick: m" : "M"}ulti-sector fund${mostly}, credited by its look-through sector weights: underweight ${sector} by ${size} vs benchmark; ${FUND_SIZING_PHRASE}`;
   } else if (heldName) {
     rationale = `Held name pick: underweight ${sector} by ${size} vs benchmark`;
   } else {
