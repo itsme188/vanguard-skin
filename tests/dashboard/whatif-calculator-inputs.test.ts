@@ -31,8 +31,8 @@ describe("WhatIfCalculator input and privacy behavior", () => {
 
   it("renders Total Value delta through Money instead of a raw formatted dollar string", () => {
     const rows = buildHeadlineRows({
-      before: { totalValue: 100, beta: 1, factorTilts: emptyFactors, sectorWeights: {}, topConcentrations: [] },
-      after: { totalValue: 125, beta: 1, factorTilts: emptyFactors, sectorWeights: {}, topConcentrations: [] },
+      before: { totalValue: 100, beta: 1, factorTilts: emptyFactors, sectorWeights: {}, topConcentrations: [], betaEstimatedWeight: 0 },
+      after: { totalValue: 125, beta: 1, factorTilts: emptyFactors, sectorWeights: {}, topConcentrations: [], betaEstimatedWeight: 0 },
       beforeWeightBySymbol: {},
       flags: [],
       droppedLegs: [],
@@ -44,8 +44,8 @@ describe("WhatIfCalculator input and privacy behavior", () => {
 
   it("computes Portfolio Beta delta from the rounded before/after figures displayed", () => {
     const rows = buildHeadlineRows({
-      before: { totalValue: 100, beta: 1.1335, factorTilts: emptyFactors, sectorWeights: {}, topConcentrations: [] },
-      after: { totalValue: 100, beta: 1.1359, factorTilts: emptyFactors, sectorWeights: {}, topConcentrations: [] },
+      before: { totalValue: 100, beta: 1.1335, factorTilts: emptyFactors, sectorWeights: {}, topConcentrations: [], betaEstimatedWeight: 0 },
+      after: { totalValue: 100, beta: 1.1359, factorTilts: emptyFactors, sectorWeights: {}, topConcentrations: [], betaEstimatedWeight: 0 },
       beforeWeightBySymbol: {},
       flags: [],
       droppedLegs: [],
