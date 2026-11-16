@@ -613,6 +613,6 @@ describe("GivingYearSection: implausible basis", () => {
     expect(total).toContain("year.gainAvoidedRowsCounted === 0");
     expect(total).toContain("not shown");
     // Split by holding period since owner ruling 14 (2026-11-16).
-    expect(total).toContain("<Money value={year.gainAvoidedLongTerm}");
+    expect(total).toContain("<Money value={year.gainAvoidedLongTermGain}");
   });
 });

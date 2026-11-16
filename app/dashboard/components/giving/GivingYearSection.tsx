@@ -91,30 +91,65 @@ export function DonationIdentityLine({ gd }: { gd: GivingDonation }) {
   );
 }
 
+/** Half a cent: a part smaller than this is float noise, not a figure. */
+const HALF_CENT = 0.005;
+
+/** A part worth printing: present and at least half a cent either way. */
+const isFigure = (n: number | null | undefined) => n != null && Math.abs(n) >= HALF_CENT;
+
+/** A loss part is stored at or below zero; it is printed as a size beside the word "loss". */
+const lossSize = (n: number | null) => (n == null ? null : -n);
+
 /**
- * A row's avoided gain split by holding period (owner ruling 14,
- * 2026-11-16): the long-term part always, the short-term part only when the
- * row gave short-term shares, and an unknown part only when there is one.
+ * One holding period's lines in a row: the gain part, and the loss part
+ * apart when there is one (a lot given below its cost). A negative figure is
+ * never labelled gain; a holding period with only a loss prints no gain line.
  */
-export function GainSplitCell({ gd }: { gd: GivingDonation }) {
-  const hasShortTerm = (gd.shortTermQuantity ?? 0) > 0;
-  const hasUnknown = Math.abs(gd.gainAvoidedHoldingUnknown ?? 0) >= 0.005;
+function HoldingPeriodLines({ label, gain, loss }: { label: string; gain: number | null; loss: number | null }) {
+  const hasLoss = isFigure(loss);
   return (
-    <span className="flex flex-col items-end gap-0.5 whitespace-nowrap">
-      <span>
-        <span className="font-sans text-xs text-ink-faint">LT </span>
-        <Money value={gd.gainAvoidedLongTerm} />
-      </span>
-      {hasShortTerm && (
+    <>
+      {(!hasLoss || isFigure(gain)) && (
         <span>
-          <span className="font-sans text-xs text-ink-faint">ST </span>
-          <Money value={gd.gainAvoidedShortTerm} />
+          <span className="font-sans text-xs text-ink-faint">{label} gain </span>
+          <Money value={gain} />
         </span>
       )}
-      {hasUnknown && (
+      {hasLoss && (
+        <span>
+          <span className="font-sans text-xs text-ink-faint">{label} loss </span>
+          <Money value={lossSize(loss)} />
+        </span>
+      )}
+    </>
+  );
+}
+
+/**
+ * A row's avoided gain split by holding period (owner ruling 14,
+ * 2026-11-16): the long-term part only when the row gave long-term shares,
+ * the short-term part only when it gave short-term shares (the same flags,
+ * and so the same threshold, the year uses), each with its loss part apart,
+ * and an unknown part only when there is one.
+ */
+export function GainSplitCell({ gd }: { gd: GivingDonation }) {
+  return (
+    <span className="flex flex-col items-end gap-0.5 whitespace-nowrap">
+      {gd.hasLongTermShares && (
+        <HoldingPeriodLines label="LT" gain={gd.gainAvoidedLongTermGain} loss={gd.gainAvoidedLongTermLoss} />
+      )}
+      {gd.hasShortTermShares && (
+        <HoldingPeriodLines label="ST" gain={gd.gainAvoidedShortTermGain} loss={gd.gainAvoidedShortTermLoss} />
+      )}
+      {isFigure(gd.gainAvoidedHoldingUnknown) && (
         <span>
           <span className="font-sans text-xs text-ink-faint">Holding period unknown </span>
           <Money value={gd.gainAvoidedHoldingUnknown} />
+        </span>
+      )}
+      {(gd.gainAvoidedOverAssigned ?? 0) > 0 && (
+        <span className="font-sans text-xs text-warn">
+          More shares assigned than given; lots overstate by <Money value={gd.gainAvoidedOverAssigned} />
         </span>
       )}
     </span>
@@ -133,7 +168,11 @@ export function GivingYearSection({ year }: { year: GivingYear }) {
   const stockDonations = year.donations.filter((gd) => gd.donation.kind === "stock");
   const cashDonations = year.donations.filter((gd) => gd.donation.kind === "cash");
   // No short-term figure and no note in a year with no short-term shares.
-  const showShortTerm = year.gainAvoided != null && year.gainAvoidedRowsWithShortTerm > 0;
+  // The split prints only when the header prints a figure (not pending, not "not shown").
+  const showSplit =
+    year.gainAvoided != null &&
+    !(year.gainAvoidedRowsCounted === 0 && year.gainAvoidedRowsLeftOut + year.gainAvoidedRowsUnsupported > 0);
+  const showShortTerm = showSplit && year.gainAvoidedRowsWithShortTerm > 0;
 
   function openReverseDialog(gd: GivingDonation) {
     setReverseTarget(gd);
@@ -254,15 +293,22 @@ export function GivingYearSection({ year }: { year: GivingYear }) {
               </>
             ) : (
               // Split by holding period, per donated lot (owner ruling 14,
-              // 2026-11-16). The three parts add up to the old single figure.
+              // 2026-11-16), each period's loss part apart: a lot given below
+              // its cost is never printed as a gain.
               <>
                 Gain avoided, held over 1 year{" "}
-                <Money value={year.gainAvoidedLongTerm} className="font-mono font-medium text-up" />
+                <Money value={year.gainAvoidedLongTermGain} className="font-mono font-medium text-up" />
                 {showShortTerm && (
                   <>
                     {" "}
-                    · short-term gain, held 1 year or less{" "}
-                    <Money value={year.gainAvoidedShortTerm} className="font-mono font-medium text-ink" />
+                    · Short-term, held 1 year or less: gain{" "}
+                    <Money value={year.gainAvoidedShortTermGain} className="font-mono font-medium text-ink" />
+                    {isFigure(year.gainAvoidedShortTermLoss) && (
+                      <>
+                        , loss{" "}
+                        <Money value={lossSize(year.gainAvoidedShortTermLoss)} className="font-mono text-ink" />
+                      </>
+                    )}
                   </>
                 )}
                 {year.gainAvoidedRowsHoldingUnknown > 0 && (
@@ -289,12 +335,28 @@ export function GivingYearSection({ year }: { year: GivingYear }) {
                 <Count value={year.gainAvoidedRowsUnsupported} className="font-mono font-medium" />
               </span>
             )}
+            {showSplit && year.gainAvoidedRowsOverAssigned > 0 && (
+              <span className="text-warn">
+                {" "}
+                · gifts with more shares assigned than given:{" "}
+                <Count value={year.gainAvoidedRowsOverAssigned} className="font-mono font-medium" /> (lot figures
+                overstate by <Money value={year.gainAvoidedOverAssigned} className="font-mono font-medium" />)
+              </span>
+            )}
           </span>
         </div>
+        {showSplit && isFigure(year.gainAvoidedLongTermLoss) && (
+          <p className="basis-full text-xs text-ink-faint">
+            Long-term lots given at a loss:{" "}
+            <Money value={lossSize(year.gainAvoidedLongTermLoss)} className="font-mono" /> (a loss on gifted shares
+            is not deductible)
+          </p>
+        )}
         {showShortTerm && (
           <p className="basis-full text-xs text-ink-faint">
-            For shares held one year or less, the charitable deduction may be limited to cost basis, so the
-            short-term gain is not necessarily a saving.
+            For shares held one year or less, the deduction is generally the lower of cost basis and fair value: a
+            short-term gain adds nothing to the deduction, and a loss on shares given away is not deductible.
+            Confirm with your tax preparer.
           </p>
         )}
       </header>

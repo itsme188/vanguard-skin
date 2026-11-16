@@ -36,18 +36,36 @@ export interface GivingYear {
    */
   gainAvoidedRowsUnsupported: number;
   /**
-   * `gainAvoided` split by holding period (owner ruling 14, 2026-11-16): the
-   * sums of the counted rows' own split figures, so long-term + short-term +
-   * holding-period-unknown equals `gainAvoided` to the cent. All three are
-   * null exactly when `gainAvoided` is.
+   * `gainAvoided` split by holding period (owner ruling 14, 2026-11-16), and
+   * each holding period split into its gain part (the sum of the lots given
+   * above their cost, >= 0) and its loss part (the sum of the lots given
+   * below their cost, <= 0), so a loss is never printed as a gain. These are
+   * the sums of the counted rows' own figures:
+   *   LT gain + LT loss + ST gain + ST loss + unknown - over-assigned
+   * equals `gainAvoided` to the cent. All are null exactly when
+   * `gainAvoided` is.
    */
-  gainAvoidedLongTerm: number | null;
-  gainAvoidedShortTerm: number | null;
+  gainAvoidedLongTermGain: number | null;
+  gainAvoidedLongTermLoss: number | null;
+  gainAvoidedShortTermGain: number | null;
+  gainAvoidedShortTermLoss: number | null;
   gainAvoidedHoldingUnknown: number | null;
-  /** Counted rows that gave short-term shares (some lot held one year or less). */
+  /**
+   * The sum of the counted rows' `gainAvoidedOverAssigned` (>= 0): what the
+   * lot parts of gifts with more shares assigned than given add up to beyond
+   * those gifts' own avoided gain. Never folded into "holding period unknown"
+   * as a negative figure.
+   */
+  gainAvoidedOverAssigned: number | null;
+  /**
+   * Counted rows that gave short-term shares (`hasShortTermShares`, the same
+   * threshold the row uses to show its short-term part).
+   */
   gainAvoidedRowsWithShortTerm: number;
   /** Counted rows with a part whose holding period is unknown (non-zero to the cent). */
   gainAvoidedRowsHoldingUnknown: number;
+  /** Counted rows with more shares assigned to lots than the gift gave (`gainAvoidedOverAssigned` > 0). */
+  gainAvoidedRowsOverAssigned: number;
   donations: GivingDonation[];
 }
 
@@ -63,12 +81,24 @@ export interface GivingDonation {
    * (fair market value per share minus its basis per share). What no dated
    * lot accounts for (a lot with no readable acquisition date, shares given
    * but not assigned to a lot, or a gift with no share count) is
-   * `gainAvoidedHoldingUnknown`. The three always add up to `gainAvoided` to
-   * the cent; all three are null exactly when it is.
+   * `gainAvoidedHoldingUnknown`. Each holding period is split into its gain
+   * part (lots given above cost, >= 0) and its loss part (lots given below
+   * cost, <= 0). When more shares are assigned than the gift gave, the lot
+   * parts add up to more than the gift's avoided gain; that excess is
+   * `gainAvoidedOverAssigned` (>= 0), never a negative "unknown" part. So
+   *   LT gain + LT loss + ST gain + ST loss + unknown - over-assigned
+   * equals `gainAvoided` to the cent; all are null exactly when it is.
    */
-  gainAvoidedLongTerm: number | null;
-  gainAvoidedShortTerm: number | null;
+  gainAvoidedLongTermGain: number | null;
+  gainAvoidedLongTermLoss: number | null;
+  gainAvoidedShortTermGain: number | null;
+  gainAvoidedShortTermLoss: number | null;
   gainAvoidedHoldingUnknown: number | null;
+  gainAvoidedOverAssigned: number | null;
+  /** Some assigned lot held more than one year (quantity above `QUANTITY_EPS`). */
+  hasLongTermShares: boolean;
+  /** Some assigned lot held one year or less (quantity above `QUANTITY_EPS`). */
+  hasShortTermShares: boolean;
   /**
    * THE left-out rule for a gift row: true when at least one assigned lot's
    * basis state (`donatedLotBasisState`) is `implausible` or `verified-stale`.
@@ -554,37 +584,68 @@ const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 /** Half a cent: a remainder smaller than this is float noise, not a figure. */
 const HALF_CENT = 0.005;
 
+type HoldingBucket = "longTerm" | "shortTerm" | "unknown";
+
 interface HoldingPeriodGains {
-  longTerm: number;
-  shortTerm: number;
+  longTermGain: number;
+  longTermLoss: number;
+  shortTermGain: number;
+  shortTermLoss: number;
   unknown: number;
+  /** >= 0: how far the lot parts exceed `total` when more shares were assigned than given. */
+  overAssigned: number;
 }
 
 /**
- * Splits a row's avoided gain by holding period. `parts` are the per-lot
- * figures already priced (shares × (fair value per share − basis per share)),
- * each tagged long-term, short-term or unknown. Whatever the lots do not
- * account for (`total` minus their sum) is unknown, so the three always add
- * up to `total`. A remainder under half a cent is rounding noise and is
- * folded into the bucket holding the most shares, so a fully assigned gift
- * never shows a stray "unknown" cent.
+ * Splits a row's avoided gain by holding period, and each holding period
+ * into its gain part (lots given above cost) and loss part (lots given below
+ * cost). `parts` are the per-lot figures already priced (shares x (fair value
+ * per share - basis per share)), each tagged long-term, short-term or
+ * unknown. Whatever the lots do not account for (`total` minus their sum):
+ * - under half a cent: rounding noise, folded into the holding period holding
+ *   the most shares (its larger part), so a fully assigned gift never shows a
+ *   stray "unknown" cent;
+ * - positive: shares given but not assigned (or no share count), "unknown";
+ * - negative with lots priced: more shares assigned than given. The lot
+ *   parts overstate the gift by that much; it is `overAssigned` (>= 0),
+ *   never a negative "unknown" figure.
+ * So LT gain + LT loss + ST gain + ST loss + unknown - overAssigned == total.
  */
 function splitGainByHoldingPeriod(
   total: number,
-  parts: { bucket: keyof HoldingPeriodGains; gain: number; shares: number }[]
+  parts: { bucket: HoldingBucket; gain: number; shares: number }[]
 ): HoldingPeriodGains {
-  const out: HoldingPeriodGains = { longTerm: 0, shortTerm: 0, unknown: 0 };
-  const shares: HoldingPeriodGains = { longTerm: 0, shortTerm: 0, unknown: 0 };
+  const out: HoldingPeriodGains = {
+    longTermGain: 0,
+    longTermLoss: 0,
+    shortTermGain: 0,
+    shortTermLoss: 0,
+    unknown: 0,
+    overAssigned: 0,
+  };
+  const shares: Record<HoldingBucket, number> = { longTerm: 0, shortTerm: 0, unknown: 0 };
+  let partsSum = 0;
   for (const p of parts) {
-    out[p.bucket] += p.gain;
+    partsSum += p.gain;
     shares[p.bucket] += p.shares;
+    if (p.bucket === "unknown") out.unknown += p.gain;
+    else if (p.bucket === "longTerm") {
+      if (p.gain >= 0) out.longTermGain += p.gain;
+      else out.longTermLoss += p.gain;
+    } else if (p.gain >= 0) out.shortTermGain += p.gain;
+    else out.shortTermLoss += p.gain;
   }
-  const remainder = total - out.longTerm - out.shortTerm - out.unknown;
+  const remainder = total - partsSum;
   if (Math.abs(remainder) < HALF_CENT && parts.length > 0) {
-    const biggest = (Object.keys(shares) as (keyof HoldingPeriodGains)[]).reduce((a, b) =>
-      shares[b] > shares[a] ? b : a
-    );
-    out[biggest] += remainder;
+    const biggest = (Object.keys(shares) as HoldingBucket[]).reduce((a, b) => (shares[b] > shares[a] ? b : a));
+    if (biggest === "unknown") out.unknown += remainder;
+    else if (biggest === "longTerm") {
+      if (out.longTermGain >= -out.longTermLoss) out.longTermGain += remainder;
+      else out.longTermLoss += remainder;
+    } else if (out.shortTermGain >= -out.shortTermLoss) out.shortTermGain += remainder;
+    else out.shortTermLoss += remainder;
+  } else if (remainder < 0 && parts.length > 0) {
+    out.overAssigned = -remainder;
   } else {
     out.unknown += remainder;
   }
@@ -627,14 +688,14 @@ function buildGivingDonation(
       typeof d.quantity === "number" && Number.isFinite(d.quantity) && d.quantity > 0
         ? d.fmv_usd / d.quantity
         : null;
-    const gainParts: { bucket: keyof HoldingPeriodGains; gain: number; shares: number }[] = [];
+    const gainParts: { bucket: HoldingBucket; gain: number; shares: number }[] = [];
     for (const a of assignments) {
       // On the gift date's share basis, the units `a.quantity` is in (G2).
       const acquiredInGiftUnits = quantityAcquiredInGiftUnits(a, splits, outLeg.trade_date);
       // Holding period per LOT, by the engine's own test. A lot with no
       // readable acquisition date is in neither bucket: it is "unknown".
       const dated = typeof a.acquisition_date === "string" && ISO_DATE_RE.test(a.acquisition_date);
-      const bucket: keyof HoldingPeriodGains = !dated
+      const bucket: HoldingBucket = !dated
         ? "unknown"
         : isLongTermHolding(a.acquisition_date, outLeg.trade_date)
           ? "longTerm"
@@ -717,9 +778,14 @@ function buildGivingDonation(
     accountName: outLeg?.account_name ?? null,
     basis,
     gainAvoided,
-    gainAvoidedLongTerm: holdingGains?.longTerm ?? null,
-    gainAvoidedShortTerm: holdingGains?.shortTerm ?? null,
+    gainAvoidedLongTermGain: holdingGains?.longTermGain ?? null,
+    gainAvoidedLongTermLoss: holdingGains?.longTermLoss ?? null,
+    gainAvoidedShortTermGain: holdingGains?.shortTermGain ?? null,
+    gainAvoidedShortTermLoss: holdingGains?.shortTermLoss ?? null,
     gainAvoidedHoldingUnknown: holdingGains?.unknown ?? null,
+    gainAvoidedOverAssigned: holdingGains?.overAssigned ?? null,
+    hasLongTermShares: (longTermQuantity ?? 0) > QUANTITY_EPS,
+    hasShortTermShares: (shortTermQuantity ?? 0) > QUANTITY_EPS,
     basisImplausible,
     basisUnestablished,
     flaggedLots,
@@ -829,15 +895,15 @@ export function getGivingView(db: Database.Database): {
         ? null
         : counted.reduce((sum, gd) => sum + (gd.gainAvoided ?? 0), 0);
       // The holding-period split sums the SAME counted rows' own split
-      // figures, so the three add up to `gainAvoided` (owner ruling 14).
+      // figures, so the parts add up to `gainAvoided` (owner ruling 14).
       const sumSplit = (pick: (gd: GivingDonation) => number | null) =>
         anyMissingBasis ? null : counted.reduce((sum, gd) => sum + (pick(gd) ?? 0), 0);
-      const gainAvoidedRowsWithShortTerm = counted.filter(
-        (gd) => (gd.shortTermQuantity ?? 0) > QUANTITY_EPS
-      ).length;
+      // The same per-row flag the row uses to show its short-term part.
+      const gainAvoidedRowsWithShortTerm = counted.filter((gd) => gd.hasShortTermShares).length;
       const gainAvoidedRowsHoldingUnknown = counted.filter(
         (gd) => Math.abs(gd.gainAvoidedHoldingUnknown ?? 0) >= HALF_CENT
       ).length;
+      const gainAvoidedRowsOverAssigned = counted.filter((gd) => (gd.gainAvoidedOverAssigned ?? 0) > 0).length;
       return {
         year,
         totalGiven,
@@ -847,11 +913,15 @@ export function getGivingView(db: Database.Database): {
         gainAvoidedRowsLeftOut,
         gainAvoidedRowsCounted: counted.length,
         gainAvoidedRowsUnsupported,
-        gainAvoidedLongTerm: sumSplit((gd) => gd.gainAvoidedLongTerm),
-        gainAvoidedShortTerm: sumSplit((gd) => gd.gainAvoidedShortTerm),
+        gainAvoidedLongTermGain: sumSplit((gd) => gd.gainAvoidedLongTermGain),
+        gainAvoidedLongTermLoss: sumSplit((gd) => gd.gainAvoidedLongTermLoss),
+        gainAvoidedShortTermGain: sumSplit((gd) => gd.gainAvoidedShortTermGain),
+        gainAvoidedShortTermLoss: sumSplit((gd) => gd.gainAvoidedShortTermLoss),
         gainAvoidedHoldingUnknown: sumSplit((gd) => gd.gainAvoidedHoldingUnknown),
+        gainAvoidedOverAssigned: sumSplit((gd) => gd.gainAvoidedOverAssigned),
         gainAvoidedRowsWithShortTerm,
         gainAvoidedRowsHoldingUnknown,
+        gainAvoidedRowsOverAssigned,
         donations: yearDonations,
       };
     });
