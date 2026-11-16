@@ -221,8 +221,11 @@ describe("undefined and a non-empty list answer as before", () => {
     expect(parsed[0].flows).toHaveLength(2);
 
     // Digest of the full output, captured at the commit before this change.
+    // Re-captured 2026-11-15 for the one-return-per-session rule
+    // (foldReturnsIntoSessions): only risk and riskScopeFloor volatility
+    // and sharpeRatio changed; every other field is identical.
     expect(createHash("sha256").update(json).digest("hex")).toBe(
-      "76af410d8eab6f31e2c1543c5d262203d28398afc19cf474fa91e72aac6ecde4",
+      "1e16d775f8809a40268eb8e78e96653ce4f3ff6f16288744ef3601d667a3d222",
     );
   });
 

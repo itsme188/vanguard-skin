@@ -14,6 +14,7 @@ import {
 import { accountIdsFilterSql, normalizeAccountIds } from "@/lib/compute/factors";
 import { buildFlowAdjustedIndex, fetchNetFlowsByDate, fetchAnchorSourceSeamDates } from "@/lib/compute/flow-adjusted";
 import { addDays, calendarDaysBetween, todayET } from "@/lib/calendar/date-utils";
+import { isMarketClosed, nextTradingDay } from "@/lib/calendar/market-holidays";
 import { isCashEquivalentSecurity } from "@/lib/compute/cash-equivalents";
 import { liveOptionExpirationSql } from "@/lib/compute/option-expiry";
 import {
@@ -294,7 +295,7 @@ export function computeRiskMetrics(
       ? fetchAnchorSourceSeamDates(db, accountIds, points[0].date, points[points.length - 1].date)
       : [];
   const { index, returns, bridgedDays } = buildFlowAdjustedIndex(points, flows, seamDates);
-  const logReturns = returns.map((r) => r.logReturn);
+  const logReturns = foldReturnsIntoSessions(returns);
 
   const rawValueByDate = new Map(points.map(p => [p.date, p.value]));
   const maxDrawdownIdx = computeMaxDrawdown(index);
@@ -457,6 +458,33 @@ function computeCurrentDrawdown(
 }
 
 // ─── Volatility & Sharpe ────────────────────────────────────────
+
+/**
+ * One log return per trading SESSION (2026-11-15). Volatility and Sharpe
+ * annualise with sqrt(252) and mean x 252, so each observation must be one
+ * session. daily_valuations also carries weekend and holiday rows (a live
+ * sync or a month-end statement can land on one); left as observations they
+ * added near-zero "returns" and read volatility too low.
+ *
+ * A return that lands on a closed day is added (log returns sum) into the
+ * next trading session's return: no market move and no flow is lost, because
+ * the index, the flow adjustment and the seam bridging all still run on
+ * every row (a flow dated on a weekend is stripped from that weekend's step,
+ * and its residue reaches the session through the sum). When that session's
+ * own step was bridged, the closed-day move stands alone as the session.
+ * Drawdowns keep reading the full index; only the return observations are
+ * grouped.
+ */
+export function foldReturnsIntoSessions(
+  returns: { date: string; logReturn: number }[]
+): number[] {
+  const bySession = new Map<string, number>();
+  for (const r of returns) {
+    const session = isMarketClosed(r.date) ? nextTradingDay(r.date) : r.date;
+    bySession.set(session, (bySession.get(session) ?? 0) + r.logReturn);
+  }
+  return [...bySession.values()];
+}
 
 function computeVolatility(
   returns: number[],

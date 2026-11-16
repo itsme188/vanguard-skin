@@ -8,6 +8,7 @@
  * is exactly 0.625; an empty scope never reaches the engine.
  */
 import { describe, it, expect, beforeEach, vi } from "vitest";
+import { nthTradingDay } from "../helpers/trading-days";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 
@@ -21,13 +22,14 @@ import { queryRiskTool } from "@/lib/chat/composite/risk";
 import { COMPOSITE_MAX_JSON_CHARS } from "@/lib/chat/composite/shared";
 
 const TODAY = "2026-03-01";
-const BASE = "2026-01-01";
+const BASE = "2025-12-01";
 let db: Database.Database;
 
+// The i-th TRADING session from BASE: volatility counts one return per
+// session (2026-11-15), so the hand-worked alternating series seeds one row
+// per session.
 function day(i: number): string {
-  const d = new Date(`${BASE}T12:00:00Z`);
-  d.setUTCDate(d.getUTCDate() + i);
-  return d.toISOString().slice(0, 10);
+  return nthTradingDay(BASE, i);
 }
 
 function addStock(symbol: string, accountId: number, qty: number, price: number): void {
