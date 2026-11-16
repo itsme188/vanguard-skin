@@ -570,6 +570,8 @@ describe("attributeProxies — Tier 2 cascade", () => {
 
   it("falls through to beta route when the ETF's geography isn't held anywhere in the book", () => {
     const r = attributeProxies([cand("EWJ", 5000)], ctx({
+      // An equity fund (owner ruling 2026-11-15, K4b: an unknown type is not credited).
+      fundIdentityByUnderlying: new Map([["EWJ", { fundCategory: null, assetClass: "equity", sector: null, leveraged: false }]]),
       // ctx()'s default longExposureByGeography only has "Europe" — "Japan"
       // is a real geography match on the ETF row, but the book holds none of it.
       etfGeography: new Map([["EWJ", "Japan"]]),
@@ -582,6 +584,8 @@ describe("attributeProxies — Tier 2 cascade", () => {
 
   it("falls back to beta-weighted broad-book credit and carries the beta source", () => {
     const r = attributeProxies([cand("MTUM", 10000)], ctx({
+      // An equity fund (owner ruling 2026-11-15, K4b: an unknown type is not credited).
+      fundIdentityByUnderlying: new Map([["MTUM", { fundCategory: null, assetClass: "equity", sector: null, leveraged: false }]]),
       resolveBeta: () => ({ beta: 1.2, source: "cached" as const }),
     }));
     expect(r.proxies[0].route).toBe("beta");

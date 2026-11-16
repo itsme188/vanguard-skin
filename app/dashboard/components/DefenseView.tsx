@@ -111,6 +111,17 @@ export async function DefenseView({ scope = "all" }: DefenseViewProps) {
           <div>
             <p className="text-[11px] uppercase tracking-widest text-ink-faint mb-1">Hedges scored</p>
             <p className="font-mono tabular-nums text-xl text-ink"><Count value={summary.hedgeCount} /></p>
+            {summary.assumedBetaHedgeCount > 0 && (
+              <p className="text-xs mt-1 text-ink-faint">
+                <Count value={summary.assumedBetaHedgeCount} /> on an assumed beta (not enough price history
+                to measure one)
+              </p>
+            )}
+            {summary.notCreditedCount > 0 && (
+              <p className="text-xs mt-1 text-ink-faint">
+                <Count value={summary.notCreditedCount} /> not credited (not a stock fund)
+              </p>
+            )}
           </div>
         </div>
       </section>
@@ -145,6 +156,8 @@ export async function DefenseView({ scope = "all" }: DefenseViewProps) {
         hedgeScores={analysis.hedgeScores}
         standaloneBets={analysis.standaloneBets}
         standaloneBetKinds={standaloneBetKinds}
+        shortSideHedgeNotional={summary.shortSideHedgeNotional}
+        notCreditedHedges={analysis.notCreditedHedges}
       />
 
       <LeveragedFundsNotModelled info={analysis.leveragedFundsUnmodelled} />

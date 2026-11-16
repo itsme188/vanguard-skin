@@ -97,6 +97,10 @@ describe("computeDefenseAnalysis", () => {
 
     // ZZM: no shares held, just a price for the option's underlying valuation
     const zzmId = seedSecurity("ZZM", { type: "ETF" });
+    // An equity fund with no sector and no look-through: the book route at
+    // its beta. A fund of unknown type is not credited (owner ruling
+    // 2026-11-15, K4b), so the fixture states its asset class.
+    db.prepare("UPDATE securities SET asset_class = 'equity' WHERE id = ?").run(zzmId);
     seedPrice(zzmId, 220);
 
     // 4 ZZM puts, strike 200, expiry +180d, multiplier 100

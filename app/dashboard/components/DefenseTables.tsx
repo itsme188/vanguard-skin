@@ -1,6 +1,13 @@
 "use client";
 
-import type { RankedExposure, RankedExposureLeg, HedgeScore, StandaloneBet, HedgeBadge } from "@/lib/compute/hedging";
+import type {
+  RankedExposure,
+  RankedExposureLeg,
+  HedgeScore,
+  StandaloneBet,
+  HedgeBadge,
+  NotCreditedHedge,
+} from "@/lib/compute/hedging";
 import { Money, Pct } from "@/lib/privacy/components";
 import { Chip, type ChipTone } from "./Chip";
 import { ScrollFade } from "./ScrollFade";
@@ -40,9 +47,15 @@ const BADGE_LABEL: Record<HedgeBadge, string> = {
  * `book (β=…)`). Each route gets a phrase here, and a route this map does not
  * know reads as words, so the cell never prints a `key: value` pair.
  */
+/** A beta the engine marked "assumed" (K4c) reads as a guess, never as a measurement. */
+function betaWords(detail: string): string {
+  const assumed = /^β=(-?[\d.]+),\s*assumed$/.exec(detail);
+  return assumed ? `β ${assumed[1]} assumed: not enough price history to measure` : detail;
+}
+
 export function protectsLabel(protects: string): string {
   const book = /^book\s*\((.*)\)$/.exec(protects);
-  if (book) return `Whole portfolio (${book[1]})`;
+  if (book) return `Whole portfolio (${betaWords(book[1])})`;
   const route = /^([a-z][a-z_]*):\s*(.*)$/.exec(protects);
   if (!route) return protects;
   const [, kind, detail] = route;
@@ -50,6 +63,14 @@ export function protectsLabel(protects: string): string {
     return detail === "" || detail === "Unknown"
       ? "Equities with no region on file (broad)"
       : `${detail} equities (broad)`;
+  }
+  if (kind === "own_sector") {
+    const own = /^(.*\S)\s+\((.*)\)$/.exec(detail);
+    if (!own) return `${detail} sector, the fund's own`;
+    const spill = /^(.*\S)\s+\+\s+book$/.exec(own[1]);
+    return spill
+      ? `${spill[1]} sector (the fund's own), then the whole portfolio (${betaWords(own[2])})`
+      : `${own[1]} sector, the fund's own (${betaWords(own[2])})`;
   }
   if (kind === "sector") {
     return detail
@@ -62,6 +83,22 @@ export function protectsLabel(protects: string): string {
   }
   const words = kind.replace(/_+/g, " ");
   return `${words.charAt(0).toUpperCase()}${words.slice(1)}: ${detail}`;
+}
+
+/**
+ * The "Protects" cell. A sector route's percentages are rendered through
+ * <Pct>, so "Hide amounts" masks them; the sector names stay readable.
+ */
+export function ProtectsCell({ text }: { text: string }) {
+  const parts = text.split(/(-?\d+(?:\.\d+)?%)/);
+  return (
+    <>
+      {parts.map((part, i) => {
+        const pct = /^(-?\d+(?:\.\d+)?)%$/.exec(part);
+        return pct ? <Pct key={i} value={Number(pct[1])} digits={0} /> : <span key={i}>{part}</span>;
+      })}
+    </>
+  );
 }
 
 /**
@@ -98,6 +135,10 @@ interface DefenseTablesProps {
       distinguish a genuinely-unhedged long from a naked short / single-name
       put bet — both share PairClassification "unhedged" upstream. */
   standaloneBetKinds: Record<string, StandaloneBet["kind"]>;
+  /** Credited offset of calls held against shorts (not in the protection ratio). */
+  shortSideHedgeNotional: number;
+  /** Fund hedges given no equity protection credit, with the reason. */
+  notCreditedHedges: NotCreditedHedge[];
 }
 
 export function DefenseTables({
@@ -105,13 +146,87 @@ export function DefenseTables({
   hedgeScores,
   standaloneBets,
   standaloneBetKinds,
+  shortSideHedgeNotional,
+  notCreditedHedges,
 }: DefenseTablesProps) {
   return (
     <div className="space-y-6">
       <MostExposedTable rankedExposures={rankedExposures} standaloneBetKinds={standaloneBetKinds} />
-      <HedgeBookTable hedgeScores={hedgeScores} />
+      <HedgeBookTable hedgeScores={hedgeScores.filter((h) => h.side !== "short")} />
+      <ShortSideHedges
+        hedgeScores={hedgeScores.filter((h) => h.side === "short")}
+        total={shortSideHedgeNotional}
+      />
+      <NotCreditedList hedges={notCreditedHedges} />
       <StandaloneBetsList standaloneBets={standaloneBets} />
     </div>
+  );
+}
+
+/**
+ * Calls held against short positions (owner ruling 2026-11-15, K4a). They
+ * protect against a rally, so they are reported here and never counted in
+ * the protection ratio, which measures protection of the long book.
+ */
+function ShortSideHedges({ hedgeScores, total }: { hedgeScores: HedgeScore[]; total: number }) {
+  if (hedgeScores.length === 0) return null;
+  return (
+    <section className="bg-panel border border-edge rounded-lg p-4">
+      <div className="flex items-baseline justify-between mb-1">
+        <h3 className="text-sm font-medium text-ink">Short-side hedges</h3>
+        <span className="font-mono tabular-nums text-sm text-ink">
+          <Money value={total} />
+        </span>
+      </div>
+      <p className="text-xs text-ink-faint mb-3">
+        Calls held against short positions. These protect against a rally and are not counted in the
+        protection ratio.
+      </p>
+      <ul className="divide-y divide-edge">
+        {hedgeScores.map((row) => (
+          <li key={`${row.securityId}:${row.protects}`} className="flex items-center justify-between py-2 text-xs">
+            <span className="text-ink">
+              <SymbolLink securityId={row.securityId} symbol={row.symbol} />{" "}
+              <span className="text-ink-faint">against the short in {row.underlying}</span>
+            </span>
+            <span className="font-mono tabular-nums">
+              <Money value={row.protectedNotional} />
+            </span>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+/**
+ * Hedges on funds that give no equity protection credit (owner ruling
+ * 2026-11-15, K4b): a commodity or bond fund, or a fund whose type is not on
+ * file. Named with the reason, never silently dropped.
+ */
+function NotCreditedList({ hedges }: { hedges: NotCreditedHedge[] }) {
+  if (hedges.length === 0) return null;
+  return (
+    <section className="bg-panel border border-edge rounded-lg p-4">
+      <h3 className="text-sm font-medium text-ink mb-1">Not credited</h3>
+      <p className="text-xs text-ink-faint mb-3">
+        Positions that would protect a fund that is not a stock fund. They are left out of the
+        protection ratio and the sector bars.
+      </p>
+      <ul className="divide-y divide-edge">
+        {hedges.map((h) => (
+          <li key={h.underlying} className="flex items-center justify-between py-2 text-xs">
+            <span className="text-ink">
+              {h.underlying} <span className="text-ink-faint font-mono">{h.symbols.join(", ")}</span>
+              <span className="block text-[11px] text-ink-dim">{h.reason}</span>
+            </span>
+            <span className="font-mono tabular-nums text-ink-dim">
+              <Money value={h.protectiveNotional} />
+            </span>
+          </li>
+        ))}
+      </ul>
+    </section>
   );
 }
 
@@ -182,8 +297,8 @@ function MostExposedTable({
                       <div className="flex justify-end gap-1 flex-wrap">
                         {row.hasAmplifiers && <Chip tone="warn" size="xs">levered</Chip>}
                         {row.classification === "speculative" && <Chip tone="info" size="xs">spec</Chip>}
-                        {kind === "naked_short" && <Chip tone="down" size="xs">short</Chip>}
-                        {kind !== undefined && kind !== "naked_short" && <Chip tone="down" size="xs">bet</Chip>}
+                        {kind !== undefined && SHORT_KINDS.has(kind) && <Chip tone="down" size="xs">short</Chip>}
+                        {kind !== undefined && !SHORT_KINDS.has(kind) && <Chip tone="down" size="xs">bet</Chip>}
                       </div>
                     </td>
                   </tr>
@@ -237,7 +352,7 @@ function HedgeBookTable({ hedgeScores }: { hedgeScores: HedgeScore[] }) {
                   <td className="py-2 pr-3 text-ink">
                     <SymbolLink securityId={row.securityId} symbol={row.symbol} />
                   </td>
-                  <td className="py-2 px-2 text-ink-dim">{protectsLabel(row.protects)}</td>
+                  <td className="py-2 px-2 text-ink-dim"><ProtectsCell text={protectsLabel(row.protects)} /></td>
                   <td className="text-right py-2 px-2 font-mono tabular-nums">
                     <Money value={row.protectedNotional} />
                   </td>
@@ -273,7 +388,11 @@ const BET_KIND_LABEL: Record<StandaloneBet["kind"], string> = {
   single_name_bearish_options: "bearish options",
   etf_bearish_options: "bearish ETF options",
   naked_short: "naked short",
+  short_with_bearish_options: "short with bearish options",
 };
+
+/** The bet kinds that hold short shares: they take the "short" chip. */
+const SHORT_KINDS: ReadonlySet<StandaloneBet["kind"]> = new Set(["naked_short", "short_with_bearish_options"]);
 
 function StandaloneBetsList({ standaloneBets }: { standaloneBets: StandaloneBet[] }) {
   if (standaloneBets.length === 0) return null;
