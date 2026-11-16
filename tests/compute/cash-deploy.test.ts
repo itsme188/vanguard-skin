@@ -124,15 +124,17 @@ describe("suggestAllocation", () => {
     expect(result.benchmarkSymbol).toBe("QQQ");
   });
 
-  it("renders seven-figure unallocated cash through formatLargeUSD ($1.1M, never $1100.9k)", () => {
+  // 2026-11-15: the unallocated amount moved out of the plain-text notes (where
+  // it was a formatLargeUSD string outside the privacy mask) onto its own card
+  // line rendered through <Money>; the engine now gives only a reason sentence.
+  it("explains seven-figure unallocated cash with a figure-free reason, not a plain-text dollar note", () => {
     seedVanguardPortfolio(db);
-    // Deploy far more than the caps allow so a seven-figure remainder is left over.
+    // Deploy far more than the gaps can take so a seven-figure remainder is left over.
     const result = suggestAllocation(db, "vanguard", [1], 2_500_000);
     expect(result.cashRemaining).toBeGreaterThanOrEqual(1_000_000);
-    const unallocatedNote = result.notes.find((n) => /unallocated/i.test(n));
-    expect(unallocatedNote).toBeDefined();
-    expect(unallocatedNote).toMatch(/\$\d+(\.\d+)?M/);
-    expect(unallocatedNote).not.toMatch(/\d{4,}(\.\d+)?k/);
+    expect(result.unallocatedReason).toBeTruthy();
+    expect(result.unallocatedReason).not.toMatch(/\d/);
+    expect(result.notes.some((n) => /\$/.test(n))).toBe(false);
   });
 });
 

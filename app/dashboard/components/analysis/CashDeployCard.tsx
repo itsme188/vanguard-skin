@@ -7,6 +7,7 @@ import { ScrollFade } from "../ScrollFade";
 import { readMutationResult, networkFailureMessage } from "@/lib/ui/mutation-result";
 import {
   equitySleeveCaptionLead,
+  NET_OF_SHORTS_CAPTION,
   type CashDeploySuggestion,
 } from "@/lib/compute/cash-deploy";
 
@@ -102,6 +103,8 @@ export function CashDeployCard({ scope }: Props) {
               <h4 className="text-[10px] text-ink-faint uppercase tracking-wider mb-2">
                 Sector Gaps (|≥ 2pp|)
               </h4>
+              {/* Owner ruling 2026-11-15: weights are NET of short positions. */}
+              <p className="text-[11px] text-ink-faint mb-2">{NET_OF_SHORTS_CAPTION}</p>
               {/*
                 Equity-only benchmark (QA finding
                 analysis-cash-deploy--fixed-income-gap-vs-equity-benchmark):
@@ -147,6 +150,7 @@ export function CashDeployCard({ scope }: Props) {
                       <td className="py-1 text-ink">{g.sector}</td>
                       <td className="text-right py-1 font-mono text-ink-dim">
                         <Pct value={g.currentWeight * 100} digits={1} />
+                        {g.currentWeight < 0 && <span className="ml-1 text-ink-faint">net short</span>}
                       </td>
                       <td className="text-right py-1 font-mono text-ink-dim">
                         {(g.targetWeight * 100).toFixed(1)}%
@@ -228,10 +232,21 @@ export function CashDeployCard({ scope }: Props) {
             <span className="text-ink-faint">Allocated:</span>
             <span className="font-mono text-ink"><Money value={result.totalAllocated} /></span>
           </div>
-          {result.cashRemaining > 0.01 && (
-            <div className="flex items-center justify-between text-xs">
-              <span className="text-ink-faint">Remaining:</span>
-              <span className="font-mono text-ink-dim"><Money value={result.cashRemaining} /></span>
+          {/*
+            Owner ruling (docs/DECISIONS.md 2026-10-12, confirmed 2026-11-15):
+            picks stop at each sector's gap, so cash the gaps cannot take is
+            shown as unallocated with its reason, never poured into a name.
+            Allocated + Unallocated = the cash asked for, to the cent.
+          */}
+          {result.cashRemaining >= 0.01 && (
+            <div className="text-xs">
+              <div className="flex items-center justify-between">
+                <span className="text-ink-faint">Unallocated:</span>
+                <span className="font-mono text-ink-dim"><Money value={result.cashRemaining} /></span>
+              </div>
+              {result.unallocatedReason && (
+                <p className="text-[11px] text-ink-faint mt-1">{result.unallocatedReason}</p>
+              )}
             </div>
           )}
         </div>

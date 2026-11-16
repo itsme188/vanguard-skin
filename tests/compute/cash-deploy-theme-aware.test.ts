@@ -84,7 +84,7 @@ describe("/api/analysis/cash-deploy reads active themes from cache", () => {
     const cashDeploy = await import("@/lib/compute/cash-deploy");
     const spy = vi.spyOn(cashDeploy, "suggestAllocation").mockReturnValue({
       scope: "all", cashAmount: 10000, benchmarkSymbol: "VTI",
-      mode: "benchmark", gaps: [], picks: [], totalAllocated: 0, cashRemaining: 10000, notes: [],
+      mode: "benchmark", gaps: [], picks: [], totalAllocated: 0, cashRemaining: 10000, unallocatedReason: null, notes: [],
     } as any);
 
     const { db } = await import("@/lib/db");

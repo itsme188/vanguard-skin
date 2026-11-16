@@ -159,12 +159,14 @@ describe("equity-sleeve sector gaps (equity benchmark)", () => {
     const expected = EQUITY_SLEEVE_TOTAL * VTI_HEALTHCARE_TARGET - HEALTHCARE_DOLLARS;
     expect(result.picks.length).toBeGreaterThan(0);
     expect(expected).toBeCloseTo(1854.5, 6);
-    expect(result.totalAllocated).toBeCloseTo(CASH, 2);
     expect(result.notes.join(" ")).not.toMatch(/couldn't match watchlist names/i);
-    // The gap gets at least fully closed; any cash left after cent-rounded
-    // gap closure rides on the chosen names so proposed dollars still sum to
-    // the cash input.
-    expect(gapFor(result, "Healthcare")!.residualDollarGap).toBeLessThan(0.01);
+    // Owner ruling (docs/DECISIONS.md 2026-10-12, confirmed 2026-11-15): the
+    // pick stops at the gap; the rest is unallocated, never poured into the
+    // name past its sector's benchmark weight.
+    expect(result.totalAllocated).toBeCloseTo(expected, 2);
+    expect(result.totalAllocated).toBeLessThanOrEqual(expected);
+    expect(Math.round(result.totalAllocated * 100) + Math.round(result.cashRemaining * 100)).toBe(CASH * 100);
+    expect(Math.abs(gapFor(result, "Healthcare")!.residualDollarGap)).toBeLessThan(0.01);
     expect(gapFor(result, "Healthcare")!.gapPp).toBeLessThan(-1);
   });
 

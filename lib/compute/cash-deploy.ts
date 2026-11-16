@@ -9,6 +9,19 @@
  * Greedy allocation: each pick covers as much of the largest remaining gap
  * as it can without breaching construction_caps. Falls back to a by-sector
  * heuristic when benchmark composition isn't seeded.
+ *
+ * Owner rulings of 2026-11-15 (docs/DECISIONS.md 2026-10-12, confirmed):
+ *  - A pick STOPS at its sector's gap. No sector is filled past its
+ *    benchmark weight; cash the gaps cannot take is reported as unallocated
+ *    (`cashRemaining` + `unallocatedReason`), never poured into a name.
+ *    This supersedes the 2026-10-07 "proposals add up to the cash asked
+ *    for" top-up.
+ *  - Sector weights are NET of short positions: signed market values, over
+ *    the same signed denominator the What-if engine uses
+ *    (`computeExposureDelta` keeps shorts in its book and total).
+ *  - A multi-sector fund is credited by its look-through weights
+ *    (`etf_sector_weights`) and sized so it pushes no sector past its
+ *    benchmark weight.
  */
 
 import type Database from "better-sqlite3";
@@ -21,7 +34,6 @@ import { explodeHoldingBySector } from "./explode-sector";
 import { getEtfSectorWeights } from "@/lib/queries/etf-weights";
 import { marketValue } from "@/lib/valuation";
 import { getUsdPerUnit } from "@/lib/queries/fx-rates";
-import { formatLargeUSD } from "@/lib/format";
 import { isCashEquivalentSecurity } from "@/lib/compute/cash-equivalents";
 import { issuerSiblings } from "@/lib/securities/issuer-family";
 
@@ -52,6 +64,18 @@ export interface CashDeployPick {
   gapClosureScore: number;
   rationale: string;
   exposureDelta: ExposureDelta;
+  /**
+   * How the pick's dollars land across sectors (weights sum to about 1). A
+   * single-sector name has one entry; a multi-sector fund has its
+   * look-through weights.
+   */
+  sectorExposure: SectorExposure[];
+  multiSectorFund: boolean;
+}
+
+export interface SectorExposure {
+  sector: string;
+  weight: number;
 }
 
 /**
@@ -73,7 +97,13 @@ export interface CashDeploySuggestion {
   gaps: SectorGap[];
   picks: CashDeployPick[];
   totalAllocated: number;
+  /**
+   * Cash the gaps could not take (owner ruling: stop at each sector's gap).
+   * totalAllocated + cashRemaining = cashAmount, to the cent.
+   */
   cashRemaining: number;
+  /** One sentence, no figure, saying why cash is unallocated; null when none is. */
+  unallocatedReason: string | null;
   notes: string[];
   /**
    * Non-null only when the benchmark is equity-only AND the portfolio
@@ -84,6 +114,18 @@ export interface CashDeploySuggestion {
 }
 
 const GAP_THRESHOLD_PP = 2.0; // surface gaps of |2pp| or more
+
+/**
+ * Room under one dollar counts as filled, and no pick is smaller than one
+ * dollar. Without this a sector a single name filled to the cent leaves a
+ * sub-cent fragment that, divided by a fund's small weight in it, proposes a
+ * pick of a few cents or dollars.
+ */
+const MIN_ROOM_DOLLARS = 1;
+const MIN_PICK_CENTS = 100;
+
+/** Security types a held-name fallback pick may be (no options, bonds, forex). */
+const HELD_PICK_TYPES = new Set(["stock", "etf", "mutual fund"]);
 
 /**
  * Sector buckets that are NOT part of the equity sleeve.
@@ -242,7 +284,10 @@ function loadCurrentHoldings(
   let totalValue = 0;
   for (const r of rows) {
     const mv = marketValue(r.quantity, r.price, r.security_type, r.multiplier, getUsdPerUnit(db, r.currency));
-    if (mv <= 0) continue;
+    // Shorts are KEPT (owner ruling 2026-11-15): a short's negative market
+    // value nets against its sector and the total, as in computeExposureDelta
+    // — dropping it showed a nearly flat sector as a large long weight.
+    if (!Number.isFinite(mv) || mv === 0) continue;
     totalValue += mv;
     const cashEquivalent = isCashEquivalentSecurity({
       security_type: r.security_type,
@@ -254,15 +299,20 @@ function loadCurrentHoldings(
     for (const part of parts) {
       sectorValue.set(part.sector, (sectorValue.get(part.sector) ?? 0) + part.value);
     }
-    const primarySector = parts.length === 1 ? parts[0].sector : r.sector;
-    if (!cashEquivalent && primarySector && !isExcludedEquitySleeveBucket(primarySector)) {
-      heldCandidatesBySymbol.set(r.symbol, {
-        symbol: r.symbol,
-        securityId: r.security_id,
-        sector: primarySector,
-        thesis: r.name ? `Held name: ${r.name}` : "Held name",
-      });
-    }
+    // A held-name fallback is a stock or fund held LONG: "buying" a name held
+    // short would be covering it, and an option's dollars do not land in its
+    // sector one for one (a long put on a sector fund is a SHORT exposure).
+    if (cashEquivalent || mv <= 0 || !HELD_PICK_TYPES.has(normalized(r.security_type))) continue;
+    const exposure = exposureOfParts(parts, mv);
+    if (exposure.length === 0) continue;
+    if (exposure.length === 1 && isExcludedEquitySleeveBucket(exposure[0].sector)) continue;
+    heldCandidatesBySymbol.set(r.symbol, {
+      symbol: r.symbol,
+      securityId: r.security_id,
+      sector: exposure.length === 1 ? exposure[0].sector : r.sector,
+      thesis: r.name ? `Held name: ${r.name}` : "Held name",
+      exposure,
+    });
   }
 
   return { totalValue, sectorValue, heldCandidates: Array.from(heldCandidatesBySymbol.values()) };
@@ -273,6 +323,25 @@ interface WatchlistCandidate {
   securityId: number;
   sector: string | null;
   thesis: string | null;
+  /** Where a dollar of this name lands, by sector (look-through for a fund). */
+  exposure: SectorExposure[];
+}
+
+/** Sector parts of one holding, turned into weights per dollar. */
+function exposureOfParts(
+  parts: Array<{ sector: string; value: number }>,
+  fundValue: number
+): SectorExposure[] {
+  if (!(fundValue > 0)) return [];
+  const bySector = new Map<string, number>();
+  for (const p of parts) {
+    if (!(p.value > 0)) continue;
+    bySector.set(p.sector, (bySector.get(p.sector) ?? 0) + p.value);
+  }
+  // Look-through weights are per dollar of the FUND, so divide by the fund's
+  // value (the explode helper's input), not by the parts' sum: a weight set
+  // that sums under 100% leaves the remainder unassigned, never inflated.
+  return Array.from(bySector.entries()).map(([sector, value]) => ({ sector, weight: value / fundValue }));
 }
 
 function benchmarkSectorParts(
@@ -291,20 +360,26 @@ function benchmarkSectorParts(
 
 function loadWatchlistCandidates(
   db: Database.Database,
-  scope: string
+  scope: string,
+  benchmarkMap: Map<string, number>
 ): WatchlistCandidate[] {
   // Group names follow the convention "<scope>_buy" (e.g., "vanguard_buy",
   // "ibkr_buy_next", "roth_buy_next"). Match all groups that contain the
   // scope token so renames don't silently break the lookup.
   const groupPattern = `%${scope}%`;
 
-  return db
+  const rows = db
     .prepare(
       `
       SELECT
         s.id AS securityId,
         s.symbol,
         s.sector,
+        s.security_type,
+        s.fund_category,
+        s.geography,
+        s.market_cap_category,
+        s.style,
         w.thesis
       FROM watchlist w
       JOIN securities s ON s.id = w.security_id
@@ -313,7 +388,38 @@ function loadWatchlistCandidates(
       ORDER BY w.added_date DESC
     `
     )
-    .all(groupPattern) as WatchlistCandidate[];
+    .all(groupPattern) as Array<{
+      securityId: number;
+      symbol: string;
+      sector: string | null;
+      security_type: string | null;
+      fund_category: string | null;
+      geography: string | null;
+      market_cap_category: string | null;
+      style: string | null;
+      thesis: string | null;
+    }>;
+
+  const etfWeights = getEtfSectorWeights(db);
+  const seen = new Set<string>();
+  const out: WatchlistCandidate[] = [];
+  for (const r of rows) {
+    // One row per symbol: a name in two matching groups must not be
+    // proposed (and capped) twice.
+    if (seen.has(r.symbol)) continue;
+    seen.add(r.symbol);
+    const exposure = isCashEquivalentSecurity(r)
+      ? []
+      : exposureOfParts(benchmarkSectorParts(r, 1, etfWeights, benchmarkMap), 1);
+    out.push({
+      symbol: r.symbol,
+      securityId: r.securityId,
+      sector: exposure.length === 1 ? exposure[0].sector : r.sector,
+      thesis: r.thesis,
+      exposure,
+    });
+  }
+  return out;
 }
 
 interface SectorGapResult {
@@ -326,6 +432,13 @@ interface SectorGapResult {
    * not the portfolio total, or the post-allocation gapPp drifts.
    */
   gapBasisTotal: number;
+  /**
+   * Dollars each sector can still take before it reaches its benchmark
+   * weight (never negative), for EVERY sector — including gaps under the
+   * 2pp display threshold and sectors already at or past target (0). A pick
+   * may spend at most this in any sector it lands in.
+   */
+  roomBySector: Map<string, number>;
 }
 
 function computeSectorGaps(
@@ -349,7 +462,8 @@ function computeSectorGaps(
   let excludedDollars = 0;
   if (equityOnly) {
     for (const [sector, value] of current.sectorValue) {
-      if (!isExcludedEquitySleeveBucket(sector) || value <= 0) continue;
+      // Net figures: a net-short excluded bucket is excluded at its signed value.
+      if (!isExcludedEquitySleeveBucket(sector) || value === 0) continue;
       excludedDollars += value;
       excludedBuckets.push({
         sector,
@@ -368,6 +482,16 @@ function computeSectorGaps(
       : null;
 
   const gaps: SectorGap[] = [];
+  const roomBySector = new Map<string, number>();
+
+  // Denominator (owner ruling 2026-11-15): the scope's NET market value
+  // (longs plus signed shorts, as computeExposureDelta totals its book) plus
+  // the cash being deployed, minus the excluded sleeve when the benchmark is
+  // equity-only. At zero or below there is no sector weight to measure, so
+  // nothing is compared and nothing is allocated.
+  if (!(gapBasisTotal > 0)) {
+    return { gaps, excludedSleeve, gapBasisTotal, roomBySector };
+  }
 
   const allSectors = new Set<string>([
     ...current.sectorValue.keys(),
@@ -382,8 +506,9 @@ function computeSectorGaps(
     if (equityOnly && isExcludedEquitySleeveBucket(sector)) continue;
 
     const currentDollars = current.sectorValue.get(sector) ?? 0;
-    const currentWeight = gapBasisTotal > 0 ? currentDollars / gapBasisTotal : 0;
+    const currentWeight = currentDollars / gapBasisTotal;
     const targetWeight = benchmarkMap.get(sector) ?? 0;
+    roomBySector.set(sector, Math.max(0, gapBasisTotal * targetWeight - currentDollars));
     const gapPp = (currentWeight - targetWeight) * 100;
     const dollarGap = gapBasisTotal * (targetWeight - currentWeight);
 
@@ -403,7 +528,7 @@ function computeSectorGaps(
 
   // Sort by largest underweight first (most negative gapPp = best target)
   gaps.sort((a, b) => a.gapPp - b.gapPp);
-  return { gaps, excludedSleeve, gapBasisTotal };
+  return { gaps, excludedSleeve, gapBasisTotal, roomBySector };
 }
 
 /**
@@ -416,6 +541,13 @@ export function equitySleeveCaptionLead(benchmarkSymbol: string): string {
 }
 
 
+/**
+ * Caption for the gap table (owner ruling 2026-11-15): every weight is a
+ * NET weight, longs plus signed shorts, over the scope's net value.
+ */
+export const NET_OF_SHORTS_CAPTION =
+  "Weights are net of short positions: a short counts against its sector and against the total.";
+
 export interface SuggestAllocationOptions {
   activeThemes?: import("./macro-themes").MacroTheme[];
 }
@@ -423,7 +555,9 @@ export interface SuggestAllocationOptions {
 /**
  * Suggest how to deploy cash across watchlist candidates to close benchmark
  * gaps. Greedy: pick the highest-scoring candidate, allocate up to
- * min(remaining_cash, dollar_gap, per_name_cap). Repeat.
+ * min(remaining_cash, per_name_cap, the room left in EVERY sector the name
+ * lands in). Repeat. Cash no gap can take stays unallocated (owner ruling,
+ * docs/DECISIONS.md 2026-10-12, confirmed 2026-11-15).
  */
 export function suggestAllocation(
   db: Database.Database,
@@ -435,7 +569,7 @@ export function suggestAllocation(
   const benchmarkSymbol = getDefaultBenchmark(scope);
   const benchmarkMap = getBenchmarkSectorMap(db, benchmarkSymbol);
   const current = loadCurrentHoldings(db, accountIds, benchmarkMap);
-  const watchlist = loadWatchlistCandidates(db, scope);
+  const watchlist = loadWatchlistCandidates(db, scope, benchmarkMap);
   const notes: string[] = [];
 
   const mode: CashDeployMode = benchmarkMap.size === 0 ? "heuristic" : "benchmark";
@@ -454,6 +588,7 @@ export function suggestAllocation(
       picks: [],
       totalAllocated: 0,
       cashRemaining: cashAmount,
+      unallocatedReason: null,
       notes: [...notes, "No cash to deploy."],
       excludedSleeve: null,
     };
@@ -468,36 +603,20 @@ export function suggestAllocation(
     gaps: rawGaps,
     excludedSleeve,
     gapBasisTotal,
+    roomBySector,
   } = computeSectorGaps(current, benchmarkMap, cashAmount);
   // Apply theme-aware boost to gapClosureScore before ranking candidates.
   const gaps = applyThemeAwareBoost(rawGaps, opts.activeThemes ?? []);
 
-  // Rank watchlist candidates by boosted gap closure score
   const rankedWatchlist = watchlist
-    .map((c) => {
-      const sector = c.sector ?? "Unknown";
-      const matchingGap = gaps.find((g) => g.sector === sector && g.gapPp < 0);
-      if (!matchingGap) return null;
-      const score = matchingGap.gapClosureScore;
-      // "Underweight" already carries the direction, so the sentence states
-      // the SIZE of the gap: "underweight by -4.8pp" is a doubled negative.
-      const rationale = `Underweight ${sector} by ${Math.abs(matchingGap.gapPp).toFixed(1)}pp vs benchmark`;
-      return { ...c, score, sectorTarget: sector, rationale };
-    })
-    .filter((x): x is WatchlistCandidate & { score: number; sectorTarget: string; rationale: string } => x !== null)
+    .map((c) => rankCandidate(c, gaps, 1, false))
+    .filter((x): x is RankedCandidate => x !== null)
     .sort((a, b) => b.score - a.score);
-  const watchlistSymbols = new Set(rankedWatchlist.map((c) => c.symbol));
+  const watchlistSymbols = new Set(watchlist.map((c) => c.symbol));
   const heldFallback = current.heldCandidates
     .filter((c) => !watchlistSymbols.has(c.symbol))
-    .map((c) => {
-      const sector = c.sector ?? "Unknown";
-      const matchingGap = gaps.find((g) => g.sector === sector && g.gapPp < 0);
-      if (!matchingGap) return null;
-      const score = matchingGap.gapClosureScore * 0.9;
-      const rationale = `Held name pick: underweight ${sector} by ${Math.abs(matchingGap.gapPp).toFixed(1)}pp vs benchmark`;
-      return { ...c, score, sectorTarget: sector, rationale };
-    })
-    .filter((x): x is WatchlistCandidate & { score: number; sectorTarget: string; rationale: string } => x !== null)
+    .map((c) => rankCandidate(c, gaps, 0.9, true))
+    .filter((x): x is RankedCandidate => x !== null)
     .sort((a, b) => b.score - a.score);
   const ranked = [...rankedWatchlist, ...heldFallback];
 
@@ -519,23 +638,30 @@ export function suggestAllocation(
   // above top1_max of the book"), so it keeps the full projected total even
   // when the gaps themselves are measured on the equity sleeve.
   const projectedTotal = current.totalValue + cashAmount;
-  const perNameCap = projectedTotal * top1Cap;
+  const perNameCapCents = Math.max(0, Math.round(projectedTotal * top1Cap * 100));
 
   const picks: CashDeployPick[] = [];
-  let cashRemainingCents = Math.round(cashAmount * 100);
+  const cashAskedCents = Math.round(cashAmount * 100);
+  let cashRemainingCents = cashAskedCents;
 
   for (const candidate of ranked) {
     if (cashRemainingCents <= 0) break;
-    const matchingGap = gaps.find((g) => g.sector === candidate.sectorTarget && g.residualGapPp < 0);
-    if (!matchingGap) continue;
-    const dollarGap = Math.abs(matchingGap.residualDollarGap);
-    const allocationCents = Math.min(
-      cashRemainingCents,
-      Math.max(0, Math.round(dollarGap * 100)),
-      Math.max(0, Math.round(perNameCap * 100))
-    );
-    if (allocationCents <= 0) continue;
-    const allocation = allocationCents / 100;
+    // A pick stops at the tightest sector it lands in: a single-sector name
+    // at its own sector's gap, a multi-sector fund where its first sector
+    // reaches the benchmark weight. Floor to the cent so a pick can never
+    // land a sector a fraction of a cent past its target.
+    let limitCents = Math.min(cashRemainingCents, perNameCapCents);
+    for (const e of candidate.exposure) {
+      if (!(e.weight > 0)) continue;
+      const room = roomBySector.get(e.sector) ?? 0;
+      if (room < MIN_ROOM_DOLLARS) {
+        limitCents = 0;
+        break;
+      }
+      limitCents = Math.min(limitCents, Math.floor((room * 100) / e.weight + 1e-6));
+    }
+    if (limitCents < MIN_PICK_CENTS) continue;
+    const allocation = limitCents / 100;
 
     const exposureDelta = computeExposureDelta(db, scope, accountIds, [
       { symbol: candidate.symbol, action: "buy", dollarAmount: allocation },
@@ -549,71 +675,51 @@ export function suggestAllocation(
       gapClosureScore: candidate.score,
       rationale: candidate.rationale,
       exposureDelta,
+      sectorExposure: candidate.exposure,
+      multiSectorFund: candidate.multiSectorFund,
     });
 
-    cashRemainingCents -= allocationCents;
-    // Reduce the RESIDUAL gap so subsequent candidates targeting the same
-    // sector don't double-fill. gapPp/dollarGap (what the table and the
-    // rationale string show) never change after computeSectorGaps returns.
+    cashRemainingCents -= limitCents;
+    // Spend the pick across every sector it lands in. gapPp/dollarGap (what
+    // the table and the rationale show) never change after computeSectorGaps
+    // returns; only the residual fields (the "After picks" column) move.
     // residualDollarGap is POSITIVE for an underweight sector (dollars still
-    // needed to close); residualGapPp is NEGATIVE — both move toward 0 as
-    // cash lands in the sector.
-    matchingGap.residualDollarGap -= allocation;
-    // Same denominator the gap was measured against (the equity sleeve when
-    // the benchmark is equity-only), otherwise the gap only partly unwinds.
-    if (gapBasisTotal > 0) matchingGap.residualGapPp += (allocation / gapBasisTotal) * 100;
+    // needed); residualGapPp is NEGATIVE — both move toward 0 as cash lands.
+    for (const e of candidate.exposure) {
+      if (!(e.weight > 0)) continue;
+      const spent = allocation * e.weight;
+      roomBySector.set(e.sector, Math.max(0, (roomBySector.get(e.sector) ?? 0) - spent));
+      const gap = gaps.find((g) => g.sector === e.sector);
+      if (!gap) continue;
+      gap.residualDollarGap -= spent;
+      // Same denominator the gap was measured against (the equity sleeve when
+      // the benchmark is equity-only), otherwise the gap only partly unwinds.
+      gap.residualGapPp += (spent / gapBasisTotal) * 100;
+    }
   }
 
-  const picksBySymbol = new Map(picks.map((pick) => [pick.symbol, pick]));
-  for (const candidate of ranked) {
-    if (cashRemainingCents <= 0) break;
-    const isHeldFallback = candidate.rationale.startsWith("Held name pick:");
-    if (excludedSleeve === null && !isHeldFallback) continue;
-    const existingPick = picksBySymbol.get(candidate.symbol);
-    const currentAllocationCents = Math.round((existingPick?.allocationDollars ?? 0) * 100);
-    const capacityCents = Math.max(
-      0,
-      Math.round(perNameCap * 100) - currentAllocationCents
-    );
-    const allocationCents = Math.min(cashRemainingCents, capacityCents);
-    if (allocationCents <= 0) continue;
-    const allocation = allocationCents / 100;
-    const newAllocation = (existingPick?.allocationDollars ?? 0) + allocation;
-    const exposureDelta = computeExposureDelta(db, scope, accountIds, [
-      { symbol: candidate.symbol, action: "buy", dollarAmount: newAllocation },
-    ]);
-    if (existingPick) {
-      existingPick.allocationDollars = newAllocation;
-      existingPick.exposureDelta = exposureDelta;
+  const allocatedCents = cashAskedCents - cashRemainingCents;
+  const totalAllocated = allocatedCents / 100;
+  const cashRemaining = cashRemainingCents / 100;
+
+  let unallocatedReason: string | null = null;
+  if (cashRemainingCents > 0) {
+    const openRoom = Array.from(roomBySector.values())
+      .filter((v) => v >= MIN_ROOM_DOLLARS)
+      .reduce((s, v) => s + v, 0);
+    if (!(gapBasisTotal > 0)) {
+      unallocatedReason =
+        "The scope's net value after short positions is zero or negative, so there are no sector weights to close and nothing was placed.";
+    } else if (openRoom < 0.01) {
+      unallocatedReason =
+        "Every underweight sector is filled to its benchmark weight; the rest stays as cash rather than pushing a sector past it.";
+    } else if (picks.length === 0) {
+      unallocatedReason =
+        "No watchlist or held name sits in an underweight sector without pushing another sector past its benchmark weight, so nothing was placed.";
     } else {
-      const pick: CashDeployPick = {
-        symbol: candidate.symbol,
-        securityId: candidate.securityId,
-        sectorTarget: candidate.sectorTarget,
-        allocationDollars: allocation,
-        gapClosureScore: candidate.score,
-        rationale: candidate.rationale,
-        exposureDelta,
-      };
-      picks.push(pick);
-      picksBySymbol.set(pick.symbol, pick);
+      unallocatedReason =
+        "Each pick stops at its sector's gap to the benchmark or at the per-name cap, and no other watchlist or held name can fill the sectors still underweight; the rest stays as cash.";
     }
-    const matchingGap = gaps.find((g) => g.sector === candidate.sectorTarget);
-    if (matchingGap) {
-      matchingGap.residualDollarGap -= allocation;
-      if (gapBasisTotal > 0) matchingGap.residualGapPp += (allocation / gapBasisTotal) * 100;
-    }
-    cashRemainingCents -= allocationCents;
-  }
-
-  const totalAllocated = picks.reduce((s, p) => s + p.allocationDollars, 0);
-  const cashRemaining = Math.round((cashAmount - totalAllocated) * 100) / 100;
-  if (cashRemaining > 0.01 && picks.length === 0) {
-    notes.push(
-      "Couldn't match watchlist names to any benchmark gaps. Consider adding tickers in underweight sectors."
-    );
-  } else if (cashRemaining > 0.01) {
-    notes.push(`${formatLargeUSD(cashRemaining)} unallocated — no remaining underweight matches or per-name capacity.`);
   }
 
   return {
@@ -625,9 +731,59 @@ export function suggestAllocation(
     picks,
     totalAllocated,
     cashRemaining,
+    unallocatedReason,
     notes,
     excludedSleeve,
   };
+}
+
+type RankedCandidate = WatchlistCandidate & {
+  score: number;
+  sectorTarget: string;
+  rationale: string;
+  multiSectorFund: boolean;
+};
+
+/**
+ * Score a candidate against the underweight gaps its dollars land in. A
+ * single-sector name scores its sector's gap; a multi-sector fund scores the
+ * weight-averaged gaps it touches and targets the one it closes most.
+ */
+function rankCandidate(
+  c: WatchlistCandidate,
+  gaps: SectorGap[],
+  scoreFactor: number,
+  heldName: boolean
+): RankedCandidate | null {
+  const hits = c.exposure
+    .filter((e) => e.weight > 0)
+    .map((e) => ({ e, gap: gaps.find((g) => g.sector === e.sector && g.gapPp < 0) }))
+    .filter((h): h is { e: SectorExposure; gap: SectorGap } => h.gap !== undefined);
+  if (hits.length === 0) return null;
+  const multiSectorFund = c.exposure.length > 1;
+  // The gap named is the shown underweight gap that takes the largest share
+  // of the name's dollars.
+  const best = hits.reduce((a, b) => (b.e.weight > a.e.weight ? b : a));
+  const baseScore = multiSectorFund
+    ? hits.reduce((s, h) => s + h.e.weight * h.gap.gapClosureScore, 0)
+    : best.gap.gapClosureScore;
+  const sector = best.gap.sector;
+  // "Underweight" already carries the direction, so the sentence states
+  // the SIZE of the gap: "underweight by -4.8pp" is a doubled negative.
+  const size = `${Math.abs(best.gap.gapPp).toFixed(1)}pp`;
+  let rationale: string;
+  if (multiSectorFund) {
+    // Name where most of the fund's money goes when that is not the gap
+    // named (it can be a sector whose gap is under the 2pp display line).
+    const dominant = c.exposure.reduce((a, b) => (b.weight > a.weight ? b : a)).sector;
+    const mostly = dominant === sector ? "" : ` (mostly ${dominant})`;
+    rationale = `${heldName ? "Held name pick: m" : "M"}ulti-sector fund${mostly}, credited by its look-through sector weights: underweight ${sector} by ${size} vs benchmark; sized so no sector passes its benchmark weight`;
+  } else if (heldName) {
+    rationale = `Held name pick: underweight ${sector} by ${size} vs benchmark`;
+  } else {
+    rationale = `Underweight ${sector} by ${size} vs benchmark`;
+  }
+  return { ...c, score: baseScore * scoreFactor, sectorTarget: sector, rationale, multiSectorFund };
 }
 
 // ---------------------------------------------------------------------------
