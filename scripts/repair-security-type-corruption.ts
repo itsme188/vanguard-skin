@@ -874,15 +874,10 @@ async function main(): Promise<void> {
     // through the runtime resolver, which only honors the alias when cwd is
     // the repo root — and the rehearsal workflow runs this script from a
     // scratch directory (caught live 2026-08-23; the failure was pre-write).
-    const { ensureBackup } = await import("./rebuild-ibkr-ledger");
-    const backupPath = path.join(
-      path.dirname(DB_PATH),
-      "backups",
-      `pre-security-type-repair-${new Date().toISOString().replace(/:/g, "-")}.db`,
-    );
-    const backup = ensureBackup(db, backupPath);
+    const { takeBackup } = await import("../lib/backup/take-backup");
+    const backup = await takeBackup(db, { purpose: "pre-security-type-repair" });
     console.log(
-      `\nBackup ${backup.created ? "created" : "already present"} at ${backup.path} (${backup.sizeBytes} bytes)`,
+      `\nBackup created at ${backup.path} (${backup.sizeBytes} bytes)`,
     );
 
     db.transaction(() => {

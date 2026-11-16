@@ -269,14 +269,9 @@ async function main(): Promise<void> {
       if (plan.candidates.length > 0 && !plan.candidates.some((c) => c.refusal)) {
         // Relative specifier: the "@/" alias is not resolved for dynamic imports
         // outside the repo cwd.
-        const { ensureBackup } = await import("./rebuild-ibkr-ledger");
-        const backupPath = path.join(
-          path.dirname(dbPath),
-          "backups",
-          `pre-fred-revision-repair-${new Date().toISOString().replace(/:/g, "-")}.db`,
-        );
-        const backup = ensureBackup(db, backupPath);
-        console.log(`Backup ${backup.created ? "created" : "already present"} at ${backup.path}`);
+        const { takeBackup } = await import("../lib/backup/take-backup");
+        const backup = await takeBackup(db, { purpose: "pre-fred-revision-repair" });
+        console.log(`Backup created at ${backup.path}`);
       }
     }
     const result = runFredRevisionRepair(db, { apply, since });

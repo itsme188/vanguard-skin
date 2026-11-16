@@ -352,7 +352,7 @@ if (isMain) {
   (async () => {
     const { default: BetterSqlite3 } = await import("better-sqlite3");
     const { runMigrations } = await import("@/lib/db/migrate");
-    const { ensureBackup } = await import("@/scripts/rebuild-ibkr-ledger");
+    const { takeBackup } = await import("@/lib/backup/take-backup");
     const { todayET } = await import("@/lib/calendar/date-utils");
     const path = await import("node:path");
     const fs = await import("node:fs");
@@ -404,14 +404,9 @@ if (isMain) {
     // Backup FIRST — before runMigrations, which writes the moment a migration
     // is pending — and beside the target DB (so a --db rehearsal copy never
     // writes into the live data directory).
-    const backupPath = path.default.join(
-      path.default.dirname(dbPath),
-      "backups",
-      `pre-reconcile-stripped-actuals-repair-${today}.db`,
-    );
-    const backup = ensureBackup(db, backupPath);
+        const backup = await takeBackup(db, { purpose: "pre-reconcile-stripped-actuals-repair" });
     console.log(
-      `\nBackup ${backup.created ? "created" : "already present"} at ${backup.path} ` +
+      `\nBackup created at ${backup.path} ` +
         `(${backup.sizeBytes.toLocaleString()} bytes).`,
     );
     // A dry run never reaches this line, so it never migrates.

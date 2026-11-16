@@ -434,14 +434,9 @@ if (isMain) {
         console.log(`Dry run: ${todo} row(s) would be repaired. Re-run with --apply to write.`);
         return;
       }
-      const { ensureBackup } = await import("@/scripts/rebuild-ibkr-ledger");
-      const backupPath = path.default.join(
-        path.default.dirname(dbPath),
-        "backups",
-        `pre-roth-december-snapshot-repair-${today}.db`,
-      );
-      const backup = ensureBackup(db, backupPath);
-      console.log(`Backup ${backup.created ? "created" : "already present"}: ${backup.path}`);
+      const { takeBackup } = await import("@/lib/backup/take-backup");
+            const backup = await takeBackup(db, { purpose: "pre-roth-december-snapshot-repair" });
+      console.log(`Backup created: ${backup.path}`);
       const result = runRothDecemberRepair(db, config, { apply: true, today });
       console.log(`Repaired ${result.updated} row(s) in one transaction.`);
     } finally {
