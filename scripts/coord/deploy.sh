@@ -708,6 +708,60 @@ fi
 log "POST-VERIFY ok: $HEALTH_URL answered with \"$HEALTH_MARKER\""
 
 # ---------------------------------------------------------------------------
+# Remove build copies (success path only, deploy lock still held)
+# ---------------------------------------------------------------------------
+# `next build` copies the whole project root, including data/ and qa/, into
+# .next/standalone. Packaging filters them out of the shipped app, but the
+# copies stay in the build tree. Once pack, gate, install and post-verify have
+# all succeeded, delete exactly those two copies. A failed deploy never gets
+# here, so .next/standalone stays whole for diagnosis. Every problem is a
+# logged warning: this function never exits and never changes the exit code.
+
+cleanup_standalone_copies() {
+  local sa_raw sa_real name target target_real
+  sa_raw="$MAIN_CHECKOUT/.next/standalone"
+  if [ ! -d "$sa_raw" ]; then
+    log "CLEANUP skip: $sa_raw is missing"
+    return 0
+  fi
+  sa_real="$(cd "$sa_raw" 2>/dev/null && pwd -P)"
+  case "$sa_real/" in
+    "$MAIN_CHECKOUT/"?*) ;;
+    *)
+      log "CLEANUP WARN: refusing $sa_raw (resolves to '$sa_real', outside $MAIN_CHECKOUT)"
+      return 0
+      ;;
+  esac
+  for name in data qa; do
+    target="$sa_raw/$name"
+    if [ ! -e "$target" ] && [ ! -L "$target" ]; then
+      log "CLEANUP skip: $target is missing"
+      continue
+    fi
+    if [ ! -d "$target" ]; then
+      log "CLEANUP WARN: refusing $target (not a directory)"
+      continue
+    fi
+    target_real="$(cd "$target" 2>/dev/null && pwd -P)"
+    case "$target_real" in
+      "$sa_real/"?*) ;;
+      *)
+        log "CLEANUP WARN: refusing $target (resolves to '$target_real', outside $sa_real/)"
+        continue
+        ;;
+    esac
+    if rm -rf "$target_real" >> "$LOG" 2>&1; then
+      log "CLEANUP removed $target"
+    else
+      log "CLEANUP WARN: could not fully remove $target (see $LOG)"
+    fi
+  done
+  return 0
+}
+
+cleanup_standalone_copies
+
+# ---------------------------------------------------------------------------
 # Record
 # ---------------------------------------------------------------------------
 

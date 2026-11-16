@@ -33,8 +33,10 @@ extraResources:
       # 2026-08-19 build was ALREADY carrying data/ (4.5GB, real financial
       # DB + backups) in Resources/standalone. The packaged server reads the
       # live DB via VANGUARD_DB_DIR (db-path.ts), so none of this is needed
-      # at runtime. next.config.ts outputFileTracingExcludes is the first
-      # layer; this is the defensive second layer that gates the bundle.
+      # at runtime. This filter and scripts/verify-bundle.js (which gates
+      # the bundle) are the only two layers; next.config.ts does not exclude
+      # these. deploy.sh removes the leftover .next/standalone/{data,qa}
+      # build copies after a successful deploy.
       - "!data/**"
       - "!.git/**"
       - "!qa/**"
