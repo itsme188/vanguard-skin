@@ -19,8 +19,11 @@ import { runMigrations } from "@/lib/db/migrate";
 import { computeTaxLots } from "@/lib/compute/tax-lots";
 import { getTaxInputGeneration } from "@/lib/compute/tax-convention";
 import {
+  backupPathFor,
+  backupStamp,
   parseRepairConfig,
   planOptionExerciseRepair,
+  takeFreshBackup,
   rehearsalImage,
   runOptionExerciseRepair,
   type RepairConfig,
@@ -148,7 +151,8 @@ function configFor(f: Fixture): RepairConfig {
         tradeDate: "2025-06-20",
         quantity: 1,
         before: { type: "EXERCISED", pricePerShare: null },
-        after: { type: "EXERCISED", pricePerShare: 5 },
+        after: { type: "EXERCISED" },
+        premiumPerShare: 5,
         stockLegTransactionId: f.callLeg,
       },
       {
@@ -158,7 +162,8 @@ function configFor(f: Fixture): RepairConfig {
         tradeDate: "2025-06-20",
         quantity: 2,
         before: { type: "SELL_TO_CLOSE", pricePerShare: 0 },
-        after: { type: "EXERCISED", pricePerShare: 3 },
+        after: { type: "EXERCISED" },
+        premiumPerShare: 3,
         stockLegTransactionId: f.putLeg,
       },
     ],
@@ -236,7 +241,7 @@ describe("repair-option-exercise-basis", () => {
       type: string; price_per_share: number; notes: string; amount: number;
     };
     expect(row.type).toBe("EXERCISED");
-    expect(row.price_per_share).toBe(3);
+    expect(row.price_per_share).toBe(40); // the strike, the price the stock was delivered at
     expect(row.amount).toBe(0); // cash and identity columns untouched
     expect(row.notes.startsWith(DIRECTION_CLOSE("2025-06-20 16:20:00"))).toBe(true); // broker evidence kept on its line
   });
@@ -297,8 +302,111 @@ describe("repair-option-exercise-basis", () => {
     expect(() => parseRepairConfig({ rows: [] })).toThrow(/non-empty/);
     const good = configFor(f).rows[0];
     expect(() => parseRepairConfig({ rows: [{ ...good, after: { type: "SELL", pricePerShare: 5 } }] })).toThrow(/EXERCISED or ASSIGNED/);
-    expect(() => parseRepairConfig({ rows: [{ ...good, after: { type: "EXERCISED", pricePerShare: 0 } }] })).toThrow(/positive/);
+    expect(() => parseRepairConfig({ rows: [{ ...good, premiumPerShare: 0 }] })).toThrow(/positive/);
+    // The price is the strike, read from the option: a configured price is refused.
+    expect(() => parseRepairConfig({ rows: [{ ...good, after: { type: "EXERCISED", pricePerShare: 5 } }] })).toThrow(
+      /no longer read.*strike/,
+    );
     expect(() => parseRepairConfig({ rows: [good, good] })).toThrow(/duplicate/);
+  });
+
+  it("writes the STRIKE as the exercise price and says so in the notes", () => {
+    runOptionExerciseRepair(db, configFor(f), { apply: true, today: TODAY });
+    const call = db.prepare("SELECT price_per_share, notes FROM transactions WHERE id = ?").get(f.callExercise) as {
+      price_per_share: number; notes: string;
+    };
+    expect(call.price_per_share).toBe(50);
+    expect(call.notes).toMatch(/priced at the strike/);
+  });
+
+  it("the tax result at the strike is identical to the premium-per-share version", () => {
+    const digest = () => ({
+      sales: db
+        .prepare(
+          `SELECT l.acquisition_transaction_id AS lot_txn, s.sale_transaction_id, s.quantity_sold,
+                  ROUND(s.proceeds, 6) AS p, ROUND(s.cost_basis_allocated, 6) AS c,
+                  ROUND(s.realized_gain_loss, 6) AS g, s.is_long_term, s.premium_rollover, s.sale_date
+             FROM tax_lot_sales s JOIN tax_lots l ON l.id = s.tax_lot_id
+            ORDER BY s.sale_transaction_id, lot_txn`,
+        )
+        .all(),
+      lots: db
+        .prepare(
+          `SELECT acquisition_transaction_id, ROUND(cost_basis, 6) AS c, ROUND(acquisition_price, 6) AS a,
+                  quantity_remaining, is_short
+             FROM tax_lots ORDER BY acquisition_transaction_id`,
+        )
+        .all(),
+    });
+    // Premium version: the rows exactly as the earlier script wrote them.
+    db.prepare("UPDATE transactions SET type = 'EXERCISED', price_per_share = 5 WHERE id = ?").run(f.callExercise);
+    db.prepare("UPDATE transactions SET type = 'EXERCISED', price_per_share = 3 WHERE id = ?").run(f.putExercise);
+    computeTaxLots(db);
+    const premium = digest();
+    expect(premium.sales.length).toBeGreaterThan(0);
+    runOptionExerciseRepair(db, configFor(f), { apply: true, today: TODAY });
+    computeTaxLots(db);
+    expect(digest()).toEqual(premium);
+  });
+
+  it("recognises a row priced at the premium by an earlier run and rewrites it to the strike", () => {
+    db.prepare("UPDATE transactions SET type = 'EXERCISED', price_per_share = 3, notes = notes || ? WHERE id = ?").run(
+      "\nrepaired earlier at the premium",
+      f.putExercise,
+    );
+    const plan = planOptionExerciseRepair(db, configFor(f));
+    expect(plan.refusals).toEqual([]);
+    expect(plan.rows.map((r) => r.state)).toEqual(["needs-repair", "premium-to-strike"]);
+    expect(runOptionExerciseRepair(db, configFor(f), { apply: true, today: TODAY }).updated).toBe(2);
+    const put = db.prepare("SELECT price_per_share, notes FROM transactions WHERE id = ?").get(f.putExercise) as {
+      price_per_share: number; notes: string;
+    };
+    expect(put.price_per_share).toBe(40);
+    expect(put.notes).toMatch(/repaired earlier at the premium\n.*changed from the premium per share to the strike/);
+    const again = planOptionExerciseRepair(db, configFor(f));
+    expect(again.rows.every((r) => r.state === "already-repaired")).toBe(true);
+  });
+
+  it("a row at its after-type with an unknown price is refused, not rewritten", () => {
+    db.prepare("UPDATE transactions SET type = 'EXERCISED', price_per_share = 7 WHERE id = ?").run(f.putExercise);
+    expect(planOptionExerciseRepair(db, configFor(f)).refusals.join("\n")).toMatch(/neither the expected before-state/);
+  });
+
+  it("the strike must equal the stock leg's price within one cent", () => {
+    db.prepare("UPDATE transactions SET price_per_share = 50.005 WHERE id = ?").run(f.callLeg);
+    expect(planOptionExerciseRepair(db, configFor(f)).refusals).toEqual([]);
+    db.prepare("UPDATE transactions SET price_per_share = 50.02 WHERE id = ?").run(f.callLeg);
+    expect(planOptionExerciseRepair(db, configFor(f)).refusals.join("\n")).toMatch(/not the strike \(within one cent\)/);
+  });
+
+  it("every --apply takes a fresh, time-stamped backup and refuses an existing one", () => {
+    // 2026-01-15 14:05:09 UTC is 09:05:09 Eastern.
+    expect(backupStamp(new Date("2026-01-15T14:05:09Z"))).toBe("2026-01-15_09-05-09");
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "repair-option-exercise-backup-"));
+    try {
+      const dbFile = path.join(dir, "copy.db");
+      const fileDb = new Database(dbFile);
+      fileDb.exec("CREATE TABLE t (v INTEGER); INSERT INTO t VALUES (1);");
+      const first = backupPathFor(dbFile, new Date("2026-01-15T14:05:09Z"));
+      const second = backupPathFor(dbFile, new Date("2026-01-15T14:05:10Z"));
+      expect(first).toBe(path.join(dir, "backups", "pre-option-exercise-basis-repair-2026-01-15_09-05-09.db"));
+      expect(second).not.toBe(first);
+      takeFreshBackup(fileDb, first);
+      const size = fs.statSync(first).size;
+      fileDb.exec("INSERT INTO t VALUES (2);");
+      expect(() => takeFreshBackup(fileDb, first)).toThrow(/already exists; refusing/);
+      expect(fs.statSync(first).size).toBe(size);
+      const old = new Database(first, { readonly: true });
+      expect((old.prepare("SELECT COUNT(*) AS n FROM t").get() as { n: number }).n).toBe(1); // untouched
+      old.close();
+      takeFreshBackup(fileDb, second);
+      const fresh = new Database(second, { readonly: true });
+      expect((fresh.prepare("SELECT COUNT(*) AS n FROM t").get() as { n: number }).n).toBe(2);
+      fresh.close();
+      fileDb.close();
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("the rehearsal image of a WAL-mode file is writable in memory and leaves the file alone", () => {

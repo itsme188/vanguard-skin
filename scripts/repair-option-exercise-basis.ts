@@ -17,12 +17,18 @@
  *
  * The repair edits ONLY the option close row: its `type` (EXERCISED for a
  * long option, ASSIGNED for a short one) and its `price_per_share`, and it
- * appends one line to `notes`. The price is the premium per share the engine
- * will roll (the engine itself rolls the option lot's STORED dollars and uses
- * the price only to decide that the row is evidence of an exercise). Nothing
- * is written to tax_lots: the next tax-lot recompute moves the premium.
- * `source_key`, `amount`, `quantity` and the trade date never change, so a
- * re-import of the same statement stays a no-op.
+ * appends one line to `notes`. The price written is the STRIKE, read from the
+ * option security: the price per share at which the exercise delivered the
+ * stock, which is how the Transactions table, the security page and the chat
+ * show it. It must equal the linked stock leg's price within one cent. The
+ * engine never reads this price as dollars: `computeExerciseLinks` needs it
+ * only to be non-zero (evidence of an exercise), `processSell` closes an
+ * EXERCISED / ASSIGNED row at $0 whatever its price, and the premium that
+ * rolls is the option lot's STORED cost. So a strike and a premium-per-share
+ * price give the same tax result. Nothing is written to tax_lots: the next
+ * tax-lot recompute moves the premium. `source_key`, `amount`, `quantity` and
+ * the trade date never change, so a re-import of the same statement stays a
+ * no-op.
  *
  * The rows come from a GITIGNORED config (the repo is public), default
  * `data/repair-configs/option-exercise-basis.json`:
@@ -36,10 +42,16 @@
  *       "tradeDate": "YYYY-MM-DD",
  *       "quantity": 1,
  *       "before": { "type": "SELL_TO_CLOSE", "pricePerShare": 0 },
- *       "after":  { "type": "EXERCISED", "pricePerShare": 1.23 },
+ *       "after":  { "type": "EXERCISED" },
+ *       "premiumPerShare": 1.23,
  *       "stockLegTransactionId": 456
  *     }]
  *   }
+ *
+ * `after` carries no price: the strike is read from the option. The optional
+ * `premiumPerShare` only recognises a row that an earlier version of this
+ * script priced at the premium (rehearsal copies only); such a row is
+ * rewritten to the strike.
  *
  * The script does not trust the config: the stock leg must be in the same
  * account, on the option's underlying, within one day, for exactly
@@ -48,9 +60,11 @@
  * broker evidence on the row, when present, must say close-only. After the
  * writes, inside the same transaction, the engine's own `computeExerciseLinks`
  * must link every repaired row to exactly its configured stock leg, or the
- * whole run rolls back. (A put exercised into a SHORT_SELL leg, or one
- * delivered as part long sale, part short sale, cannot be linked correctly by
- * the engine today: leave it out of the config; it needs an engine change.)
+ * whole run rolls back. A put whose stock leg is coded part close, part open
+ * (a SELL that closed part of a long and opened a short with the rest) IS
+ * included: the engine's mixed-trade split books both parts and the premium
+ * lands on the sale. (A put exercised into a SHORT_SELL row is not linked by
+ * the engine's lookup, which reads only BUY / SELL: leave such a row out.)
  *
  * Safety:
  *   - The database path is REQUIRED (`--db <path>` or REPAIR_DB_PATH) and is
@@ -59,13 +73,17 @@
  *     (including the link check) is rehearsed on an in-memory copy.
  *     `--compare` also recomputes tax lots on two in-memory copies (without
  *     and with the repair) and prints the realized change per tax year.
- *   - Every row must be in its exact "before" state, or already in its
- *     "after" state (skipped). Anything else refuses the WHOLE run.
+ *   - Every row must be in its exact "before" state, already at its "after"
+ *     type and the strike (skipped), or at its "after" type and the configured
+ *     premiumPerShare (rewritten to the strike). Anything else refuses the
+ *     WHOLE run.
  *   - All writes happen in ONE transaction; the tax-input generation is
  *     bumped in it, so the tax-lot convention reads stale until a recompute.
  *   - Idempotent: a second run finds every row repaired and writes nothing.
  *   - On --apply a VACUUM INTO backup is written next to the database
- *     (`<db dir>/backups/pre-option-exercise-basis-repair-<today>.db`).
+ *     (`<db dir>/backups/pre-option-exercise-basis-repair-<ET date>_<HH-MM-SS>.db`),
+ *     a fresh one on every --apply; if that file already exists the run is
+ *     refused and nothing is written.
  *
  * After --apply, recompute tax lots (rehearse first):
  *   REPAIR_DB_PATH=<db> npx tsx scripts/recompute-tax-lots-v2.ts --apply
@@ -77,6 +95,8 @@
  *     npx tsx scripts/repair-option-exercise-basis.ts --apply
  */
 
+import fs from "node:fs";
+import path from "node:path";
 import type Database from "better-sqlite3";
 import { computeExerciseLinks } from "../lib/compute/tax-lots";
 import { bumpTaxGenerationIfPresent } from "../lib/compute/tax-convention";
@@ -99,7 +119,13 @@ export interface RepairRowConfig {
   tradeDate: string;
   quantity: number;
   before: RowState;
-  after: { type: ExerciseType; pricePerShare: number };
+  /** The price is not configured: it is the option's strike. */
+  after: { type: ExerciseType };
+  /**
+   * Optional: the premium per share an earlier version of this script wrote.
+   * A row found at the "after" type and this price is rewritten to the strike.
+   */
+  premiumPerShare?: number;
   stockLegTransactionId: number;
 }
 
@@ -108,12 +134,16 @@ export interface RepairConfig {
   rows: RepairRowConfig[];
 }
 
-export type PlannedState = "needs-repair" | "already-repaired";
+export type PlannedState = "needs-repair" | "premium-to-strike" | "already-repaired";
 
 export interface PlannedRow {
   config: RepairRowConfig;
   state: PlannedState;
   notes: string | null;
+  /** The option's strike: the price written to the row. */
+  strike: number;
+  /** The row's price as found. */
+  currentPrice: number | null;
 }
 
 export interface RepairPlan {
@@ -130,6 +160,8 @@ export interface RepairResult {
 
 const PRICE_TOLERANCE = 1e-6;
 const QTY_TOLERANCE = 1e-6;
+/** The strike must equal the stock leg's price within one cent. */
+const STRIKE_LEG_TOLERANCE = 0.01 + 1e-9;
 
 function samePrice(a: number | null, b: number | null): boolean {
   if (a === null || b === null) return a === b;
@@ -188,9 +220,15 @@ export function parseRepairConfig(raw: unknown): RepairConfig {
     if (!EXERCISE_TYPES.includes(afterType as ExerciseType)) {
       throw new Error(`${where}.after.type must be EXERCISED or ASSIGNED`);
     }
-    const ap = after.pricePerShare;
-    if (typeof ap !== "number" || !Number.isFinite(ap) || ap <= 0) {
-      throw new Error(`${where}.after.pricePerShare must be a positive number`);
+    if ("pricePerShare" in after) {
+      throw new Error(
+        `${where}.after.pricePerShare is no longer read: the repaired price is the option's strike. ` +
+          "Move an earlier premium value to premiumPerShare",
+      );
+    }
+    const pp = row.premiumPerShare;
+    if (pp !== undefined && (typeof pp !== "number" || !Number.isFinite(pp) || pp <= 0)) {
+      throw new Error(`${where}.premiumPerShare must be a positive number when present`);
     }
     return {
       transactionId,
@@ -199,7 +237,8 @@ export function parseRepairConfig(raw: unknown): RepairConfig {
       tradeDate,
       quantity,
       before: { type: beforeType, pricePerShare: bp as number | null },
-      after: { type: afterType as ExerciseType, pricePerShare: ap },
+      after: { type: afterType as ExerciseType },
+      ...(pp !== undefined ? { premiumPerShare: pp as number } : {}),
       stockLegTransactionId: positiveInt(row.stockLegTransactionId, `${where}.stockLegTransactionId`),
     };
   });
@@ -283,11 +322,17 @@ export function planOptionExerciseRepair(db: Database.Database, config: RepairCo
     if (opt.trade_date !== cfg.tradeDate) problems.push("trade date differs from the config");
     if (Math.abs(opt.quantity - cfg.quantity) > QTY_TOLERANCE) problems.push("quantity differs from the config");
 
+    const strike = opt.strike_price;
     const isBefore =
       opt.type === cfg.before.type && samePrice(opt.price_per_share, cfg.before.pricePerShare);
-    const isAfter =
-      opt.type === cfg.after.type && samePrice(opt.price_per_share, cfg.after.pricePerShare);
-    if (!isBefore && !isAfter) {
+    const isAtStrike =
+      strike != null && opt.type === cfg.after.type && samePrice(opt.price_per_share, strike);
+    const isAtPremium =
+      !isAtStrike &&
+      cfg.premiumPerShare !== undefined &&
+      opt.type === cfg.after.type &&
+      samePrice(opt.price_per_share, cfg.premiumPerShare);
+    if (!isBefore && !isAtStrike && !isAtPremium) {
       problems.push(
         `row is in neither the expected before-state nor the repaired state (type ${opt.type}, price ${opt.price_per_share ?? "NULL"})`,
       );
@@ -319,9 +364,9 @@ export function planOptionExerciseRepair(db: Database.Database, config: RepairCo
       if (Math.abs(Math.abs(leg.quantity) - cfg.quantity * opt.multiplier) > QTY_TOLERANCE) {
         problems.push("stock leg quantity is not contracts x multiplier");
       }
-      if (leg.price_per_share == null || opt.strike_price == null ||
-          Math.abs(leg.price_per_share - opt.strike_price) > PRICE_TOLERANCE) {
-        problems.push("stock leg price is not the strike");
+      if (leg.price_per_share == null || strike == null ||
+          Math.abs(leg.price_per_share - strike) > STRIKE_LEG_TOLERANCE) {
+        problems.push("stock leg price is not the strike (within one cent)");
       }
     }
 
@@ -331,8 +376,10 @@ export function planOptionExerciseRepair(db: Database.Database, config: RepairCo
     }
     rows.push({
       config: cfg,
-      state: isBefore && !isAfter ? "needs-repair" : "already-repaired",
+      state: isAtStrike ? "already-repaired" : isBefore ? "needs-repair" : "premium-to-strike",
       notes: opt.notes,
+      strike: strike as number,
+      currentPrice: opt.price_per_share,
     });
   }
   return { rows, refusals };
@@ -341,7 +388,18 @@ export function planOptionExerciseRepair(db: Database.Database, config: RepairCo
 // ─── Apply (one transaction) ──────────────────────────────────────
 
 export function defaultRepairNote(today: string): string {
-  return `repaired ${today}: option exercise priced and typed so its premium moves onto the stock leg (repair-option-exercise-basis)`;
+  return (
+    `repaired ${today}: option exercise typed and priced at the strike, the price per share the stock was delivered at; ` +
+    "the premium moves onto the stock leg from the option lot's stored cost (repair-option-exercise-basis)"
+  );
+}
+
+/** The line appended when a row priced at the premium is rewritten to the strike. */
+export function premiumToStrikeNote(today: string): string {
+  return (
+    `repaired ${today}: exercise price changed from the premium per share to the strike, the price per share the stock was delivered at; ` +
+    "the tax result is unchanged (repair-option-exercise-basis)"
+  );
 }
 
 /**
@@ -362,13 +420,14 @@ export function runOptionExerciseRepair(
     }
     return { plan, applied: false, updated: 0 };
   }
-  const todo = plan.rows.filter((r) => r.state === "needs-repair");
+  const todo = plan.rows.filter((r) => r.state !== "already-repaired");
   if (!opts.apply || todo.length === 0) return { plan, applied: opts.apply, updated: 0 };
 
-  const noteLine = config.note ?? defaultRepairNote(opts.today);
+  // The guard re-checks the exact state the plan found (type and price).
   const update = db.prepare(
     `UPDATE transactions SET type = ?, price_per_share = ?, notes = ?
-      WHERE id = ? AND type = ? AND price_per_share IS ?`,
+      WHERE id = ? AND type = ?
+        AND ((? IS NULL AND price_per_share IS NULL) OR ABS(price_per_share - ?) <= ${PRICE_TOLERANCE})`,
   );
   const reread = db.prepare("SELECT type, price_per_share FROM transactions WHERE id = ?");
 
@@ -376,20 +435,17 @@ export function runOptionExerciseRepair(
     let n = 0;
     for (const r of todo) {
       const c = r.config;
+      const fromPremium = r.state === "premium-to-strike";
+      const noteLine = config.note ?? (fromPremium ? premiumToStrikeNote(opts.today) : defaultRepairNote(opts.today));
       const notes = r.notes ? `${r.notes}\n${noteLine}` : noteLine;
-      const res = update.run(
-        c.after.type,
-        c.after.pricePerShare,
-        notes,
-        c.transactionId,
-        c.before.type,
-        c.before.pricePerShare,
-      );
+      const fromType = fromPremium ? c.after.type : c.before.type;
+      const fromPrice = fromPremium ? (c.premiumPerShare as number) : c.before.pricePerShare;
+      const res = update.run(c.after.type, r.strike, notes, c.transactionId, fromType, fromPrice, fromPrice);
       if (res.changes !== 1) {
         throw new Error(`transaction ${c.transactionId}: expected 1 row updated, got ${res.changes}; rolled back`);
       }
       const after = reread.get(c.transactionId) as { type: string; price_per_share: number | null };
-      if (after.type !== c.after.type || !samePrice(after.price_per_share, c.after.pricePerShare)) {
+      if (after.type !== c.after.type || !samePrice(after.price_per_share, r.strike)) {
         throw new Error(`transaction ${c.transactionId}: re-read does not match the repaired row; rolled back`);
       }
       n++;
@@ -427,15 +483,54 @@ export function rehearsalImage(db: Database.Database): Buffer {
   return image;
 }
 
+// ─── Backup ───────────────────────────────────────────────────────
+
+/**
+ * Eastern wall-clock date and time to the second, safe in a file name
+ * (`YYYY-MM-DD_HH-MM-SS`). Every --apply gets its own backup name, so a second
+ * run on the same day never reuses an earlier, stale backup.
+ */
+export function backupStamp(now: Date): string {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/New_York",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(now);
+  const part = (t: Intl.DateTimeFormatPartTypes) => parts.find((p) => p.type === t)?.value ?? "00";
+  return `${part("year")}-${part("month")}-${part("day")}_${part("hour")}-${part("minute")}-${part("second")}`;
+}
+
+export function backupPathFor(dbPath: string, now: Date): string {
+  return path.join(path.dirname(dbPath), "backups", `pre-option-exercise-basis-repair-${backupStamp(now)}.db`);
+}
+
+/**
+ * Writes a fresh VACUUM INTO backup. Refuses (throws, writes nothing) when the
+ * target already exists: an existing file is never taken as this run's backup.
+ */
+export function takeFreshBackup(db: Database.Database, backupPath: string): { path: string; sizeBytes: number } {
+  if (fs.existsSync(backupPath)) {
+    throw new Error(`backup ${backupPath} already exists; refusing to reuse it. Nothing written.`);
+  }
+  fs.mkdirSync(path.dirname(backupPath), { recursive: true });
+  db.prepare("VACUUM INTO ?").run(backupPath);
+  return { path: backupPath, sizeBytes: fs.statSync(backupPath).size };
+}
+
 // ─── CLI ──────────────────────────────────────────────────────────
 
 function printPlan(plan: RepairPlan): void {
   for (const r of plan.rows) {
     const c = r.config;
     const change =
-      r.state === "needs-repair"
-        ? `: ${c.before.type} @ ${c.before.pricePerShare ?? "NULL"} -> ${c.after.type} @ ${c.after.pricePerShare}`
-        : "";
+      r.state === "already-repaired"
+        ? ` (${c.after.type} @ strike ${r.strike})`
+        : `: ${r.state === "needs-repair" ? c.before.type : c.after.type} @ ${r.currentPrice ?? "NULL"} -> ${c.after.type} @ strike ${r.strike}`;
     console.log(`  transaction ${c.transactionId} (${c.tradeDate}, stock leg ${c.stockLegTransactionId}): ${r.state}${change}`);
   }
   for (const reason of plan.refusals) console.log(`  REFUSED: ${reason}`);
@@ -448,8 +543,6 @@ const isMain =
 
 if (isMain) {
   (async () => {
-    const path = await import("node:path");
-    const fs = await import("node:fs");
     const args = process.argv.slice(2);
     const argValue = (flag: string): string | undefined => {
       const eq = args.find((a) => a.startsWith(`${flag}=`));
@@ -463,7 +556,7 @@ if (isMain) {
     const configPath =
       argValue("--config") ??
       process.env.REPAIR_CONFIG_PATH ??
-      path.default.join(process.cwd(), "data", "repair-configs", "option-exercise-basis.json");
+      path.join(process.cwd(), "data", "repair-configs", "option-exercise-basis.json");
 
     if (!dbPath) {
       console.error("No database named. Pass --db <path> or set REPAIR_DB_PATH (there is no default).");
@@ -471,12 +564,12 @@ if (isMain) {
     }
     console.log(`[repair-option-exercise-basis] ${apply ? "APPLY" : "DRY RUN"}, db: ${dbPath}`);
     console.log(`[repair-option-exercise-basis] config: ${configPath}`);
-    if (!fs.default.existsSync(dbPath)) {
+    if (!fs.existsSync(dbPath)) {
       console.error(`Database not found at ${dbPath}`);
       process.exit(1);
     }
 
-    const config = parseRepairConfig(JSON.parse(fs.default.readFileSync(configPath, "utf8")));
+    const config = parseRepairConfig(JSON.parse(fs.readFileSync(configPath, "utf8")));
     const { default: BetterSqlite3 } = await import("better-sqlite3");
     const { todayET } = await import("../lib/calendar/date-utils");
     const today = todayET();
@@ -489,7 +582,7 @@ if (isMain) {
         process.exitCode = 1;
         return;
       }
-      const todo = preview.plan.rows.filter((r) => r.state === "needs-repair").length;
+      const todo = preview.plan.rows.filter((r) => r.state !== "already-repaired").length;
       if (todo === 0) {
         console.log("Every row is already repaired. Nothing to do.");
         return;
@@ -530,14 +623,8 @@ if (isMain) {
         console.log(`Dry run: ${todo} row(s) would be repaired. Re-run with --apply to write.`);
         return;
       }
-      const { ensureBackup } = await import("./rebuild-ibkr-ledger");
-      const backupPath = path.default.join(
-        path.default.dirname(dbPath),
-        "backups",
-        `pre-option-exercise-basis-repair-${today}.db`,
-      );
-      const backup = ensureBackup(db, backupPath);
-      console.log(`Backup ${backup.created ? "created" : "already present"}: ${backup.path}`);
+      const backup = takeFreshBackup(db, backupPathFor(dbPath, new Date()));
+      console.log(`Backup created: ${backup.path}`);
       const result = runOptionExerciseRepair(db, config, { apply: true, today });
       console.log(`Repaired ${result.updated} row(s) in one transaction. Next: recompute tax lots (rehearse first).`);
     } finally {

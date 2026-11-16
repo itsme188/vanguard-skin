@@ -58,7 +58,9 @@
  *     before commit; any mismatch rolls everything back.
  *   - Idempotent: a second run finds every row already split.
  *   - On --apply a VACUUM INTO backup is written next to the database
- *     (`<db dir>/backups/pre-ibkr-mixed-trade-splits-<today>.db`).
+ *     (`<db dir>/backups/pre-ibkr-mixed-trade-splits-<ET date>_<HH-MM-SS>.db`),
+ *     a fresh one on every --apply; if that file already exists the run is
+ *     refused and nothing is written.
  *
  * Does NOT recompute lots. After --apply, rehearse and run the recompute
  * (scripts/recompute-tax-lots-v2.ts).
@@ -68,6 +70,8 @@
  *   npx tsx scripts/repair-ibkr-mixed-trade-splits.ts --db /path/copy.db --apply
  */
 
+import fs from "node:fs";
+import path from "node:path";
 import type Database from "better-sqlite3";
 import { readIbkrTradeDirection, type IbkrTradeDirection } from "@/lib/import/ibkr-trade-direction";
 import { bumpTaxGenerationIfPresent } from "@/lib/compute/tax-convention";
@@ -380,6 +384,45 @@ function printPlan(result: RepairResult): void {
   for (const reason of result.plan.refusals) console.log(`  REFUSED: ${reason}`);
 }
 
+// ─── Backup ───────────────────────────────────────────────────────
+
+/**
+ * Eastern wall-clock date and time to the second, safe in a file name
+ * (`YYYY-MM-DD_HH-MM-SS`). Every --apply gets its own backup name, so a second
+ * run on the same day never reuses an earlier, stale backup.
+ */
+export function backupStamp(now: Date): string {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/New_York",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(now);
+  const part = (t: Intl.DateTimeFormatPartTypes) => parts.find((p) => p.type === t)?.value ?? "00";
+  return `${part("year")}-${part("month")}-${part("day")}_${part("hour")}-${part("minute")}-${part("second")}`;
+}
+
+export function backupPathFor(dbPath: string, now: Date): string {
+  return path.join(path.dirname(dbPath), "backups", `pre-ibkr-mixed-trade-splits-${backupStamp(now)}.db`);
+}
+
+/**
+ * Writes a fresh VACUUM INTO backup. Refuses (throws, writes nothing) when the
+ * target already exists: an existing file is never taken as this run's backup.
+ */
+export function takeFreshBackup(db: Database.Database, backupPath: string): { path: string; sizeBytes: number } {
+  if (fs.existsSync(backupPath)) {
+    throw new Error(`backup ${backupPath} already exists; refusing to reuse it. Nothing written.`);
+  }
+  fs.mkdirSync(path.dirname(backupPath), { recursive: true });
+  db.prepare("VACUUM INTO ?").run(backupPath);
+  return { path: backupPath, sizeBytes: fs.statSync(backupPath).size };
+}
+
 const isMain =
   typeof process !== "undefined" &&
   process.argv[1] != null &&
@@ -387,8 +430,6 @@ const isMain =
 
 if (isMain) {
   (async () => {
-    const path = await import("node:path");
-    const fs = await import("node:fs");
     const args = process.argv.slice(2);
     const argValue = (flag: string): string | undefined => {
       const eq = args.find((a) => a.startsWith(`${flag}=`));
@@ -401,7 +442,7 @@ if (isMain) {
     const configPath =
       argValue("--config") ??
       process.env.REPAIR_CONFIG_PATH ??
-      path.default.join(process.cwd(), "data", "repair-configs", "ibkr-mixed-trade-splits.json");
+      path.join(process.cwd(), "data", "repair-configs", "ibkr-mixed-trade-splits.json");
 
     if (!dbPath) {
       console.error("No database named. Pass --db <path> or set REPAIR_DB_PATH (there is no default).");
@@ -409,12 +450,12 @@ if (isMain) {
     }
     console.log(`[repair-ibkr-mixed-trade-splits] ${apply ? "APPLY" : "DRY RUN"}, db: ${dbPath}`);
     console.log(`[repair-ibkr-mixed-trade-splits] config: ${configPath}`);
-    if (!fs.default.existsSync(dbPath)) {
+    if (!fs.existsSync(dbPath)) {
       console.error(`Database not found at ${dbPath}`);
       process.exit(1);
     }
 
-    const config = parseRepairConfig(JSON.parse(fs.default.readFileSync(configPath, "utf8")));
+    const config = parseRepairConfig(JSON.parse(fs.readFileSync(configPath, "utf8")));
     const { default: BetterSqlite3 } = await import("better-sqlite3");
     const { todayET } = await import("@/lib/calendar/date-utils");
     const today = todayET();
@@ -437,14 +478,8 @@ if (isMain) {
         console.log(`Dry run: ${todo} row(s) would be split. Re-run with --apply to write.`);
         return;
       }
-      const { ensureBackup } = await import("@/scripts/rebuild-ibkr-ledger");
-      const backupPath = path.default.join(
-        path.default.dirname(dbPath),
-        "backups",
-        `pre-ibkr-mixed-trade-splits-${today}.db`,
-      );
-      const backup = ensureBackup(db, backupPath);
-      console.log(`Backup ${backup.created ? "created" : "already present"}: ${backup.path}`);
+      const backup = takeFreshBackup(db, backupPathFor(dbPath, new Date()));
+      console.log(`Backup created: ${backup.path}`);
       const result = runMixedTradeSplits(db, config, { apply: true, today });
       console.log(`Split ${result.split} row(s) in one transaction. Recompute tax lots next (rehearsed).`);
     } finally {
