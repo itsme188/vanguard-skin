@@ -1907,3 +1907,125 @@ Branch `claude/portfolio-assistant-review-7148e7` (commits `8fd9e0e4`..`2a8c1d59
 
 
 **Small AI output caps (2026-11-13, owner-approved; `2a426eae`, `873e2488`).** Closes the 2026-11-12 item 6 open entry on `lib/gmail/process.ts` and `lib/research/verify-mentions.ts`: mention verification (1,024), newsletter enrichment and its two Worker counterparts (2,048), and the transcript desk note (900) now ask for 16,000, and a reply that stopped at the cap is never kept even when its text parses (verification returns null and the word-boundary set is kept; enrichment throws `AITruncatedError`, which `classifyEnrichmentError` reads as article-level `malformed_output`; the desk note keeps the extractive summary). The log showed verification failing from the log's first day (2026-08-05), so the old cap was too small even before thinking; the rate rose and an empty-reply form appeared after the catalog grew on 2026-10-11. Deploy the Mac and the Worker together.
+
+## 2026-11-15 and 2026-11-16 — Analysis tab deep session: owner rulings, the seam rule reversed, two data repairs
+
+A full diagnosis of the Analysis tab (Workspace, Diagnostics, Performance, Defense, Giving, Trade Reviews) by
+independent agents, then fixes with a separate run-the-code review of every wave and three browser passes on an
+isolated sandbox. Real figures, row ids and held symbols are in gitignored `docs/private/` and
+`data/repair-configs/`; this entry is direction-only.
+
+### The 2026-08-13 seam rule is reversed in part (owner informed 2026-11-15)
+
+- **What was wrong.** The old rule bridged every day whose snapshot source differed from the previous anchor's.
+  With a live row nearly every day and a statement at each month-end, every month-end and the day after it were
+  carried flat, so real market days were erased from drawdown, volatility, Sharpe and the equity curve.
+- **The rule now** (`fetchAnchorSourceSeamDates`, `lib/compute/flow-adjusted.ts`): live rows between two
+  statement-grade anchors are never seams; statement anchors are compared with each other only; the first live
+  anchor after the last statement and the first statement after leading live rows stay seams.
+  `fetchAnchorSourceTransitionDates` keeps the old writer-identity rule for the cash-residual audit only.
+- **Known cost, accepted until the Plaid dating fix lands.** The new rule counts a few closed-day steps as market
+  moves (a go-live Saturday; a Friday move that lands on a Saturday statement date). Neither rule is the root
+  cause: Plaid rows are dated one session late (see below).
+- **A correction to a claim made during the session.** "Monthly returns now match the statement" is true of ANY
+  rule that bridges nothing between statements, so it is not evidence for the new rule. The evidence is an
+  independent holdings-times-price series, which agrees with the new rule's drawdown and not the old one's.
+- **Volatility and Sharpe count one return per trading session** (`foldReturnsIntoSessions`, `lib/compute/risk.ts`):
+  a closed day's return is folded into the next session, never dropped.
+
+### Plaid rows describe the PREVIOUS session (ruled, planned, not built)
+
+- A Plaid sync on Eastern day D carries the prior session's close: balance and quantities are dated one session
+  late and mutual fund prices one session early. The 2026-10-26 note that the sync "stamps the run date on prices
+  that are the prior session's close" is right for balances and wrong for mutual fund prices.
+- **Owner rulings 2026-11-16:** date Plaid rows on `previousTradingDay(D)` and repair history with a rehearsed
+  script (decision 1 = A); the Today page treats only a same-day row as live (E1); a go-live day stays in the
+  index and is left out of volatility, beta and Sharpe (E2); a statement import removes leftover Plaid rows on
+  its own date (E4: an owner-approved change inside the import pipeline). Rebuilding live-day values from
+  holdings times close is NOT approved (decision 20 = not now): a simulation was worse, because Plaid's total on
+  the taxable account exceeds holdings plus cash by an unexplained residual. A read-only study comes first.
+- The plan needs a Codex review before it is built. It is its own branch.
+
+### Two live data repairs (owner go-ahead "Apply both", 2026-11-15; rehearsed on a copy first; backups taken)
+
+- **Roth December rows, two years.** The annual-summary December row had been stored with year figures in the
+  month fields. `scripts/repair-roth-december-snapshots.ts` restated both from the statements.
+- **Gift-month returns, taxable account.** Eleven months that contain an in-kind gift were understated because
+  the gift was not treated as a flow. `scripts/repair-gift-month-returns.ts` restated them with the convention
+  already used for the two 2026 gift months. All eleven now read "consistent" against the ledger cross-check.
+- Both scripts refuse to run with no database named. The importer silently skips a corrected snapshot row on
+  re-import; that is flagged, not changed (the import pipeline is do-not-change).
+
+### Owner rulings on the tab (2026-11-15 and 2026-11-16)
+
+- **Default scope is Vanguard on every scoped sub-view** (`DEFAULT_ANALYSIS_SCOPE`, `resolveAnalysisScope`,
+  `lib/analysis/view-param.ts`). An explicit `?scope=all` still reads every account.
+- **Cash and cash-equivalent funds are protection and flexibility.** They stay in every denominator (they dilute
+  concentration), appear as one "Cash and equivalents" line, and are never ranked as a position or warned on
+  (`splitConcentrationUniverse`). A negative cash balance is borrowing and never dilution. The effective-positions
+  figure is shown both ways (whole portfolio, invested only). Defense shows cash on its own line, never inside
+  the protection ratio. KNOWN GAP: these lines count cash-equivalent FUNDS held as positions only; a cash balance
+  at the broker is not in the holdings universe and is not counted, and every label says so. Adding broker cash
+  waits for the Plaid dating fix (decision 31, open).
+- **The benchmark is labelled "SPY price return"** and alpha says it is overstated by about the benchmark's
+  dividend yield (`lib/compute/benchmark-label.ts`). A total-return series is the real fix, later.
+- **Cash deploy** stops at each sector's gap, measures weights net of shorts with options at delta-adjusted
+  exposure, reports what it could not place, and lets a fund's sector weights of 2% or less run past target
+  (`FUND_SMALL_WEIGHT_TOLERANCE`; no cumulative cap, bounded at 2% of the cash placed through such picks). It
+  does not buy back a hedge: each sector's fillable room is the smaller of its net room and its room on the
+  LONG-ONLY BOOK (long positions plus the cash being deployed; `measureLongOnlyBook`). The long-only book as the
+  denominator is an orchestrator decision of 2026-11-16, reversible: the first build divided long-only dollars by
+  the net basis, which puts had already shrunk, so every sector looked full and about half the cash went
+  unplaced. Wording names the cause (puts, short positions, short calls).
+- **What-if** estimates beta by type when none is measured and says how much of the book is estimated; options
+  count at delta-adjusted exposure in sector weights.
+- **Scenarios:** a fund that IS the scenario's subject moves the headline; a merely sensitive fund keeps its
+  multiplier; a leveraged fund moves its leverage times the headline (single-stock leveraged funds included, as
+  an approximation); a custom rate shock moves equities and scales linearly from the 25 bp calibration, and says so. The cap is
+  applied per look-through slice (a fund at least 95% in the subject sectors, or matching by industry, category or
+  domicile, is the subject as a whole), and an option on a fund is read through its underlying, so it moves with
+  the fund. Every rate-sensitive stock falls on a hike in this model, banks included: open.
+- **Defense:** the protection ratio measures the long book only; short-side hedges are listed apart; a fund is
+  credited by evidence (look-through, else own sector for an equity fund, else not credited); a hedge whose beta
+  cannot be measured is credited nothing and listed as not credited (decision 19 = B). Review finding: on the
+  real book the unmeasured hedges are long-established sector funds whose history the app has not collected (the
+  beta cache covers only names held long in one account, and the fallback needs about 30 synced sessions), so
+  the page says "not collected" and shows the count. Whether the own-sector route needs a market beta at all,
+  and whether the beta refresh should cover hedge underlyings, is open with the owner (19c).
+- **Giving:** "gain avoided" is split by holding period per donated lot (`isLongTermHolding` to the gift's
+  transfer-out date), and each period into its gain part and its loss part, so a loss is never shown as a
+  negative gain; the parts sum to the old figure to the cent. Short lots cannot be gifted; a deduction-value
+  column waits for the tax preparer.
+- **AI on this tab:** stay on the current model class (a paid side-by-side test showed the cheaper class slower
+  and less consistent); the macro card makes one call a week; no narrative prompt carries a portfolio dollar
+  amount; every gateway call writes one `[ai-usage]` log line; stored narratives are regenerated once after deploy.
+- **Trade Reviews are on hold** pending their own session. The correctness fixes made here stay.
+- **A named scope that matches no account will show nothing** (decision 13b = A), as its own later change.
+
+### Three more data repairs: rehearsed on private copies, NOT applied (as of 2026-11-16)
+
+- **A transfer into the taxable account in 2021 was never imported.** Seven funds and a little cash; the app is
+  short the exact share counts for the three still held, and realized gains are wrong for the four later sold.
+  The broker kept the original lots. Importing it alone would make realized gains worse, because the engine
+  relieves oldest-first while the broker used its minimum-tax method for 2026 sales; it waits for a
+  sale-level lot choice in the engine (decisions 29 and 30, open).
+- **Option exercises lose their premium** (`scripts/repair-option-exercise-basis.ts`). `computeExerciseLinks`
+  links only a row typed EXERCISED or ASSIGNED that carries a price; the importers store an exercise as a
+  zero-price close or a corporate action, so the premium is booked as an option loss and the shares sit at the
+  strike. Twelve rows are repairable by data; two put exercises delivered as short sales need an engine change.
+  After the repair the affected lines match the brokers' own forms. The importers still produce the defect.
+- **A trade coded both closing and opening is dropped whole when the broker booked a later same-day sell first**
+  (`scripts/repair-ibkr-mixed-trade-splits.ts`). Replayed by timestamp, the long position still covers the trade,
+  the engine cannot split it and drops it, and the covering buy is dropped too: phantom open shares in two names.
+  The repair splits the row into its closing part and a new `:split-open` row. A plain recompute would instead
+  hide the drift behind a synthetic close; never accept that close as the fix.
+- **One 2026 gift is assigned to the wrong lots.** The app's own lot-assignment route fixes it; its
+  whole-ledger recompute would also absorb the pending synthetic close above, so the mixed-trade repair goes first.
+
+### Open after this session
+
+Reassigning one 2026 gift to the broker's lots; the cost of a lot that came from an option exercise; an open-lot
+count below the broker's for one fund; lot drift on one IBKR security; attribution weights over the whole
+portfolio; the bank sector's sign under a rate shock; a parity test between `retiredPairsAsOf`
+(`lib/compute/period-attribution.ts`) and the reconciler; twenty-five older repair scripts that default to the
+live database; eleven raw-SDK AI callers that write no usage line.
