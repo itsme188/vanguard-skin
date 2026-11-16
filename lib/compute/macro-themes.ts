@@ -115,6 +115,7 @@ export function rankThemeExposures(
 // ---------------------------------------------------------------------------
 
 import type Database from "better-sqlite3";
+import { addDays, easternDayStartIso } from "@/lib/calendar/date-utils";
 
 const MIN_SIGNAL_THRESHOLD = 2;
 /**
@@ -191,16 +192,20 @@ export function buildMacroSignalBlob(
   // read is exactly the 7 days before weekOf). The read starts 7 days before
   // weekOf and ENDS where week weekOf ends, so a past week's regeneration
   // never reads articles dated after that week (review 2026-11-15, R9).
+  // The week ends at EASTERN midnight, not UTC midnight: the theme week is an
+  // Eastern week (currentThemeWeek), and SQLite's datetime('YYYY-MM-DD') is
+  // midnight UTC, which is Sunday 19:00 or 20:00 Eastern. A UTC bound dropped
+  // every article that arrived on the week's last evening.
   // datetime() on both sides: stored times are space- or T-separated.
   const articleRows = db.prepare(
     `SELECT id, subject, summary, sentiment, mentioned_symbols, substr(raw_text, 1, 2000) AS excerpt
      FROM research_articles
      WHERE datetime(received_at) >= datetime(?, '-7 days')
-       AND datetime(received_at) < datetime(?, '+7 days')
+       AND datetime(received_at) < datetime(?)
        AND is_relevant = 1
      ORDER BY datetime(received_at) DESC, id DESC
      LIMIT ${ARTICLE_LOAD_LIMIT}`
-  ).all(weekOf, weekOf) as Array<{
+  ).all(weekOf, easternDayStartIso(addDays(weekOf, 7))) as Array<{
     id: number; subject: string; summary: string | null; sentiment: string | null;
     mentioned_symbols: string | null; excerpt: string | null;
   }>;

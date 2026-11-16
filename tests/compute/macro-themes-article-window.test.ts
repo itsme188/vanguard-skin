@@ -38,7 +38,7 @@ describe("buildMacroSignalBlob article window (R9)", () => {
 
   it("an article dated after week W ends is never read for week W", () => {
     const db = seed(3);
-    const after = new Date(Date.parse(`${W}T00:00:00Z`) + 7 * 86_400_000 + 3600_000).toISOString().replace("T", " ").slice(0, 19);
+    const after = new Date(Date.parse(`${W}T00:00:00Z`) + 7 * 86_400_000 + 6 * 3600_000).toISOString().replace("T", " ").slice(0, 19);
     db.prepare(
       `INSERT INTO research_articles (id, source_id, subject, sender, raw_text, received_at, processed_at, sentiment, mentioned_symbols, is_relevant)
        VALUES (900, 1, 'Next week', 't@t.com', 'body', ?, datetime('now'), 'neutral', '[]', 1)`
@@ -52,5 +52,24 @@ describe("buildMacroSignalBlob article window (R9)", () => {
     expect(ids).not.toContain(900);
     expect(ids).toContain(901);
     expect(ids).toHaveLength(4);
+  });
+
+  it("the week ends at Eastern midnight: Sunday evening Eastern still belongs to week W", () => {
+    // 2026-05-11 01:00 UTC is Sunday 2026-05-10 21:00 Eastern: after UTC
+    // midnight, before the Eastern week ends. A UTC bound dropped it, so a
+    // Sunday-evening generation found no articles at all.
+    const db = seed(1);
+    db.prepare(
+      `INSERT INTO research_articles (id, source_id, subject, sender, raw_text, received_at, processed_at, sentiment, mentioned_symbols, is_relevant)
+       VALUES (902, 1, 'Sunday evening', 't@t.com', 'body', '2026-05-11 01:00:00', datetime('now'), 'neutral', '[]', 1)`
+    ).run();
+    // 2026-05-11 05:00 UTC is Monday 01:00 Eastern: the next week.
+    db.prepare(
+      `INSERT INTO research_articles (id, source_id, subject, sender, raw_text, received_at, processed_at, sentiment, mentioned_symbols, is_relevant)
+       VALUES (903, 1, 'Monday early', 't@t.com', 'body', '2026-05-11 05:00:00', datetime('now'), 'neutral', '[]', 1)`
+    ).run();
+    const ids = buildMacroSignalBlob(db, "all", W).articles.map((a) => a.id);
+    expect(ids).toContain(902);
+    expect(ids).not.toContain(903);
   });
 });
