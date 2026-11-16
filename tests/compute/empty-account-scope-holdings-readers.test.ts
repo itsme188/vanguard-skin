@@ -397,8 +397,17 @@ describe("every account and a non-empty list answer as before", () => {
     // and nearMarketNeutral and the suggestion optionsAtMarketValue; the
     // top3 / sector flags moved with those weights. Every exposureDelta beta
     // and every other reader's output is unchanged.
+    // Re-captured 2026-11-16 (owner rulings 19 and 25; each unit's own
+    // field-by-field diff against the tree before, 2ef256a8...). Defense:
+    // cashLine added in every scope, summary.assumedBetaHedgeCount and
+    // assumedBetaLowFitCount and hedgeScores[].betaAssumed removed, every
+    // figure unchanged. Cash deploy: the fixture holds a Technology put, so
+    // that sector is short by choice and its held pick disappears in three
+    // scopes (its dollars move from totalAllocated into cashRemaining and
+    // unallocatedShortDollars); shortHeldSectors, unallocatedShortDollars,
+    // unallocatedShortReason and picks[].toleranceSectors are new keys.
     expect(createHash("sha256").update(json).digest("hex")).toBe(
-      "2ef256a8cd31eb22730d56820ac1fd909c29a83fcd61234daedd253b5aeb1760",
+      "30245207390c757b5d4ad050879b18bc281fd7becf1cb05344dd2fdc5b86750e",
     );
   });
 
