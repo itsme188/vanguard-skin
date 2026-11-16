@@ -27,7 +27,10 @@
  *    position any more, whatever row is still sitting in `holdings`.
  *  - An UNPRICED position is carried at its cost basis rather than dropped.
  *    We still own it, and dropping it understates the book (which is what
- *    made the risk card's denominator differ from the card's).
+ *    made the risk card's denominator differ from the card's). As of a past
+ *    date, a position with no close yet on that date and no cost basis is
+ *    carried at its first later close (marked `valuedAfterAsOf`), for the
+ *    same reason: the position count must stay honest.
  *  - Legs of one security held in several accounts are SUMMED into one whole
  *    position before any weight is taken (qa:
  *    analysis-diagnostics--four-different-spy-weights-one-page-regression-2).
@@ -62,9 +65,19 @@ export interface ConcentrationPosition {
   marketValue: number;
   /**
    * true when a stored close price valued every leg of the position; false
-   * when the cost-basis fallback stood in for at least one leg.
+   * when the cost-basis fallback (or, as of a past date, a later close)
+   * stood in for at least one leg.
    */
   priced: boolean;
+  /**
+   * As-of snapshots only: true when at least one leg had no close on or
+   * before the as-of date and no cost basis, so it was valued at its FIRST
+   * close after that date. Such a position was really held then (a position
+   * first held on the as-of date, priced a day later); valuing it at 0 dropped
+   * it from the snapshot and the week-over-week change read it as new. Always
+   * false without an as-of date.
+   */
+  valuedAfterAsOf: boolean;
 }
 
 export interface ConcentrationUniverseOptions {
@@ -118,9 +131,20 @@ export function getConcentrationUniverse(
   // today's prices on last week's holdings (look-ahead). FX stays the
   // current rate: fx_rates keeps one rate per currency, no history.
   const priceBound = options?.asOfDate ? "WHERE date <= ?" : "";
+  // The last fallback, as of a past date only: the first close AFTER the date,
+  // for a leg with no close on or before it and no cost basis (marked
+  // valuedAfterAsOf). Without an as-of date there is no "after": the latest
+  // close is already the newest there is, so this CTE is empty.
+  const laterPriceCte = options?.asOfDate
+    ? `SELECT p.security_id, p.close_price
+         FROM prices p
+         INNER JOIN (
+           SELECT security_id, MIN(date) AS min_date FROM prices WHERE date > ? GROUP BY security_id
+         ) fp ON p.security_id = fp.security_id AND p.date = fp.min_date`
+    : `SELECT NULL AS security_id, NULL AS close_price WHERE 0`;
   const params: (string | number | null)[] = [
     ...(accountIds ?? []),
-    ...(options?.asOfDate ? [options.asOfDate] : []),
+    ...(options?.asOfDate ? [options.asOfDate, options.asOfDate] : []),
     maturityCutoff,
   ];
 
@@ -138,6 +162,9 @@ export function getConcentrationUniverse(
            SELECT security_id, MAX(date) AS max_date FROM prices ${priceBound} GROUP BY security_id
          ) lp ON p.security_id = lp.security_id AND p.date = lp.max_date
        ),
+       later_prices AS (
+         ${laterPriceCte}
+       ),
        per_account_positions AS (
          SELECT
            s.id AS security_id,
@@ -148,12 +175,21 @@ export function getConcentrationUniverse(
                THEN ${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}
              WHEN h.cost_basis IS NOT NULL AND h.cost_basis > 0
                THEN h.cost_basis * COALESCE(fx.usd_per_unit, 1)
+             WHEN fp.close_price IS NOT NULL
+               THEN ${adjustedMarketValueSQL("h.quantity", "fp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}
              ELSE 0
            END AS market_value,
-           CASE WHEN lp.close_price IS NOT NULL THEN 1 ELSE 0 END AS priced
+           CASE WHEN lp.close_price IS NOT NULL THEN 1 ELSE 0 END AS priced,
+           CASE
+             WHEN lp.close_price IS NULL
+              AND NOT (h.cost_basis IS NOT NULL AND h.cost_basis > 0)
+              AND fp.close_price IS NOT NULL
+             THEN 1 ELSE 0
+           END AS valued_after_as_of
          FROM latest_holdings h
          JOIN securities s ON s.id = h.security_id
          LEFT JOIN latest_prices lp ON lp.security_id = h.security_id
+         LEFT JOIN later_prices fp ON fp.security_id = h.security_id
          LEFT JOIN fx_rates fx ON fx.currency = s.currency
          WHERE (s.maturity_date IS NULL OR s.maturity_date >= ?)
            AND ${liveOptionExpirationSql("s", maturityCutoff)}
@@ -163,7 +199,8 @@ export function getConcentrationUniverse(
          symbol,
          security_name,
          SUM(market_value) AS market_value,
-         MIN(priced) AS priced
+         MIN(priced) AS priced,
+         MAX(valued_after_as_of) AS valued_after_as_of
        FROM per_account_positions
        GROUP BY security_id, symbol, security_name
        HAVING ABS(SUM(market_value)) > ${ZERO_VALUE_EPSILON}
@@ -192,6 +229,7 @@ export function getConcentrationUniverse(
       security_name: string | null;
       market_value: number;
       priced: number;
+      valued_after_as_of: number;
     }>;
 
   return rows.map((r) => ({
@@ -200,6 +238,7 @@ export function getConcentrationUniverse(
     securityName: r.security_name,
     marketValue: r.market_value,
     priced: r.priced === 1,
+    valuedAfterAsOf: r.valued_after_as_of === 1,
   }));
 }
 

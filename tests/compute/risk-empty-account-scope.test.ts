@@ -205,7 +205,13 @@ describe("undefined and a non-empty list answer as before", () => {
       }),
       positionRisk: computePositionRisk(db, { accountIds: ids, asOfDate: AS_OF }),
     }));
-    return JSON.stringify(out);
+    // The universe's valuedAfterAsOf flag (2026-11-15) postdates the
+    // digest: no position in this fixture carries it (asserted below), so
+    // it is left out and the digest still proves every figure unchanged.
+    for (const o of out) {
+      for (const p of o.universe) expect(p.valuedAfterAsOf).toBe(false);
+    }
+    return JSON.stringify(out, (key, value) => (key === "valuedAfterAsOf" ? undefined : value));
   }
 
   it("every reader returns the figures it returned before the empty-list rule", () => {

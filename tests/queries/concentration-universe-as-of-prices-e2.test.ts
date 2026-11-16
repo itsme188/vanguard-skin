@@ -53,3 +53,50 @@ describe("getConcentrationUniverse asOfDate bounds the price read", () => {
     expect(now.find((p) => p.symbol === "ZZA")!.marketValue).toBe(2000);
   });
 });
+
+// Review 2026-11-15 (W5): a position first held ON the as-of date, with no
+// cost basis and no close on or before that date (its first close comes a
+// day later), valued to 0 and was dropped, so the week-over-week change read
+// it as a new position. It stays in the snapshot, valued at its first close
+// after the date and marked so.
+describe("getConcentrationUniverse asOfDate keeps a position with no close yet", () => {
+  it("a new position with no close on or before the date stays, valued at its first later close and marked", () => {
+    const acct = (db.prepare("SELECT id FROM accounts WHERE name = 'ZZ Acct'").get() as { id: number }).id;
+    const id = db
+      .prepare("INSERT INTO securities (symbol, name, security_type, multiplier, currency) VALUES ('ZZN', 'ZZN', 'Stock', 1, 'USD')")
+      .run().lastInsertRowid as number;
+    db.prepare(
+      "INSERT INTO holdings (account_id, security_id, quantity, as_of_date, source_key) VALUES (?, ?, 5, '2030-01-05', 't:ZZN')",
+    ).run(acct, id);
+    db.prepare("INSERT INTO prices (security_id, date, close_price) VALUES (?, '2030-01-06', 40)").run(id);
+    db.prepare("INSERT INTO prices (security_id, date, close_price) VALUES (?, '2030-01-09', 90)").run(id);
+
+    const asOf = getConcentrationUniverse(db, undefined, { asOfDate: "2030-01-05" });
+    const zzn = asOf.find((p) => p.symbol === "ZZN");
+    expect(zzn).toBeDefined();
+    expect(zzn!.marketValue).toBe(200); // 5 x the FIRST close after the date
+    expect(zzn!.priced).toBe(false);
+    expect(zzn!.valuedAfterAsOf).toBe(true);
+    // The other positions are untouched and unmarked.
+    expect(asOf.find((p) => p.symbol === "ZZA")!.valuedAfterAsOf).toBe(false);
+    expect(asOf).toHaveLength(3);
+  });
+
+  it("a cost basis still comes before a later close", () => {
+    const acct = (db.prepare("SELECT id FROM accounts WHERE name = 'ZZ Acct'").get() as { id: number }).id;
+    const id = db
+      .prepare("INSERT INTO securities (symbol, name, security_type, multiplier, currency) VALUES ('ZZC', 'ZZC', 'Stock', 1, 'USD')")
+      .run().lastInsertRowid as number;
+    db.prepare(
+      "INSERT INTO holdings (account_id, security_id, quantity, cost_basis, as_of_date, source_key) VALUES (?, ?, 5, 150, '2030-01-05', 't:ZZC')",
+    ).run(acct, id);
+    db.prepare("INSERT INTO prices (security_id, date, close_price) VALUES (?, '2030-01-06', 40)").run(id);
+    const zzc = getConcentrationUniverse(db, undefined, { asOfDate: "2030-01-05" }).find((p) => p.symbol === "ZZC")!;
+    expect(zzc.marketValue).toBe(150);
+    expect(zzc.valuedAfterAsOf).toBe(false);
+  });
+
+  it("without an as-of date nothing is marked", () => {
+    expect(getConcentrationUniverse(db).every((p) => p.valuedAfterAsOf === false)).toBe(true);
+  });
+});
