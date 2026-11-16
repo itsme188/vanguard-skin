@@ -25,15 +25,26 @@ const SITES: Array<[file: string, anchor: string]> = [
   // Their Worker counterparts (fallbackNewsletterProcessing, workhorse tier).
   ["workers/cron/src/newsletter-fetch.ts", '"fallbackNewsletterProcessing"'],
   ["workers/cron/src/fallback-digest.ts", '"fallbackNewsletterProcessing"'],
+  // 2026-11-15: the weekly macro card is now ONE call over a fourfold input
+  // (MACRO_PROMPT_INPUT_CAP 64,000 characters); its cap is a named constant.
+  ["lib/compute/macro-themes.ts", 'generateTextForFeature("analysisMacroThemes"'],
 ];
 
 describe("workhorse/frontier calls leave room for thinking", () => {
   it.each(SITES)("%s", (file, anchor) => {
     const src = fs.readFileSync(path.join(process.cwd(), file), "utf8");
     const at = anchorIndex(src, anchor, 0, file);
-    const m = /(?:maxOutputTokens|max_tokens):\s*([\d_]+)/.exec(src.slice(at, at + 1500));
+    const m = /(?:maxOutputTokens|max_tokens):\s*([A-Za-z_][\w]*|[\d_]+)/.exec(src.slice(at, at + 1500));
     expect(m, `${file}: no cap after the call`).not.toBeNull();
-    const cap = Number(m![1].replace(/_/g, ""));
+    // A cap passed as a named constant is read from that constant's
+    // declaration in the same file (a literal number, nothing computed).
+    let literal = m![1];
+    if (!/^[\d_]+$/.test(literal)) {
+      const decl = new RegExp(`const ${literal}\\s*=\\s*([\\d_]+)\\s*;`).exec(src);
+      expect(decl, `${file}: ${literal} is not a literal constant in the file`).not.toBeNull();
+      literal = decl![1];
+    }
+    const cap = Number(literal.replace(/_/g, ""));
     expect(cap).toBeGreaterThanOrEqual(16_000);
     expect(cap).toBeLessThanOrEqual(21_000);
   });

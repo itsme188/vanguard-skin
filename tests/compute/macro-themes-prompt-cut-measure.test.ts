@@ -146,7 +146,8 @@ describe("macro-themes prompt: a full-size week is filled in priority order, who
   it("stays inside the cap and is never cut mid-item: what was sent is valid JSON", async () => {
     const { sent } = await generateAndCapture();
     expect(sent.length).toBeLessThanOrEqual(MACRO_PROMPT_INPUT_CAP);
-    expect(MACRO_PROMPT_INPUT_CAP).toBe(16000);
+    // Owner ruling 2026-11-15: fourfold, now the week is one AI call.
+    expect(MACRO_PROMPT_INPUT_CAP).toBe(64000);
     const parsed = JSON.parse(sent) as SentInputs;
     // Every article that was sent arrived whole.
     for (const a of parsed.articles) {

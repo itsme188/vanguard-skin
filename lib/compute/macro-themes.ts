@@ -284,8 +284,12 @@ Inputs:
 // is left (never less than three quarters). An item is added whole or not at
 // all. Articles are ranked by how many HELD names they mention (share-class
 // aware, option underlyings included), then newest first.
+//
+// Owner ruling 2026-11-15: the cap is raised fourfold (16,000 to 64,000
+// characters) now that the week makes ONE AI call instead of four; at 16,000
+// most of a week's articles did not fit.
 
-export const MACRO_PROMPT_INPUT_CAP = 16000;
+export const MACRO_PROMPT_INPUT_CAP = 64000;
 export const MACRO_EVENT_BUDGET_SHARE = 0.2;
 export const MACRO_ALERT_BUDGET_SHARE = 0.05;
 
@@ -941,7 +945,10 @@ function scopesToWrite(requested: string): string[] {
 
 const CUT_OFF_MESSAGE =
   "The model's reply was cut off before it finished — try again in a moment.";
-const MACRO_MAX_OUTPUT_TOKENS = 8000;
+// 16,000 like the sibling workhorse/frontier calls: thinking is on by default
+// and counts against the cap, and the input is now fourfold (2026-11-15).
+// Pinned by tests/repo/ai-output-caps-thinking-room.test.ts.
+const MACRO_MAX_OUTPUT_TOKENS = 16_000;
 
 /** A reply cut off at the output cap: never parsed, never cached. */
 export class MacroThemesCutOffError extends MacroThemesParseError {
