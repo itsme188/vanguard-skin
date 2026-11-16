@@ -7,8 +7,8 @@
  */
 import fs from "node:fs";
 import path from "node:path";
-import { sha256File } from "@/lib/backup/archive";
-import { backupPaths, resolveBackupHome } from "@/lib/backup/backup-home";
+import { sha256File } from "../lib/backup/archive";
+import { backupPaths, resolveBackupHome } from "../lib/backup/backup-home";
 
 export const USB_FOLDER = "Portfolio Desk Backups";
 /** FAT32 cannot hold a file of 4 GiB or more. */
@@ -23,9 +23,10 @@ export interface SyncResult {
 export async function syncToVolume(
   home: string,
   volumeDir: string,
-  opts: { maxFileBytes?: number } = {},
+  opts: { maxFileBytes?: number; copyFile?: (src: string, dest: string) => void } = {},
 ): Promise<SyncResult> {
   const maxFileBytes = opts.maxFileBytes ?? FAT32_MAX_FILE_BYTES;
+  const copyFile = opts.copyFile ?? ((src: string, dest: string) => fs.copyFileSync(src, dest));
   if (!fs.existsSync(volumeDir) || !fs.statSync(volumeDir).isDirectory()) {
     throw new Error(`Volume folder does not exist: ${volumeDir}`);
   }
@@ -34,6 +35,8 @@ export async function syncToVolume(
   const { archives } = backupPaths(home);
   if (fs.existsSync(archives)) {
     for (const name of fs.readdirSync(archives).sort()) {
+      // Skip dotfiles and the temp files a roll in progress keeps here.
+      if (name.startsWith(".") || name.endsWith(".partial") || name.endsWith(".new")) continue;
       const file = path.join(archives, name);
       if (fs.statSync(file).isFile()) sources.push(file);
     }
@@ -62,11 +65,19 @@ export async function syncToVolume(
       result.skipped.push(name);
       continue;
     }
-    fs.copyFileSync(src, dest);
-    if ((await sha256File(dest)) !== srcSum) {
-      fs.rmSync(dest, { force: true });
-      throw new Error(`Copy of ${name} failed its checksum check; the bad copy was removed.`);
+    // Copy beside the final name, verify, then rename over it, so a crash or a
+    // pulled drive never leaves a truncated file where a good one was.
+    const partial = `${dest}.partial`;
+    try {
+      copyFile(src, partial);
+      if ((await sha256File(partial)) !== srcSum) {
+        throw new Error(`Copy of ${name} failed its checksum check; the bad copy was removed.`);
+      }
+    } catch (err) {
+      fs.rmSync(partial, { force: true });
+      throw err;
     }
+    fs.renameSync(partial, dest);
     result.copied.push(name);
   }
 

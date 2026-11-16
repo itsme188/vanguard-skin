@@ -738,6 +738,10 @@ cleanup_standalone_copies() {
       log "CLEANUP skip: $target is missing"
       continue
     fi
+    if [ -L "$target" ]; then
+      log "CLEANUP WARN: refusing $target (is a symlink)"
+      continue
+    fi
     if [ ! -d "$target" ]; then
       log "CLEANUP WARN: refusing $target (not a directory)"
       continue
@@ -750,7 +754,7 @@ cleanup_standalone_copies() {
         continue
         ;;
     esac
-    if rm -rf "$target_real" >> "$LOG" 2>&1; then
+    if rm -rf "$sa_real/$name" >> "$LOG" 2>&1; then
       log "CLEANUP removed $target"
     else
       log "CLEANUP WARN: could not fully remove $target (see $LOG)"

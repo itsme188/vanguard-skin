@@ -4,8 +4,8 @@
  * The database is opened read-only; the copy goes to the backup home.
  */
 import Database from "better-sqlite3";
-import { takeBackup } from "@/lib/backup/take-backup";
-import { resolveDbPath } from "@/lib/db/db-path";
+import { takeBackup } from "../lib/backup/take-backup";
+import { resolveDbPath } from "../lib/db/db-path";
 
 export const USAGE = "Usage: npm run backup -- --purpose <slug> [--db <path>]";
 

@@ -339,6 +339,28 @@ describe("scripts/coord/deploy.sh cleanup_standalone_copies", () => {
     expect(fs.existsSync(standalone(fx, "qa"))).toBe(false);
   }, 30_000);
 
+  it("refuses a data symlink that points at another folder inside standalone", async () => {
+    const fx = await makeFixture();
+    const inside = standalone(fx, "shared");
+    writeExecutable(
+      path.join(fx.chainDir, "pack.sh"),
+      packScript(fx, [
+        `mkdir -p "${inside}"`,
+        `echo keep > "${inside}/keep.txt"`,
+        `rm -r "${standalone(fx, "data")}"`,
+        `ln -s "${inside}" "${standalone(fx, "data")}"`,
+      ]),
+    );
+
+    const result = runDeploy(fx);
+
+    expect(result.status).toBe(0);
+    expect(fs.lstatSync(standalone(fx, "data")).isSymbolicLink()).toBe(true);
+    expect(fs.readFileSync(path.join(inside, "keep.txt"), "utf8")).toBe("keep\n");
+    expect(result.output).toMatch(/CLEANUP WARN: refusing .*\.next\/standalone\/data \(is a symlink\)/);
+    expect(fs.existsSync(standalone(fx, "qa"))).toBe(false);
+  }, 30_000);
+
   it("a removal error is a warning and the deploy still exits 0", async () => {
     const fx = await makeFixture();
     const locked = standalone(fx, "qa", "locked");

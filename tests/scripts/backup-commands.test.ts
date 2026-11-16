@@ -154,6 +154,38 @@ describe("usb sync", () => {
     expect(fs.existsSync(path.join(home, ".usb-last-sync"))).toBe(false);
   });
 
+  it("usb sync skips dotfiles and in-progress temp files", async () => {
+    await twoFiles();
+    const archives = path.join(home, "archives");
+    fs.writeFileSync(path.join(archives, ".hidden"), "h");
+    fs.writeFileSync(path.join(archives, "2026-02.tar.zst.partial"), "half");
+    fs.writeFileSync(path.join(archives, "2026-02.tar.zst.new"), "half");
+    const r = await syncToVolume(home, volume);
+    expect(r.copied.sort()).toEqual(["2026-01.sha256", "2026-01.tar.zst", "HOW-TO-RESTORE.txt"]);
+    expect(fs.readdirSync(dest()).sort()).toEqual(["2026-01.sha256", "2026-01.tar.zst", "HOW-TO-RESTORE.txt"]);
+  });
+
+  it("usb sync replaces a same-size file whose bytes differ, and verifies it", async () => {
+    await twoFiles();
+    fs.mkdirSync(dest());
+    fs.writeFileSync(path.join(dest(), "2026-01.tar.zst"), "archive-ONE"); // same length
+    const r = await syncToVolume(home, volume);
+    expect(r.copied).toContain("2026-01.tar.zst");
+    expect(fs.readFileSync(path.join(dest(), "2026-01.tar.zst"), "utf8")).toBe("archive-one");
+    expect(fs.readdirSync(dest()).some((n) => n.endsWith(".partial"))).toBe(false);
+  });
+
+  it("usb sync on a checksum mismatch throws, leaves no partial, keeps the old file, writes no stamp", async () => {
+    await twoFiles();
+    fs.mkdirSync(dest());
+    fs.writeFileSync(path.join(dest(), "2026-01.tar.zst"), "old-good-copy");
+    const badCopy = (_src: string, to: string): void => fs.writeFileSync(to, "different-bytes");
+    await expect(syncToVolume(home, volume, { copyFile: badCopy })).rejects.toThrow(/checksum/);
+    expect(fs.readdirSync(dest()).some((n) => n.endsWith(".partial"))).toBe(false);
+    expect(fs.readFileSync(path.join(dest(), "2026-01.tar.zst"), "utf8")).toBe("old-good-copy");
+    expect(fs.existsSync(path.join(home, ".usb-last-sync"))).toBe(false);
+  });
+
   it("usb sync refuses a volume folder that does not exist", async () => {
     await twoFiles();
     await expect(syncToVolume(home, path.join(root, "nope"))).rejects.toThrow(/does not exist/);

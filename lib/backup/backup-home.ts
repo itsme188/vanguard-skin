@@ -17,7 +17,11 @@ export function resolveBackupHome(
   env: EnvLike = process.env,
   homeDir: string = os.homedir(),
 ): string {
-  return env.VANGUARD_BACKUP_DIR || path.join(homeDir, DEFAULT_BACKUP_DIRNAME);
+  const configured = env.VANGUARD_BACKUP_DIR;
+  // A relative value resolves under the home directory, never the process cwd
+  // (which could be inside the project).
+  if (configured) return path.resolve(homeDir, configured);
+  return path.join(homeDir, DEFAULT_BACKUP_DIRNAME);
 }
 
 /** The fixed layout inside a backup home. */
@@ -64,15 +68,22 @@ export function backupFileName(purpose: string, now: Date): string {
     throw new Error(`Invalid backup purpose: ${JSON.stringify(purpose)}`);
   }
   const slug = purpose.startsWith("pre-") ? purpose.slice(4) : purpose;
+  if (!PURPOSE_PATTERN.test(slug)) {
+    throw new Error(`Invalid backup purpose: ${JSON.stringify(purpose)}`);
+  }
   return `pre-${slug}-${backupStamp(now)}.db`;
 }
 
 /** The `YYYY-MM` of the first `YYYY-MM-DD` in a backup file name, or null
- *  when the name carries no date. Handles `_HH-MM-SS`, ISO `T...Z`, and
+ *  when the name carries no valid date (month 01-12, day 01-31). Handles `_HH-MM-SS`, ISO `T...Z`, and
  *  date-only stamps. */
 export function archiveMonth(fileName: string): string | null {
-  const m = /(\d{4}-\d{2})-\d{2}/.exec(fileName);
-  return m ? m[1] : null;
+  const m = /(\d{4}-(\d{2}))-(\d{2})/.exec(fileName);
+  if (!m) return null;
+  const month = Number(m[2]);
+  const day = Number(m[3]);
+  if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+  return m[1];
 }
 
 /** True when `dbPath` is the live database (same resolved path). */

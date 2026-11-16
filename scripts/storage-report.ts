@@ -7,14 +7,14 @@
 import fs from "node:fs";
 import path from "node:path";
 import { execFileSync, spawnSync } from "node:child_process";
-import { resolveBackupHome } from "@/lib/backup/backup-home";
+import { resolveBackupHome } from "../lib/backup/backup-home";
 import {
   LOW_FREE_SPACE_BYTES,
   SCRATCH_MAX_AGE_DAYS,
   USB_STALE_DAYS,
   buildStorageReport,
   trimScratch,
-} from "@/lib/backup/storage-report";
+} from "../lib/backup/storage-report";
 
 function formatBytes(n: number): string {
   if (n >= 1024 ** 3) return `${(n / 1024 ** 3).toFixed(2)} GiB`;

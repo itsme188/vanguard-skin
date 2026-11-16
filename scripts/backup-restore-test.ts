@@ -9,8 +9,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import Database from "better-sqlite3";
-import { extractMember, findZstd, listArchiveMembers, readManifest, sha256File } from "@/lib/backup/archive";
-import { backupPaths, resolveBackupHome } from "@/lib/backup/backup-home";
+import { extractMember, findZstd, listArchiveMembers, readManifest, sha256File } from "../lib/backup/archive";
+import { backupPaths, resolveBackupHome } from "../lib/backup/backup-home";
 
 export interface RestoreTestResult {
   ok: boolean;
@@ -110,7 +110,13 @@ export async function runRestoreTest(home: string, zstd: string | null): Promise
   } catch (err) {
     return { ok: false, archive, member, reason: message(err) };
   } finally {
-    if (temp) fs.rmSync(temp, { recursive: true, force: true });
+    if (temp) {
+      try {
+        fs.rmSync(temp, { recursive: true, force: true });
+      } catch {
+        /* a cleanup error must not replace the result */
+      }
+    }
   }
 }
 
