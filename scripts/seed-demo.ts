@@ -12,6 +12,7 @@
 import Database from "better-sqlite3";
 import path from "node:path";
 import fs from "node:fs";
+import { takeBackup } from "../lib/backup/take-backup";
 import { runMigrations } from "../lib/db/migrate";
 import { upsertSecurity } from "../lib/mutations/securities";
 import { computeTaxLots } from "../lib/compute/tax-lots";
@@ -226,7 +227,7 @@ function generatePrices(sec: DemoSecurity, dates: string[]): Map<string, number>
 // Main
 // ---------------------------------------------------------------------------
 
-function main() {
+async function main() {
   console.log("Vanguard Skin — Demo Data Seed");
   console.log("==============================\n");
 
@@ -678,10 +679,16 @@ function main() {
 
   if (REPLACE) {
     if (fs.existsSync(PROD_DB_PATH)) {
-      const backup = PROD_DB_PATH + ".backup";
-      fs.copyFileSync(PROD_DB_PATH, backup);
-      console.log(`\nBacked up existing database to ${path.basename(backup)}`);
+      // Safety copy through the shared helper. If it throws, nothing below runs.
+      const prod = new Database(PROD_DB_PATH, { readonly: true, fileMustExist: true });
+      try {
+        const backup = await takeBackup(prod, { purpose: "pre-seed-demo-replace" });
+        console.log(`\nBacked up existing database to ${backup.path}`);
+      } finally {
+        prod.close();
+      }
     }
+    // An existing -wal/-shm pair beside the live file is left in place by this copy (pre-existing behaviour, not changed here).
     fs.copyFileSync(DEMO_DB_PATH, PROD_DB_PATH);
     console.log(`Copied demo.db -> vanguard.db`);
   }
@@ -692,4 +699,7 @@ function main() {
   }
 }
 
-main();
+main().catch((err: unknown) => {
+  console.error(err instanceof Error ? err.message : err);
+  process.exit(1);
+});

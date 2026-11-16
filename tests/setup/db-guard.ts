@@ -26,6 +26,16 @@ if (!process.env.DATABASE_PATH) {
   );
 }
 
+// Same idea for backups: a test run must never reach the real backup home
+// (~/portfolio-desk-backups), whatever the shell exports. So, unlike
+// DATABASE_PATH above, VANGUARD_BACKUP_DIR is pinned unconditionally to a
+// per-process scratch folder; an exported value is always overridden.
+process.env.VANGUARD_BACKUP_DIR = path.join(
+  os.tmpdir(),
+  `vanguard-skin-vitest-${process.pid}`,
+  "backups",
+);
+
 /** Real-path AND (dev, ino) identity — a symlink or hardlink to the live file
  *  IS the live file. Same test the 089 cutover runner uses. */
 function isLiveDb(candidate: string): boolean {

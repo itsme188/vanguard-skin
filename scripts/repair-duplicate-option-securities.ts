@@ -67,8 +67,8 @@
  * import can no longer recreate the duplicate).
  *
  * Dry-run by default (writes nothing). --apply wraps every merge in ONE
- * transaction, takes a VACUUM INTO backup first (ensureBackup, same
- * helper scripts/repair-split-basis-2024-year-end.ts uses), and
+ * transaction, takes a VACUUM INTO backup first (takeBackup, the
+ * shared helper in lib/backup/take-backup.ts), and
  * recomputes tax lots afterward (computeTaxLots — the standard rebuild
  * path, same as scripts/repair-option-roundtrip-dollars.ts).
  *
@@ -589,7 +589,7 @@ async function main(): Promise<void> {
   const { default: BetterSqlite3 } = await import("better-sqlite3");
   const path = await import("node:path");
   const fs = await import("node:fs");
-  const { ensureBackup } = await import("@/scripts/rebuild-ibkr-ledger");
+  const { takeBackup } = await import("@/lib/backup/take-backup");
 
   const args = process.argv.slice(2);
   const apply = args.includes("--apply");
@@ -627,15 +627,9 @@ async function main(): Promise<void> {
     }
 
     if (apply) {
-      const backupPath = path.default.join(
-        process.cwd(),
-        "data",
-        "backups",
-        `pre-duplicate-option-repair-${new Date().toISOString().replace(/[:.]/g, "-")}.db`,
-      );
-      const backup = ensureBackup(db, backupPath);
+      const backup = await takeBackup(db, { purpose: "pre-duplicate-option-repair" });
       console.log(
-        `Backup ${backup.created ? "created" : "already present"} at ${backup.path} (${backup.sizeBytes} bytes)\n`,
+        `Backup created at ${backup.path} (${backup.sizeBytes} bytes)\n`,
       );
     }
 

@@ -37,8 +37,9 @@
  *      Non-December mismatches are REPORT-ONLY — this script refuses to
  *      write them, on purpose (a December-specific defect should not
  *      license blanket overwrites of unrelated months).
- *   4. Backs up `data/vanguard.db` to `data/backups/` (VACUUM INTO, same
- *      helper + "fail hard" behavior as repair-ah-closes.ts) before any
+ *   4. Backs up the database with `takeBackup` (lib/backup/take-backup.ts;
+ *      live database to ~/portfolio-desk-backups/recent, a rehearsal copy's
+ *      beside the copy; "fail hard" on any error) before any
  *      write. All December repairs happen in ONE transaction; every
  *      repaired row is re-read and re-compared against the CSV inside that
  *      same transaction — any row still mismatched rolls the ENTIRE batch
@@ -441,7 +442,7 @@ if (isMain) {
   (async () => {
     const { default: BetterSqlite3 } = await import("better-sqlite3");
     const { runMigrations } = await import("@/lib/db/migrate");
-    const { ensureBackup } = await import("@/scripts/rebuild-ibkr-ledger");
+    const { takeBackup } = await import("@/lib/backup/take-backup");
     const { todayET } = await import("@/lib/calendar/date-utils");
     const path = await import("node:path");
     const fs = await import("node:fs");
@@ -567,17 +568,11 @@ if (isMain) {
     }
 
     // NEVER proceed past this line without a verified backup — same
-    // VACUUM-INTO convention + "fail hard" behavior as
-    // rebuild-ibkr-ledger.ts::ensureBackup / repair-ah-closes.ts.
+    // takeBackup (lib/backup/take-backup.ts) throws on any failure.
     const today = todayET();
-    const backupPath = path.default.join(
-      dataDir,
-      "backups",
-      `pre-december-snapshot-repair-${today}.db`,
-    );
-    const backup = ensureBackup(db, backupPath);
+    const backup = await takeBackup(db, { purpose: "pre-december-snapshot-repair" });
     console.log(
-      `\nBackup ${backup.created ? "created" : "already present"} at ${backup.path} ` +
+      `\nBackup created at ${backup.path} ` +
         `(${backup.sizeBytes.toLocaleString()} bytes).`,
     );
 

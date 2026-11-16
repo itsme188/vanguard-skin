@@ -22,9 +22,9 @@
  *   npx tsx scripts/repair-goog-presplit-basis.ts --apply   # write
  */
 
-import fs from "node:fs";
 import path from "node:path";
 import Database from "better-sqlite3";
+import { takeBackup } from "@/lib/backup/take-backup";
 import { computeTaxLots } from "@/lib/compute/tax-lots";
 
 const DB_PATH = path.join(process.cwd(), "data", "vanguard.db");
@@ -32,7 +32,7 @@ const DB_PATH = path.join(process.cwd(), "data", "vanguard.db");
 const SPLIT_RATIO = 20;
 const SPLIT_TRADING_DATE = "2022-07-18";
 
-function main() {
+async function main() {
   const apply = process.argv.includes("--apply");
   const db = new Database(DB_PATH, { timeout: 60000 });
   db.pragma("foreign_keys = ON");
@@ -72,12 +72,8 @@ function main() {
     return;
   }
 
-  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const backupDir = path.join(process.cwd(), "data", "backups");
-  fs.mkdirSync(backupDir, { recursive: true });
-  const backupPath = path.join(backupDir, `pre-goog-presplit-basis-${timestamp}.db`);
-  db.prepare(`VACUUM INTO ?`).run(backupPath);
-  console.log(`\nBackup: ${backupPath}`);
+  const backup = await takeBackup(db, { purpose: "pre-goog-presplit-basis" });
+  console.log(`\nBackup: ${backup.path}`);
 
   const update = db.prepare(`UPDATE transactions SET quantity = ?, price_per_share = ? WHERE id = ?`);
   const run = db.transaction(() => {
@@ -92,4 +88,7 @@ function main() {
   db.close();
 }
 
-main();
+main().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});

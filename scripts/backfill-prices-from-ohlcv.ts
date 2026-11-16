@@ -22,8 +22,9 @@
  *      as "no bars — skipped" (no ground truth to backfill from).
  *   2. Among those bars, finds the dates with NO existing `prices` row for
  *      that (security_id, date).
- *   3. `--apply`: backs up `data/vanguard.db` to `data/backups/` (same
- *      VACUUM-INTO convention as `rebuild-ibkr-ledger.ts::ensureBackup` —
+ *   3. `--apply`: backs up the database with `takeBackup`
+ *      (lib/backup/take-backup.ts; a backup of the live database goes to
+ *      ~/portfolio-desk-backups/recent, a rehearsal copy's beside the copy) —
  *      NEVER proceeds past this step without a verified backup), then
  *      inside one transaction INSERTs a `prices` row
  *      `(security_id, date, close_price, source='tws')` for every missing
@@ -276,8 +277,7 @@ if (isMain) {
   (async () => {
     const { default: BetterSqlite3 } = await import("better-sqlite3");
     const { runMigrations } = await import("@/lib/db/migrate");
-    const { ensureBackup } = await import("@/scripts/rebuild-ibkr-ledger");
-    const { todayET } = await import("@/lib/calendar/date-utils");
+    const { takeBackup } = await import("@/lib/backup/take-backup");
     const path = await import("node:path");
     const fs = await import("node:fs");
 
@@ -387,17 +387,11 @@ if (isMain) {
       return;
     }
 
-    // NEVER proceed past this line without a verified backup — same
-    // VACUUM-INTO convention as rebuild-ibkr-ledger.ts::ensureBackup /
-    // repair-ah-closes.ts / repair-earnings-preview-audit.ts.
-    const backupPath = path.default.join(
-      dataDir,
-      "backups",
-      `pre-ohlcv-price-backfill-${todayET()}.db`,
-    );
-    const backup = ensureBackup(db, backupPath);
+    // NEVER proceed past this line without a verified backup — takeBackup
+    // (lib/backup/take-backup.ts) throws on any failure.
+    const backup = await takeBackup(db, { purpose: "pre-ohlcv-price-backfill" });
     console.log(
-      `\nBackup ${backup.created ? "created" : "already present"} at ${backup.path} ` +
+      `\nBackup created at ${backup.path} ` +
         `(${backup.sizeBytes.toLocaleString()} bytes).`,
     );
 

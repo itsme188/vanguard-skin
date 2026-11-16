@@ -29,9 +29,9 @@
  *   npx tsx scripts/repair-buy-sign-post-april.ts --apply   # write
  */
 
-import fs from "node:fs";
 import path from "node:path";
 import Database from "better-sqlite3";
+import { takeBackup } from "@/lib/backup/take-backup";
 
 const DB_PATH = path.join(process.cwd(), "data", "vanguard.db");
 
@@ -103,16 +103,7 @@ export function rewriteSourceKeyCents(sourceKey: string, newAmount: number): str
   return `${prefix}${newCents}${ordinalSuffix ?? ""}`;
 }
 
-function backupDatabase(db: Database.Database): string {
-  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const backupDir = path.join(process.cwd(), "data", "backups");
-  fs.mkdirSync(backupDir, { recursive: true });
-  const backupPath = path.join(backupDir, `pre-buy-sign-post-april-${timestamp}.db`);
-  db.prepare(`VACUUM INTO ?`).run(backupPath);
-  return backupPath;
-}
-
-function main() {
+async function main() {
   const apply = process.argv.includes("--apply");
   // 60s lock wait — the live app's background sync can hold the write lock
   // past better-sqlite3's 5s default.
@@ -174,8 +165,8 @@ function main() {
     return;
   }
 
-  const backupPath = backupDatabase(db);
-  console.log(`\nBackup: ${backupPath}`);
+  const backup = await takeBackup(db, { purpose: "pre-buy-sign-post-april" });
+  console.log(`\nBackup: ${backup.path}`);
 
   const update = db.prepare(
     `UPDATE transactions SET amount = ?, source_key = ? WHERE id = ? AND amount = ? AND source_key = ?`
@@ -199,5 +190,8 @@ const isMain =
     process.argv[1].endsWith("repair-buy-sign-post-april.js"));
 
 if (isMain) {
-  main();
+  main().catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
 }

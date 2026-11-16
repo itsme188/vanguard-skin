@@ -38,8 +38,8 @@
  *     Refused unless REPAIR_DB_PATH is set (pointing at a rehearsal copy)
  *     or --live is ALSO passed (a deliberate live run) — never both silently
  *     assumed.
- *   - Any writable run takes a WAL-safe backup FIRST via better-sqlite3's
- *     native `db.backup()` API into data/backups/, timestamped — never a
+ *   - Any writable run takes a WAL-safe backup FIRST via the shared
+ *     `takeBackup` helper (lib/backup/take-backup.ts), timestamped — never a
  *     bare file copy of a hot WAL database.
  *   - --verify-idempotent (only meaningful with --apply): after the primary
  *     recompute, runs `computeTaxLots` a SECOND time and diffs the
@@ -53,13 +53,13 @@
  * at a scratch copy of the DB while still running from the repo root.
  */
 
-import fs from "node:fs";
 import path from "node:path";
 import type Database from "better-sqlite3";
 import { computeTaxLots } from "../lib/compute/tax-lots";
 import { computeDailyValuations } from "../lib/compute/daily-valuation";
 import { getTaxConventionState } from "../lib/compute/tax-convention";
 import { runIntegrityChecks } from "../lib/queries/integrity-checks";
+import { takeBackup } from "../lib/backup/take-backup";
 
 // ─── Core (Step 1 test target) ─────────────────────────────────────────
 
@@ -257,16 +257,9 @@ async function main(): Promise<void> {
       return;
     }
 
-    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-    const backupPath = path.join(
-      path.dirname(DB_PATH),
-      "backups",
-      `vanguard-pre-v2-recompute-${stamp}.db`,
-    );
-    fs.mkdirSync(path.dirname(backupPath), { recursive: true });
-    console.log(`\nBacking up to ${backupPath} ...`);
-    const backupMeta = await db.backup(backupPath);
-    console.log(`  backup complete (${backupMeta.totalPages} pages).`);
+    console.log("\nBacking up before the recompute ...");
+    const backup = await takeBackup(db, { purpose: "pre-v2-recompute" });
+    console.log(`  backup complete: ${backup.path}`);
 
     const result = runRecompute(db);
     console.log("\nRecompute result:");

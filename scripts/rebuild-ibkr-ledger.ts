@@ -42,6 +42,7 @@ import fs from "node:fs";
 import path from "node:path";
 import Database from "better-sqlite3";
 import type { ParsedImportResult } from "@/lib/import/types";
+import { takeBackup } from "@/lib/backup/take-backup";
 
 // ─── Config ──────────────────────────────────────────────────────
 
@@ -167,85 +168,6 @@ export function getBatchSanity(
     .get(batchId) as BatchSanity;
 }
 
-// ─── Step 2 helper: backup ────────────────────────────────────────
-
-export interface BackupResult {
-  created: boolean;
-  path: string;
-  sizeBytes: number;
-}
-
-/**
- * A same-day backup file already exists on disk. Before trusting it as
- * "the backup is satisfied," verify it wasn't left behind by an
- * interrupted prior VACUUM INTO (Mac slept, disk filled, process killed
- * mid-write) — a 0-byte or truncated file must never be silently accepted
- * as a real backup, since "NEVER proceed unbacked" is the whole point of
- * this step. Two checks, because neither alone is sufficient (verified
- * live): a 0-byte file opens fine as a valid *empty* SQLite database and
- * `PRAGMA integrity_check` reports "ok" on it — the explicit size check
- * is what catches that case. A non-empty but corrupted/garbage file fails
- * `PRAGMA integrity_check` (or fails to open at all) — that's what the
- * size check alone would miss.
- */
-function assertValidBackupFile(backupPath: string): number {
-  const size = fs.statSync(backupPath).size;
-  if (size === 0) {
-    throw new Error(
-      `existing backup file is 0 bytes (an interrupted prior VACUUM INTO) — ` +
-        `delete it and re-run for a fresh backup`
-    );
-  }
-
-  let check: Database.Database | undefined;
-  try {
-    check = new Database(backupPath, { readonly: true });
-    const rows = check.pragma("integrity_check(1)") as Array<
-      Record<string, string>
-    >;
-    const verdict = rows[0]?.integrity_check;
-    if (verdict !== "ok") {
-      throw new Error(
-        `existing backup file failed integrity_check ("${verdict ?? "unknown"}") — ` +
-          `delete it and re-run for a fresh backup`
-      );
-    }
-  } finally {
-    check?.close();
-  }
-
-  return size;
-}
-
-/**
- * `VACUUM INTO` refuses to write to a path that already exists (verified
- * live — it throws "output file already exists", not a silent overwrite).
- * The driver runs steps 1-3 unconditionally in BOTH dry-run and --apply
- * (they never mutate the live DB), and Task 7's runbook does a dry-run
- * followed by an --apply on the same ET day — so the second invocation
- * would otherwise hit that error and (per "abort HARD if backup fails")
- * refuse to proceed even though a same-day backup already exists. Treat a
- * VALID existing file at the target path as "already satisfied" rather
- * than a failure (see `assertValidBackupFile` for what "valid" means);
- * only a genuine write failure (permissions, disk full) or an invalid
- * existing file aborts.
- */
-export function ensureBackup(
-  db: Database.Database,
-  backupPath: string
-): BackupResult {
-  fs.mkdirSync(path.dirname(backupPath), { recursive: true });
-
-  if (fs.existsSync(backupPath)) {
-    const sizeBytes = assertValidBackupFile(backupPath);
-    return { created: false, path: backupPath, sizeBytes };
-  }
-
-  db.prepare("VACUUM INTO ?").run(backupPath);
-  const sizeBytes = fs.statSync(backupPath).size;
-  return { created: true, path: backupPath, sizeBytes };
-}
-
 // ─── Step 8 helper: closing census ───────────────────────────────
 
 export interface ClosingCensus {
@@ -334,7 +256,6 @@ async function main() {
   );
   const { computeTaxLots } = await import("@/lib/compute/tax-lots");
   const { computeDailyValuations } = await import("@/lib/compute/daily-valuation");
-  const { todayET } = await import("@/lib/calendar/date-utils");
 
   const apply = process.argv.includes("--apply");
   console.log(
@@ -382,14 +303,9 @@ async function main() {
 
   // ── Step 2: backup ─────────────────────────────────────────────
   console.log("\n[2/8] Backing up database...");
-  const backupPath = path.join(dataDir, "backups", `pre-ibkr-rebuild-${todayET()}.db`);
   try {
-    const backup = ensureBackup(db, backupPath);
-    console.log(
-      backup.created
-        ? `  Backup created: ${backup.path} (${backup.sizeBytes} bytes)`
-        : `  Backup for today already exists — verified valid, reusing: ${backup.path} (${backup.sizeBytes} bytes)`
-    );
+    const backup = await takeBackup(db, { purpose: "pre-ibkr-rebuild" });
+    console.log(`  Backup created: ${backup.path} (${backup.sizeBytes} bytes)`);
   } catch (err) {
     console.error(
       `\nABORT — backup FAILED: ${(err as Error).message}\nNever proceeding without a verified backup.`

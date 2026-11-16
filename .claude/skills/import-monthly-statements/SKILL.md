@@ -15,7 +15,7 @@ Turn the three monthly statements (Vanguard Taxable PDF, Vanguard Roth PDF, IBKR
 
 ## Phase 0 — Pre-flight (before touching anything)
 
-1. **Back up the DB**: `cp data/vanguard.db "data/vanguard.db.pre-{YYYYMM}-import-$(date +%Y%m%d-%H%M%S).bak"` — print the path.
+1. **Back up the DB**: `npm run backup -- --purpose pre-{YYYYMM}-import` — print the path.
 2. **Capture baseline** (read-only): per-account position counts at latest as_of_date, latest `monthly_snapshots` row per account (this gives you every `starting_value`), latest `prices` date.
 3. **Locate inputs** in `~/Desktop/Trading - Local/` (or user-given paths): two Vanguard PDFs + one IBKR CSV.
 4. **Confirm the app is running** (Electron :3099 or `npm run dev` :3000) — imports go through `POST /api/import` so post-commit hooks (tax lots, classification, daily valuations, purges) run automatically.

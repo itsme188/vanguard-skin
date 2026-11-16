@@ -35,9 +35,9 @@
  *   REPAIR_DB_PATH=/tmp/rehearsal.db npx tsx scripts/assign-donation-lots-by-method.ts --apply --acknowledge-repair
  */
 
-import fs from "node:fs";
 import path from "node:path";
 import Database from "better-sqlite3";
+import { takeBackup } from "@/lib/backup/take-backup";
 import { getOpenLotsForDonation, DonationLotsQueryError, type OpenLotForDonation } from "@/lib/queries/giving-view";
 import { assignDonationLots, DonationLinkError } from "@/lib/mutations/donation-links";
 import {
@@ -157,7 +157,7 @@ interface DonationTarget {
  * confirmed, unreversed, lot-less stock donation. Returns counts for the
  * caller's summary. Takes a VACUUM INTO backup itself before writing.
  */
-export function runAssignment(db: Database.Database, apply: boolean): { planned: number; assigned: number; problems: number } {
+export async function runAssignment(db: Database.Database, apply: boolean): Promise<{ planned: number; assigned: number; problems: number }> {
   const targets = db
     .prepare(
       `SELECT d.id, COALESCE(s.symbol, d.symbol_raw) AS symbol, d.quantity, t.trade_date AS out_date
@@ -273,12 +273,8 @@ export function runAssignment(db: Database.Database, apply: boolean): { planned:
     return { planned: 0, assigned: 0, problems: problems.length };
   }
 
-  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const backupDir = path.join(process.cwd(), "data", "backups");
-  fs.mkdirSync(backupDir, { recursive: true });
-  const backupPath = path.join(backupDir, `pre-donation-lot-assignment-${timestamp}.db`);
-  db.prepare(`VACUUM INTO ?`).run(backupPath);
-  console.log(`\nBackup: ${backupPath}`);
+  const backup = await takeBackup(db, { purpose: "pre-donation-lot-assignment" });
+  console.log(`\nBackup: ${backup.path}`);
 
   // Counted before the assignments below bump the tax input generation.
   const acceptedTaxYearsBefore = countAcceptedTaxYears(db);
@@ -305,14 +301,19 @@ export function runAssignment(db: Database.Database, apply: boolean): { planned:
   return { planned: plans.length, assigned, problems: problems.length };
 }
 
-function main() {
+async function main() {
   const apply = process.argv.includes("--apply");
   assertWriteAcknowledged(process.argv, apply);
   const db = new Database(DB_PATH, { timeout: 60000 });
   db.pragma("foreign_keys = ON");
-  runAssignment(db, apply);
+  await runAssignment(db, apply);
   db.close();
 }
 
 const isDirectRun = process.argv[1]?.includes("assign-donation-lots-by-method");
-if (isDirectRun) main();
+if (isDirectRun) {
+  main().catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
+}

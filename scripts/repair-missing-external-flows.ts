@@ -47,8 +47,8 @@
  * external-flow-candidates) the exact proposed transaction row — detailed
  * enough to approve line by line. Writes nothing unless --apply is passed.
  *
- * --apply: backs up data/vanguard.db to data/backups/ (VACUUM INTO — same
- * convention as scripts/repair-etf-types.ts), then inside one transaction
+ * --apply: backs up the database (VACUUM INTO, to ~/portfolio-desk-backups/recent for
+ * the live database, beside a rehearsal copy — same convention as scripts/repair-etf-types.ts), then inside one transaction
  * INSERT OR IGNOREs one DEPOSIT (residual > 0) or WITHDRAWAL (residual < 0)
  * row per external-flow-candidate, is_external_flow=1, with a deterministic
  * `repair-missing-flow:{account_id}:{date}:{rounded-dollar-amount}`
@@ -86,9 +86,9 @@
  *   npx tsx scripts/repair-missing-external-flows.ts --apply --only 2026-07-11 --amount 88000
  */
 
-import fs from "node:fs";
 import path from "node:path";
 import Database from "better-sqlite3";
+import { takeBackup } from "@/lib/backup/take-backup";
 import {
   computeCashFlowResiduals,
   isUnexplainedCashFlow,
@@ -331,23 +331,6 @@ export function selectRun(
   };
 }
 
-// ─── Backup (mirrors scripts/repair-etf-types.ts::backupDatabase) ─────
-
-function backupDatabase(db: Database.Database): string {
-  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const backupDir = path.join(process.cwd(), "data", "backups");
-  fs.mkdirSync(backupDir, { recursive: true });
-  const backupPath = path.join(backupDir, `pre-missing-flow-repair-${timestamp}.db`);
-  db.prepare("VACUUM INTO ?").run(backupPath);
-  const sizeBytes = fs.statSync(backupPath).size;
-  if (sizeBytes === 0) {
-    throw new Error(
-      `backup at ${backupPath} is 0 bytes — aborting, refusing to write without a verified backup`
-    );
-  }
-  return backupPath;
-}
-
 // ─── Apply ──────────────────────────────────────────────────────────
 
 /** Inserts one row per candidate inside a single transaction. Returns the
@@ -566,8 +549,8 @@ async function main(): Promise<void> {
       return;
     }
 
-    const backupPath = backupDatabase(db);
-    console.log(`\nBackup written: ${backupPath}`);
+    const backup = await takeBackup(db, { purpose: "pre-missing-flow-repair" });
+    console.log(`\nBackup written: ${backup.path}`);
 
     const inserted = applyProposedTransactions(db, proposals);
     console.log(`\nInserted ${inserted} of ${proposals.length} row(s) (skipped = already applied, same source_key).`);

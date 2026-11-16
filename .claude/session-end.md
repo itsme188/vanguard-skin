@@ -26,6 +26,8 @@ Run `gh pr list 2>/dev/null`. If any open PRs from this session, surface them in
 
 Run `git worktree list`. If extras exist beyond the main checkout, mention them in the summary so the user can clean up next session. Don't auto-remove (worktree cleanup can lose in-progress work; the user gets to decide).
 
+Run `npm run storage:report` (read-only) and mention any warning it prints (low free space, stale USB copy) in the summary.
+
 ## 4. Reconcile TODO.md
 
 Read `docs/plans/TODO.md` and reconcile it against what actually shipped this session:

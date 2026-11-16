@@ -220,7 +220,7 @@ const isMain =
 if (isMain) {
   (async () => {
     const { default: BetterSqlite3 } = await import("better-sqlite3");
-    const { ensureBackup } = await import("@/scripts/rebuild-ibkr-ledger");
+    const { takeBackup } = await import("@/lib/backup/take-backup");
     const path = await import("node:path");
     const fs = await import("node:fs");
 
@@ -292,13 +292,9 @@ if (isMain) {
       return;
     }
 
-    const backupPath = path.default.join(
-      dataDir, "backups",
-      `pre-split-basis-2024-year-end-repair.db`,
-    );
-    const backup = ensureBackup(db, backupPath);
+    const backup = await takeBackup(db, { purpose: "pre-split-basis-2024-year-end-repair" });
     console.log(
-      `\nBackup ${backup.created ? "created" : "already present"} at ${backup.path}.`,
+      `\nBackup created at ${backup.path}.`,
     );
 
     const applied = repairSplitBasis(db, targets, { apply: true });

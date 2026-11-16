@@ -1,0 +1,487 @@
+import { spawnSync } from "node:child_process";
+import crypto from "node:crypto";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import Database from "better-sqlite3";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import {
+  ZSTD_LEVEL,
+  ZSTD_LONG,
+  addToArchive,
+  extractMember,
+  findZstd,
+  listArchiveMembers,
+  readManifest,
+  sha256File,
+  uniqueTempPath,
+} from "@/lib/backup/archive";
+
+const ZSTD = findZstd();
+const noZstd = ZSTD === null;
+
+let dir: string;
+let src: string;
+let archives: string;
+
+beforeEach(() => {
+  dir = fs.mkdtempSync(path.join(os.tmpdir(), "archive-test-"));
+  src = path.join(dir, "src");
+  archives = path.join(dir, "archives");
+  fs.mkdirSync(src);
+  fs.mkdirSync(archives);
+});
+
+afterEach(() => {
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+/** A small real SQLite file with synthetic rows. */
+function makeDb(name: string, rows = 300, salt = 0): string {
+  const p = path.join(src, name);
+  const db = new Database(p);
+  db.exec("CREATE TABLE t (id INTEGER PRIMARY KEY, label TEXT, amount REAL)");
+  const ins = db.prepare("INSERT INTO t (label, amount) VALUES (?, ?)");
+  db.transaction(() => {
+    for (let i = 0; i < rows; i++) ins.run(`row-${i}-${salt}`, i + salt / 10);
+  })();
+  db.close();
+  return p;
+}
+
+/** Member names as `bsdtar -t` reports them (which hides `._` entries). */
+function bsdtarList(archive: string): string[] {
+  const z = spawnSync(ZSTD as string, ["-dc", `--long=${ZSTD_LONG}`, archive]);
+  expect(z.status).toBe(0);
+  const t = spawnSync("/usr/bin/tar", ["-tf", "-"], { input: z.stdout });
+  expect(t.status).toBe(0);
+  return t.stdout.toString().split("\n").filter(Boolean);
+}
+
+/** Every raw member name, `._` entries included. */
+const listMembers = (archive: string) => listArchiveMembers(archive, ZSTD as string);
+
+function sha(p: string): string {
+  return crypto.createHash("sha256").update(fs.readFileSync(p)).digest("hex");
+}
+
+describe("archive", () => {
+  it("exposes the compression settings", () => {
+    expect(ZSTD_LEVEL).toBe(10);
+    expect(ZSTD_LONG).toBe(31);
+  });
+
+  it("findZstd honours the passed PATH before the fallbacks", () => {
+    const bin = path.join(dir, "bin");
+    fs.mkdirSync(bin);
+    const fake = path.join(bin, "zstd");
+    fs.writeFileSync(fake, "#!/bin/sh\n");
+    fs.chmodSync(fake, 0o755);
+    expect(findZstd({ PATH: bin })).toBe(fake);
+  });
+
+  it.skipIf(noZstd)("round-trips: every member comes back byte-identical", async () => {
+    const files = [makeDb("a-2026-10-01.db", 300, 1), makeDb("b-2026-10-02.db", 300, 2)];
+    const archive = path.join(archives, "2026-10.tar.zst");
+    const manifest = path.join(archives, "2026-10.sha256");
+    await addToArchive(archive, manifest, files, ZSTD as string);
+
+    expect(await listMembers(archive)).toEqual(["a-2026-10-01.db", "b-2026-10-02.db"]);
+    expect(bsdtarList(archive)).toEqual(["a-2026-10-01.db", "b-2026-10-02.db"]);
+    const m = readManifest(manifest);
+    for (const f of files) {
+      const name = path.basename(f);
+      expect(m.get(name)).toBe(await sha256File(f));
+      const out = path.join(dir, `out-${name}`);
+      await extractMember(archive, name, out, ZSTD as string);
+      expect(sha(out)).toBe(sha(f));
+    }
+    await expect(
+      extractMember(archive, "missing.db", path.join(dir, "out-missing"), ZSTD as string),
+    ).rejects.toThrow();
+    expect(fs.existsSync(path.join(dir, "out-missing"))).toBe(false);
+  });
+
+  it.skipIf(noZstd)("adding to an existing archive keeps the old members and adds the new ones", async () => {
+    const archive = path.join(archives, "2026-10.tar.zst");
+    const manifest = path.join(archives, "2026-10.sha256");
+    const a = makeDb("a-2026-10-01.db", 300, 1);
+    const b = makeDb("b-2026-10-02.db", 300, 2);
+    await addToArchive(archive, manifest, [a, b], ZSTD as string);
+    const c = makeDb("c-2026-10-03.db", 300, 3);
+    const d = makeDb("d-2026-10-04.db", 300, 4);
+    await addToArchive(archive, manifest, [c, d], ZSTD as string);
+
+    const names = ["a-2026-10-01.db", "b-2026-10-02.db", "c-2026-10-03.db", "d-2026-10-04.db"];
+    expect(await listMembers(archive)).toEqual(names);
+    expect([...readManifest(manifest).keys()]).toEqual(names);
+    for (const f of [a, b, c, d]) {
+      const out = path.join(dir, `out-${path.basename(f)}`);
+      await extractMember(archive, path.basename(f), out, ZSTD as string);
+      expect(sha(out)).toBe(sha(f));
+    }
+  });
+
+  it.skipIf(noZstd)("skips a file already in the manifest with the same checksum", async () => {
+    const archive = path.join(archives, "2026-10.tar.zst");
+    const manifest = path.join(archives, "2026-10.sha256");
+    const a = makeDb("a-2026-10-01.db", 300, 1);
+    await addToArchive(archive, manifest, [a], ZSTD as string);
+    const b = makeDb("b-2026-10-02.db", 300, 2);
+    await addToArchive(archive, manifest, [a, b], ZSTD as string);
+    expect(await listMembers(archive)).toEqual(["a-2026-10-01.db", "b-2026-10-02.db"]);
+    expect(readManifest(manifest).size).toBe(2);
+  });
+
+  it.skipIf(noZstd)(
+    "throws on the same name with a different checksum and leaves the archive untouched",
+    async () => {
+      const archive = path.join(archives, "2026-10.tar.zst");
+      const manifest = path.join(archives, "2026-10.sha256");
+      const a = makeDb("a-2026-10-01.db", 300, 1);
+      await addToArchive(archive, manifest, [a], ZSTD as string);
+      const archiveBefore = sha(archive);
+      const manifestBefore = fs.readFileSync(manifest, "utf8");
+
+      fs.rmSync(a);
+      makeDb("a-2026-10-01.db", 300, 99); // same name, different content
+      await expect(addToArchive(archive, manifest, [a], ZSTD as string)).rejects.toThrow(/checksum/);
+      expect(sha(archive)).toBe(archiveBefore);
+      expect(fs.readFileSync(manifest, "utf8")).toBe(manifestBefore);
+    },
+  );
+
+  it.skipIf(noZstd)("records, without re-adding, a member archived but missing from the manifest", async () => {
+    // A run that died after renaming the archive but before renaming the manifest.
+    const archive = path.join(archives, "2026-10.tar.zst");
+    const manifest = path.join(archives, "2026-10.sha256");
+    const a = makeDb("a-2026-10-01.db", 300, 1);
+    await addToArchive(archive, manifest, [a], ZSTD as string);
+    fs.writeFileSync(manifest, "");
+    const b = makeDb("b-2026-10-02.db", 300, 2);
+    await addToArchive(archive, manifest, [a, b], ZSTD as string);
+    expect(await listMembers(archive)).toEqual(["a-2026-10-01.db", "b-2026-10-02.db"]);
+    expect(readManifest(manifest).get("a-2026-10-01.db")).toBe(await sha256File(a));
+
+    // Same situation, but the loose file no longer matches the archived copy.
+    fs.writeFileSync(manifest, "");
+    fs.rmSync(a);
+    makeDb("a-2026-10-01.db", 300, 99);
+    await expect(addToArchive(archive, manifest, [a], ZSTD as string)).rejects.toThrow(/checksum/);
+    expect(fs.readFileSync(manifest, "utf8")).toBe("");
+  });
+
+  it.skipIf(noZstd)("writes no ._ metadata members", async () => {
+    const files = [makeDb("a-2026-10-01.db"), makeDb("b-2026-10-02.db")];
+    // Extended attributes are what make macOS tar emit a ._ member per file.
+    for (const f of files) spawnSync("/usr/bin/xattr", ["-w", "com.example.test", "x", f]);
+
+    // Control: plain system tar on the same files DOES write ._ members, and
+    // the listing used below sees them even though `bsdtar -t` hides them.
+    const tarred = spawnSync("/usr/bin/tar", ["-cf", "-", "-C", src, "a-2026-10-01.db"], {
+      env: { ...process.env, PATH: "/usr/bin:/bin", COPYFILE_DISABLE: undefined },
+    });
+    expect(tarred.status).toBe(0);
+    const control = path.join(dir, "control.tar.zst");
+    const z = spawnSync(ZSTD as string, ["-q", `--long=${ZSTD_LONG}`, "-o", control], { input: tarred.stdout });
+    expect(z.status).toBe(0);
+    expect(await listMembers(control)).toEqual(["._a-2026-10-01.db", "a-2026-10-01.db"]);
+    expect(bsdtarList(control)).toEqual(["a-2026-10-01.db"]);
+
+    const archive = path.join(archives, "2026-10.tar.zst");
+    await addToArchive(archive, path.join(archives, "2026-10.sha256"), files, ZSTD as string);
+    const c = makeDb("c-2026-10-03.db");
+    spawnSync("/usr/bin/xattr", ["-w", "com.example.test", "x", c]);
+    await addToArchive(archive, path.join(archives, "2026-10.sha256"), [c], ZSTD as string);
+
+    const members = await listMembers(archive);
+    expect(members).toEqual(["a-2026-10-01.db", "b-2026-10-02.db", "c-2026-10-03.db"]);
+    expect(members.filter((m) => path.basename(m).startsWith("._"))).toEqual([]);
+  });
+
+  it.skipIf(noZstd)("leaves no .new or temp files behind on success or on failure", async () => {
+    const archive = path.join(archives, "2026-10.tar.zst");
+    const manifest = path.join(archives, "2026-10.sha256");
+    await addToArchive(archive, manifest, [makeDb("a-2026-10-01.db")], ZSTD as string);
+    await addToArchive(archive, manifest, [makeDb("b-2026-10-02.db")], ZSTD as string);
+    expect(fs.readdirSync(archives).sort()).toEqual(["2026-10.sha256", "2026-10.tar.zst"]);
+
+    // Failure: a truncated old archive makes `zstd -d` fail in the middle of the pipeline.
+    const full = fs.readFileSync(archive);
+    fs.writeFileSync(archive, full.subarray(0, Math.floor(full.length / 2)));
+    const truncated = sha(archive);
+    await expect(
+      addToArchive(archive, manifest, [makeDb("c-2026-10-03.db")], ZSTD as string),
+    ).rejects.toThrow();
+    expect(fs.readdirSync(archives).sort()).toEqual(["2026-10.sha256", "2026-10.tar.zst"]);
+    expect(sha(archive)).toBe(truncated);
+    expect([...readManifest(manifest).keys()]).toEqual(["a-2026-10-01.db", "b-2026-10-02.db"]);
+  });
+
+  it.skipIf(noZstd)(
+    "three near-identical 5 MB files compress to less than twice one file's compressed size",
+    async () => {
+      const base = path.join(src, "big-2026-10-01.db");
+      const db = new Database(base);
+      db.exec("CREATE TABLE blobs (id INTEGER PRIMARY KEY, data BLOB)");
+      const ins = db.prepare("INSERT INTO blobs (data) VALUES (?)");
+      db.transaction(() => {
+        for (let i = 0; i < 1280; i++) ins.run(crypto.randomBytes(4096));
+      })();
+      db.close();
+      expect(fs.statSync(base).size).toBeGreaterThan(5_000_000);
+
+      const copies = [base];
+      for (const n of [2, 3]) {
+        const p = path.join(src, `big-2026-10-0${n}.db`);
+        fs.copyFileSync(base, p);
+        const c = new Database(p);
+        c.prepare("UPDATE blobs SET data = ? WHERE id = ?").run(Buffer.from(`changed-${n}`), n * 7);
+        c.close();
+        copies.push(p);
+      }
+
+      const one = path.join(archives, "one.tar.zst");
+      await addToArchive(one, path.join(archives, "one.sha256"), [base], ZSTD as string);
+      const three = path.join(archives, "three.tar.zst");
+      await addToArchive(three, path.join(archives, "three.sha256"), copies, ZSTD as string);
+
+      const oneSize = fs.statSync(one).size;
+      expect(oneSize).toBeGreaterThan(4_000_000); // random bytes: no shrinking alone
+      expect(fs.statSync(three).size).toBeLessThan(2 * oneSize);
+    },
+    60_000,
+  );
+
+  it("two temp names from two calls differ", () => {
+    const final = path.join(archives, "2026-10.tar.zst");
+    const a = uniqueTempPath(final, ".new");
+    const b = uniqueTempPath(final, ".new");
+    expect(a).not.toBe(b);
+    for (const t of [a, b]) {
+      expect(t.startsWith(`${final}.`)).toBe(true);
+      expect(t.endsWith(".new")).toBe(true);
+    }
+    expect(uniqueTempPath(final, ".partial").endsWith(".partial")).toBe(true);
+  });
+
+  /**
+   * A zstd stand-in that runs the real zstd, except that it fails on purpose
+   * inside the BUILD pipeline (the listing before it runs normally):
+   * - "decompress-partial": the 2nd `-dc` call sends a fragment, then exits 1
+   * - "decompress-complete": the 2nd `-dc` call sends the WHOLE stream, then exits 1
+   *   (so only the exit-status check can catch it)
+   * - "compress": the `-o` call writes a complete file, then exits 1
+   */
+  function failingZstd(mode: "decompress-partial" | "decompress-complete" | "compress"): string {
+    const bin = path.join(dir, `bin-${mode}`);
+    fs.mkdirSync(bin);
+    const count = path.join(bin, "count");
+    const onSecondDecompress =
+      mode === "decompress-partial"
+        ? `"$REAL" "$@" | head -c 4096; exit 1`
+        : mode === "decompress-complete"
+          ? `"$REAL" "$@"; exit 1`
+          : `:`;
+    const onCompress = mode === "compress" ? `"$REAL" "$@"; exit 1` : `:`;
+    const script = [
+      "#!/bin/bash",
+      `REAL='${ZSTD}'`,
+      `COUNT='${count}'`,
+      'case " $* " in',
+      '  *" -dc "*)',
+      '    n=$(( $(cat "$COUNT" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$COUNT"',
+      `    if [ "$n" -eq 2 ]; then ${onSecondDecompress}; fi ;;`,
+      `  *" -o "*) ${onCompress} ;;`,
+      "esac",
+      'exec "$REAL" "$@"',
+      "",
+    ].join("\n");
+    const p = path.join(bin, "zstd");
+    fs.writeFileSync(p, script);
+    fs.chmodSync(p, 0o755);
+    return p;
+  }
+
+  for (const mode of ["decompress-partial", "decompress-complete", "compress"] as const) {
+    it.skipIf(noZstd)(`a ${mode} failure inside the build pipeline rejects and renames nothing`, async () => {
+      const archive = path.join(archives, "2026-10.tar.zst");
+      const manifest = path.join(archives, "2026-10.sha256");
+      await addToArchive(archive, manifest, [makeDb("a-2026-10-01.db")], ZSTD as string);
+      const archiveBefore = sha(archive);
+      const manifestBefore = fs.readFileSync(manifest, "utf8");
+
+      await expect(
+        addToArchive(archive, manifest, [makeDb("b-2026-10-02.db")], failingZstd(mode)),
+      ).rejects.toThrow(/exited with 1/);
+      expect(sha(archive)).toBe(archiveBefore);
+      expect(fs.readFileSync(manifest, "utf8")).toBe(manifestBefore);
+      expect(fs.readdirSync(archives).sort()).toEqual(["2026-10.sha256", "2026-10.tar.zst"]);
+    });
+  }
+
+  it.skipIf(noZstd)("aborts without renaming when the archive changes underneath", async () => {
+    const archive = path.join(archives, "2026-10.tar.zst");
+    const manifest = path.join(archives, "2026-10.sha256");
+    await addToArchive(archive, manifest, [makeDb("a-2026-10-01.db")], ZSTD as string);
+    const manifestBefore = fs.readFileSync(manifest, "utf8");
+    // Another writer's archive, landing by rename just before ours would.
+    const other = path.join(dir, "other.tar.zst");
+    fs.copyFileSync(archive, other);
+    let swapped = "";
+
+    await expect(
+      addToArchive(archive, manifest, [makeDb("b-2026-10-02.db")], ZSTD as string, {
+        beforeRename: () => {
+          if (swapped) return;
+          fs.renameSync(other, archive);
+          swapped = sha(archive);
+        },
+      }),
+    ).rejects.toThrow(/changed/);
+    expect(sha(archive)).toBe(swapped);
+    expect(fs.readFileSync(manifest, "utf8")).toBe(manifestBefore);
+    expect(fs.readdirSync(archives).sort()).toEqual(["2026-10.sha256", "2026-10.tar.zst"]);
+  });
+
+  it.skipIf(noZstd)("extracts a legacy member with folder parts, exactly, only to destPath", async () => {
+    const legacy = path.join(src, "data", "backups");
+    fs.mkdirSync(legacy, { recursive: true });
+    const inner = "data/backups/pre-x-2026-11-16_10-27-47.db";
+    fs.renameSync(makeDb("pre-x-2026-11-16_10-27-47.db", 300, 5), path.join(src, inner));
+    const other = "data/backups/pre-x-2026-11-16_10-27-48.db";
+    fs.renameSync(makeDb("pre-x-2026-11-16_10-27-48.db", 300, 6), path.join(src, other));
+    const tarred = spawnSync("/usr/bin/tar", ["-cf", "-", "--no-mac-metadata", "-C", src, inner, other], {
+      env: { ...process.env, PATH: "/usr/bin:/bin", COPYFILE_DISABLE: "1" },
+    });
+    expect(tarred.status).toBe(0);
+    const archive = path.join(archives, "legacy.tar.zst");
+    const z = spawnSync(ZSTD as string, ["-q", `--long=${ZSTD_LONG}`, "-o", archive], { input: tarred.stdout });
+    expect(z.status).toBe(0);
+
+    const out = path.join(dir, "restored.db");
+    await extractMember(archive, inner, out, ZSTD as string);
+    expect(sha(out)).toBe(sha(path.join(src, inner)));
+    expect(fs.readdirSync(dir).sort()).toEqual(["archives", "restored.db", "src"]);
+    await expect(extractMember(archive, "data/backups/pre-x-2026-11-16_10-27-4.db", out, ZSTD as string)).rejects.toThrow(
+      /not in/,
+    );
+  });
+
+  it("refuses unsafe member names before spawning anything", async () => {
+    const bad = [
+      "",
+      "/abs/x.db",
+      "../x.db",
+      "data/../x.db",
+      "./x.db",
+      "data//x.db",
+      "data/",
+      "-x.db",
+      "data/-x.db",
+      "@x.db",
+      "data/@x.db",
+      "*.db",
+      "data/x?.db",
+      "data/[ab].db",
+      "data/x].db",
+      "data/{a,b}.db",
+      "data\\x.db",
+      "data/x\u0001.db",
+      "data/x\n.db",
+    ];
+    // A zstd that cannot start: reaching spawn would fail with "failed to start", not "Unsafe".
+    for (const name of bad) {
+      await expect(extractMember(path.join(archives, "none.tar.zst"), name, path.join(dir, "o"), "/nonexistent/zstd")).rejects.toThrow(
+        /Unsafe archive member name/,
+      );
+    }
+    expect(fs.existsSync(path.join(dir, "o"))).toBe(false);
+  });
+
+  it.skipIf(noZstd)("calls onProgress between stages, and a throw there renames nothing", async () => {
+    const archive = path.join(archives, "2026-10.tar.zst");
+    const manifest = path.join(archives, "2026-10.sha256");
+    await addToArchive(archive, manifest, [makeDb("a-2026-10-01.db")], ZSTD as string);
+    const stages: string[] = [];
+    await addToArchive(archive, manifest, [makeDb("b-2026-10-02.db")], ZSTD as string, {
+      onProgress: (stage) => stages.push(stage),
+    });
+    expect(stages).toEqual(["listed", "built", "verified"]);
+
+    const archiveBefore = sha(archive);
+    const manifestBefore = fs.readFileSync(manifest, "utf8");
+    await expect(
+      addToArchive(archive, manifest, [makeDb("c-2026-10-03.db")], ZSTD as string, {
+        onProgress: (stage) => {
+          if (stage === "built") throw new Error("lock lost (simulated)");
+        },
+      }),
+    ).rejects.toThrow(/lock lost/);
+    expect(sha(archive)).toBe(archiveBefore);
+    expect(fs.readFileSync(manifest, "utf8")).toBe(manifestBefore);
+    expect(fs.readdirSync(archives).sort()).toEqual(["2026-10.sha256", "2026-10.tar.zst"]);
+  });
+
+  it.skipIf(noZstd)("leaves the manifest alone when the archive is replaced after its own rename", async () => {
+    const archive = path.join(archives, "2026-10.tar.zst");
+    const manifest = path.join(archives, "2026-10.sha256");
+    await addToArchive(archive, manifest, [makeDb("a-2026-10-01.db")], ZSTD as string);
+    const manifestBefore = fs.readFileSync(manifest, "utf8");
+    const other = path.join(dir, "other.tar.zst");
+    fs.copyFileSync(archive, other);
+    let calls = 0;
+    let swapped = "";
+
+    await expect(
+      addToArchive(archive, manifest, [makeDb("b-2026-10-02.db")], ZSTD as string, {
+        beforeRename: () => {
+          calls += 1;
+          if (calls === 2) {
+            fs.renameSync(other, archive); // lands between our archive and manifest renames
+            swapped = sha(archive);
+          }
+        },
+      }),
+    ).rejects.toThrow(/changed/);
+    expect(calls).toBe(2);
+    expect(sha(archive)).toBe(swapped);
+    expect(fs.readFileSync(manifest, "utf8")).toBe(manifestBefore);
+    expect(fs.readdirSync(archives).sort()).toEqual(["2026-10.sha256", "2026-10.tar.zst"]);
+  });
+
+  /** A system-tar archive from paths under src, with optional bsdtar -s renames. */
+  function legacyArchive(name: string, args: string[]): string {
+    const tarred = spawnSync("/usr/bin/tar", ["-cf", "-", "--no-mac-metadata", ...args], {
+      cwd: src,
+      env: { ...process.env, PATH: "/usr/bin:/bin", COPYFILE_DISABLE: "1" },
+    });
+    expect(tarred.status).toBe(0);
+    const out = path.join(archives, name);
+    const z = spawnSync(ZSTD as string, ["-q", `--long=${ZSTD_LONG}`, "-o", out], { input: tarred.stdout });
+    expect(z.status).toBe(0);
+    return out;
+  }
+
+  it.skipIf(noZstd)("refuses a member duplicated only by // and a non-regular entry", async () => {
+    fs.mkdirSync(path.join(src, "data"));
+    fs.mkdirSync(path.join(src, "data2"));
+    fs.writeFileSync(path.join(src, "data", "x.db"), "one");
+    fs.writeFileSync(path.join(src, "data2", "x.db"), "two");
+    fs.symlinkSync("data/x.db", path.join(src, "link.db"));
+    const out = path.join(dir, "out.db");
+
+    const dup = legacyArchive("dup.tar.zst", ["-s", ",^data2/,data//,", "data/x.db", "data2/x.db"]);
+    expect(await listMembers(dup)).toEqual(["data/x.db", "data//x.db"]);
+    await expect(extractMember(dup, "data/x.db", out, ZSTD as string)).rejects.toThrow(/ambiguous/);
+
+    fs.writeFileSync(path.join(src, "plain.db"), "plain");
+    const odd = legacyArchive("odd.tar.zst", ["-n", "data", "link.db", "plain.db"]);
+    expect(await listMembers(odd)).toEqual(["data/", "link.db", "plain.db"]);
+    await expect(extractMember(odd, "data", out, ZSTD as string)).rejects.toThrow(/not a regular file/);
+    await expect(extractMember(odd, "link.db", out, ZSTD as string)).rejects.toThrow(/not a regular file/);
+    // The regular file in the same archive still extracts.
+    await extractMember(odd, "plain.db", out, ZSTD as string);
+    expect(fs.readFileSync(out, "utf8")).toBe("plain");
+  });
+});

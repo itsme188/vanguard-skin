@@ -432,14 +432,9 @@ async function main(): Promise<void> {
       db.pragma("foreign_keys = ON");
       // Relative specifier: the "@/" alias is not resolved for dynamic imports
       // outside the repo cwd.
-      const { ensureBackup } = await import("./rebuild-ibkr-ledger");
-      const backupPath = path.join(
-        path.dirname(dbPath),
-        "backups",
-        `pre-closed-day-tws-repair-${new Date().toISOString().replace(/:/g, "-")}.db`,
-      );
-      const backup = ensureBackup(db, backupPath);
-      console.log(`Backup ${backup.created ? "created" : "already present"} at ${backup.path}`);
+      const { takeBackup } = await import("../lib/backup/take-backup");
+      const backup = await takeBackup(db, { purpose: "pre-closed-day-tws-repair" });
+      console.log(`Backup created at ${backup.path}`);
     }
     printResult(runClosedDayTwsRepair(db, { apply }));
   } finally {

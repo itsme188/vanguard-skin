@@ -1,7 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import fs from "node:fs";
-import path from "node:path";
-import os from "node:os";
+import { describe, it, expect, beforeEach } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import { parseIbkrActivity } from "@/lib/import/parsers/ibkr-activity";
@@ -11,7 +8,6 @@ import {
   countExistingSourceKeys,
   getBatchSanity,
   getClosingCensus,
-  ensureBackup,
 } from "@/scripts/rebuild-ibkr-ledger";
 
 function createTestDb(): Database.Database {
@@ -349,70 +345,5 @@ describe("getClosingCensus", () => {
     expect(census.negativeHpdShortCount).toBe(0);
     expect(census.negativeHpdNonShortCount).toBe(0);
     expect(census.reconcileCloseCount).toBe(0);
-  });
-});
-
-// ─── ensureBackup ───────────────────────────────────────────────────
-
-describe("ensureBackup", () => {
-  let db: Database.Database;
-  let tmpDir: string;
-
-  beforeEach(() => {
-    db = createTestDb();
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vgs-rebuild-backup-test-"));
-  });
-
-  afterEach(() => {
-    fs.rmSync(tmpDir, { recursive: true, force: true });
-  });
-
-  it("creates the backup file (and its parent directory) on first call", () => {
-    const backupPath = path.join(tmpDir, "backups", "pre-ibkr-rebuild-2026-08-03.db");
-    expect(fs.existsSync(backupPath)).toBe(false);
-
-    const result = ensureBackup(db, backupPath);
-    expect(result.created).toBe(true);
-    expect(result.path).toBe(backupPath);
-    expect(fs.existsSync(backupPath)).toBe(true);
-    expect(result.sizeBytes).toBeGreaterThan(0);
-    expect(result.sizeBytes).toBe(fs.statSync(backupPath).size);
-  });
-
-  it("treats an already-existing VALID backup file as satisfied instead of failing", () => {
-    // VACUUM INTO throws "output file already exists" on a second write to
-    // the same path — this is exactly the same-ET-day dry-run-then-apply
-    // scenario Task 7's runbook produces.
-    const backupPath = path.join(tmpDir, "backups", "pre-ibkr-rebuild-2026-08-03.db");
-    const first = ensureBackup(db, backupPath);
-    expect(first.created).toBe(true);
-
-    const second = ensureBackup(db, backupPath);
-    expect(second.created).toBe(false);
-    expect(second.path).toBe(backupPath);
-    expect(second.sizeBytes).toBe(first.sizeBytes);
-  });
-
-  it("throws instead of trusting a 0-byte existing backup file (interrupted prior write)", () => {
-    // A 0-byte file opens fine as a valid *empty* SQLite database and
-    // PRAGMA integrity_check reports "ok" on it (verified live) — the
-    // explicit size check is what catches this case; integrity_check
-    // alone would not.
-    const backupPath = path.join(tmpDir, "backups", "pre-ibkr-rebuild-2026-08-03.db");
-    fs.mkdirSync(path.dirname(backupPath), { recursive: true });
-    fs.writeFileSync(backupPath, "");
-
-    expect(() => ensureBackup(db, backupPath)).toThrow(/0 bytes/i);
-  });
-
-  it("throws instead of trusting a corrupted (non-empty, non-SQLite) existing backup file", () => {
-    const backupPath = path.join(tmpDir, "backups", "pre-ibkr-rebuild-2026-08-03.db");
-    fs.mkdirSync(path.dirname(backupPath), { recursive: true });
-    fs.writeFileSync(
-      backupPath,
-      "this is not a sqlite database, just garbage bytes padding the file to nonzero size"
-    );
-
-    expect(() => ensureBackup(db, backupPath)).toThrow(/not a database|integrity_check/i);
   });
 });

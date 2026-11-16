@@ -635,7 +635,7 @@ if (isMain) {
   (async () => {
     const { default: BetterSqlite3 } = await import("better-sqlite3");
     const { runMigrations } = await import("@/lib/db/migrate");
-    const { ensureBackup } = await import("@/scripts/rebuild-ibkr-ledger");
+    const { takeBackup } = await import("@/lib/backup/take-backup");
     const { todayET } = await import("@/lib/calendar/date-utils");
     const path = await import("node:path");
     const fs = await import("node:fs");
@@ -702,17 +702,10 @@ if (isMain) {
     }
 
     // NEVER proceed past this line without a verified backup — same
-    // VACUUM-INTO convention + "fail hard" behavior as
-    // rebuild-ibkr-ledger.ts::ensureBackup / repair-ah-closes.ts /
-    // repair-december-snapshots.ts.
-    const backupPath = path.default.join(
-      dataDir,
-      "backups",
-      `pre-earnings-preview-audit-repair-${today}.db`,
-    );
-    const backup = ensureBackup(db, backupPath);
+    // takeBackup (lib/backup/take-backup.ts), which throws on any failure.
+    const backup = await takeBackup(db, { purpose: "pre-earnings-preview-audit-repair" });
     console.log(
-      `\nBackup ${backup.created ? "created" : "already present"} at ${backup.path} ` +
+      `\nBackup created at ${backup.path} ` +
         `(${backup.sizeBytes.toLocaleString()} bytes).`,
     );
 

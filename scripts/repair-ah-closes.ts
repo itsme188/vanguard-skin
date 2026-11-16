@@ -29,8 +29,9 @@
  *      close by more than `threshold` (default 1.0%, `--threshold=`).
  *   2. Prints symbol, date, stored price, bar close, diff% for every match
  *      (dry-run behavior, always).
- *   3. `--apply`: backs up `data/vanguard.db` to `data/backups/` (same
- *      VACUUM-INTO convention as `rebuild-ibkr-ledger.ts::ensureBackup` —
+ *   3. `--apply`: backs up the database with `takeBackup`
+ *      (lib/backup/take-backup.ts; a backup of the live database goes to
+ *      ~/portfolio-desk-backups/recent, a rehearsal copy's beside the copy) —
  *      NEVER proceeds past this step without a verified backup), then
  *      inside one transaction sets `close_price` = the bar's close for
  *      every matched row.
@@ -186,8 +187,7 @@ if (isMain) {
   (async () => {
     const { default: BetterSqlite3 } = await import("better-sqlite3");
     const { runMigrations } = await import("@/lib/db/migrate");
-    const { ensureBackup } = await import("@/scripts/rebuild-ibkr-ledger");
-    const { todayET } = await import("@/lib/calendar/date-utils");
+    const { takeBackup } = await import("@/lib/backup/take-backup");
     const path = await import("node:path");
     const fs = await import("node:fs");
 
@@ -250,18 +250,12 @@ if (isMain) {
       return;
     }
 
-    // NEVER proceed past this line without a verified backup — same rule
-    // and same data/backups/ VACUUM-INTO convention as
-    // rebuild-ibkr-ledger.ts::ensureBackup (reused directly, not
-    // reimplemented, so the 0-byte / corrupt-file guards stay single-source).
-    const backupPath = path.default.join(
-      dataDir,
-      "backups",
-      `pre-ah-close-repair-${todayET()}.db`,
-    );
-    const backup = ensureBackup(db, backupPath);
+    // NEVER proceed past this line without a verified backup. takeBackup
+    // (lib/backup/take-backup.ts) throws on failure: live-database backups go to
+    // ~/portfolio-desk-backups/recent, a rehearsal copy's beside the copy.
+    const backup = await takeBackup(db, { purpose: "pre-ah-close-repair" });
     console.log(
-      `\nBackup ${backup.created ? "created" : "already present"} at ${backup.path} ` +
+      `\nBackup created at ${backup.path} ` +
         `(${backup.sizeBytes.toLocaleString()} bytes).`,
     );
 

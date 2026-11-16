@@ -2044,3 +2044,18 @@ count below the broker's for one fund; lot drift on one IBKR security; attributi
 portfolio; the bank sector's sign under a rate shock; a parity test between `retiredPairsAsOf`
 (`lib/compute/period-attribution.ts`) and the reconciler; twenty-five older repair scripts that default to the
 live database; eleven raw-SDK AI callers that write no usage line.
+
+## 2026-11-16 — Backup retention: one helper, outside the project folder, rolled automatically
+
+Owner rulings, all of 2026-11-16:
+
+1. Backups live outside the project folder (`~/portfolio-desk-backups`), so an app build never copies them.
+2. Rolling is automatic. Each new backup of the live database triggers a roll. The newest 3 stay loose and ready to use; older ones go into that month's archive.
+3. Rolling never loses a file. A loose backup is removed only after it is verified inside the archive.
+4. All existing scripts move to the shared helper (`takeBackup`, `lib/backup/`) in this round. A repo test (`tests/repo/no-handrolled-db-backups.test.ts`) blocks new hand-rolled copies.
+5. The off-machine copy is a USB drive, unencrypted (owner's choice), refreshed by hand with `npm run backup:usb`.
+6. Nothing is scheduled. No launchd job was added.
+
+Measured reason for the archive shape: about 32 scripts each took their own full copy before a repair and nothing removed one, so copies piled up to many GiB; the app build also copied them a second time into `.next/standalone`. Consecutive backups are nearly identical, so one stream of many backups compresses about 99% with a long-window zstd, while each backup compressed alone saves far less. The archive therefore holds many backups in one compressed stream per month.
+
+Also found: three copy methods were in use, and the monthly import skill used a plain `cp` on a live WAL-mode database, which can miss writes still in the `-wal` file. `takeBackup` uses `VACUUM INTO` only.
