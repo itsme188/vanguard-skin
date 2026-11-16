@@ -13,6 +13,7 @@
  */
 
 import type Database from "better-sqlite3";
+import { LIVE_SNAPSHOT_SOURCES } from "@/lib/db/live-sources";
 
 export interface SeriesPoint {
   date: string;
@@ -214,28 +215,62 @@ export function buildFlowAdjustedIndex(
 }
 
 /**
+ * Largest gap (in the account's currency) between a statement's reported
+ * opening value and the previous statement's closing total that still counts
+ * as "the two statements join". Far below any basis change worth bridging,
+ * tolerant of cent rounding between importers.
+ */
+const STATEMENT_JOIN_TOLERANCE = 1;
+
+/**
  * Anchor-source seam dates for the scoped accounts, bounded to
  * (startDate, endDate] — the same half-open convention as
  * fetchNetFlowsByDate (a seam on/before the series' first date is already
  * inside the starting value).
  *
- * A "seam" is the month_end_date of any monthly_snapshots anchor whose
- * `source` differs from the SAME account's previous anchor. Phase 2 of
- * computeDailyValuations snaps total_value to each anchor's total on the
- * anchor date, so a source change between adjacent anchors injects the two
- * sources' measurement-basis difference into the daily series as if it were
- * a market move (the 2026-07-11 Plaid go-live read as a fake ~+4% day; every
- * daily-source ↔ statement month-end handoff repeats this at ~±1-3%).
- * buildFlowAdjustedIndex bridges these days: zero information, not a return.
+ * A seam is a day where the daily series hands off between two measurement
+ * bases that are NOT reconciled by a statement on both sides. Phase 2 of
+ * computeDailyValuations snaps total_value to each anchor's total on its
+ * date; buildFlowAdjustedIndex bridges a seam day (no return, index flat).
  *
- * The scan starts from each account's FIRST anchor (not startDate) so the
- * first in-window anchor is compared against its true predecessor. NULL and
- * unrecognized sources are distinct values — a transition to/from unknown
- * provenance bridges (conservative by construction). An account's first
- * anchor has no predecessor and is never a seam.
+ * RULE (2026-11-15; replaces the 2026-08-13 "any source change" rule). Per
+ * account, over its WHOLE anchor history (not only the query window, so the
+ * answer for a past date never depends on where the window ends), with
+ * anchors split into LIVE (`LIVE_SNAPSHOT_SOURCES`: tws, plaid) and
+ * STATEMENT-GRADE (every other source, NULL included):
+ *
+ *   1. Live anchors that sit between two statement-grade anchors are never
+ *      seams, and neither are the statement anchors around them. The
+ *      statement on each side pins the series, so the daily index over that
+ *      stretch telescopes to the statement-to-statement return whatever the
+ *      live rows read; bridging any day inside it deletes a real market move
+ *      and breaks that agreement. (Measured on the real book: with the old
+ *      rule the monthly returns of the daily index missed the statement TWR
+ *      by 85-550 bp in the live era; without these bridges they match to
+ *      about 0 bp. The month-end round trips, and even the original
+ *      07-11 / 04-06 go-lives once a later statement covered them, all made
+ *      the month WORSE when bridged.)
+ *   2. Statement-grade anchors are compared with each other only. When the
+ *      source of consecutive statement anchors changes (NULL is its own
+ *      value), the newer one is a seam UNLESS its reported `starting_value`
+ *      joins the previous statement's `total_value` within
+ *      STATEMENT_JOIN_TOLERANCE; the statement's own opening value is the
+ *      direct evidence that the two readers measure on one basis (the real
+ *      canonical -> ibkr-activity hand-off joins exactly). A NULL opening
+ *      value cannot confirm the join, so it stays a seam (conservative).
+ *   3. Unbracketed edges are real hand-offs: the FIRST live anchor after the
+ *      account's last statement-grade anchor (the go-live tail, with no
+ *      later statement to reconcile it), and the FIRST statement-grade
+ *      anchor after live anchors that precede every statement (head).
+ *
+ * An account's first anchor is never a seam; a live-only account has none.
+ * The tail seam moves forward when the next statement lands (the old tail
+ * becomes bracketed), which is the same recompute-on-import staleness every
+ * valuation consumer already has.
  *
  * Gracefully returns [] when monthly_snapshots doesn't exist (minimal
- * in-memory test DBs) — same precedent as fetchNetFlowsByDate.
+ * in-memory test DBs) — same precedent as fetchNetFlowsByDate; a table
+ * without `starting_value` reads every opening value as NULL.
  */
 export function fetchAnchorSourceSeamDates(
   db: Database.Database,
@@ -257,6 +292,68 @@ export function fetchAnchorSourceSeamDates(
     ? `AND account_id IN (${accountIds.map(() => "?").join(",")})`
     : "";
 
+  const hasStartingValue = (
+    db.prepare("PRAGMA table_info(monthly_snapshots)").all() as { name: string }[]
+  ).some((c) => c.name === "starting_value");
+  const startingValueCol = hasStartingValue ? "starting_value" : "NULL";
+
+  const rows = db
+    .prepare(
+      `SELECT account_id, month_end_date, source, total_value,
+              ${startingValueCol} AS starting_value
+       FROM monthly_snapshots
+       WHERE 1 = 1
+         ${accountFilter}
+       ORDER BY account_id ASC, month_end_date ASC`
+    )
+    .all(...(accountIds ?? [])) as AnchorRow[];
+
+  const byAccount = new Map<number, AnchorRow[]>();
+  for (const row of rows) {
+    const list = byAccount.get(row.account_id);
+    if (list) list.push(row);
+    else byAccount.set(row.account_id, [row]);
+  }
+
+  const seams = new Set<string>();
+  for (const anchors of byAccount.values()) {
+    for (const date of accountSeamDates(anchors)) {
+      if (date > startDate && date <= endDate) seams.add(date);
+    }
+  }
+
+  return [...seams].sort();
+}
+
+/**
+ * Writer-identity anchor transitions: the month_end_date of every
+ * monthly_snapshots anchor whose `source` differs from the SAME account's
+ * previous anchor (NULL is its own value; an account's first anchor never
+ * counts), bounded to (startDate, endDate]. This is the pre-2026-11-15
+ * fetchAnchorSourceSeamDates rule, kept verbatim for CASH-residual auditing:
+ * on a live -> statement or statement -> live step the cash column changes
+ * meaning (a live day's cash is a plug, a statement day's is literal cash),
+ * so every such day is a measurement artifact for cash even though it is a
+ * real market day for the return series. Return-series readers use
+ * fetchAnchorSourceSeamDates, never this.
+ */
+export function fetchAnchorSourceTransitionDates(
+  db: Database.Database,
+  accountIds: number[] | undefined,
+  startDate: string,
+  endDate: string
+): string[] {
+  const hasTable = db
+    .prepare(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'monthly_snapshots'"
+    )
+    .get();
+  if (!hasTable) return [];
+  if (accountIds && accountIds.length === 0) return [];
+  const accountFilter = accountIds
+    ? `AND account_id IN (${accountIds.map(() => "?").join(",")})`
+    : "";
+
   const rows = db
     .prepare(
       `SELECT account_id, month_end_date, source
@@ -271,17 +368,60 @@ export function fetchAnchorSourceSeamDates(
     source: string | null;
   }[];
 
-  const seams = new Set<string>();
+  const out = new Set<string>();
   let prevAccount: number | null = null;
   let prevSource: string | null | undefined;
   for (const row of rows) {
-    const isNewAccount = row.account_id !== prevAccount;
-    if (!isNewAccount && row.source !== prevSource && row.month_end_date > startDate) {
-      seams.add(row.month_end_date);
+    if (row.account_id === prevAccount && row.source !== prevSource && row.month_end_date > startDate) {
+      out.add(row.month_end_date);
     }
     prevAccount = row.account_id;
     prevSource = row.source;
   }
+  return [...out].sort();
+}
 
-  return [...seams].sort();
+interface AnchorRow {
+  account_id: number;
+  month_end_date: string;
+  source: string | null;
+  total_value: number;
+  starting_value: number | null;
+}
+
+const LIVE_SOURCE_SET: ReadonlySet<string> = new Set(LIVE_SNAPSHOT_SOURCES);
+
+function isLiveAnchor(row: AnchorRow): boolean {
+  return row.source !== null && LIVE_SOURCE_SET.has(row.source);
+}
+
+/** One account's seam dates (rules 2 and 3 of fetchAnchorSourceSeamDates). */
+function accountSeamDates(anchors: AnchorRow[]): string[] {
+  const out: string[] = [];
+  const statements = anchors.filter((a) => !isLiveAnchor(a));
+  if (statements.length === 0) return out; // live-only: one basis throughout
+
+  // Rule 2: consecutive statement-grade anchors, live rows ignored.
+  for (let i = 1; i < statements.length; i++) {
+    const prev = statements[i - 1];
+    const cur = statements[i];
+    if (cur.source === prev.source) continue;
+    const joins =
+      cur.starting_value !== null &&
+      Math.abs(cur.starting_value - prev.total_value) <= STATEMENT_JOIN_TOLERANCE;
+    if (!joins) out.push(cur.month_end_date);
+  }
+
+  // Rule 3, head: live anchors before the first statement hand off to it.
+  const firstStatement = statements[0];
+  if (anchors[0] !== firstStatement) out.push(firstStatement.month_end_date);
+
+  // Rule 3, tail: the first live anchor after the last statement.
+  const lastStatement = statements[statements.length - 1];
+  const tail = anchors.find(
+    (a) => isLiveAnchor(a) && a.month_end_date > lastStatement.month_end_date
+  );
+  if (tail) out.push(tail.month_end_date);
+
+  return out;
 }

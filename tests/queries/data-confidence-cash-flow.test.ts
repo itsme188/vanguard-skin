@@ -202,20 +202,19 @@ describe("cashAccuracy dimension — unexplained cash-flow extension", () => {
   });
 
   it("stays fully silent (no unexplainedFlow, no timingResidual) on a source-seam day", () => {
+    // Since 2026-11-15 a live row bracketed by statement anchors is not a
+    // seam, so the go-live sits AFTER the fresh statement-grade anchor here:
+    // the first live anchor after the last statement (the go-live tail).
     insertFreshAnchor(db, 1, 2, 1_500_000);
-    // Anchor-source transition (canonical -> plaid) landing exactly on the
+    // Anchor-source transition (manual -> plaid) landing exactly on the
     // jump date — source-seam must win over live-anchor-residual even
     // though this date is ALSO a live (plaid) anchor.
     db.prepare(
       `INSERT INTO monthly_snapshots (account_id, month_end_date, total_value, source)
-       VALUES (1, '2026-07-05', 1300000, 'canonical')`
-    ).run();
-    db.prepare(
-      `INSERT INTO monthly_snapshots (account_id, month_end_date, total_value, source)
-       VALUES (1, '2026-07-11', 1440000.55, 'plaid')`
-    ).run();
-    insertValuation(db, 1, "2026-07-10", 60_500.25, 1_350_000.55);
-    insertValuation(db, 1, "2026-07-11", 210_500.25, 1_440_000.55);
+       VALUES (1, ?, 1440000.55, 'plaid')`
+    ).run(recentDate(1));
+    insertValuation(db, 1, recentDate(2), 60_500.25, 1_350_000.55);
+    insertValuation(db, 1, recentDate(1), 210_500.25, 1_440_000.55);
 
     const { cashAccuracy } = getDataConfidence(db);
 
