@@ -113,8 +113,14 @@ export function getConcentrationUniverse(
   // of the book four hours early (project rule: never resolve a user-facing
   // "today" in SQL).
   const maturityCutoff = options?.asOfDate ?? todayET();
+  // An as-of snapshot values each position at its newest close ON OR BEFORE
+  // that date (as computePositionRisk does): an unbounded latest close put
+  // today's prices on last week's holdings (look-ahead). FX stays the
+  // current rate: fx_rates keeps one rate per currency, no history.
+  const priceBound = options?.asOfDate ? "WHERE date <= ?" : "";
   const params: (string | number | null)[] = [
     ...(accountIds ?? []),
+    ...(options?.asOfDate ? [options.asOfDate] : []),
     maturityCutoff,
   ];
 
@@ -129,7 +135,7 @@ export function getConcentrationUniverse(
          SELECT p.security_id, p.close_price
          FROM prices p
          INNER JOIN (
-           SELECT security_id, MAX(date) AS max_date FROM prices GROUP BY security_id
+           SELECT security_id, MAX(date) AS max_date FROM prices ${priceBound} GROUP BY security_id
          ) lp ON p.security_id = lp.security_id AND p.date = lp.max_date
        ),
        per_account_positions AS (
