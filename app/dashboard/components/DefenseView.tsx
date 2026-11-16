@@ -1,6 +1,13 @@
 import { db } from "@/lib/db";
 import { resolveScope } from "@/lib/queries/accounts";
-import { computeDefenseAnalysis, NOT_CREDITED_UNKNOWN, type StandaloneBetKind } from "@/lib/compute/hedging";
+import {
+  computeDefenseAnalysis,
+  NOT_CREDITED_UNKNOWN,
+  NOT_CREDITED_BETA_NO_HISTORY,
+  NOT_CREDITED_BETA_LOW_FIT,
+  type DefenseCashLine,
+  type StandaloneBetKind,
+} from "@/lib/compute/hedging";
 import { interpretProtectionRatio, toneClass } from "@/lib/analysis/interpret";
 import { Money, Pct, Count, PrivateText } from "@/lib/privacy/components";
 import { CoverageBar } from "./CoverageBar";
@@ -36,6 +43,36 @@ function LeveragedFundsNotModelled({ info }: { info: { count: number; symbols: s
   );
 }
 
+/** One sentence under the cash line (owner ruling 2026-11-16). */
+export const DEFENSE_CASH_CAPTION =
+  "Cash lowers what can be lost, but it is not a hedge against the long book, so it is not in the protection ratio.";
+
+/**
+ * "Cash and equivalents: X% of this scope", the concentration card's own
+ * figure (splitConcentrationUniverse). Hidden when the scope holds none;
+ * borrowing (a cash fund below zero) is said instead of a share.
+ */
+function DefenseCashLineView({ cash }: { cash: DefenseCashLine }) {
+  if (cash.holdingCount === 0 && cash.borrowed.holdingCount === 0) return null;
+  return (
+    <div className="mt-4 border-t border-edge pt-3">
+      {cash.holdingCount > 0 && (
+        <p className="text-xs text-ink">
+          <span className="font-medium">Cash and equivalents:</span>{" "}
+          <Pct value={cash.weight * 100} digits={1} className="font-mono" /> of this scope
+        </p>
+      )}
+      {cash.borrowed.holdingCount > 0 && (
+        <p className="text-xs text-ink">
+          <span className="font-medium">Borrowed cash:</span> a cash balance below zero of{" "}
+          <Money value={cash.borrowed.marketValue} className="font-mono" /> (borrowing, not cash on hand)
+        </p>
+      )}
+      <p className="text-xs text-ink-faint mt-1">{DEFENSE_CASH_CAPTION}</p>
+    </div>
+  );
+}
+
 interface DefenseViewProps {
   scope?: string;
 }
@@ -68,10 +105,18 @@ export async function DefenseView({ scope = "all" }: DefenseViewProps) {
   }
 
   const protectionInterp = interpretProtectionRatio(summary.protectionRatio);
-  // Why each not-credited hedge and each assumed beta is so, counted apart.
-  const notCreditedUnknownType = analysis.notCreditedHedges.filter((h) => h.reason === NOT_CREDITED_UNKNOWN).length;
-  const notCreditedNonStock = summary.notCreditedCount - notCreditedUnknownType;
-  const assumedNoHistory = summary.assumedBetaHedgeCount - summary.assumedBetaLowFitCount;
+  // Why each hedge is not credited, counted apart (K4b; ruling 19 = B).
+  const countReason = (reason: string) => analysis.notCreditedHedges.filter((h) => h.reason === reason).length;
+  const notCreditedParts = [
+    { n: countReason(NOT_CREDITED_UNKNOWN), label: "fund type not on file" },
+    { n: countReason(NOT_CREDITED_BETA_NO_HISTORY), label: "not enough price history to measure its beta" },
+    { n: countReason(NOT_CREDITED_BETA_LOW_FIT), label: "price history fits the market too loosely to measure its beta" },
+  ];
+  notCreditedParts.unshift({
+    n: summary.notCreditedCount - notCreditedParts.reduce((a, p) => a + p.n, 0),
+    label: "not a stock fund",
+  });
+  const notCreditedShown = notCreditedParts.filter((p) => p.n > 0);
 
   // underlying → standalone-bet kind, so the most-exposed table can tell a
   // genuinely-unhedged long apart from a naked short / single-name bearish
@@ -121,40 +166,23 @@ export async function DefenseView({ scope = "all" }: DefenseViewProps) {
                 <Count value={summary.shortSideHedgeCount} /> short-side
               </p>
             )}
-            {summary.assumedBetaHedgeCount > 0 && (
-              <p className="text-xs mt-1 text-ink-faint">
-                <Count value={summary.assumedBetaHedgeCount} /> on an assumed beta (
-                {summary.assumedBetaLowFitCount === 0 ? (
-                  "not enough price history to measure one"
-                ) : assumedNoHistory === 0 ? (
-                  "a measured beta failed the fit test"
-                ) : (
-                  <>
-                    <Count value={assumedNoHistory} /> with too little price history,{" "}
-                    <Count value={summary.assumedBetaLowFitCount} /> whose measured beta failed the fit test
-                  </>
-                )}
-                )
-              </p>
-            )}
             {summary.notCreditedCount > 0 && (
               <p className="text-xs mt-1 text-ink-faint">
                 <Count value={summary.notCreditedCount} /> not credited (
-                {notCreditedUnknownType === 0 ? (
-                  "not a stock fund"
-                ) : notCreditedNonStock === 0 ? (
-                  "fund type not on file"
-                ) : (
-                  <>
-                    <Count value={notCreditedNonStock} /> not a stock fund,{" "}
-                    <Count value={notCreditedUnknownType} /> fund type not on file
-                  </>
-                )}
+                {notCreditedShown.length === 1
+                  ? notCreditedShown[0].label
+                  : notCreditedShown.map((p, i) => (
+                      <span key={p.label}>
+                        {i > 0 && ", "}
+                        <Count value={p.n} /> {p.label}
+                      </span>
+                    ))}
                 )
               </p>
             )}
           </div>
         </div>
+        <DefenseCashLineView cash={analysis.cashLine} />
       </section>
 
       {/* Sector coverage bars */}

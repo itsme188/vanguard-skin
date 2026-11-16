@@ -47,22 +47,9 @@ const BADGE_LABEL: Record<HedgeBadge, string> = {
  * `book (β=…)`). Each route gets a phrase here, and a route this map does not
  * know reads as words, so the cell never prints a `key: value` pair.
  */
-/**
- * A beta the engine marked "assumed" (K4c) reads as a guess, never as a
- * measurement, and says why: "assumed" alone is too little price history;
- * "assumed, low fit" is a beta that was measured but failed the fit test.
- */
-function betaWords(detail: string): string {
-  const assumed = /^β=(-?[\d.]+),\s*assumed(,\s*low fit)?$/.exec(detail);
-  if (!assumed) return detail;
-  return assumed[2]
-    ? `β ${assumed[1]} assumed: a beta was measured but tracked the market too loosely to use`
-    : `β ${assumed[1]} assumed: not enough price history to measure`;
-}
-
 export function protectsLabel(protects: string): string {
   const book = /^book\s*\((.*)\)$/.exec(protects);
-  if (book) return `Whole portfolio (${betaWords(book[1])})`;
+  if (book) return `Whole portfolio (${book[1]})`;
   const route = /^([a-z][a-z_]*):\s*(.*)$/.exec(protects);
   if (!route) return protects;
   const [, kind, detail] = route;
@@ -76,8 +63,8 @@ export function protectsLabel(protects: string): string {
     if (!own) return `${detail} sector, the fund's own`;
     const spill = /^(.*\S)\s+\+\s+book$/.exec(own[1]);
     return spill
-      ? `${spill[1]} sector (the fund's own), then the whole portfolio (${betaWords(own[2])})`
-      : `${own[1]} sector, the fund's own (${betaWords(own[2])})`;
+      ? `${spill[1]} sector (the fund's own), then the whole portfolio (${own[2]})`
+      : `${own[1]} sector, the fund's own (${own[2]})`;
   }
   if (kind === "sector") {
     return detail
@@ -209,7 +196,8 @@ function ShortSideHedges({ hedgeScores, total }: { hedgeScores: HedgeScore[]; to
 /**
  * Hedges on funds that give no equity protection credit (owner ruling
  * 2026-11-15, K4b): a commodity or bond fund, or a fund whose type is not on
- * file. Named with the reason, never silently dropped.
+ * file; and, by ruling 19 = B (2026-11-16), a fund whose beta cannot be
+ * measured. Named with the reason and the notional, never silently dropped.
  */
 function NotCreditedList({ hedges }: { hedges: NotCreditedHedge[] }) {
   if (hedges.length === 0) return null;
@@ -217,8 +205,8 @@ function NotCreditedList({ hedges }: { hedges: NotCreditedHedge[] }) {
     <section className="bg-panel border border-edge rounded-lg p-4">
       <h3 className="text-sm font-medium text-ink mb-1">Not credited</h3>
       <p className="text-xs text-ink-faint mb-3">
-        Positions that would protect a fund that is not a stock fund, or whose fund type is not on
-        file. They are left out of the protection ratio and the sector bars.
+        Positions on a fund that is not a stock fund, whose fund type is not on file, or whose beta
+        cannot be measured yet. They are left out of the protection ratio and the sector bars.
       </p>
       <ul className="divide-y divide-edge">
         {hedges.map((h) => (

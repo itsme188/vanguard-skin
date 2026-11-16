@@ -121,7 +121,7 @@ describe("computeDefenseAnalysis", () => {
     seedPrice(zzbId, 200);
   });
 
-  it("builds ZZA hedged_long, ZZM proxy via assumed beta, and ZZB naked_short, with a positive protection ratio", () => {
+  it("builds ZZA hedged_long, ZZM not credited (beta unmeasured, ruling 19 = B), and ZZB naked_short, with a positive protection ratio", () => {
     const result = computeDefenseAnalysis(db);
 
     expect(result.summary.protectionRatio).not.toBeNull();
@@ -133,10 +133,11 @@ describe("computeDefenseAnalysis", () => {
 
     const zzmProxy = result.proxies.find((p) => p.underlying === "ZZM");
     expect(zzmProxy).toBeDefined();
-    expect(zzmProxy!.route).toBe("beta");
-    expect(zzmProxy!.betaSource).toBe("assumed");
+    expect(zzmProxy!.route).toBe("not_credited");
+    expect(zzmProxy!.betaSource).toBe("unmeasured");
+    expect(result.notCreditedHedges.some((h) => h.underlying === "ZZM")).toBe(true);
     expect(
-      result.diagnostics.some((d) => d.kind === "assumed_beta" && d.symbol === "ZZM")
+      result.diagnostics.some((d) => d.kind === "unmeasured_beta" && d.symbol === "ZZM")
     ).toBe(true);
 
     const zzbBet = result.standaloneBets.find((b) => b.underlying === "ZZB");

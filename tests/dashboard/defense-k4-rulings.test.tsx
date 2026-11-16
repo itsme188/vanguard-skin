@@ -40,7 +40,6 @@ function score(over: Partial<HedgeScore>): HedgeScore {
     efficiency: 33,
     badges: [],
     side: "long",
-    betaAssumed: false,
     ...over,
   };
 }
@@ -110,23 +109,19 @@ describe("Defense on screen (K4)", () => {
     expect(list).toContain("commodity fund");
   });
 
-  it("K4c: an assumed beta reads as assumed; a measured one does not", () => {
-    expect(protectsLabel("book (β=1.0, assumed)")).toBe(
-      "Whole portfolio (β 1.0 assumed: not enough price history to measure)"
-    );
+  it("a measured beta reads as measured (ruling 19 = B: an unmeasured one earns no row at all)", () => {
     expect(protectsLabel("book (β=1.2)")).toBe("Whole portfolio (β=1.2)");
     expect(protectsLabel("own_sector: Healthcare (β=1.3)")).toBe("Healthcare sector, the fund's own (β=1.3)");
-    expect(protectsLabel("own_sector: Healthcare (β=1.0, assumed)")).toBe(
-      "Healthcare sector, the fund's own (β 1.0 assumed: not enough price history to measure)"
-    );
     expect(protectsLabel("own_sector: Healthcare + book (β=1.3)")).toBe(
       "Healthcare sector (the fund's own), then the whole portfolio (β=1.3)"
     );
   });
 
-  it("K4c: the headline strip counts assumed-beta hedges", () => {
+  it("ruling 19 = B: the headline strip has no assumed-beta count; unmeasured betas count as not credited", () => {
     const src = readFileSync("app/dashboard/components/DefenseView.tsx", "utf8");
-    anchorIndex(src, "<Count value={summary.assumedBetaHedgeCount} /> on an assumed beta");
+    expect(src).not.toMatch(/assumedBeta/);
+    anchorIndex(src, "NOT_CREDITED_BETA_NO_HISTORY");
+    anchorIndex(src, "NOT_CREDITED_BETA_LOW_FIT");
     anchorIndex(src, "notCreditedHedges={analysis.notCreditedHedges}");
   });
 });

@@ -435,8 +435,8 @@ describe("resolveProxyBeta", () => {
     expect(resolveProxyBeta(db, "MTUM")).toEqual({ beta: 1.42, source: "cached" });
   });
 
-  it("falls back to assumed 1.0 when nothing is available", () => {
-    expect(resolveProxyBeta(db, "ZZZQ")).toEqual({ beta: 1.0, source: "assumed", assumedReason: "no_history" });
+  it("is unmeasured (no beta assumed) when nothing is available (ruling 19 = B)", () => {
+    expect(resolveProxyBeta(db, "ZZZQ")).toEqual({ beta: null, source: "unmeasured", reason: "no_history" });
   });
 
   // 40 closes (39 return pairs): past the house beta gate's 30-pair floor
@@ -535,7 +535,7 @@ function ctx(over: Partial<AttributionContext> = {}): AttributionContext {
     longExposureByGeography: new Map([["Europe", 20000]]),
     tier1CreditedBySector: new Map(),
     totalLongExposure: 200000,
-    resolveBeta: () => ({ beta: 1.0, source: "assumed" as const }),
+    resolveBeta: () => ({ beta: 1.0, source: "cached" as const }),
     ...over,
   };
 }

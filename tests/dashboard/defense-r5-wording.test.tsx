@@ -22,13 +22,21 @@ vi.mock("next/navigation", () => ({
 import { DefenseTables, protectsLabel } from "@/app/dashboard/components/DefenseTables";
 
 describe("Defense wording (review R2/R3)", () => {
-  it("an assumed beta that failed the fit test is not called 'not enough history'", () => {
-    const low = protectsLabel("book (β=1.0, assumed, low fit)");
-    expect(low).not.toMatch(/not enough price history/);
-    expect(low).toMatch(/measured/);
-    expect(protectsLabel("own_sector: Healthcare + book (β=1.0, assumed, low fit)")).toMatch(/measured/);
-    // The no-history wording stays for a plain "assumed".
-    expect(protectsLabel("book (β=1.0, assumed)")).toMatch(/not enough price history/);
+  it("the not-credited list intro covers a beta that cannot be measured (ruling 19 = B)", () => {
+    const html = renderToStaticMarkup(
+      <DefenseTables
+        rankedExposures={[]}
+        hedgeScores={[]}
+        standaloneBets={[]}
+        standaloneBetKinds={{}}
+        shortSideHedgeNotional={0}
+        notCreditedHedges={[
+          { underlying: "ZZN", symbols: ["ZZN P"], protectiveNotional: 100, reason: "not enough price history to measure its beta" },
+        ]}
+      />
+    );
+    expect(html).toMatch(/beta\s+cannot be measured yet/);
+    expect(html).toContain("not enough price history to measure its beta");
   });
 
   it("a geography row says it is regional exposure with no beta applied", () => {
@@ -51,12 +59,12 @@ describe("Defense wording (review R2/R3)", () => {
     expect(html).toMatch(/fund type is not on file/);
   });
 
-  it("the headline strip counts the not-credited reasons, the assumed-beta reasons and the long/short split", () => {
+  it("the headline strip counts the not-credited reasons (unmeasured betas among them) and the long/short split", () => {
     const src = readFileSync("app/dashboard/components/DefenseView.tsx", "utf8");
     anchorIndex(src, "NOT_CREDITED_UNKNOWN");
     anchorIndex(src, "fund type not on file");
-    anchorIndex(src, "summary.assumedBetaLowFitCount");
-    anchorIndex(src, "failed the fit test");
+    anchorIndex(src, "NOT_CREDITED_BETA_LOW_FIT");
+    anchorIndex(src, "fits the market too loosely");
     anchorIndex(src, "<Count value={summary.longSideHedgeCount} /> long-side");
     anchorIndex(src, "<Count value={summary.shortSideHedgeCount} /> short-side");
     anchorIndex(src, "sc.protectedBeyondExposure");

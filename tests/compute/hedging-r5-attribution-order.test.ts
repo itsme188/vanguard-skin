@@ -4,6 +4,7 @@ import { runMigrations } from "@/lib/db/migrate";
 import {
   attributeProxies,
   resolveProxyBeta,
+  NOT_CREDITED_BETA_LOW_FIT,
   NOT_CREDITED_UNKNOWN,
   type AttributionContext,
   type ProxyCandidate,
@@ -132,7 +133,7 @@ describe("R3: an unknown-type fund is never credited through its geography", () 
   });
 });
 
-describe("R2: an assumed beta carries its reason", () => {
+describe("R2: an unmeasured beta carries its reason (ruling 19 = B)", () => {
   function db(): Database.Database {
     const d = new Database(":memory:");
     runMigrations(d);
@@ -147,9 +148,7 @@ describe("R2: an assumed beta carries its reason", () => {
   it("too little history: reason no_history", () => {
     const d = db();
     d.prepare("INSERT INTO securities (symbol, name, security_type, source_key) VALUES ('ZQ', 'ZQ', 'ETF', 't:ZQ')").run();
-    const r = resolveProxyBeta(d, "ZQ");
-    expect(r.source).toBe("assumed");
-    expect(r.assumedReason).toBe("no_history");
+    expect(resolveProxyBeta(d, "ZQ")).toEqual({ beta: null, source: "unmeasured", reason: "no_history" });
   });
 
   it("a measured beta that fails the fit test: reason low_fit", () => {
@@ -168,14 +167,12 @@ describe("R2: an assumed beta carries its reason", () => {
       d.prepare("INSERT INTO benchmark_prices (symbol, date, close_price, source) VALUES ('SPY', ?, ?, 'tws')").run(date, spy);
       d.prepare("INSERT INTO prices (security_id, date, close_price, source) VALUES (?, ?, ?, 'tws')").run(sid, date, zq);
     });
-    const r = resolveProxyBeta(d, "ZQ");
-    expect(r.source).toBe("assumed");
-    expect(r.assumedReason).toBe("low_fit");
+    expect(resolveProxyBeta(d, "ZQ")).toEqual({ beta: null, source: "unmeasured", reason: "low_fit" });
   });
 });
 
-describe("R2: the orchestrator carries the assumed-beta reason and the long/short split", () => {
-  it("a fit-test failure reads 'assumed, low fit' and is counted apart", async () => {
+describe("R2: the orchestrator carries the unmeasured-beta reason and the long/short split", () => {
+  it("a fit-test failure is not credited, with the low-fit reason (ruling 19 = B)", async () => {
     const { computeDefenseAnalysis } = await import("@/lib/compute/hedging");
     const { todayET, addDays } = await import("@/lib/calendar/date-utils");
     const d = new Database(":memory:");
@@ -215,14 +212,12 @@ describe("R2: the orchestrator carries the assumed-beta reason and the long/shor
 
     const r = computeDefenseAnalysis(d, [acct]);
     const p = r.proxies.find((x) => x.underlying === "ZZK")!;
-    expect(p.betaSource).toBe("assumed");
-    expect(p.assumedBetaReason).toBe("low_fit");
-    const row = r.hedgeScores.find((h) => h.underlying === "ZZK")!;
-    expect(row.protects).toMatch(/assumed, low fit/);
-    expect(row.betaAssumedReason).toBe("low_fit");
-    expect(r.summary.assumedBetaHedgeCount).toBe(1);
-    expect(r.summary.assumedBetaLowFitCount).toBe(1);
+    expect(p.route).toBe("not_credited");
+    expect(p.betaSource).toBe("unmeasured");
+    expect(p.notCreditedReason).toBe(NOT_CREDITED_BETA_LOW_FIT);
+    expect(r.hedgeScores.some((h) => h.underlying === "ZZK")).toBe(false);
+    expect(r.notCreditedHedges.find((h) => h.underlying === "ZZK")!.reason).toBe(NOT_CREDITED_BETA_LOW_FIT);
     expect(r.summary.longSideHedgeCount + r.summary.shortSideHedgeCount).toBe(r.summary.hedgeCount);
-    expect(r.diagnostics.some((x) => x.kind === "assumed_beta" && /fit test/.test(x.detail))).toBe(true);
+    expect(r.diagnostics.some((x) => x.kind === "unmeasured_beta" && /fit test/.test(x.detail))).toBe(true);
   });
 });

@@ -6,7 +6,7 @@ import {
   classifyBook,
   computeDefenseAnalysis,
   proxyFundVerdict,
-  ASSUMED_PROXY_BETA,
+  NOT_CREDITED_BETA_NO_HISTORY,
   type AttributionContext,
   type DefenseInstrument,
   type ProxyCandidate,
@@ -218,7 +218,7 @@ function ctx(over: Partial<AttributionContext> = {}): AttributionContext {
     longExposureByGeography: new Map([["Global", 50000]]),
     tier1CreditedBySector: new Map(),
     totalLongExposure: 100000,
-    resolveBeta: () => ({ beta: ASSUMED_PROXY_BETA, source: "assumed" as const }),
+    resolveBeta: () => ({ beta: null, source: "unmeasured" as const, reason: "no_history" as const }),
     ...over,
   };
 }
@@ -270,7 +270,7 @@ describe("attributeProxies: an own-sector credit never covers a sector past 100%
   });
 });
 
-describe("K4c: an assumed beta says so", () => {
+describe("K4c, superseded by ruling 19 = B (2026-11-16): an unmeasured beta is not credited", () => {
   beforeEach(() => {
     fresh();
     const zzl = sec("ZZL", { sector: "Healthcare" });
@@ -280,15 +280,14 @@ describe("K4c: an assumed beta says so", () => {
     option("ZZK", "PUT", 95, 1, 3);
   });
 
-  it("the row's route text carries 'assumed' and the summary counts it", () => {
+  it("the hedge is listed as not credited with its reason, earns no hedge-book row, and the summary counts it", () => {
     const r = computeDefenseAnalysis(db, [acct]);
     const p = r.proxies.find((x) => x.underlying === "ZZK")!;
-    expect(p.route).toBe("beta");
-    expect(p.betaSource).toBe("assumed");
-    const row = r.hedgeScores.find((h) => h.underlying === "ZZK")!;
-    expect(row.protects).toMatch(/assumed/);
-    expect(row.betaAssumed).toBe(true);
-    expect(r.summary.assumedBetaHedgeCount).toBe(1);
+    expect(p.route).toBe("not_credited");
+    expect(p.betaSource).toBe("unmeasured");
+    expect(r.hedgeScores.some((h) => h.underlying === "ZZK")).toBe(false);
+    expect(r.notCreditedHedges.find((h) => h.underlying === "ZZK")!.reason).toBe(NOT_CREDITED_BETA_NO_HISTORY);
+    expect(r.summary.notCreditedCount).toBe(1);
   });
 });
 

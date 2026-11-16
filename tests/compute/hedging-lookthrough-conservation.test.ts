@@ -136,7 +136,7 @@ describe("X4: weights that do not sum to 100 lose nothing", () => {
         longExposureByGeography: new Map(),
         tier1CreditedBySector: new Map(),
         totalLongExposure: 5000,
-        resolveBeta: () => ({ beta: 1, source: "assumed" }) as never,
+        resolveBeta: () => ({ beta: 1, source: "cached" }) as never,
         ownSectorByUnderlying: new Map([["ZZP", "Industrials"]]),
       }
     );
