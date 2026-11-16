@@ -117,7 +117,15 @@ export function rankThemeExposures(
 import type Database from "better-sqlite3";
 
 const MIN_SIGNAL_THRESHOLD = 2;
-const ARTICLE_LOAD_LIMIT = 200;
+/**
+ * A safety bound on one week's article read, not a selection: which
+ * articles are SENT is decided by buildMacroPromptInputs (held relevance,
+ * then newest). It sits far above a real week (the busiest measured week
+ * held under 300), so the ranking sees the whole window. At 200 the read
+ * dropped a busy week's OLDEST articles before the ranking ran (review
+ * 2026-11-15, R9).
+ */
+const ARTICLE_LOAD_LIMIT = 2000;
 
 export interface ArticleSignal {
   id: number;
@@ -177,14 +185,22 @@ export function buildMacroSignalBlob(
   // limit is a safety bound on the week, not the selection: which articles are
   // SENT is decided by buildMacroPromptInputs (held-relevance, then newest),
   // so a held name's article is not lost for being older than 60 others.
+  //
+  // Window: weekOf is the Monday that opens the cache week
+  // (currentThemeWeek; the Sunday briefing writes the upcoming Monday, so its
+  // read is exactly the 7 days before weekOf). The read starts 7 days before
+  // weekOf and ENDS where week weekOf ends, so a past week's regeneration
+  // never reads articles dated after that week (review 2026-11-15, R9).
+  // datetime() on both sides: stored times are space- or T-separated.
   const articleRows = db.prepare(
     `SELECT id, subject, summary, sentiment, mentioned_symbols, substr(raw_text, 1, 2000) AS excerpt
      FROM research_articles
      WHERE datetime(received_at) >= datetime(?, '-7 days')
+       AND datetime(received_at) < datetime(?, '+7 days')
        AND is_relevant = 1
      ORDER BY datetime(received_at) DESC, id DESC
      LIMIT ${ARTICLE_LOAD_LIMIT}`
-  ).all(weekOf) as Array<{
+  ).all(weekOf, weekOf) as Array<{
     id: number; subject: string; summary: string | null; sentiment: string | null;
     mentioned_symbols: string | null; excerpt: string | null;
   }>;
