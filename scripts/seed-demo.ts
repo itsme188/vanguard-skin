@@ -688,6 +688,7 @@ async function main() {
         prod.close();
       }
     }
+    // An existing -wal/-shm pair beside the live file is left in place by this copy (pre-existing behaviour, not changed here).
     fs.copyFileSync(DEMO_DB_PATH, PROD_DB_PATH);
     console.log(`Copied demo.db -> vanguard.db`);
   }
