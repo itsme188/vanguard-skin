@@ -1,9 +1,9 @@
 import fs from "node:fs";
 import path from "node:path";
 import Database from "better-sqlite3";
-import { backupFileName, backupPaths, isLiveDatabase, resolveBackupHome } from "@/lib/backup/backup-home";
-import { rollOldBackups, type RollResult } from "@/lib/backup/roll";
-import type { EnvLike } from "@/lib/db/db-path";
+import { backupFileName, backupPaths, isLiveDatabase, resolveBackupHome } from "./backup-home";
+import { rollOldBackups, type RollResult } from "./roll";
+import type { EnvLike } from "../db/db-path";
 
 export interface TakeBackupOptions {
   purpose: string;

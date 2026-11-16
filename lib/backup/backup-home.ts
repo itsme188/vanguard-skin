@@ -1,6 +1,6 @@
 import os from "node:os";
 import path from "node:path";
-import { resolveDbPath, type EnvLike } from "@/lib/db/db-path";
+import { resolveDbPath, type EnvLike } from "../db/db-path";
 
 /** How many recent backups stay in `recent/` before older ones are archived. */
 export const RECENT_BACKUPS_KEPT = 3;
