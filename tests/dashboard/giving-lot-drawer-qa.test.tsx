@@ -184,6 +184,7 @@ function gift(over: Partial<GivingDonation["donation"]> = {}, accountName: strin
     basis: null,
     gainAvoided: null,
     basisImplausible: false,
+    basisUnestablished: false,
     flaggedLots: [],
     longTermQuantity: null,
     shortTermQuantity: null,

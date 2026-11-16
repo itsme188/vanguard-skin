@@ -212,8 +212,10 @@ export function GivingYearSection({ year }: { year: GivingYear }) {
             Gain avoided{" "}
             {year.gainAvoided == null ? (
               <span className="text-ink-faint italic">pending lot assignment</span>
-            ) : year.gainAvoidedRowsLeftOut > 0 && year.gainAvoidedRowsCounted === 0 ? (
-              // Every row was left out: there is no believable total to print.
+            ) : year.gainAvoidedRowsCounted === 0 &&
+              year.gainAvoidedRowsLeftOut + year.gainAvoidedRowsUnsupported > 0 ? (
+              // Every row was left out (an implausible basis or a non-USD
+              // gift): there is no believable total to print.
               <span className="text-ink-faint italic">not shown</span>
             ) : (
               <Money value={year.gainAvoided} className="font-mono font-medium text-up" />
@@ -223,6 +225,13 @@ export function GivingYearSection({ year }: { year: GivingYear }) {
                 {" "}
                 · rows left out for an implausible basis:{" "}
                 <Count value={year.gainAvoidedRowsLeftOut} className="font-mono font-medium" />
+              </span>
+            )}
+            {year.gainAvoidedRowsUnsupported > 0 && (
+              <span className="text-warn">
+                {" "}
+                · left out (non-USD):{" "}
+                <Count value={year.gainAvoidedRowsUnsupported} className="font-mono font-medium" />
               </span>
             )}
           </span>
@@ -280,10 +289,12 @@ export function GivingYearSection({ year }: { year: GivingYear }) {
                       <Money value={d.fmv_usd} />
                     </td>
                     <td className="px-3 py-2.5 text-right font-mono tabular-nums text-ink-dim hidden md:table-cell">
-                      <Money value={gd.basis} />
+                      {/* Lots assigned but their split units cannot be
+                          established: no figure, the row needs review. */}
+                      <Money value={gd.basis} fallback={gd.basisUnestablished ? "needs review" : "—"} />
                     </td>
                     <td className="px-3 py-2.5 text-right font-mono tabular-nums text-ink-dim hidden md:table-cell">
-                      <Money value={gd.gainAvoided} />
+                      <Money value={gd.gainAvoided} fallback={gd.basisUnestablished ? "needs review" : "—"} />
                     </td>
                     <td className="px-3 py-2.5 text-xs text-ink-faint hidden md:table-cell">
                       {gd.longTermQuantity != null && gd.shortTermQuantity != null ? (
@@ -318,7 +329,7 @@ export function GivingYearSection({ year }: { year: GivingYear }) {
                               onClick={() => setDrawerDonation(gd)}
                               className="text-xs text-gold-ink hover:underline focus-ring"
                             >
-                              {gd.basis != null ? "Edit lots" : "Assign lots"}
+                              {gd.basis != null || gd.basisUnestablished ? "Edit lots" : "Assign lots"}
                             </button>
                           )}
                           {gd.linked && (

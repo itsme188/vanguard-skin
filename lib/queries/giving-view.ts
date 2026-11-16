@@ -52,6 +52,17 @@ export interface GivingDonation {
    */
   basisImplausible: boolean;
   /**
+   * True when an assigned lot's quantity on the gift date's share basis
+   * cannot be established (`quantityAcquiredInGiftUnits` answers null: a
+   * closed lot opened by part of a mixed IBKR trade, with a split after the
+   * gift). The row then shows no basis or avoided gain (both null) and
+   * `basisImplausible` is true, so it is left out of the year total and
+   * counted there. A "basis verified" marker cannot fix this (the marker
+   * vouches for the basis, not for the split units), so no flagged lot is
+   * listed for it. Always false with no lots assigned.
+   */
+  basisUnestablished: boolean;
+  /**
    * The assigned lots whose basis trips the 1% rule, in assignment order,
    * each with its state. A `plausible` lot is never listed, marker or not.
    * The page draws one chip and one control per entry.
@@ -309,14 +320,21 @@ interface StoredLotQuantities {
  * took only the first k of them. Its acquisition transaction's quantity
  * times those first k ratios must equal the stored figure for some k; when
  * it does, the gift-date figure is that quantity times the splits before the
- * gift. KNOWN LIMIT: a lot opened by only part of its transaction (an IBKR
- * mixed open/close trade) never matches, and keeps the stored figure.
+ * gift.
+ *
+ * Null when that figure cannot be established: a closed lot with a split
+ * after the gift whose stored figure matches no k. That is a lot opened by
+ * only part of its transaction (an IBKR mixed open/close trade, see the
+ * mixed branch of `processTrade` in lib/compute/tax-lots.ts), or one whose
+ * acquisition transaction is missing. Keeping the stored figure there was
+ * wrong by the product of the splits the lot took (2026-11-15 review), so
+ * callers show no basis and offer no capacity for such a lot.
  */
 function quantityAcquiredInGiftUnits(
   lot: StoredLotQuantities,
   splits: readonly ReplaySplit[],
   giftDate: string
-): number {
+): number | null {
   const sinceAcquisition = splits.filter((s) => s.effectiveDate >= lot.acquisition_date);
   const afterGift = sinceAcquisition.filter((s) => s.effectiveDate >= giftDate);
   if (afterGift.length === 0) return lot.quantity_acquired;
@@ -335,7 +353,7 @@ function quantityAcquiredInGiftUnits(
       }
     }
   }
-  return lot.quantity_acquired;
+  return null;
 }
 
 /** Splits for one security, or none. */
@@ -529,6 +547,7 @@ function buildGivingDonation(
   let longTermQuantity: number | null = null;
   let shortTermQuantity: number | null = null;
   let basisImplausible = false;
+  let basisUnestablished = false;
   const flaggedLots: GivingFlaggedLot[] = [];
 
   if (d.kind === "stock" && outLeg != null && assignments.length > 0) {
@@ -538,6 +557,14 @@ function buildGivingDonation(
     for (const a of assignments) {
       // On the gift date's share basis, the units `a.quantity` is in (G2).
       const acquiredInGiftUnits = quantityAcquiredInGiftUnits(a, splits, outLeg.trade_date);
+      if (isLongTermHolding(a.acquisition_date, outLeg.trade_date)) lt += a.quantity;
+      else st += a.quantity;
+      if (acquiredInGiftUnits == null) {
+        // No believable per-share basis: the row shows none and is left out.
+        basisUnestablished = true;
+        basisImplausible = true;
+        continue;
+      }
       const perShare = acquiredInGiftUnits !== 0 ? a.cost_basis / acquiredInGiftUnits : 0;
       basisSum += a.quantity * perShare;
       // Judged per LOT, not on the blended row: one penny-basis lot among
@@ -565,11 +592,9 @@ function buildGivingDonation(
       }
       // One unverified (or stale) lot leaves the whole row out.
       if (leavesRowOut(state)) basisImplausible = true;
-      if (isLongTermHolding(a.acquisition_date, outLeg.trade_date)) lt += a.quantity;
-      else st += a.quantity;
     }
-    basis = basisSum;
-    gainAvoided = d.fmv_usd - basisSum;
+    basis = basisUnestablished ? null : basisSum;
+    gainAvoided = basisUnestablished ? null : d.fmv_usd - basisSum;
     longTermQuantity = lt;
     shortTermQuantity = st;
   }
@@ -607,6 +632,7 @@ function buildGivingDonation(
     basis,
     gainAvoided,
     basisImplausible,
+    basisUnestablished,
     flaggedLots,
     longTermQuantity,
     shortTermQuantity,
@@ -701,7 +727,9 @@ export function getGivingView(db: Database.Database): {
       const allStockDonations = active.filter((gd) => gd.donation.kind === "stock");
       const gainAvoidedRowsUnsupported = allStockDonations.filter((gd) => gd.status === "unsupported").length;
       const stockDonations = allStockDonations.filter((gd) => gd.status !== "unsupported");
-      const anyMissingBasis = stockDonations.some((gd) => gd.basis == null);
+      // A row with lots whose basis cannot be established is left out and
+      // counted below, not "pending": its lots are assigned.
+      const anyMissingBasis = stockDonations.some((gd) => gd.basis == null && !gd.basisUnestablished);
       // A row with an implausible basis is left out of the total (owner
       // ruling 2026-10-06); the header says how many were. The row flag is
       // the single source — the total never re-derives it. A row whose
@@ -744,6 +772,13 @@ export interface OpenLotForDonation {
   /** The lot's quantity acquired on the gift date's share basis (a split
    * dated on or after the gift is taken back out; G2, 2026-11-15). */
   quantityAcquired: number;
+  /**
+   * True when the lot's quantity on the gift date's basis cannot be
+   * established (see `quantityAcquiredInGiftUnits`). `quantityAcquired`,
+   * `remainingAsOfDonationDate` are then 0 and `gainPerShare` null, so the
+   * drawer offers none of it.
+   */
+  quantityUnestablished: boolean;
   /** quantity_acquired minus sales before the donation's OUT-leg date minus
    * OTHER (unreversed) donations' assignments dated before it — NOT today's
    * quantity_remaining, which would price the gift in the wrong basis if a
@@ -899,11 +934,16 @@ export function getOpenLotsForDonation(db: Database.Database, donationId: number
     ) as { date: string; qty: number }[];
     const salesBefore = splits.length === 0 ? totalOf(salesRows) : inGiftUnits(salesRows);
     const otherAssigned = splits.length === 0 ? totalOf(otherRows) : inGiftUnits(otherRows);
-    const acquiredInGiftUnits = quantityAcquiredInGiftUnits(lot, splits, outLeg.trade_date);
-    const remaining = Math.max(0, acquiredInGiftUnits - salesBefore - otherAssigned);
+    const established = quantityAcquiredInGiftUnits(lot, splits, outLeg.trade_date);
+    // A lot whose gift-date quantity cannot be established offers no
+    // capacity and no gain per share (0 acquired, 0 available): the drawer
+    // must not offer shares it cannot count.
+    const quantityUnestablished = established == null;
+    const acquiredInGiftUnits = established ?? 0;
+    const remaining = quantityUnestablished ? 0 : Math.max(0, acquiredInGiftUnits - salesBefore - otherAssigned);
     const isLongTerm = isLongTermHolding(lot.acquisition_date, outLeg.trade_date);
     const costPerShare = acquiredInGiftUnits !== 0 ? lot.cost_basis / acquiredInGiftUnits : 0;
-    const gainPerShare = fmvPerShare != null ? fmvPerShare - costPerShare : null;
+    const gainPerShare = fmvPerShare != null && !quantityUnestablished ? fmvPerShare - costPerShare : null;
     const basisState = donatedLotBasisState({
       lotCostBasis: lot.cost_basis,
       lotQuantityAcquired: acquiredInGiftUnits,
@@ -920,6 +960,7 @@ export function getOpenLotsForDonation(db: Database.Database, donationId: number
       acquisitionDate: lot.acquisition_date,
       costBasis: lot.cost_basis,
       quantityAcquired: acquiredInGiftUnits,
+      quantityUnestablished,
       remainingAsOfDonationDate: remaining,
       isLongTerm,
       gainPerShare,

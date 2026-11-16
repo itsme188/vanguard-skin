@@ -14,6 +14,7 @@ function lot(overrides: Partial<OpenLotForDonation>): OpenLotForDonation {
     acquisitionDate: "2023-01-01",
     costBasis: 1000,
     quantityAcquired: 100,
+    quantityUnestablished: false,
     remainingAsOfDonationDate: 100,
     isLongTerm: true,
     gainPerShare: 1,
