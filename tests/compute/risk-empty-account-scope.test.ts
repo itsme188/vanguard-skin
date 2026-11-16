@@ -127,11 +127,15 @@ describe("a defined empty account list is no accounts", () => {
       top5Concentration: 0,
       top5Positions: [],
       positionCount: 0,
+      cashWeight: 0,
+      cashMarketValue: 0,
+      cashHoldingCount: 0,
     });
     expect(getConcentrationMetrics(db, [])).toEqual({
       hhi: 0,
       effective_positions: 0,
       top_positions: [],
+      cash: { market_value: 0, weight_pct: 0, holding_count: 0 },
       warnings: ["No positions with market value found."],
     });
   });
@@ -208,10 +212,23 @@ describe("undefined and a non-empty list answer as before", () => {
     // The universe's valuedAfterAsOf flag (2026-11-15) postdates the
     // digest: no position in this fixture carries it (asserted below), so
     // it is left out and the digest still proves every figure unchanged.
+    // Likewise the cash-equivalent split (owner ruling 2026-11-15): this
+    // fixture holds no cash equivalent (asserted below), so the flag and the
+    // zero cash bucket are left out and every figure is proved unchanged.
+    const POST_DIGEST_KEYS = new Set([
+      "valuedAfterAsOf",
+      "isCashEquivalent",
+      "cashWeight",
+      "cashMarketValue",
+      "cashHoldingCount",
+    ]);
     for (const o of out) {
       for (const p of o.universe) expect(p.valuedAfterAsOf).toBe(false);
+      for (const p of o.universe) expect(p.isCashEquivalent).toBe(false);
+      expect(o.concentration.cashWeight).toBe(0);
+      expect(o.risk.cashWeight).toBe(0);
     }
-    return JSON.stringify(out, (key, value) => (key === "valuedAfterAsOf" ? undefined : value));
+    return JSON.stringify(out, (key, value) => (POST_DIGEST_KEYS.has(key) ? undefined : value));
   }
 
   it("every reader returns the figures it returned before the empty-list rule", () => {

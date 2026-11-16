@@ -5,7 +5,7 @@ import { PERCENT_BASIS } from "@/lib/analysis/percent-bases";
 import { useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 import { useToast } from "../Toast";
-import { Count, PrivateText, usePrivateFormatter } from "@/lib/privacy/components";
+import { Count, Money, Pct, PrivateText, usePrivateFormatter } from "@/lib/privacy/components";
 import { usePrivacy } from "@/lib/privacy/context";
 import {
   ResponsiveContainer,
@@ -140,6 +140,47 @@ export function classifyRunSummary(
   return parts.join(" · ");
 }
 
+/**
+ * Owner ruling 2026-11-15: cash and cash-equivalent funds are protection and
+ * flexibility. They stay in the portfolio total (so they dilute every weight)
+ * and show as ONE line, never as a ranked position or a single-name warning.
+ * Shared by this card and the Risk Decomposition card (RiskMetrics.tsx).
+ */
+export const CASH_EQUIVALENTS_SENTENCE =
+  "Held as cash: available to deploy and not exposed to the market. It counts in the portfolio total, so it lowers every weight, but it is not ranked as a position.";
+
+/** How cash enters the Herfindahl (candidate ii, owner ruling 2026-11-15). */
+export const HHI_CASH_NOTE =
+  "Cash counts as dilution: it is in the total every weight is measured against, but adds nothing to the index.";
+
+/** Shown in place of the Herfindahl sentence when the scope holds only cash. */
+export const ALL_CASH_SENTENCE =
+  "Everything in this scope is held as cash, so there is no single-name risk to measure.";
+
+/** The "Cash and equivalents" line: share of the whole book, value and fund count. */
+export function CashEquivalentsLine({
+  weightPct,
+  marketValue,
+  holdingCount,
+}: {
+  weightPct: number;
+  marketValue: number;
+  holdingCount: number;
+}) {
+  return (
+    <div className="bg-raised/50 rounded-lg p-3 mb-4">
+      <p className="text-xs text-ink">
+        <span className="font-medium">Cash and equivalents</span>{" "}
+        <Pct value={weightPct} digits={1} className="font-mono text-ink" /> of the portfolio
+        {" · "}
+        <Money value={marketValue} className="font-mono" /> in{" "}
+        <Count value={holdingCount} /> {holdingCount === 1 ? "holding" : "holdings"}
+      </p>
+      <p className="text-xs text-ink-faint mt-1">{CASH_EQUIVALENTS_SENTENCE}</p>
+    </div>
+  );
+}
+
 /** Same markup as MetricCard, with slots that can hold a privacy component. */
 function ConcentrationTile({
   label,
@@ -224,6 +265,10 @@ export function ClassificationCard({ concentration, coverage }: Props) {
     (v: number | string | undefined) => `${Number(v).toFixed(1)}%`,
   );
 
+  // Owner ruling 2026-11-15: cash is one line, never a ranked position.
+  const hasCash = concentration.cash.weight_pct > 0;
+  const allCash = hasCash && concentration.top_positions.length === 0;
+
   async function runAutoClassify() {
     setClassifyLoading(true);
     try {
@@ -282,7 +327,14 @@ export function ClassificationCard({ concentration, coverage }: Props) {
           <ConcentrationTile
             label="Herfindahl Index (HHI)"
             value={<PrivateText>{concentration.hhi.toFixed(4)}</PrivateText>}
-            description={<PrivateText>{interpretHHI(concentration.hhi).text}</PrivateText>}
+            description={
+              <>
+                <PrivateText>
+                  {allCash ? ALL_CASH_SENTENCE : interpretHHI(concentration.hhi).text}
+                </PrivateText>
+                {hasCash && <span className="block mt-1">{HHI_CASH_NOTE}</span>}
+              </>
+            }
             color={
               concentration.hhi > 0.25
                 ? "text-down"
@@ -294,7 +346,7 @@ export function ClassificationCard({ concentration, coverage }: Props) {
           <ConcentrationTile
             label="Effective Positions"
             value={<Count value={Math.round(effectivePositionsFromHHI(concentration.hhi))} />}
-            description="1/HHI — equivalent equal-weighted positions (same count as the sentence below)"
+            description="1/HHI — equivalent equal-weighted positions (same count as the Herfindahl sentence)"
             color="text-blue"
           />
           <ConcentrationTile
@@ -308,6 +360,14 @@ export function ClassificationCard({ concentration, coverage }: Props) {
             color={coverage.coverage_pct > 90 ? "text-up" : coverage.coverage_pct > 70 ? "text-gold" : "text-down"}
           />
         </div>
+
+        {hasCash && (
+          <CashEquivalentsLine
+            weightPct={concentration.cash.weight_pct}
+            marketValue={concentration.cash.market_value}
+            holdingCount={concentration.cash.holding_count}
+          />
+        )}
 
         {concentration.top_positions.length > 0 && (
           <div>

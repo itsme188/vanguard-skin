@@ -43,6 +43,7 @@ function sampleConcentration(): ConcentrationMetrics {
     // Empty so the recharts <ResponsiveContainer> block (which needs real
     // DOM measurement, unavailable in this SSR-only harness) never renders.
     top_positions: [],
+    cash: { market_value: 0, weight_pct: 0, holding_count: 0 },
     warnings: [],
   };
 }

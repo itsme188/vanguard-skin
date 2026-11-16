@@ -47,6 +47,7 @@ import { adjustedMarketValueSQL } from "@/lib/valuation";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 import { todayET } from "@/lib/calendar/date-utils";
 import { liveOptionExpirationSql } from "@/lib/compute/option-expiry";
+import { cashEquivalentSecuritySql } from "@/lib/compute/cash-equivalents";
 
 /**
  * Half a cent. Below this a position is worth nothing a dollar figure could
@@ -78,6 +79,16 @@ export interface ConcentrationPosition {
    * false without an as-of date.
    */
   valuedAfterAsOf: boolean;
+  /**
+   * true for a cash-equivalent security (money-market sweep fund and the
+   * like), decided by `cashEquivalentSecuritySql`, the SQL twin of
+   * `isCashEquivalentSecurity`. Owner ruling 2026-11-15: cash STAYS in the
+   * book (it is in the weight denominator, so it dilutes concentration) but
+   * it is one "Cash and equivalents" line, never a ranked single-name
+   * position and never a single-position warning. See
+   * `splitConcentrationUniverse`.
+   */
+  isCashEquivalent: boolean;
 }
 
 export interface ConcentrationUniverseOptions {
@@ -170,6 +181,7 @@ export function getConcentrationUniverse(
            s.id AS security_id,
            s.symbol,
            s.name AS security_name,
+           CASE WHEN ${cashEquivalentSecuritySql("s")} THEN 1 ELSE 0 END AS is_cash,
            CASE
              WHEN lp.close_price IS NOT NULL
                THEN ${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}
@@ -200,7 +212,8 @@ export function getConcentrationUniverse(
          security_name,
          SUM(market_value) AS market_value,
          MIN(priced) AS priced,
-         MAX(valued_after_as_of) AS valued_after_as_of
+         MAX(valued_after_as_of) AS valued_after_as_of,
+         MAX(is_cash) AS is_cash
        FROM per_account_positions
        GROUP BY security_id, symbol, security_name
        HAVING ABS(SUM(market_value)) > ${ZERO_VALUE_EPSILON}
@@ -230,6 +243,7 @@ export function getConcentrationUniverse(
       market_value: number;
       priced: number;
       valued_after_as_of: number;
+      is_cash: number;
     }>;
 
   return rows.map((r) => ({
@@ -239,6 +253,7 @@ export function getConcentrationUniverse(
     marketValue: r.market_value,
     priced: r.priced === 1,
     valuedAfterAsOf: r.valued_after_as_of === 1,
+    isCashEquivalent: r.is_cash === 1,
   }));
 }
 
@@ -272,4 +287,51 @@ export function getConcentrationUniverse(
  */
 export function concentrationGrossValue(positions: ConcentrationPosition[]): number {
   return positions.reduce((sum, p) => sum + Math.abs(p.marketValue), 0);
+}
+
+/**
+ * The universe split the way every concentration figure reads it (owner
+ * ruling 2026-11-15: cash is protection and flexibility, not a position to
+ * leave out or to rank).
+ *
+ *  - `grossValue` is the WHOLE book, cash included, so every weight is a
+ *    share of the whole portfolio and cash dilutes concentration.
+ *  - `risky` is every non-cash position, in the universe's own gross order;
+ *    only these are ranked, summed into a top-N share or warned about.
+ *  - `cash` is ONE bucket: every cash-equivalent holding in scope together.
+ *  - `herfindahl` is Σ (|mv_i| / grossValue)² over the RISKY positions only
+ *    (cash is a riskless bucket and adds nothing to single-name risk), so
+ *    more cash lowers the index. It is the single-name risk of an equal,
+ *    fully invested book of 1/HHI names. null when there is no risky
+ *    position to measure (an empty book, or one that is all cash).
+ *
+ * Both concentration surfaces call this, so they cannot disagree.
+ */
+export interface ConcentrationSplit {
+  grossValue: number;
+  risky: ConcentrationPosition[];
+  cash: { marketValue: number; weight: number; holdingCount: number };
+  herfindahl: number | null;
+}
+
+export function splitConcentrationUniverse(positions: ConcentrationPosition[]): ConcentrationSplit {
+  const grossValue = concentrationGrossValue(positions);
+  const risky = positions.filter((p) => !p.isCashEquivalent);
+  const cashRows = positions.filter((p) => p.isCashEquivalent);
+  const cashMarketValue = cashRows.reduce((s, p) => s + p.marketValue, 0);
+  const cashGross = cashRows.reduce((s, p) => s + Math.abs(p.marketValue), 0);
+  const herfindahl =
+    grossValue > 0 && risky.length > 0
+      ? risky.reduce((s, p) => s + (Math.abs(p.marketValue) / grossValue) ** 2, 0)
+      : null;
+  return {
+    grossValue,
+    risky,
+    cash: {
+      marketValue: cashMarketValue,
+      weight: grossValue > 0 ? cashGross / grossValue : 0,
+      holdingCount: cashRows.length,
+    },
+    herfindahl,
+  };
 }

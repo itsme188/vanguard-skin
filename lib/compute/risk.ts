@@ -8,8 +8,8 @@ import { adjustedMarketValueSQL } from "@/lib/valuation";
 import { getRiskFreeRate } from "@/lib/queries/risk-free-rate";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 import {
-  concentrationGrossValue,
   getConcentrationUniverse,
+  splitConcentrationUniverse,
 } from "@/lib/queries/concentration-universe";
 import { accountIdsFilterSql, normalizeAccountIds } from "@/lib/compute/factors";
 import { buildFlowAdjustedIndex, fetchNetFlowsByDate, fetchAnchorSourceSeamDates } from "@/lib/compute/flow-adjusted";
@@ -102,6 +102,10 @@ export interface PortfolioRiskMetrics {
   top5Concentration: number; // 0-1
   top5Positions: PositionWeight[];
   positionCount: number;
+  /** Cash and equivalents' share of the whole book, 0-1 (see ConcentrationResult). */
+  cashWeight: number;
+  cashMarketValue: number;
+  cashHoldingCount: number;
   dataPoints: number; // number of daily valuations used
   /** Anchor-source seam days bridged out of the return stream (see
    *  fetchAnchorSourceSeamDates) — 0 on seam-free series. Quantifies
@@ -332,8 +336,15 @@ export function computeRiskMetrics(
   const { volatility, sharpeRatio } = computeVolatility(logReturns, points.length, riskFreeRate);
 
   // 3. Compute concentration from current holdings
-  const { herfindahl, top5Concentration, top5Positions, positionCount } =
-    computeConcentration(db, accountIds, options?.asOfDate);
+  const {
+    herfindahl,
+    top5Concentration,
+    top5Positions,
+    positionCount,
+    cashWeight,
+    cashMarketValue,
+    cashHoldingCount,
+  } = computeConcentration(db, accountIds, options?.asOfDate);
 
   return {
     maxDrawdown,
@@ -345,6 +356,9 @@ export function computeRiskMetrics(
     top5Concentration,
     top5Positions,
     positionCount,
+    cashWeight,
+    cashMarketValue,
+    cashHoldingCount,
     dataPoints: valuations.length,
     seriesStart: points.length > 0 ? points[0].date : null,
     seriesEnd: points.length > 0 ? points[points.length - 1].date : null,
@@ -517,6 +531,24 @@ function computeVolatility(
 
 // ─── Concentration (Herfindahl & Top-5) ─────────────────────────
 
+export interface ConcentrationResult {
+  /** Σ squared whole-book weights of the RISKY positions; null when there is
+   *  no risky position (empty book, or all cash). */
+  herfindahl: number | null;
+  /** Top-5 risky positions' share of the whole book, 0-1. */
+  top5Concentration: number;
+  top5Positions: PositionWeight[];
+  /** Risky (non-cash) positions only. */
+  positionCount: number;
+  /** "Cash and equivalents": every cash-equivalent holding's share of the
+   *  whole book, 0-1. Never ranked, never a single-position warning. */
+  cashWeight: number;
+  /** Signed USD value of that bucket. */
+  cashMarketValue: number;
+  /** How many cash-equivalent securities make up the bucket. */
+  cashHoldingCount: number;
+}
+
 /**
  * Herfindahl / top-5 concentration for the Risk Decomposition "Position
  * Concentration" block.
@@ -524,6 +556,11 @@ function computeVolatility(
  * Weights are GROSS — |market value| over the book's Σ |market value| (user
  * ruling, decision 2026-09-22) — so the index is bounded in (0, 1] on a book
  * that carries shorts.
+ *
+ * Cash equivalents (owner ruling 2026-11-15) stay in that denominator but are
+ * one "Cash and equivalents" bucket: never ranked, and left out of the sum of
+ * squares, so a book holding a share c in cash has an index of at most
+ * (1 − c)². See splitConcentrationUniverse.
  *
  * The position universe is NOT built here — it comes from
  * `getConcentrationUniverse`, the same helper the Analysis · Diagnostics
@@ -543,51 +580,43 @@ export function computeConcentration(
   db: Database.Database,
   accountIds?: number[],
   asOfDate?: string
-): {
-  herfindahl: number | null;
-  top5Concentration: number;
-  top5Positions: PositionWeight[];
-  positionCount: number;
-} {
+): ConcentrationResult {
   const rows = getConcentrationUniverse(db, accountIds, { asOfDate });
 
-  if (rows.length === 0) {
-    return { herfindahl: null, top5Concentration: 0, top5Positions: [], positionCount: 0 };
-  }
-
-  // GROSS denominator — Σ |market value| — per user ruling, decision
-  // 2026-09-22. A signed denominator let a short both add w² and shrink the
-  // book it was measured against, so the index ran above 1 (long 100 /
-  // short −60 read 8.5). Gross weights keep it in (0, 1]; see
-  // concentrationGrossValue for the derivation. Zero only on an empty
-  // universe, which is the same "nothing to measure" line
-  // getConcentrationMetrics draws.
-  const grossValue = concentrationGrossValue(rows);
-  if (grossValue <= 0) {
-    return { herfindahl: null, top5Concentration: 0, top5Positions: [], positionCount: 0 };
+  // GROSS denominator over the WHOLE book, cash included (decision
+  // 2026-09-22; owner ruling 2026-11-15). Cash equivalents are one bucket:
+  // they dilute every weight but are never ranked, and the Herfindahl sums
+  // the risky positions' squared weights only. splitConcentrationUniverse is
+  // the one copy of that rule; getConcentrationMetrics reads it too.
+  const split = splitConcentrationUniverse(rows);
+  const cash = {
+    cashWeight: split.cash.weight,
+    cashMarketValue: split.cash.marketValue,
+    cashHoldingCount: split.cash.holdingCount,
+  };
+  if (split.grossValue <= 0 || split.risky.length === 0) {
+    return { herfindahl: null, top5Concentration: 0, top5Positions: [], positionCount: 0, ...cash };
   }
 
   // Only the WEIGHT is gross — marketValue keeps its sign so a short still
   // renders as negative dollars on the card.
-  const positions: PositionWeight[] = rows.map(r => ({
+  const positions: PositionWeight[] = split.risky.map(r => ({
     symbol: r.symbol,
     securityName: r.securityName,
     marketValue: r.marketValue,
-    weight: Math.abs(r.marketValue) / grossValue,
+    weight: Math.abs(r.marketValue) / split.grossValue,
   }));
 
-  // Herfindahl index: sum of squared weights
-  const herfindahl = positions.reduce((s, p) => s + p.weight ** 2, 0);
-
-  // Top-5 concentration
+  // Top-5 concentration (risky positions, whole-book weights)
   const top5 = positions.slice(0, 5);
   const top5Concentration = top5.reduce((s, p) => s + p.weight, 0);
 
   return {
-    herfindahl,
+    herfindahl: split.herfindahl,
     top5Concentration,
     top5Positions: top5,
     positionCount: positions.length,
+    ...cash,
   };
 }
 

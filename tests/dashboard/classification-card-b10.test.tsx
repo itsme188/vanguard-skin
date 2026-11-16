@@ -39,7 +39,13 @@ import { ToastProvider } from "@/app/dashboard/components/Toast";
 const MASK = "•••";
 
 function concentration(): ConcentrationMetrics {
-  return { hhi: 0.08, effective_positions: 12.5, top_positions: [], warnings: [] };
+  return {
+    hhi: 0.08,
+    effective_positions: 12.5,
+    top_positions: [],
+    cash: { market_value: 0, weight_pct: 0, holding_count: 0 },
+    warnings: [],
+  };
 }
 
 // Synthetic counts, chosen so no figure collides with a class name.

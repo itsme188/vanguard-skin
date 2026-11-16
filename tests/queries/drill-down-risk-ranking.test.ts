@@ -163,15 +163,20 @@ describe("risk drill-down universe == Concentration 'Top 10 Positions' universe"
     );
   });
 
-  it("with sweeps in the book, the drawer is the concentration top 10 minus the sweeps", () => {
+  it("with sweeps in the book, the drawer is the concentration top 10's largest names", () => {
     const drawer = getHoldingsInBucket(db, "all", { kind: "risk", topN: 10 });
     const concentration = getConcentrationMetrics(db).top_positions.map((p) => p.symbol);
 
-    // The chart's own top 10 is value-ranked, so both sweeps sit in it.
-    expect(concentration.slice(0, 2)).toEqual(["SWEEP1", "SWEEP2"]);
-    expect(drawer.map((r) => r.symbol).sort()).toEqual(
-      concentration.filter((s) => !s.startsWith("SWEEP")).sort()
-    );
+    // Owner ruling 2026-11-15: cash equivalents are one "Cash and
+    // equivalents" line, never a ranked position, so the chart's top 10 is
+    // the ten equities. The drawer still takes a value-ranked top 10 WITH
+    // the sweeps and then drops them (lib/queries/drill-down.ts), so it lists
+    // the chart's first eight names. Aligning the drawer with the chart is a
+    // follow-up in drill-down.ts.
+    expect(concentration).not.toContain("SWEEP1");
+    expect(concentration).not.toContain("SWEEP2");
+    expect(concentration).toHaveLength(10);
+    expect(drawer.map((r) => r.symbol).sort()).toEqual(concentration.slice(0, 8).sort());
   });
 
   it("keeps the 7th and 8th largest positions and rejects smaller high-beta names", () => {

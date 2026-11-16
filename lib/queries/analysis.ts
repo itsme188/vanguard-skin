@@ -10,8 +10,8 @@ import { FACTOR_COLUMNS, type FactorColumn } from "@/lib/factors";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 import { accountScopeAndSql, accountScopeCondition } from "@/lib/queries/account-scope-sql";
 import {
-  concentrationGrossValue,
   getConcentrationUniverse,
+  splitConcentrationUniverse,
 } from "@/lib/queries/concentration-universe";
 import { explodeHoldingBySector } from "@/lib/compute/explode-sector";
 import { getEtfSectorWeights } from "@/lib/queries/etf-weights";
@@ -70,6 +70,20 @@ export interface ConcentrationMetrics {
     /** GROSS share of the book, always >= 0 (decision 2026-09-22). */
     weight_pct: number;
   }>;
+  /**
+   * "Cash and equivalents" (owner ruling 2026-11-15): every cash-equivalent
+   * holding in scope as ONE line. It is part of the whole-book denominator
+   * (it dilutes every weight above) but it is never in `top_positions`,
+   * never in the HHI's sum of squares and never a warning.
+   */
+  cash: {
+    /** Signed USD value of the bucket. */
+    market_value: number;
+    /** Share of the whole book (gross), 0-100. */
+    weight_pct: number;
+    /** How many cash-equivalent securities make it up. */
+    holding_count: number;
+  };
   warnings: string[];
 }
 
@@ -618,13 +632,20 @@ export function getConcentrationMetrics(
   // analysis-diagnostics--four-different-spy-weights-one-page-regression-2).
   const positions = getConcentrationUniverse(db, accountIds);
 
-  // GROSS denominator — Σ |market value| — per user ruling, decision
-  // 2026-09-22. A signed denominator let a short shrink the book it was
-  // measured against while also adding its own w², which pushed the index
-  // above 1 (long 100 / short −60 read 8.5, i.e. "~0 equal positions", and a
-  // ">5% of portfolio" warning printed 250%). Gross weights keep the index in
-  // (0, 1]. See concentrationGrossValue for the full derivation.
-  const grossValue = concentrationGrossValue(positions);
+  // GROSS denominator over the WHOLE book, cash included (decision
+  // 2026-09-22; owner ruling 2026-11-15). Cash equivalents form one bucket:
+  // they dilute every weight, but they are never ranked, never warned about,
+  // and stay out of the HHI's sum of squares (a riskless bucket adds no
+  // single-name risk, so more cash lowers the index).
+  // splitConcentrationUniverse is the one copy of this rule, shared with the
+  // Risk Decomposition card (computeConcentration).
+  const split = splitConcentrationUniverse(positions);
+  const grossValue = split.grossValue;
+  const cash = {
+    market_value: split.cash.marketValue,
+    weight_pct: split.cash.weight * 100,
+    holding_count: split.cash.holdingCount,
+  };
 
   // <= 0, not === 0: the gross book is zero only when there is nothing to
   // measure, and then there is no weight denominator at all.
@@ -636,23 +657,29 @@ export function getConcentrationMetrics(
       hhi: 0,
       effective_positions: 0,
       top_positions: [],
+      cash,
       warnings: ["No positions with market value found."],
     };
   }
 
-  // Compute HHI
-  let hhi = 0;
+  // All cash: nothing single-name to measure. No warning either: holding
+  // only cash is not a concentration problem.
+  if (split.risky.length === 0) {
+    return { hhi: 0, effective_positions: 0, top_positions: [], cash, warnings: [] };
+  }
+
+  const hhi = split.herfindahl ?? 0;
   const warnings: string[] = [];
 
-  for (const pos of positions) {
+  for (const pos of split.risky) {
     // |mv| / gross: a short's weight is its SIZE in the book, not a negative
     // share of it (decision 2026-09-22). The warning therefore compares and
     // prints the same gross figure — a 20%-of-book short is a 20% warning,
     // where the signed form skipped it entirely (−0.33 is not > 0.05).
     const weight = Math.abs(pos.marketValue) / grossValue;
-    hhi += weight * weight;
 
-    // Single position > 5% warning
+    // Single position > 5% warning (risky positions only: cash is never a
+    // single-name risk).
     if (weight > 0.05) {
       warnings.push(
         `${pos.symbol} is ${(weight * 100).toFixed(1)}% of portfolio`
@@ -669,10 +696,10 @@ export function getConcentrationMetrics(
     warnings.unshift("Portfolio is moderately concentrated (HHI > 0.15)");
   }
 
-  // Top 10 positions. The market value keeps its SIGN (a short is worth
-  // negative dollars and the chart says so); only the weight is gross
-  // (decision 2026-09-22).
-  const top_positions = positions.slice(0, 10).map((p) => ({
+  // Top 10 risky positions. The market value keeps its SIGN (a short is
+  // worth negative dollars and the chart says so); only the weight is gross
+  // (decision 2026-09-22), over the whole book including cash.
+  const top_positions = split.risky.slice(0, 10).map((p) => ({
     symbol: p.symbol,
     security_name: p.securityName,
     market_value: p.marketValue,
@@ -689,6 +716,7 @@ export function getConcentrationMetrics(
     hhi,
     effective_positions: Math.round(effective_positions * 10) / 10,
     top_positions,
+    cash,
     warnings,
   };
 }

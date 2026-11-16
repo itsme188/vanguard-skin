@@ -43,7 +43,13 @@ const OWNED_COMPONENTS = [
 ];
 
 function concentration(): ConcentrationMetrics {
-  return { hhi: 0.08, effective_positions: 12.5, top_positions: [], warnings: [] };
+  return {
+    hhi: 0.08,
+    effective_positions: 12.5,
+    top_positions: [],
+    cash: { market_value: 0, weight_pct: 0, holding_count: 0 },
+    warnings: [],
+  };
 }
 
 function coverage(overrides: Partial<ClassificationCoverage> = {}): ClassificationCoverage {

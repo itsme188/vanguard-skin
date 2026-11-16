@@ -18,6 +18,11 @@ import { Money, Pct, PrivateText, usePrivateFormatter } from "@/lib/privacy/comp
 import { NarrativeBlock } from "./analysis/NarrativeBlock";
 import { WeekOverWeekBadge } from "./analysis/WeekOverWeekBadge";
 import {
+  CashEquivalentsLine,
+  HHI_CASH_NOTE,
+  ALL_CASH_SENTENCE,
+} from "./analysis/ClassificationCard";
+import {
   interpretSharpe,
   interpretMaxDrawdown,
   interpretCurrentDrawdown,
@@ -155,9 +160,13 @@ export function RiskMetrics({ scope }: { scope?: string }) {
     );
   }
 
-  // Prepare concentration bar chart data
+  // Prepare concentration bar chart data. Cash and equivalents are one line
+  // above the chart, never a bar (owner ruling 2026-11-15), so "Other" is the
+  // rest of the RISKY book: 1 - top5 would sweep the cash share into it.
   const concentrationData = [...metrics.top5Positions];
-  const restWeight = 1 - metrics.top5Concentration;
+  const cashWeight = metrics.cashWeight ?? 0;
+  const hasCash = cashWeight > 0;
+  const restWeight = 1 - cashWeight - metrics.top5Concentration;
   if (restWeight > 0.001 && metrics.positionCount > 5) {
     concentrationData.push({
       symbol: `Other (${metrics.positionCount - 5})`,
@@ -324,7 +333,7 @@ export function RiskMetrics({ scope }: { scope?: string }) {
       </div>
 
       {/* ── Concentration ── */}
-      {concentrationData.length > 0 && (
+      {(concentrationData.length > 0 || hasCash) && (
         <div>
           <div className="flex items-center justify-between mb-3">
             <h4 className="text-xs text-ink-faint uppercase tracking-widest">
@@ -360,7 +369,22 @@ export function RiskMetrics({ scope }: { scope?: string }) {
               <PrivateText>{interpretHHI(metrics.herfindahl).text}</PrivateText>
             </p>
           )}
+          {hasCash && concentrationData.length === 0 && (
+            <p className="text-xs mb-3 text-ink-faint">
+              <PrivateText>{ALL_CASH_SENTENCE}</PrivateText>
+            </p>
+          )}
+          {hasCash && <p className="text-xs text-ink-faint mb-3">{HHI_CASH_NOTE}</p>}
 
+          {hasCash && (
+            <CashEquivalentsLine
+              weightPct={metrics.cashWeight * 100}
+              marketValue={metrics.cashMarketValue}
+              holdingCount={metrics.cashHoldingCount}
+            />
+          )}
+
+          {concentrationData.length > 0 && (
           <div className="h-40">
             {/* Fixed pixel height (h-40 = 160px): a percent height measures
                 a negative size before layout and logs a Recharts warning. */}
@@ -412,6 +436,7 @@ export function RiskMetrics({ scope }: { scope?: string }) {
               </BarChart>
             </ResponsiveContainer>
           </div>
+          )}
         </div>
       )}
     </div>
