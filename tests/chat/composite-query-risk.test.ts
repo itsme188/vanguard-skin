@@ -158,6 +158,37 @@ describe("query_risk", () => {
     expect(out.withheld?.volatility_and_sharpe).toMatch(/20 daily values/);
   });
 
+  it("returns the cash share and cash holding count, and the glosses say cash is in the total but never ranked (review R6)", () => {
+    // Account 3 holds 300 and 100 in stock; add a 400 money-market sweep.
+    const id = db
+      .prepare("INSERT INTO securities (symbol, name, security_type, fund_category, currency) VALUES ('ZZMM', 'ZZMM Sweep', 'Mutual Fund', 'Cash Equivalent', 'USD')")
+      .run().lastInsertRowid as number;
+    db.prepare(
+      "INSERT INTO holdings (account_id, security_id, quantity, cost_basis, as_of_date, source_key) VALUES (3, ?, 400, 400, ?, 'h-ZZMM-3')",
+    ).run(id, day(39));
+    db.prepare("INSERT INTO prices (security_id, date, close_price) VALUES (?, ?, 1)").run(id, day(39));
+    const out = queryRiskTool.run(db, {}, { accountIds: [3], today: TODAY }) as RiskOut & {
+      concentration: { cash_share: number; cash_holding_count: number; note: string };
+      units: Record<string, string>;
+    };
+    const engine = computeRiskMetrics(db, { accountIds: [3], coverageFloor: "scope" });
+    expect(out.concentration.cash_share).toBe(engine.cashWeight);
+    expect(out.concentration.cash_share).toBeCloseTo(0.5, 12);
+    expect(out.concentration.cash_holding_count).toBe(1);
+    // Weights over the whole 800: 300/800 and 100/800.
+    expect(out.concentration.herfindahl).toBeCloseTo((3 / 8) ** 2 + (1 / 8) ** 2, 12);
+    expect(out.concentration.top5_share).toBeCloseTo(0.5, 12);
+    expect(out.concentration.top5.map((p) => p.symbol)).not.toContain("ZZMM");
+    expect(out.units.herfindahl).toMatch(/cash equivalents/i);
+    expect(out.units.herfindahl).not.toMatch(/^sum of squared gross weights/);
+    expect(out.units.top5_share).toMatch(/cash equivalents/i);
+    expect(out.units.top5_share).toMatch(/not ranked|never ranked/);
+    expect(out.units.cash_share).toBeDefined();
+    expect(out.concentration.note).toMatch(/cash equivalents/i);
+    // No dollar figure for the cash bucket.
+    expect(Object.keys(out.concentration)).not.toContain("cash_market_value_usd");
+  });
+
   it("an empty scope answers without calling the engine", () => {
     const out = queryRiskTool.run(db, {}, { accountIds: [], today: TODAY }) as RiskOut;
     expect(out).toEqual({ error: "No account is in this chat's scope." });

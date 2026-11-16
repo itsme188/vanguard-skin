@@ -27,7 +27,7 @@ export const QUERY_RISK_NAME = "query_risk";
 const definition: CompositeTool["definition"] = {
   name: QUERY_RISK_NAME,
   description:
-    "Portfolio risk figures: annualised volatility, Sharpe ratio, maximum and current drawdown (with peak and trough dates), the risk-free rate used, and concentration (Herfindahl index, top-5 share, top 5 positions by gross weight). Returns come from a flow-adjusted daily series (deposits and withdrawals are not returns) with statement-to-live source seams bridged; for All Accounts the window starts no earlier than the date every account has daily values (as the Analysis Diagnostics risk card measures it); for a narrower scope it uses that scope's own history (as the Performance view's risk tiles do). window.rule says which. Use for 'how risky is my portfolio', 'what was my worst drawdown', 'how concentrated am I'. Do NOT use for returns (use query_twr), for a stress test (use query_scenarios), for performance against SPY or what drove it (use query_performance_vs_benchmark), or for option greeks (use query_options_greeks). Beta is not part of this engine. Fractions are decimals (0.15 = 15%).",
+    "Portfolio risk figures: annualised volatility, Sharpe ratio, maximum and current drawdown (with peak and trough dates), the risk-free rate used, and concentration (Herfindahl index, top-5 share, top 5 positions by gross weight, and the cash-equivalent share of the book). Returns come from a flow-adjusted daily series (deposits and withdrawals are not returns) with statement-to-live source seams bridged; for All Accounts the window starts no earlier than the date every account has daily values (as the Analysis Diagnostics risk card measures it); for a narrower scope it uses that scope's own history (as the Performance view's risk tiles do). window.rule says which. Use for 'how risky is my portfolio', 'what was my worst drawdown', 'how concentrated am I'. Do NOT use for returns (use query_twr), for a stress test (use query_scenarios), for performance against SPY or what drove it (use query_performance_vs_benchmark), or for option greeks (use query_options_greeks). Beta is not part of this engine. Fractions are decimals (0.15 = 15%).",
   input_schema: {
     type: "object" as const,
     properties: {
@@ -137,12 +137,14 @@ function run(db: Database.Database, input: Record<string, unknown>, ctx: Composi
       herfindahl: m.herfindahl,
       top5_share: m.top5Concentration,
       position_count: m.positionCount,
+      cash_share: m.cashWeight,
+      cash_holding_count: m.cashHoldingCount,
       top5: m.top5Positions.map((p) => ({
         symbol: p.symbol,
         market_value_usd: p.marketValue,
         gross_weight: p.weight,
       })),
-      note: "Current holdings. Weights are gross: |value| over the sum of |value|, shorts included; a short's market value is negative.",
+      note: "Current holdings. Weights are gross: |value| over the whole book's sum of |value|, shorts and cash equivalents included; a short's market value is negative. Cash equivalents (money-market and sweep funds) are one bucket, cash_share: they are in the total every weight is measured against, but they are never ranked, never in top5 or position_count, and not in the Herfindahl's sum of squares.",
     },
     ...(Object.keys(withheld).length > 0 ? { withheld } : {}),
     units: {
@@ -151,8 +153,12 @@ function run(db: Database.Database, input: Record<string, unknown>, ctx: Composi
       risk_free_rate:
         "annual rate, decimal fraction; risk_free_rate_source says whether it is the stored 3-month Treasury rate (FRED DGS3MO) or the engine's built-in default",
       drawdown_fraction: "decline from the peak of the flow-adjusted index, decimal fraction",
-      herfindahl: "sum of squared gross weights, 0-1 (1 = one position)",
-      top5_share: "gross weight of the five largest positions, 0-1",
+      herfindahl:
+        "sum of the squared gross weights of the non-cash positions, 0-1 (1 = one position, fully invested); each weight is measured against the whole book, cash equivalents included, so cash lowers the index; cash equivalents are not ranked",
+      top5_share:
+        "gross weight of the five largest non-cash positions, 0-1, measured against the whole book with cash equivalents in the total; cash equivalents are not ranked",
+      cash_share: "cash equivalents' gross weight in the whole book, 0-1, one bucket",
+      cash_holding_count: "number of cash-equivalent holdings in that bucket",
     },
     currency: "USD",
   };
