@@ -623,6 +623,26 @@ export interface SectorCoverage {
   coveragePct: number | null;
 }
 
+/**
+ * Make sector parts sum to `amount`. Look-through weights that sum under 100
+ * would lose the rest: it goes to `ownSector` (the fund's own sector), or
+ * "Unknown" when there is none. Weights over 100 are scaled back. Parts that
+ * already sum to the amount come back unchanged.
+ */
+export function conserveSectorParts(
+  parts: Array<{ sector: string; value: number }>,
+  amount: number,
+  ownSector: string | null | undefined
+): Array<{ sector: string; value: number }> {
+  const sum = parts.reduce((a, p) => a + p.value, 0);
+  if (Math.abs(sum - amount) <= 1e-9 * Math.max(1, Math.abs(amount))) return parts;
+  if (sum !== 0 && Math.abs(sum) > Math.abs(amount)) {
+    return parts.map((p) => ({ sector: p.sector, value: (p.value * amount) / sum }));
+  }
+  const home = ownSector && ownSector.trim() !== "" ? ownSector : "Unknown";
+  return [...parts, { sector: home, value: amount - sum }];
+}
+
 export interface AttributionContext {
   /** getEtfSectorWeights(db) shape: symbol → [{sector, weight_pct}] */
   sectorWeights: Map<string, Array<{ sector: string; weight_pct: number }>>;
@@ -637,6 +657,9 @@ export interface AttributionContext {
    * own totalLongExposure (for pctOfBook, etc.). Do not remove. */
   totalLongExposure: number;
   resolveBeta: (symbol: string) => ResolvedBeta;
+  /** A fund's own sector, by underlying: the home for the part of a sector
+   *  route's credit its weights do not cover. Absent: "Unknown". */
+  ownSectorByUnderlying?: Map<string, string | null>;
 }
 
 export function attributeProxies(
@@ -649,10 +672,11 @@ export function attributeProxies(
   for (const c of candidates) {
     const weights = ctx.sectorWeights.get(c.underlying);
     if (weights && weights.length > 0) {
-      const creditedTo = weights.map((w) => ({
-        bucket: w.sector,
-        credited: c.protectiveNotional * (w.weight_pct / 100),
-      }));
+      const creditedTo = conserveSectorParts(
+        weights.map((w) => ({ sector: w.sector, value: c.protectiveNotional * (w.weight_pct / 100) })),
+        c.protectiveNotional,
+        ctx.ownSectorByUnderlying?.get(c.underlying)
+      ).map((p) => ({ bucket: p.sector, credited: p.value }));
       for (const ct of creditedTo) {
         protectedBySector.set(ct.bucket, (protectedBySector.get(ct.bucket) ?? 0) + ct.credited);
       }
@@ -1274,28 +1298,54 @@ export function computeDefenseAnalysis(db: Database.Database, accountIds?: numbe
   const longExposureBySector = new Map<string, number>();
   const longExposureByGeography = new Map<string, number>();
 
+  /**
+   * The weights key for a family: its canonical key (the key attributeProxies
+   * reads), else the first sibling, in sorted order, that has weights. The
+   * long side and the Tier-1 credit both read it, so the two always spread a
+   * fund the same way.
+   */
+  const weightsKeyFor = (canonical: string): string => {
+    if (sectorWeights.has(canonical)) return canonical;
+    return (
+      issuerSiblings(canonical)
+        .slice()
+        .sort()
+        .find((s) => sectorWeights.has(s)) ?? canonical
+    );
+  };
+
+  /**
+   * One amount spread across sectors, conserved: explodeHoldingBySector's
+   * parts, then any shortfall (look-through weights summing under 100) put
+   * in the fund's own sector, or "Unknown" when it has none, and an excess
+   * (weights over 100) scaled back. A fund's long exposure and the credit
+   * for a hedge on it both go through here.
+   */
+  const spreadBySector = (
+    canonical: string,
+    securityType: string | null,
+    amount: number,
+    ownSector: string | null | undefined
+  ): Array<{ sector: string; value: number }> => {
+    const parts = explodeHoldingBySector(weightsKeyFor(canonical), securityType, amount, sectorWeights, ownSector);
+    return conserveSectorParts(parts, amount, ownSector);
+  };
+
   for (const inst of instruments) {
     if (inst.exposure <= 0) continue;
     totalLongExposure += inst.exposure;
 
-    if (!inst.isOption) {
-      const parts = explodeHoldingBySector(
-        inst.symbol,
-        securityTypeById.get(inst.securityId) ?? null,
-        inst.exposure,
-        sectorWeights,
-        inst.sector
-      );
-      for (const p of parts) {
-        longExposureBySector.set(p.sector, (longExposureBySector.get(p.sector) ?? 0) + p.value);
-      }
-    } else {
-      const meta = underlyingInfo.get(inst.underlying);
-      const sector = meta?.sector ?? inst.sector ?? "Unknown";
-      longExposureBySector.set(sector, (longExposureBySector.get(sector) ?? 0) + inst.exposure);
+    // A fund held through call options is exposed to the fund's sectors just
+    // as its shares are: spread by the same look-through weights, with the
+    // underlying's own sector as the home for any remainder.
+    const meta = underlyingInfo.get(inst.underlying);
+    const parts = inst.isOption
+      ? spreadBySector(inst.underlying, meta?.isEtf ? "ETF" : null, inst.exposure, meta?.sector ?? inst.sector)
+      : spreadBySector(inst.underlying, securityTypeById.get(inst.securityId) ?? null, inst.exposure, inst.sector);
+    for (const p of parts) {
+      longExposureBySector.set(p.sector, (longExposureBySector.get(p.sector) ?? 0) + p.value);
     }
 
-    const meta = underlyingInfo.get(inst.underlying);
     const geo = meta?.geography ?? inst.geography ?? "Unknown";
     longExposureByGeography.set(geo, (longExposureByGeography.get(geo) ?? 0) + inst.exposure);
   }
@@ -1307,12 +1357,12 @@ export function computeDefenseAnalysis(db: Database.Database, accountIds?: numbe
       // same look-through weights its long exposure was spread by above
       // (explodeHoldingBySector), never all of it onto the fund's own single
       // securities.sector. A single name (or a fund with no weights) keeps
-      // one bucket, as before. The parts sum to offsetCredited.
-      const parts = explodeHoldingBySector(
+      // one bucket, as before. The parts sum to offsetCredited
+      // (spreadBySector conserves it).
+      const parts = spreadBySector(
         pair.underlying,
         underlyingInfo.get(pair.underlying)?.isEtf ? "ETF" : null,
         pair.offsetCredited,
-        sectorWeights,
         pair.sector
       );
       for (const p of parts) {
@@ -1350,6 +1400,7 @@ export function computeDefenseAnalysis(db: Database.Database, accountIds?: numbe
     tier1CreditedBySector,
     totalLongExposure,
     resolveBeta,
+    ownSectorByUnderlying: new Map([...underlyingInfo].map(([u, m]) => [u, m.sector])),
   };
 
   const { proxies, sectorCoverage } = attributeProxies(classifyResult.proxyCandidates, attributionCtx);
