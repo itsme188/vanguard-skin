@@ -1,6 +1,6 @@
 import type Database from "better-sqlite3";
-import { jsonSchema } from "ai";
-import { generateObjectForFeature } from "@/lib/ai/generate";
+import { jsonSchema, NoObjectGeneratedError } from "ai";
+import { generateObjectForFeature, AITruncatedError } from "@/lib/ai/generate";
 import { resolveFeatureModel } from "@/lib/ai/models";
 import { userFacingModelLabel } from "@/lib/ai/model-families";
 import type { FeatureKey } from "@/lib/ai/feature-keys";
@@ -17,7 +17,7 @@ import {
   saveTradeReview,
   saveTradeRoundtrips,
 } from "@/lib/mutations/trade-reviews";
-import { buildTradeReviewPrompt } from "./prompt";
+import { buildTradeReviewPrompt, bindAnswersToTrades } from "./prompt";
 import {
   getMarketContext,
   formatMarketContext,
@@ -38,8 +38,44 @@ import type { TradeReview } from "@/lib/types";
 import { PRICED_BAR_SQL } from "@/lib/queries/ohlcv";
 import { todayET } from "@/lib/calendar/date-utils";
 
-/** Use the "large" model slot for months with many trades — defaults to Sonnet to avoid Opus timeouts */
-const SONNET_TRADE_THRESHOLD = 20;
+/**
+ * Months with more trades than this use the `tradeReviewMainLarge` feature
+ * key instead of `tradeReviewMain`. Both keys resolve through FEATURE_MODELS
+ * (lib/ai/models.ts), so either can be moved to another tier without touching
+ * this file; today they resolve to the same tier.
+ */
+const LARGE_MONTH_TRADE_THRESHOLD = 20;
+
+/**
+ * The longest reply a review may ask for, in output tokens. The cap rule
+ * (CLAUDE.md, AI section): every call passes an explicit cap with room for
+ * default-on thinking, and a reply cut off at the cap is a failure. A
+ * cut-off reply is retried at most ONCE, and only when the first cap was
+ * below this ceiling: the retry asks for this ceiling. A reply cut off at
+ * the ceiling is never retried; the same request would be cut off again.
+ */
+export const REVIEW_OUTPUT_TOKEN_CEILING = 64000;
+
+/**
+ * The month's trades did not fit in one review: the AI's reply was cut off
+ * at the longest reply a review can ask for. A domain error, written for the
+ * user, that the route passes through as it is.
+ */
+export class TradeReviewTooLargeError extends Error {
+  constructor(public tradeCount: number) {
+    super(
+      `This month has too many trades for one review: the AI's reply ran past the longest reply a review can ask for ` +
+        `(${tradeCount} round trips). Trying again gives the same result. Reviews of other months are not affected.`
+    );
+    this.name = "TradeReviewTooLargeError";
+  }
+}
+
+/** Was this call cut off at its output cap? (What lib/ai/generate.ts throws for it.) */
+function isOutputCapTruncation(err: unknown): boolean {
+  if (err instanceof AITruncatedError) return true;
+  return NoObjectGeneratedError.isInstance(err) && err.finishReason === "length";
+}
 
 interface TradeReviewStructured {
   review_markdown: string;
@@ -152,6 +188,78 @@ export interface TradeReviewResult {
   tradeCount: number;
 }
 
+/**
+ * The trades a review of one account and period covers, and what it leaves
+ * out. The one selection path: `prepareTradeReview` reviews `groupedTrades`,
+ * and the saved-review card reads the same function on read to say what the
+ * month holds now (`currentReviewCoverage`).
+ */
+export interface ReviewTradeSelection {
+  /** Every closing transaction in the period, engine closes included. */
+  closeCount: number;
+  /** The user's own closes (engine-owned RECONCILE_CLOSE rows removed). */
+  userTrades: GroupedTrade[];
+  /** Engine-owned RECONCILE_CLOSE closes: never the user's exits. */
+  syntheticCount: number;
+  /** User closes whose matched lots cover under MIN_LOT_COVERAGE of the quantity closed. */
+  lowCoverageCount: number;
+  /** The round trips a review covers. */
+  groupedTrades: GroupedTrade[];
+}
+
+export function selectReviewTrades(
+  db: Database.Database,
+  params: { accountId: number; periodStart: string; periodEnd: string }
+): ReviewTradeSelection {
+  const grouped = computeGroupedTrades(
+    getRoundTrips(db, params.accountId, params.periodStart, params.periodEnd)
+  );
+  const { userTrades, syntheticCount } = partitionSyntheticCloses(grouped);
+  const groupedTrades = filterFullyCoveredTrades(userTrades);
+  return {
+    closeCount: grouped.length,
+    userTrades,
+    syntheticCount,
+    lowCoverageCount: userTrades.length - groupedTrades.length,
+    groupedTrades,
+  };
+}
+
+/**
+ * What a saved review's account and period hold TODAY, read through the same
+ * selection and summary path a generation uses. The saved review and its
+ * prose are never rewritten from this; the card only warns beside them.
+ * Counts only: the realized P&L of a left-out close is not exact (a
+ * low-coverage close's matched lots are only part of what it sold, and an
+ * engine close's P&L is an estimate), so no excluded dollar figure is given.
+ */
+export interface CurrentReviewCoverage {
+  /** Round trips a review generated now would cover. */
+  reviewableCount: number;
+  /** The user's own closes in the period. */
+  userCloseCount: number;
+  /** User closes left out for incomplete lot history. */
+  lowCoverageCount: number;
+  /** Engine-reconciled closes left out (not the user's trades). */
+  syntheticCount: number;
+  /** Total realized P&L of the round trips a review generated now would cover. */
+  totalRealizedPnl: number;
+}
+
+export function currentReviewCoverage(
+  db: Database.Database,
+  params: { accountId: number; periodStart: string; periodEnd: string }
+): CurrentReviewCoverage {
+  const sel = selectReviewTrades(db, params);
+  return {
+    reviewableCount: sel.groupedTrades.length,
+    userCloseCount: sel.userTrades.length,
+    lowCoverageCount: sel.lowCoverageCount,
+    syntheticCount: sel.syntheticCount,
+    totalRealizedPnl: computeGroupedSummary(sel.groupedTrades).totalRealizedPnl,
+  };
+}
+
 export interface TradeReviewPreparedData {
   groupedTrades: GroupedTrade[];
   summary: ReturnType<typeof computeGroupedSummary>;
@@ -172,9 +280,15 @@ export async function prepareTradeReview(
   },
   options?: {
     onProgress?: (msg: string, current?: number, total?: number) => void;
+    /**
+     * Phase 2 (the user answered or skipped the questions) prepares the data
+     * again but must not ask the AI for questions a second time: the answer
+     * would be thrown away and the call still billed.
+     */
+    skipQuestions?: boolean;
   }
 ): Promise<TradeReviewPreparedData> {
-  const totalSteps = 4;
+  const totalSteps = options?.skipQuestions ? 2 : 4;
 
   // Step 1: Extract round-trips and group
   options?.onProgress?.(
@@ -182,14 +296,9 @@ export async function prepareTradeReview(
     1,
     totalSteps
   );
-  const roundTrips = getRoundTrips(
-    db,
-    params.accountId,
-    params.periodStart,
-    params.periodEnd
-  );
+  const selection = selectReviewTrades(db, params);
 
-  if (roundTrips.length === 0) {
+  if (selection.closeCount === 0) {
     throw new Error(
       `No closed trades found for this account in ${params.periodStart} to ${params.periodEnd}`
     );
@@ -197,9 +306,7 @@ export async function prepareTradeReview(
 
   // Engine-owned RECONCILE_CLOSE rows are not the user's exits — drop them
   // before coverage filtering, the summary, questions and the prompt.
-  const { userTrades: allGrouped, syntheticCount } = partitionSyntheticCloses(
-    computeGroupedTrades(roundTrips)
-  );
+  const { userTrades: allGrouped, syntheticCount } = selection;
   if (syntheticCount > 0) {
     if (allGrouped.length === 0) {
       throw new Error(
@@ -212,8 +319,9 @@ export async function prepareTradeReview(
       totalSteps
     );
   }
-  // Filter out trades with incomplete lot coverage (e.g., positions held before import history)
-  const groupedTrades = filterFullyCoveredTrades(allGrouped);
+  // Trades with incomplete lot coverage (e.g., positions held before import
+  // history) were filtered out by selectReviewTrades.
+  const groupedTrades = selection.groupedTrades;
 
   if (groupedTrades.length === 0) {
     throw new Error(
@@ -239,6 +347,11 @@ export async function prepareTradeReview(
     .prepare("SELECT name FROM accounts WHERE id = ?")
     .get(params.accountId) as { name: string } | undefined;
   const accountName = accountRow?.name ?? "Unknown";
+
+  if (options?.skipQuestions) {
+    options.onProgress?.("Trade data ready", 2, totalSteps);
+    return { groupedTrades, summary, questions: [], accountName };
+  }
 
   // Step 2: Fetch market context
   options?.onProgress?.(
@@ -280,7 +393,8 @@ export async function prepareTradeReview(
 }
 
 /**
- * Phase 2: Generate the full trade review with Claude Opus.
+ * Phase 2: Generate the full trade review, on the model the trade-review
+ * feature key resolves to (`resolveFeatureModel`).
  * Called after the user answers questions (or skips them).
  */
 export async function generateTradeReview(
@@ -376,7 +490,18 @@ export async function generateTradeReview(
     // Non-critical — continue without research feed context
   }
 
-  // Step 4: Call Claude API
+  // Answers bind to trades by their closing transaction; one whose trade is
+  // no longer in the set is left out, never moved onto another trade.
+  const { refused } = bindAnswersToTrades(groupedTrades, answers);
+  if (refused.length > 0) {
+    options?.onProgress?.(
+      `Note: ${refused.length} of your answer(s) left out — the trade it was written for is no longer in this month's set`,
+      3,
+      totalSteps
+    );
+  }
+
+  // Step 4: Call the AI
   const periodLabel = formatPeriodLabel(params.periodStart, params.periodEnd);
   const accountProfile = getAccountProfile(accountName);
   const { system, user } = buildTradeReviewPrompt(
@@ -389,11 +514,11 @@ export async function generateTradeReview(
     answers
   );
 
-  // Pick Opus for small months, Sonnet for large (via separate feature keys so
-  // either can be independently swapped in FEATURE_MODELS without touching code).
+  // Large months use their own feature key, so the two sizes can be put on
+  // different tiers in FEATURE_MODELS without touching code.
   const tradeCount = groupedTrades.length;
   const featureKey: FeatureKey =
-    tradeCount > SONNET_TRADE_THRESHOLD ? "tradeReviewMainLarge" : "tradeReviewMain";
+    tradeCount > LARGE_MONTH_TRADE_THRESHOLD ? "tradeReviewMainLarge" : "tradeReviewMain";
   const modelSpec = resolveFeatureModel(featureKey).modelId;
   // Scale max_tokens with trade count.
   // Each trade_grade entry (with assessment + what_worked + what_didnt) is
@@ -402,11 +527,11 @@ export async function generateTradeReview(
   // The previous formula (4000 + tradeCount * 200, capped at 32k) was too
   // tight for big months — Vanguard with 30+ trades hit the cap mid-output,
   // truncating review_markdown to empty and triggering the NOT NULL
-  // constraint on save. Bump baseline + per-trade scale, raise cap to Sonnet's
-  // 64k output limit.
+  // constraint on save. Bump baseline + per-trade scale, capped at
+  // REVIEW_OUTPUT_TOKEN_CEILING (see its comment for the cut-off rule).
   const maxTokens = Math.min(
     Math.max(12000, 5000 + tradeCount * 400),
-    64000
+    REVIEW_OUTPUT_TOKEN_CEILING
   );
 
   options?.onProgress?.(
@@ -415,16 +540,16 @@ export async function generateTradeReview(
     totalSteps
   );
 
-  // Empirically, Opus 4.7 in structured-output mode sometimes returns an empty
-  // `review_markdown` even with token budget to spare — the failure is not
-  // strictly a truncation, but a model-side decision that produced no content
-  // for the most important field. We try three strategies in order:
-  //   1. Primary model with the standard prompt.
+  // A model in structured-output mode sometimes returns an empty
+  // `review_markdown` with output budget to spare — not a cut-off (that one
+  // throws, see isOutputCapTruncation), but a reply with no content in the
+  // most important field. We try up to three strategies in order:
+  //   1. The feature key's model with the standard prompt.
   //   2. Same model + emphatic system-prompt addendum reminding it the field
   //      is required and trade_grades may be skipped first.
-  //   3. Fall back to the *other* model (Opus → Sonnet, or vice versa). This
-  //      handles cases where one model has a content-specific quirk on this
-  //      particular input — the alternative usually succeeds.
+  //   3. The OTHER trade-review feature key, but only when it resolves to a
+  //      different model id: the same prompt on the same model is attempt 1
+  //      again and is not sent.
   const isReviewMarkdownEmpty = (md: unknown): boolean =>
     !md || typeof md !== "string" || md.trim().length < 100;
 
@@ -466,6 +591,11 @@ export async function generateTradeReview(
   let usage: { inputTokens?: number; outputTokens?: number } | undefined;
   let modelUsedSpec = modelSpec;
 
+  // The output cap in force. Raised at most once, to the ceiling, after a
+  // reply was cut off below it (REVIEW_OUTPUT_TOKEN_CEILING).
+  let outputCap = maxTokens;
+  let outputCapRaised = false;
+
   const callModel = async (
     key: FeatureKey,
     extraSystem = ""
@@ -473,14 +603,43 @@ export async function generateTradeReview(
     object: TradeReviewStructured;
     usage: { inputTokens?: number; outputTokens?: number } | undefined;
   }> => {
-    const response = await generateObjectForFeature(key, {
-      maxOutputTokens: maxTokens,
-      schema: REVIEW_SCHEMA,
-      system: extraSystem ? `${system}\n\n${extraSystem}` : system,
-      prompt: user,
-    }) as unknown as { object: TradeReviewStructured; usage: { inputTokens?: number; outputTokens?: number } | undefined };
-    return { object: response.object, usage: response.usage };
+    for (;;) {
+      let cutOff = false;
+      try {
+        const response = await generateObjectForFeature(key, {
+          maxOutputTokens: outputCap,
+          schema: REVIEW_SCHEMA,
+          system: extraSystem ? `${system}\n\n${extraSystem}` : system,
+          prompt: user,
+        }) as unknown as {
+          object: TradeReviewStructured;
+          usage: { inputTokens?: number; outputTokens?: number } | undefined;
+          finishReason?: string;
+        };
+        // A reply that parsed but still stopped at the cap is cut off too.
+        if (response.finishReason !== "length") {
+          return { object: response.object, usage: response.usage };
+        }
+        cutOff = true;
+      } catch (err) {
+        if (!isOutputCapTruncation(err)) throw err;
+        cutOff = true;
+      }
+      if (cutOff && !outputCapRaised && outputCap < REVIEW_OUTPUT_TOKEN_CEILING) {
+        outputCapRaised = true;
+        outputCap = REVIEW_OUTPUT_TOKEN_CEILING;
+        options?.onProgress?.(
+          "The review was longer than the first reply allowed — asking once more with room for a longer reply...",
+          4,
+          totalSteps
+        );
+        continue;
+      }
+      await debugLog("cut-off-at-cap", { modelSpec, maxTokens: outputCap, tradeCount });
+      throw new TradeReviewTooLargeError(tradeCount);
+    }
   };
+  let attempts = 1;
 
   // Attempt 1: primary model with standard prompt
   const firstAttempt = await callModel(featureKey);
@@ -502,6 +661,7 @@ export async function generateTradeReview(
       4,
       totalSteps
     );
+    attempts++;
     const retry = await callModel(
       featureKey,
       "RETRY NOTICE: Your previous attempt returned an EMPTY review_markdown. " +
@@ -524,17 +684,20 @@ export async function generateTradeReview(
     }
   }
 
-  // Attempt 3: fall back to the other model. Models exhibit different
-  // structured-output behaviors; when one consistently refuses on a specific
-  // input, the alternative usually succeeds.
-  if (isReviewMarkdownEmpty(result.review_markdown)) {
-    const fallbackKey: FeatureKey =
-      featureKey === "tradeReviewMain"
-        ? "tradeReviewMainLarge"
-        : "tradeReviewMain";
-    const fallbackSpec = resolveFeatureModel(fallbackKey).modelId;
+  // Attempt 3: the other trade-review feature key, when it names a different
+  // model. Models differ in structured-output behaviour, so another model may
+  // succeed where this one returned an empty summary twice. When both keys
+  // resolve to the same model id the attempt is skipped: it would re-send
+  // attempt 1's request to the same model.
+  const fallbackKey: FeatureKey =
+    featureKey === "tradeReviewMain" ? "tradeReviewMainLarge" : "tradeReviewMain";
+  const fallbackSpec = isReviewMarkdownEmpty(result.review_markdown)
+    ? resolveFeatureModel(fallbackKey).modelId
+    : null;
+  if (fallbackSpec !== null && fallbackSpec !== modelSpec) {
+    attempts++;
     options?.onProgress?.(
-      `Primary model (${userFacingModelLabel(modelSpec)}) returned empty markdown twice — falling back to ${userFacingModelLabel(fallbackSpec)}...`,
+      "The review came back without its written summary twice — trying once more on a different AI model...",
       4,
       totalSteps
     );
@@ -553,6 +716,8 @@ export async function generateTradeReview(
         });
       }
     } catch (err) {
+      // A cut-off at the cap is the month's size, not this model's quirk.
+      if (err instanceof TradeReviewTooLargeError) throw err;
       await debugLog("attempt3-fallback-threw", {
         modelSpec: fallbackSpec,
         error: err instanceof Error ? err.message : String(err),
@@ -560,61 +725,64 @@ export async function generateTradeReview(
     }
   }
 
-  // Final guard. If all three attempts failed, surface a clear error.
+  // Final guard. Every attempt came back without a written summary.
   if (isReviewMarkdownEmpty(result.review_markdown)) {
     throw new Error(
-      `AI returned an empty review summary across 3 attempts (Opus retry + ` +
-      `Sonnet fallback). The model is misbehaving on this specific input — ` +
-      `${tradeCount} trades, ${maxTokens} token budget. Debug dumps written ` +
-      `to data/trade-review-debug/ — share with the dev team. Try (a) splitting ` +
-      `the period if many trades, (b) removing trader-note Q&A answers if any, ` +
-      `or (c) checking that no trade has unusual characters in symbol/notes.`
+      `The AI sent back a review with no written summary on all ${attempts} attempts, so nothing was saved. ` +
+        `This is a fault in the AI's reply, not in your trade data. Try again later; if this month keeps failing, ` +
+        `generate it again and skip the questions. A copy of each reply was kept in the app's data folder ` +
+        `(trade-review-debug) for diagnosis.`
     );
   }
 
   // Step 5: Save to database
   options?.onProgress?.("Saving review to database...", 5, totalSteps);
 
-  const review = saveTradeReview(db, {
-    accountId: params.accountId,
-    periodStart: params.periodStart,
-    periodEnd: params.periodEnd,
-    importBatchId: params.importBatchId ?? null,
-    totalTrades: summary.totalTrades,
-    winningTrades: summary.winningTrades,
-    losingTrades: summary.losingTrades,
-    winRate: summary.winRate,
-    totalRealizedPnl: summary.totalRealizedPnl,
-    avgHoldingDays: summary.avgHoldingDays,
-    bestTradePnl: summary.bestTradePnl,
-    bestTradeSymbol: summary.bestTradeSymbol,
-    worstTradePnl: summary.worstTradePnl,
-    worstTradeSymbol: summary.worstTradeSymbol,
-    avgWin: summary.avgWin,
-    avgLoss: summary.avgLoss,
-    profitFactor: summary.profitFactor,
-    reviewMarkdown: result.review_markdown,
-    tradeGrades: JSON.stringify(result.trade_grades),
-    patternsIdentified: JSON.stringify(result.patterns_identified),
-    strengths: JSON.stringify(result.strengths),
-    weaknesses: JSON.stringify(result.weaknesses),
-    cumulativePatterns: result.cumulative_patterns
-      ? JSON.stringify(result.cumulative_patterns)
-      : null,
-    model: modelUsedSpec,
-    promptTokens: usage?.inputTokens ?? null,
-    completionTokens: usage?.outputTokens ?? null,
-  });
+  // The model's arrays are checked before use: a missing or malformed field
+  // is stored as an empty list, never passed on as something else.
+  const tradeGrades = Array.isArray(result.trade_grades) ? result.trade_grades : [];
+  const listOf = (v: unknown): string[] =>
+    Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
 
-  // Save round-trips with AI grades matched by trade_number
-  const allRoundTrips = groupedTrades.flatMap((g) => g.lots);
-  saveTradeRoundtrips(
-    db,
-    review.id,
-    allRoundTrips,
-    groupedTrades,
-    result.trade_grades
-  );
+  // The review row and its round trips are one write: a failure in the
+  // second leaves no review without its trades.
+  const review = db.transaction(() => {
+    const saved = saveTradeReview(db, {
+      accountId: params.accountId,
+      periodStart: params.periodStart,
+      periodEnd: params.periodEnd,
+      importBatchId: params.importBatchId ?? null,
+      totalTrades: summary.totalTrades,
+      winningTrades: summary.winningTrades,
+      losingTrades: summary.losingTrades,
+      winRate: summary.winRate,
+      totalRealizedPnl: summary.totalRealizedPnl,
+      avgHoldingDays: summary.avgHoldingDays,
+      bestTradePnl: summary.bestTradePnl,
+      bestTradeSymbol: summary.bestTradeSymbol,
+      worstTradePnl: summary.worstTradePnl,
+      worstTradeSymbol: summary.worstTradeSymbol,
+      avgWin: summary.avgWin,
+      avgLoss: summary.avgLoss,
+      profitFactor: summary.profitFactor,
+      reviewMarkdown: result.review_markdown,
+      tradeGrades: JSON.stringify(tradeGrades),
+      patternsIdentified: JSON.stringify(listOf(result.patterns_identified)),
+      strengths: JSON.stringify(listOf(result.strengths)),
+      weaknesses: JSON.stringify(listOf(result.weaknesses)),
+      cumulativePatterns: Array.isArray(result.cumulative_patterns)
+        ? JSON.stringify(listOf(result.cumulative_patterns))
+        : null,
+      model: modelUsedSpec,
+      promptTokens: usage?.inputTokens ?? null,
+      completionTokens: usage?.outputTokens ?? null,
+    });
+
+    // Save round-trips with AI grades matched by trade_number
+    const allRoundTrips = groupedTrades.flatMap((g) => g.lots);
+    saveTradeRoundtrips(db, saved.id, allRoundTrips, groupedTrades, tradeGrades);
+    return saved;
+  })();
 
   return {
     review,

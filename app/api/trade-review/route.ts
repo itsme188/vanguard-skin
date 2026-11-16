@@ -3,7 +3,9 @@ import { db } from "@/lib/db";
 import {
   prepareTradeReview,
   generateTradeReview,
+  currentReviewCoverage,
 } from "@/lib/trade-review/generate";
+import type { TradeAnswer } from "@/lib/trade-review/questions";
 import {
   getTradeReviews,
   getTradeReviewById,
@@ -178,7 +180,47 @@ export async function GET(request: Request) {
     parseInt(accountId, 10),
     year ? parseInt(year, 10) : undefined
   );
-  return Response.json({ reviews });
+  // Read-time facts for the collapsed card, beside (never instead of) the
+  // saved figures: what the period holds today through the generator's own
+  // selection and summary path, and whether the saved pairings are stale.
+  const staleIds = getStaleTradeReviewIds(
+    db,
+    reviews.map((r) => r.id)
+  );
+  const withCurrent = reviews.map((r) => ({
+    ...r,
+    pairingsStale: staleIds.has(r.id),
+    current: currentReviewCoverage(db, {
+      accountId: r.account_id,
+      periodStart: r.period_start,
+      periodEnd: r.period_end,
+    }),
+  }));
+  return Response.json({ reviews: withCurrent });
+}
+
+/**
+ * The answers a client sent, kept only when well formed. A request with
+ * malformed items (or an older client's answers with no trade key) never
+ * crashes the route: bad items are dropped, keyless items bind by row number.
+ */
+function readAnswers(raw: unknown): TradeAnswer[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.flatMap((item): TradeAnswer[] => {
+    if (!item || typeof item !== "object") return [];
+    const { tradeNumber, answer, saleTransactionId } = item as Record<string, unknown>;
+    if (typeof answer !== "string" || !answer.trim()) return [];
+    return [
+      {
+        tradeNumber: typeof tradeNumber === "number" ? tradeNumber : NaN,
+        answer: answer.trim(),
+        saleTransactionId:
+          typeof saleTransactionId === "number" && Number.isFinite(saleTransactionId)
+            ? saleTransactionId
+            : null,
+      },
+    ];
+  });
 }
 
 /**
@@ -226,7 +268,10 @@ function vendorFailureMessage(error: unknown, message: string): string | null {
  * Phase 1 (no answers): Prepare data + generate questions → streams questions
  * Phase 2 (with answers): Generate full review with user context
  *
- * Body: { accountId, periodStart, periodEnd, answers?: [{tradeNumber, answer}] }
+ * Body: { accountId, periodStart, periodEnd, answers?: [{tradeNumber, answer, saleTransactionId?}] }
+ * `saleTransactionId` is the key phase 1 sent with each question; an answer
+ * binds to the trade with that closing transaction (lib/trade-review/prompt.ts
+ * `bindAnswersToTrades`).
  */
 export async function POST(request: Request) {
   const body = await request.json().catch(() => ({}));
@@ -234,7 +279,7 @@ export async function POST(request: Request) {
     accountId?: number;
     periodStart?: string;
     periodEnd?: string;
-    answers?: Array<{ tradeNumber: number; answer: string }>;
+    answers?: unknown;
   };
 
   if (!accountId || !periodStart || !periodEnd) {
@@ -293,7 +338,7 @@ export async function POST(request: Request) {
       };
 
       try {
-        if (!answers) {
+        if (answers === undefined || answers === null) {
           // Phase 1: Prepare data and generate questions
           const prepared = await prepareTradeReview(
             db,
@@ -335,11 +380,14 @@ export async function POST(request: Request) {
             });
           }
         } else {
-          // Phase 2: Generate review with answers
+          // Phase 2: Generate review with answers. The data is prepared
+          // again (the ledger may have moved), but the questions are not
+          // asked again: phase 1 already asked them.
           const prepared = await prepareTradeReview(
             db,
             { accountId, periodStart, periodEnd },
             {
+              skipQuestions: true,
               onProgress: (message, current, total) => {
                 send({
                   progress: { phase: "preparing", message, current, total },
@@ -352,7 +400,7 @@ export async function POST(request: Request) {
             db,
             { accountId, periodStart, periodEnd },
             prepared,
-            answers,
+            readAnswers(answers),
             { onProgress: onGenerateProgress }
           );
 

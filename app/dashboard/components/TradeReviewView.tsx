@@ -3,7 +3,7 @@
 import { CHIP_TONE_CLASSES } from "@/app/dashboard/components/Chip";
 import { CHIP_TONE_TEXT, GOLD_FILL_CLASSES } from "@/app/dashboard/components/chip-tone-text";
 import { GRADE_BAR_FILL, GRADE_BAR_TEXT } from "@/app/dashboard/components/trade-grade-bar";
-import { useState, useCallback, type ReactNode } from "react";
+import { useState, useCallback, useEffect, type ReactNode } from "react";
 import type { TradeReview } from "@/lib/types";
 import { MarkdownMessage } from "./MarkdownMessage";
 import { ConfirmDialog } from "./ConfirmDialog";
@@ -25,8 +25,24 @@ interface ReviewPeriod {
   reviewableCount: number;
 }
 
+/**
+ * What the review's account and period hold TODAY, read by the list route
+ * through the generator's own selection and summary path
+ * (`currentReviewCoverage`, lib/trade-review/generate.ts). Absent on a list
+ * the server rendered without it.
+ */
+interface ReviewCurrentState {
+  reviewableCount: number;
+  userCloseCount: number;
+  lowCoverageCount: number;
+  syntheticCount: number;
+  totalRealizedPnl: number;
+}
+
 interface TradeReviewWithAccount extends TradeReview {
   account_name: string;
+  current?: ReviewCurrentState;
+  pairingsStale?: boolean;
 }
 
 interface GroupedTradeResponse {
@@ -62,6 +78,29 @@ interface TradeQuestion {
   tradeNumber: number;
   symbol: string;
   question: string;
+  /** The trade's closing transaction: sent back with the answer so it binds to that trade. */
+  saleTransactionId?: number;
+}
+
+/**
+ * The answers phase 2 sends. Each carries its question's trade key, so the
+ * server binds it to that trade even when the month's trade order changed
+ * between the two phases (lib/trade-review/prompt.ts `bindAnswersToTrades`).
+ * Blank answers are not sent.
+ */
+export function buildTradeReviewAnswers(
+  questions: TradeQuestion[],
+  answersByTradeNumber: Record<number, string>
+): Array<{ tradeNumber: number; answer: string; saleTransactionId?: number }> {
+  return questions.flatMap((q) => {
+    const answer = (answersByTradeNumber[q.tradeNumber] ?? "").trim();
+    if (!answer) return [];
+    return [
+      q.saleTransactionId != null
+        ? { tradeNumber: q.tradeNumber, answer, saleTransactionId: q.saleTransactionId }
+        : { tradeNumber: q.tradeNumber, answer },
+    ];
+  });
 }
 
 interface TradeReviewViewProps {
@@ -181,6 +220,56 @@ export function savedReviewRoundTripDrift(
   return period.reviewableCount !== savedCount ? period.reviewableCount : null;
 }
 
+/** A P&L move smaller than this many dollars is never called a change. */
+export const PNL_DRIFT_MIN_USD = 1;
+/** ...nor one smaller than this share of the saved figure. */
+export const PNL_DRIFT_MIN_SHARE = 0.01;
+
+/**
+ * Has the period's realized P&L moved since the review was written? Compares
+ * the saved total with today's total for the same account and period (same
+ * selection and `computeGroupedSummary` path). A move counts when it is at
+ * least PNL_DRIFT_MIN_USD and PNL_DRIFT_MIN_SHARE of the saved figure; a
+ * change of sign always counts. Null = no material change, or no current
+ * figure. The saved review is never rewritten from this.
+ */
+export function savedReviewPnlDrift(
+  savedPnl: number,
+  current: { totalRealizedPnl: number } | undefined
+): { currentPnl: number; signFlipped: boolean } | null {
+  if (!current || !Number.isFinite(current.totalRealizedPnl)) return null;
+  const now = current.totalRealizedPnl;
+  const signFlipped =
+    (savedPnl >= 0.005 && now <= -0.005) || (savedPnl <= -0.005 && now >= 0.005);
+  const moved = Math.abs(now - savedPnl);
+  const material =
+    moved >= PNL_DRIFT_MIN_USD && moved >= PNL_DRIFT_MIN_SHARE * Math.abs(savedPnl);
+  return signFlipped || material ? { currentPnl: now, signFlipped } : null;
+}
+
+/**
+ * What the period's closes left out of a review are, as the ledger stands
+ * today: closes with incomplete lot history (not graded) and engine
+ * reconciliation closes (not the user's trades). Counts only: the left-out
+ * closes' P&L is not exact on read. Null = nothing left out.
+ */
+export function reviewLeftOut(
+  current: ReviewCurrentState | undefined
+): { lowCoverage: number; synthetic: number; userCloses: number } | null {
+  if (!current) return null;
+  if (current.lowCoverageCount <= 0 && current.syntheticCount <= 0) return null;
+  return {
+    lowCoverage: Math.max(0, current.lowCoverageCount),
+    synthetic: Math.max(0, current.syntheticCount),
+    userCloses: current.userCloseCount,
+  };
+}
+
+/** "close" / "closes"; under Hide amounts never singular (same rule as roundTripNoun). */
+function closeNoun(count: number, isPrivate: boolean): string {
+  return count === 1 && !isPrivate ? "close" : "closes";
+}
+
 function GradeBadge({ grade }: { grade: string | null }) {
   if (!grade) return <span className="text-ink-faint">—</span>;
   return (
@@ -273,6 +362,19 @@ export function TradeReviewView({
     periodEnd: string;
   } | null>(null);
 
+  // The server-rendered list carries no read-time state (today's counts and
+  // P&L, stale pairings); fetch the list once so the cards can warn.
+  useEffect(() => {
+    if (initialReviews.some((r) => r.current === undefined)) {
+      refreshReviews().catch((err) => {
+        // Best-effort: the cards still show the saved figures.
+        console.error("[trade-review] could not refresh the review list:", err);
+      });
+    }
+    // Once, on mount: later refreshes run from the handlers.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // ── Load detail ───────────────────────────────────────────────
   const loadReviewDetail = useCallback(
     async (reviewId: number) => {
@@ -325,7 +427,7 @@ export function TradeReviewView({
   const doGenerate = async (
     periodStart: string,
     periodEnd: string,
-    answers?: Array<{ tradeNumber: number; answer: string }>
+    answers?: Array<{ tradeNumber: number; answer: string; saleTransactionId?: number }>
   ) => {
     setGenerating(true);
     setGenerateMsg("Starting...");
@@ -435,18 +537,15 @@ export function TradeReviewView({
   // ── Submit Q&A answers (Phase 2) ──────────────────────────────
   const handleSubmitAnswers = async () => {
     if (!pendingGenerate) return;
-    const answers = Object.entries(questionAnswers)
-      .filter(([, ans]) => ans.trim())
-      .map(([tradeNum, answer]) => ({
-        tradeNumber: parseInt(tradeNum, 10),
-        answer: answer.trim(),
-      }));
+    const answers = buildTradeReviewAnswers(questions, questionAnswers);
     setQuestions([]);
     setPendingGenerate(null);
     await doGenerate(
       pendingGenerate.periodStart,
       pendingGenerate.periodEnd,
-      answers.length > 0 ? answers : undefined
+      // Always an array, even an empty one: no answers would send the
+      // request back to phase 1 and ask the AI for the questions again.
+      answers
     );
     await refreshReviews();
   };
@@ -709,15 +808,18 @@ export function TradeReviewView({
                 expandedReviewId === review.id ? detailError : null
               }
               currentRoundTrips={
-                // `periods` belongs to the selected account only.
-                review.account_id === selectedAccountId
-                  ? savedReviewRoundTripDrift(
-                      review.total_trades,
-                      periods.find(
-                        (p) => p.periodStart === review.period_start
+                // Today's count read with the review itself; else from
+                // `periods`, which belongs to the selected account only.
+                review.current
+                  ? savedReviewRoundTripDrift(review.total_trades, review.current)
+                  : review.account_id === selectedAccountId
+                    ? savedReviewRoundTripDrift(
+                        review.total_trades,
+                        periods.find(
+                          (p) => p.periodStart === review.period_start
+                        )
                       )
-                    )
-                  : null
+                    : null
               }
               onToggle={() => loadReviewDetail(review.id)}
               onRegenerate={() =>
@@ -776,6 +878,8 @@ function ReviewCard({
   const { isPrivate } = usePrivacy();
   const pnlColor =
     review.total_realized_pnl >= 0 ? "text-up" : "text-down";
+  const pnlDrift = savedReviewPnlDrift(review.total_realized_pnl, review.current);
+  const leftOut = reviewLeftOut(review.current);
 
   return (
     <div className="rounded-xl border border-edge bg-panel overflow-hidden">
@@ -842,6 +946,50 @@ function ReviewCard({
             {roundTripNoun(review.total_trades, isPrivate)}, and the month now
             has <Count value={currentRoundTrips} />. Regenerate to review the
             current set.
+          </div>
+        )}
+
+        {/* Saved P&L vs today's for the same period: warn, never rewrite. */}
+        {pnlDrift != null && (
+          <div className="mt-2 text-xs text-gold-ink">
+            {pnlDrift.signFlipped
+              ? "This month's realized P&L has changed sign since the review was written: "
+              : "This month's realized P&L has changed since the review was written: "}
+            the review was written for{" "}
+            <Money value={review.total_realized_pnl} signed />, and the month
+            now totals <Money value={pnlDrift.currentPnl} signed />. The
+            grades and prose describe the earlier figure.
+          </div>
+        )}
+
+        {review.pairingsStale && (
+          <div className="mt-2 text-xs text-gold-ink">
+            The trade pairings behind this review are outdated or unresolved,
+            so its dates, metrics and assessments may be wrong. Open it for
+            details.
+          </div>
+        )}
+
+        {/* What the month's closes this review does not cover, today. */}
+        {leftOut != null && (
+          <div className="mt-2 text-xs text-ink-dim">
+            Not in this review:{" "}
+            {leftOut.lowCoverage > 0 && (
+              <>
+                <Count value={leftOut.lowCoverage} /> of the month&apos;s{" "}
+                <Count value={leftOut.userCloses} />{" "}
+                {closeNoun(leftOut.userCloses, isPrivate)} (their lot history
+                is incomplete, so they cannot be graded)
+                {leftOut.synthetic > 0 ? ", and " : "."}
+              </>
+            )}
+            {leftOut.synthetic > 0 && (
+              <>
+                <Count value={leftOut.synthetic} /> engine reconciliation{" "}
+                {closeNoun(leftOut.synthetic, isPrivate)}, which are not your
+                own trades.
+              </>
+            )}
           </div>
         )}
       </button>

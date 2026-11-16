@@ -2,6 +2,49 @@ import type { GroupedTrade, RoundTripSummary } from "@/lib/compute/trade-roundtr
 import type { PriorReviewSummary } from "@/lib/queries/trade-reviews";
 import type { AccountProfile, TradeAnswer } from "./questions";
 
+export interface BoundTradeAnswer {
+  /** The trade's row number in THIS prompt's table (1-based). */
+  tradeNumber: number;
+  symbol: string;
+  answer: string;
+}
+
+/**
+ * Attach the trader's answers to the trades they were written for.
+ *
+ * Phase 1 and phase 2 each compute the month's trade set, so a row number
+ * from phase 1 can point at a different trade in phase 2 if the ledger
+ * changed in between. An answer that carries the question's
+ * `saleTransactionId` binds to the trade with that closing transaction, and
+ * when no trade has it any more the answer is REFUSED (left out and
+ * counted), never moved onto another trade. An answer with no key (an older
+ * client) falls back to its row number. Pure function.
+ */
+export function bindAnswersToTrades(
+  groupedTrades: GroupedTrade[],
+  answers: TradeAnswer[] | undefined
+): { bound: BoundTradeAnswer[]; refused: TradeAnswer[] } {
+  const bound: BoundTradeAnswer[] = [];
+  const refused: TradeAnswer[] = [];
+  for (const ans of answers ?? []) {
+    const keyed =
+      typeof ans.saleTransactionId === "number" &&
+      Number.isFinite(ans.saleTransactionId);
+    const index = keyed
+      ? groupedTrades.findIndex((t) => t.saleTransactionId === ans.saleTransactionId)
+      : Number.isInteger(ans.tradeNumber)
+        ? ans.tradeNumber - 1
+        : -1;
+    const trade = index >= 0 ? groupedTrades[index] : undefined;
+    if (!trade) {
+      refused.push(ans);
+      continue;
+    }
+    bound.push({ tradeNumber: index + 1, symbol: trade.symbol, answer: ans.answer });
+  }
+  return { bound, refused };
+}
+
 /**
  * Build the system + user prompt for trade review generation.
  * Uses account-specific profiles and market context for grounded analysis.
@@ -163,15 +206,11 @@ function buildUserPrompt(
   }
 
   // Trader's notes (from Q&A answers)
-  if (answers && answers.length > 0) {
+  const { bound } = bindAnswersToTrades(groupedTrades, answers);
+  if (bound.length > 0) {
     parts.push(`\n## Trader's Notes\n`);
-    for (const ans of answers) {
-      const trade = groupedTrades[ans.tradeNumber - 1];
-      if (trade) {
-        parts.push(
-          `**Trade ${ans.tradeNumber} (${trade.symbol}):** ${ans.answer}`
-        );
-      }
+    for (const ans of bound) {
+      parts.push(`**Trade ${ans.tradeNumber} (${ans.symbol}):** ${ans.answer}`);
     }
   }
 
