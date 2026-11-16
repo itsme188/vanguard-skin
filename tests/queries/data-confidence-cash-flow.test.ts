@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import { getDataConfidence } from "@/lib/queries/data-confidence";
+import { addDays, todayET } from "@/lib/calendar/date-utils";
 
 /**
  * Covers the cashAccuracy dimension's unexplained-cash-flow extension (QA:
@@ -17,10 +18,9 @@ function createTestDb(): Database.Database {
   return db;
 }
 
+/** A day `daysAgo` before today, on the Eastern calendar (never a UTC day cut). */
 function recentDate(daysAgo: number): string {
-  const d = new Date();
-  d.setDate(d.getDate() - daysAgo);
-  return d.toISOString().slice(0, 10);
+  return addDays(todayET(), -daysAgo);
 }
 
 function insertFreshAnchor(db: Database.Database, accountId: number, daysAgo: number, totalValue: number): void {
@@ -51,9 +51,9 @@ describe("cashAccuracy dimension — unexplained cash-flow extension", () => {
   });
 
   it("caps the score and names the account+date+classification for an external-flow-candidate jump", () => {
-    insertFreshAnchor(db, 1, 2, 1_500_000); // fresh statement anchor — would otherwise score 100
-    insertValuation(db, 1, "2026-07-10", 60_500.25, 1_350_000.55);
-    insertValuation(db, 1, "2026-07-11", 210_500.25, 1_440_000.55); // unexplained +150,000.00 cash, +90,000.00 total_value, no transactions
+    insertFreshAnchor(db, 1, 2, 500_000); // fresh statement anchor — would otherwise score 100
+    insertValuation(db, 1, "2026-07-10", 60_500.25, 350_000.55);
+    insertValuation(db, 1, "2026-07-11", 210_500.25, 440_000.55); // unexplained +150,000.00 cash, +90,000.00 total_value, no transactions
 
     const { cashAccuracy } = getDataConfidence(db);
 
@@ -73,9 +73,9 @@ describe("cashAccuracy dimension — unexplained cash-flow extension", () => {
     // Synthetic fixture (round numbers, not tied to any real account or
     // date): a large cash drop against a small total-value drop — the
     // shape of a cash/holdings misattribution rather than a missing flow.
-    insertFreshAnchor(db, 1, 2, 1_600_000);
-    insertValuation(db, 1, "2026-02-01", 300_000, 1_610_000);
-    insertValuation(db, 1, "2026-02-02", 100_000, 1_600_000);
+    insertFreshAnchor(db, 1, 2, 600_000);
+    insertValuation(db, 1, "2026-02-01", 300_000, 610_000);
+    insertValuation(db, 1, "2026-02-02", 100_000, 600_000);
 
     const { cashAccuracy } = getDataConfidence(db);
 
@@ -100,9 +100,9 @@ describe("cashAccuracy dimension — unexplained cash-flow extension", () => {
   });
 
   it("leaves the score untouched and unexplainedFlow null when cash is clean", () => {
-    insertFreshAnchor(db, 1, 2, 1_500_000);
-    insertValuation(db, 1, "2026-07-10", 80_000, 1_400_000);
-    insertValuation(db, 1, "2026-07-11", 80_000, 1_400_000); // flat, no jump
+    insertFreshAnchor(db, 1, 2, 500_000);
+    insertValuation(db, 1, "2026-07-10", 80_000, 400_000);
+    insertValuation(db, 1, "2026-07-11", 80_000, 400_000); // flat, no jump
 
     const { cashAccuracy } = getDataConfidence(db);
 
@@ -111,9 +111,9 @@ describe("cashAccuracy dimension — unexplained cash-flow extension", () => {
   });
 
   it("does not flag a jump that's fully explained by a recorded deposit", () => {
-    insertFreshAnchor(db, 1, 2, 1_670_000);
-    insertValuation(db, 1, "2026-07-16", 130_250, 1_500_000);
-    insertValuation(db, 1, "2026-07-17", 300_250, 1_670_000);
+    insertFreshAnchor(db, 1, 2, 670_000);
+    insertValuation(db, 1, "2026-07-16", 130_250, 500_000);
+    insertValuation(db, 1, "2026-07-17", 300_250, 670_000);
     db.prepare(
       `INSERT INTO transactions (account_id, trade_date, type, amount, is_external_flow, source_key)
        VALUES (1, '2026-07-17', 'DEPOSIT', 170000, 1, 'test:1')`
@@ -124,9 +124,9 @@ describe("cashAccuracy dimension — unexplained cash-flow extension", () => {
   });
 
   it("ignores an IBKR-account cash jump (excluded from the audit's account scope)", () => {
-    insertFreshAnchor(db, 3, 2, 1_500_000);
-    insertValuation(db, 3, "2026-07-10", 80_000, 1_400_000);
-    insertValuation(db, 3, "2026-07-11", 260_000, 1_500_000); // would clear the bar on a non-IBKR account
+    insertFreshAnchor(db, 3, 2, 500_000);
+    insertValuation(db, 3, "2026-07-10", 80_000, 400_000);
+    insertValuation(db, 3, "2026-07-11", 260_000, 500_000); // would clear the bar on a non-IBKR account
 
     const { cashAccuracy } = getDataConfidence(db);
     expect(cashAccuracy.unexplainedFlow).toBeNull();
@@ -148,16 +148,16 @@ describe("cashAccuracy dimension — unexplained cash-flow extension", () => {
   // ── live-anchor-residual: suppress the cap, keep the label (task 9) ────
 
   it("labels an external-flow-shaped jump on a plaid-anchored day as a timing residual instead of capping the score", () => {
-    insertFreshAnchor(db, 1, 2, 1_500_000); // fresh statement anchor — would otherwise score 100
+    insertFreshAnchor(db, 1, 2, 500_000); // fresh statement anchor — would otherwise score 100
     // The jump's landing date is itself a LIVE (Plaid) monthly_snapshots
     // anchor — daily-valuation.ts's cash_balance there is an intraday
     // snapshot-total-minus-close-priced-holdings plug, not literal cash.
     db.prepare(
       `INSERT INTO monthly_snapshots (account_id, month_end_date, total_value, source)
-       VALUES (1, '2026-07-11', 1440000.55, 'plaid')`
+       VALUES (1, '2026-07-11', 440000.55, 'plaid')`
     ).run();
-    insertValuation(db, 1, "2026-07-10", 60_500.25, 1_350_000.55);
-    insertValuation(db, 1, "2026-07-11", 210_500.25, 1_440_000.55); // same external-flow-shaped jump as the legacy test
+    insertValuation(db, 1, "2026-07-10", 60_500.25, 350_000.55);
+    insertValuation(db, 1, "2026-07-11", 210_500.25, 440_000.55); // same external-flow-shaped jump as the legacy test
 
     const { cashAccuracy } = getDataConfidence(db);
 
@@ -182,15 +182,15 @@ describe("cashAccuracy dimension — unexplained cash-flow extension", () => {
   });
 
   it("keeps the legacy cap + warning copy for the same jump on a canonical (non-live) anchored day", () => {
-    insertFreshAnchor(db, 1, 2, 1_500_000);
+    insertFreshAnchor(db, 1, 2, 500_000);
     // A statement-sourced (non-live) anchor row lands on the SAME date as
     // the jump — must not be mistaken for a live anchor.
     db.prepare(
       `INSERT INTO monthly_snapshots (account_id, month_end_date, total_value, source)
-       VALUES (1, '2026-07-11', 1440000.55, 'canonical')`
+       VALUES (1, '2026-07-11', 440000.55, 'canonical')`
     ).run();
-    insertValuation(db, 1, "2026-07-10", 60_500.25, 1_350_000.55);
-    insertValuation(db, 1, "2026-07-11", 210_500.25, 1_440_000.55);
+    insertValuation(db, 1, "2026-07-10", 60_500.25, 350_000.55);
+    insertValuation(db, 1, "2026-07-11", 210_500.25, 440_000.55);
 
     const { cashAccuracy } = getDataConfidence(db);
 
@@ -202,19 +202,20 @@ describe("cashAccuracy dimension — unexplained cash-flow extension", () => {
   });
 
   it("stays fully silent (no unexplainedFlow, no timingResidual) on a source-seam day", () => {
-    // Since 2026-11-15 a live row bracketed by statement anchors is not a
-    // seam, so the go-live sits AFTER the fresh statement-grade anchor here:
-    // the first live anchor after the last statement (the go-live tail).
-    insertFreshAnchor(db, 1, 2, 1_500_000);
-    // Anchor-source transition (manual -> plaid) landing exactly on the
+    insertFreshAnchor(db, 1, 2, 500_000);
+    // Anchor-source transition (canonical -> plaid) landing exactly on the
     // jump date — source-seam must win over live-anchor-residual even
     // though this date is ALSO a live (plaid) anchor.
     db.prepare(
       `INSERT INTO monthly_snapshots (account_id, month_end_date, total_value, source)
-       VALUES (1, ?, 1440000.55, 'plaid')`
-    ).run(recentDate(1));
-    insertValuation(db, 1, recentDate(2), 60_500.25, 1_350_000.55);
-    insertValuation(db, 1, recentDate(1), 210_500.25, 1_440_000.55);
+       VALUES (1, '2026-07-05', 300000, 'canonical')`
+    ).run();
+    db.prepare(
+      `INSERT INTO monthly_snapshots (account_id, month_end_date, total_value, source)
+       VALUES (1, '2026-07-11', 440000.55, 'plaid')`
+    ).run();
+    insertValuation(db, 1, "2026-07-10", 60_500.25, 350_000.55);
+    insertValuation(db, 1, "2026-07-11", 210_500.25, 440_000.55);
 
     const { cashAccuracy } = getDataConfidence(db);
 
