@@ -363,8 +363,15 @@ describe("every account and a non-empty list answer as before", () => {
     // each cashDeploy pick) moved, in beta, betaEstimatedWeight, those
     // sector keys and the beta flag; every allocation figure is unchanged.
     // The digest without K2 on the same tree was a66cf999....
+    // Re-captured 2026-11-15 (Defense review R1/R2): each sector coverage
+    // row gained protectedBeyondExposure, the summary gained
+    // longSideHedgeCount and assumedBetaLowFitCount, and two sectors with
+    // equal long exposure are now ordered by name (row-order independence).
+    // Field-by-field diff of the Defense output against the tree before:
+    // only those keys and that tie order moved; every figure is unchanged.
+    // The digest before was d2202a3e....
     expect(createHash("sha256").update(json).digest("hex")).toBe(
-      "d2202a3ec025cd8510a37486ba3de38d15d6e5c7a53225f257ae19b236d395c2",
+      "8984a85c21248bd5378a129a522109ef879e725290ca566ca801496793cbb918",
     );
   });
 

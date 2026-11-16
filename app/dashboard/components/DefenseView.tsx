@@ -1,6 +1,6 @@
 import { db } from "@/lib/db";
 import { resolveScope } from "@/lib/queries/accounts";
-import { computeDefenseAnalysis, type StandaloneBetKind } from "@/lib/compute/hedging";
+import { computeDefenseAnalysis, NOT_CREDITED_UNKNOWN, type StandaloneBetKind } from "@/lib/compute/hedging";
 import { interpretProtectionRatio, toneClass } from "@/lib/analysis/interpret";
 import { Money, Pct, Count, PrivateText } from "@/lib/privacy/components";
 import { CoverageBar } from "./CoverageBar";
@@ -68,6 +68,10 @@ export async function DefenseView({ scope = "all" }: DefenseViewProps) {
   }
 
   const protectionInterp = interpretProtectionRatio(summary.protectionRatio);
+  // Why each not-credited hedge and each assumed beta is so, counted apart.
+  const notCreditedUnknownType = analysis.notCreditedHedges.filter((h) => h.reason === NOT_CREDITED_UNKNOWN).length;
+  const notCreditedNonStock = summary.notCreditedCount - notCreditedUnknownType;
+  const assumedNoHistory = summary.assumedBetaHedgeCount - summary.assumedBetaLowFitCount;
 
   // underlying → standalone-bet kind, so the most-exposed table can tell a
   // genuinely-unhedged long apart from a naked short / single-name bearish
@@ -111,15 +115,42 @@ export async function DefenseView({ scope = "all" }: DefenseViewProps) {
           <div>
             <p className="text-[11px] uppercase tracking-widest text-ink-faint mb-1">Hedges scored</p>
             <p className="font-mono tabular-nums text-xl text-ink"><Count value={summary.hedgeCount} /></p>
+            {summary.shortSideHedgeCount > 0 && (
+              <p className="text-xs mt-1 text-ink-faint">
+                <Count value={summary.longSideHedgeCount} /> long-side (Hedge book),{" "}
+                <Count value={summary.shortSideHedgeCount} /> short-side
+              </p>
+            )}
             {summary.assumedBetaHedgeCount > 0 && (
               <p className="text-xs mt-1 text-ink-faint">
-                <Count value={summary.assumedBetaHedgeCount} /> on an assumed beta (not enough price history
-                to measure one)
+                <Count value={summary.assumedBetaHedgeCount} /> on an assumed beta (
+                {summary.assumedBetaLowFitCount === 0 ? (
+                  "not enough price history to measure one"
+                ) : assumedNoHistory === 0 ? (
+                  "a measured beta failed the fit test"
+                ) : (
+                  <>
+                    <Count value={assumedNoHistory} /> with too little price history,{" "}
+                    <Count value={summary.assumedBetaLowFitCount} /> whose measured beta failed the fit test
+                  </>
+                )}
+                )
               </p>
             )}
             {summary.notCreditedCount > 0 && (
               <p className="text-xs mt-1 text-ink-faint">
-                <Count value={summary.notCreditedCount} /> not credited (not a stock fund)
+                <Count value={summary.notCreditedCount} /> not credited (
+                {notCreditedUnknownType === 0 ? (
+                  "not a stock fund"
+                ) : notCreditedNonStock === 0 ? (
+                  "fund type not on file"
+                ) : (
+                  <>
+                    <Count value={notCreditedNonStock} /> not a stock fund,{" "}
+                    <Count value={notCreditedUnknownType} /> fund type not on file
+                  </>
+                )}
+                )
               </p>
             )}
           </div>
@@ -145,6 +176,12 @@ export async function DefenseView({ scope = "all" }: DefenseViewProps) {
                   </span>
                 </div>
                 <CoverageBar pct={sc.coveragePct} />
+                {sc.protectedBeyondExposure > 0 && (
+                  <p className="text-[11px] text-ink-dim mt-1">
+                    <Money value={sc.protectedBeyondExposure} /> of fund-hedge credit lands beyond this
+                    sector&apos;s holdings; the bar stops at 100% and the protection ratio keeps it.
+                  </p>
+                )}
               </div>
             ))}
           </div>

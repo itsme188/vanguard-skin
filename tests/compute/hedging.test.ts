@@ -436,7 +436,7 @@ describe("resolveProxyBeta", () => {
   });
 
   it("falls back to assumed 1.0 when nothing is available", () => {
-    expect(resolveProxyBeta(db, "ZZZQ")).toEqual({ beta: 1.0, source: "assumed" });
+    expect(resolveProxyBeta(db, "ZZZQ")).toEqual({ beta: 1.0, source: "assumed", assumedReason: "no_history" });
   });
 
   // 40 closes (39 return pairs): past the house beta gate's 30-pair floor
@@ -562,6 +562,8 @@ describe("attributeProxies — Tier 2 cascade", () => {
 
   it("routes country ETFs via geography when no sector weights", () => {
     const r = attributeProxies([cand("EWG", 5000)], ctx({
+      // An equity fund: an unknown type fails closed on this route too (review R3).
+      fundIdentityByUnderlying: new Map([["EWG", { fundCategory: null, assetClass: "equity", sector: null, leveraged: false }]]),
       etfGeography: new Map([["EWG", "Europe"]]),
     }));
     expect(r.proxies[0].route).toBe("geography");

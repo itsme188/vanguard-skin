@@ -157,9 +157,9 @@ describe("Defense 'Protects' labels", () => {
   });
 
   it("geography route", () => {
-    expect(protectsLabel("geography: US")).toBe("US equities (broad)");
-    expect(protectsLabel("geography: Europe")).toBe("Europe equities (broad)");
-    expect(protectsLabel("geography: Unknown")).toBe("Equities with no region on file (broad)");
+    expect(protectsLabel("geography: US")).toBe("US equities (regional exposure, no beta applied)");
+    expect(protectsLabel("geography: Europe")).toBe("Europe equities (regional exposure, no beta applied)");
+    expect(protectsLabel("geography: Unknown")).toBe("Equities with no region on file (regional exposure, no beta applied)");
   });
 
   it("sector route, one sector and several", () => {

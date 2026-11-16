@@ -47,10 +47,17 @@ const BADGE_LABEL: Record<HedgeBadge, string> = {
  * `book (β=…)`). Each route gets a phrase here, and a route this map does not
  * know reads as words, so the cell never prints a `key: value` pair.
  */
-/** A beta the engine marked "assumed" (K4c) reads as a guess, never as a measurement. */
+/**
+ * A beta the engine marked "assumed" (K4c) reads as a guess, never as a
+ * measurement, and says why: "assumed" alone is too little price history;
+ * "assumed, low fit" is a beta that was measured but failed the fit test.
+ */
 function betaWords(detail: string): string {
-  const assumed = /^β=(-?[\d.]+),\s*assumed$/.exec(detail);
-  return assumed ? `β ${assumed[1]} assumed: not enough price history to measure` : detail;
+  const assumed = /^β=(-?[\d.]+),\s*assumed(,\s*low fit)?$/.exec(detail);
+  if (!assumed) return detail;
+  return assumed[2]
+    ? `β ${assumed[1]} assumed: a beta was measured but tracked the market too loosely to use`
+    : `β ${assumed[1]} assumed: not enough price history to measure`;
 }
 
 export function protectsLabel(protects: string): string {
@@ -61,8 +68,8 @@ export function protectsLabel(protects: string): string {
   const [, kind, detail] = route;
   if (kind === "geography") {
     return detail === "" || detail === "Unknown"
-      ? "Equities with no region on file (broad)"
-      : `${detail} equities (broad)`;
+      ? "Equities with no region on file (regional exposure, no beta applied)"
+      : `${detail} equities (regional exposure, no beta applied)`;
   }
   if (kind === "own_sector") {
     const own = /^(.*\S)\s+\((.*)\)$/.exec(detail);
@@ -210,8 +217,8 @@ function NotCreditedList({ hedges }: { hedges: NotCreditedHedge[] }) {
     <section className="bg-panel border border-edge rounded-lg p-4">
       <h3 className="text-sm font-medium text-ink mb-1">Not credited</h3>
       <p className="text-xs text-ink-faint mb-3">
-        Positions that would protect a fund that is not a stock fund. They are left out of the
-        protection ratio and the sector bars.
+        Positions that would protect a fund that is not a stock fund, or whose fund type is not on
+        file. They are left out of the protection ratio and the sector bars.
       </p>
       <ul className="divide-y divide-edge">
         {hedges.map((h) => (

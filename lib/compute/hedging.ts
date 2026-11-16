@@ -575,9 +575,18 @@ export function computeGapGuardedBetaStats(
   return { beta: cov / varx, pairs: xs.length, rSquared };
 }
 
+/**
+ * Why a beta was assumed: `no_history` (too few aligned prices to measure
+ * one) or `low_fit` (one was measured but failed the house fit test,
+ * betaConfidenceVerdict's r² floor).
+ */
+export type AssumedBetaReason = "no_history" | "low_fit";
+
 export interface ResolvedBeta {
   beta: number;
   source: "cached" | "computed" | "assumed";
+  /** Set only when source is "assumed". Absent there reads as no_history. */
+  assumedReason?: AssumedBetaReason;
 }
 
 /**
@@ -647,10 +656,16 @@ export function resolveProxyBeta(db: Database.Database, symbol: string): Resolve
   const computed = computeGapGuardedBetaStats(sec, spy);
   // House publish gate (r² ≥ 0.10, ≥ 30 pairs): a slope that fails it is
   // not credited; the hedge falls back to the disclosed assumed 1.0.
-  if (computed !== null && betaConfidenceVerdict({ rSquared: computed.rSquared, pairs: computed.pairs }).ok) {
-    return { beta: computed.beta, source: "computed" };
-  }
-  return { beta: ASSUMED_PROXY_BETA, source: "assumed" };
+  if (computed === null) return { beta: ASSUMED_PROXY_BETA, source: "assumed", assumedReason: "no_history" };
+  const verdict = betaConfidenceVerdict({ rSquared: computed.rSquared, pairs: computed.pairs });
+  if (verdict.ok) return { beta: computed.beta, source: "computed" };
+  // The gate's own reason: too few pairs is "no history"; a slope measured
+  // on enough pairs that explains too little is "low fit".
+  return {
+    beta: ASSUMED_PROXY_BETA,
+    source: "assumed",
+    assumedReason: verdict.reason === "low_r2" ? "low_fit" : "no_history",
+  };
 }
 
 // ─── Proxy Attribution (Task 3) ────────────────────────────────────────
@@ -668,6 +683,8 @@ export interface ProxyHedge {
   route: "sector" | "geography" | "own_sector" | "beta" | "not_credited";
   creditedTo: Array<{ bucket: string; credited: number }>;
   betaSource?: ResolvedBeta["source"];
+  /** Why the beta was assumed (only when betaSource is "assumed"). */
+  assumedBetaReason?: AssumedBetaReason;
   notCreditedReason?: string;
   instruments: DefenseInstrument[];
 }
@@ -718,8 +735,16 @@ export function proxyFundVerdict(id: ProxyFundIdentity | undefined): ProxyFundVe
 export interface SectorCoverage {
   sector: string;
   longExposure: number;
+  /** Every credit landed on this sector (Tier-1, look-through, own sector). */
   protected: number;
+  /** protected / longExposure, capped at 1: a bar never passes 100%. */
   coveragePct: number | null;
+  /**
+   * The part of `protected` above the sector's long exposure (look-through
+   * and Tier-1 credits are not capped; own-sector credits are). Kept in the
+   * totals, shown beside the bar. 0 when the sector is not over-covered.
+   */
+  protectedBeyondExposure: number;
 }
 
 /**
@@ -769,10 +794,20 @@ export function attributeProxies(
   candidates: ProxyCandidate[],
   ctx: AttributionContext
 ): { proxies: ProxyHedge[]; sectorCoverage: SectorCoverage[] } {
+  // One ProxyHedge per candidate, in candidate order (the orchestrator joins
+  // proxies[i] to candidates[i]).
   const proxies: ProxyHedge[] = [];
   const protectedBySector = new Map<string, number>(ctx.tier1CreditedBySector);
+  const addToSector = (sector: string, amount: number) =>
+    protectedBySector.set(sector, (protectedBySector.get(sector) ?? 0) + amount);
+
+  // Own-sector credits are split in a second pass, after every Tier-1 and
+  // look-through credit has landed, so a sector's room never depends on row
+  // order (review 2026-11-15, R1).
+  const ownSector: Array<{ hedge: ProxyHedge; c: ProxyCandidate; sector: string; resolved: ResolvedBeta }> = [];
 
   for (const c of candidates) {
+    const base = { underlying: c.underlying, protectiveNotional: c.protectiveNotional, instruments: c.instruments };
     const weights = ctx.sectorWeights.get(c.underlying);
     if (weights && weights.length > 0) {
       const creditedTo = conserveSectorParts(
@@ -780,72 +815,62 @@ export function attributeProxies(
         c.protectiveNotional,
         ctx.ownSectorByUnderlying?.get(c.underlying)
       ).map((p) => ({ bucket: p.sector, credited: p.value }));
-      for (const ct of creditedTo) {
-        protectedBySector.set(ct.bucket, (protectedBySector.get(ct.bucket) ?? 0) + ct.credited);
-      }
-      proxies.push({ underlying: c.underlying, protectiveNotional: c.protectiveNotional, route: "sector", creditedTo, instruments: c.instruments });
+      for (const ct of creditedTo) addToSector(ct.bucket, ct.credited);
+      proxies.push({ ...base, route: "sector", creditedTo });
       continue;
     }
     const verdict = proxyFundVerdict(ctx.fundIdentityByUnderlying?.get(c.underlying));
-    const notCredited = (reason: string) =>
-      proxies.push({
-        underlying: c.underlying,
-        protectiveNotional: c.protectiveNotional,
-        route: "not_credited",
-        creditedTo: [],
-        notCreditedReason: reason,
-        instruments: c.instruments,
-      });
-    // A commodity or bond fund is never equity protection, whatever its
-    // geography says.
-    if (verdict.kind === "not_credited" && verdict.reason !== NOT_CREDITED_UNKNOWN) {
-      notCredited(verdict.reason);
+    // A commodity, bond or unknown-type fund is never equity protection,
+    // whatever its geography says: fail closed on every route (R3).
+    if (verdict.kind === "not_credited") {
+      proxies.push({ ...base, route: "not_credited", creditedTo: [], notCreditedReason: verdict.reason });
       continue;
     }
     const geo = ctx.etfGeography.get(c.underlying);
     if (geo && ctx.longExposureByGeography.has(geo)) {
-      proxies.push({
-        underlying: c.underlying,
-        protectiveNotional: c.protectiveNotional,
-        route: "geography",
-        creditedTo: [{ bucket: geo, credited: c.protectiveNotional }],
-        instruments: c.instruments,
-      });
-      continue;
-    }
-    if (verdict.kind === "not_credited") {
-      notCredited(verdict.reason);
+      // Credited at notional x 1: regional exposure, no beta applied.
+      proxies.push({ ...base, route: "geography", creditedTo: [{ bucket: geo, credited: c.protectiveNotional }] });
       continue;
     }
     const resolved = ctx.resolveBeta(c.underlying);
+    const betaFields = {
+      betaSource: resolved.source,
+      ...(resolved.source === "assumed" ? { assumedBetaReason: resolved.assumedReason ?? ("no_history" as const) } : {}),
+    };
     if (verdict.kind === "equity" && verdict.ownSector !== null) {
-      // The fund's own sector takes the credit up to that sector's long
-      // exposure still unprotected, so the bar never passes 100%; any rest
-      // protects the whole book at the same beta. The total is conserved.
-      const sector = verdict.ownSector;
-      const credited = creditAtResolvedBeta(c.protectiveNotional, resolved, "own_sector");
-      const room = Math.max(0, (ctx.longExposureBySector.get(sector) ?? 0) - (protectedBySector.get(sector) ?? 0));
-      const toSector = Math.min(credited, room);
-      const toBook = credited - toSector;
-      protectedBySector.set(sector, (protectedBySector.get(sector) ?? 0) + toSector);
-      proxies.push({
-        underlying: c.underlying,
-        protectiveNotional: c.protectiveNotional,
-        route: "own_sector",
-        creditedTo: [{ bucket: sector, credited: toSector }, ...(toBook > 0 ? [{ bucket: "book", credited: toBook }] : [])],
-        betaSource: resolved.source,
-        instruments: c.instruments,
-      });
+      const hedge: ProxyHedge = { ...base, route: "own_sector", creditedTo: [], ...betaFields };
+      ownSector.push({ hedge, c, sector: verdict.ownSector, resolved });
+      proxies.push(hedge);
       continue;
     }
     proxies.push({
-      underlying: c.underlying,
-      protectiveNotional: c.protectiveNotional,
+      ...base,
       route: "beta",
       creditedTo: [{ bucket: "book", credited: creditAtResolvedBeta(c.protectiveNotional, resolved, "book") }],
-      betaSource: resolved.source,
-      instruments: c.instruments,
+      ...betaFields,
     });
+  }
+
+  // Fixed order: by underlying symbol, then the larger credit first, then
+  // source. The fund's own sector takes the credit up to that sector's long
+  // exposure still unprotected; any rest protects the whole book at the same
+  // beta. The total is conserved.
+  ownSector.sort(
+    (a, b) =>
+      a.c.underlying.localeCompare(b.c.underlying) ||
+      b.c.protectiveNotional - a.c.protectiveNotional ||
+      a.c.source.localeCompare(b.c.source)
+  );
+  for (const { hedge, c, sector, resolved } of ownSector) {
+    const credited = creditAtResolvedBeta(c.protectiveNotional, resolved, "own_sector");
+    const room = Math.max(0, (ctx.longExposureBySector.get(sector) ?? 0) - (protectedBySector.get(sector) ?? 0));
+    const toSector = Math.min(credited, room);
+    const toBook = credited - toSector;
+    addToSector(sector, toSector);
+    hedge.creditedTo = [
+      { bucket: sector, credited: toSector },
+      ...(toBook > 0 ? [{ bucket: "book", credited: toBook }] : []),
+    ];
   }
 
   const sectors = new Set([...ctx.longExposureBySector.keys(), ...protectedBySector.keys()]);
@@ -857,10 +882,12 @@ export function attributeProxies(
         sector,
         longExposure,
         protected: prot,
-        coveragePct: longExposure > 0 ? prot / longExposure : null,
+        // The bar caps at 100%; the credit above it is named, not dropped.
+        coveragePct: longExposure > 0 ? Math.min(1, prot / longExposure) : null,
+        protectedBeyondExposure: Math.max(0, prot - Math.max(0, longExposure)),
       };
     })
-    .sort((a, b) => b.longExposure - a.longExposure);
+    .sort((a, b) => b.longExposure - a.longExposure || a.sector.localeCompare(b.sector));
 
   return { proxies, sectorCoverage };
 }
@@ -894,6 +921,8 @@ export interface HedgeScore {
   side: "long" | "short";
   /** True when the credit rests on an assumed beta (K4c). */
   betaAssumed: boolean;
+  /** Why it was assumed; present only when betaAssumed. */
+  betaAssumedReason?: AssumedBetaReason;
 }
 
 export interface HedgeScoreInput {
@@ -902,11 +931,12 @@ export interface HedgeScoreInput {
   protectedNotional: number;
   side?: "long" | "short";
   betaAssumed?: boolean;
+  betaAssumedReason?: AssumedBetaReason;
 }
 
 export function scoreHedges(inputs: HedgeScoreInput[]): HedgeScore[] {
   const T = HEDGE_BADGE_THRESHOLDS;
-  const scores = inputs.map(({ instrument: i, protects, protectedNotional, side = "long", betaAssumed = false }) => {
+  const scores = inputs.map(({ instrument: i, protects, protectedNotional, side = "long", betaAssumed = false, betaAssumedReason }) => {
     const hasGreeks = i.greeksAvailable && i.isOption;
     const thetaPerDay = hasGreeks && typeof i.thetaPerDay === "number" ? i.thetaPerDay : null;
     // Signed carry: theta < 0 (long options) decays — positive bleed = cost.
@@ -943,6 +973,7 @@ export function scoreHedges(inputs: HedgeScoreInput[]): HedgeScore[] {
       badges,
       side,
       betaAssumed,
+      ...(betaAssumed ? { betaAssumedReason: betaAssumedReason ?? ("no_history" as const) } : {}),
     };
   });
 
@@ -1020,7 +1051,10 @@ function rawUnderlyingOf(
 function betaText(hedge: ProxyHedge): string {
   const credited = sum(hedge.creditedTo.map((c) => c.credited));
   const beta = hedge.protectiveNotional !== 0 ? credited / hedge.protectiveNotional : 1;
-  return hedge.betaSource === "assumed" ? `β=${beta.toFixed(1)}, assumed` : `β=${beta.toFixed(1)}`;
+  if (hedge.betaSource !== "assumed") return `β=${beta.toFixed(1)}`;
+  // "assumed" alone: too little history; "assumed, low fit": a beta was
+  // measured but failed the fit test (DefenseTables' betaWords reads both).
+  return hedge.assumedBetaReason === "low_fit" ? `β=${beta.toFixed(1)}, assumed, low fit` : `β=${beta.toFixed(1)}, assumed`;
 }
 
 /**
@@ -1106,6 +1140,12 @@ export interface DefenseSummary {
   shortSideHedgeCount: number;
   /** Hedge-book rows whose credit rests on an assumed beta (K4c). */
   assumedBetaHedgeCount: number;
+  /** Of those, rows whose beta was measured but failed the fit test (r²
+   *  floor); the rest had too little price history to measure one. */
+  assumedBetaLowFitCount: number;
+  /** Scored rows on the long side (the Hedge book table). hedgeCount =
+   *  longSideHedgeCount + shortSideHedgeCount. */
+  longSideHedgeCount: number;
   /** Fund hedges given no equity protection credit (K4b). */
   notCreditedCount: number;
   netExposure: number;
@@ -1613,7 +1653,10 @@ export function computeDefenseAnalysis(db: Database.Database, accountIds?: numbe
       diagnostics.push({
         kind: "assumed_beta",
         symbol,
-        detail: `No cached or computable beta for ${symbol} — assumed β=1.0`,
+        detail:
+          result.assumedReason === "low_fit"
+            ? `Measured beta for ${symbol} failed the fit test (r² below the floor) — assumed β=1.0`
+            : `Too little price history to measure a beta for ${symbol} — assumed β=1.0`,
       });
     }
     return result;
@@ -1688,6 +1731,7 @@ export function computeDefenseAnalysis(db: Database.Database, accountIds?: numbe
     if (hedge.route === "not_credited") return;
     const routeDescription = describeProxyRoute(hedge);
     const betaAssumed = hedge.betaSource === "assumed";
+    const betaAssumedReason = hedge.assumedBetaReason;
     // Only protective instruments earn a hedge-book row (proxyHedgeInstruments).
     // tier1_spill and no_core_etf candidates already carry only protective
     // instruments; etf_negative_stack's `instruments` is the WHOLE underlying
@@ -1702,6 +1746,7 @@ export function computeDefenseAnalysis(db: Database.Database, accountIds?: numbe
           protects: routeDescription,
           protectedNotional: Math.abs(inst.exposure) * ratio,
           betaAssumed,
+          betaAssumedReason,
         });
       }
     } else {
@@ -1717,6 +1762,7 @@ export function computeDefenseAnalysis(db: Database.Database, accountIds?: numbe
           protects: routeDescription,
           protectedNotional: Math.abs(inst.exposure) * ratio,
           betaAssumed,
+          betaAssumedReason,
         });
       }
     }
@@ -1756,6 +1802,8 @@ export function computeDefenseAnalysis(db: Database.Database, accountIds?: numbe
     shortSideHedgeExposure,
     shortSideHedgeCount: hedgeScores.filter((h) => h.side === "short").length,
     assumedBetaHedgeCount: hedgeScores.filter((h) => h.betaAssumed).length,
+    assumedBetaLowFitCount: hedgeScores.filter((h) => h.betaAssumed && h.betaAssumedReason === "low_fit").length,
+    longSideHedgeCount: hedgeScores.filter((h) => h.side !== "short").length,
     notCreditedCount: proxies.filter((p) => p.route === "not_credited").length,
     hedgeCount: hedgeScores.length,
     optionPositionCount: instruments.filter((i) => i.isOption).length,
