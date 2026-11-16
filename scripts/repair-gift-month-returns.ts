@@ -454,7 +454,7 @@ function printResult(db: Database.Database, result: GiftMonthResult): void {
  * default: from the main checkout a cwd-relative default is the live
  * database (review 2026-11-15, R7). null when neither names one.
  */
-export function resolveDbPath(argv: string[], env: { REPAIR_DB_PATH?: string } = process.env): string | null {
+export function resolveDbPath(argv: string[], env: Readonly<Record<string, string | undefined>> = process.env): string | null {
   const i = argv.indexOf("--db");
   if (i >= 0) {
     const p = argv[i + 1];
