@@ -2059,3 +2059,21 @@ Owner rulings, all of 2026-11-16:
 Measured reason for the archive shape: about 32 scripts each took their own full copy before a repair and nothing removed one, so copies piled up to many GiB; the app build also copied them a second time into `.next/standalone`. Consecutive backups are nearly identical, so one stream of many backups compresses about 99% with a long-window zstd, while each backup compressed alone saves far less. The archive therefore holds many backups in one compressed stream per month.
 
 Also found: three copy methods were in use, and the monthly import skill used a plain `cp` on a live WAL-mode database, which can miss writes still in the `-wal` file. `takeBackup` uses `VACUUM INTO` only.
+
+## 2026-11-17 — Bogey scans also read FundaAI "Preview" posts
+
+**Ruling (owner):** add FundaAI previews to the bogey scan going forward. This widens the 2026-11-02 ruling ("Bogey scans look at TMT Breakout only"); it does not replace it.
+
+**Why.** FundaAI publishes a pre-print note with its own model figures for the quarter and the next-quarter guide. Under the TMT-only gate those notes were ingested and summarized but never scanned, so the figures reached no sheet, no deep read and no preview email. It took a hand fix twice: an operator one-off on 2026-11-04 (`scripts/oneoff-funda-bogeys-2026-11-04.ts`) and a hand-entered bogey row on 2026-11-17, a few hours before a print.
+
+**What changed.** The one gate, `lib/earnings/bogey-scan-eligibility.ts`, now passes an article when its source is TMT Breakout (unchanged, any subject) OR its source is FundaAI and its subject starts with "Preview" and a bar (spaces and case ignored, so "Preview | X" passes). `BOGEY_SCAN_SOURCE_SQL` now reads the article row too, so a query that uses it must alias `research_articles` as `a` and `research_sources` as `rs`; all three users already did. The code twin is `isBogeyScanArticle(sourceName, subject)` (it replaces `isBogeyScanSource`). The three readers are unchanged and still share the gate: the global scan, the per-event rescan and the armed-event deep read. No second list.
+
+**What did not change.** FundaAI's other post types (Weekly, Deep, Research, Review, Column) are not scanned. No other source is scanned. The extraction prompt, the extractor versions, the schema and the Worker are untouched (the Worker has no copy of this selection).
+
+**Evidence, measured read-only on the live article list (90 days to 2026-11-17).** The new gate passes 11 of 11 FundaAI Preview posts (about one a week) and 0 of the 77 other FundaAI posts; every TMT Breakout article passes as before. The cost reason for the 2026-11-02 ruling still holds: this adds roughly one eligible article a week, and an article that names no covered upcoming reporter makes no AI call.
+
+**How FundaAI figures are stored.** FundaAI gives its own estimate, not a Street figure. In the earlier FundaAI rows the extractor put such a figure in the whisper slot and left consensus empty, so the Street figure stays the consensus bogey. That is the prompt's behaviour, not a code rule; if a FundaAI figure ever lands in a consensus slot, fix the prompt rather than the gate.
+
+**After deploy.** The global scan looks back 30 days, so it will select the few recent FundaAI previews it never scanned. It calls the model only for one that names a covered company whose print is still ahead; the rest are marked scanned with no call.
+
+**Guard.** `tests/earnings/bogey-scan-eligibility.test.ts`: SQL and code parity over every name and subject, plus an exact count of passing rows so the two sides cannot be wrong the same way.

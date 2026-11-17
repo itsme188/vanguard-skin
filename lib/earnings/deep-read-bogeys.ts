@@ -233,8 +233,9 @@ export function gatherDeepReadInputs(db: Database.Database, eventId: number): De
   const companyName = nameRow?.name ?? null;
   const aliases = companyNameAliases(companyName);
 
-  // TMT Breakout only (owner ruling 2026-11-02): the shared bogey-scan gate,
-  // so a non-TMT article is never selected, excerpted or sent to the model.
+  // The shared bogey-scan gate (TMT Breakout, owner ruling 2026-11-02; FundaAI
+  // "Preview" posts, 2026-11-17): an article outside it is never selected,
+  // excerpted or sent to the model.
   // Two instants, datetime() on both sides (stored received_at is
   // space-separated UTC); the exact bounds are checked again in JS below.
   const fromMs = cutoffMs - DEEP_READ_WINDOW_DAYS * 86_400_000;
