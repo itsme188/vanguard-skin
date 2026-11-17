@@ -533,6 +533,15 @@ ${OPTION_PRICING_JOINS_SQL}
       }
       // A fund whose own sector is shocked took that sector's move as one bucket.
       if (pos.sector && sectorMoves[pos.sector] != null) continue;
+      // A rate hedge fund left out of a rate scenario took no figure at all,
+      // so it did not "take the market move"; its own disclosure names it.
+      // The same test the figure loop applies before it leaves the fund out.
+      if (
+        movesRates &&
+        isInterestRateHedgeFund({ security_type: pos.security_type, fund_category: pos.fund_category, name: pos.security_name })
+      ) {
+        continue;
+      }
       missingWeights.add(pos.symbol);
     }
   }

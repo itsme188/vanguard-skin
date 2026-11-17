@@ -105,6 +105,29 @@ describe("custom sector shock: funds with no cached sector weights are named", (
     expect(named).not.toContain("ZZEQ");
   });
 
+  // QA finding: a rate hedge fund left out of a rate scenario (no figure at
+  // all) was also named here as "takes the market move". It took nothing.
+  it("never names a rate hedge fund the scenario left unmodelled; names it when rates do not move", () => {
+    seed(9, "ZZHEDGE", { type: "ETF", sector: "Diversified", fundCategory: "interest rate hedge", price: 25, quantity: 400 });
+    const scenario = (rateMove: number | undefined) =>
+      computeScenario(db, {
+        id: "custom", name: "c", description: "", category: "custom",
+        marketMove: -0.1, rateMove, sectorMoves: { Technology: -0.5 },
+      });
+
+    const withRates = scenario(50);
+    expect(rowOf(withRates, 9).rateHedgeUnmodelled).toBe(true);
+    expect(rowOf(withRates, 9).estimatedChange).toBe(0);
+    expect(withRates.fundsWithoutSectorWeights).toEqual(["BBB", "CCC", "DDD"]);
+
+    // With no rate move the fund is modelled like any other fund without
+    // weights: it does take the market move, so it is named.
+    const noRates = scenario(undefined);
+    expect(rowOf(noRates, 9).rateHedgeUnmodelled).toBeUndefined();
+    expect(rowOf(noRates, 9).changePercent).toBeCloseTo(-0.1, 12);
+    expect(noRates.fundsWithoutSectorWeights).toEqual(["BBB", "CCC", "DDD", "ZZHEDGE"]);
+  });
+
   it("respects the account scope", () => {
     db.prepare(`INSERT INTO accounts (id, name) VALUES (99, 'Other')`).run();
     const res = computeScenario(
