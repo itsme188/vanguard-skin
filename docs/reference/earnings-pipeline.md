@@ -1389,6 +1389,12 @@ feature, frontier tier.
   scan matches tickers only, so a "Micron" preview with no "MU" reached no
   sheet before. Only windows around the mentions are sent (±2,500 characters,
   12,000 per article, 80,000 in all, newest first, at most 25 articles).
+- **Which sources.** Only articles that pass the shared bogey-scan gate
+  (`BOGEY_SCAN_SOURCE_SQL`, `lib/earnings/bogey-scan-eligibility.ts`): every
+  TMT Breakout article (owner ruling 2026-11-02) and FundaAI posts whose
+  subject starts with "Preview" and a bar (owner ruling 2026-11-17). The same
+  gate selects articles for the global newsletter scan and the per-event
+  rescan. Detail: `docs/DECISIONS.md` 2026-11-02 and 2026-11-17.
 - **What it asks.** One reconciled sheet: Street consensus, buyside whisper and
   company guidance kept apart; the latest issue wins a disagreement and the
   disagreement is named; no computed figures; article ids cited per figure;

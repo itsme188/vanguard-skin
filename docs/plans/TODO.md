@@ -605,6 +605,7 @@
 
 ## Live watches (passive — confirm on first natural occurrence, no code action)
 
+- [ ] **First FundaAI "Preview" post after the 2026-11-17 gate change (PR #187).** On the next FundaAI preview for a covered name with a print ahead: the scan ledger (`earnings_bogey_scans`) should gain a row for that article, a `newsletter` bogey row labelled `FundaAI <m/d>` should appear, and FundaAI's own-model figures should sit in the whisper slot with the Street figure left as consensus. If a FundaAI figure lands in a consensus slot, fix the extraction prompt, not the gate (`docs/DECISIONS.md` 2026-11-17). Also confirm an armed name's `Deep read` row lists the preview in its sources.
 - [x] **`## Today's reporters` block — FIRST VISUAL RENDER VERIFIED 2026-07-21** (7/21 morning digest, Mac-sent 8:47, single send): `AMC 16:15 · IBKR · held · $0.62 · $1.75B · ±4.5%` — all four watch columns (slot, position chip, consensus, cached implied move) rendered. The ±4.5% vs the 9:02 straddle recompute (±6.34%) is the designed "cached as of send time" behavior, not drift.
 - [x] **First ≥3-recap same-slot day — EOD wrap debut — SUPERSEDED 2026-08-02.** The wrap DID debut (7/29 MSFT/META/HOOD at 20:12 ET, 7/30 AMZN/HUN/AAPL at 20:20 ET, BMO wrap 7/30 12:07) and the user's verdict was that 4-hour-late evening staples carry no value — the wrap is now RETIRED from the Mac sweep, replaced by the 7:45 ET morning debrief (see Closed this session 2026-08-02). New watch below.
 - [ ] **First morning-debrief send (added 2026-08-02)** — next heavy AMC night (≥3 held same-slot reporters): individual recaps skip `wrap-pending` as before, then ONE "☕ Earnings Debrief — {date}" email lands 07:45–08:20 ET next morning with AI synthesis (no headline restatement) + per-name scoreboards + desk-note guidance excerpts + call notes + ET-timed roster of individually-recapped names; per-member recap chips + viewer show the debrief. Recovery if a morning is missed: `npx tsx scripts/send-morning-debrief.ts` (3-day self-healing lookback).
@@ -643,6 +644,13 @@
 - **E2E browser tests** (Theme J2, ~15 hr) — dedicated session.
 
 ---
+
+## Closed this session (2026-11-17 — bogey scans also read FundaAI previews, PR #187, branch `claude/nvda-earnings-preview-numbers-7f18ee`)
+
+Detail: `docs/DECISIONS.md` 2026-11-17.
+
+- ✅ **Bogey scan gate widened to FundaAI "Preview" posts (2026-11-17, PR #187, branch commit `9488d7f8`)** — owner ruling. `lib/earnings/bogey-scan-eligibility.ts` passes every TMT Breakout article and a FundaAI post whose subject starts with "Preview" and a bar; the global scan, the per-event rescan and the armed-event deep read share it. Code twin renamed `isBogeyScanArticle`. Full suite 21,716 passed; type-check clean. No prompt, schema or Worker change.
+- ✅ **Same-day operator work, no code (2026-11-17)** — a FundaAI preview that the TMT-only gate had kept out was entered by hand as a `manual` bogey row on an armed print through `POST /api/earnings/bogeys`, and the preview email was resent through `POST /api/earnings/email`. The Street revenue consensus was left in place by owner choice.
 
 ## Closed this session (2026-11-15 → 11-16 — Analysis tab deep session, PR #184, branch `claude/analysis-tab-deep-session-bd9283`)
 
