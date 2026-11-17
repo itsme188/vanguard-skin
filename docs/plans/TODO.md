@@ -649,7 +649,7 @@
 
 Detail: `docs/DECISIONS.md` 2026-11-17.
 
-- ✅ **Bogey scan gate widened to FundaAI "Preview" posts (2026-11-17, PR #187, branch commit `9488d7f8`)** — owner ruling. `lib/earnings/bogey-scan-eligibility.ts` passes every TMT Breakout article and a FundaAI post whose subject starts with "Preview" and a bar; the global scan, the per-event rescan and the armed-event deep read share it. Code twin renamed `isBogeyScanArticle`. Full suite 21,716 passed; type-check clean. No prompt, schema or Worker change.
+- ✅ **Bogey scan gate widened to FundaAI "Preview" posts (2026-11-17, PR #187, landed `72774c7d` on `main`; handoff `8b27787b`)** — owner ruling. App build held until after the same evening's print window, so the installed app gets it at the next build. `lib/earnings/bogey-scan-eligibility.ts` passes every TMT Breakout article and a FundaAI post whose subject starts with "Preview" and a bar; the global scan, the per-event rescan and the armed-event deep read share it. Code twin renamed `isBogeyScanArticle`. Full suite 21,716 passed; type-check clean. No prompt, schema or Worker change.
 - ✅ **Same-day operator work, no code (2026-11-17)** — a FundaAI preview that the TMT-only gate had kept out was entered by hand as a `manual` bogey row on an armed print through `POST /api/earnings/bogeys`, and the preview email was resent through `POST /api/earnings/email`. The Street revenue consensus was left in place by owner choice.
 
 ## Closed this session (2026-11-15 → 11-16 — Analysis tab deep session, PR #184, branch `claude/analysis-tab-deep-session-bd9283`)
