@@ -27,21 +27,32 @@ export interface ReportHistoryRow {
  * weekend page view erased every pre-print implied move until TWS returned.
  * Now a row with no `impliedMethod` keeps the stored implied move and the
  * `computed_at` that dates it (the chip's age stays honest); `spot` still
- * refreshes when the new row has one. A row that carries an implied move
- * replaces the stored one as before.
+ * refreshes when the new row has one.
+ *
+ * The same keep applies to a downgrade: with TWS down the IV approximation is
+ * the only road left, and it is the weaker method (sheet > straddle >
+ * iv_approx everywhere this figure is read). An incoming `iv_approx` row never
+ * replaces a stored `straddle` for the same event; the straddle stays with its
+ * own `computed_at`. A new straddle replaces any stored figure, and an
+ * approximation replaces a stored approximation, as before.
  */
+const KEEP_STORED_IMPLIED_MOVE_SQL = `(
+  excluded.implied_method IS NULL
+  OR (excluded.implied_method = 'iv_approx' AND earnings_intel.implied_method = 'straddle')
+)`;
+
 export function upsertEarningsIntel(db: Database.Database, row: EarningsIntelUpsert): void {
   db.prepare(
     `INSERT INTO earnings_intel (event_id, implied_move_pct, implied_method, expiry_used, straddle_mid, spot, computed_at)
      VALUES (@eventId, @impliedMovePct, @impliedMethod, @expiryUsed, @straddleMid, @spot, @computedAt)
      ON CONFLICT(event_id) DO UPDATE SET
-       implied_move_pct = CASE WHEN excluded.implied_method IS NULL THEN earnings_intel.implied_move_pct ELSE excluded.implied_move_pct END,
-       implied_method   = CASE WHEN excluded.implied_method IS NULL THEN earnings_intel.implied_method   ELSE excluded.implied_method   END,
-       expiry_used      = CASE WHEN excluded.implied_method IS NULL THEN earnings_intel.expiry_used      ELSE excluded.expiry_used      END,
-       straddle_mid     = CASE WHEN excluded.implied_method IS NULL THEN earnings_intel.straddle_mid     ELSE excluded.straddle_mid     END,
+       implied_move_pct = CASE WHEN ${KEEP_STORED_IMPLIED_MOVE_SQL} THEN earnings_intel.implied_move_pct ELSE excluded.implied_move_pct END,
+       implied_method   = CASE WHEN ${KEEP_STORED_IMPLIED_MOVE_SQL} THEN earnings_intel.implied_method   ELSE excluded.implied_method   END,
+       expiry_used      = CASE WHEN ${KEEP_STORED_IMPLIED_MOVE_SQL} THEN earnings_intel.expiry_used      ELSE excluded.expiry_used      END,
+       straddle_mid     = CASE WHEN ${KEEP_STORED_IMPLIED_MOVE_SQL} THEN earnings_intel.straddle_mid     ELSE excluded.straddle_mid     END,
        spot             = COALESCE(excluded.spot, earnings_intel.spot),
        computed_at      = CASE
-                            WHEN excluded.implied_method IS NULL AND earnings_intel.implied_method IS NOT NULL
+                            WHEN ${KEEP_STORED_IMPLIED_MOVE_SQL} AND earnings_intel.implied_method IS NOT NULL
                               THEN earnings_intel.computed_at
                             ELSE excluded.computed_at
                           END`
