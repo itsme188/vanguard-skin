@@ -123,7 +123,9 @@ export function getBogeyScanRules(db: Database.Database): BogeyScanRules {
     return rules;
   }
   for (const s of sources) {
-    const name = (s.name ?? "").trim().toLowerCase();
+    // SQLite trim(): spaces only. JS trim() also strips tabs and newlines,
+    // which would widen the defaults past the old SQL gate (review w1 #6).
+    const name = (s.name ?? "").replace(/^ +| +$/g, "").toLowerCase();
     if ((DEFAULT_ALL_SOURCE_NAMES as readonly string[]).includes(name)) rules.set(s.id, "all");
     else if ((DEFAULT_PREVIEW_SOURCE_NAMES as readonly string[]).includes(name)) rules.set(s.id, "previews");
   }

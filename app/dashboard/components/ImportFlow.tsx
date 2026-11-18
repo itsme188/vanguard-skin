@@ -305,7 +305,9 @@ const IMAGE_NAME = /\.(png|jpe?g|webp|gif)$/i;
 
 /** A screenshot, which the statement importer cannot read. */
 function isImageFile(f: File): boolean {
-  return IMAGE_NAME.test(f.name);
+  // By type too: the picker accepts by type, so a .jfif or an extension-less
+  // screenshot must not reach /api/import (review w1 #5).
+  return IMAGE_NAME.test(f.name) || (f.type ?? "").startsWith("image/");
 }
 
 /** Screenshots set aside from the statement import, each with the reader button. */
@@ -972,18 +974,21 @@ export function ImportFlow() {
           the per-file list, so the bogey reader is offered here too. Only for
           the not-a-statement classification; an outage or parser error keeps
           the plain message. */}
-      {state.phase === "preview" && state.message.startsWith(NOT_A_STATEMENT_PREFIX) && (
-        <div className="mb-4 space-y-2">
-          {files
-            .filter((f) => f.name.toLowerCase().endsWith(".pdf"))
-            .map((f, i) => (
-              <div key={`${f.name}-${i}`}>
-                {files.length > 1 && <div className="text-xs text-ink-dim">{f.name}</div>}
-                <ReadAsBogeysButton file={f} />
-              </div>
-            ))}
-        </div>
-      )}
+      {/* Only for a single PDF: with several, the route reports the FIRST
+          file's error, so another file may have failed for a different reason
+          (an outage) and must not be offered the reader (review w1 #3). */}
+      {state.phase === "preview" &&
+        state.message.startsWith(NOT_A_STATEMENT_PREFIX) &&
+        files.length === 1 &&
+        files[0].name.toLowerCase().endsWith(".pdf") && (
+          <div className="mb-4">
+            <ReadAsBogeysButton file={files[0]} />
+          </div>
+        )}
+      {/* Screenshots dropped with the failed statements keep their button. */}
+      <div className="mb-4">
+        <ImageFileList images={imageFiles} />
+      </div>
       <p className="text-xs text-ink-faint mb-4">
         Supported formats: Vanguard PDFs, IBKR activity and holdings CSVs, Vanguard holdings, export and cost basis CSVs, Canonical CSVs, monthly values CSVs, factor CSVs, DAF contribution CSVs (see format guide below)
       </p>

@@ -51,8 +51,8 @@ import {
 } from "@/lib/earnings/extract-newsletter-bogeys";
 import { accountFailureOf } from "@/lib/earnings/ai-unavailable";
 import { issuerSiblings } from "@/lib/securities/issuer-family";
-import { recompileContracts, type RecompileReport } from "@/lib/print-watch/recompile";
-import { getPrintByEventId } from "@/lib/print-watch/store";
+import type { RecompileReport } from "@/lib/print-watch/recompile";
+import { recompileLivePrint } from "@/lib/mutations/earnings-bogeys";
 
 /** At most this many rows, newest first. */
 export const UNREAD_PREVIEWS_MAX = 10;
@@ -204,18 +204,6 @@ export function listUnreadPreviews(
     if (out.length >= UNREAD_PREVIEWS_MAX) break;
   }
   return out;
-}
-
-/**
- * The live print's recompile, as `saveBogeyWithRecompile` runs it
- * (`recompileLivePrint`, lib/mutations/earnings-bogeys.ts, which is not
- * exported): an expired or disarmed print's sheet is the record of what was
- * measured and is never re-derived; no print is the ordinary case.
- */
-function recompileLivePrint(db: Database.Database, eventId: number): RecompileReport | null {
-  const print = getPrintByEventId(db, eventId);
-  if (!print || print.state === "expired" || print.state === "disarmed") return null;
-  return recompileContracts(db, print.id);
 }
 
 interface LedgerRow {

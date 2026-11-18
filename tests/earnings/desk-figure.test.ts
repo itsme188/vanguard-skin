@@ -69,7 +69,19 @@ describe("readDeskFigure", () => {
   });
 
   it("keeps comma behaviour and refuses exponent, huge and empty mantissa", () => {
-    expect(v("1,2,3", "count")).toBe(123);
+    // Changed after review w1 #2: a comma must group thousands, or "3,35B"
+    // (a decimal comma) would read as 335B.
+    expect(v("1,2,3", "count")).toBeNull();
+    expect(v("3,35B", "usd")).toBeNull();
+    expect(v(",5", "count")).toBeNull();
+    expect(v("5,", "count")).toBeNull();
+    expect(v("1,234,567.5", "usd")).toBe(1234567.5);
+    expect(v("3,350M", "usd")).toBe(3350000000);
+    // A doubled sign is refused, never read as positive (review w1 #1).
+    expect(v("(-0.12)", "per_share")).toBeNull();
+    expect(v("(-3)", "per_share")).toBeNull();
+    expect(v("+-6", "pct")).toBeNull();
+    expect(v("±-6", "pct")).toBeNull();
     expect(readDeskFigure("1e3", "count").value).toBeNull();
     expect(readDeskFigure("1e3", "count").error).not.toBeNull();
     const huge = readDeskFigure("9".repeat(400), "count");

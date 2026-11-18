@@ -75,7 +75,9 @@ export function readDeskFigure(raw: string, kind: DeskFigureKind): DeskFigureRes
     s = paren[1];
   }
   if (kind === "pct") {
-    s = s.replace(/^(?:±|\+\s*\/\s*-|\+)\s*/, "");
+    const stripped = s.replace(/^(?:±|\+\s*\/\s*-|\+)\s*/, "");
+    if (stripped !== s && /^[-+]/.test(stripped)) return unreadable(original, kind, approximate);
+    s = stripped;
   }
 
   // A range is never turned into one number.
@@ -90,7 +92,17 @@ export function readDeskFigure(raw: string, kind: DeskFigureKind): DeskFigureRes
 
   const m = /^(-)?\s*([\d.,]*)\s*([a-z%]*(?:\s+[a-z]+)?)$/i.exec(s);
   if (!m) return unreadable(original, kind, approximate);
-  if (m[1]) negative = !negative;
+  // A sign inside parentheses is a doubled sign: "(-0.12)" could mean either
+  // direction, so it is refused rather than read as positive (review w1 #1).
+  if (m[1] && negative) return unreadable(original, kind, approximate);
+  if (m[1]) negative = true;
+  // Commas must group thousands ("3,350" or "1,234,567.5"). A comma that does
+  // not ("3,35B", a decimal comma) would silently scale the figure 100x, so it
+  // is refused (review w1 #2; this reader is new, so parseLargeUSD's looser
+  // comma rule is not carried over).
+  if (m[2].includes(",") && !/^\d{1,3}(?:,\d{3})+(?:\.\d*)?$/.test(m[2])) {
+    return unreadable(original, kind, approximate);
+  }
   const mantissa = m[2].replace(/,/g, "");
   if (!/^(?:\d+\.?\d*|\.\d+)$/.test(mantissa)) return unreadable(original, kind, approximate);
   const suffix = m[3].toLowerCase().replace(/\s+/g, " ").trim();

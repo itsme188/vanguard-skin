@@ -248,3 +248,22 @@ describe("isBogeyScanArticle and the SQL twin", () => {
     }
   });
 });
+
+// Review w1 #6: the default-name match trims spaces only, like SQLite's trim().
+describe("default source names trim spaces only", () => {
+  it("does not treat a tab or newline in a source name as whitespace", async () => {
+    const { getBogeyScanRules } = await import("@/lib/earnings/bogey-scan-eligibility");
+    const Database = (await import("better-sqlite3")).default;
+    const db = new Database(":memory:");
+    db.exec(`CREATE TABLE research_sources (id INTEGER PRIMARY KEY, name TEXT NOT NULL);
+             CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT, updated_at TEXT);`);
+    const ins = db.prepare("INSERT INTO research_sources (id, name) VALUES (?, ?)");
+    ins.run(1, " TMT Breakout ");
+    ins.run(2, "TMT Breakout\t");
+    ins.run(3, "FundaAI\n");
+    const rules = getBogeyScanRules(db);
+    expect(rules.get(1)).toBe("all");
+    expect(rules.has(2)).toBe(false);
+    expect(rules.has(3)).toBe(false);
+  });
+});
