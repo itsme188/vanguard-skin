@@ -44,7 +44,7 @@ import {
 } from "@/lib/earnings/extract-newsletter-bogeys";
 import { stableHash, type PrepareStepDefinition } from "../prepare-armed-event";
 import { accountFailureOf, aiUnavailableReason } from "../ai-unavailable";
-import { BOGEY_SCAN_SOURCE_SQL } from "../bogey-scan-eligibility";
+import { bogeyScanSourceSql } from "../bogey-scan-eligibility";
 import { articleBeforePrint } from "@/lib/earnings/pre-print-floor";
 
 /** How far back the rescan reaches. Bogeys age out fast; two weeks covers the
@@ -134,7 +134,7 @@ export function makeNewsletterRescanStep(
                   CASE WHEN instr(COALESCE(a.raw_html, ''), '<img') > 0 THEN 1 ELSE 0 END AS has_img
              FROM research_articles a JOIN research_sources rs ON rs.id = a.source_id
             WHERE datetime(a.received_at) >= datetime('now', ?) AND a.raw_text IS NOT NULL AND length(a.raw_text) > 200
-              AND ${BOGEY_SCAN_SOURCE_SQL}
+              AND ${bogeyScanSourceSql(db)}
             ORDER BY a.received_at DESC, a.id DESC`,
         )
         .all(`-${RESCAN_WINDOW_DAYS} days`) as ArticleRow[])

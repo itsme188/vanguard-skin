@@ -65,6 +65,12 @@ function makeDb(): Database.Database {
       id INTEGER PRIMARY KEY,
       name TEXT NOT NULL
     );
+    -- The bogey-scan gate reads its per-source rules from settings (2026-11-18).
+    CREATE TABLE settings (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL,
+      updated_at TEXT DEFAULT (datetime('now'))
+    );
     CREATE TABLE research_articles (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       source_id INTEGER NOT NULL,
