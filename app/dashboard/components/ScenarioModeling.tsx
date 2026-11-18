@@ -138,6 +138,13 @@ export function ScenarioModelingCard({ scope }: { scope?: string }) {
   // re-seating a result computed for a scope that's no longer selected.
   const requestTokenRef = useRef(0);
 
+  // The custom result card renders in the card grid ABOVE the builder form.
+  // On a phone the form is taller than the screen, so a fresh result landed
+  // wholly off-screen and Compute looked dead. A successful Compute arms this
+  // flag; the effect below scrolls the new card into view once it has rendered.
+  const customCardRef = useRef<HTMLButtonElement | null>(null);
+  const revealCustomResultRef = useRef(false);
+
   // Custom scenario form state
   const [customMarketMove, setCustomMarketMove] = useState(-10);
   const [customRateMove, setCustomRateMove] = useState(0);
@@ -195,6 +202,7 @@ export function ScenarioModelingCard({ scope }: { scope?: string }) {
       if (requestTokenRef.current !== requestToken) return;
       if (result.ok) {
         setCustomError(null);
+        revealCustomResultRef.current = true;
         setCustomResult(result.data.data);
         setExpanded("custom");
       } else {
@@ -208,6 +216,17 @@ export function ScenarioModelingCard({ scope }: { scope?: string }) {
       setCustomLoading(false);
     }
   }, [customMarketMove, customRateMove, customVolMove, customSectorOverrides, scope]);
+
+  // Bring a freshly computed custom result into view, only when its top is
+  // off-screen (a desktop viewport that already shows the card does not move).
+  useEffect(() => {
+    if (!revealCustomResultRef.current) return;
+    revealCustomResultRef.current = false;
+    const card = customCardRef.current;
+    if (!customResult || !card) return;
+    const top = card.getBoundingClientRect().top;
+    if (top < 0 || top > window.innerHeight) card.scrollIntoView({ block: "start" });
+  }, [customResult]);
 
   useEffect(() => {
     setLoading(true);
@@ -300,8 +319,9 @@ export function ScenarioModelingCard({ scope }: { scope?: string }) {
           return (
             <button
               key={result.scenario.id}
+              ref={result.scenario.id === "custom" ? customCardRef : undefined}
               onClick={() => setExpanded(isExpanded ? null : result.scenario.id)}
-              className={`text-left rounded-xl border p-4 transition-[border-color,background-color,box-shadow] ${
+              className={`text-left rounded-xl border p-4 scroll-mt-20 transition-[border-color,background-color,box-shadow] ${
                 isExpanded
                   ? "border-gold/50 bg-panel shadow-lg col-span-full"
                   : "border-edge bg-panel hover:border-edge-strong"
