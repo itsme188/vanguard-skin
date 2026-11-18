@@ -172,6 +172,22 @@ export function deltaPct(expected: number | null, actual: number | null): DeltaR
   return { label: `${pct >= 0 ? "+" : ""}${pct.toFixed(1)}%`, sign };
 }
 
+/** The sheet's Δ cell. A real range on either side (a high that differs from
+ *  its low) is never compared off its low end: it reads the neutral word
+ *  "range", the same word the first-pass read uses. A high equal to the low
+ *  is a point. Everything else is `deltaPct`. */
+export function lineDelta(line: {
+  expected: { value: number | null; value_high: number | null } | null;
+  value: number | null;
+  value_high: number | null;
+}): DeltaResult | null {
+  const isRange = (low: number | null, high: number | null) => high !== null && high !== low;
+  if (isRange(line.value, line.value_high) || (line.expected && isRange(line.expected.value, line.expected.value_high))) {
+    return { label: "range", sign: 0 };
+  }
+  return deltaPct(line.expected?.value ?? null, line.value);
+}
+
 /**
  * The print-state chip's TEXT (never colour alone).
  *
