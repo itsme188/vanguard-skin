@@ -132,6 +132,24 @@ export function numbersIn(text: string, unit: CalloutUnit): number[] {
   return out;
 }
 
+// A percent that follows a tolerance lead-in ("plus or minus 3%", "+/- 3%",
+// "±3%", "give or take 3%") is a band around another figure, not a guided
+// figure. Kept separate from numbersIn so its other callers are unchanged.
+const TOLERANCE_LEAD_RE = /(?:plus or minus|plus\/minus|\+\s?\/\s?-|±|give or take)\s*$/i;
+
+/** Percent numbers in a snippet that are NOT a tolerance band around something else. */
+export function percentsOutsideToleranceBand(text: string): number[] {
+  const out: number[] = [];
+  for (const m of text.matchAll(PCT_RE)) {
+    const at = m.index ?? 0;
+    // NUM can swallow a glued minus ("+/-3%" reads as -3): put it back in the lead-in.
+    const lead = text.slice(0, at + (m[0].startsWith("-") ? 1 : 0));
+    if (TOLERANCE_LEAD_RE.test(lead)) continue;
+    out.push(toNumber(m[1]));
+  }
+  return out;
+}
+
 const RANGE_SPLIT = /\s*(?:–|—|-|\bto\b|\band\b)\s*/i;
 
 export function parseValueText(text: string): ParsedValue | null {
@@ -327,6 +345,16 @@ export function verifyCallout({ proposal, text, guidanceMetrics, sheetLineKeys: 
   const hasLow = inSnippet.some((n) => nearly(n, parsed.value));
   const hasHigh = parsed.value_high === null || inSnippet.some((n) => nearly(n, parsed.value_high!));
   if (!hasLow || !hasHigh) return { ok: false, reason: "value is not in the snippet in that unit" };
+  // A percent that only appears as "plus or minus N%" is a tolerance band
+  // around another figure. Judged per bound; a number that also stands alone
+  // in the snippet passes.
+  if (parsed.unit === "percent") {
+    const standalone = percentsOutsideToleranceBand(snippet);
+    const bounds = parsed.value_high === null ? [parsed.value] : [parsed.value, parsed.value_high];
+    if (!bounds.every((b) => standalone.some((n) => nearly(n, b)))) {
+      return { ok: false, reason: "the percent is a tolerance band around another figure, not the guided figure" };
+    }
+  }
   const lo = Math.max(0, idx - LABEL_WINDOW_CHARS);
   const hi = Math.min(text.length, idx + snippet.length + LABEL_WINDOW_CHARS);
   const window = text.slice(lo, hi).toLowerCase();

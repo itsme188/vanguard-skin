@@ -39,4 +39,10 @@ describe("data-health page sector sections", () => {
     expect(s).toMatch(/<SymbolLink\s+securityId=\{g\.securityId\}\s+symbol=\{g\.symbol\}/);
     expect(s).toMatch(/\) : \(\s*g\.symbol\s*\)/);
   });
+
+  it("describes the unmapped list in owner words, with no source-file or constant names", () => {
+    const s = section("Unmapped sector ETFs");
+    expect(s).not.toMatch(/SECTOR_TO_ETF|EVENT_SECTOR_MAP|reaction-snapshot|<code>/);
+    expect(s).toContain("measured against SPY, QQQ and TLT only");
+  });
 });
