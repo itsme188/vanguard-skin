@@ -40,4 +40,14 @@ describe("Import tab bogey fallback (source pin)", () => {
     expect(src).toContain("NOT_A_STATEMENT_PREFIX");
     expect(src).toMatch(/error\?\.startsWith\(NOT_A_STATEMENT_PREFIX\)/);
   });
+
+  // A single preview PDF fails every file, so the route answers with one
+  // whole-request error and the screen shows "Import Failed", not the
+  // per-file list. The button must be offered there too, for the same
+  // classification only, and only for a preview-phase failure.
+  it("offers the button on the whole-request error view for the classifier's prefix", () => {
+    const errorView = src.slice(anchorIndex(src, "Import Failed"));
+    expect(errorView).toMatch(/state\.phase === "preview" && state\.message\.startsWith\(NOT_A_STATEMENT_PREFIX\)/);
+    expect(errorView).toContain("<ReadAsBogeysButton file={f} />");
+  });
 });

@@ -968,6 +968,22 @@ export function ImportFlow() {
       <p className="text-sm text-ink-dim mb-2">
         {state.message}
       </p>
+      {/* Every file failed: a single earnings preview PDF lands here, not in
+          the per-file list, so the bogey reader is offered here too. Only for
+          the not-a-statement classification; an outage or parser error keeps
+          the plain message. */}
+      {state.phase === "preview" && state.message.startsWith(NOT_A_STATEMENT_PREFIX) && (
+        <div className="mb-4 space-y-2">
+          {files
+            .filter((f) => f.name.toLowerCase().endsWith(".pdf"))
+            .map((f, i) => (
+              <div key={`${f.name}-${i}`}>
+                {files.length > 1 && <div className="text-xs text-ink-dim">{f.name}</div>}
+                <ReadAsBogeysButton file={f} />
+              </div>
+            ))}
+        </div>
+      )}
       <p className="text-xs text-ink-faint mb-4">
         Supported formats: Vanguard PDFs, IBKR activity and holdings CSVs, Vanguard holdings, export and cost basis CSVs, Canonical CSVs, monthly values CSVs, factor CSVs, DAF contribution CSVs (see format guide below)
       </p>
