@@ -1,7 +1,8 @@
 /**
- * Macro figures: a strict parser, the size check on a macro actual, and the
+ * Macro figures: a strict parser, the size check on a macro actual, the
  * reference period taken from a FRED observation date (owner rulings
- * 2026-10-08, migration 097).
+ * 2026-10-08, migration 097), and the prior-period check (a release never
+ * stores the previous period's figure as its actual).
  *
  * Plain module on purpose: no imports, no database, no clock. The Worker
  * keeps a hand copy at workers/cron/src/macro-figure.ts that is byte-identical
@@ -171,4 +172,99 @@ export function isReferencePeriod(value: unknown): value is string {
     typeof value === "string" &&
     /^\d{4}-(?:(?:0[1-9]|1[0-2])|Q[1-4]|(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01]))$/.test(value)
   );
+}
+
+/** Months between a release and the data it covers, or "weekly" / "quarterly". */
+export type ReportingLag = number | "weekly" | "quarterly";
+
+/**
+ * The reporting period of a release date WITH its year, as a grouping key:
+ * `YYYY-MM` for a monthly release (the month the data covers, `lag` months
+ * before the release month), `YYYY-Qn` for a quarterly one (the quarter that
+ * most recently ended before the release month), null for weekly data (no
+ * period to group on). The year keeps December data reported in January
+ * apart from the next December. Pure: reads nothing but its arguments. The
+ * sync uses the same rule (lib/calendar/macro-events.ts re-exports it).
+ */
+export function reportingPeriodKey(releaseDate: string, lag: ReportingLag): string | null {
+  if (lag === "weekly") return null;
+  const year = Number(releaseDate.slice(0, 4));
+  const month = Number(releaseDate.slice(5, 7)); // 1-12
+  if (!Number.isFinite(year) || !Number.isFinite(month) || month < 1 || month > 12) return null;
+  if (lag === "quarterly") {
+    const currentQ = Math.floor((month - 1) / 3) + 1;
+    return currentQ === 1 ? `${year - 1}-Q4` : `${year}-Q${currentQ - 1}`;
+  }
+  const index = year * 12 + (month - 1) - lag;
+  const y = Math.floor(index / 12);
+  const m = (index % 12) + 1;
+  return `${y}-${String(m).padStart(2, "0")}`;
+}
+
+/**
+ * The FRED releases whose actual is checked against the period the release
+ * is expected to report, with the reporting lag the sync titles them with
+ * (the same values as `reportingLag` in lib/calendar/macro-events.ts
+ * TRACKED_RELEASES; a Mac test pins that). Left out on purpose, so they keep
+ * the old behaviour (fail open):
+ *   - 180 jobless claims: weekly, no derived period;
+ *   - 95 durable goods: one release id for two reports a month apart (the
+ *     advance report late in a month, the full report early in the next),
+ *     so one lag names the wrong month for half its dates;
+ *   - 291 existing home sales: no longer tracked, no lag on file.
+ * JOLTS (192) and ADP (194) sometimes publish late in a month and then
+ * report one month LATER than their lag says; the check only refuses an
+ * EARLIER period, so that never refuses a good figure.
+ */
+export const PERIOD_CHECKED_RELEASE_LAGS: Readonly<Record<number, number | "quarterly">> = {
+  10: 1,
+  46: 1,
+  54: 1,
+  53: "quarterly",
+  50: 1,
+  194: 1,
+  192: 2,
+  9: 1,
+  27: 1,
+  97: 1,
+  13: 1,
+  51: 2,
+};
+
+/**
+ * The period a FRED release is expected to report ("2026-09", "2026-Q3"), or
+ * null when it cannot be derived (not a FRED row, or a release not listed in
+ * PERIOD_CHECKED_RELEASE_LAGS).
+ */
+export function expectedReferencePeriod(
+  sourceKey: string | null | undefined,
+  releaseDate: string | null | undefined,
+): string | null {
+  if (typeof sourceKey !== "string" || typeof releaseDate !== "string") return null;
+  const m = /^fred:(\d+):/.exec(sourceKey);
+  if (!m) return null;
+  const lag = PERIOD_CHECKED_RELEASE_LAGS[Number(m[1])];
+  return lag === undefined ? null : reportingPeriodKey(releaseDate, lag);
+}
+
+/**
+ * True when an observation's reference period is EARLIER than the period
+ * the release is expected to report: the source had not loaded the new
+ * print yet and still showed the previous one. Such a figure is never
+ * stored as this release's actual. False whenever either period is missing
+ * or the two are of different forms (fail open).
+ */
+export function isPriorPeriodObservation(
+  sourceKey: string | null | undefined,
+  releaseDate: string | null | undefined,
+  observedPeriod: string | null | undefined,
+): boolean {
+  const expected = expectedReferencePeriod(sourceKey, releaseDate);
+  if (expected == null || typeof observedPeriod !== "string") return false;
+  const form = (p: string) =>
+    /^\d{4}-(?:0[1-9]|1[0-2])$/.test(p) ? "month" : /^\d{4}-Q[1-4]$/.test(p) ? "quarter" : null;
+  const kind = form(expected);
+  if (kind == null || form(observedPeriod) !== kind) return false;
+  // Same fixed-width form: string order is period order.
+  return observedPeriod < expected;
 }

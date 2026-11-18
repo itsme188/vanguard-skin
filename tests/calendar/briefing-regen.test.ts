@@ -133,7 +133,7 @@ describe("generateBriefingTextWithRegen", () => {
     expect(mockedGenerate.mock.calls[0][1].maxOutputTokens).toBe(16384);
   });
 
-  it("defaults maxOutputTokens to 8192 when omitted", async () => {
+  it("defaults maxOutputTokens to a cap with room for thinking when omitted", async () => {
     mockedGenerate.mockResolvedValueOnce({
       text: "Clean.",
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -144,7 +144,7 @@ describe("generateBriefingTextWithRegen", () => {
       prompt: "P",
     });
 
-    expect(mockedGenerate.mock.calls[0][1].maxOutputTokens).toBe(8192);
+    expect(mockedGenerate.mock.calls[0][1].maxOutputTokens).toBe(20_000);
   });
 
   it("returns empty string when model refuses on first attempt", async () => {

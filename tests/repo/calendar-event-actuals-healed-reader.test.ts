@@ -78,9 +78,9 @@ const ALLOWLIST: AllowEntry[] = [
   },
   {
     file: "lib/calendar/cloud-reconcile.ts",
-    anchor: "SELECT id, reaction_snapshot, consensus_value, consensus_estimate, enriched_at, actual_value, event_type, symbol FROM calendar_events",
+    anchor: "SELECT id, reaction_snapshot, consensus_value, consensus_estimate, enriched_at, actual_value, event_type, symbol, source_key, event_date FROM calendar_events",
     count: 1,
-    why: "WRITE path (Worker → Mac reconcile): reads the stored row to decide whether a cloud payload may fill an EMPTY actual. Never reads the acceptance stamp.",
+    why: "WRITE path (Worker → Mac reconcile): reads the stored row to decide whether a cloud payload may fill an EMPTY actual (source_key and event_date feed the prior-period check). Never reads the acceptance stamp.",
   },
   {
     file: "lib/calendar/enrichment-runner.ts",

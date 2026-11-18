@@ -57,7 +57,7 @@ describe("insertCrossFilePointers", () => {
     const lines = markdown.split("\n");
     const i = lines.indexOf("## NVDA (NVIDIA Corp)");
     expect(lines[i + 1]).toBe(
-      '📄 *Deep dive today: **MBI Deep Dives** — "NVDA\'s networking moat" (see Research Desk below)*',
+      '📄 *Deep dive: **MBI Deep Dives** — "NVDA\'s networking moat" (see Research Desk below)*',
     );
   });
 
@@ -68,7 +68,8 @@ describe("insertCrossFilePointers", () => {
       [essay({ mentioned_symbols: '["GOOGL"]', subject: "Alphabet piece" })],
       ["GOOG"],
     );
-    expect(markdown).toContain("Deep dive today");
+    expect(markdown).toContain("Deep dive:");
+    expect(markdown).not.toContain("Deep dive today");
   });
 
   it("no-ops when the essay's symbol is not held/watchlisted or has no section", () => {
@@ -107,7 +108,8 @@ describe("insertCrossFilePointers", () => {
       source_url: null, website_url: null,
     };
     const { markdown, unfiled } = insertCrossFilePointers(md, [filed, irrelevant], ["NFLX"]);
-    expect(markdown).toContain("Deep dive today");
+    expect(markdown).toContain("Deep dive:");
+    expect(markdown).not.toContain("Deep dive today");
     expect(unfiled).toEqual([]);
   });
 });

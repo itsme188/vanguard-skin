@@ -99,7 +99,8 @@ describe("generateDigestSinceAdaptive — structured composer", () => {
     expect(md!).toContain("## Research Desk");
     expect(md!.indexOf("## The Session")).toBeLessThan(md!.indexOf("## Research Desk"));
     // essay cross-filed into the NVDA section
-    expect(md!).toContain("Deep dive today");
+    expect(md!).toContain("Deep dive:");
+    expect(md!).not.toContain("Deep dive today");
     // essays excluded from the synthesis input
     const input = vi.mocked(synthesize).mock.calls[0][0] as import("@/lib/digest/synthesize").SynthesisInput;
     const bucketSources = input.buckets.flatMap((b) => b.articles.map((a) => a.source_name));

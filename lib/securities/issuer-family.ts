@@ -60,3 +60,42 @@ export function sameIssuer(a: string, b: string): boolean {
   if (!fa) return false;
   return fa.some((s) => s.toUpperCase() === b.toUpperCase());
 }
+
+/**
+ * Share classes of one family whose PER-SHARE figures (EPS, EPS surprise
+ * history, per-share actuals) are NOT on one basis: one share of one class is
+ * a fixed multiple of a share of the other, so an EPS stated for one class is
+ * a different number from the other class's EPS. Each inner list is one basis
+ * (one class written every way the import sources write it). A family not
+ * listed here keeps one per-share basis across its classes (GOOG / GOOGL,
+ * FOX / FOXA: one EPS for both). Revenue, dates and release times are company
+ * figures and are the same for every class whatever this table says.
+ */
+const SEPARATE_PER_SHARE_BASES: ReadonlyArray<readonly string[]> = [
+  ["BRK A", "BRK.A", "BRK/A", "BRK-A"],
+  ["BRK B", "BRK.B", "BRK/B", "BRK-B"],
+];
+
+const BASIS_BY_SYMBOL = new Map<string, readonly string[]>();
+for (const basis of SEPARATE_PER_SHARE_BASES) {
+  for (const sym of basis) {
+    BASIS_BY_SYMBOL.set(sym.toUpperCase(), basis);
+  }
+}
+
+/**
+ * True when a per-share figure stated for `a` may be shown for `b`: the same
+ * symbol (trimmed, case-insensitive), or two classes of one issuer family on
+ * one per-share basis (see SEPARATE_PER_SHARE_BASES). The ONE rule every path
+ * that carries an EPS-like figure from one earnings row to another reads
+ * (lib/calendar/reconcile-earnings-dates.ts, lib/earnings/prepare-steps/
+ * consensus-row.ts). A missing symbol is never a match.
+ */
+export function samePerShareBasis(a: string | null | undefined, b: string | null | undefined): boolean {
+  const na = (a ?? "").trim().toUpperCase();
+  const nb = (b ?? "").trim().toUpperCase();
+  if (na === "" || nb === "") return false;
+  if (na === nb) return true;
+  if (!sameIssuer(na, nb)) return false;
+  return BASIS_BY_SYMBOL.get(na) === BASIS_BY_SYMBOL.get(nb);
+}

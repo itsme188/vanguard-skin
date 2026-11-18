@@ -1,11 +1,11 @@
 import type Database from "better-sqlite3";
-import { issuerSiblings } from "@/lib/securities/issuer-family";
+import { issuerSiblings, samePerShareBasis } from "@/lib/securities/issuer-family";
 import { mergeEarningsEventState } from "@/lib/earnings/event-merge";
 import { writeArmedEventsOutboxRow } from "@/lib/earnings/cloud-outbox";
 import { deliveredSql, notLiveClaimSql } from "@/lib/earnings/email-states";
 import { mondayOf, todayET } from "@/lib/calendar/date-utils";
 import { deriveEarningsSlot } from "@/lib/earnings/earnings-slot";
-import { parseFinnhubFigure } from "@/lib/format/finnhub-figure";
+import { mergeFinnhubActual, parseFinnhubFigure } from "@/lib/format/finnhub-figure";
 import { clusterManualActualsAt } from "@/lib/queries/manual-actuals-cluster";
 import { getSuppressedEventTuples, suppressionKey } from "@/lib/calendar/event-suppressions";
 
@@ -1136,6 +1136,22 @@ export function checkManualAddWouldSupersedeVendor(
   };
 }
 
+/**
+ * A consensus string ("EPS x · Rev y") as it may be carried onto a row of
+ * another share class. On one per-share basis (`samePerShareBasis`) it is
+ * carried whole. Otherwise only the revenue part travels (one company, one
+ * revenue), rebuilt through the shared parser and formatter; an EPS-only or
+ * free-text string carries nothing. Exported for the guard tests.
+ */
+export function consensusForShareClass(
+  text: string | null,
+  fromSymbol: string | null,
+  toSymbol: string | null,
+): string | null {
+  if (text == null || samePerShareBasis(fromSymbol, toSymbol)) return text;
+  return mergeFinnhubActual(null, { revenue: parseFinnhubFigure(text).revenue });
+}
+
 /** The donor-row fields a fold reads (a gathered row satisfies it). */
 export type TwinDonor = Pick<
   EarningsRow,
@@ -1239,6 +1255,7 @@ export function createTwinFolder(db: Database.Database) {
   const donorPrint = db.prepare(
     "SELECT symbol, event_date, event_type FROM calendar_events WHERE id = ?",
   );
+  const symbolOf = db.prepare("SELECT symbol FROM calendar_events WHERE id = ?").pluck();
   /** The donor's own actual is a vendor figure: no stamp for it anywhere in the print. */
   const donorActualIsVendor = (r: TwinDonor): boolean => {
     if (r.actual_value == null || r.manual_actuals_at != null) return false;
@@ -1262,12 +1279,17 @@ export function createTwinFolder(db: Database.Database) {
       r.actual_value,
       canonicalId,
     );
+    // A per-share consensus never crosses onto a share class on another
+    // per-share basis (QA: a Class A row showed the Class B EPS); the revenue
+    // part still does. Same symbol, or classes on one basis: unchanged.
+    const fromSymbol = symbolOf.get(r.id) as string | null | undefined;
+    const toSymbol = symbolOf.get(canonicalId) as string | null | undefined;
     // Positional (better-sqlite3 binds `?` only positionally, so the
     // donor's actual_value is passed TWICE — once for the
     // manual_actuals_at CASE test, once for its own COALESCE).
     carryEnrichment.run(
-      r.consensus_estimate,
-      r.consensus_value,
+      consensusForShareClass(r.consensus_estimate, fromSymbol ?? null, toSymbol ?? null),
+      consensusForShareClass(r.consensus_value, fromSymbol ?? null, toSymbol ?? null),
       r.actual_value,
       r.manual_actuals_at,
       r.actual_value,
@@ -1443,9 +1465,10 @@ export function createFinnhubDataCarrier(db: Database.Database) {
     raw_json: string | null;
     description: string | null;
     consensus_estimate: string | null;
+    symbol: string | null;
   }
   const read = db.prepare(
-    "SELECT id, source, raw_json, description, consensus_estimate FROM calendar_events WHERE id = ?",
+    "SELECT id, source, raw_json, description, consensus_estimate, symbol FROM calendar_events WHERE id = ?",
   );
   const writeRawJson = db.prepare("UPDATE calendar_events SET raw_json = ? WHERE id = ?");
   const writeDescription = db.prepare("UPDATE calendar_events SET description = ? WHERE id = ?");
@@ -1472,9 +1495,19 @@ export function createFinnhubDataCarrier(db: Database.Database) {
 
     // 1. raw_json keys. A Finnhub row that lost its entry states nothing, so
     //    every key carried earlier is removed.
-    const donorJson = (donor.raw_json ? parseRawJsonObject(donor.raw_json) : null) ?? {};
+    // Between share classes on different per-share bases the Finnhub row's
+    // per-share data (EPS estimate, EPS surprise history, and the description
+    // that prints that history) reads as "not stated", so nothing per-share is
+    // carried and a copy carried earlier is removed by the rules below. The
+    // revenue estimate, quarter and vendor symbol are company data and travel.
+    const sameBasis = samePerShareBasis(donor.symbol, kept.symbol);
+    const donorJson = { ...((donor.raw_json ? parseRawJsonObject(donor.raw_json) : null) ?? {}) };
     const donorEntry = { ...(asJsonObject(donorJson.entry) ?? {}) };
     if (donorEntry.revenueEstimate === 0) delete donorEntry.revenueEstimate; // placeholder, not a figure
+    if (!sameBasis) {
+      delete donorEntry.epsEstimate;
+      delete donorJson.history;
+    }
     const hadEntry = has(keptJson, "entry");
     const keptEntry = hadEntry ? asJsonObject(keptJson.entry) : {};
     const carriedKeys: string[] = [];
@@ -1505,7 +1538,8 @@ export function createFinnhubDataCarrier(db: Database.Database) {
 
     // 2. description: fill an empty one; afterwards follow the Finnhub row
     //    for as long as the kept row still shows the carried text.
-    const donorDescription = (donor.description ?? "").trim() !== "" ? donor.description : null;
+    const donorDescription =
+      sameBasis && (donor.description ?? "").trim() !== "" ? donor.description : null;
     const markedDescription = marker && typeof marker.description === "string" ? marker.description : null;
     let carriedDescription: string | null = null;
     if ((kept.description ?? "").trim() === "") {
