@@ -1390,11 +1390,17 @@ feature, frontier tier.
   sheet before. Only windows around the mentions are sent (±2,500 characters,
   12,000 per article, 80,000 in all, newest first, at most 25 articles).
 - **Which sources.** Only articles that pass the shared bogey-scan gate
-  (`BOGEY_SCAN_SOURCE_SQL`, `lib/earnings/bogey-scan-eligibility.ts`): every
-  TMT Breakout article (owner ruling 2026-11-02) and FundaAI posts whose
-  subject starts with "Preview" and a bar (owner ruling 2026-11-17). The same
-  gate selects articles for the global newsletter scan and the per-event
-  rescan. Detail: `docs/DECISIONS.md` 2026-11-02 and 2026-11-17.
+  (`bogeyScanSourceSql(db)`, `lib/earnings/bogey-scan-eligibility.ts`). The
+  owner sets each newsletter to Off, All posts or Previews only (a subject
+  starting "Preview" and a bar) in Manage Sources; the rules live in the
+  `settings` row `bogey_scan_sources`, keyed by source id (owner ruling
+  2026-11-18). Until the first save, or when that row cannot be read, the
+  defaults apply: every TMT Breakout article (2026-11-02) and FundaAI
+  "Preview" posts (2026-11-17). The same gate selects articles for the global
+  newsletter scan and the per-event rescan. A changed switch is prospective:
+  each reader follows it on its next run, so turning a source on can make an
+  armed print's deep read run again. Detail: `docs/DECISIONS.md` 2026-11-02,
+  2026-11-17 and 2026-11-18.
 - **What it asks.** One reconciled sheet: Street consensus, buyside whisper and
   company guidance kept apart; the latest issue wins a disagreement and the
   disagreement is named; no computed figures; article ids cited per figure;

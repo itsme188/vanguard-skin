@@ -5,6 +5,11 @@ import {
   BogeysExtractionError,
 } from "@/lib/earnings/extract-bogeys";
 import { saveBogeyWithRecompile } from "@/lib/mutations/earnings-bogeys";
+import {
+  alignToExistingLines,
+  existingWatchLinesForEvent,
+  existingWatchSpecsForEvent,
+} from "@/lib/earnings/watch-metrics";
 import { issuerSiblings } from "@/lib/securities/issuer-family";
 import { addDays, todayET } from "@/lib/calendar/date-utils";
 import { buildBogeyEventMatchMap, unmatchedBogeyReason } from "@/lib/queries/bogey-event-match";
@@ -88,10 +93,29 @@ export async function POST(request: Request) {
     console.warn("R2 upload failed during bogeys ingest:", err);
   }
 
+  // ── Match window (read before extraction) ─────────────────────────
+  // Live (non-superseded) rows only — attaching to a superseded sibling
+  // makes the sheet invisible on every surface while claiming a match.
+  const startDate = addDays(weekOf, -3);
+  const endDate = addDays(weekOf, 10);
+  const eventBySymbol = buildBogeyEventMatchMap(db, startDate, endDate);
+
+  // The extra lines already on each matched print's sheet, so the extractor
+  // reuses their labels (bogey intake 2026-11-18). Keyed by the event's own
+  // symbol; a print with no lines adds nothing to the prompt.
+  const existingLinesBySymbol: Record<string, string[]> = {};
+  const seenEvents = new Set<number>();
+  for (const match of eventBySymbol.values()) {
+    if (match.eventId == null || seenEvents.has(match.eventId)) continue;
+    seenEvents.add(match.eventId);
+    const lines = existingWatchLinesForEvent(db, match.eventId);
+    if (lines.length > 0) existingLinesBySymbol[match.symbol.toUpperCase()] = lines;
+  }
+
   // ── Claude extraction ─────────────────────────────────────────────
   let extraction;
   try {
-    extraction = await extractBogeysFromUpload(buffer, mediaType);
+    extraction = await extractBogeysFromUpload(buffer, mediaType, { existingLinesBySymbol });
   } catch (err) {
     if (err instanceof BogeysExtractionError) {
       return Response.json({ success: false, error: err.message }, { status: err.status });
@@ -109,11 +133,6 @@ export async function POST(request: Request) {
   }
 
   // ── Fan-out match against calendar_events ─────────────────────────
-  // Live (non-superseded) rows only — attaching to a superseded sibling
-  // makes the sheet invisible on every surface while claiming a match.
-  const startDate = addDays(weekOf, -3);
-  const endDate = addDays(weekOf, 10);
-  const eventBySymbol = buildBogeyEventMatchMap(db, startDate, endDate);
 
   const results: Array<{
     symbol: string;
@@ -143,6 +162,12 @@ export async function POST(request: Request) {
       continue;
     }
 
+    // Each extracted line joins the sheet line it names, even a hand-typed
+    // one. The row is still OVERWRITTEN below (no merge): re-uploading under
+    // the same label is how the owner corrects a sheet.
+    const watchMetrics = Array.isArray(bogey.watch_metrics)
+      ? alignToExistingLines(bogey.watch_metrics, existingWatchSpecsForEvent(db, matchedEventId))
+      : [];
     const { result: upsert } = saveBogeyWithRecompile(db, {
       event_id: matchedEventId,
       source: "pdf_upload",
@@ -158,10 +183,7 @@ export async function POST(request: Request) {
         : null,
       guidance_notes: bogey.guidance_notes,
       notes: bogey.notes,
-      extra_metrics_json:
-        Array.isArray(bogey.watch_metrics) && bogey.watch_metrics.length > 0
-          ? JSON.stringify(bogey.watch_metrics)
-          : null,
+      extra_metrics_json: watchMetrics.length > 0 ? JSON.stringify(watchMetrics) : null,
       ai_extraction_model: extraction.modelId,
     });
     results.push({

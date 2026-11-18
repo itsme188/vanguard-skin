@@ -56,39 +56,38 @@ describe("BogeysEditModal — id identity and the shared parser (Codex round 1)"
 });
 
 /**
- * Review M-6: a whole-file `not.toMatch(/parseLargeUSD\(r\./)` was trivially
- * evaded — the modal legitimately imports parseLargeUSD for the revenue fields,
- * so `parseLargeUSD(row.consensus)` or a local alias would have passed it. Pin
- * the serialiser's OWN slice instead, the way tests/print-watch/recompile.test.ts
- * slices recompileContracts.
+ * Review M-6, revised by bogey intake 2026-11-18 (Task F). The serialiser moved
+ * to the pure module `app/dashboard/today/bogey-read-fill.ts` and now reads each
+ * row's figures in that row's OWN unit with the lenient desk reader, sending
+ * numbers. The hazard M-6 guarded (one dollar parser applied to every unit, so a
+ * pct row's "27.5%" became "no bogey") is still pinned: the serialiser's own
+ * slice holds no dollar parser and no bare coercion, and reads by `r.unit`.
  */
-describe("extraRowsToJson coerces nothing — the shared parser reads each unit", () => {
-  const OPEN = "function extraRowsToJson(";
-  const CLOSE = "const plural =";
-  const serialiser = src.slice(anchorIndex(src, OPEN), anchorIndex(src, CLOSE));
+describe("extraRowsToJson reads each row in its own unit", () => {
+  const lib = readFileSync("app/dashboard/today/bogey-read-fill.ts", "utf8");
+  const OPEN = "export function extraRowsToJson(";
+  const CLOSE = "/** One stored figure as desk text";
+  const serialiser = lib.slice(anchorIndex(lib, OPEN), anchorIndex(lib, CLOSE));
 
   it("slices the real function, not the rest of the file (anchor guard)", () => {
-    expect(src.indexOf(OPEN), "the serialiser was renamed").toBeGreaterThan(-1);
-    expect(anchorIndex(src, CLOSE), "the closing anchor moved above the serialiser").toBeGreaterThan(
-      anchorIndex(src, OPEN),
-    );
+    expect(anchorIndex(lib, CLOSE)).toBeGreaterThan(anchorIndex(lib, OPEN));
     expect(serialiser).toMatch(/JSON\.stringify\(/);
-    expect(serialiser.length).toBeLessThan(src.length / 2);
+    expect(serialiser.length).toBeLessThan(lib.length / 2);
   });
 
-  it("holds no number parser at all: no parseLargeUSD, no Number(), no percent coercion", () => {
+  it("holds no dollar parser and no bare coercion", () => {
     expect(serialiser).not.toMatch(/parseLargeUSD/);
     expect(serialiser).not.toMatch(/\bNumber\s*\(/);
     expect(serialiser).not.toMatch(/parseFloat|parseInt|coercePercent/);
   });
 
-  it("ships each row's own trimmed string, or null where the desk left it blank", () => {
-    expect(serialiser).toMatch(
-      /consensus: r\.consensus\.trim\(\) === "" \? null : r\.consensus\.trim\(\)/,
-    );
-    expect(serialiser).toMatch(
-      /whisper: r\.whisper\.trim\(\) === "" \? null : r\.whisper\.trim\(\)/,
-    );
+  it("reads each figure with the desk reader in the row's own unit", () => {
+    expect(serialiser).toContain("readDeskFigure(r[field], r.unit)");
+  });
+
+  it("the modal calls it and no longer defines its own", () => {
+    expect(src).not.toContain("function extraRowsToJson(");
+    expect(src).toContain("extraRowsToJson(extraRows)");
   });
 });
 

@@ -307,7 +307,7 @@ export function deleteBogey(db: Database.Database, id: number): boolean {
  * the RECORD of what was measured and is never re-derived. No print at all is
  * the ordinary case (most events never arm).
  */
-function recompileLivePrint(db: Database.Database, eventId: number): RecompileReport | null {
+export function recompileLivePrint(db: Database.Database, eventId: number): RecompileReport | null {
   const print = getPrintByEventId(db, eventId);
   if (!print || print.state === "expired" || print.state === "disarmed") return null;
   return recompileContracts(db, print.id);

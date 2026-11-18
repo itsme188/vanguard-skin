@@ -274,3 +274,67 @@ export function existingWatchLinesForEvent(db: Database.Database, eventId: numbe
   }
   return lines;
 }
+
+/**
+ * The extra metric lines already stored for an event, across every bogey row,
+ * as specs (first occurrence of each id wins). An unreadable row is skipped.
+ * The structured twin of `existingWatchLinesForEvent`, for `alignToExistingLines`.
+ */
+export function existingWatchSpecsForEvent(db: Database.Database, eventId: number): ExtraMetricSpec[] {
+  const rows = db
+    .prepare(`SELECT extra_metrics_json FROM earnings_bogeys WHERE event_id = ? ORDER BY id ASC`)
+    .all(eventId) as Array<{ extra_metrics_json: string | null }>;
+  const out: ExtraMetricSpec[] = [];
+  const seen = new Set<string>();
+  for (const row of rows) {
+    for (const s of parseExtraMetrics(row.extra_metrics_json).specs) {
+      if (seen.has(s.id)) continue;
+      seen.add(s.id);
+      out.push(s);
+    }
+  }
+  return out;
+}
+
+function lineIdentity(s: { label: string; period: string; unit: string; basis: string }): string {
+  return [identityTokens(s.label).join(" "), s.period, s.unit, s.basis].join("|");
+}
+
+/**
+ * Point freshly extracted specs at the sheet lines they name (bogey intake
+ * 2026-11-18, amendment A2). A line typed by hand carries a random v4 id, not
+ * the derived one, so an extraction of the same figure would otherwise land on
+ * a second line.
+ *
+ *   - A match needs the normalised label key, period, unit and basis all equal;
+ *     a label alone never matches.
+ *   - Exactly one existing line must match; two or more leave the extracted id
+ *     unchanged (the desk decides, not a guess).
+ *   - A matched spec takes the existing line's id AND kind, so the two rows
+ *     never disagree on a field `detectExtraMetricConflicts` compares.
+ *   - Two extracted specs never end on one id: the later one keeps its own.
+ *   - Inputs are not modified.
+ */
+export function alignToExistingLines(
+  extracted: ExtraMetricSpec[],
+  existing: ExtraMetricSpec[],
+): ExtraMetricSpec[] {
+  const byIdentity = new Map<string, ExtraMetricSpec[]>();
+  for (const s of existing) {
+    if (identityTokens(s.label).length === 0) continue;
+    const key = lineIdentity(s);
+    const list = byIdentity.get(key);
+    if (list) list.push(s);
+    else byIdentity.set(key, [s]);
+  }
+  const used = new Set<string>();
+  return extracted.map((spec) => {
+    const matches = identityTokens(spec.label).length > 0 ? byIdentity.get(lineIdentity(spec)) ?? [] : [];
+    if (matches.length === 1 && !used.has(matches[0].id)) {
+      used.add(matches[0].id);
+      return { ...spec, id: matches[0].id, kind: matches[0].kind };
+    }
+    used.add(spec.id);
+    return { ...spec };
+  });
+}

@@ -5,7 +5,7 @@ import { CHIP_TONE_TEXT } from "@/app/dashboard/components/chip-tone-text";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
-import { coercePercent, formatEnrichedAtET, formatLargeUSD, parseLargeUSD } from "@/lib/format";
+import { formatEnrichedAtET, formatLargeUSD } from "@/lib/format";
 import {
   consensusForActualsCheck,
   manualActualsSanityWarnings,
@@ -15,7 +15,8 @@ import { formatBogeyFields, formatBogeyFieldLine } from "@/lib/earnings/format-b
 import { PrivateText } from "@/lib/privacy/components";
 import type { EarningsBogey } from "@/lib/queries/earnings-bogeys";
 import apiFetch from "@/lib/http/apiFetch";
-import { networkFailureMessage } from "@/lib/ui/mutation-result";
+import { networkFailureMessage, readMutationResult } from "@/lib/ui/mutation-result";
+import type { ReadBogeysResult } from "@/lib/earnings/read-bogeys-types";
 import { useConfirmPrompt } from "../components/useConfirmPrompt";
 import {
   isUuidV4,
@@ -26,6 +27,22 @@ import {
   type ExtraMetricSpec,
 } from "@/lib/print-watch/extra-metrics";
 import { formatValue } from "@/lib/print-watch/first-pass-format";
+import {
+  describeReadFill,
+  extraRowsToJson,
+  fillFormFromRead,
+  parseManualBogeyForm,
+  type ExtraRow,
+  type FormState,
+} from "./bogey-read-fill";
+
+// The form reader lives in the pure module (tests import it without React);
+// re-exported so existing importers keep their path.
+export { parseManualBogeyForm };
+export type { ManualBogeyValues } from "./bogey-read-fill";
+
+/** The file types the read panel takes: the same list as the Hub upload button. */
+const READ_ACCEPT = "application/pdf,.pdf,image/png,image/jpeg,image/webp,image/gif,.png,.jpg,.jpeg,.webp,.gif";
 
 /**
  * Mirrors `lib/print-watch/recompile.ts::RecompileReport`, the shape POST/DELETE
@@ -51,17 +68,6 @@ interface Props {
   onClose: () => void;
 }
 
-interface FormState {
-  source_label: string;
-  eps_consensus: string;
-  eps_whisper: string;
-  revenue_consensus: string;
-  revenue_whisper: string;
-  expected_move: string;
-  guidance_notes: string;
-  notes: string;
-}
-
 interface ActualsState {
   eps_actual: string;
   revenue_actual: string;
@@ -83,26 +89,6 @@ const EMPTY_ACTUALS: ActualsState = {
   revenue_actual: "",
 };
 
-/**
- * One desk-defined extra metric line while it is being edited (spec §4.7).
- * Rows hold STRINGS and ship strings: `parseExtraMetrics` reads each number
- * against its row's own unit (usd takes the parseLargeUSD grammar, pct takes a
- * decimal with an optional %), and nothing here coerces. Parsing in the modal
- * would have to duplicate that table — and did, wrongly: parseLargeUSD applied
- * to a `pct` row turned a typed "27.5%" into "no bogey".
- */
-interface ExtraRow {
-  id: string;
-  label: string;
-  definition: string;
-  unit: ExtraMetricSpec["unit"];
-  kind: ExtraMetricSpec["kind"];
-  period: ExtraMetricSpec["period"];
-  basis: ExtraMetricSpec["basis"];
-  consensus: string;
-  whisper: string;
-}
-
 const EMPTY_EXTRA_ROW = {
   label: "",
   definition: "",
@@ -113,21 +99,6 @@ const EMPTY_EXTRA_ROW = {
   consensus: "",
   whisper: "",
 } satisfies Omit<ExtraRow, "id">;
-
-function extraRowsToJson(rows: ExtraRow[]): string | null {
-  if (rows.length === 0) return null;
-  return JSON.stringify(rows.map((r) => ({
-    id: r.id,
-    label: r.label.trim(),
-    definition: r.definition.trim(),
-    unit: r.unit,
-    kind: r.kind,
-    period: r.period,
-    basis: r.basis,
-    consensus: r.consensus.trim() === "" ? null : r.consensus.trim(),
-    whisper: r.whisper.trim() === "" ? null : r.whisper.trim(),
-  })));
-}
 
 const plural = (n: number, noun: string) => `${n} ${noun}${n === 1 ? "" : "s"}`;
 
@@ -210,66 +181,6 @@ export function bogeyCardHasContent(b: {
 
 export const NOTHING_TO_SAVE = "Nothing to save — enter at least one bogey, guidance or note.";
 
-export interface ManualBogeyValues {
-  eps_consensus: number | null;
-  eps_whisper: number | null;
-  revenue_consensus_usd: number | null;
-  revenue_whisper_usd: number | null;
-  expected_move_pct: number | null;
-  guidance_notes: string | null;
-  notes: string | null;
-}
-
-/**
- * Reads the manual-bogeys form. A field that is typed but cannot be read is
- * an ERROR naming that field, never "no value" — dropping it stored a row
- * with none of the numbers the desk typed (qa: unparseable-values-silently-
- * dropped). `empty` is true when no figure, guidance or note was entered
- * (extra metric rows are judged by the caller, which holds them).
- */
-export function parseManualBogeyForm(form: {
-  eps_consensus: string;
-  eps_whisper: string;
-  revenue_consensus: string;
-  revenue_whisper: string;
-  expected_move: string;
-  guidance_notes: string;
-  notes: string;
-}): { values: ManualBogeyValues; error: string | null; empty: boolean } {
-  const values: ManualBogeyValues = {
-    eps_consensus: null,
-    eps_whisper: null,
-    revenue_consensus_usd: null,
-    revenue_whisper_usd: null,
-    expected_move_pct: null,
-    guidance_notes: form.guidance_notes.trim() || null,
-    notes: form.notes.trim() || null,
-  };
-  let error: string | null = null;
-  const money = (
-    raw: string,
-    key: "eps_consensus" | "eps_whisper" | "revenue_consensus_usd" | "revenue_whisper_usd",
-    label: string,
-    example: string,
-  ) => {
-    if (!raw.trim()) return;
-    const n = parseLargeUSD(raw);
-    if (n == null) error ??= `${label} must be a number (e.g. ${example}).`;
-    else values[key] = n;
-  };
-  money(form.eps_consensus, "eps_consensus", "EPS consensus", "0.46");
-  money(form.eps_whisper, "eps_whisper", "EPS whisper", "0.50");
-  money(form.revenue_consensus, "revenue_consensus_usd", "Revenue consensus", "3.85B or 3850000000");
-  money(form.revenue_whisper, "revenue_whisper_usd", "Revenue whisper", "3.90B or 3900000000");
-  if (form.expected_move.trim()) {
-    const pct = coercePercent(form.expected_move);
-    if (pct == null) error ??= "Expected move must be a percent above zero (e.g. 6 or ±6%).";
-    else values.expected_move_pct = pct;
-  }
-  const empty = Object.values(values).every((v) => v == null);
-  return { values, error, empty };
-}
-
 /**
  * One stored extra metric as the card shows it: the label, then the figures
  * through the live sheet's own formatter, e.g. "Net new ARR $300.0M · whisper
@@ -300,8 +211,10 @@ interface ExtraMetricConflict {
 /**
  * Per-event bogeys editor. Lists existing bogey rows from any source
  * (PDF / manual / newsletter) and lets the user add or update a manual
- * entry. Revenue inputs accept "$4.34B" / "4340M" / "4,340,000,000" via
- * parseLargeUSD — same syntax accepted on the email composer side.
+ * entry. Figures are read the way people write them ("~$3.35B", "3.35bn",
+ * "c. 6%") through lib/earnings/desk-figure.ts; a range or a word is refused
+ * with a sentence naming the box. The "Read from a file or pasted text" panel
+ * fills empty boxes from a preview and saves nothing (bogey intake 2026-11-18).
  */
 export function BogeysEditModal({ eventId, symbol, open, onClose }: Props) {
   const router = useRouter();
@@ -345,6 +258,20 @@ export function BogeysEditModal({ eventId, symbol, open, onClose }: Props) {
    *  hydration can never overwrite the desk's own edits mid-typing. */
   const hydratedLabelRef = useRef<string | null>(null);
   const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** The read panel: pasted text, or one chosen/dropped file (never both). */
+  const [readText, setReadText] = useState("");
+  const [readFile, setReadFile] = useState<File | null>(null);
+  const [reading, setReading] = useState(false);
+  const [readMessage, setReadMessage] = useState<{ tone: "info" | "error"; text: string } | null>(null);
+  const [dragOver, setDragOver] = useState(false);
+  const readFileInputRef = useRef<HTMLInputElement | null>(null);
+  /** Bumped on every open, so a read that returns after the box was closed or
+   *  moved to another print fills nothing. */
+  const readSeqRef = useRef(0);
+  /** The boxes as they stand NOW. A read takes seconds; the desk may type
+   *  meanwhile, and the fill must start from what is there when it lands. */
+  const formRef = useRef<FormState>(EMPTY);
+  const extraRowsRef = useRef<ExtraRow[]>([]);
 
   // "copied" is a two-second acknowledgement, not a permanent label (M-4).
   useEffect(() => () => {
@@ -376,6 +303,12 @@ export function BogeysEditModal({ eventId, symbol, open, onClose }: Props) {
     setHydrationNote(null);
     setSaveSummary(null);
     hydratedLabelRef.current = null;
+    readSeqRef.current += 1;
+    setReadText("");
+    setReadFile(null);
+    setReading(false);
+    setReadMessage(null);
+    setDragOver(false);
     Promise.all([
       fetch(`/api/earnings/bogeys?eventId=${eventId}`).then(
         (res) =>
@@ -433,6 +366,11 @@ export function BogeysEditModal({ eventId, symbol, open, onClose }: Props) {
       cancelled = true;
     };
   }, [open, eventId]);
+
+  useEffect(() => {
+    formRef.current = form;
+    extraRowsRef.current = extraRows;
+  }, [form, extraRows]);
 
   // Questions this modal asks before a save, a clear or a delete.
   const prompt = useConfirmPrompt();
@@ -582,6 +520,57 @@ export function BogeysEditModal({ eventId, symbol, open, onClose }: Props) {
     }
   }
 
+  /**
+   * One click, one AI read of the chosen file or the pasted text for THIS
+   * print. It fills empty boxes only and writes nothing: the figures reach the
+   * database through the Save below, after the desk has looked at them.
+   */
+  async function readIntoForm() {
+    if (reading) return;
+    const text = readText.trim();
+    if (!readFile && text === "") {
+      setReadMessage({ tone: "error", text: "Choose a file or paste some preview text first." });
+      return;
+    }
+    const seq = readSeqRef.current;
+    setReading(true);
+    setReadMessage(null);
+    try {
+      const body = new FormData();
+      body.set("eventId", String(eventId));
+      if (readFile) body.set("file", readFile);
+      else body.set("text", text);
+      const res = await apiFetch("/api/earnings/bogeys/read", { method: "POST", body });
+      const r = await readMutationResult<{ data: ReadBogeysResult }>(res);
+      if (seq !== readSeqRef.current) return;
+      if (!r.ok) {
+        setReadMessage({ tone: "error", text: `${r.message} Nothing was filled.` });
+        return;
+      }
+      const result = r.data.data;
+      if (!result.found) {
+        setReadMessage({ tone: "info", text: `${result.message} The boxes were left as they were.` });
+        return;
+      }
+      const out = fillFormFromRead(formRef.current, extraRowsRef.current, result);
+      setForm(out.form);
+      setExtraRows(out.rows);
+      setReadMessage({ tone: "info", text: describeReadFill(out.filled, out.keptYours) });
+    } catch (err) {
+      if (seq !== readSeqRef.current) return;
+      // Names only: never the pasted text.
+      console.error(`Bogeys read failed: ${err instanceof Error ? err.name : "error"}`);
+      setReadMessage({ tone: "error", text: `${networkFailureMessage("read that preview")} Nothing was filled.` });
+    } finally {
+      if (seq === readSeqRef.current) setReading(false);
+    }
+  }
+
+  function chooseReadFile(file: File | null) {
+    setReadFile(file);
+    setReadMessage(null);
+  }
+
   async function save(e: React.FormEvent) {
     e.preventDefault();
     setSaving(true);
@@ -605,9 +594,16 @@ export function BogeysEditModal({ eventId, symbol, open, onClose }: Props) {
         return;
       }
 
+      // Each row's figures are read in its own unit and sent as numbers; a
+      // range or a word stops here with the metric and box named.
+      const serialised = extraRowsToJson(extraRows);
+      if (serialised.errors.length > 0) {
+        setExtraErrors(serialised.errors);
+        return;
+      }
+      const extra_metrics_json = serialised.json;
       // The server re-validates with this same parser — the client check is a
       // fast, identical refusal, never the only one.
-      const extra_metrics_json = extraRowsToJson(extraRows);
       const { errors } = parseExtraMetrics(extra_metrics_json);
       if (errors.length > 0) {
         setExtraErrors(errors);
@@ -852,6 +848,12 @@ export function BogeysEditModal({ eventId, symbol, open, onClose }: Props) {
   // ones stored before that.)
   const shown = existing.filter(bogeyCardHasContent);
   const hiddenEmpty = existing.length - shown.length;
+  // How each approximate figure ("~3.35B", "108.5B+") will be saved, said
+  // before the Save rather than discovered after it.
+  const approximations = [
+    ...parseManualBogeyForm(form).approximations,
+    ...extraRowsToJson(extraRows).approximations,
+  ];
 
   const modal = createPortal(
     <div
@@ -1031,6 +1033,98 @@ export function BogeysEditModal({ eventId, symbol, open, onClose }: Props) {
             <h3 className="text-[11px] uppercase tracking-widest text-ink-dim">
               Add manual bogeys
             </h3>
+            {/* Read from a file or pasted text: fills the empty boxes below for
+                the desk to check. Nothing is saved until Save. */}
+            <div
+              onDragOver={(e) => {
+                e.preventDefault();
+                setDragOver(true);
+              }}
+              onDragLeave={() => setDragOver(false)}
+              onDrop={(e) => {
+                e.preventDefault();
+                setDragOver(false);
+                const dropped = e.dataTransfer.files?.[0];
+                if (dropped) chooseReadFile(dropped);
+              }}
+              className={`rounded border border-dashed px-3 py-2.5 space-y-2 ${dragOver ? "border-gold bg-gold/5" : "border-edge bg-raised/30"}`}
+            >
+              <p className="text-[12px] font-medium text-ink">Read from a file or pasted text</p>
+              <p className="text-[12px] text-ink-dim">
+                Paste a preview or drop a PDF or screenshot here. The figures for {symbol} go into the
+                empty boxes below; anything you typed stays. Nothing is saved until you press Save.
+              </p>
+              <textarea
+                value={readText}
+                onChange={(e) => {
+                  setReadText(e.target.value);
+                  setReadMessage(null);
+                }}
+                rows={3}
+                disabled={readFile !== null || reading}
+                aria-label="Preview text to read"
+                placeholder="Paste the preview text here…"
+                className="w-full bg-raised border border-edge rounded px-2 py-1.5 text-[14px] text-ink focus:outline-none focus:border-gold resize-y disabled:opacity-60"
+              />
+              {readFile && (
+                <p className="text-[12px] text-ink-dim">
+                  Reading the file, not the text box.
+                </p>
+              )}
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => readFileInputRef.current?.click()}
+                  disabled={reading}
+                  className="relative text-[13px] text-ink-dim hover:text-ink border border-edge rounded px-2 py-1 disabled:opacity-50 pointer-coarse:after:absolute pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-1 pointer-coarse:after:content-['']"
+                >
+                  Choose a file
+                </button>
+                <input
+                  ref={readFileInputRef}
+                  type="file"
+                  accept={READ_ACCEPT}
+                  className="hidden"
+                  onChange={(e) => {
+                    const chosen = e.target.files?.[0] ?? null;
+                    if (chosen) chooseReadFile(chosen);
+                    // Reset so choosing the same file again still fires.
+                    e.target.value = "";
+                  }}
+                />
+                {readFile && (
+                  <span className="flex min-w-0 items-center gap-2 text-[12px] text-ink-dim">
+                    <span className="truncate max-w-[14rem] font-mono">{readFile.name}</span>
+                    <button
+                      type="button"
+                      onClick={() => chooseReadFile(null)}
+                      disabled={reading}
+                      className="relative text-[12px] text-ink-dim hover:text-ink underline disabled:opacity-50 pointer-coarse:after:absolute pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-1 pointer-coarse:after:content-['']"
+                    >
+                      clear file
+                    </button>
+                  </span>
+                )}
+                <button
+                  type="button"
+                  onClick={() => void readIntoForm()}
+                  disabled={reading}
+                  className={`relative ml-auto text-[13px] font-medium ${CHIP_TONE_CLASSES.gold} border border-gold/40 hover:bg-gold/30 disabled:opacity-50 rounded px-3 py-1 pointer-coarse:after:absolute pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-1 pointer-coarse:after:content-['']`}
+                >
+                  {reading ? "Reading…" : "Read"}
+                </button>
+              </div>
+              {readMessage &&
+                (readMessage.tone === "error" ? (
+                  <p role="alert" className={`text-[12px] ${CHIP_TONE_TEXT.down}`}>
+                    {readMessage.text}
+                  </p>
+                ) : (
+                  <p role="status" className="text-[12px] text-ink-dim">
+                    {readMessage.text}
+                  </p>
+                ))}
+            </div>
             <Field label="Source label (optional)">
               <input
                 type="text"
@@ -1264,6 +1358,12 @@ export function BogeysEditModal({ eventId, symbol, open, onClose }: Props) {
                 </div>
               ))}
             </div>
+            {/* How each approximate figure will be stored — before the Save. */}
+            {approximations.length > 0 && (
+              <p className="text-[12px] text-ink-dim">
+                {approximations.join(" · ")}.
+              </p>
+            )}
             {error && (
               <p className="text-[12px] text-down">{error}</p>
             )}

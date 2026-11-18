@@ -3,6 +3,7 @@
 import { CHIP_TONE_TEXT, GOLD_FILL_CLASSES, GOLD_OUTLINE_HOVER } from "@/app/dashboard/components/chip-tone-text";
 import { useState, useCallback, useEffect, useRef } from "react";
 import type { ResearchSource } from "@/lib/queries/research";
+import type { BogeyScanMode } from "@/lib/earnings/bogey-scan-eligibility";
 import { ConfirmDialog } from "./ConfirmDialog";
 import apiFetch from "@/lib/http/apiFetch";
 import { networkFailureMessage, readMutationResult } from "@/lib/ui/mutation-result";
@@ -23,6 +24,13 @@ interface DiscoveredSender {
   latestSubject: string;
   latestDate: string;
 }
+
+/** Labels for the per-source bogey-scan switch (owner ruling 2026-11-18). */
+const BOGEY_SCAN_OPTIONS: ReadonlyArray<{ value: BogeyScanMode; label: string }> = [
+  { value: "off", label: "Off" },
+  { value: "all", label: "All posts" },
+  { value: "previews", label: "Previews only (titled \u201cPreview | \u2026\u201d)" },
+];
 
 interface Props {
   initialSources: ResearchSource[];
@@ -123,6 +131,70 @@ export function ManageSourcesModal({
       }
     },
     [onSourcesChanged]
+  );
+
+  // ── Bogey scan switch (settings key bogey_scan_sources, 2026-11-18) ──
+  // Which newsletters the bogey scan reads. Loaded on open (no AI call);
+  // a change is saved at once and reverted, with the reason, on failure.
+  const [bogeyModes, setBogeyModes] = useState<Record<number, BogeyScanMode> | null>(null);
+  const [bogeyLoadError, setBogeyLoadError] = useState<string | null>(null);
+  const [bogeyRowErrors, setBogeyRowErrors] = useState<Record<number, string>>({});
+  const [bogeySaving, setBogeySaving] = useState<Record<number, boolean>>({});
+
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await apiFetch("/api/research/bogey-scan-sources");
+        const r = await readMutationResult<{ data: { sources: Array<{ id: number; mode: BogeyScanMode }> } }>(res);
+        if (cancelled) return;
+        if (!r.ok) {
+          setBogeyLoadError(`Couldn't load the bogey scan settings: ${r.message}`);
+          return;
+        }
+        const next: Record<number, BogeyScanMode> = {};
+        for (const s of r.data.data.sources) next[s.id] = s.mode;
+        setBogeyModes(next);
+        setBogeyLoadError(null);
+      } catch {
+        if (!cancelled) setBogeyLoadError(networkFailureMessage("load the bogey scan settings"));
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [open, initialSources]);
+
+  const handleBogeyModeChange = useCallback(
+    async (sourceId: number, previous: BogeyScanMode, mode: BogeyScanMode) => {
+      if (mode === previous) return;
+      setBogeyRowErrors((prev) => {
+        const rest = { ...prev };
+        delete rest[sourceId];
+        return rest;
+      });
+      setBogeyModes((prev) => (prev ? { ...prev, [sourceId]: mode } : prev));
+      setBogeySaving((prev) => ({ ...prev, [sourceId]: true }));
+      try {
+        const res = await apiFetch("/api/research/bogey-scan-sources", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sourceId, mode }),
+        });
+        const r = await readMutationResult(res);
+        if (!r.ok) throw new MutationFailure(r.message);
+      } catch (err) {
+        setBogeyModes((prev) => (prev ? { ...prev, [sourceId]: previous } : prev));
+        setBogeyRowErrors((prev) => ({
+          ...prev,
+          [sourceId]: `${failureText(err, "change the bogey scan")} The setting was put back.`,
+        }));
+      } finally {
+        setBogeySaving((prev) => ({ ...prev, [sourceId]: false }));
+      }
+    },
+    []
   );
 
   // ── Earnings hierarchy (migration 068) ─────────────────────────────
@@ -479,7 +551,7 @@ export function ManageSourcesModal({
       if (!panel) return;
       const focusable = Array.from(
         panel.querySelectorAll<HTMLElement>(
-          'button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])'
+          'button:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])'
         )
       );
       if (focusable.length === 0) return;
@@ -791,6 +863,43 @@ export function ManageSourcesModal({
                           </button>
                         </div>
                       </div>
+                      {/* Bogey scan switch: its own line so the name and
+                          email column keeps its width on a phone. */}
+                      {bogeyModes && (
+                        <div className="flex flex-wrap items-center justify-end gap-x-2 gap-y-1">
+                          <label
+                            htmlFor={`bogey-scan-${s.id}`}
+                            className="text-xs text-ink-faint whitespace-nowrap"
+                          >
+                            Bogey scan
+                          </label>
+                          <select
+                            id={`bogey-scan-${s.id}`}
+                            aria-label={`Bogey scan for ${s.name}`}
+                            value={bogeyModes[s.id] ?? "off"}
+                            disabled={bogeySaving[s.id] === true}
+                            onChange={(e) =>
+                              void handleBogeyModeChange(
+                                s.id,
+                                bogeyModes[s.id] ?? "off",
+                                e.target.value as BogeyScanMode
+                              )
+                            }
+                            className="max-w-full rounded-md border border-edge bg-canvas px-2 py-1 text-xs text-ink focus-ring disabled:opacity-60"
+                          >
+                            {BOGEY_SCAN_OPTIONS.map((o) => (
+                              <option key={o.value} value={o.value}>
+                                {o.label}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      )}
+                      {bogeyRowErrors[s.id] && (
+                        <p role="alert" className={`text-xs ${CHIP_TONE_TEXT.down} text-right`}>
+                          {bogeyRowErrors[s.id]}
+                        </p>
+                      )}
                       {hasArticles && (
                         <div className="flex justify-end">
                           <span className="text-[10px] text-ink-faint whitespace-nowrap">
@@ -807,6 +916,10 @@ export function ManageSourcesModal({
 
           {mutationError && (
             <p className="text-xs text-down px-1">{mutationError}</p>
+          )}
+
+          {bogeyLoadError && (
+            <p role="alert" className={`text-xs ${CHIP_TONE_TEXT.down} px-1`}>{bogeyLoadError}</p>
           )}
 
           {/* Action buttons */}

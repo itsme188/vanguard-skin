@@ -23,7 +23,7 @@ import { coercePercent, parseLargeUSD } from "@/lib/format";
 import { coveredForEvents } from "@/lib/queries/briefing-symbols";
 import { issuerSiblings } from "@/lib/securities/issuer-family";
 import { todayET, addDays } from "@/lib/calendar/date-utils";
-import { BOGEY_SCAN_SOURCE_SQL } from "@/lib/earnings/bogey-scan-eligibility";
+import { bogeyScanSourceSql } from "@/lib/earnings/bogey-scan-eligibility";
 import { classifyEnrichmentError } from "@/lib/gmail/enrichment-failure";
 import type { ExtraMetricSpec } from "@/lib/print-watch/extra-metrics";
 import {
@@ -313,6 +313,22 @@ export function isSymbolMentioned(text: string, symbol: string): boolean {
 }
 
 /**
+ * Does the article name this ticker, in its SUBJECT or its body? A preview
+ * often names the company only in its title ("Preview|ACME FQ3: ...") and
+ * never writes the ticker in the text, so a body-only test skipped exactly
+ * the article the owner needed (FundaAI NVDA preview, 2026-11-11). The deep
+ * read already searched subject plus body. One rule for every reader: the
+ * global scan, the per-event extractor (rescan step and one-click read) and
+ * the not-read list.
+ */
+export function articleNamesSymbol(
+  article: { subject?: string | null; raw_text: string },
+  symbol: string,
+): boolean {
+  return isSymbolMentioned(`${article.subject ?? ""}\n${article.raw_text}`, symbol);
+}
+
+/**
  * Fetch upcoming earnings reporters in [today, today+14d] scoped to
  * covered events only (coveredForEvents: held/watchlist family OR the
  * event itself is armed — spec §4.1). Excludes superseded calendar_events
@@ -378,7 +394,7 @@ function filterReportersMentionedInArticle(
   return reporters.filter(
     (r) =>
       (r.cutoff_ms == null || received == null || received < r.cutoff_ms) &&
-      issuerSiblings(r.symbol).some((sym) => isSymbolMentioned(article.raw_text, sym)),
+      issuerSiblings(r.symbol).some((sym) => articleNamesSymbol(article, sym)),
   );
 }
 
@@ -397,7 +413,7 @@ function getUnscannedArticles(
        FROM research_articles a
        JOIN research_sources rs ON rs.id = a.source_id
        WHERE a.bogeys_scanned_at IS NULL
-         AND ${BOGEY_SCAN_SOURCE_SQL}
+         AND ${bogeyScanSourceSql(db)}
          AND datetime(a.received_at) >= datetime('now', '-${sinceDays} days')
          AND a.raw_text IS NOT NULL AND length(a.raw_text) > 200
        ORDER BY a.received_at DESC
@@ -798,7 +814,7 @@ export async function extractBogeysFromArticleForEvent(
     event_id: event.event_id,
     event_date: event.event_date,
   };
-  if (!issuerSiblings(reporter.symbol).some((sym) => isSymbolMentioned(article.raw_text, sym))) {
+  if (!issuerSiblings(reporter.symbol).some((sym) => articleNamesSymbol(article, sym))) {
     return { bogeysStored: 0, modelId: null, called: false };
   }
 

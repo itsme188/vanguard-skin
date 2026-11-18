@@ -48,7 +48,7 @@ import {
 } from "@/lib/earnings/watch-metrics";
 import { saveBogeyWithRecompile } from "@/lib/mutations/earnings-bogeys";
 import { issuerSiblings } from "@/lib/securities/issuer-family";
-import { BOGEY_SCAN_SOURCE_SQL } from "@/lib/earnings/bogey-scan-eligibility";
+import { bogeyScanSourceSql } from "@/lib/earnings/bogey-scan-eligibility";
 import type { ExtraMetricSpec } from "@/lib/print-watch/extra-metrics";
 import {
   fetchNewsletterImages,
@@ -144,7 +144,7 @@ function nameMentionRegex(alias: string): RegExp {
 }
 
 /** Every character offset where the text names the company, by ticker or name. */
-function mentionOffsets(text: string, symbols: string[], aliases: string[]): number[] {
+export function mentionOffsets(text: string, symbols: string[], aliases: string[]): number[] {
   const offsets: number[] = [];
   const upper = text.toUpperCase();
   for (const sym of symbols) {
@@ -233,9 +233,9 @@ export function gatherDeepReadInputs(db: Database.Database, eventId: number): De
   const companyName = nameRow?.name ?? null;
   const aliases = companyNameAliases(companyName);
 
-  // The shared bogey-scan gate (TMT Breakout, owner ruling 2026-11-02; FundaAI
-  // "Preview" posts, 2026-11-17): an article outside it is never selected,
-  // excerpted or sent to the model.
+  // The shared bogey-scan gate (per-source rules in settings, owner ruling
+  // 2026-11-18; defaults TMT Breakout all posts and FundaAI "Preview" posts):
+  // an article outside it is never selected, excerpted or sent to the model.
   // Two instants, datetime() on both sides (stored received_at is
   // space-separated UTC); the exact bounds are checked again in JS below.
   const fromMs = cutoffMs - DEEP_READ_WINDOW_DAYS * 86_400_000;
@@ -246,7 +246,7 @@ export function gatherDeepReadInputs(db: Database.Database, eventId: number): De
               CASE WHEN instr(COALESCE(a.raw_html, ''), '<img') > 0 THEN 1 ELSE 0 END AS has_img
          FROM research_articles a JOIN research_sources rs ON rs.id = a.source_id
         WHERE a.raw_text IS NOT NULL AND length(a.raw_text) > 200
-          AND ${BOGEY_SCAN_SOURCE_SQL}
+          AND ${bogeyScanSourceSql(db)}
           AND datetime(a.received_at) >= datetime(?) AND datetime(a.received_at) < datetime(?)
         ORDER BY a.received_at DESC, a.id DESC`,
     )
