@@ -24,10 +24,33 @@ export function getRecipientsFor(
 
   if (!row || !row.value) return null;
 
-  const parsed = row.value
+  const parsed = splitRecipientList(row.value);
+
+  return parsed.length > 0 ? parsed : null;
+}
+
+/** The one splitting rule: comma-separated, each entry trimmed, blanks dropped. */
+export function splitRecipientList(value: string): string[] {
+  return value
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean);
+}
 
-  return parsed.length > 0 ? parsed : null;
+const ADDRESS_RE = /^[^\s@]+@[^\s@.]+(\.[^\s@.]+)+$/;
+
+/** True when the entry has one @, a local part, a dotted domain and no spaces. */
+export function looksLikeEmailAddress(entry: string): boolean {
+  return ADDRESS_RE.test(entry);
+}
+
+/**
+ * Check a comma-separated recipient value. An empty or blank value is fine
+ * (it clears the key). Returns the first bad entry, or null when all are ok.
+ */
+export function firstBadRecipient(value: string): string | null {
+  for (const entry of splitRecipientList(value)) {
+    if (!looksLikeEmailAddress(entry)) return entry;
+  }
+  return null;
 }
