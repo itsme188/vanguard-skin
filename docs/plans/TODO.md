@@ -605,7 +605,8 @@
 
 ## Live watches (passive — confirm on first natural occurrence, no code action)
 
-- [ ] **First FundaAI "Preview" post after the 2026-11-17 gate change (PR #187).** On the next FundaAI preview for a covered name with a print ahead: the scan ledger (`earnings_bogey_scans`) should gain a row for that article, a `newsletter` bogey row labelled `FundaAI <m/d>` should appear, and FundaAI's own-model figures should sit in the whisper slot with the Street figure left as consensus. If a FundaAI figure lands in a consensus slot, fix the extraction prompt, not the gate (`docs/DECISIONS.md` 2026-11-17). Also confirm an armed name's `Deep read` row lists the preview in its sources.
+- [ ] **First one-click "Read for bogeys" on an armed print (PR #189, 2026-11-18).** On the first real click in an armed Hub row's not-read list: the row should turn to "Added figures" or "No figures found", one `earnings_bogey_scans` row should be booked for that event and article, a `newsletter` bogey row labelled `<source> <m/d>` should appear, and the live sheet should recompile. The agent did not click it live because it writes to the live database. Also check that the first paste in the edit box fills only empty boxes and that Save stores exactly what the boxes show.
+- [ ] **First FundaAI "Preview" post after the 2026-11-17 gate change (PR #187; deployed 2026-11-18 13:31 Eastern; title-only tickers fixed in PR #189).** On the next FundaAI preview for a covered name with a print ahead: the scan ledger (`earnings_bogey_scans`) should gain a row for that article, a `newsletter` bogey row labelled `FundaAI <m/d>` should appear, and FundaAI's own-model figures should sit in the whisper slot with the Street figure left as consensus. If a FundaAI figure lands in a consensus slot, fix the extraction prompt, not the gate (`docs/DECISIONS.md` 2026-11-17). Also confirm an armed name's `Deep read` row lists the preview in its sources.
 - [x] **`## Today's reporters` block — FIRST VISUAL RENDER VERIFIED 2026-07-21** (7/21 morning digest, Mac-sent 8:47, single send): `AMC 16:15 · IBKR · held · $0.62 · $1.75B · ±4.5%` — all four watch columns (slot, position chip, consensus, cached implied move) rendered. The ±4.5% vs the 9:02 straddle recompute (±6.34%) is the designed "cached as of send time" behavior, not drift.
 - [x] **First ≥3-recap same-slot day — EOD wrap debut — SUPERSEDED 2026-08-02.** The wrap DID debut (7/29 MSFT/META/HOOD at 20:12 ET, 7/30 AMZN/HUN/AAPL at 20:20 ET, BMO wrap 7/30 12:07) and the user's verdict was that 4-hour-late evening staples carry no value — the wrap is now RETIRED from the Mac sweep, replaced by the 7:45 ET morning debrief (see Closed this session 2026-08-02). New watch below.
 - [ ] **First morning-debrief send (added 2026-08-02)** — next heavy AMC night (≥3 held same-slot reporters): individual recaps skip `wrap-pending` as before, then ONE "☕ Earnings Debrief — {date}" email lands 07:45–08:20 ET next morning with AI synthesis (no headline restatement) + per-name scoreboards + desk-note guidance excerpts + call notes + ET-timed roster of individually-recapped names; per-member recap chips + viewer show the debrief. Recovery if a morning is missed: `npx tsx scripts/send-morning-debrief.ts` (3-day self-healing lookback).
@@ -644,6 +645,14 @@
 - **E2E browser tests** (Theme J2, ~15 hr) — dedicated session.
 
 ---
+
+## Closed this session (2026-11-18 — bogey intake, PR #189, branch `claude/bogey-intake-2026-11-18`)
+
+Detail: `docs/DECISIONS.md` 2026-11-18; plan with Codex amendments `docs/superpowers/plans/2026-11-18-bogey-intake.md`.
+
+- ✅ **Bogey intake (2026-11-18, PR #189, landed `43b5e52d`)** — owner-approved five fixes: a not-read list with a one-click read on armed Hub rows; the upload aligns to the sheet's existing lines; a per-newsletter bogey-scan switch in Research → Sources (settings key `bogey_scan_sources`, defaults equal the old rule); "Read from a file or pasted text" in the edit box and a bogey fallback on the Import tab; lenient typing (`lib/earnings/desk-figure.ts`). Also: every reader now finds a ticker named only in an article's title (`articleNamesSymbol`). Full suite 21,872 passed.
+- ✅ **FundaAI preview gate deployed (2026-11-18 13:31 Eastern, `a6cc1d77`)** — the owner asked for it to ship before the PANW print.
+- ✅ **PANW FundaAI preview added by hand (2026-11-18, operator work)** — the owner's PDF went through the upload route; its NGS ARR line duplicated an existing line, so the figures were saved as a hand-entered row on the existing line and the upload row deleted.
 
 ## Closed this session (2026-11-17 — bogey scans also read FundaAI previews, PR #187, branch `claude/nvda-earnings-preview-numbers-7f18ee`)
 
