@@ -8,7 +8,7 @@ import {
   readBogeysForEvent,
   ReadBogeysEventNotFoundError,
 } from "@/lib/earnings/read-bogeys-for-event";
-import { accountFailureOf, aiUnavailableReason } from "@/lib/earnings/ai-unavailable";
+import { accountFailureOf, aiUnavailableForClick } from "@/lib/earnings/ai-unavailable";
 
 export const dynamic = "force-dynamic";
 
@@ -79,7 +79,7 @@ export async function POST(request: Request) {
   } catch (err) {
     if (err instanceof ReadBogeysEventNotFoundError) return fail(err.message, 404);
     const account = accountFailureOf(err);
-    if (account) return fail(aiUnavailableReason(account), 503);
+    if (account) return fail(aiUnavailableForClick(account), 503);
     if (err instanceof BogeysExtractionError) return fail(err.message, err.status);
     // Counts and names only: never the input or the model's output.
     console.error(`Bogeys read failed for event ${eventId}: ${err instanceof Error ? err.name : "error"}`);

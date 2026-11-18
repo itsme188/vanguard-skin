@@ -14,7 +14,7 @@ import Database from "better-sqlite3";
 import { APIError } from "@anthropic-ai/sdk";
 import { runMigrations } from "@/lib/db/migrate";
 import { watchMetricId } from "@/lib/earnings/watch-metrics";
-import { aiUnavailableReason } from "@/lib/earnings/ai-unavailable";
+import { aiUnavailableForClick } from "@/lib/earnings/ai-unavailable";
 
 const hoisted = vi.hoisted(() => ({
   db: null as unknown as Database.Database,
@@ -269,7 +269,7 @@ describe("POST /api/earnings/bogeys/read", () => {
     const before = counts();
     const { status, body } = await post({ eventId: "7", text: "ACME" });
     expect(status).toBe(503);
-    expect(body).toEqual({ success: false, error: aiUnavailableReason("billing") });
+    expect(body).toEqual({ success: false, error: aiUnavailableForClick("billing") });
     expect(counts()).toEqual(before);
   });
 });

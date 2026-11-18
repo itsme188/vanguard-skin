@@ -47,6 +47,15 @@ export function aiUnavailableReason(kind: AccountFailureKind): string {
 }
 
 /**
+ * The same outage, worded for an owner's click (the bogey read routes): the
+ * prep wording above ("waiting; no attempt counted") describes a background
+ * step, not a button. Starts with the same prefix so the two stay findable.
+ */
+export function aiUnavailableForClick(kind: AccountFailureKind): string {
+  return `${AI_UNAVAILABLE_REASON_PREFIX}${kind}): nothing was read. Try again once the AI service is back.`;
+}
+
+/**
  * The account-level kind of a caught error, or null when the fault is the
  * article's (or unknown). An error that wraps the provider's error on `cause`
  * (extractBogeysFromArticleForEvent) is read through it first.
