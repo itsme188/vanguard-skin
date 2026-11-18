@@ -2091,3 +2091,21 @@ Also found: three copy methods were in use, and the monthly import skill used a 
 **A change is prospective.** Nothing is re-read when a switch changes. The existing automatic readers follow it on their next run: the global scan's 30-day look-back picks up a newly enabled source's unscanned articles, and the armed rescan and deep read see the new article set. Turning a source on can therefore make an armed print's deep read run again on its next pass (its inputs are the selected article ids); that is accepted. No new automatic AI path is added.
 
 **Guards.** `tests/earnings/bogey-scan-eligibility.test.ts` (defaults, unreadable and wrong-shape rows, first save materialises the defaults, rename keeps the rule, deleted id ignored, SQL and code parity with an exact passing count, empty rules pass nothing) and `tests/api/research-bogey-scan-sources.test.ts`.
+
+## 2026-11-18 — Bogey intake: the other four parts, and a ticker named only in the title
+
+**Ruling (owner):** build all five parts of the intake plan (`docs/superpowers/plans/2026-11-18-bogey-intake.md`), ship before the PANW print ("there's enough time to do the app rebuild"). Landed as PR #189 `43b5e52d`, deployed from `df16c869` the same afternoon.
+
+**What was built besides the switch (entry above).** A not-read list with a one-click read on armed Hub rows; the edit box reads a pasted note or a dropped file into the empty boxes for checking before Save; the Import tab offers the bogey reader for an image, and for a PDF the statement reader classed as not a statement; typed figures accept ordinary wording.
+
+**Found while building: a ticker named only in the title was invisible.** Every reader tested the article BODY for the ticker. Previews often name the company only in the subject ("Preview|NVDA FY27Q3: ..."), so the global scan skipped exactly the 2026-11-11 FundaAI NVDA preview that started this work, even after the FundaAI gate change. `articleNamesSymbol` now tests subject and body for every reader; the deep read already did.
+
+**Rules that are not obvious from the code.**
+- The read route writes nothing. A suggested label carries the Eastern day AND time, because the manual Save overwrites the row with the same label: two reads on one day under one label had silently replaced the first saved sheet (wave-2 review).
+- A read never fills a watch line whose unit differs from the row's, and never fills a 0 expected move.
+- The not-read list ranks articles whose title names the company first: daily market wraps that mention a name in passing had filled the cap of 10 and hidden the real preview.
+- `readDeskFigure` refuses a comma that does not group thousands ("3,35B" had read as 335B) and a doubled sign ("(-0.12)"). This reverses the plan's original A4 pin ("1,2,3" → 123); the plan records the reversal.
+
+**Declined:** holding an Import-tab upload for review before it is filed (the Hub upload already files directly and names every print it filed to); a general multi-company paste box.
+
+**Not exercised live:** the one-click read writes to the live database, so the owner's first click is its live check (TODO live watch). The read route was exercised live once after the deploy with an invented-figure note; it wrote nothing and aligned the ARR line to the existing line.
