@@ -32,6 +32,10 @@
 
 import { classifyAnthropicErrorMessage } from "@/lib/ai/classify-anthropic-error";
 
+import { NOT_A_STATEMENT_PREFIX } from "@/lib/import/not-a-statement";
+
+export { NOT_A_STATEMENT_PREFIX };
+
 const PARSE_JSON_PREFIX = "Failed to parse Claude response as JSON: ";
 
 // Same shape `classifyAnthropicErrorMessage` matches against
@@ -130,7 +134,7 @@ export function classifyImportError(message: string): ImportErrorClassification 
   if (looksLikeWrongDocument) {
     return {
       status: 400,
-      userMessage: `This file doesn't look like a Vanguard brokerage statement. ${truncated}`,
+      userMessage: `${NOT_A_STATEMENT_PREFIX} ${truncated}`,
     };
   }
 

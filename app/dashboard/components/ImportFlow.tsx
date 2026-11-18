@@ -8,6 +8,8 @@ import apiFetch from "@/lib/http/apiFetch";
 import { Count, PrivateText } from "@/lib/privacy/components";
 import { usePrivacy } from "@/lib/privacy/context";
 import { readMutationResult, networkFailureMessage } from "@/lib/ui/mutation-result";
+import { NOT_A_STATEMENT_PREFIX } from "@/lib/import/not-a-statement";
+import { ReadAsBogeysButton } from "@/app/dashboard/components/ReadAsBogeysButton";
 
 interface SkippedRow {
   category: string;
@@ -299,12 +301,46 @@ export function sumReviewableRoundTrips(periods: NewTradePeriod[]): number | nul
   return total;
 }
 
+const IMAGE_NAME = /\.(png|jpe?g|webp|gif)$/i;
+
+/** A screenshot, which the statement importer cannot read. */
+function isImageFile(f: File): boolean {
+  return IMAGE_NAME.test(f.name);
+}
+
+/** Screenshots set aside from the statement import, each with the reader button. */
+function ImageFileList({ images }: { images: File[] }) {
+  if (images.length === 0) return null;
+  return (
+    <ul className="mt-3 space-y-2">
+      {images.map((f, i) => (
+        <li key={`${f.name}-${i}`} className="rounded-lg border border-edge bg-canvas p-3 space-y-1">
+          <div className="text-sm text-ink">{f.name}</div>
+          <div className="text-xs text-ink-dim">Images can't be imported as statements</div>
+          <ReadAsBogeysButton file={f} />
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+/** The reader button for a PDF the statement importer turned away as not a statement. */
+function BogeyFallbackForName({ files, name }: { files: File[]; name: string }) {
+  const file = files.find((f) => f.name === name);
+  return file ? (
+    <div className="mt-2">
+      <ReadAsBogeysButton file={file} />
+    </div>
+  ) : null;
+}
+
 export function ImportFlow() {
   const router = useRouter();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [state, setState] = useState<ImportState>({ status: "idle" });
   const [isDragOver, setIsDragOver] = useState(false);
   const [files, setFiles] = useState<File[]>([]);
+  const [imageFiles, setImageFiles] = useState<File[]>([]);
   const { isPrivate } = usePrivacy();
 
   const runPreview = useCallback(async (selectedFiles: File[]) => {
@@ -372,8 +408,12 @@ export function ImportFlow() {
   const handleFiles = useCallback(async (selectedFiles: File[]) => {
     if (selectedFiles.length === 0) return;
 
-    setFiles(selectedFiles);
-    await runPreview(selectedFiles);
+    // An image never goes to /api/import; it is listed with the bogey reader.
+    const statementFiles = selectedFiles.filter((f) => !isImageFile(f));
+    setImageFiles(selectedFiles.filter(isImageFile));
+    setFiles(statementFiles);
+    if (statementFiles.length === 0) return;
+    await runPreview(statementFiles);
   }, [runPreview]);
 
   const handleImport = useCallback(() => runCommit(files), [files, runCommit]);
@@ -381,6 +421,7 @@ export function ImportFlow() {
   const reset = useCallback(() => {
     setState(startOverTransition().next);
     setFiles([]);
+    setImageFiles([]);
     setIsDragOver(false);
     if (fileInputRef.current) fileInputRef.current.value = "";
   }, []);
@@ -402,7 +443,7 @@ export function ImportFlow() {
       e.preventDefault();
       setIsDragOver(false);
       const droppedFiles = Array.from(e.dataTransfer.files).filter(
-        (f) => f.name.endsWith(".csv") || f.name.endsWith(".pdf")
+        (f) => f.name.endsWith(".csv") || f.name.endsWith(".pdf") || isImageFile(f)
       );
       handleFiles(droppedFiles);
     },
@@ -412,6 +453,7 @@ export function ImportFlow() {
   // Idle / Parsing — drop zone
   if (state.status === "idle" || state.status === "parsing") {
     return (
+      <>
       <div
         onDrop={handleDrop}
         onDragOver={(e) => {
@@ -446,7 +488,7 @@ export function ImportFlow() {
           ref={fileInputRef}
           type="file"
           multiple
-          accept=".csv,.pdf"
+          accept=".csv,.pdf,image/png,image/jpeg,image/webp,image/gif,.png,.jpg,.jpeg,.webp,.gif"
           className="hidden"
           onChange={(e) => {
             const selected = Array.from(e.target.files ?? []);
@@ -488,6 +530,8 @@ export function ImportFlow() {
           </div>
         )}
       </div>
+      <ImageFileList images={imageFiles} />
+      </>
     );
   }
 
@@ -511,6 +555,8 @@ export function ImportFlow() {
             </svg>
           </button>
         </div>
+
+        <ImageFileList images={imageFiles} />
 
         <div className="space-y-3">
           {state.results.map((result, i) => (
@@ -593,6 +639,9 @@ export function ImportFlow() {
                   </svg>
                   {result.error}
                 </div>
+              )}
+              {!result.success && result.error?.startsWith(NOT_A_STATEMENT_PREFIX) && (
+                <BogeyFallbackForName files={files} name={result.filename} />
               )}
 
               {/* Corporate actions sample */}
