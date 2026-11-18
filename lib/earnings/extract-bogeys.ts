@@ -23,6 +23,7 @@ import { coercePercent, parseLargeUSD } from "@/lib/format";
 import { extractJsonArray } from "@/lib/ai/extract-json";
 import type { ExtraMetricSpec } from "@/lib/print-watch/extra-metrics";
 import { WATCH_METRICS_INSTRUCTIONS, parseWatchMetrics } from "@/lib/earnings/watch-metrics";
+import { issuerSiblings } from "@/lib/securities/issuer-family";
 
 /**
  * User-presentable extraction failure. `message` is safe to render
@@ -30,12 +31,25 @@ import { WATCH_METRICS_INSTRUCTIONS, parseWatchMetrics } from "@/lib/earnings/wa
  * and API internals) are logged server-side only, never thrown.
  */
 export class BogeysExtractionError extends Error {
+  /**
+   * `cause` keeps the provider's own error (bogey intake 2026-11-18, A5), so a
+   * route can ask `accountFailureOf` whether the AI account, not the input, is
+   * at fault. It is never rendered.
+   */
   constructor(
     message: string,
     public readonly status: number,
-    public readonly code: "invalid_pdf" | "upstream" | "truncated" | "unparseable" | "unreadable",
+    public readonly code:
+      | "invalid_pdf"
+      | "upstream"
+      | "truncated"
+      | "unparseable"
+      | "unreadable"
+      | "too_long"
+      | "empty",
+    cause?: unknown,
   ) {
-    super(message);
+    super(message, cause === undefined ? undefined : { cause });
     this.name = "BogeysExtractionError";
   }
 }
@@ -101,6 +115,65 @@ Strict rules:
 - Do not invent companies not on the page.
 - If a company is mentioned but no bogeys are given, still include an entry with all numeric fields null and the qualitative info in "notes".`;
 
+/** Longest pasted text the extractor takes (bogey intake 2026-11-18). */
+export const MAX_PASTE_CHARS = 20_000;
+
+/** What to read: an uploaded file, or text the owner pasted. */
+export type BogeysInput =
+  | { kind: "file"; bytes: Uint8Array; mediaType: BogeysUploadMediaType }
+  | { kind: "text"; text: string };
+
+/**
+ * What the extractor is told besides the page itself.
+ *   - onlySymbol: read this one company (and its share-class siblings) only.
+ *   - existingLinesBySymbol: the extra lines already on each company's sheet,
+ *     as `existingWatchLinesForEvent` writes them, so a figure that is already
+ *     a line reuses its label and lands on it.
+ */
+export interface ExtractContext {
+  onlySymbol?: string;
+  existingLinesBySymbol?: Record<string, string[]>;
+}
+
+/** Ticker text safe to put in the prompt: letters, digits, dot, dash only. */
+function promptSymbol(raw: string): string {
+  return raw.toUpperCase().replace(/[^A-Z0-9.\-]/g, "").slice(0, 12);
+}
+
+/**
+ * EXTRACTION_PROMPT plus the context blocks. With no usable context it is
+ * EXTRACTION_PROMPT exactly.
+ */
+export function buildExtractionPrompt(context?: ExtractContext): string {
+  const blocks: string[] = [];
+  const only = context?.onlySymbol ? promptSymbol(context.onlySymbol) : "";
+  if (only) {
+    const siblings = issuerSiblings(only)
+      .map(promptSymbol)
+      .filter((s) => s !== "" && s !== only);
+    const also = siblings.length > 0 ? ` (the same company also trades as ${siblings.join(", ")}; report it as ${only})` : "";
+    blocks.push(
+      `ONE COMPANY ONLY:\nOnly extract for ${only}${also}; ignore every other ticker on the page. If the page gives nothing for ${only}, return [].`,
+    );
+  }
+  const lineRows: string[] = [];
+  for (const [symbol, lines] of Object.entries(context?.existingLinesBySymbol ?? {})) {
+    const sym = promptSymbol(symbol);
+    if (!sym || !Array.isArray(lines) || lines.length === 0) continue;
+    lineRows.push(`${sym}: ${lines.join("; ")}`);
+  }
+  if (lineRows.length > 0) {
+    blocks.push(
+      [
+        "LINES ALREADY ON THE SHEET (label [unit, period, basis]):",
+        ...lineRows,
+        "When a watch metric you list is the same figure as one of these lines, reuse its label exactly, with the same unit, period and basis.",
+      ].join("\n"),
+    );
+  }
+  return blocks.length === 0 ? EXTRACTION_PROMPT : `${EXTRACTION_PROMPT}\n\n${blocks.join("\n\n")}`;
+}
+
 /** Upload media types the extraction accepts (Claude document/image blocks). */
 export type BogeysUploadMediaType =
   | "application/pdf"
@@ -156,33 +229,69 @@ export async function extractBogeysFromPdf(
   return extractBogeysFromUpload(pdfBytes, "application/pdf");
 }
 
+/** A file upload: the wrapper the upload route and older callers use. */
 export async function extractBogeysFromUpload(
   fileBytes: Uint8Array,
   mediaType: BogeysUploadMediaType,
+  context?: ExtractContext,
 ): Promise<ExtractBogeysResult> {
+  return extractBogeys({ kind: "file", bytes: fileBytes, mediaType }, context);
+}
+
+/** What the "couldn't be read" messages call the input. */
+function unreadableMessage(input: BogeysInput): string {
+  if (input.kind === "text") {
+    return "That text couldn't be read — check what was pasted and try again.";
+  }
+  return input.mediaType !== "application/pdf"
+    ? "That image couldn't be read — try a clearer screenshot (PNG/JPEG) and upload again."
+    : "That file couldn't be read as a PDF — try re-exporting it and uploading again.";
+}
+
+export async function extractBogeys(
+  input: BogeysInput,
+  context?: ExtractContext,
+): Promise<ExtractBogeysResult> {
+  if (input.kind === "text") {
+    if (input.text.trim() === "") {
+      throw new BogeysExtractionError("Paste some preview text first.", 400, "empty");
+    }
+    if (input.text.length > MAX_PASTE_CHARS) {
+      throw new BogeysExtractionError(
+        `Pasted text is too long (${input.text.length.toLocaleString("en-US")} characters; the limit is ${MAX_PASTE_CHARS.toLocaleString("en-US")}). Paste only the part about this company.`,
+        400,
+        "too_long",
+      );
+    }
+  }
+
   const feature = "earningsBogeysExtraction" as const;
   const { modelId } = resolveFeatureModel(feature);
   const client = getRawAnthropicClient(feature);
-  const base64 = Buffer.from(fileBytes).toString("base64");
-  const isImage = mediaType !== "application/pdf";
 
-  const fileBlock = isImage
-    ? {
-        type: "image" as const,
-        source: {
-          type: "base64" as const,
-          media_type: mediaType as Exclude<BogeysUploadMediaType, "application/pdf">,
-          data: base64,
-        },
-      }
-    : {
-        type: "document" as const,
-        source: {
-          type: "base64" as const,
-          media_type: "application/pdf" as const,
-          data: base64,
-        },
-      };
+  const inputBlock =
+    input.kind === "text"
+      ? {
+          type: "text" as const,
+          text: `PASTED PREVIEW TEXT (read it as the page):\n<<<\n${input.text}\n>>>`,
+        }
+      : input.mediaType !== "application/pdf"
+        ? {
+            type: "image" as const,
+            source: {
+              type: "base64" as const,
+              media_type: input.mediaType,
+              data: Buffer.from(input.bytes).toString("base64"),
+            },
+          }
+        : {
+            type: "document" as const,
+            source: {
+              type: "base64" as const,
+              media_type: "application/pdf" as const,
+              data: Buffer.from(input.bytes).toString("base64"),
+            },
+          };
 
   const stream = client.messages.stream({
     model: modelId,
@@ -193,7 +302,7 @@ export async function extractBogeysFromUpload(
     messages: [
       {
         role: "user",
-        content: [fileBlock, { type: "text", text: EXTRACTION_PROMPT }],
+        content: [inputBlock, { type: "text", text: buildExtractionPrompt(context) }],
       },
     ],
   });
@@ -214,13 +323,7 @@ export async function extractBogeysFromUpload(
       // loop (e.g. a rotated/invalid API key).
       const classification = classifyAnthropicError(err);
       if (classification?.kind === "content") {
-        throw new BogeysExtractionError(
-          isImage
-            ? "That image couldn't be read — try a clearer screenshot (PNG/JPEG) and upload again."
-            : "That file couldn't be read as a PDF — try re-exporting it and uploading again.",
-          400,
-          "invalid_pdf",
-        );
+        throw new BogeysExtractionError(unreadableMessage(input), 400, "invalid_pdf", err);
       }
       throw new BogeysExtractionError(
         classification
@@ -228,25 +331,21 @@ export async function extractBogeysFromUpload(
           : `The AI extraction service failed (upstream ${err.status || "error"}). Try again in a minute.`,
         502,
         "upstream",
+        err,
       );
     }
     throw new BogeysExtractionError(
       "The AI extraction service failed (connection error). Try again in a minute.",
       502,
       "upstream",
+      err,
     );
   }
   const textBlock = response.content.find((b) => b.type === "text");
   if (!textBlock || textBlock.type !== "text" || textBlock.text.trim() === "") {
     // Nothing came back to parse: the model produced no reading of the file.
     console.error("Bogeys extraction returned no text.");
-    throw new BogeysExtractionError(
-      isImage
-        ? "That image couldn't be read — try a clearer screenshot (PNG/JPEG) and upload again."
-        : "That file couldn't be read as a PDF — try re-exporting it and uploading again.",
-      422,
-      "unreadable",
-    );
+    throw new BogeysExtractionError(unreadableMessage(input), 422, "unreadable");
   }
 
   // Output truncation produces syntactically-broken JSON that would otherwise
@@ -267,9 +366,13 @@ export async function extractBogeysFromUpload(
   try {
     bogeys = parseExtractionResponse(raw);
   } catch (err) {
-    // The raw model output can embed anything — log it server-side, never
-    // surface it (the route renders BogeysExtractionError.message verbatim).
-    console.error("Bogeys extraction unparseable output:", err, "raw:", raw.slice(0, 500));
+    // The raw model output can embed anything, including the pasted or
+    // uploaded preview's own words: neither surface it (the route renders
+    // BogeysExtractionError.message verbatim) nor log it. Its length is enough
+    // to tell an empty reply from a long one.
+    console.error(
+      `Bogeys extraction unparseable output (${raw.length} chars): ${err instanceof Error ? err.name : "error"}`,
+    );
     throw new BogeysExtractionError(
       "The AI's extraction output couldn't be read. This is usually transient — try the upload again.",
       502,
