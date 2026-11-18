@@ -234,3 +234,23 @@ describe("the helper stays pure", () => {
     expect(src).toMatch(/import type \{ ReadBogeysResult \} from "@\/lib\/earnings\/read-bogeys-types"/);
   });
 });
+
+// Wave-2 review fixes.
+describe("fillFormFromRead: review w2 #3 and #6", () => {
+  it("never fills a row whose unit differs from the read's line", async () => {
+    const { fillFormFromRead } = await import("@/app/dashboard/today/bogey-read-fill");
+    const form = { source_label: "x", eps_consensus: "", eps_whisper: "", revenue_consensus: "", revenue_whisper: "", expected_move: "", guidance_notes: "", notes: "" };
+    const id = "11111111-1111-4111-8111-111111111111";
+    const rows = [{ id, label: "Gross margin", definition: "", unit: "pct", kind: "point", period: "Q", basis: "na", consensus: "", whisper: "" }];
+    const read = {
+      found: true, suggestedLabel: "", modelId: null, message: "",
+      values: { eps_consensus: null, eps_whisper: null, revenue_consensus_usd: null, revenue_whisper_usd: null, expected_move_pct: 0, guidance_notes: null, notes: null },
+      extraMetrics: [{ id, label: "Gross margin", definition: "", unit: "usd", kind: "point", period: "Q", basis: "na", consensus: 3.35e9, whisper: null }],
+    };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const out = fillFormFromRead(form as any, rows as any, read as any);
+    expect(out.rows[0].consensus).toBe("");
+    expect(out.keptYours.join(" ")).toMatch(/unit differs/);
+    expect(out.form.expected_move).toBe("");
+  });
+});

@@ -42,7 +42,7 @@ import { randomUUID } from "node:crypto";
 import { composeReleaseInstant } from "@/lib/calendar/reaction-snapshot";
 import { deriveEarningsSlot } from "@/lib/earnings/earnings-slot";
 import { AMC_FLOOR_ET, BMO_FLOOR_ET } from "@/lib/earnings/pre-print-floor";
-import { DEEP_READ_WINDOW_DAYS } from "@/lib/earnings/deep-read-bogeys";
+import { DEEP_READ_WINDOW_DAYS, companyNameAliases, mentionOffsets } from "@/lib/earnings/deep-read-bogeys";
 import {
   extractBogeysFromArticleForEvent,
   isSymbolMentioned,
@@ -137,8 +137,11 @@ function loadEvent(db: Database.Database, eventId: number): EventRow | undefined
 }
 
 /**
- * The unread previews for one event, newest first, at most
- * UNREAD_PREVIEWS_MAX. `null` for an unknown event (or one with no symbol);
+ * The unread previews for one event, at most UNREAD_PREVIEWS_MAX: articles
+ * whose SUBJECT names the company (ticker or name) first, then the rest,
+ * newest first within each group. Without that order the cap fills with
+ * daily market wraps that mention the name in passing and pushes the real
+ * preview off the list (sandbox click-through 2026-11-18). `null` for an unknown event (or one with no symbol);
  * `[]` for a superseded one. Reads only; no AI.
  */
 export function listUnreadPreviews(
@@ -189,21 +192,32 @@ export function listUnreadPreviews(
     ledger_state: number | null;
   }>;
 
-  const out: UnreadPreview[] = [];
+  const nameRow = db
+    .prepare(
+      `SELECT name FROM securities
+        WHERE UPPER(symbol) IN (${family.map(() => "?").join(", ")}) AND name IS NOT NULL AND TRIM(name) <> ''
+        ORDER BY id ASC LIMIT 1`,
+    )
+    .get(...family) as { name: string } | undefined;
+  const aliases = companyNameAliases(nameRow?.name ?? null);
+  const namedInSubject = (subject: string) => mentionOffsets(subject, family, aliases).length > 0;
+
+  const named: UnreadPreview[] = [];
+  const rest: UnreadPreview[] = [];
   for (const r of rows) {
     const at = receivedMs(r.received_at);
     if (!Number.isFinite(at) || at < fromMs || at >= toMs) continue;
     if (!family.some((sym) => isSymbolMentioned(r.raw_text, sym))) continue;
-    out.push({
+    const item: UnreadPreview = {
       articleId: r.id,
       sourceName: r.source_name ?? "",
       subject: r.subject ?? "",
       receivedAt: r.received_at,
       state: r.ledger_state === 2 ? "reading" : r.ledger_state === 1 ? "read_failed" : "not_read",
-    });
-    if (out.length >= UNREAD_PREVIEWS_MAX) break;
+    };
+    (namedInSubject(item.subject) ? named : rest).push(item);
   }
-  return out;
+  return [...named, ...rest].slice(0, UNREAD_PREVIEWS_MAX);
 }
 
 interface LedgerRow {

@@ -128,7 +128,17 @@ export default function UnreadPreviews({ eventId }: { eventId: number }) {
         }));
         return;
       }
-      setOutcomes((o) => ({ ...o, [articleId]: { kind: "done", ...describeReadOutcome(r.data.data!) } }));
+      // Images incomplete: the server keeps the article listed as "read
+      // failed", so the row keeps its button rather than reading as done
+      // (review w2 #5).
+      const described = describeReadOutcome(r.data.data!);
+      setOutcomes((o) => ({
+        ...o,
+        [articleId]:
+          r.data.data!.status === "images_incomplete"
+            ? { kind: "error", text: [described.text, described.warn].filter(Boolean).join(" ") }
+            : { kind: "done", ...described },
+      }));
       router.refresh();
     } catch {
       setOutcomes((o) => ({ ...o, [articleId]: { kind: "error", text: networkFailureMessage("read that preview") } }));

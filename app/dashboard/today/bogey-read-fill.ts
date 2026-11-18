@@ -215,6 +215,8 @@ export function fillFormFromRead(
   for (const { field, key, name, kind } of NUMBER_FIELDS) {
     const value = read.values[key];
     if (value === null || !Number.isFinite(value)) continue;
+    // A 0 expected move is not a move; Save would refuse it (review w2 #6).
+    if (key === "expected_move_pct" && value === 0) continue;
     if (next[field].trim() === "") {
       next[field] = formatDeskFigure(value, kind);
       filled.push(name);
@@ -252,6 +254,13 @@ export function fillFormFromRead(
       continue;
     }
     const target = nextRows[at];
+    // Same id, different unit: the owner changed this row's unit. Writing the
+    // read's number in the row's unit would turn dollars into a percent or the
+    // reverse, so the row is left alone and reported (review w2 #3).
+    if (target.unit !== spec.unit) {
+      keptYours.push(`${target.label.trim() || spec.label} (its unit differs from the read)`);
+      continue;
+    }
     for (const part of ["consensus", "whisper"] as const) {
       const value = spec[part];
       if (typeof value !== "number" || !Number.isFinite(value)) continue;

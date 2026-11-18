@@ -210,6 +210,8 @@ describe("POST /api/earnings/bogeys/read", () => {
     expect((hoisted.calls[0].input as { kind: string; mediaType: string }).kind).toBe("file");
     expect((hoisted.calls[0].input as { mediaType: string }).mediaType).toBe("application/pdf");
     expect(body.data.suggestedLabel).toContain("acme-preview");
+    // Day and Eastern time, so a second read never reuses an earlier sheet's label.
+    expect(body.data.suggestedLabel).toMatch(/\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/);
   });
 
   it("no_input_400", async () => {

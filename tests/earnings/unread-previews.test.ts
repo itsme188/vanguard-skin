@@ -214,6 +214,20 @@ describe("listUnreadPreviews", () => {
     expect(list.map((a) => a.articleId)).toEqual(ids.slice().reverse().slice(0, 10));
   });
 
+  // Sandbox click-through 2026-11-18: daily wraps that mention the name in
+  // passing filled the cap and pushed the real preview off the list.
+  it("subject_naming_the_company_ranks_first_before_the_cap", () => {
+    const eventId = seedEvent();
+    const preview = seedArticle({ text: "ACME FQ3 model.", subject: "Preview|ACME FQ3", receivedAt: hoursBeforeFloor(150) });
+    for (let i = 0; i < UNREAD_PREVIEWS_MAX + 2; i++) {
+      seedArticle({ text: `Market wrap ${i}; ACME moved.`, subject: `Daily wrap ${i}`, receivedAt: hoursBeforeFloor(100 - i) });
+    }
+    const list = listUnreadPreviews(db, eventId, NOW_AFTER_FLOOR)!;
+    expect(list).toHaveLength(UNREAD_PREVIEWS_MAX);
+    expect(list[0].articleId).toBe(preview);
+    expect(list.slice(1).every((a) => a.subject.startsWith("Daily wrap"))).toBe(true);
+  });
+
   it("null for an unknown event; empty for a superseded one", () => {
     expect(listUnreadPreviews(db, 424242, NOW_AFTER_FLOOR)).toBeNull();
     const eventId = seedEvent({ superseded: 1 });

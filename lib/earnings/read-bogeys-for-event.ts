@@ -87,11 +87,24 @@ function hasNumber(v: number | null | undefined): boolean {
   return typeof v === "number" && Number.isFinite(v);
 }
 
-function suggestedLabelFor(input: BogeysInput, sourceName: string | undefined): string {
+/**
+ * The label a read suggests for the hand-entered sheet. It carries the Eastern
+ * time as well as the day: the manual Save overwrites the row with the same
+ * label, so two reads on one day under one label silently replaced the first
+ * saved sheet, and the edit box reloaded the stored row over the new read
+ * (wave-2 review findings 1 and 2).
+ */
+function suggestedLabelFor(input: BogeysInput, sourceName: string | undefined, now: Date = new Date()): string {
   const day = todayET();
-  if (input.kind === "text") return `Pasted text ${day}`;
+  const time = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).format(now);
+  if (input.kind === "text") return `Pasted text ${day} ${time}`;
   const base = (sourceName ?? "").replace(/\.[A-Za-z0-9]+$/, "").replace(/\s+/g, " ").trim().slice(0, 60);
-  return `${base || "File"} ${day}`;
+  return `${base || "File"} ${day} ${time}`;
 }
 
 export async function readBogeysForEvent(
