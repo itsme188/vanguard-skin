@@ -17,6 +17,10 @@ export interface DigestWindowChoice {
   sinceDate: string;
 }
 
+/** Accessible names shared by the Send panel and the Preview. */
+export const DIGEST_WINDOW_LABEL = "Digest window";
+export const DIGEST_WINDOW_DATE_LABEL = "Digest window start date";
+
 export const DEFAULT_DIGEST_WINDOW: DigestWindowChoice = { mode: "today", sinceDate: "" };
 
 export const DIGEST_WINDOW_OPTIONS: ReadonlyArray<{ mode: DigestMode; label: string }> = [

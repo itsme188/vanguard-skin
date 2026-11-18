@@ -30,6 +30,8 @@ import {
   isMoverSecurityType,
   latestCompletedSession,
   resolveTradingDayPair,
+  explainMissingTradingDayPair,
+  formatMissingPairReason,
 } from "@/lib/digest/anomalies";
 import { BETA_LOOKBACK_DAYS } from "@/lib/queries/security-betas";
 import { SymbolLink } from "@/app/dashboard/components/SymbolLink";
@@ -240,7 +242,9 @@ export function SignificantMovesCard({
     return (
       <EmptySection
         title={scope.title}
-        reason="Could not evaluate significant moves because the latest SPY trading-day pair is unavailable."
+        reason={formatMissingPairReason(
+          explainMissingTradingDayPair(db, { completedOnly: true, now }),
+        )}
         hint="The card needs two consecutive SPY closes before it can compare held names against beta-adjusted expectations."
       />
     );

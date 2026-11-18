@@ -112,11 +112,11 @@ describe("digest window: one choice, held by the page, feeds both surfaces", () 
   });
 
   it("the preview has its own picker with the same three options and a date box", () => {
-    const picker = sliceBetween(VIEWER, 'aria-label="Digest window"', "</select>");
+    const picker = sliceBetween(VIEWER, "aria-label={DIGEST_WINDOW_LABEL}", "</select>");
     expect(picker).toContain("value={digestWindow.mode}");
     expect(picker).toContain("DIGEST_WINDOW_OPTIONS.map(");
     expect(picker).toContain("isDigestMode(");
-    const at = anchorIndex(VIEWER, 'aria-label="Digest window start date"');
+    const at = anchorIndex(VIEWER, "aria-label={DIGEST_WINDOW_DATE_LABEL}");
     expect(VIEWER.slice(at - 200, at + 300)).toContain('type="date"');
     expect(VIEWER).toContain("Choose a date first");
   });

@@ -635,7 +635,11 @@ function scanLotDriftHits(
     const accountName = accountNameById.get(accountId) ?? `account ${accountId}`;
     const symbol = symbolBySecurityId.get(securityId) ?? `security ${securityId}`;
     const hitKey = `lot-drift:${accountId}:${securityId}`;
-    const label = `${symbol} (${accountName})`;
+    // A short pair says so inside the parenthesis; a long one keeps the
+    // plain wording. The pending hit reads the index's own sides; every other
+    // note reads the sign of the newest holdings quantity.
+    const sideTag = (short: boolean): string => (short ? ", short" : "");
+    const label = `${symbol} (${accountName}${sideTag(latestQty < 0)})`;
 
     // R12: a pending pair gets its one pending warning first; the
     // assessment below then reports only its INDEPENDENT findings, under
@@ -645,7 +649,16 @@ function scanLotDriftHits(
     if (pending) {
       hits.push({
         magnitude: 0,
-        hit: pendingLotDriftHit(hitKey, label, pendingIndex.sidesFor(accountId, securityId), pendingReasons),
+        hit: pendingLotDriftHit(
+          hitKey,
+          (() => {
+            const sides = pendingIndex.sidesFor(accountId, securityId);
+            const allShort = sides.length > 0 && sides.every((p) => p.side === "short");
+            return `${symbol} (${accountName}${sideTag(allShort)})`;
+          })(),
+          pendingIndex.sidesFor(accountId, securityId),
+          pendingReasons
+        ),
       });
     }
     const emit = (hit: IntegrityHit, magnitude: number, role: "independent" | "fallback"): void => {

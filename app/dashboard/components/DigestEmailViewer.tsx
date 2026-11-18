@@ -7,6 +7,8 @@ import apiFetch from "@/lib/http/apiFetch";
 import { usePrivacy } from "@/lib/privacy/context";
 import { EMAIL_FRAME_SANDBOX, withExternalLinkTarget } from "@/lib/email/archive-srcdoc";
 import {
+  DIGEST_WINDOW_DATE_LABEL,
+  DIGEST_WINDOW_LABEL,
   DIGEST_WINDOW_OPTIONS,
   digestPreviewSince,
   digestWindowNeedsDate,
@@ -316,7 +318,7 @@ export function DigestEmailViewer({ open, onClose, digestWindow, onDigestWindowC
             </h2>
             <div className="flex flex-wrap items-center gap-2 mt-1.5">
               <select
-                aria-label="Digest window"
+                aria-label={DIGEST_WINDOW_LABEL}
                 title="The same window the Email panel sends"
                 value={digestWindow.mode}
                 onChange={(e) => {
@@ -334,7 +336,7 @@ export function DigestEmailViewer({ open, onClose, digestWindow, onDigestWindowC
               {digestWindow.mode === "since_date" && (
                 <input
                   type="date"
-                  aria-label="Digest window start date"
+                  aria-label={DIGEST_WINDOW_DATE_LABEL}
                   value={digestWindow.sinceDate}
                   onChange={(e) => onDigestWindowChange({ ...digestWindow, sinceDate: e.target.value })}
                   className="px-2 py-1 rounded-md bg-raised border border-edge text-xs text-ink"

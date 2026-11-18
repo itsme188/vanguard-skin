@@ -383,7 +383,7 @@ describe("review fixes (Wave 3): no-statement-book pairs, expired options, the d
       {
         key: `lot-drift:${ROTH}:${opt}:drift`,
         severity: "critical",
-        reason: "ZZWA  270115C00010000 (Vanguard Roth IRA): position/lot drift 100.0%",
+        reason: "ZZWA  270115C00010000 (Vanguard Roth IRA, short): position/lot drift 100.0%",
       },
     ]);
   });
@@ -396,7 +396,7 @@ describe("review fixes (Wave 3): no-statement-book pairs, expired options, the d
     computeTaxLots(db);
     const { critical } = runIntegrityChecks(db, OPTS);
     expect(hitsFor(critical, ROTH, opt).map((h) => [h.key, h.reason])).toEqual([
-      [`lot-drift:${ROTH}:${opt}:drift`, "ZZWC  270115C00010000 (Vanguard Roth IRA): position/lot drift 50.0%"],
+      [`lot-drift:${ROTH}:${opt}:drift`, "ZZWC  270115C00010000 (Vanguard Roth IRA, short): position/lot drift 50.0%"],
     ]);
   });
 
