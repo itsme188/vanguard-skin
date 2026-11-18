@@ -88,11 +88,19 @@ export function lateHeading(form: string, acceptedOnEt: string | null, acceptedA
 }
 
 /** What the late block says about the watch when no report is on file. */
-export function lateWatchText(state: "watching" | "found" | "ended" | "cancelled" | null, windowEnd: string | null): string {
+export function lateWatchText(
+  state: "watching" | "found" | "ended" | "cancelled" | null,
+  windowEnd: string | null,
+  /** Set only for a watch that ended before its window end: why, or "unknown". */
+  endedEarly: "foreign_filer" | "no_watch_basis" | "unknown" | null = null,
+): string {
   switch (state) {
     case "watching":
       return `Watching EDGAR for the 10-Q or 10-K every 10 minutes${windowEnd ? ` until ${windowEnd}` : ""}.`;
     case "ended":
+      if (endedEarly === "foreign_filer") return LOOK_AGAIN_TEXT.foreignFiler;
+      if (endedEarly === "no_watch_basis") return LOOK_AGAIN_TEXT.noBasis;
+      if (endedEarly === "unknown") return "The watch for the 10-Q or 10-K has stopped. Look again checks EDGAR now.";
       return `No 10-Q or 10-K was filed by ${windowEnd ?? "the end of the watch"}. Look again checks once more.`;
     case "cancelled":
       return "This print was disarmed; the watch for the 10-Q stopped.";

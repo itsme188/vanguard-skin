@@ -155,6 +155,24 @@ function watchBasis(db: Database.Database, eventId: number): WatchBasis | null {
 }
 
 /**
+ * Why a watch row sits in `ended` before its window is over, read from what
+ * is stored (the tick does not record it). The same two rules the tick's
+ * `not_eligible` answer uses: no accepted earnings filing (the basis is
+ * gone), or a foreign filer, judged by `inferFilerKind` over the event's
+ * stored filing forms (a 6-K earnings filing and no 10-Q) where the poll
+ * judges it over the SEC's recent list. Null when neither shows.
+ */
+export function lateWatchEndedEarlyReason(
+  db: Database.Database,
+  eventId: number,
+): "no_watch_basis" | "foreign_filer" | null {
+  const basis = watchBasis(db, eventId);
+  if (!basis) return "no_watch_basis";
+  const forms = listFilings(db, eventId).map((f) => f.form);
+  return inferFilerKind(forms) === "foreign" ? "foreign_filer" : null;
+}
+
+/**
  * Opens the watch for a `past_cutoff` print whose window has not ended (a
  * print already past its window gets no row: only Look again reaches it).
  * True when a row was created.

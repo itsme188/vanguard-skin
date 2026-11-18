@@ -32,6 +32,7 @@ import { countStatuses } from "./evaluate";
 import { secArchiveUrl, textFragmentUrl } from "./locate";
 import { AI_UNAVAILABLE_REASON_PREFIX } from "@/lib/earnings/ai-unavailable";
 import { easternClock } from "./poller";
+import { lateWatchEndedEarlyReason } from "./late";
 import {
   getChoice,
   getEventState,
@@ -321,6 +322,8 @@ export interface LateView {
   /** "4:00 pm on 2026-10-29": the automatic watch's end. */
   windowEndText: string | null;
   lastPolledAtEt: string | null;
+  /** Set when the watch ended before its window end: the reason, or "unknown". */
+  endedEarly: "foreign_filer" | "no_watch_basis" | "unknown" | null;
   /** The late filing, when one is on file. */
   filing: FullFiling | null;
   /** Its follow-up run (one section), when started. */
@@ -1016,7 +1019,7 @@ export function getFullView(
     inProgressRunId: inProgress?.full.runId ?? null,
     runs: built.map((b) => b.full),
     filings: filings.map((f) => fullFiling(db, f)),
-    late: lateView(db, eventId, state?.pollState ?? null),
+    late: lateView(db, eventId, state?.pollState ?? null, now.getTime()),
   };
 }
 
@@ -1062,19 +1065,24 @@ function lateAddedForm(db: Database.Database, eventId: number): string | null {
   return run.full.sections.some((s) => s.status === "done") ? filing.form : null;
 }
 
-function lateView(db: Database.Database, eventId: number, pollState: PollState | null): LateView | null {
+function lateView(db: Database.Database, eventId: number, pollState: PollState | null, nowMs: number): LateView | null {
   const watch = getLateWatch(db, eventId);
   const { filing, run } = lateParts(db, eventId);
   // Only a print with an accepted earnings filing has a late report to look for.
   const basis = pollState === "past_cutoff" && hasAcceptedEarnings(listFilings(db, eventId));
   if (!watch && !filing && !basis) return null;
   const end = watch ? etParts(watch.windowEndsAt) : null;
+  const endedEarly =
+    watch?.state === "ended" && nowMs < Date.parse(watch.windowEndsAt)
+      ? (lateWatchEndedEarlyReason(db, eventId) ?? "unknown")
+      : null;
   return {
     watchState: watch?.state ?? null,
     windowEndText: end ? `${clock12(end.time)} on ${end.date}` : null,
     lastPolledAtEt: etTime(watch?.lastPolledAt ?? null),
+    endedEarly,
     filing: filing ? fullFiling(db, filing) : null,
     run: run?.full ?? null,
-    lookAgainAvailable: basis && filing === null,
+    lookAgainAvailable: basis && filing === null && endedEarly !== "foreign_filer",
   };
 }
