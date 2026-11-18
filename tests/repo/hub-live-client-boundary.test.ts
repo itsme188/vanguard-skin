@@ -78,6 +78,9 @@ const CLIENT_SAFE_LIB = [
   "@/lib/earnings/actuals-validation",
   "@/lib/earnings/format-bogey-fields",
   "@/lib/calendar/date-utils",
+  // Bogey intake 2026-11-18 (Task F): the edit box reads typed figures with
+  // it. Import-free by contract; the purity test below holds it to that.
+  "@/lib/earnings/desk-figure",
 ];
 
 /** What an allowlisted module may never reach for, directly or transitively, or

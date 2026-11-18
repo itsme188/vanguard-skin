@@ -114,12 +114,14 @@ describe("parseManualBogeyForm", () => {
   });
 
   it.each([
-    ["eps_consensus", "abc", /^EPS consensus must be a number/],
-    ["eps_whisper", "n/a", /^EPS whisper must be a number/],
-    ["revenue_consensus", "lots", /^Revenue consensus must be a number/],
-    ["revenue_whisper", "3.9 billion", /^Revenue whisper must be a number/],
-    ["expected_move", "big", /^Expected move must be a percent above zero/],
-    ["expected_move", "0", /^Expected move must be a percent above zero/],
+    // Bogey intake 2026-11-18: the field name, then the lenient reader's own
+    // sentence. "3.9 billion" is now read (desk wording); a range is not.
+    ["eps_consensus", "abc", /^EPS consensus: Couldn't read “abc” as a per-share figure/],
+    ["eps_whisper", "n/a", /^EPS whisper: Couldn't read/],
+    ["revenue_consensus", "lots", /^Revenue consensus: Couldn't read “lots” as a dollar figure/],
+    ["revenue_whisper", "3.8-3.9B", /^Revenue whisper: That looks like a range/],
+    ["expected_move", "big", /^Expected move: Couldn't read “big” as a percent/],
+    ["expected_move", "0", /^Expected move: Enter a percent above zero/],
   ])("a typed %s of %j is an error naming the field, never a silent blank", (field, value, message) => {
     const r = parseManualBogeyForm({ ...EMPTY_FORM, notes: "a real note", [field]: value });
     expect(r.error).toMatch(message);
