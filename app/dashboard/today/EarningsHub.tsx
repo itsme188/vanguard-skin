@@ -47,6 +47,7 @@ import { RecapFigureButton } from "./RecapFigureButton";
 import { EarningsHubRefreshButton } from "./EarningsHubRefreshButton";
 import { EarningsRowChips } from "./EarningsRowChips";
 import EarningsHubLive, { LivePrintSlot } from "./EarningsHubLive";
+import UnreadPreviews from "./UnreadPreviews";
 import { EarningsDeleteButton } from "./EarningsDeleteButton";
 import { fixDateOrigin } from "@/lib/calendar/fix-date-suppression";
 import { getEmailIgnoredManualTwins } from "@/lib/queries/manual-twin-email";
@@ -421,6 +422,7 @@ export function EarningsHub() {
                       <div key={e.id}>
                         <DesktopRow event={e} />
                         <LivePrintSlot eventId={e.id} symbol={e.symbol ?? ""} armed={e.worksheetArmed} eventDate={e.event_date} />
+                        {e.worksheetArmed && <UnreadPreviews eventId={e.id} />}
                       </div>
                     ))}
                   </div>
@@ -447,6 +449,7 @@ export function EarningsHub() {
                       <div key={e.id}>
                         <MobileCard event={e} />
                         <LivePrintSlot eventId={e.id} symbol={e.symbol ?? ""} armed={e.worksheetArmed} eventDate={e.event_date} />
+                        {e.worksheetArmed && <UnreadPreviews eventId={e.id} />}
                       </div>
                     ))}
                   </div>
