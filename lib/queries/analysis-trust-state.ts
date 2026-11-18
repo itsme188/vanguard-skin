@@ -307,7 +307,12 @@ export function getAnalysisTrustState(
     -- ">" did in daytime; after 20:00 Eastern it no longer flags a day early.
     -- date(...) cuts the price date to its calendar day, so a value that
     -- carried a time of day would still count as that whole day.
+    -- An expired contract is kept in the book by its statement row, but no
+    -- refresh can price it, so it is neither counted nor listed here (QA
+    -- 2026-11-09). liveOptionExpirationSql is the one reader of a stored
+    -- expiry; a non-option (NULL expiry) passes.
     WHERE julianday(${easternDaySql()}) - julianday(date(lp.latest_date)) >= ?
+      AND ${liveOptionExpirationSql("s")}
     ORDER BY s.symbol
   `
     )
@@ -332,6 +337,7 @@ export function getAnalysisTrustState(
     JOIN securities s ON s.id = l.security_id
     LEFT JOIN prices p ON p.security_id = l.security_id
     WHERE p.security_id IS NULL
+      AND ${liveOptionExpirationSql("s")}
     ORDER BY s.symbol
   `
     )
