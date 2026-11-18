@@ -67,7 +67,12 @@ export function evalComputed(fig: ModelFigure, byId: Map<string, ResolvedFigure>
     const mNew = measureClasses(nw.figure.metric);
     const mOld = measureClasses(old.figure.metric);
     if (![...mNew].some((x) => mOld.has(x))) add("metric_unconfirmed", `"${nw.figure.metric}" and "${old.figure.metric}" are not one measure`);
-    const prior = nw.period && old.period ? isPriorPeriod(nw.period, old.period) : null;
+    // A gap to a pre-print figure (a beat or miss against a consensus or bogey) compares one
+    // period with itself: when a bogey input is for the same period as the other input, the
+    // year-before rule does not apply (QA 2026-11-18). A bogey for another period still differs.
+    const bogeyGap = (nw.figure.sourceKind === "bogey" || old.figure.sourceKind === "bogey")
+      && periodsMatch(nw.period, old.period, { ignoreRole: true }) === true;
+    const prior = bogeyGap ? true : nw.period && old.period ? isPriorPeriod(nw.period, old.period) : null;
     if (prior === false) add("periods_differ", "the old input does not end a year (or quarter) before the new one");
     if (prior === null) add("period_unconfirmed", "the inputs' periods cannot be placed a year apart");
   } else {
