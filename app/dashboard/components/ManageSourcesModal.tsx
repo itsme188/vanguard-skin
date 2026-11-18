@@ -875,6 +875,7 @@ export function ManageSourcesModal({
                           </label>
                           <select
                             id={`bogey-scan-${s.id}`}
+                            aria-label={`Bogey scan for ${s.name}`}
                             value={bogeyModes[s.id] ?? "off"}
                             disabled={bogeySaving[s.id] === true}
                             onChange={(e) =>
