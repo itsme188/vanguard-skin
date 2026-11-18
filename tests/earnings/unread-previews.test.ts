@@ -440,3 +440,12 @@ describe("readArticleForEvent", () => {
     expect(r.recompiled).toBeNull();
   });
 });
+
+describe("ticker named only in the subject (2026-11-18)", () => {
+  it("lists an article whose body never writes the ticker", () => {
+    const eventId = seedEvent();
+    const id = seedArticle({ text: "Our model forecasts revenue growth for the quarter.", subject: "Preview|ACME FQ3: demand holds" });
+    const list = listUnreadPreviews(db, eventId, NOW_AFTER_FLOOR)!;
+    expect(list.map((a) => a.articleId)).toContain(id);
+  });
+});

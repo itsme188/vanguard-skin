@@ -3,7 +3,7 @@
  * behind it (bogey intake 2026-11-18, Task D; amendment A6 is binding).
  *
  * LISTED for an event: an article whose `raw_text` names the event's ticker
- * family (`isSymbolMentioned` over `issuerSiblings`, the very test
+ * family (`articleNamesSymbol`, subject or body, over `issuerSiblings`: the very test
  * `extractBogeysFromArticleForEvent` applies, so the button always reaches the
  * model), received inside the armed deep read's window (DEEP_READ_WINDOW_DAYS
  * before the print's slot floor, cut at the floor and at now), for an event
@@ -45,7 +45,7 @@ import { AMC_FLOOR_ET, BMO_FLOOR_ET } from "@/lib/earnings/pre-print-floor";
 import { DEEP_READ_WINDOW_DAYS, companyNameAliases, mentionOffsets } from "@/lib/earnings/deep-read-bogeys";
 import {
   extractBogeysFromArticleForEvent,
-  isSymbolMentioned,
+  articleNamesSymbol,
   newsletterExtractorVersionForArticle,
   type ArticleInput,
 } from "@/lib/earnings/extract-newsletter-bogeys";
@@ -207,7 +207,7 @@ export function listUnreadPreviews(
   for (const r of rows) {
     const at = receivedMs(r.received_at);
     if (!Number.isFinite(at) || at < fromMs || at >= toMs) continue;
-    if (!family.some((sym) => isSymbolMentioned(r.raw_text, sym))) continue;
+    if (!family.some((sym) => articleNamesSymbol(r, sym))) continue;
     const item: UnreadPreview = {
       articleId: r.id,
       sourceName: r.source_name ?? "",

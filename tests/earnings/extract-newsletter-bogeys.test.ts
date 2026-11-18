@@ -897,3 +897,14 @@ describe("extractBogeysFromNewArticles", () => {
     expect(rows[0].ai_extraction_model).toBe("claude-test-model");
   });
 });
+
+// A preview that names the company only in its title (2026-11-18): the
+// ticker is in the subject, never in the body.
+describe("articleNamesSymbol reads the subject as well as the body", () => {
+  it("finds a ticker that appears only in the subject", async () => {
+    const { articleNamesSymbol } = await import("@/lib/earnings/extract-newsletter-bogeys");
+    expect(articleNamesSymbol({ subject: "Preview|ACME FQ3: demand holds", raw_text: "Our model forecasts revenue growth." }, "ACME")).toBe(true);
+    expect(articleNamesSymbol({ subject: "Weekly|notes", raw_text: "Our model forecasts revenue growth." }, "ACME")).toBe(false);
+    expect(articleNamesSymbol({ subject: null, raw_text: "ACME beat." }, "ACME")).toBe(true);
+  });
+});
