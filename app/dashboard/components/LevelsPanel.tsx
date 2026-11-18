@@ -19,6 +19,7 @@ import type {
 // render in the security's NATIVE currency and need a matching label, e.g.
 // "₩976,000" rather than "$976,000" for a KRW security).
 import { formatLevelPrice } from "@/lib/chart/price-formatter";
+import { deleteLevelPrompt } from "@/lib/levels/delete-level-prompt";
 import { detectionPrefix } from "@/lib/levels/narrative-detection-prefix";
 import { readMutationResult, networkFailureMessage } from "@/lib/ui/mutation-result";
 import { CREATE_DECLINED_MESSAGE, createRefusalPrompt } from "@/lib/levels/create-level-prompt";
@@ -1292,13 +1293,18 @@ export function LevelsPanel({
     refresh();
   }
 
-  function handleDelete(id: number) {
+  function handleDelete(l: EnrichedLevel) {
     setConfirmPrompt({
-      title: "Delete level",
-      message: "Delete this level permanently?",
-      confirmLabel: "Delete",
-      variant: "danger",
-      onConfirm: () => deleteConfirmedLevel(id),
+      ...deleteLevelPrompt(
+        {
+          typeLabel: LEVEL_TYPE_LABEL[l.level_type],
+          price: l.price,
+          priceSource: l.price_source,
+          sourceAuthor: l.source_author ?? null,
+        },
+        currency,
+      ),
+      onConfirm: () => deleteConfirmedLevel(l.id),
     });
   }
 
@@ -2230,7 +2236,7 @@ export function LevelsPanel({
                         </button>
                       ) : null}
                       <button
-                        onClick={() => handleDelete(l.id)}
+                        onClick={() => handleDelete(l)}
                         title="Delete"
                         className="relative pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-1"
                         style={{
@@ -2430,7 +2436,7 @@ export function LevelsPanel({
                   </button>
                 ) : null}
                 <button
-                  onClick={() => handleDelete(l.id)}
+                  onClick={() => handleDelete(l)}
                   className="text-[10px] text-rose-400 hover:text-rose-300 ml-2"
                   title="Delete"
                 >

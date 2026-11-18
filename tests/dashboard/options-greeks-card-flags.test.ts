@@ -27,6 +27,7 @@ function pos(over: Partial<PositionGreeks> & { symbol: string }): PositionGreeks
     expiration: "2027-03-19",
     quantity: 1,
     multiplier: 100,
+    accountName: "Acct One",
     underlyingPrice: 100,
     optionPrice: 5,
     daysToExpiry: 180,

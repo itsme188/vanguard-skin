@@ -19,6 +19,7 @@ import {
   type BetaConfidenceReason,
 } from "@/lib/compute/beta-confidence";
 import { Pct } from "@/lib/privacy/components";
+import { formatRSquared } from "@/lib/format/r-squared";
 
 /**
  * One row of Block 3, mirrored from `lib/compute/factors.ts::FactorShareEntry`.
@@ -244,7 +245,7 @@ export function FactorProfileSection({
                 label="Vol (ann)"
                 value={`${(regression.vol * 100).toFixed(1)}%`}
               />
-              <KpiCell label="R²" value={regression.rSquared.toFixed(2)} />
+              <KpiCell label="R²" value={formatRSquared(regression.rSquared)} />
               <KpiCell
                 label="Correlation"
                 value={regression.correlation.toFixed(2)}

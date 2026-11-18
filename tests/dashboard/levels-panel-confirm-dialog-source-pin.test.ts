@@ -27,11 +27,10 @@ describe("LevelsPanel confirmations use ConfirmDialog (source pin)", () => {
   });
 
   it("delete asks first and only the confirmed path calls the API", () => {
-    const ask = sliceBetween(src, "function handleDelete(id: number)", "async function deleteConfirmedLevel(");
+    const ask = sliceBetween(src, "function handleDelete(l: EnrichedLevel)", "async function deleteConfirmedLevel(");
     expect(ask).toMatch(/setConfirmPrompt\(/);
-    expect(ask).toContain("Delete this level permanently?");
-    expect(ask).toMatch(/variant: "danger"/);
-    expect(ask).toMatch(/onConfirm: \(\) => deleteConfirmedLevel\(id\)/);
+    expect(ask).toContain("deleteLevelPrompt(");
+    expect(ask).toMatch(/onConfirm: \(\) => deleteConfirmedLevel\(l\.id\)/);
     expect(ask).not.toMatch(/apiFetch\(/);
     const run = sliceBetween(src, "async function deleteConfirmedLevel(", "async function handleRequeue(");
     expect(run).toMatch(/method: "DELETE"/);
@@ -41,7 +40,7 @@ describe("LevelsPanel confirmations use ConfirmDialog (source pin)", () => {
   });
 
   it("both arm refusals ask through the dialog; declining says the level stays paused", () => {
-    const handler = sliceBetween(src, "async function handleReactivate", "function handleDelete(id: number)");
+    const handler = sliceBetween(src, "async function handleReactivate", "function handleDelete(l: EnrichedLevel)");
     expect(handler.split("setConfirmPrompt(").length - 1).toBe(2);
     expect(handler.split('onCancel: () => toast("Level left paused", "info")').length - 1).toBe(2);
     expect(handler).toMatch(/onConfirm: \(\) => handleReactivate\(id, "would_fire_immediately"\)/);
