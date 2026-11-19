@@ -422,3 +422,12 @@ describe("rejected documents on the live print row", () => {
     expect(src).not.toMatch(/text-(down|gold)\/\d+/);
   });
 });
+
+describe("the window and go line on the live print row", () => {
+  it("wraps a long unbroken address instead of widening the page", () => {
+    const src = readFileSync("app/dashboard/today/LivePrintRow.tsx", "utf8");
+    const at = anchorIndex(src, "windowText(print.effectiveWindow");
+    const open = src.lastIndexOf("<p ", at);
+    expect(src.slice(open, at)).toContain("[overflow-wrap:anywhere]");
+  });
+});

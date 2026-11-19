@@ -90,6 +90,17 @@ export interface FetchTranscriptOptions {
   expectedFiscalQuarter?: FiscalQuarter;
   /** Do not spend an Alpha Vantage request on this fetch (pacing). */
   skipAlphaVantage?: boolean;
+  /**
+   * Out-parameter. When the fetch returns null, it says here if a release WAS
+   * found inside the print's window but could not be keyed to a fiscal
+   * quarter, so a caller can tell that apart from "nothing filed". Filled by
+   * the fetch; never read by it.
+   */
+  diagnostics?: FetchDiagnostics;
+}
+
+export interface FetchDiagnostics {
+  unkeyedRelease?: { filingDate: string };
 }
 
 export { statedFiscalQuarterFromTranscript, PRINT_FILING_WINDOW_DAYS };
@@ -807,7 +818,7 @@ async function tryAlphaVantage(
 
 type FilingChoice =
   | { filing: Earnings8KFiling; key: FiscalQuarter }
-  | { reason: string };
+  | { reason: string; code?: "release_found_no_key"; filingDate?: string };
 
 function isStrongStatement(
   stated: ReturnType<typeof statedFiscalQuarterDetail>,
@@ -838,6 +849,8 @@ function chooseFilingForPrint(
     if (stated.year !== null) return { filing, key: { year: stated.year, quarter: stated.quarter } };
     if (stated.quarter !== requested.quarter) {
       return {
+        code: "release_found_no_key",
+        filingDate: filing.filingDate,
         reason: `the release filed ${filing.filingDate} states Q${stated.quarter} with no year, the print has no Finnhub fiscal quarter, and the calendar key Q${requested.quarter} ${requested.year} disagrees: no key to store it under`,
       };
     }
@@ -880,6 +893,7 @@ async function fetchFiling(
   requested: FiscalQuarter,
   printDate: string | null,
   expected: FiscalQuarter | null,
+  diagnostics?: FetchDiagnostics,
 ): Promise<FetchTranscriptResult | null> {
   const label = `${upperTicker} ${requested.year}Q${requested.quarter}`;
   let filings: Earnings8KFiling[];
@@ -896,6 +910,9 @@ async function fetchFiling(
     ? chooseFilingForPrint(filings, printDate, expected, requested)
     : chooseFilingForKey(filings, requested);
   if ("reason" in choice) {
+    if (diagnostics && choice.code === "release_found_no_key" && choice.filingDate) {
+      diagnostics.unkeyedRelease = { filingDate: choice.filingDate };
+    }
     console.log(`[transcripts] no 8-K filing stored for ${label}: ${choice.reason}`);
     return null;
   }
@@ -992,7 +1009,7 @@ export async function fetchTranscript(
   if (printDate && !expected) {
     const cachedFiling = getCachedFilingForPrint(db, upperTicker, printDate);
     if (cachedFiling) return { transcript: cachedFiling, fromCache: true };
-    const filed = await fetchFiling(db, securityId, upperTicker, requested, printDate, null);
+    const filed = await fetchFiling(db, securityId, upperTicker, requested, printDate, null, options.diagnostics);
     if (filed) return filed;
     // No 8-K for this print. A call already on file whose own date is inside
     // the print's window is this print's call; answering "nothing found"
@@ -1098,7 +1115,7 @@ export async function fetchTranscript(
   }
 
   // 4. Fall back to the EDGAR 8-K press release.
-  return fetchFiling(db, securityId, upperTicker, requested, printDate, expected);
+  return fetchFiling(db, securityId, upperTicker, requested, printDate, expected, options.diagnostics);
 }
 
 /**
@@ -1126,11 +1143,12 @@ export async function fetchTranscript(
 export async function fetchLatestTranscript(
   db: Database.Database,
   ticker: string,
+  diagnostics?: FetchDiagnostics,
 ): Promise<FetchTranscriptResult | null> {
   const print = latestPrintOnFile(db, ticker);
   const newerDate = newerPrintWithoutResults(db, ticker, print);
   if (!print) {
-    const result = await fetchTranscript(db, ticker);
+    const result = await fetchTranscript(db, ticker, undefined, undefined, { diagnostics });
     if (!result) return null;
     const t = result.transcript;
     const lead = `This ${kindHeadingLabel(t)} is for fiscal Q${t.quarter} ${t.year}.`;
@@ -1148,6 +1166,7 @@ export async function fetchLatestTranscript(
   const key = print.fiscal ?? deriveFilingReportingQuarter(print.eventDate);
   const result = await fetchTranscript(db, ticker, key.year, key.quarter, {
     eventDate: print.eventDate,
+    diagnostics,
     ...(print.fiscal ? { expectedFiscalQuarter: print.fiscal } : {}),
   });
   if (!result) return null;
