@@ -222,7 +222,7 @@ const REASON_SENTENCES: Record<string, string> = {
   value_text_mismatch: "The number as written does not match its value.",
   label_missing: "The figure has no line label to check against.",
   label_not_in_quote: "The line label was not found in the quote.",
-  metric_unconfirmed: "The number is in the cited line, but the line's label does not name this metric.",
+  metric_unconfirmed: "The number is in the cited line, but the check could not confirm that the line names this metric.",
   scale_unconfirmed: "The scale (thousands, millions, billions) could not be confirmed.",
   period_unconfirmed: "The period could not be confirmed from the filing.",
   column_ambiguous: "The table column the number sits in could not be told apart.",

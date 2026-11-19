@@ -36,7 +36,7 @@ describe("reasonText", () => {
     }
     expect(reasonText("no_such_code")).toBe("This could not be confirmed against the filing.");
     expect(reasonText("metric_unconfirmed")).toBe(
-      "The number is in the cited line, but the line's label does not name this metric.",
+      "The number is in the cited line, but the check could not confirm that the line names this metric.",
     );
   });
 });

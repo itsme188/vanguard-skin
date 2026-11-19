@@ -154,7 +154,7 @@ describe("renderSharePage", () => {
     const html = renderSharePage(view(), runId);
     expect(html).toContain("Incomplete:");
     expect(html).toContain("The filing&#39;s own figures do not support the stated comparison.");
-    expect(html).toContain("The number is in the cited line, but the line&#39;s label does not name this metric.");
+    expect(html).toContain("The number is in the cited line, but the check could not confirm that the line names this metric.");
     // Ruling A: the comparison line names both operands and the bogey's source and date.
     expect(html).toContain(
       `<li class="s-danger">${escapeHtml("filing: $64.5B is below $64.57B (Synthetic Weekly <b>, 2026-10-20), -0.10%")}</li>`,
