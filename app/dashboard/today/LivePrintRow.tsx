@@ -477,7 +477,7 @@ export default function LivePrintRow({
         </ul>
       )}
 
-      <p className="text-[12px] font-mono text-ink-dim">
+      <p className="text-[12px] font-mono text-ink-dim [overflow-wrap:anywhere]">
         {windowText(print.effectiveWindow ?? null, Date.now())}
         {goLine ? ` · ${goLine}` : ""}
       </p>
