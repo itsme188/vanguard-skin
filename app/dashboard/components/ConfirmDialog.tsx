@@ -73,7 +73,7 @@ export function ConfirmDialog({
       // which Tailwind v4's universal preflight margin reset zeroes — without
       // it the top-layer dialog pins to the viewport's top-left corner
       // (deep-QA finding, recurrence — prior closure was non-repro only).
-      className="m-auto rounded-xl border border-edge bg-panel p-0 text-ink backdrop:bg-canvas/70 backdrop:backdrop-blur-sm max-w-sm w-full"
+      className="m-auto rounded-xl border border-edge bg-panel p-0 text-ink backdrop:bg-canvas/70 backdrop:backdrop-blur-sm max-w-[min(24rem,calc(100vw-2rem))] w-full"
     >
       <div className="p-6">
         <h3 className="text-base font-medium mb-2 [overflow-wrap:anywhere]">{title}</h3>
