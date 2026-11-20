@@ -264,7 +264,9 @@ export function CommandPalette() {
         )}
 
         {/* Empty state */}
-        {query.trim() && !loading && results.length === 0 && (
+        {/* A verdict about ONE query: shown only once the list on hand answers
+            the typed query, never while the debounce is still pending. */}
+        {query.trim() && !loading && resultsQuery === query.trim() && results.length === 0 && (
           <div className="px-4 py-6 text-center text-sm text-ink-faint">
             No ticker matches &ldquo;{query}&rdquo;
           </div>
