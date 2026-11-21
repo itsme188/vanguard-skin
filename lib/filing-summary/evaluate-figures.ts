@@ -211,13 +211,14 @@ export function bindQuoteFigure(
   located: LocatedQuote,
   docs: Array<{ fileName: string; text: DocText }>,
   eventDate: string,
+  opts: { signedByWord?: boolean } = {},
 ): ResolvedFigure {
   const out = emptyResolved(fig);
   const add = (code: string, detail: string) => out.reasons.push(reason(code, fig.id, detail));
   if (located.status === "not_found") { add("quote_not_found", "the cited quote is not in the filing"); return out; }
   if (located.status === "ambiguous" || !located.block) { add("ambiguous_quote", "the cited quote matches more than one place"); return out; }
 
-  const stated = statedNumber(fig);
+  const stated = statedNumber(fig, opts);
   if (!stated) { add("value_text_mismatch", `the shown text "${fig.valueText}" does not state the typed value`); return out; }
   // A loss is a negative result already; "net loss" typed as a negative number says it twice (review round 1).
   if (fig.value < 0 && isLossMetric(fig.metric)) add("loss_sign_double", `"${fig.metric}" names a loss, and ${fig.valueText} is negative as well`);
@@ -257,7 +258,9 @@ export function bindQuoteFigure(
 // ---------------------------------------------------------------------------
 
 /** Unit, period and basis come from the frozen snapshot; the period's anchor resolves against the section. */
-export function bindBogeyFigure(fig: ModelFigure, bogeys: BogeySnapshotFigure[], anchors: SectionAnchors): ResolvedFigure {
+export function bindBogeyFigure(
+  fig: ModelFigure, bogeys: BogeySnapshotFigure[], anchors: SectionAnchors, opts: { signedByWord?: boolean } = {},
+): ResolvedFigure {
   const out = emptyResolved(fig);
   out.basis = "unknown";
   const snap = fig.bogeyKey ? bogeys.find((b) => b.key === fig.bogeyKey) : undefined;
@@ -273,7 +276,7 @@ export function bindBogeyFigure(fig: ModelFigure, bogeys: BogeySnapshotFigure[],
     { kind: p.kind, role: p.role, endDate: p.endDate, fiscalYear: p.fiscalYear, fiscalQuarter: p.fiscalQuarter, anchor: p.anchor },
     anchors,
   );
-  const stated = statedNumber({ ...fig, unit: snap.unit });
+  const stated = statedNumber({ ...fig, unit: snap.unit }, opts);
   if (!stated) {
     out.reasons.push(reason("value_text_mismatch", fig.id, `the shown text "${fig.valueText}" does not state the typed value`));
     return out;

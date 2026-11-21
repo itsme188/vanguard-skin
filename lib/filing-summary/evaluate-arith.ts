@@ -36,7 +36,9 @@ const iv = (r: ResolvedFigure): [number, number] => [r.lo as number, r.hi as num
 // Computed figures (R8)
 // ---------------------------------------------------------------------------
 
-export function evalComputed(fig: ModelFigure, byId: Map<string, ResolvedFigure>, shownIds: Set<string>): ResolvedFigure {
+export function evalComputed(
+  fig: ModelFigure, byId: Map<string, ResolvedFigure>, shownIds: Set<string>, opts: { signedByWord?: boolean } = {},
+): ResolvedFigure {
   const out = emptyResolved(fig);
   out.basisConfirmed = true;
   const add = (code: string, detail: string) => out.reasons.push(reason(code, fig.id, detail));
@@ -95,7 +97,7 @@ export function evalComputed(fig: ModelFigure, byId: Map<string, ResolvedFigure>
 
   const point = computeOp(op, inputs.map((r) => r.units as number));
   if (point === null) { add("compute_undefined", `${op} is undefined for these inputs`); return out; }
-  const stated = statedNumber(fig);
+  const stated = statedNumber(fig, opts);
   if (!stated) { add("value_text_mismatch", `the shown text "${fig.valueText}" does not state the typed value`); return out; }
 
   // The result's interval from the inputs' intervals (every operation is monotone in each input where defined).

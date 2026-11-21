@@ -28,6 +28,7 @@ import {
 } from "./evaluate-figures";
 import { evalComparison, evalComputed } from "./evaluate-arith";
 import { sectionAnchors, type SectionAnchors } from "./evaluate-periods";
+import { signedByWordBefore } from "./evaluate-tokens";
 import type {
   BogeySnapshotFigure,
   CheckReason,
@@ -150,6 +151,12 @@ function placeholderIds(text: string): string[] {
   return [...text.matchAll(PLACEHOLDER)].map((m) => m[1]);
 }
 
+/** Every placeholder of the figure follows a loss or negative word ("a loss of {f1}"): the words sign its shown text. */
+function signedByWords(text: string, id: string): { signedByWord: boolean } {
+  const at = [...text.matchAll(PLACEHOLDER)].filter((m) => m[1] === id).map((m) => m.index ?? 0);
+  return { signedByWord: at.length > 0 && at.every((i) => signedByWordBefore(text.slice(0, i))) };
+}
+
 /**
  * Fill `{fN}` with that figure's `valueText`. `unbound` when a placeholder
  * names no figure of the claim, a placed figure's valueText carries a digit
@@ -256,20 +263,20 @@ function evaluateClaim(claim: ModelClaim, top: boolean, routine: boolean, ctx: C
     if (f.sourceKind === "computed") continue;
     let r: ResolvedFigure;
     if (f.sourceKind === "bogey") {
-      r = bindBogeyFigure(f, ctx.bogeys, ctx.anchors);
+      r = bindBogeyFigure(f, ctx.bogeys, ctx.anchors, signedByWords(claim.text, f.id));
     } else if (f.citationId === null) {
       r = emptyResolved(f, [reason("no_source", f.id, "a quoted figure with no citation")]);
     } else {
       const loc = located.get(f.citationId);
       r = loc
-        ? bindQuoteFigure(f, loc, ctx.docs, ctx.eventDate)
+        ? bindQuoteFigure(f, loc, ctx.docs, ctx.eventDate, signedByWords(claim.text, f.id))
         : emptyResolved(f, [reason("dangling_citation", f.id, `citation ${f.citationId} is not a citation of this claim`)]);
     }
     byId.set(f.id, r);
   }
   const shownIds = new Set(placeholderIds(claim.text));
   for (const f of claim.figures) {
-    if (f.sourceKind === "computed") byId.set(f.id, evalComputed(f, byId, shownIds));
+    if (f.sourceKind === "computed") byId.set(f.id, evalComputed(f, byId, shownIds, signedByWords(claim.text, f.id)));
   }
 
   if (claim.figures.length > 0 && !hasFilingFigure(claim)) {
