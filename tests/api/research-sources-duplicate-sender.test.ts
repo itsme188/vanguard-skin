@@ -50,6 +50,15 @@ describe("POST duplicate sender_email", () => {
     expect(db.prepare(`SELECT COUNT(*) c FROM research_sources`).get()).toEqual({ c: 1 });
   });
 
+  it("points at Deactivate only (sources have no edit control) and has no trailing period", async () => {
+    seed("Alpha Letter", "news@alpha.example");
+    const res = await POST(req("POST", { name: "Alpha Two", sender_email: "news@alpha.example" }));
+    const body = await res.json();
+    expect(body.error).toMatch(/Deactivate it first/);
+    expect(body.error).not.toMatch(/edit/i);
+    expect(body.error).not.toMatch(/\.$/);
+  });
+
   it("matches case-insensitively and ignores surrounding whitespace", async () => {
     seed("Alpha Letter", "news@alpha.example");
     const res = await POST(req("POST", { name: "X", sender_email: "  News@Alpha.EXAMPLE " }));

@@ -140,6 +140,7 @@ export function ManageSourcesModal({
   const [bogeyLoadError, setBogeyLoadError] = useState<string | null>(null);
   const [bogeyRowErrors, setBogeyRowErrors] = useState<Record<number, string>>({});
   const [bogeySaving, setBogeySaving] = useState<Record<number, boolean>>({});
+  const [bogeySaved, setBogeySaved] = useState<Record<number, boolean>>({});
 
   useEffect(() => {
     if (!open) return;
@@ -169,6 +170,7 @@ export function ManageSourcesModal({
   const handleBogeyModeChange = useCallback(
     async (sourceId: number, previous: BogeyScanMode, mode: BogeyScanMode) => {
       if (mode === previous) return;
+      setBogeySaved((prev) => ({ ...prev, [sourceId]: false }));
       setBogeyRowErrors((prev) => {
         const rest = { ...prev };
         delete rest[sourceId];
@@ -184,6 +186,7 @@ export function ManageSourcesModal({
         });
         const r = await readMutationResult(res);
         if (!r.ok) throw new MutationFailure(r.message);
+        setBogeySaved((prev) => ({ ...prev, [sourceId]: true }));
       } catch (err) {
         setBogeyModes((prev) => (prev ? { ...prev, [sourceId]: previous } : prev));
         setBogeyRowErrors((prev) => ({
@@ -894,6 +897,15 @@ export function ManageSourcesModal({
                             ))}
                           </select>
                         </div>
+                      )}
+                      {bogeySaved[s.id] && (
+                        <p
+                          role="status"
+                          aria-live="polite"
+                          className={`text-xs ${CHIP_TONE_TEXT.up} text-right`}
+                        >
+                          Saved
+                        </p>
                       )}
                       {bogeyRowErrors[s.id] && (
                         <p role="alert" className={`text-xs ${CHIP_TONE_TEXT.down} text-right`}>

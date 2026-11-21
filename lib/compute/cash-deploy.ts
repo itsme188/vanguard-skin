@@ -74,6 +74,7 @@ import { marketValue } from "@/lib/valuation";
 import { getUsdPerUnit } from "@/lib/queries/fx-rates";
 import { isCashEquivalentSecurity } from "@/lib/compute/cash-equivalents";
 import { issuerSiblings } from "@/lib/securities/issuer-family";
+import { liveOptionExpirationSql } from "@/lib/compute/option-expiry";
 
 export type CashDeployMode = "benchmark" | "factor_balance" | "heuristic";
 
@@ -419,6 +420,10 @@ function loadCurrentHoldings(
       LEFT JOIN securities s_u ON s_u.symbol = s.underlying_symbol
       LEFT JOIN latest_prices lp ON lp.security_id = s.id
       WHERE lp.close_price IS NOT NULL AND lp.close_price > 0
+        -- An expired option is left out (the one reader of a stored expiry),
+        -- as the What-if, Scenarios and Defense cards already do: its last
+        -- mark is not a sector weight, an at-market-value option or a hedge.
+        AND ${liveOptionExpirationSql("s")}
       GROUP BY s.id
     `
     )
