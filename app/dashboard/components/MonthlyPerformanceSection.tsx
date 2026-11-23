@@ -107,6 +107,7 @@ export function MonthlyPerformanceSection({
               <Link
                 key={y}
                 href={target ? hrefForMonth(target) : "#"}
+                scroll={false}
                 aria-current={selectedYear === y ? "true" : undefined}
                 className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
                   selectedYear === y
@@ -126,6 +127,7 @@ export function MonthlyPerformanceSection({
           <Link
             key={m}
             href={hrefForMonth(m)}
+            scroll={false}
             aria-current={selectedMonth === m ? "true" : undefined}
             className={`px-2.5 py-1.5 rounded-md text-xs font-medium transition-colors ${
               selectedMonth === m
