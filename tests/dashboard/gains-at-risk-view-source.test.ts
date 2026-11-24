@@ -17,6 +17,7 @@ const VIEW = "app/dashboard/components/gains-at-risk/GainsAtRiskView.tsx";
 const CHART = "app/dashboard/components/gains-at-risk/GainsAtRiskChart.tsx";
 const HELPERS = "lib/analysis/gains-at-risk-view.ts";
 const INPUT = "lib/analysis/gains-at-risk-input.ts";
+const CONSTANTS = "lib/analysis/gains-at-risk-constants.ts";
 
 /** Source with // and /* *\/ comments removed (string contents kept as written). */
 function code(src: string): string {
@@ -143,6 +144,75 @@ describe("GainsAtRiskView wiring", () => {
   });
 });
 
+describe("the two cases and the owner's figure", () => {
+  const src = read(VIEW);
+  const body = code(src);
+
+  it("the case switch opens on Measured and is page state only", () => {
+    anchorIndex(src, "useState<GainsAtRiskCaseKey>(DEFAULT_CASE)");
+    const at = anchorIndex(src, 'aria-label="Case"');
+    const block = src.slice(at, at + 900);
+    expect(block).toContain("CASE_KEYS.map(");
+    expect(block).toContain("CASE_LABELS[k]");
+    expect(block).toContain("aria-pressed={caseKey === k}");
+    // No caret on the pill pair.
+    expect(block).not.toMatch(/[▾▼⌄]|chevron|caret/i);
+  });
+
+  it("the selected case's sentence sits under the switch", () => {
+    const at = anchorIndex(src, 'aria-label="Case"');
+    expect(src.slice(at, at + 1200)).toContain("CASE_NOTES[caseKey]");
+  });
+
+  it("the table, the per-name table and the disclosures read the selected case", () => {
+    anchorIndex(src, "result.cases[caseKey]");
+    anchorIndex(src, "p.cases[caseKey]");
+    // Only the chart reads both cases, through the helper.
+    expect(body).not.toMatch(/\.cases\.(measured|selloff)\b/);
+    expect(body).not.toMatch(/cases\[["'](measured|selloff)["']\]/);
+  });
+
+  it("the chart gets both cases and the selected one, with the gap sentence under it", () => {
+    const at = anchorIndex(src, "<GainsAtRiskChart");
+    const block = src.slice(at, at + 200);
+    expect(block).toContain("cases={result.cases}");
+    expect(block).toContain("selectedCase={caseKey}");
+    anchorIndex(src, "CHART_GAP_NOTE");
+  });
+
+  it("the figure box is a plain number input, bounded, keyed by the name's identity", () => {
+    const at = anchorIndex(src, "id={`gains-beta-${");
+    const open = src.lastIndexOf("<input", at);
+    const close = src.indexOf("/>", at);
+    expect(open).toBeGreaterThan(-1);
+    const tag = src.slice(open, close);
+    expect(tag).toContain('type="number"');
+    expect(tag).toContain("min={BETA_OVERRIDE_BOUNDS.min}");
+    expect(tag).toContain("max={BETA_OVERRIDE_BOUNDS.max}");
+    expect(tag).toContain("onBlur=");
+    expect(tag).toContain("onKeyDown={onEnterBlur}");
+    expect(src.slice(open - 400, close)).not.toContain("PrivateNumberInput");
+    anchorIndex(src, "betaEditorOwners(positions)");
+    anchorIndex(src, "SAME_FIGURE_TEXT");
+    anchorIndex(src, "onBetaCommit(p.identitySecurityId)");
+    anchorIndex(src, "onBetaClear(p.identitySecurityId)");
+  });
+
+  it("the figures are sent keyed by identity, and left out when there are none", () => {
+    anchorIndex(src, "Object.keys(next.betaOverrides).length > 0 ? { betaOverrides: next.betaOverrides } : {}");
+    anchorIndex(src, "betaOverrideProblem(");
+    anchorIndex(src, "BETA_OVERRIDE_REFUSAL_LABELS[");
+    anchorIndex(src, "overridesIgnoredText(result.betaOverridesIgnored)");
+    anchorIndex(src, "LEVERAGED_FIGURE_HINT");
+  });
+
+  it("the evidence caption and the no-measured-link line", () => {
+    anchorIndex(src, "betaEvidenceCaption(result.betaEvidence, driver)");
+    anchorIndex(src, "noMeasuredLinkSentence(");
+    anchorIndex(src, "betaSourceLine(p, caseKey)");
+  });
+});
+
 describe("no portfolio number is printed outside the privacy components", () => {
   const MONEY_FIELDS = [
     "bookPnlUsd",
@@ -180,9 +250,8 @@ describe("no portfolio number is printed outside the privacy components", () => 
       expect(src).not.toMatch(/toLocaleString\(|Intl\.NumberFormat/);
       if (file === VIEW) {
         expect(src).not.toMatch(/\bformat(USD|CompactUSD|LargeUSD|Percent)\(/);
-        // The one toFixed prints a beta, a model input, not a portfolio figure.
-        const fixed = [...src.matchAll(/([\w.?]+)\.toFixed\(/g)].map((m) => m[1]);
-        expect(fixed).toEqual(["p.assumedMovePerUnitDriver"]);
+        // A beta prints through formatBeta in the helper module; the view formats nothing itself.
+        expect(src).not.toMatch(/\.toFixed\(/);
       }
     });
   }
@@ -207,14 +276,18 @@ describe("GainsAtRiskChart", () => {
   });
 
   it("plots only the sweep, on a numeric move axis", () => {
-    anchorIndex(src, "chartRows(rows)");
+    anchorIndex(src, "chartRows(cases, selectedCase)");
     expect(src).toMatch(/dataKey="move"\s+type="number"/);
     expect(src).not.toContain('type="category"');
   });
 
-  it("the second line is the positions that lose (executable code, not a comment)", () => {
-    expect(code(read(HELPERS))).toContain("without: r.losersPnlUsd");
-    expect(code(src)).toContain('dataKey="without"');
+  it("both book lines, and the selected case's positions that lose (executable code, not a comment)", () => {
+    const helpers = code(read(HELPERS));
+    expect(helpers).toContain("measured: m.bookPnlUsd, selloff: s.bookPnlUsd, without: sel.losersPnlUsd");
+    expect(helpers).toContain('const sel = selected === "measured" ? m : s;');
+    for (const key of ["measured", "selloff", "without"]) expect(code(src)).toContain(`dataKey="${key}"`);
+    // The invisible gain-kept series rides on the selected case's book line.
+    anchorIndex(src, "gainKeptShare(p[selectedCase], yearGain)");
   });
 });
 
@@ -235,6 +308,8 @@ describe("the browser bundle reaches no database or engine code through these fi
   };
 
   const valueImports = (src: string): string[] => {
+    // A dynamic import or a require would escape the walk: refuse them outright.
+    expect(src).not.toMatch(/\bimport\s*\(|\brequire\s*\(/);
     const out: string[] = [];
     for (const m of src.matchAll(/^(?:import|export)\s+([^;]*?)\s+from\s+["']([^"']+)["']/gm)) {
       const clause = m[1].trim();
@@ -251,7 +326,7 @@ describe("the browser bundle reaches no database or engine code through these fi
     return out;
   };
 
-  it("no lib/db, lib/queries, lib/compute or better-sqlite3 as a value", () => {
+  it("no lib/db, lib/queries, lib/compute, lib/tws, better-sqlite3 or the broker SDK as a value", () => {
     const seen = new Set<string>();
     const reached: string[] = [];
     const packages = new Set<string>();
@@ -267,9 +342,9 @@ describe("the browser bundle reaches no database or engine code through these fi
         else if (!spec.startsWith(".") && !spec.startsWith("@/")) packages.add(spec);
       }
     }
-    expect(reached.filter((p) => /^lib\/(db|queries|compute)(\/|\.ts)/.test(p) || p === "lib/db.ts")).toEqual([]);
-    expect([...packages].filter((p) => p === "better-sqlite3")).toEqual([]);
-    expect(reached).toContain("lib/analysis/gains-at-risk-input.ts");
+    expect(reached.filter((p) => /^lib\/(db|queries|compute|tws)(\/|\.ts)/.test(p) || p === "lib/db.ts")).toEqual([]);
+    expect([...packages].filter((p) => p === "better-sqlite3" || p.startsWith("@stoqey/"))).toEqual([]);
+    for (const f of [VIEW, CHART, HELPERS, INPUT, CONSTANTS]) expect(reached).toContain(f);
   });
 });
 
@@ -280,6 +355,9 @@ describe("the page's words", () => {
     });
   }
   for (const file of [SECTION, VIEW, CHART, HELPERS]) {
+    it(`${file}: no beta is called estimated any more`, () => {
+      for (const t of copyOf(code(read(file)))) expect(t).not.toMatch(/estimat/i);
+    });
     it(`${file}: no plan-step wording on screen`, () => {
       for (const t of copyOf(code(read(file)))) expect(t).not.toMatch(/\bstep\s*\d/i);
     });

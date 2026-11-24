@@ -19,28 +19,43 @@ import {
   type GainsAtRiskResponse,
 } from "@/lib/analysis/gains-at-risk-input";
 import type { AnalysisScope } from "@/lib/analysis/view-param";
+import { BETA_OVERRIDE_BOUNDS } from "@/lib/analysis/gains-at-risk-constants";
 import {
-  BETA_SOURCE_LABELS,
+  BETA_OVERRIDE_REFUSAL_LABELS,
   BOOK_GAINS_TEXT,
+  CASE_KEYS,
+  CASE_LABELS,
+  CASE_NOTES,
+  CHART_GAP_NOTE,
   COLUMN_LABELS,
+  DEFAULT_CASE,
   DOWN_ONLY_NOTE,
-  NOT_MODELLED_LABELS,
+  LEVERAGED_FIGURE_HINT,
   OVERRIDE_REFUSAL_LABELS,
   PRICE_SOURCE_LABELS,
+  SAME_FIGURE_TEXT,
   SAME_PRICE_TEXT,
   TABLE_MOVES,
   UNDER_TENTH_TEXT,
   YEAR_GAIN_LABEL,
   ZERO_ROW_NOTE,
+  betaEditorOwners,
+  betaEvidenceCaption,
+  betaOverrideProblem,
+  betaSourceLine,
   customMoveProblem,
   defaultSweep,
   disclosureSentences,
   disclosureShare,
+  formatBeta,
   formatDriverMove,
   gainGivenBackShare,
   gainsRequestReducer,
   givenBackCell,
   initialGainsRequestState,
+  isLeveragedFundRow,
+  noMeasuredLinkSentence,
+  overridesIgnoredText,
   priceBoxOwners,
   reconciliationLine,
   requestFailureText,
@@ -52,7 +67,12 @@ import {
   type GainsControls,
 } from "@/lib/analysis/gains-at-risk-view";
 // Types only: no engine or query code reaches the browser.
-import type { GainsAtRiskPosition, GainsAtRiskResult } from "@/lib/compute/gains-at-risk";
+import type {
+  GainsAtRiskBetaOverrideRefusal,
+  GainsAtRiskCaseKey,
+  GainsAtRiskPosition,
+  GainsAtRiskResult,
+} from "@/lib/compute/gains-at-risk";
 import { Chip, type ChipTone } from "../Chip";
 import { CHIP_TONE_TEXT } from "../chip-tone-text";
 import { EmptySection } from "../EmptySection";
@@ -143,6 +163,7 @@ export function GainsAtRiskView({
     volChangePoints: initialInputs.volChangePoints,
     custom: null,
     priceOverrides: {},
+    betaOverrides: {},
   }));
   // The latest controls, for the refresh effect below (it must not read a stale closure).
   const controlsRef = useRef(controls);
@@ -153,6 +174,11 @@ export function GainsAtRiskView({
   const [selectedMove, setSelectedMove] = useState(initialInputs.selectedMove);
   const [overrideDrafts, setOverrideDrafts] = useState<Record<number, string>>({});
   const [overrideProblems, setOverrideProblems] = useState<Record<number, string>>({});
+  // The case on screen: both are in every answer, so switching asks nothing of the server.
+  const [caseKey, setCaseKey] = useState<GainsAtRiskCaseKey>(DEFAULT_CASE);
+  // The owner's figure per name, keyed by identitySecurityId (C6).
+  const [betaDrafts, setBetaDrafts] = useState<Record<number, string>>({});
+  const [betaProblems, setBetaProblems] = useState<Record<number, string>>({});
 
   async function run(next: GainsControls) {
     controlsRef.current = next;
@@ -171,6 +197,8 @@ export function GainsAtRiskView({
       moves: requestMoves(defaultSweep(), next.custom),
       volChangePoints: next.volChangePoints,
       ...(Object.keys(next.priceOverrides).length > 0 ? { priceOverrides: next.priceOverrides } : {}),
+      // Left out when there are none: the route refuses an explicit null.
+      ...(Object.keys(next.betaOverrides).length > 0 ? { betaOverrides: next.betaOverrides } : {}),
     };
     try {
       const res = await apiFetch("/api/compute/gains-at-risk", {
@@ -255,6 +283,30 @@ export function GainsAtRiskView({
     setOverrideProblems((p) => withoutKey(p, securityId));
     if (!Object.prototype.hasOwnProperty.call(controls.priceOverrides, securityId)) return;
     void run({ ...controls, priceOverrides: withoutKey(controls.priceOverrides, securityId) });
+  }
+
+  function commitBeta(identityId: number) {
+    const text = (betaDrafts[identityId] ?? "").trim();
+    if (text === "") {
+      clearBeta(identityId);
+      return;
+    }
+    const problem = betaOverrideProblem(text);
+    if (problem) {
+      setBetaProblems((p) => ({ ...p, [identityId]: problem }));
+      return;
+    }
+    setBetaProblems((p) => withoutKey(p, identityId));
+    const v = Number(text);
+    if (controls.betaOverrides[identityId] === v) return;
+    void run({ ...controls, betaOverrides: { ...controls.betaOverrides, [identityId]: v } });
+  }
+
+  function clearBeta(identityId: number) {
+    setBetaDrafts((d) => withoutKey(d, identityId));
+    setBetaProblems((p) => withoutKey(p, identityId));
+    if (!Object.prototype.hasOwnProperty.call(controls.betaOverrides, identityId)) return;
+    void run({ ...controls, betaOverrides: withoutKey(controls.betaOverrides, identityId) });
   }
 
   // The figures shown: the answer to the controls, or the last answer kept
@@ -389,6 +441,25 @@ export function GainsAtRiskView({
           </label>
         </div>
         <p className="text-xs text-ink-faint">{DOWN_ONLY_NOTE}</p>
+        <div className="space-y-1">
+          <span className="block text-xs text-ink-faint">Case</span>
+          <div className="flex items-center gap-1 rounded-lg bg-raised border border-edge p-0.5 w-fit" role="group" aria-label="Case">
+            {CASE_KEYS.map((k) => (
+              <button
+                key={k}
+                type="button"
+                aria-pressed={caseKey === k}
+                onClick={() => setCaseKey(k)}
+                className={`px-3 py-1.5 rounded-md text-xs font-medium whitespace-nowrap transition-colors ${
+                  caseKey === k ? "bg-panel text-ink shadow-sm" : "text-ink-dim hover:text-ink"
+                }`}
+              >
+                {CASE_LABELS[k]}
+              </button>
+            ))}
+          </div>
+          <p className="text-xs text-ink-dim">{CASE_NOTES[caseKey]}</p>
+        </div>
       </section>
 
       <ResultSections
@@ -396,6 +467,7 @@ export function GainsAtRiskView({
         response={display}
         mode={mode}
         error={state.error}
+        caseKey={caseKey}
         scopeHasAccounts={scopeHasAccounts}
         today={today}
         custom={controls.custom}
@@ -411,6 +483,12 @@ export function GainsAtRiskView({
         onOverrideCommit={commitOverride}
         onOverrideClear={clearOverride}
         priceOverrides={controls.priceOverrides}
+        betaDrafts={betaDrafts}
+        betaProblems={betaProblems}
+        onBetaDraft={(id, v) => setBetaDrafts((d) => ({ ...d, [id]: v }))}
+        onBetaCommit={commitBeta}
+        onBetaClear={clearBeta}
+        betaOverrides={controls.betaOverrides}
       />
     </div>
   );
@@ -421,6 +499,7 @@ function ResultSections({
   response,
   mode,
   error,
+  caseKey,
   scopeHasAccounts,
   today,
   custom,
@@ -436,11 +515,18 @@ function ResultSections({
   onOverrideCommit,
   onOverrideClear,
   priceOverrides,
+  betaDrafts,
+  betaProblems,
+  onBetaDraft,
+  onBetaCommit,
+  onBetaClear,
+  betaOverrides,
 }: {
   result: GainsAtRiskResult;
   response: GainsAtRiskResponse;
   mode: FigureMode;
   error: string | null;
+  caseKey: GainsAtRiskCaseKey;
   scopeHasAccounts: boolean;
   today: string;
   custom: number | null;
@@ -456,6 +542,12 @@ function ResultSections({
   onOverrideCommit: (id: number) => void;
   onOverrideClear: (id: number) => void;
   priceOverrides: Record<number, number>;
+  betaDrafts: Record<number, string>;
+  betaProblems: Record<number, string>;
+  onBetaDraft: (identityId: number, v: string) => void;
+  onBetaCommit: (identityId: number) => void;
+  onBetaClear: (identityId: number) => void;
+  betaOverrides: Record<number, number>;
 }) {
   const scopeCell = scopeFreshnessCell(response.scopeFreshness, scopeHasAccounts);
   // After a failure no figure is shown; while computing, the old ones are dimmed.
@@ -492,20 +584,34 @@ function ResultSections({
   }
 
   const yearGain = response.yearGain;
-  const rowAt = (move: number) => result.moves.find((r) => sameMove(r.move, move)) ?? null;
-  const shareShown = result.moves.some((r) => gainGivenBackShare(r.bookPnlUsd, yearGain) !== null);
+  // The table, the per-name table and the disclosures follow the case on screen.
+  const selected = result.cases[caseKey];
+  const rowAt = (move: number) => selected.moves.find((r) => sameMove(r.move, move)) ?? null;
+  const shareShown = selected.moves.some((r) => gainGivenBackShare(r.bookPnlUsd, yearGain) !== null);
   const laterDate = result.valuationDate > today;
   const tableMoves: number[] = [...TABLE_MOVES];
   const customExtra = custom !== null && !tableMoves.some((m) => sameMove(m, custom));
-  const selectedIdx = result.moves.findIndex((r) => sameMove(r.move, selectedMove));
+  const selectedIdx = selected.moves.findIndex((r) => sameMove(r.move, selectedMove));
   const driver = result.driverSymbol;
+  const caseOf = (p: GainsAtRiskPosition) => p.cases[caseKey];
 
   const positions = [...result.positions].sort((a, b) => {
-    const pa = selectedIdx >= 0 ? Math.abs(a.pnlByMove[selectedIdx] ?? 0) : 0;
-    const pb = selectedIdx >= 0 ? Math.abs(b.pnlByMove[selectedIdx] ?? 0) : 0;
+    const pa = selectedIdx >= 0 ? Math.abs(caseOf(a).pnlByMove[selectedIdx] ?? 0) : 0;
+    const pb = selectedIdx >= 0 ? Math.abs(caseOf(b).pnlByMove[selectedIdx] ?? 0) : 0;
     return pb - pa || a.symbol.localeCompare(b.symbol) || a.accountName.localeCompare(b.accountName);
   });
   const boxOwners = priceBoxOwners(positions);
+  const editorOwners = betaEditorOwners(positions);
+  // A refusal of the owner's figure belongs to the name: shown beside its one box.
+  const betaRefusals = new Map<number, GainsAtRiskBetaOverrideRefusal>();
+  for (const p of positions) {
+    if (p.identitySecurityId !== null && p.betaOverrideRefusal && !betaRefusals.has(p.identitySecurityId)) {
+      betaRefusals.set(p.identitySecurityId, p.betaOverrideRefusal);
+    }
+  }
+  const caption = betaEvidenceCaption(result.betaEvidence, driver);
+  const ignored = overridesIgnoredText(result.betaOverridesIgnored);
+  const noLink = noMeasuredLinkSentence(selected.disclosures.noMeasuredLink, caseKey);
 
   return (
     <>
@@ -524,9 +630,10 @@ function ResultSections({
         {statusLine}
         {!failed && (
           <div className={dim}>
-            <GainsAtRiskChart rows={result.moves} driverSymbol={driver} yearGain={yearGain} />
+            <GainsAtRiskChart cases={result.cases} selectedCase={caseKey} driverSymbol={driver} yearGain={yearGain} />
           </div>
         )}
+        <p className="text-xs text-ink-faint">{CHART_GAP_NOTE}</p>
       </section>
 
       {/* ── Table: fixed rows and a custom row ── */}
@@ -618,12 +725,24 @@ function ResultSections({
       {/* ── Per name ── */}
       <section className="bg-panel rounded-xl p-4 sm:p-5 card-elev space-y-3" aria-label="What moves the result" aria-busy={mode === "stale"}>
         <h3 className="text-sm font-medium text-ink whitespace-nowrap!">
-          What moves the result{selectedIdx >= 0 ? ` at ${formatDriverMove(result.moves[selectedIdx].move)}` : ""}
+          What moves the result{selectedIdx >= 0 ? ` at ${formatDriverMove(selected.moves[selectedIdx].move)}` : ""}
         </h3>
         <p className="text-xs text-ink-faint">
           Each name moves by its beta times the index&apos;s move. In a real fall a name can move more than that, or alone.
           Pick a row above to see that move.
         </p>
+        {!failed && (
+          <p className={`text-xs text-ink-faint ${dim}`}>
+            {caption.text}
+            {caption.waiting && (
+              <>
+                {" "}
+                <Count value={caption.waiting.count} /> {caption.waiting.text}
+              </>
+            )}
+          </p>
+        )}
+        {mode === "fresh" && ignored && <p className={`text-xs ${CHIP_TONE_TEXT.warn}`}>{ignored}</p>}
         <ScrollFade>
           <table className="w-full text-sm">
             <thead>
@@ -631,7 +750,8 @@ function ResultSections({
                 <th className="font-normal py-1 pr-3 whitespace-nowrap">Account</th>
                 <th className="font-normal py-1 pr-3 whitespace-nowrap">Name</th>
                 <th className="font-normal py-1 pr-3 whitespace-nowrap text-right">Beta to {driver}</th>
-                <th className="font-normal py-1 pr-3 whitespace-nowrap">Beta source</th>
+                <th className="font-normal py-1 pr-3 whitespace-nowrap">Where it comes from</th>
+                <th className="font-normal py-1 pr-3 whitespace-nowrap">Your figure</th>
                 <th className="font-normal py-1 pr-3 whitespace-nowrap">Price</th>
                 <th className="font-normal py-1 whitespace-nowrap text-right">Profit or loss</th>
               </tr>
@@ -644,7 +764,9 @@ function ResultSections({
                     key={key}
                     p={p}
                     mode={mode}
-                    pnl={selectedIdx >= 0 ? fig(p.pnlByMove[selectedIdx]) : null}
+                    caseKey={caseKey}
+                    driver={driver}
+                    pnl={selectedIdx >= 0 ? fig(p.cases[caseKey].pnlByMove[selectedIdx]) : null}
                     ownsBox={boxOwners.has(key)}
                     draft={overrideDrafts[p.securityId]}
                     problem={overrideProblems[p.securityId] ?? null}
@@ -652,6 +774,23 @@ function ResultSections({
                     onDraft={(v) => onOverrideDraft(p.securityId, v)}
                     onCommit={() => onOverrideCommit(p.securityId)}
                     onClear={() => onOverrideClear(p.securityId)}
+                    ownsEditor={editorOwners.has(key)}
+                    betaDraft={p.identitySecurityId !== null ? betaDrafts[p.identitySecurityId] : undefined}
+                    betaProblem={p.identitySecurityId !== null ? (betaProblems[p.identitySecurityId] ?? null) : null}
+                    betaRefusal={p.identitySecurityId !== null ? (betaRefusals.get(p.identitySecurityId) ?? null) : null}
+                    hasBeta={
+                      p.identitySecurityId !== null &&
+                      Object.prototype.hasOwnProperty.call(betaOverrides, p.identitySecurityId)
+                    }
+                    onBetaDraft={(v) => {
+                      if (p.identitySecurityId !== null) onBetaDraft(p.identitySecurityId, v);
+                    }}
+                    onBetaCommit={() => {
+                      if (p.identitySecurityId !== null) onBetaCommit(p.identitySecurityId);
+                    }}
+                    onBetaClear={() => {
+                      if (p.identitySecurityId !== null) onBetaClear(p.identitySecurityId);
+                    }}
                   />
                 );
               })}
@@ -665,7 +804,7 @@ function ResultSections({
         className={`bg-panel rounded-xl p-4 sm:p-5 card-elev space-y-1.5 ${dim}`}
         aria-label="What the figures leave out"
       >
-        {disclosureSentences(result.disclosures).map((d) => {
+        {disclosureSentences(selected.disclosures).map((d) => {
           const share = disclosureShare(d);
           return (
             <p key={d.key} className="text-xs text-ink-dim">
@@ -677,6 +816,18 @@ function ResultSections({
                 </>
               )}
               {!failed && d.count > 0 && share.kind === "not-known" && <>{" · "}share not known</>}
+              {!failed && d.key === "noMeasuredLink" && d.count > 0 && (
+                <>
+                  {" · "}
+                  {noLink.treatment}
+                  {noLink.reasons.map((r) => (
+                    <span key={r.key}>
+                      {" · "}
+                      {r.text} (<Count value={r.count} />)
+                    </span>
+                  ))}
+                </>
+              )}
               {!failed && d.unknownValueCount > 0 && (
                 <>
                   {" · "}
@@ -695,6 +846,8 @@ function ResultSections({
 function PositionRow({
   p,
   mode,
+  caseKey,
+  driver,
   pnl,
   ownsBox,
   draft,
@@ -703,9 +856,19 @@ function PositionRow({
   onDraft,
   onCommit,
   onClear,
+  ownsEditor,
+  betaDraft,
+  betaProblem,
+  betaRefusal,
+  hasBeta,
+  onBetaDraft,
+  onBetaCommit,
+  onBetaClear,
 }: {
   p: GainsAtRiskPosition;
   mode: FigureMode;
+  caseKey: GainsAtRiskCaseKey;
+  driver: string;
   pnl: number | null;
   ownsBox: boolean;
   draft: string | undefined;
@@ -714,18 +877,29 @@ function PositionRow({
   onDraft: (v: string) => void;
   onCommit: () => void;
   onClear: () => void;
+  ownsEditor: boolean;
+  betaDraft: string | undefined;
+  betaProblem: string | null;
+  betaRefusal: GainsAtRiskBetaOverrideRefusal | null;
+  hasBeta: boolean;
+  onBetaDraft: (v: string) => void;
+  onBetaCommit: () => void;
+  onBetaClear: () => void;
 }) {
   const editable = p.priceSource === "model" || p.priceSource === "override";
   const isOption = p.expiry !== undefined;
   // Figures and the engine's verdicts belong to the answer; dim or blank them with it.
   const dim = mode === "stale" ? "opacity-40" : "";
   const showFigures = mode !== "failed";
+  // This case's beta, side and source; the not-modelled reason is read first (betaSourceLine).
+  const pc = p.cases[caseKey];
+  const source = betaSourceLine(p, caseKey);
   return (
     <tr className="border-t border-edge align-top">
       <td className="py-1.5 pr-3 text-ink-faint whitespace-nowrap">{p.accountName}</td>
       <td className="py-1.5 pr-3">
         <span className="font-mono text-ink">{p.symbol}</span>
-        {p.side === "offsets" && (
+        {pc.side === "offsets" && (
           <Chip tone="info" size="xs" className="ml-1.5">
             offsetting
           </Chip>
@@ -733,13 +907,58 @@ function PositionRow({
         {p.expiresBeforeDate && <span className="block text-[11px] text-ink-faint">expires before the date</span>}
       </td>
       <td className={`py-1.5 pr-3 text-right tabular-nums text-ink-dim whitespace-nowrap ${dim}`}>
-        {p.assumedMovePerUnitDriver === null ? "—" : p.assumedMovePerUnitDriver.toFixed(2)}
-        {isOption && p.assumedMovePerUnitDriver !== null ? " (underlying)" : ""}
+        {formatBeta(pc.beta)}
+        {isOption && pc.beta !== null ? " (underlying)" : ""}
       </td>
-      <td className={`py-1.5 pr-3 text-ink-dim ${dim}`}>
-        {BETA_SOURCE_LABELS[p.betaSource]}
-        {p.unmodelledReason && (
-          <span className="block text-[11px] text-ink-faint">{NOT_MODELLED_LABELS[p.unmodelledReason]}</span>
+      <td className={`py-1.5 pr-3 text-ink-dim min-w-40 ${dim}`}>
+        {source.text}
+        {source.details.map((d) => (
+          <span key={d} className="block text-[11px] text-ink-faint">
+            {d}
+          </span>
+        ))}
+      </td>
+      <td className="py-1.5 pr-3 text-ink-dim">
+        {ownsEditor && p.identitySecurityId !== null && (
+          <span className="flex flex-wrap items-center gap-1.5">
+            <label className="sr-only" htmlFor={`gains-beta-${p.identitySecurityId}`}>
+              Your figure for {p.symbol}: how it moves per 1% of {driver}
+            </label>
+            {/* A beta is not a portfolio figure: a plain number box, not masked. */}
+            <input
+              id={`gains-beta-${p.identitySecurityId}`}
+              type="number"
+              inputMode="decimal"
+              step={0.05}
+              min={BETA_OVERRIDE_BOUNDS.min}
+              max={BETA_OVERRIDE_BOUNDS.max}
+              placeholder="your figure"
+              value={betaDraft ?? ""}
+              onChange={(e) => onBetaDraft(e.target.value)}
+              onBlur={onBetaCommit}
+              onKeyDown={onEnterBlur}
+              className="w-24 px-2 py-1 rounded-md border border-edge bg-raised text-sm text-ink tabular-nums"
+            />
+            {(hasBeta || (betaDraft ?? "") !== "") && (
+              <button
+                type="button"
+                onClick={onBetaClear}
+                className="px-2 py-1 rounded-md border border-edge text-xs text-ink-dim hover:text-ink"
+              >
+                Clear
+              </button>
+            )}
+          </span>
+        )}
+        {!ownsEditor && p.identitySecurityId !== null && (
+          <span className="block text-[11px] text-ink-faint">{SAME_FIGURE_TEXT}</span>
+        )}
+        {ownsEditor && isLeveragedFundRow(p) && (
+          <span className="block text-[11px] text-ink-faint max-w-56">{LEVERAGED_FIGURE_HINT}</span>
+        )}
+        {ownsEditor && betaProblem && <span className={`block text-[11px] ${CHIP_TONE_TEXT.down}`}>{betaProblem}</span>}
+        {ownsEditor && mode === "fresh" && betaRefusal && (
+          <span className={`block text-[11px] max-w-56 ${CHIP_TONE_TEXT.warn}`}>{BETA_OVERRIDE_REFUSAL_LABELS[betaRefusal]}</span>
         )}
       </td>
       <td className="py-1.5 pr-3 text-ink-dim">

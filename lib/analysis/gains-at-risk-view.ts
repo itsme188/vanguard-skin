@@ -9,6 +9,16 @@
  * and falls, the custom row takes zero or a fall, and the chart may run to a
  * small rise with its second line still on the engine's down split. No
  * on-screen copy names a plan step.
+ *
+ * Two cases (addendum rulings B4, B6, C5, C6, C13): "Measured" (each name at
+ * its beta measured from daily closes; a name with no measured link held
+ * unchanged) and "Selloff case" (an ASSUMPTION: every stock and fund falls at
+ * least one-for-one). The owner's own figure per name wins in both. A row's
+ * `unmodelledReason` is read BEFORE its `betaSource` everywhere here.
+ *
+ * Client boundary (C12): this module and the client files value-import
+ * nothing from lib/compute, lib/queries, lib/db or lib/tws (the engine pulls a
+ * broker SDK through a type map). Engine types come in as `import type` only.
  */
 
 import {
@@ -16,15 +26,26 @@ import {
   type GainsAtRiskDriver,
   type GainsAtRiskResponse,
 } from "@/lib/analysis/gains-at-risk-input";
-import { positionsFreshnessCell, type PositionsFreshnessCell } from "@/lib/ui/positions-freshness-label";
+import { BETA_OVERRIDE_BOUNDS } from "@/lib/analysis/gains-at-risk-constants";
+import {
+  formatPositionsDate,
+  positionsFreshnessCell,
+  type PositionsFreshnessCell,
+} from "@/lib/ui/positions-freshness-label";
 // Type only: erased at build, so no engine or query code reaches the client bundle.
 import type {
+  GainsAtRiskBetaOverrideRefusal,
+  GainsAtRiskBetaSource,
+  GainsAtRiskCase,
+  GainsAtRiskCaseKey,
   GainsAtRiskDisclosure,
   GainsAtRiskOverrideRefusal,
   GainsAtRiskPosition,
   GainsAtRiskResult,
   GainsAtRiskUnmodelled,
 } from "@/lib/compute/gains-at-risk";
+import type { DriverBetaRefusal } from "@/lib/compute/driver-beta";
+import type { NoMeasuredLinkReason } from "@/lib/compute/security-regression";
 import type { YearGainReconciliationReason, YearGainResult } from "@/lib/compute/year-gain";
 import type { PositionsFreshness } from "@/lib/queries/positions-freshness";
 
@@ -223,6 +244,13 @@ export function yearGainNote(g: YearGainResult): string | null {
  * through unchanged.
  */
 export function domainProblemText(message: string): string {
+  const betaMax = /^betaOverrides can hold at most (\d+) entries\.$/.exec(message);
+  if (betaMax) return `At most ${betaMax[1]} of your figures can be sent at once.`;
+  if (message.startsWith("betaOverrides values must each be ")) {
+    return `Your figures must each be ${message.slice("betaOverrides values must each be ".length)}`;
+  }
+  if (message.startsWith("betaOverrides keys")) return "A figure you typed is not tied to a name on this page.";
+  if (message.startsWith("betaOverrides must be")) return "Your figures could not be read.";
   const overrides = /^priceOverrides can hold at most (\d+) entries\.$/.exec(message);
   if (overrides) return `At most ${overrides[1]} typed prices can be sent at once.`;
   if (message === "priceOverrides values must be numbers.") return "Typed prices must be numbers.";
@@ -250,7 +278,31 @@ export const COLUMN_LABELS = {
   givenBack: "Gain given back",
 } as const;
 
-export const LINE_LABELS = { book: "book", without: "without the offsetting positions" } as const;
+// ─── The two cases ──────────────────────────────────────────────
+
+/** The two cases, in display order; Measured is the default (B6). */
+export const CASE_KEYS: readonly GainsAtRiskCaseKey[] = Object.freeze(["measured", "selloff"]);
+export const DEFAULT_CASE: GainsAtRiskCaseKey = "measured";
+export const CASE_LABELS = { measured: "Measured", selloff: "Selloff case" } as const;
+
+export const MEASURED_NOTE =
+  "Each name moves by its measured link to the index. A name with no measured link is held unchanged and listed below.";
+/** The selloff case is an assumption on every surface (addendum constraint). */
+export const SELLOFF_NOTE =
+  "An assumption, not a measurement: every stock and fund falls at least one-for-one with the index.";
+export const CASE_NOTES: Record<GainsAtRiskCaseKey, string> = { measured: MEASURED_NOTE, selloff: SELLOFF_NOTE };
+
+/** Under the chart: the gap between the two book lines is the point of the page. */
+export const CHART_GAP_NOTE = "The gap between the two lines is how much of the result rests on names falling together.";
+
+/** The legend: both book lines, and the line without offsetting positions for the selected case. */
+export function chartLineLabels(selected: GainsAtRiskCaseKey): { measured: string; selloff: string; without: string } {
+  return {
+    measured: "book, measured",
+    selloff: "book, selloff case (an assumption)",
+    without: `without the offsetting positions, ${selected === "measured" ? "measured" : "selloff case"}`,
+  };
+}
 
 /** The 0% row at a later date is not zero: options lose time value by then. */
 export const ZERO_ROW_NOTE = "With no move, this is what time alone does to the options by that date.";
@@ -261,9 +313,7 @@ export const DOWN_ONLY_NOTE =
 export const NOT_MODELLED_LABELS: Record<GainsAtRiskUnmodelled, string> = {
   "leveraged-no-factor": "leveraged or inverse fund with no stored leverage factor",
   "leveraged-no-tracked-index": "leveraged or inverse fund whose tracked index is not known",
-  "tracked-index-not-measured": "the fund's tracked index has too little price history against this index",
-  "no-driver-conversion": "no beta to this index, and the index's own market beta could not be measured to convert one",
-  "no-heuristic-beta": "no measured beta and no estimate could be made",
+  "tracked-index-not-measured": "the fund's tracked index has no measured link to this index",
   "no-option-terms": "option terms (strike, expiry or type) are missing",
   expired: "the option has expired",
   "no-option-price": "the option has no price",
@@ -273,17 +323,208 @@ export const NOT_MODELLED_LABELS: Record<GainsAtRiskUnmodelled, string> = {
   "no-fx-rate": "no exchange rate to dollars",
 };
 
-export type BetaSourceKey = GainsAtRiskPosition["betaSource"];
-
-export const BETA_SOURCE_LABELS: Record<BetaSourceKey, string> = {
+export const BETA_SOURCE_LABELS: Record<GainsAtRiskBetaSource, string> = {
   driver: "the index itself",
-  measured: "measured against the index",
-  "market-converted": "measured against SPY, converted (estimated)",
-  estimated: "estimated, not measured",
   fixed: "set by type (cash or bonds)",
   leveraged: "leverage times its tracked index",
+  measured: "measured from daily closes",
+  owner: "your figure",
+  "no-measured-link": "no measured link",
   "not-modelled": "not modelled",
 };
+
+/** Why a name has no measured link (C13), in plain words. */
+export const NO_MEASURED_LINK_REASON_LABELS: Record<NoMeasuredLinkReason, string> = {
+  "no-daily-bars": "no daily prices yet",
+  "short-history": "too few days of daily prices",
+  "low-fit": "its daily moves follow the index too loosely",
+  "foreign-session": "not traded on the US session",
+  "driver-bars-missing": "the index's own daily prices are missing",
+  "flat-driver": "the index did not move",
+};
+
+/** Display order of the reasons on the disclosure line. */
+const NO_MEASURED_LINK_REASON_ORDER: NoMeasuredLinkReason[] = [
+  "no-daily-bars",
+  "short-history",
+  "low-fit",
+  "foreign-session",
+  "driver-bars-missing",
+  "flat-driver",
+];
+
+/** Added to a row's source when the selloff case raised its beta to one-for-one. */
+export const SELLOFF_RAISED_TEXT = "The selloff case uses at least one-for-one.";
+
+/** A beta to two places. Not a portfolio figure, so plain text. */
+export function formatBeta(beta: number | null): string {
+  return beta === null || !Number.isFinite(beta) ? "—" : beta.toFixed(2);
+}
+
+function isOptionRow(p: Pick<GainsAtRiskPosition, "expiry">): boolean {
+  return p.expiry !== undefined;
+}
+
+function evidenceText(e: NonNullable<GainsAtRiskPosition["evidence"]>): string {
+  return e.lastDate ? `${e.pairs} daily pairs through ${formatPositionsDate(e.lastDate)}` : `${e.pairs} daily pairs`;
+}
+
+export interface BetaSourceLine {
+  /** Where the selected case's beta comes from. */
+  text: string;
+  /** Short plain notes under it (evidence, what the case does). */
+  details: string[];
+}
+
+/**
+ * Where a row's beta comes from in the selected case. The not-modelled
+ * reason is checked FIRST: such a row may still carry evidence or a
+ * no-measured-link reason from its underlying, and none of it is a beta.
+ */
+export function betaSourceLine(p: GainsAtRiskPosition, caseKey: GainsAtRiskCaseKey): BetaSourceLine {
+  if (p.unmodelledReason !== undefined) {
+    return { text: BETA_SOURCE_LABELS["not-modelled"], details: [NOT_MODELLED_LABELS[p.unmodelledReason]] };
+  }
+  const caseBeta = p.cases[caseKey].beta;
+  const raised =
+    caseKey === "selloff" && p.measuredBeta !== null && caseBeta !== null && Math.abs(caseBeta - p.measuredBeta) > 1e-12;
+  switch (p.betaSource) {
+    case "owner": {
+      if (p.ladderRefusal !== undefined) {
+        return { text: `Your figure. The app could not model this fund: ${NOT_MODELLED_LABELS[p.ladderRefusal]}.`, details: [] };
+      }
+      const details: string[] = [];
+      if (p.evidence?.outcome === "measured" && p.measuredBeta !== null) {
+        details.push(`Measured ${formatBeta(p.measuredBeta)} from ${evidenceText(p.evidence)}.`);
+      } else if (p.noMeasuredLinkReason !== undefined) {
+        details.push(`No measured link: ${NO_MEASURED_LINK_REASON_LABELS[p.noMeasuredLinkReason]}.`);
+      }
+      return { text: BETA_SOURCE_LABELS.owner, details };
+    }
+    case "measured":
+      return {
+        text: BETA_SOURCE_LABELS.measured,
+        details: [...(p.evidence ? [evidenceText(p.evidence)] : []), ...(raised ? [SELLOFF_RAISED_TEXT] : [])],
+      };
+    case "leveraged":
+      return { text: BETA_SOURCE_LABELS.leveraged, details: raised ? [SELLOFF_RAISED_TEXT] : [] };
+    case "no-measured-link": {
+      const reason = p.noMeasuredLinkReason;
+      const text = reason
+        ? `${BETA_SOURCE_LABELS["no-measured-link"]}: ${NO_MEASURED_LINK_REASON_LABELS[reason]}`
+        : BETA_SOURCE_LABELS["no-measured-link"];
+      const held = caseBeta === 0;
+      const detail = held
+        ? isOptionRow(p)
+          ? "The underlying is held unchanged; the option still loses or gains time value."
+          : "Held unchanged."
+        : caseBeta === null
+          ? null
+          : "Taken one-for-one.";
+      return { text, details: detail ? [detail] : [] };
+    }
+    case "driver":
+    case "fixed":
+    case "not-modelled":
+      return { text: BETA_SOURCE_LABELS[p.betaSource], details: [] };
+  }
+}
+
+// ─── The owner's figure ─────────────────────────────────────────
+
+/** null for a usable figure (finite, within the bounds); otherwise one plain sentence. Blank is the caller's Clear. */
+export function betaOverrideProblem(raw: string): string | null {
+  const text = raw.trim();
+  const v = Number(text);
+  if (text === "" || !Number.isFinite(v)) {
+    return "Type how much the name moves per 1% of the index, as a number, for example 0.8.";
+  }
+  if (v < BETA_OVERRIDE_BOUNDS.min || v > BETA_OVERRIDE_BOUNDS.max) {
+    return `Your figure must be between ${BETA_OVERRIDE_BOUNDS.min} and ${BETA_OVERRIDE_BOUNDS.max}.`;
+  }
+  return null;
+}
+
+export const BETA_OVERRIDE_REFUSAL_LABELS: Record<GainsAtRiskBetaOverrideRefusal, string> = {
+  "fixed-row": "This is cash or a bond, so its move is set by type and your figure is not used.",
+  "is-driver": "This is the index itself, so it moves one-for-one and your figure is not used.",
+  "out-of-bounds": `Your figure must be between ${BETA_OVERRIDE_BOUNDS.min} and ${BETA_OVERRIDE_BOUNDS.max}, so it is not used.`,
+};
+
+export const SAME_FIGURE_TEXT = "same figure as above";
+
+export const LEVERAGED_FIGURE_HINT = "Type how the fund itself moves per 1% of the index, not its index's link.";
+
+const LEVERAGED_REFUSALS: readonly DriverBetaRefusal[] = [
+  "leveraged-no-factor",
+  "leveraged-no-tracked-index",
+  "tracked-index-not-measured",
+];
+
+/** A leveraged or inverse fund (or an option on one): modelled by its rule, or refused by it. */
+export function isLeveragedFundRow(
+  p: Pick<GainsAtRiskPosition, "betaSource" | "ladderRefusal" | "unmodelledReason">,
+): boolean {
+  // The not-modelled reason first: a refused leveraged fund says so there.
+  if (p.unmodelledReason !== undefined) return (LEVERAGED_REFUSALS as readonly string[]).includes(p.unmodelledReason);
+  return p.betaSource === "leveraged" || p.ladderRefusal !== undefined;
+}
+
+/**
+ * One editor per name (C6): the figure is keyed by `identitySecurityId`, so
+ * the first displayed row of each identity owns the box and every other row
+ * of it (another account, an option on it) reads "same figure as above". A
+ * row with no identity has no box. Returns the owning row keys
+ * (`account:security`), given the rows in display order.
+ */
+export function betaEditorOwners(
+  rows: Pick<GainsAtRiskPosition, "accountId" | "securityId" | "identitySecurityId">[],
+): Set<string> {
+  const seen = new Set<number>();
+  const owners = new Set<string>();
+  for (const r of rows) {
+    if (r.identitySecurityId === null || seen.has(r.identitySecurityId)) continue;
+    seen.add(r.identitySecurityId);
+    owners.add(`${r.accountId}:${r.securityId}`);
+  }
+  return owners;
+}
+
+/** One line when the engine used none of some typed figures; null when it used them all. */
+export function overridesIgnoredText(count: number): string | null {
+  if (!(count > 0)) return null;
+  return count === 1
+    ? "1 figure you typed was not used: no name on this page takes it."
+    : `${count} figures you typed were not used: no name on this page takes them.`;
+}
+
+// ─── The evidence caption ───────────────────────────────────────
+
+/**
+ * Which closes the betas come from and through what date (C13). The count
+ * of names waiting is a portfolio count, so it comes back apart from the
+ * text and the page prints it through <Count>.
+ */
+export function betaEvidenceCaption(
+  e: GainsAtRiskResult["betaEvidence"],
+  driver: string,
+): { text: string; waiting: { count: number; text: string } | null } {
+  if (e.driverBarsMissing) {
+    return {
+      text: `Daily prices for ${driver} are not on file yet, so no name has a measured link. The selloff case still applies.`,
+      waiting: null,
+    };
+  }
+  const text = e.driverBarsThrough
+    ? `Betas are measured from daily closing prices through ${formatPositionsDate(e.driverBarsThrough)}.`
+    : "Betas are measured from daily closing prices.";
+  const n = e.namesWaitingForBars;
+  return {
+    text,
+    waiting:
+      n > 0 ? { count: n, text: n === 1 ? "name is waiting for daily prices." : "names are waiting for daily prices." } : null,
+  };
+}
 
 export const OVERRIDE_REFUSAL_LABELS: Record<GainsAtRiskOverrideRefusal, string> = {
   "not-positive": "A price must be above zero. The model price is kept.",
@@ -301,21 +542,30 @@ export const PRICE_SOURCE_LABELS: Record<NonNullable<GainsAtRiskPosition["priceS
 
 // ─── Disclosures ────────────────────────────────────────────────
 
-type DisclosureKey = keyof GainsAtRiskResult["disclosures"];
+type CaseDisclosures = GainsAtRiskCase["disclosures"];
+type DisclosureKey = keyof CaseDisclosures;
 
 const DISCLOSURE_TEXT: Record<DisclosureKey, string> = {
   notModelled: "Not modelled",
-  betaEstimated: "Beta estimated, not measured",
+  noMeasuredLink: "No measured link",
+  ownerFigure: "At your figure",
   pricedFromModel: "Options priced from model",
   expiresBeforeDate: "Options that expire before the date",
 };
 
-const DISCLOSURE_ORDER: DisclosureKey[] = ["notModelled", "betaEstimated", "pricedFromModel", "expiresBeforeDate"];
+const DISCLOSURE_ORDER: DisclosureKey[] = [
+  "notModelled",
+  "noMeasuredLink",
+  "ownerFigure",
+  "pricedFromModel",
+  "expiresBeforeDate",
+];
 
+/** The selected case's disclosure lines, in a fixed order; "At your figure" only when the owner typed some. */
 export function disclosureSentences(
-  d: GainsAtRiskResult["disclosures"],
-): { key: string; text: string; count: number; shareOfBook: number | null; unknownValueCount: number; symbols: string[] }[] {
-  return DISCLOSURE_ORDER.map((key) => ({
+  d: CaseDisclosures,
+): { key: DisclosureKey; text: string; count: number; shareOfBook: number | null; unknownValueCount: number; symbols: string[] }[] {
+  return DISCLOSURE_ORDER.filter((key) => key !== "ownerFigure" || d.ownerFigure.count > 0).map((key) => ({
     key,
     text: DISCLOSURE_TEXT[key],
     count: d[key].count,
@@ -323,6 +573,28 @@ export function disclosureSentences(
     unknownValueCount: d[key].unknownValueCount,
     symbols: d[key].symbols,
   }));
+}
+
+/**
+ * The extra words on the "No measured link" line: what the case does with
+ * those names, then each reason that applies with its count (the page prints
+ * the count through <Count>).
+ */
+export function noMeasuredLinkSentence(
+  d: CaseDisclosures["noMeasuredLink"],
+  caseKey: GainsAtRiskCaseKey,
+): { treatment: string; reasons: { key: NoMeasuredLinkReason; text: string; count: number }[] } {
+  return {
+    treatment:
+      caseKey === "measured"
+        ? "held unchanged (options on them still lose or gain time value)"
+        : "stocks and funds taken one-for-one",
+    reasons: NO_MEASURED_LINK_REASON_ORDER.filter((k) => (d.reasons[k] ?? 0) > 0).map((k) => ({
+      key: k,
+      text: NO_MEASURED_LINK_REASON_LABELS[k],
+      count: d.reasons[k],
+    })),
+  };
 }
 
 /**
@@ -382,27 +654,41 @@ export function givenBackCell(bookPnlUsd: number, yearGain: YearGainResult): Giv
 
 export interface GainsChartRow {
   move: number;
-  book: number;
+  /** The book in the measured case. */
+  measured: number;
+  /** The book in the selloff case. */
+  selloff: number;
+  /** The selected case's book without its offsetting positions. */
   without: number;
 }
 
 /**
  * The chart's points: only the default sweep's moves, in move order, so the
  * table's custom row never adds an extra point (on a numeric axis the
- * spacing is then true to the move). The second line is the book without its
- * offsetting positions: the engine's `losersPnlUsd`.
+ * spacing is then true to the move). Both book lines, and the selected
+ * case's book without its offsetting positions: that case's `losersPnlUsd`.
+ * A move missing from either case is left out rather than drawn as zero.
  */
-export function chartRows(moves: GainsAtRiskResult["moves"]): GainsChartRow[] {
+export function chartRows(
+  cases: Record<GainsAtRiskCaseKey, Pick<GainsAtRiskCase, "moves">>,
+  selected: GainsAtRiskCaseKey,
+): GainsChartRow[] {
   const sweep = defaultSweep();
-  return moves
-    .filter((r) => sweep.some((m) => sameMove(m, r.move)))
-    .sort((a, b) => a.move - b.move)
-    .map((r) => ({ move: r.move, book: r.bookPnlUsd, without: r.losersPnlUsd }));
+  const at = (k: GainsAtRiskCaseKey, move: number) => cases[k].moves.find((r) => sameMove(r.move, move));
+  const out: GainsChartRow[] = [];
+  for (const move of sweep) {
+    const m = at("measured", move);
+    const s = at("selloff", move);
+    const sel = selected === "measured" ? m : s;
+    if (!m || !s || !sel) continue;
+    out.push({ move: m.move, measured: m.bookPnlUsd, selloff: s.bookPnlUsd, without: sel.losersPnlUsd });
+  }
+  return out;
 }
 
 /** The dollar axis: every plotted value and zero, padded 5%. */
 export function chartDollarDomain(rows: GainsChartRow[]): [number, number] {
-  const values = rows.flatMap((r) => [r.book, r.without, 0]);
+  const values = rows.flatMap((r) => [r.measured, r.selloff, r.without, 0]);
   const lo = Math.min(...values);
   const hi = Math.max(...values);
   const pad = (hi - lo) * 0.05 || 1;
@@ -481,6 +767,8 @@ export interface GainsControls {
   custom: number | null;
   /** Owner-typed option prices per share, by security id. Page state only. */
   priceOverrides: Record<number, number>;
+  /** The owner's own figure per name, by `identitySecurityId` (C6). Page state only. */
+  betaOverrides: Record<number, number>;
 }
 
 /**
@@ -498,7 +786,8 @@ export function serverPropsAnswerControls(
     controls.valuationDate === server.valuationDate &&
     controls.volChangePoints === server.volChangePoints &&
     controls.custom === null &&
-    Object.keys(controls.priceOverrides).length === 0
+    Object.keys(controls.priceOverrides).length === 0 &&
+    Object.keys(controls.betaOverrides).length === 0
   );
 }
 

@@ -1,9 +1,29 @@
 import { describe, expect, it } from "vitest";
 import {
+  BETA_OVERRIDE_REFUSAL_LABELS,
   BETA_SOURCE_LABELS,
+  CASE_KEYS,
+  CASE_LABELS,
+  CASE_NOTES,
+  CHART_GAP_NOTE,
+  DEFAULT_CASE,
+  LEVERAGED_FIGURE_HINT,
+  MEASURED_NOTE,
+  NO_MEASURED_LINK_REASON_LABELS,
+  SAME_FIGURE_TEXT,
+  SELLOFF_NOTE,
+  SELLOFF_RAISED_TEXT,
+  betaEditorOwners,
+  betaEvidenceCaption,
+  betaOverrideProblem,
+  betaSourceLine,
+  chartLineLabels,
+  formatBeta,
+  isLeveragedFundRow,
+  noMeasuredLinkSentence,
+  overridesIgnoredText,
   COLUMN_LABELS,
   DEFAULT_DRIVER,
-  LINE_LABELS,
   NOT_MODELLED_LABELS,
   OVERRIDE_REFUSAL_LABELS,
   RECONCILIATION_REASON_LABELS,
@@ -53,7 +73,15 @@ import {
   type GainsAtRiskResponse,
 } from "@/lib/analysis/gains-at-risk-input";
 import { VOL_MOVE_MAX, VOL_MOVE_MIN } from "@/lib/compute/option-reprice";
-import type { GainsAtRiskResult } from "@/lib/compute/gains-at-risk";
+import { BETA_OVERRIDE_BOUNDS } from "@/lib/analysis/gains-at-risk-constants";
+import type {
+  GainsAtRiskCase,
+  GainsAtRiskCaseKey,
+  GainsAtRiskMoveRow,
+  GainsAtRiskPosition,
+  GainsAtRiskPositionCase,
+} from "@/lib/compute/gains-at-risk";
+import type { DailyBarEvidence, NoMeasuredLinkReason } from "@/lib/compute/security-regression";
 import type { YearGainReconciliationStatus, YearGainResult } from "@/lib/compute/year-gain";
 import type { PositionsFreshness } from "@/lib/queries/positions-freshness";
 
@@ -87,6 +115,38 @@ const B = { tag: "B" } as unknown as GainsAtRiskResponse;
 const C = { tag: "C" } as unknown as GainsAtRiskResponse;
 const D = { tag: "D" } as unknown as GainsAtRiskResponse;
 const init = (data: GainsAtRiskResponse): GainsRequestState => initialGainsRequestState(data);
+
+const posCase = (beta: number | null): GainsAtRiskPositionCase => ({ beta, pnlByMove: [], side: "flat", exposureUsd: 0 });
+const cases = (measured: number | null, selloff: number | null): Record<GainsAtRiskCaseKey, GainsAtRiskPositionCase> => ({
+  measured: posCase(measured),
+  selloff: posCase(selloff),
+});
+
+/** A synthetic ZZ position; every field a test does not set is neutral. */
+function pos(over: Partial<GainsAtRiskPosition> = {}): GainsAtRiskPosition {
+  return {
+    accountId: 1,
+    accountName: "ZZ Account",
+    securityId: 100,
+    symbol: "ZZA",
+    name: null,
+    identitySecurityId: 100,
+    betaSource: "measured",
+    measuredBeta: 1,
+    priceSource: "own-price",
+    valueUsd: 1_000,
+    cases: cases(1, 1),
+    ...over,
+  };
+}
+
+/** Two cases' move rows, for the chart helper. */
+function twoCases(
+  measured: GainsAtRiskMoveRow[],
+  selloff: GainsAtRiskMoveRow[],
+): Record<GainsAtRiskCaseKey, Pick<GainsAtRiskCase, "moves">> {
+  return { measured: { moves: measured }, selloff: { moves: selloff } };
+}
 
 describe("gains at risk: sweep, table rows and the custom row", () => {
   it("the sweep runs -20% to +10% in 2.5% steps and holds every table row", () => {
@@ -227,7 +287,6 @@ describe("gains at risk: the share of the year's gain", () => {
       book: "Book",
       givenBack: "Gain given back",
     });
-    expect(LINE_LABELS).toEqual({ book: "book", without: "without the offsetting positions" });
   });
 });
 
@@ -249,25 +308,43 @@ describe("gains at risk: scope", () => {
   });
 });
 
-describe("gains at risk: disclosures", () => {
+describe("gains at risk: disclosures, per case", () => {
   const d = (count: number, shareOfBook: number | null, unknownValueCount: number) => ({
     count,
     shareOfBook,
     unknownValueCount,
     symbols: count > 0 ? ["ZZA"] : [],
   });
+  const reasons = (over: Partial<Record<NoMeasuredLinkReason, number>> = {}): Record<NoMeasuredLinkReason, number> => ({
+    "foreign-session": 0,
+    "driver-bars-missing": 0,
+    "no-daily-bars": 0,
+    "short-history": 0,
+    "flat-driver": 0,
+    "low-fit": 0,
+    ...over,
+  });
+  const disclosures = (owner: number): GainsAtRiskCase["disclosures"] => ({
+    notModelled: d(2, 0.03, 0),
+    noMeasuredLink: { ...d(4, 0.18, 0), reasons: reasons({ "no-daily-bars": 3, "low-fit": 1 }) },
+    ownerFigure: d(owner, owner > 0 ? 0.05 : 0, 0),
+    pricedFromModel: d(1, 0.01, 0),
+    expiresBeforeDate: d(0, 0, 0),
+  });
 
-  it("four lines in a fixed order", () => {
-    const lines = disclosureSentences({
-      notModelled: d(2, 0.03, 0),
-      betaEstimated: d(4, 0.18, 0),
-      pricedFromModel: d(1, 0.01, 0),
-      expiresBeforeDate: d(0, 0, 0),
-    } as GainsAtRiskResult["disclosures"]);
-    expect(lines.map((l) => l.key)).toEqual(["notModelled", "betaEstimated", "pricedFromModel", "expiresBeforeDate"]);
+  it("lines in a fixed order; no measured link replaces the old estimate line", () => {
+    const lines = disclosureSentences(disclosures(0));
+    expect(lines.map((l) => l.key)).toEqual(["notModelled", "noMeasuredLink", "pricedFromModel", "expiresBeforeDate"]);
     expect(lines[0]).toMatchObject({ count: 2, shareOfBook: 0.03, unknownValueCount: 0 });
-    expect(lines[0].text).toMatch(/Not modelled/);
-    expect(lines[1].text).toMatch(/Beta estimated, not measured/);
+    expect(lines[0].text).toBe("Not modelled");
+    expect(lines[1].text).toBe("No measured link");
+    for (const l of lines) expect(l.text).not.toMatch(/estimat/i);
+  });
+
+  it("names at the owner's figure get a line only when there are some", () => {
+    const lines = disclosureSentences(disclosures(2));
+    expect(lines.map((l) => l.key)).toEqual(["notModelled", "noMeasuredLink", "ownerFigure", "pricedFromModel", "expiresBeforeDate"]);
+    expect(lines[2].text).toBe("At your figure");
   });
 
   it("an unknown value is never shown as a bare 0%", () => {
@@ -275,6 +352,215 @@ describe("gains at risk: disclosures", () => {
     expect(disclosureShare(d(2, 0, 2))).toEqual({ kind: "omit" });
     expect(disclosureShare(d(2, 0.05, 1))).toEqual({ kind: "pct", value: 0.05 });
     expect(disclosureShare(d(0, 0, 0))).toEqual({ kind: "pct", value: 0 });
+  });
+
+  it("no measured link: what the case does with them, and each reason with its count", () => {
+    const line = disclosures(0).noMeasuredLink;
+    const m = noMeasuredLinkSentence(line, "measured");
+    expect(m.treatment).toBe("held unchanged (options on them still lose or gain time value)");
+    expect(m.reasons).toEqual([
+      { key: "no-daily-bars", text: "no daily prices yet", count: 3 },
+      { key: "low-fit", text: NO_MEASURED_LINK_REASON_LABELS["low-fit"], count: 1 },
+    ]);
+    const s = noMeasuredLinkSentence(line, "selloff");
+    expect(s.treatment).toBe("stocks and funds taken one-for-one");
+    expect(s.reasons).toEqual(m.reasons);
+    expect(noMeasuredLinkSentence({ ...line, count: 0, reasons: reasons() }, "measured").reasons).toEqual([]);
+  });
+});
+
+describe("gains at risk: the two cases", () => {
+  it("the switch: two cases, Measured first and by default", () => {
+    expect(CASE_KEYS).toEqual(["measured", "selloff"]);
+    expect(DEFAULT_CASE).toBe("measured");
+    expect(CASE_LABELS).toEqual({ measured: "Measured", selloff: "Selloff case" });
+  });
+
+  it("each case has one plain sentence; the selloff case says it is an assumption", () => {
+    expect(SELLOFF_NOTE).toBe(
+      "An assumption, not a measurement: every stock and fund falls at least one-for-one with the index.",
+    );
+    expect(MEASURED_NOTE).toBe(
+      "Each name moves by its measured link to the index. A name with no measured link is held unchanged and listed below.",
+    );
+    expect(CASE_NOTES).toEqual({ measured: MEASURED_NOTE, selloff: SELLOFF_NOTE });
+    expect(CHART_GAP_NOTE).toBe("The gap between the two lines is how much of the result rests on names falling together.");
+  });
+
+  it("the legend names each line plainly; the third line follows the selected case", () => {
+    expect(chartLineLabels("measured")).toEqual({
+      measured: "book, measured",
+      selloff: "book, selloff case (an assumption)",
+      without: "without the offsetting positions, measured",
+    });
+    expect(chartLineLabels("selloff").without).toBe("without the offsetting positions, selloff case");
+  });
+});
+
+describe("gains at risk: the evidence caption", () => {
+  it("says which closes and through what date, and how many names wait", () => {
+    const none = betaEvidenceCaption({ driverBarsThrough: "2026-11-21", driverBarsMissing: false, namesWaitingForBars: 0 }, "QQQ");
+    expect(none).toEqual({ text: "Betas are measured from daily closing prices through Nov 21.", waiting: null });
+    const three = betaEvidenceCaption({ driverBarsThrough: "2026-11-21", driverBarsMissing: false, namesWaitingForBars: 3 }, "QQQ");
+    expect(three.text).toBe(none.text);
+    expect(three.waiting).toEqual({ count: 3, text: "names are waiting for daily prices." });
+    const one = betaEvidenceCaption({ driverBarsThrough: "2026-11-21", driverBarsMissing: false, namesWaitingForBars: 1 }, "QQQ");
+    expect(one.waiting).toEqual({ count: 1, text: "name is waiting for daily prices." });
+  });
+
+  it("the driver's own bars missing: no name is measured, the selloff case still applies", () => {
+    const c = betaEvidenceCaption({ driverBarsThrough: null, driverBarsMissing: true, namesWaitingForBars: 4 }, "SPY");
+    expect(c).toEqual({
+      text: "Daily prices for SPY are not on file yet, so no name has a measured link. The selloff case still applies.",
+      waiting: null,
+    });
+  });
+});
+
+describe("gains at risk: the owner's figure", () => {
+  it("accepts a finite figure within the bounds; refuses anything else in plain words", () => {
+    expect(betaOverrideProblem("6")).toBe("Your figure must be between -5 and 5.");
+    expect(betaOverrideProblem("-5.01")).toBe("Your figure must be between -5 and 5.");
+    expect(betaOverrideProblem("-0.4")).toBeNull();
+    expect(betaOverrideProblem("5")).toBeNull();
+    expect(betaOverrideProblem("-5")).toBeNull();
+    expect(betaOverrideProblem("0")).toBeNull();
+    expect(betaOverrideProblem("abc")).toMatch(/number/);
+    expect(betaOverrideProblem("")).toMatch(/number/);
+    expect(betaOverrideProblem("Infinity")).toMatch(/number/);
+    expect(BETA_OVERRIDE_BOUNDS).toMatchObject({ min: -5, max: 5 });
+  });
+
+  it("one editor per name: the first row of each identity, never a row with no identity", () => {
+    const owners = betaEditorOwners([
+      { accountId: 2, securityId: 501, identitySecurityId: 100 }, // an option on 100, shown first
+      { accountId: 1, securityId: 100, identitySecurityId: 100 },
+      { accountId: 1, securityId: 200, identitySecurityId: 200 },
+      { accountId: 2, securityId: 200, identitySecurityId: 200 },
+      { accountId: 1, securityId: 777, identitySecurityId: null },
+    ]);
+    expect([...owners].sort()).toEqual(["1:200", "2:501"]);
+    expect(SAME_FIGURE_TEXT).toBe("same figure as above");
+  });
+
+  it("the engine's refusal of a figure, in plain words", () => {
+    for (const k of ["fixed-row", "is-driver", "out-of-bounds"] as const) {
+      expect(BETA_OVERRIDE_REFUSAL_LABELS[k]).toMatch(/\.$/);
+    }
+    expect(BETA_OVERRIDE_REFUSAL_LABELS["out-of-bounds"]).toMatch(/-5 and 5/);
+  });
+
+  it("figures not used are counted in one line", () => {
+    expect(overridesIgnoredText(0)).toBeNull();
+    expect(overridesIgnoredText(1)).toBe("1 figure you typed was not used: no name on this page takes it.");
+    expect(overridesIgnoredText(3)).toBe("3 figures you typed were not used: no name on this page takes them.");
+  });
+
+  it("the hint for a leveraged or inverse fund", () => {
+    expect(LEVERAGED_FIGURE_HINT).toBe("Type how the fund itself moves per 1% of the index, not its index's link.");
+    expect(isLeveragedFundRow(pos({ betaSource: "leveraged" }))).toBe(true);
+    expect(isLeveragedFundRow(pos({ betaSource: "owner", ladderRefusal: "leveraged-no-factor" }))).toBe(true);
+    expect(isLeveragedFundRow(pos({ betaSource: "not-modelled", unmodelledReason: "tracked-index-not-measured" }))).toBe(true);
+    expect(isLeveragedFundRow(pos({ betaSource: "not-modelled", unmodelledReason: "no-price" }))).toBe(false);
+    expect(isLeveragedFundRow(pos({ betaSource: "measured" }))).toBe(false);
+  });
+});
+
+describe("gains at risk: where each beta comes from", () => {
+  const ev = (over: Partial<DailyBarEvidence> = {}): DailyBarEvidence => ({
+    outcome: "measured",
+    beta: 1.2,
+    rSquared: 0.6,
+    pairs: 480,
+    securityBars: 500,
+    driverBars: 500,
+    droppedOutlierPairs: 0,
+    droppedGapPairs: 0,
+    firstDate: "2024-11-26",
+    lastDate: "2026-11-21",
+    ...over,
+  });
+
+  it("a not-modelled row says so first, whatever else it carries", () => {
+    const p = pos({
+      betaSource: "not-modelled",
+      unmodelledReason: "no-option-price",
+      noMeasuredLinkReason: "low-fit",
+      evidence: ev({ outcome: "low-fit" }),
+    });
+    expect(betaSourceLine(p, "measured")).toEqual({ text: "not modelled", details: [NOT_MODELLED_LABELS["no-option-price"]] });
+  });
+
+  it("a measured row shows its daily pairs and the date its bars run to", () => {
+    const p = pos({ betaSource: "measured", measuredBeta: 1.2, evidence: ev(), cases: cases(1.2, 1.2) });
+    expect(betaSourceLine(p, "measured")).toEqual({
+      text: "measured from daily closes",
+      details: ["480 daily pairs through Nov 21"],
+    });
+    expect(betaSourceLine(p, "selloff")).toEqual(betaSourceLine(p, "measured"));
+  });
+
+  it("the selloff case says when it raised a measured beta to one-for-one", () => {
+    const p = pos({ betaSource: "measured", measuredBeta: 0.4, evidence: ev({ beta: 0.4 }), cases: cases(0.4, 1) });
+    expect(betaSourceLine(p, "measured").details).toEqual(["480 daily pairs through Nov 21"]);
+    expect(betaSourceLine(p, "selloff").details).toEqual([
+      "480 daily pairs through Nov 21",
+      SELLOFF_RAISED_TEXT,
+    ]);
+  });
+
+  it("no measured link: the reason, then what each case does", () => {
+    const stock = pos({
+      betaSource: "no-measured-link",
+      measuredBeta: null,
+      noMeasuredLinkReason: "short-history",
+      evidence: ev({ outcome: "short-history", pairs: 20 }),
+      cases: cases(0, 1),
+    });
+    expect(betaSourceLine(stock, "measured")).toEqual({
+      text: `no measured link: ${NO_MEASURED_LINK_REASON_LABELS["short-history"]}`,
+      details: ["Held unchanged."],
+    });
+    expect(betaSourceLine(stock, "selloff").details).toEqual(["Taken one-for-one."]);
+    const option = { ...stock, expiry: "2027-01-15" };
+    expect(betaSourceLine(option, "measured").details).toEqual([
+      "The underlying is held unchanged; the option still loses or gains time value.",
+    ]);
+  });
+
+  it("the owner's figure reads 'your figure' in both cases", () => {
+    const p = pos({ betaSource: "owner", measuredBeta: 1.3, evidence: ev({ beta: 1.3 }), cases: cases(0.6, 0.6) });
+    for (const k of ["measured", "selloff"] as const) {
+      expect(betaSourceLine(p, k).text).toBe("your figure");
+      expect(betaSourceLine(p, k).details).toEqual(["Measured 1.30 from 480 daily pairs through Nov 21."]);
+    }
+    const noLink = pos({ betaSource: "owner", measuredBeta: null, noMeasuredLinkReason: "no-daily-bars", cases: cases(0.6, 0.6) });
+    expect(betaSourceLine(noLink, "measured").details).toEqual(["No measured link: no daily prices yet."]);
+  });
+
+  it("the owner's figure on a fund the app could not model", () => {
+    const p = pos({ betaSource: "owner", measuredBeta: null, ladderRefusal: "leveraged-no-factor", cases: cases(-2, -2) });
+    expect(betaSourceLine(p, "selloff")).toEqual({
+      text: `Your figure. The app could not model this fund: ${NOT_MODELLED_LABELS["leveraged-no-factor"]}.`,
+      details: [],
+    });
+  });
+
+  it("the driver, fixed and leveraged rows", () => {
+    expect(betaSourceLine(pos({ betaSource: "driver", measuredBeta: 1, cases: cases(1, 1) }), "measured").text).toBe("the index itself");
+    expect(betaSourceLine(pos({ betaSource: "fixed", measuredBeta: 0, cases: cases(0, 0) }), "selloff")).toEqual({
+      text: "set by type (cash or bonds)",
+      details: [],
+    });
+    const lev = pos({ betaSource: "leveraged", measuredBeta: 1.8, cases: cases(1.8, 2) });
+    expect(betaSourceLine(lev, "measured")).toEqual({ text: "leverage times its tracked index", details: [] });
+    expect(betaSourceLine(lev, "selloff").details).toEqual([SELLOFF_RAISED_TEXT]);
+  });
+
+  it("a beta prints to two places; none prints a dash", () => {
+    expect(formatBeta(1.234)).toBe("1.23");
+    expect(formatBeta(-0.4)).toBe("-0.40");
+    expect(formatBeta(null)).toBe("—");
   });
 });
 
@@ -284,8 +570,6 @@ describe("gains at risk: plain-words labels cover every reason", () => {
       "leveraged-no-factor",
       "leveraged-no-tracked-index",
       "tracked-index-not-measured",
-      "no-driver-conversion",
-      "no-heuristic-beta",
       "no-option-terms",
       "expired",
       "no-option-price",
@@ -296,12 +580,27 @@ describe("gains at risk: plain-words labels cover every reason", () => {
     ] as const) {
       expect(NOT_MODELLED_LABELS[k]).toMatch(/\w/);
     }
+    expect(Object.keys(NOT_MODELLED_LABELS)).toHaveLength(10);
   });
 
-  it("beta sources and override refusals", () => {
-    for (const k of ["driver", "measured", "market-converted", "estimated", "fixed", "leveraged", "not-modelled"] as const) {
-      expect(BETA_SOURCE_LABELS[k]).toMatch(/\w/);
-    }
+  it("every beta source and every reason for no measured link", () => {
+    expect(BETA_SOURCE_LABELS).toEqual({
+      driver: "the index itself",
+      fixed: "set by type (cash or bonds)",
+      leveraged: "leverage times its tracked index",
+      measured: "measured from daily closes",
+      owner: "your figure",
+      "no-measured-link": "no measured link",
+      "not-modelled": "not modelled",
+    });
+    expect(NO_MEASURED_LINK_REASON_LABELS).toEqual({
+      "no-daily-bars": "no daily prices yet",
+      "short-history": "too few days of daily prices",
+      "low-fit": "its daily moves follow the index too loosely",
+      "foreign-session": "not traded on the US session",
+      "driver-bars-missing": "the index's own daily prices are missing",
+      "flat-driver": "the index did not move",
+    });
     for (const k of ["not-positive", "below-intrinsic", "row-has-price", "not-solvable", "not-an-option"] as const) {
       expect(OVERRIDE_REFUSAL_LABELS[k]).toMatch(/\.$/);
     }
@@ -365,26 +664,42 @@ describe("gains at risk: the route's refusal in the page's words", () => {
     expect(domainProblemText("priceOverrides can hold at most 200 entries.")).toBe("At most 200 typed prices can be sent at once.");
     expect(domainProblemText("moves must be a list of 1 to 41 numbers.")).toBe("The moves must be a list of 1 to 41 numbers.");
     expect(domainProblemText("Could not compute gains at risk.")).toBe("Could not compute gains at risk.");
+    expect(domainProblemText("betaOverrides can hold at most 200 entries.")).toBe("At most 200 of your figures can be sent at once.");
+    expect(domainProblemText("betaOverrides values must each be a number between -5 and 5.")).toBe(
+      "Your figures must each be a number between -5 and 5.",
+    );
+    expect(domainProblemText("betaOverrides keys must be security ids (positive whole numbers).")).toBe(
+      "A figure you typed is not tied to a name on this page.",
+    );
+    expect(domainProblemText("betaOverrides must be an object of security id to figure.")).toBe("Your figures could not be read.");
   });
 });
 
 describe("gains at risk: fix round 1", () => {
   const row = (move: number, book: number, losers: number) => ({ move, bookPnlUsd: book, losersPnlUsd: losers, offsetsPnlUsd: book - losers });
 
-  it("the chart plots only the sweep, in move order, even with a custom move present", () => {
-    const moves = requestMoves(defaultSweep(), -0.07).map((m) => row(m, m * 1_000_000, m * 1_200_000));
-    expect(moves.some((r) => sameMove(r.move, -0.07))).toBe(true);
-    const rows = chartRows([...moves].reverse());
+  it("the chart plots only the sweep, in move order, both book lines and the selected case's second line", () => {
+    const measured = requestMoves(defaultSweep(), -0.07).map((m) => row(m, m * 1_000_000, m * 1_200_000));
+    const selloff = requestMoves(defaultSweep(), -0.07).map((m) => row(m, m * 1_500_000, m * 1_800_000));
+    expect(measured.some((r) => sameMove(r.move, -0.07))).toBe(true);
+    const rows = chartRows(twoCases([...measured].reverse(), selloff), "measured");
     expect(rows.map((r) => r.move)).toEqual(defaultSweep());
     expect(rows.some((r) => sameMove(r.move, -0.07))).toBe(false);
     const ten = rows.find((r) => sameMove(r.move, -0.1))!;
-    expect(ten.book).toBeCloseTo(-100_000);
-    expect(ten.without).toBeCloseTo(-120_000); // the positions that lose
+    expect(ten.measured).toBeCloseTo(-100_000);
+    expect(ten.selloff).toBeCloseTo(-150_000);
+    expect(ten.without).toBeCloseTo(-120_000); // the measured case's positions that lose
+    const tenSelloff = chartRows(twoCases(measured, selloff), "selloff").find((r) => sameMove(r.move, -0.1))!;
+    expect(tenSelloff.without).toBeCloseTo(-180_000);
+    expect(tenSelloff.measured).toBeCloseTo(-100_000);
+    const domain = chartDollarDomain(rows);
+    expect(domain[0]).toBeLessThan(-300_000); // the selloff line is inside the axis too
   });
 
   it("the gain-kept axis lines up with the dollar axis and its ticks stay within -100%..100%", () => {
     const g = gain(100_000, "agrees");
-    const rows = chartRows(defaultSweep().map((m) => row(m, m * 2_000_000, m * 2_500_000)));
+    const sweepRows = defaultSweep().map((m) => row(m, m * 2_000_000, m * 2_500_000));
+    const rows = chartRows(twoCases(sweepRows, sweepRows), "measured");
     const domain = chartDollarDomain(rows);
     const axis = keptAxis(domain, g)!;
     expect(axis.domain[0]).toBeCloseTo(1 + domain[0] / 100_000);
@@ -442,13 +757,14 @@ describe("gains at risk: fix round 1", () => {
 
   it("fresh server props answer the controls only when the controls are the defaults", () => {
     const server = { driverSymbol: "QQQ" as const, valuationDate: "2026-12-31", volChangePoints: 0 };
-    const base = { ...server, custom: null, priceOverrides: {} };
+    const base = { ...server, custom: null, priceOverrides: {}, betaOverrides: {} };
     expect(serverPropsAnswerControls(base, server)).toBe(true);
     expect(serverPropsAnswerControls({ ...base, driverSymbol: "SPY" }, server)).toBe(false);
     expect(serverPropsAnswerControls({ ...base, valuationDate: "2027-01-15" }, server)).toBe(false);
     expect(serverPropsAnswerControls({ ...base, volChangePoints: 10 }, server)).toBe(false);
     expect(serverPropsAnswerControls({ ...base, custom: -0.07 }, server)).toBe(false);
     expect(serverPropsAnswerControls({ ...base, priceOverrides: { 9: 1.5 } }, server)).toBe(false);
+    expect(serverPropsAnswerControls({ ...base, betaOverrides: { 9: 0.8 } }, server)).toBe(false);
   });
 
   it("the client's volatility bounds equal the repricer's", () => {
