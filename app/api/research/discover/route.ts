@@ -1,8 +1,14 @@
 import { isGmailConfigured, getGmailClient } from "@/lib/gmail/auth";
 import { discoverNewsletterSenders } from "@/lib/gmail/discover";
+import { SETTINGS_GROUPS } from "@/app/dashboard/components/settings/settings-fields";
 
-/** Where the three Google OAuth fields live in the app. */
-const SETTINGS_PLACE = "Settings (the gear icon), under Gmail Newsletters";
+/**
+ * Where the three Google OAuth fields live in the app. The group title is read
+ * from the Settings field table (a plain module), so a rename cannot go stale.
+ */
+const SETTINGS_PLACE = `Settings (the gear icon), under ${
+  SETTINGS_GROUPS.find((g) => g.id === "earnings-email")?.title ?? "Earnings & email"
+}`;
 
 /**
  * A failure the owner can act on. Google's OAuth error codes are matched by

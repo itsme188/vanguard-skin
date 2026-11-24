@@ -25,6 +25,7 @@ vi.mock("@/lib/gmail/discover", () => ({
 }));
 
 import { POST } from "@/app/api/research/discover/route";
+import { SETTINGS_GROUPS, FILE_STORE_FIELDS } from "@/app/dashboard/components/settings/settings-fields";
 
 beforeEach(() => {
   hoisted.configured = true;
@@ -91,6 +92,30 @@ describe("POST /api/research/discover", () => {
     const logged = JSON.stringify((console.error as unknown as ReturnType<typeof vi.fn>).mock.calls);
     expect(logged).not.toContain("FAKE-TOKEN");
     expect(logged).not.toContain("FAKE-SECRET");
+  });
+});
+
+describe("the remedy names the Settings group that really holds the fields", () => {
+  it("every actionable failure names the current group title, never the retired section", async () => {
+    const group = SETTINGS_GROUPS.find((g) => g.id === "earnings-email");
+    expect(group).toBeDefined();
+    // The three fields really live in that group.
+    for (const key of ["googleClientId", "googleClientSecret", "googleRefreshToken"]) {
+      expect(FILE_STORE_FIELDS.find((f) => f.key === key)?.group).toBe("earnings-email");
+    }
+
+    hoisted.configured = false;
+    const bodies = [await (await POST()).json()];
+    hoisted.configured = true;
+    hoisted.discover.mockRejectedValue(new Error("invalid_grant"));
+    bodies.push(await (await POST()).json());
+    hoisted.discover.mockRejectedValue(new Error("invalid_client"));
+    bodies.push(await (await POST()).json());
+
+    for (const body of bodies) {
+      expect(body.error).toContain(`under ${group!.title}`);
+      expect(body.error).not.toContain("Gmail Newsletters");
+    }
   });
 });
 

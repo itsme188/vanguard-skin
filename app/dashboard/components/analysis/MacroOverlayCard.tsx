@@ -349,16 +349,16 @@ export function MacroOverlayCard({ scope }: { scope: string }) {
         <ul className="space-y-2">
           {data.themes.map((t, i) => (
             <li key={i} className="rounded-lg border border-edge/60 bg-canvas px-3 py-2.5">
-              <div className="flex items-baseline gap-2">
+              <div className="flex flex-wrap items-baseline gap-2">
                 <span
                   aria-hidden="true"
                   className="inline-block h-2 w-2 rounded-full mt-1.5 shrink-0"
                   style={{ backgroundColor: directionColor(t.direction) }}
                 />
-                <h4 className="text-sm font-medium text-ink flex-1">{t.name}</h4>
+                <h4 className="text-sm font-medium text-ink flex-1 min-w-0 basis-[calc(100%-1.5rem)] sm:basis-0">{t.name}</h4>
                 {hasExposureFigure(t) && (
                   <span
-                    className={`text-[10px] px-1.5 py-0.5 rounded border ${exposurePillClass(t.exposure_rank)} uppercase tracking-wide`}
+                    className={`ml-4 sm:ml-0 text-[10px] px-1.5 py-0.5 rounded border ${exposurePillClass(t.exposure_rank)} uppercase tracking-wide`}
                     title="Value-weighted share of this scope's holdings exposed to this theme's factor, scaled by how strongly each holding is tagged"
                   >
                     your exposure: <Pct value={t.exposure_pct} digits={0} />
@@ -380,7 +380,7 @@ export function MacroOverlayCard({ scope }: { scope: string }) {
                     <a
                       href={citedSourceHref(t) ?? undefined}
                       title={citedSourceLabel(t)}
-                      className="underline decoration-dotted underline-offset-2 hover:text-ink"
+                      className="relative pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-2 underline decoration-dotted underline-offset-2 hover:text-ink"
                     >
                       {citedSourceLabel(t)}
                     </a>

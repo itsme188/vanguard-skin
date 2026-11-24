@@ -160,6 +160,19 @@ describe("the section renders, and never recomputes", () => {
     expect(src).toContain("weakestFlowSource(sources)");
   });
 
+  it("keeps the scroll position when a year or month pill is picked", () => {
+    for (const anchor of [
+      'href={target ? hrefForMonth(target) : "#"}',
+      "href={hrefForMonth(m)}",
+    ]) {
+      const at = anchorIndex(src, anchor, 0, "pill link href");
+      const open = src.lastIndexOf("<Link", at);
+      expect(open, `no <Link before ${anchor}`).toBeGreaterThan(-1);
+      const close = anchorIndex(src, ">\n", at, "end of the Link opening tag");
+      expect(src.slice(open, close)).toContain("scroll={false}");
+    }
+  });
+
   it("derives the year and month pills from the data, with no hardcoded year", () => {
     const block = sliceBetween(src, "const years =", "if (months.length === 0");
     expect(block).toContain("new Set(months.map((m) => m.slice(0, 4)))");
