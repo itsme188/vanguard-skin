@@ -3,7 +3,7 @@
  * filing-summary checker, and the small shared types that figure binding
  * (`evaluate-figures.ts`, `evaluate-prose.ts`) builds on. Pure.
  */
-import { parseNumberToken, toUnits } from "./figures";
+import { matchesWithRounding, parseNumberToken, toUnits } from "./figures";
 import type { CheckReason, FigureScale, ModelFigure } from "./types";
 import type { SourcePeriod, TableContext } from "./evaluate-periods";
 
@@ -89,6 +89,14 @@ export function scanNumbers(text: string): NumberToken[] {
   for (let i = 0; i + 1 < out.length; i++) {
     const a = out[i];
     const b = out[i + 1];
+    // "$2.415 to $2.48 billion" (QA 2026-11-21): the scale word written once, after the second number,
+    // is the first number's too, when nothing but "to" sits between them, the first has no unit of its
+    // own, neither is a percent, and both are dollar amounts or neither is.
+    if (/^\s+to\s+$/.test(text.slice(a.end, b.start)) && !a.wordScale && b.wordScale && !a.isPercent && !b.isPercent
+      && text.slice(a.start, a.end).includes("$") === text.slice(b.start, b.end).includes("$")) {
+      a.wordScale = b.wordScale;
+      continue;
+    }
     if (!/^\s?[-−–]\s?$/.test(text.slice(a.end, b.start))) continue;
     // A compact range: an end with no unit takes the range's unit; a sign given by a word before the
     // first end ("losses of $18-19 billion") carries to the second (review round 1, item 6).
@@ -119,28 +127,58 @@ export function valueTextHasExtraDigit(valueText: string): boolean {
 /** The stated number for the rounding rule: the valueText's own digits, at its own scale. */
 export interface StatedNumber { value: number; decimals: number; scale: FigureScale }
 
-function nearlyEqual(a: number, b: number): boolean {
-  return Math.abs(a - b) <= 1e-9 * Math.max(1, Math.abs(a), Math.abs(b));
+/**
+ * Display rounding only (QA 2026-11-21): the typed value, rounded to exactly the
+ * decimals the text shows at the text's unit, is the written number. Half a unit
+ * of the last shown digit either way, inclusive (the R4 rule `matchesWithRounding`
+ * applies to a source); one unit off in that digit is a mismatch. Never a
+ * percentage tolerance.
+ */
+function roundsTo(written: number, decimals: number, scale: FigureScale, typedUnits: number): boolean {
+  return matchesWithRounding({ value: written, decimals, scale }, typedUnits);
+}
+
+/** The whole shown text is one bracketed number: "($41.3 million)", "(0.3%)", an accounting negative. */
+const BRACKETED = /^\(\s*[^()]*\)$/;
+
+/** The words just before a placeholder sign it: "a loss of {f1}", "negative {f1}" (the rule `scanNumbers` applies in text). */
+export function signedByWordBefore(textBefore: string): boolean {
+  return NEGATIVE_WORDS.test(textBefore);
 }
 
 /**
  * Read the figure's `valueText` (what the owner sees) and require it to say the
  * same number as `value`/`scale` (what the app checks). The text's digit count
- * sets the rounding precision (R4). Null when the text holds no single number,
- * when its sign or size disagrees with `value`, or when a percent figure is not
- * written as a percent.
+ * sets the rounding precision (R4), and the typed value may carry more digits
+ * than are shown (display rounding, `roundsTo`). Null when the text holds no
+ * single number, when its sign or size disagrees with `value`, or when a percent
+ * figure is not written as a percent.
+ *
+ * Sign: a text wrapped in brackets is negative. `signedByWord` (the claim's words
+ * before the placeholder are a loss or negative word) makes an unsigned text
+ * negative, and only for a negative typed value. Scale: a scale word in the text
+ * is its scale; with none the text is read at the typed scale, else as plain
+ * units ("$64,000" for 64 thousands).
  */
-export function statedNumber(fig: ModelFigure): StatedNumber | null {
+export function statedNumber(fig: ModelFigure, opts: { signedByWord?: boolean } = {}): StatedNumber | null {
   const tokens = scanNumbers(fig.valueText);
   if (tokens.length !== 1) return null;
   const t = tokens[0];
   if ((fig.unit === "percent") !== t.isPercent) return null;
+  let written = t.value;
+  if (written > 0 && BRACKETED.test(fig.valueText.trim())) written = -written;
+  else if (written > 0 && fig.value < 0 && opts.signedByWord) written = -written;
+  const typedUnits = fig.unit === "percent" ? fig.value : toUnits(fig.value, fig.scale);
   if (t.wordScale) {
-    if (!nearlyEqual(toUnits(t.value, t.wordScale), toUnits(fig.value, fig.scale))) return null;
-    return { value: t.value, decimals: t.decimals, scale: t.wordScale };
+    if (!roundsTo(written, t.decimals, t.wordScale, typedUnits)) return null;
+    return { value: written, decimals: t.decimals, scale: t.wordScale };
   }
-  if (!nearlyEqual(t.value, fig.value)) return null;
-  return { value: t.value, decimals: t.decimals, scale: fig.unit === "percent" ? "units" : fig.scale };
+  const scale: FigureScale = fig.unit === "percent" ? "units" : fig.scale;
+  if (roundsTo(written, t.decimals, scale, typedUnits)) return { value: written, decimals: t.decimals, scale };
+  if (fig.unit !== "percent" && scale !== "units" && roundsTo(written, t.decimals, "units", typedUnits)) {
+    return { value: written, decimals: t.decimals, scale: "units" };
+  }
+  return null;
 }
 
 /** Half a unit of a printed number's last digit, in plain units. */

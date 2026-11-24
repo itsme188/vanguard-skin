@@ -78,7 +78,7 @@ function findActiveDuplicate(
 }
 
 function duplicateMessage(existing: { name: string }): string {
-  return `"${existing.name}" is already an active source for that sender address — a second one would fetch every newsletter twice. Deactivate it first, or edit it instead.`;
+  return `"${existing.name}" is already an active source for that sender address — a second one would fetch every newsletter twice. Deactivate it first`;
 }
 
 /**
