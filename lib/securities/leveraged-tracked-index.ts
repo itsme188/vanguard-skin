@@ -4,12 +4,16 @@
  * A daily-reset leveraged fund moves its signed factor (`securities.leverage_factor`,
  * `lib/securities/leverage-factor.ts`) times the move of the thing it tracks.
  * To read its beta to a driver index, the Gains at risk engine needs that
- * tracked thing as a `benchmark_prices` symbol: the tracked index's beta to
- * the driver, times the factor. The fund's own regression is never read (a
- * daily-reset fund's multi-day path is not a linear multiple of its index).
+ * tracked thing as a securities row with a contract id and daily bars in
+ * `ohlcv_bars` (ruling C3; resolved by `barSeriesSecurityId` in
+ * `lib/compute/driver-beta.ts`, and captured by the daily-bar step whether
+ * held or not): the tracked index's bar-to-bar beta to the driver, times the
+ * factor. No `benchmark_prices` row is read. The fund's own regression is
+ * never read (a daily-reset fund's multi-day path is not a linear multiple of
+ * its index).
  *
- * Keyed by fund symbol (trimmed, upper-cased), valued by the benchmark symbol
- * it tracks. No row means no tracked index: the fund is not modelled, named
+ * Keyed by fund symbol (trimmed, upper-cased), valued by the symbol of the
+ * index it tracks. No row means no tracked index: the fund is not modelled, named
  * and counted, never guessed.
  */
 
@@ -21,7 +25,7 @@
 export const LEVERAGED_TRACKED_INDEX_SEEDS: Readonly<Record<string, string>> = Object.freeze({});
 
 /**
- * The benchmark symbol a fund tracks, or null when the seed map names none.
+ * The symbol of the index a fund tracks, or null when the seed map names none.
  * `seeds` defaults to `LEVERAGED_TRACKED_INDEX_SEEDS`; tests pass synthetic maps.
  */
 export function trackedIndexFor(

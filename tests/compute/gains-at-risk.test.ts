@@ -798,7 +798,7 @@ describe("computeGainsAtRisk: the two cases (addendum)", () => {
       expect(p.cases.measured.pnlByMove[0]).toBe(0);
       expect(p.cases.selloff.beta).toBe(1);
     }
-    expect(r.betaEvidence).toEqual({ driverBarsThrough: null, driverBarsMissing: true, namesWaitingForBars: 0 });
+    expect(r.betaEvidence).toEqual({ driverBarsThrough: null, driverBarsMissing: true, namesWaitingForBars: 0, namesNotCaptured: 0 });
     expect(r.cases.measured.disclosures.noMeasuredLink.reasons["driver-bars-missing"]).toBe(2);
 
     // No securities row for the driver at all: the same, never a throw.
@@ -812,7 +812,7 @@ describe("computeGainsAtRisk: the two cases (addendum)", () => {
     addDriverUnderlying();
     hold(stock("ZZA", 50, 1.5), 10);
     const r = run({ moves: [-0.1] });
-    expect(r.betaEvidence).toEqual({ driverBarsThrough: "2026-11-09", driverBarsMissing: false, namesWaitingForBars: 0 });
+    expect(r.betaEvidence).toEqual({ driverBarsThrough: "2026-11-09", driverBarsMissing: false, namesWaitingForBars: 0, namesNotCaptured: 0 });
   });
 
   it("namesWaitingForBars counts no-daily-bars only", () => {
@@ -1052,3 +1052,112 @@ describe("computeGainsAtRisk: review fix round 1", () => {
     expect(r.betaOverridesIgnored).toBe(0);
   });
 });
+
+describe("computeGainsAtRisk: whole-branch review fix round", () => {
+  it("names the capture never fetches are not captured, never waiting for daily prices", () => {
+    addDriverUnderlying();
+    const mf = addSecurity({ symbol: "ZZMFN", type: "Mutual Fund", sector: "Technology" });
+    price(mf, 20);
+    hold(mf, 10);
+    const noCon = addSecurity({ symbol: "ZZNC", type: "Stock", sector: "Technology", conId: false });
+    price(noCon, 30);
+    hold(noCon, 10);
+    const waits = stock("ZZWT", 40, null);
+    hold(waits, 10);
+    // An option whose underlying has no securities row (identity null).
+    const orphan = option("ZZGHOST", "CALL", 50, "2027-01-15");
+    price(orphan, 2);
+    hold(orphan, 1);
+    const r = run({ moves: [-0.1] });
+    for (const sym of ["ZZMFN", "ZZNC", "ZZWT"]) expect(pos(r, sym).noMeasuredLinkReason, sym).toBe("no-daily-bars");
+    expect(r.betaEvidence.namesWaitingForBars).toBe(1);
+    expect(r.betaEvidence.namesNotCaptured).toBe(3);
+    // The existing fields keep their meaning and names.
+    expect(r.betaEvidence.driverBarsMissing).toBe(false);
+  });
+
+  it("a name the capture lists counts as waiting; with nothing missing no capture list is read", () => {
+    addDriverUnderlying();
+    hold(stock("ZZA", 50, 1.5), 10);
+    const spy = vi.spyOn(db, "prepare");
+    const r = run({ moves: [-0.1] });
+    const sql = spy.mock.calls.map((c) => String(c[0]));
+    spy.mockRestore();
+    expect(r.betaEvidence).toMatchObject({ namesWaitingForBars: 0, namesNotCaptured: 0 });
+    expect(sql.some((x) => /FROM holdings h/.test(x) && /DISTINCT/.test(x))).toBe(false);
+  });
+
+  it("a row that expires before the date takes its side from its own worst-case P&L", () => {
+    addDriverUnderlying();
+    const longPut = option("QQQ", "PUT", 80, "2026-11-20"); // far out of the money: lapses
+    price(longPut, 0.2);
+    hold(longPut, 2);
+    const shortCall = option("QQQ", "CALL", 120, "2026-11-20"); // written, lapses: keeps the premium
+    price(shortCall, 0.1);
+    hold(shortCall, -1);
+    const moves = [-0.1, -0.05, 0, 0.05];
+    const r = run({ moves, valuationDate: "2026-12-18" });
+    for (const k of CASES) {
+      const lp = pos(r, "QQQ P80 2026-11-20").cases[k];
+      const sc = pos(r, "QQQ C120 2026-11-20").cases[k];
+      // The long put lapses at every one of these moves: a loss, so a loser (not an offset).
+      for (const x of lp.pnlByMove) expect(x).toBeLessThan(0);
+      expect(lp.side).toBe("loses");
+      // The written call lapses too: a gain, so it offsets.
+      for (const x of sc.pnlByMove) expect(x).toBeGreaterThan(0);
+      expect(sc.side).toBe("offsets");
+      for (const [i, m] of r.cases[k].moves.entries()) {
+        expect(m.losersPnlUsd).toBeCloseTo(lp.pnlByMove[i], 6);
+        expect(m.offsetsPnlUsd).toBeCloseTo(sc.pnlByMove[i], 6);
+      }
+    }
+    expectConservation(r);
+  });
+
+  it("an expiring row whose sign changes across the sweep takes the sign at the most negative move", () => {
+    addDriverUnderlying();
+    const call = option("QQQ", "CALL", 105, "2026-11-20");
+    price(call, 1);
+    hold(call, -1); // written
+    const r = run({ moves: [0.2, -0.2, 0], valuationDate: "2026-12-18" });
+    for (const k of CASES) {
+      const c = pos(r, "QQQ C105 2026-11-20").cases[k];
+      // At +20% the move may land first and the call is exercised (a loss);
+      // at -20% it lapses and the premium is kept (a gain).
+      expect(c.pnlByMove[0]).toBeLessThan(0);
+      expect(c.pnlByMove[1]).toBeGreaterThan(0);
+      // The sign at the most negative move (-20%) decides: it offsets a fall.
+      expect(c.side).toBe("offsets");
+    }
+    expectConservation(r);
+  });
+
+  it("totals and rows under half a cent are exactly 0", () => {
+    addDriverUnderlying();
+    // A tiny long and short of the same name in two accounts: rows are real, the total cancels.
+    const s = stock("ZZTN", 0.0001, 1.5);
+    hold(s, 1, 1);
+    hold(s, -1, 3);
+    const t = stock("ZZBG", 50, 1.5);
+    hold(t, 10, 1);
+    hold(t, -10, 3);
+    const r = run({ moves: [-0.3, -0.1, 0.1] });
+    for (const k of CASES) {
+      for (const p of r.positions) {
+        for (const x of p.cases[k].pnlByMove) {
+          expect(Object.is(x, -0)).toBe(false);
+          if (Math.abs(x) < 0.005) expect(x).toBe(0);
+        }
+      }
+      expect(pos(r, "ZZTN", 1).cases[k].pnlByMove).toEqual([0, 0, 0]);
+      for (const m of r.cases[k].moves) {
+        for (const x of [m.bookPnlUsd, m.losersPnlUsd, m.offsetsPnlUsd]) {
+          expect(Object.is(x, -0)).toBe(false);
+          if (Math.abs(x) < 0.005) expect(x).toBe(0);
+        }
+        expect(m.bookPnlUsd).toBe(0);
+      }
+    }
+  });
+});
+

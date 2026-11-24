@@ -38,14 +38,19 @@
  *     expiry" and "the move lands first" (F4).
  *
  * NOTHING VANISHES. A row that cannot be modelled (no price, no FX rate, a
- * refused leveraged beta, an option the model cannot price in either case)
+ * refused leveraged beta with no owner's figure, an option the model cannot
+ * price in either case)
  * contributes zero to every move in both cases and is listed under
  * `notModelled` with its reason; a row whose value is unknown carries
  * `valueUsd: null` and is counted, never shown as a 0% share (F12).
  *
- * The split (F15, down direction), per case: a row whose dollar exposure to
- * the driver is positive LOSES in a fall; negative OFFSETS it; zero or not
- * modelled is flat. For every move and case, book = losers + offsets.
+ * The split (F15, down direction), per case (`sideOf`): a row whose dollar
+ * exposure to the driver is positive LOSES in a fall; negative OFFSETS it. A
+ * row with zero exposure, or one that expires before the valuation date,
+ * takes its side from the sign of its own P&L (an expiring row: the sign at
+ * the most negative move). "flat" means zero at every move (a not-modelled
+ * row included). For every move and case, book = losers + offsets; a figure
+ * under half a cent is exactly 0.
  *
  * READ-ONLY over the database. Reads no `benchmark_prices` row and no
  * `prices` row for a beta (C3); the driver's bars are read through its own
@@ -86,6 +91,9 @@ import { equityIdentity } from "./scenario-recipes";
 import { estimateBeta, isBondFundWithoutMarketMove } from "./scenarios";
 import { loadScenarioPositionsByAccount, type ScenarioPositionAccountRow } from "./scenario-positions";
 import { mapSecurityType } from "@/lib/tws/security-type-map";
+// The capture's own target list: the one rule for which names get daily bars.
+// Its module imports the TWS client lazily (no connection at load) and does not import this engine.
+import { listDailyBarTargets } from "@/lib/tws/daily-bar-capture";
 
 // ─── Types ──────────────────────────────────────────────────────
 
@@ -208,8 +216,18 @@ export interface GainsAtRiskBetaEvidence {
   driverBarsThrough: string | null;
   /** No driver series row, or no priced driver bar in the regression window. */
   driverBarsMissing: boolean;
-  /** Distinct identities whose reason is `no-daily-bars` (C13). */
+  /**
+   * Distinct identities whose reason is `no-daily-bars` (C13) AND that the
+   * daily-bar capture will fetch: they are waiting for their first bars.
+   */
   namesWaitingForBars: number;
+  /**
+   * Distinct `no-daily-bars` identities the capture never fetches (not in
+   * `listDailyBarTargets`: a mutual fund, no contract id, a non-USD row, a
+   * bond fund, or an option underlying with no securities row). They will not
+   * get bars by waiting.
+   */
+  namesNotCaptured: number;
 }
 
 export interface GainsAtRiskResult {
@@ -279,6 +297,11 @@ function clean(x: number): number {
   return x === 0 ? 0 : x;
 }
 
+/** A dollar P&L figure: under half a cent in size is exactly 0 (never a -1e-13 printing as -0); a NaN is never hidden. */
+function cents0(x: number): number {
+  return Math.abs(x) < 0.005 ? 0 : x;
+}
+
 function intrinsicToday(row: ScenarioPositionAccountRow): number | null {
   const type = (row.option_type ?? "").trim().toUpperCase();
   const K = row.strike_price;
@@ -334,7 +357,7 @@ function caseFor(
       else if (c.side === "loses") losers += c.pnlByMove[i];
       // "flat" rows carry exactly zero at every move, so book = losers + offsets.
     }
-    return { move, bookPnlUsd: clean(losers + offsets), losersPnlUsd: clean(losers), offsetsPnlUsd: clean(offsets) };
+    return { move, bookPnlUsd: cents0(losers + offsets), losersPnlUsd: cents0(losers), offsetsPnlUsd: cents0(offsets) };
   });
   const modelled = positions.filter((p) => p.unmodelledReason === undefined);
   const noLink = modelled.filter((p) => p.betaSource === "no-measured-link");
@@ -362,12 +385,11 @@ function emptyResult(driver: string, input: GainsAtRiskInput): GainsAtRiskResult
     positions: [],
     cases,
     // Nothing is read for an empty scope, so nothing is reported missing.
-    betaEvidence: { driverBarsThrough: null, driverBarsMissing: false, namesWaitingForBars: 0 },
+    betaEvidence: { driverBarsThrough: null, driverBarsMissing: false, namesWaitingForBars: 0, namesNotCaptured: 0 },
     betaOverridesIgnored: Object.keys(input.betaOverrides ?? {}).length,
   };
 }
 
-/** Stock, ETF or mutual fund (case-insensitive): the identities the selloff floor applies to. */
 /*
  * Equity-like identity types (review fix 1): read through the single type
  * mapper (`mapSecurityType`), as `isMoverSecurityType` does. The mapper
@@ -400,16 +422,33 @@ export function isEquityLikeType(type: string | null | undefined): boolean {
 }
 
 /**
- * A row's side in one case (review fix 2). Exposure decides when it is not
- * zero. A row with zero exposure (its underlying held unchanged) can still
- * carry P&L on its options (time decay, a volatility change), the same at
- * every move: a loss "loses", a gain "offsets", exactly zero is "flat" (in
- * neither column). Mixed signs cannot arise with the underlying held
- * unchanged; should they, the row "loses" (never credited as an offset).
+ * A row's side in one case.
+ *
+ * - A row that EXPIRES BEFORE THE VALUATION DATE (`expiringWorstIndex` set)
+ *   takes its side from the sign of its own worst-case P&L, not from its
+ *   exposure today: a long put that lapses is a loser, not an offset whose loss
+ *   sits in the offsetting column. The side is fixed across the case's moves;
+ *   when the sign differs across moves, the sign at the MOST NEGATIVE move of
+ *   the sweep decides (a fall is what the page shows). At exactly zero there,
+ *   the zero-exposure rule below decides.
+ * - Otherwise exposure decides when it is not zero.
+ * - A row with zero exposure (its underlying held unchanged) can still carry
+ *   P&L on its options (time decay, a volatility change), the same at every
+ *   move: a loss "loses", a gain "offsets", exactly zero is "flat" (in neither
+ *   column). Mixed signs cannot arise with the underlying held unchanged;
+ *   should they, the row "loses" (never credited as an offset).
+ *
+ * "flat" is returned only when every figure is exactly 0, so book = losers + offsets.
  */
-function sideOf(exposureUsd: number, pnlByMove: number[]): GainsAtRiskSide {
-  if (exposureUsd > 0) return "loses";
-  if (exposureUsd < 0) return "offsets";
+function sideOf(exposureUsd: number, pnlByMove: number[], expiringWorstIndex: number | null): GainsAtRiskSide {
+  if (expiringWorstIndex !== null && expiringWorstIndex >= 0) {
+    const worst = pnlByMove[expiringWorstIndex];
+    if (worst < 0) return "loses";
+    if (worst > 0) return "offsets";
+  } else {
+    if (exposureUsd > 0) return "loses";
+    if (exposureUsd < 0) return "offsets";
+  }
   const anyLoss = pnlByMove.some((x) => x < 0);
   const anyGain = pnlByMove.some((x) => x > 0);
   if (anyGain && !anyLoss) return "offsets";
@@ -470,9 +509,11 @@ export function computeGainsAtRisk(
           endDate: addDays(today, -1),
         });
   const regressionMemo = new Map<number, DailyBarEvidence>();
+  /** Index of the most negative move in the sweep (first one on a tie); -1 with no moves. */
+  const worstMoveIndex = input.moves.reduce((best, m, i, all) => (best < 0 || m < all[best] ? i : best), -1);
   const betaMemo = new Map<string, DriverBeta>();
-  /** Distinct identities whose reason is no-daily-bars: by id, else by identity symbol. */
-  const waitingForBars = new Set<string>();
+  /** Distinct identities whose reason is no-daily-bars (by id, else by identity symbol) -> securities id. */
+  const noBarsIdentities = new Map<string, number | null>();
 
   const positions = rows.map((row): GainsAtRiskPosition => {
     const isOption = isOptionSecurityType(row.security_type);
@@ -600,8 +641,9 @@ export function computeGainsAtRisk(
       betaMemo.set(memoKey, resolved);
     }
     if (resolved.source === "no-measured-link" && resolved.reason === "no-daily-bars") {
-      waitingForBars.add(
+      noBarsIdentities.set(
         identitySecurityId !== null ? `id:${identitySecurityId}` : `sym:${identity.symbol.trim().toUpperCase()}`,
+        identitySecurityId,
       );
     }
 
@@ -721,8 +763,9 @@ export function computeGainsAtRisk(
       const up = priceAt(beta, 0.01, today, 0);
       const down = priceAt(beta, -0.01, today, 0);
       const exposureUsd = "pnl" in up && "pnl" in down ? clean((up.pnl - down.pnl) / 0.02) : 0;
-      const pnlByMove = pricedByCase[k].map((p) => clean(p.pnl));
-      return { beta, pnlByMove, side: sideOf(exposureUsd, pnlByMove), exposureUsd };
+      const pnlByMove = pricedByCase[k].map((p) => cents0(p.pnl));
+      const expires = pricedByCase[k].some((p) => p.result?.expiresBeforeDate === true);
+      return { beta, pnlByMove, side: sideOf(exposureUsd, pnlByMove, expires ? worstMoveIndex : null), exposureUsd };
     };
 
     // Value and price source: v0 does not depend on the move or the case.
@@ -798,6 +841,18 @@ export function computeGainsAtRisk(
     if (!Number.isInteger(id) || !appliedIdentities.has(id)) betaOverridesIgnored += 1;
   }
 
+  // Waiting vs never captured: membership in the capture's own target list
+  // (`listDailyBarTargets`, the one rule), read only when some name has no bars.
+  let namesWaitingForBars = 0;
+  let namesNotCaptured = 0;
+  if (noBarsIdentities.size > 0) {
+    const captured = new Set(listDailyBarTargets(db, today, { trackedIndexSeeds: seeds }).targets);
+    for (const id of noBarsIdentities.values()) {
+      if (id !== null && captured.has(id)) namesWaitingForBars += 1;
+      else namesNotCaptured += 1;
+    }
+  }
+
   return {
     driverSymbol: driver,
     valuationDate: input.valuationDate,
@@ -809,7 +864,8 @@ export function computeGainsAtRisk(
     betaEvidence: {
       driverBarsThrough: driverBars.length > 0 ? driverBars[driverBars.length - 1].date : null,
       driverBarsMissing: driverBars.length === 0,
-      namesWaitingForBars: waitingForBars.size,
+      namesWaitingForBars,
+      namesNotCaptured,
     },
     betaOverridesIgnored,
   };
