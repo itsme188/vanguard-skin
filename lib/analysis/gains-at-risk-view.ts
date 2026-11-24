@@ -337,7 +337,7 @@ export const BETA_SOURCE_LABELS: Record<GainsAtRiskBetaSource, string> = {
 export const NO_MEASURED_LINK_REASON_LABELS: Record<NoMeasuredLinkReason, string> = {
   "no-daily-bars": "no daily prices yet",
   "short-history": "too few days of daily prices",
-  "low-fit": "its daily moves follow the index too loosely",
+  "low-fit": "its link to the index cannot be told apart from zero",
   "foreign-session": "not traded on the US session",
   "driver-bars-missing": "the index's own daily prices are missing",
   "flat-driver": "the index did not move",

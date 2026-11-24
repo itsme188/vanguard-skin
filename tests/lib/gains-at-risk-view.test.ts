@@ -470,6 +470,7 @@ describe("gains at risk: where each beta comes from", () => {
   const ev = (over: Partial<DailyBarEvidence> = {}): DailyBarEvidence => ({
     outcome: "measured",
     beta: 1.2,
+    slopeTStat: 12,
     rSquared: 0.6,
     pairs: 480,
     securityBars: 500,
@@ -596,7 +597,7 @@ describe("gains at risk: plain-words labels cover every reason", () => {
     expect(NO_MEASURED_LINK_REASON_LABELS).toEqual({
       "no-daily-bars": "no daily prices yet",
       "short-history": "too few days of daily prices",
-      "low-fit": "its daily moves follow the index too loosely",
+      "low-fit": "its link to the index cannot be told apart from zero",
       "foreign-session": "not traded on the US session",
       "driver-bars-missing": "the index's own daily prices are missing",
       "flat-driver": "the index did not move",

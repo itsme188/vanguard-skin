@@ -266,8 +266,21 @@ function regressAlignedSeries(
 export const DAILY_BAR_WINDOW_DAYS = 730;
 /** Fewest aligned pairs, after both guards, for a measured link (B1). */
 export const DAILY_BAR_MIN_PAIRS = 60;
-/** Lowest r-squared for a measured link (B1). */
-export const DAILY_BAR_MIN_R_SQUARED = 0.1;
+/**
+ * Smallest |slope t-statistic| for a measured link (controller ruling
+ * 2026-11-24, replacing the r-squared >= 0.10 gate for this function only):
+ * with two years of daily pairs the question is whether the slope is
+ * distinguishable from zero, not how much of the name's variance the driver
+ * explains. r-squared is still reported as evidence.
+ */
+export const MIN_SLOPE_T_STAT = 2;
+/**
+ * The largest |slopeTStat| ever reported. A perfect fit (zero residual
+ * variance) has an infinite t-statistic; it is reported as this finite value
+ * with the slope's sign, so it survives JSON (Infinity would serialize as
+ * null, which reads as "OLS could not run").
+ */
+export const SLOPE_T_STAT_CAP = 1e9;
 /** Largest |security log return - driver log return| a pair may carry (B2). */
 export const OUTLIER_RESIDUAL_LOG_BOUND = 0.35;
 
@@ -285,6 +298,13 @@ export interface DailyBarEvidence {
   /** Set whenever OLS could run (two or more pairs and a moving driver). */
   beta: number | null;
   rSquared: number | null;
+  /**
+   * beta / standard error of the slope (residual variance on n - 2 degrees of
+   * freedom over the driver's sum of squared deviations). Null when OLS could
+   * not run or n < 3. Always finite: clamped to +/- SLOPE_T_STAT_CAP, which is
+   * also what a perfect fit reports.
+   */
+  slopeTStat: number | null;
   /** Aligned pairs kept after the gap guard and the residual guard. */
   pairs: number;
   /** Priced daily bars in the window, per leg. */
@@ -310,6 +330,38 @@ export function isOutlierReturnPair(securityLogReturn: number, driverLogReturn: 
 }
 
 /**
+ * The OLS slope's t-statistic for Rs = alpha + beta * Rb: beta / se(beta),
+ * se(beta) = sqrt(SSR / (n - 2) / Sbb), with SSR summed from the residuals
+ * directly (no cancellation). Null when n < 3 or the driver does not move.
+ * Clamped to +/- SLOPE_T_STAT_CAP; a zero residual with a non-zero slope
+ * reports the cap with the slope's sign, a zero slope reports 0.
+ */
+export function slopeTStatistic(securityReturns: number[], driverReturns: number[]): number | null {
+  const n = securityReturns.length;
+  if (n < 3 || driverReturns.length !== n) return null;
+  const meanS = securityReturns.reduce((a, v) => a + v, 0) / n;
+  const meanB = driverReturns.reduce((a, v) => a + v, 0) / n;
+  let sbb = 0;
+  let ssb = 0;
+  for (let i = 0; i < n; i++) {
+    const dB = driverReturns[i] - meanB;
+    sbb += dB * dB;
+    ssb += (securityReturns[i] - meanS) * dB;
+  }
+  if (sbb === 0) return null;
+  const beta = ssb / sbb;
+  let ssr = 0;
+  for (let i = 0; i < n; i++) {
+    const r = securityReturns[i] - meanS - beta * (driverReturns[i] - meanB);
+    ssr += r * r;
+  }
+  if (beta === 0) return 0;
+  const se = Math.sqrt(ssr / (n - 2) / sbb);
+  const t = se > 0 ? beta / se : Math.sign(beta) * SLOPE_T_STAT_CAP;
+  return Math.max(-SLOPE_T_STAT_CAP, Math.min(SLOPE_T_STAT_CAP, t));
+}
+
+/**
  * A security trades in the US session when its stored currency is USD (C4).
  * `securities.currency` is NOT NULL with a USD default; a missing value reads
  * as USD.
@@ -328,7 +380,8 @@ export function isUsSessionSecurity(currency: string | null): boolean {
  *
  * Outcome order: foreign-session, driver-bars-missing, no-daily-bars,
  * short-history (fewer than DAILY_BAR_MIN_PAIRS pairs, none included),
- * flat-driver, low-fit, measured. Always returns evidence, never null.
+ * flat-driver, low-fit (|slope t-statistic| below MIN_SLOPE_T_STAT: the link
+ * is not distinguishable from zero), measured. r-squared is evidence only. Always returns evidence, never null.
  *
  * Read-only. No cache is read or written.
  */
@@ -354,6 +407,7 @@ export function computeDailyBarRegression(
     outcome: "measured",
     beta: null,
     rSquared: null,
+    slopeTStat: null,
     pairs: 0,
     securityBars: securityBars.length,
     driverBars: driverBars.length,
@@ -393,11 +447,13 @@ export function computeDailyBarRegression(
   if (fit) {
     evidence.beta = fit.beta;
     evidence.rSquared = fit.rSquared;
+    evidence.slopeTStat = slopeTStatistic(aligned.sReturns, aligned.bReturns);
   }
 
   if (n < DAILY_BAR_MIN_PAIRS) return { ...evidence, outcome: "short-history" };
   if (!fit) return { ...evidence, outcome: "flat-driver" };
-  if (fit.rSquared < DAILY_BAR_MIN_R_SQUARED) return { ...evidence, outcome: "low-fit" };
+  const t = evidence.slopeTStat;
+  if (t === null || Math.abs(t) < MIN_SLOPE_T_STAT) return { ...evidence, outcome: "low-fit" };
   return evidence;
 }
 

@@ -103,6 +103,7 @@ function noRowEvidence(): DailyBarEvidence {
     outcome: "no-daily-bars",
     beta: null,
     rSquared: null,
+    slopeTStat: null,
     pairs: 0,
     securityBars: 0,
     driverBars: 0,
