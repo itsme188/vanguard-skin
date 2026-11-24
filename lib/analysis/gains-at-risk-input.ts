@@ -10,7 +10,6 @@
  */
 
 import { ANALYSIS_SCOPES, type AnalysisScope } from "@/lib/analysis/view-param";
-import { VOL_MOVE_MIN, VOL_MOVE_MAX } from "@/lib/compute/option-reprice";
 import type { GainsAtRiskResult } from "@/lib/compute/gains-at-risk";
 import type { YearGainResult } from "@/lib/compute/year-gain";
 // Type only: erased at build, so no query code reaches the client bundle.
@@ -18,6 +17,15 @@ import type { PositionsFreshness } from "@/lib/queries/positions-freshness";
 
 export const GAINS_AT_RISK_DRIVERS = ["SPY", "QQQ", "VTI"] as const;
 export type GainsAtRiskDriver = (typeof GAINS_AT_RISK_DRIVERS)[number];
+
+/**
+ * The volatility-change bounds, in points. Plain constants so this module
+ * (read by the client view) value-imports no engine code; they equal the
+ * repricer's `VOL_MOVE_MIN` / `VOL_MOVE_MAX` (`lib/compute/option-reprice.ts`),
+ * pinned by tests/lib/gains-at-risk-view.test.ts.
+ */
+export const GAINS_AT_RISK_VOL_MIN = -20;
+export const GAINS_AT_RISK_VOL_MAX = 60;
 
 export const GAINS_AT_RISK_BOUNDS = { moveAbsMax: 0.6, maxMoves: 41, maxOverrides: 200, maxYearsOut: 2 } as const;
 
@@ -98,8 +106,8 @@ export function gainsAtRiskBodyProblem(body: unknown, today: string): string | n
     return `moves must each be a number between -${limit} and ${limit}.`;
   }
 
-  if (!isFiniteNumber(b.volChangePoints) || b.volChangePoints < VOL_MOVE_MIN || b.volChangePoints > VOL_MOVE_MAX) {
-    return `volChangePoints must be a number between ${VOL_MOVE_MIN} and ${VOL_MOVE_MAX}.`;
+  if (!isFiniteNumber(b.volChangePoints) || b.volChangePoints < GAINS_AT_RISK_VOL_MIN || b.volChangePoints > GAINS_AT_RISK_VOL_MAX) {
+    return `volChangePoints must be a number between ${GAINS_AT_RISK_VOL_MIN} and ${GAINS_AT_RISK_VOL_MAX}.`;
   }
 
   if (b.priceOverrides !== undefined) {

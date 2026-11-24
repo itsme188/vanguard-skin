@@ -3,6 +3,7 @@
 // Canonical scheme (2026-06-09 IA fix; defense added 2026-07-05; giving added
 // 2026-08-17): `?view=` with six values:
 //   workspace (default) | diagnostics | performance | trade-reviews | defense | giving
+//   | gains (Gains at risk, added 2026-11-24)
 // Diagnostics keeps a secondary `?mode=` (classification default | factors)
 // for its internal classification/factor toggle.
 //
@@ -19,7 +20,8 @@ export type AnalysisSubView =
   | "performance"
   | "trade-reviews"
   | "defense"
-  | "giving";
+  | "giving"
+  | "gains";
 
 export type AnalysisDiagnosticsMode = "classification" | "factors";
 
@@ -47,6 +49,20 @@ export function resolveAnalysisScope(scope?: string): AnalysisScope {
     : DEFAULT_ANALYSIS_SCOPE;
 }
 
+/**
+ * Gains at risk opens on EVERY account (owner ruling 1, 2026-11-24): a
+ * deliberate exception to the Analysis default above, which stays Vanguard
+ * for every other sub-view. The year's gain on that page is always every
+ * account; this is only the stress scope.
+ */
+export const GAINS_AT_RISK_DEFAULT_SCOPE: AnalysisScope = "all";
+
+export function resolveGainsAtRiskScope(scope?: string): AnalysisScope {
+  return (ANALYSIS_SCOPES as readonly string[]).includes(scope ?? "")
+    ? (scope as AnalysisScope)
+    : GAINS_AT_RISK_DEFAULT_SCOPE;
+}
+
 function normalizeMode(mode?: string): AnalysisDiagnosticsMode {
   return mode === "factors" ? "factors" : "classification";
 }
@@ -72,6 +88,8 @@ export function resolveAnalysisView(params: {
       return { view: "defense", mode: "classification" };
     case "giving":
       return { view: "giving", mode: "classification" };
+    case "gains":
+      return { view: "gains", mode: "classification" };
   }
 
   // No (or unknown) view: legacy ?mode= alias keeps old diagnostics URLs working.

@@ -23,10 +23,12 @@ import { TrustStrip } from "../components/analysis/TrustStrip";
 import { WorkspacePanel } from "../components/analysis/WorkspacePanel";
 import { AnalysisViewToggle } from "../components/AnalysisViewToggle";
 import { GivingView } from "../components/giving/GivingView";
+import { GainsAtRiskSection } from "../components/gains-at-risk/GainsAtRiskSection";
 import {
   ANALYSIS_SCOPES,
   resolveAnalysisScope,
   resolveAnalysisView,
+  resolveGainsAtRiskScope,
   type AnalysisScope,
 } from "@/lib/analysis/view-param";
 import { SignificantMovesCard } from "../components/SignificantMovesCard";
@@ -128,6 +130,7 @@ const VIEW_TITLES: Record<string, string> = {
   "trade-reviews": "Analysis · Trade Reviews",
   defense: "Analysis · Defense",
   giving: "Analysis · Giving",
+  gains: "Analysis · Gains at risk",
 };
 
 // Per-sub-view tab title (qa:page-head--same-tab-title-every-route-...).
@@ -217,6 +220,19 @@ export default async function AnalysisPage({ searchParams }: PageProps) {
             md:space-y-0 removes on desktop. */}
         <DefenseScopePills active={scope} />
         <DefenseView scope={scope} />
+      </div>
+    );
+  }
+
+  if (resolved.view === "gains") {
+    // This page's stress scope opens on EVERY account (owner ruling 1,
+    // 2026-11-24): its own resolver, not the Analysis default above. The
+    // year's gain on it is always every account whatever the stress scope.
+    // md:space-y-0 mirrors the other branches: the pill toggle is md:hidden.
+    return (
+      <div className="space-y-6 md:space-y-0">
+        <AnalysisViewToggle currentView="gains" scope={params.scope} />
+        <GainsAtRiskSection scope={resolveGainsAtRiskScope(params.scope)} />
       </div>
     );
   }

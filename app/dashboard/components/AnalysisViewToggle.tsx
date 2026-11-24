@@ -8,8 +8,8 @@ import { ScrollFade } from "./ScrollFade";
 // Analysis sub-view switcher — mirrors ResearchViewToggle's pill idiom.
 // Desktop users get the Analysis tab-dropdown in TabNav; this pill row is
 // mobile-only (the mobile bottom-nav has no subviews, so without this most
-// Analysis sub-screens are unreachable on iPhone). Rendered on ALL SIX
-// sub-views so Performance / Trade Reviews / Defense / Giving are not dead-ends.
+// Analysis sub-screens are unreachable on iPhone). Rendered on ALL SEVEN
+// sub-views so Performance / Trade Reviews / Defense / Giving / Gains at risk are not dead-ends.
 // The strip overflows at phone width, so the active pill is scrolled into view
 // on mount and ScrollFade cues that more pills sit off to the right.
 const VIEWS: { key: AnalysisSubView; label: string; query: string }[] = [
@@ -19,6 +19,7 @@ const VIEWS: { key: AnalysisSubView; label: string; query: string }[] = [
   { key: "trade-reviews", label: "Reviews", query: "view=trade-reviews" },
   { key: "defense", label: "Defense", query: "view=defense" },
   { key: "giving", label: "Giving", query: "view=giving" },
+  { key: "gains", label: "Gains at risk", query: "view=gains" },
 ];
 
 export function AnalysisViewToggle({

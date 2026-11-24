@@ -19,7 +19,7 @@ export const tabs: Tab[] = [
     href: "/dashboard/analysis",
     // Canonical ?view= scheme (2026-06-09; defense added 2026-07-05; giving added
     // 2026-08-17): workspace | diagnostics | performance | trade-reviews | defense |
-    // giving. Legacy ?mode=factors / ?mode=classification still resolve to
+    // giving | gains (Gains at risk, added 2026-11-24). Legacy ?mode=factors / ?mode=classification still resolve to
     // Diagnostics via lib/analysis/view-param.ts; the old Classification /
     // Factor Exposure split is now the in-page mode toggle inside Diagnostics.
     // Analysis is the only tab with an account-scope selector, so it's the
@@ -32,6 +32,7 @@ export const tabs: Tab[] = [
       { name: "Trade Reviews", href: "/dashboard/analysis?view=trade-reviews", matchParam: { key: "view", value: "trade-reviews" } },
       { name: "Defense", href: "/dashboard/analysis?view=defense", matchParam: { key: "view", value: "defense" } },
       { name: "Giving", href: "/dashboard/analysis?view=giving", matchParam: { key: "view", value: "giving" } },
+      { name: "Gains at risk", href: "/dashboard/analysis?view=gains", matchParam: { key: "view", value: "gains" } },
     ],
   },
   {

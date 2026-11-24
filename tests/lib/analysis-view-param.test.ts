@@ -47,6 +47,11 @@ describe("resolveAnalysisView", () => {
     expect(resolveAnalysisView({ view: "giving" })).toEqual({ view: "giving", mode: "classification" });
   });
 
+  it("resolves the gains-at-risk sub-view", () => {
+    expect(resolveAnalysisView({ view: "gains" })).toEqual({ view: "gains", mode: "classification" });
+    expect(resolveAnalysisView({ view: "gains", mode: "factors" }).view).toBe("gains");
+  });
+
   // ── Legacy aliases (CLAUDE.md documents ?mode=factors as kept) ──
   it("aliases legacy ?mode=factors (no view) to diagnostics/factors", () => {
     expect(resolveAnalysisView({ mode: "factors" })).toEqual({
