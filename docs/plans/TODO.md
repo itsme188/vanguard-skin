@@ -12,7 +12,7 @@
 ## User roadmap (added 2026-07-03)
 
 - [ ] **Gains at risk (2026-11-24)** (`docs/DECISIONS.md` 2026-11-24 (late); design `docs/superpowers/specs/2026-11-24-gains-at-risk-design.md`). Direction-only.
-    - ~~(G1) **Step 1: the line and the table, the year's gain, betas from daily closes, measured and selloff cases, the owner's figure, daily-bar capture and backfill.**~~ Built 2026-11-24 on `claude/analysis-exposure-handoff-47b6ce`; backfill applied to the live database with the owner's go-ahead.
+    - ~~(G1) **Step 1: the line and the table, the year's gain, betas from daily closes, measured and selloff cases, the owner's figure, daily-bar capture and backfill.**~~ DONE 2026-11-24: built on `claude/analysis-exposure-handoff-47b6ce` (source through `c3560369`), full verification passed, landed and deployed on the owner's go-ahead; the daily-bar backfill was applied to the live database the same day. Not seen in a browser: privacy mode on the page, and the price box for an option with no volatility.
     - (G2) **USER: confirm the tracked index for each leveraged or inverse fund** (seed ships empty, so those funds are listed as not modelled), and whether a sector ETF may stand in for an index with no bars.
     - (G3) **Step 2: try a hedge** (trial legs, cost, the line moves). Needs its own plan.
     - (G4) **Step 3: compare candidate hedges from the live chain, and a single-name driver** (the short-stock case; compare by contract count and price per contract as well as notional). Needs its own plan.
