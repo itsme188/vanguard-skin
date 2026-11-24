@@ -17,6 +17,8 @@ vi.mock("@/lib/tws/client", () => ({
 
 import { getIbApi } from "@/lib/tws/client";
 import {
+  dailyBarCaptureEligibility,
+  type DailyBarEligibilityRow,
   DAILY_BAR_BATCH_MIN_INTERVAL_MS,
   DAILY_BAR_CAPTURE_MAX_PER_BATCH,
   listDailyBarTargets,
@@ -296,7 +298,7 @@ describe("runDailyBarCapture", () => {
     expect(f.calls).toHaveLength(1);
   });
 
-  it("a difference within 0.5% is not a basis change; fewer than 5 compared sessions is", async () => {
+  it("a difference within 0.5% is not a basis change; fewer than 5 compared sessions refetches in full but is not one", async () => {
     const within = security("ZZA");
     hold(within);
     storeBars(within, FULL_HISTORY, () => 100.4);
@@ -307,7 +309,7 @@ describe("runDailyBarCapture", () => {
     storeBars(sparse, sparseDates, () => 100);
     const f = fakeFetch({ close: () => 100 });
     const r = await runDailyBarCapture(db, { today: TODAY, now: T0, fetch: f.fn });
-    expect(r.basisChanges).toBe(1);
+    expect(r.basisChanges).toBe(0);
     expect(f.calls.filter((c) => c.securityId === within).map((c) => c.durationStr)).toEqual([expect.stringMatching(/ D$/)]);
     expect(f.calls.filter((c) => c.securityId === sparse).map((c) => c.durationStr)).toEqual([
       expect.stringMatching(/ D$/),
@@ -668,6 +670,82 @@ describe("fix round 1: targets, duplicate requests, disconnects, US session", ()
     expect(src).toMatch(/import \{[^}]*isUsSessionSecurity[^}]*\} from "@\/lib\/compute\/security-regression"/);
     expect(src).not.toContain("function isUsdSession");
     expect(isUsSessionSecurity(" usd ")).toBe(true);
+  });
+});
+
+describe("final review: older-bar delete only on a real mismatch", () => {
+  const older = () => sessionsBetween(addDays(TODAY, -900), addDays(TODAY, -731));
+
+  it("a real mismatch deletes older daily bars and counts a basis change", async () => {
+    const id = security("ZZA");
+    hold(id);
+    storeBars(id, [...older(), ...FULL_HISTORY], () => 200);
+    const info = vi.spyOn(console, "log").mockImplementation(() => {});
+    const r = await runDailyBarCapture(db, { today: TODAY, now: T0, fetch: fakeFetch({ close: () => 100 }).fn });
+    info.mockRestore();
+    expect(r).toMatchObject({ basisChanges: 1, staleOlderBarsDeleted: older().length });
+  });
+
+  it("too few comparable sessions (a halt or a sparse name): full refetch and window replace, nothing older deleted, no basis change", async () => {
+    const id = security("ZZA");
+    hold(id);
+    // Two years deep plus older bars, but a halt left only 3 sessions in the overlap before the latest.
+    const halted = [...older(), ...FULL_HISTORY.filter((d) => d < "2026-10-20"), "2026-10-28", "2026-10-29", "2026-10-30", YESTERDAY];
+    storeBars(id, halted, () => 100);
+    upsertOhlcvBars(db, id, "5 mins", [bar(`${YESTERDAY} 10:00:00`, 100)]);
+    const f = fakeFetch({ close: () => 100 });
+    const r = await runDailyBarCapture(db, { today: TODAY, now: T0, fetch: f.fn });
+    expect(f.calls.map((c) => c.durationStr)).toEqual([expect.stringMatching(/ D$/), "2 Y"]);
+    expect(r).toMatchObject({ basisChanges: 0, staleOlderBarsDeleted: 0, fullRefetches: 1, written: 1, failed: 0 });
+    expect(getPricedDailyBarRange(db, id)?.earliest).toBe(older()[0]);
+    // The window was replaced: the halt's gap is filled.
+    expect(getPricedDailyCloses(db, id, "2026-10-20").has("2026-10-21")).toBe(true);
+    expect(getOhlcvBars(db, id, "5 mins")).toHaveLength(1);
+  });
+});
+
+describe("dailyBarCaptureEligibility: the one pure rule", () => {
+  const base: DailyBarEligibilityRow = {
+    security_type: "Stock",
+    fund_category: null,
+    sector: null,
+    name: "ZZ name",
+    duration_years: null,
+    currency: "USD",
+    ib_con_id: 1,
+  };
+  it("answers each reason, in order", () => {
+    expect(dailyBarCaptureEligibility(base)).toEqual({ eligible: true });
+    expect(dailyBarCaptureEligibility({ ...base, security_type: "ETF", currency: null })).toEqual({ eligible: true });
+    expect(dailyBarCaptureEligibility({ ...base, security_type: " option " })).toEqual({ eligible: false, reason: "option" });
+    expect(dailyBarCaptureEligibility({ ...base, security_type: "Put", ib_con_id: null })).toEqual({ eligible: false, reason: "option" });
+    expect(dailyBarCaptureEligibility({ ...base, security_type: "Bond" })).toEqual({ eligible: false, reason: "bond-or-cash" });
+    expect(dailyBarCaptureEligibility({ ...base, security_type: "Mutual Fund", fund_category: "Cash Equivalent" })).toEqual({
+      eligible: false,
+      reason: "bond-or-cash",
+    });
+    expect(dailyBarCaptureEligibility({ ...base, security_type: "money_market" })).toEqual({ eligible: false, reason: "bond-or-cash" });
+    expect(dailyBarCaptureEligibility({ ...base, security_type: "mutual_fund" })).toEqual({ eligible: false, reason: "mutual-fund" });
+    expect(
+      dailyBarCaptureEligibility({ ...base, security_type: "ETF", fund_category: "US Treasury", sector: "Fixed Income" }),
+    ).toEqual({ eligible: false, reason: "bond-fund" });
+    expect(dailyBarCaptureEligibility({ ...base, currency: "KRW", ib_con_id: null })).toEqual({ eligible: false, reason: "not-us-session" });
+    expect(dailyBarCaptureEligibility({ ...base, ib_con_id: null })).toEqual({ eligible: false, reason: "no-contract-id" });
+  });
+
+  it("the list builder reads the same rule (one source)", () => {
+    const src = fs.readFileSync(path.join(process.cwd(), "lib/tws/daily-bar-capture.ts"), "utf8");
+    const list = src.slice(anchorIndex(src, "export function listDailyBarTargets"));
+    expect(list).toContain("dailyBarCaptureEligibility(");
+    expect(list).not.toContain("isBondFundWithoutMarketMove(");
+    expect(list).not.toContain("isUsSessionSecurity(");
+    expect(src).not.toMatch(/is_option|is_bond|is_cash/);
+  });
+
+  it("is pure: it reads no database and needs no broker", () => {
+    mockedGetIbApi.mockReturnValue(null);
+    expect(dailyBarCaptureEligibility(base)).toEqual({ eligible: true });
+    expect(mockedGetIbApi).not.toHaveBeenCalled();
   });
 });
 

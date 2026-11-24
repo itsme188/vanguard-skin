@@ -15,11 +15,14 @@
  *   - Never trust a stored trailing bar (C1): every capture refetches the 14
  *     calendar days before the stored latest priced bar and overwrites them,
  *     so a mid-session bar the Charts page stored becomes the true close.
- *   - A change of adjustment basis (C2): when fewer than 5 refetched sessions
- *     can be compared with stored closes (the stored latest bar left out), or
- *     any compared close differs by more than 0.5%, the full two years are
- *     refetched and the window is replaced in one transaction, so a split
- *     TWS has applied since is never spliced onto old-basis bars.
+ *   - A change of adjustment basis (C2): when any refetched close compared
+ *     with a stored close (the stored latest bar left out) differs by more
+ *     than 0.5%, the full two years are refetched and the window is replaced
+ *     in one transaction, with the older daily bars (old basis) deleted, so a
+ *     split TWS has applied since is never spliced onto old-basis bars. When
+ *     fewer than 5 sessions compare (a halt, a sparse name), the window is
+ *     refetched and replaced the same way, but nothing older is deleted and
+ *     no basis change is counted (final review, 2026-11-24).
  *   - "Done for today" is this process's own ledger (C1, C9), reset when the
  *     Eastern day changes: a stored latest date never marks a security fresh.
  *   - Budget (C8): at most 20 securities per run, at most one run per 25
@@ -38,8 +41,8 @@ import { getPricedDailyBarRange, getPricedDailyCloses } from "@/lib/queries/ohlc
 import { replaceDailyBarsInWindow, upsertOhlcvBars } from "@/lib/mutations/ohlcv";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 import { getLiveHeldOptionUnderlyings } from "./option-underlyings";
-import { OPTION_ROW_SQL } from "@/lib/compute/option-elasticity";
-import { cashEquivalentSecuritySql } from "@/lib/compute/cash-equivalents";
+import { isOptionSecurityType } from "@/lib/compute/option-elasticity";
+import { isCashEquivalentSecurity } from "@/lib/compute/cash-equivalents";
 import { LEVERAGED_TRACKED_INDEX_SEEDS } from "@/lib/securities/leveraged-tracked-index";
 import { GAINS_AT_RISK_DRIVERS } from "@/lib/analysis/gains-at-risk-input";
 import { addDays, calendarDaysBetween, todayET } from "@/lib/calendar/date-utils";
@@ -90,26 +93,89 @@ function ledgerFor(today: string): DailyBarLedger {
   return fresh;
 }
 
-interface CandidateRow {
+/**
+ * The fields of one `securities` row that decide whether the capture fetches
+ * its daily bars. Column names are the table's own.
+ */
+export interface DailyBarEligibilityRow {
+  /** `securities.security_type` (any casing). */
+  security_type: string | null;
+  /** `securities.fund_category`. */
+  fund_category: string | null;
+  /** `securities.sector`. */
+  sector: string | null;
+  /** `securities.name`. */
+  name: string | null;
+  /** `securities.duration_years`. */
+  duration_years: number | null;
+  /** `securities.currency` (NULL reads as USD). */
+  currency: string | null;
+  /** `securities.ib_con_id`. */
+  ib_con_id: number | null;
+}
+
+export type DailyBarIneligibleReason =
+  | "option"
+  | "mutual-fund"
+  | "bond-fund"
+  | "bond-or-cash"
+  | "no-contract-id"
+  | "not-us-session";
+
+export type DailyBarEligibility = { eligible: true } | { eligible: false; reason: DailyBarIneligibleReason };
+
+function isMutualFundType(type: string | null): boolean {
+  const t = (type ?? "").trim().toLowerCase();
+  return t === "mutual fund" || t === "mutual_fund";
+}
+
+/**
+ * Whether the daily-bar capture will ever fetch this security's bars: the
+ * ONE rule, read by `listDailyBarTargets` and by the Gains at risk engine
+ * (to tell a name the capture never fetches from one still waiting).
+ * Pure: no database, no broker. Checked in this order:
+ *   - `option`: an option (its underlying is captured instead);
+ *   - `bond-or-cash`: an individual bond, or a cash-equivalent
+ *     (`isCashEquivalentSecurity`);
+ *   - `mutual-fund`: the shared fetcher asks for TRADES, a fund needs
+ *     another data type (`getWhatToShow`);
+ *   - `bond-fund`: a bond fund with no equity market move, by the scenario
+ *     engine's own test (`isBondFundWithoutMarketMove`);
+ *   - `not-us-session`: stored currency not USD (ruling C4,
+ *     `isUsSessionSecurity`);
+ *   - `no-contract-id`: no IB contract id yet (it becomes eligible once the
+ *     enrichment step finds one).
+ */
+export function dailyBarCaptureEligibility(row: DailyBarEligibilityRow): DailyBarEligibility {
+  const type = (row.security_type ?? "").trim().toLowerCase();
+  if (isOptionSecurityType(row.security_type)) return { eligible: false, reason: "option" };
+  if (type === "bond" || isCashEquivalentSecurity({ security_type: row.security_type, fund_category: row.fund_category })) {
+    return { eligible: false, reason: "bond-or-cash" };
+  }
+  if (isMutualFundType(row.security_type)) return { eligible: false, reason: "mutual-fund" };
+  if (
+    isBondFundWithoutMarketMove({
+      security_type: row.security_type ?? "",
+      security_name: row.name,
+      sector: row.sector,
+      fund_category: row.fund_category,
+      duration_years: row.duration_years,
+    })
+  ) {
+    return { eligible: false, reason: "bond-fund" };
+  }
+  if (!isUsSessionSecurity(row.currency)) return { eligible: false, reason: "not-us-session" };
+  if (row.ib_con_id == null) return { eligible: false, reason: "no-contract-id" };
+  return { eligible: true };
+}
+
+interface CandidateRow extends DailyBarEligibilityRow {
   id: number;
   symbol: string;
-  security_type: string | null;
-  ib_con_id: number | null;
-  currency: string | null;
-  name: string | null;
-  sector: string | null;
-  fund_category: string | null;
-  duration_years: number | null;
-  is_option: number;
-  is_bond: number;
-  is_cash: number;
 }
 
 const CANDIDATE_COLUMNS = `s.id, s.symbol, s.security_type, s.ib_con_id, s.currency,
-       s.name, s.sector, s.fund_category, s.duration_years,
-       CASE WHEN ${OPTION_ROW_SQL} THEN 1 ELSE 0 END AS is_option,
-       CASE WHEN LOWER(TRIM(COALESCE(s.security_type, ''))) = 'bond' THEN 1 ELSE 0 END AS is_bond,
-       CASE WHEN ${cashEquivalentSecuritySql("s")} THEN 1 ELSE 0 END AS is_cash`;
+       s.name, s.sector, s.fund_category, s.duration_years`;
 
 export interface DailyBarTargets {
   /** Security ids to capture, no priced bars first, then the oldest priced latest bar. */
@@ -131,10 +197,6 @@ export interface DailyBarTargets {
   bondFund: number;
 }
 
-function isMutualFundType(type: string | null): boolean {
-  const t = (type ?? "").trim().toLowerCase();
-  return t === "mutual fund" || t === "mutual_fund";
-}
 
 /**
  * Every security whose daily bars the Gains at risk betas read (C3):
@@ -167,7 +229,7 @@ export function listDailyBarTargets(
         WHERE ${latestHoldingsPredicate({})}`,
     )
     .all() as CandidateRow[];
-  for (const row of held) if (row.is_option !== 1) candidates.set(row.id, row);
+  for (const row of held) if (!isOptionSecurityType(row.security_type)) candidates.set(row.id, row);
 
   const underlyingIds = getLiveHeldOptionUnderlyings(db, today).map((u) => u.id);
   const byId = db.prepare(`SELECT ${CANDIDATE_COLUMNS} FROM securities s WHERE s.id = ?`);
@@ -199,30 +261,13 @@ export function listDailyBarTargets(
   let bondFund = 0;
   const kept: { id: number; latest: string | null }[] = [];
   for (const row of candidates.values()) {
-    if (row.is_option === 1 || row.is_bond === 1 || row.is_cash === 1) continue;
-    if (isMutualFundType(row.security_type)) {
-      mutualFund++;
-      continue;
-    }
-    if (
-      isBondFundWithoutMarketMove({
-        security_type: row.security_type ?? "",
-        security_name: row.name,
-        sector: row.sector,
-        fund_category: row.fund_category,
-        duration_years: row.duration_years,
-      })
-    ) {
-      bondFund++;
-      continue;
-    }
-    if (!isUsSessionSecurity(row.currency)) {
-      foreignSession++;
-      continue;
-    }
-    if (row.ib_con_id == null) {
-      noContractId++;
-      continue;
+    const verdict = dailyBarCaptureEligibility(row);
+    if (!verdict.eligible) {
+      if (verdict.reason === "mutual-fund") mutualFund++;
+      else if (verdict.reason === "bond-fund") bondFund++;
+      else if (verdict.reason === "not-us-session") foreignSession++;
+      else if (verdict.reason === "no-contract-id") noContractId++;
+      continue; // options, bonds and cash-equivalents are left out silently
     }
     kept.push({ id: row.id, latest: getPricedDailyBarRange(db, row.id)?.latest ?? null });
   }
@@ -375,14 +420,13 @@ type Outcome = "succeeded" | "exhausted" | "failed";
  *     the window): one two-year request, written as a plain fill;
  *   - a stored history that starts too late: one two-year request, replacing
  *     the window when the reply covers what is stored;
- *   - otherwise the overlap request. If it agrees, it is upserted. If it
- *     disagrees, or too few sessions compare, that is a basis change: a
- *     two-year request (or the overlap reply itself, when the overlap
- *     request was already two years) replaces the window, and the daily bars
- *     older than the window, which are on the old basis, are deleted in the
- *     same transaction. A two-year overlap with too few sessions to compare
- *     is not a basis change: its reply replaces the window, nothing older is
- *     deleted.
+ *   - otherwise the overlap request. If it agrees, it is upserted. If closes
+ *     compare and differ, that is a basis change: a two-year request (or the
+ *     overlap reply itself, when the overlap request was already two years)
+ *     replaces the window, and the daily bars older than the window, which
+ *     are on the old basis, are deleted in the same transaction. If too few
+ *     sessions compare, the same full reply replaces the window, but nothing
+ *     older is deleted and no basis change is counted.
  * Every replace first passes the short-reply guard; a refused reply is a
  * failure and changes nothing. A security is marked exhausted only by a full
  * reply that was written. A disconnect during a request leaves the security
@@ -471,10 +515,14 @@ export async function runDailyBarCapture(
           if (verdict === "agree") {
             upsertOhlcvBars(db, securityId, BAR_SIZE, overlap);
             outcome = "succeeded";
-          } else if (duration === FULL_DURATION && verdict === "too-few") {
-            // The overlap request was already the full window and nothing compares: not a basis change.
-            outcome = replaceWithFull(securityId, overlap, false);
+          } else if (verdict === "too-few") {
+            // Too few sessions compare: a halt or a sparse name as often as a split.
+            // Refetch the window in full (reusing a reply that already is), replace it
+            // behind the guard, but delete nothing older and count no basis change.
+            const full = duration === FULL_DURATION ? overlap : await request(securityId, FULL_DURATION);
+            outcome = replaceWithFull(securityId, full, false);
           } else {
+            // Closes compared and differ beyond the tolerance: a real basis change.
             result.basisChanges++;
             const full = duration === FULL_DURATION ? overlap : await request(securityId, FULL_DURATION);
             outcome = replaceWithFull(securityId, full, true);
