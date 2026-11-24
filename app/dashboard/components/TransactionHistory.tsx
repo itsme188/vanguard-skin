@@ -39,6 +39,9 @@ const TYPE_STYLES: Record<string, string> = {
   BUY_TO_CLOSE: UP_CHIP,
   SELL_TO_OPEN: DOWN_CHIP,
   SELL_TO_CLOSE: DOWN_CHIP,
+  // A short sale takes cash in like a Sell; a cover pays cash out like a Buy.
+  SHORT_SELL: DOWN_CHIP,
+  BUY_TO_COVER: UP_CHIP,
   DIVIDEND: GOLD_CHIP,
   INTEREST: BLUE_CHIP,
   FEE: DOWN_CHIP,

@@ -714,6 +714,7 @@ export function ScenarioModelingCard({ scope }: { scope?: string }) {
                   max={30}
                   value={customMarketMove}
                   onChange={(e) => setCustomMarketMove(Number(e.target.value))}
+                  aria-label="Market move in percent"
                   className="flex-1 accent-gold"
                 />
                 <span className={`font-mono text-sm tabular-nums w-14 text-right ${customMarketMove >= 0 ? "text-up" : "text-down"}`}>
@@ -733,6 +734,7 @@ export function ScenarioModelingCard({ scope }: { scope?: string }) {
                 max={CUSTOM_RATE_MOVE_LIMIT_BP}
                 value={customRateMove}
                 onChange={(e) => setCustomRateMove(Number(e.target.value))}
+                aria-label="Rate move in basis points"
                 placeholder="0"
                 className="bg-raised border border-edge rounded-lg px-3 py-1.5 text-sm text-ink font-mono w-24 focus-ring"
               />
@@ -798,6 +800,7 @@ export function ScenarioModelingCard({ scope }: { scope?: string }) {
                       updated[i] = { ...updated[i], sector: e.target.value };
                       setCustomSectorOverrides(updated);
                     }}
+                    aria-label={`Sector for shock ${i + 1}`}
                     className="bg-raised border border-edge rounded-lg px-2 py-1 text-xs text-ink flex-1 focus-ring"
                   >
                     {SECTORS.map((s) => {
@@ -822,6 +825,7 @@ export function ScenarioModelingCard({ scope }: { scope?: string }) {
                       };
                       setCustomSectorOverrides(updated);
                     }}
+                    aria-label={`Move in percent for ${override.sector}`}
                     className="bg-raised border border-edge rounded-lg px-2 py-1 text-xs text-ink font-mono w-20 text-right focus-ring"
                   />
                   <span className="text-[10px] text-ink-faint">%</span>
@@ -831,6 +835,7 @@ export function ScenarioModelingCard({ scope }: { scope?: string }) {
                         customSectorOverrides.filter((_, j) => j !== i)
                       )
                     }
+                    aria-label={`Remove the ${override.sector} shock`}
                     className="text-ink-faint hover:text-down text-xs"
                   >
                     ✕
