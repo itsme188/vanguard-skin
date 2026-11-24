@@ -1,75 +1,68 @@
 /**
- * A position's beta to the DRIVER index (Gains at risk, 2026-11-24).
+ * A position's beta to the DRIVER index (Gains at risk, 2026-11-24; ladder
+ * reworked by the addendum, rulings B1, B3, C3, C4, C13).
  *
  * The Gains at risk engine moves one index (the driver: SPY, QQQ or VTI in
  * step 1) and needs each position's beta to it, with an honest label for
- * where that number came from, and a refusal with a reason (never a guess)
- * when no beta can be justified.
+ * where that number came from. There is NO estimate: a name either has a
+ * beta measured from true daily closes, or it has "no measured link" with
+ * the reason, and the engine decides what to do with it per case.
  *
  * THE RULES, first match wins (symbols trimmed and upper-cased):
- *   1. A leveraged or inverse fund, or an option on one: tracked index's
+ *   1. A leveraged or inverse fund, or an option on one: the tracked index's
  *      beta to the driver (1 when the tracked index IS the driver, else a
- *      benchmark-to-benchmark regression passing the confidence gate) times
- *      the signed factor -> "leveraged". The fund's own regression is never
- *      read (F5). No factor, no tracked index, or an unmeasured tracked index
- *      is a refusal.
+ *      bar-to-bar regression of the tracked index's series row on the
+ *      driver's that comes out `measured`) times the signed factor ->
+ *      "leveraged". The fund's own regression is never read (F5). No factor,
+ *      no tracked index, or a tracked index that is not measured (no
+ *      securities row included) is a refusal -> "not-modelled".
  *   2. The identity (or an option's stored underlying) IS the driver -> 1, "driver".
- *   3. A fixed engine value (cash, bond, bond fund with no market move) -> "fixed".
- *   4. A measured regression of the identity against the driver passing the
- *      gate -> "measured".
- *   5. Otherwise convert a beta to the broad market (SPY) through the
- *      driver's own SPY beta (`driverMarketBeta`). With no usable driver
- *      beta the row is refused (`no-driver-conversion`): it is NEVER divided
- *      by an assumed 1 (F6). A measured SPY regression -> "market-converted";
- *      else the heuristic market beta -> "estimated" (a non-finite heuristic
- *      is refused: `no-heuristic-beta`).
+ *   3. A fixed engine value (cash-equivalent, bond, bond fund with no market move) -> "fixed".
+ *   4. `computeDailyBarRegression(identitySecurityId, driverSecurityId)`
+ *      with outcome `measured` -> "measured".
+ *   5. Otherwise "no-measured-link" with its reason (`no-daily-bars` when the
+ *      identity has no securities row).
  *
- * MEASURED regressions (rules 4 and 5, F8/F9) read only correctly dated rows:
- * `MEASURED_BETA_EXCLUDED_PRICE_SOURCES` are left out of the security series
- * (`lib/plaid/refresh.ts` stamps every price it writes 'plaid', dated on
- * Plaid's own as-of day). The `security_regressions` cache was computed over
- * every row, so it is read only when the security has no excluded-source row
- * in the window that cached row covered, and only when the row is at most
- * `REGRESSION_CACHE_MAX_AGE_DAYS` old; otherwise the regression is computed on
- * demand. This module is READ-ONLY: it never writes the cache or any table.
+ * Only `outcome === "measured"` yields a beta. `DailyBarEvidence.beta` is
+ * also set on `short-history` and `low-fit`; it is carried as evidence and
+ * NEVER read as a beta here (the union below makes that a type error).
+ *
+ * READ-ONLY. Both legs come from `ohlcv_bars` (daily, priced bars, before
+ * `today`). Reads no `prices`, no `benchmark_prices`, no `security_regressions`.
+ * Nothing is cached across calls; a caller passes one `regressionMemo` per
+ * request so each identity is regressed once.
  */
 
 import type Database from "better-sqlite3";
-import { addDays, calendarDaysBetween, todayET } from "@/lib/calendar/date-utils";
+import { todayET } from "@/lib/calendar/date-utils";
 import type { LeveragedExposure } from "@/lib/compute/leveraged-fund";
+import { isOptionSecurityType } from "@/lib/compute/option-elasticity";
 import {
-  computeBenchmarkRegression,
-  computeSecurityRegression,
-  regressionBetaVerdict,
-  type SecurityRegression,
+  computeDailyBarRegression,
+  type DailyBarEvidence,
+  type NoMeasuredLinkReason,
 } from "@/lib/compute/security-regression";
-import { getCachedRegression } from "@/lib/queries/security-regressions";
+import { PRICED_BAR_SQL } from "@/lib/queries/ohlcv";
 
-export const MEASURED_BETA_EXCLUDED_PRICE_SOURCES = ["plaid"] as const;
-export const REGRESSION_CACHE_MAX_AGE_DAYS = 7;
-/** A driver whose beta to SPY is smaller than this in size cannot convert a market beta. */
-export const MIN_USABLE_DRIVER_MARKET_BETA = 0.2;
-
-/** The regression window, in calendar days: `computeSecurityRegression`'s default. */
-const REGRESSION_WINDOW_DAYS = 252;
-const MARKET_SYMBOL = "SPY";
-
-export type DriverBetaSource =
-  | "driver"
-  | "measured"
-  | "market-converted"
-  | "estimated"
-  | "fixed"
-  | "leveraged";
+export type DriverBetaSource = "driver" | "fixed" | "leveraged" | "measured";
 export type DriverBetaRefusal =
   | "leveraged-no-factor"
   | "leveraged-no-tracked-index"
-  | "tracked-index-not-measured"
-  | "no-driver-conversion"
-  /** Rule 5 fell through to the heuristic, and the heuristic market beta is not a finite number. */
-  | "no-heuristic-beta";
+  | "tracked-index-not-measured";
 export type DriverBeta =
-  | { beta: number; source: DriverBetaSource }
+  | { beta: number; source: "driver" | "fixed" }
+  | {
+      beta: number;
+      source: "leveraged";
+      /** The tracked index's beta to the driver (1 when it is the driver). */
+      trackedBeta: number;
+      /** The fund's signed leverage factor. */
+      factor: number;
+      /** The tracked index's regression; null when the tracked index is the driver. */
+      evidence: DailyBarEvidence | null;
+    }
+  | { beta: number; source: "measured"; evidence: DailyBarEvidence }
+  | { beta: null; source: "no-measured-link"; reason: NoMeasuredLinkReason; evidence: DailyBarEvidence }
   | { beta: null; source: "not-modelled"; reason: DriverBetaRefusal };
 
 export interface DriverBetaInput {
@@ -83,10 +76,17 @@ export interface DriverBetaInput {
   leveraged: LeveragedExposure;
   /** The custom engine's fixed beta (cash-equivalent 0, bond 0.1, bond fund with no market move 0), else null. */
   fixedBeta: number | null;
-  /** estimateBeta(...) for the identity: a beta to the broad market. */
-  heuristicMarketBeta: number;
   /** Leveraged rows: trackedIndexFor(identity symbol). */
   trackedIndexSymbol: string | null;
+}
+
+export interface ResolveDriverBetaOptions {
+  /** The Eastern day; bars are read strictly before it. Default `todayET()`. */
+  today?: string;
+  /** `barSeriesSecurityId(db, driver)`, resolved once per request by the caller. */
+  driverSecurityId: number | null;
+  /** Per-request memo of bar regressions keyed by security id. Never kept across requests. */
+  regressionMemo?: Map<number, DailyBarEvidence>;
 }
 
 function norm(symbol: string | null | undefined): string {
@@ -97,86 +97,79 @@ function refuse(reason: DriverBetaRefusal): DriverBeta {
   return { beta: null, source: "not-modelled", reason };
 }
 
-/** A regression whose beta may be published: passes the confidence gate and is finite. */
-function usableBeta(r: SecurityRegression | null): number | null {
-  if (r === null) return null;
-  if (!regressionBetaVerdict(r).ok) return null;
-  return Number.isFinite(r.beta) ? r.beta : null;
+/** Evidence for an identity with no securities row: nothing could be read. */
+function noRowEvidence(): DailyBarEvidence {
+  return {
+    outcome: "no-daily-bars",
+    beta: null,
+    rSquared: null,
+    pairs: 0,
+    securityBars: 0,
+    driverBars: 0,
+    droppedOutlierPairs: 0,
+    droppedGapPairs: 0,
+    firstDate: null,
+    lastDate: null,
+  };
 }
 
 /**
- * A measured regression of a security against a benchmark from correctly
- * dated rows: the fresh cache when it may be trusted, else computed on demand
- * with the excluded sources left out. Null when nothing can be regressed.
+ * The securities row whose daily bars stand for a symbol: non-option,
+ * `ib_con_id` set, most priced daily bars (`bar_size = '1 day'`,
+ * `PRICED_BAR_SQL`, any date). Ties, a row with no bars included, go to the
+ * lowest id, so the answer is deterministic. Symbol matched trimmed and
+ * upper-cased. Null when no row qualifies (or a blank symbol); never throws.
  */
-function measuredRegression(
+export function barSeriesSecurityId(db: Database.Database, symbol: string): number | null {
+  const key = norm(symbol);
+  if (key === "") return null;
+  const rows = db
+    .prepare(
+      `SELECT s.id AS id, s.security_type AS security_type,
+              (SELECT COUNT(*) FROM ohlcv_bars b
+                WHERE b.security_id = s.id AND b.bar_size = '1 day' AND ${PRICED_BAR_SQL}) AS bars
+         FROM securities s
+        WHERE UPPER(TRIM(s.symbol)) = ? AND s.ib_con_id IS NOT NULL
+        ORDER BY bars DESC, s.id ASC`,
+    )
+    .all(key) as { id: number; security_type: string | null; bars: number }[];
+  const pick = rows.find((r) => !isOptionSecurityType(r.security_type));
+  return pick ? pick.id : null;
+}
+
+function regression(
   db: Database.Database,
   securityId: number,
-  benchmarkSymbol: string,
+  opts: ResolveDriverBetaOptions,
   today: string,
-): SecurityRegression | null {
-  const cached = getCachedRegression(db, securityId, benchmarkSymbol);
-  if (cached !== null) {
-    // calendarDaysBetween is a size, not a direction: a row dated after
-    // `today` is refused by the string compare (look-ahead).
-    const age = calendarDaysBetween(cached.computedAtDay, today);
-    if (cached.computedAtDay <= today && age <= REGRESSION_CACHE_MAX_AGE_DAYS) {
-      // The cached row covered the window ending on its own day; any excluded
-      // row from that window's start onward may have fed it.
-      const windowStart = addDays(cached.computedAtDay, -REGRESSION_WINDOW_DAYS);
-      if (!hasExcludedPriceRow(db, securityId, windowStart)) return cached;
-    }
-  }
-  return computeSecurityRegression(db, securityId, benchmarkSymbol, REGRESSION_WINDOW_DAYS, {
-    excludePriceSources: MEASURED_BETA_EXCLUDED_PRICE_SOURCES,
-  });
+): DailyBarEvidence {
+  const memo = opts.regressionMemo;
+  const hit = memo?.get(securityId);
+  if (hit !== undefined) return hit;
+  const evidence = computeDailyBarRegression(db, securityId, opts.driverSecurityId, { today });
+  memo?.set(securityId, evidence);
+  return evidence;
 }
 
-function hasExcludedPriceRow(db: Database.Database, securityId: number, since: string): boolean {
-  const sources = MEASURED_BETA_EXCLUDED_PRICE_SOURCES;
-  const row = db
-    .prepare(
-      `SELECT 1 FROM prices
-        WHERE security_id = ? AND date >= ?
-          AND source IN (${sources.map(() => "?").join(", ")})
-        LIMIT 1`,
-    )
-    .get(securityId, since, ...sources);
-  return row !== undefined;
+/** The measured beta, only when the outcome is `measured` and the figure is finite. */
+function measuredBeta(e: DailyBarEvidence): number | null {
+  if (e.outcome !== "measured") return null;
+  return e.beta !== null && Number.isFinite(e.beta) ? e.beta : null;
 }
 
 /**
- * The driver's beta to the broad market (SPY): exactly 1 for SPY, else a
- * benchmark-to-benchmark regression that passes the gate, is finite and is at
- * least `MIN_USABLE_DRIVER_MARKET_BETA` in size. Null = not usable. Reads
- * `benchmark_prices` only; independent of holdings.
- */
-export function driverMarketBeta(
-  db: Database.Database,
-  driverSymbol: string,
-  _opts?: { today?: string },
-): number | null {
-  const driver = norm(driverSymbol);
-  if (driver === MARKET_SYMBOL) return 1;
-  if (driver === "") return null;
-  const beta = usableBeta(computeBenchmarkRegression(db, driver, MARKET_SYMBOL));
-  if (beta === null || Math.abs(beta) < MIN_USABLE_DRIVER_MARKET_BETA) return null;
-  return beta;
-}
-
-/**
- * A position's beta to the driver index, or a refusal with its reason. See the rules above.
- * Throws on a blank `driverSymbol`. `opts.today` controls the cache age and the Plaid probe only; the regression window counts back from the real Eastern day (`todayET()`).
+ * A position's beta to the driver index, "no measured link" with its reason,
+ * or a refusal. See the rules above. Throws on a blank `driverSymbol`.
  */
 export function resolveDriverBeta(
   db: Database.Database,
   input: DriverBetaInput,
   driverSymbol: string,
-  opts?: { today?: string },
+  opts: ResolveDriverBetaOptions,
 ): DriverBeta {
   const driver = norm(driverSymbol);
   if (driver === "") throw new Error("driverSymbol is required");
-  const today = opts?.today ?? todayET();
+  const today = opts.today ?? todayET();
 
   // 1. Leveraged or inverse: the tracked index times the signed factor.
   if (input.leveraged.flagged) {
@@ -186,14 +179,15 @@ export function resolveDriverBeta(
     }
     const tracked = norm(input.trackedIndexSymbol);
     if (tracked === "") return refuse("leveraged-no-tracked-index");
-    let trackedBeta: number | null;
     if (tracked === driver) {
-      trackedBeta = 1;
-    } else {
-      trackedBeta = usableBeta(computeBenchmarkRegression(db, tracked, driver));
+      return { beta: factor, source: "leveraged", trackedBeta: 1, factor, evidence: null };
     }
+    const trackedId = barSeriesSecurityId(db, tracked);
+    if (trackedId === null) return refuse("tracked-index-not-measured");
+    const evidence = regression(db, trackedId, opts, today);
+    const trackedBeta = measuredBeta(evidence);
     if (trackedBeta === null) return refuse("tracked-index-not-measured");
-    return { beta: trackedBeta * factor, source: "leveraged" };
+    return { beta: trackedBeta * factor, source: "leveraged", trackedBeta, factor, evidence };
   }
 
   // 2. The driver itself, or an option on it (even with no underlying row).
@@ -206,21 +200,16 @@ export function resolveDriverBeta(
     return { beta: input.fixedBeta, source: "fixed" };
   }
 
-  // 4. Measured against the driver.
-  if (input.identitySecurityId !== null) {
-    const measured = usableBeta(measuredRegression(db, input.identitySecurityId, driver, today));
-    if (measured !== null) return { beta: measured, source: "measured" };
+  // 4. Measured from daily bars against the driver's daily bars.
+  if (input.identitySecurityId === null) {
+    return { beta: null, source: "no-measured-link", reason: "no-daily-bars", evidence: noRowEvidence() };
   }
+  const evidence = regression(db, input.identitySecurityId, opts, today);
+  const beta = measuredBeta(evidence);
+  if (beta !== null) return { beta, source: "measured", evidence };
 
-  // 5. Convert a market beta through the driver's own SPY beta; never by an assumed 1.
-  const marketBeta = driverMarketBeta(db, driver, { today });
-  if (marketBeta === null) return refuse("no-driver-conversion");
-  if (input.identitySecurityId !== null) {
-    const spy = usableBeta(
-      measuredRegression(db, input.identitySecurityId, MARKET_SYMBOL, today),
-    );
-    if (spy !== null) return { beta: spy / marketBeta, source: "market-converted" };
-  }
-  if (!Number.isFinite(input.heuristicMarketBeta)) return refuse("no-heuristic-beta");
-  return { beta: input.heuristicMarketBeta / marketBeta, source: "estimated" };
+  // 5. No measured link, with the reason. A `measured` outcome with a
+  //    non-finite beta cannot occur from OLS; it is read as low-fit, never a number.
+  const reason: NoMeasuredLinkReason = evidence.outcome === "measured" ? "low-fit" : evidence.outcome;
+  return { beta: null, source: "no-measured-link", reason, evidence };
 }
