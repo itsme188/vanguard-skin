@@ -1,0 +1,2119 @@
+[
+  {
+    "name": "putOtmOwn",
+    "input": {
+      "expiration_date": "2026-08-30",
+      "underlying_price": 60,
+      "underlying_iv": 0.3,
+      "option_type": "PUT",
+      "strike_price": 50,
+      "own_price": 0.956062117752305
+    },
+    "shock": {
+      "underlyingMove": -0.5,
+      "riskFreeRate": 0.04,
+      "today": "2026-06-01",
+      "now": "2026-06-01T15:00:00Z",
+      "volChange": 0
+    },
+    "result": {
+      "modelled": true,
+      "v0": 0.9560621177540902,
+      "v1": 20,
+      "perShareChange": 19.04393788224591,
+      "changePercent": 19.91914283458701,
+      "sigma": 0.40000000000026437,
+      "sigmaShocked": 0.40000000000026437,
+      "ivSource": "own-price"
+    }
+  },
+  {
+    "name": "putOtmOwn",
+    "input": {
+      "expiration_date": "2026-08-30",
+      "underlying_price": 60,
+      "underlying_iv": 0.3,
+      "option_type": "PUT",
+      "strike_price": 50,
+      "own_price": 0.956062117752305
+    },
+    "shock": {
+      "underlyingMove": -0.2,
+      "riskFreeRate": 0.04,
+      "today": "2026-06-01",
+      "now": "2026-06-01T15:00:00Z",
+      "volChange": 0
+    },
+    "result": {
+      "modelled": true,
+      "v0": 0.9560621177540902,
+      "v1": 4.658208889803706,
+      "perShareChange": 3.702146772049616,
+      "changePercent": 3.872286855955904,
+      "sigma": 0.40000000000026437,
+      "sigmaShocked": 0.40000000000026437,
+      "ivSource": "own-price"
+    }
+  },
+  {
+    "name": "putOtmOwn",
+    "input": {
+      "expiration_date": "2026-08-30",
+      "underlying_price": 60,
+      "underlying_iv": 0.3,
+      "option_type": "PUT",
+      "strike_price": 50,
+      "own_price": 0.956062117752305
+    },
+    "shock": {
+      "underlyingMove": 0,
+      "riskFreeRate": 0.04,
+      "today": "2026-06-01",
+      "now": "2026-06-01T15:00:00Z",
+      "volChange": 0
+    },
+    "result": {
+      "modelled": true,
+      "v0": 0.9560621177540902,
+      "v1": 0.9560621177540902,
+      "perShareChange": 0,
+      "changePercent": 0,
+      "sigma": 0.40000000000026437,
+      "sigmaShocked": 0.40000000000026437,
+      "ivSource": "own-price"
+    }
+  },
+  {
+    "name": "putOtmOwn",
+    "input": {
+      "expiration_date": "2026-08-30",
+      "underlying_price": 60,
+      "underlying_iv": 0.3,
+      "option_type": "PUT",
+      "strike_price": 50,
+      "own_price": 0.956062117752305
+    },
+    "shock": {
+      "underlyingMove": 0.2,
+      "riskFreeRate": 0.04,
+      "today": "2026-06-01",
+      "now": "2026-06-01T15:00:00Z",
+      "volChange": 0
+    },
+    "result": {
+      "modelled": true,
+      "v0": 0.9560621177540902,
+      "v1": 0.1356008901354564,
+      "perShareChange": -0.8204612276186338,
+      "changePercent": -0.858167280539817,
+      "sigma": 0.40000000000026437,
+      "sigmaShocked": 0.40000000000026437,
+      "ivSource": "own-price"
+    }
+  },
+  {
+    "name": "putOtmOwn",
+    "input": {
+      "expiration_date": "2026-08-30",
+      "underlying_price": 60,
+      "underlying_iv": 0.3,
+      "option_type": "PUT",
+      "strike_price": 50,
+      "own_price": 0.956062117752305
+    },
+    "shock": {
+      "underlyingMove": -0.2,
+      "riskFreeRate": 0.04,
+      "today": "2026-06-01",
+      "now": "2026-06-01T15:00:00Z",
+      "volChange": -0.1
+    },
+    "result": {
+      "modelled": true,
+      "v0": 0.9560621177540902,
+      "v1": 3.7116136948799188,
+      "perShareChange": 2.7555515771258285,
+      "changePercent": 2.882188851498593,
+      "sigma": 0.40000000000026437,
+      "sigmaShocked": 0.3000000000002644,
+      "ivSource": "own-price"
+    }
+  },
+  {
+    "name": "putOtmOwn",
+    "input": {
+      "expiration_date": "2026-08-30",
+      "underlying_price": 60,
+      "underlying_iv": 0.3,
+      "option_type": "PUT",
+      "strike_price": 50,
+      "own_price": 0.956062117752305
+    },
+    "shock": {
+      "underlyingMove": 0.2,
+      "riskFreeRate": 0.04,
+      "today": "2026-06-01",
+      "now": "2026-06-01T15:00:00Z",
+      "volChange": 0.3
+    },
+    "result": {
+      "modelled": true,
+      "v0": 0.9560621177540902,
+      "v1": 1.4742410862110713,
+      "perShareChange": 0.5181789684569811,
+      "changePercent": 0.5419929927515756,
+      "sigma": 0.40000000000026437,
+      "sigmaShocked": 0.7000000000002644,
+      "ivSource": "own-price"
+    }
+  },
+  {
+    "name": "putOtmOwn",
+    "input": {
+      "expiration_date": "2026-08-30",
+      "underlying_price": 60,
+      "underlying_iv": 0.3,
+      "option_type": "PUT",
+      "strike_price": 50,
+      "own_price": 0.956062117752305
+    },
+    "shock": {
+      "underlyingMove": 0,
+      "riskFreeRate": 0.04,
+      "today": "2026-06-01",
+      "now": "2026-06-01T15:00:00Z",
+      "volChange": 0.3
+    },
+    "result": {
+      "modelled": true,
+      "v0": 0.9560621177540902,
+      "v1": 3.4200666774413797,
+      "perShareChange": 2.4640045596872895,
+      "changePercent": 2.5772431664588344,
+      "sigma": 0.40000000000026437,
+      "sigmaShocked": 0.7000000000002644,
+      "ivSource": "own-price"
+    }
+  },
+  {
+    "name": "putOtmOwn",
+    "input": {
+      "expiration_date": "2026-08-30",
+      "underlying_price": 60,
+      "underlying_iv": 0.3,
+      "option_type": "PUT",
+      "strike_price": 50,
+      "own_price": 0.956062117752305
+    },
+    "shock": {
+      "underlyingMove": -0.2,
+      "riskFreeRate": 0.04,
+      "today": "2026-06-01",
+      "now": "2026-06-01T15:00:00Z"
+    },
+    "result": {
+      "modelled": true,
+      "v0": 0.9560621177540902,
+      "v1": 4.658208889803706,
+      "perShareChange": 3.702146772049616,
+      "changePercent": 3.872286855955904,
+      "sigma": 0.40000000000026437,
+      "sigmaShocked": 0.40000000000026437,
+      "ivSource": "own-price"
+    }
+  },
+  {
+    "name": "putAtmOwn",
+    "input": {
+      "expiration_date": "2026-08-30",
+      "underlying_price": 60,
+      "underlying_iv": 0.3,
+      "option_type": "PUT",
+      "strike_price": 60,
+      "own_price": 3.846692890313701
+    },
+    "shock": {
+      "underlyingMove": -0.5,
+      "riskFreeRate": 0.04,
+      "today": "2026-06-01",
+      "now": "2026-06-01T15:00:00Z",
+      "volChange": 0
+    },
+    "result": {
+      "modelled": true,
+      "v0": 3.846692890313701,
+      "v1": 30,
+      "perShareChange": 26.1533071096863,
+      "changePercent": 6.798906971633359,
+      "sigma": 0.3500000000000003,
+      "sigmaShocked": 0.3500000000000003,
+      "ivSource": "own-price"
+    }
+  },
+  {
+    "name": "putAtmOwn",
+    "input": {
+      "expiration_date": "2026-08-30",
+      "underlying_price": 60,
+      "underlying_iv": 0.3,
+      "option_type": "PUT",
+      "strike_price": 60,
+      "own_price": 3.846692890313701
+    },
+    "shock": {
+      "underlyingMove": -0.2,
+      "riskFreeRate": 0.04,
+      "today": "2026-06-01",
+      "now": "2026-06-01T15:00:00Z",
+      "volChange": 0
+    },
+    "result": {
+      "modelled": true,
+      "v0": 3.846692890313701,
+      "v1": 12,
+      "perShareChange": 8.153307109686299,
+      "changePercent": 2.1195627886533437,
+      "sigma": 0.3500000000000003,
+      "sigmaShocked": 0.3500000000000003,
+      "ivSource": "own-price"
+    }
+  },
+  {
+    "name": "putAtmOwn",
+    "input": {
+      "expiration_date": "2026-08-30",
+      "underlying_price": 60,
+      "underlying_iv": 0.3,
+      "option_type": "PUT",
+      "strike_price": 60,
+      "own_price": 3.846692890313701
+    },
+    "shock": {
+      "underlyingMove": 0,
+      "riskFreeRate": 0.04,
+      "today": "2026-06-01",
+      "now": "2026-06-01T15:00:00Z",
+      "volChange": 0
+    },
+    "result": {
+      "modelled": true,
+      "v0": 3.846692890313701,
+      "v1": 3.846692890313701,
+      "perShareChange": 0,
+      "changePercent": 0,
+      "sigma": 0.3500000000000003,
+      "sigmaShocked": 0.3500000000000003,
+      "ivSource": "own-price"
+    }
+  },
+  {
+    "name": "putAtmOwn",
+    "input": {
+      "expiration_date": "2026-08-30",
+      "underlying_price": 60,
+      "underlying_iv": 0.3,
+      "option_type": "PUT",
+      "strike_price": 60,
+      "own_price": 3.846692890313701
+    },
+    "shock": {
+      "underlyingMove": 0.2,
+      "riskFreeRate": 0.04,
+      "today": "2026-06-01",
+      "now": "2026-06-01T15:00:00Z",
+      "volChange": 0
+    },
+    "result": {
+      "modelled": true,
+      "v0": 3.846692890313701,
+      "v1": 0.7691828394213207,
+      "perShareChange": -3.0775100508923803,
+      "changePercent": -0.800040486372544,
+      "sigma": 0.3500000000000003,
+      "sigmaShocked": 0.3500000000000003,
+      "ivSource": "own-price"
+    }
+  },
+  {
+    "name": "putAtmOwn",
+    "input": {
+      "expiration_date": "2026-08-30",
+      "underlying_price": 60,
+      "underlying_iv": 0.3,
+      "option_type": "PUT",
+      "strike_price": 60,
+      "own_price": 3.846692890313701
+    },
+    "shock": {
+      "underlyingMove": -0.2,
+      "riskFreeRate": 0.04,
+      "today": "2026-06-01",
+      "now": "2026-06-01T15:00:00Z",
+      "volChange": -0.1
+    },
+    "result": {
+      "modelled": true,
+      "v0": 3.846692890313701,
+      "v1": 12,
+      "perShareChange": 8.153307109686299,
+      "changePercent": 2.1195627886533437,
+      "sigma": 0.3500000000000003,
+      "sigmaShocked": 0.25000000000000033,
+      "ivSource": "own-price"
+    }
+  },
+  {
+    "name": "putAtmOwn",
+    "input": {
+      "expiration_date": "2026-08-30",
+      "underlying_price": 60,
+      "underlying_iv": 0.3,
+      "option_type": "PUT",
+      "strike_price": 60,
+      "own_price": 3.846692890313701
+    },
+    "shock": {
+      "underlyingMove": 0.2,
+      "riskFreeRate": 0.04,
+      "today": "2026-06-01",
+      "now": "2026-06-01T15:00:00Z",
+      "volChange": 0.3
+    },
+    "result": {
+      "modelled": true,
+      "v0": 3.846692890313701,
+      "v1": 3.562233734987302,
+      "perShareChange": -0.28445915532639887,
+      "changePercent": -0.07394901632066629,
+      "sigma": 0.3500000000000003,
+      "sigmaShocked": 0.6500000000000004,
+      "ivSource": "own-price"
+    }
+  },
+  {
+    "name": "putAtmOwn",
+    "input": {
+      "expiration_date": "2026-08-30",
+      "underlying_price": 60,
+      "underlying_iv": 0.3,
+      "option_type": "PUT",
+      "strike_price": 60,
+      "own_price": 3.846692890313701
+    },
+    "shock": {
+      "underlyingMove": 0,
+      "riskFreeRate": 0.04,
+      "today": "2026-06-01",
+      "now": "2026-06-01T15:00:00Z",
+      "volChange": 0.3
+    },
+    "result": {
+      "modelled": true,
+      "v0": 3.846692890313701,
+      "v1": 7.3638604266400165,
+      "perShareChange": 3.5171675363263155,
+      "changePercent": 0.9143354139819276,
+      "sigma": 0.3500000000000003,
+      "sigmaShocked": 0.6500000000000004,
+      "ivSource": "own-price"
+    }
+  },
+  {
+    "name": "putAtmOwn",
+    "input": {
+      "expiration_date": "2026-08-30",
+      "underlying_price": 60,
+      "underlying_iv": 0.3,
+      "option_type": "PUT",
+      "strike_price": 60,
+      "own_price": 3.846692890313701
+    },
+    "shock": {
+      "underlyingMove": -0.2,
+      "riskFreeRate": 0.04,
+      "today": "2026-06-01",
+      "now": "2026-06-01T15:00:00Z"
+    },
+    "result": {
+      "modelled": true,
+      "v0": 3.846692890313701,
+      "v1": 12,
+      "perShareChange": 8.153307109686299,
+      "changePercent": 2.1195627886533437,
+      "sigma": 0.3500000000000003,
+      "sigmaShocked": 0.3500000000000003,
+      "ivSource": "own-price"
+    }
+  },
+  {
+    "name": "putItmOwn",
+    "input": {
+      "expiration_date": "2026-08-30",
+      "underlying_price": 60,
+      "underlying_iv": 0.3,
+      "option_type": "PUT",
+      "strike_price": 70,
+      "own_price": 11.560155784203232
+    },
+    "shock": {
+      "underlyingMove": -0.5,
+      "riskFreeRate": 0.04,
+      "today": "2026-06-01",
+      "now": "2026-06-01T15:00:00Z",
+      "volChange": 0
+    },
+    "result": {
+      "modelled": true,
+      "v0": 11.560155784201484,
+      "v1": 40,
+      "perShareChange": 28.439844215798516,
+      "changePercent": 2.4601609828356388,
+      "sigma": 0.44999999999983104,
+      "sigmaShocked": 0.44999999999983104,
+      "ivSource": "own-price"
+    }
+  },
+  {
+    "name": "putItmOwn",
+    "input": {
+      "expiration_date": "2026-08-30",
+      "underlying_price": 60,
+      "underlying_iv": 0.3,
+      "option_type": "PUT",
+      "strike_price": 70,
+      "own_price": 11.560155784203232
+    },
+    "shock": {
+      "underlyingMove": -0.2,
+      "riskFreeRate": 0.04,
+      "today": "2026-06-01",
+      "now": "2026-06-01T15:00:00Z",
+      "volChange": 0
+    },
+    "result": {
+      "modelled": true,
+      "v0": 11.560155784201484,
+      "v1": 22,
+      "perShareChange": 10.439844215798516,
+      "changePercent": 0.9030885405596693,
+      "sigma": 0.44999999999983104,
+      "sigmaShocked": 0.44999999999983104,
+      "ivSource": "own-price"
+    }
+  },
+  {
+    "name": "putItmOwn",
+    "input": {
+      "expiration_date": "2026-08-30",
+      "underlying_price": 60,
+      "underlying_iv": 0.3,
+      "option_type": "PUT",
+      "strike_price": 70,
+      "own_price": 11.560155784203232
+    },
+    "shock": {
+      "underlyingMove": 0,
+      "riskFreeRate": 0.04,
+      "today": "2026-06-01",
+      "now": "2026-06-01T15:00:00Z",
+      "volChange": 0
+    },
+    "result": {
+      "modelled": true,
+      "v0": 11.560155784201484,
+      "v1": 11.560155784201484,
+      "perShareChange": 0,
+      "changePercent": 0,
+      "sigma": 0.44999999999983104,
+      "sigmaShocked": 0.44999999999983104,
+      "ivSource": "own-price"
+    }
+  },
+  {
+    "name": "putItmOwn",
+    "input": {
+      "expiration_date": "2026-08-30",
+      "underlying_price": 60,
+      "underlying_iv": 0.3,
+      "option_type": "PUT",
+      "strike_price": 70,
+      "own_price": 11.560155784203232
+    },
+    "shock": {
+      "underlyingMove": 0.2,
+      "riskFreeRate": 0.04,
+      "today": "2026-06-01",
+      "now": "2026-06-01T15:00:00Z",
+      "volChange": 0
+    },
+    "result": {
+      "modelled": true,
+      "v0": 11.560155784201484,
+      "v1": 5.032521761002908,
+      "perShareChange": -6.527634023198576,
+      "changePercent": -0.5646666139325288,
+      "sigma": 0.44999999999983104,
+      "sigmaShocked": 0.44999999999983104,
+      "ivSource": "own-price"
+    }
+  },
+  {
+    "name": "putItmOwn",
+    "input": {
+      "expiration_date": "2026-08-30",
+      "underlying_price": 60,
+      "underlying_iv": 0.3,
+      "option_type": "PUT",
+      "strike_price": 70,
+      "own_price": 11.560155784203232
+    },
+    "shock": {
+      "underlyingMove": -0.2,
+      "riskFreeRate": 0.04,
+      "today": "2026-06-01",
+      "now": "2026-06-01T15:00:00Z",
+      "volChange": -0.1
+    },
+    "result": {
+      "modelled": true,
+      "v0": 11.560155784201484,
+      "v1": 22,
+      "perShareChange": 10.439844215798516,
+      "changePercent": 0.9030885405596693,
+      "sigma": 0.44999999999983104,
+      "sigmaShocked": 0.349999999999831,
+      "ivSource": "own-price"
+    }
+  },
+  {
+    "name": "putItmOwn",
+    "input": {
+      "expiration_date": "2026-08-30",
+      "underlying_price": 60,
+      "underlying_iv": 0.3,
+      "option_type": "PUT",
+      "strike_price": 70,
+      "own_price": 11.560155784203232
+    },
+    "shock": {
+      "underlyingMove": 0.2,
+      "riskFreeRate": 0.04,
+      "today": "2026-06-01",
+      "now": "2026-06-01T15:00:00Z",
+      "volChange": 0.3
+    },
+    "result": {
+      "modelled": true,
+      "v0": 11.560155784201484,
+      "v1": 9.14768432170019,
+      "perShareChange": -2.412471462501294,
+      "changePercent": -0.2086884906687761,
+      "sigma": 0.44999999999983104,
+      "sigmaShocked": 0.749999999999831,
+      "ivSource": "own-price"
+    }
+  },
+  {
+    "name": "putItmOwn",
+    "input": {
+      "expiration_date": "2026-08-30",
+      "underlying_price": 60,
+      "underlying_iv": 0.3,
+      "option_type": "PUT",
+      "strike_price": 70,
+      "own_price": 11.560155784203232
+    },
+    "shock": {
+      "underlyingMove": 0,
+      "riskFreeRate": 0.04,
+      "today": "2026-06-01",
+      "now": "2026-06-01T15:00:00Z",
+      "volChange": 0.3
+    },
+    "result": {
+      "modelled": true,
+      "v0": 11.560155784201484,
+      "v1": 14.905943944694393,
+      "perShareChange": 3.3457881604929085,
+      "changePercent": 0.28942414124426197,
+      "sigma": 0.44999999999983104,
+      "sigmaShocked": 0.749999999999831,
+      "ivSource": "own-price"
+    }
+  },
+  {
+    "name": "putItmOwn",
+    "input": {
+      "expiration_date": "2026-08-30",
+      "underlying_price": 60,
+      "underlying_iv": 0.3,
+      "option_type": "PUT",
+      "strike_price": 70,
+      "own_price": 11.560155784203232
+    },
+    "shock": {
+      "underlyingMove": -0.2,
+      "riskFreeRate": 0.04,
+      "today": "2026-06-01",
+      "now": "2026-06-01T15:00:00Z"
+    },
+    "result": {
+      "modelled": true,
+      "v0": 11.560155784201484,
+      "v1": 22,
+      "perShareChange": 10.439844215798516,
+      "changePercent": 0.9030885405596693,
+      "sigma": 0.44999999999983104,
+      "sigmaShocked": 0.44999999999983104,
+      "ivSource": "own-price"
+    }
+  },
+  {
+    "name": "callOtmOwn",
+    "input": {
+      "expiration_date": "2026-08-30",
+      "underlying_price": 60,
+      "underlying_iv": 0.3,
+      "option_type": "CALL",
+      "strike_price": 70,
+      "own_price": 1.7446966767829277
+    },
+    "shock": {
+      "underlyingMove": -0.5,
+      "riskFreeRate": 0.04,
+      "today": "2026-06-01",
+      "now": "2026-06-01T15:00:00Z",
+      "volChange": 0
+    },
+    "result": {
+      "modelled": true,
+      "v0": 1.7446966767825955,
+      "v1": 0.00002410726140496906,
+      "perShareChange": -1.7446725695211907,
+      "changePercent": -0.9999861825484866,
+      "sigma": 0.39999999999996527,
+      "sigmaShocked": 0.39999999999996527,
+      "ivSource": "own-price"
+    }
+  },
+  {
+    "name": "callOtmOwn",
+    "input": {
+      "expiration_date": "2026-08-30",
+      "underlying_price": 60,
+      "underlying_iv": 0.3,
+      "option_type": "CALL",
+      "strike_price": 70,
+      "own_price": 1.7446966767829277
+    },
+    "shock": {
+      "underlyingMove": -0.2,
+      "riskFreeRate": 0.04,
+      "today": "2026-06-01",
+      "now": "2026-06-01T15:00:00Z",
+      "volChange": 0
+    },
+    "result": {
+      "modelled": true,
+      "v0": 1.7446966767825955,
+      "v1": 0.14357207631656554,
+      "perShareChange": -1.60112460046603,
+      "changePercent": -0.9177094344091763,
+      "sigma": 0.39999999999996527,
+      "sigmaShocked": 0.39999999999996527,
+      "ivSource": "own-price"
+    }
+  },
+  {
+    "name": "callOtmOwn",
+    "input": {
+      "expiration_date": "2026-08-30",
+      "underlying_price": 60,
+      "underlying_iv": 0.3,
+      "option_type": "CALL",
+      "strike_price": 70,
+      "own_price": 1.7446966767829277
+    },
+    "shock": {
+      "underlyingMove": 0,
+      "riskFreeRate": 0.04,
+      "today": "2026-06-01",
+      "now": "2026-06-01T15:00:00Z",
+      "volChange": 0
+    },
+    "result": {
+      "modelled": true,
+      "v0": 1.7446966767825955,
+      "v1": 1.7446966767825955,
+      "perShareChange": 0,
+      "changePercent": 0,
+      "sigma": 0.39999999999996527,
+      "sigmaShocked": 0.39999999999996527,
+      "ivSource": "own-price"
+    }
+  },
+  {
+    "name": "callOtmOwn",
+    "input": {
+      "expiration_date": "2026-08-30",
+      "underlying_price": 60,
+      "underlying_iv": 0.3,
+      "option_type": "CALL",
+      "strike_price": 70,
+      "own_price": 1.7446966767829277
+    },
+    "shock": {
+      "underlyingMove": 0.2,
+      "riskFreeRate": 0.04,
+      "today": "2026-06-01",
+      "now": "2026-06-01T15:00:00Z",
+      "volChange": 0
+    },
+    "result": {
+      "modelled": true,
+      "v0": 1.7446966767825955,
+      "v1": 7.034949496820552,
+      "perShareChange": 5.290252820037956,
+      "changePercent": 3.032190575265342,
+      "sigma": 0.39999999999996527,
+      "sigmaShocked": 0.39999999999996527,
+      "ivSource": "own-price"
+    }
+  },
+  {
+    "name": "callOtmOwn",
+    "input": {
+      "expiration_date": "2026-08-30",
+      "underlying_price": 60,
+      "underlying_iv": 0.3,
+      "option_type": "CALL",
+      "strike_price": 70,
+      "own_price": 1.7446966767829277
+    },
+    "shock": {
+      "underlyingMove": -0.2,
+      "riskFreeRate": 0.04,
+      "today": "2026-06-01",
+      "now": "2026-06-01T15:00:00Z",
+      "volChange": -0.1
+    },
+    "result": {
+      "modelled": true,
+      "v0": 1.7446966767825955,
+      "v1": 0.019049599179282117,
+      "perShareChange": -1.7256470776033135,
+      "changePercent": -0.9890814263401131,
+      "sigma": 0.39999999999996527,
+      "sigmaShocked": 0.2999999999999653,
+      "ivSource": "own-price"
+    }
+  },
+  {
+    "name": "callOtmOwn",
+    "input": {
+      "expiration_date": "2026-08-30",
+      "underlying_price": 60,
+      "underlying_iv": 0.3,
+      "option_type": "CALL",
+      "strike_price": 70,
+      "own_price": 1.7446966767829277
+    },
+    "shock": {
+      "underlyingMove": 0.2,
+      "riskFreeRate": 0.04,
+      "today": "2026-06-01",
+      "now": "2026-06-01T15:00:00Z",
+      "volChange": 0.3
+    },
+    "result": {
+      "modelled": true,
+      "v0": 1.7446966767825955,
+      "v1": 11.15006048966142,
+      "perShareChange": 9.405363812878825,
+      "changePercent": 5.390830359247039,
+      "sigma": 0.39999999999996527,
+      "sigmaShocked": 0.6999999999999653,
+      "ivSource": "own-price"
+    }
+  },
+  {
+    "name": "callOtmOwn",
+    "input": {
+      "expiration_date": "2026-08-30",
+      "underlying_price": 60,
+      "underlying_iv": 0.3,
+      "option_type": "CALL",
+      "strike_price": 70,
+      "own_price": 1.7446966767829277
+    },
+    "shock": {
+      "underlyingMove": 0,
+      "riskFreeRate": 0.04,
+      "today": "2026-06-01",
+      "now": "2026-06-01T15:00:00Z",
+      "volChange": 0.3
+    },
+    "result": {
+      "modelled": true,
+      "v0": 1.7446966767825955,
+      "v1": 5.013029763555057,
+      "perShareChange": 3.2683330867724614,
+      "changePercent": 1.8732958744433386,
+      "sigma": 0.39999999999996527,
+      "sigmaShocked": 0.6999999999999653,
+      "ivSource": "own-price"
+    }
+  },
+  {
+    "name": "callOtmOwn",
+    "input": {
+      "expiration_date": "2026-08-30",
+      "underlying_price": 60,
+      "underlying_iv": 0.3,
+      "option_type": "CALL",
+      "strike_price": 70,
+      "own_price": 1.7446966767829277
+    },
+    "shock": {
+      "underlyingMove": -0.2,
+      "riskFreeRate": 0.04,
+      "today": "2026-06-01",
+      "now": "2026-06-01T15:00:00Z"
+    },
+    "result": {
+      "modelled": true,
+      "v0": 1.7446966767825955,
+      "v1": 0.14357207631656554,
+      "perShareChange": -1.60112460046603,
+      "changePercent": -0.9177094344091763,
+      "sigma": 0.39999999999996527,
+      "sigmaShocked": 0.39999999999996527,
+      "ivSource": "own-price"
+    }
+  },
+  {
+    "name": "callAtmOwn",
+    "input": {
+      "expiration_date": "2026-08-30",
+      "underlying_price": 60,
+      "underlying_iv": 0.3,
+      "option_type": "CALL",
+      "strike_price": 60,
+      "own_price": 5.0235519528620785
+    },
+    "shock": {
+      "underlyingMove": -0.5,
+      "riskFreeRate": 0.04,
+      "today": "2026-06-01",
+      "now": "2026-06-01T15:00:00Z",
+      "volChange": 0
+    },
+    "result": {
+      "modelled": true,
+      "v0": 5.0235519528620785,
+      "v1": 0.0006179120782633715,
+      "perShareChange": -5.022934040783815,
+      "changePercent": -0.9998769969766289,
+      "sigma": 0.39999999999999863,
+      "sigmaShocked": 0.39999999999999863,
+      "ivSource": "own-price"
+    }
+  },
+  {
+    "name": "callAtmOwn",
+    "input": {
+      "expiration_date": "2026-08-30",
+      "underlying_price": 60,
+      "underlying_iv": 0.3,
+      "option_type": "CALL",
+      "strike_price": 60,
+      "own_price": 5.0235519528620785
+    },
+    "shock": {
+      "underlyingMove": -0.2,
+      "riskFreeRate": 0.04,
+      "today": "2026-06-01",
+      "now": "2026-06-01T15:00:00Z",
+      "volChange": 0
+    },
+    "result": {
+      "modelled": true,
+      "v0": 5.0235519528620785,
+      "v1": 0.7639151631257048,
+      "perShareChange": -4.259636789736374,
+      "changePercent": -0.8479332611081134,
+      "sigma": 0.39999999999999863,
+      "sigmaShocked": 0.39999999999999863,
+      "ivSource": "own-price"
+    }
+  },
+  {
+    "name": "callAtmOwn",
+    "input": {
+      "expiration_date": "2026-08-30",
+      "underlying_price": 60,
+      "underlying_iv": 0.3,
+      "option_type": "CALL",
+      "strike_price": 60,
+      "own_price": 5.0235519528620785
+    },
+    "shock": {
+      "underlyingMove": 0,
+      "riskFreeRate": 0.04,
+      "today": "2026-06-01",
+      "now": "2026-06-01T15:00:00Z",
+      "volChange": 0
+    },
+    "result": {
+      "modelled": true,
+      "v0": 5.0235519528620785,
+      "v1": 5.0235519528620785,
+      "perShareChange": 0,
+      "changePercent": 0,
+      "sigma": 0.39999999999999863,
+      "sigmaShocked": 0.39999999999999863,
+      "ivSource": "own-price"
+    }
+  },
+  {
+    "name": "callAtmOwn",
+    "input": {
+      "expiration_date": "2026-08-30",
+      "underlying_price": 60,
+      "underlying_iv": 0.3,
+      "option_type": "CALL",
+      "strike_price": 60,
+      "own_price": 5.0235519528620785
+    },
+    "shock": {
+      "underlyingMove": 0.2,
+      "riskFreeRate": 0.04,
+      "today": "2026-06-01",
+      "now": "2026-06-01T15:00:00Z",
+      "volChange": 0
+    },
+    "result": {
+      "modelled": true,
+      "v0": 5.0235519528620785,
+      "v1": 13.736146563077497,
+      "perShareChange": 8.712594610215419,
+      "changePercent": 1.7343494587035324,
+      "sigma": 0.39999999999999863,
+      "sigmaShocked": 0.39999999999999863,
+      "ivSource": "own-price"
+    }
+  },
+  {
+    "name": "callAtmOwn",
+    "input": {
+      "expiration_date": "2026-08-30",
+      "underlying_price": 60,
+      "underlying_iv": 0.3,
+      "option_type": "CALL",
+      "strike_price": 60,
+      "own_price": 5.0235519528620785
+    },
+    "shock": {
+      "underlyingMove": -0.2,
+      "riskFreeRate": 0.04,
+      "today": "2026-06-01",
+      "now": "2026-06-01T15:00:00Z",
+      "volChange": -0.1
+    },
+    "result": {
+      "modelled": true,
+      "v0": 5.0235519528620785,
+      "v1": 0.27138457240885216,
+      "perShareChange": -4.752167380453226,
+      "changePercent": -0.9459775523463562,
+      "sigma": 0.39999999999999863,
+      "sigmaShocked": 0.2999999999999986,
+      "ivSource": "own-price"
+    }
+  },
+  {
+    "name": "callAtmOwn",
+    "input": {
+      "expiration_date": "2026-08-30",
+      "underlying_price": 60,
+      "underlying_iv": 0.3,
+      "option_type": "CALL",
+      "strike_price": 60,
+      "own_price": 5.0235519528620785
+    },
+    "shock": {
+      "underlyingMove": 0.2,
+      "riskFreeRate": 0.04,
+      "today": "2026-06-01",
+      "now": "2026-06-01T15:00:00Z",
+      "volChange": 0.3
+    },
+    "result": {
+      "modelled": true,
+      "v0": 5.0235519528620785,
+      "v1": 16.692952034701527,
+      "perShareChange": 11.669400081839449,
+      "changePercent": 2.322938070778987,
+      "sigma": 0.39999999999999863,
+      "sigmaShocked": 0.6999999999999986,
+      "ivSource": "own-price"
+    }
+  },
+  {
+    "name": "callAtmOwn",
+    "input": {
+      "expiration_date": "2026-08-30",
+      "underlying_price": 60,
+      "underlying_iv": 0.3,
+      "option_type": "CALL",
+      "strike_price": 60,
+      "own_price": 5.0235519528620785
+    },
+    "shock": {
+      "underlyingMove": 0,
+      "riskFreeRate": 0.04,
+      "today": "2026-06-01",
+      "now": "2026-06-01T15:00:00Z",
+      "volChange": 0.3
+    },
+    "result": {
+      "modelled": true,
+      "v0": 5.0235519528620785,
+      "v1": 8.53560502356568,
+      "perShareChange": 3.512053070703601,
+      "changePercent": 0.6991174976706814,
+      "sigma": 0.39999999999999863,
+      "sigmaShocked": 0.6999999999999986,
+      "ivSource": "own-price"
+    }
+  },
+  {
+    "name": "callAtmOwn",
+    "input": {
+      "expiration_date": "2026-08-30",
+      "underlying_price": 60,
+      "underlying_iv": 0.3,
+      "option_type": "CALL",
+      "strike_price": 60,
+      "own_price": 5.0235519528620785
+    },
+    "shock": {
+      "underlyingMove": -0.2,
+      "riskFreeRate": 0.04,
+      "today": "2026-06-01",
+      "now": "2026-06-01T15:00:00Z"
+    },
+    "result": {
+      "modelled": true,
+      "v0": 5.0235519528620785,
+      "v1": 0.7639151631257048,
+      "perShareChange": -4.259636789736374,
+      "changePercent": -0.8479332611081134,
+      "sigma": 0.39999999999999863,
+      "sigmaShocked": 0.39999999999999863,
+      "ivSource": "own-price"
+    }
+  },
+  {
+    "name": "callItmOwn",
+    "input": {
+      "expiration_date": "2026-08-30",
+      "underlying_price": 60,
+      "underlying_iv": 0.3,
+      "option_type": "CALL",
+      "strike_price": 50,
+      "own_price": 10.867508545741643
+    },
+    "shock": {
+      "underlyingMove": -0.5,
+      "riskFreeRate": 0.04,
+      "today": "2026-06-01",
+      "now": "2026-06-01T15:00:00Z",
+      "volChange": 0
+    },
+    "result": {
+      "modelled": true,
+      "v0": 10.867508545741643,
+      "v1": 0.00057239944962959,
+      "perShareChange": -10.866936146292014,
+      "changePercent": -0.9999473292846084,
+      "sigma": 0.3,
+      "sigmaShocked": 0.3,
+      "ivSource": "own-price"
+    }
+  },
+  {
+    "name": "callItmOwn",
+    "input": {
+      "expiration_date": "2026-08-30",
+      "underlying_price": 60,
+      "underlying_iv": 0.3,
+      "option_type": "CALL",
+      "strike_price": 50,
+      "own_price": 10.867508545741643
+    },
+    "shock": {
+      "underlyingMove": -0.2,
+      "riskFreeRate": 0.04,
+      "today": "2026-06-01",
+      "now": "2026-06-01T15:00:00Z",
+      "volChange": 0
+    },
+    "result": {
+      "modelled": true,
+      "v0": 10.867508545741643,
+      "v1": 2.202340379689719,
+      "perShareChange": -8.665168166051924,
+      "changePercent": -0.7973463402011595,
+      "sigma": 0.3,
+      "sigmaShocked": 0.3,
+      "ivSource": "own-price"
+    }
+  },
+  {
+    "name": "callItmOwn",
+    "input": {
+      "expiration_date": "2026-08-30",
+      "underlying_price": 60,
+      "underlying_iv": 0.3,
+      "option_type": "CALL",
+      "strike_price": 50,
+      "own_price": 10.867508545741643
+    },
+    "shock": {
+      "underlyingMove": 0,
+      "riskFreeRate": 0.04,
+      "today": "2026-06-01",
+      "now": "2026-06-01T15:00:00Z",
+      "volChange": 0
+    },
+    "result": {
+      "modelled": true,
+      "v0": 10.867508545741643,
+      "v1": 10.867508545741643,
+      "perShareChange": 0,
+      "changePercent": 0,
+      "sigma": 0.3,
+      "sigmaShocked": 0.3,
+      "ivSource": "own-price"
+    }
+  },
+  {
+    "name": "callItmOwn",
+    "input": {
+      "expiration_date": "2026-08-30",
+      "underlying_price": 60,
+      "underlying_iv": 0.3,
+      "option_type": "CALL",
+      "strike_price": 50,
+      "own_price": 10.867508545741643
+    },
+    "shock": {
+      "underlyingMove": 0.2,
+      "riskFreeRate": 0.04,
+      "today": "2026-06-01",
+      "now": "2026-06-01T15:00:00Z",
+      "volChange": 0
+    },
+    "result": {
+      "modelled": true,
+      "v0": 10.867508545741643,
+      "v1": 22.50775285740489,
+      "perShareChange": 11.640244311663245,
+      "changePercent": 1.0711051445387998,
+      "sigma": 0.3,
+      "sigmaShocked": 0.3,
+      "ivSource": "own-price"
+    }
+  },
+  {
+    "name": "callItmOwn",
+    "input": {
+      "expiration_date": "2026-08-30",
+      "underlying_price": 60,
+      "underlying_iv": 0.3,
+      "option_type": "CALL",
+      "strike_price": 50,
+      "own_price": 10.867508545741643
+    },
+    "shock": {
+      "underlyingMove": -0.2,
+      "riskFreeRate": 0.04,
+      "today": "2026-06-01",
+      "now": "2026-06-01T15:00:00Z",
+      "volChange": -0.1
+    },
+    "result": {
+      "modelled": true,
+      "v0": 10.867508545741643,
+      "v1": 1.2692099648627355,
+      "perShareChange": -9.598298580878907,
+      "changePercent": -0.8832105850645899,
+      "sigma": 0.3,
+      "sigmaShocked": 0.19999999999999998,
+      "ivSource": "own-price"
+    }
+  },
+  {
+    "name": "callItmOwn",
+    "input": {
+      "expiration_date": "2026-08-30",
+      "underlying_price": 60,
+      "underlying_iv": 0.3,
+      "option_type": "CALL",
+      "strike_price": 50,
+      "own_price": 10.867508545741643
+    },
+    "shock": {
+      "underlyingMove": 0.2,
+      "riskFreeRate": 0.04,
+      "today": "2026-06-01",
+      "now": "2026-06-01T15:00:00Z",
+      "volChange": 0.3
+    },
+    "result": {
+      "modelled": true,
+      "v0": 10.867508545741643,
+      "v1": 23.370817052827462,
+      "perShareChange": 12.50330850708582,
+      "changePercent": 1.1505220772966545,
+      "sigma": 0.3,
+      "sigmaShocked": 0.6,
+      "ivSource": "own-price"
+    }
+  },
+  {
+    "name": "callItmOwn",
+    "input": {
+      "expiration_date": "2026-08-30",
+      "underlying_price": 60,
+      "underlying_iv": 0.3,
+      "option_type": "CALL",
+      "strike_price": 50,
+      "own_price": 10.867508545741643
+    },
+    "shock": {
+      "underlyingMove": 0,
+      "riskFreeRate": 0.04,
+      "today": "2026-06-01",
+      "now": "2026-06-01T15:00:00Z",
+      "volChange": 0.3
+    },
+    "result": {
+      "modelled": true,
+      "v0": 10.867508545741643,
+      "v1": 13.01904767352746,
+      "perShareChange": 2.151539127785817,
+      "changePercent": 0.19797906012495226,
+      "sigma": 0.3,
+      "sigmaShocked": 0.6,
+      "ivSource": "own-price"
+    }
+  },
+  {
+    "name": "callItmOwn",
+    "input": {
+      "expiration_date": "2026-08-30",
+      "underlying_price": 60,
+      "underlying_iv": 0.3,
+      "option_type": "CALL",
+      "strike_price": 50,
+      "own_price": 10.867508545741643
+    },
+    "shock": {
+      "underlyingMove": -0.2,
+      "riskFreeRate": 0.04,
+      "today": "2026-06-01",
+      "now": "2026-06-01T15:00:00Z"
+    },
+    "result": {
+      "modelled": true,
+      "v0": 10.867508545741643,
+      "v1": 2.202340379689719,
+      "perShareChange": -8.665168166051924,
+      "changePercent": -0.7973463402011595,
+      "sigma": 0.3,
+      "sigmaShocked": 0.3,
+      "ivSource": "own-price"
+    }
+  },
+  {
+    "name": "putStaleBelowIntrinsic",
+    "input": {
+      "expiration_date": "2026-08-30",
+      "underlying_price": 60,
+      "underlying_iv": 0.3,
+      "option_type": "PUT",
+      "strike_price": 70,
+      "own_price": 9
+    },
+    "shock": {
+      "underlyingMove": -0.5,
+      "riskFreeRate": 0.04,
+      "today": "2026-06-01",
+      "now": "2026-06-01T15:00:00Z",
+      "volChange": 0
+    },
+    "result": {
+      "modelled": true,
+      "v0": 10.160953152769899,
+      "v1": 40,
+      "perShareChange": 29.8390468472301,
+      "changePercent": 3.3154496496922334,
+      "sigma": 0.3,
+      "sigmaShocked": 0.3,
+      "ivSource": "broker-underlying"
+    }
+  },
+  {
+    "name": "putStaleBelowIntrinsic",
+    "input": {
+      "expiration_date": "2026-08-30",
+      "underlying_price": 60,
+      "underlying_iv": 0.3,
+      "option_type": "PUT",
+      "strike_price": 70,
+      "own_price": 9
+    },
+    "shock": {
+      "underlyingMove": -0.2,
+      "riskFreeRate": 0.04,
+      "today": "2026-06-01",
+      "now": "2026-06-01T15:00:00Z",
+      "volChange": 0
+    },
+    "result": {
+      "modelled": true,
+      "v0": 10.160953152769899,
+      "v1": 22,
+      "perShareChange": 11.839046847230101,
+      "changePercent": 1.3154496496922334,
+      "sigma": 0.3,
+      "sigmaShocked": 0.3,
+      "ivSource": "broker-underlying"
+    }
+  },
+  {
+    "name": "putStaleBelowIntrinsic",
+    "input": {
+      "expiration_date": "2026-08-30",
+      "underlying_price": 60,
+      "underlying_iv": 0.3,
+      "option_type": "PUT",
+      "strike_price": 70,
+      "own_price": 9
+    },
+    "shock": {
+      "underlyingMove": 0,
+      "riskFreeRate": 0.04,
+      "today": "2026-06-01",
+      "now": "2026-06-01T15:00:00Z",
+      "volChange": 0
+    },
+    "result": {
+      "modelled": true,
+      "v0": 10.160953152769899,
+      "v1": 10.160953152769899,
+      "perShareChange": 0,
+      "changePercent": 0,
+      "sigma": 0.3,
+      "sigmaShocked": 0.3,
+      "ivSource": "broker-underlying"
+    }
+  },
+  {
+    "name": "putStaleBelowIntrinsic",
+    "input": {
+      "expiration_date": "2026-08-30",
+      "underlying_price": 60,
+      "underlying_iv": 0.3,
+      "option_type": "PUT",
+      "strike_price": 70,
+      "own_price": 9
+    },
+    "shock": {
+      "underlyingMove": 0.2,
+      "riskFreeRate": 0.04,
+      "today": "2026-06-01",
+      "now": "2026-06-01T15:00:00Z",
+      "volChange": 0
+    },
+    "result": {
+      "modelled": true,
+      "v0": 10.160953152769899,
+      "v1": 2.9874511234705743,
+      "perShareChange": -7.173502029299325,
+      "changePercent": -0.7970557810332584,
+      "sigma": 0.3,
+      "sigmaShocked": 0.3,
+      "ivSource": "broker-underlying"
+    }
+  },
+  {
+    "name": "putStaleBelowIntrinsic",
+    "input": {
+      "expiration_date": "2026-08-30",
+      "underlying_price": 60,
+      "underlying_iv": 0.3,
+      "option_type": "PUT",
+      "strike_price": 70,
+      "own_price": 9
+    },
+    "shock": {
+      "underlyingMove": -0.2,
+      "riskFreeRate": 0.04,
+      "today": "2026-06-01",
+      "now": "2026-06-01T15:00:00Z",
+      "volChange": -0.1
+    },
+    "result": {
+      "modelled": true,
+      "v0": 10.160953152769899,
+      "v1": 22,
+      "perShareChange": 11.839046847230101,
+      "changePercent": 1.3154496496922334,
+      "sigma": 0.3,
+      "sigmaShocked": 0.19999999999999998,
+      "ivSource": "broker-underlying"
+    }
+  },
+  {
+    "name": "putStaleBelowIntrinsic",
+    "input": {
+      "expiration_date": "2026-08-30",
+      "underlying_price": 60,
+      "underlying_iv": 0.3,
+      "option_type": "PUT",
+      "strike_price": 70,
+      "own_price": 9
+    },
+    "shock": {
+      "underlyingMove": 0.2,
+      "riskFreeRate": 0.04,
+      "today": "2026-06-01",
+      "now": "2026-06-01T15:00:00Z",
+      "volChange": 0.3
+    },
+    "result": {
+      "modelled": true,
+      "v0": 10.160953152769899,
+      "v1": 7.091342762727976,
+      "perShareChange": -3.069610390041923,
+      "changePercent": -0.3410678211157692,
+      "sigma": 0.3,
+      "sigmaShocked": 0.6,
+      "ivSource": "broker-underlying"
+    }
+  },
+  {
+    "name": "putStaleBelowIntrinsic",
+    "input": {
+      "expiration_date": "2026-08-30",
+      "underlying_price": 60,
+      "underlying_iv": 0.3,
+      "option_type": "PUT",
+      "strike_price": 70,
+      "own_price": 9
+    },
+    "shock": {
+      "underlyingMove": 0,
+      "riskFreeRate": 0.04,
+      "today": "2026-06-01",
+      "now": "2026-06-01T15:00:00Z",
+      "volChange": 0.3
+    },
+    "result": {
+      "modelled": true,
+      "v0": 10.160953152769899,
+      "v1": 13.185603364634026,
+      "perShareChange": 3.0246502118641274,
+      "changePercent": 0.3360722457626808,
+      "sigma": 0.3,
+      "sigmaShocked": 0.6,
+      "ivSource": "broker-underlying"
+    }
+  },
+  {
+    "name": "putStaleBelowIntrinsic",
+    "input": {
+      "expiration_date": "2026-08-30",
+      "underlying_price": 60,
+      "underlying_iv": 0.3,
+      "option_type": "PUT",
+      "strike_price": 70,
+      "own_price": 9
+    },
+    "shock": {
+      "underlyingMove": -0.2,
+      "riskFreeRate": 0.04,
+      "today": "2026-06-01",
+      "now": "2026-06-01T15:00:00Z"
+    },
+    "result": {
+      "modelled": true,
+      "v0": 10.160953152769899,
+      "v1": 22,
+      "perShareChange": 11.839046847230101,
+      "changePercent": 1.3154496496922334,
+      "sigma": 0.3,
+      "sigmaShocked": 0.3,
+      "ivSource": "broker-underlying"
+    }
+  },
+  {
+    "name": "callAboveBound",
+    "input": {
+      "expiration_date": "2026-08-30",
+      "underlying_price": 60,
+      "underlying_iv": 0.3,
+      "option_type": "CALL",
+      "strike_price": 50,
+      "own_price": 70
+    },
+    "shock": {
+      "underlyingMove": -0.5,
+      "riskFreeRate": 0.04,
+      "today": "2026-06-01",
+      "now": "2026-06-01T15:00:00Z",
+      "volChange": 0
+    },
+    "result": {
+      "modelled": true,
+      "v0": 10.867508545741643,
+      "v1": 0.00057239944962959,
+      "perShareChange": -10.866936146292014,
+      "changePercent": -0.15524194494702878,
+      "sigma": 0.3,
+      "sigmaShocked": 0.3,
+      "ivSource": "broker-underlying"
+    }
+  },
+  {
+    "name": "callAboveBound",
+    "input": {
+      "expiration_date": "2026-08-30",
+      "underlying_price": 60,
+      "underlying_iv": 0.3,
+      "option_type": "CALL",
+      "strike_price": 50,
+      "own_price": 70
+    },
+    "shock": {
+      "underlyingMove": -0.2,
+      "riskFreeRate": 0.04,
+      "today": "2026-06-01",
+      "now": "2026-06-01T15:00:00Z",
+      "volChange": 0
+    },
+    "result": {
+      "modelled": true,
+      "v0": 10.867508545741643,
+      "v1": 2.202340379689719,
+      "perShareChange": -8.665168166051924,
+      "changePercent": -0.12378811665788463,
+      "sigma": 0.3,
+      "sigmaShocked": 0.3,
+      "ivSource": "broker-underlying"
+    }
+  },
+  {
+    "name": "callAboveBound",
+    "input": {
+      "expiration_date": "2026-08-30",
+      "underlying_price": 60,
+      "underlying_iv": 0.3,
+      "option_type": "CALL",
+      "strike_price": 50,
+      "own_price": 70
+    },
+    "shock": {
+      "underlyingMove": 0,
+      "riskFreeRate": 0.04,
+      "today": "2026-06-01",
+      "now": "2026-06-01T15:00:00Z",
+      "volChange": 0
+    },
+    "result": {
+      "modelled": true,
+      "v0": 10.867508545741643,
+      "v1": 10.867508545741643,
+      "perShareChange": 0,
+      "changePercent": 0,
+      "sigma": 0.3,
+      "sigmaShocked": 0.3,
+      "ivSource": "broker-underlying"
+    }
+  },
+  {
+    "name": "callAboveBound",
+    "input": {
+      "expiration_date": "2026-08-30",
+      "underlying_price": 60,
+      "underlying_iv": 0.3,
+      "option_type": "CALL",
+      "strike_price": 50,
+      "own_price": 70
+    },
+    "shock": {
+      "underlyingMove": 0.2,
+      "riskFreeRate": 0.04,
+      "today": "2026-06-01",
+      "now": "2026-06-01T15:00:00Z",
+      "volChange": 0
+    },
+    "result": {
+      "modelled": true,
+      "v0": 10.867508545741643,
+      "v1": 22.50775285740489,
+      "perShareChange": 11.640244311663245,
+      "changePercent": 0.16628920445233208,
+      "sigma": 0.3,
+      "sigmaShocked": 0.3,
+      "ivSource": "broker-underlying"
+    }
+  },
+  {
+    "name": "callAboveBound",
+    "input": {
+      "expiration_date": "2026-08-30",
+      "underlying_price": 60,
+      "underlying_iv": 0.3,
+      "option_type": "CALL",
+      "strike_price": 50,
+      "own_price": 70
+    },
+    "shock": {
+      "underlyingMove": -0.2,
+      "riskFreeRate": 0.04,
+      "today": "2026-06-01",
+      "now": "2026-06-01T15:00:00Z",
+      "volChange": -0.1
+    },
+    "result": {
+      "modelled": true,
+      "v0": 10.867508545741643,
+      "v1": 1.2692099648627355,
+      "perShareChange": -9.598298580878907,
+      "changePercent": -0.13711855115541297,
+      "sigma": 0.3,
+      "sigmaShocked": 0.19999999999999998,
+      "ivSource": "broker-underlying"
+    }
+  },
+  {
+    "name": "callAboveBound",
+    "input": {
+      "expiration_date": "2026-08-30",
+      "underlying_price": 60,
+      "underlying_iv": 0.3,
+      "option_type": "CALL",
+      "strike_price": 50,
+      "own_price": 70
+    },
+    "shock": {
+      "underlyingMove": 0.2,
+      "riskFreeRate": 0.04,
+      "today": "2026-06-01",
+      "now": "2026-06-01T15:00:00Z",
+      "volChange": 0.3
+    },
+    "result": {
+      "modelled": true,
+      "v0": 10.867508545741643,
+      "v1": 23.370817052827462,
+      "perShareChange": 12.50330850708582,
+      "changePercent": 0.17861869295836885,
+      "sigma": 0.3,
+      "sigmaShocked": 0.6,
+      "ivSource": "broker-underlying"
+    }
+  },
+  {
+    "name": "callAboveBound",
+    "input": {
+      "expiration_date": "2026-08-30",
+      "underlying_price": 60,
+      "underlying_iv": 0.3,
+      "option_type": "CALL",
+      "strike_price": 50,
+      "own_price": 70
+    },
+    "shock": {
+      "underlyingMove": 0,
+      "riskFreeRate": 0.04,
+      "today": "2026-06-01",
+      "now": "2026-06-01T15:00:00Z",
+      "volChange": 0.3
+    },
+    "result": {
+      "modelled": true,
+      "v0": 10.867508545741643,
+      "v1": 13.01904767352746,
+      "perShareChange": 2.151539127785817,
+      "changePercent": 0.030736273254083103,
+      "sigma": 0.3,
+      "sigmaShocked": 0.6,
+      "ivSource": "broker-underlying"
+    }
+  },
+  {
+    "name": "callAboveBound",
+    "input": {
+      "expiration_date": "2026-08-30",
+      "underlying_price": 60,
+      "underlying_iv": 0.3,
+      "option_type": "CALL",
+      "strike_price": 50,
+      "own_price": 70
+    },
+    "shock": {
+      "underlyingMove": -0.2,
+      "riskFreeRate": 0.04,
+      "today": "2026-06-01",
+      "now": "2026-06-01T15:00:00Z"
+    },
+    "result": {
+      "modelled": true,
+      "v0": 10.867508545741643,
+      "v1": 2.202340379689719,
+      "perShareChange": -8.665168166051924,
+      "changePercent": -0.12378811665788463,
+      "sigma": 0.3,
+      "sigmaShocked": 0.3,
+      "ivSource": "broker-underlying"
+    }
+  },
+  {
+    "name": "compactExpiry",
+    "input": {
+      "expiration_date": "20260830",
+      "underlying_price": 60,
+      "underlying_iv": 0.3,
+      "option_type": "PUT",
+      "strike_price": 50,
+      "own_price": 0.956062117752305
+    },
+    "shock": {
+      "underlyingMove": -0.5,
+      "riskFreeRate": 0.04,
+      "today": "2026-06-01",
+      "now": "2026-06-01T15:00:00Z",
+      "volChange": 0
+    },
+    "result": {
+      "modelled": true,
+      "v0": 0.9560621177540902,
+      "v1": 20,
+      "perShareChange": 19.04393788224591,
+      "changePercent": 19.91914283458701,
+      "sigma": 0.40000000000026437,
+      "sigmaShocked": 0.40000000000026437,
+      "ivSource": "own-price"
+    }
+  },
+  {
+    "name": "compactExpiry",
+    "input": {
+      "expiration_date": "20260830",
+      "underlying_price": 60,
+      "underlying_iv": 0.3,
+      "option_type": "PUT",
+      "strike_price": 50,
+      "own_price": 0.956062117752305
+    },
+    "shock": {
+      "underlyingMove": -0.2,
+      "riskFreeRate": 0.04,
+      "today": "2026-06-01",
+      "now": "2026-06-01T15:00:00Z",
+      "volChange": 0
+    },
+    "result": {
+      "modelled": true,
+      "v0": 0.9560621177540902,
+      "v1": 4.658208889803706,
+      "perShareChange": 3.702146772049616,
+      "changePercent": 3.872286855955904,
+      "sigma": 0.40000000000026437,
+      "sigmaShocked": 0.40000000000026437,
+      "ivSource": "own-price"
+    }
+  },
+  {
+    "name": "compactExpiry",
+    "input": {
+      "expiration_date": "20260830",
+      "underlying_price": 60,
+      "underlying_iv": 0.3,
+      "option_type": "PUT",
+      "strike_price": 50,
+      "own_price": 0.956062117752305
+    },
+    "shock": {
+      "underlyingMove": 0,
+      "riskFreeRate": 0.04,
+      "today": "2026-06-01",
+      "now": "2026-06-01T15:00:00Z",
+      "volChange": 0
+    },
+    "result": {
+      "modelled": true,
+      "v0": 0.9560621177540902,
+      "v1": 0.9560621177540902,
+      "perShareChange": 0,
+      "changePercent": 0,
+      "sigma": 0.40000000000026437,
+      "sigmaShocked": 0.40000000000026437,
+      "ivSource": "own-price"
+    }
+  },
+  {
+    "name": "compactExpiry",
+    "input": {
+      "expiration_date": "20260830",
+      "underlying_price": 60,
+      "underlying_iv": 0.3,
+      "option_type": "PUT",
+      "strike_price": 50,
+      "own_price": 0.956062117752305
+    },
+    "shock": {
+      "underlyingMove": 0.2,
+      "riskFreeRate": 0.04,
+      "today": "2026-06-01",
+      "now": "2026-06-01T15:00:00Z",
+      "volChange": 0
+    },
+    "result": {
+      "modelled": true,
+      "v0": 0.9560621177540902,
+      "v1": 0.1356008901354564,
+      "perShareChange": -0.8204612276186338,
+      "changePercent": -0.858167280539817,
+      "sigma": 0.40000000000026437,
+      "sigmaShocked": 0.40000000000026437,
+      "ivSource": "own-price"
+    }
+  },
+  {
+    "name": "compactExpiry",
+    "input": {
+      "expiration_date": "20260830",
+      "underlying_price": 60,
+      "underlying_iv": 0.3,
+      "option_type": "PUT",
+      "strike_price": 50,
+      "own_price": 0.956062117752305
+    },
+    "shock": {
+      "underlyingMove": -0.2,
+      "riskFreeRate": 0.04,
+      "today": "2026-06-01",
+      "now": "2026-06-01T15:00:00Z",
+      "volChange": -0.1
+    },
+    "result": {
+      "modelled": true,
+      "v0": 0.9560621177540902,
+      "v1": 3.7116136948799188,
+      "perShareChange": 2.7555515771258285,
+      "changePercent": 2.882188851498593,
+      "sigma": 0.40000000000026437,
+      "sigmaShocked": 0.3000000000002644,
+      "ivSource": "own-price"
+    }
+  },
+  {
+    "name": "compactExpiry",
+    "input": {
+      "expiration_date": "20260830",
+      "underlying_price": 60,
+      "underlying_iv": 0.3,
+      "option_type": "PUT",
+      "strike_price": 50,
+      "own_price": 0.956062117752305
+    },
+    "shock": {
+      "underlyingMove": 0.2,
+      "riskFreeRate": 0.04,
+      "today": "2026-06-01",
+      "now": "2026-06-01T15:00:00Z",
+      "volChange": 0.3
+    },
+    "result": {
+      "modelled": true,
+      "v0": 0.9560621177540902,
+      "v1": 1.4742410862110713,
+      "perShareChange": 0.5181789684569811,
+      "changePercent": 0.5419929927515756,
+      "sigma": 0.40000000000026437,
+      "sigmaShocked": 0.7000000000002644,
+      "ivSource": "own-price"
+    }
+  },
+  {
+    "name": "compactExpiry",
+    "input": {
+      "expiration_date": "20260830",
+      "underlying_price": 60,
+      "underlying_iv": 0.3,
+      "option_type": "PUT",
+      "strike_price": 50,
+      "own_price": 0.956062117752305
+    },
+    "shock": {
+      "underlyingMove": 0,
+      "riskFreeRate": 0.04,
+      "today": "2026-06-01",
+      "now": "2026-06-01T15:00:00Z",
+      "volChange": 0.3
+    },
+    "result": {
+      "modelled": true,
+      "v0": 0.9560621177540902,
+      "v1": 3.4200666774413797,
+      "perShareChange": 2.4640045596872895,
+      "changePercent": 2.5772431664588344,
+      "sigma": 0.40000000000026437,
+      "sigmaShocked": 0.7000000000002644,
+      "ivSource": "own-price"
+    }
+  },
+  {
+    "name": "compactExpiry",
+    "input": {
+      "expiration_date": "20260830",
+      "underlying_price": 60,
+      "underlying_iv": 0.3,
+      "option_type": "PUT",
+      "strike_price": 50,
+      "own_price": 0.956062117752305
+    },
+    "shock": {
+      "underlyingMove": -0.2,
+      "riskFreeRate": 0.04,
+      "today": "2026-06-01",
+      "now": "2026-06-01T15:00:00Z"
+    },
+    "result": {
+      "modelled": true,
+      "v0": 0.9560621177540902,
+      "v1": 4.658208889803706,
+      "perShareChange": 3.702146772049616,
+      "changePercent": 3.872286855955904,
+      "sigma": 0.40000000000026437,
+      "sigmaShocked": 0.40000000000026437,
+      "ivSource": "own-price"
+    }
+  },
+  {
+    "name": "noTerms",
+    "input": {
+      "expiration_date": "2026-08-30",
+      "underlying_price": 60,
+      "underlying_iv": 0.3,
+      "option_type": null,
+      "strike_price": 50,
+      "own_price": 1
+    },
+    "shock": {
+      "underlyingMove": -0.2,
+      "riskFreeRate": 0.04,
+      "today": "2026-06-01",
+      "now": "2026-06-01T15:00:00Z",
+      "volChange": 0
+    },
+    "result": {
+      "modelled": false,
+      "reason": "no-option-terms"
+    }
+  },
+  {
+    "name": "expired",
+    "input": {
+      "expiration_date": "2026-05-29",
+      "underlying_price": 60,
+      "underlying_iv": 0.3,
+      "option_type": "PUT",
+      "strike_price": 50,
+      "own_price": 1
+    },
+    "shock": {
+      "underlyingMove": -0.2,
+      "riskFreeRate": 0.04,
+      "today": "2026-06-01",
+      "now": "2026-06-01T15:00:00Z",
+      "volChange": 0
+    },
+    "result": {
+      "modelled": false,
+      "reason": "expired"
+    }
+  },
+  {
+    "name": "noOptionPrice",
+    "input": {
+      "expiration_date": "2026-08-30",
+      "underlying_price": 60,
+      "underlying_iv": 0.3,
+      "option_type": "PUT",
+      "strike_price": 50,
+      "own_price": null
+    },
+    "shock": {
+      "underlyingMove": -0.2,
+      "riskFreeRate": 0.04,
+      "today": "2026-06-01",
+      "now": "2026-06-01T15:00:00Z",
+      "volChange": 0
+    },
+    "result": {
+      "modelled": false,
+      "reason": "no-option-price"
+    }
+  },
+  {
+    "name": "noUnderlyingPrice",
+    "input": {
+      "expiration_date": "2026-08-30",
+      "underlying_price": null,
+      "underlying_iv": 0.3,
+      "option_type": "PUT",
+      "strike_price": 50,
+      "own_price": 1
+    },
+    "shock": {
+      "underlyingMove": -0.2,
+      "riskFreeRate": 0.04,
+      "today": "2026-06-01",
+      "now": "2026-06-01T15:00:00Z",
+      "volChange": 0
+    },
+    "result": {
+      "modelled": false,
+      "reason": "no-underlying-price"
+    }
+  },
+  {
+    "name": "noVolatility",
+    "input": {
+      "expiration_date": "2026-08-30",
+      "underlying_price": 60,
+      "underlying_iv": null,
+      "option_type": "PUT",
+      "strike_price": 70,
+      "own_price": 9
+    },
+    "shock": {
+      "underlyingMove": -0.2,
+      "riskFreeRate": 0.04,
+      "today": "2026-06-01",
+      "now": "2026-06-01T15:00:00Z",
+      "volChange": 0
+    },
+    "result": {
+      "modelled": false,
+      "reason": "no-volatility"
+    }
+  }
+]
