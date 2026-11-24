@@ -214,6 +214,7 @@ export function EmailRecipientsSection() {
                     type="text"
                     value={fieldValue}
                     onChange={(e) => handleChange(key, e.target.value)}
+                    aria-label={label}
                     onBlur={() => saveField(key)}
                     placeholder={`Falls back to ${envFallback} env var`}
                     className={`flex-1 px-2 py-1 text-xs font-mono bg-raised border rounded text-ink focus:outline-none focus:border-gold ${

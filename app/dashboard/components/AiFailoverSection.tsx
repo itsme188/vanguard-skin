@@ -216,6 +216,7 @@ export function AiFailoverSection() {
                     <button
                       type="button"
                       disabled={!!busy[row.key] || !dirty}
+                      aria-label={`${busy[row.key] ? "Saving" : "Save"} fallback order for ${row.key}`}
                       onClick={() => {
                         const list = draft
                           .split(",")
