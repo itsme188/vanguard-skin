@@ -279,6 +279,42 @@ describe("POST /api/transcripts (the fetch / refresh buttons)", () => {
     expect(body.latestNote).toContain(today);
   });
 
+  it("a release found for the print but with no key to store it under is not called 'may not have reported'", async () => {
+    seedPrint(null, "nasdaq");
+    const { deriveFilingReportingQuarter } = await import("@/lib/transcripts/fetch");
+    const calendarQ = deriveFilingReportingQuarter(printDate).quarter;
+    const otherWord = calendarQ === 4 ? "third" : "fourth";
+    vi.mocked(getEarnings8KFilings).mockResolvedValue([
+      {
+        accessionNumber: "zzr-nokey",
+        filingDate: printDate,
+        filingUrl: "https://example.test/zzr-nokey",
+        pressReleaseText: `ZZR reports ${otherWord} quarter results. Revenue rose.`,
+      },
+    ]);
+
+    const res = await POST(post({ ticker: "ZZR" }));
+    const body = await res.json();
+
+    expect(res.status).toBe(404);
+    expect(body.success).toBe(false);
+    expect(body.error).toContain(`An earnings release for ZZR was found, filed ${printDate}`);
+    expect(body.error).toContain("could not be matched to a fiscal quarter");
+    expect(body.error).not.toContain("may not have reported");
+  });
+
+  it("keeps the old sentence when no 8-K is filed in the print's window", async () => {
+    seedPrint(null, "nasdaq");
+
+    const res = await POST(post({ ticker: "ZZR" }));
+    const body = await res.json();
+
+    expect(res.status).toBe(404);
+    expect(body.error).toBe(
+      "No transcript found for ZZR. The company may not have reported recently.",
+    );
+  });
+
   it("an explicit quarter makes no claim about the latest (both fields null)", async () => {
     vi.mocked(getAlphaVantageTranscript).mockResolvedValueOnce(
       call("Welcome to the ZZR fiscal third quarter 2026 earnings conference call."),

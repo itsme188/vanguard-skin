@@ -6,7 +6,7 @@ import {
   getCachedQuarters,
 } from "@/lib/queries/transcripts";
 import type { EarningsTranscript } from "@/lib/types";
-import { fetchLatestTranscript, fetchTranscript } from "@/lib/transcripts/fetch";
+import { fetchLatestTranscript, fetchTranscript, type FetchDiagnostics } from "@/lib/transcripts/fetch";
 import { decodeFilingEntities } from "@/lib/apis/edgar";
 
 /**
@@ -103,21 +103,27 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    const diagnostics: FetchDiagnostics = {};
     const result =
       !year && !quarter
-        ? await fetchLatestTranscript(db, ticker)
+        ? await fetchLatestTranscript(db, ticker, diagnostics)
         : await fetchTranscript(
             db,
             ticker,
             year ? parseInt(year, 10) : undefined,
-            quarter ? parseInt(quarter, 10) : undefined
+            quarter ? parseInt(quarter, 10) : undefined,
+            { diagnostics }
           );
 
     if (!result) {
+      // A release found for the print but not keyable is not "has not reported".
+      const error = diagnostics.unkeyedRelease
+        ? `An earnings release for ${ticker} was found, filed ${diagnostics.unkeyedRelease.filingDate}, but it could not be matched to a fiscal quarter, so it was not stored.`
+        : `No transcript found for ${ticker}. The company may not have reported recently.`;
       return NextResponse.json(
         {
           success: false,
-          error: `No transcript found for ${ticker}. The company may not have reported recently.`,
+          error,
         },
         { status: 404 }
       );

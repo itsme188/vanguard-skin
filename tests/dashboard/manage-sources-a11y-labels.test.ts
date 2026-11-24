@@ -47,4 +47,11 @@ describe("ManageSourcesModal accessibility and copy (B32)", () => {
     expect(src).toContain('e.key !== "Tab"');
     expect(src).toContain("opener?.focus?.()");
   });
+
+  it("a newsletter source name wraps inside its own column at phone width", () => {
+    const at = anchorIndex(src, "flex flex-wrap items-center justify-between gap-x-3 gap-y-1");
+    const chunk = src.slice(at, at + 400);
+    expect(chunk).toContain("min-w-[8rem] flex-1");
+    expect(chunk).toContain("text-sm font-medium text-ink [overflow-wrap:anywhere]");
+  });
 });
