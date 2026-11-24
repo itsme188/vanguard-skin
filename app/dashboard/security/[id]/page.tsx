@@ -26,6 +26,7 @@ import { HoldingPeriodBadge } from "../../components/HoldingPeriodBadge";
 import { TranscriptsRefreshButton } from "./TranscriptsRefreshButton";
 import { FactorProfileSection } from "./FactorProfileSection";
 import { tradeGradeGroupCaption } from "./trade-grade-group";
+import { emptyLotsCounterpartNoun } from "@/lib/ui/empty-lots-sentence";
 import { computeSecurityFactorShareView } from "@/lib/compute/factors";
 import { getSecurityQuote } from "@/lib/queries/security-quotes";
 import { QuoteStats } from "../../components/QuoteStats";
@@ -776,7 +777,7 @@ export default async function SecurityDetailPage(props: {
                     securityType={security.security_type}
                     quantity={lotCoverageGaps.reduce((sum, gap) => sum + Math.abs(gap.positionQty), 0)}
                   />{" "}
-                  above came from a holdings snapshot with no matching purchase in the ledger
+                  above came from a holdings snapshot with no matching {emptyLotsCounterpartNoun(lotCoverageGaps.map((gap) => gap.positionQty))} in the ledger
                 </>
               )}
               .

@@ -1141,12 +1141,34 @@ function staleHoldingsClaim(a: HoldingsRecencyScore["perAccount"][number]): Copy
   return parts;
 }
 
+/**
+ * True when the cash anchor is already the newest month-end statement date
+ * that can exist as of `today` (both YYYY-MM-DD, Eastern). The newest possible
+ * month-end is today when today is its month's last day, else the last day of
+ * the previous month. Pure string/UTC-noon maths, no clock reads.
+ */
+export function isCashAnchorLatestPossible(anchorDate: string | null, today: string): boolean {
+  if (!anchorDate) return false;
+  const [y, m, d] = today.split("-").map(Number);
+  if (!y || !m || !d) return false;
+  const lastDayOfMonth = new Date(Date.UTC(y, m, 0, 12)).getUTCDate();
+  const pad = (n: number) => String(n).padStart(2, "0");
+  let latestPossible = today;
+  if (d !== lastDayOfMonth) {
+    // Last day of the previous month, built from parts (no UTC day cut).
+    const prev = new Date(Date.UTC(y, m - 1, 0, 12));
+    latestPossible = `${prev.getUTCFullYear()}-${pad(prev.getUTCMonth() + 1)}-${pad(prev.getUTCDate())}`;
+  }
+  return anchorDate >= latestPossible;
+}
+
 function deriveActions(
   price: PriceFreshnessScore,
   holdings: HoldingsRecencyScore,
   cash: CashAccuracyScore,
   enrichment: EnrichmentScore,
   valuation: ValuationCoverageScore,
+  today: string,
 ): DataAction[] {
   const actions: DataAction[] = [];
   // Every action is written as runs; the plain strings are their flattening.
@@ -1202,7 +1224,11 @@ function deriveActions(
     push({
       severity: "warning",
       messageParts: [`Cash inferred from ${cash.daysSinceAnchor ?? "?"}d-old snapshot`],
-      fixParts: ["Import latest monthly statement to update cash anchor"],
+      fixParts: [
+        isCashAnchorLatestPossible(cash.latestAnchorDate, today)
+          ? "Latest monthly statement is in; the cash anchor confirms on the next one"
+          : "Import latest monthly statement to update cash anchor",
+      ],
       autoFixable: false,
     });
   }
@@ -1308,6 +1334,7 @@ export function getDataConfidence(db: Database.Database, now: Date = new Date())
     cashAccuracy,
     enrichmentCompleteness,
     valuationCoverage,
+    todayET(now),
   );
 
   return {

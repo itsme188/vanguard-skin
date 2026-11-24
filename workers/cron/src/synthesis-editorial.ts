@@ -12,14 +12,22 @@ export const DIGEST_EDITORIAL_RULES = `EDITORIAL PRIORITIES (HARD):
 - Preserve named originators of relayed opinions; attribution matters when explaining whose view it is, not as a repetitive introduction to every sentence.
 - Copy citation URLs EXACTLY from the supplied source entries. Use inline Markdown links, never reconstructed URL slugs, reference-style links, HTML links, or invented links. If no URL was supplied, use plain source text.`;
 
-/** Keep supplied links byte-for-byte; an invented/altered link is never clickable. */
+/** Keep supplied links byte-for-byte; an invented/altered link is never clickable.
+ * The prompt lists source URLs in square brackets, so the model sometimes closes
+ * a citation with one ("[Label](url]"); that shape is closed with ")" when the
+ * URL is supplied and neutralized otherwise, never left as raw markdown. */
 export function retainSuppliedSourceLinks(
   markdown: string,
   articles: ReadonlyArray<{ source_url: string | null; website_url: string | null }>,
 ): string {
   const allowed = new Set(articles.flatMap(a => [a.source_url, a.website_url]).filter(Boolean));
-  return markdown.replace(/\[([^\]\n]+)\]\(((?:[^()\s]|\([^()\s]*\))+)\)/g, (link, label: string, url: string) =>
-    allowed.has(url) ? link : `${label} (source link unavailable)`,
+  return markdown.replace(
+    /\[([^\]\n]+)\]\((?:((?:[^()\s]|\([^()\s]*\))+)\)|((?:[^()\s\]]|\([^()\s]*\))+)\])/g,
+    (link, label: string, url: string | undefined, bracketClosedUrl: string | undefined) => {
+      if (url !== undefined) return allowed.has(url) ? link : `${label} (source link unavailable)`;
+      const closed = bracketClosedUrl ?? "";
+      return allowed.has(closed) ? `[${label}](${closed})` : `${label} (source link unavailable)`;
+    },
   );
 }
 

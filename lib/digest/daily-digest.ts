@@ -1,5 +1,5 @@
 import type Database from "better-sqlite3";
-import { todayET, addDays } from "@/lib/calendar/date-utils";
+import { todayET, addDays, isDateOnly } from "@/lib/calendar/date-utils";
 import { getRecentArticles, countRecentArticles } from "@/lib/queries/research";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 import { bucketByCompany } from "@/lib/digest/group-by-company";
@@ -35,6 +35,20 @@ interface RecentAlertRow {
   currency: string;
 }
 
+const SHORT_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/**
+ * The heading names the window the section was given. A full instant is the
+ * since-last-email window; a bare date is today or a chosen start date.
+ * Built from the date string's parts, so no timezone can shift the day.
+ */
+export function triggeredAlertsHeading(sinceDate: string, todayEt: string): string {
+  if (!isDateOnly(sinceDate)) return "## Price Levels Triggered Since Last Digest";
+  if (sinceDate === todayEt) return "## Price Levels Triggered Today";
+  const month = SHORT_MONTHS[Number(sinceDate.slice(5, 7)) - 1] ?? sinceDate.slice(5, 7);
+  return `## Price Levels Triggered Since ${month} ${Number(sinceDate.slice(8, 10))}`;
+}
+
 /**
  * Returns a markdown block summarizing alerts triggered since `sinceDate`,
  * or an empty string if none fired. Prepended to the digest so the user sees
@@ -42,7 +56,8 @@ interface RecentAlertRow {
  */
 export function formatTriggeredAlertsSection(
   db: Database.Database,
-  sinceDate: string
+  sinceDate: string,
+  todayEt: string = todayET()
 ): string {
   // sinceDate may arrive as YYYY-MM-DD (today/since_date modes) OR a full ISO
   // timestamp (since_last mode reads last_digest_sent_at, stored as full ISO).
@@ -66,7 +81,7 @@ export function formatTriggeredAlertsSection(
   if (rows.length === 0) return "";
 
   const lines: string[] = [
-    `## Price Levels Triggered Since Last Digest`,
+    triggeredAlertsHeading(sinceDate, todayEt),
     "",
     `${rows.length} alert${rows.length === 1 ? "" : "s"} fired. Review on the [alerts page](#alerts).`,
     "",
