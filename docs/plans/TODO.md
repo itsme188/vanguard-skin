@@ -11,6 +11,16 @@
 
 ## User roadmap (added 2026-07-03)
 
+- [ ] **Gains at risk (2026-11-24)** (`docs/DECISIONS.md` 2026-11-24 (late); design `docs/superpowers/specs/2026-11-24-gains-at-risk-design.md`). Direction-only.
+    - ~~(G1) **Step 1: the line and the table, the year's gain, betas from daily closes, measured and selloff cases, the owner's figure, daily-bar capture and backfill.**~~ Built 2026-11-24 on `claude/analysis-exposure-handoff-47b6ce`; backfill applied to the live database with the owner's go-ahead.
+    - (G2) **USER: confirm the tracked index for each leveraged or inverse fund** (seed ships empty, so those funds are listed as not modelled), and whether a sector ETF may stand in for an index with no bars.
+    - (G3) **Step 2: try a hedge** (trial legs, cost, the line moves). Needs its own plan.
+    - (G4) **Step 3: compare candidate hedges from the live chain, and a single-name driver** (the short-stock case; compare by contract count and price per contract as well as notional). Needs its own plan.
+    - (G5) **Pre-open snapshot rows stamped with today's date** in the sync writers (`lib/tws/snapshot.ts`, `streaming.ts`, `positions.ts`, `lib/ibkr/refresh.ts`): still feed Defense, Significant Moves and the security regression card. Own design; touches live "today" valuations.
+    - (G6) **A sector ETF's split has no corporate-action row.** Data repair: rehearse on a copy, then the owner's go-ahead.
+    - (G7) **Names with no daily bars:** mutual funds (an ETF twin per fund would give them a measured link), one row with no contract id, one failed fetch to confirm on the next sync.
+    - (G8) **Watch the first sync after deploy:** Step 7 should report few or no basis changes; a large count means the overlap tolerance trips on live data. Confirm a two-year request returns about 500 bars.
+    - (G9) **Small:** `benchmark.ts` can copy snapshot `prices` rows into `benchmark_prices` on a failed fetch (other readers still trust it); `computeBenchmarkRegression` and `excludePriceSources` are unused; a chat tool over the same engine was deferred.
 - [ ] **Analysis exposure review and data freshness (2026-11-23 → 11-24)** (`docs/DECISIONS.md`, the two 2026-11-23 entries; handoff `analysis-exposure-handoff.md`; real figures in gitignored `docs/private/`). Direction-only. Owner direction: data that is up to date and accurate comes first; Analysis work targets the long-term Vanguard accounts.
     - ~~(X1) **"Positions as of" trust-strip cell and drawer, exposure over net worth, Vanguard's own Plaid price for stocks and ETFs, daily money-market rows, leverage and currency fixes in exposure and Defense, no January year-to-date figure.**~~ DONE 2026-11-24, commit `76a1b9f6` on `claude/analysis-exposure-handoff-47b6ce` (full verification passed).
     - (X2) **WATCH: the first 07:30 Eastern Plaid sync after the deploy.** No real Plaid payload was read in the session. Check that stock and ETF prices arrive dated on the previous trading day, that the money-market rows refresh, and whether the Treasury money-market fund arrives by ticker.
