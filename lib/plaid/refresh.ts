@@ -21,14 +21,16 @@ import {
   reconcileClosedEquityHoldings,
   countStatementGradeRowsOnDate,
 } from "@/lib/mutations/closed-equity";
-import { liveOverwritableHoldingSql } from "@/lib/db/holding-sources";
+import { isPlaidSourcedHolding, liveOverwritableHoldingSql } from "@/lib/db/holding-sources";
+import { cashEquivalentSecuritySql, isCashEquivalentSecurity } from "@/lib/compute/cash-equivalents";
+import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 import {
   bumpTaxGenerationIfPresent,
   bumpIfPricesAffectSyntheticCloses,
 } from "@/lib/compute/tax-convention";
 import { computeDailyValuations } from "@/lib/compute/daily-valuation";
-import { todayET } from "@/lib/calendar/date-utils";
-import { isMarketClosed } from "@/lib/calendar/market-holidays";
+import { nowET, todayET } from "@/lib/calendar/date-utils";
+import { isMarketClosed, previousTradingDay } from "@/lib/calendar/market-holidays";
 import { isSyncing, setSyncComplete, setSyncError, setSyncPhase } from "@/lib/tws/sync-state";
 import { sendPushover } from "@/lib/alerts/notify-pushover";
 
@@ -37,7 +39,29 @@ export interface PlaidRefreshResult {
   accountsSynced: number;
   holdingsWritten: number;
   pricesWritten: number;
+  /**
+   * Stock/ETF prices whose Plaid as-of date was not the session the price is
+   * dated on (a null as-of is not counted). Logged so the gap can be watched.
+   */
+  priceAsOfMismatches: number;
+  /**
+   * Stock/ETF prices NOT stored because the read was taken at or after the
+   * regular open, or on a closed market day: only a pre-open read is known
+   * to describe the previous session, and a price is never given a guessed
+   * date.
+   */
+  equityPricesSkipped: number;
   staleRemoved: number;
+  /** Money-market fund rows refreshed from Plaid's daily balance. */
+  cashEquivalentRowsWritten: number;
+  /** Money-market fund rows set to zero because Plaid stopped reporting them. */
+  cashEquivalentRetired: number;
+  /**
+   * Funds Plaid called cash whose stored security the shared identity rule
+   * does not call a cash equivalent (or that has no stored security): no row
+   * is written, so the fund is never counted both as a position and as cash.
+   */
+  cashEquivalentSkipped: string[];
   unmatched: UnmatchedPlaidSecurity[];
   securitiesCreated: string[];
 }
@@ -46,28 +70,47 @@ const EMPTY: Omit<PlaidRefreshResult, "skippedReason"> = {
   accountsSynced: 0,
   holdingsWritten: 0,
   pricesWritten: 0,
+  priceAsOfMismatches: 0,
+  equityPricesSkipped: 0,
   staleRemoved: 0,
+  cashEquivalentRowsWritten: 0,
+  cashEquivalentRetired: 0,
+  cashEquivalentSkipped: [],
   unmatched: [],
   securitiesCreated: [],
 };
 
+type PlaidWriteResult = Omit<PlaidRefreshResult, "skippedReason" | "unmatched">;
+
 /**
  * The DB half — exported for tests. Mirrors writeIbkrHoldings but with
  * 'plaid' provenance: conditional upserts that can never claim a
- * statement row, source='plaid' live snapshot, MF-only prices.
+ * statement row, source='plaid' live snapshot, and Vanguard's own price for
+ * held stocks, ETFs and mutual funds (never options or bonds).
+ *
+ * Price dating:
+ *  - Stock/ETF: always `previousTradingDay(today)`. The read is taken before
+ *    the open and describes the previous session's close; Plaid's as-of date
+ *    is not trusted (measured one session early on fund rows). Never a closed
+ *    market day.
+ *  - Mutual fund: `asOf ?? today`, unchanged — the session-dating work moves
+ *    it together with a history repair, so one series never mixes two rules.
+ *
+ * Money-market funds: Plaid folds them into cash (cash_value is unchanged),
+ * and when the stored security is a cash equivalent by the shared rule its
+ * own holdings row is refreshed from Plaid's balance. daily_valuations
+ * excludes such rows, so account totals do not move.
  */
 export function writePlaidHoldings(
   db: Database.Database,
   mapped: PlaidMapResult,
   accountMap: Record<string, number>,
   today: string,
-): {
-  accountsSynced: number;
-  holdingsWritten: number;
-  pricesWritten: number;
-  staleRemoved: number;
-  securitiesCreated: string[];
-} {
+  opts: { storeEquityPrices?: boolean } = {},
+): PlaidWriteResult {
+  // Default true keeps the DB half testable on its own; the refresh passes
+  // the real answer (see isPreOpenRead).
+  const storeEquityPrices = opts.storeEquityPrices ?? true;
   // A live writer may only claim live rows and live-origin tombstones — never
   // a :stmt or legacy (unsuffixed) tombstone, which is statement-grade
   // closure evidence a live sync cannot re-derive if masked (spec 2026-08-31
@@ -103,7 +146,14 @@ export function writePlaidHoldings(
   let accountsSynced = 0;
   let holdingsWritten = 0;
   let pricesWritten = 0;
+  let priceAsOfMismatches = 0;
+  let equityPricesSkipped = 0;
   let staleRemoved = 0;
+  let cashEquivalentRowsWritten = 0;
+  let cashEquivalentRetired = 0;
+  const cashEquivalentSkipped: string[] = [];
+  // Stock/ETF prices describe the previous session (see the doc above).
+  const sessionDate = previousTradingDay(today);
   // Symbol-drift from Plaid tickers can create duplicate securities that
   // cause phantom closures (reconcileClosedEquityHoldings sees the "old"
   // symbol vanish) — surface every brand-new security so the user can
@@ -112,6 +162,34 @@ export function writePlaidHoldings(
   // if this call updates it) is never misreported as "created".
   const securitiesCreated: string[] = [];
   const checkExistingSecurity = db.prepare(`SELECT id FROM securities WHERE symbol = ?`);
+  /**
+   * The one symbol → existing-security resolution, shared by the holdings,
+   * price and money-market paths so a price always lands on the holding's
+   * security. Share-class form drift: statements store BRK/B, Plaid says
+   * BRK.B — the dotted form falls back to the slash form.
+   */
+  const resolveExistingSymbol = (raw: string): { symbol: string; id: number } | null => {
+    const exact = checkExistingSecurity.get(raw) as { id: number } | undefined;
+    if (exact) return { symbol: raw, id: exact.id };
+    if (raw.includes(".")) {
+      const slashForm = raw.replace(/\./g, "/");
+      const slash = checkExistingSecurity.get(slashForm) as { id: number } | undefined;
+      if (slash) return { symbol: slashForm, id: slash.id };
+    }
+    return null;
+  };
+  const securityIdentity = db.prepare(
+    `SELECT security_type, fund_category FROM securities WHERE id = ?`,
+  );
+  // Cash-equivalent pairs in one account whose LATEST row is non-zero —
+  // the candidates to retire when Plaid no longer reports them.
+  const latestCashEquivalentRows = db.prepare(
+    `SELECT h.security_id, h.quantity, h.source_key
+       FROM holdings h
+       JOIN securities s ON s.id = h.security_id
+      WHERE ${latestHoldingsPredicate({ accountFilter: "AND h.account_id = ?" })}
+        AND ${cashEquivalentSecuritySql("s")}`,
+  );
 
   for (const [plaidAccountId, localAccountId] of Object.entries(accountMap)) {
     const positions = mapped.positions.filter((p) => p.plaidAccountId === plaidAccountId);
@@ -139,20 +217,16 @@ export function writePlaidHoldings(
       const stmtGradeBefore = countStatementGradeRowsOnDate(db, localAccountId, today);
 
       const syncedSecurityIds: number[] = [];
+      // Mapper symbol → the security id its holding landed on, so the
+      // price path never resolves a symbol differently from the holding.
+      const securityIdBySymbol = new Map<string, number>();
       for (const p of positions) {
-        let symbol = p.symbol;
-        let existed = checkExistingSecurity.get(symbol) !== undefined;
-        // Share-class form drift: statements store BRK/B, Plaid says BRK.B.
         // Creating the dotted twin makes the reconciler phantom-close the
         // real slash-form row (observed live 2026-07-11) — resolve onto the
         // existing security instead.
-        if (!existed && symbol.includes(".")) {
-          const slashForm = symbol.replace(/\./g, "/");
-          if (checkExistingSecurity.get(slashForm) !== undefined) {
-            symbol = slashForm;
-            existed = true;
-          }
-        }
+        const existing = resolveExistingSymbol(p.symbol);
+        const symbol = existing?.symbol ?? p.symbol;
+        const existed = existing !== null;
         const securityId = upsertSecurity(db, {
           symbol,
           name: p.name ?? undefined,
@@ -164,6 +238,7 @@ export function writePlaidHoldings(
         });
         if (!existed) securitiesCreated.push(symbol);
         syncedSecurityIds.push(securityId);
+        securityIdBySymbol.set(p.symbol, securityId);
         const res = upsertHolding.run(
           localAccountId,
           securityId,
@@ -172,6 +247,61 @@ export function writePlaidHoldings(
           `plaid:${localAccountId}:${securityId}:${today}`,
         );
         if (res.changes > 0) holdingsWritten++;
+      }
+
+      // ── Money-market funds Plaid folded into cash ──────────────────────
+      // Refresh the fund's own row from Plaid's balance, but only onto an
+      // EXISTING security the shared identity rule calls a cash equivalent
+      // (daily_valuations then excludes it, so totals are conserved). A fund
+      // that is also reported as a position this run keeps that one row.
+      const seenToday = new Set(syncedSecurityIds);
+      for (const ce of mapped.cashEquivalentHoldings.filter((c) => c.plaidAccountId === plaidAccountId)) {
+        const existing = resolveExistingSymbol(ce.symbol);
+        const identity = existing
+          ? (securityIdentity.get(existing.id) as { security_type: string | null; fund_category: string | null })
+          : null;
+        if (!existing || !identity || !isCashEquivalentSecurity(identity)) {
+          cashEquivalentSkipped.push(ce.symbol);
+          continue;
+        }
+        if (seenToday.has(existing.id)) continue;
+        seenToday.add(existing.id);
+        syncedSecurityIds.push(existing.id);
+        const res = upsertHolding.run(
+          localAccountId,
+          existing.id,
+          ce.quantity,
+          today,
+          `plaid:${localAccountId}:${existing.id}:${today}`,
+        );
+        if (res.changes > 0) cashEquivalentRowsWritten++;
+      }
+      // Retire a fund Plaid used to report by ticker and no longer does: its
+      // latest row is a non-zero plaid: row and it is absent from this run.
+      // The zero row is dated today, so it supersedes both that row and any
+      // older statement row (latestHoldingsPredicate picks it and filters
+      // it out) — the fund reads zero, never frozen or resurrected. A fund
+      // whose latest row is a statement row is left alone: Plaid may simply
+      // report it inside its generic cash line, and the next statement
+      // settles it. The reconciler exempts cash equivalents, so this is the
+      // only live path that can retire one.
+      for (const row of latestCashEquivalentRows.all(localAccountId) as {
+        security_id: number;
+        quantity: number;
+        source_key: string | null;
+      }[]) {
+        if (seenToday.has(row.security_id)) continue;
+        if (row.quantity === 0 || !isPlaidSourcedHolding(row.source_key)) continue;
+        seenToday.add(row.security_id);
+        syncedSecurityIds.push(row.security_id);
+        const res = upsertHolding.run(
+          localAccountId,
+          row.security_id,
+          0,
+          today,
+          `plaid:${localAccountId}:${row.security_id}:${today}`,
+        );
+        if (res.changes > 0) cashEquivalentRetired++;
       }
 
       const stale = removeStaleSameDayTwsHoldings(db, {
@@ -196,13 +326,23 @@ export function writePlaidHoldings(
       }
 
       const pricePairs: { securityId: number; date: string }[] = [];
-      for (const mf of mapped.mutualFundPrices.filter((m) => m.plaidAccountId === plaidAccountId)) {
-        const sec = db.prepare(`SELECT id FROM securities WHERE symbol = ?`).get(mf.symbol) as
-          | { id: number }
-          | undefined;
-        if (!sec) continue;
-        const priceDate = mf.asOf ?? today;
-        const res = upsertPrice.run(sec.id, priceDate, mf.price);
+      for (const ip of mapped.institutionPrices.filter((m) => m.plaidAccountId === plaidAccountId)) {
+        if (!Number.isFinite(ip.price) || ip.price <= 0) continue;
+        const securityId = securityIdBySymbol.get(ip.symbol) ?? resolveExistingSymbol(ip.symbol)?.id;
+        if (securityId == null) continue;
+        let priceDate: string;
+        if (ip.kind === "equity") {
+          if (!storeEquityPrices) {
+            equityPricesSkipped++;
+            continue;
+          }
+          priceDate = sessionDate;
+          if (ip.asOf != null && ip.asOf !== sessionDate) priceAsOfMismatches++;
+        } else {
+          // Legacy fund dating, deliberately unchanged (see the doc above).
+          priceDate = ip.asOf ?? today;
+        }
+        const res = upsertPrice.run(securityId, priceDate, ip.price);
         if (res.changes > 0) pricesWritten++;
         // Collected UNCONDITIONALLY (unlike the import engine's Ruling-B gate
         // on `res.changes > 0` — see the pricePairs comment in
@@ -215,7 +355,7 @@ export function writePlaidHoldings(
         // data change. A daily Plaid sync has no analogous
         // no-op-refetch-clears-acceptance shape worth guarding — it never
         // claims "nothing changed" the way a re-import does.
-        pricePairs.push({ securityId: sec.id, date: priceDate });
+        pricePairs.push({ securityId, date: priceDate });
       }
 
       const stmtGradeAfter = countStatementGradeRowsOnDate(db, localAccountId, today);
@@ -243,7 +383,35 @@ export function writePlaidHoldings(
     })();
   }
 
-  return { accountsSynced, holdingsWritten, pricesWritten, staleRemoved, securitiesCreated };
+  if (priceAsOfMismatches > 0) {
+    console.log(
+      `[plaid] ${priceAsOfMismatches} stock/ETF price(s) carried an as-of date other than the session ${sessionDate}`,
+    );
+  }
+
+  return {
+    accountsSynced,
+    holdingsWritten,
+    pricesWritten,
+    priceAsOfMismatches,
+    equityPricesSkipped,
+    staleRemoved,
+    cashEquivalentRowsWritten,
+    cashEquivalentRetired,
+    cashEquivalentSkipped,
+    securitiesCreated,
+  };
+}
+
+/**
+ * True when a Plaid read taken at `now` is known to describe the previous
+ * session's close: a trading day, before the regular open (09:30 Eastern).
+ * The scheduled sync runs in that window. A forced read later in the day or
+ * on a closed day may already carry newer figures, so its stock/ETF prices
+ * are not stored (never a guessed date).
+ */
+export function isPreOpenRead(now: Date): boolean {
+  return !isMarketClosed(todayET(now)) && nowET(now) < "09:30";
 }
 
 /** Why a Plaid sync cannot run right now. */
@@ -337,9 +505,11 @@ export async function refreshVanguardHoldingsFromPlaid(
   }
 
   setSyncPhase("valuations");
-  let written: ReturnType<typeof writePlaidHoldings>;
+  let written: PlaidWriteResult;
   try {
-    written = writePlaidHoldings(db, mapped, conn.accountMap, today);
+    written = writePlaidHoldings(db, mapped, conn.accountMap, today, {
+      storeEquityPrices: isPreOpenRead(opts.now ?? new Date()),
+    });
     try {
       computeDailyValuations(db);
     } catch {

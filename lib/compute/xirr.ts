@@ -46,7 +46,13 @@ export interface XirrResult {
 export interface PortfolioXirrResult {
   startDate: string;
   endDate: string;
-  xirr: number;
+  /**
+   * Annualized money-weighted return, or null when the scope's summed flows
+   * have no solvable rate (e.g. the terminal date is on or before the opening
+   * date). Null means "no figure", never 0%. A single-account result is
+   * always a number (that account solved or the result is null).
+   */
+  xirr: number | null;
   totalInvested: number;
   totalWithdrawn: number;
   currentValue: number;
@@ -134,14 +140,30 @@ const TOLERANCE = 1e-7;
 /**
  * Solve for XIRR using Newton-Raphson method.
  * Returns the annualized rate as a decimal, or null if no convergence.
+ * Exported for tests.
  */
-function solveXirr(cashFlows: CashFlow[]): number | null {
+export function solveXirr(cashFlows: CashFlow[]): number | null {
   if (cashFlows.length < 2) return null;
 
   // Need at least one positive and one negative cash flow
   const hasPositive = cashFlows.some((cf) => cf.amount > 0);
   const hasNegative = cashFlows.some((cf) => cf.amount < 0);
   if (!hasPositive || !hasNegative) return null;
+
+  // Net the flows by date. When every date nets to (about) zero, NPV is zero
+  // at EVERY rate: there is no rate to find (e.g. -V and +V on one day, a
+  // window whose terminal date is its opening date). Likewise when only one
+  // date carries a nonzero net, NPV is that constant at every rate. Without
+  // this guard the bisection below returned its bracket midpoint, 4.505.
+  const grossMax = Math.max(...cashFlows.map((cf) => Math.abs(cf.amount)));
+  const netByDate = new Map<string, number>();
+  for (const cf of cashFlows) {
+    netByDate.set(cf.date, (netByDate.get(cf.date) ?? 0) + cf.amount);
+  }
+  const nonZeroDates = [...netByDate.values()].filter(
+    (v) => Math.abs(v) > grossMax * 1e-9
+  ).length;
+  if (nonZeroDates < 2) return null;
 
   const baseDate = cashFlows[0].date;
 
@@ -181,8 +203,11 @@ function solveXirr(cashFlows: CashFlow[]): number | null {
 /**
  * Bisection method fallback when Newton-Raphson fails to converge.
  * Searches for rate in [-0.99, 10.0] (i.e., -99% to +1000%).
+ * Returns null unless the bracket shows a real sign change (or an exact root
+ * at one end); a function that is zero at both ends is identically zero for
+ * this engine's flows and has no rate. Exported for tests.
  */
-function bisectionFallback(
+export function bisectionFallback(
   cashFlows: CashFlow[],
   baseDate: string
 ): number | null {
@@ -191,6 +216,14 @@ function bisectionFallback(
 
   const fLo = npv(cashFlows, lo, baseDate);
   const fHi = npv(cashFlows, hi, baseDate);
+
+  const scale = Math.max(1, ...cashFlows.map((cf) => Math.abs(cf.amount)));
+  const zeroLo = Math.abs(fLo) <= scale * 1e-12;
+  const zeroHi = Math.abs(fHi) <= scale * 1e-12;
+  // Zero at both ends: no sign change to bisect, never a midpoint.
+  if (zeroLo && zeroHi) return null;
+  if (zeroLo) return lo;
+  if (zeroHi) return hi;
 
   // If same sign, no root in this interval
   if (fLo * fHi > 0) return null;
@@ -655,6 +688,11 @@ export function computeXirr(
 
     const currentValue = endRow?.total_value ?? 0;
 
+    // A terminal date on or before the opening value's date is no window at
+    // all (YTD in January: start Jan 1, end falls back to the Dec 31
+    // statement, which is also the opening). No figure, never a solved one.
+    if (startRow && effectiveEnd <= startRow.month_end_date) continue;
+
     if (currentValue > 0) {
       cashFlows.push({
         date: effectiveEnd,
@@ -1052,12 +1090,19 @@ export function computeXirr(
     });
   }
 
-  const portfolioXirr = solveXirr(portfolioCashFlows);
+  // Same rule as the per-account path: a terminal date on or before the
+  // opening date has no money-weighted return. No rate solved means no
+  // figure either: the headline is null (never 0%), and the per-account
+  // rows that did solve are still returned.
+  const portfolioXirr =
+    aggStartDateStr && terminalDate <= aggStartDateStr
+      ? null
+      : solveXirr(portfolioCashFlows);
 
   return {
     startDate: portfolioCashFlows[0]?.date || effectiveStart,
     endDate: effectiveEnd,
-    xirr: portfolioXirr ?? 0,
+    xirr: portfolioXirr,
     totalInvested,
     totalWithdrawn,
     currentValue,

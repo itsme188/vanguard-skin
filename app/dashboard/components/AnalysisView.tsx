@@ -98,12 +98,18 @@ function bucketAllocation(allocation: AllocationEntry[]): AllocationEntry[] {
     {
       group_name: `Other (${rest.length})`,
       total_market_value: rest.reduce((s, r) => s + r.total_market_value, 0),
-      percentage: rest.reduce((s, r) => s + r.percentage, 0),
+      percentage: sumOrNull(rest.map((r) => r.percentage)),
       net_exposure: rest.reduce((s, r) => s + r.net_exposure, 0),
-      exposure_pct: rest.reduce((s, r) => s + r.exposure_pct, 0),
+      exposure_pct: sumOrNull(rest.map((r) => r.exposure_pct)),
+      leveraged_unmodelled_count: rest.reduce((s, r) => s + (r.leveraged_unmodelled_count ?? 0), 0),
       position_count: rest.reduce((s, r) => s + r.position_count, 0),
     },
   ];
+}
+
+// Every row of one allocation shares its base, so a null is all-or-none.
+function sumOrNull(values: Array<number | null>): number | null {
+  return values.some((v) => v === null) ? null : values.reduce<number>((s, v) => s + (v as number), 0);
 }
 
 function getSliceColor(index: number, groupName: string): string {
@@ -521,7 +527,7 @@ export function AnalysisView({
             {exposureSummary && exposureSummary.net_ratio != null && (
               <span
                 className="text-xs text-ink-faint"
-                title="Delta-adjusted: stocks at market value, options at delta × underlying notional (puts negative). Net = signed sum; gross = magnitude of all bets including hedges. 100% = fully invested, unlevered."
+                title="Delta-adjusted: stocks at market value (a leveraged or inverse fund times its factor), options at delta × underlying notional (puts negative); money-market funds and broker cash count as no exposure. Net = signed sum; gross = magnitude of all bets including hedges. Both are a share of net worth, the Portfolio strip's figure (holdings plus cash). 100% = fully invested, unlevered."
               >
                 Net exposure{" "}
                 <span className="font-mono text-ink-dim">
@@ -531,7 +537,7 @@ export function AnalysisView({
                 <span className="font-mono text-ink-dim">
                   <Pct value={(exposureSummary.gross_ratio ?? 0) * 100} digits={0} />
                 </span>
-                {" of holdings"}
+                {" of net worth"}
               </span>
             )}
           </div>
@@ -550,7 +556,7 @@ export function AnalysisView({
                   </th>
                   <th
                     className="text-right py-2 pr-4"
-                    title={`Delta-adjusted exposure, ${PERCENT_BASIS.breakdown}: options count at delta × underlying notional (puts negative), so this is what actually moves with the market`}
+                    title={`Delta-adjusted exposure, ${PERCENT_BASIS.breakdownExposure}: options count at delta × underlying notional (puts negative), a leveraged or inverse fund at its factor, so this is what actually moves with the market`}
                   >
                     Net exp %
                   </th>
@@ -627,7 +633,7 @@ export function AnalysisView({
                     </td>
                     <td
                       className={`text-right py-2 pr-4 font-mono ${
-                        row.exposure_pct < 0 ? "text-down" : "text-ink-dim"
+                        row.exposure_pct != null && row.exposure_pct < 0 ? "text-down" : "text-ink-dim"
                       }`}
                     >
                       <Pct value={row.exposure_pct} digits={1} />
@@ -643,6 +649,13 @@ export function AnalysisView({
             </ScrollFade>
           </div>
           <p className="mt-3 text-xs text-ink-dim">{PERCENT_BASIS.breakdownCaption}</p>
+          {exposureSummary && exposureSummary.leveraged_unmodelled_count > 0 && (
+            <p className="mt-1 text-xs text-ink-dim">
+              Left out of Net exp % and the Net exposure badge:{" "}
+              <Count value={exposureSummary.leveraged_unmodelled_count} /> leveraged or
+              inverse fund(s) with no known leverage factor. Their value stays in Value and %.
+            </p>
+          )}
         </div>
       </div>
 

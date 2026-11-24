@@ -37,9 +37,10 @@ describe("Trust strip: sector-classify time", () => {
   });
 
   it("the loading skeleton has one box per cell", () => {
+    // Seven cells since "Positions as of" was added first (2026-11-23).
     const cells = strip.match(/<Cell\n/g) ?? [];
-    expect(cells).toHaveLength(6);
-    anchorIndex(strip, "Array.from({ length: 6 })");
+    expect(cells).toHaveLength(7);
+    anchorIndex(strip, `Array.from({ length: ${cells.length} })`);
   });
 
   it("the drawer has a panel for it, shown as Eastern time, in owner language", () => {

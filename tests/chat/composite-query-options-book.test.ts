@@ -63,7 +63,7 @@ type Out = {
   contracts: { symbol: string; type: string; days_to_expiry: number; quantity: number; account: string }[];
   list_info: { returned: number; truncated: boolean };
   totals_in_window: { positions: number; short_positions: number; long_positions: number };
-  exposure: { total_market_value_usd: number; net_exposure_usd: number; gross_exposure_usd: number; net_ratio: number | null; gross_ratio: number | null };
+  exposure: { total_market_value_usd: number; net_exposure_usd: number; gross_exposure_usd: number; long_exposure_usd: number; short_exposure_usd: number; net_worth_usd: number | null; net_ratio: number | null; gross_ratio: number | null };
   excluded: { expired_option_positions: number };
   scope: { account_names: string[] };
 };
@@ -110,8 +110,18 @@ describe("query_options_book", () => {
     expect(stocks.exposure.total_market_value_usd).toBeCloseTo(800, 9);
     expect(stocks.exposure.net_exposure_usd).toBeCloseTo(800, 9);
     expect(stocks.exposure.gross_exposure_usd).toBeCloseTo(1200, 9);
-    expect(stocks.exposure.net_ratio).toBeCloseTo(1, 9);
-    expect(stocks.exposure.gross_ratio).toBeCloseTo(1.5, 9);
+    // Ratios divide by net worth (ruling 2026-11-23); none is on file yet.
+    expect(stocks.exposure.net_ratio).toBeNull();
+    expect(stocks.exposure.gross_ratio).toBeNull();
+    expect(stocks.exposure.long_exposure_usd).toBeCloseTo(1000, 9);
+    expect(stocks.exposure.short_exposure_usd).toBeCloseTo(-200, 9);
+    db.prepare(
+      "INSERT INTO daily_valuations (account_id, valuation_date, cash_balance, holdings_value, total_value) VALUES (1, ?, 1200, 800, 2000)",
+    ).run(TODAY);
+    const valued = queryOptionsBookTool.run(db, {}, { accountIds: [1], today: TODAY }) as Out;
+    expect(valued.exposure.net_worth_usd).toBeCloseTo(2000, 9);
+    expect(valued.exposure.net_ratio).toBeCloseTo(0.4, 9);
+    expect(valued.exposure.gross_ratio).toBeCloseTo(0.6, 9);
     expect(stocks.scope.account_names).toEqual(["Vanguard Taxable"]);
     expect(JSON.stringify(stocks)).not.toContain("XYZ");
     expect(JSON.stringify(stocks)).not.toContain("IBKR");

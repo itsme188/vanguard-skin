@@ -71,6 +71,18 @@ export function nextTradingDay(date: string): string {
 }
 
 /**
+ * The latest date strictly before `date` on which the market was open.
+ * Mirror of `nextTradingDay`; pure. Used to date a reading taken before the
+ * open (it describes the previous session's close).
+ */
+export function previousTradingDay(date: string): string {
+  let d = addDays(date, -1);
+  let guard = 0;
+  while (isMarketClosed(d) && guard++ < 14) d = addDays(d, -1);
+  return d;
+}
+
+/**
  * Whether the weekly week-ahead briefing should send TODAY, given holiday
  * shifting. The briefing normally goes out Sunday; when the upcoming Monday is
  * a market holiday the trading week starts Tuesday, so we defer the briefing to

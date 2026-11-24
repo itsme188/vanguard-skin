@@ -14,6 +14,7 @@ import {
 import type { DietzBand } from "@/lib/compute/dietz";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 import { accountScopeAndSql, accountScopeCondition } from "@/lib/queries/account-scope-sql";
+import { getPositionsFreshness, type PositionsFreshness } from "@/lib/queries/positions-freshness";
 
 /** The `settings` key the sector run stamps. The same string is exported as
  *  `SECTOR_CLASSIFY_LAST_RUN_KEY` by lib/securities/classify-option-sectors.ts,
@@ -89,6 +90,9 @@ export interface AnalysisTrustState {
      *  ever assumed for them (missing.length = totalBonds - withDuration). */
     missing: MissingDurationBond[];
   };
+  /** How old the counted positions are, oldest counted live row included
+   *  (lib/queries/positions-freshness.ts). Same scope and Eastern day. */
+  positionsFreshness: PositionsFreshness;
 }
 
 export interface EstimatedDurationBond {
@@ -503,5 +507,6 @@ export function getAnalysisTrustState(
       estimated: estimatedBonds,
       missing: missingDurationBonds,
     },
+    positionsFreshness: getPositionsFreshness(db, accountIds, today),
   };
 }

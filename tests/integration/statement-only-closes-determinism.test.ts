@@ -101,7 +101,9 @@ function plaidBook(positions: [string, number][], prices: [string, number, strin
     cashByAccount: {},
     totalByAccount: {},
     unmatched: [],
-    mutualFundPrices: prices.map(([symbol, price, asOf]) => ({ plaidAccountId: "pZ", symbol, price, asOf })),
+    // "mutual_fund" keeps the as-of dating these cases were written against.
+    institutionPrices: prices.map(([symbol, price, asOf]) => ({ plaidAccountId: "pZ", symbol, kind: "mutual_fund" as const, price, asOf })),
+    cashEquivalentHoldings: [],
   };
 }
 

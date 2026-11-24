@@ -321,8 +321,13 @@ describe("a defined empty account list is no accounts", () => {
       total_market_value: 0,
       net_exposure: 0,
       gross_exposure: 0,
+      long_exposure: 0,
+      short_exposure: 0,
+      net_worth: null,
       net_ratio: null,
       gross_ratio: null,
+      leveraged_unmodelled_count: 0,
+      leveraged_unmodelled_market_value: 0,
     });
     expect(computeCashFlowResiduals(db, { accountIds: [] })).toEqual([]);
   });
@@ -414,8 +419,25 @@ describe("every account and a non-empty list answer as before", () => {
     // kind move no figure on this fixture: every gap, pick, totalAllocated,
     // cashRemaining, unallocatedShortDollars and every other reader's output
     // is unchanged.
+    // Re-captured 2026-11-23 (exposure summary reads leverage): the exposure
+    // summary gained leveraged_unmodelled_count and
+    // leveraged_unmodelled_market_value. With those two keys removed the
+    // output still hashed to the 2026-11-16 digest (beb4e9ca...).
+    // Re-captured 2026-11-23 (exposure base is net worth; a cash-equivalent
+    // fund carries no exposure; Breakdown leverage and base). Moved: the
+    // exposure summary gained long_exposure, short_exposure and net_worth, and
+    // its net_exposure, gross_exposure, net_ratio and gross_ratio moved (the
+    // fixture's money-market fund now adds 0, not 3,000, in the scopes holding
+    // account A; the ratios divide by net worth); every allocation row gained
+    // leveraged_unmodelled_count, its exposure_pct moved to the net-worth base
+    // and the money-market bucket's net_exposure (and every bucket holding
+    // that fund) dropped by 3,000. With those keys removed, the money-market
+    // rule switched off and the old base recomputed, the output hashed to the
+    // previous digest (9f09ea9b...) exactly; without the trust strip's new
+    // positionsFreshness key (another change in the same tree) this change
+    // alone hashes to ad8dcdda....
     expect(createHash("sha256").update(json).digest("hex")).toBe(
-      "beb4e9cad477c8b0918c5d4367ccce684f61c2d904e6899990c82b6e3e1bc2d2",
+      "388c8cc4dc68fb2c9466f8a7f46cb82aa8f30cbc534b115ab1a70d580d06e907",
     );
   });
 

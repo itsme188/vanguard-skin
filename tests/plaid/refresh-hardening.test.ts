@@ -91,7 +91,8 @@ function mappedResult(positions: MappedPlaidPosition[]): PlaidMapResult {
     cashByAccount: {},
     totalByAccount: {},
     unmatched: [],
-    mutualFundPrices: [],
+    institutionPrices: [],
+    cashEquivalentHoldings: [],
   };
 }
 
@@ -352,7 +353,7 @@ describe("writePlaidHoldings — directional supersession + transaction bumps", 
         db,
         {
           ...mappedResult([pos("Z", 10), pos("X", 4)]),
-          mutualFundPrices: [{ plaidAccountId: "pTax", symbol: "W", price: 10, asOf: TODAY }],
+          institutionPrices: [{ plaidAccountId: "pTax", symbol: "W", kind: "mutual_fund", price: 10, asOf: TODAY }],
         },
         { pTax: taxableId },
         TODAY,

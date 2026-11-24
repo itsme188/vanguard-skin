@@ -93,19 +93,19 @@ describe("computeXirr — a multi-account scope is one return over the whole sco
 
     // The old answer for this scope: account 1 alone, 2% per half.
     expect(first.xirr).toBeCloseTo(annualized(1.02), 6);
-    expect(scope.xirr).toBeLessThan(first.xirr - 0.1);
+    expect(scope.xirr).toBeLessThan(first.xirr! - 0.1);
 
     // The account outside the scope (3% per half) lifts the all-accounts
     // rate above the scope's and adds its value and deposit.
     expect(everything.currentValue).toBe(405795);
     expect(everything.totalInvested).toBe(40000);
-    expect(everything.xirr).toBeGreaterThan(scope.xirr + 0.1);
+    expect(everything.xirr).toBeGreaterThan(scope.xirr! + 0.1);
   });
 
   it("the order of the ids does not matter", () => {
     const ab = computeXirr(db, { ...RANGE, accountIds: [A, B] })!;
     const ba = computeXirr(db, { ...RANGE, accountIds: [B, A] })!;
-    expect(ba.xirr).toBeCloseTo(ab.xirr, 10);
+    expect(ba.xirr).toBeCloseTo(ab.xirr!, 10);
     expect(ba.currentValue).toBe(ab.currentValue);
   });
 

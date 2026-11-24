@@ -51,7 +51,7 @@ describe("Portfolio Tilts sector bar reads the Breakdown's look-through buckets"
     const tilt = computeFactorAnalysis(db).sectorTilt;
     expect(tilt).not.toBeNull();
     const tiltMap = new Map(tilt!.buckets.map((b) => [b.label, b.weight]));
-    const breakdownMap = new Map(breakdown.map((b) => [b.group_name, b.percentage / 100]));
+    const breakdownMap = new Map(breakdown.map((b) => [b.group_name, b.percentage! / 100]));
     expect([...tiltMap.keys()].sort()).toEqual([...breakdownMap.keys()].sort());
     for (const [label, w] of breakdownMap) {
       expect(Math.abs((tiltMap.get(label) ?? NaN) - w)).toBeLessThan(1e-9);

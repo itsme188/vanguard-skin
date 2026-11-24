@@ -43,7 +43,7 @@ function seed(
 }
 
 function bondRowPct(ids?: number[]): number {
-  return getAllocationByDimension(db, "asset_class", ids).find((e) => e.group_name === "Bond")!.percentage;
+  return getAllocationByDimension(db, "asset_class", ids).find((e) => e.group_name === "Bond")!.percentage!;
 }
 
 function breakdownTotal(ids?: number[]): number {

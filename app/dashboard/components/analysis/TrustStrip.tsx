@@ -1,11 +1,12 @@
 "use client";
 
-import React, { useEffect, useState, useCallback } from "react";
+import React, { useEffect, useState, useCallback, useRef } from "react";
 import type { AnalysisTrustState } from "@/lib/queries/analysis-trust-state";
 import { TrustStripDrawer, stalePricesSummary, type DrawerPanel } from "./TrustStripDrawer";
 import { PrivateText } from "@/lib/privacy/components";
 import { formatEnrichedAtET } from "@/lib/format";
 import { readMutationResult, networkFailureMessage } from "@/lib/ui/mutation-result";
+import { positionsFreshnessCell } from "@/lib/ui/positions-freshness-label";
 
 type Tone = "good" | "warn" | "bad" | "neutral";
 
@@ -81,27 +82,41 @@ interface TrustStripProps {
 }
 
 export function TrustStrip({ scope }: TrustStripProps) {
-  const [state, setState] = useState<AnalysisTrustState | null>(null);
+  // The loaded state and the error are kept WITH the scope they belong to
+  // (handoff bug 16): on a scope change the strip shows the skeleton at once
+  // instead of the previous scope's figures, and a late answer for an older
+  // request is dropped (only the newest request may write).
+  const scopeKey = scope ?? "all";
+  const [loaded, setLoaded] = useState<{ scope: string; state: AnalysisTrustState } | null>(null);
+  const [errorFor, setErrorFor] = useState<{ scope: string; message: string } | null>(null);
   const [activePanel, setActivePanel] = useState<DrawerPanel | null>(null);
+  const requestSeq = useRef(0);
 
-  const [loadError, setLoadError] = useState<string | null>(null);
+  const state = loaded && loaded.scope === scopeKey ? loaded.state : null;
+  const loadError = errorFor && errorFor.scope === scopeKey ? errorFor.message : null;
 
   // A failed load is shown as a plain line with a retry, never left as a
   // pulsing skeleton. A failed refresh keeps the figures already on screen
   // and says the refresh failed.
   const fetchState = useCallback(() => {
+    const seq = ++requestSeq.current;
+    const forScope = scope ?? "all";
     const qs = scope && scope !== "all" ? `?scope=${scope}` : "";
     fetch(`/api/analysis/trust-state${qs}`)
       .then((r) => readMutationResult<{ data: AnalysisTrustState }>(r))
       .then((result) => {
+        if (seq !== requestSeq.current) return; // a newer request owns the strip
         if (result.ok) {
-          setState(result.data.data);
-          setLoadError(null);
+          setLoaded({ scope: forScope, state: result.data.data });
+          setErrorFor(null);
         } else {
-          setLoadError(`Couldn't load the data checks: ${result.message}`);
+          setErrorFor({ scope: forScope, message: `Couldn't load the data checks: ${result.message}` });
         }
       })
-      .catch(() => setLoadError(networkFailureMessage("load the data checks")));
+      .catch(() => {
+        if (seq !== requestSeq.current) return;
+        setErrorFor({ scope: forScope, message: networkFailureMessage("load the data checks") });
+      });
   }, [scope]);
 
   useEffect(() => {
@@ -114,7 +129,7 @@ export function TrustStrip({ scope }: TrustStripProps) {
 
   // Clear the error first so a retry shows the skeleton while it loads.
   function retry() {
-    setLoadError(null);
+    setErrorFor(null);
     fetchState();
   }
 
@@ -133,7 +148,7 @@ export function TrustStrip({ scope }: TrustStripProps) {
     // Skeleton placeholder while loading
     return (
       <div className="flex gap-2 flex-wrap mb-2">
-        {Array.from({ length: 6 }).map((_, i) => (
+        {Array.from({ length: 7 }).map((_, i) => (
           <div
             key={i}
             className="h-14 w-36 rounded-lg border border-edge bg-raised/30 animate-pulse"
@@ -143,7 +158,12 @@ export function TrustStrip({ scope }: TrustStripProps) {
     );
   }
 
-  const { factorCoverage, lastClassification, lastSectorClassification, crossCheckedThru, stalePrices, neverPriced, bondDuration } = state;
+  const { factorCoverage, lastClassification, lastSectorClassification, crossCheckedThru, stalePrices, neverPriced, bondDuration, positionsFreshness } = state;
+
+  // The oldest counted live row is shown, not only the newest sync: a
+  // position the latest sync left out still counts as held until a
+  // tombstone is written (lib/queries/positions-freshness.ts).
+  const positionsCell = positionsFreshnessCell(positionsFreshness);
 
   const coveragePct = Math.round(factorCoverage.percentage * 100);
   const coverageTone: Tone =
@@ -174,6 +194,23 @@ export function TrustStrip({ scope }: TrustStripProps) {
   return (
     <>
       <div className="flex gap-2 flex-wrap mb-2">
+        <Cell
+          label="Positions as of"
+          value={
+            positionsCell.countText ? (
+              <>
+                {`${positionsCell.dateText} · `}
+                <PrivateText>{positionsCell.countText}</PrivateText>
+              </>
+            ) : (
+              positionsCell.dateText
+            )
+          }
+          tone={positionsCell.tone}
+          hint={positionsCell.hint}
+          onClick={() => togglePanel("positionsFreshness")}
+          active={activePanel === "positionsFreshness"}
+        />
         <Cell
           label="Factor coverage"
           value={

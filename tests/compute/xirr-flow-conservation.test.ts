@@ -74,7 +74,7 @@ describe("XIRR counts every external flow exactly once", () => {
     const r = computeXirr(db, { startDate: "2024-12-31", endDate: "2025-12-31", accountIds: [1] })!;
     expect(netFlows(r)).toBe(1000);
     expect(r.externalFlowCount).toBe(1);
-    expect(Math.abs(r.xirr)).toBeLessThan(1e-6);
+    expect(Math.abs(r.xirr!)).toBeLessThan(1e-6);
   });
 
   it("annual-summary year, NULL month with a ledger deposit: whole portfolio", () => {
@@ -83,7 +83,7 @@ describe("XIRR counts every external flow exactly once", () => {
     for (const d of [...MONTH_ENDS_2025, "2025-12-31"]) snap(db, 2, d, 5000, 5000, 0);
     const r = computeXirr(db, { startDate: "2024-12-31", endDate: "2025-12-31" })!;
     expect(netFlows(r)).toBe(1000);
-    expect(Math.abs(r.xirr)).toBeLessThan(1e-6);
+    expect(Math.abs(r.xirr!)).toBeLessThan(1e-6);
     expect(netFlows(r.perAccount.find((p) => p.accountId === 1)!)).toBe(1000);
   });
 
@@ -118,7 +118,7 @@ describe("XIRR counts every external flow exactly once", () => {
     for (const opts of [{ accountIds: [1] }, {}]) {
       const r = computeXirr(db, { startDate: "2025-12-31", endDate: "2026-02-28", ...opts })!;
       expect(netFlows(r)).toBe(2000);
-      expect(Math.abs(r.xirr)).toBeLessThan(1e-6);
+      expect(Math.abs(r.xirr!)).toBeLessThan(1e-6);
     }
   });
 
@@ -141,7 +141,7 @@ describe("XIRR counts every external flow exactly once", () => {
     ledger(db, 2, "2026-01-12", 1000); // NULL month: from the ledger
     const r = computeXirr(db, { startDate: "2025-12-31", endDate: "2026-01-31" })!;
     expect(netFlows(r)).toBe(2000);
-    expect(Math.abs(r.xirr)).toBeLessThan(1e-6);
+    expect(Math.abs(r.xirr!)).toBeLessThan(1e-6);
     const sumOfAccounts = r.perAccount.reduce((s, p) => s + netFlows(p), 0);
     expect(sumOfAccounts).toBe(2000);
   });

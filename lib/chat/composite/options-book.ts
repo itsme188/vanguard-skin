@@ -33,7 +33,7 @@ const ROWS_MAX = 25;
 const definition: CompositeTool["definition"] = {
   name: QUERY_OPTIONS_BOOK_NAME,
   description:
-    `Option contracts expiring within a window (default the next ${DAYS_DEFAULT} days, at most ${DAYS_MAX}; the Expirations card's own default is 90): per contract the symbol, underlying, call or put, strike, expiration, days to expiry, signed quantity (negative = short, the side that can be assigned) and account, soonest first; plus the scope's delta-adjusted exposure (net and gross, in USD and as a ratio of market value, stocks and options together). Live contracts only: options past expiration are counted in excluded, never listed. Moneyness and greeks are not in this engine: use query_options_greeks for delta, gamma, theta, vega and whether a contract is in the money. Use for 'what expires in the next N days', 'which short options could be assigned'. Do NOT use for option P&L or tax lots (use query_tax_lots) or for every holding (use query_holdings).`,
+    `Option contracts expiring within a window (default the next ${DAYS_DEFAULT} days, at most ${DAYS_MAX}; the Expirations card's own default is 90): per contract the symbol, underlying, call or put, strike, expiration, days to expiry, signed quantity (negative = short, the side that can be assigned) and account, soonest first; plus the scope's delta-adjusted exposure (net, gross, long and short, in USD, and net and gross as a ratio of net worth, stocks and options together). Live contracts only: options past expiration are counted in excluded, never listed. Moneyness and greeks are not in this engine: use query_options_greeks for delta, gamma, theta, vega and whether a contract is in the money. Use for 'what expires in the next N days', 'which short options could be assigned'. Do NOT use for option P&L or tax lots (use query_tax_lots) or for every holding (use query_holdings).`,
   input_schema: {
     type: "object" as const,
     properties: {
@@ -107,9 +107,13 @@ function run(db: Database.Database, input: Record<string, unknown>, ctx: Composi
       total_market_value_usd: exposure.total_market_value,
       net_exposure_usd: exposure.net_exposure,
       gross_exposure_usd: exposure.gross_exposure,
+      long_exposure_usd: exposure.long_exposure,
+      short_exposure_usd: exposure.short_exposure,
+      net_worth_usd: exposure.net_worth,
       net_ratio: exposure.net_ratio,
       gross_ratio: exposure.gross_ratio,
-      note: "Whole scope, stocks and funds at signed market value, options at delta x underlying price x multiplier x contracts (an option with no greeks takes +/-2.5 x its market value). A ratio is null when market value is zero.",
+      leveraged_funds_not_modelled: exposure.leveraged_unmodelled_count,
+      note: "Whole scope, stocks and funds at signed market value (a leveraged or inverse fund times its signed factor), options at delta x underlying price x multiplier x contracts (an option with no greeks takes +/-2.5 x its market value). Money-market and other cash-equivalent funds carry no exposure. A leveraged fund with no known factor is left out and counted. Ratios divide by net worth (holdings plus broker cash, the Portfolio strip's figure); a ratio is null when net worth is not on file, is zero or negative, or is 5% of gross exposure or less.",
     },
     excluded: {
       expired_option_positions: countExpiredOptionRows(db, accountIds, today),
@@ -120,7 +124,7 @@ function run(db: Database.Database, input: Record<string, unknown>, ctx: Composi
       quantity: "contracts, signed (negative = short)",
       days_to_expiry: "calendar days from as_of",
       exposure_usd: "USD",
-      ratios: "exposure / total market value (1.0 = fully invested, unlevered)",
+      ratios: "exposure / net worth (1.0 = fully invested, unlevered)",
     },
     currency: "USD",
   };

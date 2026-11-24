@@ -30,7 +30,8 @@ describe("TrustStrip: a failed load is shown, not a skeleton forever", () => {
   it("records an error for a non-success reply and for a network failure", () => {
     expect(fetchFn).toContain("readMutationResult");
     expect(fetchFn).toContain("networkFailureMessage");
-    expect(fetchFn).toContain("setLoadError(");
+    // The error is kept with its scope since 2026-11-23 (handoff bug 16).
+    expect(fetchFn).toContain("setErrorFor(");
   });
 
   it("renders the error line with a retry before the skeleton", () => {

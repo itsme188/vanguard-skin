@@ -15,7 +15,17 @@ import {
 } from "@/lib/queries/concentration-universe";
 import { explodeHoldingBySector } from "@/lib/compute/explode-sector";
 import { getEtfSectorWeights } from "@/lib/queries/etf-weights";
-import { getOptionExposureMap, exposureForHolding } from "@/lib/compute/exposure";
+import {
+  getOptionExposureMap,
+  resolveBookRowExposure,
+  totalBookExposure,
+  exposureNetWorth,
+  exposureShareBase,
+  exposureShare,
+  leverageIdentityColumnsSql,
+  leverageUnderlyingJoinSql,
+  type BookExposureRow,
+} from "@/lib/compute/exposure";
 import { liveOptionExpirationSql } from "@/lib/compute/option-expiry";
 import { marketCapCategoryBucketSql } from "@/lib/securities/normalize-market-cap";
 import { normalizeSector } from "@/lib/securities/normalize-sector";
@@ -39,13 +49,27 @@ export type AllocationDimension =
 export interface AllocationEntry {
   group_name: string;
   total_market_value: number;
-  percentage: number;
-  /** Signed delta-adjusted exposure: stocks at MV, options at Δ-notional
-   *  (puts negative). See lib/compute/exposure.ts. */
+  /**
+   * total_market_value as % of the scope's signed holdings total (longs minus
+   * shorts, no broker cash): the total the Fixed Income card's Bond
+   * Allocation also divides by (E3). Null when that total is zero or
+   * negative: a share of it would flip every sign.
+   */
+  percentage: number | null;
+  /** Signed delta-adjusted exposure: stocks at MV (a leveraged or inverse
+   *  fund times its signed factor; a cash-equivalent fund 0), options at
+   *  Δ-notional (puts negative). See lib/compute/exposure.ts
+   *  (resolveBookRowExposure). */
   net_exposure: number;
-  /** net_exposure as % of total portfolio MV — same denominator as
-   *  `percentage` so the two columns are directly comparable. */
-  exposure_pct: number;
+  /** net_exposure as % of the scope's NET WORTH, the Diagnostics badge's
+   *  base (exposureShareBase); null when that base is missing, not
+   *  positive, or tiny against gross exposure. Its sign is the bucket's
+   *  exposure sign. */
+  exposure_pct: number | null;
+  /** Leveraged or inverse funds (or options on them) in this bucket with no
+   *  usable factor: left out of net_exposure, their value kept in
+   *  total_market_value. Distinct securities. */
+  leveraged_unmodelled_count?: number;
   position_count: number;
   /** Sum of the bucket's positive-value parts (no netting). The long-only
    *  donut draws this; `total_market_value` stays the net the table shows. */
@@ -470,58 +494,94 @@ export function getAllocationByDimension(
         s.id AS security_id,
         s.security_type,
         s.option_type,
+        ${leverageIdentityColumnsSql(LEVERAGE_UNDERLYING_ALIAS)},
         ${HOLDING_VALUE_USD_SQL} AS mv
       FROM latest_holdings h
       JOIN accounts a ON a.id = h.account_id
       JOIN securities s ON s.id = h.security_id
       LEFT JOIN latest_prices lp ON lp.security_id = h.security_id
       LEFT JOIN fx_rates fx ON fx.currency = s.currency
+      ${leverageUnderlyingJoinSql(LEVERAGE_UNDERLYING_ALIAS)}
       ${factorJoins}
       WHERE ${conditions.join(" AND ")}`
     )
-    .all(...params) as Array<{
-      group_name: string;
-      account_id: number;
-      security_id: number;
-      security_type: string | null;
-      option_type: string | null;
-      mv: number;
-    }>;
+    .all(...params) as Array<BookExposureRow & { group_name: string }>;
 
   const optionExposures = getOptionExposureMap(db, accountIds);
   // position_count is DISTINCT securities per bucket: a name held in two
   // accounts is one position, exactly as the drill-down panel lists it.
   const byGroup = new Map<
     string,
-    { mv: number; exposure: number; long: number; short: number; securities: Set<number> }
+    {
+      mv: number;
+      exposure: number;
+      long: number;
+      short: number;
+      securities: Set<number>;
+      unmodelled: Set<number>;
+    }
   >();
   let total = 0;
   for (const row of rows) {
     total += row.mv;
-    const exposure = exposureForHolding(row, optionExposures);
+    const exposure = resolveBookRowExposure(row, optionExposures);
     const entry =
       byGroup.get(row.group_name) ??
-      { mv: 0, exposure: 0, long: 0, short: 0, securities: new Set<number>() };
+      { mv: 0, exposure: 0, long: 0, short: 0, securities: new Set<number>(), unmodelled: new Set<number>() };
     entry.mv += row.mv;
     if (row.mv > 0) entry.long += row.mv;
     else if (row.mv < 0) entry.short += row.mv;
-    entry.exposure += exposure;
+    if (exposure === null) entry.unmodelled.add(row.security_id);
+    else entry.exposure += exposure;
     entry.securities.add(row.security_id);
     byGroup.set(row.group_name, entry);
   }
+  const base = breakdownExposureBase(db, accountIds, rows, optionExposures);
 
   return [...byGroup.entries()]
-    .map(([group_name, { mv, exposure, long, short, securities }]) => ({
+    .map(([group_name, { mv, exposure, long, short, securities, unmodelled }]) => ({
       group_name,
       total_market_value: mv,
       long_value: long,
       short_value: short,
-      percentage: total !== 0 ? (mv * 100) / total : 0,
+      percentage: holdingsShare(mv, total),
       net_exposure: exposure,
-      exposure_pct: total !== 0 ? (exposure * 100) / total : 0,
+      exposure_pct: exposurePct(exposure, base),
+      leveraged_unmodelled_count: unmodelled.size,
       position_count: securities.size,
     }))
     .sort((a, b) => b.total_market_value - a.total_market_value);
+}
+
+/**
+ * The underlying alias for the leverage identity join in the two allocation
+ * readers (`s_u` is taken by the classification inheritance join).
+ */
+const LEVERAGE_UNDERLYING_ALIAS = "s_lev";
+
+/**
+ * The net-worth base the Breakdown's "Net exp %" divides by: the SAME
+ * helpers, rows universe and rules as the Diagnostics badge
+ * (getPortfolioExposureSummary), so the bucket shares sum to its net ratio.
+ */
+function breakdownExposureBase(
+  db: Database.Database,
+  accountIds: number[] | undefined,
+  rows: BookExposureRow[],
+  optionExposures: ReturnType<typeof getOptionExposureMap>
+): number | null {
+  const totals = totalBookExposure(rows, optionExposures);
+  return exposureShareBase(exposureNetWorth(db, accountIds, rows), totals.gross);
+}
+
+function exposurePct(exposure: number, base: number | null): number | null {
+  const share = exposureShare(exposure, base);
+  return share === null ? null : share * 100;
+}
+
+/** A bucket's share of the signed holdings total; no figure when that total is not positive. */
+function holdingsShare(value: number, total: number): number | null {
+  return total > 0 ? (value * 100) / total : null;
 }
 
 /**
@@ -564,37 +624,38 @@ function getSectorAllocationWithLookThrough(
         s.security_type,
         s.option_type,
         s.sector,
-        s.fund_category,
+        ${leverageIdentityColumnsSql(LEVERAGE_UNDERLYING_ALIAS)},
         ${HOLDING_VALUE_USD_SQL} AS mv
       FROM latest_holdings h
       JOIN accounts a ON a.id = h.account_id
       JOIN securities s ON s.id = h.security_id
       LEFT JOIN latest_prices lp ON lp.security_id = h.security_id
       LEFT JOIN fx_rates fx ON fx.currency = s.currency
+      ${leverageUnderlyingJoinSql(LEVERAGE_UNDERLYING_ALIAS)}
       WHERE ${conditions.join(" AND ")}`
     )
-    .all(...params) as Array<{
-      account_id: number;
-      security_id: number;
-      symbol: string;
-      security_type: string | null;
-      option_type: string | null;
-      sector: string | null;
-      fund_category: string | null;
-      mv: number;
-    }>;
+    .all(...params) as Array<BookExposureRow & { symbol: string; sector: string | null }>;
 
   const weights = getEtfSectorWeights(db);
   const optionExposures = getOptionExposureMap(db, accountIds);
   const bySector = new Map<
     string,
-    { value: number; exposure: number; long: number; short: number; securities: Set<number> }
+    {
+      value: number;
+      exposure: number;
+      long: number;
+      short: number;
+      securities: Set<number>;
+      unmodelled: Set<number>;
+    }
   >();
   let total = 0;
 
   for (const r of rows) {
     total += r.mv;
-    const rowExposure = exposureForHolding(r, optionExposures);
+    // Null: a flagged fund with no usable factor. Its value still splits
+    // into its sectors; its exposure is left out and counted there.
+    const rowExposure = resolveBookRowExposure(r, optionExposures);
     const parts = explodeHoldingByNormalizedSector(
       r.symbol,
       r.security_type,
@@ -605,25 +666,28 @@ function getSectorAllocationWithLookThrough(
     for (const part of parts) {
       const entry =
         bySector.get(part.sector) ??
-        { value: 0, exposure: 0, long: 0, short: 0, securities: new Set<number>() };
+        { value: 0, exposure: 0, long: 0, short: 0, securities: new Set<number>(), unmodelled: new Set<number>() };
       entry.value += part.value;
       if (part.value > 0) entry.long += part.value;
       else if (part.value < 0) entry.short += part.value;
-      entry.exposure += r.mv !== 0 ? rowExposure * (part.value / r.mv) : 0;
+      if (rowExposure === null) entry.unmodelled.add(r.security_id);
+      else entry.exposure += r.mv !== 0 ? rowExposure * (part.value / r.mv) : 0;
       entry.securities.add(r.security_id);
       bySector.set(part.sector, entry);
     }
   }
+  const base = breakdownExposureBase(db, accountIds, rows, optionExposures);
 
   return [...bySector.entries()]
-    .map(([group_name, { value, exposure, long, short, securities }]) => ({
+    .map(([group_name, { value, exposure, long, short, securities, unmodelled }]) => ({
       group_name,
       total_market_value: value,
       long_value: long,
       short_value: short,
-      percentage: total !== 0 ? (value * 100) / total : 0,
+      percentage: holdingsShare(value, total),
       net_exposure: exposure,
-      exposure_pct: total !== 0 ? (exposure * 100) / total : 0,
+      exposure_pct: exposurePct(exposure, base),
+      leveraged_unmodelled_count: unmodelled.size,
       position_count: securities.size,
     }))
     .sort((a, b) => b.total_market_value - a.total_market_value) as AllocationEntry[];

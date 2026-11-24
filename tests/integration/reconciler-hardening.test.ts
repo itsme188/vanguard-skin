@@ -290,7 +290,8 @@ describe("newer-date re-buy via a live writer", () => {
       cashByAccount: {},
       totalByAccount: {},
       unmatched: [],
-      mutualFundPrices: [],
+      institutionPrices: [],
+      cashEquivalentHoldings: [],
     };
     writePlaidHoldings(db, mapped, { pB: accountId }, "2026-03-01");
 

@@ -432,6 +432,12 @@ describe("sector breakdown after classification", () => {
     await classifyOptionSectors(db);
     expect(generateTextMock).not.toHaveBeenCalled();
 
+    // Net exp % divides by net worth (ruling 2026-11-23): seed the book's
+    // 4,000 as the account's value so the shares below keep their base.
+    db.prepare(
+      "INSERT INTO daily_valuations (account_id, valuation_date, cash_balance, holdings_value, total_value) VALUES (?, '2026-06-01', 0, 4000, 4000)"
+    ).run(acct);
+
     const rows = getAllocationByDimension(db, "sector");
     const diversified = rows.find((r) => r.group_name === "Diversified")!;
     const technology = rows.find((r) => r.group_name === "Technology")!;

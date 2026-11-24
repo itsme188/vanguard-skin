@@ -19,11 +19,34 @@ export interface UnmatchedPlaidSecurity {
   reason: string;
 }
 
-export interface MutualFundPrice {
+/**
+ * Which dating rule a Plaid price follows (lib/plaid/refresh.ts):
+ *  - "equity" (stock, ETF): always the previous trading session of the run
+ *    day — the read is taken before the open and describes the prior close.
+ *  - "mutual_fund": the legacy rule, `asOf ?? run day`, kept until the
+ *    session-dating work moves it together with a history repair.
+ */
+export type InstitutionPriceKind = "equity" | "mutual_fund";
+
+/** Vanguard's own price for a held stock, ETF or mutual fund. Never an option or bond. */
+export interface InstitutionPrice {
   plaidAccountId: string;
+  /** The SAME symbol the matching position carries, so both resolve to one security. */
   symbol: string;
+  kind: InstitutionPriceKind;
   price: number;
   asOf: string | null;
+}
+
+/**
+ * A money-market fund Plaid flags as cash. Its dollars stay in
+ * `cashByAccount` (the snapshot's cash_value is unchanged); this entry only
+ * lets the writer refresh the fund's own holdings row. Never a position.
+ */
+export interface CashEquivalentHolding {
+  plaidAccountId: string;
+  symbol: string;
+  quantity: number;
 }
 
 export interface PlaidMapResult {
@@ -31,7 +54,19 @@ export interface PlaidMapResult {
   cashByAccount: Record<string, number>;
   totalByAccount: Record<string, number | null>;
   unmatched: UnmatchedPlaidSecurity[];
-  mutualFundPrices: MutualFundPrice[];
+  institutionPrices: InstitutionPrice[];
+  cashEquivalentHoldings: CashEquivalentHolding[];
+}
+
+/** Plaid security types whose institution_price is a per-share close on the `prices` basis. */
+const PRICE_KIND_BY_PLAID_TYPE: Record<string, InstitutionPriceKind> = {
+  equity: "equity",
+  etf: "equity",
+  "mutual fund": "mutual_fund",
+};
+
+function isUsablePrice(p: number | null): p is number {
+  return typeof p === "number" && Number.isFinite(p) && p > 0;
 }
 
 const TYPE_MAP: Record<string, string> = {
@@ -85,24 +120,51 @@ export function mapPlaidHoldings(resp: PlaidHoldingsResponse): PlaidMapResult {
     cashByAccount: {},
     totalByAccount: {},
     unmatched: [],
-    mutualFundPrices: [],
+    institutionPrices: [],
+    cashEquivalentHoldings: [],
   };
   for (const a of resp.accounts) result.totalByAccount[a.account_id] = a.balances.current;
 
   for (const h of resp.holdings) {
-    if (h.quantity === 0) continue;
     const sec = secById.get(h.security_id);
+    const plaidType = (sec?.type ?? "").toLowerCase();
+    // The VMFXX literal predates the shared identity rule
+    // (lib/compute/cash-equivalents.ts). It cannot move onto that rule here:
+    // the rule reads the stored security's fund_category, and this mapper
+    // has no database. It only decides what lands in cash_value.
+    const plaidSaysCash =
+      sec != null &&
+      (sec.is_cash_equivalent === true || plaidType === "cash" || sec.ticker_symbol?.trim() === "VMFXX");
+
+    // A money-market fund reported at zero is evidence the balance is gone;
+    // keep it (as a zero) so the writer can retire the fund's row. Every
+    // other zero-quantity holding is skipped as before.
+    if (h.quantity === 0 && !(plaidSaysCash && plaidType !== "cash")) continue;
     if (!sec) {
       result.unmatched.push({ name: h.security_id, reason: "security not in response" });
       continue;
     }
-    const plaidType = (sec.type ?? "").toLowerCase();
 
     // Settlement fund / cash equivalents fold into cash, never a position.
-    if (sec.is_cash_equivalent === true || plaidType === "cash" || sec.ticker_symbol?.trim() === "VMFXX") {
-      if (h.institution_value != null) {
+    if (plaidSaysCash) {
+      // A zero row adds nothing, and must not turn an absent cash_value
+      // (null) into 0.
+      if (h.quantity !== 0 && h.institution_value != null) {
         result.cashByAccount[h.account_id] =
           (result.cashByAccount[h.account_id] ?? 0) + h.institution_value;
+      }
+      // A ticketed fund (not Plaid's generic "cash" line) also refreshes its
+      // own holdings row — the writer decides, against the shared identity
+      // rule, whether the row may be written.
+      if (plaidType !== "cash") {
+        const resolved = resolveSymbol(sec);
+        if ("symbol" in resolved && Number.isFinite(h.quantity)) {
+          result.cashEquivalentHoldings.push({
+            plaidAccountId: h.account_id,
+            symbol: resolved.symbol,
+            quantity: h.quantity,
+          });
+        }
       }
       continue;
     }
@@ -169,10 +231,16 @@ export function mapPlaidHoldings(resp: PlaidHoldingsResponse): PlaidMapResult {
       securityType,
       quantity: h.quantity,
     });
-    if (plaidType === "mutual fund" && h.institution_price != null) {
-      result.mutualFundPrices.push({
+    // Options and bonds are left out on purpose: nothing in this repo proves
+    // Plaid's price for them is on the basis `prices` stores (per-share
+    // premium for an option, per-100-face for a bond), so a wrong-basis row
+    // would mis-value the position by 100x. Only stocks, ETFs and funds.
+    const kind = PRICE_KIND_BY_PLAID_TYPE[plaidType];
+    if (kind && isUsablePrice(h.institution_price)) {
+      result.institutionPrices.push({
         plaidAccountId: h.account_id,
         symbol: resolved.symbol,
+        kind,
         price: h.institution_price,
         asOf: h.institution_price_as_of,
       });

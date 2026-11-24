@@ -62,10 +62,11 @@ describe("mapPlaidHoldings", () => {
     expect(opt!.expirationDate).toBe("2027-03-19");
   });
 
-  it("collects mutual-fund prices only", () => {
+  it("collects stock and mutual-fund prices; never option, bond or cash-equivalent prices", () => {
     const r = mapPlaidHoldings(baseResp());
-    expect(r.mutualFundPrices).toEqual([
-      { plaidAccountId: "acctA", symbol: "VWENX", price: 87.31, asOf: "2026-07-09" },
+    expect(r.institutionPrices).toEqual([
+      { plaidAccountId: "acctA", symbol: "PRIM", kind: "equity", price: 50, asOf: "2026-07-09" },
+      { plaidAccountId: "acctA", symbol: "VWENX", kind: "mutual_fund", price: 87.31, asOf: "2026-07-09" },
     ]);
   });
 
@@ -96,7 +97,7 @@ describe("mapPlaidHoldings", () => {
     expect(p.strikePrice).toBe(300);
     expect(p.expirationDate).toBe("2026-07-17");
     expect(p.quantity).toBe(-3);
-    expect(r.mutualFundPrices).toEqual([]);
+    expect(r.institutionPrices).toEqual([]);
   });
 
   it("folds type:'cash' securities into cash, not position", () => {

@@ -16,8 +16,10 @@ import { formatEnrichedAtET } from "@/lib/format";
 import apiFetch from "@/lib/http/apiFetch";
 import { networkFailureMessage, readMutationResult } from "@/lib/ui/mutation-result";
 import { joinSentences } from "@/lib/ui/join-sentences";
+import { formatPositionsDate } from "@/lib/ui/positions-freshness-label";
 
 export type DrawerPanel =
+  | "positionsFreshness"
   | "factorCoverage"
   | "lastClassify"
   | "sectorClassify"
@@ -640,9 +642,81 @@ function SectorClassifyContent({ state }: { state: AnalysisTrustState }) {
   );
 }
 
+/** One line per symbol: "AAA (Nov 20)". Symbols are not figures; the count
+ *  in front of a list is, and goes through <Count>. */
+function datedSymbols(items: { symbol: string; asOfDate: string }[]): string {
+  return items.map((i) => `${i.symbol} (${formatPositionsDate(i.asOfDate)})`).join(", ");
+}
+
+function PositionsFreshnessContent({ state }: { state: AnalysisTrustState }) {
+  // The date of each account's newest live rows, and every counted row that
+  // is older: a position the latest sync left out is still counted as held
+  // until the closed-position reconciler writes its zero row
+  // (lib/queries/positions-freshness.ts).
+  const { positionsFreshness } = state;
+  if (positionsFreshness.accounts.length === 0) {
+    return <p className="text-sm text-ink-dim">No positions are held in this scope.</p>;
+  }
+  return (
+    <div className="space-y-4">
+      <p className="text-xs text-ink-dim">
+        The positions these figures use, and the date each one comes from. A position the latest sync did not report is still counted as held, so it may already be closed.
+      </p>
+      <ul className="space-y-3">
+        {positionsFreshness.accounts.map((acct) => (
+          <li
+            key={acct.accountId}
+            className="rounded-lg bg-panel border border-edge p-3 space-y-2"
+          >
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-sm text-ink truncate">{acct.accountName}</span>
+              {acct.liveSource && (
+                <span className="text-[10px] text-ink-faint uppercase tracking-wide whitespace-nowrap">
+                  {acct.liveSource}
+                </span>
+              )}
+            </div>
+            <p className="text-xs text-ink">
+              {acct.newestLiveDate
+                ? `Latest sync: ${formatPositionsDate(acct.newestLiveDate)}`
+                : "No live sync for this account."}
+            </p>
+            {acct.leftover.count > 0 && (
+              <p className="text-xs text-down">
+                Not in the latest sync, still counted as held (
+                <Count value={acct.leftover.count} />
+                ): {datedSymbols(acct.leftover.items)}
+              </p>
+            )}
+            {acct.statementRows.count > 0 && (
+              <p className="text-xs text-ink-dim">
+                {acct.statementRows.oldestDate === acct.statementRows.newestDate
+                  ? `From the ${formatPositionsDate(acct.statementRows.newestDate ?? "")} statement (`
+                  : `From statements (`}
+                <Count value={acct.statementRows.count} />
+                {acct.statementRows.oldestDate === acct.statementRows.newestDate
+                  ? `): ${acct.statementRows.symbols.join(", ")}`
+                  : `): ${datedSymbols(acct.statementRows.items)}`}
+              </p>
+            )}
+            {acct.liveSource === "Plaid" && (
+              <p className="text-[11px] text-ink-faint">
+                Plaid positions describe the previous trading session.
+                {acct.statementRows.count > 0 &&
+                  " Plaid does not report bonds or money-market funds, so those come from the statement."}
+              </p>
+            )}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 // ── Panel config ─────────────────────────────────────────────────────
 
 const PANEL_TITLES: Record<DrawerPanel, string> = {
+  positionsFreshness: "Positions As Of",
   factorCoverage: "Factor Coverage",
   lastClassify: "Factor Ratings Last Updated",
   sectorClassify: "Sectors Last Classified",
@@ -705,6 +779,7 @@ export function TrustStripDrawer({ panel, state, scope, onClose, onRefresh }: Pr
 
         {/* Content */}
         <div className="flex-1 overflow-y-auto p-4">
+          {panel === "positionsFreshness" && <PositionsFreshnessContent state={state} />}
           {panel === "factorCoverage" && (
             <FactorCoverageContent state={state} onRefresh={onRefresh} onClose={onClose} />
           )}

@@ -371,10 +371,10 @@ describe("XIRR computation", () => {
       expect(combined).not.toBeNull();
 
       // +30% account annualizes well above the +10% account
-      expect(r2!.xirr).toBeGreaterThan(r1!.xirr + 0.05);
+      expect(r2!.xirr).toBeGreaterThan(r1!.xirr! + 0.05);
       // Combined (equal starting weights) lands strictly between the two
-      expect(combined!.xirr).toBeGreaterThan(r1!.xirr);
-      expect(combined!.xirr).toBeLessThan(r2!.xirr);
+      expect(combined!.xirr).toBeGreaterThan(r1!.xirr!);
+      expect(combined!.xirr).toBeLessThan(r2!.xirr!);
       expect(combined!.currentValue).toBe(240000);
     });
   });
@@ -446,8 +446,8 @@ describe("XIRR computation", () => {
       // root — an independent check that the (untouched) aggregate XIRR
       // math still reflects the true combined economics after the
       // count-only fix, not a fixture-specific coincidence.
-      expect(combined!.xirr).toBeCloseTo(r1!.xirr, 6);
-      expect(combined!.xirr).toBeCloseTo(r2!.xirr, 6);
+      expect(combined!.xirr).toBeCloseTo(r1!.xirr!, 6);
+      expect(combined!.xirr).toBeCloseTo(r2!.xirr!, 6);
       expect(combined!.currentValue).toBe(162000);
     });
   });
@@ -480,7 +480,7 @@ describe("XIRR computation", () => {
       const anchored = computeXirr(db, { startDate: "2022-02-01", accountId: ACCT_1 });
       expect(early).not.toBeNull();
       expect(anchored).not.toBeNull();
-      expect(Math.abs(early!.xirr - anchored!.xirr)).toBeLessThan(1e-6);
+      expect(Math.abs(early!.xirr! - anchored!.xirr!)).toBeLessThan(1e-6);
       // 50000 + 1000 mid-year → 53500 over 11 months ≈ +5% a year — a
       // plausible single-digit annual rate, not a runaway 1000 → 53500 root.
       expect(early!.xirr).toBeGreaterThan(0);
@@ -495,8 +495,8 @@ describe("XIRR computation", () => {
       expect(early).not.toBeNull();
       expect(noStart).not.toBeNull();
       expect(anchored).not.toBeNull();
-      expect(Math.abs(early!.xirr - anchored!.xirr)).toBeLessThan(1e-6);
-      expect(Math.abs(noStart!.xirr - anchored!.xirr)).toBeLessThan(1e-6);
+      expect(Math.abs(early!.xirr! - anchored!.xirr!)).toBeLessThan(1e-6);
+      expect(Math.abs(noStart!.xirr! - anchored!.xirr!)).toBeLessThan(1e-6);
     });
 
     it("portfolio-wide: an early window start equals a start the day after the first snapshot", () => {
@@ -505,7 +505,7 @@ describe("XIRR computation", () => {
       const anchored = computeXirr(db, { startDate: "2022-02-01" });
       expect(early).not.toBeNull();
       expect(anchored).not.toBeNull();
-      expect(Math.abs(early!.xirr - anchored!.xirr)).toBeLessThan(1e-6);
+      expect(Math.abs(early!.xirr! - anchored!.xirr!)).toBeLessThan(1e-6);
       expect(early!.startDate).toBe("2022-01-31");
       expect(early!.totalInvested).toBe(1000);
     });

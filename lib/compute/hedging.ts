@@ -12,7 +12,11 @@ import { explodeHoldingBySector } from "@/lib/compute/explode-sector";
 import { betaConfidenceVerdict, MIN_BETA_PAIRS } from "@/lib/compute/beta-confidence";
 import { liveOptionExpirationSql } from "@/lib/compute/option-expiry";
 import { isCashEquivalentSecurity } from "@/lib/compute/cash-equivalents";
-import { resolveLeveragedExposure, summarizeUnmodelledLeveragedFunds } from "@/lib/compute/leveraged-fund";
+import {
+  normalizeLeverageFactor,
+  resolveLeveragedExposure,
+  summarizeUnmodelledLeveragedFunds,
+} from "@/lib/compute/leveraged-fund";
 import { normalizeSector, GICS_SECTORS } from "@/lib/securities/normalize-sector";
 import {
   normalizeFundCategory,
@@ -631,15 +635,28 @@ export const NOT_CREDITED_BETA_LOW_FIT = "its price history fits the market too 
  * applies no beta). Owner ruling 19 = B (2026-11-16): a beta that cannot be
  * measured earns NO credit until it can be; the hedge is listed as not
  * credited with the plain reason. It replaced an assumed beta of 1.0.
+ *
+ * `appliedLeverageFactor` (review 2026-11-23): the signed factor of a
+ * leveraged or inverse fund that the orchestrator ALREADY multiplied into
+ * `notional` (theme T2: notional is in the tracked index, not in the fund).
+ * The measured beta is the fund's own regression, so it already carries that
+ * same leverage (about -1 for a -1x fund, -3 for a -3x fund); multiplying by
+ * it again squared the leverage and flipped every inverse hedge negative.
+ * The beta applied is therefore the tracked index's: measured beta / factor.
+ * Still a measurement, so an unmeasured beta is still not credited. Absent,
+ * null or unusable (normalizeLeverageFactor): the beta is used as measured.
  */
 export function creditAtResolvedBeta(
   notional: number,
-  resolved: ResolvedBeta
+  resolved: ResolvedBeta,
+  appliedLeverageFactor?: number | null
 ): { credited: number } | { notCreditedReason: string } {
   if (resolved.source === "unmeasured") {
     return { notCreditedReason: resolved.reason === "low_fit" ? NOT_CREDITED_BETA_LOW_FIT : NOT_CREDITED_BETA_NO_HISTORY };
   }
-  return { credited: notional * resolved.beta };
+  const factor = normalizeLeverageFactor(appliedLeverageFactor);
+  const beta = factor === null ? resolved.beta : resolved.beta / factor;
+  return { credited: notional * beta };
 }
 
 /**
@@ -819,6 +836,10 @@ export interface AttributionContext {
    *  unknown type, which fails closed once sector weights and geography
    *  have both missed. */
   fundIdentityByUnderlying?: Map<string, ProxyFundIdentity>;
+  /** The signed leverage factor already multiplied into a candidate's
+   *  exposure, by underlying (creditAtResolvedBeta's third argument).
+   *  Absent: no factor was applied. */
+  appliedLeverageFactorByUnderlying?: Map<string, number>;
 }
 
 export function attributeProxies(
@@ -864,7 +885,11 @@ export function attributeProxies(
       continue;
     }
     const resolved = ctx.resolveBeta(c.underlying);
-    const credit = creditAtResolvedBeta(c.protectiveNotional, resolved);
+    const credit = creditAtResolvedBeta(
+      c.protectiveNotional,
+      resolved,
+      ctx.appliedLeverageFactorByUnderlying?.get(c.underlying)
+    );
     if ("notCreditedReason" in credit) {
       proxies.push({
         ...base,
@@ -1374,6 +1399,35 @@ export function computeDefenseAnalysis(db: Database.Database, accountIds?: numbe
   const greeksDiagBySymbol = new Map<string, GreeksDiagnostic>();
   const siblingPricedSecurityIds = new Set<number>();
   const scopes: Array<number | undefined> = scopedAccountIds ?? [undefined];
+  // computePortfolioGreeks works in NATIVE currency: the underlying's close
+  // from `prices` and the option's own premium units, never converted. The
+  // fallback path (market value) is USD, so convert here, once: exposure at
+  // the underlying's rate (the spot's currency; the option's own when no
+  // underlying row is found), theta at the option's rate (premium currency).
+  // A missing rate reads as 1.0, as everywhere (COALESCE(fx.usd_per_unit, 1)).
+  const optionFxStmt = db.prepare(
+    `SELECT COALESCE(fo.usd_per_unit, 1) AS option_fx,
+            CASE WHEN su.id IS NULL THEN COALESCE(fo.usd_per_unit, 1)
+                 ELSE COALESCE(fu.usd_per_unit, 1) END AS underlying_fx
+     FROM securities s
+     LEFT JOIN fx_rates fo ON fo.currency = s.currency
+     LEFT JOIN securities su ON su.id = (
+       SELECT u.id FROM securities u
+       WHERE u.symbol = s.underlying_symbol AND LOWER(COALESCE(u.security_type, '')) != 'option'
+       ORDER BY u.id LIMIT 1)
+     LEFT JOIN fx_rates fu ON fu.currency = su.currency
+     WHERE s.id = ?`
+  );
+  const optionFxById = new Map<number, { optionFx: number; underlyingFx: number }>();
+  const optionFxOf = (securityId: number): { optionFx: number; underlyingFx: number } => {
+    let fx = optionFxById.get(securityId);
+    if (!fx) {
+      const r = optionFxStmt.get(securityId) as { option_fx: number; underlying_fx: number } | undefined;
+      fx = { optionFx: r?.option_fx ?? 1, underlyingFx: r?.underlying_fx ?? 1 };
+      optionFxById.set(securityId, fx);
+    }
+    return fx;
+  };
   for (const accountId of scopes) {
     const greeks = computePortfolioGreeks(db, accountId !== undefined ? { accountId } : undefined);
     for (const d of greeks.diagnostics) greeksDiagBySymbol.set(d.symbol, d);
@@ -1392,8 +1446,9 @@ export function computeDefenseAnalysis(db: Database.Database, accountIds?: numbe
           greeksAvailable: false,
         };
       if (pos.greeks) {
-        cur.exposure += pos.greeks.delta * pos.underlyingPrice * pos.multiplier * pos.quantity;
-        cur.thetaPerDay += pos.greeks.theta * pos.multiplier * pos.quantity;
+        const fx = optionFxOf(pos.securityId);
+        cur.exposure += pos.greeks.delta * pos.underlyingPrice * pos.multiplier * pos.quantity * fx.underlyingFx;
+        cur.thetaPerDay += pos.greeks.theta * pos.multiplier * pos.quantity * fx.optionFx;
         // Weight the per-contract delta by the contracts each account holds
         // (it used to be "last account wins"). One contract has one delta,
         // so the accounts agree today; the weighting keeps that true if the
@@ -1505,6 +1560,7 @@ export function computeDefenseAnalysis(db: Database.Database, accountIds?: numbe
 
   // ─── Note 3 + instrument assembly ──────────────────────────────────
   const instruments: DefenseInstrument[] = [];
+  const appliedLeverageFactorByUnderlying = new Map<string, number>();
   for (const row of rows) {
     const isOption = (row.security_type ?? "").toLowerCase() === "option";
     const raw = rawUnderlyingOf(row);
@@ -1558,7 +1614,12 @@ export function computeDefenseAnalysis(db: Database.Database, accountIds?: numbe
     // same factor converts delta-notional in the fund into notional in the
     // index. `marketValue` below stays the real money, unscaled.
     const leverageFactor = leveragedBySecurityId.get(row.security_id);
-    if (leverageFactor !== undefined) exposure *= leverageFactor;
+    if (leverageFactor !== undefined) {
+      exposure *= leverageFactor;
+      // The beta route must not apply this leverage a second time through
+      // the fund's own measured beta (creditAtResolvedBeta).
+      appliedLeverageFactorByUnderlying.set(canonical, leverageFactor);
+    }
 
     instruments.push({
       securityId: row.security_id,
@@ -1731,6 +1792,7 @@ export function computeDefenseAnalysis(db: Database.Database, accountIds?: numbe
         },
       ])
     ),
+    appliedLeverageFactorByUnderlying,
   };
 
   const { proxies, sectorCoverage } = attributeProxies(classifyResult.proxyCandidates, attributionCtx);

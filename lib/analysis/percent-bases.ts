@@ -3,10 +3,12 @@
 // here say which. No figure is computed here.
 
 export const PERCENT_BASIS = {
-  /** Breakdown "%" and "Net exp %": signed net sum of the scope, shorts in. */
-  breakdown: "% of net value",
+  /** Breakdown "%": signed net sum of the scope's holdings, shorts in. */
+  breakdown: "% of net holdings value",
+  /** Breakdown "Net exp %" and the Net exposure badge: net worth (holdings plus broker cash). */
+  breakdownExposure: "% of net worth",
   breakdownCaption:
-    "Breakdown: % is of net value (longs minus shorts). Net exp % is delta-adjusted exposure over the same net value.",
+    "Breakdown: % is of net holdings value (longs minus shorts, no broker cash); none is shown when that is zero or negative. Net exp % is delta-adjusted exposure over net worth (holdings plus cash, the Portfolio strip's figure), the same base as the Net exposure badge; money-market funds count as no exposure, and none is shown when net worth is not on file or is 5% of gross exposure or less.",
   /** Concentration: sum of absolute values. */
   concentration: "% of gross exposure",
   concentrationCaption:

@@ -4,7 +4,9 @@
 // allocation bucket carries delta-adjusted exposure alongside market value.
 // A bucket holding stock + a long put reads LOWER exposure than MV (the put
 // hedges); a bucket with a long call reads HIGHER (delta-notional ≫ premium).
-// exposure_pct shares the MV denominator so the two columns are comparable.
+// exposure_pct divides by the scope's net worth (ruling 2026-11-23; it used
+// to share the MV denominator): the tests that read it seed a net worth equal
+// to the holdings, so the share is unchanged.
 import { describe, it, expect, beforeEach } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
@@ -62,6 +64,12 @@ function seedPrice(securityId: number, price: number) {
   ).run(securityId, price);
 }
 
+function seedNetWorth(accountId: number, total: number) {
+  db.prepare(
+    "INSERT INTO daily_valuations (account_id, valuation_date, cash_balance, holdings_value, total_value) VALUES (?, '2026-06-01', 0, ?, ?)"
+  ).run(accountId, total, total);
+}
+
 function futureDate(days: number): string {
   const d = new Date();
   d.setDate(d.getDate() + days);
@@ -80,6 +88,7 @@ describe("AllocationEntry delta-adjusted exposure", () => {
     const stock = seedStock("AAPL", "US Large Cap Equity");
     seedHolding(acct, stock, 10);
     seedPrice(stock, 100);
+    seedNetWorth(acct, 1_000);
 
     const rows = getAllocationByDimension(db, "fund_category");
     const bucket = rows.find((r) => r.group_name === "US Large Cap Equity")!;
@@ -96,13 +105,14 @@ describe("AllocationEntry delta-adjusted exposure", () => {
     const put = seedOption("HOOD  P90", "HOOD", "PUT", 90, futureDate(365));
     seedHolding(acct, put, 1);
     seedPrice(put, 14); // $1,400 MV, negative delta exposure
+    seedNetWorth(acct, 9_400);
 
     const rows = getAllocationByDimension(db, "fund_category");
     const bucket = rows.find((r) => r.group_name === "US Sector Equity (Financial)")!;
     // MV stacks both legs; exposure nets the hedge against the stock
     expect(bucket.total_market_value).toBeCloseTo(9_400);
     expect(bucket.net_exposure).toBeLessThan(8_000);
-    expect(bucket.exposure_pct).toBeLessThan(bucket.percentage);
+    expect(bucket.exposure_pct!).toBeLessThan(bucket.percentage!);
   });
 
   it("a long call's exposure exceeds its premium in the bucket", () => {
