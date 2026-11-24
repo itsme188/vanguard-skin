@@ -94,25 +94,26 @@ Inputs: scope accounts, driver symbol, valuation date, the list of driver moves,
 
 For each position and each driver move:
 
-1. **Position set and values.** The same rows the custom scenario engine loads (`lib/compute/scenarios.ts`): latest holdings per account and security with shorts, live options only, FX to USD. The builder should share that query, not copy it.
+1. **Position set and values.** The same rows the custom scenario engine loads (`lib/compute/scenarios.ts`): latest holdings per account and security with shorts, live options only, FX to USD. The builder should share that query, not copy it. The shared loader returns every held position, a non-option with no price included, and this page reads it per account (rulings F10, F11).
 2. **The position's own move.** `driver move x beta to the driver`.
    - Beta comes from a measured regression against the driver (`computeSecurityRegression`, cached in `security_regressions`, benchmarks SPY, QQQ, VTI) when it passes `regressionBetaVerdict`.
    - Otherwise the heuristic the Scenarios page already uses (`estimateBeta`), flagged "estimated". The page counts these and shows their share of the book.
    - An option takes its underlying's identity and beta (`equityIdentity`).
-   - When no regression against the driver passes the gate, the fallback is a beta to the broad market converted to the driver: the name's measured SPY beta (or, failing that, the `estimateBeta` heuristic, which is a beta to the broad market, not to the driver) divided by the driver's own measured SPY beta. Either fallback is flagged "estimated".
-   - A leveraged or inverse fund, and any option on it, never uses its own regression: its measured beta already contains the leverage, and multiplying by the stored factor would count it twice. It moves at the tracked index's move times its signed factor (`resolveLeveragedExposure`), where the tracked index's move is that index's beta to the driver times the driver move (1 when the index is the driver). A flagged fund with no factor is not modelled and listed.
+   - When no regression against the driver passes the gate, the fallback is a beta to the broad market converted to the driver: the name's measured SPY beta (or, failing that, the `estimateBeta` heuristic, which is a beta to the broad market, not to the driver) divided by the driver's own SPY beta, measured benchmark to benchmark from `benchmark_prices`. Either fallback is flagged "estimated". When the driver's SPY beta cannot be measured or is not usable as a divisor, there is no conversion: the name is not modelled and listed, never divided by 1 (ruling F6).
+   - A leveraged or inverse fund, and any option on it, never uses its own regression: its measured beta already contains the leverage, and multiplying by the stored factor would count it twice. It moves at the tracked index's move times its signed factor (`resolveLeveragedExposure`), where the tracked index's move is that index's beta to the driver times the driver move (1 when the index is the driver). The tracked index comes from a hand-checked seed (ruling F5). A flagged fund with no factor, or with no known tracked index, or whose tracked index has no benchmark history to measure against the driver, is not modelled and listed.
    - Cash-equivalent funds, bonds and bond funds follow the custom scenario engine's existing rules.
-   - Pre-check before step 1 lands (required): confirm, read-only, that the price series the regressions read are dated on the right session for Plaid-fed securities. A series dated a session late pulls beta toward zero and shrinks the loss. If any is misdated, that security's regression is not used and it takes the flagged fallback.
-   - The driver itself, held as shares or through options, has beta 1 by definition.
+   - Price dating (ruling F8/F9): a measured beta is built only from correctly dated price rows. Rows the Plaid sync wrote (`prices.source = 'plaid'`) are left out of the series; too few remaining pairs fails the gate and the name takes the flagged fallback. A series dated a session late pulls beta toward zero and shrinks the loss. A one-off read-only audit records the evidence for this rule; "insufficient evidence" is its own outcome, not a pass.
+   - The driver itself, held as shares or through options, has beta 1 by definition, including an option whose underlying has no securities row (its stored underlying symbol decides, ruling F7).
 3. **Stocks and funds.** Value change = market value x own move. No time effect.
 4. **Options.** Reprice at the valuation date:
    - Solve the volatility today, from the option's own price, falling back to the broker's volatility for the underlying, exactly as `repriceOptionUnderShock` does now.
    - Value today `v0` at today's time to expiry. Value at the date `v1` with the underlying moved, the volatility changed by the input, and the time to expiry counted from the valuation date.
-   - If the contract expires before the valuation date, the page cannot know whether the move comes before or after it lapses. It takes the cautious case: the contract is valued at its intrinsic value at today's underlying price (the move is assumed to come after it has gone), and the page lists it as "expires before the date" with its expiry, so the owner can set the date to that expiry and see the other case. A contract that expires on the valuation date is worth its intrinsic value at the moved price.
-   - This needs one new optional field on `OptionRepriceShock` (a valuation date). With the field absent the function returns byte-identical results; that is pinned by a test.
+   - Timing (ruling F16): a valuation date of today means the current instant, so a 0% move with no volatility change is exactly zero. A later date means the close of that day.
+   - If the contract expires before the valuation date, the page cannot know whether the move comes before or after it lapses. It takes, per position, the worse case for the owner of the two (intrinsic value at today's underlying price, or intrinsic value at the moved price), signed by quantity, so neither a long nor a written contract is flattered (ruling F4). The page lists it as "expires before the date" with its expiry, so the owner can set the date to that expiry. A contract that expires on a later valuation date is worth its intrinsic value at the moved price.
+   - This needs new optional fields on `OptionRepriceShock` (a valuation date, and model pricing for an unpriced contract). With neither passed the function returns exactly the legacy result object; that is pinned by a test (ruling F17).
 5. **An option with no price.** Today the scenario engines refuse it ("no-option-price") and its change is zero. That is wrong for this page: the unpriced options the daily Vanguard sync carries include the very hedges the owner is asking about. Proposal:
    - When the option has no price but the underlying has a price and the broker's volatility for the underlying is on file, compute both `v0` and `v1` from the model and use the difference as the change. The row is flagged "priced from model" and counted on the page.
-   - With no broker volatility on file the option is not modelled and listed. The default volatility constant (`DEFAULT_FALLBACK_VOL`) is never used here.
+   - With no broker volatility on file the option is not modelled and listed, with its value reported as unknown, never as a 0% share (ruling F12). The default volatility constant (`DEFAULT_FALLBACK_VOL`) is never used here.
    - Such a row has a stored market value of zero, so its dollar change cannot come from `changePercent x market value`. It is computed directly: per-share change x quantity x multiplier x FX. Its share of the book, and its side of the offsetting split, come from its model value and model delta, never from the zero.
    - The existing scenario engines are not changed by this.
 6. **Totals per move.** Book P&L = the sum of the position changes. Conservation is a named test (below).
@@ -123,6 +124,8 @@ The second line and the "Offsets give back" column need a split of the book into
 
 The split follows the direction being looked at. For a fall in the driver, offsetting means negative exposure to it. For a rise (the short-stock case), it is the reverse: the positions that lose are those with negative exposure, and the offsets are those with positive exposure. The column headings read "Positions that lose" and "Offsets give back" in both directions.
 
+Step 1 shows one direction, down (ruling F15): the split is the down split, the table shows the zero and negative rows plus a custom row that must be zero or negative, and the chart may extend to positive moves with its second line still on the down split. Step 3 adds the direction control that the rise case needs.
+
 ### The year's gain
 
 The app has no function that returns a scope's year-to-date gain in dollars. New function, in `lib/compute/`:
@@ -131,9 +134,9 @@ The app has no function that returns a scope's year-to-date gain in dollars. New
 
 - Value now: `getPortfolioCurrentValues(...).totalValue` for the scope (net worth, the same base as the exposure badge). That reader picks an as-of date per account.
 - Base value: each account's statement total for Dec 31 of the prior year (the statement is the authority; a computed daily row is not used). This needs a small new lookup; `baseSessionOnOrBefore` reads benchmark dates and is not it.
-- Flows: `fetchNetFlowsByDate` per account, from Jan 1 to that account's own as-of date, with in-kind transfers at their stored fair value.
-- If the Dec 31 statement total is missing for any account in the scope, no gain is printed and the page says which account.
-- Reconciliation, shown as a small line: through the last statement month-end, the figure is compared with the sum of `computeMonthlyPerformance`'s `gainLoss` for the year's months. The two use different sources (that reader can use a statement's own deposit total and returns no figure for some months), so on real data they can differ for sound reasons. The line reads "agrees with the statements through <month>", or shows the difference, or "not checked" when any month has no figure. The page's figure is the one used either way. Exact equality is pinned only on a synthetic book where every month has a figure.
+- Flows: net external flows per account, from Jan 1 to that account's own as-of date, with in-kind transfers at their stored fair value, read in dollars through the one currency rule (`lib/queries/transaction-amount-currency.ts`): a native in-kind leg is converted, a USD-stored row is not converted twice (ruling F1). `fetchNetFlowsByDate` stays as it is for its existing callers.
+- If the Dec 31 statement total is missing for any account in the scope, or an account's current value is missing or dated before Jan 1, or a flow cannot be converted, no gain is printed and the page says which account (ruling F3).
+- Reconciliation, shown as a small line: through the last statement month-end, the figure is compared with the sum of `computeMonthlyPerformance`'s `gainLoss` for the year's months. The two use different sources (that reader can use a statement's own deposit total and returns no figure for some months), so on real data they can differ for sound reasons. The line reads "agrees with the statements through <month>", or shows the difference, or "not checked" when any month has no figure. The page's dollar figure is the one shown either way; when the line reads a difference beyond the $1 tolerance, no "gain given back" ratio is printed (ruling F2). Exact equality is pinned only on a synthetic book where every month has a figure.
 
 The page only says "Year's gain so far" and never says what the figure is used for.
 
@@ -211,7 +214,7 @@ Each step is deployable alone.
 - How the scenario engine's position query is shared with the new engine.
 - The sweep's range and step (suggested -20% to +10% in 2.5% steps), and the fixed table rows.
 - Chart details (Recharts, as the other Analysis views).
-- Whether regressions are read from the cache only or computed on demand when the day's row is missing (computing on demand reads only).
+- Whether regressions are read from the cache only or computed on demand when the day's row is missing (computing on demand reads only). Settled in the plan: the cache is read only when it is at most 7 days old and the security has no Plaid-sourced price in the window; otherwise the regression is computed on demand and nothing is written.
 - File layout for the view's components.
 
 ## Owner rulings (2026-11-24)
@@ -222,3 +225,27 @@ Each step is deployable alone.
 4. **The brokerage account must be shown to be right before its figure is trusted.** Required pre-check before step 1 lands, read-only: the account's year's gain as the app computes it is compared with the broker's own figures for the same period (opening value, closing value, deposits and withdrawals), and every difference is explained. The positions-freshness line is shown beside the headline, because that account's positions can be days old.
 5. **An unpriced option is priced by the model, flagged, and can be overwritten.** Each "priced from model" row shows its model price with an edit box (`<PrivateNumberInput>`). A typed price replaces the model price for that contract: it becomes the option's own price, its volatility is solved from it as for any priced option, and the row's flag changes to "your price". A price the model cannot accept (below intrinsic value) is refused with a sentence. The typed price lives in page state only and is not stored; storing a hand-entered price would be a separate change with its own design.
 6. **Approved as proposed:** "offsetting positions" by direction of exposure; the flagged beta fallback for names with no measured beta.
+
+## Rulings after the plan review (2026-11-24)
+
+Made by the controller on the owner's delegation, after an independent review of the step 1 plan. Where these differ from the text above, these win.
+
+- **F1 Flows in dollars.** The year's gain reads flows through the one currency rule (`lib/queries/transaction-amount-currency.ts`): a native in-kind leg is converted, a USD-stored row is not converted twice. `fetchNetFlowsByDate` is unchanged for its callers; a sibling reader is added and pinned by a foreign-currency in-kind test.
+- **F2 Statement authority.** When the reconciliation reads "differs" beyond the $1 tolerance, the page shows the dollar gain with the difference beside it and prints no "gain given back" ratio, with a line saying why. "Not checked" keeps the ratio with a note.
+- **F3 Current value.** An account whose current value is missing, or dated before Jan 1 of the year, makes the gain unavailable, with that account named.
+- **F4 Expiry before the date.** Per position, the worse case for the owner of the two (intrinsic at today's underlying price, intrinsic at the moved price), signed by quantity. Still listed as "expires before the date".
+- **F5 Tracked index.** A hand-checked seed of tracked index symbols, kept as a code constant beside the leverage-factor seeds (no migration). A flagged fund with a factor but no known tracked index is not modelled and listed; there is no heuristic stand-in. A tracked index other than the driver gets its beta to the driver from benchmark-to-benchmark history only when that index is in `benchmark_prices`; otherwise not modelled.
+- **F6 Driver market beta.** Measured benchmark to benchmark from `benchmark_prices`, independent of holdings. If it cannot be measured, or is not usable as a divisor (not finite, or absolute value under 0.2), there is no conversion: the names needing it are not modelled and listed, never divided by 1.
+- **F7 Option on an absent underlying row.** The loader keeps the contract's stored underlying symbol; an option whose stored underlying symbol is the driver has beta 1 even with no underlying securities row. Tested through the real loader.
+- **F8/F9 Price dating.** No private exclusion list. A measured beta is built only from correctly dated rows: rows the Plaid sync wrote (`prices.source = 'plaid'`) are left out of the series, and too few remaining pairs falls to the flagged fallback. `computeSecurityRegression` gains an optional source filter that defaults to today's behaviour. The read-only audit stays, as evidence for the decision entry, with "insufficient evidence" as its own outcome.
+- **F10 Complete loader.** The shared loader returns every held position, a non-option with no positive price included; the old price filter moves to the custom scenario engine's side so its output stays pinned. This page lists unpriced non-options as not modelled.
+- **F11 Gross book.** Gross value and counts are taken per account before netting by security.
+- **F12 Unknown value.** A position whose value is unknown is reported under its own count with "share not known", never as 0%.
+- **F13 Override.** A typed price is accepted only when the volatility solves from it and round-trips under the repricer's own test; otherwise it is refused as not solvable and the model price stays. An upper-bound case is tested.
+- **F14 Freshness.** The response and the page carry freshness for every account beside the year's gain, with each account's value date, and separately for the stress scope beside the line.
+- **F15 Direction.** Step 1 shows one direction, down. The split is the down split. The table shows zero and negative rows plus a custom row that must be zero or negative; the chart may extend to positive moves with its second line on the down split. Step 3 adds the direction control.
+- **F16 Timing.** A valuation date of today means the current instant (the identity at rest holds); a later date means the close of that day.
+- **F17 Legacy shape.** With neither new repricing option passed, the result object is exactly the legacy shape, and the pin compares whole objects.
+- **F18 Scope.** The route accepts only the four scope tokens (anything else is refused), and a token matching no account gives an empty result, never every account. `resolveScope` itself is unchanged.
+- **F19 Tests.** Deterministic tests for stale-response rejection (a pure reducer with request sequence numbers), cache freshness boundaries with fixtures dated after the regression engine cutoff, missing FX, and "reads nothing" for an empty scope.
+- **F20 Ownership.** Implementer agents never run git; the controller commits each task with pathspecs after reviewing it, and the full suite runs once all three parallel tasks are in, before the engine task starts. Every new file belongs to exactly one task.
