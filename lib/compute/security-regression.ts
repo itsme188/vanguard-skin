@@ -29,6 +29,16 @@ export interface SecurityRegression {
   dataPoints: number;
 }
 
+/** Options for `computeSecurityRegression`. Absent = every stored row is read. */
+export interface SecurityRegressionOptions {
+  /**
+   * `prices.source` values left out of the SECURITY series (the benchmark
+   * series is never filtered). A row with a NULL source is kept. Absent or
+   * empty reads every row, exactly as before this option existed.
+   */
+  excludePriceSources?: readonly string[];
+}
+
 /**
  * Regress one security's daily log returns against a benchmark's daily log returns
  * using OLS. Mirrors the shape of `computeMarketRegression` in lib/compute/factors.ts
@@ -41,37 +51,38 @@ export interface SecurityRegression {
  * no pretending to regress sparse data.
  *
  * @param days  Lookback window in calendar days. Default 252 (~1 trading year).
+ * @param opts  Optional source filter (Gains at risk, 2026-11-24): a measured
+ *              beta reads only correctly dated rows. Absent = unchanged.
  */
 export function computeSecurityRegression(
   db: Database.Database,
   securityId: number,
   benchmarkSymbol: string,
-  days = 252
+  days = 252,
+  opts?: SecurityRegressionOptions
 ): SecurityRegression | null {
   // 1. Pull security prices for the lookback window.
   //    The window counts back from the Eastern day: a UTC slice of the wall
   //    clock is already tomorrow after 20:00 Eastern.
   const cutoff = addDays(todayET(), -days);
 
+  const excluded = opts?.excludePriceSources ?? [];
+  const sourceFilter =
+    excluded.length > 0
+      ? ` AND (source IS NULL OR source NOT IN (${excluded.map(() => "?").join(", ")}))`
+      : "";
   const securityRows = db
     .prepare(
       `SELECT date, close_price FROM prices
-       WHERE security_id = ? AND date >= ?
+       WHERE security_id = ? AND date >= ?${sourceFilter}
        ORDER BY date ASC`
     )
-    .all(securityId, cutoff) as { date: string; close_price: number }[];
+    .all(securityId, cutoff, ...excluded) as { date: string; close_price: number }[];
 
   if (securityRows.length < MIN_DATA_POINTS + 1) return null; // need >=11 prices for >=10 returns
 
   // 2. Pull benchmark prices for the same window.
-  const benchmarkRows = db
-    .prepare(
-      `SELECT date, close_price FROM benchmark_prices
-       WHERE symbol = ? AND date >= ?
-       ORDER BY date ASC`
-    )
-    .all(benchmarkSymbol, cutoff) as { date: string; close_price: number }[];
-
+  const benchmarkRows = readBenchmarkRows(db, benchmarkSymbol, cutoff);
   if (benchmarkRows.length < MIN_DATA_POINTS + 1) return null;
 
   // 3. Build aligned daily returns.
@@ -83,12 +94,6 @@ export function computeSecurityRegression(
   for (const r of securityRows) {
     securityByDate.set(r.date, splitAdjustedClose(r.date, r.close_price, splits));
   }
-  const benchmarkByDate = new Map<string, number>();
-  for (const b of benchmarkRows) benchmarkByDate.set(b.date, b.close_price);
-
-  const allDates = [...securityByDate.keys()]
-    .filter((d) => benchmarkByDate.has(d))
-    .sort();
 
   // Options are exempt from the split guard (premiums legitimately double or
   // halve; options don't split in-series) — same rule as computePositionRisk.
@@ -96,6 +101,65 @@ export function computeSecurityRegression(
     .prepare("SELECT security_type FROM securities WHERE id = ?")
     .get(securityId) as { security_type: string | null } | undefined;
   const splitGuardApplies = typeRow?.security_type?.toLowerCase() !== "option";
+
+  return regressAlignedSeries(securityByDate, byDate(benchmarkRows), splitGuardApplies);
+}
+
+/**
+ * Regress one BENCHMARK series against another (Gains at risk, 2026-11-24):
+ * e.g. QQQ's beta to SPY, or a tracked index's beta to the driver. Reads
+ * `benchmark_prices` only, never `prices` or `securities`. Same window, gap
+ * rule, split-shape guard and OLS as `computeSecurityRegression`; benchmark
+ * series are stored adjusted, so no corporate-action adjustment applies.
+ * Symbols are trimmed and upper-cased.
+ */
+export function computeBenchmarkRegression(
+  db: Database.Database,
+  symbol: string,
+  againstSymbol: string,
+  days = 252
+): SecurityRegression | null {
+  const cutoff = addDays(todayET(), -days);
+  const rows = readBenchmarkRows(db, symbol.trim().toUpperCase(), cutoff);
+  if (rows.length < MIN_DATA_POINTS + 1) return null;
+  const againstRows = readBenchmarkRows(db, againstSymbol.trim().toUpperCase(), cutoff);
+  if (againstRows.length < MIN_DATA_POINTS + 1) return null;
+  return regressAlignedSeries(byDate(rows), byDate(againstRows), true);
+}
+
+function readBenchmarkRows(
+  db: Database.Database,
+  symbol: string,
+  cutoff: string
+): { date: string; close_price: number }[] {
+  return db
+    .prepare(
+      `SELECT date, close_price FROM benchmark_prices
+       WHERE symbol = ? AND date >= ?
+       ORDER BY date ASC`
+    )
+    .all(symbol, cutoff) as { date: string; close_price: number }[];
+}
+
+function byDate(rows: { date: string; close_price: number }[]): Map<string, number> {
+  const out = new Map<string, number>();
+  for (const r of rows) out.set(r.date, r.close_price);
+  return out;
+}
+
+/**
+ * The OLS core shared by both public regressions: aligned daily log returns
+ * on the dates both series carry, long-gap pairs and (when `splitGuardApplies`)
+ * split-shaped pairs dropped, then Rs = alpha + beta * Rb.
+ */
+function regressAlignedSeries(
+  securityByDate: Map<string, number>,
+  benchmarkByDate: Map<string, number>,
+  splitGuardApplies: boolean
+): SecurityRegression | null {
+  const allDates = [...securityByDate.keys()]
+    .filter((d) => benchmarkByDate.has(d))
+    .sort();
 
   const sReturns: number[] = [];
   const bReturns: number[] = [];
@@ -118,7 +182,7 @@ export function computeSecurityRegression(
 
   if (sReturns.length < MIN_DATA_POINTS) return null;
 
-  // 4. OLS regression: Rs = alpha + beta * Rb
+  // OLS regression: Rs = alpha + beta * Rb
   const n = sReturns.length;
   const meanS = sReturns.reduce((s, v) => s + v, 0) / n;
   const meanB = bReturns.reduce((s, v) => s + v, 0) / n;
