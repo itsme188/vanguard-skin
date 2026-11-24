@@ -93,8 +93,9 @@ export type OptionRepriceResult =
 /** A real calendar day in YYYY-MM-DD (round-trips, so 2026-06-31 and 2026-02-30 fail). */
 function isCalendarDay(value: string): boolean {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
-  const ms = Date.parse(`${value}T00:00:00Z`);
-  return Number.isFinite(ms) && new Date(ms).toISOString().slice(0, 10) === value;
+  const [y, m, d] = value.split("-").map(Number);
+  const probe = new Date(Date.UTC(y, m - 1, d));
+  return probe.getUTCFullYear() === y && probe.getUTCMonth() === m - 1 && probe.getUTCDate() === d;
 }
 
 function intrinsic(type: "CALL" | "PUT", S: number, K: number): number {

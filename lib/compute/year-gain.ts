@@ -93,8 +93,8 @@ function monthEndsOfYear(year: number): string[] {
   const out: string[] = [];
   for (let m = 1; m <= 12; m++) {
     // Day 0 of the next month is the last day of this one.
-    const d = new Date(Date.UTC(year, m, 0));
-    out.push(d.toISOString().slice(0, 10));
+    const lastDay = new Date(Date.UTC(year, m, 0)).getUTCDate();
+    out.push(`${year}-${String(m).padStart(2, "0")}-${String(lastDay).padStart(2, "0")}`);
   }
   return out;
 }
