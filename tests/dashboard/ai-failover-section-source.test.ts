@@ -25,4 +25,18 @@ describe("AI failover settings page (source pin)", () => {
     const parkedBlock = section.slice(section.indexOf("parked.map("));
     expect(parkedBlock.slice(0, parkedBlock.indexOf("))}"))).not.toMatch(/<input|<button/);
   });
+
+  it("gives each per-feature switch a touch extension that grows only into the gap above it", () => {
+    // The label is 17px tall on a phone. The extension reaches up into the
+    // 8px row gap and stops at the label's own bottom edge, so it never
+    // covers the fallback-order box on the next line.
+    const start = section.indexOf("eligible.map(");
+    const label = section.slice(start, section.indexOf('type="checkbox"', start));
+    const cls = label.slice(label.lastIndexOf("<label"));
+    expect(cls).toMatch(/\brelative\b/);
+    expect(cls).toContain("pointer-coarse:after:absolute");
+    expect(cls).toContain("pointer-coarse:after:-top-2");
+    expect(cls).toContain("pointer-coarse:after:bottom-0");
+    expect(cls).not.toMatch(/pointer-coarse:after:-inset-y-|pointer-coarse:after:-bottom-/);
+  });
 });

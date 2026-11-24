@@ -177,7 +177,9 @@ export function AiFailoverSection() {
               return (
                 <div key={row.key}>
                   <div className="flex items-baseline justify-between gap-2">
-                    <label className="flex items-center gap-1.5 text-[11px] text-ink-dim">
+                    {/* Touch extension: up into the row gap only. It stops at the
+                        label's bottom edge so it never covers the box below. */}
+                    <label className="relative pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-top-2 pointer-coarse:after:bottom-0 pointer-coarse:after:-inset-x-1 flex items-center gap-1.5 text-[11px] text-ink-dim">
                       <input
                         type="checkbox"
                         checked={row.enabled}
