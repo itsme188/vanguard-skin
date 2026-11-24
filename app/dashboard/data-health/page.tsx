@@ -216,12 +216,10 @@ export default function DataHealthPage() {
             Unmapped sector ETFs
           </h2>
           <p className="text-[12px] text-ink-faint mt-0.5 max-w-3xl">
-            Earnings events whose company sector could not be mapped to a
-            sector ETF when the enrichment runner captured the reaction.
-            These symbols&rsquo; reactions only recorded SPY/QQQ/TLT. Extend{" "}
-            <code>SECTOR_TO_ETF</code> / <code>EVENT_SECTOR_MAP</code> in{" "}
-            <code>lib/calendar/reaction-snapshot.ts</code> once a pattern
-            is visible.
+            Earnings events whose company had no sector, or a sector with
+            no matching sector ETF, when the reaction was captured. These
+            reactions were measured against SPY, QQQ and TLT only, with no
+            sector comparison.
           </p>
         </div>
 

@@ -8,6 +8,7 @@ import {
   canAcceptLine,
   acceptableRivals,
   deltaPct,
+  lineDelta,
   printStateLabel,
   printCountLabel,
   candidateSourceLabel,
@@ -106,6 +107,28 @@ describe("deltaPct", () => {
     expect(d).not.toBeNull();
     expect(d?.sign).toBe(0);
     expect(d?.label).toBe("in-line");
+  });
+});
+
+describe("lineDelta — a range is never compared off its low end", () => {
+  const exp = (value: number | null, value_high: number | null = null) => ({
+    value,
+    value_high,
+    whisper: null,
+    source_label: null,
+  });
+  it("prints neutral 'range' when the actual is a guided range", () => {
+    expect(lineDelta({ expected: exp(72.3), value: 71, value_high: 72 })).toEqual({ label: "range", sign: 0 });
+  });
+  it("prints neutral 'range' when the bogey is a range", () => {
+    expect(lineDelta({ expected: exp(70, 72), value: 71, value_high: null })).toEqual({ label: "range", sign: 0 });
+  });
+  it("treats a high equal to the low as a point", () => {
+    expect(lineDelta({ expected: exp(100, 100), value: 105, value_high: 105 })).toEqual(deltaPct(100, 105));
+  });
+  it("keeps point vs point and missing bogey exactly as deltaPct", () => {
+    expect(lineDelta({ expected: exp(100), value: 105, value_high: null })).toEqual(deltaPct(100, 105));
+    expect(lineDelta({ expected: null, value: 105, value_high: null })).toBeNull();
   });
 });
 

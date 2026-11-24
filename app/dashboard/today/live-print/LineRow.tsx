@@ -28,9 +28,9 @@ import {
   candidateKey,
   candidateSourceLabel,
   canAcceptLine,
-  deltaPct,
   formatContractRange,
   formatContractValue,
+  lineDelta,
   presentState,
 } from "./helpers";
 import type { PrintWatchLine, TaggedCandidate } from "@/lib/print-watch/types";
@@ -60,7 +60,7 @@ export default function LineRow({
   const { isPrivate } = usePrivacy();
   const presentation = presentState(line);
   const basis = basisNote(line.contract);
-  const delta = deltaPct(line.expected?.value ?? null, line.value);
+  const delta = lineDelta(line);
   const isFlash = line.state === "flash";
   // M-F17: a retired row is the record of a definition that no longer
   // applies. It stays on the sheet as evidence, dimmed, with nothing to
