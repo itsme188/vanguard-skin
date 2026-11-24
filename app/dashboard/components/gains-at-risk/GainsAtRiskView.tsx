@@ -678,17 +678,17 @@ function ResultSections({
                         <span className="block text-[11px] text-ink-faint">{ZERO_ROW_NOTE}</span>
                       )}
                     </td>
-                    <td className="text-right py-1.5 px-3">
+                    <td className="text-right py-1.5 px-3 whitespace-nowrap">
                       <Money value={fig(row?.losersPnlUsd)} signed />
                     </td>
-                    <td className="text-right py-1.5 px-3">
+                    <td className="text-right py-1.5 px-3 whitespace-nowrap">
                       <Money value={fig(row?.offsetsPnlUsd)} signed />
                     </td>
-                    <td className="text-right py-1.5 px-3 text-ink">
+                    <td className="text-right py-1.5 px-3 text-ink whitespace-nowrap">
                       <Money value={fig(row?.bookPnlUsd)} signed />
                     </td>
                     {shareShown && (
-                      <td className="text-right py-1.5 pl-3">
+                      <td className="text-right py-1.5 pl-3 whitespace-nowrap">
                         {cell?.kind === "book-gains" ? (
                           <span className="text-ink-faint">{BOOK_GAINS_TEXT}</span>
                         ) : cell?.kind === "under-tenth" ? (
