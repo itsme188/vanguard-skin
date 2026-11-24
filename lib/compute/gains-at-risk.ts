@@ -26,7 +26,8 @@
  *
  * READ-ONLY over the database. Throws a worded Error on a bad input (blank
  * driver, impossible or past valuation date, non-finite move or volatility
- * change) so the route can answer 400; it never prints zeros for one.
+ * change) as `GainsAtRiskInputError` so the route can answer 400; it never
+ * prints zeros for one.
  */
 
 import type Database from "better-sqlite3";
@@ -151,6 +152,22 @@ export interface GainsAtRiskResult {
 
 // ─── Input checks ───────────────────────────────────────────────
 
+/**
+ * A refusal of the caller's input (blank driver, impossible or past date,
+ * non-finite or below -100% move, non-finite volatility change). The route
+ * answers 400 for this class and 500 for anything else.
+ *
+ * `checkInput` refuses every date the option repricer would refuse (same
+ * calendar test, same `today`), so the repricer's own untyped date errors
+ * cannot be reached from this engine.
+ */
+export class GainsAtRiskInputError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "GainsAtRiskInputError";
+  }
+}
+
 /** A real calendar day in YYYY-MM-DD (2026-02-30 fails); the same test the option repricer applies. */
 function isCalendarDay(value: string): boolean {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
@@ -161,19 +178,19 @@ function isCalendarDay(value: string): boolean {
 
 function checkInput(input: GainsAtRiskInput, today: string): string {
   const driver = (input.driverSymbol ?? "").trim().toUpperCase();
-  if (driver === "") throw new Error("driverSymbol is required");
+  if (driver === "") throw new GainsAtRiskInputError("driverSymbol is required");
   if (typeof input.valuationDate !== "string" || !isCalendarDay(input.valuationDate)) {
-    throw new Error("valuationDate is not a valid date");
+    throw new GainsAtRiskInputError("valuationDate is not a valid date");
   }
-  if (input.valuationDate < today) throw new Error("valuationDate is before today");
+  if (input.valuationDate < today) throw new GainsAtRiskInputError("valuationDate is before today");
   if (!Array.isArray(input.moves) || input.moves.some((m) => typeof m !== "number" || !Number.isFinite(m))) {
-    throw new Error("moves must be finite numbers");
+    throw new GainsAtRiskInputError("moves must be finite numbers");
   }
   // A driver cannot fall more than 100%; a deeper move would credit an
   // inverse fund or a put with a gain no price path can produce.
-  if (input.moves.some((m) => m < -1)) throw new Error("moves must be at least -1");
+  if (input.moves.some((m) => m < -1)) throw new GainsAtRiskInputError("moves must be at least -1");
   if (typeof input.volChangePoints !== "number" || !Number.isFinite(input.volChangePoints)) {
-    throw new Error("volChangePoints must be a finite number");
+    throw new GainsAtRiskInputError("volChangePoints must be a finite number");
   }
   return driver;
 }

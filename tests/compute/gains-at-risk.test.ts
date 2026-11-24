@@ -2,7 +2,12 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import { addDays } from "@/lib/calendar/date-utils";
-import { computeGainsAtRisk, type GainsAtRiskInput, type GainsAtRiskResult } from "@/lib/compute/gains-at-risk";
+import {
+  computeGainsAtRisk,
+  GainsAtRiskInputError,
+  type GainsAtRiskInput,
+  type GainsAtRiskResult,
+} from "@/lib/compute/gains-at-risk";
 import { repriceOptionUnderShock } from "@/lib/compute/option-reprice";
 import { getRiskFreeRate } from "@/lib/queries/risk-free-rate";
 
@@ -494,6 +499,17 @@ describe("computeGainsAtRisk", () => {
     expect(() => run({ driverSymbol: "  " })).toThrow("driverSymbol is required");
     expect(() => run({ moves: [Number.NaN] })).toThrow(/moves/);
     expect(() => run({ volChangePoints: Number.POSITIVE_INFINITY })).toThrow(/volChangePoints/);
+    // Every input refusal is typed, so the route answers 400 by class, never by message.
+    for (const bad of [
+      { valuationDate: "2026-11-31" },
+      { valuationDate: "2026-11-09" },
+      { driverSymbol: "  " },
+      { moves: [Number.NaN] },
+      { moves: [-1.5] },
+      { volChangePoints: Number.POSITIVE_INFINITY },
+    ] as Partial<GainsAtRiskInput>[]) {
+      expect(() => run(bad)).toThrow(GainsAtRiskInputError);
+    }
   });
 
   it("exposure is the dollar change per unit driver move at today's prices", () => {
