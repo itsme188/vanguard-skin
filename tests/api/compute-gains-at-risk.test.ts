@@ -15,6 +15,8 @@ import { runMigrations } from "@/lib/db/migrate";
 import { addDays } from "@/lib/calendar/date-utils";
 import { classifyRoute } from "@/lib/auth/route-policy";
 import { gainsAtRiskBodyProblem } from "@/lib/analysis/gains-at-risk-input";
+import { BETA_OVERRIDE_BOUNDS } from "@/lib/analysis/gains-at-risk-constants";
+import { computeGainsAtRisk } from "@/lib/compute/gains-at-risk";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -91,12 +93,48 @@ function validBody(): Record<string, unknown> {
   };
 }
 
+/** A driver series row (SPY, not held) and daily bars; a name's bars move `multiple` times the driver's daily log return. */
+const BAR_DAYS = 120;
+function barDates(): string[] {
+  const out: string[] = [];
+  let d = "2026-11-09";
+  while (out.length < BAR_DAYS) {
+    const dow = new Date(`${d}T12:00:00Z`).getUTCDay();
+    if (dow !== 0 && dow !== 6) out.unshift(d);
+    d = addDays(d, -1);
+  }
+  return out;
+}
+function seedBars(db: Database.Database, id: number, multiple: number): void {
+  const dates = barDates();
+  const ins = db.prepare(
+    `INSERT INTO ohlcv_bars (security_id, bar_date, bar_size, open, high, low, close, volume)
+     VALUES (?, ?, '1 day', ?, ?, ?, ?, 1000)`,
+  );
+  let cum = 0;
+  for (let i = 0; i < BAR_DAYS; i++) {
+    if (i > 0) cum += 0.01 * Math.sin(i * 1.3) + 0.002 * Math.cos(i * 0.7);
+    const c = 100 * Math.exp(multiple * cum);
+    ins.run(id, dates[i], c, c, c, c);
+  }
+}
+function seedDriverBars(db: Database.Database): void {
+  db.prepare(
+    "INSERT INTO securities (id, symbol, name, security_type, currency, multiplier, ib_con_id) VALUES (900, 'SPY', 'Driver index fund', 'ETF', 'USD', 1, 9000)",
+  ).run();
+  seedBars(db, 900, 1);
+}
+
 async function post(body: unknown) {
+  return postRaw(JSON.stringify(body));
+}
+
+async function postRaw(raw: string) {
   const { POST } = await import("@/app/api/compute/gains-at-risk/route");
   const res = await POST(
     new Request("http://localhost/api/compute/gains-at-risk", {
       method: "POST",
-      body: JSON.stringify(body),
+      body: raw,
       headers: { "content-type": "application/json" },
     }) as never,
   );
@@ -129,7 +167,11 @@ describe("POST /api/compute/gains-at-risk", () => {
     // The stress scope: IBKR rows only.
     expect(data.result.driverSymbol).toBe("SPY");
     expect(data.result.valuationDate).toBe(TODAY);
-    expect(data.result.moves.map((m: { move: number }) => m.move)).toEqual([-0.1, -0.2]);
+    for (const k of ["measured", "selloff"]) {
+      expect(data.result.cases[k].moves.map((m: { move: number }) => m.move)).toEqual([-0.1, -0.2]);
+    }
+    expect(data.result.betaEvidence).toEqual(expect.objectContaining({ driverBarsMissing: expect.any(Boolean) }));
+    expect(data.result.betaOverridesIgnored).toBe(0);
     expect(data.result.positions.length).toBeGreaterThan(0);
     for (const p of data.result.positions) expect(p.accountId).toBe(IBKR);
     expect(data.result.positions.map((p: { symbol: string }) => p.symbol)).toEqual(["ZZCC"]);
@@ -187,6 +229,102 @@ describe("POST /api/compute/gains-at-risk", () => {
     expect(body.error).toContain(field);
   });
 
+  it.each([
+    [[]],
+    ["x"],
+    [null],
+    [{ abc: 1 }],
+    [{ "01": 1 }],
+    [{ "0": 1 }],
+    [{ "-7": 1 }],
+    [{ "7.5": 1 }],
+    [{ 7: 5.5 }],
+    [{ 7: -5.01 }],
+    [{ 7: null }],
+    [{ 7: "1" }],
+    [Object.fromEntries(Array.from({ length: 201 }, (_, i) => [String(i + 1), 1]))],
+  ])("refuses betaOverrides %o with 400 naming betaOverrides", async (overrides) => {
+    const { res, body } = await post({ ...validBody(), betaOverrides: overrides });
+    expect(res.status).toBe(400);
+    expect(body.success).toBe(false);
+    expect(body.error).toContain("betaOverrides");
+  });
+
+  it("refuses a __proto__ key in betaOverrides (sent as raw JSON)", async () => {
+    const raw = JSON.stringify(validBody()).replace(/}$/, ',"betaOverrides":{"__proto__":1}}');
+    const { res, body } = await postRaw(raw);
+    expect(res.status).toBe(400);
+    expect(body.error).toContain("betaOverrides");
+  });
+
+  it("refuses a non-finite betaOverrides value (checked directly: JSON cannot carry one)", () => {
+    for (const v of [Infinity, -Infinity, NaN]) {
+      expect(gainsAtRiskBodyProblem({ ...validBody(), betaOverrides: { 7: v } }, TODAY)).toContain("betaOverrides");
+    }
+  });
+
+  it("accepts betaOverrides at the bounds, exactly 200 entries, and an empty object", () => {
+    expect(BETA_OVERRIDE_BOUNDS.maxEntries).toBe(200);
+    const ok = (o: unknown) => gainsAtRiskBodyProblem({ ...validBody(), betaOverrides: o }, TODAY);
+    expect(ok({ 7: BETA_OVERRIDE_BOUNDS.min, 8: BETA_OVERRIDE_BOUNDS.max, 9: 0 })).toBeNull();
+    expect(ok({})).toBeNull();
+    expect(ok(Object.fromEntries(Array.from({ length: 200 }, (_, i) => [String(i + 1), 1])))).toBeNull();
+  });
+
+  it("an accepted owner's figure prices the name at that figure in both cases", async () => {
+    const { res, body } = await post({ ...validBody(), betaOverrides: { "103": 1.5 } });
+    expect(res.status).toBe(200);
+    const p = body.data.result.positions.find((x: { symbol: string }) => x.symbol === "ZZCC");
+    expect(p.identitySecurityId).toBe(103);
+    expect(p.betaSource).toBe("owner");
+    expect(p.cases.measured.beta).toBe(1.5);
+    expect(p.cases.selloff.beta).toBe(1.5);
+    // 50 shares at 20 = 1,000; a -10% driver move at 1.5 is -150 in both cases.
+    expect(p.cases.measured.pnlByMove[0]).toBeCloseTo(-150, 6);
+    expect(p.cases.selloff.pnlByMove[0]).toBeCloseTo(-150, 6);
+    expect(body.data.result.betaOverridesIgnored).toBe(0);
+  });
+
+  it("an owner's figure for an id not in the book is ignored and counted", async () => {
+    const { res, body } = await post({ ...validBody(), betaOverrides: { "999": 1 } });
+    expect(res.status).toBe(200);
+    expect(body.data.result.betaOverridesIgnored).toBe(1);
+    const p = body.data.result.positions.find((x: { symbol: string }) => x.symbol === "ZZCC");
+    expect(p.betaSource).not.toBe("owner");
+  });
+
+  it("measures a beta from daily bars and reports the driver's bar evidence", async () => {
+    seedDriverBars(state.db);
+    seedBars(state.db, 103, 2);
+    const { res, body } = await post(validBody());
+    expect(res.status).toBe(200);
+    const p = body.data.result.positions.find((x: { symbol: string }) => x.symbol === "ZZCC");
+    expect(p.betaSource).toBe("measured");
+    expect(p.measuredBeta).toBeCloseTo(2, 3);
+    expect(p.cases.measured.beta).toBeCloseTo(2, 3);
+    expect(body.data.result.betaEvidence.driverBarsMissing).toBe(false);
+    expect(body.data.result.betaEvidence.driverBarsThrough).toBe("2026-11-09");
+  });
+
+  it("passes the engine result through untouched", async () => {
+    seedDriverBars(state.db);
+    seedBars(state.db, 103, 2);
+    const req = { ...validBody(), scope: "all", betaOverrides: { "101": 0.5, "999": 1 }, priceOverrides: { "103": 5 } };
+    const { body } = await post(req);
+    const direct = computeGainsAtRisk(state.db, {
+      accountIds: undefined,
+      driverSymbol: "SPY",
+      valuationDate: TODAY,
+      moves: [-0.1, -0.2],
+      volChangePoints: 0,
+      priceOverrides: { 103: 5 },
+      betaOverrides: { 101: 0.5, 999: 1 },
+      today: TODAY,
+    });
+    expect(body.data.result).toEqual(JSON.parse(JSON.stringify(direct)));
+    expect(Object.keys(body.data).sort()).toEqual(["result", "scopeFreshness", "yearGain", "yearGainFreshness"]);
+  });
+
   it("refuses a body that is not an object, and malformed JSON, with 400", async () => {
     expect((await post([1, 2])).res.status).toBe(400);
     expect((await post(null)).res.status).toBe(400);
@@ -202,10 +340,12 @@ describe("POST /api/compute/gains-at-risk", () => {
     const { res, body } = await post({ ...validBody(), scope: "roth" });
     expect(res.status).toBe(200);
     expect(body.data.result.positions).toEqual([]);
-    for (const m of body.data.result.moves) {
-      expect(m.bookPnlUsd).toBe(0);
-      expect(m.losersPnlUsd).toBe(0);
-      expect(m.offsetsPnlUsd).toBe(0);
+    for (const k of ["measured", "selloff"]) {
+      for (const m of body.data.result.cases[k].moves) {
+        expect(m.bookPnlUsd).toBe(0);
+        expect(m.losersPnlUsd).toBe(0);
+        expect(m.offsetsPnlUsd).toBe(0);
+      }
     }
     expect(body.data.scopeFreshness.accounts).toEqual([]);
     // The year's gain still reads every account.
@@ -255,12 +395,18 @@ describe("POST /api/compute/gains-at-risk", () => {
     expect(logged.mock.calls[0]).toEqual(["[gains-at-risk]", "SQLITE_ERROR: no such column zz_secret_detail"]);
   });
 
-  it("the shared input module imports nothing from lib/queries", () => {
+  it("the shared input module value-imports no server code (C12: it reaches the browser build)", () => {
     const src = readFileSync(join(process.cwd(), "lib/analysis/gains-at-risk-input.ts"), "utf8");
-    // Value imports only: a type-only import is erased at build.
-    const valueImports = src.split("\n").filter((l) => /^import\s/.test(l) && !/^import\s+type\s/.test(l));
-    expect(valueImports.filter((l) => l.includes("@/lib/queries/"))).toEqual([]);
-    expect(valueImports.filter((l) => l.includes("better-sqlite3"))).toEqual([]);
+    // Every import statement, multi-line ones included. Only `import type` is erased at build;
+    // an inline `{ type X }` list is treated as a value import (the safe side).
+    const statements = [...src.matchAll(/^import\s[\s\S]*?from\s+["']([^"']+)["'];?/gm)];
+    expect(statements.length).toBeGreaterThan(0);
+    const valueSources = statements.filter((m) => !/^import\s+type\s/.test(m[0])).map((m) => m[1]);
+    const forbidden = /^@\/lib\/(compute|queries|tws)\/|^@\/lib\/db(\/|$)|^@\/lib\/db\.|better-sqlite3|@stoqey\/ib/;
+    expect(valueSources.filter((s) => forbidden.test(s))).toEqual([]);
+    // The override bounds come from the import-free constants module only.
+    expect(valueSources).toContain("@/lib/analysis/gains-at-risk-constants");
+    expect(src).not.toMatch(/\brequire\(|\bimport\(/);
     expect(src).not.toMatch(/gainsAtRiskAccountIds/);
   });
 

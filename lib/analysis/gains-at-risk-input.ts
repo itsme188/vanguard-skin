@@ -5,11 +5,15 @@
  * share one set of rules. `gainsAtRiskBodyProblem` answers null for a valid
  * body, or one plain sentence naming the field at fault.
  *
- * Per-row override checks (positive, at least intrinsic, solvable) are the
- * engine's refusals, listed on the row; this module checks only the shape.
+ * Per-row override checks (positive, at least intrinsic, solvable; for an
+ * owner's beta figure: a fixed row or the driver itself) are the engine's
+ * refusals, listed on the row; this module checks only the shape and bounds.
  */
 
 import { ANALYSIS_SCOPES, type AnalysisScope } from "@/lib/analysis/view-param";
+// Import-free bounds module (C12). Never value-import the engine here: it pulls
+// a broker SDK through the TWS type map, and this module reaches the browser.
+import { BETA_OVERRIDE_BOUNDS } from "@/lib/analysis/gains-at-risk-constants";
 import type { GainsAtRiskResult } from "@/lib/compute/gains-at-risk";
 import type { YearGainResult } from "@/lib/compute/year-gain";
 // Type only: erased at build, so no query code reaches the client bundle.
@@ -36,6 +40,11 @@ export interface GainsAtRiskBody {
   moves: number[];
   volChangePoints: number;
   priceOverrides?: Record<string, number>;
+  /**
+   * The owner's own figure per name (its move per unit of driver move), keyed
+   * by the position's `identitySecurityId` (C6). Page state only; never stored.
+   */
+  betaOverrides?: Record<string, number>;
 }
 
 export interface GainsAtRiskResponse {
@@ -125,6 +134,25 @@ export function gainsAtRiskBodyProblem(body: unknown, today: string): string | n
       }
       if (!isFiniteNumber(value)) {
         return "priceOverrides values must be numbers.";
+      }
+    }
+  }
+
+  if (b.betaOverrides !== undefined) {
+    const o = b.betaOverrides;
+    if (typeof o !== "object" || o === null || Array.isArray(o)) {
+      return "betaOverrides must be an object of security id to figure.";
+    }
+    const entries = Object.entries(o as Record<string, unknown>);
+    if (entries.length > BETA_OVERRIDE_BOUNDS.maxEntries) {
+      return `betaOverrides can hold at most ${BETA_OVERRIDE_BOUNDS.maxEntries} entries.`;
+    }
+    for (const [key, value] of entries) {
+      if (!POSITIVE_INTEGER_KEY.test(key)) {
+        return "betaOverrides keys must be security ids (positive whole numbers).";
+      }
+      if (!isFiniteNumber(value) || value < BETA_OVERRIDE_BOUNDS.min || value > BETA_OVERRIDE_BOUNDS.max) {
+        return `betaOverrides values must each be a number between ${BETA_OVERRIDE_BOUNDS.min} and ${BETA_OVERRIDE_BOUNDS.max}.`;
       }
     }
   }

@@ -29,8 +29,9 @@ function gainsAtRiskAccountIds(scope: AnalysisScope): number[] | undefined {
  *
  * Body: GainsAtRiskBody (lib/analysis/gains-at-risk-input.ts).
  * Answers { success: true, data: GainsAtRiskResponse }: the engine result for
- * the scope, the year's gain for EVERY account, and freshness for every
- * account and for the scope.
+ * the scope (both cases, the bar evidence and the ignored-figure count,
+ * passed through untouched), the year's gain for EVERY account, and
+ * freshness for every account and for the scope.
  */
 export async function POST(request: NextRequest) {
   let body: unknown;
@@ -56,6 +57,8 @@ export async function POST(request: NextRequest) {
       moves: input.moves,
       volChangePoints: input.volChangePoints,
       priceOverrides: input.priceOverrides,
+      // Keyed by the underlying identity's security id (C6); the engine counts unmatched keys.
+      betaOverrides: input.betaOverrides,
       today,
     });
     const data: GainsAtRiskResponse = {
