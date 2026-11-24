@@ -10,6 +10,7 @@ import {
   splitAdjustedClose,
   splitsNotYetAbsorbed,
 } from "@/lib/compute/import-splits";
+import { getOhlcvBars } from "@/lib/queries/ohlcv";
 
 const TRADING_DAYS_PER_YEAR = 252;
 const MIN_DATA_POINTS = 10;
@@ -18,8 +19,9 @@ const MIN_DATA_POINTS = 10;
 // mixes sparse month-end statement anchors with dense daily TWS rows, so an
 // adjacent pair can span months and is not a daily return. Mirrors
 // MAX_RETURN_GAP_DAYS in lib/compute/risk.ts (not exported there); keep the two
-// equal.
-const MAX_RETURN_GAP_DAYS = 7;
+// equal. Exported (2026-11-24) for the daily-bar regression's boundary test;
+// the value is unchanged.
+export const MAX_RETURN_GAP_DAYS = 7;
 
 export interface SecurityRegression {
   beta: number;
@@ -147,43 +149,68 @@ function byDate(rows: { date: string; close_price: number }[]): Map<string, numb
   return out;
 }
 
+interface AlignedReturnPairs {
+  sReturns: number[];
+  bReturns: number[];
+  /** The later date of each kept pair, ascending. */
+  dates: string[];
+  droppedGapPairs: number;
+  droppedGuardPairs: number;
+}
+
 /**
- * The OLS core shared by both public regressions: aligned daily log returns
- * on the dates both series carry, long-gap pairs and (when `splitGuardApplies`)
- * split-shaped pairs dropped, then Rs = alpha + beta * Rb.
+ * Aligned daily log returns on the dates both series carry. A pair whose
+ * dates are more than MAX_RETURN_GAP_DAYS calendar days apart is dropped and
+ * counted; a pair with a non-positive close is skipped (not counted: priced
+ * bars never carry one); a pair `dropPair` rejects is dropped and counted.
  */
-function regressAlignedSeries(
+function buildAlignedReturnPairs(
   securityByDate: Map<string, number>,
   benchmarkByDate: Map<string, number>,
-  splitGuardApplies: boolean
-): SecurityRegression | null {
+  dropPair: (sPrev: number, sCurr: number, bPrev: number, bCurr: number) => boolean
+): AlignedReturnPairs {
   const allDates = [...securityByDate.keys()]
     .filter((d) => benchmarkByDate.has(d))
     .sort();
 
-  const sReturns: number[] = [];
-  const bReturns: number[] = [];
+  const out: AlignedReturnPairs = {
+    sReturns: [],
+    bReturns: [],
+    dates: [],
+    droppedGapPairs: 0,
+    droppedGuardPairs: 0,
+  };
 
   for (let i = 1; i < allDates.length; i++) {
     const sPrev = securityByDate.get(allDates[i - 1])!;
     const sCurr = securityByDate.get(allDates[i])!;
     const bPrev = benchmarkByDate.get(allDates[i - 1])!;
     const bCurr = benchmarkByDate.get(allDates[i])!;
-    if (calendarDaysBetween(allDates[i - 1], allDates[i]) > MAX_RETURN_GAP_DAYS) continue;
+    if (calendarDaysBetween(allDates[i - 1], allDates[i]) > MAX_RETURN_GAP_DAYS) {
+      out.droppedGapPairs++;
+      continue;
+    }
     if (sPrev > 0 && sCurr > 0 && bPrev > 0 && bCurr > 0) {
-      // A split-shaped jump left after adjustment (a split with no action
-      // row, or an action row over an already-adjusted series) is a series
-      // artifact, not a return: drop the day, as computePositionRisk does.
-      if (splitGuardApplies && isSplitSignatureReturnPair(sPrev, sCurr)) continue;
-      sReturns.push(Math.log(sCurr / sPrev));
-      bReturns.push(Math.log(bCurr / bPrev));
+      if (dropPair(sPrev, sCurr, bPrev, bCurr)) {
+        out.droppedGuardPairs++;
+        continue;
+      }
+      out.sReturns.push(Math.log(sCurr / sPrev));
+      out.bReturns.push(Math.log(bCurr / bPrev));
+      out.dates.push(allDates[i]);
     }
   }
+  return out;
+}
 
-  if (sReturns.length < MIN_DATA_POINTS) return null;
-
-  // OLS regression: Rs = alpha + beta * Rb
+/**
+ * OLS Rs = alpha + beta * Rb over paired returns. Null when the benchmark leg
+ * has zero variance (which includes fewer than two pairs). No minimum count:
+ * each caller applies its own.
+ */
+function olsRegression(sReturns: number[], bReturns: number[]): SecurityRegression | null {
   const n = sReturns.length;
+  if (n === 0) return null;
   const meanS = sReturns.reduce((s, v) => s + v, 0) / n;
   const meanB = bReturns.reduce((s, v) => s + v, 0) / n;
 
@@ -209,6 +236,169 @@ function regressAlignedSeries(
   const vol = dailyVol * Math.sqrt(TRADING_DAYS_PER_YEAR);
 
   return { beta, vol, correlation, rSquared, dataPoints: n };
+}
+
+/**
+ * The core shared by the two price-table regressions: aligned daily log
+ * returns, long-gap pairs and (when `splitGuardApplies`) split-shaped pairs
+ * dropped, at least MIN_DATA_POINTS pairs, then OLS.
+ */
+function regressAlignedSeries(
+  securityByDate: Map<string, number>,
+  benchmarkByDate: Map<string, number>,
+  splitGuardApplies: boolean
+): SecurityRegression | null {
+  // A split-shaped jump left after adjustment (a split with no action row, or
+  // an action row over an already-adjusted series) is a series artifact, not
+  // a return: drop the day, as computePositionRisk does.
+  const pairs = buildAlignedReturnPairs(
+    securityByDate,
+    benchmarkByDate,
+    (sPrev, sCurr) => splitGuardApplies && isSplitSignatureReturnPair(sPrev, sCurr)
+  );
+  if (pairs.sReturns.length < MIN_DATA_POINTS) return null;
+  return olsRegression(pairs.sReturns, pairs.bReturns);
+}
+
+// ─── Bar-to-bar regression (Gains at risk addendum, 2026-11-24) ────────────
+
+/** Lookback for the bar-to-bar regression, in calendar days (ruling B1). */
+export const DAILY_BAR_WINDOW_DAYS = 730;
+/** Fewest aligned pairs, after both guards, for a measured link (B1). */
+export const DAILY_BAR_MIN_PAIRS = 60;
+/** Lowest r-squared for a measured link (B1). */
+export const DAILY_BAR_MIN_R_SQUARED = 0.1;
+/** Largest |security log return - driver log return| a pair may carry (B2). */
+export const OUTLIER_RESIDUAL_LOG_BOUND = 0.35;
+
+export type NoMeasuredLinkReason =
+  | "foreign-session"
+  | "driver-bars-missing"
+  | "no-daily-bars"
+  | "short-history"
+  | "flat-driver"
+  | "low-fit";
+
+/** What the bar-to-bar regression found, for every outcome (ruling C13). */
+export interface DailyBarEvidence {
+  outcome: "measured" | NoMeasuredLinkReason;
+  /** Set whenever OLS could run (two or more pairs and a moving driver). */
+  beta: number | null;
+  rSquared: number | null;
+  /** Aligned pairs kept after the gap guard and the residual guard. */
+  pairs: number;
+  /** Priced daily bars in the window, per leg. */
+  securityBars: number;
+  driverBars: number;
+  droppedOutlierPairs: number;
+  droppedGapPairs: number;
+  /** Later date of the first and last kept pair. */
+  firstDate: string | null;
+  lastDate: string | null;
+}
+
+/**
+ * The residual guard (B2): a pair whose security and driver daily log returns
+ * differ by more than OUTLIER_RESIDUAL_LOG_BOUND. It catches an unrecorded
+ * 3:2 (0.405), 2:1 (0.693) or 3:1 (1.099) split when nothing else moved the
+ * security, and keeps a day both fall together. NOT a guarantee (C14): a split
+ * on a day the security also moved a lot against the driver can cancel and
+ * pass, and that pair then moves the beta.
+ */
+export function isOutlierReturnPair(securityLogReturn: number, driverLogReturn: number): boolean {
+  return Math.abs(securityLogReturn - driverLogReturn) > OUTLIER_RESIDUAL_LOG_BOUND;
+}
+
+/**
+ * A security trades in the US session when its stored currency is USD (C4).
+ * `securities.currency` is NOT NULL with a USD default; a missing value reads
+ * as USD.
+ */
+export function isUsSessionSecurity(currency: string | null): boolean {
+  return (currency ?? "USD").trim().toUpperCase() === "USD";
+}
+
+/**
+ * Regress a security's daily log returns on a driver's, BOTH legs read from
+ * `ohlcv_bars` (`bar_size = '1 day'`, priced bars only, through
+ * `getOhlcvBars`), over `[today - days, today)` (B1, C1, C3). Reads no
+ * `prices` and no `benchmark_prices` row, and no corporate action: TWS bars
+ * are split-adjusted when fetched. The shared ratio-shaped split guard does
+ * not apply here; the residual guard does (B2).
+ *
+ * Outcome order: foreign-session, driver-bars-missing, no-daily-bars,
+ * short-history (fewer than DAILY_BAR_MIN_PAIRS pairs, none included),
+ * flat-driver, low-fit, measured. Always returns evidence, never null.
+ *
+ * Read-only. No cache is read or written.
+ */
+export function computeDailyBarRegression(
+  db: Database.Database,
+  securityId: number,
+  driverSecurityId: number | null,
+  opts?: { days?: number; today?: string }
+): DailyBarEvidence {
+  const today = opts?.today ?? todayET();
+  const days = opts?.days ?? DAILY_BAR_WINDOW_DAYS;
+  const window = { startDate: addDays(today, -days), endDate: addDays(today, -1) };
+
+  const currencyOf = db.prepare("SELECT currency FROM securities WHERE id = ?");
+  const readCurrency = (id: number): string | null =>
+    (currencyOf.get(id) as { currency: string | null } | undefined)?.currency ?? null;
+
+  const securityBars = getOhlcvBars(db, securityId, "1 day", window);
+  const driverBars =
+    driverSecurityId === null ? [] : getOhlcvBars(db, driverSecurityId, "1 day", window);
+
+  const evidence: DailyBarEvidence = {
+    outcome: "measured",
+    beta: null,
+    rSquared: null,
+    pairs: 0,
+    securityBars: securityBars.length,
+    driverBars: driverBars.length,
+    droppedOutlierPairs: 0,
+    droppedGapPairs: 0,
+    firstDate: null,
+    lastDate: null,
+  };
+
+  const foreign =
+    !isUsSessionSecurity(readCurrency(securityId)) ||
+    (driverSecurityId !== null && !isUsSessionSecurity(readCurrency(driverSecurityId)));
+  if (foreign) return { ...evidence, outcome: "foreign-session" };
+  if (driverBars.length === 0) return { ...evidence, outcome: "driver-bars-missing" };
+  if (securityBars.length === 0) return { ...evidence, outcome: "no-daily-bars" };
+
+  const closes = (bars: { date: string; close: number }[]) => {
+    const m = new Map<string, number>();
+    for (const b of bars) m.set(b.date, b.close);
+    return m;
+  };
+  const aligned = buildAlignedReturnPairs(
+    closes(securityBars),
+    closes(driverBars),
+    (sPrev, sCurr, bPrev, bCurr) =>
+      isOutlierReturnPair(Math.log(sCurr / sPrev), Math.log(bCurr / bPrev))
+  );
+
+  const n = aligned.sReturns.length;
+  evidence.pairs = n;
+  evidence.droppedOutlierPairs = aligned.droppedGuardPairs;
+  evidence.droppedGapPairs = aligned.droppedGapPairs;
+  evidence.firstDate = n > 0 ? aligned.dates[0] : null;
+  evidence.lastDate = n > 0 ? aligned.dates[n - 1] : null;
+
+  const fit = n >= 2 ? olsRegression(aligned.sReturns, aligned.bReturns) : null;
+  if (fit) {
+    evidence.beta = fit.beta;
+    evidence.rSquared = fit.rSquared;
+  }
+
+  if (n < DAILY_BAR_MIN_PAIRS) return { ...evidence, outcome: "short-history" };
+  if (!fit) return { ...evidence, outcome: "flat-driver" };
+  if (fit.rSquared < DAILY_BAR_MIN_R_SQUARED) return { ...evidence, outcome: "low-fit" };
+  return evidence;
 }
 
 /**
