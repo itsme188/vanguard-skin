@@ -5,10 +5,11 @@
  *
  * - window: `resolvePerformanceWindow` with `latestStatementAnchor` over the
  *   whole scope (as `query_twr` and the page do);
- * - portfolio vs SPY: `buildEquityCurveData` over the scope's flow-adjusted,
- *   seam-bridged daily series, floored at the first statement
- *   (`firstStatementAnchorForCurve` / `curveFloorDate`), against SPY closes
- *   from `benchmark_prices` over the same window (the page's own read);
+ * - portfolio vs SPY: `loadPerformanceCurve`, the page's own curve loader
+ *   (since 2026-11-24, so the chat and the page cannot draw two curves): the
+ *   scope's flow-adjusted, seam-bridged daily series against SPY closes,
+ *   from the base session (last close on or before the window's opening
+ *   date), floored at the first statement;
  * - attribution: `computePeriodAttribution(db, scope, start, end, "SPY")`;
  * - month: `computeMonthlyPerformance(db, scope, month)`, the month defaulting
  *   to the newest of `listStatementMonths`.
@@ -27,10 +28,7 @@ import {
   performanceWindowCaption,
   type PerformancePeriod,
 } from "@/lib/compute/performance-window";
-import { buildEquityCurveData } from "@/lib/compute/equity-curve";
-import { curveFloorDate, firstStatementAnchorForCurve } from "@/lib/compute/equity-curve-floor";
-import { getDailyValuationsForAccounts } from "@/lib/queries/daily-valuations";
-import { fetchNetFlowsByDate, fetchAnchorSourceSeamDates } from "@/lib/compute/flow-adjusted";
+import { loadPerformanceCurve } from "@/lib/compute/equity-curve";
 import { computePeriodAttribution } from "@/lib/compute/period-attribution";
 import { computeMonthlyPerformance, listStatementMonths } from "@/lib/compute/monthly-performance";
 import {
@@ -96,25 +94,7 @@ function run(db: Database.Database, input: Record<string, unknown>, ctx: Composi
   const effectiveStart = perfWindow.startDate ?? "2000-01-01";
 
   // ── Portfolio vs SPY (the page's equity curve) ──
-  const curveFloor = firstStatementAnchorForCurve(db, accountIds, effectiveStart, dailyEnd);
-  const curveSeriesStart = curveFloorDate(effectiveStart, curveFloor);
-  const dailyVals = getDailyValuationsForAccounts(db, accountIds, {
-    startDate: curveSeriesStart,
-    endDate: dailyEnd,
-    fullCoverageOnly: true,
-  });
-  const benchmarkRows = db
-    .prepare(
-      `SELECT date, close_price FROM benchmark_prices
-       WHERE symbol = ? AND date BETWEEN ? AND ?
-       ORDER BY date ASC`,
-    )
-    .all(BENCHMARK_SYMBOL, effectiveStart, dailyEnd) as { date: string; close_price: number }[];
-  const seriesFrom = dailyVals.length >= 2 ? dailyVals[0].valuation_date : null;
-  const seriesTo = dailyVals.length >= 2 ? dailyVals[dailyVals.length - 1].valuation_date : null;
-  const flows = seriesFrom && seriesTo ? fetchNetFlowsByDate(db, accountIds, seriesFrom, seriesTo) : [];
-  const seamDates = seriesFrom && seriesTo ? fetchAnchorSourceSeamDates(db, accountIds, seriesFrom, seriesTo) : [];
-  const curve = buildEquityCurveData(dailyVals, benchmarkRows, flows, seamDates, curveFloor);
+  const curve = loadPerformanceCurve(db, accountIds, effectiveStart, dailyEnd, BENCHMARK_SYMBOL).data;
   const first = curve[0];
   const last = curve[curve.length - 1];
 

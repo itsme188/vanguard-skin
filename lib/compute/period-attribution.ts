@@ -1,7 +1,7 @@
 import type Database from "better-sqlite3";
 import { addDays, calendarDaysBetween } from "@/lib/calendar/date-utils";
-import { SIGNED_EXTERNAL_FLOW_SQL } from "@/lib/compute/flow-adjusted";
-import { getDailyValuationsForAccounts } from "@/lib/queries/daily-valuations";
+import { SIGNED_EXTERNAL_FLOW_SQL, fetchAnchorSourceSeamDates } from "@/lib/compute/flow-adjusted";
+import { baseSessionOnOrBefore, dailyValuationsFromBaseSession } from "@/lib/compute/performance-window";
 import { getUsdPerUnit } from "@/lib/queries/fx-rates";
 import { accountScopeAndSql } from "@/lib/queries/account-scope-sql";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
@@ -68,7 +68,17 @@ export interface PeriodAttribution {
    * so the card states this figure rather than leaving the parts to be
    * summed against the TWR tile. Null when no regression ran.
    */
-  decomposedReturn: { portfolioReturn: number; observations: number } | null;
+  decomposedReturn: {
+    portfolioReturn: number;
+    observations: number;
+    /**
+     * Session pairs left out because a measurement-source seam
+     * (fetchAnchorSourceSeamDates) falls inside them: the value step there
+     * mixes two measurement bases, so the pair is no return. Left out of the
+     * regression and of BOTH compounded returns, flows inside it included.
+     */
+    seamDaysBridged: number;
+  } | null;
   /**
    * What the contributors / detractors / sector lists were weighted from:
    * the position snapshot in force at the start (latest per account and
@@ -91,9 +101,18 @@ function computeBetaForPeriod(
   benchmarkReturn: number;
   portfolioReturn: number;
   observations: number;
+  seamDaysBridged: number;
   windowStart: string;
   windowEnd: string;
 } | null {
+  // BASE SESSION (2026-11-24): the walk starts at the last benchmark close on
+  // or before the opening date, so a window opening on a closed day (YTD's
+  // Jan 1) keeps the move of its first session (base -> first session). On a
+  // trading day the base is the opening date and nothing changes. The base
+  // row joins the valuations only when it is a full-coverage day that leaves
+  // the window's own days unchanged; otherwise the walk opens on the first
+  // session inside the window, as before (dailyValuationsFromBaseSession).
+  const baseSession = baseSessionOnOrBefore(db, benchmarkSymbol, startDate);
   // SUM across the scoped accounts per date BEFORE any return math — the
   // regression must see one portfolio series, never a single account's.
   // fullCoverageOnly is the coverage-jump guard (an appearing account's
@@ -101,11 +120,7 @@ function computeBetaForPeriod(
   // lib/queries/daily-valuations.ts::fullCoverageHaving since 2026-07-03;
   // this file's inline copy migrated there.
   // (`undefined` = every account; an empty list reads no series.)
-  const valuations = getDailyValuationsForAccounts(db, accountIds, {
-    startDate,
-    endDate,
-    fullCoverageOnly: true,
-  });
+  const valuations = dailyValuationsFromBaseSession(db, accountIds, baseSession, startDate, endDate);
 
   const benchmarks = db
     .prepare(
@@ -113,7 +128,7 @@ function computeBetaForPeriod(
        WHERE symbol = ? AND date BETWEEN ? AND ?
        ORDER BY date ASC`,
     )
-    .all(benchmarkSymbol, startDate, endDate) as { date: string; close_price: number }[];
+    .all(benchmarkSymbol, baseSession, endDate) as { date: string; close_price: number }[];
 
   if (valuations.length < 5 || benchmarks.length < 5) return null;
 
@@ -130,8 +145,15 @@ function computeBetaForPeriod(
          AND trade_date BETWEEN ? AND ?${flowFilter.sql}
        GROUP BY trade_date`,
     )
-    .all(startDate, endDate, ...flowFilter.params) as { trade_date: string; amount: number }[];
+    .all(baseSession, endDate, ...flowFilter.params) as { trade_date: string; amount: number }[];
   const flowByDate = new Map(flowRows.map((f) => [f.trade_date, f.amount]));
+
+  // SEAMS (2026-11-15 rule, applied here 2026-11-24): a pair whose half-open
+  // interval (prev, curr] holds a measurement-source seam is bridged, the
+  // same rule buildFlowAdjustedIndex applies for the risk tiles and the
+  // curve. The step mixes two measurement bases, so it is not a return.
+  const seamDates = fetchAnchorSourceSeamDates(db, accountIds, baseSession, endDate);
+  let seamDaysBridged = 0;
 
   // Pairs are consecutive BENCHMARK sessions, with the portfolio valuation
   // looked up on each session date. daily_valuations carries a row for every
@@ -162,6 +184,14 @@ function computeBetaForPeriod(
       valueCurr > 0 &&
       prev.close_price > 0
     ) {
+      // Bridged: dropped from the regression and from BOTH compounded
+      // returns (its benchmark move too, so beta contribution + alpha still
+      // equals the decomposed return over the same days), and the flows
+      // inside it go with it.
+      if (seamDates.some((s) => s > prev.date && s <= curr.date)) {
+        seamDaysBridged++;
+        continue;
+      }
       // Net external flow attributed to this pair: flows dated after the
       // previous session up to and including this one (a weekend flow lands
       // in the Friday-to-Monday pair; the first valuation already reflects
@@ -198,7 +228,15 @@ function computeBetaForPeriod(
   const portfolioReturn = aligned.reduce((p, r) => p * (1 + r.portReturn), 1) - 1;
   const benchmarkReturn = aligned.reduce((p, r) => p * (1 + r.benchReturn), 1) - 1;
 
-  return { beta, benchmarkReturn, portfolioReturn, observations: aligned.length, windowStart, windowEnd };
+  return {
+    beta,
+    benchmarkReturn,
+    portfolioReturn,
+    observations: aligned.length,
+    seamDaysBridged,
+    windowStart,
+    windowEnd,
+  };
 }
 
 // ─── Per-position contributions ───────────────────────────────────────────────
@@ -577,7 +615,11 @@ export function computePeriodAttribution(
     betaContribution = reg.beta * reg.benchmarkReturn;
     alphaContribution = reg.portfolioReturn - betaContribution;
     betaWindow = { start: reg.windowStart, end: reg.windowEnd };
-    decomposedReturn = { portfolioReturn: reg.portfolioReturn, observations: reg.observations };
+    decomposedReturn = {
+      portfolioReturn: reg.portfolioReturn,
+      observations: reg.observations,
+      seamDaysBridged: reg.seamDaysBridged,
+    };
   }
 
   return {

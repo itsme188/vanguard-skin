@@ -113,7 +113,7 @@ function run(db: Database.Database, input: Record<string, unknown>, ctx: Composi
       net_ratio: exposure.net_ratio,
       gross_ratio: exposure.gross_ratio,
       leveraged_funds_not_modelled: exposure.leveraged_unmodelled_count,
-      note: "Whole scope, stocks and funds at signed market value (a leveraged or inverse fund times its signed factor), options at delta x underlying price x multiplier x contracts (an option with no greeks takes +/-2.5 x its market value). Money-market and other cash-equivalent funds carry no exposure. A leveraged fund with no known factor is left out and counted. Ratios divide by net worth (holdings plus broker cash, the Portfolio strip's figure); a ratio is null when net worth is not on file, is zero or negative, or is 5% of gross exposure or less.",
+      note: "Whole scope, stocks and funds at signed market value (a leveraged or inverse fund times its signed factor), options at delta x underlying price x multiplier x contracts (an option with no greeks takes +/-2.5 x its market value). Money-market and other cash-equivalent funds carry no exposure. A leveraged fund with no known factor is left out and counted. Gross nets each name first (a security's shares in every account plus its options at delta), then adds the sizes; long and short are those name totals. Ratios divide by net worth (holdings plus broker cash, the Portfolio strip's figure); a ratio is null when net worth is not on file, is zero or negative, or is 5% of gross exposure or less.",
     },
     excluded: {
       expired_option_positions: countExpiredOptionRows(db, accountIds, today),

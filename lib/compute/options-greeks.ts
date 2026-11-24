@@ -762,6 +762,32 @@ export function isExpiredAsOf(
   return nowET(now) >= MARKET_CLOSE_ET;
 }
 
+/**
+ * The delta an EXPOSURE reader uses for one position, or null when it has
+ * none (the reader then falls back to ±DEFAULT_OPTION_ELASTICITY x value):
+ *   - Greeks computed: their delta;
+ *   - expired ONLY by the 16:00 ET close of its expiry day (the row is still
+ *     held through the Eastern day, liveOptionExpirationSql) and the
+ *     underlying is priced: the end-of-life delta. A call is 1 when spot is
+ *     above the strike, else 0; a put is -1 when spot is below the strike,
+ *     else 0. An in-the-money contract becomes (or delivers) the shares; an
+ *     out-of-the-money one carries nothing (fix 13, 2026-11-24);
+ *   - anything else (no underlying price, a later day): null.
+ * The Greeks stay null on such a position and the card still says
+ * "expired": only the delta is read. No currency conversion here (DECISIONS
+ * 2026-11-23): both readers convert where they already do. The one helper
+ * getOptionExposureMap and Defense both read.
+ */
+export function exposureDelta(
+  pos: Pick<PositionGreeks, "greeks" | "expired" | "daysToExpiry" | "underlyingPrice" | "strike" | "optionType">
+): number | null {
+  if (pos.greeks) return pos.greeks.delta;
+  if (!pos.expired || pos.daysToExpiry !== 0) return null;
+  if (!(pos.underlyingPrice > 0)) return null;
+  if (pos.optionType === "CALL") return pos.underlyingPrice > pos.strike ? 1 : 0;
+  return pos.underlyingPrice < pos.strike ? -1 : 0;
+}
+
 /** Hours remaining until the 16:00 ET close, floored at 0 (never negative). */
 function hoursUntilCloseET(now: Date): number {
   const [hour, minute] = nowET(now).split(":").map(Number);

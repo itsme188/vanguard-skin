@@ -42,17 +42,23 @@ export function WhatIfCalculator({ scope }: Props) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // The Before/After table always describes the legs on screen: any change
+  // to the legs, and any failed run, clears the previous result (bug 15).
   function updateLeg(id: string, patch: Partial<LegInput>) {
     setLegs((prev) => prev.map((l) => (l.id === id ? { ...l, ...patch } : l)));
     setError(null);
+    setDelta(null);
   }
 
   function removeLeg(id: string) {
+    if (legs.length === 1) return;
     setLegs((prev) => (prev.length === 1 ? prev : prev.filter((l) => l.id !== id)));
+    setDelta(null);
   }
 
   function addLeg() {
     setLegs((prev) => [...prev, newLeg()]);
+    setDelta(null);
   }
 
   async function run() {
@@ -77,6 +83,7 @@ export function WhatIfCalculator({ scope }: Props) {
       });
       const result = await readMutationResult<{ data?: ExposureDelta }>(res);
       if (!result.ok || !result.data.data) {
+        setDelta(null);
         setError(
           `Couldn't work out the what-if: ${result.ok ? "the server sent no result." : result.message}`,
         );
@@ -84,6 +91,7 @@ export function WhatIfCalculator({ scope }: Props) {
       }
       setDelta(result.data.data);
     } catch {
+      setDelta(null);
       setError(networkFailureMessage("work out the what-if"));
     } finally {
       setLoading(false);

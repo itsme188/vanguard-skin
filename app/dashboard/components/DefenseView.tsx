@@ -180,6 +180,7 @@ export async function DefenseView({ scope = "all" }: DefenseViewProps) {
             <p className="font-mono tabular-nums text-xl text-ink">
               <Money value={summary.grossExposure} />
             </p>
+            <p className="text-xs mt-1 text-ink-faint">Each name netted first: its shares plus its options at delta</p>
           </div>
           <div>
             <p className="text-[11px] uppercase tracking-widest text-ink-faint mb-1">Hedges scored</p>

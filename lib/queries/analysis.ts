@@ -5,7 +5,6 @@
 
 import type Database from "better-sqlite3";
 import { unmaturedSecuritySql } from "@/lib/db/eastern-day-sql";
-import { adjustedMarketValueSQL } from "@/lib/valuation";
 import { FACTOR_COLUMNS, type FactorColumn } from "@/lib/factors";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 import { accountScopeAndSql, accountScopeCondition } from "@/lib/queries/account-scope-sql";
@@ -25,6 +24,7 @@ import {
   leverageIdentityColumnsSql,
   leverageUnderlyingJoinSql,
   type BookExposureRow,
+  HOLDING_VALUE_USD_SQL,
 } from "@/lib/compute/exposure";
 import { liveOptionExpirationSql } from "@/lib/compute/option-expiry";
 import { marketCapCategoryBucketSql } from "@/lib/securities/normalize-market-cap";
@@ -71,10 +71,12 @@ export interface AllocationEntry {
    *  total_market_value. Distinct securities. */
   leveraged_unmodelled_count?: number;
   position_count: number;
-  /** Sum of the bucket's positive-value parts (no netting). The long-only
-   *  donut draws this; `total_market_value` stays the net the table shows. */
+  /** Sum of the bucket's positive values, each security netted across the
+   *  scoped accounts first (owner ruling 2026-11-24; an option stays in its
+   *  own bucket). The long-only donut draws this; `total_market_value` stays
+   *  the net the table shows. */
   long_value?: number;
-  /** Sum of the bucket's negative-value parts (zero or negative). */
+  /** Sum of the bucket's negative values, netted the same way (zero or negative). */
   short_value?: number;
 }
 
@@ -195,18 +197,13 @@ const LATEST_HOLDINGS_CTE = `
  * One holdings row's value in USD — the ONE expression the allocation
  * breakdown, the data-coverage figure and the drill-down panel
  * (lib/queries/drill-down.ts) all read, so a row and the panel it opens can
- * never value a holding two ways. Priced: adjusted market value. Unpriced
- * with a positive cost basis: the cost basis. Otherwise 0.
- * Needs aliases `h` (holdings), `s` (securities), `lp` (latest price) and
- * `fx` (fx_rates) in scope.
+ * never value a holding two ways. Defined beside the exposure readers
+ * (lib/compute/exposure.ts), which select the same rule; re-exported here
+ * for the readers that import it from this module. Priced: adjusted market
+ * value. Unpriced with a NONZERO cost basis (a short's is negative): the
+ * cost basis. Otherwise 0.
  */
-export const HOLDING_VALUE_USD_SQL = `CASE
-          WHEN lp.close_price IS NOT NULL
-            THEN ${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}
-          WHEN h.cost_basis IS NOT NULL AND h.cost_basis > 0
-            THEN h.cost_basis * COALESCE(fx.usd_per_unit, 1)
-          ELSE 0
-        END`;
+export { HOLDING_VALUE_USD_SQL };
 
 /**
  * A bond past its maturity date is no longer a position. Shared with the
@@ -495,6 +492,7 @@ export function getAllocationByDimension(
         s.security_type,
         s.option_type,
         ${leverageIdentityColumnsSql(LEVERAGE_UNDERLYING_ALIAS)},
+        ${LEVERAGE_UNDERLYING_ALIAS}.id AS underlying_security_id,
         ${HOLDING_VALUE_USD_SQL} AS mv
       FROM latest_holdings h
       JOIN accounts a ON a.id = h.account_id
@@ -510,13 +508,16 @@ export function getAllocationByDimension(
   const optionExposures = getOptionExposureMap(db, accountIds);
   // position_count is DISTINCT securities per bucket: a name held in two
   // accounts is one position, exactly as the drill-down panel lists it.
+  // Long and short value net each SECURITY across accounts inside the row
+  // first (owner ruling 2026-11-24, "net each name first"): a name long in one
+  // account and short in another is one net position. A row is a bucket, so
+  // an option stays in its own bucket; it is not moved into its stock's.
   const byGroup = new Map<
     string,
     {
       mv: number;
       exposure: number;
-      long: number;
-      short: number;
+      bySecurityValue: Map<number, number>;
       securities: Set<number>;
       unmodelled: Set<number>;
     }
@@ -527,10 +528,9 @@ export function getAllocationByDimension(
     const exposure = resolveBookRowExposure(row, optionExposures);
     const entry =
       byGroup.get(row.group_name) ??
-      { mv: 0, exposure: 0, long: 0, short: 0, securities: new Set<number>(), unmodelled: new Set<number>() };
+      { mv: 0, exposure: 0, bySecurityValue: new Map<number, number>(), securities: new Set<number>(), unmodelled: new Set<number>() };
     entry.mv += row.mv;
-    if (row.mv > 0) entry.long += row.mv;
-    else if (row.mv < 0) entry.short += row.mv;
+    entry.bySecurityValue.set(row.security_id, (entry.bySecurityValue.get(row.security_id) ?? 0) + row.mv);
     if (exposure === null) entry.unmodelled.add(row.security_id);
     else entry.exposure += exposure;
     entry.securities.add(row.security_id);
@@ -539,11 +539,10 @@ export function getAllocationByDimension(
   const base = breakdownExposureBase(db, accountIds, rows, optionExposures);
 
   return [...byGroup.entries()]
-    .map(([group_name, { mv, exposure, long, short, securities, unmodelled }]) => ({
+    .map(([group_name, { mv, exposure, bySecurityValue, securities, unmodelled }]) => ({
       group_name,
       total_market_value: mv,
-      long_value: long,
-      short_value: short,
+      ...longShortOfNetted(bySecurityValue),
       percentage: holdingsShare(mv, total),
       net_exposure: exposure,
       exposure_pct: exposurePct(exposure, base),
@@ -577,6 +576,17 @@ function breakdownExposureBase(
 function exposurePct(exposure: number, base: number | null): number | null {
   const share = exposureShare(exposure, base);
   return share === null ? null : share * 100;
+}
+
+/** Σ positive and Σ negative of per-security values already netted across accounts. */
+function longShortOfNetted(bySecurityValue: Map<number, number>): { long_value: number; short_value: number } {
+  let long = 0;
+  let short = 0;
+  for (const value of bySecurityValue.values()) {
+    if (value > 0) long += value;
+    else if (value < 0) short += value;
+  }
+  return { long_value: long, short_value: short };
 }
 
 /** A bucket's share of the signed holdings total; no figure when that total is not positive. */
@@ -625,6 +635,9 @@ function getSectorAllocationWithLookThrough(
         s.option_type,
         s.sector,
         ${leverageIdentityColumnsSql(LEVERAGE_UNDERLYING_ALIAS)},
+        ${LEVERAGE_UNDERLYING_ALIAS}.id AS underlying_security_id,
+        ${LEVERAGE_UNDERLYING_ALIAS}.symbol AS underlying_row_symbol,
+        ${LEVERAGE_UNDERLYING_ALIAS}.sector AS underlying_row_sector,
         ${HOLDING_VALUE_USD_SQL} AS mv
       FROM latest_holdings h
       JOIN accounts a ON a.id = h.account_id
@@ -634,17 +647,25 @@ function getSectorAllocationWithLookThrough(
       ${leverageUnderlyingJoinSql(LEVERAGE_UNDERLYING_ALIAS)}
       WHERE ${conditions.join(" AND ")}`
     )
-    .all(...params) as Array<BookExposureRow & { symbol: string; sector: string | null }>;
+    .all(...params) as Array<
+      BookExposureRow & {
+        symbol: string;
+        sector: string | null;
+        underlying_row_symbol: string | null;
+        underlying_row_sector: string | null;
+      }
+    >;
 
   const weights = getEtfSectorWeights(db);
   const optionExposures = getOptionExposureMap(db, accountIds);
+  // Long / short net each security across accounts inside the sector row
+  // first (owner ruling 2026-11-24), as in getAllocationByDimension.
   const bySector = new Map<
     string,
     {
       value: number;
       exposure: number;
-      long: number;
-      short: number;
+      bySecurityValue: Map<number, number>;
       securities: Set<number>;
       unmodelled: Set<number>;
     }
@@ -663,13 +684,42 @@ function getSectorAllocationWithLookThrough(
       weights,
       r.sector ?? r.fund_category
     );
+    // A row valued at zero (no close, no cost basis) can still carry
+    // exposure: an option whose underlying is priced has a delta. Its value
+    // parts are all zero, so they cannot carry a share of that exposure;
+    // split the EXPOSURE itself instead, an option through its underlying
+    // (look-through weights and sector), so the Breakdown's net-exposure
+    // column always sums to the badge's net (fix 12, 2026-11-24).
+    const isOptionRow = (r.security_type ?? "").toLowerCase() === "option";
+    const exposureParts =
+      r.mv === 0 && rowExposure !== null && rowExposure !== 0
+        ? explodeHoldingByNormalizedSector(
+            isOptionRow && r.underlying_row_symbol ? r.underlying_row_symbol : r.symbol,
+            isOptionRow && r.underlying_row_symbol ? r.underlying_security_type : r.security_type,
+            rowExposure,
+            weights,
+            r.sector ??
+              r.fund_category ??
+              (isOptionRow ? r.underlying_row_sector ?? r.underlying_fund_category : null)
+          )
+        : null;
+    if (exposureParts) {
+      for (const part of exposureParts) {
+        const entry =
+          bySector.get(part.sector) ??
+          { value: 0, exposure: 0, bySecurityValue: new Map<number, number>(), securities: new Set<number>(), unmodelled: new Set<number>() };
+        entry.exposure += part.value;
+        entry.securities.add(r.security_id);
+        bySector.set(part.sector, entry);
+      }
+      continue;
+    }
     for (const part of parts) {
       const entry =
         bySector.get(part.sector) ??
-        { value: 0, exposure: 0, long: 0, short: 0, securities: new Set<number>(), unmodelled: new Set<number>() };
+        { value: 0, exposure: 0, bySecurityValue: new Map<number, number>(), securities: new Set<number>(), unmodelled: new Set<number>() };
       entry.value += part.value;
-      if (part.value > 0) entry.long += part.value;
-      else if (part.value < 0) entry.short += part.value;
+      entry.bySecurityValue.set(r.security_id, (entry.bySecurityValue.get(r.security_id) ?? 0) + part.value);
       if (rowExposure === null) entry.unmodelled.add(r.security_id);
       else entry.exposure += r.mv !== 0 ? rowExposure * (part.value / r.mv) : 0;
       entry.securities.add(r.security_id);
@@ -679,11 +729,10 @@ function getSectorAllocationWithLookThrough(
   const base = breakdownExposureBase(db, accountIds, rows, optionExposures);
 
   return [...bySector.entries()]
-    .map(([group_name, { value, exposure, long, short, securities, unmodelled }]) => ({
+    .map(([group_name, { value, exposure, bySecurityValue, securities, unmodelled }]) => ({
       group_name,
       total_market_value: value,
-      long_value: long,
-      short_value: short,
+      ...longShortOfNetted(bySecurityValue),
       percentage: holdingsShare(value, total),
       net_exposure: exposure,
       exposure_pct: exposurePct(exposure, base),
@@ -1086,13 +1135,7 @@ export function getFactorHeatmap(
         s.name,
         s.security_type,
         s.underlying_symbol,
-        SUM(CASE
-          WHEN lp.close_price IS NOT NULL
-            THEN ${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}
-          WHEN h.cost_basis IS NOT NULL AND h.cost_basis > 0
-            THEN h.cost_basis * COALESCE(fx.usd_per_unit, 1)
-          ELSE 0
-        END) AS market_value,
+        SUM(${HOLDING_VALUE_USD_SQL}) AS market_value,
         COALESCE(sf.interest_rate_sensitive, sf_u.interest_rate_sensitive) AS interest_rate_sensitive,
         COALESCE(sf.growth_vs_value, sf_u.growth_vs_value) AS growth_vs_value,
         COALESCE(sf.cyclical, sf_u.cyclical) AS cyclical,

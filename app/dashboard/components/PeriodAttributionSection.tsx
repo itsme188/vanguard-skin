@@ -245,6 +245,17 @@ export function PeriodAttributionSection({
               returns over its own period window, so the two need not match.
             </p>
           )}
+          {/* Same words as the risk tiles' "N seam days bridged": a day the
+              daily values hand off between measurement sources is left out
+              of the regression and of both returns (a day count, plain). */}
+          {attribution.decomposedReturn && attribution.decomposedReturn.seamDaysBridged > 0 && (
+            <p className="text-xs text-ink-faint mt-1">
+              {attribution.decomposedReturn.seamDaysBridged} seam day
+              {attribution.decomposedReturn.seamDaysBridged === 1 ? "" : "s"} bridged: on a day where
+              the daily values switch measurement source, the step is not a return, so that day is
+              left out of the regression and of both returns.
+            </p>
+          )}
         </section>
       )}
     </>

@@ -1,5 +1,6 @@
 import type Database from "better-sqlite3";
 import { excludeLiveSnapshotsSql } from "@/lib/db/live-sources";
+import { addDays } from "@/lib/calendar/date-utils";
 import {
   SIGNED_EXTERNAL_FLOW_SQL,
   IN_KIND_LEG_SQL,
@@ -109,6 +110,9 @@ interface AggregatedSnapshotRow {
 interface CoveredSnapshotRow extends AggregatedSnapshotRow {
   carried_deposits: number;
   carried_inkind: number;
+  /** Month-ends of the skipped months whose flows rode into this row's
+   *  carried_deposits / carried_inkind (read by aggregateGapFlows). */
+  carried_months: string[];
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────
@@ -141,6 +145,36 @@ function dayBeforeMonthStart(monthStart: string): string {
   return d.toISOString().slice(0, 10);
 }
 
+/** The calendar day after `iso`. */
+function nextDay(iso: string): string {
+  return addDays(iso, 1);
+}
+
+/**
+ * GAP PERIODS (2026-11-24). A Modified Dietz month whose opening value is
+ * dated before the day before the month's start opens across one or more
+ * months with no statement: the value change covers the whole span
+ * (vStartDate, mEnd], so it is measured as ONE Dietz period over that span.
+ * Returns the span's opening date, or null when the month opens on the
+ * previous month-end (the normal case, which this never touches).
+ *
+ * Inside a gap period:
+ *  - the month's OWN flows are read exactly as for any month (snapshot
+ *    figure at weight 0.5, else the ledger), except that a dated flow's
+ *    weight is its days remaining over the SPAN's days, not the month's;
+ *  - flows dated inside the missing months come from the ledger (cash and
+ *    in-kind legs alike: the cash-flow statements carry no type filter),
+ *    day-weighted over the span. In the aggregate chain a ledger row is left
+ *    out when it is already inside carriedDeposits / carried_inkind (see
+ *    aggregateGapFlows), so no flow is counted twice;
+ *  - the result is flagged partial (a month had no statement).
+ * Before this, only the month's own flows were read and a deposit dated in
+ * a missing month read as investment gain.
+ */
+function gapOpening(vStartDate: string | null, mStart: string): string | null {
+  return vStartDate !== null && vStartDate < dayBeforeMonthStart(mStart) ? vStartDate : null;
+}
+
 function annualize(
   totalReturn: number,
   totalDays: number
@@ -168,8 +202,11 @@ function modifiedDietzReturn(
   );
   const denominator = vStart + weightedCF;
 
-  // Can't compute if denominator is zero or near-zero
-  if (Math.abs(denominator) < 0.01) return null;
+  // Can't compute if the average capital is zero, near zero or NEGATIVE
+  // (review 2026-11-24: a large withdrawal weighted over a gap span drove it
+  // below zero and printed a return under -100%). The caller drops the
+  // period and marks the result partial.
+  if (denominator < 0.01) return null;
 
   return (vEnd - vStart - totalCF) / denominator;
 }
@@ -336,6 +373,15 @@ export function computeTwr(
 
       // Use pre-computed TWR if available and NOT an annual summary
       if (snap.twr !== null && !isAnnualSummary) {
+        // A month inside the window with no stored return (no statement at
+        // all) is silently missing from the chain: say so. The figure is
+        // unchanged. For the first row only a missing month on or after the
+        // window start counts (an older hole is outside the window).
+        const prevAnchor = i > 0 ? snapshots[i - 1].month_end_date : priorRow?.month_end_date;
+        const lastMissing = dayBeforeMonthStart(monthStartDate(snap.month_end_date));
+        if (prevAnchor !== undefined && prevAnchor < lastMissing && (i > 0 || lastMissing >= effectiveStart)) {
+          isPartial = true;
+        }
         // A stored monthly TWR covers its whole calendar month, so this
         // sub-period opens on that month's first day.
         measurementStart ??= monthStartDate(snap.month_end_date);
@@ -373,14 +419,27 @@ export function computeTwr(
       const vEnd = snap.total_value;
       const mStart = monthStartDate(snap.month_end_date);
       const mEnd = snap.month_end_date;
-      const totalDaysInMonth = daysInMonth(snap.month_end_date);
+      // A gap period (see gapOpening) weights dated flows over the whole
+      // span; every other month keeps its own day count, byte for byte.
+      const gapStart = gapOpening(vStartDate, mStart);
+      const totalDaysInMonth = gapStart !== null ? daysBetween(gapStart, mEnd) : daysInMonth(snap.month_end_date);
 
       // Get external cash flows for this month
       // Prefer deposits_withdrawals from snapshot (always available)
       // over transaction-level flows (often have NULL amounts)
       let weightedFlows: { amount: number; weight: number }[];
+      // A gap ending on a December ANNUAL row: the row's cumulative figure
+      // minus the Jan-Nov statements still holds every missing month's
+      // deposits, which the gap block would read again from the ledger. So
+      // the whole span's flows come from the ledger alone (cash and in-kind,
+      // dated, over the span) and the cumulative residual is not used.
+      const annualAcrossGap = gapStart !== null && isAnnualSummary;
 
-      if (isAnnualSummary && snap.deposits_withdrawals != null) {
+      if (annualAcrossGap) {
+        weightedFlows = (cashFlowStmt.all(account.id, nextDay(gapStart), mEnd) as CashFlowRow[])
+          .filter((f) => f.amount != null)
+          .map((f) => ({ amount: f.amount, weight: daysBetween(f.trade_date, mEnd) / totalDaysInMonth }));
+      } else if (isAnnualSummary && snap.deposits_withdrawals != null) {
         // December annual row: deposits_withdrawals is cumulative for the year.
         // Compute December-only deposits by subtracting Jan-Nov.
         const year = snap.month_end_date.slice(0, 4);
@@ -426,6 +485,22 @@ export function computeTwr(
               totalDaysInMonth > 0 ? daysRemaining / totalDaysInMonth : 0;
             return { amount: f.amount, weight };
           });
+      }
+
+      if (gapStart !== null) isPartial = true;
+      if (gapStart !== null && !annualAcrossGap) {
+        // Flows dated inside the missing months: no snapshot of this account
+        // exists for them, so only the ledger knows them. cashFlowStmt has no
+        // type filter, so in-kind legs come with it (never added twice).
+        const gapFlows = cashFlowStmt.all(
+          account.id,
+          nextDay(gapStart),
+          dayBeforeMonthStart(mStart)
+        ) as CashFlowRow[];
+        for (const f of gapFlows) {
+          if (f.amount == null) continue;
+          weightedFlows.push({ amount: f.amount, weight: daysBetween(f.trade_date, mEnd) / totalDaysInMonth });
+        }
       }
 
       const r = modifiedDietzReturn(vStart, vEnd, weightedFlows);
@@ -656,6 +731,7 @@ export function computeTwr(
   const coveredSnapshots: CoveredSnapshotRow[] = [];
   let carriedDeposits = 0;
   let carriedInKind = 0;
+  let carriedMonths: string[] = [];
   for (const snap of aggSnapshots) {
     if (snap.present_accounts < snap.expected_accounts) {
       portfolioPartial = true;
@@ -672,11 +748,75 @@ export function computeTwr(
         ...scopeParams
       ) as CashFlowRow[];
       carriedInKind += skippedInKindRows.reduce((sum, row) => sum + (row.amount ?? 0), 0);
+      carriedMonths.push(snap.month_end_date);
       continue;
     }
-    coveredSnapshots.push({ ...snap, carried_deposits: carriedDeposits, carried_inkind: carriedInKind });
+    coveredSnapshots.push({
+      ...snap,
+      carried_deposits: carriedDeposits,
+      carried_inkind: carriedInKind,
+      carried_months: carriedMonths,
+    });
     carriedDeposits = 0;
     carriedInKind = 0;
+    carriedMonths = [];
+  }
+
+  // Ledger flows dated inside a gap period's missing months (see gapOpening),
+  // day-weighted over the span. A row is left out when the aggregate already
+  // holds it, so nothing is counted twice:
+  //  - an in-kind leg dated in a SKIPPED month (one in carried_months) is
+  //    already in carried_inkind;
+  //  - a cash row dated in a skipped month is already in carried_deposits
+  //    when ITS account's statement for that month states a non-zero
+  //    deposits_withdrawals (carriedDeposits sums exactly those figures).
+  // Everything else is read: cash of an account that has no statement for
+  // the month (or one stating nothing), and every flow in a month no account
+  // reported (no aggregate row, so nothing was carried).
+  const gapLedgerStmt = db.prepare(
+    `SELECT account_id, trade_date, ${SIGNED_EXTERNAL_FLOW_SQL} AS amount,
+            CASE WHEN ${IN_KIND_LEG_SQL} THEN 1 ELSE 0 END AS in_kind
+     FROM transactions
+     WHERE is_external_flow = 1
+       AND trade_date >= ? AND trade_date <= ?${scopeAnd("account_id")}
+     ORDER BY trade_date ASC`
+  );
+  const gapStatedStmt = db.prepare(
+    `SELECT account_id, month_end_date
+     FROM monthly_snapshots
+     WHERE month_end_date >= ? AND month_end_date <= ?
+       AND deposits_withdrawals IS NOT NULL AND deposits_withdrawals != 0
+       AND ${excludeLiveSnapshotsSql("source")}${scopeAnd("account_id")}`
+  );
+  function aggregateGapFlows(
+    gapStart: string,
+    mStart: string,
+    mEnd: string,
+    periodDays: number,
+    carried: string[]
+  ): { amount: number; weight: number }[] {
+    const gapEnd = dayBeforeMonthStart(mStart);
+    const from = nextDay(gapStart);
+    const carriedMonth = new Set(carried.map((d) => d.slice(0, 7)));
+    const stated = new Set(
+      (gapStatedStmt.all(from, gapEnd, ...scopeParams) as { account_id: number; month_end_date: string }[])
+        .filter((r) => carriedMonth.has(r.month_end_date.slice(0, 7)))
+        .map((r) => `${r.account_id}:${r.month_end_date.slice(0, 7)}`)
+    );
+    const rows = gapLedgerStmt.all(from, gapEnd, ...scopeParams) as {
+      account_id: number;
+      trade_date: string;
+      amount: number | null;
+      in_kind: number;
+    }[];
+    const out: { amount: number; weight: number }[] = [];
+    for (const row of rows) {
+      if (row.amount == null) continue;
+      const month = row.trade_date.slice(0, 7);
+      if (row.in_kind === 1 ? carriedMonth.has(month) : stated.has(`${row.account_id}:${month}`)) continue;
+      out.push({ amount: row.amount, weight: daysBetween(row.trade_date, mEnd) / periodDays });
+    }
+    return out;
   }
 
   for (let i = 0; i < coveredSnapshots.length; i++) {
@@ -698,6 +838,11 @@ export function computeTwr(
     }
 
     const vEnd = snap.total_value;
+    // A gap period (see gapOpening) weights dated flows over the whole span;
+    // every other month keeps its own day count, byte for byte.
+    const gapStart = gapOpening(vStartDate, monthStartDate(snap.month_end_date));
+    const periodDays = (mEnd: string) =>
+      gapStart !== null ? daysBetween(gapStart, mEnd) : daysInMonth(mEnd);
 
     // Use aggregated deposits_withdrawals, corrected for December annual rows
     const correction = decemberCorrections.get(snap.month_end_date) ?? 0;
@@ -705,8 +850,20 @@ export function computeTwr(
       snap.total_deposits_withdrawals - correction + snap.carried_deposits + snap.carried_inkind;
 
     let weightedFlows: { amount: number; weight: number }[];
+    // A gap ending on a month that holds a December ANNUAL row (one with a
+    // December correction): the corrected figure still holds the missing
+    // months' deposits, so — as in the per-account chain — the whole span's
+    // flows come from the ledger alone and neither the snapshot figure nor
+    // the carry is used.
+    const annualAcrossGap = gapStart !== null && decemberCorrections.has(snap.month_end_date);
 
-    if (effectiveDeposits !== 0) {
+    if (annualAcrossGap) {
+      const mEnd = snap.month_end_date;
+      const span = periodDays(mEnd);
+      weightedFlows = (allFlowStmt.all(nextDay(gapStart), mEnd, ...scopeParams) as CashFlowRow[])
+        .filter((f) => f.amount != null)
+        .map((f) => ({ amount: f.amount, weight: daysBetween(f.trade_date, mEnd) / span }));
+    } else if (effectiveDeposits !== 0) {
       weightedFlows = [{ amount: effectiveDeposits, weight: 0.5 }];
       // Union in THIS month's own in-kind transfer legs (spec §6.5) —
       // distinct from carried_inkind above (a PRIOR skipped month's carry).
@@ -714,7 +871,7 @@ export function computeTwr(
       // branch's per-flow weighting below.
       const mStart = monthStartDate(snap.month_end_date);
       const mEnd = snap.month_end_date;
-      const totalDaysInMonth = daysInMonth(snap.month_end_date);
+      const totalDaysInMonth = periodDays(mEnd);
       const inKindFlows = allInKindFlowStmt.all(mStart, mEnd, ...scopeParams) as CashFlowRow[];
       for (const flow of inKindFlows) {
         if (flow.amount == null) continue;
@@ -725,7 +882,7 @@ export function computeTwr(
     } else {
       const mStart = monthStartDate(snap.month_end_date);
       const mEnd = snap.month_end_date;
-      const totalDaysInMonth = daysInMonth(snap.month_end_date);
+      const totalDaysInMonth = periodDays(mEnd);
       const flows = allFlowStmt.all(mStart, mEnd, ...scopeParams) as CashFlowRow[];
       weightedFlows = flows
         .filter((f) => f.amount != null)
@@ -735,6 +892,19 @@ export function computeTwr(
             totalDaysInMonth > 0 ? daysRemaining / totalDaysInMonth : 0;
           return { amount: f.amount, weight };
         });
+    }
+
+    if (gapStart !== null) portfolioPartial = true;
+    if (gapStart !== null && !annualAcrossGap) {
+      weightedFlows.push(
+        ...aggregateGapFlows(
+          gapStart,
+          monthStartDate(snap.month_end_date),
+          snap.month_end_date,
+          periodDays(snap.month_end_date),
+          snap.carried_months
+        )
+      );
     }
 
     const r = modifiedDietzReturn(vStart, vEnd, weightedFlows);

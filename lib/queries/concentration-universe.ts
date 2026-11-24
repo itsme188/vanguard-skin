@@ -27,7 +27,12 @@
  *    position any more, whatever row is still sitting in `holdings`.
  *  - An UNPRICED position is carried at its cost basis rather than dropped.
  *    We still own it, and dropping it understates the book (which is what
- *    made the risk card's denominator differ from the card's). As of a past
+ *    made the risk card's denominator differ from the card's). A short's
+ *    basis is NEGATIVE, so the test is a basis whose sign matches the
+ *    quantity's (COST_BASIS_FALLBACK_SQL, fix 12, 2026-11-24): an unpriced
+ *    short keeps its sign in `marketValue`, weighs |basis| in the gross
+ *    weights, and is marked `priced: false` like an unpriced long. A basis
+ *    of the wrong sign is a data error and values the leg 0. As of a past
  *    date, a position with no close yet on that date and no cost basis is
  *    carried at its first later close (marked `valuedAfterAsOf`), for the
  *    same reason: the position count must stay honest.
@@ -48,6 +53,7 @@ import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 import { todayET } from "@/lib/calendar/date-utils";
 import { liveOptionExpirationSql } from "@/lib/compute/option-expiry";
 import { cashEquivalentSecuritySql } from "@/lib/compute/cash-equivalents";
+import { COST_BASIS_FALLBACK_SQL } from "@/lib/compute/exposure";
 
 /**
  * Half a cent. Below this a position is worth nothing a dollar figure could
@@ -185,7 +191,7 @@ export function getConcentrationUniverse(
            CASE
              WHEN lp.close_price IS NOT NULL
                THEN ${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}
-             WHEN h.cost_basis IS NOT NULL AND h.cost_basis > 0
+             WHEN ${COST_BASIS_FALLBACK_SQL}
                THEN h.cost_basis * COALESCE(fx.usd_per_unit, 1)
              WHEN fp.close_price IS NOT NULL
                THEN ${adjustedMarketValueSQL("h.quantity", "fp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}
@@ -194,7 +200,7 @@ export function getConcentrationUniverse(
            CASE WHEN lp.close_price IS NOT NULL THEN 1 ELSE 0 END AS priced,
            CASE
              WHEN lp.close_price IS NULL
-              AND NOT (h.cost_basis IS NOT NULL AND h.cost_basis > 0)
+              AND NOT ${COST_BASIS_FALLBACK_SQL}
               AND fp.close_price IS NOT NULL
              THEN 1 ELSE 0
            END AS valued_after_as_of

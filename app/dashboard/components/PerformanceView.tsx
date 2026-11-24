@@ -10,8 +10,6 @@ import type { DietzBand } from "@/lib/compute/dietz";
 import { computePeriodAttribution } from "@/lib/compute/period-attribution";
 import { resolveScope } from "@/lib/queries/accounts";
 import { todayET } from "@/lib/calendar/date-utils";
-import { getDailyValuationsForAccounts } from "@/lib/queries/daily-valuations";
-import { fetchNetFlowsByDate, fetchAnchorSourceSeamDates } from "@/lib/compute/flow-adjusted";
 import { Money, Pct } from "@/lib/privacy/components";
 import { formatPercent } from "@/lib/format";
 import {
@@ -22,8 +20,7 @@ import {
   type Interpretation,
 } from "@/lib/analysis/interpret";
 import { PerformanceCurveChart, type PerformanceCurveData } from "./EquityCurveChart";
-import { buildEquityCurveData } from "@/lib/compute/equity-curve";
-import { curveFloorDate, firstStatementAnchorForCurve } from "@/lib/compute/equity-curve-floor";
+import { loadPerformanceCurve } from "@/lib/compute/equity-curve";
 import { PeriodAttributionSection } from "./PeriodAttributionSection";
 import {
   resolvePerformanceWindow,
@@ -260,64 +257,18 @@ export async function PerformanceView({ scope = "all", period, month }: Performa
   // statement anchor. A daily value dated before an account's first statement
   // is an estimate, and as the base day it put a fake step on the statement
   // day. The floor is looked up over the full scope.
-  const curveFloor = firstStatementAnchorForCurve(db, scopeAccountIds, effectiveStart, dailyEnd);
-  const curveSeriesStart = curveFloorDate(effectiveStart, curveFloor);
+  //
+  // BASE SESSION (2026-11-24): a window opening on a closed day (YTD's Jan 1)
+  // is plotted from the last benchmark close on or before it, so the first
+  // session's move is on the curve; the floor still wins when it is later.
+  //
   // The WHOLE scope, summed (undefined = every account; an empty id list
-  // would be no accounts), for a named scope of one account this is that
-  // account's own series.
-  const dailyVals = getDailyValuationsForAccounts(db, scopeAccountIds, {
-    startDate: curveSeriesStart,
-    endDate: dailyEnd,
-    fullCoverageOnly: true,
-  });
-
-  const benchmarkRows = db
-    .prepare(
-      `SELECT date, close_price FROM benchmark_prices
-       WHERE symbol = ? AND date BETWEEN ? AND ?
-       ORDER BY date ASC`,
-    )
-    .all(BENCHMARK_SYMBOL, effectiveStart, dailyEnd) as { date: string; close_price: number }[];
-
-  // Flow-adjusted, seam-bridged inputs for the portfolio leg of the curve —
-  // same accountIds scope as the daily-valuation load above (scopeAccountIds:
-  // undefined for "all", the resolved id list for a named scope), mirroring
-  // computeRiskMetrics' pattern (lib/compute/risk.ts) exactly. Without this,
-  // the curve plots raw total_value: a deposit/withdrawal reads as a market
-  // move and an anchor-source handoff (statement<->Plaid<->TWS) reads as a
-  // fake step (CLAUDE.md: "a metric must be invariant to depositing $1M and
-  // buying nothing").
-  // The flow/seam scope is the SERIES' scope: dailyVals sums every account
-  // in scopeAccountIds, so the flows netted out of it are those accounts'.
-  const flows =
-    dailyVals.length >= 2
-      ? fetchNetFlowsByDate(
-          db,
-          scopeAccountIds,
-          dailyVals[0].valuation_date,
-          dailyVals[dailyVals.length - 1].valuation_date,
-        )
-      : [];
-  const seamDates =
-    dailyVals.length >= 2
-      ? fetchAnchorSourceSeamDates(
-          db,
-          scopeAccountIds,
-          dailyVals[0].valuation_date,
-          dailyVals[dailyVals.length - 1].valuation_date,
-        )
-      : [];
-
-  // Both series indexed to 100 at the first PLOTTED date (pure helper —
-  // basing the benchmark at the selected-period start let SPY carry
-  // pre-window returns and contradict the alpha card on the same page).
-  const equityCurveData: PerformanceCurveData[] = buildEquityCurveData(
-    dailyVals,
-    benchmarkRows,
-    flows,
-    seamDates,
-    curveFloor,
-  );
+  // would be no accounts), flow-adjusted and seam-bridged over the series'
+  // own span (lib/compute/equity-curve.ts loadPerformanceCurve). Both series
+  // are indexed to 100 at the first PLOTTED date.
+  const curve = loadPerformanceCurve(db, scopeAccountIds, effectiveStart, dailyEnd, BENCHMARK_SYMBOL);
+  const equityCurveData: PerformanceCurveData[] = curve.data;
+  const curveFloor = curve.curveFloor;
 
   // ── Period attribution ──────────────────────────────────────────
   // Pass the FULL scope: resolveScope's id set for a named scope, undefined

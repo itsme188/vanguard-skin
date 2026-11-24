@@ -145,7 +145,7 @@ describe("optionExposureFallback", () => {
 });
 
 describe("getPortfolioExposureSummary", () => {
-  it("stocks at MV; net sums signed exposure; gross sums absolute per security", () => {
+  it("stocks at MV; net sums signed exposure; gross nets each name first", () => {
     const acct = seedAccount("Test");
     const stock = seedStock("HOOD");
     seedHolding(acct, stock, 100);
@@ -159,9 +159,13 @@ describe("getPortfolioExposureSummary", () => {
     expect(s.total_market_value).toBeCloseTo(8_000 + 1_400);
     // Put exposure is negative → net < total MV
     expect(s.net_exposure).toBeLessThan(8_000);
-    // Gross counts the hedge's magnitude
-    expect(s.gross_exposure).toBeGreaterThan(s.net_exposure);
-    expect(s.gross_exposure).toBeGreaterThan(8_000);
+    // Gross nets the name first (owner ruling 2026-11-24): the stock and its
+    // protective put are one name, so a net-long hedged name adds only what
+    // is left of it. It used to be Σ|per security| (> net, > 8,000).
+    expect(s.net_exposure).toBeGreaterThan(0);
+    expect(s.gross_exposure).toBeCloseTo(s.net_exposure, 9);
+    expect(s.long_exposure).toBeCloseTo(s.net_exposure, 9);
+    expect(s.short_exposure).toBe(0);
   });
 
   it("scopes to accountIds", () => {

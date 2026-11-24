@@ -53,9 +53,11 @@ describe("equity-curve caption names the end overshoot", () => {
   // today, which is where the overshoot caption above still applies.
   it("the curve ends at the page window's end: today for YTD / All, the statement anchor for a fixed period", () => {
     // U13 changed the loader (one summed series for the whole scope, started
-    // at the scope's first statement); the END this test pins is unchanged.
+    // at the scope's first statement); the base-session fix (2026-11-24)
+    // moved it into loadPerformanceCurve and changed only its START. The END
+    // this test pins is unchanged: the view hands the loader dailyEnd.
     expect(flat(view)).toContain(
-      "getDailyValuationsForAccounts(db, scopeAccountIds, { startDate: curveSeriesStart, endDate: dailyEnd, fullCoverageOnly: true, })",
+      "loadPerformanceCurve(db, scopeAccountIds, effectiveStart, dailyEnd, BENCHMARK_SYMBOL)",
     );
     expect(flat(view)).toContain("const dailyEnd = perfWindow.endDate;");
     expect(flat(view)).not.toContain("{ startDate: effectiveStart, endDate: twrResult");

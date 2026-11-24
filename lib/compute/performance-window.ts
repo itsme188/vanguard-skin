@@ -14,6 +14,8 @@
 import type Database from "better-sqlite3";
 import { excludeLiveSnapshotsSql } from "@/lib/db/live-sources";
 import { SNAPSHOT_FIRSTS_CTE, EXPECTED_ACCOUNTS_SQL } from "@/lib/compute/snapshot-coverage";
+import { getDailyValuationsForAccounts, type DailyValuation } from "@/lib/queries/daily-valuations";
+import { addDays } from "@/lib/calendar/date-utils";
 
 export type PerformancePeriod = "ytd" | "1y" | "3y" | "5y" | "all";
 
@@ -128,6 +130,84 @@ export function resolvePerformanceWindow(
   const [y, m, d] = today.split("-").map(Number);
   const startDate = isoUtc(y - years, m - 1, Math.min(d, lastDayOfMonth(y - years, m - 1)));
   return { startDate, endDate: today, endsAtStatement: false, chainStartDate: startDate };
+}
+
+/**
+ * How far back the base session may sit from the opening date: a weekend or
+ * a holiday run, the same bound as the daily return-gap guard
+ * (period-attribution.ts MAX_RETURN_GAP_DAYS, risk.ts).
+ */
+const MAX_BASE_SESSION_LAG_DAYS = 7;
+
+/**
+ * The BASE SESSION of a daily series that opens on `openingDate` (2026-11-24):
+ * the last benchmark close on or before it. A window that opens on a closed
+ * day (YTD opens on Jan 1) has its first in-window session's move measured
+ * from the session before, so that session is where the curve is indexed to
+ * 100 and where the attribution walk starts; starting at the first session
+ * INSIDE the window dropped that first session's move (the TWR tile, opening
+ * on the Dec 31 statement, kept it). On a trading day this is the opening
+ * date itself, so nothing changes. Returns `openingDate` when there is no
+ * close within MAX_BASE_SESSION_LAG_DAYS before it.
+ *
+ * ONE reader for the curve (loadPerformanceCurve) and the attribution
+ * (computePeriodAttribution). It never moves the TWR's chain start.
+ */
+export function baseSessionOnOrBefore(
+  db: Database.Database,
+  benchmarkSymbol: string,
+  openingDate: string,
+): string {
+  const row = db
+    .prepare(`SELECT MAX(date) AS d FROM benchmark_prices WHERE symbol = ? AND date <= ? AND date >= ?`)
+    .get(benchmarkSymbol, openingDate, addDays(openingDate, -MAX_BASE_SESSION_LAG_DAYS)) as
+    | { d: string | null }
+    | undefined;
+  return row?.d ?? openingDate;
+}
+
+/**
+ * The scope's full-coverage daily valuations from the base session to
+ * `endDate`: the window's own rows (`openingDate`..`endDate`, exactly as read
+ * before) with the base session's row in front when there is one. The base
+ * row is used only when it does not change which window days survive the
+ * full-coverage guard and it is itself a full-coverage day; otherwise the
+ * window's own rows come back unchanged (the series then opens on its first
+ * session inside the window, as before). Nothing is invented: a missing base
+ * value is simply not there.
+ */
+export function dailyValuationsFromBaseSession(
+  db: Database.Database,
+  accountIds: number[] | undefined,
+  baseSession: string,
+  openingDate: string,
+  endDate: string,
+): DailyValuation[] {
+  const windowRows = getDailyValuationsForAccounts(db, accountIds, {
+    startDate: openingDate,
+    endDate,
+    fullCoverageOnly: true,
+  });
+  if (baseSession >= openingDate) return windowRows;
+  const extended = getDailyValuationsForAccounts(db, accountIds, {
+    startDate: baseSession,
+    endDate,
+    fullCoverageOnly: true,
+  });
+  // Decided by content, never by a row count: daily_valuations has a row for
+  // every calendar day, so a Sunday opening has two rows before it (Fri,
+  // Sat) and a Monday holiday three. The extended rows from the opening date
+  // on must be exactly the window's own rows, and the base session itself
+  // must be there. Closed days in between stay in the series (their flows
+  // fold into the next step) but never become curve points (the curve plots
+  // benchmark days) or attribution pairs (the walk is by session).
+  const before = extended.filter((r) => r.valuation_date < openingDate);
+  const fromOpening = extended.slice(before.length);
+  const sameWindow =
+    before.some((r) => r.valuation_date === baseSession) &&
+    fromOpening.length === windowRows.length &&
+    windowRows.every((r, i) => fromOpening[i].valuation_date === r.valuation_date);
+  return sameWindow ? extended : windowRows;
 }
 
 /**

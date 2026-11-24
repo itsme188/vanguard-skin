@@ -527,7 +527,7 @@ export function AnalysisView({
             {exposureSummary && exposureSummary.net_ratio != null && (
               <span
                 className="text-xs text-ink-faint"
-                title="Delta-adjusted: stocks at market value (a leveraged or inverse fund times its factor), options at delta × underlying notional (puts negative); money-market funds and broker cash count as no exposure. Net = signed sum; gross = magnitude of all bets including hedges. Both are a share of net worth, the Portfolio strip's figure (holdings plus cash). 100% = fully invested, unlevered."
+                title="Delta-adjusted: stocks at market value (a leveraged or inverse fund times its factor), options at delta × underlying notional (puts negative); money-market funds and broker cash count as no exposure. Net = signed sum; gross = each name netted first (its shares in every account plus its options at delta), then the sizes added, so a covered call shrinks its stock. Both are a share of net worth, the Portfolio strip's figure (holdings plus cash). 100% = fully invested, unlevered."
               >
                 Net exposure{" "}
                 <span className="font-mono text-ink-dim">

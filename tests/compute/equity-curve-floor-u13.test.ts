@@ -186,14 +186,17 @@ describe("firstStatementAnchorForCurve — the floor for a scope", () => {
 
 describe("PerformanceView draws the curve for the whole scope, from the floor", () => {
   const flat = readFileSync("app/dashboard/components/PerformanceView.tsx", "utf8").replace(/\s+/g, " ");
+  // Since 2026-11-24 (base session) the loading lives in one lib loader,
+  // loadPerformanceCurve (lib/compute/equity-curve.ts), so it can be tested
+  // against a database; the view hands it the whole scope and the window.
+  const loader = (() => {
+    const src = readFileSync("lib/compute/equity-curve.ts", "utf8").replace(/\s+/g, " ");
+    return src.slice(src.indexOf("export function loadPerformanceCurve("));
+  })();
 
-  it("looks the floor up over the full scope and starts the daily series there", () => {
+  it("hands the whole scope and the window to the one curve loader", () => {
     expect(flat).toContain(
-      "firstStatementAnchorForCurve(db, scopeAccountIds, effectiveStart, dailyEnd)",
-    );
-    expect(flat).toContain("const curveSeriesStart = curveFloorDate(effectiveStart, curveFloor);");
-    expect(flat).toContain(
-      "getDailyValuationsForAccounts(db, scopeAccountIds, { startDate: curveSeriesStart, endDate: dailyEnd, fullCoverageOnly: true, })",
+      "loadPerformanceCurve(db, scopeAccountIds, effectiveStart, dailyEnd, BENCHMARK_SYMBOL)",
     );
     // Scope rule (2026-10-09): the scope is passed straight through, with
     // undefined = every account. It is never coerced to an empty list, which
@@ -203,9 +206,19 @@ describe("PerformanceView draws the curve for the whole scope, from the floor", 
     expect(flat).not.toContain("getDailyValuationsByAccount");
   });
 
+  it("looks the floor up over the full scope and starts the daily series there", () => {
+    expect(loader).toContain("firstStatementAnchorForCurve(db, accountIds, openingDate, endDate)");
+    expect(loader).toContain("const windowStart = curveFloorDate(openingDate, curveFloor);");
+    // The base session reaches back only as far as the floor.
+    expect(loader).toContain("const seriesStart = curveFloorDate(baseSession, curveFloor);");
+    expect(loader).toContain(
+      "dailyValuationsFromBaseSession(db, accountIds, seriesStart, windowStart, endDate)",
+    );
+  });
+
   it("nets the scope's own flows and seams, and hands the builder the floor", () => {
-    expect(flat).toContain("fetchNetFlowsByDate( db, scopeAccountIds,");
-    expect(flat).toContain("fetchAnchorSourceSeamDates( db, scopeAccountIds,");
-    expect(flat).toContain("buildEquityCurveData( dailyVals, benchmarkRows, flows, seamDates, curveFloor, )");
+    expect(loader).toContain("fetchNetFlowsByDate(db, accountIds, seriesFrom, seriesTo)");
+    expect(loader).toContain("fetchAnchorSourceSeamDates(db, accountIds, seriesFrom, seriesTo)");
+    expect(loader).toContain("buildEquityCurveData(dailyVals, benchmarkRows, flows, seamDates, curveFloor)");
   });
 });

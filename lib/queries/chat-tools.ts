@@ -3,7 +3,7 @@ import { snapshotTwrFraction } from "@/lib/compute/monthly-snapshot-utils";
 import { easternDaySql, unmaturedSecuritySql } from "@/lib/db/eastern-day-sql";
 import { adjustedMarketValueSQL, scaledCostBasisFallbackSQL } from "@/lib/valuation";
 import { todayET, addDays, calendarDaysBetween } from "@/lib/calendar/date-utils";
-import { SECTOR_OWN_BUCKET_SQL } from "@/lib/queries/analysis";
+import { SECTOR_OWN_BUCKET_SQL, HOLDING_VALUE_USD_SQL } from "@/lib/queries/analysis";
 import { normalizeSector } from "@/lib/securities/normalize-sector";
 import { normalizeFundCategory } from "@/lib/securities/normalize-fund-category";
 import { isCashEquivalentSecurity, cashEquivalentSecuritySql } from "@/lib/compute/cash-equivalents";
@@ -918,13 +918,7 @@ export function getAllocationBreakdown(
       )
       SELECT
         ${groupExpr} AS group_name,
-        CASE
-          WHEN lp.close_price IS NOT NULL
-            THEN ${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}
-          WHEN h.cost_basis IS NOT NULL AND h.cost_basis > 0
-            THEN h.cost_basis * COALESCE(fx.usd_per_unit, 1)
-          ELSE 0
-        END AS mv
+        ${HOLDING_VALUE_USD_SQL} AS mv
       FROM holdings h
       JOIN accounts a ON a.id = h.account_id
       JOIN securities s ON s.id = h.security_id

@@ -24,7 +24,22 @@
 // is indexed, so the base day is statement-tied.
 // (qa:analysis-performance--equity-curve-pre-anchor-estimated-base-day-step)
 
-import { buildFlowAdjustedIndex, type SeriesPoint } from "./flow-adjusted";
+//
+// BASE SESSION (2026-11-24): a window that opens on a closed day (YTD opens
+// on Jan 1) is plotted from the last benchmark close on or before its opening
+// date (baseSessionOnOrBefore, lib/compute/performance-window.ts), so the
+// first in-window session's move is on the curve. loadPerformanceCurve below
+// is the one loader; the floor above still wins when it is later.
+
+import type Database from "better-sqlite3";
+import {
+  buildFlowAdjustedIndex,
+  fetchAnchorSourceSeamDates,
+  fetchNetFlowsByDate,
+  type SeriesPoint,
+} from "./flow-adjusted";
+import { curveFloorDate, firstStatementAnchorForCurve } from "./equity-curve-floor";
+import { baseSessionOnOrBefore, dailyValuationsFromBaseSession } from "./performance-window";
 
 export interface EquityCurvePoint {
   date: string;
@@ -96,4 +111,50 @@ export function buildEquityCurveData(
       };
     })
     .filter((d): d is EquityCurvePoint => d !== null);
+}
+
+/**
+ * Load and build the Performance equity curve for a scope (undefined = every
+ * account; an empty id list = none) over a window that opens on
+ * `openingDate` and ends on `endDate`.
+ *
+ * The daily series starts on the later of the BASE SESSION (the last
+ * benchmark close on or before the opening date) and the first-statement
+ * floor; both series are indexed to 100 on the first plotted day. When the
+ * base session has no full-coverage value for the scope the series opens on
+ * its first session inside the window, as before
+ * (dailyValuationsFromBaseSession). `curveFloor` is returned for the caption.
+ */
+export function loadPerformanceCurve(
+  db: Database.Database,
+  accountIds: number[] | undefined,
+  openingDate: string,
+  endDate: string,
+  benchmarkSymbol: string,
+): { data: EquityCurvePoint[]; curveFloor: string | null } {
+  const curveFloor = firstStatementAnchorForCurve(db, accountIds, openingDate, endDate);
+  const windowStart = curveFloorDate(openingDate, curveFloor);
+  const baseSession = baseSessionOnOrBefore(db, benchmarkSymbol, openingDate);
+  // The floor takes precedence: the series may reach back to the base
+  // session only as far as the first statement.
+  const seriesStart = curveFloorDate(baseSession, curveFloor);
+  const dailyVals = dailyValuationsFromBaseSession(db, accountIds, seriesStart, windowStart, endDate);
+  const benchmarkRows = db
+    .prepare(
+      `SELECT date, close_price FROM benchmark_prices
+       WHERE symbol = ? AND date BETWEEN ? AND ?
+       ORDER BY date ASC`,
+    )
+    .all(benchmarkSymbol, seriesStart, endDate) as { date: string; close_price: number }[];
+  // Flows and seams over the SERIES' own span and scope (half-open after its
+  // first row, which already holds everything before it).
+  const seriesFrom = dailyVals.length >= 2 ? dailyVals[0].valuation_date : null;
+  const seriesTo = dailyVals.length >= 2 ? dailyVals[dailyVals.length - 1].valuation_date : null;
+  const flows = seriesFrom && seriesTo ? fetchNetFlowsByDate(db, accountIds, seriesFrom, seriesTo) : [];
+  const seamDates =
+    seriesFrom && seriesTo ? fetchAnchorSourceSeamDates(db, accountIds, seriesFrom, seriesTo) : [];
+  return {
+    data: buildEquityCurveData(dailyVals, benchmarkRows, flows, seamDates, curveFloor),
+    curveFloor,
+  };
 }

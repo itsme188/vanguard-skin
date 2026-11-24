@@ -12,9 +12,10 @@
  *
  * Deltas come from computePortfolioGreeks (Black-Scholes with the IV fallback
  * chain: option-price-implied → cached IBKR underlying IV → 30% default).
- * Options whose Greeks can't compute at all (no underlying price, expired)
- * fall back to ±DEFAULT_OPTION_ELASTICITY × market value — the same
- * convention the scenario engine uses — via optionExposureFallback.
+ * A contract expired only by today's 16:00 ET close takes its end-of-life
+ * delta (exposureDelta). Options whose delta can't be read at all (no
+ * underlying price) fall back to ±DEFAULT_OPTION_ELASTICITY × market value —
+ * the same convention the scenario engine uses — via optionExposureFallback.
  *
  * Limitations (documented, deliberate): delta is a local measure — OTM
  * options show large notional but premium-bounded loss; exposure does not
@@ -22,7 +23,7 @@
  */
 
 import type Database from "better-sqlite3";
-import { computePortfolioGreeks } from "@/lib/compute/options-greeks";
+import { computePortfolioGreeks, exposureDelta } from "@/lib/compute/options-greeks";
 import { DEFAULT_OPTION_ELASTICITY } from "@/lib/compute/scenario-recipes";
 import { adjustedMarketValueSQL } from "@/lib/valuation";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
@@ -36,6 +37,38 @@ import { isCashEquivalentSecurity } from "@/lib/compute/cash-equivalents";
 // bodies, never at module load, so neither side sees an unset binding.
 import { NEAR_NEUTRAL_NET_SHARE } from "@/lib/compute/exposure-delta";
 import { getPortfolioCurrentValues } from "@/lib/queries/dashboard";
+
+/**
+ * Whether an UNPRICED holdings row is carried at its cost basis: the basis is
+ * on file and its sign matches the quantity's (a long's basis positive, a
+ * short's negative; every broker source stores a short's basis negative). A
+ * zero basis, or a basis whose sign contradicts the quantity (a data error),
+ * is not a value: the row is valued 0 and stays unpriced. The one predicate:
+ * `HOLDING_VALUE_USD_SQL` and the concentration universe both read it.
+ * Needs alias `h` (holdings) in scope.
+ */
+export const COST_BASIS_FALLBACK_SQL = `(h.cost_basis IS NOT NULL AND h.cost_basis * h.quantity > 0)`;
+
+/**
+ * One holdings row's value in USD: the ONE copy of the value rule every
+ * exposure, allocation, drill-down, fixed-income and Defense reader selects
+ * (re-exported by lib/queries/analysis.ts, where it used to live).
+ *   - priced: adjusted market value (bonds / 100, options x multiplier, FX);
+ *   - unpriced with a usable cost basis (`COST_BASIS_FALLBACK_SQL`: its sign
+ *     matches the quantity's, so a short's negative basis counts; fix 12,
+ *     2026-11-24): that basis, converted at the security's rate. The basis
+ *     is native currency on either side, like a close;
+ *   - otherwise 0.
+ * Needs aliases `h` (holdings), `s` (securities), `lp` (latest price) and
+ * `fx` (fx_rates) in scope.
+ */
+export const HOLDING_VALUE_USD_SQL = `CASE
+          WHEN lp.close_price IS NOT NULL
+            THEN ${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}
+          WHEN ${COST_BASIS_FALLBACK_SQL}
+            THEN h.cost_basis * COALESCE(fx.usd_per_unit, 1)
+          ELSE 0
+        END`;
 
 /**
  * Option delta exposure for the scoped accounts.
@@ -105,7 +138,10 @@ export function getOptionExposureMap(
   for (const accountId of scopes) {
     const greeks = computePortfolioGreeks(db, { accountIds: [accountId] });
     for (const pos of greeks.positions) {
-      if (!pos.greeks || pos.underlyingPrice <= 0) continue;
+      // Greeks' delta, or the end-of-life delta of a contract expired only by
+      // today's close (exposureDelta, the one rule Defense reads too).
+      const delta = exposureDelta(pos);
+      if (delta === null || pos.underlyingPrice <= 0) continue;
       const optionFx = (fxFor.get(pos.securityId) as { fx: number } | undefined)?.fx ?? 1;
       // The security the spot was read from (an issuer sibling when the
       // underlying's own symbol had no close); no such row: the contract's
@@ -113,8 +149,7 @@ export function getOptionExposureMap(
       const underlyingFx =
         (underlyingFxFor.get(pos.underlyingPriceSource ?? pos.underlying) as { fx: number } | undefined)?.fx ??
         optionFx;
-      const exposure =
-        pos.greeks.delta * pos.underlyingPrice * pos.multiplier * pos.quantity * underlyingFx;
+      const exposure = delta * pos.underlyingPrice * pos.multiplier * pos.quantity * underlyingFx;
       map.set(pos.securityId, (map.get(pos.securityId) ?? 0) + exposure);
       const key = holdingKey(accountId, pos.securityId);
       map.byHolding.set(key, (map.byHolding.get(key) ?? 0) + exposure);
@@ -124,7 +159,7 @@ export function getOptionExposureMap(
         // match (the rates cancel), applied to the row's USD value.
         map.perValueDollar.set(
           pos.securityId,
-          (pos.greeks.delta * pos.underlyingPrice * underlyingFx) / (pos.optionPrice * optionFx)
+          (delta * pos.underlyingPrice * underlyingFx) / (pos.optionPrice * optionFx)
         );
       }
     }
@@ -284,7 +319,83 @@ export function resolveHoldingExposure(
 
 /** One holdings row as the book-exposure readers select it. */
 export type BookExposureRow = Parameters<typeof exposureForHolding>[0] &
-  LeverageIdentity & { account_id: number; security_id: number; mv: number };
+  LeverageIdentity & {
+    account_id: number;
+    security_id: number;
+    mv: number;
+    /**
+     * For an option, the securities row of its underlying (the lowest id
+     * holding `underlying_symbol`, the same row `leverageUnderlyingJoinSql`
+     * joins: select it as `<u>.id AS underlying_security_id`); null when
+     * there is none. Read by `exposureNameKey`.
+     */
+    underlying_security_id: number | null;
+  };
+
+/**
+ * The NAME a holdings row's exposure belongs to (owner ruling 2026-11-24,
+ * fix 17): the underlying security. Shares are their own security; an option
+ * is its underlying's securities row when one is on file, else its own name.
+ * A leveraged or inverse fund is a security like any other, so it is its own
+ * name (never netted into the index it tracks) and an option on it nets with
+ * it. SQL for the underlying id: `UNDERLYING_SECURITY_ID_SQL`.
+ */
+export function exposureNameKey(row: {
+  security_id: number;
+  security_type: string | null;
+  underlying_security_id?: number | null;
+}): number {
+  if (row.security_type?.toLowerCase() === "option" && row.underlying_security_id != null) {
+    return row.underlying_security_id;
+  }
+  return row.security_id;
+}
+
+/**
+ * The underlying's securities row for `s` (alias), the row
+ * `leverageUnderlyingJoinSql` joins: one id, never a duplicate. Select it
+ * `AS underlying_security_id` where that join is not in scope.
+ */
+export function underlyingSecurityIdSql(alias = "s"): string {
+  return `(SELECT MIN(su.id) FROM securities su WHERE su.symbol = ${alias}.underlying_symbol)`;
+}
+
+export interface NameExposureTotals {
+  /** Σ exposure, the plain sum (netting never changes it). */
+  net: number;
+  /** Σ |name exposure| = long - short. */
+  gross: number;
+  /** Σ of the positive name exposures (>= 0). */
+  long: number;
+  /** Σ of the negative name exposures (<= 0). net = long + short. */
+  short: number;
+}
+
+/**
+ * Long, short, net and gross over exposures netted BY NAME first (owner
+ * ruling 2026-11-24: "Net each name first (shares in every account plus its
+ * options at delta), then add up the sizes. A covered call then shrinks its
+ * stock."). The ONE copy: the Diagnostics badge (getPortfolioExposureSummary,
+ * which the chat options tool reads), the Breakdown's ratio base and
+ * Defense's summary all call it. Each passes its own universe: Defense's
+ * leaves bonds out, so its figures equal the badge's only for a scope with
+ * no bond. `name` comes from `exposureNameKey`.
+ */
+export function nameNettedExposure(items: Iterable<{ name: number; exposure: number }>): NameExposureTotals {
+  let net = 0;
+  const byName = new Map<number, number>();
+  for (const { name, exposure } of items) {
+    net += exposure;
+    byName.set(name, (byName.get(name) ?? 0) + exposure);
+  }
+  let long = 0;
+  let short = 0;
+  for (const exposure of byName.values()) {
+    if (exposure > 0) long += exposure;
+    else if (exposure < 0) short += exposure;
+  }
+  return { net, gross: long - short, long, short };
+}
 
 /**
  * One row's exposure for a WHOLE-BOOK figure (the Diagnostics badge, the
@@ -303,33 +414,25 @@ export function resolveBookRowExposure(
   return resolveHoldingExposure(row, optionExposures);
 }
 
-export interface BookExposureTotals {
-  net: number;
-  /** Σ |per-security exposure| (a security held in two accounts nets first). */
-  gross: number;
-  /** Σ of the positive per-security exposures (>= 0). */
-  long: number;
-  /** Σ of the negative per-security exposures (<= 0). net = long + short. */
-  short: number;
+export interface BookExposureTotals extends NameExposureTotals {
   unmodelledCount: number;
   unmodelledMarketValue: number;
 }
 
 /**
- * Net, gross, long and short exposure over a set of rows. Gross nets one
- * security across accounts before |x| (an internally flat contract adds
- * nothing), and does NOT net a stock against its own options (the open
- * "which gross" ruling); long and short are read at the same per-security
- * level, so gross = long - short (to rounding; gross is summed as before).
+ * Net, gross, long and short exposure over a set of rows, netted BY NAME
+ * (`nameNettedExposure`, owner ruling 2026-11-24): a security's shares in
+ * every account and every option on it form one name before its size is
+ * taken, so a covered call shrinks its stock and an internally flat name
+ * adds nothing. gross = long - short; net is the plain sum.
  */
 export function totalBookExposure(
   rows: BookExposureRow[],
   optionExposures: OptionExposureMap
 ): BookExposureTotals {
-  let net = 0;
   const unmodelled = new Set<number>();
   let unmodelledMarketValue = 0;
-  const perSecurity = new Map<number, number>();
+  const named: Array<{ name: number; exposure: number }> = [];
   for (const row of rows) {
     const exposure = resolveBookRowExposure(row, optionExposures);
     if (exposure === null) {
@@ -337,18 +440,9 @@ export function totalBookExposure(
       unmodelledMarketValue += row.mv;
       continue;
     }
-    net += exposure;
-    perSecurity.set(row.security_id, (perSecurity.get(row.security_id) ?? 0) + exposure);
+    named.push({ name: exposureNameKey(row), exposure });
   }
-  let gross = 0;
-  let long = 0;
-  let short = 0;
-  for (const exposure of perSecurity.values()) {
-    gross += Math.abs(exposure);
-    if (exposure > 0) long += exposure;
-    else if (exposure < 0) short += exposure;
-  }
-  return { net, gross, long, short, unmodelledCount: unmodelled.size, unmodelledMarketValue };
+  return { ...nameNettedExposure(named), unmodelledCount: unmodelled.size, unmodelledMarketValue };
 }
 
 /**
@@ -395,11 +489,16 @@ export interface PortfolioExposureSummary {
   total_market_value: number;
   /** Σ signed exposure — the effective net long/short in dollars. */
   net_exposure: number;
-  /** Σ |per-security exposure| — magnitude of all bets incl. hedges. */
+  /**
+   * Σ |name exposure|: each name (a security's shares in every account plus
+   * its options at delta) netted first, then the sizes added (owner ruling
+   * 2026-11-24). A covered call shrinks its stock; a hedged name adds only
+   * what is left of it.
+   */
   gross_exposure: number;
-  /** Σ positive per-security exposure (>= 0). */
+  /** Σ positive name exposure (>= 0). */
   long_exposure: number;
-  /** Σ negative per-security exposure (<= 0); net = long + short, gross = long - short. */
+  /** Σ negative name exposure (<= 0); net = long + short, gross = long - short. */
   short_exposure: number;
   /**
    * The ratio base: the scope's net worth, the Portfolio strip's figure
@@ -471,13 +570,8 @@ export function getPortfolioExposureSummary(
         s.security_type,
         s.option_type,
         ${LEVERAGE_IDENTITY_COLUMNS_SQL},
-        CASE
-          WHEN lp.close_price IS NOT NULL
-            THEN ${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}
-          WHEN h.cost_basis IS NOT NULL AND h.cost_basis > 0
-            THEN h.cost_basis * COALESCE(fx.usd_per_unit, 1)
-          ELSE 0
-        END AS mv
+        s_u.id AS underlying_security_id,
+        ${HOLDING_VALUE_USD_SQL} AS mv
       FROM latest_holdings h
       JOIN securities s ON s.id = h.security_id
       ${LEVERAGE_UNDERLYING_JOIN_SQL}
@@ -558,13 +652,7 @@ export function getNetExposureForSymbolFamilies(
         s.option_type,
         UPPER(COALESCE(s.underlying_symbol, s.symbol)) AS family_symbol,
         ${LEVERAGE_IDENTITY_COLUMNS_SQL},
-        CASE
-          WHEN lp.close_price IS NOT NULL
-            THEN ${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}
-          WHEN h.cost_basis IS NOT NULL AND h.cost_basis > 0
-            THEN h.cost_basis * COALESCE(fx.usd_per_unit, 1)
-          ELSE 0
-        END AS mv
+        ${HOLDING_VALUE_USD_SQL} AS mv
       FROM latest_holdings h
       JOIN securities s ON s.id = h.security_id
       ${LEVERAGE_UNDERLYING_JOIN_SQL}

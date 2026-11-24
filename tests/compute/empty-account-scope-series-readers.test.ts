@@ -285,8 +285,13 @@ describe("every account and a non-empty list answer as before", () => {
     // contributor / sector lists (its start, day 7, now finds the START
     // book), plus the new positionsBasis field. With those two removed the
     // output still hashes to the old 551deda6… digest.
+    // Re-captured 2026-11-24 when attribution started bridging seam days
+    // (this fixture's end-of-January anchor-source change is one): only the
+    // attribution figures moved (the seam pair leaves the regression and both
+    // returns, plus the new decomposedReturn.seamDaysBridged field). With the
+    // pre-change period-attribution.ts the output still hashes to f457a4ae….
     expect(createHash("sha256").update(json).digest("hex")).toBe(
-      "f457a4ae16ddaff333b7b0df8e614dd0f195d33c20e487ec07244c6e1f5542ff",
+      "44fd8553d9b0862942f3d15a83894388c03c77778e8d04b826f26106831c0242",
     );
   });
 

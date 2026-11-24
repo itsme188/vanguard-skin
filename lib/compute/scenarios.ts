@@ -39,6 +39,7 @@ import {
   computeRecipeScenario,
   recipeToScenarioDefinition,
   customRateEquityLeg,
+  equityIdentity,
   UNDERLYING_IDENTITY_COLUMNS_SQL,
 } from "./scenario-recipes";
 import { FACTOR_COLUMNS } from "@/lib/factors";
@@ -378,11 +379,19 @@ ${OPTION_PRICING_JOINS_SQL}
       fund_category: pos.fund_category,
     });
     const isZeroBetaBondFund = isBondFundWithoutMarketMove(pos);
+    // An option on a fund is read through its underlying, so it moves with
+    // the fund (owner ruling 2026-11-15/16; bug 8, 2026-11-24): the sector
+    // leg explodes the UNDERLYING's symbol and type (its look-through
+    // weights) and its sector, and beta reads the underlying's sector, so
+    // the option's underlying move equals the fund's own move. An option
+    // whose underlying row is not on file keeps its own fields. Every other
+    // row is its own identity.
+    const identity = equityIdentity(pos);
     // An option is a claim on its underlying, so its beta is the UNDERLYING's
     // beta (leverage is applied separately, below, by signed elasticity).
     const beta = estimateBeta(
       isOption ? pos.underlying_security_type ?? "stock" : pos.security_type,
-      pos.sector,
+      identity.sector,
       pos.style,
       pos.market_cap_category,
       isCashEquivalent || isZeroBetaBondFund
@@ -401,11 +410,11 @@ ${OPTION_PRICING_JOINS_SQL}
       // own move (look-through for ETFs/mutual funds with cached weights;
       // single bucket otherwise), unmatched slices get the market move.
       const parts = explodeHoldingBySector(
-        pos.symbol,
-        pos.security_type,
+        identity.symbol,
+        identity.security_type,
         pos.market_value,
         etfWeights,
-        pos.sector
+        identity.sector
       );
       const mv = pos.market_value || 1;
       marketLeg = parts.reduce((sum, part) => {
@@ -517,7 +526,20 @@ ${OPTION_PRICING_JOINS_SQL}
   const sectorMoves = scenario.sectorMoves ?? {};
   const missingWeights = new Set<string>();
   if (Object.keys(sectorMoves).length > 0) {
-    for (const pos of positions) {
+    for (const row of positions) {
+      // Read through the same identity the sector leg used: an option on a
+      // fund is judged as that fund, so a fund held only through an option
+      // is named when it cannot be looked through. The Set keeps one name
+      // when the fund and options on it are all held.
+      const id = equityIdentity(row);
+      const pos = {
+        symbol: id.symbol,
+        security_type: id.security_type,
+        security_name: id.security_name ?? row.security_name,
+        sector: id.sector,
+        fund_category: id.fund_category,
+        duration_years: row.duration_years,
+      };
       // The same two tests explodeHoldingBySector applies before it looks through.
       if (!["etf", "mutual fund"].includes((pos.security_type ?? "").toLowerCase())) continue;
       if ((etfWeights.get(pos.symbol)?.length ?? 0) > 0) continue;

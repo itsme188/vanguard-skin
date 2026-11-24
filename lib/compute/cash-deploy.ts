@@ -68,12 +68,14 @@ import { accountScopeAndSql } from "@/lib/queries/account-scope-sql";
 import { getDefaultBenchmark } from "@/lib/analysis/benchmarks";
 import { computeExposureDelta, optionDeltaPerValueReader, type ExposureDelta } from "./exposure-delta";
 import { explodeHoldingBySector } from "./explode-sector";
-import { optionExposureFallback } from "@/lib/compute/exposure";
+import { leverageUnderlyingJoinSql, optionExposureFallback } from "@/lib/compute/exposure";
 import { getEtfSectorWeights } from "@/lib/queries/etf-weights";
 import { marketValue } from "@/lib/valuation";
 import { getUsdPerUnit } from "@/lib/queries/fx-rates";
 import { isCashEquivalentSecurity } from "@/lib/compute/cash-equivalents";
 import { issuerSiblings } from "@/lib/securities/issuer-family";
+import { resolveLeveragedExposure, type LeveragedExposure } from "./leveraged-fund";
+import { liveOptionExpirationSql } from "./option-expiry";
 
 export type CashDeployMode = "benchmark" | "factor_balance" | "heuristic";
 
@@ -121,12 +123,14 @@ export interface CashDeployPick {
 /**
  * What makes a sector's exposure negative (review fix FX3 A2): short stock or
  * funds, long puts, short calls. A short put is LONG exposure (positive
- * delta) and is never a cause.
+ * delta) and is never a cause. Bug 4 (2026-11-24): a long position in an
+ * inverse fund (or a long-exposure option on one) is short its index through
+ * the fund's negative factor; it is its own cause, never "short positions".
  */
-export type ShortHeldCause = "short_stock" | "puts" | "short_calls";
+export type ShortHeldCause = "short_stock" | "inverse_funds" | "puts" | "short_calls";
 
 /** Causes in the order the card's line names them. */
-const SHORT_HELD_CAUSE_ORDER: ShortHeldCause[] = ["short_stock", "puts", "short_calls"];
+const SHORT_HELD_CAUSE_ORDER: ShortHeldCause[] = ["short_stock", "inverse_funds", "puts", "short_calls"];
 
 /**
  * A sector whose gap is (partly) left unfilled because it comes from hedges
@@ -195,6 +199,15 @@ export interface CashDeploySuggestion {
    * weights at market value instead of delta-adjusted exposure.
    */
   optionsAtMarketValue: number;
+  /**
+   * Held leveraged or inverse funds, and options on them, with NO usable
+   * signed leverage factor (`resolveLeveragedExposure`): left out of the
+   * sector weights and the total, exactly as the What-if's snapshot leaves
+   * them out (its `leveragedFundsNotModelled`). Symbols, sorted. A flagged
+   * fund WITH a factor is counted at market value times the factor and is not
+   * listed. No flagged fund is ever a pick (owner ruling 2026-11-24).
+   */
+  leveragedFundsNotModelled: string[];
   notes: string[];
   /**
    * Non-null only when the benchmark is equity-only AND the portfolio
@@ -240,6 +253,7 @@ export function smallWeightToleranceLine(sectors: string[]): string {
 
 const SHORT_HELD_CAUSE_WORDS: Record<ShortHeldCause, string> = {
   short_stock: "short positions",
+  inverse_funds: "inverse funds",
   puts: "puts",
   short_calls: "short calls",
 };
@@ -265,6 +279,22 @@ export const SHORT_UNALLOCATED_LABEL = "Left out for sectors you have hedged or 
 /** Reason for `unallocatedShortDollars`. */
 export const SHORT_UNALLOCATED_REASON =
   "This part would only undo hedges or short sales you hold, so it is not placed and stays as cash.";
+
+/**
+ * Caption for `leveragedFundsNotModelled` on the card; the count follows it
+ * through `<Count>`.
+ */
+export const LEVERAGED_NOT_MODELLED_LABEL =
+  "Leveraged or inverse funds (or options on them) with no stored leverage factor are left out of the weights and the total:";
+
+/**
+ * Owner ruling 2026-11-24: "for cash deploy, never suggest an inverse or
+ * leveraged fund". A flagged row (the fund itself, or an option on one) is
+ * never a held-name or watchlist pick, whether or not it carries a factor.
+ */
+function isNeverPick(leverage: LeveragedExposure): boolean {
+  return leverage.flagged;
+}
 
 /** Security types a held-name fallback pick may be (no options, bonds, forex). */
 const HELD_PICK_TYPES = new Set(["stock", "etf", "mutual fund"]);
@@ -367,6 +397,8 @@ interface CurrentHoldingSummary {
   sectorNegativeCauses: Map<string, Set<ShortHeldCause>>;
   heldCandidates: WatchlistCandidate[];
   optionsAtMarketValue: number;
+  /** Flagged funds with no usable factor, left out (sorted symbols). */
+  leveragedFundsNotModelled: string[];
 }
 
 function loadCurrentHoldings(
@@ -403,8 +435,11 @@ function loadCurrentHoldings(
         s.style,
         s.currency,
         s.option_type,
+        s.leverage_factor,
         COALESCE(s.multiplier, 1) AS multiplier,
         s_u.symbol AS u_symbol,
+        s_u.name AS u_name,
+        s_u.leverage_factor AS u_leverage_factor,
         s_u.security_type AS u_security_type,
         s_u.sector AS u_sector,
         s_u.fund_category AS u_fund_category,
@@ -419,6 +454,9 @@ function loadCurrentHoldings(
       LEFT JOIN securities s_u ON s_u.symbol = s.underlying_symbol
       LEFT JOIN latest_prices lp ON lp.security_id = s.id
       WHERE lp.close_price IS NOT NULL AND lp.close_price > 0
+        -- An expired option is not a position (bug 9; the one reader of a
+        -- stored expiry, as the What-if baseline reads it).
+        AND ${liveOptionExpirationSql("s")}
       GROUP BY s.id
     `
     )
@@ -434,8 +472,11 @@ function loadCurrentHoldings(
       style: string | null;
       currency: string | null;
       option_type: string | null;
+      leverage_factor: number | null;
       multiplier: number;
       u_symbol: string | null;
+      u_name: string | null;
+      u_leverage_factor: number | null;
       u_security_type: string | null;
       u_sector: string | null;
       u_fund_category: string | null;
@@ -458,34 +499,60 @@ function loadCurrentHoldings(
   const heldCandidatesBySymbol = new Map<string, WatchlistCandidate>();
   let totalValue = 0;
   let optionsAtMarketValue = 0;
+  const notModelled = new Set<string>();
   for (const r of rows) {
     const mv = marketValue(r.quantity, r.price, r.security_type, r.multiplier, getUsdPerUnit(db, r.currency));
     // Shorts are KEPT (owner ruling 2026-11-15): a short's negative market
     // value nets against its sector and the total, as in computeExposureDelta
     // — dropping it showed a nearly flat sector as a large long weight.
     if (!Number.isFinite(mv) || mv === 0) continue;
+    // Leveraged and inverse funds (bug 4, 2026-11-24), read as the What-if
+    // reads them (`leveragedExposureOf` / `snapshot`): with a usable signed
+    // factor the row's sector dollars are its exposure times the factor (a
+    // long 3x inverse fund is short three times its money); with none it is
+    // left out of the weights AND the total and listed.
+    const leverage = resolveLeveragedExposure(
+      { security_type: r.security_type, fund_category: r.fund_category, name: r.name, leverage_factor: r.leverage_factor },
+      r.u_symbol === null
+        ? null
+        : {
+            security_type: r.u_security_type,
+            fund_category: r.u_fund_category,
+            name: r.u_name,
+            leverage_factor: r.u_leverage_factor,
+          },
+    );
+    if (leverage.flagged && leverage.factor === null) {
+      notModelled.add(r.symbol);
+      continue;
+    }
+    const factor = leverage.factor ?? 1;
     // The denominator takes every row at market value, options included.
     totalValue += mv;
     // An option lands in its sector at its delta-adjusted exposure, read
     // through its underlying; with no Greeks, at market value (counted).
     const isOption = normalized(r.security_type) === "option";
-    let sectorDollars = mv;
+    let sectorDollars = mv * factor;
     // The row's economic direction: long exposure (+1) or a hedge / short
     // (-1). For an option with no Greeks the net weights keep its market
     // value (What-if parity), but its direction comes from
     // optionExposureFallback (a long put or a short call is negative, a
     // short put positive), so a long put never counts as long exposure (FX3
     // A6).
-    let direction = Math.sign(mv);
+    //
+    // `baseDirection` is the direction BEFORE a leveraged fund's factor: a
+    // negative factor flips a long exposure short, and that cause is the
+    // inverse fund, never "short positions" (bug 4).
+    let baseDirection = Math.sign(mv);
     let identity: HoldingForSector = r;
     if (isOption) {
       const ratio = deltaPerValue(r.security_id);
       if (ratio === undefined) {
         optionsAtMarketValue++;
-        direction = Math.sign(optionExposureFallback(r.option_type, mv));
+        baseDirection = Math.sign(optionExposureFallback(r.option_type, mv));
       } else {
-        sectorDollars = mv * ratio;
-        direction = Math.sign(sectorDollars);
+        sectorDollars = mv * ratio * factor;
+        baseDirection = Math.sign(mv * ratio);
       }
       if (r.u_symbol !== null) {
         identity = {
@@ -514,14 +581,17 @@ function loadCurrentHoldings(
       : isOption
         ? explodeHoldingBySector(identity.symbol, identity.security_type, sectorDollars, etfWeights, identity.sector)
         : benchmarkSectorParts(identity, sectorDollars, etfWeights, benchmarkMap);
+    const direction = baseDirection * Math.sign(factor);
     const cause: ShortHeldCause | null =
       direction >= 0
         ? null
-        : !isOption
-          ? "short_stock"
-          : normalized(r.option_type) === "put"
-            ? "puts"
-            : "short_calls";
+        : factor < 0 && baseDirection > 0
+          ? "inverse_funds"
+          : !isOption
+            ? "short_stock"
+            : normalized(r.option_type) === "put"
+              ? "puts"
+              : "short_calls";
     for (const part of parts) {
       sectorValue.set(part.sector, (sectorValue.get(part.sector) ?? 0) + part.value);
       if (part.value === 0) continue;
@@ -538,7 +608,16 @@ function loadCurrentHoldings(
     // A held-name fallback is a stock or fund held LONG: "buying" a name held
     // short would be covering it, and an option's dollars do not land in its
     // sector one for one (a long put on a sector fund is a SHORT exposure).
-    if (isOption || cashEquivalent || mv <= 0 || !HELD_PICK_TYPES.has(normalized(r.security_type))) continue;
+    // Never a leveraged or inverse fund (owner ruling 2026-11-24).
+    if (
+      isOption ||
+      cashEquivalent ||
+      isNeverPick(leverage) ||
+      mv <= 0 ||
+      !HELD_PICK_TYPES.has(normalized(r.security_type))
+    ) {
+      continue;
+    }
     const exposure = exposureOfParts(parts, mv);
     if (exposure.length === 0) continue;
     if (exposure.length === 1 && isExcludedEquitySleeveBucket(exposure[0].sector)) continue;
@@ -558,6 +637,7 @@ function loadCurrentHoldings(
     sectorNegativeCauses,
     heldCandidates: Array.from(heldCandidatesBySymbol.values()),
     optionsAtMarketValue,
+    leveragedFundsNotModelled: Array.from(notModelled).sort(),
   };
 }
 
@@ -623,11 +703,19 @@ function loadWatchlistCandidates(
         s.geography,
         s.market_cap_category,
         s.style,
+        s.name,
+        s.leverage_factor,
+        s_u.security_type AS u_security_type,
+        s_u.fund_category AS u_fund_category,
+        s_u.name AS u_name,
+        s_u.leverage_factor AS u_leverage_factor,
         w.thesis
       FROM watchlist w
       JOIN securities s ON s.id = w.security_id
+      ${leverageUnderlyingJoinSql("s_u")}
       WHERE w.is_active = 1
         AND (w.group_name LIKE ? OR w.group_name = 'default')
+        AND ${liveOptionExpirationSql("s")}
       ORDER BY w.added_date DESC
     `
     )
@@ -640,6 +728,12 @@ function loadWatchlistCandidates(
       geography: string | null;
       market_cap_category: string | null;
       style: string | null;
+      name: string | null;
+      leverage_factor: number | null;
+      u_security_type: string | null;
+      u_fund_category: string | null;
+      u_name: string | null;
+      u_leverage_factor: number | null;
       thesis: string | null;
     }>;
 
@@ -651,6 +745,20 @@ function loadWatchlistCandidates(
     // proposed (and capped) twice.
     if (seen.has(r.symbol)) continue;
     seen.add(r.symbol);
+    // Never a leveraged or inverse fund, or an option on one, with or
+    // without a stored factor (owner ruling 2026-11-24).
+    const leverage = resolveLeveragedExposure(
+      r,
+      r.u_security_type === null
+        ? null
+        : {
+            security_type: r.u_security_type,
+            fund_category: r.u_fund_category,
+            name: r.u_name,
+            leverage_factor: r.u_leverage_factor,
+          },
+    );
+    if (isNeverPick(leverage)) continue;
     const exposure = isCashEquivalentSecurity(r)
       ? []
       : exposureOfParts(benchmarkSectorParts(r, 1, etfWeights, benchmarkMap), 1);
@@ -913,6 +1021,7 @@ export function suggestAllocation(
       notes: [...notes, NO_CASH_REASON],
       excludedSleeve: null,
       optionsAtMarketValue: current.optionsAtMarketValue,
+      leveragedFundsNotModelled: current.leveragedFundsNotModelled,
     };
   }
   if (watchlist.length === 0) {
@@ -1088,6 +1197,7 @@ export function suggestAllocation(
     notes,
     excludedSleeve,
     optionsAtMarketValue: current.optionsAtMarketValue,
+    leveragedFundsNotModelled: current.leveragedFundsNotModelled,
   };
 }
 

@@ -8,6 +8,7 @@ import { readMutationResult, networkFailureMessage } from "@/lib/ui/mutation-res
 import {
   CASH_AMOUNT_INVALID_MESSAGE,
   equitySleeveCaptionLead,
+  LEVERAGED_NOT_MODELLED_LABEL,
   NET_OF_SHORTS_CAPTION,
   shortHeldSectorLine,
   SHORT_UNALLOCATED_LABEL,
@@ -106,6 +107,15 @@ export function CashDeployCard({ scope }: Props) {
               <span className="ml-2 text-gold-ink">heuristic mode (composition unavailable)</span>
             )}
           </p>
+
+          {/* Bug 4 (2026-11-24): a leveraged or inverse fund with no stored
+              factor is left out of the weights and the total, as the What-if
+              leaves it out. Shown even when no gap row is. */}
+          {(result.leveragedFundsNotModelled?.length ?? 0) > 0 && (
+            <p className="text-[11px] text-ink-faint">
+              {LEVERAGED_NOT_MODELLED_LABEL} <Count value={result.leveragedFundsNotModelled.length} />.
+            </p>
+          )}
 
           {result.gaps.length > 0 && (
             <div className="bg-canvas border border-edge/60 rounded-lg p-3">

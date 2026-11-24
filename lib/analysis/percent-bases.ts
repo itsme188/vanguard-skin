@@ -9,14 +9,14 @@ export const PERCENT_BASIS = {
   breakdownExposure: "% of net worth",
   breakdownCaption:
     "Breakdown: % is of net holdings value (longs minus shorts, no broker cash); none is shown when that is zero or negative. Net exp % is delta-adjusted exposure over net worth (holdings plus cash, the Portfolio strip's figure), the same base as the Net exposure badge; money-market funds count as no exposure, and none is shown when net worth is not on file or is 5% of gross exposure or less.",
-  /** Concentration: sum of absolute values. */
-  concentration: "% of gross exposure",
+  /** Concentration: sum of absolute market values, per position (not delta exposure). */
+  concentration: "% of gross market value",
   concentrationCaption:
-    "Concentration: each weight is a % of gross exposure (longs plus the size of shorts).",
+    "Concentration is by market value per position: each weight is a % of gross market value (longs plus the size of shorts).",
   /** Risk Decomposition top-5: gross. */
-  riskTop5: "% of gross exposure",
+  riskTop5: "% of gross market value",
   riskTop5Caption:
-    "Top-5 and bar weights are a % of gross exposure (longs plus the size of shorts).",
+    "Top-5 and bar weights are by market value per position: a % of gross market value (longs plus the size of shorts).",
   /** Factor heatmap Weight: signed net sum per symbol. */
   factorWeight: "% of net value",
   factorWeightCaption:

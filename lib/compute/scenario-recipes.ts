@@ -682,8 +682,12 @@ export type RecipeEquityInput = Pick<
  * underlying's (an option has no factor row of its own; both queries
  * COALESCE them). Leverage is applied by the caller, once. An option whose
  * underlying row is not on file keeps its own inherited fields.
+ *
+ * Exported for the custom engine's sector leg and its look-through
+ * disclosure (bug 8, 2026-11-24), so both engines read an option through the
+ * same identity.
  */
-function equityIdentity(pos: RecipeEquityInput): RecipeEquityInput {
+export function equityIdentity(pos: RecipeEquityInput): RecipeEquityInput {
   if (!isOptionSecurityType(pos.security_type)) return pos;
   if (!pos.underlying_symbol || pos.underlying_security_type == null) return pos;
   const pick = <T,>(underlying: T | undefined, own: T): T => (underlying === undefined ? own : underlying);

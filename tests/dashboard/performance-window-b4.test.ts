@@ -284,13 +284,13 @@ describe("PerformanceView feeds every consumer the one window", () => {
     expect(flat).toContain("const dailyEnd = perfWindow.endDate;");
     const riskAt = anchorIndex(flat, "computeRiskMetrics(db, {");
     expect(flat.slice(riskAt, riskAt + 120)).toContain("startDate, endDate: dailyEnd,");
-    // U13: one summed series for the whole scope. It starts at the later of
-    // the window start and the scope's first statement (curveSeriesStart) and
-    // still ends on the window end.
-    expect(flat).toContain("const curveSeriesStart = curveFloorDate(effectiveStart, curveFloor);");
-    const seriesAt = anchorIndex(flat, "getDailyValuationsForAccounts(db, scopeAccountIds, {");
-    expect(flat.slice(seriesAt, seriesAt + 140)).toContain("startDate: curveSeriesStart, endDate: dailyEnd,");
-    expect(flat).toContain(".all(BENCHMARK_SYMBOL, effectiveStart, dailyEnd)");
+    // U13: one summed series for the whole scope, ending on the window end.
+    // Since 2026-11-24 it is loaded by loadPerformanceCurve, which starts it
+    // (and the benchmark rows) at the later of the base session and the
+    // scope's first statement; the view hands it the window's own dates.
+    expect(flat).toContain(
+      "loadPerformanceCurve(db, scopeAccountIds, effectiveStart, dailyEnd, BENCHMARK_SYMBOL)",
+    );
     const attrAt = anchorIndex(flat, "attribution = computePeriodAttribution(");
     expect(flat.slice(attrAt, attrAt + 200)).toContain("effectiveStart, dailyEnd, BENCHMARK_SYMBOL,");
   });

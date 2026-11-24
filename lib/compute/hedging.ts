@@ -2,9 +2,14 @@ import type Database from "better-sqlite3";
 import { unmaturedSecuritySql } from "@/lib/db/eastern-day-sql";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 import { accountScopeAndSql } from "@/lib/queries/account-scope-sql";
-import { adjustedMarketValueSQL } from "@/lib/valuation";
-import { computePortfolioGreeks, type GreeksDiagnostic } from "@/lib/compute/options-greeks";
-import { optionExposureFallback } from "@/lib/compute/exposure";
+import { computePortfolioGreeks, exposureDelta, type GreeksDiagnostic } from "@/lib/compute/options-greeks";
+import {
+  optionExposureFallback,
+  HOLDING_VALUE_USD_SQL,
+  exposureNameKey,
+  nameNettedExposure,
+  underlyingSecurityIdSql,
+} from "@/lib/compute/exposure";
 import { issuerSiblings } from "@/lib/securities/issuer-family";
 import { getEtfSectorWeights } from "@/lib/queries/etf-weights";
 import { getConcentrationUniverse, splitConcentrationUniverse } from "@/lib/queries/concentration-universe";
@@ -1055,6 +1060,8 @@ interface DefenseHoldingRow {
   currency: string | null;
   /** Signed leverage factor (migration 102); null for an ordinary row. */
   leverage_factor: number | null;
+  /** An option's underlying securities row (underlyingSecurityIdSql); names it for the summary. */
+  underlying_security_id: number | null;
   quantity: number;
   mv: number;
 }
@@ -1082,7 +1089,10 @@ interface GreeksAgg {
   daysToExpiry: number | null;
   strike: number | null;
   underlyingPrice: number | null;
+  /** A delta is known (the Greeks', or an end-of-life delta). */
   greeksAvailable: boolean;
+  /** At least one account's Greeks computed, so thetaPerDay is real. */
+  thetaAvailable: boolean;
 }
 
 const VOL_SOURCE_WEAKNESS: Record<OptionVolSource, number> = { computed: 0, ibkr: 1, default: 2 };
@@ -1199,7 +1209,25 @@ export interface DefenseSummary {
    *  19 = B). */
   notCreditedCount: number;
   netExposure: number;
+  /**
+   * Σ |name exposure|: each name (a security's shares in every account plus
+   * every option on it at delta) netted first, then the sizes added (owner
+   * ruling 2026-11-24). The same helper and rule as the Diagnostics badge
+   * (nameNettedExposure), over Defense's own universe, which leaves bonds
+   * out: it equals the badge's gross only when the scope holds no bond. A
+   * covered call shrinks its stock.
+   */
   grossExposure: number;
+  /**
+   * Σ positive / Σ negative NAME exposure (the badge's rule; equal to its
+   * long and short only when the scope holds no bond, as above):
+   * grossExposure = nameLongExposure - nameShortExposure and netExposure =
+   * nameLongExposure + nameShortExposure. Distinct from longExposure (the
+   * protection ratio's base, the long book before its hedges, K4a) and
+   * shortExposure (Σ negative INSTRUMENT exposure, a long put included).
+   */
+  nameLongExposure: number;
+  nameShortExposure: number;
   hedgeCount: number;
   /** Loaded option instruments (any side) — lets the view tell "no options" from "no hedges". */
   optionPositionCount: number;
@@ -1293,13 +1321,8 @@ export function computeDefenseAnalysis(db: Database.Database, accountIds?: numbe
     SELECT
       s.id AS security_id, s.symbol, s.name, s.security_type, s.fund_category, s.option_type, s.underlying_symbol,
       s.sector, s.geography, s.currency, s.leverage_factor, h.quantity,
-      CASE
-        WHEN lp.close_price IS NOT NULL
-          THEN ${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}
-        WHEN h.cost_basis IS NOT NULL AND h.cost_basis != 0
-          THEN h.cost_basis * COALESCE(fx.usd_per_unit, 1)
-        ELSE 0
-      END AS mv
+      ${underlyingSecurityIdSql("s")} AS underlying_security_id,
+      ${HOLDING_VALUE_USD_SQL} AS mv
     FROM latest_holdings h
     JOIN securities s ON s.id = h.security_id
     LEFT JOIN latest_prices lp ON lp.security_id = h.security_id
@@ -1444,27 +1467,37 @@ export function computeDefenseAnalysis(db: Database.Database, accountIds?: numbe
           strike: pos.strike,
           underlyingPrice: pos.underlyingPrice,
           greeksAvailable: false,
+          thetaAvailable: false,
         };
-      if (pos.greeks) {
+      // The Greeks' delta, or the end-of-life delta of a contract expired
+      // only by today's close (exposureDelta, the rule the Diagnostics map
+      // reads too); null falls back to ±2.5× market value below.
+      const exposureDeltaValue = exposureDelta(pos);
+      if (exposureDeltaValue !== null) {
         const fx = optionFxOf(pos.securityId);
-        cur.exposure += pos.greeks.delta * pos.underlyingPrice * pos.multiplier * pos.quantity * fx.underlyingFx;
-        cur.thetaPerDay += pos.greeks.theta * pos.multiplier * pos.quantity * fx.optionFx;
+        cur.exposure += exposureDeltaValue * pos.underlyingPrice * pos.multiplier * pos.quantity * fx.underlyingFx;
         // Weight the per-contract delta by the contracts each account holds
         // (it used to be "last account wins"). One contract has one delta,
         // so the accounts agree today; the weighting keeps that true if the
         // inputs ever differ by account.
         const contracts = Math.abs(pos.quantity);
         if (contracts > 0) {
-          cur.deltaWeighted += pos.greeks.delta * contracts;
+          cur.deltaWeighted += exposureDeltaValue * contracts;
           cur.deltaWeight += contracts;
           cur.delta = cur.deltaWeighted / cur.deltaWeight;
         } else if (cur.delta === null) {
-          cur.delta = pos.greeks.delta;
+          cur.delta = exposureDeltaValue;
         }
-        // A missing source is treated as the assumed one: never "real".
-        const source: OptionVolSource = pos.greeks.ivSource ?? "default";
-        if (cur.ivSource === undefined || VOL_SOURCE_WEAKNESS[source] > VOL_SOURCE_WEAKNESS[cur.ivSource]) {
-          cur.ivSource = source;
+        if (pos.greeks) {
+          // An end-of-life delta carries no theta and no volatility: both
+          // stay unset for such a contract (its theta reads null).
+          cur.thetaPerDay += pos.greeks.theta * pos.multiplier * pos.quantity * fx.optionFx;
+          cur.thetaAvailable = true;
+          // A missing source is treated as the assumed one: never "real".
+          const source: OptionVolSource = pos.greeks.ivSource ?? "default";
+          if (cur.ivSource === undefined || VOL_SOURCE_WEAKNESS[source] > VOL_SOURCE_WEAKNESS[cur.ivSource]) {
+            cur.ivSource = source;
+          }
         }
         cur.greeksAvailable = true;
         if (pos.underlyingPriceSource) siblingPricedSecurityIds.add(pos.securityId);
@@ -1580,7 +1613,7 @@ export function computeDefenseAnalysis(db: Database.Database, accountIds?: numbe
       const g = greeksMap.get(row.security_id);
       if (g && g.greeksAvailable) {
         exposure = g.exposure;
-        thetaPerDay = g.thetaPerDay;
+        thetaPerDay = g.thetaAvailable ? g.thetaPerDay : null;
         delta = g.delta;
         ivSource = g.ivSource;
         daysToExpiry = g.daysToExpiry ?? undefined;
@@ -1876,14 +1909,29 @@ export function computeDefenseAnalysis(db: Database.Database, accountIds?: numbe
   const hedgeScores = scoreHedges(scoreInputs);
 
   // ─── Note 7: summary ─────────────────────────────────────────────────
+  // Short exposure here is per INSTRUMENT (the protection book: a long put
+  // is short exposure). Net, gross and the name long/short come from the
+  // one by-name helper the Diagnostics badge reads (owner ruling 2026-11-24:
+  // each name, its shares plus its options at delta, netted first): the same
+  // helper and the same rule, over DEFENSE'S OWN universe (stocks, ETFs,
+  // options and mutual funds), which leaves bonds out. The four figures
+  // match the badge's only for a scope that holds no bond.
   let shortExposure = 0;
-  let netExposure = 0;
-  let grossExposure = 0;
   for (const inst of instruments) {
-    netExposure += inst.exposure;
-    grossExposure += Math.abs(inst.exposure);
     if (inst.exposure < 0) shortExposure += inst.exposure;
   }
+  const rowBySecurityId = new Map(rows.map((r) => [r.security_id, r]));
+  const byName = nameNettedExposure(
+    instruments.map((inst) => {
+      const row = rowBySecurityId.get(inst.securityId);
+      return {
+        name: row ? exposureNameKey(row) : inst.securityId,
+        exposure: inst.exposure,
+      };
+    })
+  );
+  const netExposure = byName.net;
+  const grossExposure = byName.gross;
 
   // Long-book protection only (K4a); a short's hedge is reported apart.
   let protectiveNotional = 0;
@@ -1903,6 +1951,8 @@ export function computeDefenseAnalysis(db: Database.Database, accountIds?: numbe
     protectionRatio: totalLongExposure > 0 ? protectiveNotional / totalLongExposure : null,
     netExposure,
     grossExposure,
+    nameLongExposure: byName.long,
+    nameShortExposure: byName.short,
     shortSideHedgeNotional,
     shortSideHedgeExposure,
     shortSideHedgeCount: hedgeScores.filter((h) => h.side === "short").length,

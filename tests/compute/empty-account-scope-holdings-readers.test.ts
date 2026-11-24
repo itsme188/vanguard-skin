@@ -436,8 +436,17 @@ describe("every account and a non-empty list answer as before", () => {
     // previous digest (9f09ea9b...) exactly; without the trust strip's new
     // positionsFreshness key (another change in the same tree) this change
     // alone hashes to ad8dcdda....
+    // Re-captured 2026-11-24 (two changes in one tree). (1) Cash deploy's
+    // output gained an empty leveragedFundsNotModelled list; with that key
+    // stripped the output hashed to the previous digest (388c8cc4...) exactly.
+    // (2) Gross nets each name first (a stock in every account plus its
+    // options at delta): in the scopes holding account A the exposure
+    // summary's gross_exposure, long_exposure, short_exposure and gross_ratio
+    // moved, Defense's grossExposure moved, and Defense gained
+    // nameLongExposure and nameShortExposure. Net is unchanged. With the name
+    // key switched back to per-security, that was the only difference.
     expect(createHash("sha256").update(json).digest("hex")).toBe(
-      "388c8cc4dc68fb2c9466f8a7f46cb82aa8f30cbc534b115ab1a70d580d06e907",
+      "12cabd29284ce9a8a4a655995aec0508c2d7148f0748f63c9a8e9b016e9f6b19",
     );
   });
 
