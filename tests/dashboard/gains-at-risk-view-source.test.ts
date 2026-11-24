@@ -18,6 +18,7 @@ const CHART = "app/dashboard/components/gains-at-risk/GainsAtRiskChart.tsx";
 const HELPERS = "lib/analysis/gains-at-risk-view.ts";
 const INPUT = "lib/analysis/gains-at-risk-input.ts";
 const CONSTANTS = "lib/analysis/gains-at-risk-constants.ts";
+const SCOPE = "lib/analysis/gains-at-risk-scope.ts";
 
 /** Source with // and /* *\/ comments removed (string contents kept as written). */
 function code(src: string): string {
@@ -73,24 +74,28 @@ describe("GainsAtRiskSection is a server component", () => {
   });
 });
 
-describe("the stress-scope rule is the route's rule", () => {
-  // The route's helper is private (a route file exports only handlers), so
-  // both copies are pinned by source anchor to the same body: "all" is every
-  // account, any other token reads only the accounts it names, a token that
-  // names no account reads nothing ([]), never every account.
-  const body = (src: string, signature: string) => {
-    const start = anchorIndex(src, signature);
-    const open = anchorIndex(src, "{", start + signature.length);
-    const close = anchorIndex(src, "\n}", open);
-    return src.slice(open + 1, close).replace(/\s+/g, " ").trim();
-  };
-
-  it("same body in the route and the section", () => {
-    const route = body(read(ROUTE), "function gainsAtRiskAccountIds(scope: AnalysisScope): number[] | undefined");
-    const section = body(read(SECTION), "function stressAccountIds(scope: AnalysisScope): number[] | undefined");
-    expect(route).toBe('if (scope === "all") return undefined; return resolveScope(db, scope) ?? [];');
-    expect(section).toBe(route);
+describe("the stress-scope rule has one copy", () => {
+  // "all" is every account; any other token reads only the accounts it
+  // names; a token that names no account reads nothing ([]), never every
+  // account. The behaviour is tested in tests/lib/gains-at-risk-view.test.ts.
+  it("the server-only module holds the rule", () => {
+    const src = read(SCOPE);
+    const at = anchorIndex(src, "export function gainsAtRiskAccountIds(db: Database.Database, scope: AnalysisScope): number[] | undefined");
+    const open = anchorIndex(src, "{", at + 20);
+    const body = src.slice(open + 1, anchorIndex(src, "\n}", open)).replace(/\s+/g, " ").trim();
+    expect(body).toBe('if (scope === "all") return undefined; return resolveScope(db, scope) ?? [];');
+    expect(src).not.toMatch(/^\s*["']use client["']/m);
   });
+
+  for (const file of [ROUTE, SECTION]) {
+    it(`${file}: uses the shared rule and keeps no copy of its own`, () => {
+      const src = read(file);
+      expect(src).toMatch(/import\s*\{\s*gainsAtRiskAccountIds\s*\}\s*from\s*"@\/lib\/analysis\/gains-at-risk-scope"/);
+      expect(src).not.toMatch(/function\s+(gainsAtRiskAccountIds|stressAccountIds)\b/);
+      expect(src).not.toMatch(/resolveScope\(/);
+      anchorIndex(src, "gainsAtRiskAccountIds(db, ");
+    });
+  }
 });
 
 describe("GainsAtRiskView wiring", () => {
@@ -135,12 +140,29 @@ describe("GainsAtRiskView wiring", () => {
     // Rendered unconditionally: not behind `result &&` or a loading check.
     expect(src.slice(at - 40, at)).not.toMatch(/&&\s*\(?\s*$/);
     anchorIndex(src, "STALE_TEXT");
-    expect(code(src)).toMatch(/failed \|\| v === undefined \? null : v/);
+    // Blank after a failure, and never a negative zero (moneyCell).
+    anchorIndex(src, "moneyCell(v, failed)");
   });
 
   it("an option held in two accounts gets one price box", () => {
     anchorIndex(src, "priceBoxOwners(positions)");
     anchorIndex(src, "SAME_PRICE_TEXT");
+  });
+
+  it("an unpriced option with no volatility is editable, with its sentence", () => {
+    anchorIndex(src, "const editable = isPriceEditable(p);");
+    anchorIndex(src, "NO_VOLATILITY_PRICE_TEXT");
+  });
+
+  it("inputs in a table name themselves with aria-label, never an sr-only label", () => {
+    // An sr-only label is absolutely positioned; its containing block is the
+    // ScrollFade wrapper, not the inner scroller, so a label deep in a wide
+    // table pushed the whole page sideways at phone width.
+    expect(code(src)).not.toContain("sr-only");
+    const beta = src.slice(anchorIndex(src, "id={`gains-beta-${"), anchorIndex(src, "/>", anchorIndex(src, "id={`gains-beta-${")));
+    expect(beta).toContain("aria-label={`Your figure for ${p.symbol}");
+    const price = src.slice(anchorIndex(src, "id={`gains-price-${"), anchorIndex(src, "/>", anchorIndex(src, "id={`gains-price-${")));
+    expect(price).toContain("aria-label={`Your price per share for ${p.symbol}");
   });
 });
 
@@ -202,12 +224,16 @@ describe("the two cases and the owner's figure", () => {
     anchorIndex(src, "Object.keys(next.betaOverrides).length > 0 ? { betaOverrides: next.betaOverrides } : {}");
     anchorIndex(src, "betaOverrideProblem(");
     anchorIndex(src, "BETA_OVERRIDE_REFUSAL_LABELS[");
-    anchorIndex(src, "overridesIgnoredText(result.betaOverridesIgnored)");
+    anchorIndex(src, "overridesIgnoredLine(result.betaOverridesIgnored)");
+    anchorIndex(src, "<Count value={ignored.count} />");
+    anchorIndex(src, "betaEditorNote(p)");
     anchorIndex(src, "LEVERAGED_FIGURE_HINT");
   });
 
   it("the evidence caption and the no-measured-link line", () => {
     anchorIndex(src, "betaEvidenceCaption(result.betaEvidence, driver)");
+    anchorIndex(src, "<Count value={caption.waiting.count} />");
+    anchorIndex(src, "<Count value={caption.notCaptured.count} />");
     anchorIndex(src, "noMeasuredLinkSentence(");
     anchorIndex(src, "betaSourceLine(p, caseKey)");
   });
@@ -343,6 +369,8 @@ describe("the browser bundle reaches no database or engine code through these fi
       }
     }
     expect(reached.filter((p) => /^lib\/(db|queries|compute|tws)(\/|\.ts)/.test(p) || p === "lib/db.ts")).toEqual([]);
+    // The scope rule value-imports lib/queries: server-only, never reached from here.
+    expect(reached).not.toContain(SCOPE);
     expect([...packages].filter((p) => p === "better-sqlite3" || p.startsWith("@stoqey/"))).toEqual([]);
     for (const f of [VIEW, CHART, HELPERS, INPUT, CONSTANTS]) expect(reached).toContain(f);
   });

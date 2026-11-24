@@ -355,6 +355,12 @@ const NO_MEASURED_LINK_REASON_ORDER: NoMeasuredLinkReason[] = [
 
 /** Added to a row's source when the selloff case raised its beta to one-for-one. */
 export const SELLOFF_RAISED_TEXT = "The selloff case uses at least one-for-one.";
+/**
+ * The same note for a leveraged or inverse fund: the selloff case floors the
+ * tracked INDEX's link at one and keeps the fund's factor, so an inverse fund
+ * still offsets. "The fund uses at least one-for-one" would be wrong there.
+ */
+export const LEVERAGED_SELLOFF_TEXT = "Its index is taken at least one-for-one.";
 
 /** A beta to two places. Not a portfolio figure, so plain text. */
 export function formatBeta(beta: number | null): string {
@@ -407,7 +413,7 @@ export function betaSourceLine(p: GainsAtRiskPosition, caseKey: GainsAtRiskCaseK
         details: [...(p.evidence ? [evidenceText(p.evidence)] : []), ...(raised ? [SELLOFF_RAISED_TEXT] : [])],
       };
     case "leveraged":
-      return { text: BETA_SOURCE_LABELS.leveraged, details: raised ? [SELLOFF_RAISED_TEXT] : [] };
+      return { text: BETA_SOURCE_LABELS.leveraged, details: raised ? [LEVERAGED_SELLOFF_TEXT] : [] };
     case "no-measured-link": {
       const reason = p.noMeasuredLinkReason;
       const text = reason
@@ -478,24 +484,45 @@ export function isLeveragedFundRow(
  * (`account:security`), given the rows in display order.
  */
 export function betaEditorOwners(
-  rows: Pick<GainsAtRiskPosition, "accountId" | "securityId" | "identitySecurityId">[],
+  rows: Pick<GainsAtRiskPosition, "accountId" | "securityId" | "identitySecurityId" | "betaSource">[],
 ): Set<string> {
   const seen = new Set<number>();
   const owners = new Set<string>();
   for (const r of rows) {
     if (r.identitySecurityId === null || seen.has(r.identitySecurityId)) continue;
+    // The index itself and a fixed row take no figure: no box (betaEditorNote says why).
+    if (r.betaSource === "driver" || r.betaSource === "fixed") continue;
     seen.add(r.identitySecurityId);
     owners.add(`${r.accountId}:${r.securityId}`);
   }
   return owners;
 }
 
-/** One line when the engine used none of some typed figures; null when it used them all. */
-export function overridesIgnoredText(count: number): string | null {
+/**
+ * In place of the figure box on a row that takes no figure: the index itself
+ * and a fixed row (cash-like, bond, bond fund). The not-modelled reason is
+ * read first: such a row keeps its box.
+ */
+export function betaEditorNote(p: Pick<GainsAtRiskPosition, "betaSource" | "unmodelledReason">): string | null {
+  if (p.unmodelledReason !== undefined) return null;
+  if (p.betaSource === "driver") return "moves with the index by definition";
+  if (p.betaSource === "fixed") return "held at a fixed link";
+  return null;
+}
+
+/**
+ * One line when the engine used none of some typed figures; null when it used
+ * them all. The count comes back apart so the page prints it through <Count>.
+ */
+export function overridesIgnoredLine(count: number): { count: number; text: string } | null {
   if (!(count > 0)) return null;
-  return count === 1
-    ? "1 figure you typed was not used: no name on this page takes it."
-    : `${count} figures you typed were not used: no name on this page takes them.`;
+  return {
+    count,
+    text:
+      count === 1
+        ? "figure you typed was not used: no name on this page takes it."
+        : "figures you typed were not used: no name on this page takes them.",
+  };
 }
 
 // ─── The evidence caption ───────────────────────────────────────
@@ -506,13 +533,30 @@ export function overridesIgnoredText(count: number): string | null {
  * text and the page prints it through <Count>.
  */
 export function betaEvidenceCaption(
-  e: GainsAtRiskResult["betaEvidence"],
+  // `namesNotCaptured` is read defensively: an older answer without it reads as zero.
+  e: Omit<GainsAtRiskResult["betaEvidence"], "namesNotCaptured"> & { namesNotCaptured?: number },
   driver: string,
-): { text: string; waiting: { count: number; text: string } | null } {
+): {
+  text: string;
+  waiting: { count: number; text: string } | null;
+  notCaptured: { count: number; text: string } | null;
+} {
+  const m = typeof e.namesNotCaptured === "number" && Number.isFinite(e.namesNotCaptured) ? e.namesNotCaptured : 0;
+  const notCaptured =
+    m > 0
+      ? {
+          count: m,
+          text:
+            m === 1
+              ? "name has no daily prices from the broker (a fund, or no contract on file). Type your own figure for it."
+              : "names have no daily prices from the broker (funds, or no contract on file). Type your own figure for them.",
+        }
+      : null;
   if (e.driverBarsMissing) {
     return {
       text: `Daily prices for ${driver} are not on file yet, so no name has a measured link. The selloff case still applies.`,
       waiting: null,
+      notCaptured,
     };
   }
   const text = e.driverBarsThrough
@@ -523,6 +567,7 @@ export function betaEvidenceCaption(
     text,
     waiting:
       n > 0 ? { count: n, text: n === 1 ? "name is waiting for daily prices." : "names are waiting for daily prices." } : null,
+    notCaptured,
   };
 }
 
@@ -732,12 +777,13 @@ export function keptAxis(
  * that own a box, given the rows in display order.
  */
 export function priceBoxOwners(
-  rows: Pick<GainsAtRiskPosition, "accountId" | "securityId" | "priceSource">[],
+  rows: (Pick<GainsAtRiskPosition, "accountId" | "securityId" | "priceSource"> &
+    Partial<Pick<GainsAtRiskPosition, "unmodelledReason" | "expiry">>)[],
 ): Set<string> {
   const seen = new Set<number>();
   const owners = new Set<string>();
   for (const r of rows) {
-    if (r.priceSource !== "model" && r.priceSource !== "override") continue;
+    if (!isPriceEditable(r)) continue;
     if (seen.has(r.securityId)) continue;
     seen.add(r.securityId);
     owners.add(`${r.accountId}:${r.securityId}`);
@@ -745,7 +791,31 @@ export function priceBoxOwners(
   return owners;
 }
 
+/**
+ * Whether a row takes the owner's price: a model-priced or owner-priced
+ * option, or an UNPRICED option left out only for want of a volatility (the
+ * engine solves the volatility from a typed price and then models it).
+ */
+export function isPriceEditable(
+  p: Pick<GainsAtRiskPosition, "priceSource"> & Partial<Pick<GainsAtRiskPosition, "unmodelledReason" | "expiry">>,
+): boolean {
+  if (p.priceSource === "model" || p.priceSource === "override") return true;
+  return p.priceSource === null && p.expiry !== undefined && p.unmodelledReason === "no-volatility";
+}
+
+export const NO_VOLATILITY_PRICE_TEXT = "No volatility on file. Type its price to include it.";
+
 export const SAME_PRICE_TEXT = "same price as above";
+
+/**
+ * A dollar cell's value: null after a failure or when there is none;
+ * otherwise the figure, with anything under half a cent read as zero so a
+ * signed <Money> never prints a negative zero.
+ */
+export function moneyCell(v: number | null | undefined, failed: boolean): number | null {
+  if (failed || v === undefined || v === null || !Number.isFinite(v)) return null;
+  return Math.abs(v) < 0.005 ? 0 : v;
+}
 
 // ─── Failures ───────────────────────────────────────────────────
 

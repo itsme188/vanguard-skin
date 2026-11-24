@@ -31,6 +31,7 @@ import {
   DEFAULT_CASE,
   DOWN_ONLY_NOTE,
   LEVERAGED_FIGURE_HINT,
+  NO_VOLATILITY_PRICE_TEXT,
   OVERRIDE_REFUSAL_LABELS,
   PRICE_SOURCE_LABELS,
   SAME_FIGURE_TEXT,
@@ -53,9 +54,12 @@ import {
   gainsRequestReducer,
   givenBackCell,
   initialGainsRequestState,
+  betaEditorNote,
   isLeveragedFundRow,
+  isPriceEditable,
+  moneyCell,
   noMeasuredLinkSentence,
-  overridesIgnoredText,
+  overridesIgnoredLine,
   priceBoxOwners,
   reconciliationLine,
   requestFailureText,
@@ -376,7 +380,7 @@ export function GainsAtRiskView({
             {recon.differenceUsd !== null && (
               <>
                 {" "}
-                <Money value={recon.differenceUsd} signed />
+                <Money value={moneyCell(recon.differenceUsd, false)} signed />
               </>
             )}
             .
@@ -553,7 +557,8 @@ function ResultSections({
   // After a failure no figure is shown; while computing, the old ones are dimmed.
   const failed = mode === "failed";
   const dim = mode === "stale" ? "opacity-40" : "";
-  const fig = (v: number | null | undefined): number | null => (failed || v === undefined ? null : v);
+  // Blank after a failure; never a negative zero in a signed cell.
+  const fig = (v: number | null | undefined): number | null => moneyCell(v, failed);
 
   const statusLine =
     mode === "stale" ? (
@@ -610,7 +615,7 @@ function ResultSections({
     }
   }
   const caption = betaEvidenceCaption(result.betaEvidence, driver);
-  const ignored = overridesIgnoredText(result.betaOverridesIgnored);
+  const ignored = overridesIgnoredLine(result.betaOverridesIgnored);
   const noLink = noMeasuredLinkSentence(selected.disclosures.noMeasuredLink, caseKey);
 
   return (
@@ -742,7 +747,16 @@ function ResultSections({
             )}
           </p>
         )}
-        {mode === "fresh" && ignored && <p className={`text-xs ${CHIP_TONE_TEXT.warn}`}>{ignored}</p>}
+        {!failed && caption.notCaptured && (
+          <p className={`text-xs text-ink-faint ${dim}`}>
+            <Count value={caption.notCaptured.count} /> {caption.notCaptured.text}
+          </p>
+        )}
+        {mode === "fresh" && ignored && (
+          <p className={`text-xs ${CHIP_TONE_TEXT.warn}`}>
+            <Count value={ignored.count} /> {ignored.text}
+          </p>
+        )}
         <ScrollFade>
           <table className="w-full text-sm">
             <thead>
@@ -886,7 +900,9 @@ function PositionRow({
   onBetaCommit: () => void;
   onBetaClear: () => void;
 }) {
-  const editable = p.priceSource === "model" || p.priceSource === "override";
+  const editable = isPriceEditable(p);
+  // No figure box on the index itself or a fixed row: a short note in its place.
+  const editorNote = betaEditorNote(p);
   const isOption = p.expiry !== undefined;
   // Figures and the engine's verdicts belong to the answer; dim or blank them with it.
   const dim = mode === "stale" ? "opacity-40" : "";
@@ -921,12 +937,11 @@ function PositionRow({
       <td className="py-1.5 pr-3 text-ink-dim">
         {ownsEditor && p.identitySecurityId !== null && (
           <span className="flex flex-wrap items-center gap-1.5">
-            <label className="sr-only" htmlFor={`gains-beta-${p.identitySecurityId}`}>
-              Your figure for {p.symbol}: how it moves per 1% of {driver}
-            </label>
-            {/* A beta is not a portfolio figure: a plain number box, not masked. */}
+            {/* A beta is not a portfolio figure: a plain number box, not masked. Named by aria-label:
+                an sr-only label escapes the table's scroller and widens the page. */}
             <input
               id={`gains-beta-${p.identitySecurityId}`}
+              aria-label={`Your figure for ${p.symbol}: how it moves per 1% of ${driver}`}
               type="number"
               inputMode="decimal"
               step={0.05}
@@ -950,7 +965,8 @@ function PositionRow({
             )}
           </span>
         )}
-        {!ownsEditor && p.identitySecurityId !== null && (
+        {editorNote && <span className="block text-[11px] text-ink-faint">{editorNote}</span>}
+        {!editorNote && !ownsEditor && p.identitySecurityId !== null && (
           <span className="block text-[11px] text-ink-faint">{SAME_FIGURE_TEXT}</span>
         )}
         {ownsEditor && isLeveragedFundRow(p) && (
@@ -973,11 +989,9 @@ function PositionRow({
         </span>
         {editable && ownsBox && (
           <span className="mt-1 flex flex-wrap items-center gap-1.5">
-            <label className="sr-only" htmlFor={`gains-price-${p.securityId}`}>
-              Your price per share for {p.symbol}
-            </label>
             <PrivateNumberInput
               id={`gains-price-${p.securityId}`}
+              aria-label={`Your price per share for ${p.symbol}`}
               inputMode="decimal"
               step={0.01}
               min={0}
@@ -998,6 +1012,9 @@ function PositionRow({
               </button>
             )}
           </span>
+        )}
+        {editable && ownsBox && p.priceSource === null && (
+          <span className="block text-[11px] text-ink-faint max-w-56">{NO_VOLATILITY_PRICE_TEXT}</span>
         )}
         {editable && !ownsBox && <span className="block text-[11px] text-ink-faint">{SAME_PRICE_TEXT}</span>}
         {ownsBox && problem && <span className={`block text-[11px] ${CHIP_TONE_TEXT.down}`}>{problem}</span>}

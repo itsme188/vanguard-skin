@@ -2,8 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { todayET } from "@/lib/calendar/date-utils";
 import { computeGainsAtRisk, GainsAtRiskInputError } from "@/lib/compute/gains-at-risk";
-import { resolveScope } from "@/lib/queries/accounts";
-import type { AnalysisScope } from "@/lib/analysis/view-param";
+import { gainsAtRiskAccountIds } from "@/lib/analysis/gains-at-risk-scope";
 import { computeYearGain } from "@/lib/compute/year-gain";
 import { getPositionsFreshness } from "@/lib/queries/positions-freshness";
 import {
@@ -11,17 +10,6 @@ import {
   type GainsAtRiskBody,
   type GainsAtRiskResponse,
 } from "@/lib/analysis/gains-at-risk-input";
-
-/**
- * The account ids to stress. "all" is every account (undefined). Any other
- * scope word reads only the accounts it names; a word that names no account
- * reads NOTHING ([]), never every account (`resolveScope` alone would answer
- * undefined there). Server-only: kept out of the shared input module.
- */
-function gainsAtRiskAccountIds(scope: AnalysisScope): number[] | undefined {
-  if (scope === "all") return undefined;
-  return resolveScope(db, scope) ?? [];
-}
 
 /**
  * POST /api/compute/gains-at-risk — the book's profit or loss under a sweep
@@ -49,7 +37,8 @@ export async function POST(request: NextRequest) {
   const input = body as GainsAtRiskBody;
 
   try {
-    const accountIds = gainsAtRiskAccountIds(input.scope);
+    // "all" is every account; a scope word naming no account reads nothing (one rule, shared with the section).
+    const accountIds = gainsAtRiskAccountIds(db, input.scope);
     const result = computeGainsAtRisk(db, {
       accountIds,
       driverSymbol: input.driverSymbol,

@@ -21,7 +21,12 @@ import {
   formatBeta,
   isLeveragedFundRow,
   noMeasuredLinkSentence,
-  overridesIgnoredText,
+  overridesIgnoredLine,
+  betaEditorNote,
+  isPriceEditable,
+  moneyCell,
+  LEVERAGED_SELLOFF_TEXT,
+  NO_VOLATILITY_PRICE_TEXT,
   COLUMN_LABELS,
   DEFAULT_DRIVER,
   NOT_MODELLED_LABELS,
@@ -84,6 +89,9 @@ import type {
 import type { DailyBarEvidence, NoMeasuredLinkReason } from "@/lib/compute/security-regression";
 import type { YearGainReconciliationStatus, YearGainResult } from "@/lib/compute/year-gain";
 import type { PositionsFreshness } from "@/lib/queries/positions-freshness";
+import Database from "better-sqlite3";
+import { runMigrations } from "@/lib/db/migrate";
+import { gainsAtRiskAccountIds } from "@/lib/analysis/gains-at-risk-scope";
 
 function gain(
   gainUsd: number | null,
@@ -400,7 +408,7 @@ describe("gains at risk: the two cases", () => {
 describe("gains at risk: the evidence caption", () => {
   it("says which closes and through what date, and how many names wait", () => {
     const none = betaEvidenceCaption({ driverBarsThrough: "2026-11-21", driverBarsMissing: false, namesWaitingForBars: 0 }, "QQQ");
-    expect(none).toEqual({ text: "Betas are measured from daily closing prices through Nov 21.", waiting: null });
+    expect(none).toEqual({ text: "Betas are measured from daily closing prices through Nov 21.", waiting: null, notCaptured: null });
     const three = betaEvidenceCaption({ driverBarsThrough: "2026-11-21", driverBarsMissing: false, namesWaitingForBars: 3 }, "QQQ");
     expect(three.text).toBe(none.text);
     expect(three.waiting).toEqual({ count: 3, text: "names are waiting for daily prices." });
@@ -413,7 +421,28 @@ describe("gains at risk: the evidence caption", () => {
     expect(c).toEqual({
       text: "Daily prices for SPY are not on file yet, so no name has a measured link. The selloff case still applies.",
       waiting: null,
+      notCaptured: null,
     });
+  });
+
+  it("names the broker never sends daily prices for are told apart from names still waiting", () => {
+    const base = { driverBarsThrough: "2026-11-21", driverBarsMissing: false, namesWaitingForBars: 2 };
+    // Before the engine carries the field it is undefined: read as zero.
+    expect(betaEvidenceCaption(base, "QQQ").notCaptured).toBeNull();
+    expect(betaEvidenceCaption({ ...base, namesNotCaptured: 0 }, "QQQ").notCaptured).toBeNull();
+    const two = betaEvidenceCaption({ ...base, namesNotCaptured: 2 }, "QQQ");
+    expect(two.waiting).toEqual({ count: 2, text: "names are waiting for daily prices." });
+    expect(two.notCaptured).toEqual({
+      count: 2,
+      text: "names have no daily prices from the broker (funds, or no contract on file). Type your own figure for them.",
+    });
+    expect(betaEvidenceCaption({ ...base, namesNotCaptured: 1 }, "QQQ").notCaptured).toEqual({
+      count: 1,
+      text: "name has no daily prices from the broker (a fund, or no contract on file). Type your own figure for it.",
+    });
+    expect(betaEvidenceCaption({ ...base, namesNotCaptured: Number.NaN }, "QQQ").notCaptured).toBeNull();
+    // Still said when the index's own prices are missing.
+    expect(betaEvidenceCaption({ ...base, driverBarsMissing: true, namesNotCaptured: 3 }, "QQQ").notCaptured?.count).toBe(3);
   });
 });
 
@@ -433,14 +462,29 @@ describe("gains at risk: the owner's figure", () => {
 
   it("one editor per name: the first row of each identity, never a row with no identity", () => {
     const owners = betaEditorOwners([
-      { accountId: 2, securityId: 501, identitySecurityId: 100 }, // an option on 100, shown first
-      { accountId: 1, securityId: 100, identitySecurityId: 100 },
-      { accountId: 1, securityId: 200, identitySecurityId: 200 },
-      { accountId: 2, securityId: 200, identitySecurityId: 200 },
-      { accountId: 1, securityId: 777, identitySecurityId: null },
+      { accountId: 2, securityId: 501, identitySecurityId: 100, betaSource: "measured" }, // an option on 100, shown first
+      { accountId: 1, securityId: 100, identitySecurityId: 100, betaSource: "measured" },
+      { accountId: 1, securityId: 200, identitySecurityId: 200, betaSource: "no-measured-link" },
+      { accountId: 2, securityId: 200, identitySecurityId: 200, betaSource: "no-measured-link" },
+      { accountId: 1, securityId: 777, identitySecurityId: null, betaSource: "measured" },
     ]);
     expect([...owners].sort()).toEqual(["1:200", "2:501"]);
     expect(SAME_FIGURE_TEXT).toBe("same figure as above");
+  });
+
+  it("no box on the index itself or a fixed row: a short note instead", () => {
+    const owners = betaEditorOwners([
+      { accountId: 1, securityId: 300, identitySecurityId: 300, betaSource: "driver" },
+      { accountId: 1, securityId: 400, identitySecurityId: 400, betaSource: "fixed" },
+      { accountId: 1, securityId: 500, identitySecurityId: 500, betaSource: "owner" },
+    ]);
+    expect([...owners]).toEqual(["1:500"]);
+    expect(betaEditorNote(pos({ betaSource: "driver" }))).toBe("moves with the index by definition");
+    expect(betaEditorNote(pos({ betaSource: "fixed" }))).toBe("held at a fixed link");
+    expect(betaEditorNote(pos({ betaSource: "measured" }))).toBeNull();
+    expect(betaEditorNote(pos({ betaSource: "owner" }))).toBeNull();
+    // A not-modelled row is read by its reason first: it keeps its box.
+    expect(betaEditorNote(pos({ betaSource: "not-modelled", unmodelledReason: "no-price" }))).toBeNull();
   });
 
   it("the engine's refusal of a figure, in plain words", () => {
@@ -450,10 +494,10 @@ describe("gains at risk: the owner's figure", () => {
     expect(BETA_OVERRIDE_REFUSAL_LABELS["out-of-bounds"]).toMatch(/-5 and 5/);
   });
 
-  it("figures not used are counted in one line", () => {
-    expect(overridesIgnoredText(0)).toBeNull();
-    expect(overridesIgnoredText(1)).toBe("1 figure you typed was not used: no name on this page takes it.");
-    expect(overridesIgnoredText(3)).toBe("3 figures you typed were not used: no name on this page takes them.");
+  it("figures not used are counted in one line (the count prints through <Count>)", () => {
+    expect(overridesIgnoredLine(0)).toBeNull();
+    expect(overridesIgnoredLine(1)).toEqual({ count: 1, text: "figure you typed was not used: no name on this page takes it." });
+    expect(overridesIgnoredLine(3)).toEqual({ count: 3, text: "figures you typed were not used: no name on this page takes them." });
   });
 
   it("the hint for a leveraged or inverse fund", () => {
@@ -555,7 +599,12 @@ describe("gains at risk: where each beta comes from", () => {
     });
     const lev = pos({ betaSource: "leveraged", measuredBeta: 1.8, cases: cases(1.8, 2) });
     expect(betaSourceLine(lev, "measured")).toEqual({ text: "leverage times its tracked index", details: [] });
-    expect(betaSourceLine(lev, "selloff").details).toEqual([SELLOFF_RAISED_TEXT]);
+    // A leveraged or inverse fund: its INDEX is floored, not the fund itself.
+    expect(betaSourceLine(lev, "selloff").details).toEqual([LEVERAGED_SELLOFF_TEXT]);
+    expect(LEVERAGED_SELLOFF_TEXT).toBe("Its index is taken at least one-for-one.");
+    const inverse = pos({ betaSource: "leveraged", measuredBeta: -0.9, cases: cases(-0.9, -1) });
+    expect(betaSourceLine(inverse, "selloff").details).toEqual([LEVERAGED_SELLOFF_TEXT]);
+    expect(betaSourceLine(inverse, "selloff").details).not.toContain(SELLOFF_RAISED_TEXT);
   });
 
   it("a beta prints to two places; none prints a dash", () => {
@@ -756,6 +805,36 @@ describe("gains at risk: fix round 1", () => {
     expect(SAME_PRICE_TEXT).toBe("same price as above");
   });
 
+  it("an unpriced option with no volatility takes a price box, one per security", () => {
+    const noVol = { priceSource: null, unmodelledReason: "no-volatility" as const, expiry: "2027-01-15" };
+    const owners = priceBoxOwners([
+      { accountId: 2, securityId: 11, ...noVol },
+      { accountId: 1, securityId: 11, ...noVol },
+      // Not modelled for another reason, or not an option: no box.
+      { accountId: 1, securityId: 12, priceSource: null, unmodelledReason: "no-option-terms", expiry: "2027-01-15" },
+      { accountId: 1, securityId: 13, priceSource: null, unmodelledReason: "no-volatility" },
+      { accountId: 1, securityId: 14, priceSource: "own-price", unmodelledReason: "no-volatility", expiry: "2027-01-15" },
+    ]);
+    expect([...owners]).toEqual(["2:11"]);
+    expect(isPriceEditable({ priceSource: null, unmodelledReason: "no-volatility", expiry: "2027-01-15" })).toBe(true);
+    expect(isPriceEditable({ priceSource: "model" })).toBe(true);
+    expect(isPriceEditable({ priceSource: "override", unmodelledReason: "no-volatility", expiry: "2027-01-15" })).toBe(true);
+    expect(isPriceEditable({ priceSource: null, unmodelledReason: "no-price" })).toBe(false);
+    expect(NO_VOLATILITY_PRICE_TEXT).toBe("No volatility on file. Type its price to include it.");
+  });
+
+  it("a money cell never prints a negative zero", () => {
+    expect(Object.is(moneyCell(-0.004, false), 0)).toBe(true);
+    expect(Object.is(moneyCell(-0, false), 0)).toBe(true);
+    expect(Object.is(moneyCell(0.0049, false), 0)).toBe(true);
+    expect(moneyCell(-0.005, false)).toBe(-0.005);
+    expect(moneyCell(-12.5, false)).toBe(-12.5);
+    expect(moneyCell(-12.5, true)).toBeNull();
+    expect(moneyCell(undefined, false)).toBeNull();
+    expect(moneyCell(null, false)).toBeNull();
+    expect(moneyCell(Number.NaN, false)).toBeNull();
+  });
+
   it("fresh server props answer the controls only when the controls are the defaults", () => {
     const server = { driverSymbol: "QQQ" as const, valuationDate: "2026-12-31", volChangePoints: 0 };
     const base = { ...server, custom: null, priceOverrides: {}, betaOverrides: {} };
@@ -771,5 +850,27 @@ describe("gains at risk: fix round 1", () => {
   it("the client's volatility bounds equal the repricer's", () => {
     expect(GAINS_AT_RISK_VOL_MIN).toBe(VOL_MOVE_MIN);
     expect(GAINS_AT_RISK_VOL_MAX).toBe(VOL_MOVE_MAX);
+  });
+});
+
+describe("gains at risk: one scope rule for the route and the section", () => {
+  const db = new Database(":memory:");
+  runMigrations(db);
+  // The migrations seed three accounts; replace them with synthetic ones.
+  db.prepare("DELETE FROM accounts").run();
+  for (const name of ["ZZ Vanguard Brokerage", "ZZ Vanguard Roth IRA", "ZZ IBKR"]) {
+    db.prepare("INSERT INTO accounts (name) VALUES (?)").run(name);
+  }
+  const id = (name: string) => (db.prepare("SELECT id FROM accounts WHERE name = ?").get(name) as { id: number }).id;
+
+  it("all is every account; a word reads only what it names; a word naming nothing reads nothing", () => {
+    expect(gainsAtRiskAccountIds(db, "all")).toBeUndefined();
+    expect(gainsAtRiskAccountIds(db, "vanguard")).toEqual([id("ZZ Vanguard Brokerage")]);
+    expect(gainsAtRiskAccountIds(db, "roth")).toEqual([id("ZZ Vanguard Roth IRA")]);
+    expect(gainsAtRiskAccountIds(db, "ibkr")).toEqual([id("ZZ IBKR")]);
+    const empty = new Database(":memory:");
+    runMigrations(empty);
+    empty.prepare("DELETE FROM accounts").run();
+    expect(gainsAtRiskAccountIds(empty, "ibkr")).toEqual([]);
   });
 });

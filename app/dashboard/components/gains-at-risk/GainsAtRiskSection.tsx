@@ -3,7 +3,7 @@ import { todayET } from "@/lib/calendar/date-utils";
 import { computeGainsAtRisk } from "@/lib/compute/gains-at-risk";
 import { computeYearGain } from "@/lib/compute/year-gain";
 import { getPositionsFreshness } from "@/lib/queries/positions-freshness";
-import { resolveScope } from "@/lib/queries/accounts";
+import { gainsAtRiskAccountIds } from "@/lib/analysis/gains-at-risk-scope";
 import type { AnalysisScope } from "@/lib/analysis/view-param";
 import { latestValuationDate, type GainsAtRiskResponse } from "@/lib/analysis/gains-at-risk-input";
 import {
@@ -22,18 +22,15 @@ import { GainsAtRiskView } from "./GainsAtRiskView";
  * default sweep) and hands it to the client view, which re-asks the route
  * on every control change. Read-only.
  *
- * The account ids follow the route's own rule: "all" is every account
- * (undefined); any other scope word reads only the accounts it names, and a
- * word that names no account reads nothing ([]), never every account.
+ * The account ids follow the route's own rule, one copy
+ * (`gainsAtRiskAccountIds`): "all" is every account; any other scope word
+ * reads only the accounts it names, and a word that names no account reads
+ * nothing ([]), never every account.
  */
-function stressAccountIds(scope: AnalysisScope): number[] | undefined {
-  if (scope === "all") return undefined;
-  return resolveScope(db, scope) ?? [];
-}
 
 export function GainsAtRiskSection({ scope }: { scope: AnalysisScope }) {
   const today = todayET();
-  const accountIds = stressAccountIds(scope);
+  const accountIds = gainsAtRiskAccountIds(db, scope);
   const scopeHasAccounts = accountIds === undefined || accountIds.length > 0;
   const valuationDate = defaultValuationDate(today);
   const moves = requestMoves(defaultSweep(), null);
