@@ -71,7 +71,7 @@ export function CoverageGapIgnoredSymbols() {
                 type="button"
                 onClick={() => remove(sym)}
                 disabled={saving}
-                className="ml-0.5 text-ink-dim hover:text-down disabled:opacity-40"
+                className="relative pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-1 pointer-coarse:after:-left-2 pointer-coarse:after:-right-2.5 ml-0.5 text-ink-dim hover:text-down disabled:opacity-40"
                 aria-label={`Stop ignoring ${sym}`}
               >
                 ×
