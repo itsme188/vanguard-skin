@@ -1,0 +1,1706 @@
+[
+  {
+    "scenario": {
+      "id": "custom-pin-a",
+      "name": "Pin A",
+      "description": "pin",
+      "category": "custom",
+      "marketMove": -0.2
+    },
+    "currentPortfolioValue": 12880,
+    "estimatedPortfolioValue": 14370.958573561986,
+    "estimatedChange": 1490.9585735619862,
+    "estimatedChangePercent": 0.11575765322686228,
+    "positionImpacts": [
+      {
+        "securityId": 1,
+        "symbol": "ZZST",
+        "securityName": "ZZ Systems",
+        "securityType": "Stock",
+        "sector": "Technology",
+        "currentValue": 5000,
+        "estimatedChange": -1265,
+        "estimatedNewValue": 3735,
+        "changePercent": -0.253,
+        "beta": 1.265
+      },
+      {
+        "securityId": 14,
+        "symbol": "ZZLS",
+        "securityName": "ZZ Long Short Co",
+        "securityType": "Stock",
+        "sector": "Healthcare",
+        "currentValue": 3000,
+        "estimatedChange": -459.00000000000006,
+        "estimatedNewValue": 2541,
+        "changePercent": -0.15300000000000002,
+        "beta": 0.765
+      },
+      {
+        "securityId": 2,
+        "symbol": "ZZEF",
+        "securityName": "ZZ Equity Fund",
+        "securityType": "ETF",
+        "sector": "Diversified",
+        "currentValue": 2000,
+        "estimatedChange": -400,
+        "estimatedNewValue": 1600,
+        "changePercent": -0.2,
+        "beta": 1
+      },
+      {
+        "securityId": 13,
+        "symbol": "ZZFX",
+        "securityName": "ZZ Overseas",
+        "securityType": "Stock",
+        "sector": "Utilities",
+        "currentValue": 1500,
+        "estimatedChange": -255.00000000000003,
+        "estimatedNewValue": 1245,
+        "changePercent": -0.17,
+        "beta": 0.85
+      },
+      {
+        "securityId": 3,
+        "symbol": "ZZMM",
+        "securityName": "ZZ Cash Reserves",
+        "securityType": "Mutual Fund",
+        "sector": null,
+        "currentValue": 1000,
+        "estimatedChange": 0,
+        "estimatedNewValue": 1000,
+        "changePercent": 0,
+        "beta": 0
+      },
+      {
+        "securityId": 5,
+        "symbol": "ZZBF",
+        "securityName": "ZZ Bond Index",
+        "securityType": "Mutual Fund",
+        "sector": "Fixed Income",
+        "currentValue": 1000,
+        "estimatedChange": 0,
+        "estimatedNewValue": 1000,
+        "changePercent": 0,
+        "beta": 0
+      },
+      {
+        "securityId": 6,
+        "symbol": "ZZ3X",
+        "securityName": "ZZ UltraPro 3X Index Fund",
+        "securityType": "ETF",
+        "sector": "Technology",
+        "currentValue": 1000,
+        "estimatedChange": -690,
+        "estimatedNewValue": 310,
+        "changePercent": -0.69,
+        "beta": 1.15
+      },
+      {
+        "securityId": 7,
+        "symbol": "ZZ2X",
+        "securityName": "ZZ Ultra 2X Fund",
+        "securityType": "ETF",
+        "sector": "Energy",
+        "currentValue": 1000,
+        "estimatedChange": 0,
+        "estimatedNewValue": 1000,
+        "changePercent": 0,
+        "beta": 1,
+        "leveragedFundUnmodelled": true
+      },
+      {
+        "securityId": 4,
+        "symbol": "ZZBOND31",
+        "securityName": "ZZ Corp 4% 2031",
+        "securityType": "Bond",
+        "sector": null,
+        "currentValue": 980,
+        "estimatedChange": -19.600000000000005,
+        "estimatedNewValue": 960.4,
+        "changePercent": -0.020000000000000004,
+        "beta": 0.1
+      },
+      {
+        "securityId": 8,
+        "symbol": "ZZST P95",
+        "securityName": null,
+        "securityType": "Option",
+        "sector": "Technology",
+        "currentValue": 600,
+        "estimatedChange": 3459.999999999871,
+        "estimatedNewValue": 4059.999999999871,
+        "changePercent": 5.766666666666452,
+        "beta": 1.265,
+        "ivSource": "own-price",
+        "underlyingMove": -0.253
+      },
+      {
+        "securityId": 10,
+        "symbol": "ZZST P90",
+        "securityName": null,
+        "securityType": "Option",
+        "sector": "Technology",
+        "currentValue": 0,
+        "estimatedChange": 0,
+        "estimatedNewValue": 0,
+        "changePercent": 0,
+        "beta": 1.265,
+        "unmodelledReason": "no-option-price",
+        "underlyingMove": -0.253
+      },
+      {
+        "securityId": 9,
+        "symbol": "ZZST C110",
+        "securityName": null,
+        "securityType": "Option",
+        "sector": "Technology",
+        "currentValue": -200,
+        "estimatedChange": 199.55857356211538,
+        "estimatedNewValue": -0.44142643788461555,
+        "changePercent": -0.9977928678105769,
+        "beta": 1.265,
+        "ivSource": "own-price",
+        "underlyingMove": -0.253
+      },
+      {
+        "securityId": 12,
+        "symbol": "ZZSH",
+        "securityName": "ZZ Shorted",
+        "securityType": "Stock",
+        "sector": "Consumer Discretionary",
+        "currentValue": -4000,
+        "estimatedChange": 919.9999999999999,
+        "estimatedNewValue": -3080,
+        "changePercent": -0.22999999999999998,
+        "beta": 1.15
+      }
+    ],
+    "biggestLosers": [
+      {
+        "securityId": 1,
+        "symbol": "ZZST",
+        "securityName": "ZZ Systems",
+        "securityType": "Stock",
+        "sector": "Technology",
+        "currentValue": 5000,
+        "estimatedChange": -1265,
+        "estimatedNewValue": 3735,
+        "changePercent": -0.253,
+        "beta": 1.265
+      },
+      {
+        "securityId": 6,
+        "symbol": "ZZ3X",
+        "securityName": "ZZ UltraPro 3X Index Fund",
+        "securityType": "ETF",
+        "sector": "Technology",
+        "currentValue": 1000,
+        "estimatedChange": -690,
+        "estimatedNewValue": 310,
+        "changePercent": -0.69,
+        "beta": 1.15
+      },
+      {
+        "securityId": 14,
+        "symbol": "ZZLS",
+        "securityName": "ZZ Long Short Co",
+        "securityType": "Stock",
+        "sector": "Healthcare",
+        "currentValue": 3000,
+        "estimatedChange": -459.00000000000006,
+        "estimatedNewValue": 2541,
+        "changePercent": -0.15300000000000002,
+        "beta": 0.765
+      },
+      {
+        "securityId": 2,
+        "symbol": "ZZEF",
+        "securityName": "ZZ Equity Fund",
+        "securityType": "ETF",
+        "sector": "Diversified",
+        "currentValue": 2000,
+        "estimatedChange": -400,
+        "estimatedNewValue": 1600,
+        "changePercent": -0.2,
+        "beta": 1
+      },
+      {
+        "securityId": 13,
+        "symbol": "ZZFX",
+        "securityName": "ZZ Overseas",
+        "securityType": "Stock",
+        "sector": "Utilities",
+        "currentValue": 1500,
+        "estimatedChange": -255.00000000000003,
+        "estimatedNewValue": 1245,
+        "changePercent": -0.17,
+        "beta": 0.85
+      }
+    ],
+    "biggestWinners": [
+      {
+        "securityId": 8,
+        "symbol": "ZZST P95",
+        "securityName": null,
+        "securityType": "Option",
+        "sector": "Technology",
+        "currentValue": 600,
+        "estimatedChange": 3459.999999999871,
+        "estimatedNewValue": 4059.999999999871,
+        "changePercent": 5.766666666666452,
+        "beta": 1.265,
+        "ivSource": "own-price",
+        "underlyingMove": -0.253
+      },
+      {
+        "securityId": 12,
+        "symbol": "ZZSH",
+        "securityName": "ZZ Shorted",
+        "securityType": "Stock",
+        "sector": "Consumer Discretionary",
+        "currentValue": -4000,
+        "estimatedChange": 919.9999999999999,
+        "estimatedNewValue": -3080,
+        "changePercent": -0.22999999999999998,
+        "beta": 1.15
+      },
+      {
+        "securityId": 9,
+        "symbol": "ZZST C110",
+        "securityName": null,
+        "securityType": "Option",
+        "sector": "Technology",
+        "currentValue": -200,
+        "estimatedChange": 199.55857356211538,
+        "estimatedNewValue": -0.44142643788461555,
+        "changePercent": -0.9977928678105769,
+        "beta": 1.265,
+        "ivSource": "own-price",
+        "underlyingMove": -0.253
+      }
+    ],
+    "optionsUnmodelled": {
+      "count": 1,
+      "valueShare": 0,
+      "unpricedCount": 1
+    },
+    "bondsUnmodelled": {
+      "count": 0,
+      "valueShare": 0,
+      "fundCount": 0
+    },
+    "rateHedgesUnmodelled": {
+      "count": 0,
+      "valueShare": 0,
+      "symbols": []
+    },
+    "leveragedFundsUnmodelled": {
+      "count": 1,
+      "valueShare": 0.046992481203007516,
+      "symbols": [
+        "ZZ2X"
+      ]
+    },
+    "fundsWithoutSectorWeights": []
+  },
+  {
+    "scenario": {
+      "id": "custom-pin-a",
+      "name": "Pin A",
+      "description": "pin",
+      "category": "custom",
+      "marketMove": -0.2
+    },
+    "currentPortfolioValue": 17080,
+    "estimatedPortfolioValue": 17835.39999999987,
+    "estimatedChange": 755.3999999998709,
+    "estimatedChangePercent": 0.04422716627633905,
+    "positionImpacts": [
+      {
+        "securityId": 1,
+        "symbol": "ZZST",
+        "securityName": "ZZ Systems",
+        "securityType": "Stock",
+        "sector": "Technology",
+        "currentValue": 5000,
+        "estimatedChange": -1265,
+        "estimatedNewValue": 3735,
+        "changePercent": -0.253,
+        "beta": 1.265
+      },
+      {
+        "securityId": 14,
+        "symbol": "ZZLS",
+        "securityName": "ZZ Long Short Co",
+        "securityType": "Stock",
+        "sector": "Healthcare",
+        "currentValue": 5000,
+        "estimatedChange": -765.0000000000001,
+        "estimatedNewValue": 4235,
+        "changePercent": -0.15300000000000002,
+        "beta": 0.765
+      },
+      {
+        "securityId": 2,
+        "symbol": "ZZEF",
+        "securityName": "ZZ Equity Fund",
+        "securityType": "ETF",
+        "sector": "Diversified",
+        "currentValue": 2000,
+        "estimatedChange": -400,
+        "estimatedNewValue": 1600,
+        "changePercent": -0.2,
+        "beta": 1
+      },
+      {
+        "securityId": 13,
+        "symbol": "ZZFX",
+        "securityName": "ZZ Overseas",
+        "securityType": "Stock",
+        "sector": "Utilities",
+        "currentValue": 1500,
+        "estimatedChange": -255.00000000000003,
+        "estimatedNewValue": 1245,
+        "changePercent": -0.17,
+        "beta": 0.85
+      },
+      {
+        "securityId": 3,
+        "symbol": "ZZMM",
+        "securityName": "ZZ Cash Reserves",
+        "securityType": "Mutual Fund",
+        "sector": null,
+        "currentValue": 1000,
+        "estimatedChange": 0,
+        "estimatedNewValue": 1000,
+        "changePercent": 0,
+        "beta": 0
+      },
+      {
+        "securityId": 5,
+        "symbol": "ZZBF",
+        "securityName": "ZZ Bond Index",
+        "securityType": "Mutual Fund",
+        "sector": "Fixed Income",
+        "currentValue": 1000,
+        "estimatedChange": 0,
+        "estimatedNewValue": 1000,
+        "changePercent": 0,
+        "beta": 0
+      },
+      {
+        "securityId": 4,
+        "symbol": "ZZBOND31",
+        "securityName": "ZZ Corp 4% 2031",
+        "securityType": "Bond",
+        "sector": null,
+        "currentValue": 980,
+        "estimatedChange": -19.600000000000005,
+        "estimatedNewValue": 960.4,
+        "changePercent": -0.020000000000000004,
+        "beta": 0.1
+      },
+      {
+        "securityId": 8,
+        "symbol": "ZZST P95",
+        "securityName": null,
+        "securityType": "Option",
+        "sector": "Technology",
+        "currentValue": 600,
+        "estimatedChange": 3459.999999999871,
+        "estimatedNewValue": 4059.999999999871,
+        "changePercent": 5.766666666666452,
+        "beta": 1.265,
+        "ivSource": "own-price",
+        "underlyingMove": -0.253
+      },
+      {
+        "securityId": 10,
+        "symbol": "ZZST P90",
+        "securityName": null,
+        "securityType": "Option",
+        "sector": "Technology",
+        "currentValue": 0,
+        "estimatedChange": 0,
+        "estimatedNewValue": 0,
+        "changePercent": 0,
+        "beta": 1.265,
+        "unmodelledReason": "no-option-price",
+        "underlyingMove": -0.253
+      }
+    ],
+    "biggestLosers": [
+      {
+        "securityId": 1,
+        "symbol": "ZZST",
+        "securityName": "ZZ Systems",
+        "securityType": "Stock",
+        "sector": "Technology",
+        "currentValue": 5000,
+        "estimatedChange": -1265,
+        "estimatedNewValue": 3735,
+        "changePercent": -0.253,
+        "beta": 1.265
+      },
+      {
+        "securityId": 14,
+        "symbol": "ZZLS",
+        "securityName": "ZZ Long Short Co",
+        "securityType": "Stock",
+        "sector": "Healthcare",
+        "currentValue": 5000,
+        "estimatedChange": -765.0000000000001,
+        "estimatedNewValue": 4235,
+        "changePercent": -0.15300000000000002,
+        "beta": 0.765
+      },
+      {
+        "securityId": 2,
+        "symbol": "ZZEF",
+        "securityName": "ZZ Equity Fund",
+        "securityType": "ETF",
+        "sector": "Diversified",
+        "currentValue": 2000,
+        "estimatedChange": -400,
+        "estimatedNewValue": 1600,
+        "changePercent": -0.2,
+        "beta": 1
+      },
+      {
+        "securityId": 13,
+        "symbol": "ZZFX",
+        "securityName": "ZZ Overseas",
+        "securityType": "Stock",
+        "sector": "Utilities",
+        "currentValue": 1500,
+        "estimatedChange": -255.00000000000003,
+        "estimatedNewValue": 1245,
+        "changePercent": -0.17,
+        "beta": 0.85
+      },
+      {
+        "securityId": 4,
+        "symbol": "ZZBOND31",
+        "securityName": "ZZ Corp 4% 2031",
+        "securityType": "Bond",
+        "sector": null,
+        "currentValue": 980,
+        "estimatedChange": -19.600000000000005,
+        "estimatedNewValue": 960.4,
+        "changePercent": -0.020000000000000004,
+        "beta": 0.1
+      }
+    ],
+    "biggestWinners": [
+      {
+        "securityId": 8,
+        "symbol": "ZZST P95",
+        "securityName": null,
+        "securityType": "Option",
+        "sector": "Technology",
+        "currentValue": 600,
+        "estimatedChange": 3459.999999999871,
+        "estimatedNewValue": 4059.999999999871,
+        "changePercent": 5.766666666666452,
+        "beta": 1.265,
+        "ivSource": "own-price",
+        "underlyingMove": -0.253
+      }
+    ],
+    "optionsUnmodelled": {
+      "count": 1,
+      "valueShare": 0,
+      "unpricedCount": 1
+    },
+    "bondsUnmodelled": {
+      "count": 0,
+      "valueShare": 0,
+      "fundCount": 0
+    },
+    "rateHedgesUnmodelled": {
+      "count": 0,
+      "valueShare": 0,
+      "symbols": []
+    },
+    "leveragedFundsUnmodelled": {
+      "count": 0,
+      "valueShare": 0,
+      "symbols": []
+    },
+    "fundsWithoutSectorWeights": []
+  },
+  {
+    "scenario": {
+      "id": "custom-pin-a",
+      "name": "Pin A",
+      "description": "pin",
+      "category": "custom",
+      "marketMove": -0.2
+    },
+    "currentPortfolioValue": 0,
+    "estimatedPortfolioValue": 0,
+    "estimatedChange": 0,
+    "estimatedChangePercent": 0,
+    "positionImpacts": [],
+    "biggestLosers": [],
+    "biggestWinners": [],
+    "optionsUnmodelled": {
+      "count": 0,
+      "valueShare": 0,
+      "unpricedCount": 0
+    },
+    "bondsUnmodelled": {
+      "count": 0,
+      "valueShare": 0,
+      "fundCount": 0
+    },
+    "rateHedgesUnmodelled": {
+      "count": 0,
+      "valueShare": 0,
+      "symbols": []
+    },
+    "leveragedFundsUnmodelled": {
+      "count": 0,
+      "valueShare": 0,
+      "symbols": []
+    },
+    "fundsWithoutSectorWeights": []
+  },
+  {
+    "scenario": {
+      "id": "custom-pin-b",
+      "name": "Pin B",
+      "description": "pin",
+      "category": "custom",
+      "marketMove": 0.1,
+      "volMove": 20
+    },
+    "currentPortfolioValue": 12880,
+    "estimatedPortfolioValue": 13027.310996301465,
+    "estimatedChange": 147.31099630146542,
+    "estimatedChangePercent": 0.011437189153840482,
+    "positionImpacts": [
+      {
+        "securityId": 1,
+        "symbol": "ZZST",
+        "securityName": "ZZ Systems",
+        "securityType": "Stock",
+        "sector": "Technology",
+        "currentValue": 5000,
+        "estimatedChange": 632.5,
+        "estimatedNewValue": 5632.5,
+        "changePercent": 0.1265,
+        "beta": 1.265
+      },
+      {
+        "securityId": 14,
+        "symbol": "ZZLS",
+        "securityName": "ZZ Long Short Co",
+        "securityType": "Stock",
+        "sector": "Healthcare",
+        "currentValue": 3000,
+        "estimatedChange": 229.50000000000003,
+        "estimatedNewValue": 3229.5,
+        "changePercent": 0.07650000000000001,
+        "beta": 0.765
+      },
+      {
+        "securityId": 2,
+        "symbol": "ZZEF",
+        "securityName": "ZZ Equity Fund",
+        "securityType": "ETF",
+        "sector": "Diversified",
+        "currentValue": 2000,
+        "estimatedChange": 200,
+        "estimatedNewValue": 2200,
+        "changePercent": 0.1,
+        "beta": 1
+      },
+      {
+        "securityId": 13,
+        "symbol": "ZZFX",
+        "securityName": "ZZ Overseas",
+        "securityType": "Stock",
+        "sector": "Utilities",
+        "currentValue": 1500,
+        "estimatedChange": 127.50000000000001,
+        "estimatedNewValue": 1627.5,
+        "changePercent": 0.085,
+        "beta": 0.85
+      },
+      {
+        "securityId": 3,
+        "symbol": "ZZMM",
+        "securityName": "ZZ Cash Reserves",
+        "securityType": "Mutual Fund",
+        "sector": null,
+        "currentValue": 1000,
+        "estimatedChange": 0,
+        "estimatedNewValue": 1000,
+        "changePercent": 0,
+        "beta": 0
+      },
+      {
+        "securityId": 5,
+        "symbol": "ZZBF",
+        "securityName": "ZZ Bond Index",
+        "securityType": "Mutual Fund",
+        "sector": "Fixed Income",
+        "currentValue": 1000,
+        "estimatedChange": 0,
+        "estimatedNewValue": 1000,
+        "changePercent": 0,
+        "beta": 0
+      },
+      {
+        "securityId": 6,
+        "symbol": "ZZ3X",
+        "securityName": "ZZ UltraPro 3X Index Fund",
+        "securityType": "ETF",
+        "sector": "Technology",
+        "currentValue": 1000,
+        "estimatedChange": 345,
+        "estimatedNewValue": 1345,
+        "changePercent": 0.345,
+        "beta": 1.15
+      },
+      {
+        "securityId": 7,
+        "symbol": "ZZ2X",
+        "securityName": "ZZ Ultra 2X Fund",
+        "securityType": "ETF",
+        "sector": "Energy",
+        "currentValue": 1000,
+        "estimatedChange": 0,
+        "estimatedNewValue": 1000,
+        "changePercent": 0,
+        "beta": 1,
+        "leveragedFundUnmodelled": true
+      },
+      {
+        "securityId": 4,
+        "symbol": "ZZBOND31",
+        "securityName": "ZZ Corp 4% 2031",
+        "securityType": "Bond",
+        "sector": null,
+        "currentValue": 980,
+        "estimatedChange": 9.800000000000002,
+        "estimatedNewValue": 989.8,
+        "changePercent": 0.010000000000000002,
+        "beta": 0.1
+      },
+      {
+        "securityId": 8,
+        "symbol": "ZZST P95",
+        "securityName": null,
+        "securityType": "Option",
+        "sector": "Technology",
+        "currentValue": 600,
+        "estimatedChange": 112.61821548502269,
+        "estimatedNewValue": 712.6182154850227,
+        "changePercent": 0.18769702580837114,
+        "beta": 1.265,
+        "ivSource": "own-price",
+        "underlyingMove": 0.1265
+      },
+      {
+        "securityId": 10,
+        "symbol": "ZZST P90",
+        "securityName": null,
+        "securityType": "Option",
+        "sector": "Technology",
+        "currentValue": 0,
+        "estimatedChange": 0,
+        "estimatedNewValue": 0,
+        "changePercent": 0,
+        "beta": 1.265,
+        "unmodelledReason": "no-option-price",
+        "underlyingMove": 0.1265
+      },
+      {
+        "securityId": 9,
+        "symbol": "ZZST C110",
+        "securityName": null,
+        "securityType": "Option",
+        "sector": "Technology",
+        "currentValue": -200,
+        "estimatedChange": -1049.6072191835574,
+        "estimatedNewValue": -1249.6072191835574,
+        "changePercent": 5.2480360959177865,
+        "beta": 1.265,
+        "ivSource": "own-price",
+        "underlyingMove": 0.1265
+      },
+      {
+        "securityId": 12,
+        "symbol": "ZZSH",
+        "securityName": "ZZ Shorted",
+        "securityType": "Stock",
+        "sector": "Consumer Discretionary",
+        "currentValue": -4000,
+        "estimatedChange": -459.99999999999994,
+        "estimatedNewValue": -4460,
+        "changePercent": 0.11499999999999999,
+        "beta": 1.15
+      }
+    ],
+    "biggestLosers": [
+      {
+        "securityId": 9,
+        "symbol": "ZZST C110",
+        "securityName": null,
+        "securityType": "Option",
+        "sector": "Technology",
+        "currentValue": -200,
+        "estimatedChange": -1049.6072191835574,
+        "estimatedNewValue": -1249.6072191835574,
+        "changePercent": 5.2480360959177865,
+        "beta": 1.265,
+        "ivSource": "own-price",
+        "underlyingMove": 0.1265
+      },
+      {
+        "securityId": 12,
+        "symbol": "ZZSH",
+        "securityName": "ZZ Shorted",
+        "securityType": "Stock",
+        "sector": "Consumer Discretionary",
+        "currentValue": -4000,
+        "estimatedChange": -459.99999999999994,
+        "estimatedNewValue": -4460,
+        "changePercent": 0.11499999999999999,
+        "beta": 1.15
+      }
+    ],
+    "biggestWinners": [
+      {
+        "securityId": 1,
+        "symbol": "ZZST",
+        "securityName": "ZZ Systems",
+        "securityType": "Stock",
+        "sector": "Technology",
+        "currentValue": 5000,
+        "estimatedChange": 632.5,
+        "estimatedNewValue": 5632.5,
+        "changePercent": 0.1265,
+        "beta": 1.265
+      },
+      {
+        "securityId": 6,
+        "symbol": "ZZ3X",
+        "securityName": "ZZ UltraPro 3X Index Fund",
+        "securityType": "ETF",
+        "sector": "Technology",
+        "currentValue": 1000,
+        "estimatedChange": 345,
+        "estimatedNewValue": 1345,
+        "changePercent": 0.345,
+        "beta": 1.15
+      },
+      {
+        "securityId": 14,
+        "symbol": "ZZLS",
+        "securityName": "ZZ Long Short Co",
+        "securityType": "Stock",
+        "sector": "Healthcare",
+        "currentValue": 3000,
+        "estimatedChange": 229.50000000000003,
+        "estimatedNewValue": 3229.5,
+        "changePercent": 0.07650000000000001,
+        "beta": 0.765
+      },
+      {
+        "securityId": 2,
+        "symbol": "ZZEF",
+        "securityName": "ZZ Equity Fund",
+        "securityType": "ETF",
+        "sector": "Diversified",
+        "currentValue": 2000,
+        "estimatedChange": 200,
+        "estimatedNewValue": 2200,
+        "changePercent": 0.1,
+        "beta": 1
+      },
+      {
+        "securityId": 13,
+        "symbol": "ZZFX",
+        "securityName": "ZZ Overseas",
+        "securityType": "Stock",
+        "sector": "Utilities",
+        "currentValue": 1500,
+        "estimatedChange": 127.50000000000001,
+        "estimatedNewValue": 1627.5,
+        "changePercent": 0.085,
+        "beta": 0.85
+      }
+    ],
+    "optionsUnmodelled": {
+      "count": 1,
+      "valueShare": 0,
+      "unpricedCount": 1
+    },
+    "bondsUnmodelled": {
+      "count": 0,
+      "valueShare": 0,
+      "fundCount": 0
+    },
+    "rateHedgesUnmodelled": {
+      "count": 0,
+      "valueShare": 0,
+      "symbols": []
+    },
+    "leveragedFundsUnmodelled": {
+      "count": 1,
+      "valueShare": 0.046992481203007516,
+      "symbols": [
+        "ZZ2X"
+      ]
+    },
+    "fundsWithoutSectorWeights": []
+  },
+  {
+    "scenario": {
+      "id": "custom-pin-b",
+      "name": "Pin B",
+      "description": "pin",
+      "category": "custom",
+      "marketMove": 0.1,
+      "volMove": 20
+    },
+    "currentPortfolioValue": 17080,
+    "estimatedPortfolioValue": 18544.918215485024,
+    "estimatedChange": 1464.9182154850228,
+    "estimatedChangePercent": 0.08576804540310437,
+    "positionImpacts": [
+      {
+        "securityId": 1,
+        "symbol": "ZZST",
+        "securityName": "ZZ Systems",
+        "securityType": "Stock",
+        "sector": "Technology",
+        "currentValue": 5000,
+        "estimatedChange": 632.5,
+        "estimatedNewValue": 5632.5,
+        "changePercent": 0.1265,
+        "beta": 1.265
+      },
+      {
+        "securityId": 14,
+        "symbol": "ZZLS",
+        "securityName": "ZZ Long Short Co",
+        "securityType": "Stock",
+        "sector": "Healthcare",
+        "currentValue": 5000,
+        "estimatedChange": 382.50000000000006,
+        "estimatedNewValue": 5382.5,
+        "changePercent": 0.07650000000000001,
+        "beta": 0.765
+      },
+      {
+        "securityId": 2,
+        "symbol": "ZZEF",
+        "securityName": "ZZ Equity Fund",
+        "securityType": "ETF",
+        "sector": "Diversified",
+        "currentValue": 2000,
+        "estimatedChange": 200,
+        "estimatedNewValue": 2200,
+        "changePercent": 0.1,
+        "beta": 1
+      },
+      {
+        "securityId": 13,
+        "symbol": "ZZFX",
+        "securityName": "ZZ Overseas",
+        "securityType": "Stock",
+        "sector": "Utilities",
+        "currentValue": 1500,
+        "estimatedChange": 127.50000000000001,
+        "estimatedNewValue": 1627.5,
+        "changePercent": 0.085,
+        "beta": 0.85
+      },
+      {
+        "securityId": 3,
+        "symbol": "ZZMM",
+        "securityName": "ZZ Cash Reserves",
+        "securityType": "Mutual Fund",
+        "sector": null,
+        "currentValue": 1000,
+        "estimatedChange": 0,
+        "estimatedNewValue": 1000,
+        "changePercent": 0,
+        "beta": 0
+      },
+      {
+        "securityId": 5,
+        "symbol": "ZZBF",
+        "securityName": "ZZ Bond Index",
+        "securityType": "Mutual Fund",
+        "sector": "Fixed Income",
+        "currentValue": 1000,
+        "estimatedChange": 0,
+        "estimatedNewValue": 1000,
+        "changePercent": 0,
+        "beta": 0
+      },
+      {
+        "securityId": 4,
+        "symbol": "ZZBOND31",
+        "securityName": "ZZ Corp 4% 2031",
+        "securityType": "Bond",
+        "sector": null,
+        "currentValue": 980,
+        "estimatedChange": 9.800000000000002,
+        "estimatedNewValue": 989.8,
+        "changePercent": 0.010000000000000002,
+        "beta": 0.1
+      },
+      {
+        "securityId": 8,
+        "symbol": "ZZST P95",
+        "securityName": null,
+        "securityType": "Option",
+        "sector": "Technology",
+        "currentValue": 600,
+        "estimatedChange": 112.61821548502269,
+        "estimatedNewValue": 712.6182154850227,
+        "changePercent": 0.18769702580837114,
+        "beta": 1.265,
+        "ivSource": "own-price",
+        "underlyingMove": 0.1265
+      },
+      {
+        "securityId": 10,
+        "symbol": "ZZST P90",
+        "securityName": null,
+        "securityType": "Option",
+        "sector": "Technology",
+        "currentValue": 0,
+        "estimatedChange": 0,
+        "estimatedNewValue": 0,
+        "changePercent": 0,
+        "beta": 1.265,
+        "unmodelledReason": "no-option-price",
+        "underlyingMove": 0.1265
+      }
+    ],
+    "biggestLosers": [],
+    "biggestWinners": [
+      {
+        "securityId": 1,
+        "symbol": "ZZST",
+        "securityName": "ZZ Systems",
+        "securityType": "Stock",
+        "sector": "Technology",
+        "currentValue": 5000,
+        "estimatedChange": 632.5,
+        "estimatedNewValue": 5632.5,
+        "changePercent": 0.1265,
+        "beta": 1.265
+      },
+      {
+        "securityId": 14,
+        "symbol": "ZZLS",
+        "securityName": "ZZ Long Short Co",
+        "securityType": "Stock",
+        "sector": "Healthcare",
+        "currentValue": 5000,
+        "estimatedChange": 382.50000000000006,
+        "estimatedNewValue": 5382.5,
+        "changePercent": 0.07650000000000001,
+        "beta": 0.765
+      },
+      {
+        "securityId": 2,
+        "symbol": "ZZEF",
+        "securityName": "ZZ Equity Fund",
+        "securityType": "ETF",
+        "sector": "Diversified",
+        "currentValue": 2000,
+        "estimatedChange": 200,
+        "estimatedNewValue": 2200,
+        "changePercent": 0.1,
+        "beta": 1
+      },
+      {
+        "securityId": 13,
+        "symbol": "ZZFX",
+        "securityName": "ZZ Overseas",
+        "securityType": "Stock",
+        "sector": "Utilities",
+        "currentValue": 1500,
+        "estimatedChange": 127.50000000000001,
+        "estimatedNewValue": 1627.5,
+        "changePercent": 0.085,
+        "beta": 0.85
+      },
+      {
+        "securityId": 8,
+        "symbol": "ZZST P95",
+        "securityName": null,
+        "securityType": "Option",
+        "sector": "Technology",
+        "currentValue": 600,
+        "estimatedChange": 112.61821548502269,
+        "estimatedNewValue": 712.6182154850227,
+        "changePercent": 0.18769702580837114,
+        "beta": 1.265,
+        "ivSource": "own-price",
+        "underlyingMove": 0.1265
+      }
+    ],
+    "optionsUnmodelled": {
+      "count": 1,
+      "valueShare": 0,
+      "unpricedCount": 1
+    },
+    "bondsUnmodelled": {
+      "count": 0,
+      "valueShare": 0,
+      "fundCount": 0
+    },
+    "rateHedgesUnmodelled": {
+      "count": 0,
+      "valueShare": 0,
+      "symbols": []
+    },
+    "leveragedFundsUnmodelled": {
+      "count": 0,
+      "valueShare": 0,
+      "symbols": []
+    },
+    "fundsWithoutSectorWeights": []
+  },
+  {
+    "scenario": {
+      "id": "custom-pin-b",
+      "name": "Pin B",
+      "description": "pin",
+      "category": "custom",
+      "marketMove": 0.1,
+      "volMove": 20
+    },
+    "currentPortfolioValue": 0,
+    "estimatedPortfolioValue": 0,
+    "estimatedChange": 0,
+    "estimatedChangePercent": 0,
+    "positionImpacts": [],
+    "biggestLosers": [],
+    "biggestWinners": [],
+    "optionsUnmodelled": {
+      "count": 0,
+      "valueShare": 0,
+      "unpricedCount": 0
+    },
+    "bondsUnmodelled": {
+      "count": 0,
+      "valueShare": 0,
+      "fundCount": 0
+    },
+    "rateHedgesUnmodelled": {
+      "count": 0,
+      "valueShare": 0,
+      "symbols": []
+    },
+    "leveragedFundsUnmodelled": {
+      "count": 0,
+      "valueShare": 0,
+      "symbols": []
+    },
+    "fundsWithoutSectorWeights": []
+  },
+  {
+    "scenario": {
+      "id": "custom-pin-c",
+      "name": "Pin C",
+      "description": "pin",
+      "category": "custom",
+      "marketMove": -0.1,
+      "rateMove": 50,
+      "sectorMoves": {
+        "Technology": -0.25
+      }
+    },
+    "currentPortfolioValue": 12880,
+    "estimatedPortfolioValue": 14950.462481321178,
+    "estimatedChange": 2070.4624813211767,
+    "estimatedChangePercent": 0.16075019264915968,
+    "positionImpacts": [
+      {
+        "securityId": 1,
+        "symbol": "ZZST",
+        "securityName": "ZZ Systems",
+        "securityType": "Stock",
+        "sector": "Technology",
+        "currentValue": 5000,
+        "estimatedChange": -1581.2499999999998,
+        "estimatedNewValue": 3418.75,
+        "changePercent": -0.31625,
+        "beta": 1.265
+      },
+      {
+        "securityId": 14,
+        "symbol": "ZZLS",
+        "securityName": "ZZ Long Short Co",
+        "securityType": "Stock",
+        "sector": "Healthcare",
+        "currentValue": 3000,
+        "estimatedChange": -229.50000000000003,
+        "estimatedNewValue": 2770.5,
+        "changePercent": -0.07650000000000001,
+        "beta": 0.765
+      },
+      {
+        "securityId": 2,
+        "symbol": "ZZEF",
+        "securityName": "ZZ Equity Fund",
+        "securityType": "ETF",
+        "sector": "Diversified",
+        "currentValue": 2000,
+        "estimatedChange": -380,
+        "estimatedNewValue": 1620,
+        "changePercent": -0.19,
+        "beta": 1
+      },
+      {
+        "securityId": 13,
+        "symbol": "ZZFX",
+        "securityName": "ZZ Overseas",
+        "securityType": "Stock",
+        "sector": "Utilities",
+        "currentValue": 1500,
+        "estimatedChange": -202.5,
+        "estimatedNewValue": 1297.5,
+        "changePercent": -0.135,
+        "beta": 0.85
+      },
+      {
+        "securityId": 3,
+        "symbol": "ZZMM",
+        "securityName": "ZZ Cash Reserves",
+        "securityType": "Mutual Fund",
+        "sector": null,
+        "currentValue": 1000,
+        "estimatedChange": 0,
+        "estimatedNewValue": 1000,
+        "changePercent": 0,
+        "beta": 0
+      },
+      {
+        "securityId": 5,
+        "symbol": "ZZBF",
+        "securityName": "ZZ Bond Index",
+        "securityType": "Mutual Fund",
+        "sector": "Fixed Income",
+        "currentValue": 1000,
+        "estimatedChange": -29.554466451491844,
+        "estimatedNewValue": 970.4455335485081,
+        "changePercent": -0.029554466451491845,
+        "beta": 0,
+        "rateDurationYears": 6,
+        "rateDurationSource": "fund-stored"
+      },
+      {
+        "securityId": 6,
+        "symbol": "ZZ3X",
+        "securityName": "ZZ UltraPro 3X Index Fund",
+        "securityType": "ETF",
+        "sector": "Technology",
+        "currentValue": 1000,
+        "estimatedChange": -862.4999999999999,
+        "estimatedNewValue": 137.5000000000001,
+        "changePercent": -0.8624999999999999,
+        "beta": 1.15
+      },
+      {
+        "securityId": 7,
+        "symbol": "ZZ2X",
+        "securityName": "ZZ Ultra 2X Fund",
+        "securityType": "ETF",
+        "sector": "Energy",
+        "currentValue": 1000,
+        "estimatedChange": 0,
+        "estimatedNewValue": 1000,
+        "changePercent": 0,
+        "beta": 1,
+        "leveragedFundUnmodelled": true
+      },
+      {
+        "securityId": 4,
+        "symbol": "ZZBOND31",
+        "securityName": "ZZ Corp 4% 2031",
+        "securityType": "Bond",
+        "sector": null,
+        "currentValue": 980,
+        "estimatedChange": -29.205300159379853,
+        "estimatedNewValue": 950.7946998406202,
+        "changePercent": -0.02980132669324475,
+        "beta": 0.1,
+        "rateDurationYears": 4,
+        "rateDurationSource": "stored"
+      },
+      {
+        "securityId": 8,
+        "symbol": "ZZST P95",
+        "securityName": null,
+        "securityType": "Option",
+        "sector": "Technology",
+        "currentValue": 600,
+        "estimatedChange": 4724.999999999868,
+        "estimatedNewValue": 5324.999999999868,
+        "changePercent": 7.874999999999781,
+        "beta": 1.265,
+        "ivSource": "own-price",
+        "underlyingMove": -0.31625
+      },
+      {
+        "securityId": 10,
+        "symbol": "ZZST P90",
+        "securityName": null,
+        "securityType": "Option",
+        "sector": "Technology",
+        "currentValue": 0,
+        "estimatedChange": 0,
+        "estimatedNewValue": 0,
+        "changePercent": 0,
+        "beta": 1.265,
+        "unmodelledReason": "no-option-price",
+        "underlyingMove": 0
+      },
+      {
+        "securityId": 9,
+        "symbol": "ZZST C110",
+        "securityName": null,
+        "securityType": "Option",
+        "sector": "Technology",
+        "currentValue": -200,
+        "estimatedChange": 199.97224793218064,
+        "estimatedNewValue": -0.0277520678193639,
+        "changePercent": -0.9998612396609032,
+        "beta": 1.265,
+        "ivSource": "own-price",
+        "underlyingMove": -0.31625
+      },
+      {
+        "securityId": 12,
+        "symbol": "ZZSH",
+        "securityName": "ZZ Shorted",
+        "securityType": "Stock",
+        "sector": "Consumer Discretionary",
+        "currentValue": -4000,
+        "estimatedChange": 459.99999999999994,
+        "estimatedNewValue": -3540,
+        "changePercent": -0.11499999999999999,
+        "beta": 1.15
+      }
+    ],
+    "biggestLosers": [
+      {
+        "securityId": 1,
+        "symbol": "ZZST",
+        "securityName": "ZZ Systems",
+        "securityType": "Stock",
+        "sector": "Technology",
+        "currentValue": 5000,
+        "estimatedChange": -1581.2499999999998,
+        "estimatedNewValue": 3418.75,
+        "changePercent": -0.31625,
+        "beta": 1.265
+      },
+      {
+        "securityId": 6,
+        "symbol": "ZZ3X",
+        "securityName": "ZZ UltraPro 3X Index Fund",
+        "securityType": "ETF",
+        "sector": "Technology",
+        "currentValue": 1000,
+        "estimatedChange": -862.4999999999999,
+        "estimatedNewValue": 137.5000000000001,
+        "changePercent": -0.8624999999999999,
+        "beta": 1.15
+      },
+      {
+        "securityId": 2,
+        "symbol": "ZZEF",
+        "securityName": "ZZ Equity Fund",
+        "securityType": "ETF",
+        "sector": "Diversified",
+        "currentValue": 2000,
+        "estimatedChange": -380,
+        "estimatedNewValue": 1620,
+        "changePercent": -0.19,
+        "beta": 1
+      },
+      {
+        "securityId": 14,
+        "symbol": "ZZLS",
+        "securityName": "ZZ Long Short Co",
+        "securityType": "Stock",
+        "sector": "Healthcare",
+        "currentValue": 3000,
+        "estimatedChange": -229.50000000000003,
+        "estimatedNewValue": 2770.5,
+        "changePercent": -0.07650000000000001,
+        "beta": 0.765
+      },
+      {
+        "securityId": 13,
+        "symbol": "ZZFX",
+        "securityName": "ZZ Overseas",
+        "securityType": "Stock",
+        "sector": "Utilities",
+        "currentValue": 1500,
+        "estimatedChange": -202.5,
+        "estimatedNewValue": 1297.5,
+        "changePercent": -0.135,
+        "beta": 0.85
+      }
+    ],
+    "biggestWinners": [
+      {
+        "securityId": 8,
+        "symbol": "ZZST P95",
+        "securityName": null,
+        "securityType": "Option",
+        "sector": "Technology",
+        "currentValue": 600,
+        "estimatedChange": 4724.999999999868,
+        "estimatedNewValue": 5324.999999999868,
+        "changePercent": 7.874999999999781,
+        "beta": 1.265,
+        "ivSource": "own-price",
+        "underlyingMove": -0.31625
+      },
+      {
+        "securityId": 12,
+        "symbol": "ZZSH",
+        "securityName": "ZZ Shorted",
+        "securityType": "Stock",
+        "sector": "Consumer Discretionary",
+        "currentValue": -4000,
+        "estimatedChange": 459.99999999999994,
+        "estimatedNewValue": -3540,
+        "changePercent": -0.11499999999999999,
+        "beta": 1.15
+      },
+      {
+        "securityId": 9,
+        "symbol": "ZZST C110",
+        "securityName": null,
+        "securityType": "Option",
+        "sector": "Technology",
+        "currentValue": -200,
+        "estimatedChange": 199.97224793218064,
+        "estimatedNewValue": -0.0277520678193639,
+        "changePercent": -0.9998612396609032,
+        "beta": 1.265,
+        "ivSource": "own-price",
+        "underlyingMove": -0.31625
+      }
+    ],
+    "optionsUnmodelled": {
+      "count": 1,
+      "valueShare": 0,
+      "unpricedCount": 1
+    },
+    "bondsUnmodelled": {
+      "count": 0,
+      "valueShare": 0,
+      "fundCount": 0
+    },
+    "rateHedgesUnmodelled": {
+      "count": 0,
+      "valueShare": 0,
+      "symbols": []
+    },
+    "leveragedFundsUnmodelled": {
+      "count": 1,
+      "valueShare": 0.046992481203007516,
+      "symbols": [
+        "ZZ2X"
+      ]
+    },
+    "fundsWithoutSectorWeights": [
+      "ZZ2X"
+    ]
+  },
+  {
+    "scenario": {
+      "id": "custom-pin-c",
+      "name": "Pin C",
+      "description": "pin",
+      "category": "custom",
+      "marketMove": -0.1,
+      "rateMove": 50,
+      "sectorMoves": {
+        "Technology": -0.25
+      }
+    },
+    "currentPortfolioValue": 17080,
+    "estimatedPortfolioValue": 19199.990233388995,
+    "estimatedChange": 2119.9902333889963,
+    "estimatedChangePercent": 0.12412120804385224,
+    "positionImpacts": [
+      {
+        "securityId": 1,
+        "symbol": "ZZST",
+        "securityName": "ZZ Systems",
+        "securityType": "Stock",
+        "sector": "Technology",
+        "currentValue": 5000,
+        "estimatedChange": -1581.2499999999998,
+        "estimatedNewValue": 3418.75,
+        "changePercent": -0.31625,
+        "beta": 1.265
+      },
+      {
+        "securityId": 14,
+        "symbol": "ZZLS",
+        "securityName": "ZZ Long Short Co",
+        "securityType": "Stock",
+        "sector": "Healthcare",
+        "currentValue": 5000,
+        "estimatedChange": -382.50000000000006,
+        "estimatedNewValue": 4617.5,
+        "changePercent": -0.07650000000000001,
+        "beta": 0.765
+      },
+      {
+        "securityId": 2,
+        "symbol": "ZZEF",
+        "securityName": "ZZ Equity Fund",
+        "securityType": "ETF",
+        "sector": "Diversified",
+        "currentValue": 2000,
+        "estimatedChange": -380,
+        "estimatedNewValue": 1620,
+        "changePercent": -0.19,
+        "beta": 1
+      },
+      {
+        "securityId": 13,
+        "symbol": "ZZFX",
+        "securityName": "ZZ Overseas",
+        "securityType": "Stock",
+        "sector": "Utilities",
+        "currentValue": 1500,
+        "estimatedChange": -202.5,
+        "estimatedNewValue": 1297.5,
+        "changePercent": -0.135,
+        "beta": 0.85
+      },
+      {
+        "securityId": 3,
+        "symbol": "ZZMM",
+        "securityName": "ZZ Cash Reserves",
+        "securityType": "Mutual Fund",
+        "sector": null,
+        "currentValue": 1000,
+        "estimatedChange": 0,
+        "estimatedNewValue": 1000,
+        "changePercent": 0,
+        "beta": 0
+      },
+      {
+        "securityId": 5,
+        "symbol": "ZZBF",
+        "securityName": "ZZ Bond Index",
+        "securityType": "Mutual Fund",
+        "sector": "Fixed Income",
+        "currentValue": 1000,
+        "estimatedChange": -29.554466451491844,
+        "estimatedNewValue": 970.4455335485081,
+        "changePercent": -0.029554466451491845,
+        "beta": 0,
+        "rateDurationYears": 6,
+        "rateDurationSource": "fund-stored"
+      },
+      {
+        "securityId": 4,
+        "symbol": "ZZBOND31",
+        "securityName": "ZZ Corp 4% 2031",
+        "securityType": "Bond",
+        "sector": null,
+        "currentValue": 980,
+        "estimatedChange": -29.205300159379853,
+        "estimatedNewValue": 950.7946998406202,
+        "changePercent": -0.02980132669324475,
+        "beta": 0.1,
+        "rateDurationYears": 4,
+        "rateDurationSource": "stored"
+      },
+      {
+        "securityId": 8,
+        "symbol": "ZZST P95",
+        "securityName": null,
+        "securityType": "Option",
+        "sector": "Technology",
+        "currentValue": 600,
+        "estimatedChange": 4724.999999999868,
+        "estimatedNewValue": 5324.999999999868,
+        "changePercent": 7.874999999999781,
+        "beta": 1.265,
+        "ivSource": "own-price",
+        "underlyingMove": -0.31625
+      },
+      {
+        "securityId": 10,
+        "symbol": "ZZST P90",
+        "securityName": null,
+        "securityType": "Option",
+        "sector": "Technology",
+        "currentValue": 0,
+        "estimatedChange": 0,
+        "estimatedNewValue": 0,
+        "changePercent": 0,
+        "beta": 1.265,
+        "unmodelledReason": "no-option-price",
+        "underlyingMove": 0
+      }
+    ],
+    "biggestLosers": [
+      {
+        "securityId": 1,
+        "symbol": "ZZST",
+        "securityName": "ZZ Systems",
+        "securityType": "Stock",
+        "sector": "Technology",
+        "currentValue": 5000,
+        "estimatedChange": -1581.2499999999998,
+        "estimatedNewValue": 3418.75,
+        "changePercent": -0.31625,
+        "beta": 1.265
+      },
+      {
+        "securityId": 14,
+        "symbol": "ZZLS",
+        "securityName": "ZZ Long Short Co",
+        "securityType": "Stock",
+        "sector": "Healthcare",
+        "currentValue": 5000,
+        "estimatedChange": -382.50000000000006,
+        "estimatedNewValue": 4617.5,
+        "changePercent": -0.07650000000000001,
+        "beta": 0.765
+      },
+      {
+        "securityId": 2,
+        "symbol": "ZZEF",
+        "securityName": "ZZ Equity Fund",
+        "securityType": "ETF",
+        "sector": "Diversified",
+        "currentValue": 2000,
+        "estimatedChange": -380,
+        "estimatedNewValue": 1620,
+        "changePercent": -0.19,
+        "beta": 1
+      },
+      {
+        "securityId": 13,
+        "symbol": "ZZFX",
+        "securityName": "ZZ Overseas",
+        "securityType": "Stock",
+        "sector": "Utilities",
+        "currentValue": 1500,
+        "estimatedChange": -202.5,
+        "estimatedNewValue": 1297.5,
+        "changePercent": -0.135,
+        "beta": 0.85
+      },
+      {
+        "securityId": 5,
+        "symbol": "ZZBF",
+        "securityName": "ZZ Bond Index",
+        "securityType": "Mutual Fund",
+        "sector": "Fixed Income",
+        "currentValue": 1000,
+        "estimatedChange": -29.554466451491844,
+        "estimatedNewValue": 970.4455335485081,
+        "changePercent": -0.029554466451491845,
+        "beta": 0,
+        "rateDurationYears": 6,
+        "rateDurationSource": "fund-stored"
+      }
+    ],
+    "biggestWinners": [
+      {
+        "securityId": 8,
+        "symbol": "ZZST P95",
+        "securityName": null,
+        "securityType": "Option",
+        "sector": "Technology",
+        "currentValue": 600,
+        "estimatedChange": 4724.999999999868,
+        "estimatedNewValue": 5324.999999999868,
+        "changePercent": 7.874999999999781,
+        "beta": 1.265,
+        "ivSource": "own-price",
+        "underlyingMove": -0.31625
+      }
+    ],
+    "optionsUnmodelled": {
+      "count": 1,
+      "valueShare": 0,
+      "unpricedCount": 1
+    },
+    "bondsUnmodelled": {
+      "count": 0,
+      "valueShare": 0,
+      "fundCount": 0
+    },
+    "rateHedgesUnmodelled": {
+      "count": 0,
+      "valueShare": 0,
+      "symbols": []
+    },
+    "leveragedFundsUnmodelled": {
+      "count": 0,
+      "valueShare": 0,
+      "symbols": []
+    },
+    "fundsWithoutSectorWeights": []
+  },
+  {
+    "scenario": {
+      "id": "custom-pin-c",
+      "name": "Pin C",
+      "description": "pin",
+      "category": "custom",
+      "marketMove": -0.1,
+      "rateMove": 50,
+      "sectorMoves": {
+        "Technology": -0.25
+      }
+    },
+    "currentPortfolioValue": 0,
+    "estimatedPortfolioValue": 0,
+    "estimatedChange": 0,
+    "estimatedChangePercent": 0,
+    "positionImpacts": [],
+    "biggestLosers": [],
+    "biggestWinners": [],
+    "optionsUnmodelled": {
+      "count": 0,
+      "valueShare": 0,
+      "unpricedCount": 0
+    },
+    "bondsUnmodelled": {
+      "count": 0,
+      "valueShare": 0,
+      "fundCount": 0
+    },
+    "rateHedgesUnmodelled": {
+      "count": 0,
+      "valueShare": 0,
+      "symbols": []
+    },
+    "leveragedFundsUnmodelled": {
+      "count": 0,
+      "valueShare": 0,
+      "symbols": []
+    },
+    "fundsWithoutSectorWeights": []
+  }
+]
