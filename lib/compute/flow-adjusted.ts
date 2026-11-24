@@ -14,6 +14,7 @@
 
 import type Database from "better-sqlite3";
 import { LIVE_SNAPSHOT_SOURCES } from "@/lib/db/live-sources";
+import { transactionAmountUsdSql } from "@/lib/queries/transaction-amount-currency";
 
 export interface SeriesPoint {
   date: string;
@@ -96,6 +97,69 @@ export function fetchNetFlowsByDate(
        ORDER BY trade_date ASC`
     )
     .all(startDate, endDate, ...(accountIds ?? [])) as { date: string; net: number }[];
+}
+
+/**
+ * fetchNetFlowsByDate in USD: the same rows (is_external_flow = 1), the same
+ * (startDate, endDate] window, the same scope rule (`undefined` every
+ * account, `[]` none) and the same sign rule (a TRANSFER_OUT is -ABS), with
+ * each amount read through `transactionAmountUsdSql`, the one
+ * transaction-currency rule: a USD-stored row as is, a native row (a
+ * foreign security's in-kind leg) times its `fx_rates` rate.
+ *
+ * A native row with no rate on file is never summed (its native figure would
+ * read as dollars); it is counted in `unconvertedCount` so the caller can
+ * refuse a figure built without it.
+ *
+ * fetchNetFlowsByDate itself is unchanged: its readers (risk index, TWR,
+ * XIRR, monthly performance, the cash stepper) keep their figures.
+ */
+export function fetchNetFlowsUsdByDate(
+  db: Database.Database,
+  accountIds: number[] | undefined,
+  startDate: string,
+  endDate: string
+): { flows: { date: string; net: number }[]; unconvertedCount: number } {
+  const hasTable = db
+    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'transactions'")
+    .get();
+  if (!hasTable) return { flows: [], unconvertedCount: 0 };
+
+  if (accountIds && accountIds.length === 0) return { flows: [], unconvertedCount: 0 };
+  const accountFilter = accountIds
+    ? `AND t.account_id IN (${accountIds.map(() => "?").join(",")})`
+    : "";
+
+  const usd = transactionAmountUsdSql("t", "s", "fx");
+  const signedUsd = `CASE WHEN t.type = 'TRANSFER_OUT' THEN -ABS(${usd}) ELSE ${usd} END`;
+  const params = [startDate, endDate, ...(accountIds ?? [])];
+  const from = `FROM transactions t
+       LEFT JOIN securities s ON s.id = t.security_id
+       LEFT JOIN fx_rates fx ON fx.currency = s.currency
+       WHERE t.is_external_flow = 1
+         AND t.trade_date > ? AND t.trade_date <= ?
+         ${accountFilter}`;
+
+  const flows = db
+    .prepare(
+      `SELECT t.trade_date AS date, SUM(${signedUsd}) AS net
+       ${from}
+       GROUP BY t.trade_date
+       HAVING SUM(${signedUsd}) != 0
+       ORDER BY t.trade_date ASC`
+    )
+    .all(...params) as { date: string; net: number }[];
+
+  const { n } = db
+    .prepare(
+      `SELECT COUNT(*) AS n
+       ${from}
+         AND t.amount IS NOT NULL AND t.amount != 0
+         AND ${usd} IS NULL`
+    )
+    .get(...params) as { n: number };
+
+  return { flows, unconvertedCount: n };
 }
 
 /**
