@@ -117,3 +117,51 @@ export function upsertOhlcvBars(
 
   return { inserted, rejected: rejectedBars.length };
 }
+
+/** Result of a {@link replaceDailyBarsInWindow} call. */
+export interface ReplaceDailyBarsResult extends UpsertOhlcvBarsResult {
+  /** Daily rows dated BEFORE the window that were deleted (only with `deleteOlderDailyBars`). */
+  olderDeleted: number;
+}
+
+/**
+ * Replace a security's daily bars from `startDate` on, in one transaction
+ * (Gains at risk daily-bar capture, ruling C2: a change of adjustment basis,
+ * such as a split TWS has applied to its history since the bars were stored).
+ *
+ * Deletes the security's `'1 day'` rows dated on or after `startDate`, then
+ * writes `bars` through the same bad-bar guard as {@link upsertOhlcvBars}.
+ * Rows of other bar sizes are never touched. Rows dated before `startDate`
+ * are kept, unless `opts.deleteOlderDailyBars` is set: after a detected basis
+ * change those older daily rows are on the old basis (cached market data,
+ * refetchable from the broker), and keeping them would put a cliff in the
+ * Charts series, so the capture deletes them in the same transaction
+ * (controller ruling, 2026-11-24, reversible).
+ *
+ * When no bar passes the guard nothing is deleted: an empty or wholly
+ * corrupt answer from the broker must never wipe the stored window.
+ */
+export function replaceDailyBarsInWindow(
+  db: Database.Database,
+  securityId: number,
+  startDate: string,
+  bars: Array<OhlcvBar & { wap?: number | null; tradeCount?: number | null }>,
+  opts: { deleteOlderDailyBars?: boolean } = {},
+): ReplaceDailyBarsResult {
+  const sane = bars.filter((b) => isSaneBar(b));
+  if (sane.length === 0) return { inserted: 0, rejected: bars.length, olderDeleted: 0 };
+  let result: ReplaceDailyBarsResult = { inserted: 0, rejected: 0, olderDeleted: 0 };
+  db.transaction(() => {
+    db.prepare(
+      "DELETE FROM ohlcv_bars WHERE security_id = ? AND bar_size = '1 day' AND bar_date >= ?",
+    ).run(securityId, startDate);
+    let olderDeleted = 0;
+    if (opts.deleteOlderDailyBars) {
+      olderDeleted = db
+        .prepare("DELETE FROM ohlcv_bars WHERE security_id = ? AND bar_size = '1 day' AND bar_date < ?")
+        .run(securityId, startDate).changes;
+    }
+    result = { ...upsertOhlcvBars(db, securityId, "1 day", bars), olderDeleted };
+  })();
+  return result;
+}

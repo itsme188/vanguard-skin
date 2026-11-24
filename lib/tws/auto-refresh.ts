@@ -9,6 +9,8 @@
  *   4. computeDailyValuations()— recompute with fresh prices (instant)
  *   5. fetchBenchmarkPrices()  — benchmark ETFs from TWS, incremental (full only)
  *   5b. fetchBenchmarkClosesFromYahoo() — TWS-free benchmark top-off (both tiers)
+ *   6. runLevelScanCycle()     — crossed levels + alerts
+ *   7. runDailyBarCapture()    — daily-bar capture, started and NOT awaited (both tiers)
  *
  * Each step catches its own errors and continues — partial success is fine.
  * Uses sync-state.ts for mutex and progress tracking.
@@ -44,6 +46,8 @@ import { runLevelScanCycle } from "../alerts/scan-cycle";
 import { getPendingOptionUnderlyings } from "./option-underlyings";
 import { todayET } from "../calendar/date-utils";
 import { cashEquivalentSecurityTypeSql } from "../compute/cash-equivalents";
+import { getIbApi } from "./client";
+import { runDailyBarCapture } from "./daily-bar-capture";
 
 export type RefreshLevel = "full" | "quick";
 
@@ -412,6 +416,29 @@ export async function runAutoRefresh(
       const msg = err instanceof Error ? err.message : "Alert detection failed";
       errors.push(msg);
       console.error("[auto-refresh] Alert detection error:", msg);
+    }
+
+    // ── Step 7: Daily-bar capture (both tiers, only while connected) ──
+    // Fetches true daily closes for held names, option underlyings, the
+    // Gains at risk drivers and seeded tracked indexes, at most 20 per batch
+    // and one batch per 25 minutes (lib/tws/daily-bar-capture.ts). Started
+    // and NOT awaited, so it can never delay or fail the sync; it never adds
+    // to this sync's errors and its log carries counts only.
+    if (getIbApi()) {
+      void runDailyBarCapture(db)
+        .then((r) => {
+          if (r.skippedReason) return;
+          console.log(
+            `[auto-refresh] Daily bars: ${r.written}/${r.attempted} captured, ${r.basisChanges} basis changes, ` +
+              `${r.failed} failed, ${r.doneToday} done today`,
+          );
+        })
+        .catch((err) => {
+          console.error(
+            "[auto-refresh] Daily-bar capture error:",
+            err instanceof Error ? err.name : typeof err,
+          );
+        });
     }
 
     // ── Done ───────────────────────────────────────────────────

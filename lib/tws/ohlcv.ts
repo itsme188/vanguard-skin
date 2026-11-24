@@ -5,6 +5,7 @@ import { RateLimiter } from "./rate-limiter";
 import { mapSecurityType } from "./security-type-map";
 import { getLatestOhlcvDate } from "@/lib/queries/ohlcv";
 import { upsertOhlcvBars } from "@/lib/mutations/ohlcv";
+import { isMarketClosed } from "@/lib/calendar/market-holidays";
 import type { OhlcvBar } from "./types";
 
 /** Reuse the same rate limiter on globalThis to survive Turbopack HMR reloads. */
@@ -39,13 +40,45 @@ export interface FetchOhlcvOptions {
   durationStr?: string; // e.g. "1 Y", "6 M", "30 D"
   incremental?: boolean; // only fetch gap since last stored bar
   onProgress?: (msg: string) => void;
+  /**
+   * Daily-bar capture only (Gains at risk, ruling C1). Bars dated after this
+   * `YYYY-MM-DD`, and bars dated on a closed market day, are dropped before
+   * anything is stored or returned: a request ending "now" returns today's
+   * bar while the session is still open, and that bar is not a close.
+   * Absent: every bar is kept, exactly as before (the Charts route).
+   */
+  maxBarDate?: string;
+  /**
+   * `false` returns the fetched bars without writing them, so the caller can
+   * compare them with what is stored before deciding how to write (the
+   * daily-bar capture, ruling C2). Absent or `true`: stored, as before.
+   */
+  store?: boolean;
 }
 
+/** A fetched bar, with the broker's extra fields kept for the writer. */
+export type FetchedOhlcvBar = OhlcvBar & { wap?: number | null; tradeCount?: number | null };
+
 export interface FetchOhlcvResult {
-  bars: OhlcvBar[];
+  /**
+   * With `store: false`, the fetched bars themselves (after `maxBarDate`).
+   * Otherwise the full stored set for the security, as before.
+   */
+  bars: FetchedOhlcvBar[];
   barsInserted: number;
   fromCache: boolean;
   symbol: string;
+}
+
+/**
+ * The bars of a daily series that may be stored: dated on or before
+ * `maxBarDate` and on a day the market was open. Order is kept.
+ */
+export function storableDailyBars<T extends { date: string }>(bars: T[], maxBarDate: string): T[] {
+  return bars.filter((b) => {
+    const day = b.date.slice(0, 10);
+    return day <= maxBarDate && !isMarketClosed(day);
+  });
 }
 
 /**
@@ -148,7 +181,7 @@ export async function fetchOhlcvBars(
   ]);
 
   // Transform IB bars to our format
-  const bars: Array<OhlcvBar & { wap?: number | null; tradeCount?: number | null }> = [];
+  let bars: FetchedOhlcvBar[] = [];
   for (const bar of rawBars) {
     if (!bar.time || bar.close == null) continue;
     bars.push({
@@ -161,6 +194,15 @@ export async function fetchOhlcvBars(
       wap: bar.WAP ?? null,
       tradeCount: bar.count ?? null,
     });
+  }
+
+  if (options.maxBarDate !== undefined) {
+    bars = storableDailyBars(bars, options.maxBarDate);
+  }
+
+  if (options.store === false) {
+    options.onProgress?.(`${sec.symbol}: fetched ${bars.length} bars (not stored)`);
+    return { bars, barsInserted: 0, fromCache: false, symbol: sec.symbol };
   }
 
   // Store in database

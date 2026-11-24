@@ -427,3 +427,45 @@ export function get52WeekRange(
     endDate: row.endDate,
   };
 }
+
+/**
+ * Earliest and latest PRICED daily bar of a security (Gains at risk daily-bar
+ * capture, ruling C1). Read through `PRICED_BAR_SQL`, so a corrupt trailing
+ * row (a zero close) never counts as the latest bar and never marks a
+ * security as captured. Null when the security has no priced daily bar.
+ */
+export function getPricedDailyBarRange(
+  db: Database.Database,
+  securityId: number,
+): { earliest: string; latest: string } | null {
+  const row = db
+    .prepare(
+      `SELECT MIN(bar_date) AS earliest, MAX(bar_date) AS latest
+         FROM ohlcv_bars
+        WHERE security_id = ? AND bar_size = '1 day' AND ${PRICED_BAR_SQL}`,
+    )
+    .get(securityId) as { earliest: string | null; latest: string | null } | undefined;
+  if (!row || row.earliest == null || row.latest == null) return null;
+  return { earliest: row.earliest, latest: row.latest };
+}
+
+/**
+ * Stored closes of a security's PRICED daily bars dated on or after
+ * `fromDate`, keyed by bar date. Used by the daily-bar capture to compare a
+ * refetched overlap with what is stored (ruling C2).
+ */
+export function getPricedDailyCloses(
+  db: Database.Database,
+  securityId: number,
+  fromDate: string,
+): Map<string, number> {
+  const rows = db
+    .prepare(
+      `SELECT bar_date AS date, close
+         FROM ohlcv_bars
+        WHERE security_id = ? AND bar_size = '1 day' AND bar_date >= ? AND ${PRICED_BAR_SQL}
+        ORDER BY bar_date ASC`,
+    )
+    .all(securityId, fromDate) as { date: string; close: number }[];
+  return new Map(rows.map((r) => [r.date, r.close]));
+}
