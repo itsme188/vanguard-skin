@@ -67,6 +67,7 @@ export function PrintingPreferences() {
             type="button"
             disabled={saving || !prefs || printerDraft === null}
             onClick={savePrinter}
+            aria-label="Save worksheet printer"
             className={`px-3 py-1 text-xs font-medium rounded-lg ${CHIP_TONE_CLASSES.gold} hover:bg-gold/30 disabled:opacity-30 disabled:cursor-not-allowed transition-colors`}
           >
             Save
@@ -96,6 +97,7 @@ export function PrintingPreferences() {
             type="button"
             disabled={saving || !prefs || pdftotextDraft === null}
             onClick={savePdftotext}
+            aria-label="Save pdftotext program"
             className={`px-3 py-1 text-xs font-medium rounded-lg ${CHIP_TONE_CLASSES.gold} hover:bg-gold/30 disabled:opacity-30 disabled:cursor-not-allowed transition-colors`}
           >
             Save

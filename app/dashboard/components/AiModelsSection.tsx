@@ -222,6 +222,7 @@ export function AiModelsSection() {
                       }}
                       placeholder={row.defaultModel}
                       spellCheck={false}
+                      aria-label={`Model for ${row.key}`}
                       className={`flex-1 min-w-0 px-2 py-1 text-xs font-mono bg-raised border rounded text-ink focus:outline-none focus:border-gold ${
                         isDirty ? "border-gold/50" : "border-edge"
                       }`}
@@ -230,6 +231,7 @@ export function AiModelsSection() {
                       type="button"
                       onClick={() => handleSave(row)}
                       disabled={isSaving}
+                      aria-label={`${isSaving ? "Saving" : "Save"} model for ${row.key}`}
                       className={`px-2 py-1 text-[11px] font-medium rounded ${CHIP_TONE_CLASSES.gold} hover:bg-gold/30 disabled:opacity-30 disabled:cursor-not-allowed transition-colors whitespace-nowrap`}
                     >
                       {isSaving ? "Saving…" : "Save"}
@@ -239,6 +241,7 @@ export function AiModelsSection() {
                         type="button"
                         onClick={() => patchOverride(row.key, null)}
                         disabled={isSaving}
+                        aria-label={`Reset model for ${row.key}`}
                         className="px-2 py-1 text-[11px] font-medium rounded bg-raised border border-edge text-ink-dim hover:text-ink disabled:opacity-30 disabled:cursor-not-allowed transition-colors whitespace-nowrap"
                         title="Clear the override and fall back to the default model"
                       >

@@ -148,6 +148,8 @@ function parseSymbols(json: string | null): string[] {
 
 interface UploadZoneProps {
   onUploadComplete: () => void;
+  /** The document the list last deleted, or null. */
+  deletedDocumentId: number | null;
 }
 
 function formatElapsed(seconds: number): string {
@@ -165,13 +167,24 @@ function phaseFor(elapsed: number, filename: string): string {
   return "Claude is still working — dense reports with graphics can take 3-5 min";
 }
 
-function UploadZone({ onUploadComplete }: UploadZoneProps) {
+function UploadZone({ onUploadComplete, deletedDocumentId }: UploadZoneProps) {
   const [dragOver, setDragOver] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [currentFilename, setCurrentFilename] = useState<string | null>(null);
   const [elapsed, setElapsed] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  // Set when the error on screen is a refused repeat upload: the id of the
+  // document it tells the owner to delete.
+  const [duplicateOfId, setDuplicateOfId] = useState<number | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  // "Delete that document first" has been followed once that document is
+  // gone, so the sentence goes with it. Any other error stays.
+  useEffect(() => {
+    if (deletedDocumentId === null || deletedDocumentId !== duplicateOfId) return;
+    setError(null);
+    setDuplicateOfId(null);
+  }, [deletedDocumentId, duplicateOfId]);
 
   // Live elapsed timer while uploading.
   useEffect(() => {
@@ -186,6 +199,7 @@ function UploadZone({ onUploadComplete }: UploadZoneProps) {
   const handleFile = useCallback(
     async (file: File) => {
       setError(null);
+      setDuplicateOfId(null);
 
       if (!file.name.toLowerCase().endsWith(".pdf") && !file.type.includes("pdf")) {
         setError("Only PDF files are supported.");
@@ -215,6 +229,9 @@ function UploadZone({ onUploadComplete }: UploadZoneProps) {
             snippet
               ? `${baseMsg}\n\nModel output snippet:\n${snippet}`
               : baseMsg,
+          );
+          setDuplicateOfId(
+            typeof body.existing_id === "number" ? body.existing_id : null,
           );
           return;
         }
@@ -981,6 +998,7 @@ export function ResearchDocumentsView({
   const searchParams = useSearchParams();
   const [documents, setDocuments] = useState<ResearchDocumentSummary[]>([]);
   const [total, setTotal] = useState(0);
+  const [deletedDocumentId, setDeletedDocumentId] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [documentType, setDocumentType] = useState<ResearchDocumentType | "">("");
@@ -1061,7 +1079,7 @@ export function ResearchDocumentsView({
 
   return (
     <div className="space-y-4">
-      <UploadZone onUploadComplete={fetchDocuments} />
+      <UploadZone onUploadComplete={fetchDocuments} deletedDocumentId={deletedDocumentId} />
 
       <InboxForwardCard onIngested={fetchDocuments} />
 
@@ -1111,8 +1129,11 @@ export function ResearchDocumentsView({
               key={doc.id}
               doc={doc}
               symbolMap={symbolMap}
-              onDeleted={fetchDocuments}
               onTagsChanged={handleTagsChanged}
+              onDeleted={() => {
+                setDeletedDocumentId(doc.id);
+                fetchDocuments();
+              }}
             />
           ))}
         </div>

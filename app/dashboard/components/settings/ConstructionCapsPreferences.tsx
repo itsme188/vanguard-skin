@@ -166,6 +166,7 @@ export function ConstructionCapsPreferences() {
                     type="button"
                     onClick={() => saveScope(scope)}
                     disabled={saving || !dirty}
+                    aria-label={`Save ${label} limits`}
                     className={`ml-auto px-3 py-1 text-xs font-medium rounded-lg ${CHIP_TONE_CLASSES.gold} hover:bg-gold/30 disabled:opacity-30 disabled:cursor-not-allowed transition-colors`}
                   >
                     Save
