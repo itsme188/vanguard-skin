@@ -133,7 +133,7 @@ export function formatStrike(v: number): string {
   return Number.isFinite(v) ? String(Number(v.toFixed(4))) : "—";
 }
 
-/** A fall as a plain percent of the index: -0.014 → "1.4%". */
+/** A move as a plain percent, without its sign: -0.014 → "1.4%". */
 function fallPct(move: number): string {
   return `${Number((Math.abs(move) * 100).toFixed(1))}%`;
 }
@@ -387,39 +387,48 @@ export function noMoveCostSentence(c: Pick<GainsAtRiskTrialCase, "noMoveCostUsd"
     : { before: "With no move, the trial positions gain", usd: -v, after: "by that date." };
 }
 
-/** A crossing this close to zero is at the first fall shown. */
+/** A crossing this close to zero is at the first fall (or rise) shown. */
 const AT_FIRST_FALL = 0.0005;
 
 /**
  * P5: one sentence per pattern of the difference across the falls shown.
  * `tableMoves` are the table's rows: a crossing deeper than every row is on
  * the chart only, so the sentence points there instead.
+ *
+ * Step 3 (D5, P7): `c.crossingDirection` "rise" (single-name mode, a positive
+ * selected move) reads the same patterns across the rises shown, and names
+ * the driver's rise. Absent or "fall" is the sentence as it always was.
  */
 export function crossingSentence(
-  c: Pick<GainsAtRiskTrialCase, "crossing">,
+  c: Pick<GainsAtRiskTrialCase, "crossing" | "crossingDirection">,
   driver: string,
   tableMoves: readonly number[] = TABLE_MOVES,
 ): string | null {
   const x = c.crossing;
+  const rise = c.crossingDirection === "rise";
+  const noun = rise ? "rise" : "fall";
+  const verb = rise ? "rises" : "falls";
   const nearZero = (m: number) => Math.abs(m) < AT_FIRST_FALL;
   switch (x.kind) {
     case "better-at-every-move":
-      return "They do better at every fall shown.";
+      return `They do better at every ${noun} shown.`;
     case "worse-at-every-move":
-      return "They cost more than they return at every fall shown.";
+      return `They cost more than they return at every ${noun} shown.`;
     case "pays-beyond":
       return nearZero(x.move)
-        ? "They pay for themselves from the first fall shown."
-        : `They pay for themselves once ${driver} falls more than ${fallPct(x.move)}.`;
+        ? `They pay for themselves from the first ${noun} shown.`
+        : `They pay for themselves once ${driver} ${verb} more than ${fallPct(x.move)}.`;
     case "helps-until":
       return nearZero(x.move)
-        ? "They cost more than they return from the first fall shown."
-        : `They help in a small fall and cost more beyond ${fallPct(x.move)}.`;
+        ? `They cost more than they return from the first ${noun} shown.`
+        : `They help in a small ${noun} and cost more beyond ${fallPct(x.move)}.`;
     case "changes-more-than-once": {
       const [a, b] = [Math.abs(x.firstHelpFrom), Math.abs(x.firstHelpTo)].sort((p, q) => p - q);
-      const deepestRow = Math.max(0, ...tableMoves.map((m) => Math.abs(m)));
+      // The furthest table row on this side of zero.
+      const sideRows = tableMoves.filter((m) => (rise ? m >= 0 : m <= 0));
+      const deepestRow = Math.max(0, ...sideRows.map((m) => Math.abs(m)));
       const look = b > deepestRow + 1e-9 ? "see the chart" : "read the table";
-      const span = nearZero(a) ? `from the first fall shown to ${fallPct(b)}` : `between ${fallPct(a)} and ${fallPct(b)}`;
+      const span = nearZero(a) ? `from the first ${noun} shown to ${fallPct(b)}` : `between ${fallPct(a)} and ${fallPct(b)}`;
       return `They help ${span}. The picture changes more than once; ${look}.`;
     }
     case "no-trial-effect":

@@ -455,6 +455,45 @@ describe("trial positions: the two sentences under the table (P5)", () => {
   });
 });
 
+describe("trial positions: the crossing in a rise (step 3, D5, P7)", () => {
+  const rise = (crossing: GainsAtRiskTrialCase["crossing"], tableMoves?: readonly number[]) =>
+    crossingSentence(trialCase({ crossing, crossingDirection: "rise" }), "ZZA", tableMoves);
+
+  it("the six sentences, mirrored for a rise", () => {
+    expect(rise({ kind: "better-at-every-move" })).toBe("They do better at every rise shown.");
+    expect(rise({ kind: "worse-at-every-move", deepestMove: 0.4 })).toBe("They cost more than they return at every rise shown.");
+    expect(rise({ kind: "pays-beyond", move: 0.09 })).toBe("They pay for themselves once ZZA rises more than 9%.");
+    expect(rise({ kind: "helps-until", move: 0.075 })).toBe("They help in a small rise and cost more beyond 7.5%.");
+    expect(rise({ kind: "changes-more-than-once", firstHelpFrom: 0.02, firstHelpTo: 0.065 }, [-0.4, -0.2, 0, 0.2, 0.4])).toBe(
+      "They help between 2% and 6.5%. The picture changes more than once; read the table.",
+    );
+    expect(rise({ kind: "no-trial-effect" })).toBeNull();
+  });
+
+  it("near zero reads from the first rise shown", () => {
+    expect(rise({ kind: "pays-beyond", move: 0.0004 })).toBe("They pay for themselves from the first rise shown.");
+    expect(rise({ kind: "helps-until", move: 0.0002 })).toBe("They cost more than they return from the first rise shown.");
+    expect(rise({ kind: "changes-more-than-once", firstHelpFrom: 0.0003, firstHelpTo: 0.065 }, [0, 0.2])).toBe(
+      "They help from the first rise shown to 6.5%. The picture changes more than once; read the table.",
+    );
+  });
+
+  it("past the furthest rise row, it points to the chart; only the rows on that side count", () => {
+    // The fall rows reach 40%, the rise rows 20%: a help up to 30% is past the table on the rise side.
+    expect(rise({ kind: "changes-more-than-once", firstHelpFrom: 0.1, firstHelpTo: 0.3 }, [-0.4, -0.2, 0, 0.2])).toBe(
+      "They help between 10% and 30%. The picture changes more than once; see the chart.",
+    );
+  });
+
+  it("absent or fall is the sentence as it always was", () => {
+    const fall = trialCase({ crossing: { kind: "pays-beyond", move: -0.06 }, crossingDirection: "fall" });
+    expect(crossingSentence(fall, "ZZA")).toBe("They pay for themselves once ZZA falls more than 6%.");
+    expect(crossingSentence(trialCase({ crossing: { kind: "pays-beyond", move: -0.06 } }), "ZZA")).toBe(
+      "They pay for themselves once ZZA falls more than 6%.",
+    );
+  });
+});
+
 describe("trial positions: the chart rows", () => {
   const book = (move: number, bookPnlUsd: number): GainsAtRiskMoveRow => ({ move, bookPnlUsd, losersPnlUsd: 0, offsetsPnlUsd: 0 });
   it("the selected case, sweep moves only: the book as it is and the book with the trial positions", () => {

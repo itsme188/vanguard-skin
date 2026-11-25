@@ -78,9 +78,37 @@ import {
   sameFigureTextAt,
   serverPropsAction,
   TRIAL_ACCOUNT_NAME,
+  DEFAULT_SELECTED_MOVE,
+  DEFAULT_SINGLE_NAME_SELECTED_MOVE,
+  HELD_UNCHANGED_NOTE,
+  SINGLE_NAME_TABLE_MOVES,
+  betaOverridesToSend,
+  caseOnScreen,
+  customMoveBoundsPct,
+  customMoveProblemFor,
+  driverFromOptionValue,
+  driverOptionLabel,
+  driverOptionValue,
+  driverRequestFields,
+  leveragedNotLinkedText,
+  moveDirection,
+  rowSideAt,
+  sameDriverIn,
+  singleNameChartDollarDomain,
+  singleNameChartRows,
+  singleNameHeadline,
+  singleNameRowCells,
+  singleNameSweep,
+  singleNameVolNote,
+  sweepFor,
+  switchDriver,
+  tableRowMoves,
+  uniqueSortedIds,
+  type DriverChoice,
   type GainsControls,
   type GainsRequestState,
 } from "@/lib/analysis/gains-at-risk-view";
+import type { SingleNameDriverEntry } from "@/lib/compute/gains-at-risk-drivers";
 import {
   DEFAULT_ANALYSIS_SCOPE,
   GAINS_AT_RISK_DEFAULT_SCOPE,
@@ -854,7 +882,7 @@ describe("gains at risk: fix round 1", () => {
 
   it("fresh server props answer the controls only when the controls are the defaults", () => {
     const server = { driverSymbol: "QQQ" as const, valuationDate: "2026-12-31", volChangePoints: 0 };
-    const base = { ...server, custom: null, priceOverrides: {}, betaOverrides: {} };
+    const base: GainsControls = { ...server, driver: { kind: "index" }, custom: null, priceOverrides: {}, betaOverrides: {} };
     expect(serverPropsAnswerControls(base, server)).toBe(true);
     expect(serverPropsAnswerControls({ ...base, driverSymbol: "SPY" }, server)).toBe(false);
     expect(serverPropsAnswerControls({ ...base, valuationDate: "2027-01-15" }, server)).toBe(false);
@@ -1161,6 +1189,7 @@ describe("gains at risk: trial positions in the view's rules", () => {
     expect(gainsRequestReducer(s, { type: "reset", data: D, hasTrials: true })).toBe(s);
     const defaults: GainsControls = {
       driverSymbol: "QQQ",
+      driver: { kind: "index" },
       valuationDate: "2026-12-31",
       volChangePoints: 0,
       custom: null,
@@ -1192,6 +1221,261 @@ describe("gains at risk: a refused trial list in the page's words", () => {
     expect(domainProblemText("trialPositions can hold at most 12 positions.")).toBe("At most 12 trial positions can be sent at once.");
     expect(requestFailureText(400, "trialPositions must be a list.")).toBe(
       "Could not compute gains at risk. A trial position could not be read. Remove it and add it again.",
+    );
+  });
+});
+
+// ─── Step 3 (Task S5): one stock or fund as the driver ──────────
+
+const zza: SingleNameDriverEntry = {
+  symbol: "ZZA",
+  name: "ZZA Holdings",
+  securityId: 41,
+  reasons: ["held"],
+  hasContractId: true,
+};
+const zzb: SingleNameDriverEntry = { symbol: "ZZB", name: null, securityId: null, reasons: ["option-underlying"], hasContractId: false };
+const singleZza: DriverChoice = { kind: "single-name", entry: zza };
+
+function controlsOf(over: Partial<GainsControls> = {}): GainsControls {
+  return {
+    driverSymbol: "QQQ",
+    driver: { kind: "index" },
+    valuationDate: "2026-12-31",
+    volChangePoints: 0,
+    custom: null,
+    priceOverrides: {},
+    betaOverrides: {},
+    ...over,
+  };
+}
+
+function moveRow(move: number, book: number, losers: number, offsets: number, split?: GainsAtRiskMoveRow["split"]): GainsAtRiskMoveRow {
+  return { move, bookPnlUsd: book, losersPnlUsd: losers, offsetsPnlUsd: offsets, ...(split ? { split } : {}) };
+}
+
+describe("gains at risk, single-name: sweep, rows and bounds", () => {
+  it("the default sweep is 17 moves from -40% to +40% in 5% steps, written as exact decimals", () => {
+    const sweep = singleNameSweep();
+    expect(sweep).toHaveLength(17);
+    expect(sweep[0]).toBe(-0.4);
+    expect(sweep[16]).toBe(0.4);
+    expect(sweep).toContain(0);
+    expect(sweep).toContain(-0.05);
+    expect(sweep).toContain(0.35);
+    for (const m of SINGLE_NAME_TABLE_MOVES) expect(sweep).toContain(m);
+    expect(sweepFor("single-name")).toEqual(sweep);
+    expect(sweepFor("index")).toEqual(defaultSweep());
+  });
+
+  it("the request holds the sweep, the table rows and a custom row, within the move cap", () => {
+    const moves = requestMoves(singleNameSweep(), 0.63, SINGLE_NAME_TABLE_MOVES);
+    expect(moves).toHaveLength(18);
+    expect(moves[moves.length - 1]).toBe(0.63);
+    expect(requestMoves(singleNameSweep(), null, SINGLE_NAME_TABLE_MOVES)).toHaveLength(17);
+    // The index request is unchanged by the new argument's default.
+    expect(requestMoves(defaultSweep(), -0.07)).toEqual(requestMoves(defaultSweep(), -0.07, TABLE_MOVES));
+  });
+
+  it("the custom move: -80% to +100% for one name; the index rule is unchanged", () => {
+    expect(customMoveProblemFor("single-name", 1.0)).toBeNull();
+    expect(customMoveProblemFor("single-name", -0.8)).toBeNull();
+    expect(customMoveProblemFor("single-name", 0.25)).toBeNull();
+    expect(customMoveProblemFor("single-name", 1.01)).toBe("The move cannot be above +100%.");
+    expect(customMoveProblemFor("single-name", -0.81)).toBe("The move cannot be below -80%.");
+    expect(customMoveProblemFor("single-name", Number.NaN)).toMatch(/number of percent/);
+    expect(customMoveProblemFor("index", 0.1)).toBe(customMoveProblem(0.1));
+    expect(customMoveProblemFor("index", 0.1)).not.toBeNull();
+    expect(customMoveProblemFor("index", -0.07)).toBeNull();
+    expect(customMoveBoundsPct("single-name")).toEqual({ min: -80, max: 100 });
+    expect(customMoveBoundsPct("index")).toEqual({ min: -60, max: 0 });
+  });
+
+  it("the table rows: falls and rises in move order, a custom row sorted in; the index rows as before", () => {
+    expect(tableRowMoves("single-name", null)).toEqual([-0.4, -0.2, 0, 0.2, 0.4]);
+    expect(tableRowMoves("single-name", 0.1)).toEqual([-0.4, -0.2, 0, 0.1, 0.2, 0.4]);
+    expect(tableRowMoves("single-name", 0.2)).toEqual([-0.4, -0.2, 0, 0.2, 0.4]);
+    expect(tableRowMoves("index", null)).toEqual([...TABLE_MOVES]);
+    expect(tableRowMoves("index", -0.07)).toEqual([...TABLE_MOVES, -0.07]);
+  });
+
+  it("a zero selected move reads falls (D5); a positive one rises", () => {
+    expect(moveDirection(0)).toBe("fall");
+    expect(moveDirection(-0.2)).toBe("fall");
+    expect(moveDirection(0.05)).toBe("rise");
+  });
+});
+
+describe("gains at risk, single-name: the request", () => {
+  it("index mode adds nothing to the body (P8); a name with a row is sent by id, one without by symbol", () => {
+    expect(driverRequestFields({ kind: "index" })).toEqual({});
+    expect(driverRequestFields(singleZza)).toEqual({ driver: { kind: "single-name", securityId: 41 } });
+    expect(driverRequestFields({ kind: "single-name", entry: zzb })).toEqual({ driver: { kind: "single-name", symbol: "ZZB" } });
+  });
+
+  it("the owner's figures are kept but not sent in single-name mode (P2)", () => {
+    const figures = { 7: 0.8 };
+    expect(betaOverridesToSend("single-name", figures)).toEqual({});
+    expect(betaOverridesToSend("index", figures)).toBe(figures);
+  });
+
+  it("single-name mode reads the measured case whatever case was picked (P20)", () => {
+    expect(caseOnScreen("single-name", "selloff")).toBe("measured");
+    expect(caseOnScreen("index", "selloff")).toBe("selloff");
+  });
+
+  it("fresh server props never answer single-name controls", () => {
+    const server = { driverSymbol: "QQQ" as const, valuationDate: "2026-12-31", volChangePoints: 0 };
+    expect(serverPropsAnswerControls(controlsOf(), server)).toBe(true);
+    expect(serverPropsAnswerControls(controlsOf({ driver: singleZza }), server)).toBe(false);
+    expect(serverPropsAction(controlsOf({ driver: singleZza }), server, false)).toBe("ask");
+  });
+
+  it("the drivers route's body: unique ids in order", () => {
+    expect(uniqueSortedIds([9, 3, 9, 1])).toEqual([1, 3, 9]);
+    expect(uniqueSortedIds([])).toEqual([]);
+  });
+});
+
+describe("gains at risk, single-name: switching the driver", () => {
+  it("a new kind resets the custom row and the selected row; date, volatility, prices and figures are kept", () => {
+    const before = controlsOf({
+      valuationDate: "2027-03-19",
+      volChangePoints: 10,
+      custom: -0.07,
+      priceOverrides: { 5: 1.25 },
+      betaOverrides: { 7: 0.8 },
+    });
+    const to = switchDriver(before, -0.07, singleZza);
+    expect(to.controls.driver).toEqual(singleZza);
+    expect(to.controls.custom).toBeNull();
+    expect(to.selectedMove).toBe(DEFAULT_SINGLE_NAME_SELECTED_MOVE);
+    expect(to.controls.valuationDate).toBe("2027-03-19");
+    expect(to.controls.volChangePoints).toBe(10);
+    expect(to.controls.priceOverrides).toEqual({ 5: 1.25 });
+    expect(to.controls.betaOverrides).toEqual({ 7: 0.8 });
+    // The index pick is kept for the way back.
+    expect(to.controls.driverSymbol).toBe("QQQ");
+    const back = switchDriver({ ...to.controls, custom: 0.3 }, 0.3, { kind: "index" });
+    expect(back.controls.driver).toEqual({ kind: "index" });
+    expect(back.controls.custom).toBeNull();
+    expect(back.selectedMove).toBe(DEFAULT_SELECTED_MOVE);
+    expect(back.controls.betaOverrides).toEqual({ 7: 0.8 });
+  });
+
+  it("another name of the same kind keeps the custom row and the selected row", () => {
+    const on = controlsOf({ driver: singleZza, custom: 0.3 });
+    const next = switchDriver(on, 0.3, { kind: "single-name", entry: zzb });
+    expect(next.controls.custom).toBe(0.3);
+    expect(next.selectedMove).toBe(0.3);
+    expect(next.controls.driver).toEqual({ kind: "single-name", entry: zzb });
+  });
+
+  it("the select's values find their entry, and a fresh list finds the same name or says it is gone", () => {
+    expect(driverOptionValue(zza)).toBe("id:41");
+    expect(driverOptionValue(zzb)).toBe("sym:ZZB");
+    expect(driverFromOptionValue([zza, zzb], "sym:ZZB")).toBe(zzb);
+    expect(driverFromOptionValue([zza], "id:42")).toBeNull();
+    expect(driverOptionLabel(zza)).toBe("ZZA (ZZA Holdings)");
+    expect(driverOptionLabel(zzb)).toBe("ZZB");
+    const fresh = { ...zza, reasons: ["held", "trial"] as SingleNameDriverEntry["reasons"] };
+    expect(sameDriverIn([fresh], zza)).toBe(fresh);
+    expect(sameDriverIn([zzb], zza)).toBeNull();
+  });
+});
+
+describe("gains at risk, single-name: rows, headline and chart", () => {
+  it("each row uses its own direction's split; the zero row has none (P6)", () => {
+    expect(singleNameRowCells(moveRow(-0.2, -45, -48, 3, "down"))).toEqual({ loses: -48, offsets: 3, book: -45 });
+    expect(singleNameRowCells(moveRow(0.2, 38, -9, 47, "up"))).toEqual({ loses: -9, offsets: 47, book: 38 });
+    expect(singleNameRowCells(moveRow(0, -1.2, 0, 0, "none"))).toEqual({ loses: null, offsets: null, book: -1.2 });
+  });
+
+  it("the headline: the dollar change always; the share only on a loss, with a positive gain the statements do not contradict", () => {
+    const g = gain(400, "agrees");
+    const loss = singleNameHeadline(moveRow(-0.25, -56, -60, 4), "ZZA", g);
+    expect(loss.usd).toBe(-56);
+    expect(loss.share).toBeCloseTo(0.14, 12);
+    expect(loss.text).toBe("If ZZA moves −25%, the book changes by");
+    const up = singleNameHeadline(moveRow(0.2, 38, -9, 47), "ZZA", g);
+    expect(up.share).toBeNull();
+    expect(up.text).toBe("If ZZA moves +20%, the book changes by");
+    expect(singleNameHeadline(moveRow(-0.25, -56, -60, 4), "ZZA", gain(400, "differs")).share).toBeNull();
+    expect(singleNameHeadline(moveRow(-0.25, -56, -60, 4), "ZZA", gain(-10, "agrees")).share).toBeNull();
+    expect(singleNameHeadline(moveRow(-0.25, -56, -60, 4), "ZZA", gain(null, "not-checked")).share).toBeNull();
+  });
+
+  it("the chart: the book on the single-name sweep, the book with trial positions when there are any, no line without the offsets", () => {
+    const book = { moves: singleNameSweep().map((m) => moveRow(m, m * 100, 0, 0)) };
+    const rows = singleNameChartRows(book, null);
+    expect(rows).toHaveLength(17);
+    expect(rows[0]).toEqual({ move: -0.4, book: -40, withTrial: null });
+    expect(Object.keys(rows[0])).not.toContain("without");
+    const trial = { moves: singleNameSweep().map((m) => ({ move: m, trialPnlUsd: 1, bookWithTrialPnlUsd: m * 100 + 1 })) };
+    const withTrial = singleNameChartRows(book, trial);
+    expect(withTrial[16]).toEqual({ move: 0.4, book: 40, withTrial: 41 });
+    // A custom row that is not on the sweep never adds a point.
+    const extra = { moves: [...book.moves, moveRow(0.63, 63, 0, 0)] };
+    expect(singleNameChartRows(extra, null)).toHaveLength(17);
+    const [lo, hi] = singleNameChartDollarDomain(withTrial);
+    expect(lo).toBeLessThan(-40);
+    expect(hi).toBeGreaterThan(41);
+  });
+
+  it("a row's side follows the selected move's direction in single-name mode", () => {
+    const pc: GainsAtRiskPositionCase = { beta: 1, pnlByMove: [], side: "loses", sideDown: "loses", sideUp: "offsets", exposureUsd: 10 };
+    expect(rowSideAt(pc, "single-name", -0.2)).toBe("loses");
+    expect(rowSideAt(pc, "single-name", 0)).toBe("loses");
+    expect(rowSideAt(pc, "single-name", 0.2)).toBe("offsets");
+    expect(rowSideAt(pc, "index", 0.2)).toBe("loses");
+  });
+});
+
+describe("gains at risk, single-name: words", () => {
+  it("the driver's own rows name the stock, never the index", () => {
+    const driverRow = pos({ betaSource: "driver", measuredBeta: 1, cases: cases(1, 1) });
+    expect(betaSourceLine(driverRow, "measured", "ZZA").text).toBe("moves one-for-one with ZZA");
+    expect(betaSourceLine(driverRow, "measured", "ZZA").text).not.toMatch(/index/);
+    // Index mode keeps its words.
+    expect(betaSourceLine(driverRow, "measured").text).toBe("the index itself");
+    expect(betaSourceLine(pos({ betaSource: "leveraged", measuredBeta: 2, cases: cases(2, 2) }), "measured", "ZZA").text).toBe(
+      "leverage times ZZA",
+    );
+  });
+
+  it("held unchanged and the not-linked leveraged fund, for a share row and an option row", () => {
+    const held = pos({ betaSource: "held-unchanged", measuredBeta: 0, cases: cases(0, 0) });
+    expect(betaSourceLine(held, "measured", "ZZA")).toEqual({ text: "held unchanged", details: [] });
+    const heldOption = pos({ betaSource: "held-unchanged", measuredBeta: 0, expiry: "2027-01-15", cases: cases(0, 0) });
+    expect(betaSourceLine(heldOption, "measured", "ZZA").details).toEqual([
+      "The underlying is held unchanged; the option still loses or gains time value.",
+    ]);
+    const lev = pos({ betaSource: "leveraged-not-linked", measuredBeta: 0, cases: cases(0, 0) });
+    expect(betaSourceLine(lev, "measured", "ZZA")).toEqual({ text: "leveraged fund, not linked to ZZA", details: ["Held unchanged."] });
+    // A not-modelled row still reads its reason first.
+    const nm = pos({ betaSource: "held-unchanged", unmodelledReason: "no-price", measuredBeta: null, cases: cases(null, null) });
+    expect(betaSourceLine(nm, "measured", "ZZA").text).toBe("not modelled");
+  });
+
+  it("the notes: other positions held unchanged; the volatility change says which options it reaches; the leveraged line names options on them", () => {
+    expect(HELD_UNCHANGED_NOTE).toBe("Other positions held unchanged. Their options still lose time value to the date.");
+    const vol = singleNameVolNote("ZZA");
+    expect(vol).toMatch(/options on ZZA/);
+    expect(vol).toMatch(/other share classes/);
+    expect(vol).toMatch(/leveraged funds that track it/);
+    expect(leveragedNotLinkedText("ZZA")).toBe("Leveraged or inverse funds not linked to ZZA, and options on them, held unchanged");
+  });
+
+  it("the route's driver refusals in the page's words; the index field keeps its own words", () => {
+    expect(domainProblemText("driver is not one of the names this page can stress.")).toBe(
+      "That name is not on the list of names this page can stress. Pick another.",
+    );
+    expect(domainProblemText("driver.securityId must be a security id (a positive whole number).")).toBe(
+      "The stock or fund chosen could not be read. Pick it again.",
+    );
+    expect(domainProblemText("driverSymbol must be one of SPY, QQQ, VTI.")).toBe("The index must be one of SPY, QQQ, VTI.");
+    expect(domainProblemText("moves must each be a number between -0.8 and 1 for a single-name driver.")).toBe(
+      "The moves must each be a number between -0.8 and 1 for a single-name driver.",
     );
   });
 });

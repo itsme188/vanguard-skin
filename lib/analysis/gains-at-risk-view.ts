@@ -23,10 +23,15 @@
 
 import {
   GAINS_AT_RISK_BOUNDS,
+  type GainsAtRiskBody,
   type GainsAtRiskDriver,
   type GainsAtRiskResponse,
 } from "@/lib/analysis/gains-at-risk-input";
-import { BETA_OVERRIDE_BOUNDS } from "@/lib/analysis/gains-at-risk-constants";
+import {
+  BETA_OVERRIDE_BOUNDS,
+  SINGLE_NAME_DEFAULT_SWEEP,
+  SINGLE_NAME_MOVE_BOUNDS,
+} from "@/lib/analysis/gains-at-risk-constants";
 import {
   formatPositionsDate,
   positionsFreshnessCell,
@@ -39,14 +44,18 @@ import type {
   GainsAtRiskCase,
   GainsAtRiskCaseKey,
   GainsAtRiskDisclosure,
+  GainsAtRiskMoveRow,
   GainsAtRiskOverrideRefusal,
   GainsAtRiskPosition,
+  GainsAtRiskPositionCase,
   GainsAtRiskResult,
+  GainsAtRiskTrialCase,
   GainsAtRiskTrialRow,
   GainsAtRiskUnmodelled,
   TrialRefusal,
 } from "@/lib/compute/gains-at-risk";
 import type { DriverBetaRefusal } from "@/lib/compute/driver-beta";
+import type { SingleNameDriverEntry } from "@/lib/compute/gains-at-risk-drivers";
 import type { NoMeasuredLinkReason } from "@/lib/compute/security-regression";
 import type { SortDir } from "@/lib/hooks/useSortParam";
 import type { YearGainReconciliationReason, YearGainResult } from "@/lib/compute/year-gain";
@@ -87,8 +96,8 @@ export function customMoveProblem(move: number): string | null {
 }
 
 /** Every move the request asks for: the sweep, the table rows and the custom row; sorted, unique. */
-export function requestMoves(sweep: number[], custom: number | null): number[] {
-  const all = [...sweep, ...TABLE_MOVES, ...(custom === null ? [] : [custom])];
+export function requestMoves(sweep: number[], custom: number | null, tableMoves: readonly number[] = TABLE_MOVES): number[] {
+  const all = [...sweep, ...tableMoves, ...(custom === null ? [] : [custom])];
   const out: number[] = [];
   for (const m of [...all].sort((a, b) => a - b)) {
     if (!out.some((x) => sameMove(x, m))) out.push(m);
@@ -106,6 +115,278 @@ export function formatDriverMove(move: number): string {
 /** The chart's tooltip label: the driver's move, whatever type the chart hands over. */
 export function formatDriverMoveLabel(label: unknown): string {
   return typeof label === "number" && Number.isFinite(label) ? formatDriverMove(label) : String(label ?? "");
+}
+
+// ─── The driver: an index, or one stock or fund (step 3) ────────
+
+/**
+ * What the sweep moves. The index variant carries no symbol: the index pick
+ * stays in `GainsControls.driverSymbol` (a required body field, and kept
+ * while the owner tries a single name so switching back restores it).
+ */
+export type DriverChoice = { kind: "index" } | { kind: "single-name"; entry: SingleNameDriverEntry };
+
+/** The single-name table rows: falls and rises, in move order. */
+export const SINGLE_NAME_TABLE_MOVES = [-0.4, -0.2, 0, 0.2, 0.4] as const;
+
+/** The row selected when the owner switches to one stock or fund. */
+export const DEFAULT_SINGLE_NAME_SELECTED_MOVE = -0.2;
+
+/** Under the controls in single-name mode (P2). */
+export const HELD_UNCHANGED_NOTE = "Other positions held unchanged. Their options still lose time value to the date.";
+
+/** Under the volatility box in single-name mode (P4): the change reaches only the names that move. */
+export function singleNameVolNote(symbol: string): string {
+  return `In this mode the volatility change applies only to options on ${symbol}, on its other share classes, and on leveraged funds that track it.`;
+}
+
+/** Above the per-name table in single-name mode. */
+export function singleNameMovesNote(symbol: string): string {
+  return `${symbol} and its other share classes move by the full move, and so does every option on them. A leveraged fund that tracks it moves by its leverage. Every other name is held unchanged.`;
+}
+
+/** The radio labels. */
+export const DRIVER_KIND_LABELS = { index: "Index", "single-name": "One stock or fund" } as const;
+
+/** When the drivers list is empty. */
+export const NO_SINGLE_NAME_TEXT = "No stock or fund with a price is held, so there is nothing to choose here.";
+
+/** When the chosen name dropped off the list (a trial on it was removed). */
+export function driverDroppedText(symbol: string): string {
+  return `${symbol} is no longer on the list of names, so the page went back to the index.`;
+}
+
+export const DRIVERS_REFRESH_FAILED_TEXT = "Could not refresh the list of names. The list shown may be out of date.";
+
+/** "ZZA (ZZA Holdings)" for the select; the symbol alone with no name. */
+export function driverOptionLabel(e: Pick<SingleNameDriverEntry, "symbol" | "name">): string {
+  return e.name ? `${e.symbol} (${e.name})` : e.symbol;
+}
+
+/** The select's value for an entry: its id, or its symbol for a name with no row. */
+export function driverOptionValue(e: Pick<SingleNameDriverEntry, "symbol" | "securityId">): string {
+  return e.securityId !== null ? `id:${e.securityId}` : `sym:${e.symbol}`;
+}
+
+/** The entry of the list a select value names; null when the list has none. */
+export function driverFromOptionValue(list: readonly SingleNameDriverEntry[], value: string): SingleNameDriverEntry | null {
+  return list.find((e) => driverOptionValue(e) === value) ?? null;
+}
+
+/** The same entry again in a fresh list (by id, or by symbol for a name with no row); null when it is gone. */
+export function sameDriverIn(
+  list: readonly SingleNameDriverEntry[],
+  e: Pick<SingleNameDriverEntry, "symbol" | "securityId">,
+): SingleNameDriverEntry | null {
+  return driverFromOptionValue(list, driverOptionValue(e));
+}
+
+/** The default single-name sweep, -40% to +40% in 5% steps, written as exact decimals. */
+export function singleNameSweep(): number[] {
+  const { from, to, step } = SINGLE_NAME_DEFAULT_SWEEP;
+  const n = Math.round((to - from) / step) + 1;
+  return Array.from({ length: n }, (_, i) => Math.round((from + i * step) * 1000) / 1000);
+}
+
+/** The chart sweep for a driver kind. */
+export function sweepFor(kind: DriverChoice["kind"]): number[] {
+  return kind === "single-name" ? singleNameSweep() : defaultSweep();
+}
+
+/** The table rows for a driver kind. */
+export function tableMovesFor(kind: DriverChoice["kind"]): readonly number[] {
+  return kind === "single-name" ? SINGLE_NAME_TABLE_MOVES : TABLE_MOVES;
+}
+
+/** The row selected by default for a driver kind. */
+export function defaultSelectedMoveFor(kind: DriverChoice["kind"]): number {
+  return kind === "single-name" ? DEFAULT_SINGLE_NAME_SELECTED_MOVE : DEFAULT_SELECTED_MOVE;
+}
+
+/** The custom move box's bounds, in percent, for a driver kind. */
+export function customMoveBoundsPct(kind: DriverChoice["kind"]): { min: number; max: number } {
+  if (kind === "single-name") {
+    return { min: Math.round(SINGLE_NAME_MOVE_BOUNDS.min * 100), max: Math.round(SINGLE_NAME_MOVE_BOUNDS.max * 100) };
+  }
+  return { min: -Math.round(GAINS_AT_RISK_BOUNDS.moveAbsMax * 100), max: 0 };
+}
+
+/** null for a usable custom move (a decimal) for the driver kind; otherwise one plain sentence. */
+export function customMoveProblemFor(kind: DriverChoice["kind"], move: number): string | null {
+  if (kind === "index") return customMoveProblem(move);
+  if (!Number.isFinite(move)) return "Type the move as a number of percent, for example -7 or 12.";
+  const { min, max } = customMoveBoundsPct("single-name");
+  if (move < SINGLE_NAME_MOVE_BOUNDS.min - 1e-12) return `The move cannot be below ${min}%.`;
+  if (move > SINGLE_NAME_MOVE_BOUNDS.max + 1e-12) return `The move cannot be above +${max}%.`;
+  return null;
+}
+
+/** The body's `driver` field: nothing for the index (P8: today's body), else the name on the server's list. */
+export function driverRequestFields(choice: DriverChoice): Pick<GainsAtRiskBody, "driver"> {
+  if (choice.kind === "index") return {};
+  const e = choice.entry;
+  return { driver: e.securityId !== null ? { kind: "single-name", securityId: e.securityId } : { kind: "single-name", symbol: e.symbol } };
+}
+
+/** Which way a selected move reads (D5): a rise when positive, else a fall (zero reads falls). */
+export function moveDirection(move: number): "fall" | "rise" {
+  return move > 0 ? "rise" : "fall";
+}
+
+/**
+ * A single-name table row's cells (P6): the split of that row's own direction,
+ * and none on the zero row (no move, so no side loses or offsets).
+ */
+export function singleNameRowCells(row: Pick<GainsAtRiskMoveRow, "bookPnlUsd" | "losersPnlUsd" | "offsetsPnlUsd" | "split">): {
+  loses: number | null;
+  offsets: number | null;
+  book: number;
+} {
+  if (row.split === "none") return { loses: null, offsets: null, book: row.bookPnlUsd };
+  return { loses: row.losersPnlUsd, offsets: row.offsetsPnlUsd, book: row.bookPnlUsd };
+}
+
+/**
+ * The sentence under the single-name table: the book's change at the selected
+ * move. The figure and the share come back apart (the page prints them
+ * through <Money> and <Pct>); the share only on a loss, and only when the
+ * year's gain is positive and not contradicted by the statements (P6).
+ */
+export function singleNameHeadline(
+  row: Pick<GainsAtRiskMoveRow, "move" | "bookPnlUsd">,
+  symbol: string,
+  yearGain: YearGainResult,
+): { usd: number; share: number | null; text: string } {
+  const share = row.bookPnlUsd < 0 ? gainGivenBackShare(row.bookPnlUsd, yearGain) : null;
+  return {
+    usd: row.bookPnlUsd,
+    share,
+    text: `If ${symbol} moves ${formatDriverMove(row.move)}, the book changes by`,
+  };
+}
+
+/** The single-name chart: one book line, and the book with trial positions when there are any. */
+export interface SingleNameChartRow {
+  move: number;
+  book: number;
+  /** null when there are no trial positions. */
+  withTrial: number | null;
+}
+
+/**
+ * The single-name chart's points, on the single-name sweep only. In this
+ * mode the engine returns the same figures under both cases (P20), so the
+ * measured case is read. No line without the offsetting positions: one line
+ * cannot follow two splits (P6). A move missing from either side is left out.
+ */
+export function singleNameChartRows(
+  book: Pick<GainsAtRiskCase, "moves">,
+  trial: { moves: GainsAtRiskTrialCase["moves"] } | null,
+): SingleNameChartRow[] {
+  const out: SingleNameChartRow[] = [];
+  for (const move of singleNameSweep()) {
+    const b = book.moves.find((r) => sameMove(r.move, move));
+    if (!b) continue;
+    if (trial) {
+      const t = trial.moves.find((r) => sameMove(r.move, move));
+      if (!t) continue;
+      out.push({ move: b.move, book: b.bookPnlUsd, withTrial: t.bookWithTrialPnlUsd });
+    } else {
+      out.push({ move: b.move, book: b.bookPnlUsd, withTrial: null });
+    }
+  }
+  return out;
+}
+
+/** The single-name chart's dollar axis: every plotted value and zero, padded 5%. */
+export function singleNameChartDollarDomain(rows: SingleNameChartRow[]): [number, number] {
+  const values = rows.flatMap((r) => [r.book, ...(r.withTrial === null ? [] : [r.withTrial]), 0]);
+  const lo = Math.min(...values);
+  const hi = Math.max(...values);
+  const pad = (hi - lo) * 0.05 || 1;
+  return [lo - pad, hi + pad];
+}
+
+/** The single-name chart's x ticks: every 10%. */
+export const SINGLE_NAME_X_TICKS = [-0.4, -0.3, -0.2, -0.1, 0, 0.1, 0.2, 0.3, 0.4] as const;
+
+/** The single-name legend. */
+export function singleNameChartLineLabels(hasTrial: boolean): { book: string; withTrial: string } {
+  return { book: hasTrial ? "book as it is" : "book", withTrial: "book with your trial positions" };
+}
+
+/**
+ * The case the page reads. Single-name mode has one case, returned under both
+ * keys (P20): the page reads "measured" and hides the switch.
+ */
+export function caseOnScreen(kind: DriverChoice["kind"], picked: GainsAtRiskCaseKey): GainsAtRiskCaseKey {
+  return kind === "single-name" ? DEFAULT_CASE : picked;
+}
+
+/**
+ * The owner's figures sent with a request: none in single-name mode (P2;
+ * they stay in page state for the index), else every one typed.
+ */
+export function betaOverridesToSend(kind: DriverChoice["kind"], figures: Record<number, number>): Record<number, number> {
+  return kind === "single-name" ? {} : figures;
+}
+
+/**
+ * Switching the driver kind (or the name). A new kind resets the sweep's
+ * custom row and the selected row to that kind's defaults; the date, the
+ * volatility change, typed prices and the owner's figures are kept (the trial
+ * list lives in its provider and is never touched here). Choosing another
+ * name of the same kind keeps the custom row and the selected row.
+ */
+export function switchDriver(
+  controls: GainsControls,
+  selectedMove: number,
+  next: DriverChoice,
+): { controls: GainsControls; selectedMove: number } {
+  if (controls.driver.kind === next.kind) return { controls: { ...controls, driver: next }, selectedMove };
+  return { controls: { ...controls, driver: next, custom: null }, selectedMove: defaultSelectedMoveFor(next.kind) };
+}
+
+/** Under the single-name chart: why there is one book line. */
+export const SINGLE_NAME_CHART_NOTE =
+  "One book line: below zero the positions that lose are the ones that fall with it, above zero the ones that fall when it rises, so a single line without the offsetting positions cannot be drawn.";
+
+/** The page's one-line description, by driver kind. */
+export function pageDescription(kind: DriverChoice["kind"]): string {
+  return kind === "single-name"
+    ? "If one stock or fund falls or rises by a date, how much the book gains or gives back."
+    : "If an index falls by a date, how much of the year's gain the book gives back.";
+}
+
+/**
+ * A row's side at the selected move: in single-name mode the side of that
+ * move's own direction (P6), else the row's one side.
+ */
+export function rowSideAt(
+  pc: Pick<GainsAtRiskPositionCase, "side" | "sideDown" | "sideUp">,
+  kind: DriverChoice["kind"],
+  selectedMove: number,
+): GainsAtRiskPositionCase["side"] {
+  if (kind !== "single-name") return pc.side;
+  return (moveDirection(selectedMove) === "rise" ? pc.sideUp : pc.sideDown) ?? pc.side;
+}
+
+/** The table's rows for a driver kind: the fixed rows, plus the custom one; single-name rows in move order. */
+export function tableRowMoves(kind: DriverChoice["kind"], custom: number | null): number[] {
+  const fixed = [...tableMovesFor(kind)];
+  const extra = custom !== null && !fixed.some((m) => sameMove(m, custom)) ? [custom] : [];
+  const rows = [...fixed, ...extra];
+  return kind === "single-name" ? rows.sort((a, b) => a - b) : rows;
+}
+
+/** The trial positions' underlying ids, unique and in order: the drivers route's body (P1). */
+export function uniqueSortedIds(ids: readonly number[]): number[] {
+  return [...new Set(ids)].sort((a, b) => a - b);
+}
+
+/** The leveraged-not-linked disclosure line's words (single-name mode, P3). */
+export function leveragedNotLinkedText(symbol: string): string {
+  return `Leveraged or inverse funds not linked to ${symbol}, and options on them, held unchanged`;
 }
 
 // ─── The share of the year's gain ───────────────────────────────
@@ -262,6 +543,13 @@ export function domainProblemText(message: string): string {
   const trialMax = /^trialPositions can hold at most (\d+) positions\.$/.exec(message);
   if (trialMax) return `At most ${trialMax[1]} trial positions can be sent at once.`;
   if (message.startsWith("trialPositions")) return "A trial position could not be read. Remove it and add it again.";
+  if (message === "driver is not one of the names this page can stress.") {
+    return "That name is not on the list of names this page can stress. Pick another.";
+  }
+  if (message.startsWith("driver ") || message.startsWith("driver.")) {
+    return "The stock or fund chosen could not be read. Pick it again.";
+  }
+  if (message === "selectedMove must be one of moves.") return "The selected row is not one of the moves. Pick a row again.";
   const fields: [string, string][] = [
     ["valuationDate ", "The date "],
     ["volChangePoints ", "The volatility change "],
@@ -395,9 +683,35 @@ export interface BetaSourceLine {
  * reason is checked FIRST: such a row may still carry evidence or a
  * no-measured-link reason from its underlying, and none of it is a beta.
  */
-export function betaSourceLine(p: GainsAtRiskPosition, caseKey: GainsAtRiskCaseKey): BetaSourceLine {
+export function betaSourceLine(
+  p: GainsAtRiskPosition,
+  caseKey: GainsAtRiskCaseKey,
+  /** Step 3: the single-name driver's symbol; the words then name it, never "the index". */
+  singleNameSymbol?: string,
+): BetaSourceLine {
   if (p.unmodelledReason !== undefined) {
     return { text: BETA_SOURCE_LABELS["not-modelled"], details: [NOT_MODELLED_LABELS[p.unmodelledReason]] };
+  }
+  if (singleNameSymbol !== undefined) {
+    const option = isOptionRow(p);
+    switch (p.betaSource) {
+      case "driver":
+        return { text: `moves one-for-one with ${singleNameSymbol}`, details: [] };
+      case "leveraged":
+        return { text: `leverage times ${singleNameSymbol}`, details: [] };
+      case "held-unchanged":
+        return {
+          text: BETA_SOURCE_LABELS["held-unchanged"],
+          details: option ? ["The underlying is held unchanged; the option still loses or gains time value."] : [],
+        };
+      case "leveraged-not-linked":
+        return {
+          text: `leveraged fund, not linked to ${singleNameSymbol}`,
+          details: [option ? "Held unchanged; the option still loses or gains time value." : "Held unchanged."],
+        };
+      default:
+        break;
+    }
   }
   const caseBeta = p.cases[caseKey].beta;
   const raised =
@@ -1061,7 +1375,10 @@ export function requestFailureText(status: number, message: string): string {
 // ─── Controls ───────────────────────────────────────────────────
 
 export interface GainsControls {
+  /** The index pick: always sent as `driverSymbol`, and kept while a single name is tried. */
   driverSymbol: GainsAtRiskDriver;
+  /** Step 3: what the sweep moves (an index, or one stock or fund). */
+  driver: DriverChoice;
   valuationDate: string;
   volChangePoints: number;
   /** The committed custom move (a decimal), or none. */
@@ -1083,6 +1400,7 @@ export function serverPropsAnswerControls(
   server: { driverSymbol: GainsAtRiskDriver; valuationDate: string; volChangePoints: number },
 ): boolean {
   return (
+    controls.driver.kind === "index" &&
     controls.driverSymbol === server.driverSymbol &&
     controls.valuationDate === server.valuationDate &&
     controls.volChangePoints === server.volChangePoints &&

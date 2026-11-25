@@ -2,10 +2,12 @@ import { db } from "@/lib/db";
 import { todayET } from "@/lib/calendar/date-utils";
 import { computeGainsAtRisk } from "@/lib/compute/gains-at-risk";
 import { computeYearGain } from "@/lib/compute/year-gain";
+import { listCandidateUnderlyings, listSingleNameDrivers } from "@/lib/compute/gains-at-risk-drivers";
 import { getPositionsFreshness } from "@/lib/queries/positions-freshness";
 import { gainsAtRiskAccountIds } from "@/lib/analysis/gains-at-risk-scope";
 import type { AnalysisScope } from "@/lib/analysis/view-param";
 import { latestValuationDate, type GainsAtRiskResponse } from "@/lib/analysis/gains-at-risk-input";
+import type { SingleNameDriversResponse } from "@/lib/analysis/gains-at-risk-candidates-input";
 import {
   DEFAULT_DRIVER,
   DEFAULT_SELECTED_MOVE,
@@ -33,6 +35,11 @@ import { TrialPositionsProvider } from "./TrialPositionsProvider";
  * the provider keeps the trial positions while the view remounts with the
  * new scope. The server never sees them here; the view asks the route with
  * them at once when it mounts with some.
+ *
+ * Step 3: the single-name driver list (P1, P21) and the candidate underlyings
+ * (F8) come with the first paint, built with no trial positions; the view
+ * asks the drivers route again whenever the trial positions' underlyings
+ * change. The candidate list is carried for the candidate section.
  */
 
 export function GainsAtRiskSection({ scope }: { scope: AnalysisScope }) {
@@ -43,7 +50,10 @@ export function GainsAtRiskSection({ scope }: { scope: AnalysisScope }) {
   const moves = requestMoves(defaultSweep(), null);
 
   let initial: GainsAtRiskResponse;
+  let driverLists: SingleNameDriversResponse;
   try {
+    const drivers = listSingleNameDrivers(db, { trialUnderlyingIds: [], today });
+    driverLists = { drivers, candidateUnderlyings: listCandidateUnderlyings(db, { drivers, today }) };
     initial = {
       result: computeGainsAtRisk(db, {
         accountIds,
@@ -81,6 +91,7 @@ export function GainsAtRiskSection({ scope }: { scope: AnalysisScope }) {
         today={today}
         latestDate={latestValuationDate(today)}
         initial={initial}
+        initialDriverLists={driverLists}
         initialInputs={{
           driverSymbol: DEFAULT_DRIVER,
           valuationDate,

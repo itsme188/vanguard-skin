@@ -21,6 +21,10 @@ import {
   formatDriverMoveLabel,
   gainKeptShare,
   keptAxis,
+  SINGLE_NAME_X_TICKS,
+  singleNameChartDollarDomain,
+  singleNameChartLineLabels,
+  singleNameChartRows,
 } from "@/lib/analysis/gains-at-risk-view";
 import {
   trialChartDollarDomain,
@@ -53,6 +57,11 @@ const X_TICKS = [-0.2, -0.15, -0.1, -0.05, 0, 0.05, 0.1];
  * the book as it is and the book with the trial positions. The line without
  * the offsetting positions is hidden then (the view says so); with none, the
  * chart is exactly the one above.
+ *
+ * Single-name mode (`singleName`, step 3 P6, P20): one case, read under
+ * "measured"; the book line on the -40% to +40% sweep, and the book with the
+ * trial positions when there are any. Never the line without the offsetting
+ * positions: one line cannot follow the down split and the up split at once.
  */
 export function GainsAtRiskChart({
   cases,
@@ -60,6 +69,7 @@ export function GainsAtRiskChart({
   driverSymbol,
   yearGain,
   trial = null,
+  singleName = false,
 }: {
   cases: Record<GainsAtRiskCaseKey, Pick<GainsAtRiskCase, "moves">>;
   selectedCase: GainsAtRiskCaseKey;
@@ -67,10 +77,26 @@ export function GainsAtRiskChart({
   yearGain: YearGainResult;
   /** The trial result's cases; null or absent when there are no trial positions. */
   trial?: Record<GainsAtRiskCaseKey, Pick<GainsAtRiskTrialCase, "moves">> | null;
+  /** Step 3: one stock or fund as the driver. */
+  singleName?: boolean;
 }) {
   const dollarTickFormatter = usePrivateFormatter((v: unknown) => formatCompactUSD(Number(v)));
   const dollarTooltipFormatter = usePrivateFormatter((v: unknown) => formatUSD(Number(v)));
   const keptTickFormatter = usePrivateFormatter((v: unknown) => `${Math.round(Number(v) * 100)}%`);
+
+  if (singleName) {
+    return (
+      <SingleNameLines
+        book={cases.measured}
+        trial={trial ? trial.measured : null}
+        driverSymbol={driverSymbol}
+        yearGain={yearGain}
+        dollarTickFormatter={dollarTickFormatter}
+        dollarTooltipFormatter={dollarTooltipFormatter}
+        keptTickFormatter={keptTickFormatter}
+      />
+    );
+  }
 
   if (trial) {
     return (
@@ -285,6 +311,118 @@ function TrialLines({
           dot={{ r: 2 }}
           isAnimationActive={false}
         />
+        {kept && (
+          <Line
+            yAxisId="kept"
+            type="linear"
+            dataKey="kept"
+            stroke="transparent"
+            dot={false}
+            activeDot={false}
+            legendType="none"
+            tooltipType="none"
+            isAnimationActive={false}
+          />
+        )}
+      </LineChart>
+    </ResponsiveContainer>
+  );
+}
+
+/** Single-name mode: the book, and the book with trial positions when there are any. No line without the offsets. */
+function SingleNameLines({
+  book,
+  trial,
+  driverSymbol,
+  yearGain,
+  dollarTickFormatter,
+  dollarTooltipFormatter,
+  keptTickFormatter,
+}: {
+  book: Pick<GainsAtRiskCase, "moves">;
+  trial: Pick<GainsAtRiskTrialCase, "moves"> | null;
+  driverSymbol: string;
+  yearGain: YearGainResult;
+  dollarTickFormatter: Formatter;
+  dollarTooltipFormatter: Formatter;
+  keptTickFormatter: Formatter;
+}) {
+  const points = singleNameChartRows(book, trial);
+  const domain = singleNameChartDollarDomain(points);
+  const kept = keptAxis(domain, yearGain);
+  const labels = singleNameChartLineLabels(trial !== null);
+  const data = points.map((p) => ({ ...p, kept: kept ? gainKeptShare(p.book, yearGain) : null }));
+
+  return (
+    <ResponsiveContainer width="100%" height={300}>
+      <LineChart data={data} margin={{ top: 8, right: kept ? 4 : 12, left: 0, bottom: 0 }}>
+        <CartesianGrid strokeDasharray="3 3" stroke="var(--edge)" vertical={false} />
+        <XAxis
+          dataKey="move"
+          type="number"
+          domain={["dataMin", "dataMax"]}
+          ticks={[...SINGLE_NAME_X_TICKS]}
+          tickFormatter={formatDriverMove}
+          tick={{ fontSize: 11, fill: "var(--ink-faint)" }}
+          label={{ value: driverSymbol, position: "insideBottomRight", offset: -2, fontSize: 11, fill: "var(--ink-faint)" }}
+        />
+        <YAxis
+          yAxisId="usd"
+          domain={domain}
+          allowDataOverflow
+          tickFormatter={dollarTickFormatter}
+          tick={{ fontSize: 11, fill: "var(--ink-faint)" }}
+          width={56}
+        />
+        {kept && (
+          <YAxis
+            yAxisId="kept"
+            orientation="right"
+            domain={kept.domain}
+            ticks={kept.ticks}
+            allowDataOverflow
+            tickFormatter={keptTickFormatter}
+            tick={{ fontSize: 11, fill: "var(--ink-faint)" }}
+            width={44}
+            label={{ value: "gain kept", angle: 90, position: "insideRight", fontSize: 11, fill: "var(--ink-faint)" }}
+          />
+        )}
+        <ReferenceLine yAxisId="usd" y={0} stroke="var(--edge-strong)" />
+        <Tooltip
+          formatter={dollarTooltipFormatter}
+          labelFormatter={formatDriverMoveLabel}
+          contentStyle={{
+            background: "var(--panel)",
+            border: "1px solid var(--edge)",
+            borderRadius: 8,
+            fontSize: 12,
+            color: "var(--ink)",
+          }}
+        />
+        <Legend wrapperStyle={{ fontSize: 12, color: "var(--ink-dim)" }} />
+        <Line
+          yAxisId="usd"
+          type="linear"
+          dataKey="book"
+          name={labels.book}
+          stroke={trial ? "var(--ink-faint)" : "var(--gold)"}
+          strokeDasharray={trial ? "5 4" : undefined}
+          strokeWidth={trial ? 1.5 : 2.5}
+          dot={trial ? false : { r: 2 }}
+          isAnimationActive={false}
+        />
+        {trial && (
+          <Line
+            yAxisId="usd"
+            type="linear"
+            dataKey="withTrial"
+            name={labels.withTrial}
+            stroke="var(--gold)"
+            strokeWidth={2.5}
+            dot={{ r: 2 }}
+            isAnimationActive={false}
+          />
+        )}
         {kept && (
           <Line
             yAxisId="kept"

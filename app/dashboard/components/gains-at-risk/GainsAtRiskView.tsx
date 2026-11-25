@@ -12,13 +12,14 @@ import {
   type PositionsFreshnessCell,
 } from "@/lib/ui/positions-freshness-label";
 import {
-  GAINS_AT_RISK_DRIVERS,
   GAINS_AT_RISK_VOL_MAX,
   GAINS_AT_RISK_VOL_MIN,
+  trialPositionSecurityId,
   type GainsAtRiskBody,
   type GainsAtRiskDriver,
   type GainsAtRiskResponse,
 } from "@/lib/analysis/gains-at-risk-input";
+import type { SingleNameDriversBody, SingleNameDriversResponse } from "@/lib/analysis/gains-at-risk-candidates-input";
 import type { AnalysisScope } from "@/lib/analysis/view-param";
 import { BETA_OVERRIDE_BOUNDS } from "@/lib/analysis/gains-at-risk-constants";
 import {
@@ -42,11 +43,34 @@ import {
   UNDER_TENTH_TEXT,
   YEAR_GAIN_LABEL,
   ZERO_ROW_NOTE,
+  DRIVERS_REFRESH_FAILED_TEXT,
+  HELD_UNCHANGED_NOTE,
+  SINGLE_NAME_CHART_NOTE,
+  betaOverridesToSend,
+  caseOnScreen,
+  customMoveBoundsPct,
+  customMoveProblemFor,
+  defaultSelectedMoveFor,
+  driverDroppedText,
+  driverRequestFields,
+  leveragedNotLinkedText,
+  moveDirection,
+  pageDescription,
+  rowSideAt,
+  sameDriverIn,
+  singleNameHeadline,
+  singleNameMovesNote,
+  singleNameRowCells,
+  singleNameVolNote,
+  sweepFor,
+  switchDriver,
+  tableMovesFor,
+  tableRowMoves,
+  uniqueSortedIds,
+  type DriverChoice,
   betaEvidenceCaption,
   betaOverrideProblem,
   betaSourceLine,
-  customMoveProblem,
-  defaultSweep,
   disclosureSentences,
   disclosureShare,
   formatBeta,
@@ -98,11 +122,13 @@ import type {
   GainsAtRiskCaseKey,
   GainsAtRiskResult,
 } from "@/lib/compute/gains-at-risk";
+import type { SingleNameDriverEntry } from "@/lib/compute/gains-at-risk-drivers";
 import { Chip, type ChipTone } from "../Chip";
 import { CHIP_TONE_TEXT } from "../chip-tone-text";
 import { EmptySection } from "../EmptySection";
 import { ScrollFade } from "../ScrollFade";
 import { SortableHeader } from "../SortableHeader";
+import { DriverControl } from "./DriverControl";
 import { GainsAtRiskChart } from "./GainsAtRiskChart";
 import { TrialPositionsPanel } from "./TrialPositionList";
 import { useTrialPositions, type TrialPositionsValue } from "./TrialPositionsProvider";
@@ -173,6 +199,7 @@ export function GainsAtRiskView({
   today,
   latestDate,
   initial,
+  initialDriverLists,
   initialInputs,
 }: {
   scope: AnalysisScope;
@@ -180,6 +207,8 @@ export function GainsAtRiskView({
   today: string;
   latestDate: string;
   initial: GainsAtRiskResponse;
+  /** Step 3: the single-name driver list and the candidate underlyings, built with no trial positions. */
+  initialDriverLists: SingleNameDriversResponse;
   initialInputs: GainsAtRiskInitialInputs;
 }) {
   // Trial positions live in the unkeyed provider above this keyed view (R5).
@@ -193,6 +222,7 @@ export function GainsAtRiskView({
 
   const [controls, setControlsState] = useState<GainsControls>(() => ({
     driverSymbol: initialInputs.driverSymbol,
+    driver: { kind: "index" },
     valuationDate: initialInputs.valuationDate,
     volChangePoints: initialInputs.volChangePoints,
     custom: null,
@@ -205,7 +235,16 @@ export function GainsAtRiskView({
   const [volDraft, setVolDraft] = useState(String(initialInputs.volChangePoints));
   const [customDraft, setCustomDraft] = useState("");
   const [customProblem, setCustomProblem] = useState<string | null>(null);
-  const [selectedMove, setSelectedMove] = useState(initialInputs.selectedMove);
+  const [selectedMove, setSelectedMoveState] = useState(initialInputs.selectedMove);
+  // The latest selected move, for run(): in single-name mode it is sent (D5, the crossing's direction).
+  const selectedMoveRef = useRef(initialInputs.selectedMove);
+  function setSelectedMove(m: number) {
+    selectedMoveRef.current = m;
+    setSelectedMoveState(m);
+  }
+  // Step 3: the server-built driver list; refreshed when the trial positions' underlyings change.
+  const [driverLists, setDriverLists] = useState<SingleNameDriversResponse>(initialDriverLists);
+  const [driverNotice, setDriverNotice] = useState<string | null>(null);
   const [overrideDrafts, setOverrideDrafts] = useState<Record<number, string>>({});
   const [overrideProblems, setOverrideProblems] = useState<Record<number, string>>({});
   // The case on screen: both are in every answer, so switching asks nothing of the server.
@@ -214,7 +253,7 @@ export function GainsAtRiskView({
   const [betaDrafts, setBetaDrafts] = useState<Record<number, string>>({});
   const [betaProblems, setBetaProblems] = useState<Record<number, string>>({});
 
-  async function run(next: GainsControls) {
+  async function run(next: GainsControls, selected: number = selectedMoveRef.current) {
     controlsRef.current = next;
     setControlsState(next);
     const seq = ++seqRef.current;
@@ -226,15 +265,25 @@ export function GainsAtRiskView({
       dispatch({ type: "failure", seq, message: `Pick a date from ${today} to ${latestDate}.` });
       return;
     }
+    const kind = next.driver.kind;
+    const moves = requestMoves(sweepFor(kind), next.custom, tableMovesFor(kind));
+    // P2: the owner's figures stay in page state but are not sent in single-name mode.
+    const figures = betaOverridesToSend(kind, next.betaOverrides);
+    // The selected move exactly as the request writes it (the route checks it is one of the moves).
+    const selectedInMoves = moves.find((m) => sameMove(m, selected));
     const body: GainsAtRiskBody = {
       scope,
       driverSymbol: next.driverSymbol,
       valuationDate: next.valuationDate,
-      moves: requestMoves(defaultSweep(), next.custom),
+      moves,
       volChangePoints: next.volChangePoints,
       ...(Object.keys(next.priceOverrides).length > 0 ? { priceOverrides: next.priceOverrides } : {}),
       // Left out when there are none: the route refuses an explicit null.
-      ...(Object.keys(next.betaOverrides).length > 0 ? { betaOverrides: next.betaOverrides } : {}),
+      ...(Object.keys(figures).length > 0 ? { betaOverrides: figures } : {}),
+      // Step 3: index mode sends exactly today's body (P8).
+      ...driverRequestFields(next.driver),
+      // D5: the selected move sets the crossing's direction; single-name mode only, and only when it is one of the moves.
+      ...(kind === "single-name" && selectedInMoves !== undefined ? { selectedMove: selectedInMoves } : {}),
       // Each trial position exactly as the entry fixed it; left out when there are none.
       ...(trialNow.list.length > 0 ? { trialPositions: trialRequestPositions(trialNow.list) } : {}),
     };
@@ -309,13 +358,13 @@ export function GainsAtRiskView({
     if (text === "") {
       setCustomProblem(null);
       if (controls.custom !== null) {
-        if (sameMove(selectedMove, controls.custom)) setSelectedMove(initialInputs.selectedMove);
+        if (sameMove(selectedMove, controls.custom)) setSelectedMove(defaultSelectedMoveFor(controls.driver.kind));
         void run({ ...controls, custom: null });
       }
       return;
     }
     const move = Number(text) / 100;
-    const problem = customMoveProblem(move);
+    const problem = customMoveProblemFor(controls.driver.kind, move);
     setCustomProblem(problem);
     if (problem) return;
     if (controls.custom !== null && sameMove(controls.custom, move)) return;
@@ -370,6 +419,114 @@ export function GainsAtRiskView({
     void run({ ...controls, betaOverrides: withoutKey(controls.betaOverrides, identityId) });
   }
 
+  // ── Step 3: the driver ──
+
+  /** Pick a driver (a kind switch resets the sweep and the selected row; date, volatility and trial list stay). */
+  function pickDriver(next: DriverChoice, indexSymbol: GainsAtRiskDriver = controls.driverSymbol) {
+    setDriverNotice(null);
+    const base = { ...controls, driverSymbol: indexSymbol };
+    const switched = switchDriver(base, selectedMove, next);
+    if (switched.controls.custom !== controls.custom) {
+      setCustomDraft("");
+      setCustomProblem(null);
+    }
+    setSelectedMove(switched.selectedMove);
+    void run(switched.controls, switched.selectedMove);
+  }
+
+  function pickIndex(symbol: GainsAtRiskDriver) {
+    if (controls.driver.kind === "index" && controls.driverSymbol === symbol) return;
+    pickDriver({ kind: "index" }, symbol);
+  }
+
+  function pickSingleName(entry: SingleNameDriverEntry) {
+    const cur = controls.driver;
+    if (cur.kind === "single-name" && sameDriverIn([entry], cur.entry) !== null) return;
+    pickDriver({ kind: "single-name", entry });
+  }
+
+  /** In single-name mode the crossing reads in the selected move's direction (D5): a change of direction asks again. */
+  function selectMove(m: number) {
+    const before = selectedMoveRef.current;
+    setSelectedMove(m);
+    if (
+      controls.driver.kind === "single-name" &&
+      trialsRef.current.list.length > 0 &&
+      moveDirection(m) !== moveDirection(before)
+    ) {
+      void run(controlsRef.current, m);
+    }
+  }
+
+  // The trial positions' underlyings: the drivers route is asked again when they change (P1).
+  const trialUnderlyingIds = uniqueSortedIds(trials.list.map((t) => trialPositionSecurityId(t.position)));
+  const trialUnderlyingKey = trialUnderlyingIds.join(",");
+  // The first paint's lists were built with no trial positions.
+  const driversKeyRef = useRef("");
+  const driversSeqRef = useRef(0);
+  useEffect(() => {
+    if (driversKeyRef.current === trialUnderlyingKey) return;
+    driversKeyRef.current = trialUnderlyingKey;
+    const seq = ++driversSeqRef.current;
+    const body: SingleNameDriversBody = { trialUnderlyingIds };
+    void (async () => {
+      try {
+        const res = await apiFetch("/api/compute/gains-at-risk/single-name-drivers", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        const r = await readMutationResult<{ data: SingleNameDriversResponse }>(res);
+        // A reply for an older set of trial positions is dropped.
+        if (seq !== driversSeqRef.current) return;
+        if (!r.ok) {
+          setDriverNotice(DRIVERS_REFRESH_FAILED_TEXT);
+          return;
+        }
+        applyDriverLists(r.data.data);
+      } catch {
+        if (seq !== driversSeqRef.current) return;
+        setDriverNotice(`${DRIVERS_REFRESH_FAILED_TEXT} ${networkFailureMessage("refresh the list of names")}`);
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [trialUnderlyingKey]);
+
+  /** Take a fresh list. A chosen name no longer on it sends the page back to the index, and says so. */
+  function applyDriverLists(lists: SingleNameDriversResponse) {
+    setDriverLists(lists);
+    const cur = controlsRef.current.driver;
+    if (cur.kind !== "single-name") {
+      setDriverNotice(null);
+      return;
+    }
+    const still = sameDriverIn(lists.drivers, cur.entry);
+    if (still) {
+      setDriverNotice(null);
+      return;
+    }
+    const back = switchDriver(controlsRef.current, selectedMoveRef.current, { kind: "index" });
+    setCustomDraft("");
+    setCustomProblem(null);
+    setSelectedMove(back.selectedMove);
+    setDriverNotice(driverDroppedText(cur.entry.symbol));
+    void run(back.controls, back.selectedMove);
+  }
+
+  // Fresh server props carry fresh lists (built with no trial positions): taken when none is on the page.
+  const seenListsRef = useRef(initialDriverLists);
+  useEffect(() => {
+    if (seenListsRef.current === initialDriverLists) return;
+    seenListsRef.current = initialDriverLists;
+    if (trialsRef.current.list.length === 0) applyDriverLists(initialDriverLists);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialDriverLists]);
+
+  const kind = controls.driver.kind;
+  const singleNameSymbol = controls.driver.kind === "single-name" ? controls.driver.entry.symbol : null;
+  // Single-name mode has one case, under both keys (P20): the page reads "measured".
+  const screenCase = caseOnScreen(kind, caseKey);
+
   // The figures shown: the answer to the controls, or the last answer kept
   // for layout (dimmed while computing, blanked after a failure).
   const display = state.result ?? state.previous ?? initial;
@@ -400,9 +557,7 @@ export function GainsAtRiskView({
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div className="min-w-0">
           <h2 className="text-lg font-medium text-ink whitespace-nowrap!">Gains at risk</h2>
-          <p className="text-sm text-ink-faint mt-0.5">
-            If an index falls by a date, how much of the year&apos;s gain the book gives back.
-          </p>
+          <p className="text-sm text-ink-faint mt-0.5">{pageDescription(kind)}</p>
         </div>
         <div
           className="flex items-center gap-1 rounded-lg bg-raised border border-edge p-0.5 self-start w-fit max-w-full overflow-x-auto"
@@ -462,26 +617,13 @@ export function GainsAtRiskView({
       {/* ── Controls: always shown and editable, whatever the request state ── */}
       <section className="bg-panel rounded-xl p-4 sm:p-5 card-elev space-y-3" aria-label="Scenario">
         <div className="flex flex-wrap items-end gap-x-5 gap-y-3">
-          <div className="space-y-1">
-            <span className="block text-xs text-ink-faint">If this index falls</span>
-            <div className="flex items-center gap-1 rounded-lg bg-raised border border-edge p-0.5 w-fit" role="group" aria-label="Index">
-              {GAINS_AT_RISK_DRIVERS.map((d) => (
-                <button
-                  key={d}
-                  type="button"
-                  aria-pressed={controls.driverSymbol === d}
-                  onClick={() => {
-                    if (d !== controls.driverSymbol) void run({ ...controls, driverSymbol: d });
-                  }}
-                  className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
-                    controls.driverSymbol === d ? "bg-panel text-ink shadow-sm" : "text-ink-dim hover:text-ink"
-                  }`}
-                >
-                  {d}
-                </button>
-              ))}
-            </div>
-          </div>
+          <DriverControl
+            driver={controls.driver}
+            indexSymbol={controls.driverSymbol}
+            drivers={driverLists.drivers}
+            onPickIndex={pickIndex}
+            onPickSingleName={pickSingleName}
+          />
           <label className="space-y-1">
             <span className="block text-xs text-ink-faint">by</span>
             <input
@@ -514,7 +656,14 @@ export function GainsAtRiskView({
             />
           </label>
         </div>
-        <p className="text-xs text-ink-faint">{DOWN_ONLY_NOTE}</p>
+        {singleNameSymbol !== null && <p className="text-xs text-ink-faint">{singleNameVolNote(singleNameSymbol)}</p>}
+        {driverNotice && <p className={`text-xs ${CHIP_TONE_TEXT.warn}`}>{driverNotice}</p>}
+        {singleNameSymbol !== null ? (
+          <p className="text-xs text-ink-dim">{HELD_UNCHANGED_NOTE}</p>
+        ) : (
+          <p className="text-xs text-ink-faint">{DOWN_ONLY_NOTE}</p>
+        )}
+        {singleNameSymbol === null && (
         <div className="space-y-1">
           <span className="block text-xs text-ink-faint">Case</span>
           <div className="flex items-center gap-1 rounded-lg bg-raised border border-edge p-0.5 w-fit" role="group" aria-label="Case">
@@ -534,6 +683,7 @@ export function GainsAtRiskView({
           </div>
           <p className="text-xs text-ink-dim">{CASE_NOTES[caseKey]}</p>
         </div>
+        )}
       </section>
 
       {/* ── Trial positions: page state only, never stored ── */}
@@ -552,7 +702,8 @@ export function GainsAtRiskView({
         response={display}
         mode={mode}
         error={state.error}
-        caseKey={caseKey}
+        caseKey={screenCase}
+        singleNameSymbol={singleNameSymbol}
         scopeHasAccounts={scopeHasAccounts}
         today={today}
         custom={controls.custom}
@@ -561,7 +712,7 @@ export function GainsAtRiskView({
         onCustomDraft={setCustomDraft}
         onCustomCommit={commitCustom}
         selectedMove={selectedMove}
-        onSelectMove={setSelectedMove}
+        onSelectMove={selectMove}
         overrideDrafts={overrideDrafts}
         overrideProblems={overrideProblems}
         onOverrideDraft={(id, v) => setOverrideDrafts((d) => ({ ...d, [id]: v }))}
@@ -586,6 +737,7 @@ function ResultSections({
   mode,
   error,
   caseKey,
+  singleNameSymbol,
   scopeHasAccounts,
   today,
   custom,
@@ -613,7 +765,10 @@ function ResultSections({
   response: GainsAtRiskResponse;
   mode: FigureMode;
   error: string | null;
+  /** The case on screen (always "measured" in single-name mode, P20). */
   caseKey: GainsAtRiskCaseKey;
+  /** Step 3: the single-name driver's symbol; null in index mode. */
+  singleNameSymbol: string | null;
   scopeHasAccounts: boolean;
   today: string;
   custom: number | null;
@@ -681,8 +836,13 @@ function ResultSections({
   const rowAt = (move: number) => selected.moves.find((r) => sameMove(r.move, move)) ?? null;
   const shareShown = selected.moves.some((r) => gainGivenBackShare(r.bookPnlUsd, yearGain) !== null);
   const laterDate = result.valuationDate > today;
-  const tableMoves: number[] = [...TABLE_MOVES];
+  // Step 3: single-name mode has its own rows (falls and rises), headline and words.
+  const singleName = singleNameSymbol !== null;
+  const kind = singleName ? "single-name" : "index";
+  const tableMoves: number[] = singleName ? [...tableMovesFor(kind)] : [...TABLE_MOVES];
   const customExtra = custom !== null && !tableMoves.some((m) => sameMove(m, custom));
+  const rowMoves = tableRowMoves(kind, custom);
+  const customBounds = customMoveBoundsPct(kind);
   const selectedIdx = selected.moves.findIndex((r) => sameMove(r.move, selectedMove));
   const driver = result.driverSymbol;
   // A key the URL carries that this table does not know falls back to the default.
@@ -703,6 +863,12 @@ function ResultSections({
     }
   }
   const caption = betaEvidenceCaption(result.betaEvidence, driver);
+  // The book's change at the selected row (single-name mode): a loss also as a share of the year's gain.
+  const selectedRow = rowAt(selectedMove);
+  const headline = singleName && selectedRow ? singleNameHeadline(selectedRow, driver, yearGain) : null;
+  // P3: the flagged funds (and options on them) no seed links to the stock, held unchanged.
+  const lnl = singleName ? (selected.disclosures.leveragedNotLinked ?? null) : null;
+  const lnlShare = lnl ? disclosureShare(lnl) : null;
   const ignored = overridesIgnoredLine(result.betaOverridesIgnored);
   const noLink = noMeasuredLinkSentence(selected.disclosures.noMeasuredLink, caseKey);
   // With trial positions: the selected case's book with them (R6: the book's own figures do not move).
@@ -737,10 +903,15 @@ function ResultSections({
               driverSymbol={driver}
               yearGain={yearGain}
               trial={trial ? trial.cases : null}
+              singleName={singleName}
             />
           </div>
         )}
-        <p className="text-xs text-ink-faint">{trial ? TRIAL_CHART_NOTE : CHART_GAP_NOTE}</p>
+        {singleName ? (
+          <p className="text-xs text-ink-faint">{SINGLE_NAME_CHART_NOTE}</p>
+        ) : (
+          <p className="text-xs text-ink-faint">{trial ? TRIAL_CHART_NOTE : CHART_GAP_NOTE}</p>
+        )}
         {trial && emptyBook && <p className="text-xs text-ink-faint">{TRIAL_EMPTY_BOOK_NOTE}</p>}
       </section>
 
@@ -771,8 +942,10 @@ function ResultSections({
               </tr>
             </thead>
             <tbody>
-              {[...tableMoves, ...(customExtra && custom !== null ? [custom] : [])].map((move) => {
+              {rowMoves.map((move) => {
                 const row = rowAt(move);
+                // P6: each single-name row carries its own direction's split; the zero row has none.
+                const cells = singleName && row ? singleNameRowCells(row) : null;
                 const selected = sameMove(move, selectedMove);
                 const isCustom = customExtra && custom !== null && sameMove(move, custom);
                 const cell = row && !failed ? givenBackCell(row.bookPnlUsd, yearGain) : null;
@@ -816,10 +989,10 @@ function ResultSections({
                     ) : (
                       <>
                         <td className="text-right py-1.5 px-3 whitespace-nowrap">
-                          <Money value={fig(row?.losersPnlUsd)} signed />
+                          {cells && cells.loses === null ? null : <Money value={fig(row?.losersPnlUsd)} signed />}
                         </td>
                         <td className="text-right py-1.5 px-3 whitespace-nowrap">
-                          <Money value={fig(row?.offsetsPnlUsd)} signed />
+                          {cells && cells.offsets === null ? null : <Money value={fig(row?.offsetsPnlUsd)} signed />}
                         </td>
                         <td className="text-right py-1.5 px-3 text-ink whitespace-nowrap">
                           <Money value={fig(row?.bookPnlUsd)} signed />
@@ -849,6 +1022,18 @@ function ResultSections({
           </p>
         )}
         {crossing && <p className={`text-xs text-ink-dim ${dim}`}>{crossing}</p>}
+        {headline && !failed && (
+          <p className={`text-sm text-ink ${dim}`}>
+            {headline.text} <Money value={fig(headline.usd)} signed />
+            {headline.share !== null && (
+              <>
+                {" "}
+                (<Pct value={headline.share * 100} /> of the year&apos;s gain)
+              </>
+            )}
+            .
+          </p>
+        )}
         <div className="flex flex-wrap items-center gap-2 text-sm">
           <label htmlFor="gains-custom-move" className="text-ink-faint text-xs">
             Custom {driver} move
@@ -858,9 +1043,9 @@ function ResultSections({
             type="number"
             inputMode="decimal"
             step={0.5}
-            max={0}
-            min={-60}
-            placeholder="-7"
+            max={customBounds.max}
+            min={customBounds.min}
+            placeholder={singleName ? "-25" : "-7"}
             value={customDraft}
             onChange={(e) => onCustomDraft(e.target.value)}
             onBlur={onCustomCommit}
@@ -878,11 +1063,15 @@ function ResultSections({
           What moves the result{selectedIdx >= 0 ? ` at ${formatDriverMove(selected.moves[selectedIdx].move)}` : ""}
         </h3>
         {sortNote && <p className="text-xs text-ink-dim">{sortNote}</p>}
-        <p className="text-xs text-ink-faint">
-          Each name moves by its beta times the index&apos;s move. In a real fall a name can move more than that, or alone.
-          Pick a row above to see that move.
-        </p>
-        {!failed && (
+        {singleName ? (
+          <p className="text-xs text-ink-faint">{singleNameMovesNote(driver)} Pick a row above to see that move.</p>
+        ) : (
+          <p className="text-xs text-ink-faint">
+            Each name moves by its beta times the index&apos;s move. In a real fall a name can move more than that, or alone.
+            Pick a row above to see that move.
+          </p>
+        )}
+        {!failed && !singleName && (
           <p className={`text-xs text-ink-faint ${dim}`}>
             {caption.text}
             {caption.waiting && (
@@ -893,7 +1082,7 @@ function ResultSections({
             )}
           </p>
         )}
-        {!failed && caption.notCaptured && (
+        {!failed && !singleName && caption.notCaptured && (
           <p className={`text-xs text-ink-faint ${dim}`}>
             <Count value={caption.notCaptured.count} /> {caption.notCaptured.text}
           </p>
@@ -920,7 +1109,7 @@ function ResultSections({
                   Beta to {driver}
                 </SortableHeader>
                 <th className="font-normal py-1 pr-3 whitespace-nowrap">Where it comes from</th>
-                <th className="font-normal py-1 pr-3 whitespace-nowrap">Your figure</th>
+                {!singleName && <th className="font-normal py-1 pr-3 whitespace-nowrap">Your figure</th>}
                 <th className="font-normal py-1 pr-3 whitespace-nowrap">Price</th>
                 <SortableHeader field="loss" sort={sort} onSort={setSort} align="right" className="whitespace-nowrap">
                   {selectedIdx >= 0 ? <>Result at {formatDriverMove(selected.moves[selectedIdx].move)}</> : "Result"}
@@ -938,6 +1127,8 @@ function ResultSections({
                     mode={mode}
                     caseKey={caseKey}
                     driver={driver}
+                    singleName={singleName}
+                    selectedMove={selectedMove}
                     pnl={selectedIdx >= 0 ? fig(p.cases[caseKey].pnlByMove[selectedIdx]) : null}
                     ownsBox={boxOwners.has(`${p.accountId}:${p.securityId}`)}
                     draft={overrideDrafts[p.securityId]}
@@ -977,7 +1168,10 @@ function ResultSections({
         className={`bg-panel rounded-xl p-4 sm:p-5 card-elev space-y-1.5 ${dim}`}
         aria-label="What the figures leave out"
       >
-        {disclosureSentences(selected.disclosures).map((d) => {
+        {/* Single-name mode measures nothing, so "no measured link" does not apply there. */}
+        {disclosureSentences(selected.disclosures)
+          .filter((d) => !(singleName && d.key === "noMeasuredLink"))
+          .map((d) => {
           const share = disclosureShare(d);
           return (
             <p key={d.key} className="text-xs text-ink-dim">
@@ -1011,6 +1205,18 @@ function ResultSections({
             </p>
           );
         })}
+        {lnl && (
+          <p className="text-xs text-ink-dim">
+            <span className="text-ink">{leveragedNotLinkedText(driver)}:</span> <Count value={fig(lnl.count)} />
+            {!failed && lnl.count > 0 && lnlShare?.kind === "pct" && (
+              <>
+                {" · "}
+                <Pct value={lnlShare.value * 100} /> of the book
+              </>
+            )}
+            {!failed && lnl.symbols.length > 0 && <span className="text-ink-faint"> · {lnl.symbols.join(", ")}</span>}
+          </p>
+        )}
       </section>
     </>
   );
@@ -1021,6 +1227,8 @@ function PositionRow({
   mode,
   caseKey,
   driver,
+  singleName,
+  selectedMove,
   pnl,
   ownsBox,
   draft,
@@ -1043,6 +1251,9 @@ function PositionRow({
   mode: FigureMode;
   caseKey: GainsAtRiskCaseKey;
   driver: string;
+  /** Step 3: single-name mode (no figure box; words name the stock; the side of the selected move's direction). */
+  singleName: boolean;
+  selectedMove: number;
   pnl: number | null;
   ownsBox: boolean;
   draft: string | undefined;
@@ -1072,7 +1283,8 @@ function PositionRow({
   const fig = (v: number | null | undefined): number | null => moneyCell(v, mode === "failed");
   // This case's beta, side and source; the not-modelled reason is read first (betaSourceLine).
   const pc = p.cases[caseKey];
-  const source = betaSourceLine(p, caseKey);
+  const source = betaSourceLine(p, caseKey, singleName ? driver : undefined);
+  const side = rowSideAt(pc, singleName ? "single-name" : "index", selectedMove);
   // A refused trial row says why in place of where its beta comes from.
   const trialRefusal = p.trialRow && p.trialRefusal !== undefined ? trialRefusalNote(p.trialRow, { tableBelow: "this-row" }) : null;
   return (
@@ -1085,7 +1297,7 @@ function PositionRow({
             trial
           </Chip>
         )}
-        {pc.side === "offsets" && (
+        {side === "offsets" && (
           <Chip tone="info" size="xs" className="ml-1.5">
             offsetting
           </Chip>
@@ -1113,6 +1325,7 @@ function PositionRow({
           </>
         )}
       </td>
+      {!singleName && (
       <td className="py-1.5 pr-3 text-ink-dim">
         {ownsEditor && p.identitySecurityId !== null && (
           <span className="flex flex-wrap items-center gap-1.5">
@@ -1156,6 +1369,7 @@ function PositionRow({
           <span className={`block text-[11px] max-w-56 ${CHIP_TONE_TEXT.warn}`}>{BETA_OVERRIDE_REFUSAL_LABELS[betaRefusal]}</span>
         )}
       </td>
+      )}
       <td className="py-1.5 pr-3 text-ink-dim">
         <span className={dim}>
           {p.priceSource ? PRICE_SOURCE_LABELS[p.priceSource] : "—"}

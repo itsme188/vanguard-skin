@@ -24,6 +24,13 @@ const TRIAL_HELPERS = "lib/analysis/gains-at-risk-trial-view.ts";
 const PROVIDER = "app/dashboard/components/gains-at-risk/TrialPositionsProvider.tsx";
 const FORM = "app/dashboard/components/gains-at-risk/TrialPositionForm.tsx";
 const LIST = "app/dashboard/components/gains-at-risk/TrialPositionList.tsx";
+// Step 3 (Task S5): the driver control.
+const DRIVER_CONTROL = "app/dashboard/components/gains-at-risk/DriverControl.tsx";
+// Step 3 (Task S4): the plain route-body module and the money module the page will read.
+const CANDIDATES_INPUT = "lib/analysis/gains-at-risk-candidates-input.ts";
+const CANDIDATE_MONEY = "lib/analysis/gains-at-risk-candidate-money.ts";
+/** Server only (F4, plan OPEN 1): never reached from a client file. */
+const CANDIDATE_CHECK = "lib/compute/gains-at-risk-candidate-check.ts";
 
 /** Source with // and /* *\/ comments removed (string contents kept as written). */
 function code(src: string): string {
@@ -226,7 +233,9 @@ describe("the two cases and the owner's figure", () => {
   });
 
   it("the figures are sent keyed by identity, and left out when there are none", () => {
-    anchorIndex(src, "Object.keys(next.betaOverrides).length > 0 ? { betaOverrides: next.betaOverrides } : {}");
+    // Step 3 (P2): none are sent in single-name mode; they stay in page state.
+    anchorIndex(src, "const figures = betaOverridesToSend(kind, next.betaOverrides);");
+    anchorIndex(src, "Object.keys(figures).length > 0 ? { betaOverrides: figures } : {}");
     anchorIndex(src, "betaOverrideProblem(");
     anchorIndex(src, "BETA_OVERRIDE_REFUSAL_LABELS[");
     anchorIndex(src, "overridesIgnoredLine(result.betaOverridesIgnored)");
@@ -240,7 +249,7 @@ describe("the two cases and the owner's figure", () => {
     anchorIndex(src, "<Count value={caption.waiting.count} />");
     anchorIndex(src, "<Count value={caption.notCaptured.count} />");
     anchorIndex(src, "noMeasuredLinkSentence(");
-    anchorIndex(src, "betaSourceLine(p, caseKey)");
+    anchorIndex(src, "betaSourceLine(p, caseKey, singleName ? driver : undefined)");
   });
 });
 
@@ -299,7 +308,7 @@ describe("no portfolio number is printed outside the privacy components", () => 
   ];
   const fieldRe = new RegExp(`\\b(${MONEY_FIELDS.join("|")})\\b`);
 
-  for (const file of [VIEW, CHART, LIST, FORM]) {
+  for (const file of [VIEW, CHART, LIST, FORM, DRIVER_CONTROL]) {
     const src = code(read(file));
 
     it(`${file}: no money field inside a template string`, () => {
@@ -398,7 +407,9 @@ describe("the browser bundle reaches no database or engine code through these fi
     const seen = new Set<string>();
     const reached: string[] = [];
     const packages = new Set<string>();
-    const stack = [VIEW, CHART, HELPERS, INPUT, TRIAL_HELPERS, PROVIDER, FORM, LIST].map((p) => join(ROOT, p));
+    const stack = [VIEW, CHART, HELPERS, INPUT, TRIAL_HELPERS, PROVIDER, FORM, LIST, DRIVER_CONTROL, CANDIDATES_INPUT, CANDIDATE_MONEY].map((p) =>
+      join(ROOT, p),
+    );
     while (stack.length > 0) {
       const file = stack.pop()!;
       if (seen.has(file)) continue;
@@ -414,17 +425,21 @@ describe("the browser bundle reaches no database or engine code through these fi
     // The scope rule value-imports lib/queries: server-only, never reached from here.
     expect(reached).not.toContain(SCOPE);
     expect([...packages].filter((p) => p === "better-sqlite3" || p.startsWith("@stoqey/"))).toEqual([]);
-    for (const f of [VIEW, CHART, HELPERS, INPUT, CONSTANTS, TRIAL_HELPERS, PROVIDER, FORM, LIST]) expect(reached).toContain(f);
+    for (const f of [VIEW, CHART, HELPERS, INPUT, CONSTANTS, TRIAL_HELPERS, PROVIDER, FORM, LIST, DRIVER_CONTROL, CANDIDATES_INPUT, CANDIDATE_MONEY]) {
+      expect(reached).toContain(f);
+    }
+    // T22: the call-2 validator is server code; its types reach the page by type-only import.
+    expect(reached).not.toContain(CANDIDATE_CHECK);
   });
 });
 
 describe("the page's words", () => {
-  for (const file of [SECTION, VIEW, CHART, HELPERS, INPUT, TRIAL_HELPERS, PROVIDER, FORM, LIST]) {
+  for (const file of [SECTION, VIEW, CHART, HELPERS, INPUT, TRIAL_HELPERS, PROVIDER, FORM, LIST, DRIVER_CONTROL]) {
     it(`${file}: never calls the offsetting positions by the other name`, () => {
       for (const t of copyOf(read(file))) expect(t).not.toMatch(/\bhedges?\b/i);
     });
   }
-  for (const file of [SECTION, VIEW, CHART, HELPERS, TRIAL_HELPERS, PROVIDER, FORM, LIST]) {
+  for (const file of [SECTION, VIEW, CHART, HELPERS, TRIAL_HELPERS, PROVIDER, FORM, LIST, DRIVER_CONTROL]) {
     it(`${file}: no beta is called estimated any more`, () => {
       for (const t of copyOf(code(read(file)))) expect(t).not.toMatch(/estimat/i);
     });
