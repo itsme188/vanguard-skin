@@ -24,6 +24,8 @@ const state = vi.hoisted(() => ({
   db: null as unknown as Database.Database,
   /** Forces the engine to throw, past the body check: "input" (typed) or "internal". */
   engineThrows: null as null | "input" | "internal",
+  /** The input the route last handed the engine. */
+  lastInput: null as unknown,
 }));
 
 vi.mock("@/lib/compute/gains-at-risk", async (importOriginal) => {
@@ -31,6 +33,7 @@ vi.mock("@/lib/compute/gains-at-risk", async (importOriginal) => {
   return {
     ...actual,
     computeGainsAtRisk: (...args: Parameters<typeof actual.computeGainsAtRisk>) => {
+      state.lastInput = args[1];
       if (state.engineThrows === "input") throw new actual.GainsAtRiskInputError("valuationDate is before today");
       if (state.engineThrows === "internal") throw new Error("SQLITE_ERROR: no such column zz_secret_detail");
       return actual.computeGainsAtRisk(...args);
@@ -402,8 +405,10 @@ describe("POST /api/compute/gains-at-risk", () => {
     const statements = [...src.matchAll(/^import\s[\s\S]*?from\s+["']([^"']+)["'];?/gm)];
     expect(statements.length).toBeGreaterThan(0);
     const valueSources = statements.filter((m) => !/^import\s+type\s/.test(m[0])).map((m) => m[1]);
-    const forbidden = /^@\/lib\/(compute|queries|tws)\/|^@\/lib\/db(\/|$)|^@\/lib\/db\.|better-sqlite3|@stoqey\/ib/;
+    const forbidden = /^@\/lib\/(compute|queries|tws|calendar|mutations)\/|^@\/lib\/db(\/|$)|^@\/lib\/db\.|better-sqlite3|@stoqey\/ib/;
     expect(valueSources.filter((s) => forbidden.test(s))).toEqual([]);
+    // Step 2 (Task S3): the value imports are exactly the scope list and the import-free constants.
+    expect([...new Set(valueSources)].sort()).toEqual(["@/lib/analysis/gains-at-risk-constants", "@/lib/analysis/view-param"]);
     // The override bounds come from the import-free constants module only.
     expect(valueSources).toContain("@/lib/analysis/gains-at-risk-constants");
     expect(src).not.toMatch(/\brequire\(|\bimport\(/);
@@ -427,5 +432,191 @@ describe("POST /api/compute/gains-at-risk", () => {
 
   it("is a human route", () => {
     expect(classifyRoute("POST", "/api/compute/gains-at-risk")).toBe("human");
+  });
+
+  // ─── Trial positions (step 2, Task S3, rulings P9 and P11) ───────────────
+  const opt = {
+    kind: "option",
+    id: "t-put",
+    underlyingSecurityId: 103,
+    right: "put",
+    side: "buy",
+    expiry: "2027-03-19",
+    strike: 20,
+    contracts: 2,
+    pricePaid: 1.5,
+    entryUnderlyingPrice: 20,
+    entryVolatility: 0.35,
+    valuationPriceAtEntry: 20,
+  };
+  const shares = { kind: "shares", id: "t-sell", securityId: 101, side: "sell", quantity: 5, price: 100 };
+
+  it.each([
+    [{ trialPositions: {} }],
+    [{ trialPositions: Array(13).fill(opt) }],
+    [{ trialPositions: Array.from({ length: 13 }, (_, i) => ({ ...opt, id: `t${i}` })) }],
+    [{ trialPositions: [opt, opt] }], // duplicate id
+    [{ trialPositions: [{ ...opt, contracts: 1.5 }] }],
+    [{ trialPositions: [{ ...opt, expiry: "2026-02-30" }] }],
+    [{ trialPositions: [{ ...shares, price: 0 }] }],
+    [{ trialPositions: [{ ...opt, id: "" }] }],
+    [{ trialPositions: [{ ...opt, id: "x".repeat(41) }] }],
+    [{ trialPositions: [{ ...opt, id: 7 }] }],
+    [{ trialPositions: [{ ...opt, kind: "future" }] }],
+    [{ trialPositions: [{ ...opt, right: "P" }] }],
+    [{ trialPositions: [{ ...opt, side: "sell" }] }],
+    [{ trialPositions: [{ ...shares, side: "write" }] }],
+    [{ trialPositions: [{ ...opt, contracts: 0 }] }],
+    [{ trialPositions: [{ ...opt, contracts: 501 }] }],
+    [{ trialPositions: [{ ...opt, strike: -1 }] }],
+    [{ trialPositions: [{ ...opt, strike: 100_001 }] }],
+    [{ trialPositions: [{ ...opt, pricePaid: 0 }] }],
+    [{ trialPositions: [{ ...opt, entryUnderlyingPrice: 100_001 }] }],
+    [{ trialPositions: [{ ...opt, entryVolatility: 0 }] }],
+    [{ trialPositions: [{ ...opt, entryVolatility: 10.01 }] }],
+    [{ trialPositions: [{ ...opt, expiry: "20270319" }] }],
+    [{ trialPositions: [{ ...shares, quantity: 1_000_001 }] }],
+    [{ trialPositions: [{ ...shares, quantity: 2.5 }] }],
+    [{ trialPositions: [{ ...shares, price: "100" }] }],
+    [{ trialPositions: [null] }],
+    [{ trialPositions: [{ ...opt, underlyingSecurityId: 0 }] }],
+    [{ trialPositions: [{ ...opt, underlyingSecurityId: 1.5 }] }],
+    [{ trialPositions: [{ ...shares, securityId: "101" }] }],
+    [{ trialPositions: [{ ...shares, securityId: 9007199254740993 }] }],
+    [{ trialPositions: [{ ...opt, valuationPriceAtEntry: undefined }] }],
+    [{ trialPositions: [{ ...opt, valuationPriceAtEntry: 0 }] }],
+    [{ trialPositions: [{ ...opt, valuationPriceAtEntry: -5 }] }],
+    [{ trialPositions: [{ ...opt, valuationPriceAtEntry: 100_001 }] }],
+    [{ trialPositions: [{ ...opt, valuationPriceAtEntry: "20" }] }],
+  ])("refuses %o with 400 naming trialPositions", async (patch) => {
+    const { res, body } = await post({ ...validBody(), ...patch });
+    expect(res.status).toBe(400);
+    expect(body.success).toBe(false);
+    expect(body.error).toContain("trialPositions");
+  });
+
+  it("the trial body check refuses a non-finite figure (checked directly: JSON cannot carry one)", () => {
+    for (const v of [Infinity, NaN]) {
+      expect(gainsAtRiskBodyProblem({ ...validBody(), trialPositions: [{ ...opt, entryVolatility: v }] }, TODAY)).toContain(
+        "trialPositions",
+      );
+      expect(gainsAtRiskBodyProblem({ ...validBody(), trialPositions: [{ ...shares, price: v }] }, TODAY)).toContain("trialPositions");
+      expect(
+        gainsAtRiskBodyProblem({ ...validBody(), trialPositions: [{ ...opt, valuationPriceAtEntry: v }] }, TODAY),
+      ).toContain("valuationPriceAtEntry");
+    }
+  });
+
+  it("accepts twelve positions and the bounds exactly", () => {
+    const twelve = Array.from({ length: 12 }, (_, i) => ({ ...opt, id: `t${i}` }));
+    expect(gainsAtRiskBodyProblem({ ...validBody(), trialPositions: twelve }, TODAY)).toBeNull();
+    expect(gainsAtRiskBodyProblem({ ...validBody(), trialPositions: [] }, TODAY)).toBeNull();
+    expect(
+      gainsAtRiskBodyProblem(
+        {
+          ...validBody(),
+          trialPositions: [
+            {
+              ...opt,
+              contracts: 500,
+              strike: 100_000,
+              pricePaid: 100_000,
+              entryUnderlyingPrice: 100_000,
+              entryVolatility: 10,
+              valuationPriceAtEntry: 100_000,
+              id: "x".repeat(40),
+            },
+            { ...shares, quantity: 1_000_000, price: 100_000 },
+          ],
+        },
+        TODAY,
+      ),
+    ).toBeNull();
+  });
+
+  it("passes trial positions to the engine and returns its result untouched", async () => {
+    const trialPositions = [opt, shares];
+    const { res, body } = await post({ ...validBody(), scope: "all", trialPositions });
+    expect(res.status).toBe(200);
+    const direct = computeGainsAtRisk(state.db, {
+      accountIds: undefined,
+      driverSymbol: "SPY",
+      valuationDate: TODAY,
+      moves: [-0.1, -0.2],
+      volChangePoints: 0,
+      trialPositions: trialPositions as never,
+      today: TODAY,
+    });
+    expect(direct.trial).toBeDefined();
+    expect(body.data.result).toEqual(JSON.parse(JSON.stringify(direct)));
+    expect(body.data.result.trial.rows.map((r: { id: string }) => r.id)).toEqual(["t-put", "t-sell"]);
+
+    // valuationPriceAtEntry reaches the engine with the rest of the option's fixed record.
+    const handed = (state.lastInput as { trialPositions: Record<string, unknown>[] }).trialPositions;
+    expect(handed[0]).toEqual(opt);
+    expect(handed[0].valuationPriceAtEntry).toBe(20);
+
+    // Unknown keys on a trial are not passed through.
+    const extra = await post({ ...validBody(), scope: "all", trialPositions: [{ ...opt, zzExtra: 1 }, shares] });
+    expect(extra.body.data.result).toEqual(body.data.result);
+
+    // An empty list is the same as none: step 1's result, no trial key.
+    const none = await post({ ...validBody(), trialPositions: [] });
+    expect(none.res.status).toBe(200);
+    expect(none.body.data.result.trial).toBeUndefined();
+  });
+
+  it("accepts a retained trial whose expiry has passed; the engine returns it refused expired", async () => {
+    const { res, body } = await post({ ...validBody(), trialPositions: [{ ...opt, expiry: "2026-11-06" }, shares] });
+    expect(res.status).toBe(200);
+    const rows = body.data.result.trial.rows;
+    expect(rows.find((r: { id: string }) => r.id === "t-put").refusal).toBe("expired");
+    expect(rows.find((r: { id: string }) => r.id === "t-sell").refusal).toBeUndefined();
+  });
+
+  it("refuses a trial security id that is not a positive safe integer (400); a bad security is the engine's row refusal", async () => {
+    const zero = await post({ ...validBody(), trialPositions: [{ ...shares, securityId: -4 }] });
+    expect(zero.res.status).toBe(400);
+    expect(zero.body.error).toContain("trialPositions");
+
+    state.db
+      .prepare("INSERT INTO securities (id, symbol, name, security_type, currency) VALUES (201, 'ZZJP', 'ZZ Japan', 'Stock', 'JPY')")
+      .run();
+    state.db
+      .prepare(
+        "INSERT INTO securities (id, symbol, name, security_type, currency) VALUES (202, 'ZZCC 270319P00020000', 'ZZCC put', 'Option', 'USD')",
+      )
+      .run();
+    // A retained trial whose security is now unknown, an option, or not in dollars: the run still
+    // answers 200, that row is refused with zero effect, and the other trial computes (P11's intent).
+    for (const [bad, refusal] of [
+      [{ ...shares, id: "t-bad", securityId: 999 }, "unknown-security"],
+      [{ ...shares, id: "t-bad", securityId: 202 }, "is-an-option"],
+      [{ ...opt, id: "t-bad", underlyingSecurityId: 201 }, "foreign-currency"],
+    ] as const) {
+      const { res, body } = await post({ ...validBody(), trialPositions: [bad, opt] });
+      expect(res.status).toBe(200);
+      const rows = body.data.result.trial.rows;
+      const badRow = rows.find((r: { id: string }) => r.id === "t-bad");
+      expect(badRow.refusal).toBe(refusal);
+      expect(badRow.cost).toBeNull();
+      for (const k of ["measured", "selloff"]) {
+        expect(badRow.cases[k].pnlByMove.every((v: number) => v === 0)).toBe(true);
+      }
+      const good = rows.find((r: { id: string }) => r.id === "t-put");
+      expect(good.refusal).toBeUndefined();
+      expect(body.data.result.trial.refusedCount).toBe(1);
+    }
+  });
+
+  it("the compute route never looks a trial's security up itself (shape only)", () => {
+    const src = readFileSync(join(process.cwd(), "app/api/compute/gains-at-risk/route.ts"), "utf8");
+    expect(src).not.toMatch(/checkTrialSecurity/);
+  });
+
+  it("a trial on a name with no broker contract is still accepted (the contract is needed only for a quote)", async () => {
+    // 103 (ZZCC) has no ib_con_id in the seed.
+    const { res } = await post({ ...validBody(), trialPositions: [opt] });
+    expect(res.status).toBe(200);
   });
 });

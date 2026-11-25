@@ -6,6 +6,7 @@ import { gainsAtRiskAccountIds } from "@/lib/analysis/gains-at-risk-scope";
 import { computeYearGain } from "@/lib/compute/year-gain";
 import { getPositionsFreshness } from "@/lib/queries/positions-freshness";
 import {
+  cleanTrialPositions,
   gainsAtRiskBodyProblem,
   type GainsAtRiskBody,
   type GainsAtRiskResponse,
@@ -20,6 +21,14 @@ import {
  * the scope (both cases, the bar evidence and the ignored-figure count,
  * passed through untouched), the year's gain for EVERY account, and
  * freshness for every account and for the scope.
+ *
+ * Step 2: `trialPositions` (fixed at the click by the trial-entry route) are
+ * shape-checked with the body (400) and passed to the engine. Securities are
+ * NOT looked up here: a retained trial whose security has since become
+ * unknown, an option or non-dollar, or whose expiry has passed, is returned
+ * by the engine as a refused row with zero effect while every other position
+ * computes (P11). The server-side security check is on the three routes that
+ * create an entry, fetch a quote or fetch bars. Nothing about a trial is stored.
  */
 export async function POST(request: NextRequest) {
   let body: unknown;
@@ -37,6 +46,8 @@ export async function POST(request: NextRequest) {
   const input = body as GainsAtRiskBody;
 
   try {
+    const trialPositions = input.trialPositions ? cleanTrialPositions(input.trialPositions) : undefined;
+
     // "all" is every account; a scope word naming no account reads nothing (one rule, shared with the section).
     const accountIds = gainsAtRiskAccountIds(db, input.scope);
     const result = computeGainsAtRisk(db, {
@@ -48,6 +59,7 @@ export async function POST(request: NextRequest) {
       priceOverrides: input.priceOverrides,
       // Keyed by the underlying identity's security id (C6); the engine counts unmatched keys.
       betaOverrides: input.betaOverrides,
+      trialPositions,
       today,
     });
     const data: GainsAtRiskResponse = {

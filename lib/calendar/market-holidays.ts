@@ -10,10 +10,14 @@
  * IMPORTANT (verify-external-truth rule): re-verify against
  * nyse.com/markets/hours-calendars before extending past 2027. The classic trap
  * is the observed-day shift — e.g. Jul 4 2026 is a Saturday, so the FULL closure
- * is Fri Jul 3 (Jul 2 is only a 1pm EARLY close, NOT a holiday).
+ * is Fri Jul 3 (Thu Jul 2 is NOT a holiday). An earlier note here called Jul 2
+ * 2026 a 1pm early close; the NYSE hours page read on 2026-11-24 lists no early
+ * close in July 2026, so that is UNCONFIRMED and it is not in NYSE_EARLY_CLOSES.
  *
- * Only FULL-day closures belong here. Early-close (1pm) days keep the market
- * OPEN, so emails still send — do not add them.
+ * Only FULL-day closures belong in NYSE_FULL_CLOSURES. Early-close (1pm) days
+ * keep the market OPEN, so emails still send and isMarketClosed is false on
+ * them; they live apart, in NYSE_EARLY_CLOSES (read only by the quote's session
+ * label, lib/calendar/market-session.ts).
  */
 
 import { addDays } from "@/lib/calendar/date-utils";
@@ -43,6 +47,34 @@ export const NYSE_FULL_CLOSURES: readonly string[] = [
   "2027-11-25", // Thanksgiving Day
   "2027-12-24", // Christmas Day (observed — Dec 25 is Saturday)
 ];
+
+/**
+ * YYYY-MM-DD → the Eastern close time ("HH:MM") of an NYSE EARLY close. The
+ * market is OPEN on these days (isMarketClosed is false); the session just
+ * ends early. Source: the same NYSE calendar (nyse.com/markets/hours-calendars,
+ * read 2026-11-24 for 2026-2027; three early closes listed, all at 13:00).
+ * Never add a derived date: only one read off the NYSE page. Mac-only (no
+ * Worker mirror: nothing in the Worker reads a session close).
+ */
+export const NYSE_EARLY_CLOSES: Readonly<Record<string, string>> = Object.freeze({
+  // ── 2026 ──
+  "2026-11-27": "13:00", // Day after Thanksgiving
+  "2026-12-24": "13:00", // Christmas Eve
+  // ── 2027 ──
+  "2027-11-26": "13:00", // Day after Thanksgiving
+});
+
+/**
+ * The years NYSE_EARLY_CLOSES is verified for (every early close of these
+ * years is listed, so an unlisted day in them is a full session). Extend this
+ * list and NYSE_EARLY_CLOSES TOGETHER, from the NYSE calendar only.
+ */
+export const NYSE_EARLY_CLOSE_YEARS: readonly number[] = Object.freeze([2026, 2027]);
+
+/** The Eastern close time of a listed early-close day, or null on any other day. */
+export function earlyCloseTime(date: string): string | null {
+  return Object.prototype.hasOwnProperty.call(NYSE_EARLY_CLOSES, date) ? NYSE_EARLY_CLOSES[date] : null;
+}
 
 const HOLIDAY_SET = new Set(NYSE_FULL_CLOSURES);
 
