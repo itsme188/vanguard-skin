@@ -337,6 +337,8 @@ export const BETA_SOURCE_LABELS: Record<GainsAtRiskBetaSource, string> = {
   owner: "your figure",
   "no-measured-link": "no measured link",
   "not-modelled": "not modelled",
+  "held-unchanged": "held unchanged",
+  "leveraged-not-linked": "leveraged fund, not linked to the driver",
 };
 
 /** Why a name has no measured link (C13), in plain words. */
@@ -438,6 +440,8 @@ export function betaSourceLine(p: GainsAtRiskPosition, caseKey: GainsAtRiskCaseK
     case "driver":
     case "fixed":
     case "not-modelled":
+    case "held-unchanged":
+    case "leveraged-not-linked":
       return { text: BETA_SOURCE_LABELS[p.betaSource], details: [] };
   }
 }
@@ -815,7 +819,7 @@ export const PRICE_SOURCE_LABELS: Record<NonNullable<GainsAtRiskPosition["priceS
 // ─── Disclosures ────────────────────────────────────────────────
 
 type CaseDisclosures = GainsAtRiskCase["disclosures"];
-type DisclosureKey = keyof CaseDisclosures;
+type DisclosureKey = Exclude<keyof CaseDisclosures, "leveragedNotLinked">;
 
 const DISCLOSURE_TEXT: Record<DisclosureKey, string> = {
   notModelled: "Not modelled",

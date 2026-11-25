@@ -680,12 +680,22 @@ export function trialShortfalls(
  * found by linear interpolation of the trial total to 0; a point at exactly 0
  * is itself the boundary. No move at or below 0, or every total exactly 0:
  * `no-trial-effect`.
+ *
+ * Step 3 (engine change 8, D5): `direction` "rise" mirrors it over the moves
+ * at or above 0, by growing rise, with the same six patterns
+ * (`worse-at-every-move.deepestMove` is then the highest move). The caller
+ * picks the direction from the driver, never from a row's put or call.
  */
-export function trialCrossing(moves: number[], trialPnlByMove: number[]): GainsAtRiskTrialCrossing {
+export function trialCrossing(
+  moves: number[],
+  trialPnlByMove: number[],
+  direction: "fall" | "rise" = "fall",
+): GainsAtRiskTrialCrossing {
+  const rise = direction === "rise";
   const pts = moves
     .map((move, i) => ({ move, pnl: trialPnlByMove[i], i }))
-    .filter((p) => p.move <= 0)
-    .sort((a, b) => b.move - a.move || a.i - b.i);
+    .filter((p) => (rise ? p.move >= 0 : p.move <= 0))
+    .sort((a, b) => (rise ? a.move - b.move : b.move - a.move) || a.i - b.i);
   if (pts.length === 0 || pts.every((p) => p.pnl === 0)) return { kind: "no-trial-effect" };
   const better = pts.map((p) => p.pnl > 0);
   if (better.every(Boolean)) return { kind: "better-at-every-move" };

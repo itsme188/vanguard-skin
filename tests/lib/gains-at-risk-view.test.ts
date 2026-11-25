@@ -657,6 +657,8 @@ describe("gains at risk: plain-words labels cover every reason", () => {
       owner: "your figure",
       "no-measured-link": "no measured link",
       "not-modelled": "not modelled",
+      "held-unchanged": "held unchanged",
+      "leveraged-not-linked": "leveraged fund, not linked to the driver",
     });
     expect(NO_MEASURED_LINK_REASON_LABELS).toEqual({
       "no-daily-bars": "no daily prices yet",

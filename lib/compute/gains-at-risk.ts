@@ -79,6 +79,20 @@
  * book + Σ trial rows, to the cent. An owner's figure keyed to a trial's
  * identity is applied, not counted as ignored.
  *
+ * ONE STOCK OR FUND AS THE DRIVER (step 3, `driver: { kind: "single-name" }`;
+ * spec 2026-11-25-gains-at-risk-step3-candidates-design.md, P2-P8, P20, D5).
+ * No regression and no driver bars: the driver, its share classes
+ * (`siblingsOf`, default `issuerSiblings`) and every option on them move by
+ * exactly the driver move; a leveraged fund whose seed names the family moves
+ * by its signed factor; everything else is "held-unchanged" (its options
+ * still reprice for time). The volatility change reaches only options whose
+ * underlying moves (the family and a seeded leveraged fund). No owner's figure is applied (every key is counted ignored). One case
+ * is computed and returned under both keys; each row carries `sideDown` and
+ * `sideUp`, and each move row its `split`. Moves lie in
+ * `SINGLE_NAME_MOVE_BOUNDS`; the trial crossing reads the selected move's
+ * direction. With no `driver` (or `{ kind: "index" }`) the result is step 2's
+ * exactly (pinned in tests/fixtures/gains-at-risk-with-trial-pin.json).
+ *
  * READ-ONLY over the database. Reads no `benchmark_prices` row and no
  * `prices` row for a beta (C3); the driver's bars are read through its own
  * securities row (`barSeriesSecurityId`), once per run, and every regression
@@ -94,9 +108,11 @@ import { getOhlcvBars } from "@/lib/queries/ohlcv";
 import { isCashEquivalentSecurity } from "@/lib/compute/cash-equivalents";
 import {
   BETA_OVERRIDE_BOUNDS,
+  SINGLE_NAME_MOVE_BOUNDS,
   TRIAL_OPTION_MULTIPLIER,
   TRIAL_POSITION_BOUNDS,
 } from "@/lib/analysis/gains-at-risk-constants";
+import { issuerSiblings } from "@/lib/securities/issuer-family";
 import { resolveLeveragedExposure, type LeveragedExposure } from "./leveraged-fund";
 import { isOptionSecurityType, normalizeExpirationDate } from "./option-elasticity";
 import { isExpiredAsOf } from "./options-greeks";
@@ -161,6 +177,18 @@ export interface GainsAtRiskInput {
    * `trial` key. Page state only; never stored.
    */
   trialPositions?: TrialPositionInput[];
+  /**
+   * Step 3: what the sweep moves. Absent means index, today's behaviour (P8).
+   * In single-name mode `driverSymbol` is ignored for pricing and the
+   * result's `driverSymbol` is `driver.symbol`, trimmed and upper-cased.
+   */
+  driver?: GainsAtRiskDriverInput;
+  /**
+   * Step 3: the move the page has selected. In single-name mode it must be
+   * one of `moves`, and it sets the trial crossing's direction (D5): a
+   * positive move reads rises, a negative or zero move (or none) reads falls.
+   */
+  selectedMove?: number;
   /** Injected for tests; default the Eastern day and the wall clock, each read once. */
   today?: string;
   now?: Date;
@@ -219,9 +247,21 @@ export type TrialPositionInput =
  */
 export type TrialPositionDraft = TrialPositionInput extends infer T ? (T extends unknown ? Omit<T, "id"> : never) : never;
 
+/**
+ * Step 3: the driver kind. An index (SPY, QQQ or VTI, named by
+ * `driverSymbol`), or one name: the name, its share classes and every option
+ * on them move by exactly the driver move; everything else is held unchanged
+ * (P2). `securityId` is null for an option underlying with no securities row.
+ */
+export type GainsAtRiskDriverInput =
+  | { kind: "index" }
+  | { kind: "single-name"; symbol: string; securityId: number | null };
+
 export interface GainsAtRiskOptions {
   /** Tracked-index map for leveraged funds; defaults to the shipped `LEVERAGED_TRACKED_INDEX_SEEDS`. */
   trackedIndexSeeds?: Readonly<Record<string, string>>;
+  /** Share-class family; default issuerSiblings. Tests inject a ZZ family (the shipped map holds real tickers). */
+  siblingsOf?: (symbol: string) => readonly string[];
 }
 
 export type GainsAtRiskCaseKey = "measured" | "selloff";
@@ -237,7 +277,15 @@ export type GainsAtRiskOverrideRefusal =
   | "not-solvable"
   /** The override is keyed to a stock, fund or bond: overrides price options only. */
   | "not-an-option";
-export type GainsAtRiskBetaSource = DriverBetaSource | "owner" | "no-measured-link" | "not-modelled";
+export type GainsAtRiskBetaSource =
+  | DriverBetaSource
+  | "owner"
+  | "no-measured-link"
+  | "not-modelled"
+  /** Single-name mode: not the driver and not a sibling (never "no measured link", which means a measurement failed). */
+  | "held-unchanged"
+  /** Single-name mode: a flagged leveraged or inverse fund whose tracked-index seed names neither the driver nor a sibling. */
+  | "leveraged-not-linked";
 export type GainsAtRiskBetaOverrideRefusal = "fixed-row" | "is-driver" | "out-of-bounds";
 
 export interface GainsAtRiskPositionCase {
@@ -246,6 +294,10 @@ export interface GainsAtRiskPositionCase {
   /** Dollars, one per input move, in the input's order. Zero on a not-modelled row. */
   pnlByMove: number[];
   side: GainsAtRiskSide;
+  /** Single-name mode only: the side in a fall (equal to `side`). */
+  sideDown?: GainsAtRiskSide;
+  /** Single-name mode only: the side in a rise (the exposure's sign reversed; an expiring row reads the most positive move). */
+  sideUp?: GainsAtRiskSide;
   /** Dollar change per unit driver move at today's prices (valuation today, no vol change), at this case's beta. */
   exposureUsd: number;
 }
@@ -287,6 +339,12 @@ export interface GainsAtRiskMoveRow {
   bookPnlUsd: number;
   losersPnlUsd: number;
   offsetsPnlUsd: number;
+  /**
+   * Single-name mode only: which split totals this row (P6). "down" uses each
+   * row's `sideDown`, "up" its `sideUp`; on "none" (move 0) losers and offsets
+   * are 0 and only `bookPnlUsd` is meaningful.
+   */
+  split?: "down" | "up" | "none";
 }
 
 export interface GainsAtRiskDisclosure {
@@ -308,6 +366,8 @@ export interface GainsAtRiskCase {
     ownerFigure: GainsAtRiskDisclosure;
     pricedFromModel: GainsAtRiskDisclosure;
     expiresBeforeDate: GainsAtRiskDisclosure;
+    /** Single-name mode only: flagged funds held unchanged because no seed links them to the driver (P3). */
+    leveragedNotLinked?: GainsAtRiskDisclosure;
   };
 }
 
@@ -328,6 +388,8 @@ export interface GainsAtRiskBetaEvidence {
    * get bars by waiting.
    */
   namesNotCaptured: number;
+  /** Single-name mode only: no regression is run (all counts 0, `driverBarsThrough` null). */
+  notApplicable?: true;
 }
 
 export interface GainsAtRiskResult {
@@ -345,6 +407,8 @@ export interface GainsAtRiskResult {
   betaOverridesIgnored: number;
   /** Step 2: present only when `trialPositions` has at least one entry. */
   trial?: GainsAtRiskTrialResult;
+  /** Step 3: present only in single-name mode. `measured` and `selloff` then hold equal figures (P20). */
+  driverKind?: "single-name";
 }
 
 // ─── Trial positions (step 2): result types ─────────────────────
@@ -425,6 +489,8 @@ export interface GainsAtRiskTrialCase {
   /** −(Σ trial P&L at move 0) at the date; null when 0 is not in the sweep. Positive = a cost. */
   noMoveCostUsd: number | null;
   crossing: GainsAtRiskTrialCrossing;
+  /** Single-name mode only: the direction the crossing reads (D5), from the selected move's sign. */
+  crossingDirection?: "fall" | "rise";
 }
 
 export interface GainsAtRiskTrialResult {
@@ -469,9 +535,33 @@ function isCalendarDay(value: string): boolean {
   return probe.getUTCFullYear() === y && probe.getUTCMonth() === m - 1 && probe.getUTCDate() === d;
 }
 
-function checkInput(input: GainsAtRiskInput, today: string): string {
+/** The checked driver: its upper-cased symbol, and the single-name fields when that is the kind. */
+type CheckedDriver = { symbol: string; singleName: null | { securityId: number | null } };
+
+function checkDriver(input: GainsAtRiskInput): CheckedDriver {
+  const raw: unknown = input.driver;
+  if (raw === undefined) return checkIndexDriver(input);
+  if (raw === null || typeof raw !== "object") throw new GainsAtRiskInputError("driver must be an object");
+  const d = raw as Record<string, unknown>;
+  if (d.kind === "index") return checkIndexDriver(input);
+  if (d.kind !== "single-name") throw new GainsAtRiskInputError("driver kind must be index or single-name");
+  const symbol = typeof d.symbol === "string" ? d.symbol.trim().toUpperCase() : "";
+  if (symbol === "") throw new GainsAtRiskInputError("a single-name driver needs a symbol");
+  const id = d.securityId;
+  if (id !== null && !(typeof id === "number" && Number.isSafeInteger(id) && id > 0)) {
+    throw new GainsAtRiskInputError("a single-name driver's securityId must be a positive whole number or null");
+  }
+  return { symbol, singleName: { securityId: id as number | null } };
+}
+
+function checkIndexDriver(input: GainsAtRiskInput): CheckedDriver {
   const driver = (input.driverSymbol ?? "").trim().toUpperCase();
   if (driver === "") throw new GainsAtRiskInputError("driverSymbol is required");
+  return { symbol: driver, singleName: null };
+}
+
+function checkInput(input: GainsAtRiskInput, today: string): CheckedDriver {
+  const driver = checkDriver(input);
   if (typeof input.valuationDate !== "string" || !isCalendarDay(input.valuationDate)) {
     throw new GainsAtRiskInputError("valuationDate is not a valid date");
   }
@@ -484,6 +574,16 @@ function checkInput(input: GainsAtRiskInput, today: string): string {
   if (input.moves.some((m) => m < -1)) throw new GainsAtRiskInputError("moves must be at least -1");
   if (typeof input.volChangePoints !== "number" || !Number.isFinite(input.volChangePoints)) {
     throw new GainsAtRiskInputError("volChangePoints must be a finite number");
+  }
+  // Step 3 (P5): one name can fall or rise, within its own bounds. Index mode keeps today's checks only.
+  if (driver.singleName !== null) {
+    const B = SINGLE_NAME_MOVE_BOUNDS;
+    if (input.moves.some((m) => m < B.min || m > B.max)) {
+      throw new GainsAtRiskInputError(`a single-name move must be between ${B.min} and ${B.max}`);
+    }
+    if (input.selectedMove !== undefined && !input.moves.includes(input.selectedMove)) {
+      throw new GainsAtRiskInputError("selectedMove must be one of the moves");
+    }
   }
   return driver;
 }
@@ -595,8 +695,27 @@ function caseFor(
   positions: GainsAtRiskPosition[],
   moves: number[],
   grossBookUsd: number,
+  singleName = false,
 ): GainsAtRiskCase {
   const rows: GainsAtRiskMoveRow[] = moves.map((move, i) => {
+    if (singleName) {
+      // P6: a fall totals each row by its down side, a rise by its up side; no move has no split.
+      const split: "down" | "up" | "none" = move < 0 ? "down" : move > 0 ? "up" : "none";
+      if (split === "none") {
+        let book = 0;
+        for (const p of positions) book += p.cases[key].pnlByMove[i];
+        return { move, bookPnlUsd: cents0(book), losersPnlUsd: 0, offsetsPnlUsd: 0, split };
+      }
+      let losers = 0;
+      let offsets = 0;
+      for (const p of positions) {
+        const c = p.cases[key];
+        const side = (split === "down" ? c.sideDown : c.sideUp) ?? c.side;
+        if (side === "offsets") offsets += c.pnlByMove[i];
+        else if (side === "loses") losers += c.pnlByMove[i];
+      }
+      return { move, bookPnlUsd: cents0(losers + offsets), losersPnlUsd: cents0(losers), offsetsPnlUsd: cents0(offsets), split };
+    }
     let losers = 0;
     let offsets = 0;
     for (const p of positions) {
@@ -617,13 +736,35 @@ function caseFor(
       ownerFigure: disclosure(modelled.filter((p) => p.betaSource === "owner"), grossBookUsd),
       pricedFromModel: disclosure(modelled.filter((p) => p.priceSource === "model"), grossBookUsd),
       expiresBeforeDate: disclosure(modelled.filter((p) => p.expiresBeforeDate === true), grossBookUsd),
+      ...(singleName
+        ? { leveragedNotLinked: disclosure(modelled.filter((p) => p.betaSource === "leveraged-not-linked"), grossBookUsd) }
+        : {}),
     },
   };
 }
 
-function emptyResult(driver: string, input: GainsAtRiskInput): GainsAtRiskResult {
+/** Single-name mode (step 3): no regression is run, so the evidence is not applicable. */
+function notApplicableEvidence(): GainsAtRiskBetaEvidence {
+  return { driverBarsThrough: null, driverBarsMissing: false, namesWaitingForBars: 0, namesNotCaptured: 0, notApplicable: true };
+}
+
+function emptyResult(driver: string, input: GainsAtRiskInput, singleName = false): GainsAtRiskResult {
   const cases = {} as Record<GainsAtRiskCaseKey, GainsAtRiskCase>;
-  for (const k of GAINS_AT_RISK_CASE_KEYS) cases[k] = caseFor(k, [], input.moves, 0);
+  for (const k of GAINS_AT_RISK_CASE_KEYS) cases[k] = caseFor(k, [], input.moves, 0, singleName);
+  if (singleName) {
+    return {
+      driverSymbol: driver,
+      valuationDate: input.valuationDate,
+      volChangePoints: input.volChangePoints,
+      grossBookUsd: 0,
+      unknownValueCount: 0,
+      positions: [],
+      cases,
+      betaEvidence: notApplicableEvidence(),
+      betaOverridesIgnored: Object.keys(input.betaOverrides ?? {}).length,
+      driverKind: "single-name",
+    };
+  }
   return {
     driverSymbol: driver,
     valuationDate: input.valuationDate,
@@ -706,6 +847,49 @@ function sideOf(exposureUsd: number, pnlByMove: number[], expiringWorstIndex: nu
 
 type CaseBetas = Record<GainsAtRiskCaseKey, number | null>;
 
+/** What the ladder resolved for an identity: the index ladder's answer, or a single-name rung (step 3). */
+type LadderBeta = DriverBeta | { beta: 0; source: "held-unchanged" | "leveraged-not-linked" };
+
+function normSymbol(symbol: string | null | undefined): string {
+  return (symbol ?? "").trim().toUpperCase();
+}
+
+/**
+ * Step 3, the single-name ladder (engine change 2; P2, P3). First match wins:
+ *   1. the identity's symbol or an option's stored underlying symbol is in the
+ *      driver's share-class family (which includes the driver), or the
+ *      identity's id is the driver's: 1, "driver";
+ *   2. a flagged leveraged or inverse fund whose tracked-index seed names the
+ *      driver or a sibling: its signed factor, "leveraged" (tracked beta 1);
+ *      such a fund with no usable factor is refused "leveraged-no-factor", as
+ *      the index ladder refuses it; any other flagged fund: 0, "leveraged-not-linked";
+ *   3. everything else (cash-equivalent, bond, every other name): 0, "held-unchanged".
+ * No regression, no bars, no database read.
+ */
+function singleNameBeta(
+  input: Omit<DriverBetaInput, "securityId" | "fixedBeta">,
+  family: ReadonlySet<string>,
+  driverSecurityId: number | null,
+): LadderBeta {
+  const inFamily = (symbol: string | null) => symbol !== null && family.has(normSymbol(symbol));
+  if (
+    inFamily(input.identitySymbol) ||
+    inFamily(input.storedUnderlyingSymbol) ||
+    (driverSecurityId !== null && input.identitySecurityId === driverSecurityId)
+  ) {
+    return { beta: 1, source: "driver" };
+  }
+  if (input.leveraged.flagged) {
+    if (!inFamily(input.trackedIndexSymbol)) return { beta: 0, source: "leveraged-not-linked" };
+    const factor = input.leveraged.factor;
+    if (factor === null || !Number.isFinite(factor) || factor === 0) {
+      return { beta: null, source: "not-modelled", reason: "leveraged-no-factor" };
+    }
+    return { beta: factor, source: "leveraged", trackedBeta: 1, factor, evidence: null };
+  }
+  return { beta: 0, source: "held-unchanged" };
+}
+
 /** Per-case beta of an identity; see the module comment. `owner` is an accepted owner's figure. */
 function caseBetas(resolved: DriverBeta, owner: number | undefined, equityLike: boolean): CaseBetas {
   if (owner !== undefined) return { measured: owner, selloff: owner };
@@ -737,12 +921,17 @@ export function computeGainsAtRisk(
   // The clock is read ONCE: every option shares one time to expiry.
   const today = input.today ?? todayET();
   const now = input.now ?? new Date();
-  const driver = checkInput(input, today);
+  const { symbol: driver, singleName } = checkInput(input, today);
+  const isSingleName = singleName !== null;
   const trials = checkTrialPositions(input);
   const emptyScope = input.accountIds !== undefined && input.accountIds.length === 0;
-  if (emptyScope && trials.length === 0) return emptyResult(driver, input);
+  if (emptyScope && trials.length === 0) return emptyResult(driver, input, isSingleName);
 
   const seeds = opts?.trackedIndexSeeds ?? LEVERAGED_TRACKED_INDEX_SEEDS;
+  // Step 3: the driver's share-class family (it includes the driver), single-name mode only.
+  const driverFamily: ReadonlySet<string> | null = isSingleName
+    ? new Set([driver, ...(opts?.siblingsOf ?? issuerSiblings)(driver).map(normSymbol)].filter((x) => x !== ""))
+    : null;
   // An empty scope reads no book; its trial positions are still priced (R5).
   const rows = emptyScope ? [] : loadScenarioPositionsByAccount(db, input.accountIds, { today });
   const riskFreeRate = getRiskFreeRate(db);
@@ -750,8 +939,8 @@ export function computeGainsAtRisk(
   const overrides = input.priceOverrides ?? {};
   const betaOverrides = input.betaOverrides ?? {};
 
-  // The driver's own series row and its bars: read once per run (C3).
-  const driverSecurityId = barSeriesSecurityId(db, driver);
+  // The driver's own series row and its bars: read once per run (C3). Single-name mode reads neither.
+  const driverSecurityId = isSingleName ? null : barSeriesSecurityId(db, driver);
   const driverBars =
     driverSecurityId === null || emptyScope
       ? []
@@ -762,6 +951,21 @@ export function computeGainsAtRisk(
   const regressionMemo = new Map<number, DailyBarEvidence>();
   /** Index of the most negative move in the sweep (first one on a tie); -1 with no moves. */
   const worstMoveIndex = input.moves.reduce((best, m, i, all) => (best < 0 || m < all[best] ? i : best), -1);
+  /** Single-name mode: index of the most positive move (first one on a tie); -1 with no moves. */
+  const bestMoveIndex = input.moves.reduce((best, m, i, all) => (best < 0 || m > all[best] ? i : best), -1);
+  /** A row's sides for one case: `side` always; single-name mode adds the down and up sides (engine change 4). */
+  const sidesOf = (
+    exposureUsd: number,
+    pnlByMove: number[],
+    expires: boolean,
+  ): Pick<GainsAtRiskPositionCase, "side" | "sideDown" | "sideUp"> => {
+    const side = sideOf(exposureUsd, pnlByMove, expires ? worstMoveIndex : null);
+    if (!isSingleName) return { side };
+    return { side, sideDown: side, sideUp: sideOf(-exposureUsd, pnlByMove, expires ? bestMoveIndex : null) };
+  };
+  /** A flat case's sides: "flat" in every direction this mode reads. */
+  const flatSides = (): Pick<GainsAtRiskPositionCase, "side" | "sideDown" | "sideUp"> =>
+    isSingleName ? { side: "flat", sideDown: "flat", sideUp: "flat" } : { side: "flat" };
   const betaMemo = new Map<string, DriverBeta>();
   /** Distinct identities whose reason is no-daily-bars (by id, else by identity symbol) -> securities id. */
   const noBarsIdentities = new Map<string, number | null>();
@@ -791,6 +995,34 @@ export function computeGainsAtRisk(
           },
     );
     const identity = equityIdentity(row);
+    if (driverFamily !== null) {
+      // Step 3: the single-name ladder. No owner's figure is applied (all are counted ignored, P2),
+      // and the volatility change reaches only the driver's family (P4).
+      const resolved: LadderBeta = singleNameBeta(
+        {
+          identitySymbol: identity.symbol,
+          storedUnderlyingSymbol: isOption ? row.stored_underlying_symbol : null,
+          identitySecurityId,
+          leveraged,
+          trackedIndexSymbol: leveraged.flagged ? trackedIndexFor(identity.symbol, seeds) : null,
+        },
+        driverFamily,
+        singleName?.securityId ?? null,
+      );
+      const betas: CaseBetas = { measured: resolved.beta, selloff: resolved.beta };
+      const betaSource: GainsAtRiskBetaSource = resolved.source;
+      return {
+        identity,
+        resolved,
+        ownerBeta: undefined as number | undefined,
+        betaOverrideRefusal: undefined as GainsAtRiskBetaOverrideRefusal | undefined,
+        betas,
+        betaSource,
+        // The volatility change reaches every option whose underlying moves with the driver:
+        // the family itself and a leveraged fund a seed links to it (controller ruling, fix round 1).
+        volApplies: resolved.source === "driver" || resolved.source === "leveraged",
+      };
+    }
     const zeroBeta =
       isCashEquivalentSecurity({ security_type: row.security_type, fund_category: row.fund_category }) ||
       isBondFundWithoutMarketMove(row);
@@ -843,7 +1075,7 @@ export function computeGainsAtRisk(
     const equityLike = isEquityLikeType(betaType);
     const betas = caseBetas(resolved, ownerBeta, equityLike);
     const betaSource: GainsAtRiskBetaSource = ownerBeta !== undefined ? "owner" : resolved.source;
-    return { identity, resolved, ownerBeta, betaOverrideRefusal, betas, betaSource };
+    return { identity, resolved: resolved as LadderBeta, ownerBeta, betaOverrideRefusal, betas, betaSource, volApplies: true };
   };
 
   const positions = rows.map((row): GainsAtRiskPosition => {
@@ -864,7 +1096,7 @@ export function computeGainsAtRisk(
     const flatCase = (beta: null): GainsAtRiskPositionCase => ({
       beta,
       pnlByMove: input.moves.map(() => 0),
-      side: "flat",
+      ...flatSides(),
       exposureUsd: 0,
     });
     const notModelled = (
@@ -928,7 +1160,8 @@ export function computeGainsAtRisk(
     const refusalField = overrideRefusal ? { overrideRefusal } : {};
 
     // 4. Beta to the driver: the ladder, then the owner's figure.
-    const { identity, resolved, ownerBeta, betaOverrideRefusal, betas, betaSource } = ladderFor(row);
+    const { identity, resolved, ownerBeta, betaOverrideRefusal, betas, betaSource, volApplies } = ladderFor(row);
+    const rowVol = volApplies ? volChange : 0;
     if (resolved.source === "no-measured-link" && resolved.reason === "no-daily-bars") {
       noBarsIdentities.set(
         identitySecurityId !== null ? `id:${identitySecurityId}` : `sym:${identity.symbol.trim().toUpperCase()}`,
@@ -997,7 +1230,7 @@ export function computeGainsAtRisk(
     let failure: OptionUnmodelledReason | undefined;
     for (const k of GAINS_AT_RISK_CASE_KEYS) {
       const beta = betas[k] as number;
-      const priced = input.moves.map((m) => priceAt(beta, m, input.valuationDate, volChange));
+      const priced = input.moves.map((m) => priceAt(beta, m, input.valuationDate, rowVol));
       const failed = priced.find((p): p is { unmodelled: OptionUnmodelledReason } => "unmodelled" in p);
       if (failed) {
         failure = failed.unmodelled;
@@ -1029,7 +1262,7 @@ export function computeGainsAtRisk(
       const exposureUsd = "pnl" in up && "pnl" in down ? clean((up.pnl - down.pnl) / 0.02) : 0;
       const pnlByMove = pricedByCase[k].map((p) => cents0(p.pnl));
       const expires = pricedByCase[k].some((p) => p.result?.expiresBeforeDate === true);
-      return { beta, pnlByMove, side: sideOf(exposureUsd, pnlByMove, expires ? worstMoveIndex : null), exposureUsd };
+      return { beta, pnlByMove, ...sidesOf(exposureUsd, pnlByMove, expires), exposureUsd };
     };
 
     // Value and price source: v0 does not depend on the move or the case.
@@ -1086,7 +1319,7 @@ export function computeGainsAtRisk(
   }
 
   const cases = {} as Record<GainsAtRiskCaseKey, GainsAtRiskCase>;
-  for (const k of GAINS_AT_RISK_CASE_KEYS) cases[k] = caseFor(k, positions, input.moves, grossBookUsd);
+  for (const k of GAINS_AT_RISK_CASE_KEYS) cases[k] = caseFor(k, positions, input.moves, grossBookUsd, isSingleName);
 
   // A key is applied (or refused on the row) only where a row with that
   // identity reached the beta: a key matching no identity, or only rows left
@@ -1120,24 +1353,39 @@ export function computeGainsAtRisk(
     }
   }
 
+  // Single-name mode applies no owner's figure: every key is counted ignored (P2).
+  const ignoredAll = Object.keys(betaOverrides).length;
   const book: GainsAtRiskResult = emptyScope
-    ? emptyResult(driver, input)
-    : {
-        driverSymbol: driver,
-        valuationDate: input.valuationDate,
-        volChangePoints: input.volChangePoints,
-        grossBookUsd,
-        unknownValueCount,
-        positions,
-        cases,
-        betaEvidence: {
-          driverBarsThrough: driverBars.length > 0 ? driverBars[driverBars.length - 1].date : null,
-          driverBarsMissing: driverBars.length === 0,
-          namesWaitingForBars,
-          namesNotCaptured,
-        },
-        betaOverridesIgnored: countIgnored(appliedIdentities),
-      };
+    ? emptyResult(driver, input, isSingleName)
+    : isSingleName
+      ? {
+          driverSymbol: driver,
+          valuationDate: input.valuationDate,
+          volChangePoints: input.volChangePoints,
+          grossBookUsd,
+          unknownValueCount,
+          positions,
+          cases,
+          betaEvidence: notApplicableEvidence(),
+          betaOverridesIgnored: ignoredAll,
+          driverKind: "single-name",
+        }
+      : {
+          driverSymbol: driver,
+          valuationDate: input.valuationDate,
+          volChangePoints: input.volChangePoints,
+          grossBookUsd,
+          unknownValueCount,
+          positions,
+          cases,
+          betaEvidence: {
+            driverBarsThrough: driverBars.length > 0 ? driverBars[driverBars.length - 1].date : null,
+            driverBarsMissing: driverBars.length === 0,
+            namesWaitingForBars,
+            namesNotCaptured,
+          },
+          betaOverridesIgnored: countIgnored(appliedIdentities),
+        };
   if (trials.length === 0) return book;
 
   // ─── Trial positions (step 2) ─────────────────────────────────
@@ -1152,8 +1400,8 @@ export function computeGainsAtRisk(
     const sign = buying ? 1 : -1;
     const holdingsNowByAccount = trialHoldingsByAccount(db, t);
     const flatCases = (): Record<GainsAtRiskCaseKey, GainsAtRiskPositionCase> => ({
-      measured: { beta: null, pnlByMove: input.moves.map(() => 0), side: "flat", exposureUsd: 0 },
-      selloff: { beta: null, pnlByMove: input.moves.map(() => 0), side: "flat", exposureUsd: 0 },
+      measured: { beta: null, pnlByMove: input.moves.map(() => 0), ...flatSides(), exposureUsd: 0 },
+      selloff: { beta: null, pnlByMove: input.moves.map(() => 0), ...flatSides(), exposureUsd: 0 },
     });
     const sec = readTrialSecurity(db, identitySecurityId);
     // Dollars per unit of the security's own currency; null when a foreign row has no rate.
@@ -1194,7 +1442,8 @@ export function computeGainsAtRisk(
         ? { kind: buying ? "premium-paid" : "premium-received", usd: t.pricePaid * t.contracts * TRIAL_OPTION_MULTIPLIER }
         : { kind: buying ? "cash-used" : "cash-raised", usd: t.quantity * t.price * fx };
 
-    const { resolved, ownerBeta, betaOverrideRefusal, betas, betaSource } = ladderFor(trialBetaRow(sec, t.kind));
+    const { resolved, ownerBeta, betaOverrideRefusal, betas, betaSource, volApplies } = ladderFor(trialBetaRow(sec, t.kind));
+    const rowVol = volApplies ? volChange : 0;
     // As for a held row: a key counts as applied where the trial reached the beta and
     // was priced, or where the owner's figure was refused on it (review fix 4).
     if (betaOverrideRefusal !== undefined) trialApplied.add(identitySecurityId);
@@ -1267,7 +1516,7 @@ export function computeGainsAtRisk(
     const pricedByCase = {} as Record<GainsAtRiskCaseKey, TrialPriced[]>;
     for (const k of GAINS_AT_RISK_CASE_KEYS) {
       const beta = betas[k] as number;
-      const priced = input.moves.map((m) => priceAt(beta, m, input.valuationDate, volChange));
+      const priced = input.moves.map((m) => priceAt(beta, m, input.valuationDate, rowVol));
       const failed = priced.find((p): p is { unmodelled: OptionUnmodelledReason } => "unmodelled" in p);
       if (failed) return refused(optionRefusal(failed.unmodelled), { valuation });
       pricedByCase[k] = priced as TrialPriced[];
@@ -1279,7 +1528,7 @@ export function computeGainsAtRisk(
       const exposureUsd = "pnl" in up && "pnl" in down ? clean((up.pnl - down.pnl) / 0.02) : 0;
       const pnlByMove = pricedByCase[k].map((p) => cents0(p.pnl));
       const expires = pricedByCase[k].some((p) => p.expires);
-      return { beta, pnlByMove, side: sideOf(exposureUsd, pnlByMove, expires ? worstMoveIndex : null), exposureUsd };
+      return { beta, pnlByMove, ...sidesOf(exposureUsd, pnlByMove, expires), exposureUsd };
     };
     const expiresBeforeDate = GAINS_AT_RISK_CASE_KEYS.some((k) => pricedByCase[k].some((p) => p.expires));
     trialApplied.add(identitySecurityId);
@@ -1328,6 +1577,9 @@ export function computeGainsAtRisk(
     netCashUsd += r.cost.kind === "premium-received" || r.cost.kind === "cash-raised" ? r.cost.usd : -r.cost.usd;
   }
 
+  // D5: index mode reads falls; single-name mode reads the selected move's direction (rise only when positive).
+  const crossingDirection: "fall" | "rise" =
+    isSingleName && input.selectedMove !== undefined && input.selectedMove > 0 ? "rise" : "fall";
   const trialCases = {} as Record<GainsAtRiskCaseKey, GainsAtRiskTrialCase>;
   for (const k of GAINS_AT_RISK_CASE_KEYS) {
     const moveRows = input.moves.map((move, i): GainsAtRiskTrialMoveRow => {
@@ -1340,14 +1592,15 @@ export function computeGainsAtRisk(
     trialCases[k] = {
       moves: moveRows,
       noMoveCostUsd: atZero < 0 ? null : clean(-moveRows[atZero].trialPnlUsd),
-      crossing: trialCrossing(input.moves, moveRows.map((m) => m.trialPnlUsd)),
+      crossing: trialCrossing(input.moves, moveRows.map((m) => m.trialPnlUsd), crossingDirection),
+      ...(isSingleName ? { crossingDirection } : {}),
     };
   }
 
   const appliedWithTrials = new Set<number>([...(emptyScope ? [] : appliedIdentities), ...trialApplied]);
   return {
     ...book,
-    betaOverridesIgnored: countIgnored(appliedWithTrials),
+    betaOverridesIgnored: isSingleName ? ignoredAll : countIgnored(appliedWithTrials),
     trial: {
       rows: trialRows,
       netCashUsd: clean(netCashUsd),

@@ -13,7 +13,7 @@ import {
   trialShortfalls,
   trialValuationPrice,
 } from "@/lib/compute/gains-at-risk-trial";
-import type { TrialPositionDraft, TrialPositionInput } from "@/lib/compute/gains-at-risk";
+import { computeGainsAtRisk, GAINS_AT_RISK_CASE_KEYS, type TrialPositionDraft, type TrialPositionInput } from "@/lib/compute/gains-at-risk";
 import { loadScenarioPositionsByAccount } from "@/lib/compute/scenario-positions";
 
 // Trial positions (Gains at risk step 2): the entry helpers. Synthetic ZZ
@@ -363,5 +363,101 @@ describe("trialCrossing", () => {
       firstHelpFrom: 0,
       firstHelpTo: expect.closeTo(-0.025, 9),
     });
+  });
+});
+
+// ─── Step 3: the crossing by the driver's direction (D5) ─────────
+
+describe("trialCrossing, rise (step 3)", () => {
+  it("T21 trialCrossing rise mirrors every fall pattern", () => {
+    expect(trialCrossing([0, 0.05, 0.1], [-100, -20, 60], "rise")).toEqual({ kind: "pays-beyond", move: expect.closeTo(0.0625, 9) });
+    expect(trialCrossing([0, 0.05, 0.1], [-10, -20, -30], "rise")).toEqual({ kind: "worse-at-every-move", deepestMove: 0.1 });
+    expect(trialCrossing([0, 0.05, 0.1], [40, 10, -30], "rise")).toEqual({ kind: "helps-until", move: expect.closeTo(0.0625, 9) });
+    expect(trialCrossing([0, -0.05], [-10, 20], "rise")).toEqual({ kind: "worse-at-every-move", deepestMove: 0 }); // falls ignored
+    expect(trialCrossing([0, -0.05, -0.1], [-100, -20, 60])).toEqual({ kind: "pays-beyond", move: expect.closeTo(-0.0625, 9) }); // default fall unchanged
+    expect(trialCrossing([0, 0.05, 0.1], [10, 20, 30], "rise")).toEqual({ kind: "better-at-every-move" });
+    expect(trialCrossing([0, 0.05, 0.1, 0.15], [-10, 10, -10, 10], "rise")).toMatchObject({
+      kind: "changes-more-than-once",
+      firstHelpFrom: expect.closeTo(0.025, 9),
+      firstHelpTo: expect.closeTo(0.075, 9),
+    });
+    expect(trialCrossing([0, 0.05], [0, 0], "rise")).toEqual({ kind: "no-trial-effect" });
+    expect(trialCrossing([0, 0.05], [0, 20], "rise")).toEqual({ kind: "pays-beyond", move: 0 });
+    // Order of the input does not matter; only moves at or above 0 are read.
+    expect(trialCrossing([-0.1, 0.1, 0, 0.05], [999, 60, -100, -20], "rise")).toEqual({ kind: "pays-beyond", move: expect.closeTo(0.0625, 9) });
+    expect(trialCrossing([-0.1, -0.05], [1, 2], "rise")).toEqual({ kind: "no-trial-effect" });
+  });
+});
+
+describe("computeGainsAtRisk: the trial crossing follows the driver's direction (step 3)", () => {
+  const expiry = "2027-01-15";
+  function trial(id: string, sec: number, right: "put" | "call", S: number, K: number): TrialPositionInput {
+    const T = yearsToExpiry(expiry, today, now);
+    const r = getRiskFreeRate(db);
+    const p = right === "put" ? putPrice(S, K, T, r, 0.3) : callPrice(S, K, T, r, 0.3);
+    const s = solveTrialEntry({ right, strike: K, expiry, price: p, underlyingPrice: S, riskFreeRate: r, today, now });
+    if (!s.ok) throw new Error("solve");
+    return { kind: "option", id, underlyingSecurityId: sec, right, side: "buy", expiry, strike: K, contracts: 1, pricePaid: p, entryUnderlyingPrice: S, valuationPriceAtEntry: S, entryVolatility: s.volatility };
+  }
+  const moves = [-0.2, -0.1, 0, 0.1, 0.2];
+
+  it("T21 engine: selectedMove 0 and -0.2 read fall, +0.2 reads rise; index mode reads fall with no crossingDirection key", () => {
+    const a = addSecurity({ symbol: "ZZA", type: "Stock" });
+    price(a, 100);
+    hold(a, 10);
+    const trialPositions = [trial("p", a, "put", 100, 95)];
+    const driver = { kind: "single-name" as const, symbol: "ZZA", securityId: a };
+    for (const [selectedMove, dir] of [[0, "fall"], [-0.2, "fall"], [0.2, "rise"]] as const) {
+      const r = computeGainsAtRisk(db, { driverSymbol: "QQQ", driver, valuationDate: today, moves, volChangePoints: 0, trialPositions, selectedMove, today, now });
+      for (const k of GAINS_AT_RISK_CASE_KEYS) {
+        const c = r.trial!.cases[k];
+        expect(c.crossingDirection).toBe(dir);
+        expect(c.crossing).toEqual(trialCrossing(moves, c.moves.map((m) => m.trialPnlUsd), dir));
+      }
+    }
+    // The bought put pays in a fall and does not in a rise.
+    const fall = computeGainsAtRisk(db, { driverSymbol: "QQQ", driver, valuationDate: today, moves, volChangePoints: 0, trialPositions, selectedMove: -0.2, today, now });
+    expect(fall.trial!.cases.measured.crossing.kind).toBe("pays-beyond");
+    const rise = computeGainsAtRisk(db, { driverSymbol: "QQQ", driver, valuationDate: today, moves, volChangePoints: 0, trialPositions, selectedMove: 0.2, today, now });
+    expect(rise.trial!.cases.measured.crossing).toEqual({ kind: "worse-at-every-move", deepestMove: 0.2 });
+    // Index mode: falls only, no direction key, whatever the selected move.
+    for (const selectedMove of [undefined, 0.1]) {
+      const idx = computeGainsAtRisk(db, { driverSymbol: "ZZA", valuationDate: today, moves, volChangePoints: 0, trialPositions, selectedMove, today, now });
+      for (const k of GAINS_AT_RISK_CASE_KEYS) {
+        const c = idx.trial!.cases[k];
+        expect("crossingDirection" in c).toBe(false);
+        expect(c.crossing).toEqual(trialCrossing(moves, c.moves.map((m) => m.trialPnlUsd)));
+      }
+    }
+  });
+
+  it("T21 a call on an inverse fund on the driver (seeded) and a name with a negative owner figure (index mode) are read by the driver's direction, not their right", () => {
+    const a = addSecurity({ symbol: "ZZA", type: "Stock" });
+    price(a, 100);
+    hold(a, 10);
+    const inv = addSecurity({ symbol: "ZZI", type: "ETF", name: "ZZ UltraShort ZZA Fund" });
+    db.prepare("UPDATE securities SET leverage_factor = -1 WHERE id = ?").run(inv);
+    price(inv, 30);
+    const driver = { kind: "single-name" as const, symbol: "ZZA", securityId: a };
+    const calls = [trial("c", inv, "call", 30, 31)];
+    const opts = { trackedIndexSeeds: { ZZI: "ZZA" } };
+    const fall = computeGainsAtRisk(db, { driverSymbol: "QQQ", driver, valuationDate: today, moves, volChangePoints: 0, trialPositions: calls, selectedMove: -0.1, today, now }, opts);
+    expect(fall.trial!.rows[0].betaSource).toBe("leveraged");
+    expect(fall.trial!.cases.measured.crossingDirection).toBe("fall");
+    // A call on an inverse fund pays as the driver FALLS.
+    expect(fall.trial!.cases.measured.crossing).toEqual({ kind: "pays-beyond", move: 0 });
+    const rise = computeGainsAtRisk(db, { driverSymbol: "QQQ", driver, valuationDate: today, moves, volChangePoints: 0, trialPositions: calls, selectedMove: 0.1, today, now }, opts);
+    expect(rise.trial!.cases.measured.crossing).toEqual({ kind: "worse-at-every-move", deepestMove: 0.2 });
+
+    // Index mode: a name the owner says moves against the index; a call on it pays in the index's fall.
+    const m = addSecurity({ symbol: "ZZM", type: "Stock" });
+    price(m, 50);
+    const idx = computeGainsAtRisk(
+      db,
+      { driverSymbol: "QQQ", valuationDate: today, moves, volChangePoints: 0, trialPositions: [trial("m", m, "call", 50, 52)], betaOverrides: { [m]: -1 }, today, now },
+    );
+    expect(idx.trial!.rows[0].betaSource).toBe("owner");
+    expect("crossingDirection" in idx.trial!.cases.measured).toBe(false);
+    expect(idx.trial!.cases.measured.crossing).toEqual({ kind: "pays-beyond", move: 0 });
   });
 });

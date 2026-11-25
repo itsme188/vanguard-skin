@@ -1273,6 +1273,27 @@ describe("computeGainsAtRisk: step 2 pin (no trial positions)", () => {
   });
 });
 
+// ─── Step 3: index mode unchanged (the with-trial pin, frozen before step 3) ──
+
+const WITH_TRIAL_PIN_PATH = join(__dirname, "../fixtures/gains-at-risk-with-trial-pin.json");
+const withTrialPin: PinCase[] = JSON.parse(readFileSync(WITH_TRIAL_PIN_PATH, "utf8"), pinReviver) as PinCase[];
+
+describe("computeGainsAtRisk: step 3 pins (index mode)", () => {
+  it("T1 index mode unchanged: both pins byte-identical with driver absent and with { kind: 'index' }; no step 3 key", () => {
+    expect(withTrialPin.length).toBe(5);
+    expect(withTrialPin.every((c) => (c.input.trialPositions ?? []).length > 0)).toBe(true);
+    for (const c of [...pin, ...withTrialPin]) {
+      for (const driver of [undefined, { kind: "index" } as const]) {
+        freshDb();
+        PIN_SEEDS[c.seed]();
+        const r = computeGainsAtRisk(db, { ...c.input, driver }, { trackedIndexSeeds: SEEDS });
+        expect(r, c.name).toStrictEqual(c.result);
+        for (const k of ["driverKind", "candidates"]) expect(k in r).toBe(false);
+      }
+    }
+  });
+});
+
 // ─── Step 2: trial positions ────────────────────────────────────
 
 /** A trial option fixed at the click: priced from `sigma` at `S`, its volatility solved back from that price (R1). */
