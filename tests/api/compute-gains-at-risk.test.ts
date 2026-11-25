@@ -619,4 +619,113 @@ describe("POST /api/compute/gains-at-risk", () => {
     const { res } = await post({ ...validBody(), trialPositions: [opt] });
     expect(res.status).toBe(200);
   });
+
+  // ─── Step 3 (Task S4): the single-name driver (P1, P5, P8, T1, T8, T20) and F3 ───────────
+
+  it("T1 no driver: the engine input carries no step 3 key and the reply equals the direct step 2 engine run", async () => {
+    for (const extra of [{}, { trialPositions: [opt, shares] }]) {
+      const { res, body } = await post({ ...validBody(), scope: "all", ...extra });
+      expect(res.status).toBe(200);
+      const handed = state.lastInput as Record<string, unknown>;
+      for (const k of ["driver", "selectedMove", "candidates"]) expect(k in handed).toBe(false);
+      const direct = computeGainsAtRisk(state.db, {
+        accountIds: undefined,
+        driverSymbol: "SPY",
+        valuationDate: TODAY,
+        moves: [-0.1, -0.2],
+        volChangePoints: 0,
+        trialPositions: (extra as { trialPositions?: never }).trialPositions,
+        today: TODAY,
+      });
+      expect(JSON.stringify(body.data.result)).toBe(JSON.stringify(direct));
+      expect("driverKind" in body.data.result).toBe(false);
+      expect(Object.keys(body.data).sort()).toEqual(["result", "scopeFreshness", "yearGain", "yearGainFreshness"]);
+    }
+  });
+
+  it("T1 an index-mode selectedMove (one of moves) leaves the reply unchanged", async () => {
+    const plain = await post(validBody());
+    const selected = await post({ ...validBody(), selectedMove: -0.2 });
+    expect(selected.res.status).toBe(200);
+    expect(JSON.stringify(selected.body.data)).toBe(JSON.stringify(plain.body.data));
+    expect((await post({ ...validBody(), selectedMove: -0.3 })).res.status).toBe(400);
+  });
+
+  it("T20 a driver not on the list is 400; a listed name by id is 200 with driverKind single-name", async () => {
+    const ok = await post({ ...validBody(), scope: "all", driver: { kind: "single-name", securityId: 101 }, moves: [-0.2, 0, 0.2] });
+    expect(ok.res.status).toBe(200);
+    expect(ok.body.data.result.driverKind).toBe("single-name");
+    expect(ok.body.data.result.driverSymbol).toBe("ZZAA");
+    expect((state.lastInput as { driver: unknown }).driver).toEqual({ kind: "single-name", symbol: "ZZAA", securityId: 101 });
+
+    state.db.prepare("INSERT INTO securities (id, symbol, name, security_type, currency) VALUES (150, 'ZZNH', 'Not held', 'Stock', 'USD')").run();
+    for (const driver of [
+      { kind: "single-name", securityId: 150 }, // known, not held, not a trial
+      { kind: "single-name", securityId: 999 }, // unknown
+      { kind: "single-name", symbol: "ZZAA" }, // a name with a row is named by id, never by symbol
+      { kind: "single-name", symbol: "ZZNOROW" }, // no row: no price, so never listed (fix round 1)
+    ]) {
+      const { res, body } = await post({ ...validBody(), driver });
+      expect(res.status).toBe(400);
+      expect(body).toEqual({ success: false, error: "driver is not one of the names this page can stress." });
+    }
+  });
+
+  it("T20 a trial underlying joins the list for that request", async () => {
+    state.db.prepare("INSERT INTO securities (id, symbol, name, security_type, currency) VALUES (150, 'ZZNH', 'Not held', 'Stock', 'USD')").run();
+    price(state.db, 150, 40);
+    const driver = { kind: "single-name", securityId: 150 };
+    expect((await post({ ...validBody(), driver })).res.status).toBe(400);
+    const trial = { ...shares, id: "t-buy", securityId: 150, side: "buy", price: 40 };
+    expect((await post({ ...validBody(), driver, trialPositions: [trial] })).res.status).toBe(200);
+  });
+
+  it("fix 3: a non-dollar trial underlying never makes its name a driver", async () => {
+    state.db.prepare("INSERT INTO securities (id, symbol, name, security_type, currency) VALUES (160, 'ZZJP', 'ZZ Japan', 'Stock', 'JPY')").run();
+    price(state.db, 160, 900);
+    const trial = { ...shares, id: "t-jp", securityId: 160, side: "buy", price: 900 };
+    const { res } = await post({ ...validBody(), driver: { kind: "single-name", securityId: 160 }, trialPositions: [trial] });
+    expect(res.status).toBe(400);
+  });
+
+  it.each([
+    [{ kind: "index" }],
+    [{ kind: "single-name" }],
+    [{ kind: "single-name", securityId: 101, symbol: "ZZAA" }],
+    [{ kind: "single-name", securityId: 0 }],
+    [{ kind: "single-name", securityId: "101" }],
+    [{ kind: "single-name", symbol: "" }],
+    ["ZZAA"],
+  ])("a malformed driver %o is 400 naming driver", async (driver) => {
+    const { res, body } = await post({ ...validBody(), driver });
+    expect(res.status).toBe(400);
+    expect(body.error).toContain("driver");
+  });
+
+  it("T8 single-name: -0.81 or 1.01 is 400; 1.0 and -0.8 pass; index: 0.61 is 400 as today", async () => {
+    const driver = { kind: "single-name", securityId: 101 };
+    for (const moves of [[-0.81], [1.01]]) {
+      const { res, body } = await post({ ...validBody(), driver, moves });
+      expect(res.status).toBe(400);
+      expect(body.error).toContain("moves");
+    }
+    expect((await post({ ...validBody(), driver, moves: [-0.8, 1.0] })).res.status).toBe(200);
+    expect((await post({ ...validBody(), moves: [0.61] })).res.status).toBe(400);
+    expect((await post({ ...validBody(), moves: [-0.6, 0.6] })).res.status).toBe(200);
+    expect((await post({ ...validBody(), moves: [-0.8] })).res.status).toBe(400);
+  });
+
+  it("F3 brokerContractId round-trips through cleanTrialPositions; without it a trial keeps exactly today's keys; 0 is 400", async () => {
+    await post({ ...validBody(), trialPositions: [opt] });
+    expect(Object.keys((state.lastInput as { trialPositions: object[] }).trialPositions[0]).sort()).toEqual(Object.keys(opt).sort());
+
+    await post({ ...validBody(), trialPositions: [{ ...opt, brokerContractId: 77001 }] });
+    expect((state.lastInput as { trialPositions: object[] }).trialPositions[0]).toEqual({ ...opt, brokerContractId: 77001 });
+
+    for (const bad of [0, 1.5, "7", -3]) {
+      const { res, body } = await post({ ...validBody(), trialPositions: [{ ...opt, brokerContractId: bad }] });
+      expect(res.status).toBe(400);
+      expect(body.error).toContain("brokerContractId");
+    }
+  });
 });

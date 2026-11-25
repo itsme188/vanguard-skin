@@ -2,11 +2,11 @@ import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { todayET } from "@/lib/calendar/date-utils";
 import { computeGainsAtRisk, GainsAtRiskInputError } from "@/lib/compute/gains-at-risk";
+import { resolveGainsAtRiskInput } from "@/lib/compute/gains-at-risk-candidate-quotes";
 import { gainsAtRiskAccountIds } from "@/lib/analysis/gains-at-risk-scope";
 import { computeYearGain } from "@/lib/compute/year-gain";
 import { getPositionsFreshness } from "@/lib/queries/positions-freshness";
 import {
-  cleanTrialPositions,
   gainsAtRiskBodyProblem,
   type GainsAtRiskBody,
   type GainsAtRiskResponse,
@@ -29,6 +29,11 @@ import {
  * by the engine as a refused row with zero effect while every other position
  * computes (P11). The server-side security check is on the three routes that
  * create an entry, fetch a quote or fetch bars. Nothing about a trial is stored.
+ *
+ * Step 3: an optional `driver` (one stock or fund, P1) must be on the server's
+ * own list, built with the body's trial underlyings; otherwise 400. Moves are
+ * bounded per mode (P5). With no `driver` the engine input and the reply are
+ * step 2's, byte for byte (P8).
  */
 export async function POST(request: NextRequest) {
   let body: unknown;
@@ -46,22 +51,13 @@ export async function POST(request: NextRequest) {
   const input = body as GainsAtRiskBody;
 
   try {
-    const trialPositions = input.trialPositions ? cleanTrialPositions(input.trialPositions) : undefined;
-
     // "all" is every account; a scope word naming no account reads nothing (one rule, shared with the section).
     const accountIds = gainsAtRiskAccountIds(db, input.scope);
-    const result = computeGainsAtRisk(db, {
-      accountIds,
-      driverSymbol: input.driverSymbol,
-      valuationDate: input.valuationDate,
-      moves: input.moves,
-      volChangePoints: input.volChangePoints,
-      priceOverrides: input.priceOverrides,
-      // Keyed by the underlying identity's security id (C6); the engine counts unmatched keys.
-      betaOverrides: input.betaOverrides,
-      trialPositions,
-      today,
-    });
+    const resolved = resolveGainsAtRiskInput(db, input, accountIds, today);
+    if (!resolved.ok) {
+      return NextResponse.json({ success: false, error: resolved.error }, { status: 400 });
+    }
+    const result = computeGainsAtRisk(db, resolved.input);
     const data: GainsAtRiskResponse = {
       result,
       yearGain: computeYearGain(db, { today }),

@@ -13,7 +13,7 @@
 import { ANALYSIS_SCOPES, type AnalysisScope } from "@/lib/analysis/view-param";
 // Import-free bounds module (C12). Never value-import the engine here: it pulls
 // a broker SDK through the TWS type map, and this module reaches the browser.
-import { BETA_OVERRIDE_BOUNDS, TRIAL_POSITION_BOUNDS } from "@/lib/analysis/gains-at-risk-constants";
+import { BETA_OVERRIDE_BOUNDS, SINGLE_NAME_MOVE_BOUNDS, TRIAL_POSITION_BOUNDS } from "@/lib/analysis/gains-at-risk-constants";
 import type { GainsAtRiskResult, TrialPositionInput } from "@/lib/compute/gains-at-risk";
 import type { YearGainResult } from "@/lib/compute/year-gain";
 // Type only: erased at build, so no query code reaches the client bundle.
@@ -63,7 +63,20 @@ export interface GainsAtRiskBody {
    * engine returns it refused "expired" and every other trial still counts.
    */
   trialPositions?: TrialPositionInput[];
+  /**
+   * Step 3 (P1, P5): one stock or fund as the driver, named by its security id
+   * (or, for a listed name with no securities row, its symbol). The server
+   * checks it against its own list (`listSingleNameDrivers`) and answers 400
+   * when it is not there. Absent: the index driver, with today's body and
+   * reply (P8). `driverSymbol` stays required and stays an index symbol.
+   */
+  driver?: GainsAtRiskBodyDriver;
+  /** Step 3: the move the page has selected; when present, one of `moves` (D5). */
+  selectedMove?: number;
 }
+
+/** Step 3: the single-name driver as the page names it. */
+export type GainsAtRiskBodyDriver = { kind: "single-name"; securityId: number } | { kind: "single-name"; symbol: string };
 
 export interface GainsAtRiskResponse {
   result: GainsAtRiskResult;
@@ -76,7 +89,7 @@ export interface GainsAtRiskResponse {
 }
 
 /** A real calendar day in YYYY-MM-DD (2026-02-30 fails); the engine's own test. */
-function isCalendarDay(value: string): boolean {
+export function isCalendarDay(value: string): boolean {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
   const [y, m, d] = value.split("-").map(Number);
   const probe = new Date(Date.UTC(y, m - 1, d));
@@ -125,12 +138,37 @@ export function gainsAtRiskBodyProblem(body: unknown, today: string): string | n
     return `valuationDate cannot be more than ${GAINS_AT_RISK_BOUNDS.maxYearsOut} years from today (latest ${latest}).`;
   }
 
-  const limit = GAINS_AT_RISK_BOUNDS.moveAbsMax;
+  // Step 3: the driver's shape (the name itself is checked on the server against its list).
+  if (b.driver !== undefined) {
+    const d = b.driver;
+    if (!isPlainObject(d) || d.kind !== "single-name") return "driver must be an object with kind single-name.";
+    const hasId = d.securityId !== undefined;
+    const hasSymbol = d.symbol !== undefined;
+    if (hasId === hasSymbol) return "driver must name either a securityId or a symbol.";
+    if (hasId && !isPositiveId(d.securityId)) return "driver.securityId must be a security id (a positive whole number).";
+    if (hasSymbol) {
+      const problem = symbolProblem(d.symbol, "driver.symbol");
+      if (problem) return problem;
+    }
+  }
+
   if (!Array.isArray(b.moves) || b.moves.length === 0 || b.moves.length > GAINS_AT_RISK_BOUNDS.maxMoves) {
     return `moves must be a list of 1 to ${GAINS_AT_RISK_BOUNDS.maxMoves} numbers.`;
   }
-  if (b.moves.some((m) => !isFiniteNumber(m) || Math.abs(m) > limit)) {
-    return `moves must each be a number between -${limit} and ${limit}.`;
+  if (b.driver !== undefined) {
+    // P5: one name can fall or rise, within its own bounds.
+    const { min, max } = SINGLE_NAME_MOVE_BOUNDS;
+    if (b.moves.some((m) => !isFiniteNumber(m) || m < min || m > max)) {
+      return `moves must each be a number between ${min} and ${max} for a single-name driver.`;
+    }
+  } else {
+    const limit = GAINS_AT_RISK_BOUNDS.moveAbsMax;
+    if (b.moves.some((m) => !isFiniteNumber(m) || Math.abs(m) > limit)) {
+      return `moves must each be a number between -${limit} and ${limit}.`;
+    }
+  }
+  if (b.selectedMove !== undefined && (!isFiniteNumber(b.selectedMove) || !(b.moves as number[]).includes(b.selectedMove))) {
+    return "selectedMove must be one of moves.";
   }
 
   if (!isFiniteNumber(b.volChangePoints) || b.volChangePoints < GAINS_AT_RISK_VOL_MIN || b.volChangePoints > GAINS_AT_RISK_VOL_MAX) {
@@ -235,6 +273,10 @@ function trialPositionsProblem(value: unknown): string | null {
       if (!isPositiveUpTo(t.valuationPriceAtEntry, B.maxPrice)) {
         return `${at}.valuationPriceAtEntry must be a number above 0 and at most ${B.maxPrice}.`;
       }
+      // Step 3 (F3): optional; when present, the broker's contract id.
+      if (t.brokerContractId !== undefined && !isPositiveId(t.brokerContractId)) {
+        return `${at}.brokerContractId must be a positive whole number.`;
+      }
     } else if (t.kind === "shares") {
       if (!isPositiveId(t.securityId)) return `${at}.securityId must be a security id (a positive whole number).`;
       if (t.side !== "buy" && t.side !== "sell") return `${at}.side must be buy or sell.`;
@@ -267,6 +309,8 @@ export function cleanTrialPositions(list: TrialPositionInput[]): TrialPositionIn
           entryUnderlyingPrice: t.entryUnderlyingPrice,
           entryVolatility: t.entryVolatility,
           valuationPriceAtEntry: t.valuationPriceAtEntry,
+          // F3: copied only when present, so a step 2 trial is rebuilt with exactly its old keys.
+          ...(t.brokerContractId !== undefined ? { brokerContractId: t.brokerContractId } : {}),
         }
       : { kind: "shares", id: t.id, securityId: t.securityId, side: t.side, quantity: t.quantity, price: t.price },
   );
