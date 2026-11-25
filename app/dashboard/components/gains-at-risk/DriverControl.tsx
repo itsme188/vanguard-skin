@@ -113,7 +113,7 @@ export function DriverControl({
               const entry = driverFromOptionValue(drivers, e.target.value);
               if (entry) onPickSingleName(entry);
             }}
-            className="min-w-0 max-w-full px-2 py-1.5 rounded-md border border-edge bg-raised text-sm text-ink"
+            className="w-full sm:w-auto min-w-0 max-w-full px-2 py-1.5 rounded-md border border-edge bg-raised text-sm text-ink"
           >
             {drivers.map((e) => (
               <option key={driverOptionValue(e)} value={driverOptionValue(e)}>

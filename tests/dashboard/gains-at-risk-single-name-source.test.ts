@@ -269,3 +269,41 @@ describe("fix round 1: wiring", () => {
     anchorIndex(view, "{FIGURES_KEPT_NOTE}");
   });
 });
+
+describe("phone width: selects in a flex row can shrink", () => {
+  const tagOf = (src: string, needle: string) => {
+    const at = anchorIndex(src, needle);
+    return src.slice(src.lastIndexOf("<select", at), src.indexOf(">", at));
+  };
+
+  it("the candidate underlying select and its label", () => {
+    const src = read("app/dashboard/components/gains-at-risk/CandidatePicker.tsx");
+    const at = anchorIndex(src, "Underlying</span>");
+    expect(src.slice(src.lastIndexOf("<label", at), at)).toContain('className="space-y-1 min-w-0 max-w-full"');
+    const tag = tagOf(src, "{underlyingSecurityId === null");
+    expect(tag).toMatch(/className="w-full min-w-0 max-w-full /);
+  });
+
+  it("the driver select", () => {
+    const src = read(DRIVER_CONTROL);
+    const at = anchorIndex(src, 'aria-label="Stock or fund"');
+    const cls = anchorIndex(src, "className=", at);
+    const tag = src.slice(cls, src.indexOf("\n", cls));
+    expect(src.slice(at, cls)).not.toContain("</select>");
+    expect(tag).toMatch(/className="w-full sm:w-auto min-w-0 max-w-full /);
+  });
+
+  it("the candidate sort select and its label", () => {
+    const src = read("app/dashboard/components/gains-at-risk/CandidateTable.tsx");
+    const at = anchorIndex(src, "Sort</span>");
+    expect(src.slice(src.lastIndexOf("<label", at), at)).toContain('className="space-y-1 min-w-0 max-w-full"');
+    expect(tagOf(src, "{CANDIDATE_SORT_OPTIONS")).toMatch(/className="w-full min-w-0 max-w-full /);
+  });
+
+  it("the nothing-moves note sits above the moves table", () => {
+    const src = read(VIEW);
+    const at = anchorIndex(src, '{nothingMoves && <p className={`text-xs text-ink-dim ${dim}`}>{nothingMoves}</p>}');
+    expect(at).toBeLessThan(anchorIndex(src, "<ScrollFade>", at));
+    anchorIndex(src, "const nothingMoves = nothingMovesNote(result);");
+  });
+});

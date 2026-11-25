@@ -474,6 +474,26 @@ export function mountDriver(
   return { driver: d, driverSymbol: remembered.driverSymbol, notice: null };
 }
 
+/**
+ * A single-name result in which nothing moves with the driver: no book row
+ * moves with it (every row held unchanged, not modelled, or a leveraged fund
+ * not linked to it) and no trial position does. The figures are then only
+ * time decay on options, so the page says so above the table. null otherwise,
+ * and always null for an index result.
+ */
+export function nothingMovesNote(
+  result: Pick<GainsAtRiskResult, "driverKind" | "driverSymbol" | "positions"> & {
+    trial?: { rows: Pick<GainsAtRiskTrialRow, "refusal" | "cases">[] };
+  },
+): string | null {
+  if (result.driverKind !== "single-name") return null;
+  const moves = (beta: number | null | undefined) => beta !== null && beta !== undefined && Number.isFinite(beta) && beta !== 0;
+  const bookMoves = result.positions.some((p) => p.unmodelledReason === undefined && moves(p.cases.measured.beta));
+  const trialMoves = (result.trial?.rows ?? []).some((r) => r.refusal === undefined && moves(r.cases.measured.beta));
+  if (bookMoves || trialMoves) return null;
+  return `Nothing in this scope moves with ${result.driverSymbol}. The figures below are what time alone does to the options by that date.`;
+}
+
 /** The trial positions' underlying ids, unique and in order: the drivers route's body (P1). */
 export function uniqueSortedIds(ids: readonly number[]): number[] {
   return [...new Set(ids)].sort((a, b) => a - b);

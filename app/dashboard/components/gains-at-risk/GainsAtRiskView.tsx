@@ -50,6 +50,7 @@ import {
   FIGURES_KEPT_NOTE,
   HELD_UNCHANGED_NOTE,
   mountDriver,
+  nothingMovesNote,
   resultLayout,
   serverPropsAnswerControls,
   SINGLE_NAME_CHART_NOTE,
@@ -948,6 +949,8 @@ function ResultSections({
       : null;
   // P3: the flagged funds (and options on them) no seed links to the stock, held unchanged.
   const lnl = singleName ? (selected.disclosures.leveragedNotLinked ?? null) : null;
+  // A scope where nothing moves with the stock: the figures are time decay alone; say so.
+  const nothingMoves = nothingMovesNote(result);
   const lnlShare = lnl ? disclosureShare(lnl) : null;
   const ignored = overridesIgnoredLine(result.betaOverridesIgnored);
   const noLink = noMeasuredLinkSentence(selected.disclosures.noMeasuredLink, caseKey);
@@ -997,6 +1000,7 @@ function ResultSections({
 
       {/* ── Table: fixed rows and a custom row ── */}
       <section className="bg-panel rounded-xl p-4 sm:p-5 card-elev space-y-3" aria-label="Moves" aria-busy={mode === "stale"}>
+        {nothingMoves && <p className={`text-xs text-ink-dim ${dim}`}>{nothingMoves}</p>}
         <ScrollFade>
           <table className={`w-full text-sm tabular-nums ${dim}`}>
             <thead>

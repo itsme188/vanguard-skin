@@ -65,7 +65,7 @@ export function CandidatePicker({
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap items-end gap-x-5 gap-y-3">
-        <label className="space-y-1">
+        <label className="space-y-1 min-w-0 max-w-full">
           <span className="block text-xs text-ink-faint">Underlying</span>
           <select
             value={underlyingSecurityId ?? ""}
@@ -73,7 +73,7 @@ export function CandidatePicker({
               const id = Number(e.target.value);
               if (Number.isSafeInteger(id) && id > 0) onUnderlying(id);
             }}
-            className="max-w-full px-2 py-1.5 rounded-md border border-edge bg-raised text-sm text-ink"
+            className="w-full min-w-0 max-w-full px-2 py-1.5 rounded-md border border-edge bg-raised text-sm text-ink"
           >
             {underlyingSecurityId === null && <option value="">Pick a name</option>}
             {underlyings.map((u) => (

@@ -107,6 +107,7 @@ import {
   FIGURES_KEPT_NOTE,
   SINGLE_NAME_CHART_NOTE,
   mountDriver,
+  nothingMovesNote,
   resultAnswersDriver,
   resultDriver,
   resultLayout,
@@ -1606,5 +1607,36 @@ describe("gains at risk, single-name: notes (fix round 1)", () => {
     );
     expect(SINGLE_NAME_CHART_NOTE).not.toMatch(/below zero/);
     expect(FIGURES_KEPT_NOTE).toBe("Your own per-name figures are kept and not used in this mode.");
+  });
+});
+
+describe("gains at risk, single-name: a scope where nothing moves with the stock", () => {
+  const NOTE = "Nothing in this scope moves with ZZA. The figures below are what time alone does to the options by that date.";
+  const held = pos({ betaSource: "held-unchanged", measuredBeta: 0, cases: cases(0, 0) });
+  const lev = pos({ securityId: 101, betaSource: "leveraged-not-linked", measuredBeta: 0, cases: cases(0, 0) });
+  const nm = pos({ securityId: 102, betaSource: "not-modelled", unmodelledReason: "no-price", measuredBeta: null, cases: cases(null, null) });
+  const mover = pos({ securityId: 103, betaSource: "driver", measuredBeta: 1, cases: cases(1, 1) });
+  const sn = (positions: GainsAtRiskPosition[], trialRows: { refusal?: GainsAtRiskTrialRow["refusal"]; cases: GainsAtRiskTrialRow["cases"] }[] = []) => ({
+    driverKind: "single-name" as const,
+    driverSymbol: "ZZA",
+    positions,
+    ...(trialRows.length > 0 ? { trial: { rows: trialRows } } : {}),
+  });
+
+  it("a row that moves with the stock: no note", () => {
+    expect(nothingMovesNote(sn([held, mover]))).toBeNull();
+  });
+
+  it("no row moves (held unchanged, not modelled, leveraged not linked): the note", () => {
+    expect(nothingMovesNote(sn([held, lev, nm]))).toBe(NOTE);
+  });
+
+  it("no book row moves but a trial position on the stock does: no note; a refused trial does not count", () => {
+    expect(nothingMovesNote(sn([held], [{ cases: cases(1, 1) }]))).toBeNull();
+    expect(nothingMovesNote(sn([held], [{ refusal: "not-modelled", cases: cases(1, 1) }]))).toBe(NOTE);
+  });
+
+  it("never for an index result", () => {
+    expect(nothingMovesNote({ driverSymbol: "QQQ", positions: [held] })).toBeNull();
   });
 });

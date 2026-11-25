@@ -137,14 +137,14 @@ export function CandidateTable({
           />
         </label>
         <p className="text-xs text-ink-dim">At the selected move: {driverSymbol} {signedMovePct(selectedMove)}</p>
-        <label className="space-y-1">
+        <label className="space-y-1 min-w-0 max-w-full">
           <span className="block text-xs text-ink-faint">Sort</span>
           <select
             value={sortKey}
             onChange={(e) => {
               if (isCandidateSortKey(e.target.value)) setSortKey(e.target.value);
             }}
-            className="px-2 py-1.5 rounded-md border border-edge bg-raised text-sm text-ink"
+            className="w-full min-w-0 max-w-full px-2 py-1.5 rounded-md border border-edge bg-raised text-sm text-ink"
           >
             {CANDIDATE_SORT_OPTIONS.map((o) => (
               <option key={o.key} value={o.key}>
