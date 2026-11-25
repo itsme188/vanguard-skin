@@ -15,6 +15,7 @@ import { usePrivateFormatter } from "@/lib/privacy/components";
 import { formatCompactUSD, formatUSD } from "@/lib/format";
 import {
   chartDollarDomain,
+  chartDollarTicks,
   chartLineLabels,
   chartRows,
   formatDriverMove,
@@ -81,6 +82,7 @@ export function GainsAtRiskChart({
         <YAxis
           yAxisId="usd"
           domain={domain}
+          ticks={chartDollarTicks(domain)}
           allowDataOverflow
           tickFormatter={dollarTickFormatter}
           tick={{ fontSize: 11, fill: "var(--ink-faint)" }}
@@ -95,8 +97,8 @@ export function GainsAtRiskChart({
             allowDataOverflow
             tickFormatter={keptTickFormatter}
             tick={{ fontSize: 11, fill: "var(--ink-faint)" }}
-            width={44}
-            label={{ value: "gain kept", angle: 90, position: "insideRight", fontSize: 11, fill: "var(--ink-faint)" }}
+            width={64}
+            label={{ value: "gain kept", angle: 90, position: "insideRight", dx: 14, fontSize: 11, fill: "var(--ink-faint)" }}
           />
         )}
         <ReferenceLine yAxisId="usd" y={0} stroke="var(--edge-strong)" />
