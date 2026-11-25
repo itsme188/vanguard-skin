@@ -377,6 +377,32 @@ export const FIGURES_KEPT_NOTE = "Your own per-name figures are kept and not use
 export const DRIVERS_LOAD_FAILED_TEXT = "The list of stocks and funds could not be loaded. The index still works.";
 
 /** The page's one-line description, by driver kind. */
+/** In-page anchors for the orientation block. */
+export const GAINS_ANCHORS = Object.freeze({
+  results: "gains-results",
+  trial: "gains-trial-positions",
+  candidates: "gains-compare-options",
+});
+
+/**
+ * Three short lines at the top of the view; each name links to its section.
+ * The first line carries the page description, so the title needs no other.
+ */
+export function pageGuideLines(kind: DriverChoice["kind"]): { anchor: string; name: string; text: string }[] {
+  return [
+    {
+      anchor: GAINS_ANCHORS.results,
+      name: "Chart and table",
+      text:
+        kind === "single-name"
+          ? "if one stock or fund falls or rises by a date, how much the book gains or gives back."
+          : "if an index falls by a date, how much of the year's gain the book gives back.",
+    },
+    { anchor: GAINS_ANCHORS.trial, name: "Try a position", text: "adds one position you type or quote." },
+    { anchor: GAINS_ANCHORS.candidates, name: "Compare options", text: "prices several contracts on one budget." },
+  ];
+}
+
 export function pageDescription(kind: DriverChoice["kind"]): string {
   return kind === "single-name"
     ? "If one stock or fund falls or rises by a date, how much the book gains or gives back."

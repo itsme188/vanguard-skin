@@ -82,12 +82,15 @@ export async function POST(request: NextRequest) {
     if (chain.kind === "expiries") {
       data = { kind: "expiries", underlyingSecurityId: req.underlyingSecurityId, right: req.right, expiries: chain.expiries };
     } else {
-      const valuationPrice = trialValuationPrice(db, req.underlyingSecurityId, { today })?.price ?? null;
+      const valuation = trialValuationPrice(db, req.underlyingSecurityId, { today });
+      const valuationPrice = valuation?.price ?? null;
       data = {
         kind: "strikes",
         underlyingSecurityId: req.underlyingSecurityId,
         right: req.right,
         valuationPrice,
+        valuationPriceDate: valuation?.date ?? null,
+        valuationPriceSource: valuation?.source ?? null,
         byExpiry: chain.byExpiry.map((e) => {
           const defaults = new Set(defaultCandidateStrikes(e.contracts, valuationPrice, req.right));
           return {

@@ -727,6 +727,8 @@ describe("requests", () => {
       underlyingSecurityId: ZZA,
       right: "put",
       valuationPrice: 90,
+      valuationPriceDate: "2026-11-24",
+      valuationPriceSource: "stored-price",
       byExpiry: ["2027-01-15", "2027-02-19", "2027-03-19"].map((expiry, k) => ({
         expiry,
         contracts: contracts(1000 * (k + 1)),

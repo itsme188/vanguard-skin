@@ -20,6 +20,7 @@ import { CANDIDATE_BOUNDS, CANDIDATE_QUOTE_OLD_AFTER_MINUTES, TRIAL_POSITION_BOU
 import { budgetToUnits, toMoneyUnits, unitsToUsd } from "@/lib/analysis/gains-at-risk-candidate-money";
 import { gainGivenBackShare, moveDirection, sameMove, type DriverChoice } from "@/lib/analysis/gains-at-risk-view";
 import { TRIAL_LIMIT_TEXT, formatMarketPrice, formatStrike } from "@/lib/analysis/gains-at-risk-trial-view";
+import { formatPositionsDate } from "@/lib/ui/positions-freshness-label";
 // Types only: erased at build.
 import type { TrialPositionState, TrialQuote } from "@/lib/analysis/gains-at-risk-trial-view";
 import type { GainsAtRiskBody } from "@/lib/analysis/gains-at-risk-input";
@@ -749,7 +750,15 @@ export function candidateToTrial(
 
 // ─── Sorting (P22: no default order, no ranking) ────────────────
 
-export type CandidateSortKey = "none" | "cost" | "contracts" | "atSelected" | "atZero" | "crossing" | "costShare";
+export type CandidateSortKey =
+  | "none"
+  | "cost"
+  | "contracts"
+  | "atSelected"
+  | "perThousand"
+  | "atZero"
+  | "crossing"
+  | "costShare";
 
 /** The sort select, "none" first. Every option is low to high: a column, never a verdict. */
 export const CANDIDATE_SORT_OPTIONS: readonly { key: CandidateSortKey; label: string }[] = Object.freeze([
@@ -757,6 +766,7 @@ export const CANDIDATE_SORT_OPTIONS: readonly { key: CandidateSortKey; label: st
   { key: "cost", label: "Cost, low to high" },
   { key: "contracts", label: "Contracts, low to high" },
   { key: "atSelected", label: "At the selected move, low to high" },
+  { key: "perThousand", label: "Per $1,000 spent, low to high" },
   { key: "atZero", label: "At 0%, low to high" },
   { key: "crossing", label: "Pays once, nearest first" },
   { key: "costShare", label: "Cost share of the gain, low to high" },
@@ -794,6 +804,10 @@ function sortKeyOf(
       return [0, f.contracts];
     case "atSelected":
       return c ? [0, c.atSelectedMoveUsd] : [1, 0];
+    case "perThousand": {
+      const v = c ? perThousandSpent(c.atSelectedMoveUsd, f.costUsd) : null;
+      return v === null ? [1, 0] : [0, v];
+    }
     case "atZero":
       return c ? [0, c.atZeroMoveUsd] : [1, atSelected];
     case "crossing":
@@ -842,6 +856,10 @@ export type CandidateCells =
       atSelectedUsd: number | null;
       atZeroUsd: number | null;
       crossingText: string | null;
+      /** The contract expires before the date (the engine counts it as expiring before the move). */
+      expiresBeforeText: string | null;
+      /** The change at the selected move per $1,000 of cost (like for like across rows). */
+      perThousandUsd: number | null;
       costShare: ReturnType<typeof candidateCostShareCell>;
       heldUnchangedText: string | null;
     };
@@ -859,6 +877,7 @@ export function candidateCells(
   caseKey: GainsAtRiskCaseKey,
   yearGain: YearGainResult,
   driverSymbol: string,
+  valuationDate: string | null = null,
 ): CandidateCells {
   if (r.quote === null) return { kind: "no-quote", text: r.quoteProblem ?? "Quoting…" };
   const f = r.record === null ? null : r.figures;
@@ -877,6 +896,9 @@ export function candidateCells(
     atSelectedUsd: c ? c.atSelectedMoveUsd : null,
     atZeroUsd: c ? c.atZeroMoveUsd : null,
     crossingText: c ? candidateCrossingText(c, driverSymbol) : null,
+    expiresBeforeText:
+      valuationDate !== null && expiresBeforeValuation(r.contract.expiry, valuationDate) ? expiresBeforeText(valuationDate) : null,
+    perThousandUsd: c ? perThousandSpent(c.atSelectedMoveUsd, f.costUsd) : null,
     costShare: candidateCostShareCell(f.costUsd, yearGain),
     heldUnchangedText: c && c.heldUnchanged ? heldUnchangedNote(f.engine.symbol || r.symbol) : null,
   };
@@ -890,4 +912,139 @@ function grouped(n: number): string {
 /** How many contracts are chosen, out of the bound. */
 export function chosenCountText(n: number): string {
   return `${n} of at most ${CANDIDATE_BOUNDS.maxContractsPerPull} contracts selected.`;
+}
+
+// ─── After the owner's first real pull ──────────────────────────
+
+const CALENDAR_DAY = /^\d{4}-\d{2}-\d{2}$/;
+
+/**
+ * The engine's step 1 rule, read from the row's own terms: an option whose
+ * expiry is before the valuation date (calendar days; the same day is not
+ * before) is counted as expiring before the move, the worse of the two orders.
+ * The candidates reply does not carry this flag, so the page derives it.
+ */
+export function expiresBeforeValuation(expiry: string, valuationDate: string): boolean {
+  return CALENDAR_DAY.test(expiry) && CALENDAR_DAY.test(valuationDate) && expiry < valuationDate;
+}
+
+export function expiresBeforeText(valuationDate: string): string {
+  return `Expires before ${formatPositionsDate(valuationDate)}. Counted as expiring before the move.`;
+}
+
+export const EXPIRES_BEFORE_NOTE = "To see a contract pay, set the date on or before its expiry.";
+
+/** A per-contract price (market data) with thousands grouped: 1010 → "$1,010.00". */
+export function formatPerContractUsd(v: number | null): string {
+  if (v === null || !Number.isFinite(v)) return "—";
+  const twoPlaces = Math.abs(Number(v.toFixed(2)) - v) < 1e-9;
+  const text = v.toLocaleString("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: twoPlaces ? 2 : 4,
+    useGrouping: true,
+  });
+  return `$${text}`;
+}
+
+/** Like for like: the change at the selected move per $1,000 spent; null when nothing was spent. */
+export function perThousandSpent(atSelectedUsd: number | null, costUsd: number | null): number | null {
+  if (atSelectedUsd === null || costUsd === null) return null;
+  if (!Number.isFinite(atSelectedUsd) || !Number.isFinite(costUsd) || costUsd <= 0) return null;
+  return (atSelectedUsd / costUsd) * 1000;
+}
+
+export function perThousandHeading(selectedMove: number): string {
+  return `At ${signedMovePct(selectedMove)}, per $1,000 spent`;
+}
+
+/** Above the strike lists. */
+export const STRIKES_NEAR_NOTE = "The five nearest out of the money are ticked to start. Only strikes near the price are listed.";
+
+/** How many listed strikes show on each side of the price by default. */
+export const STRIKES_EACH_SIDE = 15;
+
+/**
+ * The strikes shown by default, in strike order: the `perSide` listed strikes
+ * below the price and the `perSide` at or above it, plus any strike already
+ * chosen. With no price, every strike.
+ */
+export function visibleStrikes<T extends { conId: number; strike: number }>(
+  contracts: readonly T[],
+  price: number | null,
+  chosenConIds: readonly number[],
+  perSide: number = STRIKES_EACH_SIDE,
+): T[] {
+  const sorted = [...contracts].sort((a, b) => a.strike - b.strike);
+  if (price === null || !Number.isFinite(price)) return sorted;
+  const below = sorted.filter((c) => c.strike < price).slice(-perSide);
+  const above = sorted.filter((c) => c.strike >= price).slice(0, perSide);
+  const keep = new Set([...below, ...above].map((c) => c.conId));
+  for (const id of chosenConIds) keep.add(id);
+  return sorted.filter((c) => keep.has(c.conId));
+}
+
+/** Where the price marker sits in a strike list (before this index); null with no price. */
+export function priceMarkerIndex(strikes: readonly { strike: number }[], price: number | null): number | null {
+  if (price === null || !Number.isFinite(price)) return null;
+  return strikes.filter((c) => c.strike < price).length;
+}
+
+/** Which side of the price is out of the money for the chosen right. */
+export function strikeSideText(right: "put" | "call"): string {
+  return right === "put" ? "Below the price: out of the money for a put." : "Above the price: out of the money for a call.";
+}
+
+/**
+ * The price the strikes are read against, with its day when the chain reply
+ * has one: "ZZA last stored 101.40, Nov 24." A price from a daily bar reads
+ * "last close". The day is read from the YYYY-MM-DD string itself (no UTC cut).
+ */
+export function storedPriceLine(
+  symbol: string,
+  price: number | null,
+  date: string | null = null,
+  source: "book" | "daily-bar" | "stored-price" | null = null,
+): string | null {
+  if (price === null || !Number.isFinite(price)) return null;
+  const kind = source === "daily-bar" ? "last close" : "last stored";
+  return `${symbol} ${kind} ${formatMarketPrice(price)}${date ? `, ${formatPositionsDate(date)}` : ""}.`;
+}
+
+/** Per underlying in the table: the underlying price of its newest quote, and when it arrived. */
+export function quotedUnderlyingLines(rows: readonly CandidateRowState[]): string[] {
+  const newest = new Map<number, { symbol: string; q: CandidateQuoteFields }>();
+  for (const r of rows) {
+    if (r.quote === null) continue;
+    const had = newest.get(r.underlyingSecurityId);
+    if (had === undefined || Date.parse(r.quote.underlyingObservedAt) > Date.parse(had.q.underlyingObservedAt)) {
+      newest.set(r.underlyingSecurityId, { symbol: r.symbol, q: r.quote });
+    }
+  }
+  return [...newest.values()].map(({ symbol, q }) => {
+    const at = easternTime(q.underlyingObservedAt);
+    return `${symbol} quoted ${formatMarketPrice(q.underlyingPrice)}${at ? ` at ${at}` : ""}.`;
+  });
+}
+
+/** The path through the section, one short line per step. */
+export const CANDIDATE_STEPS: readonly string[] = Object.freeze([
+  "Pick the underlying and up to three expiries.",
+  "Show strikes and tick up to 15 contracts.",
+  "Get quotes.",
+  "Set a budget and read the table.",
+  "Add a row to try it in the chart.",
+]);
+
+/** One line per column that is not self-evident. */
+export function candidateLegend(selectedMove: number, crossingHeadingText: string): { term: string; text: string }[] {
+  const at = `At ${signedMovePct(selectedMove)}`;
+  return [
+    { term: "Contracts", text: "whole contracts the budget buys." },
+    { term: "Cost", text: "contracts times the price per contract, at the mid." },
+    { term: at, text: "the change in the book from this row alone, net of its cost, on top of the trial positions already listed." },
+    { term: perThousandHeading(selectedMove), text: `the same change scaled to $1,000 of cost, so rows that spend different amounts compare.` },
+    { term: "At 0%", text: "what waiting costs by the date, with no move." },
+    { term: crossingHeadingText, text: "the move where the row breaks even." },
+    { term: "Cost / year's gain", text: "the cost as a share of the year's gain." },
+  ];
 }

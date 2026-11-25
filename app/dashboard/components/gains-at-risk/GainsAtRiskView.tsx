@@ -62,7 +62,8 @@ import {
   gainsAtRiskRequestBody,
   leveragedNotLinkedText,
   moveDirection,
-  pageDescription,
+  GAINS_ANCHORS,
+  pageGuideLines,
   rowSideAt,
   sameDriverIn,
   singleNameHeadline,
@@ -622,7 +623,17 @@ export function GainsAtRiskView({
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div className="min-w-0">
           <h2 className="text-lg font-medium text-ink whitespace-nowrap!">Gains at risk</h2>
-          <p className="text-sm text-ink-faint mt-0.5">{pageDescription(kind)}</p>
+          {/* Orientation: three short lines; each name jumps to its section. The first carries the page description. */}
+          <ul className="mt-1 space-y-0.5 text-sm text-ink-faint">
+            {pageGuideLines(kind).map((l) => (
+              <li key={l.anchor}>
+                <a href={`#${l.anchor}`} className="text-ink-dim underline">
+                  {l.name}
+                </a>{" "}
+                {l.text}
+              </li>
+            ))}
+          </ul>
         </div>
         <div
           className="flex items-center gap-1 rounded-lg bg-raised border border-edge p-0.5 self-start w-fit max-w-full overflow-x-auto"
@@ -767,6 +778,7 @@ export function GainsAtRiskView({
       />
       <CandidateSection scope={scope} controls={controls} selectedMove={selectedMove} caseKey={screenCase} yearGain={display.yearGain} underlyings={driverLists.candidateUnderlyings} today={today} latestDate={latestDate} bookRevision={bookRevision} />
 
+      <div id={GAINS_ANCHORS.results} className="scroll-mt-4 space-y-6">
       <ResultSections
         result={display.result}
         trialLabels={trialLabels}
@@ -797,6 +809,7 @@ export function GainsAtRiskView({
         onBetaClear={clearBeta}
         betaOverrides={controls.betaOverrides}
       />
+      </div>
     </div>
   );
 }

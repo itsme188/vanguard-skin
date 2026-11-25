@@ -8,12 +8,17 @@ import {
   BUDGET_PENDING_TEXT,
   CANDIDATE_SORT_OPTIONS,
   CAPPED_TEXT,
+  EXPIRES_BEFORE_NOTE,
   IN_TRIALS_MARK,
   IN_TRIALS_NOTE,
   candidateAddBlocked,
   candidateCells,
   candidateContractText,
+  candidateLegend,
+  formatPerContractUsd,
   isCandidateSortKey,
+  perThousandHeading,
+  quotedUnderlyingLines,
   observationTimesLine,
   quoteAgeLine,
   signedMovePct,
@@ -37,9 +42,9 @@ const onEnterBlur = (e: KeyboardEvent<HTMLInputElement>) => {
   if (e.key === "Enter") e.currentTarget.blur();
 };
 
-/** A per-contract price: market data (the mid x 100), plain. */
+/** A per-contract price: market data (the mid x 100), plain, thousands grouped. */
 function perContractText(usd: number | null): string {
-  return usd === null ? "—" : `$${formatMarketPrice(usd)}`;
+  return formatPerContractUsd(usd);
 }
 
 interface RowProps {
@@ -70,6 +75,7 @@ export function CandidateTable({
   onBudgetDraft,
   onBudgetCommit,
   selectedMove,
+  valuationDate,
   crossingHeadingText,
   driverSymbol,
   caseKey,
@@ -87,6 +93,8 @@ export function CandidateTable({
   onBudgetDraft: (text: string) => void;
   onBudgetCommit: () => void;
   selectedMove: number;
+  /** The date the book is valued at: a contract expiring before it says so. */
+  valuationDate: string;
   crossingHeadingText: string;
   driverSymbol: string;
   caseKey: GainsAtRiskCaseKey;
@@ -108,10 +116,17 @@ export function CandidateTable({
   const computing = state.computingSeq !== null && state.computingSeq === state.computeSeq;
   const waitingText = computing ? "Computing…" : (state.computeProblem ?? budgetProblem ?? "—");
   const selectedLabel = `At ${signedMovePct(selectedMove)}`;
+  const perThousandLabel = perThousandHeading(selectedMove);
+  const quotedLines = quotedUnderlyingLines(state.rows);
+  const anyExpiresBefore = sorted.some((r) => {
+    const c = candidateCells(r, caseKey, yearGain, driverSymbol, valuationDate);
+    return c.kind === "priced" && c.expiresBeforeText !== null;
+  });
+  const legend = candidateLegend(selectedMove, crossingHeadingText);
   const rowProps = (r: CandidateRowState): RowProps => ({
     row: r,
     inTrial: inTrials.has(r.conId),
-    cells: candidateCells(r, caseKey, yearGain, driverSymbol),
+    cells: candidateCells(r, caseKey, yearGain, driverSymbol, valuationDate),
     addBlockedText: candidateAddBlocked(r, state, state.figuresSeq, trialCount, inTrials)?.text ?? null,
     waitingText,
     now,
@@ -136,7 +151,14 @@ export function CandidateTable({
             className="w-32 px-2 py-1.5 rounded-md border border-edge bg-raised text-sm text-ink tabular-nums"
           />
         </label>
-        <p className="text-xs text-ink-dim">At the selected move: {driverSymbol} {signedMovePct(selectedMove)}</p>
+        <div className="text-xs text-ink-dim space-y-0.5">
+          <p>
+            At the selected move: {driverSymbol} {signedMovePct(selectedMove)}
+          </p>
+          {quotedLines.map((l) => (
+            <p key={l}>{l}</p>
+          ))}
+        </div>
         <label className="space-y-1 min-w-0 max-w-full">
           <span className="block text-xs text-ink-faint">Sort</span>
           <select
@@ -172,7 +194,13 @@ export function CandidateTable({
           {/* Phone: one card per row. */}
           <ul className="md:hidden space-y-2">
             {sorted.map((r) => (
-              <CandidateCard key={r.conId} {...rowProps(r)} selectedLabel={selectedLabel} crossingHeadingText={crossingHeadingText} />
+              <CandidateCard
+                key={r.conId}
+                {...rowProps(r)}
+                selectedLabel={selectedLabel}
+                perThousandLabel={perThousandLabel}
+                crossingHeadingText={crossingHeadingText}
+              />
             ))}
           </ul>
           {/* Wider screens: the table, scrolling inside its own box. */}
@@ -186,11 +214,14 @@ export function CandidateTable({
                     <th className="py-1 pr-3 font-normal whitespace-nowrap!">Mid</th>
                     <th className="py-1 pr-3 font-normal whitespace-nowrap!">Per contract</th>
                     <th className="py-1 pr-3 font-normal whitespace-nowrap!">Contracts</th>
-                    <th className="py-1 pr-3 font-normal whitespace-nowrap!">Cost</th>
+                    <th className="py-1 pr-3 font-normal whitespace-nowrap!">
+                      Cost
+                      <span className="block">/ year&apos;s gain</span>
+                    </th>
                     <th className="py-1 pr-3 font-normal whitespace-nowrap!">{selectedLabel}</th>
+                    <th className="py-1 pr-3 font-normal">{perThousandLabel}</th>
                     <th className="py-1 pr-3 font-normal whitespace-nowrap!">At 0%</th>
-                    <th className="py-1 pr-3 font-normal whitespace-nowrap!">{crossingHeadingText}</th>
-                    <th className="py-1 pr-3 font-normal whitespace-nowrap!">Cost / year&apos;s gain</th>
+                    <th className="py-1 pr-3 font-normal">{crossingHeadingText}</th>
                     <th className="py-1 font-normal" aria-label="Actions" />
                   </tr>
                 </thead>
@@ -202,7 +233,15 @@ export function CandidateTable({
               </table>
             </ScrollFade>
           </div>
+          {anyExpiresBefore && <p className="mt-2 text-xs text-ink-dim">{EXPIRES_BEFORE_NOTE}</p>}
           {anyInTrials && <p className="mt-2 text-xs text-ink-faint">{IN_TRIALS_NOTE}</p>}
+          <dl className="mt-3 space-y-0.5 text-xs text-ink-faint">
+            {legend.map((l) => (
+              <div key={l.term}>
+                <dt className="inline text-ink-dim">{l.term}:</dt> <dd className="inline">{l.text}</dd>
+              </div>
+            ))}
+          </dl>
         </div>
       )}
     </div>
@@ -301,17 +340,20 @@ function CandidateTableRow({ row, inTrial, cells, addBlockedText, waitingText, n
           </td>
           <td className="py-1.5 pr-3">
             <Money value={cells.costUsd} />
+            <p className="text-ink-faint">
+              <ShareCell share={cells.costShare} />
+            </p>
           </td>
           <td className="py-1.5 pr-3">
             <Money value={cells.atSelectedUsd} signed />
           </td>
           <td className="py-1.5 pr-3">
+            <Money value={cells.perThousandUsd} signed />
+          </td>
+          <td className="py-1.5 pr-3">
             <Money value={cells.atZeroUsd} signed />
           </td>
-          <td className="py-1.5 pr-3 whitespace-nowrap">{cells.crossingText ?? "—"}</td>
-          <td className="py-1.5 pr-3">
-            <ShareCell share={cells.costShare} />
-          </td>
+          <td className="py-1.5 pr-3 min-w-40">{cells.expiresBeforeText ?? cells.crossingText ?? "—"}</td>
         </>
       )}
       <td className="py-1.5">
@@ -331,8 +373,9 @@ function CandidateCard({
   onAdd,
   onRemove,
   selectedLabel,
+  perThousandLabel,
   crossingHeadingText,
-}: RowProps & { selectedLabel: string; crossingHeadingText: string }) {
+}: RowProps & { selectedLabel: string; perThousandLabel: string; crossingHeadingText: string }) {
   const q = row.quote;
   const label = candidateContractText(row);
   return (
@@ -377,12 +420,16 @@ function CandidateCard({
           <dd>
             <Money value={cells.atSelectedUsd} signed />
           </dd>
+          <dt className="text-ink-faint">{perThousandLabel}</dt>
+          <dd>
+            <Money value={cells.perThousandUsd} signed />
+          </dd>
           <dt className="text-ink-faint">At 0%</dt>
           <dd>
             <Money value={cells.atZeroUsd} signed />
           </dd>
           <dt className="text-ink-faint">{crossingHeadingText}</dt>
-          <dd>{cells.crossingText ?? "—"}</dd>
+          <dd>{cells.expiresBeforeText ?? cells.crossingText ?? "—"}</dd>
           <dt className="text-ink-faint">Cost / year&apos;s gain</dt>
           <dd>
             <ShareCell share={cells.costShare} />

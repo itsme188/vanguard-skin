@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { Count, Money, Pct, PrivateText, QuantityUnit } from "@/lib/privacy/components";
-import { UNDER_TENTH_TEXT } from "@/lib/analysis/gains-at-risk-view";
+import { GAINS_ANCHORS, UNDER_TENTH_TEXT } from "@/lib/analysis/gains-at-risk-view";
 import {
   TRIAL_LIMIT_TEXT,
   TRIAL_NOT_STORED_NOTE,
@@ -69,7 +69,7 @@ export function TrialPositionsPanel({
   const net = trial ? netCashLine(trial.netCashUsd) : null;
 
   return (
-    <section className="bg-panel rounded-xl p-4 sm:p-5 card-elev space-y-3" aria-label={TRIAL_SECTION_TITLE}>
+    <section id={GAINS_ANCHORS.trial} className="scroll-mt-4 bg-panel rounded-xl p-4 sm:p-5 card-elev space-y-3" aria-label={TRIAL_SECTION_TITLE}>
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h3 className="text-sm font-medium text-ink whitespace-nowrap!">{TRIAL_SECTION_TITLE}</h3>
         <button

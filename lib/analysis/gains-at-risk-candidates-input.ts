@@ -102,6 +102,10 @@ export type ChainResponse =
       right: "put" | "call";
       /** The app's own valuation price (`trialValuationPrice`); null when it has none (then no defaults). */
       valuationPrice: number | null;
+      /** The day of that price (YYYY-MM-DD); null with no price. */
+      valuationPriceDate: string | null;
+      /** Where that price came from (`trialValuationPrice`); null with no price. */
+      valuationPriceSource: "book" | "daily-bar" | "stored-price" | null;
       byExpiry: {
         expiry: string;
         contracts: ChainContract[];

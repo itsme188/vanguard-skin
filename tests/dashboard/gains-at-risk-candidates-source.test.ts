@@ -187,3 +187,39 @@ describe("S6 fix round 1 wiring", () => {
     expect(table).toContain("{BUDGET_PENDING_TEXT}");
   });
 });
+
+describe("after the owner's first real pull", () => {
+  const table = code(read(TABLE));
+  const picker = code(read(PICKER));
+  it("item 1: the expires-before line takes the crossing cell's place, and the note renders", () => {
+    expect(table).toContain("candidateCells(r, caseKey, yearGain, driverSymbol, valuationDate)");
+    expect((table.match(/cells\.expiresBeforeText \?\? cells\.crossingText/g) ?? []).length).toBe(2);
+    expect(table).toContain("{EXPIRES_BEFORE_NOTE}");
+  });
+  it("items 2 and 3: strikes near the price with a toggle button, the price marker and the price line", () => {
+    expect(picker).toContain("visibleStrikes(contracts, price, chosenConIds)");
+    expect(picker).toContain("priceMarkerIndex(shown, price)");
+    expect(picker).toMatch(/showAll \? "Show fewer" : "Show all strikes"/);
+    expect(picker).toContain("storedPriceLine(symbol, state.strikes.valuationPrice, state.strikes.valuationPriceDate, state.strikes.valuationPriceSource)");
+    expect(picker).toContain("strikeSideText(state.right)");
+    expect(picker).toContain("{STRIKES_NEAR_NOTE}");
+    expect(table).toContain("quotedUnderlyingLines(state.rows)");
+  });
+  it("items 4 and 5: per-contract prices grouped; the per $1,000 column through <Money>", () => {
+    expect(table).toContain("return formatPerContractUsd(usd);");
+    expect((table.match(/<Money value=\{cells\.perThousandUsd\} signed \/>/g) ?? []).length).toBe(2);
+    expect(table).toContain("{perThousandLabel}");
+  });
+  it("item 6: the steps, the legend and the orientation links", () => {
+    expect(code(read(CANDIDATE_SECTION))).toContain("CANDIDATE_STEPS.map(");
+    expect(table).toContain("candidateLegend(selectedMove, crossingHeadingText)");
+    const view = code(read(VIEW));
+    expect(view).toContain("pageGuideLines(kind).map(");
+    expect(view).toContain("href={`#${l.anchor}`}");
+    expect(view).toContain("id={GAINS_ANCHORS.results}");
+    expect(code(read(`${DIR}/TrialPositionList.tsx`))).toContain("id={GAINS_ANCHORS.trial}");
+    expect(code(read(CANDIDATE_SECTION))).toContain("id={GAINS_ANCHORS.candidates}");
+    // The title's own description line is gone: the first orientation line carries it.
+    expect(view).not.toContain("{pageDescription(kind)}");
+  });
+});

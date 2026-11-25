@@ -9,6 +9,7 @@ import {
   CANDIDATES_DISCONNECTED_NOTE,
   CANDIDATES_NOT_STORED_NOTE,
   CANDIDATES_SECTION_TITLE,
+  CANDIDATE_STEPS,
   candidateAddBlocked,
   candidateRequestItems,
   candidateToTrial,
@@ -26,7 +27,7 @@ import {
   trialBrokerContractIds,
   type CandidateRowState,
 } from "@/lib/analysis/gains-at-risk-candidates-view";
-import { gainsAtRiskRequestBody, type GainsControls } from "@/lib/analysis/gains-at-risk-view";
+import { GAINS_ANCHORS, gainsAtRiskRequestBody, type GainsControls } from "@/lib/analysis/gains-at-risk-view";
 import { newTrialId, trialRequestPositions } from "@/lib/analysis/gains-at-risk-trial-view";
 // Types only: no engine, query or broker code reaches the browser.
 import type {
@@ -316,7 +317,11 @@ export function CandidateSection({
   const pullBlocked = pullProblem(state.rows, state.chosenConIds);
 
   return (
-    <section className="bg-panel rounded-xl p-4 sm:p-5 card-elev space-y-3" aria-label={CANDIDATES_SECTION_TITLE}>
+    <section
+      id={GAINS_ANCHORS.candidates}
+      className="scroll-mt-4 bg-panel rounded-xl p-4 sm:p-5 card-elev space-y-3"
+      aria-label={CANDIDATES_SECTION_TITLE}
+    >
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h3 className="text-sm font-medium text-ink whitespace-nowrap!">{CANDIDATES_SECTION_TITLE}</h3>
         <button
@@ -331,6 +336,13 @@ export function CandidateSection({
 
       {state.open && (
         <>
+          <ol className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-ink-dim">
+            {CANDIDATE_STEPS.map((step, i) => (
+              <li key={step}>
+                <span className="text-ink">{i + 1}</span> {step}
+              </li>
+            ))}
+          </ol>
           <p className="text-xs text-ink-faint">{CANDIDATES_BUYING_ONLY_NOTE}</p>
           {notListed && <p className="text-xs text-ink-dim">{notListed}</p>}
           {connected === false && (
@@ -347,6 +359,7 @@ export function CandidateSection({
           <CandidatePicker
             underlyings={underlyings}
             underlyingSecurityId={pickerUnderlying}
+            symbol={pickerUnderlying !== null ? symbolOf(pickerUnderlying) : ""}
             state={state}
             canAskBroker={canAskBroker}
             disconnected={connected === false}
@@ -367,6 +380,7 @@ export function CandidateSection({
             onBudgetDraft={setBudgetDraft}
             onBudgetCommit={commitBudget}
             selectedMove={selectedMove}
+            valuationDate={controls.valuationDate}
             crossingHeadingText={crossingHeading(headingDirection(controls.driver, selectedMove), driverSymbol)}
             driverSymbol={driverSymbol}
             caseKey={caseKey}
