@@ -54,13 +54,15 @@ export function positionsFreshnessCell(f: PositionsFreshness): PositionsFreshnes
     };
   }
 
+  const liveCount = f.accounts.reduce((n, a) => n + a.liveRowCount, 0);
+  const totalCount = liveCount + f.statementRowCount;
   const latest = newestLive.reduce((a, b) => (b > a ? b : a));
   const earliestNewest = newestLive.reduce((a, b) => (b < a ? b : a));
 
   if (f.leftoverCount > 0) {
     return {
       dateText: range(f.oldestCountedLiveDate ?? earliestNewest, latest),
-      countText: `${f.leftoverCount} not in latest sync`,
+      countText: `${f.leftoverCount} of ${totalCount} positions were not in the latest sync`,
       tone: "bad",
       hint:
         "Some positions were not in the latest sync but are still counted as held. They may be closed. Do not rely on these figures until the next sync clears them.",
@@ -77,7 +79,7 @@ export function positionsFreshnessCell(f: PositionsFreshness): PositionsFreshnes
     statementDates.length > 0 ? statementDates.reduce((a, b) => (b < a ? b : a)) : null;
   const statementText =
     f.statementRowCount > 0 && oldestStatement !== null
-      ? `${f.statementRowCount} from ${formatPositionsDate(oldestStatement)} statement`
+      ? `${liveCount} of ${totalCount} positions are current. ${f.statementRowCount} ${f.statementRowCount === 1 ? "is" : "are"} from the ${formatPositionsDate(oldestStatement)} statement`
       : null;
   const baseHint =
     f.level === "warn"
@@ -89,7 +91,7 @@ export function positionsFreshnessCell(f: PositionsFreshness): PositionsFreshnes
     countText: statementText,
     tone: f.level === "good" ? "good" : f.level,
     hint: statementText
-      ? `${baseHint} Some positions are not in the daily sync and still come from the last statement.`
+      ? `${baseHint} Most positions are current. A few (bonds and some funds) are not in the daily sync, so they still come from the last statement.`
       : baseHint,
   };
 }

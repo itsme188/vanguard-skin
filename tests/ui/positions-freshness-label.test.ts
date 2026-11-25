@@ -75,7 +75,7 @@ describe("positionsFreshnessCell", () => {
       }),
     );
     expect(c.dateText).toBe("Nov 23");
-    expect(c.countText).toBe("3 from Oct 31 statement");
+    expect(c.countText).toBe("2 of 5 positions are current. 3 are from the Oct 31 statement");
     expect(c.tone).toBe("good");
     expect(c.hint).toContain("last statement");
   });
@@ -85,6 +85,7 @@ describe("positionsFreshnessCell", () => {
       freshness({
         accounts: [
           account({
+            liveRowCount: 40,
             leftover: {
               count: 12,
               oldestDate: "2026-11-20",
@@ -100,7 +101,7 @@ describe("positionsFreshnessCell", () => {
       }),
     );
     expect(c.dateText).toBe("Nov 20 – Nov 23");
-    expect(c.countText).toBe("12 not in latest sync");
+    expect(c.countText).toBe("12 of 40 positions were not in the latest sync");
     expect(c.tone).toBe("bad");
   });
 
