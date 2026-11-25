@@ -131,6 +131,7 @@ import { SortableHeader } from "../SortableHeader";
 import { DriverControl } from "./DriverControl";
 import { GainsAtRiskChart } from "./GainsAtRiskChart";
 import { TrialPositionsPanel } from "./TrialPositionList";
+import { CandidateSection } from "./CandidateSection";
 import { useTrialPositions, type TrialPositionsValue } from "./TrialPositionsProvider";
 
 const SCOPE_PILLS: { key: AnalysisScope; label: string }[] = [
@@ -695,6 +696,7 @@ export function GainsAtRiskView({
         // The per-name table is on screen when the book or the trial positions give it rows.
         tableBelow={display.result.positions.length > 0 || (display.result.trial?.rows.length ?? 0) > 0}
       />
+      <CandidateSection scope={scope} controls={controls} selectedMove={selectedMove} caseKey={screenCase} yearGain={display.yearGain} underlyings={driverLists.candidateUnderlyings} />
 
       <ResultSections
         result={display.result}

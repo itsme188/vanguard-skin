@@ -18,6 +18,7 @@ import {
 import { EmptySection } from "../EmptySection";
 import { GainsAtRiskView } from "./GainsAtRiskView";
 import { TrialPositionsProvider } from "./TrialPositionsProvider";
+import { CandidatesProvider } from "./CandidatesProvider";
 
 /**
  * Gains at risk (Analysis, step 1): the server half. Computes the first
@@ -82,6 +83,8 @@ export function GainsAtRiskSection({ scope }: { scope: AnalysisScope }) {
 
   return (
     <TrialPositionsProvider>
+      {/* Step 3 (F1): the candidate rows and quotes, unkeyed like the trial list, so a scope change keeps them. */}
+      <CandidatesProvider>
       <GainsAtRiskView
         // A new scope is a new page: start from the defaults the server used.
         // Only the trial positions carry over, through the provider above.
@@ -99,6 +102,7 @@ export function GainsAtRiskSection({ scope }: { scope: AnalysisScope }) {
           selectedMove: DEFAULT_SELECTED_MOVE,
         }}
       />
+      </CandidatesProvider>
     </TrialPositionsProvider>
   );
 }

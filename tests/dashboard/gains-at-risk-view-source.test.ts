@@ -29,6 +29,13 @@ const DRIVER_CONTROL = "app/dashboard/components/gains-at-risk/DriverControl.tsx
 // Step 3 (Task S4): the plain route-body module and the money module the page will read.
 const CANDIDATES_INPUT = "lib/analysis/gains-at-risk-candidates-input.ts";
 const CANDIDATE_MONEY = "lib/analysis/gains-at-risk-candidate-money.ts";
+// Step 3 (Task S6): the candidate section.
+const CANDIDATES_PROVIDER = "app/dashboard/components/gains-at-risk/CandidatesProvider.tsx";
+const CANDIDATE_SECTION = "app/dashboard/components/gains-at-risk/CandidateSection.tsx";
+const CANDIDATE_PICKER = "app/dashboard/components/gains-at-risk/CandidatePicker.tsx";
+const CANDIDATE_TABLE = "app/dashboard/components/gains-at-risk/CandidateTable.tsx";
+const CANDIDATES_VIEW = "lib/analysis/gains-at-risk-candidates-view.ts";
+const CANDIDATE_FILES = [CANDIDATES_PROVIDER, CANDIDATE_SECTION, CANDIDATE_PICKER, CANDIDATE_TABLE, CANDIDATES_VIEW];
 /** Server only (F4, plan OPEN 1): never reached from a client file. */
 const CANDIDATE_CHECK = "lib/compute/gains-at-risk-candidate-check.ts";
 
@@ -407,7 +414,7 @@ describe("the browser bundle reaches no database or engine code through these fi
     const seen = new Set<string>();
     const reached: string[] = [];
     const packages = new Set<string>();
-    const stack = [VIEW, CHART, HELPERS, INPUT, TRIAL_HELPERS, PROVIDER, FORM, LIST, DRIVER_CONTROL, CANDIDATES_INPUT, CANDIDATE_MONEY].map((p) =>
+    const stack = [VIEW, CHART, HELPERS, INPUT, TRIAL_HELPERS, PROVIDER, FORM, LIST, DRIVER_CONTROL, CANDIDATES_INPUT, CANDIDATE_MONEY, ...CANDIDATE_FILES].map((p) =>
       join(ROOT, p),
     );
     while (stack.length > 0) {
@@ -425,7 +432,7 @@ describe("the browser bundle reaches no database or engine code through these fi
     // The scope rule value-imports lib/queries: server-only, never reached from here.
     expect(reached).not.toContain(SCOPE);
     expect([...packages].filter((p) => p === "better-sqlite3" || p.startsWith("@stoqey/"))).toEqual([]);
-    for (const f of [VIEW, CHART, HELPERS, INPUT, CONSTANTS, TRIAL_HELPERS, PROVIDER, FORM, LIST, DRIVER_CONTROL, CANDIDATES_INPUT, CANDIDATE_MONEY]) {
+    for (const f of [VIEW, CHART, HELPERS, INPUT, CONSTANTS, TRIAL_HELPERS, PROVIDER, FORM, LIST, DRIVER_CONTROL, CANDIDATES_INPUT, CANDIDATE_MONEY, ...CANDIDATE_FILES]) {
       expect(reached).toContain(f);
     }
     // T22: the call-2 validator is server code; its types reach the page by type-only import.
