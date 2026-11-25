@@ -42,7 +42,6 @@ import {
   UNDER_TENTH_TEXT,
   YEAR_GAIN_LABEL,
   ZERO_ROW_NOTE,
-  betaEditorOwnership,
   betaEvidenceCaption,
   betaOverrideProblem,
   betaSourceLine,
@@ -64,7 +63,11 @@ import {
   noMeasuredLinkSentence,
   overridesIgnoredLine,
   positionSortNote,
-  sameFigureText,
+  nameRowKey,
+  nameTableEditorOwnership,
+  nameTableRows,
+  sameFigureTextAt,
+  serverPropsAction,
   sortPositions,
   priceBoxOwners,
   reconciliationLine,
@@ -72,16 +75,27 @@ import {
   requestMoves,
   sameMove,
   scopeFreshnessCell,
-  serverPropsAnswerControls,
   yearGainNote,
   type GainsControls,
   type GainsSortKey,
+  type NameTableRow,
 } from "@/lib/analysis/gains-at-risk-view";
+import {
+  TRIAL_CHART_NOTE,
+  TRIAL_EMPTY_BOOK_NOTE,
+  TRIAL_GIVEN_BACK_ARROW,
+  TRIAL_TABLE_LABELS,
+  crossingSentence,
+  noMoveCostSentence,
+  trialName,
+  trialRefusalNote,
+  trialRequestPositions,
+  trialTableRow,
+} from "@/lib/analysis/gains-at-risk-trial-view";
 // Types only: no engine or query code reaches the browser.
 import type {
   GainsAtRiskBetaOverrideRefusal,
   GainsAtRiskCaseKey,
-  GainsAtRiskPosition,
   GainsAtRiskResult,
 } from "@/lib/compute/gains-at-risk";
 import { Chip, type ChipTone } from "../Chip";
@@ -90,6 +104,8 @@ import { EmptySection } from "../EmptySection";
 import { ScrollFade } from "../ScrollFade";
 import { SortableHeader } from "../SortableHeader";
 import { GainsAtRiskChart } from "./GainsAtRiskChart";
+import { TrialPositionsPanel } from "./TrialPositionList";
+import { useTrialPositions, type TrialPositionsValue } from "./TrialPositionsProvider";
 
 const SCOPE_PILLS: { key: AnalysisScope; label: string }[] = [
   { key: "all", label: "All accounts" },
@@ -166,7 +182,13 @@ export function GainsAtRiskView({
   initial: GainsAtRiskResponse;
   initialInputs: GainsAtRiskInitialInputs;
 }) {
-  const [state, dispatch] = useReducer(gainsRequestReducer, initial, initialGainsRequestState);
+  // Trial positions live in the unkeyed provider above this keyed view (R5).
+  const trials = useTrialPositions();
+  const trialsRef = useRef<TrialPositionsValue>(trials);
+  // P7: with trial positions already on the page, start pending; the first paint is layout only.
+  const [state, dispatch] = useReducer(gainsRequestReducer, initial, (d: GainsAtRiskResponse) =>
+    initialGainsRequestState(d, { hasTrials: trials.list.length > 0, trialVersion: trials.version }),
+  );
   const seqRef = useRef(0);
 
   const [controls, setControlsState] = useState<GainsControls>(() => ({
@@ -196,8 +218,10 @@ export function GainsAtRiskView({
     controlsRef.current = next;
     setControlsState(next);
     const seq = ++seqRef.current;
+    // The trial positions as they stand now; the answer is shown only for this set.
+    const trialNow = trialsRef.current;
     // Clear the shown result first: it answered other controls.
-    dispatch({ type: "start", seq });
+    dispatch({ type: "start", seq, trialVersion: trialNow.version });
     if (!(next.valuationDate >= today && next.valuationDate <= latestDate)) {
       dispatch({ type: "failure", seq, message: `Pick a date from ${today} to ${latestDate}.` });
       return;
@@ -211,6 +235,8 @@ export function GainsAtRiskView({
       ...(Object.keys(next.priceOverrides).length > 0 ? { priceOverrides: next.priceOverrides } : {}),
       // Left out when there are none: the route refuses an explicit null.
       ...(Object.keys(next.betaOverrides).length > 0 ? { betaOverrides: next.betaOverrides } : {}),
+      // Each trial position exactly as the entry fixed it; left out when there are none.
+      ...(trialNow.list.length > 0 ? { trialPositions: trialRequestPositions(trialNow.list) } : {}),
     };
     try {
       const res = await apiFetch("/api/compute/gains-at-risk", {
@@ -223,27 +249,50 @@ export function GainsAtRiskView({
         dispatch({ type: "failure", seq, message: requestFailureText(r.status, r.message) });
         return;
       }
-      dispatch({ type: "success", seq, data: r.data.data });
+      dispatch({ type: "success", seq, data: r.data.data, trialVersion: trialNow.version });
     } catch {
       dispatch({ type: "failure", seq, message: networkFailureMessage("compute gains at risk") });
     }
   }
 
+  // The latest trial positions for run() and the effects below. Declared
+  // first, so it is current before any later effect in the same commit.
+  useEffect(() => {
+    trialsRef.current = trials;
+  });
+
   // Fresh server props (a refresh after a sync or a saved note): they were
-  // computed with the default controls. Take them only when they answer the
-  // controls on screen; otherwise keep every control and ask again with them.
-  // Either way anything still in flight is older and is dropped.
+  // computed with the default controls and no trial positions. Take them only
+  // when they answer the controls on screen and no trial position exists;
+  // otherwise keep every control and ask again with them. Either way anything
+  // still in flight is older and is dropped.
   const seenPropsRef = useRef(initial);
   useEffect(() => {
     if (seenPropsRef.current === initial) return;
     seenPropsRef.current = initial;
-    if (serverPropsAnswerControls(controlsRef.current, initialInputs)) {
-      dispatch({ type: "reset", data: initial });
+    const hasTrials = trialsRef.current.list.length > 0;
+    if (serverPropsAction(controlsRef.current, initialInputs, hasTrials) === "reset") {
+      dispatch({ type: "reset", data: initial, hasTrials });
     } else {
       void run(controlsRef.current);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initial]);
+
+  // P7: mounted with trial positions (first paint, or a scope switch): ask with them at once.
+  useEffect(() => {
+    if (trialsRef.current.list.length > 0) void run(controlsRef.current);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Every trial add, edit or remove asks again; the shown result is cleared at once.
+  const seenTrialVersionRef = useRef(trials.version);
+  useEffect(() => {
+    if (seenTrialVersionRef.current === trials.version) return;
+    seenTrialVersionRef.current = trials.version;
+    void run(controlsRef.current);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [trials.version]);
 
   function commitVol() {
     const v = Number(volDraft);
@@ -324,7 +373,20 @@ export function GainsAtRiskView({
   // The figures shown: the answer to the controls, or the last answer kept
   // for layout (dimmed while computing, blanked after a failure).
   const display = state.result ?? state.previous ?? initial;
-  const mode: FigureMode = state.result ? "fresh" : state.loading ? "stale" : "failed";
+  // An answer counts only for the trial positions on screen now: between a
+  // trial change and its request starting, the last answer is already old.
+  const trialsCurrent = state.trialVersion === trials.version;
+  const mode: FigureMode =
+    state.result && trialsCurrent ? "fresh" : state.loading || !trialsCurrent ? "stale" : "failed";
+  // The trial list's figures: only from an answer to the list as it stands.
+  const trialAnswer = mode === "fresh" ? (display.result.trial ?? null) : null;
+  // A trial row's name in the per-name table: its contract, or its symbol.
+  const trialLabels = new Map(
+    trials.list.map((t) => [
+      t.position.id,
+      { symbol: trialName(t), ...(t.position.kind === "option" ? { expiry: t.position.expiry } : {}) },
+    ]),
+  );
 
   // The year's gain does not depend on any control, so the header keeps it.
   const yearGain = display.yearGain;
@@ -474,8 +536,19 @@ export function GainsAtRiskView({
         </div>
       </section>
 
+      {/* ── Trial positions: page state only, never stored ── */}
+      <TrialPositionsPanel
+        today={today}
+        trial={trialAnswer}
+        computing={mode === "stale"}
+        yearGain={display.yearGain}
+        // The per-name table is on screen when the book or the trial positions give it rows.
+        tableBelow={display.result.positions.length > 0 || (display.result.trial?.rows.length ?? 0) > 0}
+      />
+
       <ResultSections
         result={display.result}
+        trialLabels={trialLabels}
         response={display}
         mode={mode}
         error={state.error}
@@ -508,6 +581,7 @@ export function GainsAtRiskView({
 
 function ResultSections({
   result,
+  trialLabels,
   response,
   mode,
   error,
@@ -535,6 +609,7 @@ function ResultSections({
   betaOverrides,
 }: {
   result: GainsAtRiskResult;
+  trialLabels: ReadonlyMap<string, { symbol: string; expiry?: string }>;
   response: GainsAtRiskResponse;
   mode: FigureMode;
   error: string | null;
@@ -581,7 +656,9 @@ function ResultSections({
       </p>
     ) : null;
 
-  if (result.positions.length === 0) {
+  // With trial positions the comparison is drawn even when the scope holds nothing.
+  const trial = result.trial && result.trial.rows.length > 0 ? result.trial : null;
+  if (result.positions.length === 0 && !trial) {
     return (
       <>
         <FreshnessChip cell={scopeCell} label="Stress scope positions as of" />
@@ -611,11 +688,13 @@ function ResultSections({
   // A key the URL carries that this table does not know falls back to the default.
   const sortKey: GainsSortKey = isGainsSortKey(sort.field) ? sort.field : DEFAULT_POSITION_SORT.field;
   // By the selected case at the selected move; rows with no figure last either way.
-  const positions = sortPositions(result.positions, sortKey, sort.dir, caseKey, selectedIdx);
+  // Trial positions sit in the same table, marked "trial", sorted with the book.
+  const positions = sortPositions(nameTableRows(result, trialLabels), sortKey, sort.dir, caseKey, selectedIdx);
   const sortNote = positionSortNote(sortKey, sort.dir);
   // Both boxes follow the order on screen: the first row of a name (or a contract) owns its box.
   const boxOwners = priceBoxOwners(positions);
-  const editorOwnership = betaEditorOwnership(positions);
+  // A book row always holds its name's box; a trial row only for a name no book row has.
+  const editorOwnership = nameTableEditorOwnership(positions);
   // A refusal of the owner's figure belongs to the name: shown beside its one box.
   const betaRefusals = new Map<number, GainsAtRiskBetaOverrideRefusal>();
   for (const p of positions) {
@@ -626,6 +705,14 @@ function ResultSections({
   const caption = betaEvidenceCaption(result.betaEvidence, driver);
   const ignored = overridesIgnoredLine(result.betaOverridesIgnored);
   const noLink = noMeasuredLinkSentence(selected.disclosures.noMeasuredLink, caseKey);
+  // With trial positions: the selected case's book with them (R6: the book's own figures do not move).
+  const emptyBook = result.positions.length === 0;
+  const trialSel = trial ? trial.cases[caseKey] : null;
+  // The selected case's book rows (the moves table below shadows the name `selected`).
+  const bookCase = selected;
+  const noMoveCost = trialSel && !failed ? noMoveCostSentence(trialSel) : null;
+  const crossing =
+    trialSel && !failed ? crossingSentence(trialSel, driver, customExtra && custom !== null ? [...tableMoves, custom] : tableMoves) : null;
 
   return (
     <>
@@ -644,10 +731,17 @@ function ResultSections({
         {statusLine}
         {!failed && (
           <div className={dim}>
-            <GainsAtRiskChart cases={result.cases} selectedCase={caseKey} driverSymbol={driver} yearGain={yearGain} />
+            <GainsAtRiskChart
+              cases={result.cases}
+              selectedCase={caseKey}
+              driverSymbol={driver}
+              yearGain={yearGain}
+              trial={trial ? trial.cases : null}
+            />
           </div>
         )}
-        <p className="text-xs text-ink-faint">{CHART_GAP_NOTE}</p>
+        <p className="text-xs text-ink-faint">{trial ? TRIAL_CHART_NOTE : CHART_GAP_NOTE}</p>
+        {trial && emptyBook && <p className="text-xs text-ink-faint">{TRIAL_EMPTY_BOOK_NOTE}</p>}
       </section>
 
       {/* ── Table: fixed rows and a custom row ── */}
@@ -659,10 +753,21 @@ function ResultSections({
                 <th className="text-left font-normal py-1 pr-3 whitespace-nowrap">
                   {driver} {COLUMN_LABELS.move}
                 </th>
-                <th className="font-normal py-1 px-3 whitespace-nowrap">{COLUMN_LABELS.losers}</th>
-                <th className="font-normal py-1 px-3 whitespace-nowrap">{COLUMN_LABELS.offsets}</th>
-                <th className="font-normal py-1 px-3 whitespace-nowrap">{COLUMN_LABELS.book}</th>
-                {shareShown && <th className="font-normal py-1 pl-3 whitespace-nowrap">{COLUMN_LABELS.givenBack}</th>}
+                {trialSel ? (
+                  <>
+                    <th className="font-normal py-1 px-3 whitespace-nowrap">{TRIAL_TABLE_LABELS.asIs}</th>
+                    <th className="font-normal py-1 px-3 whitespace-nowrap">{TRIAL_TABLE_LABELS.withTrial}</th>
+                    <th className="font-normal py-1 px-3 whitespace-nowrap">{TRIAL_TABLE_LABELS.difference}</th>
+                    {shareShown && <th className="font-normal py-1 pl-3 whitespace-nowrap">{TRIAL_TABLE_LABELS.givenBack}</th>}
+                  </>
+                ) : (
+                  <>
+                    <th className="font-normal py-1 px-3 whitespace-nowrap">{COLUMN_LABELS.losers}</th>
+                    <th className="font-normal py-1 px-3 whitespace-nowrap">{COLUMN_LABELS.offsets}</th>
+                    <th className="font-normal py-1 px-3 whitespace-nowrap">{COLUMN_LABELS.book}</th>
+                    {shareShown && <th className="font-normal py-1 pl-3 whitespace-nowrap">{COLUMN_LABELS.givenBack}</th>}
+                  </>
+                )}
               </tr>
             </thead>
             <tbody>
@@ -671,6 +776,8 @@ function ResultSections({
                 const selected = sameMove(move, selectedMove);
                 const isCustom = customExtra && custom !== null && sameMove(move, custom);
                 const cell = row && !failed ? givenBackCell(row.bookPnlUsd, yearGain) : null;
+                const tRow = trialSel ? trialTableRow(bookCase, trialSel, move) : null;
+                const withCell = tRow && !failed ? givenBackCell(tRow.withTrial, yearGain) : null;
                 return (
                   <tr key={move} className={`border-t border-edge ${selected ? "bg-raised" : ""}`}>
                     <td className="text-left py-1.5 pr-3">
@@ -687,25 +794,42 @@ function ResultSections({
                         <span className="block text-[11px] text-ink-faint">{ZERO_ROW_NOTE}</span>
                       )}
                     </td>
-                    <td className="text-right py-1.5 px-3 whitespace-nowrap">
-                      <Money value={fig(row?.losersPnlUsd)} signed />
-                    </td>
-                    <td className="text-right py-1.5 px-3 whitespace-nowrap">
-                      <Money value={fig(row?.offsetsPnlUsd)} signed />
-                    </td>
-                    <td className="text-right py-1.5 px-3 text-ink whitespace-nowrap">
-                      <Money value={fig(row?.bookPnlUsd)} signed />
-                    </td>
-                    {shareShown && (
-                      <td className="text-right py-1.5 pl-3 whitespace-nowrap">
-                        {cell?.kind === "book-gains" ? (
-                          <span className="text-ink-faint">{BOOK_GAINS_TEXT}</span>
-                        ) : cell?.kind === "under-tenth" ? (
-                          <PrivateText>{UNDER_TENTH_TEXT}</PrivateText>
-                        ) : (
-                          <Pct value={cell?.kind === "pct" ? cell.percent : null} />
+                    {trialSel ? (
+                      <>
+                        <td className="text-right py-1.5 px-3 whitespace-nowrap">
+                          <Money value={fig(row?.bookPnlUsd)} signed />
+                        </td>
+                        <td className="text-right py-1.5 px-3 text-ink whitespace-nowrap">
+                          <Money value={fig(tRow?.withTrial)} signed />
+                        </td>
+                        <td className="text-right py-1.5 px-3 whitespace-nowrap">
+                          <Money value={fig(tRow?.difference)} signed />
+                        </td>
+                        {shareShown && (
+                          <td className="text-right py-1.5 pl-3 whitespace-nowrap">
+                            <GivenBack cell={cell} />
+                            <span className="text-ink-faint"> {TRIAL_GIVEN_BACK_ARROW} </span>
+                            <GivenBack cell={withCell} />
+                          </td>
                         )}
-                      </td>
+                      </>
+                    ) : (
+                      <>
+                        <td className="text-right py-1.5 px-3 whitespace-nowrap">
+                          <Money value={fig(row?.losersPnlUsd)} signed />
+                        </td>
+                        <td className="text-right py-1.5 px-3 whitespace-nowrap">
+                          <Money value={fig(row?.offsetsPnlUsd)} signed />
+                        </td>
+                        <td className="text-right py-1.5 px-3 text-ink whitespace-nowrap">
+                          <Money value={fig(row?.bookPnlUsd)} signed />
+                        </td>
+                        {shareShown && (
+                          <td className="text-right py-1.5 pl-3 whitespace-nowrap">
+                            <GivenBack cell={cell} />
+                          </td>
+                        )}
+                      </>
                     )}
                   </tr>
                 );
@@ -713,6 +837,18 @@ function ResultSections({
             </tbody>
           </table>
         </ScrollFade>
+        {noMoveCost && (
+          <p className={`text-xs text-ink-dim ${dim}`}>
+            {noMoveCost.usd === null ? (
+              noMoveCost.before
+            ) : (
+              <>
+                {noMoveCost.before} <Money value={fig(noMoveCost.usd)} /> {noMoveCost.after}
+              </>
+            )}
+          </p>
+        )}
+        {crossing && <p className={`text-xs text-ink-dim ${dim}`}>{crossing}</p>}
         <div className="flex flex-wrap items-center gap-2 text-sm">
           <label htmlFor="gains-custom-move" className="text-ink-faint text-xs">
             Custom {driver} move
@@ -793,7 +929,7 @@ function ResultSections({
             </thead>
             <tbody>
               {positions.map((p) => {
-                const key = `${p.accountId}:${p.securityId}`;
+                const key = nameRowKey(p);
                 const editor = editorOwnership.get(key);
                 return (
                   <PositionRow
@@ -803,7 +939,7 @@ function ResultSections({
                     caseKey={caseKey}
                     driver={driver}
                     pnl={selectedIdx >= 0 ? fig(p.cases[caseKey].pnlByMove[selectedIdx]) : null}
-                    ownsBox={boxOwners.has(key)}
+                    ownsBox={boxOwners.has(`${p.accountId}:${p.securityId}`)}
                     draft={overrideDrafts[p.securityId]}
                     problem={overrideProblems[p.securityId] ?? null}
                     hasOverride={Object.prototype.hasOwnProperty.call(priceOverrides, p.securityId)}
@@ -811,7 +947,7 @@ function ResultSections({
                     onCommit={() => onOverrideCommit(p.securityId)}
                     onClear={() => onOverrideClear(p.securityId)}
                     ownsEditor={editor?.owner === true}
-                    sameFigure={editor && !editor.owner ? sameFigureText(editor.ownerSymbol, p.symbol) : null}
+                    sameFigure={editor && !editor.owner ? sameFigureTextAt(editor.ownerSymbol, p.symbol, editor.where) : null}
                     betaDraft={p.identitySecurityId !== null ? betaDrafts[p.identitySecurityId] : undefined}
                     betaProblem={p.identitySecurityId !== null ? (betaProblems[p.identitySecurityId] ?? null) : null}
                     betaRefusal={p.identitySecurityId !== null ? (betaRefusals.get(p.identitySecurityId) ?? null) : null}
@@ -903,7 +1039,7 @@ function PositionRow({
   onBetaCommit,
   onBetaClear,
 }: {
-  p: GainsAtRiskPosition;
+  p: NameTableRow;
   mode: FigureMode;
   caseKey: GainsAtRiskCaseKey;
   driver: string;
@@ -937,11 +1073,18 @@ function PositionRow({
   // This case's beta, side and source; the not-modelled reason is read first (betaSourceLine).
   const pc = p.cases[caseKey];
   const source = betaSourceLine(p, caseKey);
+  // A refused trial row says why in place of where its beta comes from.
+  const trialRefusal = p.trialRow && p.trialRefusal !== undefined ? trialRefusalNote(p.trialRow, { tableBelow: "this-row" }) : null;
   return (
     <tr className="border-t border-edge align-top">
       <td className="py-1.5 pr-3 text-ink-faint whitespace-nowrap">{p.accountName}</td>
       <td className="py-1.5 pr-3">
         <span className="font-mono text-ink">{p.symbol}</span>
+        {p.trialId !== undefined && (
+          <Chip tone="neutral" size="xs" className="ml-1.5">
+            trial
+          </Chip>
+        )}
         {pc.side === "offsets" && (
           <Chip tone="info" size="xs" className="ml-1.5">
             offsetting
@@ -957,12 +1100,18 @@ function PositionRow({
         {isOption && pc.beta !== null ? " (underlying)" : ""}
       </td>
       <td className={`py-1.5 pr-3 text-ink-dim min-w-40 ${dim}`}>
-        {source.text}
-        {source.details.map((d) => (
-          <span key={d} className="block text-[11px] text-ink-faint">
-            {d}
-          </span>
-        ))}
+        {trialRefusal ? (
+          <span className={`block max-w-56 ${CHIP_TONE_TEXT.warn}`}>{trialRefusal}</span>
+        ) : (
+          <>
+            {source.text}
+            {source.details.map((d) => (
+              <span key={d} className="block text-[11px] text-ink-faint">
+                {d}
+              </span>
+            ))}
+          </>
+        )}
       </td>
       <td className="py-1.5 pr-3 text-ink-dim">
         {ownsEditor && p.identitySecurityId !== null && (
@@ -1057,4 +1206,11 @@ function PositionRow({
       </td>
     </tr>
   );
+}
+
+/** One "Gain given back" figure: "none: the book gains", "under 0.1%", or the percent. */
+function GivenBack({ cell }: { cell: ReturnType<typeof givenBackCell> | null }) {
+  if (cell?.kind === "book-gains") return <span className="text-ink-faint">{BOOK_GAINS_TEXT}</span>;
+  if (cell?.kind === "under-tenth") return <PrivateText>{UNDER_TENTH_TEXT}</PrivateText>;
+  return <Pct value={cell?.kind === "pct" ? cell.percent : null} />;
 }

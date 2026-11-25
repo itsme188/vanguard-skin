@@ -72,6 +72,13 @@ import {
   sameMove,
   scopeFreshnessCell,
   yearGainNote,
+  nameTableRows,
+  nameRowKey,
+  nameTableEditorOwnership,
+  sameFigureTextAt,
+  serverPropsAction,
+  TRIAL_ACCOUNT_NAME,
+  type GainsControls,
   type GainsRequestState,
 } from "@/lib/analysis/gains-at-risk-view";
 import {
@@ -92,6 +99,7 @@ import type {
   GainsAtRiskMoveRow,
   GainsAtRiskPosition,
   GainsAtRiskPositionCase,
+  GainsAtRiskTrialRow,
 } from "@/lib/compute/gains-at-risk";
 import type { DailyBarEvidence, NoMeasuredLinkReason } from "@/lib/compute/security-regression";
 import type { YearGainReconciliationStatus, YearGainResult } from "@/lib/compute/year-gain";
@@ -1021,5 +1029,167 @@ describe("gains at risk: sorting what moves the result", () => {
   it("the pointer back up names the row when it is another symbol", () => {
     expect(sameFigureText("ZZA", "ZZA")).toBe("same figure as above");
     expect(sameFigureText("ZZA 270115C00050000", "ZZA")).toBe("same figure as ZZA 270115C00050000, above");
+  });
+});
+
+describe("gains at risk: trial positions in the view's rules", () => {
+  const trialRow = (over: Partial<GainsAtRiskTrialRow> = {}): GainsAtRiskTrialRow => ({
+    id: "t1",
+    kind: "option",
+    identitySecurityId: 900,
+    symbol: "ZZQ",
+    name: null,
+    betaSource: "measured",
+    measuredBeta: 1.1,
+    noLinkWarning: false,
+    valuation: { price: 500, date: "2026-11-23", source: "daily-bar" },
+    valueUsd: 6_400,
+    cost: { kind: "premium-paid", usd: 6_400 },
+    holdingsNowByAccount: {},
+    leavesShortBy: null,
+    cases: {
+      measured: { beta: 1.1, pnlByMove: [0, 4_000], side: "offsets", exposureUsd: -10 },
+      selloff: { beta: 1.1, pnlByMove: [0, 5_000], side: "offsets", exposureUsd: -10 },
+    },
+    ...over,
+  });
+  const bookRow = (symbol: string, pnl: number, over: Partial<GainsAtRiskPosition> = {}) =>
+    pos({
+      symbol,
+      securityId: symbol.charCodeAt(2),
+      identitySecurityId: symbol.charCodeAt(2),
+      cases: {
+        measured: { beta: 1, pnlByMove: [0, pnl], side: "loses", exposureUsd: 1 },
+        selloff: { beta: 1, pnlByMove: [0, pnl], side: "loses", exposureUsd: 1 },
+      },
+      ...over,
+    });
+
+  it("nameTableRows: book rows, then each trial row marked trial, with its label", () => {
+    const book = [bookRow("ZZA", -500), bookRow("ZZB", -2_000)];
+    const rows = nameTableRows(
+      { positions: book, trial: { rows: [trialRow(), trialRow({ id: "t2", kind: "shares", identitySecurityId: 65, symbol: "ZZA" })] } },
+      new Map([["t1", { symbol: "ZZQ 2027-03-20 500 put", expiry: "2027-03-20" }]]),
+    );
+    expect(rows.map((r) => r.symbol)).toEqual(["ZZA", "ZZB", "ZZQ 2027-03-20 500 put", "ZZA"]);
+    expect(rows.slice(0, 2).every((r) => r.trialId === undefined)).toBe(true);
+    expect(rows[2]).toMatchObject({ accountName: TRIAL_ACCOUNT_NAME, trialId: "t1", expiry: "2027-03-20", priceSource: null, valueUsd: 6_400 });
+    expect(rows[3]).toMatchObject({ accountName: "trial", trialId: "t2", identitySecurityId: 65 });
+    // The price box never opens on a trial row: its price is fixed at the click.
+    expect(rows.slice(2).some((r) => isPriceEditable(r))).toBe(false);
+    expect(nameRowKey(rows[0])).toBe("1:65");
+    expect(nameRowKey(rows[2])).toBe("trial:t1");
+    // With no trial positions, exactly the book.
+    expect(nameTableRows({ positions: book })).toEqual(book);
+  });
+
+  it("sortPositions sorts trial rows with the book under every key", () => {
+    const rows = nameTableRows({
+      positions: [bookRow("ZZA", -500), bookRow("ZZB", -2_000, { valueUsd: 9_000 })],
+      trial: {
+        rows: [
+          trialRow(),
+          trialRow({ id: "t9", symbol: "ZZC", identitySecurityId: 67, refusal: "expired", cost: null, valueUsd: null, betaSource: "not-modelled" }),
+        ],
+      },
+    });
+    const order = (k: Parameters<typeof sortPositions>[1], d: "asc" | "desc") =>
+      sortPositions(rows, k, d, "measured", 1).map((r) => `${r.symbol}${r.trialId ? "*" : ""}`);
+    expect(order("loss", "desc")).toEqual(["ZZB", "ZZA", "ZZQ*", "ZZC*"]);
+    expect(order("loss", "asc")).toEqual(["ZZQ*", "ZZA", "ZZB", "ZZC*"]);
+    expect(order("value", "desc")).toEqual(["ZZB", "ZZQ*", "ZZA", "ZZC*"]);
+    expect(order("beta", "desc")).toEqual(["ZZQ*", "ZZA", "ZZB", "ZZC*"]);
+    expect(order("symbol", "asc")).toEqual(["ZZA", "ZZB", "ZZC*", "ZZQ*"]);
+    // "trial" is the account name of every trial row, so they sort together by account.
+    expect(order("account", "asc").slice(0, 2).every((x) => x.endsWith("*"))).toBe(true);
+  });
+
+  it("a trial row owns the figure box only for a name no book row has", () => {
+    const rows = nameTableRows({
+      positions: [bookRow("ZZA", -500)],
+      trial: {
+        rows: [
+          trialRow({ id: "t1", identitySecurityId: 65, symbol: "ZZA", cases: { measured: { beta: 1, pnlByMove: [0, -9_000], side: "loses", exposureUsd: 1 }, selloff: posCase(1) } }),
+          trialRow({ id: "t2", identitySecurityId: 900, symbol: "ZZQ" }),
+          trialRow({ id: "t3", identitySecurityId: 901, symbol: "ZZR", refusal: "expired", cost: null }),
+          trialRow({ id: "t4", identitySecurityId: 902, symbol: "ZZS", refusal: "not-modelled", ladderRefusal: "leveraged-no-factor", cost: null, betaSource: "not-modelled" }),
+        ],
+      },
+    });
+    // The trial on ZZA sorts first (largest loss) but the book row keeps the box; the pointer says where it is.
+    const sorted = sortPositions(rows, "loss", "desc", "measured", 1);
+    expect(sorted[0].trialId).toBe("t1");
+    const own = nameTableEditorOwnership(sorted);
+    expect(own.get("1:65")).toEqual({ owner: true });
+    expect(own.get("trial:t1")).toEqual({ owner: false, ownerSymbol: "ZZA", where: "below" });
+    expect(own.get("trial:t2")).toEqual({ owner: true });
+    // A refused trial takes no box, except one the app cannot model: the owner's figure can price it.
+    expect(own.has("trial:t3")).toBe(false);
+    expect(own.get("trial:t4")).toEqual({ owner: true });
+    expect(sameFigureTextAt("ZZA", "ZZA", "below")).toBe("same figure as below");
+    expect(sameFigureTextAt("ZZA", "ZZA 2027-03-20 500 put", "below")).toBe("same figure as ZZA, below");
+  });
+
+  it("with the book only, the ownership is step 1's", () => {
+    const stock = pos({ symbol: "ZZA", accountId: 1, securityId: 100, identitySecurityId: 100 });
+    const option = pos({ symbol: "ZZA 270115C00050000", accountId: 2, securityId: 501, identitySecurityId: 100, expiry: "2027-01-15" });
+    const other = pos({ symbol: "ZZB", accountId: 1, securityId: 200, identitySecurityId: 200, betaSource: "fixed" });
+    for (const order of [[stock, option, other], [option, other, stock]]) {
+      const step1 = betaEditorOwnership(order);
+      const now = nameTableEditorOwnership(order);
+      expect([...now.keys()].sort()).toEqual([...step1.keys()].sort());
+      for (const [k, v] of step1) {
+        expect(now.get(k)).toEqual(v.owner ? v : { ...v, where: "above" });
+      }
+    }
+  });
+
+  it("a reply for an older set of trial positions is dropped", () => {
+    let s = gainsRequestReducer(init(A), { type: "start", seq: 1, trialVersion: 1 });
+    expect(s.trialVersion).toBe(1);
+    // The same seq answering an older trial set (a defensive second check).
+    expect(gainsRequestReducer(s, { type: "success", seq: 1, data: B, trialVersion: 0 })).toBe(s);
+    s = gainsRequestReducer(s, { type: "start", seq: 2, trialVersion: 2 });
+    expect(gainsRequestReducer(s, { type: "success", seq: 1, data: B, trialVersion: 1 })).toBe(s);
+    expect(gainsRequestReducer(s, { type: "success", seq: 2, data: C, trialVersion: 2 }).result).toBe(C);
+  });
+
+  it("server props never stand as the answer while trial positions exist: the view asks again", () => {
+    const s = gainsRequestReducer(init(A), { type: "start", seq: 1, trialVersion: 1 });
+    expect(gainsRequestReducer(s, { type: "reset", data: D, hasTrials: true })).toBe(s);
+    const defaults: GainsControls = {
+      driverSymbol: "QQQ",
+      valuationDate: "2026-12-31",
+      volChangePoints: 0,
+      custom: null,
+      priceOverrides: {},
+      betaOverrides: {},
+    };
+    const server = { driverSymbol: "QQQ" as const, valuationDate: "2026-12-31", volChangePoints: 0 };
+    expect(serverPropsAction(defaults, server, false)).toBe("reset");
+    expect(serverPropsAction(defaults, server, true)).toBe("ask");
+    expect(serverPropsAction({ ...defaults, volChangePoints: 5 }, server, false)).toBe("ask");
+  });
+
+  it("P7: a view that opens with trial positions starts pending, with the first paint kept for layout only", () => {
+    const s = initialGainsRequestState(A, { hasTrials: true });
+    expect(s.result).toBeNull();
+    expect(s.previous).toBe(A);
+    expect(s.loading).toBe(true);
+    expect(s.error).toBeNull();
+    expect(initialGainsRequestState(A)).toEqual({ latestSeq: 0, result: A, previous: A, error: null, loading: false, trialVersion: 0 });
+    expect(initialGainsRequestState(A, { hasTrials: false }).result).toBe(A);
+  });
+});
+
+describe("gains at risk: a refused trial list in the page's words", () => {
+  it("names the trial positions, not a request field, and says what to do", () => {
+    expect(domainProblemText("trialPositions[0].strike must be a number above 0 and at most 100000.")).toBe(
+      "A trial position could not be read. Remove it and add it again.",
+    );
+    expect(domainProblemText("trialPositions can hold at most 12 positions.")).toBe("At most 12 trial positions can be sent at once.");
+    expect(requestFailureText(400, "trialPositions must be a list.")).toBe(
+      "Could not compute gains at risk. A trial position could not be read. Remove it and add it again.",
+    );
   });
 });

@@ -15,6 +15,7 @@ import {
 } from "@/lib/analysis/gains-at-risk-view";
 import { EmptySection } from "../EmptySection";
 import { GainsAtRiskView } from "./GainsAtRiskView";
+import { TrialPositionsProvider } from "./TrialPositionsProvider";
 
 /**
  * Gains at risk (Analysis, step 1): the server half. Computes the first
@@ -26,6 +27,12 @@ import { GainsAtRiskView } from "./GainsAtRiskView";
  * (`gainsAtRiskAccountIds`): "all" is every account; any other scope word
  * reads only the accounts it names, and a word that names no account reads
  * nothing ([]), never every account.
+ *
+ * Trial positions (step 2) live in TrialPositionsProvider, rendered AROUND
+ * the keyed view and NOT keyed itself: a scope pill is a soft navigation, so
+ * the provider keeps the trial positions while the view remounts with the
+ * new scope. The server never sees them here; the view asks the route with
+ * them at once when it mounts with some.
  */
 
 export function GainsAtRiskSection({ scope }: { scope: AnalysisScope }) {
@@ -64,20 +71,23 @@ export function GainsAtRiskSection({ scope }: { scope: AnalysisScope }) {
   }
 
   return (
-    <GainsAtRiskView
-      // A new scope is a new page: start from the defaults the server used.
-      key={scope}
-      scope={scope}
-      scopeHasAccounts={scopeHasAccounts}
-      today={today}
-      latestDate={latestValuationDate(today)}
-      initial={initial}
-      initialInputs={{
-        driverSymbol: DEFAULT_DRIVER,
-        valuationDate,
-        volChangePoints: 0,
-        selectedMove: DEFAULT_SELECTED_MOVE,
-      }}
-    />
+    <TrialPositionsProvider>
+      <GainsAtRiskView
+        // A new scope is a new page: start from the defaults the server used.
+        // Only the trial positions carry over, through the provider above.
+        key={scope}
+        scope={scope}
+        scopeHasAccounts={scopeHasAccounts}
+        today={today}
+        latestDate={latestValuationDate(today)}
+        initial={initial}
+        initialInputs={{
+          driverSymbol: DEFAULT_DRIVER,
+          valuationDate,
+          volChangePoints: 0,
+          selectedMove: DEFAULT_SELECTED_MOVE,
+        }}
+      />
+    </TrialPositionsProvider>
   );
 }

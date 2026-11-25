@@ -42,7 +42,9 @@ import type {
   GainsAtRiskOverrideRefusal,
   GainsAtRiskPosition,
   GainsAtRiskResult,
+  GainsAtRiskTrialRow,
   GainsAtRiskUnmodelled,
+  TrialRefusal,
 } from "@/lib/compute/gains-at-risk";
 import type { DriverBetaRefusal } from "@/lib/compute/driver-beta";
 import type { NoMeasuredLinkReason } from "@/lib/compute/security-regression";
@@ -257,6 +259,9 @@ export function domainProblemText(message: string): string {
   if (message === "priceOverrides values must be numbers.") return "Typed prices must be numbers.";
   if (message.startsWith("priceOverrides keys")) return "A typed price is not tied to a position on this page.";
   if (message.startsWith("priceOverrides must be")) return "The typed prices could not be read.";
+  const trialMax = /^trialPositions can hold at most (\d+) positions\.$/.exec(message);
+  if (trialMax) return `At most ${trialMax[1]} trial positions can be sent at once.`;
+  if (message.startsWith("trialPositions")) return "A trial position could not be read. Remove it and add it again.";
   const fields: [string, string][] = [
     ["valuationDate ", "The date "],
     ["volChangePoints ", "The volatility change "],
@@ -566,12 +571,21 @@ export function positionSortNote(key: GainsSortKey, dir: SortDir): string | null
   return dir === "desc" ? "Largest loss first." : "Largest gain first.";
 }
 
+/**
+ * The fields the sort reads. A book row has them all; a trial row (adapted by
+ * `nameTableRows`) carries `trialRefusal` / `trialId` too.
+ */
+export type SortableNameRow = Pick<GainsAtRiskPosition, "symbol" | "accountName" | "securityId" | "valueUsd" | "cases"> &
+  Partial<Pick<GainsAtRiskPosition, "unmodelledReason">> & { trialRefusal?: TrialRefusal; trialId?: string };
+
 function sortValue(
-  p: GainsAtRiskPosition,
+  p: SortableNameRow,
   key: GainsSortKey,
   caseKey: GainsAtRiskCaseKey,
   moveIndex: number,
 ): number | string | null {
+  // A not-modelled or refused row carries zeros, not a figure: no beta and no result.
+  const noFigure = p.unmodelledReason !== undefined || p.trialRefusal !== undefined;
   switch (key) {
     case "symbol":
       return p.symbol;
@@ -580,14 +594,12 @@ function sortValue(
     case "value":
       return p.valueUsd !== null && Number.isFinite(p.valueUsd) ? p.valueUsd : null;
     case "beta": {
-      // The not-modelled reason first: such a row has no beta.
-      if (p.unmodelledReason !== undefined) return null;
+      if (noFigure) return null;
       const b = p.cases[caseKey].beta;
       return b !== null && Number.isFinite(b) ? b : null;
     }
     case "loss": {
-      // A not-modelled row carries zeros, not a figure: it sorts with the rows that have none.
-      if (p.unmodelledReason !== undefined || moveIndex < 0) return null;
+      if (noFigure || moveIndex < 0) return null;
       const v = p.cases[caseKey].pnlByMove[moveIndex];
       return v !== undefined && Number.isFinite(v) ? -v : null;
     }
@@ -598,15 +610,16 @@ function sortValue(
  * The per-name table's order: by one column of the SELECTED case at the
  * SELECTED move (index into the case's moves; -1 for none). Rows with no
  * figure sort last in both directions. Stable: ties go to symbol, then
- * account, then security id. Returns a new array; the input is unchanged.
+ * account, then security id, then trial id. Returns a new array; the input is
+ * unchanged. Generic, so trial rows sort with the book.
  */
-export function sortPositions(
-  rows: GainsAtRiskPosition[],
+export function sortPositions<T extends SortableNameRow>(
+  rows: T[],
   key: GainsSortKey,
   direction: SortDir,
   caseKey: GainsAtRiskCaseKey,
   moveIndex: number,
-): GainsAtRiskPosition[] {
+): T[] {
   const sign = direction === "asc" ? 1 : -1;
   const cmp = (a: number | string, b: number | string): number =>
     typeof a === "number" && typeof b === "number" ? a - b : String(a).localeCompare(String(b));
@@ -620,10 +633,108 @@ export function sortPositions(
         primary ||
         x.p.symbol.localeCompare(y.p.symbol) ||
         x.p.accountName.localeCompare(y.p.accountName) ||
-        x.p.securityId - y.p.securityId
+        x.p.securityId - y.p.securityId ||
+        (x.p.trialId ?? "").localeCompare(y.p.trialId ?? "")
       );
     })
     .map((x) => x.p);
+}
+
+// ─── Trial positions in the per-name table ──────────────────────
+
+/** The account cell of a trial row. */
+export const TRIAL_ACCOUNT_NAME = "trial";
+
+/** A row of the per-name table: a book row, or a trial row adapted to the same fields. */
+export type NameTableRow = GainsAtRiskPosition & {
+  trialId?: string;
+  trialRefusal?: TrialRefusal;
+  /** The engine's own trial row, for the notes the page prints beside it. */
+  trialRow?: GainsAtRiskTrialRow;
+};
+
+/**
+ * The book rows, then each trial row marked "trial" (R6: trial rows are
+ * listed apart from the book's own figures). `labels` gives a trial option its
+ * contract label and expiry; the price box never opens on a trial row (its
+ * price is fixed at the click: `priceSource` null). A refused trial keeps its
+ * identity only when the owner's figure could still price it ("not-modelled").
+ */
+export function nameTableRows(
+  result: { positions: GainsAtRiskPosition[]; trial?: { rows: GainsAtRiskTrialRow[] } },
+  labels?: ReadonlyMap<string, { symbol: string; expiry?: string }>,
+): NameTableRow[] {
+  if (!result.trial || result.trial.rows.length === 0) return result.positions;
+  const trialRows: NameTableRow[] = result.trial.rows.map((r) => {
+    const label = labels?.get(r.id);
+    const keepsIdentity = r.refusal === undefined || r.refusal === "not-modelled";
+    return {
+      accountId: 0,
+      accountName: TRIAL_ACCOUNT_NAME,
+      securityId: r.identitySecurityId,
+      symbol: label?.symbol ?? r.symbol,
+      name: r.name,
+      identitySecurityId: keepsIdentity ? r.identitySecurityId : null,
+      betaSource: r.betaSource,
+      measuredBeta: r.measuredBeta,
+      ...(r.evidence ? { evidence: r.evidence } : {}),
+      ...(r.noMeasuredLinkReason ? { noMeasuredLinkReason: r.noMeasuredLinkReason } : {}),
+      ...(r.ladderRefusal ? { ladderRefusal: r.ladderRefusal } : {}),
+      priceSource: null,
+      ...(r.expiresBeforeDate ? { expiresBeforeDate: true as const } : {}),
+      ...(r.kind === "option" && label?.expiry ? { expiry: label.expiry } : {}),
+      valueUsd: r.valueUsd,
+      cases: r.cases,
+      trialId: r.id,
+      ...(r.refusal ? { trialRefusal: r.refusal } : {}),
+      trialRow: r,
+    };
+  });
+  return [...result.positions, ...trialRows];
+}
+
+/** A row's key in the per-name table: `account:security` for the book, `trial:id` for a trial. */
+export function nameRowKey(r: Pick<NameTableRow, "accountId" | "securityId" | "trialId">): string {
+  return r.trialId !== undefined ? `trial:${r.trialId}` : `${r.accountId}:${r.securityId}`;
+}
+
+export type NameEditorOwnership = { owner: true } | { owner: false; ownerSymbol: string; where: "above" | "below" };
+
+/**
+ * Who holds the figure box per row of the per-name table, given the rows in
+ * display order. A book row of a name always holds it (the first in display
+ * order, step 1's rule); a trial row holds it only for a name no book row has.
+ * Every other row of the name points to the holder, above or below it.
+ */
+export function nameTableEditorOwnership(
+  rows: Pick<NameTableRow, "accountId" | "securityId" | "identitySecurityId" | "betaSource" | "symbol" | "trialId">[],
+): Map<string, NameEditorOwnership> {
+  const takesBox = (r: (typeof rows)[number]) =>
+    r.identitySecurityId !== null && r.betaSource !== "driver" && r.betaSource !== "fixed";
+  const holder = new Map<number, number>(); // identity → index in rows
+  rows.forEach((r, i) => {
+    if (!takesBox(r) || r.trialId !== undefined) return;
+    if (!holder.has(r.identitySecurityId as number)) holder.set(r.identitySecurityId as number, i);
+  });
+  rows.forEach((r, i) => {
+    if (!takesBox(r) || r.trialId === undefined) return;
+    if (!holder.has(r.identitySecurityId as number)) holder.set(r.identitySecurityId as number, i);
+  });
+  const out = new Map<string, NameEditorOwnership>();
+  rows.forEach((r, i) => {
+    if (r.identitySecurityId === null) return;
+    const h = holder.get(r.identitySecurityId);
+    if (h === undefined) return;
+    const key = nameRowKey(r);
+    if (h === i) out.set(key, { owner: true });
+    else out.set(key, { owner: false, ownerSymbol: rows[h].symbol, where: h < i ? "above" : "below" });
+  });
+  return out;
+}
+
+/** The pointer to the row that holds the box, above or below. */
+export function sameFigureTextAt(ownerSymbol: string, rowSymbol: string, where: "above" | "below"): string {
+  return ownerSymbol === rowSymbol ? `same figure as ${where}` : `same figure as ${ownerSymbol}, ${where}`;
 }
 
 /**
@@ -991,16 +1102,40 @@ export type GainsRequestState = {
   previous: GainsAtRiskResponse | null;
   error: string | null;
   loading: boolean;
+  /** The trial-position set the latest request carried (the provider's version). */
+  trialVersion: number;
 };
 
 export type GainsRequestAction =
-  | { type: "start"; seq: number }
-  | { type: "success"; seq: number; data: GainsAtRiskResponse }
+  | { type: "start"; seq: number; trialVersion?: number }
+  | { type: "success"; seq: number; data: GainsAtRiskResponse; trialVersion?: number }
   | { type: "failure"; seq: number; message: string }
-  | { type: "reset"; data: GainsAtRiskResponse };
+  | { type: "reset"; data: GainsAtRiskResponse; hasTrials?: boolean };
 
-export function initialGainsRequestState(data: GainsAtRiskResponse): GainsRequestState {
-  return { latestSeq: 0, result: data, previous: data, error: null, loading: false };
+/**
+ * P7: a view that mounts with trial positions starts pending (the server's
+ * trial-free first paint is kept for layout only) and asks at once.
+ */
+export function initialGainsRequestState(
+  data: GainsAtRiskResponse,
+  opts: { hasTrials?: boolean; trialVersion?: number } = {},
+): GainsRequestState {
+  const trialVersion = opts.trialVersion ?? 0;
+  if (opts.hasTrials) return { latestSeq: 0, result: null, previous: data, error: null, loading: true, trialVersion };
+  return { latestSeq: 0, result: data, previous: data, error: null, loading: false, trialVersion };
+}
+
+/**
+ * What the view does with fresh server props: take them ("reset") only when
+ * they answer the controls on screen and no trial position exists (the
+ * server never computes trial positions); otherwise ask again ("ask").
+ */
+export function serverPropsAction(
+  controls: GainsControls,
+  server: { driverSymbol: GainsAtRiskDriver; valuationDate: string; volChangePoints: number },
+  hasTrials: boolean,
+): "reset" | "ask" {
+  return !hasTrials && serverPropsAnswerControls(controls, server) ? "reset" : "ask";
 }
 
 export function gainsRequestReducer(state: GainsRequestState, action: GainsRequestAction): GainsRequestState {
@@ -1013,15 +1148,27 @@ export function gainsRequestReducer(state: GainsRequestState, action: GainsReque
         previous: state.result ?? state.previous,
         error: null,
         loading: true,
+        trialVersion: action.trialVersion ?? state.trialVersion,
       };
     case "success":
       if (action.seq !== state.latestSeq) return state;
+      // A reply for an older set of trial positions is never shown.
+      if (action.trialVersion !== undefined && action.trialVersion !== state.trialVersion) return state;
       return { ...state, result: action.data, previous: action.data, error: null, loading: false };
     case "failure":
       if (action.seq !== state.latestSeq) return state;
       return { ...state, result: null, error: action.message, loading: false };
     case "reset":
+      // Server props carry no trial positions: never the answer while some exist.
+      if (action.hasTrials) return state;
       // Server props that answer the controls on screen; anything in flight is now older.
-      return { latestSeq: state.latestSeq + 1, result: action.data, previous: action.data, error: null, loading: false };
+      return {
+        latestSeq: state.latestSeq + 1,
+        result: action.data,
+        previous: action.data,
+        error: null,
+        loading: false,
+        trialVersion: state.trialVersion,
+      };
   }
 }

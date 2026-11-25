@@ -19,6 +19,11 @@ const HELPERS = "lib/analysis/gains-at-risk-view.ts";
 const INPUT = "lib/analysis/gains-at-risk-input.ts";
 const CONSTANTS = "lib/analysis/gains-at-risk-constants.ts";
 const SCOPE = "lib/analysis/gains-at-risk-scope.ts";
+// Step 2: trial positions.
+const TRIAL_HELPERS = "lib/analysis/gains-at-risk-trial-view.ts";
+const PROVIDER = "app/dashboard/components/gains-at-risk/TrialPositionsProvider.tsx";
+const FORM = "app/dashboard/components/gains-at-risk/TrialPositionForm.tsx";
+const LIST = "app/dashboard/components/gains-at-risk/TrialPositionList.tsx";
 
 /** Source with // and /* *\/ comments removed (string contents kept as written). */
 function code(src: string): string {
@@ -127,10 +132,10 @@ describe("GainsAtRiskView wiring", () => {
     anchorIndex(src, 'dispatch({ type: "failure", seq');
   });
 
-  it("a refresh keeps the controls: fresh props are taken only when they answer them, else it asks again", () => {
-    const at = anchorIndex(src, "serverPropsAnswerControls(controlsRef.current, initialInputs)");
+  it("a refresh keeps the controls: fresh props are taken only when they answer them and no trial position exists, else it asks again", () => {
+    const at = anchorIndex(src, "serverPropsAction(controlsRef.current, initialInputs, hasTrials)");
     const block = src.slice(at, at + 300);
-    expect(block).toContain('dispatch({ type: "reset", data: initial })');
+    expect(block).toContain('dispatch({ type: "reset", data: initial, hasTrials })');
     expect(block).toContain("void run(controlsRef.current)");
   });
 
@@ -214,8 +219,8 @@ describe("the two cases and the owner's figure", () => {
     expect(tag).toContain("onBlur=");
     expect(tag).toContain("onKeyDown={onEnterBlur}");
     expect(src.slice(open - 400, close)).not.toContain("PrivateNumberInput");
-    anchorIndex(src, "betaEditorOwnership(positions)");
-    anchorIndex(src, "sameFigureText(");
+    anchorIndex(src, "nameTableEditorOwnership(positions)");
+    anchorIndex(src, "sameFigureTextAt(");
     anchorIndex(src, "onBetaCommit(p.identitySecurityId)");
     anchorIndex(src, "onBetaClear(p.identitySecurityId)");
   });
@@ -258,10 +263,13 @@ describe("the per-name table sorts", () => {
   });
 
   it("sorted by the selected case and move, through the pure helper; the boxes follow that order", () => {
-    const at = anchorIndex(src, "const positions = sortPositions(result.positions, sortKey, sort.dir, caseKey, selectedIdx);");
+    const at = anchorIndex(
+      src,
+      "const positions = sortPositions(nameTableRows(result, trialLabels), sortKey, sort.dir, caseKey, selectedIdx);",
+    );
     expect(anchorIndex(src, "priceBoxOwners(positions)")).toBeGreaterThan(at);
-    expect(anchorIndex(src, "betaEditorOwnership(positions)")).toBeGreaterThan(at);
-    anchorIndex(src, "sameFigureText(");
+    expect(anchorIndex(src, "nameTableEditorOwnership(positions)")).toBeGreaterThan(at);
+    anchorIndex(src, "sameFigureTextAt(");
     anchorIndex(src, "positionSortNote(sortKey, sort.dir)");
     expect(body).not.toMatch(/\.sort\(\(a, b\)/);
   });
@@ -291,7 +299,7 @@ describe("no portfolio number is printed outside the privacy components", () => 
   ];
   const fieldRe = new RegExp(`\\b(${MONEY_FIELDS.join("|")})\\b`);
 
-  for (const file of [VIEW, CHART]) {
+  for (const file of [VIEW, CHART, LIST, FORM]) {
     const src = code(read(file));
 
     it(`${file}: no money field inside a template string`, () => {
@@ -308,7 +316,7 @@ describe("no portfolio number is printed outside the privacy components", () => 
 
     it(`${file}: no hand formatting of a figure`, () => {
       expect(src).not.toMatch(/toLocaleString\(|Intl\.NumberFormat/);
-      if (file === VIEW) {
+      if (file !== CHART) {
         expect(src).not.toMatch(/\bformat(USD|CompactUSD|LargeUSD|Percent)\(/);
         // A beta prints through formatBeta in the helper module; the view formats nothing itself.
         expect(src).not.toMatch(/\.toFixed\(/);
@@ -390,7 +398,7 @@ describe("the browser bundle reaches no database or engine code through these fi
     const seen = new Set<string>();
     const reached: string[] = [];
     const packages = new Set<string>();
-    const stack = [VIEW, CHART, HELPERS, INPUT].map((p) => join(ROOT, p));
+    const stack = [VIEW, CHART, HELPERS, INPUT, TRIAL_HELPERS, PROVIDER, FORM, LIST].map((p) => join(ROOT, p));
     while (stack.length > 0) {
       const file = stack.pop()!;
       if (seen.has(file)) continue;
@@ -406,17 +414,17 @@ describe("the browser bundle reaches no database or engine code through these fi
     // The scope rule value-imports lib/queries: server-only, never reached from here.
     expect(reached).not.toContain(SCOPE);
     expect([...packages].filter((p) => p === "better-sqlite3" || p.startsWith("@stoqey/"))).toEqual([]);
-    for (const f of [VIEW, CHART, HELPERS, INPUT, CONSTANTS]) expect(reached).toContain(f);
+    for (const f of [VIEW, CHART, HELPERS, INPUT, CONSTANTS, TRIAL_HELPERS, PROVIDER, FORM, LIST]) expect(reached).toContain(f);
   });
 });
 
 describe("the page's words", () => {
-  for (const file of [SECTION, VIEW, CHART, HELPERS, INPUT]) {
+  for (const file of [SECTION, VIEW, CHART, HELPERS, INPUT, TRIAL_HELPERS, PROVIDER, FORM, LIST]) {
     it(`${file}: never calls the offsetting positions by the other name`, () => {
       for (const t of copyOf(read(file))) expect(t).not.toMatch(/\bhedges?\b/i);
     });
   }
-  for (const file of [SECTION, VIEW, CHART, HELPERS]) {
+  for (const file of [SECTION, VIEW, CHART, HELPERS, TRIAL_HELPERS, PROVIDER, FORM, LIST]) {
     it(`${file}: no beta is called estimated any more`, () => {
       for (const t of copyOf(code(read(file)))) expect(t).not.toMatch(/estimat/i);
     });
