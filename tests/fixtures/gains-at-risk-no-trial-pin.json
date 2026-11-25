@@ -1,0 +1,4425 @@
+[
+  {
+    "name": "base",
+    "seed": "mixed",
+    "input": {
+      "driverSymbol": "QQQ",
+      "valuationDate": "2026-11-10",
+      "moves": [
+        -0.2,
+        -0.1,
+        0,
+        0.1
+      ],
+      "volChangePoints": 0
+    },
+    "result": {
+      "driverSymbol": "QQQ",
+      "valuationDate": "2026-11-10",
+      "volChangePoints": 0,
+      "grossBookUsd": 12865.406253613011,
+      "unknownValueCount": 2,
+      "positions": [
+        {
+          "accountId": 1,
+          "accountName": "Vanguard Taxable",
+          "securityId": 100,
+          "symbol": "QQQ",
+          "name": "Driver index fund",
+          "identitySecurityId": 100,
+          "betaSource": "driver",
+          "measuredBeta": 1,
+          "priceSource": "own-price",
+          "valueUsd": 1000,
+          "cases": {
+            "measured": {
+              "beta": 1,
+              "pnlByMove": [
+                -200,
+                -100,
+                0,
+                100
+              ],
+              "side": "loses",
+              "exposureUsd": 1000
+            },
+            "selloff": {
+              "beta": 1,
+              "pnlByMove": [
+                -200,
+                -100,
+                0,
+                100
+              ],
+              "side": "loses",
+              "exposureUsd": 1000
+            }
+          }
+        },
+        {
+          "accountId": 1,
+          "accountName": "Vanguard Taxable",
+          "securityId": 101,
+          "symbol": "ZZA",
+          "name": null,
+          "identitySecurityId": 101,
+          "betaSource": "measured",
+          "measuredBeta": 1.5000000000000004,
+          "evidence": {
+            "outcome": "measured",
+            "beta": 1.5000000000000004,
+            "rSquared": 1.0000000000000004,
+            "slopeTStat": 1000000000,
+            "pairs": 119,
+            "securityBars": 120,
+            "driverBars": 120,
+            "droppedOutlierPairs": 0,
+            "droppedGapPairs": 0,
+            "firstDate": "2026-05-27",
+            "lastDate": "2026-11-09"
+          },
+          "priceSource": "own-price",
+          "valueUsd": 1000,
+          "cases": {
+            "measured": {
+              "beta": 1.5000000000000004,
+              "pnlByMove": [
+                -300.0000000000001,
+                -150.00000000000006,
+                0,
+                150.00000000000006
+              ],
+              "side": "loses",
+              "exposureUsd": 1500.0000000000005
+            },
+            "selloff": {
+              "beta": 1.5000000000000004,
+              "pnlByMove": [
+                -300.0000000000001,
+                -150.00000000000006,
+                0,
+                150.00000000000006
+              ],
+              "side": "loses",
+              "exposureUsd": 1500.0000000000005
+            }
+          }
+        },
+        {
+          "accountId": 1,
+          "accountName": "Vanguard Taxable",
+          "securityId": 103,
+          "symbol": "ZZMM",
+          "name": null,
+          "identitySecurityId": 103,
+          "betaSource": "fixed",
+          "measuredBeta": 0,
+          "priceSource": "own-price",
+          "valueUsd": 1000,
+          "cases": {
+            "measured": {
+              "beta": 0,
+              "pnlByMove": [
+                0,
+                0,
+                0,
+                0
+              ],
+              "side": "flat",
+              "exposureUsd": 0
+            },
+            "selloff": {
+              "beta": 0,
+              "pnlByMove": [
+                0,
+                0,
+                0,
+                0
+              ],
+              "side": "flat",
+              "exposureUsd": 0
+            }
+          }
+        },
+        {
+          "accountId": 1,
+          "accountName": "Vanguard Taxable",
+          "securityId": 110,
+          "symbol": "ZZ2I",
+          "name": "ZZ UltraPro Short 2X Index Fund",
+          "identitySecurityId": 110,
+          "betaSource": "leveraged",
+          "measuredBeta": -1.5999999999999976,
+          "priceSource": "own-price",
+          "valueUsd": 1000,
+          "cases": {
+            "measured": {
+              "beta": -1.5999999999999976,
+              "pnlByMove": [
+                319.99999999999955,
+                159.99999999999977,
+                0,
+                -159.99999999999977
+              ],
+              "side": "offsets",
+              "exposureUsd": -1599.9999999999977
+            },
+            "selloff": {
+              "beta": -2,
+              "pnlByMove": [
+                400,
+                200,
+                0,
+                -200
+              ],
+              "side": "offsets",
+              "exposureUsd": -2000
+            }
+          }
+        },
+        {
+          "accountId": 1,
+          "accountName": "Vanguard Taxable",
+          "securityId": 112,
+          "symbol": "ZZ2L",
+          "name": "ZZ Ultra 2X Sector Fund",
+          "identitySecurityId": 112,
+          "betaSource": "not-modelled",
+          "measuredBeta": null,
+          "priceSource": "own-price",
+          "unmodelledReason": "leveraged-no-tracked-index",
+          "valueUsd": 1000,
+          "cases": {
+            "measured": {
+              "beta": null,
+              "pnlByMove": [
+                0,
+                0,
+                0,
+                0
+              ],
+              "side": "flat",
+              "exposureUsd": 0
+            },
+            "selloff": {
+              "beta": null,
+              "pnlByMove": [
+                0,
+                0,
+                0,
+                0
+              ],
+              "side": "flat",
+              "exposureUsd": 0
+            }
+          }
+        },
+        {
+          "accountId": 1,
+          "accountName": "Vanguard Taxable",
+          "securityId": 104,
+          "symbol": "ZZBOND",
+          "name": null,
+          "identitySecurityId": 104,
+          "betaSource": "fixed",
+          "measuredBeta": 0.1,
+          "priceSource": "own-price",
+          "valueUsd": 980,
+          "cases": {
+            "measured": {
+              "beta": 0.1,
+              "pnlByMove": [
+                -19.600000000000005,
+                -9.800000000000002,
+                0,
+                9.800000000000002
+              ],
+              "side": "loses",
+              "exposureUsd": 98
+            },
+            "selloff": {
+              "beta": 0.1,
+              "pnlByMove": [
+                -19.600000000000005,
+                -9.800000000000002,
+                0,
+                9.800000000000002
+              ],
+              "side": "loses",
+              "exposureUsd": 98
+            }
+          }
+        },
+        {
+          "accountId": 1,
+          "accountName": "Vanguard Taxable",
+          "securityId": 105,
+          "symbol": "QQQ P95 2027-01-15",
+          "name": null,
+          "identitySecurityId": 100,
+          "expiry": "2027-01-15",
+          "betaSource": "driver",
+          "measuredBeta": 1,
+          "priceSource": "own-price",
+          "valueUsd": 600,
+          "cases": {
+            "measured": {
+              "beta": 1,
+              "pnlByMove": [
+                2399.9999999999154,
+                902.9474262369881,
+                0,
+                -408.5840003803753
+              ],
+              "side": "offsets",
+              "exposureUsd": -6205.753242935508
+            },
+            "selloff": {
+              "beta": 1,
+              "pnlByMove": [
+                2399.9999999999154,
+                902.9474262369881,
+                0,
+                -408.5840003803753
+              ],
+              "side": "offsets",
+              "exposureUsd": -6205.753242935508
+            }
+          }
+        },
+        {
+          "accountId": 1,
+          "accountName": "Vanguard Taxable",
+          "securityId": 120,
+          "symbol": "ZZNG",
+          "name": null,
+          "identitySecurityId": 120,
+          "betaSource": "measured",
+          "measuredBeta": -0.4999999999999998,
+          "evidence": {
+            "outcome": "measured",
+            "beta": -0.4999999999999998,
+            "rSquared": 0.9999999999999996,
+            "slopeTStat": -1000000000,
+            "pairs": 119,
+            "securityBars": 120,
+            "driverBars": 120,
+            "droppedOutlierPairs": 0,
+            "droppedGapPairs": 0,
+            "firstDate": "2026-05-27",
+            "lastDate": "2026-11-09"
+          },
+          "priceSource": "own-price",
+          "valueUsd": 500,
+          "cases": {
+            "measured": {
+              "beta": -0.4999999999999998,
+              "pnlByMove": [
+                49.99999999999998,
+                24.99999999999999,
+                0,
+                -24.99999999999999
+              ],
+              "side": "offsets",
+              "exposureUsd": -249.99999999999986
+            },
+            "selloff": {
+              "beta": 1,
+              "pnlByMove": [
+                -100,
+                -50,
+                0,
+                50
+              ],
+              "side": "loses",
+              "exposureUsd": 500
+            }
+          }
+        },
+        {
+          "accountId": 1,
+          "accountName": "Vanguard Taxable",
+          "securityId": 121,
+          "symbol": "ZZSH",
+          "name": null,
+          "identitySecurityId": 121,
+          "betaSource": "no-measured-link",
+          "measuredBeta": null,
+          "evidence": {
+            "outcome": "no-daily-bars",
+            "beta": null,
+            "rSquared": null,
+            "slopeTStat": null,
+            "pairs": 0,
+            "securityBars": 0,
+            "driverBars": 120,
+            "droppedOutlierPairs": 0,
+            "droppedGapPairs": 0,
+            "firstDate": null,
+            "lastDate": null
+          },
+          "noMeasuredLinkReason": "no-daily-bars",
+          "priceSource": "own-price",
+          "valueUsd": 500,
+          "cases": {
+            "measured": {
+              "beta": 0,
+              "pnlByMove": [
+                0,
+                0,
+                0,
+                0
+              ],
+              "side": "flat",
+              "exposureUsd": 0
+            },
+            "selloff": {
+              "beta": 1,
+              "pnlByMove": [
+                -100,
+                -50,
+                0,
+                50
+              ],
+              "side": "loses",
+              "exposureUsd": 500
+            }
+          }
+        },
+        {
+          "accountId": 3,
+          "accountName": "IBKR",
+          "securityId": 111,
+          "symbol": "ZZ3X",
+          "name": "ZZ UltraPro 3X Index Fund",
+          "identitySecurityId": 111,
+          "betaSource": "leveraged",
+          "measuredBeta": 3,
+          "priceSource": "own-price",
+          "valueUsd": 500,
+          "cases": {
+            "measured": {
+              "beta": 3,
+              "pnlByMove": [
+                -300.00000000000006,
+                -150.00000000000003,
+                0,
+                150.00000000000003
+              ],
+              "side": "loses",
+              "exposureUsd": 1500
+            },
+            "selloff": {
+              "beta": 3,
+              "pnlByMove": [
+                -300.00000000000006,
+                -150.00000000000003,
+                0,
+                150.00000000000003
+              ],
+              "side": "loses",
+              "exposureUsd": 1500
+            }
+          }
+        },
+        {
+          "accountId": 1,
+          "accountName": "Vanguard Taxable",
+          "securityId": 117,
+          "symbol": "ZZFQ",
+          "name": null,
+          "identitySecurityId": 117,
+          "betaSource": "not-modelled",
+          "measuredBeta": null,
+          "priceSource": null,
+          "unmodelledReason": "no-fx-rate",
+          "valueUsd": null,
+          "cases": {
+            "measured": {
+              "beta": null,
+              "pnlByMove": [
+                0,
+                0,
+                0,
+                0
+              ],
+              "side": "flat",
+              "exposureUsd": 0
+            },
+            "selloff": {
+              "beta": null,
+              "pnlByMove": [
+                0,
+                0,
+                0,
+                0
+              ],
+              "side": "flat",
+              "exposureUsd": 0
+            }
+          }
+        },
+        {
+          "accountId": 1,
+          "accountName": "Vanguard Taxable",
+          "securityId": 118,
+          "symbol": "QQQ P95 2026-11-20",
+          "name": null,
+          "identitySecurityId": 100,
+          "expiry": "2026-11-20",
+          "betaSource": "driver",
+          "measuredBeta": 1,
+          "priceSource": "own-price",
+          "valueUsd": 200,
+          "cases": {
+            "measured": {
+              "beta": 1,
+              "pnlByMove": [
+                2800.000000000715,
+                964.9768034361684,
+                0,
+                -187.54664104758714
+              ],
+              "side": "offsets",
+              "exposureUsd": -4544.186209588936
+            },
+            "selloff": {
+              "beta": 1,
+              "pnlByMove": [
+                2800.000000000715,
+                964.9768034361684,
+                0,
+                -187.54664104758714
+              ],
+              "side": "offsets",
+              "exposureUsd": -4544.186209588936
+            }
+          }
+        },
+        {
+          "accountId": 1,
+          "accountName": "Vanguard Taxable",
+          "securityId": 107,
+          "symbol": "QQQ P90 2027-01-15",
+          "name": null,
+          "identitySecurityId": 100,
+          "expiry": "2027-01-15",
+          "betaSource": "driver",
+          "measuredBeta": 1,
+          "priceSource": "model",
+          "modelPricePerShare": 1.2320175795964303,
+          "valueUsd": 123.20175795964303,
+          "cases": {
+            "measured": {
+              "beta": 1,
+              "pnlByMove": [
+                920.2650668899338,
+                297.12714148148723,
+                0,
+                -96.31792334256728
+              ],
+              "side": "offsets",
+              "exposureUsd": -1704.5577411568756
+            },
+            "selloff": {
+              "beta": 1,
+              "pnlByMove": [
+                920.2650668899338,
+                297.12714148148723,
+                0,
+                -96.31792334256728
+              ],
+              "side": "offsets",
+              "exposureUsd": -1704.5577411568756
+            }
+          }
+        },
+        {
+          "accountId": 1,
+          "accountName": "Vanguard Taxable",
+          "securityId": 108,
+          "symbol": "ZZNP",
+          "name": null,
+          "identitySecurityId": 108,
+          "betaSource": "not-modelled",
+          "measuredBeta": null,
+          "priceSource": null,
+          "unmodelledReason": "no-price",
+          "valueUsd": null,
+          "cases": {
+            "measured": {
+              "beta": null,
+              "pnlByMove": [
+                0,
+                0,
+                0,
+                0
+              ],
+              "side": "flat",
+              "exposureUsd": 0
+            },
+            "selloff": {
+              "beta": null,
+              "pnlByMove": [
+                0,
+                0,
+                0,
+                0
+              ],
+              "side": "flat",
+              "exposureUsd": 0
+            }
+          }
+        },
+        {
+          "accountId": 1,
+          "accountName": "Vanguard Taxable",
+          "securityId": 114,
+          "symbol": "ZZU C105 2027-03-19",
+          "name": null,
+          "identitySecurityId": 113,
+          "expiry": "2027-03-19",
+          "betaSource": "no-measured-link",
+          "measuredBeta": null,
+          "evidence": {
+            "outcome": "no-daily-bars",
+            "beta": null,
+            "rSquared": null,
+            "slopeTStat": null,
+            "pairs": 0,
+            "securityBars": 0,
+            "driverBars": 120,
+            "droppedOutlierPairs": 0,
+            "droppedGapPairs": 0,
+            "firstDate": null,
+            "lastDate": null
+          },
+          "noMeasuredLinkReason": "no-daily-bars",
+          "priceSource": "model",
+          "modelPricePerShare": 5.674922534062624,
+          "valueUsd": 1702.4767602187871,
+          "cases": {
+            "measured": {
+              "beta": 0,
+              "pnlByMove": [
+                0,
+                0,
+                0,
+                0
+              ],
+              "side": "flat",
+              "exposureUsd": 0
+            },
+            "selloff": {
+              "beta": 1,
+              "pnlByMove": [
+                -1538.0714156712247,
+                -1056.0727873695948,
+                0,
+                1707.411141644168
+              ],
+              "side": "loses",
+              "exposureUsd": 13861.58955229053
+            }
+          }
+        },
+        {
+          "accountId": 1,
+          "accountName": "Vanguard Taxable",
+          "securityId": 116,
+          "symbol": "QQQ P85 2027-01-15",
+          "name": null,
+          "identitySecurityId": 100,
+          "expiry": "2027-01-15",
+          "betaSource": "driver",
+          "measuredBeta": 1,
+          "priceSource": "model",
+          "modelPricePerShare": 0.4912021921849927,
+          "valueUsd": 49.12021921849927,
+          "cases": {
+            "measured": {
+              "beta": 1,
+              "pnlByMove": [
+                619.0867251883184,
+                166.42321512488536,
+                0,
+                -40.848798565493084
+              ],
+              "side": "offsets",
+              "exposureUsd": -807.5982689093131
+            },
+            "selloff": {
+              "beta": 1,
+              "pnlByMove": [
+                619.0867251883184,
+                166.42321512488536,
+                0,
+                -40.848798565493084
+              ],
+              "side": "offsets",
+              "exposureUsd": -807.5982689093131
+            }
+          }
+        },
+        {
+          "accountId": 3,
+          "accountName": "IBKR",
+          "securityId": 115,
+          "symbol": "ZZU P95 2027-03-19",
+          "name": null,
+          "identitySecurityId": 113,
+          "expiry": "2027-03-19",
+          "betaSource": "no-measured-link",
+          "measuredBeta": null,
+          "evidence": {
+            "outcome": "no-daily-bars",
+            "beta": null,
+            "rSquared": null,
+            "slopeTStat": null,
+            "pairs": 0,
+            "securityBars": 0,
+            "driverBars": 120,
+            "droppedOutlierPairs": 0,
+            "droppedGapPairs": 0,
+            "firstDate": null,
+            "lastDate": null
+          },
+          "noMeasuredLinkReason": "no-daily-bars",
+          "priceSource": "model",
+          "modelPricePerShare": 4.106075162160813,
+          "valueUsd": -410.6075162160813,
+          "cases": {
+            "measured": {
+              "beta": 0,
+              "pnlByMove": [
+                0,
+                0,
+                0,
+                0
+              ],
+              "side": "flat",
+              "exposureUsd": 0
+            },
+            "selloff": {
+              "beta": 1,
+              "pnlByMove": [
+                -1101.4276164507614,
+                -431.2199525084559,
+                0,
+                233.0819625571131
+              ],
+              "side": "loses",
+              "exposureUsd": 3207.425947873901
+            }
+          }
+        },
+        {
+          "accountId": 1,
+          "accountName": "Vanguard Taxable",
+          "securityId": 119,
+          "symbol": "QQQ C105 2026-11-20",
+          "name": null,
+          "identitySecurityId": 100,
+          "expiry": "2026-11-20",
+          "betaSource": "driver",
+          "measuredBeta": 1,
+          "priceSource": "own-price",
+          "valueUsd": -100,
+          "cases": {
+            "measured": {
+              "beta": 1,
+              "pnlByMove": [
+                99.99499210191335,
+                97.1523116367353,
+                0,
+                -517.3095135961795
+              ],
+              "side": "offsets",
+              "exposureUsd": -2540.5525168650734
+            },
+            "selloff": {
+              "beta": 1,
+              "pnlByMove": [
+                99.99499210191335,
+                97.1523116367353,
+                0,
+                -517.3095135961795
+              ],
+              "side": "offsets",
+              "exposureUsd": -2540.5525168650734
+            }
+          }
+        },
+        {
+          "accountId": 3,
+          "accountName": "IBKR",
+          "securityId": 106,
+          "symbol": "QQQ C110 2027-01-15",
+          "name": null,
+          "identitySecurityId": 100,
+          "expiry": "2027-01-15",
+          "betaSource": "driver",
+          "measuredBeta": 1,
+          "priceSource": "own-price",
+          "valueUsd": -200,
+          "cases": {
+            "measured": {
+              "beta": 1,
+              "pnlByMove": [
+                196.80141962953655,
+                162.07414840437798,
+                0,
+                -408.6848389743469
+              ],
+              "side": "offsets",
+              "exposureUsd": -2704.9263627541186
+            },
+            "selloff": {
+              "beta": 1,
+              "pnlByMove": [
+                196.80141962953655,
+                162.07414840437798,
+                0,
+                -408.6848389743469
+              ],
+              "side": "offsets",
+              "exposureUsd": -2704.9263627541186
+            }
+          }
+        },
+        {
+          "accountId": 3,
+          "accountName": "IBKR",
+          "securityId": 102,
+          "symbol": "ZZB",
+          "name": null,
+          "identitySecurityId": 102,
+          "betaSource": "no-measured-link",
+          "measuredBeta": null,
+          "evidence": {
+            "outcome": "no-daily-bars",
+            "beta": null,
+            "rSquared": null,
+            "slopeTStat": null,
+            "pairs": 0,
+            "securityBars": 0,
+            "driverBars": 120,
+            "droppedOutlierPairs": 0,
+            "droppedGapPairs": 0,
+            "firstDate": null,
+            "lastDate": null
+          },
+          "noMeasuredLinkReason": "no-daily-bars",
+          "priceSource": "own-price",
+          "valueUsd": -2000,
+          "cases": {
+            "measured": {
+              "beta": 0,
+              "pnlByMove": [
+                0,
+                0,
+                0,
+                0
+              ],
+              "side": "flat",
+              "exposureUsd": 0
+            },
+            "selloff": {
+              "beta": 1,
+              "pnlByMove": [
+                400,
+                200,
+                0,
+                -200
+              ],
+              "side": "offsets",
+              "exposureUsd": -2000
+            }
+          }
+        }
+      ],
+      "cases": {
+        "measured": {
+          "moves": [
+            {
+              "move": -0.2,
+              "bookPnlUsd": 6586.548203810331,
+              "losersPnlUsd": -819.6000000000001,
+              "offsetsPnlUsd": 7406.148203810331
+            },
+            {
+              "move": -0.1,
+              "bookPnlUsd": 2365.901046320642,
+              "losersPnlUsd": -409.80000000000007,
+              "offsetsPnlUsd": 2775.701046320642
+            },
+            {
+              "move": 0,
+              "bookPnlUsd": 0,
+              "losersPnlUsd": 0,
+              "offsetsPnlUsd": 0
+            },
+            {
+              "move": 0.1,
+              "bookPnlUsd": -1434.491715906549,
+              "losersPnlUsd": 409.80000000000007,
+              "offsetsPnlUsd": -1844.2917159065491
+            }
+          ],
+          "disclosures": {
+            "notModelled": {
+              "count": 3,
+              "shareOfBook": 0.07772782143736569,
+              "unknownValueCount": 2,
+              "symbols": [
+                "ZZ2L",
+                "ZZFQ",
+                "ZZNP"
+              ]
+            },
+            "noMeasuredLink": {
+              "count": 4,
+              "shareOfBook": 0.3585649909142488,
+              "unknownValueCount": 0,
+              "symbols": [
+                "ZZB",
+                "ZZSH",
+                "ZZU C105 2027-03-19",
+                "ZZU P95 2027-03-19"
+              ],
+              "reasons": {
+                "foreign-session": 0,
+                "driver-bars-missing": 0,
+                "no-daily-bars": 4,
+                "short-history": 0,
+                "flat-driver": 0,
+                "low-fit": 0
+              }
+            },
+            "ownerFigure": {
+              "count": 0,
+              "shareOfBook": 0,
+              "unknownValueCount": 0,
+              "symbols": []
+            },
+            "pricedFromModel": {
+              "count": 4,
+              "shareOfBook": 0.177639649192671,
+              "unknownValueCount": 0,
+              "symbols": [
+                "QQQ P85 2027-01-15",
+                "QQQ P90 2027-01-15",
+                "ZZU C105 2027-03-19",
+                "ZZU P95 2027-03-19"
+              ]
+            },
+            "expiresBeforeDate": {
+              "count": 0,
+              "shareOfBook": 0,
+              "unknownValueCount": 0,
+              "symbols": []
+            }
+          }
+        },
+        "selloff": {
+          "moves": [
+            {
+              "move": -0.2,
+              "bookPnlUsd": 4177.049171688346,
+              "losersPnlUsd": -3659.0990321219865,
+              "offsetsPnlUsd": 7836.148203810332
+            },
+            {
+              "move": -0.1,
+              "bookPnlUsd": 993.6083064425914,
+              "losersPnlUsd": -1997.0927398780507,
+              "offsetsPnlUsd": 2990.701046320642
+            },
+            {
+              "move": 0,
+              "bookPnlUsd": 0,
+              "losersPnlUsd": 0,
+              "offsetsPnlUsd": 0
+            },
+            {
+              "move": 0.1,
+              "bookPnlUsd": 391.0013882947319,
+              "losersPnlUsd": 2450.293104201281,
+              "offsetsPnlUsd": -2059.291715906549
+            }
+          ],
+          "disclosures": {
+            "notModelled": {
+              "count": 3,
+              "shareOfBook": 0.07772782143736569,
+              "unknownValueCount": 2,
+              "symbols": [
+                "ZZ2L",
+                "ZZFQ",
+                "ZZNP"
+              ]
+            },
+            "noMeasuredLink": {
+              "count": 4,
+              "shareOfBook": 0.3585649909142488,
+              "unknownValueCount": 0,
+              "symbols": [
+                "ZZB",
+                "ZZSH",
+                "ZZU C105 2027-03-19",
+                "ZZU P95 2027-03-19"
+              ],
+              "reasons": {
+                "foreign-session": 0,
+                "driver-bars-missing": 0,
+                "no-daily-bars": 4,
+                "short-history": 0,
+                "flat-driver": 0,
+                "low-fit": 0
+              }
+            },
+            "ownerFigure": {
+              "count": 0,
+              "shareOfBook": 0,
+              "unknownValueCount": 0,
+              "symbols": []
+            },
+            "pricedFromModel": {
+              "count": 4,
+              "shareOfBook": 0.177639649192671,
+              "unknownValueCount": 0,
+              "symbols": [
+                "QQQ P85 2027-01-15",
+                "QQQ P90 2027-01-15",
+                "ZZU C105 2027-03-19",
+                "ZZU P95 2027-03-19"
+              ]
+            },
+            "expiresBeforeDate": {
+              "count": 0,
+              "shareOfBook": 0,
+              "unknownValueCount": 0,
+              "symbols": []
+            }
+          }
+        }
+      },
+      "betaEvidence": {
+        "driverBarsThrough": "2026-11-09",
+        "driverBarsMissing": false,
+        "namesWaitingForBars": 3,
+        "namesNotCaptured": 0
+      },
+      "betaOverridesIgnored": 0
+    }
+  },
+  {
+    "name": "later date, vol change, overrides, owner figures",
+    "seed": "mixed",
+    "input": {
+      "driverSymbol": "QQQ",
+      "valuationDate": "2026-12-18",
+      "moves": [
+        -0.3,
+        -0.2,
+        -0.1,
+        -0.05,
+        0,
+        0.05
+      ],
+      "volChangePoints": 10,
+      "priceOverrides": {
+        "101": 60,
+        "107": 4
+      },
+      "betaOverrides": {
+        "101": 0.7,
+        "113": 0.4,
+        "117": 1,
+        "99999": 1
+      }
+    },
+    "result": {
+      "driverSymbol": "QQQ",
+      "valuationDate": "2026-12-18",
+      "volChangePoints": 10,
+      "grossBookUsd": 13142.204495653368,
+      "unknownValueCount": 2,
+      "positions": [
+        {
+          "accountId": 1,
+          "accountName": "Vanguard Taxable",
+          "securityId": 100,
+          "symbol": "QQQ",
+          "name": "Driver index fund",
+          "identitySecurityId": 100,
+          "betaSource": "driver",
+          "measuredBeta": 1,
+          "priceSource": "own-price",
+          "valueUsd": 1000,
+          "cases": {
+            "measured": {
+              "beta": 1,
+              "pnlByMove": [
+                -300,
+                -200,
+                -100,
+                -50,
+                0,
+                50
+              ],
+              "side": "loses",
+              "exposureUsd": 1000
+            },
+            "selloff": {
+              "beta": 1,
+              "pnlByMove": [
+                -300,
+                -200,
+                -100,
+                -50,
+                0,
+                50
+              ],
+              "side": "loses",
+              "exposureUsd": 1000
+            }
+          }
+        },
+        {
+          "accountId": 1,
+          "accountName": "Vanguard Taxable",
+          "securityId": 101,
+          "symbol": "ZZA",
+          "name": null,
+          "identitySecurityId": 101,
+          "betaSource": "owner",
+          "measuredBeta": 1.5000000000000004,
+          "evidence": {
+            "outcome": "measured",
+            "beta": 1.5000000000000004,
+            "rSquared": 1.0000000000000004,
+            "slopeTStat": 1000000000,
+            "pairs": 119,
+            "securityBars": 120,
+            "driverBars": 120,
+            "droppedOutlierPairs": 0,
+            "droppedGapPairs": 0,
+            "firstDate": "2026-05-27",
+            "lastDate": "2026-11-09"
+          },
+          "priceSource": "own-price",
+          "overrideRefusal": "not-an-option",
+          "valueUsd": 1000,
+          "cases": {
+            "measured": {
+              "beta": 0.7,
+              "pnlByMove": [
+                -210,
+                -139.99999999999997,
+                -69.99999999999999,
+                -34.99999999999999,
+                0,
+                34.99999999999999
+              ],
+              "side": "loses",
+              "exposureUsd": 699.9999999999999
+            },
+            "selloff": {
+              "beta": 0.7,
+              "pnlByMove": [
+                -210,
+                -139.99999999999997,
+                -69.99999999999999,
+                -34.99999999999999,
+                0,
+                34.99999999999999
+              ],
+              "side": "loses",
+              "exposureUsd": 699.9999999999999
+            }
+          }
+        },
+        {
+          "accountId": 1,
+          "accountName": "Vanguard Taxable",
+          "securityId": 103,
+          "symbol": "ZZMM",
+          "name": null,
+          "identitySecurityId": 103,
+          "betaSource": "fixed",
+          "measuredBeta": 0,
+          "priceSource": "own-price",
+          "valueUsd": 1000,
+          "cases": {
+            "measured": {
+              "beta": 0,
+              "pnlByMove": [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              "side": "flat",
+              "exposureUsd": 0
+            },
+            "selloff": {
+              "beta": 0,
+              "pnlByMove": [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              "side": "flat",
+              "exposureUsd": 0
+            }
+          }
+        },
+        {
+          "accountId": 1,
+          "accountName": "Vanguard Taxable",
+          "securityId": 110,
+          "symbol": "ZZ2I",
+          "name": "ZZ UltraPro Short 2X Index Fund",
+          "identitySecurityId": 110,
+          "betaSource": "leveraged",
+          "measuredBeta": -1.5999999999999976,
+          "priceSource": "own-price",
+          "valueUsd": 1000,
+          "cases": {
+            "measured": {
+              "beta": -1.5999999999999976,
+              "pnlByMove": [
+                479.99999999999926,
+                319.99999999999955,
+                159.99999999999977,
+                79.99999999999989,
+                0,
+                -79.99999999999989
+              ],
+              "side": "offsets",
+              "exposureUsd": -1599.9999999999977
+            },
+            "selloff": {
+              "beta": -2,
+              "pnlByMove": [
+                600,
+                400,
+                200,
+                100,
+                0,
+                -100
+              ],
+              "side": "offsets",
+              "exposureUsd": -2000
+            }
+          }
+        },
+        {
+          "accountId": 1,
+          "accountName": "Vanguard Taxable",
+          "securityId": 112,
+          "symbol": "ZZ2L",
+          "name": "ZZ Ultra 2X Sector Fund",
+          "identitySecurityId": 112,
+          "betaSource": "not-modelled",
+          "measuredBeta": null,
+          "priceSource": "own-price",
+          "unmodelledReason": "leveraged-no-tracked-index",
+          "valueUsd": 1000,
+          "cases": {
+            "measured": {
+              "beta": null,
+              "pnlByMove": [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              "side": "flat",
+              "exposureUsd": 0
+            },
+            "selloff": {
+              "beta": null,
+              "pnlByMove": [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              "side": "flat",
+              "exposureUsd": 0
+            }
+          }
+        },
+        {
+          "accountId": 1,
+          "accountName": "Vanguard Taxable",
+          "securityId": 104,
+          "symbol": "ZZBOND",
+          "name": null,
+          "identitySecurityId": 104,
+          "betaSource": "fixed",
+          "measuredBeta": 0.1,
+          "priceSource": "own-price",
+          "valueUsd": 980,
+          "cases": {
+            "measured": {
+              "beta": 0.1,
+              "pnlByMove": [
+                -29.4,
+                -19.600000000000005,
+                -9.800000000000002,
+                -4.900000000000001,
+                0,
+                4.900000000000001
+              ],
+              "side": "loses",
+              "exposureUsd": 98
+            },
+            "selloff": {
+              "beta": 0.1,
+              "pnlByMove": [
+                -29.4,
+                -19.600000000000005,
+                -9.800000000000002,
+                -4.900000000000001,
+                0,
+                4.900000000000001
+              ],
+              "side": "loses",
+              "exposureUsd": 98
+            }
+          }
+        },
+        {
+          "accountId": 1,
+          "accountName": "Vanguard Taxable",
+          "securityId": 105,
+          "symbol": "QQQ P95 2027-01-15",
+          "name": null,
+          "identitySecurityId": 100,
+          "expiry": "2027-01-15",
+          "betaSource": "driver",
+          "measuredBeta": 1,
+          "priceSource": "own-price",
+          "valueUsd": 600,
+          "cases": {
+            "measured": {
+              "beta": 1,
+              "pnlByMove": [
+                4399.999999999915,
+                2406.8996774536267,
+                818.817927940767,
+                264.6235372215408,
+                -115.89650195149375,
+                -350.7036275953823
+              ],
+              "side": "offsets",
+              "exposureUsd": -6205.753242935508
+            },
+            "selloff": {
+              "beta": 1,
+              "pnlByMove": [
+                4399.999999999915,
+                2406.8996774536267,
+                818.817927940767,
+                264.6235372215408,
+                -115.89650195149375,
+                -350.7036275953823
+              ],
+              "side": "offsets",
+              "exposureUsd": -6205.753242935508
+            }
+          }
+        },
+        {
+          "accountId": 1,
+          "accountName": "Vanguard Taxable",
+          "securityId": 120,
+          "symbol": "ZZNG",
+          "name": null,
+          "identitySecurityId": 120,
+          "betaSource": "measured",
+          "measuredBeta": -0.4999999999999998,
+          "evidence": {
+            "outcome": "measured",
+            "beta": -0.4999999999999998,
+            "rSquared": 0.9999999999999996,
+            "slopeTStat": -1000000000,
+            "pairs": 119,
+            "securityBars": 120,
+            "driverBars": 120,
+            "droppedOutlierPairs": 0,
+            "droppedGapPairs": 0,
+            "firstDate": "2026-05-27",
+            "lastDate": "2026-11-09"
+          },
+          "priceSource": "own-price",
+          "valueUsd": 500,
+          "cases": {
+            "measured": {
+              "beta": -0.4999999999999998,
+              "pnlByMove": [
+                74.99999999999997,
+                49.99999999999998,
+                24.99999999999999,
+                12.499999999999995,
+                0,
+                -12.499999999999995
+              ],
+              "side": "offsets",
+              "exposureUsd": -249.99999999999986
+            },
+            "selloff": {
+              "beta": 1,
+              "pnlByMove": [
+                -150,
+                -100,
+                -50,
+                -25,
+                0,
+                25
+              ],
+              "side": "loses",
+              "exposureUsd": 500
+            }
+          }
+        },
+        {
+          "accountId": 1,
+          "accountName": "Vanguard Taxable",
+          "securityId": 121,
+          "symbol": "ZZSH",
+          "name": null,
+          "identitySecurityId": 121,
+          "betaSource": "no-measured-link",
+          "measuredBeta": null,
+          "evidence": {
+            "outcome": "no-daily-bars",
+            "beta": null,
+            "rSquared": null,
+            "slopeTStat": null,
+            "pairs": 0,
+            "securityBars": 0,
+            "driverBars": 120,
+            "droppedOutlierPairs": 0,
+            "droppedGapPairs": 0,
+            "firstDate": null,
+            "lastDate": null
+          },
+          "noMeasuredLinkReason": "no-daily-bars",
+          "priceSource": "own-price",
+          "valueUsd": 500,
+          "cases": {
+            "measured": {
+              "beta": 0,
+              "pnlByMove": [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              "side": "flat",
+              "exposureUsd": 0
+            },
+            "selloff": {
+              "beta": 1,
+              "pnlByMove": [
+                -150,
+                -100,
+                -50,
+                -25,
+                0,
+                25
+              ],
+              "side": "loses",
+              "exposureUsd": 500
+            }
+          }
+        },
+        {
+          "accountId": 3,
+          "accountName": "IBKR",
+          "securityId": 111,
+          "symbol": "ZZ3X",
+          "name": "ZZ UltraPro 3X Index Fund",
+          "identitySecurityId": 111,
+          "betaSource": "leveraged",
+          "measuredBeta": 3,
+          "priceSource": "own-price",
+          "valueUsd": 500,
+          "cases": {
+            "measured": {
+              "beta": 3,
+              "pnlByMove": [
+                -449.99999999999994,
+                -300.00000000000006,
+                -150.00000000000003,
+                -75.00000000000001,
+                0,
+                75.00000000000001
+              ],
+              "side": "loses",
+              "exposureUsd": 1500
+            },
+            "selloff": {
+              "beta": 3,
+              "pnlByMove": [
+                -449.99999999999994,
+                -300.00000000000006,
+                -150.00000000000003,
+                -75.00000000000001,
+                0,
+                75.00000000000001
+              ],
+              "side": "loses",
+              "exposureUsd": 1500
+            }
+          }
+        },
+        {
+          "accountId": 1,
+          "accountName": "Vanguard Taxable",
+          "securityId": 117,
+          "symbol": "ZZFQ",
+          "name": null,
+          "identitySecurityId": 117,
+          "betaSource": "not-modelled",
+          "measuredBeta": null,
+          "priceSource": null,
+          "unmodelledReason": "no-fx-rate",
+          "valueUsd": null,
+          "cases": {
+            "measured": {
+              "beta": null,
+              "pnlByMove": [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              "side": "flat",
+              "exposureUsd": 0
+            },
+            "selloff": {
+              "beta": null,
+              "pnlByMove": [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              "side": "flat",
+              "exposureUsd": 0
+            }
+          }
+        },
+        {
+          "accountId": 1,
+          "accountName": "Vanguard Taxable",
+          "securityId": 118,
+          "symbol": "QQQ P95 2026-11-20",
+          "name": null,
+          "identitySecurityId": 100,
+          "expiry": "2026-11-20",
+          "betaSource": "driver",
+          "measuredBeta": 1,
+          "priceSource": "own-price",
+          "expiresBeforeDate": true,
+          "valueUsd": 200,
+          "cases": {
+            "measured": {
+              "beta": 1,
+              "pnlByMove": [
+                -199.9999999992852,
+                -199.9999999992852,
+                -199.9999999992852,
+                -199.9999999992852,
+                -199.9999999992852,
+                -199.9999999992852
+              ],
+              "side": "loses",
+              "exposureUsd": -4544.186209588936
+            },
+            "selloff": {
+              "beta": 1,
+              "pnlByMove": [
+                -199.9999999992852,
+                -199.9999999992852,
+                -199.9999999992852,
+                -199.9999999992852,
+                -199.9999999992852,
+                -199.9999999992852
+              ],
+              "side": "loses",
+              "exposureUsd": -4544.186209588936
+            }
+          }
+        },
+        {
+          "accountId": 1,
+          "accountName": "Vanguard Taxable",
+          "securityId": 107,
+          "symbol": "QQQ P90 2027-01-15",
+          "name": null,
+          "identitySecurityId": 100,
+          "expiry": "2027-01-15",
+          "betaSource": "driver",
+          "measuredBeta": 1,
+          "priceSource": "override",
+          "valueUsd": 400,
+          "cases": {
+            "measured": {
+              "beta": 1,
+              "pnlByMove": [
+                1613.41479755874,
+                786.8144629339124,
+                196.90030122553316,
+                -1.02871959226718,
+                -143.04199339858457,
+                -240.13253210412486
+              ],
+              "side": "offsets",
+              "exposureUsd": -2658.2429967334774
+            },
+            "selloff": {
+              "beta": 1,
+              "pnlByMove": [
+                1613.41479755874,
+                786.8144629339124,
+                196.90030122553316,
+                -1.02871959226718,
+                -143.04199339858457,
+                -240.13253210412486
+              ],
+              "side": "offsets",
+              "exposureUsd": -2658.2429967334774
+            }
+          }
+        },
+        {
+          "accountId": 1,
+          "accountName": "Vanguard Taxable",
+          "securityId": 108,
+          "symbol": "ZZNP",
+          "name": null,
+          "identitySecurityId": 108,
+          "betaSource": "not-modelled",
+          "measuredBeta": null,
+          "priceSource": null,
+          "unmodelledReason": "no-price",
+          "valueUsd": null,
+          "cases": {
+            "measured": {
+              "beta": null,
+              "pnlByMove": [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              "side": "flat",
+              "exposureUsd": 0
+            },
+            "selloff": {
+              "beta": null,
+              "pnlByMove": [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              "side": "flat",
+              "exposureUsd": 0
+            }
+          }
+        },
+        {
+          "accountId": 1,
+          "accountName": "Vanguard Taxable",
+          "securityId": 114,
+          "symbol": "ZZU C105 2027-03-19",
+          "name": null,
+          "identitySecurityId": 113,
+          "expiry": "2027-03-19",
+          "betaSource": "owner",
+          "measuredBeta": null,
+          "evidence": {
+            "outcome": "no-daily-bars",
+            "beta": null,
+            "rSquared": null,
+            "slopeTStat": null,
+            "pairs": 0,
+            "securityBars": 0,
+            "driverBars": 120,
+            "droppedOutlierPairs": 0,
+            "droppedGapPairs": 0,
+            "firstDate": null,
+            "lastDate": null
+          },
+          "noMeasuredLinkReason": "no-daily-bars",
+          "priceSource": "model",
+          "modelPricePerShare": 5.674922534062624,
+          "valueUsd": 1702.4767602187871,
+          "cases": {
+            "measured": {
+              "beta": 0.4,
+              "pnlByMove": [
+                -1049.4641323981625,
+                -726.295599539316,
+                -311.77454481247366,
+                -68.84981565422663,
+                198.07809012671598,
+                488.87003757641526
+              ],
+              "side": "loses",
+              "exposureUsd": 5544.800875086117
+            },
+            "selloff": {
+              "beta": 0.4,
+              "pnlByMove": [
+                -1049.4641323981625,
+                -726.295599539316,
+                -311.77454481247366,
+                -68.84981565422663,
+                198.07809012671598,
+                488.87003757641526
+              ],
+              "side": "loses",
+              "exposureUsd": 5544.800875086117
+            }
+          }
+        },
+        {
+          "accountId": 1,
+          "accountName": "Vanguard Taxable",
+          "securityId": 116,
+          "symbol": "QQQ P85 2027-01-15",
+          "name": null,
+          "identitySecurityId": 100,
+          "expiry": "2027-01-15",
+          "betaSource": "driver",
+          "measuredBeta": 1,
+          "priceSource": "model",
+          "modelPricePerShare": 0.4912021921849927,
+          "valueUsd": 49.12021921849927,
+          "cases": {
+            "measured": {
+              "beta": 1,
+              "pnlByMove": [
+                1450.8797807815008,
+                597.3649397403065,
+                128.3932655372471,
+                28.215510042346104,
+                -19.14052691114314,
+                -38.68780808213486
+              ],
+              "side": "offsets",
+              "exposureUsd": -807.5982689093131
+            },
+            "selloff": {
+              "beta": 1,
+              "pnlByMove": [
+                1450.8797807815008,
+                597.3649397403065,
+                128.3932655372471,
+                28.215510042346104,
+                -19.14052691114314,
+                -38.68780808213486
+              ],
+              "side": "offsets",
+              "exposureUsd": -807.5982689093131
+            }
+          }
+        },
+        {
+          "accountId": 3,
+          "accountName": "IBKR",
+          "securityId": 115,
+          "symbol": "ZZU P95 2027-03-19",
+          "name": null,
+          "identitySecurityId": 113,
+          "expiry": "2027-03-19",
+          "betaSource": "owner",
+          "measuredBeta": null,
+          "evidence": {
+            "outcome": "no-daily-bars",
+            "beta": null,
+            "rSquared": null,
+            "slopeTStat": null,
+            "pairs": 0,
+            "securityBars": 0,
+            "driverBars": 120,
+            "droppedOutlierPairs": 0,
+            "droppedGapPairs": 0,
+            "firstDate": null,
+            "lastDate": null
+          },
+          "noMeasuredLinkReason": "no-daily-bars",
+          "priceSource": "model",
+          "modelPricePerShare": 4.106075162160813,
+          "valueUsd": -410.6075162160813,
+          "cases": {
+            "measured": {
+              "beta": 0.4,
+              "pnlByMove": [
+                -648.2532694976691,
+                -429.96635066979036,
+                -246.29132810212582,
+                -166.81548713989898,
+                -95.10327477955371,
+                -30.724885030532434
+              ],
+              "side": "loses",
+              "exposureUsd": 1282.56442288885
+            },
+            "selloff": {
+              "beta": 0.4,
+              "pnlByMove": [
+                -648.2532694976691,
+                -429.96635066979036,
+                -246.29132810212582,
+                -166.81548713989898,
+                -95.10327477955371,
+                -30.724885030532434
+              ],
+              "side": "loses",
+              "exposureUsd": 1282.56442288885
+            }
+          }
+        },
+        {
+          "accountId": 1,
+          "accountName": "Vanguard Taxable",
+          "securityId": 119,
+          "symbol": "QQQ C105 2026-11-20",
+          "name": null,
+          "identitySecurityId": 100,
+          "expiry": "2026-11-20",
+          "betaSource": "driver",
+          "measuredBeta": 1,
+          "priceSource": "own-price",
+          "expiresBeforeDate": true,
+          "valueUsd": -100,
+          "cases": {
+            "measured": {
+              "beta": 1,
+              "pnlByMove": [
+                99.99999999997087,
+                99.99999999997087,
+                99.99999999997087,
+                99.99999999997087,
+                99.99999999997087,
+                99.99999999997087
+              ],
+              "side": "offsets",
+              "exposureUsd": -2540.5525168650734
+            },
+            "selloff": {
+              "beta": 1,
+              "pnlByMove": [
+                99.99999999997087,
+                99.99999999997087,
+                99.99999999997087,
+                99.99999999997087,
+                99.99999999997087,
+                99.99999999997087
+              ],
+              "side": "offsets",
+              "exposureUsd": -2540.5525168650734
+            }
+          }
+        },
+        {
+          "accountId": 3,
+          "accountName": "IBKR",
+          "securityId": 106,
+          "symbol": "QQQ C110 2027-01-15",
+          "name": null,
+          "identitySecurityId": 100,
+          "expiry": "2027-01-15",
+          "betaSource": "driver",
+          "measuredBeta": 1,
+          "priceSource": "own-price",
+          "valueUsd": -200,
+          "cases": {
+            "measured": {
+              "beta": 1,
+              "pnlByMove": [
+                199.99354858703094,
+                199.26015970413107,
+                182.79376791181937,
+                146.17160791659867,
+                65.12900349709838,
+                -81.77865852660453
+              ],
+              "side": "offsets",
+              "exposureUsd": -2704.9263627541186
+            },
+            "selloff": {
+              "beta": 1,
+              "pnlByMove": [
+                199.99354858703094,
+                199.26015970413107,
+                182.79376791181937,
+                146.17160791659867,
+                65.12900349709838,
+                -81.77865852660453
+              ],
+              "side": "offsets",
+              "exposureUsd": -2704.9263627541186
+            }
+          }
+        },
+        {
+          "accountId": 3,
+          "accountName": "IBKR",
+          "securityId": 102,
+          "symbol": "ZZB",
+          "name": null,
+          "identitySecurityId": 102,
+          "betaSource": "no-measured-link",
+          "measuredBeta": null,
+          "evidence": {
+            "outcome": "no-daily-bars",
+            "beta": null,
+            "rSquared": null,
+            "slopeTStat": null,
+            "pairs": 0,
+            "securityBars": 0,
+            "driverBars": 120,
+            "droppedOutlierPairs": 0,
+            "droppedGapPairs": 0,
+            "firstDate": null,
+            "lastDate": null
+          },
+          "noMeasuredLinkReason": "no-daily-bars",
+          "priceSource": "own-price",
+          "valueUsd": -2000,
+          "cases": {
+            "measured": {
+              "beta": 0,
+              "pnlByMove": [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              "side": "flat",
+              "exposureUsd": 0
+            },
+            "selloff": {
+              "beta": 1,
+              "pnlByMove": [
+                600,
+                400,
+                200,
+                100,
+                0,
+                -100
+              ],
+              "side": "offsets",
+              "exposureUsd": -2000
+            }
+          }
+        }
+      ],
+      "cases": {
+        "measured": {
+          "moves": [
+            {
+              "move": -0.3,
+              "bookPnlUsd": 5432.17072503204,
+              "losersPnlUsd": -2887.1174018951165,
+              "offsetsPnlUsd": 8319.288126927157
+            },
+            {
+              "move": -0.2,
+              "bookPnlUsd": 2444.477289623556,
+              "losersPnlUsd": -2015.8619502083916,
+              "offsetsPnlUsd": 4460.339239831947
+            },
+            {
+              "move": -0.1,
+              "bookPnlUsd": 524.0393897014528,
+              "losersPnlUsd": -1087.8658729138847,
+              "offsetsPnlUsd": 1611.9052626153375
+            },
+            {
+              "move": -0.05,
+              "bookPnlUsd": 29.916632794778252,
+              "losersPnlUsd": -600.5653027934109,
+              "offsetsPnlUsd": 630.4819355881891
+            },
+            {
+              "move": 0,
+              "bookPnlUsd": -209.97520341627512,
+              "losersPnlUsd": -97.02518465212293,
+              "offsetsPnlUsd": -112.95001876415219
+            },
+            {
+              "move": 0.05,
+              "bookPnlUsd": -280.7574737616779,
+              "losersPnlUsd": 423.04515254659765,
+              "offsetsPnlUsd": -703.8026263082755
+            }
+          ],
+          "disclosures": {
+            "notModelled": {
+              "count": 3,
+              "shareOfBook": 0.07609073503084954,
+              "unknownValueCount": 2,
+              "symbols": [
+                "ZZ2L",
+                "ZZFQ",
+                "ZZNP"
+              ]
+            },
+            "noMeasuredLink": {
+              "count": 2,
+              "shareOfBook": 0.19022683757712383,
+              "unknownValueCount": 0,
+              "symbols": [
+                "ZZB",
+                "ZZSH"
+              ],
+              "reasons": {
+                "foreign-session": 0,
+                "driver-bars-missing": 0,
+                "no-daily-bars": 2,
+                "short-history": 0,
+                "flat-driver": 0,
+                "low-fit": 0
+              }
+            },
+            "ownerFigure": {
+              "count": 3,
+              "shareOfBook": 0.23687687080690953,
+              "unknownValueCount": 0,
+              "symbols": [
+                "ZZA",
+                "ZZU C105 2027-03-19",
+                "ZZU P95 2027-03-19"
+              ]
+            },
+            "pricedFromModel": {
+              "count": 3,
+              "shareOfBook": 0.16452372936127208,
+              "unknownValueCount": 0,
+              "symbols": [
+                "QQQ P85 2027-01-15",
+                "ZZU C105 2027-03-19",
+                "ZZU P95 2027-03-19"
+              ]
+            },
+            "expiresBeforeDate": {
+              "count": 2,
+              "shareOfBook": 0.02282722050925486,
+              "unknownValueCount": 0,
+              "symbols": [
+                "QQQ C105 2026-11-20",
+                "QQQ P95 2026-11-20"
+              ]
+            }
+          }
+        },
+        "selloff": {
+          "moves": [
+            {
+              "move": -0.3,
+              "bookPnlUsd": 5777.170725032041,
+              "losersPnlUsd": -3187.1174018951165,
+              "offsetsPnlUsd": 8964.288126927158
+            },
+            {
+              "move": -0.2,
+              "bookPnlUsd": 2674.477289623556,
+              "losersPnlUsd": -2215.8619502083916,
+              "offsetsPnlUsd": 4890.339239831947
+            },
+            {
+              "move": -0.1,
+              "bookPnlUsd": 639.0393897014528,
+              "losersPnlUsd": -1187.8658729138847,
+              "offsetsPnlUsd": 1826.9052626153375
+            },
+            {
+              "move": -0.05,
+              "bookPnlUsd": 87.41663279477837,
+              "losersPnlUsd": -650.5653027934109,
+              "offsetsPnlUsd": 737.9819355881892
+            },
+            {
+              "move": 0,
+              "bookPnlUsd": -209.97520341627512,
+              "losersPnlUsd": -97.02518465212293,
+              "offsetsPnlUsd": -112.95001876415219
+            },
+            {
+              "move": 0.05,
+              "bookPnlUsd": -338.257473761678,
+              "losersPnlUsd": 473.04515254659765,
+              "offsetsPnlUsd": -811.3026263082756
+            }
+          ],
+          "disclosures": {
+            "notModelled": {
+              "count": 3,
+              "shareOfBook": 0.07609073503084954,
+              "unknownValueCount": 2,
+              "symbols": [
+                "ZZ2L",
+                "ZZFQ",
+                "ZZNP"
+              ]
+            },
+            "noMeasuredLink": {
+              "count": 2,
+              "shareOfBook": 0.19022683757712383,
+              "unknownValueCount": 0,
+              "symbols": [
+                "ZZB",
+                "ZZSH"
+              ],
+              "reasons": {
+                "foreign-session": 0,
+                "driver-bars-missing": 0,
+                "no-daily-bars": 2,
+                "short-history": 0,
+                "flat-driver": 0,
+                "low-fit": 0
+              }
+            },
+            "ownerFigure": {
+              "count": 3,
+              "shareOfBook": 0.23687687080690953,
+              "unknownValueCount": 0,
+              "symbols": [
+                "ZZA",
+                "ZZU C105 2027-03-19",
+                "ZZU P95 2027-03-19"
+              ]
+            },
+            "pricedFromModel": {
+              "count": 3,
+              "shareOfBook": 0.16452372936127208,
+              "unknownValueCount": 0,
+              "symbols": [
+                "QQQ P85 2027-01-15",
+                "ZZU C105 2027-03-19",
+                "ZZU P95 2027-03-19"
+              ]
+            },
+            "expiresBeforeDate": {
+              "count": 2,
+              "shareOfBook": 0.02282722050925486,
+              "unknownValueCount": 0,
+              "symbols": [
+                "QQQ C105 2026-11-20",
+                "QQQ P95 2026-11-20"
+              ]
+            }
+          }
+        }
+      },
+      "betaEvidence": {
+        "driverBarsThrough": "2026-11-09",
+        "driverBarsMissing": false,
+        "namesWaitingForBars": 3,
+        "namesNotCaptured": 0
+      },
+      "betaOverridesIgnored": 2
+    }
+  },
+  {
+    "name": "one account",
+    "seed": "mixed",
+    "input": {
+      "driverSymbol": "QQQ",
+      "valuationDate": "2026-11-27",
+      "moves": [
+        -0.2,
+        -0.1,
+        0,
+        0.1
+      ],
+      "volChangePoints": 0,
+      "accountIds": [
+        3
+      ]
+    },
+    "result": {
+      "driverSymbol": "QQQ",
+      "valuationDate": "2026-11-27",
+      "volChangePoints": 0,
+      "grossBookUsd": 3110.6075162160814,
+      "unknownValueCount": 0,
+      "positions": [
+        {
+          "accountId": 3,
+          "accountName": "IBKR",
+          "securityId": 111,
+          "symbol": "ZZ3X",
+          "name": "ZZ UltraPro 3X Index Fund",
+          "identitySecurityId": 111,
+          "betaSource": "leveraged",
+          "measuredBeta": 3,
+          "priceSource": "own-price",
+          "valueUsd": 500,
+          "cases": {
+            "measured": {
+              "beta": 3,
+              "pnlByMove": [
+                -300.00000000000006,
+                -150.00000000000003,
+                0,
+                150.00000000000003
+              ],
+              "side": "loses",
+              "exposureUsd": 1500
+            },
+            "selloff": {
+              "beta": 3,
+              "pnlByMove": [
+                -300.00000000000006,
+                -150.00000000000003,
+                0,
+                150.00000000000003
+              ],
+              "side": "loses",
+              "exposureUsd": 1500
+            }
+          }
+        },
+        {
+          "accountId": 3,
+          "accountName": "IBKR",
+          "securityId": 115,
+          "symbol": "ZZU P95 2027-03-19",
+          "name": null,
+          "identitySecurityId": 113,
+          "expiry": "2027-03-19",
+          "betaSource": "no-measured-link",
+          "measuredBeta": null,
+          "evidence": {
+            "outcome": "no-daily-bars",
+            "beta": null,
+            "rSquared": null,
+            "slopeTStat": null,
+            "pairs": 0,
+            "securityBars": 0,
+            "driverBars": 120,
+            "droppedOutlierPairs": 0,
+            "droppedGapPairs": 0,
+            "firstDate": null,
+            "lastDate": null
+          },
+          "noMeasuredLinkReason": "no-daily-bars",
+          "priceSource": "model",
+          "modelPricePerShare": 4.106075162160813,
+          "valueUsd": -410.6075162160813,
+          "cases": {
+            "measured": {
+              "beta": 0,
+              "pnlByMove": [
+                35.94679929881153,
+                35.94679929881153,
+                35.94679929881153,
+                35.94679929881153
+              ],
+              "side": "offsets",
+              "exposureUsd": 0
+            },
+            "selloff": {
+              "beta": 1,
+              "pnlByMove": [
+                -1090.3098719484624,
+                -400.1999695130465,
+                35.94679929881153,
+                260.8273812222059
+              ],
+              "side": "loses",
+              "exposureUsd": 3207.425947873901
+            }
+          }
+        },
+        {
+          "accountId": 3,
+          "accountName": "IBKR",
+          "securityId": 106,
+          "symbol": "QQQ C110 2027-01-15",
+          "name": null,
+          "identitySecurityId": 100,
+          "expiry": "2027-01-15",
+          "betaSource": "driver",
+          "measuredBeta": 1,
+          "priceSource": "own-price",
+          "valueUsd": -200,
+          "cases": {
+            "measured": {
+              "beta": 1,
+              "pnlByMove": [
+                199.2439694221765,
+                182.30345013049168,
+                61.435927064646734,
+                -319.53471043713824
+              ],
+              "side": "offsets",
+              "exposureUsd": -2704.9263627541186
+            },
+            "selloff": {
+              "beta": 1,
+              "pnlByMove": [
+                199.2439694221765,
+                182.30345013049168,
+                61.435927064646734,
+                -319.53471043713824
+              ],
+              "side": "offsets",
+              "exposureUsd": -2704.9263627541186
+            }
+          }
+        },
+        {
+          "accountId": 3,
+          "accountName": "IBKR",
+          "securityId": 102,
+          "symbol": "ZZB",
+          "name": null,
+          "identitySecurityId": 102,
+          "betaSource": "no-measured-link",
+          "measuredBeta": null,
+          "evidence": {
+            "outcome": "no-daily-bars",
+            "beta": null,
+            "rSquared": null,
+            "slopeTStat": null,
+            "pairs": 0,
+            "securityBars": 0,
+            "driverBars": 120,
+            "droppedOutlierPairs": 0,
+            "droppedGapPairs": 0,
+            "firstDate": null,
+            "lastDate": null
+          },
+          "noMeasuredLinkReason": "no-daily-bars",
+          "priceSource": "own-price",
+          "valueUsd": -2000,
+          "cases": {
+            "measured": {
+              "beta": 0,
+              "pnlByMove": [
+                0,
+                0,
+                0,
+                0
+              ],
+              "side": "flat",
+              "exposureUsd": 0
+            },
+            "selloff": {
+              "beta": 1,
+              "pnlByMove": [
+                400,
+                200,
+                0,
+                -200
+              ],
+              "side": "offsets",
+              "exposureUsd": -2000
+            }
+          }
+        }
+      ],
+      "cases": {
+        "measured": {
+          "moves": [
+            {
+              "move": -0.2,
+              "bookPnlUsd": -64.80923127901204,
+              "losersPnlUsd": -300.00000000000006,
+              "offsetsPnlUsd": 235.19076872098802
+            },
+            {
+              "move": -0.1,
+              "bookPnlUsd": 68.25024942930318,
+              "losersPnlUsd": -150.00000000000003,
+              "offsetsPnlUsd": 218.2502494293032
+            },
+            {
+              "move": 0,
+              "bookPnlUsd": 97.38272636345826,
+              "losersPnlUsd": 0,
+              "offsetsPnlUsd": 97.38272636345826
+            },
+            {
+              "move": 0.1,
+              "bookPnlUsd": -133.5879111383267,
+              "losersPnlUsd": 150.00000000000003,
+              "offsetsPnlUsd": -283.5879111383267
+            }
+          ],
+          "disclosures": {
+            "notModelled": {
+              "count": 0,
+              "shareOfBook": 0,
+              "unknownValueCount": 0,
+              "symbols": []
+            },
+            "noMeasuredLink": {
+              "count": 2,
+              "shareOfBook": 0.7749635734014044,
+              "unknownValueCount": 0,
+              "symbols": [
+                "ZZB",
+                "ZZU P95 2027-03-19"
+              ],
+              "reasons": {
+                "foreign-session": 0,
+                "driver-bars-missing": 0,
+                "no-daily-bars": 2,
+                "short-history": 0,
+                "flat-driver": 0,
+                "low-fit": 0
+              }
+            },
+            "ownerFigure": {
+              "count": 0,
+              "shareOfBook": 0,
+              "unknownValueCount": 0,
+              "symbols": []
+            },
+            "pricedFromModel": {
+              "count": 1,
+              "shareOfBook": 0.13200235454827405,
+              "unknownValueCount": 0,
+              "symbols": [
+                "ZZU P95 2027-03-19"
+              ]
+            },
+            "expiresBeforeDate": {
+              "count": 0,
+              "shareOfBook": 0,
+              "unknownValueCount": 0,
+              "symbols": []
+            }
+          }
+        },
+        "selloff": {
+          "moves": [
+            {
+              "move": -0.2,
+              "bookPnlUsd": -791.0659025262859,
+              "losersPnlUsd": -1390.3098719484624,
+              "offsetsPnlUsd": 599.2439694221765
+            },
+            {
+              "move": -0.1,
+              "bookPnlUsd": -167.89651938255486,
+              "losersPnlUsd": -550.1999695130465,
+              "offsetsPnlUsd": 382.3034501304917
+            },
+            {
+              "move": 0,
+              "bookPnlUsd": 97.38272636345826,
+              "losersPnlUsd": 35.94679929881153,
+              "offsetsPnlUsd": 61.435927064646734
+            },
+            {
+              "move": 0.1,
+              "bookPnlUsd": -108.70732921493243,
+              "losersPnlUsd": 410.8273812222059,
+              "offsetsPnlUsd": -519.5347104371383
+            }
+          ],
+          "disclosures": {
+            "notModelled": {
+              "count": 0,
+              "shareOfBook": 0,
+              "unknownValueCount": 0,
+              "symbols": []
+            },
+            "noMeasuredLink": {
+              "count": 2,
+              "shareOfBook": 0.7749635734014044,
+              "unknownValueCount": 0,
+              "symbols": [
+                "ZZB",
+                "ZZU P95 2027-03-19"
+              ],
+              "reasons": {
+                "foreign-session": 0,
+                "driver-bars-missing": 0,
+                "no-daily-bars": 2,
+                "short-history": 0,
+                "flat-driver": 0,
+                "low-fit": 0
+              }
+            },
+            "ownerFigure": {
+              "count": 0,
+              "shareOfBook": 0,
+              "unknownValueCount": 0,
+              "symbols": []
+            },
+            "pricedFromModel": {
+              "count": 1,
+              "shareOfBook": 0.13200235454827405,
+              "unknownValueCount": 0,
+              "symbols": [
+                "ZZU P95 2027-03-19"
+              ]
+            },
+            "expiresBeforeDate": {
+              "count": 0,
+              "shareOfBook": 0,
+              "unknownValueCount": 0,
+              "symbols": []
+            }
+          }
+        }
+      },
+      "betaEvidence": {
+        "driverBarsThrough": "2026-11-09",
+        "driverBarsMissing": false,
+        "namesWaitingForBars": 2,
+        "namesNotCaptured": 0
+      },
+      "betaOverridesIgnored": 0
+    }
+  },
+  {
+    "name": "empty scope",
+    "seed": "mixed",
+    "input": {
+      "driverSymbol": "QQQ",
+      "valuationDate": "2026-11-10",
+      "moves": [
+        -0.2,
+        -0.1,
+        0,
+        0.1
+      ],
+      "volChangePoints": 0,
+      "accountIds": [],
+      "betaOverrides": {
+        "7": 1
+      }
+    },
+    "result": {
+      "driverSymbol": "QQQ",
+      "valuationDate": "2026-11-10",
+      "volChangePoints": 0,
+      "grossBookUsd": 0,
+      "unknownValueCount": 0,
+      "positions": [],
+      "cases": {
+        "measured": {
+          "moves": [
+            {
+              "move": -0.2,
+              "bookPnlUsd": 0,
+              "losersPnlUsd": 0,
+              "offsetsPnlUsd": 0
+            },
+            {
+              "move": -0.1,
+              "bookPnlUsd": 0,
+              "losersPnlUsd": 0,
+              "offsetsPnlUsd": 0
+            },
+            {
+              "move": 0,
+              "bookPnlUsd": 0,
+              "losersPnlUsd": 0,
+              "offsetsPnlUsd": 0
+            },
+            {
+              "move": 0.1,
+              "bookPnlUsd": 0,
+              "losersPnlUsd": 0,
+              "offsetsPnlUsd": 0
+            }
+          ],
+          "disclosures": {
+            "notModelled": {
+              "count": 0,
+              "shareOfBook": null,
+              "unknownValueCount": 0,
+              "symbols": []
+            },
+            "noMeasuredLink": {
+              "count": 0,
+              "shareOfBook": null,
+              "unknownValueCount": 0,
+              "symbols": [],
+              "reasons": {
+                "foreign-session": 0,
+                "driver-bars-missing": 0,
+                "no-daily-bars": 0,
+                "short-history": 0,
+                "flat-driver": 0,
+                "low-fit": 0
+              }
+            },
+            "ownerFigure": {
+              "count": 0,
+              "shareOfBook": null,
+              "unknownValueCount": 0,
+              "symbols": []
+            },
+            "pricedFromModel": {
+              "count": 0,
+              "shareOfBook": null,
+              "unknownValueCount": 0,
+              "symbols": []
+            },
+            "expiresBeforeDate": {
+              "count": 0,
+              "shareOfBook": null,
+              "unknownValueCount": 0,
+              "symbols": []
+            }
+          }
+        },
+        "selloff": {
+          "moves": [
+            {
+              "move": -0.2,
+              "bookPnlUsd": 0,
+              "losersPnlUsd": 0,
+              "offsetsPnlUsd": 0
+            },
+            {
+              "move": -0.1,
+              "bookPnlUsd": 0,
+              "losersPnlUsd": 0,
+              "offsetsPnlUsd": 0
+            },
+            {
+              "move": 0,
+              "bookPnlUsd": 0,
+              "losersPnlUsd": 0,
+              "offsetsPnlUsd": 0
+            },
+            {
+              "move": 0.1,
+              "bookPnlUsd": 0,
+              "losersPnlUsd": 0,
+              "offsetsPnlUsd": 0
+            }
+          ],
+          "disclosures": {
+            "notModelled": {
+              "count": 0,
+              "shareOfBook": null,
+              "unknownValueCount": 0,
+              "symbols": []
+            },
+            "noMeasuredLink": {
+              "count": 0,
+              "shareOfBook": null,
+              "unknownValueCount": 0,
+              "symbols": [],
+              "reasons": {
+                "foreign-session": 0,
+                "driver-bars-missing": 0,
+                "no-daily-bars": 0,
+                "short-history": 0,
+                "flat-driver": 0,
+                "low-fit": 0
+              }
+            },
+            "ownerFigure": {
+              "count": 0,
+              "shareOfBook": null,
+              "unknownValueCount": 0,
+              "symbols": []
+            },
+            "pricedFromModel": {
+              "count": 0,
+              "shareOfBook": null,
+              "unknownValueCount": 0,
+              "symbols": []
+            },
+            "expiresBeforeDate": {
+              "count": 0,
+              "shareOfBook": null,
+              "unknownValueCount": 0,
+              "symbols": []
+            }
+          }
+        }
+      },
+      "betaEvidence": {
+        "driverBarsThrough": null,
+        "driverBarsMissing": false,
+        "namesWaitingForBars": 0,
+        "namesNotCaptured": 0
+      },
+      "betaOverridesIgnored": 1
+    }
+  },
+  {
+    "name": "no moves",
+    "seed": "mixed",
+    "input": {
+      "driverSymbol": "QQQ",
+      "valuationDate": "2026-11-10",
+      "moves": [],
+      "volChangePoints": 0
+    },
+    "result": {
+      "driverSymbol": "QQQ",
+      "valuationDate": "2026-11-10",
+      "volChangePoints": 0,
+      "grossBookUsd": 12865.406253613011,
+      "unknownValueCount": 2,
+      "positions": [
+        {
+          "accountId": 1,
+          "accountName": "Vanguard Taxable",
+          "securityId": 100,
+          "symbol": "QQQ",
+          "name": "Driver index fund",
+          "identitySecurityId": 100,
+          "betaSource": "driver",
+          "measuredBeta": 1,
+          "priceSource": "own-price",
+          "valueUsd": 1000,
+          "cases": {
+            "measured": {
+              "beta": 1,
+              "pnlByMove": [],
+              "side": "loses",
+              "exposureUsd": 1000
+            },
+            "selloff": {
+              "beta": 1,
+              "pnlByMove": [],
+              "side": "loses",
+              "exposureUsd": 1000
+            }
+          }
+        },
+        {
+          "accountId": 1,
+          "accountName": "Vanguard Taxable",
+          "securityId": 101,
+          "symbol": "ZZA",
+          "name": null,
+          "identitySecurityId": 101,
+          "betaSource": "measured",
+          "measuredBeta": 1.5000000000000004,
+          "evidence": {
+            "outcome": "measured",
+            "beta": 1.5000000000000004,
+            "rSquared": 1.0000000000000004,
+            "slopeTStat": 1000000000,
+            "pairs": 119,
+            "securityBars": 120,
+            "driverBars": 120,
+            "droppedOutlierPairs": 0,
+            "droppedGapPairs": 0,
+            "firstDate": "2026-05-27",
+            "lastDate": "2026-11-09"
+          },
+          "priceSource": "own-price",
+          "valueUsd": 1000,
+          "cases": {
+            "measured": {
+              "beta": 1.5000000000000004,
+              "pnlByMove": [],
+              "side": "loses",
+              "exposureUsd": 1500.0000000000005
+            },
+            "selloff": {
+              "beta": 1.5000000000000004,
+              "pnlByMove": [],
+              "side": "loses",
+              "exposureUsd": 1500.0000000000005
+            }
+          }
+        },
+        {
+          "accountId": 1,
+          "accountName": "Vanguard Taxable",
+          "securityId": 103,
+          "symbol": "ZZMM",
+          "name": null,
+          "identitySecurityId": 103,
+          "betaSource": "fixed",
+          "measuredBeta": 0,
+          "priceSource": "own-price",
+          "valueUsd": 1000,
+          "cases": {
+            "measured": {
+              "beta": 0,
+              "pnlByMove": [],
+              "side": "flat",
+              "exposureUsd": 0
+            },
+            "selloff": {
+              "beta": 0,
+              "pnlByMove": [],
+              "side": "flat",
+              "exposureUsd": 0
+            }
+          }
+        },
+        {
+          "accountId": 1,
+          "accountName": "Vanguard Taxable",
+          "securityId": 110,
+          "symbol": "ZZ2I",
+          "name": "ZZ UltraPro Short 2X Index Fund",
+          "identitySecurityId": 110,
+          "betaSource": "leveraged",
+          "measuredBeta": -1.5999999999999976,
+          "priceSource": "own-price",
+          "valueUsd": 1000,
+          "cases": {
+            "measured": {
+              "beta": -1.5999999999999976,
+              "pnlByMove": [],
+              "side": "offsets",
+              "exposureUsd": -1599.9999999999977
+            },
+            "selloff": {
+              "beta": -2,
+              "pnlByMove": [],
+              "side": "offsets",
+              "exposureUsd": -2000
+            }
+          }
+        },
+        {
+          "accountId": 1,
+          "accountName": "Vanguard Taxable",
+          "securityId": 112,
+          "symbol": "ZZ2L",
+          "name": "ZZ Ultra 2X Sector Fund",
+          "identitySecurityId": 112,
+          "betaSource": "not-modelled",
+          "measuredBeta": null,
+          "priceSource": "own-price",
+          "unmodelledReason": "leveraged-no-tracked-index",
+          "valueUsd": 1000,
+          "cases": {
+            "measured": {
+              "beta": null,
+              "pnlByMove": [],
+              "side": "flat",
+              "exposureUsd": 0
+            },
+            "selloff": {
+              "beta": null,
+              "pnlByMove": [],
+              "side": "flat",
+              "exposureUsd": 0
+            }
+          }
+        },
+        {
+          "accountId": 1,
+          "accountName": "Vanguard Taxable",
+          "securityId": 104,
+          "symbol": "ZZBOND",
+          "name": null,
+          "identitySecurityId": 104,
+          "betaSource": "fixed",
+          "measuredBeta": 0.1,
+          "priceSource": "own-price",
+          "valueUsd": 980,
+          "cases": {
+            "measured": {
+              "beta": 0.1,
+              "pnlByMove": [],
+              "side": "loses",
+              "exposureUsd": 98
+            },
+            "selloff": {
+              "beta": 0.1,
+              "pnlByMove": [],
+              "side": "loses",
+              "exposureUsd": 98
+            }
+          }
+        },
+        {
+          "accountId": 1,
+          "accountName": "Vanguard Taxable",
+          "securityId": 105,
+          "symbol": "QQQ P95 2027-01-15",
+          "name": null,
+          "identitySecurityId": 100,
+          "expiry": "2027-01-15",
+          "betaSource": "driver",
+          "measuredBeta": 1,
+          "priceSource": "own-price",
+          "valueUsd": 600,
+          "cases": {
+            "measured": {
+              "beta": 1,
+              "pnlByMove": [],
+              "side": "offsets",
+              "exposureUsd": -6205.753242935508
+            },
+            "selloff": {
+              "beta": 1,
+              "pnlByMove": [],
+              "side": "offsets",
+              "exposureUsd": -6205.753242935508
+            }
+          }
+        },
+        {
+          "accountId": 1,
+          "accountName": "Vanguard Taxable",
+          "securityId": 120,
+          "symbol": "ZZNG",
+          "name": null,
+          "identitySecurityId": 120,
+          "betaSource": "measured",
+          "measuredBeta": -0.4999999999999998,
+          "evidence": {
+            "outcome": "measured",
+            "beta": -0.4999999999999998,
+            "rSquared": 0.9999999999999996,
+            "slopeTStat": -1000000000,
+            "pairs": 119,
+            "securityBars": 120,
+            "driverBars": 120,
+            "droppedOutlierPairs": 0,
+            "droppedGapPairs": 0,
+            "firstDate": "2026-05-27",
+            "lastDate": "2026-11-09"
+          },
+          "priceSource": "own-price",
+          "valueUsd": 500,
+          "cases": {
+            "measured": {
+              "beta": -0.4999999999999998,
+              "pnlByMove": [],
+              "side": "offsets",
+              "exposureUsd": -249.99999999999986
+            },
+            "selloff": {
+              "beta": 1,
+              "pnlByMove": [],
+              "side": "loses",
+              "exposureUsd": 500
+            }
+          }
+        },
+        {
+          "accountId": 1,
+          "accountName": "Vanguard Taxable",
+          "securityId": 121,
+          "symbol": "ZZSH",
+          "name": null,
+          "identitySecurityId": 121,
+          "betaSource": "no-measured-link",
+          "measuredBeta": null,
+          "evidence": {
+            "outcome": "no-daily-bars",
+            "beta": null,
+            "rSquared": null,
+            "slopeTStat": null,
+            "pairs": 0,
+            "securityBars": 0,
+            "driverBars": 120,
+            "droppedOutlierPairs": 0,
+            "droppedGapPairs": 0,
+            "firstDate": null,
+            "lastDate": null
+          },
+          "noMeasuredLinkReason": "no-daily-bars",
+          "priceSource": "own-price",
+          "valueUsd": 500,
+          "cases": {
+            "measured": {
+              "beta": 0,
+              "pnlByMove": [],
+              "side": "flat",
+              "exposureUsd": 0
+            },
+            "selloff": {
+              "beta": 1,
+              "pnlByMove": [],
+              "side": "loses",
+              "exposureUsd": 500
+            }
+          }
+        },
+        {
+          "accountId": 3,
+          "accountName": "IBKR",
+          "securityId": 111,
+          "symbol": "ZZ3X",
+          "name": "ZZ UltraPro 3X Index Fund",
+          "identitySecurityId": 111,
+          "betaSource": "leveraged",
+          "measuredBeta": 3,
+          "priceSource": "own-price",
+          "valueUsd": 500,
+          "cases": {
+            "measured": {
+              "beta": 3,
+              "pnlByMove": [],
+              "side": "loses",
+              "exposureUsd": 1500
+            },
+            "selloff": {
+              "beta": 3,
+              "pnlByMove": [],
+              "side": "loses",
+              "exposureUsd": 1500
+            }
+          }
+        },
+        {
+          "accountId": 1,
+          "accountName": "Vanguard Taxable",
+          "securityId": 117,
+          "symbol": "ZZFQ",
+          "name": null,
+          "identitySecurityId": 117,
+          "betaSource": "not-modelled",
+          "measuredBeta": null,
+          "priceSource": null,
+          "unmodelledReason": "no-fx-rate",
+          "valueUsd": null,
+          "cases": {
+            "measured": {
+              "beta": null,
+              "pnlByMove": [],
+              "side": "flat",
+              "exposureUsd": 0
+            },
+            "selloff": {
+              "beta": null,
+              "pnlByMove": [],
+              "side": "flat",
+              "exposureUsd": 0
+            }
+          }
+        },
+        {
+          "accountId": 1,
+          "accountName": "Vanguard Taxable",
+          "securityId": 118,
+          "symbol": "QQQ P95 2026-11-20",
+          "name": null,
+          "identitySecurityId": 100,
+          "expiry": "2026-11-20",
+          "betaSource": "driver",
+          "measuredBeta": 1,
+          "priceSource": "own-price",
+          "valueUsd": 200,
+          "cases": {
+            "measured": {
+              "beta": 1,
+              "pnlByMove": [],
+              "side": "offsets",
+              "exposureUsd": -4544.186209588936
+            },
+            "selloff": {
+              "beta": 1,
+              "pnlByMove": [],
+              "side": "offsets",
+              "exposureUsd": -4544.186209588936
+            }
+          }
+        },
+        {
+          "accountId": 1,
+          "accountName": "Vanguard Taxable",
+          "securityId": 107,
+          "symbol": "QQQ P90 2027-01-15",
+          "name": null,
+          "identitySecurityId": 100,
+          "expiry": "2027-01-15",
+          "betaSource": "driver",
+          "measuredBeta": 1,
+          "priceSource": "model",
+          "modelPricePerShare": 1.2320175795964303,
+          "valueUsd": 123.20175795964303,
+          "cases": {
+            "measured": {
+              "beta": 1,
+              "pnlByMove": [],
+              "side": "offsets",
+              "exposureUsd": -1704.5577411568756
+            },
+            "selloff": {
+              "beta": 1,
+              "pnlByMove": [],
+              "side": "offsets",
+              "exposureUsd": -1704.5577411568756
+            }
+          }
+        },
+        {
+          "accountId": 1,
+          "accountName": "Vanguard Taxable",
+          "securityId": 108,
+          "symbol": "ZZNP",
+          "name": null,
+          "identitySecurityId": 108,
+          "betaSource": "not-modelled",
+          "measuredBeta": null,
+          "priceSource": null,
+          "unmodelledReason": "no-price",
+          "valueUsd": null,
+          "cases": {
+            "measured": {
+              "beta": null,
+              "pnlByMove": [],
+              "side": "flat",
+              "exposureUsd": 0
+            },
+            "selloff": {
+              "beta": null,
+              "pnlByMove": [],
+              "side": "flat",
+              "exposureUsd": 0
+            }
+          }
+        },
+        {
+          "accountId": 1,
+          "accountName": "Vanguard Taxable",
+          "securityId": 114,
+          "symbol": "ZZU C105 2027-03-19",
+          "name": null,
+          "identitySecurityId": 113,
+          "expiry": "2027-03-19",
+          "betaSource": "no-measured-link",
+          "measuredBeta": null,
+          "evidence": {
+            "outcome": "no-daily-bars",
+            "beta": null,
+            "rSquared": null,
+            "slopeTStat": null,
+            "pairs": 0,
+            "securityBars": 0,
+            "driverBars": 120,
+            "droppedOutlierPairs": 0,
+            "droppedGapPairs": 0,
+            "firstDate": null,
+            "lastDate": null
+          },
+          "noMeasuredLinkReason": "no-daily-bars",
+          "priceSource": "model",
+          "modelPricePerShare": 5.674922534062624,
+          "valueUsd": 1702.4767602187871,
+          "cases": {
+            "measured": {
+              "beta": 0,
+              "pnlByMove": [],
+              "side": "flat",
+              "exposureUsd": 0
+            },
+            "selloff": {
+              "beta": 1,
+              "pnlByMove": [],
+              "side": "loses",
+              "exposureUsd": 13861.58955229053
+            }
+          }
+        },
+        {
+          "accountId": 1,
+          "accountName": "Vanguard Taxable",
+          "securityId": 116,
+          "symbol": "QQQ P85 2027-01-15",
+          "name": null,
+          "identitySecurityId": 100,
+          "expiry": "2027-01-15",
+          "betaSource": "driver",
+          "measuredBeta": 1,
+          "priceSource": "model",
+          "modelPricePerShare": 0.4912021921849927,
+          "valueUsd": 49.12021921849927,
+          "cases": {
+            "measured": {
+              "beta": 1,
+              "pnlByMove": [],
+              "side": "offsets",
+              "exposureUsd": -807.5982689093131
+            },
+            "selloff": {
+              "beta": 1,
+              "pnlByMove": [],
+              "side": "offsets",
+              "exposureUsd": -807.5982689093131
+            }
+          }
+        },
+        {
+          "accountId": 3,
+          "accountName": "IBKR",
+          "securityId": 115,
+          "symbol": "ZZU P95 2027-03-19",
+          "name": null,
+          "identitySecurityId": 113,
+          "expiry": "2027-03-19",
+          "betaSource": "no-measured-link",
+          "measuredBeta": null,
+          "evidence": {
+            "outcome": "no-daily-bars",
+            "beta": null,
+            "rSquared": null,
+            "slopeTStat": null,
+            "pairs": 0,
+            "securityBars": 0,
+            "driverBars": 120,
+            "droppedOutlierPairs": 0,
+            "droppedGapPairs": 0,
+            "firstDate": null,
+            "lastDate": null
+          },
+          "noMeasuredLinkReason": "no-daily-bars",
+          "priceSource": "model",
+          "modelPricePerShare": 4.106075162160813,
+          "valueUsd": -410.6075162160813,
+          "cases": {
+            "measured": {
+              "beta": 0,
+              "pnlByMove": [],
+              "side": "flat",
+              "exposureUsd": 0
+            },
+            "selloff": {
+              "beta": 1,
+              "pnlByMove": [],
+              "side": "loses",
+              "exposureUsd": 3207.425947873901
+            }
+          }
+        },
+        {
+          "accountId": 1,
+          "accountName": "Vanguard Taxable",
+          "securityId": 119,
+          "symbol": "QQQ C105 2026-11-20",
+          "name": null,
+          "identitySecurityId": 100,
+          "expiry": "2026-11-20",
+          "betaSource": "driver",
+          "measuredBeta": 1,
+          "priceSource": "own-price",
+          "valueUsd": -100,
+          "cases": {
+            "measured": {
+              "beta": 1,
+              "pnlByMove": [],
+              "side": "offsets",
+              "exposureUsd": -2540.5525168650734
+            },
+            "selloff": {
+              "beta": 1,
+              "pnlByMove": [],
+              "side": "offsets",
+              "exposureUsd": -2540.5525168650734
+            }
+          }
+        },
+        {
+          "accountId": 3,
+          "accountName": "IBKR",
+          "securityId": 106,
+          "symbol": "QQQ C110 2027-01-15",
+          "name": null,
+          "identitySecurityId": 100,
+          "expiry": "2027-01-15",
+          "betaSource": "driver",
+          "measuredBeta": 1,
+          "priceSource": "own-price",
+          "valueUsd": -200,
+          "cases": {
+            "measured": {
+              "beta": 1,
+              "pnlByMove": [],
+              "side": "offsets",
+              "exposureUsd": -2704.9263627541186
+            },
+            "selloff": {
+              "beta": 1,
+              "pnlByMove": [],
+              "side": "offsets",
+              "exposureUsd": -2704.9263627541186
+            }
+          }
+        },
+        {
+          "accountId": 3,
+          "accountName": "IBKR",
+          "securityId": 102,
+          "symbol": "ZZB",
+          "name": null,
+          "identitySecurityId": 102,
+          "betaSource": "no-measured-link",
+          "measuredBeta": null,
+          "evidence": {
+            "outcome": "no-daily-bars",
+            "beta": null,
+            "rSquared": null,
+            "slopeTStat": null,
+            "pairs": 0,
+            "securityBars": 0,
+            "driverBars": 120,
+            "droppedOutlierPairs": 0,
+            "droppedGapPairs": 0,
+            "firstDate": null,
+            "lastDate": null
+          },
+          "noMeasuredLinkReason": "no-daily-bars",
+          "priceSource": "own-price",
+          "valueUsd": -2000,
+          "cases": {
+            "measured": {
+              "beta": 0,
+              "pnlByMove": [],
+              "side": "flat",
+              "exposureUsd": 0
+            },
+            "selloff": {
+              "beta": 1,
+              "pnlByMove": [],
+              "side": "offsets",
+              "exposureUsd": -2000
+            }
+          }
+        }
+      ],
+      "cases": {
+        "measured": {
+          "moves": [],
+          "disclosures": {
+            "notModelled": {
+              "count": 3,
+              "shareOfBook": 0.07772782143736569,
+              "unknownValueCount": 2,
+              "symbols": [
+                "ZZ2L",
+                "ZZFQ",
+                "ZZNP"
+              ]
+            },
+            "noMeasuredLink": {
+              "count": 4,
+              "shareOfBook": 0.3585649909142488,
+              "unknownValueCount": 0,
+              "symbols": [
+                "ZZB",
+                "ZZSH",
+                "ZZU C105 2027-03-19",
+                "ZZU P95 2027-03-19"
+              ],
+              "reasons": {
+                "foreign-session": 0,
+                "driver-bars-missing": 0,
+                "no-daily-bars": 4,
+                "short-history": 0,
+                "flat-driver": 0,
+                "low-fit": 0
+              }
+            },
+            "ownerFigure": {
+              "count": 0,
+              "shareOfBook": 0,
+              "unknownValueCount": 0,
+              "symbols": []
+            },
+            "pricedFromModel": {
+              "count": 4,
+              "shareOfBook": 0.177639649192671,
+              "unknownValueCount": 0,
+              "symbols": [
+                "QQQ P85 2027-01-15",
+                "QQQ P90 2027-01-15",
+                "ZZU C105 2027-03-19",
+                "ZZU P95 2027-03-19"
+              ]
+            },
+            "expiresBeforeDate": {
+              "count": 0,
+              "shareOfBook": 0,
+              "unknownValueCount": 0,
+              "symbols": []
+            }
+          }
+        },
+        "selloff": {
+          "moves": [],
+          "disclosures": {
+            "notModelled": {
+              "count": 3,
+              "shareOfBook": 0.07772782143736569,
+              "unknownValueCount": 2,
+              "symbols": [
+                "ZZ2L",
+                "ZZFQ",
+                "ZZNP"
+              ]
+            },
+            "noMeasuredLink": {
+              "count": 4,
+              "shareOfBook": 0.3585649909142488,
+              "unknownValueCount": 0,
+              "symbols": [
+                "ZZB",
+                "ZZSH",
+                "ZZU C105 2027-03-19",
+                "ZZU P95 2027-03-19"
+              ],
+              "reasons": {
+                "foreign-session": 0,
+                "driver-bars-missing": 0,
+                "no-daily-bars": 4,
+                "short-history": 0,
+                "flat-driver": 0,
+                "low-fit": 0
+              }
+            },
+            "ownerFigure": {
+              "count": 0,
+              "shareOfBook": 0,
+              "unknownValueCount": 0,
+              "symbols": []
+            },
+            "pricedFromModel": {
+              "count": 4,
+              "shareOfBook": 0.177639649192671,
+              "unknownValueCount": 0,
+              "symbols": [
+                "QQQ P85 2027-01-15",
+                "QQQ P90 2027-01-15",
+                "ZZU C105 2027-03-19",
+                "ZZU P95 2027-03-19"
+              ]
+            },
+            "expiresBeforeDate": {
+              "count": 0,
+              "shareOfBook": 0,
+              "unknownValueCount": 0,
+              "symbols": []
+            }
+          }
+        }
+      },
+      "betaEvidence": {
+        "driverBarsThrough": "2026-11-09",
+        "driverBarsMissing": false,
+        "namesWaitingForBars": 3,
+        "namesNotCaptured": 0
+      },
+      "betaOverridesIgnored": 0
+    }
+  },
+  {
+    "name": "deep fall",
+    "seed": "mixed",
+    "input": {
+      "driverSymbol": "QQQ",
+      "valuationDate": "2027-02-01",
+      "moves": [
+        -1,
+        -0.5,
+        0.2
+      ],
+      "volChangePoints": 0
+    },
+    "result": {
+      "driverSymbol": "QQQ",
+      "valuationDate": "2027-02-01",
+      "volChangePoints": 0,
+      "grossBookUsd": 12865.406253613011,
+      "unknownValueCount": 2,
+      "positions": [
+        {
+          "accountId": 1,
+          "accountName": "Vanguard Taxable",
+          "securityId": 100,
+          "symbol": "QQQ",
+          "name": "Driver index fund",
+          "identitySecurityId": 100,
+          "betaSource": "driver",
+          "measuredBeta": 1,
+          "priceSource": "own-price",
+          "valueUsd": 1000,
+          "cases": {
+            "measured": {
+              "beta": 1,
+              "pnlByMove": [
+                -1000,
+                -500,
+                200
+              ],
+              "side": "loses",
+              "exposureUsd": 1000
+            },
+            "selloff": {
+              "beta": 1,
+              "pnlByMove": [
+                -1000,
+                -500,
+                200
+              ],
+              "side": "loses",
+              "exposureUsd": 1000
+            }
+          }
+        },
+        {
+          "accountId": 1,
+          "accountName": "Vanguard Taxable",
+          "securityId": 101,
+          "symbol": "ZZA",
+          "name": null,
+          "identitySecurityId": 101,
+          "betaSource": "measured",
+          "measuredBeta": 1.5000000000000004,
+          "evidence": {
+            "outcome": "measured",
+            "beta": 1.5000000000000004,
+            "rSquared": 1.0000000000000004,
+            "slopeTStat": 1000000000,
+            "pairs": 119,
+            "securityBars": 120,
+            "driverBars": 120,
+            "droppedOutlierPairs": 0,
+            "droppedGapPairs": 0,
+            "firstDate": "2026-05-27",
+            "lastDate": "2026-11-09"
+          },
+          "priceSource": "own-price",
+          "valueUsd": 1000,
+          "cases": {
+            "measured": {
+              "beta": 1.5000000000000004,
+              "pnlByMove": [
+                -1000,
+                -750.0000000000002,
+                300.0000000000001
+              ],
+              "side": "loses",
+              "exposureUsd": 1500.0000000000005
+            },
+            "selloff": {
+              "beta": 1.5000000000000004,
+              "pnlByMove": [
+                -1000,
+                -750.0000000000002,
+                300.0000000000001
+              ],
+              "side": "loses",
+              "exposureUsd": 1500.0000000000005
+            }
+          }
+        },
+        {
+          "accountId": 1,
+          "accountName": "Vanguard Taxable",
+          "securityId": 103,
+          "symbol": "ZZMM",
+          "name": null,
+          "identitySecurityId": 103,
+          "betaSource": "fixed",
+          "measuredBeta": 0,
+          "priceSource": "own-price",
+          "valueUsd": 1000,
+          "cases": {
+            "measured": {
+              "beta": 0,
+              "pnlByMove": [
+                0,
+                0,
+                0
+              ],
+              "side": "flat",
+              "exposureUsd": 0
+            },
+            "selloff": {
+              "beta": 0,
+              "pnlByMove": [
+                0,
+                0,
+                0
+              ],
+              "side": "flat",
+              "exposureUsd": 0
+            }
+          }
+        },
+        {
+          "accountId": 1,
+          "accountName": "Vanguard Taxable",
+          "securityId": 110,
+          "symbol": "ZZ2I",
+          "name": "ZZ UltraPro Short 2X Index Fund",
+          "identitySecurityId": 110,
+          "betaSource": "leveraged",
+          "measuredBeta": -1.5999999999999976,
+          "priceSource": "own-price",
+          "valueUsd": 1000,
+          "cases": {
+            "measured": {
+              "beta": -1.5999999999999976,
+              "pnlByMove": [
+                1599.9999999999977,
+                799.9999999999989,
+                -319.99999999999955
+              ],
+              "side": "offsets",
+              "exposureUsd": -1599.9999999999977
+            },
+            "selloff": {
+              "beta": -2,
+              "pnlByMove": [
+                2000,
+                1000,
+                -400
+              ],
+              "side": "offsets",
+              "exposureUsd": -2000
+            }
+          }
+        },
+        {
+          "accountId": 1,
+          "accountName": "Vanguard Taxable",
+          "securityId": 112,
+          "symbol": "ZZ2L",
+          "name": "ZZ Ultra 2X Sector Fund",
+          "identitySecurityId": 112,
+          "betaSource": "not-modelled",
+          "measuredBeta": null,
+          "priceSource": "own-price",
+          "unmodelledReason": "leveraged-no-tracked-index",
+          "valueUsd": 1000,
+          "cases": {
+            "measured": {
+              "beta": null,
+              "pnlByMove": [
+                0,
+                0,
+                0
+              ],
+              "side": "flat",
+              "exposureUsd": 0
+            },
+            "selloff": {
+              "beta": null,
+              "pnlByMove": [
+                0,
+                0,
+                0
+              ],
+              "side": "flat",
+              "exposureUsd": 0
+            }
+          }
+        },
+        {
+          "accountId": 1,
+          "accountName": "Vanguard Taxable",
+          "securityId": 104,
+          "symbol": "ZZBOND",
+          "name": null,
+          "identitySecurityId": 104,
+          "betaSource": "fixed",
+          "measuredBeta": 0.1,
+          "priceSource": "own-price",
+          "valueUsd": 980,
+          "cases": {
+            "measured": {
+              "beta": 0.1,
+              "pnlByMove": [
+                -98,
+                -49,
+                19.600000000000005
+              ],
+              "side": "loses",
+              "exposureUsd": 98
+            },
+            "selloff": {
+              "beta": 0.1,
+              "pnlByMove": [
+                -98,
+                -49,
+                19.600000000000005
+              ],
+              "side": "loses",
+              "exposureUsd": 98
+            }
+          }
+        },
+        {
+          "accountId": 1,
+          "accountName": "Vanguard Taxable",
+          "securityId": 105,
+          "symbol": "QQQ P95 2027-01-15",
+          "name": null,
+          "identitySecurityId": 100,
+          "expiry": "2027-01-15",
+          "betaSource": "driver",
+          "measuredBeta": 1,
+          "priceSource": "own-price",
+          "expiresBeforeDate": true,
+          "valueUsd": 600,
+          "cases": {
+            "measured": {
+              "beta": 1,
+              "pnlByMove": [
+                -600.0000000000846,
+                -600.0000000000846,
+                -600.0000000000846
+              ],
+              "side": "loses",
+              "exposureUsd": -6205.753242935508
+            },
+            "selloff": {
+              "beta": 1,
+              "pnlByMove": [
+                -600.0000000000846,
+                -600.0000000000846,
+                -600.0000000000846
+              ],
+              "side": "loses",
+              "exposureUsd": -6205.753242935508
+            }
+          }
+        },
+        {
+          "accountId": 1,
+          "accountName": "Vanguard Taxable",
+          "securityId": 120,
+          "symbol": "ZZNG",
+          "name": null,
+          "identitySecurityId": 120,
+          "betaSource": "measured",
+          "measuredBeta": -0.4999999999999998,
+          "evidence": {
+            "outcome": "measured",
+            "beta": -0.4999999999999998,
+            "rSquared": 0.9999999999999996,
+            "slopeTStat": -1000000000,
+            "pairs": 119,
+            "securityBars": 120,
+            "driverBars": 120,
+            "droppedOutlierPairs": 0,
+            "droppedGapPairs": 0,
+            "firstDate": "2026-05-27",
+            "lastDate": "2026-11-09"
+          },
+          "priceSource": "own-price",
+          "valueUsd": 500,
+          "cases": {
+            "measured": {
+              "beta": -0.4999999999999998,
+              "pnlByMove": [
+                249.9999999999999,
+                124.99999999999994,
+                -49.99999999999998
+              ],
+              "side": "offsets",
+              "exposureUsd": -249.99999999999986
+            },
+            "selloff": {
+              "beta": 1,
+              "pnlByMove": [
+                -500,
+                -250,
+                100
+              ],
+              "side": "loses",
+              "exposureUsd": 500
+            }
+          }
+        },
+        {
+          "accountId": 1,
+          "accountName": "Vanguard Taxable",
+          "securityId": 121,
+          "symbol": "ZZSH",
+          "name": null,
+          "identitySecurityId": 121,
+          "betaSource": "no-measured-link",
+          "measuredBeta": null,
+          "evidence": {
+            "outcome": "no-daily-bars",
+            "beta": null,
+            "rSquared": null,
+            "slopeTStat": null,
+            "pairs": 0,
+            "securityBars": 0,
+            "driverBars": 120,
+            "droppedOutlierPairs": 0,
+            "droppedGapPairs": 0,
+            "firstDate": null,
+            "lastDate": null
+          },
+          "noMeasuredLinkReason": "no-daily-bars",
+          "priceSource": "own-price",
+          "valueUsd": 500,
+          "cases": {
+            "measured": {
+              "beta": 0,
+              "pnlByMove": [
+                0,
+                0,
+                0
+              ],
+              "side": "flat",
+              "exposureUsd": 0
+            },
+            "selloff": {
+              "beta": 1,
+              "pnlByMove": [
+                -500,
+                -250,
+                100
+              ],
+              "side": "loses",
+              "exposureUsd": 500
+            }
+          }
+        },
+        {
+          "accountId": 3,
+          "accountName": "IBKR",
+          "securityId": 111,
+          "symbol": "ZZ3X",
+          "name": "ZZ UltraPro 3X Index Fund",
+          "identitySecurityId": 111,
+          "betaSource": "leveraged",
+          "measuredBeta": 3,
+          "priceSource": "own-price",
+          "valueUsd": 500,
+          "cases": {
+            "measured": {
+              "beta": 3,
+              "pnlByMove": [
+                -500,
+                -500,
+                300.00000000000006
+              ],
+              "side": "loses",
+              "exposureUsd": 1500
+            },
+            "selloff": {
+              "beta": 3,
+              "pnlByMove": [
+                -500,
+                -500,
+                300.00000000000006
+              ],
+              "side": "loses",
+              "exposureUsd": 1500
+            }
+          }
+        },
+        {
+          "accountId": 1,
+          "accountName": "Vanguard Taxable",
+          "securityId": 117,
+          "symbol": "ZZFQ",
+          "name": null,
+          "identitySecurityId": 117,
+          "betaSource": "not-modelled",
+          "measuredBeta": null,
+          "priceSource": null,
+          "unmodelledReason": "no-fx-rate",
+          "valueUsd": null,
+          "cases": {
+            "measured": {
+              "beta": null,
+              "pnlByMove": [
+                0,
+                0,
+                0
+              ],
+              "side": "flat",
+              "exposureUsd": 0
+            },
+            "selloff": {
+              "beta": null,
+              "pnlByMove": [
+                0,
+                0,
+                0
+              ],
+              "side": "flat",
+              "exposureUsd": 0
+            }
+          }
+        },
+        {
+          "accountId": 1,
+          "accountName": "Vanguard Taxable",
+          "securityId": 118,
+          "symbol": "QQQ P95 2026-11-20",
+          "name": null,
+          "identitySecurityId": 100,
+          "expiry": "2026-11-20",
+          "betaSource": "driver",
+          "measuredBeta": 1,
+          "priceSource": "own-price",
+          "expiresBeforeDate": true,
+          "valueUsd": 200,
+          "cases": {
+            "measured": {
+              "beta": 1,
+              "pnlByMove": [
+                -199.9999999992852,
+                -199.9999999992852,
+                -199.9999999992852
+              ],
+              "side": "loses",
+              "exposureUsd": -4544.186209588936
+            },
+            "selloff": {
+              "beta": 1,
+              "pnlByMove": [
+                -199.9999999992852,
+                -199.9999999992852,
+                -199.9999999992852
+              ],
+              "side": "loses",
+              "exposureUsd": -4544.186209588936
+            }
+          }
+        },
+        {
+          "accountId": 1,
+          "accountName": "Vanguard Taxable",
+          "securityId": 107,
+          "symbol": "QQQ P90 2027-01-15",
+          "name": null,
+          "identitySecurityId": 100,
+          "expiry": "2027-01-15",
+          "betaSource": "driver",
+          "measuredBeta": 1,
+          "priceSource": "model",
+          "modelPricePerShare": 1.2320175795964303,
+          "expiresBeforeDate": true,
+          "valueUsd": 123.20175795964303,
+          "cases": {
+            "measured": {
+              "beta": 1,
+              "pnlByMove": [
+                -123.20175795964303,
+                -123.20175795964303,
+                -123.20175795964303
+              ],
+              "side": "loses",
+              "exposureUsd": -1704.5577411568756
+            },
+            "selloff": {
+              "beta": 1,
+              "pnlByMove": [
+                -123.20175795964303,
+                -123.20175795964303,
+                -123.20175795964303
+              ],
+              "side": "loses",
+              "exposureUsd": -1704.5577411568756
+            }
+          }
+        },
+        {
+          "accountId": 1,
+          "accountName": "Vanguard Taxable",
+          "securityId": 108,
+          "symbol": "ZZNP",
+          "name": null,
+          "identitySecurityId": 108,
+          "betaSource": "not-modelled",
+          "measuredBeta": null,
+          "priceSource": null,
+          "unmodelledReason": "no-price",
+          "valueUsd": null,
+          "cases": {
+            "measured": {
+              "beta": null,
+              "pnlByMove": [
+                0,
+                0,
+                0
+              ],
+              "side": "flat",
+              "exposureUsd": 0
+            },
+            "selloff": {
+              "beta": null,
+              "pnlByMove": [
+                0,
+                0,
+                0
+              ],
+              "side": "flat",
+              "exposureUsd": 0
+            }
+          }
+        },
+        {
+          "accountId": 1,
+          "accountName": "Vanguard Taxable",
+          "securityId": 114,
+          "symbol": "ZZU C105 2027-03-19",
+          "name": null,
+          "identitySecurityId": 113,
+          "expiry": "2027-03-19",
+          "betaSource": "no-measured-link",
+          "measuredBeta": null,
+          "evidence": {
+            "outcome": "no-daily-bars",
+            "beta": null,
+            "rSquared": null,
+            "slopeTStat": null,
+            "pairs": 0,
+            "securityBars": 0,
+            "driverBars": 120,
+            "droppedOutlierPairs": 0,
+            "droppedGapPairs": 0,
+            "firstDate": null,
+            "lastDate": null
+          },
+          "noMeasuredLinkReason": "no-daily-bars",
+          "priceSource": "model",
+          "modelPricePerShare": 5.674922534062624,
+          "valueUsd": 1702.4767602187871,
+          "cases": {
+            "measured": {
+              "beta": 0,
+              "pnlByMove": [
+                -956.1424330941854,
+                -956.1424330941854,
+                -956.1424330941854
+              ],
+              "side": "loses",
+              "exposureUsd": 0
+            },
+            "selloff": {
+              "beta": 1,
+              "pnlByMove": [
+                -1702.4767602187871,
+                -1702.4767602180407,
+                3135.896769713799
+              ],
+              "side": "loses",
+              "exposureUsd": 13861.58955229053
+            }
+          }
+        },
+        {
+          "accountId": 1,
+          "accountName": "Vanguard Taxable",
+          "securityId": 116,
+          "symbol": "QQQ P85 2027-01-15",
+          "name": null,
+          "identitySecurityId": 100,
+          "expiry": "2027-01-15",
+          "betaSource": "driver",
+          "measuredBeta": 1,
+          "priceSource": "model",
+          "modelPricePerShare": 0.4912021921849927,
+          "expiresBeforeDate": true,
+          "valueUsd": 49.12021921849927,
+          "cases": {
+            "measured": {
+              "beta": 1,
+              "pnlByMove": [
+                -49.12021921849927,
+                -49.12021921849927,
+                -49.12021921849927
+              ],
+              "side": "loses",
+              "exposureUsd": -807.5982689093131
+            },
+            "selloff": {
+              "beta": 1,
+              "pnlByMove": [
+                -49.12021921849927,
+                -49.12021921849927,
+                -49.12021921849927
+              ],
+              "side": "loses",
+              "exposureUsd": -807.5982689093131
+            }
+          }
+        },
+        {
+          "accountId": 3,
+          "accountName": "IBKR",
+          "securityId": 115,
+          "symbol": "ZZU P95 2027-03-19",
+          "name": null,
+          "identitySecurityId": 113,
+          "expiry": "2027-03-19",
+          "betaSource": "no-measured-link",
+          "measuredBeta": null,
+          "evidence": {
+            "outcome": "no-daily-bars",
+            "beta": null,
+            "rSquared": null,
+            "slopeTStat": null,
+            "pairs": 0,
+            "securityBars": 0,
+            "driverBars": 120,
+            "droppedOutlierPairs": 0,
+            "droppedGapPairs": 0,
+            "firstDate": null,
+            "lastDate": null
+          },
+          "noMeasuredLinkReason": "no-daily-bars",
+          "priceSource": "model",
+          "modelPricePerShare": 4.106075162160813,
+          "valueUsd": -410.6075162160813,
+          "cases": {
+            "measured": {
+              "beta": 0,
+              "pnlByMove": [
+                216.92691556894417,
+                216.92691556894417,
+                216.92691556894417
+              ],
+              "side": "offsets",
+              "exposureUsd": 0
+            },
+            "selloff": {
+              "beta": 1,
+              "pnlByMove": [
+                -9089.392483783919,
+                -4089.3924837839186,
+                405.76701402830963
+              ],
+              "side": "loses",
+              "exposureUsd": 3207.425947873901
+            }
+          }
+        },
+        {
+          "accountId": 1,
+          "accountName": "Vanguard Taxable",
+          "securityId": 119,
+          "symbol": "QQQ C105 2026-11-20",
+          "name": null,
+          "identitySecurityId": 100,
+          "expiry": "2026-11-20",
+          "betaSource": "driver",
+          "measuredBeta": 1,
+          "priceSource": "own-price",
+          "expiresBeforeDate": true,
+          "valueUsd": -100,
+          "cases": {
+            "measured": {
+              "beta": 1,
+              "pnlByMove": [
+                99.99999999997087,
+                99.99999999997087,
+                -1400.000000000029
+              ],
+              "side": "offsets",
+              "exposureUsd": -2540.5525168650734
+            },
+            "selloff": {
+              "beta": 1,
+              "pnlByMove": [
+                99.99999999997087,
+                99.99999999997087,
+                -1400.000000000029
+              ],
+              "side": "offsets",
+              "exposureUsd": -2540.5525168650734
+            }
+          }
+        },
+        {
+          "accountId": 3,
+          "accountName": "IBKR",
+          "securityId": 106,
+          "symbol": "QQQ C110 2027-01-15",
+          "name": null,
+          "identitySecurityId": 100,
+          "expiry": "2027-01-15",
+          "betaSource": "driver",
+          "measuredBeta": 1,
+          "priceSource": "own-price",
+          "expiresBeforeDate": true,
+          "valueUsd": -200,
+          "cases": {
+            "measured": {
+              "beta": 1,
+              "pnlByMove": [
+                199.99999999999966,
+                199.99999999999966,
+                -800.0000000000003
+              ],
+              "side": "offsets",
+              "exposureUsd": -2704.9263627541186
+            },
+            "selloff": {
+              "beta": 1,
+              "pnlByMove": [
+                199.99999999999966,
+                199.99999999999966,
+                -800.0000000000003
+              ],
+              "side": "offsets",
+              "exposureUsd": -2704.9263627541186
+            }
+          }
+        },
+        {
+          "accountId": 3,
+          "accountName": "IBKR",
+          "securityId": 102,
+          "symbol": "ZZB",
+          "name": null,
+          "identitySecurityId": 102,
+          "betaSource": "no-measured-link",
+          "measuredBeta": null,
+          "evidence": {
+            "outcome": "no-daily-bars",
+            "beta": null,
+            "rSquared": null,
+            "slopeTStat": null,
+            "pairs": 0,
+            "securityBars": 0,
+            "driverBars": 120,
+            "droppedOutlierPairs": 0,
+            "droppedGapPairs": 0,
+            "firstDate": null,
+            "lastDate": null
+          },
+          "noMeasuredLinkReason": "no-daily-bars",
+          "priceSource": "own-price",
+          "valueUsd": -2000,
+          "cases": {
+            "measured": {
+              "beta": 0,
+              "pnlByMove": [
+                0,
+                0,
+                0
+              ],
+              "side": "flat",
+              "exposureUsd": 0
+            },
+            "selloff": {
+              "beta": 1,
+              "pnlByMove": [
+                2000,
+                1000,
+                -400
+              ],
+              "side": "offsets",
+              "exposureUsd": -2000
+            }
+          }
+        }
+      ],
+      "cases": {
+        "measured": {
+          "moves": [
+            {
+              "move": -1,
+              "bookPnlUsd": -2159.5374947027854,
+              "losersPnlUsd": -4526.4644102716975,
+              "offsetsPnlUsd": 2366.926915568912
+            },
+            {
+              "move": -0.5,
+              "bookPnlUsd": -2285.537494702784,
+              "losersPnlUsd": -3727.4644102716975,
+              "offsetsPnlUsd": 1441.9269155689135
+            },
+            {
+              "move": 0.2,
+              "bookPnlUsd": -3461.937494702782,
+              "losersPnlUsd": -1108.8644102716971,
+              "offsetsPnlUsd": -2353.0730844310847
+            }
+          ],
+          "disclosures": {
+            "notModelled": {
+              "count": 3,
+              "shareOfBook": 0.07772782143736569,
+              "unknownValueCount": 2,
+              "symbols": [
+                "ZZ2L",
+                "ZZFQ",
+                "ZZNP"
+              ]
+            },
+            "noMeasuredLink": {
+              "count": 4,
+              "shareOfBook": 0.3585649909142488,
+              "unknownValueCount": 0,
+              "symbols": [
+                "ZZB",
+                "ZZSH",
+                "ZZU C105 2027-03-19",
+                "ZZU P95 2027-03-19"
+              ],
+              "reasons": {
+                "foreign-session": 0,
+                "driver-bars-missing": 0,
+                "no-daily-bars": 4,
+                "short-history": 0,
+                "flat-driver": 0,
+                "low-fit": 0
+              }
+            },
+            "ownerFigure": {
+              "count": 0,
+              "shareOfBook": 0,
+              "unknownValueCount": 0,
+              "symbols": []
+            },
+            "pricedFromModel": {
+              "count": 4,
+              "shareOfBook": 0.177639649192671,
+              "unknownValueCount": 0,
+              "symbols": [
+                "QQQ P85 2027-01-15",
+                "QQQ P90 2027-01-15",
+                "ZZU C105 2027-03-19",
+                "ZZU P95 2027-03-19"
+              ]
+            },
+            "expiresBeforeDate": {
+              "count": 6,
+              "shareOfBook": 0.09889481545293871,
+              "unknownValueCount": 0,
+              "symbols": [
+                "QQQ C105 2026-11-20",
+                "QQQ C110 2027-01-15",
+                "QQQ P85 2027-01-15",
+                "QQQ P90 2027-01-15",
+                "QQQ P95 2026-11-20",
+                "QQQ P95 2027-01-15"
+              ]
+            }
+          }
+        },
+        "selloff": {
+          "moves": [
+            {
+              "move": -1,
+              "bookPnlUsd": -11062.191221180246,
+              "losersPnlUsd": -15362.191221180217,
+              "offsetsPnlUsd": 4299.999999999971
+            },
+            {
+              "move": -0.5,
+              "bookPnlUsd": -6763.191221179501,
+              "losersPnlUsd": -9063.191221179472,
+              "offsetsPnlUsd": 2299.9999999999704
+            },
+            {
+              "move": 0.2,
+              "bookPnlUsd": 588.9418065645673,
+              "losersPnlUsd": 3588.941806564597,
+              "offsetsPnlUsd": -3000.0000000000296
+            }
+          ],
+          "disclosures": {
+            "notModelled": {
+              "count": 3,
+              "shareOfBook": 0.07772782143736569,
+              "unknownValueCount": 2,
+              "symbols": [
+                "ZZ2L",
+                "ZZFQ",
+                "ZZNP"
+              ]
+            },
+            "noMeasuredLink": {
+              "count": 4,
+              "shareOfBook": 0.3585649909142488,
+              "unknownValueCount": 0,
+              "symbols": [
+                "ZZB",
+                "ZZSH",
+                "ZZU C105 2027-03-19",
+                "ZZU P95 2027-03-19"
+              ],
+              "reasons": {
+                "foreign-session": 0,
+                "driver-bars-missing": 0,
+                "no-daily-bars": 4,
+                "short-history": 0,
+                "flat-driver": 0,
+                "low-fit": 0
+              }
+            },
+            "ownerFigure": {
+              "count": 0,
+              "shareOfBook": 0,
+              "unknownValueCount": 0,
+              "symbols": []
+            },
+            "pricedFromModel": {
+              "count": 4,
+              "shareOfBook": 0.177639649192671,
+              "unknownValueCount": 0,
+              "symbols": [
+                "QQQ P85 2027-01-15",
+                "QQQ P90 2027-01-15",
+                "ZZU C105 2027-03-19",
+                "ZZU P95 2027-03-19"
+              ]
+            },
+            "expiresBeforeDate": {
+              "count": 6,
+              "shareOfBook": 0.09889481545293871,
+              "unknownValueCount": 0,
+              "symbols": [
+                "QQQ C105 2026-11-20",
+                "QQQ C110 2027-01-15",
+                "QQQ P85 2027-01-15",
+                "QQQ P90 2027-01-15",
+                "QQQ P95 2026-11-20",
+                "QQQ P95 2027-01-15"
+              ]
+            }
+          }
+        }
+      },
+      "betaEvidence": {
+        "driverBarsThrough": "2026-11-09",
+        "driverBarsMissing": false,
+        "namesWaitingForBars": 3,
+        "namesNotCaptured": 0
+      },
+      "betaOverridesIgnored": 0
+    }
+  }
+]

@@ -1,5 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import Database from "better-sqlite3";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { runMigrations } from "@/lib/db/migrate";
 import { addDays } from "@/lib/calendar/date-utils";
 import {
@@ -10,8 +12,12 @@ import {
   type GainsAtRiskInput,
   type GainsAtRiskPosition,
   type GainsAtRiskResult,
+  type GainsAtRiskTrialRow,
+  type TrialPositionInput,
 } from "@/lib/compute/gains-at-risk";
-import { BETA_OVERRIDE_BOUNDS } from "@/lib/analysis/gains-at-risk-constants";
+import { BETA_OVERRIDE_BOUNDS, TRIAL_POSITION_BOUNDS } from "@/lib/analysis/gains-at-risk-constants";
+import { solveTrialEntry } from "@/lib/compute/gains-at-risk-trial";
+import { callPrice, putPrice, yearsToExpiry } from "@/lib/compute/options-greeks";
 import { repriceOptionUnderShock } from "@/lib/compute/option-reprice";
 import { loadScenarioPositionsByAccount } from "@/lib/compute/scenario-positions";
 import { getRiskFreeRate } from "@/lib/queries/risk-free-rate";
@@ -1161,3 +1167,609 @@ describe("computeGainsAtRisk: whole-branch review fix round", () => {
   });
 });
 
+// ─── Step 2: the step-1 pin (frozen before the trial-position work) ──────
+
+/**
+ * The pin's seeds. Each builds a fresh book; ids are deterministic (the
+ * counters reset per test), so the frozen inputs can name them.
+ */
+const PIN_SEEDS: Record<string, () => void> = {
+  mixed: () => {
+    db.prepare("INSERT INTO fx_rates (currency, usd_per_unit, as_of, source) VALUES ('ZZD', 0.5, ?, 'manual')").run(TODAY);
+    seedMixedBook();
+    const t = addSecurity({ symbol: "ZZT", type: "ETF", name: "ZZ Tracked Index Fund" });
+    bars(t, 0.8);
+    const inv = addSecurity({ symbol: "ZZ2I", type: "ETF", name: "ZZ UltraPro Short 2X Index Fund", factor: -2 });
+    price(inv, 25);
+    hold(inv, 40);
+    const bull = addSecurity({ symbol: "ZZ3X", type: "ETF", name: "ZZ UltraPro 3X Index Fund", factor: 3 });
+    price(bull, 50);
+    hold(bull, 10, 3);
+    const noIdx = addSecurity({ symbol: "ZZ2L", type: "ETF", name: "ZZ Ultra 2X Sector Fund", factor: 2 });
+    price(noIdx, 25);
+    hold(noIdx, 40);
+    const u = stock("ZZU", 100, null);
+    iv(u, 0.3);
+    hold(option("ZZU", "CALL", 105, "2027-03-19"), 3);
+    hold(option("ZZU", "PUT", 95, "2027-03-19"), -1, 3);
+    const fxPut = option("QQQ", "PUT", 85, "2027-01-15", { currency: "ZZD" });
+    hold(fxPut, 2);
+    const noFx = stock("ZZFQ", 30, null, { currency: "ZZQ" });
+    hold(noFx, 10);
+    const exp = option("QQQ", "PUT", 95, "2026-11-20");
+    price(exp, 1);
+    hold(exp, 2);
+    const wexp = option("QQQ", "CALL", 105, "2026-11-20");
+    price(wexp, 1);
+    hold(wexp, -1);
+    hold(stock("ZZNG", 50, -0.5), 10);
+    hold(stock("ZZSH", 50, null), 10);
+  },
+};
+
+interface PinCase {
+  name: string;
+  seed: string;
+  input: GainsAtRiskInput;
+  result: GainsAtRiskResult;
+}
+
+const PIN_CASES: { name: string; seed: string; input: GainsAtRiskInput }[] = [
+  { name: "base", seed: "mixed", input: { ...BASE } },
+  {
+    name: "later date, vol change, overrides, owner figures",
+    seed: "mixed",
+    input: {
+      ...BASE,
+      moves: [-0.3, -0.2, -0.1, -0.05, 0, 0.05],
+      valuationDate: "2026-12-18",
+      volChangePoints: 10,
+      priceOverrides: { 107: 4, 101: 60 },
+      // 107 the model-priced put, 101 ZZA, 113 ZZU (no measured link), 117 ZZFQ (no FX rate: ignored).
+      betaOverrides: { 113: 0.4, 101: 0.7, 117: 1, 99999: 1 },
+    },
+  },
+  { name: "one account", seed: "mixed", input: { ...BASE, accountIds: [3], valuationDate: "2026-11-27" } },
+  { name: "empty scope", seed: "mixed", input: { ...BASE, accountIds: [], betaOverrides: { 7: 1 } } },
+  { name: "no moves", seed: "mixed", input: { ...BASE, moves: [] } },
+  { name: "deep fall", seed: "mixed", input: { ...BASE, moves: [-1, -0.5, 0.2], valuationDate: "2027-02-01" } },
+];
+
+/** The pin was written with JSON (every double exact); a non-finite number or -0 would be tagged `{ __num }`. */
+function pinReviver(_k: string, v: unknown): unknown {
+  if (v && typeof v === "object" && "__num" in v) {
+    const s = (v as { __num: string }).__num;
+    return s === "-0" ? -0 : Number(s);
+  }
+  return v;
+}
+
+function freshDb(): void {
+  db.close();
+  db = new Database(":memory:");
+  db.pragma("foreign_keys = ON");
+  runMigrations(db);
+  nextId = 100;
+  nextKey = 0;
+  nextConId = 5000;
+}
+
+const PIN_PATH = join(__dirname, "../fixtures/gains-at-risk-no-trial-pin.json");
+
+const pin: PinCase[] = JSON.parse(readFileSync(PIN_PATH, "utf8"), pinReviver) as PinCase[];
+
+describe("computeGainsAtRisk: step 2 pin (no trial positions)", () => {
+  it("unchanged without trial positions: whole result equal to step 1, key absent", () => {
+    expect(pin.map((c) => c.name)).toEqual(PIN_CASES.map((c) => c.name));
+    for (const c of pin) {
+      for (const trialPositions of [undefined, []]) {
+        freshDb();
+        PIN_SEEDS[c.seed]();
+        const r = computeGainsAtRisk(db, { ...c.input, trialPositions }, { trackedIndexSeeds: SEEDS });
+        expect(r, c.name).toStrictEqual(c.result);
+        expect("trial" in r).toBe(false);
+      }
+    }
+  });
+});
+
+// ─── Step 2: trial positions ────────────────────────────────────
+
+/** A trial option fixed at the click: priced from `sigma` at `S`, its volatility solved back from that price (R1). */
+function trialOption(
+  id: string,
+  underlyingSecurityId: number,
+  right: "put" | "call",
+  side: "buy" | "write",
+  strike: number,
+  expiry: string,
+  contracts: number,
+  S = 100,
+  sigma = 0.3,
+): TrialPositionInput {
+  const T = yearsToExpiry(expiry, TODAY, new Date(NOW));
+  const r = getRiskFreeRate(db);
+  const pricePaid = right === "put" ? putPrice(S, strike, T, r, sigma) : callPrice(S, strike, T, r, sigma);
+  const solved = solveTrialEntry({ right, strike, expiry, price: pricePaid, underlyingPrice: S, riskFreeRate: r, today: TODAY, now: new Date(NOW) });
+  if (!solved.ok) throw new Error(`trial ${id} must solve`);
+  return { kind: "option", id, underlyingSecurityId, right, side, expiry, strike, contracts, pricePaid, entryUnderlyingPrice: S, entryVolatility: solved.volatility };
+}
+
+function trialShares(id: string, securityId: number, side: "buy" | "sell", quantity: number, p: number): TrialPositionInput {
+  return { kind: "shares", id, securityId, side, quantity, price: p };
+}
+
+function trialRow(r: GainsAtRiskResult, id: string): GainsAtRiskTrialRow {
+  const row = r.trial?.rows.find((x) => x.id === id);
+  if (!row) throw new Error(`no trial row ${id}`);
+  return row;
+}
+
+function expectTrialConservation(r: GainsAtRiskResult): void {
+  const t = r.trial;
+  if (!t) throw new Error("trial result expected");
+  for (const k of CASES) {
+    expect(t.cases[k].moves.map((m) => m.move)).toEqual(r.cases[k].moves.map((m) => m.move));
+    for (const [i, m] of t.cases[k].moves.entries()) {
+      const rows = sum(t.rows.map((x) => x.cases[k].pnlByMove[i]));
+      expect(Math.abs(m.trialPnlUsd - rows)).toBeLessThan(0.005);
+      expect(Math.abs(m.bookWithTrialPnlUsd - (r.cases[k].moves[i].bookPnlUsd + rows))).toBeLessThan(0.005);
+      expect(Math.abs(m.bookWithTrialPnlUsd - (r.cases[k].moves[i].bookPnlUsd + m.trialPnlUsd))).toBeLessThan(0.005);
+    }
+  }
+}
+
+/** The result without its trial key. */
+function bookOnly(r: GainsAtRiskResult): GainsAtRiskResult {
+  const { trial: _t, ...rest } = r;
+  return rest;
+}
+
+describe("computeGainsAtRisk: trial positions (step 2)", () => {
+  it("conservation per case to the cent: book with trial = book + Σ trial rows", () => {
+    seedMixedBook();
+    const u = stock("ZZU", 100, null);
+    iv(u, 0.3);
+    hold(u, 1);
+    const trialPositions = [
+      trialOption("p", 100, "put", "buy", 95, "2027-01-15", 10),
+      trialOption("c", 101, "call", "write", 55, "2027-01-15", 3, 50, 0.4),
+      trialOption("n", u, "put", "buy", 90, "2027-03-19", 2),
+      trialShares("b", 101, "buy", 30, 49),
+      trialShares("s", 102, "sell", 20, 41),
+    ];
+    for (const over of [{}, { moves: [-0.3, -0.2, -0.1, -0.05, 0, 0.05], valuationDate: "2026-12-18", volChangePoints: 10 }]) {
+      const r = run({ ...over, trialPositions });
+      expect(r.trial?.count).toBe(5);
+      expect(r.trial?.refusedCount).toBe(0);
+      expectTrialConservation(r);
+      expectConservation(r);
+      // The book as it is is the step-1 result.
+      expect(bookOnly(r)).toEqual(run(over));
+    }
+  });
+
+  it("a bought put at a 0% move today is zero; at a later date it shows time decay; a written call the reverse", () => {
+    hold(addDriverUnderlying(), 1);
+    const trialPositions = [
+      trialOption("put", 100, "put", "buy", 95, "2027-01-15", 10),
+      trialOption("call", 100, "call", "write", 110, "2027-01-15", 5),
+    ];
+    const r = run({ moves: [-0.1, 0, 0.1], trialPositions });
+    for (const k of CASES) {
+      expect(trialRow(r, "put").cases[k].pnlByMove[1]).toBe(0);
+      expect(trialRow(r, "call").cases[k].pnlByMove[1]).toBe(0);
+      expect(r.trial?.cases[k].moves[1]).toEqual({ move: 0, trialPnlUsd: 0, bookWithTrialPnlUsd: 0 });
+      expect(trialRow(r, "put").valuation).toEqual({ price: 100, date: "2026-11-09", source: "book" });
+      expect(r.trial?.cases[k].noMoveCostUsd).toBe(0);
+    }
+    const later = run({ moves: [0], valuationDate: "2026-12-18", trialPositions });
+    for (const k of CASES) {
+      expect(trialRow(later, "put").cases[k].pnlByMove[0]).toBeLessThan(0);
+      expect(trialRow(later, "call").cases[k].pnlByMove[0]).toBeGreaterThan(0);
+    }
+    // The cost of waiting, positive = a cost: the put's decay less the call's.
+    const put = trialRow(later, "put").cases.measured.pnlByMove[0];
+    const call = trialRow(later, "call").cases.measured.pnlByMove[0];
+    expect(later.trial?.cases.measured.noMoveCostUsd).toBeCloseTo(-(put + call), 6);
+    // Without 0 in the sweep there is no no-move figure.
+    expect(run({ moves: [-0.1], trialPositions }).trial?.cases.measured.noMoveCostUsd).toBeNull();
+  });
+
+  it("a bought put on the driver improves the fall by an independent Black-Scholes less its cost", () => {
+    const q = addSecurity({ symbol: "ZZQ", type: "ETF", name: "ZZ Driver Fund" });
+    price(q, 100);
+    bars(q, 1);
+    hold(q, 1);
+    const trial = trialOption("p", q, "put", "buy", 100, "2027-01-15", 10);
+    if (trial.kind !== "option") throw new Error("option");
+    const r = run({ driverSymbol: "ZZQ", moves: [-0.1, 0], trialPositions: [trial] });
+    const row = trialRow(r, "p");
+    expect(row.betaSource).toBe("driver");
+    const T1 = yearsToExpiry("2027-01-15", TODAY, new Date(NOW));
+    const rate = getRiskFreeRate(db);
+    const v = Math.max(putPrice(90, 100, T1, rate, trial.entryVolatility), 10);
+    for (const k of CASES) {
+      expect(row.cases[k].beta).toBe(1);
+      expect(Math.abs(row.cases[k].pnlByMove[0] - 10 * 100 * (v - trial.pricePaid))).toBeLessThan(0.005);
+      expect(row.cases[k].side).toBe("offsets");
+      expect(row.cases[k].exposureUsd).toBeLessThan(0);
+    }
+    expect(row.valuation).toEqual({ price: 100, date: "2026-11-09", source: "book" });
+  });
+
+  it("selling held shares removes exactly that share of the holding's loss", () => {
+    addDriverUnderlying();
+    const a = stock("ZZA", 50, 1.5);
+    hold(a, 100);
+    const r = run({ trialPositions: [trialShares("s", a, "sell", 40, 50)] });
+    const held = pos(r, "ZZA");
+    const row = trialRow(r, "s");
+    for (const k of CASES) {
+      for (const [i, x] of row.cases[k].pnlByMove.entries()) expect(x).toBeCloseTo(-0.4 * held.cases[k].pnlByMove[i], 9);
+      expect(row.cases[k].side).toBe("offsets");
+      expect(row.cases[k].exposureUsd).toBeCloseTo(-0.4 * held.cases[k].exposureUsd, 9);
+    }
+    expect(row).toMatchObject({ valueUsd: -2000, cost: { kind: "cash-raised", usd: 2000 }, leavesShortBy: 0, holdingsNowByAccount: { 1: 100 } });
+    expectTrialConservation(r);
+  });
+
+  it("leaves you short counts every account: no flag when other accounts cover the sale; the exact shortfall otherwise", () => {
+    addDriverUnderlying();
+    const a = stock("ZZA", 50, 1.5);
+    hold(a, 50, 1);
+    hold(a, 100, 2);
+    const covered = run({ accountIds: [1], trialPositions: [trialShares("s", a, "sell", 120, 50)] });
+    expect(trialRow(covered, "s")).toMatchObject({ leavesShortBy: 0, holdingsNowByAccount: { 1: 50, 2: 100 } });
+    expect(covered.trial?.shortByName).toEqual([]);
+    const short = run({ accountIds: [1], trialPositions: [trialShares("s", a, "sell", 200, 50)] });
+    expect(trialRow(short, "s").leavesShortBy).toBe(50);
+    expect(short.trial?.shortByName).toEqual([{ securityId: a, symbol: "ZZA", shortBy: 50, heldShortBefore: 0 }]);
+    expectTrialConservation(short);
+  });
+
+  it("two sales each within the holding but together beyond it: the second carries the shortfall; a buy covers a sale", () => {
+    addDriverUnderlying();
+    const a = stock("ZZA", 50, 1.5);
+    hold(a, 100);
+    const r = run({ trialPositions: [trialShares("s1", a, "sell", 75, 50), trialShares("s2", a, "sell", 75, 50)] });
+    expect(trialRow(r, "s1").leavesShortBy).toBe(0);
+    expect(trialRow(r, "s2").leavesShortBy).toBe(50);
+    expect(r.trial?.shortByName).toEqual([{ securityId: a, symbol: "ZZA", shortBy: 50, heldShortBefore: 0 }]);
+    const r2 = run({ trialPositions: [trialShares("b", a, "buy", 50, 50), trialShares("s", a, "sell", 120, 50)] });
+    expect(trialRow(r2, "s").leavesShortBy).toBe(0);
+    expect(trialRow(r2, "b").leavesShortBy).toBeNull();
+    expect(r2.trial?.shortByName).toEqual([]);
+  });
+
+  it("a name already held short: shortBy is the part the trial sales cause, the short before is named apart", () => {
+    addDriverUnderlying();
+    const a = stock("ZZA", 50, 1.5);
+    hold(a, -50, 3);
+    const r = run({ trialPositions: [trialShares("s", a, "sell", 100, 50)] });
+    expect(trialRow(r, "s").leavesShortBy).toBe(100);
+    expect(r.trial?.shortByName).toEqual([{ securityId: a, symbol: "ZZA", shortBy: 100, heldShortBefore: 50 }]);
+  });
+
+  it("the same option held and tried: held row unchanged, holdingsNowByAccount = held contracts per account, conservation", () => {
+    addDriverUnderlying();
+    const put = option("QQQ", "PUT", 95, "2027-01-15");
+    price(put, 3);
+    hold(put, 2, 1);
+    hold(put, 1, 3);
+    const trialPositions = [trialOption("p", 100, "put", "buy", 95, "2027-01-15", 4)];
+    const r = run({ trialPositions, valuationDate: "2026-12-18" });
+    expect(r.positions).toEqual(run({ valuationDate: "2026-12-18" }).positions);
+    expect(trialRow(r, "p").holdingsNowByAccount).toEqual({ 1: 2, 3: 1 });
+    expect(trialRow(r, "p").leavesShortBy).toBeNull();
+    expectTrialConservation(r);
+  });
+
+  it("one valuation price per name: an option-only name is valued at the book's underlying price, not its daily close", () => {
+    addDriverUnderlying();
+    const b = stock("ZZB", 50, null);
+    db.prepare(
+      "INSERT INTO ohlcv_bars (security_id, bar_date, bar_size, open, high, low, close, volume) VALUES (?, '2026-11-06', '1 day', 48, 48, 48, 48, 1000)",
+    ).run(b);
+    hold(option("ZZB", "PUT", 45, "2027-01-15"), 1, 3);
+    const trialPositions = [trialShares("b", b, "buy", 10, 50)];
+    // Held in account 3 only: one price in every scope, the empty scope included.
+    for (const accountIds of [undefined, [3], [1], []]) {
+      const r = run({ accountIds, trialPositions });
+      expect(trialRow(r, "b").valuation, JSON.stringify(accountIds)).toEqual({ price: 50, date: "2026-11-09", source: "book" });
+      expect(trialRow(r, "b").valueUsd).toBe(500);
+      expect(trialRow(r, "b").cases.measured.pnlByMove[2]).toBe(0);
+    }
+    // A name held nowhere with a stored price and no bars: that price, with its date.
+    const d = addSecurity({ symbol: "ZZD", type: "Stock" });
+    price(d, 12, "2026-10-30");
+    const r = run({ trialPositions: [trialShares("d", d, "buy", 10, 13)] });
+    expect(trialRow(r, "d").valuation).toEqual({ price: 12, date: "2026-10-30", source: "stored-price" });
+    // Bought at 13 and marked at 12: the difference is inside the line at a 0% move.
+    expect(trialRow(r, "d").cases.measured.pnlByMove[2]).toBeCloseTo(-10, 9);
+  });
+
+  it("a trial the beta ladder refuses is refused not-modelled with its reason, unless the owner's figure models it", () => {
+    addDriverUnderlying();
+    const f = addSecurity({ symbol: "ZZ3U", type: "ETF", name: "ZZ UltraPro 3X Index Fund", factor: null });
+    price(f, 25);
+    const trialPositions = [trialOption("p", f, "put", "buy", 25, "2027-01-15", 2, 25), trialShares("s", f, "buy", 10, 25)];
+    const r = run({ trialPositions });
+    for (const id of ["p", "s"]) {
+      const row = trialRow(r, id);
+      expect(row).toMatchObject({ refusal: "not-modelled", ladderRefusal: "leveraged-no-factor", betaSource: "not-modelled", valueUsd: null, cost: null });
+      for (const k of CASES) expect(row.cases[k]).toMatchObject({ beta: null, side: "flat", exposureUsd: 0 });
+      for (const k of CASES) expect(row.cases[k].pnlByMove.every((x) => x === 0)).toBe(true);
+    }
+    expect(r.trial).toMatchObject({ netCashUsd: 0, refusedCount: 2 });
+    const owned = run({ trialPositions, betaOverrides: { [f]: 2 } });
+    const p = trialRow(owned, "p");
+    if (p.cost === null) throw new Error("a modelled row carries its cost");
+    expect(p).toMatchObject({ betaSource: "owner", ladderRefusal: "leveraged-no-factor" });
+    expect(p.refusal).toBeUndefined();
+    for (const k of CASES) expect(p.cases[k].beta).toBe(2);
+    expect(owned.trial?.refusedCount).toBe(0);
+    expect(owned.trial?.netCashUsd).toBeCloseTo(-p.cost.usd - 250, 9);
+    expect(owned.betaOverridesIgnored).toBe(0);
+  });
+
+  it("a refused row carries no cost: no FX rate, an unknown id", () => {
+    addDriverUnderlying();
+    const fx = stock("ZZFQ", 30, null, { currency: "ZZQ" });
+    const r = run({ trialPositions: [trialShares("fx", fx, "buy", 10, 30), trialShares("u", 4242, "sell", 10, 30)] });
+    expect(trialRow(r, "fx")).toMatchObject({ refusal: "no-fx-rate", cost: null, valueUsd: null });
+    expect(trialRow(r, "u")).toMatchObject({ refusal: "unknown-security", cost: null, valueUsd: null, leavesShortBy: null });
+    expect(r.trial?.netCashUsd).toBe(0);
+  });
+
+  it("an owner's figure keyed to a trial that is then refused is ignored and counted, as the book does", () => {
+    addDriverUnderlying();
+    const x = addSecurity({ symbol: "ZZX", type: "Stock" }); // no price of any kind
+    const a = stock("ZZA", 50, 1.5);
+    const expired = { ...trialOption("old", a, "put", "buy", 45, "2027-01-15", 1, 50), expiry: "2026-11-09" } as TrialPositionInput;
+    const r = run({ trialPositions: [trialShares("x", x, "buy", 1, 5), expired], betaOverrides: { [x]: 1, [a]: 1 } });
+    expect(trialRow(r, "x").refusal).toBe("no-underlying-price");
+    expect(trialRow(r, "old").refusal).toBe("expired");
+    expect(r.betaOverridesIgnored).toBe(2);
+  });
+
+  it("an Eastern-date rollover: a retained expired trial is refused expired with zero effect, the live one still counts", () => {
+    addDriverUnderlying();
+    const a = stock("ZZA", 50, 1.5);
+    const live = trialShares("live", a, "buy", 10, 50);
+    const expired: TrialPositionInput = { ...trialOption("old", 100, "put", "buy", 95, "2027-01-15", 2), expiry: "2026-11-09" } as TrialPositionInput;
+    const r = run({ trialPositions: [expired, live] });
+    const old = trialRow(r, "old");
+    expect(old).toMatchObject({ refusal: "expired", valueUsd: null, leavesShortBy: null, cost: null });
+    for (const k of CASES) {
+      expect(old.cases[k].pnlByMove.every((x) => x === 0)).toBe(true);
+      expect(old.cases[k].side).toBe("flat");
+    }
+    expect(r.trial?.netCashUsd).toBe(-500);
+    expect(r.trial?.refusedCount).toBe(1);
+    const alone = run({ trialPositions: [live] });
+    expect(trialRow(r, "live")).toEqual(trialRow(alone, "live"));
+    for (const k of CASES) expect(r.trial?.cases[k].moves).toEqual(alone.trial?.cases[k].moves);
+  });
+
+  it("a size-only change after prices moved keeps the accrued result per contract", () => {
+    hold(addDriverUnderlying(), 1);
+    const ten = trialOption("p", 100, "put", "buy", 95, "2027-01-15", 10, 105);
+    const twenty = { ...ten, contracts: 20 } as TrialPositionInput;
+    for (const valuationDate of [TODAY, "2026-12-18"]) {
+      const r10 = run({ valuationDate, trialPositions: [ten] });
+      const r20 = run({ valuationDate, trialPositions: [twenty] });
+      for (const k of CASES) {
+        const a = trialRow(r10, "p").cases[k].pnlByMove;
+        const b = trialRow(r20, "p").cases[k].pnlByMove;
+        for (const [i, x] of a.entries()) expect(b[i]).toBe(2 * x);
+        // Entered at 105, valued at 100 today: the put gained before any move.
+        if (valuationDate === TODAY) expect(a[2]).toBeGreaterThan(0);
+      }
+    }
+  });
+
+  it("a trial put added before a fall keeps its gain after the price refreshes lower, and is never refused", () => {
+    const q = addSecurity({ symbol: "QQQ", type: "ETF" });
+    price(q, 90);
+    bars(q, 1);
+    hold(q, 1);
+    const r0 = getRiskFreeRate(db);
+    const solved = solveTrialEntry({ right: "put", strike: 95, expiry: "2027-01-15", price: 3, underlyingPrice: 100, riskFreeRate: r0, today: TODAY, now: new Date(NOW) });
+    if (!solved.ok) throw new Error("must solve at the click");
+    // Solved again at today's 90, a price of 3 would be below exercise value: the click is never re-solved.
+    expect(solveTrialEntry({ right: "put", strike: 95, expiry: "2027-01-15", price: 3, underlyingPrice: 90, riskFreeRate: r0, today: TODAY, now: new Date(NOW) })).toEqual({ ok: false, reason: "below-intrinsic" });
+    const trial: TrialPositionInput = {
+      kind: "option", id: "p", underlyingSecurityId: q, right: "put", side: "buy", expiry: "2027-01-15", strike: 95, contracts: 1,
+      pricePaid: 3, entryUnderlyingPrice: 100, entryVolatility: solved.volatility,
+    };
+    const r = run({ moves: [0], trialPositions: [trial] });
+    const row = trialRow(r, "p");
+    expect(row.refusal).toBeUndefined();
+    for (const k of CASES) expect(row.cases[k].pnlByMove[0]).toBeGreaterThan(0);
+    const T = yearsToExpiry("2027-01-15", TODAY, new Date(NOW));
+    const v = Math.max(putPrice(90, 95, T, r0, solved.volatility), 5);
+    expect(row.cases.measured.pnlByMove[0]).toBeCloseTo((v - 3) * 100, 6);
+    expect(row.valueUsd).toBeCloseTo(v * 100, 6);
+  });
+
+  it("expiry before the valuation date takes the worse case for a bought and for a written trial option", () => {
+    hold(addDriverUnderlying(), 1);
+    const bought = trialOption("b", 100, "put", "buy", 95, "2026-11-20", 2);
+    const written = trialOption("w", 100, "put", "write", 90, "2026-11-20", 1);
+    if (bought.kind !== "option" || written.kind !== "option") throw new Error("options");
+    const r = run({ moves: [-0.2], valuationDate: "2026-12-18", trialPositions: [bought, written] });
+    for (const k of CASES) {
+      // Bought: the worse of lapsing (0) and the move landing first (15).
+      expect(trialRow(r, "b").cases[k].pnlByMove[0]).toBeCloseTo((0 - bought.pricePaid) * 2 * 100, 6);
+      // Written: the worse of lapsing (0) and being assigned at the moved price (10).
+      expect(trialRow(r, "w").cases[k].pnlByMove[0]).toBeCloseTo((written.pricePaid - 10) * 100, 6);
+      expect(trialRow(r, "b").cases[k].side).toBe("loses");
+      expect(trialRow(r, "w").cases[k].side).toBe("loses");
+    }
+    expect(trialRow(r, "b").expiresBeforeDate).toBe(true);
+    expectTrialConservation(r);
+  });
+
+  it("a trial on the driver has beta 1", () => {
+    const q = addDriverUnderlying();
+    hold(q, 1);
+    const r = run({ moves: [-0.1], trialPositions: [trialShares("q", q, "buy", 10, 100)], betaOverrides: { [q]: 0.5 } });
+    const row = trialRow(r, "q");
+    expect(row.betaSource).toBe("driver");
+    expect(row.measuredBeta).toBe(1);
+    for (const k of CASES) {
+      expect(row.cases[k].beta).toBe(1);
+      expect(row.cases[k].pnlByMove[0]).toBeCloseTo(-100, 9);
+    }
+    // The figure on the driver is refused on the trial, as on a held row, and is not ignored.
+    expect(r.betaOverridesIgnored).toBe(0);
+  });
+
+  it("a trial whose underlying loses its price row is listed with no-underlying-price and contributes zero", () => {
+    addDriverUnderlying();
+    const x = addSecurity({ symbol: "ZZX", type: "Stock" });
+    const r = run({ trialPositions: [trialOption("o", x, "put", "buy", 95, "2027-01-15", 1), trialShares("s", x, "buy", 10, 20)] });
+    for (const id of ["o", "s"]) {
+      const row = trialRow(r, id);
+      expect(row).toMatchObject({ refusal: "no-underlying-price", valuation: null, valueUsd: null });
+      for (const k of CASES) expect(row.cases[k].pnlByMove.every((v) => v === 0)).toBe(true);
+    }
+    expect(r.trial?.netCashUsd).toBe(0);
+    expect(r.trial?.refusedCount).toBe(2);
+    for (const k of CASES) expect(r.trial?.cases[k].moves.every((m) => m.trialPnlUsd === 0)).toBe(true);
+    // Unknown and option ids are refused too.
+    const put = option("QQQ", "PUT", 95, "2027-01-15");
+    const bad = run({ trialPositions: [trialShares("u", 4242, "buy", 1, 1), trialShares("o", put, "buy", 1, 1)] });
+    expect(trialRow(bad, "u").refusal).toBe("unknown-security");
+    expect(trialRow(bad, "o").refusal).toBe("is-an-option");
+  });
+
+  it("no measured link: the trial option shows only decay in measured, carries the warning, moves in selloff", () => {
+    addDriverUnderlying();
+    const u = stock("ZZU", 100, null);
+    hold(u, 1);
+    const trialPositions = [trialOption("p", u, "put", "buy", 95, "2027-03-19", 2), trialShares("s", u, "buy", 10, 100)];
+    const r = run({ moves: [-0.2, -0.1, 0], valuationDate: "2026-12-18", trialPositions });
+    const p = trialRow(r, "p");
+    expect(p).toMatchObject({ betaSource: "no-measured-link", noMeasuredLinkReason: "no-daily-bars", noLinkWarning: true });
+    expect(p.cases.measured.beta).toBe(0);
+    expect(new Set(p.cases.measured.pnlByMove).size).toBe(1);
+    expect(p.cases.measured.pnlByMove[0]).toBeLessThan(0);
+    expect(p.cases.selloff.beta).toBe(1);
+    expect(p.cases.selloff.pnlByMove[0]).toBeGreaterThan(p.cases.selloff.pnlByMove[2]);
+    expect(trialRow(r, "s").noLinkWarning).toBe(false);
+    expect(r.trial?.noLinkWarningCount).toBe(1);
+    expectTrialConservation(r);
+  });
+
+  it("an owner's figure keyed to a trial-only identity is applied and not counted as ignored", () => {
+    addDriverUnderlying();
+    // Not held, and only 30 daily bars: no measured link (short history), valued at its latest bar.
+    const u = addSecurity({ symbol: "ZZU", type: "Stock" });
+    bars(u, 1.2, 30);
+    const r = run({ moves: [-0.1], trialPositions: [trialOption("p", u, "put", "buy", 95, "2027-03-19", 1)], betaOverrides: { [u]: 0.4, 99999: 1 } });
+    const p = trialRow(r, "p");
+    expect(p).toMatchObject({ betaSource: "owner", noLinkWarning: false, noMeasuredLinkReason: "short-history" });
+    expect(p.refusal).toBeUndefined();
+    expect(p.valuation?.source).toBe("daily-bar");
+    for (const k of CASES) expect(p.cases[k].beta).toBe(0.4);
+    expect(r.betaOverridesIgnored).toBe(1);
+    expect(run({ moves: [-0.1], betaOverrides: { [u]: 0.4, 99999: 1 } }).betaOverridesIgnored).toBe(2);
+    // The figure counts in the book's owner disclosure only for held rows.
+    for (const k of CASES) expect(r.cases[k].disclosures.ownerFigure.count).toBe(0);
+  });
+
+  it("R6: gross book, unknown counts and every disclosure are those of the book as it is", () => {
+    seedMixedBook();
+    const w = stock("ZZW", 50, null); // no bars: would count as waiting if it were held
+    const x = addSecurity({ symbol: "ZZX", type: "Stock" });
+    const trialPositions = [
+      trialOption("p", 100, "put", "buy", 95, "2027-01-15", 10),
+      trialShares("w", w, "buy", 1000, 50),
+      trialShares("x", x, "buy", 10, 5),
+      trialOption("n", w, "call", "write", 60, "2027-01-15", 3, 50),
+    ];
+    for (const over of [{}, { accountIds: [3] }, { accountIds: [] as number[] }]) {
+      const before = run(over);
+      const after = run({ ...over, trialPositions });
+      expect(bookOnly(after)).toEqual(before);
+      expect(after.trial?.count).toBe(4);
+    }
+  });
+
+  it("an empty scope still prices the trial positions against no book", () => {
+    addDriverUnderlying();
+    const a = stock("ZZA", 50, 1.5);
+    const r = run({ accountIds: [], moves: [-0.1], trialPositions: [trialShares("b", a, "buy", 10, 50)] });
+    expect(r.positions).toEqual([]);
+    const v = trialRow(r, "b").valuation;
+    expect(v?.source).toBe("daily-bar");
+    const want = 10 * (v!.price * (1 - 0.15) - 50);
+    expect(trialRow(r, "b").cases.measured.pnlByMove[0]).toBeCloseTo(want, 9);
+    expect(r.trial?.cases.measured.moves[0]).toEqual({ move: -0.1, trialPnlUsd: expect.closeTo(want, 9), bookWithTrialPnlUsd: expect.closeTo(want, 9) });
+  });
+
+  it("R7 costs and net cash", () => {
+    hold(addDriverUnderlying(), 1);
+    const a = stock("ZZA", 50, 1.5);
+    hold(a, 5);
+    const put: TrialPositionInput = { ...trialOption("put", 100, "put", "buy", 95, "2027-01-15", 2), pricePaid: 3 } as TrialPositionInput;
+    const call: TrialPositionInput = { ...trialOption("call", 100, "call", "write", 110, "2027-01-15", 1), pricePaid: 2 } as TrialPositionInput;
+    const r = run({ trialPositions: [put, call, trialShares("b", a, "buy", 10, 50), trialShares("s", a, "sell", 20, 55)] });
+    expect(trialRow(r, "put").cost).toEqual({ kind: "premium-paid", usd: 600 });
+    expect(trialRow(r, "call").cost).toEqual({ kind: "premium-received", usd: 200 });
+    expect(trialRow(r, "b").cost).toEqual({ kind: "cash-used", usd: 500 });
+    expect(trialRow(r, "s").cost).toEqual({ kind: "cash-raised", usd: 1100 });
+    expect(r.trial?.netCashUsd).toBe(-600 + 200 - 500 + 1100);
+    // A written option and a sale are signed short.
+    expect(trialRow(r, "call").valueUsd).toBeLessThan(0);
+    expect(trialRow(r, "s").valueUsd).toBe(-1000);
+    // The sale at 55 against a price of 50 is an immediate gain inside the line.
+    expect(trialRow(r, "s").cases.measured.pnlByMove[2]).toBeCloseTo(100, 9);
+  });
+
+  it("refuses a 13th position, a duplicate id and an out-of-bounds number", () => {
+    addDriverUnderlying();
+    const a = stock("ZZA", 50, 1.5);
+    const ok = trialShares("a", a, "buy", 1, 50);
+    const twelve = Array.from({ length: TRIAL_POSITION_BOUNDS.maxPositions }, (_, i) => ({ ...ok, id: `t${i}` }));
+    expect(() => run({ trialPositions: twelve })).not.toThrow();
+    const opt = trialOption("o", 100, "put", "buy", 95, "2027-01-15", 1);
+    const bad: unknown[][] = [
+      [...twelve, { ...ok, id: "t12" }],
+      [ok, { ...ok }],
+      [{ ...ok, id: "" }],
+      [{ ...ok, id: "x".repeat(TRIAL_POSITION_BOUNDS.idMaxLength + 1) }],
+      [{ ...ok, securityId: 1.5 }],
+      [{ ...ok, securityId: Number.NaN }],
+      [{ ...ok, quantity: 0 }],
+      [{ ...ok, quantity: 2.5 }],
+      [{ ...ok, quantity: TRIAL_POSITION_BOUNDS.maxShares + 1 }],
+      [{ ...ok, price: 0 }],
+      [{ ...ok, price: TRIAL_POSITION_BOUNDS.maxPrice + 1 }],
+      [{ ...ok, side: "short" }],
+      [{ ...ok, kind: "future" }],
+      [{ ...opt, contracts: TRIAL_POSITION_BOUNDS.maxContracts + 1 }],
+      [{ ...opt, contracts: 0 }],
+      [{ ...opt, strike: TRIAL_POSITION_BOUNDS.maxStrike + 1 }],
+      [{ ...opt, strike: -1 }],
+      [{ ...opt, pricePaid: Number.POSITIVE_INFINITY }],
+      [{ ...opt, entryUnderlyingPrice: 0 }],
+      [{ ...opt, entryVolatility: 0 }],
+      [{ ...opt, entryVolatility: 1e9 }],
+      [{ ...opt, entryVolatility: TRIAL_POSITION_BOUNDS.maxVolatility + 0.01 }],
+      [{ ...opt, expiry: "2027-02-30" }],
+      [{ ...opt, right: "straddle" }],
+      [{ ...opt, side: "sell" }],
+      [{ ...opt, underlyingSecurityId: -3 }],
+    ];
+    for (const trialPositions of bad) {
+      expect(() => run({ trialPositions: trialPositions as TrialPositionInput[] }), JSON.stringify(trialPositions).slice(0, 80)).toThrow(GainsAtRiskInputError);
+    }
+    expect(() => run({ trialPositions: "nope" as unknown as TrialPositionInput[] })).toThrow(GainsAtRiskInputError);
+    expect(() => run({ trialPositions: [{ ...opt, entryVolatility: TRIAL_POSITION_BOUNDS.maxVolatility } as TrialPositionInput] })).not.toThrow();
+    // A past expiry is not an input error (P11).
+    expect(() => run({ trialPositions: [{ ...opt, expiry: "2026-01-16" } as TrialPositionInput] })).not.toThrow();
+  });
+});
