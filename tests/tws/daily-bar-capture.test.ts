@@ -7,6 +7,7 @@
  */
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import fs from "node:fs";
+import { createHash } from "node:crypto";
 import path from "node:path";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
@@ -772,3 +773,255 @@ describe("auto-refresh Step 7", () => {
   });
 });
 
+
+/**
+ * The batch pin (Gains at risk step 2, Task S2). Frozen from the code BEFORE
+ * the per-security body moved into `captureDailyBarsForSecurity`: the batch's
+ * results, its requests, its logs and every stored bar, per scenario, must
+ * stay exactly the same.
+ */
+describe("batch pin: runDailyBarCapture output is unchanged by the S2 refactor", () => {
+  const PIN_PATH = path.join(process.cwd(), "tests/fixtures/daily-bar-capture-pin.json");
+  const OLDER = () => sessionsBetween(addDays(TODAY, -900), addDays(TODAY, -731));
+  const LAST_21 = () => sessionsBetween(addDays(TODAY, -40), YESTERDAY).slice(-21);
+
+  type Scenario = { name: string; setup: () => { fetch: typeof fetchOhlcvBars; runs?: number } };
+  const scenarios: Scenario[] = [
+    {
+      name: "first fill",
+      setup: () => {
+        hold(security("ZZA"));
+        return { fetch: fakeFetch().fn };
+      },
+    },
+    {
+      name: "overlap agree, mid-session latest replaced",
+      setup: () => {
+        const id = security("ZZA");
+        hold(id);
+        storeBars(id, FULL_HISTORY, (d) => (d === YESTERDAY ? 101.3 : 100));
+        return { fetch: fakeFetch({ close: () => 100 }).fn };
+      },
+    },
+    {
+      name: "too few compared sessions",
+      setup: () => {
+        const id = security("ZZA");
+        hold(id);
+        storeBars(id, [...OLDER(), ...FULL_HISTORY.filter((d) => d < "2026-10-20"), "2026-10-28", "2026-10-29", "2026-10-30", YESTERDAY], () => 100);
+        return { fetch: fakeFetch({ close: () => 100 }).fn };
+      },
+    },
+    {
+      name: "basis change deletes older bars",
+      setup: () => {
+        const id = security("ZZA");
+        hold(id);
+        storeBars(id, [...OLDER(), ...FULL_HISTORY], () => 200);
+        return { fetch: fakeFetch({ close: () => 100 }).fn };
+      },
+    },
+    {
+      name: "short full reply refused",
+      setup: () => {
+        const id = security("ZZA");
+        hold(id);
+        storeBars(id, sessionsBetween(addDays(TODAY, -400), YESTERDAY).slice(-253), () => 100);
+        return { fetch: fakeFetch({ historyStart: () => LAST_21()[0] }).fn };
+      },
+    },
+    {
+      name: "short reply after a basis change refused",
+      setup: () => {
+        const id = security("ZZA");
+        hold(id);
+        storeBars(id, [...FULL_HISTORY.slice(0, 3), ...FULL_HISTORY.slice(-513)], () => 200);
+        return { fetch: fakeFetch({ close: () => 100, historyStart: () => LAST_21()[0] }).fn };
+      },
+    },
+    {
+      name: "exhausted history (first fill of 21 bars) and a second run",
+      setup: () => {
+        hold(security("ZZA"));
+        hold(security("ZZB"));
+        return { fetch: fakeFetch({ historyStart: (id) => (id === 1 ? LAST_21()[0] : "2026-06-01") }).fn, runs: 2 };
+      },
+    },
+    {
+      name: "failure counted, not retried",
+      setup: () => {
+        const bad = security("ZZA");
+        hold(bad);
+        hold(security("ZZB"));
+        return { fetch: fakeFetch({ fail: (id) => id === bad }).fn, runs: 2 };
+      },
+    },
+    {
+      name: "disconnect mid-run",
+      setup: () => {
+        hold(security("ZZA"));
+        hold(security("ZZB"));
+        const f = fakeFetch();
+        const dropping = vi.fn(async (d: Database.Database, o: FetchOhlcvOptions) => {
+          const res = await f.fn(d, o);
+          mockedGetIbApi.mockReturnValue(null);
+          return res;
+        });
+        return { fetch: dropping as unknown as typeof fetchOhlcvBars };
+      },
+    },
+    {
+      name: "disconnect during a fetch",
+      setup: () => {
+        hold(security("ZZA"));
+        const dropping = vi.fn(async () => {
+          mockedGetIbApi.mockReturnValue(null);
+          throw new Error("TWS not connected");
+        });
+        return { fetch: dropping as unknown as typeof fetchOhlcvBars };
+      },
+    },
+    {
+      name: "ineligible names skipped and counted",
+      setup: () => {
+        hold(security("ZZMF", { type: "Mutual Fund" }));
+        hold(security("ZZK", { currency: "KRW" }));
+        hold(security("ZZN", { conId: null }));
+        hold(security("ZZB", { type: "Bond" }));
+        hold(security("ZZE", { type: "ETF" }));
+        return { fetch: fakeFetch().fn };
+      },
+    },
+    {
+      name: "cap of 20 with a mixed book",
+      setup: () => {
+        for (let i = 0; i < 23; i++) {
+          const id = security(`ZZ${String(i).padStart(2, "0")}`);
+          hold(id);
+          if (i % 3 === 0) storeBars(id, FULL_HISTORY, () => 100);
+          if (i % 3 === 1) storeBars(id, FULL_HISTORY, () => 200);
+        }
+        return { fetch: fakeFetch({ close: () => 100 }).fn };
+      },
+    },
+  ];
+
+  async function runScenario(s: Scenario) {
+    db = new Database(":memory:");
+    db.pragma("foreign_keys = ON");
+    runMigrations(db);
+    accountId = db.prepare("INSERT INTO accounts (name) VALUES ('ZZ Test')").run().lastInsertRowid as number;
+    nextConId = 1000;
+    const gl = globalThis as unknown as G;
+    delete gl.__tws_dailyBarLedger;
+    delete gl.__tws_dailyBarLastBatchAt;
+    delete gl.__tws_dailyBarRunning;
+    mockedGetIbApi.mockReturnValue({} as unknown as ReturnType<typeof getIbApi>);
+    const logs: string[] = [];
+    const warn = vi.spyOn(console, "warn").mockImplementation((...a: unknown[]) => void logs.push(`warn ${a.join(" ")}`));
+    const info = vi.spyOn(console, "log").mockImplementation((...a: unknown[]) => void logs.push(`log ${a.join(" ")}`));
+    try {
+      const { fetch, runs = 1 } = s.setup();
+      const calls: { securityId: number; durationStr?: string; maxBarDate?: string; incremental?: boolean; store?: boolean }[] = [];
+      const recording = (async (d: Database.Database, o: FetchOhlcvOptions) => {
+        calls.push({ securityId: o.securityId, durationStr: o.durationStr, maxBarDate: o.maxBarDate, incremental: o.incremental, store: o.store });
+        return fetch(d, o);
+      }) as unknown as typeof fetchOhlcvBars;
+      const results = [];
+      for (let i = 0; i < runs; i++) {
+        results.push(await runDailyBarCapture(db, { today: TODAY, now: T0 + i * 26 * 60_000, fetch: recording }));
+      }
+      const rows = db
+        .prepare(
+          `SELECT s.symbol, b.bar_date, b.bar_size, b.open, b.high, b.low, b.close, b.volume
+             FROM ohlcv_bars b JOIN securities s ON s.id = b.security_id
+            ORDER BY s.symbol, b.bar_size, b.bar_date`,
+        )
+        .all() as { symbol: string; bar_date: string; bar_size: string; open: number; high: number; low: number; close: number; volume: number | null }[];
+      // Every stored row, digested per symbol and bar size (the full rows would make a multi-megabyte fixture).
+      const groups = new Map<string, typeof rows>();
+      for (const r of rows) {
+        const k = `${r.symbol} ${r.bar_size}`;
+        if (!groups.has(k)) groups.set(k, []);
+        groups.get(k)!.push(r);
+      }
+      const bars = [...groups.entries()].map(([key, g]) => ({
+        key,
+        count: g.length,
+        first: g[0].bar_date,
+        last: g[g.length - 1].bar_date,
+        closes: [...new Set(g.map((r) => r.close))].sort((a, b) => a - b),
+        sha256: createHash("sha256")
+          .update(g.map((r) => [r.bar_date, r.open, r.high, r.low, r.close, r.volume].join("|")).join("\n"))
+          .digest("hex"),
+      }));
+      return { name: s.name, results, calls, logs, bars };
+    } finally {
+      warn.mockRestore();
+      info.mockRestore();
+    }
+  }
+
+  it("every scenario matches the frozen fixture", async () => {
+    const actual = [];
+    for (const s of scenarios) actual.push(await runScenario(s));
+    // Frozen once (2026-11-24) from the code before the refactor, by a one-off write of
+    // `JSON.stringify(actual, null, 1)` to PIN_PATH. Never regenerate it to make this pass.
+    const frozen = JSON.parse(fs.readFileSync(PIN_PATH, "utf8"));
+    expect(JSON.parse(JSON.stringify(actual))).toStrictEqual(frozen);
+  }, 60_000);
+});
+
+describe("fix round 1 (S2): a database error while handling a fetch failure still stops the batch", () => {
+  it("fetch fails, then prepare throws: capture stopped, attempted 1, ledger empty, retried next batch", async () => {
+    const a = security("ZZA");
+    hold(a);
+    hold(security("ZZB"));
+    let broken = false;
+    const proxied = new Proxy(db, {
+      get(target, prop) {
+        if (prop === "prepare" && broken) {
+          return () => {
+            throw new Error("SQLITE_BUSY");
+          };
+        }
+        const v = Reflect.get(target, prop, target);
+        return typeof v === "function" ? v.bind(target) : v;
+      },
+    }) as Database.Database;
+    const failing = vi.fn(async () => {
+      broken = true;
+      throw new Error("Timeout after 30s");
+    });
+    const logs: string[] = [];
+    const warn = vi.spyOn(console, "warn").mockImplementation((...x: unknown[]) => void logs.push(x.join(" ")));
+    const r = await runDailyBarCapture(proxied, { today: TODAY, now: T0, fetch: failing as unknown as typeof fetchOhlcvBars });
+    warn.mockRestore();
+    // Exactly what the code before the refactor answered.
+    expect(r).toStrictEqual({
+      attempted: 1,
+      written: 0,
+      fullRefetches: 1,
+      basisChanges: 0,
+      staleOlderBarsDeleted: 0,
+      failed: 1,
+      doneToday: 0,
+      exhausted: 0,
+      foreignSession: 0,
+      noContractId: 0,
+      mutualFund: 0,
+      bondFund: 0,
+    });
+    expect(failing).toHaveBeenCalledTimes(1);
+    expect(logs).toEqual(["[daily-bars] capture stopped: Error"]);
+    const ledger = (globalThis as unknown as { __tws_dailyBarLedger: { succeeded: Set<number>; exhausted: Set<number>; failed: Set<number> } })
+      .__tws_dailyBarLedger;
+    expect([ledger.succeeded.size, ledger.exhausted.size, ledger.failed.size]).toEqual([0, 0, 0]);
+    expect((globalThis as unknown as G).__tws_dailyBarRunning).toBe(false);
+    // Nothing was recorded, so the next batch tries both names again.
+    const f = fakeFetch();
+    const r2 = await runDailyBarCapture(db, { today: TODAY, now: T0 + 26 * 60_000, fetch: f.fn });
+    expect(r2.attempted).toBe(2);
+    expect(f.calls[0].securityId).toBe(a);
+  });
+});

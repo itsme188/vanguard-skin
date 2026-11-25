@@ -29,12 +29,18 @@
  *     minutes per process, one run at a time, every request through the same
  *     global OHLCV limiter as the Charts daily path (`fetchOhlcvBars`).
  *
+ * One body, three callers (step 2, ruling R9): `captureDailyBarsForSecurity`
+ * is the per-security rule; the batch (`runDailyBarCapture`, read by the sync
+ * and the backfill script) and the one-security call
+ * (`ensureDailyBarsForSecurity`, for a trial option's underlying) both run it.
+ *
  * Writes only `ohlcv_bars`, only from TWS, only through the bad-bar guard.
  * Never throws: a failure is counted and logged with a symbol and an error
  * class, never a message, a price or a quantity.
  */
 
 import type Database from "better-sqlite3";
+import type { IBApiNext } from "@stoqey/ib";
 import { getIbApi } from "./client";
 import { fetchOhlcvBars, storableDailyBars, type FetchedOhlcvBar } from "./ohlcv";
 import { getPricedDailyBarRange, getPricedDailyCloses } from "@/lib/queries/ohlcv";
@@ -78,8 +84,15 @@ interface DailyBarLedger {
   failed: Set<number>;
 }
 
+/** One-security fetch failures, per security, this process, this Eastern day (fix round 1). */
+interface EnsureFailureState {
+  day: string;
+  byId: Map<number, { count: number; lastFailedAt: number }>;
+}
+
 type CaptureGlobals = {
   __tws_dailyBarLedger?: DailyBarLedger;
+  __tws_dailyBarEnsureFailures?: EnsureFailureState;
   __tws_dailyBarLastBatchAt?: number;
   __tws_dailyBarRunning?: boolean;
 };
@@ -293,7 +306,10 @@ export interface DailyBarCaptureResult {
   staleOlderBarsDeleted: number;
   /** Securities whose capture failed this run (not retried today). A short full reply that was refused counts here. */
   failed: number;
-  /** Securities this process has captured successfully today, this run included. */
+  /**
+   * Securities this process has captured successfully today, this run included.
+   * It can include a name fetched by the one-security call (`ensureDailyBarsForSecurity`).
+   */
   doneToday: number;
   /** Securities whose broker history is shorter than two years, found today. */
   exhausted: number;
@@ -412,10 +428,37 @@ function compareOverlap(
 type Outcome = "succeeded" | "exhausted" | "failed";
 
 /**
- * Capture one batch. Never throws (a caller in the sync pipeline does not
- * await it); every answer is a result with counts.
+ * Everything one security's capture needs that does not depend on the
+ * security: the Eastern day and the dates derived from it, the fetcher, and
+ * the counters the caller sums. Build it with `dailyBarCaptureContext`.
+ */
+export interface DailyBarCaptureContext {
+  today: string;
+  maxBarDate: string;
+  windowStart: string;
+  fullHistoryFloor: string;
+  fetch: typeof fetchOhlcvBars;
+  /** Counters the caller sums (fullRefetches, basisChanges, staleOlderBarsDeleted). */
+  counters: Pick<DailyBarCaptureResult, "fullRefetches" | "basisChanges" | "staleOlderBarsDeleted">;
+}
+
+/** The context for one Eastern day, with fresh counters. `fetch` defaults to the shared, rate-limited fetcher. */
+export function dailyBarCaptureContext(today: string, fetch: typeof fetchOhlcvBars = fetchOhlcvBars): DailyBarCaptureContext {
+  return {
+    today,
+    maxBarDate: previousTradingDay(today),
+    windowStart: addDays(today, -DAILY_BAR_HISTORY_DAYS),
+    fullHistoryFloor: addDays(today, -DAILY_BAR_FULL_HISTORY_DAYS),
+    fetch,
+    counters: { fullRefetches: 0, basisChanges: 0, staleOlderBarsDeleted: 0 },
+  };
+}
+
+/**
+ * One security: the capture body, shared by the batch (`runDailyBarCapture`,
+ * the sync and the backfill script) and the one-security call
+ * (`ensureDailyBarsForSecurity`). Three callers, one rule.
  *
- * Per security:
  *   - nothing stored in the window (no bars, or a stored latest older than
  *     the window): one two-year request, written as a plain fill;
  *   - a stored history that starts too late: one two-year request, replacing
@@ -427,10 +470,88 @@ type Outcome = "succeeded" | "exhausted" | "failed";
  *     are on the old basis, are deleted in the same transaction. If too few
  *     sessions compare, the same full reply replaces the window, but nothing
  *     older is deleted and no basis change is counted.
- * Every replace first passes the short-reply guard; a refused reply is a
- * failure and changes nothing. A security is marked exhausted only by a full
- * reply that was written. A disconnect during a request leaves the security
- * unrecorded, so it is retried after a reconnect.
+ * Every replace first passes the short-reply guard; a refused reply throws
+ * and changes nothing. Answers "exhausted" only for a full reply that was
+ * written and starts after the two-year floor.
+ *
+ * Throws on failure; never touches the ledger, the running flag or the batch
+ * window (the caller owns those). Checks no eligibility (the caller does).
+ */
+export async function captureDailyBarsForSecurity(
+  db: Database.Database,
+  securityId: number,
+  ctx: DailyBarCaptureContext,
+): Promise<"succeeded" | "exhausted"> {
+  const { today, maxBarDate, windowStart, fullHistoryFloor, counters } = ctx;
+
+  const request = async (durationStr: string): Promise<FetchedOhlcvBar[]> => {
+    if (durationStr === FULL_DURATION) counters.fullRefetches++;
+    const res = await ctx.fetch(db, { securityId, durationStr, incremental: false, store: false, maxBarDate });
+    return storableDailyBars(res.bars, maxBarDate);
+  };
+  const fullOutcome = (bars: FetchedOhlcvBar[]): "succeeded" | "exhausted" =>
+    bars[0].date <= fullHistoryFloor ? "succeeded" : "exhausted";
+
+  /** Replace the window with a full reply, behind the short-reply guard. */
+  const replaceWithFull = (bars: FetchedOhlcvBar[], basisChanged: boolean): "succeeded" | "exhausted" => {
+    if (bars.length === 0) throw new Error("empty full fetch");
+    const storedInWindow = getPricedDailyCloses(db, securityId, windowStart);
+    if (!fullReplyCovers(bars, storedInWindow)) throw new ShortFullReplyError();
+    if (storedInWindow.size === 0 && !basisChanged) {
+      upsertOhlcvBars(db, securityId, BAR_SIZE, bars);
+    } else {
+      const r = replaceDailyBarsInWindow(db, securityId, windowStart, bars, { deleteOlderDailyBars: basisChanged });
+      if (r.inserted === 0) throw new Error("no sane bar in full fetch");
+      if (r.olderDeleted > 0) {
+        counters.staleOlderBarsDeleted += r.olderDeleted;
+        console.log(`[daily-bars] #${securityId}: ${r.olderDeleted} older daily bars on the old basis deleted`);
+      }
+    }
+    return fullOutcome(bars);
+  };
+
+  const range = getPricedDailyBarRange(db, securityId);
+  if (!range || range.latest < windowStart || range.earliest > fullHistoryFloor) {
+    return replaceWithFull(await request(FULL_DURATION), false);
+  }
+  const overlapStart = addDays(range.latest, -DAILY_BAR_OVERLAP_CALENDAR_DAYS);
+  const duration = durationFrom(overlapStart, today);
+  const overlap = await request(duration);
+  const verdict = compareOverlap(overlap, getPricedDailyCloses(db, securityId, overlapStart), range.latest);
+  if (verdict === "agree") {
+    upsertOhlcvBars(db, securityId, BAR_SIZE, overlap);
+    return "succeeded";
+  }
+  if (verdict === "too-few") {
+    // Too few sessions compare: a halt or a sparse name as often as a split.
+    // Refetch the window in full (reusing a reply that already is), replace it
+    // behind the guard, but delete nothing older and count no basis change.
+    const full = duration === FULL_DURATION ? overlap : await request(FULL_DURATION);
+    return replaceWithFull(full, false);
+  }
+  // Closes compared and differ beyond the tolerance: a real basis change.
+  counters.basisChanges++;
+  const full = duration === FULL_DURATION ? overlap : await request(FULL_DURATION);
+  return replaceWithFull(full, true);
+}
+
+/**
+ * The symbol for a failure log; `#id` only when the row is missing. A
+ * database error is NOT caught: in the batch it ends the run ("capture
+ * stopped", the name unrecorded), as it did before the body moved out.
+ */
+function symbolFor(db: Database.Database, securityId: number): string {
+  const row = db.prepare("SELECT symbol FROM securities WHERE id = ?").get(securityId) as { symbol: string } | undefined;
+  return row?.symbol ?? `#${securityId}`;
+}
+
+/**
+ * Capture one batch. Never throws (a caller in the sync pipeline does not
+ * await it); every answer is a result with counts.
+ *
+ * Each due security goes through `captureDailyBarsForSecurity`. A failure is
+ * recorded in the day's ledger and not retried today. A disconnect during a
+ * request leaves the security unrecorded, so it is retried after a reconnect.
  */
 export async function runDailyBarCapture(
   db: Database.Database,
@@ -452,9 +573,8 @@ export async function runDailyBarCapture(
     const fetchBars = opts.fetch ?? fetchOhlcvBars;
     const cap = opts.maxSecurities ?? DAILY_BAR_CAPTURE_MAX_PER_BATCH;
     const ledger = ledgerFor(today);
-    const maxBarDate = previousTradingDay(today);
-    const windowStart = addDays(today, -DAILY_BAR_HISTORY_DAYS);
-    const fullHistoryFloor = addDays(today, -DAILY_BAR_FULL_HISTORY_DAYS);
+    // The body adds its counters straight onto this batch's result.
+    const ctx: DailyBarCaptureContext = { ...dailyBarCaptureContext(today, fetchBars), counters: result };
 
     let listed: DailyBarTargets;
     try {
@@ -472,62 +592,13 @@ export async function runDailyBarCapture(
       (id) => !ledger.succeeded.has(id) && !ledger.exhausted.has(id) && !ledger.failed.has(id),
     );
 
-    const request = async (securityId: number, durationStr: string): Promise<FetchedOhlcvBar[]> => {
-      if (durationStr === FULL_DURATION) result.fullRefetches++;
-      const res = await fetchBars(db, { securityId, durationStr, incremental: false, store: false, maxBarDate });
-      return storableDailyBars(res.bars, maxBarDate);
-    };
-    const fullOutcome = (bars: FetchedOhlcvBar[]): Outcome =>
-      bars[0].date <= fullHistoryFloor ? "succeeded" : "exhausted";
-
-    /** Replace the window with a full reply, behind the short-reply guard. */
-    const replaceWithFull = (securityId: number, bars: FetchedOhlcvBar[], basisChanged: boolean): Outcome => {
-      if (bars.length === 0) throw new Error("empty full fetch");
-      const storedInWindow = getPricedDailyCloses(db, securityId, windowStart);
-      if (!fullReplyCovers(bars, storedInWindow)) throw new ShortFullReplyError();
-      if (storedInWindow.size === 0 && !basisChanged) {
-        upsertOhlcvBars(db, securityId, BAR_SIZE, bars);
-      } else {
-        const r = replaceDailyBarsInWindow(db, securityId, windowStart, bars, { deleteOlderDailyBars: basisChanged });
-        if (r.inserted === 0) throw new Error("no sane bar in full fetch");
-        if (r.olderDeleted > 0) {
-          result.staleOlderBarsDeleted += r.olderDeleted;
-          console.log(`[daily-bars] #${securityId}: ${r.olderDeleted} older daily bars on the old basis deleted`);
-        }
-      }
-      return fullOutcome(bars);
-    };
-
     for (const securityId of due) {
       if (result.attempted >= cap) break;
       if (!getIbApi()) break; // disconnected mid-run: stop, count nothing as failed
       result.attempted++;
       let outcome: Outcome;
       try {
-        const range = getPricedDailyBarRange(db, securityId);
-        if (!range || range.latest < windowStart || range.earliest > fullHistoryFloor) {
-          outcome = replaceWithFull(securityId, await request(securityId, FULL_DURATION), false);
-        } else {
-          const overlapStart = addDays(range.latest, -DAILY_BAR_OVERLAP_CALENDAR_DAYS);
-          const duration = durationFrom(overlapStart, today);
-          const overlap = await request(securityId, duration);
-          const verdict = compareOverlap(overlap, getPricedDailyCloses(db, securityId, overlapStart), range.latest);
-          if (verdict === "agree") {
-            upsertOhlcvBars(db, securityId, BAR_SIZE, overlap);
-            outcome = "succeeded";
-          } else if (verdict === "too-few") {
-            // Too few sessions compare: a halt or a sparse name as often as a split.
-            // Refetch the window in full (reusing a reply that already is), replace it
-            // behind the guard, but delete nothing older and count no basis change.
-            const full = duration === FULL_DURATION ? overlap : await request(securityId, FULL_DURATION);
-            outcome = replaceWithFull(securityId, full, false);
-          } else {
-            // Closes compared and differ beyond the tolerance: a real basis change.
-            result.basisChanges++;
-            const full = duration === FULL_DURATION ? overlap : await request(securityId, FULL_DURATION);
-            outcome = replaceWithFull(securityId, full, true);
-          }
-        }
+        outcome = await captureDailyBarsForSecurity(db, securityId, ctx);
         result.written++;
       } catch (err) {
         if (!getIbApi()) {
@@ -536,10 +607,7 @@ export async function runDailyBarCapture(
         }
         outcome = "failed";
         result.failed++;
-        const sym = (db.prepare("SELECT symbol FROM securities WHERE id = ?").get(securityId) as
-          | { symbol: string }
-          | undefined)?.symbol;
-        console.warn(`[daily-bars] ${sym ?? `#${securityId}`}: ${errorClass(err)}`);
+        console.warn(`[daily-bars] ${symbolFor(db, securityId)}: ${errorClass(err)}`);
       }
       ledger[outcome].add(securityId);
     }
@@ -552,5 +620,121 @@ export async function runDailyBarCapture(
     return result;
   } finally {
     g.__tws_dailyBarRunning = false;
+  }
+}
+
+/** After a failed one-security fetch, the next attempt on that name waits this long. */
+export const DAILY_BAR_ENSURE_FAILURE_COOLDOWN_MS = 10 * 60 * 1000;
+/** After this many failed one-security fetches of a name in one Eastern day, it is refused until the next day. */
+export const DAILY_BAR_ENSURE_MAX_FAILURES_PER_DAY = 3;
+
+export type EnsureDailyBarsRefusal =
+  | "not-connected"
+  | "batch-running"
+  | "not-found"
+  | "no-contract-id"
+  | "ineligible"
+  | "cooling-down"
+  | "failed-today"
+  | "failed";
+
+export type EnsureDailyBarsResult =
+  | { ok: true; outcome: "succeeded" | "exhausted" | "already-today" }
+  | { ok: false; reason: "cooling-down"; retryAfterSeconds: number }
+  | {
+      ok: false;
+      reason: Exclude<EnsureDailyBarsRefusal, "cooling-down">;
+      ineligibleReason?: DailyBarIneligibleReason;
+    };
+
+function ensureFailuresFor(today: string): EnsureFailureState {
+  const cur = g.__tws_dailyBarEnsureFailures;
+  if (cur && cur.day === today) return cur;
+  const fresh: EnsureFailureState = { day: today, byId: new Map() };
+  g.__tws_dailyBarEnsureFailures = fresh;
+  return fresh;
+}
+
+/**
+ * Fetch the daily bars of ONE security now (Gains at risk step 2, ruling R9):
+ * a trial option on an underlying the batch has not captured yet.
+ *
+ * Refused, with no request: `not-connected` (no `api`), `batch-running`
+ * (a batch, or another one-security call, holds the running flag),
+ * `not-found` (no securities row), `no-contract-id`, `ineligible`
+ * (`dailyBarCaptureEligibility`, with its reason). Answers `already-today`,
+ * with no request, when today's ledger already has the security as
+ * succeeded or exhausted. Retries of a failing name are bounded (fix round
+ * 1): after a failed one-security fetch the name is refused `cooling-down`
+ * (with the seconds remaining) for `DAILY_BAR_ENSURE_FAILURE_COOLDOWN_MS`,
+ * and after `DAILY_BAR_ENSURE_MAX_FAILURES_PER_DAY` failures in one Eastern
+ * day it is refused `failed-today` until the next day; a success clears the
+ * name's failure state. A batch failure earlier today is not counted here.
+ *
+ * Otherwise it holds the running flag (so a batch started meanwhile answers
+ * `already-running`), runs the shared body through the same rate-limited
+ * fetcher, and records the outcome in today's ledger, so the next batch skips
+ * it. It is not held to the 25-minute batch window and never moves it.
+ * A disconnect during the request answers `not-connected` and records
+ * nothing, as the batch does. Never throws; logs a symbol and an error class
+ * at most. Writes only `ohlcv_bars`.
+ */
+export async function ensureDailyBarsForSecurity(
+  db: Database.Database,
+  api: IBApiNext | null,
+  securityId: number,
+  opts: { today?: string; fetch?: typeof fetchOhlcvBars; /** Epoch ms for the cooldown; defaults to `Date.now()`. */ now?: number } = {},
+): Promise<EnsureDailyBarsResult> {
+  let holdsFlag = false;
+  try {
+    if (!api) return { ok: false, reason: "not-connected" };
+    if (g.__tws_dailyBarRunning) return { ok: false, reason: "batch-running" };
+    if (!Number.isSafeInteger(securityId) || securityId <= 0) return { ok: false, reason: "not-found" };
+    const row = db.prepare(`SELECT ${CANDIDATE_COLUMNS} FROM securities s WHERE s.id = ?`).get(securityId) as
+      | CandidateRow
+      | undefined;
+    if (!row) return { ok: false, reason: "not-found" };
+    const verdict = dailyBarCaptureEligibility(row);
+    if (!verdict.eligible) {
+      if (verdict.reason === "no-contract-id") return { ok: false, reason: "no-contract-id" };
+      return { ok: false, reason: "ineligible", ineligibleReason: verdict.reason };
+    }
+
+    const today = opts.today ?? todayET();
+    const ledger = ledgerFor(today);
+    if (ledger.succeeded.has(securityId) || ledger.exhausted.has(securityId)) {
+      return { ok: true, outcome: "already-today" };
+    }
+
+    const now = opts.now ?? Date.now();
+    const failures = ensureFailuresFor(today);
+    const prior = failures.byId.get(securityId);
+    if (prior) {
+      if (prior.count >= DAILY_BAR_ENSURE_MAX_FAILURES_PER_DAY) return { ok: false, reason: "failed-today" };
+      const remainingMs = Math.min(prior.lastFailedAt + DAILY_BAR_ENSURE_FAILURE_COOLDOWN_MS - now, DAILY_BAR_ENSURE_FAILURE_COOLDOWN_MS);
+      if (remainingMs > 0) return { ok: false, reason: "cooling-down", retryAfterSeconds: Math.ceil(remainingMs / 1000) };
+    }
+
+    // Everything above is synchronous, so no batch can have started since the check.
+    g.__tws_dailyBarRunning = true;
+    holdsFlag = true;
+    try {
+      const outcome = await captureDailyBarsForSecurity(db, securityId, dailyBarCaptureContext(today, opts.fetch ?? fetchOhlcvBars));
+      ledger.failed.delete(securityId);
+      ledger[outcome].add(securityId);
+      failures.byId.delete(securityId);
+      return { ok: true, outcome };
+    } catch (err) {
+      if (!getIbApi()) return { ok: false, reason: "not-connected" }; // unrecorded: retried after a reconnect
+      ledger.failed.add(securityId);
+      failures.byId.set(securityId, { count: (prior?.count ?? 0) + 1, lastFailedAt: now });
+      console.warn(`[daily-bars] ${row.symbol}: ${errorClass(err)}`);
+      return { ok: false, reason: "failed" };
+    }
+  } catch (err) {
+    console.warn(`[daily-bars] one-security fetch stopped: ${errorClass(err)}`);
+    return { ok: false, reason: "failed" };
+  } finally {
+    if (holdsFlag) g.__tws_dailyBarRunning = false;
   }
 }

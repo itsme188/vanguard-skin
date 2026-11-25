@@ -1,0 +1,959 @@
+[
+ {
+  "name": "first fill",
+  "results": [
+   {
+    "attempted": 1,
+    "written": 1,
+    "fullRefetches": 1,
+    "basisChanges": 0,
+    "staleOlderBarsDeleted": 0,
+    "failed": 0,
+    "doneToday": 1,
+    "exhausted": 0,
+    "foreignSession": 0,
+    "noContractId": 0,
+    "mutualFund": 0,
+    "bondFund": 0
+   }
+  ],
+  "calls": [
+   {
+    "securityId": 1,
+    "durationStr": "2 Y",
+    "maxBarDate": "2026-11-09",
+    "incremental": false,
+    "store": false
+   }
+  ],
+  "logs": [],
+  "bars": [
+   {
+    "key": "ZZA 1 day",
+    "count": 513,
+    "first": "2024-11-11",
+    "last": "2026-11-09",
+    "closes": [
+     100
+    ],
+    "sha256": "e3d3b13cc2b12bf8c2b65631913aa7d68aa7add2859595d7d9955bfb819998c7"
+   }
+  ]
+ },
+ {
+  "name": "overlap agree, mid-session latest replaced",
+  "results": [
+   {
+    "attempted": 1,
+    "written": 1,
+    "fullRefetches": 0,
+    "basisChanges": 0,
+    "staleOlderBarsDeleted": 0,
+    "failed": 0,
+    "doneToday": 1,
+    "exhausted": 0,
+    "foreignSession": 0,
+    "noContractId": 0,
+    "mutualFund": 0,
+    "bondFund": 0
+   }
+  ],
+  "calls": [
+   {
+    "securityId": 1,
+    "durationStr": "16 D",
+    "maxBarDate": "2026-11-09",
+    "incremental": false,
+    "store": false
+   }
+  ],
+  "logs": [],
+  "bars": [
+   {
+    "key": "ZZA 1 day",
+    "count": 513,
+    "first": "2024-11-11",
+    "last": "2026-11-09",
+    "closes": [
+     100
+    ],
+    "sha256": "e3d3b13cc2b12bf8c2b65631913aa7d68aa7add2859595d7d9955bfb819998c7"
+   }
+  ]
+ },
+ {
+  "name": "too few compared sessions",
+  "results": [
+   {
+    "attempted": 1,
+    "written": 1,
+    "fullRefetches": 1,
+    "basisChanges": 0,
+    "staleOlderBarsDeleted": 0,
+    "failed": 0,
+    "doneToday": 1,
+    "exhausted": 0,
+    "foreignSession": 0,
+    "noContractId": 0,
+    "mutualFund": 0,
+    "bondFund": 0
+   }
+  ],
+  "calls": [
+   {
+    "securityId": 1,
+    "durationStr": "16 D",
+    "maxBarDate": "2026-11-09",
+    "incremental": false,
+    "store": false
+   },
+   {
+    "securityId": 1,
+    "durationStr": "2 Y",
+    "maxBarDate": "2026-11-09",
+    "incremental": false,
+    "store": false
+   }
+  ],
+  "logs": [],
+  "bars": [
+   {
+    "key": "ZZA 1 day",
+    "count": 634,
+    "first": "2024-05-24",
+    "last": "2026-11-09",
+    "closes": [
+     100
+    ],
+    "sha256": "45f15c14f1202d33778da00618ad26cdcc21f9bde35cb5393ebda66dee62f105"
+   }
+  ]
+ },
+ {
+  "name": "basis change deletes older bars",
+  "results": [
+   {
+    "attempted": 1,
+    "written": 1,
+    "fullRefetches": 1,
+    "basisChanges": 1,
+    "staleOlderBarsDeleted": 121,
+    "failed": 0,
+    "doneToday": 1,
+    "exhausted": 0,
+    "foreignSession": 0,
+    "noContractId": 0,
+    "mutualFund": 0,
+    "bondFund": 0
+   }
+  ],
+  "calls": [
+   {
+    "securityId": 1,
+    "durationStr": "16 D",
+    "maxBarDate": "2026-11-09",
+    "incremental": false,
+    "store": false
+   },
+   {
+    "securityId": 1,
+    "durationStr": "2 Y",
+    "maxBarDate": "2026-11-09",
+    "incremental": false,
+    "store": false
+   }
+  ],
+  "logs": [
+   "log [daily-bars] #1: 121 older daily bars on the old basis deleted"
+  ],
+  "bars": [
+   {
+    "key": "ZZA 1 day",
+    "count": 513,
+    "first": "2024-11-11",
+    "last": "2026-11-09",
+    "closes": [
+     100
+    ],
+    "sha256": "e3d3b13cc2b12bf8c2b65631913aa7d68aa7add2859595d7d9955bfb819998c7"
+   }
+  ]
+ },
+ {
+  "name": "short full reply refused",
+  "results": [
+   {
+    "attempted": 1,
+    "written": 0,
+    "fullRefetches": 1,
+    "basisChanges": 0,
+    "staleOlderBarsDeleted": 0,
+    "failed": 1,
+    "doneToday": 0,
+    "exhausted": 0,
+    "foreignSession": 0,
+    "noContractId": 0,
+    "mutualFund": 0,
+    "bondFund": 0
+   }
+  ],
+  "calls": [
+   {
+    "securityId": 1,
+    "durationStr": "2 Y",
+    "maxBarDate": "2026-11-09",
+    "incremental": false,
+    "store": false
+   }
+  ],
+  "logs": [
+   "warn [daily-bars] ZZA: short-full-reply"
+  ],
+  "bars": [
+   {
+    "key": "ZZA 1 day",
+    "count": 253,
+    "first": "2025-11-10",
+    "last": "2026-11-09",
+    "closes": [
+     100
+    ],
+    "sha256": "a98f4ccec3cccad26a7afcc4b518ca3b0c86cb4ba780e7d21d3d2e8a49dacd61"
+   }
+  ]
+ },
+ {
+  "name": "short reply after a basis change refused",
+  "results": [
+   {
+    "attempted": 1,
+    "written": 0,
+    "fullRefetches": 1,
+    "basisChanges": 1,
+    "staleOlderBarsDeleted": 0,
+    "failed": 1,
+    "doneToday": 0,
+    "exhausted": 0,
+    "foreignSession": 0,
+    "noContractId": 0,
+    "mutualFund": 0,
+    "bondFund": 0
+   }
+  ],
+  "calls": [
+   {
+    "securityId": 1,
+    "durationStr": "16 D",
+    "maxBarDate": "2026-11-09",
+    "incremental": false,
+    "store": false
+   },
+   {
+    "securityId": 1,
+    "durationStr": "2 Y",
+    "maxBarDate": "2026-11-09",
+    "incremental": false,
+    "store": false
+   }
+  ],
+  "logs": [
+   "warn [daily-bars] ZZA: short-full-reply"
+  ],
+  "bars": [
+   {
+    "key": "ZZA 1 day",
+    "count": 513,
+    "first": "2024-11-11",
+    "last": "2026-11-09",
+    "closes": [
+     200
+    ],
+    "sha256": "28800a698ff6e791a1a12881fc3a18f3303028f20ee7896ec5877eb57e3f3700"
+   }
+  ]
+ },
+ {
+  "name": "exhausted history (first fill of 21 bars) and a second run",
+  "results": [
+   {
+    "attempted": 2,
+    "written": 2,
+    "fullRefetches": 2,
+    "basisChanges": 0,
+    "staleOlderBarsDeleted": 0,
+    "failed": 0,
+    "doneToday": 0,
+    "exhausted": 2,
+    "foreignSession": 0,
+    "noContractId": 0,
+    "mutualFund": 0,
+    "bondFund": 0
+   },
+   {
+    "attempted": 0,
+    "written": 0,
+    "fullRefetches": 0,
+    "basisChanges": 0,
+    "staleOlderBarsDeleted": 0,
+    "failed": 0,
+    "doneToday": 0,
+    "exhausted": 2,
+    "foreignSession": 0,
+    "noContractId": 0,
+    "mutualFund": 0,
+    "bondFund": 0
+   }
+  ],
+  "calls": [
+   {
+    "securityId": 1,
+    "durationStr": "2 Y",
+    "maxBarDate": "2026-11-09",
+    "incremental": false,
+    "store": false
+   },
+   {
+    "securityId": 2,
+    "durationStr": "2 Y",
+    "maxBarDate": "2026-11-09",
+    "incremental": false,
+    "store": false
+   }
+  ],
+  "logs": [],
+  "bars": [
+   {
+    "key": "ZZA 1 day",
+    "count": 21,
+    "first": "2026-10-12",
+    "last": "2026-11-09",
+    "closes": [
+     100
+    ],
+    "sha256": "ef2d19b618e88965e7cb6b4f98dd57e8aaba3ce6929a7a1d1d479aff288e000d"
+   },
+   {
+    "key": "ZZB 1 day",
+    "count": 113,
+    "first": "2026-06-01",
+    "last": "2026-11-09",
+    "closes": [
+     100
+    ],
+    "sha256": "daf475667ff4a1351f98ff63f4f4e2d13ea7472ed58c6cdcb686ffbfc5f5032a"
+   }
+  ]
+ },
+ {
+  "name": "failure counted, not retried",
+  "results": [
+   {
+    "attempted": 2,
+    "written": 1,
+    "fullRefetches": 2,
+    "basisChanges": 0,
+    "staleOlderBarsDeleted": 0,
+    "failed": 1,
+    "doneToday": 1,
+    "exhausted": 0,
+    "foreignSession": 0,
+    "noContractId": 0,
+    "mutualFund": 0,
+    "bondFund": 0
+   },
+   {
+    "attempted": 0,
+    "written": 0,
+    "fullRefetches": 0,
+    "basisChanges": 0,
+    "staleOlderBarsDeleted": 0,
+    "failed": 0,
+    "doneToday": 1,
+    "exhausted": 0,
+    "foreignSession": 0,
+    "noContractId": 0,
+    "mutualFund": 0,
+    "bondFund": 0
+   }
+  ],
+  "calls": [
+   {
+    "securityId": 1,
+    "durationStr": "2 Y",
+    "maxBarDate": "2026-11-09",
+    "incremental": false,
+    "store": false
+   },
+   {
+    "securityId": 2,
+    "durationStr": "2 Y",
+    "maxBarDate": "2026-11-09",
+    "incremental": false,
+    "store": false
+   }
+  ],
+  "logs": [
+   "warn [daily-bars] ZZA: timeout"
+  ],
+  "bars": [
+   {
+    "key": "ZZB 1 day",
+    "count": 513,
+    "first": "2024-11-11",
+    "last": "2026-11-09",
+    "closes": [
+     100
+    ],
+    "sha256": "e3d3b13cc2b12bf8c2b65631913aa7d68aa7add2859595d7d9955bfb819998c7"
+   }
+  ]
+ },
+ {
+  "name": "disconnect mid-run",
+  "results": [
+   {
+    "attempted": 1,
+    "written": 1,
+    "fullRefetches": 1,
+    "basisChanges": 0,
+    "staleOlderBarsDeleted": 0,
+    "failed": 0,
+    "doneToday": 1,
+    "exhausted": 0,
+    "foreignSession": 0,
+    "noContractId": 0,
+    "mutualFund": 0,
+    "bondFund": 0
+   }
+  ],
+  "calls": [
+   {
+    "securityId": 1,
+    "durationStr": "2 Y",
+    "maxBarDate": "2026-11-09",
+    "incremental": false,
+    "store": false
+   }
+  ],
+  "logs": [],
+  "bars": [
+   {
+    "key": "ZZA 1 day",
+    "count": 513,
+    "first": "2024-11-11",
+    "last": "2026-11-09",
+    "closes": [
+     100
+    ],
+    "sha256": "e3d3b13cc2b12bf8c2b65631913aa7d68aa7add2859595d7d9955bfb819998c7"
+   }
+  ]
+ },
+ {
+  "name": "disconnect during a fetch",
+  "results": [
+   {
+    "attempted": 1,
+    "written": 0,
+    "fullRefetches": 1,
+    "basisChanges": 0,
+    "staleOlderBarsDeleted": 0,
+    "failed": 0,
+    "doneToday": 0,
+    "exhausted": 0,
+    "foreignSession": 0,
+    "noContractId": 0,
+    "mutualFund": 0,
+    "bondFund": 0
+   }
+  ],
+  "calls": [
+   {
+    "securityId": 1,
+    "durationStr": "2 Y",
+    "maxBarDate": "2026-11-09",
+    "incremental": false,
+    "store": false
+   }
+  ],
+  "logs": [],
+  "bars": []
+ },
+ {
+  "name": "ineligible names skipped and counted",
+  "results": [
+   {
+    "attempted": 1,
+    "written": 1,
+    "fullRefetches": 1,
+    "basisChanges": 0,
+    "staleOlderBarsDeleted": 0,
+    "failed": 0,
+    "doneToday": 1,
+    "exhausted": 0,
+    "foreignSession": 1,
+    "noContractId": 1,
+    "mutualFund": 1,
+    "bondFund": 0
+   }
+  ],
+  "calls": [
+   {
+    "securityId": 5,
+    "durationStr": "2 Y",
+    "maxBarDate": "2026-11-09",
+    "incremental": false,
+    "store": false
+   }
+  ],
+  "logs": [],
+  "bars": [
+   {
+    "key": "ZZE 1 day",
+    "count": 513,
+    "first": "2024-11-11",
+    "last": "2026-11-09",
+    "closes": [
+     100
+    ],
+    "sha256": "e3d3b13cc2b12bf8c2b65631913aa7d68aa7add2859595d7d9955bfb819998c7"
+   }
+  ]
+ },
+ {
+  "name": "cap of 20 with a mixed book",
+  "results": [
+   {
+    "attempted": 20,
+    "written": 20,
+    "fullRefetches": 13,
+    "basisChanges": 6,
+    "staleOlderBarsDeleted": 0,
+    "failed": 0,
+    "doneToday": 20,
+    "exhausted": 0,
+    "foreignSession": 0,
+    "noContractId": 0,
+    "mutualFund": 0,
+    "bondFund": 0
+   }
+  ],
+  "calls": [
+   {
+    "securityId": 3,
+    "durationStr": "2 Y",
+    "maxBarDate": "2026-11-09",
+    "incremental": false,
+    "store": false
+   },
+   {
+    "securityId": 6,
+    "durationStr": "2 Y",
+    "maxBarDate": "2026-11-09",
+    "incremental": false,
+    "store": false
+   },
+   {
+    "securityId": 9,
+    "durationStr": "2 Y",
+    "maxBarDate": "2026-11-09",
+    "incremental": false,
+    "store": false
+   },
+   {
+    "securityId": 12,
+    "durationStr": "2 Y",
+    "maxBarDate": "2026-11-09",
+    "incremental": false,
+    "store": false
+   },
+   {
+    "securityId": 15,
+    "durationStr": "2 Y",
+    "maxBarDate": "2026-11-09",
+    "incremental": false,
+    "store": false
+   },
+   {
+    "securityId": 18,
+    "durationStr": "2 Y",
+    "maxBarDate": "2026-11-09",
+    "incremental": false,
+    "store": false
+   },
+   {
+    "securityId": 21,
+    "durationStr": "2 Y",
+    "maxBarDate": "2026-11-09",
+    "incremental": false,
+    "store": false
+   },
+   {
+    "securityId": 1,
+    "durationStr": "16 D",
+    "maxBarDate": "2026-11-09",
+    "incremental": false,
+    "store": false
+   },
+   {
+    "securityId": 2,
+    "durationStr": "16 D",
+    "maxBarDate": "2026-11-09",
+    "incremental": false,
+    "store": false
+   },
+   {
+    "securityId": 2,
+    "durationStr": "2 Y",
+    "maxBarDate": "2026-11-09",
+    "incremental": false,
+    "store": false
+   },
+   {
+    "securityId": 4,
+    "durationStr": "16 D",
+    "maxBarDate": "2026-11-09",
+    "incremental": false,
+    "store": false
+   },
+   {
+    "securityId": 5,
+    "durationStr": "16 D",
+    "maxBarDate": "2026-11-09",
+    "incremental": false,
+    "store": false
+   },
+   {
+    "securityId": 5,
+    "durationStr": "2 Y",
+    "maxBarDate": "2026-11-09",
+    "incremental": false,
+    "store": false
+   },
+   {
+    "securityId": 7,
+    "durationStr": "16 D",
+    "maxBarDate": "2026-11-09",
+    "incremental": false,
+    "store": false
+   },
+   {
+    "securityId": 8,
+    "durationStr": "16 D",
+    "maxBarDate": "2026-11-09",
+    "incremental": false,
+    "store": false
+   },
+   {
+    "securityId": 8,
+    "durationStr": "2 Y",
+    "maxBarDate": "2026-11-09",
+    "incremental": false,
+    "store": false
+   },
+   {
+    "securityId": 10,
+    "durationStr": "16 D",
+    "maxBarDate": "2026-11-09",
+    "incremental": false,
+    "store": false
+   },
+   {
+    "securityId": 11,
+    "durationStr": "16 D",
+    "maxBarDate": "2026-11-09",
+    "incremental": false,
+    "store": false
+   },
+   {
+    "securityId": 11,
+    "durationStr": "2 Y",
+    "maxBarDate": "2026-11-09",
+    "incremental": false,
+    "store": false
+   },
+   {
+    "securityId": 13,
+    "durationStr": "16 D",
+    "maxBarDate": "2026-11-09",
+    "incremental": false,
+    "store": false
+   },
+   {
+    "securityId": 14,
+    "durationStr": "16 D",
+    "maxBarDate": "2026-11-09",
+    "incremental": false,
+    "store": false
+   },
+   {
+    "securityId": 14,
+    "durationStr": "2 Y",
+    "maxBarDate": "2026-11-09",
+    "incremental": false,
+    "store": false
+   },
+   {
+    "securityId": 16,
+    "durationStr": "16 D",
+    "maxBarDate": "2026-11-09",
+    "incremental": false,
+    "store": false
+   },
+   {
+    "securityId": 17,
+    "durationStr": "16 D",
+    "maxBarDate": "2026-11-09",
+    "incremental": false,
+    "store": false
+   },
+   {
+    "securityId": 17,
+    "durationStr": "2 Y",
+    "maxBarDate": "2026-11-09",
+    "incremental": false,
+    "store": false
+   },
+   {
+    "securityId": 19,
+    "durationStr": "16 D",
+    "maxBarDate": "2026-11-09",
+    "incremental": false,
+    "store": false
+   }
+  ],
+  "logs": [],
+  "bars": [
+   {
+    "key": "ZZ00 1 day",
+    "count": 513,
+    "first": "2024-11-11",
+    "last": "2026-11-09",
+    "closes": [
+     100
+    ],
+    "sha256": "e3d3b13cc2b12bf8c2b65631913aa7d68aa7add2859595d7d9955bfb819998c7"
+   },
+   {
+    "key": "ZZ01 1 day",
+    "count": 513,
+    "first": "2024-11-11",
+    "last": "2026-11-09",
+    "closes": [
+     100
+    ],
+    "sha256": "e3d3b13cc2b12bf8c2b65631913aa7d68aa7add2859595d7d9955bfb819998c7"
+   },
+   {
+    "key": "ZZ02 1 day",
+    "count": 513,
+    "first": "2024-11-11",
+    "last": "2026-11-09",
+    "closes": [
+     100
+    ],
+    "sha256": "e3d3b13cc2b12bf8c2b65631913aa7d68aa7add2859595d7d9955bfb819998c7"
+   },
+   {
+    "key": "ZZ03 1 day",
+    "count": 513,
+    "first": "2024-11-11",
+    "last": "2026-11-09",
+    "closes": [
+     100
+    ],
+    "sha256": "e3d3b13cc2b12bf8c2b65631913aa7d68aa7add2859595d7d9955bfb819998c7"
+   },
+   {
+    "key": "ZZ04 1 day",
+    "count": 513,
+    "first": "2024-11-11",
+    "last": "2026-11-09",
+    "closes": [
+     100
+    ],
+    "sha256": "e3d3b13cc2b12bf8c2b65631913aa7d68aa7add2859595d7d9955bfb819998c7"
+   },
+   {
+    "key": "ZZ05 1 day",
+    "count": 513,
+    "first": "2024-11-11",
+    "last": "2026-11-09",
+    "closes": [
+     100
+    ],
+    "sha256": "e3d3b13cc2b12bf8c2b65631913aa7d68aa7add2859595d7d9955bfb819998c7"
+   },
+   {
+    "key": "ZZ06 1 day",
+    "count": 513,
+    "first": "2024-11-11",
+    "last": "2026-11-09",
+    "closes": [
+     100
+    ],
+    "sha256": "e3d3b13cc2b12bf8c2b65631913aa7d68aa7add2859595d7d9955bfb819998c7"
+   },
+   {
+    "key": "ZZ07 1 day",
+    "count": 513,
+    "first": "2024-11-11",
+    "last": "2026-11-09",
+    "closes": [
+     100
+    ],
+    "sha256": "e3d3b13cc2b12bf8c2b65631913aa7d68aa7add2859595d7d9955bfb819998c7"
+   },
+   {
+    "key": "ZZ08 1 day",
+    "count": 513,
+    "first": "2024-11-11",
+    "last": "2026-11-09",
+    "closes": [
+     100
+    ],
+    "sha256": "e3d3b13cc2b12bf8c2b65631913aa7d68aa7add2859595d7d9955bfb819998c7"
+   },
+   {
+    "key": "ZZ09 1 day",
+    "count": 513,
+    "first": "2024-11-11",
+    "last": "2026-11-09",
+    "closes": [
+     100
+    ],
+    "sha256": "e3d3b13cc2b12bf8c2b65631913aa7d68aa7add2859595d7d9955bfb819998c7"
+   },
+   {
+    "key": "ZZ10 1 day",
+    "count": 513,
+    "first": "2024-11-11",
+    "last": "2026-11-09",
+    "closes": [
+     100
+    ],
+    "sha256": "e3d3b13cc2b12bf8c2b65631913aa7d68aa7add2859595d7d9955bfb819998c7"
+   },
+   {
+    "key": "ZZ11 1 day",
+    "count": 513,
+    "first": "2024-11-11",
+    "last": "2026-11-09",
+    "closes": [
+     100
+    ],
+    "sha256": "e3d3b13cc2b12bf8c2b65631913aa7d68aa7add2859595d7d9955bfb819998c7"
+   },
+   {
+    "key": "ZZ12 1 day",
+    "count": 513,
+    "first": "2024-11-11",
+    "last": "2026-11-09",
+    "closes": [
+     100
+    ],
+    "sha256": "e3d3b13cc2b12bf8c2b65631913aa7d68aa7add2859595d7d9955bfb819998c7"
+   },
+   {
+    "key": "ZZ13 1 day",
+    "count": 513,
+    "first": "2024-11-11",
+    "last": "2026-11-09",
+    "closes": [
+     100
+    ],
+    "sha256": "e3d3b13cc2b12bf8c2b65631913aa7d68aa7add2859595d7d9955bfb819998c7"
+   },
+   {
+    "key": "ZZ14 1 day",
+    "count": 513,
+    "first": "2024-11-11",
+    "last": "2026-11-09",
+    "closes": [
+     100
+    ],
+    "sha256": "e3d3b13cc2b12bf8c2b65631913aa7d68aa7add2859595d7d9955bfb819998c7"
+   },
+   {
+    "key": "ZZ15 1 day",
+    "count": 513,
+    "first": "2024-11-11",
+    "last": "2026-11-09",
+    "closes": [
+     100
+    ],
+    "sha256": "e3d3b13cc2b12bf8c2b65631913aa7d68aa7add2859595d7d9955bfb819998c7"
+   },
+   {
+    "key": "ZZ16 1 day",
+    "count": 513,
+    "first": "2024-11-11",
+    "last": "2026-11-09",
+    "closes": [
+     100
+    ],
+    "sha256": "e3d3b13cc2b12bf8c2b65631913aa7d68aa7add2859595d7d9955bfb819998c7"
+   },
+   {
+    "key": "ZZ17 1 day",
+    "count": 513,
+    "first": "2024-11-11",
+    "last": "2026-11-09",
+    "closes": [
+     100
+    ],
+    "sha256": "e3d3b13cc2b12bf8c2b65631913aa7d68aa7add2859595d7d9955bfb819998c7"
+   },
+   {
+    "key": "ZZ18 1 day",
+    "count": 513,
+    "first": "2024-11-11",
+    "last": "2026-11-09",
+    "closes": [
+     100
+    ],
+    "sha256": "e3d3b13cc2b12bf8c2b65631913aa7d68aa7add2859595d7d9955bfb819998c7"
+   },
+   {
+    "key": "ZZ19 1 day",
+    "count": 513,
+    "first": "2024-11-11",
+    "last": "2026-11-09",
+    "closes": [
+     200
+    ],
+    "sha256": "28800a698ff6e791a1a12881fc3a18f3303028f20ee7896ec5877eb57e3f3700"
+   },
+   {
+    "key": "ZZ20 1 day",
+    "count": 513,
+    "first": "2024-11-11",
+    "last": "2026-11-09",
+    "closes": [
+     100
+    ],
+    "sha256": "e3d3b13cc2b12bf8c2b65631913aa7d68aa7add2859595d7d9955bfb819998c7"
+   },
+   {
+    "key": "ZZ21 1 day",
+    "count": 513,
+    "first": "2024-11-11",
+    "last": "2026-11-09",
+    "closes": [
+     100
+    ],
+    "sha256": "e3d3b13cc2b12bf8c2b65631913aa7d68aa7add2859595d7d9955bfb819998c7"
+   },
+   {
+    "key": "ZZ22 1 day",
+    "count": 513,
+    "first": "2024-11-11",
+    "last": "2026-11-09",
+    "closes": [
+     200
+    ],
+    "sha256": "28800a698ff6e791a1a12881fc3a18f3303028f20ee7896ec5877eb57e3f3700"
+   }
+  ]
+ }
+]
