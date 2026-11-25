@@ -109,6 +109,20 @@ describe("GainsAtRiskView wiring", () => {
     expect(src).toMatch(/useReducer\(\s*gainsRequestReducer/);
   });
 
+  it("the row-picker button carries the touch-only hit-area extension", () => {
+    const at = anchorIndex(src, "onClick={() => onSelectMove(move)}");
+    const classAt = anchorIndex(src, "className=", at);
+    const cls = src.slice(classAt, anchorIndex(src, ">", classAt));
+    for (const needle of [
+      "relative",
+      "pointer-coarse:after:absolute",
+      "pointer-coarse:after:content-['']",
+      "pointer-coarse:after:-inset-y-",
+    ]) {
+      expect(cls).toContain(needle);
+    }
+  });
+
   it("renders figures through the privacy components", () => {
     for (const needle of ["<Money", "<Pct", "<Count", "<PrivateNumberInput"]) anchorIndex(src, needle);
   });

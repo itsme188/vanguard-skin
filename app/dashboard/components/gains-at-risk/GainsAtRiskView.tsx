@@ -669,7 +669,7 @@ function ResultSections({
                         type="button"
                         aria-pressed={selected}
                         onClick={() => onSelectMove(move)}
-                        className="text-left text-ink underline decoration-dotted underline-offset-2"
+                        className="relative text-left text-ink underline decoration-dotted underline-offset-2 pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-1.5 pointer-coarse:after:-inset-x-1"
                       >
                         {formatDriverMove(move)}
                         {isCustom ? " (custom)" : ""}
