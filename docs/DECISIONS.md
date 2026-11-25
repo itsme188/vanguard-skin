@@ -2209,3 +2209,44 @@ Owner question: "if the market falls another 5% by year-end, how much of this ye
 - The CLAUDE.md phrase that beta "never" reads chart bars described Defense's `resolveProxyBeta`; it now says so.
 
 **How it was checked.** Every task test-first with a separate reviewer that ran the code on synthetic books and checked the arithmetic by hand (Black-Scholes, conservation, known betas recovered, a split left in on purpose); two plans reviewed by Codex (35 findings folded); a whole-branch review that ran one book through the real route; a read-only run on the live book before and after the backfill; the full suite; a browser pass on a sandbox copy.
+
+## 2026-11-25 — Gains at risk, step 2: try a position before trading it
+
+Step 1 shows what a fall in an index costs the book as it stands. Step 2 lets the owner add a position that does not exist yet and see the book with it, net of its cost, before placing anything. Design: `docs/superpowers/specs/2026-11-24-gains-at-risk-step2-trial-positions-design.md`; plan: `docs/superpowers/plans/2026-11-24-gains-at-risk-step2.md`. Figures here are synthetic.
+
+**What it is.** A "Try a position" form on the Gains at risk page: an option to buy or write, or shares to buy or sell. The page shows, for the selected case, the book as it is against the book with the trial positions: both lines, a table with the difference and the share of gain given back before and after, what the trial positions cost with no move by the date, and where they start to pay for themselves. Nothing is stored and nothing is traded; trial positions live in page state, survive a refresh and a scope switch, and are lost on reload. No recommendation and no ranking. The single-stock driver, a rise in the index and a comparison grid of candidates remain step 3.
+
+**Owner rulings.**
+- A "Get quote" button, not typed prices only: typing every price would be slow enough that the tool would not be used.
+- Only a security the app already knows can be tried; a new symbol is added to the watchlist first.
+
+**A trial option is fixed at the click.** The entry records the price paid, the underlying price used, the volatility solved from the two, and the app's own valuation price for the underlying at that moment. It is solved once (`solveTrialEntry`, through its own route) and never again: a size-only edit keeps the entry and the original holdings snapshot; only a change of contract terms, side or price makes a new one. A price no volatility explains is refused, never replaced by the broker's volatility.
+
+**A trial is marked relative to the app's own price series.** The live quote's underlying price is right for solving the volatility; the stored price is what the book's own rows of that name are valued from. The two are different bases and are never differenced. The engine values the option at the entry's underlying price scaled by how far the app's valuation price has moved since the click. So a trial shows exactly zero when added, whatever the gap between quote and stored price, and afterwards carries the same relative move as the book's own rows. Between syncs the stored price does not move, so a trial does not show intraday movement. Shares are marked against the typed price, so a trade made earlier in the day shows its move since.
+
+**One price per name, in every scope** (`trialValuationPrice`): the stored price when any account holds the name, as shares or through a held option; else the latest daily closing bar; else the last stored price with its date. The symbol lookup returns the same price, so a share trial at the default price starts at zero. The stress scope never changes a name's price.
+
+**The cost is inside the line, and named truthfully.** A trial's result is what it is worth at the date less what was paid (or received less the cost to close). Cost kinds: premium paid; premium received (an obligation, not a gain); cash used; cash raised. The cost as a share of the year's gain is shown only for premium paid on a bought option. A trial that cannot be valued or modelled (unknown, an option row, non-dollar, expired, no price, a fund the ladder cannot model with no owner's figure) is refused: zero effect, no cost figure, out of the cash total, counted, with a sentence. The others still compute.
+
+**The book's own figures do not move.** Gross book, every share-of-book line and the beta evidence describe the book as it is. Book with trial positions = book as it is + the trial rows, to the cent, per case. With no trial positions the engine's result is byte-identical to step 1's (pinned).
+
+**Honest about what a quote is** (`fetchOptionQuote`, `lib/tws/option-quote.ts`): one contract, multiplier pinned to 100; live or delayed from the ticks that arrived; a one-sided or crossed quote fills nothing; never a model price; never throws. The broker connection cannot report a frozen quote, so the label comes from the Eastern clock and the exchange calendar: outside the session it reads "market closed: the last quote". The calendar gained the early closes the exchange publishes for 2026 and 2027 (13:00 on 2026-11-27, 2026-12-24, 2027-11-26); both the full-closure list and the early-close list end at 2027 and must be extended together from the exchange's calendar. The time shown is when the owner clicked.
+
+**Safety of the new routes.** `POST /api/tws/option-quote`, `POST /api/tws/daily-bars/ensure` and `POST /api/compute/gains-at-risk/trial-entry` are human routes. Each validates its body at run time, then looks the security up on the server (a non-option, dollar row; a broker contract on file for a quote or a bar fetch), then acts; a refusal sends nothing to the broker and writes nothing. The quote route allows 30 a minute. The compute route validates only the shape of trial positions and returns the engine's result untouched.
+
+**One-name daily bars.** The capture's per-security body is one function used by the sync batch, the backfill script and `ensureDailyBarsForSecurity`. The one-name call goes through the same limiter and guards, is refused while a batch runs, and a failing name cools off for ten minutes and is refused for the day after three failures. The batch's behaviour is pinned unchanged.
+
+**Protection is never credited on thin evidence.** A trial option on an underlying with no measured link shows only what time and the volatility change do to it in the measured case, carries a warning, and moves in the selloff case; the owner's own figure for the name applies to the trial too.
+
+**Stale replies.** Every form request carries the draft's revision and contract identity; a late or mismatched reply is dropped, changing the contract clears a fetched quote and the price it filled, and leaving the form drops replies still on the way. A reply for an older set of trial positions is never shown. When holdings of a tried name change in any account, the row is flagged and never removed automatically.
+
+**OPEN.**
+- USER: a real quote, the chain selects and the one-name bar fetch can only be confirmed with the broker connected. Checks are listed in the task list.
+- Between syncs a trial does not move; the page says a trial moves with the app's own price, which updates with each sync.
+- A US-listed option with a multiplier of 100 only; no commission or slippage; one price at the click.
+- The market calendar ends at 2027.
+- The quote resets the shared market-data type to real time afterwards, as the two older snapshot callers do; a stream subscription opened after a quote may lose its delayed fallback.
+- No body-size limit on the routes (loopback-only, human routes).
+- Step 3: candidate comparison, the single-stock driver and a rise in the index.
+
+**How it was checked.** Each task test-first, then a separate reviewer that ran the code: the engine against an independent Black-Scholes and for conservation; the capture refactor old against new on seventeen scenarios, row by row; the routes with about fifty malformed bodies and spies on the broker and the database; the page's reducers and sentence helpers on every kind. One Codex round on the plan (eleven findings folded). The full suite, and a browser pass on a sandbox copy with the broker disconnected.
