@@ -11,6 +11,8 @@ import { getIbApi } from "@/lib/tws/client";
 import { startStreaming, stopStreaming, getQuoteCache, snapshotToDb } from "@/lib/tws/streaming";
 import { getTaxInputGeneration } from "@/lib/compute/tax-convention";
 import { todayET } from "@/lib/calendar/date-utils";
+import { MarketDataType } from "@stoqey/ib";
+import { marketDataTypeGeneration } from "@/lib/tws/market-data-type";
 
 const mockedGetIbApi = vi.mocked(getIbApi);
 
@@ -96,6 +98,25 @@ describe("startStreaming — contract currency", () => {
       expect.anything(),
       expect.anything(),
     );
+  });
+
+  it("step 3 D2: the same DELAYED_FROZEN on start / REALTIME on stop as before, now through the counted setter", () => {
+    const secId = seedSecurity(db, "ZZS", { conId: 7102 });
+    const mockApi = {
+      setMarketDataType: vi.fn(),
+      getMarketData: vi.fn().mockReturnValue(fakeMarketDataObservable()),
+    };
+    mockedGetIbApi.mockReturnValue(mockApi as unknown as ReturnType<typeof getIbApi>);
+    const before = marketDataTypeGeneration();
+    startStreaming(db, { securityIds: [secId] });
+    expect(mockApi.setMarketDataType.mock.calls).toEqual([[MarketDataType.DELAYED_FROZEN]]);
+    stopStreaming();
+    expect(mockApi.setMarketDataType.mock.calls).toEqual([[MarketDataType.DELAYED_FROZEN], [MarketDataType.REALTIME]]);
+    expect(marketDataTypeGeneration()).toBe(before + 2);
+    // Stopping with no connection sets nothing (as the optional call did).
+    mockedGetIbApi.mockReturnValue(null);
+    stopStreaming();
+    expect(mockApi.setMarketDataType).toHaveBeenCalledTimes(2);
   });
 
   it("defaults to USD when a security has no currency stored (NULL)", () => {

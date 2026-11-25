@@ -1,6 +1,7 @@
 import type Database from "better-sqlite3";
 import { MarketDataType, SecType, IBApiTickType } from "@stoqey/ib";
 import { getIbApi } from "./client";
+import { setMarketDataTypeCounted } from "./market-data-type";
 import { mapSecurityType } from "./security-type-map";
 import { todayET, nowET } from "@/lib/calendar/date-utils";
 import { isMarketClosed } from "@/lib/calendar/market-holidays";
@@ -107,7 +108,7 @@ export async function fetchSnapshotPrices(
   // unsubscribed names is preserved; the engine compares same-date pairs so a
   // correctly-dated frozen close is sound. Official-bar capture is the next
   // accuracy increment if byte-perfect closes are ever needed.)
-  api.setMarketDataType(MarketDataType.DELAYED_FROZEN);
+  setMarketDataTypeCounted(api, MarketDataType.DELAYED_FROZEN);
 
   // Computed ONCE per run (not per security) — the whole batch shares the
   // same instant's RTH/outside-RTH regime.
@@ -301,7 +302,7 @@ export async function fetchSnapshotPrices(
 
   // Reset to real-time for subsequent requests
   try {
-    api.setMarketDataType(MarketDataType.REALTIME);
+    setMarketDataTypeCounted(api, MarketDataType.REALTIME);
   } catch {
     // Ignore — non-critical
   }

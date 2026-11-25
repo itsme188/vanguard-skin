@@ -7,6 +7,7 @@ import {
   type IBApiNext,
 } from "@stoqey/ib";
 import { getIbApi } from "./client";
+import { setMarketDataTypeCounted } from "./market-data-type";
 import { pickPostPrintExpiry, pickAtmStrike } from "@/lib/earnings/implied-move";
 
 /**
@@ -183,7 +184,7 @@ export async function fetchTwsAtmStraddle(args: {
   let call: OptionLegQuote = { ...EMPTY_LEG };
   let put: OptionLegQuote = { ...EMPTY_LEG };
   try {
-    api.setMarketDataType(MarketDataType.DELAYED_FROZEN);
+    setMarketDataTypeCounted(api, MarketDataType.DELAYED_FROZEN);
     [call, put] = await Promise.all([
       fetchLegQuote(api, callContract, "call"),
       fetchLegQuote(api, putContract, "put"),
@@ -194,7 +195,7 @@ export async function fetchTwsAtmStraddle(args: {
     );
   } finally {
     try {
-      api.setMarketDataType(MarketDataType.REALTIME);
+      setMarketDataTypeCounted(api, MarketDataType.REALTIME);
     } catch {
       // Non-critical, best-effort reset.
     }

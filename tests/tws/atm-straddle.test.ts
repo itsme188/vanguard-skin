@@ -8,6 +8,7 @@ vi.mock("@/lib/tws/client", () => ({
 
 import { getIbApi } from "@/lib/tws/client";
 import { fetchTwsAtmStraddle } from "@/lib/tws/atm-straddle";
+import { marketDataTypeGeneration } from "@/lib/tws/market-data-type";
 
 const mockedGetIbApi = vi.mocked(getIbApi);
 
@@ -214,6 +215,19 @@ describe("fetchTwsAtmStraddle", () => {
     expect(result).toBeNull();
     expect(setMarketDataType).toHaveBeenNthCalledWith(1, MarketDataType.DELAYED_FROZEN);
     expect(setMarketDataType).toHaveBeenNthCalledWith(2, MarketDataType.REALTIME);
+  });
+
+  it("step 3 D2: the same DELAYED_FROZEN / REALTIME sequence as before, now through the counted setter", async () => {
+    const getSecDefOptParams = vi.fn().mockResolvedValue([
+      { exchange: "SMART", underlyingConId: 265598, tradingClass: "AAPL", multiplier: 100, expirations: ["20260821"], strikes: [200] },
+    ]);
+    const getMarketDataSnapshot = vi.fn().mockRejectedValue(new Error("No market data"));
+    const setMarketDataType = vi.fn();
+    mockedGetIbApi.mockReturnValue({ getSecDefOptParams, getMarketDataSnapshot, setMarketDataType } as unknown as ReturnType<typeof getIbApi>);
+    const before = marketDataTypeGeneration();
+    await fetchTwsAtmStraddle(BASE_ARGS);
+    expect(setMarketDataType.mock.calls).toEqual([[MarketDataType.DELAYED_FROZEN], [MarketDataType.REALTIME]]);
+    expect(marketDataTypeGeneration()).toBe(before + 2);
   });
 
   it("resets to REALTIME even when both leg snapshots reject", async () => {

@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
-import { IBApiTickType } from "@stoqey/ib";
+import { IBApiTickType, MarketDataType } from "@stoqey/ib";
 
 // Mock the TWS client module
 vi.mock("@/lib/tws/client", () => ({
@@ -11,6 +11,7 @@ vi.mock("@/lib/tws/client", () => ({
 import { getIbApi } from "@/lib/tws/client";
 import { fetchSnapshotPrices, tickPriorityFor } from "@/lib/tws/snapshot";
 import { getTaxInputGeneration } from "@/lib/compute/tax-convention";
+import { marketDataTypeGeneration } from "@/lib/tws/market-data-type";
 
 const mockedGetIbApi = vi.mocked(getIbApi);
 
@@ -104,6 +105,19 @@ describe("fetchSnapshotPrices", () => {
     expect(price.close_price).toBe(195.50);
     expect(price.source).toBe("tws");
     expect(price.date).toBe(today);
+  });
+
+  it("step 3 D2: the same DELAYED_FROZEN / REALTIME sequence as before, now through the counted setter", async () => {
+    const secId = seedSecurity(db, "ZZS", { conId: 7101 });
+    const mockApi = {
+      setMarketDataType: vi.fn(),
+      getMarketDataSnapshot: vi.fn().mockResolvedValue(mockMarketData([{ type: IBApiTickType.LAST, value: 12.5 }])),
+    };
+    mockedGetIbApi.mockReturnValue(mockApi as unknown as ReturnType<typeof getIbApi>);
+    const before = marketDataTypeGeneration();
+    await fetchSnapshotPrices(db, { securityIds: [secId], asOfDate: TRADING_DAY });
+    expect(mockApi.setMarketDataType.mock.calls).toEqual([[MarketDataType.DELAYED_FROZEN], [MarketDataType.REALTIME]]);
+    expect(marketDataTypeGeneration()).toBe(before + 2);
   });
 
   it("uses CLOSE tick when LAST is not available", async () => {

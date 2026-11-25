@@ -35,11 +35,20 @@ const NOW = "2026-11-10T19:32:00Z"; // Tue 14:32 Eastern
 function fakeApi(optionTicks: Array<[number, number]> = [[1, 6.3], [2, 6.5], [4, 6.1]]) {
   return {
     getContractDetails: vi.fn(async () => [{ contract: { conId: 77001, multiplier: 100, tradingClass: "ZZQ" } }]),
-    getMarketDataSnapshot: vi.fn(async (c: { secType?: string }) =>
-      new Map(
-        (c.secType === SecType.OPT ? optionTicks : ([[4, 510]] as Array<[number, number]>)).map(([t, v]) => [t, { value: v }]),
-      ),
-    ),
+    // Step 3: the quote reads through the shared snapshot form, getMarketData(contract, "", true, false):
+    // one update with every tick, then completion.
+    getMarketData: vi.fn((c: { secType?: string }) => ({
+      subscribe(o: { next: (u: unknown) => void; complete: () => void }) {
+        const all = new Map(
+          (c.secType === SecType.OPT ? optionTicks : ([[4, 510]] as Array<[number, number]>)).map(([t, v]) => [t, { value: v }]),
+        );
+        queueMicrotask(() => {
+          o.next({ all });
+          o.complete();
+        });
+        return { unsubscribe: () => {} };
+      },
+    })),
     setMarketDataType: vi.fn(),
     getHistoricalData: vi.fn(),
   };
@@ -67,7 +76,7 @@ function tableCounts(): Record<string, number> {
 
 function noBrokerRequests(): void {
   expect(api.getContractDetails).not.toHaveBeenCalled();
-  expect(api.getMarketDataSnapshot).not.toHaveBeenCalled();
+  expect(api.getMarketData).not.toHaveBeenCalled();
   expect(api.getHistoricalData).not.toHaveBeenCalled();
   expect(api.setMarketDataType).not.toHaveBeenCalled();
 }

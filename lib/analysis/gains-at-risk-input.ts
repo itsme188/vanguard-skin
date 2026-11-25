@@ -454,5 +454,7 @@ export function optionQuoteRefusalSentence(reason: OptionQuoteRefusal): string {
       return "The broker did not answer in time. Try again, or type the price.";
     case "broker-error":
       return "The broker could not answer. Try again, or type the price.";
+    case "broker-busy":
+      return "The broker was busy with another request. Try again in a moment.";
   }
 }

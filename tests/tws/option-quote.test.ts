@@ -15,8 +15,14 @@ vi.mock("@/lib/tws/client", () => ({
 }));
 
 import { getIbApi } from "@/lib/tws/client";
+import { marketDataTypeGeneration, setMarketDataTypeCounted } from "@/lib/tws/market-data-type";
 import {
   fetchOptionQuote,
+  OPTION_QUOTE_LOCK_WAIT_MS,
+  brokerExpiryDay,
+  snapshotTicks,
+  twoSidedQuote,
+  withOptionQuoteLock,
   OPTION_QUOTE_RATE_LIMIT,
   OPTION_QUOTE_RATE_WINDOW_MS,
   OPTION_QUOTE_TIMEOUT_MS,
@@ -36,6 +42,34 @@ function marketData(ticks: Ticks): Map<number, { value: number }> {
   return new Map(ticks.map(([type, value]) => [type, { value }]));
 }
 
+/**
+ * A one-time snapshot observable, as `getMarketData(..., true, false)` returns: one update with every
+ * tick, then completion, delivered asynchronously. "hang" never completes; an Error errors the stream.
+ */
+function snapshotObservable(outcome: Ticks | Error | "hang") {
+  const unsubscribe = vi.fn();
+  return {
+    unsubscribe,
+    subscribe(observer: { next: (u: { all: Map<number, { value: number }> }) => void; error: (e: unknown) => void; complete: () => void }) {
+      let closed = false;
+      queueMicrotask(() => {
+        if (closed || outcome === "hang") return;
+        if (outcome instanceof Error) observer.error(outcome);
+        else {
+          observer.next({ all: marketData(outcome) });
+          observer.complete();
+        }
+      });
+      return {
+        unsubscribe: () => {
+          closed = true;
+          unsubscribe();
+        },
+      };
+    },
+  };
+}
+
 interface FakeOpts {
   details?: unknown[] | Error | "hang";
   option?: Ticks | Error | "hang";
@@ -50,10 +84,9 @@ function fakeApi(o: FakeOpts = {}) {
   ];
   const api = {
     getContractDetails: vi.fn(() => resolveOrFail(details)),
-    getMarketDataSnapshot: vi.fn((contract: { secType?: string }) =>
-      contract.secType === SecType.OPT
-        ? resolveOrFail(o.option === undefined ? [] : o.option).then((t) => marketData(t as Ticks))
-        : resolveOrFail(o.underlying === undefined ? [] : o.underlying).then((t) => marketData(t as Ticks)),
+    // Step 3: the quote reads through the shared snapshot form, getMarketData(contract, "", true, false).
+    getMarketData: vi.fn((contract: { secType?: string }) =>
+      snapshotObservable(contract.secType === SecType.OPT ? (o.option ?? []) : (o.underlying ?? [])),
     ),
     setMarketDataType: vi.fn(),
     getHistoricalData: vi.fn(),
@@ -96,7 +129,7 @@ describe("fetchOptionQuote", () => {
     });
     // One contract lookup, one snapshot of the contract, one of the underlying; no historical request.
     expect(api.getContractDetails).toHaveBeenCalledTimes(1);
-    expect(api.getMarketDataSnapshot).toHaveBeenCalledTimes(2);
+    expect(api.getMarketData).toHaveBeenCalledTimes(2);
     expect(api.getHistoricalData).not.toHaveBeenCalled();
   });
 
@@ -146,12 +179,12 @@ describe("fetchOptionQuote", () => {
       ask: null,
       last: null,
     });
-    expect(none.getMarketDataSnapshot).not.toHaveBeenCalled();
+    expect(none.getMarketData).not.toHaveBeenCalled();
 
     // The broker answers an unknown contract with error 200 ("No security definition has been found").
     const err200 = fakeApi({ details: new IBApiNextError(new Error("No security definition has been found for the request"), 200 as ErrorCode, 7) });
     expect(await fetchOptionQuote(db, req(), { api: err200 as unknown as IBApiNext })).toMatchObject({ ok: false, reason: "no-contract" });
-    expect(err200.getMarketDataSnapshot).not.toHaveBeenCalled();
+    expect(err200.getMarketData).not.toHaveBeenCalled();
 
     // A match with another multiplier (an adjusted contract) is not this contract.
     const adjusted = fakeApi({ details: [{ contract: { conId: 9, multiplier: 50, tradingClass: "ZZQ1" } }] });
@@ -171,7 +204,7 @@ describe("fetchOptionQuote", () => {
       reason: "no-underlying-contract",
     });
     expect(api.getContractDetails).not.toHaveBeenCalled();
-    expect(api.getMarketDataSnapshot).not.toHaveBeenCalled();
+    expect(api.getMarketData).not.toHaveBeenCalled();
   });
 
   it("several matching contracts: the standard trading class wins, else ambiguous-contract", async () => {
@@ -184,7 +217,7 @@ describe("fetchOptionQuote", () => {
     });
     const r = await fetchOptionQuote(db, req(), { api: two as unknown as IBApiNext, now: () => NOW });
     expect(r).toMatchObject({ ok: true, mid: 6.4 });
-    const optCall = two.getMarketDataSnapshot.mock.calls.find((c) => (c[0] as { secType?: string }).secType === SecType.OPT);
+    const optCall = two.getMarketData.mock.calls.find((c) => (c[0] as { secType?: string }).secType === SecType.OPT);
     expect((optCall![0] as { conId: number }).conId).toBe(OPTION_CON_ID);
 
     const ambiguous = fakeApi({
@@ -197,7 +230,7 @@ describe("fetchOptionQuote", () => {
       ok: false,
       reason: "ambiguous-contract",
     });
-    expect(ambiguous.getMarketDataSnapshot).not.toHaveBeenCalled();
+    expect(ambiguous.getMarketData).not.toHaveBeenCalled();
   });
 
   it("a crossed quote (bid above ask) is not a market: no-two-sided-quote, nothing filled", async () => {
@@ -227,10 +260,10 @@ describe("fetchOptionQuote", () => {
     const r1 = await fetchOptionQuote(db, req(), { api: typeThrows as unknown as IBApiNext, now: () => NOW });
     expect(r1).toEqual({ ok: false, reason: "broker-error", bid: null, ask: null, last: null });
     expect(typeThrows.setMarketDataType.mock.calls).toEqual([[MarketDataType.DELAYED_FROZEN], [MarketDataType.REALTIME]]);
-    expect(typeThrows.getMarketDataSnapshot).not.toHaveBeenCalled();
+    expect(typeThrows.getMarketData).not.toHaveBeenCalled();
 
     const syncThrow = fakeApi();
-    syncThrow.getMarketDataSnapshot.mockImplementation(() => {
+    syncThrow.getMarketData.mockImplementation(() => {
       throw new Error("not connected to socket");
     });
     const r2 = await fetchOptionQuote(db, req(), { api: syncThrow as unknown as IBApiNext, now: () => NOW });
@@ -312,12 +345,12 @@ describe("fetchOptionQuote", () => {
       right: OptionType.Call,
       multiplier: 100,
     });
-    const calls = api.getMarketDataSnapshot.mock.calls.map((c) => c[0] as Record<string, unknown>);
+    const calls = api.getMarketData.mock.calls.map((c) => c[0] as Record<string, unknown>);
     const opt = calls.find((c) => c.secType === SecType.OPT)!;
     expect(opt).toMatchObject({ conId: OPTION_CON_ID, multiplier: 100, exchange: "SMART", currency: "USD" });
     const und = calls.find((c) => c.secType === SecType.STK)!;
     expect(und).toEqual({ conId: UNDERLYING_CON_ID, secType: SecType.STK, exchange: "SMART", currency: "USD" });
-    for (const c of api.getMarketDataSnapshot.mock.calls) expect(c.slice(1)).toEqual(["", false]);
+    for (const c of api.getMarketData.mock.calls) expect(c.slice(1)).toEqual(["", true, false]);
   });
 
   it("restores the realtime market-data type after the request", async () => {
@@ -344,5 +377,181 @@ describe("fetchOptionQuote", () => {
     expect(warn).toHaveBeenCalledTimes(1);
     expect(warn.mock.calls[0]).toEqual(["[option-quote] contract lookup failed: code 321"]);
     warn.mockRestore();
+  });
+});
+
+describe("step 3: shared snapshot read, two-sided rule, generation retry and the lock", () => {
+  it("T25 a generation change in flight retries once; a second change answers broker-busy", async () => {
+    // Another caller sets the type while the first option snapshot is in flight.
+    const other = { setMarketDataType: vi.fn() };
+    const once = fakeApi({ option: [[1, 6.3], [2, 6.5]], underlying: [[4, 510]] });
+    const plain = once.getMarketData.getMockImplementation()!;
+    let optionCalls = 0;
+    once.getMarketData.mockImplementation((contract: { secType?: string }) => {
+      if (contract.secType === SecType.OPT && ++optionCalls === 1) setMarketDataTypeCounted(other, MarketDataType.REALTIME);
+      return plain(contract);
+    });
+    const r = await fetchOptionQuote(db, req(), { api: once as unknown as IBApiNext, now: () => NOW });
+    expect(r).toMatchObject({ ok: true, mid: 6.4 });
+    expect(optionCalls).toBe(2);
+    // The type is set, set again for the retry, then restored once.
+    expect(once.setMarketDataType.mock.calls).toEqual([
+      [MarketDataType.DELAYED_FROZEN],
+      [MarketDataType.DELAYED_FROZEN],
+      [MarketDataType.REALTIME],
+    ]);
+
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const twice = fakeApi({ option: [[1, 6.3], [2, 6.5]], underlying: [[4, 510]] });
+    const plain2 = twice.getMarketData.getMockImplementation()!;
+    twice.getMarketData.mockImplementation((contract: { secType?: string }) => {
+      if (contract.secType === SecType.OPT) setMarketDataTypeCounted(other, MarketDataType.REALTIME);
+      return plain2(contract);
+    });
+    const r2 = await fetchOptionQuote(db, req(), { api: twice as unknown as IBApiNext, now: () => NOW });
+    expect(r2).toEqual({ ok: false, reason: "broker-busy", bid: null, ask: null, last: null });
+    expect(twice.getMarketData.mock.calls.filter((c) => (c[0] as { secType?: string }).secType === SecType.OPT)).toHaveLength(2);
+    expect(twice.setMarketDataType.mock.calls.at(-1)).toEqual([MarketDataType.REALTIME]);
+    warn.mockRestore();
+  });
+
+  it("the type is set through the counted setter: the generation moves by two per plain quote", async () => {
+    const api = fakeApi({ option: [[1, 6.3], [2, 6.5]] });
+    const before = marketDataTypeGeneration();
+    await fetchOptionQuote(db, req(), { api: api as unknown as IBApiNext, now: () => NOW });
+    expect(marketDataTypeGeneration()).toBe(before + 2);
+  });
+
+  it("T25 a single quote started while the lock is held waits for it: the fake sees no interleaved request", async () => {
+    const api = fakeApi({ option: [[1, 6.3], [2, 6.5]] });
+    let release!: () => void;
+    const holder = withOptionQuoteLock(
+      () =>
+        new Promise<void>((resolve) => {
+          release = resolve;
+        }),
+    );
+    const quote = fetchOptionQuote(db, req(), { api: api as unknown as IBApiNext, now: () => NOW });
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+    await new Promise((r) => setTimeout(r, 5));
+    expect(api.getContractDetails).not.toHaveBeenCalled();
+    expect(api.setMarketDataType).not.toHaveBeenCalled();
+    release();
+    await holder;
+    expect(await quote).toMatchObject({ ok: true });
+    expect(api.getContractDetails).toHaveBeenCalledTimes(1);
+  });
+
+  it("the lock is released when its holder throws", async () => {
+    await expect(withOptionQuoteLock(async () => {
+      throw new Error("boom");
+    })).rejects.toThrow("boom");
+    await expect(withOptionQuoteLock(async () => 7)).resolves.toBe(7);
+  });
+
+  it("T13 one-sided, crossed and empty quotes fill nothing; a locked quote (bid === ask) fills", () => {
+    expect(twoSidedQuote(marketData([[1, 6.3], [2, -1]]))).toEqual({ ok: false, bid: 6.3, ask: null, last: null });
+    expect(twoSidedQuote(marketData([[1, 6.5], [2, 6.3], [4, 6.4]]))).toEqual({ ok: false, bid: 6.5, ask: 6.3, last: 6.4 });
+    expect(twoSidedQuote(marketData([]))).toEqual({ ok: false, bid: null, ask: null, last: null });
+    expect(twoSidedQuote(marketData([[66, 0.15], [67, 0.15]]))).toEqual({
+      ok: true,
+      bid: { value: 0.15, delayed: true },
+      ask: { value: 0.15, delayed: true },
+      last: null,
+    });
+  });
+
+  it("snapshotTicks: resolves on completion with the arrival time, unsubscribes, ignores late ticks; the backstop ends a hang", async () => {
+    let t = NOW.getTime();
+    const clock = () => new Date(t);
+    const done = snapshotObservable([[1, 6.3]]);
+    const api = { getMarketData: vi.fn(() => done) };
+    const pending = snapshotTicks(api as unknown as IBApiNext, { conId: 1 }, { now: clock });
+    t += 2_000;
+    const r = await pending;
+    expect(r).toEqual({ ok: true, ticks: marketData([[1, 6.3]]), arrivedAt: new Date(NOW.getTime() + 2_000).toISOString() });
+    expect(api.getMarketData).toHaveBeenCalledWith({ conId: 1 }, "", true, false);
+    expect(done.unsubscribe).toHaveBeenCalledTimes(1);
+
+    vi.useFakeTimers();
+    try {
+      const hang = snapshotObservable("hang");
+      const hangApi = { getMarketData: vi.fn(() => hang) };
+      let settled = false;
+      const p = snapshotTicks(hangApi as unknown as IBApiNext, { conId: 2 }, { now: clock }).then((v) => {
+        settled = true;
+        return v;
+      });
+      await vi.advanceTimersByTimeAsync(12_999);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(await p).toEqual({ ok: false, reason: "timeout" });
+      expect(hang.unsubscribe).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+
+    // A synchronous throw while sending is reported as a send failure, never thrown.
+    const throwing = { getMarketData: vi.fn(() => { throw new Error("socket"); }) };
+    expect(await snapshotTicks(throwing as unknown as IBApiNext, { conId: 3 }, { now: clock })).toMatchObject({
+      ok: false,
+      reason: "error",
+      sendFailed: true,
+    });
+  });
+});
+
+describe("S2 fix round 1: single quote", () => {
+  it("a lock wait past OPTION_QUOTE_LOCK_WAIT_MS answers broker-busy with zero broker requests; the lock still passes on", async () => {
+    expect(OPTION_QUOTE_LOCK_WAIT_MS).toBe(20_000);
+    vi.useFakeTimers();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const api = fakeApi({ option: [[1, 6.3], [2, 6.5]] });
+      let release!: () => void;
+      const holder = withOptionQuoteLock(() => new Promise<void>((r) => (release = r)));
+      let settled = false;
+      const quote = fetchOptionQuote(db, req(), { api: api as unknown as IBApiNext, now: () => NOW }).then((v) => {
+        settled = true;
+        return v;
+      });
+      await vi.advanceTimersByTimeAsync(19_999);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(await quote).toEqual({ ok: false, reason: "broker-busy", bid: null, ask: null, last: null });
+      expect(api.getContractDetails).not.toHaveBeenCalled();
+      expect(api.getMarketData).not.toHaveBeenCalled();
+      expect(api.setMarketDataType).not.toHaveBeenCalled();
+      release();
+      await holder;
+      // The refused waiter's place in the chain is passed on: the next caller runs at once.
+      await expect(withOptionQuoteLock(async () => "free")).resolves.toBe("free");
+    } finally {
+      warn.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it("the type is not restored when the connection dropped during the quote", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const api = fakeApi({ option: new Error("connection lost") });
+    const plain = api.getMarketData.getMockImplementation()!;
+    api.getMarketData.mockImplementation((contract: { secType?: string }) => {
+      mockedGetIbApi.mockReturnValue(null);
+      return plain(contract);
+    });
+    const r = await fetchOptionQuote(db, req(), { api: api as unknown as IBApiNext, now: () => NOW });
+    expect(r).toEqual({ ok: false, reason: "not-connected", bid: null, ask: null, last: null });
+    expect(api.setMarketDataType.mock.calls).toEqual([[MarketDataType.DELAYED_FROZEN]]);
+    warn.mockRestore();
+  });
+
+  it("brokerExpiryDay reads the day of a suffixed broker expiry; a bare month or junk is null", () => {
+    expect(brokerExpiryDay("20261218")).toBe("2026-12-18");
+    expect(brokerExpiryDay("20261218 16:00 US/Eastern")).toBe("2026-12-18");
+    expect(brokerExpiryDay(" 20261218 ")).toBe("2026-12-18");
+    expect(brokerExpiryDay("202612")).toBeNull();
+    expect(brokerExpiryDay("202612189")).toBeNull();
+    expect(brokerExpiryDay(undefined)).toBeNull();
   });
 });

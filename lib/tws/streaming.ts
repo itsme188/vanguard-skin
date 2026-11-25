@@ -2,6 +2,7 @@ import type Database from "better-sqlite3";
 import { MarketDataType, SecType, IBApiTickType } from "@stoqey/ib";
 import type { Subscription } from "rxjs";
 import { getIbApi } from "./client";
+import { setMarketDataTypeCounted } from "./market-data-type";
 import { todayET } from "@/lib/calendar/date-utils";
 import { isMarketClosed } from "@/lib/calendar/market-holidays";
 import { mapSecurityType } from "./security-type-map";
@@ -122,7 +123,7 @@ export function startStreaming(
   if (state.active) return; // already streaming
 
   // Enable delayed data for after-hours
-  api.setMarketDataType(MarketDataType.DELAYED_FROZEN);
+  setMarketDataTypeCounted(api, MarketDataType.DELAYED_FROZEN);
 
   // Get securities to stream
   let securities: {
@@ -259,7 +260,7 @@ export function stopStreaming(): void {
   // Reset market data type
   try {
     const api = getIbApi();
-    api?.setMarketDataType(MarketDataType.REALTIME);
+    if (api) setMarketDataTypeCounted(api, MarketDataType.REALTIME);
   } catch {
     // ignore
   }
