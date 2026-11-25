@@ -37,3 +37,22 @@ export const TRIAL_POSITION_BOUNDS = Object.freeze({
   idMaxLength: 40,
   maxVolatility: 10,
 });
+
+/** Step 3 (P5): a single-name driver can fall or rise. Index drivers keep GAINS_AT_RISK_BOUNDS.moveAbsMax, down only. */
+export const SINGLE_NAME_MOVE_BOUNDS = Object.freeze({ min: -0.8, max: 1.0 });
+/** Step 3: the default single-name sweep, -40% to +40% in 5% steps. */
+export const SINGLE_NAME_DEFAULT_SWEEP = Object.freeze({ from: -0.4, to: 0.4, step: 0.05 });
+/** Step 3 (P10, P11, D4, D9). */
+export const CANDIDATE_BOUNDS = Object.freeze({
+  maxContractsPerPull: 15,
+  maxExpiriesPerPull: 3,
+  defaultStrikesPerExpiry: 5,
+  maxCandidates: 30,
+  maxBudgetUsd: 10_000_000,
+});
+/** Step 3 (P15): a quote this old is flagged "old quote". */
+export const CANDIDATE_QUOTE_OLD_AFTER_MINUTES = 15;
+/** Step 3 (D6): the largest gap between the underlying's and the option's arrival times. */
+export const CANDIDATE_MAX_OBSERVATION_GAP_SECONDS = 30;
+/** Step 3 (D9): money is computed in whole units of 1/10,000 of a dollar. */
+export const MONEY_UNITS_PER_DOLLAR = 10_000;
