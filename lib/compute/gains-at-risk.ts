@@ -108,6 +108,7 @@ import { getOhlcvBars } from "@/lib/queries/ohlcv";
 import { isCashEquivalentSecurity } from "@/lib/compute/cash-equivalents";
 import {
   BETA_OVERRIDE_BOUNDS,
+  CANDIDATE_BOUNDS,
   SINGLE_NAME_MOVE_BOUNDS,
   TRIAL_OPTION_MULTIPLIER,
   TRIAL_POSITION_BOUNDS,
@@ -189,6 +190,14 @@ export interface GainsAtRiskInput {
    * positive move reads rises, a negative or zero move (or none) reads falls.
    */
   selectedMove?: number;
+  /**
+   * Step 3 (engine change 6): bought options tried one at a time against the
+   * book plus the trial positions, in the same run. Requires `selectedMove`
+   * (one of `moves`); at most `CANDIDATE_BOUNDS.maxCandidates`; unique ids.
+   * Never part of the book's or the trial list's figures. Absent or empty: no
+   * `candidates` key in the result.
+   */
+  candidates?: GainsAtRiskCandidateInput[];
   /** Injected for tests; default the Eastern day and the wall clock, each read once. */
   today?: string;
   now?: Date;
@@ -226,6 +235,14 @@ export type TrialPositionInput =
       valuationPriceAtEntry: number;
       /** Solved at the click by solveTrialEntry; never re-solved (R1). */
       entryVolatility: number;
+      /**
+       * Step 3 (F3): the broker's contract id, when the trial came from a
+       * quoted candidate. The holdings match then counts only a held row with
+       * that same id (an adjusted contract shares terms with a standard one);
+       * a held row with no id on file is still matched by its terms. Absent:
+       * exactly step 2's terms match.
+       */
+      brokerContractId?: number;
     }
   | {
       kind: "shares";
@@ -409,6 +426,44 @@ export interface GainsAtRiskResult {
   trial?: GainsAtRiskTrialResult;
   /** Step 3: present only in single-name mode. `measured` and `selloff` then hold equal figures (P20). */
   driverKind?: "single-name";
+  /** Step 3: present only when `candidates` has at least one entry; in the input's order. */
+  candidates?: GainsAtRiskCandidateResult[];
+}
+
+// ─── Candidates (step 3): input and result types ────────────────
+
+/** A sized candidate: a bought option with its entry fixed at call 1 (never re-solved). */
+export interface GainsAtRiskCandidateInput {
+  id: string;
+  /** side "buy", contracts >= 1; the same field rules as a trial option. */
+  position: Extract<TrialPositionInput, { kind: "option" }>;
+}
+
+export interface GainsAtRiskCandidateCase {
+  beta: number | null;
+  /** The candidate alone, net of its price paid, per input move. */
+  pnlByMove: number[];
+  atSelectedMoveUsd: number;
+  /** Evaluated on the run context whether or not 0 is in moves (D10). */
+  atZeroMoveUsd: number;
+  crossing: GainsAtRiskTrialCrossing;
+  /** D5: the driver's direction (index mode: fall; single-name: the selected move's sign), never the row's right. */
+  crossingDirection: "fall" | "rise";
+  /** P13a: this run holds the candidate's underlying unchanged in this case. */
+  heldUnchanged: boolean;
+}
+
+export interface GainsAtRiskCandidateResult {
+  id: string;
+  identitySecurityId: number;
+  symbol: string;
+  betaSource: GainsAtRiskBetaSource;
+  refusal?: TrialRefusal;
+  valueUsd: number | null;
+  /** Premium paid; null when refused. */
+  cost: TrialCost | null;
+  /** Null when refused. */
+  cases: Record<GainsAtRiskCaseKey, GainsAtRiskCandidateCase> | null;
 }
 
 // ─── Trial positions (step 2): result types ─────────────────────
@@ -614,18 +669,7 @@ function checkTrialPositions(input: GainsAtRiskInput): TrialPositionInput[] {
     if (ids.has(t.id)) throw new GainsAtRiskInputError("trial position ids must be unique");
     ids.add(t.id);
     if (t.kind === "option") {
-      if (!isId(t.underlyingSecurityId)) throw new GainsAtRiskInputError("underlyingSecurityId must be a positive whole number");
-      if (t.right !== "put" && t.right !== "call") throw new GainsAtRiskInputError("right must be put or call");
-      if (t.side !== "buy" && t.side !== "write") throw new GainsAtRiskInputError("an option's side must be buy or write");
-      if (typeof t.expiry !== "string" || !isCalendarDay(t.expiry)) throw new GainsAtRiskInputError("expiry is not a valid date");
-      if (!isPositive(t.strike, B.maxStrike)) throw new GainsAtRiskInputError("strike is out of bounds");
-      if (!isCount(t.contracts, B.maxContracts)) throw new GainsAtRiskInputError("contracts is out of bounds");
-      if (!isPositive(t.pricePaid, B.maxPrice)) throw new GainsAtRiskInputError("pricePaid is out of bounds");
-      if (!isPositive(t.entryUnderlyingPrice, B.maxPrice)) throw new GainsAtRiskInputError("entryUnderlyingPrice is out of bounds");
-      if (!isPositive(t.valuationPriceAtEntry, B.maxPrice)) throw new GainsAtRiskInputError("valuationPriceAtEntry is out of bounds");
-      if (!isPositive(t.entryVolatility, B.maxVolatility)) {
-        throw new GainsAtRiskInputError(`entryVolatility must be above 0 and at most ${B.maxVolatility}`);
-      }
+      checkOptionFields(t);
     } else if (t.kind === "shares") {
       if (!isId(t.securityId)) throw new GainsAtRiskInputError("securityId must be a positive whole number");
       if (t.side !== "buy" && t.side !== "sell") throw new GainsAtRiskInputError("a share trade's side must be buy or sell");
@@ -636,6 +680,67 @@ function checkTrialPositions(input: GainsAtRiskInput): TrialPositionInput[] {
     }
   }
   return raw as TrialPositionInput[];
+}
+
+const isPositiveId = (x: unknown) => typeof x === "number" && Number.isSafeInteger(x) && x > 0;
+
+/** The field rules of an option trial (and of a candidate's position): throws on the first bad field. */
+function checkOptionFields(t: Record<string, unknown>): void {
+  const B = TRIAL_POSITION_BOUNDS;
+  const isCount = (x: unknown, max: number) => typeof x === "number" && Number.isSafeInteger(x) && x >= 1 && x <= max;
+  const isPositive = (x: unknown, max: number) => typeof x === "number" && Number.isFinite(x) && x > 0 && x <= max;
+  if (!isPositiveId(t.underlyingSecurityId)) throw new GainsAtRiskInputError("underlyingSecurityId must be a positive whole number");
+  if (t.right !== "put" && t.right !== "call") throw new GainsAtRiskInputError("right must be put or call");
+  if (t.side !== "buy" && t.side !== "write") throw new GainsAtRiskInputError("an option's side must be buy or write");
+  if (typeof t.expiry !== "string" || !isCalendarDay(t.expiry)) throw new GainsAtRiskInputError("expiry is not a valid date");
+  if (!isPositive(t.strike, B.maxStrike)) throw new GainsAtRiskInputError("strike is out of bounds");
+  if (!isCount(t.contracts, B.maxContracts)) throw new GainsAtRiskInputError("contracts is out of bounds");
+  if (!isPositive(t.pricePaid, B.maxPrice)) throw new GainsAtRiskInputError("pricePaid is out of bounds");
+  if (!isPositive(t.entryUnderlyingPrice, B.maxPrice)) throw new GainsAtRiskInputError("entryUnderlyingPrice is out of bounds");
+  if (!isPositive(t.valuationPriceAtEntry, B.maxPrice)) throw new GainsAtRiskInputError("valuationPriceAtEntry is out of bounds");
+  if (!isPositive(t.entryVolatility, B.maxVolatility)) {
+    throw new GainsAtRiskInputError(`entryVolatility must be above 0 and at most ${B.maxVolatility}`);
+  }
+  // F3: optional; when present, a positive safe integer.
+  if (t.brokerContractId !== undefined && !isPositiveId(t.brokerContractId)) {
+    throw new GainsAtRiskInputError("brokerContractId must be a positive whole number");
+  }
+}
+
+/**
+ * Step 3: the candidates, checked. Throws for a non-list, more than
+ * `maxCandidates`, a missing, duplicate or over-long id, a position that is
+ * not a bought option, or any option field outside its bounds; and, when
+ * there is at least one, for a `selectedMove` that is not one of `moves`.
+ */
+function checkCandidates(input: GainsAtRiskInput): GainsAtRiskCandidateInput[] {
+  const raw: unknown = input.candidates;
+  if (raw === undefined) return [];
+  if (!Array.isArray(raw)) throw new GainsAtRiskInputError("candidates must be a list");
+  if (raw.length === 0) return [];
+  if (raw.length > CANDIDATE_BOUNDS.maxCandidates) {
+    throw new GainsAtRiskInputError(`at most ${CANDIDATE_BOUNDS.maxCandidates} candidates`);
+  }
+  if (typeof input.selectedMove !== "number" || !input.moves.includes(input.selectedMove)) {
+    throw new GainsAtRiskInputError("candidates need a selectedMove that is one of the moves");
+  }
+  const ids = new Set<string>();
+  for (const c of raw as unknown[]) {
+    if (c === null || typeof c !== "object") throw new GainsAtRiskInputError("a candidate must be an object");
+    const cand = c as Record<string, unknown>;
+    if (typeof cand.id !== "string" || cand.id.length === 0 || cand.id.length > TRIAL_POSITION_BOUNDS.idMaxLength) {
+      throw new GainsAtRiskInputError(`a candidate id must be 1 to ${TRIAL_POSITION_BOUNDS.idMaxLength} characters`);
+    }
+    if (ids.has(cand.id)) throw new GainsAtRiskInputError("candidate ids must be unique");
+    ids.add(cand.id);
+    const p = cand.position;
+    if (p === null || typeof p !== "object") throw new GainsAtRiskInputError("a candidate needs a position");
+    const pos = p as Record<string, unknown>;
+    if (pos.kind !== "option") throw new GainsAtRiskInputError("a candidate's position must be an option");
+    if (pos.side !== "buy") throw new GainsAtRiskInputError("a candidate's position must be a bought option");
+    checkOptionFields(pos);
+  }
+  return raw as GainsAtRiskCandidateInput[];
 }
 
 // ─── Helpers ────────────────────────────────────────────────────
@@ -924,8 +1029,9 @@ export function computeGainsAtRisk(
   const { symbol: driver, singleName } = checkInput(input, today);
   const isSingleName = singleName !== null;
   const trials = checkTrialPositions(input);
+  const candidates = checkCandidates(input);
   const emptyScope = input.accountIds !== undefined && input.accountIds.length === 0;
-  if (emptyScope && trials.length === 0) return emptyResult(driver, input, isSingleName);
+  if (emptyScope && trials.length === 0 && candidates.length === 0) return emptyResult(driver, input, isSingleName);
 
   const seeds = opts?.trackedIndexSeeds ?? LEVERAGED_TRACKED_INDEX_SEEDS;
   // Step 3: the driver's share-class family (it includes the driver), single-name mode only.
@@ -1386,19 +1492,24 @@ export function computeGainsAtRisk(
           },
           betaOverridesIgnored: countIgnored(appliedIdentities),
         };
-  if (trials.length === 0) return book;
+  if (trials.length === 0 && candidates.length === 0) return book;
 
-  // ─── Trial positions (step 2) ─────────────────────────────────
-  // After the book, on the run's own clock, risk-free rate, betas memo and
-  // rules (caseBetas, sideOf, the same exposure and rounding). Trial rows are
-  // never in positions, gross book, unknown counts, evidence or any
-  // disclosure (R6): only `trial` and the ignored-key count read them.
-  const trialApplied = new Set<number>();
-  const trialRows = trials.map((t): GainsAtRiskTrialRow => {
+  // ─── The per-row body over the run context (engine change 6) ───
+  // One function prices a trial position or a candidate, after the book, on
+  // the run's own context: the loaded rows' clock, risk-free rate, betas memo,
+  // `ladderFor`, volatility rule and sides (caseBetas, sideOf, the same
+  // exposure and rounding). The book is loaded once, whatever the number of
+  // rows. `applied` reports whether the row's identity reached the beta (the
+  // ignored-key count reads it for trials only); `atZero` is the row's figure
+  // at a 0% move on the valuation date, priced only when asked (D10).
+  type PricedRow = { row: GainsAtRiskTrialRow; applied: boolean; atZero: Record<GainsAtRiskCaseKey, number> | null };
+  const priceTrialRow = (t: TrialPositionInput, opt: { holdings: boolean; zeroMove: boolean }): PricedRow => {
+    let applied = false;
+    const done = (row: GainsAtRiskTrialRow, atZero: PricedRow["atZero"] = null): PricedRow => ({ row, applied, atZero });
     const identitySecurityId = t.kind === "shares" ? t.securityId : t.underlyingSecurityId;
     const buying = t.side === "buy";
     const sign = buying ? 1 : -1;
-    const holdingsNowByAccount = trialHoldingsByAccount(db, t);
+    const holdingsNowByAccount = opt.holdings ? trialHoldingsByAccount(db, t) : {};
     const flatCases = (): Record<GainsAtRiskCaseKey, GainsAtRiskPositionCase> => ({
       measured: { beta: null, pnlByMove: input.moves.map(() => 0), ...flatSides(), exposureUsd: 0 },
       selloff: { beta: null, pnlByMove: input.moves.map(() => 0), ...flatSides(), exposureUsd: 0 },
@@ -1428,15 +1539,15 @@ export function computeGainsAtRisk(
       cases: flatCases(),
     });
 
-    if (sec === null) return refused("unknown-security");
-    if (isOptionSecurityType(sec.security_type)) return refused("is-an-option");
-    if (t.kind === "option" && trialCurrency(sec) !== "USD") return refused("foreign-currency");
-    if (fx === null) return refused("no-fx-rate");
+    if (sec === null) return done(refused("unknown-security"));
+    if (isOptionSecurityType(sec.security_type)) return done(refused("is-an-option"));
+    if (t.kind === "option" && trialCurrency(sec) !== "USD") return done(refused("foreign-currency"));
+    if (fx === null) return done(refused("no-fx-rate"));
     // P11: a trial kept on the page whose contract has since expired adds nothing.
-    if (t.kind === "option" && isExpiredAsOf(t.expiry, today, now)) return refused("expired");
+    if (t.kind === "option" && isExpiredAsOf(t.expiry, today, now)) return done(refused("expired"));
     // One price per name in every scope; the entry reads the same function.
     const valuation = trialValuationPrice(db, identitySecurityId, { today });
-    if (valuation === null) return refused("no-underlying-price");
+    if (valuation === null) return done(refused("no-underlying-price"));
     const cost: TrialCost =
       t.kind === "option"
         ? { kind: buying ? "premium-paid" : "premium-received", usd: t.pricePaid * t.contracts * TRIAL_OPTION_MULTIPLIER }
@@ -1446,7 +1557,7 @@ export function computeGainsAtRisk(
     const rowVol = volApplies ? volChange : 0;
     // As for a held row: a key counts as applied where the trial reached the beta and
     // was priced, or where the owner's figure was refused on it (review fix 4).
-    if (betaOverrideRefusal !== undefined) trialApplied.add(identitySecurityId);
+    if (betaOverrideRefusal !== undefined) applied = true;
     const ladderRefusal = resolved.source === "not-modelled" ? { ladderRefusal: resolved.reason } : {};
     const betaFields = {
       betaSource,
@@ -1505,10 +1616,10 @@ export function computeGainsAtRisk(
       // The ladder refused the name (a leveraged fund with no factor or no
       // tracked index) and no owner's figure prices it: refused, as every
       // zero-effect trial is, with the ladder's reason.
-      return refused("not-modelled", { valuation, ...ladderRefusal });
+      return done(refused("not-modelled", { valuation, ...ladderRefusal }));
     }
     const rest = priceAt(0, 0, today, 0);
-    if ("unmodelled" in rest) return refused(optionRefusal(rest.unmodelled), { valuation });
+    if ("unmodelled" in rest) return done(refused(optionRefusal(rest.unmodelled), { valuation }));
     const valueUsd = clean(t.kind === "shares" ? sign * t.quantity * P * fx : sign * rest.v0 * t.contracts * TRIAL_OPTION_MULTIPLIER);
     const identityName = { symbol: sec.symbol, name: sec.name };
     const noLinkWarning = t.kind === "option" && betaSource === "no-measured-link";
@@ -1518,8 +1629,19 @@ export function computeGainsAtRisk(
       const beta = betas[k] as number;
       const priced = input.moves.map((m) => priceAt(beta, m, input.valuationDate, rowVol));
       const failed = priced.find((p): p is { unmodelled: OptionUnmodelledReason } => "unmodelled" in p);
-      if (failed) return refused(optionRefusal(failed.unmodelled), { valuation });
+      if (failed) return done(refused(optionRefusal(failed.unmodelled), { valuation }));
       pricedByCase[k] = priced as TrialPriced[];
+    }
+    // D10: the figure at a 0% move on the valuation date, whether or not 0 is in the sweep.
+    let atZero: PricedRow["atZero"] = null;
+    if (opt.zeroMove) {
+      const z = {} as Record<GainsAtRiskCaseKey, number>;
+      for (const k of GAINS_AT_RISK_CASE_KEYS) {
+        const p = priceAt(betas[k] as number, 0, input.valuationDate, rowVol);
+        if ("unmodelled" in p) return done(refused(optionRefusal(p.unmodelled), { valuation }));
+        z[k] = cents0(p.pnl);
+      }
+      atZero = z;
     }
     const caseOut = (k: GainsAtRiskCaseKey): GainsAtRiskPositionCase => {
       const beta = betas[k] as number;
@@ -1531,8 +1653,8 @@ export function computeGainsAtRisk(
       return { beta, pnlByMove, ...sidesOf(exposureUsd, pnlByMove, expires), exposureUsd };
     };
     const expiresBeforeDate = GAINS_AT_RISK_CASE_KEYS.some((k) => pricedByCase[k].some((p) => p.expires));
-    trialApplied.add(identitySecurityId);
-    return {
+    applied = true;
+    return done({
       id: t.id,
       kind: t.kind,
       identitySecurityId,
@@ -1547,7 +1669,59 @@ export function computeGainsAtRisk(
       holdingsNowByAccount,
       leavesShortBy: null,
       cases: { measured: caseOut("measured"), selloff: caseOut("selloff") },
+    }, atZero);
+  };
+
+  // D5: index mode reads falls; single-name mode reads the selected move's direction (rise only when positive).
+  const crossingDirection: "fall" | "rise" =
+    isSingleName && input.selectedMove !== undefined && input.selectedMove > 0 ? "rise" : "fall";
+
+  // ─── Candidates (step 3) ──────────────────────────────────────
+  // Each priced by the same body, on the same run context. A candidate never
+  // enters positions, the trial list, net cash, the shortfall check, a
+  // disclosure or the ignored-key count.
+  const candidateResults = candidates.map((c): GainsAtRiskCandidateResult => {
+    const { row, atZero } = priceTrialRow({ ...c.position, id: c.id }, { holdings: false, zeroMove: true });
+    const base = {
+      id: c.id,
+      identitySecurityId: row.identitySecurityId,
+      symbol: row.symbol,
+      betaSource: row.betaSource,
     };
+    if (row.refusal !== undefined || atZero === null) {
+      return { ...base, refusal: row.refusal ?? "no-option-terms", valueUsd: null, cost: null, cases: null };
+    }
+    const selectedIndex = input.moves.indexOf(input.selectedMove as number);
+    const caseOf = (k: GainsAtRiskCaseKey): GainsAtRiskCandidateCase => {
+      const rc = row.cases[k];
+      return {
+        beta: rc.beta,
+        pnlByMove: rc.pnlByMove,
+        atSelectedMoveUsd: rc.pnlByMove[selectedIndex],
+        atZeroMoveUsd: atZero[k],
+        crossing: trialCrossing(input.moves, rc.pnlByMove, crossingDirection),
+        crossingDirection,
+        // P13a: read from the row's own beta source, never a guess.
+        heldUnchanged:
+          rc.beta === 0 &&
+          (row.betaSource === "held-unchanged" ||
+            row.betaSource === "leveraged-not-linked" ||
+            row.betaSource === "no-measured-link"),
+      };
+    };
+    return { ...base, valueUsd: row.valueUsd, cost: row.cost, cases: { measured: caseOf("measured"), selloff: caseOf("selloff") } };
+  });
+  if (trials.length === 0) return { ...book, candidates: candidateResults };
+
+  // ─── Trial positions (step 2) ─────────────────────────────────
+  // After the book, through the per-row body. Trial rows are never in
+  // positions, gross book, unknown counts, evidence or any disclosure (R6):
+  // only `trial` and the ignored-key count read them.
+  const trialApplied = new Set<number>();
+  const trialRows = trials.map((t): GainsAtRiskTrialRow => {
+    const { row, applied } = priceTrialRow(t, { holdings: true, zeroMove: false });
+    if (applied) trialApplied.add(row.identitySecurityId);
+    return row;
   });
 
   // P4: "leaves you short", over the whole list, against every account's holding.
@@ -1577,9 +1751,6 @@ export function computeGainsAtRisk(
     netCashUsd += r.cost.kind === "premium-received" || r.cost.kind === "cash-raised" ? r.cost.usd : -r.cost.usd;
   }
 
-  // D5: index mode reads falls; single-name mode reads the selected move's direction (rise only when positive).
-  const crossingDirection: "fall" | "rise" =
-    isSingleName && input.selectedMove !== undefined && input.selectedMove > 0 ? "rise" : "fall";
   const trialCases = {} as Record<GainsAtRiskCaseKey, GainsAtRiskTrialCase>;
   for (const k of GAINS_AT_RISK_CASE_KEYS) {
     const moveRows = input.moves.map((move, i): GainsAtRiskTrialMoveRow => {
@@ -1610,5 +1781,6 @@ export function computeGainsAtRisk(
       shortByName,
       cases: trialCases,
     },
+    ...(candidates.length > 0 ? { candidates: candidateResults } : {}),
   };
 }

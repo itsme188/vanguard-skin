@@ -323,8 +323,30 @@ export type TrialEntryRequest =
     }
   | { kind: "shares"; symbol: string; side: "buy" | "sell"; quantity: number; price: number };
 
+/**
+ * Step 3 (engine change 7): an option entry for a security id, as a quoted
+ * candidate needs it (the quote is for an id; looking the symbol up again
+ * could attach it to another row sharing the symbol).
+ */
+export type TrialEntryByIdRequest = {
+  kind: "option";
+  underlyingSecurityId: number;
+  right: "put" | "call";
+  side: "buy" | "write";
+  expiry: string;
+  strike: number;
+  contracts: number;
+  price: number;
+  /** F5: required for a candidate (the quote's own underlying); the step 2 symbol path may still omit it. */
+  quotedUnderlyingPrice?: number;
+  /** F3: copied onto position.brokerContractId. */
+  brokerContractId?: number;
+};
+
 export type TrialEntryRefusal =
   | "unknown-symbol"
+  /** By id (step 3): the security id is no longer on file. */
+  | "unknown-security"
   | "is-an-option"
   | "foreign-currency"
   | "no-underlying-price"
@@ -373,15 +395,60 @@ export function buildTrialEntry(
   const today = opts?.today ?? todayET();
   const now = opts?.now ?? new Date();
   const symbol = normSymbol(req.symbol);
-  const refuse = (reason: TrialEntryRefusal): TrialEntryResult => ({ ok: false, reason, symbol });
 
   const found = lookupTrialSecurity(db, symbol, { today });
   if (found === null) {
     const optionOnly = db
       .prepare("SELECT security_type FROM securities WHERE UPPER(TRIM(symbol)) = ?")
       .all(symbol) as { security_type: string | null }[];
-    return refuse(optionOnly.some((r) => isOptionSecurityType(r.security_type)) ? "is-an-option" : "unknown-symbol");
+    return {
+      ok: false,
+      reason: optionOnly.some((r) => isOptionSecurityType(r.security_type)) ? "is-an-option" : "unknown-symbol",
+      symbol,
+    };
   }
+  return trialEntryBody(db, found, req, symbol, today, now);
+}
+
+/**
+ * Step 3 (engine change 7, F9): `buildTrialEntry`'s body for a security id;
+ * no symbol lookup. One clock: `now()` is read once and today is
+ * `todayET(now())`. The id must name a non-option, US-dollar security; an id
+ * not on file is refused "unknown-security". `brokerContractId` is copied onto
+ * the position (F3).
+ */
+export function buildTrialEntryById(
+  db: Database.Database,
+  req: TrialEntryByIdRequest,
+  opts?: { now?: () => Date },
+): TrialEntryResult {
+  const now = (opts?.now ?? (() => new Date()))();
+  const today = todayET(now);
+  const row = Number.isSafeInteger(req.underlyingSecurityId) && req.underlyingSecurityId > 0
+    ? (db.prepare("SELECT id, symbol, name, ib_con_id FROM securities WHERE id = ?").get(req.underlyingSecurityId) as
+        | { id: number; symbol: string; name: string | null; ib_con_id: number | null }
+        | undefined)
+    : undefined;
+  if (!row) return { ok: false, reason: "unknown-security", symbol: "" };
+  const found = { securityId: row.id, symbol: row.symbol, name: row.name, hasContractId: row.ib_con_id !== null };
+  return trialEntryBody(db, found, req, normSymbol(row.symbol), today, now);
+}
+
+/**
+ * The one body of an entry (R1, R2, P3, P11), shared by `buildTrialEntry`
+ * (after its symbol lookup) and `buildTrialEntryById`: the server-side
+ * security check, the expiry, the underlying's price at the click, the
+ * volatility solved once, and the holdings snapshot.
+ */
+function trialEntryBody(
+  db: Database.Database,
+  found: { securityId: number; symbol: string; name: string | null; hasContractId: boolean },
+  req: TrialEntryRequest | TrialEntryByIdRequest,
+  symbol: string,
+  today: string,
+  now: Date,
+): TrialEntryResult {
+  const refuse = (reason: TrialEntryRefusal): TrialEntryResult => ({ ok: false, reason, symbol });
   const check = checkTrialSecurity(db, found.securityId, { requireContractId: false });
   if (!check.ok) {
     // Not required here, so "no-contract-id" cannot arise; "not-found" cannot either (the lookup found it).
@@ -440,6 +507,7 @@ export function buildTrialEntry(
       entryUnderlyingPrice: underlyingPrice,
       valuationPriceAtEntry: valuation.price,
       entryVolatility: solved.volatility,
+      ...("brokerContractId" in req && req.brokerContractId !== undefined ? { brokerContractId: req.brokerContractId } : {}),
     };
   } else {
     position = { kind: "shares", securityId: found.securityId, side: req.side, quantity: req.quantity, price: req.price };
@@ -589,6 +657,12 @@ export function trialValuationPrice(
  * (shares) or contract (option: the underlying's symbol, put or call, strike,
  * expiry, and a multiplier of TRIAL_OPTION_MULTIPLIER or none stored).
  * Latest row per (account, security); accounts at 0 omitted.
+ *
+ * Step 3 (F3): an option trial carrying `brokerContractId` counts a held
+ * option row that has an `ib_con_id` only when the two ids are equal (an
+ * adjusted contract can share a standard one's terms); a held row with no id
+ * on file is still matched by its terms. Without `brokerContractId` the match
+ * is exactly step 2's.
  */
 export function trialHoldingsByAccount(
   db: Database.Database,
@@ -602,23 +676,47 @@ export function trialHoldingsByAccount(
       | { symbol: string }
       | undefined;
     if (!u) return {};
-    const rows = db
-      .prepare(
-        `SELECT s.id, s.security_type FROM securities s
-          WHERE UPPER(TRIM(s.underlying_symbol)) = ?
+    const termsSql = `UPPER(TRIM(s.underlying_symbol)) = ?
             AND UPPER(TRIM(s.option_type)) LIKE ?
             AND s.strike_price = ?
             AND (${optionExpirationDashedSql("s.expiration_date")}) = ?
-            AND (s.multiplier IS NULL OR s.multiplier = ?)`,
-      )
-      .all(
-        normSymbol(u.symbol),
-        position.right === "put" ? "P%" : "C%",
-        position.strike,
-        normalizeOptionExpiration(position.expiry),
-        TRIAL_OPTION_MULTIPLIER,
-      ) as { id: number; security_type: string | null }[];
-    securityIds = rows.filter((r) => isOptionSecurityType(r.security_type)).map((r) => r.id);
+            AND (s.multiplier IS NULL OR s.multiplier = ?)`;
+    const termsArgs = [
+      normSymbol(u.symbol),
+      position.right === "put" ? "P%" : "C%",
+      position.strike,
+      normalizeOptionExpiration(position.expiry),
+      TRIAL_OPTION_MULTIPLIER,
+    ];
+    const brokerId = position.brokerContractId;
+    if (brokerId === undefined) {
+      const rows = db
+        .prepare(`SELECT s.id, s.security_type FROM securities s
+          WHERE ${termsSql}`)
+        .all(...termsArgs) as { id: number; security_type: string | null }[];
+      securityIds = rows.filter((r) => isOptionSecurityType(r.security_type)).map((r) => r.id);
+    } else {
+      // F3 (controller ruling): when both the trial and a held row carry a broker contract id, the id
+      // decides, whatever the stored terms say: the broker id is the contract's identity, and stored terms
+      // can be stale after a split re-strikes the contract. Same id, other terms: counted. Other id, same
+      // terms: not counted. A held row with no stored id falls back to the terms match.
+      // Cost if wrong: a held row with a wrong stored id is counted or missed.
+      const rows = db
+        .prepare(
+          `SELECT s.id, s.security_type, s.ib_con_id, (${termsSql}) AS by_terms FROM securities s
+            WHERE (${termsSql}) OR s.ib_con_id = ?`,
+        )
+        .all(...termsArgs, ...termsArgs, brokerId) as {
+        id: number;
+        security_type: string | null;
+        ib_con_id: number | null;
+        by_terms: number | null;
+      }[];
+      securityIds = rows
+        .filter((r) => isOptionSecurityType(r.security_type))
+        .filter((r) => (r.ib_con_id !== null ? r.ib_con_id === brokerId : r.by_terms === 1))
+        .map((r) => r.id);
+    }
   }
   if (securityIds.length === 0) return {};
   const held = db

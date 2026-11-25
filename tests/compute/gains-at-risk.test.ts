@@ -1292,6 +1292,53 @@ describe("computeGainsAtRisk: step 3 pins (index mode)", () => {
       }
     }
   });
+
+  it("T1 candidates absent or []: both pins byte-identical, no candidates key", () => {
+    for (const c of [...pin, ...withTrialPin]) {
+      for (const candidates of [undefined, []]) {
+        freshDb();
+        PIN_SEEDS[c.seed]();
+        const r = computeGainsAtRisk(db, { ...c.input, candidates }, { trackedIndexSeeds: SEEDS });
+        expect(r, c.name).toStrictEqual(c.result);
+        expect("candidates" in r).toBe(false);
+      }
+    }
+  });
+
+  it("F3 both pins byte-identical; a trial without brokerContractId matches holdings by terms exactly as today", () => {
+    // No trial in either pin carries a broker contract id.
+    for (const c of withTrialPin) {
+      for (const t of c.input.trialPositions ?? []) expect("brokerContractId" in t).toBe(false);
+    }
+    addDriverUnderlying();
+    const put = option("QQQ", "PUT", 95, "2027-01-15");
+    db.prepare("UPDATE securities SET ib_con_id = 5551 WHERE id = ?").run(put);
+    price(put, 3);
+    hold(put, 2, 1);
+    const adjusted = addSecurity({ symbol: "QQQ P95 adj", type: "Option", underlying: "QQQ", strike: 95, expiry: "2027-01-15", optionType: "PUT", multiplier: 100, conId: false });
+    db.prepare("UPDATE securities SET ib_con_id = 5552 WHERE id = ?").run(adjusted);
+    hold(adjusted, 5, 3);
+    const byTerms = trialOption("p", 100, "put", "buy", 95, "2027-01-15", 1);
+    expect(trialRow(run({ trialPositions: [byTerms] }), "p").holdingsNowByAccount).toEqual({ 1: 2, 3: 5 });
+    // F3: with the standard contract's id only that contract counts; the rest of the row is unchanged.
+    const byId = { ...byTerms, brokerContractId: 5551 } as TrialPositionInput;
+    const a = trialRow(run({ trialPositions: [byTerms] }), "p");
+    const b = trialRow(run({ trialPositions: [byId] }), "p");
+    expect(b.holdingsNowByAccount).toEqual({ 1: 2 });
+    expect({ ...b, holdingsNowByAccount: null }).toStrictEqual({ ...a, holdingsNowByAccount: null });
+  });
+
+  it("F3 brokerContractId 0, 1.5 or '7' throws GainsAtRiskInputError", () => {
+    addDriverUnderlying();
+    const base = trialOption("p", 100, "put", "buy", 95, "2027-01-15", 1);
+    for (const bad of [0, 1.5, "7", -3, Number.NaN]) {
+      expect(() => run({ trialPositions: [{ ...base, brokerContractId: bad } as unknown as TrialPositionInput] }), String(bad)).toThrow(
+        GainsAtRiskInputError,
+      );
+    }
+    expect(() => run({ trialPositions: [{ ...base, brokerContractId: 7 } as TrialPositionInput] })).not.toThrow();
+    expect(() => run({ trialPositions: [{ ...base, brokerContractId: undefined } as TrialPositionInput] })).not.toThrow();
+  });
 });
 
 // ─── Step 2: trial positions ────────────────────────────────────

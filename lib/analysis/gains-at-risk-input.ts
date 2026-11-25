@@ -420,6 +420,8 @@ export function trialEntryRefusalSentence(reason: TrialEntryRefusal, symbol: str
   switch (reason) {
     case "unknown-symbol":
       return `The app does not know ${symbol} yet. Add it to the watchlist first.`;
+    case "unknown-security":
+      return "That security is no longer on file. Fetch the quotes again.";
     case "is-an-option":
       return trialSecurityRefusalSentence("is-an-option", symbol);
     case "foreign-currency":

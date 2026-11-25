@@ -5,6 +5,7 @@ import { putPrice, callPrice, yearsToExpiry } from "@/lib/compute/options-greeks
 import { getRiskFreeRate } from "@/lib/queries/risk-free-rate";
 import {
   buildTrialEntry,
+  buildTrialEntryById,
   checkTrialSecurity,
   lookupTrialSecurity,
   solveTrialEntry,
@@ -15,6 +16,7 @@ import {
 } from "@/lib/compute/gains-at-risk-trial";
 import { computeGainsAtRisk, GAINS_AT_RISK_CASE_KEYS, type TrialPositionDraft, type TrialPositionInput } from "@/lib/compute/gains-at-risk";
 import { loadScenarioPositionsByAccount } from "@/lib/compute/scenario-positions";
+import { trialEntryRefusalSentence } from "@/lib/analysis/gains-at-risk-input";
 
 // Trial positions (Gains at risk step 2): the entry helpers. Synthetic ZZ
 // tickers and round numbers; clock 2026-11-10 15:00 UTC (10:00 Eastern).
@@ -223,6 +225,132 @@ describe("buildTrialEntry", () => {
     // A closed position (a zero row) is omitted.
     hold(put, 0, 2, "2026-11-11");
     expect(trialHoldingsByAccount(db, position)).toEqual({ 1: 20 });
+  });
+});
+
+describe("buildTrialEntryById (step 3, engine change 7)", () => {
+  it("shares buildTrialEntry's body: the same entry by id as by symbol, with brokerContractId copied (F3)", () => {
+    const u = addSecurity({ symbol: "ZZU", type: "Stock", name: "ZZ Underlying" });
+    price(u, 100);
+    hold(u, 10, 3);
+    const r = getRiskFreeRate(db);
+    const T = yearsToExpiry("2027-01-15", today, now);
+    const p = putPrice(101, 95, T, r, 0.3);
+    const terms = { kind: "option" as const, right: "put" as const, side: "buy" as const, expiry: "2027-01-15", strike: 95, contracts: 1, price: p, quotedUnderlyingPrice: 101 };
+    const bySymbol = buildTrialEntry(db, { ...terms, symbol: "ZZU" }, { today, now });
+    const byId = buildTrialEntryById(db, { ...terms, underlyingSecurityId: u, brokerContractId: 4242 }, { now: () => now });
+    expect(bySymbol.ok && byId.ok).toBe(true);
+    if (!bySymbol.ok || !byId.ok) throw new Error("both must build");
+    expect(byId.position).toEqual({ ...bySymbol.position, brokerContractId: 4242 });
+    expect({ ...byId, position: null }).toEqual({ ...bySymbol, position: null });
+    expect(byId).toMatchObject({ underlyingPrice: 101, underlyingPriceSource: "quote", holdingsAtAddByAccount: {} });
+    if (byId.position.kind === "option") expect(byId.position.valuationPriceAtEntry).toBe(100);
+    // Without an id the position has exactly step 2's keys.
+    const noId = buildTrialEntryById(db, { ...terms, underlyingSecurityId: u }, { now: () => now });
+    expect(noId.ok && "brokerContractId" in noId.position).toBe(false);
+  });
+
+  it("refuses an id not on file, an option row, a non-dollar row, a past expiry and a price below exercise value", () => {
+    const opt = addSecurity({ symbol: "ZZOPT", type: "Option", underlying: "ZZU", strike: 50, expiry: "2027-01-15", optionType: "PUT", conId: false });
+    const fx = addSecurity({ symbol: "ZZFX", type: "Stock", currency: "ZZD" });
+    price(fx, 20);
+    const u = addSecurity({ symbol: "ZZU", type: "Stock" });
+    price(u, 100);
+    const req = { kind: "option" as const, right: "put" as const, side: "buy" as const, expiry: "2027-01-15", strike: 95, contracts: 1, price: 3, quotedUnderlyingPrice: 100 };
+    const at = { now: () => now };
+    expect(buildTrialEntryById(db, { ...req, underlyingSecurityId: 99_999 }, at)).toEqual({ ok: false, reason: "unknown-security", symbol: "" });
+    expect(trialEntryRefusalSentence("unknown-security", "")).toBe("That security is no longer on file. Fetch the quotes again.");
+    expect(buildTrialEntryById(db, { ...req, underlyingSecurityId: opt }, at)).toEqual({ ok: false, reason: "is-an-option", symbol: "ZZOPT" });
+    expect(buildTrialEntryById(db, { ...req, underlyingSecurityId: fx }, at)).toEqual({ ok: false, reason: "foreign-currency", symbol: "ZZFX" });
+    expect(buildTrialEntryById(db, { ...req, underlyingSecurityId: u, expiry: "2026-11-09" }, at)).toMatchObject({ ok: false, reason: "expired" });
+    expect(buildTrialEntryById(db, { ...req, underlyingSecurityId: u, strike: 130, price: 20 }, at)).toMatchObject({ ok: false, reason: "below-intrinsic" });
+  });
+
+  it("F9 buildTrialEntryById reads one injected now() for today and the expiry check", () => {
+    const u = addSecurity({ symbol: "ZZU", type: "Stock" });
+    price(u, 100);
+    // The wall clock is weeks later: a read of it would call the contract expired.
+    vi.setSystemTime(new Date("2026-12-20T15:00:00Z"));
+    // 22:00 Eastern on 2026-11-10 (already 2026-11-11 in UTC).
+    const clock = vi.fn(() => new Date("2026-11-11T03:00:00Z"));
+    const r = getRiskFreeRate(db);
+    const T = yearsToExpiry("2026-11-20", "2026-11-10", new Date("2026-11-11T03:00:00Z"));
+    const p = putPrice(100, 95, T, r, 0.3);
+    const out = buildTrialEntryById(
+      db,
+      { kind: "option", underlyingSecurityId: u, right: "put", side: "buy", expiry: "2026-11-20", strike: 95, contracts: 1, price: p, quotedUnderlyingPrice: 100 },
+      { now: clock },
+    );
+    expect(clock).toHaveBeenCalledTimes(1);
+    expect(out).toMatchObject({ ok: true, underlyingPriceDate: "2026-11-10" });
+    if (out.ok && out.position.kind === "option") expect(Math.abs(out.position.entryVolatility - 0.3)).toBeLessThan(1e-6);
+  });
+});
+
+describe("trialHoldingsByAccount: broker contract identity (step 3, F3)", () => {
+  function seedTwins(): { u: number; standard: number; adjusted: number; noId: number } {
+    const u = addSecurity({ symbol: "ZZU", type: "Stock" });
+    price(u, 100);
+    const twin = (conId: number | null, account: number, qty: number) => {
+      const id = addSecurity({ symbol: `ZZU P95 #${conId}`, type: "Option", underlying: "ZZU", strike: 95, expiry: "2027-01-15", optionType: "PUT", multiplier: 100, conId: false });
+      if (conId !== null) db.prepare("UPDATE securities SET ib_con_id = ? WHERE id = ?").run(conId, id);
+      hold(id, qty, account);
+      return id;
+    };
+    return { u, standard: twin(5551, 1, 2), adjusted: twin(5552, 2, 7), noId: twin(null, 3, 4) };
+  }
+  const position = (u: number, brokerContractId?: number): TrialPositionDraft => ({
+    kind: "option", underlyingSecurityId: u, right: "put", side: "buy", expiry: "2027-01-15", strike: 95, contracts: 1,
+    pricePaid: 3, entryUnderlyingPrice: 100, valuationPriceAtEntry: 100, entryVolatility: 0.3,
+    ...(brokerContractId !== undefined ? { brokerContractId } : {}),
+  });
+
+  it("F3 a trial without brokerContractId matches holdings by terms exactly as today", () => {
+    const { u } = seedTwins();
+    expect(trialHoldingsByAccount(db, position(u))).toEqual({ 1: 2, 2: 7, 3: 4 });
+  });
+
+  it("F3 a held adjusted contract with the same terms but another ib_con_id is not counted for a trial carrying brokerContractId; the held standard one is", () => {
+    const { u } = seedTwins();
+    expect(trialHoldingsByAccount(db, position(u, 5551))).toEqual({ 1: 2, 3: 4 });
+    expect(trialHoldingsByAccount(db, position(u, 5552))).toEqual({ 2: 7, 3: 4 });
+  });
+
+  it("F3 a held row with no ib_con_id is matched by terms even when the trial carries an id", () => {
+    const { u } = seedTwins();
+    // An id no held row carries: only the row with no id on file matches, by its terms.
+    expect(trialHoldingsByAccount(db, position(u, 5999))).toEqual({ 3: 4 });
+  });
+
+  it("F3 a held row carrying the trial's id counts even when its stored terms differ", () => {
+    const u = addSecurity({ symbol: "ZZU", type: "Stock" });
+    price(u, 100);
+    const id = addSecurity({ symbol: "ZZU P95 adj", type: "Option", underlying: "ZZU", strike: 95.5, expiry: "2027-01-15", optionType: "PUT", multiplier: 100, conId: false });
+    db.prepare("UPDATE securities SET ib_con_id = 5551 WHERE id = ?").run(id);
+    hold(id, 3, 2);
+    expect(trialHoldingsByAccount(db, position(u, 5551))).toEqual({ 2: 3 });
+    expect(trialHoldingsByAccount(db, position(u))).toEqual({});
+  });
+
+  it("F3 ruling: when both carry a broker id the id decides, whatever the stored terms say; no stored id falls back to terms", () => {
+    const u = addSecurity({ symbol: "ZZU", type: "Stock" });
+    price(u, 100);
+    const mk = (symbol: string, strike: number, conId: number | null, account: number, qty: number) => {
+      const id = addSecurity({ symbol, type: "Option", underlying: "ZZU", strike, expiry: "2027-01-15", optionType: "PUT", multiplier: 100, conId: false });
+      if (conId !== null) db.prepare("UPDATE securities SET ib_con_id = ? WHERE id = ?").run(conId, id);
+      hold(id, qty, account);
+    };
+    mk("ZZU P47.5 restruck", 47.5, 5551, 1, 3); // same id, stale terms after a re-strike: counts
+    mk("ZZU P95 adj", 95, 5552, 2, 7); // same terms, another id: does not count
+    mk("ZZU P95 noid", 95, null, 3, 4); // no stored id: matched by terms
+    expect(trialHoldingsByAccount(db, position(u, 5551))).toEqual({ 1: 3, 3: 4 });
+  });
+
+  it("F3 the engine's trial row reads the same match", () => {
+    const { u } = seedTwins();
+    const trial = { ...position(u, 5552), id: "t" } as TrialPositionInput;
+    const r = computeGainsAtRisk(db, { driverSymbol: "QQQ", valuationDate: today, moves: [-0.1], volChangePoints: 0, accountIds: [], trialPositions: [trial] });
+    expect(r.trial?.rows[0].holdingsNowByAccount).toEqual({ 2: 7, 3: 4 });
   });
 });
 
