@@ -376,7 +376,6 @@ export const FIGURES_KEPT_NOTE = "Your own per-name figures are kept and not use
 /** When the driver list could not be loaded. */
 export const DRIVERS_LOAD_FAILED_TEXT = "The list of stocks and funds could not be loaded. The index still works.";
 
-/** The page's one-line description, by driver kind. */
 /** In-page anchors for the orientation block. */
 export const GAINS_ANCHORS = Object.freeze({
   results: "gains-results",
@@ -385,8 +384,9 @@ export const GAINS_ANCHORS = Object.freeze({
 });
 
 /**
- * Three short lines at the top of the view; each name links to its section.
- * The first line carries the page description, so the title needs no other.
+ * Three short lines at the top of the view; each name links to its section
+ * and is followed by a colon. The first line is the page's description, so
+ * the title needs no other.
  */
 export function pageGuideLines(kind: DriverChoice["kind"]): { anchor: string; name: string; text: string }[] {
   return [
@@ -401,12 +401,6 @@ export function pageGuideLines(kind: DriverChoice["kind"]): { anchor: string; na
     { anchor: GAINS_ANCHORS.trial, name: "Try a position", text: "adds one position you type or quote." },
     { anchor: GAINS_ANCHORS.candidates, name: "Compare options", text: "prices several contracts on one budget." },
   ];
-}
-
-export function pageDescription(kind: DriverChoice["kind"]): string {
-  return kind === "single-name"
-    ? "If one stock or fund falls or rises by a date, how much the book gains or gives back."
-    : "If an index falls by a date, how much of the year's gain the book gives back.";
 }
 
 /**

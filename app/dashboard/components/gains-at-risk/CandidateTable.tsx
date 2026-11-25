@@ -109,7 +109,7 @@ export function CandidateTable({
   onRetryCompute: () => void;
 }) {
   const [sortKey, setSortKey] = useState<CandidateSortKey>("none");
-  const sorted = sortCandidateRows(state.rows, sortKey, caseKey, yearGain);
+  const sorted = sortCandidateRows(state.rows, sortKey, caseKey, yearGain, valuationDate);
   // Item 9: a typed budget not yet applied: the figures below are for the applied one, dimmed until Enter.
   const budgetPending = budgetDraft !== state.budgetUsdText;
   const anyInTrials = state.rows.some((r) => inTrials.has(r.conId));

@@ -792,9 +792,10 @@ function sortKeyOf(
   key: Exclude<CandidateSortKey, "none">,
   caseKey: GainsAtRiskCaseKey,
   yearGain: YearGainResult | null,
-): [0 | 1 | 2, number] {
+  valuationDate: string | null,
+): [0 | 1 | 2 | 3, number] {
   const f = pricedFigures(r);
-  if (f === null) return [2, 0];
+  if (f === null) return [3, 0];
   const c = f.engine.cases?.[caseKey] ?? null;
   const atSelected = c ? c.atSelectedMoveUsd : 0;
   switch (key) {
@@ -812,6 +813,8 @@ function sortKeyOf(
       return c ? [0, c.atZeroMoveUsd] : [1, atSelected];
     case "crossing":
       if (c === null) return [1, 0];
+      // The cell shows the expires-before sentence, not a crossing: after every crossing, before no figures.
+      if (valuationDate !== null && expiresBeforeValuation(r.contract.expiry, valuationDate)) return [2, atSelected];
       if (c.crossing.kind === "better-at-every-move") return [0, 0];
       if (c.crossing.kind === "pays-beyond") return [0, Math.abs(c.crossing.move)];
       return [1, atSelected];
@@ -833,9 +836,10 @@ export function sortCandidateRows(
   key: CandidateSortKey,
   caseKey: GainsAtRiskCaseKey,
   yearGain: YearGainResult | null = null,
+  valuationDate: string | null = null,
 ): CandidateRowState[] {
   if (key === "none") return [...rows];
-  const indexed = rows.map((r, i) => ({ r, i, k: sortKeyOf(r, key, caseKey, yearGain) }));
+  const indexed = rows.map((r, i) => ({ r, i, k: sortKeyOf(r, key, caseKey, yearGain, valuationDate) }));
   indexed.sort((a, b) => a.k[0] - b.k[0] || a.k[1] - b.k[1] || a.i - b.i);
   return indexed.map((x) => x.r);
 }
@@ -921,7 +925,7 @@ const CALENDAR_DAY = /^\d{4}-\d{2}-\d{2}$/;
 /**
  * The engine's step 1 rule, read from the row's own terms: an option whose
  * expiry is before the valuation date (calendar days; the same day is not
- * before) is counted as expiring before the move, the worse of the two orders.
+ * before) is counted at the worse of two orders: the move before it expires, or after.
  * The candidates reply does not carry this flag, so the page derives it.
  */
 export function expiresBeforeValuation(expiry: string, valuationDate: string): boolean {
@@ -929,7 +933,7 @@ export function expiresBeforeValuation(expiry: string, valuationDate: string): b
 }
 
 export function expiresBeforeText(valuationDate: string): string {
-  return `Expires before ${formatPositionsDate(valuationDate)}. Counted as expiring before the move.`;
+  return `Expires before ${formatPositionsDate(valuationDate)}. Counted at the worse of two cases: the move comes before it expires, or after.`;
 }
 
 export const EXPIRES_BEFORE_NOTE = "To see a contract pay, set the date on or before its expiry.";
@@ -958,7 +962,7 @@ export function perThousandHeading(selectedMove: number): string {
 }
 
 /** Above the strike lists. */
-export const STRIKES_NEAR_NOTE = "The five nearest out of the money are ticked to start. Only strikes near the price are listed.";
+export const STRIKES_NEAR_NOTE = "The five nearest out of the money are ticked to start.";
 
 /** How many listed strikes show on each side of the price by default. */
 export const STRIKES_EACH_SIDE = 15;
@@ -1012,16 +1016,18 @@ export function storedPriceLine(
 
 /** Per underlying in the table: the underlying price of its newest quote, and when it arrived. */
 export function quotedUnderlyingLines(rows: readonly CandidateRowState[]): string[] {
-  const newest = new Map<number, { symbol: string; q: CandidateQuoteFields }>();
+  // Per underlying: the quote with the newest VALID time; an unreadable time never wins over a valid one.
+  const newest = new Map<number, { symbol: string; q: CandidateQuoteFields; t: number | null }>();
   for (const r of rows) {
     if (r.quote === null) continue;
+    const parsed = Date.parse(r.quote.underlyingObservedAt);
+    const t = Number.isFinite(parsed) ? parsed : null;
     const had = newest.get(r.underlyingSecurityId);
-    if (had === undefined || Date.parse(r.quote.underlyingObservedAt) > Date.parse(had.q.underlyingObservedAt)) {
-      newest.set(r.underlyingSecurityId, { symbol: r.symbol, q: r.quote });
-    }
+    const wins = had === undefined || (t !== null && (had.t === null || t > had.t));
+    if (wins) newest.set(r.underlyingSecurityId, { symbol: r.symbol, q: r.quote, t });
   }
-  return [...newest.values()].map(({ symbol, q }) => {
-    const at = easternTime(q.underlyingObservedAt);
+  return [...newest.values()].map(({ symbol, q, t }) => {
+    const at = t === null ? "" : easternTime(q.underlyingObservedAt);
     return `${symbol} quoted ${formatMarketPrice(q.underlyingPrice)}${at ? ` at ${at}` : ""}.`;
   });
 }
@@ -1039,12 +1045,10 @@ export const CANDIDATE_STEPS: readonly string[] = Object.freeze([
 export function candidateLegend(selectedMove: number, crossingHeadingText: string): { term: string; text: string }[] {
   const at = `At ${signedMovePct(selectedMove)}`;
   return [
-    { term: "Contracts", text: "whole contracts the budget buys." },
     { term: "Cost", text: "contracts times the price per contract, at the mid." },
-    { term: at, text: "the change in the book from this row alone, net of its cost, on top of the trial positions already listed." },
-    { term: perThousandHeading(selectedMove), text: `the same change scaled to $1,000 of cost, so rows that spend different amounts compare.` },
-    { term: "At 0%", text: "what waiting costs by the date, with no move." },
-    { term: crossingHeadingText, text: "the move where the row breaks even." },
-    { term: "Cost / year's gain", text: "the cost as a share of the year's gain." },
+    { term: at, text: "this row's own gain or loss at that move, after its cost. Add it to the book and the trial positions above." },
+    { term: perThousandHeading(selectedMove), text: "the same figure scaled to $1,000 of cost, so rows that spend different amounts compare." },
+    { term: "At 0%", text: "the row's result by the date if nothing moves." },
+    { term: crossingHeadingText, text: "the move past which the row gains." },
   ];
 }

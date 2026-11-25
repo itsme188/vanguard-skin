@@ -131,6 +131,7 @@ describe("POST /api/tws/option-candidates/chain", () => {
     expect(data.kind).toBe("strikes");
     expect(data.valuationPrice).toBe(507);
     expect(data.valuationPriceDate).toBe("2026-11-09");
+    expect(data.valuationPriceSource).toBe("stored-price");
     expect(data.byExpiry.map((e) => e.expiry)).toEqual(["2026-12-18", "2027-01-15"]);
     for (const e of data.byExpiry) {
       expect(e.contracts.map((c) => c.strike)).toEqual(STRIKES);

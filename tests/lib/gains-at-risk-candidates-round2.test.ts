@@ -23,7 +23,7 @@ import {
   type CandidatesAction,
   type CandidatesState,
 } from "@/lib/analysis/gains-at-risk-candidates-view";
-import { GAINS_ANCHORS, pageDescription, pageGuideLines } from "@/lib/analysis/gains-at-risk-view";
+import { GAINS_ANCHORS, pageGuideLines } from "@/lib/analysis/gains-at-risk-view";
 import type {
   CandidateEntryRecord,
   CandidateQuoteFields,
@@ -178,7 +178,9 @@ describe("item 1: a contract that expires before the date", () => {
     const cells = candidateCells(s.rows[0], "measured", gain(400_000), "ZZA", "2026-12-31");
     expect(cells.kind).toBe("priced");
     if (cells.kind !== "priced") return;
-    expect(cells.expiresBeforeText).toBe("Expires before Dec 31. Counted as expiring before the move.");
+    expect(cells.expiresBeforeText).toBe(
+      "Expires before Dec 31. Counted at the worse of two cases: the move comes before it expires, or after.",
+    );
     expect(expiresBeforeText("2026-12-31")).toBe(cells.expiresBeforeText);
     expect(EXPIRES_BEFORE_NOTE).toBe("To see a contract pay, set the date on or before its expiry.");
     const onOrBefore = candidateCells(s.rows[0], "measured", gain(400_000), "ZZA", "2026-11-30");
@@ -186,6 +188,18 @@ describe("item 1: a contract that expires before the date", () => {
     // It sorts with figures, ahead of a row with none.
     const t = table([priced(101, 5000, -5000), { conId: 102, status: "zero-contracts", perContractUsd: 9999, quote: { ...quote(), source: "client-supplied" } }]);
     expect(sortCandidateRows(t.rows, "atSelected", "measured").map((r) => r.conId)).toEqual([101, 102]);
+  });
+
+  it("the Pays once column: an expires-before row after real crossings, before rows with no figures", () => {
+    const real = priced(103, 5000, 100);
+    if (real.status === "priced" && real.engine.cases) {
+      real.engine.cases.measured = cs({ atSelectedMoveUsd: 100, crossing: { kind: "pays-beyond", move: -0.1 } });
+    }
+    const none: CandidateRow = { conId: 102, status: "zero-contracts", perContractUsd: 9999, quote: { ...quote(), source: "client-supplied" } };
+    const t = table([priced(101, 5000, -5000), none, real]);
+    // 103's expiry is moved past the date, so it alone shows a real crossing.
+    const rows = t.rows.map((r) => (r.conId === 103 ? { ...r, contract: { ...r.contract, expiry: "2027-01-15" } } : r));
+    expect(sortCandidateRows(rows, "crossing", "measured", null, "2026-12-31").map((r) => r.conId)).toEqual([103, 101, 102]);
   });
 });
 
@@ -244,7 +258,7 @@ describe("item 3: the underlying price", () => {
     expect(storedPriceLine("ZZA", null)).toBeNull();
     expect(strikeSideText("put")).toBe("Below the price: out of the money for a put.");
     expect(strikeSideText("call")).toBe("Above the price: out of the money for a call.");
-    expect(STRIKES_NEAR_NOTE).toBe("The five nearest out of the money are ticked to start. Only strikes near the price are listed.");
+    expect(STRIKES_NEAR_NOTE).toBe("The five nearest out of the money are ticked to start.");
   });
 
   it("after a pull: each underlying's newest quoted price and its time", () => {
@@ -255,6 +269,17 @@ describe("item 3: the underlying price", () => {
       { conId: 4, underlyingSecurityId: ZZQ, symbol: "ZZQ", quote: null },
     ] as unknown as CandidateRowState[];
     expect(quotedUnderlyingLines(rows)).toEqual(["ZZA quoted 102.00 at 14:40.", "ZZQ quoted 55.25 at 14:32."]);
+  });
+
+  it("an unreadable time never wins over a valid one; with none valid, the price shows without a time", () => {
+    const bad = [
+      { conId: 1, underlyingSecurityId: ZZA, symbol: "ZZA", quote: quote({ underlyingPrice: 5, underlyingObservedAt: "not a time" }) },
+      { conId: 2, underlyingSecurityId: ZZA, symbol: "ZZA", quote: quote({ underlyingPrice: 6, underlyingObservedAt: "2026-11-25T19:40:00.000Z" }) },
+      { conId: 3, underlyingSecurityId: ZZQ, symbol: "ZZQ", quote: quote({ underlyingPrice: 7, underlyingObservedAt: "" }) },
+    ] as unknown as CandidateRowState[];
+    expect(quotedUnderlyingLines(bad)).toEqual(["ZZA quoted 6.00 at 14:40.", "ZZQ quoted 7.00."]);
+    // A valid row first, then an unreadable one: the valid one stays.
+    expect(quotedUnderlyingLines([bad[1], bad[0]])).toEqual(["ZZA quoted 6.00 at 14:40."]);
   });
 });
 
@@ -296,9 +321,11 @@ describe("item 6: guidance", () => {
       const lines = pageGuideLines(kind);
       expect(lines.map((l) => l.name)).toEqual(["Chart and table", "Try a position", "Compare options"]);
       expect(lines.map((l) => l.anchor)).toEqual([GAINS_ANCHORS.results, GAINS_ANCHORS.trial, GAINS_ANCHORS.candidates]);
-      const d = pageDescription(kind);
-      expect(lines[0].text).toBe(d.charAt(0).toLowerCase() + d.slice(1));
     }
+    expect(pageGuideLines("single-name")[0].text).toBe(
+      "if one stock or fund falls or rises by a date, how much the book gains or gives back.",
+    );
+    expect(pageGuideLines("index")[0].text).toBe("if an index falls by a date, how much of the year's gain the book gives back.");
     expect(pageGuideLines("index")[1].text).toBe("adds one position you type or quote.");
     expect(pageGuideLines("index")[2].text).toBe("prices several contracts on one budget.");
   });
@@ -312,16 +339,14 @@ describe("item 6: guidance", () => {
       "Add a row to try it in the chart.",
     ]);
     expect(candidateLegend(-0.1, "Pays once ZZA falls past")).toEqual([
-      { term: "Contracts", text: "whole contracts the budget buys." },
       { term: "Cost", text: "contracts times the price per contract, at the mid." },
       {
         term: "At -10%",
-        text: "the change in the book from this row alone, net of its cost, on top of the trial positions already listed.",
+        text: "this row's own gain or loss at that move, after its cost. Add it to the book and the trial positions above.",
       },
-      { term: "At -10%, per $1,000 spent", text: "the same change scaled to $1,000 of cost, so rows that spend different amounts compare." },
-      { term: "At 0%", text: "what waiting costs by the date, with no move." },
-      { term: "Pays once ZZA falls past", text: "the move where the row breaks even." },
-      { term: "Cost / year's gain", text: "the cost as a share of the year's gain." },
+      { term: "At -10%, per $1,000 spent", text: "the same figure scaled to $1,000 of cost, so rows that spend different amounts compare." },
+      { term: "At 0%", text: "the row's result by the date if nothing moves." },
+      { term: "Pays once ZZA falls past", text: "the move past which the row gains." },
     ]);
   });
 

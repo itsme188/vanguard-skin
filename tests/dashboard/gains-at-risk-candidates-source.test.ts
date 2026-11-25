@@ -220,6 +220,8 @@ describe("after the owner's first real pull", () => {
     expect(code(read(`${DIR}/TrialPositionList.tsx`))).toContain("id={GAINS_ANCHORS.trial}");
     expect(code(read(CANDIDATE_SECTION))).toContain("id={GAINS_ANCHORS.candidates}");
     // The title's own description line is gone: the first orientation line carries it.
-    expect(view).not.toContain("{pageDescription(kind)}");
+    expect(view).not.toContain("pageDescription(");
+    // A colon after each link name.
+    expect(view).toMatch(/\{l\.name\}\s*<\/a>\s*\{": "\}\s*\{l\.text\}/);
   });
 });

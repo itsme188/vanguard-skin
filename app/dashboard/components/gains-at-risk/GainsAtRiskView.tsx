@@ -629,7 +629,8 @@ export function GainsAtRiskView({
               <li key={l.anchor}>
                 <a href={`#${l.anchor}`} className="text-ink-dim underline">
                   {l.name}
-                </a>{" "}
+                </a>
+                {": "}
                 {l.text}
               </li>
             ))}
