@@ -214,8 +214,8 @@ describe("the two cases and the owner's figure", () => {
     expect(tag).toContain("onBlur=");
     expect(tag).toContain("onKeyDown={onEnterBlur}");
     expect(src.slice(open - 400, close)).not.toContain("PrivateNumberInput");
-    anchorIndex(src, "betaEditorOwners(positions)");
-    anchorIndex(src, "SAME_FIGURE_TEXT");
+    anchorIndex(src, "betaEditorOwnership(positions)");
+    anchorIndex(src, "sameFigureText(");
     anchorIndex(src, "onBetaCommit(p.identitySecurityId)");
     anchorIndex(src, "onBetaClear(p.identitySecurityId)");
   });
@@ -236,6 +236,40 @@ describe("the two cases and the owner's figure", () => {
     anchorIndex(src, "<Count value={caption.notCaptured.count} />");
     anchorIndex(src, "noMeasuredLinkSentence(");
     anchorIndex(src, "betaSourceLine(p, caseKey)");
+  });
+});
+
+describe("the per-name table sorts", () => {
+  const src = read(VIEW);
+  const body = code(src);
+
+  it("sort state lives in the URL under its own key, through the house hook", () => {
+    anchorIndex(src, "useSortParam<GainsSortKey>(GAINS_SORT_SCOPE, DEFAULT_POSITION_SORT.field, DEFAULT_POSITION_SORT.dir)");
+    anchorIndex(src, 'from "@/lib/hooks/useSortParam"');
+    anchorIndex(src, 'from "../SortableHeader"');
+  });
+
+  it("five sortable columns, each a SortableHeader", () => {
+    for (const field of ["account", "symbol", "beta", "value", "loss"]) {
+      expect(src).toMatch(new RegExp(`<SortableHeader\\s+field="${field}"`));
+    }
+    // No hand-drawn arrow: SortableHeader draws its own.
+    expect(copyOf(body).join(" ")).not.toMatch(/[▲▼▾↑↓]/);
+  });
+
+  it("sorted by the selected case and move, through the pure helper; the boxes follow that order", () => {
+    const at = anchorIndex(src, "const positions = sortPositions(result.positions, sortKey, sort.dir, caseKey, selectedIdx);");
+    expect(anchorIndex(src, "priceBoxOwners(positions)")).toBeGreaterThan(at);
+    expect(anchorIndex(src, "betaEditorOwnership(positions)")).toBeGreaterThan(at);
+    anchorIndex(src, "sameFigureText(");
+    anchorIndex(src, "positionSortNote(sortKey, sort.dir)");
+    expect(body).not.toMatch(/\.sort\(\(a, b\)/);
+  });
+
+  it("the result and the value print through <Money>", () => {
+    anchorIndex(src, "Result at {formatDriverMove(");
+    anchorIndex(src, "<Money value={fig(p.valueUsd)} />");
+    anchorIndex(src, "<Money value={pnl} signed />");
   });
 });
 

@@ -46,6 +46,7 @@ import type {
 } from "@/lib/compute/gains-at-risk";
 import type { DriverBetaRefusal } from "@/lib/compute/driver-beta";
 import type { NoMeasuredLinkReason } from "@/lib/compute/security-regression";
+import type { SortDir } from "@/lib/hooks/useSortParam";
 import type { YearGainReconciliationReason, YearGainResult } from "@/lib/compute/year-gain";
 import type { PositionsFreshness } from "@/lib/queries/positions-freshness";
 
@@ -508,6 +509,121 @@ export function betaEditorNote(p: Pick<GainsAtRiskPosition, "betaSource" | "unmo
   if (p.betaSource === "driver") return "moves with the index by definition";
   if (p.betaSource === "fixed") return "held at a fixed link";
   return null;
+}
+
+/**
+ * Who holds the figure box for each row, in the order given (the table's
+ * sorted order): the first row of each name owns it; every later row of that
+ * name points back up to it. Keyed by `account:security`; a row that takes no
+ * box (no identity, the index itself, a fixed row) has no entry.
+ */
+export function betaEditorOwnership(
+  rows: Pick<GainsAtRiskPosition, "accountId" | "securityId" | "identitySecurityId" | "betaSource" | "symbol">[],
+): Map<string, { owner: true } | { owner: false; ownerSymbol: string }> {
+  const owners = betaEditorOwners(rows);
+  const ownerSymbol = new Map<number, string>();
+  const out = new Map<string, { owner: true } | { owner: false; ownerSymbol: string }>();
+  for (const r of rows) {
+    const key = `${r.accountId}:${r.securityId}`;
+    if (r.identitySecurityId === null) continue;
+    if (owners.has(key)) {
+      ownerSymbol.set(r.identitySecurityId, r.symbol);
+      out.set(key, { owner: true });
+      continue;
+    }
+    const sym = ownerSymbol.get(r.identitySecurityId);
+    if (sym !== undefined) out.set(key, { owner: false, ownerSymbol: sym });
+  }
+  return out;
+}
+
+/** The pointer on a row whose name's box sits higher up: names that row when it is another symbol. */
+export function sameFigureText(ownerSymbol: string, rowSymbol: string): string {
+  return ownerSymbol === rowSymbol ? SAME_FIGURE_TEXT : `same figure as ${ownerSymbol}, above`;
+}
+
+// ─── Sorting the per-name table ─────────────────────────────────
+
+/**
+ * The sortable columns. "loss" is the result at the selected move read as a
+ * loss (minus the profit or loss), so its descending order, the default, puts
+ * the largest loss first and one click flips it to the largest gain first:
+ * the hook's click cycle (new field → desc → asc → default) then reads right.
+ */
+export type GainsSortKey = "symbol" | "account" | "beta" | "value" | "loss";
+const GAINS_SORT_KEYS: readonly GainsSortKey[] = ["symbol", "account", "beta", "value", "loss"];
+export const DEFAULT_POSITION_SORT: { field: GainsSortKey; dir: SortDir } = { field: "loss", dir: "desc" };
+/** URL params `garNamesSort` / `garNamesDir`: no other Analysis table uses them. */
+export const GAINS_SORT_SCOPE = "garNames";
+
+export function isGainsSortKey(v: unknown): v is GainsSortKey {
+  return typeof v === "string" && (GAINS_SORT_KEYS as readonly string[]).includes(v);
+}
+
+/** The short line under the heading when sorted by the result. */
+export function positionSortNote(key: GainsSortKey, dir: SortDir): string | null {
+  if (key !== "loss") return null;
+  return dir === "desc" ? "Largest loss first." : "Largest gain first.";
+}
+
+function sortValue(
+  p: GainsAtRiskPosition,
+  key: GainsSortKey,
+  caseKey: GainsAtRiskCaseKey,
+  moveIndex: number,
+): number | string | null {
+  switch (key) {
+    case "symbol":
+      return p.symbol;
+    case "account":
+      return p.accountName;
+    case "value":
+      return p.valueUsd !== null && Number.isFinite(p.valueUsd) ? p.valueUsd : null;
+    case "beta": {
+      // The not-modelled reason first: such a row has no beta.
+      if (p.unmodelledReason !== undefined) return null;
+      const b = p.cases[caseKey].beta;
+      return b !== null && Number.isFinite(b) ? b : null;
+    }
+    case "loss": {
+      // A not-modelled row carries zeros, not a figure: it sorts with the rows that have none.
+      if (p.unmodelledReason !== undefined || moveIndex < 0) return null;
+      const v = p.cases[caseKey].pnlByMove[moveIndex];
+      return v !== undefined && Number.isFinite(v) ? -v : null;
+    }
+  }
+}
+
+/**
+ * The per-name table's order: by one column of the SELECTED case at the
+ * SELECTED move (index into the case's moves; -1 for none). Rows with no
+ * figure sort last in both directions. Stable: ties go to symbol, then
+ * account, then security id. Returns a new array; the input is unchanged.
+ */
+export function sortPositions(
+  rows: GainsAtRiskPosition[],
+  key: GainsSortKey,
+  direction: SortDir,
+  caseKey: GainsAtRiskCaseKey,
+  moveIndex: number,
+): GainsAtRiskPosition[] {
+  const sign = direction === "asc" ? 1 : -1;
+  const cmp = (a: number | string, b: number | string): number =>
+    typeof a === "number" && typeof b === "number" ? a - b : String(a).localeCompare(String(b));
+  return rows
+    .map((p) => ({ p, v: sortValue(p, key, caseKey, moveIndex) }))
+    .sort((x, y) => {
+      if (x.v === null && y.v !== null) return 1;
+      if (y.v === null && x.v !== null) return -1;
+      const primary = x.v !== null && y.v !== null ? sign * cmp(x.v, y.v) : 0;
+      return (
+        primary ||
+        x.p.symbol.localeCompare(y.p.symbol) ||
+        x.p.accountName.localeCompare(y.p.accountName) ||
+        x.p.securityId - y.p.securityId
+      );
+    })
+    .map((x) => x.p);
 }
 
 /**

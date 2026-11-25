@@ -4,6 +4,7 @@ import { useEffect, useReducer, useRef, useState, type KeyboardEvent } from "rea
 import Link from "next/link";
 import apiFetch from "@/lib/http/apiFetch";
 import { readMutationResult, networkFailureMessage } from "@/lib/ui/mutation-result";
+import { useSortParam } from "@/lib/hooks/useSortParam";
 import { Count, Money, Pct, PrivateNumberInput, PrivateText } from "@/lib/privacy/components";
 import {
   formatPositionsDate,
@@ -34,13 +35,14 @@ import {
   NO_VOLATILITY_PRICE_TEXT,
   OVERRIDE_REFUSAL_LABELS,
   PRICE_SOURCE_LABELS,
-  SAME_FIGURE_TEXT,
+  DEFAULT_POSITION_SORT,
+  GAINS_SORT_SCOPE,
   SAME_PRICE_TEXT,
   TABLE_MOVES,
   UNDER_TENTH_TEXT,
   YEAR_GAIN_LABEL,
   ZERO_ROW_NOTE,
-  betaEditorOwners,
+  betaEditorOwnership,
   betaEvidenceCaption,
   betaOverrideProblem,
   betaSourceLine,
@@ -56,10 +58,14 @@ import {
   initialGainsRequestState,
   betaEditorNote,
   isLeveragedFundRow,
+  isGainsSortKey,
   isPriceEditable,
   moneyCell,
   noMeasuredLinkSentence,
   overridesIgnoredLine,
+  positionSortNote,
+  sameFigureText,
+  sortPositions,
   priceBoxOwners,
   reconciliationLine,
   requestFailureText,
@@ -69,6 +75,7 @@ import {
   serverPropsAnswerControls,
   yearGainNote,
   type GainsControls,
+  type GainsSortKey,
 } from "@/lib/analysis/gains-at-risk-view";
 // Types only: no engine or query code reaches the browser.
 import type {
@@ -81,6 +88,7 @@ import { Chip, type ChipTone } from "../Chip";
 import { CHIP_TONE_TEXT } from "../chip-tone-text";
 import { EmptySection } from "../EmptySection";
 import { ScrollFade } from "../ScrollFade";
+import { SortableHeader } from "../SortableHeader";
 import { GainsAtRiskChart } from "./GainsAtRiskChart";
 
 const SCOPE_PILLS: { key: AnalysisScope; label: string }[] = [
@@ -553,6 +561,8 @@ function ResultSections({
   onBetaClear: (identityId: number) => void;
   betaOverrides: Record<number, number>;
 }) {
+  // The per-name table's order lives in the URL (its own key, so no other Analysis table is touched).
+  const { sort, setSort } = useSortParam<GainsSortKey>(GAINS_SORT_SCOPE, DEFAULT_POSITION_SORT.field, DEFAULT_POSITION_SORT.dir);
   const scopeCell = scopeFreshnessCell(response.scopeFreshness, scopeHasAccounts);
   // After a failure no figure is shown; while computing, the old ones are dimmed.
   const failed = mode === "failed";
@@ -598,15 +608,14 @@ function ResultSections({
   const customExtra = custom !== null && !tableMoves.some((m) => sameMove(m, custom));
   const selectedIdx = selected.moves.findIndex((r) => sameMove(r.move, selectedMove));
   const driver = result.driverSymbol;
-  const caseOf = (p: GainsAtRiskPosition) => p.cases[caseKey];
-
-  const positions = [...result.positions].sort((a, b) => {
-    const pa = selectedIdx >= 0 ? Math.abs(caseOf(a).pnlByMove[selectedIdx] ?? 0) : 0;
-    const pb = selectedIdx >= 0 ? Math.abs(caseOf(b).pnlByMove[selectedIdx] ?? 0) : 0;
-    return pb - pa || a.symbol.localeCompare(b.symbol) || a.accountName.localeCompare(b.accountName);
-  });
+  // A key the URL carries that this table does not know falls back to the default.
+  const sortKey: GainsSortKey = isGainsSortKey(sort.field) ? sort.field : DEFAULT_POSITION_SORT.field;
+  // By the selected case at the selected move; rows with no figure last either way.
+  const positions = sortPositions(result.positions, sortKey, sort.dir, caseKey, selectedIdx);
+  const sortNote = positionSortNote(sortKey, sort.dir);
+  // Both boxes follow the order on screen: the first row of a name (or a contract) owns its box.
   const boxOwners = priceBoxOwners(positions);
-  const editorOwners = betaEditorOwners(positions);
+  const editorOwnership = betaEditorOwnership(positions);
   // A refusal of the owner's figure belongs to the name: shown beside its one box.
   const betaRefusals = new Map<number, GainsAtRiskBetaOverrideRefusal>();
   for (const p of positions) {
@@ -732,6 +741,7 @@ function ResultSections({
         <h3 className="text-sm font-medium text-ink whitespace-nowrap!">
           What moves the result{selectedIdx >= 0 ? ` at ${formatDriverMove(selected.moves[selectedIdx].move)}` : ""}
         </h3>
+        {sortNote && <p className="text-xs text-ink-dim">{sortNote}</p>}
         <p className="text-xs text-ink-faint">
           Each name moves by its beta times the index&apos;s move. In a real fall a name can move more than that, or alone.
           Pick a row above to see that move.
@@ -761,18 +771,30 @@ function ResultSections({
           <table className="w-full text-sm">
             <thead>
               <tr className="text-xs text-ink-faint text-left">
-                <th className="font-normal py-1 pr-3 whitespace-nowrap">Account</th>
-                <th className="font-normal py-1 pr-3 whitespace-nowrap">Name</th>
-                <th className="font-normal py-1 pr-3 whitespace-nowrap text-right">Beta to {driver}</th>
+                <SortableHeader field="account" sort={sort} onSort={setSort} className="whitespace-nowrap">
+                  Account
+                </SortableHeader>
+                <SortableHeader field="symbol" sort={sort} onSort={setSort} className="whitespace-nowrap">
+                  Name
+                </SortableHeader>
+                <SortableHeader field="value" sort={sort} onSort={setSort} align="right" className="whitespace-nowrap">
+                  Value
+                </SortableHeader>
+                <SortableHeader field="beta" sort={sort} onSort={setSort} align="right" className="whitespace-nowrap">
+                  Beta to {driver}
+                </SortableHeader>
                 <th className="font-normal py-1 pr-3 whitespace-nowrap">Where it comes from</th>
                 <th className="font-normal py-1 pr-3 whitespace-nowrap">Your figure</th>
                 <th className="font-normal py-1 pr-3 whitespace-nowrap">Price</th>
-                <th className="font-normal py-1 whitespace-nowrap text-right">Profit or loss</th>
+                <SortableHeader field="loss" sort={sort} onSort={setSort} align="right" className="whitespace-nowrap">
+                  {selectedIdx >= 0 ? <>Result at {formatDriverMove(selected.moves[selectedIdx].move)}</> : "Result"}
+                </SortableHeader>
               </tr>
             </thead>
             <tbody>
               {positions.map((p) => {
                 const key = `${p.accountId}:${p.securityId}`;
+                const editor = editorOwnership.get(key);
                 return (
                   <PositionRow
                     key={key}
@@ -788,7 +810,8 @@ function ResultSections({
                     onDraft={(v) => onOverrideDraft(p.securityId, v)}
                     onCommit={() => onOverrideCommit(p.securityId)}
                     onClear={() => onOverrideClear(p.securityId)}
-                    ownsEditor={editorOwners.has(key)}
+                    ownsEditor={editor?.owner === true}
+                    sameFigure={editor && !editor.owner ? sameFigureText(editor.ownerSymbol, p.symbol) : null}
                     betaDraft={p.identitySecurityId !== null ? betaDrafts[p.identitySecurityId] : undefined}
                     betaProblem={p.identitySecurityId !== null ? (betaProblems[p.identitySecurityId] ?? null) : null}
                     betaRefusal={p.identitySecurityId !== null ? (betaRefusals.get(p.identitySecurityId) ?? null) : null}
@@ -871,6 +894,7 @@ function PositionRow({
   onCommit,
   onClear,
   ownsEditor,
+  sameFigure,
   betaDraft,
   betaProblem,
   betaRefusal,
@@ -892,6 +916,8 @@ function PositionRow({
   onCommit: () => void;
   onClear: () => void;
   ownsEditor: boolean;
+  /** Set on a later row of a name whose box sits higher up in the current order. */
+  sameFigure: string | null;
   betaDraft: string | undefined;
   betaProblem: string | null;
   betaRefusal: GainsAtRiskBetaOverrideRefusal | null;
@@ -907,6 +933,7 @@ function PositionRow({
   // Figures and the engine's verdicts belong to the answer; dim or blank them with it.
   const dim = mode === "stale" ? "opacity-40" : "";
   const showFigures = mode !== "failed";
+  const fig = (v: number | null | undefined): number | null => moneyCell(v, mode === "failed");
   // This case's beta, side and source; the not-modelled reason is read first (betaSourceLine).
   const pc = p.cases[caseKey];
   const source = betaSourceLine(p, caseKey);
@@ -921,6 +948,9 @@ function PositionRow({
           </Chip>
         )}
         {p.expiresBeforeDate && <span className="block text-[11px] text-ink-faint">expires before the date</span>}
+      </td>
+      <td className={`py-1.5 pr-3 text-right tabular-nums text-ink-dim whitespace-nowrap ${dim}`}>
+        <Money value={fig(p.valueUsd)} />
       </td>
       <td className={`py-1.5 pr-3 text-right tabular-nums text-ink-dim whitespace-nowrap ${dim}`}>
         {formatBeta(pc.beta)}
@@ -966,8 +996,8 @@ function PositionRow({
           </span>
         )}
         {editorNote && <span className="block text-[11px] text-ink-faint">{editorNote}</span>}
-        {!editorNote && !ownsEditor && p.identitySecurityId !== null && (
-          <span className="block text-[11px] text-ink-faint">{SAME_FIGURE_TEXT}</span>
+        {!editorNote && !ownsEditor && sameFigure && (
+          <span className="block text-[11px] text-ink-faint">{sameFigure}</span>
         )}
         {ownsEditor && isLeveragedFundRow(p) && (
           <span className="block text-[11px] text-ink-faint max-w-56">{LEVERAGED_FIGURE_HINT}</span>

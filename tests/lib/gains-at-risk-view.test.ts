@@ -22,6 +22,13 @@ import {
   isLeveragedFundRow,
   noMeasuredLinkSentence,
   overridesIgnoredLine,
+  sortPositions,
+  isGainsSortKey,
+  positionSortNote,
+  sameFigureText,
+  betaEditorOwnership,
+  DEFAULT_POSITION_SORT,
+  GAINS_SORT_SCOPE,
   betaEditorNote,
   isPriceEditable,
   moneyCell,
@@ -872,5 +879,147 @@ describe("gains at risk: one scope rule for the route and the section", () => {
     runMigrations(empty);
     empty.prepare("DELETE FROM accounts").run();
     expect(gainsAtRiskAccountIds(empty, "ibkr")).toEqual([]);
+  });
+});
+
+describe("gains at risk: sorting what moves the result", () => {
+  // pnlByMove: [at move 0, at move 1]; the selected case is the one passed.
+  const row = (
+    symbol: string,
+    accountName: string,
+    measuredPnl: [number, number],
+    over: Partial<GainsAtRiskPosition> = {},
+    selloffPnl: [number, number] = measuredPnl,
+  ): GainsAtRiskPosition =>
+    pos({
+      symbol,
+      accountName,
+      securityId: symbol.charCodeAt(2) * 10 + accountName.length,
+      identitySecurityId: symbol.charCodeAt(2) * 10,
+      cases: {
+        measured: { beta: 1, pnlByMove: measuredPnl, side: "loses", exposureUsd: 1 },
+        selloff: { beta: 1.5, pnlByMove: selloffPnl, side: "loses", exposureUsd: 1 },
+      },
+      ...over,
+    });
+  const syms = (rows: GainsAtRiskPosition[]) => rows.map((r) => `${r.symbol}/${r.accountName}`);
+
+  const book = [
+    row("ZZB", "ZZ One", [0, -500]),
+    row("ZZA", "ZZ One", [0, 300]),
+    row("ZZC", "ZZ One", [0, -2_000]),
+    row("ZZD", "ZZ One", [0, 0], { betaSource: "not-modelled", unmodelledReason: "no-option-price", valueUsd: null, measuredBeta: null }),
+    row("ZZE", "ZZ One", [0, 900]),
+  ];
+
+  it("the default: largest loss first, so the biggest losers lead", () => {
+    expect(DEFAULT_POSITION_SORT).toEqual({ field: "loss", dir: "desc" });
+    expect(GAINS_SORT_SCOPE).toBe("garNames");
+    expect(syms(sortPositions(book, "loss", "desc", "measured", 1))).toEqual([
+      "ZZC/ZZ One",
+      "ZZB/ZZ One",
+      "ZZA/ZZ One",
+      "ZZE/ZZ One",
+      "ZZD/ZZ One",
+    ]);
+    expect(positionSortNote("loss", "desc")).toBe("Largest loss first.");
+  });
+
+  it("flipped: largest gain first, so the biggest offsets lead; a row with no figure stays last", () => {
+    expect(syms(sortPositions(book, "loss", "asc", "measured", 1))).toEqual([
+      "ZZE/ZZ One",
+      "ZZA/ZZ One",
+      "ZZB/ZZ One",
+      "ZZC/ZZ One",
+      "ZZD/ZZ One",
+    ]);
+    expect(positionSortNote("loss", "asc")).toBe("Largest gain first.");
+    expect(positionSortNote("symbol", "asc")).toBeNull();
+  });
+
+  it("sorts by the selected case and the selected move", () => {
+    const two = [row("ZZA", "ZZ One", [-10, -100], {}, [-10, -900]), row("ZZB", "ZZ One", [-50, -500], {}, [-50, -600])];
+    expect(syms(sortPositions(two, "loss", "desc", "measured", 1))).toEqual(["ZZB/ZZ One", "ZZA/ZZ One"]);
+    expect(syms(sortPositions(two, "loss", "desc", "selloff", 1))).toEqual(["ZZA/ZZ One", "ZZB/ZZ One"]);
+    expect(syms(sortPositions(two, "loss", "desc", "measured", 0))).toEqual(["ZZB/ZZ One", "ZZA/ZZ One"]);
+    // No selected move: no row has a figure, so the order is the tie-break.
+    expect(syms(sortPositions(two, "loss", "desc", "measured", -1))).toEqual(["ZZA/ZZ One", "ZZB/ZZ One"]);
+  });
+
+  it("the beta column: nulls last both ways", () => {
+    const rows = [
+      row("ZZA", "ZZ One", [0, 0], { cases: cases(0.5, 1) }),
+      row("ZZB", "ZZ One", [0, 0], { cases: cases(null, null), unmodelledReason: "no-price", betaSource: "not-modelled" }),
+      row("ZZC", "ZZ One", [0, 0], { cases: cases(1.8, 1.8) }),
+      row("ZZD", "ZZ One", [0, 0], { cases: cases(-0.3, 1) }),
+    ];
+    expect(syms(sortPositions(rows, "beta", "desc", "measured", 1))).toEqual(["ZZC/ZZ One", "ZZA/ZZ One", "ZZD/ZZ One", "ZZB/ZZ One"]);
+    expect(syms(sortPositions(rows, "beta", "asc", "measured", 1))).toEqual(["ZZD/ZZ One", "ZZA/ZZ One", "ZZC/ZZ One", "ZZB/ZZ One"]);
+    // The selloff case's betas: ZZA, ZZC and ZZD... ties broken by symbol.
+    expect(syms(sortPositions(rows, "beta", "desc", "selloff", 1))).toEqual(["ZZC/ZZ One", "ZZA/ZZ One", "ZZD/ZZ One", "ZZB/ZZ One"]);
+  });
+
+  it("value, symbol and account; value unknown sorts last both ways", () => {
+    const rows = [
+      row("ZZB", "ZZ Two", [0, 0], { valueUsd: 5_000 }),
+      row("ZZA", "ZZ One", [0, 0], { valueUsd: null }),
+      row("ZZC", "ZZ One", [0, 0], { valueUsd: -1_000 }),
+    ];
+    expect(syms(sortPositions(rows, "value", "desc", "measured", 1))).toEqual(["ZZB/ZZ Two", "ZZC/ZZ One", "ZZA/ZZ One"]);
+    expect(syms(sortPositions(rows, "value", "asc", "measured", 1))).toEqual(["ZZC/ZZ One", "ZZB/ZZ Two", "ZZA/ZZ One"]);
+    expect(syms(sortPositions(rows, "symbol", "asc", "measured", 1))).toEqual(["ZZA/ZZ One", "ZZB/ZZ Two", "ZZC/ZZ One"]);
+    expect(syms(sortPositions(rows, "symbol", "desc", "measured", 1))).toEqual(["ZZC/ZZ One", "ZZB/ZZ Two", "ZZA/ZZ One"]);
+    expect(syms(sortPositions(rows, "account", "asc", "measured", 1))).toEqual(["ZZA/ZZ One", "ZZC/ZZ One", "ZZB/ZZ Two"]);
+  });
+
+  it("stable: ties break by symbol, then account, whatever the input order", () => {
+    const tied = [row("ZZB", "ZZ Two", [0, -100]), row("ZZA", "ZZ Two", [0, -100]), row("ZZB", "ZZ One", [0, -100])];
+    const want = ["ZZA/ZZ Two", "ZZB/ZZ One", "ZZB/ZZ Two"];
+    expect(syms(sortPositions(tied, "loss", "desc", "measured", 1))).toEqual(want);
+    expect(syms(sortPositions([...tied].reverse(), "loss", "asc", "measured", 1))).toEqual(want);
+    // The input is not changed.
+    expect(syms(tied)).toEqual(["ZZB/ZZ Two", "ZZA/ZZ Two", "ZZB/ZZ One"]);
+  });
+
+  it("an unknown key from the URL falls back to the default order", () => {
+    expect(isGainsSortKey("loss")).toBe(true);
+    expect(isGainsSortKey("beta")).toBe(true);
+    expect(isGainsSortKey("pnl")).toBe(false);
+    expect(isGainsSortKey(null)).toBe(false);
+  });
+
+  it("one box per name follows the sorted order: the first row of the name owns it, the others point back up", () => {
+    // ZZA's stock (identity 100) and an option on it (also identity 100), in another account.
+    const stock = pos({ symbol: "ZZA", accountId: 1, securityId: 100, identitySecurityId: 100, cases: { measured: { beta: 1, pnlByMove: [0, -100], side: "loses", exposureUsd: 1 }, selloff: posCase(1) } });
+    const option = pos({ symbol: "ZZA 270115C00050000", accountId: 2, securityId: 501, identitySecurityId: 100, expiry: "2027-01-15", priceSource: "model", cases: { measured: { beta: 1, pnlByMove: [0, -900], side: "loses", exposureUsd: 1 }, selloff: posCase(1) } });
+    const other = pos({ symbol: "ZZB", accountId: 1, securityId: 200, identitySecurityId: 200, cases: { measured: { beta: 1, pnlByMove: [0, -500], side: "loses", exposureUsd: 1 }, selloff: posCase(1) } });
+    const lossFirst = sortPositions([stock, option, other], "loss", "desc", "measured", 1);
+    expect(lossFirst.map((r) => r.symbol)).toEqual(["ZZA 270115C00050000", "ZZB", "ZZA"]);
+    const own = betaEditorOwnership(lossFirst);
+    expect(own.get("2:501")).toEqual({ owner: true });
+    expect(own.get("1:200")).toEqual({ owner: true });
+    // Not adjacent: the stock row names the row that holds the box, which is above it.
+    expect(own.get("1:100")).toEqual({ owner: false, ownerSymbol: "ZZA 270115C00050000" });
+    const gainFirst = sortPositions([stock, option, other], "loss", "asc", "measured", 1);
+    const own2 = betaEditorOwnership(gainFirst);
+    expect(own2.get("1:100")).toEqual({ owner: true });
+    expect(own2.get("2:501")).toEqual({ owner: false, ownerSymbol: "ZZA" });
+    // The owner always comes first in the order it was given.
+    for (const order of [lossFirst, gainFirst]) {
+      const ownership = betaEditorOwnership(order);
+      order.forEach((r, i) => {
+        const o = ownership.get(`${r.accountId}:${r.securityId}`);
+        if (o && !o.owner) {
+          const at = order.findIndex((x) => x.symbol === o.ownerSymbol && x.identitySecurityId === r.identitySecurityId);
+          expect(at).toBeLessThan(i);
+        }
+      });
+    }
+    expect(betaEditorOwners(lossFirst)).toEqual(new Set(["2:501", "1:200"]));
+  });
+
+  it("the pointer back up names the row when it is another symbol", () => {
+    expect(sameFigureText("ZZA", "ZZA")).toBe("same figure as above");
+    expect(sameFigureText("ZZA 270115C00050000", "ZZA")).toBe("same figure as ZZA 270115C00050000, above");
   });
 });
