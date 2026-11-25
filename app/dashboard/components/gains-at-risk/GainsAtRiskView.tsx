@@ -19,7 +19,11 @@ import {
   type GainsAtRiskDriver,
   type GainsAtRiskResponse,
 } from "@/lib/analysis/gains-at-risk-input";
-import type { SingleNameDriversBody, SingleNameDriversResponse } from "@/lib/analysis/gains-at-risk-candidates-input";
+import {
+  DRIVER_NOT_LISTED_SENTENCE,
+  type SingleNameDriversBody,
+  type SingleNameDriversResponse,
+} from "@/lib/analysis/gains-at-risk-candidates-input";
 import type { AnalysisScope } from "@/lib/analysis/view-param";
 import { BETA_OVERRIDE_BOUNDS } from "@/lib/analysis/gains-at-risk-constants";
 import {
@@ -44,7 +48,11 @@ import {
   YEAR_GAIN_LABEL,
   ZERO_ROW_NOTE,
   DRIVERS_REFRESH_FAILED_TEXT,
+  FIGURES_KEPT_NOTE,
   HELD_UNCHANGED_NOTE,
+  mountDriver,
+  resultLayout,
+  serverPropsAnswerControls,
   SINGLE_NAME_CHART_NOTE,
   betaOverridesToSend,
   caseOnScreen,
@@ -129,6 +137,7 @@ import { EmptySection } from "../EmptySection";
 import { ScrollFade } from "../ScrollFade";
 import { SortableHeader } from "../SortableHeader";
 import { DriverControl } from "./DriverControl";
+import { useDriverChoice } from "./DriverChoiceProvider";
 import { GainsAtRiskChart } from "./GainsAtRiskChart";
 import { TrialPositionsPanel } from "./TrialPositionList";
 import { CandidateSection } from "./CandidateSection";
@@ -208,13 +217,30 @@ export function GainsAtRiskView({
   today: string;
   latestDate: string;
   initial: GainsAtRiskResponse;
-  /** Step 3: the single-name driver list and the candidate underlyings, built with no trial positions. */
-  initialDriverLists: SingleNameDriversResponse;
+  /** Step 3: the single-name driver list and the candidate underlyings, built with no trial positions; null when they could not be built. */
+  initialDriverLists: SingleNameDriversResponse | null;
   initialInputs: GainsAtRiskInitialInputs;
 }) {
   // Trial positions live in the unkeyed provider above this keyed view (R5).
   const trials = useTrialPositions();
   const trialsRef = useRef<TrialPositionsValue>(trials);
+  // Step 3: the driver choice survives a scope change (an unkeyed provider, like the trial list).
+  const driverMemory = useDriverChoice();
+  const [mount] = useState(() =>
+    mountDriver(driverMemory.get(), initialInputs.driverSymbol, initialDriverLists?.drivers ?? null, trials.list.length > 0),
+  );
+  const mountControls: GainsControls = {
+    driverSymbol: mount.driverSymbol,
+    driver: mount.driver,
+    valuationDate: initialInputs.valuationDate,
+    volChangePoints: initialInputs.volChangePoints,
+    custom: null,
+    priceOverrides: {},
+    betaOverrides: {},
+  };
+  // A remembered driver the first paint did not compute: asked at once on mount
+  // (until then the first paint is drawn in its own layout, dimmed, with no headline).
+  const driverPendingAtMount = !serverPropsAnswerControls(mountControls, initialInputs);
   // P7: with trial positions already on the page, start pending; the first paint is layout only.
   const [state, dispatch] = useReducer(gainsRequestReducer, initial, (d: GainsAtRiskResponse) =>
     initialGainsRequestState(d, { hasTrials: trials.list.length > 0, trialVersion: trials.version }),
@@ -222,8 +248,8 @@ export function GainsAtRiskView({
   const seqRef = useRef(0);
 
   const [controls, setControlsState] = useState<GainsControls>(() => ({
-    driverSymbol: initialInputs.driverSymbol,
-    driver: { kind: "index" },
+    driverSymbol: mount.driverSymbol,
+    driver: mount.driver,
     valuationDate: initialInputs.valuationDate,
     volChangePoints: initialInputs.volChangePoints,
     custom: null,
@@ -236,16 +262,23 @@ export function GainsAtRiskView({
   const [volDraft, setVolDraft] = useState(String(initialInputs.volChangePoints));
   const [customDraft, setCustomDraft] = useState("");
   const [customProblem, setCustomProblem] = useState<string | null>(null);
-  const [selectedMove, setSelectedMoveState] = useState(initialInputs.selectedMove);
+  const mountSelected = mount.driver.kind === "single-name" ? defaultSelectedMoveFor("single-name") : initialInputs.selectedMove;
+  const [selectedMove, setSelectedMoveState] = useState(mountSelected);
   // The latest selected move, for run(): in single-name mode it is sent (D5, the crossing's direction).
-  const selectedMoveRef = useRef(initialInputs.selectedMove);
+  const selectedMoveRef = useRef(mountSelected);
   function setSelectedMove(m: number) {
     selectedMoveRef.current = m;
     setSelectedMoveState(m);
   }
   // Step 3: the server-built driver list; refreshed when the trial positions' underlyings change.
-  const [driverLists, setDriverLists] = useState<SingleNameDriversResponse>(initialDriverLists);
-  const [driverNotice, setDriverNotice] = useState<string | null>(null);
+  const [driverLists, setDriverLists] = useState<SingleNameDriversResponse>(
+    initialDriverLists ?? { drivers: [], candidateUnderlyings: [] },
+  );
+  // The list could not be loaded: the index keeps working; the single-name choice offers a retry.
+  const [driversFailed, setDriversFailed] = useState(initialDriverLists === null);
+  const [driverNotice, setDriverNotice] = useState<string | null>(mount.notice);
+  // Set when the compute route said the chosen name is not on its list: the fresh list decides (fallback, or ask again).
+  const notListedRef = useRef(false);
   const [overrideDrafts, setOverrideDrafts] = useState<Record<number, string>>({});
   const [overrideProblems, setOverrideProblems] = useState<Record<number, string>>({});
   // The case on screen: both are in every answer, so switching asks nothing of the server.
@@ -296,6 +329,15 @@ export function GainsAtRiskView({
       });
       const r = await readMutationResult<{ data: GainsAtRiskResponse }>(res);
       if (!r.ok) {
+        // The chosen name left the server's list (a trial on it was removed): no error flash;
+        // the fresh list sends the page back to the index with its notice.
+        if (r.status === 400 && r.message === DRIVER_NOT_LISTED_SENTENCE && next.driver.kind === "single-name") {
+          notListedRef.current = true;
+          refreshDrivers(trialIdsNow(), () =>
+            dispatch({ type: "failure", seq, message: requestFailureText(r.status, r.message) }),
+          );
+          return;
+        }
         dispatch({ type: "failure", seq, message: requestFailureText(r.status, r.message) });
         return;
       }
@@ -332,6 +374,8 @@ export function GainsAtRiskView({
   // P7: mounted with trial positions (first paint, or a scope switch): ask with them at once.
   useEffect(() => {
     if (trialsRef.current.list.length > 0) void run(controlsRef.current);
+    // Step 3: a remembered driver the first paint did not compute.
+    else if (driverPendingAtMount) void run(controlsRef.current);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -465,11 +509,18 @@ export function GainsAtRiskView({
   // The first paint's lists were built with no trial positions.
   const driversKeyRef = useRef("");
   const driversSeqRef = useRef(0);
-  useEffect(() => {
-    if (driversKeyRef.current === trialUnderlyingKey) return;
-    driversKeyRef.current = trialUnderlyingKey;
+  function trialIdsNow(): number[] {
+    return uniqueSortedIds(trialsRef.current.list.map((t) => trialPositionSecurityId(t.position)));
+  }
+  /** Ask the drivers route for the list; an older reply is dropped. `onFail` runs after a failure (the default says so). */
+  function refreshDrivers(ids: number[], onFail?: () => void) {
     const seq = ++driversSeqRef.current;
-    const body: SingleNameDriversBody = { trialUnderlyingIds };
+    const body: SingleNameDriversBody = { trialUnderlyingIds: ids };
+    const failed = (text: string) => {
+      notListedRef.current = false;
+      if (onFail) onFail();
+      else setDriverNotice(text);
+    };
     void (async () => {
       try {
         const res = await apiFetch("/api/compute/gains-at-risk/single-name-drivers", {
@@ -481,17 +532,29 @@ export function GainsAtRiskView({
         // A reply for an older set of trial positions is dropped.
         if (seq !== driversSeqRef.current) return;
         if (!r.ok) {
-          setDriverNotice(DRIVERS_REFRESH_FAILED_TEXT);
+          failed(DRIVERS_REFRESH_FAILED_TEXT);
           return;
         }
+        setDriversFailed(false);
         applyDriverLists(r.data.data);
       } catch {
         if (seq !== driversSeqRef.current) return;
-        setDriverNotice(`${DRIVERS_REFRESH_FAILED_TEXT} ${networkFailureMessage("refresh the list of names")}`);
+        failed(`${DRIVERS_REFRESH_FAILED_TEXT} ${networkFailureMessage("refresh the list of names")}`);
       }
     })();
+  }
+  useEffect(() => {
+    if (driversKeyRef.current === trialUnderlyingKey) return;
+    driversKeyRef.current = trialUnderlyingKey;
+    refreshDrivers(trialUnderlyingIds);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [trialUnderlyingKey]);
+
+  /** Retry after the list failed to load. */
+  function retryDrivers() {
+    setDriverNotice(null);
+    refreshDrivers(trialIdsNow());
+  }
 
   /** Take a fresh list. A chosen name no longer on it sends the page back to the index, and says so. */
   function applyDriverLists(lists: SingleNameDriversResponse) {
@@ -504,8 +567,14 @@ export function GainsAtRiskView({
     const still = sameDriverIn(lists.drivers, cur.entry);
     if (still) {
       setDriverNotice(null);
+      // The compute route refused the name a moment ago, but the fresh list has it: ask again.
+      if (notListedRef.current) {
+        notListedRef.current = false;
+        void run(controlsRef.current);
+      }
       return;
     }
+    notListedRef.current = false;
     const back = switchDriver(controlsRef.current, selectedMoveRef.current, { kind: "index" });
     setCustomDraft("");
     setCustomProblem(null);
@@ -519,9 +588,16 @@ export function GainsAtRiskView({
   useEffect(() => {
     if (seenListsRef.current === initialDriverLists) return;
     seenListsRef.current = initialDriverLists;
+    if (initialDriverLists === null) return;
+    setDriversFailed(false);
     if (trialsRef.current.list.length === 0) applyDriverLists(initialDriverLists);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialDriverLists]);
+
+  // The driver choice is remembered across a scope change.
+  useEffect(() => {
+    driverMemory.set({ driver: controls.driver, driverSymbol: controls.driverSymbol });
+  }, [driverMemory, controls.driver, controls.driverSymbol]);
 
   const kind = controls.driver.kind;
   const singleNameSymbol = controls.driver.kind === "single-name" ? controls.driver.entry.symbol : null;
@@ -624,6 +700,8 @@ export function GainsAtRiskView({
             drivers={driverLists.drivers}
             onPickIndex={pickIndex}
             onPickSingleName={pickSingleName}
+            listFailed={driversFailed}
+            onRetry={retryDrivers}
           />
           <label className="space-y-1">
             <span className="block text-xs text-ink-faint">by</span>
@@ -659,6 +737,9 @@ export function GainsAtRiskView({
         </div>
         {singleNameSymbol !== null && <p className="text-xs text-ink-faint">{singleNameVolNote(singleNameSymbol)}</p>}
         {driverNotice && <p className={`text-xs ${CHIP_TONE_TEXT.warn}`}>{driverNotice}</p>}
+        {singleNameSymbol !== null && Object.keys(controls.betaOverrides).length > 0 && (
+          <p className="text-xs text-ink-faint">{FIGURES_KEPT_NOTE}</p>
+        )}
         {singleNameSymbol !== null ? (
           <p className="text-xs text-ink-dim">{HELD_UNCHANGED_NOTE}</p>
         ) : (
@@ -704,8 +785,8 @@ export function GainsAtRiskView({
         response={display}
         mode={mode}
         error={state.error}
-        caseKey={screenCase}
-        singleNameSymbol={singleNameSymbol}
+        caseKey={caseKey}
+        controlsDriver={{ driver: controls.driver, driverSymbol: controls.driverSymbol }}
         scopeHasAccounts={scopeHasAccounts}
         today={today}
         custom={controls.custom}
@@ -738,8 +819,8 @@ function ResultSections({
   response,
   mode,
   error,
-  caseKey,
-  singleNameSymbol,
+  caseKey: pickedCase,
+  controlsDriver,
   scopeHasAccounts,
   today,
   custom,
@@ -767,10 +848,10 @@ function ResultSections({
   response: GainsAtRiskResponse;
   mode: FigureMode;
   error: string | null;
-  /** The case on screen (always "measured" in single-name mode, P20). */
+  /** The case the owner picked (a single-name result reads "measured", P20). */
   caseKey: GainsAtRiskCaseKey;
-  /** Step 3: the single-name driver's symbol; null in index mode. */
-  singleNameSymbol: string | null;
+  /** Step 3: the controls' driver; the layout itself follows the RESULT's own driver. */
+  controlsDriver: Pick<GainsControls, "driver" | "driverSymbol">;
   scopeHasAccounts: boolean;
   today: string;
   custom: number | null;
@@ -796,9 +877,14 @@ function ResultSections({
   // The per-name table's order lives in the URL (its own key, so no other Analysis table is touched).
   const { sort, setSort } = useSortParam<GainsSortKey>(GAINS_SORT_SCOPE, DEFAULT_POSITION_SORT.field, DEFAULT_POSITION_SORT.dir);
   const scopeCell = scopeFreshnessCell(response.scopeFreshness, scopeHasAccounts);
+  // Step 3: everything drawn about the result follows the RESULT's own driver,
+  // never the controls; a result for another driver is dimmed and has no headline.
+  const layout = resultLayout(result, controlsDriver, mode);
+  // A single-name result reads "measured" (both keys hold the same figures, P20).
+  const caseKey = caseOnScreen(layout.kind, pickedCase);
   // After a failure no figure is shown; while computing, the old ones are dimmed.
   const failed = mode === "failed";
-  const dim = mode === "stale" ? "opacity-40" : "";
+  const dim = layout.dim ? "opacity-40" : "";
   // Blank after a failure; never a negative zero in a signed cell.
   const fig = (v: number | null | undefined): number | null => moneyCell(v, failed);
 
@@ -839,12 +925,13 @@ function ResultSections({
   const shareShown = selected.moves.some((r) => gainGivenBackShare(r.bookPnlUsd, yearGain) !== null);
   const laterDate = result.valuationDate > today;
   // Step 3: single-name mode has its own rows (falls and rises), headline and words.
-  const singleName = singleNameSymbol !== null;
-  const kind = singleName ? "single-name" : "index";
+  const singleName = layout.kind === "single-name";
+  const kind = layout.kind;
   const tableMoves: number[] = singleName ? [...tableMovesFor(kind)] : [...TABLE_MOVES];
   const customExtra = custom !== null && !tableMoves.some((m) => sameMove(m, custom));
   const rowMoves = tableRowMoves(kind, custom);
-  const customBounds = customMoveBoundsPct(kind);
+  // The custom box is a control: its bounds follow the controls' driver.
+  const customBounds = customMoveBoundsPct(controlsDriver.driver.kind);
   const selectedIdx = selected.moves.findIndex((r) => sameMove(r.move, selectedMove));
   const driver = result.driverSymbol;
   // A key the URL carries that this table does not know falls back to the default.
@@ -867,7 +954,11 @@ function ResultSections({
   const caption = betaEvidenceCaption(result.betaEvidence, driver);
   // The book's change at the selected row (single-name mode): a loss also as a share of the year's gain.
   const selectedRow = rowAt(selectedMove);
-  const headline = singleName && selectedRow ? singleNameHeadline(selectedRow, driver, yearGain) : null;
+  const headlineTrialRow = trial && selectedRow ? trial.cases[caseKey].moves.find((r) => sameMove(r.move, selectedRow.move)) : undefined;
+  const headline =
+    layout.showHeadline && selectedRow
+      ? singleNameHeadline(selectedRow, driver, yearGain, trial ? (headlineTrialRow?.bookWithTrialPnlUsd ?? null) : null)
+      : null;
   // P3: the flagged funds (and options on them) no seed links to the stock, held unchanged.
   const lnl = singleName ? (selected.disclosures.leveragedNotLinked ?? null) : null;
   const lnlShare = lnl ? disclosureShare(lnl) : null;
@@ -1033,12 +1124,23 @@ function ResultSections({
                 (<Pct value={headline.share * 100} /> of the year&apos;s gain)
               </>
             )}
+            {headline.withTrial && (
+              <>
+                ; {headline.withTrial.text} <Money value={fig(headline.withTrial.usd)} signed />
+                {headline.withTrial.share !== null && (
+                  <>
+                    {" "}
+                    (<Pct value={headline.withTrial.share * 100} /> of the year&apos;s gain)
+                  </>
+                )}
+              </>
+            )}
             .
           </p>
         )}
         <div className="flex flex-wrap items-center gap-2 text-sm">
           <label htmlFor="gains-custom-move" className="text-ink-faint text-xs">
-            Custom {driver} move
+            Custom {controlsDriver.driver.kind === "single-name" ? controlsDriver.driver.entry.symbol : controlsDriver.driverSymbol} move
           </label>
           <input
             id="gains-custom-move"
@@ -1047,7 +1149,7 @@ function ResultSections({
             step={0.5}
             max={customBounds.max}
             min={customBounds.min}
-            placeholder={singleName ? "-25" : "-7"}
+            placeholder={controlsDriver.driver.kind === "single-name" ? "-25" : "-7"}
             value={customDraft}
             onChange={(e) => onCustomDraft(e.target.value)}
             onBlur={onCustomCommit}

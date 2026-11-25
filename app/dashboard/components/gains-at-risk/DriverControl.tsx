@@ -3,6 +3,7 @@
 import { GAINS_AT_RISK_DRIVERS, type GainsAtRiskDriver } from "@/lib/analysis/gains-at-risk-input";
 import {
   DRIVER_KIND_LABELS,
+  DRIVERS_LOAD_FAILED_TEXT,
   NO_SINGLE_NAME_TEXT,
   driverFromOptionValue,
   driverOptionLabel,
@@ -24,6 +25,8 @@ export function DriverControl({
   drivers,
   onPickIndex,
   onPickSingleName,
+  listFailed = false,
+  onRetry,
 }: {
   driver: DriverChoice;
   indexSymbol: GainsAtRiskDriver;
@@ -32,6 +35,9 @@ export function DriverControl({
   onPickIndex: (symbol: GainsAtRiskDriver) => void;
   /** Switch to one stock or fund, or pick another name while on it. */
   onPickSingleName: (entry: SingleNameDriverEntry) => void;
+  /** The list could not be loaded: the choice is disabled with a sentence and a retry; the index keeps working. */
+  listFailed?: boolean;
+  onRetry?: () => void;
 }) {
   const single = driver.kind === "single-name" ? driver.entry : null;
   // The select shows the chosen name; before one is chosen, the first on the list.
@@ -78,7 +84,7 @@ export function DriverControl({
             name="gains-driver-kind"
             value="single-name"
             checked={driver.kind === "single-name"}
-            disabled={drivers.length === 0}
+            disabled={drivers.length === 0 && single === null}
             onChange={() => {
               const first = single ?? drivers[0];
               if (first) onPickSingleName(first);
@@ -86,7 +92,20 @@ export function DriverControl({
           />
           {DRIVER_KIND_LABELS["single-name"]}
         </label>
-        {drivers.length > 0 ? (
+        {listFailed && drivers.length === 0 ? (
+          <span className="inline-flex flex-wrap items-center gap-2 text-xs text-ink-faint">
+            {DRIVERS_LOAD_FAILED_TEXT}
+            {onRetry && (
+              <button
+                type="button"
+                onClick={onRetry}
+                className="px-2 py-1 rounded-md border border-edge text-xs text-ink-dim hover:text-ink"
+              >
+                Try again
+              </button>
+            )}
+          </span>
+        ) : drivers.length > 0 ? (
           <select
             aria-label="Stock or fund"
             value={selectValue}

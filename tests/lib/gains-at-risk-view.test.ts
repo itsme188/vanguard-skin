@@ -104,6 +104,12 @@ import {
   switchDriver,
   tableRowMoves,
   uniqueSortedIds,
+  FIGURES_KEPT_NOTE,
+  SINGLE_NAME_CHART_NOTE,
+  mountDriver,
+  resultAnswersDriver,
+  resultDriver,
+  resultLayout,
   type DriverChoice,
   type GainsControls,
   type GainsRequestState,
@@ -1425,7 +1431,8 @@ describe("gains at risk, single-name: rows, headline and chart", () => {
   it("a row's side follows the selected move's direction in single-name mode", () => {
     const pc: GainsAtRiskPositionCase = { beta: 1, pnlByMove: [], side: "loses", sideDown: "loses", sideUp: "offsets", exposureUsd: 10 };
     expect(rowSideAt(pc, "single-name", -0.2)).toBe("loses");
-    expect(rowSideAt(pc, "single-name", 0)).toBe("loses");
+    // No move, no split: no side chip at 0% either.
+    expect(rowSideAt(pc, "single-name", 0)).toBe("flat");
     expect(rowSideAt(pc, "single-name", 0.2)).toBe("offsets");
     expect(rowSideAt(pc, "index", 0.2)).toBe("loses");
   });
@@ -1477,5 +1484,127 @@ describe("gains at risk, single-name: words", () => {
     expect(domainProblemText("moves must each be a number between -0.8 and 1 for a single-name driver.")).toBe(
       "The moves must each be a number between -0.8 and 1 for a single-name driver.",
     );
+  });
+});
+
+describe("gains at risk, single-name: the layout follows the result on screen (fix round 1)", () => {
+  const indexResult = { driverSymbol: "QQQ" };
+  const zzaResult = { driverSymbol: "ZZA", driverKind: "single-name" as const };
+
+  it("a result names its own driver", () => {
+    expect(resultDriver(indexResult)).toEqual({ kind: "index", symbol: "QQQ" });
+    expect(resultDriver(zzaResult)).toEqual({ kind: "single-name", symbol: "ZZA" });
+  });
+
+  it("an index result under single-name controls (a switch in flight): index layout, dimmed, no headline", () => {
+    const c = controlsOf({ driver: singleZza });
+    expect(resultAnswersDriver(indexResult, c)).toBe(false);
+    expect(resultLayout(indexResult, c, "stale")).toEqual({
+      kind: "index",
+      symbol: "QQQ",
+      answersDriver: false,
+      showHeadline: false,
+      dim: true,
+    });
+  });
+
+  it("a single-name result under index controls: single-name layout, dimmed, no headline", () => {
+    const c = controlsOf();
+    expect(resultLayout(zzaResult, c, "stale")).toEqual({
+      kind: "single-name",
+      symbol: "ZZA",
+      answersDriver: false,
+      showHeadline: false,
+      dim: true,
+    });
+    // Another index is another driver too.
+    expect(resultAnswersDriver(indexResult, controlsOf({ driverSymbol: "SPY" }))).toBe(false);
+  });
+
+  it("a failure after a switch: the old result's layout, figures blank (not dimmed), no headline", () => {
+    const l = resultLayout(indexResult, controlsOf({ driver: singleZza }), "failed");
+    expect(l.kind).toBe("index");
+    expect(l.symbol).toBe("QQQ");
+    expect(l.showHeadline).toBe(false);
+    expect(l.dim).toBe(false);
+  });
+
+  it("a fresh answer for the controls' own name: its layout, the headline, not dimmed", () => {
+    expect(resultLayout(zzaResult, controlsOf({ driver: singleZza }), "fresh")).toEqual({
+      kind: "single-name",
+      symbol: "ZZA",
+      answersDriver: true,
+      showHeadline: true,
+      dim: false,
+    });
+    expect(resultLayout(indexResult, controlsOf(), "fresh").showHeadline).toBe(false);
+    // Another name of the same kind is another driver.
+    expect(resultAnswersDriver(zzaResult, controlsOf({ driver: { kind: "single-name", entry: zzb } }))).toBe(false);
+  });
+});
+
+describe("gains at risk, single-name: the headline with trial positions (fix round 1)", () => {
+  it("both figures, each labelled, each with its own share on a loss", () => {
+    const h = singleNameHeadline(moveRow(-0.2, -80, -90, 10), "ZZA", gain(400, "agrees"), -40);
+    expect(h.text).toBe("If ZZA moves −20%, the book as it is changes by");
+    expect(h.usd).toBe(-80);
+    expect(h.share).toBeCloseTo(0.2, 12);
+    expect(h.withTrial).not.toBeNull();
+    expect(h.withTrial?.text).toBe("with trial positions,");
+    expect(h.withTrial?.usd).toBe(-40);
+    expect(h.withTrial?.share).toBeCloseTo(0.1, 12);
+  });
+
+  it("a gain with trial positions shows no share; the book's loss still does", () => {
+    const h = singleNameHeadline(moveRow(-0.2, -80, -90, 10), "ZZA", gain(400, "agrees"), 15);
+    expect(h.share).toBeCloseTo(0.2, 12);
+    expect(h.withTrial?.share).toBeNull();
+    // A contradicted gain gives neither a share.
+    const d = singleNameHeadline(moveRow(-0.2, -80, -90, 10), "ZZA", gain(400, "differs"), -40);
+    expect(d.share).toBeNull();
+    expect(d.withTrial?.share).toBeNull();
+  });
+
+  it("with no trial positions it is the one figure, as before", () => {
+    const h = singleNameHeadline(moveRow(-0.2, -80, -90, 10), "ZZA", gain(400, "agrees"));
+    expect(h.withTrial).toBeNull();
+    expect(h.text).toBe("If ZZA moves −20%, the book changes by");
+  });
+});
+
+describe("gains at risk, single-name: the driver across a scope change (fix round 1)", () => {
+  it("nothing remembered: the index", () => {
+    expect(mountDriver(null, "QQQ", [zza], false)).toEqual({ driver: { kind: "index" }, driverSymbol: "QQQ", notice: null });
+  });
+
+  it("a remembered name on the list is kept (the list's own entry)", () => {
+    const fresh = { ...zza, name: "ZZA Holdings Inc" };
+    expect(mountDriver({ driver: singleZza, driverSymbol: "SPY" }, "QQQ", [fresh], false)).toEqual({
+      driver: { kind: "single-name", entry: fresh },
+      driverSymbol: "SPY",
+      notice: null,
+    });
+  });
+
+  it("a remembered name off the list goes back to the index, with the notice", () => {
+    const m = mountDriver({ driver: singleZza, driverSymbol: "SPY" }, "QQQ", [zzb], false);
+    expect(m.driver).toEqual({ kind: "index" });
+    expect(m.driverSymbol).toBe("SPY");
+    expect(m.notice).toBe("ZZA is no longer on the list of names, so the page went back to the index.");
+  });
+
+  it("with trial positions, or with no list loaded, the server's own list decides", () => {
+    expect(mountDriver({ driver: singleZza, driverSymbol: "QQQ" }, "QQQ", [zzb], true).driver).toEqual(singleZza);
+    expect(mountDriver({ driver: singleZza, driverSymbol: "QQQ" }, "QQQ", null, false).driver).toEqual(singleZza);
+  });
+});
+
+describe("gains at risk, single-name: notes (fix round 1)", () => {
+  it("the chart note is one plain sentence; the kept-figures line", () => {
+    expect(SINGLE_NAME_CHART_NOTE).toBe(
+      "The chart shows the whole book only, because which positions lose depends on whether the stock falls or rises.",
+    );
+    expect(SINGLE_NAME_CHART_NOTE).not.toMatch(/below zero/);
+    expect(FIGURES_KEPT_NOTE).toBe("Your own per-name figures are kept and not used in this mode.");
   });
 });

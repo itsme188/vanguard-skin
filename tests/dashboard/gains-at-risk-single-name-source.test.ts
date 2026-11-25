@@ -53,7 +53,7 @@ describe("the driver control", () => {
   });
 
   it("an empty list says so and the single-name radio is disabled", () => {
-    anchorIndex(src, "disabled={drivers.length === 0}");
+    anchorIndex(src, "disabled={drivers.length === 0 && single === null}");
     anchorIndex(src, "NO_SINGLE_NAME_TEXT");
   });
 
@@ -134,7 +134,6 @@ describe("single-name mode in the view", () => {
     expect(src.slice(guard, at)).not.toContain(")}"); // the guard is still open at the switch
     anchorIndex(src, "<p className=\"text-xs text-ink-dim\">{HELD_UNCHANGED_NOTE}</p>");
     anchorIndex(src, "singleNameVolNote(singleNameSymbol)");
-    anchorIndex(src, "caseKey={screenCase}");
     anchorIndex(src, "const screenCase = caseOnScreen(kind, caseKey);");
   });
 
@@ -204,5 +203,66 @@ describe("single-name mode in the chart", () => {
     const block = src.slice(at, at + 300);
     expect(block).toContain("book={cases.measured}");
     expect(block).toContain("trial={trial ? trial.measured : null}");
+  });
+});
+
+describe("fix round 1: wiring", () => {
+  const view = read(VIEW);
+  const section = read(SECTION);
+  const provider = read("app/dashboard/components/gains-at-risk/DriverChoiceProvider.tsx");
+
+  it("the result sections draw the RESULT's layout, never the controls'", () => {
+    const at = anchorIndex(view, "function ResultSections(");
+    const body = view.slice(at);
+    expect(body).toContain("const layout = resultLayout(result, controlsDriver, mode);");
+    expect(body).toContain("const caseKey = caseOnScreen(layout.kind, pickedCase);");
+    expect(body).toContain('const singleName = layout.kind === "single-name";');
+    expect(body).toContain('const dim = layout.dim ? "opacity-40" : "";');
+    expect(body).toContain("layout.showHeadline && selectedRow");
+    // The headline names the result's own driver.
+    expect(body).toContain("singleNameHeadline(selectedRow, driver, yearGain,");
+  });
+
+  it("the headline prints the with-trial figure through <Money> and <Pct>", () => {
+    anchorIndex(view, "<Money value={fig(headline.withTrial.usd)} signed />");
+    anchorIndex(view, "<Pct value={headline.withTrial.share * 100} />");
+  });
+
+  it("a name that left the server's list flashes no error: the fresh list decides", () => {
+    const at = anchorIndex(view, "r.message === DRIVER_NOT_LISTED_SENTENCE");
+    const block = view.slice(at, at + 500);
+    expect(block).toContain("notListedRef.current = true;");
+    expect(block).toContain("refreshDrivers(trialIdsNow(),");
+    const apply = view.slice(anchorIndex(view, "function applyDriverLists("));
+    expect(apply.slice(0, 1200)).toContain("if (notListedRef.current) {");
+  });
+
+  it("the driver choice lives in an unkeyed provider around the keyed view", () => {
+    expect(provider.trimStart().startsWith('"use client"')).toBe(true);
+    const open = anchorIndex(section, "<DriverChoiceProvider>");
+    const viewAt = anchorIndex(section, "<GainsAtRiskView");
+    const close = anchorIndex(section, "</DriverChoiceProvider>");
+    expect(open).toBeLessThan(viewAt);
+    expect(viewAt).toBeLessThan(close);
+    expect(section.slice(open, viewAt)).not.toMatch(/<DriverChoiceProvider[^>]*key=/);
+    anchorIndex(view, "mountDriver(driverMemory.get(),");
+    anchorIndex(view, "driverMemory.set({ driver: controls.driver, driverSymbol: controls.driverSymbol });");
+  });
+
+  it("a failed driver list never blanks the section: its own try, null, and a retry", () => {
+    const listAt = anchorIndex(section, "listSingleNameDrivers(");
+    const own = section.slice(listAt, anchorIndex(section, "let initial: GainsAtRiskResponse;"));
+    expect(own).toContain('console.error("[gains-at-risk] driver list failed");');
+    expect(own).toContain("driverLists = null;");
+    anchorIndex(view, "listFailed={driversFailed}");
+    anchorIndex(view, "onRetry={retryDrivers}");
+    const control = read(DRIVER_CONTROL);
+    anchorIndex(control, "DRIVERS_LOAD_FAILED_TEXT");
+    anchorIndex(control, "onClick={onRetry}");
+  });
+
+  it("the kept-figures line shows in single-name mode when figures are typed", () => {
+    anchorIndex(view, "singleNameSymbol !== null && Object.keys(controls.betaOverrides).length > 0 && (");
+    anchorIndex(view, "{FIGURES_KEPT_NOTE}");
   });
 });

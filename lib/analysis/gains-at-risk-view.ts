@@ -246,22 +246,40 @@ export function singleNameRowCells(row: Pick<GainsAtRiskMoveRow, "bookPnlUsd" | 
   return { loses: row.losersPnlUsd, offsets: row.offsetsPnlUsd, book: row.bookPnlUsd };
 }
 
+/** One figure of the single-name headline: its words, then the amount, then (a loss only) its share. */
+export interface HeadlineFigure {
+  text: string;
+  usd: number;
+  /** Share of the year's gain given back; null unless a loss with a positive, uncontradicted gain. */
+  share: number | null;
+}
+
 /**
  * The sentence under the single-name table: the book's change at the selected
  * move. The figure and the share come back apart (the page prints them
  * through <Money> and <Pct>); the share only on a loss, and only when the
  * year's gain is positive and not contradicted by the statements (P6).
+ *
+ * With trial positions (`withTrialUsd` a number) both figures are given, each
+ * labelled: the book as it is, then with the trial positions, each with its
+ * own share under the same rule.
  */
 export function singleNameHeadline(
   row: Pick<GainsAtRiskMoveRow, "move" | "bookPnlUsd">,
   symbol: string,
   yearGain: YearGainResult,
-): { usd: number; share: number | null; text: string } {
-  const share = row.bookPnlUsd < 0 ? gainGivenBackShare(row.bookPnlUsd, yearGain) : null;
+  withTrialUsd: number | null = null,
+): HeadlineFigure & { withTrial: HeadlineFigure | null } {
+  const shareOf = (usd: number) => (usd < 0 ? gainGivenBackShare(usd, yearGain) : null);
+  const lead = `If ${symbol} moves ${formatDriverMove(row.move)}, the book`;
+  if (withTrialUsd === null || !Number.isFinite(withTrialUsd)) {
+    return { usd: row.bookPnlUsd, share: shareOf(row.bookPnlUsd), text: `${lead} changes by`, withTrial: null };
+  }
   return {
     usd: row.bookPnlUsd,
-    share,
-    text: `If ${symbol} moves ${formatDriverMove(row.move)}, the book changes by`,
+    share: shareOf(row.bookPnlUsd),
+    text: `${lead} as it is changes by`,
+    withTrial: { usd: withTrialUsd, share: shareOf(withTrialUsd), text: "with trial positions," },
   };
 }
 
@@ -349,7 +367,13 @@ export function switchDriver(
 
 /** Under the single-name chart: why there is one book line. */
 export const SINGLE_NAME_CHART_NOTE =
-  "One book line: below zero the positions that lose are the ones that fall with it, above zero the ones that fall when it rises, so a single line without the offsetting positions cannot be drawn.";
+  "The chart shows the whole book only, because which positions lose depends on whether the stock falls or rises.";
+
+/** In single-name mode, when the owner has typed figures for the index. */
+export const FIGURES_KEPT_NOTE = "Your own per-name figures are kept and not used in this mode.";
+
+/** When the driver list could not be loaded. */
+export const DRIVERS_LOAD_FAILED_TEXT = "The list of stocks and funds could not be loaded. The index still works.";
 
 /** The page's one-line description, by driver kind. */
 export function pageDescription(kind: DriverChoice["kind"]): string {
@@ -368,6 +392,8 @@ export function rowSideAt(
   selectedMove: number,
 ): GainsAtRiskPositionCase["side"] {
   if (kind !== "single-name") return pc.side;
+  // No move, no split (P6): no side either.
+  if (sameMove(selectedMove, 0)) return "flat";
   return (moveDirection(selectedMove) === "rise" ? pc.sideUp : pc.sideDown) ?? pc.side;
 }
 
@@ -377,6 +403,74 @@ export function tableRowMoves(kind: DriverChoice["kind"], custom: number | null)
   const extra = custom !== null && !fixed.some((m) => sameMove(m, custom)) ? [custom] : [];
   const rows = [...fixed, ...extra];
   return kind === "single-name" ? rows.sort((a, b) => a - b) : rows;
+}
+
+/**
+ * What a result was computed for: its own driver kind and symbol. Everything
+ * drawn about a result (layout, headings, table and chart shape, headline)
+ * reads this, never the controls.
+ */
+export function resultDriver(result: Pick<GainsAtRiskResult, "driverKind" | "driverSymbol">): {
+  kind: DriverChoice["kind"];
+  symbol: string;
+} {
+  return { kind: result.driverKind === "single-name" ? "single-name" : "index", symbol: result.driverSymbol };
+}
+
+/** Whether a result was computed for the driver the controls show (kind and name). */
+export function resultAnswersDriver(
+  result: Pick<GainsAtRiskResult, "driverKind" | "driverSymbol">,
+  controls: Pick<GainsControls, "driver" | "driverSymbol">,
+): boolean {
+  const r = resultDriver(result);
+  if (r.kind !== controls.driver.kind) return false;
+  if (controls.driver.kind === "single-name") return r.symbol === controls.driver.entry.symbol.trim().toUpperCase();
+  return r.symbol === controls.driverSymbol;
+}
+
+/**
+ * The layout for the result on screen. It is the RESULT's layout, never a
+ * mix with the controls. When the result does not answer the controls'
+ * driver (a switch in flight, or a failure after one), the headline is not
+ * shown and the figures are dimmed as "updating" (or blank after a failure,
+ * as the page already does).
+ */
+export function resultLayout(
+  result: Pick<GainsAtRiskResult, "driverKind" | "driverSymbol">,
+  controls: Pick<GainsControls, "driver" | "driverSymbol">,
+  mode: "fresh" | "stale" | "failed",
+): { kind: DriverChoice["kind"]; symbol: string; answersDriver: boolean; showHeadline: boolean; dim: boolean } {
+  const { kind, symbol } = resultDriver(result);
+  const answersDriver = resultAnswersDriver(result, controls);
+  return {
+    kind,
+    symbol,
+    answersDriver,
+    showHeadline: kind === "single-name" && answersDriver && mode !== "failed",
+    dim: mode === "stale" || (!answersDriver && mode !== "failed"),
+  };
+}
+
+/**
+ * The driver the view opens with: the one remembered across a scope change,
+ * else the index. A remembered name the list no longer carries goes back to
+ * the index with a notice; with trial positions on, or with no list loaded,
+ * the server's own list decides (it is built with the trial positions).
+ */
+export function mountDriver(
+  remembered: Pick<GainsControls, "driver" | "driverSymbol"> | null,
+  fallbackIndex: GainsAtRiskDriver,
+  list: readonly SingleNameDriverEntry[] | null,
+  hasTrials: boolean,
+): { driver: DriverChoice; driverSymbol: GainsAtRiskDriver; notice: string | null } {
+  if (remembered === null) return { driver: { kind: "index" }, driverSymbol: fallbackIndex, notice: null };
+  const d = remembered.driver;
+  if (d.kind === "single-name" && list !== null && !hasTrials) {
+    const still = sameDriverIn(list, d.entry);
+    if (!still) return { driver: { kind: "index" }, driverSymbol: remembered.driverSymbol, notice: driverDroppedText(d.entry.symbol) };
+    return { driver: { kind: "single-name", entry: still }, driverSymbol: remembered.driverSymbol, notice: null };
+  }
+  return { driver: d, driverSymbol: remembered.driverSymbol, notice: null };
 }
 
 /** The trial positions' underlying ids, unique and in order: the drivers route's body (P1). */

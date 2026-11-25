@@ -18,6 +18,7 @@ import {
 import { EmptySection } from "../EmptySection";
 import { GainsAtRiskView } from "./GainsAtRiskView";
 import { TrialPositionsProvider } from "./TrialPositionsProvider";
+import { DriverChoiceProvider } from "./DriverChoiceProvider";
 import { CandidatesProvider } from "./CandidatesProvider";
 
 /**
@@ -50,11 +51,19 @@ export function GainsAtRiskSection({ scope }: { scope: AnalysisScope }) {
   const valuationDate = defaultValuationDate(today);
   const moves = requestMoves(defaultSweep(), null);
 
-  let initial: GainsAtRiskResponse;
-  let driverLists: SingleNameDriversResponse;
+  // A failure to build the lists never blanks the section: the index keeps working,
+  // and the view offers a retry for the single-name choice (null = not loaded).
+  let driverLists: SingleNameDriversResponse | null;
   try {
     const drivers = listSingleNameDrivers(db, { trialUnderlyingIds: [], today });
     driverLists = { drivers, candidateUnderlyings: listCandidateUnderlyings(db, { drivers, today }) };
+  } catch {
+    console.error("[gains-at-risk] driver list failed");
+    driverLists = null;
+  }
+
+  let initial: GainsAtRiskResponse;
+  try {
     initial = {
       result: computeGainsAtRisk(db, {
         accountIds,
@@ -83,6 +92,8 @@ export function GainsAtRiskSection({ scope }: { scope: AnalysisScope }) {
 
   return (
     <TrialPositionsProvider>
+      {/* Step 3: the driver choice, unkeyed too, so a scope change keeps it. */}
+      <DriverChoiceProvider>
       {/* Step 3 (F1): the candidate rows and quotes, unkeyed like the trial list, so a scope change keeps them. */}
       <CandidatesProvider>
       <GainsAtRiskView
@@ -103,6 +114,7 @@ export function GainsAtRiskSection({ scope }: { scope: AnalysisScope }) {
         }}
       />
       </CandidatesProvider>
+      </DriverChoiceProvider>
     </TrialPositionsProvider>
   );
 }
