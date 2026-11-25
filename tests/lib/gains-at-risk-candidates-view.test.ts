@@ -8,7 +8,10 @@ import {
   candidateCrossingText,
   candidateRequestItems,
   candidateToTrial,
-  candidatesBaseBody,
+  candidatesComputeBody,
+  candidatesInputsKey,
+  IN_TRIALS_TEXT,
+  trialBrokerContractIds,
   candidatesReducer,
   chosenBatchContracts,
   crossingHeading,
@@ -30,7 +33,7 @@ import {
   type PricedCandidateRow,
 } from "@/lib/analysis/gains-at-risk-candidates-view";
 import { TRIAL_LIMIT_TEXT, type TrialPositionState } from "@/lib/analysis/gains-at-risk-trial-view";
-import type { GainsControls } from "@/lib/analysis/gains-at-risk-view";
+import { gainsAtRiskRequestBody, type GainsControls } from "@/lib/analysis/gains-at-risk-view";
 import type {
   BatchContractRequest,
   CandidateEntryRecord,
@@ -546,7 +549,8 @@ describe("defaults and words", () => {
         priced(103, { costUsd: 8000, contracts: 50 }, { atSelectedMoveUsd: 900, atZeroMoveUsd: -50, crossing: { kind: "pays-beyond", move: -0.05 } }),
       ]),
     );
-    const ids = (key: Parameters<typeof sortCandidateRows>[1]) => sortCandidateRows(s.rows, key, "measured").map((r) => r.conId);
+    const ids = (key: Parameters<typeof sortCandidateRows>[1]) =>
+      sortCandidateRows(s.rows, key, "measured", gain(400_000)).map((r) => r.conId);
     expect(ids("none")).toEqual([101, 102, 103, 104]);
     expect(ids("cost")).toEqual([103, 101, 102, 104]);
     expect(ids("contracts")).toEqual([101, 103, 102, 104]);
@@ -625,31 +629,84 @@ describe("requests", () => {
     ...over,
   });
 
-  it("the compute body: index mode carries the selected move and the owner's figures", () => {
-    const body = candidatesBaseBody({ scope: "all", controls: controls(), selectedMove: -0.1, trialPositions: [] });
-    expect(body).not.toBeNull();
-    expect(body!.selectedMove).toBe(-0.1);
-    expect(body!.moves).toContain(-0.1);
-    expect(body!.betaOverrides).toEqual({ 4: 1.2 });
-    expect("driver" in body!).toBe(false);
-    expect("trialPositions" in body!).toBe(false);
+  const trialOption = {
+    kind: "option" as const,
+    id: "t1",
+    underlyingSecurityId: ZZA,
+    right: "put" as const,
+    side: "buy" as const,
+    expiry: "2027-03-19",
+    strike: 90,
+    contracts: 2,
+    pricePaid: 1.95,
+    entryUnderlyingPrice: 101.4,
+    valuationPriceAtEntry: 100.9,
+    entryVolatility: 0.3,
+    brokerContractId: 555,
+  };
+  const entry: SingleNameDriverEntry = { symbol: "ZZA", name: null, securityId: ZZA, reasons: ["held"], hasContractId: true };
+  const dates = { today: "2026-11-25", latestDate: "2027-11-25" };
+
+  it.each([
+    ["index", controls({ custom: -0.25, priceOverrides: { 12: 4.5 } }), -0.25],
+    ["single-name", controls({ driver: { kind: "single-name", entry }, custom: 0.3, priceOverrides: { 12: 4.5 } }), 0.3],
+  ] as const)("item 4: %s mode, the table's body minus its three fields deep-equals the view's body", (_k, c, selected) => {
+    const viewBody = gainsAtRiskRequestBody({ scope: "all", controls: c, selectedMove: selected, trialPositions: [trialOption], ...dates });
+    expect(viewBody.ok).toBe(true);
+    if (!viewBody.ok) return;
+    const items = candidateRequestItems(run(opened(), pullReq(1, [101]), pullReply(1, [quotedRow(101)])).rows);
+    const table = candidatesComputeBody(viewBody.body, selected, 10_000, items);
+    expect(table).not.toBeNull();
+    const { budgetUsd, selectedMove, candidates, ...rest } = table!;
+    expect(budgetUsd).toBe(10_000);
+    expect(candidates).toBe(items);
+    expect(selectedMove).toBe(selected);
+    // The view sends the selected move in single-name mode only (D5); the table always adds it.
+    const { selectedMove: viewSelected, ...viewRest } = viewBody.body;
+    expect(rest).toStrictEqual(viewRest);
+    if (viewSelected !== undefined) expect(viewSelected).toBe(selectedMove);
+    expect(viewBody.body.trialPositions).toEqual([trialOption]);
+    expect(viewBody.body.priceOverrides).toEqual({ 12: 4.5 });
+    expect(viewBody.body.moves).toContain(selected);
   });
 
-  it("the compute body: single-name mode drops the owner's figures and names the driver", () => {
-    const entry: SingleNameDriverEntry = { symbol: "ZZA", name: null, securityId: ZZA, reasons: ["held"], hasContractId: true };
-    const body = candidatesBaseBody({
+  it("the builder: index mode keeps the owner's figures and no driver; single-name drops them; a date outside the window is refused", () => {
+    const idx = gainsAtRiskRequestBody({ scope: "all", controls: controls(), selectedMove: -0.1, trialPositions: [], ...dates });
+    expect(idx.ok && idx.body.betaOverrides).toEqual({ 4: 1.2 });
+    expect(idx.ok && ("driver" in idx.body || "selectedMove" in idx.body || "trialPositions" in idx.body)).toBe(false);
+    const sn = gainsAtRiskRequestBody({
       scope: "vanguard",
       controls: controls({ driver: { kind: "single-name", entry } }),
       selectedMove: 0.2,
       trialPositions: [],
+      ...dates,
     });
-    expect(body!.driver).toEqual({ kind: "single-name", securityId: ZZA });
-    expect("betaOverrides" in body!).toBe(false);
-    expect(body!.selectedMove).toBe(0.2);
+    expect(sn.ok && sn.body.driver).toEqual({ kind: "single-name", securityId: ZZA });
+    expect(sn.ok && "betaOverrides" in sn.body).toBe(false);
+    expect(sn.ok && sn.body.selectedMove).toBe(0.2);
+    const late = gainsAtRiskRequestBody({ scope: "all", controls: controls({ valuationDate: "2028-01-01" }), selectedMove: -0.1, trialPositions: [], ...dates });
+    expect(late).toEqual({ ok: false, message: "Pick a date from 2026-11-25 to 2027-11-25." });
   });
 
-  it("the compute body is null when the selected move is not one of the moves", () => {
-    expect(candidatesBaseBody({ scope: "all", controls: controls(), selectedMove: -0.37, trialPositions: [] })).toBeNull();
+  it("the candidates body is null when the selected move is not one of the moves", () => {
+    const b = gainsAtRiskRequestBody({ scope: "all", controls: controls(), selectedMove: -0.1, trialPositions: [], ...dates });
+    expect(b.ok && candidatesComputeBody(b.body, -0.37, 100, [])).toBeNull();
+  });
+
+  it("item 1: same body, a new book revision: figures cleared, recompute asked, an old reply dropped", () => {
+    const b = gainsAtRiskRequestBody({ scope: "all", controls: controls(), selectedMove: -0.1, trialPositions: [], ...dates });
+    const k1 = candidatesInputsKey(b, -0.1, 0);
+    let s = run(opened(), { type: "inputs-changed", key: k1 }, pullReq(1, [101]), pullReply(1, [quotedRow(101)]));
+    const seq = s.computeSeq;
+    s = run(s, { type: "compute-request", seq }, computeReply(seq, [priced(101)]));
+    expect(s.rows[0].figures).not.toBeNull();
+    expect(candidatesInputsKey(b, -0.1, 0)).toBe(k1);
+    s = run(s, { type: "inputs-changed", key: candidatesInputsKey(b, -0.1, 1) });
+    expect(s.rows[0].figures).toBeNull();
+    expect(s.computeSeq).toBe(seq + 1);
+    expect(s.figuresSeq).not.toBe(s.computeSeq);
+    s = run(s, computeReply(seq, [priced(101)]));
+    expect(s.rows[0].figures).toBeNull();
   });
 
   it("candidate items: only rows with a quote and an entry, each in call 1's shape", () => {
@@ -687,5 +744,87 @@ describe("requests", () => {
     // Choosing more than 15 keeps 15; an id the chain did not offer is ignored.
     s = run(s, { type: "choose", conIds: [...s.chosenConIds, 3007, 424242] });
     expect(s.chosenConIds).toHaveLength(15);
+  });
+});
+
+describe("S6 fix round 1", () => {
+  it("item 3: a contract already in the trial list cannot be added again; removing the trial enables Add", () => {
+    const s = withFigures();
+    const r = s.rows[0];
+    const trial = candidateToTrial({ ...r, record: r.record!, quote: r.quote!, figures: r.figures as PricedCandidateRow }, "t9");
+    const ids = trialBrokerContractIds([trial]);
+    expect([...ids]).toEqual([101]);
+    expect(candidateAddBlocked(r, s, s.figuresSeq, 1, ids)).toEqual({ reason: "in-trials", text: IN_TRIALS_TEXT });
+    expect(candidateAddBlocked(s.rows[1], s, s.figuresSeq, 1, ids)).toBeNull();
+    expect(candidateAddBlocked(r, s, s.figuresSeq, 0, trialBrokerContractIds([]))).toBeNull();
+  });
+
+  it("item 5: clear bumps the compute sequence; an old reply then sets nothing", () => {
+    const s = withFigures();
+    const t = run(s, { type: "clear" });
+    expect(t.computeSeq).toBe(s.computeSeq + 1);
+    expect(t.figuresSeq).toBeNull();
+    expect(run(t, computeReply(s.computeSeq, [priced(101)])).rows).toEqual([]);
+  });
+
+  it("item 5: a row with no quote and entry never takes figures, and sorts last", () => {
+    let s = run(opened(), { type: "inputs-changed", key: "k" }, pullReq(1, [101, 102]), pullReply(1, [quotedRow(101)]));
+    // 102 is still a placeholder (no quote yet) when a reply names it.
+    s = run(s, computeReply(s.computeSeq, [priced(101, { costUsd: 9000 }), priced(102, { costUsd: 1 })]));
+    expect(s.rows.find((r) => r.conId === 102)?.figures).toBeNull();
+    expect(sortCandidateRows(s.rows, "cost", "measured").map((r) => r.conId)).toEqual([101, 102]);
+  });
+
+  it("item 6: changing the picker keeps a Refresh in flight for rows already in the table", () => {
+    let s = withFigures();
+    s = run(s, pullReq(11, [101], "refresh"), pullReq(12, [301]), { type: "set-underlying", securityId: ZZQ });
+    // The picker's own pull is gone with its placeholder; the refresh still lands.
+    expect(s.rows.map((r) => r.conId)).toEqual([101, 102]);
+    const fresh = quote({ bid: 2.9, ask: 3.1, mid: 3.0 });
+    s = run(s, pullReply(11, [quotedRow(101, fresh)]), pullReply(12, [quotedRow(301)]));
+    expect(s.rows[0].quote).toEqual(fresh);
+    expect(s.rows.map((r) => r.conId)).toEqual([101, 102]);
+  });
+
+  it("item 7: a refused request leaves the state as it was (the page then sends nothing)", () => {
+    const closed = run(withFigures(), { type: "close" });
+    expect(run(closed, pullReq(13, [101], "refresh"))).toBe(closed);
+    expect(run(closed, { type: "chain-request", revision: 14 })).toBe(closed);
+    const removed = run(withFigures(), { type: "remove", conId: 101 });
+    expect(run(removed, pullReq(15, [101], "refresh"))).toBe(removed);
+  });
+
+  it("item 8: a failed compute can be asked again (a new sequence)", () => {
+    let s = run(opened(), { type: "inputs-changed", key: "k" }, pullReq(1, [101]), pullReply(1, [quotedRow(101)]));
+    const seq = s.computeSeq;
+    s = run(s, { type: "compute-request", seq }, { type: "compute-failure", seq, message: "Could not compute the candidates." });
+    expect(s.computeProblem).toBe("Could not compute the candidates.");
+    s = run(s, { type: "compute-retry" });
+    expect(s.computeSeq).toBe(seq + 1);
+    expect(s.computeProblem).toBeNull();
+  });
+
+  it("item 9: the budget is read strictly", () => {
+    for (const ok of ["10000", "10,000", "1,234,567.89", "45.5", "45."]) expect("usd" in parseBudgetText(ok)).toBe(true);
+    expect(parseBudgetText("1,234,567.89")).toEqual({ usd: 1_234_567.89 });
+    for (const bad of ["0x10", "1e3", "-5", "1,23", "12,3456", "10.001", "$10", " ", "+5"]) {
+      expect("problem" in parseBudgetText(bad)).toBe(true);
+    }
+  });
+
+  it("item 11: worded crossings have figures and sort after numbered ones by their change at the move; blank shares leave the order", () => {
+    let s = run(opened(), { type: "inputs-changed", key: "k" }, pullReq(1, [101, 102, 103, 104]));
+    s = run(s, pullReply(1, [quotedRow(101), quotedRow(102), quotedRow(103), quotedRow(104)]));
+    s = run(
+      s,
+      computeReply(s.computeSeq, [
+        priced(101, {}, { crossing: { kind: "helps-until", move: -0.1 }, atSelectedMoveUsd: 500 }),
+        priced(102, {}, { crossing: { kind: "pays-beyond", move: -0.2 }, atSelectedMoveUsd: 100 }),
+        priced(103, {}, { crossing: { kind: "changes-more-than-once", firstHelpFrom: -0.05, firstHelpTo: -0.15 }, atSelectedMoveUsd: -200 }),
+      ]),
+    );
+    expect(sortCandidateRows(s.rows, "crossing", "measured").map((r) => r.conId)).toEqual([102, 103, 101, 104]);
+    // No usable year's gain: every share blank, the order is unchanged.
+    expect(sortCandidateRows(s.rows, "costShare", "measured", gain(null)).map((r) => r.conId)).toEqual([101, 102, 103, 104]);
   });
 });

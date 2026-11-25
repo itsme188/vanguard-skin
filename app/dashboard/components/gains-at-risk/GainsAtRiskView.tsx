@@ -15,7 +15,6 @@ import {
   GAINS_AT_RISK_VOL_MAX,
   GAINS_AT_RISK_VOL_MIN,
   trialPositionSecurityId,
-  type GainsAtRiskBody,
   type GainsAtRiskDriver,
   type GainsAtRiskResponse,
 } from "@/lib/analysis/gains-at-risk-input";
@@ -54,13 +53,12 @@ import {
   resultLayout,
   serverPropsAnswerControls,
   SINGLE_NAME_CHART_NOTE,
-  betaOverridesToSend,
   caseOnScreen,
   customMoveBoundsPct,
   customMoveProblemFor,
   defaultSelectedMoveFor,
   driverDroppedText,
-  driverRequestFields,
+  gainsAtRiskRequestBody,
   leveragedNotLinkedText,
   moveDirection,
   pageDescription,
@@ -70,7 +68,6 @@ import {
   singleNameMovesNote,
   singleNameRowCells,
   singleNameVolNote,
-  sweepFor,
   switchDriver,
   tableMovesFor,
   tableRowMoves,
@@ -104,7 +101,6 @@ import {
   priceBoxOwners,
   reconciliationLine,
   requestFailureText,
-  requestMoves,
   sameMove,
   scopeFreshnessCell,
   yearGainNote,
@@ -226,6 +222,8 @@ export function GainsAtRiskView({
   const trialsRef = useRef<TrialPositionsValue>(trials);
   // Step 3: the driver choice survives a scope change (an unkeyed provider, like the trial list).
   const driverMemory = useDriverChoice();
+  // Step 3 (S6 fix 1): bumped whenever fresh server props arrive (a sync), so the candidate table recomputes too.
+  const [bookRevision, setBookRevision] = useState(0);
   const [mount] = useState(() =>
     mountDriver(driverMemory.get(), initialInputs.driverSymbol, initialDriverLists?.drivers ?? null, trials.list.length > 0),
   );
@@ -295,32 +293,20 @@ export function GainsAtRiskView({
     const trialNow = trialsRef.current;
     // Clear the shown result first: it answered other controls.
     dispatch({ type: "start", seq, trialVersion: trialNow.version });
-    if (!(next.valuationDate >= today && next.valuationDate <= latestDate)) {
-      dispatch({ type: "failure", seq, message: `Pick a date from ${today} to ${latestDate}.` });
+    // The one body builder (shared with the candidate table): moves, custom row, date check, driver, figures, trials.
+    const built = gainsAtRiskRequestBody({
+      scope,
+      controls: next,
+      selectedMove: selected,
+      trialPositions: trialRequestPositions(trialNow.list),
+      today,
+      latestDate,
+    });
+    if (!built.ok) {
+      dispatch({ type: "failure", seq, message: built.message });
       return;
     }
-    const kind = next.driver.kind;
-    const moves = requestMoves(sweepFor(kind), next.custom, tableMovesFor(kind));
-    // P2: the owner's figures stay in page state but are not sent in single-name mode.
-    const figures = betaOverridesToSend(kind, next.betaOverrides);
-    // The selected move exactly as the request writes it (the route checks it is one of the moves).
-    const selectedInMoves = moves.find((m) => sameMove(m, selected));
-    const body: GainsAtRiskBody = {
-      scope,
-      driverSymbol: next.driverSymbol,
-      valuationDate: next.valuationDate,
-      moves,
-      volChangePoints: next.volChangePoints,
-      ...(Object.keys(next.priceOverrides).length > 0 ? { priceOverrides: next.priceOverrides } : {}),
-      // Left out when there are none: the route refuses an explicit null.
-      ...(Object.keys(figures).length > 0 ? { betaOverrides: figures } : {}),
-      // Step 3: index mode sends exactly today's body (P8).
-      ...driverRequestFields(next.driver),
-      // D5: the selected move sets the crossing's direction; single-name mode only, and only when it is one of the moves.
-      ...(kind === "single-name" && selectedInMoves !== undefined ? { selectedMove: selectedInMoves } : {}),
-      // Each trial position exactly as the entry fixed it; left out when there are none.
-      ...(trialNow.list.length > 0 ? { trialPositions: trialRequestPositions(trialNow.list) } : {}),
-    };
+    const body = built.body;
     try {
       const res = await apiFetch("/api/compute/gains-at-risk", {
         method: "POST",
@@ -362,6 +348,7 @@ export function GainsAtRiskView({
   useEffect(() => {
     if (seenPropsRef.current === initial) return;
     seenPropsRef.current = initial;
+    setBookRevision((n) => n + 1);
     const hasTrials = trialsRef.current.list.length > 0;
     if (serverPropsAction(controlsRef.current, initialInputs, hasTrials) === "reset") {
       dispatch({ type: "reset", data: initial, hasTrials });
@@ -777,7 +764,7 @@ export function GainsAtRiskView({
         // The per-name table is on screen when the book or the trial positions give it rows.
         tableBelow={display.result.positions.length > 0 || (display.result.trial?.rows.length ?? 0) > 0}
       />
-      <CandidateSection scope={scope} controls={controls} selectedMove={selectedMove} caseKey={screenCase} yearGain={display.yearGain} underlyings={driverLists.candidateUnderlyings} />
+      <CandidateSection scope={scope} controls={controls} selectedMove={selectedMove} caseKey={screenCase} yearGain={display.yearGain} underlyings={driverLists.candidateUnderlyings} today={today} latestDate={latestDate} bookRevision={bookRevision} />
 
       <ResultSections
         result={display.result}

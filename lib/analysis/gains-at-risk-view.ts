@@ -52,6 +52,7 @@ import type {
   GainsAtRiskTrialCase,
   GainsAtRiskTrialRow,
   GainsAtRiskUnmodelled,
+  TrialPositionInput,
   TrialRefusal,
 } from "@/lib/compute/gains-at-risk";
 import type { DriverBetaRefusal } from "@/lib/compute/driver-beta";
@@ -1481,6 +1482,49 @@ export interface GainsControls {
   priceOverrides: Record<number, number>;
   /** The owner's own figure per name, by `identitySecurityId` (C6). Page state only. */
   betaOverrides: Record<number, number>;
+}
+
+/**
+ * THE request body for the controls on screen: the one builder the view's
+ * run() and the candidate table both call (one copy of the rules). The sweep
+ * and the custom row by driver kind; the date inside today..latestDate; the
+ * owner's figures left out in single-name mode (P2); the driver fields (index
+ * mode sends exactly the step 2 body, P8); the selected move only in
+ * single-name mode and only when it is one of the moves (D5); each trial
+ * position exactly as its entry fixed it. Empty maps and lists are left out
+ * (the route refuses an explicit null).
+ */
+export function gainsAtRiskRequestBody(args: {
+  scope: GainsAtRiskBody["scope"];
+  controls: GainsControls;
+  selectedMove: number;
+  trialPositions: readonly TrialPositionInput[];
+  today: string;
+  latestDate: string;
+}): { ok: true; body: GainsAtRiskBody } | { ok: false; message: string } {
+  const { controls: c, today, latestDate } = args;
+  if (!(c.valuationDate >= today && c.valuationDate <= latestDate)) {
+    return { ok: false, message: `Pick a date from ${today} to ${latestDate}.` };
+  }
+  const kind = c.driver.kind;
+  const moves = requestMoves(sweepFor(kind), c.custom, tableMovesFor(kind));
+  const figures = betaOverridesToSend(kind, c.betaOverrides);
+  const selectedInMoves = moves.find((m) => sameMove(m, args.selectedMove));
+  return {
+    ok: true,
+    body: {
+      scope: args.scope,
+      driverSymbol: c.driverSymbol,
+      valuationDate: c.valuationDate,
+      moves,
+      volChangePoints: c.volChangePoints,
+      ...(Object.keys(c.priceOverrides).length > 0 ? { priceOverrides: c.priceOverrides } : {}),
+      ...(Object.keys(figures).length > 0 ? { betaOverrides: figures } : {}),
+      ...driverRequestFields(c.driver),
+      ...(kind === "single-name" && selectedInMoves !== undefined ? { selectedMove: selectedInMoves } : {}),
+      ...(args.trialPositions.length > 0 ? { trialPositions: [...args.trialPositions] } : {}),
+    },
+  };
 }
 
 /**

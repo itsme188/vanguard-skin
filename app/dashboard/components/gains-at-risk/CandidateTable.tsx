@@ -5,8 +5,11 @@ import { Count, Money, Pct, PrivateNumberInput, PrivateText } from "@/lib/privac
 import { CANDIDATE_BOUNDS } from "@/lib/analysis/gains-at-risk-constants";
 import { UNDER_TENTH_TEXT } from "@/lib/analysis/gains-at-risk-view";
 import {
+  BUDGET_PENDING_TEXT,
   CANDIDATE_SORT_OPTIONS,
   CAPPED_TEXT,
+  IN_TRIALS_MARK,
+  IN_TRIALS_NOTE,
   candidateAddBlocked,
   candidateCells,
   candidateContractText,
@@ -41,6 +44,8 @@ function perContractText(usd: number | null): string {
 
 interface RowProps {
   row: CandidateRowState;
+  /** Ruling (S6 fix 1): this contract already has a trial position. */
+  inTrial: boolean;
   cells: CandidateCells;
   addBlockedText: string | null;
   waitingText: string;
@@ -70,9 +75,11 @@ export function CandidateTable({
   caseKey,
   yearGain,
   trialCount,
+  inTrials,
   now,
   onAdd,
   onRemove,
+  onRetryCompute,
 }: {
   state: CandidatesState;
   budgetDraft: string;
@@ -85,19 +92,27 @@ export function CandidateTable({
   caseKey: GainsAtRiskCaseKey;
   yearGain: YearGainResult;
   trialCount: number;
+  /** The broker contract ids already in the trial list. */
+  inTrials: ReadonlySet<number>;
   now: Date;
   onAdd: (row: CandidateRowState) => void;
   onRemove: (conId: number) => void;
+  /** S6 fix 1 (item 8): ask a failed compute again. */
+  onRetryCompute: () => void;
 }) {
   const [sortKey, setSortKey] = useState<CandidateSortKey>("none");
-  const sorted = sortCandidateRows(state.rows, sortKey, caseKey);
+  const sorted = sortCandidateRows(state.rows, sortKey, caseKey, yearGain);
+  // Item 9: a typed budget not yet applied: the figures below are for the applied one, dimmed until Enter.
+  const budgetPending = budgetDraft !== state.budgetUsdText;
+  const anyInTrials = state.rows.some((r) => inTrials.has(r.conId));
   const computing = state.computingSeq !== null && state.computingSeq === state.computeSeq;
   const waitingText = computing ? "Computing…" : (state.computeProblem ?? budgetProblem ?? "—");
   const selectedLabel = `At ${signedMovePct(selectedMove)}`;
   const rowProps = (r: CandidateRowState): RowProps => ({
     row: r,
+    inTrial: inTrials.has(r.conId),
     cells: candidateCells(r, caseKey, yearGain, driverSymbol),
-    addBlockedText: candidateAddBlocked(r, state, state.figuresSeq, trialCount)?.text ?? null,
+    addBlockedText: candidateAddBlocked(r, state, state.figuresSeq, trialCount, inTrials)?.text ?? null,
     waitingText,
     now,
     onAdd: () => onAdd(r),
@@ -139,13 +154,21 @@ export function CandidateTable({
           </select>
         </label>
       </div>
+      {budgetPending && <p className="text-xs text-ink-dim">{BUDGET_PENDING_TEXT}</p>}
       {budgetProblem && <p className={`text-xs ${CHIP_TONE_TEXT.warn}`}>{budgetProblem}</p>}
-      {state.computeProblem && <p className={`text-xs ${CHIP_TONE_TEXT.warn}`}>{state.computeProblem}</p>}
+      {state.computeProblem && (
+        <div className="flex flex-wrap items-center gap-2">
+          <p className={`text-xs ${CHIP_TONE_TEXT.warn}`}>{state.computeProblem}</p>
+          <button type="button" onClick={onRetryCompute} className={buttonClass}>
+            Try again
+          </button>
+        </div>
+      )}
 
       {sorted.length === 0 ? (
         <p className="text-xs text-ink-faint">No contracts yet. Pick strikes above and get quotes.</p>
       ) : (
-        <>
+        <div className={budgetPending ? "opacity-60" : undefined}>
           {/* Phone: one card per row. */}
           <ul className="md:hidden space-y-2">
             {sorted.map((r) => (
@@ -179,7 +202,8 @@ export function CandidateTable({
               </table>
             </ScrollFade>
           </div>
-        </>
+          {anyInTrials && <p className="mt-2 text-xs text-ink-faint">{IN_TRIALS_NOTE}</p>}
+        </div>
       )}
     </div>
   );
@@ -191,11 +215,12 @@ function ShareCell({ share }: { share: Extract<CandidateCells, { kind: "priced" 
 }
 
 /** The quote line (P15) and the two arrival times behind a button (D6; never a hover). */
-function QuoteLines({ row, now }: { row: CandidateRowState; now: Date }) {
+function QuoteLines({ row, inTrial, now }: { row: CandidateRowState; inTrial: boolean; now: Date }) {
   const [showTimes, setShowTimes] = useState(false);
   const q = row.quote;
   return (
     <div className="space-y-0.5">
+      {inTrial && <p className="text-ink-dim">{IN_TRIALS_MARK}</p>}
       {q && <p className="text-ink-faint">{quoteAgeLine(q, now)}</p>}
       {row.quoteProblem && q && <p className={CHIP_TONE_TEXT.warn}>{row.quoteProblem}</p>}
       {q && (
@@ -230,14 +255,14 @@ function AddRemove({ addBlockedText, onAdd, onRemove, label }: Pick<RowProps, "a
   );
 }
 
-function CandidateTableRow({ row, cells, addBlockedText, waitingText, now, onAdd, onRemove }: RowProps) {
+function CandidateTableRow({ row, inTrial, cells, addBlockedText, waitingText, now, onAdd, onRemove }: RowProps) {
   const q = row.quote;
   const label = candidateContractText(row);
   return (
     <tr className="border-t border-edge align-top">
       <td className="py-1.5 pr-3">
         <p className="font-mono text-ink whitespace-nowrap">{label}</p>
-        <QuoteLines row={row} now={now} />
+        <QuoteLines row={row} inTrial={inTrial} now={now} />
         {cells.kind === "priced" && cells.heldUnchangedText && <p className="text-ink-dim">{cells.heldUnchangedText}</p>}
       </td>
       <td className="py-1.5 pr-3 whitespace-nowrap">{q ? `${formatMarketPrice(q.bid)} / ${formatMarketPrice(q.ask)}` : ""}</td>
@@ -298,6 +323,7 @@ function CandidateTableRow({ row, cells, addBlockedText, waitingText, now, onAdd
 
 function CandidateCard({
   row,
+  inTrial,
   cells,
   addBlockedText,
   waitingText,
@@ -317,7 +343,7 @@ function CandidateCard({
           Bid / ask {formatMarketPrice(q.bid)} / {formatMarketPrice(q.ask)} · mid {formatMarketPrice(q.mid)}
         </p>
       )}
-      <QuoteLines row={row} now={now} />
+      <QuoteLines row={row} inTrial={inTrial} now={now} />
       {cells.kind === "no-quote" && <p className={CHIP_TONE_TEXT.warn}>{cells.text}</p>}
       {cells.kind === "waiting" && (
         <p className="text-ink-faint">

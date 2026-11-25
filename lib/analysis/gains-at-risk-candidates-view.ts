@@ -18,22 +18,11 @@
 
 import { CANDIDATE_BOUNDS, CANDIDATE_QUOTE_OLD_AFTER_MINUTES, TRIAL_POSITION_BOUNDS } from "@/lib/analysis/gains-at-risk-constants";
 import { budgetToUnits, toMoneyUnits, unitsToUsd } from "@/lib/analysis/gains-at-risk-candidate-money";
-import {
-  betaOverridesToSend,
-  driverRequestFields,
-  gainGivenBackShare,
-  moveDirection,
-  requestMoves,
-  sameMove,
-  sweepFor,
-  tableMovesFor,
-  type DriverChoice,
-  type GainsControls,
-} from "@/lib/analysis/gains-at-risk-view";
+import { gainGivenBackShare, moveDirection, sameMove, type DriverChoice } from "@/lib/analysis/gains-at-risk-view";
 import { TRIAL_LIMIT_TEXT, formatMarketPrice, formatStrike } from "@/lib/analysis/gains-at-risk-trial-view";
 // Types only: erased at build.
 import type { TrialPositionState, TrialQuote } from "@/lib/analysis/gains-at-risk-trial-view";
-import type { AnalysisScope } from "@/lib/analysis/view-param";
+import type { GainsAtRiskBody } from "@/lib/analysis/gains-at-risk-input";
 import type {
   BatchContractRequest,
   CandidateEntryRecord,
@@ -50,7 +39,6 @@ import type {
   GainsAtRiskCandidateCase,
   GainsAtRiskCaseKey,
   GainsAtRiskTrialCrossing,
-  TrialPositionInput,
   TrialRefusal,
 } from "@/lib/compute/gains-at-risk";
 import type { CandidateUnderlyingEntry } from "@/lib/compute/gains-at-risk-drivers";
@@ -69,6 +57,11 @@ export const ZERO_CONTRACTS_TEXT = "One contract costs more than the budget.";
 export const CAPPED_TEXT = `Capped at ${TRIAL_POSITION_BOUNDS.maxContracts} contracts.`;
 export const NO_FIGURES_TEXT = "does not pay within the moves shown";
 export const OLD_QUOTE_TEXT = "old quote";
+export const BUDGET_PENDING_TEXT = "Press Enter to apply the new budget.";
+export const IN_TRIALS_TEXT = "Already in the trial positions. Change its size there.";
+export const IN_TRIALS_MARK = "In trial positions";
+export const IN_TRIALS_NOTE =
+  "A row marked In trial positions shows its effect on top of everything already on the page, its own trial position included.";
 export const ROWS_LIMIT_TEXT = `At most ${CANDIDATE_BOUNDS.maxCandidates} rows in the table. Remove some first.`;
 
 // ─── State ──────────────────────────────────────────────────────
@@ -119,6 +112,8 @@ export interface CandidatesState {
   rows: CandidateRowState[];
   /** conId → the id of the newest pull asked for it (D8). */
   pulls: Record<number, number>;
+  /** The pull ids sent from the picker (not a Refresh): a picker change drops only these (D8). */
+  pickerPullIds: number[];
   pullProblem: string | null;
   /** Bumped by every compute-input revision (P15, F6); a compute reply is shown only for the current value. */
   computeSeq: number;
@@ -159,6 +154,8 @@ export type CandidatesAction =
   | { type: "compute-request"; seq: number }
   | { type: "compute-reply"; seq: number; reply: CandidatesResponse }
   | { type: "compute-failure"; seq: number; message: string }
+  /** A failed compute, asked again by the owner: a new sequence. */
+  | { type: "compute-retry" }
   | { type: "budget"; text: string };
 
 export const DEFAULT_BUDGET_TEXT = "10000";
@@ -177,6 +174,7 @@ export function initialCandidatesState(): CandidatesState {
     chosenConIds: [],
     rows: [],
     pulls: {},
+    pickerPullIds: [],
     pullProblem: null,
     computeSeq: 0,
     inputsKey: "",
@@ -215,13 +213,27 @@ function resetPicker(state: CandidatesState): CandidatesState {
     chosenExpiries: [],
     strikes: null,
     chosenConIds: [],
-    ...dropPulls(state),
+    ...dropPulls(state, new Set(state.pickerPullIds)),
   };
 }
 
-/** Every pull in flight is dropped: its replies will be ignored, and rows that existed only for it go. */
-function dropPulls(state: CandidatesState): Pick<CandidatesState, "rows" | "pulls"> {
-  return { rows: state.rows.filter((r) => !(state.pulls[r.conId] !== undefined && isPlaceholder(r))), pulls: {} };
+/**
+ * Pulls in flight are dropped (every one, or only `only`): their replies will
+ * be ignored, and rows that existed only for them go. A Refresh in flight for
+ * rows already in the table survives a picker change (S6 fix 1, item 6).
+ */
+function dropPulls(
+  state: CandidatesState,
+  only?: ReadonlySet<number>,
+): Pick<CandidatesState, "rows" | "pulls" | "pickerPullIds"> {
+  const dropped = (conId: number) => state.pulls[conId] !== undefined && (only === undefined || only.has(state.pulls[conId]));
+  const pulls: Record<number, number> = {};
+  for (const [id, pullId] of Object.entries(state.pulls)) if (!dropped(Number(id))) pulls[Number(id)] = pullId;
+  return {
+    rows: state.rows.filter((r) => !(dropped(r.conId) && isPlaceholder(r))),
+    pulls,
+    pickerPullIds: only === undefined ? [] : state.pickerPullIds.filter((id) => !only.has(id)),
+  };
 }
 
 /** P11 defaults across the chosen expiries, in expiry then strike order, at most 15 in all. */
@@ -245,17 +257,8 @@ export function candidatesReducer(state: CandidatesState, action: CandidatesActi
       if (!state.open) return state;
       return { ...state, open: false, chainRevision: 0, chainPending: false, ...dropPulls(state) };
     case "clear":
-      return {
-        ...state,
-        rows: [],
-        pulls: {},
-        pullProblem: null,
-        chainRevision: 0,
-        chainPending: false,
-        figuresSeq: null,
-        computingSeq: null,
-        computeProblem: null,
-      };
+      // A compute in flight answered the old rows: the sequence moves on (S6 fix 1, item 5).
+      return { ...revise(state), rows: [], pulls: {}, pickerPullIds: [], pullProblem: null, chainRevision: 0, chainPending: false };
     case "set-underlying":
       if (state.underlyingSecurityId === action.securityId) return state;
       return { ...resetPicker(state), underlyingSecurityId: action.securityId, pullProblem: null };
@@ -319,7 +322,8 @@ export function candidatesReducer(state: CandidatesState, action: CandidatesActi
         quoteProblem: null,
         figures: null,
       }));
-      return { ...state, rows: [...state.rows, ...newRows], pulls, pullProblem: null };
+      const pickerPullIds = action.mode === "pull" ? [...state.pickerPullIds, action.pullId] : state.pickerPullIds;
+      return { ...state, rows: [...state.rows, ...newRows], pulls, pickerPullIds, pullProblem: null };
     }
     case "quotes-reply": {
       const byConId = new Map(action.reply.rows.map((q) => [q.conId, q]));
@@ -377,7 +381,8 @@ export function candidatesReducer(state: CandidatesState, action: CandidatesActi
       const byConId = new Map(action.reply.rows.map((r) => [r.conId, r]));
       return {
         ...state,
-        rows: state.rows.map((r) => ({ ...r, figures: byConId.get(r.conId) ?? null })),
+        // Only rows that were computed (a quote and an entry) take figures (S6 fix 1, item 5).
+        rows: state.rows.map((r) => ({ ...r, figures: r.quote !== null && r.record !== null ? (byConId.get(r.conId) ?? null) : null })),
         figuresSeq: action.seq,
         computingSeq: null,
         computeProblem: null,
@@ -386,6 +391,8 @@ export function candidatesReducer(state: CandidatesState, action: CandidatesActi
     case "compute-failure":
       if (action.seq !== state.computeSeq) return state;
       return { ...state, computingSeq: null, computeProblem: action.message };
+    case "compute-retry":
+      return revise(state);
     case "budget":
       if (action.text === state.budgetUsdText) return state;
       return { ...revise(state), budgetUsdText: action.text };
@@ -437,48 +444,47 @@ export function pullProblem(rows: readonly CandidateRowState[], conIds: readonly
 }
 
 /** The budget box: whole cents above 0, at most the bound (D9). */
+const BUDGET_TEXT = /^(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d{0,2})?$/;
+
+/** Digits, optional commas grouping thousands, an optional point with at most two places; nothing else. */
 export function parseBudgetText(text: string): { usd: number } | { problem: string } {
   const t = text.trim();
-  const v = Number(t);
-  if (t === "" || !Number.isFinite(v) || budgetToUnits(v) === null) {
+  const v = BUDGET_TEXT.test(t) ? Number(t.replace(/,/g, "")) : NaN;
+  if (!Number.isFinite(v) || budgetToUnits(v) === null) {
     return { problem: `Type a budget in dollars and cents, above $0 and at most $${grouped(CANDIDATE_BOUNDS.maxBudgetUsd)}.` };
   }
   return { usd: v };
 }
 
 /**
- * The page's own compute body for the controls on screen, written by the same
- * rules as the main compute request (sweep, custom row, figures not sent in
- * single-name mode, the driver fields, the trial positions untouched), plus
- * the selected move. Null when the selected move is not one of the moves.
+ * What the rows' figures answer (P15): the page's body (or why there is
+ * none), the selected move, and the book revision (a sync with the same
+ * controls answers a new book, S6 fix 1).
  */
-export function candidatesBaseBody(args: {
-  scope: AnalysisScope;
-  controls: GainsControls;
-  selectedMove: number;
-  trialPositions: readonly TrialPositionInput[];
-}): CandidatesBaseBody | null {
-  const { controls } = args;
-  const kind = controls.driver.kind;
-  const moves = requestMoves(sweepFor(kind), controls.custom, tableMovesFor(kind));
-  const selected = moves.find((m) => sameMove(m, args.selectedMove));
-  if (selected === undefined) return null;
-  const figures = betaOverridesToSend(kind, controls.betaOverrides);
-  return {
-    scope: args.scope,
-    driverSymbol: controls.driverSymbol,
-    valuationDate: controls.valuationDate,
-    moves,
-    volChangePoints: controls.volChangePoints,
-    ...(Object.keys(controls.priceOverrides).length > 0 ? { priceOverrides: controls.priceOverrides } : {}),
-    ...(Object.keys(figures).length > 0 ? { betaOverrides: figures } : {}),
-    ...driverRequestFields(controls.driver),
-    selectedMove: selected,
-    ...(args.trialPositions.length > 0 ? { trialPositions: [...args.trialPositions] } : {}),
-  };
+export function candidatesInputsKey(
+  built: { ok: true; body: GainsAtRiskBody } | { ok: false; message: string },
+  selectedMove: number,
+  bookRevision: number,
+): string {
+  return JSON.stringify({ built, selectedMove, bookRevision });
 }
 
-export type CandidatesBaseBody = Omit<CandidatesBody, "budgetUsd" | "candidates">;
+/**
+ * The candidates body: the page's ONE gains-at-risk body
+ * (`gainsAtRiskRequestBody`, the view's own) plus exactly three fields: the
+ * budget, the selected move (written as the moves write it) and the
+ * candidates. Null when the selected move is not one of the moves.
+ */
+export function candidatesComputeBody(
+  base: GainsAtRiskBody,
+  selectedMove: number,
+  budgetUsd: number,
+  candidates: CandidateRequestItem[],
+): CandidatesBody | null {
+  const selected = base.moves.find((m) => sameMove(m, selectedMove));
+  if (selected === undefined) return null;
+  return { ...base, selectedMove: selected, budgetUsd, candidates };
+}
 
 /** The rows that can be computed: a quote with a solved entry (in row order, at most 30 by construction). */
 export function candidateRequestItems(rows: readonly CandidateRowState[]): CandidateRequestItem[] {
@@ -669,10 +675,11 @@ export function candidateRefusalText(refusal: TrialRefusal, symbol: string): str
 
 // ─── Add (P14, F10) ─────────────────────────────────────────────
 
-export type AddBlocked = "no-entry" | "refused" | "zero-contracts" | "figures-not-current" | "trial-limit";
+export type AddBlocked = "no-entry" | "in-trials" | "refused" | "zero-contracts" | "figures-not-current" | "trial-limit";
 
 const ADD_BLOCKED_TEXT: Record<AddBlocked, string> = {
   "no-entry": "No quote with a solved entry, so there is nothing to add.",
+  "in-trials": IN_TRIALS_TEXT,
   refused: "This row adds nothing in this run, so it cannot be added.",
   "zero-contracts": ZERO_CONTRACTS_TEXT,
   "figures-not-current": "Wait for the figures for the settings on screen.",
@@ -685,14 +692,25 @@ export function candidateAddBlocked(
   state: Pick<CandidatesState, "computeSeq">,
   figuresSeq: number | null,
   trialCount: number,
+  /** The broker contract ids already in the trial list (`trialBrokerContractIds`). */
+  inTrials: ReadonlySet<number> = new Set(),
 ): { reason: AddBlocked; text: string } | null {
   const blocked = (reason: AddBlocked) => ({ reason, text: ADD_BLOCKED_TEXT[reason] });
+  // Ruling (S6 fix 1): one contract is one trial position; its size is changed there.
+  if (inTrials.has(row.conId)) return blocked("in-trials");
   if (row.record === null || row.quote === null) return blocked("no-entry");
   if (row.figures === null || figuresSeq === null || figuresSeq !== state.computeSeq) return blocked("figures-not-current");
   if (row.figures.status === "refused") return blocked("refused");
   if (row.figures.status === "zero-contracts" || row.figures.contracts <= 0) return blocked("zero-contracts");
   if (trialCount >= TRIAL_POSITION_BOUNDS.maxPositions) return blocked("trial-limit");
   return null;
+}
+
+/** The broker contract ids of the trial list's options (F3). */
+export function trialBrokerContractIds(list: readonly Pick<TrialPositionState, "position">[]): Set<number> {
+  const out = new Set<number>();
+  for (const t of list) if (t.position.kind === "option" && t.position.brokerContractId !== undefined) out.add(t.position.brokerContractId);
+  return out;
 }
 
 export type PricedCandidateRow = Extract<CandidateRow, { status: "priced" }>;
@@ -748,44 +766,63 @@ export function isCandidateSortKey(x: string): x is CandidateSortKey {
   return CANDIDATE_SORT_OPTIONS.some((o) => o.key === x);
 }
 
-function sortValue(r: CandidateRowState, key: CandidateSortKey, caseKey: GainsAtRiskCaseKey): number | null {
+/** A row's figures count only when it was computed from a quote and an entry. */
+function pricedFigures(r: CandidateRowState): PricedCandidateRow | null {
   const f = r.figures;
-  if (f === null || f.status !== "priced") return null;
-  const c = f.engine.cases?.[caseKey];
+  return f !== null && f.status === "priced" && r.quote !== null && r.record !== null ? f : null;
+}
+
+/**
+ * [group, value]: group 0 sorts by value; group 1 has figures but no number
+ * for this column (a worded crossing, a blank share) and keeps its tie order
+ * by the change at the selected move; group 2 has no figures (always last).
+ */
+function sortKeyOf(
+  r: CandidateRowState,
+  key: Exclude<CandidateSortKey, "none">,
+  caseKey: GainsAtRiskCaseKey,
+  yearGain: YearGainResult | null,
+): [0 | 1 | 2, number] {
+  const f = pricedFigures(r);
+  if (f === null) return [2, 0];
+  const c = f.engine.cases?.[caseKey] ?? null;
+  const atSelected = c ? c.atSelectedMoveUsd : 0;
   switch (key) {
-    case "none":
-      return 0;
     case "cost":
-    case "costShare":
-      return f.costUsd;
+      return [0, f.costUsd];
     case "contracts":
-      return f.contracts;
+      return [0, f.contracts];
     case "atSelected":
-      return c ? c.atSelectedMoveUsd : null;
+      return c ? [0, c.atSelectedMoveUsd] : [1, 0];
     case "atZero":
-      return c ? c.atZeroMoveUsd : null;
+      return c ? [0, c.atZeroMoveUsd] : [1, atSelected];
     case "crossing":
-      if (!c) return null;
-      if (c.crossing.kind === "better-at-every-move") return 0;
-      return c.crossing.kind === "pays-beyond" ? Math.abs(c.crossing.move) : null;
+      if (c === null) return [1, 0];
+      if (c.crossing.kind === "better-at-every-move") return [0, 0];
+      if (c.crossing.kind === "pays-beyond") return [0, Math.abs(c.crossing.move)];
+      return [1, atSelected];
+    case "costShare": {
+      const share = yearGain ? candidateCostShareOfGain(f.costUsd, yearGain) : null;
+      return share === null || !Number.isFinite(share) ? [1, 0] : [0, share];
+    }
   }
 }
 
-/** P22: request order until a column is picked; under every picked column, rows with no figures sort last. Stable. */
+/**
+ * P22: request order until a column is picked ("none" returns the rows as
+ * they are). Under a picked column, rows with no figures sort last; rows with
+ * figures but no number for that column come after the numbered ones; ties
+ * keep request order. Stable; the input is untouched.
+ */
 export function sortCandidateRows(
   rows: readonly CandidateRowState[],
   key: CandidateSortKey,
   caseKey: GainsAtRiskCaseKey,
+  yearGain: YearGainResult | null = null,
 ): CandidateRowState[] {
-  // "none": request order, untouched (P22: no column picked, no order imposed).
   if (key === "none") return [...rows];
-  const indexed = rows.map((r, i) => ({ r, i, v: sortValue(r, key, caseKey) }));
-  indexed.sort((a, b) => {
-    if (a.v === null && b.v === null) return a.i - b.i;
-    if (a.v === null) return 1;
-    if (b.v === null) return -1;
-    return a.v - b.v || a.i - b.i;
-  });
+  const indexed = rows.map((r, i) => ({ r, i, k: sortKeyOf(r, key, caseKey, yearGain) }));
+  indexed.sort((a, b) => a.k[0] - b.k[0] || a.k[1] - b.k[1] || a.i - b.i);
   return indexed.map((x) => x.r);
 }
 
@@ -824,7 +861,7 @@ export function candidateCells(
   driverSymbol: string,
 ): CandidateCells {
   if (r.quote === null) return { kind: "no-quote", text: r.quoteProblem ?? "Quoting…" };
-  const f = r.figures;
+  const f = r.record === null ? null : r.figures;
   if (f === null) return { kind: "waiting", perContractUsd: r.record ? perContractUsdOf(r.quote) : null };
   if (f.status === "zero-contracts") return { kind: "zero-contracts", perContractUsd: f.perContractUsd, text: ZERO_CONTRACTS_TEXT };
   if (f.status === "refused") {

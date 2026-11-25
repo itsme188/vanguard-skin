@@ -93,15 +93,18 @@ describe("single-name mode in the view", () => {
   });
 
   it("the request: index mode sends today's body; single-name sends the driver, its moves and the selected move", () => {
-    const at = anchorIndex(src, "const body: GainsAtRiskBody = {");
-    const block = src.slice(anchorIndex(src, "async function run("), anchorIndex(src, "apiFetch(", at));
-    expect(block).toContain("requestMoves(sweepFor(kind), next.custom, tableMovesFor(kind))");
-    expect(block).toContain("...driverRequestFields(next.driver)");
-    expect(block).toContain("const selectedInMoves = moves.find((m) => sameMove(m, selected));");
+    // S6 fix 1 (item 4): run() builds its body through the one shared builder.
+    const run = src.slice(anchorIndex(src, "async function run("), anchorIndex(src, "apiFetch(", anchorIndex(src, "async function run(")));
+    expect(run).toContain("gainsAtRiskRequestBody({");
+    const helpers = read("lib/analysis/gains-at-risk-view.ts");
+    const block = helpers.slice(anchorIndex(helpers, "export function gainsAtRiskRequestBody("));
+    expect(block).toContain("requestMoves(sweepFor(kind), c.custom, tableMovesFor(kind))");
+    expect(block).toContain("...driverRequestFields(c.driver)");
+    expect(block).toContain("const selectedInMoves = moves.find((m) => sameMove(m, args.selectedMove));");
     expect(block).toContain('kind === "single-name" && selectedInMoves !== undefined ? { selectedMove: selectedInMoves } : {}');
     // P2: the owner's figures are not sent in single-name mode.
-    expect(block).toContain("betaOverridesToSend(kind, next.betaOverrides)");
-    expect(block).not.toContain("betaOverrides: next.betaOverrides");
+    expect(block).toContain("betaOverridesToSend(kind, c.betaOverrides)");
+    expect(block).not.toContain("betaOverrides: c.betaOverrides");
   });
 
   it("the stale-reply guard is kept for every request, the drivers list included", () => {

@@ -242,8 +242,11 @@ describe("the two cases and the owner's figure", () => {
 
   it("the figures are sent keyed by identity, and left out when there are none", () => {
     // Step 3 (P2): none are sent in single-name mode; they stay in page state.
-    anchorIndex(src, "const figures = betaOverridesToSend(kind, next.betaOverrides);");
-    anchorIndex(src, "Object.keys(figures).length > 0 ? { betaOverrides: figures } : {}");
+    // S6 fix 1 (item 4): the one body builder holds the rule; run() calls it.
+    anchorIndex(src, "gainsAtRiskRequestBody({");
+    const helpers = read(HELPERS);
+    anchorIndex(helpers, "const figures = betaOverridesToSend(kind, c.betaOverrides);");
+    anchorIndex(helpers, "Object.keys(figures).length > 0 ? { betaOverrides: figures } : {}");
     anchorIndex(src, "betaOverrideProblem(");
     anchorIndex(src, "BETA_OVERRIDE_REFUSAL_LABELS[");
     anchorIndex(src, "overridesIgnoredLine(result.betaOverridesIgnored)");

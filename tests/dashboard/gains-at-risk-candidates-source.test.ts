@@ -109,7 +109,7 @@ describe("the picker, the sort and Add", () => {
   });
   it("Add's disabled state reads candidateAddBlocked, and the handler checks it again", () => {
     const table = code(read(TABLE));
-    expect(table).toContain("candidateAddBlocked(r, state, state.figuresSeq, trialCount)");
+    expect(table).toContain("candidateAddBlocked(r, state, state.figuresSeq, trialCount, inTrials)");
     expect(table).toContain("disabled={addBlockedText !== null}");
     const section = code(read(CANDIDATE_SECTION));
     expect(section).toMatch(/function addRow[\s\S]*?candidateAddBlocked\(/);
@@ -148,5 +148,42 @@ describe("the words", () => {
   }
   it("no caret glyphs", () => {
     for (const file of NEW_FILES) for (const t of copyOf(code(read(file)))) expect(t).not.toMatch(/[▾▼▸⌄⌃]/);
+  });
+});
+
+describe("S6 fix round 1 wiring", () => {
+  const section = code(read(CANDIDATE_SECTION));
+  it("item 4: the section builds its body with the page's one builder; no copy of the rules", () => {
+    expect(section).toContain("gainsAtRiskRequestBody({");
+    expect(section).toContain("candidatesComputeBody(built.body, selectedMove, budget.usd, candidates)");
+    const helpers = code(read(HELPERS));
+    expect(helpers).not.toMatch(/requestMoves\(|betaOverridesToSend\(|driverRequestFields\(/);
+    expect(code(read(VIEW)).slice(anchorIndex(code(read(VIEW)), "async function run("))).toContain("gainsAtRiskRequestBody({");
+  });
+  it("item 1: the book revision is in the inputs key and comes from the view", () => {
+    expect(section).toContain("candidatesInputsKey(built, selectedMove, bookRevision)");
+    const view = code(read(VIEW));
+    expect(view).toContain("bookRevision={bookRevision}");
+    const effect = view.slice(anchorIndex(view, "seenPropsRef.current = initial;"));
+    expect(effect.slice(0, 120)).toContain("setBookRevision((n) => n + 1)");
+  });
+  it("item 2: the connection is checked on mount when open, after a chain 503, and on Check again; never on a timer", () => {
+    expect(section).toMatch(/if \(current\(\)\.open\) void connectAndFetch/);
+    const chain = section.slice(anchorIndex(section, "async function fetchChain"));
+    expect(chain.slice(0, 900)).toContain("if (r.status === 503) setConnected(false);");
+    expect(section).toContain("Check again");
+    expect(section).not.toMatch(/setInterval\([^)]*checkConnected|setInterval\([^)]*connectAndFetch/);
+  });
+  it("item 7: every broker request goes out only after the reducer accepted its request action", () => {
+    expect(section).toContain('if (!act({ type: "chain-request"');
+    expect(section).toContain('if (!act({ type: "quotes-request"');
+    expect(code(read(PROVIDER))).toContain("return after !== before;");
+  });
+  it("items 3, 8, 9: the in-trials mark and note, Try again, the pending budget line", () => {
+    const table = code(read(TABLE));
+    expect(table).toContain("{IN_TRIALS_MARK}");
+    expect(table).toContain("{IN_TRIALS_NOTE}");
+    expect(table).toContain("Try again");
+    expect(table).toContain("{BUDGET_PENDING_TEXT}");
   });
 });
