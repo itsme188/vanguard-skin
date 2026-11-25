@@ -98,7 +98,7 @@ export function GainsAtRiskChart({
             tickFormatter={keptTickFormatter}
             tick={{ fontSize: 11, fill: "var(--ink-faint)" }}
             width={64}
-            label={{ value: "gain kept", angle: 90, position: "insideRight", dx: 14, fontSize: 11, fill: "var(--ink-faint)" }}
+            label={{ value: "gain kept", angle: 90, position: "insideRight", dx: -2, fontSize: 11, fill: "var(--ink-faint)" }}
           />
         )}
         <ReferenceLine yAxisId="usd" y={0} stroke="var(--edge-strong)" />
