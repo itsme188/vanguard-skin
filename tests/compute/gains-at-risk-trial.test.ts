@@ -160,11 +160,15 @@ describe("buildTrialEntry", () => {
       hasContractId: true,
     });
     if (!fromBar.ok || fromBar.position.kind !== "option") throw new Error("must build an option");
-    expect(fromBar.position).toMatchObject({ underlyingSecurityId: u, pricePaid: p, entryUnderlyingPrice: 100, contracts: 2, strike: 95 });
+    expect(fromBar.position).toMatchObject({ underlyingSecurityId: u, pricePaid: p, entryUnderlyingPrice: 100, valuationPriceAtEntry: 100, contracts: 2, strike: 95 });
     expect(Math.abs(fromBar.position.entryVolatility - 0.3)).toBeLessThan(1e-6);
 
     const quoted = buildTrialEntry(db, { ...req, quotedUnderlyingPrice: 100 }, { today, now });
     expect(quoted).toMatchObject({ ok: true, underlyingPrice: 100, underlyingPriceDate: today, underlyingPriceSource: "quote", staleCloseDate: null });
+    // A quote off the app's own price: the volatility is solved at the quote, and the app's price is recorded beside it.
+    const off = buildTrialEntry(db, { ...req, price: putPrice(104, 95, T, r, 0.3), quotedUnderlyingPrice: 104 }, { today, now });
+    expect(off).toMatchObject({ ok: true, underlyingPrice: 104, position: { entryUnderlyingPrice: 104, valuationPriceAtEntry: 100 } });
+    if (off.ok && off.position.kind === "option") expect(Math.abs(off.position.entryVolatility - 0.3)).toBeLessThan(1e-6);
 
     // A name held nowhere reads its latest daily bar before a stored price (one rule with the engine).
     price(u, 101, "2026-11-09");
@@ -205,7 +209,7 @@ describe("buildTrialEntry", () => {
     hold(u, 50, 3);
     const position: TrialPositionDraft = {
       kind: "option", underlyingSecurityId: u, right: "put", side: "buy", expiry: "2027-01-15", strike: 95, contracts: 1,
-      pricePaid: 3, entryUnderlyingPrice: 100, entryVolatility: 0.3,
+      pricePaid: 3, entryUnderlyingPrice: 100, valuationPriceAtEntry: 100, entryVolatility: 0.3,
     };
     const atAdd = trialHoldingsByAccount(db, position);
     expect(atAdd).toEqual({ 1: 10 });
@@ -223,6 +227,19 @@ describe("buildTrialEntry", () => {
 });
 
 describe("lookupTrialSecurity and checkTrialSecurity", () => {
+  it("lookup's price is the valuation price: stored 500 and bar 505 on a name no account holds reads 505", () => {
+    const n = addSecurity({ symbol: "ZZV", type: "Stock" });
+    price(n, 500, "2026-11-09");
+    bar(n, "2026-11-06", 505);
+    expect(lookupTrialSecurity(db, "ZZV", { today })).toMatchObject({ price: 505, priceDate: "2026-11-06", priceSource: "daily-bar" });
+    expect(trialValuationPrice(db, n, { today })).toEqual({ price: 505, date: "2026-11-06", source: "daily-bar" });
+    hold(n, 1, 2);
+    expect(lookupTrialSecurity(db, "ZZV", { today })).toMatchObject({ price: 500, priceDate: "2026-11-09", priceSource: "book" });
+    expect(lookupTrialSecurity(db, "ZZNOPX", { today })).toBeNull();
+    const bare = addSecurity({ symbol: "ZZBARE", type: "Stock" });
+    expect(lookupTrialSecurity(db, "ZZBARE", { today })).toMatchObject({ securityId: bare, price: null, priceDate: null, priceSource: null });
+  });
+
   it("lookup reports priced daily bars: a known, priced security with zero bars", () => {
     const n = addSecurity({ symbol: "ZZN", type: "Stock", name: "ZZ Name" });
     price(n, 40);
@@ -233,6 +250,7 @@ describe("lookupTrialSecurity and checkTrialSecurity", () => {
       name: "ZZ Name",
       price: 40,
       priceDate: "2026-11-09",
+      priceSource: "stored-price",
       hasContractId: true,
       dailyBars: { count: 0, through: null },
     });
@@ -241,6 +259,8 @@ describe("lookupTrialSecurity and checkTrialSecurity", () => {
     bar(n, today, 41); // today's bar is outside [today - window, today)
     bar(n, "2020-01-02", 10); // older than the window
     expect(lookupTrialSecurity(db, "ZZN", { today })?.dailyBars).toEqual({ count: 2, through: "2026-11-09" });
+    // The lookup's price is the price the engine marks against (one rule): here today's bar, the latest.
+    expect(lookupTrialSecurity(db, "ZZN", { today })).toMatchObject({ price: 41, priceDate: today, priceSource: "daily-bar" });
     addSecurity({ symbol: "ZZOPT", type: "Option", conId: false });
     expect(lookupTrialSecurity(db, "ZZOPT", { today })).toBeNull();
     expect(lookupTrialSecurity(db, "ZZNONE", { today })).toBeNull();

@@ -1292,7 +1292,7 @@ function trialOption(
   const pricePaid = right === "put" ? putPrice(S, strike, T, r, sigma) : callPrice(S, strike, T, r, sigma);
   const solved = solveTrialEntry({ right, strike, expiry, price: pricePaid, underlyingPrice: S, riskFreeRate: r, today: TODAY, now: new Date(NOW) });
   if (!solved.ok) throw new Error(`trial ${id} must solve`);
-  return { kind: "option", id, underlyingSecurityId, right, side, expiry, strike, contracts, pricePaid, entryUnderlyingPrice: S, entryVolatility: solved.volatility };
+  return { kind: "option", id, underlyingSecurityId, right, side, expiry, strike, contracts, pricePaid, entryUnderlyingPrice: S, valuationPriceAtEntry: S, entryVolatility: solved.volatility };
 }
 
 function trialShares(id: string, securityId: number, side: "buy" | "sell", quantity: number, p: number): TrialPositionInput {
@@ -1552,6 +1552,38 @@ describe("computeGainsAtRisk: trial positions (step 2)", () => {
     for (const k of CASES) expect(r.trial?.cases[k].moves).toEqual(alone.trial?.cases[k].moves);
   });
 
+  it("a trial option is marked relative to the app's own price: a quote above the stored price shows nothing at the click", () => {
+    const q = addSecurity({ symbol: "QQQ", type: "ETF" });
+    price(q, 505);
+    bars(q, 1);
+    hold(q, 1);
+    // Solved at the quote's 520; the app's own price for the name is 505.
+    const quoted = { ...trialOption("p", q, "put", "buy", 500, "2027-01-15", 2, 520), valuationPriceAtEntry: 505 } as TrialPositionInput;
+    if (quoted.kind !== "option") throw new Error("option");
+    const atClick = run({ moves: [-0.1, 0], trialPositions: [quoted] });
+    for (const k of CASES) expect(trialRow(atClick, "p").cases[k].pnlByMove[1]).toBe(0);
+    expect(atClick.trial?.cases.measured.noMoveCostUsd).toBe(0);
+    expectTrialConservation(atClick);
+    // The app's price then falls to 480 (about -4.95%): the trial carries that same relative move.
+    db.prepare("INSERT INTO prices (security_id, date, close_price, source) VALUES (?, ?, 480, 'test')").run(q, TODAY);
+    const later = run({ moves: [-0.1, 0], trialPositions: [quoted] });
+    const T = yearsToExpiry("2027-01-15", TODAY, new Date(NOW));
+    const rate = getRiskFreeRate(db);
+    const S = (520 * 480) / 505;
+    for (const [i, m] of [-0.1, 0].entries()) {
+      const v = Math.max(putPrice(S * (1 + m), 500, T, rate, quoted.entryVolatility), Math.max(500 - S * (1 + m), 0));
+      for (const k of CASES) {
+        expect(Math.abs(trialRow(later, "p").cases[k].pnlByMove[i] - (v - quoted.pricePaid) * 2 * 100)).toBeLessThan(0.005);
+      }
+    }
+    expect(trialRow(later, "p").valuation).toEqual({ price: 480, date: TODAY, source: "book" });
+    expect(trialRow(later, "p").valueUsd).toBeCloseTo(Math.max(putPrice(S, 500, T, rate, quoted.entryVolatility), 0) * 200, 6);
+    expectTrialConservation(later);
+    // A shares trial is still marked against its typed price (R3): bought at 520, marked at 480.
+    const sh = run({ moves: [0], trialPositions: [trialShares("s", q, "buy", 10, 520)] });
+    expect(trialRow(sh, "s").cases.measured.pnlByMove[0]).toBeCloseTo(10 * (480 - 520), 9);
+  });
+
   it("a size-only change after prices moved keeps the accrued result per contract", () => {
     hold(addDriverUnderlying(), 1);
     const ten = trialOption("p", 100, "put", "buy", 95, "2027-01-15", 10, 105);
@@ -1581,7 +1613,7 @@ describe("computeGainsAtRisk: trial positions (step 2)", () => {
     expect(solveTrialEntry({ right: "put", strike: 95, expiry: "2027-01-15", price: 3, underlyingPrice: 90, riskFreeRate: r0, today: TODAY, now: new Date(NOW) })).toEqual({ ok: false, reason: "below-intrinsic" });
     const trial: TrialPositionInput = {
       kind: "option", id: "p", underlyingSecurityId: q, right: "put", side: "buy", expiry: "2027-01-15", strike: 95, contracts: 1,
-      pricePaid: 3, entryUnderlyingPrice: 100, entryVolatility: solved.volatility,
+      pricePaid: 3, entryUnderlyingPrice: 100, valuationPriceAtEntry: 100, entryVolatility: solved.volatility,
     };
     const r = run({ moves: [0], trialPositions: [trial] });
     const row = trialRow(r, "p");
@@ -1756,6 +1788,10 @@ describe("computeGainsAtRisk: trial positions (step 2)", () => {
       [{ ...opt, strike: -1 }],
       [{ ...opt, pricePaid: Number.POSITIVE_INFINITY }],
       [{ ...opt, entryUnderlyingPrice: 0 }],
+      [{ ...opt, valuationPriceAtEntry: 0 }],
+      [{ ...opt, valuationPriceAtEntry: Number.NaN }],
+      [{ ...opt, valuationPriceAtEntry: TRIAL_POSITION_BOUNDS.maxPrice + 1 }],
+      [{ ...opt, valuationPriceAtEntry: undefined }],
       [{ ...opt, entryVolatility: 0 }],
       [{ ...opt, entryVolatility: 1e9 }],
       [{ ...opt, entryVolatility: TRIAL_POSITION_BOUNDS.maxVolatility + 0.01 }],

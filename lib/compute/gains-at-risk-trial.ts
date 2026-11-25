@@ -399,14 +399,15 @@ export function buildTrialEntry(
   let underlyingPrice: number;
   let underlyingPriceDate: string;
   let underlyingPriceSource: "quote" | "book" | "daily-bar" | "stored-price";
+  // The engine's own price for the name at the click: an option is marked relative to it.
+  const valuation = trialValuationPrice(db, found.securityId, { today });
+  if (valuation === null) return refuse("no-underlying-price");
   const quoted = req.kind === "option" ? req.quotedUnderlyingPrice : undefined;
   if (quoted !== undefined && Number.isFinite(quoted) && quoted > 0) {
     underlyingPrice = quoted;
     underlyingPriceDate = today;
     underlyingPriceSource = "quote";
   } else {
-    const valuation = trialValuationPrice(db, found.securityId, { today });
-    if (valuation === null) return refuse("no-underlying-price");
     underlyingPrice = valuation.price;
     underlyingPriceDate = valuation.date;
     underlyingPriceSource = valuation.source;
@@ -437,6 +438,7 @@ export function buildTrialEntry(
       contracts: req.contracts,
       pricePaid: req.price,
       entryUnderlyingPrice: underlyingPrice,
+      valuationPriceAtEntry: valuation.price,
       entryVolatility: solved.volatility,
     };
   } else {
@@ -461,7 +463,9 @@ export function buildTrialEntry(
 
 /**
  * A non-option security by its exact symbol (trimmed, upper-cased), with its
- * latest stored price (native currency) and its priced daily bars in
+ * valuation price (`trialValuationPrice`: the price the engine marks a trial
+ * against, so a share trial at this default price shows exactly zero; native
+ * currency; null when the name has no price of any kind) and its priced daily bars in
  * [today - DAILY_BAR_WINDOW_DAYS, today) (P8). Several rows on one symbol:
  * one with a broker contract first, then the lowest id. Null when none.
  */
@@ -473,8 +477,10 @@ export function lookupTrialSecurity(
   securityId: number;
   symbol: string;
   name: string | null;
+  /** `trialValuationPrice` of the name; null when it has none. */
   price: number | null;
   priceDate: string | null;
+  priceSource: "book" | "daily-bar" | "stored-price" | null;
   hasContractId: boolean;
   /** P8: priced daily bars in [today - DAILY_BAR_WINDOW_DAYS, today). */
   dailyBars: { count: number; through: string | null };
@@ -491,9 +497,7 @@ export function lookupTrialSecurity(
     .all(key) as { id: number; symbol: string; name: string | null; security_type: string | null; ib_con_id: number | null }[];
   const pick = rows.find((r) => !isOptionSecurityType(r.security_type));
   if (!pick) return null;
-  const latest = db
-    .prepare("SELECT close_price, date FROM prices WHERE security_id = ? ORDER BY date DESC LIMIT 1")
-    .get(pick.id) as { close_price: number; date: string } | undefined;
+  const latest = trialValuationPrice(db, pick.id, { today });
   const barStats = db
     .prepare(
       `SELECT COUNT(*) AS n, MAX(bar_date) AS through FROM ohlcv_bars
@@ -505,8 +509,9 @@ export function lookupTrialSecurity(
     securityId: pick.id,
     symbol: pick.symbol,
     name: pick.name,
-    price: latest ? latest.close_price : null,
+    price: latest ? latest.price : null,
     priceDate: latest ? latest.date : null,
+    priceSource: latest ? latest.source : null,
     hasContractId: pick.ib_con_id !== null,
     dailyBars: { count: barStats.n, through: barStats.n > 0 ? barStats.through : null },
   };

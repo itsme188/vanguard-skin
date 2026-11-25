@@ -60,8 +60,10 @@
  * `sideOf`, exposure and rounding), each trial is priced as a row with no
  * account:
  *   - an option at the RECORDED volatility (solved once at the click, R1;
- *     never solved again, never the broker's), at the underlying's current
- *     price, less the price paid (bought) or the premium received less the
+ *     never solved again, never the broker's), at an underlying of
+ *     entryUnderlyingPrice x (valuation price now / valuationPriceAtEntry):
+ *     marked relative to the app's own price series, so a quote off the
+ *     stored price shows nothing at the click; less the price paid (bought) or the premium received less the
  *     cost to close (written); worse-of-two when it expires before the date;
  *   - shares against the typed price (R3), sign -1 for a sale.
  * Its underlying price is `trialValuationPrice` (the stored price the loader
@@ -186,8 +188,14 @@ export type TrialPositionInput =
       contracts: number;
       /** Per share, at the click (R1). */
       pricePaid: number;
-      /** The underlying's price used at the click (R1, R2). */
+      /** The underlying's price used at the click (R1, R2): the quote's when one was fetched. The volatility is solved at it. */
       entryUnderlyingPrice: number;
+      /**
+       * The app's own valuation price of the underlying at the click (`trialValuationPrice`);
+       * equal to `entryUnderlyingPrice` when no quote was used. The option is marked RELATIVE
+       * to the app's price series: underlying = entryUnderlyingPrice x (valuation now / this).
+       */
+      valuationPriceAtEntry: number;
       /** Solved at the click by solveTrialEntry; never re-solved (R1). */
       entryVolatility: number;
     }
@@ -514,6 +522,7 @@ function checkTrialPositions(input: GainsAtRiskInput): TrialPositionInput[] {
       if (!isCount(t.contracts, B.maxContracts)) throw new GainsAtRiskInputError("contracts is out of bounds");
       if (!isPositive(t.pricePaid, B.maxPrice)) throw new GainsAtRiskInputError("pricePaid is out of bounds");
       if (!isPositive(t.entryUnderlyingPrice, B.maxPrice)) throw new GainsAtRiskInputError("entryUnderlyingPrice is out of bounds");
+      if (!isPositive(t.valuationPriceAtEntry, B.maxPrice)) throw new GainsAtRiskInputError("valuationPriceAtEntry is out of bounds");
       if (!isPositive(t.entryVolatility, B.maxVolatility)) {
         throw new GainsAtRiskInputError(`entryVolatility must be above 0 and at most ${B.maxVolatility}`);
       }
@@ -1198,7 +1207,15 @@ export function computeGainsAtRisk(
         : {}),
       ...(resolved.source === "no-measured-link" ? { noMeasuredLinkReason: resolved.reason } : {}),
     };
-    const P = valuation.price;
+    // Shares are marked at the app's price (R3). An option is marked RELATIVE to the app's
+    // own price series (fix round 2): the quote and the stored price are on different
+    // bases and are never differenced, so at the click the ratio is exactly 1.
+    const P =
+      t.kind === "option"
+        ? valuation.price === t.valuationPriceAtEntry
+          ? t.entryUnderlyingPrice
+          : t.entryUnderlyingPrice * (valuation.price / t.valuationPriceAtEntry)
+        : valuation.price;
 
     type TrialPriced = { pnl: number; expires: boolean; v0: number };
     const priceAt = (
