@@ -47,7 +47,7 @@ export function DriverControl({
     <fieldset className="space-y-2 min-w-0 max-w-full">
       <legend className="block text-xs text-ink-faint mb-1">What moves</legend>
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-        <label className="inline-flex items-center gap-1.5 text-sm text-ink">
+        <label className="relative inline-flex items-center gap-1.5 text-sm text-ink pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-1 pointer-coarse:after:-inset-x-1">
           <input
             type="radio"
             name="gains-driver-kind"
@@ -78,7 +78,7 @@ export function DriverControl({
         </div>
       </div>
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2 min-w-0">
-        <label className="inline-flex items-center gap-1.5 text-sm text-ink">
+        <label className="relative inline-flex items-center gap-1.5 text-sm text-ink pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-1 pointer-coarse:after:-inset-x-1">
           <input
             type="radio"
             name="gains-driver-kind"

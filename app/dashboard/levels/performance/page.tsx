@@ -49,7 +49,9 @@ export default function LevelPerformancePage() {
           <p className="text-[12px] text-ink-dim mt-1 leading-relaxed max-w-3xl">
             For each fired alert:{" "}
             <code className="text-ink">pnl = (close_N_days_later − triggered_price) / triggered_price</code>.
-            Windows: 30 / 60 / 90 calendar days. &quot;Acted vs ignored&quot;
+            Windows: 30 / 60 / 90 calendar days. The three P&amp;L columns
+            average only alerts you acted on, and show a dash until a source
+            has 3 of them. &quot;Acted vs ignored&quot;
             compares average 30-day P&amp;L between the two response buckets,
             shown only when both sides have ≥ 3 samples. The rule ignores
             prior position state — if the user was already long and acted
@@ -78,8 +80,8 @@ export default function LevelPerformancePage() {
                 <th className="text-right px-4 py-2 font-medium">Hit rate</th>
                 <th className="text-right px-4 py-2 font-medium">Responses</th>
                 <th className="text-right px-4 py-2 font-medium">P&amp;L 30d (acted)</th>
-                <th className="text-right px-4 py-2 font-medium">P&amp;L 60d</th>
-                <th className="text-right px-4 py-2 font-medium">P&amp;L 90d</th>
+                <th className="text-right px-4 py-2 font-medium">P&amp;L 60d (acted)</th>
+                <th className="text-right px-4 py-2 font-medium">P&amp;L 90d (acted)</th>
                 <th className="text-right px-4 py-2 font-medium">vs Ignored (30d)</th>
               </tr>
             </thead>

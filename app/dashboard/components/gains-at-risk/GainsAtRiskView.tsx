@@ -624,10 +624,13 @@ export function GainsAtRiskView({
         <div className="min-w-0">
           <h2 className="text-lg font-medium text-ink whitespace-nowrap!">Gains at risk</h2>
           {/* Orientation: three short lines; each name jumps to its section. The first carries the page description. */}
-          <ul className="mt-1 space-y-0.5 text-sm text-ink-faint">
+          <ul className="mt-1 space-y-0.5 pointer-coarse:space-y-2 text-sm text-ink-faint">
             {pageGuideLines(kind).map((l) => (
               <li key={l.anchor}>
-                <a href={`#${l.anchor}`} className="text-ink-dim underline">
+                <a
+                  href={`#${l.anchor}`}
+                  className="relative text-ink-dim underline pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-1 pointer-coarse:after:-inset-x-1"
+                >
                   {l.name}
                 </a>
                 {": "}
