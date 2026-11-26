@@ -1,66 +1,60 @@
-**Waiting on:** USER: the first real one-click "Read for bogeys" on an armed print is the live check of that button (TODO "Live watches"); nothing else from this session. Carried over: USER rule on the open Analysis tab decisions (record `analysis-tab-owner-decisions`) and confirm the 2025 return used the IBKR 1099-B (record `ibkr-1099b-2025-confirm`); CLAUDE run a Codex review of the Plaid session-dating plan, then build it (record `plaid-session-dating`).
+**Waiting on:** USER: four live checks of the Gains at risk broker paths not yet seen with the broker connected (a pull while live quotes are streaming, a Get quote clicked during a pull, a delayed or closed-session label, an unlisted strike), and a look at the new strike picker, row notes and per-$1,000 column on the next real pull (`docs/plans/TODO.md` G3a, G4a). Nothing else from this session. Carried over from earlier sessions: the open Analysis tab decisions and the other `decision` records in the register (`npm run inbox`).
 
 # Session Handoff — for Codex review
 
 > Rolling file, overwritten at each session close. Past handoffs: `git log -p docs/HANDOFF.md`.
 
-Session: 2026-11-17 → 2026-11-18, bogey intake. Agents: Claude (Fable 5.2 on 11-17, Opus 5.5 on 11-18, orchestrating); Opus and Sonnet subagents built the tasks; two Opus subagents reviewed by running the code; Codex reviewed the plan.
+Session: 2026-11-23 → 2026-11-25, exposure review, then Gains at risk (three steps). Agents: Claude (Fable 5.2 planning, ruling and reviewing as controller); Opus 5.5 subagents wrote the specs and plans from the controller's rulings, built every unit with one owner per file, and ran the code in independent reviews. Codex reviewed each spec and plan read-only (one round each).
 
 ## 1. Goal and files changed
 
-Goal: the owner could not get earnings bogeys onto armed prints without a lot of manual work. A source they read was never scanned, a preview that names the ticker only in its title was skipped, the upload refused anything that was not a statement, and hand entry refused ordinary wording. Owner-approved five-part fix plus the scan gate change from the day before.
+Goal: the owner asked for tools to judge how well protected the book is against a market fall, a single-name move, and what a candidate option would change. One new Analysis view, "Gains at risk" (`/dashboard/analysis?view=gains`), built in three steps. The session began with a handoff of 17 Analysis-tab exposure bugs (fixed and landed at `a9ada9e4`, recorded in `docs/DECISIONS.md` 2026-11-23 and 2026-11-24).
 
-Landed on `main`:
-- PR #187, `72774c7d` (2026-11-17): the bogey-scan gate also reads FundaAI "Preview" posts. Deployed 2026-11-18 13:31 Eastern from `a6cc1d77`.
-- PR #189, `43b5e52d` (2026-11-18): bogey intake. Plan with the Codex round-1 amendments: `docs/superpowers/plans/2026-11-18-bogey-intake.md`. By area:
-  - Scan rules from settings: `lib/earnings/bogey-scan-eligibility.ts` (`getBogeyScanRules`, `setBogeyScanMode`, `bogeyScanSourceSql`, `isBogeyScanArticle`), `app/api/research/bogey-scan-sources/route.ts`, the switch in `app/dashboard/components/ManageSourcesModal.tsx`, and the three readers' gate use.
-  - Title-only tickers: `articleNamesSymbol` in `lib/earnings/extract-newsletter-bogeys.ts`, used by the global scan, the per-event extractor and the not-read list.
-  - Extractor and read route: `lib/earnings/extract-bogeys.ts` (text input, context, `cause` kept), `lib/earnings/watch-metrics.ts` (`alignToExistingLines`, `existingWatchSpecsForEvent`), `lib/earnings/read-bogeys-for-event.ts`, `lib/earnings/read-bogeys-types.ts`, `app/api/earnings/bogeys/read/route.ts`, `app/api/earnings/bogeys/upload/route.ts`.
-  - Not-read list: `lib/earnings/unread-previews.ts`, `app/api/earnings/bogeys/unread/route.ts`, `app/api/earnings/bogeys/read-article/route.ts`, `app/dashboard/today/UnreadPreviews.tsx`, mounted in `app/dashboard/today/EarningsHub.tsx`; `recompileLivePrint` is now exported from `lib/mutations/earnings-bogeys.ts`.
-  - Edit box: `app/dashboard/today/BogeysEditModal.tsx`, `app/dashboard/today/bogey-read-fill.ts`, `lib/earnings/desk-figure.ts`.
-  - Import tab: `app/dashboard/components/ImportFlow.tsx`, `app/dashboard/components/ReadAsBogeysButton.tsx`, `lib/import/not-a-statement.ts`, `lib/import/error-classify.ts` (message unchanged), `lib/ui/current-monday.ts`.
-  - Outage wording for a click: `aiUnavailableForClick` in `lib/earnings/ai-unavailable.ts`.
-  - Docs: `CLAUDE.md` (gate line), `docs/DECISIONS.md` 2026-11-17 and 2026-11-18, `docs/reference/earnings-pipeline.md`, `docs/plans/TODO.md`.
-- `df16c869`: TODO reconciliation. No migration, no schema change, no Worker change.
+Landed on `main` (53 commits after `a9ada9e4`; final code commit `9cc6dc7c`, final docs commit before this file `b534e667`):
+
+- **Step 1, the line and the table** (through `61f838f6`). Design `docs/superpowers/specs/2026-11-24-gains-at-risk-design.md`; plans `docs/superpowers/plans/2026-11-24-gains-at-risk-step1.md` and `-step1-addendum-betas.md`.
+  - Engine: `lib/compute/gains-at-risk.ts`, `driver-beta.ts`, `security-regression.ts` (`computeDailyBarRegression`), `year-gain.ts`, `scenario-positions.ts`, `option-reprice.ts` (`valuationDate`, `modelWhenUnpriced`), `flow-adjusted.ts` (`fetchNetFlowsUsdByDate`), `lib/securities/leveraged-tracked-index.ts`.
+  - Daily bars: `lib/tws/daily-bar-capture.ts` (sync Step 7), `scripts/backfill-daily-bars.ts`, `lib/mutations/ohlcv.ts`, `lib/queries/ohlcv.ts`, `lib/tws/auto-refresh.ts`.
+  - Route and page: `app/api/compute/gains-at-risk/route.ts`, `lib/analysis/gains-at-risk-{input,constants,scope,view}.ts`, `lib/analysis/view-param.ts`, `app/dashboard/components/gains-at-risk/GainsAtRisk{Section,View,Chart}.tsx`.
+- **Step 2, try a position** (through `5bcd44c3`). Design `docs/superpowers/specs/2026-11-24-gains-at-risk-step2-trial-positions-design.md`; plan `docs/superpowers/plans/2026-11-24-gains-at-risk-step2.md`.
+  - `lib/compute/gains-at-risk-trial.ts`, `lib/tws/option-quote.ts`, `lib/calendar/market-session.ts`, `lib/calendar/market-holidays.ts` (early closes), routes `app/api/tws/option-quote/`, `app/api/tws/daily-bars/ensure/`, `app/api/compute/gains-at-risk/trial-entry/`, `lib/analysis/gains-at-risk-trial-view.ts`, `TrialPositions{Provider,Form,List}.tsx`, `lib/ui/positions-freshness-label.ts` (reworded).
+- **Step 3, one stock as the driver and candidate options on one budget** (through `ea0873ed`), then a round after the owner's first real pull (`dbdba8db`, `c91d1c0e`) and tracked-index seeds (`9cc6dc7c`). Design `docs/superpowers/specs/2026-11-25-gains-at-risk-step3-candidates-design.md`; plan `docs/superpowers/plans/2026-11-25-gains-at-risk-step3.md`.
+  - Engine: `lib/compute/gains-at-risk.ts` (driver kind, single-name ladder, two sides per row, candidate pass), `gains-at-risk-drivers.ts`, `gains-at-risk-candidates.ts`, `gains-at-risk-candidate-check.ts`, `gains-at-risk-candidate-quotes.ts`, `lib/analysis/gains-at-risk-candidate-money.ts` (exact scaled integers).
+  - Broker: `lib/tws/market-data-type.ts` (the one setter, with a counter), `option-chain-reader.ts`, `option-quote-batch.ts`, `option-quote.ts` (bounded lock, `brokerExpiryDay`); one-line setter swaps in `snapshot.ts`, `atm-straddle.ts`, `streaming.ts`.
+  - Routes: `app/api/compute/gains-at-risk/{single-name-drivers,candidates}/route.ts`, `app/api/tws/option-candidates/{chain,quotes}/route.ts`, `lib/analysis/gains-at-risk-candidates-input.ts`.
+  - Page: `DriverControl.tsx`, `DriverChoiceProvider.tsx`, `CandidatesProvider.tsx`, `Candidate{Section,Picker,Table}.tsx`, `lib/analysis/gains-at-risk-candidates-view.ts`.
+- Docs: `CLAUDE.md` (three Gains at risk rule blocks), `docs/DECISIONS.md` (2026-11-23, 11-24, 11-24 late, 11-25, 11-25 later), `docs/plans/TODO.md` (G1 to G9, G3a, G3b, G4a, G4b).
+
+No migration, no schema change, no new dependency, no Worker change.
 
 ## 2. Checks run and results
 
-- Branch: `bash scripts/verify.sh full --base main`: 1,816 files, 21,872 passed, 0 failed (4 skipped, 9 todo). `npx tsc --noEmit -p .` clean. `npm run build` passes. Rerun in the main checkout at `df16c869` after the deploy for the stop gate.
-- Codex plan review: REVISE with 17 findings; 16 folded into the plan as binding amendments, one declined with the reason recorded (A7, the Import tab files directly as the Hub upload already does).
-- Two run-the-code reviews (wave 1 and wave 2): 12 findings, all fixed. One plan amendment was reversed and recorded (A4 revised: commas must group thousands, because "3,35B" read silently as 335B).
-- Gate parity, read-only on the live database: the settings-based gate matches the deployed rule on all 1,676 articles from the last 90 days.
-- Sandbox (database copy, :3090), checked in the browser pane and Playwright:
-  - The not-read list (and the fix that ranks title-named articles first).
-  - The edit box: lenient typing and the range refusal, plus the save read back from the sandbox database.
-  - The paste reader's outage message.
-  - The Sources switch round trip.
-  - The Import image fallback through a real file upload (nothing sent to `/api/import`).
-  - Phone width (no sideways scroll).
-- Live, after the deploy: `POST /api/earnings/bogeys/read` with an invented-figure PANW note returned the figures and aligned the ARR line to the existing line's id. Counts of `earnings_bogeys` and `earnings_bogey_scans` were unchanged. The live not-read list shows the FundaAI PANW preview first.
-- Deploy: `npm run deploy` from `df16c869`. Build id matches, codesign verified, a fresh listener answers on :3099.
+- `bash scripts/verify.sh full --base main` passed on the final code in the worktree and in the main checkout (about 1,880 files and 23,160 tests, 0 failed). The commits after `9cc6dc7c` are docs only; the suite was run again on the final commit in both checkouts at close.
+- Each unit had an independent review that ran the code with its own synthetic book or fake broker. Examples of what those reviews established: option payoffs at expiry match hand arithmetic to the cent; adding candidates changes no book or trial figure; sizing conserves the budget exactly; every malformed route body is refused with zero broker requests and zero writes; the sync's three broker files changed by a one-line setter swap with no behaviour change; index-mode results are byte-identical to the pre-step-3 fixtures (checked against the engine extracted from the earlier commit).
+- Codex reviews (read-only): REVISE on every spec and plan (step 3: 11 findings on the spec, 10 on the plan); every finding was folded in as a recorded ruling.
+- Sandbox browser passes (database copy, port 3090, broker disconnected) for each step: the page in index and one-stock mode, a scope change, privacy mode, phone width, the trial list, the Compare options section's disconnected state and guidance. Two defects found there and fixed (a sideways scroll at phone width; no explanation when the stress scope holds nothing that moves with the chosen driver).
+- Live, by the owner, 2026-11-25: the first real option-chain pull and quote pull worked (expiries listed, a near-dated expiry listed strikes, fifteen contracts priced and labelled live, sizing and Add matched), and the step 2 Get quote filled live. The server log showed no error from any new route.
+- Deploys: four on 2026-11-25. The last is `npm run deploy` from `b534e667`: build id matches on both sides, codesign verified, a fresh listener answers on :3099. One attempt in between was refused at pre-flight (the TODO file was not in the newest commit) before anything was built; the app stayed up.
 
-## 3. Open concerns, rejected approaches, owner decisions
+## 3. Open concerns, rejected approaches, user decisions
 
-- **Owner decisions (2026-11-18).** Build all five intake fixes. Ship the FundaAI gate before the PANW print, then ship the intake work the same afternoon ("there's enough time to do the app rebuild").
-- **Not exercised live:** the one-click "Read for bogeys" writes to the live database, so the owner's first click is its live check (TODO live watch). The sandbox has no AI key, so the AI paths are proven by route tests with a mocked extractor and database assertions, plus the one live read above.
-- **Accepted behaviour:** turning a source on in the switch makes the armed deep read re-run on its next pass, which is an automatic AI call (amendment A1, documented).
-- **Known limit:** the not-read list and the per-article reader find a ticker, not a company name; name-only mentions are left to the deep read for enabled sources.
-- **Rejected:** a general multi-company paste box (A8); holding Import-tab uploads for review before filing (declined in A7).
-- **Operator work on live data, 2026-11-17/18, through the app's own routes:**
-  - Hand-entered FundaAI rows on the NVDA and PANW prints; the PANW upload row was deleted after it duplicated a watch line.
-  - The NVDA preview email was resent.
-  - Temporary `qa` sessions were minted and revoked each time.
+- **Owner decisions:** one Gains at risk view in three steps; the year's gain is measured on every account and its label says nothing about its use; unpriced options are flagged, priced by the model and can be overridden; "Get quote" over typed-only prices; candidates compared on a same-budget basis; the whole candidate table computed in one server call; tracked-index seeds for three leveraged funds confirmed.
+- **Controller rulings worth a second look** (all recorded in `docs/DECISIONS.md` with why and cost if wrong): no beta estimate, ever (a name with no measured link says so); the selloff case is an assumption and is labelled as one; index drivers stay falls-only; an option that expires before the valuation date is counted at the worse of two orders (cautious, and it makes near-dated candidates look poor until the date is moved; the row now says so); candidates are costed at the mid; a pull never starts during a sync and never abandons a snapshot in flight; a broker contract id decides a holdings match when both sides have one.
+- **Rejected:** a heuristic or sector-average beta; `prices` rows or `benchmark_prices` as regression input (sync-time snapshots, not closes); a page that loops the existing routes per candidate (rows could be measured on different books); a lock around the sync pipeline (a counter plus one retry instead); comparing a broker expiry as text (the library's decoder can leave a time on it).
+- **Not verified:** four broker paths listed in "Waiting on"; the round-2 strike picker, price marker, row note and per-$1,000 column with real quotes; the installed app clicked through end to end by an agent (the owner used it for the live pull).
+- **Known limits:** a leveraged fund with no confirmed seed is listed as not modelled; one seeded tracked fund has no daily bars until the next sync's capture step fetches it; mutual funds have no daily bars and so no measured link; a trial underlying priced only from daily bars is not offered as a driver.
+- **Decided, not built:** a rise in an index (needs a meaning for the selloff case); a cost-at-the-ask column; written options in the candidate table; a live underlying price beside the strike picker (`docs/plans/TODO.md` G4b); older items G5 to G9.
 
-## 4. Uncommitted changes and live-process state
+## 4. Uncommitted changes and live-process state (after the deploy)
 
-- `main` = `origin/main` at this handoff commit; the main checkout is clean.
-- Installed app: build `mAYVIzIdtSDJpvvoHYvl1` from `df16c869` on :3099.
-- Sibling worktree `/Users/Yitzi/code/vanguard-skin-bogey-intake` holds this handoff commit. Branches `claude/bogey-intake-2026-11-18` (squash-merged; content equals `43b5e52d`), `claude/bogey-intake-docs-2026-11-18` (pushed to main) and `claude/nvda-earnings-preview-numbers-7f18ee` (squash-merged as #187) can be removed after `git diff --quiet <branch> main` checks.
-- Its `node_modules` is an APFS clone of the main checkout's (gitignored); Turbopack refuses a symlink there.
-- Sandbox `bogey-intake` is stopped; its evidence is kept under the coordination directory.
-- No dev server or background job is left running.
-- Open PRs, none from this session: #175, #176, #177, #179, #181, #182, #183, #186.
+- Main checkout and this session's worktree: clean. `main` == `origin/main`.
+- Branch `claude/analysis-exposure-handoff-47b6ce` is fully merged into `main` (fast-forward); the branch and its worktree (`.claude/worktrees/portfolio-assistant-review-7148e7`) still exist for the owner to remove.
+- Other worktrees, not this session's: `vanguard-skin-bogey-intake`, `-menu`, `-perf`, `-qa-fix`.
+- Open PRs, not this session's: the nightly QA auto-fix PRs (#192 to #196 and older).
+- Sandbox for task `gains-at-risk-step1`: stopped. No dev server, no background job, no agent running.
+- Installed app: the build from `b534e667`, running on :3099.
+- Storage report: scratch files older than 7 days exist (trim is optional); the USB copy was last synced 9 days before close.
 
-## 5. Agent and session
+## 5. Agent identity and session link
 
-Claude (Opus 5.5 on 2026-11-18, Fable 5.2 on 2026-11-17), Claude desktop app, local session. No shareable session link.
+Claude Code (Claude Fable 5.2 as controller; Opus 5.5 subagents). Session link: not exposed in this session's environment.
