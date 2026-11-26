@@ -414,8 +414,14 @@ describe("barSeriesSecurityId", () => {
 });
 
 describe("trackedIndexFor", () => {
-  it("ships with no seed entries", () => {
-    expect(Object.keys(LEVERAGED_TRACKED_INDEX_SEEDS)).toEqual([]);
+  it("ships only the confirmed seed entries", () => {
+    // Every entry is a public fact about a fund (what index it is built on), confirmed by the owner.
+    expect(LEVERAGED_TRACKED_INDEX_SEEDS).toEqual({ TQQQ: "QQQ", UDOW: "DIA", SOXL: "SOXX" });
+    for (const [fund, tracked] of Object.entries(LEVERAGED_TRACKED_INDEX_SEEDS)) {
+      expect(fund).toBe(fund.trim().toUpperCase());
+      expect(tracked).toBe(tracked.trim().toUpperCase());
+      expect(tracked).not.toBe(fund);
+    }
     expect(Object.isFrozen(LEVERAGED_TRACKED_INDEX_SEEDS)).toBe(true);
     expect(trackedIndexFor("ZZL")).toBeNull();
   });

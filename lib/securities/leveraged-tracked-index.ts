@@ -20,9 +20,20 @@
 /**
  * Hand-checked tracked indexes for flagged funds. Add an entry only with the
  * owner's word on that fund's tracked index (the same rule as
- * `LEVERAGE_FACTOR_SEEDS`). Ships empty: the owner confirms real entries later.
+ * `LEVERAGE_FACTOR_SEEDS`), and only after reading the issuer's own fund page.
+ *
+ * Each value is a fund that tracks the SAME index unleveraged, because the
+ * engine needs daily bars and an index has none here:
+ * - TQQQ: three times the Nasdaq-100; QQQ tracks the Nasdaq-100.
+ * - UDOW: three times the Dow Jones Industrial Average; DIA tracks it.
+ * - SOXL: three times the NYSE Semiconductor Index; SOXX tracks that index.
+ * Confirmed 2026-11-25.
  */
-export const LEVERAGED_TRACKED_INDEX_SEEDS: Readonly<Record<string, string>> = Object.freeze({});
+export const LEVERAGED_TRACKED_INDEX_SEEDS: Readonly<Record<string, string>> = Object.freeze({
+  TQQQ: "QQQ",
+  UDOW: "DIA",
+  SOXL: "SOXX",
+});
 
 /**
  * The symbol of the index a fund tracks, or null when the seed map names none.
