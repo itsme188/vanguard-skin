@@ -699,6 +699,15 @@ function PhaseChip({ eventId, phase, sent, skipped, missed = false, onView }: Ph
             body: JSON.stringify({ eventId, phase }),
           });
       if (!res.ok) {
+        // A row whose event was deleted meanwhile: the server says so in a sentence.
+        const gone =
+          res.status === 404
+            ? ((await res.json().catch(() => null)) as { code?: string; error?: string } | null)
+            : null;
+        if (gone?.code === "event_not_found" && gone.error) {
+          toast(`Couldn't skip the ${phase} email: ${gone.error}`, "error");
+          return;
+        }
         toast(
           `Couldn't ${skipped ? "un-skip" : "skip"} the ${phase} email (server returned ${res.status}) — the chip state is unchanged.`,
           "error"
