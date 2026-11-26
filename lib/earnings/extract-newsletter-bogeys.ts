@@ -273,7 +273,7 @@ function escapeRegExp(s: string): string {
 export const AMBIGUOUS_TICKER_WORDS = new Set([
   "A", "AIR", "ALL", "AM", "AN", "ANY", "ARE", "AT", "BE", "BIG", "BY",
   "CAN", "CAR", "COST", "DAY", "DO", "EAT", "FOR", "GO", "GOOD", "HAS",
-  "HE", "IT", "KEY", "LOVE", "LOW", "MAIN", "MAN", "MET", "NEXT", "NICE",
+  "HE", "IT", "KEY", "LAND", "LOVE", "LOW", "MAIN", "MAN", "MET", "NEXT", "NICE",
   "NOW", "ON", "ONE", "OR", "OUT", "PLAY", "PRO", "REAL", "RUN", "SEE",
   "SO", "TAP", "TELL", "TWO", "UP", "WELL", "WIN", "YOU",
 ]);
