@@ -1420,6 +1420,35 @@ export function chartDollarDomain(rows: GainsChartRow[]): [number, number] {
   return [lo - pad, hi + pad];
 }
 
+/**
+ * Round dollar ticks for the left axis: constant step from the 1 / 2 / 2.5 / 5
+ * x 10^n family (the smallest that gives at most 7 ticks), every tick an
+ * integer multiple of the step so zero is always one of them.
+ */
+export function chartDollarTicks(domain: [number, number]): number[] {
+  const [lo, hi] = domain;
+  const span = hi - lo;
+  if (!Number.isFinite(span) || span <= 0) return [0];
+  const exp0 = Math.floor(Math.log10(span)) - 2;
+  let step = 0;
+  for (let e = exp0; e <= exp0 + 4 && step === 0; e++) {
+    for (const m of [1, 2, 2.5, 5]) {
+      const cand = m * 10 ** e;
+      if (Math.floor(hi / cand + 1e-9) - Math.ceil(lo / cand - 1e-9) + 1 <= 7) {
+        step = cand;
+        break;
+      }
+    }
+  }
+  if (step === 0) return [0];
+  const ticks: number[] = [];
+  for (let k = Math.ceil(lo / step - 1e-9); k <= Math.floor(hi / step + 1e-9); k++) {
+    const t = Number((k * step).toPrecision(12));
+    ticks.push(t === 0 ? 0 : t);
+  }
+  return ticks;
+}
+
 const KEPT_STEPS = [0.01, 0.02, 0.05, 0.1, 0.2, 0.25, 0.5];
 
 /**

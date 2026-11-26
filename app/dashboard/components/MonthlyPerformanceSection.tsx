@@ -8,7 +8,9 @@ import {
   METHOD_TEXT,
   MONTH_ABBR,
   REFUSAL_TEXT,
+  isOneAccountScope,
   monthLabel,
+  noFigureForMonthText,
 } from "./monthly-performance-labels";
 import { weakestFlowSource } from "@/lib/compute/monthly-performance";
 import type {
@@ -147,7 +149,16 @@ export function MonthlyPerformanceSection({
           <>
             <p className="text-xl font-mono tabular-nums text-ink-faint">Incomplete</p>
             <p className="text-sm text-ink-dim mt-1 max-w-prose">
-              {blended.blockedBy.length > 0 ? (
+              {isOneAccountScope(accounts) ? (
+                // One account is the whole scope: nothing was blended.
+                noFigureForMonthText(
+                  blended.blockedBy.length > 0
+                    ? REFUSAL_TEXT[blended.blockedBy[0].refusal]
+                    : blended.refusal !== null
+                      ? REFUSAL_TEXT[blended.refusal]
+                      : null,
+                )
+              ) : blended.blockedBy.length > 0 ? (
                 <>
                   No blended figure for this month:{" "}
                   {blended.blockedBy.map((b, i) => (

@@ -71,3 +71,19 @@ export const METHOD_BLURB =
   "Money paid in or taken out is never counted as performance. The blended figure adds " +
   "the accounts’ balances and flows and runs that same formula once; it is not an " +
   "average of their percentages.";
+
+/**
+ * A scope that holds exactly one account has no blend: the one account IS the
+ * scope. `accounts` is one row per account in the scope, so a length of one
+ * means a one-account scope.
+ */
+export function isOneAccountScope(accounts: readonly unknown[]): boolean {
+  return accounts.length === 1;
+}
+
+/** The headline for a one-account scope whose month carries no figure. */
+export function noFigureForMonthText(reason: string | null): string {
+  return reason === null
+    ? "No figure for this month."
+    : `No figure for this month: ${reason}.`;
+}

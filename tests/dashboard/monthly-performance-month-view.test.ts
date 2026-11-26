@@ -18,6 +18,14 @@
  */
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { PrivacyProvider } from "@/lib/privacy/context";
+import { MonthlyPerformanceSection } from "@/app/dashboard/components/MonthlyPerformanceSection";
+import type {
+  AccountMonthPerformance,
+  BlendedMonthPerformance,
+} from "@/lib/compute/monthly-performance";
 import { anchorIndex, sliceBetween } from "../helpers/source-anchor";
 import {
   MONTHLY_FLOW_SOURCES,
@@ -164,5 +172,103 @@ describe("the section renders, and never recomputes", () => {
     const block = sliceBetween(src, "const years =", "if (months.length === 0");
     expect(block).toContain("new Set(months.map((m) => m.slice(0, 4)))");
     expect(src).not.toMatch(/"20\d\d"/);
+  });
+});
+
+describe("the headline for a month with no figure", () => {
+  const row = (id: number, name: string, refused: boolean): AccountMonthPerformance => ({
+    accountId: id,
+    accountName: name,
+    monthEndDate: "2026-03-31",
+    beginningValue: refused ? null : 1000,
+    endingValue: refused ? null : 1100,
+    netFlow: 0,
+    gainLoss: refused ? null : 100,
+    returnFraction: refused ? null : 0.1,
+    method: refused ? null : "modified-dietz",
+    flowSource: refused ? null : "ledger-verified",
+    refusal: refused ? "no-statement" : null,
+  }) as AccountMonthPerformance;
+
+  const blend = (over: Partial<BlendedMonthPerformance>): BlendedMonthPerformance =>
+    ({
+      monthEndDate: "2026-03-31",
+      beginningValue: null,
+      endingValue: null,
+      netFlow: 0,
+      gainLoss: null,
+      returnFraction: null,
+      method: null,
+      flowSource: null,
+      incomplete: true,
+      blockedBy: [],
+      refusal: null,
+      ...over,
+    }) as BlendedMonthPerformance;
+
+  // The headline only: the method blurb above it legitimately says "blended".
+  const headline = (html: string) =>
+    html.slice(html.indexOf("Incomplete"), html.indexOf("<table"));
+
+  const render = (accounts: AccountMonthPerformance[], blended: BlendedMonthPerformance) =>
+    renderToStaticMarkup(
+      createElement(
+        PrivacyProvider,
+        null,
+        createElement(MonthlyPerformanceSection, {
+          months: ["2026-03-31"],
+          selectedMonth: "2026-03-31",
+          accounts,
+          blended,
+          scopeLabel: "Test scope",
+          hrefForMonth: () => "#",
+        }),
+      ),
+    );
+
+  it("one account with a reason: no blend wording", () => {
+    const html = render(
+      [row(1, "Alpha Account", true)],
+      blend({
+        blockedBy: [{ accountId: 1, accountName: "Alpha Account", refusal: "no-statement" }],
+      }),
+    );
+    expect(html).toContain(
+      `No figure for this month: ${REFUSAL_TEXT["no-statement"]}.`,
+    );
+    const h = headline(html);
+    expect(h).not.toContain("blended");
+    expect(h).not.toContain("accounts below");
+    expect(h).not.toContain("names three");
+  });
+
+  it("one account with a scope-level reason", () => {
+    const html = render(
+      [row(1, "Alpha Account", true)],
+      blend({ refusal: "no-measurable-base" }),
+    );
+    expect(html).toContain(
+      `No figure for this month: ${REFUSAL_TEXT["no-measurable-base"]}.`,
+    );
+    expect(headline(html)).not.toContain("blended");
+  });
+
+  it("one account with no reason", () => {
+    const html = render([row(1, "Alpha Account", true)], blend({}));
+    expect(html).toContain("No figure for this month.");
+    expect(headline(html)).not.toContain("blended");
+  });
+
+  it("two accounts keep the existing copy", () => {
+    const html = render(
+      [row(1, "Alpha Account", true), row(2, "Beta Account", false)],
+      blend({
+        blockedBy: [{ accountId: 1, accountName: "Alpha Account", refusal: "no-statement" }],
+      }),
+    );
+    const h = headline(html);
+    expect(h).toContain("No blended figure for this month");
+    expect(h).toContain("never blended");
+    expect(html).toContain("Alpha Account");
   });
 });

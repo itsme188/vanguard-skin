@@ -56,6 +56,7 @@ import {
   UNDER_TENTH_TEXT,
   ZERO_ROW_NOTE,
   chartDollarDomain,
+  chartDollarTicks,
   chartRows,
   givenBackCell,
   keptAxis,
@@ -796,6 +797,41 @@ describe("gains at risk: fix round 1", () => {
     expect(tenSelloff.measured).toBeCloseTo(-100_000);
     const domain = chartDollarDomain(rows);
     expect(domain[0]).toBeLessThan(-300_000); // the selloff line is inside the axis too
+  });
+
+  it("chartDollarTicks: round, evenly spaced, inside the domain, always with zero", () => {
+    const domains: [number, number][] = [
+      [-1, 1],
+      [-350, 40],
+      [-345_000, 12_000],
+      [-48_000, 21_000],
+      [-3_600_000, 150_000],
+      [-0.4, 0.7],
+      [-2_500_000, 2_500_000],
+    ];
+    for (const d of domains) {
+      const ticks = chartDollarTicks(d);
+      expect(ticks).toContain(0);
+      expect(ticks.some((t) => Object.is(t, -0))).toBe(false);
+      expect(ticks.length).toBeGreaterThanOrEqual(3);
+      expect(ticks.length).toBeLessThanOrEqual(8);
+      for (const t of ticks) {
+        expect(t).toBeGreaterThanOrEqual(d[0]);
+        expect(t).toBeLessThanOrEqual(d[1]);
+      }
+      const step = ticks[1] - ticks[0];
+      for (let i = 1; i < ticks.length; i++) {
+        expect(ticks[i] - ticks[i - 1]).toBeCloseTo(step, 9);
+      }
+      const mantissa = step / 10 ** Math.floor(Math.log10(step));
+      expect([1, 2, 2.5, 5].some((m) => Math.abs(m - mantissa) < 1e-9)).toBe(true);
+      for (const t of ticks) expect(Math.abs(t / step - Math.round(t / step))).toBeLessThan(1e-9);
+    }
+  });
+
+  it("chartDollarTicks: no floating-point noise", () => {
+    const ticks = chartDollarTicks([-0.35, 0.65]);
+    for (const t of ticks) expect(String(t).length).toBeLessThan(8);
   });
 
   it("the gain-kept axis lines up with the dollar axis and its ticks stay within -100%..100%", () => {
