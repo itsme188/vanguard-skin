@@ -176,6 +176,8 @@ Detail: `docs/reference/auto-refresh.md`
   - **Every market-data-type change goes through `lib/tws/market-data-type.ts`** (a repo test fails on a second setter). Option quotes hold one bounded lock; a pull never starts during a sync, never abandons a snapshot in flight, and refuses a contract whose stock and option prices were read more than 30 seconds apart.
   - **A broker expiry is read through `brokerExpiryDay`** and compared by day; never compare `lastTradeDateOrContractMonth` as text.
   - **A broker contract id, when both sides have one, decides a holdings match.**
+  - **A cautious engine rule is explained on every row that shows its output:** a candidate that expires before the valuation date carries the "worse of two cases" note and what to change to see it pay (`lib/analysis/gains-at-risk-candidates-view.ts`). Never show a figure a cautious rule produced without its reason.
+  - **A tracked-index seed names a fund on the SAME index, unleveraged** (checked on the issuer's page and confirmed by the owner), never a similar sector fund.
   - **Page state:** candidate rows and the driver choice live in unkeyed providers; a result is drawn from its own driver kind, never the controls'; the view and the table share `gainsAtRiskRequestBody`; figures clear on any input change, quote replacement or new book.
 - **Unchecked integrity scan (2026-09-17):** `lotDriftChecked` distinguishes an unperformed scan from a clean result. Fresh prices do not imply reconciled tax lots; stale tax markers display Unchecked while critical/stale states retain precedence.
 
