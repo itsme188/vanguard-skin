@@ -28,6 +28,21 @@ export async function POST(request: Request) {
     return Response.json({ error: "phase must be 'preview' or 'recap'" }, { status: 400 });
   }
 
+  // The hub row can outlive its event (deleted in another tab, or replaced by
+  // a refresh under a new id). Answer plainly instead of letting the INSERT
+  // trip the foreign key and surface as a 500.
+  const exists = db.prepare("SELECT 1 FROM calendar_events WHERE id = ?").get(body.eventId);
+  if (!exists) {
+    return Response.json(
+      {
+        success: false,
+        code: "event_not_found",
+        error: "This calendar entry no longer exists. Reload the page to see the current list.",
+      },
+      { status: 404 },
+    );
+  }
+
   const inserted = recordEarningsEmailSkip(db, body.eventId, body.phase);
   return Response.json({ ok: true, inserted });
 }
