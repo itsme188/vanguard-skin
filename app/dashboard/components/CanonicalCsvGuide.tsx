@@ -39,7 +39,7 @@ const FORMATS: FormatSpec[] = [
       "Transaction types (UPPERCASE): BUY, SELL, DIVIDEND, REINVESTMENT, INTEREST, TAX_WITHHELD, TRANSFER, TRANSFER_IN, TRANSFER_OUT, DEPOSIT, WITHDRAWAL, FEE, COMMISSION, BUY_TO_OPEN, SELL_TO_CLOSE, SELL_TO_OPEN, BUY_TO_CLOSE, BUY_TO_COVER, EXERCISED, ASSIGNED, EXPIRED, REDEMPTION, CORPORATE_ACTION, SPINOFF, MERGER, SPLIT",
       "QUANTITY IS ALWAYS POSITIVE. The type field (BUY/SELL/SELL_TO_CLOSE/EXERCISED/REDEMPTION/etc.) carries direction. Never emit a negative quantity. Sold 100 RSP → quantity=100, type=SELL.",
       "Account names must match the dashboard exactly. Use these mappings: 'Individual brokerage account' or 'Vanguard Individual Brokerage' → 'Vanguard Taxable'. 'Vanguard Roth IRA' is verbatim. 'IBKR' is verbatim.",
-      "Cash-only rows (WITHDRAWAL, DEPOSIT, FEE, COMMISSION, INTEREST without a security) MUST use symbol 'CASH'. Blank symbol will be silently dropped.",
+      "Cash-only rows (WITHDRAWAL, DEPOSIT, FEE, COMMISSION, INTEREST without a security) MUST use symbol 'CASH'. A row with a blank symbol is skipped and listed in the preview warnings. (If the security_name is clear enough, the importer may fill in the symbol from it.)",
       "For DIVIDEND / INTEREST / TAX_WITHHELD income rows: leave `quantity` and `price` empty, put the income amount in the `amount` column (never in `fees`)",
       "For REINVESTMENT rows: populate both `quantity` + `price` (shares received at the reinvestment price) AND `amount` (total value reinvested)",
       "AMOUNT IS THE SIGNED CASH EFFECT. BUY/BUY_TO_OPEN/BUY_TO_CLOSE/BUY_TO_COVER are NEGATIVE (cash out — keep the statement's minus sign); SELL/SELL_TO_CLOSE/SELL_TO_OPEN positive; DIVIDEND/INTEREST/DEPOSIT positive; TAX_WITHHELD/FEE/COMMISSION/WITHDRAWAL negative; REINVESTMENT positive (flip the statement's negative). The parser auto-normalizes a wrong-sign BUY/SELL-family amount (trade_date >= 2026-04-01) to the correct sign with a warning, but emit the correct sign in the first place.",
@@ -48,7 +48,7 @@ const FORMATS: FormatSpec[] = [
       "Set `amount` to the transfer-date market value (positive; the row type carries direction — the flow readers sign it). Leave `price` empty for journal/donation legs (a priced TRANSFER_IN creates a tax lot — ACATS only). Transcribe both legs of a printed pair verbatim; deciding whether an IN leg is a DAF routing artifact happens in Analysis › Giving, never at authoring time.",
       "Options must use OCC format: AAPL  260320C00150000 (symbol padded to 6 chars, YYMMDD, C/P, strike x1000 padded to 8 digits)",
       "Symbol conventions (consistency across statements is critical — each variant creates a duplicate security row): for bonds incl. US Treasuries, use the 9-character CUSIP as the symbol (e.g., `912810SA7`, never the descriptive name like `U S TREASURY BOND 3 2/15/48`); for dual-class equities, use the SLASH form (e.g., `BRK/B`, `LBRD/A`, `LSXM/K`), never `BRK B`, `BRK.B`, or `BRKB`.",
-      "Numbers: NO comma thousands separators (1234.56 ✓, 1,234.56 ✗). NO currency symbols ($, %, etc). Use `.` for decimals only. Negative numbers use a leading minus sign (-250.00). Commas inside numeric cells will silently truncate or skip the row.",
+      "Numbers: NO comma thousands separators (1234.56 ✓, 1,234.56 ✗). NO currency symbols ($, %, etc). Use `.` for decimals only. Negative numbers use a leading minus sign (-250.00). A number with a comma fails the number check. That row is skipped and listed in the preview.",
       "All dates: YYYY-MM-DD format",
       "Output the CSV directly with the header row first — do NOT prefix with comment lines like `# transactions.csv` or markdown fences. The file must start with the header row.",
     ],
@@ -177,11 +177,11 @@ General rules:
 - Quantity is ALWAYS POSITIVE — the type field carries direction (BUY adds, SELL/SELL_TO_CLOSE/EXERCISED/REDEMPTION removes). Never emit a negative quantity.
 - Amount is the SIGNED CASH EFFECT: BUY/BUY_TO_OPEN negative (keep the statement's minus sign), SELL positive, DIVIDEND/INTEREST/DEPOSIT positive, TAX_WITHHELD/FEE/WITHDRAWAL negative, REINVESTMENT positive. (Wrong-sign BUY/SELL-family amounts on/after 2026-04-01 are auto-normalized with a warning — still emit the correct sign in the first place.)
 - Account names must match the dashboard exactly. Aliases: 'Individual brokerage account' / 'Vanguard Individual Brokerage' → 'Vanguard Taxable'. 'Vanguard Roth IRA' verbatim. 'IBKR' verbatim.
-- Cash-only transaction rows (WITHDRAWAL, DEPOSIT, FEE, COMMISSION, INTEREST without a security) MUST use symbol 'CASH'. Blank symbol drops the row.
+- Cash-only transaction rows (WITHDRAWAL, DEPOSIT, FEE, COMMISSION, INTEREST without a security) MUST use symbol 'CASH'. A row with a blank symbol is skipped and listed in the preview warnings (the importer may fill in the symbol from security_name when it can).
 - Security types: Stock, Bond, ETF, Option, Mutual Fund
 - Options: use OCC format (e.g., AAPL  260320C00150000)
 - Symbol conventions (consistency across statements is critical — each variant creates a duplicate security row): for bonds incl. US Treasuries, use the 9-character CUSIP as the symbol (e.g., \`912810SA7\`, never the descriptive name like \`U S TREASURY BOND 3 2/15/48\`); for dual-class equities, use the SLASH form (e.g., \`BRK/B\`, \`LBRD/A\`, \`LSXM/K\`), never \`BRK B\`, \`BRK.B\`, or \`BRKB\`.
-- Numbers: NO comma thousands separators (1234.56 ✓, 1,234.56 ✗), NO currency symbols, use \`.\` for decimals only. Negative numbers use a leading minus sign.
+- Numbers: NO comma thousands separators (1234.56 ✓, 1,234.56 ✗), NO currency symbols, use \`.\` for decimals only. Negative numbers use a leading minus sign. A number with a comma fails the number check, and that row is skipped and listed in the preview.
 - Output ONLY the CSV files (header + data rows). NO markdown fences, NO comment lines, NO explanation prose.`;
 }
 
