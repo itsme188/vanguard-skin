@@ -250,7 +250,12 @@ export function stageChips(
       key: "recap",
       ...titled(
         withFullWord(chipFor("rec", row.stages.recap), row.stages.recap),
-        stageTitle("recap", row.stages.recap),
+        // A waiting recap blames missing figures only when they ARE missing;
+        // with figures captured (or captured but flagged) it is simply due.
+        row.stages.recap === "waiting" &&
+          (row.stages.actual === "captured" || row.stages.actual === "implausible")
+          ? `${STAGE_NAMES.recap}: due, not sent yet`
+          : stageTitle("recap", row.stages.recap),
       ),
       clickable: VIEWABLE.has(row.stages.recap) ? "recap" : null,
     },
