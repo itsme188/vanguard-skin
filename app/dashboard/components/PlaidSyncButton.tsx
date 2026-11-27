@@ -2,10 +2,13 @@
 
 /**
  * Small "Sync Vanguard (Plaid)" button for the Accounts tab — RecomputeButton
- * pattern (useToast honest feedback). The route itself explains not-connected
- * / already-synced-today / market-closed no-ops via `data.error` or
- * `skippedReason`, so this always renders rather than hiding based on
- * connection state the client doesn't know yet.
+ * pattern (useToast honest feedback). Every sentence it shows comes from
+ * `lib/ui/plaid-sync-message.ts` (plan v4, section A "The button"): a
+ * skipped read says "Nothing stored" and why, a read that stored no account
+ * is information, never success, and the page refreshes only when at least
+ * one account was stored. It always renders rather than hiding based on
+ * connection state the client doesn't know yet; the route names a missing
+ * connection in `error`.
  */
 
 import { useState } from "react";
@@ -13,11 +16,16 @@ import { useRouter } from "next/navigation";
 import { useToast } from "./Toast";
 import apiFetch from "@/lib/http/apiFetch";
 import { networkFailureMessage, readMutationResult } from "@/lib/ui/mutation-result";
+import {
+  PLAID_SYNC_ACTION,
+  plaidSyncFailureText,
+  plaidSyncMessage,
+  type PlaidSyncAnswer,
+} from "@/lib/ui/plaid-sync-message";
 
 interface PlaidSyncResponse {
   success: boolean;
-  holdingsWritten?: number;
-  skippedReason?: "market_closed" | "already_synced_today" | null;
+  data?: PlaidSyncAnswer | null;
   error?: string;
 }
 
@@ -32,20 +40,14 @@ export function PlaidSyncButton() {
       const res = await apiFetch("/api/plaid/sync", { method: "POST" });
       const result = await readMutationResult<PlaidSyncResponse>(res);
       if (!result.ok) {
-        toast(`Vanguard sync failed: ${result.message}`, "error");
+        toast(plaidSyncFailureText(result.message), "error");
         return;
       }
-      const data = result.data;
-      if (data.skippedReason === "market_closed") {
-        toast("Vanguard sync skipped — the market is closed.", "info");
-      } else if (data.skippedReason === "already_synced_today") {
-        toast("Vanguard already synced today — nothing new to pull.", "info");
-      } else {
-        toast(`Vanguard synced — ${data.holdingsWritten ?? 0} holdings updated`, "success");
-        router.refresh();
-      }
+      const message = plaidSyncMessage(result.data.data);
+      toast(message.text, message.tone);
+      if (message.refresh) router.refresh();
     } catch {
-      toast(networkFailureMessage("sync Vanguard"), "error");
+      toast(networkFailureMessage(PLAID_SYNC_ACTION), "error");
     } finally {
       setIsLoading(false);
     }

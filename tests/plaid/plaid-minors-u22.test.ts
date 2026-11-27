@@ -29,8 +29,9 @@ import { RECON_HOLDING_SOURCE_PREFIX } from "@/lib/db/holding-sources";
 import { setSyncPhase, setSyncError } from "@/lib/tws/sync-state";
 import { anchorIndex } from "@/tests/helpers/source-anchor";
 
-// A weekday, non-holiday reference instant (Fri 2026-07-10 ~noon ET).
-const NOW = new Date("2026-07-10T16:00:00.000Z");
+// A weekday, non-holiday reference instant (Fri 2026-07-10 07:35 ET): a
+// Plaid read is stored only before the open (plan v4 A1).
+const NOW = new Date("2026-07-10T11:35:00.000Z");
 const TODAY = todayET(NOW);
 const STATEMENT_DATE = "2026-05-29";
 

@@ -5,6 +5,7 @@ import { runMigrations } from "@/lib/db/migrate";
 import {
   getAccountCashLine,
   LIVE_SNAPSHOT_TIMING_RESIDUAL_PHRASE,
+  PLAID_SNAPSHOT_TIMING_RESIDUAL_PHRASE,
 } from "@/lib/queries/account-cash-line";
 
 /**
@@ -132,7 +133,12 @@ describe("getAccountCashLine", () => {
       expect(line.liveSourceCaption).toBeNull();
     });
 
-    it.each(["tws", "plaid"])("is true, with the caption, when the anchor on the valuation date is %s", (source) => {
+    // Plan v4: "intraday" only for a TWS total; a Plaid total is read
+    // before the open and is the previous session's broker total.
+    it.each([
+      ["tws", LIVE_SNAPSHOT_TIMING_RESIDUAL_PHRASE],
+      ["plaid", PLAID_SNAPSHOT_TIMING_RESIDUAL_PHRASE],
+    ] as const)("is true, with the caption, when the anchor on the valuation date is %s", (source, phrase) => {
       seedValuation(accountId, "2026-03-03", 300, 700);
       seedAnchor(accountId, "2026-02-28", "statement", { cashValue: 300 });
       seedAnchor(accountId, "2026-03-03", source);
@@ -140,7 +146,9 @@ describe("getAccountCashLine", () => {
       const line = getAccountCashLine(db, accountId)!;
       expect(line.anchorDate).toBe("2026-03-03");
       expect(line.isLiveSource).toBe(true);
-      expect(line.liveSourceCaption).toContain(LIVE_SNAPSHOT_TIMING_RESIDUAL_PHRASE);
+      expect(line.liveSource).toBe(source);
+      expect(line.liveSourceCaption).toContain(phrase);
+      if (source === "plaid") expect(line.liveSourceCaption).not.toContain("intraday");
     });
 
     it("stays true on a later day whose cash is carried forward from a live anchor", () => {
@@ -257,6 +265,7 @@ describe("getAccountCashLine", () => {
     // caption. A reworded source fails here instead of silently diverging.
     const dataConfidence = readFileSync("lib/queries/data-confidence.ts", "utf8");
     expect(dataConfidence).toContain(LIVE_SNAPSHOT_TIMING_RESIDUAL_PHRASE);
+    expect(dataConfidence).toContain(PLAID_SNAPSHOT_TIMING_RESIDUAL_PHRASE);
   });
 
   it("classifies the anchor source through the shared live-source helper", () => {

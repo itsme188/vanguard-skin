@@ -71,9 +71,9 @@ describe("Plaid section: a failed re-read after a finished sync", () => {
     expect(reread).toContain("setRefreshError(null)");
   });
 
-  it("the sync handler re-reads through it, after the success line is set", () => {
-    const success = anchorIndex(sync, 'kind: "success"');
-    const call = anchorIndex(sync, "refreshAfterWrite()");
+  it("the sync handler re-reads through it, after the outcome line is set, only when an account was stored", () => {
+    const success = anchorIndex(sync, "kind: outcome.tone");
+    const call = anchorIndex(sync, "if (outcome.refresh) void refreshAfterWrite();");
     expect(call).toBeGreaterThan(success);
     expect(sync).not.toContain("setLoadError(");
     expect(sync).not.toMatch(/[^\w]load\(\)/);

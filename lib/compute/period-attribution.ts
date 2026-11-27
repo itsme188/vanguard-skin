@@ -1,6 +1,11 @@
 import type Database from "better-sqlite3";
 import { addDays, calendarDaysBetween } from "@/lib/calendar/date-utils";
-import { SIGNED_EXTERNAL_FLOW_SQL, fetchAnchorSourceSeamDates } from "@/lib/compute/flow-adjusted";
+import {
+  SIGNED_EXTERNAL_FLOW_SQL,
+  fetchAnchorSourceSeamDates,
+  fetchGoLiveDatesForScope,
+  intervalContainsAnyDate,
+} from "@/lib/compute/flow-adjusted";
 import { baseSessionOnOrBefore, dailyValuationsFromBaseSession } from "@/lib/compute/performance-window";
 import { getUsdPerUnit } from "@/lib/queries/fx-rates";
 import { accountScopeAndSql } from "@/lib/queries/account-scope-sql";
@@ -155,6 +160,14 @@ function computeBetaForPeriod(
   const seamDates = fetchAnchorSourceSeamDates(db, accountIds, baseSession, endDate);
   let seamDaysBridged = 0;
 
+  // GO-LIVE (ruling E2): a pair whose interval holds the day a live source
+  // started on an account in scope is a change of measurement, not a market
+  // move. It is left out of the BETA regression only. It stays in both
+  // compounded returns, as it stays in the index and the TWR (a later
+  // statement pins the series on both sides), so the decomposed return is
+  // unchanged and alpha, the remainder, carries the step.
+  const goLiveDates = fetchGoLiveDatesForScope(db, accountIds);
+
   // Pairs are consecutive BENCHMARK sessions, with the portfolio valuation
   // looked up on each session date. daily_valuations carries a row for every
   // calendar day (the fallback writes weekends and holidays too) and those
@@ -163,7 +176,7 @@ function computeBetaForPeriod(
   // valuation row can never break a Friday-to-Monday pair. A session whose
   // date has no valuation drops the two pairs it belongs to, never more.
   const valueByDate = new Map(valuations.map((v) => [v.valuation_date, v.total_value]));
-  const aligned: { portReturn: number; benchReturn: number }[] = [];
+  const aligned: { portReturn: number; benchReturn: number; goLive: boolean }[] = [];
   let windowStart: string | null = null;
   let windowEnd: string | null = null;
 
@@ -203,6 +216,7 @@ function computeBetaForPeriod(
       aligned.push({
         portReturn: (valueCurr - valuePrev - flow) / valuePrev,
         benchReturn: (curr.close_price - prev.close_price) / prev.close_price,
+        goLive: intervalContainsAnyDate(prev.date, curr.date, goLiveDates),
       });
       windowStart ??= prev.date;
       windowEnd = curr.date;
@@ -211,11 +225,16 @@ function computeBetaForPeriod(
 
   if (aligned.length < 5 || windowStart === null || windowEnd === null) return null;
 
-  const meanP = aligned.reduce((s, r) => s + r.portReturn, 0) / aligned.length;
-  const meanB = aligned.reduce((s, r) => s + r.benchReturn, 0) / aligned.length;
+  // With no go-live in the window this is `aligned` itself (same array, so
+  // the figures are byte-identical to before).
+  const regressionPairs = aligned.some((r) => r.goLive) ? aligned.filter((r) => !r.goLive) : aligned;
+  if (regressionPairs.length < 5) return null;
+
+  const meanP = regressionPairs.reduce((s, r) => s + r.portReturn, 0) / regressionPairs.length;
+  const meanB = regressionPairs.reduce((s, r) => s + r.benchReturn, 0) / regressionPairs.length;
   let covar = 0;
   let varB = 0;
-  for (const r of aligned) {
+  for (const r of regressionPairs) {
     covar += (r.portReturn - meanP) * (r.benchReturn - meanB);
     varB += (r.benchReturn - meanB) ** 2;
   }

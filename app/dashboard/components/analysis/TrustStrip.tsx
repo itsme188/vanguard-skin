@@ -6,7 +6,7 @@ import { TrustStripDrawer, stalePricesSummary, type DrawerPanel } from "./TrustS
 import { PrivateText } from "@/lib/privacy/components";
 import { formatEnrichedAtET } from "@/lib/format";
 import { readMutationResult, networkFailureMessage } from "@/lib/ui/mutation-result";
-import { positionsFreshnessCell } from "@/lib/ui/positions-freshness-label";
+import { plaidTrustLines, positionsFreshnessCell } from "@/lib/ui/positions-freshness-label";
 
 type Tone = "good" | "warn" | "bad" | "neutral";
 
@@ -164,6 +164,9 @@ export function TrustStrip({ scope }: TrustStripProps) {
   // position the latest sync left out still counts as held until a
   // tombstone is written (lib/queries/positions-freshness.ts).
   const positionsCell = positionsFreshnessCell(positionsFreshness);
+  // Plaid lines (dating state, a held-back account, a repeat read). Silent for
+  // a scope with no Plaid-fed account. Words come only from the helper.
+  const plaidLines = plaidTrustLines(positionsFreshness);
 
   const coveragePct = Math.round(factorCoverage.percentage * 100);
   const coverageTone: Tone =
@@ -296,6 +299,16 @@ export function TrustStrip({ scope }: TrustStripProps) {
           active={activePanel === "bondDuration"}
         />
       </div>
+
+      {plaidLines.length > 0 && (
+        <ul className="mb-2 space-y-0.5">
+          {plaidLines.map((line) => (
+            <li key={line.key} className="text-xs text-warn">
+              {line.text}
+            </li>
+          ))}
+        </ul>
+      )}
 
       {/* A failed refresh keeps the figures and offers the same Retry. */}
       {loadError && (

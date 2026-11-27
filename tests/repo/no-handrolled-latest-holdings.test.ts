@@ -551,6 +551,18 @@ const ALLOWLIST: AllowlistEntry[] = [
       "computePeriodAttribution's per-account book_date: whether the account has any position snapshot in the 31 days up to the period start, and the date printed in the section caption. It DOES decide, at the account level, whether an account takes part: an account with no book_date is left out of the weights, or, when it held value at the start, reported as missing (accounts_missing_at_start), which empties the lists. It does not select rows within an account: the start positions of a taking-part account come from latestHoldingsPredicate({ asOfDate }), less the pairs a newer book of the account no longer holds (retiredPairsAsOf).",
   },
   {
+    file: "lib/queries/positions-freshness.ts",
+    anchor: "SELECT MAX(h.as_of_date) FROM holdings h\n                WHERE h.account_id = a.id AND h.source_key LIKE 'plaid:%'",
+    justification:
+      "plaidCoverage (Plaid session dating, 2026-11-26): the newest date of any `plaid:` holdings row for a Plaid-fed account, one input to its newest COVERED session, which is compared with expectedPlaidSession for the trust strip's warn level. A freshness date only: the counted positions come from latestHoldingsPredicate in getPositionsFreshness's own query.",
+  },
+  {
+    file: "lib/queries/positions-freshness.ts",
+    anchor: "SELECT MAX(h.as_of_date) FROM holdings h\n                WHERE h.account_id = a.id AND ${statementSourcedHoldingSql(\"h.source_key\")}",
+    justification:
+      "plaidCoverage (Plaid session dating, 2026-11-26): the newest statement holdings date for a Plaid-fed account (a statement covers its session on purpose), the other input to its newest COVERED session. A freshness date only, never a row filter.",
+  },
+  {
     file: "lib/queries/dashboard.ts",
     anchor: "SELECT account_id, MAX(as_of_date) AS max_date\n        FROM holdings GROUP BY account_id",
     justification:

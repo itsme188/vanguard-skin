@@ -12,7 +12,13 @@ import {
   splitConcentrationUniverse,
 } from "@/lib/queries/concentration-universe";
 import { accountIdsFilterSql, normalizeAccountIds } from "@/lib/compute/factors";
-import { buildFlowAdjustedIndex, fetchNetFlowsByDate, fetchAnchorSourceSeamDates } from "@/lib/compute/flow-adjusted";
+import {
+  buildFlowAdjustedIndex,
+  fetchNetFlowsByDate,
+  fetchAnchorSourceSeamDates,
+  fetchGoLiveDatesForScope,
+  intervalContainsAnyDate,
+} from "@/lib/compute/flow-adjusted";
 import { addDays, calendarDaysBetween, todayET } from "@/lib/calendar/date-utils";
 import { isMarketClosed, nextTradingDay } from "@/lib/calendar/market-holidays";
 import { isCashEquivalentSecurity } from "@/lib/compute/cash-equivalents";
@@ -303,7 +309,20 @@ export function computeRiskMetrics(
       ? fetchAnchorSourceSeamDates(db, accountIds, points[0].date, points[points.length - 1].date)
       : [];
   const { index, returns, bridgedDays } = buildFlowAdjustedIndex(points, flows, seamDates);
-  const logReturns = foldReturnsIntoSessions(returns);
+  // GO-LIVE (ruling E2): the session whose interval holds the day a live
+  // source started on an account in scope is a change of measurement, not a
+  // market move, so volatility and Sharpe leave it out. The index above (and
+  // so drawdown) keeps it. Each return is dated with the series point before
+  // it, so the interval is exact even after a bridged or skipped step.
+  const prevDateOf = new Map<string, string>();
+  for (let i = 1; i < points.length; i++) prevDateOf.set(points[i].date, points[i - 1].date);
+  const goLiveDates = points.length >= 2 ? fetchGoLiveDatesForScope(db, accountIds) : [];
+  const logReturns = dropGoLiveSessions(
+    foldReturnsIntoDatedSessions(
+      returns.map((r) => ({ ...r, prevDate: prevDateOf.get(r.date) }))
+    ),
+    goLiveDates
+  ).map((o) => o.logReturn);
 
   const rawValueByDate = new Map(points.map(p => [p.date, p.value]));
   const maxDrawdownIdx = computeMaxDrawdown(index);
@@ -500,12 +519,70 @@ function computeCurrentDrawdown(
 export function foldReturnsIntoSessions(
   returns: { date: string; logReturn: number }[]
 ): number[] {
-  const bySession = new Map<string, number>();
+  return foldReturnsIntoDatedSessions(returns).map((o) => o.logReturn);
+}
+
+/** One folded session observation with the interval it covers. */
+export interface DatedSessionReturn {
+  /**
+   * Exclusive start of the interval this observation covers: the date of
+   * the series point before its first return (`prevDate`), or, when the
+   * caller passed none, the date of the previous return given (null for the
+   * very first). Can be a closed day.
+   */
+  sessionStart: string | null;
+  /** The trading session the observation is counted on. */
+  session: string;
+  logReturn: number;
+}
+
+/**
+ * foldReturnsIntoSessions with dates kept (2026-11-26, ruling E2): the same
+ * fold (a closed day's return adds into the next session's), and each
+ * observation carries the interval (sessionStart, session] it covers so a
+ * reader can leave out the one that holds a given date (a live source's
+ * go-live). Pass `prevDate` (the series point before each return) for an
+ * exact interval: without it a bridged or skipped step before a return
+ * widens that return's interval back to the previous return.
+ *
+ * The summing order is the original's, so foldReturnsIntoSessions (now a
+ * wrapper) returns byte-identical numbers.
+ */
+export function foldReturnsIntoDatedSessions(
+  returns: { date: string; logReturn: number; prevDate?: string }[]
+): DatedSessionReturn[] {
+  const bySession = new Map<string, DatedSessionReturn>();
+  let previousDate: string | null = null;
   for (const r of returns) {
     const session = isMarketClosed(r.date) ? nextTradingDay(r.date) : r.date;
-    bySession.set(session, (bySession.get(session) ?? 0) + r.logReturn);
+    const start = r.prevDate ?? previousDate;
+    const existing = bySession.get(session);
+    if (existing) {
+      existing.logReturn = existing.logReturn + r.logReturn;
+      if (start === null || (existing.sessionStart !== null && start < existing.sessionStart)) {
+        existing.sessionStart = start;
+      }
+    } else {
+      bySession.set(session, { sessionStart: start, session, logReturn: 0 + r.logReturn });
+    }
+    previousDate = r.date;
   }
   return [...bySession.values()];
+}
+
+/**
+ * Leave out every folded observation whose interval (sessionStart, session]
+ * holds one of `goLiveDates` (fetchGoLiveDatesForScope). Volatility and
+ * Sharpe read the rest. With no go-live dates the input comes back as is.
+ */
+export function dropGoLiveSessions(
+  observations: DatedSessionReturn[],
+  goLiveDates: readonly string[]
+): DatedSessionReturn[] {
+  if (goLiveDates.length === 0) return observations;
+  return observations.filter(
+    (o) => !intervalContainsAnyDate(o.sessionStart, o.session, goLiveDates)
+  );
 }
 
 function computeVolatility(

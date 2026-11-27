@@ -16,7 +16,11 @@ import { formatEnrichedAtET } from "@/lib/format";
 import apiFetch from "@/lib/http/apiFetch";
 import { networkFailureMessage, readMutationResult } from "@/lib/ui/mutation-result";
 import { joinSentences } from "@/lib/ui/join-sentences";
-import { formatPositionsDate } from "@/lib/ui/positions-freshness-label";
+import {
+  formatPositionsDate,
+  plaidAccountFreshnessNote,
+  plaidTrustLines,
+} from "@/lib/ui/positions-freshness-label";
 
 export type DrawerPanel =
   | "positionsFreshness"
@@ -654,11 +658,29 @@ function PositionsFreshnessContent({ state }: { state: AnalysisTrustState }) {
   // until the closed-position reconciler writes its zero row
   // (lib/queries/positions-freshness.ts).
   const { positionsFreshness } = state;
+  // The same Plaid lines the strip shows (words from the helper only).
+  const plaidLines = plaidTrustLines(positionsFreshness);
+  const plaidLineList =
+    plaidLines.length > 0 ? (
+      <ul className="space-y-1">
+        {plaidLines.map((line) => (
+          <li key={line.key} className="text-xs text-warn">
+            {line.text}
+          </li>
+        ))}
+      </ul>
+    ) : null;
   if (positionsFreshness.accounts.length === 0) {
-    return <p className="text-sm text-ink-dim">No positions are held in this scope.</p>;
+    return (
+      <div className="space-y-3">
+        {plaidLineList}
+        <p className="text-sm text-ink-dim">No positions are held in this scope.</p>
+      </div>
+    );
   }
   return (
     <div className="space-y-4">
+      {plaidLineList}
       <p className="text-xs text-ink-dim">
         The positions these figures use, and the date each one comes from. A position the latest sync did not report is still counted as held, so it may already be closed.
       </p>
@@ -681,6 +703,9 @@ function PositionsFreshnessContent({ state }: { state: AnalysisTrustState }) {
                 ? `Latest sync: ${formatPositionsDate(acct.newestLiveDate)}`
                 : "No live sync for this account."}
             </p>
+            {plaidAccountFreshnessNote(acct) && (
+              <p className="text-xs text-warn">{plaidAccountFreshnessNote(acct)}</p>
+            )}
             {acct.leftover.count > 0 && (
               <p className="text-xs text-down">
                 Not in the latest sync, still counted as held (

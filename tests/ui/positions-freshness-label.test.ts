@@ -21,6 +21,7 @@ function account(over: Partial<AccountPositionsFreshness>): AccountPositionsFres
     leftover: { count: 0, oldestDate: null, symbols: [], items: [] },
     statementRows: { count: 0, oldestDate: null, newestDate: null, symbols: [], items: [] },
     liveSource: "broker sync",
+    plaid: null,
     level: "good",
     ...over,
   };
@@ -34,6 +35,16 @@ function freshness(over: Partial<PositionsFreshness>): PositionsFreshness {
     leftoverCount: 0,
     statementRowCount: 0,
     level: "good",
+    plaid: {
+      accountIds: [],
+      expectedSession: "2026-11-20",
+      datingState: "repaired",
+      datingError: null,
+      earliestFirstSession: null,
+      everyAccountHasFirstSession: true,
+      transitionHolds: [],
+      repeatReads: [],
+    },
     ...over,
   };
 }

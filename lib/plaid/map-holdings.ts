@@ -20,11 +20,11 @@ export interface UnmatchedPlaidSecurity {
 }
 
 /**
- * Which dating rule a Plaid price follows (lib/plaid/refresh.ts):
- *  - "equity" (stock, ETF): always the previous trading session of the run
- *    day — the read is taken before the open and describes the prior close.
- *  - "mutual_fund": the legacy rule, `asOf ?? run day`, kept until the
- *    session-dating work moves it together with a history repair.
+ * The kind of a Plaid price. Both kinds are dated the same way since the
+ * session-dating work (lib/plaid/refresh.ts, plan v4 A1): on the session the
+ * pre-open read describes, the trading day before the run day. Plaid's
+ * as-of date is never used as a date. The kind is kept so the mapper's
+ * "stocks, ETFs and funds only" rule stays visible.
  */
 export type InstitutionPriceKind = "equity" | "mutual_fund";
 

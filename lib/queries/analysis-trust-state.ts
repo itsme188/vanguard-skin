@@ -91,7 +91,9 @@ export interface AnalysisTrustState {
     missing: MissingDurationBond[];
   };
   /** How old the counted positions are, oldest counted live row included
-   *  (lib/queries/positions-freshness.ts). Same scope and Eastern day. */
+   *  (lib/queries/positions-freshness.ts). Same scope and Eastern day. Also
+   *  carries the facts for the strip's Plaid lines (`positionsFreshness.plaid`,
+   *  worded by `plaidTrustLines` in lib/ui/positions-freshness-label.ts). */
   positionsFreshness: PositionsFreshness;
 }
 
@@ -233,6 +235,9 @@ export function getAnalysisTrustState(
   accountIds?: number[],
   /** The Eastern calendar date the bond durations and the maturity cut are judged on. */
   today: string = todayET(),
+  /** The instant the expected Plaid session is judged at (positions
+   *  freshness). Default: see `getPositionsFreshness`. */
+  now?: Date,
 ): AnalysisTrustState {
   // `undefined` is every account; a defined empty list is NO accounts.
   const { sql: accountFilter, params } = accountScopeAndSql(accountIds);
@@ -507,6 +512,6 @@ export function getAnalysisTrustState(
       estimated: estimatedBonds,
       missing: missingDurationBonds,
     },
-    positionsFreshness: getPositionsFreshness(db, accountIds, today),
+    positionsFreshness: getPositionsFreshness(db, accountIds, today, { now }),
   };
 }

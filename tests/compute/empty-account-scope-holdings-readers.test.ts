@@ -445,8 +445,13 @@ describe("every account and a non-empty list answer as before", () => {
     // moved, Defense's grossExposure moved, and Defense gained
     // nameLongExposure and nameShortExposure. Net is unchanged. With the name
     // key switched back to per-security, that was the only difference.
+    // Re-captured 2026-11-26 (Plaid session dating, U4): the trust state's
+    // positionsFreshness gained a `plaid` key (the strip's Plaid line facts)
+    // and each account a `plaid` key (null on this fixture's accounts). With
+    // those keys removed the output hashed to the previous digest
+    // (12cabd29...) exactly.
     expect(createHash("sha256").update(json).digest("hex")).toBe(
-      "12cabd29284ce9a8a4a655995aec0508c2d7148f0748f63c9a8e9b016e9f6b19",
+      "229750edb0fa1ad1a7f166cf891fb82bde28d48b597c4fbe063d9bcb00e94ad9",
     );
   });
 

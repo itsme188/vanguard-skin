@@ -2,11 +2,110 @@ import type Database from "better-sqlite3";
 import { snapshotTwrFraction } from "@/lib/compute/monthly-snapshot-utils";
 import { easternDaySql } from "@/lib/db/eastern-day-sql";
 import {
+  currentValueLiveSnapshotSql,
   excludeLiveSnapshotsSql,
   onlyLiveSnapshotsSql,
 } from "@/lib/db/live-sources";
+import {
+  RECON_HOLDING_SOURCE_PREFIX,
+  classifyHoldingSourceKey,
+  isPlaidSourcedHolding,
+  isTwsSourcedHolding,
+} from "@/lib/db/holding-sources";
 
-export interface AccountSummary {
+/** Where an account's newest (non-tombstone) holdings rows came from. */
+export type HoldingsSessionSource = "statement" | "plaid" | "tws";
+
+/** Where an account's newest `monthly_snapshots` anchor came from. */
+export type AnchorSessionSource = "statement" | "plaid" | "tws";
+
+/**
+ * The three dates behind an account's value, reported separately (plan v4,
+ * unit U3). A Plaid book describes the PREVIOUS session's close, and the
+ * daily valuation can run past it on later prices, so one "as of" date
+ * cannot say what a Vanguard figure is.
+ */
+export interface AccountValueDates {
+  /** The account's latest `daily_valuations` row (the row the value is read
+   *  from when the pick is the daily valuation). Null when none. */
+  valuationDate: string | null;
+  /** Date of the account's newest holdings rows, recon tombstones left out. */
+  holdingsSession: string | null;
+  /** Source of the rows on `holdingsSession`: a statement row on that date
+   *  wins, then Plaid, then TWS. Null when no row or an unknown source. */
+  holdingsSource: HoldingsSessionSource | null;
+  /** Date of the account's newest `monthly_snapshots` anchor (any source):
+   *  the newest anchor the daily valuation is built on. */
+  anchorSession: string | null;
+  anchorSource: AnchorSessionSource | null;
+}
+
+const NO_DATES: AccountValueDates = {
+  valuationDate: null,
+  holdingsSession: null,
+  holdingsSource: null,
+  anchorSession: null,
+  anchorSource: null,
+};
+
+/**
+ * `AccountValueDates` per account, for the given ids. Freshness reads of one
+ * date each (ORDER BY ... LIMIT 1); they never choose which holdings rows
+ * are current, so they do not go through latestHoldingsPredicate.
+ */
+function readAccountValueDates(
+  db: Database.Database,
+  accountIds: readonly number[],
+): Map<number, AccountValueDates> {
+  const valuationStmt = db.prepare(
+    `SELECT valuation_date FROM daily_valuations
+     WHERE account_id = ? ORDER BY valuation_date DESC LIMIT 1`,
+  );
+  const holdingsDateStmt = db.prepare(
+    `SELECT as_of_date FROM holdings
+     WHERE account_id = ?
+       AND COALESCE(source_key, '') NOT LIKE '${RECON_HOLDING_SOURCE_PREFIX}%'
+     ORDER BY as_of_date DESC LIMIT 1`,
+  );
+  const holdingsKeysStmt = db.prepare(
+    `SELECT DISTINCT source_key FROM holdings
+     WHERE account_id = ? AND as_of_date = ?
+       AND COALESCE(source_key, '') NOT LIKE '${RECON_HOLDING_SOURCE_PREFIX}%'`,
+  );
+  const anchorStmt = db.prepare(
+    `SELECT month_end_date,
+            CASE WHEN ${currentValueLiveSnapshotSql("source")} THEN 1 ELSE 0 END AS is_tws,
+            CASE WHEN ${onlyLiveSnapshotsSql("source")} THEN 1 ELSE 0 END AS is_live
+     FROM monthly_snapshots
+     WHERE account_id = ? ORDER BY month_end_date DESC LIMIT 1`,
+  );
+
+  const out = new Map<number, AccountValueDates>();
+  for (const id of accountIds) {
+    const valuation = valuationStmt.get(id) as { valuation_date: string } | undefined;
+    const holdings = holdingsDateStmt.get(id) as { as_of_date: string } | undefined;
+    let holdingsSource: HoldingsSessionSource | null = null;
+    if (holdings) {
+      const keys = (holdingsKeysStmt.all(id, holdings.as_of_date) as { source_key: string | null }[]).map(
+        (r) => r.source_key,
+      );
+      if (keys.some((k) => k !== null && classifyHoldingSourceKey(k) === "statement")) holdingsSource = "statement";
+      else if (keys.some((k) => isPlaidSourcedHolding(k))) holdingsSource = "plaid";
+      else if (keys.some((k) => isTwsSourcedHolding(k))) holdingsSource = "tws";
+    }
+    const anchor = anchorStmt.get(id) as { month_end_date: string; is_tws: number; is_live: number } | undefined;
+    out.set(id, {
+      valuationDate: valuation?.valuation_date ?? null,
+      holdingsSession: holdings?.as_of_date ?? null,
+      holdingsSource,
+      anchorSession: anchor?.month_end_date ?? null,
+      anchorSource: anchor ? (anchor.is_tws === 1 ? "tws" : anchor.is_live === 1 ? "plaid" : "statement") : null,
+    });
+  }
+  return out;
+}
+
+export interface AccountSummary extends AccountValueDates {
   id: number;
   name: string;
   latestValue: number | null;
@@ -19,7 +118,8 @@ export interface AccountSummary {
   dataQuality: string | null;
   /** Date of the most recent holdings snapshot for this account */
   holdingsAsOf: string | null;
-  /** 'tws_live' when value comes from TWS netLiquidation, null otherwise */
+  /** 'tws_live' when value comes from TWS netLiquidation, null otherwise.
+   *  A Plaid snapshot is never this (plan v4 ruling E1). */
   dataSource: string | null;
   /** Latest statement value (non-TWS monthly snapshot) */
   canonicalValue: number | null;
@@ -76,7 +176,9 @@ export function getAccountSummaries(db: Database.Database): AccountSummary[] {
           ms.total_value,
           ROW_NUMBER() OVER (PARTITION BY ms.account_id ORDER BY ms.month_end_date DESC) AS rn
         FROM monthly_snapshots ms
-        WHERE ${onlyLiveSnapshotsSql("ms.source")}
+        -- TWS only: a Plaid snapshot is the previous session's close, never
+        -- the current value (plan v4 ruling E1).
+        WHERE ${currentValueLiveSnapshotSql("ms.source")}
           AND ms.month_end_date >= date(${easternDaySql()}, '-1 day')
       ),
       latest_holdings AS (
@@ -126,6 +228,7 @@ export function getAccountSummaries(db: Database.Database): AccountSummary[] {
     )
     .all() as AccountSummaryRow[];
 
+  const dates = readAccountValueDates(db, rows.map((r) => r.id));
   return rows.map((row) => {
     const monthlyChange =
       row.latestValue !== null && row.previousValue !== null
@@ -153,6 +256,7 @@ export function getAccountSummaries(db: Database.Database): AccountSummary[] {
       canonicalValue: row.canonicalValue ?? null,
       canonicalDate: row.canonicalDate ?? null,
       estimatedValue: row.estimatedValue ?? null,
+      ...(dates.get(row.id) ?? NO_DATES),
     };
   });
 }
@@ -202,12 +306,15 @@ export interface PortfolioTotals {
   /** Earliest / latest statement date the change is measured against (null = none). */
   previousDateEarliest: string | null;
   previousDateLatest: string | null;
+  /** Each account's value and its dates: the rows behind the totals. */
+  accounts: AccountCurrentValue[];
 }
 
-/** Which kind of row an account's current value was read from. */
+/** Which kind of row an account's current value was read from. 'live' is a
+ *  same-day (or previous-day) TWS snapshot only; never a Plaid one. */
 export type AccountValueSourceKind = "live" | "daily" | "statement";
 
-export interface AccountCurrentValue {
+export interface AccountCurrentValue extends AccountValueDates {
   accountId: number;
   accountName: string;
   /** null when the account has no value on record. */
@@ -234,8 +341,10 @@ export interface PortfolioCurrentValues {
 /**
  * The per-account "current value" selection behind the Portfolio strip, as a
  * CTE chain ending in `account_values` (one row per account in scope):
- * a live (TWS / Plaid) row dated within a day wins, else the latest daily
- * valuation when it is newer than the latest statement, else that statement.
+ * a live TWS row dated within a day wins, else the latest daily valuation
+ * when it is newer than the latest statement, else that statement. A Plaid
+ * snapshot is never the live pick (plan v4 ruling E1: it is the previous
+ * session's close), so a Vanguard account reads its daily valuation.
  * `scopeSql` is appended to the final accounts read (`AND a.id IN (...)`).
  */
 function accountValuesCteSql(scopeSql: string): string {
@@ -260,7 +369,7 @@ function accountValuesCteSql(scopeSql: string): string {
         SELECT account_id, month_end_date, total_value,
           ROW_NUMBER() OVER (PARTITION BY account_id ORDER BY month_end_date DESC) AS rn
         FROM monthly_snapshots
-        WHERE ${onlyLiveSnapshotsSql("source")}
+        WHERE ${currentValueLiveSnapshotSql("source")}
           AND month_end_date >= date(${easternDaySql()}, '-1 day')
       ),
       account_values AS (
@@ -335,14 +444,18 @@ export function getPortfolioCurrentValues(
       FROM account_values
       ORDER BY id`
     )
-    .all(...scopeParams) as AccountCurrentValue[];
+    .all(...scopeParams) as Omit<AccountCurrentValue, keyof AccountValueDates>[];
 
-  return { ...row, accounts };
+  const dates = readAccountValueDates(db, accounts.map((a) => a.accountId));
+  return {
+    ...row,
+    accounts: accounts.map((a) => ({ ...a, ...(dates.get(a.accountId) ?? NO_DATES) })),
+  };
 }
 
 export function getPortfolioTotals(db: Database.Database): PortfolioTotals {
-  // Use same blending logic as getAccountSummaries: prefer recent TWS value,
-  // then daily valuation, then non-TWS monthly snapshot per account.
+  // Use same blending logic as getAccountSummaries: prefer a recent TWS
+  // value, then daily valuation, then the latest statement per account.
   const row = getPortfolioCurrentValues(db);
 
   const totalChange = row.totalValue - row.totalPreviousValue;
@@ -375,5 +488,6 @@ export function getPortfolioTotals(db: Database.Database): PortfolioTotals {
     oldestDate: row.oldestDate,
     previousDateEarliest: row.previousDateEarliest,
     previousDateLatest: row.previousDateLatest,
+    accounts: row.accounts,
   };
 }

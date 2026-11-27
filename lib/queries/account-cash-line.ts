@@ -1,5 +1,5 @@
 import type Database from "better-sqlite3";
-import { onlyLiveSnapshotsSql } from "@/lib/db/live-sources";
+import { currentValueLiveSnapshotSql, onlyLiveSnapshotsSql } from "@/lib/db/live-sources";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 import { isCashEquivalentSecurity } from "@/lib/compute/cash-equivalents";
 import { liveOptionExpirationSql } from "@/lib/compute/option-expiry";
@@ -21,11 +21,13 @@ import { liveOptionExpirationSql } from "@/lib/compute/option-expiry";
  *
  * 1. Which day the figures are for (`valuationDate`).
  * 2. Whether the cash figure is a live-snapshot residual. On a day anchored
- *    to a live broker snapshot (Plaid or TWS) cash is the broker's intraday
- *    total minus close-priced holdings, not a literal cash balance (see
- *    lib/compute/cash-flow-audit.ts, `live-anchor-residual`). The caption
- *    reuses the Data Confidence detail line's wording rather than coining a
- *    second one.
+ *    to a live broker snapshot (Plaid or TWS) cash is the broker's total
+ *    minus close-priced holdings, not a literal cash balance (see
+ *    lib/compute/cash-flow-audit.ts, `live-anchor-residual`). Only a TWS
+ *    total is intraday; a Plaid total is read before the open and is the
+ *    previous session's broker total (plan v4), so the caption names which.
+ *    The caption reuses the Data Confidence detail line's wording rather
+ *    than coining a second one.
  * 3. Which holdings rows are already inside the cash figure. Daily
  *    valuations count money-market sweep funds as CASH, not positions
  *    (`isCashEquivalentSecurity`), yet a statement-fed account still lists
@@ -38,15 +40,25 @@ import { liveOptionExpirationSql } from "@/lib/compute/option-expiry";
  * double-convert.
  */
 
-/** The wording lib/queries/data-confidence.ts uses for a live-snapshot day's
+/** The wording lib/queries/data-confidence.ts uses for a TWS-anchored day's
  *  cash figure. tests/queries/account-cash-line.test.ts fails if that file
  *  stops containing it, so the two surfaces cannot drift apart. */
 export const LIVE_SNAPSHOT_TIMING_RESIDUAL_PHRASE =
   "live-snapshot timing residual (intraday broker total vs close-priced holdings)";
 
-/** Caption shown under the Cash line when the cash figure comes from a live
- *  (Plaid/TWS) anchor. */
+/** The same wording for a Plaid-anchored day: Plaid's total is read before
+ *  the open, so it is the previous session's broker total, never intraday
+ *  (plan v4). Pinned the same way against data-confidence.ts. */
+export const PLAID_SNAPSHOT_TIMING_RESIDUAL_PHRASE =
+  "live-snapshot timing residual (previous-session broker total vs close-priced holdings)";
+
+/** Caption shown under the Cash line when the cash figure comes from a TWS
+ *  anchor. */
 export const LIVE_SNAPSHOT_CASH_CAPTION = `This is a ${LIVE_SNAPSHOT_TIMING_RESIDUAL_PHRASE}, not a literal cash balance.`;
+
+/** Caption shown under the Cash line when the cash figure comes from a Plaid
+ *  anchor. */
+export const PLAID_SNAPSHOT_CASH_CAPTION = `This is a ${PLAID_SNAPSHOT_TIMING_RESIDUAL_PHRASE}, not a literal cash balance.`;
 
 /** Caption shown under the Cash line instead of `LIVE_SNAPSHOT_CASH_CAPTION`
  *  when the live broker total is from the anchor day but the positions were
@@ -83,9 +95,15 @@ export interface AccountCashLine {
    *  valuation engine could resolve it. Null when there is no such row or
    *  it did not resolve. */
   anchorDate: string | null;
-  /** True when that anchor is a live broker snapshot (Plaid or TWS). */
+  /** True when that anchor is a live broker snapshot (Plaid or TWS). Its
+   *  meaning is unchanged by plan v4: "the anchor is a live row". */
   isLiveSource: boolean;
-  /** `LIVE_SNAPSHOT_CASH_CAPTION` when `isLiveSource`, replaced by
+  /** Which live source the anchor is: "tws" (an intraday broker total) or
+   *  "plaid" (the previous session's broker total). Null when not
+   *  `isLiveSource`. */
+  liveSource: "tws" | "plaid" | null;
+  /** `LIVE_SNAPSHOT_CASH_CAPTION` (TWS) or `PLAID_SNAPSHOT_CASH_CAPTION`
+   *  (Plaid) when `isLiveSource`, replaced by
    *  `priceDateMismatchCaption(anchorDate, positionsPriceDate)` when
    *  `priceDateMismatch`; null when not `isLiveSource`. */
   liveSourceCaption: string | null;
@@ -131,6 +149,8 @@ interface ValuationRow {
 interface AnchorRow {
   month_end_date: string;
   is_live: number;
+  /** 1 when the live anchor is TWS (the current-value live source). */
+  is_tws: number;
 }
 
 interface HeldSecurityRow {
@@ -172,6 +192,7 @@ export function getAccountCashLine(
     .prepare(
       `SELECT ms.month_end_date,
               CASE WHEN ${onlyLiveSnapshotsSql("ms.source")} THEN 1 ELSE 0 END AS is_live,
+              CASE WHEN ${currentValueLiveSnapshotSql("ms.source")} THEN 1 ELSE 0 END AS is_tws,
               CASE WHEN ms.cash_value IS NOT NULL
                      OR EXISTS (
                        SELECT 1 FROM daily_valuations dv
@@ -263,6 +284,7 @@ export function getAccountCashLine(
 
   const cashAnchored = anchor !== undefined;
   const isLiveSource = anchor?.is_live === 1;
+  const liveSource: "tws" | "plaid" | null = !isLiveSource ? null : anchor?.is_tws === 1 ? "tws" : "plaid";
   const anchorDate = anchor?.month_end_date ?? null;
 
   // Sweep funds are cash to the valuation engine, so their prices do not
@@ -294,11 +316,14 @@ export function getAccountCashLine(
     pricedCount: valuation.priced_count,
     anchorDate,
     isLiveSource,
+    liveSource,
     liveSourceCaption: !isLiveSource
       ? null
       : priceDateMismatch && anchorDate !== null && positionsPriceDate !== null
         ? priceDateMismatchCaption(anchorDate, positionsPriceDate)
-        : LIVE_SNAPSHOT_CASH_CAPTION,
+        : liveSource === "plaid"
+          ? PLAID_SNAPSHOT_CASH_CAPTION
+          : LIVE_SNAPSHOT_CASH_CAPTION,
     dataQuality: valuation.data_quality,
     measuredDate,
     carried,

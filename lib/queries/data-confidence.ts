@@ -6,13 +6,14 @@
  */
 
 import type Database from "better-sqlite3";
-import { excludeLiveSnapshotsSql } from "@/lib/db/live-sources";
+import { currentValueLiveSnapshotSql, excludeLiveSnapshotsSql } from "@/lib/db/live-sources";
 import { todayET, addDays } from "@/lib/calendar/date-utils";
 import { isMarketClosed } from "@/lib/calendar/market-holidays";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 import { liveOptionExpirationSql } from "@/lib/compute/option-expiry";
 import { isCashEquivalentSecurity } from "@/lib/compute/cash-equivalents";
-import { classifyHoldingSourceKey } from "@/lib/db/holding-sources";
+import { classifyHoldingSourceKey, isPlaidSourcedHolding } from "@/lib/db/holding-sources";
+import { expectedPlaidSession } from "@/lib/plaid/session-dating";
 import { runIntegrityChecks, sortWorstFirst } from "@/lib/queries/integrity-checks";
 import { formatUSD, rendersAsZero } from "@/lib/format";
 import { adjustedMarketValueSQL } from "@/lib/valuation";
@@ -96,7 +97,8 @@ export interface HoldingsRecencyScore extends DimensionScore {
     /** Calendar days since `date`: the figure the wording prints. */
     daysOld: number | null;
     /** `holdingAgeDays` of `date` (closed market days not counted): what
-     *  every "more than a day old" check reads. */
+     *  every "more than a day old" check reads. A Plaid row dated on or
+     *  after `expectedPlaidSession(now)` counts as at most 1 (fresh). */
     ageDays: number | null;
     /** The stalest position's symbol, so the drawer/guidance can name
      *  exactly what to refresh instead of just an age. */
@@ -125,6 +127,10 @@ export interface TimingResidualNote {
   date: string;
   accountName: string;
   amount: number;
+  /** Which live source anchors that day: "tws" (an intraday broker total)
+   *  or "plaid" (the previous session's broker total, read before the open;
+   *  plan v4). Decides the wording only. */
+  liveSource: "tws" | "plaid";
 }
 
 export interface CashAccuracyScore extends DimensionScore {
@@ -414,6 +420,16 @@ function formatValueShare(share: number): string {
 
 function scoreHoldingsRecency(db: Database.Database, now: Date = new Date()): HoldingsRecencyScore {
   const today = todayET(now);
+  // A Plaid row is dated on the session whose close it describes, and the
+  // read runs before the open (plan v4). So before 07:40 Eastern, or on a
+  // closed day, the newest Plaid row a healthy schedule can hold is two
+  // sessions back. A Plaid row dated on or after that expected session is
+  // as fresh as it can be: it scores as fresh whatever its trading-day age.
+  const plaidExpected = expectedPlaidSession(now);
+  const ageOf = (asOf: string, sourceKey: string | null): number => {
+    const age = holdingAgeDays(asOf, today);
+    return isPlaidSourcedHolding(sourceKey) && asOf >= plaidExpected ? Math.min(age, 1) : age;
+  };
 
   const accounts = db.prepare(`SELECT id, name FROM accounts ORDER BY name`).all() as {
     id: number;
@@ -471,7 +487,7 @@ function scoreHoldingsRecency(db: Database.Database, now: Date = new Date()): Ho
   const staleByAccount = new Map<number, { symbol: string; date: string }[]>();
   for (const r of holdingRows) {
     heldCountByAccount.set(r.account_id, (heldCountByAccount.get(r.account_id) ?? 0) + 1);
-    if (holdingAgeDays(r.as_of_date, today) > 1) {
+    if (ageOf(r.as_of_date, r.source_key) > 1) {
       const list = staleByAccount.get(r.account_id) ?? [];
       list.push({ symbol: r.symbol, date: r.as_of_date });
       staleByAccount.set(r.account_id, list);
@@ -512,7 +528,7 @@ function scoreHoldingsRecency(db: Database.Database, now: Date = new Date()): Ho
       date: worst?.as_of_date ?? null,
       source: worst ? classifyHoldingSourceKey(worst.source_key) : null,
       daysOld,
-      ageDays: worst ? holdingAgeDays(worst.as_of_date, today) : null,
+      ageDays: worst ? ageOf(worst.as_of_date, worst.source_key) : null,
       stalestSymbol: worst?.symbol ?? null,
       latestDate: latestByAccount.get(a.id) ?? null,
       heldCount: heldCountByAccount.get(a.id) ?? 0,
@@ -556,7 +572,7 @@ function scoreHoldingsRecency(db: Database.Database, now: Date = new Date()): Ho
   let oldestRowAgeDays: number | null = null;
   for (const r of holdingRows) {
     const daysOld = Math.round((Date.parse(today) - Date.parse(r.as_of_date)) / 86_400_000);
-    const ageDays = holdingAgeDays(r.as_of_date, today);
+    const ageDays = ageOf(r.as_of_date, r.source_key);
     if (oldestRowDays === null || daysOld > oldestRowDays) oldestRowDays = daysOld;
     if (oldestRowAgeDays === null || ageDays > oldestRowAgeDays) oldestRowAgeDays = ageDays;
     const marketValue =
@@ -780,10 +796,22 @@ function findWorstUnexplainedCashFlow(
   if (suppressedTimingResiduals.length > 0) {
     sortWorstFirst(suppressedTimingResiduals);
     const worst = suppressedTimingResiduals[0];
+    // The anchor that owns the day: the newest snapshot on or before it. A
+    // live-anchor-residual point's anchor is live by definition, so "not
+    // TWS" means Plaid.
+    const anchor = db
+      .prepare(
+        `SELECT CASE WHEN ${currentValueLiveSnapshotSql("source")} THEN 1 ELSE 0 END AS is_tws
+         FROM monthly_snapshots
+         WHERE account_id = ? AND month_end_date <= ?
+         ORDER BY month_end_date DESC LIMIT 1`,
+      )
+      .get(worst.accountId, worst.toDate) as { is_tws: number } | undefined;
     timingResidual = {
       date: worst.toDate,
       accountName: worst.accountName,
       amount: worst.residual,
+      liveSource: anchor?.is_tws === 1 ? "tws" : "plaid",
     };
   }
 
@@ -908,10 +936,17 @@ function scoreCashAccuracy(db: Database.Database, now: Date = new Date()): CashA
     // "actionable" text — it names something worth checking, not reassurance.
     guidanceActionable = true;
     const amountStr = formatCashDeltaLikeMoney(timingResidual.amount);
+    // "Intraday" only for a TWS total; a Plaid total is read before the open
+    // and is the previous session's broker total (plan v4). The two phrases
+    // are pinned against lib/queries/account-cash-line.ts.
+    const residualPhrase =
+      timingResidual.liveSource === "tws"
+        ? "live-snapshot timing residual (intraday broker total vs close-priced holdings)"
+        : "live-snapshot timing residual (previous-session broker total vs close-priced holdings)";
     detailParts.push(
       "; cash delta of ",
       priv(amountStr),
-      ` on ${timingResidual.date} in ${timingResidual.accountName} is a live-snapshot timing residual (intraday broker total vs close-priced holdings) — not treated as an external flow`,
+      ` on ${timingResidual.date} in ${timingResidual.accountName} is a ${residualPhrase} — not treated as an external flow`,
     );
     guidance =
       `Live-snapshot (Plaid/TWS) days infer cash as snapshot-total minus holdings value; the residual usually moves ` +

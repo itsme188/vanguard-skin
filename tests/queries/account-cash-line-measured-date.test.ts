@@ -4,6 +4,7 @@ import { runMigrations } from "@/lib/db/migrate";
 import {
   getAccountCashLine,
   LIVE_SNAPSHOT_CASH_CAPTION,
+  PLAID_SNAPSHOT_CASH_CAPTION,
   priceDateMismatchCaption,
 } from "@/lib/queries/account-cash-line";
 
@@ -206,7 +207,8 @@ describe("getAccountCashLine: measured date and price-date mismatch", () => {
       const line = getAccountCashLine(db, accountId)!;
       expect(line.positionsPriceDate).toBe("2026-03-05");
       expect(line.priceDateMismatch).toBe(false);
-      expect(line.liveSourceCaption).toBe(LIVE_SNAPSHOT_CASH_CAPTION);
+      // Plan v4: a Plaid total is the previous session's, never intraday.
+      expect(line.liveSourceCaption).toBe(PLAID_SNAPSHOT_CASH_CAPTION);
     });
 
     it("ignores a price dated after the valuation date and a sweep fund's price", () => {

@@ -35,6 +35,7 @@ import { useEffect, useState } from "react";
 import apiFetch from "@/lib/http/apiFetch";
 import { networkFailureMessage, readMutationResult } from "@/lib/ui/mutation-result";
 import { joinSentences } from "@/lib/ui/join-sentences";
+import { plaidSyncMessage, type PlaidSyncAnswer } from "@/lib/ui/plaid-sync-message";
 import { createPlaidLinkStore, type StoredLinkPayload } from "@/lib/plaid/link-storage";
 
 declare global {
@@ -52,6 +53,8 @@ type ConnectState =
   | { kind: "opening" }
   | { kind: "syncing" }
   | { kind: "success"; message: string }
+  /** Re-authenticated, but the sync stored no account (a skipped read). */
+  | { kind: "info"; message: string }
   | { kind: "cancelled"; message: string }
   | { kind: "error"; message: string };
 
@@ -145,13 +148,17 @@ export default function PlaidLinkPage() {
       setState({ kind: "syncing" });
       try {
         const res = await apiFetch("/api/plaid/sync", { method: "POST" });
-        const result = await readMutationResult<{ holdingsWritten?: number }>(res);
+        const result = await readMutationResult<{ data?: PlaidSyncAnswer | null }>(res);
         if (cancelled) return;
         if (result.ok) {
-          const n = result.data.holdingsWritten ?? 0;
+          // The sync outcome sentence is the shared helper's (the same words
+          // as the Accounts-tab button). A skipped read (before 07:30, after
+          // the open, a closed market) stores nothing: information, not
+          // success.
+          const outcome = plaidSyncMessage(result.data.data);
           setState({
-            kind: "success",
-            message: `Re-authenticated and synced — ${n} holding${n === 1 ? "" : "s"} updated.`,
+            kind: outcome.refresh ? "success" : "info",
+            message: joinSentences("Re-authenticated.", outcome.text),
           });
         } else {
           setState({
@@ -305,6 +312,17 @@ export default function PlaidLinkPage() {
         {state.kind === "success" && (
           <>
             <p className="text-sm text-up">{state.message}</p>
+            <a
+              href="/dashboard/today"
+              className="inline-block text-sm text-gold-ink hover:decoration-2 underline"
+            >
+              Back to Portfolio Desk
+            </a>
+          </>
+        )}
+        {state.kind === "info" && (
+          <>
+            <p className="text-sm text-ink-dim">{state.message}</p>
             <a
               href="/dashboard/today"
               className="inline-block text-sm text-gold-ink hover:decoration-2 underline"

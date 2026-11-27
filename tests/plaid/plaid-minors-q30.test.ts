@@ -2,11 +2,12 @@
  * Plaid minors, second batch (wave Q unit 30).
  *
  * 1. The Settings "Sync Vanguard now" button calls a route that always forces
- *    the sync, and a forced sync never reports "market closed" or "already
- *    synced today". The panel carried two messages for those answers that no
- *    click could ever show. They are gone; the pin on the route's `force`
- *    keeps the removal honest (drop the force and this file fails, which is
- *    the moment to put the messages back).
+ *    the sync, and a forced sync never reports "already synced today". The
+ *    panel carried two messages for "market closed" and "already synced
+ *    today". Since the Plaid session-dating work (plan v4 A2) a forced read
+ *    CAN answer "market closed" (and "after open"); `force` bypasses only the
+ *    once-a-day gate. The panel's wording for those answers is not part of
+ *    this file; the pins below on the route's `force` stay.
  * 2. The daily launchd script: it stops with a clear line when `.env.local`
  *    or the cron secret is missing (it used to call the route with no secret
  *    and log only the refusal), it accepts any 2xx answer, and it logs a line
@@ -53,7 +54,7 @@ function connectedDb(): Database.Database {
   return db;
 }
 
-describe("a forced Plaid sync never answers with a skip reason", () => {
+describe("a forced Plaid sync skips only on a closed market or after the open", () => {
   // Sat 2026-07-11 noon ET: the market is closed.
   const SATURDAY = new Date("2026-07-11T16:00:00.000Z");
 
@@ -62,19 +63,20 @@ describe("a forced Plaid sync never answers with a skip reason", () => {
     expect(r?.skippedReason).toBe("market_closed");
   });
 
-  it("forced on a closed day: runs, skip reason is null", async () => {
+  it("forced on a closed day: still skipped as market_closed (force no longer bypasses it)", async () => {
     const r = await refreshVanguardHoldingsFromPlaid(connectedDb(), {
       cfg: stubCfg(EMPTY_PLAID),
       now: SATURDAY,
       force: true,
     });
     expect(r).not.toBeNull();
-    expect(r!.skippedReason).toBeNull();
+    expect(r!.skippedReason).toBe("market_closed");
   });
 
-  it("forced twice in one day: the second run is not 'already synced today'", async () => {
+  it("forced twice in one pre-open window: the second run is not 'already synced today'", async () => {
     const db = connectedDb();
-    const FRIDAY = new Date("2026-07-10T16:00:00.000Z");
+    // Fri 2026-07-10 07:35 ET: inside the store window.
+    const FRIDAY = new Date("2026-07-10T11:35:00.000Z");
     const first = await refreshVanguardHoldingsFromPlaid(db, { cfg: stubCfg(EMPTY_PLAID), now: FRIDAY, force: true });
     const second = await refreshVanguardHoldingsFromPlaid(db, { cfg: stubCfg(EMPTY_PLAID), now: FRIDAY, force: true });
     expect(first!.skippedReason).toBeNull();
@@ -99,16 +101,19 @@ describe("PlaidSection carries no message a click can never show", () => {
     expect(panel).not.toContain("Already synced today");
   });
 
-  it("the success message is the one honest count line, with the new-securities warning kept", () => {
+  it("the outcome line is the shared helper's, with the new-securities warning kept", () => {
+    // Since the session-dating work the outcome sentence comes from
+    // lib/ui/plaid-sync-message.ts (tests/ui/plaid-sync-message.test.ts pins
+    // the words and the panel's use of it).
     const handler = sliceBetween(panel, "async function handleSync()", "if (!payload && !loadError)");
-    expect(handler).toContain("Synced ${holdingsWritten} holding");
-    expect(handler).toContain("across ${accountsSynced} account");
-    expect(handler).toContain("New securities created:");
+    expect(handler).toContain("plaidSyncMessage(data)");
+    expect(handler).toContain("plaidNewSecuritiesSentence(securitiesCreated)");
+    expect(handler).not.toContain("Synced ${holdingsWritten} holding");
     // A failed sync names itself and carries the server's own reason, read
     // through the shared result reader (a 500 with no JSON is still a line).
     expect(handler).toContain("readMutationResult<SyncResponse>(res)");
-    expect(handler).toContain("Vanguard sync failed: ${result.message}");
-    expect(handler).toContain('networkFailureMessage("sync Vanguard")');
+    expect(handler).toContain("plaidSyncFailureText(result.message)");
+    expect(handler).toContain("networkFailureMessage(PLAID_SYNC_ACTION)");
   });
 });
 

@@ -58,10 +58,10 @@ describe("olderVanguardBasisNote", () => {
   });
   it("names the older Vanguard date", () => {
     expect(olderVanguardBasisNote("2026-09-17", "2026-09-20", TODAY)).toBe(
-      "Vanguard holdings through Sep 17",
+      "Vanguard positions from the Sep 17 close",
     );
     expect(olderVanguardBasisNote("2026-09-17", "2026-09-20T00:00:00", TODAY)).toBe(
-      "Vanguard holdings through Sep 17",
+      "Vanguard positions from the Sep 17 close",
     );
   });
   it("is silent when either date is unknown", () => {

@@ -62,6 +62,7 @@ function cashLine(over: Partial<AccountCashLine> = {}): AccountCashLine {
     anchorDate: "2026-02-28",
     cashAnchored: true,
     isLiveSource: false,
+    liveSource: null,
     liveSourceCaption: null,
     cashEquivalentSymbols: [],
     dataQuality: "live",

@@ -21,6 +21,13 @@ import { useEffect, useState } from "react";
 import apiFetch from "@/lib/http/apiFetch";
 import { networkFailureMessage, readMutationResult } from "@/lib/ui/mutation-result";
 import { joinSentences } from "@/lib/ui/join-sentences";
+import {
+  PLAID_SYNC_ACTION,
+  plaidNewSecuritiesSentence,
+  plaidSyncFailureText,
+  plaidSyncMessage,
+  type PlaidSyncAnswer,
+} from "@/lib/ui/plaid-sync-message";
 
 interface PlaidAccountInfo {
   id: string;
@@ -44,13 +51,16 @@ interface UnmatchedPlaidSecurity {
   reason: string;
 }
 
+/** The in-app sync route's answer: `{ success, data }` (lib/plaid/refresh.ts result). */
 interface SyncResponse {
-  accountsSynced?: number;
-  holdingsWritten?: number;
-  pricesWritten?: number;
-  staleRemoved?: number;
-  unmatched?: UnmatchedPlaidSecurity[];
-  securitiesCreated?: string[];
+  success: boolean;
+  data?:
+    | (PlaidSyncAnswer & {
+        unmatched?: UnmatchedPlaidSecurity[];
+        securitiesCreated?: string[];
+      })
+    | null;
+  error?: string;
 }
 
 type InlineStatus =
@@ -59,7 +69,8 @@ type InlineStatus =
 
 type SyncStatus =
   | {
-      kind: "success";
+      /** "info" when nothing was stored (a skipped read, or no account stored). */
+      kind: "success" | "info";
       message: string;
       unmatched: UnmatchedPlaidSecurity[];
       securitiesCreated: string[];
@@ -203,29 +214,27 @@ export function PlaidSection() {
       const res = await apiFetch("/api/plaid/sync", { method: "POST" });
       const result = await readMutationResult<SyncResponse>(res);
       if (!result.ok) {
-        setSyncStatus({ kind: "error", message: `Vanguard sync failed: ${result.message}` });
+        setSyncStatus({ kind: "error", message: plaidSyncFailureText(result.message) });
         return;
       }
-      const data = result.data;
-      const accountsSynced = data.accountsSynced ?? 0;
-      const holdingsWritten = data.holdingsWritten ?? 0;
-      // This button's route always forces the sync, so the cron-only
-      // "skipped" answers (closed day, already ran today) never come back
-      // here; tests/plaid/plaid-minors-q30.test.ts pins that.
-      let message = `Synced ${holdingsWritten} holding${holdingsWritten === 1 ? "" : "s"} across ${accountsSynced} account${accountsSynced === 1 ? "" : "s"}.`;
-      const securitiesCreated = data.securitiesCreated ?? [];
-      if (securitiesCreated.length > 0) {
-        message += ` New securities created: ${securitiesCreated.join(", ")} — verify these aren't duplicates of existing holdings.`;
-      }
+      // The outcome sentence comes from the shared helper, the same words the
+      // Accounts-tab button shows: a skipped read or a read that stored no
+      // account is information, never success (plan v4 section A).
+      const data = result.data.data ?? null;
+      const outcome = plaidSyncMessage(data);
+      const securitiesCreated = data?.securitiesCreated ?? [];
+      const newSecurities = plaidNewSecuritiesSentence(securitiesCreated);
       setSyncStatus({
-        kind: "success",
-        message,
-        unmatched: data.unmatched ?? [],
+        kind: outcome.tone,
+        message: newSecurities ? joinSentences(outcome.text, newSecurities) : outcome.text,
+        unmatched: data?.unmatched ?? [],
         securitiesCreated,
       });
-      void refreshAfterWrite();
+      // Re-read the settings (the "last synced" time) only when an account
+      // was stored; a skipped read moved nothing.
+      if (outcome.refresh) void refreshAfterWrite();
     } catch {
-      setSyncStatus({ kind: "error", message: networkFailureMessage("sync Vanguard") });
+      setSyncStatus({ kind: "error", message: networkFailureMessage(PLAID_SYNC_ACTION) });
     } finally {
       setSyncing(false);
     }
@@ -374,10 +383,18 @@ export function PlaidSection() {
         </button>
         {syncStatus && (
           <div className="text-[11px] space-y-0.5">
-            <p className={syncStatus.kind === "error" ? "text-down" : "text-up"}>
+            <p
+              className={
+                syncStatus.kind === "error"
+                  ? "text-down"
+                  : syncStatus.kind === "success"
+                    ? "text-up"
+                    : "text-ink-dim"
+              }
+            >
               {syncStatus.message}
             </p>
-            {syncStatus.kind === "success" && syncStatus.unmatched.length > 0 && (
+            {syncStatus.kind !== "error" && syncStatus.unmatched.length > 0 && (
               <p className="text-ink-faint italic">
                 Unmatched:{" "}
                 {syncStatus.unmatched

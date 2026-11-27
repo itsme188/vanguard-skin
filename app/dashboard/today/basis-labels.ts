@@ -49,9 +49,11 @@ export function ibkrSessionWord(sessionDate: string | null | undefined, today: s
 }
 
 /**
- * Note beside the Portfolio strip's "as of" date when the Vanguard holdings
+ * Note beside the Portfolio strip's "as of" date when the Vanguard positions
  * behind the total are older than that headline date. Null when they are not
- * older, or when either date is unknown.
+ * older, or when either date is unknown. Since plan v4 (Plaid session dating)
+ * a Vanguard position row is dated on the session whose close it describes,
+ * so the note names that close.
  */
 export function olderVanguardBasisNote(
   vanguardHoldingsAsOf: string | null | undefined,
@@ -62,7 +64,90 @@ export function olderVanguardBasisNote(
   const headline = datePart(headlineAsOf);
   if (vanguard === null || headline === null) return null;
   if (vanguard >= headline) return null;
-  return `Vanguard holdings through ${shortDate(vanguard, today)}`;
+  return `Vanguard positions from the ${shortDate(vanguard, today)} close`;
+}
+
+/**
+ * The dates behind one account's value, as `getPortfolioCurrentValues`
+ * returns them (lib/queries/dashboard.ts). Declared here, structurally, so
+ * this file stays import-free.
+ */
+export interface AccountValueCaptionInput {
+  /** Which row the value was read from. */
+  sourceKind: "live" | "daily" | "statement" | null;
+  /** Date of that row. */
+  asOfDate: string | null;
+  /** The account's latest daily valuation row. */
+  valuationDate: string | null;
+  /** Date and source of the newest holdings rows (tombstones left out). */
+  holdingsSession: string | null;
+  holdingsSource: "statement" | "plaid" | "tws" | null;
+  /** Date and source of the newest monthly_snapshots anchor. */
+  anchorSession: string | null;
+  anchorSource: "statement" | "plaid" | "tws" | null;
+}
+
+/**
+ * The caption under the Portfolio strip for one Vanguard account (plan v4,
+ * unit U3). Two sentences, positions first, then the value:
+ *
+ *  - "Positions from the <session> close (Plaid)." when the newest rows are
+ *    Plaid's AND a Plaid anchor sits on that same date; Plaid rows with no
+ *    Plaid anchor on their date never read as a Plaid close ("Positions from
+ *    Plaid, dated <session>.").
+ *  - "Positions from the <session> statement." for statement rows.
+ *  - The value: a daily valuation dated after the newest anchor reads
+ *    "Valued <date> at the latest prices." (never "a Plaid close"); one
+ *    dated before it (a valuation that has not caught up, plan A8) reads
+ *    "Value not yet updated for the <anchor> close."; one on the anchor's
+ *    own date reads as that close or statement. A value read straight from a
+ *    statement row names the statement.
+ *
+ * Words only: it never touches a figure. Null when there is nothing true to
+ * say (no positions and no value).
+ */
+export function accountValueCaption(input: AccountValueCaptionInput, today: string): string | null {
+  const parts: string[] = [];
+
+  const session = datePart(input.holdingsSession);
+  const anchor = datePart(input.anchorSession);
+  if (session !== null) {
+    if (input.holdingsSource === "statement") {
+      parts.push(`Positions from the ${shortDate(session, today)} statement.`);
+    } else if (input.holdingsSource === "plaid") {
+      parts.push(
+        input.anchorSource === "plaid" && anchor === session
+          ? `Positions from the ${shortDate(session, today)} close (Plaid).`
+          : `Positions from Plaid, dated ${shortDate(session, today)}.`,
+      );
+    } else if (input.holdingsSource === "tws") {
+      parts.push(`Positions from the ${shortDate(session, today)} broker sync.`);
+    }
+  }
+
+  const asOf = datePart(input.asOfDate);
+  if (input.sourceKind === "statement" && asOf !== null) {
+    parts.push(`Valued at the ${shortDate(asOf, today)} statement.`);
+  } else if (input.sourceKind === "live" && asOf !== null) {
+    parts.push(`Live broker value, ${shortDate(asOf, today)}.`);
+  } else if (input.sourceKind === "daily") {
+    const valued = datePart(input.valuationDate) ?? asOf;
+    if (valued !== null) {
+      if (anchor === null || valued > anchor) {
+        parts.push(`Valued ${shortDate(valued, today)} at the latest prices.`);
+      } else if (valued < anchor) {
+        parts.push(`Value not yet updated for the ${shortDate(anchor, today)} close.`);
+      } else if (input.anchorSource === "plaid") {
+        parts.push(`Valued at the ${shortDate(anchor, today)} close (Plaid).`);
+      } else if (input.anchorSource === "statement") {
+        parts.push(`Valued at the ${shortDate(anchor, today)} statement.`);
+      } else {
+        parts.push(`Valued ${shortDate(valued, today)}.`);
+      }
+    }
+  }
+
+  return parts.length > 0 ? parts.join(" ") : null;
 }
 
 /**

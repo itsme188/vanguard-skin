@@ -156,7 +156,11 @@ describe("writePlaidHoldings — directional supersession + transaction bumps", 
     hold(taxableId, expiresToday, 4, D_MINUS_5, `plaid:${taxableId}:${expiresToday}:${D_MINUS_5}`);
 
     const genBefore = getTaxInputGeneration(db);
-    writePlaidHoldings(db, mappedResult([pos("Y", 10)]), { pTax: taxableId }, TODAY);
+    // Session dating (plan v4 A4): the book is dated on the session, the
+    // purges run on the run day. TODAY is the run day here.
+    writePlaidHoldings(db, mappedResult([pos("Y", 10)]), { pTax: taxableId }, "2026-07-09", {
+      runDay: TODAY,
+    });
 
     expect(rowAt(taxableId, liveExpiredOption, D_MINUS_5)).toBeUndefined();
     expect(rowAt(taxableId, liveMaturedBond, D_MINUS_5)).toBeUndefined();

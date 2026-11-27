@@ -8,9 +8,13 @@ import type { PlaidClientConfig } from "@/lib/plaid/client";
 import { todayET } from "@/lib/calendar/date-utils";
 import { getSyncState } from "@/lib/tws/sync-state";
 
-// A weekday, non-holiday reference instant (Fri 2026-07-10 ~noon ET)
-const NOW = new Date("2026-07-10T16:00:00.000Z");
+// A weekday, non-holiday reference instant inside the store window (Fri
+// 2026-07-10 07:35 ET). Since the session-dating work (plan v4 A1) a read is
+// stored only before the open, and its rows are dated on the session it
+// describes: the trading day before the run day.
+const NOW = new Date("2026-07-10T11:35:00.000Z");
 const TODAY = todayET(NOW);
+const SESSION = "2026-07-09";
 
 function holdingsJson() {
   return {
@@ -87,28 +91,28 @@ describe("refreshVanguardHoldingsFromPlaid", () => {
       .prepare(
         `SELECT s.symbol, h.quantity, h.cost_basis, h.source_key FROM holdings h JOIN securities s ON s.id = h.security_id WHERE h.account_id = ? AND h.as_of_date = ?`,
       )
-      .all(taxableId, TODAY) as { symbol: string; quantity: number; cost_basis: number | null; source_key: string }[];
+      .all(taxableId, SESSION) as { symbol: string; quantity: number; cost_basis: number | null; source_key: string }[];
     expect(holdings.map((h) => h.symbol).sort()).toEqual(["PRIM", "VWENX"]);
     expect(holdings.every((h) => h.cost_basis === null)).toBe(true);
-    expect(holdings.every((h) => h.source_key.startsWith("plaid:"))).toBe(true);
+    expect(holdings.every((h) => h.source_key.startsWith("plaid:s:"))).toBe(true);
 
     const snap = db
       .prepare(`SELECT total_value, cash_value, source FROM monthly_snapshots WHERE account_id = ? AND month_end_date = ?`)
-      .get(taxableId, TODAY) as { total_value: number; cash_value: number; source: string };
+      .get(taxableId, SESSION) as { total_value: number; cash_value: number; source: string };
     expect(snap).toEqual({ total_value: 300000, cash_value: 15000, source: "plaid" });
 
     const price = db
       .prepare(
         `SELECT p.close_price, p.source FROM prices p JOIN securities s ON s.id = p.security_id WHERE s.symbol = 'VWENX' AND p.date = ?`,
       )
-      .get(TODAY) as { close_price: number; source: string };
+      .get(SESSION) as { close_price: number; source: string };
     expect(price).toEqual({ close_price: 87.31, source: "plaid" });
   });
 
   it("never overwrites a statement-sourced snapshot", async () => {
     db.prepare(
       `INSERT INTO monthly_snapshots (account_id, month_end_date, total_value, source) VALUES (?, ?, 111, 'vanguard-pdf')`,
-    ).run(taxableId, TODAY);
+    ).run(taxableId, SESSION);
     await refreshVanguardHoldingsFromPlaid(db, { cfg: stubCfg(holdingsJson()), now: NOW, force: true });
     const snap = db
       .prepare(`SELECT total_value, source FROM monthly_snapshots WHERE account_id = ?`)
@@ -121,7 +125,7 @@ describe("refreshVanguardHoldingsFromPlaid", () => {
     const goneId = upsertSecurity(db, { symbol: "GONE", securityType: "Stock" });
     db.prepare(
       `INSERT INTO holdings (account_id, security_id, quantity, cost_basis, as_of_date, source_key) VALUES (?, ?, 10, NULL, ?, ?)`,
-    ).run(taxableId, goneId, TODAY, `plaid:${taxableId}:${goneId}:${TODAY}`);
+    ).run(taxableId, goneId, SESSION, `plaid:s:${taxableId}:${goneId}:${SESSION}`);
     const r = await refreshVanguardHoldingsFromPlaid(db, { cfg: stubCfg(holdingsJson()), now: NOW, force: true });
     expect(r!.staleRemoved).toBe(1);
     expect(
@@ -215,7 +219,7 @@ describe("refreshVanguardHoldingsFromPlaid", () => {
     // …and the plaid holdings row landed on the existing BRK/B security.
     const row = db
       .prepare(`SELECT quantity FROM holdings WHERE account_id = ? AND security_id = ? AND as_of_date = ?`)
-      .get(taxableId, brkSlashId, TODAY) as { quantity: number } | undefined;
+      .get(taxableId, brkSlashId, SESSION) as { quantity: number } | undefined;
     expect(row?.quantity).toBe(25);
   });
 
@@ -224,7 +228,7 @@ describe("refreshVanguardHoldingsFromPlaid", () => {
     db.prepare(
       `INSERT INTO holdings (account_id, security_id, quantity, cost_basis, as_of_date, source_key)
        VALUES (?, ?, 999, NULL, ?, 'vanguard-pdf:test:1')`,
-    ).run(taxableId, primId, TODAY);
+    ).run(taxableId, primId, SESSION);
 
     await refreshVanguardHoldingsFromPlaid(db, { cfg: stubCfg(holdingsJson()), now: NOW, force: true });
 
@@ -232,7 +236,7 @@ describe("refreshVanguardHoldingsFromPlaid", () => {
       .prepare(
         `SELECT quantity, source_key FROM holdings WHERE account_id = ? AND security_id = ? AND as_of_date = ?`,
       )
-      .get(taxableId, primId, TODAY) as { quantity: number; source_key: string };
+      .get(taxableId, primId, SESSION) as { quantity: number; source_key: string };
     expect(row.quantity).toBe(999);
     expect(row.source_key).toBe("vanguard-pdf:test:1");
   });
@@ -241,13 +245,13 @@ describe("refreshVanguardHoldingsFromPlaid", () => {
     const vwenxId = upsertSecurity(db, { symbol: "VWENX", securityType: "Mutual Fund" });
     db.prepare(
       `INSERT INTO prices (security_id, date, close_price, source) VALUES (?, ?, 111, 'tws')`,
-    ).run(vwenxId, TODAY);
+    ).run(vwenxId, SESSION);
 
     await refreshVanguardHoldingsFromPlaid(db, { cfg: stubCfg(holdingsJson()), now: NOW, force: true });
 
     const row = db
       .prepare(`SELECT close_price, source FROM prices WHERE security_id = ? AND date = ?`)
-      .get(vwenxId, TODAY) as { close_price: number; source: string };
+      .get(vwenxId, SESSION) as { close_price: number; source: string };
     expect(row.close_price).toBe(111);
     expect(row.source).toBe("tws");
   });
@@ -289,8 +293,12 @@ describe("refreshVanguardHoldingsFromPlaid", () => {
     });
 
     expect(r).not.toBeNull();
-    // Only pTax counted — pEmpty (zero positions) is skipped entirely.
+    // Only pTax counted — pEmpty (zero positions) is skipped entirely, and
+    // the answer says why.
     expect(r!.accountsSynced).toBe(1);
+    expect(r!.skippedAccounts).toEqual([
+      { accountId: rothId, accountName: "Roth IRA", reason: "no_positions" },
+    ]);
 
     const holdingsCount = db
       .prepare(`SELECT COUNT(*) AS c FROM holdings WHERE account_id = ?`)

@@ -9,6 +9,8 @@ import {
   buildFlowAdjustedIndex,
   fetchNetFlowsByDate,
   fetchAnchorSourceSeamDates,
+  fetchGoLiveDatesForScope,
+  intervalContainsAnyDate,
 } from "@/lib/compute/flow-adjusted";
 import { normalizeMarketCapCategory } from "@/lib/securities/normalize-market-cap";
 import { issuerSiblings } from "@/lib/securities/issuer-family";
@@ -220,12 +222,20 @@ function computeMarketRegression(
       : [];
   const { returns: adjustedReturns } = buildFlowAdjustedIndex(alignedSeries, flows, seamDates);
 
+  // GO-LIVE (ruling E2): an aligned interval (allDates[i-1], allDates[i]]
+  // that holds the day a live source started on an account in scope carries
+  // a change of measurement, not a market move, so the regression leaves it
+  // out. The interval can span several sessions when the benchmark has a
+  // gap, and a closed-day go-live falls inside the interval that covers it.
+  const goLiveDates = alignedSeries.length >= 2 ? fetchGoLiveDatesForScope(db, accountIds) : [];
+
   const dateIndex = new Map(allDates.map((d, i) => [d, i]));
   const portfolioReturns: number[] = [];
   const benchmarkReturns: number[] = [];
 
   for (const r of adjustedReturns) {
     const i = dateIndex.get(r.date)!;
+    if (intervalContainsAnyDate(allDates[i - 1], allDates[i], goLiveDates)) continue;
     const bPrev = benchmarkByDate.get(allDates[i - 1])!;
     const bCurr = benchmarkByDate.get(allDates[i])!;
     if (bPrev > 0 && bCurr > 0) {

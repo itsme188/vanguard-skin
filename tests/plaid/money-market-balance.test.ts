@@ -72,6 +72,7 @@ function dayPayload(mmQty: number | null, mm: PlaidSecurity = MM_FLAGGED): Plaid
   return resp(holdings, mmQty != null ? [STOCK, mm] : [STOCK]);
 }
 
+/** `day` is the session the book is dated on (writePlaidHoldings's 4th argument). */
 function write(r: PlaidHoldingsResponse, day: string) {
   return writePlaidHoldings(db, mapPlaidHoldings(r), { pTax: acct }, day);
 }
@@ -106,7 +107,7 @@ describe("money-market balance from Plaid", () => {
     expect(r.holdingsWritten).toBe(1); // the stock only: the fund is not a position
     // Before: the current row was the 5,000 statement row. After: Plaid's 6,000.
     expect(currentRows(mmId)).toEqual([
-      { quantity: 6000, as_of_date: DAY1, source_key: `plaid:${acct}:${mmId}:${DAY1}` },
+      { quantity: 6000, as_of_date: DAY1, source_key: `plaid:s:${acct}:${mmId}:${DAY1}` },
     ]);
     expect(snapshot(DAY1)).toEqual({ total_value: ACCOUNT_TOTAL, cash_value: 6000 });
   });

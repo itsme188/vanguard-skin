@@ -23,7 +23,9 @@ import { EarningsHub } from "./EarningsHub";
 import { WeekAheadView } from "./WeekAheadView";
 import { IbkrRefreshButton } from "./IbkrRefreshButton";
 import { SnapshotAge } from "../components/SnapshotAge";
+import { RECON_HOLDING_SOURCE_PREFIX } from "@/lib/db/holding-sources";
 import {
+  accountValueCaption,
   ibkrSessionWord,
   ibkrSnapshotHeading,
   olderVanguardBasisNote,
@@ -150,6 +152,8 @@ export default async function TodayPage({ searchParams }: TodayPageProps) {
   //    boundary so a glance-at-phone view tells the user when Vanguard
   //    holdings + cash were last refreshed. Picks the OLDER of the two
   //    Vanguard accounts since both share the same statement cadence.
+  //    A recon tombstone (a quantity-0 closure row) is not a position, so
+  //    it never dates the Vanguard positions.
   const vanguardAsOf = db
     .prepare(
       `SELECT MIN(latest) AS earliest
@@ -158,6 +162,7 @@ export default async function TodayPage({ searchParams }: TodayPageProps) {
            FROM holdings h
            JOIN accounts a ON a.id = h.account_id
            WHERE LOWER(a.name) LIKE '%vanguard%'
+             AND COALESCE(h.source_key, '') NOT LIKE '${RECON_HOLDING_SOURCE_PREFIX}%'
            GROUP BY h.account_id
          )`,
     )
@@ -166,6 +171,13 @@ export default async function TodayPage({ searchParams }: TodayPageProps) {
   // The strip's total can sit on a newer date than the Vanguard holdings in
   // it. Say so beside the as-of date; the total itself is unchanged.
   const vanguardBasisNote = olderVanguardBasisNote(vanguardSnapshotDate, portfolio.latestDate, todayET());
+  // One caption per Vanguard account, naming the positions' session and the
+  // valuation date separately (plan v4 U3). A Plaid snapshot is the previous
+  // session's close, so a Vanguard value is its daily valuation, never live.
+  const vanguardCaptions = portfolio.accounts
+    .filter((a) => a.accountName.toLowerCase().includes("vanguard"))
+    .map((a) => ({ accountId: a.accountId, accountName: a.accountName, caption: accountValueCaption(a, todayET()) }))
+    .filter((c): c is { accountId: number; accountName: string; caption: string } => c.caption !== null);
 
   const overallDaysOld = latestPriceDate ? daysAgo(latestPriceDate) : null;
   const overallSource = holdings.find((h) => h.price_date === latestPriceDate)?.price_source ?? null;
@@ -231,6 +243,15 @@ export default async function TodayPage({ searchParams }: TodayPageProps) {
           {portfolio.latestDate && ` · as of ${fmtShortDate(portfolio.latestDate)}`}
           {vanguardBasisNote && ` · ${vanguardBasisNote}`}
         </span>
+        {vanguardCaptions.length > 0 && (
+          <div className="basis-full space-y-0.5 text-[11px] text-ink-faint">
+            {vanguardCaptions.map((c) => (
+              <p key={c.accountId}>
+                {c.accountName}: {c.caption}
+              </p>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* ── Today's releases (full width — the momentum tile moved to

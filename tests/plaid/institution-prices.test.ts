@@ -6,6 +6,7 @@ import { mapPlaidHoldings } from "@/lib/plaid/map-holdings";
 import { isPreOpenRead, writePlaidHoldings } from "@/lib/plaid/refresh";
 import type { PlaidHolding, PlaidHoldingsResponse, PlaidSecurity } from "@/lib/plaid/client";
 import { getTaxInputGeneration } from "@/lib/compute/tax-convention";
+import { previousTradingDay } from "@/lib/calendar/market-holidays";
 
 // Synthetic symbols and round numbers only. The run day is a Monday, so the
 // session a pre-open Plaid read describes is the previous Friday.
@@ -46,8 +47,10 @@ function resp(holdings: PlaidHolding[], securities: PlaidSecurity[]): PlaidHoldi
   };
 }
 
+// The writer takes the session the book is dated on (plan v4 A1); the
+// refresh passes previousTradingDay(run day). Same here.
 function write(r: PlaidHoldingsResponse, runDay = RUN_DAY) {
-  return writePlaidHoldings(db, mapPlaidHoldings(r), { pTax: acct }, runDay);
+  return writePlaidHoldings(db, mapPlaidHoldings(r), { pTax: acct }, previousTradingDay(runDay), { runDay });
 }
 
 function pricesFor(symbol: string): { date: string; close_price: number; source: string }[] {
@@ -172,15 +175,16 @@ describe("writePlaidHoldings — Vanguard price when the broker feed has none", 
     expect(pricesFor("ZSTK")[0]).toEqual({ date: "2026-06-18", close_price: 102, source: "plaid" });
   });
 
-  it("keeps the mutual-fund dating exactly as before (as-of, else run day)", () => {
-    write(
+  it("dates a mutual-fund price on the session too; a mismatching as-of is only counted (plan v4 A1)", () => {
+    const r = write(
       resp(
         [holding("a", 10, 20, "2026-07-09"), holding("b", 10, 30, null)],
         [security("a", "ZFND", "mutual fund"), security("b", "ZFNN", "mutual fund")],
       ),
     );
-    expect(pricesFor("ZFND")).toEqual([{ date: "2026-07-09", close_price: 20, source: "plaid" }]);
-    expect(pricesFor("ZFNN")).toEqual([{ date: RUN_DAY, close_price: 30, source: "plaid" }]);
+    expect(pricesFor("ZFND")).toEqual([{ date: SESSION, close_price: 20, source: "plaid" }]);
+    expect(pricesFor("ZFNN")).toEqual([{ date: SESSION, close_price: 30, source: "plaid" }]);
+    expect(r.priceAsOfMismatches).toBe(1);
   });
 
   it("a dotted share-class price lands on the slash-form security the holding uses", () => {
@@ -189,7 +193,7 @@ describe("writePlaidHoldings — Vanguard price when the broker feed has none", 
     expect(db.prepare(`SELECT COUNT(*) AS c FROM securities WHERE symbol = 'ZBR.B'`).get()).toEqual({ c: 0 });
     const holdingRow = db
       .prepare(`SELECT security_id FROM holdings WHERE account_id = ? AND as_of_date = ?`)
-      .get(acct, RUN_DAY) as { security_id: number };
+      .get(acct, SESSION) as { security_id: number };
     expect(holdingRow.security_id).toBe(slashId);
     expect(
       db.prepare(`SELECT security_id, date, close_price FROM prices WHERE security_id = ?`).all(slashId),
@@ -234,35 +238,18 @@ describe("writePlaidHoldings — Vanguard price when the broker feed has none", 
   });
 });
 
-describe("a read taken outside the pre-open window stores no stock price", () => {
-  it("isPreOpenRead: a trading day before 09:30 Eastern only", () => {
+// The refresh stores nothing outside the pre-open window (plan v4 A2;
+// tests/plaid/refresh-session-dating.test.ts), so the writer has no
+// "skip stock prices" switch any more. isPreOpenRead stays as an alias.
+describe("the pre-open window", () => {
+  it("isPreOpenRead: a trading day from 07:30 to before 09:30 Eastern only", () => {
     // 2026-07-13 is a Monday; July is UTC-4.
+    expect(isPreOpenRead(new Date("2026-07-13T11:29:00Z"))).toBe(false); // 07:29 ET
     expect(isPreOpenRead(new Date("2026-07-13T11:30:00Z"))).toBe(true); // 07:30 ET
     expect(isPreOpenRead(new Date("2026-07-13T13:29:00Z"))).toBe(true); // 09:29 ET
     expect(isPreOpenRead(new Date("2026-07-13T13:30:00Z"))).toBe(false); // 09:30 ET
     expect(isPreOpenRead(new Date("2026-07-13T19:00:00Z"))).toBe(false); // 15:00 ET
     expect(isPreOpenRead(new Date("2026-07-12T11:30:00Z"))).toBe(false); // Sunday
     expect(isPreOpenRead(new Date("2026-07-03T11:30:00Z"))).toBe(false); // holiday observed
-  });
-
-  it("skips and counts stock and ETF prices; the fund price and holdings are still written", () => {
-    const r = writePlaidHoldings(
-      db,
-      mapPlaidHoldings(
-        resp(
-          [holding("a", 10, 100, null), holding("b", 10, 50, null), holding("f", 10, 20, "2026-07-09")],
-          [security("a", "ZSTK", "equity"), security("b", "ZETF", "etf"), security("f", "ZFNDX", "mutual fund")],
-        ),
-      ),
-      { pTax: acct },
-      RUN_DAY,
-      { storeEquityPrices: false },
-    );
-    expect(pricesFor("ZSTK")).toEqual([]);
-    expect(pricesFor("ZETF")).toEqual([]);
-    expect(pricesFor("ZFNDX")).toEqual([{ date: "2026-07-09", close_price: 20, source: "plaid" }]);
-    expect(r.equityPricesSkipped).toBe(2);
-    expect(r.pricesWritten).toBe(1);
-    expect(r.holdingsWritten).toBe(3);
   });
 });

@@ -15,6 +15,7 @@
 import type Database from "better-sqlite3";
 import { LIVE_SNAPSHOT_SOURCES } from "@/lib/db/live-sources";
 import { transactionAmountUsdSql } from "@/lib/queries/transaction-amount-currency";
+import { accountScopeAndSql } from "@/lib/queries/account-scope-sql";
 
 export interface SeriesPoint {
   date: string;
@@ -488,4 +489,115 @@ function accountSeamDates(anchors: AnchorRow[]): string[] {
   if (tail) out.push(tail.month_end_date);
 
   return out;
+}
+
+/**
+ * Go-live dates of the live sources on each account (ruling E2, 2026-11-15/16).
+ *
+ * The day a live source (`LIVE_SNAPSHOT_SOURCES`: tws, plaid) starts on an
+ * account, the daily series steps from statement-anchored values to a live
+ * broker total. That step is a one-off change of measurement, not a market
+ * move, so volatility, Sharpe and beta leave out the return interval that
+ * holds it. The flow-adjusted index, drawdown, cumulative return and the
+ * equity curve keep it: a later statement pins the series on both sides, so
+ * the index still telescopes to the statement return (see
+ * fetchAnchorSourceSeamDates, rule 1).
+ *
+ * RULE. For each account and each live source, the go-live date is the date
+ * of that source's FIRST monthly_snapshots anchor on the account, but only
+ * when the account has an EARLIER anchor of any other source (a statement
+ * source, NULL, or the other live source). An account that starts on a live
+ * source has no go-live jump.
+ *
+ * Derived from stored anchors on every call, never stored and never a fixed
+ * list, so it stays right when a repair moves the first live anchor (for
+ * example from a Saturday onto the Friday before it). The date is the
+ * anchor's own date, which can be a closed day; callers test it against
+ * return INTERVALS (see intervalContainsAnyDate), so a closed-day go-live
+ * still hits the session it folds into.
+ *
+ * Scope: `undefined` is every account; a defined empty list is no account
+ * (an empty map). Returns an empty map when monthly_snapshots does not exist
+ * (minimal in-memory test databases), as the readers above do.
+ */
+export function fetchLiveSourceGoLiveDates(
+  db: Database.Database,
+  accountIds: readonly number[] | undefined
+): Map<number, string[]> {
+  const out = new Map<number, string[]>();
+  const hasTable = db
+    .prepare(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'monthly_snapshots'"
+    )
+    .get();
+  if (!hasTable) return out;
+
+  const scope = accountScopeAndSql(accountIds, "account_id");
+  const rows = db
+    .prepare(
+      `SELECT account_id, month_end_date, source
+       FROM monthly_snapshots
+       WHERE 1 = 1
+         ${scope.sql}
+       ORDER BY account_id ASC, month_end_date ASC`
+    )
+    .all(...scope.params) as { account_id: number; month_end_date: string; source: string | null }[];
+
+  const byAccount = new Map<number, { date: string; source: string | null }[]>();
+  for (const row of rows) {
+    const list = byAccount.get(row.account_id);
+    const anchor = { date: row.month_end_date, source: row.source };
+    if (list) list.push(anchor);
+    else byAccount.set(row.account_id, [anchor]);
+  }
+
+  for (const [accountId, anchors] of byAccount) {
+    const dates = new Set<string>();
+    for (const live of LIVE_SNAPSHOT_SOURCES) {
+      const first = anchors.find((a) => a.source === live);
+      if (!first) continue;
+      const hasEarlierOther = anchors.some(
+        (a) => a.date < first.date && a.source !== live
+      );
+      if (hasEarlierOther) dates.add(first.date);
+    }
+    if (dates.size > 0) out.set(accountId, [...dates].sort());
+  }
+  return out;
+}
+
+/**
+ * Every go-live date of the accounts in scope, one sorted list. A return
+ * series summed over several accounts carries each account's go-live step,
+ * so the summed series leaves out an interval holding ANY of them.
+ */
+export function fetchGoLiveDatesForScope(
+  db: Database.Database,
+  accountIds: readonly number[] | undefined
+): string[] {
+  const all = new Set<string>();
+  for (const dates of fetchLiveSourceGoLiveDates(db, accountIds).values()) {
+    for (const d of dates) all.add(d);
+  }
+  return [...all].sort();
+}
+
+/**
+ * Does the return interval (startExclusive, endInclusive] hold any of
+ * `dates`? The same half-open convention as flows and seams: a date equal to
+ * the interval's start is already inside the starting value.
+ *
+ * A null start means the interval's lower end is unknown; it is then read as
+ * open below (any date on or before the end counts), which leaves an
+ * observation out rather than risk keeping a go-live step.
+ */
+export function intervalContainsAnyDate(
+  startExclusive: string | null,
+  endInclusive: string,
+  dates: readonly string[]
+): boolean {
+  for (const d of dates) {
+    if (d <= endInclusive && (startExclusive === null || d > startExclusive)) return true;
+  }
+  return false;
 }
