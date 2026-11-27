@@ -56,7 +56,7 @@ const PERCENT_FIELDS: { field: keyof Caps; label: string; help: string }[] = [
 ];
 
 export function ConstructionCapsPreferences() {
-  const { prefs, message, saving, save } = usePreferences();
+  const { prefs, message, saving, saved, clearSaved, save } = usePreferences();
   const [drafts, setDrafts] = useState<Partial<Record<CapScope, CapsDraft>>>({});
 
   function shownValue(scope: CapScope, field: keyof Caps): string {
@@ -69,6 +69,7 @@ export function ConstructionCapsPreferences() {
   }
 
   function setDraft(scope: CapScope, field: keyof Caps, value: string) {
+    clearSaved();
     setDrafts((prev) => ({ ...prev, [scope]: { ...prev[scope], [field]: value } }));
   }
 
@@ -93,6 +94,11 @@ export function ConstructionCapsPreferences() {
       {message && (
         <p role="alert" className="text-[12px] text-down">
           {message}
+        </p>
+      )}
+      {saved && (
+        <p role="status" className="text-[12px] text-up">
+          Saved
         </p>
       )}
       {!prefs && <p className="text-[12px] text-ink-faint">Loading the limits…</p>}

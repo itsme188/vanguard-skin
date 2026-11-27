@@ -23,6 +23,10 @@ export interface PreferencesState {
   /** A load or save failure, in plain words. */
   message: string | null;
   saving: boolean;
+  /** True after a save the server confirmed; cleared by the next save, a failure, or `clearSaved`. */
+  saved: boolean;
+  /** Dismisses the saved note, for when the owner edits a field again. */
+  clearSaved: () => void;
   /** Sends a subset; `action` completes "Couldn't <action>: …". */
   save: (updates: PreferencesPatch, action: string) => Promise<boolean>;
 }
@@ -31,6 +35,7 @@ export function usePreferences(): PreferencesState {
   const [prefs, setPrefs] = useState<AppPreferences | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -51,6 +56,7 @@ export function usePreferences(): PreferencesState {
   const save = useCallback(async (updates: PreferencesPatch, action: string) => {
     setSaving(true);
     setMessage(null);
+    setSaved(false);
     const result = await patchPreferences(updates, action);
     setSaving(false);
     if (!result.ok) {
@@ -58,8 +64,11 @@ export function usePreferences(): PreferencesState {
       return false;
     }
     setPrefs(result.prefs);
+    setSaved(true);
     return true;
   }, []);
 
-  return { prefs, message, saving, save };
+  const clearSaved = useCallback(() => setSaved(false), []);
+
+  return { prefs, message, saving, saved, clearSaved, save };
 }
