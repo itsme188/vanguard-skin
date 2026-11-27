@@ -194,7 +194,13 @@ export async function parseImport(
       return parseCanonicalCsv(textContent, filename);
     case "daf-contributions":
       return parseDafContributions(textContent, filename);
-    default:
+    default: {
+      // An empty file (or one holding only whitespace / a byte-order mark)
+      // is not an unrecognised format; say so, so the user does not go
+      // hunting for a header problem.
+      const bom = String.fromCharCode(0xfeff);
+      const isEmpty =
+        (textContent.startsWith(bom) ? textContent.slice(1) : textContent).trim() === "";
       return {
         sourceType: "unknown",
         sourceName: filename,
@@ -204,9 +210,14 @@ export async function parseImport(
         prices: [],
         snapshots: [],
         corporateActions: [],
-        errors: [`Unknown file format: ${filename}`],
+        errors: [
+          isEmpty
+            ? `This file is empty, there is nothing to import: ${filename}`
+            : `Unknown file format: ${filename}`,
+        ],
         warnings: [],
       };
+    }
   }
 }
 

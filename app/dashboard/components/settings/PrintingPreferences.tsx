@@ -19,7 +19,7 @@ import { CHIP_TONE_CLASSES } from "@/app/dashboard/components/Chip";
 import { usePreferences } from "./usePreferences";
 
 export function PrintingPreferences() {
-  const { prefs, message, saving, save } = usePreferences();
+  const { prefs, message, saving, saved, clearSaved, save } = usePreferences();
   const [printerDraft, setPrinterDraft] = useState<string | null>(null);
   const [pdftotextDraft, setPdftotextDraft] = useState<string | null>(null);
 
@@ -45,6 +45,11 @@ export function PrintingPreferences() {
           {message}
         </p>
       )}
+      {saved && (
+        <p role="status" className="text-[12px] text-up">
+          Saved
+        </p>
+      )}
 
       <div className="space-y-1">
         <label htmlFor="worksheetPrinterName" className="block text-[13px] font-medium text-ink">
@@ -59,7 +64,10 @@ export function PrintingPreferences() {
             id="worksheetPrinterName"
             type="text"
             value={printer}
-            onChange={(e) => setPrinterDraft(e.target.value)}
+            onChange={(e) => {
+              clearSaved();
+              setPrinterDraft(e.target.value);
+            }}
             placeholder="Default printer"
             className="w-full max-w-md px-2 py-1.5 text-[13px] font-mono bg-raised border border-edge rounded text-ink"
           />
@@ -88,7 +96,10 @@ export function PrintingPreferences() {
             id="pdftotextPath"
             type="text"
             value={pdftotext}
-            onChange={(e) => setPdftotextDraft(e.target.value)}
+            onChange={(e) => {
+              clearSaved();
+              setPdftotextDraft(e.target.value);
+            }}
             placeholder="/opt/homebrew/bin/pdftotext"
             className="w-full max-w-md px-2 py-1.5 text-[13px] font-mono bg-raised border border-edge rounded text-ink"
           />
