@@ -6,6 +6,7 @@ import {
   getDefaultChartSecurityId,
   getLatestPrice,
   getLatestPriceNative,
+  isMaturedSecurity,
 } from "@/lib/queries/ohlcv";
 import { getSecurityById } from "@/lib/queries/securities";
 import { getActiveWatchlistSecurityIds } from "@/lib/queries/watchlist";
@@ -86,7 +87,9 @@ export default async function ChartsPage({ searchParams }: PageProps) {
               ? "no_contract"
               : isExpiredOption(asked)
                 ? "expired_option"
-                : "mutual_fund",
+                : isMaturedSecurity(db, asked.id)
+                  ? "matured"
+                  : "mutual_fund",
         }
       : { securityId: null, symbol: null, reason: "not_found" };
   }

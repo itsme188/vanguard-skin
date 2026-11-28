@@ -1,3 +1,4 @@
+import { noRecipientMessage } from "@/lib/email/no-recipient-message";
 import type Database from "better-sqlite3";
 import { isGmailConfigured, getGmailClient } from "@/lib/gmail/auth";
 import { fetchNewArticles, backfillSourceUrls } from "@/lib/gmail/fetch";
@@ -71,7 +72,7 @@ export async function sendDigestEmail(
 
   if (!recipient) {
     throw new DigestSendError(
-      "No recipient. Set BRIEFING_EMAIL_TO env var or pass 'recipient'.",
+      noRecipientMessage("digest"),
       400
     );
   }

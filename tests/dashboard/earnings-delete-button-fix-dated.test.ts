@@ -97,7 +97,7 @@ describe("wiring", () => {
   });
 
   it("both hub layouts tell the button which vendor date the row was corrected from", () => {
-    const needle = "vendorDate={fixDateOrigin(event)}";
+    const needle = "vendorDate={event.fixDateVendorDate}";
     const first = anchorIndex(HUB, needle);
     anchorIndex(HUB, needle, first + needle.length, "mobile card");
   });

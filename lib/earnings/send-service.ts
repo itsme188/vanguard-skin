@@ -49,6 +49,7 @@
  * members and one composed email, because the morning debrief staples several
  * names into a single message and must run the identical choreography.
  */
+import { noRecipientMessage } from "@/lib/email/no-recipient-message";
 import { randomUUID } from "node:crypto";
 import { getRecapHold } from "@/lib/earnings/figure-conflict";
 import { getRecapReadinessHold, isPlaceholderRecap, ACTUALS_UNCONFIRMED_REASON } from "@/lib/earnings/recap-readiness";
@@ -621,7 +622,7 @@ export async function sendEarningsCandidate(
   if (!recipient) {
     return {
       outcome: "refused",
-      reason: "No recipient. Set BRIEFING_EMAIL_TO env var or pass 'recipient'.",
+      reason: noRecipientMessage("earnings"),
       status: 400,
     };
   }

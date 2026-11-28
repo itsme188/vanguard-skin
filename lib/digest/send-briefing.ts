@@ -1,3 +1,4 @@
+import { noRecipientMessage } from "@/lib/email/no-recipient-message";
 import type Database from "better-sqlite3";
 import { getBriefingByWeek, isBriefingStale } from "@/lib/queries/calendar";
 import { generateWeeklyBriefing } from "@/lib/calendar/briefing";
@@ -60,7 +61,7 @@ export async function sendBriefingEmail(
 
   if (!recipient) {
     throw new BriefingSendError(
-      "No recipient. Set BRIEFING_EMAIL_TO env var or pass 'recipient'.",
+      noRecipientMessage("briefing"),
       400
     );
   }

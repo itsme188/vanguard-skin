@@ -28,7 +28,7 @@ export interface UnavailableChartRequest {
   /** null when no security matches the id at all. */
   securityId: number | null;
   symbol: string | null;
-  reason: "no_contract" | "mutual_fund" | "expired_option" | "not_found";
+  reason: "no_contract" | "mutual_fund" | "expired_option" | "matured" | "not_found";
 }
 
 /** Empty-state copy for a chart request the page cannot serve. */
@@ -53,7 +53,9 @@ export function unavailableChartCopy(req: UnavailableChartRequest): {
       ? `${req.symbol} is a mutual fund, and mutual funds have no traded price history to chart.`
       : req.reason === "expired_option"
         ? `${req.symbol} is an expired option contract, and no price history is available for an expired contract.`
-        : `${req.symbol} has no IBKR contract id yet, so there is no price history to chart.`;
+        : req.reason === "matured"
+          ? `${req.symbol} has matured, and no price history can be loaded for it.`
+          : `${req.symbol} has no IBKR contract id yet, so there is no price history to chart.`;
   return {
     title: `No chart for ${req.symbol}`,
     reason: `${why} Pick a security above.`,
