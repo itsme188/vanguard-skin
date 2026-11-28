@@ -2,6 +2,8 @@ import type Database from "better-sqlite3";
 import type { OhlcvBar } from "@/lib/tws/types";
 import { adjustedMarketValueSQL } from "@/lib/valuation";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
+import { unmaturedSecuritySql } from "@/lib/db/eastern-day-sql";
+import { todayET } from "@/lib/calendar/date-utils";
 
 /**
  * Shared read-side corrupt-bar guard — the SQL counterpart of `isSaneBar` in
@@ -168,15 +170,34 @@ export const DEFAULT_CHART_MAX_BAR_AGE_DAYS = 31;
  */
 export function getChartableSecurities(
   db: Database.Database,
+  today: string = todayET(),
 ): ChartableSecurity[] {
+  // A matured bond or bill is left out (Eastern day, shared helper): the
+  // broker serves no history for it. It stays listed on its maturity day.
   return db
     .prepare(
       `SELECT id, symbol, name, security_type, currency
        FROM securities s
        WHERE ${CHARTABLE_PREDICATE_SQL}
+         AND ${unmaturedSecuritySql("s", today)}
        ORDER BY symbol`,
     )
     .all() as ChartableSecurity[];
+}
+
+/** True when the security's maturity date is before today (Eastern). */
+export function isMaturedSecurity(
+  db: Database.Database,
+  securityId: number,
+  today: string = todayET(),
+): boolean {
+  const row = db
+    .prepare(
+      `SELECT NOT ${unmaturedSecuritySql("s", today)} AS matured
+       FROM securities s WHERE s.id = ?`,
+    )
+    .get(securityId) as { matured: number } | undefined;
+  return row?.matured === 1;
 }
 
 /**
