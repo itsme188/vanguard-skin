@@ -28,9 +28,9 @@ function inRange01(n: unknown): n is number {
   return typeof n === "number" && Number.isFinite(n) && n > 0 && n <= 1;
 }
 
-function validateCaps(scope: string, raw: unknown): { error: string } | { caps: Caps } {
+function validateCaps(raw: unknown): { error: string } | { caps: Caps } {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
-    return { error: `The ${scope} caps must be an object.` };
+    return { error: "The caps must be an object." };
   }
   const c = raw as Record<string, unknown>;
   const fields: Array<[keyof Caps, string]> = [
@@ -40,19 +40,19 @@ function validateCaps(scope: string, raw: unknown): { error: string } | { caps: 
   ];
   for (const [k, label] of fields) {
     if (!inRange01(c[k])) {
-      return { error: `${label} cap for ${scope} must be a number above 0 and at most 1 (for example 0.10 for 10%).` };
+      return { error: `${label} cap must be above 0% and at most 100%.` };
     }
   }
   const { top1Max, top3Max, sectorMax, betaMin, betaMax } = c as Record<string, number>;
   if (top1Max > top3Max) {
-    return { error: `For ${scope}, the largest-position cap cannot exceed the top-three cap.` };
+    return { error: "The largest-position cap cannot be above the top-three cap." };
   }
   if (
     typeof betaMin !== "number" || typeof betaMax !== "number" ||
     !Number.isFinite(betaMin) || !Number.isFinite(betaMax) ||
     betaMin < 0 || betaMax > 5 || !(betaMin < betaMax)
   ) {
-    return { error: `Beta range for ${scope} must satisfy 0 <= low < high <= 5.` };
+    return { error: "The beta range must run from a low of at least 0 to a higher value of at most 5." };
   }
   return { caps: { top1Max, top3Max, sectorMax, betaMin, betaMax } };
 }
@@ -99,7 +99,7 @@ export function applyPreferencesPatch(db: Database.Database, body: unknown): Pat
       if (!(CAP_SCOPES as readonly string[]).includes(scope)) {
         return { ok: false, error: `Unknown caps scope "${scope}".` };
       }
-      const r = validateCaps(scope, raw);
+      const r = validateCaps(raw);
       if ("error" in r) return { ok: false, error: r.error };
       // snake_case + 2-tuple beta_range: what getCaps / cash-deploy parse.
       writes.push({

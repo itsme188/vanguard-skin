@@ -185,6 +185,24 @@ describe("validation refusals return 400 and change nothing", () => {
     });
   }
 
+  it("cap refusals speak percent and never print the raw scope key", async () => {
+    const cases: Array<[unknown, string]> = [
+      [{ ...NEW_CAPS, top1Max: 5 }, "100%"],
+      [{ ...NEW_CAPS, top1Max: 0.3, top3Max: 0.2 }, "top-three cap"],
+      [{ ...NEW_CAPS, betaMin: 1.3, betaMax: 1.3 }, "beta range"],
+    ];
+    for (const [caps, expected] of cases) {
+      const res = await patch({ constructionCaps: { all: caps } });
+      expect(res.status).toBe(400);
+      const { error } = (await res.json()) as { error: string };
+      expect(error.toLowerCase()).toContain(expected.toLowerCase());
+      expect(error).not.toContain("0.10");
+      expect(error).not.toMatch(/\b(all|vanguard|roth|ibkr)\b/i);
+    }
+    const big = await (await patch({ constructionCaps: { all: { ...NEW_CAPS, top1Max: 5 } } })).json();
+    expect(big.error).toBe("Largest position cap must be above 0% and at most 100%.");
+  });
+
   it("non-object body and unparseable JSON", async () => {
     const before = snapshot();
     expect((await patch([1])).status).toBe(400);
