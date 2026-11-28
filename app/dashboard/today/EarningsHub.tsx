@@ -49,7 +49,7 @@ import { EarningsRowChips } from "./EarningsRowChips";
 import EarningsHubLive, { LivePrintSlot } from "./EarningsHubLive";
 import UnreadPreviews from "./UnreadPreviews";
 import { EarningsDeleteButton } from "./EarningsDeleteButton";
-import { fixDateOrigin } from "@/lib/calendar/fix-date-suppression";
+import { fixDateVendorOrigin } from "@/lib/calendar/fix-date-suppression";
 import { getEmailIgnoredManualTwins } from "@/lib/queries/manual-twin-email";
 import { emailFollowsEarlierCopy } from "./email-follows-earlier-copy";
 import { EarningsDateChip } from "./EarningsDateChip";
@@ -93,6 +93,11 @@ type EnrichedRow = CalendarEvent & {
    * 2026-10-07). Null on every other row.
    */
   emailFollowsDate: string | null;
+  /**
+   * The VENDOR date a Fix-date row hid (the remove dialog offers to restore
+   * it), else null: a plain row, or a row whose earlier date was hand-entered.
+   */
+  fixDateVendorDate: string | null;
   /** Hand-entered entries in the group (the earlier row plus the ones email ignores). 0 on an unmarked row. */
   emailFollowsCount: number;
 };
@@ -296,6 +301,7 @@ export function EarningsHub() {
         ? recapHoldChipView(getRecapHold(db, e.id))
         : null,
     emailFollowsDate: ignoredManualTwins.get(e.id)?.emailRowDate ?? null,
+    fixDateVendorDate: e.event_type === "earnings" ? fixDateVendorOrigin(db, e) : null,
     emailFollowsCount: emailGroupSize(ignoredManualTwins, e.id),
   }));
 
@@ -659,7 +665,7 @@ function DesktopRow({ event }: { event: EnrichedRow }) {
           eventId={event.id}
           symbol={event.symbol}
           source={event.source}
-          vendorDate={fixDateOrigin(event)}
+          vendorDate={event.fixDateVendorDate}
         />
       </span>
       {/* Spans every column, so it sits on its own line under the row. */}
@@ -882,7 +888,7 @@ function MobileCard({ event }: { event: EnrichedRow }) {
           eventId={event.id}
           symbol={event.symbol}
           source={event.source}
-          vendorDate={fixDateOrigin(event)}
+          vendorDate={event.fixDateVendorDate}
         />
       </div>
       <EmailFollowsEarlierNote

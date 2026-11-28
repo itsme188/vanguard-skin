@@ -7,7 +7,7 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
-import { fixDateOrigin, liftEarningsSuppression } from "@/lib/calendar/fix-date-suppression";
+import { fixDateOrigin, fixDateVendorOrigin, liftEarningsSuppression } from "@/lib/calendar/fix-date-suppression";
 import { correctEarningsEventDate, suppressCalendarEvent } from "@/lib/mutations/calendar";
 import { anchorIndex } from "../helpers/source-anchor";
 
@@ -65,6 +65,42 @@ describe("fixDateOrigin", () => {
   it("the description literal in the mutation still has the shape the reader matches", () => {
     const src = readFileSync("lib/mutations/calendar.ts", "utf8");
     anchorIndex(src, "description: `Date corrected from ${opts.wrongDate} (wrong sync-sourced date)`");
+  });
+});
+
+describe("fixDateVendorOrigin (only a hidden VENDOR date counts)", () => {
+  const insert = (source: string, key: string, date: string) =>
+    db
+      .prepare(
+        `INSERT INTO calendar_events (source, event_type, event_date, title, symbol, source_key, week_of, raw_json)
+         VALUES (?, 'earnings', ?, 'QAXX earnings', 'QAXX', ?, '2026-08-31', '{}')`,
+      )
+      .run(source, date, key).lastInsertRowid as number;
+  const minted = (id: number) =>
+    db.prepare("SELECT symbol, source, description FROM calendar_events WHERE id = ?").get(id) as {
+      symbol: string;
+      source: string;
+      description: string | null;
+    };
+
+  it("a vendor row moved by Fix date still reports the vendor date", () => {
+    insert("finnhub", "finnhub:QAXX:2026-09-03", "2026-09-03");
+    const r = correctEarningsEventDate(db, { symbol: "QAXX", wrongDate: "2026-09-03", correctDate: "2026-09-04" });
+    expect(fixDateVendorOrigin(db, minted(r.newEventId!))).toBe("2026-09-03");
+  });
+
+  it("a hand-entered row moved by Fix date reports no vendor date", () => {
+    insert("manual", "manual:QAXX:2026-09-03", "2026-09-03");
+    const r = correctEarningsEventDate(db, { symbol: "QAXX", wrongDate: "2026-09-03", correctDate: "2026-09-04" });
+    expect(r.ok).toBe(true);
+    const row = minted(r.newEventId!);
+    // The description alone cannot tell the two apart (same text in both cases).
+    expect(fixDateOrigin(row)).toBe("2026-09-03");
+    expect(fixDateVendorOrigin(db, row)).toBeNull();
+  });
+
+  it("is null for a row that is not a Fix date product", () => {
+    expect(fixDateVendorOrigin(db, { symbol: "QAXX", source: "manual", description: null })).toBeNull();
   });
 });
 

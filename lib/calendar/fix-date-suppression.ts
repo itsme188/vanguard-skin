@@ -34,6 +34,42 @@ export function fixDateOrigin(row: {
 }
 
 /**
+ * The suppression reason `deleteAndSuppressCalendarEvent` writes for a row it
+ * deletes is `user-deleted ${row.source} row #${id}` (lib/mutations/calendar.ts),
+ * and Fix date deletes the wrong-date rows through it. A hand-entered wrong row
+ * therefore leaves `user-deleted manual row #N`. Only that exact shape means
+ * "the earlier date was the user's own entry"; anything else (a vendor source,
+ * a missing reason, a missing suppression) keeps the vendor reading.
+ */
+const MANUAL_ORIGIN_REASON_RE = /^user-deleted manual row #\d+$/;
+
+/**
+ * The VENDOR date a Fix-date row hid, or null. Same as `fixDateOrigin` except
+ * that when the earlier date was the user's own hand-entered row there is no
+ * vendor date to restore, so it answers null. The row's description reads the
+ * same in both cases, so this looks at the suppression's stored reason.
+ */
+export function fixDateVendorOrigin(
+  db: Database.Database,
+  row: {
+    symbol: string | null | undefined;
+    source: string | null | undefined;
+    description: string | null | undefined;
+  },
+): string | null {
+  const origin = fixDateOrigin(row);
+  if (origin === null || !row.symbol) return null;
+  const hidden = db
+    .prepare(
+      `SELECT reason FROM calendar_event_suppressions
+        WHERE UPPER(symbol) = ? AND event_date = ? AND event_type = 'earnings'`,
+    )
+    .get(row.symbol.trim().toUpperCase(), origin) as { reason: string | null } | undefined;
+  if (hidden?.reason && MANUAL_ORIGIN_REASON_RE.test(hidden.reason)) return null;
+  return origin;
+}
+
+/**
  * Remove the earnings suppression for one (symbol, date). Returns how many
  * rows were removed (0 when there was none). The vendor's row is not
  * re-created here: it returns on the next calendar sync, if the vendor still
